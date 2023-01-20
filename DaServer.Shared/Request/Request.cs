@@ -7,9 +7,9 @@ using DaServer.Shared.Misc;
 namespace DaServer.Shared.Request;
 
 /// <summary>
-/// Event request (won't expose) - 事件请求（不暴露外部）
+/// Event request - 事件请求
 /// </summary>
-file interface IRequest
+public interface IRequest
 {
     /// <summary>
     /// Request - 请求
@@ -47,13 +47,12 @@ public abstract class Request<TActor, TRequest, TResponse> : IRequest<TActor, TR
     {
         try
         {
-            return await OnRequest((TActor)actor, (TRequest)request);
+            var ret = await OnRequest((TActor)actor, (TRequest)request);
+            return ret;
         }
         catch (Exception ex)
         {
             Logger.Error(ex, "Request {Type} Error", GetType());
-            Logger.Error(ex.StackTrace!);
-            Logger.Info(ex.InnerException?.StackTrace!);
         }
 
         return null;

@@ -8,17 +8,32 @@ public class Actor
 {
     public Session Session;
 
-    public readonly ConcurrentQueue<(int requestId, Task<IMessage?> requestTask)> Requests = new();
+    public readonly ConcurrentQueue<RemoteCall> Requests = new();
 
-    public void AddRequest(int requestId, Task<IMessage?> requestTask)
+    public void AddRequest(RemoteCall call)
     {
-        Requests.Enqueue((requestId, requestTask));
+        Requests.Enqueue(call);
     }
     
     public Actor(Session session)
     {
         Session = session;
     }
+    
+    /// <summary>
+    /// 回复某个请求
+    /// </summary>
+    /// <param name="requestId"></param>
+    /// <param name="val"></param>
+    /// <typeparam name="T"></typeparam>
+    /// <returns></returns>
+    public Task Respond<T>(int requestId, T? val) where T: IMessage
+    {
+        //TODO 如果是空，通知请求失败
+        //TODO 发送任务
+        return Task.CompletedTask;
+    }
+
 
     public void ChangeSession(Session newSession)
     {

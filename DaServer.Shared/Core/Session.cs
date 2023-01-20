@@ -1,12 +1,22 @@
-using System.Threading.Tasks;
+using System;
+using DaServer.Shared.Network;
 
 namespace DaServer.Shared.Core;
 
-public class Session
+public class Session: IDisposable
 {
-    public Task Send<T>(int requestId, T val)
+    public uint Id;
+    private readonly TcpServer _server;
+    
+    public Session(uint id, TcpServer server)
     {
-        //TODO 发送任务
-        return Task.CompletedTask;
+        Id = id;
+        _server = server;
+    }
+    
+    public void Dispose()
+    {
+        //关闭会话
+        _server.KickClient(Id);
     }
 }

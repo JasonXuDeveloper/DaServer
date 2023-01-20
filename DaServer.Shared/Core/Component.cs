@@ -15,11 +15,14 @@ public abstract class Component
 {
     protected Component()
     {
-        throw new InvalidOperationException(
-            $"Can not create instance of {GetType()} with `new()`, use `AddComponent()` instead. " +
-            $"无法使用`new()`创建{GetType()}的实例，请使用`AddComponent()`代替。");
+        if (System == null)
+        {
+            throw new InvalidOperationException(
+                $"Can not create instance of {GetType()} with `new()`, use `AddComponent()` instead. " +
+                $"无法使用`new()`创建{GetType()}的实例，请使用`AddComponent()`代替。");
+        }
     }
-    
+
     public System System { get; internal set; }
 
     internal virtual ComponentRole Role => ComponentRole.HighLevel;

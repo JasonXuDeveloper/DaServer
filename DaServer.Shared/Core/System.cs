@@ -1,7 +1,6 @@
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Linq;
+using System.Reflection;
 using System.Runtime.Serialization;
 using System.Timers;
 using DaServer.Shared.Misc;
@@ -40,16 +39,6 @@ public sealed class System
     /// </summary>
     private readonly int _startTick = Time.CurrentTick;
 
-        /// <summary>
-    /// Components to be added - 要添加的组件
-    /// </summary>
-    private readonly ConcurrentQueue<Component> _createQueue = new ConcurrentQueue<Component>();
-    
-    /// <summary>
-    /// Components to be removed - 要删除的组件
-    /// </summary>
-    private readonly ConcurrentQueue<Component> _destroyQueue = new ConcurrentQueue<Component>();
-    
     /// <summary>
     /// Enable the system - 启用系统
     /// </summary>
@@ -83,7 +72,16 @@ public sealed class System
             return null;
         }
         component.System = this;
-        _createQueue.Enqueue(component);
+        //get constructor
+        ConstructorInfo? constructor = typeof(T).GetConstructor(Type.EmptyTypes);
+        if (constructor == null)
+        {
+            throw new InvalidOperationException($"Can not find constructor for component: {typeof(T)}");
+        }
+        //invoke constructor
+        constructor.Invoke(component, Array.Empty<object>());
+        component.Create().Wait();
+        _components.Add(component);
         return component;
     }
     
@@ -94,7 +92,16 @@ public sealed class System
     /// <returns></returns>
     public T? GetComponent<T>() where T: Component
     {
-        return _components.OfType<T>().FirstOrDefault();
+        int cnt = _components.Count;
+        for (int i = 0; i < cnt; i++)
+        {
+            if (_components[i] is T component)
+            {
+                return component;
+            }
+        }
+        
+        return null;
     }
     
     /// <summary>
@@ -102,8 +109,9 @@ public sealed class System
     /// </summary>
     /// <param name="component"></param>
     /// <typeparam name="T"></typeparam>
-    public void RemoveComponent<T>(T component) where T: Component
+    public void RemoveComponent<T>(T? component) where T: Component
     {
+        if (component == null) return;
         if(!_timer.Enabled)
         {
             Logger.Error("System is not enabled, can not remove {comp}", component);
@@ -114,20 +122,21 @@ public sealed class System
             Logger.Error("LowLevel component: {comp} can not be removed", component);
             return;
         }
-        _destroyQueue.Enqueue(component);
+        
+        component.Destroy().Wait();
+        _components.Remove(component);
     }
     
     /// <summary>
-    /// Clear all components - 清除所有组件
+    /// Remove all components - 清除所有组件
     /// </summary>
-    public void ClearComponents()
+    public void RemoveAllComponents()
     {
-        if (!_timer.Enabled)
+        foreach (Component component in _components)
         {
-            Logger.Error("System is not enabled, can not clear components");
-            return;
+            if (component.Role == ComponentRole.LowLevel) continue;
+            RemoveComponent(component);
         }
-        _components.RemoveAll(c => c.Role != ComponentRole.LowLevel);
     }
     
     /// <summary>
@@ -137,21 +146,12 @@ public sealed class System
     {
         var diff = Time.CurrentTick - _startTick;
 
-        foreach (var component in _components.Where(component => diff % component.TickInterval == 0))
+        int cnt = _components.Count;
+        for (int i = 0; i < cnt; i++)
         {
-            await component.Update(Time.CurrentTick);
-        }
-        
-        while (_createQueue.TryDequeue(out var component))
-        {
-            await component.Create();
-            _components.Add(component);
-        }
-        
-        while (_destroyQueue.TryDequeue(out var component))
-        {
-            await component.Destroy();
-            _components.Remove(component);
+            if (i >= _components.Count) break;
+            var component = _components[i];
+            await component.Update(diff);
         }
     }
 }
