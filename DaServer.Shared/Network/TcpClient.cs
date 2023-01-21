@@ -95,10 +95,10 @@ public class TcpClient
     internal void Start()
     {
         SetSocket();
-        OnConnected?.Invoke();
         Task writing = FillPipeAsync(Socket, _pipe.Writer);
         Task reading = ReadPipeAsync(_pipe.Reader);
         _ = Task.WhenAll(reading, writing);
+        OnConnected?.Invoke();
     }
 
     /// <summary>
