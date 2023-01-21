@@ -31,16 +31,15 @@ public class Actor
     /// <returns></returns>
     public async Task Respond<T>(int requestId, T? val) where T: IMessage
     {
-        //TODO 如果是空，通知请求失败
+        //如果是空，则请求出了问题，抛异常
         if (val is null)
         {
-            return;
+            throw new NullReferenceException(
+                $"val is null, requestId: {requestId}, if you want to return nothing please return MVoid.Empty");
         }
         // 发送任务
         var buf = MessageFactory.GetMessage(requestId, val);
         await Session.SendAsync(buf);
-        Logger.Info("Respond: {id}", requestId);
-        Logger.Info("回了消息 {buf}", new ArraySegment<byte>(buf));
     }
 
 

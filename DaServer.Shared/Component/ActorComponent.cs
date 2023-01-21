@@ -81,7 +81,7 @@ public class ActorComponent: Core.Component
                 if(requestTask == null)
                     continue;
                 var task = requestTask.OnRequest(actor, remoteCall.MessageObj!);
-                _tasks.Add(task.ContinueWith((t, obj) =>
+                _tasks.Add(task.ContinueWith((t, __) =>
                 {
                     //不等待响应结果
                     _ = actor.Respond(remoteCall.RequestId, t.Result);

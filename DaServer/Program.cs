@@ -19,7 +19,7 @@ public static class Program
         TcpClient client = new TcpClient("127.0.0.1", 9999);
         client.OnConnected += () =>
         {
-            Logger.Info("客户端连上了服务端: {c}", client);
+            Logger.Info("客户端连上了服务端");
             _ = Request(client, 1, new MTestRequest()
             {
                 Txt = "hello"
@@ -38,6 +38,7 @@ public static class Program
         {
             var remoteCall = MessageFactory.GetRemoteCall(data);
             Logger.Info("客户端收到了服务端的消息: {r}", remoteCall);
+            //id > 0 => response, <=0 => callback
             if(Requests.TryGetValue(remoteCall.RequestId, out var tcs))
             {
                 tcs.SetResult(remoteCall.MessageObj!);
