@@ -38,6 +38,10 @@ public static class Program
         {
             var remoteCall = MessageFactory.GetRemoteCall(data);
             Logger.Info("客户端收到了服务端的消息: {r}", remoteCall);
+            if (remoteCall.MsgId == MsgId.Error)
+            {
+                throw new Exception("服务端出现错误");
+            }
             //id > 0 => response, <=0 => callback
             if(Requests.TryGetValue(remoteCall.RequestId, out var tcs))
             {

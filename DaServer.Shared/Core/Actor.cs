@@ -34,8 +34,9 @@ public class Actor
         //如果是空，则请求出了问题，抛异常
         if (val is null)
         {
-            throw new NullReferenceException(
-                $"val is null, requestId: {requestId}, if you want to return nothing please return MVoid.Empty");
+            // 发送错误
+            await Session.SendAsync(MessageFactory.GetMessage(requestId, MError.Empty));
+            return;
         }
         // 发送任务
         var buf = MessageFactory.GetMessage(requestId, val);
