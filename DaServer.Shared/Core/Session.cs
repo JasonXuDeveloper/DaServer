@@ -1,4 +1,5 @@
 using System;
+using System.Threading.Tasks;
 using DaServer.Shared.Network;
 
 namespace DaServer.Shared.Core;
@@ -18,5 +19,17 @@ public class Session: IDisposable
     {
         //关闭会话
         _server.KickClient(Id);
+    }
+    
+    public void Send(Span<byte> data)
+    {
+        //发送数据
+        _server.SendToClient(Id, data);
+    }
+    
+    public async Task SendAsync(Memory<byte> data)
+    {
+        //异步发送数据
+        await _server.SendToClientAsync(Id, data);
     }
 }

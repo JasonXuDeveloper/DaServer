@@ -1,6 +1,8 @@
+using System;
 using System.Collections.Concurrent;
 using System.Threading.Tasks;
 using DaServer.Shared.Message;
+using DaServer.Shared.Misc;
 
 namespace DaServer.Shared.Core;
 
@@ -27,11 +29,18 @@ public class Actor
     /// <param name="val"></param>
     /// <typeparam name="T"></typeparam>
     /// <returns></returns>
-    public Task Respond<T>(int requestId, T? val) where T: IMessage
+    public async Task Respond<T>(int requestId, T? val) where T: IMessage
     {
         //TODO 如果是空，通知请求失败
-        //TODO 发送任务
-        return Task.CompletedTask;
+        if (val is null)
+        {
+            return;
+        }
+        // 发送任务
+        var buf = MessageFactory.GetMessage(requestId, val);
+        await Session.SendAsync(buf);
+        Logger.Info("Respond: {id}", requestId);
+        Logger.Info("回了消息 {buf}", new ArraySegment<byte>(buf));
     }
 
 

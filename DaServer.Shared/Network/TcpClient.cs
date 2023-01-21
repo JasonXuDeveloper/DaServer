@@ -42,11 +42,6 @@ public class TcpClient
     /// </summary>
     private readonly Pipe _pipe;
 
-    /// <summary>
-    /// 封装网络流
-    /// </summary>
-    private NetworkStream? _stream;
-
     //标识是否已经释放
     private volatile bool _isDispose;
 
@@ -78,7 +73,6 @@ public class TcpClient
     {
         if (Socket.Connected) return;
         Socket.Connect(Ip, Port);
-        _stream = new NetworkStream(Socket);
         Start();
     }
 
@@ -171,6 +165,7 @@ public class TcpClient
 
         // By completing PipeWriter, tell the PipeReader that there's no more data coming.
         await writer.CompleteAsync();
+        Logger.Info("不接收了");
     }
 
     /// <summary>
@@ -249,8 +244,8 @@ public class TcpClient
                 uint length = (uint)buffer.Length + 4;
                 //uint取其span
                 Span<byte> lengthSpan = new Span<byte>(&length, 4);
-                _stream!.Write(lengthSpan);
-                _stream.Write(buffer);
+                Socket.Send(lengthSpan);
+                Socket.Send(buffer);
             }
         }
         catch
@@ -277,8 +272,8 @@ public class TcpClient
                     memory = memoryManager.Memory;
                 }
 
-                await _stream!.WriteAsync(memory);
-                await _stream.WriteAsync(buffer);
+                await Socket.SendAsync(memory);
+                await Socket.SendAsync(buffer);
             }
         }
         catch

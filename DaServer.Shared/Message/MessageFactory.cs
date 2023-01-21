@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Linq;
 using System.Reflection;
@@ -63,23 +64,44 @@ public static class MessageFactory
         return 0;
     }
 
-    public static byte[] GetMessage<T>(T val, int requestId) where T: IMessage
+    public static byte[] GetMessage<T>(int requestId, T val) where T: IMessage
     {
-        if (!_msgIdCache.TryGetValue(typeof(T), out _))
+        var type = typeof(T);
+        if(type == typeof(IMessage))
+            type = val.GetType();
+        if (!_msgIdCache.TryGetValue(type, out _))
         {
-            throw new Exception($"消息类型{typeof(T).FullName}未注册");
+            throw new Exception($"消息类型{type.FullName}未注册");
         }
-        var msgBytes = Serializer.Serialize(val, CompressOption.NoCompression);
+
+        var msgBytes = Serializer.Serialize(type != typeof(T) ? (object)val : val, CompressOption.NoCompression);
         RemoteCall remoteCall = new RemoteCall
         {
             RequestId = requestId,
-            MsgId = GetMsgId(typeof(T)),
+            MsgId = GetMsgId(type),
             MessageData = msgBytes
         };
         return Serializer.Serialize(remoteCall);
     }
     
-    public static RemoteCall GetRemoteCall(byte[] bytes)
+    public static RemoteCall GetRemoteCall(ReadOnlySequence<byte> data)
+    {
+        //try stackalloc if len <= 1024
+        if (data.Length <= 1024)
+        {
+            Span<byte> buffer = stackalloc byte[(int)data.Length];
+            data.CopyTo(buffer);
+            return GetRemoteCall(buffer);
+        }
+        else
+        {
+            var buffer = ArrayPool<byte>.Shared.Rent((int)data.Length);
+            data.CopyTo(buffer);
+            return GetRemoteCall(new ArraySegment<byte>(buffer, 0, (int)data.Length));
+        }
+    }
+    
+    public static RemoteCall GetRemoteCall(scoped Span<byte> bytes)
     {
         var ret = Deserializer.Deserialize<RemoteCall>(bytes);
         var type = GetMsgType(ret.MsgId);

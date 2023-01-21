@@ -10,20 +10,20 @@ using DaServer.Shared.Network;
 
 namespace DaServer.Shared.Component;
 
-public class NetComponent: Core.Component
+public class NetComponent : Core.Component
 {
     internal override ComponentRole Role => ComponentRole.LowLevel;
-    
+
     /// <summary>
     /// tcp server
     /// </summary>
     private TcpServer _server = null!;
-    
+
     /// <summary>
     /// sessions
     /// </summary>
     private ConcurrentDictionary<uint, Session> _sessions = null!;
-    
+
     /// <summary>
     /// session request queue
     /// </summary>
@@ -33,36 +33,33 @@ public class NetComponent: Core.Component
     /// on connect event
     /// </summary>
     public event Action<uint>? OnClientConnected;
-    
+
     /// <summary>
     /// on disconnect event
     /// </summary>
     public event Action<uint, string>? OnClientDisconnected;
-    
+
     /// <summary>
     /// on receive event
     /// </summary>
     public event Action<uint, ReadOnlySequence<byte>>? OnClientDataReceived;
 
-    
+
     public override Task Create()
     {
         //init fields
         _sessions = new();
         _queue = new ConcurrentQueue<(uint sessionId, RemoteCall call)>();
-        
+
         //create server
         _server = new TcpServer("0.0.0.0", 9999); //TODO: Config
         _server.OnConnect += id => OnClientConnected?.Invoke(id);
         _server.OnDisconnect += (id, reason) => OnClientDisconnected?.Invoke(id, reason);
         _server.OnMessage += (id, data) => OnClientDataReceived?.Invoke(id, data);
-        
+
         //add callback
-        OnClientConnected += id =>
-        {
-            _sessions.TryAdd(id, new Session(id, _server));
-        };
-        
+        OnClientConnected += id => { _sessions.TryAdd(id, new Session(id, _server)); };
+
         OnClientDisconnected += (id, _) =>
         {
             if (_sessions.TryRemove(id, out var session))
@@ -70,19 +67,17 @@ public class NetComponent: Core.Component
                 session.Dispose();
             }
         };
-        
+
         OnClientDataReceived += (id, data) =>
         {
             //get session
             if (_sessions.TryGetValue(id, out _))
             {
                 //process data
-                var remoteCall = MessageFactory.GetRemoteCall(data.ToArray());
-                //record
-                _queue.Enqueue((id, remoteCall));
+                _queue.Enqueue((id, MessageFactory.GetRemoteCall(data)));
             }
         };
-        
+
         //start server
         _server.Start();
 
@@ -109,6 +104,7 @@ public class NetComponent: Core.Component
                 msgProcComp.AddRequest(session, queueItem.call);
             }
         }
+
         return Task.CompletedTask;
     }
 }

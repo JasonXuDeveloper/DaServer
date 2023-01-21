@@ -13,11 +13,13 @@ public class ActorComponent: Core.Component
     
     private ConcurrentDictionary<Session, Actor> _actors  = null!;
     private List<Actor> _actorList  = null!;
+    private List<Task> _tasks  = null!;
 
     public override Task Create()
     {
         _actors = new ConcurrentDictionary<Session, Actor>();
         _actorList = new List<Actor>();
+        _tasks = new List<Task>();
         return Task.CompletedTask;
     }
 
@@ -66,18 +68,26 @@ public class ActorComponent: Core.Component
     {
         //循环每个Actor并调用Request
         int cnt = _actorList.Count;
+        _tasks.Clear();
         for (int i = 0; i < cnt; i++)
         {
+            //按顺序处理每个actor的消息
             Actor actor = _actorList[i];
+            //TODO 检测actor的session断开
+
             while (actor.Requests.TryDequeue(out var remoteCall))
             {
                 var requestTask = RequestFactory.GetRequest(remoteCall.MsgId);
                 if(requestTask == null)
                     continue;
-                var respond = await requestTask.OnRequest(actor, remoteCall.MessageObj!);
-                await actor.Respond(remoteCall.RequestId, respond);
+                var task = requestTask.OnRequest(actor, remoteCall.MessageObj!);
+                _tasks.Add(task.ContinueWith((t, obj) =>
+                {
+                    //不等待响应结果
+                    _ = actor.Respond(remoteCall.RequestId, t.Result);
+                }, null));
             }
         }
-        //TODO 检测actor的session断开
+        await Task.WhenAll(_tasks);
     }
 }
