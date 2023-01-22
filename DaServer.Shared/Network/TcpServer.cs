@@ -124,9 +124,9 @@ public class TcpServer
     /// </summary>
     /// <param name="id"></param>
     /// <param name="message"></param>
-    public Task SendToClientAsync(uint id, Memory<byte> message)
+    public ValueTask SendToClientAsync(uint id, Memory<byte> message)
     {
-        if (!_clients.TryGetValue(id, out var client)) return Task.CompletedTask;
+        if (!_clients.TryGetValue(id, out var client)) return ValueTask.CompletedTask;
         return client.SendAsync(message);
     }
 

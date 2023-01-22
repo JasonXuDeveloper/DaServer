@@ -14,9 +14,9 @@ namespace DaServer.Shared.Core;
 [NinoSerialize()]
 public struct RemoteCall
 {
-    [NinoMember(0)] public int MsgId;
-    [NinoMember(1)] public int RequestId;
+    [NinoMember(0)] public int MsgId { get; set; }
+    [NinoMember(1)] public int RequestId { get; set; }
     [NinoMember(2)] internal byte[]? MessageData;
 
-    public IMessage? MessageObj;
+    public IMessage? MessageObj { get; set; }
 }

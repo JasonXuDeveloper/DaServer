@@ -257,7 +257,7 @@ public class TcpClient
     /// <summary>
     /// 发送消息方法
     /// </summary>
-    public async Task SendAsync(Memory<byte> buffer)
+    public async ValueTask SendAsync(Memory<byte> buffer)
     {
         try
         {
