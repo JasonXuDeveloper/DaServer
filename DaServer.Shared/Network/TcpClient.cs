@@ -165,7 +165,6 @@ public class TcpClient
 
         // By completing PipeWriter, tell the PipeReader that there's no more data coming.
         await writer.CompleteAsync();
-        Logger.Info("不接收了");
     }
 
     /// <summary>

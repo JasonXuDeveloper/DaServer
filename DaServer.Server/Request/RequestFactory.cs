@@ -4,14 +4,14 @@ using System.Linq;
 using DaServer.Shared.Message;
 using DaServer.Shared.Misc;
 
-namespace DaServer.Shared.Request;
+namespace DaServer.Server.Request;
 
 public static class RequestFactory
 {
     /// <summary>
     /// 缓存
     /// </summary>
-    private static readonly ConcurrentDictionary<int, IRequest> _requests = new ConcurrentDictionary<int, IRequest>();
+    private static readonly ConcurrentDictionary<int, IRequest> Requests = new ConcurrentDictionary<int, IRequest>();
 
     static RequestFactory()
     {
@@ -36,7 +36,7 @@ public static class RequestFactory
             //创建实例
             var request = (IRequest)Activator.CreateInstance(type)!;
             //添加到缓存
-            _requests[id] = request;
+            Requests[id] = request;
             //返回类型
             var returnType = type.BaseType.GetGenericArguments()[2];
             Logger.Info("注册了请求「msgId={id} ({msgType}) => msgId={id2} ({msgType2})」：{tName}", id,
@@ -47,7 +47,7 @@ public static class RequestFactory
     
     public static IRequest? GetRequest(int msgId)
     {
-        if (_requests.TryGetValue(msgId, out var request))
+        if (Requests.TryGetValue(msgId, out var request))
         {
             return request;
         }

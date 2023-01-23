@@ -3,7 +3,6 @@ using System.Buffers;
 using System.Collections.Concurrent;
 using System.Linq;
 using System.Reflection;
-using System.Runtime.CompilerServices;
 using DaServer.Shared.Core;
 using DaServer.Shared.Misc;
 using Nino.Serialization;
@@ -15,8 +14,8 @@ public static class MessageFactory
     /// <summary>
     /// 缓存
     /// </summary>
-    private static readonly ConcurrentDictionary<Type, int> _msgIdCache = new ConcurrentDictionary<Type, int>();
-    private static readonly ConcurrentDictionary<int, Type> _idMsgCache = new ConcurrentDictionary<int, Type>();
+    private static readonly ConcurrentDictionary<Type, int> MsgIdCache = new ConcurrentDictionary<Type, int>();
+    private static readonly ConcurrentDictionary<int, Type> IdMsgCache = new ConcurrentDictionary<int, Type>();
 
     static MessageFactory()
     {
@@ -39,15 +38,15 @@ public static class MessageFactory
             //获取MessageAttribute
             var attribute = type.GetCustomAttribute<MessageAttribute>();
             //将类型和MessageAttribute的Id对应起来
-            _msgIdCache[type] = attribute!.Id;
-            _idMsgCache[attribute!.Id] = type;
+            MsgIdCache[type] = attribute!.Id;
+            IdMsgCache[attribute!.Id] = type;
             Logger.Info("加载消息类型: {FullName} Id: {Id}", type.FullName!, attribute!.Id);
         }
     }
     
     public static Type? GetMsgType(int id)
     {
-        if (_idMsgCache.TryGetValue(id, out var type))
+        if (IdMsgCache.TryGetValue(id, out var type))
         {
             return type;
         }
@@ -56,7 +55,7 @@ public static class MessageFactory
     
     public static int GetMsgId(Type type)
     {
-        if (_msgIdCache.TryGetValue(type, out var id))
+        if (MsgIdCache.TryGetValue(type, out var id))
         {
             return id;
         }
@@ -69,7 +68,7 @@ public static class MessageFactory
         var type = typeof(T);
         if(type == typeof(IMessage))
             type = val.GetType();
-        if (!_msgIdCache.TryGetValue(type, out _))
+        if (!MsgIdCache.TryGetValue(type, out _))
         {
             throw new Exception($"消息类型{type.FullName}未注册");
         }

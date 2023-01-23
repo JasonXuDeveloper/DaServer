@@ -4,7 +4,7 @@ using DaServer.Shared.Core;
 using DaServer.Shared.Message;
 using DaServer.Shared.Misc;
 
-namespace DaServer.Shared.Request;
+namespace DaServer.Server.Request;
 
 /// <summary>
 /// Event request - 事件请求

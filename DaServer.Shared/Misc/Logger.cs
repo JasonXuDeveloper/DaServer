@@ -1,7 +1,5 @@
 using System;
 using Serilog;
-using Serilog.Formatting.Compact;
-using Serilog.Formatting.Json;
 
 namespace DaServer.Shared.Misc;
 

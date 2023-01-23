@@ -6,30 +6,30 @@ namespace DaServer.Shared.Core;
 
 public class Session: IDisposable
 {
-    public uint Id;
-    private readonly TcpServer _server;
+    public uint Id { get; set; }
+    private TcpServer Server { get; }
     
     public Session(uint id, TcpServer server)
     {
         Id = id;
-        _server = server;
+        Server = server;
     }
     
     public void Dispose()
     {
         //关闭会话
-        _server.KickClient(Id);
+        Server.KickClient(Id);
     }
     
     public void Send(Span<byte> data)
     {
         //发送数据
-        _server.SendToClient(Id, data);
+        Server.SendToClient(Id, data);
     }
     
     public async Task SendAsync(Memory<byte> data)
     {
         //异步发送数据
-        await _server.SendToClientAsync(Id, data);
+        await Server.SendToClientAsync(Id, data);
     }
 }

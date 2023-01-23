@@ -5,14 +5,13 @@ using System.Threading.Tasks;
 using DaServer.Shared.Core;
 using DaServer.Shared.Extension;
 using DaServer.Shared.Message;
-using DaServer.Shared.Misc;
 using DaServer.Shared.Network;
 
-namespace DaServer.Shared.Component;
+namespace DaServer.Server.Component;
 
-public class NetComponent : Core.Component
+public class NetComponent : Shared.Core.Component
 {
-    internal override ComponentRole Role => ComponentRole.LowLevel;
+    public override ComponentRole Role => ComponentRole.LowLevel;
 
     /// <summary>
     /// tcp server

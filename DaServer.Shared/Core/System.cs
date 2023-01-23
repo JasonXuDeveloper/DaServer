@@ -4,6 +4,7 @@ using System.Reflection;
 using System.Runtime.Serialization;
 using System.Timers;
 using DaServer.Shared.Misc;
+using Nito.AsyncEx;
 
 namespace DaServer.Shared.Core;
 
@@ -142,16 +143,28 @@ public sealed class System
     /// <summary>
     /// Update all components - 更新所有组件
     /// </summary>
-    private async void Update()
+    private void Update()
     {
-        var diff = Time.CurrentTick - _startTick;
-
-        int cnt = _components.Count;
-        for (int i = 0; i < cnt; i++)
+        //全部组件在同一个线程执行即可
+        using (var ctx = new AsyncContext())
         {
-            if (i >= _components.Count) break;
-            var component = _components[i];
-            await component.Update(diff);
+            ctx.SynchronizationContext.OperationStarted();
+            //派发异步任务
+            ctx.SynchronizationContext.Post(async _ =>
+            {
+                var diff = Time.CurrentTick - _startTick;
+                int cnt = _components.Count;
+                for (int i = 0; i < cnt; i++)
+                {
+                    if (i >= _components.Count) break;
+                    var component = _components[i];
+                    await component.Update(diff);
+                }
+                
+                ctx.SynchronizationContext.OperationCompleted();
+            }, null);
+            //执行，在被通知前不会退出
+            ctx.Execute();
         }
     }
 }

@@ -1,15 +1,14 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using DaServer.Server.Request;
 using DaServer.Shared.Core;
-using DaServer.Shared.Misc;
-using DaServer.Shared.Request;
 
-namespace DaServer.Shared.Component;
+namespace DaServer.Server.Component;
 
-public class ActorComponent: Core.Component
+public class ActorComponent: Shared.Core.Component
 {
-    internal override ComponentRole Role => ComponentRole.LowLevel;
+    public override ComponentRole Role => ComponentRole.LowLevel;
     
     private ConcurrentDictionary<Session, Actor> _actors  = null!;
     private List<Actor> _actorList  = null!;
@@ -88,6 +87,6 @@ public class ActorComponent: Core.Component
                 }, null));
             }
         }
-        await Task.WhenAll(_tasks);
+        await Task.WhenAll(_tasks).ConfigureAwait(false);
     }
 }

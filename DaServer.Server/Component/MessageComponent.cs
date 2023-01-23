@@ -1,15 +1,14 @@
 using System.Collections.Concurrent;
 using System.Threading.Tasks;
+using DaServer.Server.Request;
 using DaServer.Shared.Core;
 using DaServer.Shared.Extension;
-using DaServer.Shared.Misc;
-using DaServer.Shared.Request;
 
-namespace DaServer.Shared.Component;
+namespace DaServer.Server.Component;
 
-public class MessageComponent: Core.Component
+public class MessageComponent: Shared.Core.Component
 {
-    internal override ComponentRole Role => ComponentRole.LowLevel;
+    public override ComponentRole Role => ComponentRole.LowLevel;
 
     private ConcurrentQueue<(Session session, RemoteCall call)>? _requestQueue;
 

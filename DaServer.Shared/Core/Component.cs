@@ -25,7 +25,7 @@ public abstract class Component
 
     public System System { get; internal set; }
 
-    internal virtual ComponentRole Role => ComponentRole.HighLevel;
+    public virtual ComponentRole Role => ComponentRole.HighLevel;
     public virtual int TickInterval => 1;
     public abstract Task Create();
     public abstract Task Destroy();

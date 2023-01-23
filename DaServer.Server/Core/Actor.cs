@@ -1,16 +1,14 @@
-using System;
 using System.Collections.Concurrent;
 using System.Threading.Tasks;
 using DaServer.Shared.Message;
-using DaServer.Shared.Misc;
 
 namespace DaServer.Shared.Core;
 
 public class Actor
 {
-    public Session Session;
+    public Session Session { get; private set; }
 
-    public readonly ConcurrentQueue<RemoteCall> Requests = new();
+    public ConcurrentQueue<RemoteCall> Requests { get; set; } = new();
 
     public void AddRequest(RemoteCall call)
     {

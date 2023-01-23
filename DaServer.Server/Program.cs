@@ -1,5 +1,5 @@
 ﻿using System;
-using DaServer.Shared.Component;
+using DaServer.Server.Component;
 
 namespace DaServer.Server;
 
