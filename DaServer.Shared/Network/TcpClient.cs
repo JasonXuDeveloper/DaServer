@@ -6,7 +6,6 @@ using System.Net.Sockets;
 using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 using DaServer.Shared.Misc;
-using Pipelines.Sockets.Unofficial;
 
 namespace DaServer.Shared.Network;
 
@@ -21,7 +20,7 @@ public class TcpClient
     /// 收到服务端消息的回调
     /// </summary>
     public event Action<ReadOnlySequence<byte>>? OnReceived;
-
+    
     /// <summary>
     /// 连接的IP
     /// </summary>
@@ -177,7 +176,6 @@ public class TcpClient
         {
             ReadResult result = await reader.ReadAsync();
             ReadOnlySequence<byte> buffer = result.Buffer;
-
             while (TryParsePacket(ref buffer, out ReadOnlySequence<byte> packet))
             {
                 // Process callback
@@ -190,9 +188,9 @@ public class TcpClient
                     Logger.Error(ex, "NET Error");
                 }
             }
-
+            
             // Tell the PipeReader how much of the buffer has been consumed.
-            reader.AdvanceTo(buffer.Start, buffer.End);
+            reader.AdvanceTo(buffer.Start);
 
             // Stop reading if there's no more data coming.
             if (result.IsCompleted)
@@ -205,7 +203,7 @@ public class TcpClient
         await reader.CompleteAsync();
     }
 
-    bool TryParsePacket(ref ReadOnlySequence<byte> buffer, out ReadOnlySequence<byte> packet)
+    unsafe bool TryParsePacket(ref ReadOnlySequence<byte> buffer, out ReadOnlySequence<byte> packet)
     {
         //first 4 bytes is a uint represents length of packet
         if (buffer.Length < 4)
@@ -214,17 +212,17 @@ public class TcpClient
             return false;
         }
 
-        //read length (this length includes the length of the length, 4 bytes)
-        var firstByte = buffer.FirstSpan.GetPinnableReference();
-        uint length = Unsafe.As<byte, uint>(ref firstByte);
-
+        //read length uint (this length includes the length of the length, 4 bytes)
+        Span<byte> firstFourBytes = stackalloc byte[4];
+        buffer.Slice(buffer.Start, 4).CopyTo(firstFourBytes);
+        uint length = Unsafe.ReadUnaligned<uint>(ref firstFourBytes[0]);
         // Read the packet
         if (buffer.Length < length)
         {
             packet = default;
             return false;
         }
-
+        
         packet = buffer.Slice(4, length - 4);
         buffer = buffer.Slice(length);
         return true;
@@ -241,10 +239,23 @@ public class TcpClient
             {
                 //长度作为uint放在前4个字节
                 uint length = (uint)buffer.Length + 4;
-                //uint取其span
-                Span<byte> lengthSpan = new Span<byte>(&length, 4);
-                Socket.Send(lengthSpan);
-                Socket.Send(buffer);
+                //合并
+                if(length<1024)
+                {
+                    Span<byte> span = stackalloc byte[(int)length];
+                    Unsafe.As<byte, uint>(ref span[0]) = length;
+                    buffer.CopyTo(span[4..]);
+                    Socket.Send(span);
+                }
+                else
+                {
+                    var buf = ArrayPool<byte>.Shared.Rent((int)length);
+                    Span<byte> span = new Span<byte>(buf, 0, (int)length);
+                    Unsafe.As<byte, uint>(ref span[0]) = length;
+                    buffer.CopyTo(span[4..]);
+                    Socket.Send(span);
+                    ArrayPool<byte>.Shared.Return(buf);
+                }
             }
         }
         catch
@@ -264,15 +275,13 @@ public class TcpClient
             {
                 //长度作为uint放在前4个字节
                 uint length = (uint)buffer.Length + 4;
-                Memory<byte> memory;
-                unsafe
-                {
-                    using var memoryManager = new UnmanagedMemoryManager<byte>((byte*)&length, 4);
-                    memory = memoryManager.Memory;
-                }
-
-                await Socket.SendAsync(memory);
-                await Socket.SendAsync(buffer);
+                var buf = ArrayPool<byte>.Shared.Rent((int)length);
+                Memory<byte> memory = buf;
+                //合并
+                Unsafe.As<byte, uint>(ref memory.Span[0]) = length;
+                buffer.Span.CopyTo(memory.Span[4..]);
+                await Socket.SendAsync(memory[..(int)length], SocketFlags.None);
+                ArrayPool<byte>.Shared.Return(buf);
             }
         }
         catch

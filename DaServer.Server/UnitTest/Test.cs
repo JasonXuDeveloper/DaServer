@@ -1,3 +1,4 @@
+using System.Threading;
 using System.Threading.Tasks;
 using DaServer.Server.Request;
 using DaServer.Shared.Core;
@@ -10,9 +11,8 @@ public class Test : Request<Actor, MTestRequest, MTestResponse>
 {
     public override Task<MTestResponse> OnRequest(Actor actor, MTestRequest request)
     {
-        Logger.Info("服务端收到请求");
-        Logger.Info("actor {@actor}", actor);
-        Logger.Info("request {@request}", request);
+        Logger.Info("MTestRequest.OnRequest: actor {@actor}, request {@request} at thread {t}", actor, request,
+            Thread.CurrentThread.ManagedThreadId);
         return Task.FromResult(new MTestResponse()
         {
             Txt = "response"

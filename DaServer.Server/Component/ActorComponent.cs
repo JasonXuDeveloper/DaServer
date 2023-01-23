@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using DaServer.Server.Request;
 using DaServer.Shared.Core;
+using Nino.Shared.IO;
 
 namespace DaServer.Server.Component;
 
@@ -12,13 +13,11 @@ public class ActorComponent: Shared.Core.Component
     
     private ConcurrentDictionary<Session, Actor> _actors  = null!;
     private List<Actor> _actorList  = null!;
-    private List<Task> _tasks  = null!;
 
     public override Task Create()
     {
         _actors = new ConcurrentDictionary<Session, Actor>();
         _actorList = new List<Actor>();
-        _tasks = new List<Task>();
         return Task.CompletedTask;
     }
 
@@ -67,6 +66,7 @@ public class ActorComponent: Shared.Core.Component
     {
         //循环每个Actor并调用Request
         int cnt = _actorList.Count;
+        var _tasks = ObjectPool<List<Task>>.Request();
         _tasks.Clear();
         for (int i = 0; i < cnt; i++)
         {
@@ -87,6 +87,12 @@ public class ActorComponent: Shared.Core.Component
                 }, null));
             }
         }
-        await Task.WhenAll(_tasks).ConfigureAwait(false);
+
+        if (_tasks.Count > 0)
+        {
+            await Task.WhenAll(_tasks).ConfigureAwait(false);
+        }
+        _tasks.Clear();
+        ObjectPool<List<Task>>.Return(_tasks);
     }
 }

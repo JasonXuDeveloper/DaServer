@@ -8,8 +8,10 @@ public class Actor
 {
     public Session Session { get; private set; }
 
-    public ConcurrentQueue<RemoteCall> Requests { get; set; } = new();
+    public readonly ConcurrentQueue<RemoteCall> Requests = new();
 
+    public int RequestsToProcess => Requests.Count;
+    
     public void AddRequest(RemoteCall call)
     {
         Requests.Enqueue(call);

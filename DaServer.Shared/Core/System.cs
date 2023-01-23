@@ -2,9 +2,10 @@ using System;
 using System.Collections.Generic;
 using System.Reflection;
 using System.Runtime.Serialization;
-using System.Timers;
+using System.Threading;
 using DaServer.Shared.Misc;
 using Nito.AsyncEx;
+using Timer = System.Timers.Timer;
 
 namespace DaServer.Shared.Core;
 
@@ -158,7 +159,7 @@ public sealed class System
                 {
                     if (i >= _components.Count) break;
                     var component = _components[i];
-                    await component.Update(diff);
+                    await component.Update(diff).ConfigureAwait(false);
                 }
                 
                 ctx.SynchronizationContext.OperationCompleted();

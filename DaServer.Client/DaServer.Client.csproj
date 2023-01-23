@@ -11,8 +11,4 @@
       <ProjectReference Include="..\DaServer.Shared\DaServer.Shared.csproj" />
     </ItemGroup>
 
-    <ItemGroup>
-      <Folder Include="Component" />
-    </ItemGroup>
-
 </Project>
