@@ -20,6 +20,9 @@ public class TcpClient
     /// 收到服务端消息的回调
     /// </summary>
     public event Action<ReadOnlySequence<byte>>? OnReceived;
+
+    //断开回调
+    public event Action<string>? OnClose;
     
     /// <summary>
     /// 连接的IP
@@ -47,9 +50,6 @@ public class TcpClient
     //默认10K的缓冲区空间
     private readonly int _bufferSize = 10 * 1024;
 
-    //断开回调
-    public event Action<string>? OnClose;
-
     /// <summary>
     /// 客户端主动请求服务器
     /// </summary>
@@ -66,16 +66,6 @@ public class TcpClient
     }
 
     /// <summary>
-    /// 连接
-    /// </summary>
-    public void Connect()
-    {
-        if (Socket.Connected) return;
-        Socket.Connect(Ip, Port);
-        Start();
-    }
-
-    /// <summary>
     /// 这个是服务器收到有效链接初始化
     /// </summary>
     /// <param name="socket"></param>
@@ -86,6 +76,16 @@ public class TcpClient
         Ip = remoteIpEndPoint?.Address!;
         Port = remoteIpEndPoint?.Port ?? 0;
         _pipe = new Pipe();
+    }
+
+    /// <summary>
+    /// 连接
+    /// </summary>
+    public void Connect()
+    {
+        if (Socket.Connected) return;
+        Socket.Connect(Ip, Port);
+        Start();
     }
 
     /// <summary>
@@ -134,6 +134,14 @@ public class TcpClient
                     // Tell the PipeWriter how much was read from the Socket.
                     writer.Advance(bytesRead);
                 }
+                catch(SocketException e)
+                {
+                    //connection ended
+                    if (e.SocketErrorCode == SocketError.ConnectionReset)
+                    {
+                        break;
+                    }
+                }
                 catch (Exception ex)
                 {
                     Logger.Error(ex, "NET Error");
@@ -164,6 +172,7 @@ public class TcpClient
 
         // By completing PipeWriter, tell the PipeReader that there's no more data coming.
         await writer.CompleteAsync();
+        Close("connection has been closed");
     }
 
     /// <summary>
@@ -212,10 +221,20 @@ public class TcpClient
             return false;
         }
 
+        uint length;
         //read length uint (this length includes the length of the length, 4 bytes)
-        Span<byte> firstFourBytes = stackalloc byte[4];
-        buffer.Slice(buffer.Start, 4).CopyTo(firstFourBytes);
-        uint length = Unsafe.ReadUnaligned<uint>(ref firstFourBytes[0]);
+        if (buffer.IsSingleSegment)
+        {
+            var b = buffer.FirstSpan[0];
+            length = Unsafe.ReadUnaligned<uint>(ref b);
+        }
+        else
+        {
+            Span<byte> firstFourBytes = stackalloc byte[4];
+            buffer.Slice(buffer.Start, 4).CopyTo(firstFourBytes);
+            length = Unsafe.ReadUnaligned<uint>(ref firstFourBytes[0]);
+        }
+        
         // Read the packet
         if (buffer.Length < length)
         {

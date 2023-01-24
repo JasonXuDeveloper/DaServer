@@ -5,12 +5,12 @@ namespace DaServer.Shared.Misc;
 public static class Time
 {
     /// <summary>
-    /// Current tick - 当前Tick
+    /// Current ms - 当前ms （毫秒时间戳）
     /// </summary>
-    public static int CurrentTick => unchecked((int)DateTime.UtcNow.Ticks);
-        
+    public static long CurrentMs => (Now.Ticks - 621355968000000000) / 10000;
+
     /// <summary>
     /// UTC Time - UTC时间
     /// </summary>
-    public static DateTime Now => DateTime.UtcNow;
+    public static DateTime Now => DateTime.Now.ToUniversalTime();
 }

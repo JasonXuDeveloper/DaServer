@@ -83,8 +83,15 @@ public static class MessageFactory
         return Serializer.Serialize(remoteCall);
     }
     
-    public static RemoteCall GetRemoteCall(ReadOnlySequence<byte> data)
+    public static unsafe RemoteCall GetRemoteCall(ReadOnlySequence<byte> data)
     {
+        //single segment
+        // if (data.IsSingleSegment)
+        // {
+        //     var firstSpan = data.FirstSpan[0];
+        //     var len = data.Length;
+        //     return GetRemoteCall(new Span<byte>(&firstSpan, (int)len));
+        // }
         //try stackalloc if len <= 1024
         if (data.Length <= 1024)
         {

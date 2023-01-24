@@ -1,7 +1,7 @@
 using System.Threading;
 using System.Threading.Tasks;
+using DaServer.Server.Core;
 using DaServer.Server.Request;
-using DaServer.Shared.Core;
 using DaServer.Shared.Message;
 using DaServer.Shared.Misc;
 
@@ -13,7 +13,7 @@ public class Test : Request<Actor, MTestRequest, MTestResponse>
     {
         Logger.Info("MTestRequest.OnRequest: actor {@actor}, request {@request} at thread {t}", actor, request,
             Thread.CurrentThread.ManagedThreadId);
-        return Task.FromResult(new MTestResponse()
+        return Task.FromResult(new MTestResponse
         {
             Txt = "response"
         });

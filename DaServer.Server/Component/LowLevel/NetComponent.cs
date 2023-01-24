@@ -90,7 +90,7 @@ public class NetComponent : Shared.Core.Component
         return Task.CompletedTask;
     }
 
-    public override Task Update(int currentTick)
+    public override Task Update(long currentMs)
     {
         var msgProcComp = this.GetComponent<MessageComponent>()!;
         //fetch

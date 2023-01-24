@@ -7,8 +7,10 @@ namespace DaServer.Shared.Core;
 public class Session: IDisposable
 {
     public uint Id { get; set; }
-    private TcpServer Server { get; }
+    public bool Connected => Server.ClientOnline(Id);
     
+    private TcpServer Server { get; }
+
     public Session(uint id, TcpServer server)
     {
         Id = id;
@@ -31,5 +33,11 @@ public class Session: IDisposable
     {
         //异步发送数据
         await Server.SendToClientAsync(Id, data);
+    }
+
+    public void End()
+    {
+        Server.KickClient(Id);
+        Dispose();
     }
 }

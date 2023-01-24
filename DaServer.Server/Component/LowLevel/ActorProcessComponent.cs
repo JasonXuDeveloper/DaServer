@@ -1,13 +1,14 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading.Tasks;
-using DaServer.Server.Request;
+using DaServer.Server.Core;
 using DaServer.Shared.Core;
+using DaServer.Shared.Misc;
 using Nino.Shared.IO;
 
 namespace DaServer.Server.Component;
 
-public class ActorComponent: Shared.Core.Component
+public class ActorProcessComponent: Shared.Core.Component
 {
     public override ComponentRole Role => ComponentRole.LowLevel;
     
@@ -30,7 +31,7 @@ public class ActorComponent: Shared.Core.Component
     
     public Actor AddActor(Session session)
     {
-        Actor actor = new Actor(session);
+        Actor actor = new Actor((Shared.Core.System)Holder, session);
         _actors.TryAdd(session, actor);
         _actorList.Add(actor);
         return actor;
@@ -50,7 +51,6 @@ public class ActorComponent: Shared.Core.Component
             {
                 _actors.TryRemove(pair.Key, out _);
                 _actorList.Remove(actor);
-                //TODO 关闭该会话
                 break;
             }
         }
@@ -62,37 +62,35 @@ public class ActorComponent: Shared.Core.Component
         return actor;
     }
 
-    public override async Task Update(int currentTick)
+    public override async Task Update(long currentMs)
     {
         //循环每个Actor并调用Request
         int cnt = _actorList.Count;
-        var _tasks = ObjectPool<List<Task>>.Request();
-        _tasks.Clear();
+        var tasks = ObjectPool<List<Task>>.Request();
+        tasks.Clear();
         for (int i = 0; i < cnt; i++)
         {
             //按顺序处理每个actor的消息
             Actor actor = _actorList[i];
-            //TODO 检测actor的session断开
-
-            while (actor.Requests.TryDequeue(out var remoteCall))
+            var cur = Time.CurrentMs;
+            int compCnt = actor.Components.Count;
+            for (int j = 0; j < compCnt; j++)
             {
-                var requestTask = RequestFactory.GetRequest(remoteCall.MsgId);
-                if(requestTask == null)
-                    continue;
-                var task = requestTask.OnRequest(actor, remoteCall.MessageObj!);
-                _tasks.Add(task.ContinueWith((t, __) =>
+                if (j >= actor.Components.Count) break;
+                var component = actor.Components[j];
+                if (cur > component.LastExecuteTime + component.TimeInterval)
                 {
-                    //不等待响应结果
-                    _ = actor.Respond(remoteCall.RequestId, t.Result);
-                }, null));
+                    component.LastExecuteTime = cur;
+                    tasks.Add(component.Update(Time.CurrentMs));
+                }
             }
         }
 
-        if (_tasks.Count > 0)
+        if (tasks.Count > 0)
         {
-            await Task.WhenAll(_tasks).ConfigureAwait(false);
+            await Task.WhenAll(tasks).ConfigureAwait(false);
         }
-        _tasks.Clear();
-        ObjectPool<List<Task>>.Return(_tasks);
+        tasks.Clear();
+        ObjectPool<List<Task>>.Return(tasks);
     }
 }

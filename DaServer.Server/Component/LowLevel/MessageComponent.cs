@@ -32,13 +32,13 @@ public class MessageComponent: Shared.Core.Component
         _requestQueue!.Enqueue((session, call));
     }
     
-    public override Task Update(int currentTick)
+    public override Task Update(long currentMs)
     {
-        var actorComp = this.GetComponent<ActorComponent>()!;
+        var actorComp = this.GetComponent<ActorProcessComponent>()!;
         while (_requestQueue!.TryDequeue(out var request))
         {
             var actor = actorComp.GetActor(request.session) ?? actorComp.AddActor(request.session);
-            actor.AddRequest(request.call);
+            actor.GetComponent<RequestComponent>()?.AddRequest(request.call);
         }
         return Task.CompletedTask;
     }

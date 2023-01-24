@@ -15,7 +15,7 @@ public abstract class Component
 {
     protected Component()
     {
-        if (System == null)
+        if (Holder == null)
         {
             throw new InvalidOperationException(
                 $"Can not create instance of {GetType()} with `new()`, use `AddComponent()` instead. " +
@@ -23,11 +23,12 @@ public abstract class Component
         }
     }
 
-    public System System { get; internal set; }
+    public ComponentHolder Holder { get; internal set; }
 
     public virtual ComponentRole Role => ComponentRole.HighLevel;
-    public virtual int TickInterval => 1;
+    public virtual int TimeInterval => 10;
+    public long LastExecuteTime = 0;
     public abstract Task Create();
     public abstract Task Destroy();
-    public abstract Task Update(int currentTick);
+    public abstract Task Update(long currentMs);
 }

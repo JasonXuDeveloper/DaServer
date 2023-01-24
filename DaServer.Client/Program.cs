@@ -16,9 +16,9 @@ public static class Program
         client.OnConnected += () =>
         {
             Logger.Info("客户端连上了服务端");
-            Parallel.For(0, 10000, async (i,__) =>
+            Parallel.For(0, 100, async (i,__) =>
             {
-                var response = (MTestResponse)await Request(client, new MTestRequest()
+                var response = await Request<MTestRequest, MTestResponse>(client, new MTestRequest()
                 {
                     Txt = "hello"
                 });
@@ -46,7 +46,21 @@ public static class Program
     }
 
     private static int _requestId;
-    
+
+    /// <summary>
+    /// 请求服务端接口，返回服务端的响应，全部返回结果必定会切换到同一个线程（不保证还在调用请求的线程）
+    /// </summary>
+    /// <param name="client"></param>
+    /// <param name="request"></param>
+    /// <param name="timeout"></param>
+    /// <typeparam name="TRequest"></typeparam>
+    /// <typeparam name="TResponse"></typeparam>
+    /// <returns></returns>
+    /// <exception cref="Exception"></exception>
+    public static async Task<TResponse> Request<TRequest, TResponse>(TcpClient client, TRequest request,
+        float timeout = -1) where TRequest : IMessage where TResponse : IMessage
+        => (TResponse)await Request(client, request, timeout);
+
     /// <summary>
     /// 请求服务端接口，返回服务端的响应，全部返回结果必定会切换到同一个线程（不保证还在调用请求的线程）
     /// </summary>
