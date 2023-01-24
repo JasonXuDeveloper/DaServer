@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Reflection;
 using System.Runtime.Serialization;
@@ -6,13 +7,18 @@ using DaServer.Shared.Misc;
 
 namespace DaServer.Shared.Core;
 
-public class ComponentHolder
+public abstract class ComponentHolder
 {
     /// <summary>
     /// Updating components - 更新组件
     /// </summary>
     public readonly List<Component> Components = new List<Component>();
     
+    /// <summary>
+    /// Cache of all components - 所有组件的缓存
+    /// </summary>
+    private readonly ConcurrentDictionary<Type, Component> _cache = new ConcurrentDictionary<Type, Component>();
+
     /// <summary>
     /// Add a component - 添加组件
     /// </summary>
@@ -24,7 +30,7 @@ public class ComponentHolder
         {
             throw new InvalidOperationException($"Can not create component: {typeof(T)}");
         }
-        component.Holder = this;
+        component.Owner = this;
         //get constructor
         ConstructorInfo? constructor = typeof(T).GetConstructor(Type.EmptyTypes);
         if (constructor == null)
@@ -40,6 +46,7 @@ public class ComponentHolder
         }
         component.Create().Wait();
         Components.Add(component);
+        _cache.TryAdd(typeof(T), component);
         return component;
     }
     
@@ -50,25 +57,20 @@ public class ComponentHolder
     /// <returns></returns>
     public T? GetComponent<T>() where T: Component
     {
-        int cnt = Components.Count;
-        for (int i = 0; i < cnt; i++)
+        if(_cache.TryGetValue(typeof(T), out Component? component))
         {
-            if (Components[i] is T component)
-            {
-                return component;
-            }
+            return component as T;
         }
-        
         return null;
     }
     
     /// <summary>
     /// Remove a component - 删除组件
     /// </summary>
-    /// <param name="component"></param>
     /// <typeparam name="T"></typeparam>
-    public void RemoveComponent<T>(T? component) where T: Component
+    public void RemoveComponent<T>() where T: Component
     {
+        var component = GetComponent<T>();
         if (component == null) return;
         if (component.Role == ComponentRole.LowLevel)
         {
@@ -78,6 +80,7 @@ public class ComponentHolder
         
         component.Destroy().Wait();
         Components.Remove(component);
+        _cache.TryRemove(typeof(T), out _);
     }
     
     /// <summary>
@@ -91,5 +94,6 @@ public class ComponentHolder
             Components[i].Destroy().Wait();
         }
         Components.Clear();
+        _cache.Clear();
     }
 }

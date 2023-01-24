@@ -9,14 +9,14 @@ namespace DaServer.Client.Response;
 
 public static class ResponseFactory
 {
-    private static ConcurrentDictionary<int, TaskCompletionSource<IMessage>> _responseTcs = new();
+    private static readonly ConcurrentDictionary<int, TaskCompletionSource<IMessage>> ResponseTcs = new();
 
     public static void AddResponse(ref RemoteCall remoteCall)
     {
         //id > 0 => response, 0 => callback
         if (remoteCall.RequestId > 0)
         {
-            if(_responseTcs.TryRemove(remoteCall.RequestId, out var tcs))
+            if(ResponseTcs.TryRemove(remoteCall.RequestId, out var tcs))
             {
                 IMessage? msgObj = remoteCall.MessageObj;
                 tcs.SetResult(msgObj);
@@ -31,7 +31,7 @@ public static class ResponseFactory
     public static async Task<IMessage?> GetResponse(int requestId, float timeout)
     {
         var tcs = new TaskCompletionSource<IMessage>();
-        _responseTcs.TryAdd(requestId, tcs);
+        ResponseTcs.TryAdd(requestId, tcs);
         IMessage? ret;
         
         if (tcs.Task.IsCompleted)

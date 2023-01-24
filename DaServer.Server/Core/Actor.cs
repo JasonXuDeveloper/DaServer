@@ -1,17 +1,36 @@
+using System.Threading;
 using System.Threading.Tasks;
 using DaServer.Server.Component;
+using DaServer.Server.Extension;
 using DaServer.Shared.Core;
 using DaServer.Shared.Message;
 using DaServer.Shared.Misc;
+using Destructurama.Attributed;
 
 namespace DaServer.Server.Core;
 
 public class Actor: ComponentHolder
 {
     /// <summary>
+    /// Actor ID初始值
+    /// </summary>
+    private static long _id = 10000;
+
+    /// <summary>
+    /// 实体ID
+    /// </summary>
+    public long Id { get; } = Interlocked.Increment(ref _id);
+    
+    /// <summary>
     /// 持有Actor的游戏系统
     /// </summary>
-    public Shared.Core.System System { get; }
+    public Entity OwnerEntity { get; }
+
+    /// <summary>
+    /// Actor系统
+    /// </summary>
+    [NotLogged]
+    public ActorSystemComponent ActorSystem => OwnerEntity.GetComponent<ActorSystemComponent>()!;
     
     /// <summary>
     /// Actor的会话
@@ -28,9 +47,9 @@ public class Actor: ComponentHolder
     /// </summary>
     public long OnlineMs => Time.CurrentMs - StartMs;
     
-    public Actor(Shared.Core.System system, Session session)
+    public Actor(Entity ownerEntity, Session session)
     {
-        System = system;
+        OwnerEntity = ownerEntity;
         Session = session;
         //添加必备组件
         AddComponent<SessionComponent>();
@@ -47,7 +66,7 @@ public class Actor: ComponentHolder
         //删除组件
         RemoveAllComponents();
         //删除Actor引用
-        System.GetComponent<ActorProcessComponent>()!.RemoveActor(this);
+        ActorSystem.RemoveActor(this);
     }
     
     /// <summary>

@@ -11,7 +11,7 @@ namespace DaServer.Server.Component;
 /// <summary>
 /// 处理请求的组件
 /// </summary>
-public class RequestComponent: ActorComponent
+public class RequestComponent: Core.ActorComponent
 {
     /// <summary>
     /// 确保不会被删除该组件

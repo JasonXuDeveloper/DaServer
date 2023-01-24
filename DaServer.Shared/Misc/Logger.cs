@@ -1,4 +1,5 @@
 using System;
+using Destructurama;
 using Serilog;
 
 namespace DaServer.Shared.Misc;
@@ -8,6 +9,7 @@ public static class Logger
     static Logger()
     {
         Log.Logger = new LoggerConfiguration()
+            .Destructure.UsingAttributes()
             .MinimumLevel.Information()
             .WriteTo.Console()
             .WriteTo.File("log.txt",

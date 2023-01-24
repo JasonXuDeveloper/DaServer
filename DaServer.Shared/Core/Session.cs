@@ -6,9 +6,8 @@ namespace DaServer.Shared.Core;
 
 public class Session: IDisposable
 {
-    public uint Id { get; set; }
+    public uint Id { get; }
     public bool Connected => Server.ClientOnline(Id);
-    
     private TcpServer Server { get; }
 
     public Session(uint id, TcpServer server)

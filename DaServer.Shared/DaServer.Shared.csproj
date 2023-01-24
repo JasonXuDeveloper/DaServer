@@ -8,6 +8,7 @@
     </PropertyGroup>
 
     <ItemGroup>
+      <PackageReference Include="Destructurama.Attributed" Version="3.0.0" />
       <PackageReference Include="Nino.Serialization" Version="1.1.0" />
       <PackageReference Include="Nito.AsyncEx.Context" Version="5.1.2" />
       <PackageReference Include="Pipelines.Sockets.Unofficial" Version="2.2.2" />

@@ -7,7 +7,7 @@ namespace DaServer.Server.Component;
 /// <summary>
 /// 处理会话的组件
 /// </summary>
-public class SessionComponent: ActorComponent
+public class SessionComponent: Core.ActorComponent
 {
     /// <summary>
     /// 确保不会被删除该组件

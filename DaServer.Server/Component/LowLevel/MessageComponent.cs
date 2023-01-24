@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Threading.Tasks;
+using DaServer.Server.Extension;
 using DaServer.Server.Request;
 using DaServer.Shared.Core;
 using DaServer.Shared.Extension;
@@ -34,7 +35,7 @@ public class MessageComponent: Shared.Core.Component
     
     public override Task Update(long currentMs)
     {
-        var actorComp = this.GetComponent<ActorProcessComponent>()!;
+        var actorComp = this.GetComponent<ActorSystemComponent>()!;
         while (_requestQueue!.TryDequeue(out var request))
         {
             var actor = actorComp.GetActor(request.session) ?? actorComp.AddActor(request.session);

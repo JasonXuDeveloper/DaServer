@@ -15,7 +15,7 @@ public abstract class Component
 {
     protected Component()
     {
-        if (Holder == null)
+        if (Owner == null)
         {
             throw new InvalidOperationException(
                 $"Can not create instance of {GetType()} with `new()`, use `AddComponent()` instead. " +
@@ -23,7 +23,10 @@ public abstract class Component
         }
     }
 
-    public ComponentHolder Holder { get; internal set; }
+    /// <summary>
+    /// 持有这个组件的对象
+    /// </summary>
+    public ComponentHolder Owner { get; internal set; }
 
     public virtual ComponentRole Role => ComponentRole.HighLevel;
     public virtual int TimeInterval => 10;

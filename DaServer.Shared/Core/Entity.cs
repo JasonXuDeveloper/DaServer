@@ -1,3 +1,4 @@
+using System.Threading;
 using DaServer.Shared.Misc;
 using Nito.AsyncEx;
 using Timer = System.Timers.Timer;
@@ -5,14 +6,24 @@ using Timer = System.Timers.Timer;
 namespace DaServer.Shared.Core;
 
 /// <summary>
-/// System - 系统
+/// Entity - 实体
 /// </summary>
-public sealed class System: ComponentHolder
+public sealed class Entity: ComponentHolder
 {
+    /// <summary>
+    /// 实体ID初始值
+    /// </summary>
+    private static long _id = 0;
+
+    /// <summary>
+    /// 实体ID
+    /// </summary>
+    public long Id { get; } = Interlocked.Increment(ref _id);
+
     /// <summary>
     /// Constructor - 构造函数
     /// </summary>
-    public System()
+    public Entity()
     {
         // Add timer
         _timer = new Timer(10);
@@ -29,7 +40,7 @@ public sealed class System: ComponentHolder
     /// <summary>
     /// Start Ms - 开始 Ms
     /// </summary>
-    private readonly long _startMs = Time.CurrentMs;
+    private long StartMs { get; } = Time.CurrentMs;
 
     /// <summary>
     /// Enable the system - 启用系统
