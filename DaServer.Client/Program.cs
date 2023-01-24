@@ -16,6 +16,7 @@ public static class Program
         client.OnConnected += () =>
         {
             Logger.Info("客户端连上了服务端");
+            var i = 0;
             Parallel.For(0, 100, async (i,__) =>
             {
                 var response = await Request<MTestRequest, MTestResponse>(client, new MTestRequest()
@@ -24,6 +25,7 @@ public static class Program
                 });
                 Logger.Info("客户端收到了服务端的回应: {@c}", response);
                 Logger.Info("多线程任务{i} 收到回应后的线程ID: {c}", i, Thread.CurrentThread.ManagedThreadId);
+                Logger.Info("总共收到了{i}个请求", Interlocked.Increment(ref i));
             });
         };
         client.OnClose += reason =>

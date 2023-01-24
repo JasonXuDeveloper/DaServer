@@ -9,7 +9,7 @@ namespace DaServer.Client.Response;
 
 public static class ResponseFactory
 {
-    private static readonly ConcurrentDictionary<int, TaskCompletionSource<IMessage>> ResponseTcs = new();
+    private static readonly ConcurrentDictionary<int, TaskCompletionSource<IMessage?>> ResponseTcs = new();
 
     public static void AddResponse(ref RemoteCall remoteCall)
     {
@@ -30,7 +30,7 @@ public static class ResponseFactory
 
     public static async Task<IMessage?> GetResponse(int requestId, float timeout)
     {
-        var tcs = new TaskCompletionSource<IMessage>();
+        var tcs = new TaskCompletionSource<IMessage?>();
         ResponseTcs.TryAdd(requestId, tcs);
         IMessage? ret;
         
