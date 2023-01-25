@@ -1,13 +1,15 @@
+using System.Threading;
 using System.Threading.Tasks;
 using DaServer.Server.Core;
 using DaServer.Shared.Core;
+using DaServer.Shared.Misc;
 
 namespace DaServer.Server.Component;
 
 /// <summary>
 /// 处理会话的组件
 /// </summary>
-public class SessionComponent: Core.ActorComponent
+public class SessionComponent: ActorComponent
 {
     /// <summary>
     /// 确保不会被删除该组件
@@ -42,6 +44,7 @@ public class SessionComponent: Core.ActorComponent
     {
         if (!Actor.Session.Connected)
         {
+            Logger.Info("Actor {Id} offline at thread {t}", Actor.Id, Thread.CurrentThread.ManagedThreadId);
             Actor.Destroy();
         }
         return Task.CompletedTask;

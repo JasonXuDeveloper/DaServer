@@ -1,6 +1,5 @@
 using System.Threading;
 using DaServer.Shared.Misc;
-using Nito.AsyncEx;
 using Timer = System.Timers.Timer;
 
 namespace DaServer.Shared.Core;
@@ -57,36 +56,23 @@ public sealed class Entity: ComponentHolder
     {
         _timer.Enabled = false;
     }
-    
+
     /// <summary>
     /// Update all components - 更新所有组件
     /// </summary>
-    private void Update()
+    private async void Update()
     {
-        //全部组件在同一个线程执行即可
-        using (var ctx = new AsyncContext())
+        var cur = Time.CurrentMs;
+        int cnt = Components.Count;
+        for (int i = 0; i < cnt; i++)
         {
-            ctx.SynchronizationContext.OperationStarted();
-            //派发异步任务
-            ctx.SynchronizationContext.Post(async _ =>
+            if (i >= Components.Count) break;
+            var component = Components[i];
+            if (cur > component.LastExecuteTime + component.TimeInterval)
             {
-                var cur = Time.CurrentMs;
-                int cnt = Components.Count;
-                for (int i = 0; i < cnt; i++)
-                {
-                    if (i >= Components.Count) break;
-                    var component = Components[i];
-                    if (cur > component.LastExecuteTime + component.TimeInterval)
-                    {
-                        component.LastExecuteTime = cur;
-                        await component.Update(cur).ConfigureAwait(false);
-                    }
-                }
-                
-                ctx.SynchronizationContext.OperationCompleted();
-            }, null);
-            //执行，在被通知前不会退出
-            ctx.Execute();
+                component.LastExecuteTime = cur;
+                await component.Update(cur).ConfigureAwait(false);
+            }
         }
     }
 }

@@ -63,7 +63,7 @@ public static class MessageFactory
         return 0;
     }
 
-    public static byte[] GetMessage<T>(int requestId, T val) where T: IMessage
+    public static byte[] ToRemoteCallMessage<T>(int requestId, T val) where T: IMessage
     {
         var type = typeof(T);
         if(type == typeof(IMessage))

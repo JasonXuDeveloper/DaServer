@@ -9,8 +9,8 @@ public static class Program
     public static void Main(string[] args)
     {
         var ent = new Entity();
-        ent.AddComponent<NetComponent>();
-        ent.AddComponent<MessageComponent>();
+        ent.AddComponent<TcpComponent>();
+        ent.AddComponent<RemoteCallComponent>();
         ent.AddComponent<ActorSystemComponent>();
         while (true)
         {

@@ -85,17 +85,9 @@ public class TcpServer
     /// <returns></returns>
     public bool ClientOnline(uint id)
     {
-        var socket = GetClient(id)?.Socket;
-        try
-        {
-            if (socket == null) return false;
-            if (!socket.Connected) return false;
-            return !(socket.Poll(1, SelectMode.SelectRead) && socket.Available == 0);
-        }
-        catch
-        {
-            return false;
-        }
+        var client = GetClient(id);
+        if (client == null) return false;
+        return client.Socket.Connected;
     }
 
     /// <summary>

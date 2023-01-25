@@ -7,7 +7,7 @@ using DaServer.Shared.Extension;
 
 namespace DaServer.Server.Component;
 
-public class MessageComponent: Shared.Core.Component
+public class RemoteCallComponent: Shared.Core.Component
 {
     public override ComponentRole Role => ComponentRole.LowLevel;
 

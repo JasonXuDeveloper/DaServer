@@ -1,3 +1,4 @@
+using System;
 using System.Threading;
 using System.Threading.Tasks;
 using DaServer.Server.Component;
@@ -90,12 +91,40 @@ public class Actor: ComponentHolder
         if (val is null)
         {
             // 发送错误
-            await Session.SendAsync(MessageFactory.GetMessage(requestId, MError.Empty));
+            await Session.SendAsync(MessageFactory.ToRemoteCallMessage(requestId, MError.Empty));
             return;
         }
 
         // 发送任务
-        var buf = MessageFactory.GetMessage(requestId, val);
+        var buf = MessageFactory.ToRemoteCallMessage(requestId, val);
         await Session.SendAsync(buf);
+    }
+
+    public sealed override T? AddComponent<T>() where T: class
+    {
+        if (!typeof(T).IsAssignableTo(typeof(ActorComponent)))
+        {
+            throw new InvalidOperationException("Actor can only add ActorComponent");
+        }
+
+        return base.AddComponent<T>();
+    }
+    
+    public sealed override T? GetComponent<T>() where T: class
+    {
+        if (!typeof(T).IsAssignableTo(typeof(ActorComponent)))
+        {
+            throw new InvalidOperationException("Actor can only get ActorComponent");
+        }
+
+        return base.GetComponent<T>();
+    }
+    
+    public sealed override void RemoveComponent<T>() where T: class
+    {
+        if (!typeof(T).IsAssignableTo(typeof(ActorComponent)))
+        {
+            throw new InvalidOperationException("Actor can only remove ActorComponent");
+        }
     }
 }

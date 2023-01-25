@@ -5,10 +5,10 @@ A developing dotnet(C#) RPC server.
 
 
 ## Architecture
-
+### Shared Architecture Diagram - Everything but Network
 ```mermaid
 ---
-title: Shared Architecture Diagram - Everything but network
+title: Shared Architecture Diagram - Everything but Network
 ---
 classDiagram
     class ComponentRole{
@@ -17,24 +17,24 @@ classDiagram
         HighLevle = 1
     }
     class Component{
-    +ComponentHolder Owner
-    *ComponentRole Role => ComponentRole.HighLevel;
-    *int TimeInterval => 10;
-    +long LastExecuteTime = 0;
-    +Create() *Task
-    +Destroy() *Task
-    +Update(long currentMs) *Task
+        +ComponentHolder Owner
+        *ComponentRole Role => ComponentRole.HighLevel;
+        *int TimeInterval => 10;
+        +long LastExecuteTime = 0;
+        +Create() *Task
+        +Destroy() *Task
+        +Update(long currentMs) *Task
     }
-    Component --> ComponentRole
+    ComponentRole <-- Component
     class ComponentHolder{
         +readonly List~Component~ Components
-        -readonly ConcurrentDictionary~Type, Component~ _cache
+        -readonly ConcurrentDictionary~Type,Component~ _cache
         +AddComponent[T]() T?, where T: Component
         +GetComponent[T]() T?, where T: Component
         +RemoveComponent[T]() void, where T: Component
         +RemoveAllComponents() void
     }
-    Component <-- ComponentHolder
+    ComponentHolder <-- Component
     class Entity{
         +long Id
         -Timer _timer
@@ -60,10 +60,12 @@ classDiagram
         +int Void = 0
         ...
     }
-    RemoteCall <--> MsgId
-    IMessage <-- MsgId
-    IMessage <-- MessageFactory
-    RemoteCall <-- MessageFactory
+    MessageFactory --> IMessage
+    MessageFactory --> RemoteCall 
+    MessageFactory <--> MsgId
+    IMessage <--> MsgId
+    MsgId <--> RemoteCall
+    IMessage <-->RemoteCall
     class MessageFactory{
         -ConcurrentDictionary~Type,int~ MsgIdCache
         -ConcurrentDictionary~int,Type~ IdMsgCache
@@ -72,16 +74,15 @@ classDiagram
         +LoadMsgTypes()$
         +GetMsgType(int id)$ Type?
         +GetMsgId(Type type)$ int?
-        +GetMessage~T~(int requestId, T val)$ byte[], where T: IMessage
+        +ToRemoteCallMessage~T~(int requestId, T val)$ byte[], where T: IMessage
         +GetRemoteCall(ReadOnlySequence~byte~ data)$ RemoteCall
         +GetRemoteCall(scoped Span~byte~ bytes)$ RemoteCall
     }
-    MsgId <--> MessageFactory
 ```
-
+### Shared Architecture Diagram - Network
 ```mermaid
 ---
-title: Shared Architecture Diagram - network
+title: Shared Architecture Diagram - Network
 ---
 classDiagram
     class TcpClient{
@@ -110,11 +111,11 @@ classDiagram
         +IPEndPoint Ip
         -Socket _listener
         -bool _disposed
-        -ConcurrentDictionary~ulong, TcpClient~ _clients
+        -ConcurrentDictionary~ulong,TcpClient~ _clients
         -ConcurrentQueue~TcpClient~ _clientsToStart
         +Action~uint~? OnConnect
-        +Action~uint, ReadOnlySequence~byte~~? OnMessage
-        +Action~uint, string~? OnDisconnect;
+        +Action~uint,ReadOnlySequence~byte~~? OnMessage
+        +Action~uint,string~? OnDisconnect;
         +bool IsRunning
         -uint _curId
         +.ctor(string ip, int port) TcpServer
@@ -144,7 +145,7 @@ classDiagram
     }
     note for Session "Session holds the TcpServer instance\nand sends the client id to it to process\ndifferent jobs"
 ```
-
+### Server Architecture Diagram
 ```mermaid
 ---
 title: Server Architecture Diagram
@@ -155,16 +156,16 @@ classDiagram
         OnRequest(Actor actor, IMessage request) Task~IMessage?~
     }
     note for IRequestBase "IRequestBase is IRequest in C# impl"
-    class IRequest~TActor, TRequest, TResponse~{
+    class IRequest~TActor,TRequest,TResponse~{
         <<interface>>
         where TActor : Actor
         where TRequest : IMessage
         where TResponse : IMessage
         OnRequest(Actor actor, IMessage request) Task~IMessage?~
     }
-    IRequestBase --> IRequest~TActor, TRequest, TResponse~
-    IRequest~TActor, TRequest, TResponse~ --> Request~TActor, TRequest, TResponse~
-    class Request~TActor, TRequest, TResponse~{
+    IRequestBase --> IRequest~TActor,TRequest,TResponse~
+    IRequest~TActor,TRequest,TResponse~ --> Request~TActor,TRequest,TResponse~
+    class Request~TActor,TRequest,TResponse~{
         where TActor : Actor
         where TRequest : IMessage
         where TResponse : IMessage
@@ -196,21 +197,21 @@ classDiagram
     class RemoteCall{
         From Shared
     }
-    class NetComponent{
+    class TcpComponent{
         +ComponentRole Role => ComponentRole.LowLevel
         -TcpServer _server
-        -ConcurrentDictionary~uint, Session~ _sessions
-        -ConcurrentQueue~[uint sessionId, RemoteCall call]~ _queue
+        -ConcurrentDictionary~uint,Session~ _sessions
+        -ConcurrentQueue~[uint-sessionId,RemoteCall-call]~ _queue
         +Action~uint~? OnClientConnected
-        +Action~uint, string~? OnClientDisconnected
-        +Action~uint, ReadOnlySequence~byte~~? OnClientDataReceived
+        +Action~uint,string~? OnClientDisconnected
+        +Action~uint,ReadOnlySequence~byte~~? OnClientDataReceived
         +Create() Task
         +Destroy() Task
         +Update(long currentMs) Task
     }
-    class MessageComponent{
+    class RemoteCallComponent{
         +ComponentRole Role => ComponentRole.LowLevel
-        -ConcurrentQueue~[Session session, RemoteCall call]~ _requestQueue
+        -ConcurrentQueue~[Session-session,RemoteCall-call]~ _requestQueue
         +Create() Task
         +Destroy() Task
         +Update(long currentMs) Task
@@ -218,8 +219,8 @@ classDiagram
     }
     class ActorSystemComponent{
         +ComponentRole Role => ComponentRole.LowLevel
-        +ConcurrentDictionary~Session, Actor~ Actors
-        +ConcurrentDictionary~long, Actor~ ActorsFromId
+        +ConcurrentDictionary~Session,Actor~ Actors
+        +ConcurrentDictionary~long,Actor~ ActorsFromId
         +List~Actor~ ActorList
         +Create() Task
         +Destroy() Task
@@ -266,25 +267,23 @@ classDiagram
     }
     note for Program "Host the server"
     Program --> Entity
-    TcpServer <-- NetComponent
-    Session <-- MessageComponent
-    RemoteCall <-- MessageComponent
+    TcpServer <-- TcpComponent
+    Session <-- RemoteCallComponent
+    RemoteCall <-- RemoteCallComponent
     Session --> Actor
     ComponentHolder --> Actor
-    NetComponent --> MessageComponent
-    MessageComponent --> ActorSystemComponent
+    TcpComponent --> RemoteCallComponent
+    RemoteCallComponent --> ActorSystemComponent
     ComponentHolder --> Entity
     Entity --> Component
-    Component --> NetComponent
-    Component --> MessageComponent
+    Component --> TcpComponent
+    Component --> RemoteCallComponent
     Component --> ActorSystemComponent
-    ActorSystemComponent --> RequestComponent
-    ActorSystemComponent --> SessionComponent
-    Component --> ActorComponent
-    ActorSystemComponent --> ActorComponent
-    ActorComponent --> RequestComponent
-    ActorComponent --> SessionComponent
+    Actor --> ActorComponent
     Actor --> ActorSystemComponent
+    ActorComponent --> ActorSystemComponent
+    ActorComponent <-- RequestComponent
+    ActorComponent <-- SessionComponent
     RequestComponent --> RequestFactory
 ```
 

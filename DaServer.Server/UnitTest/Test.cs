@@ -9,13 +9,14 @@ namespace DaServer.Server.UnitTest;
 
 public class Test : Request<Actor, MTestRequest, MTestResponse>
 {
-    public override Task<MTestResponse> OnRequest(Actor actor, MTestRequest request)
+    public override async Task<MTestResponse> OnRequest(Actor actor, MTestRequest request)
     {
+        await Task.Yield();// attempt to switch thread
         Logger.Info("MTestRequest.OnRequest: actor {@actor}, request {@request} at thread {t}", actor, request,
-            Thread.CurrentThread.ManagedThreadId);
-        return Task.FromResult(new MTestResponse
+            Thread.CurrentThread.ManagedThreadId);// should not be able to switch thread
+        return new MTestResponse
         {
             Txt = "response"
-        });
+        };
     }
 }

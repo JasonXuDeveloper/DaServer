@@ -23,7 +23,7 @@ public abstract class ComponentHolder
     /// Add a component - 添加组件
     /// </summary>
     /// <typeparam name="T"></typeparam>
-    public T? AddComponent<T>() where T: Component
+    public virtual T? AddComponent<T>() where T: Component
     {
         T? component = FormatterServices.GetUninitializedObject(typeof(T)) as T;
         if (component == null)
@@ -55,7 +55,7 @@ public abstract class ComponentHolder
     /// </summary>
     /// <typeparam name="T"></typeparam>
     /// <returns></returns>
-    public T? GetComponent<T>() where T: Component
+    public virtual T? GetComponent<T>() where T: Component
     {
         if(_cache.TryGetValue(typeof(T), out Component? component))
         {
@@ -68,7 +68,7 @@ public abstract class ComponentHolder
     /// Remove a component - 删除组件
     /// </summary>
     /// <typeparam name="T"></typeparam>
-    public void RemoveComponent<T>() where T: Component
+    public virtual void RemoveComponent<T>() where T: Component
     {
         var component = GetComponent<T>();
         if (component == null) return;
@@ -86,7 +86,7 @@ public abstract class ComponentHolder
     /// <summary>
     /// Remove all components - 删除所有组件
     /// </summary>
-    public void RemoveAllComponents()
+    public virtual void RemoveAllComponents()
     {
         int cnt = Components.Count;
         for (int i = 0; i < cnt; i++)

@@ -9,7 +9,7 @@ using DaServer.Shared.Network;
 
 namespace DaServer.Server.Component;
 
-public class NetComponent : Shared.Core.Component
+public class TcpComponent : Shared.Core.Component
 {
     public override ComponentRole Role => ComponentRole.LowLevel;
 
@@ -92,7 +92,7 @@ public class NetComponent : Shared.Core.Component
 
     public override Task Update(long currentMs)
     {
-        var msgProcComp = this.GetComponent<MessageComponent>()!;
+        var msgProcComp = this.GetComponent<RemoteCallComponent>()!;
         //fetch
         while (_queue.TryDequeue(out var queueItem))
         {

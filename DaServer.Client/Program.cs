@@ -10,28 +10,24 @@ namespace DaServer.Client;
 
 public static class Program
 {
-    public static void Main(string[] args)
+    public static Task Main(string[] args)
     {
         TcpClient client = new TcpClient("127.0.0.1", 9999);
         client.OnConnected += () =>
         {
             Logger.Info("客户端连上了服务端");
-            var i = 0;
-            Parallel.For(0, 100, async (i,__) =>
+            Parallel.For(0, 100, async (i, _) =>
             {
+                await Task.Delay(i * 10);
                 var response = await Request<MTestRequest, MTestResponse>(client, new MTestRequest()
                 {
                     Txt = "hello"
                 });
                 Logger.Info("客户端收到了服务端的回应: {@c}", response);
                 Logger.Info("多线程任务{i} 收到回应后的线程ID: {c}", i, Thread.CurrentThread.ManagedThreadId);
-                Logger.Info("总共收到了{i}个请求", Interlocked.Increment(ref i));
             });
         };
-        client.OnClose += reason =>
-        {
-            Logger.Info("客户端断开了服务端: {@c}, {@r}", client, reason);
-        };
+        client.OnClose += reason => { Logger.Info("客户端断开了服务端: {@c}, {@r}", client, reason); };
         client.OnReceived += data =>
         {
             var remoteCall = MessageFactory.GetRemoteCall(data);
@@ -40,11 +36,7 @@ public static class Program
         };
 
         client.Connect();
-        while (true)
-        {
-            Console.ReadKey();
-            client.Close();
-        }
+        return Task.Delay(-1);
     }
 
     private static int _requestId;
@@ -72,12 +64,12 @@ public static class Program
     /// <typeparam name="T"></typeparam>
     /// <returns></returns>
     /// <exception cref="Exception"></exception>
-    public static async Task<IMessage> Request<T>(TcpClient client, T request, float timeout = -1) where T:IMessage
+    public static async Task<IMessage> Request<T>(TcpClient client, T request, float timeout = -1) where T : IMessage
     {
         //请求
         var requestId = Interlocked.Increment(ref _requestId);
         //获取消息
-        var buf = MessageFactory.GetMessage(requestId, request);
+        var buf = MessageFactory.ToRemoteCallMessage(requestId, request);
         //发送
         await client.SendAsync(buf);
         //接收处理
@@ -86,6 +78,7 @@ public static class Program
         {
             throw new Exception("服务端的逻辑有错误");
         }
+
         return ret;
     }
 }
