@@ -1,4 +1,6 @@
 using System.Threading;
+using System.Threading.Tasks;
+using DaServer.Shared.Interface;
 using DaServer.Shared.Misc;
 using Timer = System.Timers.Timer;
 
@@ -7,7 +9,7 @@ namespace DaServer.Shared.Core;
 /// <summary>
 /// Entity - 实体
 /// </summary>
-public sealed class Entity: ComponentHolder
+public sealed class Entity: ComponentHolder, IUpdatable
 {
     /// <summary>
     /// 实体ID初始值
@@ -26,7 +28,7 @@ public sealed class Entity: ComponentHolder
     {
         // Add timer
         _timer = new Timer(10);
-        _timer.Elapsed += (_, _) => Update();
+        _timer.Elapsed += (_, _) => Update(Time.CurrentMs).Wait();
         _timer.AutoReset = true;
         _timer.Enabled = true;
     }
@@ -60,18 +62,17 @@ public sealed class Entity: ComponentHolder
     /// <summary>
     /// Update all components - 更新所有组件
     /// </summary>
-    private async void Update()
+    public async Task Update(long currentMs)
     {
-        var cur = Time.CurrentMs;
         int cnt = Components.Count;
         for (int i = 0; i < cnt; i++)
         {
             if (i >= Components.Count) break;
             var component = Components[i];
-            if (cur > component.LastExecuteTime + component.TimeInterval)
+            if (currentMs > component.LastExecuteTime + component.TimeInterval)
             {
-                component.LastExecuteTime = cur;
-                await component.Update(cur).ConfigureAwait(false);
+                component.LastExecuteTime = currentMs;
+                await component.Update(currentMs).ConfigureAwait(false);
             }
         }
     }

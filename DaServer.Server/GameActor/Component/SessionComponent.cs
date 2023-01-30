@@ -4,12 +4,12 @@ using DaServer.Server.Core;
 using DaServer.Shared.Core;
 using DaServer.Shared.Misc;
 
-namespace DaServer.Server.Component;
+namespace DaServer.Server.GameActor;
 
 /// <summary>
 /// 处理会话的组件
 /// </summary>
-public class SessionComponent: ActorComponent
+public class SessionComponent: ActorComponent<SessionSystem>
 {
     /// <summary>
     /// 确保不会被删除该组件

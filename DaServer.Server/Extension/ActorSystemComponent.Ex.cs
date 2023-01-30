@@ -6,7 +6,7 @@ using DaServer.Shared.Core;
 
 namespace DaServer.Server.Extension;
 
-public static class ActorSystemExtension
+public static class ActorSystemComponentExtension
 {
     /// <summary>
     /// 添加Actor
@@ -31,10 +31,8 @@ public static class ActorSystemExtension
     {
         if(sysComp.Actors.TryRemove(session, out var actor))
         {
-            sysComp.ActorList.Remove(actor);
-            sysComp.ActorsFromId.TryRemove(actor.Id, out _);
+            RemoveActor(sysComp, actor);
         }
-        sysComp.ActorList.RemoveAll(x => x.Session == session);
     }
 
     /// <summary>
@@ -44,14 +42,17 @@ public static class ActorSystemExtension
     /// <param name="actor"></param>
     public static void RemoveActor(this ActorSystemComponent sysComp, Actor actor)
     {
-        foreach (var pair in sysComp.Actors)
+        for (int i = 0; i < sysComp.ActorList.Count; i++)
         {
-            if (pair.Value == actor)
+            if (i >= sysComp.ActorList.Count) break;
+            if (sysComp.ActorList[i] == actor)
             {
-                sysComp.Actors.TryRemove(pair.Key, out _);
+                actor.Session.Dispose();
+                sysComp.Actors.TryRemove(actor.Session, out _);
                 sysComp.ActorsFromId.TryRemove(actor.Id, out _);
-                sysComp.ActorList.Remove(actor);
-                break;
+                sysComp.ActorList.RemoveAt(i);
+                sysComp.RemoveAllComponents(actor);
+                return;
             }
         }
     }
@@ -65,8 +66,7 @@ public static class ActorSystemExtension
     {
         if (sysComp.ActorsFromId.TryRemove(id, out var actor))
         {
-            sysComp.Actors.TryRemove(actor.Session, out _);
-            sysComp.ActorList.Remove(actor);
+            RemoveActor(sysComp, actor);
         }
     }
     
@@ -77,7 +77,16 @@ public static class ActorSystemExtension
     /// <param name="match"></param>
     public static void RemoveActor(this ActorSystemComponent sysComp, Predicate<Actor> match)
     {
-        sysComp.ActorList.RemoveAll(match);
+        for (int i = 0; i < sysComp.ActorList.Count; i++)
+        {
+            if (i >= sysComp.ActorList.Count) break;
+            var actor = sysComp.ActorList[i];
+            if (match(actor))
+            {
+                RemoveActor(sysComp, actor);
+                return;
+            }
+        }
     }
     
     /// <summary>

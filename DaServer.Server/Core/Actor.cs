@@ -1,6 +1,6 @@
-using System;
 using System.Threading;
 using System.Threading.Tasks;
+using DaServer.Server.GameActor;
 using DaServer.Server.Component;
 using DaServer.Server.Extension;
 using DaServer.Shared.Core;
@@ -10,7 +10,7 @@ using Destructurama.Attributed;
 
 namespace DaServer.Server.Core;
 
-public class Actor: ComponentHolder
+public class Actor
 {
     /// <summary>
     /// Actor ID初始值
@@ -31,7 +31,7 @@ public class Actor: ComponentHolder
     /// Actor系统
     /// </summary>
     [NotLogged]
-    public ActorSystemComponent ActorSystem => OwnerEntity.GetComponent<ActorSystemComponent>()!;
+    public ActorSystemComponent ActorSystemComponent => OwnerEntity.GetComponent<ActorSystemComponent>()!;
     
     /// <summary>
     /// Actor的会话
@@ -53,8 +53,8 @@ public class Actor: ComponentHolder
         OwnerEntity = ownerEntity;
         Session = session;
         //添加必备组件
-        AddComponent<SessionComponent>();
-        AddComponent<RequestComponent>();
+        _ = AddComponent<SessionComponent, SessionSystem>();
+        _ = AddComponent<RequestComponent, RequestSystem>();
     }
     
     /// <summary>
@@ -64,10 +64,8 @@ public class Actor: ComponentHolder
     {
         //释放会话
         Session.Dispose();
-        //删除组件
-        RemoveAllComponents();
         //删除Actor引用
-        ActorSystem.RemoveActor(this);
+        ActorSystemComponent.RemoveActor(this);
     }
     
     /// <summary>
@@ -100,31 +98,25 @@ public class Actor: ComponentHolder
         await Session.SendAsync(buf);
     }
 
-    public sealed override T? AddComponent<T>() where T: class
-    {
-        if (!typeof(T).IsAssignableTo(typeof(ActorComponent)))
-        {
-            throw new InvalidOperationException("Actor can only add ActorComponent");
-        }
+    public TActorComponent AddComponent<TActorComponent, TActorSystem>()
+        where TActorComponent : ActorComponent<TActorSystem>
+        where TActorSystem : ComponentHolder, IActorSystem<ActorComponent<TActorSystem>>, new() =>
+        (TActorComponent)ActorSystemComponent.GetSystem<TActorSystem>().AddComponent(this);
 
-        return base.AddComponent<T>();
-    }
+    public TActorComponent? GetComponent<TActorComponent, TActorSystem>()
+        where TActorComponent : ActorComponent<TActorSystem>
+        where TActorSystem : ComponentHolder, IActorSystem<ActorComponent<TActorSystem>>, new() =>
+        (TActorComponent?)ActorSystemComponent.GetSystem<TActorSystem>().GetComponent(this);
     
-    public sealed override T? GetComponent<T>() where T: class
-    {
-        if (!typeof(T).IsAssignableTo(typeof(ActorComponent)))
-        {
-            throw new InvalidOperationException("Actor can only get ActorComponent");
-        }
+    public void RemoveComponent<TActorSystem>()
+        where TActorSystem : ComponentHolder, IActorSystem<ActorComponent<TActorSystem>>, new() =>
+        ActorSystemComponent.GetSystem<TActorSystem>().RemoveComponent(this);
+    
+    public void RemoveAllComponents<TActorSystem>()
+        where TActorSystem : ComponentHolder, IActorSystem<ActorComponent<TActorSystem>>, new() =>
+        ActorSystemComponent.RemoveAllComponents(this);
 
-        return base.GetComponent<T>();
-    }
-    
-    public sealed override void RemoveComponent<T>() where T: class
-    {
-        if (!typeof(T).IsAssignableTo(typeof(ActorComponent)))
-        {
-            throw new InvalidOperationException("Actor can only remove ActorComponent");
-        }
-    }
+    public TActorSystem GetSystem<TActorSystem>()
+        where TActorSystem : ComponentHolder, IActorSystem, new()
+        => ActorSystemComponent.GetSystem<TActorSystem>();
 }

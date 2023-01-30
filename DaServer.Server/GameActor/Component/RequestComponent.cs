@@ -4,12 +4,12 @@ using DaServer.Server.Core;
 using DaServer.Server.Request;
 using DaServer.Shared.Core;
 
-namespace DaServer.Server.Component;
+namespace DaServer.Server.GameActor;
 
 /// <summary>
 /// 处理请求的组件
 /// </summary>
-public class RequestComponent: ActorComponent
+public class RequestComponent: ActorComponent<RequestSystem>
 {
     /// <summary>
     /// 确保不会被删除该组件

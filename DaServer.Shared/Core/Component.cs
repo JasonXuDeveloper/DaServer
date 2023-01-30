@@ -1,5 +1,6 @@
 using System;
 using System.Threading.Tasks;
+using DaServer.Shared.Interface;
 
 namespace DaServer.Shared.Core;
 
@@ -11,7 +12,7 @@ public enum ComponentRole: byte
     LowLevel = 0,
     HighLevel = 1,
 }
-public abstract class Component
+public abstract class Component: IUpdatable
 {
     protected Component()
     {

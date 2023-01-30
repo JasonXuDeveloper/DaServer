@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Threading.Tasks;
 using DaServer.Server.Extension;
+using DaServer.Server.GameActor;
 using DaServer.Server.Request;
 using DaServer.Shared.Core;
 using DaServer.Shared.Extension;
@@ -39,7 +40,7 @@ public class RemoteCallComponent: Shared.Core.Component
         while (_requestQueue!.TryDequeue(out var request))
         {
             var actor = actorComp.GetActor(request.session) ?? actorComp.AddActor(request.session);
-            actor.GetComponent<RequestComponent>()?.AddRequest(request.call);
+            actor.GetSystem<RequestSystem>().GetComponent(actor)?.AddRequest(request.call);
         }
         return Task.CompletedTask;
     }
