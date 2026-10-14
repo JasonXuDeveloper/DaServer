@@ -17,6 +17,9 @@ discovery, gateways and serialization. Aspire runs the cluster locally and publi
 - **RPC, events and ECS.** Request/response and one-way calls through generated proxies; cluster events published
   without knowing the handlers, delivered to actor mailboxes by key; per-tick logic in EasyEcs systems.
 - **No hard-coded topology.** A node hosts what its project compiles. The AppHost lists projects and replica counts.
+- **Reliable links, bounded work.** One ordered stream per node pair resumes after a dropped connection (no loss, no
+  duplicate). Requests carry their caller's deadline, and work nobody waits for is dropped. Full inboxes answer
+  `Overloaded` instead of growing.
 - **Misuse is a build error.** Analyzers DAS001–DAS014 cover DaServer contracts, handlers, event keys and wire types, and EECS001–EECS008
   cover ECS, including the ECS principles.
 

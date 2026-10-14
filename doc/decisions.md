@@ -42,7 +42,7 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
 - Decision: `Connection.Send` copies the frame into one pending batch buffer under a short lock; one send loop swaps
   and writes whole batches. Broadcast serializes once, then memcpy per recipient.
 - Consequences: N small frames = 1 syscall; no per-frame objects; per-connection backlog bounded by
-  `MaxPendingSendBytes` (slow consumers are disconnected and may resume, see ADR-008).
+  `MaxPendingSendBytes` (slow consumers are disconnected; node links then resume, see ADR-008).
 
 ## ADR-007 Placement by rendezvous hashing + forwarding
 - Decision: actor owner = highest-random-weight node among `Up` members hosting the implementation. A node activates
@@ -51,10 +51,27 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
 - Consequences: no central directory, O(nodes) placement computation; brief disagreement during membership changes is
   handled by forwarding/retry rather than a lease protocol (documented limitation).
 
-## ADR-008 Reliability via byte-offset resumable links (planned)
-- Decision: node links and client sessions number the stream by byte offset; sent batch buffers stay in an unacked
-  list until acked; on reconnect the handshake exchanges the last received offset and the sender replays.
-- Consequences: transient disconnects become delays (no lost messages) without an extra copy per frame.
+## ADR-008 Reliability via byte-offset resumable links
+- Context: a dropped node connection failed every call in flight and silently lost one-way calls, events, pushes
+  and session control queued on it; a network blip between a game node and a gateway looked like a crash.
+- Decision: each node link numbers its stream by byte offset (frames sent through the link, across connections).
+  The connection's send loop copies each batch, before writing it, into the link's `ResendWindow` (pooled 64 KB
+  chunks). A new connection opens with a Hello carrying the stream id; the receiver lets the previous inbound
+  connection deliver its last frame, then answers `Resume` with the bytes it processed and its node id; the sender
+  replays the rest, then the backlog, then new frames. The receiver acknowledges every 64 KB and on the 100 ms
+  maintenance tick, which releases chunks. The stream restarts (calls in flight fail with `Disconnected`, outcome
+  unknown as after a timeout) when the peer's node id changed (restart), when the window no longer holds what the
+  peer needs (`NodeOptions.LinkResendWindow`, 32 MB), after the reconnect attempts run out, or when the member is
+  declared dead.
+- Alternatives: keep the sent batch buffers themselves (no copy) — node links batch into 256 KB buffers, so a few
+  small batches would pin megabytes until acknowledged; one memcpy per batch on the send loop (not on producers)
+  keeps memory proportional to unacknowledged bytes. Per-frame sequence numbers — bytes are simpler and exact
+  because frames are whole in every batch. Client sessions: not resumed (a client reconnects and logs in again;
+  resuming would keep session state alive on the gateway during the gap).
+- Consequences: a transient disconnect is a delay: no loss, no duplicate (`LinkTests` drop connections mid-stream).
+  Cost: one memcpy per batch on the send loop and one type check per received frame; BenchmarkDotNet RPC numbers are
+  unchanged within noise. A crashed peer fails calls when it is declared dead (or at their timeout), not at the
+  first socket error.
 
 ## ADR-009 Hosting and orchestration
 - Decision: `DaServer.Hosting` on the .NET Generic Host (configuration, ILogger, SIGTERM → graceful leave),
@@ -180,7 +197,7 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
   to that node through its own outgoing link to it (`LinkReplySink`). Everything node A sends to node B, replies
   included, is one ordered TCP stream.
 - Consequences: "the binding is in place when the call that made it returns" holds (tested with a push burst before
-  the bind). A link failure fails the calls it carried (resumable links remain ADR-008).
+  the bind). A dropped connection resumes the stream (ADR-008).
 
 ## ADR-023 Placement keeps keys on suspect members
 - Context: placement over Up members only moved every key of a node that missed a few gossip rounds (GC pause,
