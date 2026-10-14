@@ -31,7 +31,7 @@ Keep this file current: tick items when done, add items when scope changes.
 - [ ] Backpressure on links: pause a link's receive while its target shard is full (today: refuse and reply)
 - [x] Deadlines: the caller's remaining time travels with each request; expired work is dropped (ADR-028)
 - [ ] Send group broadcasts only to gateways that have members of the group (deferred: ADR-029)
-- [ ] Reliability: resumable links (ADR-008)
+- [x] Resumable node links: a dropped connection replays what the peer did not process (ADR-008)
 - [ ] Placement hints (co-locate actors that talk a lot)
 - [ ] Gateway sessions as ECS entities (session components + flush system) on a gateway shard
 - [ ] Actor self-deactivation (idle timeout) and persistence helpers
