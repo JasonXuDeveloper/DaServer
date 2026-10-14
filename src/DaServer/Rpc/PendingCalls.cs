@@ -167,19 +167,20 @@ public sealed class PendingCallTable
 /// <para>Completion threading: when the caller is a shard thread (<see cref="CallerShard"/> set at creation) the
 /// runtime completes the call <b>on that shard thread</b> (the response is posted to the shard's mailbox), so the
 /// continuation runs inline there: no SynchronizationContext.Post, no thread-pool hop, no allocation. Callers outside
-/// a shard (tests, tools, the game client) get their continuation on the thread pool.</para>
+/// a shard (tests, tools, the game client) get their continuation on the thread pool, queued as this object itself
+/// (<see cref="IThreadPoolWorkItem"/>), so that path allocates nothing either.</para>
 /// ExecutionContext (AsyncLocal) is intentionally not flowed across RPC awaits.
 /// </summary>
-public abstract class PendingCallBase : IPendingCall
+public abstract class PendingCallBase : IPendingCall, IThreadPoolWorkItem
 {
     private static readonly Action<object?> CompletedSentinel = static _ => { };
 
     private Action<object?>? _continuation;
+    private Action<object?>? _queued; // continuation handed to the thread pool (see Execute)
     private object? _continuationState;
     private SynchronizationContext? _capturedContext;
     private Exception? _error;
     private short _version;
-    private int _completed;
 
     /// <summary>Shard of the caller (null when the call was made outside any shard thread).</summary>
     public object? CallerShard { get; protected set; }
@@ -196,10 +197,13 @@ public abstract class PendingCallBase : IPendingCall
         Signal();
     }
 
-    /// <summary>Publish completion and run the continuation if one is already registered.</summary>
+    /// <summary>
+    /// Publish completion and run the continuation if one is already registered. Completion and the continuation are
+    /// one atomic state (<see cref="CompletedSentinel"/>): with a separate flag the awaiter could see it, reset this
+    /// pooled object and register the next call's continuation before the exchange, which would then run it early.
+    /// </summary>
     protected void Signal()
     {
-        Volatile.Write(ref _completed, 1);
         var continuation = Interlocked.Exchange(ref _continuation, CompletedSentinel);
         if (continuation != null)
             Invoke(continuation, _continuationState);
@@ -213,7 +217,20 @@ public abstract class PendingCallBase : IPendingCall
         else if (CallerShard != null)
             continuation(state); // completed on the caller's shard thread
         else
-            ThreadPool.UnsafeQueueUserWorkItem(continuation, state, preferLocal: false);
+            Queue(continuation);
+    }
+
+    private void Queue(Action<object?> continuation)
+    {
+        _queued = continuation;
+        ThreadPool.UnsafeQueueUserWorkItem(this, preferLocal: false);
+    }
+
+    void IThreadPoolWorkItem.Execute()
+    {
+        var continuation = _queued!;
+        _queued = null;
+        continuation(_continuationState); // the continuation resets this object: read everything before
     }
 
     // Separate method: a lambda capturing parameters allocates its closure on entry to the method that declares it,
@@ -224,7 +241,7 @@ public abstract class PendingCallBase : IPendingCall
     protected ValueTaskSourceStatus Status(short token)
     {
         if (token != _version) throw new InvalidOperationException("Stale ValueTask token");
-        if (Volatile.Read(ref _completed) == 0) return ValueTaskSourceStatus.Pending;
+        if (!ReferenceEquals(Volatile.Read(ref _continuation), CompletedSentinel)) return ValueTaskSourceStatus.Pending;
         return _error == null ? ValueTaskSourceStatus.Succeeded
             : _error is OperationCanceledException ? ValueTaskSourceStatus.Canceled : ValueTaskSourceStatus.Faulted;
     }
@@ -245,7 +262,7 @@ public abstract class PendingCallBase : IPendingCall
         if (previous != null)
         {
             // Completed between the awaiter's IsCompleted check and now: never run inline from OnCompleted.
-            ThreadPool.UnsafeQueueUserWorkItem(continuation, state, preferLocal: false);
+            Queue(continuation);
         }
     }
 
@@ -258,7 +275,6 @@ public abstract class PendingCallBase : IPendingCall
         _continuation = null;
         _continuationState = null;
         _capturedContext = null;
-        _completed = 0;
         CallerShard = null;
         _version++;
         Return();
