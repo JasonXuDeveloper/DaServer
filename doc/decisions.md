@@ -76,10 +76,11 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
 - Decision: `ContractGenerator` emits, per contract, a struct proxy (arguments serialized straight into a pooled
   frame), a dispatcher switch (arguments deserialized straight from the received frame), wire ids, a module-initializer
   registration and cluster accessors (`Cluster.Player(key)`, `Cluster.Auth()`, `Cluster.PlayerClient(session)`,
-  `Cluster.PlayerClient(group)`). `HostGenerator` registers implementations (with `[Role]`), EasyEcs systems, and
-  runs the module initializers of referenced contract assemblies (found via `[assembly: RpcContractsAssembly]`).
+  `Cluster.PlayerClient(group)`). `HostGenerator` registers implementations (with their contracts and handled events),
+  EasyEcs systems, and runs the module initializers of referenced contract assemblies (found via
+  `[assembly: RpcContractsAssembly]`). Roles were removed by ADR-017.
 - Consequences: no reflection, no configuration strings, no hand-maintained lists; invalid contracts are compile
-  errors (DAS001-DAS008).
+  errors (DAS001-DAS012).
 
 ## ADR-013 The shard runtime is ECS
 - Context: the shard was an imperative loop (drain a shard-wide queue, sweep an in-flight list, run timers, tick)
@@ -106,7 +107,8 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
 ## ADR-015 Orchestration with Aspire
 - Context: hand-written Dockerfile, compose and Kubernetes files duplicated the topology (ports, seeds, roles) and
   drifted from the code.
-- Decision: `DaServer.Aspire` describes a cluster in the AppHost (`AddDaServerCluster`, `AddNodes`, `WithGateways`).
+- Decision: `DaServer.Aspire` describes a cluster in the AppHost (`AddDaServerCluster`, `AddNodes`, `AddGateways`,
+  `WithGateways`).
   The same model runs locally with the dashboard and publishes Docker Compose or Kubernetes through Aspire publishers.
   Nodes export logs and metrics over OTLP when Aspire (or any collector) configures it. `deploy/` was removed.
 - Consequences: one source of truth for topology. Ports are assigned deterministically per node. Replicas are
@@ -115,7 +117,55 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
 ## ADR-016 Analyzer separate from generators
 - Context: generators that report diagnostics carry symbols and locations in their models, which defeats caching.
 - Decision: generators use syntax-only predicates and equatable, symbol-free models with tracking names, and report
-  nothing. `DaServerAnalyzer` reports DAS001–DAS008 (collisions in a compilation-end action), and reads symbols
+  nothing. `DaServerAnalyzer` reports DAS001–DAS012 (collisions in a compilation-end action), and reads symbols
   through the same `Shapes` code as the generators.
 - Consequences: edits that do not touch contracts hit the cache (tested); "skipped by the generator" and "reported by
   the analyzer" cannot disagree.
+
+## ADR-017 No roles: the deployment unit is a project
+- Context: nodes used to carry role strings (`[Role("game")]` on implementations, `DaServer:Roles` in configuration).
+  The same strings were repeated in code, configuration and the AppHost, a typo silently hosted nothing, and the
+  sample hard-coded "game" and "gateway".
+- Decision: a node hosts every actor, service and system compiled into its process. Splitting the cluster means
+  splitting projects (`Sample.Game`, `Sample.Gateway`); the AppHost lists projects and replica counts. Accepting
+  clients is a capability (`ClientPort`, `AddGateways`), not a role. In-process tests narrow hosting with
+  `NodeOptions.Hosts`, a type filter.
+- Consequences: no topology strings anywhere (checked by the release checklist). The compiler decides what a node can
+  host; references between projects decide what can be split.
+
+## ADR-018 Contract markers instead of attributes
+- Context: `[ClientAccessible(AnyKey = true)]` on `IActor` interfaces mixed two concerns (who may call, how the key is
+  chosen) into an attribute next to `[NinoType]`, which means something else entirely (serialization).
+- Decision: the base interface says it all: `IService`, `IPublicService`, `IActor`, `ISessionActor`, `IPublicActor`,
+  `IClientCallback`. `[NinoType]` only marks wire data, and every type crossing the wire must be one (DAS009).
+  `[WireId]` (formerly `[RpcId]`) only resolves a reported collision. Contracts are cut per audience: one actor may
+  implement a server contract and a client contract (`IMap` and `IMapInput`).
+- Consequences: one vocabulary table covers every declaration; access control is visible in the type declaration and
+  checked by the gateway from generated metadata (`ClientAccess`).
+
+## ADR-019 Cluster events are delivered through mailboxes, at most once
+- Context: EasyEcs had an in-world event bus, which is not an ECS concern (state changes are data) and could not
+  cross shards or nodes. DaServer needed events between actors and services anywhere in the cluster.
+- Decision: `IEvent` / `IKeyedEvent` structs, handled by `IHandle<T>` on actors and services. Handlers are part of the
+  gossiped member info; `Publish` serializes once and sends one `Event` frame per handling implementation. Keyed
+  events go to the owner of the key and enter the activation's mailbox (turn-based, activated on demand); service
+  handlers run once per implementation, local node first. Delivery is at most once and ordered with the calls of the
+  same sender. `SessionClosed` is a framework event sent to every actor a closing session was bound to.
+- Alternatives: a broker (Kafka, NATS) on the call path adds a hop and an external dependency to every event;
+  subscription state per actor would have to survive rebalancing. Durable events are an application concern (outbox).
+- Consequences: publishers never depend on handlers; event delivery costs the same as a one-way call and allocates
+  nothing (the key is read through a constrained generic call).
+
+## ADR-020 Business code sees ICluster, not Node
+- Context: `ShardObject.Cluster` returned `Node`, exposing lifecycle, membership and internals to business code.
+- Decision: `ICluster` (proxies via `IRpcInvoker`, `NodeId`, `Bind`/`Unbind` per session-actor contract, groups,
+  `Kick`, `Publish`). Actors get a `Group` of their own (`ClientGroup.Of(implementation, key)`), so group ids of
+  different features cannot collide.
+- Consequences: the surface business code can touch is small and testable; runtime refactors do not break it.
+
+## ADR-021 Generated node entry point
+- Context: every node project carried the same three-line `Program.cs`.
+- Decision: `HostGenerator` emits `DaServer.Generated.NodeProgram.Main` (Generic Host + `AddDaServer`) for an
+  executable that references `DaServer.Hosting` and declares no entry point. Writing a `Program.cs` opts out.
+- Consequences: a node project is business classes plus `appsettings.json`.
+

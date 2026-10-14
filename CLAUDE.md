@@ -1,12 +1,13 @@
 # DaServer
 
 .NET 10 framework for high-performance clusters (game servers: many gateways + many map/logic nodes, and other
-low-latency backends). Users write contracts, implementations and ECS systems; source generators write the plumbing.
+low-latency backends). Users write contracts, implementations, event handlers and ECS systems; source generators
+write the plumbing.
 Code, comments, commits and docs are in English.
 
-**Start here when resuming work:** `doc/roadmap.md` (what is done / next), `doc/decisions.md` (why things are the
-way they are), `doc/design.md` (architecture). Update the roadmap when finishing a step and add a decision record
-for every non-obvious choice.
+**Start here when resuming work:** `doc/requirements.md` (what must hold, release checklist), `doc/roadmap.md` (what
+is done / next), `doc/decisions.md` (why things are the way they are), `doc/design.md` (architecture). Update the
+roadmap when finishing a step and add a decision record for every non-obvious choice.
 
 ## Commands
 
@@ -27,14 +28,16 @@ src/DaServer/              runtime (net10.0): Protocol/ Buffers/ Concurrency/ Ne
   Runtime/ShardData.cs     shard ECS data: actor components (Mailbox, Turn, ...) and shard singletons
   Runtime/ShardDispatch.cs routing/invoke/retire operations shared by the runtime systems
   Runtime/Systems/         runtime systems (ShardMessages group): Inbox, Turn, Mailbox, ServiceTask, Timer, Rebalance
-src/DaServer.Generator/    incremental generators (ContractGenerator, HostGenerator) + DaServerAnalyzer (DAS001-008);
+src/DaServer.Generator/    incremental generators (ContractGenerator, HostGenerator incl. node entry point)
+                           + DaServerAnalyzer (DAS001-012);
                            Shapes.cs reads symbols once for both, so "skipped by the generator" == "reported"
 src/DaServer.Hosting/      Generic Host integration, configuration, OpenTelemetry (OTLP when configured), shutdown
-src/DaServer.Aspire/       Aspire hosting integration: AddDaServerCluster / AddNodes / WithGateways
-samples/                   Sample.Contracts / Sample.Server / Sample.Bot / Sample.AppHost (Aspire: run + publish)
+src/DaServer.Aspire/       Aspire hosting integration: AddDaServerCluster / AddNodes / AddGateways / WithGateways
+samples/                   Sample.Contracts / Sample.Game / Sample.Gateway (node projects: no Program.cs) / Sample.Bot /
+                           Sample.AppHost (Aspire: run + publish)
 tests/DaServer.Tests/      NUnit: ClusterTest fixture, per-feature tests, generator/analyzer, allocation
-benchmarks/DaServer.Benchmark/   BenchmarkDotNet over real loopback sockets (RPC, broadcast fan-out)
-doc/                       design.md, decisions.md, roadmap.md
+benchmarks/DaServer.Benchmark/   BenchmarkDotNet over real loopback sockets (RPC, events, broadcast fan-out)
+doc/                       requirements.md, design.md, decisions.md, roadmap.md
 ```
 
 ## Engineering principles (apply to every change)
@@ -50,9 +53,10 @@ doc/                       design.md, decisions.md, roadmap.md
    cross-thread handoff only through mailboxes; shared runtime state is immutable snapshots swapped atomically.
 5. **Concise, elegant, no duplication**: generate repetitive code with the source generator; one shared core with
    thin typed wrappers; no copy-pasted variants.
-6. **Developers only write business code**: contracts (`IService`/`IActor`/`IClientCallback`), actors/services,
-   EasyEcs systems with `[ForEach]` methods. Registration, routing, serialization, placement, orchestration are the
-   framework's job.
+6. **Developers only write business code**: contracts (`IService`/`IPublicService`/`IActor`/`ISessionActor`/
+   `IPublicActor`/`IClientCallback`), actors/services, event handlers (`IHandle<T>`), EasyEcs systems with `[ForEach]`
+   methods. Registration, routing, serialization, placement, entry points, orchestration are the framework's job;
+   if users would write the same lines twice, generate them.
 7. **ECS all the way down**: the runtime follows the same ECS rules as user code (EasyEcs `doc/ecs-principles.md`):
    actors are entities, per-actor runtime state is components, per-shard state is singletons, each runtime system does
    one job. Actors only turn calls into data; per-tick logic lives in systems.
@@ -67,6 +71,8 @@ doc/                       design.md, decisions.md, roadmap.md
 - Actors are turn-based: one message at a time including its awaits (no interleaving). Calls in a cycle (A awaits B
   awaits A) deadlock until timeout: model such flows with one-way calls or events.
 - Orchestration is the Aspire model (`samples/Sample.AppHost`); do not add hand-written compose/k8s files.
-- Wire ids are generated (FNV-1a); never renumber by hand except `[RpcId]` to resolve a reported collision.
+- Wire ids are generated (FNV-1a); never renumber by hand except `[WireId]` to resolve a reported collision.
+- No topology strings (roles, node names) in code: a node hosts what its project compiles (ADR-017).
+- Business code sees `ICluster`, never `Node` (ADR-020).
 - Commits: logic, docs and CI in separate commits. The author is the repository owner; the committer is the
   environment's signing identity so the signature shows as Verified. No session links in commit messages.
