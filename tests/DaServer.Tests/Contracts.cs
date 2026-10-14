@@ -39,7 +39,7 @@ public interface IEcho
     ValueTask<ulong> NodeId();
 }
 
-[Service, Client]
+[Service, FromClient]
 public interface IAuth
 {
     ValueTask<bool> Login(long playerId);
@@ -47,7 +47,7 @@ public interface IAuth
     ValueTask Logout();
 }
 
-[Actor, Client]
+[Actor, FromClient]
 public interface IPlayer
 {
     ValueTask<int> AddGold(int amount);
@@ -55,7 +55,7 @@ public interface IPlayer
 }
 
 /// <summary>A public chat room: clients choose the room id.</summary>
-[Actor, Client(AnyKey = true)]
+[Actor, FromClient(AnyKey = true)]
 public interface IRoom
 {
     ValueTask Join();
@@ -64,13 +64,13 @@ public interface IRoom
 
 /// <summary>Keyed event: delivered to the counter activation of <see cref="Key"/>.</summary>
 [NinoType]
-public readonly partial record struct CounterBumped([property: Key] long Key, int By);
+public readonly partial record struct CounterBumped([property: ActorKey] long Key, int By);
 
 /// <summary>Unkeyed event: delivered once to each service implementation handling it.</summary>
 [NinoType]
 public readonly partial record struct Ping(int Id);
 
-[Push]
+[ToClient]
 public interface IPlayerClient
 {
     void OnChat(long from, string text);
@@ -201,21 +201,21 @@ public sealed class AuthService : Service, IAuth
 {
     public ValueTask<bool> Login(long playerId)
     {
-        if (!Caller.IsValid || playerId <= 0) return new(false);
-        Cluster.Bind<IPlayer>(Caller, playerId);
+        if (!CallerSession.IsValid || playerId <= 0) return new(false);
+        Cluster.Bind<IPlayer>(CallerSession, playerId);
         return new(true);
     }
 
     public ValueTask<bool> LoginAfterPushes(long playerId, int pushes)
     {
         var text = new string('x', 4096);
-        for (int i = 0; i < pushes; i++) Cluster.PlayerClient(Caller).OnChat(0, text);
+        for (int i = 0; i < pushes; i++) Cluster.PlayerClient(CallerSession).OnChat(0, text);
         return Login(playerId);
     }
 
     public ValueTask Logout()
     {
-        Cluster.Unbind<IPlayer>(Caller);
+        Cluster.Unbind<IPlayer>(CallerSession);
         return default;
     }
 }
@@ -227,7 +227,7 @@ public sealed class Player : Actor<Wallet>, IPlayer
     public ValueTask<int> AddGold(int amount)
     {
         int gold = State.Gold += amount;
-        if (Caller.IsValid) Cluster.PlayerClient(Caller).OnGold(gold); // push to the calling client
+        if (CallerSession.IsValid) Cluster.PlayerClient(CallerSession).OnGold(gold); // push to the calling client
         return new(gold);
     }
 
@@ -245,7 +245,7 @@ public sealed class Room : Actor, IRoom
 {
     public ValueTask Join()
     {
-        Cluster.JoinGroup(Caller, Group);
+        Cluster.JoinGroup(CallerSession, Group);
         return default;
     }
 

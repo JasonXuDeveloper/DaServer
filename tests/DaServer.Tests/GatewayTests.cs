@@ -174,9 +174,9 @@ public class GatewayTests : ClusterTest
     }
 
     [Test]
-    public async Task ADispatchGatewaySpreadsClientsOverTheOtherGateways()
+    public async Task ABalancerSpreadsClientsOverTheOtherGateways()
     {
-        var dispatch = await Start("dispatch", gateway: true, hosts: static _ => false, configure: static o => o.DispatchOnly = true);
+        var balancer = await Start("balancer", gateway: true, hosts: static _ => false, configure: static o => o.Balancer = true);
         var gateways = new[]
         {
             await Start("gw-0", gateway: true, hosts: static _ => false),
@@ -189,21 +189,51 @@ public class GatewayTests : ClusterTest
         for (int i = 0; i < clients.Length; i++)
         {
             clients[i] = Track(new ClusterClient());
-            await clients[i].ConnectAsync("127.0.0.1", dispatch.ClientPort); // the one well-known address
+            await clients[i].ConnectAsync("127.0.0.1", balancer.ClientPort); // the one well-known address
             Assert.That(await clients[i].Auth().Login(1000 + i), Is.True);
         }
 
-        await Eventually(() => dispatch.SessionCount == 0, "the dispatch gateway kept sessions");
+        await Eventually(() => balancer.SessionCount == 0, "the balancer kept sessions");
         Assert.That(gateways.Sum(g => g.SessionCount), Is.EqualTo(clients.Length));
         Assert.That(gateways.Min(g => g.SessionCount), Is.GreaterThanOrEqualTo(8), "power of two choices spreads the load");
     }
 
     [Test]
+    public async Task AGatewayStartedLaterIsDiscoveredAndReceivesTheNewClients()
+    {
+        var balancer = await Start("balancer", gateway: true, hosts: static _ => false, configure: static o => o.Balancer = true);
+        var first = await Start("gw-0", gateway: true, hosts: static _ => false);
+        await Start("game");
+        await Converged();
+
+        const int wave = 30;
+        var clients = new ClusterClient[2 * wave];
+        for (int i = 0; i < wave; i++) clients[i] = await ConnectThrough(balancer, 2000 + i);
+        Assert.That(first.SessionCount, Is.EqualTo(wave));
+
+        // Scale out: nobody configures the balancer; gossip tells it about the new gateway.
+        var late = await Start("gw-1", gateway: true, hosts: static _ => false);
+        await Converged();
+        for (int i = wave; i < clients.Length; i++) clients[i] = await ConnectThrough(balancer, 2000 + i);
+
+        Assert.That(late.SessionCount, Is.GreaterThanOrEqualTo(wave - 2), "new clients go to the least loaded gateway");
+        Assert.That(first.SessionCount + late.SessionCount, Is.EqualTo(clients.Length));
+    }
+
+    private async Task<ClusterClient> ConnectThrough(DaServer.Runtime.Node balancer, long player)
+    {
+        var client = Track(new ClusterClient());
+        await client.ConnectAsync("127.0.0.1", balancer.ClientPort);
+        Assert.That(await client.Auth().Login(player), Is.True);
+        return client;
+    }
+
+    [Test]
     public async Task ClientsConnectingWhileTheClusterFormsWaitForAGateway()
     {
-        var dispatch = await Start("dispatch", gateway: true, hosts: static _ => false, configure: static o => o.DispatchOnly = true);
+        var balancer = await Start("balancer", gateway: true, hosts: static _ => false, configure: static o => o.Balancer = true);
         var client = Track(new ClusterClient());
-        var connecting = client.ConnectAsync("127.0.0.1", dispatch.ClientPort).AsTask(); // no gateway exists yet
+        var connecting = client.ConnectAsync("127.0.0.1", balancer.ClientPort).AsTask(); // no gateway exists yet
 
         await Task.Delay(300);
         var gateway = await Start("gw", gateway: true);

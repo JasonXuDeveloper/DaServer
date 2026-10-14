@@ -2,15 +2,16 @@ using System;
 
 namespace DaServer.Rpc;
 
-// A contract is an interface with one attribute saying how a target is chosen; [Client] says what clients may call.
+// A contract is an interface with one attribute saying who serves it; [FromClient] says what game clients may call.
 // Everything else (proxies, dispatch, wire ids, registration, discovery) is generated.
 //
-//   [Service]   any node hosting it (load-balanced, local node first)       Cluster.Account().Login(..)
-//   [Actor]     the activation of a key (one per cluster, turn-based)       Cluster.Player(id).AddGold(..)
-//   [Push]      one client session or a client group (implemented by clients) Cluster.PlayerView(session).OnGold(..)
-//   [Client]    on a [Service]/[Actor] method (or the whole interface): game clients may call it through a gateway;
-//               an actor method reaches the key the server bound to the client's session (Cluster.Bind),
-//               [Client(AnyKey = true)] lets the client choose the key (public rooms, leaderboards).
+//   [Service]     any node hosting it (load-balanced, local node first)          Cluster.Account().Login(..)
+//   [Actor]       the actor of a key (one per cluster, turn-based)               Cluster.Player(id).AddGold(..)
+//   [ToClient]    server to client: one session or a client group (clients       Cluster.PlayerClient(session).OnGold(..)
+//                 implement it)
+//   [FromClient]  client to server, on a [Service]/[Actor] method (or the whole interface): game clients may call it
+//                 through a gateway; an actor method reaches the key the server bound to the client's session
+//                 (Cluster.Bind); [FromClient(AnyKey = true)] lets the client choose the key (rooms, leaderboards).
 
 /// <summary>
 /// Stateless service contract. Methods return <c>ValueTask</c>, <c>ValueTask&lt;T&gt;</c> or <c>void</c> (one-way);
@@ -28,7 +29,7 @@ public sealed class ActorAttribute : Attribute;
 
 /// <summary>Server-to-client contract, implemented by game clients. All methods return <c>void</c>.</summary>
 [AttributeUsage(AttributeTargets.Interface)]
-public sealed class PushAttribute : Attribute;
+public sealed class ToClientAttribute : Attribute;
 
 /// <summary>
 /// Game clients may call this method (or every method of the interface) through a gateway, which adds the caller's
@@ -36,7 +37,7 @@ public sealed class PushAttribute : Attribute;
 /// so a client can never address another player's actor, unless <see cref="AnyKey"/> is set.
 /// </summary>
 [AttributeUsage(AttributeTargets.Interface | AttributeTargets.Method)]
-public sealed class ClientAttribute : Attribute
+public sealed class FromClientAttribute : Attribute
 {
     /// <summary>Actor methods only: the client chooses the key (public, read-mostly actors: rooms, leaderboards).</summary>
     public bool AnyKey { get; set; }

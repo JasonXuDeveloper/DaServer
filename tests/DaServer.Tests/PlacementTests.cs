@@ -8,7 +8,7 @@ public class PlacementTests
 {
     private const uint Contract = 7, Implementation = 9;
 
-    private static MemberInfo Member(ulong id, MemberStatus status) => new()
+    private static ClusterMember Member(ulong id, MemberStatus status) => new()
     {
         NodeId = id, Name = "n" + id, Status = status,
         Actors = [new HostedActor { ContractId = Contract, ImplementationId = Implementation }],

@@ -31,7 +31,7 @@ public class BackpressureTests : ClusterTest
     [Test]
     public async Task AFullShardRefusesNewCallsAndRecovers()
     {
-        var node = await Start("single", shards: 1, configure: static o => o.MailboxCapacity = 16);
+        var node = await Start("single", shards: 1, configure: static o => o.ShardInboxCapacity = 16);
         var shard = node.Shards[0];
         using var gate = new ManualResetEventSlim();
         shard.Post(static g => ((ManualResetEventSlim)g!).Wait(), gate); // the shard is busy until the gate opens

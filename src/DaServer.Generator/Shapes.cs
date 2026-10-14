@@ -9,7 +9,7 @@ internal enum ContractKind
 {
     Service,
     Actor,
-    Push,
+    ToClient,
 }
 
 internal enum MethodShape
@@ -19,19 +19,19 @@ internal enum MethodShape
     TaskOfT,
 }
 
-/// <summary>How clients may call a method (mirrors DaServer.Rpc.ClientAccess).</summary>
-internal enum ClientAccess
+/// <summary>How clients may call a method (mirrors DaServer.Rpc.ClientRoute).</summary>
+internal enum ClientRoute
 {
     None,
     Service,
-    SessionKey,
+    BoundKey,
     AnyKey,
 }
 
 internal sealed record ParameterModel(string Type, string Name);
 
 internal sealed record MethodModel(string Name, uint Id, MethodShape Shape, string ResultType,
-    EquatableArray<ParameterModel> Parameters, ClientAccess Access);
+    EquatableArray<ParameterModel> Parameters, ClientRoute Route);
 
 /// <summary>Symbol-free description of an RPC contract (cached by the incremental pipeline).</summary>
 internal sealed record ContractModel(string Namespace, string Name, string FullName, ContractKind Kind, uint Id,
@@ -40,7 +40,7 @@ internal sealed record ContractModel(string Namespace, string Name, string FullN
     public string Accessor => StripInterfacePrefix(Name);
     public string ProxyName => Accessor + "Proxy";
     public string RpcClassName => Accessor + "Rpc";
-    public bool HasSessionMethods => Methods.Any(m => m.Access == ClientAccess.SessionKey);
+    public bool HasSessionMethods => Methods.Any(m => m.Route == ClientRoute.BoundKey);
 }
 
 /// <summary>A <c>[Handle]</c> method: the event it takes and whether it returns void.</summary>
@@ -50,7 +50,7 @@ internal sealed record HandlerModel(string EventType, string Method, bool Return
 internal sealed record HostedModel(string FullName, bool IsSystem, ContractKind Kind, EquatableArray<string> Contracts,
     EquatableArray<HandlerModel> Handlers);
 
-/// <summary>A struct with a <c>[Key]</c> member: the generator implements DaServer.Rpc.IKeyed on it.</summary>
+/// <summary>A struct with a <c>[ActorKey]</c> member: the generator implements DaServer.Rpc.IKeyed on it.</summary>
 internal sealed record KeyedEventModel(string Namespace, string Declaration, string Name, string Member);
 
 /// <summary>
@@ -59,14 +59,14 @@ internal sealed record KeyedEventModel(string Namespace, string Declaration, str
 /// </summary>
 internal static class Shapes
 {
-    private static readonly string[] KindAttributes = [ServiceAttribute, ActorAttribute, PushAttribute];
+    private static readonly string[] KindAttributes = [ServiceAttribute, ActorAttribute, ToClientAttribute];
 
     public static ContractKind? KindOf(INamedTypeSymbol type)
     {
         if (type.TypeKind != TypeKind.Interface) return null;
         if (HasAttribute(type, ActorAttribute)) return ContractKind.Actor;
         if (HasAttribute(type, ServiceAttribute)) return ContractKind.Service;
-        if (HasAttribute(type, PushAttribute)) return ContractKind.Push;
+        if (HasAttribute(type, ToClientAttribute)) return ContractKind.ToClient;
         return null;
     }
 
@@ -83,11 +83,11 @@ internal static class Shapes
 
         if (KindAttributes.Count(a => HasAttribute(type, a)) > 1)
         {
-            report?.Invoke(Rules.BadContractAttributes, location, type.Name, "only one of [Service], [Actor] and [Push] applies");
+            report?.Invoke(Rules.BadContractAttributes, location, type.Name, "only one of [Service], [Actor] and [ToClient] applies");
             valid = false;
         }
 
-        var interfaceClient = GetAttribute(type, ClientAttribute);
+        var interfaceClient = GetAttribute(type, FromClientAttribute);
 
         // Methods of the interface and of the interfaces it extends.
         var methods = new List<MethodModel>();
@@ -96,7 +96,7 @@ internal static class Shapes
         {
             if (member is IMethodSymbol { MethodKind: MethodKind.Ordinary, IsStatic: false } method)
             {
-                var model = ReadMethod(type, method, kind, ClientAccessOf(type, kind, method, interfaceClient, report), report);
+                var model = ReadMethod(type, method, kind, ClientRouteOf(type, kind, method, interfaceClient, report), report);
                 if (model == null) valid = false;
                 else methods.Add(model);
             }
@@ -113,14 +113,14 @@ internal static class Shapes
             new EquatableArray<MethodModel>(methods.ToArray()));
     }
 
-    /// <summary>[Client] on the method, else on the interface; AnyKey only on actors; never on [Push] contracts.</summary>
-    private static ClientAccess? ClientAccessOf(INamedTypeSymbol contract, ContractKind kind, IMethodSymbol method,
+    /// <summary>[FromClient] on the method, else on the interface; AnyKey only on actors; never on [ToClient] contracts.</summary>
+    private static ClientRoute? ClientRouteOf(INamedTypeSymbol contract, ContractKind kind, IMethodSymbol method,
         AttributeData? interfaceClient, Report? report)
     {
-        var client = GetAttribute(method, ClientAttribute) ?? interfaceClient;
-        if (client == null) return ClientAccess.None;
+        var client = GetAttribute(method, FromClientAttribute) ?? interfaceClient;
+        if (client == null) return ClientRoute.None;
         bool anyKey = client.NamedArguments.Any(a => a.Key == "AnyKey" && a.Value.Value is true);
-        string? problem = kind == ContractKind.Push ? "[Client] applies to [Service] and [Actor] methods, not [Push]"
+        string? problem = kind == ContractKind.ToClient ? "[FromClient] applies to [Service] and [Actor] methods, not [ToClient]"
             : kind == ContractKind.Service && anyKey ? "AnyKey applies to actor methods only"
             : null;
         if (problem != null)
@@ -129,13 +129,13 @@ internal static class Shapes
             return null;
         }
 
-        return kind == ContractKind.Service ? ClientAccess.Service : anyKey ? ClientAccess.AnyKey : ClientAccess.SessionKey;
+        return kind == ContractKind.Service ? ClientRoute.Service : anyKey ? ClientRoute.AnyKey : ClientRoute.BoundKey;
     }
 
     private static MethodModel? ReadMethod(INamedTypeSymbol contract, IMethodSymbol method, ContractKind kind,
-        ClientAccess? access, Report? report)
+        ClientRoute? route, Report? report)
     {
-        if (access == null) return null;
+        if (route == null) return null;
         var location = method.Locations.FirstOrDefault();
         if (method.IsGenericMethod)
         {
@@ -165,7 +165,7 @@ internal static class Shapes
             return null;
         }
 
-        if (kind == ContractKind.Push && shape != MethodShape.OneWay)
+        if (kind == ContractKind.ToClient && shape != MethodShape.OneWay)
         {
             report?.Invoke(Rules.CallbackMustBeVoid, location, method.Name, contract.Name);
             return null;
@@ -190,7 +190,7 @@ internal static class Shapes
         }
 
         return new MethodModel(method.Name, MethodId(contract, method), shape, resultType,
-            new EquatableArray<ParameterModel>(parameters.ToArray()), access.Value);
+            new EquatableArray<ParameterModel>(parameters.ToArray()), route.Value);
     }
 
     /// <summary>
@@ -267,25 +267,25 @@ internal static class Shapes
         return valid ? handlers : null;
     }
 
-    /// <summary>A [Key] member, or IKeyed implemented by hand (the runtime's own SessionClosed).</summary>
+    /// <summary>A [ActorKey] member, or IKeyed implemented by hand (the runtime's own SessionClosed).</summary>
     public static bool IsKeyed(ITypeSymbol type) =>
         KeyMember(type) != null || type.AllInterfaces.Any(i => i.ToDisplayString() == "DaServer.Rpc.IKeyed");
 
     private static ISymbol? KeyMember(ITypeSymbol type) =>
-        type.GetMembers().FirstOrDefault(m => m is IFieldSymbol or IPropertySymbol && HasAttribute(m, KeyAttribute));
+        type.GetMembers().FirstOrDefault(m => m is IFieldSymbol or IPropertySymbol && HasAttribute(m, ActorKeyAttribute));
 
-    /// <summary>A struct with a [Key] member: an integer member of a partial, non-nested struct, one per type.</summary>
+    /// <summary>A struct with a [ActorKey] member: an integer member of a partial, non-nested struct, one per type.</summary>
     public static KeyedEventModel? ReadKeyedEvent(INamedTypeSymbol type, Report? report = null)
     {
-        var keys = type.GetMembers().Where(m => m is IFieldSymbol or IPropertySymbol && HasAttribute(m, KeyAttribute)).ToArray();
+        var keys = type.GetMembers().Where(m => m is IFieldSymbol or IPropertySymbol && HasAttribute(m, ActorKeyAttribute)).ToArray();
         if (keys.Length == 0) return null;
         var key = keys[0];
         var keyType = key is IFieldSymbol f ? f.Type : ((IPropertySymbol)key).Type;
         bool partial = type.DeclaringSyntaxReferences.All(r =>
             r.GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.TypeDeclarationSyntax d && d.Modifiers.Any(m => m.ValueText == "partial"));
-        string? problem = keys.Length > 1 ? "an event has one [Key]"
+        string? problem = keys.Length > 1 ? "an event has one [ActorKey]"
             : type.TypeKind != TypeKind.Struct || !partial || type.ContainingType != null || type.IsGenericType
-                ? "[Key] belongs to a partial, non-nested, non-generic struct"
+                ? "[ActorKey] belongs to a partial, non-nested, non-generic struct"
             : keyType.SpecialType is not (SpecialType.System_Int64 or SpecialType.System_Int32 or SpecialType.System_UInt32 or
                 SpecialType.System_Int16 or SpecialType.System_UInt16 or SpecialType.System_Byte or SpecialType.System_SByte)
                 ? "the key must be a long (or a smaller integer)"

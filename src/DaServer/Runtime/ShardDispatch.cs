@@ -131,7 +131,7 @@ internal static class ShardDispatch
 
     /// <summary>
     /// Create the activation's entity (link, identity, mailbox, the actor's own components) and start
-    /// <see cref="Actor.OnActivateAsync"/> as its first turn: mail waits until it completes.
+    /// <see cref="Actor.OnLoad"/> as its first turn: mail waits until it completes.
     /// </summary>
     private static Entity Activate(World world, ImplementationInfo impl, ActorId id)
     {
@@ -142,7 +142,7 @@ internal static class ShardDispatch
         var entity = world.CreateEntity(new ActorLink(actor), new ActorIdentity(id), new Mailbox(new()));
         actor.Entity = entity;
         actor.InitializeEntity(entity);
-        entity.Add<Turn>() = new Turn(Start(static a => a.OnActivateAsync(), actor), TurnKind.Activation);
+        entity.Add<Turn>() = new Turn(Start(static a => a.OnLoad(), actor), TurnKind.Activation);
         return entity;
     }
 

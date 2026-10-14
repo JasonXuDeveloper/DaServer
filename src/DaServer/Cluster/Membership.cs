@@ -42,7 +42,7 @@ internal static class ControlOp
     /// <summary>Gossip named nodes we have no card for: payload = their ids (ulong each); answered with <see cref="Cards"/>.</summary>
     public const uint CardRequest = 7;
 
-    /// <summary>Full member descriptions: payload = MemberInfo[] (sent when a node meets another, not every round).</summary>
+    /// <summary>Full member descriptions: payload = ClusterMember[] (sent when a node meets another, not every round).</summary>
     public const uint Cards = 8;
 
     /// <summary>Client to gateway (a request: RequestId set): which gateway should I use? Answer: a <see cref="GatewayEndpoint"/>.</summary>
@@ -63,7 +63,7 @@ internal static class ControlOp
     public const uint LeaveGroup = 13;
 
     /// <summary>Gateway: close a session.</summary>
-    public const uint Kick = 14;
+    public const uint Disconnect = 14;
 }
 
 /// <summary>
@@ -81,20 +81,20 @@ internal sealed class Membership : IDisposable
     private readonly Lock _gate = new();
     private readonly Dictionary<ulong, Entry> _members = new();
     private ClusterView _view;
-    private MemberInfo _self = new();
+    private ClusterMember _self = new();
     private long _version;
     private Timer? _timer;
     private bool _changed;
     private List<(string Host, int Port)>? _seeds;
-    private readonly MemberInfo[] _targets = new MemberInfo[Fanout];
+    private readonly ClusterMember[] _targets = new ClusterMember[Fanout];
     private int _inRound;
     private long _seedsResolvedAt;
 
     private static readonly TimeSpan SeedRefresh = TimeSpan.FromSeconds(5);
 
-    private sealed class Entry(MemberInfo info, long lastProgress)
+    private sealed class Entry(ClusterMember info, long lastProgress)
     {
-        public MemberInfo Info = info;
+        public ClusterMember Info = info;
         public long LastProgress = lastProgress; // Stopwatch timestamp of the last heartbeat/status change we saw
     }
 
@@ -106,7 +106,7 @@ internal sealed class Membership : IDisposable
 
     public ClusterView View => Volatile.Read(ref _view);
 
-    public MemberInfo Self => Volatile.Read(ref _self);
+    public ClusterMember Self => Volatile.Read(ref _self);
 
     public bool SelfIsUp => Self.Status == MemberStatus.Up;
 
@@ -115,7 +115,7 @@ internal sealed class Membership : IDisposable
         var (services, actors, handlers) = _node.AdvertisedContracts();
         lock (_gate)
         {
-            _self = new MemberInfo
+            _self = new ClusterMember
             {
                 NodeId = _node.Id,
                 Name = _node.Options.Name,
@@ -123,7 +123,7 @@ internal sealed class Membership : IDisposable
                 Port = port,
                 ClientPort = _node.ClientPort,
                 ClientHost = _node.Options.ClientAdvertisedHost ?? host,
-                DispatchOnly = _node.Options.DispatchOnly,
+                Balancer = _node.Options.Balancer,
                 Services = services,
                 Actors = actors,
                 Handlers = handlers,
@@ -298,7 +298,7 @@ internal sealed class Membership : IDisposable
                 break;
             case ControlOp.Cards:
                 var reader = new Reader(payload);
-                NinoDeserializer.Deserialize(out MemberInfo[] cards, ref reader);
+                NinoDeserializer.Deserialize(out ClusterMember[] cards, ref reader);
                 MergeCards(cards);
                 break;
         }
@@ -377,7 +377,7 @@ internal sealed class Membership : IDisposable
 
     private void SendCards(Connection connection, ReadOnlySpan<byte> ids)
     {
-        var cards = new List<MemberInfo>();
+        var cards = new List<ClusterMember>();
         lock (_gate)
             for (; ids.Length >= sizeof(ulong); ids = ids.Slice(sizeof(ulong)))
                 if (_members.TryGetValue(BinaryPrimitives.ReadUInt64LittleEndian(ids), out var entry))
@@ -391,7 +391,7 @@ internal sealed class Membership : IDisposable
         w.Dispose();
     }
 
-    private void MergeCards(MemberInfo[] incoming)
+    private void MergeCards(ClusterMember[] incoming)
     {
         lock (_gate)
         {
@@ -456,7 +456,7 @@ internal sealed class Membership : IDisposable
 
     private void Publish()
     {
-        var members = new List<MemberInfo>(_members.Count);
+        var members = new List<ClusterMember>(_members.Count);
         foreach (var entry in _members.Values) members.Add(entry.Info);
         var old = _view;
         var view = new ClusterView(members, ++_version);

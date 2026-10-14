@@ -29,11 +29,14 @@ public abstract class Actor : ShardObject
     /// <summary>The activation's entity (carries an <see cref="ActorLink"/> back to this object).</summary>
     public Entity Entity { get; internal set; }
 
-    /// <summary>Called once before the first message is processed (load state here; messages wait meanwhile).</summary>
-    public virtual ValueTask OnActivateAsync() => default;
+    /// <summary>
+    /// The actor is loaded on this node (first message for its key, or its key moved here): read its state from storage
+    /// here. Messages wait until it completes.
+    /// </summary>
+    public virtual ValueTask OnLoad() => default;
 
-    /// <summary>Called before the activation is removed (ownership moved, shutdown): persist state here.</summary>
-    public virtual ValueTask OnDeactivateAsync() => default;
+    /// <summary>The actor leaves this node (its key moved, the node shuts down): save its state here.</summary>
+    public virtual ValueTask OnUnload() => default;
 
     /// <summary>Components every activation starts with (the entity already has <see cref="ActorLink"/>).</summary>
     internal virtual void InitializeEntity(Entity entity)
@@ -42,15 +45,16 @@ public abstract class Actor : ShardObject
 }
 
 /// <summary>
-/// An actor whose state is one component, added to its entity on activation: <c>State.Gold += 10</c>. Systems
-/// query it like any component (<c>[ForEach] void Regen(ref PlayerState s)</c> runs over every player of the shard).
+/// An actor whose state is one component, added to its entity on load: <c>State.Gold += 10</c>. Systems query it like
+/// any component (<c>[ForEach] void Regen(ref PlayerState s)</c> runs over every player of the shard). The state starts
+/// as <c>new TState()</c>, so field initializers run: <c>public HashSet&lt;long&gt; Online = new();</c>.
 /// </summary>
 public abstract class Actor<TState> : Actor where TState : struct, IComponent
 {
     /// <summary>The actor's state (a ref into ECS storage: re-read it after an <c>await</c>).</summary>
     protected ref TState State => ref Entity.Get<TState>();
 
-    internal override void InitializeEntity(Entity entity) => entity.Add<TState>();
+    internal override void InitializeEntity(Entity entity) => entity.Add<TState>() = new TState();
 }
 
 /// <summary>Links an actor entity back to its activation (systems can reach the actor object).</summary>

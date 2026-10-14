@@ -24,8 +24,22 @@ internal readonly record struct ActorId(uint ImplementationId, long Key);
 
 // ---------------------------------------------------------------- actor components
 
-/// <summary>Identity of an activation (directory key).</summary>
-internal readonly record struct ActorIdentity(ActorId Id) : IComponent;
+/// <summary>
+/// Who an actor entity is: systems read its key and client group from it
+/// (<c>[ForEach] void Send(ref MapState map, in ActorIdentity actor) => .. PlayerClient(actor.Group) ..</c>).
+/// </summary>
+public readonly struct ActorIdentity : IComponent
+{
+    internal readonly ActorId Id;
+
+    internal ActorIdentity(ActorId id) => Id = id;
+
+    /// <summary>The actor's key (<see cref="Actor.Key"/>).</summary>
+    public long Key => Id.Key;
+
+    /// <summary>The actor's client group (<see cref="Actor.Group"/>).</summary>
+    public ClientGroup Group => ClientGroup.Of(Id.ImplementationId, Id.Key);
+}
 
 /// <summary>
 /// Messages waiting for the actor. An actor runs one message (turn) at a time: the next starts when the previous

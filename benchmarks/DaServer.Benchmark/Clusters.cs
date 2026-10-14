@@ -18,7 +18,7 @@ internal static class Clusters
             started[i] = new Node(new NodeOptions
             {
                 Name = $"bench-{i}",
-                ClusterBind = "127.0.0.1",
+                ListenAddress = "127.0.0.1",
                 ClientPort = i < gateways ? 0 : null,
                 Shards = shards,
                 Seeds = i == 0 ? [] : [$"127.0.0.1:{started[0].ClusterEndPoint.Port}"],

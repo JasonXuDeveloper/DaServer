@@ -29,7 +29,7 @@ public interface ICluster : IRpcInvoker
     void LeaveGroup(SessionRef session, ClientGroup group);
 
     /// <summary>Disconnect a client session.</summary>
-    void Kick(SessionRef session);
+    void Disconnect(SessionRef session);
 
     /// <summary>
     /// Publish a cluster event (a <c>[NinoType]</c> struct) to every <see cref="HandleAttribute">[Handle]</see> method in

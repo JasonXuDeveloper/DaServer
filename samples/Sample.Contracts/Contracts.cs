@@ -5,7 +5,7 @@ using Nino.Core;
 
 namespace Sample.Contracts;
 
-// Contracts shared by servers and clients. [Service] / [Actor] / [Push] say how a target is chosen, [Client] what game
+// Contracts shared by servers and clients. [Service] / [Actor] / [ToClient] say how a target is chosen, [FromClient] what game
 // clients may call; proxies, dispatch, wire ids, registration and discovery are generated.
 
 [NinoType]
@@ -23,7 +23,7 @@ public partial record struct Moved(long PlayerId, float X, float Y);
 public partial record struct RealmStatus(long Tick, int Online, long ServerTimeTicks);
 
 /// <summary>Login (clients call it before anything is bound to their session).</summary>
-[Service, Client]
+[Service, FromClient]
 public interface IAccount
 {
     ValueTask<LoginResult> Login(string name);
@@ -31,10 +31,10 @@ public interface IAccount
 
 /// <summary>A player logged in on a gateway (published by the account service; whoever cares handles it).</summary>
 [NinoType]
-public readonly partial record struct PlayerLoggedIn([property: Key] long Player, SessionRef Session);
+public readonly partial record struct PlayerLoggedIn([property: ActorKey] long Player, SessionRef Session);
 
 /// <summary>The client's own player (keyed by player id, bound to the session at login).</summary>
-[Actor, Client]
+[Actor, FromClient]
 public interface IPlayer
 {
     ValueTask<PlayerInfo> GetInfo();
@@ -50,8 +50,8 @@ public interface IMap
 {
     ValueTask Enter(long playerId, SessionRef session);
     ValueTask Leave(SessionRef session);
-    [Client] void Move(float vx, float vy);
-    [Client] void Chat(string text);
+    [FromClient] void Move(float vx, float vy);
+    [FromClient] void Chat(string text);
 }
 
 /// <summary>The realm (one activation, key <see cref="Id"/>): who is online, realm-wide announcements.</summary>
@@ -65,7 +65,7 @@ public interface IRealm
 }
 
 /// <summary>Server-to-client pushes.</summary>
-[Push]
+[ToClient]
 public interface IPlayerClient
 {
     /// <summary>Positions that changed in the client's map this tick (one message per map per tick).</summary>

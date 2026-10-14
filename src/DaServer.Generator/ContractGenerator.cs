@@ -8,10 +8,10 @@ using static DaServer.Generator.Support;
 namespace DaServer.Generator;
 
 /// <summary>
-/// For every contract interface ([Service], [Actor] or [Push]): a struct proxy (serializes arguments straight
+/// For every contract interface ([Service], [Actor] or [ToClient]): a struct proxy (serializes arguments straight
 /// into a pooled frame), a dispatcher switch (deserializes and invokes), wire ids, registration in a module
 /// initializer, and cluster accessors (<c>Cluster.Player(key)</c>, <c>Cluster.PlayerClient(session or group)</c>).
-/// For every struct with a [Key] member: the DaServer.Rpc.IKeyed implementation that routes the event to the actor of
+/// For every struct with a [ActorKey] member: the DaServer.Rpc.IKeyed implementation that routes the event to the actor of
 /// that key. Incremental rules: ForAttributeWithMetadataName or syntax-only predicates, symbol-free equatable models,
 /// invalid input skipped (DaServerAnalyzer reports it), tracking names on every stage.
 /// </summary>
@@ -23,13 +23,13 @@ public sealed class ContractGenerator : IIncrementalGenerator
         // Distinct: a partial interface declared in several files yields the same model more than once.
         var contracts = ContractsWith(context, ServiceAttribute).Collect()
             .Combine(ContractsWith(context, ActorAttribute).Collect())
-            .Combine(ContractsWith(context, PushAttribute).Collect())
+            .Combine(ContractsWith(context, ToClientAttribute).Collect())
             .SelectMany(static (all, _) => all.Left.Left.Concat(all.Left.Right).Concat(all.Right).Distinct())
             .WithTrackingName("Contracts");
         context.RegisterSourceOutput(contracts, static (spc, contract) =>
             spc.AddSource($"{HintName(contract.FullName)}.Rpc.g.cs", SourceText.From(Emit(contract), Encoding.UTF8)));
 
-        // Not ForAttributeWithMetadataName: [property: Key] on a positional record parameter is not reported there.
+        // Not ForAttributeWithMetadataName: [property: ActorKey] on a positional record parameter is not reported there.
         var keyedEvents = context.SyntaxProvider
             .CreateSyntaxProvider(static (node, _) => node is StructDeclarationSyntax or RecordDeclarationSyntax &&
                                                       ((TypeDeclarationSyntax)node).Modifiers.Any(m => m.ValueText == "partial"),
@@ -86,7 +86,7 @@ public sealed class ContractGenerator : IIncrementalGenerator
 
     private static void EmitProxy(StringBuilder sb, ContractModel c)
     {
-        bool callback = c.Kind == ContractKind.Push;
+        bool callback = c.Kind == ContractKind.ToClient;
         string kind = c.Kind switch
         {
             ContractKind.Actor => "RpcTargetKind.Actor",
@@ -149,7 +149,7 @@ public sealed class ContractGenerator : IIncrementalGenerator
         sb.Append("\n    [ModuleInitializer]\n    internal static void Register() => RpcRegistry.Register(new RpcContractInfo(\n");
         sb.Append($"        typeof({c.FullName}), ContractId, RpcContractKind.{c.Kind}, Dispatch,\n        [\n");
         foreach (var m in c.Methods)
-            sb.Append($"            new RpcMethodInfo({m.Name}Id, \"{m.Name}\", {Bool(m.Shape == MethodShape.OneWay)}, ClientAccess.{m.Access}),\n");
+            sb.Append($"            new RpcMethodInfo({m.Name}Id, \"{m.Name}\", {Bool(m.Shape == MethodShape.OneWay)}, ClientRoute.{m.Route}),\n");
         sb.Append("        ]));\n\n");
 
         sb.Append("    private static ValueTask Dispatch(object target, uint methodId, ref Reader reader, in CallContext context)\n    {\n");

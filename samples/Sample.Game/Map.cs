@@ -21,21 +21,19 @@ public record struct Avatar(long PlayerId, Entity Map) : IComponent;
 public record struct NetSync(float X, float Y) : IComponent;
 
 /// <summary>
-/// State of a map activation: its avatars by client session, the client group that sees the map and the positions
-/// that changed this tick (sent as one message per tick, reused: no garbage per tick).
+/// State of a map: its avatars by client session and the positions that changed this tick (sent as one message per
+/// tick, reused: no garbage per tick).
 /// </summary>
-public record struct MapState(Dictionary<SessionRef, Entity> Avatars, ClientGroup Group, List<Moved> Moves) : IComponent;
+public struct MapState() : IComponent
+{
+    public readonly Dictionary<SessionRef, Entity> Avatars = new();
+    public readonly List<Moved> Moves = new();
+}
 
 public sealed class Map : Actor<MapState>, IMap
 {
     private const float MaxSpeed = 5f;
     private const int MaxChatLength = 256;
-
-    public override ValueTask OnActivateAsync()
-    {
-        State = new MapState(new Dictionary<SessionRef, Entity>(), Group, new List<Moved>());
-        return default;
-    }
 
     public ValueTask Enter(long playerId, SessionRef session)
     {
@@ -64,17 +62,17 @@ public sealed class Map : Actor<MapState>, IMap
     public void Move(float vx, float vy)
     {
         // Input is data: MovementSystem integrates it on the next tick.
-        if (State.Avatars.TryGetValue(Caller, out var avatar))
+        if (State.Avatars.TryGetValue(CallerSession, out var avatar))
             avatar.Get<Velocity>() = new Velocity(Math.Clamp(vx, -MaxSpeed, MaxSpeed), Math.Clamp(vy, -MaxSpeed, MaxSpeed));
     }
 
     public void Chat(string text)
     {
-        if (text.Length <= MaxChatLength && State.Avatars.TryGetValue(Caller, out var avatar))
+        if (text.Length <= MaxChatLength && State.Avatars.TryGetValue(CallerSession, out var avatar))
             Cluster.PlayerClient(Group).OnChat(avatar.Get<Avatar>().PlayerId, text);
     }
 
-    public override ValueTask OnDeactivateAsync()
+    public override ValueTask OnUnload()
     {
         foreach (var avatar in State.Avatars.Values) avatar.Destroy();
         State.Avatars.Clear();
@@ -120,10 +118,10 @@ public sealed partial class SnapshotSystem : EcsSystem
     public override int Priority => 20; // after the snapshot is complete
 
     [ForEach]
-    private static void Send(ref MapState map, World world)
+    private static void Send(ref MapState map, in ActorIdentity actor, World world)
     {
         if (map.Moves.Count == 0) return;
-        world.Cluster().PlayerClient(map.Group).OnMoves(map.Moves);
+        world.Cluster().PlayerClient(actor.Group).OnMoves(map.Moves);
         map.Moves.Clear();
     }
 }

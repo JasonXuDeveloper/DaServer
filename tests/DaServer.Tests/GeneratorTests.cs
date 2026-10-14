@@ -60,10 +60,10 @@ public class GeneratorTests
         var (sources, diagnostics) = await Run("""
             namespace Game;
             [Service] public interface IShop { ValueTask<int> Price(string item, int count); void Log(string s); ValueTask Clear(); }
-            [Actor, Client(AnyKey = true)] public interface IRoom { ValueTask<string?> Topic(); }
-            [Actor] public interface IHero { [Client] void Move(float x, float y); ValueTask Heal(int hp); }
-            [Nino.Core.NinoType] public readonly partial record struct Opened([property: Key] long Room);
-            [Push] public interface IRoomClient { void OnTopic(string topic); }
+            [Actor, FromClient(AnyKey = true)] public interface IRoom { ValueTask<string?> Topic(); }
+            [Actor] public interface IHero { [FromClient] void Move(float x, float y); ValueTask Heal(int hp); }
+            [Nino.Core.NinoType] public readonly partial record struct Opened([property: ActorKey] long Room);
+            [ToClient] public interface IRoomClient { void OnTopic(string topic); }
             public sealed class Shop : Service, IShop
             {
                 public ValueTask<int> Price(string item, int count) => new(count);
@@ -81,9 +81,9 @@ public class GeneratorTests
         Assert.That(sources.Single(s => s.Contains("RegisterImplementation")),
             Does.Contain("typeof(global::Game.Room)").And.Contain("EventHandlerInfo.Of<global::Game.Opened>(").And.Contain(".On(e)"));
         Assert.That(sources, Has.Some.Contains("long global::DaServer.Rpc.IKeyed.EventKey => Room;"), "generated event key");
-        Assert.That(sources, Has.Some.Contains("ClientAccess.AnyKey"));
-        Assert.That(sources, Has.Some.Contains("new RpcMethodInfo(MoveId, \"Move\", true, ClientAccess.SessionKey)"));
-        Assert.That(sources, Has.Some.Contains("new RpcMethodInfo(HealId, \"Heal\", false, ClientAccess.None)"), "per-method access");
+        Assert.That(sources, Has.Some.Contains("ClientRoute.AnyKey"));
+        Assert.That(sources, Has.Some.Contains("new RpcMethodInfo(MoveId, \"Move\", true, ClientRoute.BoundKey)"));
+        Assert.That(sources, Has.Some.Contains("new RpcMethodInfo(HealId, \"Heal\", false, ClientRoute.None)"), "per-method access");
         Assert.That(sources, Has.Some.Contains("Hero(this DaServer.Client.ClusterClient client)"), "keyless client accessor");
         Assert.That(sources, Has.Some.Contains("public readonly struct ShopProxy : global::Game.IShop"));
         Assert.That(sources, Has.Some.Contains("RoomClient(this IRpcInvoker cluster, ClientGroup group)"));
@@ -92,7 +92,7 @@ public class GeneratorTests
     [TestCase("[Service] public interface IBad { Task<int> A(); }", "DAS001")]
     [TestCase("[Service] public interface IBad { ValueTask A(ref int x); }", "DAS002")]
     [TestCase("[Service] public interface IBad { ValueTask A<T>(); }", "DAS003")]
-    [TestCase("[Push] public interface IBad { ValueTask A(); }", "DAS004")]
+    [TestCase("[ToClient] public interface IBad { ValueTask A(); }", "DAS004")]
     [TestCase("[Service] public interface IBad { [WireId(5)] ValueTask A(); [WireId(5)] ValueTask B(); }", "DAS005")]
     [TestCase("[Actor] public interface IA { ValueTask A(); } public sealed class Bad : IA { public ValueTask A() => default; }", "DAS006")]
     [TestCase("[Service] public interface IS { ValueTask A(); } public sealed class Bad : Service, IS { public Bad(int x) { } public ValueTask A() => default; }", "DAS007")]
@@ -103,12 +103,12 @@ public class GeneratorTests
     [TestCase("[Nino.Core.NinoType] public partial record struct Tick(int N); public sealed class Bad : Actor { [Handle] public void On(Tick e) { } }", "DAS010")]
     [TestCase("[Actor] public interface IA { } [Service] public interface IS { } public sealed class Bad : Actor, IA, IS { }", "DAS011")]
     [TestCase("[Service, Actor] public interface IBad { ValueTask A(); }", "DAS012")]
-    [TestCase("[Push] public interface IBad { [Client] void A(); }", "DAS012")]
-    [TestCase("[Service] public interface IBad { [Client(AnyKey = true)] ValueTask A(); }", "DAS012")]
+    [TestCase("[ToClient] public interface IBad { [FromClient] void A(); }", "DAS012")]
+    [TestCase("[Service] public interface IBad { [FromClient(AnyKey = true)] ValueTask A(); }", "DAS012")]
     [TestCase("[Nino.Core.NinoType] public partial record struct Tick(int N); public sealed class Bad : Service { [Handle] public int On(Tick e) => 0; }", "DAS013")]
     [TestCase("[Nino.Core.NinoType] public partial record struct Tick(int N); public sealed class Bad : Service { [Handle] void On(Tick e) { } }", "DAS013")]
-    [TestCase("[Nino.Core.NinoType] public record struct Tick([property: Key] string Id);", "DAS014")]
-    [TestCase("[Nino.Core.NinoType] public record struct Tick([property: Key] long Id);", "DAS014")]
+    [TestCase("[Nino.Core.NinoType] public record struct Tick([property: ActorKey] string Id);", "DAS014")]
+    [TestCase("[Nino.Core.NinoType] public record struct Tick([property: ActorKey] long Id);", "DAS014")]
     public async Task MisuseIsReportedByTheAnalyzer(string source, string id)
     {
         var (_, diagnostics) = await Run(source);

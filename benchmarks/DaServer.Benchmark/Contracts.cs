@@ -14,7 +14,7 @@ public interface ICounter
     ValueTask<int> Add(int delta);
 }
 
-[Actor, Client(AnyKey = true)]
+[Actor, FromClient(AnyKey = true)]
 public interface IRoom
 {
     ValueTask Join();
@@ -22,9 +22,9 @@ public interface IRoom
 }
 
 [Nino.Core.NinoType]
-public readonly partial record struct Bumped([property: Key] long Key, int By);
+public readonly partial record struct Bumped([property: ActorKey] long Key, int By);
 
-[Push]
+[ToClient]
 public interface IRoomClient
 {
     void OnTick(int sequence);
@@ -48,7 +48,7 @@ public sealed class Room : Actor, IRoom
 {
     public ValueTask Join()
     {
-        Cluster.JoinGroup(Caller, Group);
+        Cluster.JoinGroup(CallerSession, Group);
         return default;
     }
 

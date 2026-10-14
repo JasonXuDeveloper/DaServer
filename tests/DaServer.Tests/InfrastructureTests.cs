@@ -141,7 +141,7 @@ public class InfrastructureTests
     [Test]
     public void RendezvousPlacementIsStableAndMinimallyDisruptive()
     {
-        MemberInfo Member(ulong id) => new()
+        ClusterMember Member(ulong id) => new()
         {
             NodeId = id, Status = MemberStatus.Up,
             Actors = [new HostedActor { ContractId = 7, ImplementationId = 70 }],
@@ -179,11 +179,11 @@ public class InfrastructureTests
     [Test]
     public void MemberMergeOrder()
     {
-        var a = new MemberInfo { Incarnation = 1, Heartbeat = 5, Status = MemberStatus.Up };
-        Assert.That(new MemberInfo { Incarnation = 2, Heartbeat = 0, Status = MemberStatus.Up }.Supersedes(a), Is.True);
-        Assert.That(new MemberInfo { Incarnation = 1, Heartbeat = 0, Status = MemberStatus.Dead }.Supersedes(a), Is.True);
-        Assert.That(new MemberInfo { Incarnation = 1, Heartbeat = 6, Status = MemberStatus.Up }.Supersedes(a), Is.True);
-        Assert.That(new MemberInfo { Incarnation = 1, Heartbeat = 4, Status = MemberStatus.Up }.Supersedes(a), Is.False);
+        var a = new ClusterMember { Incarnation = 1, Heartbeat = 5, Status = MemberStatus.Up };
+        Assert.That(new ClusterMember { Incarnation = 2, Heartbeat = 0, Status = MemberStatus.Up }.Supersedes(a), Is.True);
+        Assert.That(new ClusterMember { Incarnation = 1, Heartbeat = 0, Status = MemberStatus.Dead }.Supersedes(a), Is.True);
+        Assert.That(new ClusterMember { Incarnation = 1, Heartbeat = 6, Status = MemberStatus.Up }.Supersedes(a), Is.True);
+        Assert.That(new ClusterMember { Incarnation = 1, Heartbeat = 4, Status = MemberStatus.Up }.Supersedes(a), Is.False);
     }
 
     [Test]

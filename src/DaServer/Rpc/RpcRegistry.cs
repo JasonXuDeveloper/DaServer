@@ -8,22 +8,22 @@ public enum RpcContractKind : byte
 {
     Service = 1,
     Actor = 2,
-    Push = 3,
+    ToClient = 3,
 }
 
-/// <summary>Whether and how game clients may call a method (<see cref="ClientAttribute"/>).</summary>
-public enum ClientAccess : byte
+/// <summary>Whether and how game clients may call a method (<see cref="FromClientAttribute"/>).</summary>
+public enum ClientRoute : byte
 {
     /// <summary>Servers only.</summary>
     None = 0,
 
-    /// <summary>A <c>[Client]</c> service method.</summary>
+    /// <summary>A <c>[FromClient]</c> service method.</summary>
     Service = 1,
 
-    /// <summary>A <c>[Client]</c> actor method: the key comes from the session binding.</summary>
-    SessionKey = 2,
+    /// <summary>A <c>[FromClient]</c> actor method: the key comes from the session binding.</summary>
+    BoundKey = 2,
 
-    /// <summary>A <c>[Client(AnyKey = true)]</c> actor method: the client chooses the key.</summary>
+    /// <summary>A <c>[FromClient(AnyKey = true)]</c> actor method: the client chooses the key.</summary>
     AnyKey = 3,
 }
 
@@ -54,12 +54,12 @@ public sealed class RpcContractInfo
 
 public sealed class RpcMethodInfo
 {
-    public RpcMethodInfo(uint id, string name, bool oneWay, ClientAccess clientAccess = ClientAccess.None)
+    public RpcMethodInfo(uint id, string name, bool oneWay, ClientRoute clientRoute = ClientRoute.None)
     {
         Id = id;
         Name = name;
         OneWay = oneWay;
-        ClientAccess = clientAccess;
+        ClientRoute = clientRoute;
     }
 
     public uint Id { get; }
@@ -69,7 +69,7 @@ public sealed class RpcMethodInfo
     public bool OneWay { get; }
 
     /// <summary>Whether and how game clients may call it (gateways refuse the rest).</summary>
-    public ClientAccess ClientAccess { get; }
+    public ClientRoute ClientRoute { get; }
 
     public RpcContractInfo Owner { get; internal set; } = null!;
 

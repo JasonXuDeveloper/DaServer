@@ -10,23 +10,23 @@ namespace DaServer.Cluster;
 /// </summary>
 public sealed class ClusterView
 {
-    private static readonly MemberInfo[] NoMembers = [];
+    private static readonly ClusterMember[] NoMembers = [];
 
-    private readonly FrozenDictionary<ulong, MemberInfo> _members;
-    private readonly FrozenDictionary<uint, MemberInfo[]> _serviceNodes;
-    private readonly FrozenDictionary<uint, (uint Implementation, MemberInfo[] Nodes)> _actorNodes;
-    private readonly FrozenDictionary<uint, MemberInfo[]> _implementationNodes;
+    private readonly FrozenDictionary<ulong, ClusterMember> _members;
+    private readonly FrozenDictionary<uint, ClusterMember[]> _serviceNodes;
+    private readonly FrozenDictionary<uint, (uint Implementation, ClusterMember[] Nodes)> _actorNodes;
+    private readonly FrozenDictionary<uint, ClusterMember[]> _implementationNodes;
     private readonly FrozenDictionary<uint, EventRoute[]> _eventRoutes;
 
-    public ClusterView(IEnumerable<MemberInfo> members, long version)
+    public ClusterView(IEnumerable<ClusterMember> members, long version)
     {
         Version = version;
-        var all = new Dictionary<ulong, MemberInfo>();
-        var services = new Dictionary<uint, List<MemberInfo>>();
-        var actors = new Dictionary<uint, (uint, List<MemberInfo>)>();
-        var implementations = new Dictionary<uint, List<MemberInfo>>();
-        var handlers = new Dictionary<uint, Dictionary<uint, (bool Actor, List<MemberInfo> Nodes)>>();
-        var upMembers = new List<MemberInfo>();
+        var all = new Dictionary<ulong, ClusterMember>();
+        var services = new Dictionary<uint, List<ClusterMember>>();
+        var actors = new Dictionary<uint, (uint, List<ClusterMember>)>();
+        var implementations = new Dictionary<uint, List<ClusterMember>>();
+        var handlers = new Dictionary<uint, Dictionary<uint, (bool Actor, List<ClusterMember> Nodes)>>();
+        var upMembers = new List<ClusterMember>();
 
         foreach (var m in members)
         {
@@ -72,13 +72,13 @@ public sealed class ClusterView
 
         _members = all.ToFrozenDictionary();
         UpMembers = upMembers.ToArray();
-        var serviceArrays = new Dictionary<uint, MemberInfo[]>();
+        var serviceArrays = new Dictionary<uint, ClusterMember[]>();
         foreach (var (k, v) in services) serviceArrays[k] = v.ToArray();
         _serviceNodes = serviceArrays.ToFrozenDictionary();
-        var actorArrays = new Dictionary<uint, (uint, MemberInfo[])>();
+        var actorArrays = new Dictionary<uint, (uint, ClusterMember[])>();
         foreach (var (k, v) in actors) actorArrays[k] = (v.Item1, v.Item2.ToArray());
         _actorNodes = actorArrays.ToFrozenDictionary();
-        var implementationArrays = new Dictionary<uint, MemberInfo[]>();
+        var implementationArrays = new Dictionary<uint, ClusterMember[]>();
         foreach (var (k, v) in implementations) implementationArrays[k] = v.ToArray();
         _implementationNodes = implementationArrays.ToFrozenDictionary();
         var routes = new Dictionary<uint, EventRoute[]>();
@@ -96,14 +96,14 @@ public sealed class ClusterView
     /// <summary>Monotonic version of the view (incremented on every change).</summary>
     public long Version { get; }
 
-    public MemberInfo[] UpMembers { get; }
+    public ClusterMember[] UpMembers { get; }
 
-    public IEnumerable<MemberInfo> Members => _members.Values;
+    public IEnumerable<ClusterMember> Members => _members.Values;
 
-    public bool TryGetMember(ulong nodeId, out MemberInfo member) => _members.TryGetValue(nodeId, out member!);
+    public bool TryGetMember(ulong nodeId, out ClusterMember member) => _members.TryGetValue(nodeId, out member!);
 
     /// <summary>Up nodes hosting stateless service <paramref name="contractId"/>.</summary>
-    public MemberInfo[] ServiceNodes(uint contractId) =>
+    public ClusterMember[] ServiceNodes(uint contractId) =>
         _serviceNodes.TryGetValue(contractId, out var nodes) ? nodes : NoMembers;
 
     /// <summary>
@@ -111,16 +111,16 @@ public sealed class ClusterView
     /// hashing over the Up and Suspect nodes hosting its implementation. Every node with the same view picks the same owner, and
     /// adding/removing a node only moves the keys that node wins/loses.
     /// </summary>
-    public MemberInfo? ActorOwner(uint contractId, long key) =>
+    public ClusterMember? ActorOwner(uint contractId, long key) =>
         _actorNodes.TryGetValue(contractId, out var entry) ? Rendezvous(entry.Nodes, entry.Implementation, key) : null;
 
     /// <summary>Owner of actor (<paramref name="implementationId"/>, <paramref name="key"/>); see <see cref="ActorOwner"/>.</summary>
-    public MemberInfo? ImplementationOwner(uint implementationId, long key) =>
+    public ClusterMember? ImplementationOwner(uint implementationId, long key) =>
         _implementationNodes.TryGetValue(implementationId, out var nodes) ? Rendezvous(nodes, implementationId, key) : null;
 
-    private static MemberInfo? Rendezvous(MemberInfo[] nodes, uint implementationId, long key)
+    private static ClusterMember? Rendezvous(ClusterMember[] nodes, uint implementationId, long key)
     {
-        MemberInfo? best = null;
+        ClusterMember? best = null;
         ulong bestWeight = 0;
         for (int i = 0; i < nodes.Length; i++)
         {
@@ -142,7 +142,7 @@ public sealed class ClusterView
     /// Node that receives an event for <paramref name="route"/>: the owner of the key for actor handlers, otherwise the
     /// local node when it hosts the handler, else the one <paramref name="spread"/> picks (balances services).
     /// </summary>
-    public MemberInfo? EventTarget(in EventRoute route, long key, ulong localNodeId, uint spread)
+    public ClusterMember? EventTarget(in EventRoute route, long key, ulong localNodeId, uint spread)
     {
         if (route.Actor) return Rendezvous(route.Nodes, route.ImplementationId, key);
         foreach (var node in route.Nodes)
@@ -175,4 +175,4 @@ public sealed class ClusterView
 }
 
 /// <summary>One implementation handling an event type, and the Up nodes hosting it.</summary>
-public readonly record struct EventRoute(uint ImplementationId, bool Actor, MemberInfo[] Nodes);
+public readonly record struct EventRoute(uint ImplementationId, bool Actor, ClusterMember[] Nodes);

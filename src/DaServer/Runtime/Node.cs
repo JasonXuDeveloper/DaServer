@@ -76,14 +76,14 @@ public sealed partial class Node : ICluster, IAsyncDisposable
             socket => new Connection(socket, ClusterHandler, ConnectionOptions.ForNodeLinks()));
         _clusterListener.Start();
         var host = Options.AdvertisedHost ??
-                   (Options.ClusterBind == "0.0.0.0" ? IPAddress.Loopback.ToString() : Options.ClusterBind);
+                   (Options.ListenAddress == "0.0.0.0" ? IPAddress.Loopback.ToString() : Options.ListenAddress);
         ClusterEndPoint = new IPEndPoint(IPAddress.TryParse(host, out var ip) ? ip : IPAddress.Loopback,
             _clusterListener.LocalEndPoint.Port);
 
         int shardCount = Math.Max(1, Options.Shards);
         _shards = new Shard[shardCount];
         for (int i = 0; i < shardCount; i++)
-            _shards[i] = new Shard(this, i, Options.MailboxCapacity, Options.TickRate);
+            _shards[i] = new Shard(this, i, Options.ShardInboxCapacity, Options.TickRate);
         foreach (var shard in _shards) shard.Start();
 
         StartGateway();

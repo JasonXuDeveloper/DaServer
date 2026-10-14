@@ -19,7 +19,7 @@ public sealed class NodeOptions
     public Func<Type, bool>? Hosts { get; set; }
 
     /// <summary>Address to bind the cluster (node-to-node) listener to.</summary>
-    public string ClusterBind { get; set; } = "0.0.0.0";
+    public string ListenAddress { get; set; } = "0.0.0.0";
 
     /// <summary>Cluster port; 0 = pick a free port (tests).</summary>
     public int ClusterPort { get; set; }
@@ -34,10 +34,10 @@ public sealed class NodeOptions
     public string? ClientAdvertisedHost { get; set; }
 
     /// <summary>
-    /// A dispatch (entry) gateway: clients connecting to it are directed to the least loaded other gateway
+    /// A balancer (the clients' entry gateway): clients connecting to it are directed to the least loaded other gateway
     /// (<c>ClusterClient.ConnectAsync</c> follows automatically), so clients need one well-known address only.
     /// </summary>
-    public bool DispatchOnly { get; set; }
+    public bool Balancer { get; set; }
 
     /// <summary>Seed endpoints "host:port" (DNS names resolve to every address, e.g. a Kubernetes headless service).</summary>
     public List<string> Seeds { get; set; } = new();
@@ -55,7 +55,7 @@ public sealed class NodeOptions
     /// Calls and events waiting in a shard's inbox before new ones are refused with <see cref="Protocol.RpcStatus.Overloaded"/>
     /// (one-way calls and events are dropped).
     /// </summary>
-    public int MailboxCapacity { get; set; } = 64 * 1024;
+    public int ShardInboxCapacity { get; set; } = 64 * 1024;
 
     /// <summary>Messages waiting for one actor before new ones are refused the same way.</summary>
     public int ActorMailboxCapacity { get; set; } = 4096;
@@ -76,5 +76,5 @@ public sealed class NodeOptions
 
     public ILoggerFactory? LoggerFactory { get; set; }
 
-    internal IPEndPoint ClusterBindEndPoint => new(IPAddress.Parse(ClusterBind), ClusterPort);
+    internal IPEndPoint ClusterBindEndPoint => new(IPAddress.Parse(ListenAddress), ClusterPort);
 }

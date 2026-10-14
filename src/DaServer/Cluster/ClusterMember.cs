@@ -40,7 +40,7 @@ public partial struct HostedHandler
 /// latest load hints without being rebuilt (readers may see a hint one round old).
 /// </summary>
 [NinoType]
-public partial class MemberInfo
+public partial class ClusterMember
 {
     public ulong NodeId;
     public string Name = "";
@@ -77,7 +77,7 @@ public partial class MemberInfo
     public int Sessions;
 
     /// <summary>
-    /// Clients this node directed to the gateway since its last pulse (dispatch only): added to <see cref="Sessions"/>
+    /// Clients this node directed to the gateway since its last pulse (balancers only): added to <see cref="Sessions"/>
     /// so a burst of connections within one gossip round does not all pick the gateway that reported the fewest.
     /// </summary>
     [NinoIgnore]
@@ -86,20 +86,20 @@ public partial class MemberInfo
     /// <summary>Sessions the gateway has, as far as this node knows.</summary>
     internal int ExpectedSessions => Sessions + Volatile.Read(ref Directed);
 
-    /// <summary>A dispatch gateway: it directs clients to the other gateways and keeps no sessions itself.</summary>
-    public bool DispatchOnly;
+    /// <summary>A balancer: it directs clients to the other gateways and keeps no sessions itself.</summary>
+    public bool Balancer;
 
     /// <summary>A gateway clients may be directed to.</summary>
-    public bool AcceptsSessions => ClientPort != 0 && !DispatchOnly && Status == MemberStatus.Up;
+    public bool AcceptsSessions => ClientPort != 0 && !Balancer && Status == MemberStatus.Up;
 
     /// <summary>This node's link to the member (resolved once; copies share it: the endpoint never changes).</summary>
     [NinoIgnore]
     internal PeerLink? Link;
 
-    public MemberInfo Clone() => (MemberInfo)MemberwiseClone();
+    public ClusterMember Clone() => (ClusterMember)MemberwiseClone();
 
     /// <summary>Gossip merge order: higher incarnation, then worse status, then higher heartbeat wins.</summary>
-    public bool Supersedes(MemberInfo other) => Pulse.Of(this).Supersedes(other);
+    public bool Supersedes(ClusterMember other) => Pulse.Of(this).Supersedes(other);
 
     public override string ToString() => $"{Name}({NodeId:x}) {Host}:{Port} {Status} inc={Incarnation} hb={Heartbeat}";
 }
@@ -112,10 +112,10 @@ internal readonly record struct Pulse(ulong NodeId, int Incarnation, long Heartb
 {
     public const int Size = 8 + 4 + 8 + 1 + 4 + 4;
 
-    public static Pulse Of(MemberInfo m) => new(m.NodeId, m.Incarnation, m.Heartbeat, m.Status, m.Load, m.Sessions);
+    public static Pulse Of(ClusterMember m) => new(m.NodeId, m.Incarnation, m.Heartbeat, m.Status, m.Load, m.Sessions);
 
     /// <summary>Gossip merge order: higher incarnation, then worse status, then higher heartbeat wins.</summary>
-    public bool Supersedes(MemberInfo current)
+    public bool Supersedes(ClusterMember current)
     {
         if (Incarnation != current.Incarnation) return Incarnation > current.Incarnation;
         if (Status != current.Status) return Status > current.Status;
