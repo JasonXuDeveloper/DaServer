@@ -37,7 +37,7 @@ public sealed partial class Node
         _gatewayHandler = new GatewayHandler(this);
         var sessionOptions = ConnectionOptions.ForClients();
         sessionOptions.MaxFrameSize = Options.MaxClientFrameSize; // what an untrusted client may make us buffer
-        _clientListener = new Listener(new IPEndPoint(IPAddress.Parse(Options.ClusterBind), port), socket =>
+        _clientListener = new Listener(new IPEndPoint(IPAddress.Parse(Options.ListenAddress), port), socket =>
         {
             var connection = new Connection(socket, _gatewayHandler, sessionOptions);
             var session = new Session(Interlocked.Increment(ref _nextSessionId), connection);
@@ -73,7 +73,7 @@ public sealed partial class Node
 
     public void LeaveGroup(SessionRef session, ClientGroup group) => SendGatewayControl(session, ControlOp.LeaveGroup, 0, group.Id);
 
-    public void Kick(SessionRef session) => SendGatewayControl(session, ControlOp.Kick, 0, 0);
+    public void Disconnect(SessionRef session) => SendGatewayControl(session, ControlOp.Disconnect, 0, 0);
 
     private void SendGatewayControl(SessionRef session, uint op, uint contractId, long value)
     {
@@ -110,7 +110,7 @@ public sealed partial class Node
             frame.SetHeader(FrameKind.Broadcast, 0, methodId, key);
             foreach (var member in View.UpMembers)
             {
-                if (member.ClientPort == 0 || member.DispatchOnly) continue; // a dispatch keeps no sessions
+                if (member.ClientPort == 0 || member.Balancer) continue; // a balancer keeps no sessions
                 if (member.NodeId == Id) DeliverToGroup(key, frame.Frame);
                 else GetLink(member).Send(frame.Frame);
             }
@@ -200,13 +200,13 @@ public sealed partial class Node
             case ControlOp.LeaveGroup:
                 lock (_groupGate) Leave(session, value);
                 break;
-            case ControlOp.Kick:
+            case ControlOp.Disconnect:
                 session.Connection.Close();
                 break;
         }
     }
 
-    /// <summary>Add a session to a group (once). Caller holds the gate.</summary>
+    /// <summary>Add a session to a group (once). CallerSession holds the gate.</summary>
     private void Join(Session session, long groupId)
     {
         if (session.Closed || session.Groups.ContainsKey(groupId)) return;
@@ -214,7 +214,7 @@ public sealed partial class Node
         group.Add(session);
     }
 
-    /// <summary>Remove a session from a group; empty groups are dropped (bounded memory). Caller holds the gate.</summary>
+    /// <summary>Remove a session from a group; empty groups are dropped (bounded memory). CallerSession holds the gate.</summary>
     private void Leave(Session session, long groupId)
     {
         if (!session.Groups.ContainsKey(groupId) || !_groups.TryGetValue(groupId, out var group)) return;
@@ -249,7 +249,7 @@ public sealed partial class Node
     private void PickGateway(Session session, uint requestId)
     {
         var up = View.UpMembers;
-        MemberInfo? first = null, second = null;
+        ClusterMember? first = null, second = null;
         int candidates = 0;
         foreach (var member in up)
         {
@@ -309,23 +309,23 @@ public sealed partial class Node
     }
 
     /// <summary>
-    /// Validate and route a client call by the method's <see cref="ClientAttribute"/>: services, actors on the key bound
+    /// Validate and route a client call by the method's <see cref="FromClientAttribute"/>: services, actors on the key bound
     /// to the session, or on the key the client chose (AnyKey). The caller session is prepended for the handler.
     /// </summary>
     private void OnClientCall(Session session, in FrameHeader header, ReadOnlySpan<byte> frame)
     {
         uint replyId = header.Kind == FrameKind.Request ? header.RequestId : 0;
-        if (!RpcRegistry.TryGetMethod(header.MethodId, out var method) || method.ClientAccess == ClientAccess.None)
+        if (!RpcRegistry.TryGetMethod(header.MethodId, out var method) || method.ClientRoute == ClientRoute.None)
         {
             if (replyId != 0) ReplyError(session.Sink, replyId, RpcStatus.Forbidden, "Not client accessible");
             return;
         }
 
         var contract = method.Owner;
-        var (kind, key) = method.ClientAccess switch
+        var (kind, key) = method.ClientRoute switch
         {
-            ClientAccess.SessionKey => (RpcTargetKind.Actor, session.KeyOf(contract.Id)),
-            ClientAccess.AnyKey => (RpcTargetKind.Actor, header.Key),
+            ClientRoute.BoundKey => (RpcTargetKind.Actor, session.KeyOf(contract.Id)),
+            ClientRoute.AnyKey => (RpcTargetKind.Actor, header.Key),
             _ => (RpcTargetKind.Service, 0L),
         };
         if (kind == RpcTargetKind.Actor && key == 0)

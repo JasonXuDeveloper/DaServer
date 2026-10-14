@@ -20,7 +20,7 @@ public sealed class Account : Service, IAccount
 
         // A real game verifies a token against an account store here.
         long playerId = (long)(RpcIds.Fnv1a(name) & 0x7FFF_FFFF) + 1;
-        var session = Caller;
+        var session = CallerSession;
         Cluster.Bind<IPlayer>(session, playerId);
         Cluster.Publish(new PlayerLoggedIn(playerId, session));
         return new(new LoginResult(true, playerId));

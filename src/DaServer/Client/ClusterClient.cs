@@ -16,8 +16,8 @@ namespace DaServer.Client;
 
 /// <summary>
 /// Client connection to a gateway (game client, bot, tool). Implements <see cref="IRpcInvoker"/>, so the same generated proxies used on
-/// servers work here (the gateway accepts <c>[Client]</c> methods). Pushes and broadcasts are dispatched to registered
-/// <see cref="PushAttribute">[Push]</see> implementations.
+/// servers work here (the gateway accepts <c>[FromClient]</c> methods). Pushes and broadcasts are dispatched to registered
+/// <see cref="ToClientAttribute">[ToClient]</see> implementations.
 /// </summary>
 public sealed class ClusterClient : IRpcInvoker, IConnectionHandler, IAsyncDisposable
 {
@@ -49,21 +49,21 @@ public sealed class ClusterClient : IRpcInvoker, IConnectionHandler, IAsyncDispo
     public event Action<Exception?>? Disconnected;
 
     /// <summary>
-    /// Connect to the cluster through any gateway (typically a dispatch gateway's well-known address): the gateway names
-    /// the least loaded gateway and the client moves there when it is another one. <paramref name="followDispatch"/>
-    /// false stays on the given gateway. While the cluster is still forming (the dispatch has not met a gateway yet) the
+    /// Connect to the cluster through any gateway (typically a balancer's well-known address): the gateway names
+    /// the least loaded gateway and the client moves there when it is another one. <paramref name="followBalancer"/>
+    /// false stays on the given gateway. While the cluster is still forming (the balancer has not met a gateway yet) the
     /// question is asked again until <see cref="CallTimeout"/>.
     /// </summary>
-    public async ValueTask ConnectAsync(string host, int port, bool followDispatch = true, CancellationToken cancellationToken = default)
+    public async ValueTask ConnectAsync(string host, int port, bool followBalancer = true, CancellationToken cancellationToken = default)
     {
         await ConnectToAsync(host, port, cancellationToken).ConfigureAwait(false);
-        if (!followDispatch) return;
+        if (!followBalancer) return;
 
         var gateway = await PickGatewayAsync(cancellationToken).ConfigureAwait(false);
         if (gateway.Host == host && gateway.Port == port) return;
 
-        var dispatch = Interlocked.Exchange(ref _connection, null); // closed on purpose: not a disconnect
-        dispatch?.Close();
+        var balancer = Interlocked.Exchange(ref _connection, null); // closed on purpose: not a disconnect
+        balancer?.Close();
         await ConnectToAsync(gateway.Host, gateway.Port, cancellationToken).ConfigureAwait(false);
     }
 
@@ -188,7 +188,7 @@ public sealed class ClusterClient : IRpcInvoker, IConnectionHandler, IAsyncDispo
 
     void IConnectionHandler.OnClosed(Connection connection, Exception? error)
     {
-        if (connection != _connection) return; // the dispatch connection, left on purpose
+        if (connection != _connection) return; // the balancer connection, left on purpose
         _pending.FailAll(RpcStatus.Disconnected);
         Disconnected?.Invoke(error);
     }

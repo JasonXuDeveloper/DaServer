@@ -39,7 +39,7 @@ public readonly struct CallContext
     public readonly long Key;
 
     /// <summary>Client session that originated the call (through a gateway), or default for server-internal calls.</summary>
-    public readonly SessionRef Caller;
+    public readonly SessionRef CallerSession;
 
     public CallContext(IReplySink? sink, uint requestId, uint methodId, long key, SessionRef caller)
     {
@@ -47,7 +47,7 @@ public readonly struct CallContext
         RequestId = requestId;
         MethodId = methodId;
         Key = key;
-        Caller = caller;
+        CallerSession = caller;
     }
 
     /// <summary>Context of the call being dispatched on this thread (valid until the handler's first await).</summary>

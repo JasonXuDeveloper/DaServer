@@ -9,17 +9,15 @@ using Sample.Contracts;
 namespace Sample.Game;
 
 /// <summary>Who is online and the realm's tick counter.</summary>
-public record struct RealmState(HashSet<long> Online, long Tick) : IComponent;
+public struct RealmState() : IComponent
+{
+    public readonly HashSet<long> Online = new();
+    public long Tick;
+}
 
 /// <summary>The realm: players report in and out; <see cref="RealmBroadcastSystem"/> tells every client about it.</summary>
 public sealed class Realm : Actor<RealmState>, IRealm
 {
-    public override ValueTask OnActivateAsync()
-    {
-        State.Online = new HashSet<long>();
-        return default;
-    }
-
     public void PlayerOnline(long playerId) => State.Online.Add(playerId);
 
     public void PlayerOffline(long playerId) => State.Online.Remove(playerId);

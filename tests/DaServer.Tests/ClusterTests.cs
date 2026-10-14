@@ -61,7 +61,7 @@ public class ClusterTests : ClusterTest
         await Stop(b); // graceful: Leaving is gossiped, b deactivates its actors
         await Eventually(() => a.View.UpMembers.Length == 1, "a still sees b as Up");
 
-        // Reactivated on a; in-memory state is gone (persist it in OnDeactivateAsync / load in OnActivateAsync).
+        // Reactivated on a; in-memory state is gone (persist it in OnUnload / load in OnLoad).
         Assert.That(await a.Counter(key).Add(1), Is.EqualTo(1));
         Assert.That(a.View.ActorOwner(CounterRpc.ContractId, key)!.NodeId, Is.EqualTo(a.Id));
     }
@@ -102,7 +102,7 @@ public class ClusterTests : ClusterTest
         await Converged();
 
         Assert.ThrowsAsync<System.Net.Sockets.SocketException>(
-            async () => await new DaServer.Runtime.Node(new DaServer.Runtime.NodeOptions { ClusterBind = "127.0.0.1", ClusterPort = port }).StartAsync(),
+            async () => await new DaServer.Runtime.Node(new DaServer.Runtime.NodeOptions { ListenAddress = "127.0.0.1", ClusterPort = port }).StartAsync(),
             "a second process on the same port would silently take half of the connections");
 
         await Stop(first);

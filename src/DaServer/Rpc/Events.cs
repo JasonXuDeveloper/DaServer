@@ -9,7 +9,7 @@ namespace DaServer.Rpc;
 // Events: any [NinoType] struct published with Cluster.Publish(e); the publisher never knows its handlers.
 //   - Handlers are methods marked [Handle] on services and actors, taking the event: [Handle] void On(PlayerLoggedIn e).
 //   - Service handlers run once per handling service type, on one node (local first).
-//   - Actor handlers need a keyed event (one member marked [Key]): the activation of that key receives it as one more
+//   - Actor handlers need a keyed event (one member marked [ActorKey]): the activation of that key receives it as one more
 //     message of its mailbox (activated on demand, turn-based like calls).
 //   - Delivery is at most once, like one-way calls; events of one sender travel in order with its calls.
 
@@ -22,12 +22,12 @@ public sealed class HandleAttribute : Attribute;
 
 /// <summary>
 /// The key of an event (a <c>long</c> field or property of a partial struct): actor handlers receive the event in the
-/// activation with this key. <c>[NinoType] public partial record struct PlayerLoggedIn([property: Key] long Player)</c>
+/// activation with this key. <c>[NinoType] public partial record struct PlayerLoggedIn([property: ActorKey] long Player)</c>
 /// </summary>
 [AttributeUsage(AttributeTargets.Field | AttributeTargets.Property)]
-public sealed class KeyAttribute : Attribute;
+public sealed class ActorKeyAttribute : Attribute;
 
-/// <summary>Implemented by the generator for structs with a <see cref="KeyAttribute"/> member (not for user code).</summary>
+/// <summary>Implemented by the generator for structs with a <see cref="ActorKeyAttribute"/> member (not for user code).</summary>
 [EditorBrowsable(EditorBrowsableState.Never)]
 public interface IKeyed
 {

@@ -80,7 +80,7 @@ public sealed class Shard : IDisposable
     internal void Start() => _thread.Start();
 
     /// <summary>
-    /// Thread-safe: admit a new call or event unless the inbox holds <see cref="NodeOptions.MailboxCapacity"/> items.
+    /// Thread-safe: admit a new call or event unless the inbox holds <see cref="NodeOptions.ShardInboxCapacity"/> items.
     /// New work is bounded so a flood cannot grow memory without limit; completions and callbacks (<see cref="Post"/>)
     /// always get in, because they finish work already admitted and are bounded by the calls in flight.
     /// </summary>

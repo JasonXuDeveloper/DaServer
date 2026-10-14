@@ -10,10 +10,10 @@ internal static class Support
 
     public const string ServiceAttribute = "DaServer.Rpc.ServiceAttribute";
     public const string ActorAttribute = "DaServer.Rpc.ActorAttribute";
-    public const string PushAttribute = "DaServer.Rpc.PushAttribute";
-    public const string ClientAttribute = "DaServer.Rpc.ClientAttribute";
+    public const string ToClientAttribute = "DaServer.Rpc.ToClientAttribute";
+    public const string FromClientAttribute = "DaServer.Rpc.FromClientAttribute";
     public const string HandleAttribute = "DaServer.Rpc.HandleAttribute";
-    public const string KeyAttribute = "DaServer.Rpc.KeyAttribute";
+    public const string ActorKeyAttribute = "DaServer.Rpc.ActorKeyAttribute";
     public const string WireIdAttribute = "DaServer.Rpc.WireIdAttribute";
     public const string NinoTypeAttribute = "Nino.Core.NinoTypeAttribute";
     public const string ActorBase = "DaServer.Runtime.Actor";

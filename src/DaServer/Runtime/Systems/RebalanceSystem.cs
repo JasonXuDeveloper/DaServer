@@ -4,7 +4,7 @@ namespace DaServer.Runtime;
 
 /// <summary>
 /// After a membership change (or on shutdown), starts deactivating actors this node no longer owns. Busy actors are
-/// retried on the next wake; their mail is forwarded once <see cref="Actor.OnDeactivateAsync"/> completes.
+/// retried on the next wake; their mail is forwarded once <see cref="Actor.OnUnload"/> completes.
 /// </summary>
 [UpdateInGroup<ShardMessages>]
 internal sealed class RebalanceSystem : EcsSystem
@@ -29,7 +29,7 @@ internal sealed class RebalanceSystem : EcsSystem
             var actor = item.Entity;
             var link = item.Component1.Actor;
             actor.Add<Deactivating>();
-            actor.Add<Turn>() = new Turn(ShardDispatch.Start(static a => a.OnDeactivateAsync(), link), TurnKind.Deactivation);
+            actor.Add<Turn>() = new Turn(ShardDispatch.Start(static a => a.OnUnload(), link), TurnKind.Deactivation);
         }
 
         // Busy actors were skipped: if one of them must move, look again on the next wake (a turn's end wakes the shard).

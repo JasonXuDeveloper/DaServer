@@ -123,7 +123,7 @@ public sealed partial class Node : IRpcInvoker, IConnectionHandler
         Route(frame, header.MethodId, RpcTargetKind.Actor, header.Key, null, sink, replyId, (byte)(header.Hops + 1), header.Flags);
     }
 
-    private MemberInfo? PickServiceNode(uint contractId)
+    private ClusterMember? PickServiceNode(uint contractId)
     {
         if (_implementationByContract.ContainsKey(contractId) && Membership.SelfIsUp)
             return Membership.Self; // prefer local: no network hop
@@ -300,7 +300,7 @@ public sealed partial class Node : IRpcInvoker, IConnectionHandler
     }
 
     /// <summary>The link to <paramref name="member"/> (cached on the member: no lookup on the send path).</summary>
-    internal PeerLink GetLink(MemberInfo member) => member.Link ??= GetLink(member.Host, member.Port);
+    internal PeerLink GetLink(ClusterMember member) => member.Link ??= GetLink(member.Host, member.Port);
 
     internal PeerLink GetLink(string host, int port) =>
         _links.TryGetValue((host, port), out var link) ? link : AddLink(host, port);

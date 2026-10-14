@@ -30,7 +30,7 @@ public abstract class ShardObject
     /// The client session that made the current call (invalid for server-to-server calls and events). In an actor it
     /// holds for the whole turn, awaits included; in a service (whose calls may overlap) until the first <c>await</c>.
     /// </summary>
-    protected SessionRef Caller => this is Actor actor ? actor.TurnCaller : CallContext.Current.Caller;
+    protected SessionRef CallerSession => this is Actor actor ? actor.TurnCaller : CallContext.Current.CallerSession;
 }
 
 /// <summary>

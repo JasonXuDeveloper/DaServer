@@ -36,7 +36,7 @@ public abstract class ClusterTest
         var options = new NodeOptions
         {
             Name = name,
-            ClusterBind = "127.0.0.1",
+            ListenAddress = "127.0.0.1",
             ClusterPort = 0,
             ClientPort = gateway ? 0 : null,
             Shards = shards,
@@ -85,7 +85,7 @@ public abstract class ClusterTest
     protected async Task<ClusterClient> Connect(Node gateway)
     {
         var client = new ClusterClient();
-        await client.ConnectAsync("127.0.0.1", gateway.ClientPort, followDispatch: false);
+        await client.ConnectAsync("127.0.0.1", gateway.ClientPort, followBalancer: false);
         _clients.Add(client);
         return client;
     }

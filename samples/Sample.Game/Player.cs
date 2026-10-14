@@ -12,7 +12,7 @@ public record struct PlayerState(string Name, long MapId, int Logins, SessionRef
 /// <summary>The player: its own state, and which map it is in. The map simulates the avatar.</summary>
 public sealed class Player : Actor<PlayerState>, IPlayer
 {
-    public override ValueTask OnActivateAsync()
+    public override ValueTask OnLoad()
     {
         // Load from storage here (await is fine: messages wait until activation completes).
         State.Name = "player-" + Key;
@@ -44,8 +44,8 @@ public sealed class Player : Actor<PlayerState>, IPlayer
     {
         long previous = State.MapId;
         if (previous == mapId) return;
-        if (previous != 0) await Cluster.Map(previous).Leave(Caller);
-        await Cluster.Map(mapId).Enter(Key, Caller); // Caller holds for the whole turn
+        if (previous != 0) await Cluster.Map(previous).Leave(CallerSession);
+        await Cluster.Map(mapId).Enter(Key, CallerSession); // CallerSession holds for the whole turn
         State.MapId = mapId;             // State is re-read after awaiting (never hold the ref across await)
     }
 }

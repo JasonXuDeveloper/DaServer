@@ -72,7 +72,7 @@ internal static class Rules
         "RPC contract '{0}' and its methods cannot be generic", Category, DiagnosticSeverity.Error, true);
 
     public static readonly DiagnosticDescriptor CallbackMustBeVoid = new("DAS004", "Pushes are one-way",
-        "Method '{0}' of [Push] contract '{1}' must return void", Category, DiagnosticSeverity.Error, true);
+        "Method '{0}' of [ToClient] contract '{1}' must return void", Category, DiagnosticSeverity.Error, true);
 
     public static readonly DiagnosticDescriptor IdCollision = new("DAS005", "RPC method id collision",
         "Methods '{0}' and '{1}' hash to the same wire id; add [WireId] to one of them", Category,
@@ -94,7 +94,7 @@ internal static class Rules
         DiagnosticSeverity.Error, true);
 
     public static readonly DiagnosticDescriptor UnkeyedActorEvent = new("DAS010", "Actors handle keyed events only",
-        "Actor '{0}' handles '{1}', which has no [Key] member: an actor event is delivered to the activation of the event's key",
+        "Actor '{0}' handles '{1}', which has no [ActorKey] member: an actor event is delivered to the activation of the event's key",
         Category, DiagnosticSeverity.Error, true);
 
     public static readonly DiagnosticDescriptor MixedKinds = new("DAS011", "Actor and service in one type",
