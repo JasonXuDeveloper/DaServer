@@ -75,10 +75,17 @@ public abstract class ClusterTest
         _nodes.Remove(node);
     }
 
+    /// <summary>Dispose <paramref name="client"/> with the cluster.</summary>
+    protected ClusterClient Track(ClusterClient client)
+    {
+        _clients.Add(client);
+        return client;
+    }
+
     protected async Task<ClusterClient> Connect(Node gateway)
     {
         var client = new ClusterClient();
-        await client.ConnectAsync("127.0.0.1", gateway.ClientPort);
+        await client.ConnectAsync("127.0.0.1", gateway.ClientPort, followDispatch: false);
         _clients.Add(client);
         return client;
     }

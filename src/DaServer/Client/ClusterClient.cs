@@ -1,9 +1,11 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
 using DaServer.Buffers;
+using DaServer.Cluster;
 using DaServer.Concurrency;
 using DaServer.Net;
 using DaServer.Protocol;
@@ -23,7 +25,13 @@ public sealed class ClusterClient : IRpcInvoker, IConnectionHandler, IAsyncDispo
     private readonly Dictionary<uint, object> _callbacks = new();
     private readonly MpmcQueue<FrameWriter>? _inbox;
     private Connection? _connection;
-    private Timer? _sweeper;
+
+    // One timer expires the calls of every client in the process (a bot process runs thousands of clients).
+    private static readonly ConcurrentDictionary<ClusterClient, bool> Live = new();
+    private static readonly Timer Sweeper = new(static _ =>
+    {
+        foreach (var (client, _) in Live) client._pending.SweepExpired();
+    }, null, 100, 100);
 
     /// <param name="queueCallbacks">
     /// false: callbacks run on the IO thread as frames arrive (bots, tools). true: frames are queued and run by
@@ -40,15 +48,35 @@ public sealed class ClusterClient : IRpcInvoker, IConnectionHandler, IAsyncDispo
 
     public event Action<Exception?>? Disconnected;
 
-    /// <summary>Connect to a gateway by host name or address (e.g. the value of <c>DaServer:Gateways</c>).</summary>
-    public ValueTask ConnectAsync(string host, int port, CancellationToken cancellationToken = default) =>
-        ConnectAsync(IPAddress.TryParse(host, out var ip) ? new IPEndPoint(ip, port) : new DnsEndPoint(host, port), cancellationToken);
-
-    public async ValueTask ConnectAsync(EndPoint gateway, CancellationToken cancellationToken = default)
+    /// <summary>
+    /// Connect to the cluster through any gateway (typically a dispatch gateway's well-known address): the gateway names
+    /// the least loaded gateway and the client moves there when it is another one. <paramref name="followDispatch"/>
+    /// false stays on the given gateway.
+    /// </summary>
+    public async ValueTask ConnectAsync(string host, int port, bool followDispatch = true, CancellationToken cancellationToken = default)
     {
-        _connection = await Connection.ConnectAsync(gateway, this, ConnectionOptions.ForClients(), cancellationToken)
+        await ConnectToAsync(host, port, cancellationToken).ConfigureAwait(false);
+        if (!followDispatch) return;
+
+        var call = PendingCall<GatewayEndpoint>.Rent(null);
+        var answer = call.Task;
+        var request = FrameWriter.Rent(FrameHeader.Size);
+        Send(request, ControlOp.PickGateway, 0, call, FrameKind.Control);
+        var gateway = await answer.ConfigureAwait(false);
+        if (gateway.Host == host && gateway.Port == port) return;
+
+        _connection?.Close();
+        await ConnectToAsync(gateway.Host, gateway.Port, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask ConnectToAsync(string host, int port, CancellationToken cancellationToken)
+    {
+        EndPoint endPoint = IPAddress.TryParse(host, out var ip) ? new IPEndPoint(ip, port) : new DnsEndPoint(host, port);
+        var connection = await Connection.ConnectAsync(endPoint, this, ConnectionOptions.ForClients(), cancellationToken)
             .ConfigureAwait(false);
-        _sweeper ??= new Timer(static s => ((ClusterClient)s!)._pending.SweepExpired(), this, 100, 100);
+        _connection = connection;
+        GC.KeepAlive(Sweeper);
+        Live.TryAdd(this, true);
     }
 
     /// <summary>Register the implementation of a server-to-client contract.</summary>
@@ -101,7 +129,7 @@ public sealed class ClusterClient : IRpcInvoker, IConnectionHandler, IAsyncDispo
     public void Send(FrameWriter request, uint methodId, RpcTargetKind kind, long key, ulong gatewayNodeId = 0) =>
         Send(request, methodId, key, null);
 
-    private void Send(FrameWriter request, uint methodId, long key, IPendingCall? call)
+    private void Send(FrameWriter request, uint methodId, long key, IPendingCall? call, FrameKind requestKind = FrameKind.Request)
     {
         var connection = _connection;
         try
@@ -110,7 +138,7 @@ public sealed class ClusterClient : IRpcInvoker, IConnectionHandler, IAsyncDispo
                 throw new RpcException(RpcStatus.Disconnected);
 
             uint requestId = call != null ? _pending.Register(call, (int)CallTimeout.TotalMilliseconds) : 0;
-            request.SetHeader(call != null ? FrameKind.Request : FrameKind.OneWay, requestId, methodId, key);
+            request.SetHeader(call != null ? requestKind : FrameKind.OneWay, requestId, methodId, key);
             if (!connection.Send(request.Frame) && call != null)
                 _pending.Take(requestId)?.Fail(new RpcException(RpcStatus.Disconnected));
         }
@@ -143,6 +171,7 @@ public sealed class ClusterClient : IRpcInvoker, IConnectionHandler, IAsyncDispo
 
     void IConnectionHandler.OnClosed(Connection connection, Exception? error)
     {
+        if (connection != _connection) return; // the dispatch connection, left on purpose
         _pending.FailAll(RpcStatus.Disconnected);
         Disconnected?.Invoke(error);
     }
@@ -163,7 +192,7 @@ public sealed class ClusterClient : IRpcInvoker, IConnectionHandler, IAsyncDispo
 
     public async ValueTask DisposeAsync()
     {
-        _sweeper?.Dispose();
+        Live.TryRemove(this, out _);
         _connection?.Close();
         if (_inbox != null)
             while (_inbox.TryDequeue(out var frame)) frame.Dispose();

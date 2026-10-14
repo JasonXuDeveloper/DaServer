@@ -30,6 +30,15 @@ public sealed class NodeOptions
     /// <summary>Client (gateway) port; null = this node accepts no game clients.</summary>
     public int? ClientPort { get; set; }
 
+    /// <summary>Host game clients use to reach this gateway (public DNS name or address); defaults to AdvertisedHost.</summary>
+    public string? ClientAdvertisedHost { get; set; }
+
+    /// <summary>
+    /// A dispatch (entry) gateway: clients connecting to it are directed to the least loaded other gateway
+    /// (<c>ClusterClient.ConnectAsync</c> follows automatically), so clients need one well-known address only.
+    /// </summary>
+    public bool DispatchOnly { get; set; }
+
     /// <summary>Seed endpoints "host:port" (DNS names resolve to every address, e.g. a Kubernetes headless service).</summary>
     public List<string> Seeds { get; set; } = new();
 

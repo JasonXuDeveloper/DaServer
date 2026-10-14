@@ -57,3 +57,7 @@ public readonly partial record struct ClientGroup(long Id)
         return new ClientGroup(x == 0 ? 1 : (long)x);
     }
 }
+
+/// <summary>Where a client should connect: a gateway's public host and client port (answer of a dispatch gateway).</summary>
+[Nino.Core.NinoType]
+public readonly partial record struct GatewayEndpoint(string Host, int Port);

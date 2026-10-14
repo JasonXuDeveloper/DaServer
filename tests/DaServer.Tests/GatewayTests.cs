@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Linq;
 using System.Threading.Tasks;
+using DaServer.Client;
 using DaServer.Protocol;
 using DaServer.Rpc;
 using NUnit.Framework;
@@ -135,6 +136,31 @@ public class GatewayTests : ClusterTest
         await Eventually(() => members.All(m => m.Chat.Contains("7:hello")), "broadcast missing");
         await Task.Delay(100); // a stray delivery would arrive about as fast as the ones above
         Assert.That(outsiderInbox.Chat, Is.Empty, "groups of different keys are distinct");
+    }
+
+    [Test]
+    public async Task ADispatchGatewaySpreadsClientsOverTheOtherGateways()
+    {
+        var dispatch = await Start("dispatch", gateway: true, hosts: static _ => false, configure: static o => o.DispatchOnly = true);
+        var gateways = new[]
+        {
+            await Start("gw-0", gateway: true, hosts: static _ => false),
+            await Start("gw-1", gateway: true, hosts: static _ => false),
+        };
+        await Start("game");
+        await Converged();
+
+        var clients = new ClusterClient[40];
+        for (int i = 0; i < clients.Length; i++)
+        {
+            clients[i] = Track(new ClusterClient());
+            await clients[i].ConnectAsync("127.0.0.1", dispatch.ClientPort); // the one well-known address
+            Assert.That(await clients[i].Auth().Login(1000 + i), Is.True);
+        }
+
+        await Eventually(() => dispatch.SessionCount == 0, "the dispatch gateway kept sessions");
+        Assert.That(gateways.Sum(g => g.SessionCount), Is.EqualTo(clients.Length));
+        Assert.That(gateways.Min(g => g.SessionCount), Is.GreaterThanOrEqualTo(8), "power of two choices spreads the load");
     }
 
     [Test]
