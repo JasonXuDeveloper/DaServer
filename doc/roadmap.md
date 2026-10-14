@@ -56,6 +56,13 @@ Keep this file current: tick items when done, add items when scope changes.
 - [x] Aspire: one resource per replica (members are addressed individually), DNS seeds for headless services
       (ADR-030)
 
+## Release review (this branch)
+- [x] Checklist 1-3: 0 warnings, 0 errors; 77 unit/integration tests and the end-to-end test pass (CI green); topology
+      names only in the AppHost
+- [x] Checklist 4: RPC unchanged within noise by resumable links (BenchmarkDotNet medium job)
+- [x] Checklist 5: 10,000 bots through the AppHost: E2E OK, p50 35.7 ms, p99 63.8 ms, 600k realm broadcasts, no gap
+- [x] Checklist 6: R1-R11 and E1-E10 hold; open items are the unchecked roadmap entries
+
 ## Quality
 - [x] Unit tests (queue, pool, frames, pending table, membership, placement)
 - [x] Generator/analyzer tests including incremental caching

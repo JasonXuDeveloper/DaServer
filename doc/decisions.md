@@ -216,6 +216,8 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
   gateway publishes `SessionClosed` to each, and when a gateway is declared dead every node closes that gateway's
   sessions for its own activations. `Caller` is the session of the running turn and holds across its awaits.
 - Consequences: business code binds and handles `SessionClosed`; nothing else. Gateway crash tests cover it.
+  Session control and pushes go to the gateway's link from the view, or, while gossip has not listed the gateway
+  yet, from its Hello (a client call can reach a node first): a Bind is never dropped while the cluster forms.
 
 ## ADR-025 Gateway groups: slot arrays under a per-group lock
 - Context: group membership was a copy-on-write array: O(n) per join (O(n^2) to fill a 3k-session group, with large
