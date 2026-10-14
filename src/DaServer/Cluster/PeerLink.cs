@@ -84,8 +84,7 @@ internal sealed class PeerLink : IDisposable
         {
             try
             {
-                var addresses = await Dns.GetHostAddressesAsync(Host).ConfigureAwait(false);
-                var connection = await Connection.ConnectAsync(new IPEndPoint(addresses[0], Port), _node.ClusterHandler,
+                var connection = await Connection.ConnectAsync(Host, Port, _node.ClusterHandler,
                     ConnectionOptions.ForNodeLinks()).ConfigureAwait(false);
                 connection.Tag = this;
 
