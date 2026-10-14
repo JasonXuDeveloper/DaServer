@@ -27,6 +27,9 @@ internal static class ControlOp
     /// </summary>
     public const uint Hello = 3;
 
+    /// <summary>Client to gateway (a request: RequestId set): which gateway should I use? Answer: a <see cref="GatewayEndpoint"/>.</summary>
+    public const uint PickGateway = 4;
+
     // Gateway operations: Key = session id, RequestId = contract id (Bind/Unbind), payload = one long value.
 
     /// <summary>Gateway: bind a session to an actor key of a contract (payload = actor key).</summary>
@@ -98,6 +101,8 @@ internal sealed class Membership : IDisposable
                 Host = host,
                 Port = port,
                 ClientPort = _node.ClientPort,
+                ClientHost = _node.Options.ClientAdvertisedHost ?? host,
+                DispatchOnly = _node.Options.DispatchOnly,
                 Services = services,
                 Actors = actors,
                 Handlers = handlers,
@@ -139,6 +144,7 @@ internal sealed class Membership : IDisposable
                 {
                     m.Heartbeat++;
                     m.Load = _node.TotalQueueLength();
+                    m.Sessions = _node.SessionCount;
                 });
                 DetectFailures();
                 if (_changed) Publish();

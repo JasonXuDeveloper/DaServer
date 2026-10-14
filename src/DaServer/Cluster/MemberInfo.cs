@@ -62,6 +62,18 @@ public partial class MemberInfo
     /// <summary>Queued messages across the node's shards (load hint for service balancing).</summary>
     public int Load;
 
+    /// <summary>Host game clients use to reach this gateway (its public name or address).</summary>
+    public string ClientHost = "";
+
+    /// <summary>Connected client sessions (gateways): clients are directed to the least loaded gateway.</summary>
+    public int Sessions;
+
+    /// <summary>A dispatch gateway: it directs clients to the other gateways and keeps no sessions itself.</summary>
+    public bool DispatchOnly;
+
+    /// <summary>A gateway clients may be directed to.</summary>
+    public bool AcceptsSessions => ClientPort != 0 && !DispatchOnly && Status == MemberStatus.Up;
+
     public MemberInfo Clone() => (MemberInfo)MemberwiseClone();
 
     /// <summary>Gossip merge order: higher incarnation, then worse status, then higher heartbeat wins.</summary>

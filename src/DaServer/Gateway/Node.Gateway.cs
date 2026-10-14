@@ -236,6 +236,37 @@ public sealed partial class Node
             PublishTo(binding.ContractId, new SessionClosed(sessionRef, binding.Key));
     }
 
+    /// <summary>
+    /// Answer "which gateway should I use": the less loaded of two random gateways that accept sessions (power of two
+    /// choices: even spread from gossiped counts, no herd on the single least loaded one while counts are stale).
+    /// </summary>
+    private void PickGateway(Session session, uint requestId)
+    {
+        var up = View.UpMembers;
+        MemberInfo? first = null, second = null;
+        int candidates = 0;
+        foreach (var member in up)
+        {
+            if (!member.AcceptsSessions) continue;
+            candidates++;
+            // Reservoir sampling of two distinct candidates in one pass.
+            if (Random.Shared.Next(candidates) == 0) (first, second) = (member, first);
+            else if (second == null || Random.Shared.Next(candidates - 1) == 0) second = member;
+        }
+
+        if (first == null)
+        {
+            ReplyError(session.Sink, requestId, RpcStatus.NotHosted, "No gateway accepts sessions");
+            return;
+        }
+
+        var pick = second != null && second.Sessions < first.Sessions ? second : first;
+        var w = FrameWriter.Rent(64);
+        var nino = w.Nino;
+        NinoSerializer.Serialize(new GatewayEndpoint(pick.ClientHost, pick.ClientPort), ref nino);
+        session.Sink.SendReply(requestId, RpcStatus.Ok, w);
+    }
+
     // ------------------------------------------------------------------ client connections
 
     private sealed class GatewayHandler(Node node) : IConnectionHandler
@@ -248,6 +279,9 @@ public sealed partial class Node
                 case FrameKind.Request:
                 case FrameKind.OneWay:
                     node.OnClientCall(session, in header, frame);
+                    break;
+                case FrameKind.Control when header.MethodId == ControlOp.PickGateway && header.RequestId != 0:
+                    node.PickGateway(session, header.RequestId);
                     break;
                 case FrameKind.Ping:
                     Span<byte> pong = stackalloc byte[FrameHeader.Size];
