@@ -9,7 +9,8 @@ namespace DaServer.Benchmark;
 /// <summary>Real nodes on loopback TCP, production defaults except membership timings (fast convergence).</summary>
 internal static class Clusters
 {
-    public static async Task<Node[]> Start(int nodes, int shards, bool gateway = false)
+    /// <summary>Start <paramref name="nodes"/> nodes; the first <paramref name="gateways"/> accept clients.</summary>
+    public static async Task<Node[]> Start(int nodes, int shards, int gateways = 0)
     {
         var started = new Node[nodes];
         for (int i = 0; i < nodes; i++)
@@ -18,7 +19,7 @@ internal static class Clusters
             {
                 Name = $"bench-{i}",
                 ClusterBind = "127.0.0.1",
-                ClientPort = gateway && i == 0 ? 0 : null,
+                ClientPort = i < gateways ? 0 : null,
                 Shards = shards,
                 Seeds = i == 0 ? [] : [$"127.0.0.1:{started[0].ClusterEndPoint.Port}"],
                 GossipInterval = TimeSpan.FromMilliseconds(100),

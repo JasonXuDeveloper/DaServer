@@ -74,6 +74,10 @@ public partial class MemberInfo
     /// <summary>A gateway clients may be directed to.</summary>
     public bool AcceptsSessions => ClientPort != 0 && !DispatchOnly && Status == MemberStatus.Up;
 
+    /// <summary>This node's link to the member (resolved once; copies share it: the endpoint never changes).</summary>
+    [NinoIgnore]
+    internal PeerLink? Link;
+
     public MemberInfo Clone() => (MemberInfo)MemberwiseClone();
 
     /// <summary>Gossip merge order: higher incarnation, then worse status, then higher heartbeat wins.</summary>

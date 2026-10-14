@@ -20,7 +20,7 @@ namespace DaServer.Runtime;
 /// </summary>
 public sealed partial class Node : ICluster, IAsyncDisposable
 {
-    private readonly ConcurrentDictionary<string, PeerLink> _links = new();
+    private readonly ConcurrentDictionary<(string Host, int Port), PeerLink> _links = new();
     private Shard[] _shards = [];
     private FrozenDictionary<uint, ImplementationInfo> _implementationByContract = FrozenDictionary<uint, ImplementationInfo>.Empty;
     private FrozenDictionary<uint, ImplementationInfo> _implementationById = FrozenDictionary<uint, ImplementationInfo>.Empty;

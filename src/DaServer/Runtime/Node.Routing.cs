@@ -260,14 +260,13 @@ public sealed partial class Node : IRpcInvoker, IConnectionHandler
         connection.Tag = GetLink(host, port);
     }
 
-    internal PeerLink GetLink(MemberInfo member) => GetLink(member.Host, member.Port);
+    /// <summary>The link to <paramref name="member"/> (cached on the member: no lookup on the send path).</summary>
+    internal PeerLink GetLink(MemberInfo member) => member.Link ??= GetLink(member.Host, member.Port);
 
-    internal PeerLink GetLink(string host, int port)
-    {
-        string endpoint = host + ":" + port;
-        if (_links.TryGetValue(endpoint, out var link)) return link;
-        return _links.GetOrAdd(endpoint, static (_, s) => new PeerLink(s.node, s.host, s.port), (node: this, host, port));
-    }
+    internal PeerLink GetLink(string host, int port) =>
+        _links.TryGetValue((host, port), out var link)
+            ? link
+            : _links.GetOrAdd((host, port), static (endpoint, node) => new PeerLink(node, endpoint.Host, endpoint.Port), this);
 
     // ------------------------------------------------------------------ reply sinks
 

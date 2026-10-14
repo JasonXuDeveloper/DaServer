@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Net;
 using System.Threading;
 using DaServer.Buffers;
@@ -18,8 +19,8 @@ namespace DaServer.Runtime;
 public sealed partial class Node
 {
     private readonly ConcurrentDictionary<long, Session> _sessions = new();
-    private readonly ConcurrentDictionary<long, CopyOnWriteArray<Session>> _groups = new();
-    private readonly Lock _groupGate = new(); // group membership changes (control path); fan-out reads are lock-free
+    private readonly ConcurrentDictionary<long, GroupMembers> _groups = new();
+    private readonly Lock _groupGate = new(); // membership changes (control path); fan-out takes only its group's lock
     private Listener? _clientListener;
     private GatewayHandler? _gatewayHandler;
     private long _nextSessionId;
@@ -34,12 +35,15 @@ public sealed partial class Node
     {
         if (Options.ClientPort is not { } port) return;
         _gatewayHandler = new GatewayHandler(this);
+        var sessionOptions = ConnectionOptions.ForClients();
+        sessionOptions.MaxFrameSize = Options.MaxClientFrameSize; // what an untrusted client may make us buffer
         _clientListener = new Listener(new IPEndPoint(IPAddress.Parse(Options.ClusterBind), port), socket =>
         {
-            var connection = new Connection(socket, _gatewayHandler, ConnectionOptions.ForClients());
+            var connection = new Connection(socket, _gatewayHandler, sessionOptions);
             var session = new Session(Interlocked.Increment(ref _nextSessionId), connection);
             connection.Tag = session;
             _sessions[session.Id] = session;
+            lock (_groupGate) Join(session, ClientGroup.All.Id); // group 0 is a group like any other
             return connection;
         });
         _clientListener.Start();
@@ -106,7 +110,7 @@ public sealed partial class Node
             frame.SetHeader(FrameKind.Broadcast, 0, methodId, key);
             foreach (var member in View.UpMembers)
             {
-                if (member.ClientPort == 0) continue;
+                if (member.ClientPort == 0 || member.DispatchOnly) continue; // a dispatch keeps no sessions
                 if (member.NodeId == Id) DeliverToGroup(key, frame.Frame);
                 else GetLink(member).Send(frame.Frame);
             }
@@ -133,16 +137,7 @@ public sealed partial class Node
     /// <summary>Fan a frame out to every local session of a group (group 0 = every session). memcpy per session.</summary>
     private void DeliverToGroup(long groupId, ReadOnlySpan<byte> frame)
     {
-        if (groupId == 0)
-        {
-            foreach (var session in _sessions.Values) session.Connection.Send(frame);
-            return;
-        }
-
-        if (!_groups.TryGetValue(groupId, out var group)) return;
-        var members = group.Items; // immutable snapshot
-        for (int i = 0; i < members.Length; i++)
-            members[i].Connection.Send(frame);
+        if (_groups.TryGetValue(groupId, out var group)) group.Send(frame);
     }
 
     private void OnControl(Connection connection, in FrameHeader header, ReadOnlySpan<byte> payload)
@@ -206,18 +201,16 @@ public sealed partial class Node
     /// <summary>Add a session to a group (once). Caller holds the gate.</summary>
     private void Join(Session session, long groupId)
     {
-        if (session.Closed || Array.IndexOf(session.Groups.Items, groupId) >= 0) return;
-        _groups.GetOrAdd(groupId, static _ => new CopyOnWriteArray<Session>()).Add(session);
-        session.Groups.Add(groupId);
+        if (session.Closed || session.Groups.ContainsKey(groupId)) return;
+        if (!_groups.TryGetValue(groupId, out var group)) _groups[groupId] = group = new GroupMembers(groupId);
+        group.Add(session);
     }
 
     /// <summary>Remove a session from a group; empty groups are dropped (bounded memory). Caller holds the gate.</summary>
     private void Leave(Session session, long groupId)
     {
-        session.Groups.Remove(groupId);
-        if (!_groups.TryGetValue(groupId, out var group)) return;
-        group.Remove(session);
-        if (group.Items.Length == 0) _groups.TryRemove(groupId, out _);
+        if (!session.Groups.ContainsKey(groupId) || !_groups.TryGetValue(groupId, out var group)) return;
+        if (group.Remove(session) == 0) _groups.TryRemove(groupId, out _);
     }
 
     /// <summary>Drop the session from its groups and tell every actor it was bound to (<see cref="SessionClosed"/>).</summary>
@@ -228,7 +221,12 @@ public sealed partial class Node
         lock (_groupGate)
         {
             session.Closed = true;
-            foreach (var groupId in session.Groups.Items) Leave(session, groupId);
+            while (session.Groups.Count > 0)
+            {
+                using var groups = session.Groups.Keys.GetEnumerator();
+                groups.MoveNext();
+                Leave(session, groups.Current);
+            }
         }
 
         var sessionRef = new SessionRef(Id, session.Id);
@@ -348,8 +346,8 @@ internal sealed class Session(long id, Connection connection)
     /// <summary>Actor keys bound by servers, one per contract (<c>Cluster.Bind&lt;TActor&gt;</c>).</summary>
     public CopyOnWriteArray<SessionBinding> Bindings { get; } = new();
 
-    /// <summary>Groups the session belongs to (to leave them when it closes).</summary>
-    public CopyOnWriteArray<long> Groups { get; } = new();
+    /// <summary>Groups the session belongs to and its slot in each (changed under the gateway's group gate).</summary>
+    public Dictionary<long, int> Groups { get; } = new();
 
     /// <summary>Set under the gateway's group gate when the session closed: it joins no group afterwards.</summary>
     public bool Closed { get; set; }
@@ -361,5 +359,56 @@ internal sealed class Session(long id, Connection connection)
         for (int i = 0; i < bindings.Length; i++)
             if (bindings[i].ContractId == contractId) return bindings[i].Key;
         return 0;
+    }
+}
+
+/// <summary>
+/// The sessions of one client group on this gateway. Membership changes (under the gateway's group gate) and fan-out
+/// both take the group's lock, so a fan-out reaches every session that joined before it (a Bind then a push on one
+/// link: the push reaches the session). Join and leave are O(1) (slot per session, swap-remove); a broadcast copies
+/// nothing and allocates nothing. Lock order: group gate, group, connection send lock; <see cref="Connection.Send"/>
+/// never closes inline, so no close callback re-enters a group during a fan-out.
+/// </summary>
+internal sealed class GroupMembers(long id)
+{
+    private readonly Lock _gate = new();
+    private Session[] _members = new Session[4];
+    private int _count;
+
+    public void Add(Session session)
+    {
+        lock (_gate)
+        {
+            if (_count == _members.Length) Array.Resize(ref _members, _count * 2);
+            _members[_count] = session;
+            session.Groups[id] = _count++;
+        }
+    }
+
+    /// <summary>Remove <paramref name="session"/> (a member); returns the members left.</summary>
+    public int Remove(Session session)
+    {
+        lock (_gate)
+        {
+            session.Groups.Remove(id, out int slot);
+            var last = _members[--_count];
+            _members[_count] = null!;
+            if (slot != _count)
+            {
+                _members[slot] = last;
+                last.Groups[id] = slot;
+            }
+
+            return _count;
+        }
+    }
+
+    public void Send(ReadOnlySpan<byte> frame)
+    {
+        lock (_gate)
+        {
+            var members = _members;
+            for (int i = 0; i < _count; i++) members[i].Connection.Send(frame);
+        }
     }
 }

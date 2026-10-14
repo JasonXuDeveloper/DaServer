@@ -139,6 +139,41 @@ public class GatewayTests : ClusterTest
     }
 
     [Test]
+    public async Task GroupsFollowJoinsAndClosesExactly()
+    {
+        var gateway = await Start("gw", gateway: true);
+        var clients = new ClusterClient[30];
+        var inboxes = new Inbox[clients.Length];
+        for (int i = 0; i < clients.Length; i++)
+        {
+            clients[i] = await Connect(gateway);
+            clients[i].Register<IPlayerClient>(inboxes[i] = new Inbox());
+            await clients[i].Room(7).Join();
+        }
+
+        // Close every third member (swap-remove moves others into their slots), then broadcast to the room and to All.
+        for (int i = 0; i < clients.Length; i += 3) await clients[i].DisposeAsync();
+        await Eventually(() => gateway.SessionCount == 20, "sessions did not close");
+        gateway.Room(7).Say("hello");
+        gateway.PlayerClient(ClientGroup.All).OnChat(0, "all");
+
+        var open = Enumerable.Range(0, clients.Length).Where(i => i % 3 != 0).Select(i => inboxes[i]).ToArray();
+        await Eventually(() => open.All(m => m.Chat.Count == 2), "a member missed a broadcast");
+        await Task.Delay(100); // a duplicate would arrive about as fast
+        Assert.That(open.All(m => m.Chat.Order().SequenceEqual(["0:all", "7:hello"])), "each member got each broadcast once");
+    }
+
+    [Test]
+    public async Task AnOversizedClientFrameClosesTheSession()
+    {
+        var gateway = await Start("gw", gateway: true, configure: static o => o.MaxClientFrameSize = 1024);
+        var client = await Connect(gateway);
+        await client.Room(7).Join();
+        client.Room(7).Say(new string('x', 2048));
+        await Eventually(() => gateway.SessionCount == 0, "a frame over MaxClientFrameSize was accepted");
+    }
+
+    [Test]
     public async Task ADispatchGatewaySpreadsClientsOverTheOtherGateways()
     {
         var dispatch = await Start("dispatch", gateway: true, hosts: static _ => false, configure: static o => o.DispatchOnly = true);

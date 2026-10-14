@@ -31,7 +31,7 @@ public class BroadcastBenchmark
 
     private async Task SetupAsync()
     {
-        _nodes = await Clusters.Start(2, shards: 4, gateway: true);
+        _nodes = await Clusters.Start(2, shards: 4, gateways: 1);
 
         // A room owned by the non-gateway node: the broadcast crosses the node link, then fans out at the gateway.
         long room = 1;

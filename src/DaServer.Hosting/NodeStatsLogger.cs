@@ -26,10 +26,10 @@ internal sealed class NodeStatsLogger(Node node, ILogger<NodeStatsLogger> logger
                 var now = Sample.Take(process);
                 double seconds = (now.Time - last.Time).TotalSeconds;
                 logger.LogInformation(
-                    "stats: cpu={Cpu:F0}% alloc={Alloc:F1}MB/s gc0/1/2={Gen0}/{Gen1}/{Gen2} pause={Pause:F2}% " +
+                    "stats: cpu={Cpu:F0}% alloc={Alloc:F0}KB/s gc0/1/2={Gen0}/{Gen1}/{Gen2} pause={Pause:F2}% " +
                     "heap={Heap}MB sessions={Sessions} actors={Actors} queued={Queued} rejected={Rejected}",
                     (now.Cpu - last.Cpu).TotalSeconds / seconds / Environment.ProcessorCount * 100,
-                    (now.Allocated - last.Allocated) / seconds / (1024 * 1024),
+                    (now.Allocated - last.Allocated) / seconds / 1024,
                     now.Gen0 - last.Gen0, now.Gen1 - last.Gen1, now.Gen2 - last.Gen2,
                     (now.Pause - last.Pause).TotalSeconds / seconds * 100,
                     GC.GetGCMemoryInfo().HeapSizeBytes / (1024 * 1024),
