@@ -43,6 +43,7 @@ public interface IEcho
 public interface IAuth
 {
     ValueTask<bool> Login(long playerId);
+    ValueTask<bool> LoginAfterPushes(long playerId, int pushes); // binds behind a burst of 8 KB pushes to the caller
     ValueTask Logout();
 }
 
@@ -50,6 +51,7 @@ public interface IAuth
 public interface IPlayer
 {
     ValueTask<int> AddGold(int amount);
+    void Tip(int amount);                               // one-way
 }
 
 /// <summary>A public chat room: clients choose the room id.</summary>
@@ -204,6 +206,13 @@ public sealed class AuthService : Service, IAuth
         return new(true);
     }
 
+    public ValueTask<bool> LoginAfterPushes(long playerId, int pushes)
+    {
+        var text = new string('x', 4096);
+        for (int i = 0; i < pushes; i++) Cluster.PlayerClient(Caller).OnChat(0, text);
+        return Login(playerId);
+    }
+
     public ValueTask Logout()
     {
         Cluster.Unbind<IPlayer>(Caller);
@@ -221,6 +230,8 @@ public sealed class Player : Actor<Wallet>, IPlayer
         if (Caller.IsValid) Cluster.PlayerClient(Caller).OnGold(gold); // push to the calling client
         return new(gold);
     }
+
+    public void Tip(int amount) => State.Gold += amount;
 
     [Handle]
     public ValueTask On(SessionClosed e)

@@ -45,6 +45,23 @@ public class GatewayTests : ClusterTest
     }
 
     [Test]
+    public async Task ABindingIsInPlaceWhenTheCallThatMadeItReturns()
+    {
+        // The binding is made on another node than the gateway, queued behind pushes to the same gateway: the login's
+        // reply must not overtake it, or the client's next one-way call would be refused as unbound.
+        var gateway = await Start("gw", gateway: true, hosts: static _ => false);
+        await Start("game");
+        await Converged();
+        for (long player = 1; player <= 5; player++)
+        {
+            var client = await Connect(gateway);
+            Assert.That(await client.Auth().LoginAfterPushes(player, pushes: 48), Is.True);
+            client.Player().Tip(1);
+            Assert.That(await client.Player().AddGold(0), Is.EqualTo(1), $"the one-way call of player {player} was dropped");
+        }
+    }
+
+    [Test]
     public async Task BindingsAreIsolatedPerSession()
     {
         var gateway = await Start("gw", gateway: true);
