@@ -5,13 +5,15 @@ using Microsoft.Extensions.Logging;
 namespace DaServer.Runtime;
 
 /// <summary>
-/// What business code (actors, services, shard systems) can reach: its shard, the shard's ECS world and the cluster.
-/// Everything here is used from the shard thread only.
+/// What business code (actors, services) can reach: the shard's ECS world and the cluster. Everything here is used
+/// from the shard thread only. The shard itself (its thread, inbox, callbacks) is not exposed: code that ran outside a
+/// turn could interleave with an actor's awaiting turn. Time-based logic is ECS: a component with a due tick and a
+/// system comparing it to <see cref="ShardWorldExtensions.Tick"/>.
 /// </summary>
 public abstract class ShardObject
 {
     /// <summary>The shard this object lives in.</summary>
-    public Shard Shard { get; internal set; } = null!;
+    internal Shard Shard { get; set; } = null!;
 
     /// <summary>The shard's ECS world (shared by every actor, service and system of the shard).</summary>
     public World World => Shard.World;
