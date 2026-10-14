@@ -1,0 +1,168 @@
+using System;
+using System.Collections.Generic;
+using System.Net;
+using System.Threading;
+using System.Threading.Tasks;
+using DaServer.Buffers;
+using DaServer.Concurrency;
+using DaServer.Net;
+using DaServer.Protocol;
+using DaServer.Rpc;
+using Nino.Core;
+
+namespace DaServer.Client;
+
+/// <summary>
+/// Game client connection to a gateway. Implements <see cref="IRpcInvoker"/>, so the same generated proxies used on
+/// servers work here (only [ClientAccessible] contracts are accepted by the gateway). Pushes and broadcasts are
+/// dispatched to registered <see cref="IClientCallback"/> implementations.
+/// </summary>
+public sealed class GameClient : IRpcInvoker, IConnectionHandler, IAsyncDisposable
+{
+    private readonly PendingCallTable _pending = new(14);
+    private readonly Dictionary<uint, object> _callbacks = new();
+    private readonly MpmcQueue<FrameWriter>? _inbox;
+    private Connection? _connection;
+    private Timer? _sweeper;
+
+    /// <param name="queueCallbacks">
+    /// false: callbacks run on the IO thread as frames arrive (bots, tools). true: frames are queued and run by
+    /// <see cref="ProcessCallbacks"/> on the application's own thread (game loop / UI thread).
+    /// </param>
+    public GameClient(bool queueCallbacks = false)
+    {
+        if (queueCallbacks) _inbox = new MpmcQueue<FrameWriter>(64 * 1024);
+    }
+
+    public TimeSpan CallTimeout { get; set; } = TimeSpan.FromSeconds(10);
+
+    public bool IsConnected => _connection is { IsClosed: false };
+
+    public event Action<Exception?>? Disconnected;
+
+    public async ValueTask ConnectAsync(EndPoint gateway, CancellationToken cancellationToken = default)
+    {
+        _connection = await Connection.ConnectAsync(gateway, this, ConnectionOptions.ForClients(), cancellationToken)
+            .ConfigureAwait(false);
+        _sweeper ??= new Timer(static s => ((GameClient)s!)._pending.SweepExpired(), this, 100, 100);
+    }
+
+    /// <summary>Register the implementation of a server-to-client contract.</summary>
+    public void Register<TCallback>(TCallback implementation) where TCallback : class, IClientCallback
+    {
+        var contract = RpcRegistry.GetContract(typeof(TCallback));
+        lock (_callbacks) _callbacks[contract.Id] = implementation;
+    }
+
+    /// <summary>Run queued callbacks on the calling thread (only when constructed with queueCallbacks: true).</summary>
+    public int ProcessCallbacks(int max = int.MaxValue)
+    {
+        if (_inbox == null) return 0;
+        int n = 0;
+        while (n < max && _inbox.TryDequeue(out var frame))
+        {
+            try
+            {
+                DispatchCallback(frame.Frame);
+            }
+            finally
+            {
+                frame.Dispose();
+            }
+
+            n++;
+        }
+
+        return n;
+    }
+
+    // ------------------------------------------------------------------ IRpcInvoker
+
+    public ValueTask<T> Call<T>(FrameWriter request, uint methodId, RpcTargetKind kind, long key)
+    {
+        var call = PendingCall<T>.Rent(null);
+        var task = call.Task;
+        Send(request, methodId, key, call);
+        return task;
+    }
+
+    public ValueTask CallVoid(FrameWriter request, uint methodId, RpcTargetKind kind, long key)
+    {
+        var call = PendingCall.Rent(null);
+        var task = call.Task;
+        Send(request, methodId, key, call);
+        return task;
+    }
+
+    public void Send(FrameWriter request, uint methodId, RpcTargetKind kind, long key, ulong gatewayNodeId = 0) =>
+        Send(request, methodId, key, null);
+
+    private void Send(FrameWriter request, uint methodId, long key, IPendingCall? call)
+    {
+        var connection = _connection;
+        try
+        {
+            if (connection == null || connection.IsClosed)
+                throw new RpcException(RpcStatus.Disconnected);
+
+            uint requestId = call != null ? _pending.Register(call, (int)CallTimeout.TotalMilliseconds) : 0;
+            request.SetHeader(call != null ? FrameKind.Request : FrameKind.OneWay, requestId, methodId, key);
+            if (!connection.Send(request.Frame) && call != null)
+                _pending.Take(requestId)?.Fail(new RpcException(RpcStatus.Disconnected));
+        }
+        catch (RpcException e)
+        {
+            call?.Fail(e);
+        }
+        finally
+        {
+            request.Dispose();
+        }
+    }
+
+    // ------------------------------------------------------------------ IConnectionHandler
+
+    void IConnectionHandler.OnFrame(Connection connection, in FrameHeader header, ReadOnlySpan<byte> frame)
+    {
+        switch (header.Kind)
+        {
+            case FrameKind.Response:
+                _pending.TryComplete(header.RequestId, header.Status, frame.Slice(FrameHeader.Size));
+                break;
+            case FrameKind.Push:
+            case FrameKind.Broadcast:
+                if (_inbox != null) _inbox.TryEnqueue(FrameWriter.CopyOf(frame));
+                else DispatchCallback(frame);
+                break;
+        }
+    }
+
+    void IConnectionHandler.OnClosed(Connection connection, Exception? error)
+    {
+        _pending.FailAll(RpcStatus.Disconnected);
+        Disconnected?.Invoke(error);
+    }
+
+    private void DispatchCallback(ReadOnlySpan<byte> frame)
+    {
+        var header = FrameHeader.Read(frame);
+        if (!RpcRegistry.TryGetMethod(header.MethodId, out var method)) return;
+        object? target;
+        lock (_callbacks) _callbacks.TryGetValue(method.Owner.Id, out target);
+        if (target == null) return;
+
+        var reader = new Reader(frame.Slice(FrameHeader.Size));
+        var context = new CallContext(null, 0, header.MethodId, header.Key, default);
+        var task = method.Owner.Dispatcher(target, header.MethodId, ref reader, in context);
+        if (task.IsCompleted) task.GetAwaiter().GetResult();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _sweeper?.Dispose();
+        _connection?.Close();
+        if (_inbox != null)
+            while (_inbox.TryDequeue(out var frame)) frame.Dispose();
+        await Task.CompletedTask.ConfigureAwait(false);
+    }
+}

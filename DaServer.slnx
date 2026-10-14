@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/DaServer/DaServer.csproj" />
+    <Project Path="src/DaServer.Generator/DaServer.Generator.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/DaServer.Tests/DaServer.Tests.csproj" />
+  </Folder>
+</Solution>

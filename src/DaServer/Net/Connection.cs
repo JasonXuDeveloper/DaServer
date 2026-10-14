@@ -1,0 +1,365 @@
+using System;
+using System.Net;
+using System.Net.Sockets;
+using System.Threading;
+using System.Threading.Tasks;
+using DaServer.Buffers;
+using DaServer.Concurrency;
+using DaServer.Protocol;
+
+namespace DaServer.Net;
+
+/// <summary>Receives frames and lifecycle events of a <see cref="Connection"/>.</summary>
+public interface IConnectionHandler
+{
+    /// <summary>
+    /// Called on the connection's receive loop for every complete frame. <paramref name="frame"/> (header included)
+    /// is only valid during the call: copy it if it must outlive the call. Must not block.
+    /// </summary>
+    void OnFrame(Connection connection, in FrameHeader header, ReadOnlySpan<byte> frame);
+
+    /// <summary>Called exactly once when the connection closes.</summary>
+    void OnClosed(Connection connection, Exception? error);
+}
+
+public sealed class ConnectionOptions
+{
+    /// <summary>Receive buffer size used while data is flowing.</summary>
+    public int ReceiveBufferSize { get; set; } = 16 * 1024;
+
+    /// <summary>
+    /// Await readiness with a zero-byte read before renting a receive buffer, so idle connections hold no buffer.
+    /// Recommended for client sessions (many mostly-idle sockets); disable for busy node-to-node links.
+    /// </summary>
+    public bool ZeroByteReads { get; set; } = true;
+
+    /// <summary>
+    /// Max bytes queued and not yet handed to the socket. Exceeding it closes the connection (slow consumer),
+    /// which bounds memory per connection under broadcast storms.
+    /// </summary>
+    public int MaxPendingSendBytes { get; set; } = 4 * 1024 * 1024;
+
+    /// <summary>Initial pending-send batch buffer size.</summary>
+    public int SendBufferSize { get; set; } = 16 * 1024;
+
+    public static ConnectionOptions ForClients() => new ConnectionOptions
+    {
+        ReceiveBufferSize = 4 * 1024, ZeroByteReads = true, MaxPendingSendBytes = 1024 * 1024, SendBufferSize = 4 * 1024,
+    };
+
+    public static ConnectionOptions ForNodeLinks() => new ConnectionOptions
+    {
+        ReceiveBufferSize = 256 * 1024, ZeroByteReads = false, MaxPendingSendBytes = 256 * 1024 * 1024,
+        SendBufferSize = 256 * 1024,
+    };
+}
+
+/// <summary>
+/// Framed TCP connection.
+/// <para>Send: frames are copied into a per-connection batch buffer under a short lock; one send loop swaps and
+/// writes whole batches, so N small frames cost one syscall and broadcasting serializes once then memcpy's.</para>
+/// <para>Receive: frames are parsed in place and handed to <see cref="IConnectionHandler.OnFrame"/>.</para>
+/// Steady state allocates nothing: buffers come from <see cref="BufferPool"/>, the two loops are allocated once.
+/// </summary>
+public sealed class Connection
+{
+    private static long _nextId;
+
+    private readonly Socket _socket;
+    private readonly IConnectionHandler _handler;
+    private readonly ConnectionOptions _options;
+    private readonly AsyncSignal _sendSignal = new AsyncSignal();
+    private readonly Lock _sendLock = new Lock();
+    private byte[] _pending;
+    private int _pendingLength;
+    private int _closed;
+
+    public Connection(Socket socket, IConnectionHandler handler, ConnectionOptions? options = null)
+    {
+        _socket = socket;
+        _handler = handler;
+        _options = options ?? new ConnectionOptions();
+        _pending = Array.Empty<byte>();
+        Id = Interlocked.Increment(ref _nextId);
+        socket.NoDelay = true;
+        RemoteEndPoint = socket.RemoteEndPoint;
+    }
+
+    /// <summary>Process-unique connection id.</summary>
+    public long Id { get; }
+
+    public EndPoint? RemoteEndPoint { get; }
+
+    /// <summary>Free slot for the owner (e.g. session or peer node state).</summary>
+    public object? Tag { get; set; }
+
+    public bool IsClosed => Volatile.Read(ref _closed) != 0;
+
+    /// <summary>Bytes queued but not yet handed to the socket.</summary>
+    public int PendingSendBytes => Volatile.Read(ref _pendingLength);
+
+    public static async ValueTask<Connection> ConnectAsync(EndPoint endPoint, IConnectionHandler handler,
+        ConnectionOptions? options = null, CancellationToken cancellationToken = default)
+    {
+        var socket = new Socket(endPoint.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
+        try
+        {
+            await socket.ConnectAsync(endPoint, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            socket.Dispose();
+            throw;
+        }
+
+        var connection = new Connection(socket, handler, options);
+        connection.Start();
+        return connection;
+    }
+
+    /// <summary>Start the receive and send loops.</summary>
+    public void Start()
+    {
+        _ = ReceiveLoop();
+        _ = SendLoop();
+    }
+
+    /// <summary>
+    /// Queue a complete frame (header included). Thread-safe, never blocks on IO.
+    /// Returns false when the connection is closed or was closed because the peer is too slow.
+    /// </summary>
+    public bool Send(ReadOnlySpan<byte> frame)
+    {
+        if (Volatile.Read(ref _closed) != 0)
+            return false;
+
+        bool overflow = false;
+        bool wake;
+        lock (_sendLock)
+        {
+            if (Volatile.Read(ref _closed) != 0)
+                return false;
+
+            int required = _pendingLength + frame.Length;
+            if (required > _options.MaxPendingSendBytes)
+            {
+                overflow = true;
+                wake = false;
+            }
+            else
+            {
+                if (required > _pending.Length)
+                    GrowPending(required);
+
+                frame.CopyTo(new Span<byte>(_pending, _pendingLength, frame.Length));
+                wake = _pendingLength == 0;
+                _pendingLength = required;
+            }
+        }
+
+        if (overflow)
+        {
+            Close(new InvalidOperationException("Send backlog exceeded MaxPendingSendBytes (slow consumer)"));
+            return false;
+        }
+
+        if (wake)
+            _sendSignal.Set();
+        return true;
+    }
+
+    public void Close(Exception? error = null)
+    {
+        if (Interlocked.Exchange(ref _closed, 1) != 0)
+            return;
+
+        try
+        {
+            _socket.Shutdown(SocketShutdown.Both);
+        }
+        catch
+        {
+            // already disconnected
+        }
+
+        _socket.Dispose();
+        _sendSignal.Set();
+
+        try
+        {
+            _handler.OnClosed(this, error);
+        }
+        catch
+        {
+            // handler errors must not escape the IO loops
+        }
+    }
+
+    private void GrowPending(int required)
+    {
+        int size = Math.Max(_options.SendBufferSize, Math.Max(_pending.Length * 2, required));
+        var next = BufferPool.Rent(size);
+        if (_pendingLength > 0)
+            Buffer.BlockCopy(_pending, 0, next, 0, _pendingLength);
+        BufferPool.Return(_pending);
+        _pending = next;
+    }
+
+    private async Task SendLoop()
+    {
+        byte[] sending = Array.Empty<byte>();
+        try
+        {
+            while (true)
+            {
+                await _sendSignal.WaitAsync().ConfigureAwait(false);
+
+                while (true)
+                {
+                    if (Volatile.Read(ref _closed) != 0)
+                        return;
+
+                    int length;
+                    lock (_sendLock)
+                    {
+                        length = _pendingLength;
+                        if (length == 0)
+                            break;
+
+                        // Swap batch buffers: producers continue filling the other one while we send.
+                        var batch = _pending;
+                        _pending = sending.Length >= _options.SendBufferSize ? sending : Array.Empty<byte>();
+                        if (_pending.Length == 0 && sending.Length > 0)
+                            BufferPool.Return(sending);
+                        _pendingLength = 0;
+                        sending = batch;
+                    }
+
+                    int offset = 0;
+                    while (offset < length)
+                    {
+                        int sent = await _socket.SendAsync(new ReadOnlyMemory<byte>(sending, offset, length - offset),
+                            SocketFlags.None).ConfigureAwait(false);
+                        if (sent <= 0)
+                            throw new SocketException((int)SocketError.ConnectionReset);
+                        offset += sent;
+                    }
+                }
+
+                // Idle: give the in-flight buffer back so idle connections hold no send memory.
+                if (sending.Length > 0)
+                {
+                    BufferPool.Return(sending);
+                    sending = Array.Empty<byte>();
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            Close(e);
+        }
+        finally
+        {
+            Volatile.Write(ref _closed, 1);
+            BufferPool.Return(sending);
+            lock (_sendLock)
+            {
+                BufferPool.Return(_pending);
+                _pending = Array.Empty<byte>();
+                _pendingLength = 0;
+            }
+        }
+    }
+
+    private async Task ReceiveLoop()
+    {
+        byte[] buffer = Array.Empty<byte>();
+        int filled = 0;
+        Exception? error = null;
+        try
+        {
+            while (true)
+            {
+                if (filled == 0 && _options.ZeroByteReads)
+                {
+                    // Wait for readiness without holding a buffer.
+                    if (buffer.Length > 0)
+                    {
+                        BufferPool.Return(buffer);
+                        buffer = Array.Empty<byte>();
+                    }
+
+                    await _socket.ReceiveAsync(Memory<byte>.Empty, SocketFlags.None).ConfigureAwait(false);
+                }
+
+                if (buffer.Length == 0)
+                    buffer = BufferPool.Rent(_options.ReceiveBufferSize);
+
+                int read = await _socket.ReceiveAsync(new Memory<byte>(buffer, filled, buffer.Length - filled),
+                    SocketFlags.None).ConfigureAwait(false);
+                if (read == 0)
+                    break; // graceful close
+
+                filled += read;
+
+                int consumed = ParseFrames(buffer, filled, out int needed);
+                if (consumed > 0)
+                {
+                    filled -= consumed;
+                    if (filled > 0)
+                        Buffer.BlockCopy(buffer, consumed, buffer, 0, filled);
+                }
+
+                if (needed > buffer.Length)
+                {
+                    // A frame larger than the current buffer: grow to fit it.
+                    var bigger = BufferPool.Rent(needed);
+                    Buffer.BlockCopy(buffer, 0, bigger, 0, filled);
+                    BufferPool.Return(buffer);
+                    buffer = bigger;
+                }
+                else if (filled == 0 && buffer.Length > _options.ReceiveBufferSize * 4)
+                {
+                    // Shrink back after a burst of large frames.
+                    BufferPool.Return(buffer);
+                    buffer = Array.Empty<byte>();
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            error = e;
+        }
+        finally
+        {
+            BufferPool.Return(buffer);
+        }
+
+        Close(error);
+    }
+
+    /// <summary>Dispatch every complete frame in buffer[0..filled]; returns bytes consumed.</summary>
+    private int ParseFrames(byte[] buffer, int filled, out int needed)
+    {
+        int offset = 0;
+        needed = 0;
+        while (filled - offset >= FrameHeader.Size)
+        {
+            var span = new ReadOnlySpan<byte>(buffer, offset, filled - offset);
+            var header = FrameHeader.Read(span);
+            if (header.Length < FrameHeader.Size || header.Length > FrameHeader.MaxFrameSize)
+                throw new InvalidOperationException("Invalid frame length " + header.Length);
+
+            if (header.Length > span.Length)
+            {
+                needed = header.Length;
+                break;
+            }
+
+            _handler.OnFrame(this, in header, span.Slice(0, header.Length));
+            offset += header.Length;
+        }
+
+        return offset;
+    }
+}

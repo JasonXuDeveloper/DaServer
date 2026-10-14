@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <RootNamespace>DaServer</RootNamespace>
+        <Description>DaServer runtime: ECS worlds, actors, RPC, cluster membership, gateway and client.</Description>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Nino" Version="$(NinoVersion)" />
+        <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.13" />
+    </ItemGroup>
+
+    <ItemGroup Condition="Exists('$(EasyEcsProject)')">
+        <ProjectReference Include="$(EasyEcsProject)" />
+        <ProjectReference Include="$(EasyEcsGeneratorProject)" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+    </ItemGroup>
+    <ItemGroup Condition="!Exists('$(EasyEcsProject)')">
+        <PackageReference Include="EasyEcs" Version="$(EasyEcsVersion)" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <InternalsVisibleTo Include="DaServer.Tests" />
+        <InternalsVisibleTo Include="DaServer.Benchmark" />
+    </ItemGroup>
+
+</Project>

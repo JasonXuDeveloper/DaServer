@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <IsPackable>false</IsPackable>
+        <!-- Tests intentionally exercise edge cases (stale refs, error paths) -->
+        <NoWarn>$(NoWarn);CS1591;NUnit2045</NoWarn>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.11.0" />
+        <PackageReference Include="NUnit" Version="4.6.1" />
+        <PackageReference Include="NUnit3TestAdapter" Version="5.2.0" />
+        <PackageReference Include="NUnit.Analyzers" Version="4.15.0" />
+        <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="10.0.13" />
+        <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\..\src\DaServer\DaServer.csproj" />
+        <ProjectReference Include="..\..\src\DaServer.Generator\DaServer.Generator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="true" />
+        <ProjectReference Include="$(EasyEcsGeneratorProject)" OutputItemType="Analyzer" ReferenceOutputAssembly="false" Condition="Exists('$(EasyEcsGeneratorProject)')" />
+    </ItemGroup>
+
+</Project>
