@@ -151,13 +151,13 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
   host; references between projects decide what can be split.
 
 ## ADR-018 Attributes on contracts (revised: markers were replaced)
-- Context: the first version used `[ClientAccessible]`; the second used base interfaces (`IService`, `IPublicService`,
+- Context: the first version used `[ClientRouteible]`; the second used base interfaces (`IService`, `IPublicService`,
   `IActor`, `ISessionActor`, `IPublicActor`, `IClientCallback`, `IEvent`, `IKeyedEvent`, `IHandle<T>`). Markers made
   client access all-or-nothing per contract, so one actor needed two contracts for one audience split (`IMap` and
   `IMapInput`), and event handling needed one interface per event type plus a fixed `Key` property name.
-- Decision: attributes, read by the generator: `[Service]`, `[Actor]`, `[Push]` say how the target is chosen;
-  `[Client]` (on a contract or on single methods, `AnyKey = true` for client-chosen actor keys) says what game
-  clients may call; any `[NinoType]` struct is an event, `[Key]` on one member makes it keyed (the generator adds
+- Decision: attributes, read by the generator: `[Service]`, `[Actor]`, `[ToClient]` say how the target is chosen;
+  `[FromClient]` (on a contract or on single methods, `AnyKey = true` for client-chosen actor keys) says what game
+  clients may call; any `[NinoType]` struct is an event, `[ActorKey]` on one member makes it keyed (the generator adds
   `IKeyed`); `[Handle]` marks handler methods. `[NinoType]` marks wire data (DAS009), `[WireId]` resolves a reported
   collision. DAS012-DAS014 report conflicting contract attributes, bad handler shapes and bad keys.
 - Consequences: one contract per concept with per-method access; handlers are ordinary methods named freely; the
@@ -166,7 +166,7 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
 ## ADR-019 Cluster events are delivered through mailboxes, at most once
 - Context: EasyEcs had an in-world event bus, which is not an ECS concern (state changes are data) and could not
   cross shards or nodes. DaServer needed events between actors and services anywhere in the cluster.
-- Decision: `[NinoType]` event structs (keyed by a `[Key]` member), handled by `[Handle]` methods of actors and services. Handlers are part of the
+- Decision: `[NinoType]` event structs (keyed by a `[ActorKey]` member), handled by `[Handle]` methods of actors and services. Handlers are part of the
   gossiped member info; `Publish` serializes once and sends one `Event` frame per handling implementation. Keyed
   events go to the owner of the key and enter the activation's mailbox (turn-based, activated on demand); service
   handlers run once per implementation, local node first. Delivery is at most once and ordered with the calls of the
@@ -179,7 +179,7 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
 ## ADR-020 Business code sees ICluster, not Node
 - Context: `ShardObject.Cluster` returned `Node`, exposing lifecycle, membership and internals to business code.
 - Decision: `ICluster` (proxies via `IRpcInvoker`, `NodeId`, `Bind`/`Unbind` per session-actor contract, groups,
-  `Kick`, `Publish`). Actors get a `Group` of their own (`ClientGroup.Of(implementation, key)`), so group ids of
+  `Disconnect`, `Publish`). Actors get a `Group` of their own (`ClientGroup.Of(implementation, key)`), so group ids of
   different features cannot collide.
 - Consequences: the surface business code can touch is small and testable; runtime refactors do not break it.
 
@@ -209,12 +209,12 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
   node can still run its activations until it is declared dead: fencing by epoch is future work.
 
 ## ADR-024 The runtime owns client sessions
-- Context: business code had to pair `Bind` with `JoinGroup`, remember sessions to clean up, and copy `Caller`
+- Context: business code had to pair `Bind` with `JoinGroup`, remember sessions to clean up, and copy `CallerSession`
   before the first await; a crashed gateway left actors believing their sessions were alive.
 - Decision: `Bind<IX>(session, key)` also puts the session in the activation's `Group`; `Unbind` and close leave it.
   Every activation records the sessions bound to it (a `ClientSessions` component); when a session closes the
   gateway publishes `SessionClosed` to each, and when a gateway is declared dead every node closes that gateway's
-  sessions for its own activations. `Caller` is the session of the running turn and holds across its awaits.
+  sessions for its own activations. `CallerSession` is the session of the running turn and holds across its awaits.
 - Consequences: business code binds and handles `SessionClosed`; nothing else. Gateway crash tests cover it.
   Session control and pushes go to the gateway's link from the view, or, while gossip has not listed the gateway
   yet, from its Hello (a client call can reach a node first): a Bind is never dropped while the cluster forms.
@@ -226,26 +226,26 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
 - Decision: each group is a slot array; a session knows its slot in each group, leave is swap-remove. Membership
   changes and fan-out both take the group's lock (fan-out reaches every earlier join). `ClientGroup.All` is a group
   every session joins on accept. `Connection.Send` closes a slow consumer off the caller's thread, so a fan-out never
-  re-enters a group. Lock order: group gate, group, connection send lock. Dispatch gateways receive no broadcasts.
+  re-enters a group. Lock order: group gate, group, connection send lock. Balancers receive no broadcasts.
 - Alternatives: lock-free snapshots rebuilt on change (allocates per change, large arrays); gateway sessions as ECS
   entities on a gateway shard (one more thread hop per push; kept on the roadmap).
 - Consequences: join/leave O(1); a broadcast allocates nothing (allocation tests); a 3k-session fan-out holds one
   group lock for about a millisecond, which only delays membership changes of that group.
 
-## ADR-026 Dispatch gateways and client gateway discovery
+## ADR-026 Balancers and client gateway discovery
 - Context: clients were given every gateway address (`DaServer__Gateways__{i}`) and spread themselves round robin,
   so adding a gateway meant reconfiguring clients and load followed connection order, not load.
-- Decision: members gossip their client host, port and session count. A gateway with `DispatchOnly` (Aspire
-  `AddDispatch`) answers `PickGateway` with the less loaded of two random gateways that accept sessions (power of two
+- Decision: members gossip their client host, port and session count. A gateway with `Balancer` (Aspire
+  `AddBalancer`) answers `PickGateway` with the less loaded of two random gateways that accept sessions (power of two
   choices: even spread from stale counts, no herd). `ClusterClient.ConnectAsync(host, port)` follows the answer, and
   asks again while the cluster is still forming (no gateway known yet) until its call timeout.
 - Consequences: clients know one address; gateways scale by replica count. Any gateway can answer `PickGateway`, so
-  a dispatch is a deployment choice, not a separate component.
+  a balancer is a deployment choice, not a separate component.
 
 ## ADR-027 Bounded inboxes refuse instead of growing
 - Context: shard inboxes and actor mailboxes were unbounded: a flood (or a slow actor) grew memory until the process
   died, and callers learned nothing.
-- Decision: `NodeOptions.MailboxCapacity` bounds a shard's inbox and `ActorMailboxCapacity` an actor's mailbox; a call
+- Decision: `NodeOptions.ShardInboxCapacity` bounds a shard's inbox and `ActorMailboxCapacity` an actor's mailbox; a call
   or event beyond either is refused with `RpcStatus.Overloaded` (requests get the status, one-way messages are
   dropped and counted in `daserver.shard.rejected`).
 - Consequences: memory is bounded under any load; overload is visible to callers and in metrics. Pausing a link's
@@ -273,15 +273,39 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
 - Consequences: simple and ordered with binds (ADR-022). Revisit when deployments run tens of gateways with small
   groups; the roadmap keeps the item.
 
+## ADR-032 Names from the distributed-server vocabulary
+- Context: several public names were borrowed from one framework (Orleans' `OnActivateAsync`) or described a mechanism
+  instead of its role (`[Client]` read like "the client contract", the opposite of `[Push]`; "dispatch" also meant
+  RPC dispatch; `MemberInfo` clashed with `System.Reflection.MemberInfo`; `Kick` is one game's word for a disconnect).
+- Decision: name things by their role in a cluster of game servers, in pairs where they are pairs:
+
+  | Before | After | Why |
+  |---|---|---|
+  | `[Client]` / `[Push]` | `[FromClient]` / `[ToClient]` | the two directions across the gateway |
+  | `ClientAccess` (`SessionKey`) | `ClientRoute` (`BoundKey`) | how a client call is routed |
+  | `[Key]` (events) | `[ActorKey]` | the key of the actor that receives the event |
+  | `OnActivateAsync` / `OnDeactivateAsync` | `OnLoad` / `OnUnload` | the actor is loaded on / leaves this node |
+  | `Caller` | `CallerSession` | it is the client session, invalid for server calls |
+  | `Kick` | `Disconnect` | not game-specific |
+  | dispatch gateway, `AddDispatch`, `DispatchOnly` | balancer, `AddBalancer`, `Balancer` | its role; "dispatch" stays RPC dispatch |
+  | `MemberInfo` | `ClusterMember` | no clash with reflection |
+  | `NodeOptions.ClusterBind` / `MailboxCapacity` | `ListenAddress` / `ShardInboxCapacity` | what they configure |
+
+  Two simplifications came with the review: actor state starts as `new TState()` (field initializers of a state
+  struct run, so `OnLoad` is only for loading), and `ActorIdentity` is a public component, so systems read an actor's
+  `Key` and `Group` instead of copying them into state.
+- Consequences: wire format and wire ids are unchanged (contract and method names are hashed, not attribute names).
+  Earlier records below use the new names.
+
 ## ADR-031 Gossip carries pulses, cards travel once
-- Context: every gossip round serialized the whole member table and every receiver deserialized new `MemberInfo`
+- Context: every gossip round serialized the whole member table and every receiver deserialized new `ClusterMember`
   objects: about 10 KB/s per idle node at one round a second, growing with the square of the cluster size. The view
-  also kept the load hints of the last status change, so dispatch never saw gateways fill up.
+  also kept the load hints of the last status change, so balancers never saw gateways fill up.
 - Decision: a member is its card (identity, endpoints, hosted contracts: fixed while it runs) plus its pulse
   (incarnation, heartbeat, status, load, sessions: 29 bytes). Gossip and its reply carry pulses, written into a pooled
   frame and read in place; a pulse naming an unknown node is answered with `CardRequest`/`Cards`. Pulses update
   members in place; incarnation and status changes publish a copy and rebuild the view. Because counts lag a round,
-  the dispatch adds the clients it directed to a gateway since its last pulse.
+  the balancer adds the clients it directed to a gateway since its last pulse.
 - Consequences: a steady-state round allocates nothing (allocation test at 300 rounds/s); idle nodes in the 10k
   topology allocate 0 KB/s; gossip size is 29 bytes per member. Load hints are fresh within a round.
 
@@ -289,8 +313,8 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
 - Context: Aspire's `WithReplicas` runs replicas as one resource behind a proxy with shared endpoints. Cluster
   members are addressed individually: each gossips its own cluster and client endpoint, links go to a specific node
   and clients are directed to a specific gateway.
-- Decision: `AddNodes` / `AddGateways` / `AddDispatch` create one resource per replica (`gateway-0`, `gateway-1`, ...)
-  with its own endpoints, and every node gets every other node as a seed; the dispatch is the only well-known client
+- Decision: `AddNodes` / `AddGateways` / `AddBalancer` create one resource per replica (`gateway-0`, `gateway-1`, ...)
+  with its own endpoints, and every node gets every other node as a seed; the balancer is the only well-known client
   address. Deployments that do have per-replica DNS (Kubernetes headless services) use DNS seeds instead: a seed that
   resolves to several addresses yields one seed per address.
 - Consequences: replicas are visible and individually addressable on the dashboard; replica count is still a single

@@ -32,7 +32,7 @@ src/DaServer.Generator/    incremental generators (ContractGenerator, HostGenera
                            + DaServerAnalyzer (DAS001-014);
                            Shapes.cs reads symbols once for both, so "skipped by the generator" == "reported"
 src/DaServer.Hosting/      Generic Host integration, configuration, OpenTelemetry (OTLP when configured), shutdown
-src/DaServer.Aspire/       Aspire hosting integration: AddDaServerCluster / AddNodes / AddGateways / AddDispatch /
+src/DaServer.Aspire/       Aspire hosting integration: AddDaServerCluster / AddNodes / AddGateways / AddBalancer /
                            WithGateways
 samples/                   Sample.Contracts / Sample.Login / Sample.Game / Sample.Gateway (node projects: no Program.cs,
                            no appsettings) / Sample.Bot (10k-bot e2e) /
@@ -55,8 +55,8 @@ doc/                       requirements.md, design.md, decisions.md, roadmap.md
    cross-thread handoff only through mailboxes; shared runtime state is immutable snapshots swapped atomically.
 5. **Concise, elegant, no duplication**: generate repetitive code with the source generator; one shared core with
    thin typed wrappers; no copy-pasted variants.
-6. **Developers only write business code**: contracts (`[Service]`/`[Actor]`/`[Push]`, `[Client]` per method),
-   actors/services, events (`[NinoType]` structs, `[Key]`) and `[Handle]` methods, EasyEcs systems with `[ForEach]`
+6. **Developers only write business code**: contracts (`[Service]`/`[Actor]`/`[ToClient]`, `[FromClient]` per method),
+   actors/services, events (`[NinoType]` structs, `[ActorKey]`) and `[Handle]` methods, EasyEcs systems with `[ForEach]`
    methods. Registration, routing, serialization, placement, entry points, orchestration are the framework's job;
    if users would write the same lines twice, generate them.
 7. **ECS all the way down**: the runtime follows the same ECS rules as user code (EasyEcs `doc/ecs-principles.md`):
