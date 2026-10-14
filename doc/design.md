@@ -28,24 +28,22 @@ Acceptance criteria and metrics are in [requirements.md](requirements.md); the r
 
 ### Vocabulary
 
-Everything a developer declares is one of these. The contract marker decides who may call and how a target is
-chosen, so there is no separate attribute for access or routing.
+Everything a developer declares is one of these (ADR-018). Attributes on the contract say how a target is chosen
+and what game clients may call.
 
 | Declaration | Callers | Target |
 |---|---|---|
-| `interface IX : IService` | servers | any node hosting it (load-balanced, local first) |
-| `interface IX : IPublicService` | servers and clients | same |
-| `interface IX : IActor` | servers | the activation of a key (rendezvous placement) |
-| `interface IX : ISessionActor` | servers and clients | clients reach the key the server bound to their session (`Cluster.Bind<IX>`) |
-| `interface IX : IPublicActor` | servers and clients | clients choose the key (public rooms, leaderboards) |
-| `interface IX : IClientCallback` | servers | one session or a client group |
-| `[NinoType] struct E : IEvent` / `IKeyedEvent` | `Cluster.Publish(e)` | every `IHandle<E>`: each service implementation once, the actor activation of `e.Key` |
+| `[Service] interface IX` | servers | any node hosting it (load-balanced, local first) |
+| `[Actor] interface IX` | servers | the activation of a key (rendezvous placement) |
+| `[Client]` on a contract or method | also clients | services: any; actors: the key the server bound to the session (`Cluster.Bind<IX>`) |
+| `[Client(AnyKey = true)]` | also clients | actors: clients choose the key (public rooms, leaderboards) |
+| `[Push] interface IX` | servers | one session or a client group |
+| `[NinoType]` struct, optional `[Key]` member | `Cluster.Publish(e)` | every `[Handle]` method for it: each service implementation once, the actor activation of the key |
 | `class S : EcsSystem` with `[ForEach]` | the shard loop | every matching entity of the shard |
 | `[NinoType]` | | wire data (arguments, results, events); anything else crossing the wire is a build error (DAS009) |
 
-A contract is cut per audience. The sample's map is one actor implementing `IMap : IActor` (servers: `Enter`,
-`Leave`) and `IMapInput : ISessionActor` (clients: `Move`, `Chat`), so a client can never call `Enter` with someone
-else's player id.
+Access is per method. The sample's `IMap` lets servers call `Enter` and `Leave` and lets the bound client call only
+`[Client] Move` and `[Client] Chat`, so a client can never call `Enter` with someone else's player id.
 
 Business code reaches the cluster only through `ICluster` (`Cluster` in actors and services, `world.Cluster()` in
 systems): generated proxies, session binding, client groups and `Publish`. `Node` (lifecycle, membership, links) is
@@ -153,11 +151,14 @@ that keeps session state as ECS components.
 
 ```mermaid
 flowchart TB
-    C[clients] --> G1 & G2
-    subgraph gateways [Sample.Gateway: client sockets, bindings, groups, fan-out, Account]
+    C[clients] -. "connect (well-known address)" .-> D[dispatch<br/>Sample.Gateway, DispatchOnly]
+    C --> G1 & G2
+    subgraph gateways [Sample.Gateway: client sockets, bindings, groups, fan-out; no business code]
         G1[gateway-0]
         G2[gateway-1]
     end
+    L[login-0<br/>Sample.Login: Account]
+    G1 & G2 <--> L
     subgraph game [Sample.Game: Player and Map actors, ECS systems]
         N1[game-0<br/>shards x N]
         N2[game-1<br/>shards x N]
@@ -174,7 +175,7 @@ into one project. A large one splits it by load profile: gateways are IO-bound, 
 sequenceDiagram
     participant Cl as client
     participant G as gateway
-    participant A as Account (service, on the gateway)
+    participant A as Account (service, login node)
     participant P as Player (actor)
     participant M as Map (actor)
     Cl->>G: Account.Login(name)
@@ -184,11 +185,11 @@ sequenceDiagram
     Cl->>G: Player().EnterMap(7)
     G->>P: routed to the bound player id
     P->>M: Map(7).Enter(playerId, session)
-    M->>G: Bind<IMapInput>(session, 7), JoinGroup(session, Group)
-    Cl->>G: MapInput().Move(vx, vy)  (one-way)
+    M->>G: Bind<IMap>(session, 7)  (also joins the map's Group)
+    Cl->>G: Map().Move(vx, vy)  (one-way, [Client])
     G->>M: routed to the bound map
-    M->>M: writes Velocity; MovementSystem and PositionSyncSystem run on the tick
-    M-->>G: PlayerClient(Group).OnMoved(..)  one frame per gateway
+    M->>M: writes Velocity; MovementSystem, PositionSyncSystem, SnapshotSystem run on the tick
+    M-->>G: PlayerClient(Group).OnMoves(changes)  one message per map per tick, one frame per gateway
     G-->>Cl: fan-out to the group's local sessions
     Cl--xG: disconnect
     G-->>P: SessionClosed (bound)
@@ -199,17 +200,22 @@ sequenceDiagram
   the avatars as entities of its shard; `[ForEach]` systems do movement, AOI, combat and sync. Switching maps is
   `Leave` on map A and `Enter` on map B; the player actor stays where it is.
 - **Push and broadcast.** `Cluster.PlayerClient(session)` pushes to one session. `Cluster.PlayerClient(Group)` (every
-  actor has its own group) serializes once and sends one frame per gateway, which fans out locally.
+  actor has its own group) serializes once and sends one frame per gateway, which fans out locally (ADR-025).
+  `ClientGroup.All` reaches every session of the cluster (the sample's realm status every 5 ticks).
+- **Batch per tick.** Systems collect changes into the map's state and one system sends them as one message per map
+  per tick: n moving avatars cost n entries, not n x n messages.
+- **Measured.** 10k bots through a dispatch and 3 gateways to one game node: see the README's Performance section.
 
 ### Backend cluster without clients
 
-The same blocks without gateways: `IService` nodes for stateless request handling behind an HTTP or queue edge, and
-`IActor` nodes for keyed state (accounts, carts, devices, matches) with events between them. Nodes are added and
+The same blocks without gateways: `[Service]` nodes for stateless request handling behind an HTTP or queue edge, and
+`[Actor]` nodes for keyed state (accounts, carts, devices, matches) with events between them. Nodes are added and
 removed at run time; placement moves only the keys of the node that joined or left.
 
 ## 8. Clients
 
-`ClusterClient` connects to a gateway (`host:port`, DNS names included) and uses the same generated proxies as
+`ClusterClient` connects to a gateway (`host:port`, DNS names included); given a dispatch address it moves to the
+gateway the dispatch names (ADR-026), waiting while the cluster forms. It uses the same generated proxies as
 servers: `client.Account().Login(..)`, `client.Player().GetInfo()` (session actors need no key: the gateway uses the
 binding), `client.Room(id).Join()` (public actors). Callbacks are registered with `client.Register<IPlayerClient>(x)`
 and run on the IO thread or, for game loops and UIs, on the application's thread through `ProcessCallbacks`.
@@ -257,20 +263,22 @@ The only per-message work is a dictionary lookup, a queue push and the handler. 
 ## 10. Developer experience (generated code)
 
 ```csharp
-public interface IPlayer : ISessionActor
+[Actor, Client]
+public interface IPlayer
 {
     ValueTask<int> AddGold(int amount);
 }
 
-[NinoType] public readonly partial record struct PlayerLoggedIn(long Key, SessionRef Session) : IKeyedEvent;
+[NinoType] public readonly partial record struct PlayerLoggedIn([property: Key] long Player, SessionRef Session);
 
 public record struct Wallet(int Gold, int Logins) : IComponent;
 
-public sealed class Player : Actor<Wallet>, IPlayer, IHandle<PlayerLoggedIn>
+public sealed class Player : Actor<Wallet>, IPlayer
 {
     public ValueTask<int> AddGold(int amount) => new(State.Gold += amount);
 
-    public ValueTask Handle(PlayerLoggedIn e)
+    [Handle]
+    public ValueTask On(PlayerLoggedIn e)
     {
         State.Logins++;
         return default;
@@ -288,23 +296,24 @@ What the generators write:
 
 | Generator | Output |
 |---|---|
-| `ContractGenerator` | proxy struct, dispatcher switch, wire ids, contract registration with its client access, cluster accessors (`Cluster.Player(key)`, `client.Player()`, `Cluster.PlayerClient(session or group)`) |
-| `HostGenerator` | registration of every actor and service (contracts and handled events) and every `EcsSystem`; the node entry point when the project has no `Program.cs` |
+| `ContractGenerator` | proxy struct, dispatcher switch, wire ids, contract registration with per-method client access, `IKeyed` for keyed events, cluster accessors (`Cluster.Player(key)`, `client.Player()`, `Cluster.PlayerClient(session or group)`) |
+| `HostGenerator` | registration of every actor and service (contracts and `[Handle]` dispatchers) and every `EcsSystem`; the node entry point when the project has no `Program.cs` |
 | EasyEcs `SystemGenerator` | `[ForEach]` struct jobs (components, singletons, entity, world parameters) and `GeneratedUpdate` |
-| Analyzers | DAS001–DAS012 (contracts, wire types, event keys, markers), EECS001–EECS008 (ECS rules) |
+| Analyzers | DAS001–DAS014 (contracts, wire types, contract attributes, handlers, event keys), EECS001–EECS008 (ECS rules) |
 
 Both generators follow the incremental-generator rules: syntax-only predicates, equatable models, tracking names, and
 no diagnostics. There is no reflection scanning, no configuration string and no hand-written registration list. A
-node project is its business classes plus `appsettings.json`.
+node project is its business classes only.
 
 ## 11. Orchestration
 
-- The deployment unit is a project: a node hosts what the project compiles. Ports and seeds come from configuration,
-  bound by `DaServer.Hosting` on the Generic Host. `SIGTERM` triggers a graceful leave.
+- The deployment unit is a project: a node hosts what the project compiles. Names, ports and seeds come from the
+  environment the AppHost sets, bound by `DaServer.Hosting` on the Generic Host. `SIGTERM` triggers a graceful
+  leave. Each node logs a stats line (CPU, allocation rate, GCs, sessions, actors, queue, rejected) every 30 s.
 - The cluster is described once in an Aspire AppHost with `DaServer.Aspire`:
-  `AddDaServerCluster`, `AddNodes<TProject>(name, replicas)`, `AddGateways<TProject>(name, replicas)`. Every node
-  gets a cluster endpoint and seeds (every other node), gateways a client endpoint; `WithGateways` hands the gateway
-  endpoints to clients and bots.
+  `AddDaServerCluster`, `AddNodes<TProject>(name, replicas)`, `AddGateways<TProject>(name, replicas)`,
+  `AddDispatch<TProject>(name)`. Every node gets a cluster endpoint and seeds (every other node), gateways a client
+  endpoint; `WithGateways(dispatch)` hands the dispatch address to clients and bots.
 - The same model runs locally (`dotnet run` on the AppHost, with the dashboard showing logs and OTLP metrics) and is
   published with `aspire publish`: Docker Compose via `AddDockerComposeEnvironment`, Kubernetes via
   `AddKubernetesEnvironment`. There are no hand-maintained deployment files.
@@ -316,7 +325,7 @@ node project is its business classes plus `appsettings.json`.
 |---|---|---|
 | Unit | Queues, buffer pool, frame parsing, pending-call table, membership merge, rendezvous placement | `tests/DaServer.Tests` |
 | Generator | Valid input compiles, every DAS rule fires from the analyzer, the entry point is generated only when missing, unrelated edits hit the incremental cache | `tests/DaServer.Tests` |
-| Integration | In-process clusters on loopback (`ClusterTest`): RPC semantics and ordering, turn-based actors, ECS systems over actor state, single activation, failover, events (keyed, once per service, ordering, routing), gateway access by marker, binding isolation, broadcast, `SessionClosed` | `tests/DaServer.Tests` |
-| Allocation | Steady-state cross-shard calls and keyed events allocate nothing per message | `tests/DaServer.Tests` |
-| End to end | Sample nodes + `Sample.Bot` (login, map, input, broadcast, disconnect); exit code 0 | `samples/` |
-| Benchmarks | BenchmarkDotNet on real loopback sockets: RPC at 1/64/1,024 outstanding calls (local and remote), keyed events (local and remote), broadcast to 1k/5k client sockets | `benchmarks/DaServer.Benchmark` |
+| Integration | In-process clusters on loopback (`ClusterTest`): RPC semantics and ordering, turn-based actors, ECS systems over actor state, single activation, failover, events (keyed, once per service, ordering, routing), gateway access by `[Client]`, binding isolation, broadcast (exact under churn), dispatch, `SessionClosed` (close and gateway crash), backpressure, placement under suspicion | `tests/DaServer.Tests` |
+| Allocation | Steady-state cross-shard calls, keyed events, gateway fan-out and client calls through a gateway allocate nothing per message | `tests/DaServer.Tests` |
+| End to end | AppHost topology (login, game, 3 gateways, dispatch) + `Sample.Bot` with 10k bots: fails on any gap, disconnect or p99 over the limit | `samples/` |
+| Benchmarks | BenchmarkDotNet on real loopback sockets: RPC at 1/64/1,024 outstanding calls (local and remote), keyed events (local and remote), group broadcast to 1k/5k client sockets, broadcast to everyone through 3 gateways (3k/9k) | `benchmarks/DaServer.Benchmark` |
