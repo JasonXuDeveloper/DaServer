@@ -199,6 +199,20 @@ public class GatewayTests : ClusterTest
     }
 
     [Test]
+    public async Task ClientsConnectingWhileTheClusterFormsWaitForAGateway()
+    {
+        var dispatch = await Start("dispatch", gateway: true, hosts: static _ => false, configure: static o => o.DispatchOnly = true);
+        var client = Track(new ClusterClient());
+        var connecting = client.ConnectAsync("127.0.0.1", dispatch.ClientPort).AsTask(); // no gateway exists yet
+
+        await Task.Delay(300);
+        var gateway = await Start("gw", gateway: true);
+        await connecting;
+        Assert.That(gateway.SessionCount, Is.EqualTo(1), "the client was directed to the gateway once it joined");
+        Assert.That(await client.Auth().Login(1), Is.True);
+    }
+
+    [Test]
     public async Task ClosingASessionNotifiesTheBoundActors()
     {
         var gateway = await Start("gw", gateway: true);
