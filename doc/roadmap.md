@@ -11,7 +11,7 @@ Keep this file current: tick items when done, add items when scope changes.
 - [x] Shard runtime as ECS (ADR-013): actor entities with mailbox/turn components, runtime systems, system groups
 - [x] Turn-based actors (ADR-014), stateless services
 - [x] Node: shards, local/remote routing, forwarding/relay, reply sinks
-- [x] Cluster: push-pull gossip, seeds (static + DNS), failure detection, `ClusterView`, rendezvous placement,
+- [x] Cluster: push-pull gossip of pulses (cards once, ADR-031), seeds (static + DNS), failure detection, `ClusterView`, rendezvous placement,
       graceful leave + rebalancing
 - [x] Gateway: sessions, per-contract bindings, per-method `[Client]` access, push, `ClientGroup` broadcast fan-out
       (O(1) membership, `All` is a group, no allocation per broadcast), `SessionClosed` to bound actors, client frame
@@ -60,7 +60,9 @@ Keep this file current: tick items when done, add items when scope changes.
 - [x] Checklist 1-3: 0 warnings, 0 errors; 77 unit/integration tests and the end-to-end test pass (CI green); topology
       names only in the AppHost
 - [x] Checklist 4: RPC unchanged within noise by resumable links (BenchmarkDotNet medium job)
-- [x] Checklist 5: 10,000 bots through the AppHost: E2E OK, p50 35.7 ms, p99 63.8 ms, 600k realm broadcasts, no gap
+- [x] Checklist 5: 10,000 bots, 60 s: E2E OK, 2.4M realm broadcasts, p50 35.1 ms, p99 57.2 ms, no gap or
+      disconnect; servers without telemetry: 0 KB/s except business payloads (chat strings) and < 0.5 B per pushed
+      message on gateways, no GC (README "Performance")
 - [x] Checklist 6: R1-R11 and E1-E10 hold; open items are the unchecked roadmap entries
 
 ## Quality

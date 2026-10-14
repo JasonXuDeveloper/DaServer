@@ -220,21 +220,22 @@ Kubernetes).
 Measured on one 4-core VM (servers, bots and the kernel share it), Release builds.
 
 **10k-player scenario** ([Sample.AppHost](samples/Sample.AppHost), [Sample.Bot](samples/Sample.Bot)): a login
-node, a game node, 3 gateways and a dispatch, run by Aspire. 10,000 bots connect through the dispatch, log in, enter
+node, a game node, 3 gateways and a dispatch (the AppHost's topology, here as plain processes without telemetry). 10,000 bots connect through the dispatch, log in, enter
 100 maps and chat (one message every 10 s each, sent to the map's 100 players); the realm broadcasts its status to
 every session every 5 ticks (20 ticks/s). 60 s measured window:
 
 | | |
 |---|---|
 | Realm broadcasts delivered | 2,400,000 (every bot received every one, in order) |
-| Broadcast latency (game system to bot callback) | p50 33.6 ms, p99 57.2 ms, max 74.2 ms |
+| Broadcast latency (game system to bot callback) | p50 35.1 ms, p99 57.2 ms, max 73.1 ms |
 | Chat deliveries | ~100,000/s |
-| Game node | 2% CPU, 0 B/s allocated, no GC |
-| Each gateway (~3,350 sessions) | 5–6% CPU, 0 B/s allocated, no GC |
+| Game node | 2% CPU, ~32 KB/s allocated (the 1,000 chat strings/s it receives), no GC |
+| Each gateway (~3,300 sessions) | 5–6% CPU, 0–7 KB/s allocated (under 0.5 B per message pushed), no GC |
+| Login, dispatch | 1–2% CPU, 0 KB/s allocated |
 | Disconnects, gaps | 0 |
 
-(CPU is the share of all 4 cores; allocation is 0 without an OTLP exporter, ~55 KB/s per node with Aspire's
-telemetry on.) The latency is dominated by the single bot process receiving 10k sockets on the same machine. Adding
+(CPU is the share of all 4 cores. Without chat the game node allocates 0 KB/s. With Aspire's OTLP telemetry on, the
+exporter adds ~55 KB/s per node.) The latency is dominated by the single bot process receiving 10k sockets on the same machine. Adding
 per-tick position sync for every player (`moves/s` > 0: 20M position entries/s to clients) saturates this machine
 in the bots and the kernel first; the servers stay under 20% CPU each.
 
