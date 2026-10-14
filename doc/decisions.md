@@ -231,3 +231,36 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
   dropped and counted in `daserver.shard.rejected`).
 - Consequences: memory is bounded under any load; overload is visible to callers and in metrics. Pausing a link's
   receive while its target is full (true backpressure across nodes) is on the roadmap.
+
+## ADR-028 Request deadlines travel as a budget
+- Context: a caller that timed out still had its request run (and possibly relayed further) after it gave up, so a
+  backlog kept doing work nobody waited for and recovery after a spike took longer than the spike.
+- Decision: a request's header status byte (unused on requests) carries the caller's remaining time in 100 ms units
+  (up to 25.5 s). Every hop turns it into a local deadline on arrival (`Environment.TickCount64`, no clock sync) and
+  forwards what is left; clients send their call timeout. A shard drops a request whose deadline passed before it
+  runs: no reply (the caller has already failed it), counted in `daserver.shard.expired`.
+- Alternatives: absolute timestamps (need synchronized clocks); a separate header field (24-byte header, one byte
+  was free on requests).
+- Consequences: work whose caller gave up is not run, on any node; one-way messages and events never expire. A
+  request in flight longer than its budget is reported as a timeout, never run late.
+
+## ADR-029 Group broadcasts go to every gateway
+- Context: a `ClientGroup` push is sent once to every gateway, and gateways with no member of the group drop it.
+  Tracking which gateways hold members would save those frames.
+- Decision: keep sending to every gateway. The cost is one small frame per gateway per broadcast, independent of
+  the group size, and a gateway without the group answers it with one dictionary miss. Tracking members per gateway
+  needs membership gossip from gateways to every sender (sessions join groups on whichever node binds them), more
+  ordering cases on gateway loss, and it only pays when there are many gateways and groups live on few of them.
+- Consequences: simple and ordered with binds (ADR-022). Revisit when deployments run tens of gateways with small
+  groups; the roadmap keeps the item.
+
+## ADR-030 One Aspire resource per replica
+- Context: Aspire's `WithReplicas` runs replicas as one resource behind a proxy with shared endpoints. Cluster
+  members are addressed individually: each gossips its own cluster and client endpoint, links go to a specific node
+  and clients are directed to a specific gateway.
+- Decision: `AddNodes` / `AddGateways` / `AddDispatch` create one resource per replica (`gateway-0`, `gateway-1`, ...)
+  with its own endpoints, and every node gets every other node as a seed; the dispatch is the only well-known client
+  address. Deployments that do have per-replica DNS (Kubernetes headless services) use DNS seeds instead: a seed that
+  resolves to several addresses yields one seed per address.
+- Consequences: replicas are visible and individually addressable on the dashboard; replica count is still a single
+  argument, and no endpoints are configured by hand.
