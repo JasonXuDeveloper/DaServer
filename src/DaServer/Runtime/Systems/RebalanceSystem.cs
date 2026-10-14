@@ -20,12 +20,12 @@ internal sealed class RebalanceSystem : EcsSystem
         if (!activity.Rebalance) return;
         activity.Rebalance = false;
 
-        bool stopping = activity.Stopping;
+        bool all = activity.Stopping || activity.RetireAll;
         var placement = World.Shard().Node.Placement;
         foreach (var item in World.Query<ActorLink, ActorIdentity>(Idle))
         {
             var id = item.Component2.Id;
-            if (!stopping && placement.IsLocalOwner(id.ImplementationId, id.Key)) continue;
+            if (!all && placement.IsLocalOwner(id.ImplementationId, id.Key)) continue;
             var actor = item.Entity;
             var link = item.Component1.Actor;
             actor.Add<Deactivating>();
@@ -33,14 +33,19 @@ internal sealed class RebalanceSystem : EcsSystem
         }
 
         // Busy actors were skipped: if one of them must move, look again on the next wake (a turn's end wakes the shard).
+        bool retry = false;
         foreach (var item in World.Query<ActorIdentity>(Busy))
         {
             var id = item.Component1.Id;
-            if (stopping || !placement.IsLocalOwner(id.ImplementationId, id.Key))
+            if (all || !placement.IsLocalOwner(id.ImplementationId, id.Key))
             {
-                World.GetSingleton<ShardActivity>().Rebalance = true;
+                retry = true;
                 break;
             }
         }
+
+        ref var after = ref World.GetSingleton<ShardActivity>();
+        after.Rebalance = retry;
+        if (!retry) after.RetireAll = false;
     }
 }

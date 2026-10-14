@@ -41,13 +41,19 @@ internal static class ShardDispatch
         }
 
         var contract = method.Owner;
+        var impl = node.ImplementationOf(contract);
+        if (impl is { Kind: RpcContractKind.Actor } && TryGetActivation(world, impl.Id, header.Key, out var existing))
+        {
+            Deliver(world, existing, new Envelope(frame, sink)); // even while deactivating: its mail moves in order
+            return;
+        }
+
         if (contract.Kind == RpcContractKind.Actor && !OwnsHere(world, node, contract, header.Key))
         {
             node.Forward(frame, sink);
             return;
         }
 
-        var impl = node.ImplementationOf(contract);
         if (impl == null)
             Reject(frame, sink, requestId, RpcStatus.NotHosted, contract.ToString());
         else if (impl.Kind == RpcContractKind.Actor)
@@ -61,7 +67,9 @@ internal static class ShardDispatch
     {
         var impl = node.ImplementationById(header.RequestId);
         var handler = impl?.HandlerOf(header.MethodId);
-        if (handler == null || (impl!.Kind == RpcContractKind.Actor && !OwnsHere(world, node, impl.Id, header.Key)))
+        if (handler != null && impl!.Kind == RpcContractKind.Actor && TryGetActivation(world, impl.Id, header.Key, out var existing))
+            Deliver(world, existing, new Envelope(frame, null));
+        else if (handler == null || (impl!.Kind == RpcContractKind.Actor && !OwnsHere(world, node, impl.Id, header.Key)))
             node.ForwardEvent(frame);
         else if (impl.Kind == RpcContractKind.Actor)
             Deliver(world, ActorOf(world, impl, header.Key), new Envelope(frame, null));
@@ -77,6 +85,10 @@ internal static class ShardDispatch
 
     private static object ServiceOf(World world, ImplementationInfo impl) =>
         world.GetSingleton<ServiceDirectory>().Services[impl.Id];
+
+    /// <summary>An activation of this shard, including one being deactivated (new mail queues behind its mail).</summary>
+    private static bool TryGetActivation(World world, uint implementationId, long key, out Entity actor) =>
+        world.GetSingleton<ActorDirectory>().Actors.TryGetValue(new ActorId(implementationId, key), out actor);
 
     /// <summary>The activation of (<paramref name="impl"/>, <paramref name="key"/>) on this shard, activated on first use.</summary>
     private static Entity ActorOf(World world, ImplementationInfo impl, long key)

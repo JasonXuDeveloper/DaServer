@@ -82,4 +82,10 @@ internal struct ShardActivity : ISingletonComponent
 
     /// <summary>The shard is stopping: every actor is deactivated, no new activation starts.</summary>
     public bool Stopping;
+
+    /// <summary>
+    /// Deactivate every current activation once (the cluster declared this node Dead and moved its keys); cleared when
+    /// none is left busy. New activations are allowed: they are legitimate once the node is Up again.
+    /// </summary>
+    public bool RetireAll;
 }
