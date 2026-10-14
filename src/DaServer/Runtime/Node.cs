@@ -21,6 +21,7 @@ namespace DaServer.Runtime;
 public sealed partial class Node : ICluster, IAsyncDisposable
 {
     private readonly ConcurrentDictionary<(string Host, int Port), PeerLink> _links = new();
+    private PeerLink[] _linkList = [];
     private Shard[] _shards = [];
     private FrozenDictionary<uint, ImplementationInfo> _implementationByContract = FrozenDictionary<uint, ImplementationInfo>.Empty;
     private FrozenDictionary<uint, ImplementationInfo> _implementationById = FrozenDictionary<uint, ImplementationInfo>.Empty;
@@ -259,6 +260,11 @@ public sealed partial class Node : ICluster, IAsyncDisposable
     {
         foreach (var shard in _shards) shard.RequestRebalance();
 
+        // Calls waiting on a dead member's link fail now instead of at their timeout (its stream cannot resume).
+        foreach (var member in View.Members)
+            if (member.Status == MemberStatus.Dead && _links.TryGetValue((member.Host, member.Port), out var link))
+                link.OnPeerDead();
+
         var gateways = new List<ulong>();
         foreach (var member in View.Members)
             if (member.ClientPort != 0 && member.Status != MemberStatus.Dead) gateways.Add(member.NodeId);
@@ -282,6 +288,7 @@ public sealed partial class Node : ICluster, IAsyncDisposable
         try
         {
             Pending.SweepExpired();
+            foreach (var link in Volatile.Read(ref _linkList)) link.AcknowledgeReceived();
         }
         catch (Exception e)
         {

@@ -22,10 +22,20 @@ internal static class ControlOp
     public const uint GossipReply = 2;
 
     /// <summary>
-    /// First frame of every node link: Key = sender node id, payload = its advertised host and port. The receiver
+    /// First frame of every node link connection: Key = sender node id, payload = its advertised host and port and the
+    /// id of its stream to us. The receiver
     /// answers everything that arrives on the connection through its own link to that node (see <see cref="PeerLink.ReplySink"/>).
     /// </summary>
     public const uint Hello = 3;
+
+    /// <summary>
+    /// Answer to a <see cref="Hello"/> on the same connection: Key = bytes of the sender's stream this node processed
+    /// (the sender replays the rest, ADR-008), payload = this node's id (a different id means the peer restarted).
+    /// </summary>
+    public const uint Resume = 5;
+
+    /// <summary>Receiver to sender on a link connection: Key = bytes of the stream processed so far.</summary>
+    public const uint Acknowledge = 6;
 
     /// <summary>Client to gateway (a request: RequestId set): which gateway should I use? Answer: a <see cref="GatewayEndpoint"/>.</summary>
     public const uint PickGateway = 4;

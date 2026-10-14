@@ -22,6 +22,15 @@ public interface IConnectionHandler
     void OnClosed(Connection connection, Exception? error);
 }
 
+/// <summary>
+/// Sees every byte a connection hands to its socket, in order and before it is written (resumable node links keep
+/// what the peer has not acknowledged). Called on the connection's send loop, outside its locks.
+/// </summary>
+internal interface ISendTap
+{
+    void OnSending(ReadOnlySpan<byte> bytes);
+}
+
 public sealed class ConnectionOptions
 {
     /// <summary>Receive buffer size used while data is flowing.</summary>
@@ -44,6 +53,9 @@ public sealed class ConnectionOptions
 
     /// <summary>Initial pending-send batch buffer size.</summary>
     public int SendBufferSize { get; set; } = 16 * 1024;
+
+    /// <summary>Receives a copy of the outgoing stream (node links, see <see cref="ISendTap"/>).</summary>
+    internal ISendTap? Tap { get; set; }
 
     public static ConnectionOptions ForClients() => new ConnectionOptions
     {
@@ -80,6 +92,7 @@ public sealed class Connection
     private byte[] _pending;
     private int _pendingLength;
     private int _closed;
+    private readonly ISendTap? _tap;
 
     public Connection(Socket socket, IConnectionHandler handler, ConnectionOptions? options = null)
     {
@@ -87,6 +100,7 @@ public sealed class Connection
         _handler = handler;
         _options = options ?? new ConnectionOptions();
         _pending = Array.Empty<byte>();
+        _tap = _options.Tap;
         Id = Interlocked.Increment(ref _nextId);
         socket.NoDelay = true;
         RemoteEndPoint = socket.RemoteEndPoint;
@@ -136,11 +150,17 @@ public sealed class Connection
         return connection;
     }
 
+    /// <summary>Completes when the send loop has ended (every byte given to the connection reached the tap).</summary>
+    internal Task SendCompletion { get; private set; } = Task.CompletedTask;
+
+    /// <summary>Completes when the receive loop has ended (no frame of this connection is delivered any more).</summary>
+    internal Task ReceiveCompletion { get; private set; } = Task.CompletedTask;
+
     /// <summary>Start the receive and send loops.</summary>
     public void Start()
     {
-        _ = ReceiveLoop();
-        _ = SendLoop();
+        ReceiveCompletion = ReceiveLoop();
+        SendCompletion = SendLoop();
     }
 
     /// <summary>
@@ -256,6 +276,8 @@ public sealed class Connection
                         sending = batch;
                     }
 
+                    _tap?.OnSending(new ReadOnlySpan<byte>(sending, 0, length));
+
                     int offset = 0;
                     while (offset < length)
                     {
@@ -283,12 +305,18 @@ public sealed class Connection
         {
             Volatile.Write(ref _closed, 1);
             BufferPool.Return(sending);
+            byte[] unsent;
+            int unsentLength;
             lock (_sendLock)
             {
-                BufferPool.Return(_pending);
+                (unsent, unsentLength) = (_pending, _pendingLength);
                 _pending = Array.Empty<byte>();
                 _pendingLength = 0;
             }
+
+            // Queued but never written: the tap still sees it (outside the lock: the tap may send on another connection).
+            if (unsentLength > 0) _tap?.OnSending(new ReadOnlySpan<byte>(unsent, 0, unsentLength));
+            BufferPool.Return(unsent);
         }
     }
 
