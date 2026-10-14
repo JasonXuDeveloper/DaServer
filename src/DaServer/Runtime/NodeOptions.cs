@@ -65,6 +65,12 @@ public sealed class NodeOptions
     public TimeSpan SuspectAfter { get; set; } = TimeSpan.FromSeconds(3);
     public TimeSpan DeadAfter { get; set; } = TimeSpan.FromSeconds(10);
 
+    /// <summary>
+    /// Unacknowledged bytes each node link keeps so its stream resumes after a disconnect (ADR-008). Acknowledgements
+    /// arrive every 64 KB, so a link holds about what is in flight; a disconnect that needs more restarts the stream.
+    /// </summary>
+    public int LinkResendWindow { get; set; } = 32 * 1024 * 1024;
+
     /// <summary>log2 of the max number of concurrent outgoing calls per node.</summary>
     public int PendingCallBits { get; set; } = 18;
 

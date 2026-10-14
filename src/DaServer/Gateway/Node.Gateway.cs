@@ -147,6 +147,12 @@ public sealed partial class Node
             case ControlOp.Hello:
                 OnHello(connection, payload);
                 break;
+            case ControlOp.Resume:
+                OnResume(connection, header.Key, payload);
+                break;
+            case ControlOp.Acknowledge:
+                (connection.Tag as PeerLink)?.OnAcknowledge(connection, header.Key);
+                break;
             case ControlOp.Gossip:
             case ControlOp.GossipReply:
                 Membership.OnGossip(connection, header.MethodId, payload);

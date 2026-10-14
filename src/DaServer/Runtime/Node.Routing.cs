@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using DaServer.Buffers;
@@ -173,6 +174,7 @@ public sealed partial class Node : IRpcInvoker, IConnectionHandler
             return;
         }
 
+        if (connection.Tag is PeerLink link) link.OnReceived(connection, header.Length);
         switch (header.Kind)
         {
             case FrameKind.Request:
@@ -250,14 +252,18 @@ public sealed partial class Node : IRpcInvoker, IConnectionHandler
         sink.SendReply(requestId, status, w);
     }
 
-    /// <summary>The first frame of each node link: who we are, so the peer answers through its own link to us.</summary>
-    internal ReadOnlySpan<byte> HelloFrame()
+    /// <summary>
+    /// The first frame of each node link connection: who we are, so the peer answers through its own link to us, and
+    /// which stream continues on it.
+    /// </summary>
+    internal byte[] HelloFrame(long streamId)
     {
         var self = Membership.Self;
         var w = FrameWriter.Rent();
         var nino = w.Nino;
         NinoSerializer.Serialize(self.Host, ref nino);
         NinoSerializer.Serialize(self.Port, ref nino);
+        NinoSerializer.Serialize(streamId, ref nino);
         w.SetHeader(FrameKind.Control, 0, ControlOp.Hello, (long)Id);
         var frame = w.Frame.ToArray(); // once per connection
         w.Dispose();
@@ -270,16 +276,37 @@ public sealed partial class Node : IRpcInvoker, IConnectionHandler
         var reader = new Reader(payload);
         NinoDeserializer.Deserialize(out string host, ref reader);
         NinoDeserializer.Deserialize(out int port, ref reader);
-        connection.Tag = GetLink(host, port);
+        NinoDeserializer.Deserialize(out long streamId, ref reader);
+        GetLink(host, port).OnInboundHello(connection, streamId);
+    }
+
+    /// <summary>Our Hello was answered on <paramref name="connection"/>: the link resumes its stream.</summary>
+    private static void OnResume(Connection connection, long received, ReadOnlySpan<byte> payload)
+    {
+        if (connection.Tag is not PeerLink link) return;
+        var reader = new Reader(payload);
+        NinoDeserializer.Deserialize(out ulong peerId, ref reader);
+        link.OnResume(connection, received, peerId);
     }
 
     /// <summary>The link to <paramref name="member"/> (cached on the member: no lookup on the send path).</summary>
     internal PeerLink GetLink(MemberInfo member) => member.Link ??= GetLink(member.Host, member.Port);
 
     internal PeerLink GetLink(string host, int port) =>
-        _links.TryGetValue((host, port), out var link)
-            ? link
-            : _links.GetOrAdd((host, port), static (endpoint, node) => new PeerLink(node, endpoint.Host, endpoint.Port), this);
+        _links.TryGetValue((host, port), out var link) ? link : AddLink(host, port);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private PeerLink AddLink(string host, int port)
+    {
+        lock (_links)
+        {
+            if (_links.TryGetValue((host, port), out var link)) return link;
+            link = new PeerLink(this, host, port);
+            _links[(host, port)] = link;
+            _linkList = [.. _linkList, link]; // copy on write: the maintenance tick walks it without allocating
+            return link;
+        }
+    }
 
     // ------------------------------------------------------------------ reply sinks
 
