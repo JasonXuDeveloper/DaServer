@@ -116,6 +116,23 @@ public class AllocationTests : ClusterTest
         }
     }
 
+    [Test]
+    public async Task GossipRoundsDoNotAllocate()
+    {
+        // Three members gossiping every 10 ms (about 300 rounds a second between them), idle otherwise.
+        for (int i = 0; i < 3; i++)
+            await Start("gossip-" + i, configure: static o => o.GossipInterval = TimeSpan.FromMilliseconds(10));
+        await Converged();
+        Thread.Sleep(2000); // cards exchanged, links, pools and tiered JIT warm
+
+        var meter = new AllocationMeter();
+        Thread.Sleep(2000);
+        long allocated = meter.Garbage;
+        // Exchanging full tables cost an idle six-node topology about 10 KB/s per node at one round a second; pulses
+        // are read in place. What remains is the process background (timers: about 2 KB/s with gossip off).
+        Assert.That(allocated / 600.0, Is.LessThan(32), $"{allocated} B for about 600 rounds");
+    }
+
     /// <summary>
     /// Garbage allocated (process-wide) since construction: every allocation minus <see cref="BufferPool"/> growth,
     /// which is pinned memory the pool keeps for reuse once returned, not GC pressure. Growth is reported apart.

@@ -1,10 +1,12 @@
 using System;
 using System.Collections.Generic;
+using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
 using DaServer.Buffers;
+using DaServer.Net;
 using DaServer.Protocol;
 using DaServer.Runtime;
 using Microsoft.Extensions.Logging;
@@ -15,10 +17,10 @@ namespace DaServer.Cluster;
 /// <summary>Control operations carried in <see cref="FrameKind.Control"/> frames (MethodId field).</summary>
 internal static class ControlOp
 {
-    /// <summary>Push gossip: payload = MemberInfo[]; the receiver answers with <see cref="GossipReply"/>.</summary>
+    /// <summary>Push gossip: payload = the sender's table as <see cref="Pulse"/>s; answered with <see cref="GossipReply"/>.</summary>
     public const uint Gossip = 1;
 
-    /// <summary>Pull half of push-pull gossip: payload = MemberInfo[].</summary>
+    /// <summary>Pull half of push-pull gossip: payload = <see cref="Pulse"/>s.</summary>
     public const uint GossipReply = 2;
 
     /// <summary>
@@ -36,6 +38,12 @@ internal static class ControlOp
 
     /// <summary>Receiver to sender on a link connection: Key = bytes of the stream processed so far.</summary>
     public const uint Acknowledge = 6;
+
+    /// <summary>Gossip named nodes we have no card for: payload = their ids (ulong each); answered with <see cref="Cards"/>.</summary>
+    public const uint CardRequest = 7;
+
+    /// <summary>Full member descriptions: payload = MemberInfo[] (sent when a node meets another, not every round).</summary>
+    public const uint Cards = 8;
 
     /// <summary>Client to gateway (a request: RequestId set): which gateway should I use? Answer: a <see cref="GatewayEndpoint"/>.</summary>
     public const uint PickGateway = 4;
@@ -61,7 +69,8 @@ internal static class ControlOp
 /// <summary>
 /// Gossip-based membership with heartbeat-staleness failure detection (no clock synchronisation needed):
 /// every <see cref="NodeOptions.GossipInterval"/> a node bumps its heartbeat and exchanges its member table with up to
-/// three random peers (push-pull). A member whose heartbeat has not advanced for SuspectAfter becomes Suspect, after
+/// three random peers (push-pull) as fixed-size <see cref="Pulse"/>s; full cards travel only to nodes that ask for
+/// them, so a steady-state round allocates nothing. A member whose heartbeat has not advanced for SuspectAfter becomes Suspect, after
 /// DeadAfter Dead; a node that learns it is suspected refutes by bumping its incarnation.
 /// </summary>
 internal sealed class Membership : IDisposable
@@ -77,6 +86,8 @@ internal sealed class Membership : IDisposable
     private Timer? _timer;
     private bool _changed;
     private List<(string Host, int Port)>? _seeds;
+    private readonly MemberInfo[] _targets = new MemberInfo[Fanout];
+    private int _inRound;
     private long _seedsResolvedAt;
 
     private static readonly TimeSpan SeedRefresh = TimeSpan.FromSeconds(5);
@@ -131,13 +142,13 @@ internal sealed class Membership : IDisposable
     {
         lock (_gate)
         {
-            UpdateSelf(m => m.Status = MemberStatus.Leaving);
+            UpdateSelf(MemberStatus.Leaving, _self.Incarnation);
             Publish();
         }
 
         foreach (var member in View.Members)
             if (member.NodeId != _node.Id && member.Status != MemberStatus.Dead)
-                SendGossip(_node.GetLink(member), ControlOp.Gossip);
+                SendPulses(_node.GetLink(member));
     }
 
     public void Dispose() => _timer?.Dispose();
@@ -145,33 +156,38 @@ internal sealed class Membership : IDisposable
     /// <summary>One gossip round (timer thread).</summary>
     private void Round()
     {
-        List<MemberInfo>? targets = null;
+        if (Interlocked.Exchange(ref _inRound, 1) != 0) return; // the previous round is still sending
         try
         {
+            int targets;
             lock (_gate)
             {
-                UpdateSelf(m =>
-                {
-                    m.Heartbeat++;
-                    m.Load = _node.TotalQueueLength();
-                    m.Sessions = _node.SessionCount;
-                });
+                _self.Heartbeat++;
+                _self.Load = _node.TotalQueueLength();
+                _self.Sessions = _node.SessionCount;
                 DetectFailures();
                 if (_changed) Publish();
                 targets = PickTargets();
             }
 
-            foreach (var member in targets)
-                SendGossip(_node.GetLink(member), ControlOp.Gossip);
+            for (int i = 0; i < targets; i++)
+            {
+                SendPulses(_node.GetLink(_targets[i]));
+                _targets[i] = null!;
+            }
 
             // Alone (or still joining): keep contacting the seeds until someone answers.
-            if (targets.Count == 0 || View.UpMembers.Length <= 1)
+            if (targets == 0 || View.UpMembers.Length <= 1)
                 foreach (var (host, port) in SeedEndPoints())
-                    SendGossip(_node.GetLink(host, port), ControlOp.Gossip);
+                    SendPulses(_node.GetLink(host, port));
         }
         catch (Exception e)
         {
             _node.Logger.LogError(e, "Gossip round failed");
+        }
+        finally
+        {
+            Volatile.Write(ref _inRound, 0);
         }
     }
 
@@ -217,70 +233,165 @@ internal sealed class Membership : IDisposable
         _changed = true;
     }
 
-    private List<MemberInfo> PickTargets()
+    /// <summary>Up to <see cref="Fanout"/> random live members into <see cref="_targets"/> (reservoir sampling).</summary>
+    private int PickTargets()
     {
-        var candidates = new List<MemberInfo>();
+        int seen = 0;
         foreach (var (id, entry) in _members)
-            if (id != _node.Id && entry.Info.Status is MemberStatus.Up or MemberStatus.Suspect or MemberStatus.Joining)
-                candidates.Add(entry.Info);
-
-        for (int i = candidates.Count - 1; i > 0; i--)
         {
-            int j = Random.Shared.Next(i + 1);
-            (candidates[i], candidates[j]) = (candidates[j], candidates[i]);
+            if (id == _node.Id || entry.Info.Status is not (MemberStatus.Up or MemberStatus.Suspect or MemberStatus.Joining))
+                continue;
+            int slot = seen < Fanout ? seen : Random.Shared.Next(seen + 1);
+            if (slot < Fanout) _targets[slot] = entry.Info;
+            seen++;
         }
 
-        if (candidates.Count > Fanout) candidates.RemoveRange(Fanout, candidates.Count - Fanout);
-        return candidates;
+        return Math.Min(seen, Fanout);
     }
 
     // ------------------------------------------------------------------ wire
 
-    private void SendGossip(PeerLink link, uint op)
+    /// <summary>Our table as pulses, written straight into a pooled frame.</summary>
+    private FrameWriter PulseFrame(uint op)
     {
-        MemberInfo[] table;
+        FrameWriter w;
+        Span<byte> pulse = stackalloc byte[Pulse.Size];
         lock (_gate)
         {
-            table = new MemberInfo[_members.Count];
-            int i = 0;
-            foreach (var entry in _members.Values) table[i++] = entry.Info;
+            w = FrameWriter.Rent(FrameHeader.Size + _members.Count * Pulse.Size);
+            foreach (var entry in _members.Values)
+            {
+                Pulse.Of(entry.Info).Write(pulse);
+                w.WriteRaw(pulse);
+            }
         }
 
-        var w = FrameWriter.Rent(1024);
-        var nino = w.Nino;
-        NinoSerializer.Serialize(table, ref nino);
         w.SetHeader(FrameKind.Control, 0, op, 0);
+        return w;
+    }
+
+    private void SendPulses(PeerLink link)
+    {
+        var w = PulseFrame(ControlOp.Gossip);
         link.Send(w.Frame);
         w.Dispose();
     }
 
-    /// <summary>Handle a gossip control frame (IO thread).</summary>
-    public void OnGossip(Net.Connection connection, uint op, ReadOnlySpan<byte> payload)
+    /// <summary>Handle a gossip control frame (IO thread). Answers go back on the same connection.</summary>
+    public void OnGossip(Connection connection, uint op, ReadOnlySpan<byte> payload)
     {
-        var reader = new Reader(payload);
-        NinoDeserializer.Deserialize(out MemberInfo[] incoming, ref reader);
-        Merge(incoming);
+        switch (op)
+        {
+            case ControlOp.Gossip:
+            case ControlOp.GossipReply:
+                if (MergePulses(payload)) RequestCards(connection, payload);
+                if (op == ControlOp.Gossip)
+                {
+                    var w = PulseFrame(ControlOp.GossipReply);
+                    connection.Send(w.Frame);
+                    w.Dispose();
+                }
 
-        if (op != ControlOp.Gossip) return;
+                break;
+            case ControlOp.CardRequest:
+                SendCards(connection, payload);
+                break;
+            case ControlOp.Cards:
+                var reader = new Reader(payload);
+                NinoDeserializer.Deserialize(out MemberInfo[] cards, ref reader);
+                MergeCards(cards);
+                break;
+        }
+    }
 
-        // Pull half: answer with our table on the same connection.
-        MemberInfo[] table;
+    /// <summary>Apply pulses in place; true when some name a node we have no card for.</summary>
+    private bool MergePulses(ReadOnlySpan<byte> pulses)
+    {
+        bool unknown = false;
         lock (_gate)
         {
-            table = new MemberInfo[_members.Count];
-            int i = 0;
-            foreach (var entry in _members.Values) table[i++] = entry.Info;
+            long now = Stopwatch.GetTimestamp();
+            for (; pulses.Length >= Pulse.Size; pulses = pulses.Slice(Pulse.Size))
+            {
+                var pulse = Pulse.Read(pulses);
+                if (pulse.NodeId == _node.Id)
+                {
+                    Refute(pulse.Status, pulse.Incarnation);
+                    continue;
+                }
+
+                if (!_members.TryGetValue(pulse.NodeId, out var entry))
+                {
+                    unknown = true;
+                    continue;
+                }
+
+                var info = entry.Info;
+                if (!pulse.Supersedes(info)) continue;
+                if (pulse.Heartbeat != info.Heartbeat || pulse.Incarnation != info.Incarnation) entry.LastProgress = now;
+                if (pulse.Incarnation != info.Incarnation || pulse.Status != info.Status)
+                {
+                    // Routing-relevant: publish a copy (the view is rebuilt).
+                    info = info.Clone();
+                    info.Incarnation = pulse.Incarnation;
+                    info.Status = pulse.Status;
+                    entry.Info = info;
+                    _changed = true;
+                }
+
+                info.Heartbeat = pulse.Heartbeat;
+                info.Load = pulse.Load;
+                if (info.Sessions != pulse.Sessions)
+                {
+                    info.Sessions = pulse.Sessions;
+                    Volatile.Write(ref info.Directed, 0); // counted by the gateway now (approximately: hints)
+                }
+            }
+
+            if (_changed) Publish();
         }
 
-        var w = FrameWriter.Rent(1024);
-        var nino = w.Nino;
-        NinoSerializer.Serialize(table, ref nino);
-        w.SetHeader(FrameKind.Control, 0, ControlOp.GossipReply, 0);
+        return unknown;
+    }
+
+    /// <summary>Ask the sender of <paramref name="pulses"/> for the cards of the nodes we do not know.</summary>
+    private void RequestCards(Connection connection, ReadOnlySpan<byte> pulses)
+    {
+        var w = FrameWriter.Rent();
+        Span<byte> id = stackalloc byte[sizeof(ulong)];
+        lock (_gate)
+        {
+            for (; pulses.Length >= Pulse.Size; pulses = pulses.Slice(Pulse.Size))
+            {
+                ulong nodeId = Pulse.Read(pulses).NodeId;
+                if (nodeId == _node.Id || _members.ContainsKey(nodeId)) continue;
+                BinaryPrimitives.WriteUInt64LittleEndian(id, nodeId);
+                w.WriteRaw(id);
+            }
+        }
+
+        w.SetHeader(FrameKind.Control, 0, ControlOp.CardRequest, 0);
         connection.Send(w.Frame);
         w.Dispose();
     }
 
-    private void Merge(MemberInfo[] incoming)
+    private void SendCards(Connection connection, ReadOnlySpan<byte> ids)
+    {
+        var cards = new List<MemberInfo>();
+        lock (_gate)
+            for (; ids.Length >= sizeof(ulong); ids = ids.Slice(sizeof(ulong)))
+                if (_members.TryGetValue(BinaryPrimitives.ReadUInt64LittleEndian(ids), out var entry))
+                    cards.Add(entry.Info);
+
+        var w = FrameWriter.Rent(1024);
+        var nino = w.Nino;
+        NinoSerializer.Serialize(cards.ToArray(), ref nino);
+        w.SetHeader(FrameKind.Control, 0, ControlOp.Cards, 0);
+        connection.Send(w.Frame);
+        w.Dispose();
+    }
+
+    private void MergeCards(MemberInfo[] incoming)
     {
         lock (_gate)
         {
@@ -289,21 +400,7 @@ internal sealed class Membership : IDisposable
             {
                 if (member.NodeId == _node.Id)
                 {
-                    // Someone thinks we are suspect/dead: refute with a higher incarnation. Dead means the cluster already
-                    // moved our keys: retire our activations first so they do not run beside the new ones.
-                    if (member.Status is MemberStatus.Suspect or MemberStatus.Dead && member.Incarnation >= _self.Incarnation &&
-                        _self.Status == MemberStatus.Up)
-                    {
-                        if (member.Status == MemberStatus.Dead)
-                        {
-                            _node.Logger.LogWarning("Declared dead by the cluster: retiring local actors before rejoining");
-                            foreach (var shard in _node.Shards) shard.RequestRetireAll();
-                        }
-
-                        int incarnation = member.Incarnation + 1;
-                        UpdateSelf(m => m.Incarnation = incarnation);
-                    }
-
+                    Refute(member.Status, member.Incarnation);
                     continue;
                 }
 
@@ -316,26 +413,45 @@ internal sealed class Membership : IDisposable
                 }
 
                 if (!member.Supersedes(entry.Info)) continue;
-
-                bool progressed = member.Heartbeat != entry.Info.Heartbeat || member.Incarnation != entry.Info.Incarnation;
-                if (member.Status != entry.Info.Status) _changed = true; // routing-relevant change: republish the view
                 entry.Info = member;
-                if (progressed) entry.LastProgress = now;
+                entry.LastProgress = now;
+                _changed = true;
             }
 
             if (_changed) Publish();
         }
     }
 
+    /// <summary>
+    /// Someone thinks we are suspect/dead: refute with a higher incarnation. Dead means the cluster already moved our
+    /// keys: retire our activations first so they do not run beside the new ones. Under the gate.
+    /// </summary>
+    private void Refute(MemberStatus status, int incarnation)
+    {
+        if (status is not (MemberStatus.Suspect or MemberStatus.Dead) || incarnation < _self.Incarnation ||
+            _self.Status != MemberStatus.Up)
+            return;
+
+        if (status == MemberStatus.Dead)
+        {
+            _node.Logger.LogWarning("Declared dead by the cluster: retiring local actors before rejoining");
+            foreach (var shard in _node.Shards) shard.RequestRetireAll();
+        }
+
+        UpdateSelf(_self.Status, incarnation + 1);
+    }
+
     // ------------------------------------------------------------------ helpers (call under _gate)
 
-    private void UpdateSelf(Action<MemberInfo> change)
+    /// <summary>Publish a copy of ourselves with a new status or incarnation (no delegate: refutation is per pulse).</summary>
+    private void UpdateSelf(MemberStatus status, int incarnation)
     {
         var self = _self.Clone();
-        change(self);
+        self.Status = status;
+        self.Incarnation = incarnation;
         Volatile.Write(ref _self, self);
         _members[_node.Id] = new Entry(self, Stopwatch.GetTimestamp());
-        if (self.Status != _view.TryGetSelfStatus(_node.Id)) _changed = true;
+        _changed = true; // the view must hold the new object (pulse fields are updated in place on it)
     }
 
     private void Publish()
@@ -415,10 +531,4 @@ internal sealed class Membership : IDisposable
         host = colon > 0 ? text[..colon] : text;
         return int.TryParse(colon > 0 ? text[(colon + 1)..] : "", out port);
     }
-}
-
-internal static class ClusterViewExtensions
-{
-    public static MemberStatus? TryGetSelfStatus(this ClusterView view, ulong nodeId) =>
-        view.TryGetMember(nodeId, out var m) ? m.Status : null;
 }

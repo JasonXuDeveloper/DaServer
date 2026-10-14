@@ -1,3 +1,6 @@
+using System;
+using System.Buffers.Binary;
+using System.Threading;
 using Nino.Core;
 
 namespace DaServer.Cluster;
@@ -30,7 +33,12 @@ public partial struct HostedHandler
     public bool Actor;
 }
 
-/// <summary>Gossiped description of a cluster member. Immutable once published (copy to change).</summary>
+/// <summary>
+/// Description of a cluster member: its card (identity, endpoints, hosted contracts: fixed for the node's lifetime, sent
+/// once to each node that meets it) and its pulse (<see cref="Pulse"/>, gossiped every round). Incarnation and status
+/// changes publish a copy; heartbeat, load and session counts are updated in place, so the view always shows the
+/// latest load hints without being rebuilt (readers may see a hint one round old).
+/// </summary>
 [NinoType]
 public partial class MemberInfo
 {
@@ -68,6 +76,16 @@ public partial class MemberInfo
     /// <summary>Connected client sessions (gateways): clients are directed to the least loaded gateway.</summary>
     public int Sessions;
 
+    /// <summary>
+    /// Clients this node directed to the gateway since its last pulse (dispatch only): added to <see cref="Sessions"/>
+    /// so a burst of connections within one gossip round does not all pick the gateway that reported the fewest.
+    /// </summary>
+    [NinoIgnore]
+    internal int Directed;
+
+    /// <summary>Sessions the gateway has, as far as this node knows.</summary>
+    internal int ExpectedSessions => Sessions + Volatile.Read(ref Directed);
+
     /// <summary>A dispatch gateway: it directs clients to the other gateways and keeps no sessions itself.</summary>
     public bool DispatchOnly;
 
@@ -81,12 +99,44 @@ public partial class MemberInfo
     public MemberInfo Clone() => (MemberInfo)MemberwiseClone();
 
     /// <summary>Gossip merge order: higher incarnation, then worse status, then higher heartbeat wins.</summary>
-    public bool Supersedes(MemberInfo other)
-    {
-        if (Incarnation != other.Incarnation) return Incarnation > other.Incarnation;
-        if (Status != other.Status) return Status > other.Status;
-        return Heartbeat > other.Heartbeat;
-    }
+    public bool Supersedes(MemberInfo other) => Pulse.Of(this).Supersedes(other);
 
     public override string ToString() => $"{Name}({NodeId:x}) {Host}:{Port} {Status} inc={Incarnation} hb={Heartbeat}";
+}
+
+/// <summary>
+/// The part of a member that changes while it runs: what a gossip round carries for every member (29 bytes, written
+/// and read in place, so a round allocates nothing). Unknown node ids are answered with full cards.
+/// </summary>
+internal readonly record struct Pulse(ulong NodeId, int Incarnation, long Heartbeat, MemberStatus Status, int Load, int Sessions)
+{
+    public const int Size = 8 + 4 + 8 + 1 + 4 + 4;
+
+    public static Pulse Of(MemberInfo m) => new(m.NodeId, m.Incarnation, m.Heartbeat, m.Status, m.Load, m.Sessions);
+
+    /// <summary>Gossip merge order: higher incarnation, then worse status, then higher heartbeat wins.</summary>
+    public bool Supersedes(MemberInfo current)
+    {
+        if (Incarnation != current.Incarnation) return Incarnation > current.Incarnation;
+        if (Status != current.Status) return Status > current.Status;
+        return Heartbeat > current.Heartbeat;
+    }
+
+    public void Write(Span<byte> s)
+    {
+        BinaryPrimitives.WriteUInt64LittleEndian(s, NodeId);
+        BinaryPrimitives.WriteInt32LittleEndian(s.Slice(8), Incarnation);
+        BinaryPrimitives.WriteInt64LittleEndian(s.Slice(12), Heartbeat);
+        s[20] = (byte)Status;
+        BinaryPrimitives.WriteInt32LittleEndian(s.Slice(21), Load);
+        BinaryPrimitives.WriteInt32LittleEndian(s.Slice(25), Sessions);
+    }
+
+    public static Pulse Read(ReadOnlySpan<byte> s) => new(
+        BinaryPrimitives.ReadUInt64LittleEndian(s),
+        BinaryPrimitives.ReadInt32LittleEndian(s.Slice(8)),
+        BinaryPrimitives.ReadInt64LittleEndian(s.Slice(12)),
+        (MemberStatus)s[20],
+        BinaryPrimitives.ReadInt32LittleEndian(s.Slice(21)),
+        BinaryPrimitives.ReadInt32LittleEndian(s.Slice(25)));
 }
