@@ -24,11 +24,22 @@ public partial struct SessionRef : IEquatable<SessionRef>
 
     public override readonly bool Equals(object? obj) => obj is SessionRef other && Equals(other);
 
-    public override readonly int GetHashCode() => (GatewayNodeId.GetHashCode() * 397) ^ SessionId.GetHashCode();
+    public override readonly int GetHashCode() => HashCode.Combine(GatewayNodeId, SessionId);
 
     public override readonly string ToString() => $"Session({GatewayNodeId:x}:{SessionId})";
 
     public static bool operator ==(SessionRef a, SessionRef b) => a.Equals(b);
 
     public static bool operator !=(SessionRef a, SessionRef b) => !a.Equals(b);
+}
+
+/// <summary>
+/// A broadcast group of client sessions spanning every gateway (map instance, AOI cell, guild channel, chat room).
+/// A push to a group is serialized once and sent as one frame per gateway, which fans it out to its local members.
+/// </summary>
+[Nino.Core.NinoType]
+public readonly partial record struct ClientGroup(long Id)
+{
+    /// <summary>Every connected session of the cluster.</summary>
+    public static readonly ClientGroup All = new(0);
 }

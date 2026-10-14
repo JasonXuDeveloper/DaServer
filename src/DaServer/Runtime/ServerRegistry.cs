@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using DaServer.Rpc;
-using EasyEcs.Core;
+using EasyEcs;
 
 namespace DaServer.Runtime;
 
@@ -24,10 +24,10 @@ public sealed class ImplementationInfo(Type type, RpcContractKind kind, Func<obj
 }
 
 /// <summary>An ECS system added to every shard of nodes with a matching role (generated registration).</summary>
-public sealed class SystemInfo(Type type, Action<World> add, string[] roles)
+public sealed class SystemInfo(Type type, Func<EcsSystem> factory, string[] roles)
 {
     public Type Type { get; } = type;
-    public Action<World> Add { get; } = add;
+    public Func<EcsSystem> Factory { get; } = factory;
     public string[] Roles { get; } = roles;
 }
 

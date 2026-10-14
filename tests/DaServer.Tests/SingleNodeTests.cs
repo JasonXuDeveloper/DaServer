@@ -3,52 +3,44 @@ using System.Linq;
 using System.Threading.Tasks;
 using DaServer.Protocol;
 using DaServer.Rpc;
+using DaServer.Runtime;
 using NUnit.Framework;
 
 namespace DaServer.Tests;
 
 /// <summary>RPC semantics on one node (local delivery through shard mailboxes).</summary>
-public class SingleNodeTests
+public class SingleNodeTests : ClusterTest
 {
-    private TestCluster _cluster = null!;
-    private Runtime.Node _node = null!;
+    private Node _node = null!;
 
     [SetUp]
-    public async Task Start()
-    {
-        _cluster = new TestCluster();
-        _node = await _cluster.StartNode(TestCluster.Options("single", shards: 4));
-    }
-
-    [TearDown]
-    public async Task Stop() => await _cluster.DisposeAsync();
+    public async Task StartNode() => _node = await Start("single", shards: 4);
 
     [Test]
-    public async Task ActorCallsReturnValuesAndKeepState()
+    public async Task ActorsKeepStatePerKey()
     {
         Assert.That(await _node.Counter(1).Add(5), Is.EqualTo(5));
         Assert.That(await _node.Counter(1).Add(2), Is.EqualTo(7));
-        Assert.That(await _node.Counter(2).Get(), Is.EqualTo(0), "state is per key");
+        Assert.That(await _node.Counter(2).Get(), Is.Zero);
         Assert.That(await _node.Counter(1).Echo(new Point(1, 2)), Is.EqualTo(new Point(2, 2)));
     }
 
     [Test]
-    public async Task OneWayAndVoidCalls()
+    public async Task CallsFromOneSenderArriveInOrder()
     {
-        _node.Counter(3).Bump();
-        _node.Counter(3).Bump();
-        await TestCluster.Eventually(() => _node.Counter(3).Get().AsTask().Result == 2, "one-way calls not applied");
-        await _node.Counter(3).Reset();
-        Assert.That(await _node.Counter(3).Get(), Is.EqualTo(0));
+        var counter = _node.Counter(3);
+        counter.Bump();               // one-way calls are queued before the request below
+        counter.Bump();
+        Assert.That(await counter.Get(), Is.EqualTo(2));
+        await counter.Reset();
+        Assert.That(await counter.Get(), Is.Zero);
     }
 
     [Test]
-    public async Task CallsToOneActorAreSerializedOnItsShard()
+    public async Task ConcurrentCallsToOneActorAreSerialized()
     {
-        var tasks = Enumerable.Range(0, 1000).Select(_ => _node.Counter(4).Add(1).AsTask());
-        var results = await Task.WhenAll(tasks);
-        Assert.That(results.Distinct().Count(), Is.EqualTo(1000), "no lost or duplicated updates");
-        Assert.That(await _node.Counter(4).Get(), Is.EqualTo(1000));
+        var results = await Task.WhenAll(Enumerable.Range(0, 1000).Select(_ => _node.Counter(4).Add(1).AsTask()));
+        Assert.That(results.Order(), Is.EqualTo(Enumerable.Range(1, 1000)), "no lost or duplicated updates");
 
         string shard = await _node.Counter(4).WhereAmI();
         Assert.That(shard, Does.Contain("shard"));
@@ -56,7 +48,7 @@ public class SingleNodeTests
     }
 
     [Test]
-    public async Task ActorToActorCallsAndForeignAwaitsResumeOnTheShard()
+    public async Task AwaitsResumeOnTheActorsShard()
     {
         Assert.That(await _node.Counter(10).AddVia(11, 3), Is.EqualTo(3));
         Assert.That(await _node.Counter(11).Get(), Is.EqualTo(3));
@@ -64,21 +56,29 @@ public class SingleNodeTests
     }
 
     [Test]
-    public async Task ServicesAndErrors()
+    public async Task ServicesRunOnTheLocalNode()
     {
         Assert.That(await _node.Echo().Echo("hi"), Is.EqualTo("hi"));
         Assert.That(await _node.Echo().NodeId(), Is.EqualTo(_node.Id));
-
-        var error = Assert.ThrowsAsync<RpcException>(async () => await _node.Counter(5).Fail("boom"));
-        Assert.That(error!.Status, Is.EqualTo(RpcStatus.Error));
-        Assert.That(error.Message, Does.Contain("boom"));
-        Assert.That(await _node.Counter(5).Add(1), Is.EqualTo(1), "the actor survives a failed call");
     }
 
     [Test]
-    public async Task EcsSystemsTickInEveryShard()
+    public async Task ExceptionsBecomeRpcErrorsAndTheActorSurvives()
     {
-        int before = TickCounterSystem.Ticks;
-        await TestCluster.Eventually(() => TickCounterSystem.Ticks >= before + 4 * 5, "systems are not ticking");
+        var error = Assert.ThrowsAsync<RpcException>(async () => await _node.Counter(5).Fail("boom"));
+        Assert.That(error!.Status, Is.EqualTo(RpcStatus.Error));
+        Assert.That(error.Message, Does.Contain("boom"));
+        Assert.That(await _node.Counter(5).Add(1), Is.EqualTo(1));
+    }
+
+    [Test]
+    public async Task SystemsProcessActorStateEveryTick()
+    {
+        var counter = _node.Counter(6);
+        await counter.Grow();         // the actor writes input; GrowthSystem does the per-tick work
+        int first = await counter.Get();
+        await Task.Delay(TimeSpan.FromMilliseconds(100)); // 50 ticks/s
+        Assert.That(await counter.Get(), Is.GreaterThan(first));
+        Assert.That(await _node.Counter(7).Get(), Is.Zero, "only growing counters grow");
     }
 }

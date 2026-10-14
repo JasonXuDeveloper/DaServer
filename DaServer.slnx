@@ -2,8 +2,19 @@
   <Folder Name="/src/">
     <Project Path="src/DaServer/DaServer.csproj" />
     <Project Path="src/DaServer.Generator/DaServer.Generator.csproj" />
+    <Project Path="src/DaServer.Hosting/DaServer.Hosting.csproj" />
+    <Project Path="src/DaServer.Aspire/DaServer.Aspire.csproj" />
+  </Folder>
+  <Folder Name="/samples/">
+    <Project Path="samples/Sample.Contracts/Sample.Contracts.csproj" />
+    <Project Path="samples/Sample.Server/Sample.Server.csproj" />
+    <Project Path="samples/Sample.Bot/Sample.Bot.csproj" />
+    <Project Path="samples/Sample.AppHost/Sample.AppHost.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/DaServer.Tests/DaServer.Tests.csproj" />
+  </Folder>
+  <Folder Name="/benchmarks/">
+    <Project Path="benchmarks/DaServer.Benchmark/DaServer.Benchmark.csproj" />
   </Folder>
 </Solution>

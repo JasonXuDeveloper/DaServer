@@ -59,9 +59,10 @@ public sealed partial class Node
     public void BindSession(SessionRef session, long actorKey) => SendGatewayControl(session, ControlOp.BindSession, actorKey);
 
     /// <summary>Add a session to a broadcast group (AOI area, guild channel, chat room...).</summary>
-    public void JoinGroup(SessionRef session, long groupId) => SendGatewayControl(session, ControlOp.JoinGroup, groupId);
+    public void JoinGroup(SessionRef session, ClientGroup group) => SendGatewayControl(session, ControlOp.JoinGroup, group.Id);
 
-    public void LeaveGroup(SessionRef session, long groupId) => SendGatewayControl(session, ControlOp.LeaveGroup, groupId);
+    /// <summary>Remove a session from a broadcast group.</summary>
+    public void LeaveGroup(SessionRef session, ClientGroup group) => SendGatewayControl(session, ControlOp.LeaveGroup, group.Id);
 
     /// <summary>Disconnect a client session.</summary>
     public void Kick(SessionRef session) => SendGatewayControl(session, ControlOp.Kick, 0);

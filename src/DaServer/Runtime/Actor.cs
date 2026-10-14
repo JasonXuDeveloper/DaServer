@@ -1,56 +1,46 @@
-using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
-using EasyEcs.Core;
-using EasyEcs.Core.Components;
+using DaServer.Rpc;
+using EasyEcs;
 
 namespace DaServer.Runtime;
 
 /// <summary>
-/// Base class of stateful actor implementations. An activation is an ECS entity in its shard's world: keep state in
-/// struct components (<see cref="Get{T}"/>, <see cref="Add{T}"/>) so shard systems can query it too.
-/// All methods run on the shard thread, one call at a time between awaits (no locks needed).
+/// Base class of stateful actor implementations (<see cref="IActor"/> contracts). An activation is an entity of its
+/// shard's ECS world: keep state in components on <see cref="Entity"/> so shard systems can process every actor of
+/// the shard in one pass. Calls run on the shard thread one at a time between awaits (no locks).
 /// </summary>
-/// <remarks>
-/// <c>ref</c>s returned by <see cref="Get{T}"/> are valid until the next structural change of the shard: never keep
-/// them across an <c>await</c>; call <see cref="Get{T}"/> again afterwards.
-/// </remarks>
-public abstract class Actor
+/// <remarks>Refs into components are valid until the next structural change: never keep one across an <c>await</c>.</remarks>
+public abstract class Actor : ShardObject
 {
     /// <summary>Actor key (player id, map instance id, ...).</summary>
     public long Key { get; internal set; }
 
-    /// <summary>Shard (shard) the activation lives in.</summary>
-    public Shard Shard { get; internal set; } = null!;
+    /// <summary>The activation's entity (carries an <see cref="ActorLink"/> back to this object).</summary>
+    public Entity Entity { get; internal set; }
 
-    /// <summary>The activation's entity in <see cref="Shard"/>.World.</summary>
-    public EntityRef Entity { get; internal set; }
-
-    /// <summary>The shard's ECS world (shortcut for <c>Shard.World</c>).</summary>
-    public World World => Shard.World;
-
-    /// <summary>Cluster runtime: proxies to other actors/services, pushes and broadcasts.</summary>
-    public Node Runtime => Shard.Node;
-
-    /// <summary>Called once before the first message is processed (load state here).</summary>
+    /// <summary>Called once before the first message is processed (load state here; messages wait meanwhile).</summary>
     public virtual ValueTask OnActivateAsync() => default;
 
-    /// <summary>Called before the activation is removed (idle, ownership moved, shutdown): persist state here.</summary>
+    /// <summary>Called before the activation is removed (ownership moved, shutdown): persist state here.</summary>
     public virtual ValueTask OnDeactivateAsync() => default;
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    protected ref T Get<T>() where T : struct, IComponent => ref Entity.Value.GetComponent<T>().Value;
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    protected bool Has<T>() where T : struct, IComponent => Entity.Value.HasComponent<T>();
-
-    /// <summary>Add (or reset) component <typeparamref name="T"/> and return a ref to it.</summary>
-    protected ref T Add<T>() where T : struct, IComponent => ref Entity.Value.AddComponent<T>().Value;
-
-    protected void Remove<T>() where T : struct, IComponent => Entity.Value.RemoveComponent<T>();
+    /// <summary>Components every activation starts with (the entity already has <see cref="ActorLink"/>).</summary>
+    internal virtual void InitializeEntity(Entity entity)
+    {
+    }
 }
 
-/// <summary>Links an actor entity back to its activation object (so systems can reach the actor).</summary>
-public struct ActorLink : IComponent
+/// <summary>
+/// An actor whose state is one component, added to its entity on activation: <c>State.Gold += 10</c>. Systems
+/// query it like any component (<c>[ForEach] void Regen(ref PlayerState s)</c> runs over every player of the shard).
+/// </summary>
+public abstract class Actor<TState> : Actor where TState : struct, IComponent
 {
-    public Actor Actor;
+    /// <summary>The actor's state (a ref into ECS storage: re-read it after an <c>await</c>).</summary>
+    protected ref TState State => ref Entity.Get<TState>();
+
+    internal override void InitializeEntity(Entity entity) => entity.Add<TState>();
 }
+
+/// <summary>Links an actor entity back to its activation (systems can reach the actor object).</summary>
+public record struct ActorLink(Actor Actor) : IComponent;
