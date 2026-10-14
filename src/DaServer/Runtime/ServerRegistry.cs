@@ -6,29 +6,38 @@ using EasyEcs;
 
 namespace DaServer.Runtime;
 
-/// <summary>A hosted implementation of one or more contracts (generated registration).</summary>
-public sealed class ImplementationInfo(Type type, RpcContractKind kind, Func<object> factory, Type[] contracts, string[] roles)
+/// <summary>
+/// A hosted actor or service implementation (generated registration): the contracts it serves and the cluster events
+/// it handles.
+/// </summary>
+public sealed class ImplementationInfo(Type type, RpcContractKind kind, Func<object> factory, Type[] contracts,
+    EventHandlerInfo[] events)
 {
     public Type Type { get; } = type;
     public RpcContractKind Kind { get; } = kind;
     public Func<object> Factory { get; } = factory;
     public Type[] Contracts { get; } = contracts;
+    public EventHandlerInfo[] Events { get; } = events;
 
-    /// <summary>Node roles that host this implementation; empty = every node.</summary>
-    public string[] Roles { get; } = roles;
-
-    /// <summary>Placement identity of actor implementations (FNV-1a of the type name).</summary>
+    /// <summary>Identity of the implementation in placement, membership and event routing (FNV-1a of the type name).</summary>
     public uint Id { get; } = RpcIds.Fnv1a(type.FullName ?? type.Name);
+
+    /// <summary>Handler of event <paramref name="eventId"/>, or null.</summary>
+    public EventHandlerInfo? HandlerOf(uint eventId)
+    {
+        foreach (var handler in Events)
+            if (handler.EventId == eventId) return handler;
+        return null;
+    }
 
     public override string ToString() => Type.FullName ?? Type.Name;
 }
 
-/// <summary>An ECS system added to every shard of nodes with a matching role (generated registration).</summary>
-public sealed class SystemInfo(Type type, Func<EcsSystem> factory, string[] roles)
+/// <summary>An ECS system added to every shard of the nodes hosting it (generated registration).</summary>
+public sealed class SystemInfo(Type type, Func<EcsSystem> factory)
 {
     public Type Type { get; } = type;
     public Func<EcsSystem> Factory { get; } = factory;
-    public string[] Roles { get; } = roles;
 }
 
 /// <summary>
@@ -73,21 +82,16 @@ public static class ServerRegistry
 
     /// <summary>Make sure the generated module initializer of <paramref name="type"/>'s assembly has run.</summary>
     public static void EnsureLoaded(Type type) => RuntimeHelpers.RunModuleConstructor(type.Module.ModuleHandle);
-
-    internal static bool IsHostedBy(string[] roles, IReadOnlyCollection<string> nodeRoles)
-    {
-        if (roles.Length == 0) return true;
-        foreach (var role in roles)
-            foreach (var nodeRole in nodeRoles)
-                if (string.Equals(role, nodeRole, StringComparison.OrdinalIgnoreCase))
-                    return true;
-        return false;
-    }
 }
 
-/// <summary>Restrict an actor/service implementation or an ECS system to nodes with one of these roles.</summary>
-[AttributeUsage(AttributeTargets.Class, AllowMultiple = false)]
-public sealed class RoleAttribute(params string[] roles) : Attribute
+/// <summary>Contract id of <typeparamref name="TContract"/>, resolved once (registration forced on first use).</summary>
+internal static class ContractOf<TContract>
 {
-    public string[] Roles { get; } = roles;
+    public static readonly uint Id = Resolve();
+
+    private static uint Resolve()
+    {
+        ServerRegistry.EnsureLoaded(typeof(TContract));
+        return RpcRegistry.GetContract(typeof(TContract)).Id;
+    }
 }

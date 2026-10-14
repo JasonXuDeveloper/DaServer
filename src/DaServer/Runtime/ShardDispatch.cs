@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.CompilerServices;
 using DaServer.Buffers;
 using DaServer.Protocol;
 using DaServer.Rpc;
@@ -18,13 +19,20 @@ internal static class ShardDispatch
     internal static readonly int SessionRefSize = NinoSerializer.Serialize(default(SessionRef)).Length;
 
     /// <summary>
-    /// Route a received frame: services run immediately; actor messages go to the owner's mailbox (activating it on
-    /// first use) or are forwarded when another node owns the key. Takes ownership of <paramref name="frame"/>.
+    /// Route a received frame (call or event): services run immediately; actor messages go to the owner's mailbox
+    /// (activating it on first use) or are forwarded when another node owns the key. Takes ownership of
+    /// <paramref name="frame"/>.
     /// </summary>
     public static void Route(World world, FrameWriter frame, IReplySink? sink)
     {
-        var shard = world.Shard();
+        var node = world.Shard().Node;
         var header = FrameHeader.Read(frame.Frame);
+        if (header.Kind == FrameKind.Event)
+        {
+            RouteEvent(world, node, frame, in header);
+            return;
+        }
+
         uint requestId = header.Kind == FrameKind.Request ? header.RequestId : 0;
         if (!RpcRegistry.TryGetMethod(header.MethodId, out var method))
         {
@@ -33,33 +41,51 @@ internal static class ShardDispatch
         }
 
         var contract = method.Owner;
-        if (contract.Kind != RpcContractKind.Actor)
+        if (contract.Kind == RpcContractKind.Actor && !OwnsHere(world, node, contract, header.Key))
         {
-            if (world.GetSingleton<ServiceDirectory>().Services.TryGetValue(contract.Id, out var service))
-                Track(world, Invoke(contract, service, frame, sink));
-            else
-                Reject(frame, sink, requestId, RpcStatus.NotHosted, contract.ToString());
+            node.Forward(frame, sink);
             return;
         }
 
-        if (!shard.Node.Placement.IsLocalOwner(contract, header.Key) || world.GetSingleton<ShardActivity>().Stopping)
-        {
-            shard.Node.Forward(frame, sink);
-            return;
-        }
-
-        var impl = shard.Node.ImplementationOf(contract);
+        var impl = node.ImplementationOf(contract);
         if (impl == null)
-        {
             Reject(frame, sink, requestId, RpcStatus.NotHosted, contract.ToString());
-            return;
-        }
+        else if (impl.Kind == RpcContractKind.Actor)
+            Deliver(world, ActorOf(world, impl, header.Key), new Envelope(frame, sink));
+        else
+            Track(world, Invoke(contract.Dispatcher, ServiceOf(world, impl), frame, sink, world.Logger()));
+    }
 
-        var id = new ActorId(impl.Id, header.Key);
+    /// <summary>An event for one implementation: the service instance, or the activation of the event key.</summary>
+    private static void RouteEvent(World world, Node node, FrameWriter frame, in FrameHeader header)
+    {
+        var impl = node.ImplementationById(header.RequestId);
+        var handler = impl?.HandlerOf(header.MethodId);
+        if (handler == null || (impl!.Kind == RpcContractKind.Actor && !OwnsHere(world, node, impl.Id, header.Key)))
+            node.ForwardEvent(frame);
+        else if (impl.Kind == RpcContractKind.Actor)
+            Deliver(world, ActorOf(world, impl, header.Key), new Envelope(frame, null));
+        else
+            Track(world, Invoke(handler.Dispatcher, ServiceOf(world, impl), frame, null, world.Logger()));
+    }
+
+    private static bool OwnsHere(World world, Node node, RpcContractInfo contract, long key) =>
+        node.Placement.IsLocalOwner(contract, key) && !world.GetSingleton<ShardActivity>().Stopping;
+
+    private static bool OwnsHere(World world, Node node, uint implementationId, long key) =>
+        node.Placement.IsLocalOwner(implementationId, key) && !world.GetSingleton<ShardActivity>().Stopping;
+
+    private static object ServiceOf(World world, ImplementationInfo impl) =>
+        world.GetSingleton<ServiceDirectory>().Services[impl.Id];
+
+    /// <summary>The activation of (<paramref name="impl"/>, <paramref name="key"/>) on this shard, activated on first use.</summary>
+    private static Entity ActorOf(World world, ImplementationInfo impl, long key)
+    {
+        var id = new ActorId(impl.Id, key);
         var actors = world.GetSingleton<ActorDirectory>().Actors;
         if (!actors.TryGetValue(id, out var entity))
             actors[id] = entity = Activate(world, impl, id);
-        Deliver(world, entity, new Envelope(frame, sink));
+        return entity;
     }
 
     /// <summary>Queue a message for an actor and mark it ready unless it is busy (a running turn reschedules it).</summary>
@@ -85,6 +111,7 @@ internal static class ShardDispatch
     private static Entity Activate(World world, ImplementationInfo impl, ActorId id)
     {
         var actor = (Actor)impl.Factory();
+        actor.Implementation = impl;
         actor.Key = id.Key;
         actor.Shard = world.Shard();
         var entity = world.CreateEntity(new ActorLink(actor), new ActorIdentity(id), new Mailbox(new()));
@@ -108,11 +135,12 @@ internal static class ShardDispatch
     }
 
     /// <summary>
-    /// Deserialize and invoke a call on <paramref name="target"/> through the generated dispatcher. Returns the
-    /// handler's task (default when it completed synchronously). Disposes <paramref name="frame"/>.
+    /// Deserialize and invoke a call or event on <paramref name="target"/> through a generated dispatcher. Returns the
+    /// handler's task (default when it completed synchronously). A synchronous failure is replied to the caller, or
+    /// logged when nobody waits for a reply (one-way call, event). Disposes <paramref name="frame"/>.
     /// </summary>
-    public static System.Threading.Tasks.ValueTask Invoke(RpcContractInfo contract, object target, FrameWriter frame,
-        IReplySink? sink)
+    public static System.Threading.Tasks.ValueTask Invoke(RpcDispatcher dispatcher, object target, FrameWriter frame,
+        IReplySink? sink, ILogger logger)
     {
         try
         {
@@ -132,14 +160,15 @@ internal static class ShardDispatch
             try
             {
                 var reader = new Reader(payload);
-                var task = contract.Dispatcher(target, header.MethodId, ref reader, in context);
+                var task = dispatcher(target, header.MethodId, ref reader, in context);
                 if (!task.IsCompleted) return task;
                 task.GetAwaiter().GetResult();
                 return default;
             }
             catch (Exception e)
             {
-                context.ReplyException(e);
+                if (context.ExpectsReply) context.ReplyException(e);
+                else LogUnobserved(logger, e, target, in header);
                 return default;
             }
             finally
@@ -153,12 +182,26 @@ internal static class ShardDispatch
         }
     }
 
-    /// <summary>Invoke the next message of an actor (contract resolved from the frame's method id).</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void LogUnobserved(ILogger logger, Exception e, object target, in FrameHeader header) =>
+        logger.LogError(e, "{Kind} {Id:x8} failed in {Target}", header.Kind, header.MethodId, target);
+
+    /// <summary>Invoke the next message of an actor: a call (dispatcher of its contract) or an event (of its handler).</summary>
     public static System.Threading.Tasks.ValueTask Invoke(Actor actor, in Envelope envelope)
     {
         var header = FrameHeader.Read(envelope.Frame.Frame);
-        RpcRegistry.TryGetMethod(header.MethodId, out var method); // validated by Route
-        return Invoke(method.Owner, actor, envelope.Frame, envelope.Sink);
+        RpcDispatcher dispatcher;
+        if (header.Kind == FrameKind.Event)
+        {
+            dispatcher = actor.Implementation.HandlerOf(header.MethodId)!.Dispatcher; // validated by RouteEvent
+        }
+        else
+        {
+            RpcRegistry.TryGetMethod(header.MethodId, out var method); // validated by Route
+            dispatcher = method.Owner.Dispatcher;
+        }
+
+        return Invoke(dispatcher, actor, envelope.Frame, envelope.Sink, actor.Shard.Node.Logger);
     }
 
     /// <summary>Keep an unfinished service call until it completes (its state machine returns to its pool then).</summary>

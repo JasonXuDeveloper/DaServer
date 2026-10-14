@@ -15,8 +15,8 @@ public static class ShardWorldExtensions
     public static Shard Shard(this World world) => world.GetSingleton<ShardContext>().Shard;
 
     /// <summary>
-    /// The cluster: generated proxies hang off it (<c>world.Cluster().GameClient(group).OnMoved(..)</c>), plus session
+    /// The cluster: generated proxies hang off it (<c>world.Cluster().PlayerClient(group).OnMoved(..)</c>), plus session
     /// binding and groups.
     /// </summary>
-    public static Node Cluster(this World world) => world.GetSingleton<ShardContext>().Shard.Node;
+    public static ICluster Cluster(this World world) => world.GetSingleton<ShardContext>().Shard.Node;
 }

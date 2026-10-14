@@ -4,41 +4,49 @@ using Nino.Core;
 
 namespace Sample.Contracts;
 
-// Contracts shared by the server and the game client. Everything else (proxies, dispatch, ids) is generated.
+// Contracts shared by servers and clients. The marker says who may call a contract and how its target is chosen;
+// proxies, dispatch, wire ids and registration are generated. A contract is cut per audience: what clients may call
+// (IPublicService / ISessionActor) is separate from what servers call (IActor), even when one actor implements both.
 
 [NinoType]
 public partial record struct LoginResult(bool Ok, long PlayerId);
 
 [NinoType]
-public partial record struct PlayerInfo(long Id, string Name, long MapId, int Gold);
+public partial record struct PlayerInfo(long Id, string Name, long MapId, int Logins);
 
-/// <summary>Stateless login: validates the account and binds the session to the player id.</summary>
-[ClientAccessible]
-public interface IAccount : IService
+/// <summary>Login (clients call it before anything is bound to their session).</summary>
+public interface IAccount : IPublicService
 {
     ValueTask<LoginResult> Login(string name);
 }
 
-/// <summary>The player's persistent state (inventory, currencies, current map). Keyed by player id.</summary>
-[ClientAccessible]
-public interface IPlayer : IActor
+/// <summary>A player logged in on a gateway (published by the account service; whoever cares handles it).</summary>
+[NinoType]
+public readonly partial record struct PlayerLoggedIn(long Key, SessionRef Session) : IKeyedEvent;
+
+/// <summary>The client's own player (keyed by player id, bound to the session at login).</summary>
+public interface IPlayer : ISessionActor
 {
     ValueTask<PlayerInfo> GetInfo();
     ValueTask EnterMap(long mapId);
-    void Move(float dx, float dy);       // one-way: input stream
-    void Chat(string text);              // one-way
 }
 
-/// <summary>A map instance: owns the spatial simulation of its players (ECS entities). Keyed by map id.</summary>
+/// <summary>A map instance as servers see it: players enter and leave it (keyed by map id).</summary>
 public interface IMap : IActor
 {
     ValueTask Enter(long playerId, SessionRef session);
-    ValueTask Leave(long playerId);
-    void SetVelocity(long playerId, float vx, float vy);
+    ValueTask Leave(SessionRef session);
+}
+
+/// <summary>Client input to the map the session is in (bound by the map on enter). One-way: an input stream.</summary>
+public interface IMapInput : ISessionActor
+{
+    void Move(float vx, float vy);
+    void Chat(string text);
 }
 
 /// <summary>Server-to-client pushes.</summary>
-public interface IGameClient : IClientCallback
+public interface IPlayerClient : IClientCallback
 {
     void OnMoved(long playerId, float x, float y);
     void OnChat(long playerId, string text);

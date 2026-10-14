@@ -6,15 +6,16 @@ namespace Aspire.Hosting;
 
 /// <summary>
 /// Declares a DaServer cluster in an Aspire AppHost. Every node gets a cluster endpoint, the seed list (every other
-/// node), its roles and, for gateways, a client endpoint; nodes discover each other through gossip. The same model runs
+/// node) and, for gateways, a client endpoint; nodes discover each other through gossip. A node hosts every actor,
+/// service and system compiled into its project, so the topology is the list of projects and replica counts. The same model runs
 /// locally (<c>dotnet run</c> on the AppHost, with the dashboard) and publishes to Docker Compose or Kubernetes
 /// (<c>aspire publish</c>) without hand-written deployment files.
 /// </summary>
 /// <example>
 /// <code>
 /// var cluster = builder.AddDaServerCluster("cluster");
-/// cluster.AddNodes&lt;Projects.Game_Server&gt;("game", replicas: 3, roles: ["game"]);
-/// var gateways = cluster.AddNodes&lt;Projects.Game_Server&gt;("gateway", replicas: 2, roles: ["gateway"], gateway: true);
+/// cluster.AddNodes&lt;Projects.Sample_Game&gt;("game", replicas: 3);
+/// var gateways = cluster.AddGateways&lt;Projects.Sample_Gateway&gt;("gateway", replicas: 2);
 /// builder.AddProject&lt;Projects.Bot&gt;("bots").WithGateways(gateways);
 /// </code>
 /// </example>
@@ -34,7 +35,7 @@ public static class DaServerClusterExtensions
         where T : IResourceWithEnvironment, IResourceWithWaitSupport
     {
         if (gateways.ClientEndpoints.Count == 0)
-            throw new ArgumentException($"Node group '{gateways.Name}' has no client endpoints (add it with gateway: true)");
+            throw new ArgumentException($"Node group '{gateways.Name}' has no client endpoints (declare it with AddGateways)");
 
         for (int i = 0; i < gateways.Nodes.Count; i++) resource.WaitFor(gateways.Nodes[i]);
         return resource.WithEnvironment(context =>
@@ -65,12 +66,21 @@ public sealed class DaServerCluster
     public string Name { get; }
 
     /// <summary>
-    /// Add <paramref name="replicas"/> nodes running <typeparamref name="TProject"/> with <paramref name="roles"/>
-    /// (empty: host every contract). Each replica is its own resource (<c>{name}-0</c>, <c>{name}-1</c>, ...) because
-    /// cluster members are addressed individually, not through a load balancer.
+    /// Add <paramref name="replicas"/> nodes running <typeparamref name="TProject"/>. Each replica is its own resource
+    /// (<c>{name}-0</c>, <c>{name}-1</c>, ...) because cluster members are addressed individually, not through a load
+    /// balancer.
     /// </summary>
-    public DaServerNodeGroup AddNodes<TProject>(string name, int replicas = 1, string[]? roles = null, bool gateway = false)
-        where TProject : IProjectMetadata, new()
+    public DaServerNodeGroup AddNodes<TProject>(string name, int replicas = 1) where TProject : IProjectMetadata, new() =>
+        Add<TProject>(name, replicas, gateway: false);
+
+    /// <summary>
+    /// Add <paramref name="replicas"/> nodes running <typeparamref name="TProject"/> that also accept clients (an external
+    /// client endpoint each). Pass the group to <see cref="DaServerClusterExtensions.WithGateways{T}"/> of a client.
+    /// </summary>
+    public DaServerNodeGroup AddGateways<TProject>(string name, int replicas = 1) where TProject : IProjectMetadata, new() =>
+        Add<TProject>(name, replicas, gateway: true);
+
+    private DaServerNodeGroup Add<TProject>(string name, int replicas, bool gateway) where TProject : IProjectMetadata, new()
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(replicas, 1);
         var nodes = new List<IResourceBuilder<ProjectResource>>(replicas);
@@ -86,9 +96,6 @@ public sealed class DaServerCluster
                     env: "DaServer__ClusterPort", isProxied: false);
             var self = node.GetEndpoint("cluster");
             _clusterEndpoints.Add(self);
-
-            for (int r = 0; r < (roles?.Length ?? 0); r++)
-                node.WithEnvironment($"DaServer__Roles__{r}", roles![r]);
 
             if (gateway)
             {
@@ -113,7 +120,7 @@ public sealed class DaServerCluster
     }
 }
 
-/// <summary>Nodes added by one <see cref="DaServerCluster.AddNodes{TProject}"/> call.</summary>
+/// <summary>Nodes added by one <see cref="DaServerCluster.AddNodes{TProject}"/> or <see cref="DaServerCluster.AddGateways{TProject}"/> call.</summary>
 public sealed class DaServerNodeGroup(string name, IReadOnlyList<IResourceBuilder<ProjectResource>> nodes,
     IReadOnlyList<EndpointReference> clientEndpoints)
 {

@@ -15,6 +15,14 @@ public abstract class Actor : ShardObject
     /// <summary>Actor key (player id, map instance id, ...).</summary>
     public long Key { get; internal set; }
 
+    /// <summary>
+    /// The activation's client group: sessions that joined it (<c>Cluster.JoinGroup(session, Group)</c>) receive pushes
+    /// sent to it (<c>Cluster.PlayerClient(Group).OnMoved(..)</c>). Distinct per implementation and key.
+    /// </summary>
+    public ClientGroup Group => ClientGroup.Of(Implementation.Id, Key);
+
+    internal ImplementationInfo Implementation { get; set; } = null!;
+
     /// <summary>The activation's entity (carries an <see cref="ActorLink"/> back to this object).</summary>
     public Entity Entity { get; internal set; }
 

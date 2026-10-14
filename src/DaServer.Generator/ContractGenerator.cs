@@ -8,9 +8,9 @@ using static DaServer.Generator.Support;
 namespace DaServer.Generator;
 
 /// <summary>
-/// For every interface deriving from IService / IActor / IClientCallback: a struct proxy (serializes arguments straight
+/// For every contract interface (deriving from a marker of DaServer.Rpc.Contracts): a struct proxy (serializes arguments straight
 /// into a pooled frame), a dispatcher switch (deserializes and invokes), wire ids, registration in a module
-/// initializer, and cluster accessors (<c>Cluster.Player(key)</c>, <c>Cluster.GameClient(session or group)</c>).
+/// initializer, and cluster accessors (<c>Cluster.Player(key)</c>, <c>Cluster.PlayerClient(session or group)</c>).
 /// Incremental rules: syntax-only predicate (interfaces with a base list), symbol-free equatable models, invalid input
 /// skipped (DaServerAnalyzer reports it), tracking names on every stage.
 /// </summary>
@@ -122,7 +122,7 @@ public sealed class ContractGenerator : IIncrementalGenerator
         foreach (var m in c.Methods) sb.Append($"    public const uint {m.Name}Id = 0x{m.Id:X8}u;\n");
 
         sb.Append("\n    [ModuleInitializer]\n    internal static void Register() => RpcRegistry.Register(new RpcContractInfo(\n");
-        sb.Append($"        typeof({c.FullName}), ContractId, RpcContractKind.{c.Kind}, {Bool(c.ClientAccessible)}, {Bool(c.AnyKey)}, Dispatch,\n        [\n");
+        sb.Append($"        typeof({c.FullName}), ContractId, RpcContractKind.{c.Kind}, ClientAccess.{c.Access}, Dispatch,\n        [\n");
         foreach (var m in c.Methods)
             sb.Append($"            new RpcMethodInfo({m.Name}Id, \"{m.Name}\", {Bool(m.Shape == MethodShape.OneWay)}),\n");
         sb.Append("        ]));\n\n");
@@ -148,6 +148,12 @@ public sealed class ContractGenerator : IIncrementalGenerator
             case ContractKind.Actor:
                 sb.Append($"    /// <summary>Proxy to the <see cref=\"{c.Name}\"/> actor with key <paramref name=\"key\"/> (activated on demand).</summary>\n");
                 sb.Append($"    public static {c.ProxyName} {c.Accessor}(this IRpcInvoker cluster, long key) => new(cluster, key);\n");
+                if (c.Access == ClientAccess.SessionKey)
+                {
+                    sb.Append($"\n    /// <summary>Client side: the <see cref=\"{c.Name}\"/> actor bound to this client's session by the server.</summary>\n");
+                    sb.Append($"    public static {c.ProxyName} {c.Accessor}(this DaServer.Client.ClusterClient client) => new(client, 0);\n");
+                }
+
                 break;
             case ContractKind.Service:
                 sb.Append($"    /// <summary>Proxy to the <see cref=\"{c.Name}\"/> service (load-balanced, local node preferred).</summary>\n");

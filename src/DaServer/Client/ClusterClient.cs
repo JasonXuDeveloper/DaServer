@@ -13,11 +13,11 @@ using Nino.Core;
 namespace DaServer.Client;
 
 /// <summary>
-/// Game client connection to a gateway. Implements <see cref="IRpcInvoker"/>, so the same generated proxies used on
-/// servers work here (only [ClientAccessible] contracts are accepted by the gateway). Pushes and broadcasts are
+/// Client connection to a gateway (game client, bot, tool). Implements <see cref="IRpcInvoker"/>, so the same generated proxies used on
+/// servers work here (the gateway accepts IPublicService, ISessionActor and IPublicActor contracts). Pushes and broadcasts are
 /// dispatched to registered <see cref="IClientCallback"/> implementations.
 /// </summary>
-public sealed class GameClient : IRpcInvoker, IConnectionHandler, IAsyncDisposable
+public sealed class ClusterClient : IRpcInvoker, IConnectionHandler, IAsyncDisposable
 {
     private readonly PendingCallTable _pending = new(14);
     private readonly Dictionary<uint, object> _callbacks = new();
@@ -29,7 +29,7 @@ public sealed class GameClient : IRpcInvoker, IConnectionHandler, IAsyncDisposab
     /// false: callbacks run on the IO thread as frames arrive (bots, tools). true: frames are queued and run by
     /// <see cref="ProcessCallbacks"/> on the application's own thread (game loop / UI thread).
     /// </param>
-    public GameClient(bool queueCallbacks = false)
+    public ClusterClient(bool queueCallbacks = false)
     {
         if (queueCallbacks) _inbox = new MpmcQueue<FrameWriter>(64 * 1024);
     }
@@ -40,11 +40,15 @@ public sealed class GameClient : IRpcInvoker, IConnectionHandler, IAsyncDisposab
 
     public event Action<Exception?>? Disconnected;
 
+    /// <summary>Connect to a gateway by host name or address (e.g. the value of <c>DaServer:Gateways</c>).</summary>
+    public ValueTask ConnectAsync(string host, int port, CancellationToken cancellationToken = default) =>
+        ConnectAsync(IPAddress.TryParse(host, out var ip) ? new IPEndPoint(ip, port) : new DnsEndPoint(host, port), cancellationToken);
+
     public async ValueTask ConnectAsync(EndPoint gateway, CancellationToken cancellationToken = default)
     {
         _connection = await Connection.ConnectAsync(gateway, this, ConnectionOptions.ForClients(), cancellationToken)
             .ConfigureAwait(false);
-        _sweeper ??= new Timer(static s => ((GameClient)s!)._pending.SweepExpired(), this, 100, 100);
+        _sweeper ??= new Timer(static s => ((ClusterClient)s!)._pending.SweepExpired(), this, 100, 100);
     }
 
     /// <summary>Register the implementation of a server-to-client contract.</summary>

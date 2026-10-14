@@ -9,8 +9,8 @@ var builder = DistributedApplication.CreateBuilder(args);
 builder.AddDockerComposeEnvironment("compose");
 
 var cluster = builder.AddDaServerCluster("sample");
-cluster.AddNodes<Projects.Sample_Server>("game", replicas: 2, roles: ["game"]);
-var gateways = cluster.AddNodes<Projects.Sample_Server>("gateway", replicas: 2, roles: ["gateway"], gateway: true);
+cluster.AddNodes<Projects.Sample_Game>("game", replicas: 2);
+var gateways = cluster.AddGateways<Projects.Sample_Gateway>("gateway", replicas: 2);
 
 builder.AddProject<Projects.Sample_Bot>("bots")
     .WithGateways(gateways)

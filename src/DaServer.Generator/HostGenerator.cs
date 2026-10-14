@@ -10,7 +10,7 @@ namespace DaServer.Generator;
 
 /// <summary>
 /// For assemblies referencing the DaServer runtime: one module initializer registering every actor/service
-/// implementation and every EasyEcs system (with their [Role]s), and forcing registration of referenced contract
+/// implementation (with the events it handles) and every EasyEcs system, and forcing registration of referenced contract
 /// assemblies. No reflection scanning, no configuration strings, no hand-written registration list.
 /// </summary>
 [Generator(LanguageNames.CSharp)]
@@ -67,16 +67,16 @@ public sealed class HostGenerator : IIncrementalGenerator
 
         foreach (var t in types)
         {
-            string roles = "[" + string.Join(", ", t.Roles.Select(r => "\"" + r + "\"")) + "]";
             if (t.IsSystem)
             {
-                sb.Append($"        ServerRegistry.RegisterSystem(new SystemInfo(typeof({t.FullName}), static () => new {t.FullName}(), {roles}));\n");
+                sb.Append($"        ServerRegistry.RegisterSystem(new SystemInfo(typeof({t.FullName}), static () => new {t.FullName}()));\n");
                 continue;
             }
 
             string contracts = string.Join(", ", t.Contracts.Select(c => $"typeof({c})"));
+            string events = string.Join(", ", t.Events.Select(e => $"EventHandlerInfo.Of<{e}>()"));
             sb.Append($"        ServerRegistry.RegisterImplementation(new ImplementationInfo(typeof({t.FullName}), RpcContractKind.{t.Kind},\n");
-            sb.Append($"            static () => new {t.FullName}(), [{contracts}], {roles}));\n");
+            sb.Append($"            static () => new {t.FullName}(), [{contracts}], [{events}]));\n");
         }
 
         return sb.Append("    }\n}\n").ToString();

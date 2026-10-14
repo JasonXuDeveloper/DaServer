@@ -11,8 +11,12 @@ public sealed class NodeOptions
     /// <summary>Human-readable node name (logs, thread names).</summary>
     public string Name { get; set; } = Environment.MachineName;
 
-    /// <summary>Roles of this node (e.g. "gateway", "game"); implementations/systems marked [Role] only run on matching nodes.</summary>
-    public List<string> Roles { get; set; } = new();
+    /// <summary>
+    /// Which registered implementations and systems this node hosts; null (default) = everything compiled into the
+    /// process, so the deployment unit is the project. Set it only to run several kinds of nodes in one process
+    /// (in-process tests, embedding).
+    /// </summary>
+    public Func<Type, bool>? Hosts { get; set; }
 
     /// <summary>Address to bind the cluster (node-to-node) listener to.</summary>
     public string ClusterBind { get; set; } = "0.0.0.0";

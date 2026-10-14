@@ -24,4 +24,17 @@ public class AllocationTests : ClusterTest
         long allocated = await node.Counter(1).AddMany(other, calls);
         Assert.That(allocated / (double)calls, Is.LessThan(1), $"{allocated} B for {calls} calls");
     }
+
+    [Test]
+    public async Task KeyedEventsDoNotAllocate()
+    {
+        var node = await Start("alloc", configure: o => o.GossipInterval = TimeSpan.FromHours(1));
+        long other = 2;
+        while (await node.Counter(other).WhereAmI() == await node.Counter(1).WhereAmI()) other++;
+
+        const int events = 20_000;
+        await node.Counter(1).PublishMany(other, 3 * events);
+        long allocated = await node.Counter(1).PublishMany(other, events);
+        Assert.That(allocated / (double)events, Is.LessThan(1), $"{allocated} B for {events} events");
+    }
 }

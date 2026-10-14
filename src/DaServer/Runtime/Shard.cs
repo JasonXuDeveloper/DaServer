@@ -181,8 +181,7 @@ public sealed class Shard : IDisposable
             if (impl.Kind != Rpc.RpcContractKind.Service) continue;
             var instance = impl.Factory();
             if (instance is ShardObject shardObject) shardObject.Shard = this;
-            foreach (var contractType in impl.Contracts)
-                services[Rpc.RpcRegistry.GetContract(contractType).Id] = instance;
+            services[impl.Id] = instance;
         }
 
         World.AddSingleton<ServiceDirectory>() = new ServiceDirectory(services);

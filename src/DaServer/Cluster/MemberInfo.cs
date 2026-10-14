@@ -19,6 +19,17 @@ public partial struct HostedActor
     public uint ImplementationId;
 }
 
+/// <summary>A cluster event handled by an implementation hosted on a node (event routing).</summary>
+[NinoType]
+public partial struct HostedHandler
+{
+    public uint EventId;
+    public uint ImplementationId;
+
+    /// <summary>Actor implementation (delivered to the activation of the event key) rather than a service.</summary>
+    public bool Actor;
+}
+
 /// <summary>Gossiped description of a cluster member. Immutable once published (copy to change).</summary>
 [NinoType]
 public partial class MemberInfo
@@ -31,12 +42,14 @@ public partial class MemberInfo
     /// <summary>Client (gateway) port, 0 when the node accepts no game clients.</summary>
     public int ClientPort;
 
-    public string[] Roles = [];
-
     /// <summary>Stateless service contracts hosted by the node.</summary>
     public uint[] Services = [];
 
+    /// <summary>Actor implementations (ContractId 0 for an actor that only handles events).</summary>
     public HostedActor[] Actors = [];
+
+    /// <summary>Cluster events handled by the node's implementations.</summary>
+    public HostedHandler[] Handlers = [];
 
     /// <summary>Bumped by the node itself to refute suspicion or announce a restart.</summary>
     public int Incarnation;

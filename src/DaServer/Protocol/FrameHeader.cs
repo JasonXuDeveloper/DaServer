@@ -27,6 +27,12 @@ public enum FrameKind : byte
 
     Ping = 7,
     Pong = 8,
+
+    /// <summary>
+    /// Cluster event for one handling implementation: method id = event id, request id = target implementation id
+    /// (events are one-way, so the correlation field is free), key = event key (0 for unkeyed events).
+    /// </summary>
+    Event = 9,
 }
 
 /// <summary>Bits of <see cref="FrameHeader.Flags"/>.</summary>
@@ -60,8 +66,8 @@ public enum RpcStatus : byte
 /// 5  byte   Status     RpcStatus for responses, otherwise 0
 /// 6  byte   Hops       forwarding count (loop guard)
 /// 7  byte   Flags      reserved
-/// 8  uint32 RequestId  correlation id (0 for one-way / push)
-/// 12 uint32 MethodId   globally unique method id (see RpcIds) or control op
+/// 8  uint32 RequestId  correlation id (0 for one-way / push; target implementation id for Event)
+/// 12 uint32 MethodId   globally unique method id (see RpcIds), event id or control op
 /// 16 int64  Key        actor key / session id / group id
 /// </code>
 /// </summary>

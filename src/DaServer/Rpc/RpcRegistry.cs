@@ -11,17 +11,32 @@ public enum RpcContractKind : byte
     ClientCallback = 3,
 }
 
+/// <summary>Whether and how game clients may call a contract (from its marker interface).</summary>
+public enum ClientAccess : byte
+{
+    /// <summary>Servers only (<see cref="IService"/>, <see cref="IActor"/>).</summary>
+    None = 0,
+
+    /// <summary><see cref="IPublicService"/>.</summary>
+    Service = 1,
+
+    /// <summary><see cref="ISessionActor"/>: the key comes from the session binding.</summary>
+    SessionKey = 2,
+
+    /// <summary><see cref="IPublicActor"/>: the client chooses the key.</summary>
+    AnyKey = 3,
+}
+
 /// <summary>Metadata of one contract (interface), registered by generated code.</summary>
 public sealed class RpcContractInfo
 {
-    public RpcContractInfo(Type contract, uint id, RpcContractKind kind, bool clientAccessible, bool anyKey,
+    public RpcContractInfo(Type contract, uint id, RpcContractKind kind, ClientAccess clientAccess,
         RpcDispatcher dispatcher, RpcMethodInfo[] methods)
     {
         Contract = contract;
         Id = id;
         Kind = kind;
-        ClientAccessible = clientAccessible;
-        AnyKey = anyKey;
+        ClientAccess = clientAccess;
         Dispatcher = dispatcher;
         Methods = methods;
         foreach (var m in methods) m.Owner = this;
@@ -33,8 +48,7 @@ public sealed class RpcContractInfo
     public uint Id { get; }
 
     public RpcContractKind Kind { get; }
-    public bool ClientAccessible { get; }
-    public bool AnyKey { get; }
+    public ClientAccess ClientAccess { get; }
     public RpcDispatcher Dispatcher { get; }
     public RpcMethodInfo[] Methods { get; }
 
@@ -105,7 +119,7 @@ public static class RpcRegistry
             {
                 if (methods.TryGetValue(m.Id, out var existing))
                     throw new InvalidOperationException(
-                        $"RPC method id collision 0x{m.Id:x8}: {m} and {existing}. Use [RpcId] on one of them.");
+                        $"RPC method id collision 0x{m.Id:x8}: {m} and {existing}. Use [WireId] on one of them.");
                 methods.Add(m.Id, m);
             }
 
