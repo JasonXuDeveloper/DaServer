@@ -65,7 +65,8 @@ public sealed class ClusterClient : IRpcInvoker, IConnectionHandler, IAsyncDispo
         var gateway = await answer.ConfigureAwait(false);
         if (gateway.Host == host && gateway.Port == port) return;
 
-        _connection?.Close();
+        var dispatch = Interlocked.Exchange(ref _connection, null); // closed on purpose: not a disconnect
+        dispatch?.Close();
         await ConnectToAsync(gateway.Host, gateway.Port, cancellationToken).ConfigureAwait(false);
     }
 

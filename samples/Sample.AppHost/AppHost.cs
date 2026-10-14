@@ -8,12 +8,16 @@ using Aspire.Hosting;
 var builder = DistributedApplication.CreateBuilder(args);
 builder.AddDockerComposeEnvironment("compose");
 
+// A node hosts what its project compiles: the topology is projects and replica counts. Ports, names and seeds are
+// assigned here; discovery (gossip) and client placement (dispatch) are automatic.
 var cluster = builder.AddDaServerCluster("sample");
-cluster.AddNodes<Projects.Sample_Game>("game", replicas: 2);
-var gateways = cluster.AddGateways<Projects.Sample_Gateway>("gateway", replicas: 2);
+cluster.AddNodes<Projects.Sample_Login>("login");
+cluster.AddNodes<Projects.Sample_Game>("game");
+cluster.AddGateways<Projects.Sample_Gateway>("gateway", replicas: 3);
+var dispatch = cluster.AddDispatch<Projects.Sample_Gateway>("dispatch");
 
 builder.AddProject<Projects.Sample_Bot>("bots")
-    .WithGateways(gateways)
-    .WithArgs("200", "600", "10"); // bots, seconds, moves per second
+    .WithGateways(dispatch)
+    .WithArgs("10000", "60"); // bots, seconds (see Sample.Bot for the other knobs)
 
 builder.Build().Run();

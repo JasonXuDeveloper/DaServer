@@ -1,3 +1,4 @@
+using System;
 using System.Threading;
 using System.Threading.Tasks;
 using DaServer.Rpc;
@@ -18,7 +19,8 @@ public static class DaServerHostingExtensions
     /// <summary>
     /// Run a DaServer <see cref="Node"/> in this host. Options bind from the <paramref name="section"/> configuration
     /// section (appsettings, environment variables such as <c>DaServer__ClientPort=7100</c>, command line).
-    /// The node starts with the host and leaves the cluster gracefully on SIGTERM / Ctrl+C.
+    /// The node starts with the host and leaves the cluster gracefully on SIGTERM / Ctrl+C. A stats line is logged every
+    /// <c>{section}:StatsInterval</c> (default 30 s, 0 turns it off).
     /// </summary>
     public static IHostApplicationBuilder AddDaServer(this IHostApplicationBuilder builder, string section = "DaServer")
     {
@@ -32,6 +34,10 @@ public static class DaServerHostingExtensions
         builder.Services.AddSingleton<ICluster>(static sp => sp.GetRequiredService<Node>());
         builder.Services.AddSingleton<IRpcInvoker>(static sp => sp.GetRequiredService<Node>());
         builder.Services.AddHostedService<NodeHostedService>();
+        var statsInterval = builder.Configuration.GetValue($"{section}:StatsInterval", TimeSpan.FromSeconds(30));
+        if (statsInterval > TimeSpan.Zero)
+            builder.Services.AddHostedService(sp => new NodeStatsLogger(sp.GetRequiredService<Node>(),
+                sp.GetRequiredService<ILogger<NodeStatsLogger>>(), statsInterval));
         builder.AddDaServerTelemetry();
         return builder;
     }

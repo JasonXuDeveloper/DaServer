@@ -8,104 +8,218 @@ using DaServer.Protocol;
 using DaServer.Rpc;
 using Sample.Contracts;
 
-// Load generator / end-to-end client: N bots log in, enter maps, move at 10 Hz and chat, while counting pushes.
-// Usage: Sample.Bot [bots=100] [seconds=30] [maps=10]; gateways come from DaServer__Gateways__{i} (set by the AppHost's
-// WithGateways) and default to 127.0.0.1:7100.
-// Exit code 0 only if every bot logged in and received broadcasts (used as the e2e check).
+// End-to-end load test: N bots connect through the dispatch address (and are directed to a gateway), log in, enter a
+// map, then move and chat while the realm broadcasts its status to every session every few ticks.
+//
+// Usage: Sample.Bot [bots=1000] [seconds=30] [maps=bots/100] [moves/s=2] [chat every s=10] [max p99 ms=250] (0 = off)
+// The dispatch address comes from DaServer__Gateways__0 (set by the AppHost's WithGateways); default 127.0.0.1:7100.
+// Exit code 0 only if every bot came online and, during the measured window, every bot received every realm broadcast
+// in order (no gap), no bot disconnected, and the p99 broadcast latency stayed under the limit.
 
-int bots = args.Length > 0 ? int.Parse(args[0]) : 100;
-int seconds = args.Length > 1 ? int.Parse(args[1]) : 30;
-int maps = args.Length > 2 ? int.Parse(args[2]) : 10;
-var gateways = new List<string>();
-while (Environment.GetEnvironmentVariable($"DaServer__Gateways__{gateways.Count}") is { } gateway) gateways.Add(gateway);
-if (gateways.Count == 0) gateways.Add("127.0.0.1:7100");
+var arg = (int i, int fallback) => args.Length > i ? int.Parse(args[i]) : fallback;
+int bots = arg(0, 1000);
+int seconds = arg(1, 30);
+int maps = arg(2, Math.Max(1, bots / 100));
+int movesPerSecond = arg(3, 2);
+int chatEverySeconds = arg(4, 10);
+int maxP99Ms = arg(5, 250);
+string dispatch = Environment.GetEnvironmentVariable("DaServer__Gateways__0") ?? "127.0.0.1:7100";
+int colon = dispatch.LastIndexOf(':');
+string host = dispatch[..colon];
+int port = int.Parse(dispatch[(colon + 1)..]);
 
-var inbox = new Inbox();
-var clients = new List<ClusterClient>();
-var inputs = new List<MapProxy>();
-
-for (int i = 0; i < bots; i++)
+var stats = new Stats();
+var players = new Bot[bots];
+var online = Stopwatch.StartNew();
+await Parallel.ForAsync(0, bots, new ParallelOptions { MaxDegreeOfParallelism = 256 }, async (i, _) =>
 {
     var client = new ClusterClient();
-    await ConnectWithRetry(client, gateways[i % gateways.Count]);
-    client.Register<IPlayerClient>(inbox);
-
-    var login = await client.Account().Login("bot-" + i);
+    var bot = players[i] = new Bot(client, stats);
+    client.Register<IPlayerClient>(bot);
+    client.Disconnected += _ => Interlocked.Increment(ref stats.Disconnects);
+    await Retry(() => client.ConnectAsync(host, port), static e => e is not RpcException);
+    var login = await RetryFor(() => client.Account().Login("bot-" + i), static e => e is RpcException { Status: RpcStatus.NotHosted });
     if (!login.Ok) throw new InvalidOperationException("login failed for bot " + i);
-    long map = 1 + i % maps;
-    await WhileStarting(() => client.Player().EnterMap(map)); // the gateway routes to the player bound at login
-    clients.Add(client);
-    inputs.Add(client.Map());                // and this to the map the player entered
-}
+    // The gateway routes this to the player bound at login, and the map binds the session for input.
+    await Retry(() => client.Player().EnterMap(1 + i % maps), static e => e is RpcException { Status: RpcStatus.NotHosted });
+    bot.Map = client.Map();
+});
+Console.WriteLine($"{bots} bots online in {online.Elapsed.TotalSeconds:F1}s ({maps} maps)");
 
-Console.WriteLine($"{bots} bots online on {gateways.Count} gateway(s), {maps} maps");
+// Warm-up: every bot receives a realm broadcast before the measured window starts.
+var warmup = Stopwatch.StartNew();
+while (Array.Exists(players, static p => Volatile.Read(ref p.LastTick) == 0) && warmup.Elapsed.TotalSeconds < 30)
+    await Task.Delay(100);
+stats.Reset();
+foreach (var player in players) player.StartMeasuring();
 
 var random = new Random(1);
 var clock = Stopwatch.StartNew();
-long lastMoved = 0;
+var report = TimeSpan.FromSeconds(5);
+var lastReport = TimeSpan.Zero;
+var window = new Histogram();
+long round = 0;
 while (clock.Elapsed.TotalSeconds < seconds)
 {
-    var tick = Stopwatch.StartNew();
-    foreach (var input in inputs)
-        input.Move((float)(random.NextDouble() * 2 - 1), (float)(random.NextDouble() * 2 - 1));
-    if (random.Next(10) == 0) inputs[random.Next(inputs.Count)].Chat("hello");
-
-    if ((int)clock.Elapsed.TotalSeconds != (int)(clock.Elapsed.TotalSeconds - tick.Elapsed.TotalSeconds))
+    // Input rounds at 10 Hz: each bot moves movesPerSecond times a second and chats every chatEverySeconds.
+    var started = clock.Elapsed;
+    for (int i = 0; i < players.Length; i++)
     {
-        long moved = Interlocked.Read(ref inbox.Moved);
-        Console.WriteLine($"t={clock.Elapsed.TotalSeconds:F0}s pushes/s={moved - lastMoved} chat={inbox.Chat}");
-        lastMoved = moved;
+        var bot = players[i];
+        if (movesPerSecond > 0 && (round + i) % Math.Max(1, 10 / movesPerSecond) == 0)
+            bot.Map.Move((float)(random.NextDouble() * 2 - 1), (float)(random.NextDouble() * 2 - 1));
+        if (chatEverySeconds > 0 && (round + i) % (10 * chatEverySeconds) == 0) bot.Map.Chat("hello");
     }
 
-    var wait = TimeSpan.FromMilliseconds(100) - tick.Elapsed;
+    round++;
+    if (clock.Elapsed - lastReport >= report)
+    {
+        var snapshot = stats.Latency.Snapshot();
+        window.Subtract(snapshot, out var interval);
+        window = snapshot;
+        double elapsed = (clock.Elapsed - lastReport).TotalSeconds;
+        Console.WriteLine($"t={clock.Elapsed.TotalSeconds,4:F0}s realm/s={interval.Count / elapsed,8:F0} " +
+                          $"p50={interval.Percentile(0.50),6:F1}ms p99={interval.Percentile(0.99),6:F1}ms max={interval.Max,6:F1}ms " +
+                          $"moves/s={Interlocked.Exchange(ref stats.Moves, 0) / elapsed,8:F0} chat/s={Interlocked.Exchange(ref stats.Chats, 0) / elapsed,8:F0} " +
+                          $"gaps={stats.Gaps} disconnects={stats.Disconnects}");
+        lastReport = clock.Elapsed;
+    }
+
+    var wait = TimeSpan.FromMilliseconds(100) - (clock.Elapsed - started);
     if (wait > TimeSpan.Zero) await Task.Delay(wait);
 }
 
-foreach (var client in clients) await client.DisposeAsync();
-bool ok = Interlocked.Read(ref inbox.Moved) > 0;
-Console.WriteLine(ok ? "E2E OK" : "E2E FAILED: no position broadcasts received");
-return ok ? 0 : 1;
+// Results of the measured window.
+var latency = stats.Latency.Snapshot();
+long minReceived = long.MaxValue;
+foreach (var player in players) minReceived = Math.Min(minReceived, player.Received);
+long disconnects = Interlocked.Read(ref stats.Disconnects);
+await Parallel.ForEachAsync(players, static (p, _) => p.Client.DisposeAsync());
 
-// NotHosted while the cluster converges (the gateway has not met the node hosting the actor yet): retry for a while.
-static async Task WhileStarting(Func<ValueTask> call)
+double p99 = latency.Percentile(0.99);
+Console.WriteLine($"realm broadcasts: {latency.Count} delivered, every bot received >= {minReceived}, " +
+                  $"latency p50={latency.Percentile(0.50):F1}ms p99={p99:F1}ms p99.9={latency.Percentile(0.999):F1}ms max={latency.Max:F1}ms");
+var failures = new List<string>();
+if (minReceived == 0) failures.Add("a bot received no realm broadcast");
+if (stats.Gaps > 0) failures.Add($"{stats.Gaps} realm broadcasts missed or out of order");
+if (disconnects > 0) failures.Add($"{disconnects} bots disconnected");
+if (p99 > maxP99Ms) failures.Add($"p99 latency {p99:F1}ms > {maxP99Ms}ms");
+Console.WriteLine(failures.Count == 0 ? "E2E OK" : "E2E FAILED: " + string.Join("; ", failures));
+return failures.Count == 0 ? 0 : 1;
+
+// The cluster may still be starting or converging (the gateway has not met the node hosting the target yet): retry.
+static async Task<T> RetryFor<T>(Func<ValueTask<T>> call, Func<Exception, bool> transient)
 {
     for (int attempt = 0; ; attempt++)
     {
         try
         {
-            await call();
-            return;
+            return await call();
         }
-        catch (RpcException e) when (e.Status == RpcStatus.NotHosted && attempt < 30)
+        catch (Exception e) when (attempt < 60 && transient(e))
         {
             await Task.Delay(500);
         }
     }
 }
 
-static async Task ConnectWithRetry(ClusterClient client, string hostPort)
-{
-    int colon = hostPort.LastIndexOf(':');
-    for (int attempt = 0; ; attempt++)
+static Task Retry(Func<ValueTask> call, Func<Exception, bool> transient) =>
+    RetryFor(async () =>
     {
-        try
-        {
-            await client.ConnectAsync(hostPort[..colon], int.Parse(hostPort[(colon + 1)..]));
-            return;
-        }
-        catch when (attempt < 30)
-        {
-            await Task.Delay(1000); // servers may still be starting (docker compose / Aspire)
-        }
+        await call();
+        return true;
+    }, transient);
+
+/// <summary>One bot: its connection, its input proxy and what it received (pushes arrive on IO threads).</summary>
+sealed class Bot(ClusterClient client, Stats stats) : IPlayerClient
+{
+    public readonly ClusterClient Client = client;
+    public MapProxy Map;
+    public long LastTick;
+    public long Received;
+    private bool _measuring;
+
+    public void StartMeasuring()
+    {
+        Volatile.Write(ref Received, 0);
+        Volatile.Write(ref _measuring, true);
+    }
+
+    public void OnRealm(RealmStatus status)
+    {
+        long previous = LastTick;
+        LastTick = status.Tick;
+        if (!Volatile.Read(ref _measuring)) return;
+        Received++;
+        if (status.Tick != previous + 5 && Interlocked.Increment(ref stats.Gaps) <= 5) // RealmBroadcastSystem.EveryTicks
+            Console.WriteLine($"gap: realm tick {previous} then {status.Tick}");
+        stats.Latency.Add(TimeSpan.FromTicks(DateTime.UtcNow.Ticks - status.ServerTimeTicks).TotalMilliseconds);
+    }
+
+    public void OnMoves(List<Moved> moves) => Interlocked.Add(ref stats.Moves, moves.Count);
+
+    public void OnChat(long playerId, string text) => Interlocked.Increment(ref stats.Chats);
+}
+
+sealed class Stats
+{
+    public readonly Histogram Latency = new();
+    public long Moves, Chats, Gaps, Disconnects;
+
+    public void Reset()
+    {
+        Latency.Clear();
+        Moves = Chats = Gaps = 0;
     }
 }
 
-sealed class Inbox : IPlayerClient
+/// <summary>Lock-free latency histogram: 0.1 ms buckets up to 5 s.</summary>
+sealed class Histogram
 {
-    public long Moved;
-    public long Chat;
+    private const double BucketMs = 0.1;
+    private readonly long[] _buckets = new long[50_001];
 
-    public void OnMoved(long playerId, float x, float y) => Interlocked.Increment(ref Moved);
+    public long Count { get; private set; }
+    public double Max { get; private set; }
 
-    public void OnChat(long playerId, string text) => Interlocked.Increment(ref Chat);
+    public void Add(double ms) =>
+        Interlocked.Increment(ref _buckets[Math.Clamp((int)(ms / BucketMs), 0, _buckets.Length - 1)]);
+
+    public void Clear() => Array.Clear(_buckets);
+
+    public Histogram Snapshot()
+    {
+        var copy = new Histogram();
+        for (int i = 0; i < _buckets.Length; i++) copy._buckets[i] = Volatile.Read(ref _buckets[i]);
+        copy.Summarize();
+        return copy;
+    }
+
+    /// <summary>What <paramref name="later"/> recorded after this snapshot.</summary>
+    public void Subtract(Histogram later, out Histogram interval)
+    {
+        interval = new Histogram();
+        for (int i = 0; i < _buckets.Length; i++) interval._buckets[i] = later._buckets[i] - _buckets[i];
+        interval.Summarize();
+    }
+
+    public double Percentile(double p)
+    {
+        long target = (long)Math.Ceiling(Count * p), seen = 0;
+        for (int i = 0; i < _buckets.Length; i++)
+            if ((seen += _buckets[i]) >= target && target > 0)
+                return (i + 1) * BucketMs;
+        return 0;
+    }
+
+    private void Summarize()
+    {
+        Count = 0;
+        Max = 0;
+        for (int i = 0; i < _buckets.Length; i++)
+        {
+            Count += _buckets[i];
+            if (_buckets[i] != 0) Max = (i + 1) * BucketMs;
+        }
+    }
 }
