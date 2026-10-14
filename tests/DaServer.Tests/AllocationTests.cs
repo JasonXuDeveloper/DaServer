@@ -1,6 +1,7 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using DaServer.Buffers;
 using DaServer.Rpc;
 using NUnit.Framework;
 
@@ -60,10 +61,11 @@ public class AllocationTests : ClusterTest
         // Server side and client side both count: serialize once, one copy per session, client dispatch.
         const int broadcasts = 5_000;
         Broadcast(3 * broadcasts);
-        long before = GC.GetTotalAllocatedBytes(precise: true);
+        var meter = new AllocationMeter();
         Broadcast(broadcasts);
-        long allocated = GC.GetTotalAllocatedBytes(precise: true) - before;
+        long allocated = meter.Garbage;
         Assert.That(allocated / (double)(broadcasts * members), Is.LessThan(1), $"{allocated} B for {broadcasts} broadcasts to {members}");
+        Assert.That(meter.PoolGrowth, Is.LessThan(1 << 20), "pooled buffers reach their peak during warm-up");
 
         // Synchronous waits: an await here would allocate in the test harness, not in the path under test.
         void Broadcast(int count)
@@ -93,11 +95,13 @@ public class AllocationTests : ClusterTest
         // One-way client input (the dominant client traffic) crossing gateway -> game.
         const int calls = 5_000;
         await Calls(3 * calls);
-        long before = GC.GetTotalAllocatedBytes(precise: true);
+        var meter = new AllocationMeter();
         await Calls(calls);
-        long allocated = GC.GetTotalAllocatedBytes(precise: true) - before;
-        // A burst can grow a pooled send buffer once (a few KB): anything per call would be >= 24 B.
+        long allocated = meter.Garbage;
+        // Anything per call would be >= 24 B; below that is the harness (the test's awaits).
         Assert.That(allocated / (double)calls, Is.LessThan(8), $"{allocated} B for {calls} client calls");
+        // A burst above the warm-up peak may rent a few more pooled buffers (send batches, resend window chunks).
+        Assert.That(meter.PoolGrowth, Is.LessThan(1 << 20), "pooled buffers stay near their warm-up peak");
 
         // Batches of 500 with one await each: the reply comes after the batch's tips (one ordered stream per direction),
         // so send backlogs stay as small as during warm-up (a larger burst would grow a pooled buffer to a new size
@@ -110,6 +114,19 @@ public class AllocationTests : ClusterTest
                 if (i % 500 == 0) await player.AddGold(0);
             }
         }
+    }
+
+    /// <summary>
+    /// Garbage allocated (process-wide) since construction: every allocation minus <see cref="BufferPool"/> growth,
+    /// which is pinned memory the pool keeps for reuse once returned, not GC pressure. Growth is reported apart.
+    /// </summary>
+    private readonly struct AllocationMeter()
+    {
+        private readonly long _total = GC.GetTotalAllocatedBytes(precise: true);
+        private readonly long _pool = BufferPool.AllocatedBytes;
+
+        public long PoolGrowth => BufferPool.AllocatedBytes - _pool;
+        public long Garbage => GC.GetTotalAllocatedBytes(precise: true) - _total - PoolGrowth;
     }
 
     private static void WaitFor(ref long counter, long target)
