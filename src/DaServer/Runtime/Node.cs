@@ -208,6 +208,17 @@ public sealed partial class Node : ICluster, IAsyncDisposable
         return total;
     }
 
+    /// <summary>Calls and events refused by full shard inboxes or actor mailboxes since start (backpressure).</summary>
+    public long Rejected
+    {
+        get
+        {
+            long total = 0;
+            foreach (var shard in _shards) total += shard.Rejected;
+            return total;
+        }
+    }
+
     /// <summary>Called by membership when the view changes: shards drop actors they no longer own.</summary>
     internal void OnViewChanged()
     {

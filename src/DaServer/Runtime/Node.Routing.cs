@@ -122,7 +122,13 @@ public sealed partial class Node : IRpcInvoker, IConnectionHandler
     }
 
     private void DeliverLocal(RpcContractInfo contract, long key, FrameWriter frame, IReplySink? sink) =>
-        SelectShard(contract, key).Post(new WorkItem(WorkKind.Dispatch, frame, sink));
+        Admit(SelectShard(contract, key), frame, sink);
+
+    /// <summary>Hand a call or event to a shard, or refuse it when the shard is full. Takes ownership of <paramref name="frame"/>.</summary>
+    internal static void Admit(Shard shard, FrameWriter frame, IReplySink? sink)
+    {
+        if (!shard.TryAdmit(frame, sink)) ShardDispatch.Overloaded(frame, sink);
+    }
 
     private Shard SelectShard(RpcContractInfo contract, long key)
     {
@@ -202,7 +208,7 @@ public sealed partial class Node : IRpcInvoker, IConnectionHandler
         }
 
         // Actors not owned/hosted here are forwarded by the shard (it re-checks ownership on its own thread).
-        SelectShard(contract, header.Key).Post(new WorkItem(WorkKind.Dispatch, FrameWriter.CopyOf(frame), sink));
+        Admit(SelectShard(contract, header.Key), FrameWriter.CopyOf(frame), sink);
     }
 
     /// <summary>Complete an outgoing call: on the caller's shard when it has one, inline otherwise.</summary>

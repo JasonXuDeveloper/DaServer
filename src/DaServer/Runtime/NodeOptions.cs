@@ -39,8 +39,14 @@ public sealed class NodeOptions
     /// <summary>ECS tick rate of every shard (Hz).</summary>
     public int TickRate { get; set; } = 20;
 
-    /// <summary>Bounded mailbox capacity per shard (overflow spills to an unbounded queue, never drops).</summary>
+    /// <summary>
+    /// Calls and events waiting in a shard's inbox before new ones are refused with <see cref="Protocol.RpcStatus.Overloaded"/>
+    /// (one-way calls and events are dropped).
+    /// </summary>
     public int MailboxCapacity { get; set; } = 64 * 1024;
+
+    /// <summary>Messages waiting for one actor before new ones are refused the same way.</summary>
+    public int ActorMailboxCapacity { get; set; } = 4096;
 
     public TimeSpan CallTimeout { get; set; } = TimeSpan.FromSeconds(10);
     public TimeSpan GossipInterval { get; set; } = TimeSpan.FromSeconds(1);

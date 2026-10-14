@@ -4,7 +4,9 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
+using DaServer.Buffers;
 using DaServer.Concurrency;
+using DaServer.Rpc;
 using EasyEcs;
 using Microsoft.Extensions.Logging;
 
@@ -22,8 +24,10 @@ public sealed class Shard : IDisposable
     [ThreadStatic] private static Shard? _current;
 
     private readonly MpmcQueue<WorkItem> _inbox;
-    private readonly ConcurrentQueue<WorkItem> _overflow = new(); // only used if the bounded ring is full
+    private readonly ConcurrentQueue<WorkItem> _overflow = new(); // completions and callbacks when the ring is full
     private int _overflowCount;
+    private readonly int _admitLimit;
+    private long _rejected;
     private readonly ManualResetEventSlim _wake = new(false, spinCount: 0);
     private int _sleeping;
     private readonly Thread _thread;
@@ -37,6 +41,7 @@ public sealed class Shard : IDisposable
         Node = node;
         Index = index;
         _inbox = new MpmcQueue<WorkItem>(mailboxCapacity);
+        _admitLimit = mailboxCapacity;
         _tickInterval = Stopwatch.Frequency / Math.Max(1, tickRate);
         World = new World();
         _thread = new Thread(Run) { IsBackground = true, Name = $"{node.Options.Name}-shard-{index}" };
@@ -59,6 +64,9 @@ public sealed class Shard : IDisposable
     /// <summary>Work items waiting in the inbox (approximate, any thread).</summary>
     public int QueueLength => _inbox.Count + Volatile.Read(ref _overflowCount);
 
+    /// <summary>Calls and events refused because the shard or an actor mailbox was full (any thread).</summary>
+    public long Rejected => Interlocked.Read(ref _rejected);
+
     /// <summary>Active actor activations (approximate, any thread).</summary>
     public int ActorCount => Volatile.Read(ref _actorCount);
 
@@ -66,6 +74,25 @@ public sealed class Shard : IDisposable
     public Task Stopped => _stopped.Task;
 
     internal void Start() => _thread.Start();
+
+    /// <summary>
+    /// Thread-safe: admit a new call or event unless the inbox holds <see cref="NodeOptions.MailboxCapacity"/> items.
+    /// New work is bounded so a flood cannot grow memory without limit; completions and callbacks (<see cref="Post"/>)
+    /// always get in, because they finish work already admitted and are bounded by the calls in flight.
+    /// </summary>
+    internal bool TryAdmit(FrameWriter frame, IReplySink? sink)
+    {
+        if (QueueLength >= _admitLimit)
+        {
+            CountRejected();
+            return false;
+        }
+
+        Post(new WorkItem(WorkKind.Dispatch, frame, sink));
+        return true;
+    }
+
+    internal void CountRejected() => Interlocked.Increment(ref _rejected);
 
     /// <summary>Thread-safe: enqueue work and wake the shard if it is sleeping.</summary>
     internal void Post(in WorkItem item)

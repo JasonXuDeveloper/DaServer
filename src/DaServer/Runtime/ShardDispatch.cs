@@ -88,10 +88,22 @@ internal static class ShardDispatch
         return entity;
     }
 
-    /// <summary>Queue a message for an actor and mark it ready unless it is busy (a running turn reschedules it).</summary>
+    /// <summary>
+    /// Queue a message for an actor and mark it ready unless it is busy (a running turn reschedules it). A full
+    /// mailbox (<see cref="NodeOptions.ActorMailboxCapacity"/>) refuses the message: one slow actor cannot hold the
+    /// shard's memory.
+    /// </summary>
     public static void Deliver(World world, Entity actor, in Envelope envelope)
     {
         ref var mailbox = ref actor.Get<Mailbox>();
+        var shard = world.Shard();
+        if (mailbox.Pending.Count >= shard.Node.Options.ActorMailboxCapacity)
+        {
+            shard.CountRejected();
+            Overloaded(envelope.Frame, envelope.Sink);
+            return;
+        }
+
         mailbox.Pending.Enqueue(envelope);
         Schedule(world, actor, ref mailbox);
     }
@@ -235,6 +247,14 @@ internal static class ShardDispatch
     }
 
     /// <summary>Answer a request with an error status (one-way messages are dropped). Disposes the frame.</summary>
+    /// <summary>Refuse a call or event that found its shard or mailbox full (calls get <see cref="RpcStatus.Overloaded"/>).</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void Overloaded(FrameWriter frame, IReplySink? sink)
+    {
+        var header = FrameHeader.Read(frame.Frame);
+        Reject(frame, sink, header.Kind == FrameKind.Request ? header.RequestId : 0, RpcStatus.Overloaded, "Overloaded");
+    }
+
     private static void Reject(FrameWriter frame, IReplySink? sink, uint requestId, RpcStatus status, string message)
     {
         frame.Dispose();

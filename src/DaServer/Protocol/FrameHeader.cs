@@ -56,6 +56,8 @@ public enum RpcStatus : byte
     Forbidden = 5,
     /// <summary>Connection lost before the response arrived.</summary>
     Disconnected = 6,
+    /// <summary>The target shard or actor mailbox is full; nothing ran. The caller may back off and retry.</summary>
+    Overloaded = 7,
 }
 
 /// <summary>
