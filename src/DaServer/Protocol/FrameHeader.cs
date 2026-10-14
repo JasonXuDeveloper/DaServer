@@ -65,7 +65,7 @@ public enum RpcStatus : byte
 /// <code>
 /// 0  int32  Length     whole frame size including header
 /// 4  byte   Kind
-/// 5  byte   Status     RpcStatus for responses, otherwise 0
+/// 5  byte   Status     RpcStatus for responses; for requests the caller's time budget (see Budget), otherwise 0
 /// 6  byte   Hops       forwarding count (loop guard)
 /// 7  byte   Flags      reserved
 /// 8  uint32 RequestId  correlation id (0 for one-way / push; target implementation id for Event)
@@ -88,6 +88,26 @@ public struct FrameHeader
     public uint RequestId;
     public uint MethodId;
     public long Key;
+
+    /// <summary>Milliseconds per unit of a request's time budget.</summary>
+    public const int BudgetUnitMs = 100;
+
+    /// <summary>
+    /// Requests only (the status byte is free there): the caller's remaining time in units of
+    /// <see cref="BudgetUnitMs"/> (at most 25.5 s), 0 = no deadline. Relative, so clocks of different machines need
+    /// not agree; the receiver turns it into a deadline on arrival.
+    /// </summary>
+    public readonly byte Budget => (byte)Status;
+
+    /// <summary>The budget byte for <paramref name="remainingMs"/> (at least one unit while time remains).</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static RpcStatus EncodeBudget(long remainingMs) =>
+        (RpcStatus)(byte)Math.Clamp((remainingMs + BudgetUnitMs - 1) / BudgetUnitMs, 1, byte.MaxValue);
+
+    /// <summary>Deadline (<see cref="Environment.TickCount64"/>) of a request that arrived now, 0 when it has none.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public readonly long DeadlineOnArrival() =>
+        Kind == FrameKind.Request && Status != 0 ? Environment.TickCount64 + (byte)Status * BudgetUnitMs : 0;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FrameHeader Read(ReadOnlySpan<byte> s)

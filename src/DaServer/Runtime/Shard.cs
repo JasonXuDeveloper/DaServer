@@ -28,6 +28,7 @@ public sealed class Shard : IDisposable
     private int _overflowCount;
     private readonly int _admitLimit;
     private long _rejected;
+    private long _expired;
     private readonly ManualResetEventSlim _wake = new(false, spinCount: 0);
     private int _sleeping;
     private readonly Thread _thread;
@@ -67,6 +68,9 @@ public sealed class Shard : IDisposable
     /// <summary>Calls and events refused because the shard or an actor mailbox was full (any thread).</summary>
     public long Rejected => Interlocked.Read(ref _rejected);
 
+    /// <summary>Requests dropped unrun because their caller had already timed out (the call carried a deadline).</summary>
+    public long Expired => Interlocked.Read(ref _expired);
+
     /// <summary>Active actor activations (approximate, any thread).</summary>
     public int ActorCount => Volatile.Read(ref _actorCount);
 
@@ -93,6 +97,8 @@ public sealed class Shard : IDisposable
     }
 
     internal void CountRejected() => Interlocked.Increment(ref _rejected);
+
+    internal void CountExpired() => Interlocked.Increment(ref _expired);
 
     /// <summary>Thread-safe: enqueue work and wake the shard if it is sleeping.</summary>
     internal void Post(in WorkItem item)

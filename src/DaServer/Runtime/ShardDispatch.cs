@@ -169,6 +169,12 @@ internal static class ShardDispatch
     {
         try
         {
+            if (frame.Deadline != 0 && Environment.TickCount64 > frame.Deadline)
+            {
+                Expired(); // the caller gave up while the request waited: running it would be wasted (and late) work
+                return default;
+            }
+
             var header = FrameHeader.Read(frame.Frame);
             uint requestId = header.Kind == FrameKind.Request ? header.RequestId : 0;
             var payload = frame.Payload;
@@ -206,6 +212,9 @@ internal static class ShardDispatch
             frame.Dispose();
         }
     }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void Expired() => Shard.Current?.CountExpired();
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static void LogUnobserved(ILogger logger, Exception e, object target, in FrameHeader header) =>

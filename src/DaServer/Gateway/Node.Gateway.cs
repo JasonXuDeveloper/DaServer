@@ -329,6 +329,7 @@ public sealed partial class Node
         var nino = w.Nino;
         NinoSerializer.Serialize(new SessionRef(Id, session.Id), ref nino);
         w.WriteRaw(frame.Slice(FrameHeader.Size));
+        w.Deadline = header.DeadlineOnArrival(); // the client's own timeout, when it sent one
         Route(w, header.MethodId, kind, key, null, replyId != 0 ? session.Sink : null, replyId, flags: FrameFlags.HasCaller);
     }
 }
