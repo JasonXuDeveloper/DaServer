@@ -54,10 +54,10 @@ public sealed partial class Node
 
     // ------------------------------------------------------------------ ICluster: sessions (any node)
 
-    public void Bind<TActor>(SessionRef session, long key) where TActor : ISessionActor =>
+    public void Bind<TActor>(SessionRef session, long key) where TActor : class =>
         SendGatewayControl(session, ControlOp.Bind, ContractOf<TActor>.Id, key);
 
-    public void Unbind<TActor>(SessionRef session) where TActor : ISessionActor =>
+    public void Unbind<TActor>(SessionRef session) where TActor : class =>
         SendGatewayControl(session, ControlOp.Unbind, ContractOf<TActor>.Id, 0);
 
     public void JoinGroup(SessionRef session, ClientGroup group) => SendGatewayControl(session, ControlOp.JoinGroup, 0, group.Id);
@@ -241,20 +241,20 @@ public sealed partial class Node
     }
 
     /// <summary>
-    /// Validate and route a client call by the contract's marker: public services, session actors on the key bound to
-    /// the session, public actors on the key the client chose. The caller session is prepended for the handler.
+    /// Validate and route a client call by the method's <see cref="ClientAttribute"/>: services, actors on the key bound
+    /// to the session, or on the key the client chose (AnyKey). The caller session is prepended for the handler.
     /// </summary>
     private void OnClientCall(Session session, in FrameHeader header, ReadOnlySpan<byte> frame)
     {
         uint replyId = header.Kind == FrameKind.Request ? header.RequestId : 0;
-        if (!RpcRegistry.TryGetMethod(header.MethodId, out var method) || method.Owner.ClientAccess == ClientAccess.None)
+        if (!RpcRegistry.TryGetMethod(header.MethodId, out var method) || method.ClientAccess == ClientAccess.None)
         {
             if (replyId != 0) ReplyError(session.Sink, replyId, RpcStatus.Forbidden, "Not client accessible");
             return;
         }
 
         var contract = method.Owner;
-        var (kind, key) = contract.ClientAccess switch
+        var (kind, key) = method.ClientAccess switch
         {
             ClientAccess.SessionKey => (RpcTargetKind.Actor, session.KeyOf(contract.Id)),
             ClientAccess.AnyKey => (RpcTargetKind.Actor, header.Key),

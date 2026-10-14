@@ -113,9 +113,20 @@ public sealed class HostGenerator : IIncrementalGenerator
             }
 
             string contracts = string.Join(", ", t.Contracts.Select(c => $"typeof({c})"));
-            string events = string.Join(", ", t.Events.Select(e => $"EventHandlerInfo.Of<{e}>()"));
             sb.Append($"        ServerRegistry.RegisterImplementation(new ImplementationInfo(typeof({t.FullName}), RpcContractKind.{t.Kind},\n");
-            sb.Append($"            static () => new {t.FullName}(), [{contracts}], [{events}]));\n");
+            sb.Append($"            static () => new {t.FullName}(), [{contracts}],\n            [");
+            foreach (var h in t.Handlers)
+            {
+                // The handler's dispatcher: deserialize the event straight from the frame and call the [Handle] method.
+                string call = $"Unsafe.As<{t.FullName}>(target).{h.Method}(e)";
+                sb.Append($"\n                EventHandlerInfo.Of<{h.EventType}>(static (object target, uint _, ref global::Nino.Core.Reader reader, in CallContext __) =>\n");
+                sb.Append($"                {{\n                    global::Nino.Core.NinoDeserializer.Deserialize(out {h.EventType} e, ref reader);\n");
+                sb.Append(h.ReturnsVoid
+                    ? $"                    {call};\n                    return default;\n                }}),"
+                    : $"                    return {call};\n                }}),");
+            }
+
+            sb.Append(t.Handlers.Length > 0 ? "\n            ]));\n" : "]));\n");
         }
 
         return sb.Append("    }\n}\n").ToString();

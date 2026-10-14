@@ -17,10 +17,10 @@ public interface ICluster : IRpcInvoker
     /// contract go to this key (the client cannot choose it), and the actor receives
     /// <see cref="SessionClosed"/> when the session ends. A session has at most one key per contract.
     /// </summary>
-    void Bind<TActor>(SessionRef session, long key) where TActor : ISessionActor;
+    void Bind<TActor>(SessionRef session, long key) where TActor : class;
 
     /// <summary>Remove the binding of <typeparamref name="TActor"/> from a session.</summary>
-    void Unbind<TActor>(SessionRef session) where TActor : ISessionActor;
+    void Unbind<TActor>(SessionRef session) where TActor : class;
 
     /// <summary>Add a session to a broadcast group (usually an actor's <c>Group</c>).</summary>
     void JoinGroup(SessionRef session, ClientGroup group);
@@ -32,8 +32,8 @@ public interface ICluster : IRpcInvoker
     void Kick(SessionRef session);
 
     /// <summary>
-    /// Publish a cluster event to every handler (<see cref="IHandle{TEvent}"/>) in the cluster: serialized once, one frame
-    /// per handling implementation. The publisher never depends on its handlers.
+    /// Publish a cluster event (a <c>[NinoType]</c> struct) to every <see cref="HandleAttribute">[Handle]</see> method in
+    /// the cluster: serialized once, one frame per handling implementation. The publisher never depends on its handlers.
     /// </summary>
-    void Publish<TEvent>(in TEvent e) where TEvent : struct, IEvent;
+    void Publish<TEvent>(in TEvent e) where TEvent : struct;
 }

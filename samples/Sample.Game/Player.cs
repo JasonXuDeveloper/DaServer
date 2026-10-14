@@ -10,7 +10,7 @@ namespace Sample.Game;
 public record struct PlayerState(string Name, long MapId, int Logins, SessionRef Session) : IComponent;
 
 /// <summary>The player: its own state, and which map it is in. The map simulates the avatar.</summary>
-public sealed class Player : Actor<PlayerState>, IPlayer, IHandle<PlayerLoggedIn>, IHandle<SessionClosed>
+public sealed class Player : Actor<PlayerState>, IPlayer
 {
     public override ValueTask OnActivateAsync()
     {
@@ -19,14 +19,16 @@ public sealed class Player : Actor<PlayerState>, IPlayer, IHandle<PlayerLoggedIn
         return default;
     }
 
-    public ValueTask Handle(PlayerLoggedIn e)
+    [Handle]
+    public ValueTask On(PlayerLoggedIn e)
     {
         State.Logins++;
         State.Session = e.Session;
         return default;
     }
 
-    public ValueTask Handle(SessionClosed e)
+    [Handle]
+    public ValueTask On(SessionClosed e)
     {
         // The map got its own SessionClosed (the session was bound to it too) and removed the avatar.
         State.Session = default;

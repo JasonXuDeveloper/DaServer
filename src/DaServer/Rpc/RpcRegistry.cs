@@ -8,35 +8,33 @@ public enum RpcContractKind : byte
 {
     Service = 1,
     Actor = 2,
-    ClientCallback = 3,
+    Push = 3,
 }
 
-/// <summary>Whether and how game clients may call a contract (from its marker interface).</summary>
+/// <summary>Whether and how game clients may call a method (<see cref="ClientAttribute"/>).</summary>
 public enum ClientAccess : byte
 {
-    /// <summary>Servers only (<see cref="IService"/>, <see cref="IActor"/>).</summary>
+    /// <summary>Servers only.</summary>
     None = 0,
 
-    /// <summary><see cref="IPublicService"/>.</summary>
+    /// <summary>A <c>[Client]</c> service method.</summary>
     Service = 1,
 
-    /// <summary><see cref="ISessionActor"/>: the key comes from the session binding.</summary>
+    /// <summary>A <c>[Client]</c> actor method: the key comes from the session binding.</summary>
     SessionKey = 2,
 
-    /// <summary><see cref="IPublicActor"/>: the client chooses the key.</summary>
+    /// <summary>A <c>[Client(AnyKey = true)]</c> actor method: the client chooses the key.</summary>
     AnyKey = 3,
 }
 
 /// <summary>Metadata of one contract (interface), registered by generated code.</summary>
 public sealed class RpcContractInfo
 {
-    public RpcContractInfo(Type contract, uint id, RpcContractKind kind, ClientAccess clientAccess,
-        RpcDispatcher dispatcher, RpcMethodInfo[] methods)
+    public RpcContractInfo(Type contract, uint id, RpcContractKind kind, RpcDispatcher dispatcher, RpcMethodInfo[] methods)
     {
         Contract = contract;
         Id = id;
         Kind = kind;
-        ClientAccess = clientAccess;
         Dispatcher = dispatcher;
         Methods = methods;
         foreach (var m in methods) m.Owner = this;
@@ -48,7 +46,6 @@ public sealed class RpcContractInfo
     public uint Id { get; }
 
     public RpcContractKind Kind { get; }
-    public ClientAccess ClientAccess { get; }
     public RpcDispatcher Dispatcher { get; }
     public RpcMethodInfo[] Methods { get; }
 
@@ -57,11 +54,12 @@ public sealed class RpcContractInfo
 
 public sealed class RpcMethodInfo
 {
-    public RpcMethodInfo(uint id, string name, bool oneWay)
+    public RpcMethodInfo(uint id, string name, bool oneWay, ClientAccess clientAccess = ClientAccess.None)
     {
         Id = id;
         Name = name;
         OneWay = oneWay;
+        ClientAccess = clientAccess;
     }
 
     public uint Id { get; }
@@ -69,6 +67,9 @@ public sealed class RpcMethodInfo
 
     /// <summary>void method: no response is sent.</summary>
     public bool OneWay { get; }
+
+    /// <summary>Whether and how game clients may call it (gateways refuse the rest).</summary>
+    public ClientAccess ClientAccess { get; }
 
     public RpcContractInfo Owner { get; internal set; } = null!;
 
