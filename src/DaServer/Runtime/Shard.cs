@@ -122,6 +122,14 @@ public sealed class Shard : IDisposable
     internal void RequestRebalance() =>
         Post(static s => ((Shard)s!).World.GetSingleton<ShardActivity>().Rebalance = true, this);
 
+    /// <summary>Thread-safe: deactivate every current activation (this node was declared Dead; its keys moved).</summary>
+    internal void RequestRetireAll() =>
+        Post(static s =>
+        {
+            ref var activity = ref ((Shard)s!).World.GetSingleton<ShardActivity>();
+            activity.RetireAll = activity.Rebalance = true;
+        }, this);
+
     internal void RequestStop()
     {
         _stopRequested = true;

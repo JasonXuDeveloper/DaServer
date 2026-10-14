@@ -273,10 +273,17 @@ internal sealed class Membership : IDisposable
             {
                 if (member.NodeId == _node.Id)
                 {
-                    // Someone thinks we are suspect/dead: refute with a higher incarnation.
+                    // Someone thinks we are suspect/dead: refute with a higher incarnation. Dead means the cluster already
+                    // moved our keys: retire our activations first so they do not run beside the new ones.
                     if (member.Status is MemberStatus.Suspect or MemberStatus.Dead && member.Incarnation >= _self.Incarnation &&
                         _self.Status == MemberStatus.Up)
                     {
+                        if (member.Status == MemberStatus.Dead)
+                        {
+                            _node.Logger.LogWarning("Declared dead by the cluster: retiring local actors before rejoining");
+                            foreach (var shard in _node.Shards) shard.RequestRetireAll();
+                        }
+
                         int incarnation = member.Incarnation + 1;
                         UpdateSelf(m => m.Incarnation = incarnation);
                     }

@@ -26,16 +26,21 @@ public sealed class ClusterView
         var actors = new Dictionary<uint, (uint, List<MemberInfo>)>();
         var implementations = new Dictionary<uint, List<MemberInfo>>();
         var handlers = new Dictionary<uint, Dictionary<uint, (bool Actor, List<MemberInfo> Nodes)>>();
-        var up = new List<MemberInfo>();
+        var upMembers = new List<MemberInfo>();
 
         foreach (var m in members)
         {
             all[m.NodeId] = m;
-            if (m.Status != MemberStatus.Up) continue; // only Up members receive new work
-            up.Add(m);
+
+            // Keys stay with a Suspect member: a pause or a blip must not activate its actors a second time elsewhere.
+            // They move when it is Dead or Leaving. New stateless work (services, service events) goes to Up members only.
+            bool up = m.Status == MemberStatus.Up;
+            if (!up && m.Status != MemberStatus.Suspect) continue;
+            if (up) upMembers.Add(m);
 
             foreach (var contract in m.Services)
             {
+                if (!up) break;
                 if (!services.TryGetValue(contract, out var list)) services[contract] = list = new();
                 list.Add(m);
             }
@@ -56,6 +61,7 @@ public sealed class ClusterView
 
             foreach (var handler in m.Handlers)
             {
+                if (!up && !handler.Actor) continue;
                 if (!handlers.TryGetValue(handler.EventId, out var byImplementation))
                     handlers[handler.EventId] = byImplementation = new();
                 if (!byImplementation.TryGetValue(handler.ImplementationId, out var route))
@@ -65,7 +71,7 @@ public sealed class ClusterView
         }
 
         _members = all.ToFrozenDictionary();
-        UpMembers = up.ToArray();
+        UpMembers = upMembers.ToArray();
         var serviceArrays = new Dictionary<uint, MemberInfo[]>();
         foreach (var (k, v) in services) serviceArrays[k] = v.ToArray();
         _serviceNodes = serviceArrays.ToFrozenDictionary();
@@ -102,7 +108,7 @@ public sealed class ClusterView
 
     /// <summary>
     /// Owner of actor (<paramref name="contractId"/>, <paramref name="key"/>) by rendezvous (highest random weight)
-    /// hashing over the Up nodes hosting its implementation. Every node with the same view picks the same owner, and
+    /// hashing over the Up and Suspect nodes hosting its implementation. Every node with the same view picks the same owner, and
     /// adding/removing a node only moves the keys that node wins/loses.
     /// </summary>
     public MemberInfo? ActorOwner(uint contractId, long key) =>
