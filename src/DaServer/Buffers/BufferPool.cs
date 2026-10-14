@@ -16,16 +16,20 @@ public static class BufferPool
     public const int MaxPooledSize = 1 << 22; // 4 MB
     private const int MinShift = 8;
     private const int BucketCount = 22 - MinShift + 1;
+    private const int BucketBudget = 64 << 20; // bytes retained per bucket at most
 
     private static readonly MpmcQueue<byte[]>[] Buckets = CreateBuckets();
 
     private static MpmcQueue<byte[]>[] CreateBuckets()
     {
+        // Each bucket retains up to BucketBudget bytes (16..65536 buffers). The pool must hold the peak number of
+        // buffers in flight, or every burst above it allocates again: a broadcast to N sessions has N send batches
+        // (4-16 KB) in flight at once, so small buckets need tens of thousands of slots (4 KB: 16384). Memory is only
+        // retained up to what the process actually rented at its peak; the slot arrays cost about 4 MB in total.
         var buckets = new MpmcQueue<byte[]>[BucketCount];
         for (int i = 0; i < BucketCount; i++)
         {
-            // Keep fewer large buffers around: 4096 x 256B ... 16 x 4MB
-            int capacity = Math.Max(16, 4096 >> Math.Max(0, i - 4));
+            int capacity = Math.Clamp(BucketBudget >> (MinShift + i), 16, 65536);
             buckets[i] = new MpmcQueue<byte[]>(capacity);
         }
 
