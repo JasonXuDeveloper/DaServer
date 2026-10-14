@@ -15,28 +15,36 @@ Priorities, in order:
 | Concept | What it is | Threading |
 |---|---|---|
 | **Node** | One process. Has a `NodeId`, roles, hosted contracts, a cluster endpoint and optionally a client endpoint. | IO threads plus the shards it owns. |
-| **Shard** | A single-threaded executor. It has a lock-free mailbox, an EasyEcs `World`, timers and a fixed-rate tick. A node runs N shards (default: one per core). | One dedicated thread. Every handler and system of the shard runs on it, so user code needs no locks. |
-| **Actor** (`IActor` contract) | Keyed, stateful (player, map instance, room, guild). One activation per key in the cluster, living in one shard. Its state lives in ECS components on its entity. | Its shard's thread. |
-| **Service** (`IService` contract) | Stateless (login, matchmaking, chat routing). One instance per shard; calls are load-balanced. | The shard thread of the instance that handles the call. |
-| **Client callback** (`IClientCallback`) | Server → client push contract. | Fire-and-forget. |
-| **Event** (`[EventHandler]`) | Synchronous, in-shard, decoupled module events (e.g. `LevelUp` → quests, achievements). | The publisher's shard thread. |
-| **System** (`[Query]` methods) | Per-tick ECS logic (movement, AOI, buffs). | The shard thread. |
+| **Shard** | A single-threaded executor: one thread, a lock-free inbox and an EasyEcs `World` holding everything else (see [ECS in DaServer](#8-ecs-in-daserver)). A node runs N shards (default: one per core). | One dedicated thread. Every handler and system of the shard runs on it, so user code needs no locks. |
+| **Actor** (`IActor` contract) | Keyed, stateful (player, map instance, room, guild). One activation per key in the cluster. The activation is an entity: its state is components (`Actor<TState>`). Turn-based: one message at a time, including its awaits. | Its shard's thread. |
+| **Service** (`IService` contract) | Stateless (login, matchmaking, chat routing). One instance per shard; calls are load-balanced and may overlap. | The shard thread of the instance that handles the call. |
+| **Client callback** (`IClientCallback`) | Server → client push contract, to a session or a `ClientGroup`. | Fire-and-forget. |
+| **System** (EasyEcs `EcsSystem`, `[ForEach]`) | One per-tick responsibility over every matching entity of a shard (movement, AOI, buffs, sync). | The shard thread, at the tick rate. |
+| **Event** (EasyEcs `IEvent`, `IEventHandler<T>`) | Synchronous, in-shard notification between systems and actors (`Died` → loot, quests). | The publisher's shard thread. |
 
 Data flow of a call:
 
-```
-caller (shard thread or client)
-  → generated proxy serializes the arguments once into a pooled frame
-    → same node:  frame handed to the target shard's mailbox (zero copy)
-    → other node: frame copied into the node link's batch buffer → TCP → peer IO thread → target shard's mailbox
-  → target shard thread: generated dispatcher deserializes the arguments and invokes the implementation
-  → reply: same path in reverse; the caller's continuation resumes on the caller's shard thread
+```mermaid
+sequenceDiagram
+    participant C as caller (shard thread or client)
+    participant L as node link (TCP, batched)
+    participant T as target shard
+    C->>C: generated proxy serializes arguments once into a pooled frame
+    alt same node
+        C->>T: frame into the target shard's inbox (zero copy)
+    else other node
+        C->>L: frame copied into the link's batch buffer
+        L->>T: peer IO thread posts it to the target shard's inbox
+    end
+    T->>T: InboxSystem routes it to the actor's mailbox (or a service)
+    T->>T: MailboxSystem runs the generated dispatcher, then the handler
+    T-->>C: reply on the same path; the caller resumes on its own shard
 ```
 
 ## 2. Wire protocol
 
 - Frames carry a fixed 24-byte header: `length`, `kind`, `status`, `hops`, `flags`, `requestId`, `methodId`, `key`. The payload is Nino-serialized arguments.
-- `methodId` is FNV-1a of `Namespace.Interface.Method(ParamTypes)`, computed at compile time. Collisions are build errors from the generator and registration errors at runtime.
+- `methodId` is FNV-1a of `Namespace.Interface.Method(ParamTypes)`, computed at compile time. Collisions are build errors (DAS005, from the analyzer) and registration errors at runtime.
 - Frame kinds:
   - `Request` / `OneWay` / `Response`
   - `Push` (one session)
@@ -55,8 +63,8 @@ caller (shard thread or client)
 | Awaiting | `PendingCall<T>` is a pooled `IValueTaskSource<T>`. Dispatch helpers use `PoolingAsyncValueTaskMethodBuilder`. A synchronously completed handler replies without any state machine. |
 | Sending | Each connection copies frames into one batch buffer under a short lock. One send loop swaps and writes whole batches, so N frames cost one syscall. A broadcast serializes once and fans out by `memcpy`. |
 | Receiving | Frames are parsed in place. Zero-byte reads mean an idle client connection holds no receive buffer, which matters with tens of thousands of sockets. |
-| Proxies | Generated `readonly struct` proxies, so `runtime.Player(42).AddGold(10)` allocates nothing. |
-| ECS | EasyEcs v4: struct components, `[Query]` jobs, zero allocations per tick. |
+| Proxies | Generated `readonly struct` proxies, so `Cluster.Player(42).AddGold(10)` allocates nothing. |
+| ECS | EasyEcs v4: struct components, `[ForEach]` struct jobs, zero allocations per tick. The runtime keeps per-actor state in components and visits only ready or busy actors. |
 | GC mode | Server GC, concurrent, `SustainedLowLatency` during steady state. Allocation tests in CI hold the zero-GC budget. |
 
 ## 4. Latency
@@ -89,82 +97,122 @@ caller (shard thread or client)
 
 ## 7. Game server reference architecture
 
-```
-              clients (TCP, session resumption)
-                 │            │
-           ┌─────▼────┐  ┌────▼─────┐        role: gateway
-           │ gateway1 │  │ gateway2 │        sessions, auth binding, push/broadcast fan-out
-           └─────┬────┘  └────┬─────┘
-                 │  node links (reliable, batched)
-     ┌───────────┼────────────┼───────────┐
-┌────▼───┐  ┌────▼───┐   ┌────▼───┐  ┌────▼───┐    role: game
-│ game1  │  │ game2  │   │ game3  │  │ login  │    IPlayer actors, IMap actors (AOI via ECS systems),
-│shards×N│  │shards×N│   │shards×N│  │services│    stateless services; any node can host any contract
-└────────┘  └────────┘   └────────┘  └────────┘
+```mermaid
+flowchart TB
+    C[clients: TCP, session resumption] --> G1 & G2
+    subgraph gateways [role: gateway: sessions, binding, push and broadcast fan-out]
+        G1[gateway-0]
+        G2[gateway-1]
+    end
+    subgraph game [role: game: IPlayer / IMap actors, ECS systems, services]
+        N1[game-0<br/>shards x N]
+        N2[game-1<br/>shards x N]
+        N3[game-2<br/>shards x N]
+    end
+    G1 <-->|node links: reliable, batched| N1 & N2 & N3
+    G2 <--> N1 & N2 & N3
 ```
 
 - **Login.** The client calls `IAuth.Login`, a client-accessible service. The handler validates credentials and binds the session to a player id. Later client calls to `[ClientAccessible]` actor contracts are routed with the **bound** key, so a client can never address someone else's actor.
 - **Player and map.**
   - `IPlayer` is keyed by player id. It holds persistent state: inventory, quests, currencies.
-  - `IMap` is keyed by map instance id. It owns the spatial simulation: an ECS world with `[Query]` systems for movement, AOI and combat.
+  - `IMap` is keyed by map instance id. Its avatars are entities of its shard; `[ForEach]` systems do movement, AOI, combat and sync.
   - The player's avatar entity lives in the map. To switch maps, the client calls `Leave` on map A, then `Enter` on map B, and the player actor stays where it is.
 - **Push and broadcast.**
-  - `runtime.Client<IPlayerClient>(session).OnChat(msg)` pushes to one session.
-  - `runtime.Broadcast<IPlayerClient>(groupId).OnChat(msg)` serializes once and sends one frame per gateway. Each gateway fans out to its local sessions in the group.
+  - `Cluster.PlayerClient(session).OnChat(msg)` pushes to one session.
+  - `Cluster.PlayerClient(new ClientGroup(id)).OnChat(msg)` serializes once and sends one frame per gateway. Each gateway fans out to its local sessions in the group.
   - AOI lists, guild channels and shard chat are all groups.
 
-## 8. Developer experience (generated code)
+## 8. ECS in DaServer
 
-The developer writes:
+Business code and the runtime follow the same ECS rules (EasyEcs `doc/ecs-principles.md`).
+
+| Element | Responsibility | Never |
+|---|---|---|
+| Actor | Network boundary of one keyed entity: validate a call, write input as components or events; lifecycle and persistence hooks. | Per-tick logic. |
+| Service | Stateless request handling. | State between calls. |
+| Component | Data of one entity (actor state via `Actor<TState>`, avatars, buffs). | Logic. |
+| System | One per-tick responsibility; stateless; communicates through data and events. | References to other systems, IO. |
+| Event | One-way in-shard notification. | Commands to a specific receiver. |
+
+The shard runtime itself is ECS. `Shard` owns only the thread, the cross-thread inbox and the wake/tick loop:
+
+| Data | Kind | Meaning |
+|---|---|---|
+| `ActorLink`, `ActorIdentity` | components | the activation object and its directory key |
+| `Mailbox` | component | messages waiting for the actor (a turn at a time) |
+| `Turn` | component | the asynchronous call, activation or deactivation in progress (present = busy) |
+| `Deactivating` | tag | the actor is being deactivated (mail is forwarded afterwards) |
+| `ActorDirectory`, `ServiceDirectory` | singletons | activations by id, service instances by contract |
+| `ReadyActors` | singleton | idle actors with mail: the only actors the mailbox system visits (dirty set) |
+| `ServiceTasks`, `ShardTimers`, `ShardActivity` | singletons | running service calls, timers, per-wake bookkeeping |
+
+```mermaid
+flowchart LR
+    IN[inbox<br/>other threads post] --> I[InboxSystem<br/>route frames, complete calls,<br/>run continuations]
+    I -->|mail + ready| M[MailboxSystem<br/>run ready actors' mail]
+    I --> S[services]
+    M -->|handler awaits| T[TurnSystem<br/>finish turns, reschedule]
+    T -->|ready| M
+    R[RebalanceSystem<br/>deactivate moved actors] --> T
+    TM[TimerSystem]
+```
+
+Runtime systems belong to the `ShardMessages` group, updated on every wake (`world.Update<ShardMessages>()`), so message
+latency does not depend on the tick. User systems are in the default group, updated at the tick rate
+(`world.Update()`). The only per-message work is a dictionary lookup, a queue push and the handler. Busy actors are
+found by archetype (`Turn`), and idle actors with mail come from the ready queue, so nothing scans all actors.
+
+## 9. Developer experience (generated code)
 
 ```csharp
 [ClientAccessible]
 public interface IPlayer : IActor
 {
     ValueTask<int> AddGold(int amount);
-    void Emote(int id);                          // one-way
+    void Emote(int id);                                   // one-way
 }
 
-public sealed partial class Player : Actor, IPlayer
-{
-    public ValueTask<int> AddGold(int amount)
-    {
-        ref var wallet = ref Get<Wallet>();
-        wallet.Gold += amount;
-        return new(wallet.Gold);
-    }
+public record struct Wallet(int Gold) : IComponent;
 
-    public void Emote(int id) => Runtime.Broadcast<IPlayerClient>(MapGroup).OnEmote(Key, id);
+public sealed class Player : Actor<Wallet>, IPlayer
+{
+    public ValueTask<int> AddGold(int amount) => new(State.Gold += amount);
+    public void Emote(int id) => Cluster.PlayerClient(new ClientGroup(Key)).OnEmote(Key, id);
 }
 
-public partial class RegenSystem : SystemBase
+public sealed partial class RegenSystem : EcsSystem
 {
-    [Query, Without<Dead>]
+    [ForEach, Without<Dead>]
     static void Regen(ref Health hp, in Regen r) => hp.Value = Math.Min(hp.Max, hp.Value + r.PerTick);
 }
 ```
 
-The generator produces:
+`ContractGenerator` emits the proxy struct, the dispatcher switch, wire ids, contract registration and cluster
+accessors (`Cluster.Player(key)`, `Cluster.PlayerClient(session or group)`). `HostGenerator` registers actor and
+service factories and every `EcsSystem` with their `[Role]`s. EasyEcs's generator compiles `[ForEach]` methods and
+event subscriptions. Both follow the incremental-generator rules: syntax-only predicates, equatable models, tracking
+names, and no diagnostics. `DaServerAnalyzer` reports DAS001–DAS008 from the same symbol reader (`Shapes`), and
+EasyEcs's analyzer reports EECS001–EECS008, including the ECS-principle warnings. There is no reflection scanning, no
+configuration strings and no hand-written registration list.
 
-- the proxy struct, the dispatcher switch and contract registration
-- actor and service factories, and system registration
-- `[Query]` jobs
-- `[EventHandler]` dispatch tables
+## 10. Orchestration
 
-It also reports diagnostics for invalid signatures, `Task` instead of `ValueTask`, non-partial types and id collisions. There is no reflection, no configuration strings and no hand-written registration list.
+- One binary per application. Roles, ports and seeds come from configuration (`DaServer:Roles`, environment
+  `DaServer__Roles__0=gateway`), bound by `DaServer.Hosting` on the Generic Host. `SIGTERM` triggers a graceful leave.
+- The cluster is described once in an Aspire AppHost with `DaServer.Aspire`. `AddDaServerCluster` and
+  `AddNodes<TProject>(name, replicas, roles, gateway)` give every node a cluster endpoint, its roles, seeds (every
+  other node) and, for gateways, a client endpoint. `WithGateways` hands the gateway endpoints to clients and bots.
+- The same model runs locally (`dotnet run` on the AppHost, with the dashboard showing logs and OTLP metrics) and is
+  published with `aspire publish`: Docker Compose via `AddDockerComposeEnvironment`, Kubernetes via
+  `AddKubernetesEnvironment`. There are no hand-maintained deployment files.
 
-## 9. Orchestration
-
-- One binary per application. Roles and hosted contracts come from configuration (`DaServer:Roles`, environment `DaServer__Roles=gateway`).
-- `DaServer.Hosting` integrates with the .NET Generic Host: configuration, logging, `SIGTERM` → graceful leave.
-- Container image, `docker-compose` (2 gateways + 3 game nodes) and Kubernetes manifests: Deployments, a headless Service for seed discovery, readiness on cluster join, and a `preStop` drain.
-
-## 10. Quality gates
+## 11. Quality gates
 
 | Level | What | Where |
 |---|---|---|
-| Unit | Queues, buffer pool, frame parsing, pending-call table, membership merge, rendezvous placement, generator output (Roslyn driver) and diagnostics | `tests/DaServer.Tests` |
-| Integration | An in-process cluster of N nodes on loopback. Covers: RPC round trip, ordering, single activation across nodes, failover after a node is killed, gateway login → bind → call → push → broadcast, session resumption after a socket drop | `tests/DaServer.Tests` |
-| Allocation | Steady-state RPC, push and broadcast loops allocate 0 bytes (`GC.GetTotalAllocatedBytes(precise: true)`) | `tests/DaServer.Tests` |
-| E2E | `docker compose` cluster with the sample server, plus the bot client running a scripted session | `deploy/`, CI job |
-| Benchmarks | BenchmarkDotNet on real loopback sockets: RPC round trip at 1/64/1,024 outstanding calls, broadcast to 10k sessions, cross-shard actor messages, a gateway with 10k clients at 20 msg/s, and an EasyEcs map tick with 100k entities | `benchmarks/DaServer.Benchmark` |
+| Unit | Queues, buffer pool, frame parsing, pending-call table, membership merge, rendezvous placement | `tests/DaServer.Tests` |
+| Generator | Valid input compiles, every DAS rule fires from the analyzer, unrelated edits hit the incremental cache | `tests/DaServer.Tests` |
+| Integration | In-process clusters on loopback (`ClusterTest`): RPC semantics and ordering, turn-based actors, ECS systems over actor state, single activation, failover, gateway binding, push and broadcast | `tests/DaServer.Tests` |
+| Allocation | Steady-state cross-shard actor calls allocate nothing per call | `tests/DaServer.Tests` |
+| Benchmarks | BenchmarkDotNet on real loopback sockets: RPC at 1/64/1,024 outstanding calls (local and remote), broadcast to 1k/5k client sockets | `benchmarks/DaServer.Benchmark` |

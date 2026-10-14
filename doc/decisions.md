@@ -58,8 +58,7 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
 
 ## ADR-009 Hosting and orchestration
 - Decision: `DaServer.Hosting` on the .NET Generic Host (configuration, ILogger, SIGTERM → graceful leave),
-  `System.Diagnostics.Metrics` + OpenTelemetry for metrics, an Aspire AppHost sample for local multi-node runs, and
-  docker-compose / Kubernetes (headless service for DNS seeds) for deployment.
+  `System.Diagnostics.Metrics` + OpenTelemetry for metrics. Superseded for deployment by ADR-015.
 
 ## ADR-010 Benchmarks and tests
 - Decision: BenchmarkDotNet only, over real loopback sockets, modelling real load (thousands of sessions, broadcast
@@ -67,16 +66,56 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
   tests assert 0 B in steady-state loops.
 
 ## ADR-011 Naming: Shard (DaServer executor) vs World (EasyEcs)
-- Context: EasyEcs v4 adopted standard ECS vocabulary (`World`, `Query`, `SystemBase.OnUpdate`).
+- Context: EasyEcs v4 adopted standard ECS vocabulary (`World`, `Query`, `EcsSystem.OnUpdate`).
 - Decision: DaServer's single-threaded executor is a `Shard`; each shard owns one EasyEcs `World`
-  (`shard.World`, `actor.World`). Actors/services expose `Shard`, `World` and `Runtime` (the node).
+  (`shard.World`, `actor.World`). Actors/services expose `Shard`, `World` and `Cluster` (the node); ECS code reaches
+  them through the `ShardContext` singleton (`world.Cluster()`).
 - Consequences: no name clash; "world" always means the ECS world.
 
 ## ADR-012 Source generation instead of registration code
 - Decision: `ContractGenerator` emits, per contract, a struct proxy (arguments serialized straight into a pooled
   frame), a dispatcher switch (arguments deserialized straight from the received frame), wire ids, a module-initializer
-  registration and invoker accessors (`runtime.Player(key)`, `runtime.Auth()`, `runtime.PlayerClient(session)`,
-  `runtime.PlayerClientGroup(id)`). `HostGenerator` registers implementations (with `[Role]`), EasyEcs systems, and
+  registration and cluster accessors (`Cluster.Player(key)`, `Cluster.Auth()`, `Cluster.PlayerClient(session)`,
+  `Cluster.PlayerClient(group)`). `HostGenerator` registers implementations (with `[Role]`), EasyEcs systems, and
   runs the module initializers of referenced contract assemblies (found via `[assembly: RpcContractsAssembly]`).
 - Consequences: no reflection, no configuration strings, no hand-maintained lists; invalid contracts are compile
   errors (DAS001-DAS008).
+
+## ADR-013 The shard runtime is ECS
+- Context: the shard was an imperative loop (drain a shard-wide queue, sweep an in-flight list, run timers, tick)
+  with ad-hoc per-actor queues for activation. EasyEcs was only used by user systems. a studied game server's useful idea:
+  actors are entities with their own mailbox, drained by systems; infrastructure (receive dispatch, timers) is systems
+  over singleton state; dirty sets avoid scanning everything.
+- Decision: `Shard` keeps only the thread, the cross-thread inbox and the loop. Activations are entities
+  (`ActorLink`, `ActorIdentity`, `Mailbox`, `Turn`, `Deactivating`); directories, the ready queue, timers and
+  running service calls are singletons; `InboxSystem`, `TurnSystem`, `MailboxSystem`, `ServiceTaskSystem`,
+  `TimerSystem` and `RebalanceSystem` each do one job. They run in the `ShardMessages` system group on every wake;
+  user systems run in the default group at the tick rate (EasyEcs system groups were added for this).
+- Consequences: the runtime obeys the ECS rules it asks users to follow. Per message: one dictionary lookup, one
+  queue push, the handler. Busy actors are found by archetype and idle actors with mail come from a ready queue
+  (dirty set), so no system scans all actors per wake. Measured: zero allocation per cross-shard call.
+
+## ADR-014 Turn-based actors
+- Context: handlers used to interleave at awaits (reentrant), so actor state could change between an await and the
+  code after it, unlike the actor model most developers expect.
+- Decision: one message at a time per actor, including its awaits (`Turn` component). Services stay concurrent
+  (stateless).
+- Consequences: no interleaving bugs in actor state. Call cycles (A awaits B awaits A) deadlock until the call timeout;
+  use one-way calls or events for such flows. A `[Reentrant]` opt-in can be added if a real need appears.
+
+## ADR-015 Orchestration with Aspire
+- Context: hand-written Dockerfile, compose and Kubernetes files duplicated the topology (ports, seeds, roles) and
+  drifted from the code.
+- Decision: `DaServer.Aspire` describes a cluster in the AppHost (`AddDaServerCluster`, `AddNodes`, `WithGateways`).
+  The same model runs locally with the dashboard and publishes Docker Compose or Kubernetes through Aspire publishers.
+  Nodes export logs and metrics over OTLP when Aspire (or any collector) configures it. `deploy/` was removed.
+- Consequences: one source of truth for topology. Ports are assigned deterministically per node. Replicas are
+  separate resources because cluster members are addressed individually, not through a load balancer.
+
+## ADR-016 Analyzer separate from generators
+- Context: generators that report diagnostics carry symbols and locations in their models, which defeats caching.
+- Decision: generators use syntax-only predicates and equatable, symbol-free models with tracking names, and report
+  nothing. `DaServerAnalyzer` reports DAS001–DAS008 (collisions in a compilation-end action), and reads symbols
+  through the same `Shapes` code as the generators.
+- Consequences: edits that do not touch contracts hit the cache (tested); "skipped by the generator" and "reported by
+  the analyzer" cannot disagree.
