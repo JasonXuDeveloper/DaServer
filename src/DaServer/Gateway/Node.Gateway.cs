@@ -155,6 +155,8 @@ public sealed partial class Node
                 break;
             case ControlOp.Gossip:
             case ControlOp.GossipReply:
+            case ControlOp.CardRequest:
+            case ControlOp.Cards:
                 Membership.OnGossip(connection, header.MethodId, payload);
                 break;
             default:
@@ -264,7 +266,8 @@ public sealed partial class Node
             return;
         }
 
-        var pick = second != null && second.Sessions < first.Sessions ? second : first;
+        var pick = second != null && second.ExpectedSessions < first.ExpectedSessions ? second : first;
+        Interlocked.Increment(ref pick.Directed);
         var w = FrameWriter.Rent(64);
         var nino = w.Nino;
         NinoSerializer.Serialize(new GatewayEndpoint(pick.ClientHost, pick.ClientPort), ref nino);

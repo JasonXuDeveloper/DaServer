@@ -168,6 +168,15 @@ public class InfrastructureTests
     }
 
     [Test]
+    public void PulsesRoundTrip()
+    {
+        var pulse = new Pulse(0xDEADBEEF12345678, 7, 1L << 40, MemberStatus.Suspect, 123, 4567);
+        Span<byte> wire = stackalloc byte[Pulse.Size];
+        pulse.Write(wire);
+        Assert.That(Pulse.Read(wire), Is.EqualTo(pulse));
+    }
+
+    [Test]
     public void MemberMergeOrder()
     {
         var a = new MemberInfo { Incarnation = 1, Heartbeat = 5, Status = MemberStatus.Up };
