@@ -19,12 +19,13 @@ public class AllocationTests : ClusterTest
         long other = 2;
         while (await node.Counter(other).WhereAmI() == await node.Counter(1).WhereAmI()) other++;
 
-        // Warm up past tiered-JIT promotion, then measure. The counter is process-wide, so background runtime work (the
-        // maintenance timer, about 0.15 B per call at this rate) is included: anything per-call would be >= 24 B.
+        // Warm up past tiered-JIT promotion, then measure. The counter is process-wide, so background runtime work
+        // (timers, thread-pool bookkeeping: 0.15 B per call locally, up to ~2.5 B on a 2-core CI runner) is included;
+        // anything per call would be >= 24 B (the smallest object), so 8 B still catches it.
         const int calls = 20_000;
         await node.Counter(1).AddMany(other, 3 * calls);
         long allocated = await node.Counter(1).AddMany(other, calls);
-        Assert.That(allocated / (double)calls, Is.LessThan(1), $"{allocated} B for {calls} calls");
+        Assert.That(allocated / (double)calls, Is.LessThan(8), $"{allocated} B for {calls} calls");
     }
 
     [Test]
@@ -37,7 +38,7 @@ public class AllocationTests : ClusterTest
         const int events = 20_000;
         await node.Counter(1).PublishMany(other, 3 * events);
         long allocated = await node.Counter(1).PublishMany(other, events);
-        Assert.That(allocated / (double)events, Is.LessThan(1), $"{allocated} B for {events} events");
+        Assert.That(allocated / (double)events, Is.LessThan(8), $"{allocated} B for {events} events"); // see above
     }
 
     [Test]
