@@ -6,7 +6,8 @@ namespace DaServer.Benchmark;
 
 /// <summary>
 /// Request/response throughput and latency: <see cref="Concurrency"/> outstanding calls to actors on the calling node
-/// (shard mailboxes, no socket) or on another node (batched TCP link, both directions). One operation = one call.
+/// (shard mailboxes, no socket) or on another node (batched TCP link, both directions). One operation =
+/// <see cref="Concurrency"/> calls issued together and all completed.
 /// </summary>
 [MemoryDiagnoser]
 public class RpcBenchmark
