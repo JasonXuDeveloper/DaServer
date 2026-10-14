@@ -21,6 +21,12 @@ internal static class ControlOp
     /// <summary>Pull half of push-pull gossip: payload = MemberInfo[].</summary>
     public const uint GossipReply = 2;
 
+    /// <summary>
+    /// First frame of every node link: Key = sender node id, payload = its advertised host and port. The receiver
+    /// answers everything that arrives on the connection through its own link to that node (see <see cref="PeerLink.ReplySink"/>).
+    /// </summary>
+    public const uint Hello = 3;
+
     // Gateway operations: Key = session id, RequestId = contract id (Bind/Unbind), payload = one long value.
 
     /// <summary>Gateway: bind a session to an actor key of a contract (payload = actor key).</summary>

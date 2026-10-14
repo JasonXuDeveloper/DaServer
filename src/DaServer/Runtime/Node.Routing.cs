@@ -231,6 +231,29 @@ public sealed partial class Node : IRpcInvoker, IConnectionHandler
         sink.SendReply(requestId, status, w);
     }
 
+    /// <summary>The first frame of each node link: who we are, so the peer answers through its own link to us.</summary>
+    internal ReadOnlySpan<byte> HelloFrame()
+    {
+        var self = Membership.Self;
+        var w = FrameWriter.Rent();
+        var nino = w.Nino;
+        NinoSerializer.Serialize(self.Host, ref nino);
+        NinoSerializer.Serialize(self.Port, ref nino);
+        w.SetHeader(FrameKind.Control, 0, ControlOp.Hello, (long)Id);
+        var frame = w.Frame.ToArray(); // once per connection
+        w.Dispose();
+        return frame;
+    }
+
+    /// <summary>A node named itself on an accepted connection: our replies to it go through our link to it.</summary>
+    private void OnHello(Connection connection, ReadOnlySpan<byte> payload)
+    {
+        var reader = new Reader(payload);
+        NinoDeserializer.Deserialize(out string host, ref reader);
+        NinoDeserializer.Deserialize(out int port, ref reader);
+        connection.Tag = GetLink(host, port);
+    }
+
     internal PeerLink GetLink(MemberInfo member) => GetLink(member.Host, member.Port);
 
     internal PeerLink GetLink(string host, int port)
@@ -311,10 +334,13 @@ public sealed partial class Node : IRpcInvoker, IConnectionHandler
 /// <summary>Replies to a request that arrived on a connection (one instance per connection, created once).</summary>
 internal sealed class ConnectionReplySink(Connection connection) : IReplySink
 {
-    public static ConnectionReplySink For(Connection connection)
+    /// <summary>
+    /// Where replies to a request received on <paramref name="connection"/> go: the link back to the node that named
+    /// itself with a Hello (one ordered stream per direction), else this connection (created once per connection).
+    /// </summary>
+    public static IReplySink For(Connection connection)
     {
-        // Peer links keep their sink on the link; accepted connections get one lazily (created once per connection).
-        if (connection.Tag is PeerLink link) return link.Sink(connection);
+        if (connection.Tag is PeerLink link) return link.ReplySink;
         if (connection.Tag is ConnectionReplySink sink) return sink;
         sink = new ConnectionReplySink(connection);
         connection.Tag = sink;

@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using DaServer.Buffers;
 using DaServer.Net;
 using DaServer.Protocol;
+using DaServer.Rpc;
 using DaServer.Runtime;
 using Microsoft.Extensions.Logging;
 
@@ -13,7 +14,9 @@ namespace DaServer.Cluster;
 
 /// <summary>
 /// Outgoing link to another node (one per remote endpoint). Connects lazily, buffers frames while connecting
-/// (bounded), reconnects with backoff. Requests travel on this link; the peer answers on the same connection.
+/// (bounded), reconnects with backoff. Everything this node sends to that node travels on this link: requests, one-way
+/// calls, events, pushes, session control and the replies to that node's requests (the peer names itself with a
+/// <see cref="ControlOp.Hello"/>), so one ordered stream carries them: a reply never overtakes the Bind sent before it.
 /// </summary>
 internal sealed class PeerLink : IDisposable
 {
@@ -22,7 +25,6 @@ internal sealed class PeerLink : IDisposable
     private readonly Node _node;
     private readonly Lock _gate = new();
     private Connection? _connection;
-    private ConnectionReplySink? _sink;
     private List<FrameWriter>? _backlog;
     private int _backlogBytes;
     private bool _connecting;
@@ -33,7 +35,11 @@ internal sealed class PeerLink : IDisposable
         _node = node;
         Host = host;
         Port = port;
+        ReplySink = new LinkReplySink(this);
     }
+
+    /// <summary>Replies to requests that node sent us (they travel with everything else we send it).</summary>
+    public IReplySink ReplySink { get; }
 
     public string Host { get; }
     public int Port { get; }
@@ -71,12 +77,6 @@ internal sealed class PeerLink : IDisposable
         }
     }
 
-    internal ConnectionReplySink Sink(Connection connection)
-    {
-        var sink = _sink;
-        return sink != null && sink.Connection == connection ? sink : new ConnectionReplySink(connection);
-    }
-
     private async Task ConnectLoop()
     {
         int attempt = 0;
@@ -89,9 +89,9 @@ internal sealed class PeerLink : IDisposable
                     ConnectionOptions.ForNodeLinks()).ConfigureAwait(false);
                 connection.Tag = this;
 
+                connection.Send(_node.HelloFrame());
                 lock (_gate)
                 {
-                    _sink = new ConnectionReplySink(connection);
                     if (_backlog != null)
                     {
                         foreach (var frame in _backlog)
@@ -167,5 +167,16 @@ internal sealed class PeerLink : IDisposable
 
         connection?.Close();
         DropBacklog();
+    }
+}
+
+/// <summary>Sends replies through a <see cref="PeerLink"/> (reconnects and backlog included).</summary>
+internal sealed class LinkReplySink(PeerLink link) : IReplySink
+{
+    public void SendReply(uint requestId, RpcStatus status, FrameWriter response)
+    {
+        response.SetHeader(FrameKind.Response, requestId, 0, 0, status);
+        link.Send(response.Frame);
+        response.Dispose();
     }
 }

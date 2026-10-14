@@ -144,6 +144,9 @@ public sealed partial class Node
     {
         switch (header.MethodId)
         {
+            case ControlOp.Hello:
+                OnHello(connection, payload);
+                break;
             case ControlOp.Gossip:
             case ControlOp.GossipReply:
                 Membership.OnGossip(connection, header.MethodId, payload);
