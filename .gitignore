@@ -2,6 +2,13 @@ bin/
 obj/
 /packages/
 riderModule.iml
-/_ReSharper.Caches/BenchmarkDotNet.Artifacts/
+/_ReSharper.Caches/
+BenchmarkDotNet.Artifacts/
 artifacts/
 *.user
+
+# IDE state
+.idea/
+.vs/
+*.DotSettings.user
+TestResults/
