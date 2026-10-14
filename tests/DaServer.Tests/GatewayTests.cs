@@ -208,7 +208,8 @@ public class GatewayTests : ClusterTest
         await Task.Delay(300);
         var gateway = await Start("gw", gateway: true);
         await connecting;
-        Assert.That(gateway.SessionCount, Is.EqualTo(1), "the client was directed to the gateway once it joined");
+        // The client's connect completes before the gateway's accept loop has registered the session.
+        await Eventually(() => gateway.SessionCount == 1, "the client was directed to the gateway once it joined");
         Assert.That(await client.Auth().Login(1), Is.True);
     }
 
