@@ -125,6 +125,7 @@ that keeps session state as ECS components.
 |---|---|
 | Ordering | FIFO per (sender → target actor): one link per node pair, one inbox per shard, one mailbox per actor. Calls and events of one sender keep their order (tests rely on it). |
 | Calls | At most once, with timeouts (`RpcStatus.Timeout`, `Disconnected`, `NotHosted`). Retrying is the caller's choice, and only for idempotent operations. |
+| Deadlines | A request carries its caller's remaining time; each hop turns it into a local deadline and a shard drops a request that expired before it ran (ADR-028). Work nobody waits for is not done. |
 | Events | At most once, like one-way calls. Events that must not be lost are written to storage by the publisher first (outbox) and re-published on recovery; DaServer does not hide a broker inside the call path. |
 | Single activation | Rendezvous hashing over the `Up` nodes hosting the implementation: every node computes the same owner from the same view. A node activates an actor only if it is the owner in its own view; otherwise it forwards (hop limit 3) or answers `NotHosted`. When ownership changes, the old owner deactivates (`OnDeactivateAsync`, the persistence hook) and forwards its remaining mail. |
 | Sessions | A gateway owns its sockets. Bindings and groups live on the gateway; when a session closes, every actor it was bound to that handles `SessionClosed` receives it, so no actor keeps a dead session. |

@@ -22,14 +22,15 @@ Keep this file current: tick items when done, add items when scope changes.
       (ADR-026)
 - [x] One ordered link per node direction: replies travel with binds, pushes and events (ADR-022)
 - [x] Placement: keys stay with suspect members, a dead node's keys move, deactivating actors keep their mail (ADR-023)
-- [x] Client: `ClusterClient` (generated proxies, keyless session-actor accessors, DNS endpoints, dispatch redirect,
+- [x] Client: `ClusterClient` (generated proxies, keyless session-actor accessors, DNS endpoints over every resolved
+      address, dispatch redirect,
       callbacks inline or queued)
 - [x] Topology without roles (ADR-017), `ICluster` for business code (ADR-020), actor `Group`
 - [x] Cluster events: `[NinoType]` structs, `[Key]`, `[Handle]`, gossiped handlers, mailbox delivery (ADR-019)
 - [x] Backpressure: bounded shard inbox and actor mailboxes refuse with `Overloaded` (ADR-027)
 - [ ] Backpressure on links: pause a link's receive while its target shard is full (today: refuse and reply)
-- [ ] Deadlines in the frame header (drop work whose caller already timed out)
-- [ ] Send group broadcasts only to gateways that have members of the group
+- [x] Deadlines: the caller's remaining time travels with each request; expired work is dropped (ADR-028)
+- [ ] Send group broadcasts only to gateways that have members of the group (deferred: ADR-029)
 - [ ] Reliability: resumable links (ADR-008)
 - [ ] Placement hints (co-locate actors that talk a lot)
 - [ ] Gateway sessions as ECS entities (session components + flush system) on a gateway shard
@@ -50,8 +51,10 @@ Keep this file current: tick items when done, add items when scope changes.
       (ADR-015); no configuration files in node projects
 - [x] 10k-player scenario: login, game, 3 gateways, dispatch, 10k bots (Sample.Bot fails on any gap, disconnect or
       p99 over the limit); passes through Aspire (README "Performance")
-- [ ] E2E in CI: AppHost-based run of the sample + bot (needs an exit signal from the AppHost when the bot ends)
-- [ ] Aspire: replicas as one resource with DNS seeds instead of one resource per replica
+- [x] E2E in CI: `tests/DaServer.E2E` runs the AppHost with `Aspire.Hosting.Testing` (1000 bots in CI) and
+      fails unless the bot exits 0
+- [x] Aspire: one resource per replica (members are addressed individually), DNS seeds for headless services
+      (ADR-030)
 
 ## Quality
 - [x] Unit tests (queue, pool, frames, pending table, membership, placement)
