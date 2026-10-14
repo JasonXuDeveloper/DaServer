@@ -137,9 +137,10 @@ that keeps session state as ECS components.
 
 - Seeds come from static `host:port` entries or DNS names (a Kubernetes headless service resolves to every pod). A
   node joins through any reachable seed.
-- Gossip runs every second (configurable), from each node to up to 3 random peers (push-pull). The digest is the full
-  member table: `NodeId`, endpoints, hosted services, hosted actor implementations, event handlers, incarnation,
-  heartbeat, status and load.
+- Gossip runs every second (configurable), from each node to up to 3 random peers (push-pull). A round carries one
+  29-byte pulse per member (`NodeId`, incarnation, heartbeat, status, load, sessions), written and read in place; a
+  member's card (endpoints, hosted services, actor implementations, event handlers) is sent only to nodes that do
+  not know it yet (ADR-031). A steady-state round allocates nothing.
 - Failure detection doesn't depend on synchronized clocks: a member whose heartbeat hasn't advanced for
   `SuspectAfter` becomes `Suspect`, after `DeadAfter` it is `Dead`; a node that hears it is suspected refutes by
   bumping its incarnation.

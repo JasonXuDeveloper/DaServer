@@ -273,6 +273,18 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
 - Consequences: simple and ordered with binds (ADR-022). Revisit when deployments run tens of gateways with small
   groups; the roadmap keeps the item.
 
+## ADR-031 Gossip carries pulses, cards travel once
+- Context: every gossip round serialized the whole member table and every receiver deserialized new `MemberInfo`
+  objects: about 10 KB/s per idle node at one round a second, growing with the square of the cluster size. The view
+  also kept the load hints of the last status change, so dispatch never saw gateways fill up.
+- Decision: a member is its card (identity, endpoints, hosted contracts: fixed while it runs) plus its pulse
+  (incarnation, heartbeat, status, load, sessions: 29 bytes). Gossip and its reply carry pulses, written into a pooled
+  frame and read in place; a pulse naming an unknown node is answered with `CardRequest`/`Cards`. Pulses update
+  members in place; incarnation and status changes publish a copy and rebuild the view. Because counts lag a round,
+  the dispatch adds the clients it directed to a gateway since its last pulse.
+- Consequences: a steady-state round allocates nothing (allocation test at 300 rounds/s); idle nodes in the 10k
+  topology allocate 0 KB/s; gossip size is 29 bytes per member. Load hints are fresh within a round.
+
 ## ADR-030 One Aspire resource per replica
 - Context: Aspire's `WithReplicas` runs replicas as one resource behind a proxy with shared endpoints. Cluster
   members are addressed individually: each gossips its own cluster and client endpoint, links go to a specific node
