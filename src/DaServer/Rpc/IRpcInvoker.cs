@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Threading.Tasks;
 using DaServer.Buffers;
 
@@ -22,13 +23,18 @@ public enum RpcTargetKind : byte
 /// <summary>
 /// Transport used by generated proxies. Implemented by the server node runtime and by the game client.
 /// All methods take ownership of <c>request</c> (a frame whose payload holds the serialized arguments).
+/// Business code calls the generated accessors (<c>Cluster.Player(id)</c>) instead: the members are hidden from
+/// completion lists.
 /// </summary>
 public interface IRpcInvoker
 {
+    [EditorBrowsable(EditorBrowsableState.Never)]
     ValueTask<T> Call<T>(FrameWriter request, uint methodId, RpcTargetKind kind, long key);
 
+    [EditorBrowsable(EditorBrowsableState.Never)]
     ValueTask CallVoid(FrameWriter request, uint methodId, RpcTargetKind kind, long key);
 
     /// <summary>Fire-and-forget (void methods, pushes, broadcasts).</summary>
+    [EditorBrowsable(EditorBrowsableState.Never)]
     void Send(FrameWriter request, uint methodId, RpcTargetKind kind, long key, ulong gatewayNodeId = 0);
 }
