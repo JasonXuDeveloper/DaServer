@@ -3,11 +3,11 @@ using DaServer.Rpc;
 using DaServer.Runtime;
 using Sample.Contracts;
 
-namespace Sample.Gateway;
+namespace Sample.Login;
 
 /// <summary>
-/// Login, hosted by the gateway project: it runs next to the client sockets, so binding the session needs no hop.
-/// It binds the session to the player and announces the login; it knows nothing about who reacts to it.
+/// Login: binds the client's session to its player and announces the login; it knows nothing about who reacts to it.
+/// Stateless, so the login project scales by adding replicas.
 /// </summary>
 public sealed class Account : Service, IAccount
 {

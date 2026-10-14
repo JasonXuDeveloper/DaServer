@@ -24,6 +24,7 @@ public sealed class Player : Actor<PlayerState>, IPlayer
     {
         State.Logins++;
         State.Session = e.Session;
+        Cluster.Realm(IRealm.Id).PlayerOnline(Key);
         return default;
     }
 
@@ -33,6 +34,7 @@ public sealed class Player : Actor<PlayerState>, IPlayer
         // The map got its own SessionClosed (the session was bound to it too) and removed the avatar.
         State.Session = default;
         State.MapId = 0;
+        Cluster.Realm(IRealm.Id).PlayerOffline(Key);
         return default;
     }
 

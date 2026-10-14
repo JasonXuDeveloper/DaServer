@@ -14,14 +14,17 @@ namespace Sample.Game;
 public record struct Position(float X, float Y) : IComponent;
 public record struct Velocity(float X, float Y) : IComponent;
 
-/// <summary>Whose avatar it is and which client group sees it.</summary>
-public record struct Avatar(long PlayerId, ClientGroup Map) : IComponent;
+/// <summary>Whose avatar it is and the map entity it lives in.</summary>
+public record struct Avatar(long PlayerId, Entity Map) : IComponent;
 
 /// <summary>Last position sent to clients (change detection by comparison: no tag churn).</summary>
 public record struct NetSync(float X, float Y) : IComponent;
 
-/// <summary>State of a map activation: its avatars by client session.</summary>
-public record struct MapState(Dictionary<SessionRef, Entity> Avatars) : IComponent;
+/// <summary>
+/// State of a map activation: its avatars by client session, the client group that sees the map and the positions
+/// that changed this tick (sent as one message per tick, reused: no garbage per tick).
+/// </summary>
+public record struct MapState(Dictionary<SessionRef, Entity> Avatars, ClientGroup Group, List<Moved> Moves) : IComponent;
 
 public sealed class Map : Actor<MapState>, IMap
 {
@@ -30,14 +33,14 @@ public sealed class Map : Actor<MapState>, IMap
 
     public override ValueTask OnActivateAsync()
     {
-        State = new MapState(new Dictionary<SessionRef, Entity>());
+        State = new MapState(new Dictionary<SessionRef, Entity>(), Group, new List<Moved>());
         return default;
     }
 
     public ValueTask Enter(long playerId, SessionRef session)
     {
         if (!State.Avatars.ContainsKey(session))
-            State.Avatars[session] = World.CreateEntity(new Position(), new Velocity(), new Avatar(playerId, Group),
+            State.Avatars[session] = World.CreateEntity(new Position(), new Velocity(), new Avatar(playerId, Entity),
                 new NetSync(float.NaN, float.NaN)); // NaN never equals a position: the first tick syncs it
 
         Cluster.Bind<IMap>(session, Key); // the client's input reaches this map and it sees the map's Group broadcasts
@@ -94,19 +97,33 @@ public sealed partial class MovementSystem : EcsSystem
         p = new Position(Math.Clamp(p.X + v.X, 0f, Size), Math.Clamp(p.Y + v.Y, 0f, Size));
 }
 
-/// <summary>
-/// Broadcasts positions that changed since the last sync to the avatar's map group (serialized once, one frame per
-/// gateway, fanned out there).
-/// </summary>
+/// <summary>Collects the positions that changed since the last sync into their map's snapshot.</summary>
 public sealed partial class PositionSyncSystem : EcsSystem
 {
     public override int Priority => 10; // after movement
 
     [ForEach]
-    private static void Sync(in Position p, ref NetSync sent, in Avatar avatar, World world)
+    private static void Sync(in Position p, ref NetSync sent, in Avatar avatar)
     {
         if (p.X == sent.X && p.Y == sent.Y) return;
         sent = new NetSync(p.X, p.Y);
-        world.Cluster().PlayerClient(avatar.Map).OnMoved(avatar.PlayerId, p.X, p.Y);
+        avatar.Map.Get<MapState>().Moves.Add(new Moved(avatar.PlayerId, p.X, p.Y));
+    }
+}
+
+/// <summary>
+/// Sends each map's snapshot to the map's group: one message per map per tick, serialized once, one frame per gateway,
+/// fanned out there (n avatars moving cost n entries, not n x n messages).
+/// </summary>
+public sealed partial class SnapshotSystem : EcsSystem
+{
+    public override int Priority => 20; // after the snapshot is complete
+
+    [ForEach]
+    private static void Send(ref MapState map, World world)
+    {
+        if (map.Moves.Count == 0) return;
+        world.Cluster().PlayerClient(map.Group).OnMoves(map.Moves);
+        map.Moves.Clear();
     }
 }

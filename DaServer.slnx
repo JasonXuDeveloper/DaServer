@@ -9,6 +9,7 @@
     <Project Path="samples/Sample.Contracts/Sample.Contracts.csproj" />
     <Project Path="samples/Sample.Game/Sample.Game.csproj" />
     <Project Path="samples/Sample.Gateway/Sample.Gateway.csproj" />
+    <Project Path="samples/Sample.Login/Sample.Login.csproj" />
     <Project Path="samples/Sample.Bot/Sample.Bot.csproj" />
     <Project Path="samples/Sample.AppHost/Sample.AppHost.csproj" />
   </Folder>
