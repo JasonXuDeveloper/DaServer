@@ -15,6 +15,7 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/DaServer.Tests/DaServer.Tests.csproj" />
+    <Project Path="tests/DaServer.E2E/DaServer.E2E.csproj" />
   </Folder>
   <Folder Name="/benchmarks/">
     <Project Path="benchmarks/DaServer.Benchmark/DaServer.Benchmark.csproj" />
