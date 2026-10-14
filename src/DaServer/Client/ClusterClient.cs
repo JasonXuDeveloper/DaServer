@@ -51,23 +51,39 @@ public sealed class ClusterClient : IRpcInvoker, IConnectionHandler, IAsyncDispo
     /// <summary>
     /// Connect to the cluster through any gateway (typically a dispatch gateway's well-known address): the gateway names
     /// the least loaded gateway and the client moves there when it is another one. <paramref name="followDispatch"/>
-    /// false stays on the given gateway.
+    /// false stays on the given gateway. While the cluster is still forming (the dispatch has not met a gateway yet) the
+    /// question is asked again until <see cref="CallTimeout"/>.
     /// </summary>
     public async ValueTask ConnectAsync(string host, int port, bool followDispatch = true, CancellationToken cancellationToken = default)
     {
         await ConnectToAsync(host, port, cancellationToken).ConfigureAwait(false);
         if (!followDispatch) return;
 
-        var call = PendingCall<GatewayEndpoint>.Rent(null);
-        var answer = call.Task;
-        var request = FrameWriter.Rent(FrameHeader.Size);
-        Send(request, ControlOp.PickGateway, 0, call, FrameKind.Control);
-        var gateway = await answer.ConfigureAwait(false);
+        var gateway = await PickGatewayAsync(cancellationToken).ConfigureAwait(false);
         if (gateway.Host == host && gateway.Port == port) return;
 
         var dispatch = Interlocked.Exchange(ref _connection, null); // closed on purpose: not a disconnect
         dispatch?.Close();
         await ConnectToAsync(gateway.Host, gateway.Port, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask<GatewayEndpoint> PickGatewayAsync(CancellationToken cancellationToken)
+    {
+        long deadline = Environment.TickCount64 + (long)CallTimeout.TotalMilliseconds;
+        while (true)
+        {
+            var call = PendingCall<GatewayEndpoint>.Rent(null);
+            var answer = call.Task;
+            Send(FrameWriter.Rent(FrameHeader.Size), ControlOp.PickGateway, 0, call, FrameKind.Control);
+            try
+            {
+                return await answer.ConfigureAwait(false);
+            }
+            catch (RpcException e) when (e.Status == RpcStatus.NotHosted && Environment.TickCount64 < deadline)
+            {
+                await Task.Delay(200, cancellationToken).ConfigureAwait(false);
+            }
+        }
     }
 
     private async ValueTask ConnectToAsync(string host, int port, CancellationToken cancellationToken)

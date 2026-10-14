@@ -18,6 +18,8 @@ var dispatch = cluster.AddDispatch<Projects.Sample_Gateway>("dispatch");
 
 builder.AddProject<Projects.Sample_Bot>("bots")
     .WithGateways(dispatch)
-    .WithArgs("10000", "60"); // bots, seconds (see Sample.Bot for the other knobs)
+    // 10k players chatting in 100 maps while the realm broadcasts to everyone every 5 ticks. Moves per second (4th
+    // argument, 0 here) adds per-tick position sync: on one machine the bots, not the servers, saturate first.
+    .WithArgs("10000", "60", "100", "0", "10");
 
 builder.Build().Run();
