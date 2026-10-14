@@ -27,7 +27,7 @@ discovery, gateways and serialization. Aspire runs the cluster locally and publi
 
 ```mermaid
 flowchart TB
-    C1[clients] -. connect .-> D[dispatch]
+    C1[clients] -. connect .-> D[balancer]
     C1 --> G1
     C2[clients] --> G2
     subgraph cluster [cluster: gossip membership, rendezvous placement]
@@ -70,24 +70,24 @@ game clients may call.
 |---|---|---|
 | `[Service] interface IX` | servers | any node hosting it (load-balanced, local first) |
 | `[Actor] interface IX` | servers | the activation of a key (one per cluster, on demand, turn-based) |
-| `[Client]` on a method or a contract | also game clients | services: any; actors: the key bound to the session (`Cluster.Bind<IX>`) |
-| `[Client(AnyKey = true)]` | also game clients | actors: the client chooses the key |
-| `[Push] interface IX` | servers | one session or a client group (implemented by clients) |
-| `[NinoType]` struct, `[Key]` on one member | `Cluster.Publish(e)` | each `[Handle]` service once; keyed: the actor activation of the key |
+| `[FromClient]` on a method or a contract | also game clients | services: any; actors: the key bound to the session (`Cluster.Bind<IX>`) |
+| `[FromClient(AnyKey = true)]` | also game clients | actors: the client chooses the key |
+| `[ToClient] interface IX` | servers | one session or a client group (implemented by clients) |
+| `[NinoType]` struct, `[ActorKey]` on one member | `Cluster.Publish(e)` | each `[Handle]` service once; keyed: the actor activation of the key |
 | `[Handle] ValueTask On(E e)` | the event router | a method of an actor or service handling event `E` |
 | `partial class S : EcsSystem` with `[ForEach]` | the shard loop | every matching entity of the shard |
 | `[NinoType]` | | wire data; anything else crossing the wire is a build error |
 
 | Element | Responsibility | Never |
 |---|---|---|
-| **Actor** | The network boundary of one keyed entity: validate a call or event, then write input as components. Lifecycle and persistence (`OnActivateAsync`, `OnDeactivateAsync`). | Per-tick logic (that belongs to systems). |
+| **Actor** | The network boundary of one keyed entity: validate a call or event, then write input as components. Lifecycle and persistence (`OnLoad`, `OnUnload`). | Per-tick logic (that belongs to systems). |
 | **Service** | Stateless request and event handling (login, matchmaking, routing). | Keep state between calls. |
 | **Component / singleton** | Data of one entity (actor state is `Actor<TState>`) / of one shard world. | Logic. |
 | **System** | One per-tick responsibility over all matching entities of a shard. Stateless. | Reference other systems, perform IO. |
 | **Event** | A fact published to the cluster; the publisher does not know the handlers. | Commands to a specific receiver (that is a call). |
 
 Business code reaches the cluster through `ICluster`: `Cluster` in actors and services, `world.Cluster()` in systems.
-`Caller` is the client session of the running turn (valid across its awaits).
+`CallerSession` is the client session of the running turn (valid across its awaits).
 
 The runtime owns client sessions: `Cluster.Bind<IX>(session, key)` routes the client's `IX` calls to that key and
 puts the session in the activation's `Group`; when the session closes (or its gateway crashes), every actor it was
@@ -100,17 +100,17 @@ nothing.
 
 ```csharp
 // Contracts (shared with clients).
-[Service, Client] public interface IAccount { ValueTask<LoginResult> Login(string name); }
-[Actor, Client]   public interface IPlayer { ValueTask EnterMap(long mapId); }
+[Service, FromClient] public interface IAccount { ValueTask<LoginResult> Login(string name); }
+[Actor, FromClient]   public interface IPlayer { ValueTask EnterMap(long mapId); }
 [Actor] public interface IMap
 {
     ValueTask Enter(long playerId, SessionRef session);
-    [Client] void Move(float vx, float vy);                       // one-way input from the bound client
-    [Client] void Chat(string text);
+    [FromClient] void Move(float vx, float vy);                       // one-way input from the bound client
+    [FromClient] void Chat(string text);
 }
-[Push] public interface IPlayerClient { void OnMoves(List<Moved> moves); void OnChat(long playerId, string text); void OnRealm(RealmStatus s); }
+[ToClient] public interface IPlayerClient { void OnMoves(List<Moved> moves); void OnChat(long playerId, string text); void OnRealm(RealmStatus s); }
 
-[NinoType] public readonly partial record struct PlayerLoggedIn([property: Key] long Player, SessionRef Session);
+[NinoType] public readonly partial record struct PlayerLoggedIn([property: ActorKey] long Player, SessionRef Session);
 
 // Login project: binds the session and announces the login.
 public sealed class Account : Service, IAccount
@@ -118,8 +118,8 @@ public sealed class Account : Service, IAccount
     public ValueTask<LoginResult> Login(string name)
     {
         long playerId = Accounts.IdOf(name);
-        Cluster.Bind<IPlayer>(Caller, playerId);                   // the client's IPlayer calls now reach this key
-        Cluster.Publish(new PlayerLoggedIn(playerId, Caller));     // whoever cares handles it
+        Cluster.Bind<IPlayer>(CallerSession, playerId);               // the client's IPlayer calls now reach this key
+        Cluster.Publish(new PlayerLoggedIn(playerId, CallerSession)); // whoever cares handles it
         return new(new LoginResult(true, playerId));
     }
 }
@@ -132,9 +132,16 @@ public sealed class Player : Actor<PlayerState>, IPlayer
 
     public async ValueTask EnterMap(long mapId)
     {
-        await Cluster.Map(mapId).Enter(Key, Caller);               // generated proxy, zero allocation
+        await Cluster.Map(mapId).Enter(Key, CallerSession);        // generated proxy, zero allocation
         State.MapId = mapId;                                       // re-read after awaiting
     }
+}
+
+// Actor state is a component; field initializers run when the actor loads (no OnLoad boilerplate).
+public struct MapState() : IComponent
+{
+    public readonly Dictionary<SessionRef, Entity> Avatars = new();
+    public readonly List<Moved> Moves = new();                     // this tick's changes, reused
 }
 
 public sealed class Map : Actor<MapState>, IMap
@@ -147,9 +154,9 @@ public sealed class Map : Actor<MapState>, IMap
     }
 
     public void Move(float vx, float vy) =>                        // input is data: systems integrate it
-        State.Avatars[Caller].Get<Velocity>() = new(vx, vy);
+        State.Avatars[CallerSession].Get<Velocity>() = new(vx, vy);
 
-    public void Chat(string text) => Cluster.PlayerClient(Group).OnChat(PlayerOf(Caller), text);
+    public void Chat(string text) => Cluster.PlayerClient(Group).OnChat(PlayerOf(CallerSession), text);
 }
 
 // ...and systems do the per-tick work, one responsibility each.
@@ -163,10 +170,10 @@ public sealed partial class SnapshotSystem : EcsSystem              // one messa
     public override int Priority => 20;
 
     [ForEach]
-    static void Send(ref MapState map, World world)
+    static void Send(ref MapState map, in ActorIdentity actor, World world) // the map actor's key and client group
     {
         if (map.Moves.Count == 0) return;
-        world.Cluster().PlayerClient(map.Group).OnMoves(map.Moves); // serialized once, one frame per gateway
+        world.Cluster().PlayerClient(actor.Group).OnMoves(map.Moves); // serialized once, one frame per gateway
         map.Moves.Clear();
     }
 }
@@ -183,7 +190,7 @@ public sealed partial class RealmBroadcastSystem : EcsSystem        // every 5 t
 
 // Client (bot, game): the same generated proxies, one well-known address.
 var client = new ClusterClient();
-await client.ConnectAsync("dispatch.example.com", 7100);          // directed to the least loaded gateway
+await client.ConnectAsync("play.example.com", 7100);          // directed to the least loaded gateway
 await client.Account().Login("alice");
 await client.Player().EnterMap(1);                                 // no key: the gateway uses the binding
 client.Map().Move(1, 0);
@@ -202,14 +209,14 @@ var cluster = builder.AddDaServerCluster("sample");
 cluster.AddNodes<Projects.Sample_Login>("login");                           // Account
 cluster.AddNodes<Projects.Sample_Game>("game");                             // Player, Map, Realm, systems
 cluster.AddGateways<Projects.Sample_Gateway>("gateway", replicas: 3);       // client sockets, no business code
-var dispatch = cluster.AddDispatch<Projects.Sample_Gateway>("dispatch");    // the one address clients know
+var balancer = cluster.AddBalancer<Projects.Sample_Gateway>("balancer");    // the one address clients know
 
-builder.AddProject<Projects.Sample_Bot>("bots").WithGateways(dispatch).WithArgs("10000", "60", "100", "0", "10");
+builder.AddProject<Projects.Sample_Bot>("bots").WithGateways(balancer).WithArgs("10000", "60", "200", "1", "0");
 builder.Build().Run();
 ```
 
 `AddDaServerCluster` gives every node a name, a cluster endpoint and seeds; `AddGateways` adds a client endpoint;
-`AddDispatch` adds gateways that only direct clients (power of two choices over the gossiped session counts). There
+`AddBalancer` adds gateways that only direct clients (power of two choices over the gossiped session counts). There
 are no roles and no configuration files: what a node hosts is what its project compiles. Nodes export logs and
 metrics over OpenTelemetry, which feeds the Aspire dashboard. The same model runs with
 `dotnet run --project samples/Sample.AppHost` and publishes with `aspire publish` (`AddKubernetesEnvironment` for
@@ -220,24 +227,32 @@ Kubernetes).
 Measured on one 4-core VM (servers, bots and the kernel share it), Release builds.
 
 **10k-player scenario** ([Sample.AppHost](samples/Sample.AppHost), [Sample.Bot](samples/Sample.Bot)): a login
-node, a game node, 3 gateways and a dispatch (the AppHost's topology, here as plain processes without telemetry). 10,000 bots connect through the dispatch, log in, enter
-100 maps and chat (one message every 10 s each, sent to the map's 100 players); the realm broadcasts its status to
-every session every 5 ticks (20 ticks/s). 60 s measured window:
+node, a game node, 3 gateways and a balancer (the AppHost's topology, here as plain processes without telemetry).
+10,000 bots connect through the balancer, log in and enter a map; the realm broadcasts its status to every session
+every 5 ticks (20 ticks/s). Two input loads, 60 s measured window each:
 
-| | |
-|---|---|
-| Realm broadcasts delivered | 2,400,000 (every bot received every one, in order) |
-| Broadcast latency (game system to bot callback) | p50 35.1 ms, p99 57.2 ms, max 73.1 ms |
-| Chat deliveries | ~100,000/s |
-| Game node | 2% CPU, ~32 KB/s allocated (the 1,000 chat strings/s it receives), no GC |
-| Each gateway (~3,300 sessions) | 5–6% CPU, 0–7 KB/s allocated (under 0.5 B per message pushed), no GC |
-| Login, dispatch | 1–2% CPU, 0 KB/s allocated |
-| Disconnects, gaps | 0 |
+- **Moving** (the AppHost default): 200 maps of 50 players, every bot changes direction once a second, every position
+  change goes to the whole map each tick (one snapshot message per map per tick). No strings on the wire.
+- **Chatting**: 100 maps of 100 players, one chat message every 10 s per bot, sent to the map.
 
-(CPU is the share of all 4 cores. Without chat the game node allocates 0 KB/s. With Aspire's OTLP telemetry on, the
-exporter adds ~55 KB/s per node.) The latency is dominated by the single bot process receiving 10k sockets on the same machine. Adding
-per-tick position sync for every player (`moves/s` > 0: 20M position entries/s to clients) saturates this machine
-in the bots and the kernel first; the servers stay under 20% CPU each.
+| | Moving | Chatting |
+|---|---|---|
+| Realm broadcasts delivered (every bot every one, in order) | 2,400,000 | 2,400,000 |
+| Map traffic delivered to clients | ~10,000,000 positions/s | ~100,000 chat lines/s |
+| Broadcast latency (game system to bot callback) | p50 42.8 ms, p99 138.6 ms | p50 35.1 ms, p99 57.2 ms |
+| Game node | 2–3% CPU, 0–3 KB/s allocated | 2% CPU, ~32 KB/s (the chat strings it receives) |
+| Each gateway (~3,300 sessions) | 12–15% CPU, 0–2 KB/s allocated | 5–6% CPU, 0–7 KB/s allocated |
+| Login, balancer | 1% CPU, 0 KB/s | 1–2% CPU, 0 KB/s |
+| GCs on servers, disconnects, gaps | 0 | 0 |
+
+(CPU is the share of all 4 cores; with Aspire's OTLP telemetry on, the exporter adds ~55 KB/s per node.) Latency is
+dominated by the bot process: while moving, the one bot process receiving 10M positions/s and the kernel's loopback
+take 90% of the machine. With 100 players per map (20M positions/s) the bots fall behind (p99 ~330 ms) while the
+servers still stay under 20% CPU each.
+
+**Scale-out**: start 3,000 bots on 2 gateways (1,508 / 1,492 sessions), start a third gateway process with only a seed
+address, then 3,000 more bots: the balancer learns of it through gossip and sends it 1,961 of them (2,017 / 2,022 /
+1,961). Both waves pass (no gap, no disconnect). Cluster test: `AGatewayStartedLaterIsDiscoveredAndReceivesTheNewClients`.
 
 **BenchmarkDotNet** ([benchmarks/](benchmarks/DaServer.Benchmark), short job; Allocated includes the clients):
 

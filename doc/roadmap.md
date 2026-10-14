@@ -13,20 +13,20 @@ Keep this file current: tick items when done, add items when scope changes.
 - [x] Node: shards, local/remote routing, forwarding/relay, reply sinks
 - [x] Cluster: push-pull gossip of pulses (cards once, ADR-031), seeds (static + DNS), failure detection, `ClusterView`, rendezvous placement,
       graceful leave + rebalancing
-- [x] Gateway: sessions, per-contract bindings, per-method `[Client]` access, push, `ClientGroup` broadcast fan-out
+- [x] Gateway: sessions, per-contract bindings, per-method `[FromClient]` access, push, `ClientGroup` broadcast fan-out
       (O(1) membership, `All` is a group, no allocation per broadcast), `SessionClosed` to bound actors, client frame
       limit (ADR-025)
-- [x] Runtime-owned sessions: Bind joins the activation's group, `Caller` holds for the turn, a crashed gateway's
+- [x] Runtime-owned sessions: Bind joins the activation's group, `CallerSession` holds for the turn, a crashed gateway's
       sessions close (ADR-024)
-- [x] Dispatch gateways and client gateway discovery (power of two choices; clients wait while the cluster forms)
+- [x] Balancers and client gateway discovery (power of two choices; clients wait while the cluster forms)
       (ADR-026)
 - [x] One ordered link per node direction: replies travel with binds, pushes and events (ADR-022)
 - [x] Placement: keys stay with suspect members, a dead node's keys move, deactivating actors keep their mail (ADR-023)
 - [x] Client: `ClusterClient` (generated proxies, keyless session-actor accessors, DNS endpoints over every resolved
-      address, dispatch redirect,
+      address, balancer redirect,
       callbacks inline or queued)
 - [x] Topology without roles (ADR-017), `ICluster` for business code (ADR-020), actor `Group`
-- [x] Cluster events: `[NinoType]` structs, `[Key]`, `[Handle]`, gossiped handlers, mailbox delivery (ADR-019)
+- [x] Cluster events: `[NinoType]` structs, `[ActorKey]`, `[Handle]`, gossiped handlers, mailbox delivery (ADR-019)
 - [x] Backpressure: bounded shard inbox and actor mailboxes refuse with `Overloaded` (ADR-027)
 - [ ] Backpressure on links: pause a link's receive while its target shard is full (today: refuse and reply)
 - [x] Deadlines: the caller's remaining time travels with each request; expired work is dropped (ADR-028)
@@ -47,9 +47,9 @@ Keep this file current: tick items when done, add items when scope changes.
 
 ## Hosting / orchestration
 - [x] `DaServer.Hosting`: Generic Host, configuration, OpenTelemetry (OTLP), periodic stats line, graceful shutdown
-- [x] `DaServer.Aspire`: AddDaServerCluster / AddNodes / AddGateways / AddDispatch / WithGateways; compose publishing
+- [x] `DaServer.Aspire`: AddDaServerCluster / AddNodes / AddGateways / AddBalancer / WithGateways; compose publishing
       (ADR-015); no configuration files in node projects
-- [x] 10k-player scenario: login, game, 3 gateways, dispatch, 10k bots (Sample.Bot fails on any gap, disconnect or
+- [x] 10k-player scenario: login, game, 3 gateways, balancer, 10k bots (Sample.Bot fails on any gap, disconnect or
       p99 over the limit); passes through Aspire (README "Performance")
 - [x] E2E in CI: `tests/DaServer.E2E` runs the AppHost with `Aspire.Hosting.Testing` (1000 bots in CI) and
       fails unless the bot exits 0
@@ -57,13 +57,17 @@ Keep this file current: tick items when done, add items when scope changes.
       (ADR-030)
 
 ## Release review (this branch)
-- [x] Checklist 1-3: 0 warnings, 0 errors; 77 unit/integration tests and the end-to-end test pass (CI green); topology
+- [x] Checklist 1-3: 0 warnings, 0 errors; 80 unit/integration tests and the end-to-end test pass (CI green); topology
       names only in the AppHost
 - [x] Checklist 4: RPC unchanged within noise by resumable links (BenchmarkDotNet medium job)
 - [x] Checklist 5: 10,000 bots, 60 s: E2E OK, 2.4M realm broadcasts, p50 35.1 ms, p99 57.2 ms, no gap or
       disconnect; servers without telemetry: 0 KB/s except business payloads (chat strings) and < 0.5 B per pushed
       message on gateways, no GC (README "Performance")
 - [x] Checklist 6: R1-R11 and E1-E10 hold; open items are the unchecked roadmap entries
+- [x] Naming review (ADR-032): `[FromClient]`/`[ToClient]`, `[ActorKey]`, `OnLoad`/`OnUnload`, `CallerSession`,
+      balancers; actor state from field initializers, `ActorIdentity` for systems
+- [x] Moving scenario (AppHost default): 10,000 bots in 200 maps, ~10M positions/s to clients, p99 138.6 ms, servers
+      0–3 KB/s, no GC; scale-out: a gateway started mid-run receives the new clients (test + process run)
 
 ## Quality
 - [x] Unit tests (queue, pool, frames, pending table, membership, placement)

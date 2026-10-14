@@ -35,15 +35,15 @@ and what game clients may call.
 |---|---|---|
 | `[Service] interface IX` | servers | any node hosting it (load-balanced, local first) |
 | `[Actor] interface IX` | servers | the activation of a key (rendezvous placement) |
-| `[Client]` on a contract or method | also clients | services: any; actors: the key the server bound to the session (`Cluster.Bind<IX>`) |
-| `[Client(AnyKey = true)]` | also clients | actors: clients choose the key (public rooms, leaderboards) |
-| `[Push] interface IX` | servers | one session or a client group |
-| `[NinoType]` struct, optional `[Key]` member | `Cluster.Publish(e)` | every `[Handle]` method for it: each service implementation once, the actor activation of the key |
+| `[FromClient]` on a contract or method | also clients | services: any; actors: the key the server bound to the session (`Cluster.Bind<IX>`) |
+| `[FromClient(AnyKey = true)]` | also clients | actors: clients choose the key (public rooms, leaderboards) |
+| `[ToClient] interface IX` | servers | one session or a client group |
+| `[NinoType]` struct, optional `[ActorKey]` member | `Cluster.Publish(e)` | every `[Handle]` method for it: each service implementation once, the actor activation of the key |
 | `class S : EcsSystem` with `[ForEach]` | the shard loop | every matching entity of the shard |
 | `[NinoType]` | | wire data (arguments, results, events); anything else crossing the wire is a build error (DAS009) |
 
 Access is per method. The sample's `IMap` lets servers call `Enter` and `Leave` and lets the bound client call only
-`[Client] Move` and `[Client] Chat`, so a client can never call `Enter` with someone else's player id.
+`[FromClient] Move` and `[FromClient] Chat`, so a client can never call `Enter` with someone else's player id.
 
 Business code reaches the cluster only through `ICluster` (`Cluster` in actors and services, `world.Cluster()` in
 systems): generated proxies, session binding, client groups and `Publish`. `Node` (lifecycle, membership, links) is
@@ -127,7 +127,7 @@ that keeps session state as ECS components.
 | Calls | At most once, with timeouts (`RpcStatus.Timeout`, `Disconnected`, `NotHosted`). Retrying is the caller's choice, and only for idempotent operations. |
 | Deadlines | A request carries its caller's remaining time; each hop turns it into a local deadline and a shard drops a request that expired before it ran (ADR-028). Work nobody waits for is not done. |
 | Events | At most once, like one-way calls. Events that must not be lost are written to storage by the publisher first (outbox) and re-published on recovery; DaServer does not hide a broker inside the call path. |
-| Single activation | Rendezvous hashing over the `Up` nodes hosting the implementation: every node computes the same owner from the same view. A node activates an actor only if it is the owner in its own view; otherwise it forwards (hop limit 3) or answers `NotHosted`. When ownership changes, the old owner deactivates (`OnDeactivateAsync`, the persistence hook) and forwards its remaining mail. |
+| Single activation | Rendezvous hashing over the `Up` nodes hosting the implementation: every node computes the same owner from the same view. A node activates an actor only if it is the owner in its own view; otherwise it forwards (hop limit 3) or answers `NotHosted`. When ownership changes, the old owner deactivates (`OnUnload`, the persistence hook) and forwards its remaining mail. |
 | Sessions | A gateway owns its sockets. Bindings and groups live on the gateway; when a session closes, every actor it was bound to that handles `SessionClosed` receives it, so no actor keeps a dead session. |
 | Graceful shutdown | `SIGTERM` → `Leaving` (pushed to every member) → stop accepting activations → drain mailboxes → deactivate actors → exit. |
 | Backpressure | Shard inboxes and actor mailboxes are bounded and refuse with `Overloaded` (ADR-027). Planned (roadmap): pausing a link's receive loop while its target shard is full (TCP pushes back to the sender). A slow client hits the per-connection send backlog bound and is disconnected. |
@@ -153,7 +153,7 @@ that keeps session state as ECS components.
 
 ```mermaid
 flowchart TB
-    C[clients] -. "connect (well-known address)" .-> D[dispatch<br/>Sample.Gateway, DispatchOnly]
+    C[clients] -. "connect (well-known address)" .-> D[balancer<br/>Sample.Gateway, Balancer]
     C --> G1 & G2
     subgraph gateways [Sample.Gateway: client sockets, bindings, groups, fan-out; no business code]
         G1[gateway-0]
@@ -188,7 +188,7 @@ sequenceDiagram
     G->>P: routed to the bound player id
     P->>M: Map(7).Enter(playerId, session)
     M->>G: Bind<IMap>(session, 7)  (also joins the map's Group)
-    Cl->>G: Map().Move(vx, vy)  (one-way, [Client])
+    Cl->>G: Map().Move(vx, vy)  (one-way, [FromClient])
     G->>M: routed to the bound map
     M->>M: writes Velocity; MovementSystem, PositionSyncSystem, SnapshotSystem run on the tick
     M-->>G: PlayerClient(Group).OnMoves(changes)  one message per map per tick, one frame per gateway
@@ -206,7 +206,7 @@ sequenceDiagram
   `ClientGroup.All` reaches every session of the cluster (the sample's realm status every 5 ticks).
 - **Batch per tick.** Systems collect changes into the map's state and one system sends them as one message per map
   per tick: n moving avatars cost n entries, not n x n messages.
-- **Measured.** 10k bots through a dispatch and 3 gateways to one game node: see the README's Performance section.
+- **Measured.** 10k bots through a balancer and 3 gateways to one game node: see the README's Performance section.
 
 ### Backend cluster without clients
 
@@ -216,8 +216,8 @@ removed at run time; placement moves only the keys of the node that joined or le
 
 ## 8. Clients
 
-`ClusterClient` connects to a gateway (`host:port`, DNS names included); given a dispatch address it moves to the
-gateway the dispatch names (ADR-026), waiting while the cluster forms. It uses the same generated proxies as
+`ClusterClient` connects to a gateway (`host:port`, DNS names included); given a balancer address it moves to the
+gateway the balancer names (ADR-026), waiting while the cluster forms. It uses the same generated proxies as
 servers: `client.Account().Login(..)`, `client.Player().GetInfo()` (session actors need no key: the gateway uses the
 binding), `client.Room(id).Join()` (public actors). Callbacks are registered with `client.Register<IPlayerClient>(x)`
 and run on the IO thread or, for game loops and UIs, on the application's thread through `ProcessCallbacks`.
@@ -265,13 +265,13 @@ The only per-message work is a dictionary lookup, a queue push and the handler. 
 ## 10. Developer experience (generated code)
 
 ```csharp
-[Actor, Client]
+[Actor, FromClient]
 public interface IPlayer
 {
     ValueTask<int> AddGold(int amount);
 }
 
-[NinoType] public readonly partial record struct PlayerLoggedIn([property: Key] long Player, SessionRef Session);
+[NinoType] public readonly partial record struct PlayerLoggedIn([property: ActorKey] long Player, SessionRef Session);
 
 public record struct Wallet(int Gold, int Logins) : IComponent;
 
@@ -314,8 +314,8 @@ node project is its business classes only.
   leave. Each node logs a stats line (CPU, allocation rate, GCs, sessions, actors, queue, rejected) every 30 s.
 - The cluster is described once in an Aspire AppHost with `DaServer.Aspire`:
   `AddDaServerCluster`, `AddNodes<TProject>(name, replicas)`, `AddGateways<TProject>(name, replicas)`,
-  `AddDispatch<TProject>(name)`. Every node gets a cluster endpoint and seeds (every other node), gateways a client
-  endpoint; `WithGateways(dispatch)` hands the dispatch address to clients and bots.
+  `AddBalancer<TProject>(name)`. Every node gets a cluster endpoint and seeds (every other node), gateways a client
+  endpoint; `WithGateways(balancer)` hands the balancer address to clients and bots.
 - The same model runs locally (`dotnet run` on the AppHost, with the dashboard showing logs and OTLP metrics) and is
   published with `aspire publish`: Docker Compose via `AddDockerComposeEnvironment`, Kubernetes via
   `AddKubernetesEnvironment`. There are no hand-maintained deployment files.
@@ -327,7 +327,7 @@ node project is its business classes only.
 |---|---|---|
 | Unit | Queues, buffer pool, frame parsing, pending-call table, membership merge, rendezvous placement | `tests/DaServer.Tests` |
 | Generator | Valid input compiles, every DAS rule fires from the analyzer, the entry point is generated only when missing, unrelated edits hit the incremental cache | `tests/DaServer.Tests` |
-| Integration | In-process clusters on loopback (`ClusterTest`): RPC semantics and ordering, turn-based actors, ECS systems over actor state, single activation, failover, events (keyed, once per service, ordering, routing), gateway access by `[Client]`, binding isolation, broadcast (exact under churn), dispatch, `SessionClosed` (close and gateway crash), backpressure, placement under suspicion | `tests/DaServer.Tests` |
+| Integration | In-process clusters on loopback (`ClusterTest`): RPC semantics and ordering, turn-based actors, ECS systems over actor state, single activation, failover, events (keyed, once per service, ordering, routing), gateway access by `[FromClient]`, binding isolation, broadcast (exact under churn), balancer, `SessionClosed` (close and gateway crash), backpressure, placement under suspicion | `tests/DaServer.Tests` |
 | Allocation | Steady-state cross-shard calls, keyed events, gateway fan-out and client calls through a gateway allocate nothing per message | `tests/DaServer.Tests` |
-| End to end | AppHost topology (login, game, 3 gateways, dispatch) + `Sample.Bot` with 10k bots: fails on any gap, disconnect or p99 over the limit | `samples/` |
+| End to end | AppHost topology (login, game, 3 gateways, balancer) + `Sample.Bot` with 10k bots: fails on any gap, disconnect or p99 over the limit | `samples/` |
 | Benchmarks | BenchmarkDotNet on real loopback sockets: RPC at 1/64/1,024 outstanding calls (local and remote), keyed events (local and remote), group broadcast to 1k/5k client sockets, broadcast to everyone through 3 gateways (3k/9k) | `benchmarks/DaServer.Benchmark` |
