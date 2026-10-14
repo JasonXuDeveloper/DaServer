@@ -11,8 +11,8 @@ using NUnit.Framework;
 namespace DaServer.E2E;
 
 /// <summary>
-/// The sample cluster as deployed: Aspire starts login, game, 3 gateways and a dispatch, then the bots connect through
-/// the dispatch, log in, enter maps, chat and receive the realm broadcasts. The bots' exit code is the verdict (no
+/// The sample cluster as deployed: Aspire starts login, game, 3 gateways, and a balancer, then the bots connect through
+/// the balancer, log in, enter maps, move and receive the realm broadcasts. The bots' exit code is the verdict (no
 /// gap, no disconnect, p99 under the limit).
 /// </summary>
 public class SampleClusterTests
