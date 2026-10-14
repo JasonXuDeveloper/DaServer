@@ -19,7 +19,8 @@ public sealed class Listener : IDisposable
         _socket = new Socket(endPoint.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
         if (endPoint.AddressFamily == AddressFamily.InterNetworkV6)
             _socket.DualMode = true;
-        _socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+        // No ReuseAddress: on Linux .NET maps it to SO_REUSEPORT, which lets a second process bind the same port and
+        // silently take half of the connections. Rebinding a port in TIME_WAIT works without it on every platform.
         _socket.Bind(endPoint);
         _socket.Listen(backlog);
         LocalEndPoint = (IPEndPoint)_socket.LocalEndPoint!;

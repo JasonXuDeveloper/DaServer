@@ -80,4 +80,22 @@ public class ClusterTests : ClusterTest
         var nodes = await StartCluster(2);
         return (nodes[0], nodes[1]);
     }
+
+    [Test]
+    public async Task APortBelongsToOneNodeAndIsReusableAfterARestart()
+    {
+        var first = await Start("first");
+        int port = first.ClusterEndPoint.Port;
+        var second = await Start("second"); // links to first: first's sockets go through TIME_WAIT when it stops
+        await Converged();
+
+        Assert.ThrowsAsync<System.Net.Sockets.SocketException>(
+            async () => await new DaServer.Runtime.Node(new DaServer.Runtime.NodeOptions { ClusterBind = "127.0.0.1", ClusterPort = port }).StartAsync(),
+            "a second process on the same port would silently take half of the connections");
+
+        await Stop(first);
+        var restarted = await Start("restarted", configure: o => o.ClusterPort = port);
+        Assert.That(restarted.ClusterEndPoint.Port, Is.EqualTo(port));
+        Assert.That(second.Id, Is.Not.EqualTo(restarted.Id));
+    }
 }

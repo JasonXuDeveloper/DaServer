@@ -4,6 +4,8 @@ using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using DaServer.Client;
+using DaServer.Protocol;
+using DaServer.Rpc;
 using Sample.Contracts;
 
 // Load generator / end-to-end client: N bots log in, enter maps, move at 10 Hz and chat, while counting pushes.
@@ -30,7 +32,8 @@ for (int i = 0; i < bots; i++)
 
     var login = await client.Account().Login("bot-" + i);
     if (!login.Ok) throw new InvalidOperationException("login failed for bot " + i);
-    await client.Player().EnterMap(1 + i % maps); // the gateway routes to the player bound at login
+    long map = 1 + i % maps;
+    await WhileStarting(() => client.Player().EnterMap(map)); // the gateway routes to the player bound at login
     clients.Add(client);
     inputs.Add(client.MapInput());                // and this to the map the player entered
 }
@@ -62,6 +65,23 @@ foreach (var client in clients) await client.DisposeAsync();
 bool ok = Interlocked.Read(ref inbox.Moved) > 0;
 Console.WriteLine(ok ? "E2E OK" : "E2E FAILED: no position broadcasts received");
 return ok ? 0 : 1;
+
+// NotHosted while the cluster converges (the gateway has not met the node hosting the actor yet): retry for a while.
+static async Task WhileStarting(Func<ValueTask> call)
+{
+    for (int attempt = 0; ; attempt++)
+    {
+        try
+        {
+            await call();
+            return;
+        }
+        catch (RpcException e) when (e.Status == RpcStatus.NotHosted && attempt < 30)
+        {
+            await Task.Delay(500);
+        }
+    }
+}
 
 static async Task ConnectWithRetry(ClusterClient client, string hostPort)
 {
