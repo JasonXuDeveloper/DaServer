@@ -156,6 +156,12 @@ public sealed partial class Node : IRpcInvoker, IConnectionHandler
 
     void IConnectionHandler.OnFrame(Connection connection, in FrameHeader header, ReadOnlySpan<byte> frame)
     {
+        if (_killed)
+        {
+            connection.Close();
+            return;
+        }
+
         switch (header.Kind)
         {
             case FrameKind.Request:

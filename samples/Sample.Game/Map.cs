@@ -40,15 +40,13 @@ public sealed class Map : Actor<MapState>, IMap
             State.Avatars[session] = World.CreateEntity(new Position(), new Velocity(), new Avatar(playerId, Group),
                 new NetSync(float.NaN, float.NaN)); // NaN never equals a position: the first tick syncs it
 
-        Cluster.Bind<IMap>(session, Key); // the client's input now reaches this map
-        Cluster.JoinGroup(session, Group);     // and it sees this map's broadcasts
+        Cluster.Bind<IMap>(session, Key); // the client's input reaches this map and it sees the map's Group broadcasts
         return default;
     }
 
     public ValueTask Leave(SessionRef session)
     {
         Cluster.Unbind<IMap>(session);
-        Cluster.LeaveGroup(session, Group);
         Remove(session);
         return default;
     }
@@ -56,7 +54,7 @@ public sealed class Map : Actor<MapState>, IMap
     [Handle]
     public ValueTask On(SessionClosed e)
     {
-        Remove(e.Session); // the gateway already dropped the session's bindings and groups
+        Remove(e.Session); // also delivered when the session's gateway crashed
         return default;
     }
 

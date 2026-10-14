@@ -40,11 +40,10 @@ public sealed class Player : Actor<PlayerState>, IPlayer
 
     public async ValueTask EnterMap(long mapId)
     {
-        var session = Caller;            // valid until the first await
         long previous = State.MapId;
         if (previous == mapId) return;
-        if (previous != 0) await Cluster.Map(previous).Leave(session);
-        await Cluster.Map(mapId).Enter(Key, session);
+        if (previous != 0) await Cluster.Map(previous).Leave(Caller);
+        await Cluster.Map(mapId).Enter(Key, Caller); // Caller holds for the whole turn
         State.MapId = mapId;             // State is re-read after awaiting (never hold the ref across await)
     }
 }

@@ -23,6 +23,9 @@ public abstract class Actor : ShardObject
 
     internal ImplementationInfo Implementation { get; set; } = null!;
 
+    /// <summary>Client session of the message whose turn is running (kept across its awaits: turns never interleave).</summary>
+    internal SessionRef TurnCaller;
+
     /// <summary>The activation's entity (carries an <see cref="ActorLink"/> back to this object).</summary>
     public Entity Entity { get; internal set; }
 
