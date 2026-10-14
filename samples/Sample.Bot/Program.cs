@@ -8,11 +8,11 @@ using DaServer.Protocol;
 using DaServer.Rpc;
 using Sample.Contracts;
 
-// End-to-end load test: N bots connect through the dispatch address (and are directed to a gateway), log in, enter a
+// End-to-end load test: N bots connect through the balancer address (and are directed to a gateway), log in, enter a
 // map, then move and chat while the realm broadcasts its status to every session every few ticks.
 //
 // Usage: Sample.Bot [bots=1000] [seconds=30] [maps=bots/100] [moves/s=2] [chat every s=10] [max p99 ms=250] (0 = off)
-// The dispatch address comes from DaServer__Gateways__0 (set by the AppHost's WithGateways); default 127.0.0.1:7100.
+// The balancer address comes from DaServer__Gateways__0 (set by the AppHost's WithGateways); default 127.0.0.1:7100.
 // Exit code 0 only if every bot came online and, during the measured window, every bot received every realm broadcast
 // in order (no gap), no bot disconnected, and the p99 broadcast latency stayed under the limit.
 
@@ -23,10 +23,10 @@ int maps = arg(2, Math.Max(1, bots / 100));
 int movesPerSecond = arg(3, 2);
 int chatEverySeconds = arg(4, 10);
 int maxP99Ms = arg(5, 250);
-string dispatch = Environment.GetEnvironmentVariable("DaServer__Gateways__0") ?? "127.0.0.1:7100";
-int colon = dispatch.LastIndexOf(':');
-string host = dispatch[..colon];
-int port = int.Parse(dispatch[(colon + 1)..]);
+string balancer = Environment.GetEnvironmentVariable("DaServer__Gateways__0") ?? "127.0.0.1:7100";
+int colon = balancer.LastIndexOf(':');
+string host = balancer[..colon];
+int port = int.Parse(balancer[(colon + 1)..]);
 
 var stats = new Stats();
 var players = new Bot[bots];
@@ -58,7 +58,7 @@ var clock = Stopwatch.StartNew();
 var report = TimeSpan.FromSeconds(5);
 var lastReport = TimeSpan.Zero;
 var window = new Histogram();
-long round = 0;
+long round = 0, movesBefore = 0, chatsBefore = 0;
 while (clock.Elapsed.TotalSeconds < seconds)
 {
     // Input rounds at 10 Hz: each bot moves movesPerSecond times a second and chats every chatEverySeconds.
@@ -78,9 +78,19 @@ while (clock.Elapsed.TotalSeconds < seconds)
         window.Subtract(snapshot, out var interval);
         window = snapshot;
         double elapsed = (clock.Elapsed - lastReport).TotalSeconds;
+        long moves = -movesBefore, chats = -chatsBefore;
+        foreach (var p in players)
+        {
+            moves += Volatile.Read(ref p.Moves);
+            chats += Volatile.Read(ref p.Chats);
+        }
+
+        movesBefore += moves;
+        chatsBefore += chats;
+
         Console.WriteLine($"t={clock.Elapsed.TotalSeconds,4:F0}s realm/s={interval.Count / elapsed,8:F0} " +
                           $"p50={interval.Percentile(0.50),6:F1}ms p99={interval.Percentile(0.99),6:F1}ms max={interval.Max,6:F1}ms " +
-                          $"moves/s={Interlocked.Exchange(ref stats.Moves, 0) / elapsed,8:F0} chat/s={Interlocked.Exchange(ref stats.Chats, 0) / elapsed,8:F0} " +
+                          $"positions/s={moves / elapsed,8:F0} chat/s={chats / elapsed,8:F0} " +
                           $"gaps={stats.Gaps} disconnects={stats.Disconnects}");
         lastReport = clock.Elapsed;
     }
@@ -156,20 +166,24 @@ sealed class Bot(ClusterClient client, Stats stats) : IPlayerClient
         stats.Latency.Add(TimeSpan.FromTicks(DateTime.UtcNow.Ticks - status.ServerTimeTicks).TotalMilliseconds);
     }
 
-    public void OnMoves(List<Moved> moves) => Interlocked.Add(ref stats.Moves, moves.Count);
+    // Totals per bot (one connection: one IO thread at a time), summed by the report: a shared counter would be the hottest
+    // contended cache line of the process at 200k snapshots per second.
+    public long Moves, Chats;
 
-    public void OnChat(long playerId, string text) => Interlocked.Increment(ref stats.Chats);
+    public void OnMoves(List<Moved> moves) => Moves += moves.Count;
+
+    public void OnChat(long playerId, string text) => Chats++;
 }
 
 sealed class Stats
 {
     public readonly Histogram Latency = new();
-    public long Moves, Chats, Gaps, Disconnects;
+    public long Gaps, Disconnects;
 
     public void Reset()
     {
         Latency.Clear();
-        Moves = Chats = Gaps = 0;
+        Gaps = 0;
     }
 }
 

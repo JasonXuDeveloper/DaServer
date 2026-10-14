@@ -11,20 +11,21 @@ var builder = DistributedApplication.CreateBuilder(args);
 builder.AddDockerComposeEnvironment("compose");
 
 // A node hosts what its project compiles: the topology is projects and replica counts. Ports, names and seeds are
-// assigned here; discovery (gossip) and client placement (dispatch) are automatic.
+// assigned here; discovery (gossip) and client placement (balancer) are automatic.
 var cluster = builder.AddDaServerCluster("sample");
 cluster.AddNodes<Projects.Sample_Login>("login");
 cluster.AddNodes<Projects.Sample_Game>("game");
 cluster.AddGateways<Projects.Sample_Gateway>("gateway", replicas: 3);
-var dispatch = cluster.AddDispatch<Projects.Sample_Gateway>("dispatch");
+var balancer = cluster.AddBalancer<Projects.Sample_Gateway>("balancer");
 
-// 10k players chatting in 100 maps while the realm broadcasts to everyone every 5 ticks (Bots and Seconds can be
-// overridden: `dotnet run -- Bots=1000`, the e2e test does). Moves per second (4th argument, 0 here) adds per-tick
-// position sync: on one machine the bots, not the servers, saturate first.
+// 10k players moving in 200 maps (50 per map, every position change sent to the whole map each tick) while the realm
+// broadcasts to everyone every 5 ticks: about 10 million position updates a second reach the bots, no strings involved
+// (Bots and Seconds can be overridden: `dotnet run -- Bots=1000`, the e2e test does). Bot arguments: bots, seconds,
+// maps, moves per second, chat every n seconds (0 = off).
 int bots = builder.Configuration.GetValue("Bots", 10_000);
 int seconds = builder.Configuration.GetValue("Seconds", 60);
 builder.AddProject<Projects.Sample_Bot>("bots")
-    .WithGateways(dispatch)
-    .WithArgs(bots.ToString(), seconds.ToString(), Math.Max(1, bots / 100).ToString(), "0", "10");
+    .WithGateways(balancer)
+    .WithArgs(bots.ToString(), seconds.ToString(), Math.Max(1, bots / 50).ToString(), "1", "0");
 
 builder.Build().Run();

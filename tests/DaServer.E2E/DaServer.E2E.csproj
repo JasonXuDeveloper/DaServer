@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-    <!-- End to end: the sample AppHost (login, game, 3 gateways, dispatch, bots) started by Aspire's test host. -->
+    <!-- End to end: the sample AppHost (login, game, 3 gateways, balancer, bots) started by Aspire's test host. -->
     <PropertyGroup>
         <TargetFramework>net10.0</TargetFramework>
         <IsPackable>false</IsPackable>
