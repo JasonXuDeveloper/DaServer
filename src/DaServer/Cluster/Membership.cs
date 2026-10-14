@@ -335,14 +335,21 @@ internal sealed class Membership : IDisposable
             _node.OnViewChanged();
     }
 
-    /// <summary>Did the set of Up members (which drives placement) change?</summary>
+    /// <summary>
+    /// Did any member's status change (placement uses Up and Suspect members, gateways' sessions end when they are Dead)?
+    /// Heartbeats alone do not count.
+    /// </summary>
     private static bool SameRouting(ClusterView a, ClusterView b)
     {
-        if (a.UpMembers.Length != b.UpMembers.Length) return false;
-        foreach (var m in a.UpMembers)
-            if (!b.TryGetMember(m.NodeId, out var other) || other.Status != MemberStatus.Up)
-                return false;
-        return true;
+        int count = 0;
+        foreach (var m in a.Members)
+        {
+            count++;
+            if (!b.TryGetMember(m.NodeId, out var other) || other.Status != m.Status) return false;
+        }
+
+        foreach (var _ in b.Members) count--;
+        return count == 0;
     }
 
     /// <summary>

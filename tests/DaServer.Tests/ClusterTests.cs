@@ -67,6 +67,18 @@ public class ClusterTests : ClusterTest
     }
 
     [Test]
+    public async Task KeysMoveToSurvivorsWhenANodeCrashes()
+    {
+        var (a, b) = await StartPair();
+        long key = KeyOwnedBy(b, CounterRpc.ContractId);
+        Assert.That(await a.Counter(key).Add(3), Is.EqualTo(3));
+
+        await b.KillAsync(); // suspect first (keys stay), then dead (keys move)
+        await Eventually(() => a.View.ActorOwner(CounterRpc.ContractId, key)!.NodeId == a.Id, "the key never moved");
+        Assert.That(await a.Counter(key).Add(1), Is.EqualTo(1), "reactivated on the survivor");
+    }
+
+    [Test]
     public async Task CallsToUnhostedContractsFailFast()
     {
         var a = await Start("a");

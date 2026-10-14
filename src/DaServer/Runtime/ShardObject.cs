@@ -25,10 +25,10 @@ public abstract class ShardObject
     protected ILogger Logger => Shard.Node.Logger;
 
     /// <summary>
-    /// The client session that made the current call (invalid for server-to-server calls). Valid until the handler's
-    /// first <c>await</c>: read it into a local first.
+    /// The client session that made the current call (invalid for server-to-server calls and events). In an actor it
+    /// holds for the whole turn, awaits included; in a service (whose calls may overlap) until the first <c>await</c>.
     /// </summary>
-    protected static SessionRef Caller => CallContext.Current.Caller;
+    protected SessionRef Caller => this is Actor actor ? actor.TurnCaller : CallContext.Current.Caller;
 }
 
 /// <summary>

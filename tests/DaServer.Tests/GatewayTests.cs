@@ -62,6 +62,34 @@ public class GatewayTests : ClusterTest
     }
 
     [Test]
+    public async Task ABoundSessionReceivesTheActorsGroupBroadcasts()
+    {
+        var gateway = await Start("gw", gateway: true);
+        var client = await Connect(gateway);
+        var inbox = new Inbox();
+        client.Register<IPlayerClient>(inbox);
+        await client.Auth().Login(42);
+
+        Assert.That(gateway.View.TryGetActorImplementation(PlayerRpc.ContractId, out uint player));
+        gateway.PlayerClient(ClientGroup.Of(player, 42)).OnGold(7); // the player's Group: joined by Bind, no JoinGroup
+        await Eventually(() => inbox.Gold == 7, "the bound session is not in the actor's group");
+    }
+
+    [Test]
+    public async Task ActorsLearnThatTheSessionsOfACrashedGatewayAreGone()
+    {
+        var gateway = await Start("gw", gateway: true, hosts: static _ => false);
+        await Start("game");
+        await Converged();
+        var client = await Connect(gateway);
+        await client.Auth().Login(77);
+        await client.Player().AddGold(1); // the player knows the session from its call
+
+        await gateway.KillAsync(); // no Leaving, no session close: found by failure detection only
+        await Eventually(() => Observed.Events.Contains("closed:77"), "SessionClosed was not delivered after the gateway died");
+    }
+
+    [Test]
     public async Task BindingsAreIsolatedPerSession()
     {
         var gateway = await Start("gw", gateway: true);

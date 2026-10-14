@@ -123,6 +123,25 @@ public sealed partial class Node : ICluster, IAsyncDisposable
 
     public async ValueTask DisposeAsync() => await StopAsync().ConfigureAwait(false);
 
+    private volatile bool _killed;
+
+    /// <summary>
+    /// Tests: simulate a process crash. Gossip stops and every socket drops without announcing Leaving, closing client
+    /// sessions or deactivating actors: the cluster finds out by failure detection only.
+    /// </summary>
+    internal async Task KillAsync()
+    {
+        if (Interlocked.Exchange(ref _started, 2) != 1) return;
+        _killed = true;
+        _maintenance?.Dispose();
+        Membership.Dispose();
+        _clusterListener?.Dispose();
+        StopGateway();
+        foreach (var link in _links.Values) link.Dispose();
+        foreach (var shard in _shards) shard.RequestStop();
+        await Task.WhenAll(Array.ConvertAll(_shards, w => w.Stopped)).ConfigureAwait(false);
+    }
+
     /// <summary>Hosted implementation serving <paramref name="contract"/> on this node, or null.</summary>
     internal ImplementationInfo? ImplementationOf(RpcContractInfo contract) =>
         _implementationByContract.TryGetValue(contract.Id, out var impl) ? impl : null;
@@ -219,10 +238,32 @@ public sealed partial class Node : ICluster, IAsyncDisposable
         }
     }
 
-    /// <summary>Called by membership when the view changes: shards drop actors they no longer own.</summary>
+    private ulong[] _gateways = [];
+
+    /// <summary>
+    /// Called by membership when the view changes: shards drop actors they no longer own, and actors that knew sessions
+    /// of a gateway that died (it could not close them) receive <see cref="Rpc.SessionClosed"/> for them.
+    /// </summary>
     internal void OnViewChanged()
     {
         foreach (var shard in _shards) shard.RequestRebalance();
+
+        var gateways = new List<ulong>();
+        foreach (var member in View.Members)
+            if (member.ClientPort != 0 && member.Status != MemberStatus.Dead) gateways.Add(member.NodeId);
+        foreach (ulong previous in _gateways)
+        {
+            if (gateways.Contains(previous)) continue;
+            Logger.LogWarning("Gateway {Gateway:x} is gone: closing its sessions", previous);
+            foreach (var shard in _shards)
+                shard.Post(static s =>
+                {
+                    var (target, gateway) = ((Shard, ulong))s!;
+                    ShardDispatch.CloseSessionsOf(target.World, gateway);
+                }, (shard, previous));
+        }
+
+        _gateways = gateways.ToArray();
     }
 
     private void Maintain()

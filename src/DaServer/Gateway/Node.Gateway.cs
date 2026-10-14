@@ -54,8 +54,13 @@ public sealed partial class Node
 
     // ------------------------------------------------------------------ ICluster: sessions (any node)
 
-    public void Bind<TActor>(SessionRef session, long key) where TActor : class =>
-        SendGatewayControl(session, ControlOp.Bind, ContractOf<TActor>.Id, key);
+    public void Bind<TActor>(SessionRef session, long key) where TActor : class
+    {
+        uint contractId = ContractOf<TActor>.Id;
+        SendGatewayControl(session, ControlOp.Bind, contractId, key);
+        if (Shard.Current is { } shard && shard.Node == this && _implementationByContract.TryGetValue(contractId, out var impl))
+            ShardDispatch.RecordBinding(shard.World, impl.Id, key, session);
+    }
 
     public void Unbind<TActor>(SessionRef session) where TActor : class =>
         SendGatewayControl(session, ControlOp.Unbind, ContractOf<TActor>.Id, 0);
@@ -165,19 +170,29 @@ public sealed partial class Node
         switch (op)
         {
             case ControlOp.Bind:
+            {
+                // A bound session also joins the activation's group, so Cluster.X(actor.Group) reaches it.
+                long previous = session.KeyOf(contractId);
                 session.Bindings.Set(contractId, new SessionBinding(contractId, value), static (b, c) => b.ContractId == c);
-                break;
-            case ControlOp.Unbind:
-                session.Bindings.Remove(contractId, static (b, c) => b.ContractId == c);
-                break;
-            case ControlOp.JoinGroup:
+                if (!View.TryGetActorImplementation(contractId, out uint implementationId)) break;
                 lock (_groupGate)
                 {
-                    if (session.Closed) return;
-                    _groups.GetOrAdd(value, static _ => new CopyOnWriteArray<Session>()).Add(session);
-                    session.Groups.Add(value);
+                    if (previous != 0 && previous != value) Leave(session, ClientGroup.Of(implementationId, previous).Id);
+                    Join(session, ClientGroup.Of(implementationId, value).Id);
                 }
 
+                break;
+            }
+            case ControlOp.Unbind:
+            {
+                long previous = session.KeyOf(contractId);
+                session.Bindings.Remove(contractId, static (b, c) => b.ContractId == c);
+                if (previous != 0 && View.TryGetActorImplementation(contractId, out uint implementationId))
+                    lock (_groupGate) Leave(session, ClientGroup.Of(implementationId, previous).Id);
+                break;
+            }
+            case ControlOp.JoinGroup:
+                lock (_groupGate) Join(session, value);
                 break;
             case ControlOp.LeaveGroup:
                 lock (_groupGate) Leave(session, value);
@@ -186,6 +201,14 @@ public sealed partial class Node
                 session.Connection.Close();
                 break;
         }
+    }
+
+    /// <summary>Add a session to a group (once). Caller holds the gate.</summary>
+    private void Join(Session session, long groupId)
+    {
+        if (session.Closed || Array.IndexOf(session.Groups.Items, groupId) >= 0) return;
+        _groups.GetOrAdd(groupId, static _ => new CopyOnWriteArray<Session>()).Add(session);
+        session.Groups.Add(groupId);
     }
 
     /// <summary>Remove a session from a group; empty groups are dropped (bounded memory). Caller holds the gate.</summary>
@@ -201,6 +224,7 @@ public sealed partial class Node
     private void OnSessionClosed(Session session)
     {
         _sessions.TryRemove(session.Id, out _);
+        if (_killed) return; // a crashed gateway tells nobody
         lock (_groupGate)
         {
             session.Closed = true;

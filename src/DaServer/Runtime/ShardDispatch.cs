@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using DaServer.Buffers;
 using DaServer.Protocol;
@@ -210,22 +211,89 @@ internal static class ShardDispatch
     private static void LogUnobserved(ILogger logger, Exception e, object target, in FrameHeader header) =>
         logger.LogError(e, "{Kind} {Id:x8} failed in {Target}", header.Kind, header.MethodId, target);
 
-    /// <summary>Invoke the next message of an actor: a call (dispatcher of its contract) or an event (of its handler).</summary>
+    /// <summary>
+    /// Invoke the next message of an actor: a call (dispatcher of its contract) or an event (of its handler). Records
+    /// the client session of a gateway-relayed call (see <see cref="ClientSessions"/>) and forgets a closed one.
+    /// </summary>
     public static System.Threading.Tasks.ValueTask Invoke(Actor actor, in Envelope envelope)
     {
         var header = FrameHeader.Read(envelope.Frame.Frame);
         RpcDispatcher dispatcher;
+        actor.TurnCaller = default;
         if (header.Kind == FrameKind.Event)
         {
+            if (header.MethodId == EventType<SessionClosed>.Id) ForgetSession(actor, envelope.Frame.Payload);
             dispatcher = actor.Implementation.HandlerOf(header.MethodId)!.Dispatcher; // validated by RouteEvent
         }
         else
         {
+            if ((header.Flags & FrameFlags.HasCaller) != 0)
+            {
+                var reader = new Reader(envelope.Frame.Payload);
+                NinoDeserializer.Deserialize(out actor.TurnCaller, ref reader);
+                RecordSession(actor.Entity, actor.TurnCaller);
+            }
+
             RpcRegistry.TryGetMethod(header.MethodId, out var method); // validated by Route
             dispatcher = method.Owner.Dispatcher;
         }
 
         return Invoke(dispatcher, actor, envelope.Frame, envelope.Sink, actor.Shard.Node.Logger);
+    }
+
+    /// <summary>Remember a client session of an activation (a hash lookup; allocates once per new session).</summary>
+    internal static void RecordSession(Entity actor, SessionRef session)
+    {
+        if (!actor.TryGet<ClientSessions>(out var sessions))
+            actor.Add<ClientSessions>() = sessions = new ClientSessions(new HashSet<SessionRef>());
+        sessions.Sessions.Add(session);
+    }
+
+    private static void ForgetSession(Actor actor, ReadOnlySpan<byte> payload)
+    {
+        if (!actor.Entity.TryGet<ClientSessions>(out var sessions)) return;
+        var reader = new Reader(payload);
+        NinoDeserializer.Deserialize(out SessionClosed closed, ref reader);
+        sessions.Sessions.Remove(closed.Session);
+    }
+
+    /// <summary>
+    /// Bind called on the shard of the bound activation (an actor binding a client to itself): remember the session
+    /// now, so it is closed for the actor even if the client never calls it before its gateway dies.
+    /// </summary>
+    internal static void RecordBinding(World world, uint implementationId, long key, SessionRef session)
+    {
+        if (TryGetActivation(world, implementationId, key, out var actor)) RecordSession(actor, session);
+    }
+
+    /// <summary>
+    /// A gateway died without closing its sessions: every activation of this shard that knew one of them receives
+    /// <see cref="SessionClosed"/> (when it handles it), as if the gateway had closed the session.
+    /// </summary>
+    internal static void CloseSessionsOf(World world, ulong gatewayNodeId)
+    {
+        List<SessionRef>? lost = null;
+        foreach (var item in world.Query<ClientSessions, ActorLink>())
+        {
+            var sessions = item.Component1.Sessions;
+            lost?.Clear();
+            foreach (var session in sessions)
+                if (session.GatewayNodeId == gatewayNodeId) (lost ??= new()).Add(session);
+            if (lost == null || lost.Count == 0) continue;
+
+            var actor = item.Component2.Actor;
+            var handler = actor.Implementation.HandlerOf(EventType<SessionClosed>.Id);
+            foreach (var session in lost)
+            {
+                sessions.Remove(session);
+                if (handler == null) continue;
+                var w = FrameWriter.Rent();
+                var nino = w.Nino;
+                NinoSerializer.Serialize(new SessionClosed(session, actor.Key), ref nino);
+                w.SetHeader(FrameKind.Event, actor.Implementation.Id, EventType<SessionClosed>.Id, actor.Key);
+                Deliver(world, item.Entity, new Envelope(w, null));
+            }
+        }
     }
 
     /// <summary>Keep an unfinished service call until it completes (its state machine returns to its pool then).</summary>
