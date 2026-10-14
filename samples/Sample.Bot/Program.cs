@@ -22,7 +22,7 @@ if (gateways.Count == 0) gateways.Add("127.0.0.1:7100");
 
 var inbox = new Inbox();
 var clients = new List<ClusterClient>();
-var inputs = new List<MapInputProxy>();
+var inputs = new List<MapProxy>();
 
 for (int i = 0; i < bots; i++)
 {
@@ -35,7 +35,7 @@ for (int i = 0; i < bots; i++)
     long map = 1 + i % maps;
     await WhileStarting(() => client.Player().EnterMap(map)); // the gateway routes to the player bound at login
     clients.Add(client);
-    inputs.Add(client.MapInput());                // and this to the map the player entered
+    inputs.Add(client.Map());                // and this to the map the player entered
 }
 
 Console.WriteLine($"{bots} bots online on {gateways.Count} gateway(s), {maps} maps");

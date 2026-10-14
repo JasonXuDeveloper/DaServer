@@ -8,11 +8,12 @@ using static DaServer.Generator.Support;
 namespace DaServer.Generator;
 
 /// <summary>
-/// For every contract interface (deriving from a marker of DaServer.Rpc.Contracts): a struct proxy (serializes arguments straight
+/// For every contract interface ([Service], [Actor] or [Push]): a struct proxy (serializes arguments straight
 /// into a pooled frame), a dispatcher switch (deserializes and invokes), wire ids, registration in a module
 /// initializer, and cluster accessors (<c>Cluster.Player(key)</c>, <c>Cluster.PlayerClient(session or group)</c>).
-/// Incremental rules: syntax-only predicate (interfaces with a base list), symbol-free equatable models, invalid input
-/// skipped (DaServerAnalyzer reports it), tracking names on every stage.
+/// For every struct with a [Key] member: the DaServer.Rpc.IKeyed implementation that routes the event to the actor of
+/// that key. Incremental rules: ForAttributeWithMetadataName or syntax-only predicates, symbol-free equatable models,
+/// invalid input skipped (DaServerAnalyzer reports it), tracking names on every stage.
 /// </summary>
 [Generator(LanguageNames.CSharp)]
 public sealed class ContractGenerator : IIncrementalGenerator
@@ -20,22 +21,30 @@ public sealed class ContractGenerator : IIncrementalGenerator
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
         // Distinct: a partial interface declared in several files yields the same model more than once.
-        var contracts = context.SyntaxProvider
-            .CreateSyntaxProvider(static (node, _) => node is InterfaceDeclarationSyntax { BaseList: not null },
-                static (ctx, ct) => ctx.SemanticModel.GetDeclaredSymbol(ctx.Node, ct) is INamedTypeSymbol type ? Shapes.ReadContract(type) : null)
+        var contracts = ContractsWith(context, ServiceAttribute).Collect()
+            .Combine(ContractsWith(context, ActorAttribute).Collect())
+            .Combine(ContractsWith(context, PushAttribute).Collect())
+            .SelectMany(static (all, _) => all.Left.Left.Concat(all.Left.Right).Concat(all.Right).Distinct())
+            .WithTrackingName("Contracts");
+        context.RegisterSourceOutput(contracts, static (spc, contract) =>
+            spc.AddSource($"{HintName(contract.FullName)}.Rpc.g.cs", SourceText.From(Emit(contract), Encoding.UTF8)));
+
+        // Not ForAttributeWithMetadataName: [property: Key] on a positional record parameter is not reported there.
+        var keyedEvents = context.SyntaxProvider
+            .CreateSyntaxProvider(static (node, _) => node is StructDeclarationSyntax or RecordDeclarationSyntax &&
+                                                      ((TypeDeclarationSyntax)node).Modifiers.Any(m => m.ValueText == "partial"),
+                static (ctx, ct) => ctx.SemanticModel.GetDeclaredSymbol(ctx.Node, ct) is INamedTypeSymbol type ? Shapes.ReadKeyedEvent(type) : null)
             .Where(static m => m is not null)
             .Collect()
             .SelectMany(static (all, _) => all.Distinct())
-            .WithTrackingName("Contracts");
-        context.RegisterSourceOutput(contracts, static (spc, contract) =>
-            spc.AddSource($"{HintName(contract!.FullName)}.Rpc.g.cs", SourceText.From(Emit(contract), Encoding.UTF8)));
+            .WithTrackingName("KeyedEvents");
+        context.RegisterSourceOutput(keyedEvents, static (spc, e) =>
+            spc.AddSource($"{HintName((e!.Namespace.Length > 0 ? e.Namespace + "." : "") + e.Name)}.Key.g.cs",
+                SourceText.From(EmitKeyed(e), Encoding.UTF8)));
 
         // Marker so hosts can force-run this assembly's registrations (it only depends on "any contract" + the name).
-        var marker = context.SyntaxProvider
-            .CreateSyntaxProvider(static (node, _) => node is InterfaceDeclarationSyntax { BaseList: not null },
-                static (ctx, ct) => ctx.SemanticModel.GetDeclaredSymbol(ctx.Node, ct) is INamedTypeSymbol type && Shapes.KindOf(type) != null)
-            .Collect()
-            .Select(static (all, _) => all.Contains(true))
+        var marker = contracts.Collect()
+            .Select(static (all, _) => all.Length > 0)
             .Combine(context.CompilationProvider.Select(static (c, _) => Identifier(c.AssemblyName ?? "Contracts")))
             .WithTrackingName("ContractsMarker");
         context.RegisterSourceOutput(marker, static (spc, pair) =>
@@ -47,6 +56,22 @@ public sealed class ContractGenerator : IIncrementalGenerator
                 $"namespace DaServer.Generated\n{{\n    /// <summary>Anchor of this contracts assembly (referenced by generated registration code).</summary>\n    [global::System.ComponentModel.EditorBrowsable(global::System.ComponentModel.EditorBrowsableState.Never)]\n    public static class Contracts_{pair.Right} {{ }}\n}}\n",
                 Encoding.UTF8));
         });
+    }
+
+    private static IncrementalValuesProvider<ContractModel> ContractsWith(IncrementalGeneratorInitializationContext context,
+        string attribute) =>
+        context.SyntaxProvider
+            .ForAttributeWithMetadataName(attribute, static (node, _) => node is InterfaceDeclarationSyntax,
+                static (ctx, _) => Shapes.ReadContract((INamedTypeSymbol)ctx.TargetSymbol))
+            .Where(static m => m is not null)!;
+
+    private static string EmitKeyed(KeyedEventModel e)
+    {
+        var sb = new StringBuilder(Header);
+        if (e.Namespace.Length > 0) sb.Append($"namespace {e.Namespace};\n\n");
+        sb.Append($"{e.Declaration} : global::DaServer.Rpc.IKeyed\n{{\n");
+        sb.Append($"    long global::DaServer.Rpc.IKeyed.EventKey => {e.Member};\n}}\n");
+        return sb.ToString();
     }
 
     private static string Emit(ContractModel c)
@@ -61,7 +86,7 @@ public sealed class ContractGenerator : IIncrementalGenerator
 
     private static void EmitProxy(StringBuilder sb, ContractModel c)
     {
-        bool callback = c.Kind == ContractKind.ClientCallback;
+        bool callback = c.Kind == ContractKind.Push;
         string kind = c.Kind switch
         {
             ContractKind.Actor => "RpcTargetKind.Actor",
@@ -122,9 +147,9 @@ public sealed class ContractGenerator : IIncrementalGenerator
         foreach (var m in c.Methods) sb.Append($"    public const uint {m.Name}Id = 0x{m.Id:X8}u;\n");
 
         sb.Append("\n    [ModuleInitializer]\n    internal static void Register() => RpcRegistry.Register(new RpcContractInfo(\n");
-        sb.Append($"        typeof({c.FullName}), ContractId, RpcContractKind.{c.Kind}, ClientAccess.{c.Access}, Dispatch,\n        [\n");
+        sb.Append($"        typeof({c.FullName}), ContractId, RpcContractKind.{c.Kind}, Dispatch,\n        [\n");
         foreach (var m in c.Methods)
-            sb.Append($"            new RpcMethodInfo({m.Name}Id, \"{m.Name}\", {Bool(m.Shape == MethodShape.OneWay)}),\n");
+            sb.Append($"            new RpcMethodInfo({m.Name}Id, \"{m.Name}\", {Bool(m.Shape == MethodShape.OneWay)}, ClientAccess.{m.Access}),\n");
         sb.Append("        ]));\n\n");
 
         sb.Append("    private static ValueTask Dispatch(object target, uint methodId, ref Reader reader, in CallContext context)\n    {\n");
@@ -148,7 +173,7 @@ public sealed class ContractGenerator : IIncrementalGenerator
             case ContractKind.Actor:
                 sb.Append($"    /// <summary>Proxy to the <see cref=\"{c.Name}\"/> actor with key <paramref name=\"key\"/> (activated on demand).</summary>\n");
                 sb.Append($"    public static {c.ProxyName} {c.Accessor}(this IRpcInvoker cluster, long key) => new(cluster, key);\n");
-                if (c.Access == ClientAccess.SessionKey)
+                if (c.HasSessionMethods)
                 {
                     sb.Append($"\n    /// <summary>Client side: the <see cref=\"{c.Name}\"/> actor bound to this client's session by the server.</summary>\n");
                     sb.Append($"    public static {c.ProxyName} {c.Accessor}(this DaServer.Client.ClusterClient client) => new(client, 0);\n");

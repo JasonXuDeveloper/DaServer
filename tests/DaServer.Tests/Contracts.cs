@@ -15,7 +15,8 @@ namespace DaServer.Tests;
 [NinoType]
 public partial record struct Point(int X, int Y);
 
-public interface ICounter : IActor
+[Actor]
+public interface ICounter
 {
     ValueTask<int> Add(int delta);
     ValueTask<int> Get();
@@ -31,25 +32,29 @@ public interface ICounter : IActor
     ValueTask<long> PublishMany(long otherKey, int count); // keyed events; returns bytes allocated meanwhile
 }
 
-public interface IEcho : IService
+[Service]
+public interface IEcho
 {
     ValueTask<string> Echo(string text);
     ValueTask<ulong> NodeId();
 }
 
-public interface IAuth : IPublicService
+[Service, Client]
+public interface IAuth
 {
     ValueTask<bool> Login(long playerId);
     ValueTask Logout();
 }
 
-public interface IPlayer : ISessionActor
+[Actor, Client]
+public interface IPlayer
 {
     ValueTask<int> AddGold(int amount);
 }
 
 /// <summary>A public chat room: clients choose the room id.</summary>
-public interface IRoom : IPublicActor
+[Actor, Client(AnyKey = true)]
+public interface IRoom
 {
     ValueTask Join();
     void Say(string text);
@@ -57,13 +62,14 @@ public interface IRoom : IPublicActor
 
 /// <summary>Keyed event: delivered to the counter activation of <see cref="Key"/>.</summary>
 [NinoType]
-public readonly partial record struct CounterBumped(long Key, int By) : IKeyedEvent;
+public readonly partial record struct CounterBumped([property: Key] long Key, int By);
 
 /// <summary>Unkeyed event: delivered once to each service implementation handling it.</summary>
 [NinoType]
-public readonly partial record struct Ping(int Id) : IEvent;
+public readonly partial record struct Ping(int Id);
 
-public interface IPlayerClient : IClientCallback
+[Push]
+public interface IPlayerClient
 {
     void OnChat(long from, string text);
     void OnGold(int gold);
@@ -74,9 +80,10 @@ public record struct CounterState(int Value) : IComponent;
 /// <summary>Tag: the counter grows by one every tick (written by the actor, processed by GrowthSystem).</summary>
 public struct Growing : IComponent;
 
-public sealed class Counter : Actor<CounterState>, ICounter, IHandle<CounterBumped>
+public sealed class Counter : Actor<CounterState>, ICounter
 {
-    public ValueTask Handle(CounterBumped e)
+    [Handle]
+    public ValueTask On(CounterBumped e)
     {
         State.Value += e.By;
         return default;
@@ -163,13 +170,14 @@ public static class Observed
     public static readonly ConcurrentQueue<string> Events = new();
 }
 
-public sealed class EchoService : Service, IEcho, IHandle<Ping>
+public sealed class EchoService : Service, IEcho
 {
     public ValueTask<string> Echo(string text) => new(text);
 
     public ValueTask<ulong> NodeId() => new(Cluster.NodeId);
 
-    public ValueTask Handle(Ping e)
+    [Handle]
+    public ValueTask On(Ping e)
     {
         Observed.Events.Enqueue($"echo:{e.Id}:{Cluster.NodeId:x}");
         return default;
@@ -177,9 +185,10 @@ public sealed class EchoService : Service, IEcho, IHandle<Ping>
 }
 
 /// <summary>A second service handling Ping: every handling implementation receives each event once.</summary>
-public sealed class AuditService : Service, IHandle<Ping>
+public sealed class AuditService : Service
 {
-    public ValueTask Handle(Ping e)
+    [Handle]
+    public ValueTask On(Ping e)
     {
         Observed.Events.Enqueue($"audit:{e.Id}");
         return default;
@@ -204,7 +213,7 @@ public sealed class AuthService : Service, IAuth
 
 public record struct Wallet(int Gold) : IComponent;
 
-public sealed class Player : Actor<Wallet>, IPlayer, IHandle<SessionClosed>
+public sealed class Player : Actor<Wallet>, IPlayer
 {
     public ValueTask<int> AddGold(int amount)
     {
@@ -213,7 +222,8 @@ public sealed class Player : Actor<Wallet>, IPlayer, IHandle<SessionClosed>
         return new(gold);
     }
 
-    public ValueTask Handle(SessionClosed e)
+    [Handle]
+    public ValueTask On(SessionClosed e)
     {
         Observed.Events.Enqueue($"closed:{e.Key}");
         return default;

@@ -13,17 +13,17 @@ namespace DaServer.Runtime;
 // MethodId = event id, Key = event key). Routes come from the gossiped handlers in the ClusterView.
 public sealed partial class Node
 {
-    public void Publish<TEvent>(in TEvent e) where TEvent : struct, IEvent =>
+    public void Publish<TEvent>(in TEvent e) where TEvent : struct =>
         Publish(in e, View.EventRoutes(EventType<TEvent>.Id), onlyImplementation: 0);
 
     /// <summary>Deliver <paramref name="e"/> only to the implementation serving actor contract <paramref name="contractId"/>.</summary>
-    internal void PublishTo<TEvent>(uint contractId, in TEvent e) where TEvent : struct, IKeyedEvent
+    internal void PublishTo<TEvent>(uint contractId, in TEvent e) where TEvent : struct, IKeyed
     {
         if (View.TryGetActorImplementation(contractId, out uint implementationId))
             Publish(in e, View.EventRoutes(EventType<TEvent>.Id), implementationId);
     }
 
-    private void Publish<TEvent>(in TEvent e, EventRoute[] routes, uint onlyImplementation) where TEvent : struct, IEvent
+    private void Publish<TEvent>(in TEvent e, EventRoute[] routes, uint onlyImplementation) where TEvent : struct
     {
         if (routes.Length == 0) return;
         long key = EventType<TEvent>.KeyOf(in e);

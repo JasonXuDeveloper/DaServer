@@ -14,8 +14,8 @@ namespace DaServer.Client;
 
 /// <summary>
 /// Client connection to a gateway (game client, bot, tool). Implements <see cref="IRpcInvoker"/>, so the same generated proxies used on
-/// servers work here (the gateway accepts IPublicService, ISessionActor and IPublicActor contracts). Pushes and broadcasts are
-/// dispatched to registered <see cref="IClientCallback"/> implementations.
+/// servers work here (the gateway accepts <c>[Client]</c> methods). Pushes and broadcasts are dispatched to registered
+/// <see cref="PushAttribute">[Push]</see> implementations.
 /// </summary>
 public sealed class ClusterClient : IRpcInvoker, IConnectionHandler, IAsyncDisposable
 {
@@ -52,7 +52,7 @@ public sealed class ClusterClient : IRpcInvoker, IConnectionHandler, IAsyncDispo
     }
 
     /// <summary>Register the implementation of a server-to-client contract.</summary>
-    public void Register<TCallback>(TCallback implementation) where TCallback : class, IClientCallback
+    public void Register<TCallback>(TCallback implementation) where TCallback : class
     {
         var contract = RpcRegistry.GetContract(typeof(TCallback));
         lock (_callbacks) _callbacks[contract.Id] = implementation;
