@@ -98,12 +98,16 @@ public class AllocationTests : ClusterTest
         // A burst can grow a pooled send buffer once (a few KB): anything per call would be >= 24 B.
         Assert.That(allocated / (double)calls, Is.LessThan(8), $"{allocated} B for {calls} client calls");
 
-        // One await per batch (a test-side await allocates in the harness, not in the path under test); the reply
-        // comes after every tip (one ordered stream per direction).
+        // Batches of 500 with one await each: the reply comes after the batch's tips (one ordered stream per direction),
+        // so send backlogs stay as small as during warm-up (a larger burst would grow a pooled buffer to a new size
+        // class once), and the few test-side awaits allocate little in the harness.
         async ValueTask Calls(int count)
         {
-            for (int i = 0; i < count; i++) player.Tip(1);
-            await player.AddGold(0);
+            for (int i = 1; i <= count; i++)
+            {
+                player.Tip(1);
+                if (i % 500 == 0) await player.AddGold(0);
+            }
         }
     }
 
