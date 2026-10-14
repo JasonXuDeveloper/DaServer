@@ -1,6 +1,7 @@
 using System;
 using System.Numerics;
 using System.Runtime.CompilerServices;
+using System.Threading;
 using DaServer.Concurrency;
 
 namespace DaServer.Buffers;
@@ -74,8 +75,18 @@ public static class BufferPool
     }
 
 
+    /// <summary>
+    /// Bytes allocated because a bucket was empty (pool growth, kept for reuse once returned), and for oversized
+    /// rentals. Tests tell growth to a new peak apart from garbage with it.
+    /// </summary>
+    internal static long AllocatedBytes => Volatile.Read(ref _allocatedBytes);
+
+    private static long _allocatedBytes;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
     private static byte[] Allocate(int length)
     {
+        Interlocked.Add(ref _allocatedBytes, length);
         return GC.AllocateUninitializedArray<byte>(length, pinned: true);
     }
 }
