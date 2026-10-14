@@ -271,14 +271,24 @@ public sealed partial class Node : IRpcInvoker, IConnectionHandler
     }
 
     /// <summary>A node named itself on an accepted connection: our replies to it go through our link to it.</summary>
-    private void OnHello(Connection connection, ReadOnlySpan<byte> payload)
+    private void OnHello(Connection connection, ulong nodeId, ReadOnlySpan<byte> payload)
     {
         var reader = new Reader(payload);
         NinoDeserializer.Deserialize(out string host, ref reader);
         NinoDeserializer.Deserialize(out int port, ref reader);
         NinoDeserializer.Deserialize(out long streamId, ref reader);
-        GetLink(host, port).OnInboundHello(connection, streamId);
+        var link = GetLink(host, port);
+        _introduced[nodeId] = link;
+        link.OnInboundHello(connection, streamId);
     }
+
+    /// <summary>
+    /// The link to node <paramref name="nodeId"/>: from the view, or, while gossip has not told us about it yet, from
+    /// its Hello. A gateway's client call can reach a node before that node's view lists the gateway; the Bind and
+    /// pushes it causes must still reach the gateway (ahead of the reply, on the same link).
+    /// </summary>
+    internal PeerLink? LinkTo(ulong nodeId) =>
+        View.TryGetMember(nodeId, out var member) ? GetLink(member) : _introduced.TryGetValue(nodeId, out var link) ? link : null;
 
     /// <summary>Our Hello was answered on <paramref name="connection"/>: the link resumes its stream.</summary>
     private static void OnResume(Connection connection, long received, ReadOnlySpan<byte> payload)

@@ -22,6 +22,7 @@ public sealed partial class Node : ICluster, IAsyncDisposable
 {
     private readonly ConcurrentDictionary<(string Host, int Port), PeerLink> _links = new();
     private PeerLink[] _linkList = [];
+    private readonly ConcurrentDictionary<ulong, PeerLink> _introduced = new(); // node id -> link, from Hellos
     private Shard[] _shards = [];
     private FrozenDictionary<uint, ImplementationInfo> _implementationByContract = FrozenDictionary<uint, ImplementationInfo>.Empty;
     private FrozenDictionary<uint, ImplementationInfo> _implementationById = FrozenDictionary<uint, ImplementationInfo>.Empty;
@@ -262,8 +263,11 @@ public sealed partial class Node : ICluster, IAsyncDisposable
 
         // Calls waiting on a dead member's link fail now instead of at their timeout (its stream cannot resume).
         foreach (var member in View.Members)
-            if (member.Status == MemberStatus.Dead && _links.TryGetValue((member.Host, member.Port), out var link))
-                link.OnPeerDead();
+            if (member.Status == MemberStatus.Dead)
+            {
+                _introduced.TryRemove(member.NodeId, out _);
+                if (_links.TryGetValue((member.Host, member.Port), out var link)) link.OnPeerDead();
+            }
 
         var gateways = new List<ulong>();
         foreach (var member in View.Members)

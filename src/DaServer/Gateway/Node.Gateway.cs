@@ -85,9 +85,9 @@ public sealed partial class Node
         {
             OnGatewayControl(op, session.SessionId, contractId, w.Payload);
         }
-        else if (View.TryGetMember(session.GatewayNodeId, out var gateway))
+        else
         {
-            GetLink(gateway).Send(w.Frame);
+            LinkTo(session.GatewayNodeId)?.Send(w.Frame);
         }
 
         w.Dispose();
@@ -102,7 +102,7 @@ public sealed partial class Node
             {
                 frame.SetHeader(FrameKind.Push, 0, methodId, key);
                 if (gatewayNodeId == Id) DeliverToSession(key, frame.Frame);
-                else if (View.TryGetMember(gatewayNodeId, out var gateway)) GetLink(gateway).Send(frame.Frame);
+                else LinkTo(gatewayNodeId)?.Send(frame.Frame);
                 return;
             }
 
@@ -145,7 +145,7 @@ public sealed partial class Node
         switch (header.MethodId)
         {
             case ControlOp.Hello:
-                OnHello(connection, payload);
+                OnHello(connection, (ulong)header.Key, payload);
                 break;
             case ControlOp.Resume:
                 OnResume(connection, header.Key, payload);
