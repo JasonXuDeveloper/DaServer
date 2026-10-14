@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Linq;
 using System.Threading.Tasks;
 using DaServer.Protocol;
 using DaServer.Rpc;
@@ -6,10 +7,10 @@ using NUnit.Framework;
 
 namespace DaServer.Tests;
 
-/// <summary>Client sessions through a gateway: binding, access control, push and group broadcast.</summary>
-public class GatewayTests
+/// <summary>Client sessions through gateways: binding, access control, push and group broadcast.</summary>
+public class GatewayTests : ClusterTest
 {
-    private sealed class ClientInbox : IPlayerClient
+    private sealed class Inbox : IPlayerClient
     {
         public readonly ConcurrentQueue<string> Chat = new();
         public volatile int Gold;
@@ -19,71 +20,57 @@ public class GatewayTests
         public void OnGold(int gold) => Gold = gold;
     }
 
-    private TestCluster _cluster = null!;
-
-    [SetUp]
-    public void Create() => _cluster = new TestCluster();
-
-    [TearDown]
-    public async Task Dispose() => await _cluster.DisposeAsync();
-
     [Test]
-    public async Task LoginBindsTheSessionAndCallsReachTheBoundActor()
+    public async Task CallsReachTheActorBoundToTheSession()
     {
-        var gateway = await _cluster.StartNode(TestCluster.Options("gw", clientPort: 0));
-        await _cluster.Join("game");
-        await _cluster.Converged(2);
-
-        await using var client = await _cluster.Connect(gateway);
-        var inbox = new ClientInbox();
+        var gateway = await Start("gw", gateway: true);
+        await Start("game");
+        await Converged();
+        var client = await Connect(gateway);
+        var inbox = new Inbox();
         client.Register<IPlayerClient>(inbox);
 
         var unbound = Assert.ThrowsAsync<RpcException>(async () => await client.Player(0).AddGold(1));
         Assert.That(unbound!.Status, Is.EqualTo(RpcStatus.Forbidden), "actor calls need a bound session");
 
         Assert.That(await client.Auth().Login(42), Is.True);
-        Assert.That(await client.Player(999).AddGold(10), Is.EqualTo(10), "the key comes from the binding, not the client");
+        Assert.That(await client.Player(999).AddGold(10), Is.EqualTo(10), "the key comes from the binding");
         Assert.That(await gateway.Player(42).AddGold(0), Is.EqualTo(10));
-
-        await TestCluster.Eventually(() => inbox.Gold == 10, "push to the session was not delivered");
+        await Eventually(() => inbox.Gold == 10, "push to the session was not delivered");
     }
 
     [Test]
-    public async Task ClientsCannotCallNonClientAccessibleContracts()
+    public async Task ClientsCannotCallServerOnlyContracts()
     {
-        var gateway = await _cluster.StartNode(TestCluster.Options("gw", clientPort: 0));
-        await using var client = await _cluster.Connect(gateway);
+        var client = await Connect(await Start("gw", gateway: true));
         var error = Assert.ThrowsAsync<RpcException>(async () => await client.Counter(1).Get());
         Assert.That(error!.Status, Is.EqualTo(RpcStatus.Forbidden));
     }
 
     [Test]
-    public async Task GroupBroadcastReachesEveryMemberOnEveryGateway()
+    public async Task GroupBroadcastReachesMembersOnEveryGateway()
     {
-        var gw1 = await _cluster.StartNode(TestCluster.Options("gw1", clientPort: 0));
-        var gw2 = await _cluster.Join("gw2", clientPort: 0);
-        await _cluster.Join("game");
-        await _cluster.Converged(3);
+        var gateways = new[] { await Start("gw1", gateway: true), await Start("gw2", gateway: true) };
+        await Start("game");
+        await Converged();
 
-        var inboxes = new ClientInbox[4];
-        for (int i = 0; i < inboxes.Length; i++)
+        var members = new Inbox[4];
+        for (int i = 0; i < members.Length; i++)
         {
-            var client = await _cluster.Connect(i % 2 == 0 ? gw1 : gw2);
-            client.Register<IPlayerClient>(inboxes[i] = new ClientInbox());
-            Assert.That(await client.Auth().Login(100 + i), Is.True);
+            var client = await Connect(gateways[i % 2]);
+            client.Register<IPlayerClient>(members[i] = new Inbox());
+            await client.Auth().Login(100 + i);
             await client.Player(0).JoinRoom(7);
         }
 
-        // A non-member does not receive the broadcast.
-        var outsider = await _cluster.Connect(gw1);
-        var outsiderInbox = new ClientInbox();
+        var outsider = await Connect(gateways[0]);
+        var outsiderInbox = new Inbox();
         outsider.Register<IPlayerClient>(outsiderInbox);
-        Assert.That(await outsider.Auth().Login(200), Is.True);
+        await outsider.Auth().Login(200);
 
-        gw1.Player(100).Say(7, "hello");
-        foreach (var inbox in inboxes)
-            await TestCluster.Eventually(() => inbox.Chat.TryPeek(out var m) && m == "100:hello", "broadcast missing");
-        await Task.Delay(100);
+        gateways[0].Player(100).Say(7, "hello");
+        await Eventually(() => members.All(m => m.Chat.Contains("100:hello")), "broadcast missing");
+        await Task.Delay(100); // a stray delivery would arrive about as fast as the ones above
         Assert.That(outsiderInbox.Chat, Is.Empty);
     }
 }

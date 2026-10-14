@@ -23,7 +23,6 @@ public sealed partial class Node : IAsyncDisposable
     private readonly ConcurrentDictionary<string, PeerLink> _links = new();
     private Shard[] _shards = [];
     private FrozenDictionary<uint, ImplementationInfo> _implementationByContract = FrozenDictionary<uint, ImplementationInfo>.Empty;
-    private FrozenDictionary<Type, ImplementationInfo> _implementationByType = FrozenDictionary<Type, ImplementationInfo>.Empty;
     private Listener? _clusterListener;
     private Timer? _maintenance;
     private int _started;
@@ -100,8 +99,13 @@ public sealed partial class Node : IAsyncDisposable
         if (Interlocked.Exchange(ref _started, 2) != 1)
             return;
 
+        // Leave() pushes Leaving to every member directly; give those frames time to be delivered (not a gossip
+        // round: that can be long), and skip the wait when there is nobody to tell.
         Membership.Leave();
-        await Task.Delay(Options.GossipInterval).ConfigureAwait(false); // let the Leaving status propagate
+        bool hasPeers = false;
+        foreach (var member in View.Members) hasPeers |= member.NodeId != Id;
+        if (hasPeers)
+            await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(Options.GossipInterval.TotalMilliseconds, 500))).ConfigureAwait(false);
 
         StopGateway();
         foreach (var shard in _shards) shard.RequestStop();
@@ -120,18 +124,14 @@ public sealed partial class Node : IAsyncDisposable
     internal ImplementationInfo? ImplementationOf(RpcContractInfo contract) =>
         _implementationByContract.TryGetValue(contract.Id, out var impl) ? impl : null;
 
-    internal uint ImplementationIdOf(Actor actor) => _implementationByType[actor.GetType()].Id;
-
     private void ResolveHosting()
     {
         var byContract = new Dictionary<uint, ImplementationInfo>();
-        var byType = new Dictionary<Type, ImplementationInfo>();
         var hosted = new List<ImplementationInfo>();
         foreach (var impl in ServerRegistry.Implementations)
         {
             if (!ServerRegistry.IsHostedBy(impl.Roles, Options.Roles)) continue;
             hosted.Add(impl);
-            byType[impl.Type] = impl;
             foreach (var contractType in impl.Contracts)
             {
                 ServerRegistry.EnsureLoaded(contractType);
@@ -150,7 +150,6 @@ public sealed partial class Node : IAsyncDisposable
         HostedImplementations = hosted.ToArray();
         HostedSystems = systems.ToArray();
         _implementationByContract = byContract.ToFrozenDictionary();
-        _implementationByType = byType.ToFrozenDictionary();
     }
 
     /// <summary>Contracts this node advertises in membership.</summary>
@@ -169,7 +168,19 @@ public sealed partial class Node : IAsyncDisposable
         return (services.ToArray(), actors.ToArray());
     }
 
-    internal int TotalQueueLength()
+    /// <summary>Active actor activations across all shards (approximate, for metrics).</summary>
+    public int ActorCount
+    {
+        get
+        {
+            int total = 0;
+            foreach (var shard in _shards) total += shard.ActorCount;
+            return total;
+        }
+    }
+
+    /// <summary>Messages waiting in all shard mailboxes (approximate, for metrics and load reporting).</summary>
+    public int TotalQueueLength()
     {
         int total = 0;
         foreach (var shard in _shards) total += shard.QueueLength;
@@ -179,8 +190,7 @@ public sealed partial class Node : IAsyncDisposable
     /// <summary>Called by membership when the view changes: shards drop actors they no longer own.</summary>
     internal void OnViewChanged()
     {
-        foreach (var shard in _shards)
-            shard.Post(static s => ((Shard)s!).RebalanceActors(), shard);
+        foreach (var shard in _shards) shard.RequestRebalance();
     }
 
     private void Maintain()

@@ -4,47 +4,39 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
-using DaServer.Buffers;
 using DaServer.Concurrency;
-using DaServer.Protocol;
-using DaServer.Rpc;
-using EasyEcs.Core;
+using EasyEcs;
 using Microsoft.Extensions.Logging;
-using Nino.Core;
 
 namespace DaServer.Runtime;
 
 /// <summary>
-/// A single-threaded shard: lock-free mailbox + an EasyEcs <see cref="EasyEcs.Core.World"/> + timers + fixed-rate tick,
-/// on one dedicated thread.
-/// Every actor method, service method, continuation and ECS system of the shard runs on that thread, so user code
-/// never needs locks. Messages are processed as soon as they arrive (the tick rate only drives ECS systems/timers).
+/// A single-threaded shard: one dedicated thread owning an EasyEcs <see cref="EasyEcs.World"/>, plus the lock-free
+/// inbox other threads post to. Everything else is ECS: actors are entities (mailbox, turn and state components),
+/// directories and timers are singletons, and runtime systems in <see cref="ShardMessages"/> route and run messages.
+/// <para>Loop: on every wake the <see cref="ShardMessages"/> group runs (so messages never wait for a tick); at the
+/// tick rate the default group runs (simulation systems). User code never needs locks.</para>
 /// </summary>
 public sealed class Shard : IDisposable
 {
     [ThreadStatic] private static Shard? _current;
 
-    private readonly MpmcQueue<WorkItem> _mailbox;
+    private readonly MpmcQueue<WorkItem> _inbox;
     private readonly ConcurrentQueue<WorkItem> _overflow = new(); // only used if the bounded ring is full
     private int _overflowCount;
     private readonly ManualResetEventSlim _wake = new(false, spinCount: 0);
     private int _sleeping;
     private readonly Thread _thread;
     private readonly TaskCompletionSource _stopped = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private volatile bool _stopping;
-
+    private volatile bool _stopRequested;
     private readonly long _tickInterval; // Stopwatch ticks
-    private readonly PriorityQueue<TimerEntry, long> _timers = new();
-    private readonly Dictionary<ActorId, ActorSlot> _actors = new();
-    private readonly Dictionary<uint, object> _services = new();
-    private readonly List<ValueTask> _inflight = new();
-    private readonly List<ActorSlot> _activating = new();
+    private int _actorCount;
 
     internal Shard(Node node, int index, int mailboxCapacity, int tickRate)
     {
         Node = node;
         Index = index;
-        _mailbox = new MpmcQueue<WorkItem>(mailboxCapacity);
+        _inbox = new MpmcQueue<WorkItem>(mailboxCapacity);
         _tickInterval = Stopwatch.Frequency / Math.Max(1, tickRate);
         World = new World();
         _thread = new Thread(Run) { IsBackground = true, Name = $"{node.Options.Name}-shard-{index}" };
@@ -58,16 +50,17 @@ public sealed class Shard : IDisposable
     /// <summary>Index of the shard inside its node.</summary>
     public int Index { get; }
 
-    /// <summary>The shard's ECS world (systems registered for this node's roles run every tick).</summary>
+    /// <summary>The shard's ECS world: actors, runtime systems and the node's user systems.</summary>
     public World World { get; }
 
     /// <summary>Number of completed ticks.</summary>
     public long TickCount { get; private set; }
 
-    /// <summary>Messages waiting in the mailbox (approximate).</summary>
-    public int QueueLength => _mailbox.Count + Volatile.Read(ref _overflowCount);
+    /// <summary>Work items waiting in the inbox (approximate, any thread).</summary>
+    public int QueueLength => _inbox.Count + Volatile.Read(ref _overflowCount);
 
-    public int ActorCount => _actors.Count;
+    /// <summary>Active actor activations (approximate, any thread).</summary>
+    public int ActorCount => Volatile.Read(ref _actorCount);
 
     /// <summary>Completes when the shard thread has exited.</summary>
     public Task Stopped => _stopped.Task;
@@ -77,7 +70,7 @@ public sealed class Shard : IDisposable
     /// <summary>Thread-safe: enqueue work and wake the shard if it is sleeping.</summary>
     internal void Post(in WorkItem item)
     {
-        if (!_mailbox.TryEnqueue(item))
+        if (!_inbox.TryEnqueue(item))
         {
             _overflow.Enqueue(item);
             Interlocked.Increment(ref _overflowCount);
@@ -93,18 +86,31 @@ public sealed class Shard : IDisposable
     /// <summary>Run <paramref name="callback"/> on the shard thread after <paramref name="delay"/>. Shard thread only.</summary>
     public void Schedule(TimeSpan delay, Action<object?> callback, object? state)
     {
-        AssertWorldThread();
+        AssertShardThread();
         long due = Stopwatch.GetTimestamp() + (long)(delay.TotalSeconds * Stopwatch.Frequency);
-        _timers.Enqueue(new TimerEntry(callback, state), due);
+        World.GetSingleton<ShardTimers>().Queue.Enqueue(new TimerEntry(callback, state), due);
     }
+
+    /// <summary>Thread-safe: ownership may have changed; actors this node no longer owns are deactivated.</summary>
+    internal void RequestRebalance() =>
+        Post(static s => ((Shard)s!).World.GetSingleton<ShardActivity>().Rebalance = true, this);
 
     internal void RequestStop()
     {
-        _stopping = true;
+        _stopRequested = true;
         _wake.Set();
     }
 
     public void Dispose() => RequestStop();
+
+    /// <summary>Inbox consumer (shard thread only, used by <see cref="InboxSystem"/>).</summary>
+    internal bool TryTake(out WorkItem item)
+    {
+        if (_inbox.TryDequeue(out item)) return true;
+        if (Volatile.Read(ref _overflowCount) == 0 || !_overflow.TryDequeue(out item)) return false;
+        Interlocked.Decrement(ref _overflowCount);
+        return true;
+    }
 
     // ------------------------------------------------------------------ loop
 
@@ -114,20 +120,17 @@ public sealed class Shard : IDisposable
         SynchronizationContext.SetSynchronizationContext(new ShardSynchronizationContext(this));
         try
         {
-            World.AddSingleton<ShardInfo>().Shard = this;
-            foreach (var system in Node.HostedSystems)
-                system.Add(World);
-            CreateServices();
-
+            CreateWorld();
             long nextTick = Stopwatch.GetTimestamp() + _tickInterval;
             while (true)
             {
-                int processed = Drain(4096);
-                SweepInflight();
+                ref var activity = ref World.GetSingleton<ShardActivity>();
+                activity.Processed = 0;
+                if (_stopRequested && !activity.Stopping) activity.Stopping = activity.Rebalance = true;
+
+                World.Update<ShardMessages>();
 
                 long now = Stopwatch.GetTimestamp();
-                RunTimers(now);
-
                 if (now >= nextTick)
                 {
                     TickCount++;
@@ -137,15 +140,12 @@ public sealed class Shard : IDisposable
                         nextTick = now + _tickInterval; // fell far behind: skip instead of a catch-up storm
                 }
 
-                if (_stopping && processed == 0 && _inflight.Count == 0 && _activating.Count == 0)
-                    break;
-
-                if (processed == 0)
+                activity = ref World.GetSingleton<ShardActivity>();
+                Volatile.Write(ref _actorCount, World.GetSingleton<ActorDirectory>().Actors.Count);
+                if (activity.Stopping && IsDrained()) break;
+                if (activity.Processed == 0 && World.GetSingleton<ReadyActors>().Queue.Count == 0)
                     Sleep(nextTick);
             }
-
-            ShutdownActors();
-            World.Dispose();
         }
         catch (Exception e)
         {
@@ -153,19 +153,63 @@ public sealed class Shard : IDisposable
         }
         finally
         {
-            _current = null;
-            _stopped.TrySetResult();
+            try
+            {
+                World.Dispose();
+            }
+            finally
+            {
+                _current = null;
+                _stopped.TrySetResult();
+            }
         }
     }
+
+    /// <summary>Singletons, runtime systems, the node's user systems and service instances.</summary>
+    private void CreateWorld()
+    {
+        World.AddSingleton<ShardContext>() = new ShardContext(this);
+        World.AddSingleton<ShardActivity>();
+        World.AddSingleton<ActorDirectory>() = new ActorDirectory(new Dictionary<ActorId, Entity>());
+        World.AddSingleton<ReadyActors>() = new ReadyActors(new Queue<Entity>());
+        World.AddSingleton<ServiceTasks>() = new ServiceTasks(new List<ValueTask>());
+        World.AddSingleton<ShardTimers>() = new ShardTimers(new PriorityQueue<TimerEntry, long>());
+
+        var services = new Dictionary<uint, object>();
+        foreach (var impl in Node.HostedImplementations)
+        {
+            if (impl.Kind != Rpc.RpcContractKind.Service) continue;
+            var instance = impl.Factory();
+            if (instance is ShardObject shardObject) shardObject.Shard = this;
+            foreach (var contractType in impl.Contracts)
+                services[Rpc.RpcRegistry.GetContract(contractType).Id] = instance;
+        }
+
+        World.AddSingleton<ServiceDirectory>() = new ServiceDirectory(services);
+
+        World.AddSystem<InboxSystem>();
+        World.AddSystem<TurnSystem>();
+        World.AddSystem<MailboxSystem>();
+        World.AddSystem<ServiceTaskSystem>();
+        World.AddSystem<TimerSystem>();
+        World.AddSystem<RebalanceSystem>();
+        foreach (var info in Node.HostedSystems) World.AddSystem(info.Factory());
+    }
+
+    /// <summary>Stopping: every actor retired, no service call running, nothing left in the inbox.</summary>
+    private bool IsDrained() =>
+        World.GetSingleton<ActorDirectory>().Actors.Count == 0 &&
+        World.GetSingleton<ServiceTasks>().Tasks.Count == 0 &&
+        QueueLength == 0;
 
     private void Sleep(long nextTick)
     {
         long wakeAt = nextTick;
-        if (_timers.TryPeek(out _, out long timerDue) && timerDue < wakeAt)
+        if (World.GetSingleton<ShardTimers>().Queue.TryPeek(out _, out long timerDue) && timerDue < wakeAt)
             wakeAt = timerDue;
 
         Interlocked.Exchange(ref _sleeping, 1);
-        if (_mailbox.IsEmpty && Volatile.Read(ref _overflowCount) == 0 && !_stopping)
+        if (QueueLength == 0 && !_stopRequested)
         {
             long remaining = wakeAt - Stopwatch.GetTimestamp();
             if (remaining > 0)
@@ -176,391 +220,10 @@ public sealed class Shard : IDisposable
         _wake.Reset();
     }
 
-    private int Drain(int budget)
-    {
-        int processed = 0;
-        while (processed < budget)
-        {
-            if (!_mailbox.TryDequeue(out var item))
-            {
-                if (Volatile.Read(ref _overflowCount) == 0 || !_overflow.TryDequeue(out item))
-                    break;
-                Interlocked.Decrement(ref _overflowCount);
-            }
-
-            Execute(in item);
-            processed++;
-        }
-
-        return processed;
-    }
-
-    private void Execute(in WorkItem item)
-    {
-        try
-        {
-            switch (item.Kind)
-            {
-                case WorkKind.Dispatch:
-                    Dispatch((FrameWriter)item.A!, (IReplySink?)item.B);
-                    break;
-                case WorkKind.Complete:
-                    var frame = (FrameWriter)item.B!;
-                    try
-                    {
-                        var header = FrameHeader.Read(frame.Frame);
-                        ((IPendingCall)item.A!).Complete(header.Status, frame.Payload);
-                    }
-                    finally
-                    {
-                        frame.Dispose();
-                    }
-
-                    break;
-                case WorkKind.Callback:
-                    if (item.A is SendOrPostCallback post) post(item.B);
-                    else ((Action<object?>)item.A!)(item.B);
-                    break;
-            }
-        }
-        catch (Exception e)
-        {
-            Node.Logger.LogError(e, "Unhandled exception in shard {Shard}", Index);
-        }
-    }
-
-    private void RunTimers(long now)
-    {
-        while (_timers.TryPeek(out var timer, out long due) && due <= now)
-        {
-            _timers.Dequeue();
-            try
-            {
-                timer.Callback(timer.State);
-            }
-            catch (Exception e)
-            {
-                Node.Logger.LogError(e, "Timer callback failed in shard {Shard}", Index);
-            }
-        }
-    }
-
-    private void SweepInflight()
-    {
-        for (int i = _inflight.Count - 1; i >= 0; i--)
-        {
-            var task = _inflight[i];
-            if (!task.IsCompleted) continue;
-
-            _inflight.RemoveAt(i);
-            try
-            {
-                task.GetAwaiter().GetResult(); // returns pooled state machines to their pools
-            }
-            catch (Exception e)
-            {
-                Node.Logger.LogError(e, "Async handler failed in shard {Shard}", Index);
-            }
-        }
-
-        for (int i = _activating.Count - 1; i >= 0; i--)
-        {
-            var slot = _activating[i];
-            if (!slot.Activation.IsCompleted) continue;
-
-            _activating.RemoveAt(i);
-            CompleteActivation(slot);
-        }
-    }
-
-    // ------------------------------------------------------------------ dispatch
-
-    private void Dispatch(FrameWriter frame, IReplySink? sink)
-    {
-        var header = FrameHeader.Read(frame.Frame);
-        uint requestId = header.Kind == FrameKind.Request ? header.RequestId : 0;
-        try
-        {
-            if (!RpcRegistry.TryGetMethod(header.MethodId, out var method))
-            {
-                Reply(sink, requestId, RpcStatus.UnknownMethod, "Unknown method");
-                return;
-            }
-
-            var contract = method.Owner;
-            object? target;
-            if (contract.Kind == RpcContractKind.Actor)
-            {
-                if (!Node.Placement.IsLocalOwner(contract, header.Key))
-                {
-                    Node.Forward(frame, sink); // takes ownership of the frame
-                    frame = null!;
-                    return;
-                }
-
-                var slot = GetOrActivate(contract, header.Key);
-                if (slot == null)
-                {
-                    Reply(sink, requestId, RpcStatus.NotHosted, contract.ToString());
-                    return;
-                }
-
-                if (!slot.Activated)
-                {
-                    slot.Queue(frame, sink); // replayed once OnActivateAsync completes
-                    frame = null!;
-                    return;
-                }
-
-                target = slot.Actor;
-            }
-            else if (!_services.TryGetValue(contract.Id, out target))
-            {
-                Reply(sink, requestId, RpcStatus.NotHosted, contract.ToString());
-                return;
-            }
-
-            Invoke(contract, target!, in header, frame, sink, requestId);
-        }
-        finally
-        {
-            frame?.Dispose();
-        }
-    }
-
-    private void Invoke(RpcContractInfo contract, object target, in FrameHeader header, FrameWriter frame, IReplySink? sink,
-        uint requestId)
-    {
-        var payload = frame.Payload;
-        var caller = default(SessionRef);
-        if ((header.Flags & FrameFlags.HasCaller) != 0)
-        {
-            var callerReader = new Reader(payload);
-            NinoDeserializer.Deserialize(out caller, ref callerReader);
-            payload = payload.Slice(SessionRefSize);
-        }
-
-        var context = new CallContext(sink, requestId, header.MethodId, header.Key, caller);
-        var previous = CallContext.Enter(in context);
-        try
-        {
-            var reader = new Reader(payload);
-            var task = contract.Dispatcher(target, header.MethodId, ref reader, in context);
-            if (task.IsCompleted)
-                task.GetAwaiter().GetResult();
-            else
-                _inflight.Add(task);
-        }
-        catch (Exception e)
-        {
-            context.ReplyException(e);
-        }
-        finally
-        {
-            CallContext.Exit(in previous);
-        }
-    }
-
-    /// <summary>Serialized size of a <see cref="SessionRef"/> caller prefix.</summary>
-    internal static readonly int SessionRefSize = NinoSerializer.Serialize(default(SessionRef)).Length;
-
-    private static void Reply(IReplySink? sink, uint requestId, RpcStatus status, string message)
-    {
-        if (sink == null || requestId == 0) return;
-        var w = FrameWriter.Rent();
-        var nino = w.Nino;
-        NinoSerializer.Serialize(message, ref nino);
-        sink.SendReply(requestId, status, w);
-    }
-
-    // ------------------------------------------------------------------ services & actors
-
-    private void CreateServices()
-    {
-        foreach (var impl in Node.HostedImplementations)
-        {
-            if (impl.Kind != RpcContractKind.Service) continue;
-            var instance = impl.Factory();
-            if (instance is IShardAware aware) aware.Attach(this);
-            foreach (var contractType in impl.Contracts)
-                _services[RpcRegistry.GetContract(contractType).Id] = instance;
-        }
-    }
-
-    private ActorSlot? GetOrActivate(RpcContractInfo contract, long key)
-    {
-        var impl = Node.ImplementationOf(contract);
-        if (impl == null) return null;
-
-        var id = new ActorId(impl.Id, key);
-        if (_actors.TryGetValue(id, out var slot))
-            return slot;
-
-        var actor = (Actor)impl.Factory();
-        actor.Key = key;
-        actor.Shard = this;
-        var entity = World.CreateEntity();
-        entity.Value.AddComponent<ActorLink>().Value.Actor = actor;
-        actor.Entity = entity;
-
-        slot = new ActorSlot(id, actor);
-        _actors.Add(id, slot);
-
-        ValueTask activation;
-        try
-        {
-            activation = actor.OnActivateAsync();
-        }
-        catch (Exception e)
-        {
-            activation = ValueTask.FromException(e);
-        }
-
-        slot.Activation = activation;
-        if (activation.IsCompleted)
-            CompleteActivation(slot);
-        else
-            _activating.Add(slot);
-        return slot;
-    }
-
-    private void CompleteActivation(ActorSlot slot)
-    {
-        try
-        {
-            slot.Activation.GetAwaiter().GetResult();
-        }
-        catch (Exception e)
-        {
-            Node.Logger.LogError(e, "Activation of {Actor} {Key} failed", slot.Actor.GetType().Name, slot.Id.Key);
-            RemoveActivation(slot);
-            slot.FailPending(this, RpcStatus.Error, "Activation failed: " + e.Message);
-            return;
-        }
-
-        slot.Activated = true;
-        slot.ReplayPending(this);
-    }
-
-    internal void ReplayDispatch(FrameWriter frame, IReplySink? sink) => Dispatch(frame, sink);
-
-    /// <summary>Deactivate an actor (OnDeactivateAsync, then remove its entity). Shard thread only.</summary>
-    public async ValueTask DeactivateAsync(Actor actor)
-    {
-        AssertWorldThread();
-        var id = new ActorId(Node.ImplementationIdOf(actor), actor.Key);
-        if (!_actors.TryGetValue(id, out var slot) || slot.Actor != actor) return;
-
-        _actors.Remove(id);
-        try
-        {
-            await actor.OnDeactivateAsync();
-        }
-        finally
-        {
-            World.DestroyEntity(actor.Entity);
-        }
-    }
-
-    private void RemoveActivation(ActorSlot slot)
-    {
-        _actors.Remove(slot.Id);
-        World.DestroyEntity(slot.Actor.Entity);
-    }
-
-    /// <summary>Deactivate actors this node no longer owns (membership changed). Shard thread only.</summary>
-    internal void RebalanceActors()
-    {
-        List<Actor>? moved = null;
-        foreach (var slot in _actors.Values)
-        {
-            if (slot.Activated && !Node.Placement.IsLocalOwner(slot.Id.ImplementationId, slot.Id.Key))
-                (moved ??= new()).Add(slot.Actor);
-        }
-
-        if (moved == null) return;
-        foreach (var actor in moved)
-            _inflight.Add(DeactivateAsync(actor));
-    }
-
-    private void ShutdownActors()
-    {
-        var actors = new List<Actor>();
-        foreach (var slot in _actors.Values)
-            if (slot.Activated) actors.Add(slot.Actor);
-
-        foreach (var actor in actors)
-        {
-            var task = DeactivateAsync(actor);
-            while (!task.IsCompleted)
-            {
-                if (Drain(256) == 0) Thread.Yield();
-            }
-
-            try
-            {
-                task.GetAwaiter().GetResult();
-            }
-            catch (Exception e)
-            {
-                Node.Logger.LogError(e, "Deactivation of {Actor} {Key} failed", actor.GetType().Name, actor.Key);
-            }
-        }
-    }
-
     [Conditional("DEBUG")]
-    private void AssertWorldThread()
+    private void AssertShardThread()
     {
         if (_current != this)
             throw new InvalidOperationException($"Shard {Index} API called from outside its thread");
     }
-
-    private readonly record struct TimerEntry(Action<object?> Callback, object? State);
-
-    internal readonly record struct ActorId(uint ImplementationId, long Key);
-
-    private sealed class ActorSlot(ActorId id, Actor actor)
-    {
-        public readonly ActorId Id = id;
-        public readonly Actor Actor = actor;
-        public ValueTask Activation;
-        public bool Activated;
-        private Queue<(FrameWriter Frame, IReplySink? Sink)>? _pending;
-
-        public void Queue(FrameWriter frame, IReplySink? sink) => (_pending ??= new()).Enqueue((frame, sink));
-
-        public void ReplayPending(Shard shard)
-        {
-            if (_pending == null) return;
-            while (_pending.TryDequeue(out var item))
-                shard.ReplayDispatch(item.Frame, item.Sink);
-            _pending = null;
-        }
-
-        public void FailPending(Shard shard, RpcStatus status, string message)
-        {
-            if (_pending == null) return;
-            while (_pending.TryDequeue(out var item))
-            {
-                var header = FrameHeader.Read(item.Frame.Frame);
-                item.Frame.Dispose();
-                if (header.Kind == FrameKind.Request)
-                    Reply(item.Sink, header.RequestId, status, message);
-            }
-
-            _pending = null;
-        }
-    }
-}
-
-/// <summary>Singleton component giving ECS systems access to their shard.</summary>
-public struct ShardInfo : EasyEcs.Core.Components.ISingletonComponent
-{
-    public Shard Shard;
-}
-
-/// <summary>Implemented by services that want their shard injected at creation.</summary>
-public interface IShardAware
-{
-    void Attach(Shard shard);
 }

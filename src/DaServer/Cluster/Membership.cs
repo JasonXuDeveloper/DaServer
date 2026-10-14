@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Net;
+using System.Net.Sockets;
 using System.Threading;
 using DaServer.Buffers;
 using DaServer.Protocol;
@@ -50,6 +52,10 @@ internal sealed class Membership : IDisposable
     private long _version;
     private Timer? _timer;
     private bool _changed;
+    private List<(string Host, int Port)>? _seeds;
+    private long _seedsResolvedAt;
+
+    private static readonly TimeSpan SeedRefresh = TimeSpan.FromSeconds(5);
 
     private sealed class Entry(MemberInfo info, long lastProgress)
     {
@@ -133,9 +139,8 @@ internal sealed class Membership : IDisposable
 
             // Alone (or still joining): keep contacting the seeds until someone answers.
             if (targets.Count == 0 || View.UpMembers.Length <= 1)
-                foreach (var seed in _node.Options.Seeds)
-                    if (TryParseEndPoint(seed, out var host, out var port) && !IsSelf(host, port))
-                        SendGossip(_node.GetLink(host, port), ControlOp.Gossip);
+                foreach (var (host, port) in SeedEndPoints())
+                    SendGossip(_node.GetLink(host, port), ControlOp.Gossip);
         }
         catch (Exception e)
         {
@@ -320,6 +325,44 @@ internal sealed class Membership : IDisposable
             if (!b.TryGetMember(m.NodeId, out var other) || other.Status != MemberStatus.Up)
                 return false;
         return true;
+    }
+
+    /// <summary>
+    /// Seed endpoints with DNS names expanded to every address (a Kubernetes headless service resolves to all pods),
+    /// minus this node. Cached for <see cref="SeedRefresh"/> so a node waiting alone does not hammer DNS; only used
+    /// while the node is alone, never on a hot path.
+    /// </summary>
+    private List<(string Host, int Port)> SeedEndPoints()
+    {
+        long now = Stopwatch.GetTimestamp();
+        if (_seeds != null && Stopwatch.GetElapsedTime(_seedsResolvedAt, now) < SeedRefresh) return _seeds;
+
+        var seeds = new List<(string, int)>();
+        foreach (var seed in _node.Options.Seeds)
+        {
+            if (!TryParseEndPoint(seed, out var host, out var port)) continue;
+            if (IPAddress.TryParse(host, out _) || host == "localhost")
+            {
+                if (!IsSelf(host, port)) seeds.Add((host, port));
+                continue;
+            }
+
+            try
+            {
+                foreach (var address in Dns.GetHostAddresses(host))
+                {
+                    var ip = (address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address).ToString();
+                    if (!IsSelf(ip, port)) seeds.Add((ip, port));
+                }
+            }
+            catch (SocketException e)
+            {
+                _node.Logger.LogDebug("Seed {Seed} does not resolve yet: {Error}", seed, e.SocketErrorCode);
+            }
+        }
+
+        _seedsResolvedAt = now;
+        return _seeds = seeds;
     }
 
     private bool IsSelf(string host, int port) =>

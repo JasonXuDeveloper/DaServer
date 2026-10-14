@@ -1,115 +1,83 @@
 using System.Linq;
 using System.Threading.Tasks;
+using DaServer.Buffers;
+using DaServer.Protocol;
 using DaServer.Rpc;
 using NUnit.Framework;
 
 namespace DaServer.Tests;
 
 /// <summary>Multi-node behaviour over real loopback TCP: discovery, routing, single activation, failover.</summary>
-public class ClusterTests
+public class ClusterTests : ClusterTest
 {
-    private TestCluster _cluster = null!;
-
-    [SetUp]
-    public void Create() => _cluster = new TestCluster();
-
-    [TearDown]
-    public async Task Dispose() => await _cluster.DisposeAsync();
+    [Test]
+    public async Task NodesDiscoverEachOtherThroughASeed() => await StartCluster(3);
 
     [Test]
-    public async Task NodesDiscoverEachOtherThroughASeed()
+    public async Task EveryNodeRoutesAKeyToTheSameActivation()
     {
-        await _cluster.StartNode(TestCluster.Options("a"));
-        await _cluster.Join("b");
-        await _cluster.Join("c");
-        await _cluster.Converged(3);
-    }
-
-    [Test]
-    public async Task EveryNodeRoutesAKeyToTheSameSingleActivation()
-    {
-        var a = await _cluster.StartNode(TestCluster.Options("a"));
-        var b = await _cluster.Join("b");
-        var c = await _cluster.Join("c");
-        await _cluster.Converged(3);
-
-        var nodes = new[] { a, b, c };
+        var nodes = await StartCluster(3);
         for (long key = 1; key <= 30; key++)
         {
-            // Increment the same key from every node: a single activation must see all increments.
             foreach (var node in nodes) await node.Counter(key).Add(1);
-            Assert.That(await a.Counter(key).Get(), Is.EqualTo(3), $"key {key} has more than one activation");
+            Assert.That(await nodes[0].Counter(key).Get(), Is.EqualTo(3), $"key {key} has more than one activation");
         }
 
-        // Keys are spread over the cluster (rendezvous placement).
-        var owners = Enumerable.Range(1, 30).Select(k => a.View.ActorOwner(CounterRpc.ContractId, k)!.NodeId).Distinct();
-        Assert.That(owners.Count(), Is.EqualTo(3));
+        var owners = Enumerable.Range(1, 30).Select(k => nodes[0].View.ActorOwner(CounterRpc.ContractId, k)!.NodeId);
+        Assert.That(owners.Distinct().Count(), Is.EqualTo(3), "keys spread over the cluster");
     }
 
     [Test]
-    public async Task CrossNodeActorToActorCalls()
+    public async Task ActorsCallActorsOnOtherNodes()
     {
-        var a = await _cluster.StartNode(TestCluster.Options("a"));
-        await _cluster.Join("b");
-        await _cluster.Converged(2);
-
-        // Find two keys owned by different nodes.
-        long k1 = 1, k2 = 2;
-        while (a.View.ActorOwner(CounterRpc.ContractId, k1)!.NodeId == a.View.ActorOwner(CounterRpc.ContractId, k2)!.NodeId) k2++;
-
-        Assert.That(await a.Counter(k1).AddVia(k2, 5), Is.EqualTo(5));
-        Assert.That(await a.Counter(k2).Get(), Is.EqualTo(5));
+        var (a, b) = await StartPair();
+        long onA = KeyOwnedBy(a, CounterRpc.ContractId), onB = KeyOwnedBy(b, CounterRpc.ContractId);
+        Assert.That(await a.Counter(onA).AddVia(onB, 5), Is.EqualTo(5));
+        Assert.That(await b.Counter(onB).Get(), Is.EqualTo(5));
     }
 
     [Test]
     public async Task ServicesPreferTheLocalNode()
     {
-        var a = await _cluster.StartNode(TestCluster.Options("a"));
-        var b = await _cluster.Join("b");
-        await _cluster.Converged(2);
+        var (a, b) = await StartPair();
         Assert.That(await a.Echo().NodeId(), Is.EqualTo(a.Id));
         Assert.That(await b.Echo().NodeId(), Is.EqualTo(b.Id));
     }
 
     [Test]
-    public async Task RolesRestrictWhereImplementationsRun()
+    public async Task MembersAdvertiseTheContractsTheyHost()
     {
-        // "gateway" hosts nothing role-restricted... all test implementations are unrestricted, so check advertising:
-        var a = await _cluster.StartNode(TestCluster.Options("a"));
-        await _cluster.Join("b", roles: "gateway");
-        await _cluster.Converged(2);
-        Assert.That(a.View.UpMembers.All(m => m.Actors.Any(x => x.ContractId == CounterRpc.ContractId)), Is.True);
+        var (a, _) = await StartPair();
+        Assert.That(a.View.UpMembers.All(m => m.Actors.Any(x => x.ContractId == CounterRpc.ContractId)));
     }
 
     [Test]
     public async Task KeysMoveToSurvivorsWhenANodeLeaves()
     {
-        var a = await _cluster.StartNode(TestCluster.Options("a"));
-        var b = await _cluster.Join("b");
-        await _cluster.Converged(2);
-
-        long key = 1;
-        while (a.View.ActorOwner(CounterRpc.ContractId, key)!.NodeId != b.Id) key++;
+        var (a, b) = await StartPair();
+        long key = KeyOwnedBy(b, CounterRpc.ContractId);
         Assert.That(await a.Counter(key).Add(7), Is.EqualTo(7));
 
-        await _cluster.Stop(b); // graceful: Leaving is gossiped, b deactivates its actors
-        await TestCluster.Eventually(() => a.View.UpMembers.Length == 1, "a still sees b as Up");
+        await Stop(b); // graceful: Leaving is gossiped, b deactivates its actors
+        await Eventually(() => a.View.UpMembers.Length == 1, "a still sees b as Up");
 
-        // The key reactivates on a (in-memory state is gone: persist in OnDeactivateAsync/OnActivateAsync).
+        // Reactivated on a; in-memory state is gone (persist it in OnDeactivateAsync / load in OnActivateAsync).
         Assert.That(await a.Counter(key).Add(1), Is.EqualTo(1));
         Assert.That(a.View.ActorOwner(CounterRpc.ContractId, key)!.NodeId, Is.EqualTo(a.Id));
     }
 
     [Test]
-    public async Task CallsToAnUnhostedContractFail()
+    public async Task CallsToUnhostedContractsFailFast()
     {
-        var a = await _cluster.StartNode(TestCluster.Options("a"));
-        // IPlayerClient is a client callback: no node hosts it, routing a call must fail fast, not hang.
+        var a = await Start("a");
         var error = Assert.ThrowsAsync<RpcException>(async () =>
-        {
-            var frame = Buffers.FrameWriter.Rent();
-            await a.Call<int>(frame, PlayerClientRpc.OnGoldId, RpcTargetKind.Service, 0);
-        });
-        Assert.That(error!.Status, Is.EqualTo(Protocol.RpcStatus.NotHosted));
+            await a.Call<int>(FrameWriter.Rent(), PlayerClientRpc.OnGoldId, RpcTargetKind.Service, 0));
+        Assert.That(error!.Status, Is.EqualTo(RpcStatus.NotHosted));
+    }
+
+    private async Task<(Runtime.Node A, Runtime.Node B)> StartPair()
+    {
+        var nodes = await StartCluster(2);
+        return (nodes[0], nodes[1]);
     }
 }

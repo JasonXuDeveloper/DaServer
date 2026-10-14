@@ -209,12 +209,17 @@ public abstract class PendingCallBase : IPendingCall
     {
         var context = _capturedContext;
         if (context != null)
-            context.Post(static s => ((Action)s!)(), (Action)(() => continuation(state))); // foreign UI-style contexts only
+            PostTo(context, continuation, state); // foreign UI-style contexts only
         else if (CallerShard != null)
             continuation(state); // completed on the caller's shard thread
         else
             ThreadPool.UnsafeQueueUserWorkItem(continuation, state, preferLocal: false);
     }
+
+    // Separate method: a lambda capturing parameters allocates its closure on entry to the method that declares it,
+    // even on branches that never use it; here that cost stays on this rare path.
+    private static void PostTo(SynchronizationContext context, Action<object?> continuation, object? state) =>
+        context.Post(static s => ((Action)s!)(), (Action)(() => continuation(state)));
 
     protected ValueTaskSourceStatus Status(short token)
     {
