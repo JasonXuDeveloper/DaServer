@@ -24,11 +24,18 @@ public class GeneratorTests
 
     private static readonly CSharpParseOptions ParseOptions = new(LanguageVersion.Latest);
 
-    private static CSharpCompilation Compile(params SyntaxTree[] trees) => CSharpCompilation.Create("GeneratorTest", trees,
-        System.AppDomain.CurrentDomain.GetAssemblies()
-            .Where(a => !a.IsDynamic && !string.IsNullOrEmpty(a.Location))
-            .Select(a => MetadataReference.CreateFromFile(a.Location)),
-        new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, nullableContextOptions: NullableContextOptions.Enable));
+    private static CSharpCompilation Compile(params SyntaxTree[] trees) => Compile(OutputKind.DynamicallyLinkedLibrary, trees);
+
+    private static CSharpCompilation Compile(OutputKind kind, params SyntaxTree[] trees) => CSharpCompilation.Create("GeneratorTest", trees,
+        References, new CSharpCompilationOptions(kind, nullableContextOptions: NullableContextOptions.Enable));
+
+    /// <summary>The framework plus every assembly next to the tests (DaServer, Hosting, Nino, EasyEcs...).</summary>
+    private static readonly MetadataReference[] References =
+        ((string)System.AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!).Split(System.IO.Path.PathSeparator)
+        .Concat(System.IO.Directory.GetFiles(System.AppContext.BaseDirectory, "*.dll"))
+        .GroupBy(System.IO.Path.GetFileName).Select(g => g.First())
+        .Where(path => !System.IO.Path.GetFileName(path).StartsWith("DaServer.Tests"))
+        .Select(path => (MetadataReference)MetadataReference.CreateFromFile(path)).ToArray();
 
     private static SyntaxTree Parse(string source) => CSharpSyntaxTree.ParseText(Usings + source, ParseOptions);
 
@@ -100,6 +107,22 @@ public class GeneratorTests
     }
 
     [Test]
+    public void NodeExecutablesGetAnEntryPointUnlessTheyWriteOne()
+    {
+        const string node = "public interface IShop : IService { ValueTask<int> Price(int n); } public sealed class Shop : Service, IShop { public ValueTask<int> Price(int n) => new(n); }";
+        Driver().RunGeneratorsAndUpdateCompilation(Compile(OutputKind.ConsoleApplication, Parse(node)), out var generated, out _);
+        Assert.That(generated.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error), Is.Empty);
+        Assert.That(generated.GetEntryPoint(default)?.ContainingType.ToDisplayString(), Is.EqualTo("DaServer.Generated.NodeProgram"));
+
+        var own = Parse(node + " public static class Program { public static void Main() { } }");
+        Driver().RunGeneratorsAndUpdateCompilation(Compile(OutputKind.ConsoleApplication, own), out var custom, out _);
+        Assert.That(custom.GetEntryPoint(default)?.ContainingType.Name, Is.EqualTo("Program"), "a written entry point wins");
+
+        Driver().RunGeneratorsAndUpdateCompilation(Compile(Parse(node)), out var library, out _);
+        Assert.That(library.SyntaxTrees.Any(t => t.FilePath.EndsWith("DaServer.Program.g.cs")), Is.False, "libraries get none");
+    }
+
+    [Test]
     public void UnrelatedEditsHitTheCache()
     {
         var contracts = Parse("public interface IShop : IService { ValueTask<int> Price(int n); } public sealed class Shop : Service, IShop { public ValueTask<int> Price(int n) => new(n); }");
@@ -111,7 +134,7 @@ public class GeneratorTests
         foreach (var result in driver.GetRunResult().Results)
         foreach (var (name, steps) in result.TrackedSteps)
         {
-            if (name is not ("Contracts" or "HostedTypes")) continue;
+            if (name is not ("Contracts" or "HostedTypes" or "UserEntryPoint")) continue;
             Assert.That(steps.SelectMany(s => s.Outputs).Select(o => o.Reason),
                 Is.All.AnyOf(IncrementalStepRunReason.Cached, IncrementalStepRunReason.Unchanged), name);
         }

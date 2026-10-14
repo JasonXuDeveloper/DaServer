@@ -18,6 +18,7 @@
 
     <ItemGroup>
         <ProjectReference Include="..\..\src\DaServer\DaServer.csproj" />
+        <ProjectReference Include="..\..\src\DaServer.Hosting\DaServer.Hosting.csproj" />
         <ProjectReference Include="..\..\src\DaServer.Generator\DaServer.Generator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="true" />
         <ProjectReference Include="$(EasyEcsGeneratorProject)" OutputItemType="Analyzer" ReferenceOutputAssembly="false" Condition="Exists('$(EasyEcsGeneratorProject)')" />
     </ItemGroup>

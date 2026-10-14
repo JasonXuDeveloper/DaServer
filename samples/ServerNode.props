@@ -1,5 +1,6 @@
 <Project>
-    <!-- Shared by the sample's node projects: a node hosts every actor, service and system compiled into its project. -->
+    <!-- Shared by the sample's node projects: a node hosts every actor, service and system compiled into its project.
+         No Program.cs: the DaServer generator emits the entry point (Generic Host + AddDaServer). -->
 
     <PropertyGroup>
         <OutputType>Exe</OutputType>
@@ -16,7 +17,6 @@
         <ProjectReference Include="$(MSBuildThisFileDirectory)Sample.Contracts\Sample.Contracts.csproj" />
         <ProjectReference Include="$(MSBuildThisFileDirectory)..\src\DaServer.Generator\DaServer.Generator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
         <ProjectReference Include="$(EasyEcsGeneratorProject)" OutputItemType="Analyzer" ReferenceOutputAssembly="false" Condition="Exists('$(EasyEcsGeneratorProject)')" />
-        <Compile Include="$(MSBuildThisFileDirectory)NodeProgram.cs" Link="Program.cs" />
         <None Update="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
     </ItemGroup>
 </Project>
