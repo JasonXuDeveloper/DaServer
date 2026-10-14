@@ -88,8 +88,7 @@ public sealed class ClusterClient : IRpcInvoker, IConnectionHandler, IAsyncDispo
 
     private async ValueTask ConnectToAsync(string host, int port, CancellationToken cancellationToken)
     {
-        EndPoint endPoint = IPAddress.TryParse(host, out var ip) ? new IPEndPoint(ip, port) : new DnsEndPoint(host, port);
-        var connection = await Connection.ConnectAsync(endPoint, this, ConnectionOptions.ForClients(), cancellationToken)
+        var connection = await Connection.ConnectAsync(host, port, this, ConnectionOptions.ForClients(), cancellationToken)
             .ConfigureAwait(false);
         _connection = connection;
         GC.KeepAlive(Sweeper);

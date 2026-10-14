@@ -105,6 +105,15 @@ public sealed class Connection
     /// <summary>Bytes queued but not yet handed to the socket.</summary>
     public int PendingSendBytes => Volatile.Read(ref _pendingLength);
 
+    /// <summary>
+    /// Connect to a host name or address. A name is connected through every address it resolves to ("localhost" is ::1
+    /// first on many hosts while the peer may listen on IPv4 only, or the reverse), not only the first one.
+    /// </summary>
+    public static ValueTask<Connection> ConnectAsync(string host, int port, IConnectionHandler handler,
+        ConnectionOptions? options = null, CancellationToken cancellationToken = default) =>
+        ConnectAsync(IPAddress.TryParse(host, out var ip) ? new IPEndPoint(ip, port) : new DnsEndPoint(host, port),
+            handler, options, cancellationToken);
+
     public static async ValueTask<Connection> ConnectAsync(EndPoint endPoint, IConnectionHandler handler,
         ConnectionOptions? options = null, CancellationToken cancellationToken = default)
     {
