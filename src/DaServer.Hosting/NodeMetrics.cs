@@ -27,6 +27,8 @@ public static class NodeMetrics
             description: "Connected client sessions");
         Meter.CreateObservableCounter("daserver.shard.rejected", () => Sample(static n => n.Rejected),
             description: "Calls and events refused because a shard or actor mailbox was full");
+        Meter.CreateObservableCounter("daserver.shard.expired", () => Sample(static n => n.Expired),
+            description: "Requests dropped unrun because their caller had already timed out");
     }
 
     public static void Track(Node node)

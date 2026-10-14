@@ -155,7 +155,8 @@ public sealed class ClusterClient : IRpcInvoker, IConnectionHandler, IAsyncDispo
                 throw new RpcException(RpcStatus.Disconnected);
 
             uint requestId = call != null ? _pending.Register(call, (int)CallTimeout.TotalMilliseconds) : 0;
-            request.SetHeader(call != null ? requestKind : FrameKind.OneWay, requestId, methodId, key);
+            request.SetHeader(call != null ? requestKind : FrameKind.OneWay, requestId, methodId, key,
+                call != null && requestKind == FrameKind.Request ? FrameHeader.EncodeBudget((long)CallTimeout.TotalMilliseconds) : RpcStatus.Ok);
             if (!connection.Send(request.Frame) && call != null)
                 _pending.Take(requestId)?.Fail(new RpcException(RpcStatus.Disconnected));
         }

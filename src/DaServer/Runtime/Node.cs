@@ -238,6 +238,17 @@ public sealed partial class Node : ICluster, IAsyncDisposable
         }
     }
 
+    /// <summary>Requests dropped unrun since start because their caller had already timed out.</summary>
+    public long Expired
+    {
+        get
+        {
+            long total = 0;
+            foreach (var shard in _shards) total += shard.Expired;
+            return total;
+        }
+    }
+
     private ulong[] _gateways = [];
 
     /// <summary>

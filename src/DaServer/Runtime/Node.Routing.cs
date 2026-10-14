@@ -72,8 +72,19 @@ public sealed partial class Node : IRpcInvoker, IConnectionHandler
             if (relaySink != null && relayRequestId != 0)
                 call = RelayCall.Rent(relaySink, relayRequestId);
 
-            uint requestId = call != null ? Pending.Register(call, (int)Options.CallTimeout.TotalMilliseconds, link) : 0;
-            frame.SetHeader(call != null ? FrameKind.Request : FrameKind.OneWay, requestId, methodId, key, flags: flags, hops: hops);
+            uint requestId = 0;
+            var budget = RpcStatus.Ok;
+            if (call != null)
+            {
+                // The request is worth running until its first caller gives up (a relayed call keeps the deadline it
+                // arrived with); the remaining time travels with it.
+                long now = Environment.TickCount64;
+                if (frame.Deadline == 0) frame.Deadline = now + (long)Options.CallTimeout.TotalMilliseconds;
+                requestId = Pending.Register(call, (int)Math.Max(1, frame.Deadline - now), link);
+                budget = FrameHeader.EncodeBudget(frame.Deadline - now);
+            }
+
+            frame.SetHeader(call != null ? FrameKind.Request : FrameKind.OneWay, requestId, methodId, key, budget, flags, hops);
 
             if (local)
             {
@@ -214,7 +225,9 @@ public sealed partial class Node : IRpcInvoker, IConnectionHandler
         }
 
         // Actors not owned/hosted here are forwarded by the shard (it re-checks ownership on its own thread).
-        Admit(SelectShard(contract, header.Key), FrameWriter.CopyOf(frame), sink);
+        var copy = FrameWriter.CopyOf(frame);
+        copy.Deadline = header.DeadlineOnArrival();
+        Admit(SelectShard(contract, header.Key), copy, sink);
     }
 
     /// <summary>Complete an outgoing call: on the caller's shard when it has one, inline otherwise.</summary>

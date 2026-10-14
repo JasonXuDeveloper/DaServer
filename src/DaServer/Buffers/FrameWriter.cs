@@ -19,6 +19,12 @@ public sealed class FrameWriter : INinoBufferWriter, IDisposable
     private byte[] _buffer = Array.Empty<byte>();
     private int _pos;
 
+    /// <summary>
+    /// When the request in this frame is no longer worth running (<see cref="Environment.TickCount64"/>; 0 = never):
+    /// its caller has given up. Set where the request enters this process, checked right before it runs.
+    /// </summary>
+    internal long Deadline;
+
     private FrameWriter()
     {
     }
@@ -29,6 +35,7 @@ public sealed class FrameWriter : INinoBufferWriter, IDisposable
         var w = Pool.Rent();
         w._buffer = BufferPool.Rent(Math.Max(sizeHint, FrameHeader.Size + 16));
         w._pos = FrameHeader.Size;
+        w.Deadline = 0;
         return w;
     }
 
@@ -39,6 +46,7 @@ public sealed class FrameWriter : INinoBufferWriter, IDisposable
         w._buffer = BufferPool.Rent(Math.Max(frame.Length, FrameHeader.Size));
         frame.CopyTo(w._buffer);
         w._pos = frame.Length;
+        w.Deadline = 0;
         return w;
     }
 
