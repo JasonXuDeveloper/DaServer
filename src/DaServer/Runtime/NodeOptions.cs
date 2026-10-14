@@ -42,6 +42,9 @@ public sealed class NodeOptions
     /// <summary>Seed endpoints "host:port" (DNS names resolve to every address, e.g. a Kubernetes headless service).</summary>
     public List<string> Seeds { get; set; } = new();
 
+    /// <summary>Largest frame a game client may send (gateway); larger frames close the session.</summary>
+    public int MaxClientFrameSize { get; set; } = 64 * 1024;
+
     /// <summary>Number of shards (single-threaded shards); default one per core.</summary>
     public int Shards { get; set; } = Environment.ProcessorCount;
 

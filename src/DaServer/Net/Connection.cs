@@ -39,6 +39,9 @@ public sealed class ConnectionOptions
     /// </summary>
     public int MaxPendingSendBytes { get; set; } = 4 * 1024 * 1024;
 
+    /// <summary>Largest frame accepted from the peer (a larger length prefix closes the connection).</summary>
+    public int MaxFrameSize { get; set; } = FrameHeader.MaxFrameSize;
+
     /// <summary>Initial pending-send batch buffer size.</summary>
     public int SendBufferSize { get; set; } = 16 * 1024;
 
@@ -63,7 +66,11 @@ public sealed class ConnectionOptions
 /// </summary>
 public sealed class Connection
 {
+    private static readonly InvalidOperationException SlowConsumer =
+        new("Send backlog exceeded MaxPendingSendBytes (slow consumer)");
+
     private static long _nextId;
+    private int _overflowed;
 
     private readonly Socket _socket;
     private readonly IConnectionHandler _handler;
@@ -162,7 +169,9 @@ public sealed class Connection
 
         if (overflow)
         {
-            Close(new InvalidOperationException("Send backlog exceeded MaxPendingSendBytes (slow consumer)"));
+            // Closed off the caller's thread: a fan-out holding a group's lock must not run the close callback inline.
+            if (Interlocked.Exchange(ref _overflowed, 1) == 0)
+                ThreadPool.UnsafeQueueUserWorkItem(static c => c.Close(SlowConsumer), this, preferLocal: false);
             return false;
         }
 
@@ -350,7 +359,7 @@ public sealed class Connection
         {
             var span = new ReadOnlySpan<byte>(buffer, offset, filled - offset);
             var header = FrameHeader.Read(span);
-            if (header.Length < FrameHeader.Size || header.Length > FrameHeader.MaxFrameSize)
+            if (header.Length < FrameHeader.Size || header.Length > _options.MaxFrameSize)
                 throw new InvalidOperationException("Invalid frame length " + header.Length);
 
             if (header.Length > span.Length)
