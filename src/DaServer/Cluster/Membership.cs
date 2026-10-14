@@ -21,17 +21,22 @@ internal static class ControlOp
     /// <summary>Pull half of push-pull gossip: payload = MemberInfo[].</summary>
     public const uint GossipReply = 2;
 
-    /// <summary>Gateway: bind a session to an actor key (Key = session id, payload = long actor key).</summary>
-    public const uint BindSession = 10;
+    // Gateway operations: Key = session id, RequestId = contract id (Bind/Unbind), payload = one long value.
 
-    /// <summary>Gateway: add a session to a group (Key = session id, payload = long group id).</summary>
-    public const uint JoinGroup = 11;
+    /// <summary>Gateway: bind a session to an actor key of a contract (payload = actor key).</summary>
+    public const uint Bind = 10;
 
-    /// <summary>Gateway: remove a session from a group (Key = session id, payload = long group id).</summary>
-    public const uint LeaveGroup = 12;
+    /// <summary>Gateway: remove the session's binding of a contract.</summary>
+    public const uint Unbind = 11;
 
-    /// <summary>Gateway: close a session (Key = session id).</summary>
-    public const uint Kick = 13;
+    /// <summary>Gateway: add a session to a group (payload = group id).</summary>
+    public const uint JoinGroup = 12;
+
+    /// <summary>Gateway: remove a session from a group (payload = group id).</summary>
+    public const uint LeaveGroup = 13;
+
+    /// <summary>Gateway: close a session.</summary>
+    public const uint Kick = 14;
 }
 
 /// <summary>
@@ -77,7 +82,7 @@ internal sealed class Membership : IDisposable
 
     public void Start(string host, int port)
     {
-        var (services, actors) = _node.AdvertisedContracts();
+        var (services, actors, handlers) = _node.AdvertisedContracts();
         lock (_gate)
         {
             _self = new MemberInfo
@@ -87,9 +92,9 @@ internal sealed class Membership : IDisposable
                 Host = host,
                 Port = port,
                 ClientPort = _node.ClientPort,
-                Roles = _node.Options.Roles.ToArray(),
                 Services = services,
                 Actors = actors,
+                Handlers = handlers,
                 Status = MemberStatus.Up,
             };
             _members[_node.Id] = new Entry(_self, Stopwatch.GetTimestamp());

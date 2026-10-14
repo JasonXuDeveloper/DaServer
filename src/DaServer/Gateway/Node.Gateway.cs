@@ -4,6 +4,7 @@ using System.Net;
 using System.Threading;
 using DaServer.Buffers;
 using DaServer.Cluster;
+using DaServer.Concurrency;
 using DaServer.Net;
 using DaServer.Protocol;
 using DaServer.Rpc;
@@ -12,24 +13,22 @@ using Nino.Core;
 
 namespace DaServer.Runtime;
 
-// Gateway role: game-client sessions, routing of client calls into the cluster, push and group broadcast fan-out.
+// Gateway capability (NodeOptions.ClientPort): client sessions, routing of client calls into the cluster, push and group broadcast fan-out.
 // Client calls are routed by patching header fields; payloads are never deserialized here.
 public sealed partial class Node
 {
     private readonly ConcurrentDictionary<long, Session> _sessions = new();
-    private readonly ConcurrentDictionary<long, SessionGroup> _groups = new();
+    private readonly ConcurrentDictionary<long, CopyOnWriteArray<Session>> _groups = new();
+    private readonly Lock _groupGate = new(); // group membership changes (control path); fan-out reads are lock-free
     private Listener? _clientListener;
     private GatewayHandler? _gatewayHandler;
     private long _nextSessionId;
 
-    /// <summary>Port game clients connect to (0 when this node is not a gateway).</summary>
+    /// <summary>Port clients connect to (0 when this node accepts no clients).</summary>
     public int ClientPort { get; private set; }
 
     /// <summary>Connected client sessions on this gateway.</summary>
     public int SessionCount => _sessions.Count;
-
-    /// <summary>Fired on the IO thread when a client session closes (e.g. notify the bound actor).</summary>
-    public event Action<SessionRef, long>? SessionClosed;
 
     private void StartGateway()
     {
@@ -53,29 +52,29 @@ public sealed partial class Node
         foreach (var session in _sessions.Values) session.Connection.Close();
     }
 
-    // ------------------------------------------------------------------ server-side API (any node)
+    // ------------------------------------------------------------------ ICluster: sessions (any node)
 
-    /// <summary>Bind a client session to an actor key: its calls to [ClientAccessible] actors target that key.</summary>
-    public void BindSession(SessionRef session, long actorKey) => SendGatewayControl(session, ControlOp.BindSession, actorKey);
+    public void Bind<TActor>(SessionRef session, long key) where TActor : ISessionActor =>
+        SendGatewayControl(session, ControlOp.Bind, ContractOf<TActor>.Id, key);
 
-    /// <summary>Add a session to a broadcast group (AOI area, guild channel, chat room...).</summary>
-    public void JoinGroup(SessionRef session, ClientGroup group) => SendGatewayControl(session, ControlOp.JoinGroup, group.Id);
+    public void Unbind<TActor>(SessionRef session) where TActor : ISessionActor =>
+        SendGatewayControl(session, ControlOp.Unbind, ContractOf<TActor>.Id, 0);
 
-    /// <summary>Remove a session from a broadcast group.</summary>
-    public void LeaveGroup(SessionRef session, ClientGroup group) => SendGatewayControl(session, ControlOp.LeaveGroup, group.Id);
+    public void JoinGroup(SessionRef session, ClientGroup group) => SendGatewayControl(session, ControlOp.JoinGroup, 0, group.Id);
 
-    /// <summary>Disconnect a client session.</summary>
-    public void Kick(SessionRef session) => SendGatewayControl(session, ControlOp.Kick, 0);
+    public void LeaveGroup(SessionRef session, ClientGroup group) => SendGatewayControl(session, ControlOp.LeaveGroup, 0, group.Id);
 
-    private void SendGatewayControl(SessionRef session, uint op, long value)
+    public void Kick(SessionRef session) => SendGatewayControl(session, ControlOp.Kick, 0, 0);
+
+    private void SendGatewayControl(SessionRef session, uint op, uint contractId, long value)
     {
         var w = FrameWriter.Rent(64);
         var nino = w.Nino;
         NinoSerializer.Serialize(value, ref nino);
-        w.SetHeader(FrameKind.Control, 0, op, session.SessionId);
+        w.SetHeader(FrameKind.Control, contractId, op, session.SessionId);
         if (session.GatewayNodeId == Id)
         {
-            OnGatewayControl(op, session.SessionId, w.Payload);
+            OnGatewayControl(op, session.SessionId, contractId, w.Payload);
         }
         else if (View.TryGetMember(session.GatewayNodeId, out var gateway))
         {
@@ -136,7 +135,7 @@ public sealed partial class Node
         }
 
         if (!_groups.TryGetValue(groupId, out var group)) return;
-        var members = group.Members; // immutable snapshot
+        var members = group.Items; // immutable snapshot
         for (int i = 0; i < members.Length; i++)
             members[i].Connection.Send(frame);
     }
@@ -150,28 +149,35 @@ public sealed partial class Node
                 Membership.OnGossip(connection, header.MethodId, payload);
                 break;
             default:
-                OnGatewayControl(header.MethodId, header.Key, payload);
+                OnGatewayControl(header.MethodId, header.Key, header.RequestId, payload);
                 break;
         }
     }
 
-    private void OnGatewayControl(uint op, long sessionId, ReadOnlySpan<byte> payload)
+    private void OnGatewayControl(uint op, long sessionId, uint contractId, ReadOnlySpan<byte> payload)
     {
         if (!_sessions.TryGetValue(sessionId, out var session)) return;
         var reader = new Reader(payload);
         NinoDeserializer.Deserialize(out long value, ref reader);
         switch (op)
         {
-            case ControlOp.BindSession:
-                session.BoundKey = value;
+            case ControlOp.Bind:
+                session.Bindings.Set(contractId, new SessionBinding(contractId, value), static (b, c) => b.ContractId == c);
+                break;
+            case ControlOp.Unbind:
+                session.Bindings.Remove(contractId, static (b, c) => b.ContractId == c);
                 break;
             case ControlOp.JoinGroup:
-                _groups.GetOrAdd(value, static _ => new SessionGroup()).Add(session);
-                session.AddGroup(value);
+                lock (_groupGate)
+                {
+                    if (session.Closed) return;
+                    _groups.GetOrAdd(value, static _ => new CopyOnWriteArray<Session>()).Add(session);
+                    session.Groups.Add(value);
+                }
+
                 break;
             case ControlOp.LeaveGroup:
-                if (_groups.TryGetValue(value, out var group)) group.Remove(session);
-                session.RemoveGroup(value);
+                lock (_groupGate) Leave(session, value);
                 break;
             case ControlOp.Kick:
                 session.Connection.Close();
@@ -179,14 +185,28 @@ public sealed partial class Node
         }
     }
 
+    /// <summary>Remove a session from a group; empty groups are dropped (bounded memory). Caller holds the gate.</summary>
+    private void Leave(Session session, long groupId)
+    {
+        session.Groups.Remove(groupId);
+        if (!_groups.TryGetValue(groupId, out var group)) return;
+        group.Remove(session);
+        if (group.Items.Length == 0) _groups.TryRemove(groupId, out _);
+    }
+
+    /// <summary>Drop the session from its groups and tell every actor it was bound to (<see cref="SessionClosed"/>).</summary>
     private void OnSessionClosed(Session session)
     {
         _sessions.TryRemove(session.Id, out _);
-        foreach (var groupId in session.Groups)
-            if (_groups.TryGetValue(groupId, out var group))
-                group.Remove(session);
+        lock (_groupGate)
+        {
+            session.Closed = true;
+            foreach (var groupId in session.Groups.Items) Leave(session, groupId);
+        }
 
-        SessionClosed?.Invoke(new SessionRef(Id, session.Id), session.BoundKey);
+        var sessionRef = new SessionRef(Id, session.Id);
+        foreach (var binding in session.Bindings.Items)
+            PublishTo(binding.ContractId, new SessionClosed(sessionRef, binding.Key));
     }
 
     // ------------------------------------------------------------------ client connections
@@ -221,31 +241,29 @@ public sealed partial class Node
     }
 
     /// <summary>
-    /// Validate and route a client call: only [ClientAccessible] contracts, actor keys come from the session binding
-    /// (unless the contract allows any key), and the caller session is prepended so handlers know who called.
+    /// Validate and route a client call by the contract's marker: public services, session actors on the key bound to
+    /// the session, public actors on the key the client chose. The caller session is prepended for the handler.
     /// </summary>
     private void OnClientCall(Session session, in FrameHeader header, ReadOnlySpan<byte> frame)
     {
         uint replyId = header.Kind == FrameKind.Request ? header.RequestId : 0;
-        if (!RpcRegistry.TryGetMethod(header.MethodId, out var method) || !method.Owner.ClientAccessible ||
-            method.Owner.Kind == RpcContractKind.ClientCallback)
+        if (!RpcRegistry.TryGetMethod(header.MethodId, out var method) || method.Owner.ClientAccess == ClientAccess.None)
         {
             if (replyId != 0) ReplyError(session.Sink, replyId, RpcStatus.Forbidden, "Not client accessible");
             return;
         }
 
         var contract = method.Owner;
-        long key = 0;
-        var kind = RpcTargetKind.Service;
-        if (contract.Kind == RpcContractKind.Actor)
+        var (kind, key) = contract.ClientAccess switch
         {
-            kind = RpcTargetKind.Actor;
-            key = contract.AnyKey ? header.Key : session.BoundKey;
-            if (key == 0)
-            {
-                if (replyId != 0) ReplyError(session.Sink, replyId, RpcStatus.Forbidden, "Session not bound");
-                return;
-            }
+            ClientAccess.SessionKey => (RpcTargetKind.Actor, session.KeyOf(contract.Id)),
+            ClientAccess.AnyKey => (RpcTargetKind.Actor, header.Key),
+            _ => (RpcTargetKind.Service, 0L),
+        };
+        if (kind == RpcTargetKind.Actor && key == 0)
+        {
+            if (replyId != 0) ReplyError(session.Sink, replyId, RpcStatus.Forbidden, "Session not bound to " + contract);
+            return;
         }
 
         var w = FrameWriter.Rent(frame.Length + 32);
@@ -256,76 +274,31 @@ public sealed partial class Node
     }
 }
 
-/// <summary>A connected game client on this gateway.</summary>
-internal sealed class Session
+/// <summary>Actor key a session is bound to for one contract.</summary>
+internal readonly record struct SessionBinding(uint ContractId, long Key);
+
+/// <summary>A connected client on this gateway.</summary>
+internal sealed class Session(long id, Connection connection)
 {
-    private long[] _groups = [];
+    public long Id { get; } = id;
+    public Connection Connection { get; } = connection;
+    public ConnectionReplySink Sink { get; } = new(connection);
 
-    public Session(long id, Connection connection)
+    /// <summary>Actor keys bound by servers, one per contract (<c>Cluster.Bind&lt;TActor&gt;</c>).</summary>
+    public CopyOnWriteArray<SessionBinding> Bindings { get; } = new();
+
+    /// <summary>Groups the session belongs to (to leave them when it closes).</summary>
+    public CopyOnWriteArray<long> Groups { get; } = new();
+
+    /// <summary>Set under the gateway's group gate when the session closed: it joins no group afterwards.</summary>
+    public bool Closed { get; set; }
+
+    /// <summary>Key bound for <paramref name="contractId"/>, 0 when unbound. Lock-free (client call path).</summary>
+    public long KeyOf(uint contractId)
     {
-        Id = id;
-        Connection = connection;
-        Sink = new ConnectionReplySink(connection);
-    }
-
-    public long Id { get; }
-    public Connection Connection { get; }
-    public ConnectionReplySink Sink { get; }
-
-    /// <summary>Actor key bound by the server (e.g. player id after login); 0 = unbound.</summary>
-    public long BoundKey { get; set; }
-
-    public long[] Groups => Volatile.Read(ref _groups);
-
-    public void AddGroup(long id)
-    {
-        lock (this)
-        {
-            if (Array.IndexOf(_groups, id) < 0) Volatile.Write(ref _groups, [.. _groups, id]);
-        }
-    }
-
-    public void RemoveGroup(long id)
-    {
-        lock (this)
-        {
-            int i = Array.IndexOf(_groups, id);
-            if (i < 0) return;
-            var next = new long[_groups.Length - 1];
-            Array.Copy(_groups, 0, next, 0, i);
-            Array.Copy(_groups, i + 1, next, i, _groups.Length - i - 1);
-            Volatile.Write(ref _groups, next);
-        }
-    }
-}
-
-/// <summary>Sessions of a broadcast group: copy-on-write array so fan-out iterates without locking.</summary>
-internal sealed class SessionGroup
-{
-    private readonly Lock _gate = new();
-    private Session[] _members = [];
-
-    public Session[] Members => Volatile.Read(ref _members);
-
-    public void Add(Session session)
-    {
-        lock (_gate)
-        {
-            if (Array.IndexOf(_members, session) >= 0) return;
-            Volatile.Write(ref _members, [.. _members, session]);
-        }
-    }
-
-    public void Remove(Session session)
-    {
-        lock (_gate)
-        {
-            int i = Array.IndexOf(_members, session);
-            if (i < 0) return;
-            var next = new Session[_members.Length - 1];
-            Array.Copy(_members, 0, next, 0, i);
-            Array.Copy(_members, i + 1, next, i, _members.Length - i - 1);
-            Volatile.Write(ref _members, next);
-        }
+        var bindings = Bindings.Items;
+        for (int i = 0; i < bindings.Length; i++)
+            if (bindings[i].ContractId == contractId) return bindings[i].Key;
+        return 0;
     }
 }

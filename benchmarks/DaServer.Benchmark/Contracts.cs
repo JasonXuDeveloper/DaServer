@@ -5,20 +5,22 @@ using EasyEcs;
 
 namespace DaServer.Benchmark;
 
-// Benchmark business code, written like user code: an actor with state in a component, a client-accessible service
-// that manages a broadcast group, and a client callback.
+// Benchmark business code, written like user code: an actor with state in a component that also handles a keyed
+// event, a public room actor whose group clients join, and a client callback.
 
 public interface ICounter : IActor
 {
     ValueTask<int> Add(int delta);
 }
 
-[ClientAccessible]
-public interface IRoom : IService
+public interface IRoom : IPublicActor
 {
-    ValueTask Join(long room);
-    ValueTask Broadcast(long room, int sequence);
+    ValueTask Join();
+    ValueTask Broadcast(int sequence);
 }
+
+[Nino.Core.NinoType]
+public readonly partial record struct Bumped(long Key, int By) : IKeyedEvent;
 
 public interface IRoomClient : IClientCallback
 {
@@ -27,22 +29,28 @@ public interface IRoomClient : IClientCallback
 
 public record struct CounterState(int Value) : IComponent;
 
-public sealed class Counter : Actor<CounterState>, ICounter
+public sealed class Counter : Actor<CounterState>, ICounter, IHandle<Bumped>
 {
     public ValueTask<int> Add(int delta) => new(State.Value += delta);
+
+    public ValueTask Handle(Bumped e)
+    {
+        State.Value += e.By;
+        return default;
+    }
 }
 
-public sealed class Room : Service, IRoom
+public sealed class Room : Actor, IRoom
 {
-    public ValueTask Join(long room)
+    public ValueTask Join()
     {
-        Cluster.JoinGroup(Caller, new ClientGroup(room));
+        Cluster.JoinGroup(Caller, Group);
         return default;
     }
 
-    public ValueTask Broadcast(long room, int sequence)
+    public ValueTask Broadcast(int sequence)
     {
-        Cluster.RoomClient(new ClientGroup(room)).OnTick(sequence);
+        Cluster.RoomClient(Group).OnTick(sequence);
         return default;
     }
 }

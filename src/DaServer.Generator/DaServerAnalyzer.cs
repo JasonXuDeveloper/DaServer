@@ -15,7 +15,8 @@ public sealed class DaServerAnalyzer : DiagnosticAnalyzer
 {
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics { get; } = ImmutableArray.Create(
         Rules.BadReturnType, Rules.BadParameter, Rules.GenericMember, Rules.CallbackMustBeVoid, Rules.IdCollision,
-        Rules.ActorBase, Rules.NoDefaultConstructor, Rules.NoMethods);
+        Rules.ActorBase, Rules.NoDefaultConstructor, Rules.NoMethods, Rules.NotWireType, Rules.UnkeyedActorEvent,
+        Rules.MixedKinds, Rules.ConflictingMarkers);
 
     public override void Initialize(AnalysisContext context)
     {
@@ -34,6 +35,7 @@ public sealed class DaServerAnalyzer : DiagnosticAnalyzer
                     symbolContext.ReportDiagnostic(Diagnostic.Create(d, l ?? type.Locations.FirstOrDefault(), a));
 
                 Shapes.ReadHosted(type, Report);
+                Shapes.CheckEvent(type, Report);
                 if (Shapes.ReadContract(type, Report) == null) return;
 
                 foreach (var method in type.GetMembers().OfType<IMethodSymbol>().Where(m => m.MethodKind == MethodKind.Ordinary))
@@ -73,7 +75,7 @@ internal static class Rules
         "Method '{0}' of client callback '{1}' must return void", Category, DiagnosticSeverity.Error, true);
 
     public static readonly DiagnosticDescriptor IdCollision = new("DAS005", "RPC method id collision",
-        "Methods '{0}' and '{1}' hash to the same wire id; add [RpcId] to one of them", Category,
+        "Methods '{0}' and '{1}' hash to the same wire id; add [WireId] to one of them", Category,
         DiagnosticSeverity.Error, true, customTags: WellKnownDiagnosticTags.CompilationEnd);
 
     public static readonly DiagnosticDescriptor ActorBase = new("DAS006", "Actor implementation must derive from Actor",
@@ -86,4 +88,19 @@ internal static class Rules
 
     public static readonly DiagnosticDescriptor NoMethods = new("DAS008", "Properties and events are not supported",
         "RPC contract '{0}' may only declare methods (member '{1}')", Category, DiagnosticSeverity.Error, true);
+
+    public static readonly DiagnosticDescriptor NotWireType = new("DAS009", "Type cannot cross the wire",
+        "'{0}' (used by {1}) must be a primitive, string, enum, array, BCL collection or a [NinoType] type", Category,
+        DiagnosticSeverity.Error, true);
+
+    public static readonly DiagnosticDescriptor UnkeyedActorEvent = new("DAS010", "Actors handle keyed events only",
+        "Actor '{0}' handles '{1}', which is not an IKeyedEvent: an actor event is delivered to the activation of the event's key",
+        Category, DiagnosticSeverity.Error, true);
+
+    public static readonly DiagnosticDescriptor MixedKinds = new("DAS011", "Actor and service in one type",
+        "'{0}' implements both actor and service contracts; an implementation is either keyed (actor) or stateless (service)",
+        Category, DiagnosticSeverity.Error, true);
+
+    public static readonly DiagnosticDescriptor ConflictingMarkers = new("DAS012", "Conflicting client markers",
+        "Actor contract '{0}' cannot be both ISessionActor and IPublicActor", Category, DiagnosticSeverity.Error, true);
 }

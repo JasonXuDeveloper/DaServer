@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
 using DaServer.Client;
@@ -20,22 +19,20 @@ while (Environment.GetEnvironmentVariable($"DaServer__Gateways__{gateways.Count}
 if (gateways.Count == 0) gateways.Add("127.0.0.1:7100");
 
 var inbox = new Inbox();
-var clients = new List<GameClient>();
-var players = new List<PlayerProxy>();
+var clients = new List<ClusterClient>();
+var inputs = new List<MapInputProxy>();
 
 for (int i = 0; i < bots; i++)
 {
-    var client = new GameClient();
-    var endpoint = IPEndPoint.Parse(await Resolve(gateways[i % gateways.Count]));
-    await ConnectWithRetry(client, endpoint);
-    client.Register<IGameClient>(inbox);
+    var client = new ClusterClient();
+    await ConnectWithRetry(client, gateways[i % gateways.Count]);
+    client.Register<IPlayerClient>(inbox);
 
     var login = await client.Account().Login("bot-" + i);
     if (!login.Ok) throw new InvalidOperationException("login failed for bot " + i);
-    var player = client.Player(0); // the gateway routes to the bound player id
-    await player.EnterMap(1 + i % maps);
+    await client.Player().EnterMap(1 + i % maps); // the gateway routes to the player bound at login
     clients.Add(client);
-    players.Add(player);
+    inputs.Add(client.MapInput());                // and this to the map the player entered
 }
 
 Console.WriteLine($"{bots} bots online on {gateways.Count} gateway(s), {maps} maps");
@@ -46,9 +43,9 @@ long lastMoved = 0;
 while (clock.Elapsed.TotalSeconds < seconds)
 {
     var tick = Stopwatch.StartNew();
-    foreach (var player in players)
-        player.Move((float)(random.NextDouble() * 2 - 1), (float)(random.NextDouble() * 2 - 1));
-    if (random.Next(10) == 0) players[random.Next(players.Count)].Chat("hello");
+    foreach (var input in inputs)
+        input.Move((float)(random.NextDouble() * 2 - 1), (float)(random.NextDouble() * 2 - 1));
+    if (random.Next(10) == 0) inputs[random.Next(inputs.Count)].Chat("hello");
 
     if ((int)clock.Elapsed.TotalSeconds != (int)(clock.Elapsed.TotalSeconds - tick.Elapsed.TotalSeconds))
     {
@@ -66,22 +63,14 @@ bool ok = Interlocked.Read(ref inbox.Moved) > 0;
 Console.WriteLine(ok ? "E2E OK" : "E2E FAILED: no position broadcasts received");
 return ok ? 0 : 1;
 
-static async Task<string> Resolve(string hostPort)
+static async Task ConnectWithRetry(ClusterClient client, string hostPort)
 {
     int colon = hostPort.LastIndexOf(':');
-    string host = hostPort[..colon];
-    if (IPAddress.TryParse(host, out _)) return hostPort;
-    var addresses = await Dns.GetHostAddressesAsync(host);
-    return $"{addresses[0]}:{hostPort[(colon + 1)..]}";
-}
-
-static async Task ConnectWithRetry(GameClient client, IPEndPoint endpoint)
-{
     for (int attempt = 0; ; attempt++)
     {
         try
         {
-            await client.ConnectAsync(endpoint);
+            await client.ConnectAsync(hostPort[..colon], int.Parse(hostPort[(colon + 1)..]));
             return;
         }
         catch when (attempt < 30)
@@ -91,7 +80,7 @@ static async Task ConnectWithRetry(GameClient client, IPEndPoint endpoint)
     }
 }
 
-sealed class Inbox : IGameClient
+sealed class Inbox : IPlayerClient
 {
     public long Moved;
     public long Chat;

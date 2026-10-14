@@ -18,11 +18,12 @@ namespace DaServer.Runtime;
 /// One process of the cluster: owns the shards, the cluster listener and links, membership and placement, and routes
 /// every call made through generated proxies (<see cref="IRpcInvoker"/>).
 /// </summary>
-public sealed partial class Node : IAsyncDisposable
+public sealed partial class Node : ICluster, IAsyncDisposable
 {
     private readonly ConcurrentDictionary<string, PeerLink> _links = new();
     private Shard[] _shards = [];
     private FrozenDictionary<uint, ImplementationInfo> _implementationByContract = FrozenDictionary<uint, ImplementationInfo>.Empty;
+    private FrozenDictionary<uint, ImplementationInfo> _implementationById = FrozenDictionary<uint, ImplementationInfo>.Empty;
     private Listener? _clusterListener;
     private Timer? _maintenance;
     private int _started;
@@ -42,6 +43,8 @@ public sealed partial class Node : IAsyncDisposable
 
     /// <summary>Random 64-bit id, new on every process start (a restarted node is a new member).</summary>
     public ulong Id { get; }
+
+    ulong ICluster.NodeId => Id;
 
     public ILogger Logger { get; }
 
@@ -85,8 +88,8 @@ public sealed partial class Node : IAsyncDisposable
 
         Membership.Start(host, _clusterListener.LocalEndPoint.Port);
         _maintenance = new Timer(static s => ((Node)s!).Maintain(), this, 100, 100);
-        Logger.LogInformation("Node {Name} ({Id:x}) up on {Endpoint}, {Shards} shards, roles [{Roles}]",
-            Options.Name, Id, ClusterEndPoint, shardCount, string.Join(",", Options.Roles));
+        Logger.LogInformation("Node {Name} ({Id:x}) up on {Endpoint}, {Shards} shards, {Implementations} implementations, {Systems} systems",
+            Options.Name, Id, ClusterEndPoint, shardCount, HostedImplementations.Length, HostedSystems.Length);
         return Task.CompletedTask;
     }
 
@@ -124,14 +127,22 @@ public sealed partial class Node : IAsyncDisposable
     internal ImplementationInfo? ImplementationOf(RpcContractInfo contract) =>
         _implementationByContract.TryGetValue(contract.Id, out var impl) ? impl : null;
 
+    /// <summary>Hosted implementation with placement/routing id <paramref name="implementationId"/>, or null.</summary>
+    internal ImplementationInfo? ImplementationById(uint implementationId) =>
+        _implementationById.TryGetValue(implementationId, out var impl) ? impl : null;
+
+    /// <summary>Everything registered in the process, narrowed by <see cref="NodeOptions.Hosts"/> when set.</summary>
     private void ResolveHosting()
     {
+        var hosts = Options.Hosts;
         var byContract = new Dictionary<uint, ImplementationInfo>();
+        var byId = new Dictionary<uint, ImplementationInfo>();
         var hosted = new List<ImplementationInfo>();
         foreach (var impl in ServerRegistry.Implementations)
         {
-            if (!ServerRegistry.IsHostedBy(impl.Roles, Options.Roles)) continue;
+            if (hosts != null && !hosts(impl.Type)) continue;
             hosted.Add(impl);
+            byId[impl.Id] = impl;
             foreach (var contractType in impl.Contracts)
             {
                 ServerRegistry.EnsureLoaded(contractType);
@@ -144,28 +155,38 @@ public sealed partial class Node : IAsyncDisposable
 
         var systems = new List<SystemInfo>();
         foreach (var system in ServerRegistry.Systems)
-            if (ServerRegistry.IsHostedBy(system.Roles, Options.Roles))
+            if (hosts == null || hosts(system.Type))
                 systems.Add(system);
 
         HostedImplementations = hosted.ToArray();
         HostedSystems = systems.ToArray();
         _implementationByContract = byContract.ToFrozenDictionary();
+        _implementationById = byId.ToFrozenDictionary();
     }
 
-    /// <summary>Contracts this node advertises in membership.</summary>
-    internal (uint[] Services, HostedActor[] Actors) AdvertisedContracts()
+    /// <summary>What this node advertises in membership: services, actor implementations and event handlers.</summary>
+    internal (uint[] Services, HostedActor[] Actors, HostedHandler[] Handlers) AdvertisedContracts()
     {
         var services = new List<uint>();
         var actors = new List<HostedActor>();
-        foreach (var (contractId, impl) in _implementationByContract)
+        var handlers = new List<HostedHandler>();
+        foreach (var impl in HostedImplementations)
         {
-            if (impl.Kind == RpcContractKind.Actor)
-                actors.Add(new HostedActor { ContractId = contractId, ImplementationId = impl.Id });
-            else
-                services.Add(contractId);
+            bool isActor = impl.Kind == RpcContractKind.Actor;
+            foreach (var contractType in impl.Contracts)
+            {
+                uint contractId = RpcRegistry.GetContract(contractType).Id;
+                if (isActor) actors.Add(new HostedActor { ContractId = contractId, ImplementationId = impl.Id });
+                else services.Add(contractId);
+            }
+
+            if (isActor && impl.Contracts.Length == 0)
+                actors.Add(new HostedActor { ContractId = 0, ImplementationId = impl.Id });
+            foreach (var handler in impl.Events)
+                handlers.Add(new HostedHandler { EventId = handler.EventId, ImplementationId = impl.Id, Actor = isActor });
         }
 
-        return (services.ToArray(), actors.ToArray());
+        return (services.ToArray(), actors.ToArray(), handlers.ToArray());
     }
 
     /// <summary>Active actor activations across all shards (approximate, for metrics).</summary>

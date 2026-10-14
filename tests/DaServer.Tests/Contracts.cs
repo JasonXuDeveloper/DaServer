@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -27,6 +28,7 @@ public interface ICounter : IActor
     ValueTask<int> SlowAdd(int delta);                  // awaits a foreign Task.Delay, resumes on the shard
     ValueTask Grow();                                   // input for GrowthSystem
     ValueTask<long> AddMany(long otherKey, int count);  // sequential calls; returns bytes allocated meanwhile
+    ValueTask<long> PublishMany(long otherKey, int count); // keyed events; returns bytes allocated meanwhile
 }
 
 public interface IEcho : IService
@@ -35,19 +37,31 @@ public interface IEcho : IService
     ValueTask<ulong> NodeId();
 }
 
-[ClientAccessible]
-public interface IAuth : IService
+public interface IAuth : IPublicService
 {
     ValueTask<bool> Login(long playerId);
+    ValueTask Logout();
 }
 
-[ClientAccessible]
-public interface IPlayer : IActor
+public interface IPlayer : ISessionActor
 {
     ValueTask<int> AddGold(int amount);
-    ValueTask JoinRoom(long roomId);
-    void Say(long roomId, string text);
 }
+
+/// <summary>A public chat room: clients choose the room id.</summary>
+public interface IRoom : IPublicActor
+{
+    ValueTask Join();
+    void Say(string text);
+}
+
+/// <summary>Keyed event: delivered to the counter activation of <see cref="Key"/>.</summary>
+[NinoType]
+public readonly partial record struct CounterBumped(long Key, int By) : IKeyedEvent;
+
+/// <summary>Unkeyed event: delivered once to each service implementation handling it.</summary>
+[NinoType]
+public readonly partial record struct Ping(int Id) : IEvent;
 
 public interface IPlayerClient : IClientCallback
 {
@@ -60,8 +74,14 @@ public record struct CounterState(int Value) : IComponent;
 /// <summary>Tag: the counter grows by one every tick (written by the actor, processed by GrowthSystem).</summary>
 public struct Growing : IComponent;
 
-public sealed class Counter : Actor<CounterState>, ICounter
+public sealed class Counter : Actor<CounterState>, ICounter, IHandle<CounterBumped>
 {
+    public ValueTask Handle(CounterBumped e)
+    {
+        State.Value += e.By;
+        return default;
+    }
+
     public ValueTask<int> Add(int delta) => new(State.Value += delta);
 
     public ValueTask<int> Get() => new(State.Value);
@@ -109,6 +129,25 @@ public sealed class Counter : Actor<CounterState>, ICounter
         for (int i = 0; i < count; i++) await other.Add(1);
         return GC.GetTotalAllocatedBytes(precise: true) - before;
     }
+
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
+    public async ValueTask<long> PublishMany(long otherKey, int count)
+    {
+        // Bursts of 100 events, each followed by a call (events and calls of one sender reach an actor in order):
+        // steady state with bounded frames in flight, as in a running server.
+        const int burst = 100;
+        var other = Cluster.Counter(otherKey);
+        for (int i = 0; i < burst; i++) Cluster.Publish(new CounterBumped(otherKey, 1));
+        await other.Get();
+        long before = GC.GetTotalAllocatedBytes(precise: true);
+        for (int sent = 0; sent < count; sent += burst)
+        {
+            for (int i = 0; i < burst; i++) Cluster.Publish(new CounterBumped(otherKey, 1));
+            await other.Get();
+        }
+
+        return GC.GetTotalAllocatedBytes(precise: true) - before;
+    }
 }
 
 /// <summary>Per-tick logic over every growing counter of the shard (actors only write the Growing tag).</summary>
@@ -118,11 +157,33 @@ public sealed partial class GrowthSystem : EcsSystem
     private static void Grow(ref CounterState counter) => counter.Value++;
 }
 
-public sealed class EchoService : Service, IEcho
+/// <summary>What event handlers observed (tests read it from the test thread).</summary>
+public static class Observed
+{
+    public static readonly ConcurrentQueue<string> Events = new();
+}
+
+public sealed class EchoService : Service, IEcho, IHandle<Ping>
 {
     public ValueTask<string> Echo(string text) => new(text);
 
-    public ValueTask<ulong> NodeId() => new(Cluster.Id);
+    public ValueTask<ulong> NodeId() => new(Cluster.NodeId);
+
+    public ValueTask Handle(Ping e)
+    {
+        Observed.Events.Enqueue($"echo:{e.Id}:{Cluster.NodeId:x}");
+        return default;
+    }
+}
+
+/// <summary>A second service handling Ping: every handling implementation receives each event once.</summary>
+public sealed class AuditService : Service, IHandle<Ping>
+{
+    public ValueTask Handle(Ping e)
+    {
+        Observed.Events.Enqueue($"audit:{e.Id}");
+        return default;
+    }
 }
 
 public sealed class AuthService : Service, IAuth
@@ -130,14 +191,20 @@ public sealed class AuthService : Service, IAuth
     public ValueTask<bool> Login(long playerId)
     {
         if (!Caller.IsValid || playerId <= 0) return new(false);
-        Cluster.BindSession(Caller, playerId);
+        Cluster.Bind<IPlayer>(Caller, playerId);
         return new(true);
+    }
+
+    public ValueTask Logout()
+    {
+        Cluster.Unbind<IPlayer>(Caller);
+        return default;
     }
 }
 
 public record struct Wallet(int Gold) : IComponent;
 
-public sealed class Player : Actor<Wallet>, IPlayer
+public sealed class Player : Actor<Wallet>, IPlayer, IHandle<SessionClosed>
 {
     public ValueTask<int> AddGold(int amount)
     {
@@ -146,11 +213,20 @@ public sealed class Player : Actor<Wallet>, IPlayer
         return new(gold);
     }
 
-    public ValueTask JoinRoom(long roomId)
+    public ValueTask Handle(SessionClosed e)
     {
-        Cluster.JoinGroup(Caller, new ClientGroup(roomId));
+        Observed.Events.Enqueue($"closed:{e.Key}");
+        return default;
+    }
+}
+
+public sealed class Room : Actor, IRoom
+{
+    public ValueTask Join()
+    {
+        Cluster.JoinGroup(Caller, Group);
         return default;
     }
 
-    public void Say(long roomId, string text) => Cluster.PlayerClient(new ClientGroup(roomId)).OnChat(Key, text);
+    public void Say(string text) => Cluster.PlayerClient(Group).OnChat(Key, text);
 }

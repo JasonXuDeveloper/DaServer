@@ -60,7 +60,7 @@ internal readonly record struct ActorDirectory(Dictionary<ActorId, Entity> Actor
 /// <summary>Actors with mail and no running turn, in arrival order: the only actors the mailbox system visits.</summary>
 internal readonly record struct ReadyActors(Queue<Entity> Queue) : ISingletonComponent;
 
-/// <summary>This shard's service instances by contract id.</summary>
+/// <summary>This shard's service instances by implementation id.</summary>
 internal readonly record struct ServiceDirectory(Dictionary<uint, object> Services) : ISingletonComponent;
 
 /// <summary>Asynchronous service calls still running (services are stateless, so their calls may overlap).</summary>

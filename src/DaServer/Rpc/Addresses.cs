@@ -36,10 +36,24 @@ public partial struct SessionRef : IEquatable<SessionRef>
 /// <summary>
 /// A broadcast group of client sessions spanning every gateway (map instance, AOI cell, guild channel, chat room).
 /// A push to a group is serialized once and sent as one frame per gateway, which fans it out to its local members.
+/// Every actor has its own group (<c>Actor.Group</c>), so group ids of different features never collide.
 /// </summary>
 [Nino.Core.NinoType]
 public readonly partial record struct ClientGroup(long Id)
 {
     /// <summary>Every connected session of the cluster.</summary>
     public static readonly ClientGroup All = new(0);
+
+    /// <summary>
+    /// The group of <paramref name="key"/> within <paramref name="scope"/> (e.g. an actor implementation id): a 64-bit
+    /// mix of both, never <see cref="All"/>.
+    /// </summary>
+    public static ClientGroup Of(uint scope, long key)
+    {
+        ulong x = ((ulong)scope << 32 | scope) ^ (ulong)key;
+        x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9UL; // splitmix64 finalizer: neighbouring keys spread over the range
+        x = (x ^ (x >> 27)) * 0x94D049BB133111EBUL;
+        x ^= x >> 31;
+        return new ClientGroup(x == 0 ? 1 : (long)x);
+    }
 }

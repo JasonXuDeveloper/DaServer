@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
-using System.Net;
 using System.Threading.Tasks;
 using DaServer.Client;
 using DaServer.Runtime;
@@ -17,7 +16,7 @@ namespace DaServer.Tests;
 public abstract class ClusterTest
 {
     private readonly List<Node> _nodes = [];
-    private readonly List<GameClient> _clients = [];
+    private readonly List<ClusterClient> _clients = [];
 
     protected IReadOnlyList<Node> Nodes => _nodes;
 
@@ -31,7 +30,7 @@ public abstract class ClusterTest
     }
 
     /// <summary>Start a node; every node after the first joins through the first one.</summary>
-    protected async Task<Node> Start(string name, int shards = 2, bool gateway = false, string[]? roles = null,
+    protected async Task<Node> Start(string name, int shards = 2, bool gateway = false, Func<Type, bool>? hosts = null,
         Action<NodeOptions>? configure = null)
     {
         var options = new NodeOptions
@@ -43,7 +42,7 @@ public abstract class ClusterTest
             Shards = shards,
             TickRate = 50,
             Seeds = _nodes.Count == 0 ? [] : [$"127.0.0.1:{_nodes[0].ClusterEndPoint.Port}"],
-            Roles = roles?.ToList() ?? [],
+            Hosts = hosts,
             GossipInterval = TimeSpan.FromMilliseconds(100),
             SuspectAfter = TimeSpan.FromMilliseconds(600),
             DeadAfter = TimeSpan.FromMilliseconds(1500),
@@ -76,10 +75,10 @@ public abstract class ClusterTest
         _nodes.Remove(node);
     }
 
-    protected async Task<GameClient> Connect(Node gateway)
+    protected async Task<ClusterClient> Connect(Node gateway)
     {
-        var client = new GameClient();
-        await client.ConnectAsync(new IPEndPoint(IPAddress.Loopback, gateway.ClientPort));
+        var client = new ClusterClient();
+        await client.ConnectAsync("127.0.0.1", gateway.ClientPort);
         _clients.Add(client);
         return client;
     }
@@ -97,6 +96,17 @@ public abstract class ClusterTest
     {
         var watch = Stopwatch.StartNew();
         while (!condition())
+        {
+            if (watch.ElapsedMilliseconds > timeoutMs) Assert.Fail(message);
+            await Task.Delay(10);
+        }
+    }
+
+    /// <summary>Polls an asynchronous condition (a call into the cluster) until it holds.</summary>
+    protected static async Task Eventually(Func<ValueTask<bool>> condition, string message, int timeoutMs = 10_000)
+    {
+        var watch = Stopwatch.StartNew();
+        while (!await condition())
         {
             if (watch.ElapsedMilliseconds > timeoutMs) Assert.Fail(message);
             await Task.Delay(10);

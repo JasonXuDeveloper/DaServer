@@ -17,7 +17,7 @@ public static class DaServerHostingExtensions
 {
     /// <summary>
     /// Run a DaServer <see cref="Node"/> in this host. Options bind from the <paramref name="section"/> configuration
-    /// section (appsettings, environment variables such as <c>DaServer__Roles__0=game</c>, command line).
+    /// section (appsettings, environment variables such as <c>DaServer__ClientPort=7100</c>, command line).
     /// The node starts with the host and leaves the cluster gracefully on SIGTERM / Ctrl+C.
     /// </summary>
     public static IHostApplicationBuilder AddDaServer(this IHostApplicationBuilder builder, string section = "DaServer")
@@ -29,6 +29,7 @@ public static class DaServerHostingExtensions
             options.LoggerFactory ??= sp.GetRequiredService<ILoggerFactory>();
             return new Node(options);
         });
+        builder.Services.AddSingleton<ICluster>(static sp => sp.GetRequiredService<Node>());
         builder.Services.AddSingleton<IRpcInvoker>(static sp => sp.GetRequiredService<Node>());
         builder.Services.AddHostedService<NodeHostedService>();
         builder.AddDaServerTelemetry();

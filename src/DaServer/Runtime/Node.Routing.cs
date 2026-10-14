@@ -124,15 +124,22 @@ public sealed partial class Node : IRpcInvoker, IConnectionHandler
     private void DeliverLocal(RpcContractInfo contract, long key, FrameWriter frame, IReplySink? sink) =>
         SelectShard(contract, key).Post(new WorkItem(WorkKind.Dispatch, frame, sink));
 
-    /// <summary>Shard of an actor key (stable hash) or of a service call (caller's shard when local, else round robin).</summary>
     private Shard SelectShard(RpcContractInfo contract, long key)
     {
+        bool actor = contract.Kind == RpcContractKind.Actor;
+        uint implementationId = _implementationByContract.TryGetValue(contract.Id, out var impl) ? impl.Id : contract.Id;
+        return SelectShard(implementationId, actor, key);
+    }
+
+    /// <summary>
+    /// Shard of an actor (stable hash of implementation and key: every message of an activation reaches the shard
+    /// that holds it) or of a service message (the calling shard when local, else round robin).
+    /// </summary>
+    private Shard SelectShard(uint implementationId, bool actor, long key)
+    {
         var shards = _shards;
-        if (contract.Kind == RpcContractKind.Actor)
-        {
-            uint impl = _implementationByContract.TryGetValue(contract.Id, out var info) ? info.Id : contract.Id;
-            return shards[(int)(ClusterView.Weight((ulong)shards.Length, impl, key) % (ulong)shards.Length)];
-        }
+        if (actor)
+            return shards[(int)(ClusterView.Weight((ulong)shards.Length, implementationId, key) % (ulong)shards.Length)];
 
         var current = Shard.Current;
         if (current != null && current.Node == this) return current;
@@ -148,6 +155,9 @@ public sealed partial class Node : IRpcInvoker, IConnectionHandler
             case FrameKind.Request:
             case FrameKind.OneWay:
                 OnInboundCall(connection, in header, frame);
+                break;
+            case FrameKind.Event:
+                OnInboundEvent(in header, frame);
                 break;
             case FrameKind.Response:
                 CompleteCall(header.RequestId, header.Status, frame);

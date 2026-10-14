@@ -7,7 +7,7 @@ using NUnit.Framework;
 
 namespace DaServer.Tests;
 
-/// <summary>Client sessions through gateways: binding, access control, push and group broadcast.</summary>
+/// <summary>Client sessions through gateways: access by contract marker, bindings, push, group broadcast, close.</summary>
 public class GatewayTests : ClusterTest
 {
     private sealed class Inbox : IPlayerClient
@@ -21,7 +21,7 @@ public class GatewayTests : ClusterTest
     }
 
     [Test]
-    public async Task CallsReachTheActorBoundToTheSession()
+    public async Task SessionActorCallsReachTheKeyBoundToTheSession()
     {
         var gateway = await Start("gw", gateway: true);
         await Start("game");
@@ -30,13 +30,32 @@ public class GatewayTests : ClusterTest
         var inbox = new Inbox();
         client.Register<IPlayerClient>(inbox);
 
-        var unbound = Assert.ThrowsAsync<RpcException>(async () => await client.Player(0).AddGold(1));
-        Assert.That(unbound!.Status, Is.EqualTo(RpcStatus.Forbidden), "actor calls need a bound session");
+        var unbound = Assert.ThrowsAsync<RpcException>(async () => await client.Player().AddGold(1));
+        Assert.That(unbound!.Status, Is.EqualTo(RpcStatus.Forbidden), "session actors need a binding");
 
         Assert.That(await client.Auth().Login(42), Is.True);
-        Assert.That(await client.Player(999).AddGold(10), Is.EqualTo(10), "the key comes from the binding");
-        Assert.That(await gateway.Player(42).AddGold(0), Is.EqualTo(10));
-        await Eventually(() => inbox.Gold == 10, "push to the session was not delivered");
+        Assert.That(await client.Player().AddGold(10), Is.EqualTo(10));
+        Assert.That(await client.Player(999).AddGold(5), Is.EqualTo(15), "a key chosen by the client is ignored");
+        Assert.That(await gateway.Player(42).AddGold(0), Is.EqualTo(15));
+        await Eventually(() => inbox.Gold == 15, "push to the session was not delivered");
+
+        await client.Auth().Logout();
+        var unboundAgain = Assert.ThrowsAsync<RpcException>(async () => await client.Player().AddGold(1));
+        Assert.That(unboundAgain!.Status, Is.EqualTo(RpcStatus.Forbidden), "unbind removes the binding");
+    }
+
+    [Test]
+    public async Task BindingsAreIsolatedPerSession()
+    {
+        var gateway = await Start("gw", gateway: true);
+        var first = await Connect(gateway);
+        var second = await Connect(gateway);
+        await first.Auth().Login(1);
+        await second.Auth().Login(2);
+
+        await first.Player().AddGold(100);
+        Assert.That(await second.Player().AddGold(1), Is.EqualTo(1), "each session reaches its own player only");
+        Assert.That(await gateway.Player(1).AddGold(0), Is.EqualTo(100));
     }
 
     [Test]
@@ -59,18 +78,30 @@ public class GatewayTests : ClusterTest
         {
             var client = await Connect(gateways[i % 2]);
             client.Register<IPlayerClient>(members[i] = new Inbox());
-            await client.Auth().Login(100 + i);
-            await client.Player(0).JoinRoom(7);
+            await client.Room(7).Join(); // public actor: the client chooses the room
         }
 
         var outsider = await Connect(gateways[0]);
         var outsiderInbox = new Inbox();
         outsider.Register<IPlayerClient>(outsiderInbox);
-        await outsider.Auth().Login(200);
+        await outsider.Room(8).Join();
 
-        gateways[0].Player(100).Say(7, "hello");
-        await Eventually(() => members.All(m => m.Chat.Contains("100:hello")), "broadcast missing");
+        gateways[0].Room(7).Say("hello");
+        await Eventually(() => members.All(m => m.Chat.Contains("7:hello")), "broadcast missing");
         await Task.Delay(100); // a stray delivery would arrive about as fast as the ones above
-        Assert.That(outsiderInbox.Chat, Is.Empty);
+        Assert.That(outsiderInbox.Chat, Is.Empty, "groups of different keys are distinct");
+    }
+
+    [Test]
+    public async Task ClosingASessionNotifiesTheBoundActors()
+    {
+        var gateway = await Start("gw", gateway: true);
+        await Start("game");
+        await Converged();
+        var client = await Connect(gateway);
+        await client.Auth().Login(77);
+
+        await client.DisposeAsync();
+        await Eventually(() => Observed.Events.Contains("closed:77"), "SessionClosed not delivered to the bound player");
     }
 }

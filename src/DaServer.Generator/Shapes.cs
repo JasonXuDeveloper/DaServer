@@ -1,5 +1,4 @@
 using System.Collections.Generic;
-using System.Collections.Immutable;
 using System.Linq;
 using Microsoft.CodeAnalysis;
 using static DaServer.Generator.Support;
@@ -26,17 +25,26 @@ internal sealed record MethodModel(string Name, uint Id, MethodShape Shape, stri
     EquatableArray<ParameterModel> Parameters);
 
 /// <summary>Symbol-free description of an RPC contract (cached by the incremental pipeline).</summary>
+/// <summary>How clients may call a contract (mirrors DaServer.Rpc.ClientAccess).</summary>
+internal enum ClientAccess
+{
+    None,
+    Service,
+    SessionKey,
+    AnyKey,
+}
+
 internal sealed record ContractModel(string Namespace, string Name, string FullName, ContractKind Kind, uint Id,
-    bool ClientAccessible, bool AnyKey, EquatableArray<MethodModel> Methods)
+    ClientAccess Access, EquatableArray<MethodModel> Methods)
 {
     public string Accessor => StripInterfacePrefix(Name);
     public string ProxyName => Accessor + "Proxy";
     public string RpcClassName => Accessor + "Rpc";
 }
 
-/// <summary>Symbol-free description of a hosted implementation or shard system.</summary>
+/// <summary>Symbol-free description of a hosted implementation (contracts it serves, events it handles) or shard system.</summary>
 internal sealed record HostedModel(string FullName, bool IsSystem, ContractKind Kind, EquatableArray<string> Contracts,
-    EquatableArray<string> Roles);
+    EquatableArray<string> Events);
 
 /// <summary>
 /// Reads contracts and implementations from symbols. The single source of truth for validity: the generator calls it
@@ -64,8 +72,15 @@ internal static class Shapes
             valid = false;
         }
 
-        var accessible = type.GetAttributes().FirstOrDefault(a => a.AttributeClass?.ToDisplayString() == "DaServer.Rpc.ClientAccessibleAttribute");
-        bool anyKey = accessible?.NamedArguments.Any(a => a.Key == "AnyKey" && a.Value.Value is true) == true;
+        var access = Implements(type, ISessionActor) ? ClientAccess.SessionKey
+            : Implements(type, IPublicActor) ? ClientAccess.AnyKey
+            : Implements(type, IPublicService) ? ClientAccess.Service
+            : ClientAccess.None;
+        if (kind == ContractKind.Actor && Implements(type, ISessionActor) && Implements(type, IPublicActor))
+        {
+            report?.Invoke(Rules.ConflictingMarkers, location, type.Name);
+            valid = false;
+        }
 
         // Methods of the interface and of the contract interfaces it extends (markers excluded).
         var methods = new List<MethodModel>();
@@ -88,7 +103,7 @@ internal static class Shapes
         if (!valid) return null;
         string ns = type.ContainingNamespace.IsGlobalNamespace ? "" : type.ContainingNamespace.ToDisplayString();
         return new ContractModel(ns, type.Name, type.ToDisplayString(Fqn), kind, Fnv1a(type.ToDisplayString()),
-            accessible != null, anyKey, new EquatableArray<MethodModel>(methods.ToArray()));
+            access, new EquatableArray<MethodModel>(methods.ToArray()));
     }
 
     private static MethodModel? ReadMethod(INamedTypeSymbol contract, IMethodSymbol method, ContractKind kind, Report? report)
@@ -110,6 +125,11 @@ internal static class Shapes
         {
             shape = MethodShape.TaskOfT;
             resultType = returnType!.TypeArguments[0].ToDisplayString(Fqn);
+            if (!IsWireType(returnType.TypeArguments[0]))
+            {
+                report?.Invoke(Rules.NotWireType, location, returnType.TypeArguments[0].ToDisplayString(), contract.Name + "." + method.Name);
+                return null;
+            }
         }
         else
         {
@@ -132,6 +152,12 @@ internal static class Shapes
                 return null;
             }
 
+            if (!IsWireType(p.Type))
+            {
+                report?.Invoke(Rules.NotWireType, p.Locations.FirstOrDefault(), p.Type.ToDisplayString(), contract.Name + "." + method.Name);
+                return null;
+            }
+
             parameters.Add(new ParameterModel(p.Type.ToDisplayString(Fqn), "@" + p.Name));
         }
 
@@ -140,15 +166,49 @@ internal static class Shapes
     }
 
     /// <summary>
-    /// Wire id: [RpcId] override or FNV-1a of "Namespace.Contract.Method(ParamTypes)" (the contract, not the declaring
+    /// Wire id: [WireId] override or FNV-1a of "Namespace.Contract.Method(ParamTypes)" (the contract, not the declaring
     /// interface, so a contract extending another one never registers duplicate ids).
     /// </summary>
     public static uint MethodId(INamedTypeSymbol contract, IMethodSymbol method)
     {
-        var idAttribute = method.GetAttributes().FirstOrDefault(a => a.AttributeClass?.ToDisplayString() == "DaServer.Rpc.RpcIdAttribute");
+        var idAttribute = method.GetAttributes().FirstOrDefault(a => a.AttributeClass?.ToDisplayString() == WireIdAttribute);
         return idAttribute?.ConstructorArguments.FirstOrDefault().Value is uint explicitId
             ? explicitId
             : Fnv1a($"{contract.ToDisplayString()}.{method.Name}({string.Join(",", method.Parameters.Select(p => p.Type.ToDisplayString()))})");
+    }
+
+    /// <summary>
+    /// Types that cross the wire: primitives, strings, enums, arrays and BCL generics of wire types, and [NinoType]
+    /// types. Anything else would fail at run time in the serializer, so it is a build error (DAS009).
+    /// </summary>
+    public static bool IsWireType(ITypeSymbol type)
+    {
+        switch (type)
+        {
+            case IArrayTypeSymbol array:
+                return IsWireType(array.ElementType);
+            case ITypeParameterSymbol:
+                return false;
+        }
+
+        if (type.SpecialType != SpecialType.None || type.TypeKind == TypeKind.Enum) return true;
+        if (HasAttribute(type, NinoTypeAttribute)) return true;
+        if (type is INamedTypeSymbol named && named.ContainingNamespace?.ToDisplayString() is { } ns &&
+            (ns == "System" || ns.StartsWith("System.", System.StringComparison.Ordinal)))
+            return named.TypeArguments.All(IsWireType);
+        return false;
+    }
+
+    /// <summary>Event types handled by <paramref name="type"/> (its <c>IHandle&lt;T&gt;</c> interfaces).</summary>
+    public static INamedTypeSymbol[] HandledEvents(INamedTypeSymbol type) =>
+        type.AllInterfaces.Where(i => i.ConstructedFrom.ToDisplayString() == IHandle)
+            .Select(i => i.TypeArguments[0]).OfType<INamedTypeSymbol>().ToArray();
+
+    /// <summary>An event type (a struct implementing IEvent) that is not serializable (DAS009).</summary>
+    public static void CheckEvent(INamedTypeSymbol type, Report? report)
+    {
+        if (type.TypeKind == TypeKind.Struct && Implements(type, IEvent) && !HasAttribute(type, NinoTypeAttribute))
+            report?.Invoke(Rules.NotWireType, type.Locations.FirstOrDefault(), type.ToDisplayString(), "event " + type.Name);
     }
 
     public static HostedModel? ReadHosted(INamedTypeSymbol type, Report? report = null)
@@ -159,15 +219,32 @@ internal static class Shapes
         var contracts = isSystem
             ? []
             : type.AllInterfaces.Where(i => KindOf(i) is ContractKind.Actor or ContractKind.Service).ToArray();
-        if (!isSystem && contracts.Length == 0) return null;
+        var events = isSystem ? [] : HandledEvents(type);
+        if (!isSystem && contracts.Length == 0 && events.Length == 0) return null;
 
         bool valid = true;
         var location = type.Locations.FirstOrDefault();
-        bool isActor = contracts.Any(c => KindOf(c) == ContractKind.Actor);
-        if (isActor && !DerivesFrom(type, ActorBase))
+        bool actorContract = contracts.Any(c => KindOf(c) == ContractKind.Actor);
+        bool isActor = actorContract || DerivesFrom(type, ActorBase);
+        if (actorContract && !DerivesFrom(type, ActorBase))
         {
-            report?.Invoke(Rules.ActorBase, location, type.Name, contracts[0].Name);
+            report?.Invoke(Rules.ActorBase, location, type.Name, contracts.First(c => KindOf(c) == ContractKind.Actor).Name);
             valid = false;
+        }
+
+        if (isActor && contracts.Any(c => KindOf(c) == ContractKind.Service))
+        {
+            report?.Invoke(Rules.MixedKinds, location, type.Name);
+            valid = false;
+        }
+
+        if (isActor)
+        {
+            foreach (var e in events.Where(e => !Implements(e, IKeyedEvent)))
+            {
+                report?.Invoke(Rules.UnkeyedActorEvent, location, type.Name, e.Name);
+                valid = false;
+            }
         }
 
         if (!type.InstanceConstructors.Any(c => c.Parameters.Length == 0 && c.DeclaredAccessibility == Accessibility.Public))
@@ -177,12 +254,8 @@ internal static class Shapes
         }
 
         if (!valid) return null;
-        var roles = type.GetAttributes()
-            .Where(a => a.AttributeClass?.ToDisplayString() == RoleAttribute)
-            .SelectMany(a => a.ConstructorArguments.SelectMany(arg => arg.Kind == TypedConstantKind.Array ? arg.Values : ImmutableArray.Create(arg)))
-            .Select(v => v.Value as string).Where(v => v != null).Select(v => v!).ToArray();
         return new HostedModel(type.ToDisplayString(Fqn), isSystem, isActor ? ContractKind.Actor : ContractKind.Service,
             new EquatableArray<string>(contracts.Select(c => c.ToDisplayString(Fqn)).ToArray()),
-            new EquatableArray<string>(roles));
+            new EquatableArray<string>(events.Select(e => e.ToDisplayString(Fqn)).OrderBy(e => e).ToArray()));
     }
 }

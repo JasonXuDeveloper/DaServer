@@ -53,8 +53,9 @@ public class GeneratorTests
         var (sources, diagnostics) = await Run("""
             namespace Game;
             public interface IShop : IService { ValueTask<int> Price(string item, int count); void Log(string s); ValueTask Clear(); }
-            [ClientAccessible(AnyKey = true)]
-            public interface IRoom : IActor { ValueTask<string?> Topic(); }
+            public interface IRoom : IPublicActor { ValueTask<string?> Topic(); }
+            public interface IHero : ISessionActor { void Move(float x, float y); }
+            [Nino.Core.NinoType] public readonly partial record struct Opened(long Key) : IKeyedEvent;
             public interface IRoomClient : IClientCallback { void OnTopic(string topic); }
             public sealed class Shop : Service, IShop
             {
@@ -62,12 +63,18 @@ public class GeneratorTests
                 public void Log(string s) { }
                 public ValueTask Clear() => default;
             }
-            [Role("game")]
-            public sealed class Room : Actor, IRoom { public ValueTask<string?> Topic() => new((string?)null); }
+            public sealed class Room : Actor, IRoom, IHandle<Opened>
+            {
+                public ValueTask<string?> Topic() => new((string?)null);
+                public ValueTask Handle(Opened e) => default;
+            }
+            public sealed class Hero : Actor, IHero { public void Move(float x, float y) { } }
             """);
         Assert.That(diagnostics, Is.Empty);
         Assert.That(sources.Single(s => s.Contains("RegisterImplementation")),
-            Does.Contain("typeof(global::Game.Room)").And.Contain("\"game\""));
+            Does.Contain("typeof(global::Game.Room)").And.Contain("EventHandlerInfo.Of<global::Game.Opened>()"));
+        Assert.That(sources, Has.Some.Contains("ClientAccess.AnyKey"));
+        Assert.That(sources, Has.Some.Contains("Hero(this DaServer.Client.ClusterClient client)"), "keyless client accessor");
         Assert.That(sources, Has.Some.Contains("public readonly struct ShopProxy : global::Game.IShop"));
         Assert.That(sources, Has.Some.Contains("RoomClient(this IRpcInvoker cluster, ClientGroup group)"));
     }
@@ -76,10 +83,16 @@ public class GeneratorTests
     [TestCase("public interface IBad : IService { ValueTask A(ref int x); }", "DAS002")]
     [TestCase("public interface IBad : IService { ValueTask A<T>(); }", "DAS003")]
     [TestCase("public interface IBad : IClientCallback { ValueTask A(); }", "DAS004")]
-    [TestCase("public interface IBad : IService { [RpcId(5)] ValueTask A(); [RpcId(5)] ValueTask B(); }", "DAS005")]
+    [TestCase("public interface IBad : IService { [WireId(5)] ValueTask A(); [WireId(5)] ValueTask B(); }", "DAS005")]
     [TestCase("public interface IA : IActor { ValueTask A(); } public sealed class Bad : IA { public ValueTask A() => default; }", "DAS006")]
     [TestCase("public interface IS : IService { ValueTask A(); } public sealed class Bad : Service, IS { public Bad(int x) { } public ValueTask A() => default; }", "DAS007")]
     [TestCase("public interface IBad : IService { int P { get; } }", "DAS008")]
+    [TestCase("public struct Data { } public interface IBad : IService { ValueTask A(Data d); }", "DAS009")]
+    [TestCase("public struct Data { } public interface IBad : IService { ValueTask<Data[]> A(); }", "DAS009")]
+    [TestCase("public partial record struct Happened(int X) : IEvent;", "DAS009")]
+    [TestCase("[Nino.Core.NinoType] public partial record struct Tick(int N) : IEvent; public sealed class Bad : Actor, IHandle<Tick> { public ValueTask Handle(Tick e) => default; }", "DAS010")]
+    [TestCase("public interface IA : IActor { } public interface IS : IService { } public sealed class Bad : Actor, IA, IS { }", "DAS011")]
+    [TestCase("public interface IBad : ISessionActor, IPublicActor { ValueTask A(); }", "DAS012")]
     public async Task MisuseIsReportedByTheAnalyzer(string source, string id)
     {
         var (_, diagnostics) = await Run(source);

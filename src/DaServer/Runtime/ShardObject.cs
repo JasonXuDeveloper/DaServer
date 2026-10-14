@@ -18,9 +18,9 @@ public abstract class ShardObject
 
     /// <summary>
     /// The cluster: generated proxies hang off it (<c>Cluster.Player(id).AddGold(10)</c>,
-    /// <c>Cluster.GameClient(session).OnChat(..)</c>), plus session binding and groups.
+    /// <c>Cluster.PlayerClient(session).OnChat(..)</c>), plus session binding and groups.
     /// </summary>
-    public Node Cluster => Shard.Node;
+    public ICluster Cluster => Shard.Node;
 
     protected ILogger Logger => Shard.Node.Logger;
 

@@ -101,7 +101,10 @@ public sealed class Connection
     public static async ValueTask<Connection> ConnectAsync(EndPoint endPoint, IConnectionHandler handler,
         ConnectionOptions? options = null, CancellationToken cancellationToken = default)
     {
-        var socket = new Socket(endPoint.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
+        // A DnsEndPoint (host name: containers, Aspire service discovery) has no family: use a dual-mode socket.
+        var socket = endPoint.AddressFamily == AddressFamily.Unspecified
+            ? new Socket(SocketType.Stream, ProtocolType.Tcp)
+            : new Socket(endPoint.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
         try
         {
             await socket.ConnectAsync(endPoint, cancellationToken).ConfigureAwait(false);

@@ -1,4 +1,5 @@
-<Project Sdk="Microsoft.NET.Sdk">
+<Project>
+    <!-- Shared by the sample's node projects: a node hosts every actor, service and system compiled into its project. -->
 
     <PropertyGroup>
         <OutputType>Exe</OutputType>
@@ -11,14 +12,11 @@
     </PropertyGroup>
 
     <ItemGroup>
-        <ProjectReference Include="..\..\src\DaServer.Hosting\DaServer.Hosting.csproj" />
-        <ProjectReference Include="..\Sample.Contracts\Sample.Contracts.csproj" />
-        <ProjectReference Include="..\..\src\DaServer.Generator\DaServer.Generator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+        <ProjectReference Include="$(MSBuildThisFileDirectory)..\src\DaServer.Hosting\DaServer.Hosting.csproj" />
+        <ProjectReference Include="$(MSBuildThisFileDirectory)Sample.Contracts\Sample.Contracts.csproj" />
+        <ProjectReference Include="$(MSBuildThisFileDirectory)..\src\DaServer.Generator\DaServer.Generator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
         <ProjectReference Include="$(EasyEcsGeneratorProject)" OutputItemType="Analyzer" ReferenceOutputAssembly="false" Condition="Exists('$(EasyEcsGeneratorProject)')" />
-    </ItemGroup>
-
-    <ItemGroup>
+        <Compile Include="$(MSBuildThisFileDirectory)NodeProgram.cs" Link="Program.cs" />
         <None Update="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
     </ItemGroup>
-
 </Project>
