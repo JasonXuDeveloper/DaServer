@@ -25,6 +25,8 @@ public static class NodeMetrics
             description: "Active actor activations");
         Meter.CreateObservableGauge("daserver.gateway.sessions", () => Sample(static n => n.SessionCount),
             description: "Connected client sessions");
+        Meter.CreateObservableCounter("daserver.shard.rejected", () => Sample(static n => n.Rejected),
+            description: "Calls and events refused because a shard or actor mailbox was full");
     }
 
     public static void Track(Node node)
@@ -32,11 +34,11 @@ public static class NodeMetrics
         lock (Nodes) Nodes.Add(node);
     }
 
-    private static IEnumerable<Measurement<int>> Sample(System.Func<Node, int> read)
+    private static IEnumerable<Measurement<T>> Sample<T>(System.Func<Node, T> read) where T : struct
     {
         Node[] nodes;
         lock (Nodes) nodes = Nodes.ToArray();
         foreach (var node in nodes)
-            yield return new Measurement<int>(read(node), new KeyValuePair<string, object?>("node", node.Options.Name));
+            yield return new Measurement<T>(read(node), new KeyValuePair<string, object?>("node", node.Options.Name));
     }
 }

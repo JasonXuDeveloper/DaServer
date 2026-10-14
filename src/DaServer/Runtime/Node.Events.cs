@@ -53,7 +53,7 @@ public sealed partial class Node
         if (target == null) return;
         w.SetHeader(FrameKind.Event, route.ImplementationId, eventId, key, hops: hops);
         if (target.NodeId == Id)
-            SelectShard(route.ImplementationId, route.Actor, key).Post(new WorkItem(WorkKind.Dispatch, FrameWriter.CopyOf(w.Frame), null));
+            Admit(SelectShard(route.ImplementationId, route.Actor, key), FrameWriter.CopyOf(w.Frame), null);
         else
             GetLink(target).Send(w.Frame);
     }
@@ -68,8 +68,7 @@ public sealed partial class Node
             return;
         }
 
-        SelectShard(impl.Id, impl.Kind == RpcContractKind.Actor, header.Key)
-            .Post(new WorkItem(WorkKind.Dispatch, FrameWriter.CopyOf(frame), null));
+        Admit(SelectShard(impl.Id, impl.Kind == RpcContractKind.Actor, header.Key), FrameWriter.CopyOf(frame), null);
     }
 
     /// <summary>
