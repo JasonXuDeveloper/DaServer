@@ -286,7 +286,8 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
   endpoints (webhooks, payment callbacks, HTTP login, back-office). A hand-written HTTP responder would re-implement
   Kestrel and the official health-check middleware.
 - Decision: every node hosts Kestrel on a separate HTTP port for health (`/health` readiness, `/alive` liveness),
-  admin endpoints and user REST endpoints. Node-to-node and client traffic stays on DaServer's TCP links (zero GC,
+  admin endpoints and user REST endpoints, all as minimal APIs (no MVC controllers: lighter, AOT/trim friendly, and
+  one reloadable endpoint source for N9). Node-to-node and client traffic stays on DaServer's TCP links (zero GC,
   ordered, batched). HTTP handlers run on the thread pool and reach actors only through `ICluster`.
 - Consequences: nodes reference the ASP.NET Core shared framework (aspnet runtime image, a few MB of memory, tens of
   ms of start-up); HTTP requests allocate like any ASP.NET request, so the HTTP plane is for low-frequency work, never

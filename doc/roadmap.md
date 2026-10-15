@@ -328,10 +328,9 @@ in separate commits.
       the old context unloads when unused, weak-reference leak check, no forced GC; a changed Model/Contracts refuses
       and needs a rolling deploy) and config (validated snapshot, pinned per shard wake, cluster-wide trigger, version
       in gossip). HTTP endpoints (ADR-046) reload with the Logic assembly: the framework owns a reloadable
-      `EndpointDataSource` whose change token swaps the endpoint set (minimal API style handlers declared in Logic,
-      registered by the generator), in-flight requests finish on the old delegates; MVC controllers only through
-      `ApplicationPartManager` + `IActionDescriptorChangeProvider`, and the unload test must prove no MVC, routing or
-      System.Text.Json cache keeps the old context alive (JSON through source-generated contexts in Logic). Benchmark
+      `EndpointDataSource` whose change token swaps the endpoint set (minimal API handlers declared in Logic,
+      registered by the generator), in-flight requests finish on the old delegates; the unload test proves no routing
+      or System.Text.Json cache keeps the old context alive (JSON through source-generated contexts in Logic). Benchmark
       the hot path before and after. (a studied game server, ET)
 - [ ] N11 Generated filters: `[Filter<T>]` with static `Before`/`After` inlined into the dispatchers (rate limits on
       `FromClient`, auth, metrics), nothing for handlers without filters. (Orleans call filters)
