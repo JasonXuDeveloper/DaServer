@@ -119,10 +119,18 @@ in separate commits.
       `Task.Delay`/blocking calls in handlers. (ET timers as data, Orleans timers)
 - [ ] N3 Call cycles fail fast: a chain id travels with requests (`FrameFlags` bit + 8 bytes); mail carrying the
       running turn's chain id is answered `CallCycle` at once instead of waiting for the timeout. (Orleans call chains)
-- [ ] N3b No sync-over-async on shard threads: DAS008 reports `.Result`, `.Wait()`, `GetAwaiter().GetResult()` and
-      `AsTask().Wait*` on tasks/ValueTasks in actors, services and systems (a blocked shard thread can never run the
-      continuation it waits for); the pooled call source throws when its result is read before completion instead of
-      returning a default and corrupting the pool; a blocking wait on a shard thread throws (debug and tests).
+- [ ] N3b No sync-over-async on shard threads (agreed: all four layers):
+      1. DAS008 (error) in actors, services and systems: `.Result`, `.Wait()`, `GetAwaiter().GetResult()`,
+         `AsTask().Wait*`, `Thread.Sleep`, `SemaphoreSlim.Wait`, `Monitor.Enter`/`lock` waits; the message names the
+         replacement for the context.
+      2. Replacements: handlers `await` (a turn: only that actor waits); delays use `SendAfter` (N2, the actor stays
+         free); systems use requests as data: `Cluster.Ask(target, request, replyTo: entity)` delivers the reply as a
+         `Reply<TReply>` component (or a `CallFailed` tag) on that entity for a later `[ForEach]` system (no
+         continuation, zero allocation).
+      3. Runtime: reading a pooled call's result before completion throws; a shard stall watchdog (shard thread away
+         from its loop longer than a threshold) logs the stack and marks the node degraded in health checks.
+      4. `Ask` returns a framework awaitable (`Reply<T>`-style, await-only: no `.Result`/`.Wait`/`AsTask`), whose
+         awaiter throws instead of blocking when read before completion; `Cluster.WhenAll(...)` combinators.
 - [ ] N4 Route completeness check: one handler type per request / one-way message kind across all node projects,
       a handler for every `FromClient` message; run in tests and at AppHost start. (Orleans compile-time interfaces)
 - [ ] N7 Placement affinity: an actor type may declare a placement key (`PlacementKey(key)`), hashed instead of the
