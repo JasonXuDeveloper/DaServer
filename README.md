@@ -96,7 +96,8 @@ Everything a developer declares is one of these. The message type alone decides 
 | **System** | One per-tick responsibility over all matching entities of a shard. Stateless. | Reference other systems, perform IO. |
 
 Business code reaches the cluster through `ICluster`: `Cluster` in actors and services, `world.Cluster()` in systems.
-`CallerSession` is the client session of the running turn (valid across its awaits).
+`Caller` is who sent the running turn's message from outside the cluster, a client session (valid across its awaits;
+`Cluster.Send(Caller, m)` answers it, `BindSession(Caller)` binds it).
 
 The runtime owns client sessions: an actor's `await BindSession(session)` routes the client's messages for that actor
 type to its id and puts the session in the actor's `Group`; when the session closes (or its gateway crashes),
@@ -131,7 +132,7 @@ public sealed class Account : Service
     public async ValueTask<LoginResult> On(Login m)
     {
         var player = Accounts.IdOf(m.Name);                                    // a PlayerId
-        bool attached = await Cluster.Ask(player, new Attach(CallerSession)); // the Player actor of that id
+        bool attached = await Cluster.Ask(player, new Attach(Caller)); // the Player actor of that id
         return new LoginResult(attached, player);
     }
 }
@@ -150,7 +151,7 @@ public sealed class Player : Actor<PlayerId, PlayerState>
     [Handle]
     public async ValueTask<bool> On(EnterMap m)
     {
-        await Cluster.Ask(m.Map, new Enter(Id, CallerSession)); // zero allocation
+        await Cluster.Ask(m.Map, new Enter(Id, Caller)); // zero allocation
         State.Map = m.Map;
         return true;
     }
@@ -176,11 +177,11 @@ public sealed class Map : Actor<MapId, MapState>
 
     [Handle]
     public void On(Move m) =>                      // input is data: systems integrate it
-        State.Avatars[CallerSession].Get<Velocity>() = new(m.VelocityX, m.VelocityY);
+        State.Avatars[Caller].Get<Velocity>() = new(m.VelocityX, m.VelocityY);
 
     [Handle]
     public void On(Say m) =>
-        Cluster.Send(Group, new Chat(State.Avatars[CallerSession].Get<Avatar>().Player, m.Text));
+        Cluster.Send(Group, new Chat(State.Avatars[Caller].Get<Avatar>().Player, m.Text));
 }
 
 // ...and systems do the per-tick work, one responsibility each.
