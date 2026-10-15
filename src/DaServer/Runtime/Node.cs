@@ -7,13 +7,16 @@ namespace DaServer.Runtime;
 /// One process of the cluster: owns the shards, the cluster listener and links, membership and placement, and routes
 /// every message (<see cref="ICluster"/>).
 /// </summary>
-internal sealed partial class Node : ICluster, IAsyncDisposable
+internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
 {
     private readonly ConcurrentDictionary<(string Host, int Port), PeerLink> _links = new();
     private PeerLink[] _linkList = [];
     private readonly ConcurrentDictionary<ulong, PeerLink> _introduced = new(); // node id -> link, from Hellos
     private Shard[] _shards = [];
     private FrozenDictionary<uint, HandlerTypeInfo> _handlerTypeById = FrozenDictionary<uint, HandlerTypeInfo>.Empty;
+    private Dictionary<uint, IAddressHandler>? _registering = new(); // address handlers while features start
+    private FrozenDictionary<uint, IAddressHandler> _addressHandlers = FrozenDictionary<uint, IAddressHandler>.Empty;
+    private readonly HashSet<ulong> _deadReported = new(); // members whose death features were told (view changes are serialized)
     private Listener? _clusterListener;
     private Timer? _maintenance;
     private int _started;
@@ -34,6 +37,20 @@ internal sealed partial class Node : ICluster, IAsyncDisposable
     public ulong Id { get; }
 
     ulong ICluster.NodeId => Id;
+
+    ulong INodeContext.NodeId => Id;
+
+    ICluster INodeContext.Cluster => this;
+
+    void INodeContext.HandleAddress<TAddr>(IAddressHandler handler)
+    {
+        var registering = _registering ?? throw new InvalidOperationException("Address handlers are registered in NodeFeature.Start");
+        if (!registering.TryAdd(Addresses<TAddr>.Scope, handler))
+            throw new InvalidOperationException($"{typeof(TAddr)} already has a handler on this node");
+    }
+
+    /// <summary>The address scopes this node's features handle (advertised in its card).</summary>
+    internal uint[] AdvertisedScopes() => [.. _addressHandlers.Keys];
 
     public ILogger Logger { get; }
 
@@ -60,6 +77,10 @@ internal sealed partial class Node : ICluster, IAsyncDisposable
             throw new InvalidOperationException("Node already started");
 
         ResolveHosting();
+        foreach (var feature in Options.Features) feature.Start(this);
+        StartGateway();
+        _addressHandlers = _registering!.ToFrozenDictionary();
+        _registering = null;
 
         _clusterListener = new Listener(Options.ClusterBindEndPoint,
             socket => new Connection(socket, ClusterHandler, ConnectionOptions.ForNodeLinks()));
@@ -74,8 +95,6 @@ internal sealed partial class Node : ICluster, IAsyncDisposable
         for (int i = 0; i < shardCount; i++)
             _shards[i] = new Shard(this, i, Options.DispatchQueueCapacity, Options.TickRate);
         foreach (var shard in _shards) shard.Start();
-
-        StartGateway();
 
         Membership.Start(host, _clusterListener.LocalEndPoint.Port);
         _maintenance = new Timer(static s => ((Node)s!).Maintain(), this, 100, 100);
@@ -107,8 +126,10 @@ internal sealed partial class Node : ICluster, IAsyncDisposable
         if (hasPeers)
             await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(Options.GossipInterval.TotalMilliseconds, 500))).ConfigureAwait(false);
 
+        foreach (var feature in Options.Features) await feature.DrainAsync(CancellationToken.None).ConfigureAwait(false);
         StopGateway();
         await StopShards().ConfigureAwait(false);
+        foreach (var feature in Options.Features) feature.Stop(crashed: false);
         CloseLinks();
         Logger.LogInformation("Node {Name} ({Id:x}) stopped", Options.Name, Id);
     }
@@ -127,6 +148,7 @@ internal sealed partial class Node : ICluster, IAsyncDisposable
         _killed = true;
         CloseLinks();
         StopGateway();
+        foreach (var feature in Options.Features) feature.Stop(crashed: true);
         await StopShards().ConfigureAwait(false);
     }
 
@@ -212,12 +234,17 @@ internal sealed partial class Node : ICluster, IAsyncDisposable
         foreach (var shard in _shards) shard.RequestRebalance();
 
         // Calls waiting on a dead member's link fail now instead of at their timeout (its stream cannot resume).
-        foreach (var member in View.Members)
+        var view = View;
+        foreach (var member in view.Members)
             if (member.Status == MemberStatus.Dead)
             {
                 _introduced.TryRemove(member.NodeId, out _);
                 if (_links.TryGetValue((member.Host, member.Port), out var link)) link.OnPeerDead();
+                if (_deadReported.Add(member.NodeId))
+                    foreach (var feature in Options.Features) feature.OnMemberDead(member);
             }
+
+        foreach (var feature in Options.Features) feature.OnViewChanged(view);
 
         var gateways = new List<ulong>();
         foreach (var member in View.Members)

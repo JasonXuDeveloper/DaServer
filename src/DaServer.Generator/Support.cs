@@ -9,8 +9,9 @@ internal static class Support
     public const string MessageAttribute = "DaServer.Rpc.MessageAttribute";
     public const string ClusterClientType = "DaServer.Client.ClusterClient";
     public const string ActorId = "DaServer.Rpc.IActorId";
-    public const string NodeAddress = "DaServer.Rpc.INodeAddress";
-    public const string GroupAddress = "DaServer.Rpc.IGroupAddress";
+
+    /// <summary>Address types of client connections: messages sent to them reach clients (<c>Flow.ToClient</c>).</summary>
+    public static readonly string[] ClientAddresses = ["DaServer.Rpc.SessionRef", "DaServer.Rpc.Origin", "DaServer.Rpc.ClientGroup"];
 
     /// <summary>DaServer.Rpc.Flow values.</summary>
     public const int FlowFromClient = 1, FlowToClient = 2;

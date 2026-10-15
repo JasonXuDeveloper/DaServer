@@ -81,7 +81,7 @@ sealed partial class Node : IConnectionHandler
 
         frame.SetCallId(callId);
         frame.SetHeader(FrameKind.Message, scope, messageId, value, FrameHeader.EncodeBudget(timeout));
-        if (link == null) DeliverToAddress(scope, value, frame.Frame, _localSink);
+        if (link == null) DeliverToAddress(frame.Frame, _localSink);
         else link.Send(frame.Frame);
         frame.Dispose();
     }

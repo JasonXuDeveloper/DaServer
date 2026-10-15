@@ -254,6 +254,7 @@ internal sealed class Shard
         World.AddSystem<IdleSystem>();
         World.AddSystem<UnloadSystem>();
         foreach (var info in Node.HostedSystems) World.AddSystem(info.Factory());
+        foreach (var feature in Node.Options.Features) feature.ConfigureShard(World);
     }
 
     /// <summary>Stopping: every actor removed, no service call running, nothing left in the dispatch queue.</summary>

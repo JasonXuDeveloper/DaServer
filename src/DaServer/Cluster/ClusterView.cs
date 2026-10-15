@@ -10,6 +10,7 @@ public sealed class ClusterView
     private readonly FrozenDictionary<uint, ClusterMember[]> _handlerTypeNodes;
     private readonly FrozenSet<uint> _actorTypes;
     private readonly FrozenDictionary<uint, MessageRoute[]> _routes;
+    private readonly FrozenDictionary<uint, ClusterMember[]> _scopeNodes;
 
     public ClusterView(IEnumerable<ClusterMember> members)
     {
@@ -18,6 +19,7 @@ public sealed class ClusterView
         var handlers = new Dictionary<uint, Dictionary<uint, bool>>();
         var upMembers = new List<ClusterMember>();
         var actorTypes = new HashSet<uint>();
+        var scopes = new Dictionary<uint, List<ClusterMember>>();
 
         foreach (var m in members)
         {
@@ -27,7 +29,15 @@ public sealed class ClusterView
             // They move when it is Dead or Leaving. New stateless work (services) goes to Up members only.
             bool up = m.Status == MemberStatus.Up;
             if (!up && m.Status != MemberStatus.Suspect) continue;
-            if (up) upMembers.Add(m);
+            if (up)
+            {
+                upMembers.Add(m);
+                foreach (uint scope in m.Scopes)
+                {
+                    if (!scopes.TryGetValue(scope, out var nodes)) scopes[scope] = nodes = new();
+                    nodes.Add(m);
+                }
+            }
 
             foreach (var handler in m.Handlers)
             {
@@ -58,7 +68,13 @@ public sealed class ClusterView
         }
 
         _routes = routes.ToFrozenDictionary();
+        var scopeArrays = new Dictionary<uint, ClusterMember[]>();
+        foreach (var (k, v) in scopes) scopeArrays[k] = v.ToArray();
+        _scopeNodes = scopeArrays.ToFrozenDictionary();
     }
+
+    /// <summary>The Up members handling address scope <paramref name="scope"/> (where its group messages go).</summary>
+    public ClusterMember[] NodesWithScope(uint scope) => _scopeNodes.TryGetValue(scope, out var nodes) ? nodes : [];
 
     public ClusterMember[] UpMembers { get; }
 

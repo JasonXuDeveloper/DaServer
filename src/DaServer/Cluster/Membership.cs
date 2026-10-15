@@ -102,6 +102,7 @@ internal sealed class Membership : IDisposable
                 Host = host,
                 Port = port,
                 ClientPort = _node.ClientPort,
+                Scopes = _node.AdvertisedScopes(),
                 ClientHost = _node.Options.ClientAdvertisedHost ?? host,
                 Balancer = _node.Options.Balancer,
                 Handlers = handlers,
