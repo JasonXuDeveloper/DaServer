@@ -147,7 +147,8 @@ Step plan (each step builds and keeps every test green; logic, docs, CI in separ
    converts implicitly from it.
 4. Session operations become messages to `SessionRef` (done: `JoinGroup`/`LeaveGroup`/`Disconnect` to a session or
    a group; `BindSession` asks a `Bind`, so ADR-022 ordering holds).
-5. Feature points and ingress (`DaServer.Features`, `DaServer.Ingress`):
+5. Feature points and ingress (`DaServer.Features`, `DaServer.Ingress`); done so far: `NodeFeature` hooks,
+   `HandleAddress<TAddr>` with scopes in the card and group fan-out by scope (client connections registered through it):
    - `NodeFeature`: Configure, ConfigureShard(World), Start(INodeContext), OnViewChanged, OnMemberDead,
      `Drain(deadline)`, Stop(crashed), a readiness contribution, metrics registration; options bound from
      `DaServer:{Section}`; enabled by configuration.

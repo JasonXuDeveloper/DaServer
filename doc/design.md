@@ -244,6 +244,18 @@ servers: `client.Ask(new Login(..))`, `client.Ask(new GetInfo())` (session actor
 binding), `client.Ask(roomId, new Join())` (`AnyId` messages). Push handlers are `[Handle]` methods of any class,
 registered with `client.Register(obj)`; they run on the IO thread or, for game loops and UIs, on the application's thread through `ProcessCallbacks`.
 
+### Features
+
+A capability a node runs besides its actors and services (client connections, an HTTP edge) is a `NodeFeature` in
+`NodeOptions.Features`, off unless configured (ADR-048). Hooks: `Start(INodeContext)` (IO side, before the shards
+run), `ConfigureShard(World)` (each shard thread), `OnViewChanged`, `OnMemberDead` (once per member), `DrainAsync`
+(the node is leaving, shards still run), `Stop(crashed)`, `IsReady`. A feature owns address types:
+`node.HandleAddress<TAddr>(handler)` receives every message to a `TAddr` of this node on the receiving thread with the
+raw frame (never blocking). Node addresses go to the node they name; the scope of each registered type is advertised
+in the node's card, and a message to a group address goes once to every Up node advertising its scope. The runtime
+never depends on a feature: the receiving node routes a frame by its target, a handler type to its shard or an address
+scope to the feature registered for it. Client connections are the first consumer (sessions, origins, client groups).
+
 ## 9. ECS in DaServer
 
 Business code and the runtime follow the same ECS rules (EasyEcs `doc/ecs-principles.md`). EasyEcs is data plus
