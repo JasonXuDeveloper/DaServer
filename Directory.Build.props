@@ -11,5 +11,9 @@
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
         <EasyEcsVersion>4.0.1</EasyEcsVersion>
         <NinoVersion>4.0.0-beta.47</NinoVersion>
+        <!-- Pre-1.0: the API may still change between minor versions. -->
+        <Version>0.1.0</Version>
+        <!-- NU5104: a release depending on a prerelease package (Nino 4 is in beta). -->
+        <NoWarn>$(NoWarn);NU5104</NoWarn>
     </PropertyGroup>
 </Project>
