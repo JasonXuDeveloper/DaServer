@@ -59,6 +59,12 @@ public interface INodeContext
 
     ILogger Logger { get; }
 
+    /// <summary>
+    /// A new origin id on this node (a client session, an HTTP request): unique among every ingress of the node, so a
+    /// message to an <see cref="Origin"/> reaches at most the one thing that was given it.
+    /// </summary>
+    long NewOriginId();
+
     /// <summary>Messages from outside the cluster (with an origin and a capped deadline).</summary>
     DaServer.Ingress.IIngress Ingress { get; }
 

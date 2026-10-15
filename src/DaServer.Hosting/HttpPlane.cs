@@ -1,0 +1,93 @@
+using DaServer.Ingress;
+using DaServer.Protocol;
+using DaServer.Rpc;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Hosting;
+
+namespace DaServer.Hosting;
+
+/// <summary>
+/// The node's HTTP plane (ADR-046): ASP.NET Core minimal APIs whose requests enter the cluster through the node's
+/// ingress, each with an origin of its own and its caller's budget. Endpoints reach actors only through messages.
+/// </summary>
+public static class DaServerHttpExtensions
+{
+    /// <summary>Request header: the caller's remaining time in milliseconds (capped at the node's call timeout).</summary>
+    public const string BudgetHeader = "DaServer-Budget";
+
+    /// <summary>
+    /// Run a node in this web application (<see cref="DaServerHostingExtensions.AddDaServer"/>) with Kestrel on
+    /// <c>{section}:HttpPort</c> at the node's listen address; without a port Kestrel keeps the host's own URLs
+    /// (<c>ASPNETCORE_URLS</c>), or a free port when there are none.
+    /// </summary>
+    public static WebApplicationBuilder AddDaServer(this WebApplicationBuilder builder, string section = "DaServer")
+    {
+        ((IHostApplicationBuilder)builder).AddDaServer(section);
+        var listen = builder.Configuration[$"{section}:ListenAddress"] ?? "0.0.0.0";
+        if (builder.Configuration[$"{section}:HttpPort"] is { Length: > 0 } port)
+            builder.WebHost.UseUrls($"http://{listen}:{port}");
+        else if (string.IsNullOrEmpty(builder.Configuration[WebHostDefaults.ServerUrlsKey]))
+            builder.WebHost.UseUrls($"http://{listen}:0");
+        return builder;
+    }
+
+    /// <summary>POST <paramref name="pattern"/>: the JSON body asked of the service handling it; the reply as JSON.</summary>
+    public static RouteHandlerBuilder MapAsk<TRequest, TReply>(this IEndpointRouteBuilder endpoints, string pattern)
+        where TRequest : struct, IRequest<TReply> =>
+        endpoints.MapPost(pattern, static async (HttpContext http, TRequest request, Node node) =>
+        {
+            IIngress ingress = ((Features.INodeContext)node).Ingress;
+            return await Reply(http, ingress.Ask<TRequest, TReply>(in request, OriginOf(node), BudgetOf(http)));
+        });
+
+    /// <summary>POST <paramref name="pattern"/> with an <c>{id}</c>: the JSON body asked of the actor <typeparamref name="TId"/>(id).</summary>
+    public static RouteHandlerBuilder MapAsk<TId, TRequest, TReply>(this IEndpointRouteBuilder endpoints, string pattern)
+        where TId : struct, IActorId where TRequest : struct, IRequest<TReply> =>
+        endpoints.MapPost(pattern, static async (HttpContext http, long id, TRequest request, Node node) =>
+        {
+            IIngress ingress = ((Features.INodeContext)node).Ingress;
+            return await Reply(http, ingress.Ask<TId, TRequest, TReply>(ActorIds<TId>.Of(id), in request, OriginOf(node), BudgetOf(http)));
+        });
+
+    /// <summary>POST <paramref name="pattern"/>: the JSON body sent one-way to the service handling it (202 Accepted).</summary>
+    public static RouteHandlerBuilder MapSend<T>(this IEndpointRouteBuilder endpoints, string pattern) where T : struct =>
+        endpoints.MapPost(pattern, static (T message, Node node) =>
+        {
+            IIngress ingress = ((Features.INodeContext)node).Ingress;
+            ingress.Send(MessageType<T>.Id, 0, 0, Nino.Core.NinoSerializer.Serialize(message), OriginOf(node));
+            return Results.Accepted();
+        });
+
+    private static Origin OriginOf(Node node) => new(node.Id, ((Features.INodeContext)node).NewOriginId());
+
+    private static TimeSpan BudgetOf(HttpContext http) =>
+        long.TryParse(http.Request.Headers[BudgetHeader], out long ms) && ms > 0 ? TimeSpan.FromMilliseconds(ms) : TimeSpan.Zero;
+
+    private static async ValueTask<IResult> Reply<TReply>(HttpContext http, ValueTask<TReply> call)
+    {
+        try
+        {
+            return Results.Json(await call);
+        }
+        catch (RpcException e)
+        {
+            if (e.RetryAfter > TimeSpan.Zero || e.Status is RpcStatus.Overloaded or RpcStatus.RateLimited)
+                http.Response.Headers.RetryAfter = Math.Max(1, (int)Math.Ceiling(e.RetryAfter.TotalSeconds)).ToString();
+            return Results.Problem(e.Message, statusCode: StatusCodeOf(e.Status));
+        }
+    }
+
+    /// <summary>The HTTP status of a failed call.</summary>
+    public static int StatusCodeOf(RpcStatus status) => status switch
+    {
+        RpcStatus.RateLimited => StatusCodes.Status429TooManyRequests,
+        RpcStatus.Overloaded or RpcStatus.NotHosted or RpcStatus.Disconnected => StatusCodes.Status503ServiceUnavailable,
+        RpcStatus.Timeout => StatusCodes.Status504GatewayTimeout,
+        RpcStatus.Forbidden => StatusCodes.Status403Forbidden,
+        _ => StatusCodes.Status500InternalServerError,
+    };
+}
