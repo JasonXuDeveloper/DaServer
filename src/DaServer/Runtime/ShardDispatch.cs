@@ -11,7 +11,7 @@ using Nino.Core;
 namespace DaServer.Runtime;
 
 /// <summary>
-/// Operations shared by the runtime systems (routing a frame, invoking a target, retiring an activation). Static and
+/// Operations shared by the runtime systems (routing a frame, delivering and invoking a message). Static and
 /// stateless: everything they touch lives in the world.
 /// </summary>
 internal static class ShardDispatch
@@ -74,7 +74,7 @@ internal static class ShardDispatch
     }
 
     /// <summary>
-    /// Queue a message for an actor and mark it ready unless it is busy (a running turn reschedules it). A full
+    /// Queue a message for an actor and tag it <see cref="Ready"/> (it runs once it has no turn). A full
     /// mailbox (<see cref="NodeOptions.ActorMailboxCapacity"/>) refuses the message: one slow actor cannot hold the
     /// shard's memory.
     /// </summary>
@@ -90,20 +90,12 @@ internal static class ShardDispatch
         }
 
         mailbox.Pending.Enqueue(envelope);
-        Schedule(world, actor, ref mailbox);
-    }
-
-    /// <summary>Put an idle actor with mail into <see cref="ReadyActors"/> (once).</summary>
-    public static void Schedule(World world, Entity actor, ref Mailbox mailbox)
-    {
-        if (mailbox.Scheduled || mailbox.Pending.Count == 0 || actor.Has<Turn>()) return;
-        mailbox.Scheduled = true;
-        world.GetSingleton<ReadyActors>().Queue.Enqueue(actor);
+        if (!actor.Has<Ready>()) actor.Add<Ready>();
     }
 
     /// <summary>
     /// Create the activation's entity (link, identity, mailbox, the actor's own components) and start
-    /// <see cref="Actor.OnLoad"/> as its first turn: mail waits until it completes.
+    /// <see cref="Actor.OnLoad"/> as its first turn (<see cref="Loading"/>): mail waits until it completes.
     /// </summary>
     private static Entity Activate(World world, ImplementationInfo impl, ActorId id)
     {
@@ -112,24 +104,13 @@ internal static class ShardDispatch
         actor.Key = id.Key;
         actor.Shard = world.Shard();
         var entity = world.CreateEntity(new ActorLink(actor), new ActorIdentity(id),
-            new Mailbox(new()) { LastActive = Environment.TickCount64 });
+            new Mailbox(new()) { LastActive = Environment.TickCount64 }, new Loading());
         actor.Entity = entity;
         var idle = actor.UnloadAfterIdle;
         if (idle > TimeSpan.Zero) entity.Add<UnloadWhenIdle>() = new UnloadWhenIdle((long)idle.TotalMilliseconds);
         actor.InitializeEntity(entity);
-        entity.Add<Turn>() = new Turn(Start(static a => a.OnLoad(), actor), TurnKind.Activation);
+        TurnWatcher.Begin(world, entity, Start(static a => a.OnLoad(), actor));
         return entity;
-    }
-
-    /// <summary>
-    /// Start unloading an idle actor: <see cref="Actor.OnUnload"/> runs as its last turn, then
-    /// <see cref="TurnSystem"/> retires it and routes mail that arrived meanwhile again (to the new owner, or to a new
-    /// activation here).
-    /// </summary>
-    public static void Unload(Entity entity, Actor actor)
-    {
-        entity.Add<Deactivating>();
-        entity.Add<Turn>() = new Turn(Start(static a => a.OnUnload(), actor), TurnKind.Deactivation);
     }
 
     /// <summary>Start a lifecycle hook, turning a synchronous throw into a faulted task.</summary>
@@ -300,43 +281,24 @@ internal static class ShardDispatch
         }
     }
 
-    /// <summary>Keep an unfinished service call until it completes (its state machine returns to its pool then).</summary>
+    /// <summary>
+    /// Keep an unfinished service call until it completes: it becomes a <see cref="ServiceCall"/> entity whose
+    /// <see cref="Turn"/> ends like an actor's (its state machine returns to its pool then).
+    /// </summary>
     private static void Track(World world, System.Threading.Tasks.ValueTask task)
     {
-        if (!task.IsCompleted) world.GetSingleton<ServiceTasks>().Tasks.Add(task);
+        if (!task.IsCompleted) TurnWatcher.Begin(world, world.CreateEntity(new ServiceCall()), task);
     }
 
-    /// <summary>
-    /// Remove an activation: drop it from the directory, destroy its entity, and forward its remaining mail (it is
-    /// routed again, now to the new owner) or fail it with <paramref name="status"/>.
-    /// </summary>
-    public static void Retire(World world, Entity actor, RpcStatus status = RpcStatus.Ok, string? message = null)
-    {
-        var pending = actor.Get<Mailbox>().Pending;
-        world.GetSingleton<ActorDirectory>().Actors.Remove(actor.Get<ActorIdentity>().Id);
-        actor.Destroy();
-
-        while (pending.TryDequeue(out var envelope))
-        {
-            if (status == RpcStatus.Ok)
-            {
-                Route(world, envelope.Frame, envelope.Sink);
-                continue;
-            }
-
-            var header = FrameHeader.Read(envelope.Frame.Frame);
-            Reject(envelope.Frame, envelope.Sink, header.Kind == FrameKind.Request ? header.RequestId : 0, status,
-                message ?? status.ToString());
-        }
-    }
-
-    /// <summary>Answer a request with an error status (one-way messages are dropped). Disposes the frame.</summary>
     /// <summary>Refuse a call or event that found its shard or mailbox full (calls get <see cref="RpcStatus.Overloaded"/>).</summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    internal static void Overloaded(FrameWriter frame, IReplySink? sink)
+    internal static void Overloaded(FrameWriter frame, IReplySink? sink) => Fail(frame, sink, RpcStatus.Overloaded, "Overloaded");
+
+    /// <summary>Answer a request with an error status (one-way messages are dropped). Disposes the frame.</summary>
+    internal static void Fail(FrameWriter frame, IReplySink? sink, RpcStatus status, string message)
     {
         var header = FrameHeader.Read(frame.Frame);
-        Reject(frame, sink, header.Kind == FrameKind.Request ? header.RequestId : 0, RpcStatus.Overloaded, "Overloaded");
+        Reject(frame, sink, header.Kind == FrameKind.Request ? header.RequestId : 0, status, message);
     }
 
     private static void Reject(FrameWriter frame, IReplySink? sink, uint requestId, RpcStatus status, string message)

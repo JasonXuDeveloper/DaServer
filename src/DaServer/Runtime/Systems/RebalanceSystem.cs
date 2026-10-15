@@ -3,14 +3,15 @@ using EasyEcs;
 namespace DaServer.Runtime;
 
 /// <summary>
-/// After a membership change (or on shutdown), starts deactivating actors this node no longer owns. Busy actors are
-/// retried on the next wake; their mail is forwarded once <see cref="Actor.OnUnload"/> completes.
+/// After a membership change (or on shutdown), asks the actors this node no longer owns to leave
+/// (<see cref="Unloading"/>); busy ones leave when their turn ends. Runs only when asked
+/// (<see cref="ShardActivity.Rebalance"/>).
 /// </summary>
 [UpdateInGroup<ShardMessages>]
 internal sealed class RebalanceSystem : EcsSystem
 {
-    private static readonly QueryFilter Idle = QueryFilter.Create().Without<Turn>().Without<Deactivating>();
-    private static readonly QueryFilter Busy = QueryFilter.Create().With<Turn>().Without<Deactivating>();
+    private static readonly QueryFilter Staying = QueryFilter.Create().Without<Unloading>().Without<Deactivating>()
+        .Without<Retiring>();
 
     public override int Priority => 5;
 
@@ -18,31 +19,14 @@ internal sealed class RebalanceSystem : EcsSystem
     {
         ref var activity = ref World.GetSingleton<ShardActivity>();
         if (!activity.Rebalance) return;
-        activity.Rebalance = false;
-
         bool all = activity.Stopping || activity.RetireAll;
-        var placement = World.Shard().Node.Placement;
-        foreach (var item in World.Query<ActorLink, ActorIdentity>(Idle))
-        {
-            var id = item.Component2.Id;
-            if (!all && placement.IsLocalOwner(id.ImplementationId, id.Key)) continue;
-            ShardDispatch.Unload(item.Entity, item.Component1.Actor);
-        }
+        activity.Rebalance = activity.RetireAll = false;
 
-        // Busy actors were skipped: if one of them must move, look again on the next wake (a turn's end wakes the shard).
-        bool retry = false;
-        foreach (var item in World.Query<ActorIdentity>(Busy))
+        var placement = World.Shard().Node.Placement;
+        foreach (var item in World.Query<ActorIdentity>(Staying))
         {
             var id = item.Component1.Id;
-            if (all || !placement.IsLocalOwner(id.ImplementationId, id.Key))
-            {
-                retry = true;
-                break;
-            }
+            if (all || !placement.IsLocalOwner(id.ImplementationId, id.Key)) item.Entity.Add<Unloading>();
         }
-
-        ref var after = ref World.GetSingleton<ShardActivity>();
-        after.Rebalance = retry;
-        if (!retry) after.RetireAll = false;
     }
 }

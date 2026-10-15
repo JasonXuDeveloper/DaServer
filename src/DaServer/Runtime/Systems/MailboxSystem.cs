@@ -5,43 +5,43 @@ namespace DaServer.Runtime;
 
 /// <summary>
 /// Runs the mail of ready actors, one turn at a time per actor: synchronous handlers run back to back; a handler that
-/// awaits becomes the actor's <see cref="Turn"/> and its next message waits for it. Only ready actors are visited.
+/// awaits becomes the actor's <see cref="Turn"/> and its next message waits for it. Only actors with mail and no turn
+/// are visited (<see cref="Ready"/>).
 /// </summary>
 [UpdateInGroup<ShardMessages>]
-internal sealed class MailboxSystem : EcsSystem
+internal sealed partial class MailboxSystem : EcsSystem
 {
     /// <summary>Upper bound per wake (fairness with timers and the tick under a flood).</summary>
     private const int Budget = 4096;
 
-    public override int Priority => 2;
+    /// <summary>Actors <see cref="Run"/> visits (the shard does not sleep while one is left).</summary>
+    internal static readonly QueryFilter Runnable = QueryFilter.Create().With<Ready>().Without<Turn>()
+        .Without<Unloading>().Without<Retiring>();
 
-    protected override void OnUpdate()
+    public override int Priority => 8;
+
+    protected override void OnUpdate() => World.GetSingleton<ShardActivity>().MailBudget = Budget;
+
+    [ForEach, With<Ready>, Without<Turn>, Without<Unloading>, Without<Retiring>]
+    private static void Run(Entity actor, ref Mailbox mailbox, in ActorLink link, ref ShardActivity activity, World world)
     {
-        var world = World;
-        var ready = world.GetSingleton<ReadyActors>().Queue;
+        if (activity.MailBudget <= 0) return; // continue next wake (the actor stays Ready)
+        mailbox.LastActive = Environment.TickCount64;
+        var pending = mailbox.Pending; // the queue outlives refs invalidated by handlers' structural changes
+        var target = link.Actor;
         int processed = 0;
-        long now = Environment.TickCount64;
-        while (processed < Budget && ready.TryDequeue(out var actor))
+        while (processed < activity.MailBudget && pending.TryDequeue(out var envelope))
         {
-            if (!actor.IsAlive) continue;
-            ref var mailbox = ref actor.Get<Mailbox>();
-            mailbox.Scheduled = false;
-            mailbox.LastActive = now;
-            var pending = mailbox.Pending;  // the queue object outlives refs invalidated by handlers' structural changes
-            var target = actor.Get<ActorLink>().Actor;
-
-            while (processed < Budget && pending.TryDequeue(out var envelope))
-            {
-                processed++;
-                var task = ShardDispatch.Invoke(target, in envelope);
-                if (task.IsCompleted) continue;
-                actor.Add<Turn>() = new Turn(task, TurnKind.Call);
-                break;
-            }
-
-            ShardDispatch.Schedule(world, actor, ref actor.Get<Mailbox>()); // budget exhausted: continue next wake
+            processed++;
+            var task = ShardDispatch.Invoke(target, in envelope);
+            if (task.IsCompleted) continue;
+            TurnWatcher.Begin(world, actor, task);
+            break;
         }
 
-        world.GetSingleton<ShardActivity>().Processed += processed;
+        ref var after = ref world.GetSingleton<ShardActivity>(); // `activity` may be stale after handlers ran
+        after.MailBudget -= processed;
+        after.Processed += processed;
+        if (pending.Count == 0) actor.Remove<Ready>();
     }
 }

@@ -12,6 +12,9 @@ internal enum WorkKind : byte
 
     /// <summary>A = Action&lt;object?&gt;, B = state. Continuations and runtime callbacks.</summary>
     Callback = 3,
+
+    /// <summary>A = <see cref="TurnWatcher"/>: a turn's task completed.</summary>
+    TurnEnded = 4,
 }
 
 /// <summary>Mailbox entry: a 24-byte struct (two references + kind), no allocation per message.</summary>

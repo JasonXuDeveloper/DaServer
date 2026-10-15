@@ -8,7 +8,7 @@ namespace DaServer.Runtime;
 
 /// <summary>
 /// Drains the shard's cross-thread inbox: routes received frames (to service instances or actor mailboxes), completes
-/// this shard's outgoing calls and runs posted callbacks (await continuations).
+/// this shard's outgoing calls, runs posted callbacks (await continuations) and tags ended turns (<see cref="TurnEnded"/>).
 /// </summary>
 [UpdateInGroup<ShardMessages>]
 internal sealed class InboxSystem : EcsSystem
@@ -39,6 +39,9 @@ internal sealed class InboxSystem : EcsSystem
                     case WorkKind.Callback:
                         if (item.A is System.Threading.SendOrPostCallback post) post(item.B);
                         else ((System.Action<object?>)item.A!)(item.B);
+                        break;
+                    case WorkKind.TurnEnded:
+                        ((TurnWatcher)item.A!).Ended(world);
                         break;
                 }
             }
