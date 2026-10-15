@@ -58,6 +58,26 @@ public class BackpressureTests : ClusterTest
     }
 
     [Test]
+    public async Task AnActorWhoseCallTimedOutResumesOnItsShard()
+    {
+        // The timeout is found by the maintenance timer, not on the caller's shard: the caller's code must not run there.
+        var node = await Start("single", shards: 2, configure: static o => o.CallTimeout = TimeSpan.FromMilliseconds(200));
+        var caller = new CounterId(1);
+        string callerShard = await node.Ask(caller, new WhereAmI());
+        var callee = new CounterId(2);
+        while (await node.Ask(callee, new WhereAmI()) == callerShard) callee = new CounterId(callee.Value + 1);
+        var blocked = node.Shards.Single(s => s.Index != node.Shards.Single(x => callerShard.EndsWith("-" + x.Index)).Index);
+        using var gate = new ManualResetEventSlim();
+        blocked.Post(static g => ((ManualResetEventSlim)g!).Wait(), gate);
+
+        Reports.ResumedOnShard = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        node.Send(caller, new AskAndFail(callee));
+        bool resumedOnShard = await Reports.ResumedOnShard.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        gate.Set();
+        Assert.That(resumedOnShard, Is.True);
+    }
+
+    [Test]
     public async Task ACallKeepsItsDeadlineAcrossNodes()
     {
         // The caller's remaining time travels in the request: the remote node drops it once the caller gave up.
