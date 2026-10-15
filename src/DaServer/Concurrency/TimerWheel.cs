@@ -40,7 +40,10 @@ public sealed class TimerWheel<T>
     /// <summary>Timers scheduled and not yet fired or cancelled.</summary>
     public int Count { get; private set; }
 
-    /// <summary>Fire <paramref name="item"/> once <paramref name="delay"/> has passed (at the first advance after it, rounded up to a tick).</summary>
+    /// <summary>
+    /// Fire <paramref name="item"/> once <paramref name="delay"/> has passed: never earlier, at most two ticks later (the
+    /// current tick is partly over, and the delay rounds up to whole ticks).
+    /// </summary>
     /// <returns>A handle for <see cref="Cancel"/>.</returns>
     public long Schedule(TimeSpan delay, in T item)
     {
@@ -48,7 +51,7 @@ public sealed class TimerWheel<T>
         ref var e = ref _entries[index];
         e.Item = item;
         long ticks = (long)Math.Ceiling(Math.Max(0, delay.TotalSeconds) * Stopwatch.Frequency / _tickTimestamps);
-        e.Due = Math.Max(TickOf(Stopwatch.GetTimestamp()), _current) + Math.Max(1, ticks);
+        e.Due = Math.Max(TickOf(Stopwatch.GetTimestamp()), _current) + ticks + 1;
         Link(index);
         Count++;
         return (long)e.Generation << 32 | (uint)index;

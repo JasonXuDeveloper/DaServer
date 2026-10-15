@@ -110,7 +110,7 @@ public class SingleNodeTests : ClusterTest
     [Test]
     public async Task DispatchFiltersRefuseBeforeTheHandlerRuns()
     {
-        MessageFilters.Register<Guarded>(static (in Guarded m, in CallContext _) => m.N < 0 ? RpcStatus.Forbidden : RpcStatus.Ok);
+        MessageFilters.Register<Guarded>(static (object _, in Guarded m, in CallContext _) => m.N < 0 ? RpcStatus.Forbidden : RpcStatus.Ok);
         Assert.That(await _node.Ask(new Guarded(7)), Is.EqualTo(7));
         var error = Assert.ThrowsAsync<RpcException>(async () => await _node.Ask(new Guarded(-1)));
         Assert.That(error!.Status, Is.EqualTo(RpcStatus.Forbidden));

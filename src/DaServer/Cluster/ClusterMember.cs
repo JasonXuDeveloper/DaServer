@@ -34,9 +34,6 @@ public partial class ClusterMember
     public string Host = "";
     public int Port;
 
-    /// <summary>Client (gateway) port, 0 when the node accepts no game clients.</summary>
-    public int ClientPort;
-
     /// <summary>Messages handled by the node's handler types.</summary>
     public HostedMessage[] Handlers = [];
 
@@ -54,27 +51,35 @@ public partial class ClusterMember
     /// <summary>Queued messages across the node's shards (load hint for service balancing).</summary>
     public int Load;
 
-    /// <summary>Host game clients use to reach this gateway (its public name or address).</summary>
-    public string ClientHost = "";
+    /// <summary>The keys of the node's pulse slots in slot order (counters its features gossip every round).</summary>
+    public uint[] PulseKeys = [];
 
-    /// <summary>Connected client sessions (gateways): clients are directed to the least loaded gateway.</summary>
-    public int Sessions;
+    /// <summary>The pulse slots' values (<see cref="Pulse.Slots"/>), updated in place by every gossip round.</summary>
+    public int[] PulseValues = new int[Pulse.Slots];
 
-    /// <summary>
-    /// Clients this node directed to the gateway since its last pulse (balancers only): added to <see cref="Sessions"/>
-    /// so a burst of connections within one gossip round does not all pick the gateway that reported the fewest.
-    /// </summary>
-    [NinoIgnore]
-    internal int Directed;
+    /// <summary>What the node's features publish about it (an endpoint, a mode): set once at start.</summary>
+    public CardEntry[] Entries = [];
 
-    /// <summary>Sessions the gateway has, as far as this node knows.</summary>
-    internal int ExpectedSessions => Sessions + Volatile.Read(ref Directed);
+    /// <summary>The value the member gossips under <paramref name="key"/> (<see cref="INodeContext.AddPulse"/>), 0 when none.</summary>
+    public int PulseValue(uint key)
+    {
+        int slot = Array.IndexOf(PulseKeys, key);
+        return slot >= 0 && slot < PulseValues.Length ? Volatile.Read(ref PulseValues[slot]) : 0;
+    }
 
-    /// <summary>A balancer: it directs clients to the other gateways and keeps no sessions itself.</summary>
-    public bool Balancer;
+    /// <summary>The member's card entry <paramref name="key"/> (<see cref="INodeContext.SetCardEntry"/>), or null.</summary>
+    public string? Entry(uint key)
+    {
+        foreach (var entry in Entries)
+            if (entry.Key == key) return entry.Value;
+        return null;
+    }
 
-    /// <summary>A gateway clients may be directed to.</summary>
-    public bool AcceptsSessions => ClientPort != 0 && !Balancer && Status == MemberStatus.Up;
+    /// <summary>Whether a feature of the member handles address scope <paramref name="scope"/>.</summary>
+    public bool HasScope(uint scope) => Array.IndexOf(Scopes, scope) >= 0;
+
+    /// <summary>A key of pulse slots and card entries: FNV-1a of a name the feature chooses (<c>"clients.sessions"</c>).</summary>
+    public static uint KeyOf(string name) => WireIds.Fnv1a(name);
 
     /// <summary>This node's link to the member (resolved once; copies share it: the endpoint never changes).</summary>
     [NinoIgnore]
@@ -89,14 +94,33 @@ public partial class ClusterMember
 }
 
 /// <summary>
-/// The part of a member that changes while it runs: what a gossip round carries for every member (29 bytes, written
+/// The part of a member that changes while it runs: what a gossip round carries for every member (37 bytes, written
 /// and read in place, so a round allocates nothing). Unknown node ids are answered with full cards.
 /// </summary>
-internal readonly record struct Pulse(ulong NodeId, int Incarnation, long Heartbeat, MemberStatus Status, int Load, int Sessions)
+internal readonly record struct Pulse(ulong NodeId, int Incarnation, long Heartbeat, MemberStatus Status, int Load,
+    int Slot0, int Slot1, int Slot2)
 {
-    public const int Size = 8 + 4 + 8 + 1 + 4 + 4;
+    /// <summary>Counters features may gossip per node (<see cref="INodeContext.AddPulse"/>).</summary>
+    public const int Slots = 3;
 
-    public static Pulse Of(ClusterMember m) => new(m.NodeId, m.Incarnation, m.Heartbeat, m.Status, m.Load, m.Sessions);
+    public const int Size = 8 + 4 + 8 + 1 + 4 + Slots * 4;
+
+    public static Pulse Of(ClusterMember m)
+    {
+        var v = m.PulseValues;
+        return new(m.NodeId, m.Incarnation, m.Heartbeat, m.Status, m.Load, Slot(v, 0), Slot(v, 1), Slot(v, 2));
+    }
+
+    private static int Slot(int[] values, int slot) => slot < values.Length ? Volatile.Read(ref values[slot]) : 0;
+
+    /// <summary>Copy the slots into <paramref name="values"/> (a member's, in place).</summary>
+    public void CopySlots(int[] values)
+    {
+        if (values.Length < Slots) return;
+        Volatile.Write(ref values[0], Slot0);
+        Volatile.Write(ref values[1], Slot1);
+        Volatile.Write(ref values[2], Slot2);
+    }
 
     /// <summary>Gossip merge order: higher incarnation, then worse status, then higher heartbeat wins.</summary>
     public bool Supersedes(ClusterMember current)
@@ -113,7 +137,9 @@ internal readonly record struct Pulse(ulong NodeId, int Incarnation, long Heartb
         BinaryPrimitives.WriteInt64LittleEndian(s.Slice(12), Heartbeat);
         s[20] = (byte)Status;
         BinaryPrimitives.WriteInt32LittleEndian(s.Slice(21), Load);
-        BinaryPrimitives.WriteInt32LittleEndian(s.Slice(25), Sessions);
+        BinaryPrimitives.WriteInt32LittleEndian(s.Slice(25), Slot0);
+        BinaryPrimitives.WriteInt32LittleEndian(s.Slice(29), Slot1);
+        BinaryPrimitives.WriteInt32LittleEndian(s.Slice(33), Slot2);
     }
 
     public static Pulse Read(ReadOnlySpan<byte> s) => new(
@@ -122,5 +148,11 @@ internal readonly record struct Pulse(ulong NodeId, int Incarnation, long Heartb
         BinaryPrimitives.ReadInt64LittleEndian(s.Slice(12)),
         (MemberStatus)s[20],
         BinaryPrimitives.ReadInt32LittleEndian(s.Slice(21)),
-        BinaryPrimitives.ReadInt32LittleEndian(s.Slice(25)));
+        BinaryPrimitives.ReadInt32LittleEndian(s.Slice(25)),
+        BinaryPrimitives.ReadInt32LittleEndian(s.Slice(29)),
+        BinaryPrimitives.ReadInt32LittleEndian(s.Slice(33)));
 }
+
+/// <summary>A key and value a node's feature publishes on its card (<see cref="ClusterMember.Entries"/>).</summary>
+[NinoType]
+public partial record struct CardEntry(uint Key, string Value);

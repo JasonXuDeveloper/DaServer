@@ -29,7 +29,7 @@ internal sealed class NodeStatsLogger(Node node, ILogger<NodeStatsLogger> logger
                     now.Gen0 - last.Gen0, now.Gen1 - last.Gen1, now.Gen2 - last.Gen2,
                     (now.Pause - last.Pause).TotalSeconds / seconds * 100,
                     GC.GetGCMemoryInfo().HeapSizeBytes / (1024 * 1024),
-                    node.SessionCount, node.ActorCount, node.TotalQueueLength(), node.Rejected, node.Expired);
+                    (node.Feature<DaServer.Clients.ClientConnections>()?.SessionCount ?? 0), node.ActorCount, node.TotalQueueLength(), node.Rejected, node.Expired);
                 last = now;
             }
         }

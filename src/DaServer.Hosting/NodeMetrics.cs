@@ -21,7 +21,7 @@ public static class NodeMetrics
             description: "Messages waiting in shard mailboxes");
         Meter.CreateObservableGauge("daserver.actors", () => Sample(static n => n.ActorCount),
             description: "Active loaded actors");
-        Meter.CreateObservableGauge("daserver.gateway.sessions", () => Sample(static n => n.SessionCount),
+        Meter.CreateObservableGauge("daserver.clients.sessions", () => Sample(static n => n.Feature<DaServer.Clients.ClientConnections>()?.SessionCount ?? 0),
             description: "Connected client sessions");
         Meter.CreateObservableCounter("daserver.shard.rejected", () => Sample(static n => n.Rejected),
             description: "Calls and events refused because a shard or actor mailbox was full");

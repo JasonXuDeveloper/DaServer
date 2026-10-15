@@ -14,13 +14,18 @@ public static class DaServerHostingExtensions
 {
     /// <summary>
     /// Run a DaServer <see cref="Node"/> in this host. Options bind from the <paramref name="section"/> configuration
-    /// section (appsettings, environment variables such as <c>DaServer__ClientPort=7100</c>, command line).
+    /// section (appsettings, environment variables such as <c>DaServer__Clients__Port=7100</c>, command line). Features
+    /// run when their section is configured: client connections with <c>{section}:Clients</c>.
     /// The node starts with the host and leaves the cluster gracefully on SIGTERM / Ctrl+C. A stats line is logged every
     /// <c>{section}:StatsInterval</c> (default 30 s, 0 turns it off).
     /// </summary>
     public static IHostApplicationBuilder AddDaServer(this IHostApplicationBuilder builder, string section = "DaServer")
     {
         builder.Services.Configure<NodeOptions>(builder.Configuration.GetSection(section));
+        var clients = builder.Configuration.GetSection($"{section}:Clients");
+        if (clients.Exists())
+            builder.Services.Configure<NodeOptions>(o => o.Features.Add(new DaServer.Clients.ClientConnections(
+                clients.Get<DaServer.Clients.ClientOptions>() ?? new DaServer.Clients.ClientOptions())));
         builder.Services.AddSingleton(static sp =>
         {
             var options = sp.GetRequiredService<IOptions<NodeOptions>>().Value;

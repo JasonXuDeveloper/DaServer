@@ -92,7 +92,7 @@ public sealed class DaServerCluster
     public DaServerNodeGroup AddBalancer<TProject>(string name, int replicas = 1) where TProject : IProjectMetadata, new()
     {
         var group = Add<TProject>(name, replicas, gateway: true);
-        foreach (var node in group.Nodes) node.WithEnvironment("DaServer__Balancer", "true");
+        foreach (var node in group.Nodes) node.WithEnvironment("DaServer__Clients__Balancer", "true");
         return group;
     }
 
@@ -116,7 +116,7 @@ public sealed class DaServerCluster
             if (gateway)
             {
                 node.WithEndpoint(port: _nextClientPort, targetPort: _nextClientPort++, scheme: "tcp", name: "client",
-                    env: "DaServer__ClientPort", isProxied: false, isExternal: true);
+                    env: "DaServer__Clients__Port", isProxied: false, isExternal: true);
                 clientEndpoints.Add(node.GetEndpoint("client"));
             }
 

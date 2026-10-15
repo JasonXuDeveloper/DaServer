@@ -163,97 +163,21 @@ internal static class ShardDispatch
         logger.LogError(e, "{Kind} {Id:x8} failed in {Target}", header.Kind, header.MessageId, target);
 
     /// <summary>
-    /// Invoke the next message of an actor. Records the client session of a gateway-relayed message (see
-    /// <see cref="ClientSessions"/>), forgets a closed one and swaps a resumed one; the late close of a resumed session
-    /// is not delivered.
+    /// Invoke the next message of an actor: its origin is the turn's caller and, being a client session, one the actor
+    /// knows (<see cref="ActorSessions"/>).
     /// </summary>
     public static System.Threading.Tasks.ValueTask Invoke(Actor actor, in Envelope envelope)
     {
         var header = FrameHeader.Read(envelope.Frame.Frame);
         actor.TurnCaller = default;
-        if (header.MessageId == MessageType<SessionClosed>.Id)
-        {
-            if (!ForgetSession(actor, envelope.Frame.Payload))
-            {
-                envelope.Frame.Dispose();
-                return default;
-            }
-        }
-        else if (header.MessageId == MessageType<SessionResync>.Id) ResyncSession(actor, envelope.Frame.Payload);
-        else if ((header.Flags & FrameFlags.HasOrigin) != 0)
+        if ((header.Flags & FrameFlags.HasOrigin) != 0)
         {
             actor.TurnCaller = envelope.Frame.Origin;
-            RecordSession(actor, actor.TurnCaller);
+            ActorSessions.Record(actor, actor.TurnCaller);
         }
 
         var dispatcher = actor.HandlerType.Handlers.Of(header.MessageId)!.Dispatcher; // validated by Route
         return Invoke(dispatcher, actor, envelope.Frame, envelope.Sink, actor.Shard.Node.Logger);
-    }
-
-    /// <summary>Remember a client session of a loaded actor (a hash lookup; allocates once per new session).</summary>
-    internal static void RecordSession(Actor actor, SessionRef session)
-    {
-        SessionsOf(actor).Sessions.Add(session);
-    }
-
-    private static ClientSessions SessionsOf(Actor actor)
-    {
-        var entity = actor.Entity;
-        if (!entity.TryGet<ClientSessions>(out var sessions))
-            entity.Add<ClientSessions>() = sessions = actor.World.GetSingleton<ActorPools>().RentSessions();
-        return sessions;
-    }
-
-    /// <summary>Forget a closed session; false when it had been resumed (its close is stale and not delivered).</summary>
-    private static bool ForgetSession(Actor actor, ReadOnlySpan<byte> payload)
-    {
-        if (!actor.Entity.TryGet<ClientSessions>(out var sessions)) return true;
-        var reader = new Reader(payload);
-        NinoDeserializer.Deserialize(out SessionClosed closed, ref reader);
-        if (sessions.Superseded.Remove(closed.Session)) return false;
-        sessions.Sessions.Remove(closed.Session);
-        return true;
-    }
-
-    /// <summary>The resumed session replaces the previous one; it is the caller of the turn (<c>Caller</c>).</summary>
-    private static void ResyncSession(Actor actor, ReadOnlySpan<byte> payload)
-    {
-        var reader = new Reader(payload);
-        NinoDeserializer.Deserialize(out SessionResync resync, ref reader);
-        var sessions = SessionsOf(actor);
-        sessions.Sessions.Remove(resync.Previous);
-        sessions.Superseded.Add(resync.Previous); // removed when its late SessionClosed arrives or its gateway dies
-        sessions.Sessions.Add(resync.Session);
-        actor.TurnCaller = new Origin(resync.Session.GatewayNodeId, resync.Session.SessionId);
-    }
-
-    /// <summary>
-    /// A gateway died without closing its sessions: every loaded actor of this shard that knew one of them receives
-    /// <see cref="SessionClosed"/> (when it handles it), as if the gateway had closed the session.
-    /// </summary>
-    internal static void CloseSessionsOf(World world, ulong gatewayNodeId)
-    {
-        List<SessionRef>? lost = null;
-        foreach (var item in world.Query<ClientSessions, ActorRef>())
-        {
-            var sessions = item.Component1.Sessions;
-            item.Component1.Superseded.RemoveWhere(s => s.GatewayNodeId == gatewayNodeId); // their close will not come
-            lost?.Clear();
-            foreach (var session in sessions)
-                if (session.GatewayNodeId == gatewayNodeId) (lost ??= new()).Add(session);
-            if (lost == null || lost.Count == 0) continue;
-
-            var actor = item.Component2.Actor;
-            bool handles = actor.HandlerType.Handlers.Of(MessageType<SessionClosed>.Id) != null;
-            foreach (var session in lost)
-            {
-                sessions.Remove(session);
-                if (!handles) continue;
-                var w = MessageWriter.Write(new SessionClosed(session));
-                w.SetHeader(FrameKind.Message, actor.HandlerType.Id, MessageType<SessionClosed>.Id, actor.Key);
-                Deliver(world, item.Entity, new Envelope(w, null));
-            }
-        }
     }
 
     /// <summary>

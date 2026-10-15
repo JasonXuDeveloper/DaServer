@@ -1,110 +1,91 @@
-namespace DaServer.Runtime;
+namespace DaServer.Clients;
 
-// Gateway capability (NodeOptions.ClientPort): client sessions, routing of client messages into the cluster, push and
-// group broadcast fan-out. Client messages are routed by patching header fields; payloads are never deserialized here.
-sealed partial class Node
+/// <summary>
+/// Client connections (ADR-048): game clients, bots and tools connect to this node (a client-facing node, the
+/// deployment's "gateway"), get a session, and their <see cref="Flow.FromClient"/> messages enter the cluster through
+/// the node's ingress with the session as origin. Messages to sessions and client groups are pushed to the sockets
+/// (a group message is serialized once and fanned out here); session operations (<see cref="JoinGroup"/>,
+/// <see cref="LeaveGroup"/>, <see cref="Disconnect"/>, bindings) are applied here; reconnect tickets let a client
+/// resume on any client-facing node. Payloads are never deserialized on the way in.
+/// </summary>
+public sealed class ClientConnections(ClientOptions options) : NodeFeature
 {
+    private Node _node = null!;
+    private volatile bool _stopped, _crashed;
+
     private readonly ConcurrentDictionary<long, Session> _sessions = new();
     private readonly ConcurrentDictionary<long, GroupMembers> _groups = new();
     private readonly Lock _groupGate = new(); // membership changes (control path); fan-out takes only its group's lock
-    private Listener? _clientListener;
+    private Listener? _listener;
     private GatewayHandler? _gatewayHandler;
     private byte[]? _ticketSecret; // reconnect tickets: null when the cluster has no secret
 
-    /// <summary>Port clients connect to (0 when this node accepts no clients).</summary>
-    public int ClientPort { get; private set; }
+    /// <summary>The port clients connect to (after the node started).</summary>
+    public int Port { get; private set; }
 
-    /// <summary>Connected client sessions on this gateway.</summary>
+    /// <summary>Connected client sessions.</summary>
     public int SessionCount => _sessions.Count;
 
-    private void StartGateway()
+    protected internal override void Start(INodeContext context)
     {
-        if (Options.ClientPort is not { } port) return;
+        _node = (Node)context; // a capability of this assembly: it may use the node's internals, never the other way round
         _gatewayHandler = new GatewayHandler(this);
         var addresses = new ClientAddresses(this);
-        INodeContext context = this;
         context.HandleAddress<SessionRef>(addresses);
         context.HandleAddress<Origin>(addresses); // the origin of a client's message is its session
-        if (!Options.Balancer) context.HandleAddress<ClientGroup>(addresses); // a balancer keeps no sessions
-        if (Options.ClusterSecret is { Length: > 0 } secret) _ticketSecret = System.Text.Encoding.UTF8.GetBytes(secret);
+        if (!options.Balancer) context.HandleAddress<ClientGroup>(addresses); // a balancer keeps no sessions
+        if (_node.Options.ClusterSecret is { Length: > 0 } secret) _ticketSecret = System.Text.Encoding.UTF8.GetBytes(secret);
         var sessionOptions = ConnectionOptions.ForClients();
-        sessionOptions.MaxFrameSize = Options.MaxClientFrameSize; // what an untrusted client may make us buffer
-        _clientListener = new Listener(new IPEndPoint(IPAddress.Parse(Options.ListenAddress), port), socket =>
+        sessionOptions.MaxFrameSize = options.MaxFrameSize; // what an untrusted client may make us buffer
+        _listener = new Listener(new IPEndPoint(IPAddress.Parse(_node.Options.ListenAddress), options.Port), socket =>
         {
             var connection = new Connection(socket, _gatewayHandler, sessionOptions);
-            var session = new Session(((INodeContext)this).NewOriginId(), connection); // a session is the origin of its messages
+            var session = new Session(context.NewOriginId(), connection); // a session is the origin of its messages
             connection.Tag = session;
             _sessions[session.Id] = session;
             lock (_groupGate) Join(session, ClientGroup.All.Id); // group 0 is a group like any other
             return connection;
         });
-        _clientListener.Start();
-        ClientPort = _clientListener.LocalEndPoint.Port;
+        _listener.Start();
+        Port = _listener.LocalEndPoint.Port;
+        context.SetCardEntry(ClientKeys.Endpoint, $"{options.AdvertisedHost ?? _node.AdvertisedHost}:{Port}");
+        context.AddPulse(ClientKeys.Sessions, () => _sessions.Count);
     }
 
-    private void StopGateway()
+    /// <summary>Keys of what client-facing nodes publish: where clients connect, how many sessions they hold.</summary>
+    private static class ClientKeys
     {
-        _clientListener?.Dispose();
+        public static readonly uint Endpoint = ClusterMember.KeyOf("clients.endpoint"), Sessions = ClusterMember.KeyOf("clients.sessions");
+    }
+
+    /// <summary>
+    /// Clients this node directed to each client-facing node since that node's last gossiped session count: added to
+    /// it, so a burst of connections within one gossip round does not all pick the node that reported the fewest.
+    /// </summary>
+    private readonly Dictionary<ulong, (int Reported, int Directed)> _directed = new();
+
+    /// <summary>The node is leaving: stop accepting clients and close the sessions (their actors learn it now).</summary>
+    protected internal override ValueTask DrainAsync(CancellationToken cancellationToken)
+    {
+        Close();
+        return default;
+    }
+
+    protected internal override void Stop(bool crashed)
+    {
+        _crashed |= crashed; // a crashed node tells nobody
+        _stopped = true;
+        Close();
+    }
+
+    private void Close()
+    {
+        _listener?.Dispose();
         foreach (var session in _sessions.Values) session.Connection.Close();
     }
 
-    // ------------------------------------------------------------------ ICluster: sessions (any node)
-
-    /// <summary>
-    /// Bind (or unbind) a session to an actor (<see cref="Actor.BindSession"/>): a <see cref="Bind"/> asked of the session,
-    /// so it completes once the session's gateway applied it and the client's next message already reaches the actor.
-    /// </summary>
-    internal ValueTask BindSession(SessionRef session, uint handlerTypeId, long key)
-    {
-        var call = PendingCall<NoReply>.Rent(Shard.Current);
-        var task = call.Done;
-        AskNode(MessageWriter.Write(new Bind(handlerTypeId, key)), AddressScopes.Session, MessageType<Bind>.Id,
-            session.GatewayNodeId, session.SessionId, call);
-        return task;
-    }
-
-    /// <summary>
-    /// A message (payload written) to something node <paramref name="node"/> holds: today a client session (by its
-    /// <see cref="SessionRef"/> or the <see cref="Origin"/> of its messages). Takes
-    /// ownership of <paramref name="frame"/>.
-    /// </summary>
-    private void SendToNode(FrameWriter frame, uint scope, uint messageId, ulong node, long value)
-    {
-        try
-        {
-            frame.SetHeader(FrameKind.Message, scope, messageId, value);
-            if (node == Id) DeliverToAddress(frame.Frame, null);
-            else LinkTo(node)?.Send(frame.Frame);
-        }
-        finally
-        {
-            frame.Dispose();
-        }
-    }
-
-    /// <summary>
-    /// A message (payload written) to a group: serialized once, one frame per node handling the group's scope (the
-    /// nodes that may have members), which fans it out locally. Takes ownership of <paramref name="frame"/>.
-    /// </summary>
-    private void SendToGroup(FrameWriter frame, uint scope, uint messageId, long value)
-    {
-        try
-        {
-            frame.SetHeader(FrameKind.Message, scope, messageId, value);
-            foreach (var member in View.NodesWithScope(scope))
-            {
-                if (member.NodeId == Id) DeliverToAddress(frame.Frame, null);
-                else GetLink(member).Send(frame.Frame);
-            }
-        }
-        finally
-        {
-            frame.Dispose();
-        }
-    }
-
     /// <summary>Messages to the sessions, origins and client groups of this gateway.</summary>
-    private sealed class ClientAddresses(Node node) : IAddressHandler
+    private sealed class ClientAddresses(ClientConnections node) : IAddressHandler
     {
         public void OnMessage(in FrameHeader header, ReadOnlySpan<byte> frame, IReplySink? replyTo) =>
             node.OnClientAddress(header.Target, header.Key, in header, frame, replyTo);
@@ -203,30 +184,6 @@ sealed partial class Node
         if (_groups.TryGetValue(groupId, out var group)) group.Send(frame);
     }
 
-    private void OnControl(Connection connection, in FrameHeader header, ReadOnlySpan<byte> frame)
-    {
-        var payload = FrameHeader.PayloadOf(in header, frame);
-        switch (header.MessageId)
-        {
-            case ControlOp.Hello:
-                OnHello(connection, (ulong)header.Key, payload);
-                break;
-            case ControlOp.Resume:
-                OnResume(connection, header.Key, payload);
-                break;
-            case ControlOp.Acknowledge:
-                (connection.Tag as PeerLink)?.OnAcknowledge(connection, header.Key);
-                break;
-            case ControlOp.Gossip:
-            case ControlOp.GossipReply:
-            case ControlOp.CardRequest:
-            case ControlOp.Cards:
-                Membership.OnGossip(connection, header.MessageId, payload);
-                break;
-
-        }
-    }
-
     /// <summary>Add a session to a group (once). Caller holds the gate.</summary>
     private void Join(Session session, long groupId)
     {
@@ -246,7 +203,7 @@ sealed partial class Node
     private void OnSessionClosed(Session session)
     {
         _sessions.TryRemove(session.Id, out _);
-        if (_killed) return; // a crashed gateway tells nobody
+        if (_crashed) return; // a crashed node tells nobody
         lock (_groupGate)
         {
             session.Closed = true;
@@ -258,7 +215,7 @@ sealed partial class Node
             }
         }
 
-        var sessionRef = new SessionRef(Id, session.Id);
+        var sessionRef = new SessionRef(_node.Id, session.Id);
         var bindings = session.Bindings;
         if (bindings.Length == 0) return;
         if (session.Explicit || ReconnectGrace == TimeSpan.Zero) ReportClosed(sessionRef, bindings);
@@ -269,17 +226,17 @@ sealed partial class Node
     private async Task ReportClosedAfterGrace(SessionRef session, SessionBinding[] bindings)
     {
         await Task.Delay(ReconnectGrace).ConfigureAwait(false);
-        if (Volatile.Read(ref _started) == 1) ReportClosed(session, bindings);
+        if (!_stopped) ReportClosed(session, bindings);
     }
 
     private void ReportClosed(SessionRef session, SessionBinding[] bindings)
     {
         foreach (var binding in bindings)
-            SendTo(binding.HandlerTypeId, binding.Key, new SessionClosed(session));
+            _node.SendTo(binding.HandlerTypeId, binding.Key, new SessionClosed(session));
     }
 
-    /// <summary>How long a lost client may take to resume: <see cref="NodeOptions.ReconnectGrace"/> when tickets exist.</summary>
-    private TimeSpan ReconnectGrace => Options.ClusterSecret is { Length: > 0 } ? Options.ReconnectGrace : TimeSpan.Zero;
+    /// <summary>How long a lost client may take to resume (the cluster's <see cref="NodeOptions.ReconnectGrace"/>) when tickets exist.</summary>
+    private TimeSpan ReconnectGrace => _ticketSecret != null ? _node.Options.ReconnectGrace : TimeSpan.Zero;
 
     /// <summary>Send the session's client a fresh reconnect ticket (after binding changes, and when the client asks).</summary>
     private void IssueTicket(Session session)
@@ -288,8 +245,8 @@ sealed partial class Node
         if (_ticketSecret == null || bindings.Length > ReconnectTicket.MaxBindings) return;
         int size = ReconnectTicket.SizeOf(bindings.Length);
         Span<byte> ticket = stackalloc byte[size];
-        ReconnectTicket.Write(ticket, _ticketSecret, new SessionRef(Id, session.Id), bindings,
-            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), (long)Options.ReconnectTicketLifetime.TotalMilliseconds);
+        ReconnectTicket.Write(ticket, _ticketSecret, new SessionRef(_node.Id, session.Id), bindings,
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), (long)options.TicketLifetime.TotalMilliseconds);
         var w = FrameWriter.Rent(FrameHeader.Size + size);
         w.WriteRaw(ticket);
         w.SendControl(session.Connection, ControlOp.Ticket);
@@ -320,11 +277,11 @@ sealed partial class Node
             }
         }
 
-        var current = new SessionRef(Id, session.Id);
+        var current = new SessionRef(_node.Id, session.Id);
         for (int i = 0; i < count; i++)
         {
             var binding = ReconnectTicket.BindingAt(bindings, i);
-            SendTo(binding.HandlerTypeId, binding.Key, new SessionResync(current, previous));
+            _node.SendTo(binding.HandlerTypeId, binding.Key, new SessionResync(current, previous));
         }
 
         IssueTicket(session);
@@ -337,12 +294,11 @@ sealed partial class Node
     /// </summary>
     private void PickGateway(Session session, uint callId)
     {
-        var up = View.UpMembers;
         ClusterMember? first = null, second = null;
         int candidates = 0;
-        foreach (var member in up)
+        foreach (var member in _node.View.NodesWithScope(AddressScopes.Group)) // nodes holding sessions (not balancers)
         {
-            if (!member.AcceptsSessions) continue;
+            if (member.Entry(ClientKeys.Endpoint) == null) continue;
             candidates++;
             // Reservoir sampling of two distinct candidates in one pass.
             if (Random.Shared.Next(candidates) == 0) (first, second) = (member, first);
@@ -355,17 +311,32 @@ sealed partial class Node
             return;
         }
 
-        var pick = second != null && second.ExpectedSessions < first.ExpectedSessions ? second : first;
-        Interlocked.Increment(ref pick.Directed);
+        ClusterMember pick;
+        lock (_directed)
+        {
+            pick = second != null && ExpectedSessions(second) < ExpectedSessions(first) ? second : first;
+            int reported = pick.PulseValue(ClientKeys.Sessions);
+            _directed[pick.NodeId] = (reported, ExpectedSessions(pick) - reported + 1);
+        }
+
+        string endpoint = pick.Entry(ClientKeys.Endpoint)!;
+        int colon = endpoint.LastIndexOf(':');
         var w = FrameWriter.Rent(64);
         var nino = w.Nino;
-        NinoSerializer.Serialize(new GatewayEndpoint(pick.ClientHost, pick.ClientPort), ref nino);
+        NinoSerializer.Serialize(new GatewayEndpoint(endpoint[..colon], int.Parse(endpoint.AsSpan(colon + 1))), ref nino);
         session.Sink.SendReply(callId, RpcStatus.Ok, w);
+    }
+
+    /// <summary>Sessions a client-facing node has, as far as this node knows (its gossiped count plus clients sent since). Under the lock.</summary>
+    private int ExpectedSessions(ClusterMember member)
+    {
+        int reported = member.PulseValue(ClientKeys.Sessions);
+        return _directed.TryGetValue(member.NodeId, out var d) && d.Reported == reported ? reported + d.Directed : reported;
     }
 
     // ------------------------------------------------------------------ client connections
 
-    private sealed class GatewayHandler(Node node) : IConnectionHandler
+    private sealed class GatewayHandler(ClientConnections node) : IConnectionHandler
     {
         public void OnFrame(Connection connection, in FrameHeader header, ReadOnlySpan<byte> frame)
         {
@@ -445,7 +416,7 @@ sealed partial class Node
 
             (handlerTypeId, key) = (named, header.Key);
         }
-        else if (View.TryGetRoute(message.Id, actor: true, out var route, out _))
+        else if (_node.View.TryGetRoute(message.Id, actor: true, out var route, out _))
         {
             (handlerTypeId, key) = (route.HandlerTypeId, session.KeyOf(route.HandlerTypeId));
             if (key == 0)
@@ -460,8 +431,8 @@ sealed partial class Node
         }
 
         // The payload goes on as is; the origin is this gateway's session, whatever the client wrote.
-        IIngress ingress = this;
-        var origin = new Origin(Id, session.Id);
+        IIngress ingress = _node;
+        var origin = new Origin(_node.Id, session.Id);
         if (replyId == 0) ingress.Send(message.Id, handlerTypeId, key, body, origin);
         else ingress.Ask(message.Id, handlerTypeId, key, body, origin, session.Sink, replyId, header.Budget); // the client's own timeout
     }
@@ -469,7 +440,7 @@ sealed partial class Node
     /// <summary>Whether actor type <paramref name="handlerTypeId"/> handles message <paramref name="messageId"/> in the cluster.</summary>
     private bool HandlesMessage(uint handlerTypeId, uint messageId)
     {
-        var routes = View.Routes(messageId);
+        var routes = _node.View.Routes(messageId);
         for (int i = 0; i < routes.Length; i++)
             if (routes[i].HandlerTypeId == handlerTypeId && routes[i].Actor) return true;
         return false;
