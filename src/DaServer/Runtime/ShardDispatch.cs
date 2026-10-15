@@ -277,6 +277,7 @@ internal static class ShardDispatch
     private static void Track(World world, System.Threading.Tasks.ValueTask task)
     {
         if (!task.IsCompleted) TurnWatcher.Begin(world, world.CreateEntity(new ServiceCall()), task);
+        else task.GetAwaiter().GetResult(); // completed while being dispatched: release a pooled source (errors were replied)
     }
 
     /// <summary>Refuse a call or event that found its shard or mailbox full (calls get <see cref="RpcStatus.Overloaded"/>).</summary>

@@ -23,6 +23,16 @@ public class AllocationTests : ClusterTest
     }
 
     [Test]
+    public async Task RepliesOfSuspendedHandlersDoNotAllocate()
+    {
+        var node = await Start("alloc", configure: o => o.GossipInterval = TimeSpan.FromHours(1));
+        const int calls = 10_000;
+        await node.Ask(new CounterId(1), new AddViaMany(new CounterId(2), new CounterId(3), 3 * calls));
+        long allocated = await node.Ask(new CounterId(1), new AddViaMany(new CounterId(2), new CounterId(3), calls));
+        Assert.That(allocated / (double)calls, Is.LessThan(8), $"{allocated} B for {calls} calls");
+    }
+
+    [Test]
     public async Task BurstsOfConcurrentCallsDoNotAllocate()
     {
         // 2,000 calls in flight at once: above the old fixed pool sizes (1,024), below the callee's mailbox bound.
