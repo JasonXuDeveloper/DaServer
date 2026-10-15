@@ -2,6 +2,23 @@
 
 Keep this file current: tick items when done, add items when scope changes.
 
+## Development order (agreed: one item at a time, each proven before the next)
+
+1. Z2/Z3 zero GC fixes that keep the API: H2 reply watcher, M1 error paths, M2-M8, low items, missing allocation
+   tests (H3 done).
+2. G1-G4 the core as a general framework, the client edge as the optional `DaServer.Gateway` module.
+3. T2 ECS bots and business isolation (bots use the gateway module).
+4. N2 `SendAfter`, N3 call cycles fail fast, N3b no sync-over-async (incl. the await-only `Reply<T>`, which also
+   fixes H1: pooled handler state machines).
+5. N8 Nino ref deserialization (H4).
+6. D1-D4 graceful shutdown without a store, A-items (Aspire and hosting best practices).
+7. N1 Contracts / Model / Logic split.
+8. N5 persistence (PostgreSQL + in-memory store) with D5-D6, N6 state handoff, N7 placement affinity.
+9. S1-S6 elastic scaling.
+10. N9 hot reload.
+11. N4 route completeness, N11 generated filters, open cleanup (B/A/E items), quality items.
+EasyEcs in parallel when DaServer waits on benchmarks: the Friflo gap, comparison tables in the docs.
+
 ## Runtime (`src/DaServer`)
 - [x] Protocol: 24-byte frame header, frame kinds, RPC status codes
 - [x] Buffers: POH `BufferPool`, pooled `FrameWriter` (INinoBufferWriter)
@@ -134,6 +151,33 @@ Steady state allocates nothing: per message, call, reply, tick, broadcast, conne
       BenchmarkDotNet A/B (time and allocated) against the G baseline.
 - [ ] Z4 Keep it: CLAUDE.md rule plus analyzer coverage where a misuse is detectable in user code (e.g.
       `TaskCompletionSource`/`Task.Delay` in handlers and systems: use pooled framework awaitables and `SendAfter`).
+
+## Next: graceful shutdown and no data loss
+
+Detection: the Generic Host turns SIGTERM, SIGINT (Ctrl+C) and SIGQUIT into `IHostApplicationLifetime.ApplicationStopping`
+and calls `IHostedService.StopAsync` with a token that fires at `HostOptions.ShutdownTimeout` (30 s by default);
+after it the process exits whatever is still running. Platforms send SIGTERM and kill later: Kubernetes after
+`terminationGracePeriodSeconds` (30 s default), Docker Compose after `stop_grace_period` (10 s default). SIGKILL,
+OOM kills, crashes and power loss give no signal at all, so no shutdown code can be the only protection.
+Today `NodeHostedService.StopAsync` ignores the token, no time limit is configured anywhere, there is no readiness
+signal, gateways drop their clients on stop and nothing is persisted yet (N5).
+
+- [ ] D1 One shutdown budget: `NodeOptions.ShutdownTimeout` (default 25 s) drives `HostOptions.ShutdownTimeout`
+      and the published Kubernetes grace period / Compose `stop_grace_period` (budget + margin), so the platform never
+      kills a node that is still saving. `StopAsync` honors the token; past the deadline it logs which actors were not
+      saved instead of hanging.
+- [ ] D2 Ordered stop: readiness off -> Leaving (callers reroute) -> stop accepting new external connections and new
+      calls -> finish in-flight turns and calls -> unload every actor (`OnUnload`, parallel, bounded) -> flush the store
+      -> close links -> exit. Each phase logged with its duration and exported as a metric.
+- [ ] D3 Gateways drain: clients are told to move (resume ticket to another gateway, staggered) before the listener
+      closes; the balancer stops directing clients to a leaving gateway.
+- [ ] D4 Tests: SIGTERM-style stop under load loses no acknowledged write and no session; a stop that exceeds its
+      budget reports the unsaved actors; Kill (crash) loses at most what the persistence policy allows.
+- [ ] D5 (with N5) Persistence that survives a crash: per actor type a save policy: on unload (default), write-behind
+      with a maximum dirty age (checkpoint every N seconds), and immediate saves for declared critical changes
+      (trades, purchases). Versioned saves reject a fenced node's late write (ADR-042).
+- [ ] D6 (with N5) Store flush and backpressure: the store's write queue is bounded, flushed in D2 before links close,
+      and its health feeds readiness.
 
 ## Next: elastic scaling (after N5/N6: moving stateful actors needs persistence and handoff)
 
