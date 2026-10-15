@@ -256,6 +256,13 @@ in the node's card, and a message to a group address goes once to every Up node 
 never depends on a feature: the receiving node routes a frame by its target, a handler type to its shard or an address
 scope to the feature registered for it. Client connections are the first consumer (sessions, origins, client groups).
 
+`node.Ingress` (`IIngress`) lets messages from outside in: raw (`Send`/`Ask` with message id, target, key and the
+payload as received, never deserialized; the reply goes to the ingress's `IReplySink` under its call id) or typed
+(`Ask(address, request, origin, budget)` for endpoints that build the message). Every message gets the origin the
+ingress assigns (handlers read it as `Caller`) and a deadline capped at `CallTimeout`; this node picks the owner from
+its view (one hop). With `IngressLoadLimit` set, a request whose target node gossiped that many queued messages is
+refused with `Overloaded` before it is sent. Client connections send every client message through it.
+
 ## 9. ECS in DaServer
 
 Business code and the runtime follow the same ECS rules (EasyEcs `doc/ecs-principles.md`). EasyEcs is data plus
