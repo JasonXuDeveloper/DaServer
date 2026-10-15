@@ -3,7 +3,7 @@
 DaServer is a .NET 11 framework for building **clusters**: game servers (many client-facing nodes, many map/logic nodes) and
 other low-latency, high-concurrency backends (matchmaking, chat, trading, IoT fan-in). Developers write messages
 (`[NinoType, Message]` structs), actors and services with `[Handle]` methods, and ECS systems. Source generators write the
-rest: dispatchers, typed `Ask` overloads, wire ids, registration, entry points and query jobs.
+rest: dispatchers, typed `Ask` overloads, registration, entry points and query jobs.
 
 Priorities, in order:
 
@@ -90,8 +90,8 @@ local node when it hosts one.
 - Frames carry a fixed 24-byte header: `length`, `kind`, `status`, `hops`, `flags`, `target`, `messageId`, `key`,
   then the Nino-serialized message, then the trailers its flags name (ADR-005).
 - `messageId` is FNV-1a of the message type's full name (or its `[WireId]`), computed once per type at run time (the analyzer computes the same value at build time). Collisions are
-  build errors (DAS004) and registration errors at runtime. Handler type ids are FNV-1a of the actor or service
-  type's full name.
+  build errors (DAS004) and registration errors at runtime. Handler type ids are FNV-1a of the actor's id type or of the
+  service type's full name (ADR-043).
 - Frame kinds:
   - `Message`: to `target` (an actor or service handler type id, `key` the actor id; or an address scope: a session
     or a client group, `key` its id). With a call id trailer (flag `HasCall`) it is a request; the status byte then
@@ -113,7 +113,7 @@ local node when it hosts one.
 | Message objects | None. Messages are structs serialized straight into pooled `FrameWriter` buffers; dispatchers deserialize straight from the received bytes. |
 | Buffers | `BufferPool`: power-of-two buckets on the **Pinned Object Heap**, each bucket bounded by a byte budget (64 MB). Sockets use the buffers without pinning, and they never fragment gen0/1/2. |
 | Queues | Bounded Vyukov MPMC rings with struct slots. Producer and consumer cursors are padded onto separate 64-byte cache lines. |
-| Awaiting | `PendingCall<T>` is a pooled `IValueTaskSource<T>`. Dispatch helpers use `PoolingAsyncValueTaskMethodBuilder`. A synchronously completed handler replies without any state machine. |
+| Awaiting | `PendingCall<T>` is a pooled `IValueTaskSource<T>`. A suspended handler's reply is awaited by a pooled `ReplyWatcher<T>`; a synchronously completed handler replies without any state machine. |
 | Sending | Each connection copies frames into one batch buffer under a short lock. One send loop swaps and writes whole batches, so N frames cost one syscall. A broadcast serializes once and fans out by `memcpy`. |
 | Receiving | Frames are parsed in place. Zero-byte reads mean an idle client connection holds no receive buffer, which matters with tens of thousands of sockets. |
 | Sending API | Messages are `in` struct parameters of generic methods (`Ask<TRequest, TReply>`, generated typed overloads), so `Cluster.Ask(playerId, new AddGold(10))` allocates nothing and boxes nothing. |
@@ -149,15 +149,15 @@ shard that keeps session state as ECS components.
 | Sessions | A client-facing node owns its sockets. Grants, bindings and groups live there; when a session closes, every actor it was bound or granted to that handles `SessionClosed` receives it, so no actor keeps a dead session. |
 | Graceful shutdown | `SIGTERM` → `Leaving` (pushed to every member) → stop loading actors → drain mailboxes → unload actors → exit. |
 | Backpressure | Shard dispatch queues and actor mailboxes are bounded and refuse with `Overloaded` (ADR-027). Links are not paused (their replies would stall too, ADR-027). A slow client hits the per-connection send backlog bound (256 KB) and is disconnected; it reconnects and resynchronizes (ADR-035). |
-| Dead connections | Silence closes a connection (ADR-053): idle directions carry a 24-byte `Ping`/`Pong`, any frame counts as life. Clients ping after 15 s idle and give up after 30 s without a frame (then resume); client-facing nodes close sessions silent for 45 s (then the reconnect grace); node links ping each gossip interval and reconnect after `SuspectAfter` of silence (then replay the resend window). |
-| Link resumption | A node link's stream survives disconnects (ADR-008): the sender keeps unacknowledged bytes, the new connection's Hello names the stream, the receiver answers how much it processed and the sender replays the rest before anything new. A network blip is a delay: nothing is lost or run twice, calls in flight keep waiting. Calls fail with `Disconnected` only when the stream cannot resume (peer restarted, unreachable, declared dead, or the window no longer holds what it needs). A client that loses its connection resumes its session on any gateway with a signed ticket; actors receive `SessionResync` instead of `SessionClosed` (ADR-036). |
+| Dead connections | Silence closes a connection (ADR-053): idle directions carry a 24-byte `Ping`/`Pong`, any frame counts as life. Clients ping after 15 s idle and give up after 30 s without a frame (then resume); client-facing nodes close sessions silent for 45 s (then the reconnect grace); node links ping each gossip interval and reconnect after max(`SuspectAfter`, three gossip intervals) of silence (then replay the resend window). |
+| Link resumption | A node link's stream survives disconnects (ADR-008): the sender keeps unacknowledged bytes, the new connection's Hello names the stream, the receiver answers how much it processed and the sender replays the rest before anything new. A network blip is a delay: nothing is lost or run twice, calls in flight keep waiting. Calls fail with `Disconnected` only when the stream cannot resume (peer restarted, unreachable, declared dead, or the window no longer holds what it needs). A client that loses its connection resumes its session on any client-facing node with a signed ticket; actors receive `SessionResync` instead of `SessionClosed` (ADR-036). |
 
 ## 6. Membership and discovery
 
 - Seeds come from static `host:port` entries or DNS names (a Kubernetes headless service resolves to every pod). A
   node joins through any reachable seed.
 - Gossip runs every second (configurable), from each node to up to 3 random peers (push-pull). A round carries one
-  29-byte pulse per member (`NodeId`, incarnation, heartbeat, status, load, sessions), written and read in place; a
+  37-byte pulse per member (`NodeId`, incarnation, heartbeat, status, load, three feature slots such as sessions), written and read in place; a
   member's card (endpoints, hosted handlers: message id, handler type id, actor or service) is sent only to nodes that do
   not know it yet (ADR-031). A steady-state round allocates nothing.
 - Failure detection doesn't depend on synchronized clocks: a member whose heartbeat hasn't advanced for
@@ -214,7 +214,7 @@ sequenceDiagram
     Cl->>G: Move(vx, vy)  (one-way, [FromClient])
     G->>M: routed to the bound map
     M->>M: writes Velocity; MovementSystem, PlacementSystem, MotionSyncSystem run on the tick
-    M-->>G: Send(group, Motion(changes))  one message per cell per tick, one frame per gateway
+    M-->>G: SnapshotSystem: Send(group, Motion(changes))  one message per changed cell every other tick, one frame per client-facing node
     G-->>Cl: fan-out to the group's local sessions
     Cl--xG: disconnect
     G-->>P: SessionClosed (bound)
@@ -225,7 +225,7 @@ sequenceDiagram
   the avatars as entities of its shard; `[ForEach]` systems do movement, AOI, combat and sync. Switching maps is
   `Leave` on map A and `Enter` on map B; the player actor stays where it is.
 - **Messages to clients.** `Cluster.Send(session, m)` reaches one session. `Cluster.Send(Group, m)` (every actor has
-  its own group) serializes once and sends one frame per gateway, which fans out locally (ADR-025).
+  its own group) serializes once and sends one frame per client-facing node, which fans out locally (ADR-025, ADR-029).
   `ClientGroup.All` reaches every session of the cluster (the sample's realm status every 5 ticks).
 - **Batch per tick.** Systems collect changes into the map's grid and one system sends them as one message per
   changed cell every other tick: n moving avatars cost n entries, not n x n messages.
@@ -277,8 +277,8 @@ Admission is the edge's: features add `IIngressFilter`s (`node.AddIngressFilter`
 outside before it is routed; the first refusal wins, with a status (`RateLimited`, `Overloaded`, `Forbidden`) and
 when to retry (a client gets it as `RpcException.RetryAfter`, carried in the refusal reply's key; HTTP maps it to
 `Retry-After`). Building blocks: `TokenBucket` (one owner, allocation-free), `ConcurrencyLimit` (shared,
-interlocked), `SignedToken` (content plus issued/expiry times, HMAC-SHA256 with the signing secret: reconnect tickets,
-admission tokens, internal HTTP auth). Timers are data too: `TimerWheel<T>` (a hashed wheel owned by one thread:
+interlocked), `SignedToken` (content plus issued/expiry times, HMAC-SHA256 with the signing secret: reconnect tickets today,
+a building block for admission tokens). Timers are data too: `TimerWheel<T>` (a hashed wheel owned by one thread:
 O(1) schedule, cancel and fire, allocation-free) is advanced by its owner's loop.
 
 On the shard, generated dispatchers run the dispatch-stage filters after deserializing and before the handler
@@ -292,7 +292,7 @@ next to the TCP data plane. Endpoints reach actors only through messages: `app.M
 (the JSON body asked of the service), `app.MapAsk<TId, TRequest, TReply>("/x/{id}")` (of an actor),
 `app.MapSend<T>(pattern)` (one-way, 202). Each request enters through the ingress with an origin of its own and the
 budget of its `DaServer-Budget` header (ms, capped); refusals map to HTTP: `RateLimited` 429, `Overloaded`/`NotHosted`/
-`Disconnected` 503 (with `Retry-After`), `Timeout` 504, `Forbidden` 403, handler errors 500.
+`Disconnected` 503 (`Retry-After` when overloaded or hinted), `Timeout` 504, `Forbidden` 403, handler errors 500.
 
 ## 9. ECS in DaServer
 
@@ -313,7 +313,8 @@ The shard runtime itself is ECS. `Shard` owns only the thread, the dispatch queu
 Messages pass two queues, as in Akka and Orleans (dispatcher, then mailbox). The **dispatch queue** is per shard and
 the only cross-thread handoff: IO threads, other shards and completed awaits post to it, because only the shard
 thread may touch ECS data. It is two bounded rings: new calls and messages (refused when full, ADR-027), and
-completions, continuations and turn ends (never refused, drained first). `DispatchSystem` drains it and sorts each frame into its actor's **mailbox** (a component).
+completions, continuations and turn ends (16k slots, never refused, drained first; a burst beyond spills into an
+overflow queue). `DispatchSystem` drains it and sorts each frame into its actor's **mailbox** (a component).
 `MailboxSystem` runs mailboxes one turn at a time: while an actor awaits inside a handler, its own mail waits and the
 other actors of the shard keep running, so one queue could not serve both purposes.
 
@@ -387,7 +388,7 @@ What the generators write:
 | EasyEcs `SystemGenerator` | `[ForEach]` struct jobs (components, singletons, entity, world parameters) and `GeneratedUpdate` |
 | Analyzers | DAS001–DAS008 (handlers, messages, wire types, id collisions, constructors, message flow, stateless actors and services, address kinds), EECS001–EECS008 (ECS rules) |
 
-Both generators follow the incremental-generator rules: syntax-only predicates, equatable models, tracking names, and
+The generators follow the incremental-generator rules: syntax-only predicates, equatable models, tracking names, and
 no diagnostics. There is no reflection scanning, no configuration string and no hand-written registration list. A
 node project is its business classes only.
 
@@ -411,7 +412,7 @@ node project is its business classes only.
 |---|---|---|
 | Unit | Queues, buffer pool, frame parsing, pending-call table, membership merge, rendezvous placement | `tests/DaServer.Tests` |
 | Generator | Valid input compiles, every DAS rule fires from the analyzer, the entry point is generated only when missing, unrelated edits hit the incremental cache | `tests/DaServer.Tests` |
-| Integration | In-process clusters on loopback (`ClusterTest`): request semantics and ordering, turn-based actors, ECS systems over actor state, single loaded actor, idle unloading, failover, fencing, one-way and published messages (to actors on any node, once per service type, ordering, routing), resumable links, deadlines, gateway access by `[FromClient]`, binding isolation, broadcast (exact under churn), the directory, `SessionClosed` (close and gateway crash), session resumption, backpressure, placement under suspicion | `tests/DaServer.Tests` |
-| Allocation | Steady-state cross-shard calls, replies of suspended handlers, bursts of concurrent calls, one-way messages, gateway fan-out, client messages through a gateway and gossip rounds allocate nothing per operation | `tests/DaServer.Tests` |
-| End to end | AppHost topology (login, game, map, 3 gateways) + `Sample.Bot`: 10k bots locally, 1,000 in CI (`tests/DaServer.E2E`); fails on any gap, disconnect or p99 over the limit | `samples/mmo/`, `tests/DaServer.E2E` |
-| Benchmarks | BenchmarkDotNet on real loopback sockets: RPC at 1/64/1,024 outstanding calls (local and remote), one-way messages to actors (local and remote), group broadcast to 1k/5k client sockets in 1 or 9 groups, broadcast to everyone through 3 gateways (3k/9k) | `benchmarks/DaServer.Benchmark` |
+| Integration | In-process clusters on loopback (`ClusterTest`): request semantics and ordering, turn-based actors, ECS systems over actor state, single loaded actor, idle unloading, failover, fencing, one-way and published messages (to actors on any node, once per service type, ordering, routing), resumable links, deadlines, client access by `[FromClient]`, binding isolation, broadcast (exact under churn), the directory, `SessionClosed` (close and client-facing node crash), session resumption, backpressure, placement under suspicion | `tests/DaServer.Tests` |
+| Allocation | Steady-state cross-shard calls, replies of suspended handlers, bursts of concurrent calls, one-way messages, client fan-out, client messages through a client-facing node and gossip rounds allocate nothing per operation | `tests/DaServer.Tests` |
+| End to end | AppHost topology (login, game, map, 3 client-facing gateway nodes) + `Sample.Bot`: 10k bots locally, 1,000 in CI (`tests/DaServer.E2E`); fails on any gap, disconnect or p99 over the limit | `samples/mmo/`, `tests/DaServer.E2E` |
+| Benchmarks | BenchmarkDotNet on real loopback sockets: RPC at 1/64/1,024 outstanding calls (local and remote), one-way messages to actors (local and remote), group broadcast to 1k/5k client sockets in 1 or 9 groups, broadcast to everyone through 3 client-facing nodes (3k/9k) | `benchmarks/DaServer.Benchmark` |
