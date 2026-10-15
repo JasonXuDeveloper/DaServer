@@ -4,8 +4,9 @@ Keep this file current: tick items when done, add items when scope changes.
 
 ## Development order (agreed: one item at a time, each proven before the next)
 
-1. Z2 core hot paths (H3, H2 done): M1 status-only error frames, M6 bounded completion ring, M4, M7, low items in
-   core, missing core allocation tests. M2/M3/M5 move with client connections (G steps 6 and 8); H1 comes with N3b, H4 with N8.
+1. Z2 core hot paths (done): H3, H2, M1 status-only refusals, M6 completion queue, M4 actor pools, M7 per-link chunk
+   reuse, local sends without a copy, core allocation tests. M2/M3/M5 move with client connections (G steps 6 and 8);
+   H1 comes with N3b, H4 with N8.
 2. G0-G2 (step plan below): one message model (ADR-047), feature points and ingress, client connections as a
    built-in feature, Abstractions and Client packages (ADR-048).
 3. T2 ECS bots and business isolation (bots use the gateway module).
@@ -92,16 +93,20 @@ Steady state allocates nothing: per message, call, reply, tick, broadcast, conne
       - M8 string concatenation on hostile client rejects. Fix: constant/precomputed messages.
       - L1-L7 rare (view rebuilds, binding arrays, client sweeper enumerator, metrics tags, reconnects, foreign awaits,
         local Send copy): fix where trivial.
-      Missing allocation tests: remote Ask, client Ask through a gateway, many suspended async handlers, services
-      (Send/Ask/Publish), Push and remote broadcast, group and binding churn, idle node (0 B/s),
-      Overloaded/Timeout/NotHosted steady state, client callback queue and collection messages.
-- [ ] Z2 Fix in this order: H3 (done: per-shard call stacks, 64k frame/relay pools), H2 (done: pooled
-      `ReplyWatcher<T>`, 264 -> 0 B per reply of a suspended handler; tests build optimized so async state machines
-      are structs as users ship them), M1, M6, M4, M7, low items in core; H1 comes with N3b, H4 with N8, M2/M3 with G
-      step 6, M5 with G step 8. Hot paths first (message, call, reply, broadcast, dispatch), then per connection and
-      per view change; pools bounded and allocation-free when warm. Replacements: pooled `IValueTaskSource`s, struct
-      work items, static lambdas with state, cached delegates, pooled `FrameWriter`, `ArrayPool`/`stackalloc`, ring
-      buffers, Nino ref deserialization.
+      Allocation tests still missing (they come with the items that change those paths): client Ask through a gateway
+      and Push/remote broadcast (G step 6), many suspended `async` handlers (H1, N3b), group and binding churn (M2),
+      client callback queue (G step 8), collection messages (N8).
+- [x] Z2 Core fixes: H3 (per-shard call stacks, 64k frame/relay pools), H2 (pooled `ReplyWatcher<T>`, 264 -> 0 B per
+      reply of a suspended handler; tests build optimized so async state machines are structs as users ship them),
+      M1 (status-only refusals, ADR-049), M6 (completions, callbacks and turn ends in their own queue, ADR-027), M4
+      (actor objects, mailboxes and session sets pooled per shard, ADR-044; a lifecycle hook that completes
+      synchronously no longer registers a continuation: that cost an allocation and a thread-pool hop per load and
+      unload), M7 (a resend window recycles up to 16 released chunks), L7 (a local `Send` hands its frame over
+      instead of copying it). New allocation tests: calls to another node, service Send/Ask/Publish (local and
+      remote), refusals, relayed timeouts, actor churn, resend window reuse, idle nodes. Kept: L1 view rebuilds and
+      L5 reconnects (per membership change), L4 metric sampling (a few hundred bytes per collection, only with a
+      listener), L6 foreign awaits (a closure per await in a foreign UI-style context). H1 comes with N3b, H4 with N8,
+      M2/M3/L2 with G step 6, M5/L3 with G step 8.
 - [ ] Z3 Prove it: an allocation test per hot path the audit finds uncovered (0 B per operation after warm-up) and
       BenchmarkDotNet A/B (time and allocated) against the baseline (G step 0).
 - [ ] Z4 Keep it: CLAUDE.md rule plus analyzer coverage where a misuse is detectable in user code (e.g.
@@ -291,8 +296,8 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
 - [ ] K3 Load-aware service choice (power of two over the pulse load).
 - [ ] K4 Per-call options (`CallOptions` struct overload: timeout), the turn's deadline readable in handlers without
       a `CancellationTokenSource`.
-- [ ] K5 Per actor type mailbox capacity and a `messages.dropped{reason}` metric (replies and completions already
-      bypass the dispatch queue bound; M6 gives them their own bounded ring).
+- [ ] K5 Per actor type mailbox capacity and a `messages.dropped{reason}` metric (replies and completions have their
+      own queue, ADR-027).
 - Out of scope in core: durable streams (use Kafka/NATS from a service), transactions (a turn is atomic; sagas are
   messages plus persistence), distributed locks (an actor is the lock), multi-tenancy, event sourcing (documented
   pattern only).
@@ -450,8 +455,9 @@ in separate commits.
 - [x] Unit tests (queue, pool, frames, pending table, membership, placement)
 - [x] Generator/analyzer tests including incremental caching
 - [x] In-process cluster integration tests (`ClusterTest` fixture)
-- [x] Allocation tests: cross-shard actor calls, replies of suspended handlers, call bursts, one-way messages, gateway
-      fan-out, client messages through a gateway to another node and gossip rounds allocate nothing per operation
+- [x] Allocation tests: cross-shard and cross-node actor calls, replies of suspended handlers, call bursts, one-way
+      messages, service messages, refusals and relayed timeouts, actor churn, gateway fan-out, client messages through
+      a gateway to another node, gossip rounds, resend windows and idle nodes allocate nothing per operation
 - [x] BenchmarkDotNet suite: RPC (1/64/1024, local/remote), one-way messages (local/remote), group broadcast (1k/5k
       sockets), broadcast to everyone through 3 gateways (3k/9k sockets)
 - [x] CI workflow (build, test, end to end; EasyEcs from NuGet)

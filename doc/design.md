@@ -261,7 +261,8 @@ The shard runtime itself is ECS. `Shard` owns only the thread, the dispatch queu
 
 Messages pass two queues, as in Akka and Orleans (dispatcher, then mailbox). The **dispatch queue** is per shard and
 the only cross-thread handoff: IO threads, other shards and completed awaits post to it, because only the shard
-thread may touch ECS data. `DispatchSystem` drains it and sorts each frame into its actor's **mailbox** (a component).
+thread may touch ECS data. It is two bounded rings: new calls and messages (refused when full, ADR-027), and
+completions, continuations and turn ends (never refused, drained first). `DispatchSystem` drains it and sorts each frame into its actor's **mailbox** (a component).
 `MailboxSystem` runs mailboxes one turn at a time: while an actor awaits inside a handler, its own mail waits and the
 other actors of the shard keep running, so one queue could not serve both purposes.
 
@@ -271,7 +272,7 @@ other actors of the shard keep running, so one queue could not serve both purpos
 | `Mailbox` | component | messages waiting for the actor (a turn at a time) and when it last took mail |
 | `Ready` | tag | the mailbox has mail |
 | `Turn` | component | the asynchronous message, load or unload in progress (present = busy) |
-| `TurnEnded` | tag | the turn's task completed (posted by its `TurnWatcher`, never polled) |
+| `TurnEnded` | tag | the turn's task completed (posted by its `TurnWatcher`, or set at once when it completed synchronously; never polled) |
 | `Loading`, `UnloadRequested`, `Unloading` | tags | `OnLoad` running; asked to leave; `OnUnload` running |
 | `Fenced` | tag | the node was declared dead: removed without `OnUnload` (ADR-042) |
 | `Removing` | component | the loaded actor ends: mail is routed again (or failed with its status) |
@@ -279,7 +280,7 @@ other actors of the shard keep running, so one queue could not serve both purpos
 | `ClientSessions` | component | client sessions the actor knows (closed for it when their gateway dies) |
 | `ServiceCall` | tag | an entity per running asynchronous service call (ended like a turn) |
 | `ActorDirectory`, `ServiceDirectory` | singletons | loaded actors by id, service instances by handler type |
-| `TurnWatchers`, `ShardActivity` | singletons | pooled watchers, per-wake bookkeeping |
+| `TurnWatchers`, `ActorPools`, `ShardActivity` | singletons | pooled watchers; actor objects, mailboxes and session sets of removed actors (ADR-044); per-wake bookkeeping |
 
 ```mermaid
 flowchart LR
