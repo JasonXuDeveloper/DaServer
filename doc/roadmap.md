@@ -213,6 +213,11 @@ Step plan (each step builds and keeps every test green; logic, docs, CI in separ
    (`DaServer__ClientEndpoints__{i}`) replace `AddGateways`/`WithGateways`.
 8a. Names, done: `ClientSession(Node, Id)` (was `SessionRef(GatewayNodeId, SessionId)`), `NodeOptions.SigningSecret`
    (was `ClusterSecret`), contract types in the root `DaServer` namespace, `HandlerRegistry`; `ClusterClient` kept.
+8c. Generator cost, done (`GeneratorBenchmark`: 1,000 messages, 250 handler types, 5,000 call sites): symbol checks
+   compare names in place instead of display strings, requests and handlers are found through the compiler's
+   attribute index (`ForAttributeWithMetadataName`), a handler type is read once: full run 48.5 -> 36.0 ms
+   (15.4 -> 13.0 MB), an unrelated edit 16.5 -> 9.8 ms (4.9 -> 2.4 MB). The analyzer costs what an empty analyzer
+   watching the same symbols and invocations costs (720-750 ms, the compiler's binding).
 8b. Keep-alive (ADR-053), done: `Ping`/`Pong` on idle directions, silence closes client sessions (45 s), client
    connections (30 s, `CheckConnection` probes) and node link connections (`SuspectAfter`); `KeepAliveTests`.
 9. Tests: architecture test done (`ArchitectureTests`: package references point down only; the runtime's folders
