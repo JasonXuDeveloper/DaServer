@@ -44,6 +44,13 @@ Patterns only, never business code. Each item: tests, BenchmarkDotNet where a ho
 in separate commits.
 
 - [x] N0 Fence a node declared dead: its actors are removed without `OnUnload` (ADR-042, from Orleans)
+- [ ] T1 Typed actor ids (agreed): contracts declare id types (`readonly record struct MapId(long Value) : IActorId`);
+      actors declare theirs (`Map : Actor<MapId, MapState>`, `Id` replaces `Key`); `Cluster.Send/Ask(id, message)`
+      routes by (id type, message), so one message may be handled by several actor types without ambiguity and a
+      wrong id does not compile; singletons use a fixed id (`RealmId.Instance`), no `Keys` constants.
+- [ ] T2 ECS bots (agreed): `Sample.Bot` and the E2E/benchmarks drive bots as entities on a client world: components
+      for input and stats, `[ForEach]` systems on a tick for behaviour, `[Handle]` for pushes, systems shared with the
+      server where the logic is the same (dead reckoning); no imperative loops.
 - [ ] N1 Stateless handler types and a fixed/reloadable split: DAS007 (no mutable fields on actors and services; state
       in components and singletons); projects Contracts (messages) + Model (components, singletons: never reloaded) +
       Logic (actors, services, systems: reloadable). Prerequisite of N5 and N9. (RandomGame, ET)
