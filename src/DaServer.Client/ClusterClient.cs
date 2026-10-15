@@ -32,29 +32,43 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
     private static readonly ConcurrentDictionary<ClusterClient, bool> Live = new();
     private static readonly Timer Sweeper = new(static _ =>
     {
+        // A sweep that runs late (a GC pause, a starved machine) says nothing about the network: no silence verdicts then.
+        long now = Platform.Milliseconds, last = Interlocked.Exchange(ref _lastSweepMs, now);
+        bool late = last != 0 && now - last > 1000;
         foreach (var (client, _) in Live)
         {
-            client._pending.SweepExpired();
-            client.RefreshTicket();
-            client.CheckAlive();
+            try
+            {
+                client._pending.SweepExpired();
+                client.RefreshTicket();
+                client.CheckAlive(late);
+            }
+            catch (Exception)
+            {
+                // One client's failure (an event handler throwing) must not stop the others' sweeps or the process.
+            }
         }
     }, null, 100, 100);
 
-    /// <param name="queueCallbacks">
-    /// false: callbacks run on the IO thread as frames arrive (bots, tools). true: frames are queued and run by
-    /// <see cref="ProcessCallbacks"/> on the application's own thread (game loop / UI thread).
+    private static long _lastSweepMs;
+
+    /// <param name="callbackQueue">
+    /// 0: callbacks run on the IO thread as frames arrive (tools, tests). Otherwise frames wait, up to this many, for
+    /// <see cref="ProcessCallbacks"/> on the application's own thread (a game loop, a UI thread, a client world); a client
+    /// that falls further behind is disconnected as a slow consumer and resumes (its actors resend the state).
     /// </param>
     /// <param name="maxCallsInFlight">
     /// Requests awaiting their reply at once (rounded up to a power of two, 16 to 2^24); one more fails at once with
-    /// <see cref="RpcStatus.Overloaded"/>. Memory follows the peak actually in flight (64 slots at a time), not this bound.
+    /// <see cref="RpcStatus.Overloaded"/>. Memory follows the peak actually in flight (slots come in doubling chunks), not this bound.
     /// </param>
-    public ClusterClient(bool queueCallbacks = false, int maxCallsInFlight = 4096)
+    public ClusterClient(int callbackQueue = 0, int maxCallsInFlight = 4096)
     {
         if (maxCallsInFlight < 1) throw new ArgumentOutOfRangeException(nameof(maxCallsInFlight));
         int bits = 4;
         while (bits < 24 && 1 << bits < maxCallsInFlight) bits++;
         _pending = new PendingCallTable(bits);
-        if (queueCallbacks) _inbox = new MpmcQueue<FrameWriter>(64 * 1024);
+        if (callbackQueue < 0) throw new ArgumentOutOfRangeException(nameof(callbackQueue));
+        if (callbackQueue > 0) _inbox = new MpmcQueue<FrameWriter>(callbackQueue);
     }
 
     public TimeSpan CallTimeout { get; set; } = TimeSpan.FromSeconds(10);
@@ -86,20 +100,20 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
 
     private long _probeDeadlineMs; // 0: no probe waiting for its pong
 
-    /// <summary>Sweeper tick: ping when idle, close a silent connection (and an unanswered probe).</summary>
-    private void CheckAlive()
+    /// <summary>Sweeper tick: ping when idle, close a silent connection (and an unanswered probe) unless the tick ran <paramref name="late"/>.</summary>
+    private void CheckAlive(bool late)
     {
         if (_connection is not { } connection || Volatile.Read(ref _reconnecting) != 0) return;
         long now = Platform.Milliseconds;
         long probeDeadline = Volatile.Read(ref _probeDeadlineMs);
-        if (probeDeadline != 0 && now >= probeDeadline)
+        if (probeDeadline != 0 && now >= probeDeadline && !late)
         {
             Volatile.Write(ref _probeDeadlineMs, 0);
             connection.Close(KeepAlive.Silent);
             return;
         }
 
-        KeepAlive.Check(connection, now, (long)KeepAliveInterval.TotalMilliseconds, (long)ServerTimeout.TotalMilliseconds);
+        KeepAlive.Check(connection, now, (long)KeepAliveInterval.TotalMilliseconds, late ? long.MaxValue : (long)ServerTimeout.TotalMilliseconds);
     }
 
     public bool IsConnected => _connection is { IsClosed: false };
@@ -222,7 +236,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
         lock (_handlersGate) Volatile.Write(ref _handlers, [.. _handlers, (handler, handlers)]);
     }
 
-    /// <summary>Run queued callbacks on the calling thread (only when constructed with queueCallbacks: true).</summary>
+    /// <summary>Run queued callbacks on the calling thread (only when constructed with a callbackQueue).</summary>
     public int ProcessCallbacks(int max = int.MaxValue)
     {
         if (_inbox == null) return 0;
@@ -344,8 +358,8 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
                 _pending.TryComplete(FrameHeader.CallIdOf(in header, frame), header.Status, FrameHeader.PayloadOf(in header, frame));
                 break;
             case FrameKind.Message: // to this session or one of its groups
-                if (_inbox != null) _inbox.TryEnqueue(FrameWriter.CopyOf(frame));
-                else DispatchCallback(frame);
+                if (_inbox == null) DispatchCallback(frame);
+                else Enqueue(connection, frame);
                 break;
             case FrameKind.Control when header.MessageId == ControlOp.Ping:
                 KeepAlive.Pong(connection);
@@ -371,6 +385,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
     private void OnClosed(IFrameChannel connection, Exception? error)
     {
         if (connection != _connection) return; // the entry connection, left on purpose
+        Volatile.Write(ref _probeDeadlineMs, 0); // a probe of this connection must not close the next one
         _pending.FailAll(RpcStatus.Disconnected);
         if (Volatile.Read(ref _reconnecting) != 0) return; // an attempt of the running reconnect failed: it retries
         Disconnected?.Invoke(error);
@@ -448,6 +463,18 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
 
     /// <summary>Tests: lose the connection as a network failure would (no goodbye).</summary>
     internal void DropConnection() => _connection?.Close(new System.IO.IOException("Connection dropped"));
+
+    /// <summary>Queue a pushed frame for <see cref="ProcessCallbacks"/>; a full queue disconnects (slow consumer).</summary>
+    private void Enqueue(IFrameChannel connection, ReadOnlySpan<byte> frame)
+    {
+        var copy = FrameWriter.CopyOf(frame);
+        if (_inbox!.TryEnqueue(copy)) return;
+        copy.Dispose();
+        connection.Close(CallbacksBehind);
+    }
+
+    private static readonly InvalidOperationException CallbacksBehind =
+        new("Pushes waiting for ProcessCallbacks exceeded the client's callbackQueue (slow consumer)");
 
     private void DispatchCallback(ReadOnlySpan<byte> frame)
     {
