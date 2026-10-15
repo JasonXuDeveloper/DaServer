@@ -4,18 +4,24 @@ Keep this file current: tick items when done, add items when scope changes.
 
 ## Development order (agreed: one item at a time, each proven before the next)
 
-1. Z2/Z3 zero GC fixes that keep the API: M1 error paths, M2-M8, low items, missing allocation tests (H3, H2 done).
-2. G1-G4 the core as a general framework, the client edge as the optional `DaServer.Gateway` module.
+1. Z2 core hot paths (H3, H2 done): M1 status-only error frames, M6 bounded completion ring, M4, M7, low items in
+   core, missing core allocation tests. M2/M3/M5 move with the gateway (G step 7); H1 comes with N3b, H4 with N8.
+2. G0 + G1/G2 (re-sequenced step plan below): one message model (ADR-047), then the client edge as the optional
+   `DaServer.Gateway` module, `DaServer.Abstractions` split.
 3. T2 ECS bots and business isolation (bots use the gateway module).
-4. N2 `SendAfter`, N3 call cycles fail fast, N3b no sync-over-async (incl. the await-only `Reply<T>`, which also
-   fixes H1: pooled handler state machines).
+4. N2 `SendAfter` (the delayed send primitive, per-shard timer wheel), N3 call cycles fail fast (`Chain` header
+   extension), N3b no sync-over-async (incl. the await-only `Reply<T>`, which also fixes H1).
 5. N8 Nino ref deserialization (H4).
-6. D1-D4 graceful shutdown without a store, A-items (Aspire and hosting best practices).
-7. N1 Contracts / Model / Logic split.
-8. N5 persistence (PostgreSQL + in-memory store) with D5-D6, N6 state handoff, N7 placement affinity.
-9. S1-S6 elastic scaling.
-10. N9 hot reload.
-11. N4 route completeness, N11 generated filters, open cleanup (B/A/E items), quality items.
+6. D1-D4 graceful shutdown without a store, A-items (Aspire and hosting; A6 uses the `Trace` header extension).
+7. C1-C4 cluster hardening (before persistence: fencing assumes correct downing).
+8. N1 Contracts / Model / Logic split.
+9. N5 persistence (PostgreSQL + in-memory store) with D5-D6 and P1 `DaServer.Testing`, N6 state handoff, N7
+   placement affinity with K1-K2 placement strategies and the owner table.
+10. V1-V3 versioning and rolling upgrades (before scaling: rolling deploys depend on them).
+11. S1-S6 elastic scaling.
+12. N9 hot reload.
+13. N4 route completeness, N11 generated filters (on the G filter point), K3-K5, open cleanup, quality items. Later
+    optional modules: `DaServer.Reminders`, `DaServer.Topics`, leases for strict singletons.
 EasyEcs in parallel when DaServer waits on benchmarks: the Friflo gap, comparison tables in the docs.
 
 ## Runtime (`src/DaServer`)
@@ -73,39 +79,47 @@ reload); MMO roles (login, balancer, gateways, game, maps) exist only in samples
       run. Document it in design.md.
 - [ ] G4 Docs: README/design describe the core first, the gateway module second, the MMO sample third.
 
-Step plan for G1/G2 (each step builds and keeps every test green; logic, docs, CI in separate commits):
+- [ ] G0 One message model (ADR-047, agreed): a message, an address, an optional reply. Public verbs `Send`/`Ask`
+      (to an address or the one service), `Publish` (every service type handling the message); `Push`/`Broadcast`
+      become `Send` to a session / group address (one release as `[Obsolete]` aliases), `JoinGroup`/`LeaveGroup`/
+      `Disconnect`/`BindSession` become messages to the session address. Addresses: `IAddress` (`IActorId` keyed,
+      `INodeAddress` pinned to a node, `IGroupAddress` fan-out), scope = `TypeId<TAddr>`, kind cached per address
+      type (no boxing, no branch at run time). Wire: 3 frame kinds `Message`/`Reply`/`Control`, `Target` always set by
+      the sender, header extensions in fixed order by flag (`CallId`, `Origin` 16 B, `Chain`, `Trace`); `ToActor`
+      trailer, `HasCaller` prefix, `Request`/`OneWay`/`Push`/`Broadcast` kinds and session control ops deleted.
+      Wire break, no rolling upgrade across it (pre-1.0).
 
-0. Baseline BenchmarkDotNet: Rpc, Message, Broadcast (1k/5k x 1/9), Scenario (3k/9k).
-1. `Origin(ulong NodeId, long Id)` in core: `FrameFlags.HasCaller` -> `HasOrigin` (raw 16-byte prefix),
-   `CallContext.Origin`, `Actor.TurnOrigin`, `ShardObject.Caller` replaces `CallerSession` (`SessionRef` converts
-   implicitly from `Origin` while it is still in core).
-2. Public plumbing on purpose (no InternalsVisibleTo for the module): `ConnectionReplySink`, `ReplySinks`,
-   `FrameWriter.Write<T>`/`WriteTarget` (replaces `MessageWriter`, also B4), `ActorType<TId>` (replaces
-   `ActorIds<TId>`), `TypeIds.Of<T>`, `ActorAddress`/`Actor.Address`, a public `CallTable` over the pending-call pool;
-   `ClusterClient` rewritten on public types only.
-3. Feature infrastructure, unused: `NodeFeature` (Configure frame kinds / ConfigureShard ECS / Start returns card
-   data / OnViewChanged / Connections / Stop(crashed)), `FeatureInfo` + `ServerRegistry.RegisterFeature`,
-   `FeatureSet` (sealed, slot-indexed) on `ICluster.Features`, `NodeOptions.Feature<T>()` + Hosting binding of
-   `DaServer:{Section}`, `INodeContext` (ingress Send/Ask with origin, SendFrame, CallNode, Post to shard),
-   `FeatureSetup.HandleFrames(kind, IFrameHandler)` (256-entry table), card `Features` + pulse `Connections`,
-   `MessageHandler.Filter` via `RegisterFilter<T>` (static, stateless). Core test with a toy feature.
-4. Gateway as a feature inside the DaServer assembly: (a) gateway card + immutable `GatewayPeer[]` snapshot, client
-   fields leave `ClusterMember`; (b) Push/Broadcast kinds (same numbers) + `SessionOp` frame, core `OnControl` keeps
-   core ops; (c) `BoundSessions` component + `SessionClosed`/`SessionResync` filters, dead-gateway close in the
-   feature, `ClientSessions`/`RecordSession`/`CloseSessionsOf` deleted; (d) `Push`/`Broadcast`/`JoinGroup`/
-   `LeaveGroup`/`Disconnect` become extensions, `this.BindSession`, `GatewayOptions` (`DaServer__Gateway__Port`,
-   ...), metric `daserver.connections`. Allocation tests after each sub-step.
-5. Attributes `[FromClient(AnyId)]` / `[ToClient]`; `Flow`/`AnyId` leave `[Message]`; `MessagesAssembly` ->
-   `DaServerRegistration` (module initializers of referenced assemblies run via HostGenerator anchors).
-6. Assembly move: `src/DaServer.Gateway` + `src/DaServer.Gateway.Generator` (client-message registration, DAS006
-   incl. `client.Register(x)` handler check), linked shared generator sources.
-7. Aspire split: core `AddDaServerCluster`/`AddNodes`; `src/DaServer.Gateway.Aspire` with `AddGateways`/
-   `AddBalancer`/`WithGateways` (namespace `Aspire.Hosting`).
-8. Tests split: core tests without Gateway; `tests/DaServer.Gateway.Tests`; architecture test (no
-   `*Session*|*Gateway*|*Client*` types in DaServer.dll).
-9. Benchmark A/B against step 0 (no regression; dispatch lighter), allocation tests < 1 B per delivery.
-10. Docs: ADR-045, design/README/samples/CLAUDE.md, node-to-node wire break noted. Later: `ShardFlush` group for
-    per-tick broadcast coalescing.
+Step plan for G0-G2 (each step builds and keeps every test green; logic, docs, CI in separate commits):
+
+0. Baseline BenchmarkDotNet: Rpc, Message, Broadcast (1k/5k x 1/9), Scenario (3k/9k) (done: d676d2a numbers).
+1. Wire unification inside core: `Target` always set, call-id extension, 3 frame kinds, receiver dispatch by one
+   `Target` lookup (handler type -> shard, address scope -> feature handler on the IO thread).
+2. Addresses: `IAddress`/`INodeAddress`/`IGroupAddress`, `Send(addr, m)`, address-generic generated `Ask`
+   overloads, `Push`/`Broadcast` obsolete; DAS006 checks `[ToClient]` by address kind; `Ask` to a fan-out address
+   is an analyzer error (and to a session for now).
+3. `Origin(ulong Node, long Id)`: raw 16-byte extension, `CallContext(ReplyTo, Origin)`, `ShardObject.Caller`
+   replaces `CallerSession` (`SessionRef` converts implicitly from `Origin`).
+4. Session operations become messages to `SessionRef` (Bind is an `Ask`, so ADR-022 ordering holds).
+5. Feature infrastructure: `NodeFeature` (Configure, ConfigureShard(World), Start(INodeContext), OnViewChanged,
+   OnMemberDead, Stop(crashed)), `HandleAddress<TAddr>(IAddressHandler)` + hosted address scopes gossiped in the
+   card, card feature data + one pulse load slot, `INodeContext` (Ingress Send/Ask with origin, reply sink and
+   deadline, Resolve(messageId), Post to a shard, timer wheel), message filters (`RegisterFilter<T>`, ingress and
+   dispatch stages; N11 generates into the same point). Core test with a toy feature. Public plumbing shrinks to
+   `FrameWriter.Write<T>`, `TypeIds.Of<T>`, `ActorType<TId>`, `Address(scope, key)`, a public `CallTable`.
+6. Gateway as a feature inside the DaServer assembly: listener, sessions, bindings, `GroupMembers` (M2 pool),
+   address handlers for `SessionRef` and `ClientGroup`, reconnect tickets and grace timers on the timer wheel (M3),
+   balancer from the feature card (client fields leave `ClusterMember`), `BoundSessions` + filters for
+   `SessionClosed`/`SessionResync` (special cases leave `ShardDispatch`), dead-gateway close through a system,
+   ingress checks (size, FromClient set, destination, rate limit, origin overwrite, budget cap), `GatewayOptions`.
+7. Attributes `[FromClient(AnyId)]` / `[ToClient]`; `Flow`/`AnyId` leave `[Message]`; registration through module
+   initializers of referenced assemblies.
+8. Packages: `DaServer.Abstractions` (attributes, `IRequest`, addresses, `Origin`, `FrameHeader`, wire ids, Nino),
+   `DaServer.Gateway`, `DaServer.Gateway.Client` (SDK on Abstractions only, `ClusterClient`, M5 smaller table),
+   `DaServer.Gateway.Generator`, `DaServer.Gateway.Aspire` (`AddGateways`/`AddBalancer`/`WithGateways`).
+9. Tests split (core without Gateway, `tests/DaServer.Gateway.Tests`), architecture test (no
+   `*Session*|*Gateway*|*Client*` types in DaServer.dll), benchmark A/B against step 0 (no regression), allocation
+   tests < 1 B per delivery.
+10. Docs: ADR-047, design/README/samples/CLAUDE.md, requirements R2/R6/R7, wire break noted.
 
 ## Now: zero GC audit (agreed, done together with G1/G2)
 
@@ -237,6 +251,38 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
 - Notes: the Aspire dashboard in deployments is diagnostic only (production observability is OTLP); Azure Container
   Apps exposes ingress, not per-replica addresses, so it is a later target than Kubernetes.
 
+## Next: cluster hardening (C, before N5)
+- [ ] C1 Failure detection robust to GC/CPU pauses: SWIM indirect probes (ping-req through k members) or a phi-accrual
+      detector over pulse arrivals; suspicion before death.
+- [ ] C2 Split brain: a downing rule in core (keep-majority / static quorum: the minority side stops itself), plus an
+      optional authoritative lease store (Kubernetes Lease, PostgreSQL) as a module for strict ownership.
+- [ ] C3 Node authentication: HMAC challenge in Hello with the cluster secret, cluster id and protocol version in
+      Hello; a process that only reaches the port can no longer join.
+- [ ] C4 Supervision: per actor type `OnError` policy (Resume default, Reload = unload and reload state); poison
+      message counter and metric.
+
+## Next: versioning and rolling upgrades (V, before S)
+- [ ] V1 Generated wire manifest (message ids, field layout) committed with a baseline test: fields are append-only,
+      removals and reorders fail the build; check Nino's handling of missing trailing fields.
+- [ ] V2 Protocol and build version in Hello and in the card.
+- [ ] V3 During a rolling upgrade route only to nodes that understand the message (manifest per version in the view).
+
+## Next: packages and other core gaps (P, K)
+- [ ] P1 `DaServer.Testing` (with N5): the in-process cluster as a public package, `TimeProvider` and deterministic
+      shard stepping, so users test their own actors and systems (replaces the N12 "out of scope" note).
+- [ ] P2 `DaServer.Abstractions` (in G step 8): contracts and clients reference no shard runtime and no EasyEcs.
+- [ ] K1 Pluggable placement strategy per actor type: rendezvous hash (default), prefer caller node, load aware,
+      sticky (S3).
+- [ ] K2 Owner table per handler type rebuilt on view change (jump/Maglev hash) instead of O(nodes) rendezvous per send.
+- [ ] K3 Load-aware service choice (power of two over the pulse load).
+- [ ] K4 Per-call options (`CallOptions` struct overload: timeout), the turn's deadline readable in handlers without
+      a `CancellationTokenSource`.
+- [ ] K5 Priority lane: replies and completions are never refused by a full dispatch queue (with M6); per actor type
+      mailbox capacity; `messages.dropped{reason}` metric.
+- Out of scope in core: durable streams (use Kafka/NATS from a service), transactions (a turn is atomic; sagas are
+  messages plus persistence), distributed locks (an actor is the lock), multi-tenancy, event sourcing (documented
+  pattern only).
+
 ## Next: elastic scaling (after N5/N6: moving stateful actors needs persistence and handoff)
 
 DaServer does not write an autoscaler. The platform decides replica counts (Kubernetes HPA, KEDA, Azure Container
@@ -336,8 +382,7 @@ in separate commits.
       `FromClient`, auth, metrics), nothing for handlers without filters. (Orleans call filters)
 - Not adopted: Orleans interface proxies, per-activation Task scheduling, grain directory / repartitioning,
   transactions; ET location server, coroutine locks, class entity trees, global singletons; RandomGame stop-the-world
-  reload with forced GC, manual dirty marking. GM commands (N10) and a testing package (N12: unit/integration tests
-  and the Bot E2E already cover it) are out of scope for now.
+  reload with forced GC, manual dirty marking. GM commands (N10) are out of scope for now; the testing package came back as P1.
 
 ## Open cleanup (review rounds)
 - [ ] B4 one serialize-into-pooled-frame helper; B5 `DeliverTo(nodeId, frame)` (local or link); B7
