@@ -90,5 +90,7 @@ doc/                       requirements.md, design.md, decisions.md, roadmap.md
 - The core is general (ADR-045): a feature needed by one kind of application goes into an optional module built on
   public extension points, or into a sample; never into `src/DaServer`.
 - Business code sees `ICluster`, never `Node` (ADR-020).
+- Nothing stale: a replaced API is deleted, not kept as an `[Obsolete]` alias (pre-1.0); docs describe what is true
+  now (a superseded ADR is removed or rewritten, no "first version used..." history, no dead roadmap items).
 - Commits: logic, docs and CI in separate commits. The author is the repository owner; the committer is the
   environment's signing identity so the signature shows as Verified. No session links in commit messages.

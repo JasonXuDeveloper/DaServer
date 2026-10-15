@@ -81,7 +81,7 @@ reload); MMO roles (login, balancer, gateways, game, maps) exist only in samples
 
 - [ ] G0 One message model (ADR-047, agreed): a message, an address, an optional reply. Public verbs `Send`/`Ask`
       (to an address or the one service), `Publish` (every service type handling the message); `Push`/`Broadcast`
-      become `Send` to a session / group address (one release as `[Obsolete]` aliases), `JoinGroup`/`LeaveGroup`/
+      become `Send` to a session / group address (removed, no aliases), `JoinGroup`/`LeaveGroup`/
       `Disconnect`/`BindSession` become messages to the session address. Addresses: `IAddress` (`IActorId` keyed,
       `INodeAddress` pinned to a node, `IGroupAddress` fan-out), scope = `TypeId<TAddr>`, kind cached per address
       type (no boxing, no branch at run time). Wire: 3 frame kinds `Message`/`Reply`/`Control`, `Target` always set by
@@ -95,7 +95,7 @@ Step plan for G0-G2 (each step builds and keeps every test green; logic, docs, C
 1. Wire unification inside core: `Target` always set, call-id extension, 3 frame kinds, receiver dispatch by one
    `Target` lookup (handler type -> shard, address scope -> feature handler on the IO thread).
 2. Addresses: `IAddress`/`INodeAddress`/`IGroupAddress`, `Send(addr, m)`, address-generic generated `Ask`
-   overloads, `Push`/`Broadcast` obsolete; DAS006 checks `[ToClient]` by address kind; `Ask` to a fan-out address
+   overloads, `Push`/`Broadcast` removed; DAS006 checks `[ToClient]` by address kind; `Ask` to a fan-out address
    is an analyzer error (and to a session for now).
 3. `Origin(ulong Node, long Id)`: raw 16-byte extension, `CallContext(ReplyTo, Origin)`, `ShardObject.Caller`
    replaces `CallerSession` (`SessionRef` converts implicitly from `Origin`).
@@ -385,13 +385,10 @@ in separate commits.
   reload with forced GC, manual dirty marking. GM commands (N10) are out of scope for now; the testing package came back as P1.
 
 ## Open cleanup (review rounds)
-- [ ] B4 one serialize-into-pooled-frame helper; B5 `DeliverTo(nodeId, frame)` (local or link); B7
-      `ClusterView.Route(messageId, handlerTypeId)`; B8 one pending-table scan; B9 registries; B10 shared hash helpers;
+- [ ] B4 one serialize-into-pooled-frame helper; B5 `DeliverTo(nodeId, frame)` (local or link); B8 one pending-table scan; B9 registries; B10 shared hash helpers;
       B11 sample nits
-- [ ] A1 split `Node` (gateway, links, router); A2 membership talks to the node through an interface; A4 control ops
-      and reconnect tickets in Protocol; A7 one endpoint parser for `DaServer__Gateways`
-- [ ] E ECS misuse: `CloseSessionsOf` as a system over a lost-gateways singleton, `TurnCaller` as a component,
-      sample `Despawning(bool)` flag as a tag
+- [ ] A1 split `Node` (gateway, links, router); A2 membership talks to the node through an interface; A7 one endpoint parser for `DaServer__Gateways`
+- [ ] E ECS misuse: `TurnCaller` as a component, sample `Despawning(bool)` flag as a tag
 - Kept on purpose: B6 (local replies hand the frame over without a copy), B12 (the shard checks runnable actors after
   tick systems sent local mail)
 
