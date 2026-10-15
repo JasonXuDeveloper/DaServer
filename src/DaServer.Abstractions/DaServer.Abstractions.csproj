@@ -2,7 +2,7 @@
 
     <PropertyGroup>
         <!-- netstandard2.1: contract assemblies shared with Unity and other .NET clients. -->
-        <TargetFrameworks>netstandard2.1;net10.0</TargetFrameworks>
+        <TargetFrameworks>netstandard2.1;net10.0;net11.0</TargetFrameworks>
         <RootNamespace>DaServer</RootNamespace>
         <Description>DaServer contracts: message, handler and client attributes, requests, addresses, wire ids. Referenced by contract assemblies shared between servers and clients.</Description>
     </PropertyGroup>
