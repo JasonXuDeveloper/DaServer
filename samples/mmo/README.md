@@ -73,16 +73,16 @@ A bot is the real client (`Sample.Client`) whose hands are a planner. `Behavior.
 ```csharp
 var d = new DomainBuilder<BotFact>();
 int wander = d.Primitive<Wandering>();                                  // a task is a component, done when removed
-int speak = d.Primitive<Speak>(requires: BotFact.ChatDue, clears: BotFact.ChatDue);
+int chat = d.Primitive<Chatting>(requires: BotFact.ChatDue, clears: BotFact.ChatDue);
 int travel = d.Primitive<Travelling>(requires: BotFact.TravelDue, clears: BotFact.TravelDue);
 int play = d.Compound();
 d.Method(play, BotFact.TravelDue, travel, wander)                       // first method that holds wins
-    .Method(play, BotFact.ChatDue, speak, wander)
+    .Method(play, BotFact.ChatDue, chat, wander)
     .Method(play, BotFact.None, wander);
 ```
 
-`BotSenseSystem` writes the facts (what is due), and one system carries out each task on the client's own data:
-`WanderSystem` steers, `SpeakSystem` adds the client's `Speaking`, `TravelSystem` runs the client's
+`SenseSystem` writes the facts (what is due), and one system carries out each task on the client's own data:
+`WanderSystem` steers, `ChatSystem` adds the client's `Speaking`, `TravelSystem` runs the client's
 `EnterMapAsync`. `Program.cs` starts the swarm, waits for every bot to hear the realm, measures a window and judges it:
 no gap in the realm broadcasts, no disconnect, no failed map change, p99 under the limit.
 
