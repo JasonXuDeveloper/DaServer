@@ -6,7 +6,7 @@ using DaServer.Runtime;
 using EasyEcs;
 using Sample.Contracts;
 
-namespace Sample.Game;
+namespace Sample.MapServer;
 
 // A map instance owns the spatial simulation of the players in it. Every avatar is an entity of the map's shard world:
 // the Map actor only turns messages into data (spawn, despawn, input components); systems do the per-tick work, and

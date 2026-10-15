@@ -6,7 +6,7 @@ using DaServer.Runtime;
 using EasyEcs;
 using Sample.Contracts;
 
-namespace Sample.Game;
+namespace Sample.GameServer;
 
 /// <summary>Who is online and the realm's tick counter.</summary>
 public struct RealmState() : IComponent

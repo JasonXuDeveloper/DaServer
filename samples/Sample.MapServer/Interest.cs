@@ -5,7 +5,7 @@ using DaServer.Runtime;
 using EasyEcs;
 using Sample.Contracts;
 
-namespace Sample.Game;
+namespace Sample.MapServer;
 
 // Area of interest: a map is a grid of cells and a player sees the 3x3 cells around its avatar. Every cell has a client
 // group (its viewers: the sessions whose 3x3 contains it), so a change is serialized once per cell and fanned out by
@@ -38,7 +38,7 @@ public struct MapGrid() : IComponent
     /// <summary>Changes go out every other tick (10 Hz): half the messages, clients extrapolate meanwhile.</summary>
     public const int SyncEveryTicks = 2;
 
-    private static readonly uint Scope = RpcIds.Fnv1a("Sample.Game.MapGrid");
+    private static readonly uint Scope = RpcIds.Fnv1a("Sample.MapServer.MapGrid");
 
     public readonly List<Entity>?[] Avatars = new List<Entity>?[Side * Side];
     public readonly List<Moved>?[] Changes = new List<Moved>?[Side * Side];

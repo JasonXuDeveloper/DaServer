@@ -10,15 +10,17 @@ using Microsoft.Extensions.Configuration;
 var builder = DistributedApplication.CreateBuilder(args);
 builder.AddDockerComposeEnvironment("compose");
 
-// A node hosts what its project compiles: the topology is projects and replica counts. Ports, names and seeds are
-// assigned here; discovery (gossip) and client placement (balancer) are automatic.
+// One project per server: a node hosts exactly the actors, services and systems its project compiles (its startup log
+// lists them). The topology is projects and replica counts; ports, names and seeds are assigned here, discovery
+// (gossip) and client placement (balancer) are automatic. Who talks to whom: samples/README.md.
 var cluster = builder.AddDaServerCluster("sample");
-cluster.AddNodes<Projects.Sample_Login>("login");
-cluster.AddNodes<Projects.Sample_Game>("game");
-cluster.AddGateways<Projects.Sample_Gateway>("gateway", replicas: 3);
-var balancer = cluster.AddBalancer<Projects.Sample_Gateway>("balancer");
+cluster.AddNodes<Projects.Sample_LoginServer>("login");                    // Account service
+cluster.AddNodes<Projects.Sample_GameServer>("game");                      // Player and Realm actors
+cluster.AddNodes<Projects.Sample_MapServer>("map");                        // Map actors + movement/interest systems
+cluster.AddGateways<Projects.Sample_Gateway>("gateway", replicas: 3);      // client connections, no business code
+var balancer = cluster.AddBalancer<Projects.Sample_Gateway>("balancer");   // tells clients which gateway to use
 
-// 10k players moving in one map on one game node while the realm broadcasts to everyone every 5 ticks. Each player sees
+// 10k players moving in one map on one map node while the realm broadcasts to everyone every 5 ticks. Each player sees
 // the 3x3 cells around it (area of interest) and hears about avatars only when they turn (dead reckoning): about
 // 2.5 million position updates a second reach the bots, no strings involved. Bots and Seconds can be overridden
 // (`dotnet run -- Bots=1000`, the e2e test does). Bot arguments: bots, seconds, maps, moves per second, chat every n
