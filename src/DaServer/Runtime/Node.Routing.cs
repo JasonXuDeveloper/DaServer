@@ -189,6 +189,11 @@ sealed partial class Node : IConnectionHandler
             case ControlOp.Resume:
                 OnResume(connection, header.Key, payload);
                 break;
+            case ControlOp.Ping:
+                KeepAlive.Pong(connection);
+                break;
+            case ControlOp.Pong:
+                break;
             case ControlOp.Acknowledge:
                 (connection.Tag as PeerLink)?.OnAcknowledge(connection, header.Key);
                 break;

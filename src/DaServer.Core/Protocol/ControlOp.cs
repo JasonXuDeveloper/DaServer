@@ -47,4 +47,10 @@ internal static class ControlOp
 
     /// <summary>Client to gateway (a request): the client closes on purpose (no reconnect grace).</summary>
     public const uint Goodbye = 17;
+
+    /// <summary>Either side, on a connection it has sent nothing on for a while (<see cref="Net.KeepAlive"/>): answer with <see cref="Pong"/>.</summary>
+    public const uint Ping = 18;
+
+    /// <summary>Answer to a <see cref="Ping"/> on the same connection: proof the peer still reads it.</summary>
+    public const uint Pong = 19;
 }

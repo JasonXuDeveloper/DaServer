@@ -271,8 +271,23 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
     {
         var expired = new GraceExpired(this);
         lock (_graces) _graces.Advance(ref expired);
-        if (Environment.TickCount64 >= _nextGroupSweep) SweepGroups();
+        long now = Environment.TickCount64;
+        if (now >= _nextGroupSweep) SweepGroups();
+        if (now >= _nextSilenceSweep) CloseSilentSessions(now);
     }
+
+    /// <summary>
+    /// Once a second: close the connections of clients that sent nothing for <see cref="ClientOptions.ClientTimeout"/>
+    /// (two comparisons per session; idle clients ping, so only lost ones go quiet).
+    /// </summary>
+    private void CloseSilentSessions(long now)
+    {
+        _nextSilenceSweep = now + 1000;
+        long timeout = (long)options.ClientTimeout.TotalMilliseconds;
+        foreach (var (_, session) in _sessions) KeepAlive.Check(session.Channel, now, 0, timeout);
+    }
+
+    private long _nextSilenceSweep;
 
     /// <summary>
     /// Empty groups stay in the table a while (a group emptied and joined again, as area-of-interest cells are, costs
@@ -482,6 +497,11 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
                 break;
             case ControlOp.ResumeSession when callId != 0:
                 ResumeSession(session, callId, FrameHeader.PayloadOf(in header, frame));
+                break;
+            case ControlOp.Ping:
+                KeepAlive.Pong(session.Channel);
+                break;
+            case ControlOp.Pong:
                 break;
             case ControlOp.Goodbye:
                 session.Explicit = true;
