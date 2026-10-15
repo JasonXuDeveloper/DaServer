@@ -310,7 +310,7 @@ sealed partial class Node : IConnectionHandler
 }
 
 /// <summary>Replies to a request that arrived on a connection (one instance per connection, created once).</summary>
-internal sealed class ConnectionReplySink(Connection connection) : IReplySink
+internal sealed class ConnectionReplySink(Connection connection) : IFrameSink
 {
     /// <summary>
     /// Where replies to a request received on <paramref name="connection"/> go: the link back to the node that named
@@ -327,10 +327,5 @@ internal sealed class ConnectionReplySink(Connection connection) : IReplySink
 
     public Connection Connection { get; } = connection;
 
-    public void SendReply(uint requestId, RpcStatus status, FrameWriter response)
-    {
-        response.SetHeader(FrameKind.Response, requestId, 0, 0, status);
-        Connection.Send(response.Frame);
-        response.Dispose();
-    }
+    public void Send(ReadOnlySpan<byte> frame) => Connection.Send(frame);
 }

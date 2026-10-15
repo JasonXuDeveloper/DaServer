@@ -13,6 +13,13 @@ public interface IConnectionHandler
     void OnClosed(Connection connection, Exception? error);
 }
 
+/// <summary>Anything frames are written to: a connection or a node link.</summary>
+internal interface IFrameSender
+{
+    /// <summary>Send a complete frame (copied; the caller keeps ownership of the span).</summary>
+    void Send(ReadOnlySpan<byte> frame);
+}
+
 /// <summary>
 /// Sees every byte a connection hands to its socket, in order and before it is written (resumable node links keep
 /// what the peer has not acknowledged). Called on the connection's send loop, outside its locks.
@@ -67,7 +74,7 @@ public sealed class ConnectionOptions
 /// <para>Receive: frames are parsed in place and handed to <see cref="IConnectionHandler.OnFrame"/>.</para>
 /// Steady state allocates nothing: buffers come from <see cref="BufferPool"/>, the two loops are allocated once.
 /// </summary>
-public sealed class Connection
+public sealed class Connection : IFrameSender
 {
     private static readonly InvalidOperationException SlowConsumer =
         new("Send backlog exceeded MaxPendingSendBytes (slow consumer)");
@@ -142,6 +149,8 @@ public sealed class Connection
         ReceiveCompletion = ReceiveLoop();
         SendCompletion = SendLoop();
     }
+
+    void IFrameSender.Send(ReadOnlySpan<byte> frame) => Send(frame);
 
     /// <summary>
     /// Queue a complete frame (header included). Thread-safe, never blocks on IO.

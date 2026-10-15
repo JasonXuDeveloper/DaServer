@@ -172,7 +172,7 @@ sealed partial class Node
             default:
                 var status = OnSessionControl(header.MessageId, header.Key, payload);
                 if (header.RequestId == 0) break;
-                if (status == RpcStatus.Ok) ConnectionReplySink.For(connection).SendReply(header.RequestId, status, FrameWriter.Rent(FrameHeader.Size));
+                if (status == RpcStatus.Ok) ConnectionReplySink.For(connection).SendOk(header.RequestId);
                 else ConnectionReplySink.For(connection).SendError(header.RequestId, status, "Session is gone");
                 break;
         }
@@ -290,9 +290,7 @@ sealed partial class Node
             DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), (long)Options.ReconnectTicketLifetime.TotalMilliseconds);
         var w = FrameWriter.Rent(FrameHeader.Size + size);
         w.WriteRaw(ticket);
-        w.SetHeader(FrameKind.Control, 0, ControlOp.Ticket, 0);
-        session.Connection.Send(w.Frame);
-        w.Dispose();
+        w.SendControl(session.Connection, ControlOp.Ticket);
     }
 
     /// <summary>
@@ -328,7 +326,7 @@ sealed partial class Node
         }
 
         IssueTicket(session);
-        session.Sink.SendReply(requestId, RpcStatus.Ok, FrameWriter.Rent(FrameHeader.Size));
+        session.Sink.SendOk(requestId);
     }
 
     /// <summary>
@@ -407,7 +405,7 @@ sealed partial class Node
                 break;
             case ControlOp.Goodbye:
                 session.Explicit = true;
-                if (header.RequestId != 0) session.Sink.SendReply(header.RequestId, RpcStatus.Ok, FrameWriter.Rent(FrameHeader.Size));
+                if (header.RequestId != 0) session.Sink.SendOk(header.RequestId);
                 break;
             default:
                 session.Connection.Close(new InvalidOperationException("Unexpected control operation from client: " + header.MessageId));
@@ -466,7 +464,7 @@ internal sealed class Session(long id, Connection connection)
 {
     public long Id { get; } = id;
     public Connection Connection { get; } = connection;
-    public ConnectionReplySink Sink { get; } = new(connection);
+    public IReplySink Sink { get; } = new ConnectionReplySink(connection);
 
     private volatile SessionBinding[] _bindings = [];
 

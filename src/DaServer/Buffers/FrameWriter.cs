@@ -60,6 +60,14 @@ public sealed class FrameWriter : INinoBufferWriter, IDisposable
     public int Length => _pos;
 
     /// <summary>Write the header (length is filled in automatically).</summary>
+    /// <summary>Finish a control frame, send it to <paramref name="target"/> and return this writer to the pool.</summary>
+    internal void SendControl(IFrameSender target, uint op, long key = 0, uint requestId = 0)
+    {
+        SetHeader(FrameKind.Control, requestId, op, key);
+        target.Send(Frame);
+        Dispose();
+    }
+
     public void SetHeader(FrameKind kind, uint requestId, uint messageId, long key, RpcStatus status = RpcStatus.Ok,
         byte flags = 0, byte hops = 0)
     {
