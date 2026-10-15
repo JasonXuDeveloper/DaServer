@@ -17,8 +17,8 @@ public interface ICounter
 [Actor, FromClient(AnyKey = true)]
 public interface IRoom
 {
-    ValueTask Join();
-    ValueTask Broadcast(int sequence);
+    ValueTask Join(int groups);
+    ValueTask Broadcast(int groups, int sequence);
 }
 
 [Nino.Core.NinoType]
@@ -46,15 +46,21 @@ public sealed class Counter : Actor<CounterState>, ICounter
 
 public sealed class Room : Actor, IRoom
 {
-    public ValueTask Join()
+    /// <summary>Join the room's group, or <paramref name="groups"/> groups of it (cells around a player in a map).</summary>
+    public ValueTask Join(int groups)
     {
-        Cluster.JoinGroup(CallerSession, Group);
+        for (int i = 0; i < groups; i++) Cluster.JoinGroup(CallerSession, GroupOf(i));
         return default;
     }
 
-    public ValueTask Broadcast(int sequence)
+    /// <summary>One message to each of <paramref name="groups"/> groups in the same turn.</summary>
+    public ValueTask Broadcast(int groups, int sequence)
     {
-        Cluster.RoomClient(Group).OnTick(sequence);
+        for (int i = 0; i < groups; i++) Cluster.RoomClient(GroupOf(i)).OnTick(sequence);
         return default;
     }
+
+    private static readonly uint Cells = RpcIds.Fnv1a("DaServer.Benchmark.Cells");
+
+    private ClientGroup GroupOf(int index) => index == 0 ? Group : ClientGroup.Of(Cells, Key * 16 + index);
 }
