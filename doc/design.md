@@ -89,8 +89,8 @@ and enters the actor's mailbox, so it is turn-based. A service handler runs on t
 
 - Frames carry a fixed 24-byte header: `length`, `kind`, `status`, `hops`, `flags`, `requestId`, `messageId`, `key`.
   The payload is the Nino-serialized message.
-- `messageId` is FNV-1a of the message type's full name (or its `[WireId]`), computed at compile time. Collisions are
-  build errors (DAS004) and registration errors at runtime. HandlerType ids are FNV-1a of the actor or service
+- `messageId` is FNV-1a of the message type's full name (or its `[WireId]`), computed once per type at run time (the analyzer computes the same value at build time). Collisions are
+  build errors (DAS004) and registration errors at runtime. Handler type ids are FNV-1a of the actor or service
   type's full name.
 - Frame kinds:
   - `Request` (`requestId` is the call id; flag `ToActor` selects actor or service handlers) / `Response`
@@ -318,7 +318,7 @@ What the generators write:
 | `MessageGenerator` | typed `Ask` overloads per request (`Cluster.Ask(key, new AddGold(1))` infers the reply type), `Flow.FromClient` registration for gateways |
 | `HostGenerator` | registration of every actor and service with one dispatcher per `[Handle]` method, client handler classes, every `EcsSystem`; the node entry point when the project has no `Program.cs` |
 | EasyEcs `SystemGenerator` | `[ForEach]` struct jobs (components, singletons, entity, world parameters) and `GeneratedUpdate` |
-| Analyzers | DAS001–DAS005 (handlers, messages, wire types, id collisions, constructors), EECS001–EECS008 (ECS rules) |
+| Analyzers | DAS001–DAS006 (handlers, messages, wire types, id collisions, constructors, message flow), EECS001–EECS008 (ECS rules) |
 
 Both generators follow the incremental-generator rules: syntax-only predicates, equatable models, tracking names, and
 no diagnostics. There is no reflection scanning, no configuration string and no hand-written registration list. A

@@ -28,7 +28,7 @@ src/DaServer/              runtime (net10.0): Protocol/ Buffers/ Concurrency/ Ne
   Runtime/Shard.cs         thread + cross-thread inbox + wake/tick loop (nothing else)
   Runtime/ShardData.cs     shard ECS data: actor components and lifecycle tags (Mailbox, Ready, Turn, ...), singletons
   Runtime/ShardDispatch.cs routing/delivery/invoke operations shared by the runtime systems
-  Runtime/Systems/         runtime systems: Inbox, Turn, ServiceCall, Retire, Unload, Mailbox (ShardMessages group),
+  Runtime/Systems/         runtime systems: Inbox, Turn, ServiceCall, Removal, Unload, Mailbox (ShardMessages group),
                            Rebalance (ShardRebalance), Idle (ShardIdleScan); each reacts to one lifecycle tag (ADR-037)
 src/DaServer.Generator/    incremental generators (MessageGenerator, HostGenerator incl. node entry point)
                            + DaServerAnalyzer (DAS001-006);
