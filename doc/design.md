@@ -268,7 +268,8 @@ outside before it is routed; the first refusal wins, with a status (`RateLimited
 when to retry (a client gets it as `RpcException.RetryAfter`, carried in the refusal reply's key; HTTP maps it to
 `Retry-After`). Building blocks: `TokenBucket` (one owner, allocation-free), `ConcurrencyLimit` (shared,
 interlocked), `SignedToken` (content plus issued/expiry times, HMAC-SHA256 with the cluster secret: reconnect tickets,
-admission tokens, internal HTTP auth).
+admission tokens, internal HTTP auth). Timers are data too: `TimerWheel<T>` (a hashed wheel owned by one thread:
+O(1) schedule, cancel and fire, allocation-free) is advanced by its owner's loop.
 
 ## 9. ECS in DaServer
 

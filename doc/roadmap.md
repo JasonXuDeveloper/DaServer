@@ -150,7 +150,8 @@ Step plan (each step builds and keeps every test green; logic, docs, CI in separ
 5. Feature points and ingress (`DaServer.Features`, `DaServer.Ingress`); done so far: `NodeFeature` hooks,
    `HandleAddress<TAddr>` with scopes in the card and group fan-out by scope, `IIngress` (raw and typed, origin,
    capped deadline, `IngressLoadLimit` early refusal), admission (`IIngressFilter`, `RateLimited` with a retry hint,
-   `TokenBucket`, `ConcurrencyLimit`, `SignedToken` under the reconnect tickets); client connections use them:
+   `TokenBucket`, `ConcurrencyLimit`, `SignedToken` under the reconnect tickets), `TimerWheel<T>` (hashed wheel, one
+   owner, O(1), allocation-free; consumers: grace timers in step 6, `SendAfter` in N2); client connections use them:
    - `NodeFeature`: Configure, ConfigureShard(World), Start(INodeContext), OnViewChanged, OnMemberDead,
      `Drain(deadline)`, Stop(crashed), a readiness contribution, metrics registration; options bound from
      `DaServer:{Section}`; enabled by configuration.
