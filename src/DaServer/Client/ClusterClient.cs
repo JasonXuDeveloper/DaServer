@@ -10,6 +10,7 @@ using DaServer.Concurrency;
 using DaServer.Net;
 using DaServer.Protocol;
 using DaServer.Rpc;
+using DaServer.Runtime;
 using Nino.Core;
 
 namespace DaServer.Client;
@@ -17,7 +18,8 @@ namespace DaServer.Client;
 /// <summary>
 /// Client connection to a gateway (game client, bot, tool): sends <see cref="ClientMessageAttribute">[ClientMessage]</see>
 /// types (<c>client.Send(new Move(..))</c>, <c>await client.Ask(new GetInfo())</c>) and dispatches the messages servers
-/// push to the [Handle] methods of registered handler objects (<see cref="Register"/>).
+/// push to the [Handle] methods of registered handler objects (<see cref="Register"/>). When the connection is lost it
+/// reconnects on its own and resumes its session with the gateway's reconnect ticket (<see cref="Reconnected"/>).
 /// </summary>
 public sealed class ClusterClient : IMessageSender, IConnectionHandler, IAsyncDisposable
 {
@@ -26,12 +28,23 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IAsyncDi
     private Dictionary<uint, (object Target, MessageDispatcher Dispatcher)> _handlers = new(); // copy on write
     private readonly MpmcQueue<FrameWriter>? _inbox;
     private Connection? _connection;
+    private string _host = "";
+    private int _port;
+    private bool _followBalancer;
+    private byte[]? _ticket;          // latest reconnect ticket from the gateway (null: nothing to resume)
+    private long _refreshTicketAtMs;  // local clock
+    private int _reconnecting;
+    private volatile bool _disposed;
 
     // One timer expires the calls of every client in the process (a bot process runs thousands of clients).
     private static readonly ConcurrentDictionary<ClusterClient, bool> Live = new();
     private static readonly Timer Sweeper = new(static _ =>
     {
-        foreach (var (client, _) in Live) client._pending.SweepExpired();
+        foreach (var (client, _) in Live)
+        {
+            client._pending.SweepExpired();
+            client.RefreshTicket();
+        }
     }, null, 100, 100);
 
     /// <param name="queueCallbacks">
@@ -47,7 +60,26 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IAsyncDi
 
     public bool IsConnected => _connection is { IsClosed: false };
 
+    /// <summary>Reconnect and resume the session when the connection is lost (needs a cluster secret on the servers).</summary>
+    public bool AutoReconnect { get; set; } = true;
+
+    /// <summary>
+    /// How long to keep trying (exponential backoff up to 5 s between attempts). Servers wait
+    /// <c>NodeOptions.ReconnectGrace</c> (30 s by default) before they report the session closed.
+    /// </summary>
+    public TimeSpan ReconnectTimeout { get; set; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>The connection was lost (calls in flight fail with <see cref="RpcStatus.Disconnected"/>); a reconnect may follow.</summary>
     public event Action<Exception?>? Disconnected;
+
+    /// <summary>
+    /// The session resumed on a new connection: messages reach the same actors again, and they resend the full state
+    /// (pushes sent while disconnected were lost). Groups joined by AnyKey messages are not restored: join them again.
+    /// </summary>
+    public event Action? Reconnected;
+
+    /// <summary>Reconnecting gave up (timeout, or the ticket was refused): log in again.</summary>
+    public event Action<Exception?>? ReconnectFailed;
 
     /// <summary>
     /// Connect to the cluster through any gateway (typically a balancer's well-known address): the gateway names
@@ -57,6 +89,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IAsyncDi
     /// </summary>
     public async ValueTask ConnectAsync(string host, int port, bool followBalancer = true, CancellationToken cancellationToken = default)
     {
+        (_host, _port, _followBalancer) = (host, port, followBalancer);
         await ConnectToAsync(host, port, cancellationToken).ConfigureAwait(false);
         if (!followBalancer) return;
 
@@ -161,7 +194,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IAsyncDi
                 throw new RpcException(RpcStatus.Disconnected);
 
             uint requestId = call != null ? _pending.Register(call, (int)CallTimeout.TotalMilliseconds) : 0;
-            request.SetHeader(call != null ? requestKind : FrameKind.OneWay, requestId, messageId, key,
+            request.SetHeader(call != null || requestKind == FrameKind.Control ? requestKind : FrameKind.OneWay, requestId, messageId, key,
                 call != null && requestKind == FrameKind.Request ? FrameHeader.EncodeBudget((long)CallTimeout.TotalMilliseconds) : RpcStatus.Ok);
             if (!connection.Send(request.Frame) && call != null)
                 _pending.Take(requestId)?.Fail(new RpcException(RpcStatus.Disconnected));
@@ -190,6 +223,13 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IAsyncDi
                 if (_inbox != null) _inbox.TryEnqueue(FrameWriter.CopyOf(frame));
                 else DispatchCallback(frame);
                 break;
+            case FrameKind.Control when header.MessageId == ControlOp.Ticket:
+                var ticket = frame.Slice(FrameHeader.Size);
+                long lifetime = ReconnectTicket.ExpiresMs(ticket) - ReconnectTicket.IssuedMs(ticket); // server clock: use only the span
+                // No binding (before login, after logout): nothing to resume.
+                Volatile.Write(ref _ticket, ticket.Length > ReconnectTicket.SizeOf(0) ? ticket.ToArray() : null);
+                Volatile.Write(ref _refreshTicketAtMs, Environment.TickCount64 + lifetime / 2);
+                break;
         }
     }
 
@@ -197,8 +237,72 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IAsyncDi
     {
         if (connection != _connection) return; // the balancer connection, left on purpose
         _pending.FailAll(RpcStatus.Disconnected);
+        if (Volatile.Read(ref _reconnecting) != 0) return; // an attempt of the running reconnect failed: it retries
         Disconnected?.Invoke(error);
+        if (!_disposed && AutoReconnect && Volatile.Read(ref _ticket) != null && Interlocked.CompareExchange(ref _reconnecting, 1, 0) == 0)
+            _ = ReconnectAsync();
     }
+
+    /// <summary>Connect again (through the original address: a balancer picks a live gateway) and resume the session.</summary>
+    private async Task ReconnectAsync()
+    {
+        Exception? error = null;
+        long deadline = Environment.TickCount64 + (long)ReconnectTimeout.TotalMilliseconds;
+        var delay = TimeSpan.FromMilliseconds(100);
+        while (!_disposed)
+        {
+            await Task.Delay(delay).ConfigureAwait(false); // a blip or a restarting gateway: give it a moment
+            _connection?.Close(); // the previous attempt's, if it connected
+            try
+            {
+                await ConnectAsync(_host, _port, _followBalancer).ConfigureAwait(false);
+                await ResumeAsync().ConfigureAwait(false);
+                Volatile.Write(ref _reconnecting, 0);
+                Reconnected?.Invoke();
+                return;
+            }
+            catch (RpcException e) when (e.Status == RpcStatus.Forbidden)
+            {
+                error = e; // the ticket was refused: retrying cannot help
+                break;
+            }
+            catch (Exception e)
+            {
+                error = e;
+            }
+
+            if (Environment.TickCount64 + (long)delay.TotalMilliseconds > deadline) break;
+            delay = TimeSpan.FromMilliseconds(Math.Min(delay.TotalMilliseconds * 2, 5000));
+        }
+
+        _connection?.Close(); // a connection without a session: the application logs in again
+        Volatile.Write(ref _reconnecting, 0);
+        if (!_disposed) ReconnectFailed?.Invoke(error);
+    }
+
+    private ValueTask ResumeAsync()
+    {
+        var ticket = Volatile.Read(ref _ticket)!;
+        var call = PendingCall.Rent(null);
+        var task = call.Task;
+        var w = FrameWriter.Rent(FrameHeader.Size + ticket.Length);
+        w.WriteRaw(ticket);
+        Send(w, ControlOp.ResumeSession, 0, call, FrameKind.Control);
+        return task;
+    }
+
+    /// <summary>Ask for a fresh ticket at half of its lifetime (the sweeper timer, every 100 ms).</summary>
+    private void RefreshTicket()
+    {
+        if (Volatile.Read(ref _ticket) == null || !IsConnected || Volatile.Read(ref _reconnecting) != 0) return;
+        long now = Environment.TickCount64;
+        if (now < Volatile.Read(ref _refreshTicketAtMs)) return;
+        Volatile.Write(ref _refreshTicketAtMs, now + 10_000); // until the new one arrives
+        Send(FrameWriter.Rent(FrameHeader.Size), ControlOp.Ticket, 0, null, FrameKind.Control);
+    }
+
+    /// <summary>Tests: lose the connection as a network failure would (no goodbye).</summary>
+    internal void DropConnection() => _connection?.Close(new System.IO.IOException("Connection dropped"));
 
     private void DispatchCallback(ReadOnlySpan<byte> frame)
     {
@@ -210,12 +314,28 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IAsyncDi
         if (task.IsCompleted) task.GetAwaiter().GetResult();
     }
 
+    /// <summary>Close on purpose: the gateway reports the session closed at once (no reconnect grace).</summary>
     public async ValueTask DisposeAsync()
     {
+        _disposed = true;
+        if (IsConnected)
+        {
+            var call = PendingCall.Rent(null);
+            var goodbye = call.Task;
+            Send(FrameWriter.Rent(FrameHeader.Size), ControlOp.Goodbye, 0, call, FrameKind.Control);
+            try
+            {
+                await goodbye.AsTask().WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+            }
+            catch
+            {
+                // gone already, or slow: closing is all that is left
+            }
+        }
+
         Live.TryRemove(this, out _);
         _connection?.Close();
         if (_inbox != null)
             while (_inbox.TryDequeue(out var frame)) frame.Dispose();
-        await Task.CompletedTask.ConfigureAwait(false);
     }
 }

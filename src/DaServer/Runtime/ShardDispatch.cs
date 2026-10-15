@@ -208,13 +208,22 @@ internal static class ShardDispatch
 
     /// <summary>
     /// Invoke the next message of an actor. Records the client session of a gateway-relayed message (see
-    /// <see cref="ClientSessions"/>) and forgets a closed one.
+    /// <see cref="ClientSessions"/>), forgets a closed one and swaps a resumed one; the late close of a resumed session
+    /// is not delivered.
     /// </summary>
     public static System.Threading.Tasks.ValueTask Invoke(Actor actor, in Envelope envelope)
     {
         var header = FrameHeader.Read(envelope.Frame.Frame);
         actor.TurnCaller = default;
-        if (header.MessageId == MessageType<SessionClosed>.Id) ForgetSession(actor, envelope.Frame.Payload);
+        if (header.MessageId == MessageType<SessionClosed>.Id)
+        {
+            if (!ForgetSession(actor, envelope.Frame.Payload))
+            {
+                envelope.Frame.Dispose();
+                return default;
+            }
+        }
+        else if (header.MessageId == MessageType<SessionResync>.Id) ResyncSession(actor, envelope.Frame.Payload);
         else if ((header.Flags & FrameFlags.HasCaller) != 0)
         {
             var reader = new Reader(envelope.Frame.Payload);
@@ -229,17 +238,37 @@ internal static class ShardDispatch
     /// <summary>Remember a client session of an activation (a hash lookup; allocates once per new session).</summary>
     internal static void RecordSession(Entity actor, SessionRef session)
     {
-        if (!actor.TryGet<ClientSessions>(out var sessions))
-            actor.Add<ClientSessions>() = sessions = new ClientSessions(new HashSet<SessionRef>());
-        sessions.Sessions.Add(session);
+        SessionsOf(actor).Sessions.Add(session);
     }
 
-    private static void ForgetSession(Actor actor, ReadOnlySpan<byte> payload)
+    private static ClientSessions SessionsOf(Entity actor)
     {
-        if (!actor.Entity.TryGet<ClientSessions>(out var sessions)) return;
+        if (!actor.TryGet<ClientSessions>(out var sessions))
+            actor.Add<ClientSessions>() = sessions = new ClientSessions(new HashSet<SessionRef>(), new HashSet<SessionRef>());
+        return sessions;
+    }
+
+    /// <summary>Forget a closed session; false when it had been resumed (its close is stale and not delivered).</summary>
+    private static bool ForgetSession(Actor actor, ReadOnlySpan<byte> payload)
+    {
+        if (!actor.Entity.TryGet<ClientSessions>(out var sessions)) return true;
         var reader = new Reader(payload);
         NinoDeserializer.Deserialize(out SessionClosed closed, ref reader);
+        if (sessions.Superseded.Remove(closed.Session)) return false;
         sessions.Sessions.Remove(closed.Session);
+        return true;
+    }
+
+    /// <summary>The resumed session replaces the previous one; it is the session of the turn (<c>CallerSession</c>).</summary>
+    private static void ResyncSession(Actor actor, ReadOnlySpan<byte> payload)
+    {
+        var reader = new Reader(payload);
+        NinoDeserializer.Deserialize(out SessionResync resync, ref reader);
+        var sessions = SessionsOf(actor.Entity);
+        sessions.Sessions.Remove(resync.Previous);
+        sessions.Superseded.Add(resync.Previous); // removed when its late SessionClosed arrives or its gateway dies
+        sessions.Sessions.Add(resync.Session);
+        actor.TurnCaller = resync.Session;
     }
 
     /// <summary>
@@ -252,6 +281,7 @@ internal static class ShardDispatch
         foreach (var item in world.Query<ClientSessions, ActorLink>())
         {
             var sessions = item.Component1.Sessions;
+            item.Component1.Superseded.RemoveWhere(s => s.GatewayNodeId == gatewayNodeId); // their close will not come
             lost?.Clear();
             foreach (var session in sessions)
                 if (session.GatewayNodeId == gatewayNodeId) (lost ??= new()).Add(session);

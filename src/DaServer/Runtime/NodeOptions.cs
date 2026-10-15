@@ -61,6 +61,23 @@ public sealed class NodeOptions
     public int ActorMailboxCapacity { get; set; } = 4096;
 
     public TimeSpan CallTimeout { get; set; } = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// Secret shared by every node of the cluster (configuration <c>DaServer__ClusterSecret</c>; Aspire generates one).
+    /// Gateways sign reconnect tickets with it, so a client that lost its connection resumes its session on any
+    /// gateway (<see cref="Rpc.SessionResync"/>). Null: no tickets, a lost connection closes the session at once.
+    /// </summary>
+    public string? ClusterSecret { get; set; }
+
+    /// <summary>
+    /// How long actors wait for a client that lost its connection before they receive <see cref="Rpc.SessionClosed"/>
+    /// (when <see cref="ClusterSecret"/> is set). A client that resumes in time is never reported closed; an explicit
+    /// close (client dispose, <c>Disconnect</c>) is reported at once.
+    /// </summary>
+    public TimeSpan ReconnectGrace { get; set; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>Validity of a reconnect ticket; clients refresh theirs at half of it.</summary>
+    public TimeSpan ReconnectTicketLifetime { get; set; } = TimeSpan.FromMinutes(10);
     public TimeSpan GossipInterval { get; set; } = TimeSpan.FromSeconds(1);
     public TimeSpan SuspectAfter { get; set; } = TimeSpan.FromSeconds(3);
     public TimeSpan DeadAfter { get; set; } = TimeSpan.FromSeconds(10);

@@ -60,6 +60,19 @@ public sealed class InterestGrid
                 if (cell >= 0 && !Near(cell, to)) cluster.LeaveGroup(session, Viewers(map, cell));
             }
 
+        View(cluster, map, avatar, session, from, to);
+    }
+
+    /// <summary>The avatar's client resumed on a new session: it views its 3x3 again and receives the avatars there.</summary>
+    public void Rejoin(ICluster cluster, long map, Entity avatar, SessionRef session)
+    {
+        int cell = avatar.Get<GridCell>().Index;
+        if (cell >= 0) View(cluster, map, avatar, session, from: -1, cell); // not placed yet: the next tick does it
+    }
+
+    /// <summary>The session starts viewing the cells around <paramref name="to"/> not seen from <paramref name="from"/>.</summary>
+    private void View(ICluster cluster, long map, Entity avatar, SessionRef session, int from, int to)
+    {
         _inView.Clear();
         for (int dy = -1; dy <= 1; dy++)
         for (int dx = -1; dx <= 1; dx++)
