@@ -125,7 +125,7 @@ balancing, TLS, CDN/WAF, Gateway API routes and autoscaling stay with the platfo
 - [x] G0 One message model (ADR-047), steps 1-4: `Send`/`Ask`/`Publish` plus addresses (`IActorId` keyed,
       `INodeAddress` pinned, `IGroupAddress` fan-out; scope = `TypeId<TAddr>`, kind a JIT constant per address type);
       `Push`/`Broadcast` are sends to session / group addresses, `JoinGroup`/`LeaveGroup`/`Disconnect` messages to
-      them, `BindSession` an `Ask` of `Bind` (removed verbs, no aliases). Wire: `Message`/`Reply`/`Control`, `Target`
+      them, `BindSession` an `Ask` of `SessionAccess` (removed verbs, no aliases). Wire: `Message`/`Reply`/`Control`, `Target`
       always set, trailers by flag (`Origin` 16 B, call id; `Chain` with N3, `Trace` with A6). Wire break, no rolling
       upgrade across it (pre-1.0). A/B against Z2: see the benchmark table below.
 - [ ] G1 Feature points and ingress, step 5, proven by two consumers (client connections and the HTTP plane).
@@ -150,7 +150,7 @@ Step plan (each step builds and keeps every test green; logic, docs, CI in separ
    `ShardObject.Caller` replaces `CallerSession`; the origin is an `INodeAddress` (`Send(Caller, m)`) and `SessionRef`
    converts implicitly from it.
 4. Session operations become messages to `SessionRef` (done: `JoinGroup`/`LeaveGroup`/`Disconnect` to a session or
-   a group; `BindSession` asks a `Bind`, so ADR-022 ordering holds).
+   a group; `BindSession` asks a `SessionAccess`, so ADR-022 ordering holds).
 5. Feature points and ingress (`DaServer.Features`, `DaServer.Ingress`); done so far: `NodeFeature` hooks,
    `HandleAddress<TAddr>` with scopes in the card and group fan-out by scope, `IIngress` (raw and typed, origin,
    capped deadline, `IngressLoadLimit` early refusal), admission (`IIngressFilter`, `RateLimited` with a retry hint,
@@ -199,7 +199,8 @@ Step plan (each step builds and keeps every test green; logic, docs, CI in separ
    ticket, close the listener). The balancer role goes: every client-facing node answers "which node" (power of two
    over gossiped sessions) as a control op and `GET /clients/endpoint`; the well-known address is the platform LB /
    DNS; redirect mode or behind-LB mode. `ClusterMember` keeps no client fields (they are feature card data).
-7. Done: attributes `[FromClient(AnyId)]` / `[ToClient]` replace `Flow`/`AnyId` on `[Message]`.
+7. Done: attributes `[FromClient]` / `[ToClient]` replace `Flow` on `[Message]`; `AnyId` is replaced by grants
+   (ADR-051): `GrantSession`/`RevokeSession` admit a session to an actor, the edge refuses any other named actor.
 8. Packages: `DaServer.Abstractions` (netstandard2.1 + net10: `[Message]`, `[FromClient]`/`[ToClient]`,
    `IRequest`, addresses incl. `SessionRef`/`ClientGroup`, `Origin`, `RpcStatus`, `FrameHeader`, wire ids,
    `TypeIds`, `SessionClosed`/`SessionResync`; no runtime, no EasyEcs; `TypeId<T>` static classes, no static

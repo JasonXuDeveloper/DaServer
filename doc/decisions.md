@@ -341,9 +341,9 @@ records that no longer hold). Each: context → decision → consequences.
   - `Ask(id, m)` / `Send(id, m)` go to the actor `id` (its id type names the actor type, ADR-043); without an id, to
     the one service handling the message (several service handlers is an `Ambiguous` error). `Publish(e)` reaches
     every service type handling it once.
-  - A `[FromClient]` message to an actor goes to the actor bound to the client's session for that actor type
-    (`AnyId` lets the client name the actor); the actor binds itself: `await BindSession(session)` (acknowledged by
-    the gateway before it returns).
+  - A `[FromClient]` message to an actor goes to the actor bound to the client's session for that actor type, or to
+    the actor the client names when that actor granted the session (ADR-051); the actor binds or grants itself:
+    `await BindSession(session)`, `await GrantSession(session)` (acknowledged by the gateway before they return).
   - Messages to clients are sends to their address: `Send(session, m)` / `Send(group, m)`, handled on clients by
     `[Handle]` methods of a registered object.
   - Generated code: ADR-012.
@@ -372,8 +372,9 @@ records that no longer hold). Each: context → decision → consequences.
 - Alternatives: resumable client streams like node links (ADR-008) keep per-session replay buffers on gateways, which
   is memory per connection and lost with the gateway anyway; a session store (Redis) adds a dependency and a hop.
 - Consequences: without a cluster secret there are no tickets and a lost connection closes the session at once. A
-  ticket is a bearer token for its lifetime, carried on the same connection as the login. Groups joined by `AnyId`
-  messages are rejoined by the client (`client.Reconnected`).
+  ticket is a bearer token for its lifetime, carried on the same connection as the login. The ticket carries the
+  session's grants and bindings (ADR-051) and their actors' groups; other groups are rejoined by the actors on
+  `SessionResync`.
 
 ## ADR-037 Actor lifecycle is tags; turn ends are posted, not polled
 - Context: polling every busy actor's task on every wake, ready queues with `Scheduled` flags, lifecycle enums and
@@ -407,8 +408,8 @@ records that no longer hold). Each: context → decision → consequences.
   would say which messages clients send or receive. A server could push an internal message to a client, or a client
   handler could expect one, and only testing would notice.
 - Decision: `[NinoType, Message]` is a message; plain `[NinoType]` is data. Who sends it to whom is
-  said by the clients module's attributes: none (servers only), `[FromClient]` (clients may send it; `AnyId = true`
-  lets them name the actor), `[ToClient]` (servers push it, clients handle it); both may be applied. The analyzer checks handlers (servers never handle a
+  said by the clients module's attributes: none (servers only), `[FromClient]` (clients may send it; they name an actor only
+  if it granted their session, ADR-051), `[ToClient]` (servers push it, clients handle it); both may be applied. The analyzer checks handlers (servers never handle a
   `ToClient`-only message, client handlers only `ToClient` ones) and call sites (a send to a session or group
   address needs `ToClient`, `ClusterClient` sends need `FromClient`, servers do not send `ToClient`-only messages to
   each other): DAS006. DAS008 rejects asking a session or group and clients addressing anything but actors. Gateways also accept only `FromClient` messages at run time.
@@ -458,8 +459,8 @@ records that no longer hold). Each: context → decision → consequences.
   type: its type id (FNV of the full name) is the actor's handler type id, so placement and the wire use the id type
   and messages need no owner. Two actor types may not share an id type. Every message carries the handler type id in
   the header's target (ADR-005). `Publish` reaches services
-  only; actors are told one by one with `Send`. A client may name an actor only with an `AnyId` message whose handler
-  is that actor type; otherwise the session binding decides.
+  only; actors are told one by one with `Send`. A client may name an actor only if that actor granted its session
+  (ADR-051); otherwise the session binding decides.
 - Alternatives: `long` keys with a generated per-actor proxy (`Cluster.Map(id).Enter(..)`), which ADR-035 rejects; the
   id inside the message (an `[ActorKey]` member), which couples messages to one receiver.
 - Consequences: the compiler checks targets, ids are plain data that travel inside messages (`Enter(PlayerId)`), and
@@ -524,7 +525,8 @@ records that no longer hold). Each: context → decision → consequences.
   id, set by the ingress (a client's own bytes never become it) and kept by every hop. Session operations are
   messages to a client address that its node applies instead of delivering them (`JoinGroup`, `LeaveGroup`,
   `Disconnect`; to a group they apply to every member on every node). Binding stays an actor operation
-  (`BindSession`: it binds the actor itself) and is an `Ask` of a `Bind` message to the session, so it travels on the
+  (`BindSession`/`GrantSession`: the actor binds or grants itself) and is an `Ask` of a `SessionAccess` message to
+  the session, so it travels on the
   ordered link with the actor's other messages to that session (ADR-022) and returns once applied.
 - Consequences: sessions and groups are addresses of the gateway module, not core verbs; `ICluster` is `Send`,
   `Ask`, `Publish` and `NodeId`; node-to-node and client wire
@@ -584,12 +586,33 @@ records that no longer hold). Each: context → decision → consequences.
   `DaServer:Clients` section (`ClientOptions`): it registers the session, origin and client group address scopes,
   publishes its endpoint as a card entry and its session count as a pulse slot, and sends every client message
   through the ingress. The actor part stays in the runtime (`ActorSessions`): it needs only contract types
-  (`SessionRef`, `SessionClosed`, `SessionResync`, `Bind`), records an actor's callers and bound sessions, handles
+  (`SessionRef`, `SessionClosed`, `SessionResync`, `SessionAccess`), records an actor's callers and bound or granted
+  sessions, handles
   closes and resyncs as dispatch filters of their message types and closes the sessions of a dead node holding the
   session scope. Card entries and pulse slots are generic (`SetCardEntry`, `AddPulse`: keys chosen by features, at
   most three slots), so `ClusterMember` keeps no client fields. `ReconnectGrace` stays a node option: both parts wait
   it.
 - Consequences: a node without the `Clients` section runs no client code on its IO side; the runtime's dependency
   rule holds (an architecture test, roadmap G step 9); a feature of this assembly may use the node's internals
-  (`ClientConnections` sends `SessionClosed` to bound actors directly), never the other way round.
+  (`ClientConnections` sends `SessionClosed` to granted actors directly), never the other way round.
 
+## ADR-051 Clients name only actors that granted their session
+- Context: a client message to an actor goes to the actor bound to the session. Rooms, matches and shared boards need
+  the client to name the actor (`client.Send(roomId, new Say(..))`), and a session may be in several of one type. A
+  per-message flag letting clients name any id (`AnyId`) turned every such message into an open door: any id
+  activates an actor (and, with persistence, loads it), every handler had to check `Caller` itself, and internal ids
+  could be enumerated. Orleans keeps untrusted clients behind a frontend that authorizes before calling grains;
+  Nakama and Colyseus expose match and room ids but accept messages only from clients that joined (a server-side
+  decision); ET routes client messages by the session's bound unit.
+- Decision: the actor decides who may address it, once: `await GrantSession(session)` / `RevokeSession(session)`
+  (an `Ask` of `SessionAccess` to the session, like `BindSession`, which is a grant that is also the session's actor
+  of its type). The client-facing node keeps the session's grants (at most 64, an immutable array scanned lock-free)
+  and refuses a message naming any other actor with `Forbidden` before it enters the cluster. A grant puts the
+  session in the actor's `Group`, the actor receives `SessionClosed` / `SessionResync` for it, and the reconnect
+  ticket carries grants with their bound flag. Unbind and revoke remove the entry of that actor only.
+- Alternatives: bindings only (one actor per type, no two rooms at once); opaque per-session handles instead of ids
+  (hides ids clients usually display anyway, one more mapping); handler-side checks (repeated in every handler, and
+  the actor is activated before it can refuse).
+- Consequences: `[FromClient]` has no options; an unknown or unadmitted id costs the edge a scan and a reply, never an
+  actor activation or a load. Entering a room is a request to something that may admit (a lobby service asking the
+  room, or the room's own bound player flow).

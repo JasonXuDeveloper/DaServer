@@ -33,8 +33,7 @@ Everything a developer declares is one of these (ADR-035). The message type alon
 | Declaration | Meaning |
 |---|---|
 | `[NinoType, Message] partial record struct M` | a message between servers only |
-| `[Message, FromClient]` | game clients may send it; to an actor it goes to the actor the server bound to the session (`BindSession`) |
-| `[Message, FromClient(AnyId = true)]` | to an actor, clients choose the id (public rooms, leaderboards) |
+| `[Message, FromClient]` | game clients may send it; to an actor it goes to the actor bound to the session (`BindSession`), or to the actor the client names when that actor granted the session (`GrantSession`) |
 | `[Message, ToClient]` | servers push it to sessions and groups; only clients handle it |
 | `[NinoType]` alone | data inside messages; anything else crossing the wire is a build error (DAS003) |
 | `M : IRequest<TReply>` | a request, answered with one `TReply` |
@@ -101,8 +100,9 @@ local node when it hosts one.
   - `Control`: link handshake and resume, gossip, client tickets and gateway choice; a call id makes it a call.
 - A receiving node routes a message by its target alone: a hosted handler type goes to its shard, a session or group
   to the client connections, anything else on to the node hosting it.
-- A client leaves the target 0 to let its gateway pick the actor bound to its session or the service; it names the
-  actor only with `AnyId` messages. Gateways copy the client's payload as is, add the session as the origin trailer
+- A client leaves the target 0 to let its gateway pick the actor bound to its session or the service; it names an
+  actor only if that actor granted its session (ADR-051): the gateway checks the session's grants (at most 64, a
+  lock-free scan) and refuses anything else with `Forbidden`, before any actor is reached. Gateways copy the client's payload as is, add the session as the origin trailer
   (flag `HasOrigin`, 16 bytes before the call id; handlers read it as `Caller`) and route it. They never deserialize
   payloads.
 
@@ -243,7 +243,7 @@ address is tried) and moves to the client-facing node the entry names (ADR-026);
 again; `ConnectAsync(new Uri("ws://node/clients/ws"))` connects over a WebSocket of the node's HTTP plane instead
 (browsers, WebGL builds; one or more whole frames per binary message, the same protocol). It sends the same messages as
 servers: `client.Ask(new Login(..))`, `client.Ask(new GetInfo())` (session actors need no id: the gateway uses the
-binding), `client.Ask(roomId, new Join())` (`AnyId` messages). Push handlers are `[Handle]` methods of any class,
+binding), `client.Send(roomId, new Say(..))` (actors that granted the session). Push handlers are `[Handle]` methods of any class,
 registered with `client.Register(obj)`; they run on the IO thread or, for game loops and UIs, on the application's thread through `ProcessCallbacks`.
 
 ### Features
