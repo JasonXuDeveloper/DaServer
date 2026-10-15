@@ -263,6 +263,13 @@ ingress assigns (handlers read it as `Caller`) and a deadline capped at `CallTim
 its view (one hop). With `IngressLoadLimit` set, a request whose target node gossiped that many queued messages is
 refused with `Overloaded` before it is sent. Client connections send every client message through it.
 
+Admission is the edge's: features add `IIngressFilter`s (`node.AddIngressFilter`), run for every message from
+outside before it is routed; the first refusal wins, with a status (`RateLimited`, `Overloaded`, `Forbidden`) and
+when to retry (a client gets it as `RpcException.RetryAfter`, carried in the refusal reply's key; HTTP maps it to
+`Retry-After`). Building blocks: `TokenBucket` (one owner, allocation-free), `ConcurrencyLimit` (shared,
+interlocked), `SignedToken` (content plus issued/expiry times, HMAC-SHA256 with the cluster secret: reconnect tickets,
+admission tokens, internal HTTP auth).
+
 ## 9. ECS in DaServer
 
 Business code and the runtime follow the same ECS rules (EasyEcs `doc/ecs-principles.md`). EasyEcs is data plus
