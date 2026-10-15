@@ -20,12 +20,10 @@ public sealed class Realm : Actor<RealmId, RealmState>
     [Handle] public void On(PlayerOffline m) => State.Online.Remove(m.Player);
 }
 
-/// <summary>Every <see cref="EveryTicks"/> ticks, the realm status goes to every session of the cluster.</summary>
+/// <summary>Every <see cref="Timing.RealmStatusEveryTicks"/> ticks, the realm status goes to every session of the cluster.</summary>
 public sealed partial class RealmBroadcastSystem : EcsSystem
 {
-    public const int EveryTicks = 5;
-
-    public override int UpdateInterval => EveryTicks;
+    public override int UpdateInterval => Timing.RealmStatusEveryTicks;
 
     [ForEach]
     private static void Broadcast(in RealmState realm, World world) =>

@@ -2,4 +2,8 @@
 
     <Import Project="..\ServerNode.props" />
 
+    <ItemGroup>
+        <ProjectReference Include="..\Sample.Shared\Sample.Shared.csproj" />
+    </ItemGroup>
+
 </Project>

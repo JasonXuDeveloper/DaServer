@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net11.0</TargetFramework>
+        <IsPackable>false</IsPackable>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <InternalsVisibleTo Include="Sample.Tests" />
+    </ItemGroup>
+
+    <!-- The game client's logic: what a Unity client runs, and what the bots run (many clients per process). -->
+    <ItemGroup>
+        <ProjectReference Include="..\Sample.Shared\Sample.Shared.csproj" />
+        <ProjectReference Include="..\..\..\src\DaServer.Client\DaServer.Client.csproj" />
+        <ProjectReference Include="..\..\..\src\DaServer.Generator\DaServer.Generator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+    </ItemGroup>
+
+</Project>

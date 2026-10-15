@@ -87,6 +87,16 @@ public partial record struct Gone(PlayerId Player);
 [NinoType, Message, ToClient]
 public partial record struct Chat(PlayerId Player, string Text);
 
-/// <summary>Realm state every client sees (broadcast to every session of the cluster every few ticks).</summary>
+/// <summary>Realm state every client sees (broadcast to every session of the cluster every <see cref="Timing.RealmStatusEveryTicks"/> ticks).</summary>
 [NinoType, Message, ToClient]
 public partial record struct RealmStatus(long Tick, int Online, long ServerTimeTicks);
+
+/// <summary>The game's clock, the same on servers and clients.</summary>
+public static class Timing
+{
+    /// <summary>Simulation ticks per second (the nodes' default tick rate; clients predict at the same rate).</summary>
+    public const int TickRate = 20;
+
+    /// <summary>The realm status goes to every session every this many ticks.</summary>
+    public const int RealmStatusEveryTicks = 5;
+}

@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net11.0</TargetFramework>
+        <IsPackable>false</IsPackable>
+        <!-- Rules and ECS systems the servers, the game client and the bots all run: no server runtime, no transport
+             (DAS010 fails the build if one is referenced). -->
+        <DaServerShared>true</DaServerShared>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\Sample.Contracts\Sample.Contracts.csproj" />
+        <PackageReference Include="EasyEcs" Version="$(EasyEcsVersion)" />
+        <ProjectReference Include="..\..\..\src\DaServer.Generator\DaServer.Generator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+    </ItemGroup>
+
+</Project>

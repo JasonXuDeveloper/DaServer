@@ -3,15 +3,14 @@ using DaServer.Rpc;
 using DaServer.Runtime;
 using EasyEcs;
 using Sample.Contracts;
+using Sample.Shared;
 
 namespace Sample.MapServer;
 
 // A map instance owns the spatial simulation of the players in it. Every avatar is an entity of the map's shard world:
 // the Map actor only turns messages into data (spawn, despawn, input components); systems do the per-tick work, and
-// Interest.cs decides who hears about what (area of interest).
-
-public record struct Position(float X, float Y) : IComponent;
-public record struct Velocity(float X, float Y) : IComponent;
+// Interest.cs decides who hears about what (area of interest). Movement itself is a shared rule (Sample.Shared:
+// MovementSystem), the same clients predict with.
 
 /// <summary>Whose avatar it is, the map entity it lives in and the client session that controls it.</summary>
 public record struct Avatar(PlayerId Player, Entity Map, ClientSession Session) : IComponent;
@@ -24,7 +23,6 @@ public struct MapState() : IComponent
 
 public sealed class Map : Actor<MapId, MapState>
 {
-    private const float MaxSpeed = 5f;
     private const int MaxChatLength = 256;
 
     public override ValueTask OnLoad()
@@ -41,7 +39,7 @@ public sealed class Map : Actor<MapId, MapState>
         {
             // Spread over the map by player id (a real game reads the saved position).
             ulong h = (ulong)player.Value * 0x9E3779B97F4A7C15UL >> 32;
-            var spawn = new Position(h % 1000 / 1000f * MapGrid.Size, h / 1000 % 1000 / 1000f * MapGrid.Size);
+            var spawn = new Position(h % 1000 / 1000f * MapGeometry.Size, h / 1000 % 1000 / 1000f * MapGeometry.Size);
             State.Avatars[session] = World.CreateEntity(spawn, new Velocity(), new Avatar(player, Entity, session));
             // PlacementSystem puts it into the grid on the next tick; MotionSyncSystem tells its viewers.
         }
@@ -80,7 +78,7 @@ public sealed class Map : Actor<MapId, MapState>
     {
         // Input is data: MovementSystem integrates it, MotionSyncSystem tells the avatar's viewers.
         if (!State.Avatars.TryGetValue(Caller, out var avatar)) return;
-        avatar.Get<Velocity>() = new Velocity(Math.Clamp(m.VelocityX, -MaxSpeed, MaxSpeed), Math.Clamp(m.VelocityY, -MaxSpeed, MaxSpeed));
+        avatar.Get<Velocity>() = MapGeometry.Clamp(m.VelocityX, m.VelocityY);
     }
 
     [Handle]
@@ -108,20 +106,5 @@ public sealed class Map : Actor<MapId, MapState>
         if (!State.Avatars.Remove(session, out var avatar)) return null;
         avatar.Add<Despawning>();
         return avatar;
-    }
-}
-
-/// <summary>Integrates velocities inside the map; the border stops an avatar (its viewers learn it from the velocity).</summary>
-public sealed partial class MovementSystem : EcsSystem
-{
-    [ForEach]
-    private static void Move(ref Position p, ref Velocity v)
-    {
-        if (v.X == 0 && v.Y == 0) return;
-        float x = p.X + v.X, y = p.Y + v.Y;
-        float cx = Math.Clamp(x, 0f, MapGrid.Size), cy = Math.Clamp(y, 0f, MapGrid.Size);
-        p = new Position(cx, cy);
-        if (cx == x && cy == y) return;
-        v = new Velocity(cx == x ? v.X : 0, cy == y ? v.Y : 0); // clients extrapolate: they must learn about the stop
     }
 }

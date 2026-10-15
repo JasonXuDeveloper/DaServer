@@ -8,9 +8,9 @@
         <InvariantGlobalization>true</InvariantGlobalization>
     </PropertyGroup>
 
+    <!-- The game client's logic (Sample.Client) driven by bots: load test and end-to-end test in one. -->
     <ItemGroup>
-        <ProjectReference Include="..\Sample.Contracts\Sample.Contracts.csproj" />
-        <ProjectReference Include="..\..\..\src\DaServer.Client\DaServer.Client.csproj" />
+        <ProjectReference Include="..\Sample.Client\Sample.Client.csproj" />
         <ProjectReference Include="..\..\..\src\DaServer.Generator\DaServer.Generator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
     </ItemGroup>
 

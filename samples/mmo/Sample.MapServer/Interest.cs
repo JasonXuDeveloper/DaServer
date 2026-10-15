@@ -3,6 +3,8 @@ using DaServer.Rpc;
 using DaServer.Runtime;
 using EasyEcs;
 using Sample.Contracts;
+using Sample.Shared;
+using static Sample.Shared.MapGeometry;
 
 namespace Sample.MapServer;
 
@@ -33,13 +35,8 @@ public struct Resynced : IComponent;
 /// <summary>A map's cells: who is in each one, and the changes not sent yet (lists reused: no garbage per tick).</summary>
 public struct MapGrid(MapId map) : IComponent
 {
-    public const float Size = 2000f;
-    public const float CellSize = 100f;
-    public const int Side = (int)(Size / CellSize);
-
     /// <summary>Changes go out every other tick (10 Hz): half the messages, clients extrapolate meanwhile.</summary>
     public const int SyncEveryTicks = 2;
-
 
     /// <summary>The map this grid belongs to (its viewer groups are per map).</summary>
     public readonly MapId Map = map;
@@ -49,32 +46,8 @@ public struct MapGrid(MapId map) : IComponent
     public readonly List<int> ChangedCells = new();
     public readonly List<Moved> Scratch = new();
 
-    public static int CellOf(in Position p) =>
-        Math.Min((int)(p.Y / CellSize), Side - 1) * Side + Math.Min((int)(p.X / CellSize), Side - 1);
-
     /// <summary>The sessions that see <paramref name="cell"/> of this map.</summary>
     public readonly ClientGroup Viewers(int cell) => ClientGroup.Of<MapGrid>(Map.Value * Side * Side + cell);
-
-    /// <summary>The cells of the 3x3 around <paramref name="cell"/> that are inside the map, into <paramref name="cells"/> (9 long).</summary>
-    public static Span<int> Around(int cell, Span<int> cells)
-    {
-        int n = 0;
-        for (int dy = -1; dy <= 1; dy++)
-        for (int dx = -1; dx <= 1; dx++)
-            if (Offset(cell, dx, dy) is var c and >= 0)
-                cells[n++] = c;
-        return cells[..n];
-    }
-
-    /// <summary>The cell at (<paramref name="dx"/>, <paramref name="dy"/>) from <paramref name="cell"/>; -1 outside the map.</summary>
-    public static int Offset(int cell, int dx, int dy)
-    {
-        int x = cell % Side + dx, y = cell / Side + dy;
-        return x < 0 || y < 0 || x >= Side || y >= Side ? -1 : y * Side + x;
-    }
-
-    /// <summary>Whether <paramref name="a"/> is in the 3x3 around <paramref name="b"/>.</summary>
-    public static bool Near(int a, int b) => Math.Abs(a % Side - b % Side) <= 1 && Math.Abs(a / Side - b / Side) <= 1;
 
     public static Moved StateOf(Entity avatar)
     {
@@ -133,7 +106,7 @@ public sealed partial class DespawnSystem : EcsSystem
             var cluster = world.Cluster();
             cluster.Send(grid.Viewers(cell), new Gone(player));
             if (!entity.Has<SessionGone>())
-                foreach (int c in MapGrid.Around(cell, stackalloc int[9]))
+                foreach (int c in Around(cell, stackalloc int[9]))
                     cluster.Send(session, new LeaveGroup(grid.Viewers(c)));
         }
 
@@ -152,7 +125,7 @@ public sealed partial class PlacementSystem : EcsSystem
     [ForEach, Without<GridCell>]
     private static void Place(Entity entity, in Position p, in Avatar avatar, World world)
     {
-        int to = MapGrid.CellOf(p);
+        int to = CellOf(p);
         var session = avatar.Session;
         var map = avatar.Map;
         entity.Add<GridCell>() = new GridCell(to); // `p` and `avatar` are invalid from here on
@@ -164,7 +137,7 @@ public sealed partial class PlacementSystem : EcsSystem
     [ForEach]
     private static void Cross(Entity entity, in Position p, ref GridCell cell, in Avatar avatar, World world)
     {
-        int from = cell.Index, to = MapGrid.CellOf(p);
+        int from = cell.Index, to = CellOf(p);
         if (to == from) return;
         cell = new GridCell(to);
 
@@ -173,8 +146,8 @@ public sealed partial class PlacementSystem : EcsSystem
         (grid.Avatars[to] ??= new()).Add(entity);
 
         var cluster = world.Cluster();
-        foreach (int c in MapGrid.Around(from, stackalloc int[9]))
-            if (!MapGrid.Near(c, to)) cluster.Send(avatar.Session, new LeaveGroup(grid.Viewers(c)));
+        foreach (int c in Around(from, stackalloc int[9]))
+            if (!Near(c, to)) cluster.Send(avatar.Session, new LeaveGroup(grid.Viewers(c)));
 
         MapGrid.View(ref grid, cluster, entity, avatar.Session, from, to);
     }
