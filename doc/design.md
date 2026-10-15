@@ -20,7 +20,7 @@ Acceptance criteria and metrics are in [requirements.md](requirements.md); the r
 |---|---|---|
 | **Node** | One process: a random `NodeId`, a cluster endpoint, optionally a client endpoint (gateway). It hosts every actor, service and system compiled into its project; there are no roles. | IO threads plus the shards it owns. |
 | **Shard** | A single-threaded executor: one thread, a lock-free inbox and an EasyEcs `World` holding everything else ([§9](#9-ecs-in-daserver)). A node runs N shards (default: one per core). | One dedicated thread. Every handler and system of the shard runs on it, so user code needs no locks. |
-| **Actor** | Keyed and stateful (player, map instance, room, guild): one loaded actor per key in the cluster, loaded on demand, turn-based. The loaded actor is an entity; its state is components (`Actor<TState>`). | Its shard's thread. |
+| **Actor** | Keyed and stateful (player, map instance, room, guild): one loaded actor per id in the cluster, loaded on demand, turn-based. The loaded actor is an entity; its state is components (`Actor<TId, TState>`). | Its shard's thread. |
 | **Service** | Stateless (login, matchmaking, chat routing). One instance per shard; calls are load-balanced (local node first) and may overlap. | The shard thread that received the call. |
 | **Message** | A `[NinoType, Message]` struct; its `Flow` says whether clients send it or receive it. A request (`IRequest<TReply>`) is answered; anything else is one-way. Routed by its type to the handler: the sender never names the receiver's type. | Delivered to the handler's mailbox (actors) or shard (services). |
 | **Push** | A message to one client session or a `ClientGroup`; clients handle it with `[Handle]` methods. | Fire-and-forget. |
@@ -33,8 +33,8 @@ Everything a developer declares is one of these (ADR-035). The message type alon
 | Declaration | Meaning |
 |---|---|
 | `[NinoType, Message] partial record struct M` | a message between servers (`Flow.Internal`) |
-| `[Message(Flow.FromClient)]` | game clients may send it; to an actor it goes to the key the server bound to the session (`BindSession`) |
-| `[Message(Flow.FromClient, AnyKey = true)]` | to an actor, clients choose the key (public rooms, leaderboards) |
+| `[Message(Flow.FromClient)]` | game clients may send it; to an actor it goes to the actor the server bound to the session (`BindSession`) |
+| `[Message(Flow.FromClient, AnyId = true)]` | to an actor, clients choose the id (public rooms, leaderboards) |
 | `[Message(Flow.ToClient)]` | servers push it to sessions and groups; only clients handle it |
 | `[NinoType]` alone | data inside messages; anything else crossing the wire is a build error (DAS003) |
 | `M : IRequest<TReply>` | a request, answered with one `TReply` |
@@ -44,9 +44,9 @@ Everything a developer declares is one of these (ADR-035). The message type alon
 
 | Call (`ICluster`, `ClusterClient`) | Target |
 |---|---|
-| `Ask(key, m)` / `Send(key, m)` | the loaded actor of `key` of the one actor type handling `M` (rendezvous placement) |
+| `Ask(id, m)` / `Send(id, m)` | the actor `id` (`MapId`, `PlayerId`, ...: the id type names the actor type; rendezvous placement) |
 | `Ask(m)` / `Send(m)` | the one service handling `M` (load-balanced, local first); from a client: also the actor bound to the session |
-| `Publish(key, e)` / `Publish(e)` | every actor type handling `E` at that key / every service handling `E`, once each |
+| `Publish(e)` | every service type handling `E`, once each |
 | `Push(session, m)` / `Broadcast(group, m)` | one client session / a client group |
 
 Access is per message type. The sample's map lets servers send `Enter` and `Leave` and lets the bound client send only
@@ -236,7 +236,7 @@ removed at run time; placement moves only the keys of the node that joined or le
 `ClusterClient` connects to a gateway (`host:port`, DNS names included); given a balancer address it moves to the
 gateway the balancer names (ADR-026), waiting while the cluster forms. It sends the same messages as
 servers: `client.Ask(new Login(..))`, `client.Ask(new GetInfo())` (session actors need no key: the gateway uses the
-binding), `client.Ask(roomId, new Join())` (`AnyKey` actors). Push handlers are `[Handle]` methods of any class,
+binding), `client.Ask(roomId, new Join())` (`AnyId` messages). Push handlers are `[Handle]` methods of any class,
 registered with `client.Register(obj)`; they run on the IO thread or, for game loops and UIs, on the application's thread through `ProcessCallbacks`.
 
 ## 9. ECS in DaServer
@@ -249,7 +249,7 @@ inside a world.
 |---|---|---|
 | Actor | Network boundary of one keyed entity: validate a message, write input as components; lifecycle and persistence hooks. | Per-tick logic. |
 | Service | Stateless message handling. | State between messages. |
-| Component | Data of one entity (actor state via `Actor<TState>`, avatars, buffs). | Logic. |
+| Component | Data of one entity (actor state via `Actor<TId, TState>`, avatars, buffs). | Logic. |
 | Singleton | Data of one shard world (statistics, configuration). | Per-entity data. |
 | System | One per-tick responsibility; stateless; reads and writes components and singletons. | References to other systems, IO. |
 
@@ -297,7 +297,7 @@ entities in the state it handles (a filter on tags), so nothing scans all actors
 
 public record struct Wallet(int Gold, int Logins) : IComponent;
 
-public sealed class Player : Actor<Wallet>
+public sealed class Player : Actor<PlayerId, Wallet>
 {
     [Handle] public int On(AddGold m) => State.Gold += m.Amount;
 
@@ -315,7 +315,7 @@ What the generators write:
 
 | Generator | Output |
 |---|---|
-| `MessageGenerator` | typed `Ask` overloads per request (`Cluster.Ask(key, new AddGold(1))` infers the reply type), `Flow.FromClient` registration for gateways |
+| `MessageGenerator` | typed `Ask` overloads per request (`Cluster.Ask(playerId, new AddGold(1))` infers the reply type), `Flow.FromClient` registration for gateways |
 | `HostGenerator` | registration of every actor and service with one dispatcher per `[Handle]` method, client handler classes, every `EcsSystem`; the node entry point when the project has no `Program.cs` |
 | EasyEcs `SystemGenerator` | `[ForEach]` struct jobs (components, singletons, entity, world parameters) and `GeneratedUpdate` |
 | Analyzers | DAS001–DAS006 (handlers, messages, wire types, id collisions, constructors, message flow), EECS001–EECS008 (ECS rules) |

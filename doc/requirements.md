@@ -41,7 +41,7 @@ Run in order; record results in the roadmap.
 1. `dotnet build DaServer.slnx` — 0 warnings, 0 errors.
 2. `dotnet test DaServer.slnx` — all pass (count recorded).
 3. `grep -rn "Role\|\"game\"\|\"gateway\"" src samples` — no topology strings.
-4. BenchmarkDotNet: `RpcBenchmark`, `EventBenchmark`, `BroadcastBenchmark`, `ScenarioBenchmark` — mean and
+4. BenchmarkDotNet: `RpcBenchmark`, `MessageBenchmark`, `BroadcastBenchmark`, `ScenarioBenchmark` — mean and
    allocated recorded.
 5. Sample end to end: the AppHost's 10k-bot scenario prints `E2E OK` (R11).
 6. Review against R1–R11 and E1–E10 (this file); open items go to the roadmap.
