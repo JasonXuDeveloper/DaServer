@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using DaServer.Buffers;
+using DaServer.Net;
 using DaServer.Concurrency;
 using DaServer.Rpc;
 using EasyEcs;
@@ -169,16 +170,19 @@ public sealed class Shard : IDisposable
                 activity.Processed = 0;
                 if (_stopRequested && !activity.Stopping) activity.Stopping = activity.Rebalance = true;
 
-                World.Update<ShardMessages>();
-
-                long now = Stopwatch.GetTimestamp();
-                if (now >= nextTick)
+                using (Connection.BeginSendBatch()) // everything this wake sends leaves in one write per connection
                 {
-                    TickCount++;
-                    World.Update();
-                    nextTick += _tickInterval;
-                    if (now - nextTick > _tickInterval * 5)
-                        nextTick = now + _tickInterval; // fell far behind: skip instead of a catch-up storm
+                    World.Update<ShardMessages>();
+
+                    long now = Stopwatch.GetTimestamp();
+                    if (now >= nextTick)
+                    {
+                        TickCount++;
+                        World.Update();
+                        nextTick += _tickInterval;
+                        if (now - nextTick > _tickInterval * 5)
+                            nextTick = now + _tickInterval; // fell far behind: skip instead of a catch-up storm
+                    }
                 }
 
                 activity = ref World.GetSingleton<ShardActivity>();

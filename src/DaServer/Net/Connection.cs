@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
@@ -205,8 +206,36 @@ public sealed class Connection
         }
 
         if (wake)
-            _sendSignal.Set();
+        {
+            if (t_batchDepth > 0) (t_batched ??= new()).Add(this); // woken once when the batch ends
+            else _sendSignal.Set();
+        }
+
         return true;
+    }
+
+    [ThreadStatic] private static int t_batchDepth;
+    [ThreadStatic] private static List<Connection>? t_batched;
+
+    /// <summary>
+    /// Until the returned scope is disposed, sends from this thread only queue bytes; each connection's send loop is
+    /// woken once at the end. A batch of work that sends many messages (the frames of one receive, one shard wake) then
+    /// costs one write per connection instead of one per message (a session in 9 groups gets 9 frames per update).
+    /// </summary>
+    internal static SendBatch BeginSendBatch()
+    {
+        t_batchDepth++;
+        return default;
+    }
+
+    internal readonly struct SendBatch : IDisposable
+    {
+        public void Dispose()
+        {
+            if (--t_batchDepth > 0 || t_batched is not { Count: > 0 } batched) return;
+            foreach (var connection in batched) connection._sendSignal.Set();
+            batched.Clear();
+        }
     }
 
     public void Close(Exception? error = null)
@@ -351,7 +380,9 @@ public sealed class Connection
 
                 filled += read;
 
-                int consumed = ParseFrames(buffer, filled, out int needed);
+                int consumed;
+                int needed;
+                using (BeginSendBatch()) consumed = ParseFrames(buffer, filled, out needed);
                 if (consumed > 0)
                 {
                     filled -= consumed;
