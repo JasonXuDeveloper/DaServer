@@ -8,7 +8,7 @@ using Sample.Contracts;
 // log in, enter a map, then move and chat while the realm broadcasts its status to every session every few ticks.
 //
 // Usage: Sample.Bot [bots=1000] [seconds=30] [maps=bots/100] [moves/s=2] [chat every s=10] [max p99 ms=250] (0 = off)
-// The gateway addresses come from DaServer__Gateways__{i} (set by the AppHost's WithGateways); default 127.0.0.1:7100.
+// The entry addresses come from DaServer__ClientEndpoints__{i} (set by the AppHost's WithClientEndpoints); default 127.0.0.1:7100.
 // Exit code 0 only if every bot came online and, during the measured window, every bot received every realm broadcast
 // in order (no gap), no bot disconnected, and the p99 broadcast latency stayed under the limit.
 
@@ -20,7 +20,7 @@ int movesPerSecond = arg(3, 2);
 int chatEverySeconds = arg(4, 10);
 int maxP99Ms = arg(5, 250);
 var entries = new List<System.Net.DnsEndPoint>();
-for (int i = 0; Environment.GetEnvironmentVariable($"DaServer__Gateways__{i}") is { } address; i++)
+for (int i = 0; Environment.GetEnvironmentVariable($"DaServer__ClientEndpoints__{i}") is { } address; i++)
     entries.Add(new System.Net.DnsEndPoint(address[..address.LastIndexOf(':')], int.Parse(address[(address.LastIndexOf(':') + 1)..])));
 if (entries.Count == 0) entries.Add(new System.Net.DnsEndPoint("127.0.0.1", 7100));
 
@@ -34,10 +34,10 @@ await Parallel.ForAsync(0, bots, new ParallelOptions { MaxDegreeOfParallelism = 
     client.Register(bot);
     client.Disconnected += _ => Interlocked.Increment(ref stats.Disconnects);
     await Retry(() => client.ConnectAsync(entries), static e => e is not RpcException);
-    var login = await RetryFor(() => client.Ask(new Login("bot-" + i)), static e => e is RpcException { Status: RpcStatus.NotHosted });
+    var login = await RetryFor(() => client.Ask(new Login("bot-" + i)), Starting);
     if (!login.Ok) throw new InvalidOperationException("login failed for bot " + i);
     // The gateway routes this to the player bound at login, and the map binds the session for input.
-    await RetryFor(() => client.Ask(new EnterMap(new MapId(1 + i % maps))), static e => e is RpcException { Status: RpcStatus.NotHosted });
+    await RetryFor(() => client.Ask(new EnterMap(new MapId(1 + i % maps))), Starting);
 });
 Console.WriteLine($"{bots} bots online in {online.Elapsed.TotalSeconds:F1}s ({maps} maps)");
 
@@ -118,7 +118,11 @@ if (p99 > maxP99Ms) failures.Add($"p99 latency {p99:F1}ms > {maxP99Ms}ms");
 Console.WriteLine(failures.Count == 0 ? "E2E OK" : "E2E FAILED: " + string.Join("; ", failures));
 return failures.Count == 0 ? 0 : 1;
 
-// The cluster may still be starting or converging (the gateway has not met the node hosting the target yet): retry.
+// The cluster may still be starting or converging: the gateway has not met the node hosting the target yet
+// (NotHosted), or a node still warming up on a busy machine misses the call's deadline (Timeout). Logging in and
+// entering a map again are idempotent.
+static bool Starting(Exception e) => e is RpcException { Status: RpcStatus.NotHosted or RpcStatus.Timeout };
+
 static async Task<T> RetryFor<T>(Func<ValueTask<T>> call, Func<Exception, bool> transient)
 {
     for (int attempt = 0; ; attempt++)
