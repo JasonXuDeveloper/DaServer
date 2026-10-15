@@ -248,9 +248,11 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
     {
         _sessions.TryRemove(session.Id, out _);
         if (_crashed) return; // a crashed node tells nobody
+        SessionGrant[] grants;
         lock (_groupGate)
         {
             session.Closed = true;
+            grants = session.Grants; // final: grants change under the gate, never on a closed session
             while (session.Groups.Count > 0)
             {
                 using var groups = session.Groups.Keys.GetEnumerator();
@@ -260,7 +262,6 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
         }
 
         var sessionRef = new ClientSession(_node.Id, session.Id);
-        var grants = session.Grants;
         if (grants.Length == 0) return;
         if (session.Explicit || ReconnectGrace == TimeSpan.Zero) ReportClosed(sessionRef, grants);
         else
@@ -343,39 +344,77 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
     }
 
     /// <summary>
-    /// A client that lost its connection presents its ticket on a new one: the new session takes over the grants
-    /// (and the actors' groups), and every granted actor learns the new session (<see cref="SessionResync"/>) before the
-    /// client's next message, which travels behind it on the same links.
+    /// A client that lost its connection presents its ticket on a new one. The ticket only names what the session held:
+    /// each actor in it is asked (<see cref="SessionResync"/>) and accepts only while it still holds the previous session
+    /// granted, so a withdrawn grant, a closed session or a ticket used once already resumes nothing. The new session
+    /// takes over what was accepted (and the actors' groups), then the client gets its reply: its next messages reach
+    /// actors that already know the new session. Cold path (a reconnect): it allocates.
     /// </summary>
     private void ResumeSession(SessionState session, uint callId, ReadOnlySpan<byte> ticket)
     {
         if (_ticketSecret == null || session.Grants.Length != 0 ||
-            !ReconnectTicket.TryRead(ticket, _ticketSecret, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), out var previous, out var grants))
+            !ReconnectTicket.TryRead(ticket, _ticketSecret, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), out var previous, out var granted) ||
+            Interlocked.Exchange(ref session.Resuming, 1) != 0)
         {
             session.Sink.SendError(callId, RpcStatus.Forbidden);
             return;
         }
 
-        int count = ReconnectTicket.GrantCount(grants);
-        for (int i = 0; i < count; i++)
+        var grants = new SessionGrant[ReconnectTicket.GrantCount(granted)];
+        for (int i = 0; i < grants.Length; i++) grants[i] = ReconnectTicket.GrantAt(granted, i);
+        _ = ResumeAsync(session, callId, previous, grants);
+    }
+
+    private async Task ResumeAsync(SessionState session, uint callId, ClientSession previous, SessionGrant[] grants)
+    {
+        var current = new ClientSession(_node.Id, session.Id);
+        var answers = new Task<bool>[grants.Length];
+        for (int i = 0; i < grants.Length; i++) answers[i] = Accepts(grants[i], new SessionResync(current, previous));
+        var accepted = await Task.WhenAll(answers).ConfigureAwait(false);
+
+        int taken = 0;
+        bool closed;
+        lock (_groupGate)
         {
-            var grant = ReconnectTicket.GrantAt(grants, i);
-            lock (_groupGate)
+            closed = session.Closed;
+            for (int i = 0; i < grants.Length && !closed; i++)
             {
-                session.Grant(grant.HandlerTypeId, grant.Key, grant.Bound);
-                Join(session, ClientGroup.Of(grant.HandlerTypeId, grant.Key).Id);
+                if (!accepted[i]) continue;
+                session.Grant(grants[i].HandlerTypeId, grants[i].Key, grants[i].Bound);
+                Join(session, ClientGroup.Of(grants[i].HandlerTypeId, grants[i].Key).Id);
+                taken++;
             }
         }
 
-        var current = new ClientSession(_node.Id, session.Id);
-        for (int i = 0; i < count; i++)
+        if (closed)
         {
-            var grant = ReconnectTicket.GrantAt(grants, i);
-            _node.SendTo(grant.HandlerTypeId, grant.Key, new SessionResync(current, previous));
+            // Closed while the actors were asked: those that took the new session learn it ended.
+            for (int i = 0; i < grants.Length; i++)
+                if (accepted[i]) _node.SendTo(grants[i].HandlerTypeId, grants[i].Key, new SessionClosed(current));
+            return;
+        }
+
+        if (taken == 0)
+        {
+            session.Sink.SendError(callId, RpcStatus.Forbidden);
+            return;
         }
 
         IssueTicket(session);
         session.Sink.SendOk(callId);
+    }
+
+    private async Task<bool> Accepts(SessionGrant grant, SessionResync resync)
+    {
+        try
+        {
+            await _node.Resync(grant.HandlerTypeId, grant.Key, in resync).ConfigureAwait(false);
+            return true;
+        }
+        catch (RpcException)
+        {
+            return false; // refused, or the actor's node is gone: the client asks it again (logs in, enters again)
+        }
     }
 
     /// <summary>
@@ -602,6 +641,9 @@ internal sealed class SessionState(long id, IFrameChannel channel)
 
     /// <summary>Set under the group gate when the session closed: it joins no group afterwards.</summary>
     public bool Closed { get; set; }
+
+    /// <summary>1 once the client presented a ticket: a session resumes at most once.</summary>
+    public int Resuming;
 
     /// <summary>Closed on purpose (client goodbye, <c>Disconnect</c>): its actors learn it at once, no reconnect grace.</summary>
     public volatile bool Explicit;

@@ -111,10 +111,11 @@ public interface IMessageSender
 public readonly partial record struct SessionClosed(ClientSession Session);
 
 /// <summary>
-/// A client that lost its connection resumed on a client-facing node: <see cref="Session"/> replaces <see cref="Previous"/> and is
-/// already bound to every actor <see cref="Previous"/> was bound to (and in their groups). Delivered to each of them
-/// that handles it, as the session of the turn (<c>Caller</c>): update the stored session, rejoin other groups
-/// and send the client its full state (pushes sent meanwhile were lost). <see cref="SessionClosed"/> for
+/// A client that lost its connection resumed on a client-facing node: <see cref="Session"/> replaces <see cref="Previous"/> at
+/// every actor that still held <see cref="Previous"/> bound or granted (the runtime checks it; a revoked, closed or
+/// already resumed session resumes nothing), and is then bound or granted to it again (and in its group). Delivered to
+/// each such actor that handles it, as the session of the turn (<c>Caller</c>): update the stored session, rejoin
+/// other groups and send the client its full state (pushes sent meanwhile were lost). <see cref="SessionClosed"/> for
 /// <see cref="Previous"/> is not delivered afterwards.
 /// </summary>
 [NinoType, Message]
