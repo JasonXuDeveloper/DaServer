@@ -1,6 +1,6 @@
 # DaServer design
 
-DaServer is a .NET 10 framework for building **clusters**: game servers (many client-facing nodes, many map/logic nodes) and
+DaServer is a .NET 11 framework for building **clusters**: game servers (many client-facing nodes, many map/logic nodes) and
 other low-latency, high-concurrency backends (matchmaking, chat, trading, IoT fan-in). Developers write messages
 (`[NinoType, Message]` structs), actors and services with `[Handle]` methods, and ECS systems. Source generators write the
 rest: dispatchers, typed `Ask` overloads, wire ids, registration, entry points and query jobs.
@@ -259,9 +259,12 @@ in the node's card, and a message to a group address goes once to every Up node 
 never depends on a feature: the receiving node routes a frame by its target, a handler type to its shard or an address
 scope to the feature registered for it. Features publish values on the node's card (`SetCardEntry`: an endpoint) and
 gossip up to three counters in its pulse (`AddPulse`: sessions held), read on other nodes as `member.Entry(key)` and
-`member.PulseValue(key)`; `PostToShards` runs rare work on every shard. Client connections are the first consumer
-(`ClientConnections`, enabled by the `DaServer:Clients` section; ADR-050): sessions, origins and client groups, the
-endpoint and session count clients are directed by.
+`member.PulseValue(key)`; `AddGauge` reports a gauge on the DaServer meter (OpenTelemetry, dotnet-counters, the
+dashboard); `PostToShards` runs rare work on every shard. A hosted node runs a feature when its configuration section
+exists: `builder.AddDaServerFeature<TOptions>(name, create)` binds `DaServer:{name}` and adds the feature (built-in
+ones are added by `AddDaServer`). Client connections are the first consumer (`ClientConnections`, enabled by the
+`DaServer:Clients` section; ADR-050): sessions, origins and client groups, the endpoint and session count clients are
+directed by, the `daserver.clients.sessions` gauge.
 
 `node.Ingress` (`IIngress`) lets messages from outside in: raw (`Send`/`Ask` with message id, target, key and the
 payload as received, never deserialized; the reply goes to the ingress's `IReplySink` under its call id) or typed

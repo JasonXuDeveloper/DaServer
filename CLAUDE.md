@@ -1,6 +1,6 @@
 # DaServer
 
-**DaServer is a general-purpose ECS distributed server framework for high performance and high concurrency** (.NET 10).
+**DaServer is a general-purpose ECS distributed server framework for high performance and high concurrency** (.NET 11, ADR-054).
 Users write messages, actors and services with `[Handle]` methods, and ECS systems; source generators write the
 plumbing. The framework covers what every real-time backend needs (actors, services, messaging, membership,
 placement, persistence, ingress, client connections; ADR-045/048) and knows no business domain: logins, maps,
@@ -27,11 +27,11 @@ EasyEcs comes from NuGet (`EasyEcsVersion` in `Directory.Build.props`). Use it a
 ## Layout
 
 ```
-src/DaServer.Abstractions/ contracts (netstandard2.1 + net10): attributes, IRequest, addresses, wire ids (ADR-052)
-src/DaServer.Core/         wire and transport shared by servers and clients (netstandard2.1 + net10): Protocol/
+src/DaServer.Abstractions/ contracts (netstandard2.1, net10.0, net11.0): attributes, IRequest, addresses, wire ids (ADR-052)
+src/DaServer.Core/         wire and transport shared by servers and clients (netstandard2.1, net10.0, net11.0): Protocol/
                            Buffers/ Net/ Rpc/ (calls, dispatch) Concurrency/
-src/DaServer.Client/       client SDK (netstandard2.1 + net10): ClusterClient
-src/DaServer/              server runtime (net10.0): Runtime/ Cluster/ Rpc/ and the built-in capabilities on the
+src/DaServer.Client/       client SDK (netstandard2.1, net10.0, net11.0): ClusterClient
+src/DaServer/              server runtime (net11.0): Runtime/ Cluster/ Rpc/ and the built-in capabilities on the
                            feature points: Features/ Ingress/ Clients/
   Runtime/Shard.cs         thread + dispatch queue (the cross-thread handoff) + wake/tick loop (nothing else)
   Runtime/ShardData.cs     shard ECS data: actor components and lifecycle tags (Mailbox, Ready, Turn, ...), singletons
