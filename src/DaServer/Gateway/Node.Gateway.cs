@@ -10,7 +10,6 @@ sealed partial class Node
     private Listener? _clientListener;
     private GatewayHandler? _gatewayHandler;
     private byte[]? _ticketSecret; // reconnect tickets: null when the cluster has no secret
-    private long _nextSessionId;
 
     /// <summary>Port clients connect to (0 when this node accepts no clients).</summary>
     public int ClientPort { get; private set; }
@@ -33,7 +32,7 @@ sealed partial class Node
         _clientListener = new Listener(new IPEndPoint(IPAddress.Parse(Options.ListenAddress), port), socket =>
         {
             var connection = new Connection(socket, _gatewayHandler, sessionOptions);
-            var session = new Session(Interlocked.Increment(ref _nextSessionId), connection);
+            var session = new Session(((INodeContext)this).NewOriginId(), connection); // a session is the origin of its messages
             connection.Tag = session;
             _sessions[session.Id] = session;
             lock (_groupGate) Join(session, ClientGroup.All.Id); // group 0 is a group like any other

@@ -4,6 +4,9 @@ namespace DaServer.Runtime;
 sealed partial class Node : IIngress
 {
     private IIngressFilter[] _ingressFilters = []; // fixed once the features started
+    private long _lastOriginId;
+
+    long INodeContext.NewOriginId() => Interlocked.Increment(ref _lastOriginId);
 
     IIngress INodeContext.Ingress => this;
 

@@ -65,16 +65,16 @@ public sealed class HostGenerator : IIncrementalGenerator
 
         /// <summary>
         /// Entry point of a DaServer node (generated because the project has none): the node hosts every actor, service
-        /// and system compiled into it; options come from configuration (appsettings.json, DaServer__* environment
-        /// variables, command line). Write a Program.cs to customize the host.
+        /// and system compiled into it and runs its HTTP plane; options come from configuration (appsettings.json,
+        /// DaServer__* environment variables, command line). Write a Program.cs to customize the host or map endpoints.
         /// </summary>
         internal static class NodeProgram
         {
             public static async global::System.Threading.Tasks.Task Main(string[] args)
             {
-                var builder = global::Microsoft.Extensions.Hosting.Host.CreateApplicationBuilder(args);
-                global::DaServer.Hosting.DaServerHostingExtensions.AddDaServer(builder);
-                await global::Microsoft.Extensions.Hosting.HostingAbstractionsHostExtensions.RunAsync(builder.Build());
+                var builder = global::Microsoft.AspNetCore.Builder.WebApplication.CreateBuilder(args);
+                global::DaServer.Hosting.DaServerHttpExtensions.AddDaServer(builder);
+                await builder.Build().RunAsync();
             }
         }
 
