@@ -1,3 +1,4 @@
+using System;
 using System.Linq;
 using System.Threading.Tasks;
 using DaServer.Buffers;
@@ -76,6 +77,30 @@ public class ClusterTests : ClusterTest
         await b.KillAsync(); // suspect first (keys stay), then dead (keys move)
         await Eventually(() => a.View.ActorOwner(CounterRpc.ContractId, key)!.NodeId == a.Id, "the key never moved");
         Assert.That(await a.Counter(key).Add(1), Is.EqualTo(1), "reactivated on the survivor");
+    }
+
+    [Test]
+    public async Task CallsInFlightToACrashedNodeFailWhenItIsDeclaredDead()
+    {
+        var (a, b) = await StartPair();
+        long key = KeyOwnedBy(b, CounterRpc.ContractId);
+        Assert.That(await a.Counter(key).Add(1), Is.EqualTo(1));
+
+        // Sent after the crash, while b is only suspect: the key stays on b and the calls wait in the link's stream.
+        await b.KillAsync();
+        var started = System.Diagnostics.Stopwatch.StartNew();
+        var calls = new ValueTask<int>[100];
+        for (int i = 0; i < calls.Length; i++) calls[i] = a.Counter(key).Add(1);
+
+        foreach (var call in calls)
+        {
+            var error = Assert.ThrowsAsync<RpcException>(async () => await call);
+            Assert.That(error!.Status, Is.Not.EqualTo(RpcStatus.Ok));
+        }
+
+        // Failed once the cluster declared b dead (DeadAfter 1.5 s), not at the 5 s call timeout.
+        Assert.That(started.Elapsed, Is.LessThan(TimeSpan.FromSeconds(4)));
+        Assert.That(await a.Counter(key).Add(1), Is.EqualTo(1), "the key moved to the survivor");
     }
 
     [Test]

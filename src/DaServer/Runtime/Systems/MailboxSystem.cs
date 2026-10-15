@@ -1,3 +1,4 @@
+using System;
 using EasyEcs;
 
 namespace DaServer.Runtime;
@@ -19,11 +20,13 @@ internal sealed class MailboxSystem : EcsSystem
         var world = World;
         var ready = world.GetSingleton<ReadyActors>().Queue;
         int processed = 0;
+        long now = Environment.TickCount64;
         while (processed < Budget && ready.TryDequeue(out var actor))
         {
             if (!actor.IsAlive) continue;
             ref var mailbox = ref actor.Get<Mailbox>();
             mailbox.Scheduled = false;
+            mailbox.LastActive = now;
             var pending = mailbox.Pending;  // the queue object outlives refs invalidated by handlers' structural changes
             var target = actor.Get<ActorLink>().Actor;
 

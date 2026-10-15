@@ -62,6 +62,13 @@ public interface IRoom
     void Say(string text);
 }
 
+/// <summary>An actor that unloads when idle (its state lives only while it is loaded).</summary>
+[Actor]
+public interface IVisitor
+{
+    ValueTask<int> Visit();
+}
+
 /// <summary>Keyed event: delivered to the counter activation of <see cref="Key"/>.</summary>
 [NinoType]
 public readonly partial record struct CounterBumped([property: ActorKey] long Key, int By);
@@ -164,6 +171,27 @@ public sealed partial class GrowthSystem : EcsSystem
 {
     [ForEach, With<Growing>]
     private static void Grow(ref CounterState counter) => counter.Value++;
+}
+
+public record struct Visits(int Count) : IComponent;
+
+public sealed class Visitor : Actor<Visits>, IVisitor
+{
+    public override TimeSpan UnloadAfterIdle => TimeSpan.FromMilliseconds(300);
+
+    public override ValueTask OnLoad()
+    {
+        Observed.Events.Enqueue($"load:{Key}");
+        return default;
+    }
+
+    public override ValueTask OnUnload()
+    {
+        Observed.Events.Enqueue($"unload:{Key}");
+        return default;
+    }
+
+    public ValueTask<int> Visit() => new(++State.Count);
 }
 
 /// <summary>What event handlers observed (tests read it from the test thread).</summary>

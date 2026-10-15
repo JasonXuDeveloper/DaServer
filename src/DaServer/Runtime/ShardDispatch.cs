@@ -139,11 +139,25 @@ internal static class ShardDispatch
         actor.Implementation = impl;
         actor.Key = id.Key;
         actor.Shard = world.Shard();
-        var entity = world.CreateEntity(new ActorLink(actor), new ActorIdentity(id), new Mailbox(new()));
+        var entity = world.CreateEntity(new ActorLink(actor), new ActorIdentity(id),
+            new Mailbox(new()) { LastActive = Environment.TickCount64 });
         actor.Entity = entity;
+        var idle = actor.UnloadAfterIdle;
+        if (idle > TimeSpan.Zero) entity.Add<UnloadWhenIdle>() = new UnloadWhenIdle((long)idle.TotalMilliseconds);
         actor.InitializeEntity(entity);
         entity.Add<Turn>() = new Turn(Start(static a => a.OnLoad(), actor), TurnKind.Activation);
         return entity;
+    }
+
+    /// <summary>
+    /// Start unloading an idle actor: <see cref="Actor.OnUnload"/> runs as its last turn, then
+    /// <see cref="TurnSystem"/> retires it and routes mail that arrived meanwhile again (to the new owner, or to a new
+    /// activation here).
+    /// </summary>
+    public static void Unload(Entity entity, Actor actor)
+    {
+        entity.Add<Deactivating>();
+        entity.Add<Turn>() = new Turn(Start(static a => a.OnUnload(), actor), TurnKind.Deactivation);
     }
 
     /// <summary>Start a lifecycle hook, turning a synchronous throw into a faulted task.</summary>
