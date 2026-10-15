@@ -185,11 +185,14 @@ signal, gateways drop their clients on stop and nothing is persisted yet (N5).
 Aspire generates manifests and runs the local cluster; it never autoscales and publishes no grace period, no
 Compose health check and no probe except HTTP probes declared with `WithHttpProbe`. What a node needs from it:
 
-- [ ] A1 Health without ASP.NET Core: `DaServer.Hosting` registers `IHealthCheck`s (`daserver-ready`: joined and not
-      leaving/draining; `daserver-live`: shard stall watchdog, N3b) and serves `/health` and `/alive` on a small
-      separate port (`DaServer__HealthPort`), no Kestrel. `DaServer.Aspire` adds the `health` endpoint and readiness /
-      liveness / startup probes (`WithHttpProbe`, experimental ASPIREPROBES001), so `WaitFor` and the dashboard mean
-      "joined", not "process running".
+- [ ] A1 HTTP plane on ASP.NET Core (ADR-046): every node runs Kestrel on a separate HTTP port (`DaServer__HttpPort`,
+      Aspire endpoint `http`) next to its own TCP data plane. Official health checks: `daserver-ready` (joined, not
+      leaving/draining, store healthy) mapped to `/health`, `daserver-live` (shard stall watchdog, N3b) tagged `live`
+      and mapped to `/alive`, always on (not Development-only like the template). `DaServer.Aspire` declares the
+      endpoint, `WithHttpHealthCheck("/health")` (local `WaitFor` and dashboard) and readiness / liveness / startup
+      probes (`WithHttpProbe`, ASPIREPROBES001) for Kubernetes. Users map REST endpoints in their node project (admin,
+      webhooks, payment callbacks, HTTP login); an endpoint reaches actors only through `ICluster` (Ask/Send post to
+      the shard), never shard state.
 - [ ] A2 Drain budget published (D1): `WithDrain(grace)` sets the pod `terminationGracePeriodSeconds`, Compose
       `stop_grace_period` and `DaServer__ShutdownTimeout` below it, plus an optional preStop sleep so endpoint removal
       propagates before Leave; stateful groups default longer than stateless ones.
@@ -200,13 +203,14 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
       through the downward API; run mode keeps one resource per replica (ADR-030). HPA v2 / KEDA / PDB via
       `PublishAsKubernetesService` + `AdditionalResources` (PDB and KEDA as small custom resource types).
 - [ ] A5 Dashboard: a cluster parent resource (`WithParentRelationship`) showing "n/n joined"; custom states Joining /
-      Joined / Draining / Suspected; commands Drain, Membership (JSON), Stats, Unload actor type (through the health
-      port's admin path, bound to localhost or the cluster secret). Usable from `aspire resource <node> <command>`,
+      Joined / Draining / Suspected; commands Drain, Membership (JSON), Stats, Unload actor type (admin endpoints on the HTTP
+      plane, authorized with the cluster secret). Usable from `aspire resource <node> <command>`,
       MCP and tests.
 - [ ] A6 Tracing: an allocation-free `ActivitySource` for cross-node calls (spans only when a listener is attached),
-      added to `AddDaServer`'s OpenTelemetry setup. `AddDaServer` stays the framework's service defaults; no
-      ASP.NET-based ServiceDefaults project and no `Microsoft.Extensions.ServiceDiscovery` for node links (gossip seeds
-      and headless DNS stay).
+      added to `AddDaServer`'s OpenTelemetry setup with the ASP.NET Core and HttpClient instrumentation, so a REST call
+      and the actor calls it causes are one trace. `AddDaServer` is the framework's service defaults (the template's
+      content: OTel, health, `ConfigureHttpClientDefaults` with service discovery and resilience for user HttpClients),
+      no separate ServiceDefaults project.
 - [ ] A7 Store wiring (with N5): `cluster.WithActorStore(postgres.AddDatabase("actors"))` = `WithReference` +
       `WaitFor` on stateful groups; persistent container lifetime in samples; store health feeds readiness (D6).
 - [ ] A8 Parameters and environments: shards per node, drain budget, replicas and HPA bounds as AppHost parameters
@@ -220,7 +224,11 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
       so a cluster with an unreachable message or service never ships.
 - [ ] A12 Operator docs: `aspire describe/ps/logs/otel`, `aspire resource <node> drain`, and the Aspire MCP server
       (`list_resources`, logs, traces, `execute_resource_command`) to operate and debug a cluster.
-- Not for nodes: `WithReference` service discovery (one load-balanced address, not membership), persistent project
+- [ ] A13 Seeds through Aspire's service discovery format: nodes also read `services__<group>__tcp__N` (what
+      `WithReference(group)` writes), so the AppHost wiring is standard Aspire and our env callbacks shrink. Gossip
+      stays the membership layer (who is alive, suspected, leaving, which types each node hosts, load); service
+      discovery only bootstraps it.
+- Not for node membership: `WithReference` service discovery alone (one load-balanced address, not membership), persistent project
   lifetimes (no replicas, fixed ports); fine for databases and user HTTP services.
 - Notes: the Aspire dashboard in deployments is diagnostic only (production observability is OTLP); Azure Container
   Apps exposes ingress, not per-replica addresses, so it is a later target than Kubernetes.
