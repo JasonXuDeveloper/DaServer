@@ -229,6 +229,7 @@ public static class Observed
 [NinoType, Message] public partial record struct EchoText(string Text) : IRequest<string>;
 [NinoType, Message] public partial record struct WhichNode : IRequest<ulong>;
 [NinoType, Message] public partial record struct WhoAsks : IRequest<long>;                 // the caller's origin id
+[NinoType, Message] public partial record struct Guarded(int N) : IRequest<int>;           // a dispatch filter refuses N < 0
 
 /// <summary>Event: delivered once to each service type handling it.</summary>
 [NinoType, Message] public partial record struct Ping(int Id);
@@ -240,6 +241,8 @@ public sealed class EchoService : Service
     [Handle] public ulong On(WhichNode _) => Cluster.NodeId;
 
     [Handle] public long On(WhoAsks _) => Caller.Id;
+
+    [Handle] public int On(Guarded m) => m.N;
 
     [Handle] public void On(Ping e) => Observed.Events.Enqueue($"echo:{e.Id}:{Cluster.NodeId:x}");
 }
