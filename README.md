@@ -73,9 +73,9 @@ Everything a developer declares is one of these. The message type alone decides 
 | Declaration | Meaning |
 |---|---|
 | `[NinoType, Message] partial record struct M` | A message between servers (actors and services on any node). |
-| `[Message(Flow.FromClient)]` | Game clients may send it too. To an actor, it goes to the actor bound to the session. |
-| `[Message(Flow.FromClient, AnyId = true)]` | To an actor, the client chooses the id (public rooms). |
-| `[Message(Flow.ToClient)]` | Servers push it to client sessions and groups; clients handle it. |
+| `[Message, FromClient]` | Game clients may send it too. To an actor, it goes to the actor bound to the session. |
+| `[Message, FromClient(AnyId = true)]` | To an actor, the client chooses the id (public rooms). |
+| `[Message, ToClient]` | Servers push it to client sessions and groups; clients handle it. |
 | `[NinoType] partial record struct D` | Data inside messages (fields, replies), never sent on its own. Anything crossing the wire is `[NinoType]`. |
 | `... : IRequest<TReply>` | A request: answered with one `TReply`. |
 | `[Handle] R On(M m)` | A handler in an actor or service: `void`/`ValueTask`, or the reply/`ValueTask<TReply>` of a request. |
@@ -86,7 +86,7 @@ Everything a developer declares is one of these. The message type alone decides 
 | `Cluster.Ask(id, new M())` / `Send(id, ...)` | The actor `id` (`MapId`, `PlayerId`: the id type names the actor type; one per cluster, on demand, turn-based). |
 | `Cluster.Ask(new M())` / `Send(...)` | The one service handling `M` (load-balanced, local first). |
 | `Cluster.Publish(e)` | Every service type handling `e`, once each. |
-| `Cluster.Send(session, m)` / `Send(group, m)` | A client session / a client group (`Flow.ToClient` messages; clients handle them with `[Handle]` too). `JoinGroup`, `LeaveGroup` and `Disconnect` sent there are applied by the session's gateway. |
+| `Cluster.Send(session, m)` / `Send(group, m)` | A client session / a client group (`[ToClient]` messages; clients handle them with `[Handle]` too). `JoinGroup`, `LeaveGroup` and `Disconnect` sent there are applied by the session's gateway. |
 
 | Element | Responsibility | Never |
 |---|---|---|
@@ -117,13 +117,13 @@ public readonly record struct PlayerId(long Value) : IActorId;
 public readonly record struct MapId(long Value) : IActorId;
 
 // Messages (shared with clients).
-[NinoType, Message(Flow.FromClient)] public partial record struct Login(string Name) : IRequest<LoginResult>;
-[NinoType, Message(Flow.FromClient)] public partial record struct EnterMap(MapId Map) : IRequest<bool>;
-[NinoType, Message(Flow.FromClient)] public partial record struct Move(float VelocityX, float VelocityY); // input
-[NinoType, Message(Flow.FromClient)] public partial record struct Say(string Text);
+[NinoType, Message, FromClient] public partial record struct Login(string Name) : IRequest<LoginResult>;
+[NinoType, Message, FromClient] public partial record struct EnterMap(MapId Map) : IRequest<bool>;
+[NinoType, Message, FromClient] public partial record struct Move(float VelocityX, float VelocityY); // input
+[NinoType, Message, FromClient] public partial record struct Say(string Text);
 [NinoType, Message] public partial record struct Attach(SessionRef Session) : IRequest<bool>;  // servers only
 [NinoType, Message] public partial record struct Enter(PlayerId Player, SessionRef Session) : IRequest<bool>;
-[NinoType, Message(Flow.ToClient)] public partial record struct Chat(PlayerId Player, string Text); // pushed
+[NinoType, Message, ToClient] public partial record struct Chat(PlayerId Player, string Text); // pushed
 
 // Login project: a stateless service.
 public sealed class Account : Service

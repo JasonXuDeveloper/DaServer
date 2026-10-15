@@ -22,7 +22,7 @@ Acceptance criteria and metrics are in [requirements.md](requirements.md); the r
 | **Shard** | A single-threaded executor: one thread, a lock-free dispatch queue and an EasyEcs `World` holding everything else ([§9](#9-ecs-in-daserver)). A node runs N shards (default: one per core). | One dedicated thread. Every handler and system of the shard runs on it, so user code needs no locks. |
 | **Actor** | Keyed and stateful (player, map instance, room, guild): one loaded actor per id in the cluster, loaded on demand, turn-based. The loaded actor is an entity; its state is components (`Actor<TId, TState>`). | Its shard's thread. |
 | **Service** | Stateless (login, matchmaking, chat routing). One instance per shard; calls are load-balanced (local node first) and may overlap. | The shard thread that received the call. |
-| **Message** | A `[NinoType, Message]` struct; its `Flow` says whether clients send it or receive it. A request (`IRequest<TReply>`) is answered; anything else is one-way. Routed by its type to the handler: the sender never names the receiver's type. | Delivered to the handler's mailbox (actors) or shard (services). |
+| **Message** | A `[NinoType, Message]` struct; `[FromClient]`/`[ToClient]` say whether clients send it or receive it. A request (`IRequest<TReply>`) is answered; anything else is one-way. Routed by its type to the handler: the sender never names the receiver's type. | Delivered to the handler's mailbox (actors) or shard (services). |
 | **Push** | A message to one client session or a `ClientGroup`; clients handle it with `[Handle]` methods. | Fire-and-forget. |
 | **System** | EasyEcs `EcsSystem` with `[ForEach]` methods: one per-tick responsibility over every matching entity of a shard. | The shard thread, at the tick rate. |
 
@@ -32,10 +32,10 @@ Everything a developer declares is one of these (ADR-035). The message type alon
 
 | Declaration | Meaning |
 |---|---|
-| `[NinoType, Message] partial record struct M` | a message between servers (`Flow.Internal`) |
-| `[Message(Flow.FromClient)]` | game clients may send it; to an actor it goes to the actor the server bound to the session (`BindSession`) |
-| `[Message(Flow.FromClient, AnyId = true)]` | to an actor, clients choose the id (public rooms, leaderboards) |
-| `[Message(Flow.ToClient)]` | servers push it to sessions and groups; only clients handle it |
+| `[NinoType, Message] partial record struct M` | a message between servers only |
+| `[Message, FromClient]` | game clients may send it; to an actor it goes to the actor the server bound to the session (`BindSession`) |
+| `[Message, FromClient(AnyId = true)]` | to an actor, clients choose the id (public rooms, leaderboards) |
+| `[Message, ToClient]` | servers push it to sessions and groups; only clients handle it |
 | `[NinoType]` alone | data inside messages; anything else crossing the wire is a build error (DAS003) |
 | `M : IRequest<TReply>` | a request, answered with one `TReply` |
 | `[Handle]` method of an `Actor`/`Service` | handles one message type; returns `void`/`ValueTask`, or a request's reply/`ValueTask<TReply>` |
@@ -47,12 +47,12 @@ Everything a developer declares is one of these (ADR-035). The message type alon
 | `Ask(id, m)` / `Send(id, m)` | the actor `id` (`MapId`, `PlayerId`, ...: the id type names the actor type; rendezvous placement) |
 | `Ask(m)` / `Send(m)` | the one service handling `M` (load-balanced, local first); from a client: also the actor bound to the session |
 | `Publish(e)` | every service type handling `E`, once each |
-| `Send(session, m)` / `Send(group, m)` | one client session / a client group (`Flow.ToClient` messages; servers only) |
+| `Send(session, m)` / `Send(group, m)` | one client session / a client group (`[ToClient]` messages; servers only) |
 
 Access is per message type. The sample's map lets servers send `Enter` and `Leave` and lets the bound client send only
-`Flow.FromClient` messages `Move` and `Say`, so a client can never enter someone else's player. The flow is checked at
+`[FromClient]` messages `Move` and `Say`, so a client can never enter someone else's player. The flow is checked at
 build time (DAS006): pushing an internal message to a client, sending it from a client, or handling a push on a server
-fails the build; at run time gateways accept only `Flow.FromClient` messages.
+fails the build; at run time gateways accept only `[FromClient]` messages.
 
 Gateways and other nodes talk through framework frames (relayed client messages with their session, bindings, group
 membership, resumed sessions), never through business messages, so there is no fourth flow: a service hosted on a
@@ -210,7 +210,7 @@ sequenceDiagram
     G->>P: routed to the bound player id
     P->>M: Ask(7, Enter(playerId, session))
     M->>G: BindSession(session)  (also joins the map's Group)
-    Cl->>G: Move(vx, vy)  (one-way, Flow.FromClient)
+    Cl->>G: Move(vx, vy)  (one-way, [FromClient])
     G->>M: routed to the bound map
     M->>M: writes Velocity; MovementSystem, PlacementSystem, MotionSyncSystem run on the tick
     M-->>G: Send(group, Motion(changes))  one message per cell per tick, one frame per gateway
@@ -353,7 +353,7 @@ entities in the state it handles (a filter on tags), so nothing scans all actors
 ## 10. Developer experience (generated code)
 
 ```csharp
-[NinoType, Message(Flow.FromClient)] public partial record struct AddGold(int Amount) : IRequest<int>;
+[NinoType, Message, FromClient] public partial record struct AddGold(int Amount) : IRequest<int>;
 [NinoType, Message] public partial record struct LoggedIn(SessionRef Session);
 
 public record struct Wallet(int Gold, int Logins) : IComponent;
@@ -376,7 +376,7 @@ What the generators write:
 
 | Generator | Output |
 |---|---|
-| `MessageGenerator` | typed `Ask` overloads per request (`Cluster.Ask(playerId, new AddGold(1))` infers the reply type), `Flow.FromClient` registration for gateways |
+| `MessageGenerator` | typed `Ask` overloads per request (`Cluster.Ask(playerId, new AddGold(1))` infers the reply type), `[FromClient]` registration for gateways |
 | `HostGenerator` | registration of every actor and service with one dispatcher per `[Handle]` method, client handler classes, every `EcsSystem`; the node entry point when the project has no `Program.cs` |
 | EasyEcs `SystemGenerator` | `[ForEach]` struct jobs (components, singletons, entity, world parameters) and `GeneratedUpdate` |
 | Analyzers | DAS001–DAS008 (handlers, messages, wire types, id collisions, constructors, message flow, stateless actors and services, address kinds), EECS001–EECS008 (ECS rules) |
@@ -405,7 +405,7 @@ node project is its business classes only.
 |---|---|---|
 | Unit | Queues, buffer pool, frame parsing, pending-call table, membership merge, rendezvous placement | `tests/DaServer.Tests` |
 | Generator | Valid input compiles, every DAS rule fires from the analyzer, the entry point is generated only when missing, unrelated edits hit the incremental cache | `tests/DaServer.Tests` |
-| Integration | In-process clusters on loopback (`ClusterTest`): request semantics and ordering, turn-based actors, ECS systems over actor state, single loaded actor, idle unloading, failover, fencing, one-way and published messages (to actors on any node, once per service type, ordering, routing), resumable links, deadlines, gateway access by `Flow.FromClient`, binding isolation, broadcast (exact under churn), the directory, `SessionClosed` (close and gateway crash), session resumption, backpressure, placement under suspicion | `tests/DaServer.Tests` |
+| Integration | In-process clusters on loopback (`ClusterTest`): request semantics and ordering, turn-based actors, ECS systems over actor state, single loaded actor, idle unloading, failover, fencing, one-way and published messages (to actors on any node, once per service type, ordering, routing), resumable links, deadlines, gateway access by `[FromClient]`, binding isolation, broadcast (exact under churn), the directory, `SessionClosed` (close and gateway crash), session resumption, backpressure, placement under suspicion | `tests/DaServer.Tests` |
 | Allocation | Steady-state cross-shard calls, replies of suspended handlers, bursts of concurrent calls, one-way messages, gateway fan-out, client messages through a gateway and gossip rounds allocate nothing per operation | `tests/DaServer.Tests` |
 | End to end | AppHost topology (login, game, map, 3 gateways) + `Sample.Bot`: 10k bots locally, 1,000 in CI (`tests/DaServer.E2E`); fails on any gap, disconnect or p99 over the limit | `samples/mmo/`, `tests/DaServer.E2E` |
 | Benchmarks | BenchmarkDotNet on real loopback sockets: RPC at 1/64/1,024 outstanding calls (local and remote), one-way messages to actors (local and remote), group broadcast to 1k/5k client sockets in 1 or 9 groups, broadcast to everyone through 3 gateways (3k/9k) | `benchmarks/DaServer.Benchmark` |

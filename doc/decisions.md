@@ -96,7 +96,7 @@ records that no longer hold). Each: context → decision → consequences.
 - Consequences: no name clash; "world" always means the ECS world.
 
 ## ADR-012 Source generation instead of registration code
-- Decision: `MessageGenerator` emits typed `Ask` overloads per request and registers `Flow.FromClient` messages for
+- Decision: `MessageGenerator` emits typed `Ask` overloads per request and registers `[FromClient]` messages for
   gateways in a module initializer of the declaring assembly (marked `[assembly: MessagesAssembly]`). `HostGenerator`
   registers every actor and service with one dispatcher per `[Handle]` method, client handler classes and EasyEcs
   systems, runs the registration of referenced message assemblies, and emits the node entry point (ADR-021).
@@ -301,7 +301,7 @@ records that no longer hold). Each: context → decision → consequences.
 - Context: names borrowed from one framework (Orleans' `OnActivateAsync`) or describing a mechanism instead of its
   role read wrong to people who know other distributed servers.
 - Decision: name things by their role in a cluster, in pairs where they are pairs: `OnLoad` / `OnUnload` (the actor is
-  loaded on / leaves this node), `Flow.FromClient` / `Flow.ToClient` (the two directions across the gateway),
+  loaded on / leaves this node), `[FromClient]` / `[ToClient]` (the two directions across the gateway),
   `Caller` (who sent the message from outside; invalid for server calls), `Disconnect` (not a game's "kick"), directory
   ("dispatch" means message dispatch only), `ClusterMember` (no clash with
   `System.Reflection.MemberInfo`), `ListenAddress` / `DispatchQueueCapacity` (what they configure). Actor state starts
@@ -341,7 +341,7 @@ records that no longer hold). Each: context → decision → consequences.
   - `Ask(id, m)` / `Send(id, m)` go to the actor `id` (its id type names the actor type, ADR-043); without an id, to
     the one service handling the message (several service handlers is an `Ambiguous` error). `Publish(e)` reaches
     every service type handling it once.
-  - A `Flow.FromClient` message to an actor goes to the actor bound to the client's session for that actor type
+  - A `[FromClient]` message to an actor goes to the actor bound to the client's session for that actor type
     (`AnyId` lets the client name the actor); the actor binds itself: `await BindSession(session)` (acknowledged by
     the gateway before it returns).
   - Messages to clients are sends to their address: `Send(session, m)` / `Send(group, m)`, handled on clients by
@@ -406,16 +406,15 @@ records that no longer hold). Each: context → decision → consequences.
   indistinguishable from messages, wire-id collisions would be checked for data that never travels alone, and nothing
   would say which messages clients send or receive. A server could push an internal message to a client, or a client
   handler could expect one, and only testing would notice.
-- Decision: `[NinoType, Message]` is a message; plain `[NinoType]` is data. `[Message(Flow)]` says who sends it to
-  whom: `Internal` (default, servers only), `FromClient` (clients may send it; `AnyId` lets them name the actor),
-  `ToClient` (servers push it, clients handle it); flags combine. The analyzer checks handlers (servers never handle a
+- Decision: `[NinoType, Message]` is a message; plain `[NinoType]` is data. Who sends it to whom is
+  said by the clients module's attributes: none (servers only), `[FromClient]` (clients may send it; `AnyId = true`
+  lets them name the actor), `[ToClient]` (servers push it, clients handle it); both may be applied. The analyzer checks handlers (servers never handle a
   `ToClient`-only message, client handlers only `ToClient` ones) and call sites (a send to a session or group
   address needs `ToClient`, `ClusterClient` sends need `FromClient`, servers do not send `ToClient`-only messages to
   each other): DAS006. DAS008 rejects asking a session or group and clients addressing anything but actors. Gateways also accept only `FromClient` messages at run time.
-  Agreed for roadmap G step 7: `Flow`/`AnyId` move to `[FromClient(AnyId)]` / `[ToClient]` attributes of the gateway
-  module, so the core's `[Message]` carries no client concept (ADR-045).
-- Alternatives: marker interfaces (`IClientMessage`) would allow generic constraints, but a message's flow is
-  metadata for the analyzer and the gateway, not a type relation.
+  The core's `[Message]` carries no client concept (ADR-045, ADR-050): the attributes live in `DaServer.Clients`.
+- Alternatives: marker interfaces (`IClientMessage`) would allow generic constraints, but who sends a message is
+  metadata for the analyzer and the client connections, not a type relation.
 - Consequences: a contracts file reads as a protocol (who talks to whom); leaking server-internal messages to clients
   is a build error. Gateway-to-node traffic stays framework frames, so roles never appear in message declarations.
 

@@ -62,8 +62,8 @@ doc/                       requirements.md, design.md, decisions.md, roadmap.md
    cross-thread handoff only through mailboxes; shared runtime state is immutable snapshots swapped atomically.
 5. **Concise, elegant, no duplication**: generate repetitive code with the source generator; one shared core with
    thin typed wrappers; no copy-pasted variants.
-6. **Developers only write business code**: messages (`[NinoType, Message]` structs with a `Flow`,
-   `IRequest<TReply>`), actors/services with `[Handle]` methods (ADR-035), EasyEcs systems with `[ForEach]`
+6. **Developers only write business code**: messages (`[NinoType, Message]` structs, `IRequest<TReply>`,
+   `[FromClient]`/`[ToClient]` when clients send or receive them), actors/services with `[Handle]` methods (ADR-035), EasyEcs systems with `[ForEach]`
    methods. Registration, routing, serialization, placement, entry points, orchestration are the framework's job;
    if users would write the same lines twice, generate them.
 7. **ECS all the way down**: the runtime follows the same ECS rules as user code (EasyEcs `doc/ecs-principles.md`):
