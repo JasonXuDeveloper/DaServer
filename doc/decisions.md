@@ -30,13 +30,17 @@ records that no longer hold). Each: context → decision → consequences.
 - Consequences: zero allocation per awaited RPC; ExecutionContext/AsyncLocal does not flow across RPC awaits.
 
 ## ADR-005 Wire format
-- Decision: fixed 24-byte little-endian header (length, kind, status, hops, flags, requestId, messageId, key) + the
-  Nino-serialized message. Message id = FNV-1a 32 of the message type's full name (or its `[WireId]`), computed once
-  per type at run time and by the analyzer at build time; handler type ids are FNV-1a of the actor id type or service
-  type name.
+- Decision: fixed 24-byte little-endian header (length, kind, status, hops, flags, target, message id, key), the
+  Nino-serialized message, then trailers named by the flags. Three kinds: `Message` (a request when it carries a call
+  id), `Reply` and `Control` (link protocol). The target is always set: the handler type id of an actor or service,
+  or an address scope (sessions, client groups), so a receiver routes a frame with one lookup. The call id is a
+  4-byte trailer (`HasCall`): the payload is serialized before routing picks the call id, and every hop that relays a
+  request rewrites it in place, so neither needs to move the payload. Message id = FNV-1a 32 of the message type's
+  full name (or its `[WireId]`), computed once per type at run time and by the analyzer at build time; handler type
+  ids are FNV-1a of the actor id type or service type name.
 - Consequences: gateways route by patching header fields without parsing payloads; collisions are build errors
-  (DAS004) and registration errors, resolvable with `[WireId]`. ADR-047 (agreed, roadmap G0) changes the frame kinds
-  and adds header extensions.
+  (DAS004) and registration errors, resolvable with `[WireId]`. A request costs the same bytes as a one-way message
+  plus its call id; a reply carries the call id as a trailer too (4 bytes).
 
 ## ADR-006 Connection send path: copy into a per-connection batch
 - Decision: `Connection.Send` copies the frame into one pending batch buffer under a short lock; one send loop swaps
@@ -450,9 +454,8 @@ records that no longer hold). Each: context → decision → consequences.
 - Decision: each actor type declares its own id type in contracts (`readonly record struct MapId(long Value) :
   IActorId`) and derives from `Actor<MapId, MapState>` (`Id` is typed). `Send(id, m)` / `Ask(id, m)` route by the id
   type: its type id (FNV of the full name) is the actor's handler type id, so placement and the wire use the id type
-  and messages need no owner. Two actor types may not share an id type. Actor requests carry the handler type id as a
-  4-byte trailer after the Nino payload (`FrameFlags.ToActor`; Nino ignores trailing bytes), messages carry it in the
-  header's request id (ADR-047, agreed for roadmap G0, puts it in an always-set `Target`). `Publish` reaches services
+  and messages need no owner. Two actor types may not share an id type. Every message carries the handler type id in
+  the header's target (ADR-005). `Publish` reaches services
   only; actors are told one by one with `Send`. A client may name an actor only with an `AnyId` message whose handler
   is that actor type; otherwise the session binding decides.
 - Alternatives: `long` keys with a generated per-actor proxy (`Cluster.Map(id).Enter(..)`), which ADR-035 rejects; the
@@ -502,7 +505,8 @@ records that no longer hold). Each: context → decision → consequences.
   request volume, since the actor interior stays zero-GC. Health endpoints are always mapped, admin endpoints require the cluster secret.
 
 ## ADR-047 One message model: message, address, optional reply
-- Status: agreed; implemented in roadmap G0 (the code still has the verbs and frame kinds listed in the context).
+- Status: agreed; the wire is done (three frame kinds, target always set, ADR-005); the verbs and the origin follow
+  in roadmap G0 steps 2-4 (the code still has the verbs listed in the context).
 - Context: messages and RPC are one thing, but the API has nine operations (`Send`, `Ask`, `Publish`, `Push`,
   `Broadcast`, `JoinGroup`, `LeaveGroup`, `Disconnect`, `BindSession`) and the wire seven frame kinds plus a trailer
   (`ToActor`) and a prefix (`HasCaller`), because `RequestId` means either a call id or a target. Most of the extra

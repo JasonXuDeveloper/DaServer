@@ -136,8 +136,8 @@ balancing, TLS, CDN/WAF, Gateway API routes and autoscaling stay with the platfo
 Step plan (each step builds and keeps every test green; logic, docs, CI in separate commits):
 
 0. Baseline BenchmarkDotNet: Rpc, Message, Broadcast (1k/5k x 1/9), Scenario (3k/9k) (done: d676d2a numbers).
-1. Wire unification inside core: `Target` always set, call-id extension, 3 frame kinds, receiver dispatch by one
-   `Target` lookup (handler type -> shard, address scope -> feature handler on the IO thread).
+1. Wire unification inside core (done): `Target` always set, call-id trailer rewritten per hop, 3 frame kinds,
+   receiver dispatch by one `Target` lookup (handler type -> shard, session/group scope -> client connections).
 2. Addresses: `IAddress`/`INodeAddress`/`IGroupAddress`, `Send(addr, m)`, address-generic generated `Ask`
    overloads, `Push`/`Broadcast` removed; DAS006 checks `[ToClient]` by address kind; `Ask` to a fan-out address
    is an analyzer error (and to a session for now).

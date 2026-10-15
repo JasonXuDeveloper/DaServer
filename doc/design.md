@@ -88,22 +88,23 @@ local node when it hosts one.
 
 ## 2. Wire protocol
 
-- Frames carry a fixed 24-byte header: `length`, `kind`, `status`, `hops`, `flags`, `requestId`, `messageId`, `key`.
-  The payload is the Nino-serialized message.
+- Frames carry a fixed 24-byte header: `length`, `kind`, `status`, `hops`, `flags`, `target`, `messageId`, `key`,
+  then the Nino-serialized message, then the trailers its flags name (ADR-005).
 - `messageId` is FNV-1a of the message type's full name (or its `[WireId]`), computed once per type at run time (the analyzer computes the same value at build time). Collisions are
   build errors (DAS004) and registration errors at runtime. Handler type ids are FNV-1a of the actor or service
   type's full name.
 - Frame kinds:
-  - `Request` (`requestId` is the call id; a request to an actor ends with its handler type id, flag `ToActor`) /
-    `Response`
-  - `Message` (one-way and published): `requestId` is the target handler type, `key` the actor id
-  - `OneWay`: a client's one-way message to its gateway
-  - `Push` (one session) / `Broadcast` (a group of sessions)
-  - `Control` (link handshake and resume, gossip, session binding, groups, disconnect)
-- Gateways route client frames with a new header and the caller session prepended to the payload (flag `HasCaller`).
-  They never deserialize payloads.
-- Agreed next (ADR-047, roadmap G0): three frame kinds (`Message`, `Reply`, `Control`), a target always set, header
-  extensions by flag instead of the trailer and the prefix.
+  - `Message`: to `target` (an actor or service handler type id, `key` the actor id; or an address scope: a session
+    or a client group, `key` its id). With a call id trailer (flag `HasCall`) it is a request; the status byte then
+    carries the caller's time budget (ADR-028).
+  - `Reply`: the call id trailer, the status, the reply (or a handler's error message).
+  - `Control`: link handshake and resume, gossip, session binding, groups, disconnect; a call id makes it a call.
+- A receiving node routes a message by its target alone: a hosted handler type goes to its shard, a session or group
+  to the client connections, anything else on to the node hosting it.
+- A client leaves the target 0 to let its gateway pick the actor bound to its session or the service; it names the
+  actor only with `AnyId` messages. Gateways route client frames with a new header and the caller session prepended
+  to the payload (flag `HasCaller`). They never deserialize payloads.
+- Next (ADR-047, roadmap G0 step 3): the caller session becomes an `Origin` trailer instead of the payload prefix.
 
 ## 3. Performance model (zero GC)
 
