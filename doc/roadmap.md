@@ -138,9 +138,9 @@ Step plan (each step builds and keeps every test green; logic, docs, CI in separ
 0. Baseline BenchmarkDotNet: Rpc, Message, Broadcast (1k/5k x 1/9), Scenario (3k/9k) (done: d676d2a numbers).
 1. Wire unification inside core (done): `Target` always set, call-id trailer rewritten per hop, 3 frame kinds,
    receiver dispatch by one `Target` lookup (handler type -> shard, session/group scope -> client connections).
-2. Addresses: `IAddress`/`INodeAddress`/`IGroupAddress`, `Send(addr, m)`, address-generic generated `Ask`
-   overloads, `Push`/`Broadcast` removed; DAS006 checks `[ToClient]` by address kind; `Ask` to a fan-out address
-   is an analyzer error (and to a session for now).
+2. Addresses (done): `IAddress`/`INodeAddress`/`IGroupAddress`, `Send(addr, m)`, address-generic generated `Ask`
+   overloads, `Push`/`Broadcast` removed; DAS006 checks `[ToClient]` by address kind; asking a session or group and
+   a client addressing anything but actors are DAS008.
 3. `Origin(ulong Node, long Id)`: raw 16-byte extension, `CallContext(ReplyTo, Origin)`, `ShardObject.Caller`
    replaces `CallerSession` (`SessionRef` converts implicitly from `Origin`).
 4. Session operations become messages to `SessionRef` (Bind is an `Ask`, so ADR-022 ordering holds).
@@ -349,13 +349,13 @@ in separate commits.
       Model (components, singletons: never reloaded) + Logic (actors, services, systems: reloadable), samples
       included. Prerequisite of N5 and N9. (a studied game server, ET)
 - [ ] N2 `SendAfter(delay, ...)`: per-shard timer wheel of serialized frames, cancellable, delivered as ordinary
-      mail (turn-based, follows moved keys), zero allocation; replaces `await Task.Delay` in handlers (DAS008 of N3b
+      mail (turn-based, follows moved keys), zero allocation; replaces `await Task.Delay` in handlers (DAS009 of N3b
       points to it). (ET timers as data, Orleans timers)
 - [ ] N3 Call cycles fail fast: a chain id travels with requests (the `Chain` header extension of G0); mail carrying
       the running turn's chain id is answered `CallCycle` at once instead of waiting for the timeout. (Orleans call
       chains)
 - [ ] N3b No sync-over-async on shard threads (agreed: all four layers):
-      1. DAS008 (error) in actors, services and systems: `.Result`, `.Wait()`, `GetAwaiter().GetResult()`,
+      1. DAS009 (error) in actors, services and systems: `.Result`, `.Wait()`, `GetAwaiter().GetResult()`,
          `AsTask().Wait*`, `Thread.Sleep`, `Task.Delay`, `SemaphoreSlim.Wait`, `Monitor.Enter`/`lock` waits; the
          message names the replacement for the context.
       2. Replacements: handlers `await` (a turn: only that actor waits); delays use `SendAfter` (N2, the actor stays
@@ -412,8 +412,8 @@ in separate commits.
 - [x] Hosting: actor/service factories with their handlers, client handler classes, EasyEcs system registration
 - [x] Node entry point generated when a node project has no `Program.cs` (ADR-021)
 - [x] Incremental rules: syntax predicates, equatable models, tracking names, cache test (ADR-016)
-- [x] `DaServerAnalyzer`: DAS001-DAS007 (handlers, messages, wire types, id collisions, constructors, message flow
-      (ADR-038), stateless actors and services (ADR-044))
+- [x] `DaServerAnalyzer`: DAS001-DAS008 (handlers, messages, wire types, id collisions, constructors, message flow
+      (ADR-038), stateless actors and services (ADR-044), address kinds (ADR-047))
 
 ## Hosting / orchestration
 - [x] `DaServer.Hosting`: Generic Host, configuration, OpenTelemetry (OTLP), periodic stats line, graceful shutdown

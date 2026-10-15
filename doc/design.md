@@ -47,7 +47,7 @@ Everything a developer declares is one of these (ADR-035). The message type alon
 | `Ask(id, m)` / `Send(id, m)` | the actor `id` (`MapId`, `PlayerId`, ...: the id type names the actor type; rendezvous placement) |
 | `Ask(m)` / `Send(m)` | the one service handling `M` (load-balanced, local first); from a client: also the actor bound to the session |
 | `Publish(e)` | every service type handling `E`, once each |
-| `Push(session, m)` / `Broadcast(group, m)` | one client session / a client group |
+| `Send(session, m)` / `Send(group, m)` | one client session / a client group (`Flow.ToClient` messages; servers only) |
 
 Access is per message type. The sample's map lets servers send `Enter` and `Leave` and lets the bound client send only
 `Flow.FromClient` messages `Move` and `Say`, so a client can never enter someone else's player. The flow is checked at
@@ -213,7 +213,7 @@ sequenceDiagram
     Cl->>G: Move(vx, vy)  (one-way, Flow.FromClient)
     G->>M: routed to the bound map
     M->>M: writes Velocity; MovementSystem, PlacementSystem, MotionSyncSystem run on the tick
-    M-->>G: Broadcast(group, Motion(changes))  one message per cell per tick, one frame per gateway
+    M-->>G: Send(group, Motion(changes))  one message per cell per tick, one frame per gateway
     G-->>Cl: fan-out to the group's local sessions
     Cl--xG: disconnect
     G-->>P: SessionClosed (bound)
@@ -223,8 +223,8 @@ sequenceDiagram
 - **Player and map.** The player actor (keyed by player id) holds persistent state. The map (keyed by map instance id) owns
   the avatars as entities of its shard; `[ForEach]` systems do movement, AOI, combat and sync. Switching maps is
   `Leave` on map A and `Enter` on map B; the player actor stays where it is.
-- **Push and broadcast.** `Cluster.Push(session, m)` pushes to one session. `Cluster.Broadcast(Group, m)` (every
-  actor has its own group) serializes once and sends one frame per gateway, which fans out locally (ADR-025).
+- **Messages to clients.** `Cluster.Send(session, m)` reaches one session. `Cluster.Send(Group, m)` (every actor has
+  its own group) serializes once and sends one frame per gateway, which fans out locally (ADR-025).
   `ClientGroup.All` reaches every session of the cluster (the sample's realm status every 5 ticks).
 - **Batch per tick.** Systems collect changes into the map's grid and one system sends them as one message per
   changed cell every other tick: n moving avatars cost n entries, not n x n messages.
@@ -333,7 +333,7 @@ What the generators write:
 | `MessageGenerator` | typed `Ask` overloads per request (`Cluster.Ask(playerId, new AddGold(1))` infers the reply type), `Flow.FromClient` registration for gateways |
 | `HostGenerator` | registration of every actor and service with one dispatcher per `[Handle]` method, client handler classes, every `EcsSystem`; the node entry point when the project has no `Program.cs` |
 | EasyEcs `SystemGenerator` | `[ForEach]` struct jobs (components, singletons, entity, world parameters) and `GeneratedUpdate` |
-| Analyzers | DAS001–DAS007 (handlers, messages, wire types, id collisions, constructors, message flow, stateless actors and services), EECS001–EECS008 (ECS rules) |
+| Analyzers | DAS001–DAS008 (handlers, messages, wire types, id collisions, constructors, message flow, stateless actors and services, address kinds), EECS001–EECS008 (ECS rules) |
 
 Both generators follow the incremental-generator rules: syntax-only predicates, equatable models, tracking names, and
 no diagnostics. There is no reflection scanning, no configuration string and no hand-written registration list. A

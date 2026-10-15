@@ -24,7 +24,7 @@ locally and publishes it.
 - **Reliable links, bounded work.** One ordered stream per node pair resumes after a dropped connection (no loss, no
   duplicate). Requests carry their caller's deadline, and work nobody waits for is dropped. Full dispatch queues and mailboxes answer
   `Overloaded` instead of growing; a client that cannot keep up is disconnected and resynchronizes on reconnect.
-- **Misuse is a build error.** Analyzers DAS001–DAS007 cover handlers, messages, wire types, id collisions, message
+- **Misuse is a build error.** Analyzers DAS001–DAS008 cover handlers, messages, wire types, id collisions, message
   flow and stateless actors and services, and EECS001–EECS008 cover ECS, including the ECS principles.
 
 ## Architecture
@@ -86,7 +86,7 @@ Everything a developer declares is one of these. The message type alone decides 
 | `Cluster.Ask(id, new M())` / `Send(id, ...)` | The actor `id` (`MapId`, `PlayerId`: the id type names the actor type; one per cluster, on demand, turn-based). |
 | `Cluster.Ask(new M())` / `Send(...)` | The one service handling `M` (load-balanced, local first). |
 | `Cluster.Publish(e)` | Every service type handling `e`, once each. |
-| `Cluster.Push(session, m)` / `Broadcast(group, m)` | A client session / a client group (pushes; clients handle them with `[Handle]` too). |
+| `Cluster.Send(session, m)` / `Send(group, m)` | A client session / a client group (`Flow.ToClient` messages; clients handle them with `[Handle]` too). |
 
 | Element | Responsibility | Never |
 |---|---|---|
@@ -180,7 +180,7 @@ public sealed class Map : Actor<MapId, MapState>
 
     [Handle]
     public void On(Say m) =>
-        Cluster.Broadcast(Group, new Chat(State.Avatars[CallerSession].Get<Avatar>().Player, m.Text));
+        Cluster.Send(Group, new Chat(State.Avatars[CallerSession].Get<Avatar>().Player, m.Text));
 }
 
 // ...and systems do the per-tick work, one responsibility each.
@@ -195,7 +195,7 @@ public sealed partial class RealmBroadcastSystem : EcsSystem        // every 5 t
 
     [ForEach]
     static void Broadcast(in RealmState realm, World world) =>
-        world.Cluster().Broadcast(ClientGroup.All, new RealmStatus(world.Tick(), realm.Online.Count, DateTime.UtcNow.Ticks));
+        world.Cluster().Send(ClientGroup.All, new RealmStatus(world.Tick(), realm.Online.Count, DateTime.UtcNow.Ticks));
 }
 
 // Client (bot, game): the same messages, one well-known address.
