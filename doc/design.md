@@ -240,7 +240,8 @@ removed at run time; placement moves only the keys of the node that joined or le
 
 `ClusterClient` connects through one or several entry addresses (`host:port`, DNS names included: every resolved
 address is tried) and moves to the client-facing node the entry names (ADR-026); reconnects go through the entries
-again. It sends the same messages as
+again; `ConnectAsync(new Uri("ws://node/clients/ws"))` connects over a WebSocket of the node's HTTP plane instead
+(browsers, WebGL builds; one or more whole frames per binary message, the same protocol). It sends the same messages as
 servers: `client.Ask(new Login(..))`, `client.Ask(new GetInfo())` (session actors need no id: the gateway uses the
 binding), `client.Ask(roomId, new Join())` (`AnyId` messages). Push handlers are `[Handle]` methods of any class,
 registered with `client.Register(obj)`; they run on the IO thread or, for game loops and UIs, on the application's thread through `ProcessCallbacks`.

@@ -186,7 +186,10 @@ Step plan (each step builds and keeps every test green; logic, docs, CI in separ
    addresses; ADR-026), M2 (group objects pooled, empty groups removed lazily by the feature's 100 ms timer: group
    churn allocates nothing), M3 (reconnect graces on a `TimerWheel`), a per-session rate limit
    (`ClientOptions.MessagesPerSecond`/`Burst`, refusals with a retry hint). L2 kept: a binding change copies the
-   session's small bindings array (a login or map change, not per message). Left:
+   session's small bindings array (a login or map change, not per message). WebSocket transport: `WebSocketChannel`
+   (bounded send batch, frames parsed in place) behind `IFrameChannel`, `/clients/ws` mapped by `MapDaServer`,
+   `ClusterClient.ConnectAsync(Uri)`. Drain moving clients with tickets is D3; today a leaving node closes its
+   listener and sessions. Left (original plan, for reference):
    transports (TCP on `DaServer.Net`; WebSocket through the HTTP plane in `DaServer.Hosting`), sessions, bindings,
    `GroupMembers` (M2 pool), address handlers for `SessionRef` and `ClientGroup` (fan-out to the nodes advertising
    the scope), resume tickets on `SignedToken` and grace timers on the timer wheel (M3), `BoundSessions` + filters for
