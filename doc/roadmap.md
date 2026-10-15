@@ -107,7 +107,7 @@ Steady state allocates nothing: per message, call, reply, tick, broadcast, conne
 - [ ] Z4 Keep it: CLAUDE.md rule plus analyzer coverage where a misuse is detectable in user code (e.g.
       `TaskCompletionSource`/`Task.Delay` in handlers and systems: use pooled framework awaitables and `SendAfter`).
 
-## Next: one message model, built-in ingress and client connections (G0-G6, agreed)
+## Next: one message model, built-in ingress and client connections (G0-G5, agreed)
 
 One framework (ADR-045, ADR-048): ingress (`DaServer.Ingress`) and client connections (`DaServer.Clients`) are
 built-in capabilities on public feature points, off unless configured; business domains live in samples. Load
