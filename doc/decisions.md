@@ -281,6 +281,17 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
 - Consequences: simple and ordered with binds (ADR-022). Revisit when deployments run tens of gateways with small
   groups; the roadmap keeps the item.
 
+## ADR-040 One noun per concept
+- Context: "link" meant both a node-to-node connection (`PeerLink`) and the component pointing an entity at its actor
+  (`ActorLink`); "implementation" named the actor or service type handling a message; the lifecycle mixed load/unload
+  (public `OnLoad`, `OnUnload`, `UnloadAfterIdle`) with activate/deactivate/retire (internal tags and docs).
+- Decision: `ActorRef` is the actor component (key, client group); "link" is only a node connection. `HandlerType`
+  (`HandlerTypeInfo`, `HandlerTypeId`) is an actor or service type with `[Handle]` methods. The lifecycle is load/unload
+  only: `Loading` (`OnLoad` running), `UnloadRequested` (asked to leave), `Unloading` (`OnUnload` running), `Removing`
+  (entity destroyed, mail routed again); a running actor is a "loaded actor", not an activation.
+- Consequences: wire values are unchanged (handler type ids are the same FNV-1a of the type name). Earlier ADRs keep
+  the names of their time.
+
 ## ADR-039 EasyEcs from NuGet, used as its documentation teaches
 - Context: DaServer built against a sibling EasyEcs checkout, and parts of the runtime used EasyEcs against its own
   guidance: systems gated themselves with flags and ran manual queries in `OnUpdate`, samples counted ticks in

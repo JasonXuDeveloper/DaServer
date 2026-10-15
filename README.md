@@ -79,7 +79,7 @@ Everything a developer declares is one of these. The message type alone decides 
 
 | Call | Target |
 |---|---|
-| `Cluster.Ask(key, new M())` / `Send(key, ...)` | The actor activation of `key` of the one actor type handling `M` (one per cluster, on demand, turn-based). |
+| `Cluster.Ask(key, new M())` / `Send(key, ...)` | The actor of `key` of the one actor type handling `M` (one per cluster, on demand, turn-based). |
 | `Cluster.Ask(new M())` / `Send(...)` | The one service handling `M` (load-balanced, local first). |
 | `Cluster.Publish(key, e)` / `Publish(e)` | Every actor type handling `e` at that key / every service handling it, once each. |
 | `Cluster.Send(session, m)` / `Send(group, m)` | A client session / a client group (pushes; clients handle them with `[Handle]` too). |
@@ -95,7 +95,7 @@ Business code reaches the cluster through `ICluster`: `Cluster` in actors and se
 `CallerSession` is the client session of the running turn (valid across its awaits).
 
 The runtime owns client sessions: an actor's `await BindSession(session)` routes the client's messages for that actor
-type to its key and puts the session in the activation's `Group`; when the session closes (or its gateway crashes),
+type to its key and puts the session in the actor's `Group`; when the session closes (or its gateway crashes),
 every actor it was bound to receives `SessionClosed`. A client that loses its connection reconnects on its own and
 resumes the session with a signed ticket: its actors receive `SessionResync` (send the full state again) instead, and
 `SessionClosed` only if it does not come back within 30 s.
