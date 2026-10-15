@@ -13,9 +13,9 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IAsyncDi
     private Dictionary<uint, (object Target, MessageDispatcher Dispatcher)> _handlers = new(); // copy on write
     private readonly MpmcQueue<FrameWriter>? _inbox;
     private Connection? _connection;
-    private string _host = "";
-    private int _port;
-    private bool _followBalancer;
+    private DnsEndPoint[] _entries = [];  // the well-known addresses (reconnects start there again)
+    private int _nextEntry = Random.Shared.Next(); // spreads clients over the entries
+    private bool _followRedirect;
     private byte[]? _ticket;          // latest reconnect ticket from the gateway (null: nothing to resume)
     private long _refreshTicketAtMs;  // local clock
     private int _reconnecting;
@@ -67,42 +67,64 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IAsyncDi
     public event Action<Exception?>? ReconnectFailed;
 
     /// <summary>
-    /// Connect to the cluster through any gateway (typically a balancer's well-known address): the gateway names
-    /// the least loaded gateway and the client moves there when it is another one. <paramref name="followBalancer"/>
-    /// false stays on the given gateway. While the cluster is still forming (the balancer has not met a gateway yet) the
-    /// question is asked again until <see cref="CallTimeout"/>.
+    /// Connect to the cluster through its well-known address (a load balancer, a DNS name: every resolved address is
+    /// tried): the node answering names the client-facing node to use and the client moves there when it is another
+    /// one (<paramref name="followRedirect"/> false stays). A node it cannot reach is not fatal: it stays where it is.
     /// </summary>
-    public async ValueTask ConnectAsync(string host, int port, bool followBalancer = true, CancellationToken cancellationToken = default)
+    public ValueTask ConnectAsync(string host, int port, bool followRedirect = true, CancellationToken cancellationToken = default) =>
+        ConnectAsync([new DnsEndPoint(host, port)], followRedirect, cancellationToken);
+
+    /// <summary>Connect through the first reachable of <paramref name="entries"/> (tried in turn, starting at a random one).</summary>
+    public async ValueTask ConnectAsync(IReadOnlyList<DnsEndPoint> entries, bool followRedirect = true, CancellationToken cancellationToken = default)
     {
-        (_host, _port, _followBalancer) = (host, port, followBalancer);
-        await ConnectToAsync(host, port, cancellationToken).ConfigureAwait(false);
-        if (!followBalancer) return;
+        if (entries.Count == 0) throw new ArgumentException("No entry address", nameof(entries));
+        (_entries, _followRedirect) = ([.. entries], followRedirect);
+        await ConnectToEntryAsync(cancellationToken).ConfigureAwait(false);
+        if (!followRedirect) return;
 
-        var gateway = await PickGatewayAsync(cancellationToken).ConfigureAwait(false);
-        if (gateway.Host == host && gateway.Port == port) return;
+        var pick = await PickNodeAsync().ConfigureAwait(false);
+        if (pick.Host.Length == 0) return; // stay
+        Connection moved;
+        try
+        {
+            moved = await Connection.ConnectAsync(pick.Host, pick.Port, this, ConnectionOptions.ForClients(), cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception e) when (e is System.Net.Sockets.SocketException or IOException)
+        {
+            return; // the named node is gone or unreachable from here: the entry node serves as well
+        }
 
-        var balancer = Interlocked.Exchange(ref _connection, null); // closed on purpose: not a disconnect
-        balancer?.Close();
-        await ConnectToAsync(gateway.Host, gateway.Port, cancellationToken).ConfigureAwait(false);
+        var entry = Interlocked.Exchange(ref _connection, moved);
+        entry?.Close(); // closed on purpose: not a disconnect (no longer the current connection)
     }
 
-    private async ValueTask<GatewayEndpoint> PickGatewayAsync(CancellationToken cancellationToken)
+    private ValueTask<ClientEndpoint> PickNodeAsync()
     {
-        long deadline = Environment.TickCount64 + (long)CallTimeout.TotalMilliseconds;
-        while (true)
+        var call = PendingCall<ClientEndpoint>.Rent(null);
+        var answer = call.Task;
+        SendControl(FrameWriter.Rent(FrameHeader.Size), ControlOp.PickNode, call);
+        return answer;
+    }
+
+    private async ValueTask ConnectToEntryAsync(CancellationToken cancellationToken)
+    {
+        Exception? last = null;
+        for (int i = 0; i < _entries.Length; i++)
         {
-            var call = PendingCall<GatewayEndpoint>.Rent(null);
-            var answer = call.Task;
-            SendControl(FrameWriter.Rent(FrameHeader.Size), ControlOp.PickGateway, call);
+            var entry = _entries[(int)((uint)Interlocked.Increment(ref _nextEntry) % (uint)_entries.Length)];
             try
             {
-                return await answer.ConfigureAwait(false);
+                await ConnectToAsync(entry.Host, entry.Port, cancellationToken).ConfigureAwait(false);
+                return;
             }
-            catch (RpcException e) when (e.Status == RpcStatus.NotHosted && Environment.TickCount64 < deadline)
+            catch (Exception e) when (e is System.Net.Sockets.SocketException or IOException)
             {
-                await Task.Delay(200, cancellationToken).ConfigureAwait(false);
+                last = e;
             }
         }
+
+        throw last!;
     }
 
     private async ValueTask ConnectToAsync(string host, int port, CancellationToken cancellationToken)
@@ -255,7 +277,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IAsyncDi
 
     void IConnectionHandler.OnClosed(Connection connection, Exception? error)
     {
-        if (connection != _connection) return; // the balancer connection, left on purpose
+        if (connection != _connection) return; // the entry connection, left on purpose
         _pending.FailAll(RpcStatus.Disconnected);
         if (Volatile.Read(ref _reconnecting) != 0) return; // an attempt of the running reconnect failed: it retries
         Disconnected?.Invoke(error);
@@ -263,7 +285,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IAsyncDi
             _ = ReconnectAsync();
     }
 
-    /// <summary>Connect again (through the original address: a balancer picks a live gateway) and resume the session.</summary>
+    /// <summary>Connect again (through the entry addresses: the cluster picks a live node) and resume the session.</summary>
     private async Task ReconnectAsync()
     {
         Exception? error = null;
@@ -275,7 +297,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IAsyncDi
             _connection?.Close(); // the previous attempt's, if it connected
             try
             {
-                await ConnectAsync(_host, _port, _followBalancer).ConfigureAwait(false);
+                await ConnectAsync(_entries, _followRedirect).ConfigureAwait(false);
                 await ResumeAsync().ConfigureAwait(false);
                 Volatile.Write(ref _reconnecting, 0);
                 Reconnected?.Invoke();

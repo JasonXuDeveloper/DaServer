@@ -74,7 +74,9 @@ public sealed class HostGenerator : IIncrementalGenerator
             {
                 var builder = global::Microsoft.AspNetCore.Builder.WebApplication.CreateBuilder(args);
                 global::DaServer.Hosting.DaServerHttpExtensions.AddDaServer(builder);
-                await builder.Build().RunAsync();
+                var app = builder.Build();
+                global::DaServer.Hosting.DaServerHttpExtensions.MapDaServer(app);
+                await app.RunAsync();
             }
         }
 

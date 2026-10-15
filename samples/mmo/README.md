@@ -10,7 +10,7 @@ Messages are routed by type: a sender never names a server, so moving `Map` into
 | [Sample.LoginServer](Sample.LoginServer) | `login` | `Account` service (stateless) | `Login` (client) | `Attach` to the player |
 | [Sample.GameServer](Sample.GameServer) | `game` | `Player` actor (id: `PlayerId`), `Realm` actor (one: `RealmId.The`), `RealmBroadcastSystem` | `Attach`; `GetInfo`, `EnterMap` (client); `PlayerOnline`, `PlayerOffline` | `Enter` / `Leave` to maps, `PlayerOnline` / `PlayerOffline` to the realm, `RealmStatus` to every client |
 | [Sample.MapServer](Sample.MapServer) | `map` | `Map` actor (id: `MapId`), movement and area-of-interest systems | `Enter`, `Leave`; `Move`, `Say` (client) | `Motion`, `Gone`, `Chat` to the clients that see the avatar |
-| [Sample.Gateway](Sample.Gateway) | `gateway` x3, `balancer` | nothing: client sockets, session bindings, client groups | | |
+| [Sample.Gateway](Sample.Gateway) | `gateway` x3 | nothing: client sockets, session bindings, client groups, directing clients | | |
 | [Sample.Contracts](Sample.Contracts/Contracts.cs) | (library) | every message, with its `Flow` | | |
 | [Sample.Bot](Sample.Bot) | `bots` | game clients (10,000 by default) | `Motion`, `Gone`, `Chat`, `RealmStatus` | `Login`, `EnterMap`, `Move`, `Say` |
 

@@ -172,6 +172,10 @@ internal static class Addresses<TAddr> where TAddr : struct, IAddress
     }
 }
 
-/// <summary>Where a client should connect: a gateway's public host and client port (answer of a balancer).</summary>
+/// <summary>Where a client should connect: a client-facing node's public host and client port (the directory's answer).</summary>
 [Nino.Core.NinoType]
-public readonly partial record struct GatewayEndpoint(string Host, int Port);
+public readonly partial record struct ClientEndpoint(string Host, int Port)
+{
+    /// <summary>The answer "stay where you are" (the node itself, or nodes behind a load balancer).</summary>
+    public static ClientEndpoint Stay => new("", 0);
+}

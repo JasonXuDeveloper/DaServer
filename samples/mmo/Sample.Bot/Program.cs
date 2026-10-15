@@ -4,11 +4,11 @@ using DaServer.Protocol;
 using DaServer.Rpc;
 using Sample.Contracts;
 
-// End-to-end load test: N bots connect through the balancer address (and are directed to a gateway), log in, enter a
-// map, then move and chat while the realm broadcasts its status to every session every few ticks.
+// End-to-end load test: N bots connect through the gateways' addresses (and are directed to the less loaded gateway),
+// log in, enter a map, then move and chat while the realm broadcasts its status to every session every few ticks.
 //
 // Usage: Sample.Bot [bots=1000] [seconds=30] [maps=bots/100] [moves/s=2] [chat every s=10] [max p99 ms=250] (0 = off)
-// The balancer address comes from DaServer__Gateways__0 (set by the AppHost's WithGateways); default 127.0.0.1:7100.
+// The gateway addresses come from DaServer__Gateways__{i} (set by the AppHost's WithGateways); default 127.0.0.1:7100.
 // Exit code 0 only if every bot came online and, during the measured window, every bot received every realm broadcast
 // in order (no gap), no bot disconnected, and the p99 broadcast latency stayed under the limit.
 
@@ -19,10 +19,10 @@ int maps = arg(2, Math.Max(1, bots / 100));
 int movesPerSecond = arg(3, 2);
 int chatEverySeconds = arg(4, 10);
 int maxP99Ms = arg(5, 250);
-string balancer = Environment.GetEnvironmentVariable("DaServer__Gateways__0") ?? "127.0.0.1:7100";
-int colon = balancer.LastIndexOf(':');
-string host = balancer[..colon];
-int port = int.Parse(balancer[(colon + 1)..]);
+var entries = new List<System.Net.DnsEndPoint>();
+for (int i = 0; Environment.GetEnvironmentVariable($"DaServer__Gateways__{i}") is { } address; i++)
+    entries.Add(new System.Net.DnsEndPoint(address[..address.LastIndexOf(':')], int.Parse(address[(address.LastIndexOf(':') + 1)..])));
+if (entries.Count == 0) entries.Add(new System.Net.DnsEndPoint("127.0.0.1", 7100));
 
 var stats = new Stats();
 var players = new Bot[bots];
@@ -33,7 +33,7 @@ await Parallel.ForAsync(0, bots, new ParallelOptions { MaxDegreeOfParallelism = 
     var bot = players[i] = new Bot(client, stats);
     client.Register(bot);
     client.Disconnected += _ => Interlocked.Increment(ref stats.Disconnects);
-    await Retry(() => client.ConnectAsync(host, port), static e => e is not RpcException);
+    await Retry(() => client.ConnectAsync(entries), static e => e is not RpcException);
     var login = await RetryFor(() => client.Ask(new Login("bot-" + i)), static e => e is RpcException { Status: RpcStatus.NotHosted });
     if (!login.Ok) throw new InvalidOperationException("login failed for bot " + i);
     // The gateway routes this to the player bound at login, and the map binds the session for input.
