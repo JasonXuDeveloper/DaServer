@@ -13,7 +13,7 @@ public static class ClientSystems
         world.AddSystem<SteeringSystem>();
         world.AddSystem<MovementSystem>();
         world.AddSystem<ViewSystem>();
-        world.AddSystem<SpeechSystem>();
+        world.AddSystem<SpeakingSystem>();
     }
 }
 
@@ -44,7 +44,7 @@ public sealed partial class SteeringSystem : EcsSystem
 }
 
 /// <summary>Says what the player wants to say, once.</summary>
-public sealed partial class SpeechSystem : EcsSystem
+public sealed partial class SpeakingSystem : EcsSystem
 {
     [ForEach]
     private static void Say(Entity player, in Link link, in Speaking speaking)

@@ -43,7 +43,7 @@ await using var swarm = new Swarm(new SwarmOptions
         world.AddSingleton<HtnDomain>() = domain;
         world.AddSingleton<BotMeters>() = BotMeters.Of(meter);
         ClientSystems.AddTo(world);
-        Behavior.AddSystems(world);
+        Behavior.AddTo(world);
         world.AddSystem<MeasureSystem>();
     },
 });
