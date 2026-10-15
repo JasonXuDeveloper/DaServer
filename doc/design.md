@@ -247,6 +247,27 @@ servers: `client.Ask(new Login(..))`, `client.Ask(new GetInfo())` (session actor
 binding), `client.Send(roomId, new Say(..))` (actors that granted the session). Push handlers are `[Handle]` methods of any class,
 registered with `client.Register(obj)`; they run on the IO thread or, for game loops and UIs, on the application's thread through `ProcessCallbacks`.
 
+### Simulated users
+
+`DaServer.Simulation` (ADR-056) runs a backend's real client logic as thousands of users, for end-to-end and load
+tests of any domain. A `Swarm` spreads users over one `ClientLoop` per core: a client world on its own thread (its
+`SynchronizationContext`, so flows awaited there resume there), arrivals handled every pass, systems at the servers'
+tick rate. A user is an entity; what it does is planned as data: sensor systems write `Facts` (a bit set), the
+`HtnDomain` singleton holds tasks, methods and steps as tables with bit-mask conditions and effects, and
+`PlannerSystem` decomposes the root task on a copy of the facts (method order, effects, backtracking) into a `Plan`
+of task ids. A primitive task is a component: added to start it, removed by the system that carries it out. The
+swarm's `Meter` (latency histogram, counters) is a singleton of every world; the scenario judges the window.
+
+```mermaid
+flowchart LR
+    S[sensor systems] -->|Facts bits| P[PlannerSystem]
+    D[(HtnDomain tables)] --> P
+    P -->|adds task component| T[task systems]
+    T -->|client data: steering, speech, flows| C[client systems]
+    T -->|remove when done| P
+    C <-->|messages| N[cluster]
+```
+
 ### Features
 
 A capability a node runs besides its actors and services (client connections, an HTTP edge) is a `NodeFeature` in

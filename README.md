@@ -220,7 +220,10 @@ a periodic stats line, graceful shutdown). Write one to customize the host.
 
 Packages (ADR-052): contract projects reference `DaServer.Abstractions`; clients (Unity through netstandard2.1, bots,
 tools) reference `DaServer.Client`; node projects reference `DaServer.Hosting` (server runtime `DaServer`). The wire
-and transport both sides share are `DaServer.Core`. The generator ships with Abstractions.
+and transport both sides share are `DaServer.Core`. The generator ships with Abstractions. `DaServer.Simulation`
+(client side, ADR-056) runs thousands of simulated users against a cluster for end-to-end and load tests: client
+worlds on their own threads, behavior as HTN planning over ECS data, swarms that measure and judge
+([samples/mmo](samples/mmo#bots) drives its real game client with it).
 
 ## Orchestration with Aspire
 
@@ -234,7 +237,7 @@ cluster.AddNodes<Projects.Sample_GameServer>("game");                       // P
 cluster.AddNodes<Projects.Sample_MapServer>("map");                         // Map actors, movement/AOI systems
 var gateways = cluster.AddNodes<Projects.Sample_Gateway>("gateway", replicas: 3).WithClients(); // clients, no business code
 
-builder.AddProject<Projects.Sample_Bot>("bots").WithClientEndpoints(gateways).WithArgs("10000", "60", "1", "1", "0");
+builder.AddProject<Projects.Sample_Bot>("bots").WithClientEndpoints(gateways).WithArgs("10000", "60", "1", "1", "0"); // simulated players
 builder.Build().Run();
 ```
 

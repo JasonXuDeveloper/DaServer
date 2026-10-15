@@ -9,7 +9,7 @@ Keep this file current: tick items when done, add items when scope changes.
    H1 comes with N3b, H4 with N8.
 2. G0-G2 (done, below): one message model (ADR-047), feature points and ingress, client connections as a
    built-in feature, Abstractions and Client packages (ADR-048).
-3. T2 ECS bots and business isolation: shared rules, a real client, bots that run it (in progress).
+3. T2 ECS bots and business isolation (done): shared rules, a real client, simulated users that run it.
 4. N2 `SendAfter` (the delayed send primitive, per-shard timer wheel), N3 call cycles fail fast (`Chain` header
    extension), N3b no sync-over-async (incl. the await-only `Reply<T>`, which also fixes H1).
 5. N8 Nino ref deserialization (H4).
@@ -362,17 +362,12 @@ stateful, maps being heavy actors.
 Patterns only, never business code. Each item: tests, BenchmarkDotNet where a hot path changes, an ADR, logic and docs
 in separate commits.
 
-- [ ] T2 ECS bots (agreed): `Sample.Bot` and the E2E/benchmarks drive bots as entities on a client world: components
-      for input and stats, `[ForEach]` systems on a tick for behaviour, `[Handle]` for pushes, systems shared with the
-      server where the logic is the same (dead reckoning); no imperative loops.
-      Business isolation: Contracts (messages, id types: everyone) / Shared (pure rules and ECS systems over plain
-      components: server, real client and bots; may not reference DaServer.Runtime or server projects, enforced by an
-      analyzer rule) / Server (authority, storage, other players' data: never visible to bots). Bots talk to the
-      cluster only through gateways with `FromClient` messages, like players; unit tests exercise Shared systems
-      without a cluster; benchmarks load a real cluster with the same bots.
-- [ ] Sample bot scenarios beyond moving and chatting (change map, reconnect, log out and in): phases as components
-      on the player entity, one system per phase and a selection system on an `UpdateInterval` (ET's priority-ordered
-      AI handlers expressed as data: no coroutine per bot, no reflection registry).
+- [x] T2 ECS bots and business isolation (ADR-055, ADR-056): `Sample.Shared` (rules both sides run; DAS010 keeps the
+      server and the transport out), `Sample.Client` (the game client as ECS data and systems), `Sample.Bot` (that
+      client as a `DaServer.Simulation` swarm with an HTN behavior: change maps, chat, wander), `Sample.Tests`; the
+      e2e test changes maps every 5 s. `DaServer.Simulation`: `ClientLoop`, HTN planning as ECS data, `Swarm`/`Meter`.
+- [ ] Optional sample: server-side NPCs (patrol, chase, flee) planned with the same HTN model in a map server, to
+      show heavy AI batched on shards without allocation.
 - [ ] N1 Fixed/reloadable split on top of stateless handler types (DAS007, ADR-044): projects Contracts (messages) +
       Model (components, singletons: never reloaded) + Logic (actors, services, systems: reloadable), samples
       included. Prerequisite of N5 and N9. (RandomGame, ET)
