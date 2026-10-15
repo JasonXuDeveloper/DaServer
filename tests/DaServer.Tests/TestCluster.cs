@@ -93,10 +93,10 @@ public abstract class ClusterTest
 
     /// <summary>Node owning the <typeparamref name="TActor"/> of <paramref name="key"/> in <paramref name="node"/>'s view.</summary>
     protected static ulong OwnerOf<TActor>(Node node, long key) where TActor : Actor =>
-        node.View.ImplementationOwner(ImplementationId<TActor>(), key)!.NodeId;
+        node.View.HandlerTypeOwner(HandlerTypeId<TActor>(), key)!.NodeId;
 
     /// <summary>Placement identity of an actor or service type (FNV-1a of its full name).</summary>
-    protected static uint ImplementationId<T>() => RpcIds.Fnv1a(typeof(T).FullName!);
+    protected static uint HandlerTypeId<T>() => RpcIds.Fnv1a(typeof(T).FullName!);
 
     /// <summary>Polls a condition that depends on asynchronous delivery (membership, pushes to other sockets).</summary>
     protected static async Task Eventually(Func<bool> condition, string message, int timeoutMs = 10_000)

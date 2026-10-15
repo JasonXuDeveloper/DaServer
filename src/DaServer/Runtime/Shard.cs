@@ -60,7 +60,7 @@ public sealed class Shard
     /// <summary>Requests dropped unrun because their caller had already timed out (the call carried a deadline).</summary>
     public long Expired => Interlocked.Read(ref _expired);
 
-    /// <summary>Active actor activations (approximate, any thread).</summary>
+    /// <summary>Active loaded actors (approximate, any thread).</summary>
     public int ActorCount => Volatile.Read(ref _actorCount);
 
     /// <summary>Completes when the shard thread has exited.</summary>
@@ -105,16 +105,16 @@ public sealed class Shard
     /// <summary>Run <paramref name="callback"/> on this shard's thread (thread-safe, allocation-free).</summary>
     public void Post(Action<object?> callback, object? state) => Post(new WorkItem(WorkKind.Callback, callback, state));
 
-    /// <summary>Thread-safe: ownership may have changed; actors this node no longer owns are deactivated.</summary>
+    /// <summary>Thread-safe: ownership may have changed; actors this node no longer owns are unloaded.</summary>
     internal void RequestRebalance() =>
         Post(static s => ((Shard)s!).World.GetSingleton<ShardActivity>().Rebalance = true, this);
 
-    /// <summary>Thread-safe: deactivate every current activation (this node was declared Dead; its keys moved).</summary>
-    internal void RequestRetireAll() =>
+    /// <summary>Thread-safe: unload every current loaded actor (this node was declared Dead; its keys moved).</summary>
+    internal void RequestUnloadAll() =>
         Post(static s =>
         {
             ref var activity = ref ((Shard)s!).World.GetSingleton<ShardActivity>();
-            activity.RetireAll = activity.Rebalance = true;
+            activity.DeclaredDead = activity.Rebalance = true;
         }, this);
 
     internal void RequestStop()
@@ -156,7 +156,7 @@ public sealed class Shard
                     {
                         activity.Rebalance = false;
                         World.Update<ShardRebalance>();
-                        activity.RetireAll = false;
+                        activity.DeclaredDead = false;
                     }
 
                     if (Environment.TickCount64 >= nextIdleScan)
@@ -211,7 +211,7 @@ public sealed class Shard
         World.AddSingleton<TurnWatchers>() = new TurnWatchers(new Stack<TurnWatcher>());
 
         var services = new Dictionary<uint, object>();
-        foreach (var impl in Node.HostedImplementations)
+        foreach (var impl in Node.HostedHandlerTypes)
         {
             if (impl.IsActor) continue;
             var instance = impl.Factory();
@@ -225,14 +225,14 @@ public sealed class Shard
         World.AddSystem<TurnSystem>();
         World.AddSystem<MailboxSystem>();
         World.AddSystem<ServiceCallSystem>();
-        World.AddSystem<RetireSystem>();
+        World.AddSystem<RemovalSystem>();
         World.AddSystem<RebalanceSystem>();
         World.AddSystem<IdleSystem>();
         World.AddSystem<UnloadSystem>();
         foreach (var info in Node.HostedSystems) World.AddSystem(info.Factory());
     }
 
-    /// <summary>Stopping: every actor retired, no service call running, nothing left in the inbox.</summary>
+    /// <summary>Stopping: every actor removed, no service call running, nothing left in the inbox.</summary>
     private bool IsDrained() =>
         World.GetSingleton<ActorDirectory>().Actors.Count == 0 &&
         !World.Any<ServiceCall>() &&

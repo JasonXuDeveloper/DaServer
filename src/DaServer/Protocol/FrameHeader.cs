@@ -5,7 +5,7 @@ public enum FrameKind : byte
 {
     /// <summary>
     /// Message expecting a <see cref="Response"/> with the same request id (<c>Ask</c>): message id, key; the handling
-    /// implementation is the receiver's one for (message, <see cref="FrameFlags.ToActor"/>).
+    /// handler type is the receiver's one for (message, <see cref="FrameFlags.ToActor"/>).
     /// </summary>
     Request = 1,
 
@@ -25,8 +25,8 @@ public enum FrameKind : byte
     Control = 6,
 
     /// <summary>
-    /// One-way message for one handling implementation (<c>Send</c>, <c>Publish</c>): message id, request id = target
-    /// implementation id (one-way, so the correlation field is free), key = actor key (0 for services).
+    /// One-way message for one handler type (<c>Send</c>, <c>Publish</c>): message id, request id = target
+    /// handler type id (one-way, so the correlation field is free), key = actor key (0 for services).
     /// </summary>
     Message = 9,
 }
@@ -66,7 +66,7 @@ public enum RpcStatus : byte
 /// 5  byte   Status     RpcStatus for responses; for requests the caller's time budget (see EncodeBudget), otherwise 0
 /// 6  byte   Hops       forwarding count (loop guard)
 /// 7  byte   Flags      reserved
-/// 8  uint32 RequestId  correlation id (0 for one-way / push; target implementation id for Event)
+/// 8  uint32 RequestId  correlation id (0 for one-way / push; target handler type id for Event)
 /// 12 uint32 MessageId   globally unique method id (see RpcIds), event id or control op
 /// 16 int64  Key        actor key / session id / group id
 /// </code>

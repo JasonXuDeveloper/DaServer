@@ -12,7 +12,7 @@ public interface ICluster : IMessageSender
 
     /// <summary>
     /// Publish an event (a <c>[NinoType]</c> struct) to every service handling it (<see cref="HandleAttribute">[Handle]</see>):
-    /// serialized once, one frame per handling implementation. The publisher never depends on its handlers.
+    /// serialized once, one frame per handler type. The publisher never depends on its handlers.
     /// </summary>
     void Publish<TEvent>(in TEvent e) where TEvent : struct;
 

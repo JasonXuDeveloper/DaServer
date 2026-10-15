@@ -82,11 +82,11 @@ public class GeneratorTests
             public sealed class Screen { [Handle] public void On(Shown _) { } }
             """);
         Assert.That(diagnostics, Is.Empty);
-        string registration = sources.Single(s => s.Contains("RegisterImplementation"));
+        string registration = sources.Single(s => s.Contains("RegisterHandlerType"));
         Assert.That(registration, Does.Contain("typeof(global::Game.Room), true").And.Contain("typeof(global::Game.Shop), false"));
         Assert.That(registration, Does.Contain("context.ReplyValue(Unsafe.As<global::Game.Shop>(target).On(m))"), "a reply returned synchronously");
         Assert.That(registration, Does.Contain("return context.Reply(Unsafe.As<global::Game.Hero>(target).On(m))"), "a reply returned later");
-        Assert.That(registration, Does.Contain("MessageRegistry.RegisterHandlers(typeof(global::Game.Screen)"), "client handler type");
+        Assert.That(registration, Does.Contain("MessageRegistry.RegisterHandlers(typeof(global::Game.Screen)"), "client handlerType");
         Assert.That(sources, Has.Some.Contains("Ask(this global::DaServer.Rpc.IMessageSender sender, long key, in global::Game.Heal request)"));
         Assert.That(sources, Has.Some.Contains("sender.Ask<global::Game.Topic, string?>(in request)"));
         Assert.That(sources, Has.Some.Contains("RegisterClientMessage<global::Game.Move>(anyKey: false)")

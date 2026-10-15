@@ -13,8 +13,8 @@ public sealed partial class Node : ICluster, IAsyncDisposable
     private PeerLink[] _linkList = [];
     private readonly ConcurrentDictionary<ulong, PeerLink> _introduced = new(); // node id -> link, from Hellos
     private Shard[] _shards = [];
-    private FrozenDictionary<ulong, ImplementationInfo?> _requestHandlers = FrozenDictionary<ulong, ImplementationInfo?>.Empty;
-    private FrozenDictionary<uint, ImplementationInfo> _implementationById = FrozenDictionary<uint, ImplementationInfo>.Empty;
+    private FrozenDictionary<ulong, HandlerTypeInfo?> _requestHandlers = FrozenDictionary<ulong, HandlerTypeInfo?>.Empty;
+    private FrozenDictionary<uint, HandlerTypeInfo> _handlerTypeById = FrozenDictionary<uint, HandlerTypeInfo>.Empty;
     private Listener? _clusterListener;
     private Timer? _maintenance;
     private int _started;
@@ -48,11 +48,11 @@ public sealed partial class Node : ICluster, IAsyncDisposable
 
     internal PendingCallTable Pending { get; }
     internal Membership Membership { get; }
-    internal ImplementationInfo[] HostedImplementations { get; private set; } = [];
+    internal HandlerTypeInfo[] HostedHandlerTypes { get; private set; } = [];
     internal SystemInfo[] HostedSystems { get; private set; } = [];
 
-    /// <summary>This node owns the actor <paramref name="key"/> of <paramref name="implementationId"/> in the current view.</summary>
-    internal bool IsLocalOwner(uint implementationId, long key) => View.ImplementationOwner(implementationId, key)?.NodeId == Id;
+    /// <summary>This node owns the actor <paramref name="key"/> of <paramref name="handlerTypeId"/> in the current view.</summary>
+    internal bool IsLocalOwner(uint handlerTypeId, long key) => View.HandlerTypeOwner(handlerTypeId, key)?.NodeId == Id;
 
     /// <summary>Start shards, listeners and membership. The node is Up when this returns.</summary>
     public Task StartAsync(CancellationToken cancellationToken = default)
@@ -82,8 +82,8 @@ public sealed partial class Node : ICluster, IAsyncDisposable
         _maintenance = new Timer(static s => ((Node)s!).Maintain(), this, 100, 100);
         Logger.LogInformation("Node {Name} ({Id:x}) up on {Endpoint}, {Shards} shards; actors: {Actors}; services: {Services}; systems: {Systems}",
             Options.Name, Id, ClusterEndPoint, shardCount,
-            Names(HostedImplementations.Where(static i => i.IsActor).Select(static i => i.Type.Name)),
-            Names(HostedImplementations.Where(static i => !i.IsActor).Select(static i => i.Type.Name)),
+            Names(HostedHandlerTypes.Where(static i => i.IsActor).Select(static i => i.Type.Name)),
+            Names(HostedHandlerTypes.Where(static i => !i.IsActor).Select(static i => i.Type.Name)),
             Names(HostedSystems.Select(static s => s.Type.Name)));
         return Task.CompletedTask;
     }
@@ -93,7 +93,7 @@ public sealed partial class Node : ICluster, IAsyncDisposable
 
     /// <summary>
     /// Graceful shutdown: announce Leaving (so callers stop routing here), drain shards (in-flight calls, actor
-    /// deactivation), then close links.
+    /// unload), then close links.
     /// </summary>
     public async Task StopAsync()
     {
@@ -120,7 +120,7 @@ public sealed partial class Node : ICluster, IAsyncDisposable
 
     /// <summary>
     /// Tests: simulate a process crash. Gossip stops and every socket drops without announcing Leaving, closing client
-    /// sessions or deactivating actors: the cluster finds out by failure detection only.
+    /// sessions or unloading actors: the cluster finds out by failure detection only.
     /// </summary>
     internal async Task KillAsync()
     {
@@ -146,16 +146,16 @@ public sealed partial class Node : ICluster, IAsyncDisposable
         foreach (var link in _links.Values) link.Dispose();
     }
 
-    /// <summary>Hosted implementation with placement/routing id <paramref name="implementationId"/>, or null.</summary>
-    internal ImplementationInfo? ImplementationById(uint implementationId) =>
-        _implementationById.TryGetValue(implementationId, out var impl) ? impl : null;
+    /// <summary>Hosted handler type with placement/routing id <paramref name="handlerTypeId"/>, or null.</summary>
+    internal HandlerTypeInfo? HandlerTypeById(uint handlerTypeId) =>
+        _handlerTypeById.TryGetValue(handlerTypeId, out var impl) ? impl : null;
 
     /// <summary>
-    /// The hosted implementation answering requests of <paramref name="messageId"/> sent to an actor or a service
-    /// (requests carry the message id, not the implementation: their RequestId field is the call's), or null when none
+    /// The hosted handler type answering requests of <paramref name="messageId"/> sent to an actor or a service
+    /// (requests carry the message id, not the handler type: their RequestId field is the call's), or null when none
     /// or several of that kind handle it (an event: published to all of them, never asked).
     /// </summary>
-    internal ImplementationInfo? RequestHandler(uint messageId, bool actor) =>
+    internal HandlerTypeInfo? RequestHandler(uint messageId, bool actor) =>
         _requestHandlers.TryGetValue(RequestKey(messageId, actor), out var impl) ? impl : null;
 
     private static ulong RequestKey(uint messageId, bool actor) => (ulong)messageId << 1 | (actor ? 1UL : 0UL);
@@ -164,10 +164,10 @@ public sealed partial class Node : ICluster, IAsyncDisposable
     private void ResolveHosting()
     {
         var hosts = Options.Hosts;
-        var byId = new Dictionary<uint, ImplementationInfo>();
-        var requests = new Dictionary<ulong, ImplementationInfo?>();
-        var hosted = new List<ImplementationInfo>();
-        foreach (var impl in ServerRegistry.Implementations)
+        var byId = new Dictionary<uint, HandlerTypeInfo>();
+        var requests = new Dictionary<ulong, HandlerTypeInfo?>();
+        var hosted = new List<HandlerTypeInfo>();
+        foreach (var impl in ServerRegistry.HandlerTypes)
         {
             if (hosts != null && !hosts(impl.Type)) continue;
             hosted.Add(impl);
@@ -184,23 +184,23 @@ public sealed partial class Node : ICluster, IAsyncDisposable
             if (hosts == null || hosts(system.Type))
                 systems.Add(system);
 
-        HostedImplementations = hosted.ToArray();
+        HostedHandlerTypes = hosted.ToArray();
         HostedSystems = systems.ToArray();
         _requestHandlers = requests.ToFrozenDictionary();
-        _implementationById = byId.ToFrozenDictionary();
+        _handlerTypeById = byId.ToFrozenDictionary();
     }
 
-    /// <summary>What this node advertises in membership: the messages its implementations handle.</summary>
+    /// <summary>What this node advertises in membership: the messages its handler types handle.</summary>
     internal HostedHandler[] AdvertisedHandlers()
     {
         var handlers = new List<HostedHandler>();
-        foreach (var impl in HostedImplementations)
+        foreach (var impl in HostedHandlerTypes)
         foreach (var handler in impl.Handlers.All)
-            handlers.Add(new HostedHandler { MessageId = handler.MessageId, ImplementationId = impl.Id, Actor = impl.IsActor });
+            handlers.Add(new HostedHandler { MessageId = handler.MessageId, HandlerTypeId = impl.Id, Actor = impl.IsActor });
         return handlers.ToArray();
     }
 
-    /// <summary>Active actor activations across all shards (approximate, for metrics).</summary>
+    /// <summary>Active loaded actors across all shards (approximate, for metrics).</summary>
     public int ActorCount => (int)Sum(static s => s.ActorCount);
 
     /// <summary>Messages waiting in all shard mailboxes (approximate, for metrics and load reporting).</summary>

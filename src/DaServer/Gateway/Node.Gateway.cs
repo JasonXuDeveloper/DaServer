@@ -62,12 +62,12 @@ public sealed partial class Node
     /// Bind (or unbind) a session to an actor (<see cref="Actor.BindSession"/>): completes once the session's gateway
     /// applied it, so the client's next message already reaches the actor.
     /// </summary>
-    internal ValueTask BindSession(SessionRef session, uint implementationId, long key, bool bind)
+    internal ValueTask BindSession(SessionRef session, uint handlerTypeId, long key, bool bind)
     {
         uint op = bind ? ControlOp.Bind : ControlOp.Unbind;
         if (session.GatewayNodeId == Id)
         {
-            var w = SessionControl(op, 0, session.SessionId, implementationId, key);
+            var w = SessionControl(op, 0, session.SessionId, handlerTypeId, key);
             var status = OnSessionControl(op, session.SessionId, w.Payload);
             w.Dispose();
             return status == RpcStatus.Ok ? default : ValueTask.FromException(new RpcException(status, "Session is gone"));
@@ -78,7 +78,7 @@ public sealed partial class Node
         var call = PendingCall<NoReply>.Rent(Shard.Current);
         var task = call.Done;
         uint requestId = Pending.Register(call, (int)Options.CallTimeout.TotalMilliseconds, link);
-        var frame = SessionControl(op, requestId, session.SessionId, implementationId, key);
+        var frame = SessionControl(op, requestId, session.SessionId, handlerTypeId, key);
         link.Send(frame.Frame);
         frame.Dispose();
         return task;
@@ -273,7 +273,7 @@ public sealed partial class Node
     private void ReportClosed(SessionRef session, SessionBinding[] bindings)
     {
         foreach (var binding in bindings)
-            SendTo(binding.ImplementationId, binding.Key, new SessionClosed(session));
+            SendTo(binding.HandlerTypeId, binding.Key, new SessionClosed(session));
     }
 
     /// <summary>How long a lost client may take to resume: <see cref="NodeOptions.ReconnectGrace"/> when tickets exist.</summary>
@@ -315,8 +315,8 @@ public sealed partial class Node
             var binding = ReconnectTicket.BindingAt(bindings, i);
             lock (_groupGate)
             {
-                session.Bind(binding.ImplementationId, binding.Key);
-                Join(session, ClientGroup.Of(binding.ImplementationId, binding.Key).Id);
+                session.Bind(binding.HandlerTypeId, binding.Key);
+                Join(session, ClientGroup.Of(binding.HandlerTypeId, binding.Key).Id);
             }
         }
 
@@ -324,7 +324,7 @@ public sealed partial class Node
         for (int i = 0; i < count; i++)
         {
             var binding = ReconnectTicket.BindingAt(bindings, i);
-            SendTo(binding.ImplementationId, binding.Key, new SessionResync(current, previous));
+            SendTo(binding.HandlerTypeId, binding.Key, new SessionResync(current, previous));
         }
 
         IssueTicket(session);
@@ -436,7 +436,7 @@ public sealed partial class Node
             return;
         }
 
-        long key = !actor ? 0 : message.AnyKey ? header.Key : session.KeyOf(route.ImplementationId);
+        long key = !actor ? 0 : message.AnyKey ? header.Key : session.KeyOf(route.HandlerTypeId);
         if (actor && key == 0 && !message.AnyKey)
         {
             if (replyId != 0) session.Sink.SendError(replyId, RpcStatus.Forbidden, "Session not bound to a handler of " + message.Type.Name);
@@ -458,8 +458,8 @@ public sealed partial class Node
     }
 }
 
-/// <summary>Actor key a session is bound to for one actor implementation.</summary>
-internal readonly record struct SessionBinding(uint ImplementationId, long Key);
+/// <summary>Actor key a session is bound to for one actor handler type.</summary>
+internal readonly record struct SessionBinding(uint HandlerTypeId, long Key);
 
 /// <summary>A connected client on this gateway.</summary>
 internal sealed class Session(long id, Connection connection)
@@ -471,7 +471,7 @@ internal sealed class Session(long id, Connection connection)
     private volatile SessionBinding[] _bindings = [];
 
     /// <summary>
-    /// Actor keys bound by actors, one per implementation (<c>BindSession</c>): an immutable snapshot, read lock-free.
+    /// Actor keys bound by actors, one per handler type (<c>BindSession</c>): an immutable snapshot, read lock-free.
     /// </summary>
     public SessionBinding[] Bindings => _bindings;
 
@@ -484,28 +484,28 @@ internal sealed class Session(long id, Connection connection)
     /// <summary>Closed on purpose (client goodbye, <c>Disconnect</c>): its actors learn it at once, no reconnect grace.</summary>
     public volatile bool Explicit;
 
-    /// <summary>Key bound for <paramref name="implementationId"/>, 0 when unbound. Lock-free (client message path).</summary>
-    public long KeyOf(uint implementationId)
+    /// <summary>Key bound for <paramref name="handlerTypeId"/>, 0 when unbound. Lock-free (client message path).</summary>
+    public long KeyOf(uint handlerTypeId)
     {
         var bindings = _bindings;
         for (int i = 0; i < bindings.Length; i++)
-            if (bindings[i].ImplementationId == implementationId) return bindings[i].Key;
+            if (bindings[i].HandlerTypeId == handlerTypeId) return bindings[i].Key;
         return 0;
     }
 
     /// <summary>
-    /// Bind <paramref name="implementationId"/> to <paramref name="key"/> (0 unbinds) and return the previous key.
+    /// Bind <paramref name="handlerTypeId"/> to <paramref name="key"/> (0 unbinds) and return the previous key.
     /// Callers hold the gateway's group gate; the copy is published to lock-free readers by the volatile write.
     /// </summary>
-    public long Bind(uint implementationId, long key)
+    public long Bind(uint handlerTypeId, long key)
     {
         var items = _bindings;
         int i = 0;
-        while (i < items.Length && items[i].ImplementationId != implementationId) i++;
+        while (i < items.Length && items[i].HandlerTypeId != handlerTypeId) i++;
         long previous = i < items.Length ? items[i].Key : 0;
         if (i == items.Length)
         {
-            if (key != 0) _bindings = [.. items, new SessionBinding(implementationId, key)];
+            if (key != 0) _bindings = [.. items, new SessionBinding(handlerTypeId, key)];
         }
         else if (key == 0)
         {
@@ -514,7 +514,7 @@ internal sealed class Session(long id, Connection connection)
         else
         {
             var next = (SessionBinding[])items.Clone();
-            next[i] = new SessionBinding(implementationId, key);
+            next[i] = new SessionBinding(handlerTypeId, key);
             _bindings = next;
         }
 

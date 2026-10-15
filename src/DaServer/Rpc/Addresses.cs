@@ -24,7 +24,7 @@ public readonly partial record struct ClientGroup(long Id)
     public static readonly ClientGroup All = new(0);
 
     /// <summary>
-    /// The group of <paramref name="key"/> within <paramref name="scope"/> (e.g. an actor implementation id): a 64-bit
+    /// The group of <paramref name="key"/> within <paramref name="scope"/> (e.g. an actor handler type id): a 64-bit
     /// mix of both, never <see cref="All"/>.
     /// </summary>
     public static ClientGroup Of(uint scope, long key)

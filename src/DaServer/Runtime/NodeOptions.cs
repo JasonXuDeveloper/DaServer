@@ -7,7 +7,7 @@ public sealed class NodeOptions
     public string Name { get; set; } = Environment.MachineName;
 
     /// <summary>
-    /// Which registered implementations and systems this node hosts; null (default) = everything compiled into the
+    /// Which registered handler types and systems this node hosts; null (default) = everything compiled into the
     /// process, so the deployment unit is the project. Set it only to run several kinds of nodes in one process
     /// (in-process tests, embedding).
     /// </summary>

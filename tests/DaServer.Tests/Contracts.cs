@@ -165,7 +165,7 @@ public sealed class EchoService : Service
     [Handle] public void On(Ping e) => Observed.Events.Enqueue($"echo:{e.Id}:{Cluster.NodeId:x}");
 }
 
-/// <summary>A second service handling Ping: every handling implementation receives each event once.</summary>
+/// <summary>A second service handling Ping: every handler type receives each event once.</summary>
 public sealed class AuditService : Service
 {
     [Handle] public void On(Ping e) => Observed.Events.Enqueue($"audit:{e.Id}");

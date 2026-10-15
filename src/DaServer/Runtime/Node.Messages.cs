@@ -1,8 +1,8 @@
 namespace DaServer.Runtime;
 
-// Outgoing messages. A message type is routed by its id to the implementations handling it (gossiped handlers in the
-// ClusterView): Send/Publish as one Message frame per handling implementation (RequestId = implementation id), Ask as
-// a Request frame (RequestId = call id; the receiver resolves its implementation by message id and kind).
+// Outgoing messages. A message type is routed by its id to the handler types handling it (gossiped handlers in the
+// ClusterView): Send/Publish as one Message frame per handler type (RequestId = handler type id), Ask as
+// a Request frame (RequestId = call id; the receiver resolves its handler type by message id and kind).
 public sealed partial class Node
 {
     public void Send<T>(long key, in T message) where T : struct =>
@@ -29,7 +29,7 @@ public sealed partial class Node
 
     public void Publish<TEvent>(long key, in TEvent e) where TEvent : struct => Publish(in e, key, actors: true);
 
-    /// <summary>To every implementation handling the event: services, and actor handlers of <paramref name="key"/>.</summary>
+    /// <summary>To every handler type handling the event: services, and actor handlers of <paramref name="key"/>.</summary>
     private void Publish<TEvent>(in TEvent e, long key, bool actors) where TEvent : struct
     {
         var routes = View.Routes(MessageType<TEvent>.Id);
@@ -48,7 +48,7 @@ public sealed partial class Node
     }
 
     /// <summary>
-    /// One-way message to the one implementation of the kind handling <paramref name="messageId"/> (dropped when none
+    /// One-way message to the one handler type of the kind handling <paramref name="messageId"/> (dropped when none
     /// does: one-way delivery is at most once). Takes ownership of <paramref name="w"/>.
     /// </summary>
     internal void SendMessage(FrameWriter w, uint messageId, long key, bool actor, byte flags = 0)
@@ -66,13 +66,13 @@ public sealed partial class Node
         }
     }
 
-    /// <summary>Deliver <paramref name="e"/> only to implementation <paramref name="implementationId"/> (runtime notifications).</summary>
-    internal void SendTo<TEvent>(uint implementationId, long key, in TEvent e) where TEvent : struct
+    /// <summary>Deliver <paramref name="e"/> only to handler type <paramref name="handlerTypeId"/> (runtime notifications).</summary>
+    internal void SendTo<TEvent>(uint handlerTypeId, long key, in TEvent e) where TEvent : struct
     {
         var routes = View.Routes(MessageType<TEvent>.Id);
         for (int i = 0; i < routes.Length; i++)
         {
-            if (routes[i].ImplementationId != implementationId) continue;
+            if (routes[i].HandlerTypeId != handlerTypeId) continue;
             var w = MessageWriter.Write(in e);
             SendTo(in routes[i], MessageType<TEvent>.Id, key, w, hops: 0, flags: 0);
             w.Dispose();
@@ -85,17 +85,17 @@ public sealed partial class Node
     {
         var target = View.Target(in route, key, Id, (uint)Interlocked.Increment(ref _roundRobin));
         if (target == null) return;
-        w.SetHeader(FrameKind.Message, route.ImplementationId, messageId, key, flags: flags, hops: hops);
+        w.SetHeader(FrameKind.Message, route.HandlerTypeId, messageId, key, flags: flags, hops: hops);
         if (target.NodeId == Id)
-            Admit(SelectShard(route.ImplementationId, route.Actor, key), FrameWriter.CopyOf(w.Frame), null);
+            Admit(SelectShard(route.HandlerTypeId, route.Actor, key), FrameWriter.CopyOf(w.Frame), null);
         else
             GetLink(target).Send(w.Frame);
     }
 
-    /// <summary>Message frame from another node: to the shard of its implementation, or on to the right node.</summary>
+    /// <summary>Message frame from another node: to the shard of its handler type, or on to the right node.</summary>
     private void OnInboundMessage(in FrameHeader header, ReadOnlySpan<byte> frame)
     {
-        var impl = ImplementationById(header.RequestId);
+        var impl = HandlerTypeById(header.RequestId);
         if (impl == null)
         {
             ForwardMessage(FrameWriter.CopyOf(frame));
@@ -118,7 +118,7 @@ public sealed partial class Node
             var routes = View.Routes(header.MessageId);
             for (int i = 0; i < routes.Length; i++)
             {
-                if (routes[i].ImplementationId != header.RequestId) continue;
+                if (routes[i].HandlerTypeId != header.RequestId) continue;
                 SendTo(in routes[i], header.MessageId, header.Key, frame, (byte)(header.Hops + 1), header.Flags);
                 return;
             }

@@ -20,7 +20,7 @@ public static class NodeMetrics
         Meter.CreateObservableGauge("daserver.shard.queue_length", () => Sample(static n => n.TotalQueueLength()),
             description: "Messages waiting in shard mailboxes");
         Meter.CreateObservableGauge("daserver.actors", () => Sample(static n => n.ActorCount),
-            description: "Active actor activations");
+            description: "Active loaded actors");
         Meter.CreateObservableGauge("daserver.gateway.sessions", () => Sample(static n => n.SessionCount),
             description: "Connected client sessions");
         Meter.CreateObservableCounter("daserver.shard.rejected", () => Sample(static n => n.Rejected),

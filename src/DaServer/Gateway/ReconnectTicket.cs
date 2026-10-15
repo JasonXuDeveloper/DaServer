@@ -9,7 +9,7 @@ namespace DaServer.Runtime;
 /// </summary>
 /// <remarks>
 /// Layout (little endian): issued and expires (Unix milliseconds), gateway node id, session id, binding count,
-/// bindings (implementation id, key), HMAC-SHA256 of everything before it.
+/// bindings (handler type id, key), HMAC-SHA256 of everything before it.
 /// </remarks>
 internal static class ReconnectTicket
 {
@@ -34,7 +34,7 @@ internal static class ReconnectTicket
         int offset = HeaderSize;
         foreach (var binding in bindings)
         {
-            BinaryPrimitives.WriteUInt32LittleEndian(destination[offset..], binding.ImplementationId);
+            BinaryPrimitives.WriteUInt32LittleEndian(destination[offset..], binding.HandlerTypeId);
             BinaryPrimitives.WriteInt64LittleEndian(destination[(offset + 4)..], binding.Key);
             offset += BindingSize;
         }

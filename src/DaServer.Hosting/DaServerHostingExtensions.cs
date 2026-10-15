@@ -56,7 +56,7 @@ public static class DaServerHostingExtensions
     }
 }
 
-/// <summary>Starts the node with the host and stops it gracefully (Leaving → drain → deactivate) on shutdown.</summary>
+/// <summary>Starts the node with the host and stops it gracefully (Leaving → drain → unload) on shutdown.</summary>
 internal sealed class NodeHostedService(Node node) : IHostedService
 {
     public Task StartAsync(CancellationToken cancellationToken)

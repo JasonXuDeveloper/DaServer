@@ -97,7 +97,7 @@ public sealed class HostGenerator : IIncrementalGenerator
     {
         var sb = new StringBuilder(Header);
         sb.Append("using System.Runtime.CompilerServices;\nusing DaServer.Rpc;\nusing DaServer.Runtime;\n\nnamespace DaServer.Generated;\n\n");
-        sb.Append("/// <summary>Registers this assembly's DaServer implementations and systems (generated).</summary>\n");
+        sb.Append("/// <summary>Registers this assembly's DaServer handlerTypes and systems (generated).</summary>\n");
         sb.Append($"internal static class Registration_{info.AssemblyHint}\n{{\n    [ModuleInitializer]\n    internal static void Register()\n    {{\n");
 
         foreach (var anchor in info.ContractAnchors)
@@ -114,7 +114,7 @@ public sealed class HostGenerator : IIncrementalGenerator
                     sb.Append($"        MessageRegistry.RegisterHandlers(typeof({t.FullName}), ");
                     break;
                 default:
-                    sb.Append($"        ServerRegistry.RegisterImplementation(new ImplementationInfo(typeof({t.FullName}), ");
+                    sb.Append($"        ServerRegistry.RegisterHandlerType(new HandlerTypeInfo(typeof({t.FullName}), ");
                     sb.Append($"{(t.Kind == HostedKind.Actor ? "true" : "false")},\n            static () => new {t.FullName}(), ");
                     break;
             }
