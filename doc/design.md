@@ -275,6 +275,15 @@ On the shard, generated dispatchers run the dispatch-stage filters after deseria
 (`MessageFilters.Register<T>(filter)` per message type, `MessageFilters.Register(IMessageFilter)` for all): a status
 other than `Ok` refuses the message (a request gets it as its reply). Without filters the check is two array lengths.
 
+### HTTP plane
+
+Every node is an ASP.NET Core `WebApplication` (the generated entry point; ADR-046): Kestrel on `DaServer:HttpPort`
+next to the TCP data plane. Endpoints reach actors only through messages: `app.MapAsk<TRequest, TReply>(pattern)`
+(the JSON body asked of the service), `app.MapAsk<TId, TRequest, TReply>("/x/{id}")` (of an actor),
+`app.MapSend<T>(pattern)` (one-way, 202). Each request enters through the ingress with an origin of its own and the
+budget of its `DaServer-Budget` header (ms, capped); refusals map to HTTP: `RateLimited` 429, `Overloaded`/`NotHosted`/
+`Disconnected` 503 (with `Retry-After`), `Timeout` 504, `Forbidden` 403, handler errors 500.
+
 ## 9. ECS in DaServer
 
 Business code and the runtime follow the same ECS rules (EasyEcs `doc/ecs-principles.md`). EasyEcs is data plus
