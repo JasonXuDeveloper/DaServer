@@ -254,7 +254,11 @@ run), `ConfigureShard(World)` (each shard thread), `OnViewChanged`, `OnMemberDea
 raw frame (never blocking). Node addresses go to the node they name; the scope of each registered type is advertised
 in the node's card, and a message to a group address goes once to every Up node advertising its scope. The runtime
 never depends on a feature: the receiving node routes a frame by its target, a handler type to its shard or an address
-scope to the feature registered for it. Client connections are the first consumer (sessions, origins, client groups).
+scope to the feature registered for it. Features publish values on the node's card (`SetCardEntry`: an endpoint) and
+gossip up to three counters in its pulse (`AddPulse`: sessions held), read on other nodes as `member.Entry(key)` and
+`member.PulseValue(key)`; `PostToShards` runs rare work on every shard. Client connections are the first consumer
+(`ClientConnections`, enabled by the `DaServer:Clients` section; ADR-050): sessions, origins and client groups, the
+endpoint and session count clients are directed by.
 
 `node.Ingress` (`IIngress`) lets messages from outside in: raw (`Send`/`Ask` with message id, target, key and the
 payload as received, never deserialized; the reply goes to the ingress's `IReplySink` under its call id) or typed

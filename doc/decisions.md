@@ -148,7 +148,7 @@ records that no longer hold). Each: context → decision → consequences.
   AppHost, and a typo silently hosts nothing.
 - Decision: a node hosts every actor, service and system compiled into its process. Splitting the cluster means
   splitting projects (`Sample.LoginServer`, `Sample.GameServer`, `Sample.MapServer`, `Sample.Gateway`); the AppHost
-  lists projects and replica counts. Accepting clients is a capability (`ClientPort`, `AddGateways`), not a role.
+  lists projects and replica counts. Accepting clients is a capability (the `DaServer:Clients` section, `AddGateways`), not a role.
   In-process tests narrow hosting with `NodeOptions.Hosts`, a type filter.
 - Consequences: no topology strings anywhere (checked by the release checklist). The compiler decides what a node can
   host; references between projects decide what can be split.
@@ -570,3 +570,23 @@ records that no longer hold). Each: context → decision → consequences.
 - Consequences: refusing, relaying and timing out allocate nothing (`AllocationTests`); the caller still gets an
   exception (N3b adds non-throwing status results). A refusal no longer names the type or message id: the caller's
   stack trace names the call.
+
+## ADR-050 Client connections are a feature; the actor side of sessions stays in the runtime
+- Context: client connections (ADR-048) have an edge part, on the nodes clients connect to (listener, sessions,
+  groups, tickets, the directory, session operations, client messages entering the cluster), and an actor part, on
+  every node hosting actors (the sessions each actor knows, `SessionClosed` when they end, even when the node holding
+  them crashed, `SessionResync` swapping a resumed one). A feature runs only where it is configured, and the runtime
+  may not depend on `DaServer.Clients`.
+- Decision: the edge part is `ClientConnections` (`DaServer.Clients`), a `NodeFeature` enabled by the
+  `DaServer:Clients` section (`ClientOptions`): it registers the session, origin and client group address scopes,
+  publishes its endpoint as a card entry and its session count as a pulse slot, and sends every client message
+  through the ingress. The actor part stays in the runtime (`ActorSessions`): it needs only contract types
+  (`SessionRef`, `SessionClosed`, `SessionResync`, `Bind`), records an actor's callers and bound sessions, handles
+  closes and resyncs as dispatch filters of their message types and closes the sessions of a dead node holding the
+  session scope. Card entries and pulse slots are generic (`SetCardEntry`, `AddPulse`: keys chosen by features, at
+  most three slots), so `ClusterMember` keeps no client fields. `ReconnectGrace` stays a node option: both parts wait
+  it.
+- Consequences: a node without the `Clients` section runs no client code on its IO side; the runtime's dependency
+  rule holds (an architecture test, roadmap G step 9); a feature of this assembly may use the node's internals
+  (`ClientConnections` sends `SessionClosed` to bound actors directly), never the other way round.
+

@@ -157,7 +157,7 @@ Step plan (each step builds and keeps every test green; logic, docs, CI in separ
    `MapAsk`/`MapSend` through the ingress, statuses to 429/503/504/403 with `Retry-After`, `DaServer-Budget` header;
    one origin id space per node for sessions and HTTP requests); client connections use them. Left for step 6 with
    the client feature: feature options bound from `DaServer:{Section}` and enabled by configuration, metrics
-   registration, pulse slots. The plan:
+   registration (pulse slots and card entries are done with step 6). The plan:
    - `NodeFeature`: Configure, ConfigureShard(World), Start(INodeContext), OnViewChanged, OnMemberDead,
      `Drain(deadline)`, Stop(crashed), a readiness contribution, metrics registration; options bound from
      `DaServer:{Section}`; enabled by configuration.
@@ -175,7 +175,10 @@ Step plan (each step builds and keeps every test green; logic, docs, CI in separ
    - The HTTP plane minimum pulled forward from A1: Kestrel minimal APIs in `DaServer.Hosting`, `MapAsk`/`MapSend`
      helpers, status -> 429/503 + `Retry-After`, deadline header -> budget. Tests with a toy feature and a toy HTTP
      endpoint.
-6. Client connections as a feature (`src/DaServer/Clients`, namespace `DaServer.Clients`), enabled by a client port:
+6. Client connections as a feature (`src/DaServer/Clients`, namespace `DaServer.Clients`), enabled by a client port.
+   Done: `ClientConnections` feature enabled by `DaServer:Clients` (`ClientOptions`), generic card entries and pulse
+   slots (`ClusterMember` keeps no client fields), the actor side in `ActorSessions` with dispatch filters (ADR-050).
+   Left:
    transports (TCP on `DaServer.Net`; WebSocket through the HTTP plane in `DaServer.Hosting`), sessions, bindings,
    `GroupMembers` (M2 pool), address handlers for `SessionRef` and `ClientGroup` (fan-out to the nodes advertising
    the scope), resume tickets on `SignedToken` and grace timers on the timer wheel (M3), `BoundSessions` + filters for
