@@ -213,6 +213,15 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
       (become Helm values per `--environment`); `AddConnectionString` for an existing production database.
 - [ ] A9 Tests through Aspire: wait for the cluster resource to be healthy before bots; S6 scale/failover E2E through
       the stop/start/Drain commands and `WithExplicitStart`.
+- [ ] A10 Kubernetes packaging: `WithHelm` (namespace, release and chart names, version) on the cluster's
+      environment; `AddHelmChart` installs what HPA on custom metrics needs (KEDA or Prometheus Adapter) next to the
+      app; `WithNodePool` pins stateful groups to their node pool.
+- [ ] A11 Pipeline step (`aspire do`): run the N4 route-completeness check and the analyzers before `publish`/`deploy`,
+      so a cluster with an unreachable message or service never ships.
+- [ ] A12 Operator docs: `aspire describe/ps/logs/otel`, `aspire resource <node> drain`, and the Aspire MCP server
+      (`list_resources`, logs, traces, `execute_resource_command`) to operate and debug a cluster.
+- Not for nodes: `WithReference` service discovery (one load-balanced address, not membership), persistent project
+  lifetimes (no replicas, fixed ports); fine for databases and user HTTP services.
 - Notes: the Aspire dashboard in deployments is diagnostic only (production observability is OTLP); Azure Container
   Apps exposes ingress, not per-replica addresses, so it is a later target than Kubernetes.
 
