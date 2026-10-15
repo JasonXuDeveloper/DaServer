@@ -8,9 +8,10 @@
         <InvariantGlobalization>true</InvariantGlobalization>
     </PropertyGroup>
 
-    <!-- The game client's logic (Sample.Client) driven by bots: load test and end-to-end test in one. -->
+    <!-- The game client's logic (Sample.Client) as simulated players (DaServer.Simulation): load test and end-to-end test in one. -->
     <ItemGroup>
         <ProjectReference Include="..\Sample.Client\Sample.Client.csproj" />
+        <ProjectReference Include="..\..\..\src\DaServer.Simulation\DaServer.Simulation.csproj" />
         <ProjectReference Include="..\..\..\src\DaServer.Generator\DaServer.Generator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
     </ItemGroup>
 

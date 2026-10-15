@@ -76,13 +76,16 @@ public partial record struct PlayerOffline(PlayerId Player);
 [NinoType]
 public partial record struct Moved(PlayerId Player, float X, float Y, float VelocityX, float VelocityY);
 
-/// <summary>Avatars in view that changed direction, or that came into view (one message per map cell).</summary>
+/// <summary>
+/// Avatars in view that changed direction, or that came into view (one message per map cell). The map tells clients
+/// that changed maps which pushes are late ones from the map they left.
+/// </summary>
 [NinoType, Message, ToClient]
-public partial record struct Motion(List<Moved> Avatars);
+public partial record struct Motion(MapId Map, List<Moved> Avatars);
 
 /// <summary>An avatar in view left the map.</summary>
 [NinoType, Message, ToClient]
-public partial record struct Gone(PlayerId Player);
+public partial record struct Gone(MapId Map, PlayerId Player);
 
 [NinoType, Message, ToClient]
 public partial record struct Chat(PlayerId Player, string Text);

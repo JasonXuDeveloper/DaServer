@@ -15,6 +15,7 @@ internal sealed class Pushes(World world, Entity player)
     [Handle]
     public void On(Motion m)
     {
+        if (!InMap(m.Map)) return; // late, from the map the player left
         var me = player.Get<Me>().Player;
         var avatars = player.Get<View>().Avatars;
         foreach (var moved in m.Avatars)
@@ -43,7 +44,7 @@ internal sealed class Pushes(World world, Entity player)
     [Handle]
     public void On(Gone g)
     {
-        if (player.Get<View>().Avatars.Remove(g.Player, out var avatar)) avatar.Destroy();
+        if (InMap(g.Map) && player.Get<View>().Avatars.Remove(g.Player, out var avatar)) avatar.Destroy();
     }
 
     [Handle]
@@ -58,4 +59,6 @@ internal sealed class Pushes(World world, Entity player)
     }
 
     [Handle] public void On(Chat _) => player.Get<Heard>().Lines++;
+
+    private bool InMap(MapId map) => player.TryGet<Me>(out var me) && me.Map == map;
 }

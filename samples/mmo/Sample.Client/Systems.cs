@@ -4,7 +4,20 @@ using Sample.Shared;
 
 namespace Sample.Client;
 
-/// <summary>Pushes: run as soon as they arrive (every turn of the client loop), not at the simulation's tick rate.</summary>
+/// <summary>The client's systems, for the world that holds its players (a game's, or a simulated users' loop).</summary>
+public static class ClientSystems
+{
+    public static void AddTo(World world)
+    {
+        world.AddSystem<PushSystem>();
+        world.AddSystem<SteeringSystem>();
+        world.AddSystem<MovementSystem>();
+        world.AddSystem<ViewSystem>();
+        world.AddSystem<SpeechSystem>();
+    }
+}
+
+/// <summary>Pushes: run as soon as they arrive (every pass of the client's loop), not at the simulation's tick rate.</summary>
 public struct ClientPushes : ISystemGroup;
 
 /// <summary>Runs each player's queued pushes on the world's thread (<see cref="Pushes"/>).</summary>
