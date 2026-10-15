@@ -51,6 +51,11 @@ in separate commits.
 - [ ] T2 ECS bots (agreed): `Sample.Bot` and the E2E/benchmarks drive bots as entities on a client world: components
       for input and stats, `[ForEach]` systems on a tick for behaviour, `[Handle]` for pushes, systems shared with the
       server where the logic is the same (dead reckoning); no imperative loops.
+      Business isolation: Contracts (messages, id types: everyone) / Shared (pure rules and ECS systems over plain
+      components: server, real client and bots; may not reference DaServer.Runtime or server projects, enforced by an
+      analyzer rule) / Server (authority, storage, other players' data: never visible to bots). Bots talk to the
+      cluster only through gateways with `FromClient` messages, like players; unit tests exercise Shared systems
+      without a cluster; benchmarks load a real cluster with the same bots.
 - [ ] N1 Stateless handler types and a fixed/reloadable split: DAS007 (no mutable fields on actors and services; state
       in components and singletons); projects Contracts (messages) + Model (components, singletons: never reloaded) +
       Logic (actors, services, systems: reloadable). Prerequisite of N5 and N9. (a studied game server, ET)
