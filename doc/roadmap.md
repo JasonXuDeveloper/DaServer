@@ -33,10 +33,63 @@ Keep this file current: tick items when done, add items when scope changes.
 - [x] Deadlines: the caller's remaining time travels with each request; expired work is dropped (ADR-028)
 - [ ] Send group broadcasts only to gateways that have members of the group (deferred: ADR-029)
 - [x] Resumable node links: a dropped connection replays what the peer did not process (ADR-008)
-- [ ] Placement hints (co-locate actors that talk a lot)
+- [ ] Placement hints: see N7 below
 - [ ] Gateway sessions as ECS entities (session components + flush system) on a gateway shard
 - [x] Actors unload when idle (`UnloadAfterIdle`, ADR-033)
-- [ ] Persistence helpers
+- [ ] Persistence helpers: see N5/N6 below
+
+## Next: architecture borrowed from a studied game server, ET and Orleans (agreed scope, in this order)
+
+Patterns only, never business code. Each item: tests, BenchmarkDotNet where a hot path changes, an ADR, logic and docs
+in separate commits.
+
+- [x] N0 Fence a node declared dead: its actors are removed without `OnUnload` (ADR-042, from Orleans)
+- [ ] N1 Stateless handler types and a fixed/reloadable split: DAS007 (no mutable fields on actors and services; state
+      in components and singletons); projects Contracts (messages) + Model (components, singletons: never reloaded) +
+      Logic (actors, services, systems: reloadable). Prerequisite of N5 and N9. (a studied game server, ET)
+- [ ] N2 `SendAfter(delay, ...)`: per-shard timer wheel of serialized frames, cancellable, delivered as ordinary
+      mail (turn-based, follows moved keys), zero allocation; replaces `await Task.Delay` in handlers; DAS008 for
+      `Task.Delay`/blocking calls in handlers. (ET timers as data, Orleans timers)
+- [ ] N3 Call cycles fail fast: a chain id travels with requests (`FrameFlags` bit + 8 bytes); mail carrying the
+      running turn's chain id is answered `CallCycle` at once instead of waiting for the timeout. (Orleans call chains)
+- [ ] N4 Route completeness check: one handler type per request / one-way message kind across all node projects,
+      a handler for every `FromClient` message; run in tests and at AppHost start. (Orleans compile-time interfaces)
+- [ ] N7 Placement affinity: an actor type may declare a placement key (`PlacementKey(key)`), hashed instead of the
+      key: same placement key = same node (and shard); zones without topology strings, no directory. (ET addresses)
+- [ ] N5 Persistence as ECS: `[Persist]` components of an actor form one record (sections by component wire id);
+      `LoadSystem` batches the loads of one wake; `PersistSystem` (cadence group) serializes on the shard into pooled
+      buffers, skips unchanged state by hash, hands bytes to a bounded IO queue; `SaveNow` tag for critical changes;
+      unload waits for the last write; versioned writes (conflict = fenced). `IActorStore` (LoadMany / SaveMany with
+      expected version) is all a backend implements: PostgreSQL (default, Aspire `WithActorStore`) and in-memory
+      (tests). Relational business data (accounts, payments, mail, auctions) stays in the user's ORM inside services.
+      (a studied game server write-behind, ET serialized components, Orleans IPersistentState + ETags)
+- [ ] N6 State handoff on moves: the old owner sends the same bytes to the new owner on the ordered link ahead of the
+      forwarded mail; the store is the fallback. (ET transfer, Orleans migration)
+- [ ] N8 Collections in messages without allocation: use Nino's own ref deserialization (`[NinoRefDeserialization]`
+      factories, deserializing into a reused instance) for messages with arrays/lists instead of a new mechanism.
+      (ET pooled messages, as a studied game server does with Nino)
+- [ ] N9 Hot reload: code (Logic assembly in a collectible load context; each shard swaps handler registry and
+      systems at a wake boundary, recreates actor objects over unchanged components; old turns finish on old code;
+      the old context unloads when unused, weak-reference leak check, no forced GC; a changed Model/Contracts refuses
+      and needs a rolling deploy) and config (validated snapshot, pinned per shard wake, cluster-wide trigger, version
+      in gossip). Benchmark the hot path before and after. (a studied game server, ET)
+- [ ] N11 Generated filters: `[Filter<T>]` with static `Before`/`After` inlined into the dispatchers (rate limits on
+      `FromClient`, auth, metrics), nothing for handlers without filters. (Orleans call filters)
+- Not adopted: Orleans interface proxies, per-activation Task scheduling, grain directory / repartitioning,
+  transactions; ET location server, coroutine locks, class entity trees, global singletons; a studied game server stop-the-world
+  reload with forced GC, manual dirty marking. GM commands (N10) and a testing package (N12: unit/integration tests
+  and the Bot E2E already cover it) are out of scope for now.
+
+## Open cleanup (review rounds)
+- [ ] B4 one serialize-into-pooled-frame helper; B5 `DeliverTo(nodeId, frame)` (local or link); B7
+      `ClusterView.Route(messageId, handlerTypeId)`; B8 one pending-table scan; B9 registries; B10 shared hash helpers;
+      B11 sample nits
+- [ ] A1 split `Node` (gateway, links, router); A2 membership talks to the node through an interface; A4 control ops
+      and reconnect tickets in Protocol; A7 one endpoint parser for `DaServer__Gateways`
+- [ ] E ECS misuse: `CloseSessionsOf` as a system over a lost-gateways singleton, `TurnCaller` as a component,
+      sample `Despawning(bool)` flag as a tag
+- Kept on purpose: B6 (local replies hand the frame over without a copy), B12 (the shard checks runnable actors after
+  tick systems sent local mail)
 
 ## Generator / analyzer (`src/DaServer.Generator`)
 - [x] Messages (ADR-035): typed `Ask` overloads per request, one dispatcher per `[Handle]` method, client message
