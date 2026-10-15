@@ -13,6 +13,7 @@ public sealed class FrameWriter : INinoBufferWriter, IDisposable
 
     private byte[] _buffer = Array.Empty<byte>();
     private int _pos;
+    private byte _trailers; // FrameFlags of the trailers written so far (written into the header by SetHeader)
 
     /// <summary>
     /// When the request in this frame is no longer worth running (<see cref="Environment.TickCount64"/>; 0 = never):
@@ -30,17 +31,19 @@ public sealed class FrameWriter : INinoBufferWriter, IDisposable
         var w = Pool.Rent();
         w._buffer = BufferPool.Rent(Math.Max(sizeHint, FrameHeader.Size + 16));
         w._pos = FrameHeader.Size;
+        w._trailers = 0;
         w.Deadline = 0;
         return w;
     }
 
-    /// <summary>Rent a writer holding a copy of a complete received frame (header included).</summary>
+    /// <summary>Rent a writer holding a copy of a complete received frame (header and trailers included).</summary>
     public static FrameWriter CopyOf(ReadOnlySpan<byte> frame)
     {
         var w = Pool.Rent();
         w._buffer = BufferPool.Rent(Math.Max(frame.Length, FrameHeader.Size));
         frame.CopyTo(w._buffer);
         w._pos = frame.Length;
+        w._trailers = (byte)(frame[7] & FrameFlags.HasCall);
         w.Deadline = 0;
         return w;
     }
@@ -52,24 +55,32 @@ public sealed class FrameWriter : INinoBufferWriter, IDisposable
         get => new Writer(this);
     }
 
-    /// <summary>Whole frame including header.</summary>
+    /// <summary>Whole frame including header and trailers.</summary>
     public ReadOnlySpan<byte> Frame => new ReadOnlySpan<byte>(_buffer, 0, _pos);
 
-    /// <summary>Payload after the header.</summary>
-    public ReadOnlySpan<byte> Payload => new ReadOnlySpan<byte>(_buffer, FrameHeader.Size, _pos - FrameHeader.Size);
+    /// <summary>Payload: after the header, before the trailers.</summary>
+    public ReadOnlySpan<byte> Payload =>
+        new ReadOnlySpan<byte>(_buffer, FrameHeader.Size, _pos - FrameHeader.Size - FrameFlags.TrailerSize(_trailers));
+
+    /// <summary>The call id trailer (<see cref="FrameFlags.HasCall"/>), 0 when the frame has none.</summary>
+    public uint CallId => (_trailers & FrameFlags.HasCall) != 0 ? BinaryPrimitives.ReadUInt32LittleEndian(_buffer.AsSpan(_pos - sizeof(uint))) : 0;
 
     public int Length => _pos;
 
-    /// <summary>Finish a control frame, send it to <paramref name="target"/> and return this writer to the pool.</summary>
-    internal void SendControl(IFrameSender target, uint op, long key = 0, uint requestId = 0)
+    /// <summary>Finish a control frame (a call when <paramref name="callId"/> is set), send it and return this writer to the pool.</summary>
+    internal void SendControl(IFrameSender target, uint op, long key = 0, uint callId = 0)
     {
-        SetHeader(FrameKind.Control, requestId, op, key);
+        if (callId != 0) SetCallId(callId);
+        SetHeader(FrameKind.Control, 0, op, key);
         target.Send(Frame);
         Dispose();
     }
 
-    /// <summary>Write the header (length is filled in automatically).</summary>
-    public void SetHeader(FrameKind kind, uint requestId, uint messageId, long key, RpcStatus status = RpcStatus.Ok,
+    /// <summary>
+    /// Write the header (length is filled in automatically; the trailer flags written so far are added to
+    /// <paramref name="flags"/>). Call after the payload and the trailers.
+    /// </summary>
+    public void SetHeader(FrameKind kind, uint target, uint messageId, long key, RpcStatus status = RpcStatus.Ok,
         byte flags = 0, byte hops = 0)
     {
         var h = new FrameHeader
@@ -78,22 +89,31 @@ public sealed class FrameWriter : INinoBufferWriter, IDisposable
             Kind = kind,
             Status = status,
             Hops = hops,
-            Flags = flags,
-            RequestId = requestId,
+            Flags = (byte)((flags & ~FrameFlags.HasCall) | _trailers),
+            Target = target,
             MessageId = messageId,
             Key = key,
         };
         h.Write(_buffer);
     }
 
-    /// <summary>Append raw bytes to the payload.</summary>
-    /// <summary>Append the target handler type of an actor request (<see cref="FrameFlags.ToActor"/>).</summary>
-    internal void WriteTarget(uint handlerTypeId)
+    /// <summary>
+    /// Set the call id trailer (after the payload): appended once, rewritten in place by every hop that relays the
+    /// request under its own call id.
+    /// </summary>
+    public void SetCallId(uint callId)
     {
-        BinaryPrimitives.WriteUInt32LittleEndian(GetSpan(sizeof(uint)), handlerTypeId);
-        _pos += sizeof(uint);
+        if ((_trailers & FrameFlags.HasCall) == 0)
+        {
+            GetSpan(sizeof(uint));
+            _pos += sizeof(uint);
+            _trailers |= FrameFlags.HasCall;
+        }
+
+        BinaryPrimitives.WriteUInt32LittleEndian(_buffer.AsSpan(_pos - sizeof(uint)), callId);
     }
 
+    /// <summary>Append raw bytes to the payload (before any trailer).</summary>
     public void WriteRaw(ReadOnlySpan<byte> bytes)
     {
         bytes.CopyTo(GetSpan(bytes.Length));

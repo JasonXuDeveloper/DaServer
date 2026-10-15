@@ -43,6 +43,16 @@ public readonly partial record struct ClientGroup(long Id)
     }
 }
 
+/// <summary>
+/// Address scopes: the <see cref="FrameHeader.Target"/> of messages to sessions and client groups (the value is the
+/// header's key). Handler type ids and scopes are type ids of different types, so one lookup tells them apart.
+/// </summary>
+internal static class AddressScopes
+{
+    public static readonly uint Session = TypeId<SessionRef>.Value;
+    public static readonly uint Group = TypeId<ClientGroup>.Value;
+}
+
 /// <summary>Where a client should connect: a gateway's public host and client port (answer of a balancer).</summary>
 [Nino.Core.NinoType]
 public readonly partial record struct GatewayEndpoint(string Host, int Port);

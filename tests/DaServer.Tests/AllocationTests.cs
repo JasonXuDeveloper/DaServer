@@ -243,7 +243,8 @@ public class AllocationTests : ClusterTest
             for (int i = 0; i < count; i++)
             {
                 var frame = FrameWriter.Rent(FrameHeader.Size);
-                frame.SetHeader(FrameKind.Request, 1, MessageType<Add>.Id, 1, RpcStatus.Ok);
+                frame.SetCallId(1);
+                frame.SetHeader(FrameKind.Message, ActorIds<CounterId>.HandlerTypeId, MessageType<Add>.Id, 1);
                 Node.Admit(shard, frame, sink); // full shard: Overloaded
                 node.Request(FrameWriter.Rent(FrameHeader.Size), 0xDEAD, 0, 0, null, sink, 1); // nobody: NotHosted
             }

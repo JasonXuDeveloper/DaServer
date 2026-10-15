@@ -1,6 +1,6 @@
 namespace DaServer.Runtime;
 
-// Request routing (Ask): local shard or remote link; inbound frames -> shards; responses -> callers.
+// Request routing (Ask): local shard or remote link; inbound frames -> shards; replies -> callers.
 sealed partial class Node : IConnectionHandler
 {
     private const int MaxHops = 3;
@@ -14,43 +14,38 @@ sealed partial class Node : IConnectionHandler
     /// Route a request whose payload is already written to actor (<paramref name="handlerTypeId"/>,
     /// <paramref name="key"/>), or with handler type 0 to the one service handling <paramref name="messageId"/>.
     /// Exactly one of <paramref name="call"/> (local caller) or <paramref name="relaySink"/> (forwarding a request made
-    /// elsewhere, answered to that sink under <paramref name="relayRequestId"/>) is set. Takes ownership of
-    /// <paramref name="frame"/>.
+    /// elsewhere, answered to that sink under <paramref name="relayCallId"/>) is set. The frame gets this hop's call
+    /// id (a forwarded frame's is rewritten). Takes ownership of <paramref name="frame"/>.
     /// </summary>
     internal void Request(FrameWriter frame, uint messageId, uint handlerTypeId, long key, IPendingCall? call,
-        IReplySink? relaySink, uint relayRequestId, byte hops = 0, byte flags = 0)
+        IReplySink? relaySink, uint relayCallId, byte hops = 0, byte flags = 0)
     {
         ClusterMember? target;
         if (!TryRoute(messageId, handlerTypeId, out var route, out bool ambiguous) ||
             (target = View.Target(in route, key, Id, (uint)Interlocked.Increment(ref _roundRobin))) == null)
         {
-            if (ambiguous) Refuse(frame, call, relaySink, relayRequestId, RpcStatus.Error, AmbiguousMessage(messageId));
-            else Refuse(frame, call, relaySink, relayRequestId, RpcStatus.NotHosted);
+            if (ambiguous) Refuse(frame, call, relaySink, relayCallId, RpcStatus.Error, AmbiguousMessage(messageId));
+            else Refuse(frame, call, relaySink, relayCallId, RpcStatus.NotHosted);
             return;
         }
 
         bool local = target.NodeId == Id;
         PeerLink? link = local ? null : GetLink(target);
-        call ??= RelayCall.Rent(relaySink!, relayRequestId);
+        call ??= RelayCall.Rent(relaySink!, relayCallId);
 
         // The request is worth running until its first caller gives up (a relayed request keeps the deadline it
         // arrived with); the remaining time travels with it.
         long now = Environment.TickCount64;
         if (frame.Deadline == 0) frame.Deadline = now + (long)Options.CallTimeout.TotalMilliseconds;
-        if (!Pending.TryRegister(call, (int)Math.Max(1, frame.Deadline - now), out uint requestId, link))
+        if (!Pending.TryRegister(call, (int)Math.Max(1, frame.Deadline - now), out uint callId, link))
         {
             Refuse(frame, call, null, 0, RpcStatus.Overloaded);
             return;
         }
 
         var budget = FrameHeader.EncodeBudget(frame.Deadline - now);
-        if (handlerTypeId != 0 && (flags & FrameFlags.ToActor) == 0)
-        {
-            frame.WriteTarget(handlerTypeId); // a forwarded request already carries it
-            flags |= FrameFlags.ToActor;
-        }
-
-        frame.SetHeader(FrameKind.Request, requestId, messageId, key, budget, flags, hops);
+        frame.SetCallId(callId);
+        frame.SetHeader(FrameKind.Message, route.HandlerTypeId, messageId, key, budget, flags, hops);
 
         if (local)
         {
@@ -65,12 +60,12 @@ sealed partial class Node : IConnectionHandler
 
     /// <summary>Fail a request that cannot be sent: status-only, nothing formatted. Takes ownership of <paramref name="frame"/>.</summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static void Refuse(FrameWriter frame, IPendingCall? call, IReplySink? relaySink, uint relayRequestId,
+    private static void Refuse(FrameWriter frame, IPendingCall? call, IReplySink? relaySink, uint relayCallId,
         RpcStatus status, string? message = null)
     {
         frame.Dispose();
         if (call != null) call.Fail(status, message);
-        else relaySink!.SendError(relayRequestId, status, message);
+        else relaySink!.SendError(relayCallId, status, message);
     }
 
     /// <summary>
@@ -80,21 +75,21 @@ sealed partial class Node : IConnectionHandler
     internal void Forward(FrameWriter frame, IReplySink? sink)
     {
         var header = FrameHeader.Read(frame.Frame);
-        if (header.Kind == FrameKind.Message)
+        if (!header.IsRequest)
         {
             ForwardMessage(frame);
             return;
         }
 
+        uint callId = frame.CallId;
         if (header.Hops >= MaxHops)
         {
             frame.Dispose();
-            if (sink != null) sink.SendError(header.RequestId, RpcStatus.NotHosted);
+            sink?.SendError(callId, RpcStatus.NotHosted);
             return;
         }
 
-        Request(frame, header.MessageId, FrameHeader.TargetOf(in header, frame.Frame), header.Key, null, sink!, header.RequestId,
-            (byte)(header.Hops + 1), header.Flags);
+        Request(frame, header.MessageId, header.Target, header.Key, null, sink!, callId, (byte)(header.Hops + 1), header.Flags);
     }
 
     /// <summary>Hand a call or event to a shard, or refuse it when the shard is full. Takes ownership of <paramref name="frame"/>.</summary>
@@ -131,21 +126,14 @@ sealed partial class Node : IConnectionHandler
         if (connection.Tag is PeerLink link) link.OnReceived(connection, header.Length);
         switch (header.Kind)
         {
-            case FrameKind.Request:
-                OnInboundRequest(connection, in header, frame);
-                break;
             case FrameKind.Message:
-                OnInboundMessage(in header, frame);
+                OnInboundMessage(connection, in header, frame);
                 break;
-            case FrameKind.Response:
-                CompleteCall(header.RequestId, header.Status, frame);
-                break;
-            case FrameKind.Push:
-            case FrameKind.Broadcast:
-                OnClientDelivery(in header, frame);
+            case FrameKind.Reply:
+                CompleteCall(FrameHeader.CallIdOf(in header, frame), header.Status, frame);
                 break;
             case FrameKind.Control:
-                OnControl(connection, in header, frame.Slice(FrameHeader.Size));
+                OnControl(connection, in header, frame);
                 break;
         }
     }
@@ -156,32 +144,16 @@ sealed partial class Node : IConnectionHandler
             link.OnConnectionClosed(connection, error);
     }
 
-    private void OnInboundRequest(Connection connection, in FrameHeader header, ReadOnlySpan<byte> frame)
-    {
-        uint handlerTypeId = FrameHeader.TargetOf(in header, frame);
-        var sink = ConnectionReplySink.For(connection);
-        if (handlerTypeId == 0 && ServiceHandler(header.MessageId) == null)
-        {
-            sink.SendError(header.RequestId, RpcStatus.NotHosted);
-            return;
-        }
-
-        // Actors not owned/hosted here are forwarded by the shard (it re-checks ownership on its own thread).
-        var copy = FrameWriter.CopyOf(frame);
-        copy.Deadline = header.DeadlineOnArrival();
-        Admit(SelectShard(handlerTypeId, handlerTypeId != 0, header.Key), copy, sink);
-    }
-
     /// <summary>Complete an outgoing call: on the caller's shard when it has one, inline otherwise.</summary>
-    private void CompleteCall(uint requestId, RpcStatus status, ReadOnlySpan<byte> frame)
+    private void CompleteCall(uint callId, RpcStatus status, ReadOnlySpan<byte> frame)
     {
-        var call = Pending.Take(requestId);
+        var call = Pending.Take(callId);
         if (call == null) return; // timed out or failed already
 
         if (call.CallerShard is { } shard)
             shard.Post(new WorkItem(WorkKind.Complete, call, FrameWriter.CopyOf(frame)));
         else
-            call.Complete(status, frame.Slice(FrameHeader.Size));
+            call.Complete(status, FrameHeader.PayloadOf(FrameHeader.Read(frame), frame));
     }
 
     /// <summary>
@@ -255,29 +227,29 @@ sealed partial class Node : IConnectionHandler
     /// <summary>Replies to calls made from this node: complete the pending call (on the caller's shard).</summary>
     private sealed class LocalReplySink(Node node) : IReplySink
     {
-        public void SendReply(uint requestId, RpcStatus status, FrameWriter response)
+        public void SendReply(uint callId, RpcStatus status, FrameWriter reply)
         {
-            var call = node.Pending.Take(requestId);
+            var call = node.Pending.Take(callId);
             if (call == null)
             {
-                response.Dispose();
+                reply.Dispose();
                 return;
             }
 
-            response.SetHeader(FrameKind.Response, requestId, 0, 0, status);
+            reply.SetHeader(FrameKind.Reply, 0, 0, 0, status); // local: no call id trailer needed
             if (call.CallerShard is { } shard)
             {
-                shard.Post(new WorkItem(WorkKind.Complete, call, response)); // zero copy: the frame is handed over
+                shard.Post(new WorkItem(WorkKind.Complete, call, reply)); // zero copy: the frame is handed over
             }
             else
             {
-                call.Complete(status, response.Payload);
-                response.Dispose();
+                call.Complete(status, reply.Payload);
+                reply.Dispose();
             }
         }
     }
 
-    /// <summary>Forwards the response of a relayed call to the original caller's sink under its request id.</summary>
+    /// <summary>Forwards the reply of a relayed call to the original caller's sink under its call id.</summary>
     private sealed class RelayCall : IPendingCall
     {
         private static readonly ObjectPool<RelayCall> Pool = new(() => new RelayCall(), 1 << 16); // calls relayed at once by a gateway
@@ -287,11 +259,11 @@ sealed partial class Node : IConnectionHandler
         private IReplySink _sink = null!;
         private uint _requestId;
 
-        public static RelayCall Rent(IReplySink sink, uint requestId)
+        public static RelayCall Rent(IReplySink sink, uint callId)
         {
             var call = Pool.Rent();
             call._sink = sink;
-            call._requestId = requestId;
+            call._requestId = callId;
             return call;
         }
 

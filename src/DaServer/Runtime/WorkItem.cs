@@ -2,10 +2,10 @@ namespace DaServer.Runtime;
 
 internal enum WorkKind : byte
 {
-    /// <summary>A = FrameWriter (request / one-way frame), B = IReplySink (where the response goes).</summary>
+    /// <summary>A = FrameWriter (request / one-way frame), B = IReplySink (where the reply goes).</summary>
     Dispatch = 1,
 
-    /// <summary>A = IPendingCall, B = FrameWriter (response frame). Completes a call made from this shard.</summary>
+    /// <summary>A = IPendingCall, B = FrameWriter (reply frame). Completes a call made from this shard.</summary>
     Complete = 2,
 
     /// <summary>A = Action&lt;object?&gt;, B = state. Continuations and runtime callbacks.</summary>

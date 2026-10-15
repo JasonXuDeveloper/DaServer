@@ -13,7 +13,6 @@ internal sealed partial class Node : ICluster, IAsyncDisposable
     private PeerLink[] _linkList = [];
     private readonly ConcurrentDictionary<ulong, PeerLink> _introduced = new(); // node id -> link, from Hellos
     private Shard[] _shards = [];
-    private FrozenDictionary<uint, HandlerTypeInfo?> _serviceHandlers = FrozenDictionary<uint, HandlerTypeInfo?>.Empty;
     private FrozenDictionary<uint, HandlerTypeInfo> _handlerTypeById = FrozenDictionary<uint, HandlerTypeInfo>.Empty;
     private Listener? _clusterListener;
     private Timer? _maintenance;
@@ -150,28 +149,17 @@ internal sealed partial class Node : ICluster, IAsyncDisposable
     internal HandlerTypeInfo? HandlerTypeById(uint handlerTypeId) =>
         _handlerTypeById.TryGetValue(handlerTypeId, out var handlerType) ? handlerType : null;
 
-    /// <summary>
-    /// The hosted service answering requests of <paramref name="messageId"/> (a service request names its message, not
-    /// its handler type), or null when none or several handle it (an event: published to all of them, never asked).
-    /// </summary>
-    internal HandlerTypeInfo? ServiceHandler(uint messageId) =>
-        _serviceHandlers.TryGetValue(messageId, out var handlerType) ? handlerType : null;
-
     /// <summary>Everything registered in the process, narrowed by <see cref="NodeOptions.Hosts"/> when set.</summary>
     private void ResolveHosting()
     {
         var hosts = Options.Hosts;
         var byId = new Dictionary<uint, HandlerTypeInfo>();
-        var services = new Dictionary<uint, HandlerTypeInfo?>();
         var hosted = new List<HandlerTypeInfo>();
         foreach (var handlerType in ServerRegistry.HandlerTypes)
         {
             if (hosts != null && !hosts(handlerType.Type)) continue;
             hosted.Add(handlerType);
             byId[handlerType.Id] = handlerType;
-            if (handlerType.IsActor) continue;
-            foreach (var handler in handlerType.Handlers.All)
-                services[handler.MessageId] = services.ContainsKey(handler.MessageId) ? null : handlerType;
         }
 
         var systems = new List<SystemInfo>();
@@ -181,7 +169,6 @@ internal sealed partial class Node : ICluster, IAsyncDisposable
 
         HostedHandlerTypes = hosted.ToArray();
         HostedSystems = systems.ToArray();
-        _serviceHandlers = services.ToFrozenDictionary();
         _handlerTypeById = byId.ToFrozenDictionary();
     }
 

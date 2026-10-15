@@ -4,47 +4,39 @@ namespace DaServer.Protocol;
 public enum FrameKind : byte
 {
     /// <summary>
-    /// Message expecting a <see cref="Response"/> with the same request id (<c>Ask</c>): message id, key; an actor's
-    /// handler type trails the payload (<see cref="FrameFlags.ToActor"/>), a service is the one handling the message.
+    /// A message to <see cref="FrameHeader.Target"/> (<see cref="FrameHeader.Key"/>): one-way, or a request when it
+    /// carries a call id (<see cref="FrameFlags.HasCall"/>), answered by a <see cref="Reply"/> with that id.
     /// </summary>
-    Request = 1,
+    Message = 1,
 
-    /// <summary>Client to gateway: one-way message (the gateway turns it into a <see cref="Message"/>).</summary>
-    OneWay = 2,
-
-    /// <summary>Reply to a <see cref="Request"/>; <see cref="FrameHeader.Status"/> tells success or error.</summary>
-    Response = 3,
-
-    /// <summary>Server -> one client session (key = session id on the gateway hop).</summary>
-    Push = 4,
-
-    /// <summary>Server -> every client session in a group (key = group id) on each gateway.</summary>
-    Broadcast = 5,
-
-    /// <summary>Runtime control traffic (handshake, gossip, session binding, groups). Method id = control op.</summary>
-    Control = 6,
+    /// <summary>The answer to a request: its call id trailer, <see cref="FrameHeader.Status"/> (success or error), the reply payload.</summary>
+    Reply = 2,
 
     /// <summary>
-    /// One-way message for one handler type (<c>Send</c>, <c>Publish</c>): message id, request id = target
-    /// handler type id (one-way, so the correlation field is free), key = actor key (0 for services).
+    /// The link protocol between nodes and between a client and its node (handshake, gossip, session operations):
+    /// <see cref="FrameHeader.MessageId"/> is the operation; a call id makes it a request.
     /// </summary>
-    Message = 9,
+    Control = 3,
 }
 
-/// <summary>Bits of <see cref="FrameHeader.Flags"/>.</summary>
+/// <summary>
+/// Bits of <see cref="FrameHeader.Flags"/>. Trailers follow the payload: a frame is serialized once and routing data
+/// that is known only later (the call id each hop assigns) is appended, or rewritten in place, without moving it.
+/// </summary>
 public static class FrameFlags
 {
-    /// <summary>Payload starts with the serialized <see cref="Rpc.SessionRef"/> of the client that made the call.</summary>
-    public const byte HasCaller = 1;
+    /// <summary>The frame ends with a 4-byte call id (uint32): a request, its reply, or a control call.</summary>
+    public const byte HasCall = 1;
 
-    /// <summary>
-    /// A <see cref="FrameKind.Request"/> for an actor: the frame ends with the actor's handler type id (uint32; the
-    /// header's RequestId is the call's). Without it, a request is for the one service handling its message.
-    /// </summary>
-    public const byte ToActor = 2;
+    /// <summary>Payload starts with the serialized <see cref="Rpc.SessionRef"/> of the client that made the call.</summary>
+    public const byte HasCaller = 2;
+
+    /// <summary>Bytes of the trailers a frame with <paramref name="flags"/> ends with.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int TrailerSize(byte flags) => (flags & HasCall) != 0 ? sizeof(uint) : 0;
 }
 
-/// <summary>Status carried by <see cref="FrameKind.Response"/> frames.</summary>
+/// <summary>Status carried by <see cref="FrameKind.Reply"/> frames.</summary>
 public enum RpcStatus : byte
 {
     Ok = 0,
@@ -55,23 +47,27 @@ public enum RpcStatus : byte
     Timeout = 4,
     /// <summary>Client is not allowed to call this contract or has no bound key.</summary>
     Forbidden = 5,
-    /// <summary>Connection lost before the response arrived.</summary>
+    /// <summary>Connection lost before the reply arrived.</summary>
     Disconnected = 6,
     /// <summary>The target shard or actor mailbox is full; nothing ran. The caller may back off and retry.</summary>
     Overloaded = 7,
 }
 
 /// <summary>
-/// Fixed 24-byte little-endian frame header. Layout:
+/// Fixed 24-byte little-endian frame header, then the payload, then the trailers named by <see cref="Flags"/>. Layout:
 /// <code>
-/// 0  int32  Length     whole frame size including header
+/// 0  int32  Length     whole frame size including header and trailers
 /// 4  byte   Kind
-/// 5  byte   Status     RpcStatus for responses; for requests the caller's time budget (see EncodeBudget), otherwise 0
+/// 5  byte   Status     RpcStatus for replies; for requests the caller's time budget (see EncodeBudget), otherwise 0
 /// 6  byte   Hops       forwarding count (loop guard)
-/// 7  byte   Flags      FrameFlags (HasCaller, ToActor)
-/// 8  uint32 RequestId  correlation id (requests); target handler type id (Message); 0 otherwise
+/// 7  byte   Flags      FrameFlags (HasCall, HasCaller)
+/// 8  uint32 Target     who handles a message: an actor or service handler type id, or an address scope (sessions,
+///                      client groups); 0 in replies and control frames, and from clients that leave the choice to
+///                      their node (the actor bound to the session, else the service)
 /// 12 uint32 MessageId  wire id of the message type (see WireIds) or control op
-/// 16 int64  Key        actor key / session id / group id
+/// 16 int64  Key        actor key / session id / group id (0 for services)
+/// ..        payload
+/// ..        uint32 call id when HasCall
 /// </code>
 /// </summary>
 public struct FrameHeader
@@ -86,7 +82,7 @@ public struct FrameHeader
     public RpcStatus Status;
     public byte Hops;
     public byte Flags;
-    public uint RequestId;
+    public uint Target;
     public uint MessageId;
     public long Key;
 
@@ -102,20 +98,23 @@ public struct FrameHeader
     public static RpcStatus EncodeBudget(long remainingMs) =>
         (RpcStatus)(byte)Math.Clamp((remainingMs + BudgetUnitMs - 1) / BudgetUnitMs, 1, byte.MaxValue);
 
+    /// <summary>A message that expects a reply (it carries a call id).</summary>
+    public readonly bool IsRequest => Kind == FrameKind.Message && (Flags & FrameFlags.HasCall) != 0;
+
     /// <summary>Deadline (<see cref="Environment.TickCount64"/>) of a request that arrived now, 0 when it has none.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public readonly long DeadlineOnArrival() =>
-        Kind == FrameKind.Request && Status != 0 ? Environment.TickCount64 + (byte)Status * BudgetUnitMs : 0;
+        IsRequest && Status != 0 ? Environment.TickCount64 + (byte)Status * BudgetUnitMs : 0;
 
+    /// <summary>The call id of a frame (<see cref="FrameFlags.HasCall"/>), 0 when it has none.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    /// <summary>
-    /// The handler type a frame targets: a Message frame's RequestId, an actor request's trailer
-    /// (<see cref="FrameFlags.ToActor"/>), 0 for a service request (its message names it).
-    /// </summary>
-    public static uint TargetOf(in FrameHeader header, ReadOnlySpan<byte> frame) =>
-        header.Kind == FrameKind.Message ? header.RequestId
-        : (header.Flags & FrameFlags.ToActor) != 0 ? BinaryPrimitives.ReadUInt32LittleEndian(frame[(header.Length - sizeof(uint))..])
-        : 0;
+    public static uint CallIdOf(in FrameHeader header, ReadOnlySpan<byte> frame) =>
+        (header.Flags & FrameFlags.HasCall) != 0 ? BinaryPrimitives.ReadUInt32LittleEndian(frame[(header.Length - sizeof(uint))..]) : 0;
+
+    /// <summary>The payload of a frame: between the header and the trailers.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static ReadOnlySpan<byte> PayloadOf(in FrameHeader header, ReadOnlySpan<byte> frame) =>
+        frame[Size..(header.Length - FrameFlags.TrailerSize(header.Flags))];
 
     public static FrameHeader Read(ReadOnlySpan<byte> s)
     {
@@ -125,7 +124,7 @@ public struct FrameHeader
         h.Status = (RpcStatus)s[5];
         h.Hops = s[6];
         h.Flags = s[7];
-        h.RequestId = BinaryPrimitives.ReadUInt32LittleEndian(s.Slice(8));
+        h.Target = BinaryPrimitives.ReadUInt32LittleEndian(s.Slice(8));
         h.MessageId = BinaryPrimitives.ReadUInt32LittleEndian(s.Slice(12));
         h.Key = BinaryPrimitives.ReadInt64LittleEndian(s.Slice(16));
         return h;
@@ -139,7 +138,7 @@ public struct FrameHeader
         s[5] = (byte)Status;
         s[6] = Hops;
         s[7] = Flags;
-        BinaryPrimitives.WriteUInt32LittleEndian(s.Slice(8), RequestId);
+        BinaryPrimitives.WriteUInt32LittleEndian(s.Slice(8), Target);
         BinaryPrimitives.WriteUInt32LittleEndian(s.Slice(12), MessageId);
         BinaryPrimitives.WriteInt64LittleEndian(s.Slice(16), Key);
     }

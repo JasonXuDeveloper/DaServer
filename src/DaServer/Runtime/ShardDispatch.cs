@@ -18,17 +18,14 @@ internal static class ShardDispatch
     {
         var node = world.Shard().Node;
         var header = FrameHeader.Read(frame.Frame);
-        uint target = FrameHeader.TargetOf(in header, frame.Frame);
-        var handlerType = target != 0 ? node.HandlerTypeById(target) : node.ServiceHandler(header.MessageId);
+        var handlerType = node.HandlerTypeById(header.Target);
         var handler = handlerType?.Handlers.Of(header.MessageId);
         if (handler == null)
         {
-            // Not hosted here (stale view at the sender): an actor message finds its owner, a service request fails.
-            // An actor type that does not handle the message fails at its owner the same way (wrong id type).
-            if (target == 0 || (handlerType != null && handlerType.IsActor))
-                Fail(frame, sink, RpcStatus.NotHosted, "Nothing here handles the message");
-            else
-                node.Forward(frame, sink);
+            // A handler type that does not handle the message (a wrong id type) fails; one not hosted here (stale view
+            // at the sender) is found on its node.
+            if (handlerType != null) Fail(frame, sink, RpcStatus.NotHosted);
+            else node.Forward(frame, sink);
             return;
         }
 
@@ -133,7 +130,7 @@ internal static class ShardDispatch
             }
 
             var header = FrameHeader.Read(frame.Frame);
-            uint requestId = header.Kind == FrameKind.Request ? header.RequestId : 0;
+            uint callId = frame.CallId;
             var payload = frame.Payload;
             var caller = default(SessionRef);
             if ((header.Flags & FrameFlags.HasCaller) != 0)
@@ -143,7 +140,7 @@ internal static class ShardDispatch
                 payload = payload.Slice(SessionRefSize);
             }
 
-            var context = new CallContext(sink, requestId, caller);
+            var context = new CallContext(sink, callId, caller);
             var previous = CallContext.Enter(in context);
             try
             {
@@ -292,10 +289,11 @@ internal static class ShardDispatch
     /// </summary>
     internal static void Fail(FrameWriter frame, IReplySink? sink, RpcStatus status, string? message = null)
     {
-        var header = FrameHeader.Read(frame.Frame);
+        bool request = FrameHeader.Read(frame.Frame).IsRequest;
+        uint callId = frame.CallId;
         frame.Dispose();
-        if (sink != null && header.Kind == FrameKind.Request && header.RequestId != 0)
-            sink.SendError(header.RequestId, status, message);
+        if (sink != null && request)
+            sink.SendError(callId, status, message);
     }
 
     public static ILogger Logger(this World world) => world.Shard().Node.Logger;

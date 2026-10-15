@@ -31,10 +31,10 @@ internal static class ControlOp
     /// <summary>Full member descriptions: payload = ClusterMember[] (sent when a node meets another, not every round).</summary>
     public const uint Cards = 8;
 
-    /// <summary>Client to gateway (a request: RequestId set): which gateway should I use? Answer: a <see cref="GatewayEndpoint"/>.</summary>
+    /// <summary>Client to gateway (a call): which gateway should I use? Answer: a <see cref="GatewayEndpoint"/>.</summary>
     public const uint PickGateway = 4;
 
-    // Session operations (to the session's gateway): Key = session id, RequestId = call to acknowledge (0: none),
+    // Session operations (to the session's gateway): Key = session id, a call id when acknowledged,
     // payload = scope (uint: actor handler type id for Bind/Unbind) + value (long: actor key or group id).
 
     /// <summary>Gateway: bind a session to an actor (scope = handler type id, value = key).</summary>

@@ -77,13 +77,13 @@ sealed partial class Node
         if (link == null) return ValueTask.FromException(new RpcException(RpcStatus.Disconnected));
         var call = PendingCall<NoReply>.Rent(Shard.Current);
         var task = call.Done;
-        if (!Pending.TryRegister(call, (int)Options.CallTimeout.TotalMilliseconds, out uint requestId, link))
+        if (!Pending.TryRegister(call, (int)Options.CallTimeout.TotalMilliseconds, out uint callId, link))
         {
             call.Fail(RpcStatus.Overloaded);
             return task;
         }
 
-        var frame = SessionControl(op, requestId, session.SessionId, handlerTypeId, key);
+        var frame = SessionControl(op, callId, session.SessionId, handlerTypeId, key);
         link.Send(frame.Frame);
         frame.Dispose();
         return task;
@@ -97,14 +97,15 @@ sealed partial class Node
         w.Dispose();
     }
 
-    /// <summary>A session control frame: Key = session id, RequestId = call to acknowledge (0: none), payload = scope + value.</summary>
-    private static FrameWriter SessionControl(uint op, uint requestId, long sessionId, uint scope, long value)
+    /// <summary>A session control frame: Key = session id, payload = scope + value, a call id when acknowledged.</summary>
+    private static FrameWriter SessionControl(uint op, uint callId, long sessionId, uint scope, long value)
     {
         var w = FrameWriter.Rent(64);
         var nino = w.Nino;
         NinoSerializer.Serialize(scope, ref nino);
         NinoSerializer.Serialize(value, ref nino);
-        w.SetHeader(FrameKind.Control, requestId, op, sessionId);
+        if (callId != 0) w.SetCallId(callId);
+        w.SetHeader(FrameKind.Control, 0, op, sessionId);
         return w;
     }
 
@@ -115,14 +116,14 @@ sealed partial class Node
         {
             if (!group)
             {
-                frame.SetHeader(FrameKind.Push, 0, messageId, key);
+                frame.SetHeader(FrameKind.Message, AddressScopes.Session, messageId, key);
                 if (gatewayNodeId == Id) DeliverToSession(key, frame.Frame);
                 else LinkTo(gatewayNodeId)?.Send(frame.Frame);
                 return;
             }
 
             // Group broadcast: serialized once, one frame per gateway; each gateway fans out locally.
-            frame.SetHeader(FrameKind.Broadcast, 0, messageId, key);
+            frame.SetHeader(FrameKind.Message, AddressScopes.Group, messageId, key);
             foreach (var member in View.UpMembers)
             {
                 if (member.ClientPort == 0 || member.Balancer) continue; // a balancer keeps no sessions
@@ -134,13 +135,6 @@ sealed partial class Node
         {
             frame.Dispose();
         }
-    }
-
-    /// <summary>Push/broadcast frame arriving from another node.</summary>
-    private void OnClientDelivery(in FrameHeader header, ReadOnlySpan<byte> frame)
-    {
-        if (header.Kind == FrameKind.Push) DeliverToSession(header.Key, frame);
-        else DeliverToGroup(header.Key, frame);
     }
 
     private void DeliverToSession(long sessionId, ReadOnlySpan<byte> frame)
@@ -155,8 +149,9 @@ sealed partial class Node
         if (_groups.TryGetValue(groupId, out var group)) group.Send(frame);
     }
 
-    private void OnControl(Connection connection, in FrameHeader header, ReadOnlySpan<byte> payload)
+    private void OnControl(Connection connection, in FrameHeader header, ReadOnlySpan<byte> frame)
     {
+        var payload = FrameHeader.PayloadOf(in header, frame);
         switch (header.MessageId)
         {
             case ControlOp.Hello:
@@ -176,9 +171,10 @@ sealed partial class Node
                 break;
             default:
                 var status = OnSessionControl(header.MessageId, header.Key, payload);
-                if (header.RequestId == 0) break;
-                if (status == RpcStatus.Ok) ConnectionReplySink.For(connection).SendOk(header.RequestId);
-                else ConnectionReplySink.For(connection).SendError(header.RequestId, status);
+                uint callId = FrameHeader.CallIdOf(in header, frame);
+                if (callId == 0) break;
+                if (status == RpcStatus.Ok) ConnectionReplySink.For(connection).SendOk(callId);
+                else ConnectionReplySink.For(connection).SendError(callId, status);
                 break;
         }
     }
@@ -303,12 +299,12 @@ sealed partial class Node
     /// (and the actors' groups), and every bound actor learns the new session (<see cref="SessionResync"/>) before the
     /// client's next message, which travels behind it on the same links.
     /// </summary>
-    private void ResumeSession(Session session, uint requestId, ReadOnlySpan<byte> ticket)
+    private void ResumeSession(Session session, uint callId, ReadOnlySpan<byte> ticket)
     {
         if (_ticketSecret == null || session.Bindings.Length != 0 ||
             !ReconnectTicket.TryRead(ticket, _ticketSecret, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), out var previous, out var bindings))
         {
-            session.Sink.SendError(requestId, RpcStatus.Forbidden);
+            session.Sink.SendError(callId, RpcStatus.Forbidden);
             return;
         }
 
@@ -331,14 +327,14 @@ sealed partial class Node
         }
 
         IssueTicket(session);
-        session.Sink.SendOk(requestId);
+        session.Sink.SendOk(callId);
     }
 
     /// <summary>
     /// Answer "which gateway should I use": the less loaded of two random gateways that accept sessions (power of two
     /// choices: even spread from gossiped counts, no herd on the single least loaded one while counts are stale).
     /// </summary>
-    private void PickGateway(Session session, uint requestId)
+    private void PickGateway(Session session, uint callId)
     {
         var up = View.UpMembers;
         ClusterMember? first = null, second = null;
@@ -354,7 +350,7 @@ sealed partial class Node
 
         if (first == null)
         {
-            session.Sink.SendError(requestId, RpcStatus.NotHosted);
+            session.Sink.SendError(callId, RpcStatus.NotHosted);
             return;
         }
 
@@ -363,7 +359,7 @@ sealed partial class Node
         var w = FrameWriter.Rent(64);
         var nino = w.Nino;
         NinoSerializer.Serialize(new GatewayEndpoint(pick.ClientHost, pick.ClientPort), ref nino);
-        session.Sink.SendReply(requestId, RpcStatus.Ok, w);
+        session.Sink.SendReply(callId, RpcStatus.Ok, w);
     }
 
     // ------------------------------------------------------------------ client connections
@@ -375,8 +371,7 @@ sealed partial class Node
             var session = (Session)connection.Tag!;
             switch (header.Kind)
             {
-                case FrameKind.Request:
-                case FrameKind.OneWay:
+                case FrameKind.Message:
                     node.OnClientMessage(session, in header, frame);
                     break;
                 case FrameKind.Control:
@@ -397,20 +392,21 @@ sealed partial class Node
 
     private void OnClientControl(Session session, in FrameHeader header, ReadOnlySpan<byte> frame)
     {
+        uint callId = FrameHeader.CallIdOf(in header, frame);
         switch (header.MessageId)
         {
-            case ControlOp.PickGateway when header.RequestId != 0:
-                PickGateway(session, header.RequestId);
+            case ControlOp.PickGateway when callId != 0:
+                PickGateway(session, callId);
                 break;
             case ControlOp.Ticket:
                 IssueTicket(session);
                 break;
-            case ControlOp.ResumeSession when header.RequestId != 0:
-                ResumeSession(session, header.RequestId, frame.Slice(FrameHeader.Size));
+            case ControlOp.ResumeSession when callId != 0:
+                ResumeSession(session, callId, FrameHeader.PayloadOf(in header, frame));
                 break;
             case ControlOp.Goodbye:
                 session.Explicit = true;
-                if (header.RequestId != 0) session.Sink.SendOk(header.RequestId);
+                if (callId != 0) session.Sink.SendOk(callId);
                 break;
             default:
                 session.Connection.Close(new InvalidOperationException("Unexpected control operation from client: " + header.MessageId));
@@ -426,15 +422,15 @@ sealed partial class Node
     /// </summary>
     private void OnClientMessage(Session session, in FrameHeader header, ReadOnlySpan<byte> frame)
     {
-        uint replyId = header.Kind == FrameKind.Request ? header.RequestId : 0;
+        uint replyId = FrameHeader.CallIdOf(in header, frame);
         if (!MessageRegistry.TryGetClientMessage(header.MessageId, out var message))
         {
             if (replyId != 0) session.Sink.SendError(replyId, RpcStatus.Forbidden);
             return;
         }
 
-        uint named = FrameHeader.TargetOf(in header, frame);
-        var body = frame[FrameHeader.Size..(named != 0 ? header.Length - sizeof(uint) : header.Length)];
+        uint named = header.Target;
+        var body = FrameHeader.PayloadOf(in header, frame);
         uint handlerTypeId;
         long key;
         if (named != 0)
