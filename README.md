@@ -1,7 +1,9 @@
 # DaServer
 
-A .NET 10 framework for low-latency, high-concurrency clusters: game servers with many gateways and many map/logic
-nodes, and any backend made of stateful entities and stateless services.
+A general-purpose ECS distributed server framework for .NET 10, built for high performance and high concurrency: any
+backend made of stateful entities (actors) and stateless services, spread over many nodes. The core knows no
+application scenario; an MMO cluster (login, balancer, gateways, game server, map servers) is one sample built on it
+([samples/mmo](samples/mmo)).
 
 You write **messages** (`[NinoType, Message]` structs), **actors** and **services** with `[Handle]` methods, and **ECS
 systems**. Source generators write dispatchers, typed `Ask` overloads, wire ids, registration and the node's entry
@@ -19,9 +21,9 @@ locally and publishes it.
   `Publish` to every handler. The sender never names the receiver's type; per-tick logic lives in EasyEcs systems.
 - **No hard-coded topology.** A node hosts what its project compiles. The AppHost lists projects and replica counts.
 - **Reliable links, bounded work.** One ordered stream per node pair resumes after a dropped connection (no loss, no
-  duplicate). Requests carry their caller's deadline, and work nobody waits for is dropped. Full inboxes answer
+  duplicate). Requests carry their caller's deadline, and work nobody waits for is dropped. Full dispatch queues and mailboxes answer
   `Overloaded` instead of growing; a client that cannot keep up is disconnected and resynchronizes on reconnect.
-- **Misuse is a build error.** Analyzers DAS001–DAS005 cover handlers, messages, wire types and id collisions, and
+- **Misuse is a build error.** Analyzers DAS001–DAS007 cover handlers, messages, wire types and id collisions, and
   EECS001–EECS008 cover ECS, including the ECS principles.
 
 ## Architecture
@@ -102,7 +104,7 @@ resumes the session with a signed ticket: its actors receive `SessionResync` (se
 
 ## Example
 
-From [samples/](samples) (who runs where and who talks to whom: [samples/README.md](samples/README.md)): a login
+From the MMO sample [samples/mmo/](samples/mmo) (who runs where and who talks to whom: [samples/mmo/README.md](samples/mmo/README.md)): a login
 server, a game server (players, the realm), a map server (maps, movement, area of interest) and gateways that host no
 business code.
 
@@ -232,14 +234,14 @@ builder.Build().Run();
 `AddBalancer` adds gateways that only direct clients (power of two choices over the gossiped session counts). There
 are no roles and no configuration files: what a node hosts is what its project compiles. Nodes export logs and
 metrics over OpenTelemetry, which feeds the Aspire dashboard. The same model runs with
-`dotnet run --project samples/Sample.AppHost` and publishes with `aspire publish` (`AddKubernetesEnvironment` for
+`dotnet run --project samples/mmo/Sample.AppHost` and publishes with `aspire publish` (`AddKubernetesEnvironment` for
 Kubernetes).
 
 ## Performance
 
 Measured on one 4-core VM (servers, bots and the kernel share it), Release builds.
 
-**10k-player scenario** ([Sample.AppHost](samples/Sample.AppHost), [Sample.Bot](samples/Sample.Bot)): a login
+**10k-player scenario** ([Sample.AppHost](samples/mmo/Sample.AppHost), [Sample.Bot](samples/mmo/Sample.Bot)): a login
 node, a game node, a map node, 3 gateways and a balancer (the AppHost's topology, here as plain processes without telemetry).
 10,000 bots connect through the balancer, log in and enter a map; the realm broadcasts its status to every session
 every 5 ticks (20 ticks/s). Three loads, 60 s measured window each:
