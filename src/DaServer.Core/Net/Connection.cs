@@ -91,6 +91,8 @@ public sealed class Connection : IFrameSender, IFrameChannel
     private int _pendingLength;
     private int _closed;
     private readonly ISendTap? _tap;
+    private long _lastReceivedMs = Platform.Milliseconds;
+    private long _lastSentMs = Platform.Milliseconds;
 
     public Connection(Socket socket, IConnectionHandler handler, ConnectionOptions? options = null)
     {
@@ -106,6 +108,10 @@ public sealed class Connection : IFrameSender, IFrameChannel
     public object? Tag { get; set; }
 
     public bool IsClosed => Volatile.Read(ref _closed) != 0;
+
+    public long LastReceivedMs => Volatile.Read(ref _lastReceivedMs);
+
+    public long LastSentMs => Volatile.Read(ref _lastSentMs);
 
     /// <summary>
     /// Connect to a host name or address. A name is connected through every address it resolves to ("localhost" is ::1
@@ -310,6 +316,8 @@ public sealed class Connection : IFrameSender, IFrameChannel
                             throw new SocketException((int)SocketError.ConnectionReset);
                         offset += sent;
                     }
+
+                    Volatile.Write(ref _lastSentMs, Platform.Milliseconds);
                 }
 
                 // Idle: give the in-flight buffer back so idle connections hold no send memory, and with
@@ -381,6 +389,7 @@ public sealed class Connection : IFrameSender, IFrameChannel
                     SocketFlags.None).ConfigureAwait(false);
                 if (read == 0)
                     break; // graceful close
+                Volatile.Write(ref _lastReceivedMs, Platform.Milliseconds);
 
                 filled += read;
 

@@ -333,7 +333,14 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
         try
         {
             Pending.SweepExpired();
-            foreach (var link in Volatile.Read(ref _linkList)) link.AcknowledgeReceived();
+            long now = Environment.TickCount64;
+            long interval = (long)Options.GossipInterval.TotalMilliseconds;
+            long timeout = Math.Max((long)Options.SuspectAfter.TotalMilliseconds, 3 * interval);
+            foreach (var link in Volatile.Read(ref _linkList))
+            {
+                link.AcknowledgeReceived();
+                link.CheckAlive(now, interval, timeout);
+            }
         }
         catch (Exception e)
         {

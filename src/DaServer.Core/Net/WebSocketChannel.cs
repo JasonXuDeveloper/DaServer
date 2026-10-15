@@ -14,6 +14,12 @@ public interface IFrameChannel
 
     /// <summary>Free slot for the owner (a session).</summary>
     object? Tag { get; set; }
+
+    /// <summary>When something last arrived (<see cref="Platform.Milliseconds"/>; at least once per read).</summary>
+    long LastReceivedMs { get; }
+
+    /// <summary>When the send loop last wrote to the transport (<see cref="Platform.Milliseconds"/>).</summary>
+    long LastSentMs { get; }
 }
 
 /// <summary>Receives the frames of an <see cref="IFrameChannel"/> that is not a TCP connection.</summary>
@@ -38,6 +44,12 @@ public sealed class WebSocketChannel(WebSocket socket, IChannelHandler handler, 
 
     private readonly AsyncSignal _sendSignal = new();
     private readonly Lock _sendLock = new();
+    private long _lastReceivedMs = Platform.Milliseconds;
+    private long _lastSentMs = Platform.Milliseconds;
+
+    public long LastReceivedMs => Volatile.Read(ref _lastReceivedMs);
+
+    public long LastSentMs => Volatile.Read(ref _lastSentMs);
     private byte[] _pending = [];
     private int _pendingLength;
     private int _closed;
@@ -132,6 +144,7 @@ public sealed class WebSocketChannel(WebSocket socket, IChannelHandler handler, 
 
                     await socket.SendAsync(new ReadOnlyMemory<byte>(sending, 0, length), WebSocketMessageType.Binary,
                         endOfMessage: true, CancellationToken.None).ConfigureAwait(false);
+                    Volatile.Write(ref _lastSentMs, Platform.Milliseconds);
                 }
 
                 // Idle: hold no send memory (the next send rents a buffer).
@@ -184,6 +197,7 @@ public sealed class WebSocketChannel(WebSocket socket, IChannelHandler handler, 
 
                     result = await socket.ReceiveAsync(buffer.AsMemory(filled), CancellationToken.None).ConfigureAwait(false);
                     if (result.MessageType == WebSocketMessageType.Close) return;
+                    Volatile.Write(ref _lastReceivedMs, Platform.Milliseconds);
                     filled += result.Count;
                 } while (!result.EndOfMessage);
 

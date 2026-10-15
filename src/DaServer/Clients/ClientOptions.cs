@@ -21,6 +21,13 @@ public sealed class ClientOptions
     /// <summary>Messages a client may send at once above <see cref="MessagesPerSecond"/>.</summary>
     public double Burst { get; set; } = 100;
 
+    /// <summary>
+    /// A client that sent nothing for this long is gone (half-open TCP, a dropped NAT mapping, a switched network, an
+    /// app in the background): its connection is closed as lost, so its session waits out the reconnect grace (ADR-053).
+    /// Idle clients ping (<c>ClusterClient.KeepAliveInterval</c>, 15 s): keep this a few intervals above it.
+    /// </summary>
+    public TimeSpan ClientTimeout { get; set; } = TimeSpan.FromSeconds(45);
+
     /// <summary>Validity of a reconnect ticket; clients refresh theirs at half of it.</summary>
     public TimeSpan TicketLifetime { get; set; } = TimeSpan.FromMinutes(10);
 

@@ -36,6 +36,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
         {
             client._pending.SweepExpired();
             client.RefreshTicket();
+            client.CheckAlive();
         }
     }, null, 100, 100);
 
@@ -57,6 +58,49 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
     }
 
     public TimeSpan CallTimeout { get; set; } = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// When the client has sent nothing for this long it pings its node, which answers (ADR-053): the node then knows
+    /// the client is there, and the client hears from the node even when nothing is pushed. Keep it below the
+    /// node's <c>ClientOptions.ClientTimeout</c> (45 s by default).
+    /// </summary>
+    public TimeSpan KeepAliveInterval { get; set; } = TimeSpan.FromSeconds(15);
+
+    /// <summary>
+    /// Nothing received for this long: the connection is dead (half-open TCP, a dropped NAT mapping, a switched
+    /// network) and is closed, as a lost connection (<see cref="Disconnected"/>, then the reconnect).
+    /// </summary>
+    public TimeSpan ServerTimeout { get; set; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Probe the connection now (call it when the app returns to the foreground or the network changed): a ping that
+    /// is not answered within <paramref name="timeout"/> (5 s by default) closes the connection as lost, so the client
+    /// reconnects at once instead of after <see cref="ServerTimeout"/>.
+    /// </summary>
+    public void CheckConnection(TimeSpan? timeout = null)
+    {
+        if (_connection is not { IsClosed: false } connection) return;
+        Volatile.Write(ref _probeDeadlineMs, Platform.Milliseconds + (long)(timeout ?? TimeSpan.FromSeconds(5)).TotalMilliseconds);
+        KeepAlive.Send(connection, ControlOp.Ping);
+    }
+
+    private long _probeDeadlineMs; // 0: no probe waiting for its pong
+
+    /// <summary>Sweeper tick: ping when idle, close a silent connection (and an unanswered probe).</summary>
+    private void CheckAlive()
+    {
+        if (_connection is not { } connection || Volatile.Read(ref _reconnecting) != 0) return;
+        long now = Platform.Milliseconds;
+        long probeDeadline = Volatile.Read(ref _probeDeadlineMs);
+        if (probeDeadline != 0 && now >= probeDeadline)
+        {
+            Volatile.Write(ref _probeDeadlineMs, 0);
+            connection.Close(KeepAlive.Silent);
+            return;
+        }
+
+        KeepAlive.Check(connection, now, (long)KeepAliveInterval.TotalMilliseconds, (long)ServerTimeout.TotalMilliseconds);
+    }
 
     public bool IsConnected => _connection is { IsClosed: false };
 
@@ -302,6 +346,12 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
             case FrameKind.Message: // to this session or one of its groups
                 if (_inbox != null) _inbox.TryEnqueue(FrameWriter.CopyOf(frame));
                 else DispatchCallback(frame);
+                break;
+            case FrameKind.Control when header.MessageId == ControlOp.Ping:
+                KeepAlive.Pong(connection);
+                break;
+            case FrameKind.Control when header.MessageId == ControlOp.Pong:
+                Volatile.Write(ref _probeDeadlineMs, 0); // a probe (or a keep-alive ping) answered
                 break;
             case FrameKind.Control when header.MessageId == ControlOp.Ticket:
                 var ticket = FrameHeader.PayloadOf(in header, frame);

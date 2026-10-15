@@ -311,6 +311,18 @@ internal sealed class PeerLink : IFrameSink, IDisposable
         if (received - _acknowledged >= ResendWindow.ChunkSize) Acknowledge(connection, received);
     }
 
+    /// <summary>
+    /// Maintenance tick (ADR-053): ping on the outgoing connection when it has sent nothing for
+    /// <paramref name="intervalMs"/> (the peer answers, as it acknowledges data), and close either connection when it
+    /// has received nothing for <paramref name="timeoutMs"/>: a half-open link or a peer that stopped reading is
+    /// reconnected and resumed from the resend window, while membership alone decides whether the peer is dead.
+    /// </summary>
+    internal void CheckAlive(long nowMs, long intervalMs, long timeoutMs)
+    {
+        if (Volatile.Read(ref _connection) is { } outgoing) KeepAlive.Check(outgoing, nowMs, intervalMs, timeoutMs);
+        if (Volatile.Read(ref _inbound) is { } inbound) KeepAlive.Check(inbound, nowMs, 0, timeoutMs);
+    }
+
     /// <summary>Maintenance tick: acknowledge the tail of the peer's stream.</summary>
     internal void AcknowledgeReceived()
     {
