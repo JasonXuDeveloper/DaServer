@@ -60,12 +60,13 @@ public class GeneratorTests
     {
         var (sources, diagnostics) = await Run("""
             namespace Game;
-            [NinoType] public partial record struct Price(string Item, int Count) : IRequest<int>;
-            [NinoType] public partial record struct Restock(string Item);
-            [NinoType, ClientMessage] public partial record struct Move(float X, float Y);
-            [NinoType, ClientMessage(AnyKey = true)] public partial record struct Topic : IRequest<string?>;
-            [NinoType] public partial record struct Heal(int Hp) : IRequest<int>;
-            [NinoType] public partial record struct Opened;
+            [NinoType, Message] public partial record struct Price(string Item, int Count) : IRequest<int>;
+            [NinoType, Message] public partial record struct Restock(string Item);
+            [NinoType, Message(Flow.FromClient)] public partial record struct Move(float X, float Y);
+            [NinoType, Message(Flow.FromClient, AnyKey = true)] public partial record struct Topic : IRequest<string?>;
+            [NinoType, Message] public partial record struct Heal(int Hp) : IRequest<int>;
+            [NinoType, Message] public partial record struct Opened;
+            [NinoType, Message(Flow.ToClient)] public partial record struct Shown;
             public sealed class Shop : Service
             {
                 [Handle] public int On(Price m) => m.Count;
@@ -81,7 +82,7 @@ public class GeneratorTests
                 [Handle] public void On(Move m) { }
                 [Handle] public ValueTask<int> On(Heal m) => new(m.Hp);
             }
-            public sealed class Screen { [Handle] public void On(Opened _) { } }
+            public sealed class Screen { [Handle] public void On(Shown _) { } }
             """);
         Assert.That(diagnostics, Is.Empty);
         string registration = sources.Single(s => s.Contains("RegisterImplementation"));
@@ -95,19 +96,26 @@ public class GeneratorTests
             .And.Some.Contains("RegisterClientMessage<global::Game.Topic>(anyKey: true)"));
     }
 
-    [TestCase("[NinoType] public partial record struct Tick(int N); public sealed class Bad : Service { [Handle] void On(Tick e) { } }", "DAS001")]
-    [TestCase("[NinoType] public partial record struct Tick(int N); public sealed class Bad : Service { [Handle] public void On(ref Tick e) { } }", "DAS001")]
-    [TestCase("[NinoType] public partial record struct Tick(int N); public sealed class Bad : Service { [Handle] public int On(Tick e) => 0; }", "DAS001")]
-    [TestCase("[NinoType] public partial record struct Ask : IRequest<int>; public sealed class Bad : Service { [Handle] public void On(Ask e) { } }", "DAS001")]
-    [TestCase("[NinoType] public partial record struct Ask : IRequest<int>; public sealed class Bad : Service { [Handle] public ValueTask<long> On(Ask e) => default; }", "DAS001")]
-    [TestCase("[NinoType] public partial record struct Tick(int N); public sealed class Bad : Service { [Handle] public void A(Tick e) { } [Handle] public void B(Tick e) { } }", "DAS001")]
+    [TestCase("[NinoType, Message] public partial record struct Tick(int N); public sealed class Bad : Service { [Handle] void On(Tick e) { } }", "DAS001")]
+    [TestCase("[NinoType, Message] public partial record struct Tick(int N); public sealed class Bad : Service { [Handle] public void On(ref Tick e) { } }", "DAS001")]
+    [TestCase("[NinoType, Message] public partial record struct Tick(int N); public sealed class Bad : Service { [Handle] public int On(Tick e) => 0; }", "DAS001")]
+    [TestCase("[NinoType, Message] public partial record struct Ask : IRequest<int>; public sealed class Bad : Service { [Handle] public void On(Ask e) { } }", "DAS001")]
+    [TestCase("[NinoType, Message] public partial record struct Ask : IRequest<int>; public sealed class Bad : Service { [Handle] public ValueTask<long> On(Ask e) => default; }", "DAS001")]
+    [TestCase("[NinoType, Message] public partial record struct Tick(int N); public sealed class Bad : Service { [Handle] public void A(Tick e) { } [Handle] public void B(Tick e) { } }", "DAS001")]
     [TestCase("public struct Tick { } public sealed class Bad : Service { [Handle] public void On(Tick e) { } }", "DAS002")]
     [TestCase("[NinoType] public partial class Tick { } public sealed class Bad : Service { [Handle] public void On(Tick e) { } }", "DAS002")]
-    [TestCase("[ClientMessage] public struct Bad { }", "DAS002")]
+    [TestCase("[Message(Flow.FromClient)] public struct Bad { }", "DAS002")]
+    [TestCase("[NinoType] public partial record struct Tick(int N); public sealed class Bad : Service { [Handle] public void On(Tick e) { } }", "DAS002")]
     [TestCase("public struct Bad : IRequest<int> { }", "DAS002")]
-    [TestCase("public struct Data { } [NinoType] public partial record struct Bad : IRequest<Data>;", "DAS003")]
-    [TestCase("[NinoType, WireId(5)] public partial record struct A; [NinoType, WireId(5)] public partial record struct B;", "DAS004")]
-    [TestCase("[NinoType] public partial record struct Tick; public sealed class Bad : Service { public Bad(int x) { } [Handle] public void On(Tick e) { } }", "DAS005")]
+    [TestCase("public struct Data { } [NinoType, Message] public partial record struct Bad : IRequest<Data>;", "DAS003")]
+    [TestCase("[NinoType, Message, WireId(5)] public partial record struct A; [NinoType, Message, WireId(5)] public partial record struct B;", "DAS004")]
+    [TestCase("[NinoType, Message] public partial record struct Tick; public sealed class Bad : Service { public Bad(int x) { } [Handle] public void On(Tick e) { } }", "DAS005")]
+    [TestCase("[NinoType, Message(Flow.ToClient)] public partial record struct Tick; public sealed class Bad : Service { [Handle] public void On(Tick e) { } }", "DAS006")]
+    [TestCase("[NinoType, Message] public partial record struct Tick; public sealed class Ui { [Handle] public void On(Tick e) { } }", "DAS006")]
+    [TestCase("[NinoType, Message] public partial record struct Tick; public sealed class Bad : Service { [Handle] public void On(Tick e) => Cluster.Send(CallerSession, e); }", "DAS006")]
+    [TestCase("[NinoType, Message] public partial record struct Tick; public static class Bad { public static void Go(DaServer.Client.ClusterClient c) => c.Send(new Tick()); }", "DAS006")]
+    [TestCase("[NinoType, Message(Flow.ToClient)] public partial record struct Tick; public static class Bad { public static void Go(ICluster c) => c.Send(1, new Tick()); }", "DAS006")]
+    [TestCase("[NinoType] public partial record struct Tick; public static class Bad { public static void Go(ICluster c) => c.Publish(new Tick()); }", "DAS002")]
     public async Task MisuseIsReportedByTheAnalyzer(string source, string id)
     {
         var (_, diagnostics) = await Run(source);
@@ -117,7 +125,7 @@ public class GeneratorTests
     [Test]
     public void NodeExecutablesGetAnEntryPointUnlessTheyWriteOne()
     {
-        const string node = "[NinoType] public partial record struct Price(int N) : IRequest<int>; public sealed class Shop : Service { [Handle] public int On(Price m) => m.N; }";
+        const string node = "[NinoType, Message] public partial record struct Price(int N) : IRequest<int>; public sealed class Shop : Service { [Handle] public int On(Price m) => m.N; }";
         Driver().RunGeneratorsAndUpdateCompilation(Compile(OutputKind.ConsoleApplication, Parse(node)), out var generated, out _);
         Assert.That(generated.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error), Is.Empty);
         Assert.That(generated.GetEntryPoint(default)?.ContainingType.ToDisplayString(), Is.EqualTo("DaServer.Generated.NodeProgram"));
@@ -133,7 +141,7 @@ public class GeneratorTests
     [Test]
     public void UnrelatedEditsHitTheCache()
     {
-        var messages = Parse("[NinoType, ClientMessage] public partial record struct Price(int N) : IRequest<int>; public sealed class Shop : Service { [Handle] public int On(Price m) => m.N; }");
+        var messages = Parse("[NinoType, Message(Flow.FromClient)] public partial record struct Price(int N) : IRequest<int>; public sealed class Shop : Service { [Handle] public int On(Price m) => m.N; }");
         var other = Parse("public class Unrelated { }");
         var compilation = Compile(messages, other);
         var driver = Driver().RunGenerators(compilation);

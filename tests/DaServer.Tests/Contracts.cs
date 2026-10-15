@@ -16,21 +16,21 @@ namespace DaServer.Tests;
 
 // ---------------------------------------------------------------- counter (actor)
 
-[NinoType] public partial record struct Add(int Delta) : IRequest<int>;
-[NinoType] public partial record struct Get : IRequest<int>;
-[NinoType] public partial record struct Bump;                                       // one-way
-[NinoType] public partial record struct Reset : IRequest<bool>;
-[NinoType] public partial record struct WhereAmI : IRequest<string>;              // shard thread name
-[NinoType] public partial record struct EchoPoint(Point Point) : IRequest<Point>;
-[NinoType] public partial record struct AddVia(long Other, int Delta) : IRequest<int>; // actor -> actor request
-[NinoType] public partial record struct Fail(string Message) : IRequest<bool>;
-[NinoType] public partial record struct SlowAdd(int Delta) : IRequest<int>;       // awaits a foreign Task.Delay
-[NinoType] public partial record struct Grow : IRequest<bool>;                    // input for GrowthSystem
-[NinoType] public partial record struct AddMany(long Other, int Count) : IRequest<long>;     // bytes allocated meanwhile
-[NinoType] public partial record struct PublishMany(long Other, int Count) : IRequest<long>; // bytes allocated meanwhile
+[NinoType, Message] public partial record struct Add(int Delta) : IRequest<int>;
+[NinoType, Message(Flow.FromClient)] public partial record struct Get : IRequest<int>;
+[NinoType, Message] public partial record struct Bump;                                       // one-way
+[NinoType, Message] public partial record struct Reset : IRequest<bool>;
+[NinoType, Message] public partial record struct WhereAmI : IRequest<string>;              // shard thread name
+[NinoType, Message] public partial record struct EchoPoint(Point Point) : IRequest<Point>;
+[NinoType, Message] public partial record struct AddVia(long Other, int Delta) : IRequest<int>; // actor -> actor request
+[NinoType, Message] public partial record struct Fail(string Message) : IRequest<bool>;
+[NinoType, Message] public partial record struct SlowAdd(int Delta) : IRequest<int>;       // awaits a foreign Task.Delay
+[NinoType, Message] public partial record struct Grow : IRequest<bool>;                    // input for GrowthSystem
+[NinoType, Message] public partial record struct AddMany(long Other, int Count) : IRequest<long>;     // bytes allocated meanwhile
+[NinoType, Message] public partial record struct PublishMany(long Other, int Count) : IRequest<long>; // bytes allocated meanwhile
 
 /// <summary>Event: delivered to the counter of the key it is published with.</summary>
-[NinoType] public partial record struct CounterBumped(int By);
+[NinoType, Message] public partial record struct CounterBumped(int By);
 
 public record struct CounterState(int Value) : IComponent;
 
@@ -121,11 +121,11 @@ public sealed partial class GrowthSystem : EcsSystem
 }
 
 /// <summary>A request no type handles.</summary>
-[NinoType] public partial record struct Unhandled : IRequest<int>;
+[NinoType, Message] public partial record struct Unhandled : IRequest<int>;
 
 // ---------------------------------------------------------------- visitor (actor unloaded when idle)
 
-[NinoType] public partial record struct Visit : IRequest<int>;
+[NinoType, Message] public partial record struct Visit : IRequest<int>;
 
 public record struct Visits(int Count) : IComponent;
 
@@ -156,11 +156,11 @@ public static class Observed
 
 // ---------------------------------------------------------------- services
 
-[NinoType] public partial record struct EchoText(string Text) : IRequest<string>;
-[NinoType] public partial record struct WhichNode : IRequest<ulong>;
+[NinoType, Message] public partial record struct EchoText(string Text) : IRequest<string>;
+[NinoType, Message] public partial record struct WhichNode : IRequest<ulong>;
 
 /// <summary>Event: delivered once to each service type handling it.</summary>
-[NinoType] public partial record struct Ping(int Id);
+[NinoType, Message] public partial record struct Ping(int Id);
 
 public sealed class EchoService : Service
 {
@@ -179,25 +179,25 @@ public sealed class AuditService : Service
 
 // ---------------------------------------------------------------- client-facing: login, player, rooms
 
-[NinoType, ClientMessage] public partial record struct Login(long PlayerId) : IRequest<bool>;
+[NinoType, Message(Flow.FromClient)] public partial record struct Login(long PlayerId) : IRequest<bool>;
 
 /// <summary>Logs in behind a burst of 4 KB pushes to the caller (the binding must not be overtaken).</summary>
-[NinoType, ClientMessage] public partial record struct LoginAfterPushes(long PlayerId, int Pushes) : IRequest<bool>;
+[NinoType, Message(Flow.FromClient)] public partial record struct LoginAfterPushes(long PlayerId, int Pushes) : IRequest<bool>;
 
-[NinoType, ClientMessage] public partial record struct Logout : IRequest<bool>;
-[NinoType, ClientMessage] public partial record struct AddGold(int Amount) : IRequest<int>;
-[NinoType, ClientMessage] public partial record struct Tip(int Amount);            // one-way
+[NinoType, Message(Flow.FromClient)] public partial record struct Logout : IRequest<bool>;
+[NinoType, Message(Flow.FromClient)] public partial record struct AddGold(int Amount) : IRequest<int>;
+[NinoType, Message(Flow.FromClient)] public partial record struct Tip(int Amount);            // one-way
 
 /// <summary>Server-only: the login service attaches a client session to its player.</summary>
-[NinoType] public partial record struct Attach(SessionRef Session) : IRequest<bool>;
+[NinoType, Message] public partial record struct Attach(SessionRef Session) : IRequest<bool>;
 
 /// <summary>A public chat room: clients choose the room id.</summary>
-[NinoType, ClientMessage(AnyKey = true)] public partial record struct Join : IRequest<bool>;
-[NinoType, ClientMessage(AnyKey = true)] public partial record struct Say(string Text);
+[NinoType, Message(Flow.FromClient, AnyKey = true)] public partial record struct Join : IRequest<bool>;
+[NinoType, Message(Flow.FromClient, AnyKey = true)] public partial record struct Say(string Text);
 
 // Pushes (server to client).
-[NinoType] public partial record struct Chat(long From, string Text);
-[NinoType] public partial record struct GoldChanged(int Gold);
+[NinoType, Message(Flow.ToClient)] public partial record struct Chat(long From, string Text);
+[NinoType, Message(Flow.ToClient)] public partial record struct GoldChanged(int Gold);
 
 public sealed class AuthService : Service
 {

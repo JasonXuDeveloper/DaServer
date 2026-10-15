@@ -33,7 +33,7 @@ internal sealed record HostedModel(string FullName, HostedKind Kind, EquatableAr
 /// <summary>A request type (<c>IRequest&lt;TReply&gt;</c>): the generator emits its typed <c>Ask</c> overloads.</summary>
 internal sealed record RequestModel(string Namespace, string ClassName, string FullName, string ReplyType, bool Public);
 
-/// <summary>A [ClientMessage] type: registered for gateways in its assembly.</summary>
+/// <summary>A <c>Flow.FromClient</c> message type: registered for gateways in its assembly.</summary>
 internal sealed record ClientMessageModel(string FullName, bool AnyKey);
 
 /// <summary>
@@ -47,13 +47,13 @@ internal static class Shapes
         type.AllInterfaces.FirstOrDefault(i => i.ConstructedFrom.ToDisplayString() == RequestInterface)?.TypeArguments[0];
 
     /// <summary>
-    /// A message type: a non-generic [NinoType] struct (what crosses the wire as one message). Reports why not when
-    /// <paramref name="report"/> is set.
+    /// A message type: a non-generic [NinoType, Message] struct (what crosses the wire as one message; plain [NinoType]
+    /// types are data inside messages). Reports why not when <paramref name="report"/> is set.
     /// </summary>
     public static bool IsMessage(ITypeSymbol type, Location? location, string usedBy, Report? report)
     {
         string? problem = type.TypeKind != TypeKind.Struct ? "must be a struct"
-            : !HasAttribute(type, NinoTypeAttribute) ? "must be a [NinoType] struct"
+            : !HasAttribute(type, NinoTypeAttribute) || !HasAttribute(type, MessageAttribute) ? "must be a [NinoType, Message] struct"
             : type is INamedTypeSymbol { IsGenericType: true } ? "cannot be generic"
             : null;
         if (problem == null) return true;
@@ -80,13 +80,35 @@ internal static class Shapes
             IsPublic(type));
     }
 
-    /// <summary>A [ClientMessage] struct, or null (reported).</summary>
+    /// <summary>The <c>Flow</c> of a [Message] type (0, internal, when it has none).</summary>
+    public static int FlowOf(ITypeSymbol type) =>
+        GetAttribute(type, MessageAttribute)?.ConstructorArguments.FirstOrDefault().Value is int flow ? flow : 0;
+
+    /// <summary>A <c>Flow.FromClient</c> message, or null (invalid ones are reported).</summary>
     public static ClientMessageModel? ReadClientMessage(INamedTypeSymbol type, Report? report = null)
     {
-        var attribute = GetAttribute(type, ClientMessageAttribute);
-        if (attribute == null || !IsMessage(type, type.Locations.FirstOrDefault(), "[ClientMessage]", report)) return null;
+        var attribute = GetAttribute(type, MessageAttribute);
+        if (attribute == null || (FlowOf(type) & FlowFromClient) == 0) return null;
+        if (!IsMessage(type, type.Locations.FirstOrDefault(), "[Message(Flow.FromClient)]", report)) return null;
         bool anyKey = attribute.NamedArguments.Any(a => a.Key == "AnyKey" && a.Value.Value is true);
         return new ClientMessageModel(type.ToDisplayString(Fqn), anyKey);
+    }
+
+    /// <summary>
+    /// Whether <paramref name="message"/> may travel the way a call or handler uses it (reported when not):
+    /// <paramref name="toClient"/> (pushed to a session or group, handled on a client) needs <c>Flow.ToClient</c>;
+    /// <paramref name="fromClient"/> (sent by a client) needs <c>Flow.FromClient</c>; anything a server handles or
+    /// sends to servers must not be a <c>Flow.ToClient</c>-only message (no server handles it).
+    /// </summary>
+    public static bool CheckFlow(ITypeSymbol message, bool toClient, bool fromClient, Location? location, string usedBy, Report? report)
+    {
+        int flow = FlowOf(message);
+        string? problem = toClient ? ((flow & FlowToClient) == 0 ? "needs [Message(Flow.ToClient)] to reach clients" : null)
+            : fromClient ? ((flow & FlowFromClient) == 0 ? "needs [Message(Flow.FromClient)] to be sent by clients" : null)
+            : flow == FlowToClient ? "is a Flow.ToClient message: only clients handle it" : null;
+        if (problem == null) return true;
+        report?.Invoke(Rules.WrongFlow, location, message.ToDisplayString(), usedBy, problem);
+        return false;
     }
 
     /// <summary>
@@ -129,7 +151,7 @@ internal static class Shapes
     /// one handler per message type; a request's handler returns its reply, other handlers void or ValueTask. Null
     /// when one is invalid.
     /// </summary>
-    public static List<(HandlerModel Model, ITypeSymbol Message)>? ReadHandlers(INamedTypeSymbol type, Report? report)
+    public static List<(HandlerModel Model, ITypeSymbol Message)>? ReadHandlers(INamedTypeSymbol type, bool client, Report? report)
     {
         var handlers = new List<(HandlerModel, ITypeSymbol)>();
         bool valid = true;
@@ -147,7 +169,8 @@ internal static class Shapes
                 continue;
             }
 
-            if (!IsMessage(message, location, "handler " + name, report))
+            if (!IsMessage(message, location, "handler " + name, report) ||
+                !CheckFlow(message, toClient: client, fromClient: false, location, "handler " + name, report))
             {
                 valid = false;
                 continue;
@@ -203,7 +226,7 @@ internal static class Shapes
             : HostedKind.ClientHandler;
         if (kind == HostedKind.System) return new HostedModel(type.ToDisplayString(Fqn), kind, default);
 
-        var handlers = ReadHandlers(type, report);
+        var handlers = ReadHandlers(type, client: kind == HostedKind.ClientHandler, report);
         if (handlers == null || (kind == HostedKind.ClientHandler && handlers.Count == 0)) return null;
         if (!IsReachable(type))
         {

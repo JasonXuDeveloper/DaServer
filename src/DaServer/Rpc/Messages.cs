@@ -10,13 +10,14 @@ using Nino.Core;
 
 namespace DaServer.Rpc;
 
-// Message-first: a message is a [NinoType] struct, a handler is a [Handle] method taking it. Nothing else is declared.
+// Message-first: a message is a [NinoType, Message] struct, a handler is a [Handle] method taking it. Nothing else is
+// declared. Plain [NinoType] types are data inside messages (fields, replies), never sent on their own.
 //
 //   Cluster.Send(key, msg)        one-way to the actor of that key handling msg   (Send(msg): the service handling it)
 //   Cluster.Ask(key, request)     request/reply: request implements IRequest<TReply>, its handler returns TReply
 //   Cluster.Publish(e)            to every handler of e (services); Publish(key, e) also reaches actor handlers of key
 //   Cluster.Send(session, msg)    push to one client; Send(group, msg) broadcasts to a client group
-//   client.Send(msg) / Ask(..)    clients send [ClientMessage] types; actor handlers get the key bound to the session
+//   client.Send(msg) / Ask(..)    clients send Flow.FromClient messages; actor handlers get the key bound to the session
 
 /// <summary>
 /// A message answered with a <typeparamref name="TReply"/>: <c>Cluster.Ask(key, new GetInfo())</c>. Its handler
@@ -33,15 +34,36 @@ public interface IRequest<TReply>;
 [AttributeUsage(AttributeTargets.Method)]
 public sealed class HandleAttribute : Attribute;
 
+/// <summary>Who a message travels between (<see cref="MessageAttribute"/>). Servers can always send it to each other.</summary>
+[Flags]
+public enum Flow
+{
+    /// <summary>Between servers only: actors and services on any node (login, game, map, gateway services).</summary>
+    Internal = 0,
+
+    /// <summary>
+    /// Game clients may send it through a gateway, which adds the client's session (<c>CallerSession</c>). Handled by a
+    /// service: any node hosting it. Handled by an actor: the key bound to the session (<c>BindSession</c>), so a
+    /// client never reaches another player's actor, unless <see cref="MessageAttribute.AnyKey"/> is set.
+    /// </summary>
+    FromClient = 1,
+
+    /// <summary>Servers push it to client sessions and groups (<c>Send(session, m)</c>), handled on clients.</summary>
+    ToClient = 2,
+}
+
 /// <summary>
-/// Game clients may send this message through a gateway, which adds the client's session (<c>CallerSession</c>).
-/// Handled by a service: any node hosting it. Handled by an actor: the key bound to the session
-/// (<c>BindSession</c>), so a client never reaches another player's actor, unless <see cref="AnyKey"/> is set.
+/// Marks a <c>[NinoType]</c> struct as a message: what is sent, published, pushed or asked (with
+/// <see cref="IRequest{TReply}"/>) and taken by <see cref="HandleAttribute">[Handle]</see> methods. Plain
+/// <c>[NinoType]</c> types are data inside messages. <see cref="Flow"/> says who may send it to whom; the analyzer
+/// rejects a message used against its flow (a server pushing an internal message, a client sending one).
 /// </summary>
 [AttributeUsage(AttributeTargets.Struct)]
-public sealed class ClientMessageAttribute : Attribute
+public sealed class MessageAttribute(Flow flow = Flow.Internal) : Attribute
 {
-    /// <summary>Actor handlers only: the client chooses the key (public actors: rooms, leaderboards).</summary>
+    public Flow Flow { get; } = flow;
+
+    /// <summary><see cref="Flow.FromClient"/> to actors only: the client chooses the key (public actors: rooms, leaderboards).</summary>
     public bool AnyKey { get; set; }
 }
 
@@ -93,7 +115,7 @@ public interface IMessageSender
 /// was bound to (<c>BindSession</c>) that handles it; for a lost connection, only once the client had
 /// <see cref="Runtime.NodeOptions.ReconnectGrace"/> to resume (and it did not).
 /// </summary>
-[NinoType]
+[NinoType, Message]
 public readonly partial record struct SessionClosed(SessionRef Session);
 
 /// <summary>
@@ -103,7 +125,7 @@ public readonly partial record struct SessionClosed(SessionRef Session);
 /// and send the client its full state (pushes sent meanwhile were lost). <see cref="SessionClosed"/> for
 /// <see cref="Previous"/> is not delivered afterwards.
 /// </summary>
-[NinoType]
+[NinoType, Message]
 public readonly partial record struct SessionResync(SessionRef Session, SessionRef Previous);
 
 /// <summary>Wire identity of message type <typeparamref name="T"/>: [WireId] or FNV-1a of its full name, computed once.</summary>
@@ -159,7 +181,7 @@ public sealed class MessageHandlers
     public MessageHandler? Of(uint messageId) => _byId.TryGetValue(messageId, out var handler) ? handler : null;
 }
 
-/// <summary>A message type game clients may send (<see cref="ClientMessageAttribute"/>).</summary>
+/// <summary>A message type game clients may send (<see cref="Flow.FromClient"/>).</summary>
 public readonly record struct ClientMessageInfo(uint Id, Type Type, bool AnyKey);
 
 /// <summary>
