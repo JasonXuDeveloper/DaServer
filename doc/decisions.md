@@ -698,5 +698,30 @@ records that no longer hold). Each: context → decision → consequences.
 - Alternatives: stay on .NET 10 LTS (gives up 2.3-2.7x on concurrent local calls, 1.1-1.3x remote); multi-target the server (doubles build and test
   time for users who all deploy one runtime).
 - Consequences: servers need the .NET 11 runtime (x86-64-v2 or newer); BenchmarkDotNet 0.16 (preview) hosts .NET 11.
-  Broadcast fan-out is the one path that did not gain: profile it on .NET 11 (roadmap, step 8d).
+  Broadcast fan-out is the one path that did not gain: profile it on .NET 11 (roadmap, "Open after G").
 
+
+## ADR-055 Shared rules, a real client, and bots that run it
+- Context: the sample's bot called the protocol directly (log in, send random `Move`s, count pushes): a second
+  client written for the test, so the end-to-end and load tests proved the servers against code no player runs, and
+  rules both sides need (movement, the interest grid) lived in the map server only. ET runs its robots as real
+  clients (each robot a fiber running the client's scenes); RandomGame-style bots mirror that.
+- Decision: three layers in samples. `Sample.Shared` (`<DaServerShared>true</DaServerShared>`) holds rules and ECS
+  systems both sides run (`MovementSystem`, `MapGeometry`); the generator marks it `[assembly: SharedLogic]` and a
+  node project referencing it runs its public systems on every shard, as its own; DAS010 makes a reference from a
+  shared assembly to the server runtime or the transport (`DaServer`, `DaServer.Hosting`, `DaServer.Core`,
+  `DaServer.Client`) a build error. `Sample.Client` is the game client's logic as data and systems: a player entity
+  per connected client, pushes handled into components on the world's thread (`PushSystem` drains the client's
+  callback queue), prediction with the shared rules, input sent when it changes, the view kept to the 3x3; flows
+  (log in, enter a map) are awaits on a `ClientLoop` (a `SynchronizationContext` with its own thread: pushes as they
+  arrive, the simulation at the server's tick rate). Per-player state lives on the player entity, never in world
+  singletons, so one world holds one player in a game and thousands in a bot process. `Sample.Bot` is the client plus
+  an input source (`BotInputSystem` writes `Steering`/`Speaking` as a UI would) and measurement (`MeasureSystem`),
+  one loop per core.
+- Alternatives: a fiber (an isolated world, scheduler and mailbox) per robot as in ET: 10,000 worlds polled every
+  millisecond for the isolation a player entity already gives; systems over many players batch the same work.
+  Keeping protocol-level bots: cheap, but tests the servers against a client nobody ships.
+- Consequences: the end-to-end test and the load test run the client a player runs; a client change is load-tested
+  by the next run. Bots now hold what a client holds (avatars in view as entities), which costs memory a protocol bot
+  did not spend. Shared systems run on every node that references the shared assembly, so a node references it only
+  when it simulates what the rules are about (the map server does; the game server does not).

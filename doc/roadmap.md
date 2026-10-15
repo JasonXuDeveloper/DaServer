@@ -370,6 +370,9 @@ in separate commits.
       analyzer rule) / Server (authority, storage, other players' data: never visible to bots). Bots talk to the
       cluster only through gateways with `FromClient` messages, like players; unit tests exercise Shared systems
       without a cluster; benchmarks load a real cluster with the same bots.
+- [ ] Sample bot scenarios beyond moving and chatting (change map, reconnect, log out and in): phases as components
+      on the player entity, one system per phase and a selection system on an `UpdateInterval` (ET's priority-ordered
+      AI handlers expressed as data: no coroutine per bot, no reflection registry).
 - [ ] N1 Fixed/reloadable split on top of stateless handler types (DAS007, ADR-044): projects Contracts (messages) +
       Model (components, singletons: never reloaded) + Logic (actors, services, systems: reloadable), samples
       included. Prerequisite of N5 and N9. (RandomGame, ET)
