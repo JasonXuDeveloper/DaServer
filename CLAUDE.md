@@ -27,15 +27,19 @@ EasyEcs comes from NuGet (`EasyEcsVersion` in `Directory.Build.props`). Use it a
 ## Layout
 
 ```
-src/DaServer/              runtime (net10.0): Protocol/ Buffers/ Concurrency/ Net/ Rpc/ Runtime/ Cluster/ Client/
-                           and the built-in capabilities on the feature points: Features/ Ingress/ Clients/
+src/DaServer.Abstractions/ contracts (netstandard2.1 + net10): attributes, IRequest, addresses, wire ids (ADR-052)
+src/DaServer.Core/         wire and transport shared by servers and clients (netstandard2.1 + net10): Protocol/
+                           Buffers/ Net/ Rpc/ (calls, dispatch) Concurrency/
+src/DaServer.Client/       client SDK (netstandard2.1 + net10): ClusterClient
+src/DaServer/              server runtime (net10.0): Runtime/ Cluster/ Rpc/ and the built-in capabilities on the
+                           feature points: Features/ Ingress/ Clients/
   Runtime/Shard.cs         thread + dispatch queue (the cross-thread handoff) + wake/tick loop (nothing else)
   Runtime/ShardData.cs     shard ECS data: actor components and lifecycle tags (Mailbox, Ready, Turn, ...), singletons
   Runtime/ShardDispatch.cs routing/delivery/invoke operations shared by the runtime systems
   Runtime/Systems/         runtime systems: Dispatch, Turn, ServiceCall, Removal, Unload, Mailbox (ShardMessages group),
                            Rebalance (ShardRebalance), Idle (ShardIdleScan); each reacts to one lifecycle tag (ADR-037)
-src/DaServer.Generator/    incremental generators (MessageGenerator, HostGenerator incl. node entry point)
-                           + DaServerAnalyzer (DAS001-007);
+src/DaServer.Generator/    incremental generators (AskGenerator, RegistrationGenerator, EntryPointGenerator,
+                           PolyfillGenerator) + DaServerAnalyzer (DAS001-008);
                            Shapes.cs reads symbols once for both, so "skipped by the generator" == "reported"
 src/DaServer.Hosting/      Generic Host integration, configuration, OpenTelemetry (OTLP when configured), shutdown
 src/DaServer.Aspire/       Aspire hosting integration: AddDaServerCluster / AddNodes / AddGateways /

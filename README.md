@@ -217,6 +217,10 @@ client.Send(new Move(1, 0));
 A node project needs no `Program.cs`: the generator emits the entry point (Generic Host, configuration, OpenTelemetry,
 a periodic stats line, graceful shutdown). Write one to customize the host.
 
+Packages (ADR-052): contract projects reference `DaServer.Abstractions`; clients (Unity through netstandard2.1, bots,
+tools) reference `DaServer.Client`; node projects reference `DaServer.Hosting` (server runtime `DaServer`). The wire
+and transport both sides share are `DaServer.Core`. The generator ships with Abstractions.
+
 ## Orchestration with Aspire
 
 ```csharp

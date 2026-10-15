@@ -376,8 +376,10 @@ What the generators write:
 
 | Generator | Output |
 |---|---|
-| `MessageGenerator` | typed `Ask` overloads per request (`Cluster.Ask(playerId, new AddGold(1))` infers the reply type), `[FromClient]` registration for gateways |
-| `HostGenerator` | registration of every actor and service with one dispatcher per `[Handle]` method, client handler classes, every `EcsSystem`; the node entry point when the project has no `Program.cs` |
+| `AskGenerator` | a `{Request}Ask` class of typed `Ask` overloads per request (`Cluster.Ask(playerId, new AddGold(1))` infers the reply type) |
+| `RegistrationGenerator` | `Registration_{Assembly}`: registrations of referenced assemblies first, then `[FromClient]` messages, client handler classes, actors and services (one dispatcher per `[Handle]` method), every `EcsSystem`; run once by its static constructor (ADR-012) |
+| `EntryPointGenerator` | `NodeProgram.Main` when a node project has no `Program.cs` (ADR-021) |
+| `PolyfillGenerator` | `IsExternalInit` for contract assemblies built for netstandard2.1 |
 | EasyEcs `SystemGenerator` | `[ForEach]` struct jobs (components, singletons, entity, world parameters) and `GeneratedUpdate` |
 | Analyzers | DAS001–DAS008 (handlers, messages, wire types, id collisions, constructors, message flow, stateless actors and services, address kinds), EECS001–EECS008 (ECS rules) |
 
