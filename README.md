@@ -281,17 +281,23 @@ node stays under 10% CPU.
 address, then 3,000 more bots: the directory learns of it through gossip and sends it 1,961 of them (2,017 / 2,022 /
 1,961). Both waves pass (no gap, no disconnect). Cluster test: `ANodeStartedLaterIsDiscoveredAndReceivesTheNewClients`.
 
-**BenchmarkDotNet** ([benchmarks/](benchmarks/DaServer.Benchmark), short job; Allocated includes the clients):
+**BenchmarkDotNet** ([benchmarks/](benchmarks/DaServer.Benchmark), default job, one 4-core VM, .NET 11 RC2; Allocated
+is per operation and includes the benchmark's clients):
 
 | Benchmark | Case | Mean | Allocated |
 |---|---|---:|---:|
-| Broadcast to every session, game node through 3 gateways | 3,000 clients | 12.7 ms | 4.2 KB |
-| | 9,000 clients | 38.8 ms | 16.6 KB |
-| Group broadcast through 1 gateway | 1,000 clients | 5.0 ms | 456 B |
-| | 5,000 clients | 21.5 ms | 895 B |
-| One-way messages to 64 actors, bursts of 1,024 (per message) | same node / other node | 4.2 µs / 2.5 µs | 0 |
-| 1,024 concurrent actor calls, all completed | same node / other node | 3.4 ms / 2.1 ms | 252 B |
-| 1 actor call, round trip | same node / other node | 34 µs / 128 µs | 104 B / 167 B |
+| Broadcast to every session, game node through 3 client-facing nodes | 3,000 clients | 13.2 ms | 96 B |
+| | 9,000 clients | 47.2 ms | 129 B |
+| Group broadcast through 1 client-facing node (1 / 9 groups) | 1,000 clients | 5.4 / 5.9 ms | 220 B |
+| | 5,000 clients | 26.2 / 28.9 ms | 232 B |
+| One-way messages to 64 actors, bursts of 1,024 (per message) | same node / other node | 620 ns / 981 ns | 0 |
+| 64 / 1,024 concurrent actor calls, all completed | same node | 218 µs / 1.88 ms | 112 B |
+| | other node | 335 µs / 1.67 ms | 112 B |
+| 1 actor call, round trip | same node / other node | 20 µs / 101 µs | 112 B |
+
+Against the agreed baseline (d676d2a on .NET 10, same machine, run back to back): calls 11-55% faster, one-way
+messages 45-88% faster, broadcasts and the 9k scenario within noise (-12% to +7%), allocations no higher. How much
+comes from .NET 11 alone: ADR-054.
 
 ## Build, test, benchmark
 

@@ -127,7 +127,7 @@ balancing, TLS, CDN/WAF, Gateway API routes and autoscaling stay with the platfo
       `Push`/`Broadcast` are sends to session / group addresses, `JoinGroup`/`LeaveGroup`/`Disconnect` messages to
       them, `BindSession` an `Ask` of `SessionAccess` (removed verbs, no aliases). Wire: `Message`/`Reply`/`Control`, `Target`
       always set, trailers by flag (`Origin` 16 B, call id; `Chain` with N3, `Trace` with A6). Wire break, no rolling
-      upgrade across it (pre-1.0). A/B against Z2: see the benchmark table below.
+      upgrade across it (pre-1.0). A/B of the G work against the baseline: G step 9 below and the README.
 - [ ] G1 Feature points and ingress, step 5, proven by two consumers (client connections and the HTTP plane).
 - [ ] G2 Client connections as a built-in feature, packages, tests, docs: steps 6-10.
 - [ ] G5 `samples/flashsale` (after N5): HTTP edge with admission and a waiting room (signed queue tokens, release
@@ -222,8 +222,21 @@ Step plan (each step builds and keeps every test green; logic, docs, CI in separ
    watching the same symbols and invocations costs (720-750 ms, the compiler's binding).
 8b. Keep-alive (ADR-053), done: `Ping`/`Pong` on idle directions, silence closes client sessions (45 s), client
    connections (30 s, `CheckConnection` probes) and node link connections (`SuspectAfter`); `KeepAliveTests`.
-9. Tests: architecture test done (`ArchitectureTests`: package references point down only; the runtime's folders
-   use no client-connection type); A/B against step 0 (no regression), allocation tests < 1 B per delivery.
+9. Tests, done: architecture test (`ArchitectureTests`: package references point down only; the runtime's folders
+   use no client-connection type); allocation tests (< 1 B per delivery hold); A/B against step 0, d676d2a on .NET 10
+   vs the G head on .NET 11, back to back on one machine (BenchmarkDotNet default job):
+
+   | Case | d676d2a | G head | |
+   |---|---:|---:|---:|
+   | 1 call local / remote | 31.5 / 121 us | 20.2 / 101 us | -36% / -17% |
+   | 64 calls local / remote | 480 / 377 us | 218 / 335 us | -55% / -11% |
+   | 1,024 calls local / remote | 4.16 / 2.22 ms | 1.88 / 1.67 ms | -55% / -25% |
+   | messages local / remote | 5.10 / 1.78 us | 620 / 981 ns | -88% / -45% |
+   | broadcast 1k x 1 / 1k x 9 | 5.37 / 5.81 ms | 5.35 / 5.86 ms | 0 / +1% |
+   | broadcast 5k x 1 / 5k x 9 | 25.1 / 28.2 ms | 26.2 / 28.9 ms | +5% / +2% |
+   | scenario 3k / 9k | 14.9 / 44.0 ms | 13.2 / 47.2 ms | -12% / +7% |
+
+   Allocated per operation: equal or lower everywhere (messages 0 on both).
 10. Docs: ADR-047/048, design/README/samples/CLAUDE.md, requirements R0/R2/R3/R6/R7/R11 (directory instead of
     balancer), wire break noted; `samples/mmo` drops the balancer project and `Sample.Gateway` becomes a client-facing
     node group in the AppHost.
