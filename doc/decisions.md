@@ -168,10 +168,9 @@ records that no longer hold). Each: context → decision → consequences.
 
 ## ADR-020 Business code sees ICluster, not Node
 - Context: exposing `Node` gives business code lifecycle, membership and internals.
-- Decision: `ICluster` (`Send`/`Ask` of `IMessageSender` over addresses, `NodeId`, `Publish`, `JoinGroup`,
-  `LeaveGroup`, `Disconnect`); session binding is an actor operation (`BindSession`). Actors get a `Group` of their
-  own (`ClientGroup.Of(handler type id, id)`), so group ids of different features cannot collide. ADR-047 (roadmap G0
-  step 4) turns the remaining session operations into messages to the session.
+- Decision: `ICluster` (`Send`/`Ask` of `IMessageSender` over addresses, `NodeId`, `Publish`); session operations are
+  messages to the session (ADR-047) and binding is an actor operation (`BindSession`). Actors get a `Group` of their
+  own (`ClientGroup.Of(handler type id, id)`), so group ids of different features cannot collide.
 - Consequences: the surface business code can touch is small and testable; runtime refactors do not break it.
 
 ## ADR-021 Generated node entry point
@@ -505,12 +504,9 @@ records that no longer hold). Each: context → decision → consequences.
   request volume, since the actor interior stays zero-GC. Health endpoints are always mapped, admin endpoints require the cluster secret.
 
 ## ADR-047 One message model: message, address, optional reply
-- Status: agreed; done except the session operations (roadmap G0 step 4: the code still has `JoinGroup`,
-  `LeaveGroup`, `Disconnect` and `BindSession` as operations).
-- Context: messages and RPC are one thing, but the API has nine operations (`Send`, `Ask`, `Publish`, `Push`,
-  `Broadcast`, `JoinGroup`, `LeaveGroup`, `Disconnect`, `BindSession`) and the wire seven frame kinds plus a trailer
-  (`ToActor`) and a prefix (`HasCaller`), because `RequestId` means either a call id or a target. Most of the extra
-  verbs are one scenario (client sessions) in the core.
+- Context: messages and RPC are one thing; an API with a verb per target (push to a session, broadcast to a group,
+  join, leave, disconnect, bind) and a wire with a frame kind per verb, where one field means either a call id or a
+  target, grows with every scenario, and most such verbs are one scenario (client sessions) in the core.
 - Decision: four concepts: message, address, optional reply (a request is a message whose type declares a reply),
   origin (who caused it; set only by ingress). Addresses are structs: `IActorId` (keyed, rendezvous), the one service
   (balanced), `INodeAddress` (pinned to a node, handled by the feature owning its scope) and `IGroupAddress`
@@ -522,8 +518,13 @@ records that no longer hold). Each: context → decision → consequences.
   (`Origin(Node, Id)` implements `INodeAddress`): `Cluster.Send(Caller, m)` reaches whoever sent the message (the
   ingress that issued the origin delivers it; for client connections the origin is the session), and `SessionRef`
   converts implicitly from it where a session is stored or bound. The origin is a 16-byte trailer before the call
-  id, set by the ingress (a client's own bytes never become it) and kept by every hop.
-- Consequences: sessions and groups are addresses of the gateway module, not core verbs; node-to-node and client wire
+  id, set by the ingress (a client's own bytes never become it) and kept by every hop. Session operations are
+  messages to a client address that its node applies instead of delivering them (`JoinGroup`, `LeaveGroup`,
+  `Disconnect`; to a group they apply to every member on every node). Binding stays an actor operation
+  (`BindSession`: it binds the actor itself) and is an `Ask` of a `Bind` message to the session, so it travels on the
+  ordered link with the actor's other messages to that session (ADR-022) and returns once applied.
+- Consequences: sessions and groups are addresses of the gateway module, not core verbs; `ICluster` is `Send`,
+  `Ask`, `Publish` and `NodeId`; node-to-node and client wire
   protocols break once (pre-1.0, no rolling upgrade across it); the old verbs are removed outright, no aliases; send
   paths stay generic over struct addresses (no boxing, the kind is a JIT constant).
 

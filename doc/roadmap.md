@@ -118,11 +118,12 @@ One framework (ADR-045, ADR-048): ingress (`DaServer.Ingress`) and client connec
 built-in capabilities on public feature points, off unless configured; business domains live in samples. Load
 balancing, TLS, CDN/WAF, Gateway API routes and autoscaling stay with the platform.
 
-- [ ] G0 One message model (ADR-047), steps 1-4: `Send`/`Ask`/`Publish` plus addresses (`IActorId` keyed,
+- [x] G0 One message model (ADR-047), steps 1-4: `Send`/`Ask`/`Publish` plus addresses (`IActorId` keyed,
       `INodeAddress` pinned, `IGroupAddress` fan-out; scope = `TypeId<TAddr>`, kind a JIT constant per address type);
-      `Push`/`Broadcast`/`JoinGroup`/`LeaveGroup`/`Disconnect`/`BindSession` become messages to session / group
-      addresses (removed, no aliases). Wire: `Message`/`Reply`/`Control`, `Target` always set, header extensions by
-      flag (`CallId`, `Origin` 16 B, `Chain`, `Trace`). Wire break, no rolling upgrade across it (pre-1.0).
+      `Push`/`Broadcast` are sends to session / group addresses, `JoinGroup`/`LeaveGroup`/`Disconnect` messages to
+      them, `BindSession` an `Ask` of `Bind` (removed verbs, no aliases). Wire: `Message`/`Reply`/`Control`, `Target`
+      always set, trailers by flag (`Origin` 16 B, call id; `Chain` with N3, `Trace` with A6). Wire break, no rolling
+      upgrade across it (pre-1.0). A/B against Z2: see the benchmark table below.
 - [ ] G1 Feature points and ingress, step 5, proven by two consumers (client connections and the HTTP plane).
 - [ ] G2 Client connections as a built-in feature, packages, tests, docs: steps 6-10.
 - [ ] G5 `samples/flashsale` (after N5): HTTP edge with admission and a waiting room (signed queue tokens, release
@@ -144,7 +145,8 @@ Step plan (each step builds and keeps every test green; logic, docs, CI in separ
 3. `Origin(ulong Node, long Id)` (done): raw 16-byte trailer, `CallContext(ReplyTo, CallId, Origin)`,
    `ShardObject.Caller` replaces `CallerSession`; the origin is an `INodeAddress` (`Send(Caller, m)`) and `SessionRef`
    converts implicitly from it.
-4. Session operations become messages to `SessionRef` (Bind is an `Ask`, so ADR-022 ordering holds).
+4. Session operations become messages to `SessionRef` (done: `JoinGroup`/`LeaveGroup`/`Disconnect` to a session or
+   a group; `BindSession` asks a `Bind`, so ADR-022 ordering holds).
 5. Feature points and ingress (`DaServer.Features`, `DaServer.Ingress`):
    - `NodeFeature`: Configure, ConfigureShard(World), Start(INodeContext), OnViewChanged, OnMemberDead,
      `Drain(deadline)`, Stop(crashed), a readiness contribution, metrics registration; options bound from
