@@ -55,7 +55,7 @@ public enum RpcStatus : byte
     /// <summary>Target actor/service not hosted here (stale membership view); the caller should retry.</summary>
     NotHosted = 3,
     Timeout = 4,
-    /// <summary>Client is not allowed to call this contract or has no bound key.</summary>
+    /// <summary>Client may not send this message, may not name this actor (not granted) or has no actor bound for it.</summary>
     Forbidden = 5,
     /// <summary>Connection lost before the reply arrived.</summary>
     Disconnected = 6,

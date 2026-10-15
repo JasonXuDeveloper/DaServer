@@ -19,25 +19,41 @@ public abstract class Actor : ShardObject
     internal long Key { get; set; }
 
     /// <summary>
-    /// The actor's client group: sessions bound to it (<see cref="BindSession"/>) or that joined it receive
+    /// The actor's client group: sessions bound or granted to it (<see cref="BindSession"/>, <see cref="GrantSession"/>)
+    /// or that joined it receive
     /// messages sent to it (<c>Cluster.Send(Group, new Moved(..))</c>). Distinct per actor type and key.
     /// </summary>
     public ClientGroup Group => ClientGroup.Of(HandlerType.Id, Key);
 
     /// <summary>
-    /// Bind a client session to this actor: the client's messages handled by this actor type reach this key (the
-    /// client cannot choose another one), the session joins <see cref="Group"/>, and the actor receives
-    /// <see cref="SessionClosed"/> when the session ends. Completes once the session's gateway applied it, so the
-    /// client's next message already arrives here. A session has at most one key per actor type.
+    /// Bind a client session to this actor: the client's messages handled by this actor type that name no actor reach
+    /// this one (a session has one actor per type; binding another replaces it), and the session is granted this
+    /// actor (<see cref="GrantSession"/>). Completes once the session's node applied it, so the client's next message
+    /// already arrives here.
     /// </summary>
-    protected ValueTask BindSession(SessionRef session)
-    {
-        ActorSessions.Record(this, session);
-        return Shard.Node.BindSession(session, HandlerType.Id, Key);
-    }
+    protected ValueTask BindSession(SessionRef session) => ChangeAccess(session, AccessChange.Bind);
 
-    /// <summary>Remove the session's binding to this actor type (it also leaves <see cref="Group"/>).</summary>
-    protected ValueTask UnbindSession(SessionRef session) => Shard.Node.BindSession(session, HandlerType.Id, 0);
+    /// <summary>Remove the session's binding to this actor and its grant (it also leaves <see cref="Group"/>).</summary>
+    protected ValueTask UnbindSession(SessionRef session) => ChangeAccess(session, AccessChange.Unbind);
+
+    /// <summary>
+    /// Grant a client session this actor: its client may name it (<c>client.Send(roomId, new Say(..))</c>; a client
+    /// can name only actors granted to its session, anything else is refused at the edge without reaching an actor),
+    /// the session joins <see cref="Group"/>, and the actor receives <see cref="SessionClosed"/> when the session
+    /// ends and <see cref="SessionResync"/> when it resumes. The actor decides who may address it, in one place (a
+    /// room admitting a player); grants are bounded per session (<see cref="RpcStatus.Overloaded"/> beyond).
+    /// Completes once the session's node applied it.
+    /// </summary>
+    protected ValueTask GrantSession(SessionRef session) => ChangeAccess(session, AccessChange.Grant);
+
+    /// <summary>Withdraw the session's grant of this actor (a binding to it goes too; it also leaves <see cref="Group"/>).</summary>
+    protected ValueTask RevokeSession(SessionRef session) => ChangeAccess(session, AccessChange.Revoke);
+
+    private ValueTask ChangeAccess(SessionRef session, AccessChange change)
+    {
+        if (change is AccessChange.Bind or AccessChange.Grant) ActorSessions.Record(this, session);
+        return Shard.Node.ChangeAccess(session, new SessionAccess(HandlerType.Id, Key, change));
+    }
 
     internal HandlerTypeInfo HandlerType { get; set; } = null!;
 

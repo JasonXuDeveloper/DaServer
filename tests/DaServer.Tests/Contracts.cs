@@ -293,13 +293,24 @@ public sealed class TallyAuditService : Service
 /// <summary>Server-only: the login service attaches a client session to its player.</summary>
 [NinoType, Message] public partial record struct Attach(SessionRef Session) : IRequest<bool>;
 
-/// <summary>A public chat room: clients name the room (<c>client.Send(roomId, ..)</c>).</summary>
-[NinoType, Message, FromClient(AnyId = true)] public partial record struct Join : IRequest<bool>;
-[NinoType, Message, FromClient(AnyId = true)] public partial record struct Say(string Text);
+/// <summary>
+/// A chat room: the lobby admits clients (<see cref="Enter"/>), the room grants their sessions, and they name the room
+/// from then on (<c>client.Send(roomId, ..)</c>) until they <see cref="Exit"/>.
+/// </summary>
+[NinoType, Message, FromClient] public partial record struct Enter(RoomId Room) : IRequest<bool>;
+[NinoType, Message] public partial record struct Admit(SessionRef Session) : IRequest<bool>;
+[NinoType, Message, FromClient] public partial record struct Say(string Text);
+[NinoType, Message, FromClient] public partial record struct Exit : IRequest<bool>;
 
 // Pushes (server to client).
 [NinoType, Message, ToClient] public partial record struct Chat(RoomId From, string Text);
 [NinoType, Message, ToClient] public partial record struct GoldChanged(int Gold);
+
+public sealed class LobbyService : Service
+{
+    [Handle]
+    public async ValueTask<bool> On(Enter m) => m.Room.Value > 0 && await Cluster.Ask(m.Room, new Admit(Caller));
+}
 
 public sealed class AuthService : Service
 {
@@ -352,11 +363,22 @@ public sealed class Player : Actor<PlayerId, Wallet>
 public sealed class Room : Actor<RoomId>
 {
     [Handle]
-    public bool On(Join _)
+    public async ValueTask<bool> On(Admit m)
     {
-        Cluster.Send(Caller, new JoinGroup(Group));
+        await GrantSession(m.Session); // the session joins Group with the grant
         return true;
     }
 
     [Handle] public void On(Say m) => Cluster.Send(Group, new Chat(Id, m.Text));
+
+    [Handle]
+    public async ValueTask<bool> On(Exit _)
+    {
+        await RevokeSession(Caller);
+        return true;
+    }
+
+    [Handle] public void On(SessionClosed _) => Observed.Events.Enqueue($"room-closed:{Id.Value}");
+
+    [Handle] public void On(SessionResync _) => Observed.Events.Enqueue($"room-resync:{Id.Value}");
 }

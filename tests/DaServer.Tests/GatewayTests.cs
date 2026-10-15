@@ -29,7 +29,8 @@ public class GatewayTests : ClusterTest
         Assert.That(await client.Ask(new Login(new PlayerId(42))), Is.True);
         Assert.That(await client.Ask(new AddGold(10)), Is.EqualTo(10));
         var named = Assert.ThrowsAsync<RpcException>(async () => await client.Ask(new PlayerId(999), new AddGold(5)));
-        Assert.That(named!.Status, Is.EqualTo(RpcStatus.Forbidden), "only AnyId messages may name an actor");
+        Assert.That(named!.Status, Is.EqualTo(RpcStatus.Forbidden), "a client names only actors granted to its session");
+        Assert.That(await client.Ask(new PlayerId(42), new AddGold(0)), Is.EqualTo(10), "its bound actor is granted");
         Assert.That(await client.Ask(new AddGold(5)), Is.EqualTo(15));
         Assert.That(await gateway.Ask(new PlayerId(42), new AddGold(0)), Is.EqualTo(15));
         await Eventually(() => inbox.Gold == 15, "push to the session was not delivered");
@@ -117,18 +118,40 @@ public class GatewayTests : ClusterTest
         {
             var client = await Connect(gateways[i % 2]);
             client.Register(members[i] = new Inbox());
-            await client.Ask(new RoomId(7), new Join()); // public actor: the client chooses the room
+            await client.Ask(new Enter(new RoomId(7))); // the room grants the session: the client names it from now on
         }
 
         var outsider = await Connect(gateways[0]);
         var outsiderInbox = new Inbox();
         outsider.Register(outsiderInbox);
-        await outsider.Ask(new RoomId(8), new Join());
+        await outsider.Ask(new Enter(new RoomId(8)));
 
         gateways[0].Send(new RoomId(7), new Say("hello"));
         await Eventually(() => members.All(m => m.Chat.Contains("7:hello")), "broadcast missing");
         await Task.Delay(100); // a stray delivery would arrive about as fast as the ones above
         Assert.That(outsiderInbox.Chat, Is.Empty, "groups of different keys are distinct");
+    }
+
+    [Test]
+    public async Task ClientsNameOnlyActorsThatGrantedTheirSession()
+    {
+        var gateway = await Start("gw", gateway: true);
+        var client = await Connect(gateway);
+        var inbox = new Inbox();
+        client.Register(inbox);
+        var refused = Assert.ThrowsAsync<RpcException>(async () => await client.Ask(new RoomId(7), new Exit()));
+        Assert.That(refused!.Status, Is.EqualTo(RpcStatus.Forbidden), "named without a grant");
+
+        Assert.That(await client.Ask(new Enter(new RoomId(7))), Is.True);
+        client.Send(new RoomId(7), new Say("hi"));
+        await Eventually(() => inbox.Chat.Contains("7:hi"), "the granted room did not get the message, or its group missed the client");
+
+        Assert.That(await client.Ask(new RoomId(7), new Exit()), Is.True, "the room revokes the grant");
+        refused = Assert.ThrowsAsync<RpcException>(async () => await client.Ask(new RoomId(7), new Exit()));
+        Assert.That(refused!.Status, Is.EqualTo(RpcStatus.Forbidden), "named after the revoke");
+        gateway.Send(ClientGroup.Of(new RoomId(7)), new Chat(default, "after"));
+        await Task.Delay(100); // a stray delivery would arrive about as fast
+        Assert.That(inbox.Chat, Does.Not.Contain("0:after"), "the session left the room's group with its grant");
     }
 
     [Test]
@@ -141,7 +164,7 @@ public class GatewayTests : ClusterTest
         {
             clients[i] = await Connect(gateway);
             clients[i].Register(inboxes[i] = new Inbox());
-            await clients[i].Ask(new RoomId(7), new Join());
+            await clients[i].Ask(new Enter(new RoomId(7)));
         }
 
         // Close every third member (swap-remove moves others into their slots), then broadcast to the room and to All.
@@ -168,7 +191,7 @@ public class GatewayTests : ClusterTest
         {
             members[i] = await Connect(gateways[i % 2]);
             members[i].Register(inboxes[i] = new Inbox());
-            await members[i].Ask(new RoomId(7), new Join());
+            await members[i].Ask(new Enter(new RoomId(7)));
         }
 
         var room9 = ClientGroup.Of(new RoomId(9));
@@ -200,7 +223,7 @@ public class GatewayTests : ClusterTest
     {
         var gateway = await Start("gw", clients: static o => o.MaxFrameSize = 1024);
         var client = await Connect(gateway);
-        await client.Ask(new RoomId(7), new Join());
+        await client.Ask(new Enter(new RoomId(7)));
         client.Send(new RoomId(7), new Say(new string('x', 2048)));
         await Eventually(() => gateway.SessionCount() == 0, "a frame over MaxFrameSize was accepted");
     }

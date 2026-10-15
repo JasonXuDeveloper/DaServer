@@ -60,7 +60,8 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
 
     /// <summary>
     /// The session resumed on a new connection: messages reach the same actors again, and they resend the full state
-    /// (pushes sent while disconnected were lost). Groups joined by AnyId messages are not restored: join them again.
+    /// (pushes sent while disconnected were lost). Grants and bindings are restored (with the groups of those actors);
+    /// other groups are rejoined by the actors on <c>SessionResync</c>.
     /// </summary>
     public event Action? Reconnected;
 
@@ -193,8 +194,9 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
     // ------------------------------------------------------------------ IMessageSender
 
     /// <summary>
-    /// A <see cref="Clients.FromClientAttribute">[FromClient]</see> message to the actor <paramref name="address"/> (<see cref="Clients.FromClientAttribute.AnyId"/>
-    /// messages only). Clients address actors only (DAS008).
+    /// A <see cref="Clients.FromClientAttribute">[FromClient]</see> message to the actor <paramref name="address"/>, which
+    /// must have granted this client's session (<c>GrantSession</c>; else <see cref="RpcStatus.Forbidden"/>). Clients
+    /// address actors only (DAS008).
     /// </summary>
     public void Send<TAddr, T>(TAddr address, in T message) where TAddr : struct, IAddress where T : struct =>
         Send(MessageWriter.Write(in message), MessageType<T>.Id, ActorScope<TAddr>(), Addresses<TAddr>.Value(in address), null);
@@ -295,7 +297,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
             case FrameKind.Control when header.MessageId == ControlOp.Ticket:
                 var ticket = FrameHeader.PayloadOf(in header, frame);
                 long lifetime = SignedToken.ExpiresMs(ticket) - SignedToken.IssuedMs(ticket); // server clock: use only the span
-                // No binding (before login, after logout): nothing to resume.
+                // No grant (before login, after logout): nothing to resume.
                 Volatile.Write(ref _ticket, ticket.Length > ReconnectTicket.SizeOf(0) ? ticket.ToArray() : null);
                 Volatile.Write(ref _refreshTicketAtMs, Environment.TickCount64 + lifetime / 2);
                 break;

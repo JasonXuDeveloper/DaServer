@@ -4,7 +4,7 @@ using Nino.Core;
 namespace DaServer.Benchmark;
 
 // Benchmark business code, written like user code: an actor with state in a component that also takes one-way messages, a
-// public room actor whose groups clients join, and a message pushed to clients.
+// room actor whose groups clients join through a lobby service, and a message pushed to clients.
 
 public readonly record struct CounterId(long Value) : IActorId;
 public readonly record struct RoomId(long Value) : IActorId;
@@ -15,7 +15,10 @@ public readonly record struct RoomId(long Value) : IActorId;
 [NinoType, Message] public partial record struct Bumped(int By);
 
 /// <summary>Join the room's group, or <see cref="Groups"/> groups of it (cells around a player in a map).</summary>
-[NinoType, Message, FromClient(AnyId = true)] public partial record struct Join(int Groups) : IRequest<bool>;
+[NinoType, Message, FromClient] public partial record struct Join(RoomId Room, int Groups) : IRequest<bool>;
+
+/// <summary>The lobby admits a session to the room's groups.</summary>
+[NinoType, Message] public partial record struct Admit(SessionRef Session, int Groups) : IRequest<bool>;
 
 /// <summary>One message to each of <see cref="Groups"/> groups in the same turn.</summary>
 [NinoType, Message] public partial record struct Broadcast(int Groups, int Sequence) : IRequest<bool>;
@@ -32,12 +35,17 @@ public sealed class Counter : Actor<CounterId, CounterState>
     [Handle] public void On(Bumped e) => State.Value += e.By;
 }
 
+public sealed class Lobby : Service
+{
+    [Handle] public ValueTask<bool> On(Join m) => Cluster.Ask(m.Room, new Admit(Caller, m.Groups));
+}
+
 public sealed class Room : Actor<RoomId>
 {
     [Handle]
-    public bool On(Join m)
+    public bool On(Admit m)
     {
-        for (int i = 0; i < m.Groups; i++) Cluster.Send(Caller, new JoinGroup(GroupOf(i)));
+        for (int i = 0; i < m.Groups; i++) Cluster.Send(m.Session, new JoinGroup(GroupOf(i)));
         return true;
     }
 
