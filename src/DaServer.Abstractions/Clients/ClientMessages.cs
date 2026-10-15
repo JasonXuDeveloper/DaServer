@@ -4,7 +4,7 @@ namespace DaServer;
 public readonly record struct ClientMessageInfo(uint Id, Type Type);
 
 /// <summary>
-/// The messages clients may send, registered by the module initializers generated into the assemblies declaring them
+/// The messages clients may send, registered by the registrations generated into the assemblies declaring them (ADR-012)
 /// (no reflection scanning, no configuration). Client-facing nodes refuse every other message from clients.
 /// </summary>
 [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]

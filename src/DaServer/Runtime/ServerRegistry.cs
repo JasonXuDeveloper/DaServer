@@ -43,7 +43,7 @@ public sealed class SystemInfo(Type type, Func<EcsSystem> factory)
 }
 
 /// <summary>
-/// Process-wide registry of server-side handler types and systems, filled by generated module initializers.
+/// Process-wide registry of server-side handler types and systems, filled by the generated registrations (ADR-012).
 /// Read once at node start; not on any hot path.
 /// </summary>
 public static class ServerRegistry

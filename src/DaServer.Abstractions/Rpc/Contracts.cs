@@ -63,6 +63,15 @@ public sealed class GeneratedRegistrationAttribute(Type registration) : Attribut
     public Type Registration { get; } = registration;
 }
 
+/// <summary>
+/// Emitted by the generator into assemblies built with <c>&lt;DaServerShared&gt;true&lt;/DaServerShared&gt;</c>: rules and
+/// ECS systems servers and clients both run (no server runtime or transport may be referenced: DAS010). A node project
+/// referencing such an assembly runs its systems on every shard, as it runs its own.
+/// </summary>
+[AttributeUsage(AttributeTargets.Assembly)]
+[EditorBrowsable(EditorBrowsableState.Never)]
+public sealed class SharedLogicAttribute : Attribute;
+
 /// <summary>Runs the generated registrations of an assembly (<see cref="GeneratedRegistrationAttribute"/>).</summary>
 [EditorBrowsable(EditorBrowsableState.Never)]
 public static class Registrations

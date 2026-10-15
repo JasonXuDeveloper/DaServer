@@ -133,6 +133,59 @@ public class GeneratorTests
     }
 
     [Test]
+    public async Task SharedLogicReferencesNoServerOrTransport()
+    {
+        // A <DaServerShared> assembly runs on servers and clients: referencing the runtime or the transport is DAS010.
+        var shared = new SharedOption();
+        var bad = Compile(Parse("public sealed class Rules { }"));
+        var reported = await bad.WithAnalyzers([new DaServerAnalyzer()], new AnalyzerOptions([], shared)).GetAnalyzerDiagnosticsAsync();
+        Assert.That(reported.Select(d => d.Id).Distinct(), Is.EqualTo(new[] { "DAS010" }));
+
+        var good = CSharpCompilation.Create("Rules", [Parse("public sealed class Rules { }")],
+            References.Where(r => r.Display is not { } path || !ServerAssembly(System.IO.Path.GetFileNameWithoutExtension(path))),
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        reported = await good.WithAnalyzers([new DaServerAnalyzer()], new AnalyzerOptions([], shared)).GetAnalyzerDiagnosticsAsync();
+        Assert.That(reported.Where(d => d.Id == "DAS010"), Is.Empty);
+
+        static bool ServerAssembly(string name) => name is "DaServer" or "DaServer.Hosting" or "DaServer.Core" or "DaServer.Client";
+    }
+
+    [Test]
+    public void NodesRunTheSystemsOfSharedLogicTheyReference()
+    {
+        var shared = CSharpCompilation.Create("Rules", [Parse("""
+            [assembly: SharedLogic]
+            namespace Rules;
+            public sealed class Glide : EasyEcs.EcsSystem { }
+            internal sealed class Hidden : EasyEcs.EcsSystem { }
+            """)], References, new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        var node = Compile(Parse("[NinoType, Message] public partial record struct Tick; public sealed class Clock : Service { [Handle] public void On(Tick _) { } }"))
+            .AddReferences(shared.ToMetadataReference());
+
+        Driver().RunGeneratorsAndUpdateCompilation(node, out var generated, out _);
+        string registration = generated.SyntaxTrees.Single(t => t.FilePath.EndsWith("DaServer.Registration.g.cs")).ToString();
+        Assert.That(registration, Does.Contain("global::Rules.Glide"));
+        Assert.That(registration, Does.Not.Contain("Hidden"), "only public systems");
+    }
+
+    /// <summary>Build options of a project with <c>&lt;DaServerShared&gt;true&lt;/DaServerShared&gt;</c>.</summary>
+    private sealed class SharedOption : AnalyzerConfigOptionsProvider
+    {
+        private sealed class Options(bool shared) : AnalyzerConfigOptions
+        {
+            public override bool TryGetValue(string key, out string value)
+            {
+                value = "true";
+                return shared && key == "build_property.DaServerShared";
+            }
+        }
+
+        public override AnalyzerConfigOptions GlobalOptions { get; } = new Options(true);
+        public override AnalyzerConfigOptions GetOptions(SyntaxTree tree) => new Options(false);
+        public override AnalyzerConfigOptions GetOptions(AdditionalText textFile) => new Options(false);
+    }
+
+    [Test]
     public void NodeExecutablesGetAnEntryPointUnlessTheyWriteOne()
     {
         const string node = "[NinoType, Message] public partial record struct Price(int N) : IRequest<int>; public sealed class Shop : Service { [Handle] public int On(Price m) => m.N; }";

@@ -13,12 +13,13 @@ namespace DaServer.Generator;
 public sealed partial class DaServerAnalyzer : DiagnosticAnalyzer
 {
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics { get; } = ImmutableArray.Create(
-        Rules.BadHandler, Rules.BadMessage, Rules.NotWireType, Rules.IdCollision, Rules.NoDefaultConstructor, Rules.WrongFlow, Rules.StatefulHandlerType, Rules.WrongAddress);
+        Rules.BadHandler, Rules.BadMessage, Rules.NotWireType, Rules.IdCollision, Rules.NoDefaultConstructor, Rules.WrongFlow, Rules.StatefulHandlerType, Rules.WrongAddress, Rules.SharedReferencesServer);
 
     public override void Initialize(AnalysisContext context)
     {
         context.ConfigureGeneratedCodeAnalysis(GeneratedCodeAnalysisFlags.None);
         context.EnableConcurrentExecution();
+        context.RegisterCompilationAction(CheckShared);
         context.RegisterCompilationStartAction(start =>
         {
             // Wire ids of every message type declared in this compilation, for the collision check at the end.
@@ -52,6 +53,21 @@ public sealed partial class DaServerAnalyzer : DiagnosticAnalyzer
                 foreach (var d in collisions) end.ReportDiagnostic(d);
             });
         });
+    }
+}
+
+/// <summary>Shared logic (rules and systems clients run too) cannot depend on the server or the transport.</summary>
+public sealed partial class DaServerAnalyzer
+{
+    private static readonly string[] ServerAssemblies = ["DaServer", "DaServer.Hosting", "DaServer.Core", "DaServer.Client"];
+
+    private static void CheckShared(CompilationAnalysisContext context)
+    {
+        if (!RegistrationGenerator.IsShared(context.Options.AnalyzerConfigOptionsProvider.GlobalOptions)) return;
+        foreach (var reference in context.Compilation.ReferencedAssemblyNames)
+            if (System.Array.IndexOf(ServerAssemblies, reference.Name) >= 0)
+                context.ReportDiagnostic(Diagnostic.Create(Rules.SharedReferencesServer, Location.None,
+                    context.Compilation.AssemblyName, reference.Name));
     }
 }
 
@@ -169,6 +185,10 @@ internal static class Rules
 
     public static readonly DiagnosticDescriptor WrongFlow = new("DAS006", "Message used against its flow",
         "'{0}' (used by {1}) {2}", Category, DiagnosticSeverity.Error, true);
+
+    public static readonly DiagnosticDescriptor SharedReferencesServer = new("DAS010", "Shared logic references the server",
+        "Shared assembly '{0}' references {1}: shared logic (<DaServerShared>true</DaServerShared>) runs on clients too and may reference contracts and EasyEcs only",
+        Category, DiagnosticSeverity.Error, true, customTags: WellKnownDiagnosticTags.CompilationEnd);
 
     public static readonly DiagnosticDescriptor WrongAddress = new("DAS008", "Wrong kind of address",
         "'{0}' {1}", Category, DiagnosticSeverity.Error, true);
