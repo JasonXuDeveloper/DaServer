@@ -21,8 +21,7 @@ Keep this file current: tick items when done, add items when scope changes.
 11. S1-S6 elastic scaling.
 12. N9 hot reload.
 13. N4 route completeness, N11 generated filters (on the G filter point), K3-K5, open cleanup, quality items. Later
-    optional modules: `DaServer.Reminders`, `DaServer.Topics`, leases for strict singletons; G6 admission
-    primitives from the flash-sale sample.
+    optional modules: `DaServer.Reminders`, `DaServer.Topics`, leases for strict singletons.
 EasyEcs in parallel when DaServer waits on benchmarks: the Friflo gap, comparison tables in the docs.
 
 ## Runtime (`src/DaServer`)
@@ -125,8 +124,9 @@ balancing, TLS, CDN/WAF, Gateway API routes and autoscaling stay with the platfo
       paced by capacity), `StockShard` actors keyed (sku, shard) so the turn is the atomic decrement (no lock, no
       Redis), `Order` actors keyed (user, sale) so retries are idempotent, async order pipeline, push or poll for the
       result; AppHost + HTTP load generator; E2E.
-- [ ] G6 Waiting room / admission tokens / fair queue move from the sample into `DaServer.Ingress` once a second
-      domain (e.g. the MMO login queue) uses them.
+- Not in the framework: waiting rooms (virtual queues for human surges). They are policy for one kind of traffic,
+  belong at the very edge (CDN/SaaS) to protect origins, and compose from ingress primitives (admission filters,
+  token bucket, `SignedToken`, load-aware refusal) plus a queue actor; `samples/flashsale` shows the pattern.
 
 Step plan (each step builds and keeps every test green; logic, docs, CI in separate commits):
 

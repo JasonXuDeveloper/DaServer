@@ -533,8 +533,9 @@ records that no longer hold). Each: context → decision → consequences.
   second ingress consumer; WebSocket clients connect through it. Packages: `DaServer.Abstractions` (contracts:
   attributes, `IRequest`, addresses incl. `SessionRef`/`ClientGroup`, `Origin`, wire ids; netstandard2.1 + net10),
   `DaServer` (runtime + generator and analyzers), `DaServer.Client` (client SDK on Abstractions; netstandard2.1 +
-  net10, Unity), `DaServer.Hosting`, `DaServer.Aspire`. Waiting rooms stay in `samples/flashsale` until a second
-  domain needs them.
+  net10, Unity), `DaServer.Hosting`, `DaServer.Aspire`. Waiting rooms are not part of the framework: they are policy for human traffic
+  surges, belong at the CDN/SaaS edge to protect origins, and compose from the ingress primitives plus a queue actor
+  (shown in `samples/flashsale`).
 - Consequences: dedicated client-facing nodes may carry high request volume (the actor interior stays zero-GC;
   ADR-046). Abstractions and the client SDK cannot use net10-only language or runtime features. Redirect mode needs
   a public address per client-facing node; behind-LB mode leaves long connections unbalanced after a scale-out until
