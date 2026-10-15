@@ -648,3 +648,30 @@ records that no longer hold). Each: context → decision → consequences.
   (every contract assembly carries sockets); a separate client transport (two implementations of one protocol).
 - Consequences: a Unity client references Abstractions, Core and Client (one package reference, the rest are
   dependencies); contract projects reference Abstractions only.
+
+## ADR-053 Keep-alive: silence closes a connection, pings only fill idle directions
+- Context: TCP does not report a peer that vanished (a host gone, a dropped NAT or load balancer mapping, a mobile
+  client that switched networks or went to the background) until a write times out, about 15 minutes on Linux, and
+  never while nothing is written; TCP keepalive probes only idle sockets, cannot see a peer process that stopped
+  reading, does not cross proxies and has no netstandard2.1 API. Client sessions had no liveness check, and a
+  half-open node link stayed stuck while gossip through other nodes showed the peer alive.
+- Decision: as Kubernetes' client-go HTTP/2 health check, SignalR, MQTT and RabbitMQ do, liveness is "something
+  arrived on this connection lately": every connection stamps when it last received and last wrote
+  (`IFrameChannel.LastReceivedMs`/`LastSentMs`, once per read and per flush). A side that has sent nothing for an
+  interval sends a header-only `Ping`; the other side answers `Pong` on the same connection. Any frame counts, so
+  busy connections carry nothing extra. A connection that received nothing for its timeout is closed
+  (`KeepAlive.Check`); closing is never a verdict on the peer, the owner reconnects and resumes:
+  - Clients ping after `ClusterClient.KeepAliveInterval` (15 s) without sending and close after `ServerTimeout`
+    (30 s) without receiving, then reconnect and resume with their ticket; `CheckConnection()` probes at once (app
+    back in the foreground, network changed). Client-facing nodes never ping: once a second they close sessions
+    silent for `ClientOptions.ClientTimeout` (45 s), which then wait out the reconnect grace.
+  - Node links ping on their outgoing connection after a gossip interval without sending; either side closes a link
+    connection silent for max(`SuspectAfter`, three gossip intervals), and the link reconnects and replays its resend
+    window (ADR-008). Membership alone decides that a node is dead.
+- Alternatives: TCP keepalive or `TCP_USER_TIMEOUT` (see context); server-driven pings to every session (traffic
+  from the side with the most connections, and the client still needs its own timeout); per-session timers (a
+  reschedule per frame, where one sweep a second costs two comparisons a session).
+- Consequences: a lost client is noticed within 45 s by its node and 30 s by itself (seconds with
+  `CheckConnection`), a stuck link within a few seconds; idle connections exchange 24-byte frames every interval,
+  which also keeps NAT and load balancer mappings open. Node timeouts must stay a few client intervals apart.
+
