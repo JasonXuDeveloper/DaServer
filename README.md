@@ -2,7 +2,7 @@
 
 A general-purpose ECS distributed server framework for .NET 10, built for high performance and high concurrency: any
 backend made of stateful entities (actors) and stateless services, spread over many nodes. The core knows no
-application scenario; an MMO cluster (login, balancer, gateways, game server, map servers) is one sample built on it
+application scenario; an MMO cluster (login, gateways, game server, map servers) is one sample built on it
 ([samples/mmo](samples/mmo)).
 
 You write **messages** (`[NinoType, Message]` structs), **actors** and **services** with `[Handle]` methods, and **ECS
@@ -31,7 +31,7 @@ locally and publishes it.
 
 ```mermaid
 flowchart TB
-    C1[clients] -. connect .-> D[balancer]
+    C1[clients] -. "connect to any (directory)" .-> G1
     C1 --> G1
     C2[clients] --> G2
     subgraph cluster [cluster: gossip membership, rendezvous placement]
@@ -226,15 +226,15 @@ var cluster = builder.AddDaServerCluster("sample");
 cluster.AddNodes<Projects.Sample_LoginServer>("login");                     // Account service
 cluster.AddNodes<Projects.Sample_GameServer>("game");                       // Player, Realm actors
 cluster.AddNodes<Projects.Sample_MapServer>("map");                         // Map actors, movement/AOI systems
-cluster.AddGateways<Projects.Sample_Gateway>("gateway", replicas: 3);       // client sockets, no business code
-var balancer = cluster.AddBalancer<Projects.Sample_Gateway>("balancer");    // the one address clients know
+var gateways = cluster.AddGateways<Projects.Sample_Gateway>("gateway", replicas: 3); // client sockets, no business code
 
-builder.AddProject<Projects.Sample_Bot>("bots").WithGateways(balancer).WithArgs("10000", "60", "1", "1", "0");
+builder.AddProject<Projects.Sample_Bot>("bots").WithGateways(gateways).WithArgs("10000", "60", "1", "1", "0");
 builder.Build().Run();
 ```
 
-`AddDaServerCluster` gives every node a name, a cluster endpoint and seeds; `AddGateways` adds a client endpoint;
-`AddBalancer` adds gateways that only direct clients (power of two choices over the gossiped session counts). There
+`AddDaServerCluster` gives every node a name, a cluster endpoint and seeds; `AddGateways` adds a client endpoint (the
+`DaServer:Clients` section). A client connects to any gateway (in production: the platform's load balancer or DNS name)
+and is directed to the less loaded of two (power of two choices over the gossiped session counts). There
 are no roles and no configuration files: what a node hosts is what its project compiles. Nodes export logs and
 metrics over OpenTelemetry, which feeds the Aspire dashboard. The same model runs with
 `dotnet run --project samples/mmo/Sample.AppHost` and publishes with `aspire publish` (`AddKubernetesEnvironment` for
@@ -245,8 +245,9 @@ Kubernetes).
 Measured on one 4-core VM (servers, bots and the kernel share it), Release builds.
 
 **10k-player scenario** ([Sample.AppHost](samples/mmo/Sample.AppHost), [Sample.Bot](samples/mmo/Sample.Bot)): a login
-node, a game node, a map node, 3 gateways and a balancer (the AppHost's topology, here as plain processes without telemetry).
-10,000 bots connect through the balancer, log in and enter a map; the realm broadcasts its status to every session
+node, a game node, a map node and 3 gateways (the AppHost's topology, here as plain processes without telemetry; these
+numbers were taken with a fourth gateway that only directed clients, re-measured at the G release check). 10,000 bots
+connect through a gateway's address and are directed to the less loaded gateway, log in and enter a map; the realm broadcasts its status to every session
 every 5 ticks (20 ticks/s). Two loads, 60 s measured window each:
 
 - **One map** (the AppHost default): all 10,000 players in one map on one map node, each changing direction once a
@@ -263,7 +264,7 @@ every 5 ticks (20 ticks/s). Two loads, 60 s measured window each:
 | Each gateway (~3,300 sessions) | 11–12% CPU, 0 KB/s | 5–6% CPU, 0–7 KB/s |
 | GCs on servers, disconnects, gaps | 0 | 0 |
 
-(CPU is the share of all 4 cores; login and balancer stay at 1% and 0 KB/s; with Aspire's OTLP telemetry on, the
+(CPU is the share of all 4 cores; the login node stays at 1% and 0 KB/s; with Aspire's OTLP telemetry on, the
 exporter adds ~55 KB/s per node.) The bot process and the kernel's loopback use most of the machine, so latency is
 mostly theirs. Without area of interest, 10,000 players in one map is a bandwidth problem, not a CPU one: every
 position to everyone each tick is 10,000 x 10,000 x 20 = 2 billion entries a second (~40 GB/s); even with dead
@@ -272,8 +273,8 @@ clients (the per-session send bound then disconnects them or, below it, memory g
 node stays under 10% CPU.
 
 **Scale-out**: start 3,000 bots on 2 gateways (1,508 / 1,492 sessions), start a third gateway process with only a seed
-address, then 3,000 more bots: the balancer learns of it through gossip and sends it 1,961 of them (2,017 / 2,022 /
-1,961). Both waves pass (no gap, no disconnect). Cluster test: `AGatewayStartedLaterIsDiscoveredAndReceivesTheNewClients`.
+address, then 3,000 more bots: the directory learns of it through gossip and sends it 1,961 of them (2,017 / 2,022 /
+1,961). Both waves pass (no gap, no disconnect). Cluster test: `ANodeStartedLaterIsDiscoveredAndReceivesTheNewClients`.
 
 **BenchmarkDotNet** ([benchmarks/](benchmarks/DaServer.Benchmark), short job; Allocated includes the clients):
 

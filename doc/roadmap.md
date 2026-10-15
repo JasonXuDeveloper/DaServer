@@ -45,12 +45,12 @@ EasyEcs in parallel when DaServer waits on benchmarks: the Friflo gap, compariso
       limit (ADR-025)
 - [x] Runtime-owned sessions: Bind joins the actor's group, `Caller` holds for the turn, a crashed gateway's
       sessions close (ADR-024)
-- [x] Balancers and client gateway discovery (power of two choices; clients wait while the cluster forms)
-      (ADR-026)
+- [x] Client-facing nodes direct clients to each other (power of two choices over gossiped session counts; entry
+      addresses; redirect or behind-a-load-balancer mode) (ADR-026)
 - [x] One ordered link per node direction: replies travel with binds, pushes and events (ADR-022)
 - [x] Placement: keys stay with suspect members, a dead node's keys move, unloading actors keep their mail (ADR-023)
 - [x] Client: `ClusterClient` (the same messages as servers, session-bound actor messages without an id, DNS
-      endpoints over every resolved address, balancer redirect, callbacks inline or queued)
+      endpoints over every resolved address, entry addresses and the directory's redirect, callbacks inline or queued)
 - [x] Topology without roles (ADR-017), `ICluster` for business code (ADR-020), actor `Group`
 - [x] One-way and published messages: `Send`, `Publish` to every handling service, gossiped handlers, mailbox
       delivery (ADR-019)
@@ -177,8 +177,9 @@ Step plan (each step builds and keeps every test green; logic, docs, CI in separ
      endpoint.
 6. Client connections as a feature (`src/DaServer/Clients`, namespace `DaServer.Clients`), enabled by a client port.
    Done: `ClientConnections` feature enabled by `DaServer:Clients` (`ClientOptions`), generic card entries and pulse
-   slots (`ClusterMember` keeps no client fields), the actor side in `ActorSessions` with dispatch filters (ADR-050).
-   Left:
+   slots (`ClusterMember` keeps no client fields), the actor side in `ActorSessions` with dispatch filters (ADR-050),
+   the directory instead of the balancer role (`PickNode`, `GET /clients/endpoint`, `Redirect`, client entry
+   addresses; ADR-026). Left:
    transports (TCP on `DaServer.Net`; WebSocket through the HTTP plane in `DaServer.Hosting`), sessions, bindings,
    `GroupMembers` (M2 pool), address handlers for `SessionRef` and `ClientGroup` (fan-out to the nodes advertising
    the scope), resume tickets on `SignedToken` and grace timers on the timer wheel (M3), `BoundSessions` + filters for
@@ -221,7 +222,7 @@ signal, gateways drop their clients on stop and nothing is persisted yet (N5).
       calls -> finish in-flight turns and calls -> unload every actor (`OnUnload`, parallel, bounded) -> flush the store
       -> close links -> exit. Each phase logged with its duration and exported as a metric.
 - [ ] D3 Gateways drain: clients are told to move (resume ticket to another gateway, staggered) before the listener
-      closes; the balancer stops directing clients to a leaving gateway.
+      closes; the directory stops directing clients to a leaving gateway.
 - [ ] D4 Tests: SIGTERM-style stop under load loses no acknowledged write and no session; a stop that exceeds its
       budget reports the unsaved actors; Kill (crash) loses at most what the persistence policy allows.
 - [ ] D5 (with N5) Persistence that survives a crash: per actor type a save policy: on unload (default), write-behind
@@ -325,7 +326,7 @@ Apps scale rules); Aspire only generates the manifests. The framework's job is t
 kind is safe and cheap, that it exports the signals to scale on, and that the generated manifests are correct.
 
 What is stateful is decided by code, not by a role: a node hosting actors is stateful, a node hosting only services is
-stateless. In the MMO sample the balancer and the login server are stateless; gateways hold connections (soft state:
+stateless. In the MMO sample the login server is stateless; gateways hold connections (soft state:
 clients resume on another gateway with their ticket); the game server (players, realm) and the map servers are
 stateful, maps being heavy actors.
 
@@ -433,9 +434,9 @@ in separate commits.
 
 ## Hosting / orchestration
 - [x] `DaServer.Hosting`: Generic Host, configuration, OpenTelemetry (OTLP), periodic stats line, graceful shutdown
-- [x] `DaServer.Aspire`: AddDaServerCluster / AddNodes / AddGateways / AddBalancer / WithGateways; compose publishing
+- [x] `DaServer.Aspire`: AddDaServerCluster / AddNodes / AddGateways / WithGateways; compose publishing
       (ADR-015); no configuration files in node projects
-- [x] 10k-player scenario: login, game, map, 3 gateways, balancer, 10k bots (Sample.Bot fails on any gap, disconnect or
+- [x] 10k-player scenario: login, game, map, 3 gateways, 10k bots (Sample.Bot fails on any gap, disconnect or
       p99 over the limit); passes through Aspire (README "Performance")
 - [x] E2E in CI: `tests/DaServer.E2E` runs the AppHost with `Aspire.Hosting.Testing` (1000 bots in CI) and
       fails unless the bot exits 0
@@ -450,7 +451,7 @@ in separate commits.
       disconnect; servers without telemetry: 0 KB/s except business payloads (chat strings) and < 0.5 B per pushed
       message on gateways, no GC (README "Performance")
 - [x] Checklist 6: R1-R11 and E1-E10 hold; open items are the unchecked roadmap entries
-- [x] Naming review (ADR-032, ADR-040): `OnLoad`/`OnUnload`, `Caller`, balancers, one noun per concept;
+- [x] Naming review (ADR-032, ADR-040): `OnLoad`/`OnUnload`, `Caller`, the directory, one noun per concept;
       actor state from field initializers, `ActorRef` for systems
 - [x] Moving scenario: 10,000 bots in one map (AOI and dead reckoning, ~2.5M positions/s, p99 106 ms); servers
       0–5 KB/s, no GC; scale-out: a gateway started mid-run

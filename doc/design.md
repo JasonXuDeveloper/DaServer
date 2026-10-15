@@ -171,7 +171,7 @@ that keeps session state as ECS components.
 
 ```mermaid
 flowchart TB
-    C[clients] -. "connect (well-known address)" .-> D[balancer<br/>Sample.Gateway, Balancer]
+    C[clients] -. "connect to any (well-known address), directed to the less loaded" .-> G1
     C --> G1 & G2
     subgraph gateways [Sample.Gateway: client sockets, bindings, groups, fan-out; no business code]
         G1[gateway-0]
@@ -228,7 +228,7 @@ sequenceDiagram
   `ClientGroup.All` reaches every session of the cluster (the sample's realm status every 5 ticks).
 - **Batch per tick.** Systems collect changes into the map's grid and one system sends them as one message per
   changed cell every other tick: n moving avatars cost n entries, not n x n messages.
-- **Measured.** 10k bots through a balancer and 3 gateways to one game node and one map node: see the README's Performance section.
+- **Measured.** 10k bots through 3 gateways to one game node and one map node: see the README's Performance section.
 
 ### Backend cluster without clients
 
@@ -238,8 +238,9 @@ removed at run time; placement moves only the keys of the node that joined or le
 
 ## 8. Clients
 
-`ClusterClient` connects to a gateway (`host:port`, DNS names included); given a balancer address it moves to the
-gateway the balancer names (ADR-026), waiting while the cluster forms. It sends the same messages as
+`ClusterClient` connects through one or several entry addresses (`host:port`, DNS names included: every resolved
+address is tried) and moves to the client-facing node the entry names (ADR-026); reconnects go through the entries
+again. It sends the same messages as
 servers: `client.Ask(new Login(..))`, `client.Ask(new GetInfo())` (session actors need no id: the gateway uses the
 binding), `client.Ask(roomId, new Join())` (`AnyId` messages). Push handlers are `[Handle]` methods of any class,
 registered with `client.Register(obj)`; they run on the IO thread or, for game loops and UIs, on the application's thread through `ProcessCallbacks`.
@@ -389,9 +390,9 @@ node project is its business classes only.
   environment the AppHost sets, bound by `DaServer.Hosting` on the Generic Host. `SIGTERM` triggers a graceful
   leave. Each node logs a stats line (CPU, allocation rate, GCs, sessions, actors, queue, rejected) every 30 s.
 - The cluster is described once in an Aspire AppHost with `DaServer.Aspire`:
-  `AddDaServerCluster`, `AddNodes<TProject>(name, replicas)`, `AddGateways<TProject>(name, replicas)`,
-  `AddBalancer<TProject>(name)`. Every node gets a cluster endpoint and seeds (every other node), gateways a client
-  endpoint; `WithGateways(balancer)` hands the balancer address to clients and bots.
+  `AddDaServerCluster`, `AddNodes<TProject>(name, replicas)`, `AddGateways<TProject>(name, replicas)`. Every node gets
+  a cluster endpoint and seeds (every other node), gateways a client endpoint (`DaServer__Clients__Port`);
+  `WithGateways(gateways)` hands their addresses to clients and bots as entries.
 - The same model runs locally (`dotnet run` on the AppHost, with the dashboard showing logs and OTLP metrics) and is
   published with `aspire publish`: Docker Compose via `AddDockerComposeEnvironment`, Kubernetes via
   `AddKubernetesEnvironment`. There are no hand-maintained deployment files.
@@ -403,7 +404,7 @@ node project is its business classes only.
 |---|---|---|
 | Unit | Queues, buffer pool, frame parsing, pending-call table, membership merge, rendezvous placement | `tests/DaServer.Tests` |
 | Generator | Valid input compiles, every DAS rule fires from the analyzer, the entry point is generated only when missing, unrelated edits hit the incremental cache | `tests/DaServer.Tests` |
-| Integration | In-process clusters on loopback (`ClusterTest`): request semantics and ordering, turn-based actors, ECS systems over actor state, single loaded actor, idle unloading, failover, fencing, one-way and published messages (to actors on any node, once per service type, ordering, routing), resumable links, deadlines, gateway access by `Flow.FromClient`, binding isolation, broadcast (exact under churn), balancer, `SessionClosed` (close and gateway crash), session resumption, backpressure, placement under suspicion | `tests/DaServer.Tests` |
+| Integration | In-process clusters on loopback (`ClusterTest`): request semantics and ordering, turn-based actors, ECS systems over actor state, single loaded actor, idle unloading, failover, fencing, one-way and published messages (to actors on any node, once per service type, ordering, routing), resumable links, deadlines, gateway access by `Flow.FromClient`, binding isolation, broadcast (exact under churn), the directory, `SessionClosed` (close and gateway crash), session resumption, backpressure, placement under suspicion | `tests/DaServer.Tests` |
 | Allocation | Steady-state cross-shard calls, replies of suspended handlers, bursts of concurrent calls, one-way messages, gateway fan-out, client messages through a gateway and gossip rounds allocate nothing per operation | `tests/DaServer.Tests` |
-| End to end | AppHost topology (login, game, map, 3 gateways, balancer) + `Sample.Bot`: 10k bots locally, 1,000 in CI (`tests/DaServer.E2E`); fails on any gap, disconnect or p99 over the limit | `samples/mmo/`, `tests/DaServer.E2E` |
+| End to end | AppHost topology (login, game, map, 3 gateways) + `Sample.Bot`: 10k bots locally, 1,000 in CI (`tests/DaServer.E2E`); fails on any gap, disconnect or p99 over the limit | `samples/mmo/`, `tests/DaServer.E2E` |
 | Benchmarks | BenchmarkDotNet on real loopback sockets: RPC at 1/64/1,024 outstanding calls (local and remote), one-way messages to actors (local and remote), group broadcast to 1k/5k client sockets in 1 or 9 groups, broadcast to everyone through 3 gateways (3k/9k) | `benchmarks/DaServer.Benchmark` |

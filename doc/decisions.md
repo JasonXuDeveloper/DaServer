@@ -129,7 +129,7 @@ records that no longer hold). Each: context → decision → consequences.
 - Context: hand-written Dockerfile, compose and Kubernetes files duplicate the topology (ports, seeds, projects) and
   drift from the code.
 - Decision: `DaServer.Aspire` describes a cluster in the AppHost (`AddDaServerCluster`, `AddNodes`, `AddGateways`,
-  `AddBalancer`, `WithGateways`). The same model runs locally with the dashboard and publishes Docker Compose or
+  `WithGateways`). The same model runs locally with the dashboard and publishes Docker Compose or
   Kubernetes through Aspire publishers. Nodes export logs and metrics over OTLP when Aspire (or any collector)
   configures it. There are no hand-written deployment files.
 - Consequences: one source of truth for topology. Ports are assigned deterministically per node. Replicas are
@@ -217,22 +217,26 @@ records that no longer hold). Each: context → decision → consequences.
 - Decision: each group is a slot array; a session knows its slot in each group, leave is swap-remove. Membership
   changes and fan-out both take the group's lock (fan-out reaches every earlier join). `ClientGroup.All` is a group
   every session joins on accept. `Connection.Send` closes a slow consumer off the caller's thread, so a fan-out never
-  re-enters a group. Lock order: group gate, group, connection send lock. Balancers receive no broadcasts.
+  re-enters a group. Lock order: group gate, group, connection send lock.
 - Alternatives: copy-on-write member arrays (O(n) per join, O(n^2) to fill a group, large array churn); a
   `ConcurrentDictionary.Values` snapshot per broadcast (8 B per session per broadcast); gateway sessions as ECS
   entities on a gateway shard (one more thread hop per push; kept on the roadmap).
 - Consequences: join/leave O(1); a broadcast allocates nothing (allocation tests); a 3k-session fan-out holds one
   group lock for about a millisecond, which only delays membership changes of that group.
 
-## ADR-026 Balancers and client gateway discovery
+## ADR-026 Client-facing nodes direct clients to each other
 - Context: clients that are given every gateway address and spread themselves round robin must be reconfigured when
-  a gateway is added, and load follows connection order, not load.
-- Decision: members gossip their client host, port and session count. A gateway with `Balancer` (Aspire
-  `AddBalancer`) answers `PickGateway` with the less loaded of two random gateways that accept sessions (power of two
-  choices: even spread from stale counts, no herd). `ClusterClient.ConnectAsync(host, port)` follows the answer, and
-  asks again while the cluster is still forming (no gateway known yet) until its call timeout.
-- Consequences: clients know one address; gateways scale by replica count. Any gateway can answer `PickGateway`, so
-  a balancer is a deployment choice, not a separate component.
+  a gateway is added, and load follows connection order, not load; a dedicated directing role is one more thing to
+  deploy, and the platform already offers the well-known address (a load balancer, a DNS name).
+- Decision: client-facing nodes publish their client endpoint (a card entry) and gossip their session count (a pulse
+  slot). Any of them answers `PickNode` (and `GET /clients/endpoint`) with the less loaded of two random client-facing
+  nodes (power of two choices: even spread from stale counts, no herd), adding the clients it directed since the
+  node's last count, or "stay" when that is itself. `ClusterClient.ConnectAsync` connects through one or several
+  entry addresses (tried in turn; reconnects use them again) and moves to the named node; a node it cannot reach is
+  not fatal (it stays). With `ClientOptions.Redirect` off (nodes behind a load balancer without addresses of their
+  own) the answer is always "stay".
+- Consequences: clients know one address; client-facing nodes scale by replica count; there is no balancer role. A
+  load balancer in front spreads the first connection, the directory the session.
 
 ## ADR-027 Bounded queues refuse instead of growing
 - Context: unbounded dispatch queues and mailboxes let a flood (or a slow actor) grow memory until the process dies,
@@ -274,9 +278,8 @@ records that no longer hold). Each: context → decision → consequences.
 - Context: Aspire's `WithReplicas` runs replicas as one resource behind a proxy with shared endpoints. Cluster
   members are addressed individually: each gossips its own cluster and client endpoint, links go to a specific node
   and clients are directed to a specific gateway.
-- Decision: `AddNodes` / `AddGateways` / `AddBalancer` create one resource per replica (`gateway-0`, `gateway-1`, ...)
-  with its own endpoints, and every node gets every other node as a seed; the balancer is the only well-known client
-  address. Deployments that do have per-replica DNS (Kubernetes headless services) use DNS seeds instead: a seed that
+- Decision: `AddNodes` / `AddGateways` create one resource per replica (`gateway-0`, `gateway-1`, ...) with its own
+  endpoints, and every node gets every other node as a seed; clients get the gateways' addresses as entries. Deployments that do have per-replica DNS (Kubernetes headless services) use DNS seeds instead: a seed that
   resolves to several addresses yields one seed per address.
 - Consequences: replicas are visible and individually addressable on the dashboard; replica count is still a single
   argument, and no endpoints are configured by hand.
@@ -285,21 +288,22 @@ records that no longer hold). Each: context → decision → consequences.
 - Context: serializing the whole member table every round costs about 10 KB/s per idle node at one round a second,
   growing with the square of the cluster size, and allocates new member objects on every receiver; a view that keeps
   the load hints of the last status change never shows gateways filling up.
-- Decision: a member is its card (identity, endpoints, hosted handlers: fixed while it runs) plus its pulse
-  (incarnation, heartbeat, status, load, sessions: 29 bytes). Gossip and its reply carry pulses, written into a pooled
-  frame and read in place; a pulse naming an unknown node is answered with `CardRequest`/`Cards`. Pulses update
-  members in place; incarnation and status changes publish a copy and rebuild the view. Because counts lag a round,
-  the balancer adds the clients it directed to a gateway since its last pulse.
+- Decision: a member is its card (identity, endpoint, hosted handlers and address scopes, its features' card
+  entries: fixed while it runs) plus its pulse (incarnation, heartbeat, status, load and three feature slots such as
+  sessions: 37 bytes). Gossip and its reply carry pulses, written into a pooled frame and read in place; a pulse naming
+  an unknown node is answered with `CardRequest`/`Cards`. Pulses update members in place; incarnation and status
+  changes publish a copy and rebuild the view. Because counts lag a round, the directory adds the clients it directed
+  to a node since its last pulse.
 - Consequences: a steady-state round allocates nothing (allocation test at 300 rounds/s); idle nodes in the 10k
-  topology allocate 0 KB/s; gossip size is 29 bytes per member. Load hints are fresh within a round.
+  topology allocate 0 KB/s; gossip size is 37 bytes per member. Load hints are fresh within a round.
 
 ## ADR-032 Names from the distributed-server vocabulary
 - Context: names borrowed from one framework (Orleans' `OnActivateAsync`) or describing a mechanism instead of its
   role read wrong to people who know other distributed servers.
 - Decision: name things by their role in a cluster, in pairs where they are pairs: `OnLoad` / `OnUnload` (the actor is
   loaded on / leaves this node), `Flow.FromClient` / `Flow.ToClient` (the two directions across the gateway),
-  `Caller` (who sent the message from outside; invalid for server calls), `Disconnect` (not a game's "kick"), balancer
-  (`AddBalancer`, `Balancer`; "dispatch" means message dispatch only), `ClusterMember` (no clash with
+  `Caller` (who sent the message from outside; invalid for server calls), `Disconnect` (not a game's "kick"), directory
+  ("dispatch" means message dispatch only), `ClusterMember` (no clash with
   `System.Reflection.MemberInfo`), `ListenAddress` / `DispatchQueueCapacity` (what they configure). Actor state starts
   as `new TState()` (field initializers of a state struct run, so `OnLoad` is only for loading), and systems read an
   actor's id and group from its public `ActorRef` component instead of copying them into state.
@@ -358,7 +362,7 @@ records that no longer hold). Each: context → decision → consequences.
 - Decision: the session's gateway sends its client a reconnect ticket after every binding change: session, bindings
   (handler type id, key) and expiry, signed with HMAC-SHA256 of the cluster secret (`DaServer__ClusterSecret`,
   generated by Aspire). Gateways keep no state for it, so any gateway accepts it. `ClusterClient` reconnects through
-  its original address (a balancer picks a live gateway) with exponential backoff and presents the ticket; the new
+  its entry addresses (a live node directs it) with exponential backoff and presents the ticket; the new
   session takes over the bindings and the actors' groups, and every bound actor receives
   `SessionResync(Session, Previous)` before the client's next message (same links). Actors swap the session and send
   the full state; pushes sent meanwhile are lost by design (state, not a log). A lost connection is reported as
