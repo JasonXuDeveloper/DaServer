@@ -37,14 +37,28 @@ public static class DaServerHttpExtensions
     }
 
     /// <summary>
-    /// Map the node's own endpoints (the generated entry point does; a written Program.cs calls it after <c>Build</c>):
-    /// <c>GET /clients/endpoint</c> on client-facing nodes, where a client should connect (clients that bootstrap over
-    /// HTTP).
+    /// Map the node's own endpoints (the generated entry point does; a written Program.cs calls it after <c>Build</c>).
+    /// On client-facing nodes: <c>GET /clients/endpoint</c>, where a client should connect (clients that bootstrap over
+    /// HTTP), and <c>/clients/ws</c>, client connections over WebSocket (browsers, WebGL builds).
     /// </summary>
     public static WebApplication MapDaServer(this WebApplication app)
     {
-        if (app.Services.GetRequiredService<Node>().Feature<DaServer.Clients.ClientConnections>() is { } clients)
-            app.MapGet("/clients/endpoint", () => Results.Json(clients.Pick() is { Host.Length: > 0 } other ? other : clients.Endpoint));
+        if (app.Services.GetRequiredService<Node>().Feature<DaServer.Clients.ClientConnections>() is not { } clients) return app;
+        app.MapGet("/clients/endpoint", () => Results.Json(clients.Pick() is { Host.Length: > 0 } other ? other : clients.Endpoint));
+        app.UseWebSockets();
+        app.Map("/clients/ws", async (HttpContext http) =>
+        {
+            if (!http.WebSockets.IsWebSocketRequest)
+            {
+                http.Response.StatusCode = StatusCodes.Status400BadRequest;
+                return;
+            }
+
+            var socket = await http.WebSockets.AcceptWebSocketAsync();
+            var channel = new DaServer.Net.WebSocketChannel(socket, clients.Channels, clients.MaxFrameSize, clients.MaxPendingSendBytes);
+            clients.Open(channel);
+            await channel.RunAsync(); // the request lives as long as the client's connection
+        });
         return app;
     }
 

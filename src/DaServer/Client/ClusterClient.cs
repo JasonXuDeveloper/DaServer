@@ -6,13 +6,14 @@ namespace DaServer.Client;
 /// push to the [Handle] methods of registered handler objects (<see cref="Register"/>). When the connection is lost it
 /// reconnects on its own and resumes its session with the gateway's reconnect ticket (<see cref="Reconnected"/>).
 /// </summary>
-public sealed class ClusterClient : IMessageSender, IConnectionHandler, IAsyncDisposable
+public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannelHandler, IAsyncDisposable
 {
     private readonly PendingCallTable _pending = new(14);
     private readonly Lock _handlersGate = new();
     private Dictionary<uint, (object Target, MessageDispatcher Dispatcher)> _handlers = new(); // copy on write
     private readonly MpmcQueue<FrameWriter>? _inbox;
-    private Connection? _connection;
+    private IFrameChannel? _connection;
+    private Uri? _webSocket; // connected over a WebSocket (reconnects go there again)
     private DnsEndPoint[] _entries = [];  // the well-known addresses (reconnects start there again)
     private int _nextEntry = Random.Shared.Next(); // spreads clients over the entries
     private bool _followRedirect;
@@ -74,11 +75,27 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IAsyncDi
     public ValueTask ConnectAsync(string host, int port, bool followRedirect = true, CancellationToken cancellationToken = default) =>
         ConnectAsync([new DnsEndPoint(host, port)], followRedirect, cancellationToken);
 
+    /// <summary>
+    /// Connect over a WebSocket (<c>ws://node:8080/clients/ws</c>, <c>wss://</c> behind TLS termination): for browsers,
+    /// WebGL builds and networks that pass HTTP only. The node's load balancer picks the node; the client stays there.
+    /// </summary>
+    public async ValueTask ConnectAsync(Uri webSocket, CancellationToken cancellationToken = default)
+    {
+        var socket = new System.Net.WebSockets.ClientWebSocket();
+        await socket.ConnectAsync(webSocket, cancellationToken).ConfigureAwait(false);
+        var channel = new WebSocketChannel(socket, this, FrameHeader.MaxFrameSize, ConnectionOptions.ForClients().MaxPendingSendBytes);
+        _webSocket = webSocket;
+        _connection = channel;
+        _ = channel.RunAsync();
+        GC.KeepAlive(Sweeper);
+        Live.TryAdd(this, true);
+    }
+
     /// <summary>Connect through the first reachable of <paramref name="entries"/> (tried in turn, starting at a random one).</summary>
     public async ValueTask ConnectAsync(IReadOnlyList<DnsEndPoint> entries, bool followRedirect = true, CancellationToken cancellationToken = default)
     {
         if (entries.Count == 0) throw new ArgumentException("No entry address", nameof(entries));
-        (_entries, _followRedirect) = ([.. entries], followRedirect);
+        (_entries, _followRedirect, _webSocket) = ([.. entries], followRedirect, null);
         await ConnectToEntryAsync(cancellationToken).ConfigureAwait(false);
         if (!followRedirect) return;
 
@@ -95,7 +112,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IAsyncDi
             return; // the named node is gone or unreachable from here: the entry node serves as well
         }
 
-        var entry = Interlocked.Exchange(ref _connection, moved);
+        var entry = Interlocked.Exchange(ref _connection, (IFrameChannel)moved);
         entry?.Close(); // closed on purpose: not a disconnect (no longer the current connection)
     }
 
@@ -251,7 +268,17 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IAsyncDi
 
     // ------------------------------------------------------------------ IConnectionHandler
 
-    void IConnectionHandler.OnFrame(Connection connection, in FrameHeader header, ReadOnlySpan<byte> frame)
+    void IConnectionHandler.OnFrame(Connection connection, in FrameHeader header, ReadOnlySpan<byte> frame) =>
+        OnFrame(connection, in header, frame);
+
+    void IConnectionHandler.OnClosed(Connection connection, Exception? error) => OnClosed(connection, error);
+
+    void IChannelHandler.OnFrame(IFrameChannel channel, in FrameHeader header, ReadOnlySpan<byte> frame) =>
+        OnFrame(channel, in header, frame);
+
+    void IChannelHandler.OnClosed(IFrameChannel channel, Exception? error) => OnClosed(channel, error);
+
+    private void OnFrame(IFrameChannel connection, in FrameHeader header, ReadOnlySpan<byte> frame)
     {
         switch (header.Kind)
         {
@@ -275,7 +302,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IAsyncDi
         }
     }
 
-    void IConnectionHandler.OnClosed(Connection connection, Exception? error)
+    private void OnClosed(IFrameChannel connection, Exception? error)
     {
         if (connection != _connection) return; // the entry connection, left on purpose
         _pending.FailAll(RpcStatus.Disconnected);
@@ -297,7 +324,8 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IAsyncDi
             _connection?.Close(); // the previous attempt's, if it connected
             try
             {
-                await ConnectAsync(_entries, _followRedirect).ConfigureAwait(false);
+                if (_webSocket != null) await ConnectAsync(_webSocket).ConfigureAwait(false);
+                else await ConnectAsync(_entries, _followRedirect).ConfigureAwait(false);
                 await ResumeAsync().ConfigureAwait(false);
                 Volatile.Write(ref _reconnecting, 0);
                 Reconnected?.Invoke();
