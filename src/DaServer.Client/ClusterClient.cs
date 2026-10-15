@@ -15,7 +15,11 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
     private IFrameChannel? _connection;
     private Uri? _webSocket; // connected over a WebSocket (reconnects go there again)
     private DnsEndPoint[] _entries = [];  // the well-known addresses (reconnects start there again)
-    private int _nextEntry = Random.Shared.Next(); // spreads clients over the entries
+    #if NET
+    private int _nextEntry = Random.Shared.Next();
+#else
+    private int _nextEntry = new Random().Next();
+#endif // spreads clients over the entries
     private bool _followRedirect;
     private byte[]? _ticket;          // latest reconnect ticket from the gateway (null: nothing to resume)
     private long _refreshTicketAtMs;  // local clock
@@ -296,10 +300,15 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
                 break;
             case FrameKind.Control when header.MessageId == ControlOp.Ticket:
                 var ticket = FrameHeader.PayloadOf(in header, frame);
+                if (ticket.Length == 0) // no grants (before login, after logout): nothing to resume
+                {
+                    Volatile.Write(ref _ticket, null);
+                    break;
+                }
+
                 long lifetime = SignedToken.ExpiresMs(ticket) - SignedToken.IssuedMs(ticket); // server clock: use only the span
-                // No grant (before login, after logout): nothing to resume.
-                Volatile.Write(ref _ticket, ticket.Length > ReconnectTicket.SizeOf(0) ? ticket.ToArray() : null);
-                Volatile.Write(ref _refreshTicketAtMs, Environment.TickCount64 + lifetime / 2);
+                Volatile.Write(ref _ticket, ticket.ToArray());
+                Volatile.Write(ref _refreshTicketAtMs, Platform.Milliseconds + lifetime / 2);
                 break;
         }
     }
@@ -318,7 +327,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
     private async Task ReconnectAsync()
     {
         Exception? error = null;
-        long deadline = Environment.TickCount64 + (long)ReconnectTimeout.TotalMilliseconds;
+        long deadline = Platform.Milliseconds + (long)ReconnectTimeout.TotalMilliseconds;
         var delay = TimeSpan.FromMilliseconds(100);
         while (!_disposed)
         {
@@ -343,7 +352,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
                 error = e;
             }
 
-            if (Environment.TickCount64 + (long)delay.TotalMilliseconds > deadline) break;
+            if (Platform.Milliseconds + (long)delay.TotalMilliseconds > deadline) break;
             delay = TimeSpan.FromMilliseconds(Math.Min(delay.TotalMilliseconds * 2, 5000));
         }
 
@@ -367,7 +376,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
     private void RefreshTicket()
     {
         if (Volatile.Read(ref _ticket) == null || !IsConnected || Volatile.Read(ref _reconnecting) != 0) return;
-        long now = Environment.TickCount64;
+        long now = Platform.Milliseconds;
         if (now < Volatile.Read(ref _refreshTicketAtMs)) return;
         Volatile.Write(ref _refreshTicketAtMs, now + 10_000); // until the new one arrives
         SendControl(FrameWriter.Rent(FrameHeader.Size), ControlOp.Ticket, null);
@@ -397,7 +406,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
             SendControl(FrameWriter.Rent(FrameHeader.Size), ControlOp.Goodbye, call);
             try
             {
-                await goodbye.AsTask().WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+                await Task.WhenAny(goodbye.AsTask(), Task.Delay(TimeSpan.FromSeconds(1))).ConfigureAwait(false);
             }
             catch
             {

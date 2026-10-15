@@ -1,12 +1,13 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
-        <TargetFramework>net10.0</TargetFramework>
+        <!-- netstandard2.1: the same contracts compile into Unity clients. -->
+        <TargetFrameworks>netstandard2.1;net10.0</TargetFrameworks>
         <IsPackable>false</IsPackable>
     </PropertyGroup>
 
     <ItemGroup>
-        <ProjectReference Include="..\..\..\src\DaServer\DaServer.csproj" />
+        <ProjectReference Include="..\..\..\src\DaServer.Abstractions\DaServer.Abstractions.csproj" />
         <ProjectReference Include="..\..\..\src\DaServer.Generator\DaServer.Generator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
     </ItemGroup>
 

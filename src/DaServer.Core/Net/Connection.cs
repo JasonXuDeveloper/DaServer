@@ -124,7 +124,12 @@ public sealed class Connection : IFrameSender, IFrameChannel
             : new Socket(endPoint.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
         try
         {
+#if NET
             await socket.ConnectAsync(endPoint, cancellationToken).ConfigureAwait(false);
+#else
+            using (cancellationToken.Register(static s => ((Socket)s!).Dispose(), socket))
+                await socket.ConnectAsync(endPoint).ConfigureAwait(false);
+#endif
         }
         catch
         {
@@ -189,7 +194,7 @@ public sealed class Connection : IFrameSender, IFrameChannel
         {
             // Closed off the caller's thread: a fan-out holding a group's lock must not run the close callback inline.
             if (Interlocked.Exchange(ref _overflowed, 1) == 0)
-                ThreadPool.UnsafeQueueUserWorkItem(static c => c.Close(SlowConsumer), this, preferLocal: false);
+                Platform.Queue(static c => c.Close(SlowConsumer), this);
             return false;
         }
 

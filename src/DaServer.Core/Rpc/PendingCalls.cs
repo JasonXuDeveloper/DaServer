@@ -5,8 +5,8 @@ namespace DaServer.Rpc;
 /// <summary>A call waiting for its reply.</summary>
 internal interface IPendingCall
 {
-    /// <summary>Shard of the caller: the reply is completed on that shard thread (null: completed inline).</summary>
-    Shard? CallerShard { get; }
+    /// <summary>Thread of the caller that completes it there (a shard), or null: completed inline.</summary>
+    CallerThread? Caller { get; }
 
     /// <summary>Complete with a reply. Runs on an IO thread; payload is only valid during the call.</summary>
     void Complete(RpcStatus status, ReadOnlySpan<byte> payload);
@@ -169,14 +169,17 @@ internal readonly struct NoReply;
 /// <summary>
 /// Pooled, allocation-free awaitable for an in-flight call returning <typeparamref name="T"/> (<see cref="Task"/>), or
 /// nothing (<see cref="Done"/>, with <see cref="NoReply"/>).
-/// <para>Completion threading: when the caller is a shard thread (<see cref="CallerShard"/> set at creation) the
+/// <para>Completion threading: when the caller is a shard thread (<see cref="Caller"/> set at creation) the
 /// runtime completes the call <b>on that shard thread</b> (the reply is posted to the shard's mailbox), so the
 /// continuation runs inline there: no SynchronizationContext.Post, no thread-pool hop, no allocation. Callers outside
 /// a shard (tests, tools, the game client) get their continuation on the thread pool, queued as this object itself
 /// (<see cref="IThreadPoolWorkItem"/>), so that path allocates nothing either.</para>
 /// ExecutionContext (AsyncLocal) is intentionally not flowed across RPC awaits.
 /// </summary>
-internal sealed class PendingCall<T> : IPendingCall, IValueTaskSource<T>, IValueTaskSource, IThreadPoolWorkItem
+internal sealed class PendingCall<T> : IPendingCall, IValueTaskSource<T>, IValueTaskSource
+#if NET
+    , IThreadPoolWorkItem
+#endif
 {
     /// <summary>Calls made outside shards (clients, tools, tests): their in-flight count is bounded by their table.</summary>
     private static readonly ObjectPool<PendingCall<T>> Pool = new(() => new PendingCall<T>(), 1024);
@@ -201,14 +204,14 @@ internal sealed class PendingCall<T> : IPendingCall, IValueTaskSource<T>, IValue
     {
     }
 
-    public static PendingCall<T> Rent(Shard? caller)
+    public static PendingCall<T> Rent(CallerThread? caller)
     {
         var call = caller != null && _shardPool is { Count: > 0 } local ? local.Pop() : Pool.Rent();
-        call.CallerShard = caller;
+        call.Caller = caller;
         return call;
     }
 
-    public Shard? CallerShard { get; private set; }
+    public CallerThread? Caller { get; private set; }
 
     public ValueTask<T> Task => new(this, _version);
 
@@ -262,7 +265,7 @@ internal sealed class PendingCall<T> : IPendingCall, IValueTaskSource<T>, IValue
         var context = _capturedContext;
         if (context != null)
             PostTo(context, continuation, _continuationState); // foreign UI-style contexts only
-        else if (CallerShard != null)
+        else if (Caller != null)
             continuation(_continuationState); // completed on the caller's shard thread
         else
             Queue(continuation);
@@ -271,10 +274,18 @@ internal sealed class PendingCall<T> : IPendingCall, IValueTaskSource<T>, IValue
     private void Queue(Action<object?> continuation)
     {
         _queued = continuation;
+#if NET
         ThreadPool.UnsafeQueueUserWorkItem(this, preferLocal: false);
+#else
+        ThreadPool.UnsafeQueueUserWorkItem(static call => ((PendingCall<T>)call!).Execute(), this);
+#endif
     }
 
-    void IThreadPoolWorkItem.Execute()
+#if NET
+    void IThreadPoolWorkItem.Execute() => Execute();
+#endif
+
+    private void Execute()
     {
         var continuation = _queued!;
         _queued = null;
@@ -298,7 +309,7 @@ internal sealed class PendingCall<T> : IPendingCall, IValueTaskSource<T>, IValue
     {
         if (token != _version) throw new InvalidOperationException("Stale ValueTask token");
 
-        if (CallerShard == null && (flags & ValueTaskSourceOnCompletedFlags.UseSchedulingContext) != 0)
+        if (Caller == null && (flags & ValueTaskSourceOnCompletedFlags.UseSchedulingContext) != 0)
         {
             var sc = SynchronizationContext.Current;
             if (sc != null && sc.GetType() != typeof(SynchronizationContext))
@@ -314,15 +325,15 @@ internal sealed class PendingCall<T> : IPendingCall, IValueTaskSource<T>, IValue
     public T GetResult(short token)
     {
         if (token != _version) throw new InvalidOperationException("Stale ValueTask token");
-        var (result, error, shard) = (_result, _error, CallerShard);
+        var (result, error, caller) = (_result, _error, Caller);
         _result = default!;
         _error = null;
         _continuation = null;
         _continuationState = null;
         _capturedContext = null;
-        CallerShard = null;
+        Caller = null;
         _version++;
-        if (shard != null && ReferenceEquals(Shard.Current, shard))
+        if (caller != null && ReferenceEquals(CallerThread.Current, caller))
             (_shardPool ??= new Stack<PendingCall<T>>()).Push(this);
         else
             Pool.Return(this);

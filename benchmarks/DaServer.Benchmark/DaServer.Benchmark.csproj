@@ -15,6 +15,7 @@
 
     <ItemGroup>
         <ProjectReference Include="..\..\src\DaServer\DaServer.csproj" />
+        <ProjectReference Include="..\..\src\DaServer.Client\DaServer.Client.csproj" />
         <ProjectReference Include="..\..\src\DaServer.Generator\DaServer.Generator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
     </ItemGroup>
 

@@ -66,7 +66,12 @@ public static class BufferPool
     {
         if (length <= MinSize) return 0;
         // ceil(log2(length)) - MinShift
-        int log = 32 - BitOperations.LeadingZeroCount((uint)(length - 1));
+#if NET
+        int log = 32 - System.Numerics.BitOperations.LeadingZeroCount((uint)(length - 1));
+#else
+        int log = 0;
+        for (uint v = (uint)(length - 1); v != 0; v >>= 1) log++;
+#endif
         return log - MinShift;
     }
 
@@ -83,6 +88,10 @@ public static class BufferPool
     private static byte[] Allocate(int length)
     {
         Interlocked.Add(ref _allocatedBytes, length);
+#if NET
         return GC.AllocateUninitializedArray<byte>(length, pinned: true);
+#else
+        return new byte[length];
+#endif
     }
 }
