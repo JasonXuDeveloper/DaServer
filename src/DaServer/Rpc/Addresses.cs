@@ -36,7 +36,7 @@ public interface IGroupAddress : IAddress
 /// <summary>
 /// Who sent a message from outside the cluster: the node whose ingress let it in and its id there (today a client
 /// session on its gateway). Read in handlers as <c>Caller</c> (default for messages sent inside the cluster), and an
-/// address: <c>Cluster.Send(Caller, m)</c> reaches it (<c>Flow.ToClient</c> messages).
+/// address: <c>Cluster.Send(Caller, m)</c> reaches it (<c>[ToClient]</c> messages).
 /// </summary>
 [Nino.Core.NinoType]
 public readonly partial record struct Origin(ulong Node, long Id) : INodeAddress

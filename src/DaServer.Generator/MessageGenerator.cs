@@ -8,7 +8,7 @@ namespace DaServer.Generator;
 /// <summary>
 /// For every request struct (<c>IRequest&lt;TReply&gt;</c>): typed <c>Ask</c> overloads on <c>IMessageSender</c>
 /// (<c>await Cluster.Ask(playerId, new GetInfo())</c> returns the reply type without boxing the request). For every
-/// <c>Flow.FromClient</c> message: its registration for gateways, in a module initializer of its assembly, plus the
+/// <c>[FromClient]</c> message: its registration for client-facing nodes, in a module initializer of its assembly, plus the
 /// assembly marker hosts use to run it. Incremental rules: syntax-only predicates or ForAttributeWithMetadataName,
 /// symbol-free equatable models, invalid input skipped (DaServerAnalyzer reports it), tracking names on every stage.
 /// </summary>
@@ -30,7 +30,7 @@ public sealed class MessageGenerator : IIncrementalGenerator
             spc.AddSource($"{HintName(request!.FullName)}.Ask.g.cs", SourceText.From(EmitAsk(request), Encoding.UTF8)));
 
         var clientMessages = context.SyntaxProvider
-            .ForAttributeWithMetadataName(MessageAttribute, static (node, _) => node is TypeDeclarationSyntax,
+            .ForAttributeWithMetadataName(FromClientAttribute, static (node, _) => node is TypeDeclarationSyntax,
                 static (ctx, _) => Shapes.ReadClientMessage((INamedTypeSymbol)ctx.TargetSymbol))
             .Where(static m => m is not null)
             .Collect()
@@ -69,7 +69,7 @@ public sealed class MessageGenerator : IIncrementalGenerator
         var sb = new StringBuilder(Header);
         sb.Append($"[assembly: global::DaServer.Rpc.MessagesAssembly(typeof(global::{anchor}))]\n\n");
         sb.Append("namespace DaServer.Generated\n{\n");
-        sb.Append("    /// <summary>Registers the Flow.FromClient messages of this assembly for gateways (generated).</summary>\n");
+        sb.Append("    /// <summary>Registers the [FromClient] messages of this assembly for client-facing nodes (generated).</summary>\n");
         sb.Append("    [global::System.ComponentModel.EditorBrowsable(global::System.ComponentModel.EditorBrowsableState.Never)]\n");
         sb.Append($"    public static class Messages_{assembly}\n    {{\n");
         sb.Append("        [global::System.Runtime.CompilerServices.ModuleInitializer]\n        internal static void Register()\n        {\n");

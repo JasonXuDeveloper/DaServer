@@ -15,13 +15,13 @@ public readonly record struct RoomId(long Value) : IActorId;
 [NinoType, Message] public partial record struct Bumped(int By);
 
 /// <summary>Join the room's group, or <see cref="Groups"/> groups of it (cells around a player in a map).</summary>
-[NinoType, Message(Flow.FromClient, AnyId = true)] public partial record struct Join(int Groups) : IRequest<bool>;
+[NinoType, Message, FromClient(AnyId = true)] public partial record struct Join(int Groups) : IRequest<bool>;
 
 /// <summary>One message to each of <see cref="Groups"/> groups in the same turn.</summary>
 [NinoType, Message] public partial record struct Broadcast(int Groups, int Sequence) : IRequest<bool>;
 
 /// <summary>Pushed to clients.</summary>
-[NinoType, Message(Flow.ToClient)] public partial record struct Tick(int Sequence);
+[NinoType, Message, ToClient] public partial record struct Tick(int Sequence);
 
 public record struct CounterState(int Value) : IComponent;
 

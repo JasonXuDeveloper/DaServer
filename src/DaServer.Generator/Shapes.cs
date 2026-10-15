@@ -30,7 +30,7 @@ internal sealed record HostedModel(string FullName, HostedKind Kind, EquatableAr
 /// <summary>A request type (<c>IRequest&lt;TReply&gt;</c>): the generator emits its typed <c>Ask</c> overloads.</summary>
 internal sealed record RequestModel(string Namespace, string ClassName, string FullName, string ReplyType, bool Public);
 
-/// <summary>A <c>Flow.FromClient</c> message type: registered for gateways in its assembly.</summary>
+/// <summary>A <c>[FromClient]</c> message type: registered for client-facing nodes in its assembly.</summary>
 internal sealed record ClientMessageModel(string FullName, bool AnyId);
 
 /// <summary>
@@ -77,32 +77,32 @@ internal static class Shapes
             IsPublic(type));
     }
 
-    /// <summary>The <c>Flow</c> of a [Message] type (0, internal, when it has none).</summary>
+    /// <summary>Who besides servers a message travels between: <c>[FromClient]</c> and <c>[ToClient]</c> bits (0: servers only).</summary>
     public static int FlowOf(ITypeSymbol type) =>
-        GetAttribute(type, MessageAttribute)?.ConstructorArguments.FirstOrDefault().Value is int flow ? flow : 0;
+        (HasAttribute(type, FromClientAttribute) ? FlowFromClient : 0) | (HasAttribute(type, ToClientAttribute) ? FlowToClient : 0);
 
-    /// <summary>A <c>Flow.FromClient</c> message, or null (invalid ones are reported).</summary>
+    /// <summary>A <c>[FromClient]</c> message, or null (invalid ones are reported).</summary>
     public static ClientMessageModel? ReadClientMessage(INamedTypeSymbol type, Report? report = null)
     {
-        var attribute = GetAttribute(type, MessageAttribute);
-        if (attribute == null || (FlowOf(type) & FlowFromClient) == 0) return null;
-        if (!IsMessage(type, type.Locations.FirstOrDefault(), "[Message(Flow.FromClient)]", report)) return null;
+        var attribute = GetAttribute(type, FromClientAttribute);
+        if (attribute == null) return null;
+        if (!IsMessage(type, type.Locations.FirstOrDefault(), "[FromClient]", report)) return null;
         bool anyId = attribute.NamedArguments.Any(a => a.Key == "AnyId" && a.Value.Value is true);
         return new ClientMessageModel(type.ToDisplayString(Fqn), anyId);
     }
 
     /// <summary>
     /// Whether <paramref name="message"/> may travel the way a call or handler uses it (reported when not):
-    /// <paramref name="toClient"/> (pushed to a session or group, handled on a client) needs <c>Flow.ToClient</c>;
-    /// <paramref name="fromClient"/> (sent by a client) needs <c>Flow.FromClient</c>; anything a server handles or
-    /// sends to servers must not be a <c>Flow.ToClient</c>-only message (no server handles it).
+    /// <paramref name="toClient"/> (sent to a session or group, handled on a client) needs <c>[ToClient]</c>;
+    /// <paramref name="fromClient"/> (sent by a client) needs <c>[FromClient]</c>; anything a server handles or sends to
+    /// servers must not be a <c>[ToClient]</c>-only message (no server handles it).
     /// </summary>
     public static bool CheckFlow(ITypeSymbol message, bool toClient, bool fromClient, Location? location, string usedBy, Report? report)
     {
         int flow = FlowOf(message);
-        string? problem = toClient ? ((flow & FlowToClient) == 0 ? "needs [Message(Flow.ToClient)] to reach clients" : null)
-            : fromClient ? ((flow & FlowFromClient) == 0 ? "needs [Message(Flow.FromClient)] to be sent by clients" : null)
-            : flow == FlowToClient ? "is a Flow.ToClient message: only clients handle it" : null;
+        string? problem = toClient ? ((flow & FlowToClient) == 0 ? "needs [Message, ToClient] to reach clients" : null)
+            : fromClient ? ((flow & FlowFromClient) == 0 ? "needs [Message, FromClient] to be sent by clients" : null)
+            : flow == FlowToClient ? "is a [ToClient] message: only clients handle it" : null;
         if (problem == null) return true;
         report?.Invoke(Rules.WrongFlow, location, message.ToDisplayString(), usedBy, problem);
         return false;

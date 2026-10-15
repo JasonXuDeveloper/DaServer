@@ -2,7 +2,7 @@ namespace DaServer.Clients;
 
 /// <summary>
 /// Client connections (ADR-048): game clients, bots and tools connect to this node (a client-facing node, the
-/// deployment's "gateway"), get a session, and their <see cref="Flow.FromClient"/> messages enter the cluster through
+/// deployment's "gateway"), get a session, and their <see cref="Clients.FromClientAttribute">[FromClient]</see> messages enter the cluster through
 /// the node's ingress with the session as origin. Messages to sessions and client groups are pushed to the sockets
 /// (a group message is serialized once and fanned out here); session operations (<see cref="JoinGroup"/>,
 /// <see cref="LeaveGroup"/>, <see cref="Disconnect"/>, bindings) are applied here; reconnect tickets let a client
@@ -464,8 +464,8 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
     }
 
     /// <summary>
-    /// Validate and route a client message (<see cref="Flow.FromClient"/> messages only) to its handler: the actor the
-    /// client named (<see cref="MessageAttribute.AnyId"/> messages only), else the actor of the type handling it that
+    /// Validate and route a client message (<see cref="Clients.FromClientAttribute">[FromClient]</see> messages only) to its handler: the actor the
+    /// client named (<see cref="Clients.FromClientAttribute.AnyId"/> messages only), else the actor of the type handling it that
     /// is bound to the session, else the service handling it. The session is the message's origin (<c>Caller</c> in the
     /// handler).
     /// </summary>

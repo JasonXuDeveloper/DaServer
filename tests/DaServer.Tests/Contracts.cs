@@ -17,7 +17,7 @@ public readonly record struct RoomId(long Value) : IActorId;
 // ---------------------------------------------------------------- counter (actor)
 
 [NinoType, Message] public partial record struct Add(int Delta) : IRequest<int>;
-[NinoType, Message(Flow.FromClient)] public partial record struct Get : IRequest<int>;
+[NinoType, Message, FromClient] public partial record struct Get : IRequest<int>;
 [NinoType, Message] public partial record struct Bump;                                       // one-way
 [NinoType, Message] public partial record struct Reset : IRequest<bool>;
 [NinoType, Message] public partial record struct WhereAmI : IRequest<string>;              // shard thread name
@@ -281,25 +281,25 @@ public sealed class TallyAuditService : Service
 
 // ---------------------------------------------------------------- client-facing: login, player, rooms
 
-[NinoType, Message(Flow.FromClient)] public partial record struct Login(PlayerId Player) : IRequest<bool>;
+[NinoType, Message, FromClient] public partial record struct Login(PlayerId Player) : IRequest<bool>;
 
 /// <summary>Logs in behind a burst of 4 KB pushes to the caller (the binding must not be overtaken).</summary>
-[NinoType, Message(Flow.FromClient)] public partial record struct LoginAfterPushes(PlayerId Player, int Pushes) : IRequest<bool>;
+[NinoType, Message, FromClient] public partial record struct LoginAfterPushes(PlayerId Player, int Pushes) : IRequest<bool>;
 
-[NinoType, Message(Flow.FromClient)] public partial record struct Logout : IRequest<bool>;
-[NinoType, Message(Flow.FromClient)] public partial record struct AddGold(int Amount) : IRequest<int>;
-[NinoType, Message(Flow.FromClient)] public partial record struct Tip(int Amount);            // one-way
+[NinoType, Message, FromClient] public partial record struct Logout : IRequest<bool>;
+[NinoType, Message, FromClient] public partial record struct AddGold(int Amount) : IRequest<int>;
+[NinoType, Message, FromClient] public partial record struct Tip(int Amount);            // one-way
 
 /// <summary>Server-only: the login service attaches a client session to its player.</summary>
 [NinoType, Message] public partial record struct Attach(SessionRef Session) : IRequest<bool>;
 
 /// <summary>A public chat room: clients name the room (<c>client.Send(roomId, ..)</c>).</summary>
-[NinoType, Message(Flow.FromClient, AnyId = true)] public partial record struct Join : IRequest<bool>;
-[NinoType, Message(Flow.FromClient, AnyId = true)] public partial record struct Say(string Text);
+[NinoType, Message, FromClient(AnyId = true)] public partial record struct Join : IRequest<bool>;
+[NinoType, Message, FromClient(AnyId = true)] public partial record struct Say(string Text);
 
 // Pushes (server to client).
-[NinoType, Message(Flow.ToClient)] public partial record struct Chat(RoomId From, string Text);
-[NinoType, Message(Flow.ToClient)] public partial record struct GoldChanged(int Gold);
+[NinoType, Message, ToClient] public partial record struct Chat(RoomId From, string Text);
+[NinoType, Message, ToClient] public partial record struct GoldChanged(int Gold);
 
 public sealed class AuthService : Service
 {

@@ -7,11 +7,11 @@ namespace DaServer.Rpc;
 // declared. Plain [NinoType] types are data inside messages (fields, replies), never sent on their own.
 //
 //   Cluster.Send(address, msg)    one-way to an address: an actor id (its type names the actor type), a client session
-//                                 or a client group (Flow.ToClient messages)
+//                                 or a client group ([ToClient] messages)
 //   Cluster.Send(msg)             one-way to the service handling msg
 //   Cluster.Ask(mapId, request)   request/reply: request implements IRequest<TReply>, its handler returns TReply
 //   Cluster.Publish(e)            to every service handling e
-//   client.Send(msg) / Ask(..)    clients send Flow.FromClient messages: to the actor bound to their session, else a service
+//   client.Send(msg) / Ask(..)    clients send [FromClient] messages: to the actor bound to their session, else a service
 
 /// <summary>
 /// A message answered with a <typeparamref name="TReply"/>: <c>Cluster.Ask(playerId, new GetInfo())</c>. Its handler
@@ -28,41 +28,16 @@ public interface IRequest<TReply>;
 [AttributeUsage(AttributeTargets.Method)]
 public sealed class HandleAttribute : Attribute;
 
-/// <summary>Who a message travels between (<see cref="MessageAttribute"/>). Servers can always send it to each other.</summary>
-[Flags]
-public enum Flow
-{
-    /// <summary>Between servers only: actors and services on any node (login, game, map, gateway services).</summary>
-    Internal = 0,
-
-    /// <summary>
-    /// Game clients may send it through a gateway, whose session is its origin (<c>Caller</c>). Handled by a
-    /// service: any node hosting it. Handled by an actor: the actor bound to the session (<c>BindSession</c>), so a
-    /// client never reaches another player's actor, unless <see cref="MessageAttribute.AnyId"/> is set.
-    /// </summary>
-    FromClient = 1,
-
-    /// <summary>Servers send it to client sessions and groups (<c>Send(session, m)</c>, <c>Send(group, m)</c>), handled on clients.</summary>
-    ToClient = 2,
-}
-
 /// <summary>
-/// Marks a <c>[NinoType]</c> struct as a message: what is sent, published, pushed or asked (with
+/// Marks a <c>[NinoType]</c> struct as a message: what is sent, published or asked (with
 /// <see cref="IRequest{TReply}"/>) and taken by <see cref="HandleAttribute">[Handle]</see> methods. Plain
-/// <c>[NinoType]</c> types are data inside messages. <see cref="Flow"/> says who may send it to whom; the analyzer
-/// rejects a message used against its flow (a server pushing an internal message, a client sending one).
+/// <c>[NinoType]</c> types are data inside messages. A message travels between servers; client connections add who else
+/// may send or receive it (<see cref="Clients.FromClientAttribute"/>, <see cref="Clients.ToClientAttribute"/>), and the
+/// analyzer rejects a message used against them (a server sending a server-only message to a client, a client sending
+/// one).
 /// </summary>
 [AttributeUsage(AttributeTargets.Struct)]
-public sealed class MessageAttribute(Flow flow = Flow.Internal) : Attribute
-{
-    public Flow Flow { get; } = flow;
-
-    /// <summary>
-    /// <see cref="Flow.FromClient"/> to actors only: the client names the actor (<c>client.Send(roomId, new Say(..))</c>;
-    /// public actors: rooms, leaderboards).
-    /// </summary>
-    public bool AnyId { get; set; }
-}
+public sealed class MessageAttribute : Attribute;
 
 /// <summary>
 /// Overrides the wire id of a message type (FNV-1a of its full name by default). Only to resolve a reported collision
@@ -93,7 +68,7 @@ public interface IMessageSender
 {
     /// <summary>
     /// One-way message to <paramref name="address"/>: an actor (<c>Cluster.Send(mapId, new Move(..))</c>), a client
-    /// session or a client group (servers only, <c>Flow.ToClient</c> messages).
+    /// session or a client group (servers only, <c>[ToClient]</c> messages).
     /// </summary>
     void Send<TAddr, T>(TAddr address, in T message) where TAddr : struct, IAddress where T : struct;
 
@@ -134,15 +109,15 @@ public readonly partial record struct SessionResync(SessionRef Session, SessionR
 // They travel on the same ordered link as the messages to the session, so what follows them sees their effect.
 
 /// <summary>Add the session (or every member of the group) to <see cref="Group"/>: <c>Cluster.Send(Caller, new JoinGroup(cell))</c>.</summary>
-[NinoType, Message(Flow.ToClient)]
+[NinoType, Message, ToClient]
 public readonly partial record struct JoinGroup(ClientGroup Group);
 
 /// <summary>Remove the session (or every member of the group) from <see cref="Group"/>.</summary>
-[NinoType, Message(Flow.ToClient)]
+[NinoType, Message, ToClient]
 public readonly partial record struct LeaveGroup(ClientGroup Group);
 
 /// <summary>Close the session (or every session of the group): its actors get <see cref="SessionClosed"/> at once, no reconnect grace.</summary>
-[NinoType, Message(Flow.ToClient)]
+[NinoType, Message, ToClient]
 public readonly partial record struct Disconnect;
 
 /// <summary>
@@ -205,7 +180,7 @@ public sealed class MessageHandlers
     public MessageHandler? Of(uint messageId) => _byId.TryGetValue(messageId, out var handler) ? handler : null;
 }
 
-/// <summary>A message type game clients may send (<see cref="Flow.FromClient"/>).</summary>
+/// <summary>A message type game clients may send (<see cref="Clients.FromClientAttribute">[FromClient]</see>).</summary>
 public readonly record struct ClientMessageInfo(uint Id, Type Type, bool AnyId);
 
 /// <summary>

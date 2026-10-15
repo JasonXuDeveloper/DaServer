@@ -10,10 +10,13 @@ internal static class Support
     public const string ClusterClientType = "DaServer.Client.ClusterClient";
     public const string ActorId = "DaServer.Rpc.IActorId";
 
-    /// <summary>Address types of client connections: messages sent to them reach clients (<c>Flow.ToClient</c>).</summary>
+    /// <summary>Address types of client connections: messages sent to them reach clients (<c>[ToClient]</c>).</summary>
     public static readonly string[] ClientAddresses = ["DaServer.Rpc.SessionRef", "DaServer.Rpc.Origin", "DaServer.Rpc.ClientGroup"];
 
-    /// <summary>DaServer.Rpc.Flow values.</summary>
+    public const string FromClientAttribute = "DaServer.Clients.FromClientAttribute";
+    public const string ToClientAttribute = "DaServer.Clients.ToClientAttribute";
+
+    /// <summary>Who a message travels between, besides servers (bits of <see cref="Shapes.FlowOf"/>).</summary>
     public const int FlowFromClient = 1, FlowToClient = 2;
     public const string WireIdAttribute = "DaServer.Rpc.WireIdAttribute";
     public const string RequestInterface = "DaServer.Rpc.IRequest<TReply>";
