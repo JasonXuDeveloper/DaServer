@@ -2,6 +2,7 @@ global using DaServer.Buffers;
 global using DaServer.Cluster;
 global using DaServer.Concurrency;
 global using DaServer.Features;
+global using DaServer.Ingress;
 global using DaServer.Net;
 global using DaServer.Protocol;
 global using DaServer.Rpc;

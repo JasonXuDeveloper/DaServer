@@ -109,6 +109,9 @@ public struct FrameHeader
     /// <summary>A message that expects a reply (it carries a call id).</summary>
     public readonly bool IsRequest => Kind == FrameKind.Message && (Flags & FrameFlags.HasCall) != 0;
 
+    /// <summary>The time budget a request carries (zero: none).</summary>
+    public readonly TimeSpan Budget => IsRequest ? TimeSpan.FromMilliseconds((byte)Status * BudgetUnitMs) : TimeSpan.Zero;
+
     /// <summary>Deadline (<see cref="Environment.TickCount64"/>) of a request that arrived now, 0 when it has none.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public readonly long DeadlineOnArrival() =>

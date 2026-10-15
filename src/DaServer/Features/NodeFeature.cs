@@ -59,6 +59,9 @@ public interface INodeContext
 
     ILogger Logger { get; }
 
+    /// <summary>Messages from outside the cluster (with an origin and a capped deadline).</summary>
+    DaServer.Ingress.IIngress Ingress { get; }
+
     /// <summary>
     /// Handle the messages sent to <typeparamref name="TAddr"/> addresses this node holds (an <see cref="INodeAddress"/>
     /// whose node is this one, or an <see cref="IGroupAddress"/> fanned out to it). Only from <see cref="NodeFeature.Start"/>.

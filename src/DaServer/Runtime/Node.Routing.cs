@@ -18,7 +18,7 @@ sealed partial class Node : IConnectionHandler
     /// id (a forwarded frame's is rewritten). Takes ownership of <paramref name="frame"/>.
     /// </summary>
     internal void Request(FrameWriter frame, uint messageId, uint handlerTypeId, long key, IPendingCall? call,
-        IReplySink? relaySink, uint relayCallId, byte hops = 0, byte flags = 0)
+        IReplySink? relaySink, uint relayCallId, byte hops = 0, byte flags = 0, bool refuseLoaded = false)
     {
         ClusterMember? target;
         if (!TryRoute(messageId, handlerTypeId, out var route, out bool ambiguous) ||
@@ -30,6 +30,12 @@ sealed partial class Node : IConnectionHandler
         }
 
         bool local = target.NodeId == Id;
+        if (refuseLoaded && !local && Options.IngressLoadLimit > 0 && target.Load >= Options.IngressLoadLimit)
+        {
+            Refuse(frame, call, relaySink, relayCallId, RpcStatus.Overloaded); // it would refuse it anyway, later
+            return;
+        }
+
         PeerLink? link = local ? null : GetLink(target);
         call ??= RelayCall.Rent(relaySink!, relayCallId);
 

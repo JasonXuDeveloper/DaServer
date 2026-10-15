@@ -59,6 +59,13 @@ public sealed class NodeOptions
     public TimeSpan CallTimeout { get; set; } = TimeSpan.FromSeconds(10);
 
     /// <summary>
+    /// Requests from outside the cluster (<see cref="DaServer.Ingress.IIngress"/>) are refused with
+    /// <see cref="Protocol.RpcStatus.Overloaded"/> before they are sent when the target node gossiped at least this many
+    /// queued messages: an overloaded node is not sent more work it would refuse anyway. 0 (default): no check.
+    /// </summary>
+    public int IngressLoadLimit { get; set; }
+
+    /// <summary>
     /// Secret shared by every node of the cluster (configuration <c>DaServer__ClusterSecret</c>; Aspire generates one).
     /// Gateways sign reconnect tickets with it, so a client that lost its connection resumes its session on any
     /// gateway (<see cref="Rpc.SessionResync"/>). Null: no tickets, a lost connection closes the session at once.
