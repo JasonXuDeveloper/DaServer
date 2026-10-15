@@ -105,6 +105,7 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
   with ad-hoc per-actor queues for activation. EasyEcs was only used by user systems. RandomGame's useful idea:
   actors are entities with their own mailbox, drained by systems; infrastructure (receive dispatch, timers) is systems
   over singleton state; dirty sets avoid scanning everything.
+- Status: the data and systems were refined by ADR-037 (lifecycle tags, posted turn ends).
 - Decision: `Shard` keeps only the thread, the cross-thread inbox and the loop. Activations are entities
   (`ActorLink`, `ActorIdentity`, `Mailbox`, `Turn`, `Deactivating`); directories, the ready queue, timers and
   running service calls are singletons; `InboxSystem`, `TurnSystem`, `MailboxSystem`, `ServiceTaskSystem`,
@@ -279,6 +280,29 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
   ordering cases on gateway loss, and it only pays when there are many gateways and groups live on few of them.
 - Consequences: simple and ordered with binds (ADR-022). Revisit when deployments run tens of gateways with small
   groups; the roadmap keeps the item.
+
+## ADR-037 Actor lifecycle is tags; turn ends are posted, not polled
+- Context: the runtime used ECS storage but not ECS style. `TurnSystem` visited every busy actor on every wake and
+  polled `IsCompleted` on its task; a ready queue plus a `Scheduled` flag duplicated what a tag expresses; a
+  `TurnKind` enum and static procedures (`Unload`, `Retire`, `Schedule`) called from several systems carried the
+  lifecycle instead of data; running service calls were a polled list. The sample did the same: an interest grid
+  class with behavior, a `-1` sentinel cell and a `MotionChanged` flag set from three places.
+- Decision: state changes are data, each system reacts to one state.
+  - A `TurnWatcher` (pooled, one cached delegate) registers on the turn's task; its continuation posts it to the
+    shard and the inbox tags the entity `TurnEnded`. `TurnSystem` visits only ended turns, by filter (`EndCall`,
+    `EndLoad` with `Loading`, `EndUnload` with `Deactivating`); `GetResult` is read once after the end, as `await`
+    does. Running service calls are `ServiceCall` entities ended the same way (`ServiceCallSystem`).
+  - Lifecycle tags: `Ready` (mail waiting), `Loading`, `Unloading` (asked to leave, by `RebalanceSystem` or
+    `IdleSystem`), `Deactivating`, `Retiring(status)`. `UnloadSystem` starts `OnUnload` once the actor is idle,
+    `RetireSystem` destroys it and routes its mail again, `MailboxSystem` runs `Ready` actors without a turn.
+  - Rebalancing marks busy actors too, so the retry loop is gone.
+  - Sample: an avatar without `GridCell` is not placed yet; `SentMotion` (last sent velocity and cell) is compared
+    each tick instead of a flag; leaving is `Despawning` data handled by `DespawnSystem`; the grid is `MapGrid` data
+    on the map entity, its steps are systems (`PlacementSystem`, `MotionSyncSystem`, `SnapshotSystem`).
+- Alternatives: a ready queue avoids the archetype move per idle-to-ready transition, but it is a second
+  representation of the same state; benchmarks showed no measurable difference.
+- Consequences: no system scans busy actors and nothing polls tasks; every lifecycle step is a filter that tests and
+  users can read. Async turns cost a continuation post (no allocation). Benchmarks before and after are in the README.
 
 ## ADR-036 Clients resume sessions with signed tickets
 - Context: the game synchronizes state from servers to clients. A network blip, a slow client disconnected at its

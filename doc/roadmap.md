@@ -76,6 +76,8 @@ Keep this file current: tick items when done, add items when scope changes.
       (a slow client is disconnected and resynchronizes on reconnect)
 - [x] Auto-reconnect (ADR-036): signed reconnect tickets, `SessionClosed` after a grace period, `SessionResync`,
       Aspire-generated cluster secret
+- [x] Lifecycle as tags (ADR-037): turn ends posted by `TurnWatcher` (no polling), `Ready`/`Loading`/`Unloading`/
+      `Deactivating`/`Retiring` with one system each; sample grid as data + systems (`DespawnSystem`, `PlacementSystem`)
 
 ## Quality
 - [x] Unit tests (queue, pool, frames, pending table, membership, placement)

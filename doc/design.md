@@ -196,7 +196,7 @@ sequenceDiagram
     M->>G: BindSession(session)  (also joins the map's Group)
     Cl->>G: Move(vx, vy)  (one-way [ClientMessage])
     G->>M: routed to the bound map
-    M->>M: writes Velocity; MovementSystem, InterestSystem, MotionSyncSystem run on the tick
+    M->>M: writes Velocity; MovementSystem, PlacementSystem, MotionSyncSystem run on the tick
     M-->>G: Send(group, Motion(changes))  one message per cell per tick, one frame per gateway
     G-->>Cl: fan-out to the group's local sessions
     Cl--xG: disconnect
@@ -248,25 +248,31 @@ The shard runtime itself is ECS. `Shard` owns only the thread, the cross-thread 
 |---|---|---|
 | `ActorLink`, `ActorIdentity` | components | the activation object and its directory key |
 | `Mailbox` | component | messages waiting for the actor (a turn at a time) |
-| `Turn` | component | the asynchronous message, activation or deactivation in progress (present = busy) |
-| `Deactivating` | tag | the actor is being deactivated (mail is forwarded afterwards) |
+| `Ready` | tag | the mailbox has mail |
+| `Turn` | component | the asynchronous message, load or unload in progress (present = busy) |
+| `TurnEnded` | tag | the turn's task completed (posted by its `TurnWatcher`, never polled) |
+| `Loading`, `Unloading`, `Deactivating` | tags | `OnLoad` running; asked to leave; `OnUnload` running |
+| `Retiring` | component | the activation ends: mail is routed again (or failed with its status) |
+| `ServiceCall` | tag | an entity per running asynchronous service call (ended like a turn) |
 | `ActorDirectory`, `ServiceDirectory` | singletons | activations by id, service instances by implementation |
-| `ReadyActors` | singleton | idle actors with mail: the only actors the mailbox system visits (dirty set) |
-| `ServiceTasks`, `ShardTimers`, `ShardActivity` | singletons | running service calls, timers, per-wake bookkeeping |
+| `TurnWatchers`, `ShardTimers`, `ShardActivity` | singletons | pooled watchers, timers, per-wake bookkeeping |
 
 ```mermaid
 flowchart LR
-    IN[inbox<br/>other threads post] --> I[InboxSystem<br/>route messages,<br/>complete requests, run continuations]
-    I -->|mail + ready| M[MailboxSystem<br/>run ready actors' mail]
+    IN[inbox<br/>other threads post] --> I[InboxSystem<br/>route, complete requests,<br/>run continuations]
+    I -->|Ready| M[MailboxSystem<br/>Ready, no Turn]
     I --> S[services]
-    M -->|handler awaits| T[TurnSystem<br/>finish turns, reschedule]
-    T -->|ready| M
-    R[RebalanceSystem<br/>deactivate moved actors] --> T
+    M -->|handler awaits: Turn| W((TurnWatcher))
+    W -->|posts| I
+    I -->|TurnEnded| T[TurnSystem<br/>end calls, loads, unloads]
+    T -->|Retiring| RT[RetireSystem<br/>destroy, route mail again]
+    R[RebalanceSystem / IdleSystem] -->|Unloading| U[UnloadSystem<br/>OnUnload when idle]
+    U -->|Deactivating + Turn| W
     TM[TimerSystem]
 ```
 
-The only per-message work is a dictionary lookup, a queue push and the handler. Busy actors are found by archetype
-(`Turn`), idle actors with mail come from the ready queue, so nothing scans all actors.
+The only per-message work is a dictionary lookup, a queue push and the handler. Every system visits only the
+entities in the state it handles (a filter on tags), so nothing scans all actors and nothing polls running turns.
 
 ## 10. Developer experience (generated code)
 

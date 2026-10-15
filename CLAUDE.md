@@ -25,9 +25,10 @@ EasyEcs is consumed from the sibling checkout `../EasyEcs` when present (co-deve
 ```
 src/DaServer/              runtime (net10.0): Protocol/ Buffers/ Concurrency/ Net/ Rpc/ Runtime/ Cluster/ Gateway/ Client/
   Runtime/Shard.cs         thread + cross-thread inbox + wake/tick loop (nothing else)
-  Runtime/ShardData.cs     shard ECS data: actor components (Mailbox, Turn, ...) and shard singletons
-  Runtime/ShardDispatch.cs routing/invoke/retire operations shared by the runtime systems
-  Runtime/Systems/         runtime systems (ShardMessages group): Inbox, Turn, Mailbox, ServiceTask, Timer, Rebalance
+  Runtime/ShardData.cs     shard ECS data: actor components and lifecycle tags (Mailbox, Ready, Turn, ...), singletons
+  Runtime/ShardDispatch.cs routing/delivery/invoke operations shared by the runtime systems
+  Runtime/Systems/         runtime systems (ShardMessages group): Inbox, Turn, ServiceCall, Retire, Timer, Rebalance,
+                           Idle, Unload, Mailbox (each reacts to one lifecycle tag, ADR-037)
 src/DaServer.Generator/    incremental generators (MessageGenerator, HostGenerator incl. node entry point)
                            + DaServerAnalyzer (DAS001-005);
                            Shapes.cs reads symbols once for both, so "skipped by the generator" == "reported"
