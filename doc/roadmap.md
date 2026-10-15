@@ -28,13 +28,15 @@ Keep this file current: tick items when done, add items when scope changes.
 - [x] Topology without roles (ADR-017), `ICluster` for business code (ADR-020), actor `Group`
 - [x] Cluster events: `[NinoType]` structs, `[ActorKey]`, `[Handle]`, gossiped handlers, mailbox delivery (ADR-019)
 - [x] Backpressure: bounded shard inbox and actor mailboxes refuse with `Overloaded` (ADR-027)
-- [ ] Backpressure on links: pause a link's receive while its target shard is full (today: refuse and reply)
+- [x] Backpressure on links: decided against pausing a link's receive (ADR-027): the link also carries replies to
+      the receiver's own calls, so a paused link stalls them until timeouts; full shards keep refusing with `Overloaded`
 - [x] Deadlines: the caller's remaining time travels with each request; expired work is dropped (ADR-028)
 - [ ] Send group broadcasts only to gateways that have members of the group (deferred: ADR-029)
 - [x] Resumable node links: a dropped connection replays what the peer did not process (ADR-008)
 - [ ] Placement hints (co-locate actors that talk a lot)
 - [ ] Gateway sessions as ECS entities (session components + flush system) on a gateway shard
-- [ ] Actor self-deactivation (idle timeout) and persistence helpers
+- [x] Actors unload when idle (`UnloadAfterIdle`, ADR-033)
+- [ ] Persistence helpers
 
 ## Generator / analyzer (`src/DaServer.Generator`)
 - [x] Contracts: struct proxies, dispatcher switch, registration, method ids, cluster accessors
@@ -66,8 +68,10 @@ Keep this file current: tick items when done, add items when scope changes.
 - [x] Checklist 6: R1-R11 and E1-E10 hold; open items are the unchecked roadmap entries
 - [x] Naming review (ADR-032): `[FromClient]`/`[ToClient]`, `[ActorKey]`, `OnLoad`/`OnUnload`, `CallerSession`,
       balancers; actor state from field initializers, `ActorIdentity` for systems
-- [x] Moving scenario (AppHost default): 10,000 bots in 200 maps, ~10M positions/s to clients, p99 138.6 ms, servers
-      0–3 KB/s, no GC; scale-out: a gateway started mid-run receives the new clients (test + process run)
+- [x] Moving scenarios: 10,000 bots in 200 maps (full sync, ~10M positions/s, p99 139 ms) and in one map (AOI and
+      dead reckoning, ~2.5M positions/s, p99 106 ms); servers 0–5 KB/s, no GC; scale-out: a gateway started mid-run
+      receives the new clients (test + process run)
+- [x] One write per connection per batch (ADR-034)
 
 ## Quality
 - [x] Unit tests (queue, pool, frames, pending table, membership, placement)
@@ -80,4 +84,5 @@ Keep this file current: tick items when done, add items when scope changes.
 - [x] CI workflow (build, test, sibling EasyEcs checkout)
 - [x] Requirements and release checklist ([requirements.md](requirements.md))
 - [x] Record benchmark numbers of this release in the README
-- [ ] Tests: crash with calls in flight, suspect flapping, hostile client frames beyond size, link backpressure
+- [x] Test: calls in flight to a crashed node fail when it is declared dead
+- [ ] Tests: suspect flapping, hostile client frames beyond size, link backpressure
