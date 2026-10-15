@@ -49,10 +49,12 @@ reload); MMO roles (login, balancer, gateways, game, maps) exist only in samples
       `SessionClosed`/`SessionResync`, `ClientGroup` fan-out (`Push`/`Broadcast`), reconnect tickets, `ClusterClient`,
       balancer, `Flow.FromClient/ToClient` checks (DAS006 part), Aspire `AddGateways`/`AddBalancer`. Built only on
       public extension points; keeps zero allocation on fan-out (benchmark A/B before/after).
-- [ ] G3 Rename the two message systems: `InboxSystem` -> `DeliverySystem` (drains the shard's cross-thread inbox,
-      sorts frames into actor mailboxes, completes calls, runs continuations), `MailboxSystem` -> `ActorTurnSystem`
-      (runs one turn per ready actor). Two levels stay: only the shard thread touches ECS data, and an actor awaiting
-      in a turn holds its own mail while others run. Document it in design.md.
+- [ ] G3 Naming of the two message levels (agreed): the per-actor `Mailbox` component and `MailboxSystem` stay (the
+      actor-model term: Erlang, Akka, Orleans). The shard's cross-thread queue becomes the dispatch queue and
+      `InboxSystem` becomes `DispatchSystem` (Akka/Orleans "dispatcher": sorts frames into mailboxes or service calls,
+      completes calls, runs continuations); `NodeOptions.ShardInboxCapacity` -> `DispatchQueueCapacity`. Two levels
+      stay: only the shard thread touches ECS data, and an actor awaiting in a turn holds its own mail while others
+      run. Document it in design.md.
 - [ ] G4 Docs: README/design describe the core first, the gateway module second, the MMO sample third.
 
 ## Next: architecture borrowed from a studied game server, ET and Orleans (agreed scope, in this order)
