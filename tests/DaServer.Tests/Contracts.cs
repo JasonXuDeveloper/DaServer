@@ -27,6 +27,7 @@ public readonly record struct RoomId(long Value) : IActorId;
 [NinoType, Message] public partial record struct Grow : IRequest<bool>;                    // input for GrowthSystem
 [NinoType, Message] public partial record struct AddMany(CounterId Other, int Count) : IRequest<long>;     // bytes allocated meanwhile
 [NinoType, Message] public partial record struct SendMany(CounterId Other, int Count) : IRequest<long>;    // bytes allocated meanwhile
+[NinoType, Message] public partial record struct AddViaMany(CounterId Via, CounterId Target, int Count) : IRequest<long>; // bytes allocated meanwhile
 [NinoType, Message] public partial record struct AskInBursts(CounterId Other, int Width, int Rounds) : IRequest<long>; // bytes allocated meanwhile
 
 /// <summary>One-way: sent in bursts (allocation test, events test).</summary>
@@ -59,6 +60,7 @@ public sealed class Counter : Actor<CounterId, CounterState>
     [Handle] public Point On(EchoPoint m) => m.Point with { X = m.Point.X + 1 };
 
     [Handle]
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     public async ValueTask<int> On(AddVia m)
     {
         int other = await Cluster.Ask(m.Other, new Add(m.Delta));
@@ -90,6 +92,17 @@ public sealed class Counter : Actor<CounterId, CounterState>
         for (int i = 0; i < 100; i++) await Cluster.Ask(m.Other, new Add(1)); // warm-up: pools, JIT
         long before = GC.GetTotalAllocatedBytes(precise: true);
         for (int i = 0; i < m.Count; i++) await Cluster.Ask(m.Other, new Add(1));
+        return GC.GetTotalAllocatedBytes(precise: true) - before;
+    }
+
+    [Handle]
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
+    public async ValueTask<long> On(AddViaMany m)
+    {
+        // Every call suspends in the callee (it awaits a third actor), so each reply goes through the reply watcher.
+        for (int i = 0; i < 100; i++) await Cluster.Ask(m.Via, new AddVia(m.Target, 1)); // warm-up
+        long before = GC.GetTotalAllocatedBytes(precise: true);
+        for (int i = 0; i < m.Count; i++) await Cluster.Ask(m.Via, new AddVia(m.Target, 1));
         return GC.GetTotalAllocatedBytes(precise: true) - before;
     }
 

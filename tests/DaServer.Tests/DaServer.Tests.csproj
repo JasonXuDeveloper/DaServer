@@ -5,6 +5,9 @@
         <IsPackable>false</IsPackable>
         <!-- Tests intentionally exercise edge cases (stale refs, error paths) -->
         <NoWarn>$(NoWarn);CS1591;NUnit2045</NoWarn>
+        <!-- Allocation tests measure what users ship: unoptimized builds turn every async state machine into a class
+             allocated per call, which would hide (or fake) real allocations behind pooled builders. -->
+        <Optimize>true</Optimize>
     </PropertyGroup>
 
     <ItemGroup>
