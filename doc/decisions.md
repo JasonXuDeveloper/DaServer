@@ -152,20 +152,6 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
 - Consequences: no topology strings anywhere (checked by the release checklist). The compiler decides what a node can
   host; references between projects decide what can be split.
 
-## ADR-018 Attributes on contracts (revised: markers were replaced)
-- Status: superseded by ADR-035 (messages instead of contracts).
-- Context: the first version used `[ClientRouteible]`; the second used base interfaces (`IService`, `IPublicService`,
-  `IActor`, `ISessionActor`, `IPublicActor`, `IClientCallback`, `IEvent`, `IKeyedEvent`, `IHandle<T>`). Markers made
-  client access all-or-nothing per contract, so one actor needed two contracts for one audience split (`IMap` and
-  `IMapInput`), and event handling needed one interface per event type plus a fixed `Key` property name.
-- Decision: attributes, read by the generator: `[Service]`, `[Actor]`, `[ToClient]` say how the target is chosen;
-  `[FromClient]` (on a contract or on single methods, `AnyKey = true` for client-chosen actor keys) says what game
-  clients may call; any `[NinoType]` struct is an event, `[ActorKey]` on one member makes it keyed (the generator adds
-  `IKeyed`); `[Handle]` marks handler methods. `[NinoType]` marks wire data (DAS009), `[WireId]` resolves a reported
-  collision. DAS012-DAS014 report conflicting contract attributes, bad handler shapes and bad keys.
-- Consequences: one contract per concept with per-method access; handlers are ordinary methods named freely; the
-  vocabulary table in the README covers every declaration.
-
 ## ADR-019 Cluster events are delivered through mailboxes, at most once
 - Status: delivery stands; ADR-035 made every message travel this way and replaced `[ActorKey]` by `Publish(key, e)`.
 - Context: EasyEcs had an in-world event bus, which is not an ECS concern (state changes are data) and could not
@@ -292,11 +278,11 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
   (fan-out to the nodes advertising its scope). Verbs: `Send` and `Ask` (kept apart: `Ask` holds the turn and a cycle
   deadlocks, so the call site must show it, as Akka Tell/Ask), `Publish` (every service type handling the message; no
   address value), `SendAfter` (N2). Wire: `Message`, `Reply`, `Control` (link protocol only); `Target` always set;
-  header extensions by flag. Supersedes ADR-041: since ADR-043 the address type names the target at the call site,
-  and DAS006 checks `[ToClient]` by address kind.
+  header extensions by flag. One verb per target kind is not needed: since ADR-043 the address type names the target
+  at the call site, and DAS006 checks `[ToClient]` by address kind.
 - Consequences: sessions and groups are addresses of the gateway module, not core verbs; node-to-node and client wire
-  protocols break once (pre-1.0, no rolling upgrade across it); `Push`/`Broadcast` stay one release as obsolete
-  aliases; send paths stay generic over struct addresses (no boxing, the kind is a JIT constant).
+  protocols break once (pre-1.0, no rolling upgrade across it); the old verbs are removed outright, no aliases; send
+  paths stay generic over struct addresses (no boxing, the kind is a JIT constant).
 
 ## ADR-046 Two planes per node: DaServer TCP for data, ASP.NET Core for HTTP
 - Context: Kubernetes probes and Aspire health are HTTP; operators want admin commands; applications want REST
@@ -358,17 +344,6 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
 - Consequences: work since the actor's last save is lost on that node, which is the price of a partition. A turn in
   flight still finishes; stores that must reject late writes need versioned saves (future persistence helpers).
 
-## ADR-041 One verb per target (superseded by ADR-047)
-- Context: `Send` meant four things by the type of its first argument: an actor (`Send(key, m)`), a service
-  (`Send(m)`), a client session (`Send(session, m)`) and a client group (`Send(group, m)`). A call site did not say
-  whether it reached servers or clients.
-- Decision: `Send`/`Ask` reach actors and services, `Publish` every handler, `Push(session, m)` one client session and
-  `Broadcast(group, m)` a client group. DAS006 checks `Flow.ToClient` on `Push`/`Broadcast` by name.
-- Alternatives: putting the actor key inside the message (the old `[ActorKey]`, removed by ADR-035) or typed addresses
-  (`Cluster.Actor(key).Send(m)`), which couple a sender to its receiver. `[NinoType, Message]` stays a pair: the Nino
-  generator only recognizes its own attribute, not a derived one.
-- Consequences: the target of every call is visible at the call site, and the verbs line up with `Flow`.
-
 ## ADR-040 One noun per concept
 - Context: "link" meant both a node-to-node connection (`PeerLink`) and the component pointing an entity at its actor
   (`ActorLink`); "implementation" named the actor or service type handling a message; the lifecycle mixed load/unload
@@ -402,7 +377,7 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
   (servers never handle a `ToClient`-only message, client handlers only `ToClient` ones) and call sites
   (`Send(session|group, m)` needs `ToClient`, `ClusterClient` sends need `FromClient`, servers do not send
   `ToClient`-only messages to each other): DAS006. Gateways still accept only `FromClient` messages at run time.
-- Alternatives: marker interfaces (`IClientMessage`) would allow generic constraints but were removed by ADR-018 for
+- Alternatives: marker interfaces (`IClientMessage`) would allow generic constraints but were removed for
   attributes; separate attributes per direction would split one concept into three names.
 - Consequences: a contracts file reads as a protocol (who talks to whom); leaking server-internal messages to clients
   is a build error. Gateway-to-node traffic stays framework frames, so roles never appear in message declarations.
