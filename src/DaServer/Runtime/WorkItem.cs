@@ -16,16 +16,4 @@ internal enum WorkKind : byte
 }
 
 /// <summary>Mailbox entry: a 24-byte struct (two references + kind), no allocation per message.</summary>
-internal readonly struct WorkItem
-{
-    public readonly object? A;
-    public readonly object? B;
-    public readonly WorkKind Kind;
-
-    public WorkItem(WorkKind kind, object? a, object? b)
-    {
-        Kind = kind;
-        A = a;
-        B = b;
-    }
-}
+internal readonly record struct WorkItem(WorkKind Kind, object? A, object? B);

@@ -44,7 +44,7 @@ internal static class ShardDispatch
     }
 
     private static bool OwnsHere(World world, Node node, uint implementationId, long key) =>
-        node.Placement.IsLocalOwner(implementationId, key) && !world.GetSingleton<ShardActivity>().Stopping;
+        node.IsLocalOwner(implementationId, key) && !world.GetSingleton<ShardActivity>().Stopping;
 
     private static object ServiceOf(World world, ImplementationInfo impl) =>
         world.GetSingleton<ServiceDirectory>().Services[impl.Id];

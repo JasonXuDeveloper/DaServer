@@ -5,30 +5,11 @@ namespace DaServer.Rpc;
 /// Serializable, so actors can store it in components and push to the client later.
 /// </summary>
 [Nino.Core.NinoType]
-public partial struct SessionRef : IEquatable<SessionRef>
+public readonly partial record struct SessionRef(ulong GatewayNodeId, long SessionId)
 {
-    public ulong GatewayNodeId;
-    public long SessionId;
+    public bool IsValid => SessionId != 0;
 
-    public SessionRef(ulong gatewayNodeId, long sessionId)
-    {
-        GatewayNodeId = gatewayNodeId;
-        SessionId = sessionId;
-    }
-
-    public readonly bool IsValid => SessionId != 0;
-
-    public readonly bool Equals(SessionRef other) => GatewayNodeId == other.GatewayNodeId && SessionId == other.SessionId;
-
-    public override readonly bool Equals(object? obj) => obj is SessionRef other && Equals(other);
-
-    public override readonly int GetHashCode() => HashCode.Combine(GatewayNodeId, SessionId);
-
-    public override readonly string ToString() => $"Session({GatewayNodeId:x}:{SessionId})";
-
-    public static bool operator ==(SessionRef a, SessionRef b) => a.Equals(b);
-
-    public static bool operator !=(SessionRef a, SessionRef b) => !a.Equals(b);
+    public override string ToString() => $"Session({GatewayNodeId:x}:{SessionId})";
 }
 
 /// <summary>
