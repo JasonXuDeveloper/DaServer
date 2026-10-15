@@ -18,14 +18,15 @@ cluster.AddNodes<Projects.Sample_Game>("game");
 cluster.AddGateways<Projects.Sample_Gateway>("gateway", replicas: 3);
 var balancer = cluster.AddBalancer<Projects.Sample_Gateway>("balancer");
 
-// 10k players moving in 200 maps (50 per map, every position change sent to the whole map each tick) while the realm
-// broadcasts to everyone every 5 ticks: about 10 million position updates a second reach the bots, no strings involved
-// (Bots and Seconds can be overridden: `dotnet run -- Bots=1000`, the e2e test does). Bot arguments: bots, seconds,
-// maps, moves per second, chat every n seconds (0 = off).
+// 10k players moving in one map on one game node while the realm broadcasts to everyone every 5 ticks. Each player sees
+// the 3x3 cells around it (area of interest) and hears about avatars only when they turn (dead reckoning): about
+// 2.5 million position updates a second reach the bots, no strings involved. Bots and Seconds can be overridden
+// (`dotnet run -- Bots=1000`, the e2e test does). Bot arguments: bots, seconds, maps, moves per second, chat every n
+// seconds (0 = off).
 int bots = builder.Configuration.GetValue("Bots", 10_000);
 int seconds = builder.Configuration.GetValue("Seconds", 60);
 builder.AddProject<Projects.Sample_Bot>("bots")
     .WithGateways(balancer)
-    .WithArgs(bots.ToString(), seconds.ToString(), Math.Max(1, bots / 50).ToString(), "1", "0");
+    .WithArgs(bots.ToString(), seconds.ToString(), "1", "1", "0");
 
 builder.Build().Run();
