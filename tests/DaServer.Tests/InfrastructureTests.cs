@@ -195,6 +195,51 @@ public class InfrastructureTests
     }
 
     [Test]
+    public void TimerWheelsFireDueTimersOnceAndCancelOthers()
+    {
+        var wheel = new TimerWheel<int>(TimeSpan.FromMilliseconds(5), slots: 8); // 40 ms a round: 100 ms is a later round
+        var fired = new Fired();
+        wheel.Schedule(TimeSpan.FromMilliseconds(30), 3);
+        wheel.Schedule(TimeSpan.FromMilliseconds(10), 1);
+        long cancelled = wheel.Schedule(TimeSpan.FromMilliseconds(20), 2);
+        wheel.Schedule(TimeSpan.FromMilliseconds(100), 4);
+        Assert.That(wheel.Cancel(cancelled), Is.True);
+        Assert.That(wheel.Cancel(cancelled), Is.False, "once");
+
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        while (wheel.Count > 0 && watch.ElapsedMilliseconds < 2000) wheel.Advance(ref fired);
+        Assert.That(fired.Items, Is.EqualTo(new[] { 1, 3, 4 }));
+        Assert.That(watch.ElapsedMilliseconds, Is.GreaterThanOrEqualTo(100), "nothing fires early");
+
+        // Steady state: schedule and fire without allocating once the entry table reached its peak (the first round).
+        var counting = new Counting();
+        long before = 0;
+        for (int round = 0; round < 2; round++)
+        {
+            if (round == 1) before = GC.GetAllocatedBytesForCurrentThread();
+            for (int i = 0; i < 1000; i++) wheel.Schedule(TimeSpan.Zero, i);
+            while (wheel.Count > 0) wheel.Advance(ref counting);
+        }
+
+        Assert.That(GC.GetAllocatedBytesForCurrentThread() - before, Is.Zero);
+        Assert.That(counting.Count, Is.EqualTo(2000));
+    }
+
+    private struct Fired() : ITimerHandler<int>
+    {
+        public readonly List<int> Items = [];
+
+        public void OnTimer(in int item) => Items.Add(item);
+    }
+
+    private struct Counting : ITimerHandler<int>
+    {
+        public int Count;
+
+        public void OnTimer(in int item) => Count++;
+    }
+
+    [Test]
     public void RendezvousPlacementIsStableAndMinimallyDisruptive()
     {
         ClusterMember Member(ulong id) => new()
