@@ -20,7 +20,7 @@ public abstract class Actor : ShardObject
 
     /// <summary>
     /// The actor's client group: sessions bound to it (<see cref="BindSession"/>) or that joined it receive
-    /// messages sent to it (<c>Cluster.Broadcast(Group, new Moved(..))</c>). Distinct per actor type and key.
+    /// messages sent to it (<c>Cluster.Send(Group, new Moved(..))</c>). Distinct per actor type and key.
     /// </summary>
     public ClientGroup Group => ClientGroup.Of(HandlerType.Id, Key);
 

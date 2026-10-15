@@ -46,12 +46,6 @@ sealed partial class Node
 
     // ------------------------------------------------------------------ ICluster: sessions (any node)
 
-    public void Push<T>(SessionRef session, in T message) where T : struct =>
-        SendToClients(MessageWriter.Write(in message), MessageType<T>.Id, group: false, session.SessionId, session.GatewayNodeId);
-
-    public void Broadcast<T>(ClientGroup group, in T message) where T : struct =>
-        SendToClients(MessageWriter.Write(in message), MessageType<T>.Id, group: true, group.Id, 0);
-
     public void JoinGroup(SessionRef session, ClientGroup group) => SendSessionControl(session, ControlOp.JoinGroup, 0, group.Id);
 
     public void LeaveGroup(SessionRef session, ClientGroup group) => SendSessionControl(session, ControlOp.LeaveGroup, 0, group.Id);
@@ -109,25 +103,38 @@ sealed partial class Node
         return w;
     }
 
-    /// <summary>Push / broadcast a message to clients. Takes ownership of <paramref name="frame"/>.</summary>
-    private void SendToClients(FrameWriter frame, uint messageId, bool group, long key, ulong gatewayNodeId)
+    /// <summary>
+    /// A message (payload written) to something node <paramref name="node"/> holds: today a client session. Takes
+    /// ownership of <paramref name="frame"/>.
+    /// </summary>
+    private void SendToNode(FrameWriter frame, uint scope, uint messageId, ulong node, long value)
     {
         try
         {
-            if (!group)
-            {
-                frame.SetHeader(FrameKind.Message, AddressScopes.Session, messageId, key);
-                if (gatewayNodeId == Id) DeliverToSession(key, frame.Frame);
-                else LinkTo(gatewayNodeId)?.Send(frame.Frame);
-                return;
-            }
+            frame.SetHeader(FrameKind.Message, scope, messageId, value);
+            if (node == Id) DeliverToAddress(scope, value, frame.Frame);
+            else LinkTo(node)?.Send(frame.Frame);
+        }
+        finally
+        {
+            frame.Dispose();
+        }
+    }
 
-            // Group broadcast: serialized once, one frame per gateway; each gateway fans out locally.
-            frame.SetHeader(FrameKind.Message, AddressScopes.Group, messageId, key);
+    /// <summary>
+    /// A message (payload written) to a group: serialized once, one frame per node that may have members (today the
+    /// client-facing nodes, for client groups), which fans it out locally. Takes ownership of <paramref name="frame"/>.
+    /// </summary>
+    private void SendToGroup(FrameWriter frame, uint scope, uint messageId, long value)
+    {
+        try
+        {
+            if (scope != AddressScopes.Group) return;
+            frame.SetHeader(FrameKind.Message, scope, messageId, value);
             foreach (var member in View.UpMembers)
             {
                 if (member.ClientPort == 0 || member.Balancer) continue; // a balancer keeps no sessions
-                if (member.NodeId == Id) DeliverToGroup(key, frame.Frame);
+                if (member.NodeId == Id) DeliverToGroup(value, frame.Frame);
                 else GetLink(member).Send(frame.Frame);
             }
         }
@@ -135,6 +142,13 @@ sealed partial class Node
         {
             frame.Dispose();
         }
+    }
+
+    /// <summary>A message to a session or client group of this node (from a link or sent here).</summary>
+    private void DeliverToAddress(uint scope, long value, ReadOnlySpan<byte> frame)
+    {
+        if (scope == AddressScopes.Session) DeliverToSession(value, frame);
+        else if (scope == AddressScopes.Group) DeliverToGroup(value, frame);
     }
 
     private void DeliverToSession(long sessionId, ReadOnlySpan<byte> frame)
@@ -189,7 +203,7 @@ sealed partial class Node
         {
             case ControlOp.Bind:
             {
-                // A bound session also joins the actor's group, so Cluster.Broadcast(actor.Group, ..) reaches it.
+                // A bound session also joins the actor's group, so Cluster.Send(actor.Group, ..) reaches it.
                 lock (_groupGate)
                 {
                     long previous = session.Bind(scope, value);

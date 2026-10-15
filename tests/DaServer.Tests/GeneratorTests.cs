@@ -93,7 +93,7 @@ public class GeneratorTests
         Assert.That(registration, Does.Contain("context.ReplyValue(Unsafe.As<global::Game.Shop>(target).On(m))"), "a reply returned synchronously");
         Assert.That(registration, Does.Contain("return context.Reply(Unsafe.As<global::Game.Hero>(target).On(m))"), "a reply returned later");
         Assert.That(registration, Does.Contain("MessageRegistry.RegisterHandlers(typeof(global::Game.Screen)"), "client handlerType");
-        Assert.That(sources, Has.Some.Contains("Ask<TId>(this global::DaServer.Rpc.IMessageSender sender, TId id, in global::Game.Heal request)"));
+        Assert.That(sources, Has.Some.Contains("Ask<TAddr>(this global::DaServer.Rpc.IMessageSender sender, TAddr address, in global::Game.Heal request)"));
         Assert.That(sources, Has.Some.Contains("sender.Ask<global::Game.Topic, string?>(in request)"));
         Assert.That(sources, Has.Some.Contains("RegisterClientMessage<global::Game.Move>(anyId: false)")
             .And.Some.Contains("RegisterClientMessage<global::Game.Topic>(anyId: true)"));
@@ -115,13 +115,16 @@ public class GeneratorTests
     [TestCase("[NinoType, Message] public partial record struct Tick; public sealed class Bad : Service { public Bad(int x) { } [Handle] public void On(Tick e) { } }", "DAS005")]
     [TestCase("[NinoType, Message(Flow.ToClient)] public partial record struct Tick; public sealed class Bad : Service { [Handle] public void On(Tick e) { } }", "DAS006")]
     [TestCase("[NinoType, Message] public partial record struct Tick; public sealed class Ui { [Handle] public void On(Tick e) { } }", "DAS006")]
-    [TestCase("[NinoType, Message] public partial record struct Tick; public sealed class Bad : Service { [Handle] public void On(Tick e) => Cluster.Push(CallerSession, e); }", "DAS006")]
+    [TestCase("[NinoType, Message] public partial record struct Tick; public sealed class Bad : Service { [Handle] public void On(Tick e) => Cluster.Send(CallerSession, e); }", "DAS006")]
     [TestCase("[NinoType, Message] public partial record struct Tick; public static class Bad { public static void Go(DaServer.Client.ClusterClient c) => c.Send(new Tick()); }", "DAS006")]
     [TestCase("[NinoType, Message(Flow.ToClient)] public partial record struct Tick; public static class Bad { public static void Go(ICluster c) => c.Send(new Tick()); }", "DAS006")]
     [TestCase("[NinoType] public partial record struct Tick; public static class Bad { public static void Go(ICluster c) => c.Publish(new Tick()); }", "DAS002")]
     [TestCase("[NinoType, Message] public partial record struct Tick; public sealed class Bad : Service { private int _count; [Handle] public void On(Tick e) => _count++; }", "DAS007")]
     [TestCase("public readonly record struct BadId(long Value) : IActorId; public sealed class Bad : Actor<BadId> { public static int Total; }", "DAS007")]
     [TestCase("public readonly record struct BadId(long Value) : IActorId; public sealed class Bad : Actor<BadId> { public string Name { get; set; } = \"\"; }", "DAS007")]
+    [TestCase("[NinoType, Message(Flow.ToClient)] public partial record struct Ping : IRequest<int>; [NinoType, Message] public partial record struct Tick; public sealed class Bad : Service { [Handle] public async ValueTask On(Tick e) => await Cluster.Ask(CallerSession, new Ping()); }", "DAS008")]
+    [TestCase("[NinoType, Message(Flow.ToClient)] public partial record struct Ping : IRequest<int>; public static class Bad { public static ValueTask<int> Go(ICluster c) => c.Ask(ClientGroup.All, new Ping()); }", "DAS008")]
+    [TestCase("[NinoType, Message(Flow.FromClient | Flow.ToClient)] public partial record struct Tick; public static class Bad { public static void Go(DaServer.Client.ClusterClient c) => c.Send(ClientGroup.All, new Tick()); }", "DAS008")]
     public async Task MisuseIsReportedByTheAnalyzer(string source, string id)
     {
         var (_, diagnostics) = await Run(source);
