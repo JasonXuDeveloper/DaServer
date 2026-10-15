@@ -1,4 +1,4 @@
-namespace DaServer.Rpc;
+namespace DaServer;
 
 /// <summary>
 /// Stable wire ids: FNV-1a 32 of a message type's full name (UTF-16 code units), never 0.

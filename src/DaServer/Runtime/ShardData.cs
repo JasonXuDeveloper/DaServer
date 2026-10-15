@@ -76,11 +76,11 @@ internal readonly record struct Removing(RpcStatus Status, string? Message) : IC
 internal struct ServiceCall : IComponent;
 
 /// <summary>
-/// Client sessions known to a loaded actor: those that called it through a gateway, or that it bound to itself. When a
-/// gateway dies without closing its sessions, the runtime delivers <see cref="SessionClosed"/> for them. Superseded:
+/// Client sessions known to a loaded actor: those that called it or that it bound or granted. When a
+/// client-facing node dies without closing its sessions, the runtime delivers <see cref="SessionClosed"/> for them. Superseded:
 /// sessions a client resumed from (<see cref="SessionResync"/>), whose late close is not delivered.
 /// </summary>
-internal readonly record struct ClientSessions(HashSet<SessionRef> Sessions, HashSet<SessionRef> Superseded) : IComponent;
+internal readonly record struct ClientSessions(HashSet<ClientSession> Sessions, HashSet<ClientSession> Superseded) : IComponent;
 
 // ---------------------------------------------------------------- shard singletons
 
@@ -108,7 +108,7 @@ internal readonly record struct ActorPools(
     public Queue<Envelope> RentMailbox() => Mailboxes.TryPop(out var queue) ? queue : new Queue<Envelope>();
 
     public ClientSessions RentSessions() =>
-        Sessions.TryPop(out var sessions) ? sessions : new ClientSessions(new HashSet<SessionRef>(), new HashSet<SessionRef>());
+        Sessions.TryPop(out var sessions) ? sessions : new ClientSessions(new HashSet<ClientSession>(), new HashSet<ClientSession>());
 
     /// <summary>Return what a removed actor held (its entity is destroyed and its mailbox drained).</summary>
     public void Return(Actor actor, Queue<Envelope> mailbox, in ClientSessions sessions, bool hasSessions)

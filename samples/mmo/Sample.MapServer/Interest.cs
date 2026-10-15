@@ -1,3 +1,4 @@
+using DaServer;
 using DaServer.Rpc;
 using DaServer.Runtime;
 using EasyEcs;
@@ -86,7 +87,7 @@ public struct MapGrid(MapId map) : IComponent
     /// The session starts viewing the cells around <paramref name="to"/> that it did not see from
     /// <paramref name="from"/> (null: none) and receives the avatars already there.
     /// </summary>
-    public static void View(ref MapGrid grid, ICluster cluster, Entity avatar, SessionRef session, int? from, int to)
+    public static void View(ref MapGrid grid, ICluster cluster, Entity avatar, ClientSession session, int? from, int to)
     {
         var inView = grid.Scratch;
         inView.Clear();

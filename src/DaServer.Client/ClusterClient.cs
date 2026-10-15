@@ -1,10 +1,10 @@
 namespace DaServer.Client;
 
 /// <summary>
-/// Client connection to a gateway (game client, bot, tool): sends <see cref="Clients.FromClientAttribute">[FromClient]</see> messages
+/// Connection of a client (game, bot, tool) to the cluster's client-facing nodes: sends <see cref="FromClientAttribute">[FromClient]</see> messages
 /// (<c>client.Send(new Move(..))</c>, <c>await client.Ask(new GetInfo())</c>) and dispatches the messages servers
 /// push to the [Handle] methods of registered handler objects (<see cref="Register"/>). When the connection is lost it
-/// reconnects on its own and resumes its session with the gateway's reconnect ticket (<see cref="Reconnected"/>).
+/// reconnects on its own and resumes its session with its reconnect ticket (<see cref="Reconnected"/>).
 /// </summary>
 public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannelHandler, IAsyncDisposable
 {
@@ -23,7 +23,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
     private int _nextEntry = new Random().Next();
 #endif // spreads clients over the entries
     private bool _followRedirect;
-    private byte[]? _ticket;          // latest reconnect ticket from the gateway (null: nothing to resume)
+    private byte[]? _ticket;          // latest reconnect ticket from the node (null: nothing to resume)
     private long _refreshTicketAtMs;  // local clock
     private int _reconnecting;
     private volatile bool _disposed;
@@ -104,7 +104,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
 
     public bool IsConnected => _connection is { IsClosed: false };
 
-    /// <summary>Reconnect and resume the session when the connection is lost (needs a cluster secret on the servers).</summary>
+    /// <summary>Reconnect and resume the session when the connection is lost (needs a signing secret on the servers).</summary>
     public bool AutoReconnect { get; set; } = true;
 
     /// <summary>
@@ -218,7 +218,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
     /// </summary>
     public void Register(object handler)
     {
-        var handlers = MessageRegistry.HandlersOf(handler.GetType());
+        var handlers = HandlerRegistry.HandlersOf(handler.GetType());
         lock (_handlersGate) Volatile.Write(ref _handlers, [.. _handlers, (handler, handlers)]);
     }
 
@@ -247,14 +247,14 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
     // ------------------------------------------------------------------ IMessageSender
 
     /// <summary>
-    /// A <see cref="Clients.FromClientAttribute">[FromClient]</see> message to the actor <paramref name="address"/>, which
+    /// A <see cref="FromClientAttribute">[FromClient]</see> message to the actor <paramref name="address"/>, which
     /// must have granted this client's session (<c>GrantSession</c>; else <see cref="RpcStatus.Forbidden"/>). Clients
     /// address actors only (DAS008).
     /// </summary>
     public void Send<TAddr, T>(TAddr address, in T message) where TAddr : struct, IAddress where T : struct =>
         Send(MessageWriter.Write(in message), MessageType<T>.Id, ActorScope<TAddr>(), Addresses<TAddr>.Value(in address), null);
 
-    /// <summary>A <see cref="Clients.FromClientAttribute">[FromClient]</see> message to the actor bound to this client's session, or to its service.</summary>
+    /// <summary>A <see cref="FromClientAttribute">[FromClient]</see> message to the actor bound to this client's session, or to its service.</summary>
     public void Send<T>(in T message) where T : struct => Send(MessageWriter.Write(in message), MessageType<T>.Id, 0, 0, null);
 
     public ValueTask<TReply> Ask<TAddr, TRequest, TReply>(TAddr address, in TRequest request)
@@ -289,7 +289,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
         Transmit(w, FrameKind.Message, handlerTypeId, messageId, key, call, budget);
     }
 
-    /// <summary>A control frame to the gateway, answered when <paramref name="call"/> is set. Takes ownership of <paramref name="w"/>.</summary>
+    /// <summary>A control frame to the node, answered when <paramref name="call"/> is set. Takes ownership of <paramref name="w"/>.</summary>
     private void SendControl(FrameWriter w, uint op, IPendingCall? call) => Transmit(w, FrameKind.Control, 0, op, 0, call, RpcStatus.Ok);
 
     private void Transmit(FrameWriter w, FrameKind kind, uint target, uint messageId, long key, IPendingCall? call, RpcStatus budget)
@@ -386,7 +386,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
         var delay = TimeSpan.FromMilliseconds(100);
         while (!_disposed)
         {
-            await Task.Delay(delay).ConfigureAwait(false); // a blip or a restarting gateway: give it a moment
+            await Task.Delay(delay).ConfigureAwait(false); // a blip or a restarting node: give it a moment
             _connection?.Close(); // the previous attempt's, if it connected
             try
             {
@@ -455,7 +455,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
         }
     }
 
-    /// <summary>Close on purpose: the gateway reports the session closed at once (no reconnect grace).</summary>
+    /// <summary>Close on purpose: the node reports the session closed at once (no reconnect grace).</summary>
     public async ValueTask DisposeAsync()
     {
         _disposed = true;

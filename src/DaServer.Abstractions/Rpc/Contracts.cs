@@ -1,7 +1,7 @@
 using System.ComponentModel;
 using System.Reflection;
 
-namespace DaServer.Rpc;
+namespace DaServer;
 
 // Message-first: a message is a [NinoType, Message] struct, a handler is a [Handle] method taking it. Nothing else is
 // declared. Plain [NinoType] types are data inside messages (fields, replies), never sent on their own.
@@ -12,6 +12,7 @@ namespace DaServer.Rpc;
 //   Cluster.Ask(mapId, request)   request/reply: request implements IRequest<TReply>, its handler returns TReply
 //   Cluster.Publish(e)            to every service handling e
 //   client.Send(msg) / Ask(..)    clients send [FromClient] messages: to the actor bound to their session, else a service
+//   client.Send(roomId, msg)      to an actor that granted the client's session (GrantSession)
 
 /// <summary>
 /// A message answered with a <typeparamref name="TReply"/>: <c>Cluster.Ask(playerId, new GetInfo())</c>. Its handler
@@ -32,7 +33,7 @@ public sealed class HandleAttribute : Attribute;
 /// Marks a <c>[NinoType]</c> struct as a message: what is sent, published or asked (with
 /// <see cref="IRequest{TReply}"/>) and taken by <see cref="HandleAttribute">[Handle]</see> methods. Plain
 /// <c>[NinoType]</c> types are data inside messages. A message travels between servers; client connections add who else
-/// may send or receive it (<see cref="Clients.FromClientAttribute"/>, <see cref="Clients.ToClientAttribute"/>), and the
+/// may send or receive it (<see cref="FromClientAttribute"/>, <see cref="ToClientAttribute"/>), and the
 /// analyzer rejects a message used against them (a server sending a server-only message to a client, a client sending
 /// one).
 /// </summary>
@@ -102,22 +103,22 @@ public interface IMessageSender
 }
 
 /// <summary>
-/// The gateway's session of a client closed (disconnect, kick, gateway crash). Delivered to every actor the session
+/// A client's session closed (disconnect, kick, crash of its node). Delivered to every actor the session
 /// was bound or granted to (<c>BindSession</c>, <c>GrantSession</c>) that handles it; for a lost connection, only once the client had
 /// <see cref="Runtime.NodeOptions.ReconnectGrace"/> to resume (and it did not).
 /// </summary>
 [NinoType, Message]
-public readonly partial record struct SessionClosed(SessionRef Session);
+public readonly partial record struct SessionClosed(ClientSession Session);
 
 /// <summary>
-/// A client that lost its connection resumed on a gateway: <see cref="Session"/> replaces <see cref="Previous"/> and is
+/// A client that lost its connection resumed on a client-facing node: <see cref="Session"/> replaces <see cref="Previous"/> and is
 /// already bound to every actor <see cref="Previous"/> was bound to (and in their groups). Delivered to each of them
 /// that handles it, as the session of the turn (<c>Caller</c>): update the stored session, rejoin other groups
 /// and send the client its full state (pushes sent meanwhile were lost). <see cref="SessionClosed"/> for
 /// <see cref="Previous"/> is not delivered afterwards.
 /// </summary>
 [NinoType, Message]
-public readonly partial record struct SessionResync(SessionRef Session, SessionRef Previous);
+public readonly partial record struct SessionResync(ClientSession Session, ClientSession Previous);
 
 // Session operations: messages to a client address that the node holding the session applies instead of delivering
 // them to the client. To a session (or the Caller): that session; to a client group: every member, on every node.

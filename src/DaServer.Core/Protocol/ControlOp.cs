@@ -34,18 +34,18 @@ internal static class ControlOp
     /// <summary>Client to its node (a call): which node should I use? Answer: a <see cref="ClientEndpoint"/> (or stay).</summary>
     public const uint PickNode = 4;
 
-    // Client sessions (client and gateway): reconnect tickets (ADR-036).
+    // Client sessions (client and client-facing node): reconnect tickets (ADR-036).
 
     /// <summary>
-    /// Gateway to client: payload = the session's current reconnect ticket (after every binding change). Client to
-    /// gateway (no payload): send me a fresh one.
+    /// Node to client: payload = the session's current reconnect ticket (after every grant change). Client to
+    /// node (no payload): send me a fresh one.
     /// </summary>
     public const uint Ticket = 15;
 
-    /// <summary>Client to gateway (a request): payload = a reconnect ticket; resume the session it names here.</summary>
+    /// <summary>Client to node (a request): payload = a reconnect ticket; resume the session it names here.</summary>
     public const uint ResumeSession = 16;
 
-    /// <summary>Client to gateway (a request): the client closes on purpose (no reconnect grace).</summary>
+    /// <summary>Client to node (a request): the client closes on purpose (no reconnect grace).</summary>
     public const uint Goodbye = 17;
 
     /// <summary>Either side, on a connection it has sent nothing on for a while (<see cref="Net.KeepAlive"/>): answer with <see cref="Pong"/>.</summary>

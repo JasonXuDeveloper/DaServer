@@ -342,6 +342,6 @@ public class InfrastructureTests
     {
         // The analyzer checks collisions with the same hash at compile time; the runtime must agree.
         Assert.That(MessageType<Add>.Id, Is.EqualTo(WireIds.Fnv1a("DaServer.Tests.Add")));
-        Assert.That(MessageType<SessionClosed>.Id, Is.EqualTo(WireIds.Fnv1a("DaServer.Rpc.SessionClosed")));
+        Assert.That(MessageType<SessionClosed>.Id, Is.EqualTo(WireIds.Fnv1a("DaServer.SessionClosed")));
     }
 }

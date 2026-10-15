@@ -385,7 +385,7 @@ internal sealed class Membership : IDisposable
     }
 
     /// <summary>
-    /// Did any member's status change (placement uses Up and Suspect members, gateways' sessions end when they are Dead)?
+    /// Did any member's status change (placement uses Up and Suspect members, client-facing nodes' sessions end when they are Dead)?
     /// Heartbeats alone do not count.
     /// </summary>
     private static bool SameRouting(ClusterView a, ClusterView b)

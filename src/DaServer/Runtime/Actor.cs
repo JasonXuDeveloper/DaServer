@@ -31,10 +31,10 @@ public abstract class Actor : ShardObject
     /// actor (<see cref="GrantSession"/>). Completes once the session's node applied it, so the client's next message
     /// already arrives here.
     /// </summary>
-    protected ValueTask BindSession(SessionRef session) => ChangeAccess(session, AccessChange.Bind);
+    protected ValueTask BindSession(ClientSession session) => ChangeAccess(session, AccessChange.Bind);
 
     /// <summary>Remove the session's binding to this actor and its grant (it also leaves <see cref="Group"/>).</summary>
-    protected ValueTask UnbindSession(SessionRef session) => ChangeAccess(session, AccessChange.Unbind);
+    protected ValueTask UnbindSession(ClientSession session) => ChangeAccess(session, AccessChange.Unbind);
 
     /// <summary>
     /// Grant a client session this actor: its client may name it (<c>client.Send(roomId, new Say(..))</c>; a client
@@ -44,12 +44,12 @@ public abstract class Actor : ShardObject
     /// room admitting a player); grants are bounded per session (<see cref="RpcStatus.Overloaded"/> beyond).
     /// Completes once the session's node applied it.
     /// </summary>
-    protected ValueTask GrantSession(SessionRef session) => ChangeAccess(session, AccessChange.Grant);
+    protected ValueTask GrantSession(ClientSession session) => ChangeAccess(session, AccessChange.Grant);
 
     /// <summary>Withdraw the session's grant of this actor (a binding to it goes too; it also leaves <see cref="Group"/>).</summary>
-    protected ValueTask RevokeSession(SessionRef session) => ChangeAccess(session, AccessChange.Revoke);
+    protected ValueTask RevokeSession(ClientSession session) => ChangeAccess(session, AccessChange.Revoke);
 
-    private ValueTask ChangeAccess(SessionRef session, AccessChange change)
+    private ValueTask ChangeAccess(ClientSession session, AccessChange change)
     {
         if (change is AccessChange.Bind or AccessChange.Grant) ActorSessions.Record(this, session);
         return Shard.Node.ChangeAccess(session, new SessionAccess(HandlerType.Id, Key, change));

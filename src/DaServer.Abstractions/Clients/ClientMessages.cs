@@ -1,4 +1,4 @@
-namespace DaServer.Clients;
+namespace DaServer;
 
 /// <summary>A message type clients may send (<see cref="FromClientAttribute">[FromClient]</see>).</summary>
 public readonly record struct ClientMessageInfo(uint Id, Type Type);
@@ -7,6 +7,7 @@ public readonly record struct ClientMessageInfo(uint Id, Type Type);
 /// The messages clients may send, registered by the module initializers generated into the assemblies declaring them
 /// (no reflection scanning, no configuration). Client-facing nodes refuse every other message from clients.
 /// </summary>
+[System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
 public static class ClientMessages
 {
     private static readonly Lock Gate = new();

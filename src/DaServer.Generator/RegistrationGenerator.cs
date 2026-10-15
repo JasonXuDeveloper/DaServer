@@ -37,7 +37,7 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
         // Equatable projection of the compilation: recomputed on edits, but downstream stages stay cached.
         var assembly = context.CompilationProvider
             .Select(static (c, _) => new AssemblyModel(
-                c.GetTypeByMetadataName("DaServer.Rpc.MessageRegistry") != null,
+                c.GetTypeByMetadataName("DaServer.Rpc.HandlerRegistry") != null,
                 c.GetTypeByMetadataName("DaServer.Runtime.ServerRegistry") != null,
                 HasModuleInitializers(c),
                 Identifier(c.AssemblyName ?? "Assembly"),
@@ -59,7 +59,7 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
         var anchors = new List<string>();
         foreach (var assembly in compilation.SourceModule.ReferencedAssemblySymbols)
         foreach (var attribute in assembly.GetAttributes())
-            if (attribute.AttributeClass?.ToDisplayString() == "DaServer.Rpc.GeneratedRegistrationAttribute" &&
+            if (attribute.AttributeClass?.ToDisplayString() == "DaServer.GeneratedRegistrationAttribute" &&
                 attribute.ConstructorArguments.FirstOrDefault().Value is ITypeSymbol anchor)
                 anchors.Add(anchor.ToDisplayString(Fqn));
         anchors.Sort();
@@ -69,10 +69,11 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
     private static string Emit(EquatableArray<HostedModel> types, EquatableArray<ClientMessageModel> messages, AssemblyModel info)
     {
         var sb = new StringBuilder(Header);
-        sb.Append("using System.Runtime.CompilerServices;\nusing DaServer.Rpc;\n");
+        sb.Append("using System.Runtime.CompilerServices;\nusing DaServer;\n");
+        if (info.ReferencesCore) sb.Append("using DaServer.Rpc;\n");
         if (info.ReferencesRuntime) sb.Append("using DaServer.Runtime;\n");
         string className = $"Registration_{info.AssemblyHint}";
-        sb.Append($"\n[assembly: global::DaServer.Rpc.GeneratedRegistration(typeof(global::DaServer.Generated.{className}))]\n");
+        sb.Append($"\n[assembly: global::DaServer.GeneratedRegistration(typeof(global::DaServer.Generated.{className}))]\n");
         sb.Append("\nnamespace DaServer.Generated;\n\n");
         sb.Append("/// <summary>Registers this assembly's DaServer client messages, handler types and systems (generated).</summary>\n");
         BeginRegistration(sb, className, info.ModuleInitializer);
@@ -80,7 +81,7 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
         foreach (var anchor in info.ContractAnchors) // referenced assemblies' registrations first
             sb.Append($"        RuntimeHelpers.RunClassConstructor(typeof({anchor}).TypeHandle);\n");
         foreach (var m in messages)
-            sb.Append($"        global::DaServer.Clients.ClientMessages.Register<{m.FullName}>();\n");
+            sb.Append($"        global::DaServer.ClientMessages.Register<{m.FullName}>();\n");
 
         foreach (var t in types)
         {
@@ -90,7 +91,7 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
                     sb.Append($"        ServerRegistry.RegisterSystem(new SystemInfo(typeof({t.FullName}), static () => new {t.FullName}()));\n");
                     continue;
                 case HostedKind.ClientHandler:
-                    sb.Append($"        MessageRegistry.RegisterHandlers(typeof({t.FullName}), ");
+                    sb.Append($"        HandlerRegistry.RegisterHandlers(typeof({t.FullName}), ");
                     break;
                 default:
                     sb.Append($"        ServerRegistry.RegisterHandlerType(new HandlerTypeInfo(typeof({t.FullName}), ");

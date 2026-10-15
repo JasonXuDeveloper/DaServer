@@ -1,6 +1,6 @@
 using System.Runtime.CompilerServices;
 
-namespace DaServer.Rpc;
+namespace DaServer;
 
 /// <summary>
 /// The id of one actor type, declared in contracts: <c>public readonly record struct MapId(long Value) : IActorId;</c>.

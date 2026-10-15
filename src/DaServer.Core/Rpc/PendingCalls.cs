@@ -6,7 +6,7 @@ namespace DaServer.Rpc;
 internal interface IPendingCall
 {
     /// <summary>Thread of the caller that completes it there (a shard), or null: completed inline.</summary>
-    CallerThread? Caller { get; }
+    CompletionThread? Caller { get; }
 
     /// <summary>Complete with a reply. Runs on an IO thread; payload is only valid during the call.</summary>
     void Complete(RpcStatus status, ReadOnlySpan<byte> payload);
@@ -311,14 +311,14 @@ internal sealed class PendingCall<T> : IPendingCall, IValueTaskSource<T>, IValue
     {
     }
 
-    public static PendingCall<T> Rent(CallerThread? caller)
+    public static PendingCall<T> Rent(CompletionThread? caller)
     {
         var call = caller != null && _shardPool is { Count: > 0 } local ? local.Pop() : Pool.Rent();
         call.Caller = caller;
         return call;
     }
 
-    public CallerThread? Caller { get; private set; }
+    public CompletionThread? Caller { get; private set; }
 
     public ValueTask<T> Task => new(this, _version);
 
@@ -440,7 +440,7 @@ internal sealed class PendingCall<T> : IPendingCall, IValueTaskSource<T>, IValue
         _capturedContext = null;
         Caller = null;
         _version++;
-        if (caller != null && ReferenceEquals(CallerThread.Current, caller))
+        if (caller != null && ReferenceEquals(CompletionThread.Current, caller))
             (_shardPool ??= new Stack<PendingCall<T>>()).Push(this);
         else
             Pool.Return(this);

@@ -24,7 +24,8 @@ public abstract class ShardObject
 
     /// <summary>
     /// Who sent the current message from outside the cluster: a client session (<c>Cluster.Send(Caller, m)</c>,
-    /// <c>BindSession(Caller)</c>); invalid for messages sent inside the cluster. In an actor it holds for the whole turn,
+    /// <c>BindSession(Caller)</c>, <c>GrantSession(Caller)</c>) or an HTTP request of the HTTP plane; invalid for
+    /// messages sent inside the cluster. In an actor it holds for the whole turn,
     /// awaits included; in a service (whose calls may overlap) until the first <c>await</c>.
     /// </summary>
     protected Origin Caller => this is Actor actor ? actor.TurnCaller : CallContext.Current.Origin;

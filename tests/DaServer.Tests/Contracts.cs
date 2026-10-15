@@ -302,14 +302,14 @@ public sealed class TallyAuditService : Service
 [NinoType, Message, FromClient] public partial record struct Tip(int Amount);            // one-way
 
 /// <summary>Server-only: the login service attaches a client session to its player.</summary>
-[NinoType, Message] public partial record struct Attach(SessionRef Session) : IRequest<bool>;
+[NinoType, Message] public partial record struct Attach(ClientSession Session) : IRequest<bool>;
 
 /// <summary>
 /// A chat room: the lobby admits clients (<see cref="Enter"/>), the room grants their sessions, and they name the room
 /// from then on (<c>client.Send(roomId, ..)</c>) until they <see cref="Exit"/>.
 /// </summary>
 [NinoType, Message, FromClient] public partial record struct Enter(RoomId Room) : IRequest<bool>;
-[NinoType, Message] public partial record struct Admit(SessionRef Session) : IRequest<bool>;
+[NinoType, Message] public partial record struct Admit(ClientSession Session) : IRequest<bool>;
 [NinoType, Message, FromClient] public partial record struct Say(string Text);
 [NinoType, Message, FromClient] public partial record struct Exit : IRequest<bool>;
 

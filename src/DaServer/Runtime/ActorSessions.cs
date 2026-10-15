@@ -23,7 +23,7 @@ internal static class ActorSessions
     public static void Register() => RuntimeHelpers.RunClassConstructor(typeof(ActorSessions).TypeHandle);
 
     /// <summary>Remember a client session of a loaded actor (a hash lookup; allocates once per new session).</summary>
-    public static void Record(Actor actor, SessionRef session) => SessionsOf(actor).Sessions.Add(session);
+    public static void Record(Actor actor, ClientSession session) => SessionsOf(actor).Sessions.Add(session);
 
     private static ClientSessions SessionsOf(Actor actor)
     {
@@ -34,7 +34,7 @@ internal static class ActorSessions
     }
 
     /// <summary>Forget a closed session; false when it had been resumed (its close is stale and not delivered).</summary>
-    private static bool Forget(Actor actor, SessionRef session)
+    private static bool Forget(Actor actor, ClientSession session)
     {
         if (!actor.Entity.TryGet<ClientSessions>(out var sessions)) return true;
         if (sessions.Superseded.Remove(session)) return false;
@@ -49,7 +49,7 @@ internal static class ActorSessions
         sessions.Sessions.Remove(resync.Previous);
         sessions.Superseded.Add(resync.Previous); // removed when its late SessionClosed arrives or its node dies
         sessions.Sessions.Add(resync.Session);
-        actor.TurnCaller = new Origin(resync.Session.GatewayNodeId, resync.Session.SessionId);
+        actor.TurnCaller = new Origin(resync.Session.Node, resync.Session.Id);
     }
 
     /// <summary>
@@ -58,14 +58,14 @@ internal static class ActorSessions
     /// </summary>
     public static void CloseSessionsOf(World world, ulong nodeId)
     {
-        List<SessionRef>? lost = null;
+        List<ClientSession>? lost = null;
         foreach (var item in world.Query<ClientSessions, ActorRef>())
         {
             var sessions = item.Component1.Sessions;
-            item.Component1.Superseded.RemoveWhere(s => s.GatewayNodeId == nodeId); // their close will not come
+            item.Component1.Superseded.RemoveWhere(s => s.Node == nodeId); // their close will not come
             lost?.Clear();
             foreach (var session in sessions)
-                if (session.GatewayNodeId == nodeId) (lost ??= new()).Add(session);
+                if (session.Node == nodeId) (lost ??= new()).Add(session);
             if (lost == null || lost.Count == 0) continue;
 
             var actor = item.Component2.Actor;

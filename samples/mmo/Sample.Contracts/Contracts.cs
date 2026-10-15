@@ -1,5 +1,4 @@
-using DaServer.Clients;
-using DaServer.Rpc;
+using DaServer;
 using Nino.Core;
 
 namespace Sample.Contracts;
@@ -52,14 +51,14 @@ public partial record struct Say(string Text);
 
 /// <summary>The login service attaches a client session to its player (the player binds it).</summary>
 [NinoType, Message]
-public partial record struct Attach(SessionRef Session) : IRequest<bool>;
+public partial record struct Attach(ClientSession Session) : IRequest<bool>;
 
 /// <summary>A player enters a map instance with its client session.</summary>
 [NinoType, Message]
-public partial record struct Enter(PlayerId Player, SessionRef Session) : IRequest<bool>;
+public partial record struct Enter(PlayerId Player, ClientSession Session) : IRequest<bool>;
 
 [NinoType, Message]
-public partial record struct Leave(SessionRef Session) : IRequest<bool>;
+public partial record struct Leave(ClientSession Session) : IRequest<bool>;
 
 /// <summary>To the realm: who is online.</summary>
 [NinoType, Message]

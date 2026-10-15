@@ -39,11 +39,11 @@ public sealed class AskGenerator : IIncrementalGenerator
         sb.Append("[global::System.ComponentModel.EditorBrowsable(global::System.ComponentModel.EditorBrowsableState.Never)]\n");
         sb.Append($"{access} static class {r.ClassName}\n{{\n");
         sb.Append("    /// <summary>Ask the actor at <paramref name=\"address\"/>; completes with its reply.</summary>\n");
-        sb.Append($"    public static {reply} Ask<TAddr>(this global::DaServer.Rpc.IMessageSender sender, TAddr address, in {r.FullName} request)\n");
-        sb.Append("        where TAddr : struct, global::DaServer.Rpc.IAddress =>\n");
+        sb.Append($"    public static {reply} Ask<TAddr>(this global::DaServer.IMessageSender sender, TAddr address, in {r.FullName} request)\n");
+        sb.Append("        where TAddr : struct, global::DaServer.IAddress =>\n");
         sb.Append($"        sender.Ask<TAddr, {r.FullName}, {r.ReplyType}>(address, in request);\n\n");
         sb.Append("    /// <summary>Ask the service handling the request (from a client: the actor bound to its session, else the service).</summary>\n");
-        sb.Append($"    public static {reply} Ask(this global::DaServer.Rpc.IMessageSender sender, in {r.FullName} request) =>\n");
+        sb.Append($"    public static {reply} Ask(this global::DaServer.IMessageSender sender, in {r.FullName} request) =>\n");
         sb.Append($"        sender.Ask<{r.FullName}, {r.ReplyType}>(in request);\n}}\n");
         return sb.ToString();
     }

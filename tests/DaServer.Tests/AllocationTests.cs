@@ -105,7 +105,7 @@ public class AllocationTests : ClusterTest
         var gateway = await Start("gw", gateway: true, configure: o => o.GossipInterval = TimeSpan.FromHours(1));
         for (int i = 0; i < 16; i++) await Connect(gateway);
         await Eventually(() => gateway.SessionCount() == 16, "sessions");
-        var sessions = gateway.Feature<ClientConnections>()!.SessionIds().Select(id => new SessionRef(gateway.Id, id)).ToArray();
+        var sessions = gateway.Feature<ClientConnections>()!.SessionIds().Select(id => new ClientSession(gateway.Id, id)).ToArray();
 
         const int rounds = 5_000;
         Churn(3 * rounds);

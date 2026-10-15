@@ -7,7 +7,7 @@ namespace DaServer.Runtime;
 /// <para>Loop: on every wake the <see cref="ShardMessages"/> group runs (so messages never wait for a tick); at the
 /// tick rate the default group runs (simulation systems). User code never needs locks.</para>
 /// </summary>
-internal sealed class Shard : CallerThread
+internal sealed class Shard : CompletionThread
 {
     /// <summary>
     /// Completions, callbacks and turn ends that may wait at once before <see cref="_overflow"/> takes the rest. They
@@ -44,7 +44,7 @@ internal sealed class Shard : CallerThread
 
     /// <summary>The shard whose thread is executing the current code, or null outside shard threads.</summary>
     // Invariant: shards are the only caller threads on servers.
-    public static new Shard? Current => Unsafe.As<Shard?>(CallerThread.Current);
+    public static new Shard? Current => Unsafe.As<Shard?>(CompletionThread.Current);
 
     public Node Node { get; }
 
