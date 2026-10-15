@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFrameworks>net10.0;net11.0</TargetFrameworks>
+        <RootNamespace>DaServer.Simulation</RootNamespace>
+        <Description>Simulated users for DaServer clusters (end-to-end, load and behavior tests of any domain): client worlds on their own threads, HTN planning as ECS data, and swarms that connect, measure and judge thousands of clients. Client side only: it runs against any cluster.</Description>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\DaServer.Client\DaServer.Client.csproj" />
+        <PackageReference Include="EasyEcs" Version="$(EasyEcsVersion)" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <InternalsVisibleTo Include="DaServer.Tests" />
+    </ItemGroup>
+
+</Project>

@@ -5,7 +5,8 @@ namespace DaServer.Tests;
 
 /// <summary>
 /// Dependency rules (ADR-045, ADR-052): contracts, shared transport and the client SDK never depend on the server
-/// runtime or EasyEcs (they compile into Unity clients), and the runtime never depends on its capabilities.
+/// runtime or EasyEcs (they compile into Unity clients), simulated users are client side only, and the runtime never
+/// depends on its capabilities.
 /// </summary>
 public class ArchitectureTests
 {
@@ -13,6 +14,7 @@ public class ArchitectureTests
     private static readonly Assembly Core = typeof(FrameWriter).Assembly;
     private static readonly Assembly Client = typeof(ClusterClient).Assembly;
     private static readonly Assembly Runtime = typeof(Node).Assembly;
+    private static readonly Assembly Simulation = typeof(DaServer.Simulation.Swarm).Assembly;
 
     [Test]
     public void PackagesDependOnlyDownwards()
@@ -23,6 +25,8 @@ public class ArchitectureTests
             .And.Not.Contain("DaServer").And.Not.Contain("EasyEcs"));
         Assert.That(References(Client), Does.Contain("DaServer.Core").And.Not.Contain("DaServer").And.Not.Contain("EasyEcs"));
         Assert.That(References(Runtime), Does.Contain("DaServer.Core").And.Not.Contain("DaServer.Client"));
+        Assert.That(References(Simulation), Does.Contain("DaServer.Client").And.Not.Contain("DaServer"),
+            "simulated users are clients: they run against any cluster");
     }
 
     [Test]

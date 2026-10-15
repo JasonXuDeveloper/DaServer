@@ -3,6 +3,7 @@
     <Project Path="src/DaServer.Abstractions/DaServer.Abstractions.csproj" />
     <Project Path="src/DaServer.Core/DaServer.Core.csproj" />
     <Project Path="src/DaServer.Client/DaServer.Client.csproj" />
+    <Project Path="src/DaServer.Simulation/DaServer.Simulation.csproj" />
     <Project Path="src/DaServer/DaServer.csproj" />
     <Project Path="src/DaServer.Generator/DaServer.Generator.csproj" />
     <Project Path="src/DaServer.Hosting/DaServer.Hosting.csproj" />
