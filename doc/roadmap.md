@@ -151,7 +151,9 @@ Step plan (each step builds and keeps every test green; logic, docs, CI in separ
    `HandleAddress<TAddr>` with scopes in the card and group fan-out by scope, `IIngress` (raw and typed, origin,
    capped deadline, `IngressLoadLimit` early refusal), admission (`IIngressFilter`, `RateLimited` with a retry hint,
    `TokenBucket`, `ConcurrencyLimit`, `SignedToken` under the reconnect tickets), `TimerWheel<T>` (hashed wheel, one
-   owner, O(1), allocation-free; consumers: grace timers in step 6, `SendAfter` in N2); client connections use them:
+   owner, O(1), allocation-free; consumers: grace timers in step 6, `SendAfter` in N2), dispatch-stage message filters
+   (`MessageFilters.Register<T>` / `Register(IMessageFilter)`, run by generated dispatchers; N11 generates into
+   them); client connections use them:
    - `NodeFeature`: Configure, ConfigureShard(World), Start(INodeContext), OnViewChanged, OnMemberDead,
      `Drain(deadline)`, Stop(crashed), a readiness contribution, metrics registration; options bound from
      `DaServer:{Section}`; enabled by configuration.
