@@ -43,7 +43,7 @@ EasyEcs in parallel when DaServer waits on benchmarks: the Friflo gap, compariso
 - [x] Gateway: sessions, per-handler-type bindings, per-message `Flow.FromClient` access, push, `ClientGroup` broadcast fan-out
       (O(1) membership, `All` is a group, no allocation per broadcast), `SessionClosed` to bound actors, client frame
       limit (ADR-025)
-- [x] Runtime-owned sessions: Bind joins the actor's group, `CallerSession` holds for the turn, a crashed gateway's
+- [x] Runtime-owned sessions: Bind joins the actor's group, `Caller` holds for the turn, a crashed gateway's
       sessions close (ADR-024)
 - [x] Balancers and client gateway discovery (power of two choices; clients wait while the cluster forms)
       (ADR-026)
@@ -141,8 +141,9 @@ Step plan (each step builds and keeps every test green; logic, docs, CI in separ
 2. Addresses (done): `IAddress`/`INodeAddress`/`IGroupAddress`, `Send(addr, m)`, address-generic generated `Ask`
    overloads, `Push`/`Broadcast` removed; DAS006 checks `[ToClient]` by address kind; asking a session or group and
    a client addressing anything but actors are DAS008.
-3. `Origin(ulong Node, long Id)`: raw 16-byte extension, `CallContext(ReplyTo, Origin)`, `ShardObject.Caller`
-   replaces `CallerSession` (`SessionRef` converts implicitly from `Origin`).
+3. `Origin(ulong Node, long Id)` (done): raw 16-byte trailer, `CallContext(ReplyTo, CallId, Origin)`,
+   `ShardObject.Caller` replaces `CallerSession`; the origin is an `INodeAddress` (`Send(Caller, m)`) and `SessionRef`
+   converts implicitly from it.
 4. Session operations become messages to `SessionRef` (Bind is an `Ask`, so ADR-022 ordering holds).
 5. Feature points and ingress (`DaServer.Features`, `DaServer.Ingress`):
    - `NodeFeature`: Configure, ConfigureShard(World), Start(INodeContext), OnViewChanged, OnMemberDead,
@@ -434,7 +435,7 @@ in separate commits.
       disconnect; servers without telemetry: 0 KB/s except business payloads (chat strings) and < 0.5 B per pushed
       message on gateways, no GC (README "Performance")
 - [x] Checklist 6: R1-R11 and E1-E10 hold; open items are the unchecked roadmap entries
-- [x] Naming review (ADR-032, ADR-040): `OnLoad`/`OnUnload`, `CallerSession`, balancers, one noun per concept;
+- [x] Naming review (ADR-032, ADR-040): `OnLoad`/`OnUnload`, `Caller`, balancers, one noun per concept;
       actor state from field initializers, `ActorRef` for systems
 - [x] Moving scenario: 10,000 bots in one map (AOI and dead reckoning, ~2.5M positions/s, p99 106 ms); servers
       0–5 KB/s, no GC; scale-out: a gateway started mid-run

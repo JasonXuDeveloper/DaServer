@@ -206,7 +206,8 @@ records that no longer hold). Each: context → decision → consequences.
 - Decision: `BindSession(session)` also puts the session in the actor's `Group`; `UnbindSession` and close leave it.
   Every loaded actor records the sessions bound to it (a `ClientSessions` component); when a session closes the
   gateway publishes `SessionClosed` to each, and when a gateway is declared dead every node closes that gateway's
-  sessions for its own actors. `CallerSession` is the session of the running turn and holds across its awaits.
+  sessions for its own actors. `Caller` (the origin, ADR-047) is the session of the running turn and holds across its
+  awaits.
 - Consequences: business code binds and handles `SessionClosed`; nothing else. Gateway crash tests cover it.
   Session control and pushes go to the gateway's link from the view, or, while gossip has not listed the gateway
   yet, from its Hello (a client call can reach a node first): a Bind is never dropped while the cluster forms.
@@ -298,13 +299,12 @@ records that no longer hold). Each: context → decision → consequences.
   role read wrong to people who know other distributed servers.
 - Decision: name things by their role in a cluster, in pairs where they are pairs: `OnLoad` / `OnUnload` (the actor is
   loaded on / leaves this node), `Flow.FromClient` / `Flow.ToClient` (the two directions across the gateway),
-  `CallerSession` (the client session; invalid for server calls), `Disconnect` (not a game's "kick"), balancer
+  `Caller` (who sent the message from outside; invalid for server calls), `Disconnect` (not a game's "kick"), balancer
   (`AddBalancer`, `Balancer`; "dispatch" means message dispatch only), `ClusterMember` (no clash with
   `System.Reflection.MemberInfo`), `ListenAddress` / `DispatchQueueCapacity` (what they configure). Actor state starts
   as `new TState()` (field initializers of a state struct run, so `OnLoad` is only for loading), and systems read an
   actor's id and group from its public `ActorRef` component instead of copying them into state.
-- Consequences: wire ids do not depend on these names (message and handler type names are hashed). ADR-047 (agreed,
-  roadmap G0) renames `CallerSession` to `Caller`.
+- Consequences: wire ids do not depend on these names (message and handler type names are hashed).
 
 ## ADR-033 Actors unload when idle, by their own declaration
 - Context: actors that stay loaded until their key moves make actors used now and then (offline players, finished
@@ -505,8 +505,8 @@ records that no longer hold). Each: context → decision → consequences.
   request volume, since the actor interior stays zero-GC. Health endpoints are always mapped, admin endpoints require the cluster secret.
 
 ## ADR-047 One message model: message, address, optional reply
-- Status: agreed; the wire is done (three frame kinds, target always set, ADR-005); the verbs and the origin follow
-  in roadmap G0 steps 2-4 (the code still has the verbs listed in the context).
+- Status: agreed; done except the session operations (roadmap G0 step 4: the code still has `JoinGroup`,
+  `LeaveGroup`, `Disconnect` and `BindSession` as operations).
 - Context: messages and RPC are one thing, but the API has nine operations (`Send`, `Ask`, `Publish`, `Push`,
   `Broadcast`, `JoinGroup`, `LeaveGroup`, `Disconnect`, `BindSession`) and the wire seven frame kinds plus a trailer
   (`ToActor`) and a prefix (`HasCaller`), because `RequestId` means either a call id or a target. Most of the extra
@@ -517,8 +517,12 @@ records that no longer hold). Each: context → decision → consequences.
   (fan-out to the nodes advertising its scope). Verbs: `Send` and `Ask` (kept apart: `Ask` holds the turn and a cycle
   deadlocks, so the call site must show it, as Akka Tell/Ask), `Publish` (every service type handling the message; no
   address value), `SendAfter` (N2). Wire: `Message`, `Reply`, `Control` (link protocol only); `Target` always set;
-  header extensions by flag. One verb per target kind is not needed: the address type names the target at the call
-  site (as the id type does since ADR-043), and DAS006 checks `[ToClient]` by address kind.
+  trailers by flag. One verb per target kind is not needed: the address type names the target at the call site (as
+  the id type does since ADR-043), and DAS006 checks `[ToClient]` by address kind. The origin is an address itself
+  (`Origin(Node, Id)` implements `INodeAddress`): `Cluster.Send(Caller, m)` reaches whoever sent the message (the
+  ingress that issued the origin delivers it; for client connections the origin is the session), and `SessionRef`
+  converts implicitly from it where a session is stored or bound. The origin is a 16-byte trailer before the call
+  id, set by the ingress (a client's own bytes never become it) and kept by every hop.
 - Consequences: sessions and groups are addresses of the gateway module, not core verbs; node-to-node and client wire
   protocols break once (pre-1.0, no rolling upgrade across it); the old verbs are removed outright, no aliases; send
   paths stay generic over struct addresses (no boxing, the kind is a JIT constant).

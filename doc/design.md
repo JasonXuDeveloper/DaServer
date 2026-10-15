@@ -102,9 +102,9 @@ local node when it hosts one.
 - A receiving node routes a message by its target alone: a hosted handler type goes to its shard, a session or group
   to the client connections, anything else on to the node hosting it.
 - A client leaves the target 0 to let its gateway pick the actor bound to its session or the service; it names the
-  actor only with `AnyId` messages. Gateways route client frames with a new header and the caller session prepended
-  to the payload (flag `HasCaller`). They never deserialize payloads.
-- Next (ADR-047, roadmap G0 step 3): the caller session becomes an `Origin` trailer instead of the payload prefix.
+  actor only with `AnyId` messages. Gateways copy the client's payload as is, add the session as the origin trailer
+  (flag `HasOrigin`, 16 bytes before the call id; handlers read it as `Caller`) and route it. They never deserialize
+  payloads.
 
 ## 3. Performance model (zero GC)
 
@@ -203,7 +203,7 @@ sequenceDiagram
     participant P as Player (actor)
     participant M as Map (actor)
     Cl->>G: Login(name)
-    G->>A: request (caller session prepended)
+    G->>A: request (origin: the session)
     A->>P: Ask(playerId, Attach(session))
     P->>G: BindSession(session)  (acknowledged before the reply)
     Cl->>G: EnterMap(7)
