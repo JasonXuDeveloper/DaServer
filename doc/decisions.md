@@ -15,8 +15,8 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
   bounded lock-free MPMC mailbox (overflow queue, never drops), timers and a fixed tick. Actors and service instances
   live in exactly one shard.
 - Consequences: no locks in user code; deterministic ordering per shard; messages are processed immediately (tick rate
-  only drives systems/timers). ECS systems must complete synchronously per tick (the shard pumps its mailbox while
-  waiting, so an async system cannot deadlock it, but it stalls the tick).
+  only drives systems/timers). ECS systems are synchronous (EasyEcs 4); a handler that awaits suspends only its actor
+  (a `Turn`), and the shard keeps running other actors and systems (ADR-037).
 
 ## ADR-003 Completing RPCs on the caller's shard (no SynchronizationContext.Post)
 - Context: `ManualResetValueTaskSourceCore` with a captured SynchronizationContext allocates a Tuple per Post.
