@@ -205,8 +205,11 @@ Step plan (each step builds and keeps every test green; logic, docs, CI in separ
    `DaServer.Client` / `DaServer` (server runtime); the first three build for netstandard2.1 + net10 and
    `samples/mmo/Sample.Contracts` builds for both. Generators split by output (ADR-012): `AskGenerator`,
    `RegistrationGenerator` (static-constructor registration, IL2CPP-safe), `EntryPointGenerator`,
-   `PolyfillGenerator`. M5: the client call table is sized by `ClusterClient(maxCallsInFlight: 256)` (was 2^14
-   slots per client). Aspire: `AddNodes(...).WithClients()` and `WithClientEndpoints(group)`
+   `PolyfillGenerator`. M5: call tables allocate slots in doubling chunks as calls in flight reach them
+   (`ClusterClient(maxCallsInFlight: 4096)` is only a bound; it was 2^14 slots allocated per client), connections
+   with `ReleaseIdleBuffers` hold no send buffer when idle, clients share handler tables: 10k sample bots use 182 MB
+   resident / 80 MB managed (was 357 / 226 MB after a first cut, about 9 GB before). Open: trim `BufferPool` buckets
+   back after a peak (41 MB of the 80 MB are 4 KB buffers kept from the all-sessions broadcast peak). Aspire: `AddNodes(...).WithClients()` and `WithClientEndpoints(group)`
    (`DaServer__ClientEndpoints__{i}`) replace `AddGateways`/`WithGateways`.
 9. Tests: architecture test done (`ArchitectureTests`: package references point down only; the runtime's folders
    use no client-connection type); A/B against step 0 (no regression), allocation tests < 1 B per delivery.
