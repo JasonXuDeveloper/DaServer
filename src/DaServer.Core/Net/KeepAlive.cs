@@ -2,9 +2,9 @@ namespace DaServer.Net;
 
 /// <summary>
 /// Liveness of frame channels (ADR-053). A peer is alive while frames arrive: any frame counts, so busy connections
-/// carry no extra traffic; a side that has sent nothing for an interval sends a header-only <see cref="ControlOp.Ping"/>,
-/// answered with <see cref="ControlOp.Pong"/>, so an idle connection still hears from its peer (and NAT and load
-/// balancer mappings stay open). A connection that has received nothing for its timeout is closed: half-open TCP
+/// carry no extra traffic; a side that has sent or received nothing for an interval sends a header-only
+/// <see cref="ControlOp.Ping"/>, answered with <see cref="ControlOp.Pong"/>, so a connection still hears from its peer
+/// when nothing else comes back (an idle one, or one that only sends) and NAT and load balancer mappings stay open. A connection that has received nothing for its timeout is closed: half-open TCP
 /// (a vanished host, a dropped NAT mapping, a switched mobile network) and a peer that stopped reading are noticed in
 /// seconds, not after TCP's retransmission timeout. Closing is never a verdict on the peer: the owner reconnects and
 /// resumes (client tickets, node link resend windows).
@@ -16,7 +16,8 @@ public static class KeepAlive
 
     /// <summary>
     /// Close <paramref name="channel"/> when it has received nothing for <paramref name="timeoutMs"/>; else send a
-    /// ping when it has sent nothing for <paramref name="intervalMs"/> (0: never ping). Times are
+    /// ping when it has sent or received nothing for <paramref name="intervalMs"/> (0: never ping; while the peer
+    /// stays silent, a ping per check until it answers). Times are
     /// <see cref="Platform.Milliseconds"/>. False when the channel is (now) closed.
     /// </summary>
     public static bool Check(IFrameChannel channel, long nowMs, long intervalMs, long timeoutMs)
@@ -28,7 +29,7 @@ public static class KeepAlive
             return false;
         }
 
-        if (intervalMs > 0 && nowMs - channel.LastSentMs >= intervalMs) Send(channel, ControlOp.Ping);
+        if (intervalMs > 0 && nowMs - Math.Min(channel.LastSentMs, channel.LastReceivedMs) >= intervalMs) Send(channel, ControlOp.Ping);
         return true;
     }
 
