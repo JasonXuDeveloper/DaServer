@@ -128,8 +128,8 @@ balancing, TLS, CDN/WAF, Gateway API routes and autoscaling stay with the platfo
       them, `BindSession` an `Ask` of `SessionAccess` (removed verbs, no aliases). Wire: `Message`/`Reply`/`Control`, `Target`
       always set, trailers by flag (`Origin` 16 B, call id; `Chain` with N3, `Trace` with A6). Wire break, no rolling
       upgrade across it (pre-1.0). A/B of the G work against the baseline: G step 9 below and the README.
-- [ ] G1 Feature points and ingress, step 5, proven by two consumers (client connections and the HTTP plane).
-- [ ] G2 Client connections as a built-in feature, packages, tests, docs: steps 6-10.
+- [x] G1 Feature points and ingress, step 5, proven by two consumers (client connections and the HTTP plane).
+- [x] G2 Client connections as a built-in feature, grants, packages, keep-alive, .NET 11, tests, docs: steps 6-10.
 - [ ] G5 `samples/flashsale` (after N5): HTTP edge with admission and a waiting room (signed queue tokens, release
       paced by capacity), `StockShard` actors keyed (sku, shard) so the turn is the atomic decrement (no lock, no
       Redis), `Order` actors keyed (user, sale) so retries are idempotent, async order pipeline, push or poll for the
