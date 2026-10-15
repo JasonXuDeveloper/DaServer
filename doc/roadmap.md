@@ -30,7 +30,7 @@ EasyEcs in parallel when DaServer waits on benchmarks: the Friflo gap, compariso
 - [x] Buffers: POH `BufferPool`, pooled `FrameWriter` (INinoBufferWriter)
 - [x] Concurrency: padded MPMC queue, object pool, allocation-free `AsyncSignal`
 - [x] Net: `Connection` (batched send, zero-byte reads, backlog bound), `Listener`
-- [x] RPC core: messages (`IRequest<TReply>`, `MessageRegistry`), `CallContext` replies, pending-call table, pooled awaitables
+- [x] RPC core: messages (`IRequest<TReply>`, `HandlerRegistry`), `CallContext` replies, pending-call table, pooled awaitables
 - [x] Shard runtime as ECS (ADR-013): actor entities with mailbox/turn components, runtime systems, system groups;
       dispatch queue (`DispatchSystem`, `DispatchQueueCapacity`) and per-actor mailboxes (ADR-040)
 - [x] Turn-based actors (ADR-014), stateless services
@@ -147,9 +147,9 @@ Step plan (each step builds and keeps every test green; logic, docs, CI in separ
    overloads, `Push`/`Broadcast` removed; DAS006 checks `[ToClient]` by address kind; asking a session or group and
    a client addressing anything but actors are DAS008.
 3. `Origin(ulong Node, long Id)` (done): raw 16-byte trailer, `CallContext(ReplyTo, CallId, Origin)`,
-   `ShardObject.Caller` replaces `CallerSession`; the origin is an `INodeAddress` (`Send(Caller, m)`) and `SessionRef`
+   `ShardObject.Caller` replaces `CallerSession`; the origin is an `INodeAddress` (`Send(Caller, m)`) and `ClientSession`
    converts implicitly from it.
-4. Session operations become messages to `SessionRef` (done: `JoinGroup`/`LeaveGroup`/`Disconnect` to a session or
+4. Session operations become messages to `ClientSession` (done: `JoinGroup`/`LeaveGroup`/`Disconnect` to a session or
    a group; `BindSession` asks a `SessionAccess`, so ADR-022 ordering holds).
 5. Feature points and ingress (`DaServer.Features`, `DaServer.Ingress`); done so far: `NodeFeature` hooks,
    `HandleAddress<TAddr>` with scopes in the card and group fan-out by scope, `IIngress` (raw and typed, origin,
@@ -172,7 +172,7 @@ Step plan (each step builds and keeps every test green; logic, docs, CI in separ
      (the edge picks the owner from its gossip view); `LoadOf(node)` and load-aware early refusal before the network.
    - Admission primitives: ingress filter stage (reject with status + retry-after), `RateLimited` / `Overloaded`
      statuses with a retry hint, an allocation-free token bucket / concurrency limit, `SignedToken` (HMAC with the
-     cluster secret: resume tickets, admission tokens, internal HTTP auth).
+     signing secret: resume tickets, admission tokens, internal HTTP auth).
    - One timer wheel implementation (IO side here, per-shard for N2); `DaServer.Net` (`Connection`, `Listener`,
      batched send) as the transport base.
    - Message filters (`RegisterFilter<T>`, static/generic, ingress and dispatch stages; N11 generates into them).
@@ -191,7 +191,7 @@ Step plan (each step builds and keeps every test green; logic, docs, CI in separ
    `ClusterClient.ConnectAsync(Uri)`. Drain moving clients with tickets is D3; today a leaving node closes its
    listener and sessions. Left (original plan, for reference):
    transports (TCP on `DaServer.Net`; WebSocket through the HTTP plane in `DaServer.Hosting`), sessions, bindings,
-   `GroupMembers` (M2 pool), address handlers for `SessionRef` and `ClientGroup` (fan-out to the nodes advertising
+   `GroupMembers` (M2 pool), address handlers for `ClientSession` and `ClientGroup` (fan-out to the nodes advertising
    the scope), resume tickets on `SignedToken` and grace timers on the timer wheel (M3), `BoundSessions` + filters for
    `SessionClosed`/`SessionResync` (special cases leave `ShardDispatch`), dead-node session close through a system,
    ingress checks (size, `[FromClient]` set, destination, per-session rate limit, origin overwrite, budget cap),
@@ -211,6 +211,8 @@ Step plan (each step builds and keeps every test green; logic, docs, CI in separ
    resident / 80 MB managed (was 357 / 226 MB after a first cut, about 9 GB before). Open: trim `BufferPool` buckets
    back after a peak (41 MB of the 80 MB are 4 KB buffers kept from the all-sessions broadcast peak). Aspire: `AddNodes(...).WithClients()` and `WithClientEndpoints(group)`
    (`DaServer__ClientEndpoints__{i}`) replace `AddGateways`/`WithGateways`.
+8a. Names, done: `ClientSession(Node, Id)` (was `SessionRef(GatewayNodeId, SessionId)`), `NodeOptions.SigningSecret`
+   (was `ClusterSecret`), contract types in the root `DaServer` namespace, `HandlerRegistry`; `ClusterClient` kept.
 8b. Keep-alive (ADR-053), done: `Ping`/`Pong` on idle directions, silence closes client sessions (45 s), client
    connections (30 s, `CheckConnection` probes) and node link connections (`SuspectAfter`); `KeepAliveTests`.
 9. Tests: architecture test done (`ArchitectureTests`: package references point down only; the runtime's folders
@@ -270,7 +272,7 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
       `PublishAsKubernetesService` + `AdditionalResources` (PDB and KEDA as small custom resource types).
 - [ ] A5 Dashboard: a cluster parent resource (`WithParentRelationship`) showing "n/n joined"; custom states Joining /
       Joined / Draining / Suspected; commands Drain, Membership (JSON), Stats, Unload actor type (admin endpoints on the HTTP
-      plane, authorized with the cluster secret). Usable from `aspire resource <node> <command>`,
+      plane, authorized with the signing secret). Usable from `aspire resource <node> <command>`,
       MCP and tests.
 - [ ] A6 Tracing: an allocation-free `ActivitySource` for cross-node calls (spans only when a listener is attached),
       added to `AddDaServer`'s OpenTelemetry setup with the ASP.NET Core and HttpClient instrumentation, so a REST call
@@ -308,7 +310,7 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
       detector over pulse arrivals; suspicion before death.
 - [ ] C2 Split brain: a downing rule in core (keep-majority / static quorum: the minority side stops itself), plus an
       optional authoritative lease store (Kubernetes Lease, PostgreSQL) as a module for strict ownership.
-- [ ] C3 Node authentication: HMAC challenge in Hello with the cluster secret, cluster id and protocol version in
+- [ ] C3 Node authentication: HMAC challenge in Hello with the signing secret, cluster id and protocol version in
       Hello; a process that only reaches the port can no longer join.
 - [ ] C4 Supervision: per actor type `OnError` policy (Resume default, Reload = unload and reload state); poison
       message counter and metric.
@@ -475,7 +477,7 @@ in separate commits.
 - [x] Message-first model (ADR-035); client send backlog bound 256 KB (a slow client is disconnected and
       resynchronizes on reconnect)
 - [x] Auto-reconnect (ADR-036): signed reconnect tickets, `SessionClosed` after a grace period, `SessionResync`,
-      Aspire-generated cluster secret
+      Aspire-generated signing secret
 - [x] Lifecycle as tags (ADR-037): turn ends posted by `TurnWatcher` (no polling), `Ready`/`Loading`/`UnloadRequested`/
       `Unloading`/`Removing` with one system each; sample grid as data + systems (`DespawnSystem`, `PlacementSystem`)
 - [x] `[Message]` (ADR-038): `[NinoType, Message]` is a message, plain `[NinoType]` is data; `[FromClient]`/

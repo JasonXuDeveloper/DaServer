@@ -7,7 +7,7 @@ application scenario; an MMO cluster (login, gateways, game server, map servers)
 
 You write **messages** (`[NinoType, Message]` structs), **actors** and **services** with `[Handle]` methods, and **ECS
 systems**. Source generators write dispatchers, typed `Ask` overloads, wire ids, registration and the node's entry
-point. The runtime handles shards, mailboxes, placement, discovery, gateways and serialization. Aspire runs the cluster
+point. The runtime handles shards, mailboxes, placement, discovery, client connections and serialization. Aspire runs the cluster
 locally and publishes it.
 
 - **Zero GC on hot paths.** Messages serialize straight into pooled buffers. Dispatchers deserialize straight from
@@ -101,7 +101,7 @@ Business code reaches the cluster through `ICluster`: `Cluster` in actors and se
 The runtime owns client sessions: an actor's `await BindSession(session)` routes the client's messages for that actor
 type to its id and puts the session in the actor's `Group`; `await GrantSession(session)` lets the client name the
 actor (`client.Send(roomId, new Say(..))`: a room admitting a player) and puts it in the `Group` too. A client can
-name no other actor: anything else is refused at the edge. When the session closes (or its gateway crashes), every
+name no other actor: anything else is refused at the edge. When the session closes (or its node crashes), every
 actor it was bound or granted to receives `SessionClosed`. A client that loses its connection reconnects on its own and
 resumes the session with a signed ticket: its actors receive `SessionResync` (send the full state again) instead, and
 `SessionClosed` only if it does not come back within 30 s.
@@ -122,8 +122,8 @@ public readonly record struct MapId(long Value) : IActorId;
 [NinoType, Message, FromClient] public partial record struct EnterMap(MapId Map) : IRequest<bool>;
 [NinoType, Message, FromClient] public partial record struct Move(float VelocityX, float VelocityY); // input
 [NinoType, Message, FromClient] public partial record struct Say(string Text);
-[NinoType, Message] public partial record struct Attach(SessionRef Session) : IRequest<bool>;  // servers only
-[NinoType, Message] public partial record struct Enter(PlayerId Player, SessionRef Session) : IRequest<bool>;
+[NinoType, Message] public partial record struct Attach(ClientSession Session) : IRequest<bool>;  // servers only
+[NinoType, Message] public partial record struct Enter(PlayerId Player, ClientSession Session) : IRequest<bool>;
 [NinoType, Message, ToClient] public partial record struct Chat(PlayerId Player, string Text); // pushed
 
 // Login project: a stateless service.
@@ -163,7 +163,7 @@ public sealed class Player : Actor<PlayerId, PlayerState>
 // Actor state is a component; field initializers run when the actor loads (no OnLoad boilerplate).
 public struct MapState() : IComponent
 {
-    public readonly Dictionary<SessionRef, Entity> Avatars = new();
+    public readonly Dictionary<ClientSession, Entity> Avatars = new();
 }
 
 public sealed class Map : Actor<MapId, MapState>
@@ -208,7 +208,7 @@ class Bot
 
 var client = new ClusterClient();
 client.Register(new Bot());
-await client.ConnectAsync("play.example.com", 7100);          // directed to the least loaded gateway
+await client.ConnectAsync("play.example.com", 7100);          // directed to a less loaded client-facing node
 await client.Ask(new Login("alice"));
 await client.Ask(new EnterMap(new MapId(1)));               // to the bound player (session binding)
 client.Send(new Move(1, 0));
@@ -238,7 +238,7 @@ builder.Build().Run();
 ```
 
 `AddDaServerCluster` gives every node a name, a cluster endpoint and seeds; `WithClients` adds a client endpoint (the
-`DaServer:Clients` section). A client connects to any gateway (in production: the platform's load balancer or DNS name)
+`DaServer:Clients` section). A client connects to any client-facing node (in production: the platform's load balancer or DNS name)
 and is directed to the less loaded of two (power of two choices over the gossiped session counts). There
 are no roles and no configuration files: what a node hosts is what its project compiles. Nodes export logs and
 metrics over OpenTelemetry, which feeds the Aspire dashboard. The same model runs with

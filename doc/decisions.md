@@ -38,7 +38,7 @@ records that no longer hold). Each: context → decision → consequences.
   request rewrites it in place, so neither needs to move the payload. Message id = FNV-1a 32 of the message type's
   full name (or its `[WireId]`), computed once per type at run time and by the analyzer at build time; handler type
   ids are FNV-1a of the actor id type or service type name.
-- Consequences: gateways route by patching header fields without parsing payloads; collisions are build errors
+- Consequences: client-facing nodes route by patching header fields without parsing payloads; collisions are build errors
   (DAS004) and registration errors, resolvable with `[WireId]`. A request costs the same bytes as a one-way message
   plus its call id; a reply carries the call id as a trailer too (4 bytes).
 
@@ -57,7 +57,7 @@ records that no longer hold). Each: context → decision → consequences.
 
 ## ADR-008 Reliability via byte-offset resumable links
 - Context: without resumption, a dropped node connection fails every call in flight and silently loses one-way
-  messages, pushes and session control queued on it; a network blip between a game node and a gateway looks like a
+  messages, pushes and session control queued on it; a network blip between a game node and a client-facing node looks like a
   crash.
 - Decision: each node link numbers its stream by byte offset (frames sent through the link, across connections).
   The connection's send loop copies each batch, before writing it, into the link's `ResendWindow` (pooled 64 KB
@@ -72,7 +72,7 @@ records that no longer hold). Each: context → decision → consequences.
   small batches would pin megabytes until acknowledged; one memcpy per batch on the send loop (not on producers)
   keeps memory proportional to unacknowledged bytes. Per-frame sequence numbers — bytes are simpler and exact
   because frames are whole in every batch. Client connections are not resumed byte by byte: a client resumes its
-  session with a ticket instead (ADR-036), so gateways keep no replay buffer per session.
+  session with a ticket instead (ADR-036), so client-facing nodes keep no replay buffer per session.
 - Consequences: a transient disconnect is a delay: no loss, no duplicate (`LinkTests` drop connections mid-stream).
   Cost: one memcpy per batch on the send loop and one type check per received frame; BenchmarkDotNet RPC numbers are
   unchanged within noise. A crashed peer fails calls when it is declared dead (or at their timeout), not at the
@@ -189,7 +189,7 @@ records that no longer hold). Each: context → decision → consequences.
 ## ADR-022 One ordered stream per node direction
 - Context: if a node answers requests on the accepted connection while its own binds, pushes and messages to the
   caller travel on its outgoing link, a reply can overtake a `Bind` sent before it (the client calls the actor before
-  the gateway knows the binding).
+  the client-facing node knows the binding).
 - Decision: a node names itself with a `Hello` control frame on every link it opens; the receiver then sends replies
   to that node through its own outgoing link to it (`PeerLink` is the reply sink). Everything node A sends to node B,
   replies included, is one ordered TCP stream.
@@ -208,17 +208,17 @@ records that no longer hold). Each: context → decision → consequences.
 
 ## ADR-024 The runtime owns client sessions
 - Context: business code should not pair binding with group joins, remember sessions to clean up, or copy the caller
-  session before the first await; and a crashed gateway must not leave actors believing their sessions are alive.
+  session before the first await; and a crashed client-facing node must not leave actors believing their sessions are alive.
 - Decision: `BindSession(session)` also puts the session in the actor's `Group`; `UnbindSession` and close leave it.
   Every loaded actor records the sessions bound to it (a `ClientSessions` component); when a session closes the
-  gateway publishes `SessionClosed` to each, and when a gateway is declared dead every node closes that gateway's
+  client-facing node publishes `SessionClosed` to each, and when a client-facing node is declared dead every node closes that client-facing node's
   sessions for its own actors. `Caller` (the origin, ADR-047) is the session of the running turn and holds across its
   awaits.
-- Consequences: business code binds and handles `SessionClosed`; nothing else. Gateway crash tests cover it.
-  Session control and pushes go to the gateway's link from the view, or, while gossip has not listed the gateway
+- Consequences: business code binds and handles `SessionClosed`; nothing else. Client-facing node crash tests cover it.
+  Session control and pushes go to the client-facing node's link from the view, or, while gossip has not listed the client-facing node
   yet, from its Hello (a client call can reach a node first): a Bind is never dropped while the cluster forms.
 
-## ADR-025 Gateway groups: slot arrays under a per-group lock
+## ADR-025 Client groups: slot arrays under a per-group lock
 - Context: a group of thousands of sessions must take joins and leaves in O(1) and fan out without a snapshot
   allocation per broadcast.
 - Decision: each group is a slot array; a session knows its slot in each group, leave is swap-remove. Membership
@@ -226,14 +226,14 @@ records that no longer hold). Each: context → decision → consequences.
   every session joins on accept. `Connection.Send` closes a slow consumer off the caller's thread, so a fan-out never
   re-enters a group. Lock order: group gate, group, connection send lock.
 - Alternatives: copy-on-write member arrays (O(n) per join, O(n^2) to fill a group, large array churn); a
-  `ConcurrentDictionary.Values` snapshot per broadcast (8 B per session per broadcast); gateway sessions as ECS
-  entities on a gateway shard (one more thread hop per push; kept on the roadmap).
+  `ConcurrentDictionary.Values` snapshot per broadcast (8 B per session per broadcast); client-facing node sessions as ECS
+  entities on a client-facing node shard (one more thread hop per push; kept on the roadmap).
 - Consequences: join/leave O(1); a broadcast allocates nothing (allocation tests); a 3k-session fan-out holds one
   group lock for about a millisecond, which only delays membership changes of that group.
 
 ## ADR-026 Client-facing nodes direct clients to each other
-- Context: clients that are given every gateway address and spread themselves round robin must be reconfigured when
-  a gateway is added, and load follows connection order, not load; a dedicated directing role is one more thing to
+- Context: clients that are given every client-facing node address and spread themselves round robin must be reconfigured when
+  a client-facing node is added, and load follows connection order, not load; a dedicated directing role is one more thing to
   deploy, and the platform already offers the well-known address (a load balancer, a DNS name).
 - Decision: client-facing nodes publish their client endpoint (a card entry) and gossip their session count (a pulse
   slot). Any of them answers `PickNode` (and `GET /clients/endpoint`) with the less loaded of two random client-facing
@@ -271,22 +271,22 @@ records that no longer hold). Each: context → decision → consequences.
 - Consequences: work whose caller gave up is not run, on any node; one-way messages never expire. A request in
   flight longer than its budget is reported as a timeout, never run late.
 
-## ADR-029 Group broadcasts go to every gateway
-- Context: a `ClientGroup` push is sent once to every gateway, and gateways with no member of the group drop it.
-  Tracking which gateways hold members would save those frames.
-- Decision: keep sending to every gateway. The cost is one small frame per gateway per broadcast, independent of
-  the group size, and a gateway without the group answers it with one dictionary miss. Tracking members per gateway
-  needs membership gossip from gateways to every sender (sessions join groups on whichever node binds them), more
-  ordering cases on gateway loss, and it only pays when there are many gateways and groups live on few of them.
-- Consequences: simple and ordered with binds (ADR-022). Revisit when deployments run tens of gateways with small
+## ADR-029 Group broadcasts go to every client-facing node
+- Context: a `ClientGroup` push is sent once to every client-facing node, and client-facing nodes with no member of the group drop it.
+  Tracking which client-facing nodes hold members would save those frames.
+- Decision: keep sending to every client-facing node. The cost is one small frame per client-facing node per broadcast, independent of
+  the group size, and a client-facing node without the group answers it with one dictionary miss. Tracking members per client-facing node
+  needs membership gossip from client-facing nodes to every sender (sessions join groups on whichever node binds them), more
+  ordering cases on client-facing node loss, and it only pays when there are many client-facing nodes and groups live on few of them.
+- Consequences: simple and ordered with binds (ADR-022). Revisit when deployments run tens of client-facing nodes with small
   groups; the roadmap keeps the item.
 
 ## ADR-030 One Aspire resource per replica
 - Context: Aspire's `WithReplicas` runs replicas as one resource behind a proxy with shared endpoints. Cluster
   members are addressed individually: each gossips its own cluster and client endpoint, links go to a specific node
-  and clients are directed to a specific gateway.
+  and clients are directed to a specific client-facing node.
 - Decision: `AddNodes` creates one resource per replica (`gateway-0`, `gateway-1`, ...) with its own
-  endpoints, and every node gets every other node as a seed; clients get the gateways' addresses as entries. Deployments that do have per-replica DNS (Kubernetes headless services) use DNS seeds instead: a seed that
+  endpoints, and every node gets every other node as a seed; clients get the client-facing nodes' addresses as entries. Deployments that do have per-replica DNS (Kubernetes headless services) use DNS seeds instead: a seed that
   resolves to several addresses yields one seed per address.
 - Consequences: replicas are visible and individually addressable on the dashboard; replica count is still a single
   argument, and no endpoints are configured by hand.
@@ -294,7 +294,7 @@ records that no longer hold). Each: context → decision → consequences.
 ## ADR-031 Gossip carries pulses, cards travel once
 - Context: serializing the whole member table every round costs about 10 KB/s per idle node at one round a second,
   growing with the square of the cluster size, and allocates new member objects on every receiver; a view that keeps
-  the load hints of the last status change never shows gateways filling up.
+  the load hints of the last status change never shows client-facing nodes filling up.
 - Decision: a member is its card (identity, endpoint, hosted handlers and address scopes, its features' card
   entries: fixed while it runs) plus its pulse (incarnation, heartbeat, status, load and three feature slots such as
   sessions: 37 bytes). Gossip and its reply carry pulses, written into a pooled frame and read in place; a pulse naming
@@ -308,7 +308,7 @@ records that no longer hold). Each: context → decision → consequences.
 - Context: names borrowed from one framework (Orleans' `OnActivateAsync`) or describing a mechanism instead of its
   role read wrong to people who know other distributed servers.
 - Decision: name things by their role in a cluster, in pairs where they are pairs: `OnLoad` / `OnUnload` (the actor is
-  loaded on / leaves this node), `[FromClient]` / `[ToClient]` (the two directions across the gateway),
+  loaded on / leaves this node), `[FromClient]` / `[ToClient]` (the two directions across the client-facing node),
   `Caller` (who sent the message from outside; invalid for server calls), `Disconnect` (not a game's "kick"), directory
   ("dispatch" means message dispatch only), `ClusterMember` (no clash with
   `System.Reflection.MemberInfo`), `ListenAddress` / `DispatchQueueCapacity` (what they configure). Actor state starts
@@ -350,7 +350,7 @@ records that no longer hold). Each: context → decision → consequences.
     every service type handling it once.
   - A `[FromClient]` message to an actor goes to the actor bound to the client's session for that actor type, or to
     the actor the client names when that actor granted the session (ADR-051); the actor binds or grants itself:
-    `await BindSession(session)`, `await GrantSession(session)` (acknowledged by the gateway before they return).
+    `await BindSession(session)`, `await GrantSession(session)` (acknowledged by the client-facing node before they return).
   - Messages to clients are sends to their address: `Send(session, m)` / `Send(group, m)`, handled on clients by
     `[Handle]` methods of a registered object.
   - Generated code: ADR-012.
@@ -360,25 +360,25 @@ records that no longer hold). Each: context → decision → consequences.
   without touching callers. Hot paths: messages are `in` structs of generic methods, serialized once into pooled
   frames. A client that cannot drain its pushes (send backlog over 256 KB) is disconnected rather than throttled; it
   reconnects and the server resends full state, which is cheaper and simpler than per-session drop policies in a
-  state-synchronized game. ADR-047 (agreed, roadmap G0) folds pushes into `Send` to session and group addresses.
+  state-synchronized game. Pushes are `Send` to session and group addresses (ADR-047).
 
 ## ADR-036 Clients resume sessions with signed tickets
-- Context: a network blip, a slow client disconnected at its send bound (ADR-035) or a gateway restart closes the
+- Context: a network blip, a slow client disconnected at its send bound (ADR-035) or a client-facing node restart closes the
   session: without resumption, actors remove the avatar, the player logs in again, and players near it see it vanish
   and reappear.
-- Decision: the session's gateway sends its client a reconnect ticket after every binding change: session, bindings
-  (handler type id, key) and expiry, signed with HMAC-SHA256 of the cluster secret (`DaServer__ClusterSecret`,
-  generated by Aspire). Gateways keep no state for it, so any gateway accepts it. `ClusterClient` reconnects through
+- Decision: the session's client-facing node sends its client a reconnect ticket after every grant change: session, grants
+  (handler type id, key, bound) and expiry, signed with HMAC-SHA256 of the signing secret (`DaServer__SigningSecret`,
+  generated by Aspire). Client-facing nodes keep no state for it, so any client-facing node accepts it. `ClusterClient` reconnects through
   its entry addresses (a live node directs it) with exponential backoff and presents the ticket; the new
-  session takes over the bindings and the actors' groups, and every bound actor receives
+  session takes over the grants and the actors' groups, and every granted actor receives
   `SessionResync(Session, Previous)` before the client's next message (same links). Actors swap the session and send
   the full state; pushes sent meanwhile are lost by design (state, not a log). A lost connection is reported as
-  `SessionClosed` only after `ReconnectGrace` (30 s), also for a crashed gateway; the runtime drops the late
+  `SessionClosed` only after `ReconnectGrace` (30 s), also for a crashed client-facing node; the runtime drops the late
   `SessionClosed` of a resumed session. An explicit close (client dispose, `Disconnect`) is reported at once. Tickets
-  live `ReconnectTicketLifetime` (10 min); clients refresh theirs at half of it.
-- Alternatives: resumable client streams like node links (ADR-008) keep per-session replay buffers on gateways, which
-  is memory per connection and lost with the gateway anyway; a session store (Redis) adds a dependency and a hop.
-- Consequences: without a cluster secret there are no tickets and a lost connection closes the session at once. A
+  live `ClientOptions.TicketLifetime` (10 min); clients refresh theirs at half of it.
+- Alternatives: resumable client streams like node links (ADR-008) keep per-session replay buffers on client-facing nodes, which
+  is memory per connection and lost with the client-facing node anyway; a session store (Redis) adds a dependency and a hop.
+- Consequences: without a signing secret there are no tickets and a lost connection closes the session at once. A
   ticket is a bearer token for its lifetime, carried on the same connection as the login. The ticket carries the
   session's grants and bindings (ADR-051) and their actors' groups; other groups are rejoined by the actors on
   `SessionResync`.
@@ -419,12 +419,12 @@ records that no longer hold). Each: context → decision → consequences.
   if it granted their session, ADR-051), `[ToClient]` (servers push it, clients handle it); both may be applied. The analyzer checks handlers (servers never handle a
   `ToClient`-only message, client handlers only `ToClient` ones) and call sites (a send to a session or group
   address needs `ToClient`, `ClusterClient` sends need `FromClient`, servers do not send `ToClient`-only messages to
-  each other): DAS006. DAS008 rejects asking a session or group and clients addressing anything but actors. Gateways also accept only `FromClient` messages at run time.
-  The core's `[Message]` carries no client concept (ADR-045, ADR-050): the attributes live in `DaServer.Clients`.
+  each other): DAS006. DAS008 rejects asking a session or group and clients addressing anything but actors. Client-facing nodes also accept only `FromClient` messages at run time.
+  The attributes are contracts (`DaServer.Abstractions`, ADR-052); the client connections feature enforces them.
 - Alternatives: marker interfaces (`IClientMessage`) would allow generic constraints, but who sends a message is
   metadata for the analyzer and the client connections, not a type relation.
 - Consequences: a contracts file reads as a protocol (who talks to whom); leaking server-internal messages to clients
-  is a build error. Gateway-to-node traffic stays framework frames, so roles never appear in message declarations.
+  is a build error. Traffic between client-facing nodes and other nodes stays framework frames, so roles never appear in message declarations.
 
 ## ADR-039 EasyEcs from NuGet, used as its documentation teaches
 - Context: building against a sibling checkout couples the two repositories, and runtime code that gates systems with
@@ -512,7 +512,7 @@ records that no longer hold). Each: context → decision → consequences.
 - Consequences: nodes reference the ASP.NET Core shared framework (aspnet runtime image, a few MB of memory, tens of
   ms of start-up); HTTP requests allocate like any ASP.NET request: on nodes hosting actors the HTTP plane carries
   low-frequency work, never per-tick or per-player traffic; dedicated HTTP edge nodes (ADR-048) may carry high
-  request volume, since the actor interior stays zero-GC. Health endpoints are always mapped, admin endpoints require the cluster secret.
+  request volume, since the actor interior stays zero-GC. Health endpoints are always mapped, admin endpoints require the signing secret.
 
 ## ADR-047 One message model: message, address, optional reply
 - Context: messages and RPC are one thing; an API with a verb per target (push to a session, broadcast to a group,
@@ -527,7 +527,7 @@ records that no longer hold). Each: context → decision → consequences.
   trailers by flag. One verb per target kind is not needed: the address type names the target at the call site (as
   the id type does since ADR-043), and DAS006 checks `[ToClient]` by address kind. The origin is an address itself
   (`Origin(Node, Id)` implements `INodeAddress`): `Cluster.Send(Caller, m)` reaches whoever sent the message (the
-  ingress that issued the origin delivers it; for client connections the origin is the session), and `SessionRef`
+  ingress that issued the origin delivers it; for client connections the origin is the session), and `ClientSession`
   converts implicitly from it where a session is stored or bound. The origin is a 16-byte trailer before the call
   id, set by the ingress (a client's own bytes never become it) and kept by every hop. Session operations are
   messages to a client address that its node applies instead of delivering them (`JoinGroup`, `LeaveGroup`,
@@ -535,7 +535,7 @@ records that no longer hold). Each: context → decision → consequences.
   (`BindSession`/`GrantSession`: the actor binds or grants itself) and is an `Ask` of a `SessionAccess` message to
   the session, so it travels on the
   ordered link with the actor's other messages to that session (ADR-022) and returns once applied.
-- Consequences: sessions and groups are addresses of the gateway module, not core verbs; `ICluster` is `Send`,
+- Consequences: sessions and groups are addresses of the client connections feature, not core verbs; `ICluster` is `Send`,
   `Ask`, `Publish` and `NodeId`; node-to-node and client wire
   protocols break once (pre-1.0, no rolling upgrade across it); the old verbs are removed outright, no aliases; send
   paths stay generic over struct addresses (no boxing, the kind is a JIT constant).
@@ -551,7 +551,7 @@ records that no longer hold). Each: context → decision → consequences.
   one framework look like two products.
 - Decision: one framework. `DaServer.Ingress` (origin, capped deadline, reply sink, raw pass-through, one hop to the
   owner from the gossip view, load-aware early refusal, filters that reject with status + retry hint, token bucket,
-  signed tokens) and `DaServer.Clients` (client connections as a node feature: transports, sessions, `SessionRef` and
+  signed tokens) and `DaServer.Clients` (client connections as a node feature: transports, sessions, `ClientSession` and
   `ClientGroup` addresses, push and fan-out, resume tickets, a directory answering "which node to connect to") are
   namespaces of the `DaServer` assembly, built on the public feature points. A node accepts clients when a client
   port is configured; "gateway" is only a deployment word for such a node group (co-hosted in small clusters,
@@ -590,7 +590,7 @@ records that no longer hold). Each: context → decision → consequences.
   `DaServer:Clients` section (`ClientOptions`): it registers the session, origin and client group address scopes,
   publishes its endpoint as a card entry and its session count as a pulse slot, and sends every client message
   through the ingress. The actor part stays in the runtime (`ActorSessions`): it needs only contract types
-  (`SessionRef`, `SessionClosed`, `SessionResync`, `SessionAccess`), records an actor's callers and bound or granted
+  (`ClientSession`, `SessionClosed`, `SessionResync`, `SessionAccess`), records an actor's callers and bound or granted
   sessions, handles
   closes and resyncs as dispatch filters of their message types and closes the sessions of a dead node holding the
   session scope. Card entries and pulse slots are generic (`SetCardEntry`, `AddPulse`: keys chosen by features, at
@@ -630,12 +630,13 @@ records that no longer hold). Each: context → decision → consequences.
 - Decision: as Orleans (Core.Abstractions / Core / Client / Server), gRPC (Core.Api / Net.Common / Net.Client /
   AspNetCore.Server) and MagicOnion (Abstractions / Shared / Client / Server) do, four layers, each depending only on
   the one below:
-  - `DaServer.Abstractions` (netstandard2.1 + net10): what contract assemblies reference: `[Message]`, `[Handle]`,
-    `[FromClient]`/`[ToClient]`, `[WireId]`, `IRequest`, addresses (`IActorId`, `SessionRef`, `ClientGroup`,
+  - `DaServer.Abstractions` (netstandard2.1 + net10, namespace `DaServer`: one using in a contract file): what
+    contract assemblies reference: `[Message]`, `[Handle]`,
+    `[FromClient]`/`[ToClient]`, `[WireId]`, `IRequest`, addresses (`IActorId`, `ClientSession`, `ClientGroup`,
     `Origin`), `IMessageSender`, session messages, wire ids, the client message registry and generated-registration
     support.
   - `DaServer.Core` (netstandard2.1 + net10): the wire and transport both sides run: `FrameHeader`/`RpcStatus`/
-    `ControlOp`, `FrameWriter`/`BufferPool`, `Connection`/`WebSocketChannel`, pending calls (`CallerThread`: a thread
+    `ControlOp`, `FrameWriter`/`BufferPool`, `Connection`/`WebSocketChannel`, pending calls (`CompletionThread`: a thread
     that completes its own calls, a shard on servers), `CallContext`, `RpcException`, handler dispatch,
     `SignedToken`.
   - `DaServer.Client` (netstandard2.1 + net10): `ClusterClient`.
