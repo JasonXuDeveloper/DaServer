@@ -5,4 +5,4 @@ knows about them.
 
 | Scenario | What it shows |
 |---|---|
-| [mmo/](mmo) | An MMO cluster: login server, balancer, several gateways, game server (players, realm), map servers (maps, movement, area of interest), 10k bots, Aspire orchestration. |
+| [mmo/](mmo) | An MMO cluster: login server, client-facing gateway nodes, game server (players, realm), map servers (maps, movement, area of interest), 10k bots, Aspire orchestration. |

@@ -9,7 +9,7 @@ records that no longer hold). Each: context → decision → consequences.
 - Decision: the server runtime (`DaServer`, `DaServer.Hosting`, `DaServer.Aspire`) targets one framework, the newest
   .NET (ADR-054); what clients share (`DaServer.Abstractions`, `DaServer.Core`, `DaServer.Client`, ADR-052) also
   builds for netstandard2.1 and the previous .NET, with the newer APIs behind `Platform` and internal polyfills.
-- Consequences: the server uses the newest APIs freely (`Lock`, frozen collections, POH, C# preview); shared code
+- Consequences: the server uses the newest APIs freely (`Lock`, frozen collections, POH, C# latest); shared code
   pays a few `#if NET` lines, never a second implementation.
 
 ## ADR-002 Shards: single-threaded shards with a dispatch queue, not a thread-pool actor runtime
@@ -87,7 +87,7 @@ records that no longer hold). Each: context → decision → consequences.
 ## ADR-010 Benchmarks and tests
 - Decision: BenchmarkDotNet only, over real loopback sockets, modelling real load (thousands of sessions, broadcast
   fan-out, concurrent callers, cross-shard traffic). Integration tests run multi-node clusters in-process. Allocation
-  tests assert 0 B in steady-state loops.
+  tests assert < 8 B per operation (< 1 B per fan-out delivery) in steady-state loops.
 
 ## ADR-011 Naming: Shard (DaServer executor) vs World (EasyEcs)
 - Context: EasyEcs uses standard ECS vocabulary (`World`, `Query`, `EcsSystem.OnUpdate`).
@@ -168,7 +168,7 @@ records that no longer hold). Each: context → decision → consequences.
   (`Publish`) travel as `Message` frames: a message to an actor goes to the owner of its id and enters the actor's
   mailbox (turn-based, loaded on demand); `Publish` serializes once and sends one frame per service type handling the
   message, local node first. Delivery is at most once and ordered with the calls of the same sender.
-  `SessionClosed` is a framework message sent to every actor a closing session was bound to.
+  `SessionClosed` is a framework message sent to every actor a closing session was bound or granted to.
 - Alternatives: a broker (Kafka, NATS) on the call path adds a hop and an external dependency to every message;
   subscription state per actor would have to survive rebalancing. Durable events are an application concern (outbox).
 - Consequences: publishers never depend on handlers; a one-way message costs the same as a call without a reply and
@@ -347,7 +347,7 @@ records that no longer hold). Each: context → decision → consequences.
   - Handlers are `[Handle]` methods of actors and services (and of any class on clients, for pushes). The message type
     decides the handler: the cluster gossips `(message id, handler type id, actor)` per handler.
   - `Ask(id, m)` / `Send(id, m)` go to the actor `id` (its id type names the actor type, ADR-043); without an id, to
-    the one service handling the message (several service handlers is an `Ambiguous` error). `Publish(e)` reaches
+    the one service handling the message (several service handlers is an error: `RpcStatus.Error`, cold path). `Publish(e)` reaches
     every service type handling it once.
   - A `[FromClient]` message to an actor goes to the actor bound to the client's session for that actor type, or to
     the actor the client names when that actor granted the session (ADR-051); the actor binds or grants itself:
@@ -499,15 +499,16 @@ records that no longer hold). Each: context → decision → consequences.
   concurrency. The framework covers the capabilities any such backend needs: ECS shards, actors and services,
   messages and RPC, membership, placement, persistence, reload, ingress and client connections (sessions, push,
   groups, resume; chat, IoT, market data, collaboration and games all need them, ADR-048). Business domains are not
-  part of it: logins, maps, interest management, matchmaking, inventories live in samples (`samples/mmo`,
-  `samples/flashsale`) or user code.
+  part of it: logins, maps, interest management, matchmaking, inventories live in samples (`samples/mmo`;
+  `samples/flashsale` planned, G5) or user code. Persistence (N5) and reload (N9) are planned.
 - Consequences: a capability enters the framework only if backends of different domains need it; it is built on the
   same public extension points users have (node features, ingress, address handlers, filters), lives in its own
   namespace and is off unless configured. The runtime (`DaServer.Runtime`, `DaServer.Cluster`, `DaServer.Rpc`) never
   depends on a capability namespace (`DaServer.Clients`); an architecture test checks it.
 
 ## ADR-046 Two planes per node: DaServer TCP for data, ASP.NET Core for HTTP
-- Status: agreed; implemented in roadmap A1 (nodes have no HTTP plane yet).
+- Status: minimum implemented (Kestrel on `DaServer:HttpPort`, `MapAsk`/`MapSend`, `/clients/endpoint`, `/clients/ws`);
+  health, admin endpoints and Aspire probes in roadmap A1.
 - Context: Kubernetes probes and Aspire health are HTTP; operators want admin commands; applications want REST
   endpoints (webhooks, payment callbacks, HTTP login, back-office). A hand-written HTTP responder would re-implement
   Kestrel and the official health-check middleware.
@@ -518,7 +519,7 @@ records that no longer hold). Each: context → decision → consequences.
 - Consequences: nodes reference the ASP.NET Core shared framework (aspnet runtime image, a few MB of memory, tens of
   ms of start-up); HTTP requests allocate like any ASP.NET request: on nodes hosting actors the HTTP plane carries
   low-frequency work, never per-tick or per-player traffic; dedicated HTTP edge nodes (ADR-048) may carry high
-  request volume, since the actor interior stays zero-GC. Health endpoints are always mapped, admin endpoints require the signing secret.
+  request volume, since the actor interior stays zero-GC. Health endpoints (always on) and admin endpoints (authorized with the signing secret) come with A1.
 
 ## ADR-047 One message model: message, address, optional reply
 - Context: messages and RPC are one thing; an API with a verb per target (push to a session, broadcast to a group,
@@ -543,7 +544,7 @@ records that no longer hold). Each: context → decision → consequences.
   ordered link with the actor's other messages to that session (ADR-022) and returns once applied.
 - Consequences: sessions and groups are addresses of the client connections feature, not core verbs; `ICluster` is `Send`,
   `Ask`, `Publish` and `NodeId`; node-to-node and client wire
-  protocols break once (pre-1.0, no rolling upgrade across it); the old verbs are removed outright, no aliases; send
+  protocols break once (pre-1.0, no rolling upgrade across it); no verb per target exists, no aliases; send
   paths stay generic over struct addresses (no boxing, the kind is a JIT constant).
 
 ## ADR-048 Ingress and client connections are built in; load balancing stays with the platform
@@ -565,7 +566,7 @@ records that no longer hold). Each: context → decision → consequences.
   well-known address is the platform's LB or DNS (redirect mode or behind-LB mode). The HTTP plane (ADR-046) is the
   second ingress consumer; WebSocket clients connect through it. Packages: ADR-052. Waiting rooms are not part of the framework: they are policy for human traffic
   surges, belong at the CDN/SaaS edge to protect origins, and compose from the ingress primitives plus a queue actor
-  (shown in `samples/flashsale`).
+  (to be shown in `samples/flashsale`, G5).
 - Consequences: dedicated client-facing nodes may carry high request volume (the actor interior stays zero-GC;
   ADR-046). Abstractions and the client SDK use newer runtime features only behind netstandard2.1 fallbacks (ADR-001). Redirect mode needs
   a public address per client-facing node; behind-LB mode leaves long connections unbalanced after a scale-out until
@@ -583,7 +584,7 @@ records that no longer hold). Each: context → decision → consequences.
   instead of throwing. Programming errors found on a cold path (a call to a message several services handle) still
   carry text.
 - Consequences: refusing, relaying and timing out allocate nothing (`AllocationTests`); the caller still gets an
-  exception (N3b adds non-throwing status results). A refusal no longer names the type or message id: the caller's
+  exception (N3b adds non-throwing status results). A refusal does not name the type or message id: the caller's
   stack trace names the call.
 
 ## ADR-050 Client connections are a feature; the actor side of sessions stays in the runtime
@@ -609,9 +610,9 @@ records that no longer hold). Each: context → decision → consequences.
 ## ADR-051 Clients name only actors that granted their session
 - Context: a client message to an actor goes to the actor bound to the session. Rooms, matches and shared boards need
   the client to name the actor (`client.Send(roomId, new Say(..))`), and a session may be in several of one type. A
-  per-message flag letting clients name any id (`AnyId`) turned every such message into an open door: any id
-  activates an actor (and, with persistence, loads it), every handler had to check `Caller` itself, and internal ids
-  could be enumerated. Orleans keeps untrusted clients behind a frontend that authorizes before calling grains;
+  per-message flag letting clients name any id would make every such message an open door: any id
+  activates an actor (and, with persistence, loads it), every handler must check `Caller` itself, and internal ids
+  can be enumerated. Orleans keeps untrusted clients behind a frontend that authorizes before calling grains;
   Nakama and Colyseus expose match and room ids but accept messages only from clients that joined (a server-side
   decision); ET routes client messages by the session's bound unit.
 - Decision: the actor decides who may address it, once: `await GrantSession(session)` / `RevokeSession(session)`
@@ -694,8 +695,8 @@ records that no longer hold). Each: context → decision → consequences.
   `net11.0`; the shared packages add `net11.0` beside netstandard2.1 and net10.0 (ADR-001). `global.json` pins the 11.0
   SDK (RC2 until GA, then the GA band); CI installs it from there. Runtime async (`runtime-async=on`) stays off until
   measured on its own: the framework's hot paths have no async methods (pooled `IValueTaskSource`s).
-- Alternatives: stay on .NET 10 LTS (gives up 2x on concurrent calls); multi-target the server (doubles build and test
+- Alternatives: stay on .NET 10 LTS (gives up 2.3-2.7x on concurrent local calls, 1.1-1.3x remote); multi-target the server (doubles build and test
   time for users who all deploy one runtime).
 - Consequences: servers need the .NET 11 runtime (x86-64-v2 or newer); BenchmarkDotNet 0.16 (preview) hosts .NET 11.
-  Broadcast fan-out is the one path that did not gain: profile it on .NET 11 (roadmap).
+  Broadcast fan-out is the one path that did not gain: profile it on .NET 11 (roadmap, step 8d).
 

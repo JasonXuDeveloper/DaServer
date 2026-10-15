@@ -6,8 +6,8 @@ application scenario; an MMO cluster (login, gateways, game server, map servers)
 ([samples/mmo](samples/mmo)).
 
 You write **messages** (`[NinoType, Message]` structs), **actors** and **services** with `[Handle]` methods, and **ECS
-systems**. Source generators write dispatchers, typed `Ask` overloads, wire ids, registration and the node's entry
-point. The runtime handles shards, mailboxes, placement, discovery, client connections and serialization. Aspire runs the cluster
+systems**. Source generators write dispatchers, typed `Ask` overloads, registration and the node's entry point; wire
+ids are FNV-1a hashes of the type names. The runtime handles shards, mailboxes, placement, discovery, client connections and serialization. Aspire runs the cluster
 locally and publishes it.
 
 - **Zero GC on hot paths.** Messages serialize straight into pooled buffers. Dispatchers deserialize straight from
@@ -85,7 +85,7 @@ Everything a developer declares is one of these. The message type alone decides 
 | `Cluster.Ask(id, new M())` / `Send(id, ...)` | The actor `id` (`MapId`, `PlayerId`: the id type names the actor type; one per cluster, on demand, turn-based). |
 | `Cluster.Ask(new M())` / `Send(...)` | The one service handling `M` (load-balanced, local first). |
 | `Cluster.Publish(e)` | Every service type handling `e`, once each. |
-| `Cluster.Send(session, m)` / `Send(group, m)` | A client session / a client group (`[ToClient]` messages; clients handle them with `[Handle]` too). `JoinGroup`, `LeaveGroup` and `Disconnect` sent there are applied by the session's gateway. |
+| `Cluster.Send(session, m)` / `Send(group, m)` | A client session / a client group (`[ToClient]` messages; clients handle them with `[Handle]` too). `JoinGroup`, `LeaveGroup` and `Disconnect` sent there are applied by the node holding the session. |
 
 | Element | Responsibility | Never |
 |---|---|---|
@@ -95,7 +95,8 @@ Everything a developer declares is one of these. The message type alone decides 
 | **System** | One per-tick responsibility over all matching entities of a shard. Stateless. | Reference other systems, perform IO. |
 
 Business code reaches the cluster through `ICluster`: `Cluster` in actors and services, `world.Cluster()` in systems.
-`Caller` is who sent the running turn's message from outside the cluster, a client session (valid across its awaits;
+`Caller` is who sent the running turn's message from outside the cluster, a client session (in actors valid across the
+turn's awaits, in services until the first await;
 `Cluster.Send(Caller, m)` answers it, `BindSession(Caller)` binds it, `GrantSession(Caller)` admits it).
 
 The runtime owns client sessions: an actor's `await BindSession(session)` routes the client's messages for that actor
@@ -132,7 +133,7 @@ public sealed class Account : Service
     [Handle]
     public async ValueTask<LoginResult> On(Login m)
     {
-        var player = Accounts.IdOf(m.Name);                                    // a PlayerId
+        var player = new PlayerId(Hash(m.Name));                               // a real game looks the account up
         bool attached = await Cluster.Ask(player, new Attach(Caller)); // the Player actor of that id
         return new LoginResult(attached, player);
     }
@@ -152,7 +153,7 @@ public sealed class Player : Actor<PlayerId, PlayerState>
     [Handle]
     public async ValueTask<bool> On(EnterMap m)
     {
-        await Cluster.Ask(m.Map, new Enter(Id, Caller)); // zero allocation
+        await Cluster.Ask(m.Map, new Enter(Id, Caller)); // the call allocates nothing
         State.Map = m.Map;
         return true;
     }
@@ -201,17 +202,17 @@ public sealed partial class RealmBroadcastSystem : EcsSystem        // every 5 t
 }
 
 // Client (bot, game): the same messages, one well-known address.
-class Bot
-{
-    [Handle] public void On(Chat m) => Console.WriteLine(m.Text);   // pushes are handled like any message
-}
-
 var client = new ClusterClient();
-client.Register(new Bot());
+client.Register(new Pushes());
 await client.ConnectAsync("play.example.com", 7100);          // directed to a less loaded client-facing node
 await client.Ask(new Login("alice"));
 await client.Ask(new EnterMap(new MapId(1)));               // to the bound player (session binding)
 client.Send(new Move(1, 0));
+
+class Pushes
+{
+    [Handle] public void On(Chat m) => Console.WriteLine(m.Text);   // pushes are handled like any message
+}
 ```
 
 A node project needs no `Program.cs`: the generator emits the entry point (Generic Host, configuration, OpenTelemetry,
@@ -296,7 +297,7 @@ is per operation and includes the benchmark's clients):
 | 1 actor call, round trip | same node / other node | 20 µs / 101 µs | 112 B |
 
 Against the agreed baseline (d676d2a on .NET 10, same machine, run back to back): calls 11-55% faster, one-way
-messages 45-88% faster, broadcasts and the 9k scenario within noise (-12% to +7%), allocations no higher. How much
+messages 45-88% faster, broadcasts 0 to +5% and the 3k / 9k scenario -12% / +7% (within noise), allocations no higher. How much
 comes from .NET 11 alone: ADR-054.
 
 ## Build, test, benchmark
