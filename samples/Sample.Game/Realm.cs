@@ -16,11 +16,11 @@ public struct RealmState() : IComponent
 }
 
 /// <summary>The realm: players report in and out; <see cref="RealmBroadcastSystem"/> tells every client about it.</summary>
-public sealed class Realm : Actor<RealmState>, IRealm
+public sealed class Realm : Actor<RealmState>
 {
-    public void PlayerOnline(long playerId) => State.Online.Add(playerId);
+    [Handle] public void On(PlayerOnline m) => State.Online.Add(m.PlayerId);
 
-    public void PlayerOffline(long playerId) => State.Online.Remove(playerId);
+    [Handle] public void On(PlayerOffline m) => State.Online.Remove(m.PlayerId);
 }
 
 /// <summary>Every <see cref="EveryTicks"/> ticks, the realm status goes to every session of the cluster.</summary>
@@ -32,7 +32,6 @@ public sealed partial class RealmBroadcastSystem : EcsSystem
     private static void Broadcast(ref RealmState realm, World world)
     {
         if (++realm.Tick % EveryTicks != 0) return;
-        world.Cluster().PlayerClient(ClientGroup.All)
-            .OnRealm(new RealmStatus(realm.Tick, realm.Online.Count, DateTime.UtcNow.Ticks));
+        world.Cluster().Send(ClientGroup.All, new RealmStatus(realm.Tick, realm.Online.Count, DateTime.UtcNow.Ticks));
     }
 }

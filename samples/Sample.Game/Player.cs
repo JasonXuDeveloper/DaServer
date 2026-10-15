@@ -10,42 +10,45 @@ namespace Sample.Game;
 public record struct PlayerState(string Name, long MapId, int Logins, SessionRef Session) : IComponent;
 
 /// <summary>The player: its own state, and which map it is in. The map simulates the avatar.</summary>
-public sealed class Player : Actor<PlayerState>, IPlayer
+public sealed class Player : Actor<PlayerState>
 {
     public override ValueTask OnLoad()
     {
-        // Load from storage here (await is fine: messages wait until activation completes).
+        // Load from storage here (await is fine: messages wait until loading completes).
         State.Name = "player-" + Key;
         return default;
     }
 
     [Handle]
-    public ValueTask On(PlayerLoggedIn e)
+    public async ValueTask<bool> On(Attach m)
     {
-        State.Logins++;
-        State.Session = e.Session;
-        Cluster.Realm(IRealm.Id).PlayerOnline(Key);
-        return default;
+        await BindSession(m.Session); // the client's GetInfo/EnterMap reach this player from now on
+        State.Logins++;               // State is re-read after awaiting (never hold the ref across await)
+        State.Session = m.Session;
+        Cluster.Send(Keys.Realm, new PlayerOnline(Key));
+        return true;
     }
 
     [Handle]
-    public ValueTask On(SessionClosed e)
+    public void On(SessionClosed _)
     {
         // The map got its own SessionClosed (the session was bound to it too) and removed the avatar.
         State.Session = default;
         State.MapId = 0;
-        Cluster.Realm(IRealm.Id).PlayerOffline(Key);
-        return default;
+        Cluster.Send(Keys.Realm, new PlayerOffline(Key));
     }
 
-    public ValueTask<PlayerInfo> GetInfo() => new(new PlayerInfo(Key, State.Name, State.MapId, State.Logins));
+    [Handle]
+    public PlayerInfo On(GetInfo _) => new(Key, State.Name, State.MapId, State.Logins);
 
-    public async ValueTask EnterMap(long mapId)
+    [Handle]
+    public async ValueTask<bool> On(EnterMap m)
     {
         long previous = State.MapId;
-        if (previous == mapId) return;
-        if (previous != 0) await Cluster.Map(previous).Leave(CallerSession);
-        await Cluster.Map(mapId).Enter(Key, CallerSession); // CallerSession holds for the whole turn
-        State.MapId = mapId;             // State is re-read after awaiting (never hold the ref across await)
+        if (previous == m.MapId) return true;
+        if (previous != 0) await Cluster.Ask(previous, new Leave(CallerSession));
+        await Cluster.Ask(m.MapId, new Enter(Key, CallerSession)); // CallerSession holds for the whole turn
+        State.MapId = m.MapId;
+        return true;
     }
 }

@@ -14,7 +14,7 @@ using Nino.Core;
 
 namespace DaServer.Cluster;
 
-/// <summary>Control operations carried in <see cref="FrameKind.Control"/> frames (MethodId field).</summary>
+/// <summary>Control operations carried in <see cref="FrameKind.Control"/> frames (MessageId field).</summary>
 internal static class ControlOp
 {
     /// <summary>Push gossip: payload = the sender's table as <see cref="Pulse"/>s; answered with <see cref="GossipReply"/>.</summary>
@@ -48,12 +48,13 @@ internal static class ControlOp
     /// <summary>Client to gateway (a request: RequestId set): which gateway should I use? Answer: a <see cref="GatewayEndpoint"/>.</summary>
     public const uint PickGateway = 4;
 
-    // Gateway operations: Key = session id, RequestId = contract id (Bind/Unbind), payload = one long value.
+    // Session operations (to the session's gateway): Key = session id, RequestId = call to acknowledge (0: none),
+    // payload = scope (uint: actor implementation id for Bind/Unbind) + value (long: actor key or group id).
 
-    /// <summary>Gateway: bind a session to an actor key of a contract (payload = actor key).</summary>
+    /// <summary>Gateway: bind a session to an actor (scope = implementation id, value = key).</summary>
     public const uint Bind = 10;
 
-    /// <summary>Gateway: remove the session's binding of a contract.</summary>
+    /// <summary>Gateway: remove the session's binding to an actor implementation.</summary>
     public const uint Unbind = 11;
 
     /// <summary>Gateway: add a session to a group (payload = group id).</summary>
@@ -112,7 +113,7 @@ internal sealed class Membership : IDisposable
 
     public void Start(string host, int port)
     {
-        var (services, actors, handlers) = _node.AdvertisedContracts();
+        var handlers = _node.AdvertisedHandlers();
         lock (_gate)
         {
             _self = new ClusterMember
@@ -124,8 +125,6 @@ internal sealed class Membership : IDisposable
                 ClientPort = _node.ClientPort,
                 ClientHost = _node.Options.ClientAdvertisedHost ?? host,
                 Balancer = _node.Options.Balancer,
-                Services = services,
-                Actors = actors,
                 Handlers = handlers,
                 Status = MemberStatus.Up,
             };

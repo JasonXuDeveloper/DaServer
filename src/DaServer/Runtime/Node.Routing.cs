@@ -13,8 +13,8 @@ using Nino.Core;
 
 namespace DaServer.Runtime;
 
-// Call routing: proxies -> local shard mailbox or remote link; inbound frames -> shards; responses -> callers.
-public sealed partial class Node : IRpcInvoker, IConnectionHandler
+// Request routing (Ask): local shard or remote link; inbound frames -> shards; responses -> callers.
+public sealed partial class Node : IConnectionHandler
 {
     private const int MaxHops = 3;
 
@@ -23,73 +23,42 @@ public sealed partial class Node : IRpcInvoker, IConnectionHandler
 
     internal IConnectionHandler ClusterHandler => this;
 
-    // ------------------------------------------------------------------ outgoing calls (IRpcInvoker)
-
-    public ValueTask<T> Call<T>(FrameWriter request, uint methodId, RpcTargetKind kind, long key)
-    {
-        var call = PendingCall<T>.Rent(Shard.Current);
-        var task = call.Task;
-        Route(request, methodId, kind, key, call, null, 0);
-        return task;
-    }
-
-    public ValueTask CallVoid(FrameWriter request, uint methodId, RpcTargetKind kind, long key)
-    {
-        var call = PendingCall.Rent(Shard.Current);
-        var task = call.Task;
-        Route(request, methodId, kind, key, call, null, 0);
-        return task;
-    }
-
-    public void Send(FrameWriter request, uint methodId, RpcTargetKind kind, long key, ulong gatewayNodeId = 0)
-    {
-        if (kind is RpcTargetKind.Session or RpcTargetKind.Group)
-            SendToClients(request, methodId, kind, key, gatewayNodeId);
-        else
-            Route(request, methodId, kind, key, null, null, 0);
-    }
-
     /// <summary>
-    /// Route a request whose payload is already written. Exactly one of <paramref name="call"/> (local caller) or
-    /// <paramref name="relaySink"/> (forwarding a call made elsewhere, answered to that sink under
-    /// <paramref name="relayRequestId"/>) may be set; neither = one-way. Takes ownership of <paramref name="frame"/>.
+    /// Route a request whose payload is already written to the implementation of the kind handling
+    /// <paramref name="messageId"/>. Exactly one of <paramref name="call"/> (local caller) or <paramref name="relaySink"/>
+    /// (forwarding a request made elsewhere, answered to that sink under <paramref name="relayRequestId"/>) is set.
+    /// Takes ownership of <paramref name="frame"/>.
     /// </summary>
-    internal void Route(FrameWriter frame, uint methodId, RpcTargetKind kind, long key, IPendingCall? call,
+    internal void Request(FrameWriter frame, uint messageId, long key, bool actor, IPendingCall? call,
         IReplySink? relaySink, uint relayRequestId, byte hops = 0, byte flags = 0)
     {
         try
         {
-            if (!RpcRegistry.TryGetMethod(methodId, out var method))
-                throw new RpcException(RpcStatus.UnknownMethod, "Unknown method " + methodId.ToString("x8"));
+            if (!View.TryGetRoute(messageId, actor, out var route, out bool ambiguous))
+                throw ambiguous
+                    ? new RpcException(RpcStatus.Error, Ambiguous(messageId, actor).Message)
+                    : new RpcException(RpcStatus.NotHosted, $"No {(actor ? "actor" : "service")} handles message 0x{messageId:x8}");
 
-            var contract = method.Owner;
-            var target = kind == RpcTargetKind.Actor ? View.ActorOwner(contract.Id, key) : PickServiceNode(contract.Id);
+            var target = View.Target(in route, key, Id, (uint)Interlocked.Increment(ref _roundRobin));
             if (target == null)
-                throw new RpcException(RpcStatus.NotHosted, "No node hosts " + contract);
+                throw new RpcException(RpcStatus.NotHosted, $"No node handles message 0x{messageId:x8}");
 
             bool local = target.NodeId == Id;
             PeerLink? link = local ? null : GetLink(target);
+            call ??= RelayCall.Rent(relaySink!, relayRequestId);
 
-            if (relaySink != null && relayRequestId != 0)
-                call = RelayCall.Rent(relaySink, relayRequestId);
-
-            uint requestId = 0;
-            var budget = RpcStatus.Ok;
-            if (call != null)
-            {
-                // The request is worth running until its first caller gives up (a relayed call keeps the deadline it
-                // arrived with); the remaining time travels with it.
-                long now = Environment.TickCount64;
-                if (frame.Deadline == 0) frame.Deadline = now + (long)Options.CallTimeout.TotalMilliseconds;
-                requestId = Pending.Register(call, (int)Math.Max(1, frame.Deadline - now), link);
-                budget = FrameHeader.EncodeBudget(frame.Deadline - now);
-            }
-
-            frame.SetHeader(call != null ? FrameKind.Request : FrameKind.OneWay, requestId, methodId, key, budget, flags, hops);
+            // The request is worth running until its first caller gives up (a relayed request keeps the deadline it
+            // arrived with); the remaining time travels with it.
+            long now = Environment.TickCount64;
+            if (frame.Deadline == 0) frame.Deadline = now + (long)Options.CallTimeout.TotalMilliseconds;
+            uint requestId = Pending.Register(call, (int)Math.Max(1, frame.Deadline - now), link);
+            var budget = FrameHeader.EncodeBudget(frame.Deadline - now);
+            if (actor) flags |= FrameFlags.ToActor;
+            frame.SetHeader(FrameKind.Request, requestId, messageId, key, budget, flags, hops);
 
             if (local)
             {
-                DeliverLocal(contract, key, frame, call != null ? _localSink : null);
+                Admit(SelectShard(route.ImplementationId, actor, key), frame, _localSink);
             }
             else
             {
@@ -101,52 +70,38 @@ public sealed partial class Node : IRpcInvoker, IConnectionHandler
         {
             frame.Dispose();
             if (call != null) call.Fail(e);
-            else if (relaySink != null && relayRequestId != 0) ReplyError(relaySink, relayRequestId, e.Status, e.Message);
+            else ReplyError(relaySink!, relayRequestId, e.Status, e.Message);
         }
     }
 
     /// <summary>
-    /// Forward a request a shard received for an actor this node does not own (stale view at the sender).
+    /// Forward a message a shard received for an actor this node does not own (stale view at the sender).
     /// Takes ownership of <paramref name="frame"/>.
     /// </summary>
     internal void Forward(FrameWriter frame, IReplySink? sink)
     {
         var header = FrameHeader.Read(frame.Frame);
-        uint replyId = header.Kind == FrameKind.Request ? header.RequestId : 0;
-        if (header.Hops >= MaxHops)
+        if (header.Kind == FrameKind.Message)
         {
-            frame.Dispose();
-            if (sink != null && replyId != 0) ReplyError(sink, replyId, RpcStatus.NotHosted, "Too many forwarding hops");
+            ForwardMessage(frame);
             return;
         }
 
-        Route(frame, header.MethodId, RpcTargetKind.Actor, header.Key, null, sink, replyId, (byte)(header.Hops + 1), header.Flags);
+        if (header.Hops >= MaxHops)
+        {
+            frame.Dispose();
+            if (sink != null) ReplyError(sink, header.RequestId, RpcStatus.NotHosted, "Too many forwarding hops");
+            return;
+        }
+
+        Request(frame, header.MessageId, header.Key, (header.Flags & FrameFlags.ToActor) != 0, null, sink!, header.RequestId,
+            (byte)(header.Hops + 1), header.Flags);
     }
-
-    private ClusterMember? PickServiceNode(uint contractId)
-    {
-        if (_implementationByContract.ContainsKey(contractId) && Membership.SelfIsUp)
-            return Membership.Self; // prefer local: no network hop
-
-        var nodes = View.ServiceNodes(contractId);
-        if (nodes.Length == 0) return null;
-        return nodes[(int)((uint)Interlocked.Increment(ref _roundRobin) % (uint)nodes.Length)];
-    }
-
-    private void DeliverLocal(RpcContractInfo contract, long key, FrameWriter frame, IReplySink? sink) =>
-        Admit(SelectShard(contract, key), frame, sink);
 
     /// <summary>Hand a call or event to a shard, or refuse it when the shard is full. Takes ownership of <paramref name="frame"/>.</summary>
     internal static void Admit(Shard shard, FrameWriter frame, IReplySink? sink)
     {
         if (!shard.TryAdmit(frame, sink)) ShardDispatch.Overloaded(frame, sink);
-    }
-
-    private Shard SelectShard(RpcContractInfo contract, long key)
-    {
-        bool actor = contract.Kind == RpcContractKind.Actor;
-        uint implementationId = _implementationByContract.TryGetValue(contract.Id, out var impl) ? impl.Id : contract.Id;
-        return SelectShard(implementationId, actor, key);
     }
 
     /// <summary>
@@ -178,11 +133,10 @@ public sealed partial class Node : IRpcInvoker, IConnectionHandler
         switch (header.Kind)
         {
             case FrameKind.Request:
-            case FrameKind.OneWay:
-                OnInboundCall(connection, in header, frame);
+                OnInboundRequest(connection, in header, frame);
                 break;
-            case FrameKind.Event:
-                OnInboundEvent(in header, frame);
+            case FrameKind.Message:
+                OnInboundMessage(in header, frame);
                 break;
             case FrameKind.Response:
                 CompleteCall(header.RequestId, header.Status, frame);
@@ -209,27 +163,21 @@ public sealed partial class Node : IRpcInvoker, IConnectionHandler
             link.OnConnectionClosed(connection, error);
     }
 
-    private void OnInboundCall(Connection connection, in FrameHeader header, ReadOnlySpan<byte> frame)
+    private void OnInboundRequest(Connection connection, in FrameHeader header, ReadOnlySpan<byte> frame)
     {
+        bool actor = (header.Flags & FrameFlags.ToActor) != 0;
+        var impl = RequestHandler(header.MessageId, actor);
         var sink = ConnectionReplySink.For(connection);
-        uint replyId = header.Kind == FrameKind.Request ? header.RequestId : 0;
-        if (!RpcRegistry.TryGetMethod(header.MethodId, out var method))
+        if (impl == null && !actor)
         {
-            if (replyId != 0) ReplyError(sink, replyId, RpcStatus.UnknownMethod, "Unknown method");
-            return;
-        }
-
-        var contract = method.Owner;
-        if (contract.Kind == RpcContractKind.Service && !_implementationByContract.ContainsKey(contract.Id))
-        {
-            if (replyId != 0) ReplyError(sink, replyId, RpcStatus.NotHosted, contract.ToString());
+            ReplyError(sink, header.RequestId, RpcStatus.NotHosted, $"No service handles message 0x{header.MessageId:x8} here");
             return;
         }
 
         // Actors not owned/hosted here are forwarded by the shard (it re-checks ownership on its own thread).
         var copy = FrameWriter.CopyOf(frame);
         copy.Deadline = header.DeadlineOnArrival();
-        Admit(SelectShard(contract, header.Key), copy, sink);
+        Admit(SelectShard(impl?.Id ?? 0, actor, header.Key), copy, sink);
     }
 
     /// <summary>Complete an outgoing call: on the caller's shard when it has one, inline otherwise.</summary>

@@ -7,10 +7,13 @@ namespace DaServer.Protocol;
 /// <summary>Kind of a wire frame.</summary>
 public enum FrameKind : byte
 {
-    /// <summary>Call expecting a <see cref="Response"/> with the same request id.</summary>
+    /// <summary>
+    /// Message expecting a <see cref="Response"/> with the same request id (<c>Ask</c>): message id, key; the handling
+    /// implementation is the receiver's one for (message, <see cref="FrameFlags.ToActor"/>).
+    /// </summary>
     Request = 1,
 
-    /// <summary>Fire-and-forget call (void methods).</summary>
+    /// <summary>Client to gateway: one-way message (the gateway turns it into a <see cref="Message"/>).</summary>
     OneWay = 2,
 
     /// <summary>Reply to a <see cref="Request"/>; <see cref="FrameHeader.Status"/> tells success or error.</summary>
@@ -29,10 +32,10 @@ public enum FrameKind : byte
     Pong = 8,
 
     /// <summary>
-    /// Cluster event for one handling implementation: method id = event id, request id = target implementation id
-    /// (events are one-way, so the correlation field is free), key = event key (0 for unkeyed events).
+    /// One-way message for one handling implementation (<c>Send</c>, <c>Publish</c>): message id, request id = target
+    /// implementation id (one-way, so the correlation field is free), key = actor key (0 for services).
     /// </summary>
-    Event = 9,
+    Message = 9,
 }
 
 /// <summary>Bits of <see cref="FrameHeader.Flags"/>.</summary>
@@ -40,6 +43,9 @@ public static class FrameFlags
 {
     /// <summary>Payload starts with the serialized <see cref="Rpc.SessionRef"/> of the client that made the call.</summary>
     public const byte HasCaller = 1;
+
+    /// <summary>A <see cref="FrameKind.Request"/> for an actor handler (else for a service handler).</summary>
+    public const byte ToActor = 2;
 }
 
 /// <summary>Status carried by <see cref="FrameKind.Response"/> frames.</summary>
@@ -48,7 +54,7 @@ public enum RpcStatus : byte
     Ok = 0,
     /// <summary>Handler threw; payload = message string.</summary>
     Error = 1,
-    UnknownMethod = 2,
+    UnknownMessage = 2,
     /// <summary>Target actor/service not hosted here (stale membership view); the caller should retry.</summary>
     NotHosted = 3,
     Timeout = 4,
@@ -69,7 +75,7 @@ public enum RpcStatus : byte
 /// 6  byte   Hops       forwarding count (loop guard)
 /// 7  byte   Flags      reserved
 /// 8  uint32 RequestId  correlation id (0 for one-way / push; target implementation id for Event)
-/// 12 uint32 MethodId   globally unique method id (see RpcIds), event id or control op
+/// 12 uint32 MessageId   globally unique method id (see RpcIds), event id or control op
 /// 16 int64  Key        actor key / session id / group id
 /// </code>
 /// </summary>
@@ -86,7 +92,7 @@ public struct FrameHeader
     public byte Hops;
     public byte Flags;
     public uint RequestId;
-    public uint MethodId;
+    public uint MessageId;
     public long Key;
 
     /// <summary>Milliseconds per unit of a request's time budget.</summary>
@@ -119,7 +125,7 @@ public struct FrameHeader
         h.Hops = s[6];
         h.Flags = s[7];
         h.RequestId = BinaryPrimitives.ReadUInt32LittleEndian(s.Slice(8));
-        h.MethodId = BinaryPrimitives.ReadUInt32LittleEndian(s.Slice(12));
+        h.MessageId = BinaryPrimitives.ReadUInt32LittleEndian(s.Slice(12));
         h.Key = BinaryPrimitives.ReadInt64LittleEndian(s.Slice(16));
         return h;
     }
@@ -133,7 +139,7 @@ public struct FrameHeader
         s[6] = Hops;
         s[7] = Flags;
         BinaryPrimitives.WriteUInt32LittleEndian(s.Slice(8), RequestId);
-        BinaryPrimitives.WriteUInt32LittleEndian(s.Slice(12), MethodId);
+        BinaryPrimitives.WriteUInt32LittleEndian(s.Slice(12), MessageId);
         BinaryPrimitives.WriteInt64LittleEndian(s.Slice(16), Key);
     }
 

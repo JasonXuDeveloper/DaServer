@@ -14,27 +14,19 @@ public enum MemberStatus : byte
     Dead = 4,
 }
 
-/// <summary>An actor contract hosted by a node, with the implementation that serves it (placement identity).</summary>
-[NinoType]
-public partial struct HostedActor
-{
-    public uint ContractId;
-    public uint ImplementationId;
-}
-
-/// <summary>A cluster event handled by an implementation hosted on a node (event routing).</summary>
+/// <summary>A message type handled by an implementation hosted on a node (message routing and actor placement).</summary>
 [NinoType]
 public partial struct HostedHandler
 {
-    public uint EventId;
+    public uint MessageId;
     public uint ImplementationId;
 
-    /// <summary>Actor implementation (delivered to the activation of the event key) rather than a service.</summary>
+    /// <summary>Actor implementation (delivered to the activation of the message key) rather than a service.</summary>
     public bool Actor;
 }
 
 /// <summary>
-/// Description of a cluster member: its card (identity, endpoints, hosted contracts: fixed for the node's lifetime, sent
+/// Description of a cluster member: its card (identity, endpoints, handled messages: fixed for the node's lifetime, sent
 /// once to each node that meets it) and its pulse (<see cref="Pulse"/>, gossiped every round). Incarnation and status
 /// changes publish a copy; heartbeat, load and session counts are updated in place, so the view always shows the
 /// latest load hints without being rebuilt (readers may see a hint one round old).
@@ -50,13 +42,7 @@ public partial class ClusterMember
     /// <summary>Client (gateway) port, 0 when the node accepts no game clients.</summary>
     public int ClientPort;
 
-    /// <summary>Stateless service contracts hosted by the node.</summary>
-    public uint[] Services = [];
-
-    /// <summary>Actor implementations (ContractId 0 for an actor that only handles events).</summary>
-    public HostedActor[] Actors = [];
-
-    /// <summary>Cluster events handled by the node's implementations.</summary>
+    /// <summary>Messages handled by the node's implementations.</summary>
     public HostedHandler[] Handlers = [];
 
     /// <summary>Bumped by the node itself to refute suspicion or announce a restart.</summary>

@@ -16,15 +16,9 @@ namespace DaServer.Benchmark;
 [MemoryDiagnoser]
 public class ScenarioBenchmark
 {
-    private sealed class Receiver(Countdown countdown) : IRoomClient
-    {
-        public void OnTick(int sequence) => countdown.Signal();
-    }
-
     private readonly Countdown _countdown = new();
     private Node[] _nodes = null!;
     private ClusterClient[] _clients = null!;
-    private RoomClientProxy _everyone;
     private int _sequence;
 
     [Params(3_000, 9_000)] public int Clients;
@@ -41,10 +35,8 @@ public class ScenarioBenchmark
         {
             var client = _clients[i] = new ClusterClient();
             await client.ConnectAsync("127.0.0.1", _nodes[i % 3].ClientPort, followBalancer: false);
-            client.Register<IRoomClient>(receiver);
+            client.Register(receiver);
         }
-
-        _everyone = _nodes[3].RoomClient(ClientGroup.All); // sent from the game node, like the realm system
     }
 
     [GlobalCleanup]
@@ -58,7 +50,7 @@ public class ScenarioBenchmark
     public Task BroadcastToEveryone()
     {
         var delivered = _countdown.Reset(Clients);
-        _everyone.OnTick(++_sequence);
+        _nodes[3].Send(ClientGroup.All, new Tick(++_sequence)); // from the game node, like the realm system
         return delivered;
     }
 }

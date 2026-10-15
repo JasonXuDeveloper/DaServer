@@ -20,66 +20,38 @@ internal static class ShardDispatch
     internal static readonly int SessionRefSize = NinoSerializer.Serialize(default(SessionRef)).Length;
 
     /// <summary>
-    /// Route a received frame (call or event): services run immediately; actor messages go to the owner's mailbox
-    /// (activating it on first use) or are forwarded when another node owns the key. Takes ownership of
+    /// Route a received message (one-way or request): services run immediately; actor messages go to the owner's
+    /// mailbox (activating it on first use) or are forwarded when another node owns the key. Takes ownership of
     /// <paramref name="frame"/>.
     /// </summary>
     public static void Route(World world, FrameWriter frame, IReplySink? sink)
     {
         var node = world.Shard().Node;
         var header = FrameHeader.Read(frame.Frame);
-        if (header.Kind == FrameKind.Event)
+        bool request = header.Kind == FrameKind.Request;
+        var impl = request
+            ? node.RequestHandler(header.MessageId, (header.Flags & FrameFlags.ToActor) != 0)
+            : node.ImplementationById(header.RequestId);
+        var handler = impl?.Handlers.Of(header.MessageId);
+        if (handler == null)
         {
-            RouteEvent(world, node, frame, in header);
+            // Not hosted here (stale view at the sender): an actor message finds its owner, a service request fails.
+            if (request && (header.Flags & FrameFlags.ToActor) == 0)
+                Reject(frame, sink, header.RequestId, RpcStatus.NotHosted, "No service handles the message here");
+            else
+                node.Forward(frame, sink);
             return;
         }
 
-        uint requestId = header.Kind == FrameKind.Request ? header.RequestId : 0;
-        if (!RpcRegistry.TryGetMethod(header.MethodId, out var method))
-        {
-            Reject(frame, sink, requestId, RpcStatus.UnknownMethod, "Unknown method");
-            return;
-        }
-
-        var contract = method.Owner;
-        var impl = node.ImplementationOf(contract);
-        if (impl is { Kind: RpcContractKind.Actor } && TryGetActivation(world, impl.Id, header.Key, out var existing))
-        {
+        if (!impl!.IsActor)
+            Track(world, Invoke(handler.Dispatcher, ServiceOf(world, impl), frame, sink, world.Logger()));
+        else if (TryGetActivation(world, impl.Id, header.Key, out var existing))
             Deliver(world, existing, new Envelope(frame, sink)); // even while deactivating: its mail moves in order
-            return;
-        }
-
-        if (contract.Kind == RpcContractKind.Actor && !OwnsHere(world, node, contract, header.Key))
-        {
+        else if (!OwnsHere(world, node, impl.Id, header.Key))
             node.Forward(frame, sink);
-            return;
-        }
-
-        if (impl == null)
-            Reject(frame, sink, requestId, RpcStatus.NotHosted, contract.ToString());
-        else if (impl.Kind == RpcContractKind.Actor)
+        else
             Deliver(world, ActorOf(world, impl, header.Key), new Envelope(frame, sink));
-        else
-            Track(world, Invoke(contract.Dispatcher, ServiceOf(world, impl), frame, sink, world.Logger()));
     }
-
-    /// <summary>An event for one implementation: the service instance, or the activation of the event key.</summary>
-    private static void RouteEvent(World world, Node node, FrameWriter frame, in FrameHeader header)
-    {
-        var impl = node.ImplementationById(header.RequestId);
-        var handler = impl?.HandlerOf(header.MethodId);
-        if (handler != null && impl!.Kind == RpcContractKind.Actor && TryGetActivation(world, impl.Id, header.Key, out var existing))
-            Deliver(world, existing, new Envelope(frame, null));
-        else if (handler == null || (impl!.Kind == RpcContractKind.Actor && !OwnsHere(world, node, impl.Id, header.Key)))
-            node.ForwardEvent(frame);
-        else if (impl.Kind == RpcContractKind.Actor)
-            Deliver(world, ActorOf(world, impl, header.Key), new Envelope(frame, null));
-        else
-            Track(world, Invoke(handler.Dispatcher, ServiceOf(world, impl), frame, null, world.Logger()));
-    }
-
-    private static bool OwnsHere(World world, Node node, RpcContractInfo contract, long key) =>
-        node.Placement.IsLocalOwner(contract, key) && !world.GetSingleton<ShardActivity>().Stopping;
 
     private static bool OwnsHere(World world, Node node, uint implementationId, long key) =>
         node.Placement.IsLocalOwner(implementationId, key) && !world.GetSingleton<ShardActivity>().Stopping;
@@ -174,11 +146,11 @@ internal static class ShardDispatch
     }
 
     /// <summary>
-    /// Deserialize and invoke a call or event on <paramref name="target"/> through a generated dispatcher. Returns the
+    /// Deserialize and invoke a message on <paramref name="target"/> through a generated dispatcher. Returns the
     /// handler's task (default when it completed synchronously). A synchronous failure is replied to the caller, or
     /// logged when nobody waits for a reply (one-way call, event). Disposes <paramref name="frame"/>.
     /// </summary>
-    public static System.Threading.Tasks.ValueTask Invoke(RpcDispatcher dispatcher, object target, FrameWriter frame,
+    public static System.Threading.Tasks.ValueTask Invoke(MessageDispatcher dispatcher, object target, FrameWriter frame,
         IReplySink? sink, ILogger logger)
     {
         try
@@ -200,12 +172,12 @@ internal static class ShardDispatch
                 payload = payload.Slice(SessionRefSize);
             }
 
-            var context = new CallContext(sink, requestId, header.MethodId, header.Key, caller);
+            var context = new CallContext(sink, requestId, header.MessageId, header.Key, caller);
             var previous = CallContext.Enter(in context);
             try
             {
                 var reader = new Reader(payload);
-                var task = dispatcher(target, header.MethodId, ref reader, in context);
+                var task = dispatcher(target, ref reader, in context);
                 if (!task.IsCompleted) return task;
                 task.GetAwaiter().GetResult();
                 return default;
@@ -232,35 +204,25 @@ internal static class ShardDispatch
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static void LogUnobserved(ILogger logger, Exception e, object target, in FrameHeader header) =>
-        logger.LogError(e, "{Kind} {Id:x8} failed in {Target}", header.Kind, header.MethodId, target);
+        logger.LogError(e, "{Kind} {Id:x8} failed in {Target}", header.Kind, header.MessageId, target);
 
     /// <summary>
-    /// Invoke the next message of an actor: a call (dispatcher of its contract) or an event (of its handler). Records
-    /// the client session of a gateway-relayed call (see <see cref="ClientSessions"/>) and forgets a closed one.
+    /// Invoke the next message of an actor. Records the client session of a gateway-relayed message (see
+    /// <see cref="ClientSessions"/>) and forgets a closed one.
     /// </summary>
     public static System.Threading.Tasks.ValueTask Invoke(Actor actor, in Envelope envelope)
     {
         var header = FrameHeader.Read(envelope.Frame.Frame);
-        RpcDispatcher dispatcher;
         actor.TurnCaller = default;
-        if (header.Kind == FrameKind.Event)
+        if (header.MessageId == MessageType<SessionClosed>.Id) ForgetSession(actor, envelope.Frame.Payload);
+        else if ((header.Flags & FrameFlags.HasCaller) != 0)
         {
-            if (header.MethodId == EventType<SessionClosed>.Id) ForgetSession(actor, envelope.Frame.Payload);
-            dispatcher = actor.Implementation.HandlerOf(header.MethodId)!.Dispatcher; // validated by RouteEvent
-        }
-        else
-        {
-            if ((header.Flags & FrameFlags.HasCaller) != 0)
-            {
-                var reader = new Reader(envelope.Frame.Payload);
-                NinoDeserializer.Deserialize(out actor.TurnCaller, ref reader);
-                RecordSession(actor.Entity, actor.TurnCaller);
-            }
-
-            RpcRegistry.TryGetMethod(header.MethodId, out var method); // validated by Route
-            dispatcher = method.Owner.Dispatcher;
+            var reader = new Reader(envelope.Frame.Payload);
+            NinoDeserializer.Deserialize(out actor.TurnCaller, ref reader);
+            RecordSession(actor.Entity, actor.TurnCaller);
         }
 
+        var dispatcher = actor.Implementation.Handlers.Of(header.MessageId)!.Dispatcher; // validated by Route
         return Invoke(dispatcher, actor, envelope.Frame, envelope.Sink, actor.Shard.Node.Logger);
     }
 
@@ -281,15 +243,6 @@ internal static class ShardDispatch
     }
 
     /// <summary>
-    /// Bind called on the shard of the bound activation (an actor binding a client to itself): remember the session
-    /// now, so it is closed for the actor even if the client never calls it before its gateway dies.
-    /// </summary>
-    internal static void RecordBinding(World world, uint implementationId, long key, SessionRef session)
-    {
-        if (TryGetActivation(world, implementationId, key, out var actor)) RecordSession(actor, session);
-    }
-
-    /// <summary>
     /// A gateway died without closing its sessions: every activation of this shard that knew one of them receives
     /// <see cref="SessionClosed"/> (when it handles it), as if the gateway had closed the session.
     /// </summary>
@@ -305,15 +258,13 @@ internal static class ShardDispatch
             if (lost == null || lost.Count == 0) continue;
 
             var actor = item.Component2.Actor;
-            var handler = actor.Implementation.HandlerOf(EventType<SessionClosed>.Id);
+            bool handles = actor.Implementation.Handlers.Of(MessageType<SessionClosed>.Id) != null;
             foreach (var session in lost)
             {
                 sessions.Remove(session);
-                if (handler == null) continue;
-                var w = FrameWriter.Rent();
-                var nino = w.Nino;
-                NinoSerializer.Serialize(new SessionClosed(session, actor.Key), ref nino);
-                w.SetHeader(FrameKind.Event, actor.Implementation.Id, EventType<SessionClosed>.Id, actor.Key);
+                if (!handles) continue;
+                var w = MessageWriter.Write(new SessionClosed(session));
+                w.SetHeader(FrameKind.Message, actor.Implementation.Id, MessageType<SessionClosed>.Id, actor.Key);
                 Deliver(world, item.Entity, new Envelope(w, null));
             }
         }

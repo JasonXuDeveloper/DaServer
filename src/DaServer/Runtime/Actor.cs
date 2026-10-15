@@ -6,9 +6,11 @@ using EasyEcs;
 namespace DaServer.Runtime;
 
 /// <summary>
-/// Base class of stateful actor implementations (<see cref="IActor"/> contracts). An activation is an entity of its
-/// shard's ECS world: keep state in components on <see cref="Entity"/> so shard systems can process every actor of
-/// the shard in one pass. Calls run on the shard thread one at a time between awaits (no locks).
+/// Base class of stateful, keyed actors: one activation per key in the cluster, placed by rendezvous hashing over the
+/// nodes hosting the type, loaded on demand, one message at a time. Messages arrive at its [Handle] methods
+/// (<c>Cluster.Send(key, msg)</c>, <c>Cluster.Ask(key, request)</c>). An activation is an entity of its shard's ECS
+/// world: keep state in components on <see cref="Entity"/> so shard systems can process every actor of the shard in one
+/// pass. Messages run on the shard thread one at a time, awaits included (no locks).
 /// </summary>
 /// <remarks>Refs into components are valid until the next structural change: never keep one across an <c>await</c>.</remarks>
 public abstract class Actor : ShardObject
@@ -17,10 +19,25 @@ public abstract class Actor : ShardObject
     public long Key { get; internal set; }
 
     /// <summary>
-    /// The activation's client group: sessions that joined it (<c>Cluster.JoinGroup(session, Group)</c>) receive pushes
-    /// sent to it (<c>Cluster.PlayerClient(Group).OnMoved(..)</c>). Distinct per implementation and key.
+    /// The activation's client group: sessions bound to it (<see cref="BindSession"/>) or that joined it receive
+    /// messages sent to it (<c>Cluster.Send(Group, new Moved(..))</c>). Distinct per actor type and key.
     /// </summary>
     public ClientGroup Group => ClientGroup.Of(Implementation.Id, Key);
+
+    /// <summary>
+    /// Bind a client session to this actor: the client's messages handled by this actor type reach this key (the
+    /// client cannot choose another one), the session joins <see cref="Group"/>, and the actor receives
+    /// <see cref="SessionClosed"/> when the session ends. Completes once the session's gateway applied it, so the
+    /// client's next message already arrives here. A session has at most one key per actor type.
+    /// </summary>
+    protected ValueTask BindSession(SessionRef session)
+    {
+        ShardDispatch.RecordSession(Entity, session);
+        return Shard.Node.BindSession(session, Implementation.Id, Key, bind: true);
+    }
+
+    /// <summary>Remove the session's binding to this actor type (it also leaves <see cref="Group"/>).</summary>
+    protected ValueTask UnbindSession(SessionRef session) => Shard.Node.BindSession(session, Implementation.Id, Key, bind: false);
 
     internal ImplementationInfo Implementation { get; set; } = null!;
 

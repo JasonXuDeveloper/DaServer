@@ -19,6 +19,7 @@ public class GeneratorTests
         using System.Threading.Tasks;
         using DaServer.Rpc;
         using DaServer.Runtime;
+        using Nino.Core;
 
         """;
 
@@ -40,7 +41,7 @@ public class GeneratorTests
     private static SyntaxTree Parse(string source) => CSharpSyntaxTree.ParseText(Usings + source, ParseOptions);
 
     private static GeneratorDriver Driver() => CSharpGeneratorDriver.Create(
-        [new ContractGenerator().AsSourceGenerator(), new HostGenerator().AsSourceGenerator()], parseOptions: ParseOptions,
+        [new MessageGenerator().AsSourceGenerator(), new HostGenerator().AsSourceGenerator()], parseOptions: ParseOptions,
         driverOptions: new GeneratorDriverOptions(IncrementalGeneratorOutputKind.None, trackIncrementalGeneratorSteps: true));
 
     /// <summary>Generated sources and every error or DASxxx diagnostic (generator, compiler and analyzer).</summary>
@@ -55,60 +56,58 @@ public class GeneratorTests
     }
 
     [Test]
-    public async Task ValidContractsAndImplementationsCompile()
+    public async Task ValidMessagesAndHandlersCompile()
     {
         var (sources, diagnostics) = await Run("""
             namespace Game;
-            [Service] public interface IShop { ValueTask<int> Price(string item, int count); void Log(string s); ValueTask Clear(); }
-            [Actor, FromClient(AnyKey = true)] public interface IRoom { ValueTask<string?> Topic(); }
-            [Actor] public interface IHero { [FromClient] void Move(float x, float y); ValueTask Heal(int hp); }
-            [Nino.Core.NinoType] public readonly partial record struct Opened([property: ActorKey] long Room);
-            [ToClient] public interface IRoomClient { void OnTopic(string topic); }
-            public sealed class Shop : Service, IShop
+            [NinoType] public partial record struct Price(string Item, int Count) : IRequest<int>;
+            [NinoType] public partial record struct Restock(string Item);
+            [NinoType, ClientMessage] public partial record struct Move(float X, float Y);
+            [NinoType, ClientMessage(AnyKey = true)] public partial record struct Topic : IRequest<string?>;
+            [NinoType] public partial record struct Heal(int Hp) : IRequest<int>;
+            [NinoType] public partial record struct Opened;
+            public sealed class Shop : Service
             {
-                public ValueTask<int> Price(string item, int count) => new(count);
-                public void Log(string s) { }
-                public ValueTask Clear() => default;
+                [Handle] public int On(Price m) => m.Count;
+                [Handle] public ValueTask On(Restock m) => default;
             }
-            public sealed class Room : Actor, IRoom
+            public sealed class Room : Actor
             {
-                public ValueTask<string?> Topic() => new((string?)null);
-                [Handle] public void On(Opened e) { }
+                [Handle] public string? On(Topic _) => null;
+                [Handle] public void On(Opened _) { }
             }
-            public sealed class Hero : Actor, IHero { public void Move(float x, float y) { } public ValueTask Heal(int hp) => default; }
+            public sealed class Hero : Actor
+            {
+                [Handle] public void On(Move m) { }
+                [Handle] public ValueTask<int> On(Heal m) => new(m.Hp);
+            }
+            public sealed class Screen { [Handle] public void On(Opened _) { } }
             """);
         Assert.That(diagnostics, Is.Empty);
-        Assert.That(sources.Single(s => s.Contains("RegisterImplementation")),
-            Does.Contain("typeof(global::Game.Room)").And.Contain("EventHandlerInfo.Of<global::Game.Opened>(").And.Contain(".On(e)"));
-        Assert.That(sources, Has.Some.Contains("long global::DaServer.Rpc.IKeyed.EventKey => Room;"), "generated event key");
-        Assert.That(sources, Has.Some.Contains("ClientRoute.AnyKey"));
-        Assert.That(sources, Has.Some.Contains("new RpcMethodInfo(MoveId, \"Move\", true, ClientRoute.BoundKey)"));
-        Assert.That(sources, Has.Some.Contains("new RpcMethodInfo(HealId, \"Heal\", false, ClientRoute.None)"), "per-method access");
-        Assert.That(sources, Has.Some.Contains("Hero(this DaServer.Client.ClusterClient client)"), "keyless client accessor");
-        Assert.That(sources, Has.Some.Contains("public readonly struct ShopProxy : global::Game.IShop"));
-        Assert.That(sources, Has.Some.Contains("RoomClient(this IRpcInvoker cluster, ClientGroup group)"));
+        string registration = sources.Single(s => s.Contains("RegisterImplementation"));
+        Assert.That(registration, Does.Contain("typeof(global::Game.Room), true").And.Contain("typeof(global::Game.Shop), false"));
+        Assert.That(registration, Does.Contain("context.ReplyValue(Unsafe.As<global::Game.Shop>(target).On(m))"), "a reply returned synchronously");
+        Assert.That(registration, Does.Contain("return context.Reply(Unsafe.As<global::Game.Hero>(target).On(m))"), "a reply returned later");
+        Assert.That(registration, Does.Contain("MessageRegistry.RegisterHandlers(typeof(global::Game.Screen)"), "client handler type");
+        Assert.That(sources, Has.Some.Contains("Ask(this global::DaServer.Rpc.IMessageSender sender, long key, in global::Game.Heal request)"));
+        Assert.That(sources, Has.Some.Contains("sender.Ask<global::Game.Topic, string?>(in request)"));
+        Assert.That(sources, Has.Some.Contains("RegisterClientMessage<global::Game.Move>(anyKey: false)")
+            .And.Some.Contains("RegisterClientMessage<global::Game.Topic>(anyKey: true)"));
     }
 
-    [TestCase("[Service] public interface IBad { Task<int> A(); }", "DAS001")]
-    [TestCase("[Service] public interface IBad { ValueTask A(ref int x); }", "DAS002")]
-    [TestCase("[Service] public interface IBad { ValueTask A<T>(); }", "DAS003")]
-    [TestCase("[ToClient] public interface IBad { ValueTask A(); }", "DAS004")]
-    [TestCase("[Service] public interface IBad { [WireId(5)] ValueTask A(); [WireId(5)] ValueTask B(); }", "DAS005")]
-    [TestCase("[Actor] public interface IA { ValueTask A(); } public sealed class Bad : IA { public ValueTask A() => default; }", "DAS006")]
-    [TestCase("[Service] public interface IS { ValueTask A(); } public sealed class Bad : Service, IS { public Bad(int x) { } public ValueTask A() => default; }", "DAS007")]
-    [TestCase("[Service] public interface IBad { int P { get; } }", "DAS008")]
-    [TestCase("public struct Data { } [Service] public interface IBad { ValueTask A(Data d); }", "DAS009")]
-    [TestCase("public struct Data { } [Service] public interface IBad { ValueTask<Data[]> A(); }", "DAS009")]
-    [TestCase("public struct Happened { } public sealed class Bad : Service { [Handle] public void On(Happened e) { } }", "DAS009")]
-    [TestCase("[Nino.Core.NinoType] public partial record struct Tick(int N); public sealed class Bad : Actor { [Handle] public void On(Tick e) { } }", "DAS010")]
-    [TestCase("[Actor] public interface IA { } [Service] public interface IS { } public sealed class Bad : Actor, IA, IS { }", "DAS011")]
-    [TestCase("[Service, Actor] public interface IBad { ValueTask A(); }", "DAS012")]
-    [TestCase("[ToClient] public interface IBad { [FromClient] void A(); }", "DAS012")]
-    [TestCase("[Service] public interface IBad { [FromClient(AnyKey = true)] ValueTask A(); }", "DAS012")]
-    [TestCase("[Nino.Core.NinoType] public partial record struct Tick(int N); public sealed class Bad : Service { [Handle] public int On(Tick e) => 0; }", "DAS013")]
-    [TestCase("[Nino.Core.NinoType] public partial record struct Tick(int N); public sealed class Bad : Service { [Handle] void On(Tick e) { } }", "DAS013")]
-    [TestCase("[Nino.Core.NinoType] public record struct Tick([property: ActorKey] string Id);", "DAS014")]
-    [TestCase("[Nino.Core.NinoType] public record struct Tick([property: ActorKey] long Id);", "DAS014")]
+    [TestCase("[NinoType] public partial record struct Tick(int N); public sealed class Bad : Service { [Handle] void On(Tick e) { } }", "DAS001")]
+    [TestCase("[NinoType] public partial record struct Tick(int N); public sealed class Bad : Service { [Handle] public void On(ref Tick e) { } }", "DAS001")]
+    [TestCase("[NinoType] public partial record struct Tick(int N); public sealed class Bad : Service { [Handle] public int On(Tick e) => 0; }", "DAS001")]
+    [TestCase("[NinoType] public partial record struct Ask : IRequest<int>; public sealed class Bad : Service { [Handle] public void On(Ask e) { } }", "DAS001")]
+    [TestCase("[NinoType] public partial record struct Ask : IRequest<int>; public sealed class Bad : Service { [Handle] public ValueTask<long> On(Ask e) => default; }", "DAS001")]
+    [TestCase("[NinoType] public partial record struct Tick(int N); public sealed class Bad : Service { [Handle] public void A(Tick e) { } [Handle] public void B(Tick e) { } }", "DAS001")]
+    [TestCase("public struct Tick { } public sealed class Bad : Service { [Handle] public void On(Tick e) { } }", "DAS002")]
+    [TestCase("[NinoType] public partial class Tick { } public sealed class Bad : Service { [Handle] public void On(Tick e) { } }", "DAS002")]
+    [TestCase("[ClientMessage] public struct Bad { }", "DAS002")]
+    [TestCase("public struct Bad : IRequest<int> { }", "DAS002")]
+    [TestCase("public struct Data { } [NinoType] public partial record struct Bad : IRequest<Data>;", "DAS003")]
+    [TestCase("[NinoType, WireId(5)] public partial record struct A; [NinoType, WireId(5)] public partial record struct B;", "DAS004")]
+    [TestCase("[NinoType] public partial record struct Tick; public sealed class Bad : Service { public Bad(int x) { } [Handle] public void On(Tick e) { } }", "DAS005")]
     public async Task MisuseIsReportedByTheAnalyzer(string source, string id)
     {
         var (_, diagnostics) = await Run(source);
@@ -118,7 +117,7 @@ public class GeneratorTests
     [Test]
     public void NodeExecutablesGetAnEntryPointUnlessTheyWriteOne()
     {
-        const string node = "[Service] public interface IShop { ValueTask<int> Price(int n); } public sealed class Shop : Service, IShop { public ValueTask<int> Price(int n) => new(n); }";
+        const string node = "[NinoType] public partial record struct Price(int N) : IRequest<int>; public sealed class Shop : Service { [Handle] public int On(Price m) => m.N; }";
         Driver().RunGeneratorsAndUpdateCompilation(Compile(OutputKind.ConsoleApplication, Parse(node)), out var generated, out _);
         Assert.That(generated.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error), Is.Empty);
         Assert.That(generated.GetEntryPoint(default)?.ContainingType.ToDisplayString(), Is.EqualTo("DaServer.Generated.NodeProgram"));
@@ -134,16 +133,16 @@ public class GeneratorTests
     [Test]
     public void UnrelatedEditsHitTheCache()
     {
-        var contracts = Parse("[Service] public interface IShop { ValueTask<int> Price(int n); } public sealed class Shop : Service, IShop { public ValueTask<int> Price(int n) => new(n); }");
+        var messages = Parse("[NinoType, ClientMessage] public partial record struct Price(int N) : IRequest<int>; public sealed class Shop : Service { [Handle] public int On(Price m) => m.N; }");
         var other = Parse("public class Unrelated { }");
-        var compilation = Compile(contracts, other);
+        var compilation = Compile(messages, other);
         var driver = Driver().RunGenerators(compilation);
         driver = driver.RunGenerators(compilation.ReplaceSyntaxTree(other, Parse("public class Unrelated { int x; }")));
 
         foreach (var result in driver.GetRunResult().Results)
         foreach (var (name, steps) in result.TrackedSteps)
         {
-            if (name is not ("Contracts" or "HostedTypes" or "UserEntryPoint")) continue;
+            if (name is not ("Requests" or "ClientMessages" or "HostedTypes" or "UserEntryPoint")) continue;
             Assert.That(steps.SelectMany(s => s.Outputs).Select(o => o.Reason),
                 Is.All.AnyOf(IncrementalStepRunReason.Cached, IncrementalStepRunReason.Unchanged), name);
         }

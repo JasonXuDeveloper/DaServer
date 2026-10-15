@@ -19,22 +19,23 @@ public abstract class ShardObject
     public World World => Shard.World;
 
     /// <summary>
-    /// The cluster: generated proxies hang off it (<c>Cluster.Player(id).AddGold(10)</c>,
-    /// <c>Cluster.PlayerClient(session).OnChat(..)</c>), plus session binding and groups.
+    /// The cluster: messages (<c>Cluster.Send(mapId, new Move(..))</c>, <c>await Cluster.Ask(id, new GetInfo())</c>),
+    /// events, pushes to clients and client groups.
     /// </summary>
     public ICluster Cluster => Shard.Node;
 
     protected ILogger Logger => Shard.Node.Logger;
 
     /// <summary>
-    /// The client session that made the current call (invalid for server-to-server calls and events). In an actor it
+    /// The client session that sent the current message (invalid for messages from servers). In an actor it
     /// holds for the whole turn, awaits included; in a service (whose calls may overlap) until the first <c>await</c>.
     /// </summary>
     protected SessionRef CallerSession => this is Actor actor ? actor.TurnCaller : CallContext.Current.CallerSession;
 }
 
 /// <summary>
-/// Base class of stateless service implementations (<see cref="IService"/> contracts). One instance per shard; a
-/// call runs on the shard that received it, so services may cache per-shard data without locks.
+/// Base class of stateless services: messages arrive at its [Handle] methods (<c>Cluster.Send(msg)</c>,
+/// <c>Cluster.Ask(request)</c>) on any node hosting it (the local node first). One instance per shard; a message runs
+/// on the shard that received it, so services may cache per-shard data without locks.
 /// </summary>
 public abstract class Service : ShardObject;

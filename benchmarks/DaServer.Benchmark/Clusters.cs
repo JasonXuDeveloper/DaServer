@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using DaServer.Rpc;
 using DaServer.Runtime;
 
 namespace DaServer.Benchmark;
@@ -35,6 +36,15 @@ internal static class Clusters
         }
 
         return started;
+    }
+
+    /// <summary>First key from <paramref name="start"/> whose <typeparamref name="TActor"/> lives on <paramref name="owner"/> in <paramref name="node"/>'s view.</summary>
+    public static long KeyOwnedBy<TActor>(Node node, Node owner, long start = 1) where TActor : Actor
+    {
+        uint implementation = RpcIds.Fnv1a(typeof(TActor).FullName!);
+        long key = start;
+        while (node.View.ImplementationOwner(implementation, key)!.NodeId != owner.Id) key++;
+        return key;
     }
 
     public static async Task Stop(IEnumerable<Node> nodes)

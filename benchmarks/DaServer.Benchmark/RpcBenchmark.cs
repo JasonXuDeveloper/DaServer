@@ -19,7 +19,7 @@ public class RpcBenchmark
     }
 
     private Node[] _nodes = null!;
-    private CounterProxy[] _proxies = null!;
+    private long[] _keys = null!;
     private ValueTask<int>[] _calls = null!;
 
     [Params(1, 64, 1024)] public int Concurrency;
@@ -34,13 +34,12 @@ public class RpcBenchmark
         var owner = Placement == Target.Local ? _nodes[0] : _nodes[1];
 
         // One actor per outstanding call, all owned by the target node, spread over its shards.
-        _proxies = new CounterProxy[Concurrency];
+        _keys = new long[Concurrency];
         long key = 0;
         for (int i = 0; i < Concurrency; i++)
         {
-            do key++; while (caller.View.ActorOwner(CounterRpc.ContractId, key)!.NodeId != owner.Id);
-            _proxies[i] = caller.Counter(key);
-            _proxies[i].Add(0).AsTask().GetAwaiter().GetResult(); // activate
+            _keys[i] = key = Clusters.KeyOwnedBy<Counter>(caller, owner, key + 1);
+            caller.Ask(key, new Add(0)).AsTask().GetAwaiter().GetResult(); // activate
         }
 
         _calls = new ValueTask<int>[Concurrency];
@@ -52,7 +51,8 @@ public class RpcBenchmark
     [Benchmark]
     public async Task Calls()
     {
-        for (int i = 0; i < _calls.Length; i++) _calls[i] = _proxies[i].Add(1);
+        var caller = _nodes[0];
+        for (int i = 0; i < _calls.Length; i++) _calls[i] = caller.Ask(_keys[i], new Add(1));
         for (int i = 0; i < _calls.Length; i++) await _calls[i];
     }
 }

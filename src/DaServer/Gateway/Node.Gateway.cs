@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Net;
 using System.Threading;
+using System.Threading.Tasks;
 using DaServer.Buffers;
 using DaServer.Cluster;
 using DaServer.Concurrency;
@@ -14,8 +15,8 @@ using Nino.Core;
 
 namespace DaServer.Runtime;
 
-// Gateway capability (NodeOptions.ClientPort): client sessions, routing of client calls into the cluster, push and group broadcast fan-out.
-// Client calls are routed by patching header fields; payloads are never deserialized here.
+// Gateway capability (NodeOptions.ClientPort): client sessions, routing of client messages into the cluster, push and
+// group broadcast fan-out. Client messages are routed by patching header fields; payloads are never deserialized here.
 public sealed partial class Node
 {
     private readonly ConcurrentDictionary<long, Session> _sessions = new();
@@ -58,56 +59,78 @@ public sealed partial class Node
 
     // ------------------------------------------------------------------ ICluster: sessions (any node)
 
-    public void Bind<TActor>(SessionRef session, long key) where TActor : class
+    public void Send<T>(SessionRef session, in T message) where T : struct =>
+        SendToClients(MessageWriter.Write(in message), MessageType<T>.Id, group: false, session.SessionId, session.GatewayNodeId);
+
+    public void Send<T>(ClientGroup group, in T message) where T : struct =>
+        SendToClients(MessageWriter.Write(in message), MessageType<T>.Id, group: true, group.Id, 0);
+
+    public void JoinGroup(SessionRef session, ClientGroup group) => SendSessionControl(session, ControlOp.JoinGroup, 0, group.Id);
+
+    public void LeaveGroup(SessionRef session, ClientGroup group) => SendSessionControl(session, ControlOp.LeaveGroup, 0, group.Id);
+
+    public void Disconnect(SessionRef session) => SendSessionControl(session, ControlOp.Disconnect, 0, 0);
+
+    /// <summary>
+    /// Bind (or unbind) a session to an actor (<see cref="Actor.BindSession"/>): completes once the session's gateway
+    /// applied it, so the client's next message already reaches the actor.
+    /// </summary>
+    internal ValueTask BindSession(SessionRef session, uint implementationId, long key, bool bind)
     {
-        uint contractId = ContractOf<TActor>.Id;
-        SendGatewayControl(session, ControlOp.Bind, contractId, key);
-        if (Shard.Current is { } shard && shard.Node == this && _implementationByContract.TryGetValue(contractId, out var impl))
-            ShardDispatch.RecordBinding(shard.World, impl.Id, key, session);
-    }
-
-    public void Unbind<TActor>(SessionRef session) where TActor : class =>
-        SendGatewayControl(session, ControlOp.Unbind, ContractOf<TActor>.Id, 0);
-
-    public void JoinGroup(SessionRef session, ClientGroup group) => SendGatewayControl(session, ControlOp.JoinGroup, 0, group.Id);
-
-    public void LeaveGroup(SessionRef session, ClientGroup group) => SendGatewayControl(session, ControlOp.LeaveGroup, 0, group.Id);
-
-    public void Disconnect(SessionRef session) => SendGatewayControl(session, ControlOp.Disconnect, 0, 0);
-
-    private void SendGatewayControl(SessionRef session, uint op, uint contractId, long value)
-    {
-        var w = FrameWriter.Rent(64);
-        var nino = w.Nino;
-        NinoSerializer.Serialize(value, ref nino);
-        w.SetHeader(FrameKind.Control, contractId, op, session.SessionId);
+        uint op = bind ? ControlOp.Bind : ControlOp.Unbind;
         if (session.GatewayNodeId == Id)
         {
-            OnGatewayControl(op, session.SessionId, contractId, w.Payload);
-        }
-        else
-        {
-            LinkTo(session.GatewayNodeId)?.Send(w.Frame);
+            var w = SessionControl(op, 0, session.SessionId, implementationId, key);
+            var status = OnSessionControl(op, session.SessionId, w.Payload);
+            w.Dispose();
+            return status == RpcStatus.Ok ? default : ValueTask.FromException(new RpcException(status, "Session is gone"));
         }
 
+        var link = LinkTo(session.GatewayNodeId);
+        if (link == null) return ValueTask.FromException(new RpcException(RpcStatus.Disconnected, "Gateway is gone"));
+        var call = PendingCall.Rent(Shard.Current);
+        var task = call.Task;
+        uint requestId = Pending.Register(call, (int)Options.CallTimeout.TotalMilliseconds, link);
+        var frame = SessionControl(op, requestId, session.SessionId, implementationId, key);
+        link.Send(frame.Frame);
+        frame.Dispose();
+        return task;
+    }
+
+    private void SendSessionControl(SessionRef session, uint op, uint scope, long value)
+    {
+        var w = SessionControl(op, 0, session.SessionId, scope, value);
+        if (session.GatewayNodeId == Id) OnSessionControl(op, session.SessionId, w.Payload);
+        else LinkTo(session.GatewayNodeId)?.Send(w.Frame);
         w.Dispose();
     }
 
-    /// <summary>Push / broadcast from generated client-callback proxies. Takes ownership of <paramref name="frame"/>.</summary>
-    private void SendToClients(FrameWriter frame, uint methodId, RpcTargetKind kind, long key, ulong gatewayNodeId)
+    /// <summary>A session control frame: Key = session id, RequestId = call to acknowledge (0: none), payload = scope + value.</summary>
+    private static FrameWriter SessionControl(uint op, uint requestId, long sessionId, uint scope, long value)
+    {
+        var w = FrameWriter.Rent(64);
+        var nino = w.Nino;
+        NinoSerializer.Serialize(scope, ref nino);
+        NinoSerializer.Serialize(value, ref nino);
+        w.SetHeader(FrameKind.Control, requestId, op, sessionId);
+        return w;
+    }
+
+    /// <summary>Push / broadcast a message to clients. Takes ownership of <paramref name="frame"/>.</summary>
+    private void SendToClients(FrameWriter frame, uint messageId, bool group, long key, ulong gatewayNodeId)
     {
         try
         {
-            if (kind == RpcTargetKind.Session)
+            if (!group)
             {
-                frame.SetHeader(FrameKind.Push, 0, methodId, key);
+                frame.SetHeader(FrameKind.Push, 0, messageId, key);
                 if (gatewayNodeId == Id) DeliverToSession(key, frame.Frame);
                 else LinkTo(gatewayNodeId)?.Send(frame.Frame);
                 return;
             }
 
             // Group broadcast: serialized once, one frame per gateway; each gateway fans out locally.
-            frame.SetHeader(FrameKind.Broadcast, 0, methodId, key);
+            frame.SetHeader(FrameKind.Broadcast, 0, messageId, key);
             foreach (var member in View.UpMembers)
             {
                 if (member.ClientPort == 0 || member.Balancer) continue; // a balancer keeps no sessions
@@ -142,7 +165,7 @@ public sealed partial class Node
 
     private void OnControl(Connection connection, in FrameHeader header, ReadOnlySpan<byte> payload)
     {
-        switch (header.MethodId)
+        switch (header.MessageId)
         {
             case ControlOp.Hello:
                 OnHello(connection, (ulong)header.Key, payload);
@@ -157,41 +180,43 @@ public sealed partial class Node
             case ControlOp.GossipReply:
             case ControlOp.CardRequest:
             case ControlOp.Cards:
-                Membership.OnGossip(connection, header.MethodId, payload);
+                Membership.OnGossip(connection, header.MessageId, payload);
                 break;
             default:
-                OnGatewayControl(header.MethodId, header.Key, header.RequestId, payload);
+                var status = OnSessionControl(header.MessageId, header.Key, payload);
+                if (header.RequestId == 0) break;
+                if (status == RpcStatus.Ok) ConnectionReplySink.For(connection).SendReply(header.RequestId, status, FrameWriter.Rent(FrameHeader.Size));
+                else ReplyError(ConnectionReplySink.For(connection), header.RequestId, status, "Session is gone");
                 break;
         }
     }
 
-    private void OnGatewayControl(uint op, long sessionId, uint contractId, ReadOnlySpan<byte> payload)
+    private RpcStatus OnSessionControl(uint op, long sessionId, ReadOnlySpan<byte> payload)
     {
-        if (!_sessions.TryGetValue(sessionId, out var session)) return;
+        if (!_sessions.TryGetValue(sessionId, out var session)) return RpcStatus.Disconnected;
         var reader = new Reader(payload);
+        NinoDeserializer.Deserialize(out uint scope, ref reader);
         NinoDeserializer.Deserialize(out long value, ref reader);
         switch (op)
         {
             case ControlOp.Bind:
             {
-                // A bound session also joins the activation's group, so Cluster.X(actor.Group) reaches it.
-                long previous = session.KeyOf(contractId);
-                session.Bindings.Set(contractId, new SessionBinding(contractId, value), static (b, c) => b.ContractId == c);
-                if (!View.TryGetActorImplementation(contractId, out uint implementationId)) break;
+                // A bound session also joins the actor's group, so Cluster.Send(actor.Group, ..) reaches it.
+                long previous = session.KeyOf(scope);
+                session.Bindings.Set(scope, new SessionBinding(scope, value), static (b, id) => b.ImplementationId == id);
                 lock (_groupGate)
                 {
-                    if (previous != 0 && previous != value) Leave(session, ClientGroup.Of(implementationId, previous).Id);
-                    Join(session, ClientGroup.Of(implementationId, value).Id);
+                    if (previous != 0 && previous != value) Leave(session, ClientGroup.Of(scope, previous).Id);
+                    Join(session, ClientGroup.Of(scope, value).Id);
                 }
 
                 break;
             }
             case ControlOp.Unbind:
             {
-                long previous = session.KeyOf(contractId);
-                session.Bindings.Remove(contractId, static (b, c) => b.ContractId == c);
-                if (previous != 0 && View.TryGetActorImplementation(contractId, out uint implementationId))
-                    lock (_groupGate) Leave(session, ClientGroup.Of(implementationId, previous).Id);
+                long previous = session.KeyOf(scope);
+                session.Bindings.Remove(scope, static (b, id) => b.ImplementationId == id);
+                if (previous != 0) lock (_groupGate) Leave(session, ClientGroup.Of(scope, previous).Id);
                 break;
             }
             case ControlOp.JoinGroup:
@@ -204,6 +229,8 @@ public sealed partial class Node
                 session.Connection.Close();
                 break;
         }
+
+        return RpcStatus.Ok;
     }
 
     /// <summary>Add a session to a group (once). CallerSession holds the gate.</summary>
@@ -239,7 +266,7 @@ public sealed partial class Node
 
         var sessionRef = new SessionRef(Id, session.Id);
         foreach (var binding in session.Bindings.Items)
-            PublishTo(binding.ContractId, new SessionClosed(sessionRef, binding.Key));
+            SendTo(binding.ImplementationId, binding.Key, new SessionClosed(sessionRef));
     }
 
     /// <summary>
@@ -285,9 +312,9 @@ public sealed partial class Node
             {
                 case FrameKind.Request:
                 case FrameKind.OneWay:
-                    node.OnClientCall(session, in header, frame);
+                    node.OnClientMessage(session, in header, frame);
                     break;
-                case FrameKind.Control when header.MethodId == ControlOp.PickGateway && header.RequestId != 0:
+                case FrameKind.Control when header.MessageId == ControlOp.PickGateway && header.RequestId != 0:
                     node.PickGateway(session, header.RequestId);
                     break;
                 case FrameKind.Ping:
@@ -309,28 +336,30 @@ public sealed partial class Node
     }
 
     /// <summary>
-    /// Validate and route a client call by the method's <see cref="FromClientAttribute"/>: services, actors on the key bound
-    /// to the session, or on the key the client chose (AnyKey). The caller session is prepended for the handler.
+    /// Validate and route a client message (<see cref="ClientMessageAttribute"/> types only) to its handler: a service,
+    /// or an actor on the key bound to the session (or the key the client chose: AnyKey). The caller session is
+    /// prepended for the handler (<c>CallerSession</c>).
     /// </summary>
-    private void OnClientCall(Session session, in FrameHeader header, ReadOnlySpan<byte> frame)
+    private void OnClientMessage(Session session, in FrameHeader header, ReadOnlySpan<byte> frame)
     {
         uint replyId = header.Kind == FrameKind.Request ? header.RequestId : 0;
-        if (!RpcRegistry.TryGetMethod(header.MethodId, out var method) || method.ClientRoute == ClientRoute.None)
+        if (!MessageRegistry.TryGetClientMessage(header.MessageId, out var message))
         {
-            if (replyId != 0) ReplyError(session.Sink, replyId, RpcStatus.Forbidden, "Not client accessible");
+            if (replyId != 0) ReplyError(session.Sink, replyId, RpcStatus.Forbidden, "Not a client message");
             return;
         }
 
-        var contract = method.Owner;
-        var (kind, key) = method.ClientRoute switch
+        bool actor = View.TryGetRoute(message.Id, actor: true, out var route, out _);
+        if (!actor && !View.TryGetRoute(message.Id, actor: false, out route, out _))
         {
-            ClientRoute.BoundKey => (RpcTargetKind.Actor, session.KeyOf(contract.Id)),
-            ClientRoute.AnyKey => (RpcTargetKind.Actor, header.Key),
-            _ => (RpcTargetKind.Service, 0L),
-        };
-        if (kind == RpcTargetKind.Actor && key == 0)
+            if (replyId != 0) ReplyError(session.Sink, replyId, RpcStatus.NotHosted, "No handler for " + message.Type.Name);
+            return;
+        }
+
+        long key = !actor ? 0 : message.AnyKey ? header.Key : session.KeyOf(route.ImplementationId);
+        if (actor && key == 0 && !message.AnyKey)
         {
-            if (replyId != 0) ReplyError(session.Sink, replyId, RpcStatus.Forbidden, "Session not bound to " + contract);
+            if (replyId != 0) ReplyError(session.Sink, replyId, RpcStatus.Forbidden, "Session not bound to a handler of " + message.Type.Name);
             return;
         }
 
@@ -338,13 +367,19 @@ public sealed partial class Node
         var nino = w.Nino;
         NinoSerializer.Serialize(new SessionRef(Id, session.Id), ref nino);
         w.WriteRaw(frame.Slice(FrameHeader.Size));
+        if (replyId == 0)
+        {
+            SendMessage(w, message.Id, key, actor, FrameFlags.HasCaller);
+            return;
+        }
+
         w.Deadline = header.DeadlineOnArrival(); // the client's own timeout, when it sent one
-        Route(w, header.MethodId, kind, key, null, replyId != 0 ? session.Sink : null, replyId, flags: FrameFlags.HasCaller);
+        Request(w, message.Id, key, actor, null, session.Sink, replyId, flags: FrameFlags.HasCaller);
     }
 }
 
-/// <summary>Actor key a session is bound to for one contract.</summary>
-internal readonly record struct SessionBinding(uint ContractId, long Key);
+/// <summary>Actor key a session is bound to for one actor implementation.</summary>
+internal readonly record struct SessionBinding(uint ImplementationId, long Key);
 
 /// <summary>A connected client on this gateway.</summary>
 internal sealed class Session(long id, Connection connection)
@@ -353,7 +388,7 @@ internal sealed class Session(long id, Connection connection)
     public Connection Connection { get; } = connection;
     public ConnectionReplySink Sink { get; } = new(connection);
 
-    /// <summary>Actor keys bound by servers, one per contract (<c>Cluster.Bind&lt;TActor&gt;</c>).</summary>
+    /// <summary>Actor keys bound by actors, one per implementation (<c>BindSession</c>).</summary>
     public CopyOnWriteArray<SessionBinding> Bindings { get; } = new();
 
     /// <summary>Groups the session belongs to and its slot in each (changed under the gateway's group gate).</summary>
@@ -362,12 +397,12 @@ internal sealed class Session(long id, Connection connection)
     /// <summary>Set under the gateway's group gate when the session closed: it joins no group afterwards.</summary>
     public bool Closed { get; set; }
 
-    /// <summary>Key bound for <paramref name="contractId"/>, 0 when unbound. Lock-free (client call path).</summary>
-    public long KeyOf(uint contractId)
+    /// <summary>Key bound for <paramref name="implementationId"/>, 0 when unbound. Lock-free (client message path).</summary>
+    public long KeyOf(uint implementationId)
     {
         var bindings = Bindings.Items;
         for (int i = 0; i < bindings.Length; i++)
-            if (bindings[i].ContractId == contractId) return bindings[i].Key;
+            if (bindings[i].ImplementationId == implementationId) return bindings[i].Key;
         return 0;
     }
 }

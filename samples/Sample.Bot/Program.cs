@@ -35,14 +35,13 @@ await Parallel.ForAsync(0, bots, new ParallelOptions { MaxDegreeOfParallelism = 
 {
     var client = new ClusterClient();
     var bot = players[i] = new Bot(client, stats);
-    client.Register<IPlayerClient>(bot);
+    client.Register(bot);
     client.Disconnected += _ => Interlocked.Increment(ref stats.Disconnects);
     await Retry(() => client.ConnectAsync(host, port), static e => e is not RpcException);
-    var login = await RetryFor(() => client.Account().Login("bot-" + i), static e => e is RpcException { Status: RpcStatus.NotHosted });
+    var login = await RetryFor(() => client.Ask(new Login("bot-" + i)), static e => e is RpcException { Status: RpcStatus.NotHosted });
     if (!login.Ok) throw new InvalidOperationException("login failed for bot " + i);
     // The gateway routes this to the player bound at login, and the map binds the session for input.
-    await Retry(() => client.Player().EnterMap(1 + i % maps), static e => e is RpcException { Status: RpcStatus.NotHosted });
-    bot.Map = client.Map();
+    await RetryFor(() => client.Ask(new EnterMap(1 + i % maps)), static e => e is RpcException { Status: RpcStatus.NotHosted });
 });
 Console.WriteLine($"{bots} bots online in {online.Elapsed.TotalSeconds:F1}s ({maps} maps)");
 
@@ -67,8 +66,8 @@ while (clock.Elapsed.TotalSeconds < seconds)
     {
         var bot = players[i];
         if (movesPerSecond > 0 && (round + i) % Math.Max(1, 10 / movesPerSecond) == 0)
-            bot.Map.Move((float)(random.NextDouble() * 2 - 1), (float)(random.NextDouble() * 2 - 1));
-        if (chatEverySeconds > 0 && (round + i) % (10 * chatEverySeconds) == 0) bot.Map.Chat("hello");
+            bot.Client.Send(new Move((float)(random.NextDouble() * 2 - 1), (float)(random.NextDouble() * 2 - 1)));
+        if (chatEverySeconds > 0 && (round + i) % (10 * chatEverySeconds) == 0) bot.Client.Send(new Say("hello"));
     }
 
     round++;
@@ -146,11 +145,10 @@ static Task Retry(Func<ValueTask> call, Func<Exception, bool> transient) =>
         return true;
     }, transient);
 
-/// <summary>One bot: its connection, its input proxy and what it received (pushes arrive on IO threads).</summary>
-sealed class Bot(ClusterClient client, Stats stats) : IPlayerClient
+/// <summary>One bot: its connection and what it received (pushes arrive on IO threads).</summary>
+sealed class Bot(ClusterClient client, Stats stats)
 {
     public readonly ClusterClient Client = client;
-    public MapProxy Map;
     public long LastTick;
     public long Received;
     private bool _measuring;
@@ -161,7 +159,8 @@ sealed class Bot(ClusterClient client, Stats stats) : IPlayerClient
         Volatile.Write(ref _measuring, true);
     }
 
-    public void OnRealm(RealmStatus status)
+    [Handle]
+    public void On(RealmStatus status)
     {
         long previous = LastTick;
         LastTick = status.Tick;
@@ -176,11 +175,11 @@ sealed class Bot(ClusterClient client, Stats stats) : IPlayerClient
     // contended cache line of the process at 200k snapshots per second.
     public long Moves, Chats;
 
-    public void OnMoves(List<Moved> moves) => Moves += moves.Count;
+    [Handle] public void On(Motion m) => Moves += m.Avatars.Count;
 
-    public void OnGone(long playerId) { }
+    [Handle] public void On(Gone _) { }
 
-    public void OnChat(long playerId, string text) => Chats++;
+    [Handle] public void On(Chat _) => Chats++;
 }
 
 sealed class Stats

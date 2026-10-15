@@ -10,156 +10,103 @@ using Nino.Core;
 
 namespace DaServer.Tests;
 
-// The "business code" the tests drive: contracts, implementations and systems written exactly as users write them.
+// The "business code" the tests drive: messages, handlers and systems written exactly as users write them.
 
-[NinoType]
-public partial record struct Point(int X, int Y);
+[NinoType] public partial record struct Point(int X, int Y);
 
-[Actor]
-public interface ICounter
-{
-    ValueTask<int> Add(int delta);
-    ValueTask<int> Get();
-    void Bump();                                        // one-way
-    ValueTask Reset();
-    ValueTask<string> WhereAmI();                       // shard thread name
-    ValueTask<Point> Echo(Point point);                 // Nino-serialized argument and result
-    ValueTask<int> AddVia(long otherKey, int delta);    // actor -> actor call
-    ValueTask Fail(string message);
-    ValueTask<int> SlowAdd(int delta);                  // awaits a foreign Task.Delay, resumes on the shard
-    ValueTask Grow();                                   // input for GrowthSystem
-    ValueTask<long> AddMany(long otherKey, int count);  // sequential calls; returns bytes allocated meanwhile
-    ValueTask<long> PublishMany(long otherKey, int count); // keyed events; returns bytes allocated meanwhile
-}
+// ---------------------------------------------------------------- counter (actor)
 
-[Service]
-public interface IEcho
-{
-    ValueTask<string> Echo(string text);
-    ValueTask<ulong> NodeId();
-}
+[NinoType] public partial record struct Add(int Delta) : IRequest<int>;
+[NinoType] public partial record struct Get : IRequest<int>;
+[NinoType] public partial record struct Bump;                                       // one-way
+[NinoType] public partial record struct Reset : IRequest<bool>;
+[NinoType] public partial record struct WhereAmI : IRequest<string>;              // shard thread name
+[NinoType] public partial record struct EchoPoint(Point Point) : IRequest<Point>;
+[NinoType] public partial record struct AddVia(long Other, int Delta) : IRequest<int>; // actor -> actor request
+[NinoType] public partial record struct Fail(string Message) : IRequest<bool>;
+[NinoType] public partial record struct SlowAdd(int Delta) : IRequest<int>;       // awaits a foreign Task.Delay
+[NinoType] public partial record struct Grow : IRequest<bool>;                    // input for GrowthSystem
+[NinoType] public partial record struct AddMany(long Other, int Count) : IRequest<long>;     // bytes allocated meanwhile
+[NinoType] public partial record struct PublishMany(long Other, int Count) : IRequest<long>; // bytes allocated meanwhile
 
-[Service, FromClient]
-public interface IAuth
-{
-    ValueTask<bool> Login(long playerId);
-    ValueTask<bool> LoginAfterPushes(long playerId, int pushes); // binds behind a burst of 8 KB pushes to the caller
-    ValueTask Logout();
-}
-
-[Actor, FromClient]
-public interface IPlayer
-{
-    ValueTask<int> AddGold(int amount);
-    void Tip(int amount);                               // one-way
-}
-
-/// <summary>A public chat room: clients choose the room id.</summary>
-[Actor, FromClient(AnyKey = true)]
-public interface IRoom
-{
-    ValueTask Join();
-    void Say(string text);
-}
-
-/// <summary>An actor that unloads when idle (its state lives only while it is loaded).</summary>
-[Actor]
-public interface IVisitor
-{
-    ValueTask<int> Visit();
-}
-
-/// <summary>Keyed event: delivered to the counter activation of <see cref="Key"/>.</summary>
-[NinoType]
-public readonly partial record struct CounterBumped([property: ActorKey] long Key, int By);
-
-/// <summary>Unkeyed event: delivered once to each service implementation handling it.</summary>
-[NinoType]
-public readonly partial record struct Ping(int Id);
-
-[ToClient]
-public interface IPlayerClient
-{
-    void OnChat(long from, string text);
-    void OnGold(int gold);
-}
+/// <summary>Event: delivered to the counter of the key it is published with.</summary>
+[NinoType] public partial record struct CounterBumped(int By);
 
 public record struct CounterState(int Value) : IComponent;
 
 /// <summary>Tag: the counter grows by one every tick (written by the actor, processed by GrowthSystem).</summary>
 public struct Growing : IComponent;
 
-public sealed class Counter : Actor<CounterState>, ICounter
+public sealed class Counter : Actor<CounterState>
 {
+    [Handle] public void On(CounterBumped e) => State.Value += e.By;
+
+    [Handle] public int On(Add m) => State.Value += m.Delta;
+
+    [Handle] public int On(Get _) => State.Value;
+
+    [Handle] public void On(Bump _) => State.Value++;
+
     [Handle]
-    public ValueTask On(CounterBumped e)
-    {
-        State.Value += e.By;
-        return default;
-    }
-
-    public ValueTask<int> Add(int delta) => new(State.Value += delta);
-
-    public ValueTask<int> Get() => new(State.Value);
-
-    public void Bump() => State.Value++;
-
-    public ValueTask Reset()
+    public bool On(Reset _)
     {
         State.Value = 0;
-        return default;
+        return true;
     }
 
-    public ValueTask<string> WhereAmI() => new(Thread.CurrentThread.Name ?? "");
+    [Handle] public string On(WhereAmI _) => Thread.CurrentThread.Name ?? "";
 
-    public ValueTask<Point> Echo(Point point) => new(point with { X = point.X + 1 });
+    [Handle] public Point On(EchoPoint m) => m.Point with { X = m.Point.X + 1 };
 
-    public async ValueTask<int> AddVia(long otherKey, int delta)
+    [Handle]
+    public async ValueTask<int> On(AddVia m)
     {
-        int other = await Cluster.Counter(otherKey).Add(delta);
+        int other = await Cluster.Ask(m.Other, new Add(m.Delta));
         return State.Value += other; // back on this shard's thread: no locks needed
     }
 
-    public ValueTask Fail(string message) => throw new InvalidOperationException(message);
+    [Handle] public bool On(Fail m) => throw new InvalidOperationException(m.Message);
 
-    public async ValueTask<int> SlowAdd(int delta)
+    [Handle]
+    public async ValueTask<int> On(SlowAdd m)
     {
         var shard = Shard.Current;
         await Task.Delay(10);
         if (Shard.Current != shard) throw new InvalidOperationException("continuation left the shard thread");
-        return State.Value += delta;
+        return State.Value += m.Delta;
     }
 
-    public ValueTask Grow()
+    [Handle]
+    public bool On(Grow _)
     {
         Entity.GetOrAdd<Growing>();
-        return default;
+        return true;
     }
 
+    [Handle]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
-    public async ValueTask<long> AddMany(long otherKey, int count)
+    public async ValueTask<long> On(AddMany m)
     {
-        var other = Cluster.Counter(otherKey);
-        for (int i = 0; i < 100; i++) await other.Add(1); // warm-up: pools, JIT
+        for (int i = 0; i < 100; i++) await Cluster.Ask(m.Other, new Add(1)); // warm-up: pools, JIT
         long before = GC.GetTotalAllocatedBytes(precise: true);
-        for (int i = 0; i < count; i++) await other.Add(1);
+        for (int i = 0; i < m.Count; i++) await Cluster.Ask(m.Other, new Add(1));
         return GC.GetTotalAllocatedBytes(precise: true) - before;
     }
 
+    [Handle]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
-    public async ValueTask<long> PublishMany(long otherKey, int count)
+    public async ValueTask<long> On(PublishMany m)
     {
-        // Bursts of 100 events, each followed by a call (events and calls of one sender reach an actor in order):
-        // steady state with bounded frames in flight, as in a running server.
+        // Bursts of 100 events, each followed by a request (messages of one sender reach an actor in order): steady
+        // state with bounded frames in flight, as in a running server.
         const int burst = 100;
-        var other = Cluster.Counter(otherKey);
-        for (int i = 0; i < burst; i++) Cluster.Publish(new CounterBumped(otherKey, 1));
-        await other.Get();
+        for (int i = 0; i < burst; i++) Cluster.Publish(m.Other, new CounterBumped(1));
+        await Cluster.Ask(m.Other, new Get());
         long before = GC.GetTotalAllocatedBytes(precise: true);
-        for (int sent = 0; sent < count; sent += burst)
+        for (int sent = 0; sent < m.Count; sent += burst)
         {
-            for (int i = 0; i < burst; i++) Cluster.Publish(new CounterBumped(otherKey, 1));
-            await other.Get();
+            for (int i = 0; i < burst; i++) Cluster.Publish(m.Other, new CounterBumped(1));
+            await Cluster.Ask(m.Other, new Get());
         }
 
         return GC.GetTotalAllocatedBytes(precise: true) - before;
@@ -173,9 +120,16 @@ public sealed partial class GrowthSystem : EcsSystem
     private static void Grow(ref CounterState counter) => counter.Value++;
 }
 
+/// <summary>A request no type handles.</summary>
+[NinoType] public partial record struct Unhandled : IRequest<int>;
+
+// ---------------------------------------------------------------- visitor (actor unloaded when idle)
+
+[NinoType] public partial record struct Visit : IRequest<int>;
+
 public record struct Visits(int Count) : IComponent;
 
-public sealed class Visitor : Actor<Visits>, IVisitor
+public sealed class Visitor : Actor<Visits>
 {
     public override TimeSpan UnloadAfterIdle => TimeSpan.FromMilliseconds(300);
 
@@ -191,91 +145,114 @@ public sealed class Visitor : Actor<Visits>, IVisitor
         return default;
     }
 
-    public ValueTask<int> Visit() => new(++State.Count);
+    [Handle] public int On(Visit _) => ++State.Count;
 }
 
-/// <summary>What event handlers observed (tests read it from the test thread).</summary>
+/// <summary>What handlers observed (tests read it from the test thread).</summary>
 public static class Observed
 {
     public static readonly ConcurrentQueue<string> Events = new();
 }
 
-public sealed class EchoService : Service, IEcho
+// ---------------------------------------------------------------- services
+
+[NinoType] public partial record struct EchoText(string Text) : IRequest<string>;
+[NinoType] public partial record struct WhichNode : IRequest<ulong>;
+
+/// <summary>Event: delivered once to each service type handling it.</summary>
+[NinoType] public partial record struct Ping(int Id);
+
+public sealed class EchoService : Service
 {
-    public ValueTask<string> Echo(string text) => new(text);
+    [Handle] public string On(EchoText m) => m.Text;
 
-    public ValueTask<ulong> NodeId() => new(Cluster.NodeId);
+    [Handle] public ulong On(WhichNode _) => Cluster.NodeId;
 
-    [Handle]
-    public ValueTask On(Ping e)
-    {
-        Observed.Events.Enqueue($"echo:{e.Id}:{Cluster.NodeId:x}");
-        return default;
-    }
+    [Handle] public void On(Ping e) => Observed.Events.Enqueue($"echo:{e.Id}:{Cluster.NodeId:x}");
 }
 
 /// <summary>A second service handling Ping: every handling implementation receives each event once.</summary>
 public sealed class AuditService : Service
 {
-    [Handle]
-    public ValueTask On(Ping e)
-    {
-        Observed.Events.Enqueue($"audit:{e.Id}");
-        return default;
-    }
+    [Handle] public void On(Ping e) => Observed.Events.Enqueue($"audit:{e.Id}");
 }
 
-public sealed class AuthService : Service, IAuth
+// ---------------------------------------------------------------- client-facing: login, player, rooms
+
+[NinoType, ClientMessage] public partial record struct Login(long PlayerId) : IRequest<bool>;
+
+/// <summary>Logs in behind a burst of 4 KB pushes to the caller (the binding must not be overtaken).</summary>
+[NinoType, ClientMessage] public partial record struct LoginAfterPushes(long PlayerId, int Pushes) : IRequest<bool>;
+
+[NinoType, ClientMessage] public partial record struct Logout : IRequest<bool>;
+[NinoType, ClientMessage] public partial record struct AddGold(int Amount) : IRequest<int>;
+[NinoType, ClientMessage] public partial record struct Tip(int Amount);            // one-way
+
+/// <summary>Server-only: the login service attaches a client session to its player.</summary>
+[NinoType] public partial record struct Attach(SessionRef Session) : IRequest<bool>;
+
+/// <summary>A public chat room: clients choose the room id.</summary>
+[NinoType, ClientMessage(AnyKey = true)] public partial record struct Join : IRequest<bool>;
+[NinoType, ClientMessage(AnyKey = true)] public partial record struct Say(string Text);
+
+// Pushes (server to client).
+[NinoType] public partial record struct Chat(long From, string Text);
+[NinoType] public partial record struct GoldChanged(int Gold);
+
+public sealed class AuthService : Service
 {
-    public ValueTask<bool> Login(long playerId)
-    {
-        if (!CallerSession.IsValid || playerId <= 0) return new(false);
-        Cluster.Bind<IPlayer>(CallerSession, playerId);
-        return new(true);
-    }
+    [Handle]
+    public async ValueTask<bool> On(Login m) =>
+        CallerSession.IsValid && m.PlayerId > 0 && await Cluster.Ask(m.PlayerId, new Attach(CallerSession));
 
-    public ValueTask<bool> LoginAfterPushes(long playerId, int pushes)
+    [Handle]
+    public ValueTask<bool> On(LoginAfterPushes m)
     {
-        var text = new string('x', 4096);
-        for (int i = 0; i < pushes; i++) Cluster.PlayerClient(CallerSession).OnChat(0, text);
-        return Login(playerId);
-    }
-
-    public ValueTask Logout()
-    {
-        Cluster.Unbind<IPlayer>(CallerSession);
-        return default;
+        var text = new string('x', 2048); // 4 KB (UTF-16)
+        for (int i = 0; i < m.Pushes; i++) Cluster.Send(CallerSession, new Chat(0, text));
+        return On(new Login(m.PlayerId));
     }
 }
 
 public record struct Wallet(int Gold) : IComponent;
 
-public sealed class Player : Actor<Wallet>, IPlayer
+public sealed class Player : Actor<Wallet>
 {
-    public ValueTask<int> AddGold(int amount)
+    [Handle]
+    public async ValueTask<bool> On(Attach m)
     {
-        int gold = State.Gold += amount;
-        if (CallerSession.IsValid) Cluster.PlayerClient(CallerSession).OnGold(gold); // push to the calling client
-        return new(gold);
+        await BindSession(m.Session);
+        return true;
     }
-
-    public void Tip(int amount) => State.Gold += amount;
 
     [Handle]
-    public ValueTask On(SessionClosed e)
+    public async ValueTask<bool> On(Logout _)
     {
-        Observed.Events.Enqueue($"closed:{e.Key}");
-        return default;
+        await UnbindSession(CallerSession);
+        return true;
     }
+
+    [Handle]
+    public int On(AddGold m)
+    {
+        int gold = State.Gold += m.Amount;
+        if (CallerSession.IsValid) Cluster.Send(CallerSession, new GoldChanged(gold)); // push to the calling client
+        return gold;
+    }
+
+    [Handle] public void On(Tip m) => State.Gold += m.Amount;
+
+    [Handle] public void On(SessionClosed _) => Observed.Events.Enqueue($"closed:{Key}");
 }
 
-public sealed class Room : Actor, IRoom
+public sealed class Room : Actor
 {
-    public ValueTask Join()
+    [Handle]
+    public bool On(Join _)
     {
         Cluster.JoinGroup(CallerSession, Group);
-        return default;
+        return true;
     }
 
-    public void Say(string text) => Cluster.PlayerClient(Group).OnChat(Key, text);
+    [Handle] public void On(Say m) => Cluster.Send(Group, new Chat(Key, m.Text));
 }

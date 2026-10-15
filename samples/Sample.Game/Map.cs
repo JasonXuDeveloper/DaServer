@@ -9,7 +9,7 @@ using Sample.Contracts;
 namespace Sample.Game;
 
 // A map instance owns the spatial simulation of the players in it. Every avatar is an entity of the map's shard world:
-// the Map actor only turns calls into data (spawn, despawn, input components); systems do the per-tick work, and
+// the Map actor only turns messages into data (spawn, despawn, input components); systems do the per-tick work, and
 // Interest.cs decides who hears about what (area of interest).
 
 public record struct Position(float X, float Y) : IComponent;
@@ -25,13 +25,15 @@ public struct MapState() : IComponent
     public readonly InterestGrid Grid = new();
 }
 
-public sealed class Map : Actor<MapState>, IMap
+public sealed class Map : Actor<MapState>
 {
     private const float MaxSpeed = 5f;
     private const int MaxChatLength = 256;
 
-    public ValueTask Enter(long playerId, SessionRef session)
+    [Handle]
+    public async ValueTask<bool> On(Enter m)
     {
+        var (playerId, session) = (m.PlayerId, m.Session);
         if (!State.Avatars.ContainsKey(session))
         {
             // Spread over the map by player id (a real game reads the saved position).
@@ -41,36 +43,35 @@ public sealed class Map : Actor<MapState>, IMap
                 new GridCell(-1), new MotionChanged(true)); // cell -1: InterestSystem places it on the next tick
         }
 
-        Cluster.Bind<IMap>(session, Key); // the client's input reaches this map and it sees the map's Group broadcasts
-        return default;
-    }
-
-    public ValueTask Leave(SessionRef session)
-    {
-        Cluster.Unbind<IMap>(session);
-        Remove(session, closed: false);
-        return default;
+        await BindSession(session); // the client's input reaches this map and it sees the map's Group broadcasts
+        return true;
     }
 
     [Handle]
-    public ValueTask On(SessionClosed e)
+    public async ValueTask<bool> On(Leave m)
     {
-        Remove(e.Session, closed: true); // also delivered when the session's gateway crashed
-        return default;
+        await UnbindSession(m.Session);
+        Remove(m.Session, closed: false);
+        return true;
     }
 
-    public void Move(float vx, float vy)
+    [Handle]
+    public void On(SessionClosed e) => Remove(e.Session, closed: true); // also delivered when the session's gateway crashed
+
+    [Handle]
+    public void On(Move m)
     {
         // Input is data: MovementSystem integrates it, the next sync tells the avatar's viewers.
         if (!State.Avatars.TryGetValue(CallerSession, out var avatar)) return;
-        avatar.Get<Velocity>() = new Velocity(Math.Clamp(vx, -MaxSpeed, MaxSpeed), Math.Clamp(vy, -MaxSpeed, MaxSpeed));
+        avatar.Get<Velocity>() = new Velocity(Math.Clamp(m.VelocityX, -MaxSpeed, MaxSpeed), Math.Clamp(m.VelocityY, -MaxSpeed, MaxSpeed));
         avatar.Get<MotionChanged>() = new MotionChanged(true);
     }
 
-    public void Chat(string text)
+    [Handle]
+    public void On(Say m)
     {
-        if (text.Length <= MaxChatLength && State.Avatars.TryGetValue(CallerSession, out var avatar))
-            Cluster.PlayerClient(Group).OnChat(avatar.Get<Avatar>().PlayerId, text);
+        if (m.Text.Length <= MaxChatLength && State.Avatars.TryGetValue(CallerSession, out var avatar))
+            Cluster.Send(Group, new Chat(avatar.Get<Avatar>().PlayerId, m.Text));
     }
 
     public override ValueTask OnUnload()

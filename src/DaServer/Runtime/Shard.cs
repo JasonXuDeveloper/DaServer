@@ -223,7 +223,7 @@ public sealed class Shard : IDisposable
         var services = new Dictionary<uint, object>();
         foreach (var impl in Node.HostedImplementations)
         {
-            if (impl.Kind != Rpc.RpcContractKind.Service) continue;
+            if (impl.IsActor) continue;
             var instance = impl.Factory();
             if (instance is ShardObject shardObject) shardObject.Shard = this;
             services[impl.Id] = instance;
