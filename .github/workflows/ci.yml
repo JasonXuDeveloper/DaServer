@@ -24,6 +24,10 @@ jobs:
         working-directory: DaServer
         run: dotnet test tests/DaServer.Tests -c Release --no-build --blame-hang-timeout 120s
 
+      - name: Sample tests
+        working-directory: DaServer
+        run: dotnet test samples/mmo/Sample.Tests -c Release --no-build
+
       # The sample cluster as deployed (login, game, map, 3 client-facing gateway nodes) started by Aspire, with 1000 bots.
       - name: End to end
         working-directory: DaServer
