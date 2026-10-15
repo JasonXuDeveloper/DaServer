@@ -47,7 +47,7 @@ Everything a developer declares is one of these (ADR-035). The message type alon
 | `Ask(key, m)` / `Send(key, m)` | the loaded actor of `key` of the one actor type handling `M` (rendezvous placement) |
 | `Ask(m)` / `Send(m)` | the one service handling `M` (load-balanced, local first); from a client: also the actor bound to the session |
 | `Publish(key, e)` / `Publish(e)` | every actor type handling `E` at that key / every service handling `E`, once each |
-| `Send(session, m)` / `Send(group, m)` | one client session / a client group |
+| `Push(session, m)` / `Broadcast(group, m)` | one client session / a client group |
 
 Access is per message type. The sample's map lets servers send `Enter` and `Leave` and lets the bound client send only
 `Flow.FromClient` messages `Move` and `Say`, so a client can never enter someone else's player. The flow is checked at
@@ -208,7 +208,7 @@ sequenceDiagram
     Cl->>G: Move(vx, vy)  (one-way, Flow.FromClient)
     G->>M: routed to the bound map
     M->>M: writes Velocity; MovementSystem, PlacementSystem, MotionSyncSystem run on the tick
-    M-->>G: Send(group, Motion(changes))  one message per cell per tick, one frame per gateway
+    M-->>G: Broadcast(group, Motion(changes))  one message per cell per tick, one frame per gateway
     G-->>Cl: fan-out to the group's local sessions
     Cl--xG: disconnect
     G-->>P: SessionClosed (bound)
@@ -218,7 +218,7 @@ sequenceDiagram
 - **Player and map.** The player actor (keyed by player id) holds persistent state. The map (keyed by map instance id) owns
   the avatars as entities of its shard; `[ForEach]` systems do movement, AOI, combat and sync. Switching maps is
   `Leave` on map A and `Enter` on map B; the player actor stays where it is.
-- **Push and broadcast.** `Cluster.Send(session, m)` pushes to one session. `Cluster.Send(Group, m)` (every
+- **Push and broadcast.** `Cluster.Push(session, m)` pushes to one session. `Cluster.Broadcast(Group, m)` (every
   actor has its own group) serializes once and sends one frame per gateway, which fans out locally (ADR-025).
   `ClientGroup.All` reaches every session of the cluster (the sample's realm status every 5 ticks).
 - **Batch per tick.** Systems collect changes into the map's state and one system sends them as one message per map
