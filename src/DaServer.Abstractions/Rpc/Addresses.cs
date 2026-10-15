@@ -1,6 +1,6 @@
 using System.Runtime.CompilerServices;
 
-namespace DaServer.Rpc;
+namespace DaServer;
 
 /// <summary>
 /// Who receives a message: a struct whose type says how it is routed. <see cref="IActorId"/> (one actor, placed by
@@ -11,7 +11,7 @@ namespace DaServer.Rpc;
 public interface IAddress;
 
 /// <summary>
-/// Something one node holds (a client session on its gateway): a struct of exactly a <c>ulong</c> node id then a
+/// Something one node holds (a client session on its client-facing node): a struct of exactly a <c>ulong</c> node id then a
 /// <c>long</c> value, in that order.
 /// </summary>
 public interface INodeAddress : IAddress
@@ -34,9 +34,10 @@ public interface IGroupAddress : IAddress
 }
 
 /// <summary>
-/// Who sent a message from outside the cluster: the node whose ingress let it in and its id there (today a client
-/// session on its gateway). Read in handlers as <c>Caller</c> (default for messages sent inside the cluster), and an
-/// address: <c>Cluster.Send(Caller, m)</c> reaches it (<c>[ToClient]</c> messages).
+/// Who sent a message from outside the cluster: the node whose ingress let it in and its id there (a client session
+/// for client messages, an HTTP request for the HTTP plane's). Read in handlers as <c>Caller</c> (default for messages
+/// sent inside the cluster), and an address: <c>Cluster.Send(Caller, m)</c> reaches a client (<c>[ToClient]</c>
+/// messages).
 /// </summary>
 [Nino.Core.NinoType]
 public readonly partial record struct Origin(ulong Node, long Id) : INodeAddress
@@ -55,27 +56,28 @@ public readonly partial record struct Origin(ulong Node, long Id) : INodeAddress
 }
 
 /// <summary>
-/// Address of a client session: the gateway node that holds the socket plus the session id on that gateway.
-/// Serializable, so actors can store it in components and message the client later (<c>Cluster.Send(session, m)</c>).
+/// Address of a connected client: the client-facing node holding its connection and its session id there.
+/// Serializable, so actors store it in components and message the client later (<c>Cluster.Send(session, m)</c>).
 /// </summary>
 [Nino.Core.NinoType]
-public readonly partial record struct SessionRef(ulong GatewayNodeId, long SessionId) : INodeAddress
+public readonly partial record struct ClientSession(ulong Node, long Id) : INodeAddress
 {
-    public bool IsValid => SessionId != 0;
+    public bool IsValid => Id != 0;
 
-    /// <summary>The session a client message came from (<c>BindSession(Caller)</c>, a component field).</summary>
-    public static implicit operator SessionRef(Origin origin) => new(origin.Node, origin.Id);
+    /// <summary>
+    /// The session a client message came from (<c>BindSession(Caller)</c>, a component field). Only an origin that is
+    /// a client session (a <c>[FromClient]</c> message) converts to a meaningful session.
+    /// </summary>
+    public static implicit operator ClientSession(Origin origin) => new(origin.Node, origin.Id);
 
-    ulong INodeAddress.Node => GatewayNodeId;
+    long INodeAddress.Value => Id;
 
-    long INodeAddress.Value => SessionId;
-
-    public override string ToString() => $"Session({GatewayNodeId:x}:{SessionId})";
+    public override string ToString() => $"Session({Node:x}:{Id})";
 }
 
 /// <summary>
-/// A broadcast group of client sessions spanning every gateway (map instance, AOI cell, guild channel, chat room).
-/// A push to a group is serialized once and sent as one frame per gateway, which fans it out to its local members.
+/// A broadcast group of client sessions spanning every client-facing node (map instance, AOI cell, guild channel, chat
+/// room). A push to a group is serialized once and sent as one frame per such node, which fans it out locally.
 /// Every actor has its own group (<c>Actor.Group</c>), so group ids of different features never collide.
 /// </summary>
 [Nino.Core.NinoType]
@@ -112,7 +114,7 @@ public readonly partial record struct ClientGroup(long Id) : IGroupAddress
 /// </summary>
 internal static class AddressScopes
 {
-    public static readonly uint Session = TypeId<SessionRef>.Value;
+    public static readonly uint Session = TypeId<ClientSession>.Value;
     public static readonly uint Origin = TypeId<Origin>.Value;
     public static readonly uint Group = TypeId<ClientGroup>.Value;
 }

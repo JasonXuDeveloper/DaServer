@@ -29,7 +29,7 @@ public static class FrameFlags
     public const byte HasCall = 1;
 
     /// <summary>
-    /// After the payload: the 16-byte <see cref="Rpc.Origin"/> of the message (node uint64, id int64), set by the ingress
+    /// After the payload: the 16-byte <see cref="Origin"/> of the message (node uint64, id int64), set by the ingress
     /// that let it into the cluster and kept by every hop. Before the call id.
     /// </summary>
     public const byte HasOrigin = 2;
@@ -40,7 +40,7 @@ public static class FrameFlags
     /// <summary>Bytes of the trailers a frame with <paramref name="flags"/> ends with.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int TrailerSize(byte flags) =>
-        ((flags & HasCall) != 0 ? sizeof(uint) : 0) + ((flags & HasOrigin) != 0 ? Rpc.Origin.Size : 0);
+        ((flags & HasCall) != 0 ? sizeof(uint) : 0) + ((flags & HasOrigin) != 0 ? Origin.Size : 0);
 }
 
 /// <summary>
@@ -128,11 +128,11 @@ public struct FrameHeader
         (header.Flags & FrameFlags.HasCall) != 0 ? BinaryPrimitives.ReadUInt32LittleEndian(frame[(header.Length - sizeof(uint))..]) : 0;
 
     /// <summary>The origin trailer of a frame (<see cref="FrameFlags.HasOrigin"/>), default when it has none.</summary>
-    public static Rpc.Origin OriginOf(in FrameHeader header, ReadOnlySpan<byte> frame)
+    public static Origin OriginOf(in FrameHeader header, ReadOnlySpan<byte> frame)
     {
         if ((header.Flags & FrameFlags.HasOrigin) == 0) return default;
         var at = frame[(header.Length - FrameFlags.TrailerSize(header.Flags))..];
-        return new Rpc.Origin(BinaryPrimitives.ReadUInt64LittleEndian(at), BinaryPrimitives.ReadInt64LittleEndian(at[sizeof(ulong)..]));
+        return new Origin(BinaryPrimitives.ReadUInt64LittleEndian(at), BinaryPrimitives.ReadInt64LittleEndian(at[sizeof(ulong)..]));
     }
 
     /// <summary>The payload of a frame: between the header and the trailers.</summary>

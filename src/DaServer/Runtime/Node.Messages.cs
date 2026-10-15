@@ -99,17 +99,17 @@ sealed partial class Node
     /// asked of the session, so it completes once the session's node applied it and the client's next message already
     /// reaches the actor.
     /// </summary>
-    internal ValueTask ChangeAccess(SessionRef session, SessionAccess access)
+    internal ValueTask ChangeAccess(ClientSession session, SessionAccess access)
     {
         var call = PendingCall<NoReply>.Rent(Shard.Current);
         var task = call.Done;
         AskNode(MessageWriter.Write(in access), AddressScopes.Session, MessageType<SessionAccess>.Id,
-            session.GatewayNodeId, session.SessionId, call);
+            session.Node, session.Id, call);
         return task;
     }
 
     /// <summary>
-    /// A message (payload written) to something node <paramref name="node"/> holds: a client session (by its <see cref="SessionRef"/>
+    /// A message (payload written) to something node <paramref name="node"/> holds: a client session (by its <see cref="ClientSession"/>
     /// or the <see cref="Origin"/> of its messages), whatever its scope's feature holds. Takes
     /// ownership of <paramref name="frame"/>.
     /// </summary>

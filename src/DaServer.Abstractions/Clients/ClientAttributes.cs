@@ -1,4 +1,4 @@
-namespace DaServer.Clients;
+namespace DaServer;
 
 /// <summary>
 /// Clients may send this message (<c>[NinoType, Message, FromClient]</c>), through a client-facing node whose session is

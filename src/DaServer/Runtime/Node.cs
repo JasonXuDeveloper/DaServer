@@ -276,11 +276,11 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
         return total;
     }
 
-    private ulong[] _gateways = [];
+    private ulong[] _clientNodes = [];
 
     /// <summary>
     /// Called by membership when the view changes: shards drop actors they no longer own, and actors that knew sessions
-    /// of a gateway that died (it could not close them) receive <see cref="Rpc.SessionClosed"/> for them.
+    /// of a client-facing node that died (it could not close them) receive <see cref="SessionClosed"/> for them.
     /// </summary>
     internal void OnViewChanged()
     {
@@ -299,33 +299,33 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
 
         foreach (var feature in Options.Features) feature.OnViewChanged(view);
 
-        var gateways = new List<ulong>();
+        var clientNodes = new List<ulong>();
         foreach (var member in View.Members)
-            if (member.HasScope(AddressScopes.Session) && member.Status != MemberStatus.Dead) gateways.Add(member.NodeId);
-        foreach (ulong previous in _gateways)
+            if (member.HasScope(AddressScopes.Session) && member.Status != MemberStatus.Dead) clientNodes.Add(member.NodeId);
+        foreach (ulong previous in _clientNodes)
         {
-            if (gateways.Contains(previous)) continue;
-            Logger.LogWarning("Gateway {Gateway:x} is gone: closing its sessions", previous);
+            if (clientNodes.Contains(previous)) continue;
+            Logger.LogWarning("Client-facing node {Node:x} is gone: closing its sessions", previous);
             _ = CloseSessionsOf(previous);
         }
 
-        _gateways = gateways.ToArray();
+        _clientNodes = clientNodes.ToArray();
     }
 
     /// <summary>How long a lost client may take to resume elsewhere before its actors learn it is gone (tickets need the secret).</summary>
-    private TimeSpan ReconnectGrace => Options.ClusterSecret is { Length: > 0 } ? Options.ReconnectGrace : TimeSpan.Zero;
+    private TimeSpan ReconnectGrace => Options.SigningSecret is { Length: > 0 } ? Options.ReconnectGrace : TimeSpan.Zero;
 
-    /// <summary>Close a lost gateway's sessions on every shard, once their clients had the grace to resume elsewhere.</summary>
-    private async Task CloseSessionsOf(ulong gateway)
+    /// <summary>Close a lost client-facing node's sessions on every shard, once their clients had the grace to resume elsewhere.</summary>
+    private async Task CloseSessionsOf(ulong clientNode)
     {
         if (ReconnectGrace > TimeSpan.Zero) await Task.Delay(ReconnectGrace).ConfigureAwait(false);
         if (Volatile.Read(ref _started) != 1) return;
         foreach (var shard in _shards)
             shard.Post(static s =>
             {
-                var (target, gateway) = ((Shard, ulong))s!;
-                ActorSessions.CloseSessionsOf(target.World, gateway);
-            }, (shard, gateway));
+                var (target, clientNode) = ((Shard, ulong))s!;
+                ActorSessions.CloseSessionsOf(target.World, clientNode);
+            }, (shard, clientNode));
     }
 
     private void Maintain()

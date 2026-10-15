@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Reflection;
 
 namespace DaServer.Rpc;
@@ -52,7 +53,8 @@ public sealed class MessageHandlers
 /// The handlers of client-side handler objects (<c>client.Register(handler)</c>), filled by generated module
 /// initializers (no reflection scanning, no configuration).
 /// </summary>
-public static class MessageRegistry
+[EditorBrowsable(EditorBrowsableState.Never)]
+public static class HandlerRegistry
 {
     private static readonly Lock Gate = new();
     private static FrozenDictionary<Type, MessageHandlers> _handlerTypes = FrozenDictionary<Type, MessageHandlers>.Empty;

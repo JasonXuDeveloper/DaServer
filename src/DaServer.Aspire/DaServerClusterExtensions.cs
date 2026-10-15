@@ -30,21 +30,21 @@ public static class DaServerClusterExtensions
         new(builder, name, clusterPortBase, clientPortBase);
 
     /// <summary>
-    /// Pass the client endpoints of <paramref name="gateways"/> as <c>DaServer__ClientEndpoints__{i}</c> (host:port), the
+    /// Pass the client endpoints of <paramref name="nodes"/> as <c>DaServer__ClientEndpoints__{i}</c> (host:port), the
     /// entry addresses a client connects through.
     /// </summary>
-    public static IResourceBuilder<T> WithClientEndpoints<T>(this IResourceBuilder<T> resource, DaServerNodeGroup gateways)
+    public static IResourceBuilder<T> WithClientEndpoints<T>(this IResourceBuilder<T> resource, DaServerNodeGroup nodes)
         where T : IResourceWithEnvironment, IResourceWithWaitSupport
     {
-        if (gateways.ClientEndpoints.Count == 0)
-            throw new ArgumentException($"Node group '{gateways.Name}' accepts no clients (call WithClients on it)");
+        if (nodes.ClientEndpoints.Count == 0)
+            throw new ArgumentException($"Node group '{nodes.Name}' accepts no clients (call WithClients on it)");
 
-        for (int i = 0; i < gateways.Nodes.Count; i++) resource.WaitFor(gateways.Nodes[i]);
+        for (int i = 0; i < nodes.Nodes.Count; i++) resource.WaitFor(nodes.Nodes[i]);
         return resource.WithEnvironment(context =>
         {
-            for (int i = 0; i < gateways.ClientEndpoints.Count; i++)
+            for (int i = 0; i < nodes.ClientEndpoints.Count; i++)
                 context.EnvironmentVariables[$"DaServer__ClientEndpoints__{i}"] =
-                    gateways.ClientEndpoints[i].Property(EndpointProperty.HostAndPort);
+                    nodes.ClientEndpoints[i].Property(EndpointProperty.HostAndPort);
         });
     }
 }
@@ -87,7 +87,7 @@ public sealed class DaServerCluster
             string nodeName = $"{name}-{i}";
             var node = _builder.AddProject<TProject>(nodeName)
                 .WithEnvironment("DaServer__Name", nodeName)
-                .WithEnvironment("DaServer__ClusterSecret", _secret)
+                .WithEnvironment("DaServer__SigningSecret", _secret)
                 .WithEndpoint(port: _nextClusterPort, targetPort: _nextClusterPort++, scheme: "tcp", name: "cluster",
                     env: "DaServer__ClusterPort", isProxied: false);
             var self = node.GetEndpoint("cluster");

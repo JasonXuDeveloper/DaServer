@@ -14,7 +14,7 @@ public sealed class PolyfillGenerator : IIncrementalGenerator
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
         var needsIsExternalInit = context.CompilationProvider
-            .Select(static (c, _) => c.GetTypeByMetadataName("DaServer.Rpc.IMessageSender") != null &&
+            .Select(static (c, _) => c.GetTypeByMetadataName("DaServer.IMessageSender") != null &&
                                      c.GetTypeByMetadataName("System.Runtime.CompilerServices.IsExternalInit") == null)
             .WithTrackingName("IsExternalInit");
         context.RegisterSourceOutput(needsIsExternalInit, static (spc, needed) =>

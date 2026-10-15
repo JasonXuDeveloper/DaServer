@@ -1,3 +1,4 @@
+using DaServer;
 using DaServer.Rpc;
 using DaServer.Runtime;
 using EasyEcs;
@@ -13,12 +14,12 @@ public record struct Position(float X, float Y) : IComponent;
 public record struct Velocity(float X, float Y) : IComponent;
 
 /// <summary>Whose avatar it is, the map entity it lives in and the client session that controls it.</summary>
-public record struct Avatar(PlayerId Player, Entity Map, SessionRef Session) : IComponent;
+public record struct Avatar(PlayerId Player, Entity Map, ClientSession Session) : IComponent;
 
 /// <summary>State of a map: its avatars by client session (its interest grid is <see cref="MapGrid"/>).</summary>
 public struct MapState() : IComponent
 {
-    public readonly Dictionary<SessionRef, Entity> Avatars = new();
+    public readonly Dictionary<ClientSession, Entity> Avatars = new();
 }
 
 public sealed class Map : Actor<MapId, MapState>
@@ -102,7 +103,7 @@ public sealed class Map : Actor<MapId, MapState>
     }
 
     /// <summary>The avatar leaves the map: <see cref="DespawnSystem"/> removes it on the next tick.</summary>
-    private Entity? Despawn(SessionRef session)
+    private Entity? Despawn(ClientSession session)
     {
         if (!State.Avatars.Remove(session, out var avatar)) return null;
         avatar.Add<Despawning>();

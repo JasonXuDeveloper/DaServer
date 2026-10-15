@@ -8,7 +8,7 @@ public class ReconnectTests : ClusterTest
 {
     private static Action<NodeOptions> Secret(TimeSpan grace) => o =>
     {
-        o.ClusterSecret = "test-secret";
+        o.SigningSecret = "test-secret";
         o.ReconnectGrace = grace;
     };
 
@@ -126,7 +126,7 @@ public class ReconnectTests : ClusterTest
     public void TicketsAreUnforgeableAndExpire()
     {
         byte[] secret = Encoding.UTF8.GetBytes("secret");
-        var session = new SessionRef(7, 42);
+        var session = new ClientSession(7, 42);
         SessionGrant[] grants = [new(1, 100, Bound: true), new(2, 200, Bound: false)];
         var ticket = new byte[ReconnectTicket.SizeOf(grants.Length)];
         ReconnectTicket.Write(ticket, secret, session, grants, nowMs: 1000, lifetimeMs: 500);

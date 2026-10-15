@@ -81,7 +81,7 @@ public sealed partial class DaServerAnalyzer
 /// <summary>Call sites: what is sent must be a message, and travel its flow.</summary>
 public sealed partial class DaServerAnalyzer
 {
-    private static readonly string[] Senders = ["DaServer.Rpc.IMessageSender", "DaServer.Runtime.ICluster", Support.ClusterClientType];
+    private static readonly string[] Senders = ["DaServer.IMessageSender", "DaServer.Runtime.ICluster", Support.ClusterClientType];
 
     /// <summary>
     /// <c>Send</c> / <c>Ask</c> / <c>Publish</c> of the cluster or a client: the last parameter is the message, the one

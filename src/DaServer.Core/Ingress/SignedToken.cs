@@ -4,7 +4,7 @@ namespace DaServer.Ingress;
 
 /// <summary>
 /// Data an edge hands out and later trusts again without keeping state (resume tickets, admission tokens, internal
-/// HTTP auth): the content with when it was issued and when it expires, signed with the cluster secret (HMAC-SHA256).
+/// HTTP auth): the content with when it was issued and when it expires, signed with the signing secret (HMAC-SHA256).
 /// Not encrypted: whoever holds it may read it, nobody can forge or extend it. Allocation-free.
 /// </summary>
 /// <remarks>Layout (little endian): issued, expires (Unix milliseconds), content, HMAC-SHA256 of everything before it.</remarks>

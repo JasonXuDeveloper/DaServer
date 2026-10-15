@@ -251,8 +251,8 @@ sealed partial class Node : IConnectionHandler
 
     /// <summary>
     /// The link to node <paramref name="nodeId"/>: from the view, or, while gossip has not told us about it yet, from
-    /// its Hello. A gateway's client call can reach a node before that node's view lists the gateway; the Bind and
-    /// pushes it causes must still reach the gateway (ahead of the reply, on the same link).
+    /// its Hello. A client's call can reach a node before that node's view lists the client-facing node; the access
+    /// changes and pushes it causes must still reach that node (ahead of the reply, on the same link).
     /// </summary>
     internal PeerLink? LinkTo(ulong nodeId) =>
         View.TryGetMember(nodeId, out var member) ? GetLink(member) : _introduced.TryGetValue(nodeId, out var link) ? link : null;
@@ -315,9 +315,9 @@ sealed partial class Node : IConnectionHandler
     /// <summary>Forwards the reply of a relayed call to the original caller's sink under its call id.</summary>
     private sealed class RelayCall : IPendingCall
     {
-        private static readonly ObjectPool<RelayCall> Pool = new(() => new RelayCall(), 1 << 16); // calls relayed at once by a gateway
+        private static readonly ObjectPool<RelayCall> Pool = new(() => new RelayCall(), 1 << 16); // calls relayed at once by a client-facing nodeateway
 
-        public CallerThread? Caller => null; // forwarded inline from the IO thread
+        public CompletionThread? Caller => null; // forwarded inline from the IO thread
 
         private IReplySink _sink = null!;
         private uint _callId;

@@ -14,8 +14,7 @@ public class GeneratorTests
 {
     private const string Usings = """
         using System.Threading.Tasks;
-        using DaServer.Clients;
-        using DaServer.Rpc;
+        using DaServer;
         using DaServer.Runtime;
         using Nino.Core;
 
@@ -94,8 +93,8 @@ public class GeneratorTests
         Assert.That(registration, Does.Contain("typeof(global::Game.Room), true").And.Contain("typeof(global::Game.Shop), false"));
         Assert.That(registration, Does.Contain("context.ReplyValue(Unsafe.As<global::Game.Shop>(target).On(m))"), "a reply returned synchronously");
         Assert.That(registration, Does.Contain("return context.Reply(Unsafe.As<global::Game.Hero>(target).On(m))"), "a reply returned later");
-        Assert.That(registration, Does.Contain("MessageRegistry.RegisterHandlers(typeof(global::Game.Screen)"), "client handlerType");
-        Assert.That(sources, Has.Some.Contains("Ask<TAddr>(this global::DaServer.Rpc.IMessageSender sender, TAddr address, in global::Game.Heal request)"));
+        Assert.That(registration, Does.Contain("HandlerRegistry.RegisterHandlers(typeof(global::Game.Screen)"), "client handlerType");
+        Assert.That(sources, Has.Some.Contains("Ask<TAddr>(this global::DaServer.IMessageSender sender, TAddr address, in global::Game.Heal request)"));
         Assert.That(sources, Has.Some.Contains("sender.Ask<global::Game.Topic, string?>(in request)"));
         Assert.That(sources, Has.Some.Contains("ClientMessages.Register<global::Game.Move>()")
             .And.Some.Contains("ClientMessages.Register<global::Game.Topic>()"));

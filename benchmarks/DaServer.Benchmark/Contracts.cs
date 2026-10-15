@@ -18,7 +18,7 @@ public readonly record struct RoomId(long Value) : IActorId;
 [NinoType, Message, FromClient] public partial record struct Join(RoomId Room, int Groups) : IRequest<bool>;
 
 /// <summary>The lobby admits a session to the room's groups.</summary>
-[NinoType, Message] public partial record struct Admit(SessionRef Session, int Groups) : IRequest<bool>;
+[NinoType, Message] public partial record struct Admit(ClientSession Session, int Groups) : IRequest<bool>;
 
 /// <summary>One message to each of <see cref="Groups"/> groups in the same turn.</summary>
 [NinoType, Message] public partial record struct Broadcast(int Groups, int Sequence) : IRequest<bool>;

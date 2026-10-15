@@ -51,16 +51,17 @@ public sealed class NodeOptions
     public int IngressLoadLimit { get; set; }
 
     /// <summary>
-    /// Secret shared by every node of the cluster (configuration <c>DaServer__ClusterSecret</c>; Aspire generates one).
-    /// Client-facing nodes sign reconnect tickets with it, so a client that lost its connection resumes its session on
-    /// any of them (<see cref="Rpc.SessionResync"/>); features sign their tokens with it. Null: no tickets, a lost
+    /// Secret shared by every node of the cluster for signing (configuration <c>DaServer__SigningSecret</c>; Aspire
+    /// generates one). It secures nothing else (node links are not authenticated with it). Client-facing nodes sign
+    /// reconnect tickets with it, so a client that lost its connection resumes its session on
+    /// any of them (<see cref="SessionResync"/>); features sign their tokens with it. Null: no tickets, a lost
     /// connection closes the session at once.
     /// </summary>
-    public string? ClusterSecret { get; set; }
+    public string? SigningSecret { get; set; }
 
     /// <summary>
-    /// How long actors wait for a client that lost its connection before they receive <see cref="Rpc.SessionClosed"/>
-    /// (when <see cref="ClusterSecret"/> is set). A client that resumes in time is never reported closed; an explicit
+    /// How long actors wait for a client that lost its connection before they receive <see cref="SessionClosed"/>
+    /// (when <see cref="SigningSecret"/> is set). A client that resumes in time is never reported closed; an explicit
     /// close (client dispose, <c>Disconnect</c>) is reported at once.
     /// </summary>
     public TimeSpan ReconnectGrace { get; set; } = TimeSpan.FromSeconds(30);
