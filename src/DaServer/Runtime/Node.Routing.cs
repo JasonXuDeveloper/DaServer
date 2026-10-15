@@ -6,7 +6,6 @@ sealed partial class Node : IConnectionHandler
     private const int MaxHops = 3;
 
     private readonly LocalReplySink _localSink;
-    private int _roundRobin;
 
     internal IConnectionHandler ClusterHandler => this;
 
@@ -22,7 +21,7 @@ sealed partial class Node : IConnectionHandler
     {
         ClusterMember? target;
         if (!TryRoute(messageId, handlerTypeId, out var route, out bool ambiguous) ||
-            (target = View.Target(in route, key, Id, (uint)Interlocked.Increment(ref _roundRobin))) == null)
+            (target = View.Target(in route, key, Id)) == null)
         {
             if (ambiguous) Refuse(frame, call, relaySink, relayCallId, RpcStatus.Error, AmbiguousMessage(messageId));
             else Refuse(frame, call, relaySink, relayCallId, RpcStatus.NotHosted);
@@ -144,7 +143,7 @@ sealed partial class Node : IConnectionHandler
 
         var current = Shard.Current;
         if (current != null && current.Node == this) return current;
-        return shards[(int)((uint)Interlocked.Increment(ref _roundRobin) % (uint)shards.Length)];
+        return shards[(int)(Spread.Next() % (uint)shards.Length)];
     }
 
     // ------------------------------------------------------------------ inbound frames (cluster links)

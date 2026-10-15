@@ -144,14 +144,14 @@ public sealed class ClusterView
 
     /// <summary>
     /// Node that receives a message for <paramref name="route"/>: the owner of the key for actor handlers, otherwise
-    /// the local node when it hosts the handler, else the one <paramref name="spread"/> picks (balances services).
+    /// the local node when it hosts the handler, else one in turn (<see cref="Spread"/>: balances services).
     /// </summary>
-    public ClusterMember? Target(in MessageRoute route, long key, ulong localNodeId, uint spread)
+    public ClusterMember? Target(in MessageRoute route, long key, ulong localNodeId)
     {
         if (route.Actor) return Rendezvous(route.Nodes, route.HandlerTypeId, key);
         foreach (var node in route.Nodes)
             if (node.NodeId == localNodeId) return node;
-        return route.Nodes.Length == 0 ? null : route.Nodes[(int)(spread % (uint)route.Nodes.Length)];
+        return route.Nodes.Length == 0 ? null : route.Nodes[(int)(Spread.Next() % (uint)route.Nodes.Length)];
     }
 
     /// <summary>SplitMix64-style mix of (node, handler type, key).</summary>

@@ -47,7 +47,9 @@ internal sealed class PendingCallTable
     private readonly uint _indexMask;
     private readonly int _size;
     private int _allocated; // slots handed out at least once (the prefix sweeps scan), at most _size
-    private long _freeHead; // (version << 32) | (index + 1) of the top free slot; the version defeats ABA
+    // (version << 32) | (index + 1) of the top free slot; the version defeats ABA. Every call and reply swaps it: alone on
+    // its cache line, off the fields every call reads.
+    private PaddedLong _freeHead;
 
     /// <param name="indexBits">log2 of the max number of concurrent calls (default 2^16 = 65536).</param>
     public PendingCallTable(int indexBits = 16)
@@ -65,11 +67,11 @@ internal sealed class PendingCallTable
         get
         {
             int allocated = Volatile.Read(ref _allocated);
-            return allocated == 0 ? 0 : StartOf(ChunkOf(allocated - 1) + 1);
+            return allocated == 0 ? 0 : Math.Min(StartOf(ChunkOf(allocated - 1) + 1), _size);
         }
     }
 
-    // Chunk k holds FirstChunk << k slots and starts at slot FirstChunk * (2^k - 1).
+    // Chunk k holds FirstChunk << k slots and starts at slot FirstChunk * (2^k - 1); the last one ends at the table's size.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static int ChunkOf(int index) => 31 - LeadingZeros((uint)(index >> FirstChunkBits) + 1);
 
@@ -132,7 +134,7 @@ internal sealed class PendingCallTable
     {
         while (true)
         {
-            long head = Volatile.Read(ref _freeHead);
+            long head = Volatile.Read(ref _freeHead.Value);
             int top = (int)head - 1;
             if (top < 0)
             {
@@ -142,7 +144,7 @@ internal sealed class PendingCallTable
 
             // A stale read of the link is harmless: the slot was popped meanwhile, which changed the version.
             int next = Volatile.Read(ref At(top).NextFree);
-            if (Interlocked.CompareExchange(ref _freeHead, (head >> 32) + 1 << 32 | (uint)next, head) == head)
+            if (Interlocked.CompareExchange(ref _freeHead.Value, (head >> 32) + 1 << 32 | (uint)next, head) == head)
             {
                 index = top;
                 return true;
@@ -155,9 +157,9 @@ internal sealed class PendingCallTable
         ref var e = ref At(index);
         while (true)
         {
-            long head = Volatile.Read(ref _freeHead);
+            long head = Volatile.Read(ref _freeHead.Value);
             Volatile.Write(ref e.NextFree, (int)head);
-            if (Interlocked.CompareExchange(ref _freeHead, (head >> 32) + 1 << 32 | (uint)(index + 1), head) == head)
+            if (Interlocked.CompareExchange(ref _freeHead.Value, (head >> 32) + 1 << 32 | (uint)(index + 1), head) == head)
                 return;
         }
     }
@@ -189,7 +191,7 @@ internal sealed class PendingCallTable
     {
         lock (_grow)
             if (_chunks[chunk] == null)
-                Volatile.Write(ref _chunks[chunk], new Entry[FirstChunk << chunk]);
+                Volatile.Write(ref _chunks[chunk], new Entry[Math.Min(FirstChunk << chunk, _size - StartOf(chunk))]);
     }
 
     /// <summary>Remove and return the call registered under <paramref name="callId"/>, or null.</summary>
