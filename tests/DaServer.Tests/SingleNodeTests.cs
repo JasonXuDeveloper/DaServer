@@ -26,6 +26,27 @@ public class SingleNodeTests : ClusterTest
     }
 
     [Test]
+    public async Task IdleActorsUnloadAndLoadAgainOnTheNextMessage()
+    {
+        const long key = 501;
+        Assert.That(await _node.Visitor(key).Visit(), Is.EqualTo(1));
+
+        // Kept loaded while it receives mail more often than its UnloadAfterIdle (300 ms).
+        for (int i = 2; i <= 5; i++)
+        {
+            await Task.Delay(100);
+            Assert.That(await _node.Visitor(key).Visit(), Is.EqualTo(i));
+        }
+
+        Assert.That(Observed.Events, Has.No.Member($"unload:{key}"));
+        await Eventually(() => Observed.Events.Contains($"unload:{key}"), "the idle actor was not unloaded");
+        await Eventually(() => _node.ActorCount == 0, "the unloaded actor is still in the directory");
+
+        Assert.That(await _node.Visitor(key).Visit(), Is.EqualTo(1), "loaded again with fresh state");
+        Assert.That(Observed.Events.Count(e => e == $"load:{key}"), Is.EqualTo(2));
+    }
+
+    [Test]
     public async Task CallsFromOneSenderArriveInOrder()
     {
         var counter = _node.Counter(3);

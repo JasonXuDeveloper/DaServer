@@ -1,3 +1,4 @@
+using System;
 using System.Threading.Tasks;
 using DaServer.Rpc;
 using EasyEcs;
@@ -35,8 +36,18 @@ public abstract class Actor : ShardObject
     /// </summary>
     public virtual ValueTask OnLoad() => default;
 
-    /// <summary>The actor leaves this node (its key moved, the node shuts down): save its state here.</summary>
+    /// <summary>
+    /// The actor leaves this node (its key moved, it was idle for <see cref="UnloadAfterIdle"/>, the node shuts down):
+    /// save its state here.
+    /// </summary>
     public virtual ValueTask OnUnload() => default;
+
+    /// <summary>
+    /// Unload the actor after it received no message for this long (zero, the default: stay loaded until the key moves
+    /// or the node stops). A later message loads it again (<see cref="OnLoad"/>), so this bounds the memory of actors
+    /// that are only used now and then (offline players, finished matches). Read once when the actor loads.
+    /// </summary>
+    public virtual TimeSpan UnloadAfterIdle => TimeSpan.Zero;
 
     /// <summary>Components every activation starts with (the entity already has <see cref="ActorLink"/>).</summary>
     internal virtual void InitializeEntity(Entity entity)

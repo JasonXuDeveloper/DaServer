@@ -233,6 +233,7 @@ public sealed class Shard : IDisposable
         World.AddSystem<ServiceTaskSystem>();
         World.AddSystem<TimerSystem>();
         World.AddSystem<RebalanceSystem>();
+        World.AddSystem<IdleSystem>();
         foreach (var info in Node.HostedSystems) World.AddSystem(info.Factory());
     }
 

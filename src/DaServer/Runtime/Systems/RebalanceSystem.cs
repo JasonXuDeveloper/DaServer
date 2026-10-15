@@ -26,10 +26,7 @@ internal sealed class RebalanceSystem : EcsSystem
         {
             var id = item.Component2.Id;
             if (!all && placement.IsLocalOwner(id.ImplementationId, id.Key)) continue;
-            var actor = item.Entity;
-            var link = item.Component1.Actor;
-            actor.Add<Deactivating>();
-            actor.Add<Turn>() = new Turn(ShardDispatch.Start(static a => a.OnUnload(), link), TurnKind.Deactivation);
+            ShardDispatch.Unload(item.Entity, item.Component1.Actor);
         }
 
         // Busy actors were skipped: if one of them must move, look again on the next wake (a turn's end wakes the shard).

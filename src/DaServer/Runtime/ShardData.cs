@@ -51,7 +51,13 @@ internal struct Mailbox(Queue<Envelope> pending) : IComponent
 
     /// <summary>Already in <see cref="ReadyActors"/> (each actor is queued at most once).</summary>
     public bool Scheduled;
+
+    /// <summary><see cref="Environment.TickCount64"/> when the actor last took mail (idle unloading).</summary>
+    public long LastActive;
 }
+
+/// <summary>The actor unloads after <see cref="Milliseconds"/> without mail (<see cref="Actor.UnloadAfterIdle"/>).</summary>
+internal readonly record struct UnloadWhenIdle(long Milliseconds) : IComponent;
 
 internal enum TurnKind : byte
 {
@@ -108,4 +114,7 @@ internal struct ShardActivity : ISingletonComponent
     /// none is left busy. New activations are allowed: they are legitimate once the node is Up again.
     /// </summary>
     public bool RetireAll;
+
+    /// <summary><see cref="Environment.TickCount64"/> of the next idle-actor scan.</summary>
+    public long NextIdleScan;
 }
