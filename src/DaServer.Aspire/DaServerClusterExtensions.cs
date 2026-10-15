@@ -14,7 +14,7 @@ namespace Aspire.Hosting;
 /// <code>
 /// var cluster = builder.AddDaServerCluster("cluster");
 /// cluster.AddNodes&lt;Projects.Sample_MapServer&gt;("map", replicas: 3);
-/// var gateways = cluster.AddNodes&lt;Projects.Sample_Gateway&gt;("gateway", replicas: 2).WithClients();
+/// var gateways = cluster.AddNodes&lt;Projects.Sample_GatewayServer&gt;("gateway", replicas: 2).WithClients();
 /// builder.AddProject&lt;Projects.Bot&gt;("bots").WithClientEndpoints(gateways);
 /// </code>
 /// </example>

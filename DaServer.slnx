@@ -14,7 +14,7 @@
     <Project Path="samples/mmo/Sample.Shared/Sample.Shared.csproj" />
     <Project Path="samples/mmo/Sample.Client/Sample.Client.csproj" />
     <Project Path="samples/mmo/Sample.GameServer/Sample.GameServer.csproj" />
-    <Project Path="samples/mmo/Sample.Gateway/Sample.Gateway.csproj" />
+    <Project Path="samples/mmo/Sample.GatewayServer/Sample.GatewayServer.csproj" />
     <Project Path="samples/mmo/Sample.LoginServer/Sample.LoginServer.csproj" />
     <Project Path="samples/mmo/Sample.MapServer/Sample.MapServer.csproj" />
     <Project Path="samples/mmo/Sample.Bot/Sample.Bot.csproj" />

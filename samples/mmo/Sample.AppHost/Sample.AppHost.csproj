@@ -17,7 +17,7 @@
     <ItemGroup>
         <ProjectReference Include="..\..\..\src\DaServer.Aspire\DaServer.Aspire.csproj" IsAspireProjectResource="false" />
         <ProjectReference Include="..\Sample.GameServer\Sample.GameServer.csproj" />
-        <ProjectReference Include="..\Sample.Gateway\Sample.Gateway.csproj" />
+        <ProjectReference Include="..\Sample.GatewayServer\Sample.GatewayServer.csproj" />
         <ProjectReference Include="..\Sample.LoginServer\Sample.LoginServer.csproj" />
         <ProjectReference Include="..\Sample.MapServer\Sample.MapServer.csproj" />
         <ProjectReference Include="..\Sample.Bot\Sample.Bot.csproj" />
