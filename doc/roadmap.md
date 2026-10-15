@@ -211,6 +211,8 @@ Step plan (each step builds and keeps every test green; logic, docs, CI in separ
    resident / 80 MB managed (was 357 / 226 MB after a first cut, about 9 GB before). Open: trim `BufferPool` buckets
    back after a peak (41 MB of the 80 MB are 4 KB buffers kept from the all-sessions broadcast peak). Aspire: `AddNodes(...).WithClients()` and `WithClientEndpoints(group)`
    (`DaServer__ClientEndpoints__{i}`) replace `AddGateways`/`WithGateways`.
+8b. Keep-alive (ADR-053), done: `Ping`/`Pong` on idle directions, silence closes client sessions (45 s), client
+   connections (30 s, `CheckConnection` probes) and node link connections (`SuspectAfter`); `KeepAliveTests`.
 9. Tests: architecture test done (`ArchitectureTests`: package references point down only; the runtime's folders
    use no client-connection type); A/B against step 0 (no regression), allocation tests < 1 B per delivery.
 10. Docs: ADR-047/048, design/README/samples/CLAUDE.md, requirements R0/R2/R3/R6/R7/R11 (directory instead of
