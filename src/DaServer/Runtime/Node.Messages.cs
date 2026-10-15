@@ -58,8 +58,10 @@ sealed partial class Node
     {
         try
         {
-            if (TryRoute(messageId, handlerTypeId, out var route))
+            if (TryRoute(messageId, handlerTypeId, out var route, out bool ambiguous))
                 SendTo(in route, messageId, key, w, hops: 0, flags);
+            else if (ambiguous)
+                throw new RpcException(RpcStatus.Error, AmbiguousMessage(messageId));
         }
         finally
         {
@@ -68,12 +70,11 @@ sealed partial class Node
     }
 
     /// <summary>The route of an actor type, or of the one service handling <paramref name="messageId"/> (handler type 0).</summary>
-    private bool TryRoute(uint messageId, uint handlerTypeId, out MessageRoute route)
+    private bool TryRoute(uint messageId, uint handlerTypeId, out MessageRoute route, out bool ambiguous)
     {
+        ambiguous = false;
         if (handlerTypeId != 0) return View.TryGetHandlerTypeRoute(handlerTypeId, out route);
-        if (View.TryGetRoute(messageId, actor: false, out route, out bool ambiguous)) return true;
-        if (ambiguous) throw Ambiguous(messageId);
-        return false;
+        return View.TryGetRoute(messageId, actor: false, out route, out ambiguous);
     }
 
     /// <summary>Send the message in <paramref name="w"/> (payload written) to the node handling <paramref name="route"/>.</summary>
@@ -121,6 +122,8 @@ sealed partial class Node
         }
     }
 
-    private static RpcException Ambiguous(uint messageId) =>
-        new(RpcStatus.Error, $"Message 0x{messageId:x8} has several service handlers: Publish it to reach them all");
+    /// <summary>A programming error (a call or send to a message several services handle), reported on a cold path.</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static string AmbiguousMessage(uint messageId) =>
+        $"Message 0x{messageId:x8} has several service handlers: Publish it to reach them all";
 }

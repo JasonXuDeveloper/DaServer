@@ -26,6 +26,14 @@ internal sealed class TurnWatcher
     public static void Begin(World world, Entity entity, ValueTask task)
     {
         entity.Add<Turn>() = new Turn(task);
+        if (task.IsCompleted)
+        {
+            // A hook that finished synchronously (the usual OnLoad/OnUnload): registering a continuation on a completed
+            // task would allocate one and run it through the thread pool.
+            entity.Add<TurnEnded>();
+            return;
+        }
+
         var pool = world.GetSingleton<TurnWatchers>().Pool;
         var watcher = pool.Count > 0 ? pool.Pop() : new TurnWatcher(world.Shard());
         watcher.Entity = entity;

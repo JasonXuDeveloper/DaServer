@@ -2,7 +2,8 @@ namespace DaServer.Runtime;
 
 /// <summary>
 /// Removes actors marked <see cref="Removing"/>: drops them from the directory, destroys their entity and
-/// routes their remaining mail again (now to the new owner, or loads the actor here again) or fails it.
+/// routes their remaining mail again (now to the new owner, or loads the actor here again) or fails it. What the actor
+/// held returns to the shard's <see cref="ActorPools"/>.
 /// </summary>
 [UpdateInGroup<ShardMessages>]
 internal sealed partial class RemovalSystem : EcsSystem
@@ -15,13 +16,17 @@ internal sealed partial class RemovalSystem : EcsSystem
     {
         var (status, message) = removing;
         var pending = mailbox.Pending;
+        var target = self.Actor;
+        bool hasSessions = actor.TryGet<ClientSessions>(out var sessions);
         directory.Actors.Remove(self.Address);
         actor.Destroy(); // the refs above are invalid from here on
 
         while (pending.TryDequeue(out var envelope))
         {
-            if (status == RpcStatus.Ok) ShardDispatch.Route(world, envelope.Frame, envelope.Sink);
-            else ShardDispatch.Fail(envelope.Frame, envelope.Sink, status, message ?? status.ToString());
+            if (status == RpcStatus.Ok) ShardDispatch.Route(world, envelope.Frame, envelope.Sink); // may load the key again
+            else ShardDispatch.Fail(envelope.Frame, envelope.Sink, status, message);
         }
+
+        world.GetSingleton<ActorPools>().Return(target, pending, in sessions, hasSessions);
     }
 }

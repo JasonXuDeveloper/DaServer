@@ -29,9 +29,18 @@ internal static class ReplySinks
     public static void SendOk(this IReplySink sink, uint requestId) =>
         sink.SendReply(requestId, RpcStatus.Ok, FrameWriter.Rent(FrameHeader.Size));
 
-    /// <summary>Answer <paramref name="requestId"/> with an error <paramref name="status"/> and message.</summary>
-    public static void SendError(this IReplySink sink, uint requestId, RpcStatus status, string? message)
+    /// <summary>
+    /// Answer <paramref name="requestId"/> with an error <paramref name="status"/>: a status-only frame (the runtime's
+    /// refusals, allocation-free), or with a <paramref name="message"/> (a handler's error).
+    /// </summary>
+    public static void SendError(this IReplySink sink, uint requestId, RpcStatus status, string? message = null)
     {
+        if (message == null)
+        {
+            sink.SendReply(requestId, status, FrameWriter.Rent(FrameHeader.Size));
+            return;
+        }
+
         var w = FrameWriter.Rent();
         var nino = w.Nino;
         NinoSerializer.Serialize(message, ref nino);
@@ -116,7 +125,7 @@ public readonly struct CallContext
     public void ReplyException(Exception e)
     {
         if (e is RpcException rpc)
-            ReplyError(rpc.Status, rpc.Message);
+            ReplyError(rpc.Status, rpc.Detail); // a status-only failure passes on status-only
         else
             ReplyError(RpcStatus.Error, e.GetType().Name + ": " + e.Message);
     }

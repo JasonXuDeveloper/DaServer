@@ -70,14 +70,19 @@ sealed partial class Node
             var w = SessionControl(op, 0, session.SessionId, handlerTypeId, key);
             var status = OnSessionControl(op, session.SessionId, w.Payload);
             w.Dispose();
-            return status == RpcStatus.Ok ? default : ValueTask.FromException(new RpcException(status, "Session is gone"));
+            return status == RpcStatus.Ok ? default : ValueTask.FromException(new RpcException(status));
         }
 
         var link = LinkTo(session.GatewayNodeId);
-        if (link == null) return ValueTask.FromException(new RpcException(RpcStatus.Disconnected, "Gateway is gone"));
+        if (link == null) return ValueTask.FromException(new RpcException(RpcStatus.Disconnected));
         var call = PendingCall<NoReply>.Rent(Shard.Current);
         var task = call.Done;
-        uint requestId = Pending.Register(call, (int)Options.CallTimeout.TotalMilliseconds, link);
+        if (!Pending.TryRegister(call, (int)Options.CallTimeout.TotalMilliseconds, out uint requestId, link))
+        {
+            call.Fail(RpcStatus.Overloaded);
+            return task;
+        }
+
         var frame = SessionControl(op, requestId, session.SessionId, handlerTypeId, key);
         link.Send(frame.Frame);
         frame.Dispose();
@@ -173,7 +178,7 @@ sealed partial class Node
                 var status = OnSessionControl(header.MessageId, header.Key, payload);
                 if (header.RequestId == 0) break;
                 if (status == RpcStatus.Ok) ConnectionReplySink.For(connection).SendOk(header.RequestId);
-                else ConnectionReplySink.For(connection).SendError(header.RequestId, status, "Session is gone");
+                else ConnectionReplySink.For(connection).SendError(header.RequestId, status);
                 break;
         }
     }
@@ -303,7 +308,7 @@ sealed partial class Node
         if (_ticketSecret == null || session.Bindings.Length != 0 ||
             !ReconnectTicket.TryRead(ticket, _ticketSecret, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), out var previous, out var bindings))
         {
-            session.Sink.SendError(requestId, RpcStatus.Forbidden, "Invalid or expired reconnect ticket");
+            session.Sink.SendError(requestId, RpcStatus.Forbidden);
             return;
         }
 
@@ -349,7 +354,7 @@ sealed partial class Node
 
         if (first == null)
         {
-            session.Sink.SendError(requestId, RpcStatus.NotHosted, "No gateway accepts sessions");
+            session.Sink.SendError(requestId, RpcStatus.NotHosted);
             return;
         }
 
@@ -424,7 +429,7 @@ sealed partial class Node
         uint replyId = header.Kind == FrameKind.Request ? header.RequestId : 0;
         if (!MessageRegistry.TryGetClientMessage(header.MessageId, out var message))
         {
-            if (replyId != 0) session.Sink.SendError(replyId, RpcStatus.Forbidden, "Not a client message");
+            if (replyId != 0) session.Sink.SendError(replyId, RpcStatus.Forbidden);
             return;
         }
 
@@ -437,7 +442,7 @@ sealed partial class Node
             // The client named the actor: only for AnyId messages, and only an actor type handling the message.
             if (!message.AnyId || !HandlesMessage(named, message.Id))
             {
-                if (replyId != 0) session.Sink.SendError(replyId, RpcStatus.Forbidden, message.Type.Name + " cannot be sent to that actor");
+                if (replyId != 0) session.Sink.SendError(replyId, RpcStatus.Forbidden);
                 return;
             }
 
@@ -448,7 +453,7 @@ sealed partial class Node
             (handlerTypeId, key) = (route.HandlerTypeId, session.KeyOf(route.HandlerTypeId));
             if (key == 0)
             {
-                if (replyId != 0) session.Sink.SendError(replyId, RpcStatus.Forbidden, "Session not bound to a handler of " + message.Type.Name);
+                if (replyId != 0) session.Sink.SendError(replyId, RpcStatus.Forbidden);
                 return;
             }
         }

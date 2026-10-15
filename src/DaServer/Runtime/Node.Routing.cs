@@ -20,51 +20,57 @@ sealed partial class Node : IConnectionHandler
     internal void Request(FrameWriter frame, uint messageId, uint handlerTypeId, long key, IPendingCall? call,
         IReplySink? relaySink, uint relayRequestId, byte hops = 0, byte flags = 0)
     {
-        try
+        ClusterMember? target;
+        if (!TryRoute(messageId, handlerTypeId, out var route, out bool ambiguous) ||
+            (target = View.Target(in route, key, Id, (uint)Interlocked.Increment(ref _roundRobin))) == null)
         {
-            if (!TryRoute(messageId, handlerTypeId, out var route))
-                throw new RpcException(RpcStatus.NotHosted, handlerTypeId != 0
-                    ? $"No node hosts actor type 0x{handlerTypeId:x8}"
-                    : $"No service handles message 0x{messageId:x8}");
-
-            var target = View.Target(in route, key, Id, (uint)Interlocked.Increment(ref _roundRobin));
-            if (target == null)
-                throw new RpcException(RpcStatus.NotHosted, $"No node handles message 0x{messageId:x8}");
-
-            bool local = target.NodeId == Id;
-            PeerLink? link = local ? null : GetLink(target);
-            call ??= RelayCall.Rent(relaySink!, relayRequestId);
-
-            // The request is worth running until its first caller gives up (a relayed request keeps the deadline it
-            // arrived with); the remaining time travels with it.
-            long now = Environment.TickCount64;
-            if (frame.Deadline == 0) frame.Deadline = now + (long)Options.CallTimeout.TotalMilliseconds;
-            uint requestId = Pending.Register(call, (int)Math.Max(1, frame.Deadline - now), link);
-            var budget = FrameHeader.EncodeBudget(frame.Deadline - now);
-            if (handlerTypeId != 0 && (flags & FrameFlags.ToActor) == 0)
-            {
-                frame.WriteTarget(handlerTypeId); // a forwarded request already carries it
-                flags |= FrameFlags.ToActor;
-            }
-
-            frame.SetHeader(FrameKind.Request, requestId, messageId, key, budget, flags, hops);
-
-            if (local)
-            {
-                Admit(SelectShard(route.HandlerTypeId, route.Actor, key), frame, _localSink);
-            }
-            else
-            {
-                link!.Send(frame.Frame);
-                frame.Dispose();
-            }
+            if (ambiguous) Refuse(frame, call, relaySink, relayRequestId, RpcStatus.Error, AmbiguousMessage(messageId));
+            else Refuse(frame, call, relaySink, relayRequestId, RpcStatus.NotHosted);
+            return;
         }
-        catch (RpcException e)
+
+        bool local = target.NodeId == Id;
+        PeerLink? link = local ? null : GetLink(target);
+        call ??= RelayCall.Rent(relaySink!, relayRequestId);
+
+        // The request is worth running until its first caller gives up (a relayed request keeps the deadline it
+        // arrived with); the remaining time travels with it.
+        long now = Environment.TickCount64;
+        if (frame.Deadline == 0) frame.Deadline = now + (long)Options.CallTimeout.TotalMilliseconds;
+        if (!Pending.TryRegister(call, (int)Math.Max(1, frame.Deadline - now), out uint requestId, link))
         {
+            Refuse(frame, call, null, 0, RpcStatus.Overloaded);
+            return;
+        }
+
+        var budget = FrameHeader.EncodeBudget(frame.Deadline - now);
+        if (handlerTypeId != 0 && (flags & FrameFlags.ToActor) == 0)
+        {
+            frame.WriteTarget(handlerTypeId); // a forwarded request already carries it
+            flags |= FrameFlags.ToActor;
+        }
+
+        frame.SetHeader(FrameKind.Request, requestId, messageId, key, budget, flags, hops);
+
+        if (local)
+        {
+            Admit(SelectShard(route.HandlerTypeId, route.Actor, key), frame, _localSink);
+        }
+        else
+        {
+            link!.Send(frame.Frame);
             frame.Dispose();
-            if (call != null) call.Fail(e);
-            else relaySink!.SendError(relayRequestId, e.Status, e.Message);
         }
+    }
+
+    /// <summary>Fail a request that cannot be sent: status-only, nothing formatted. Takes ownership of <paramref name="frame"/>.</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void Refuse(FrameWriter frame, IPendingCall? call, IReplySink? relaySink, uint relayRequestId,
+        RpcStatus status, string? message = null)
+    {
+        frame.Dispose();
+        if (call != null) call.Fail(status, message);
+        else relaySink!.SendError(relayRequestId, status, message);
     }
 
     /// <summary>
@@ -83,7 +89,7 @@ sealed partial class Node : IConnectionHandler
         if (header.Hops >= MaxHops)
         {
             frame.Dispose();
-            if (sink != null) sink.SendError(header.RequestId, RpcStatus.NotHosted, "Too many forwarding hops");
+            if (sink != null) sink.SendError(header.RequestId, RpcStatus.NotHosted);
             return;
         }
 
@@ -156,7 +162,7 @@ sealed partial class Node : IConnectionHandler
         var sink = ConnectionReplySink.For(connection);
         if (handlerTypeId == 0 && ServiceHandler(header.MessageId) == null)
         {
-            sink.SendError(header.RequestId, RpcStatus.NotHosted, $"No service handles message 0x{header.MessageId:x8} here");
+            sink.SendError(header.RequestId, RpcStatus.NotHosted);
             return;
         }
 
@@ -298,11 +304,11 @@ sealed partial class Node : IConnectionHandler
             sink.SendReply(id, status, w);
         }
 
-        public void Fail(RpcException error)
+        public void Fail(RpcStatus status, string? message = null)
         {
             var (sink, id) = (_sink, _requestId);
             Release();
-            sink.SendError(id, error.Status, error.Message);
+            sink.SendError(id, status, message);
         }
 
         private void Release()

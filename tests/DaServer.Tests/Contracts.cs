@@ -10,6 +10,7 @@ namespace DaServer.Tests;
 
 public readonly record struct CounterId(long Value) : IActorId;
 public readonly record struct VisitorId(long Value) : IActorId;
+public readonly record struct GuestId(long Value) : IActorId;
 public readonly record struct PlayerId(long Value) : IActorId;
 public readonly record struct RoomId(long Value) : IActorId;
 
@@ -180,10 +181,25 @@ public sealed class Visitor : Actor<VisitorId, Visits>
     [Handle] public int On(Visit _) => ++State.Count;
 }
 
+// ---------------------------------------------------------------- guest (loads and unloads all the time)
+
+[NinoType, Message] public partial record struct Knock;
+
+/// <summary>An actor that unloads as soon as the idle scan sees it (actor churn: logins, short matches).</summary>
+public sealed class Guest : Actor<GuestId, Visits>
+{
+    public override TimeSpan UnloadAfterIdle => TimeSpan.FromMilliseconds(1);
+
+    [Handle] public void On(Knock _) => Interlocked.Increment(ref Observed.Knocks);
+}
+
 /// <summary>What handlers observed (tests read it from the test thread).</summary>
 public static class Observed
 {
     public static readonly ConcurrentQueue<string> Events = new();
+
+    /// <summary><see cref="Knock"/>s handled by guests (counted without allocating).</summary>
+    public static long Knocks;
 }
 
 // ---------------------------------------------------------------- services

@@ -32,7 +32,7 @@ public abstract class Actor : ShardObject
     /// </summary>
     protected ValueTask BindSession(SessionRef session)
     {
-        ShardDispatch.RecordSession(Entity, session);
+        ShardDispatch.RecordSession(this, session);
         return Shard.Node.BindSession(session, HandlerType.Id, Key, bind: true);
     }
 

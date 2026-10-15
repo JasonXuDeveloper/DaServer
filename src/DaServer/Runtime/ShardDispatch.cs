@@ -88,11 +88,12 @@ internal static class ShardDispatch
     /// </summary>
     private static Entity Load(World world, HandlerTypeInfo handlerType, ActorAddress id)
     {
-        var actor = (Actor)handlerType.Factory();
+        ref var pools = ref world.GetSingleton<ActorPools>();
+        var actor = pools.RentActor(handlerType);
         actor.HandlerType = handlerType;
         actor.Key = id.Key;
         actor.Shard = world.Shard();
-        var entity = world.CreateEntity(new ActorRef(actor), new Mailbox(new()) { LastActive = Environment.TickCount64 },
+        var entity = world.CreateEntity(new ActorRef(actor), new Mailbox(pools.RentMailbox()) { LastActive = Environment.TickCount64 },
             new Loading());
         actor.Entity = entity;
         var idle = actor.UnloadAfterIdle;
@@ -198,7 +199,7 @@ internal static class ShardDispatch
         {
             var reader = new Reader(envelope.Frame.Payload);
             NinoDeserializer.Deserialize(out actor.TurnCaller, ref reader);
-            RecordSession(actor.Entity, actor.TurnCaller);
+            RecordSession(actor, actor.TurnCaller);
         }
 
         var dispatcher = actor.HandlerType.Handlers.Of(header.MessageId)!.Dispatcher; // validated by Route
@@ -206,15 +207,16 @@ internal static class ShardDispatch
     }
 
     /// <summary>Remember a client session of a loaded actor (a hash lookup; allocates once per new session).</summary>
-    internal static void RecordSession(Entity actor, SessionRef session)
+    internal static void RecordSession(Actor actor, SessionRef session)
     {
         SessionsOf(actor).Sessions.Add(session);
     }
 
-    private static ClientSessions SessionsOf(Entity actor)
+    private static ClientSessions SessionsOf(Actor actor)
     {
-        if (!actor.TryGet<ClientSessions>(out var sessions))
-            actor.Add<ClientSessions>() = sessions = new ClientSessions(new HashSet<SessionRef>(), new HashSet<SessionRef>());
+        var entity = actor.Entity;
+        if (!entity.TryGet<ClientSessions>(out var sessions))
+            entity.Add<ClientSessions>() = sessions = actor.World.GetSingleton<ActorPools>().RentSessions();
         return sessions;
     }
 
@@ -234,7 +236,7 @@ internal static class ShardDispatch
     {
         var reader = new Reader(payload);
         NinoDeserializer.Deserialize(out SessionResync resync, ref reader);
-        var sessions = SessionsOf(actor.Entity);
+        var sessions = SessionsOf(actor);
         sessions.Sessions.Remove(resync.Previous);
         sessions.Superseded.Add(resync.Previous); // removed when its late SessionClosed arrives or its gateway dies
         sessions.Sessions.Add(resync.Session);
@@ -282,10 +284,13 @@ internal static class ShardDispatch
 
     /// <summary>Refuse a call or event that found its shard or mailbox full (calls get <see cref="RpcStatus.Overloaded"/>).</summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    internal static void Overloaded(FrameWriter frame, IReplySink? sink) => Fail(frame, sink, RpcStatus.Overloaded, "Overloaded");
+    internal static void Overloaded(FrameWriter frame, IReplySink? sink) => Fail(frame, sink, RpcStatus.Overloaded);
 
-    /// <summary>Answer a request with an error status (one-way messages are dropped). Disposes the frame.</summary>
-    internal static void Fail(FrameWriter frame, IReplySink? sink, RpcStatus status, string message)
+    /// <summary>
+    /// Answer a request with an error status, status-only unless a <paramref name="message"/> is given (one-way messages
+    /// are dropped). Disposes the frame.
+    /// </summary>
+    internal static void Fail(FrameWriter frame, IReplySink? sink, RpcStatus status, string? message = null)
     {
         var header = FrameHeader.Read(frame.Frame);
         frame.Dispose();

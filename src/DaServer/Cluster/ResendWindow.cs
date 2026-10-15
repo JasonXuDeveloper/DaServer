@@ -6,7 +6,9 @@ namespace DaServer.Cluster;
 /// nothing is lost and nothing runs twice.
 /// <para>Stream offsets count the bytes of every frame sent through the link, across connections (the Hello that
 /// opens each connection is not part of the stream). Memory: pooled chunks released as acknowledgements arrive; at
-/// most <c>maxBytes</c> are kept, and a disconnect that needs older bytes cannot resume.</para>
+/// most <c>maxBytes</c> are kept, and a disconnect that needs older bytes cannot resume. Released chunks stay with
+/// the window up to <see cref="SpareChunks"/>, so a busy link recycles its own chunks: the shared pool's 64 KB bucket
+/// is sized for the process, and many backlogged links together would otherwise overflow it and allocate.</para>
 /// <para>Thread safety: one lock. The send loop appends, the link's receive loop acknowledges and replays.</para>
 /// </summary>
 internal sealed class ResendWindow(int maxBytes) : ISendTap
@@ -14,10 +16,15 @@ internal sealed class ResendWindow(int maxBytes) : ISendTap
     /// <summary>Chunk size, also how often the receiver acknowledges (one chunk freed per acknowledgement).</summary>
     public const int ChunkSize = 64 * 1024;
 
+    /// <summary>Released chunks a window keeps for its next ones (1 MB per link at most).</summary>
+    private const int SpareChunks = 16;
+
     private readonly Lock _gate = new();
     private readonly int _maxChunks = Math.Max(2, maxBytes / ChunkSize);
     private byte[][] _chunks = new byte[8][];
     private int _head, _count;
+    private readonly byte[][] _spare = new byte[SpareChunks][];
+    private int _spareCount;
 
     // Stream offsets: _base = first byte of the head chunk, _start = first unacknowledged byte, _end = next byte.
     private long _base, _start, _end;
@@ -126,13 +133,15 @@ internal sealed class ResendWindow(int maxBytes) : ISendTap
             _head = 0;
         }
 
-        _chunks[(_head + _count) % _chunks.Length] = BufferPool.Rent(ChunkSize);
+        _chunks[(_head + _count) % _chunks.Length] = _spareCount > 0 ? _spare[--_spareCount] : BufferPool.Rent(ChunkSize);
         _count++;
     }
 
     private void ReleaseHead()
     {
-        BufferPool.Return(_chunks[_head]);
+        var chunk = _chunks[_head];
+        if (_spareCount < SpareChunks) _spare[_spareCount++] = chunk;
+        else BufferPool.Return(chunk);
         _chunks[_head] = null!;
         _head = (_head + 1) % _chunks.Length;
         _count--;
