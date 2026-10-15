@@ -94,7 +94,9 @@ Business code reaches the cluster through `ICluster`: `Cluster` in actors and se
 
 The runtime owns client sessions: an actor's `await BindSession(session)` routes the client's messages for that actor
 type to its key and puts the session in the activation's `Group`; when the session closes (or its gateway crashes),
-every actor it was bound to receives `SessionClosed`.
+every actor it was bound to receives `SessionClosed`. A client that loses its connection reconnects on its own and
+resumes the session with a signed ticket: its actors receive `SessionResync` (send the full state again) instead, and
+`SessionClosed` only if it does not come back within 30 s.
 
 ## Example
 

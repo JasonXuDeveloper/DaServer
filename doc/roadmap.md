@@ -74,7 +74,8 @@ Keep this file current: tick items when done, add items when scope changes.
 - [x] One write per connection per batch (ADR-034)
 - [x] Message-first model (ADR-035): contracts, proxies and `[ActorKey]` removed; client send backlog bound 256 KB
       (a slow client is disconnected and resynchronizes on reconnect)
-- [ ] Auto-reconnect: signed reconnect tickets, `SessionClosed` after a grace period, `SessionResync`
+- [x] Auto-reconnect (ADR-036): signed reconnect tickets, `SessionClosed` after a grace period, `SessionResync`,
+      Aspire-generated cluster secret
 
 ## Quality
 - [x] Unit tests (queue, pool, frames, pending table, membership, placement)
