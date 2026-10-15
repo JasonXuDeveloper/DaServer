@@ -393,9 +393,9 @@ node project is its business classes only.
   environment the AppHost sets, bound by `DaServer.Hosting` on the Generic Host. `SIGTERM` triggers a graceful
   leave. Each node logs a stats line (CPU, allocation rate, GCs, sessions, actors, queue, rejected) every 30 s.
 - The cluster is described once in an Aspire AppHost with `DaServer.Aspire`:
-  `AddDaServerCluster`, `AddNodes<TProject>(name, replicas)`, `AddGateways<TProject>(name, replicas)`. Every node gets
+  `AddDaServerCluster`, `AddNodes<TProject>(name, replicas)`, `.WithClients()` on a node group. Every node gets
   a cluster endpoint and seeds (every other node), gateways a client endpoint (`DaServer__Clients__Port`);
-  `WithGateways(gateways)` hands their addresses to clients and bots as entries.
+  `WithClientEndpoints(gateways)` hands their addresses to clients and bots as entries.
 - The same model runs locally (`dotnet run` on the AppHost, with the dashboard showing logs and OTLP metrics) and is
   published with `aspire publish`: Docker Compose via `AddDockerComposeEnvironment`, Kubernetes via
   `AddKubernetesEnvironment`. There are no hand-maintained deployment files.

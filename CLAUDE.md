@@ -42,8 +42,8 @@ src/DaServer.Generator/    incremental generators (AskGenerator, RegistrationGen
                            PolyfillGenerator) + DaServerAnalyzer (DAS001-008);
                            Shapes.cs reads symbols once for both, so "skipped by the generator" == "reported"
 src/DaServer.Hosting/      Generic Host integration, configuration, OpenTelemetry (OTLP when configured), shutdown
-src/DaServer.Aspire/       Aspire hosting integration: AddDaServerCluster / AddNodes / AddGateways /
-                           WithGateways
+src/DaServer.Aspire/       Aspire hosting integration: AddDaServerCluster / AddNodes / WithClients /
+                           WithClientEndpoints
 samples/mmo/               MMO scenario: Sample.Contracts / Sample.LoginServer / Sample.GameServer / Sample.MapServer / Sample.Gateway
                            (one project per server, no Program.cs,
                            no appsettings) / Sample.Bot (10k-bot e2e) /
