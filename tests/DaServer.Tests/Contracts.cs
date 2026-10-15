@@ -26,6 +26,9 @@ public readonly record struct RoomId(long Value) : IActorId;
 [NinoType, Message] public partial record struct Fail(string Message) : IRequest<bool>;
 [NinoType, Message] public partial record struct SlowAdd(int Delta) : IRequest<int>;       // awaits a foreign Task.Delay
 [NinoType, Message] public partial record struct Grow : IRequest<bool>;                    // input for GrowthSystem
+[NinoType, Message] public partial record struct AnswerLater(int Ms, bool Fail) : IRequest<int>;
+[NinoType, Message] public partial record struct ConfirmVia(CounterId Target) : IRequest<int>; // replied when Target answered (ReplyWhen)
+[NinoType, Message] public partial record struct ConfirmViaMany(CounterId Via, CounterId Target, int Count) : IRequest<long>; // bytes allocated meanwhile // replied after Ms, the turn ends at once
 [NinoType, Message] public partial record struct AskAndFail(CounterId Other);            // completes Reports.ResumedOnShard
 [NinoType, Message] public partial record struct AddMany(CounterId Other, int Count) : IRequest<long>;     // bytes allocated meanwhile
 [NinoType, Message] public partial record struct SendMany(CounterId Other, int Count) : IRequest<long>;    // bytes allocated meanwhile
@@ -101,6 +104,22 @@ public sealed class Counter : Actor<CounterId, CounterState>
 
         Reports.ResumedOnShard.TrySetResult(Shard.Current == shard);
     }
+
+    [Handle] public ValueTask<int> On(ConfirmVia m) => ReplyWhen(Cluster.Ask(m.Target, new Add(1)), State.Value);
+
+    [Handle]
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
+    public async ValueTask<long> On(ConfirmViaMany m)
+    {
+        for (int i = 0; i < 100; i++) await Cluster.Ask(m.Via, new ConfirmVia(m.Target)); // warm-up
+        long before = GC.GetTotalAllocatedBytes(precise: true);
+        for (int i = 0; i < m.Count; i++) await Cluster.Ask(m.Via, new ConfirmVia(m.Target));
+        return GC.GetTotalAllocatedBytes(precise: true) - before;
+    }
+
+    [Handle]
+    public ValueTask<int> On(AnswerLater m) =>
+        ReplyWhen(m.Fail ? ValueTask.FromException(new InvalidOperationException("later")) : new ValueTask(Task.Delay(m.Ms)), State.Value);
 
     [Handle]
     public bool On(Grow _)

@@ -126,6 +126,8 @@ public class GeneratorTests
     [TestCase("[NinoType, Message, ToClient] public partial record struct Ping : IRequest<int>; [NinoType, Message] public partial record struct Tick; public sealed class Bad : Service { [Handle] public async ValueTask On(Tick e) => await Cluster.Ask(Caller, new Ping()); }", "DAS008")]
     [TestCase("[NinoType, Message, ToClient] public partial record struct Ping : IRequest<int>; public static class Bad { public static ValueTask<int> Go(ICluster c) => c.Ask(ClientGroup.All, new Ping()); }", "DAS008")]
     [TestCase("[NinoType, Message, FromClient, ToClient] public partial record struct Tick; public static class Bad { public static void Go(DaServer.Client.ClusterClient c) => c.Send(ClientGroup.All, new Tick()); }", "DAS008")]
+    [TestCase("public readonly record struct BadId(long Value) : IActorId; [NinoType, Message] public partial record struct Q : IRequest<int>; public sealed class Bad : Actor<BadId> { [Handle] public async ValueTask<int> On(Q m) => await ReplyWhen(default, 1); }", "DAS011")]
+    [TestCase("public readonly record struct BadId(long Value) : IActorId; [NinoType, Message] public partial record struct Q : IRequest<int>; public sealed class Bad : Actor<BadId> { [Handle] public ValueTask<int> On(Q m) { var r = ReplyWhen(default, 1); return r; } }", "DAS011")]
     public async Task MisuseIsReportedByTheAnalyzer(string source, string id)
     {
         var (_, diagnostics) = await Run(source);

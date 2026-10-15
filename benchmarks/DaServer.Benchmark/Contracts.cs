@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using EasyEcs;
 using Nino.Core;
 
@@ -68,3 +69,34 @@ internal sealed class Receiver(Countdown countdown)
 
 /// <summary>Group scope of the benchmark's extra broadcast groups.</summary>
 public struct Cells;
+
+// ---------------------------------------------------------------- a hot actor waiting for acknowledgements
+
+public readonly record struct GateId(long Value) : IActorId;
+
+/// <summary>Enter through the gate, which waits for the ledger's acknowledgement before answering (awaiting it).</summary>
+[NinoType, Message] public partial record struct EnterAwaited(CounterId Ledger) : IRequest<bool>;
+
+/// <summary>The same, replied when the acknowledgement arrives while the gate takes its next caller (ReplyWhen).</summary>
+[NinoType, Message] public partial record struct EnterDeferred(CounterId Ledger) : IRequest<bool>;
+
+public record struct GateState(int Entered) : IComponent;
+
+public sealed class Gate : Actor<GateId, GateState>
+{
+    [Handle]
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
+    public async ValueTask<bool> On(EnterAwaited m)
+    {
+        State.Entered++;
+        await Cluster.Ask(m.Ledger, new Add(1));
+        return true;
+    }
+
+    [Handle]
+    public ValueTask<bool> On(EnterDeferred m)
+    {
+        State.Entered++;
+        return ReplyWhen(Cluster.Ask(m.Ledger, new Add(1)), true);
+    }
+}

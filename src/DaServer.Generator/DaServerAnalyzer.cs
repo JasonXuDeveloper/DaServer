@@ -13,7 +13,7 @@ namespace DaServer.Generator;
 public sealed partial class DaServerAnalyzer : DiagnosticAnalyzer
 {
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics { get; } = ImmutableArray.Create(
-        Rules.BadHandler, Rules.BadMessage, Rules.NotWireType, Rules.IdCollision, Rules.NoDefaultConstructor, Rules.WrongFlow, Rules.StatefulHandlerType, Rules.WrongAddress, Rules.SharedReferencesServer);
+        Rules.BadHandler, Rules.BadMessage, Rules.NotWireType, Rules.IdCollision, Rules.NoDefaultConstructor, Rules.WrongFlow, Rules.StatefulHandlerType, Rules.WrongAddress, Rules.SharedReferencesServer, Rules.MisplacedReplyWhen);
 
     public override void Initialize(AnalysisContext context)
     {
@@ -47,12 +47,33 @@ public sealed partial class DaServerAnalyzer : DiagnosticAnalyzer
             }, SymbolKind.NamedType);
 
             start.RegisterOperationAction(CheckSend, OperationKind.Invocation);
+            start.RegisterOperationAction(CheckReplyWhen, OperationKind.Invocation);
 
             start.RegisterCompilationEndAction(end =>
             {
                 foreach (var d in collisions) end.ReportDiagnostic(d);
             });
         });
+    }
+}
+
+/// <summary>
+/// <c>ReplyWhen</c> ends the turn and replies later: it must be what a non-<c>async</c> method returns, so nothing of
+/// the handler runs after it (an <c>async</c> handler would keep the turn, and its own result would be replied too).
+/// </summary>
+public sealed partial class DaServerAnalyzer
+{
+    private static void CheckReplyWhen(OperationAnalysisContext context)
+    {
+        var invocation = (IInvocationOperation)context.Operation;
+        if (invocation.TargetMethod.Name != "ReplyWhen" || !Support.Is(invocation.TargetMethod.ContainingType, "DaServer.Runtime.ShardObject")) return;
+        IOperation? parent = invocation.Parent;
+        while (parent is IConversionOperation { IsImplicit: true }) parent = parent.Parent;
+        bool returned = parent is IReturnOperation;
+        for (var p = parent; returned && p != null; p = p.Parent)
+            if (p is IAnonymousFunctionOperation or ILocalFunctionOperation) returned = false;
+        if (!returned || context.ContainingSymbol is IMethodSymbol { IsAsync: true } or not IMethodSymbol)
+            context.ReportDiagnostic(Diagnostic.Create(Rules.MisplacedReplyWhen, invocation.Syntax.GetLocation()));
     }
 }
 
@@ -189,6 +210,10 @@ internal static class Rules
     public static readonly DiagnosticDescriptor SharedReferencesServer = new("DAS010", "Shared logic references the server",
         "Shared assembly '{0}' references {1}: shared logic (<DaServerShared>true</DaServerShared>) runs on clients too and may reference contracts and EasyEcs only",
         Category, DiagnosticSeverity.Error, true, customTags: WellKnownDiagnosticTags.CompilationEnd);
+
+    public static readonly DiagnosticDescriptor MisplacedReplyWhen = new("DAS011", "ReplyWhen outside a return",
+        "ReplyWhen must be what a handler that is not async returns: 'return ReplyWhen(task, reply);'", Category,
+        DiagnosticSeverity.Error, true);
 
     public static readonly DiagnosticDescriptor WrongAddress = new("DAS008", "Wrong kind of address",
         "'{0}' {1}", Category, DiagnosticSeverity.Error, true);

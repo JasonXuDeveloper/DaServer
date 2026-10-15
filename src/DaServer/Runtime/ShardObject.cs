@@ -29,6 +29,26 @@ public abstract class ShardObject
     /// awaits included; in a service (whose calls may overlap) until the first <c>await</c>.
     /// </summary>
     protected Origin Caller => this is Actor actor ? actor.TurnCaller : CallContext.Current.Origin;
+
+    /// <summary>
+    /// Reply <paramref name="reply"/> once <paramref name="done"/> completes (its failure is replied instead), and end
+    /// the turn now: an actor takes its next message while an access change (<c>BindSession</c>) or a save it waits for
+    /// is pending, so a busy actor's throughput does not hang on round trips. Only as the returned expression of a
+    /// handler that is not <c>async</c>, after the handler's last use of its state (DAS011): <c>return
+    /// ReplyWhen(BindSession(m.Session), true);</c>.
+    /// </summary>
+    protected static ValueTask<T> ReplyWhen<T>(ValueTask done, T reply)
+    {
+        DeferredAfter<T>.Set(done, reply);
+        return default;
+    }
+
+    /// <inheritdoc cref="ReplyWhen{T}(ValueTask, T)"/>
+    protected static ValueTask<T> ReplyWhen<TDone, T>(ValueTask<TDone> done, T reply)
+    {
+        DeferredAfter<TDone, T>.Set(done, reply);
+        return default;
+    }
 }
 
 /// <summary>

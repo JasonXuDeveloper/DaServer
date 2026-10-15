@@ -33,6 +33,17 @@ public class AllocationTests : ClusterTest
     }
 
     [Test]
+    public async Task RepliesSentLaterDoNotAllocate()
+    {
+        // Every call is replied with ReplyWhen once a third actor answered: the deferred reply's watcher is pooled.
+        var node = await Start("alloc", configure: o => o.GossipInterval = TimeSpan.FromHours(1));
+        const int calls = 10_000;
+        await node.Ask(new CounterId(1), new ConfirmViaMany(new CounterId(2), new CounterId(3), 3 * calls));
+        long allocated = await node.Ask(new CounterId(1), new ConfirmViaMany(new CounterId(2), new CounterId(3), calls));
+        Assert.That(allocated / (double)calls, Is.LessThan(8), $"{allocated} B for {calls} calls");
+    }
+
+    [Test]
     public async Task BurstsOfConcurrentCallsDoNotAllocate()
     {
         // 2,000 calls in flight at once: above the old fixed pool sizes (1,024), below the callee's mailbox bound.
