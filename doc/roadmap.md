@@ -40,7 +40,7 @@ EasyEcs in parallel when DaServer waits on benchmarks: the Friflo gap, compariso
 - [x] Node: shards, local/remote routing, forwarding/relay, reply sinks
 - [x] Cluster: push-pull gossip of pulses (cards once, ADR-031), seeds (static + DNS), failure detection, `ClusterView`, rendezvous placement,
       graceful leave + rebalancing
-- [x] Gateway: sessions, per-handler-type bindings, per-message `Flow.FromClient` access, push, `ClientGroup` broadcast fan-out
+- [x] Gateway: sessions, per-handler-type bindings, per-message `[FromClient]` access, push, `ClientGroup` broadcast fan-out
       (O(1) membership, `All` is a group, no allocation per broadcast), `SessionClosed` to bound actors, client frame
       limit (ADR-025)
 - [x] Runtime-owned sessions: Bind joins the actor's group, `Caller` holds for the turn, a crashed gateway's
@@ -199,7 +199,7 @@ Step plan (each step builds and keeps every test green; logic, docs, CI in separ
    ticket, close the listener). The balancer role goes: every client-facing node answers "which node" (power of two
    over gossiped sessions) as a control op and `GET /clients/endpoint`; the well-known address is the platform LB /
    DNS; redirect mode or behind-LB mode. `ClusterMember` keeps no client fields (they are feature card data).
-7. Attributes `[FromClient(AnyId)]` / `[ToClient]` replace `Flow`/`AnyId` on `[Message]`.
+7. Done: attributes `[FromClient(AnyId)]` / `[ToClient]` replace `Flow`/`AnyId` on `[Message]`.
 8. Packages: `DaServer.Abstractions` (netstandard2.1 + net10: `[Message]`, `[FromClient]`/`[ToClient]`,
    `IRequest`, addresses incl. `SessionRef`/`ClientGroup`, `Origin`, `RpcStatus`, `FrameHeader`, wire ids,
    `TypeIds`, `SessionClosed`/`SessionResync`; no runtime, no EasyEcs; `TypeId<T>` static classes, no static
@@ -473,8 +473,8 @@ in separate commits.
       Aspire-generated cluster secret
 - [x] Lifecycle as tags (ADR-037): turn ends posted by `TurnWatcher` (no polling), `Ready`/`Loading`/`UnloadRequested`/
       `Unloading`/`Removing` with one system each; sample grid as data + systems (`DespawnSystem`, `PlacementSystem`)
-- [x] `[Message]` (ADR-038): `[NinoType, Message]` is a message, plain `[NinoType]` is data; `Flow` (`Internal`,
-      `FromClient`, `ToClient`) checked at build time (DAS006)
+- [x] `[Message]` (ADR-038): `[NinoType, Message]` is a message, plain `[NinoType]` is data; `[FromClient]`/
+      `[ToClient]` (G2 step 7; were `Flow`) checked at build time (DAS006)
 - [x] EasyEcs from NuGet, used as its docs teach (ADR-039): cadence as system groups (`ShardRebalance`,
       `ShardIdleScan`), `UpdateInterval` in samples, `ActorRef` as the only identity, timer queue removed
 
