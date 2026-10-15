@@ -86,8 +86,8 @@ public sealed partial class DaServerAnalyzer
     /// <summary>
     /// <c>Send</c> / <c>Ask</c> / <c>Publish</c> of the cluster or a client: the last parameter is the message, the one
     /// before it (when there is one besides the sender) the address. A client address (session, origin, client group)
-    /// needs <c>Flow.ToClient</c>; only actors are asked; a <c>ClusterClient</c> needs <c>Flow.FromClient</c> and
-    /// addresses actors only; servers may not send <c>Flow.ToClient</c>-only messages to each other.
+    /// needs <c>[ToClient]</c>; only actors are asked; a <c>ClusterClient</c> needs <c>[FromClient]</c> and addresses
+    /// actors only; servers may not send <c>[ToClient]</c>-only messages to each other.
     /// </summary>
     private static void CheckSend(OperationAnalysisContext context)
     {

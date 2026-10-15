@@ -1,7 +1,7 @@
 namespace DaServer.Client;
 
 /// <summary>
-/// Client connection to a gateway (game client, bot, tool): sends <see cref="Flow.FromClient"/> messages
+/// Client connection to a gateway (game client, bot, tool): sends <see cref="Clients.FromClientAttribute">[FromClient]</see> messages
 /// (<c>client.Send(new Move(..))</c>, <c>await client.Ask(new GetInfo())</c>) and dispatches the messages servers
 /// push to the [Handle] methods of registered handler objects (<see cref="Register"/>). When the connection is lost it
 /// reconnects on its own and resumes its session with the gateway's reconnect ticket (<see cref="Reconnected"/>).
@@ -193,13 +193,13 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
     // ------------------------------------------------------------------ IMessageSender
 
     /// <summary>
-    /// A <see cref="Flow.FromClient"/> message to the actor <paramref name="address"/> (<see cref="MessageAttribute.AnyId"/>
+    /// A <see cref="Clients.FromClientAttribute">[FromClient]</see> message to the actor <paramref name="address"/> (<see cref="Clients.FromClientAttribute.AnyId"/>
     /// messages only). Clients address actors only (DAS008).
     /// </summary>
     public void Send<TAddr, T>(TAddr address, in T message) where TAddr : struct, IAddress where T : struct =>
         Send(MessageWriter.Write(in message), MessageType<T>.Id, ActorScope<TAddr>(), Addresses<TAddr>.Value(in address), null);
 
-    /// <summary>A <see cref="Flow.FromClient"/> message to the actor bound to this client's session, or to its service.</summary>
+    /// <summary>A <see cref="Clients.FromClientAttribute">[FromClient]</see> message to the actor bound to this client's session, or to its service.</summary>
     public void Send<T>(in T message) where T : struct => Send(MessageWriter.Write(in message), MessageType<T>.Id, 0, 0, null);
 
     public ValueTask<TReply> Ask<TAddr, TRequest, TReply>(TAddr address, in TRequest request)
