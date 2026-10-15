@@ -1,7 +1,3 @@
-using System;
-using System.Buffers.Binary;
-using System.Runtime.CompilerServices;
-
 namespace DaServer.Protocol;
 
 /// <summary>Kind of a wire frame.</summary>
@@ -28,9 +24,6 @@ public enum FrameKind : byte
     /// <summary>Runtime control traffic (handshake, gossip, session binding, groups). Method id = control op.</summary>
     Control = 6,
 
-    Ping = 7,
-    Pong = 8,
-
     /// <summary>
     /// One-way message for one handling implementation (<c>Send</c>, <c>Publish</c>): message id, request id = target
     /// implementation id (one-way, so the correlation field is free), key = actor key (0 for services).
@@ -54,7 +47,6 @@ public enum RpcStatus : byte
     Ok = 0,
     /// <summary>Handler threw; payload = message string.</summary>
     Error = 1,
-    UnknownMessage = 2,
     /// <summary>Target actor/service not hosted here (stale membership view); the caller should retry.</summary>
     NotHosted = 3,
     Timeout = 4,
@@ -71,7 +63,7 @@ public enum RpcStatus : byte
 /// <code>
 /// 0  int32  Length     whole frame size including header
 /// 4  byte   Kind
-/// 5  byte   Status     RpcStatus for responses; for requests the caller's time budget (see Budget), otherwise 0
+/// 5  byte   Status     RpcStatus for responses; for requests the caller's time budget (see EncodeBudget), otherwise 0
 /// 6  byte   Hops       forwarding count (loop guard)
 /// 7  byte   Flags      reserved
 /// 8  uint32 RequestId  correlation id (0 for one-way / push; target implementation id for Event)
@@ -99,13 +91,10 @@ public struct FrameHeader
     public const int BudgetUnitMs = 100;
 
     /// <summary>
-    /// Requests only (the status byte is free there): the caller's remaining time in units of
-    /// <see cref="BudgetUnitMs"/> (at most 25.5 s), 0 = no deadline. Relative, so clocks of different machines need
-    /// not agree; the receiver turns it into a deadline on arrival.
+    /// The status byte of a request (free there): the caller's remaining time in units of <see cref="BudgetUnitMs"/>
+    /// (at least one unit while time remains, at most 25.5 s), 0 = no deadline. Relative, so clocks of different
+    /// machines need not agree; the receiver turns it into a deadline on arrival.
     /// </summary>
-    public readonly byte Budget => (byte)Status;
-
-    /// <summary>The budget byte for <paramref name="remainingMs"/> (at least one unit while time remains).</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static RpcStatus EncodeBudget(long remainingMs) =>
         (RpcStatus)(byte)Math.Clamp((remainingMs + BudgetUnitMs - 1) / BudgetUnitMs, 1, byte.MaxValue);
@@ -141,14 +130,5 @@ public struct FrameHeader
         BinaryPrimitives.WriteUInt32LittleEndian(s.Slice(8), RequestId);
         BinaryPrimitives.WriteUInt32LittleEndian(s.Slice(12), MessageId);
         BinaryPrimitives.WriteInt64LittleEndian(s.Slice(16), Key);
-    }
-
-    /// <summary>Overwrite only the routing fields of an already-serialized frame (used when forwarding).</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void Patch(Span<byte> frame, FrameKind kind, uint requestId, long key)
-    {
-        frame[4] = (byte)kind;
-        BinaryPrimitives.WriteUInt32LittleEndian(frame.Slice(8), requestId);
-        BinaryPrimitives.WriteInt64LittleEndian(frame.Slice(16), key);
     }
 }

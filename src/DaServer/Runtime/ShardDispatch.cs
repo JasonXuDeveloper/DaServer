@@ -1,13 +1,3 @@
-using System;
-using System.Collections.Generic;
-using System.Runtime.CompilerServices;
-using DaServer.Buffers;
-using DaServer.Protocol;
-using DaServer.Rpc;
-using EasyEcs;
-using Microsoft.Extensions.Logging;
-using Nino.Core;
-
 namespace DaServer.Runtime;
 
 /// <summary>
@@ -37,7 +27,7 @@ internal static class ShardDispatch
         {
             // Not hosted here (stale view at the sender): an actor message finds its owner, a service request fails.
             if (request && (header.Flags & FrameFlags.ToActor) == 0)
-                Reject(frame, sink, header.RequestId, RpcStatus.NotHosted, "No service handles the message here");
+                Fail(frame, sink, RpcStatus.NotHosted, "No service handles the message here");
             else
                 node.Forward(frame, sink);
             return;
@@ -153,7 +143,7 @@ internal static class ShardDispatch
                 payload = payload.Slice(SessionRefSize);
             }
 
-            var context = new CallContext(sink, requestId, header.MessageId, header.Key, caller);
+            var context = new CallContext(sink, requestId, caller);
             var previous = CallContext.Enter(in context);
             try
             {
@@ -298,17 +288,9 @@ internal static class ShardDispatch
     internal static void Fail(FrameWriter frame, IReplySink? sink, RpcStatus status, string message)
     {
         var header = FrameHeader.Read(frame.Frame);
-        Reject(frame, sink, header.Kind == FrameKind.Request ? header.RequestId : 0, status, message);
-    }
-
-    private static void Reject(FrameWriter frame, IReplySink? sink, uint requestId, RpcStatus status, string message)
-    {
         frame.Dispose();
-        if (sink == null || requestId == 0) return;
-        var reply = FrameWriter.Rent();
-        var nino = reply.Nino;
-        NinoSerializer.Serialize(message, ref nino);
-        sink.SendReply(requestId, status, reply);
+        if (sink != null && header.Kind == FrameKind.Request && header.RequestId != 0)
+            sink.SendError(header.RequestId, status, message);
     }
 
     public static ILogger Logger(this World world) => world.Shard().Node.Logger;

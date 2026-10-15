@@ -1,16 +1,3 @@
-using System;
-using System.Runtime.CompilerServices;
-using System.Threading;
-using System.Threading.Tasks;
-using DaServer.Buffers;
-using DaServer.Cluster;
-using DaServer.Concurrency;
-using DaServer.Net;
-using DaServer.Protocol;
-using DaServer.Rpc;
-using Microsoft.Extensions.Logging;
-using Nino.Core;
-
 namespace DaServer.Runtime;
 
 // Request routing (Ask): local shard or remote link; inbound frames -> shards; responses -> callers.
@@ -70,7 +57,7 @@ public sealed partial class Node : IConnectionHandler
         {
             frame.Dispose();
             if (call != null) call.Fail(e);
-            else ReplyError(relaySink!, relayRequestId, e.Status, e.Message);
+            else relaySink!.SendError(relayRequestId, e.Status, e.Message);
         }
     }
 
@@ -90,7 +77,7 @@ public sealed partial class Node : IConnectionHandler
         if (header.Hops >= MaxHops)
         {
             frame.Dispose();
-            if (sink != null) ReplyError(sink, header.RequestId, RpcStatus.NotHosted, "Too many forwarding hops");
+            if (sink != null) sink.SendError(header.RequestId, RpcStatus.NotHosted, "Too many forwarding hops");
             return;
         }
 
@@ -148,12 +135,6 @@ public sealed partial class Node : IConnectionHandler
             case FrameKind.Control:
                 OnControl(connection, in header, frame.Slice(FrameHeader.Size));
                 break;
-            case FrameKind.Ping:
-                var pong = new FrameHeader { Length = FrameHeader.Size, Kind = FrameKind.Pong };
-                Span<byte> buffer = stackalloc byte[FrameHeader.Size];
-                pong.Write(buffer);
-                connection.Send(buffer);
-                break;
         }
     }
 
@@ -170,7 +151,7 @@ public sealed partial class Node : IConnectionHandler
         var sink = ConnectionReplySink.For(connection);
         if (impl == null && !actor)
         {
-            ReplyError(sink, header.RequestId, RpcStatus.NotHosted, $"No service handles message 0x{header.MessageId:x8} here");
+            sink.SendError(header.RequestId, RpcStatus.NotHosted, $"No service handles message 0x{header.MessageId:x8} here");
             return;
         }
 
@@ -186,18 +167,10 @@ public sealed partial class Node : IConnectionHandler
         var call = Pending.Take(requestId);
         if (call == null) return; // timed out or failed already
 
-        if (call is PendingCallBase { CallerShard: Shard shard })
+        if (call.CallerShard is { } shard)
             shard.Post(new WorkItem(WorkKind.Complete, call, FrameWriter.CopyOf(frame)));
         else
             call.Complete(status, frame.Slice(FrameHeader.Size));
-    }
-
-    internal static void ReplyError(IReplySink sink, uint requestId, RpcStatus status, string message)
-    {
-        var w = FrameWriter.Rent();
-        var nino = w.Nino;
-        NinoSerializer.Serialize(message, ref nino);
-        sink.SendReply(requestId, status, w);
     }
 
     /// <summary>
@@ -281,7 +254,7 @@ public sealed partial class Node : IConnectionHandler
             }
 
             response.SetHeader(FrameKind.Response, requestId, 0, 0, status);
-            if (call is PendingCallBase { CallerShard: Shard shard })
+            if (call.CallerShard is { } shard)
             {
                 shard.Post(new WorkItem(WorkKind.Complete, call, response)); // zero copy: the frame is handed over
             }
@@ -297,6 +270,8 @@ public sealed partial class Node : IConnectionHandler
     private sealed class RelayCall : IPendingCall
     {
         private static readonly ObjectPool<RelayCall> Pool = new(() => new RelayCall(), 1024);
+
+        public Shard? CallerShard => null; // forwarded inline from the IO thread
 
         private IReplySink _sink = null!;
         private uint _requestId;
@@ -322,7 +297,7 @@ public sealed partial class Node : IConnectionHandler
         {
             var (sink, id) = (_sink, _requestId);
             Release();
-            ReplyError(sink, id, error.Status, error.Message);
+            sink.SendError(id, error.Status, error.Message);
         }
 
         private void Release()

@@ -3,7 +3,6 @@
 // Publish the same model as Docker Compose files:
 //   aspire publish --project samples/Sample.AppHost
 
-using System;
 using Aspire.Hosting;
 using Microsoft.Extensions.Configuration;
 

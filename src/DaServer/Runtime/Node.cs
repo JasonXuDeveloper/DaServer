@@ -1,15 +1,4 @@
-using System;
-using System.Collections.Concurrent;
-using System.Collections.Frozen;
-using System.Collections.Generic;
-using System.Net;
 using System.Security.Cryptography;
-using System.Threading;
-using System.Threading.Tasks;
-using DaServer.Cluster;
-using DaServer.Net;
-using DaServer.Rpc;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace DaServer.Runtime;
@@ -91,25 +80,15 @@ public sealed partial class Node : ICluster, IAsyncDisposable
         Membership.Start(host, _clusterListener.LocalEndPoint.Port);
         _maintenance = new Timer(static s => ((Node)s!).Maintain(), this, 100, 100);
         Logger.LogInformation("Node {Name} ({Id:x}) up on {Endpoint}, {Shards} shards; actors: {Actors}; services: {Services}; systems: {Systems}",
-            Options.Name, Id, ClusterEndPoint, shardCount, Names(true), Names(false), SystemNames());
+            Options.Name, Id, ClusterEndPoint, shardCount,
+            Names(HostedImplementations.Where(static i => i.IsActor).Select(static i => i.Type.Name)),
+            Names(HostedImplementations.Where(static i => !i.IsActor).Select(static i => i.Type.Name)),
+            Names(HostedSystems.Select(static s => s.Type.Name)));
         return Task.CompletedTask;
     }
 
     /// <summary>What this node hosts, for the startup log (a node hosts what its project compiles, ADR-017).</summary>
-    private string Names(bool actors)
-    {
-        var names = new List<string>();
-        foreach (var impl in HostedImplementations)
-            if (impl.IsActor == actors) names.Add(impl.Type.Name);
-        return names.Count == 0 ? "none" : string.Join(", ", names);
-    }
-
-    private string SystemNames()
-    {
-        var names = new List<string>();
-        foreach (var system in HostedSystems) names.Add(system.Type.Name);
-        return names.Count == 0 ? "none" : string.Join(", ", names);
-    }
+    private static string Names(IEnumerable<string> names) => string.Join(", ", names) is { Length: > 0 } s ? s : "none";
 
     /// <summary>
     /// Graceful shutdown: announce Leaving (so callers stop routing here), drain shards (in-flight calls, actor
@@ -129,13 +108,8 @@ public sealed partial class Node : ICluster, IAsyncDisposable
             await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(Options.GossipInterval.TotalMilliseconds, 500))).ConfigureAwait(false);
 
         StopGateway();
-        foreach (var shard in _shards) shard.RequestStop();
-        await Task.WhenAll(Array.ConvertAll(_shards, w => w.Stopped)).ConfigureAwait(false);
-
-        _maintenance?.Dispose();
-        Membership.Dispose();
-        _clusterListener?.Dispose();
-        foreach (var link in _links.Values) link.Dispose();
+        await StopShards().ConfigureAwait(false);
+        CloseLinks();
         Logger.LogInformation("Node {Name} ({Id:x}) stopped", Options.Name, Id);
     }
 
@@ -151,13 +125,24 @@ public sealed partial class Node : ICluster, IAsyncDisposable
     {
         if (Interlocked.Exchange(ref _started, 2) != 1) return;
         _killed = true;
+        CloseLinks();
+        StopGateway();
+        await StopShards().ConfigureAwait(false);
+    }
+
+    private Task StopShards()
+    {
+        foreach (var shard in _shards) shard.RequestStop();
+        return Task.WhenAll(Array.ConvertAll(_shards, static s => s.Stopped));
+    }
+
+    /// <summary>Stop gossip, maintenance and every node link.</summary>
+    private void CloseLinks()
+    {
         _maintenance?.Dispose();
         Membership.Dispose();
         _clusterListener?.Dispose();
-        StopGateway();
         foreach (var link in _links.Values) link.Dispose();
-        foreach (var shard in _shards) shard.RequestStop();
-        await Task.WhenAll(Array.ConvertAll(_shards, w => w.Stopped)).ConfigureAwait(false);
     }
 
     /// <summary>Hosted implementation with placement/routing id <paramref name="implementationId"/>, or null.</summary>
@@ -215,44 +200,22 @@ public sealed partial class Node : ICluster, IAsyncDisposable
     }
 
     /// <summary>Active actor activations across all shards (approximate, for metrics).</summary>
-    public int ActorCount
-    {
-        get
-        {
-            int total = 0;
-            foreach (var shard in _shards) total += shard.ActorCount;
-            return total;
-        }
-    }
+    public int ActorCount => (int)Sum(static s => s.ActorCount);
 
     /// <summary>Messages waiting in all shard mailboxes (approximate, for metrics and load reporting).</summary>
-    public int TotalQueueLength()
-    {
-        int total = 0;
-        foreach (var shard in _shards) total += shard.QueueLength;
-        return total;
-    }
+    public int TotalQueueLength() => (int)Sum(static s => s.QueueLength);
 
     /// <summary>Calls and events refused by full shard inboxes or actor mailboxes since start (backpressure).</summary>
-    public long Rejected
-    {
-        get
-        {
-            long total = 0;
-            foreach (var shard in _shards) total += shard.Rejected;
-            return total;
-        }
-    }
+    public long Rejected => Sum(static s => s.Rejected);
 
     /// <summary>Requests dropped unrun since start because their caller had already timed out.</summary>
-    public long Expired
+    public long Expired => Sum(static s => s.Expired);
+
+    private long Sum(Func<Shard, long> value)
     {
-        get
-        {
-            long total = 0;
-            foreach (var shard in _shards) total += shard.Expired;
-            return total;
-        }
+        long total = 0;
+        foreach (var shard in _shards) total += value(shard);
+        return total;
     }
 
     private ulong[] _gateways = [];

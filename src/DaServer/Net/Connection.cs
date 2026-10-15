@@ -1,13 +1,3 @@
-using System;
-using System.Collections.Generic;
-using System.Net;
-using System.Net.Sockets;
-using System.Threading;
-using System.Threading.Tasks;
-using DaServer.Buffers;
-using DaServer.Concurrency;
-using DaServer.Protocol;
-
 namespace DaServer.Net;
 
 /// <summary>Receives frames and lifecycle events of a <see cref="Connection"/>.</summary>
@@ -82,7 +72,6 @@ public sealed class Connection
     private static readonly InvalidOperationException SlowConsumer =
         new("Send backlog exceeded MaxPendingSendBytes (slow consumer)");
 
-    private static long _nextId;
     private int _overflowed;
 
     private readonly Socket _socket;
@@ -102,23 +91,13 @@ public sealed class Connection
         _options = options ?? new ConnectionOptions();
         _pending = Array.Empty<byte>();
         _tap = _options.Tap;
-        Id = Interlocked.Increment(ref _nextId);
         socket.NoDelay = true;
-        RemoteEndPoint = socket.RemoteEndPoint;
     }
-
-    /// <summary>Process-unique connection id.</summary>
-    public long Id { get; }
-
-    public EndPoint? RemoteEndPoint { get; }
 
     /// <summary>Free slot for the owner (e.g. session or peer node state).</summary>
     public object? Tag { get; set; }
 
     public bool IsClosed => Volatile.Read(ref _closed) != 0;
-
-    /// <summary>Bytes queued but not yet handed to the socket.</summary>
-    public int PendingSendBytes => Volatile.Read(ref _pendingLength);
 
     /// <summary>
     /// Connect to a host name or address. A name is connected through every address it resolves to ("localhost" is ::1

@@ -1,10 +1,3 @@
-using System;
-using System.Runtime.CompilerServices;
-using System.Threading.Tasks;
-using DaServer.Buffers;
-using DaServer.Protocol;
-using Nino.Core;
-
 namespace DaServer.Rpc;
 
 /// <summary>Where the response of an incoming request goes (a connection, the local pending table, ...).</summary>
@@ -17,6 +10,18 @@ public interface IReplySink
     void SendReply(uint requestId, RpcStatus status, FrameWriter response);
 }
 
+internal static class ReplySinks
+{
+    /// <summary>Answer <paramref name="requestId"/> with an error <paramref name="status"/> and message.</summary>
+    public static void SendError(this IReplySink sink, uint requestId, RpcStatus status, string? message)
+    {
+        var w = FrameWriter.Rent();
+        var nino = w.Nino;
+        NinoSerializer.Serialize(message, ref nino);
+        sink.SendReply(requestId, status, w);
+    }
+}
+
 /// <summary>
 /// Per-message context passed to generated dispatchers. A small struct: no allocation per call.
 /// Inside a handler, <see cref="Current"/> exposes it until the handler's first <c>await</c>.
@@ -27,20 +32,14 @@ public readonly struct CallContext
 
     public readonly IReplySink? Sink;
     public readonly uint RequestId;
-    public readonly uint MessageId;
-
-    /// <summary>Actor key of the target (0 for services).</summary>
-    public readonly long Key;
 
     /// <summary>Client session that originated the call (through a gateway), or default for server-internal calls.</summary>
     public readonly SessionRef CallerSession;
 
-    public CallContext(IReplySink? sink, uint requestId, uint messageId, long key, SessionRef caller)
+    public CallContext(IReplySink? sink, uint requestId, SessionRef caller)
     {
         Sink = sink;
         RequestId = requestId;
-        MessageId = messageId;
-        Key = key;
         CallerSession = caller;
     }
 
@@ -73,18 +72,6 @@ public readonly struct CallContext
         return AwaitReply(task, this);
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public ValueTask Reply(ValueTask task)
-    {
-        if (task.IsCompletedSuccessfully)
-        {
-            ReplyEmpty();
-            return default;
-        }
-
-        return AwaitReply(task, this);
-    }
-
     public void ReplyValue<T>(T value)
     {
         if (!ExpectsReply) return;
@@ -104,19 +91,9 @@ public readonly struct CallContext
         Sink!.SendReply(RequestId, RpcStatus.Ok, w);
     }
 
-    public void ReplyEmpty()
-    {
-        if (!ExpectsReply) return;
-        Sink!.SendReply(RequestId, RpcStatus.Ok, FrameWriter.Rent(FrameHeader.Size));
-    }
-
     public void ReplyError(RpcStatus status, string? message)
     {
-        if (!ExpectsReply) return;
-        var w = FrameWriter.Rent();
-        var nino = w.Nino;
-        NinoSerializer.Serialize(message, ref nino);
-        Sink!.SendReply(RequestId, status, w);
+        if (ExpectsReply) Sink!.SendError(RequestId, status, message);
     }
 
     public void ReplyException(Exception e)
@@ -142,21 +119,5 @@ public readonly struct CallContext
         }
 
         context.ReplyValue(value);
-    }
-
-    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
-    private static async ValueTask AwaitReply(ValueTask task, CallContext context)
-    {
-        try
-        {
-            await task.ConfigureAwait(true);
-        }
-        catch (Exception e)
-        {
-            context.ReplyException(e);
-            return;
-        }
-
-        context.ReplyEmpty();
     }
 }

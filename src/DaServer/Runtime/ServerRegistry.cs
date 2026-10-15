@@ -1,9 +1,3 @@
-using System;
-using System.Collections.Generic;
-using System.Runtime.CompilerServices;
-using DaServer.Rpc;
-using EasyEcs;
-
 namespace DaServer.Runtime;
 
 /// <summary>A hosted actor or service implementation and the messages it handles (generated registration).</summary>
@@ -69,7 +63,4 @@ public static class ServerRegistry
     {
         get { lock (Gate) return SystemList.ToArray(); }
     }
-
-    /// <summary>Make sure the generated module initializer of <paramref name="type"/>'s assembly has run.</summary>
-    public static void EnsureLoaded(Type type) => RuntimeHelpers.RunModuleConstructor(type.Module.ModuleHandle);
 }

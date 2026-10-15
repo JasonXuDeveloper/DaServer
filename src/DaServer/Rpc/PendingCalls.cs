@@ -1,17 +1,13 @@
-using System;
-using System.Diagnostics;
-using System.Threading;
-using System.Threading.Tasks;
 using System.Threading.Tasks.Sources;
-using DaServer.Concurrency;
-using DaServer.Protocol;
-using Nino.Core;
 
 namespace DaServer.Rpc;
 
 /// <summary>A call waiting for its response.</summary>
 public interface IPendingCall
 {
+    /// <summary>Shard of the caller: the response is completed on that shard thread (null: completed inline).</summary>
+    Shard? CallerShard { get; }
+
     /// <summary>Complete with a response. Runs on an IO thread; payload is only valid during the call.</summary>
     void Complete(RpcStatus status, ReadOnlySpan<byte> payload);
 
@@ -52,10 +48,6 @@ public sealed class PendingCallTable
         for (int i = 0; i < size; i++) _free.TryEnqueue(i);
     }
 
-    public int Capacity => _entries.Length;
-
-    /// <summary>Approximate number of in-flight calls.</summary>
-    public int Count => _entries.Length - _free.Count;
 
     /// <param name="owner">Optional owner (e.g. the connection) for <see cref="FailOwnedBy"/>.</param>
     public uint Register(IPendingCall call, int timeoutMs, object? owner = null)
@@ -162,8 +154,12 @@ public sealed class PendingCallTable
     }
 }
 
+/// <summary>Reply type of calls that return no value (control calls): nothing is deserialized.</summary>
+internal readonly struct NoReply;
+
 /// <summary>
-/// Pooled, allocation-free awaitable for an in-flight call.
+/// Pooled, allocation-free awaitable for an in-flight call returning <typeparamref name="T"/> (<see cref="Task"/>), or
+/// nothing (<see cref="Done"/>, with <see cref="NoReply"/>).
 /// <para>Completion threading: when the caller is a shard thread (<see cref="CallerShard"/> set at creation) the
 /// runtime completes the call <b>on that shard thread</b> (the response is posted to the shard's mailbox), so the
 /// continuation runs inline there: no SynchronizationContext.Post, no thread-pool hop, no allocation. Callers outside
@@ -171,8 +167,9 @@ public sealed class PendingCallTable
 /// (<see cref="IThreadPoolWorkItem"/>), so that path allocates nothing either.</para>
 /// ExecutionContext (AsyncLocal) is intentionally not flowed across RPC awaits.
 /// </summary>
-public abstract class PendingCallBase : IPendingCall, IThreadPoolWorkItem
+public sealed class PendingCall<T> : IPendingCall, IValueTaskSource<T>, IValueTaskSource, IThreadPoolWorkItem
 {
+    private static readonly ObjectPool<PendingCall<T>> Pool = new(() => new PendingCall<T>(), 1024);
     private static readonly Action<object?> CompletedSentinel = static _ => { };
 
     private Action<object?>? _continuation;
@@ -180,18 +177,55 @@ public abstract class PendingCallBase : IPendingCall, IThreadPoolWorkItem
     private object? _continuationState;
     private SynchronizationContext? _capturedContext;
     private Exception? _error;
+    private T _result = default!;
     private short _version;
 
-    /// <summary>Shard of the caller (null when the call was made outside any shard thread).</summary>
-    public object? CallerShard { get; protected set; }
+    private PendingCall()
+    {
+    }
 
-    protected short Version => _version;
+    public static PendingCall<T> Rent(Shard? caller)
+    {
+        var call = Pool.Rent();
+        call.CallerShard = caller;
+        return call;
+    }
 
-    public abstract void Complete(RpcStatus status, ReadOnlySpan<byte> payload);
+    public Shard? CallerShard { get; private set; }
 
-    public void Fail(RpcException error) => SetException(error);
+    public ValueTask<T> Task => new(this, _version);
 
-    protected void SetException(Exception error)
+    /// <summary>The call as a <see cref="ValueTask"/> (calls without a reply value).</summary>
+    public ValueTask Done => new(this, _version);
+
+    public void Complete(RpcStatus status, ReadOnlySpan<byte> payload)
+    {
+        if (status != RpcStatus.Ok)
+        {
+            Fail(RpcErrors.FromPayload(status, payload));
+            return;
+        }
+
+        if (typeof(T) != typeof(NoReply))
+        {
+            try
+            {
+                var reader = new Reader(payload);
+                NinoDeserializer.Deserialize(out _result, ref reader);
+            }
+            catch (Exception e)
+            {
+                Fail(e);
+                return;
+            }
+        }
+
+        Signal();
+    }
+
+    public void Fail(RpcException error) => Fail((Exception)error);
+
+    private void Fail(Exception error)
     {
         _error = error;
         Signal();
@@ -202,20 +236,16 @@ public abstract class PendingCallBase : IPendingCall, IThreadPoolWorkItem
     /// one atomic state (<see cref="CompletedSentinel"/>): with a separate flag the awaiter could see it, reset this
     /// pooled object and register the next call's continuation before the exchange, which would then run it early.
     /// </summary>
-    protected void Signal()
+    private void Signal()
     {
         var continuation = Interlocked.Exchange(ref _continuation, CompletedSentinel);
-        if (continuation != null)
-            Invoke(continuation, _continuationState);
-    }
+        if (continuation == null) return;
 
-    private void Invoke(Action<object?> continuation, object? state)
-    {
         var context = _capturedContext;
         if (context != null)
-            PostTo(context, continuation, state); // foreign UI-style contexts only
+            PostTo(context, continuation, _continuationState); // foreign UI-style contexts only
         else if (CallerShard != null)
-            continuation(state); // completed on the caller's shard thread
+            continuation(_continuationState); // completed on the caller's shard thread
         else
             Queue(continuation);
     }
@@ -238,7 +268,7 @@ public abstract class PendingCallBase : IPendingCall, IThreadPoolWorkItem
     private static void PostTo(SynchronizationContext context, Action<object?> continuation, object? state) =>
         context.Post(static s => ((Action)s!)(), (Action)(() => continuation(state)));
 
-    protected ValueTaskSourceStatus Status(short token)
+    public ValueTaskSourceStatus GetStatus(short token)
     {
         if (token != _version) throw new InvalidOperationException("Stale ValueTask token");
         if (!ReferenceEquals(Volatile.Read(ref _continuation), CompletedSentinel)) return ValueTaskSourceStatus.Pending;
@@ -246,7 +276,7 @@ public abstract class PendingCallBase : IPendingCall, IThreadPoolWorkItem
             : _error is OperationCanceledException ? ValueTaskSourceStatus.Canceled : ValueTaskSourceStatus.Faulted;
     }
 
-    protected void OnCompletedCore(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags)
+    public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags)
     {
         if (token != _version) throw new InvalidOperationException("Stale ValueTask token");
 
@@ -258,125 +288,29 @@ public abstract class PendingCallBase : IPendingCall, IThreadPoolWorkItem
         }
 
         _continuationState = state;
-        var previous = Interlocked.CompareExchange(ref _continuation, continuation, null);
-        if (previous != null)
-        {
-            // Completed between the awaiter's IsCompleted check and now: never run inline from OnCompleted.
-            Queue(continuation);
-        }
+        if (Interlocked.CompareExchange(ref _continuation, continuation, null) != null)
+            Queue(continuation); // completed between the awaiter's IsCompleted check and now: never run inline here
     }
 
-    /// <summary>Throw the stored error (if any) and reset for reuse.</summary>
-    protected void FinishAndReset(short token)
+    /// <summary>Return the result (or throw the stored error) and reset for reuse.</summary>
+    public T GetResult(short token)
     {
         if (token != _version) throw new InvalidOperationException("Stale ValueTask token");
-        var error = _error;
+        var (result, error) = (_result, _error);
+        _result = default!;
         _error = null;
         _continuation = null;
         _continuationState = null;
         _capturedContext = null;
         CallerShard = null;
         _version++;
-        Return();
+        Pool.Return(this);
         if (error != null)
             System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(error);
-    }
-
-    protected abstract void Return();
-}
-
-/// <summary>Pooled awaitable for a call returning <typeparamref name="T"/>.</summary>
-public sealed class PendingCall<T> : PendingCallBase, IValueTaskSource<T>
-{
-    private static readonly ObjectPool<PendingCall<T>> Pool = new(() => new PendingCall<T>(), 1024);
-
-    private T _result = default!;
-
-    private PendingCall()
-    {
-    }
-
-    public static PendingCall<T> Rent(object? callerWorld)
-    {
-        var call = Pool.Rent();
-        call.CallerShard = callerWorld;
-        return call;
-    }
-
-    public ValueTask<T> Task => new(this, Version);
-
-    public override void Complete(RpcStatus status, ReadOnlySpan<byte> payload)
-    {
-        if (status != RpcStatus.Ok)
-        {
-            SetException(RpcErrors.FromPayload(status, payload));
-            return;
-        }
-
-        try
-        {
-            var reader = new Reader(payload);
-            NinoDeserializer.Deserialize(out _result, ref reader);
-        }
-        catch (Exception e)
-        {
-            SetException(e);
-            return;
-        }
-
-        Signal();
-    }
-
-    T IValueTaskSource<T>.GetResult(short token)
-    {
-        var result = _result;
-        _result = default!;
-        FinishAndReset(token);
         return result;
     }
 
-    ValueTaskSourceStatus IValueTaskSource<T>.GetStatus(short token) => Status(token);
-
-    void IValueTaskSource<T>.OnCompleted(Action<object?> continuation, object? state, short token,
-        ValueTaskSourceOnCompletedFlags flags) => OnCompletedCore(continuation, state, token, flags);
-
-    protected override void Return() => Pool.Return(this);
-}
-
-/// <summary>Pooled awaitable for a call returning no value.</summary>
-public sealed class PendingCall : PendingCallBase, IValueTaskSource
-{
-    private static readonly ObjectPool<PendingCall> Pool = new(() => new PendingCall(), 1024);
-
-    private PendingCall()
-    {
-    }
-
-    public static PendingCall Rent(object? callerWorld)
-    {
-        var call = Pool.Rent();
-        call.CallerShard = callerWorld;
-        return call;
-    }
-
-    public ValueTask Task => new(this, Version);
-
-    public override void Complete(RpcStatus status, ReadOnlySpan<byte> payload)
-    {
-        if (status != RpcStatus.Ok)
-            SetException(RpcErrors.FromPayload(status, payload));
-        else
-            Signal();
-    }
-
-    void IValueTaskSource.GetResult(short token) => FinishAndReset(token);
-
-    ValueTaskSourceStatus IValueTaskSource.GetStatus(short token) => Status(token);
-
-    void IValueTaskSource.OnCompleted(Action<object?> continuation, object? state, short token,
-        ValueTaskSourceOnCompletedFlags flags) => OnCompletedCore(continuation, state, token, flags);
-
-    protected override void Return() => Pool.Return(this);
+    void IValueTaskSource.GetResult(short token) => GetResult(token);
 }
 
 /// <summary>Encoding of error payloads (a Nino string message).</summary>

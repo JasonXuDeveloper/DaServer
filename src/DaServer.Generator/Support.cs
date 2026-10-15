@@ -1,6 +1,3 @@
-using System.Linq;
-using Microsoft.CodeAnalysis;
-
 namespace DaServer.Generator;
 
 /// <summary>Shared helpers of the DaServer generators and analyzer.</summary>
@@ -39,9 +36,6 @@ internal static class Support
 
         return hash == 0 ? 1u : hash;
     }
-
-    public static bool Implements(ITypeSymbol type, string interfaceName) =>
-        type.AllInterfaces.Any(i => i.ToDisplayString() == interfaceName);
 
     public static bool HasAttribute(ISymbol symbol, string attributeName) => GetAttribute(symbol, attributeName) != null;
 
