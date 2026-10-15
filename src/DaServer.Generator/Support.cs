@@ -19,7 +19,7 @@ internal static class Support
     /// <summary>Who a message travels between, besides servers (bits of <see cref="Shapes.FlowOf"/>).</summary>
     public const int FlowFromClient = 1, FlowToClient = 2;
     public const string WireIdAttribute = "DaServer.WireIdAttribute";
-    public const string RequestInterface = "DaServer.IRequest<TReply>";
+    public const string RequestInterface = "DaServer.IRequest`1";
     public const string NinoTypeAttribute = "Nino.Core.NinoTypeAttribute";
     public const string ActorBase = "DaServer.Runtime.Actor";
     public const string ServiceBase = "DaServer.Runtime.Service";
@@ -44,14 +44,66 @@ internal static class Support
 
     public static bool HasAttribute(ISymbol symbol, string attributeName) => GetAttribute(symbol, attributeName) != null;
 
-    public static AttributeData? GetAttribute(ISymbol symbol, string attributeName) =>
-        symbol.GetAttributes().FirstOrDefault(a => a.AttributeClass?.ToDisplayString() == attributeName);
+    public static AttributeData? GetAttribute(ISymbol symbol, string attributeName)
+    {
+        foreach (var attribute in symbol.GetAttributes())
+            if (Is(attribute.AttributeClass, attributeName)) return attribute;
+        return null;
+    }
 
     public static bool DerivesFrom(ITypeSymbol type, string baseName)
     {
         for (var b = type.BaseType; b != null; b = b.BaseType)
-            if (b.ToDisplayString() == baseName || b.ConstructedFrom.ToDisplayString() == baseName) return true;
+            if (Is(b, baseName)) return true;
         return false;
+    }
+
+    public static bool Implements(ITypeSymbol type, string interfaceName)
+    {
+        foreach (var i in type.AllInterfaces)
+            if (Is(i, interfaceName)) return true;
+        return false;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="type"/> (its definition, for constructed generics) is the top-level type
+    /// <paramref name="fullName"/> (metadata name: <c>Ns.Type</c>, generics with their arity, <c>DaServer.IRequest`1</c>).
+    /// Compares name segments in place: symbol checks run for every type and call site of a compilation, so they
+    /// allocate nothing (unlike comparing display strings).
+    /// </summary>
+    public static bool Is(ITypeSymbol? type, string fullName)
+    {
+        if (type == null || type.ContainingType != null) return false;
+        int end = fullName.Length;
+        if (!TrimSegment(fullName, ref end, type.OriginalDefinition.MetadataName)) return false;
+        for (var ns = type.ContainingNamespace; ns is { IsGlobalNamespace: false }; ns = ns.ContainingNamespace)
+            if (end == 0 || !TrimSegment(fullName, ref end, ns.Name)) return false;
+        return end == 0;
+    }
+
+    /// <summary>Whether <paramref name="text"/> ends (before <paramref name="end"/>) with "." + segment or is it; moves end before it.</summary>
+    private static bool TrimSegment(string text, ref int end, string segment)
+    {
+        int start = end - segment.Length;
+        if (start < 0 || string.CompareOrdinal(text, start, segment, 0, segment.Length) != 0) return false;
+        if (start == 0)
+        {
+            end = 0;
+            return true;
+        }
+
+        if (text[start - 1] != '.') return false;
+        end = start - 1;
+        return true;
+    }
+
+    /// <summary>Whether <paramref name="type"/> is declared in namespace System or below it.</summary>
+    public static bool InSystemNamespace(ITypeSymbol type)
+    {
+        var ns = type.ContainingNamespace;
+        if (ns == null || ns.IsGlobalNamespace) return false;
+        while (ns.ContainingNamespace is { IsGlobalNamespace: false } outer) ns = outer;
+        return ns.Name == "System";
     }
 
     /// <summary>A valid C# identifier derived from <paramref name="text"/> (e.g. an assembly name).</summary>
