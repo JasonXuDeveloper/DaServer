@@ -1,6 +1,6 @@
 namespace DaServer.Tests;
 
-/// <summary>Cluster events: keyed delivery to actor activations, once per handling service implementation.</summary>
+/// <summary>Cluster events: keyed delivery to loaded actors, once per handling service handler type.</summary>
 public class EventTests : ClusterTest
 {
     [SetUp]

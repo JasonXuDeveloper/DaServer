@@ -120,7 +120,7 @@ internal static class Rules
         DiagnosticSeverity.Error, true, customTags: WellKnownDiagnosticTags.CompilationEnd);
 
     public static readonly DiagnosticDescriptor NoDefaultConstructor = new("DAS005", "Missing parameterless constructor",
-        "'{0}' must have a public parameterless constructor (the runtime creates one instance per shard/activation)",
+        "'{0}' must have a public parameterless constructor (the runtime creates one instance per shard/loaded actor)",
         Category, DiagnosticSeverity.Error, true);
 
     public static readonly DiagnosticDescriptor WrongFlow = new("DAS006", "Message used against its flow",

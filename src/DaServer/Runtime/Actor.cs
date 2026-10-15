@@ -1,9 +1,9 @@
 namespace DaServer.Runtime;
 
 /// <summary>
-/// Base class of stateful, keyed actors: one activation per key in the cluster, placed by rendezvous hashing over the
+/// Base class of stateful, keyed actors: one loaded actor per key in the cluster, placed by rendezvous hashing over the
 /// nodes hosting the type, loaded on demand, one message at a time. Messages arrive at its [Handle] methods
-/// (<c>Cluster.Send(key, msg)</c>, <c>Cluster.Ask(key, request)</c>). An activation is an entity of its shard's ECS
+/// (<c>Cluster.Send(key, msg)</c>, <c>Cluster.Ask(key, request)</c>). A loaded actor is an entity of its shard's ECS
 /// world: keep state in components on <see cref="Entity"/> so shard systems can process every actor of the shard in one
 /// pass. Messages run on the shard thread one at a time, awaits included (no locks).
 /// </summary>
@@ -14,10 +14,10 @@ public abstract class Actor : ShardObject
     public long Key { get; internal set; }
 
     /// <summary>
-    /// The activation's client group: sessions bound to it (<see cref="BindSession"/>) or that joined it receive
+    /// The actor's client group: sessions bound to it (<see cref="BindSession"/>) or that joined it receive
     /// messages sent to it (<c>Cluster.Send(Group, new Moved(..))</c>). Distinct per actor type and key.
     /// </summary>
-    public ClientGroup Group => ClientGroup.Of(Implementation.Id, Key);
+    public ClientGroup Group => ClientGroup.Of(HandlerType.Id, Key);
 
     /// <summary>
     /// Bind a client session to this actor: the client's messages handled by this actor type reach this key (the
@@ -28,18 +28,18 @@ public abstract class Actor : ShardObject
     protected ValueTask BindSession(SessionRef session)
     {
         ShardDispatch.RecordSession(Entity, session);
-        return Shard.Node.BindSession(session, Implementation.Id, Key, bind: true);
+        return Shard.Node.BindSession(session, HandlerType.Id, Key, bind: true);
     }
 
     /// <summary>Remove the session's binding to this actor type (it also leaves <see cref="Group"/>).</summary>
-    protected ValueTask UnbindSession(SessionRef session) => Shard.Node.BindSession(session, Implementation.Id, Key, bind: false);
+    protected ValueTask UnbindSession(SessionRef session) => Shard.Node.BindSession(session, HandlerType.Id, Key, bind: false);
 
-    internal ImplementationInfo Implementation { get; set; } = null!;
+    internal HandlerTypeInfo HandlerType { get; set; } = null!;
 
     /// <summary>Client session of the message whose turn is running (kept across its awaits: turns never interleave).</summary>
     internal SessionRef TurnCaller;
 
-    /// <summary>The activation's entity (carries an <see cref="ActorLink"/> back to this object).</summary>
+    /// <summary>The actor's entity (carries an <see cref="ActorRef"/> back to this object).</summary>
     public Entity Entity { get; internal set; }
 
     /// <summary>
@@ -61,7 +61,7 @@ public abstract class Actor : ShardObject
     /// </summary>
     public virtual TimeSpan UnloadAfterIdle => TimeSpan.Zero;
 
-    /// <summary>Components every activation starts with (the entity already has <see cref="ActorLink"/>).</summary>
+    /// <summary>Components every loaded actor starts with (the entity already has <see cref="ActorRef"/>).</summary>
     internal virtual void InitializeEntity(Entity entity)
     {
     }
@@ -81,10 +81,10 @@ public abstract class Actor<TState> : Actor where TState : struct, IComponent
 }
 
 /// <summary>
-/// The activation an actor entity belongs to: systems read its key and client group from it
-/// (<c>[ForEach] static void Send(ref MapGrid grid, in ActorLink actor, World world) => .. actor.Key ..</c>).
+/// The loaded actor an actor entity belongs to: systems read its key and client group from it
+/// (<c>[ForEach] static void Send(ref MapGrid grid, in ActorRef actor, World world) => .. actor.Key ..</c>).
 /// </summary>
-public readonly record struct ActorLink(Actor Actor) : IComponent
+public readonly record struct ActorRef(Actor Actor) : IComponent
 {
     /// <summary>The actor's key (<see cref="Runtime.Actor.Key"/>).</summary>
     public long Key => Actor.Key;
@@ -92,5 +92,5 @@ public readonly record struct ActorLink(Actor Actor) : IComponent
     /// <summary>The actor's client group (<see cref="Runtime.Actor.Group"/>).</summary>
     public ClientGroup Group => Actor.Group;
 
-    internal ActorId Id => new(Actor.Implementation.Id, Actor.Key);
+    internal ActorId Id => new(Actor.HandlerType.Id, Actor.Key);
 }

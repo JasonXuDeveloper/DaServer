@@ -1,6 +1,6 @@
 namespace DaServer.Tests;
 
-/// <summary>Multi-node behaviour over real loopback TCP: discovery, routing, single activation, failover.</summary>
+/// <summary>Multi-node behaviour over real loopback TCP: discovery, routing, single loaded actor, failover.</summary>
 public class ClusterTests : ClusterTest
 {
     [Test]
@@ -13,7 +13,7 @@ public class ClusterTests : ClusterTest
         for (long key = 1; key <= 30; key++)
         {
             foreach (var node in nodes) await node.Ask(key, new Add(1));
-            Assert.That(await nodes[0].Ask(key, new Get()), Is.EqualTo(3), $"key {key} has more than one activation");
+            Assert.That(await nodes[0].Ask(key, new Get()), Is.EqualTo(3), $"key {key} has more than one loaded actor");
         }
 
         var owners = Enumerable.Range(1, 30).Select(k => OwnerOf<Counter>(nodes[0], k));
@@ -41,7 +41,7 @@ public class ClusterTests : ClusterTest
     public async Task MembersAdvertiseTheContractsTheyHost()
     {
         var (a, _) = await StartPair();
-        Assert.That(a.View.UpMembers.All(m => m.Handlers.Any(h => h.ImplementationId == ImplementationId<Counter>())));
+        Assert.That(a.View.UpMembers.All(m => m.Handlers.Any(h => h.HandlerTypeId == HandlerTypeId<Counter>())));
     }
 
     [Test]
@@ -51,7 +51,7 @@ public class ClusterTests : ClusterTest
         long key = KeyOwnedBy<Counter>(b);
         Assert.That(await a.Ask(key, new Add(7)), Is.EqualTo(7));
 
-        await Stop(b); // graceful: Leaving is gossiped, b deactivates its actors
+        await Stop(b); // graceful: Leaving is gossiped, b unloads its actors
         await Eventually(() => a.View.UpMembers.Length == 1, "a still sees b as Up");
 
         // Reactivated on a; in-memory state is gone (persist it in OnUnload / load in OnLoad).

@@ -11,7 +11,7 @@ public sealed partial class Node : IConnectionHandler
     internal IConnectionHandler ClusterHandler => this;
 
     /// <summary>
-    /// Route a request whose payload is already written to the implementation of the kind handling
+    /// Route a request whose payload is already written to the handler type of the kind handling
     /// <paramref name="messageId"/>. Exactly one of <paramref name="call"/> (local caller) or <paramref name="relaySink"/>
     /// (forwarding a request made elsewhere, answered to that sink under <paramref name="relayRequestId"/>) is set.
     /// Takes ownership of <paramref name="frame"/>.
@@ -45,7 +45,7 @@ public sealed partial class Node : IConnectionHandler
 
             if (local)
             {
-                Admit(SelectShard(route.ImplementationId, actor, key), frame, _localSink);
+                Admit(SelectShard(route.HandlerTypeId, actor, key), frame, _localSink);
             }
             else
             {
@@ -92,14 +92,14 @@ public sealed partial class Node : IConnectionHandler
     }
 
     /// <summary>
-    /// Shard of an actor (stable hash of implementation and key: every message of an activation reaches the shard
+    /// Shard of an actor (stable hash of handler type and key: every message of a loaded actor reaches the shard
     /// that holds it) or of a service message (the calling shard when local, else round robin).
     /// </summary>
-    private Shard SelectShard(uint implementationId, bool actor, long key)
+    private Shard SelectShard(uint handlerTypeId, bool actor, long key)
     {
         var shards = _shards;
         if (actor)
-            return shards[(int)(ClusterView.Weight((ulong)shards.Length, implementationId, key) % (ulong)shards.Length)];
+            return shards[(int)(ClusterView.Weight((ulong)shards.Length, handlerTypeId, key) % (ulong)shards.Length)];
 
         var current = Shard.Current;
         if (current != null && current.Node == this) return current;

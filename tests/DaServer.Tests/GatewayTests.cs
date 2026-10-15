@@ -63,7 +63,7 @@ public class GatewayTests : ClusterTest
         client.Register(inbox);
         await client.Ask(new Login(42));
 
-        gateway.Send(ClientGroup.Of(ImplementationId<Player>(), 42), new GoldChanged(7)); // the player's Group: joined by BindSession
+        gateway.Send(ClientGroup.Of(HandlerTypeId<Player>(), 42), new GoldChanged(7)); // the player's Group: joined by BindSession
         await Eventually(() => inbox.Gold == 7, "the bound session is not in the actor's group");
     }
 

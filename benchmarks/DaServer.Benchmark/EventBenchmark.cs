@@ -3,7 +3,7 @@ namespace DaServer.Benchmark;
 /// <summary>
 /// Keyed cluster events: a burst of <see cref="Burst"/> events published to 64 actors owned by the publishing node
 /// (shard mailboxes) or by another node (TCP link), fully handled. One operation = one event (published, routed by
-/// key, delivered to the activation's mailbox, handled).
+/// key, delivered to the actor's mailbox, handled).
 /// </summary>
 [MemoryDiagnoser]
 public class EventBenchmark
@@ -29,7 +29,7 @@ public class EventBenchmark
         for (int i = 0; i < Actors; i++)
         {
             _keys[i] = key = Clusters.KeyOwnedBy<Counter>(publisher, owner, key + 1);
-            publisher.Ask(key, new Add(0)).AsTask().GetAwaiter().GetResult(); // activate
+            publisher.Ask(key, new Add(0)).AsTask().GetAwaiter().GetResult(); // load the actor
         }
     }
 

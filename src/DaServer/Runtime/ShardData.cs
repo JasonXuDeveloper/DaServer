@@ -1,6 +1,6 @@
 namespace DaServer.Runtime;
 
-// The shard runtime is ECS like the business code: every actor activation is an entity, its mailbox and running turn
+// The shard runtime is ECS like the business code: every actor is an entity, its mailbox and running turn
 // are components, the shard's directories and queues are singletons, and runtime systems (Systems/) each do one job.
 
 /// <summary>
@@ -19,7 +19,7 @@ internal struct ShardIdleScan : ISystemGroup;
 /// <summary>A message for an actor or service: the frame and where its response goes.</summary>
 internal readonly record struct Envelope(FrameWriter Frame, IReplySink? Sink);
 
-internal readonly record struct ActorId(uint ImplementationId, long Key);
+internal readonly record struct ActorId(uint HandlerTypeId, long Key);
 
 // ---------------------------------------------------------------- actor components
 
@@ -55,22 +55,22 @@ internal struct TurnEnded : IComponent;
 internal struct Loading : IComponent;
 
 /// <summary>Tag: the actor must leave this shard (not owned here, idle, stopping); it starts unloading once idle.</summary>
-internal struct Unloading : IComponent;
+internal struct UnloadRequested : IComponent;
 
 /// <summary>Tag: the turn is <see cref="Actor.OnUnload"/>; mail arriving meanwhile is forwarded afterwards.</summary>
-internal struct Deactivating : IComponent;
+internal struct Unloading : IComponent;
 
 /// <summary>
-/// The activation ends: its entity is destroyed and its remaining mail routed again (<see cref="RpcStatus.Ok"/>, to the
+/// The loaded actor ends: its entity is destroyed and its remaining mail routed again (<see cref="RpcStatus.Ok"/>, to the
 /// new owner) or failed with <see cref="Status"/>.
 /// </summary>
-internal readonly record struct Retiring(RpcStatus Status, string? Message) : IComponent;
+internal readonly record struct Removing(RpcStatus Status, string? Message) : IComponent;
 
 /// <summary>Tag: the entity is an asynchronous service call (services are stateless, so their calls may overlap).</summary>
 internal struct ServiceCall : IComponent;
 
 /// <summary>
-/// Client sessions known to an activation: those that called it through a gateway, or that it bound to itself. When a
+/// Client sessions known to a loaded actor: those that called it through a gateway, or that it bound to itself. When a
 /// gateway dies without closing its sessions, the runtime delivers <see cref="SessionClosed"/> for them. Superseded:
 /// sessions a client resumed from (<see cref="SessionResync"/>), whose late close is not delivered.
 /// </summary>
@@ -78,13 +78,13 @@ internal readonly record struct ClientSessions(HashSet<SessionRef> Sessions, Has
 
 // ---------------------------------------------------------------- shard singletons
 
-/// <summary>Activations of this shard by id.</summary>
+/// <summary>Loaded actors of this shard by id.</summary>
 internal readonly record struct ActorDirectory(Dictionary<ActorId, Entity> Actors) : ISingletonComponent;
 
 /// <summary>Idle <see cref="TurnWatcher"/>s (bounded by the turns in flight).</summary>
 internal readonly record struct TurnWatchers(Stack<TurnWatcher> Pool) : ISingletonComponent;
 
-/// <summary>This shard's service instances by implementation id.</summary>
+/// <summary>This shard's service instances by handler type id.</summary>
 internal readonly record struct ServiceDirectory(Dictionary<uint, object> Services) : ISingletonComponent;
 
 /// <summary>Per-wake bookkeeping shared by the runtime systems and the shard loop.</summary>
@@ -99,14 +99,14 @@ internal struct ShardActivity : ISingletonComponent
     /// <summary>Ownership may have changed (membership view or shutdown): the shard runs <see cref="ShardRebalance"/>.</summary>
     public bool Rebalance;
 
-    /// <summary>The shard is stopping: every actor is deactivated, no new activation starts.</summary>
+    /// <summary>The shard is stopping: every actor is unloaded, no actor loads.</summary>
     public bool Stopping;
 
     /// <summary>
-    /// Deactivate every current activation once (the cluster declared this node Dead and moved its keys). New activations are allowed: they are legitimate once the node is Up again.
+    /// Unload every loaded actor once (the cluster declared this node Dead and moved its keys). New loads are allowed: they are legitimate once the node is Up again.
     /// </summary>
-    public bool RetireAll;
+    public bool DeclaredDead;
 
-    /// <summary>Every activation leaves on the next rebalance, owned here or not.</summary>
-    public readonly bool LeaveAll => Stopping || RetireAll;
+    /// <summary>Every loaded actor leaves on the next rebalance, owned here or not.</summary>
+    public readonly bool UnloadAll => Stopping || DeclaredDead;
 }

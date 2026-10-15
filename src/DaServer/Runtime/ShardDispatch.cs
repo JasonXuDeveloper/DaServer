@@ -11,7 +11,7 @@ internal static class ShardDispatch
 
     /// <summary>
     /// Route a received message (one-way or request): services run immediately; actor messages go to the owner's
-    /// mailbox (activating it on first use) or are forwarded when another node owns the key. Takes ownership of
+    /// mailbox (loading it on first use) or are forwarded when another node owns the key. Takes ownership of
     /// <paramref name="frame"/>.
     /// </summary>
     public static void Route(World world, FrameWriter frame, IReplySink? sink)
@@ -21,7 +21,7 @@ internal static class ShardDispatch
         bool request = header.Kind == FrameKind.Request;
         var impl = request
             ? node.RequestHandler(header.MessageId, (header.Flags & FrameFlags.ToActor) != 0)
-            : node.ImplementationById(header.RequestId);
+            : node.HandlerTypeById(header.RequestId);
         var handler = impl?.Handlers.Of(header.MessageId);
         if (handler == null)
         {
@@ -35,26 +35,26 @@ internal static class ShardDispatch
 
         if (!impl!.IsActor)
             Track(world, Invoke(handler.Dispatcher, ServiceOf(world, impl), frame, sink, world.Logger()));
-        else if (TryGetActivation(world, impl.Id, header.Key, out var existing))
-            Deliver(world, existing, new Envelope(frame, sink)); // even while deactivating: its mail moves in order
+        else if (TryGetLoaded(world, impl.Id, header.Key, out var existing))
+            Deliver(world, existing, new Envelope(frame, sink)); // even while unloading: its mail moves in order
         else if (!OwnsHere(world, node, impl.Id, header.Key))
             node.Forward(frame, sink);
         else
             Deliver(world, ActorOf(world, impl, header.Key), new Envelope(frame, sink));
     }
 
-    private static bool OwnsHere(World world, Node node, uint implementationId, long key) =>
-        node.IsLocalOwner(implementationId, key) && !world.GetSingleton<ShardActivity>().Stopping;
+    private static bool OwnsHere(World world, Node node, uint handlerTypeId, long key) =>
+        node.IsLocalOwner(handlerTypeId, key) && !world.GetSingleton<ShardActivity>().Stopping;
 
-    private static object ServiceOf(World world, ImplementationInfo impl) =>
+    private static object ServiceOf(World world, HandlerTypeInfo impl) =>
         world.GetSingleton<ServiceDirectory>().Services[impl.Id];
 
-    /// <summary>An activation of this shard, including one being deactivated (new mail queues behind its mail).</summary>
-    private static bool TryGetActivation(World world, uint implementationId, long key, out Entity actor) =>
-        world.GetSingleton<ActorDirectory>().Actors.TryGetValue(new ActorId(implementationId, key), out actor);
+    /// <summary>A loaded actor of this shard, including one being unloaded (new mail queues behind its mail).</summary>
+    private static bool TryGetLoaded(World world, uint handlerTypeId, long key, out Entity actor) =>
+        world.GetSingleton<ActorDirectory>().Actors.TryGetValue(new ActorId(handlerTypeId, key), out actor);
 
-    /// <summary>The activation of (<paramref name="impl"/>, <paramref name="key"/>) on this shard, activated on first use.</summary>
-    private static Entity ActorOf(World world, ImplementationInfo impl, long key)
+    /// <summary>The loaded actor of (<paramref name="impl"/>, <paramref name="key"/>) on this shard, loaded on first use.</summary>
+    private static Entity ActorOf(World world, HandlerTypeInfo impl, long key)
     {
         var id = new ActorId(impl.Id, key);
         var actors = world.GetSingleton<ActorDirectory>().Actors;
@@ -84,16 +84,16 @@ internal static class ShardDispatch
     }
 
     /// <summary>
-    /// Create the activation's entity (link, identity, mailbox, the actor's own components) and start
+    /// Create the actor's entity (link, identity, mailbox, the actor's own components) and start
     /// <see cref="Actor.OnLoad"/> as its first turn (<see cref="Loading"/>): mail waits until it completes.
     /// </summary>
-    private static Entity Activate(World world, ImplementationInfo impl, ActorId id)
+    private static Entity Activate(World world, HandlerTypeInfo impl, ActorId id)
     {
         var actor = (Actor)impl.Factory();
-        actor.Implementation = impl;
+        actor.HandlerType = impl;
         actor.Key = id.Key;
         actor.Shard = world.Shard();
-        var entity = world.CreateEntity(new ActorLink(actor), new Mailbox(new()) { LastActive = Environment.TickCount64 },
+        var entity = world.CreateEntity(new ActorRef(actor), new Mailbox(new()) { LastActive = Environment.TickCount64 },
             new Loading());
         actor.Entity = entity;
         var idle = actor.UnloadAfterIdle;
@@ -202,11 +202,11 @@ internal static class ShardDispatch
             RecordSession(actor.Entity, actor.TurnCaller);
         }
 
-        var dispatcher = actor.Implementation.Handlers.Of(header.MessageId)!.Dispatcher; // validated by Route
+        var dispatcher = actor.HandlerType.Handlers.Of(header.MessageId)!.Dispatcher; // validated by Route
         return Invoke(dispatcher, actor, envelope.Frame, envelope.Sink, actor.Shard.Node.Logger);
     }
 
-    /// <summary>Remember a client session of an activation (a hash lookup; allocates once per new session).</summary>
+    /// <summary>Remember a client session of a loaded actor (a hash lookup; allocates once per new session).</summary>
     internal static void RecordSession(Entity actor, SessionRef session)
     {
         SessionsOf(actor).Sessions.Add(session);
@@ -243,13 +243,13 @@ internal static class ShardDispatch
     }
 
     /// <summary>
-    /// A gateway died without closing its sessions: every activation of this shard that knew one of them receives
+    /// A gateway died without closing its sessions: every loaded actor of this shard that knew one of them receives
     /// <see cref="SessionClosed"/> (when it handles it), as if the gateway had closed the session.
     /// </summary>
     internal static void CloseSessionsOf(World world, ulong gatewayNodeId)
     {
         List<SessionRef>? lost = null;
-        foreach (var item in world.Query<ClientSessions, ActorLink>())
+        foreach (var item in world.Query<ClientSessions, ActorRef>())
         {
             var sessions = item.Component1.Sessions;
             item.Component1.Superseded.RemoveWhere(s => s.GatewayNodeId == gatewayNodeId); // their close will not come
@@ -259,13 +259,13 @@ internal static class ShardDispatch
             if (lost == null || lost.Count == 0) continue;
 
             var actor = item.Component2.Actor;
-            bool handles = actor.Implementation.Handlers.Of(MessageType<SessionClosed>.Id) != null;
+            bool handles = actor.HandlerType.Handlers.Of(MessageType<SessionClosed>.Id) != null;
             foreach (var session in lost)
             {
                 sessions.Remove(session);
                 if (!handles) continue;
                 var w = MessageWriter.Write(new SessionClosed(session));
-                w.SetHeader(FrameKind.Message, actor.Implementation.Id, MessageType<SessionClosed>.Id, actor.Key);
+                w.SetHeader(FrameKind.Message, actor.HandlerType.Id, MessageType<SessionClosed>.Id, actor.Key);
                 Deliver(world, item.Entity, new Envelope(w, null));
             }
         }

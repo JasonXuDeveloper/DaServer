@@ -9,14 +9,14 @@ public enum MemberStatus : byte
     Dead = 4,
 }
 
-/// <summary>A message type handled by an implementation hosted on a node (message routing and actor placement).</summary>
+/// <summary>A message type handled by a handler type hosted on a node (message routing and actor placement).</summary>
 [NinoType]
 public partial struct HostedHandler
 {
     public uint MessageId;
-    public uint ImplementationId;
+    public uint HandlerTypeId;
 
-    /// <summary>Actor implementation (delivered to the activation of the message key) rather than a service.</summary>
+    /// <summary>Actor handler type (delivered to the loaded actor of the message key) rather than a service.</summary>
     public bool Actor;
 }
 
@@ -37,7 +37,7 @@ public partial class ClusterMember
     /// <summary>Client (gateway) port, 0 when the node accepts no game clients.</summary>
     public int ClientPort;
 
-    /// <summary>Messages handled by the node's implementations.</summary>
+    /// <summary>Messages handled by the node's handler types.</summary>
     public HostedHandler[] Handlers = [];
 
     /// <summary>Bumped by the node itself to refute suspicion or announce a restart.</summary>

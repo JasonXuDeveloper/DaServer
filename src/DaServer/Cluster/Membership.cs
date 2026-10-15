@@ -35,12 +35,12 @@ internal static class ControlOp
     public const uint PickGateway = 4;
 
     // Session operations (to the session's gateway): Key = session id, RequestId = call to acknowledge (0: none),
-    // payload = scope (uint: actor implementation id for Bind/Unbind) + value (long: actor key or group id).
+    // payload = scope (uint: actor handler type id for Bind/Unbind) + value (long: actor key or group id).
 
-    /// <summary>Gateway: bind a session to an actor (scope = implementation id, value = key).</summary>
+    /// <summary>Gateway: bind a session to an actor (scope = handler type id, value = key).</summary>
     public const uint Bind = 10;
 
-    /// <summary>Gateway: remove the session's binding to an actor implementation.</summary>
+    /// <summary>Gateway: remove the session's binding to an actor handler type.</summary>
     public const uint Unbind = 11;
 
     /// <summary>Gateway: add a session to a group (payload = group id).</summary>
@@ -420,7 +420,7 @@ internal sealed class Membership : IDisposable
 
     /// <summary>
     /// Someone thinks we are suspect/dead: refute with a higher incarnation. Dead means the cluster already moved our
-    /// keys: retire our activations first so they do not run beside the new ones. Under the gate.
+    /// keys: remove our loaded actors first so they do not run beside the new ones. Under the gate.
     /// </summary>
     private void Refute(MemberStatus status, int incarnation)
     {
@@ -430,8 +430,8 @@ internal sealed class Membership : IDisposable
 
         if (status == MemberStatus.Dead)
         {
-            _node.Logger.LogWarning("Declared dead by the cluster: retiring local actors before rejoining");
-            foreach (var shard in _node.Shards) shard.RequestRetireAll();
+            _node.Logger.LogWarning("Declared dead by the cluster: removed local actors before rejoining");
+            foreach (var shard in _node.Shards) shard.RequestUnloadAll();
         }
 
         UpdateSelf(_self.Status, incarnation + 1);

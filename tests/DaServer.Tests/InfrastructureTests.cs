@@ -134,7 +134,7 @@ public class InfrastructureTests
         ClusterMember Member(ulong id) => new()
         {
             NodeId = id, Status = MemberStatus.Up,
-            Handlers = [new HostedHandler { MessageId = 7, ImplementationId = 70, Actor = true }],
+            Handlers = [new HostedHandler { MessageId = 7, HandlerTypeId = 70, Actor = true }],
         };
 
         var three = new ClusterView([Member(1), Member(2), Member(3)]);
@@ -143,9 +143,9 @@ public class InfrastructureTests
         int moved = 0;
         for (long key = 0; key < 10_000; key++)
         {
-            var before = three.ImplementationOwner(70, key)!.NodeId;
-            var after = four.ImplementationOwner(70, key)!.NodeId;
-            Assert.That(three.ImplementationOwner(70, key)!.NodeId, Is.EqualTo(before), "deterministic");
+            var before = three.HandlerTypeOwner(70, key)!.NodeId;
+            var after = four.HandlerTypeOwner(70, key)!.NodeId;
+            Assert.That(three.HandlerTypeOwner(70, key)!.NodeId, Is.EqualTo(before), "deterministic");
             if (before != after)
             {
                 moved++;

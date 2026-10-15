@@ -7,13 +7,13 @@ namespace DaServer.Cluster;
 public sealed class ClusterView
 {
     private readonly FrozenDictionary<ulong, ClusterMember> _members;
-    private readonly FrozenDictionary<uint, ClusterMember[]> _implementationNodes;
+    private readonly FrozenDictionary<uint, ClusterMember[]> _handlerTypeNodes;
     private readonly FrozenDictionary<uint, MessageRoute[]> _routes;
 
     public ClusterView(IEnumerable<ClusterMember> members)
     {
         var all = new Dictionary<ulong, ClusterMember>();
-        var implementations = new Dictionary<uint, List<ClusterMember>>();
+        var handlerTypes = new Dictionary<uint, List<ClusterMember>>();
         var handlers = new Dictionary<uint, Dictionary<uint, bool>>();
         var upMembers = new List<ClusterMember>();
 
@@ -21,7 +21,7 @@ public sealed class ClusterView
         {
             all[m.NodeId] = m;
 
-            // Keys stay with a Suspect member: a pause or a blip must not activate its actors a second time elsewhere.
+            // Keys stay with a Suspect member: a pause or a blip must not load its actors a second time elsewhere.
             // They move when it is Dead or Leaving. New stateless work (services) goes to Up members only.
             bool up = m.Status == MemberStatus.Up;
             if (!up && m.Status != MemberStatus.Suspect) continue;
@@ -30,26 +30,26 @@ public sealed class ClusterView
             foreach (var handler in m.Handlers)
             {
                 if (!up && !handler.Actor) continue;
-                if (!handlers.TryGetValue(handler.MessageId, out var byImplementation))
-                    handlers[handler.MessageId] = byImplementation = new();
-                byImplementation[handler.ImplementationId] = handler.Actor;
-                if (!implementations.TryGetValue(handler.ImplementationId, out var hosts))
-                    implementations[handler.ImplementationId] = hosts = new();
+                if (!handlers.TryGetValue(handler.MessageId, out var byHandlerType))
+                    handlers[handler.MessageId] = byHandlerType = new();
+                byHandlerType[handler.HandlerTypeId] = handler.Actor;
+                if (!handlerTypes.TryGetValue(handler.HandlerTypeId, out var hosts))
+                    handlerTypes[handler.HandlerTypeId] = hosts = new();
                 if (!hosts.Contains(m)) hosts.Add(m);
             }
         }
 
         _members = all.ToFrozenDictionary();
         UpMembers = upMembers.ToArray();
-        var implementationArrays = new Dictionary<uint, ClusterMember[]>();
-        foreach (var (k, v) in implementations) implementationArrays[k] = v.ToArray();
-        _implementationNodes = implementationArrays.ToFrozenDictionary();
+        var handlerTypeArrays = new Dictionary<uint, ClusterMember[]>();
+        foreach (var (k, v) in handlerTypes) handlerTypeArrays[k] = v.ToArray();
+        _handlerTypeNodes = handlerTypeArrays.ToFrozenDictionary();
         var routes = new Dictionary<uint, MessageRoute[]>();
-        foreach (var (messageId, byImplementation) in handlers)
+        foreach (var (messageId, byHandlerType) in handlers)
         {
             var list = new List<MessageRoute>();
-            foreach (var (implementation, actor) in byImplementation)
-                list.Add(new MessageRoute(implementation, actor, implementationArrays[implementation]));
+            foreach (var (handlerType, actor) in byHandlerType)
+                list.Add(new MessageRoute(handlerType, actor, handlerTypeArrays[handlerType]));
             routes[messageId] = list.ToArray();
         }
 
@@ -62,11 +62,11 @@ public sealed class ClusterView
 
     public bool TryGetMember(ulong nodeId, out ClusterMember member) => _members.TryGetValue(nodeId, out member!);
 
-    /// <summary>Every implementation handling message <paramref name="messageId"/> in the cluster, with the nodes hosting it.</summary>
+    /// <summary>Every handler type handling message <paramref name="messageId"/> in the cluster, with the nodes hosting it.</summary>
     public MessageRoute[] Routes(uint messageId) => _routes.TryGetValue(messageId, out var routes) ? routes : [];
 
     /// <summary>
-    /// The one implementation of the requested kind handling <paramref name="messageId"/> (actor handlers when
+    /// The one handler type of the requested kind handling <paramref name="messageId"/> (actor handlers when
     /// <paramref name="actor"/>, else services). False when none does; <paramref name="ambiguous"/> when several do
     /// (point-to-point messages have one handler, <c>Publish</c> reaches them all).
     /// </summary>
@@ -88,20 +88,20 @@ public sealed class ClusterView
     }
 
     /// <summary>
-    /// Owner of actor (<paramref name="implementationId"/>, <paramref name="key"/>) by rendezvous (highest random weight)
-    /// hashing over the Up and Suspect nodes hosting its implementation. Every node with the same view picks the same
+    /// Owner of actor (<paramref name="handlerTypeId"/>, <paramref name="key"/>) by rendezvous (highest random weight)
+    /// hashing over the Up and Suspect nodes hosting its handler type. Every node with the same view picks the same
     /// owner, and adding/removing a node only moves the keys that node wins/loses.
     /// </summary>
-    public ClusterMember? ImplementationOwner(uint implementationId, long key) =>
-        _implementationNodes.TryGetValue(implementationId, out var nodes) ? Rendezvous(nodes, implementationId, key) : null;
+    public ClusterMember? HandlerTypeOwner(uint handlerTypeId, long key) =>
+        _handlerTypeNodes.TryGetValue(handlerTypeId, out var nodes) ? Rendezvous(nodes, handlerTypeId, key) : null;
 
-    private static ClusterMember? Rendezvous(ClusterMember[] nodes, uint implementationId, long key)
+    private static ClusterMember? Rendezvous(ClusterMember[] nodes, uint handlerTypeId, long key)
     {
         ClusterMember? best = null;
         ulong bestWeight = 0;
         for (int i = 0; i < nodes.Length; i++)
         {
-            ulong weight = Weight(nodes[i].NodeId, implementationId, key);
+            ulong weight = Weight(nodes[i].NodeId, handlerTypeId, key);
             if (best == null || weight > bestWeight)
             {
                 best = nodes[i];
@@ -118,22 +118,22 @@ public sealed class ClusterView
     /// </summary>
     public ClusterMember? Target(in MessageRoute route, long key, ulong localNodeId, uint spread)
     {
-        if (route.Actor) return Rendezvous(route.Nodes, route.ImplementationId, key);
+        if (route.Actor) return Rendezvous(route.Nodes, route.HandlerTypeId, key);
         foreach (var node in route.Nodes)
             if (node.NodeId == localNodeId) return node;
         return route.Nodes.Length == 0 ? null : route.Nodes[(int)(spread % (uint)route.Nodes.Length)];
     }
 
-    /// <summary>SplitMix64-style mix of (node, implementation, key).</summary>
+    /// <summary>SplitMix64-style mix of (node, handler type, key).</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal static ulong Weight(ulong nodeId, uint implementationId, long key)
+    internal static ulong Weight(ulong nodeId, uint handlerTypeId, long key)
     {
-        ulong x = nodeId ^ ((ulong)key * 0x9E3779B97F4A7C15UL) ^ ((ulong)implementationId << 32);
+        ulong x = nodeId ^ ((ulong)key * 0x9E3779B97F4A7C15UL) ^ ((ulong)handlerTypeId << 32);
         x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9UL;
         x = (x ^ (x >> 27)) * 0x94D049BB133111EBUL;
         return x ^ (x >> 31);
     }
 }
 
-/// <summary>One implementation handling a message type, and the nodes hosting it.</summary>
-public readonly record struct MessageRoute(uint ImplementationId, bool Actor, ClusterMember[] Nodes);
+/// <summary>One handler type handling a message type, and the nodes hosting it.</summary>
+public readonly record struct MessageRoute(uint HandlerTypeId, bool Actor, ClusterMember[] Nodes);

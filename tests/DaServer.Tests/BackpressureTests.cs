@@ -12,7 +12,7 @@ public class BackpressureTests : ClusterTest
 
         int ok = statuses.Count(s => s == RpcStatus.Ok), overloaded = statuses.Count(s => s == RpcStatus.Overloaded);
         Assert.That(ok + overloaded, Is.EqualTo(50), "every call either ran or was refused");
-        // All 50 may arrive before the first turn starts (activation): then exactly the capacity is admitted.
+        // All 50 may arrive before the first turn starts (loaded actor): then exactly the capacity is admitted.
         Assert.That(ok, Is.InRange(4, 49), "the mailbox capacity was used");
         Assert.That(await node.Ask(1, new Get()), Is.EqualTo(ok), "refused calls did not run");
         Assert.That(node.Rejected, Is.EqualTo(overloaded));

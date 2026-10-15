@@ -11,7 +11,7 @@ namespace Sample.Contracts;
 /// <summary>Well-known actor keys.</summary>
 public static class Keys
 {
-    /// <summary>The realm actor (one activation for the whole cluster).</summary>
+    /// <summary>The realm actor (one loaded actor for the whole cluster).</summary>
     public const long Realm = 1;
 }
 

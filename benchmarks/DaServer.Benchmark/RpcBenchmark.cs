@@ -35,7 +35,7 @@ public class RpcBenchmark
         for (int i = 0; i < Concurrency; i++)
         {
             _keys[i] = key = Clusters.KeyOwnedBy<Counter>(caller, owner, key + 1);
-            caller.Ask(key, new Add(0)).AsTask().GetAwaiter().GetResult(); // activate
+            caller.Ask(key, new Add(0)).AsTask().GetAwaiter().GetResult(); // load the actor
         }
 
         _calls = new ValueTask<int>[Concurrency];
