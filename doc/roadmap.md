@@ -5,8 +5,8 @@ Keep this file current: tick items when done, add items when scope changes.
 ## Development order (agreed: one item at a time, each proven before the next)
 
 1. Z2 core hot paths (H3, H2 done): M1 status-only error frames, M6 bounded completion ring, M4, M7, low items in
-   core, missing core allocation tests. M2/M3/M5 move with the gateway (G step 7); H1 comes with N3b, H4 with N8.
-2. G0 + G1/G2 (re-sequenced step plan below): one message model (ADR-047), then the client edge as the optional
+   core, missing core allocation tests. M2/M3/M5 move with the gateway (G steps 6 and 8); H1 comes with N3b, H4 with N8.
+2. G0 + G1/G2 (step plan below): one message model (ADR-047), then the client edge as the optional
    `DaServer.Gateway` module, `DaServer.Abstractions` split.
 3. T2 ECS bots and business isolation (bots use the gateway module).
 4. N2 `SendAfter` (the delayed send primitive, per-shard timer wheel), N3 call cycles fail fast (`Chain` header
@@ -30,8 +30,12 @@ EasyEcs in parallel when DaServer waits on benchmarks: the Friflo gap, compariso
 - [x] Concurrency: padded MPMC queue, object pool, allocation-free `AsyncSignal`
 - [x] Net: `Connection` (batched send, zero-byte reads, backlog bound), `Listener`
 - [x] RPC core: messages (`IRequest<TReply>`, `MessageRegistry`), `CallContext` replies, pending-call table, pooled awaitables
-- [x] Shard runtime as ECS (ADR-013): actor entities with mailbox/turn components, runtime systems, system groups
+- [x] Shard runtime as ECS (ADR-013): actor entities with mailbox/turn components, runtime systems, system groups;
+      dispatch queue (`DispatchSystem`, `DispatchQueueCapacity`) and per-actor mailboxes (ADR-040)
 - [x] Turn-based actors (ADR-014), stateless services
+- [x] Typed actor ids (ADR-043): `Actor<TId, TState>`, `Send`/`Ask(id, m)` route by the id type, `Publish` to services
+      only
+- [x] Fence a node declared dead: its actors are removed without `OnUnload` (ADR-042, from Orleans)
 - [x] Node: shards, local/remote routing, forwarding/relay, reply sinks
 - [x] Cluster: push-pull gossip of pulses (cards once, ADR-031), seeds (static + DNS), failure detection, `ClusterView`, rendezvous placement,
       graceful leave + rebalancing
@@ -44,84 +48,20 @@ EasyEcs in parallel when DaServer waits on benchmarks: the Friflo gap, compariso
       (ADR-026)
 - [x] One ordered link per node direction: replies travel with binds, pushes and events (ADR-022)
 - [x] Placement: keys stay with suspect members, a dead node's keys move, unloading actors keep their mail (ADR-023)
-- [x] Client: `ClusterClient` (the same messages as servers, keyless session-actor messages, DNS endpoints over every resolved
-      address, balancer redirect,
-      callbacks inline or queued)
+- [x] Client: `ClusterClient` (the same messages as servers, session-bound actor messages without an id, DNS
+      endpoints over every resolved address, balancer redirect, callbacks inline or queued)
 - [x] Topology without roles (ADR-017), `ICluster` for business code (ADR-020), actor `Group`
-- [x] Cluster events: `[NinoType]` structs, `Publish(key, e)`, `[Handle]`, gossiped handlers, mailbox delivery (ADR-019)
-- [x] Backpressure: bounded shard inbox and actor mailboxes refuse with `Overloaded` (ADR-027)
-- [x] Backpressure on links: decided against pausing a link's receive (ADR-027): the link also carries replies to
-      the receiver's own calls, so a paused link stalls them until timeouts; full shards keep refusing with `Overloaded`
+- [x] One-way and published messages: `Send`, `Publish` to every handling service, gossiped handlers, mailbox
+      delivery (ADR-019)
+- [x] Backpressure: bounded dispatch queues and actor mailboxes refuse with `Overloaded`; links are never paused
+      (ADR-027)
 - [x] Deadlines: the caller's remaining time travels with each request; expired work is dropped (ADR-028)
 - [ ] Send group broadcasts only to gateways that have members of the group (deferred: ADR-029)
 - [x] Resumable node links: a dropped connection replays what the peer did not process (ADR-008)
-- [ ] Placement hints: see N7 below
 - [ ] Gateway sessions as ECS entities (session components + flush system) on a gateway shard
 - [x] Actors unload when idle (`UnloadAfterIdle`, ADR-033)
-- [ ] Persistence helpers: see N5/N6 below
 
-## Now: a general framework, the client edge as an optional module (agreed, before T2)
-
-The core is a general distributed ECS framework (actors, services, messages/RPC, membership, placement, persistence,
-reload); MMO roles (login, balancer, gateways, game, maps) exist only in samples.
-
-- [ ] G1 Core extension point for external connections: an edge accepts connections, owns them on IO threads and hands
-      their frames to the cluster as messages (connection -> entity -> message); the core has no "client" concept.
-- [ ] G2 Move the client edge into `src/DaServer.Gateway` (optional package): sessions and `BindSession`,
-      `SessionClosed`/`SessionResync`, `ClientGroup` fan-out (`Push`/`Broadcast`), reconnect tickets, `ClusterClient`,
-      balancer, `Flow.FromClient/ToClient` checks (DAS006 part), Aspire `AddGateways`/`AddBalancer`. Built only on
-      public extension points; keeps zero allocation on fan-out (benchmark A/B before/after).
-- [x] G3 Naming of the two message levels (agreed): the per-actor `Mailbox` component and `MailboxSystem` stay (the
-      actor-model term: Erlang, Akka, Orleans). The shard's cross-thread queue becomes the dispatch queue and
-      `InboxSystem` becomes `DispatchSystem` (Akka/Orleans "dispatcher": sorts frames into mailboxes or service calls,
-      completes calls, runs continuations); `NodeOptions.ShardInboxCapacity` -> `DispatchQueueCapacity`. Two levels
-      stay: only the shard thread touches ECS data, and an actor awaiting in a turn holds its own mail while others
-      run. Document it in design.md.
-- [ ] G4 Docs: README/design describe the core first, the gateway module second, the MMO sample third.
-
-- [ ] G0 One message model (ADR-047, agreed): a message, an address, an optional reply. Public verbs `Send`/`Ask`
-      (to an address or the one service), `Publish` (every service type handling the message); `Push`/`Broadcast`
-      become `Send` to a session / group address (removed, no aliases), `JoinGroup`/`LeaveGroup`/
-      `Disconnect`/`BindSession` become messages to the session address. Addresses: `IAddress` (`IActorId` keyed,
-      `INodeAddress` pinned to a node, `IGroupAddress` fan-out), scope = `TypeId<TAddr>`, kind cached per address
-      type (no boxing, no branch at run time). Wire: 3 frame kinds `Message`/`Reply`/`Control`, `Target` always set by
-      the sender, header extensions in fixed order by flag (`CallId`, `Origin` 16 B, `Chain`, `Trace`); `ToActor`
-      trailer, `HasCaller` prefix, `Request`/`OneWay`/`Push`/`Broadcast` kinds and session control ops deleted.
-      Wire break, no rolling upgrade across it (pre-1.0).
-
-Step plan for G0-G2 (each step builds and keeps every test green; logic, docs, CI in separate commits):
-
-0. Baseline BenchmarkDotNet: Rpc, Message, Broadcast (1k/5k x 1/9), Scenario (3k/9k) (done: d676d2a numbers).
-1. Wire unification inside core: `Target` always set, call-id extension, 3 frame kinds, receiver dispatch by one
-   `Target` lookup (handler type -> shard, address scope -> feature handler on the IO thread).
-2. Addresses: `IAddress`/`INodeAddress`/`IGroupAddress`, `Send(addr, m)`, address-generic generated `Ask`
-   overloads, `Push`/`Broadcast` removed; DAS006 checks `[ToClient]` by address kind; `Ask` to a fan-out address
-   is an analyzer error (and to a session for now).
-3. `Origin(ulong Node, long Id)`: raw 16-byte extension, `CallContext(ReplyTo, Origin)`, `ShardObject.Caller`
-   replaces `CallerSession` (`SessionRef` converts implicitly from `Origin`).
-4. Session operations become messages to `SessionRef` (Bind is an `Ask`, so ADR-022 ordering holds).
-5. Feature infrastructure: `NodeFeature` (Configure, ConfigureShard(World), Start(INodeContext), OnViewChanged,
-   OnMemberDead, Stop(crashed)), `HandleAddress<TAddr>(IAddressHandler)` + hosted address scopes gossiped in the
-   card, card feature data + one pulse load slot, `INodeContext` (Ingress Send/Ask with origin, reply sink and
-   deadline, Resolve(messageId), Post to a shard, timer wheel), message filters (`RegisterFilter<T>`, ingress and
-   dispatch stages; N11 generates into the same point). Core test with a toy feature. Public plumbing shrinks to
-   `FrameWriter.Write<T>`, `TypeIds.Of<T>`, `ActorType<TId>`, `Address(scope, key)`, a public `CallTable`.
-6. Gateway as a feature inside the DaServer assembly: listener, sessions, bindings, `GroupMembers` (M2 pool),
-   address handlers for `SessionRef` and `ClientGroup`, reconnect tickets and grace timers on the timer wheel (M3),
-   balancer from the feature card (client fields leave `ClusterMember`), `BoundSessions` + filters for
-   `SessionClosed`/`SessionResync` (special cases leave `ShardDispatch`), dead-gateway close through a system,
-   ingress checks (size, FromClient set, destination, rate limit, origin overwrite, budget cap), `GatewayOptions`.
-7. Attributes `[FromClient(AnyId)]` / `[ToClient]`; `Flow`/`AnyId` leave `[Message]`; registration through module
-   initializers of referenced assemblies.
-8. Packages: `DaServer.Abstractions` (attributes, `IRequest`, addresses, `Origin`, `FrameHeader`, wire ids, Nino),
-   `DaServer.Gateway`, `DaServer.Gateway.Client` (SDK on Abstractions only, `ClusterClient`, M5 smaller table),
-   `DaServer.Gateway.Generator`, `DaServer.Gateway.Aspire` (`AddGateways`/`AddBalancer`/`WithGateways`).
-9. Tests split (core without Gateway, `tests/DaServer.Gateway.Tests`), architecture test (no
-   `*Session*|*Gateway*|*Client*` types in DaServer.dll), benchmark A/B against step 0 (no regression), allocation
-   tests < 1 B per delivery.
-10. Docs: ADR-047, design/README/samples/CLAUDE.md, requirements R2/R6/R7, wire break noted.
-
-## Now: zero GC audit (agreed, done together with G1/G2)
+## Now: zero GC (agreed; Z2 is step 1 of the development order)
 
 Steady state allocates nothing: per message, call, reply, tick, broadcast, connection, gossip round and timer.
 
@@ -152,20 +92,75 @@ Steady state allocates nothing: per message, call, reply, tick, broadcast, conne
       - M8 string concatenation on hostile client rejects. Fix: constant/precomputed messages.
       - L1-L7 rare (view rebuilds, binding arrays, client sweeper enumerator, metrics tags, reconnects, foreign awaits,
         local Send copy): fix where trivial.
-      Missing allocation tests: remote Ask, client Ask through a gateway, concurrency above pool caps (RpcBenchmark
-      Concurrency=4096), many suspended async handlers, services (Send/Ask/Publish), Push and remote broadcast, group
-      and binding churn, idle node (0 B/s), Overloaded/Timeout/NotHosted steady state, client callback queue and
-      collection messages.
+      Missing allocation tests: remote Ask, client Ask through a gateway, many suspended async handlers, services
+      (Send/Ask/Publish), Push and remote broadcast, group and binding churn, idle node (0 B/s),
+      Overloaded/Timeout/NotHosted steady state, client callback queue and collection messages.
 - [ ] Z2 Fix in this order: H3 (done: per-shard call stacks, 64k frame/relay pools), H2 (done: pooled
       `ReplyWatcher<T>`, 264 -> 0 B per reply of a suspended handler; tests build optimized so async state machines
-      are structs as users ship them), H1, H4 (N8), M1, M6/M2/M3/M4/M7, M5, low items; hot paths first (message, call, reply, broadcast, dispatch), then per connection and per
-      view change; pools bounded and allocation-free when warm. Replacements: pooled `IValueTaskSource`s, struct
+      are structs as users ship them), M1, M6, M4, M7, low items in core; H1 comes with N3b, H4 with N8, M2/M3 with G
+      step 6, M5 with G step 8. Hot paths first (message, call, reply, broadcast, dispatch), then per connection and
+      per view change; pools bounded and allocation-free when warm. Replacements: pooled `IValueTaskSource`s, struct
       work items, static lambdas with state, cached delegates, pooled `FrameWriter`, `ArrayPool`/`stackalloc`, ring
       buffers, Nino ref deserialization.
 - [ ] Z3 Prove it: an allocation test per hot path the audit finds uncovered (0 B per operation after warm-up) and
-      BenchmarkDotNet A/B (time and allocated) against the G baseline.
+      BenchmarkDotNet A/B (time and allocated) against the baseline (G step 0).
 - [ ] Z4 Keep it: CLAUDE.md rule plus analyzer coverage where a misuse is detectable in user code (e.g.
       `TaskCompletionSource`/`Task.Delay` in handlers and systems: use pooled framework awaitables and `SendAfter`).
+
+## Next: one message model and the client edge as an optional module (G0-G2, agreed)
+
+The core is a general distributed ECS framework (actors, services, messages/RPC, membership, placement, persistence,
+reload); MMO roles (login, balancer, gateways, game, maps) exist only in samples (ADR-045).
+
+- [ ] G0 One message model (ADR-047): a message, an address, an optional reply (steps 1-4). Public verbs `Send`/`Ask`
+      (to an address or the one service), `Publish` (every service type handling the message); `Push`/`Broadcast`
+      become `Send` to a session / group address (removed, no aliases), `JoinGroup`/`LeaveGroup`/
+      `Disconnect`/`BindSession` become messages to the session address. Addresses: `IAddress` (`IActorId` keyed,
+      `INodeAddress` pinned to a node, `IGroupAddress` fan-out), scope = `TypeId<TAddr>`, kind cached per address
+      type (no boxing, no branch at run time). Wire: 3 frame kinds `Message`/`Reply`/`Control`, `Target` always set by
+      the sender, header extensions in fixed order by flag (`CallId`, `Origin` 16 B, `Chain`, `Trace`); `ToActor`
+      trailer, `HasCaller` prefix, `Request`/`OneWay`/`Push`/`Broadcast` kinds and session control ops deleted.
+      Wire break, no rolling upgrade across it (pre-1.0).
+- [ ] G1 Core extension points (step 5): an edge accepts external connections, owns them on IO threads and hands
+      their frames to the cluster as messages (connection -> entity -> message); the core has no "client" concept.
+- [ ] G2 The client edge as the optional `DaServer.Gateway` module (steps 6-9): sessions and binding,
+      `SessionClosed`/`SessionResync`, group fan-out, reconnect tickets, `ClusterClient`, balancer, the client flow
+      checks (DAS006 part), Aspire `AddGateways`/`AddBalancer`; built only on public extension points, zero allocation
+      on fan-out kept (benchmark A/B against step 0).
+
+Step plan (each step builds and keeps every test green; logic, docs, CI in separate commits):
+
+0. Baseline BenchmarkDotNet: Rpc, Message, Broadcast (1k/5k x 1/9), Scenario (3k/9k) (done: d676d2a numbers).
+1. Wire unification inside core: `Target` always set, call-id extension, 3 frame kinds, receiver dispatch by one
+   `Target` lookup (handler type -> shard, address scope -> feature handler on the IO thread).
+2. Addresses: `IAddress`/`INodeAddress`/`IGroupAddress`, `Send(addr, m)`, address-generic generated `Ask`
+   overloads, `Push`/`Broadcast` removed; DAS006 checks `[ToClient]` by address kind; `Ask` to a fan-out address
+   is an analyzer error (and to a session for now).
+3. `Origin(ulong Node, long Id)`: raw 16-byte extension, `CallContext(ReplyTo, Origin)`, `ShardObject.Caller`
+   replaces `CallerSession` (`SessionRef` converts implicitly from `Origin`).
+4. Session operations become messages to `SessionRef` (Bind is an `Ask`, so ADR-022 ordering holds).
+5. Feature infrastructure: `NodeFeature` (Configure, ConfigureShard(World), Start(INodeContext), OnViewChanged,
+   OnMemberDead, Stop(crashed)), `HandleAddress<TAddr>(IAddressHandler)` + hosted address scopes gossiped in the
+   card, card feature data + one pulse load slot, `INodeContext` (Ingress Send/Ask with origin, reply sink and
+   deadline, Resolve(messageId), Post to a shard, timer wheel), message filters (`RegisterFilter<T>`, ingress and
+   dispatch stages; N11 generates into the same point). Core test with a toy feature. Public plumbing shrinks to
+   `FrameWriter.Write<T>`, `TypeIds.Of<T>`, `ActorType<TId>`, `Address(scope, key)`, a public `CallTable`.
+6. Gateway as a feature inside the DaServer assembly: listener, sessions, bindings, `GroupMembers` (M2 pool),
+   address handlers for `SessionRef` and `ClientGroup`, reconnect tickets and grace timers on the timer wheel (M3),
+   balancer from the feature card (client fields leave `ClusterMember`), `BoundSessions` + filters for
+   `SessionClosed`/`SessionResync` (special cases leave `ShardDispatch`), dead-gateway close through a system,
+   ingress checks (size, FromClient set, destination, rate limit, origin overwrite, budget cap), `GatewayOptions`.
+7. Attributes `[FromClient(AnyId)]` / `[ToClient]`; `Flow`/`AnyId` leave `[Message]`; registration through module
+   initializers of referenced assemblies.
+8. Packages: `DaServer.Abstractions` (attributes, `IRequest`, addresses, `Origin`, `FrameHeader`, wire ids, Nino;
+   contracts and clients reference no shard runtime and no EasyEcs), `DaServer.Gateway`, `DaServer.Gateway.Client`
+   (SDK on Abstractions only, `ClusterClient`, M5 smaller table), `DaServer.Gateway.Generator`,
+   `DaServer.Gateway.Aspire` (`AddGateways`/`AddBalancer`/`WithGateways`).
+9. Tests split (core without Gateway, `tests/DaServer.Gateway.Tests`), architecture test (no
+   `*Session*|*Gateway*|*Client*` types in DaServer.dll), benchmark A/B against step 0 (no regression), allocation
+   tests < 1 B per delivery.
+10. Docs: ADR-047 and ADR-038 status, design/README/samples/CLAUDE.md (core first, the gateway module second, the
+    MMO sample third), requirements R0/R2/R6/R7, wire break noted.
 
 ## Next: graceful shutdown and no data loss
 
@@ -269,16 +264,15 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
 
 ## Next: packages and other core gaps (P, K)
 - [ ] P1 `DaServer.Testing` (with N5): the in-process cluster as a public package, `TimeProvider` and deterministic
-      shard stepping, so users test their own actors and systems (replaces the N12 "out of scope" note).
-- [ ] P2 `DaServer.Abstractions` (in G step 8): contracts and clients reference no shard runtime and no EasyEcs.
+      shard stepping, so users test their own actors and systems. (`DaServer.Abstractions` is G step 8.)
 - [ ] K1 Pluggable placement strategy per actor type: rendezvous hash (default), prefer caller node, load aware,
       sticky (S3).
 - [ ] K2 Owner table per handler type rebuilt on view change (jump/Maglev hash) instead of O(nodes) rendezvous per send.
 - [ ] K3 Load-aware service choice (power of two over the pulse load).
 - [ ] K4 Per-call options (`CallOptions` struct overload: timeout), the turn's deadline readable in handlers without
       a `CancellationTokenSource`.
-- [ ] K5 Priority lane: replies and completions are never refused by a full dispatch queue (with M6); per actor type
-      mailbox capacity; `messages.dropped{reason}` metric.
+- [ ] K5 Per actor type mailbox capacity and a `messages.dropped{reason}` metric (replies and completions already
+      bypass the dispatch queue bound; M6 gives them their own bounded ring).
 - Out of scope in core: durable streams (use Kafka/NATS from a service), transactions (a turn is atomic; sagas are
   messages plus persistence), distributed locks (an actor is the lock), multi-tenancy, event sourcing (documented
   pattern only).
@@ -313,16 +307,11 @@ stateful, maps being heavy actors.
 - [ ] S6 Prove it: E2E that scales a stateful group out and in under load (10k bots) with no lost state, no dropped
       session and bounded latency spikes.
 
-## Next: architecture borrowed from RandomGame, ET and Orleans (agreed scope, in this order)
+## Next: architecture borrowed from RandomGame, ET and Orleans (agreed scope; order: the development order above)
 
 Patterns only, never business code. Each item: tests, BenchmarkDotNet where a hot path changes, an ADR, logic and docs
 in separate commits.
 
-- [x] N0 Fence a node declared dead: its actors are removed without `OnUnload` (ADR-042, from Orleans)
-- [x] T1 Typed actor ids (ADR-043): contracts declare id types (`readonly record struct MapId(long Value) : IActorId`);
-      actors declare theirs (`Map : Actor<MapId, MapState>`, `Id` replaces `Key`); `Cluster.Send/Ask(id, message)`
-      routes by the id type, so one message may be handled by several actor types without ambiguity and a wrong id
-      does not compile; singletons use a fixed id (`RealmId.The`); keyed `Publish` is gone (services only).
 - [ ] T2 ECS bots (agreed): `Sample.Bot` and the E2E/benchmarks drive bots as entities on a client world: components
       for input and stats, `[ForEach]` systems on a tick for behaviour, `[Handle]` for pushes, systems shared with the
       server where the logic is the same (dead reckoning); no imperative loops.
@@ -331,20 +320,19 @@ in separate commits.
       analyzer rule) / Server (authority, storage, other players' data: never visible to bots). Bots talk to the
       cluster only through gateways with `FromClient` messages, like players; unit tests exercise Shared systems
       without a cluster; benchmarks load a real cluster with the same bots.
-- [ ] N1 Stateless handler types and a fixed/reloadable split: DAS007 (no mutable fields on actors and services; state
-      in components and singletons); projects Contracts (messages) + Model (components, singletons: never reloaded) +
-      Logic (actors, services, systems: reloadable). Prerequisite of N5 and N9. (RandomGame, ET)
-      - [x] DAS007 (ADR-044)
-      - [ ] Contracts / Model / Logic split of the samples
+- [ ] N1 Fixed/reloadable split on top of stateless handler types (DAS007, ADR-044): projects Contracts (messages) +
+      Model (components, singletons: never reloaded) + Logic (actors, services, systems: reloadable), samples
+      included. Prerequisite of N5 and N9. (RandomGame, ET)
 - [ ] N2 `SendAfter(delay, ...)`: per-shard timer wheel of serialized frames, cancellable, delivered as ordinary
-      mail (turn-based, follows moved keys), zero allocation; replaces `await Task.Delay` in handlers; DAS008 for
-      `Task.Delay`/blocking calls in handlers. (ET timers as data, Orleans timers)
-- [ ] N3 Call cycles fail fast: a chain id travels with requests (`FrameFlags` bit + 8 bytes); mail carrying the
-      running turn's chain id is answered `CallCycle` at once instead of waiting for the timeout. (Orleans call chains)
+      mail (turn-based, follows moved keys), zero allocation; replaces `await Task.Delay` in handlers (DAS008 of N3b
+      points to it). (ET timers as data, Orleans timers)
+- [ ] N3 Call cycles fail fast: a chain id travels with requests (the `Chain` header extension of G0); mail carrying
+      the running turn's chain id is answered `CallCycle` at once instead of waiting for the timeout. (Orleans call
+      chains)
 - [ ] N3b No sync-over-async on shard threads (agreed: all four layers):
       1. DAS008 (error) in actors, services and systems: `.Result`, `.Wait()`, `GetAwaiter().GetResult()`,
-         `AsTask().Wait*`, `Thread.Sleep`, `SemaphoreSlim.Wait`, `Monitor.Enter`/`lock` waits; the message names the
-         replacement for the context.
+         `AsTask().Wait*`, `Thread.Sleep`, `Task.Delay`, `SemaphoreSlim.Wait`, `Monitor.Enter`/`lock` waits; the
+         message names the replacement for the context.
       2. Replacements: handlers `await` (a turn: only that actor waits); delays use `SendAfter` (N2, the actor stays
          free); systems use requests as data: `Cluster.Ask(target, request, replyTo: entity)` delivers the reply as a
          `Reply<TReply>` component (or a `CallFailed` tag) on that entity for a later `[ForEach]` system (no
@@ -382,30 +370,31 @@ in separate commits.
       `FromClient`, auth, metrics), nothing for handlers without filters. (Orleans call filters)
 - Not adopted: Orleans interface proxies, per-activation Task scheduling, grain directory / repartitioning,
   transactions; ET location server, coroutine locks, class entity trees, global singletons; RandomGame stop-the-world
-  reload with forced GC, manual dirty marking. GM commands (N10) are out of scope for now; the testing package came back as P1.
+  reload with forced GC, manual dirty marking. GM commands (N10) are out of scope for now.
 
 ## Open cleanup (review rounds)
-- [ ] B4 one serialize-into-pooled-frame helper; B5 `DeliverTo(nodeId, frame)` (local or link); B8 one pending-table scan; B9 registries; B10 shared hash helpers;
-      B11 sample nits
-- [ ] A1 split `Node` (gateway, links, router); A2 membership talks to the node through an interface; A7 one endpoint parser for `DaServer__Gateways`
-- [ ] E ECS misuse: `TurnCaller` as a component, sample `Despawning(bool)` flag as a tag
+- [ ] B4 one serialize-into-pooled-frame helper; B5 `DeliverTo(nodeId, frame)` (local or link); B8 one pending-table
+      scan; B9 registries; B10 shared hash helpers; B11 sample nits
+- [ ] Split `Node` into links and router (the gateway part leaves with G step 6); membership talks to the node
+      through an interface; one endpoint parser for seeds and `DaServer__Gateways`
+- [ ] ECS misuse: the turn's caller (`Actor.TurnCaller`) as a component
 - Kept on purpose: B6 (local replies hand the frame over without a copy), B12 (the shard checks runnable actors after
   tick systems sent local mail)
 
 ## Generator / analyzer (`src/DaServer.Generator`)
-- [x] Messages (ADR-035): typed `Ask` overloads per request, one dispatcher per `[Handle]` method, client message
-      registration, message ids
+- [x] Messages instead of contracts (ADR-035): typed `Ask` overloads per request, one dispatcher per `[Handle]`
+      method, client message registration, message ids
 - [x] Hosting: actor/service factories with their handlers, client handler classes, EasyEcs system registration
 - [x] Node entry point generated when a node project has no `Program.cs` (ADR-021)
 - [x] Incremental rules: syntax predicates, equatable models, tracking names, cache test (ADR-016)
-- [x] `DaServerAnalyzer`: DAS001-DAS005 (handlers, messages, wire types, id collisions, constructors)
-- [x] Messages instead of contracts: one concept for requests, one-way messages, events and pushes (ADR-035)
+- [x] `DaServerAnalyzer`: DAS001-DAS007 (handlers, messages, wire types, id collisions, constructors, message flow
+      (ADR-038), stateless actors and services (ADR-044))
 
 ## Hosting / orchestration
 - [x] `DaServer.Hosting`: Generic Host, configuration, OpenTelemetry (OTLP), periodic stats line, graceful shutdown
 - [x] `DaServer.Aspire`: AddDaServerCluster / AddNodes / AddGateways / AddBalancer / WithGateways; compose publishing
       (ADR-015); no configuration files in node projects
-- [x] 10k-player scenario: login, game, 3 gateways, balancer, 10k bots (Sample.Bot fails on any gap, disconnect or
+- [x] 10k-player scenario: login, game, map, 3 gateways, balancer, 10k bots (Sample.Bot fails on any gap, disconnect or
       p99 over the limit); passes through Aspire (README "Performance")
 - [x] E2E in CI: `tests/DaServer.E2E` runs the AppHost with `Aspire.Hosting.Testing` (1000 bots in CI) and
       fails unless the bot exits 0
@@ -420,20 +409,20 @@ in separate commits.
       disconnect; servers without telemetry: 0 KB/s except business payloads (chat strings) and < 0.5 B per pushed
       message on gateways, no GC (README "Performance")
 - [x] Checklist 6: R1-R11 and E1-E10 hold; open items are the unchecked roadmap entries
-- [x] Naming review (ADR-032): `[FromClient]`/`[ToClient]`, `[ActorKey]`, `OnLoad`/`OnUnload`, `CallerSession`,
-      balancers; actor state from field initializers, `ActorRef` for systems
-- [x] Moving scenarios: 10,000 bots in 200 maps (full sync, ~10M positions/s, p99 139 ms) and in one map (AOI and
-      dead reckoning, ~2.5M positions/s, p99 106 ms); servers 0–5 KB/s, no GC; scale-out: a gateway started mid-run
+- [x] Naming review (ADR-032, ADR-040): `OnLoad`/`OnUnload`, `CallerSession`, balancers, one noun per concept;
+      actor state from field initializers, `ActorRef` for systems
+- [x] Moving scenario: 10,000 bots in one map (AOI and dead reckoning, ~2.5M positions/s, p99 106 ms); servers
+      0–5 KB/s, no GC; scale-out: a gateway started mid-run
       receives the new clients (test + process run)
 - [x] One write per connection per batch (ADR-034)
-- [x] Message-first model (ADR-035): contracts, proxies and `[ActorKey]` removed; client send backlog bound 256 KB
-      (a slow client is disconnected and resynchronizes on reconnect)
+- [x] Message-first model (ADR-035); client send backlog bound 256 KB (a slow client is disconnected and
+      resynchronizes on reconnect)
 - [x] Auto-reconnect (ADR-036): signed reconnect tickets, `SessionClosed` after a grace period, `SessionResync`,
       Aspire-generated cluster secret
 - [x] Lifecycle as tags (ADR-037): turn ends posted by `TurnWatcher` (no polling), `Ready`/`Loading`/`UnloadRequested`/
       `Unloading`/`Removing` with one system each; sample grid as data + systems (`DespawnSystem`, `PlacementSystem`)
 - [x] `[Message]` (ADR-038): `[NinoType, Message]` is a message, plain `[NinoType]` is data; `Flow` (`Internal`,
-      `FromClient`, `ToClient`) checked at build time (DAS006); `[ClientMessage]` removed
+      `FromClient`, `ToClient`) checked at build time (DAS006)
 - [x] EasyEcs from NuGet, used as its docs teach (ADR-039): cadence as system groups (`ShardRebalance`,
       `ShardIdleScan`), `UpdateInterval` in samples, `ActorRef` as the only identity, timer queue removed
 
@@ -441,12 +430,12 @@ in separate commits.
 - [x] Unit tests (queue, pool, frames, pending table, membership, placement)
 - [x] Generator/analyzer tests including incremental caching
 - [x] In-process cluster integration tests (`ClusterTest` fixture)
-- [x] Allocation tests: cross-shard actor calls, keyed events, gateway fan-out and client calls through a gateway to
-      another node allocate nothing per message
-- [x] BenchmarkDotNet suite: RPC (1/64/1024, local/remote), keyed events (local/remote), group broadcast (1k/5k
+- [x] Allocation tests: cross-shard actor calls, replies of suspended handlers, call bursts, one-way messages, gateway
+      fan-out, client messages through a gateway to another node and gossip rounds allocate nothing per operation
+- [x] BenchmarkDotNet suite: RPC (1/64/1024, local/remote), one-way messages (local/remote), group broadcast (1k/5k
       sockets), broadcast to everyone through 3 gateways (3k/9k sockets)
 - [x] CI workflow (build, test, end to end; EasyEcs from NuGet)
 - [x] Requirements and release checklist ([requirements.md](requirements.md))
 - [x] Record benchmark numbers of this release in the README
 - [x] Test: calls in flight to a crashed node fail when it is declared dead
-- [ ] Tests: suspect flapping, hostile client frames beyond size, link backpressure
+- [ ] Tests: suspect flapping, hostile client frames beyond the size check
