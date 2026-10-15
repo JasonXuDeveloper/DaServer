@@ -91,6 +91,24 @@ Step plan for G1/G2 (each step builds and keeps every test green; logic, docs, C
 10. Docs: ADR-045, design/README/samples/CLAUDE.md, node-to-node wire break noted. Later: `ShardFlush` group for
     per-tick broadcast coalescing.
 
+## Now: zero GC audit (agreed, done together with G1/G2)
+
+Steady state allocates nothing: per message, call, reply, tick, broadcast, connection, gossip round and timer.
+
+- [ ] Z1 Audit every runtime path (src/DaServer, Hosting, generated dispatchers and `Ask` overloads, what samples
+      teach): `TaskCompletionSource`/`Task`/timers/`CancellationTokenSource` per operation, unpooled awaitables, async
+      state machines, closures and per-call delegates, LINQ, boxed enumerators, `params`, string formatting and
+      logging without guards, boxing (structs in object fields), per-operation arrays/lists/records, Nino collection
+      and string deserialization per message (N8), gossip/membership rebuilds, reconnect tickets, metrics.
+- [ ] Z2 Fix by priority: hot paths first (message, call, reply, broadcast, dispatch), then per connection and per
+      view change; pools bounded and allocation-free when warm. Replacements: pooled `IValueTaskSource`s, struct
+      work items, static lambdas with state, cached delegates, pooled `FrameWriter`, `ArrayPool`/`stackalloc`, ring
+      buffers, Nino ref deserialization.
+- [ ] Z3 Prove it: an allocation test per hot path the audit finds uncovered (0 B per operation after warm-up) and
+      BenchmarkDotNet A/B (time and allocated) against the G baseline.
+- [ ] Z4 Keep it: CLAUDE.md rule plus analyzer coverage where a misuse is detectable in user code (e.g.
+      `TaskCompletionSource`/`Task.Delay` in handlers and systems: use pooled framework awaitables and `SendAfter`).
+
 ## Next: architecture borrowed from RandomGame, ET and Orleans (agreed scope, in this order)
 
 Patterns only, never business code. Each item: tests, BenchmarkDotNet where a hot path changes, an ADR, logic and docs
