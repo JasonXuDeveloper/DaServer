@@ -2,7 +2,7 @@
 
     <PropertyGroup>
         <TargetFramework>net11.0</TargetFramework>
-        <Description>Aspire hosting integration: declare a DaServer cluster in an AppHost (nodes, roles, gateways, seeds, ports) and run or publish it.</Description>
+        <Description>Aspire hosting integration: declare a DaServer cluster in an AppHost (node groups, client endpoints, seeds, ports) and run or publish it.</Description>
         <RootNamespace>Aspire.Hosting</RootNamespace>
     </PropertyGroup>
 

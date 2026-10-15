@@ -10,12 +10,15 @@
   </Folder>
   <Folder Name="/samples/mmo/">
     <Project Path="samples/mmo/Sample.Contracts/Sample.Contracts.csproj" />
+    <Project Path="samples/mmo/Sample.Shared/Sample.Shared.csproj" />
+    <Project Path="samples/mmo/Sample.Client/Sample.Client.csproj" />
     <Project Path="samples/mmo/Sample.GameServer/Sample.GameServer.csproj" />
     <Project Path="samples/mmo/Sample.Gateway/Sample.Gateway.csproj" />
     <Project Path="samples/mmo/Sample.LoginServer/Sample.LoginServer.csproj" />
     <Project Path="samples/mmo/Sample.MapServer/Sample.MapServer.csproj" />
     <Project Path="samples/mmo/Sample.Bot/Sample.Bot.csproj" />
     <Project Path="samples/mmo/Sample.AppHost/Sample.AppHost.csproj" />
+    <Project Path="samples/mmo/Sample.Tests/Sample.Tests.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/DaServer.Tests/DaServer.Tests.csproj" />
