@@ -11,10 +11,17 @@ internal sealed class Shard
 {
     [ThreadStatic] private static Shard? _current;
 
-    private readonly MpmcQueue<WorkItem> _dispatchQueue;
-    private readonly ConcurrentQueue<WorkItem> _overflow = new(); // completions and callbacks when the ring is full
+    /// <summary>
+    /// Completions, callbacks and turn ends that may wait at once before <see cref="_overflow"/> takes the rest. They
+    /// finish work already admitted (at most one per call or turn in flight), so they never compete with new work for
+    /// space; 16k slots (512 KB) cover the widest bursts measured, beyond them a burst allocates queue segments once.
+    /// </summary>
+    private const int CompletionQueueCapacity = 16 * 1024;
+
+    private readonly MpmcQueue<WorkItem> _dispatchQueue; // new calls and messages: full = refused (Overloaded)
+    private readonly MpmcQueue<WorkItem> _completionQueue; // work that finishes admitted work: never refused
+    private readonly ConcurrentQueue<WorkItem> _overflow = new(); // only when the completion ring is full
     private int _overflowCount;
-    private readonly int _admitLimit;
     private long _rejected;
     private long _expired;
     private readonly ManualResetEventSlim _wake = new(false, spinCount: 0);
@@ -31,7 +38,7 @@ internal sealed class Shard
         Node = node;
         Index = index;
         _dispatchQueue = new MpmcQueue<WorkItem>(dispatchQueueCapacity);
-        _admitLimit = dispatchQueueCapacity;
+        _completionQueue = new MpmcQueue<WorkItem>(CompletionQueueCapacity);
         _tickInterval = Stopwatch.Frequency / Math.Max(1, tickRate);
         World = new World();
         _thread = new Thread(Run) { IsBackground = true, Name = $"{node.Options.Name}-shard-{index}" };
@@ -52,7 +59,7 @@ internal sealed class Shard
     public long TickCount { get; private set; }
 
     /// <summary>Work items waiting in the dispatch queue (approximate, any thread).</summary>
-    public int QueueLength => _dispatchQueue.Count + Volatile.Read(ref _overflowCount);
+    public int QueueLength => _dispatchQueue.Count + _completionQueue.Count + Volatile.Read(ref _overflowCount);
 
     /// <summary>Calls and events refused because the shard or an actor mailbox was full (any thread).</summary>
     public long Rejected => Interlocked.Read(ref _rejected);
@@ -69,19 +76,19 @@ internal sealed class Shard
     internal void Start() => _thread.Start();
 
     /// <summary>
-    /// Thread-safe: admit a new call or event unless the dispatch queue holds <see cref="NodeOptions.DispatchQueueCapacity"/> items.
+    /// Thread-safe: admit a new call or event unless the dispatch queue is full (<see cref="NodeOptions.DispatchQueueCapacity"/>).
     /// New work is bounded so a flood cannot grow memory without limit; completions and callbacks (<see cref="Post"/>)
-    /// always get in, because they finish work already admitted and are bounded by the calls in flight.
+    /// have their own queue and always get in, because they finish work already admitted.
     /// </summary>
     internal bool TryAdmit(FrameWriter frame, IReplySink? sink)
     {
-        if (QueueLength >= _admitLimit)
+        if (!_dispatchQueue.TryEnqueue(new WorkItem(WorkKind.Dispatch, frame, sink)))
         {
             CountRejected();
             return false;
         }
 
-        Post(new WorkItem(WorkKind.Dispatch, frame, sink));
+        Wake();
         return true;
     }
 
@@ -89,15 +96,23 @@ internal sealed class Shard
 
     internal void CountExpired() => Interlocked.Increment(ref _expired);
 
-    /// <summary>Thread-safe: enqueue work and wake the shard if it is sleeping.</summary>
+    /// <summary>Thread-safe: enqueue a completion, callback or turn end and wake the shard if it is sleeping.</summary>
     internal void Post(in WorkItem item)
     {
-        if (!_dispatchQueue.TryEnqueue(item))
-        {
-            _overflow.Enqueue(item);
-            Interlocked.Increment(ref _overflowCount);
-        }
+        if (!_completionQueue.TryEnqueue(item)) PostOverflow(item);
+        Wake();
+    }
 
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void PostOverflow(in WorkItem item)
+    {
+        _overflow.Enqueue(item);
+        Interlocked.Increment(ref _overflowCount);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void Wake()
+    {
         if (Volatile.Read(ref _sleeping) != 0)
             _wake.Set();
     }
@@ -123,13 +138,20 @@ internal sealed class Shard
         _wake.Set();
     }
 
-    /// <summary>Dispatch queue consumer (shard thread only, used by <see cref="DispatchSystem"/>).</summary>
+    /// <summary>
+    /// Queue consumer (shard thread only, used by <see cref="DispatchSystem"/>): work that finishes admitted work first
+    /// (it frees calls, turns and their buffers), then new work.
+    /// </summary>
     internal bool TryTake(out WorkItem item)
     {
-        if (_dispatchQueue.TryDequeue(out item)) return true;
-        if (Volatile.Read(ref _overflowCount) == 0 || !_overflow.TryDequeue(out item)) return false;
-        Interlocked.Decrement(ref _overflowCount);
-        return true;
+        if (_completionQueue.TryDequeue(out item)) return true;
+        if (Volatile.Read(ref _overflowCount) != 0 && _overflow.TryDequeue(out item))
+        {
+            Interlocked.Decrement(ref _overflowCount);
+            return true;
+        }
+
+        return _dispatchQueue.TryDequeue(out item);
     }
 
     // ------------------------------------------------------------------ loop
@@ -209,6 +231,8 @@ internal sealed class Shard
         World.AddSingleton<ShardActivity>();
         World.AddSingleton<ActorDirectory>() = new ActorDirectory(new Dictionary<ActorAddress, Entity>());
         World.AddSingleton<TurnWatchers>() = new TurnWatchers(new Stack<TurnWatcher>());
+        World.AddSingleton<ActorPools>() = new ActorPools(new Dictionary<uint, Stack<Actor>>(), new Stack<Queue<Envelope>>(),
+            new Stack<ClientSessions>());
 
         var services = new Dictionary<uint, object>();
         foreach (var handlerType in Node.HostedHandlerTypes)

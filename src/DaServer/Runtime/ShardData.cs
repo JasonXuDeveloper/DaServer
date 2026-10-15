@@ -87,6 +87,50 @@ internal readonly record struct ClientSessions(HashSet<SessionRef> Sessions, Has
 /// <summary>Loaded actors of this shard by id.</summary>
 internal readonly record struct ActorDirectory(Dictionary<ActorAddress, Entity> Actors) : ISingletonComponent;
 
+/// <summary>
+/// What a loaded actor holds besides its components, kept for the next load on this shard: the actor object (actors and
+/// services hold no fields, DAS007), the mailbox queue and the session sets. Rented on load, returned on removal, both
+/// on the shard thread; each pool keeps at most <see cref="Bound"/> idle items, so churn (players logging in and out,
+/// idle unloads) allocates nothing while the peak of loaded actors stays bounded memory-wise.
+/// </summary>
+internal readonly record struct ActorPools(
+    Dictionary<uint, Stack<Actor>> Actors, Stack<Queue<Envelope>> Mailboxes, Stack<ClientSessions> Sessions) : ISingletonComponent
+{
+    /// <summary>Idle items each pool keeps (per actor type for actor objects).</summary>
+    public const int Bound = 4096;
+
+    /// <summary>A mailbox that grew beyond this (a backlog) is dropped rather than pooled with its large array.</summary>
+    private const int MaxPooledMailbox = 64;
+
+    public Actor RentActor(HandlerTypeInfo handlerType) =>
+        Actors.TryGetValue(handlerType.Id, out var pool) && pool.TryPop(out var actor) ? actor : (Actor)handlerType.Factory();
+
+    public Queue<Envelope> RentMailbox() => Mailboxes.TryPop(out var queue) ? queue : new Queue<Envelope>();
+
+    public ClientSessions RentSessions() =>
+        Sessions.TryPop(out var sessions) ? sessions : new ClientSessions(new HashSet<SessionRef>(), new HashSet<SessionRef>());
+
+    /// <summary>Return what a removed actor held (its entity is destroyed and its mailbox drained).</summary>
+    public void Return(Actor actor, Queue<Envelope> mailbox, in ClientSessions sessions, bool hasSessions)
+    {
+        actor.Key = 0;
+        actor.Entity = default;
+        actor.TurnCaller = default;
+        if (!Actors.TryGetValue(actor.HandlerType.Id, out var actors))
+            Actors[actor.HandlerType.Id] = actors = new Stack<Actor>();
+        if (actors.Count < Bound) actors.Push(actor);
+
+        if (Mailboxes.Count < Bound && mailbox.EnsureCapacity(0) <= MaxPooledMailbox) Mailboxes.Push(mailbox);
+
+        if (hasSessions && Sessions.Count < Bound && sessions.Sessions.Count + sessions.Superseded.Count <= MaxPooledMailbox)
+        {
+            sessions.Sessions.Clear();
+            sessions.Superseded.Clear();
+            Sessions.Push(sessions);
+        }
+    }
+}
+
 /// <summary>Idle <see cref="TurnWatcher"/>s (bounded by the turns in flight).</summary>
 internal readonly record struct TurnWatchers(Stack<TurnWatcher> Pool) : ISingletonComponent;
 

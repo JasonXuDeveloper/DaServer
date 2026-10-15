@@ -11,7 +11,11 @@ internal interface IPendingCall
     /// <summary>Complete with a response. Runs on an IO thread; payload is only valid during the call.</summary>
     void Complete(RpcStatus status, ReadOnlySpan<byte> payload);
 
-    void Fail(RpcException error);
+    /// <summary>
+    /// Fail with a status: status-only for the runtime's refusals (timeout, overload, lost connection: nothing
+    /// formatted), with a <paramref name="message"/> only for programming errors found on a cold path.
+    /// </summary>
+    void Fail(RpcStatus status, string? message = null);
 }
 
 /// <summary>
@@ -49,11 +53,15 @@ internal sealed class PendingCallTable
     }
 
 
+    /// <summary>Register <paramref name="call"/>; false when the table is full (the caller refuses it as <see cref="RpcStatus.Overloaded"/>).</summary>
     /// <param name="owner">Optional owner (e.g. the connection) for <see cref="FailOwnedBy"/>.</param>
-    public uint Register(IPendingCall call, int timeoutMs, object? owner = null)
+    public bool TryRegister(IPendingCall call, int timeoutMs, out uint requestId, object? owner = null)
     {
         if (!_free.TryDequeue(out int index))
-            throw new RpcException(RpcStatus.Error, "Too many in-flight calls");
+        {
+            requestId = 0;
+            return false;
+        }
 
         ref var e = ref _entries[index];
         uint generation = e.Generation + 1;
@@ -76,7 +84,8 @@ internal sealed class PendingCallTable
         {
         }
 
-        return id;
+        requestId = id;
+        return true;
     }
 
     /// <summary>Remove and return the call registered under <paramref name="requestId"/>, or null.</summary>
@@ -119,7 +128,7 @@ internal sealed class PendingCallTable
                 var call = Take((uint)tag);
                 if (call != null)
                 {
-                    call.Fail(new RpcException(RpcStatus.Timeout));
+                    call.Fail(RpcStatus.Timeout);
                     failed++;
                 }
             }
@@ -136,7 +145,7 @@ internal sealed class PendingCallTable
         {
             long tag = Volatile.Read(ref _entries[i].Tag);
             if (tag != 0)
-                Take((uint)tag)?.Fail(new RpcException(status));
+                Take((uint)tag)?.Fail(status);
         }
     }
 
@@ -149,7 +158,7 @@ internal sealed class PendingCallTable
             ref var e = ref _entries[i];
             long tag = Volatile.Read(ref e.Tag);
             if (tag != 0 && ReferenceEquals(e.Owner, owner))
-                Take((uint)tag)?.Fail(new RpcException(status));
+                Take((uint)tag)?.Fail(status);
         }
     }
 }
@@ -231,7 +240,7 @@ internal sealed class PendingCall<T> : IPendingCall, IValueTaskSource<T>, IValue
         Signal();
     }
 
-    public void Fail(RpcException error) => Fail((Exception)error);
+    public void Fail(RpcStatus status, string? message = null) => Fail(new RpcException(status, message));
 
     private void Fail(Exception error)
     {

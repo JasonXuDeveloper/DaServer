@@ -148,6 +148,132 @@ public class AllocationTests : ClusterTest
         Assert.That(allocated / 600.0, Is.LessThan(32), $"{allocated} B for about 600 rounds");
     }
 
+    [Test]
+    public async Task ActorChurnDoesNotAllocate()
+    {
+        // Actors loaded by a message and unloaded when idle, again and again: the actor object, its mailbox and its
+        // entity's storage are reused.
+        var node = await Start("churn", configure: static o => o.GossipInterval = TimeSpan.FromHours(1));
+        const int actors = 1_000;
+        for (int round = 0; round < 3; round++) Churn();
+        var meter = new AllocationMeter();
+        Churn();
+        long allocated = meter.Garbage;
+        Assert.That(allocated / (double)actors, Is.LessThan(8), $"{allocated} B for {actors} loads and unloads");
+
+        // Synchronous waits: an await here would allocate in the test harness, not in the path under test.
+        void Churn()
+        {
+            long knocks = Interlocked.Read(ref Observed.Knocks) + actors;
+            for (int i = 0; i < actors; i++) node.Send(new GuestId(i + 1), new Knock());
+            WaitFor(ref Observed.Knocks, knocks);
+            var spin = new SpinWait();
+            while (node.ActorCount > 0) spin.SpinOnce(); // unloaded by the idle scan (a few times a second)
+        }
+    }
+
+    [Test]
+    public async Task RefusalsDoNotAllocate()
+    {
+        // Overload is when refusals happen most: refusing must not add GC work. Refusals are status-only frames.
+        var node = await Start("refuse", shards: 1, configure: static o =>
+        {
+            o.GossipInterval = TimeSpan.FromHours(1);
+            o.DispatchQueueCapacity = 16;
+        });
+        var shard = node.Shards[0];
+        using var gate = new ManualResetEventSlim();
+        shard.Post(static g => ((ManualResetEventSlim)g!).Wait(), gate); // the shard is busy until the gate opens
+        await Eventually(() => shard.QueueLength == 0, "the shard took the blocking callback");
+        var sink = new StatusSink();
+        for (int i = 0; i < 16; i++) // the dispatch queue is full (these run, and succeed, once the gate opens)
+        {
+            var add = FrameWriter.Rent();
+            var nino = add.Nino;
+            Nino.Core.NinoSerializer.Serialize(new Add(1), ref nino);
+            node.Request(add, MessageType<Add>.Id, ActorIds<CounterId>.HandlerTypeId, 1, null, sink, 1);
+        }
+
+        const int refusals = 10_000;
+        Refuse(3 * refusals);
+        var meter = new AllocationMeter();
+        Refuse(refusals);
+        long allocated = meter.Garbage;
+        gate.Set();
+
+        Assert.That(sink.Overloaded, Is.EqualTo(4 * refusals));
+        Assert.That(sink.NotHosted, Is.EqualTo(4 * refusals));
+        Assert.That(sink.PayloadBytes, Is.Zero, "status-only frames");
+        Assert.That(allocated / (double)(2 * refusals), Is.LessThan(8), $"{allocated} B for {2 * refusals} refusals");
+
+        void Refuse(int count)
+        {
+            for (int i = 0; i < count; i++)
+            {
+                var frame = FrameWriter.Rent(FrameHeader.Size);
+                frame.SetHeader(FrameKind.Request, 1, MessageType<Add>.Id, 1, RpcStatus.Ok);
+                Node.Admit(shard, frame, sink); // full shard: Overloaded
+                node.Request(FrameWriter.Rent(FrameHeader.Size), 0xDEAD, 0, 0, null, sink, 1); // nobody: NotHosted
+            }
+        }
+    }
+
+    [Test]
+    public async Task TimeoutsOfRelayedCallsDoNotAllocate()
+    {
+        // Relayed requests (as a gateway forwards client calls) whose deadline passes while the target shard is busy:
+        // the sweep answers each with a status-only Timeout, and the shard later drops them unrun.
+        var node = await Start("timeout", shards: 1, configure: static o => o.GossipInterval = TimeSpan.FromHours(1));
+        var shard = node.Shards[0];
+        var sink = new StatusSink();
+        const int calls = 2_000;
+        for (int round = 0; round < 3; round++) Relay(calls);
+        var meter = new AllocationMeter();
+        Relay(calls);
+        long allocated = meter.Garbage;
+
+        Assert.That(sink.Timeout, Is.EqualTo(4 * calls));
+        Assert.That(node.Expired, Is.EqualTo(4 * calls), "the shard dropped the expired requests unrun");
+        Assert.That(sink.PayloadBytes, Is.Zero, "status-only frames");
+        Assert.That(allocated / (double)calls, Is.LessThan(8), $"{allocated} B for {calls} timeouts");
+
+        // Synchronous waits: an await here would allocate in the test harness, not in the path under test.
+        void Relay(int count)
+        {
+            using var gate = new ManualResetEventSlim();
+            shard.Post(static g => ((ManualResetEventSlim)g!).Wait(), gate); // the shard is busy until the gate opens
+            long timedOut = Interlocked.Read(ref sink.Timeout) + count, expired = node.Expired + count;
+            for (int i = 0; i < count; i++)
+            {
+                var frame = FrameWriter.Rent();
+                var nino = frame.Nino;
+                Nino.Core.NinoSerializer.Serialize(new Add(1), ref nino);
+                frame.Deadline = Environment.TickCount64 + 1;
+                node.Request(frame, MessageType<Add>.Id, ActorIds<CounterId>.HandlerTypeId, 1, null, sink, (uint)i + 1);
+            }
+
+            WaitFor(ref sink.Timeout, timedOut);
+            gate.Set();
+            var spin = new SpinWait();
+            while (node.Expired < expired) spin.SpinOnce(); // frames back in their pool
+        }
+    }
+
+    /// <summary>Counts error replies by status (any thread); returns every response frame to its pool.</summary>
+    private sealed class StatusSink : IReplySink
+    {
+        public long Overloaded, NotHosted, Timeout, PayloadBytes;
+
+        public void SendReply(uint requestId, RpcStatus status, FrameWriter response)
+        {
+            if (status != RpcStatus.Ok) Interlocked.Add(ref PayloadBytes, response.Payload.Length);
+            response.Dispose();
+            if (status == RpcStatus.Overloaded) Interlocked.Increment(ref Overloaded);
+            else if (status == RpcStatus.NotHosted) Interlocked.Increment(ref NotHosted);
+            else if (status == RpcStatus.Timeout) Interlocked.Increment(ref Timeout);
+        }
+    }
+
     /// <summary>
     /// Garbage allocated (process-wide) since construction: every allocation minus <see cref="BufferPool"/> growth,
     /// which is pinned memory the pool keeps for reuse once returned, not GC pressure. Growth is reported apart.

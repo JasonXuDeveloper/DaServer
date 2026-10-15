@@ -48,7 +48,8 @@ public sealed class NodeOptions
 
     /// <summary>
     /// Calls and events waiting in a shard's dispatch queue before new ones are refused with <see cref="Protocol.RpcStatus.Overloaded"/>
-    /// (one-way calls and messages are dropped).
+    /// (one-way calls and messages are dropped). Rounded up to a power of two. Replies, continuations and turn ends
+    /// have a queue of their own and are never refused.
     /// </summary>
     public int DispatchQueueCapacity { get; set; } = 64 * 1024;
 

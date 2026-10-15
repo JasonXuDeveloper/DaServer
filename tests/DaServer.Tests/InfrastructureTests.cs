@@ -107,7 +107,7 @@ public class InfrastructureTests
         var table = new PendingCallTable(4);
         var call = PendingCall<int>.Rent(null);
         var task = call.Task;
-        uint id = table.Register(call, timeoutMs: 0);
+        Assert.That(table.TryRegister(call, timeoutMs: 0, out uint id), Is.True);
 
         var w = FrameWriter.Rent();
         var nino = w.Nino;
@@ -119,13 +119,49 @@ public class InfrastructureTests
 
         // Slot reuse: a late response for the old id must not complete the new call.
         var second = PendingCall<int>.Rent(null);
-        uint id2 = table.Register(second, timeoutMs: 1);
+        Assert.That(table.TryRegister(second, timeoutMs: 1, out uint id2), Is.True);
         Assert.That(id2, Is.Not.EqualTo(id));
         Assert.That(table.Take(id), Is.Null);
         Thread.Sleep(5);
         Assert.That(table.SweepExpired(), Is.EqualTo(1));
         var timedOut = Assert.ThrowsAsync<RpcException>(async () => await second.Task);
         Assert.That(timedOut!.Status, Is.EqualTo(RpcStatus.Timeout));
+        Assert.That(timedOut.Detail, Is.Null, "runtime failures are status-only");
+
+        // A full table refuses instead of throwing (the caller fails the call as Overloaded).
+        var held = PendingCall<int>.Rent(null);
+        for (int i = 0; i < 16; i++) Assert.That(table.TryRegister(held, timeoutMs: 0, out _), Is.True);
+        Assert.That(table.TryRegister(held, timeoutMs: 0, out _), Is.False);
+    }
+
+    [Test]
+    public void ResendWindowsRecycleTheirOwnChunks()
+    {
+        // A busy link sends and gets acknowledged continuously: it reuses its released chunks, so it neither depends on
+        // the shared pool's 64 KB bucket (which many backlogged links can empty) nor allocates.
+        var window = new ResendWindow(32 << 20);
+        var batch = new byte[ResendWindow.ChunkSize / 4];
+        long sent = 0;
+        Stream(); // warm: the window's first chunks come from the shared pool
+
+        var held = new List<byte[]>();
+        long before = BufferPool.AllocatedBytes;
+        while (BufferPool.AllocatedBytes == before) held.Add(BufferPool.Rent(ResendWindow.ChunkSize)); // the bucket is empty
+        long pool = BufferPool.AllocatedBytes, garbage = GC.GetAllocatedBytesForCurrentThread();
+        Stream();
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - garbage, rented = BufferPool.AllocatedBytes - pool;
+        Assert.That(rented, Is.Zero, "no chunk rented from the shared pool");
+        Assert.That(allocated, Is.Zero, "nothing allocated");
+        foreach (var buffer in held) BufferPool.Return(buffer);
+
+        void Stream()
+        {
+            for (int i = 0; i < 256; i++) // 4 MB through the window, acknowledged as it goes
+            {
+                window.OnSending(batch);
+                window.Acknowledge(sent += batch.Length);
+            }
+        }
     }
 
     [Test]

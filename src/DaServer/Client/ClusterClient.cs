@@ -202,16 +202,21 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IAsyncDi
         try
         {
             if (connection == null || connection.IsClosed)
-                throw new RpcException(RpcStatus.Disconnected);
+            {
+                call?.Fail(RpcStatus.Disconnected);
+                return;
+            }
 
-            uint requestId = call != null ? _pending.Register(call, (int)CallTimeout.TotalMilliseconds) : 0;
+            uint requestId = 0;
+            if (call != null && !_pending.TryRegister(call, (int)CallTimeout.TotalMilliseconds, out requestId))
+            {
+                call.Fail(RpcStatus.Overloaded);
+                return;
+            }
+
             w.SetHeader(kind, requestId, messageId, key, budget, flags);
             if (!connection.Send(w.Frame) && call != null)
-                _pending.Take(requestId)?.Fail(new RpcException(RpcStatus.Disconnected));
-        }
-        catch (RpcException e)
-        {
-            call?.Fail(e);
+                _pending.Take(requestId)?.Fail(RpcStatus.Disconnected);
         }
         finally
         {
