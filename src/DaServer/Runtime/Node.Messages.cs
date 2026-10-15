@@ -35,17 +35,20 @@ sealed partial class Node
     public void Publish<T>(in T e) where T : struct
     {
         var routes = View.Routes(MessageType<T>.Id);
-        if (routes.Length == 0) return;
+        int last = routes.Length - 1;
+        while (last >= 0 && routes[last].Actor) last--;
+        if (last < 0) return;
         var w = MessageWriter.Write(in e);
+        bool handedOver = false;
         try
         {
-            for (int i = 0; i < routes.Length; i++)
+            for (int i = 0; i <= last; i++)
                 if (!routes[i].Actor)
-                    SendTo(in routes[i], MessageType<T>.Id, 0, w, hops: 0, flags: 0);
+                    handedOver = SendTo(in routes[i], MessageType<T>.Id, 0, w, hops: 0, flags: 0, handOver: i == last);
         }
         finally
         {
-            w.Dispose();
+            if (!handedOver) w.Dispose();
         }
     }
 
@@ -56,16 +59,17 @@ sealed partial class Node
     /// </summary>
     internal void SendMessage(FrameWriter w, uint messageId, uint handlerTypeId, long key, byte flags = 0)
     {
+        bool handedOver = false;
         try
         {
             if (TryRoute(messageId, handlerTypeId, out var route, out bool ambiguous))
-                SendTo(in route, messageId, key, w, hops: 0, flags);
+                handedOver = SendTo(in route, messageId, key, w, hops: 0, flags, handOver: true);
             else if (ambiguous)
                 throw new RpcException(RpcStatus.Error, AmbiguousMessage(messageId));
         }
         finally
         {
-            w.Dispose();
+            if (!handedOver) w.Dispose();
         }
     }
 
@@ -77,16 +81,24 @@ sealed partial class Node
         return View.TryGetRoute(messageId, actor: false, out route, out ambiguous);
     }
 
-    /// <summary>Send the message in <paramref name="w"/> (payload written) to the node handling <paramref name="route"/>.</summary>
-    private void SendTo(in MessageRoute route, uint messageId, long key, FrameWriter w, byte hops, byte flags)
+    /// <summary>
+    /// Send the message in <paramref name="w"/> (payload written) to the node handling <paramref name="route"/>. With
+    /// <paramref name="handOver"/> a local target takes <paramref name="w"/> itself instead of a copy; returns whether it
+    /// did (the caller disposes <paramref name="w"/> otherwise).
+    /// </summary>
+    private bool SendTo(in MessageRoute route, uint messageId, long key, FrameWriter w, byte hops, byte flags, bool handOver)
     {
         var target = View.Target(in route, key, Id, (uint)Interlocked.Increment(ref _roundRobin));
-        if (target == null) return;
+        if (target == null) return false;
         w.SetHeader(FrameKind.Message, route.HandlerTypeId, messageId, key, flags: flags, hops: hops);
-        if (target.NodeId == Id)
-            Admit(SelectShard(route.HandlerTypeId, route.Actor, key), FrameWriter.CopyOf(w.Frame), null);
-        else
+        if (target.NodeId != Id)
+        {
             GetLink(target).Send(w.Frame);
+            return false;
+        }
+
+        Admit(SelectShard(route.HandlerTypeId, route.Actor, key), handOver ? w : FrameWriter.CopyOf(w.Frame), null);
+        return handOver;
     }
 
     /// <summary>Message frame from another node: to the shard of its handler type, or on to the right node.</summary>
@@ -109,16 +121,17 @@ sealed partial class Node
     /// </summary>
     internal void ForwardMessage(FrameWriter frame)
     {
+        bool handedOver = false;
         try
         {
             var header = FrameHeader.Read(frame.Frame);
             if (header.Hops >= MaxHops) return;
             if (View.TryGetHandlerTypeRoute(header.RequestId, out var route))
-                SendTo(in route, header.MessageId, header.Key, frame, (byte)(header.Hops + 1), header.Flags);
+                handedOver = SendTo(in route, header.MessageId, header.Key, frame, (byte)(header.Hops + 1), header.Flags, handOver: true);
         }
         finally
         {
-            frame.Dispose();
+            if (!handedOver) frame.Dispose();
         }
     }
 

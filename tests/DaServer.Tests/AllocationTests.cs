@@ -149,6 +149,38 @@ public class AllocationTests : ClusterTest
     }
 
     [Test]
+    public async Task CallsToAnotherNodeDoNotAllocate()
+    {
+        // The measuring call lasts as long as its 60,000 round trips.
+        var caller = await Start("caller", configure: static o => (o.GossipInterval, o.CallTimeout) = (TimeSpan.FromHours(1), TimeSpan.FromMinutes(1)));
+        var callee = await Start("callee", configure: static o => o.GossipInterval = TimeSpan.FromHours(1));
+        await Converged();
+        long from = KeyOwnedBy<CounterId>(caller), to = KeyOwnedBy<CounterId>(callee);
+
+        const int calls = 20_000;
+        await caller.Ask(new CounterId(from), new AddMany(new CounterId(to), 3 * calls));
+        long allocated = await caller.Ask(new CounterId(from), new AddMany(new CounterId(to), calls));
+        Assert.That(allocated / (double)calls, Is.LessThan(8), $"{allocated} B for {calls} calls"); // see above
+    }
+
+    [TestCase(false, TestName = "ServiceTrafficDoesNotAllocate(local)")]
+    [TestCase(true, TestName = "ServiceTrafficDoesNotAllocate(remote)")]
+    public async Task ServiceTrafficDoesNotAllocate(bool remote)
+    {
+        // Remote: the services live only on the second node, so every message crosses the link.
+        var caller = await Start("caller", hosts: remote ? static t => t == typeof(Counter) : null,
+            configure: static o => (o.GossipInterval, o.CallTimeout) = (TimeSpan.FromHours(1), TimeSpan.FromMinutes(1)));
+        if (remote) await Start("services", hosts: static t => t != typeof(Counter), configure: static o => o.GossipInterval = TimeSpan.FromHours(1));
+        await Converged();
+
+        const int rounds = 10_000;
+        await caller.Ask(new CounterId(1), new ServiceTraffic(3 * rounds));
+        long allocated = await caller.Ask(new CounterId(1), new ServiceTraffic(rounds));
+        // Per round: one message, one event to two services, one request and its reply.
+        Assert.That(allocated / (double)rounds, Is.LessThan(8), $"{allocated} B for {rounds} rounds");
+    }
+
+    [Test]
     public async Task ActorChurnDoesNotAllocate()
     {
         // Actors loaded by a message and unloaded when idle, again and again: the actor object, its mailbox and its
@@ -272,6 +304,25 @@ public class AllocationTests : ClusterTest
             else if (status == RpcStatus.NotHosted) Interlocked.Increment(ref NotHosted);
             else if (status == RpcStatus.Timeout) Interlocked.Increment(ref Timeout);
         }
+    }
+
+    [Test]
+    public async Task IdleNodesDoNotAllocate()
+    {
+        // 500 ticks a second on each of 4 shards, maintenance and gossip timers running: anything allocated per tick or
+        // per wake would be >= 48 KB/s. What remains is the test process (about 1.7 KB/s with no node at all).
+        // The quietest of several one-second windows: one-time work (tiered JIT, the test host warming up) lands in some
+        // windows, anything per tick in all of them.
+        await Start("idle", shards: 4, configure: static o => o.TickRate = 500);
+        long quietest = long.MaxValue;
+        for (int second = 0; second < 8; second++)
+        {
+            var meter = new AllocationMeter();
+            Thread.Sleep(1000);
+            quietest = Math.Min(quietest, meter.Garbage);
+        }
+
+        Assert.That(quietest, Is.LessThan(8 * 1024), $"{quietest} B/s idle");
     }
 
     /// <summary>
