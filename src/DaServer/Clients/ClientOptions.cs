@@ -15,6 +15,10 @@ public sealed class ClientOptions
     /// <summary>Validity of a reconnect ticket; clients refresh theirs at half of it.</summary>
     public TimeSpan TicketLifetime { get; set; } = TimeSpan.FromMinutes(10);
 
-    /// <summary>Only direct clients to the other client-facing nodes, keep no sessions (a well-known address).</summary>
-    public bool Balancer { get; set; }
+    /// <summary>
+    /// Clients that connect are directed to the less loaded of two client-facing nodes (their gossiped sessions) and
+    /// move there: clients know one well-known address (the platform's load balancer or DNS name), the cluster spreads
+    /// them. False when the nodes sit behind a load balancer without addresses of their own: clients stay.
+    /// </summary>
+    public bool Redirect { get; set; } = true;
 }

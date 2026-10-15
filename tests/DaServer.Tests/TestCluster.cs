@@ -86,7 +86,7 @@ public abstract class ClusterTest
     private protected async Task<ClusterClient> Connect(Node gateway)
     {
         var client = new ClusterClient();
-        await client.ConnectAsync("127.0.0.1", gateway.ClientPort(), followBalancer: false);
+        await client.ConnectAsync("127.0.0.1", gateway.ClientPort(), followRedirect: false);
         _clients.Add(client);
         return client;
     }

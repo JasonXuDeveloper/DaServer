@@ -11,13 +11,12 @@ builder.AddDockerComposeEnvironment("compose");
 
 // One project per server: a node hosts exactly the actors, services and systems its project compiles (its startup log
 // lists them). The topology is projects and replica counts; ports, names and seeds are assigned here, discovery
-// (gossip) and client placement (balancer) are automatic. Who talks to whom: samples/mmo/README.md.
+// (gossip) and client placement (the gateways' directory) are automatic. Who talks to whom: samples/mmo/README.md.
 var cluster = builder.AddDaServerCluster("sample");
 cluster.AddNodes<Projects.Sample_LoginServer>("login");                    // Account service
 cluster.AddNodes<Projects.Sample_GameServer>("game");                      // Player and Realm actors
 cluster.AddNodes<Projects.Sample_MapServer>("map");                        // Map actors + movement/interest systems
-cluster.AddGateways<Projects.Sample_Gateway>("gateway", replicas: 3);      // client connections, no business code
-var balancer = cluster.AddBalancer<Projects.Sample_Gateway>("balancer");   // tells clients which gateway to use
+var gateways = cluster.AddGateways<Projects.Sample_Gateway>("gateway", replicas: 3); // client connections, no business code
 
 // 10k players moving in one map on one map node while the realm broadcasts to everyone every 5 ticks. Each player sees
 // the 3x3 cells around it (area of interest) and hears about avatars only when they turn (dead reckoning): about
@@ -27,7 +26,7 @@ var balancer = cluster.AddBalancer<Projects.Sample_Gateway>("balancer");   // te
 int bots = builder.Configuration.GetValue("Bots", 10_000);
 int seconds = builder.Configuration.GetValue("Seconds", 60);
 builder.AddProject<Projects.Sample_Bot>("bots")
-    .WithGateways(balancer)
+    .WithGateways(gateways)
     .WithArgs(bots.ToString(), seconds.ToString(), "1", "1", "0");
 
 builder.Build().Run();

@@ -13,9 +13,8 @@ namespace Aspire.Hosting;
 /// <code>
 /// var cluster = builder.AddDaServerCluster("cluster");
 /// cluster.AddNodes&lt;Projects.Sample_MapServer&gt;("map", replicas: 3);
-/// cluster.AddGateways&lt;Projects.Sample_Gateway&gt;("gateway", replicas: 2);
-/// var balancer = cluster.AddBalancer&lt;Projects.Sample_Gateway&gt;("balancer");
-/// builder.AddProject&lt;Projects.Bot&gt;("bots").WithGateways(balancer);
+/// var gateways = cluster.AddGateways&lt;Projects.Sample_Gateway&gt;("gateway", replicas: 2);
+/// builder.AddProject&lt;Projects.Bot&gt;("bots").WithGateways(gateways);
 /// </code>
 /// </example>
 public static class DaServerClusterExtensions
@@ -83,18 +82,6 @@ public sealed class DaServerCluster
     /// </summary>
     public DaServerNodeGroup AddGateways<TProject>(string name, int replicas = 1) where TProject : IProjectMetadata, new() =>
         Add<TProject>(name, replicas, gateway: true);
-
-    /// <summary>
-    /// Add <paramref name="replicas"/> balancers: clients connect to their well-known address and are directed to
-    /// the least loaded gateway; they keep no sessions themselves. Pass the group to
-    /// <see cref="DaServerClusterExtensions.WithGateways{T}"/> of a client.
-    /// </summary>
-    public DaServerNodeGroup AddBalancer<TProject>(string name, int replicas = 1) where TProject : IProjectMetadata, new()
-    {
-        var group = Add<TProject>(name, replicas, gateway: true);
-        foreach (var node in group.Nodes) node.WithEnvironment("DaServer__Clients__Balancer", "true");
-        return group;
-    }
 
     private DaServerNodeGroup Add<TProject>(string name, int replicas, bool gateway) where TProject : IProjectMetadata, new()
     {

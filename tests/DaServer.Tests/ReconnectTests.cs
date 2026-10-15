@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text;
 
 namespace DaServer.Tests;
@@ -11,9 +12,8 @@ public class ReconnectTests : ClusterTest
         o.ReconnectGrace = grace;
     };
 
-    private async Task<(Node Balancer, Node[] Gateways)> StartCluster(TimeSpan grace)
+    private async Task<Node[]> StartCluster(TimeSpan grace)
     {
-        var balancer = await Start("balancer", hosts: static _ => false, configure: Secret(grace), clients: static o => o.Balancer = true);
         var gateways = new[]
         {
             await Start("gw-0", gateway: true, hosts: static _ => false, configure: Secret(grace)),
@@ -21,13 +21,14 @@ public class ReconnectTests : ClusterTest
         };
         await Start("game", configure: Secret(grace));
         await Converged();
-        return (balancer, gateways);
+        return gateways;
     }
 
-    private async Task<ClusterClient> LogIn(Node balancer, long player)
+    /// <summary>Log in through the client-facing nodes' addresses (the client reconnects through them too).</summary>
+    private async Task<ClusterClient> LogIn(Node[] gateways, long player)
     {
         var client = Track(new ClusterClient());
-        await client.ConnectAsync("127.0.0.1", balancer.ClientPort());
+        await client.ConnectAsync([.. gateways.Select(static g => new DnsEndPoint("127.0.0.1", g.ClientPort()))]);
         Assert.That(await client.Ask(new Login(new PlayerId(player))), Is.True);
         return client;
     }
@@ -43,8 +44,8 @@ public class ReconnectTests : ClusterTest
     [Test]
     public async Task ALostConnectionResumesTheSession()
     {
-        var (balancer, gateways) = await StartCluster(TimeSpan.FromSeconds(1));
-        var client = await LogIn(balancer, 501);
+        var gateways = await StartCluster(TimeSpan.FromSeconds(1));
+        var client = await LogIn(gateways, 501);
         var inbox = new GatewayTests.Inbox();
         client.Register(inbox);
         Assert.That(await client.Ask(new AddGold(5)), Is.EqualTo(5));
@@ -65,8 +66,9 @@ public class ReconnectTests : ClusterTest
     [Test]
     public async Task ClientsOfACrashedGatewayResumeOnAnother()
     {
-        var (balancer, gateways) = await StartCluster(TimeSpan.FromSeconds(2));
-        var client = await LogIn(balancer, 502);
+        var gateways = await StartCluster(TimeSpan.FromSeconds(2));
+        var client = await LogIn(gateways, 502);
+        await Eventually(() => gateways.Sum(g => g.SessionCount()) == 1, "the entry connection was not closed");
         var crashed = gateways.Single(g => g.SessionCount() == 1);
 
         var reconnected = Reconnected(client);
@@ -82,8 +84,8 @@ public class ReconnectTests : ClusterTest
     [Test]
     public async Task AClientThatDoesNotComeBackIsReportedClosedAfterTheGrace()
     {
-        var (balancer, _) = await StartCluster(TimeSpan.FromMilliseconds(800));
-        var client = await LogIn(balancer, 503);
+        var gateways = await StartCluster(TimeSpan.FromMilliseconds(800));
+        var client = await LogIn(gateways, 503);
         client.AutoReconnect = false;
 
         client.DropConnection();
@@ -95,8 +97,8 @@ public class ReconnectTests : ClusterTest
     [Test]
     public async Task ClosingOnPurposeIsReportedAtOnce()
     {
-        var (balancer, _) = await StartCluster(TimeSpan.FromSeconds(30));
-        var client = await LogIn(balancer, 504);
+        var gateways = await StartCluster(TimeSpan.FromSeconds(30));
+        var client = await LogIn(gateways, 504);
         await client.DisposeAsync();
         await Eventually(() => Observed.Events.Contains("closed:504"), "an explicit close waited for the grace");
     }

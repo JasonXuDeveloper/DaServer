@@ -31,8 +31,8 @@ internal static class ControlOp
     /// <summary>Full member descriptions: payload = ClusterMember[] (sent when a node meets another, not every round).</summary>
     public const uint Cards = 8;
 
-    /// <summary>Client to gateway (a call): which gateway should I use? Answer: a <see cref="GatewayEndpoint"/>.</summary>
-    public const uint PickGateway = 4;
+    /// <summary>Client to its node (a call): which node should I use? Answer: a <see cref="ClientEndpoint"/> (or stay).</summary>
+    public const uint PickNode = 4;
 
     // Client sessions (client and gateway): reconnect tickets (ADR-036).
 

@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
 namespace DaServer.Hosting;
@@ -33,6 +34,18 @@ public static class DaServerHttpExtensions
         else if (string.IsNullOrEmpty(builder.Configuration[WebHostDefaults.ServerUrlsKey]))
             builder.WebHost.UseUrls($"http://{listen}:0");
         return builder;
+    }
+
+    /// <summary>
+    /// Map the node's own endpoints (the generated entry point does; a written Program.cs calls it after <c>Build</c>):
+    /// <c>GET /clients/endpoint</c> on client-facing nodes, where a client should connect (clients that bootstrap over
+    /// HTTP).
+    /// </summary>
+    public static WebApplication MapDaServer(this WebApplication app)
+    {
+        if (app.Services.GetRequiredService<Node>().Feature<DaServer.Clients.ClientConnections>() is { } clients)
+            app.MapGet("/clients/endpoint", () => Results.Json(clients.Pick() is { Host.Length: > 0 } other ? other : clients.Endpoint));
+        return app;
     }
 
     /// <summary>POST <paramref name="pattern"/>: the JSON body asked of the service handling it; the reply as JSON.</summary>

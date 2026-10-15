@@ -26,6 +26,9 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
     /// <summary>Connected client sessions.</summary>
     public int SessionCount => _sessions.Count;
 
+    /// <summary>Where clients reach this node (after the node started).</summary>
+    public ClientEndpoint Endpoint { get; private set; } = ClientEndpoint.Stay;
+
     protected internal override void Start(INodeContext context)
     {
         _node = (Node)context; // a capability of this assembly: it may use the node's internals, never the other way round
@@ -33,7 +36,7 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
         var addresses = new ClientAddresses(this);
         context.HandleAddress<SessionRef>(addresses);
         context.HandleAddress<Origin>(addresses); // the origin of a client's message is its session
-        if (!options.Balancer) context.HandleAddress<ClientGroup>(addresses); // a balancer keeps no sessions
+        context.HandleAddress<ClientGroup>(addresses);
         if (_node.Options.ClusterSecret is { Length: > 0 } secret) _ticketSecret = System.Text.Encoding.UTF8.GetBytes(secret);
         var sessionOptions = ConnectionOptions.ForClients();
         sessionOptions.MaxFrameSize = options.MaxFrameSize; // what an untrusted client may make us buffer
@@ -48,7 +51,8 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
         });
         _listener.Start();
         Port = _listener.LocalEndPoint.Port;
-        context.SetCardEntry(ClientKeys.Endpoint, $"{options.AdvertisedHost ?? _node.AdvertisedHost}:{Port}");
+        Endpoint = new ClientEndpoint(options.AdvertisedHost ?? _node.AdvertisedHost, Port);
+        context.SetCardEntry(ClientKeys.Endpoint, $"{Endpoint.Host}:{Port}");
         context.AddPulse(ClientKeys.Sessions, () => _sessions.Count);
     }
 
@@ -289,14 +293,16 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
     }
 
     /// <summary>
-    /// Answer "which gateway should I use": the less loaded of two random gateways that accept sessions (power of two
-    /// choices: even spread from gossiped counts, no herd on the single least loaded one while counts are stale).
+    /// Where a client should connect (the directory): the less loaded of two random client-facing nodes (power of two
+    /// choices: even spread from gossiped counts, no herd on the single least loaded one while counts are stale), or
+    /// <see cref="ClientEndpoint.Stay"/> when that is this node or clients are not redirected.
     /// </summary>
-    private void PickGateway(Session session, uint callId)
+    public ClientEndpoint Pick()
     {
+        if (!options.Redirect) return ClientEndpoint.Stay;
         ClusterMember? first = null, second = null;
         int candidates = 0;
-        foreach (var member in _node.View.NodesWithScope(AddressScopes.Group)) // nodes holding sessions (not balancers)
+        foreach (var member in _node.View.NodesWithScope(AddressScopes.Group))
         {
             if (member.Entry(ClientKeys.Endpoint) == null) continue;
             candidates++;
@@ -305,12 +311,7 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
             else if (second == null || Random.Shared.Next(candidates - 1) == 0) second = member;
         }
 
-        if (first == null)
-        {
-            session.Sink.SendError(callId, RpcStatus.NotHosted);
-            return;
-        }
-
+        if (first == null) return ClientEndpoint.Stay;
         ClusterMember pick;
         lock (_directed)
         {
@@ -319,11 +320,17 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
             _directed[pick.NodeId] = (reported, ExpectedSessions(pick) - reported + 1);
         }
 
+        if (pick.NodeId == _node.Id) return ClientEndpoint.Stay;
         string endpoint = pick.Entry(ClientKeys.Endpoint)!;
         int colon = endpoint.LastIndexOf(':');
+        return new ClientEndpoint(endpoint[..colon], int.Parse(endpoint.AsSpan(colon + 1)));
+    }
+
+    private void PickNode(Session session, uint callId)
+    {
         var w = FrameWriter.Rent(64);
         var nino = w.Nino;
-        NinoSerializer.Serialize(new GatewayEndpoint(endpoint[..colon], int.Parse(endpoint.AsSpan(colon + 1))), ref nino);
+        NinoSerializer.Serialize(Pick(), ref nino);
         session.Sink.SendReply(callId, RpcStatus.Ok, w);
     }
 
@@ -367,8 +374,8 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
         uint callId = FrameHeader.CallIdOf(in header, frame);
         switch (header.MessageId)
         {
-            case ControlOp.PickGateway when callId != 0:
-                PickGateway(session, callId);
+            case ControlOp.PickNode when callId != 0:
+                PickNode(session, callId);
                 break;
             case ControlOp.Ticket:
                 IssueTicket(session);
