@@ -26,7 +26,6 @@ public sealed partial class Node : ICluster, IAsyncDisposable
         Logger = (options.LoggerFactory ?? NullLoggerFactory.Instance).CreateLogger("DaServer.Node." + options.Name);
         Pending = new PendingCallTable(options.PendingCallBits);
         Membership = new Membership(this);
-        Placement = new NodePlacement(this);
         _localSink = new LocalReplySink(this);
     }
 
@@ -49,9 +48,11 @@ public sealed partial class Node : ICluster, IAsyncDisposable
 
     internal PendingCallTable Pending { get; }
     internal Membership Membership { get; }
-    internal NodePlacement Placement { get; }
     internal ImplementationInfo[] HostedImplementations { get; private set; } = [];
     internal SystemInfo[] HostedSystems { get; private set; } = [];
+
+    /// <summary>This node owns the actor <paramref name="key"/> of <paramref name="implementationId"/> in the current view.</summary>
+    internal bool IsLocalOwner(uint implementationId, long key) => View.ImplementationOwner(implementationId, key)?.NodeId == Id;
 
     /// <summary>Start shards, listeners and membership. The node is Up when this returns.</summary>
     public Task StartAsync(CancellationToken cancellationToken = default)
@@ -274,11 +275,4 @@ public sealed partial class Node : ICluster, IAsyncDisposable
             Logger.LogError(e, "Maintenance failed");
         }
     }
-}
-
-/// <summary>Ownership checks used by shards (thin wrapper over the current <see cref="ClusterView"/>).</summary>
-internal sealed class NodePlacement(Node node)
-{
-    public bool IsLocalOwner(uint implementationId, long key) =>
-        node.View.ImplementationOwner(implementationId, key)?.NodeId == node.Id;
 }

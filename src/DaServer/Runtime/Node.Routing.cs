@@ -318,7 +318,7 @@ internal sealed class ConnectionReplySink(Connection connection) : IReplySink
     /// </summary>
     public static IReplySink For(Connection connection)
     {
-        if (connection.Tag is PeerLink link) return link.ReplySink;
+        if (connection.Tag is PeerLink link) return link;
         if (connection.Tag is ConnectionReplySink sink) return sink;
         sink = new ConnectionReplySink(connection);
         connection.Tag = sink;

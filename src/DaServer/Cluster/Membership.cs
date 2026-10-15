@@ -12,7 +12,7 @@ internal static class ControlOp
     /// <summary>
     /// First frame of every node link connection: Key = sender node id, payload = its advertised host and port and the
     /// id of its stream to us. The receiver
-    /// answers everything that arrives on the connection through its own link to that node (see <see cref="PeerLink.ReplySink"/>).
+    /// answers everything that arrives on the connection through its own link to that node (see <see cref="PeerLink.SendReply"/>).
     /// </summary>
     public const uint Hello = 3;
 
