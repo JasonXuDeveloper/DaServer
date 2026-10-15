@@ -247,6 +247,9 @@ public sealed class AuditService : Service
     [Handle] public void On(Ping e) => Observed.Events.Enqueue($"audit:{e.Id}");
 }
 
+/// <summary>To the toy feature's addresses (FeatureTests).</summary>
+[NinoType, Message] public partial record struct Probe(int N);
+
 /// <summary>Service traffic without payload allocations (allocation tests): one-way, request and published event.</summary>
 [NinoType, Message] public partial record struct Tally(int By);
 [NinoType, Message] public partial record struct TallyAsk(int By) : IRequest<int>;

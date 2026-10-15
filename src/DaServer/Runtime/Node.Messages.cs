@@ -94,6 +94,13 @@ sealed partial class Node
         }
     }
 
+    /// <summary>A message (header written) to an address of this node: to the feature handling its scope, if any.</summary>
+    private void DeliverToAddress(ReadOnlySpan<byte> frame, IReplySink? replyTo)
+    {
+        var header = FrameHeader.Read(frame);
+        if (_addressHandlers.TryGetValue(header.Target, out var handler)) handler.OnMessage(in header, frame, replyTo);
+    }
+
     /// <summary>The route of an actor type, or of the one service handling <paramref name="messageId"/> (handler type 0).</summary>
     private bool TryRoute(uint messageId, uint handlerTypeId, out MessageRoute route, out bool ambiguous)
     {
@@ -124,7 +131,7 @@ sealed partial class Node
 
     /// <summary>
     /// Message frame from another node, by its target: a handler type goes to its shard (which forwards an actor this
-    /// node does not own), a session or client group to the gateway, anything else on to the node hosting it.
+    /// node does not own), an address scope to the feature handling it, anything else on to the node hosting it.
     /// </summary>
     private void OnInboundMessage(Connection connection, in FrameHeader header, ReadOnlySpan<byte> frame)
     {
@@ -141,8 +148,8 @@ sealed partial class Node
 
             Admit(SelectShard(handlerType.Id, handlerType.IsActor, header.Key), copy, sink);
         }
-        else if (header.Target == AddressScopes.Session || header.Target == AddressScopes.Origin || header.Target == AddressScopes.Group)
-            DeliverToAddress(header.Target, header.Key, frame, header.IsRequest ? ConnectionReplySink.For(connection) : null);
+        else if (_addressHandlers.TryGetValue(header.Target, out var addresses))
+            addresses.OnMessage(in header, frame, header.IsRequest ? ConnectionReplySink.For(connection) : null);
         else Forward(FrameWriter.CopyOf(frame), header.IsRequest ? ConnectionReplySink.For(connection) : null);
     }
 

@@ -85,8 +85,8 @@ public sealed partial class DaServerAnalyzer
 
     /// <summary>
     /// <c>Send</c> / <c>Ask</c> / <c>Publish</c> of the cluster or a client: the last parameter is the message, the one
-    /// before it (when there is one besides the sender) the address. A session or group address needs
-    /// <c>Flow.ToClient</c> and is sent to, never asked; a <c>ClusterClient</c> needs <c>Flow.FromClient</c> and
+    /// before it (when there is one besides the sender) the address. A client address (session, origin, client group)
+    /// needs <c>Flow.ToClient</c>; only actors are asked; a <c>ClusterClient</c> needs <c>Flow.FromClient</c> and
     /// addresses actors only; servers may not send <c>Flow.ToClient</c>-only messages to each other.
     /// </summary>
     private static void CheckSend(OperationAnalysisContext context)
@@ -105,16 +105,17 @@ public sealed partial class DaServerAnalyzer
         int addressIndex = method.Parameters.Length - 2;
         var address = addressIndex >= (method.IsExtensionMethod ? 1 : 0) ? method.Parameters[addressIndex].Type : null;
         if (address is ITypeParameterSymbol) return;
-        bool toClient = address != null && (Implements(address, Support.NodeAddress) || Implements(address, Support.GroupAddress));
+        bool toClient = address != null && Support.ClientAddresses.Contains(address.ToDisplayString());
+        bool notActor = address != null && !Implements(address, Support.ActorId);
 
         var location = invocation.Syntax.GetLocation();
         void Report(DiagnosticDescriptor d, Location? l, params object[] a) =>
             context.ReportDiagnostic(Diagnostic.Create(d, l ?? location, a));
         string usedBy = method.Name;
-        if (toClient && method.Name == "Ask")
-            Report(Rules.WrongAddress, location, address!.ToDisplayString(), "is a session or group: send to it, it cannot be asked");
-        else if (client && address != null && !Implements(address, Support.ActorId))
-            Report(Rules.WrongAddress, location, address.ToDisplayString(), "is not an actor id: clients send to actors and services only");
+        if (notActor && method.Name == "Ask")
+            Report(Rules.WrongAddress, location, address!.ToDisplayString(), "is not an actor id: send to it, only actors are asked");
+        else if (client && notActor)
+            Report(Rules.WrongAddress, location, address!.ToDisplayString(), "is not an actor id: clients send to actors and services only");
         else if (Shapes.IsMessage(message, location, usedBy, Report))
             Shapes.CheckFlow(message, toClient, fromClient: client, location, usedBy, Report);
     }

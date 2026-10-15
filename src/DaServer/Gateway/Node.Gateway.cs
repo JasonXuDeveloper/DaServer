@@ -22,6 +22,11 @@ sealed partial class Node
     {
         if (Options.ClientPort is not { } port) return;
         _gatewayHandler = new GatewayHandler(this);
+        var addresses = new ClientAddresses(this);
+        INodeContext context = this;
+        context.HandleAddress<SessionRef>(addresses);
+        context.HandleAddress<Origin>(addresses); // the origin of a client's message is its session
+        if (!Options.Balancer) context.HandleAddress<ClientGroup>(addresses); // a balancer keeps no sessions
         if (Options.ClusterSecret is { Length: > 0 } secret) _ticketSecret = System.Text.Encoding.UTF8.GetBytes(secret);
         var sessionOptions = ConnectionOptions.ForClients();
         sessionOptions.MaxFrameSize = Options.MaxClientFrameSize; // what an untrusted client may make us buffer
@@ -69,7 +74,7 @@ sealed partial class Node
         try
         {
             frame.SetHeader(FrameKind.Message, scope, messageId, value);
-            if (node == Id) DeliverToAddress(scope, value, frame.Frame, null);
+            if (node == Id) DeliverToAddress(frame.Frame, null);
             else LinkTo(node)?.Send(frame.Frame);
         }
         finally
@@ -79,19 +84,17 @@ sealed partial class Node
     }
 
     /// <summary>
-    /// A message (payload written) to a group: serialized once, one frame per node that may have members (today the
-    /// client-facing nodes, for client groups), which fans it out locally. Takes ownership of <paramref name="frame"/>.
+    /// A message (payload written) to a group: serialized once, one frame per node handling the group's scope (the
+    /// nodes that may have members), which fans it out locally. Takes ownership of <paramref name="frame"/>.
     /// </summary>
     private void SendToGroup(FrameWriter frame, uint scope, uint messageId, long value)
     {
         try
         {
-            if (scope != AddressScopes.Group) return;
             frame.SetHeader(FrameKind.Message, scope, messageId, value);
-            foreach (var member in View.UpMembers)
+            foreach (var member in View.NodesWithScope(scope))
             {
-                if (member.ClientPort == 0 || member.Balancer) continue; // a balancer keeps no sessions
-                if (member.NodeId == Id) DeliverToAddress(scope, value, frame.Frame, null);
+                if (member.NodeId == Id) DeliverToAddress(frame.Frame, null);
                 else GetLink(member).Send(frame.Frame);
             }
         }
@@ -101,13 +104,19 @@ sealed partial class Node
         }
     }
 
+    /// <summary>Messages to the sessions, origins and client groups of this gateway.</summary>
+    private sealed class ClientAddresses(Node node) : IAddressHandler
+    {
+        public void OnMessage(in FrameHeader header, ReadOnlySpan<byte> frame, IReplySink? replyTo) =>
+            node.OnClientAddress(header.Target, header.Key, in header, frame, replyTo);
+    }
+
     /// <summary>
     /// A message to a session or client group of this node (from a link or sent here): delivered to the clients, or
     /// applied when it is a session operation (answered to <paramref name="replyTo"/> when asked).
     /// </summary>
-    private void DeliverToAddress(uint scope, long value, ReadOnlySpan<byte> frame, IReplySink? replyTo)
+    private void OnClientAddress(uint scope, long value, in FrameHeader header, ReadOnlySpan<byte> frame, IReplySink? replyTo)
     {
-        var header = FrameHeader.Read(frame);
         bool operation = SessionOperations.Contains(header.MessageId);
         if (scope == AddressScopes.Group)
         {

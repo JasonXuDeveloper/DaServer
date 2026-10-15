@@ -89,5 +89,12 @@ public sealed class NodeOptions
 
     public ILoggerFactory? LoggerFactory { get; set; }
 
+    /// <summary>
+    /// Capabilities this node runs (<see cref="NodeFeature"/>): none unless configured (the host adds the ones its
+    /// configuration enables). Not bound from configuration itself.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public List<NodeFeature> Features { get; } = new();
+
     internal IPEndPoint ClusterBindEndPoint => new(IPAddress.Parse(ListenAddress), ClusterPort);
 }

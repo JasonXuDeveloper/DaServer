@@ -40,6 +40,9 @@ public partial class ClusterMember
     /// <summary>Messages handled by the node's handler types.</summary>
     public HostedMessage[] Handlers = [];
 
+    /// <summary>Address scopes the node's features handle (<see cref="INodeContext.HandleAddress{TAddr}"/>): group messages of a scope go to these nodes.</summary>
+    public uint[] Scopes = [];
+
     /// <summary>Bumped by the node itself to refute suspicion or announce a restart.</summary>
     public int Incarnation;
 
