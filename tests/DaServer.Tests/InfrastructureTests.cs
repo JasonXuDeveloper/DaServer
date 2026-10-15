@@ -165,6 +165,57 @@ public class InfrastructureTests
     }
 
     [Test]
+    public void PendingCallTableMemoryFollowsCallsInFlight()
+    {
+        var table = new PendingCallTable(16);
+        Assert.That(table.Capacity, Is.Zero, "nothing allocated before the first call");
+        var held = PendingCall<int>.Rent(null);
+        var ids = new List<uint>();
+        for (int i = 0; i < 3; i++)
+        {
+            Assert.That(table.TryRegister(held, timeoutMs: 0, out uint id), Is.True);
+            ids.Add(id);
+        }
+
+        Assert.That(table.Capacity, Is.EqualTo(PendingCallTable.FirstChunk));
+        foreach (var id in ids) table.Take(id);
+        for (int round = 0; round < 1000; round++) // reuse: a steady call rate stays in the first chunk
+        {
+            Assert.That(table.TryRegister(held, timeoutMs: 0, out uint id), Is.True);
+            table.Take(id);
+        }
+
+        Assert.That(table.Capacity, Is.EqualTo(PendingCallTable.FirstChunk));
+
+        for (int i = 0; i < 100; i++) Assert.That(table.TryRegister(held, timeoutMs: 0, out _), Is.True);
+        Assert.That(table.Capacity, Is.EqualTo(120), "chunks of 8, 16, 32, 64 slots");
+    }
+
+    [Test]
+    public void PendingCallTableHandsEachFreeSlotToOneCallerUnderContention()
+    {
+        const int threads = 8, rounds = 50_000, inFlight = 20;
+        var table = new PendingCallTable(10);
+        var held = PendingCall<int>.Rent(null);
+        int duplicates = 0, failures = 0;
+        Parallel.For(0, threads, _ =>
+        {
+            var mine = new uint[inFlight];
+            for (int round = 0; round < rounds; round++)
+            {
+                for (int i = 0; i < inFlight; i++)
+                    if (!table.TryRegister(held, timeoutMs: 0, out mine[i])) Interlocked.Increment(ref failures);
+                for (int i = 0; i < inFlight; i++)
+                    if (table.Take(mine[i]) == null) Interlocked.Increment(ref duplicates); // someone else held the slot
+            }
+        });
+
+        Assert.That(failures, Is.Zero, "8 x 20 calls fit in 1024 slots");
+        Assert.That(duplicates, Is.Zero, "a slot was handed to two calls");
+        Assert.That(table.Capacity, Is.LessThanOrEqualTo(2 * threads * inFlight + PendingCallTable.FirstChunk));
+    }
+
+    [Test]
     public void ResendWindowsRecycleTheirOwnChunks()
     {
         // A busy link sends and gets acknowledged continuously: it reuses its released chunks, so it neither depends on

@@ -35,10 +35,11 @@ public sealed class ConnectionOptions
     public int ReceiveBufferSize { get; set; } = 16 * 1024;
 
     /// <summary>
-    /// Await readiness with a zero-byte read before renting a receive buffer, so idle connections hold no buffer.
-    /// Recommended for client sessions (many mostly-idle sockets); disable for busy node-to-node links.
+    /// Idle connections hold no buffer: a zero-byte read awaits readiness before a receive buffer is rented, and the
+    /// send batch buffer goes back to the pool once everything queued is written (rented again by the next send).
+    /// For client sessions and clients (many mostly idle sockets); off for busy node-to-node links.
     /// </summary>
-    public bool ZeroByteReads { get; set; } = true;
+    public bool ReleaseIdleBuffers { get; set; } = true;
 
     /// <summary>
     /// Max bytes queued and not yet handed to the socket. Exceeding it closes the connection (slow consumer),
@@ -57,12 +58,12 @@ public sealed class ConnectionOptions
 
     public static ConnectionOptions ForClients() => new ConnectionOptions
     {
-        ReceiveBufferSize = 4 * 1024, ZeroByteReads = true, MaxPendingSendBytes = 256 * 1024, SendBufferSize = 4 * 1024,
+        ReceiveBufferSize = 4 * 1024, ReleaseIdleBuffers = true, MaxPendingSendBytes = 256 * 1024, SendBufferSize = 4 * 1024,
     };
 
     public static ConnectionOptions ForNodeLinks() => new ConnectionOptions
     {
-        ReceiveBufferSize = 256 * 1024, ZeroByteReads = false, MaxPendingSendBytes = 256 * 1024 * 1024,
+        ReceiveBufferSize = 256 * 1024, ReleaseIdleBuffers = false, MaxPendingSendBytes = 256 * 1024 * 1024,
         SendBufferSize = 256 * 1024,
     };
 }
@@ -311,11 +312,21 @@ public sealed class Connection : IFrameSender, IFrameChannel
                     }
                 }
 
-                // Idle: give the in-flight buffer back so idle connections hold no send memory.
+                // Idle: give the in-flight buffer back so idle connections hold no send memory, and with
+                // ReleaseIdleBuffers the empty batch buffer too (the next send rents one).
                 if (sending.Length > 0)
                 {
                     BufferPool.Return(sending);
                     sending = Array.Empty<byte>();
+                }
+
+                if (_options.ReleaseIdleBuffers)
+                {
+                    byte[] spare = Array.Empty<byte>();
+                    lock (_sendLock)
+                        if (_pendingLength == 0)
+                            (spare, _pending) = (_pending, Array.Empty<byte>());
+                    BufferPool.Return(spare);
                 }
             }
         }
@@ -351,7 +362,7 @@ public sealed class Connection : IFrameSender, IFrameChannel
         {
             while (true)
             {
-                if (filled == 0 && _options.ZeroByteReads)
+                if (filled == 0 && _options.ReleaseIdleBuffers)
                 {
                     // Wait for readiness without holding a buffer.
                     if (buffer.Length > 0)

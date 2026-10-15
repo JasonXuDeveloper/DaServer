@@ -10,7 +10,9 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
 {
     private readonly PendingCallTable _pending;
     private readonly Lock _handlersGate = new();
-    private Dictionary<uint, (object Target, MessageDispatcher Dispatcher)> _handlers = new(); // copy on write
+    // Registered handler objects with their type's shared handler table (copy on write; usually one or two, so a scan
+    // beats a per-client dictionary: thousands of bot clients share one table per handler type).
+    private (object Target, MessageHandlers Handlers)[] _handlers = [];
     private readonly MpmcQueue<FrameWriter>? _inbox;
     private IFrameChannel? _connection;
     private Uri? _webSocket; // connected over a WebSocket (reconnects go there again)
@@ -43,10 +45,9 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
     /// </param>
     /// <param name="maxCallsInFlight">
     /// Requests awaiting their reply at once (rounded up to a power of two, 16 to 2^24); one more fails at once with
-    /// <see cref="RpcStatus.Overloaded"/>. The table is allocated up front (about 48 bytes a slot), so a process running
-    /// thousands of clients (bots) keeps it small; a game client rarely has more than a few requests out.
+    /// <see cref="RpcStatus.Overloaded"/>. Memory follows the peak actually in flight (64 slots at a time), not this bound.
     /// </param>
-    public ClusterClient(bool queueCallbacks = false, int maxCallsInFlight = 256)
+    public ClusterClient(bool queueCallbacks = false, int maxCallsInFlight = 4096)
     {
         if (maxCallsInFlight < 1) throw new ArgumentOutOfRangeException(nameof(maxCallsInFlight));
         int bits = 4;
@@ -174,12 +175,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
     public void Register(object handler)
     {
         var handlers = MessageRegistry.HandlersOf(handler.GetType());
-        lock (_handlersGate)
-        {
-            var next = new Dictionary<uint, (object, MessageDispatcher)>(_handlers);
-            foreach (var h in handlers.All) next[h.MessageId] = (handler, h.Dispatcher);
-            Volatile.Write(ref _handlers, next);
-        }
+        lock (_handlersGate) Volatile.Write(ref _handlers, [.. _handlers, (handler, handlers)]);
     }
 
     /// <summary>Run queued callbacks on the calling thread (only when constructed with queueCallbacks: true).</summary>
@@ -397,11 +393,16 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
     private void DispatchCallback(ReadOnlySpan<byte> frame)
     {
         var header = FrameHeader.Read(frame);
-        if (!Volatile.Read(ref _handlers).TryGetValue(header.MessageId, out var handler)) return;
-        var reader = new Reader(FrameHeader.PayloadOf(in header, frame));
-        var context = default(CallContext);
-        var task = handler.Dispatcher(handler.Target, ref reader, in context);
-        if (task.IsCompleted) task.GetAwaiter().GetResult();
+        var registered = Volatile.Read(ref _handlers);
+        for (int i = registered.Length - 1; i >= 0; i--) // the latest registration handling the message wins
+        {
+            if (registered[i].Handlers.Of(header.MessageId) is not { } handler) continue;
+            var reader = new Reader(FrameHeader.PayloadOf(in header, frame));
+            var context = default(CallContext);
+            var task = handler.Dispatcher(registered[i].Target, ref reader, in context);
+            if (task.IsCompleted) task.GetAwaiter().GetResult();
+            return;
+        }
     }
 
     /// <summary>Close on purpose: the gateway reports the session closed at once (no reconnect grace).</summary>
