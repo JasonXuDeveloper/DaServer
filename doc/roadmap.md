@@ -13,7 +13,7 @@ Keep this file current: tick items when done, add items when scope changes.
 - [x] Node: shards, local/remote routing, forwarding/relay, reply sinks
 - [x] Cluster: push-pull gossip of pulses (cards once, ADR-031), seeds (static + DNS), failure detection, `ClusterView`, rendezvous placement,
       graceful leave + rebalancing
-- [x] Gateway: sessions, per-implementation bindings, per-message `[ClientMessage]` access, push, `ClientGroup` broadcast fan-out
+- [x] Gateway: sessions, per-implementation bindings, per-message `Flow.FromClient` access, push, `ClientGroup` broadcast fan-out
       (O(1) membership, `All` is a group, no allocation per broadcast), `SessionClosed` to bound actors, client frame
       limit (ADR-025)
 - [x] Runtime-owned sessions: Bind joins the activation's group, `CallerSession` holds for the turn, a crashed gateway's
@@ -78,6 +78,8 @@ Keep this file current: tick items when done, add items when scope changes.
       Aspire-generated cluster secret
 - [x] Lifecycle as tags (ADR-037): turn ends posted by `TurnWatcher` (no polling), `Ready`/`Loading`/`Unloading`/
       `Deactivating`/`Retiring` with one system each; sample grid as data + systems (`DespawnSystem`, `PlacementSystem`)
+- [x] `[Message]` (ADR-038): `[NinoType, Message]` is a message, plain `[NinoType]` is data; `Flow` (`Internal`,
+      `FromClient`, `ToClient`) checked at build time (DAS006); `[ClientMessage]` removed
 
 ## Quality
 - [x] Unit tests (queue, pool, frames, pending table, membership, placement)

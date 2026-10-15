@@ -281,6 +281,22 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
 - Consequences: simple and ordered with binds (ADR-022). Revisit when deployments run tens of gateways with small
   groups; the roadmap keeps the item.
 
+## ADR-038 `[Message]` marks messages and their flow
+- Context: any `[NinoType]` struct counted as a message, so data types (a reply, a struct inside a list) were
+  indistinguishable from messages, wire-id collisions were checked for data that never travels alone, and nothing
+  said which messages clients send or receive except `[ClientMessage]`. A server could push an internal message to a
+  client, or a client handler could expect one, and only testing would notice.
+- Decision: `[NinoType, Message]` is a message; plain `[NinoType]` is data. `[Message(Flow)]` says who sends it to
+  whom: `Internal` (default, servers only), `FromClient` (clients may send it; replaces `[ClientMessage]`, `AnyKey`
+  moves to `[Message]`), `ToClient` (servers push it, clients handle it); flags combine. The analyzer checks handlers
+  (servers never handle a `ToClient`-only message, client handlers only `ToClient` ones) and call sites
+  (`Send(session|group, m)` needs `ToClient`, `ClusterClient` sends need `FromClient`, servers do not send
+  `ToClient`-only messages to each other): DAS006. Gateways still accept only `FromClient` messages at run time.
+- Alternatives: marker interfaces (`IClientMessage`) would allow generic constraints but were removed by ADR-018 for
+  attributes; separate attributes per direction would split one concept into three names.
+- Consequences: a contracts file reads as a protocol (who talks to whom); leaking server-internal messages to clients
+  is a build error. Gateway-to-node traffic stays framework frames, so roles never appear in message declarations.
+
 ## ADR-037 Actor lifecycle is tags; turn ends are posted, not polled
 - Context: the runtime used ECS storage but not ECS style. `TurnSystem` visited every busy actor on every wake and
   polled `IsCompleted` on its task; a ready queue plus a `Scheduled` flag duplicated what a tag expresses; a

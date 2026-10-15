@@ -2,7 +2,7 @@
 
 DaServer is a .NET 10 framework for building **clusters**: game servers (many gateways, many map/logic nodes) and
 other low-latency, high-concurrency backends (matchmaking, chat, trading, IoT fan-in). Developers write messages
-(`[NinoType]` structs), actors and services with `[Handle]` methods, and ECS systems. Source generators write the
+(`[NinoType, Message]` structs), actors and services with `[Handle]` methods, and ECS systems. Source generators write the
 rest: dispatchers, typed `Ask` overloads, wire ids, registration, entry points and query jobs.
 
 Priorities, in order:
@@ -22,7 +22,7 @@ Acceptance criteria and metrics are in [requirements.md](requirements.md); the r
 | **Shard** | A single-threaded executor: one thread, a lock-free inbox and an EasyEcs `World` holding everything else ([§9](#9-ecs-in-daserver)). A node runs N shards (default: one per core). | One dedicated thread. Every handler and system of the shard runs on it, so user code needs no locks. |
 | **Actor** | Keyed and stateful (player, map instance, room, guild): one activation per key in the cluster, activated on demand, turn-based. The activation is an entity; its state is components (`Actor<TState>`). | Its shard's thread. |
 | **Service** | Stateless (login, matchmaking, chat routing). One instance per shard; calls are load-balanced (local node first) and may overlap. | The shard thread that received the call. |
-| **Message** | A `[NinoType]` struct. A request (`IRequest<TReply>`) is answered; anything else is one-way. Routed by its type to the handler: the sender never names the receiver's type. | Delivered to the handler's mailbox (actors) or shard (services). |
+| **Message** | A `[NinoType, Message]` struct; its `Flow` says whether clients send it or receive it. A request (`IRequest<TReply>`) is answered; anything else is one-way. Routed by its type to the handler: the sender never names the receiver's type. | Delivered to the handler's mailbox (actors) or shard (services). |
 | **Push** | A message to one client session or a `ClientGroup`; clients handle it with `[Handle]` methods. | Fire-and-forget. |
 | **System** | EasyEcs `EcsSystem` with `[ForEach]` methods: one per-tick responsibility over every matching entity of a shard. | The shard thread, at the tick rate. |
 
@@ -32,10 +32,12 @@ Everything a developer declares is one of these (ADR-035). The message type alon
 
 | Declaration | Meaning |
 |---|---|
-| `[NinoType] partial record struct M` | a message; anything else crossing the wire is a build error (DAS003) |
+| `[NinoType, Message] partial record struct M` | a message between servers (`Flow.Internal`) |
+| `[Message(Flow.FromClient)]` | game clients may send it; to an actor it goes to the key the server bound to the session (`BindSession`) |
+| `[Message(Flow.FromClient, AnyKey = true)]` | to an actor, clients choose the key (public rooms, leaderboards) |
+| `[Message(Flow.ToClient)]` | servers push it to sessions and groups; only clients handle it |
+| `[NinoType]` alone | data inside messages; anything else crossing the wire is a build error (DAS003) |
 | `M : IRequest<TReply>` | a request, answered with one `TReply` |
-| `[ClientMessage]` | game clients may send it; to an actor it goes to the key the server bound to the session (`BindSession`) |
-| `[ClientMessage(AnyKey = true)]` | to an actor, clients choose the key (public rooms, leaderboards) |
 | `[Handle]` method of an `Actor`/`Service` | handles one message type; returns `void`/`ValueTask`, or a request's reply/`ValueTask<TReply>` |
 | `[Handle]` method of any other class | client-side handler of pushes (`client.Register(obj)`) |
 | `class S : EcsSystem` with `[ForEach]` | per-tick logic over every matching entity of the shard |
@@ -48,7 +50,13 @@ Everything a developer declares is one of these (ADR-035). The message type alon
 | `Send(session, m)` / `Send(group, m)` | one client session / a client group |
 
 Access is per message type. The sample's map lets servers send `Enter` and `Leave` and lets the bound client send only
-`[ClientMessage] Move` and `Say`, so a client can never enter someone else's player.
+`Flow.FromClient` messages `Move` and `Say`, so a client can never enter someone else's player. The flow is checked at
+build time (DAS006): pushing an internal message to a client, sending it from a client, or handling a push on a server
+fails the build; at run time gateways accept only `Flow.FromClient` messages.
+
+Gateways and other nodes talk through framework frames (relayed client messages with their session, bindings, group
+membership, resumed sessions), never through business messages, so there is no fourth flow: a service hosted on a
+gateway node exchanges ordinary `[Message]`s with the rest of the cluster.
 
 Business code reaches the cluster only through `ICluster` (`Cluster` in actors and services, `world.Cluster()` in
 systems): messages, session binding, client groups. `Node` (lifecycle, membership, links) is not visible to it.
@@ -165,15 +173,19 @@ flowchart TB
         G1[gateway-0]
         G2[gateway-1]
     end
-    L[login-0<br/>Sample.Login: Account]
+    L[login-0<br/>Sample.LoginServer: Account]
     G1 & G2 <--> L
-    subgraph game [Sample.Game: Player and Map actors, ECS systems]
+    subgraph game [Sample.GameServer: Player and Realm actors]
         N1[game-0<br/>shards x N]
         N2[game-1<br/>shards x N]
-        N3[game-2<br/>shards x N]
     end
-    G1 <-->|node links: batched TCP| N1 & N2 & N3
-    G2 <--> N1 & N2 & N3
+    subgraph map [Sample.MapServer: Map actors, movement and AOI systems]
+        M1[map-0<br/>shards x N]
+        M2[map-1<br/>shards x N]
+    end
+    G1 <-->|node links: batched TCP| N1 & N2 & M1 & M2
+    G2 <--> N1 & N2 & M1 & M2
+    N1 & N2 <--> M1 & M2
 ```
 
 The topology is the list of projects and replica counts in the AppHost. A small deployment can compile everything
@@ -194,7 +206,7 @@ sequenceDiagram
     G->>P: routed to the bound player id
     P->>M: Ask(7, Enter(playerId, session))
     M->>G: BindSession(session)  (also joins the map's Group)
-    Cl->>G: Move(vx, vy)  (one-way [ClientMessage])
+    Cl->>G: Move(vx, vy)  (one-way, Flow.FromClient)
     G->>M: routed to the bound map
     M->>M: writes Velocity; MovementSystem, PlacementSystem, MotionSyncSystem run on the tick
     M-->>G: Send(group, Motion(changes))  one message per cell per tick, one frame per gateway
@@ -212,7 +224,7 @@ sequenceDiagram
   `ClientGroup.All` reaches every session of the cluster (the sample's realm status every 5 ticks).
 - **Batch per tick.** Systems collect changes into the map's state and one system sends them as one message per map
   per tick: n moving avatars cost n entries, not n x n messages.
-- **Measured.** 10k bots through a balancer and 3 gateways to one game node: see the README's Performance section.
+- **Measured.** 10k bots through a balancer and 3 gateways to one game node and one map node: see the README's Performance section.
 
 ### Backend cluster without clients
 
@@ -277,8 +289,8 @@ entities in the state it handles (a filter on tags), so nothing scans all actors
 ## 10. Developer experience (generated code)
 
 ```csharp
-[NinoType, ClientMessage] public partial record struct AddGold(int Amount) : IRequest<int>;
-[NinoType] public partial record struct LoggedIn(SessionRef Session);
+[NinoType, Message(Flow.FromClient)] public partial record struct AddGold(int Amount) : IRequest<int>;
+[NinoType, Message] public partial record struct LoggedIn(SessionRef Session);
 
 public record struct Wallet(int Gold, int Logins) : IComponent;
 
@@ -300,7 +312,7 @@ What the generators write:
 
 | Generator | Output |
 |---|---|
-| `MessageGenerator` | typed `Ask` overloads per request (`Cluster.Ask(key, new AddGold(1))` infers the reply type), `[ClientMessage]` registration for gateways |
+| `MessageGenerator` | typed `Ask` overloads per request (`Cluster.Ask(key, new AddGold(1))` infers the reply type), `Flow.FromClient` registration for gateways |
 | `HostGenerator` | registration of every actor and service with one dispatcher per `[Handle]` method, client handler classes, every `EcsSystem`; the node entry point when the project has no `Program.cs` |
 | EasyEcs `SystemGenerator` | `[ForEach]` struct jobs (components, singletons, entity, world parameters) and `GeneratedUpdate` |
 | Analyzers | DAS001–DAS005 (handlers, messages, wire types, id collisions, constructors), EECS001–EECS008 (ECS rules) |
@@ -329,7 +341,7 @@ node project is its business classes only.
 |---|---|---|
 | Unit | Queues, buffer pool, frame parsing, pending-call table, membership merge, rendezvous placement | `tests/DaServer.Tests` |
 | Generator | Valid input compiles, every DAS rule fires from the analyzer, the entry point is generated only when missing, unrelated edits hit the incremental cache | `tests/DaServer.Tests` |
-| Integration | In-process clusters on loopback (`ClusterTest`): request semantics and ordering, turn-based actors, ECS systems over actor state, single activation, failover, published messages (keyed, once per implementation, ordering, routing), gateway access by `[ClientMessage]`, binding isolation, broadcast (exact under churn), balancer, `SessionClosed` (close and gateway crash), backpressure, placement under suspicion | `tests/DaServer.Tests` |
+| Integration | In-process clusters on loopback (`ClusterTest`): request semantics and ordering, turn-based actors, ECS systems over actor state, single activation, failover, published messages (keyed, once per implementation, ordering, routing), gateway access by `Flow.FromClient`, binding isolation, broadcast (exact under churn), balancer, `SessionClosed` (close and gateway crash), backpressure, placement under suspicion | `tests/DaServer.Tests` |
 | Allocation | Steady-state cross-shard calls, keyed events, gateway fan-out and client calls through a gateway allocate nothing per message | `tests/DaServer.Tests` |
 | End to end | AppHost topology (login, game, 3 gateways, balancer) + `Sample.Bot` with 10k bots: fails on any gap, disconnect or p99 over the limit | `samples/` |
 | Benchmarks | BenchmarkDotNet on real loopback sockets: RPC at 1/64/1,024 outstanding calls (local and remote), keyed events (local and remote), group broadcast to 1k/5k client sockets, broadcast to everyone through 3 gateways (3k/9k) | `benchmarks/DaServer.Benchmark` |

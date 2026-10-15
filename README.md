@@ -3,7 +3,7 @@
 A .NET 10 framework for low-latency, high-concurrency clusters: game servers with many gateways and many map/logic
 nodes, and any backend made of stateful entities and stateless services.
 
-You write **messages** (`[NinoType]` structs), **actors** and **services** with `[Handle]` methods, and **ECS
+You write **messages** (`[NinoType, Message]` structs), **actors** and **services** with `[Handle]` methods, and **ECS
 systems**. Source generators write dispatchers, typed `Ask` overloads, wire ids, registration and the node's entry
 point. The runtime handles shards, mailboxes, placement, discovery, gateways and serialization. Aspire runs the cluster
 locally and publishes it.
@@ -68,10 +68,12 @@ Everything a developer declares is one of these. The message type alone decides 
 
 | Declaration | Meaning |
 |---|---|
-| `[NinoType] partial record struct M` | A message (anything crossing the wire is `[NinoType]`; anything else is a build error). |
+| `[NinoType, Message] partial record struct M` | A message between servers (actors and services on any node). |
+| `[Message(Flow.FromClient)]` | Game clients may send it too. To an actor, it goes to the key bound to the session. |
+| `[Message(Flow.FromClient, AnyKey = true)]` | To an actor, the client chooses the key (public rooms). |
+| `[Message(Flow.ToClient)]` | Servers push it to client sessions and groups; clients handle it. |
+| `[NinoType] partial record struct D` | Data inside messages (fields, replies), never sent on its own. Anything crossing the wire is `[NinoType]`. |
 | `... : IRequest<TReply>` | A request: answered with one `TReply`. |
-| `[ClientMessage]` | Game clients may send it too. To an actor, it goes to the key bound to the session. |
-| `[ClientMessage(AnyKey = true)]` | To an actor, the client chooses the key (public rooms). |
 | `[Handle] R On(M m)` | A handler in an actor or service: `void`/`ValueTask`, or the reply/`ValueTask<TReply>` of a request. |
 | `partial class S : EcsSystem` with `[ForEach]` | Per-tick logic over every matching entity of the shard. |
 
@@ -100,18 +102,19 @@ resumes the session with a signed ticket: its actors receive `SessionResync` (se
 
 ## Example
 
-From [samples/](samples): login on a login node, players, maps and the realm on a game node, gateways that host
-nothing.
+From [samples/](samples) (who runs where and who talks to whom: [samples/README.md](samples/README.md)): a login
+server, a game server (players, the realm), a map server (maps, movement, area of interest) and gateways that host no
+business code.
 
 ```csharp
 // Messages (shared with clients).
-[NinoType, ClientMessage] public partial record struct Login(string Name) : IRequest<LoginResult>;
-[NinoType, ClientMessage] public partial record struct EnterMap(long MapId) : IRequest<bool>;
-[NinoType, ClientMessage] public partial record struct Move(float VelocityX, float VelocityY);   // one-way input
-[NinoType, ClientMessage] public partial record struct Say(string Text);
-[NinoType] public partial record struct Attach(SessionRef Session) : IRequest<bool>;            // server only
-[NinoType] public partial record struct Enter(long PlayerId, SessionRef Session) : IRequest<bool>;
-[NinoType] public partial record struct Chat(long PlayerId, string Text);                      // pushed to clients
+[NinoType, Message(Flow.FromClient)] public partial record struct Login(string Name) : IRequest<LoginResult>;
+[NinoType, Message(Flow.FromClient)] public partial record struct EnterMap(long MapId) : IRequest<bool>;
+[NinoType, Message(Flow.FromClient)] public partial record struct Move(float VelocityX, float VelocityY); // input
+[NinoType, Message(Flow.FromClient)] public partial record struct Say(string Text);
+[NinoType, Message] public partial record struct Attach(SessionRef Session) : IRequest<bool>;  // servers only
+[NinoType, Message] public partial record struct Enter(long PlayerId, SessionRef Session) : IRequest<bool>;
+[NinoType, Message(Flow.ToClient)] public partial record struct Chat(long PlayerId, string Text); // pushed
 
 // Login project: a stateless service.
 public sealed class Account : Service
@@ -211,8 +214,9 @@ var builder = DistributedApplication.CreateBuilder(args);
 builder.AddDockerComposeEnvironment("compose");            // `aspire publish` writes docker-compose files
 
 var cluster = builder.AddDaServerCluster("sample");
-cluster.AddNodes<Projects.Sample_Login>("login");                           // Account
-cluster.AddNodes<Projects.Sample_Game>("game");                             // Player, Map, Realm, systems
+cluster.AddNodes<Projects.Sample_LoginServer>("login");                     // Account service
+cluster.AddNodes<Projects.Sample_GameServer>("game");                       // Player, Realm actors
+cluster.AddNodes<Projects.Sample_MapServer>("map");                         // Map actors, movement/AOI systems
 cluster.AddGateways<Projects.Sample_Gateway>("gateway", replicas: 3);       // client sockets, no business code
 var balancer = cluster.AddBalancer<Projects.Sample_Gateway>("balancer");    // the one address clients know
 
@@ -232,11 +236,11 @@ Kubernetes).
 Measured on one 4-core VM (servers, bots and the kernel share it), Release builds.
 
 **10k-player scenario** ([Sample.AppHost](samples/Sample.AppHost), [Sample.Bot](samples/Sample.Bot)): a login
-node, a game node, 3 gateways and a balancer (the AppHost's topology, here as plain processes without telemetry).
+node, a game node, a map node, 3 gateways and a balancer (the AppHost's topology, here as plain processes without telemetry).
 10,000 bots connect through the balancer, log in and enter a map; the realm broadcasts its status to every session
 every 5 ticks (20 ticks/s). Three loads, 60 s measured window each:
 
-- **One map** (the AppHost default): all 10,000 players in one map on one game node, each changing direction once a
+- **One map** (the AppHost default): all 10,000 players in one map on one map node, each changing direction once a
   second. Area of interest (the sample's `Interest.cs`): a 20x20 grid, each cell a client group, each player sees the
   3x3 cells around it; updates carry velocity and go out when it changes (dead reckoning), every other tick.
 - **Many maps, full sync**: 200 maps of 50 players, every position of the map to every player every tick.

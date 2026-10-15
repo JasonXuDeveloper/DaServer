@@ -30,12 +30,13 @@ src/DaServer/              runtime (net10.0): Protocol/ Buffers/ Concurrency/ Ne
   Runtime/Systems/         runtime systems (ShardMessages group): Inbox, Turn, ServiceCall, Retire, Timer, Rebalance,
                            Idle, Unload, Mailbox (each reacts to one lifecycle tag, ADR-037)
 src/DaServer.Generator/    incremental generators (MessageGenerator, HostGenerator incl. node entry point)
-                           + DaServerAnalyzer (DAS001-005);
+                           + DaServerAnalyzer (DAS001-006);
                            Shapes.cs reads symbols once for both, so "skipped by the generator" == "reported"
 src/DaServer.Hosting/      Generic Host integration, configuration, OpenTelemetry (OTLP when configured), shutdown
 src/DaServer.Aspire/       Aspire hosting integration: AddDaServerCluster / AddNodes / AddGateways / AddBalancer /
                            WithGateways
-samples/                   Sample.Contracts / Sample.Login / Sample.Game / Sample.Gateway (node projects: no Program.cs,
+samples/                   Sample.Contracts / Sample.LoginServer / Sample.GameServer / Sample.MapServer / Sample.Gateway
+                           (one project per server, no Program.cs,
                            no appsettings) / Sample.Bot (10k-bot e2e) /
                            Sample.AppHost (Aspire: run + publish)
 tests/DaServer.Tests/      NUnit: ClusterTest fixture, per-feature tests, generator/analyzer, allocation
@@ -56,8 +57,8 @@ doc/                       requirements.md, design.md, decisions.md, roadmap.md
    cross-thread handoff only through mailboxes; shared runtime state is immutable snapshots swapped atomically.
 5. **Concise, elegant, no duplication**: generate repetitive code with the source generator; one shared core with
    thin typed wrappers; no copy-pasted variants.
-6. **Developers only write business code**: messages (`[NinoType]` structs, `IRequest<TReply>`,
-   `[ClientMessage]`), actors/services with `[Handle]` methods (ADR-035), EasyEcs systems with `[ForEach]`
+6. **Developers only write business code**: messages (`[NinoType, Message]` structs with a `Flow`,
+   `IRequest<TReply>`), actors/services with `[Handle]` methods (ADR-035), EasyEcs systems with `[ForEach]`
    methods. Registration, routing, serialization, placement, entry points, orchestration are the framework's job;
    if users would write the same lines twice, generate them.
 7. **ECS all the way down**: the runtime follows the same ECS rules as user code (EasyEcs `doc/ecs-principles.md`):
