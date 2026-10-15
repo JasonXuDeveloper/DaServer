@@ -30,7 +30,7 @@ public class ScenarioBenchmark
         for (int i = 0; i < Clients; i++)
         {
             var client = _clients[i] = new ClusterClient();
-            await client.ConnectAsync("127.0.0.1", _nodes[i % 3].ClientPort, followBalancer: false);
+            await client.ConnectAsync("127.0.0.1", _nodes[i % 3].ClientPort(), followBalancer: false);
             client.Register(receiver);
         }
     }

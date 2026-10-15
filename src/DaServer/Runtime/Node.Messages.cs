@@ -94,6 +94,59 @@ sealed partial class Node
         }
     }
 
+    /// <summary>
+    /// Bind (or unbind) a session to an actor (<see cref="Actor.BindSession"/>): a <see cref="Bind"/> asked of the session,
+    /// so it completes once the session's gateway applied it and the client's next message already reaches the actor.
+    /// </summary>
+    internal ValueTask BindSession(SessionRef session, uint handlerTypeId, long key)
+    {
+        var call = PendingCall<NoReply>.Rent(Shard.Current);
+        var task = call.Done;
+        AskNode(MessageWriter.Write(new Bind(handlerTypeId, key)), AddressScopes.Session, MessageType<Bind>.Id,
+            session.GatewayNodeId, session.SessionId, call);
+        return task;
+    }
+
+    /// <summary>
+    /// A message (payload written) to something node <paramref name="node"/> holds: a client session (by its <see cref="SessionRef"/>
+    /// or the <see cref="Origin"/> of its messages), whatever its scope's feature holds. Takes
+    /// ownership of <paramref name="frame"/>.
+    /// </summary>
+    private void SendToNode(FrameWriter frame, uint scope, uint messageId, ulong node, long value)
+    {
+        try
+        {
+            frame.SetHeader(FrameKind.Message, scope, messageId, value);
+            if (node == Id) DeliverToAddress(frame.Frame, null);
+            else LinkTo(node)?.Send(frame.Frame);
+        }
+        finally
+        {
+            frame.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// A message (payload written) to a group: serialized once, one frame per node handling the group's scope (the
+    /// nodes that may have members), which fans it out locally. Takes ownership of <paramref name="frame"/>.
+    /// </summary>
+    private void SendToGroup(FrameWriter frame, uint scope, uint messageId, long value)
+    {
+        try
+        {
+            frame.SetHeader(FrameKind.Message, scope, messageId, value);
+            foreach (var member in View.NodesWithScope(scope))
+            {
+                if (member.NodeId == Id) DeliverToAddress(frame.Frame, null);
+                else GetLink(member).Send(frame.Frame);
+            }
+        }
+        finally
+        {
+            frame.Dispose();
+        }
+    }
+
     /// <summary>A message (header written) to an address of this node: to the feature handling its scope, if any.</summary>
     private void DeliverToAddress(ReadOnlySpan<byte> frame, IReplySink? replyTo)
     {

@@ -22,23 +22,8 @@ public sealed class NodeOptions
     /// <summary>Host other nodes use to reach this node (pod IP / DNS name). Defaults to the bind address or loopback.</summary>
     public string? AdvertisedHost { get; set; }
 
-    /// <summary>Client (gateway) port; null = this node accepts no game clients.</summary>
-    public int? ClientPort { get; set; }
-
-    /// <summary>Host game clients use to reach this gateway (public DNS name or address); defaults to AdvertisedHost.</summary>
-    public string? ClientAdvertisedHost { get; set; }
-
-    /// <summary>
-    /// A balancer (the clients' entry gateway): clients connecting to it are directed to the least loaded other gateway
-    /// (<c>ClusterClient.ConnectAsync</c> follows automatically), so clients need one well-known address only.
-    /// </summary>
-    public bool Balancer { get; set; }
-
     /// <summary>Seed endpoints "host:port" (DNS names resolve to every address, e.g. a Kubernetes headless service).</summary>
     public List<string> Seeds { get; set; } = new();
-
-    /// <summary>Largest frame a game client may send (gateway); larger frames close the session.</summary>
-    public int MaxClientFrameSize { get; set; } = 64 * 1024;
 
     /// <summary>Number of shards (single-threaded shards); default one per core.</summary>
     public int Shards { get; set; } = Environment.ProcessorCount;
@@ -67,8 +52,9 @@ public sealed class NodeOptions
 
     /// <summary>
     /// Secret shared by every node of the cluster (configuration <c>DaServer__ClusterSecret</c>; Aspire generates one).
-    /// Gateways sign reconnect tickets with it, so a client that lost its connection resumes its session on any
-    /// gateway (<see cref="Rpc.SessionResync"/>). Null: no tickets, a lost connection closes the session at once.
+    /// Client-facing nodes sign reconnect tickets with it, so a client that lost its connection resumes its session on
+    /// any of them (<see cref="Rpc.SessionResync"/>); features sign their tokens with it. Null: no tickets, a lost
+    /// connection closes the session at once.
     /// </summary>
     public string? ClusterSecret { get; set; }
 
@@ -79,8 +65,6 @@ public sealed class NodeOptions
     /// </summary>
     public TimeSpan ReconnectGrace { get; set; } = TimeSpan.FromSeconds(30);
 
-    /// <summary>Validity of a reconnect ticket; clients refresh theirs at half of it.</summary>
-    public TimeSpan ReconnectTicketLifetime { get; set; } = TimeSpan.FromMinutes(10);
     public TimeSpan GossipInterval { get; set; } = TimeSpan.FromSeconds(1);
     public TimeSpan SuspectAfter { get; set; } = TimeSpan.FromSeconds(3);
     public TimeSpan DeadAfter { get; set; } = TimeSpan.FromSeconds(10);

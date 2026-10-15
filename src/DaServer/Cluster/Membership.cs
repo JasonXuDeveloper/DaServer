@@ -93,6 +93,7 @@ internal sealed class Membership : IDisposable
     public void Start(string host, int port)
     {
         var handlers = _node.AdvertisedHandlers();
+        var (pulseKeys, entries) = _node.FeatureCard();
         lock (_gate)
         {
             _self = new ClusterMember
@@ -101,10 +102,9 @@ internal sealed class Membership : IDisposable
                 Name = _node.Options.Name,
                 Host = host,
                 Port = port,
-                ClientPort = _node.ClientPort,
                 Scopes = _node.AdvertisedScopes(),
-                ClientHost = _node.Options.ClientAdvertisedHost ?? host,
-                Balancer = _node.Options.Balancer,
+                PulseKeys = pulseKeys,
+                Entries = entries,
                 Handlers = handlers,
                 Status = MemberStatus.Up,
             };
@@ -143,7 +143,7 @@ internal sealed class Membership : IDisposable
             {
                 _self.Heartbeat++;
                 _self.Load = _node.TotalQueueLength();
-                _self.Sessions = _node.SessionCount;
+                _node.ReadPulses(_self.PulseValues);
                 DetectFailures();
                 if (_changed) PublishView();
                 targets = PickTargets();
@@ -315,11 +315,7 @@ internal sealed class Membership : IDisposable
 
                 info.Heartbeat = pulse.Heartbeat;
                 info.Load = pulse.Load;
-                if (info.Sessions != pulse.Sessions)
-                {
-                    info.Sessions = pulse.Sessions;
-                    Volatile.Write(ref info.Directed, 0); // counted by the gateway now (approximately: hints)
-                }
+                pulse.CopySlots(info.PulseValues);
             }
 
             if (_changed) PublishView();

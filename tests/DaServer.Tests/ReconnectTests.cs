@@ -13,11 +13,7 @@ public class ReconnectTests : ClusterTest
 
     private async Task<(Node Balancer, Node[] Gateways)> StartCluster(TimeSpan grace)
     {
-        var balancer = await Start("balancer", gateway: true, hosts: static _ => false, configure: o =>
-        {
-            Secret(grace)(o);
-            o.Balancer = true;
-        });
+        var balancer = await Start("balancer", hosts: static _ => false, configure: Secret(grace), clients: static o => o.Balancer = true);
         var gateways = new[]
         {
             await Start("gw-0", gateway: true, hosts: static _ => false, configure: Secret(grace)),
@@ -31,7 +27,7 @@ public class ReconnectTests : ClusterTest
     private async Task<ClusterClient> LogIn(Node balancer, long player)
     {
         var client = Track(new ClusterClient());
-        await client.ConnectAsync("127.0.0.1", balancer.ClientPort);
+        await client.ConnectAsync("127.0.0.1", balancer.ClientPort());
         Assert.That(await client.Ask(new Login(new PlayerId(player))), Is.True);
         return client;
     }
@@ -71,14 +67,14 @@ public class ReconnectTests : ClusterTest
     {
         var (balancer, gateways) = await StartCluster(TimeSpan.FromSeconds(2));
         var client = await LogIn(balancer, 502);
-        var crashed = gateways.Single(g => g.SessionCount == 1);
+        var crashed = gateways.Single(g => g.SessionCount() == 1);
 
         var reconnected = Reconnected(client);
         await crashed.KillAsync();
         await reconnected;
 
         Assert.That(await client.Ask(new AddGold(1)), Is.EqualTo(1));
-        Assert.That(gateways.Single(g => g != crashed).SessionCount, Is.EqualTo(1));
+        Assert.That(gateways.Single(g => g != crashed).SessionCount(), Is.EqualTo(1));
         await Task.Delay(4000); // failure detection (1.5 s) plus the grace
         Assert.That(Observed.Events, Does.Not.Contain("closed:502"), "the dead gateway's session was resumed");
     }

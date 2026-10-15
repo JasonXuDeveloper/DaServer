@@ -127,7 +127,7 @@ public sealed class HostGenerator : IIncrementalGenerator
                 sb.Append($"\n            MessageHandler.Of<{h.MessageType}>(static (object target, ref global::Nino.Core.Reader reader, in CallContext context) =>\n");
                 sb.Append($"            {{\n                global::Nino.Core.NinoDeserializer.Deserialize(out {h.MessageType} m, ref reader);\n");
                 if (t.Kind != HostedKind.ClientHandler)
-                    sb.Append($"                if (!MessageFilters<{h.MessageType}>.Admit(in m, in context)) return default;\n");
+                    sb.Append($"                if (!MessageFilters<{h.MessageType}>.Admit(target, in m, in context)) return default;\n");
                 sb.Append(h.Return switch
                 {
                     HandlerReturn.Void => $"                {call};\n                return default;\n",

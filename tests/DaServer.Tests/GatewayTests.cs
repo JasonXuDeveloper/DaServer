@@ -146,7 +146,7 @@ public class GatewayTests : ClusterTest
 
         // Close every third member (swap-remove moves others into their slots), then broadcast to the room and to All.
         for (int i = 0; i < clients.Length; i += 3) await clients[i].DisposeAsync();
-        await Eventually(() => gateway.SessionCount == 20, "sessions did not close");
+        await Eventually(() => gateway.SessionCount() == 20, "sessions did not close");
         gateway.Send(new RoomId(7), new Say("hello"));
         gateway.Send(ClientGroup.All, new Chat(default, "all"));
 
@@ -178,23 +178,23 @@ public class GatewayTests : ClusterTest
         await Eventually(() => inboxes.All(m => m.Chat.Contains("0:nine")), "a member did not join the group");
 
         gateways[0].Send(room9, new Disconnect());
-        await Eventually(() => gateways.Sum(g => g.SessionCount) == 0, "the group's sessions were not closed");
+        await Eventually(() => gateways.Sum(g => g.SessionCount()) == 0, "the group's sessions were not closed");
     }
 
     [Test]
     public async Task AnOversizedClientFrameClosesTheSession()
     {
-        var gateway = await Start("gw", gateway: true, configure: static o => o.MaxClientFrameSize = 1024);
+        var gateway = await Start("gw", clients: static o => o.MaxFrameSize = 1024);
         var client = await Connect(gateway);
         await client.Ask(new RoomId(7), new Join());
         client.Send(new RoomId(7), new Say(new string('x', 2048)));
-        await Eventually(() => gateway.SessionCount == 0, "a frame over MaxClientFrameSize was accepted");
+        await Eventually(() => gateway.SessionCount() == 0, "a frame over MaxFrameSize was accepted");
     }
 
     [Test]
     public async Task ABalancerSpreadsClientsOverTheOtherGateways()
     {
-        var balancer = await Start("balancer", gateway: true, hosts: static _ => false, configure: static o => o.Balancer = true);
+        var balancer = await Start("balancer", gateway: true, hosts: static _ => false, clients: static o => o.Balancer = true);
         var gateways = new[]
         {
             await Start("gw-0", gateway: true, hosts: static _ => false),
@@ -207,19 +207,19 @@ public class GatewayTests : ClusterTest
         for (int i = 0; i < clients.Length; i++)
         {
             clients[i] = Track(new ClusterClient());
-            await clients[i].ConnectAsync("127.0.0.1", balancer.ClientPort); // the one well-known address
+            await clients[i].ConnectAsync("127.0.0.1", balancer.ClientPort()); // the one well-known address
             Assert.That(await clients[i].Ask(new Login(new PlayerId(1000 + i))), Is.True);
         }
 
-        await Eventually(() => balancer.SessionCount == 0, "the balancer kept sessions");
-        Assert.That(gateways.Sum(g => g.SessionCount), Is.EqualTo(clients.Length));
-        Assert.That(gateways.Min(g => g.SessionCount), Is.GreaterThanOrEqualTo(8), "power of two choices spreads the load");
+        await Eventually(() => balancer.SessionCount() == 0, "the balancer kept sessions");
+        Assert.That(gateways.Sum(g => g.SessionCount()), Is.EqualTo(clients.Length));
+        Assert.That(gateways.Min(g => g.SessionCount()), Is.GreaterThanOrEqualTo(8), "power of two choices spreads the load");
     }
 
     [Test]
     public async Task AGatewayStartedLaterIsDiscoveredAndReceivesTheNewClients()
     {
-        var balancer = await Start("balancer", gateway: true, hosts: static _ => false, configure: static o => o.Balancer = true);
+        var balancer = await Start("balancer", gateway: true, hosts: static _ => false, clients: static o => o.Balancer = true);
         var first = await Start("gw-0", gateway: true, hosts: static _ => false);
         await Start("game");
         await Converged();
@@ -227,21 +227,21 @@ public class GatewayTests : ClusterTest
         const int wave = 30;
         var clients = new ClusterClient[2 * wave];
         for (int i = 0; i < wave; i++) clients[i] = await ConnectThrough(balancer, 2000 + i);
-        Assert.That(first.SessionCount, Is.EqualTo(wave));
+        Assert.That(first.SessionCount(), Is.EqualTo(wave));
 
         // Scale out: nobody configures the balancer; gossip tells it about the new gateway.
         var late = await Start("gw-1", gateway: true, hosts: static _ => false);
         await Converged();
         for (int i = wave; i < clients.Length; i++) clients[i] = await ConnectThrough(balancer, 2000 + i);
 
-        Assert.That(late.SessionCount, Is.GreaterThanOrEqualTo(wave - 2), "new clients go to the least loaded gateway");
-        Assert.That(first.SessionCount + late.SessionCount, Is.EqualTo(clients.Length));
+        Assert.That(late.SessionCount(), Is.GreaterThanOrEqualTo(wave - 2), "new clients go to the least loaded gateway");
+        Assert.That(first.SessionCount() + late.SessionCount(), Is.EqualTo(clients.Length));
     }
 
     private async Task<ClusterClient> ConnectThrough(DaServer.Runtime.Node balancer, long player)
     {
         var client = Track(new ClusterClient());
-        await client.ConnectAsync("127.0.0.1", balancer.ClientPort);
+        await client.ConnectAsync("127.0.0.1", balancer.ClientPort());
         Assert.That(await client.Ask(new Login(new PlayerId(player))), Is.True);
         return client;
     }
@@ -249,15 +249,15 @@ public class GatewayTests : ClusterTest
     [Test]
     public async Task ClientsConnectingWhileTheClusterFormsWaitForAGateway()
     {
-        var balancer = await Start("balancer", gateway: true, hosts: static _ => false, configure: static o => o.Balancer = true);
+        var balancer = await Start("balancer", gateway: true, hosts: static _ => false, clients: static o => o.Balancer = true);
         var client = Track(new ClusterClient());
-        var connecting = client.ConnectAsync("127.0.0.1", balancer.ClientPort).AsTask(); // no gateway exists yet
+        var connecting = client.ConnectAsync("127.0.0.1", balancer.ClientPort()).AsTask(); // no gateway exists yet
 
         await Task.Delay(300);
         var gateway = await Start("gw", gateway: true);
         await connecting;
         // The client's connect completes before the gateway's accept loop has registered the session.
-        await Eventually(() => gateway.SessionCount == 1, "the client was directed to the gateway once it joined");
+        await Eventually(() => gateway.SessionCount() == 1, "the client was directed to the gateway once it joined");
         Assert.That(await client.Ask(new Login(new PlayerId(1))), Is.True);
     }
 

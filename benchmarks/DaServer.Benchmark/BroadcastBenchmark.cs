@@ -35,7 +35,7 @@ public class BroadcastBenchmark
         for (int i = 0; i < Clients; i++)
         {
             var client = _clients[i] = new ClusterClient();
-            await client.ConnectAsync("127.0.0.1", _nodes[0].ClientPort);
+            await client.ConnectAsync("127.0.0.1", _nodes[0].ClientPort());
             client.Register(receiver);
             await client.Ask(room, new Join(Groups));
         }

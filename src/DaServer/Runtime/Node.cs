@@ -49,10 +49,56 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
             throw new InvalidOperationException($"{typeof(TAddr)} already has a handler on this node");
     }
 
+    private uint[] _pulseKeys = [];
+    private Func<int>[] _pulseSources = [];
+    private CardEntry[] _cardEntries = [];
+
+    void INodeContext.AddPulse(uint key, Func<int> read)
+    {
+        if (_registering == null) throw new InvalidOperationException("Pulses are added in NodeFeature.Start");
+        if (_pulseKeys.Length == Pulse.Slots) throw new InvalidOperationException($"A node gossips at most {Pulse.Slots} feature counters");
+        _pulseKeys = [.. _pulseKeys, key];
+        _pulseSources = [.. _pulseSources, read];
+    }
+
+    void INodeContext.SetCardEntry(uint key, string value)
+    {
+        if (_registering == null) throw new InvalidOperationException("Card entries are set in NodeFeature.Start");
+        _cardEntries = [.. _cardEntries, new CardEntry(key, value)];
+    }
+
+    void INodeContext.PostToShards(Action<World, object?> callback, object? state)
+    {
+        foreach (var shard in _shards)
+            shard.Post(static s =>
+            {
+                var (target, callback, state) = ((Shard, Action<World, object?>, object?))s!;
+                callback(target.World, state);
+            }, (shard, callback, state));
+    }
+
+    /// <summary>What this node's features publish on its card and gossip in its pulse.</summary>
+    internal (uint[] PulseKeys, CardEntry[] Entries) FeatureCard() => (_pulseKeys, _cardEntries);
+
+    /// <summary>The features' counters for this round's pulse (gossip timer).</summary>
+    internal void ReadPulses(int[] values)
+    {
+        var sources = _pulseSources;
+        for (int i = 0; i < sources.Length && i < values.Length; i++) Volatile.Write(ref values[i], sources[i]());
+    }
+
     void INodeContext.AddIngressFilter(IIngressFilter filter)
     {
         if (_registering == null) throw new InvalidOperationException("Ingress filters are added in NodeFeature.Start");
         _ingressFilters = [.. _ingressFilters, filter];
+    }
+
+    /// <summary>The feature of type <typeparamref name="T"/> this node runs, or null (tools, tests, metrics).</summary>
+    internal T? Feature<T>() where T : NodeFeature
+    {
+        foreach (var feature in Options.Features)
+            if (feature is T match) return match;
+        return null;
     }
 
     /// <summary>The address scopes this node's features handle (advertised in its card).</summary>
@@ -81,18 +127,17 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
     {
         if (Interlocked.Exchange(ref _started, 1) != 0)
             throw new InvalidOperationException("Node already started");
+        ActorSessions.Register();
 
         ResolveHosting();
         foreach (var feature in Options.Features) feature.Start(this);
-        StartGateway();
         _addressHandlers = _registering!.ToFrozenDictionary();
         _registering = null;
 
         _clusterListener = new Listener(Options.ClusterBindEndPoint,
             socket => new Connection(socket, ClusterHandler, ConnectionOptions.ForNodeLinks()));
         _clusterListener.Start();
-        var host = Options.AdvertisedHost ??
-                   (Options.ListenAddress == "0.0.0.0" ? IPAddress.Loopback.ToString() : Options.ListenAddress);
+        var host = AdvertisedHost;
         ClusterEndPoint = new IPEndPoint(IPAddress.TryParse(host, out var ip) ? ip : IPAddress.Loopback,
             _clusterListener.LocalEndPoint.Port);
 
@@ -111,6 +156,10 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
             Names(HostedSystems.Select(static s => s.Type.Name)));
         return Task.CompletedTask;
     }
+
+    /// <summary>The host other nodes reach this node at.</summary>
+    internal string AdvertisedHost =>
+        Options.AdvertisedHost ?? (Options.ListenAddress == "0.0.0.0" ? IPAddress.Loopback.ToString() : Options.ListenAddress);
 
     /// <summary>What this node hosts, for the startup log (a node hosts what its project compiles, ADR-017).</summary>
     private static string Names(IEnumerable<string> names) => string.Join(", ", names) is { Length: > 0 } s ? s : "none";
@@ -133,7 +182,6 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
             await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(Options.GossipInterval.TotalMilliseconds, 500))).ConfigureAwait(false);
 
         foreach (var feature in Options.Features) await feature.DrainAsync(CancellationToken.None).ConfigureAwait(false);
-        StopGateway();
         await StopShards().ConfigureAwait(false);
         foreach (var feature in Options.Features) feature.Stop(crashed: false);
         CloseLinks();
@@ -153,7 +201,6 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
         if (Interlocked.Exchange(ref _started, 2) != 1) return;
         _killed = true;
         CloseLinks();
-        StopGateway();
         foreach (var feature in Options.Features) feature.Stop(crashed: true);
         await StopShards().ConfigureAwait(false);
     }
@@ -254,7 +301,7 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
 
         var gateways = new List<ulong>();
         foreach (var member in View.Members)
-            if (member.ClientPort != 0 && member.Status != MemberStatus.Dead) gateways.Add(member.NodeId);
+            if (member.HasScope(AddressScopes.Session) && member.Status != MemberStatus.Dead) gateways.Add(member.NodeId);
         foreach (ulong previous in _gateways)
         {
             if (gateways.Contains(previous)) continue;
@@ -265,6 +312,9 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
         _gateways = gateways.ToArray();
     }
 
+    /// <summary>How long a lost client may take to resume elsewhere before its actors learn it is gone (tickets need the secret).</summary>
+    private TimeSpan ReconnectGrace => Options.ClusterSecret is { Length: > 0 } ? Options.ReconnectGrace : TimeSpan.Zero;
+
     /// <summary>Close a lost gateway's sessions on every shard, once their clients had the grace to resume elsewhere.</summary>
     private async Task CloseSessionsOf(ulong gateway)
     {
@@ -274,7 +324,7 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
             shard.Post(static s =>
             {
                 var (target, gateway) = ((Shard, ulong))s!;
-                ShardDispatch.CloseSessionsOf(target.World, gateway);
+                ActorSessions.CloseSessionsOf(target.World, gateway);
             }, (shard, gateway));
     }
 

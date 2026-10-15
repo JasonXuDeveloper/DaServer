@@ -178,6 +178,30 @@ sealed partial class Node : IConnectionHandler
             link.OnConnectionClosed(connection, error);
     }
 
+    private void OnControl(Connection connection, in FrameHeader header, ReadOnlySpan<byte> frame)
+    {
+        var payload = FrameHeader.PayloadOf(in header, frame);
+        switch (header.MessageId)
+        {
+            case ControlOp.Hello:
+                OnHello(connection, (ulong)header.Key, payload);
+                break;
+            case ControlOp.Resume:
+                OnResume(connection, header.Key, payload);
+                break;
+            case ControlOp.Acknowledge:
+                (connection.Tag as PeerLink)?.OnAcknowledge(connection, header.Key);
+                break;
+            case ControlOp.Gossip:
+            case ControlOp.GossipReply:
+            case ControlOp.CardRequest:
+            case ControlOp.Cards:
+                Membership.OnGossip(connection, header.MessageId, payload);
+                break;
+
+        }
+    }
+
     /// <summary>Complete an outgoing call: on the caller's shard when it has one, inline otherwise.</summary>
     private void CompleteCall(uint callId, RpcStatus status, ReadOnlySpan<byte> frame)
     {

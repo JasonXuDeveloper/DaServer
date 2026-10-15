@@ -23,15 +23,16 @@ public abstract class ClusterTest
     }
 
     /// <summary>Start a node; every node after the first joins through the first one.</summary>
+    /// <param name="gateway">Run client connections (on any free port).</param>
+    /// <param name="clients">Adjust the client connections' options (implies <paramref name="gateway"/>).</param>
     private protected async Task<Node> Start(string name, int shards = 2, bool gateway = false, Func<Type, bool>? hosts = null,
-        Action<NodeOptions>? configure = null)
+        Action<NodeOptions>? configure = null, Action<ClientOptions>? clients = null)
     {
         var options = new NodeOptions
         {
             Name = name,
             ListenAddress = "127.0.0.1",
             ClusterPort = 0,
-            ClientPort = gateway ? 0 : null,
             Shards = shards,
             TickRate = 50,
             Seeds = _nodes.Count == 0 ? [] : [$"127.0.0.1:{_nodes[0].ClusterEndPoint.Port}"],
@@ -41,6 +42,13 @@ public abstract class ClusterTest
             DeadAfter = TimeSpan.FromMilliseconds(1500),
             CallTimeout = TimeSpan.FromSeconds(5),
         };
+        if (gateway || clients != null)
+        {
+            var clientOptions = new ClientOptions();
+            clients?.Invoke(clientOptions);
+            options.Features.Add(new ClientConnections(clientOptions));
+        }
+
         configure?.Invoke(options);
 
         var node = new Node(options);
@@ -78,7 +86,7 @@ public abstract class ClusterTest
     private protected async Task<ClusterClient> Connect(Node gateway)
     {
         var client = new ClusterClient();
-        await client.ConnectAsync("127.0.0.1", gateway.ClientPort, followBalancer: false);
+        await client.ConnectAsync("127.0.0.1", gateway.ClientPort(), followBalancer: false);
         _clients.Add(client);
         return client;
     }
@@ -116,4 +124,12 @@ public abstract class ClusterTest
             await Task.Delay(10);
         }
     }
+}
+
+/// <summary>Test access to a node's client connections.</summary>
+internal static class ClientNodes
+{
+    public static int ClientPort(this Node node) => node.Feature<ClientConnections>()!.Port;
+
+    public static int SessionCount(this Node node) => node.Feature<ClientConnections>()?.SessionCount ?? 0;
 }

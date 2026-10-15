@@ -75,6 +75,22 @@ public interface INodeContext
     /// </summary>
     void HandleAddress<TAddr>(IAddressHandler handler) where TAddr : struct, IAddress;
 
+    /// <summary>
+    /// Gossip a counter of this node every round (sessions held, requests in flight): other nodes read it with
+    /// <see cref="ClusterMember.PulseValue"/>. <paramref name="read"/> runs on the gossip timer, once a round. At most
+    /// three per node. Only from <see cref="NodeFeature.Start"/>.
+    /// </summary>
+    void AddPulse(uint key, Func<int> read);
+
+    /// <summary>Publish a value on this node's card (an endpoint): read with <see cref="ClusterMember.Entry"/>. Only from <see cref="NodeFeature.Start"/>.</summary>
+    void SetCardEntry(uint key, string value);
+
+    /// <summary>
+    /// Run <paramref name="callback"/> on every shard's thread with its world (thread-safe; rare work such as reacting
+    /// to a dead member: it allocates).
+    /// </summary>
+    void PostToShards(Action<World, object?> callback, object? state);
+
     /// <summary>Admit or refuse every message from outside before it is routed (<see cref="IIngressFilter"/>). Only from <see cref="NodeFeature.Start"/>.</summary>
     void AddIngressFilter(IIngressFilter filter);
 }

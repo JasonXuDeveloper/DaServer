@@ -9,15 +9,16 @@ internal static class Clusters
         var started = new Node[nodes];
         for (int i = 0; i < nodes; i++)
         {
-            started[i] = new Node(new NodeOptions
+            var options = new NodeOptions
             {
                 Name = $"bench-{i}",
                 ListenAddress = "127.0.0.1",
-                ClientPort = i < gateways ? 0 : null,
                 Shards = shards,
                 Seeds = i == 0 ? [] : [$"127.0.0.1:{started[0].ClusterEndPoint.Port}"],
                 GossipInterval = TimeSpan.FromMilliseconds(100),
-            });
+            };
+            if (i < gateways) options.Features.Add(new ClientConnections(new ClientOptions()));
+            started[i] = new Node(options);
             await started[i].StartAsync();
         }
 
@@ -38,6 +39,8 @@ internal static class Clusters
         while (node.View.HandlerTypeOwner(ActorIds<TId>.HandlerTypeId, key)!.NodeId != owner.Id) key++;
         return ActorIds<TId>.Of(key);
     }
+
+    public static int ClientPort(this Node node) => node.Feature<ClientConnections>()!.Port;
 
     public static async Task Stop(IEnumerable<Node> nodes)
     {

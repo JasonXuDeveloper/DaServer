@@ -199,6 +199,7 @@ public class InfrastructureTests
     {
         var wheel = new TimerWheel<int>(TimeSpan.FromMilliseconds(5), slots: 8); // 40 ms a round: 100 ms is a later round
         var fired = new Fired();
+        var watch = System.Diagnostics.Stopwatch.StartNew();
         wheel.Schedule(TimeSpan.FromMilliseconds(30), 3);
         wheel.Schedule(TimeSpan.FromMilliseconds(10), 1);
         long cancelled = wheel.Schedule(TimeSpan.FromMilliseconds(20), 2);
@@ -206,7 +207,6 @@ public class InfrastructureTests
         Assert.That(wheel.Cancel(cancelled), Is.True);
         Assert.That(wheel.Cancel(cancelled), Is.False, "once");
 
-        var watch = System.Diagnostics.Stopwatch.StartNew();
         while (wheel.Count > 0 && watch.ElapsedMilliseconds < 2000) wheel.Advance(ref fired);
         Assert.That(fired.Items, Is.EqualTo(new[] { 1, 3, 4 }));
         Assert.That(watch.ElapsedMilliseconds, Is.GreaterThanOrEqualTo(100), "nothing fires early");
@@ -270,7 +270,7 @@ public class InfrastructureTests
     [Test]
     public void PulsesRoundTrip()
     {
-        var pulse = new Pulse(0xDEADBEEF12345678, 7, 1L << 40, MemberStatus.Suspect, 123, 4567);
+        var pulse = new Pulse(0xDEADBEEF12345678, 7, 1L << 40, MemberStatus.Suspect, 123, 4567, -1, int.MaxValue);
         Span<byte> wire = stackalloc byte[Pulse.Size];
         pulse.Write(wire);
         Assert.That(Pulse.Read(wire), Is.EqualTo(pulse));
