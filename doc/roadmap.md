@@ -153,7 +153,11 @@ Step plan (each step builds and keeps every test green; logic, docs, CI in separ
    `TokenBucket`, `ConcurrencyLimit`, `SignedToken` under the reconnect tickets), `TimerWheel<T>` (hashed wheel, one
    owner, O(1), allocation-free; consumers: grace timers in step 6, `SendAfter` in N2), dispatch-stage message filters
    (`MessageFilters.Register<T>` / `Register(IMessageFilter)`, run by generated dispatchers; N11 generates into
-   them); client connections use them:
+   them), the HTTP plane minimum (generated entry point on `WebApplication`, Kestrel on `DaServer:HttpPort`,
+   `MapAsk`/`MapSend` through the ingress, statuses to 429/503/504/403 with `Retry-After`, `DaServer-Budget` header;
+   one origin id space per node for sessions and HTTP requests); client connections use them. Left for step 6 with
+   the client feature: feature options bound from `DaServer:{Section}` and enabled by configuration, metrics
+   registration, pulse slots. The plan:
    - `NodeFeature`: Configure, ConfigureShard(World), Start(INodeContext), OnViewChanged, OnMemberDead,
      `Drain(deadline)`, Stop(crashed), a readiness contribution, metrics registration; options bound from
      `DaServer:{Section}`; enabled by configuration.
