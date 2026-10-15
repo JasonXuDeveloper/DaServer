@@ -20,10 +20,10 @@ public interface ICluster : IMessageSender
     void Publish<TEvent>(long key, in TEvent e) where TEvent : struct;
 
     /// <summary>Push a message to one client session (its client handles it with a [Handle] method).</summary>
-    void Send<T>(SessionRef session, in T message) where T : struct;
+    void Push<T>(SessionRef session, in T message) where T : struct;
 
     /// <summary>Broadcast a message to every session of a group on every gateway (serialized once).</summary>
-    void Send<T>(ClientGroup group, in T message) where T : struct;
+    void Broadcast<T>(ClientGroup group, in T message) where T : struct;
 
     /// <summary>Add a session to a broadcast group (an actor's own <c>Group</c> is joined by <c>BindSession</c>).</summary>
     void JoinGroup(SessionRef session, ClientGroup group);

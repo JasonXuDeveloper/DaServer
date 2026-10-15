@@ -8,8 +8,6 @@ internal static class Support
     public const string HandleAttribute = "DaServer.Rpc.HandleAttribute";
     public const string MessageAttribute = "DaServer.Rpc.MessageAttribute";
     public const string ClusterClientType = "DaServer.Client.ClusterClient";
-    public const string SessionRefType = "DaServer.Rpc.SessionRef";
-    public const string ClientGroupType = "DaServer.Rpc.ClientGroup";
 
     /// <summary>DaServer.Rpc.Flow values.</summary>
     public const int FlowFromClient = 1, FlowToClient = 2;

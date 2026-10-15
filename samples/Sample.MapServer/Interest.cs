@@ -85,7 +85,7 @@ public struct MapGrid() : IComponent
                 if (other != avatar) inView.Add(StateOf(other));
         }
 
-        if (inView.Count > 0) cluster.Send(session, new Motion(inView));
+        if (inView.Count > 0) cluster.Push(session, new Motion(inView));
     }
 
     public static void SwapRemove(List<Entity> list, Entity item)
@@ -117,7 +117,7 @@ public sealed partial class DespawnSystem : EcsSystem
 
             var cluster = world.Cluster();
             long map = avatar.Map.Get<ActorRef>().Key;
-            cluster.Send(MapGrid.Viewers(map, cell), new Gone(player));
+            cluster.Broadcast(MapGrid.Viewers(map, cell), new Gone(player));
             if (leaveGroups)
                 for (int dy = -1; dy <= 1; dy++)
                 for (int dx = -1; dx <= 1; dx++)
@@ -226,7 +226,7 @@ public sealed partial class SnapshotSystem : EcsSystem
         foreach (int cell in grid.ChangedCells)
         {
             var changes = grid.Changes[cell]!;
-            cluster.Send(MapGrid.Viewers(actor.Key, cell), new Motion(changes));
+            cluster.Broadcast(MapGrid.Viewers(actor.Key, cell), new Motion(changes));
             changes.Clear();
         }
 

@@ -60,22 +60,21 @@ public sealed partial class DaServerAnalyzer
     private static readonly string[] Senders = ["DaServer.Rpc.IMessageSender", "DaServer.Runtime.ICluster", Support.ClusterClientType];
 
     /// <summary>
-    /// <c>Send</c> / <c>Ask</c> / <c>Publish</c> of the cluster or a client: the last parameter is the message. Pushing to
-    /// a session or group needs <c>Flow.ToClient</c>; a <c>ClusterClient</c> needs <c>Flow.FromClient</c>; servers may not
+    /// <c>Send</c> / <c>Ask</c> / <c>Publish</c> / <c>Push</c> / <c>Broadcast</c> of the cluster or a client: the last
+    /// parameter is the message. <c>Push</c> to a session and <c>Broadcast</c> to a group need <c>Flow.ToClient</c>; a <c>ClusterClient</c> needs <c>Flow.FromClient</c>; servers may not
     /// send <c>Flow.ToClient</c>-only messages to each other.
     /// </summary>
     private static void CheckSend(OperationAnalysisContext context)
     {
         var invocation = (IInvocationOperation)context.Operation;
         var method = invocation.TargetMethod;
-        if (method.Name is not ("Send" or "Ask" or "Publish") || method.Parameters.Length == 0) return;
+        if (method.Name is not ("Send" or "Ask" or "Publish" or "Push" or "Broadcast") || method.Parameters.Length == 0) return;
 
         var sender = method.IsExtensionMethod ? method.Parameters[0].Type : method.ContainingType;
         if (sender == null || !IsSender(sender)) return;
         var receiver = method.IsExtensionMethod ? Unwrap(invocation.Arguments.FirstOrDefault()?.Value) : Unwrap(invocation.Instance);
         bool client = receiver != null && receiver.ToDisplayString() == Support.ClusterClientType;
-        var first = method.Parameters[method.IsExtensionMethod ? 1 : 0].Type.ToDisplayString();
-        bool push = !client && (first == Support.SessionRefType || first == Support.ClientGroupType);
+        bool push = method.Name is "Push" or "Broadcast";
 
         var message = method.Parameters[method.Parameters.Length - 1].Type;
         if (message is ITypeParameterSymbol) return; // generic plumbing: checked where the type is known
