@@ -32,7 +32,7 @@ public sealed class Map : Actor<MapId, MapState>
     }
 
     [Handle]
-    public async ValueTask<bool> On(Enter m)
+    public ValueTask<bool> On(Enter m)
     {
         var (player, session) = (m.Player, m.Session);
         if (!State.Avatars.ContainsKey(session))
@@ -44,16 +44,16 @@ public sealed class Map : Actor<MapId, MapState>
             // PlacementSystem puts it into the grid on the next tick; MotionSyncSystem tells its viewers.
         }
 
-        await BindSession(session); // the client's input reaches this map and it sees the map's Group broadcasts
-        return true;
+        // The client's input reaches this map, and it hears the map's Group, once the binding applied: the reply waits
+        // for it while the map takes its next message (thousands entering do not queue behind each round trip).
+        return ReplyWhen(BindSession(session), true);
     }
 
     [Handle]
-    public async ValueTask<bool> On(Leave m)
+    public ValueTask<bool> On(Leave m)
     {
-        await UnbindSession(m.Session);
         Despawn(m.Session);
-        return true;
+        return ReplyWhen(UnbindSession(m.Session), true);
     }
 
     // Also delivered when the session's gateway crashed. A closed session already left its groups.
