@@ -126,7 +126,7 @@ Steady state allocates nothing: per message, call, reply, tick, broadcast, conne
       Concurrency=4096), many suspended async handlers, services (Send/Ask/Publish), Push and remote broadcast, group
       and binding churn, idle node (0 B/s), Overloaded/Timeout/NotHosted steady state, client callback queue and
       collection messages.
-- [ ] Z2 Fix in this order: H3, H2, H1, H4 (N8), M1, M6/M2/M3/M4/M7, M5, low items; hot paths first (message, call, reply, broadcast, dispatch), then per connection and per
+- [ ] Z2 Fix in this order: H3 (done: per-shard call stacks, 64k frame/relay pools), H2, H2, H1, H4 (N8), M1, M6/M2/M3/M4/M7, M5, low items; hot paths first (message, call, reply, broadcast, dispatch), then per connection and per
       view change; pools bounded and allocation-free when warm. Replacements: pooled `IValueTaskSource`s, struct
       work items, static lambdas with state, cached delegates, pooled `FrameWriter`, `ArrayPool`/`stackalloc`, ring
       buffers, Nino ref deserialization.
@@ -134,6 +134,36 @@ Steady state allocates nothing: per message, call, reply, tick, broadcast, conne
       BenchmarkDotNet A/B (time and allocated) against the G baseline.
 - [ ] Z4 Keep it: CLAUDE.md rule plus analyzer coverage where a misuse is detectable in user code (e.g.
       `TaskCompletionSource`/`Task.Delay` in handlers and systems: use pooled framework awaitables and `SendAfter`).
+
+## Next: elastic scaling (after N5/N6: moving stateful actors needs persistence and handoff)
+
+DaServer does not write an autoscaler. The platform decides replica counts (Kubernetes HPA, KEDA, Azure Container
+Apps scale rules); Aspire only generates the manifests. The framework's job is that adding or removing a node of any
+kind is safe and cheap, that it exports the signals to scale on, and that the generated manifests are correct.
+
+What is stateful is decided by code, not by a role: a node hosting actors is stateful, a node hosting only services is
+stateless. In the MMO sample the balancer and the login server are stateless; gateways hold connections (soft state:
+clients resume on another gateway with their ticket); the game server (players, realm) and the map servers are
+stateful, maps being heavy actors.
+
+- [ ] S1 Scale signals: per-node OpenTelemetry metrics fit for HPA/KEDA (dispatch queue depth, mailbox backlog, tick
+      overrun, loaded actors per type, connections, CPU), documented as scaling metrics.
+- [ ] S2 Scale-in is a drain: SIGTERM -> graceful Leave -> actors hand off (N6) or unload and save (N5) -> exit within
+      the termination grace period; readiness turns false first. Gateways drain by directing their clients to other
+      gateways over time (resume tickets) instead of dropping them.
+- [ ] S3 Scale-out moves little: a joining node takes only the keys rendezvous hashing gives it (~1/N); per actor type
+      a move policy: light actors move at once (handoff), heavy actors (maps) stay where they are loaded and only new
+      keys go to the new node (lease/sticky placement for declared heavy types), so a scale-out never moves a map
+      with players in it.
+- [ ] S4 Generated manifests: `DaServer.Aspire` emits, per node group, HPA (or KEDA `ScaledObject`) with min/max and the
+      S1 metric, a PodDisruptionBudget (stateful groups: one node at a time), termination grace period and probes,
+      scale-down stabilization for stateful groups; through Aspire's Kubernetes publisher (generated resources can be
+      customized and extra resources such as `HorizontalPodAutoscaler` added). Plain Deployments: identity comes from
+      gossip incarnations and state from the store, so no StatefulSet is needed.
+- [ ] S5 Vertical scaling: shards follow the CPU limit (cgroup-aware core count). VPA in recommendation mode for
+      stateful groups (applying it restarts pods, i.e. a drain and a rejoin); automatic VPA only for stateless groups.
+- [ ] S6 Prove it: E2E that scales a stateful group out and in under load (10k bots) with no lost state, no dropped
+      session and bounded latency spikes.
 
 ## Next: architecture borrowed from a studied game server, ET and Orleans (agreed scope, in this order)
 
