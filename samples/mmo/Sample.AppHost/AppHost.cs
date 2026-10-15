@@ -1,7 +1,7 @@
 // The whole sample cluster, with the Aspire dashboard (logs, traces, metrics):
-//   dotnet run --project samples/Sample.AppHost
+//   dotnet run --project samples/mmo/Sample.AppHost
 // Publish the same model as Docker Compose files:
-//   aspire publish --project samples/Sample.AppHost
+//   aspire publish --project samples/mmo/Sample.AppHost
 
 using Aspire.Hosting;
 using Microsoft.Extensions.Configuration;
@@ -11,7 +11,7 @@ builder.AddDockerComposeEnvironment("compose");
 
 // One project per server: a node hosts exactly the actors, services and systems its project compiles (its startup log
 // lists them). The topology is projects and replica counts; ports, names and seeds are assigned here, discovery
-// (gossip) and client placement (balancer) are automatic. Who talks to whom: samples/README.md.
+// (gossip) and client placement (balancer) are automatic. Who talks to whom: samples/mmo/README.md.
 var cluster = builder.AddDaServerCluster("sample");
 cluster.AddNodes<Projects.Sample_LoginServer>("login");                    // Account service
 cluster.AddNodes<Projects.Sample_GameServer>("game");                      // Player and Realm actors
