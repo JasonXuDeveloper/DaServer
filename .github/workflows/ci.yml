@@ -12,13 +12,6 @@ jobs:
         with:
           path: DaServer
 
-      # Co-development: use the EasyEcs branch with the same name when it exists, otherwise master.
-      - name: Checkout EasyEcs
-        run: |
-          branch="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
-          git clone --depth 1 --branch "$branch" https://github.com/JasonXuDeveloper/EasyEcs.git EasyEcs \
-            || git clone --depth 1 https://github.com/JasonXuDeveloper/EasyEcs.git EasyEcs
-
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
