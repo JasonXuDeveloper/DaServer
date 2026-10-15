@@ -38,6 +38,23 @@ Keep this file current: tick items when done, add items when scope changes.
 - [x] Actors unload when idle (`UnloadAfterIdle`, ADR-033)
 - [ ] Persistence helpers: see N5/N6 below
 
+## Now: a general framework, the client edge as an optional module (agreed, before T2)
+
+The core is a general distributed ECS framework (actors, services, messages/RPC, membership, placement, persistence,
+reload); MMO roles (login, balancer, gateways, game, maps) exist only in samples.
+
+- [ ] G1 Core extension point for external connections: an edge accepts connections, owns them on IO threads and hands
+      their frames to the cluster as messages (connection -> entity -> message); the core has no "client" concept.
+- [ ] G2 Move the client edge into `src/DaServer.Gateway` (optional package): sessions and `BindSession`,
+      `SessionClosed`/`SessionResync`, `ClientGroup` fan-out (`Push`/`Broadcast`), reconnect tickets, `ClusterClient`,
+      balancer, `Flow.FromClient/ToClient` checks (DAS006 part), Aspire `AddGateways`/`AddBalancer`. Built only on
+      public extension points; keeps zero allocation on fan-out (benchmark A/B before/after).
+- [ ] G3 Rename the two message systems: `InboxSystem` -> `DeliverySystem` (drains the shard's cross-thread inbox,
+      sorts frames into actor mailboxes, completes calls, runs continuations), `MailboxSystem` -> `ActorTurnSystem`
+      (runs one turn per ready actor). Two levels stay: only the shard thread touches ECS data, and an actor awaiting
+      in a turn holds its own mail while others run. Document it in design.md.
+- [ ] G4 Docs: README/design describe the core first, the gateway module second, the MMO sample third.
+
 ## Next: architecture borrowed from a studied game server, ET and Orleans (agreed scope, in this order)
 
 Patterns only, never business code. Each item: tests, BenchmarkDotNet where a hot path changes, an ADR, logic and docs
