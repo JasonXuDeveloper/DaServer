@@ -90,10 +90,21 @@ public interface IMessageSender
 
 /// <summary>
 /// The gateway's session of a client closed (disconnect, kick, gateway crash). Delivered to every actor the session
-/// was bound to (<c>BindSession</c>) that handles it.
+/// was bound to (<c>BindSession</c>) that handles it; for a lost connection, only once the client had
+/// <see cref="Runtime.NodeOptions.ReconnectGrace"/> to resume (and it did not).
 /// </summary>
 [NinoType]
 public readonly partial record struct SessionClosed(SessionRef Session);
+
+/// <summary>
+/// A client that lost its connection resumed on a gateway: <see cref="Session"/> replaces <see cref="Previous"/> and is
+/// already bound to every actor <see cref="Previous"/> was bound to (and in their groups). Delivered to each of them
+/// that handles it, as the session of the turn (<c>CallerSession</c>): update the stored session, rejoin other groups
+/// and send the client its full state (pushes sent meanwhile were lost). <see cref="SessionClosed"/> for
+/// <see cref="Previous"/> is not delivered afterwards.
+/// </summary>
+[NinoType]
+public readonly partial record struct SessionResync(SessionRef Session, SessionRef Previous);
 
 /// <summary>Wire identity of message type <typeparamref name="T"/>: [WireId] or FNV-1a of its full name, computed once.</summary>
 public static class MessageType<T> where T : struct

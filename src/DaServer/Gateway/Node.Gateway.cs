@@ -24,6 +24,7 @@ public sealed partial class Node
     private readonly Lock _groupGate = new(); // membership changes (control path); fan-out takes only its group's lock
     private Listener? _clientListener;
     private GatewayHandler? _gatewayHandler;
+    private byte[]? _ticketSecret; // reconnect tickets: null when the cluster has no secret
     private long _nextSessionId;
 
     /// <summary>Port clients connect to (0 when this node accepts no clients).</summary>
@@ -36,6 +37,7 @@ public sealed partial class Node
     {
         if (Options.ClientPort is not { } port) return;
         _gatewayHandler = new GatewayHandler(this);
+        if (Options.ClusterSecret is { Length: > 0 } secret) _ticketSecret = System.Text.Encoding.UTF8.GetBytes(secret);
         var sessionOptions = ConnectionOptions.ForClients();
         sessionOptions.MaxFrameSize = Options.MaxClientFrameSize; // what an untrusted client may make us buffer
         _clientListener = new Listener(new IPEndPoint(IPAddress.Parse(Options.ListenAddress), port), socket =>
@@ -210,6 +212,7 @@ public sealed partial class Node
                     Join(session, ClientGroup.Of(scope, value).Id);
                 }
 
+                IssueTicket(session);
                 break;
             }
             case ControlOp.Unbind:
@@ -217,6 +220,7 @@ public sealed partial class Node
                 long previous = session.KeyOf(scope);
                 session.Bindings.Remove(scope, static (b, id) => b.ImplementationId == id);
                 if (previous != 0) lock (_groupGate) Leave(session, ClientGroup.Of(scope, previous).Id);
+                IssueTicket(session);
                 break;
             }
             case ControlOp.JoinGroup:
@@ -226,6 +230,7 @@ public sealed partial class Node
                 lock (_groupGate) Leave(session, value);
                 break;
             case ControlOp.Disconnect:
+                session.Explicit = true;
                 session.Connection.Close();
                 break;
         }
@@ -265,8 +270,75 @@ public sealed partial class Node
         }
 
         var sessionRef = new SessionRef(Id, session.Id);
-        foreach (var binding in session.Bindings.Items)
-            SendTo(binding.ImplementationId, binding.Key, new SessionClosed(sessionRef));
+        var bindings = session.Bindings.Items;
+        if (bindings.Length == 0) return;
+        if (session.Explicit || ReconnectGrace == TimeSpan.Zero) ReportClosed(sessionRef, bindings);
+        else _ = ReportClosedAfterGrace(sessionRef, bindings);
+    }
+
+    /// <summary>A lost connection: the client may resume within the grace (its actors then get SessionResync instead).</summary>
+    private async Task ReportClosedAfterGrace(SessionRef session, SessionBinding[] bindings)
+    {
+        await Task.Delay(ReconnectGrace).ConfigureAwait(false);
+        if (Volatile.Read(ref _started) == 1) ReportClosed(session, bindings);
+    }
+
+    private void ReportClosed(SessionRef session, SessionBinding[] bindings)
+    {
+        foreach (var binding in bindings)
+            SendTo(binding.ImplementationId, binding.Key, new SessionClosed(session));
+    }
+
+    /// <summary>How long a lost client may take to resume: <see cref="NodeOptions.ReconnectGrace"/> when tickets exist.</summary>
+    private TimeSpan ReconnectGrace => Options.ClusterSecret is { Length: > 0 } ? Options.ReconnectGrace : TimeSpan.Zero;
+
+    /// <summary>Send the session's client a fresh reconnect ticket (after binding changes, and when the client asks).</summary>
+    private void IssueTicket(Session session)
+    {
+        var bindings = session.Bindings.Items;
+        if (_ticketSecret == null || bindings.Length > ReconnectTicket.MaxBindings) return;
+        int size = ReconnectTicket.SizeOf(bindings.Length);
+        Span<byte> ticket = stackalloc byte[size];
+        ReconnectTicket.Write(ticket, _ticketSecret, new SessionRef(Id, session.Id), bindings,
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), (long)Options.ReconnectTicketLifetime.TotalMilliseconds);
+        var w = FrameWriter.Rent(FrameHeader.Size + size);
+        w.WriteRaw(ticket);
+        w.SetHeader(FrameKind.Control, 0, ControlOp.Ticket, 0);
+        session.Connection.Send(w.Frame);
+        w.Dispose();
+    }
+
+    /// <summary>
+    /// A client that lost its connection presents its ticket on a new one: the new session takes over the bindings
+    /// (and the actors' groups), and every bound actor learns the new session (<see cref="SessionResync"/>) before the
+    /// client's next message, which travels behind it on the same links.
+    /// </summary>
+    private void ResumeSession(Session session, uint requestId, ReadOnlySpan<byte> ticket)
+    {
+        if (_ticketSecret == null || session.Bindings.Items.Length != 0 ||
+            !ReconnectTicket.TryRead(ticket, _ticketSecret, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), out var previous, out var bindings))
+        {
+            ReplyError(session.Sink, requestId, RpcStatus.Forbidden, "Invalid or expired reconnect ticket");
+            return;
+        }
+
+        int count = ReconnectTicket.BindingCount(bindings);
+        for (int i = 0; i < count; i++)
+        {
+            var binding = ReconnectTicket.BindingAt(bindings, i);
+            session.Bindings.Set(binding.ImplementationId, binding, static (b, id) => b.ImplementationId == id);
+            lock (_groupGate) Join(session, ClientGroup.Of(binding.ImplementationId, binding.Key).Id);
+        }
+
+        var current = new SessionRef(Id, session.Id);
+        for (int i = 0; i < count; i++)
+        {
+            var binding = ReconnectTicket.BindingAt(bindings, i);
+            SendTo(binding.ImplementationId, binding.Key, new SessionResync(current, previous));
+        }
+
+        IssueTicket(session);
+        session.Sink.SendReply(requestId, RpcStatus.Ok, FrameWriter.Rent(FrameHeader.Size));
     }
 
     /// <summary>
@@ -314,8 +386,8 @@ public sealed partial class Node
                 case FrameKind.OneWay:
                     node.OnClientMessage(session, in header, frame);
                     break;
-                case FrameKind.Control when header.MessageId == ControlOp.PickGateway && header.RequestId != 0:
-                    node.PickGateway(session, header.RequestId);
+                case FrameKind.Control:
+                    node.OnClientControl(session, in header, frame);
                     break;
                 case FrameKind.Ping:
                     Span<byte> pong = stackalloc byte[FrameHeader.Size];
@@ -332,6 +404,29 @@ public sealed partial class Node
         {
             if (connection.Tag is Session session)
                 node.OnSessionClosed(session);
+        }
+    }
+
+    private void OnClientControl(Session session, in FrameHeader header, ReadOnlySpan<byte> frame)
+    {
+        switch (header.MessageId)
+        {
+            case ControlOp.PickGateway when header.RequestId != 0:
+                PickGateway(session, header.RequestId);
+                break;
+            case ControlOp.Ticket:
+                IssueTicket(session);
+                break;
+            case ControlOp.ResumeSession when header.RequestId != 0:
+                ResumeSession(session, header.RequestId, frame.Slice(FrameHeader.Size));
+                break;
+            case ControlOp.Goodbye:
+                session.Explicit = true;
+                if (header.RequestId != 0) session.Sink.SendReply(header.RequestId, RpcStatus.Ok, FrameWriter.Rent(FrameHeader.Size));
+                break;
+            default:
+                session.Connection.Close(new InvalidOperationException("Unexpected control operation from client: " + header.MessageId));
+                break;
         }
     }
 
@@ -396,6 +491,9 @@ internal sealed class Session(long id, Connection connection)
 
     /// <summary>Set under the gateway's group gate when the session closed: it joins no group afterwards.</summary>
     public bool Closed { get; set; }
+
+    /// <summary>Closed on purpose (client goodbye, <c>Disconnect</c>): its actors learn it at once, no reconnect grace.</summary>
+    public volatile bool Explicit;
 
     /// <summary>Key bound for <paramref name="implementationId"/>, 0 when unbound. Lock-free (client message path).</summary>
     public long KeyOf(uint implementationId)

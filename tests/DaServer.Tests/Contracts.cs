@@ -243,6 +243,8 @@ public sealed class Player : Actor<Wallet>
     [Handle] public void On(Tip m) => State.Gold += m.Amount;
 
     [Handle] public void On(SessionClosed _) => Observed.Events.Enqueue($"closed:{Key}");
+
+    [Handle] public void On(SessionResync _) => Observed.Events.Enqueue($"resync:{Key}");
 }
 
 public sealed class Room : Actor

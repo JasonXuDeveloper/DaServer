@@ -52,6 +52,7 @@ public static class DaServerClusterExtensions
 public sealed class DaServerCluster
 {
     private readonly IDistributedApplicationBuilder _builder;
+    private readonly IResourceBuilder<ParameterResource> _secret;
     private readonly List<EndpointReference> _clusterEndpoints = [];
     private int _nextClusterPort;
     private int _nextClientPort;
@@ -60,6 +61,10 @@ public sealed class DaServerCluster
     {
         _builder = builder;
         Name = name;
+        // Signs client reconnect tickets: generated once and kept (user secrets locally, a deployment parameter when
+        // published), the same for every node.
+        _secret = builder.AddParameter($"{name}-secret", new GenerateParameterDefault { MinLength = 32, Special = false },
+            secret: true, persist: true);
         _nextClusterPort = clusterPortBase;
         _nextClientPort = clientPortBase;
     }
@@ -105,6 +110,7 @@ public sealed class DaServerCluster
             var node = _builder.AddProject<TProject>(nodeName)
                 .WithAnnotation(new DaServerNodeAnnotation(Name))
                 .WithEnvironment("DaServer__Name", nodeName)
+                .WithEnvironment("DaServer__ClusterSecret", _secret)
                 .WithEndpoint(port: _nextClusterPort, targetPort: _nextClusterPort++, scheme: "tcp", name: "cluster",
                     env: "DaServer__ClusterPort", isProxied: false);
             var self = node.GetEndpoint("cluster");

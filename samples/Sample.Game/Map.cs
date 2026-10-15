@@ -59,6 +59,16 @@ public sealed class Map : Actor<MapState>
     public void On(SessionClosed e) => Remove(e.Session, closed: true); // also delivered when the session's gateway crashed
 
     [Handle]
+    public void On(SessionResync e)
+    {
+        // The client reconnected: same avatar, new session. It lost the pushes meanwhile, so it gets its view again.
+        if (!State.Avatars.Remove(e.Previous, out var avatar)) return;
+        State.Avatars[e.Session] = avatar;
+        avatar.Get<Avatar>().Session = e.Session;
+        State.Grid.Rejoin(Cluster, Key, avatar, e.Session);
+    }
+
+    [Handle]
     public void On(Move m)
     {
         // Input is data: MovementSystem integrates it, the next sync tells the avatar's viewers.

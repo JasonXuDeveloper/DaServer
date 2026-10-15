@@ -63,8 +63,22 @@ internal static class ControlOp
     /// <summary>Gateway: remove a session from a group (payload = group id).</summary>
     public const uint LeaveGroup = 13;
 
-    /// <summary>Gateway: close a session.</summary>
+    /// <summary>Gateway: close a session (reported to its actors at once, no reconnect grace).</summary>
     public const uint Disconnect = 14;
+
+    // Client sessions (client and gateway): reconnect tickets (ADR-036).
+
+    /// <summary>
+    /// Gateway to client: payload = the session's current reconnect ticket (after every binding change). Client to
+    /// gateway (no payload): send me a fresh one.
+    /// </summary>
+    public const uint Ticket = 15;
+
+    /// <summary>Client to gateway (a request): payload = a reconnect ticket; resume the session it names here.</summary>
+    public const uint ResumeSession = 16;
+
+    /// <summary>Client to gateway (a request): the client closes on purpose (no reconnect grace).</summary>
+    public const uint Goodbye = 17;
 }
 
 /// <summary>

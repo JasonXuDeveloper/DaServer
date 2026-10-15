@@ -264,15 +264,23 @@ public sealed partial class Node : ICluster, IAsyncDisposable
         {
             if (gateways.Contains(previous)) continue;
             Logger.LogWarning("Gateway {Gateway:x} is gone: closing its sessions", previous);
-            foreach (var shard in _shards)
-                shard.Post(static s =>
-                {
-                    var (target, gateway) = ((Shard, ulong))s!;
-                    ShardDispatch.CloseSessionsOf(target.World, gateway);
-                }, (shard, previous));
+            _ = CloseSessionsOf(previous);
         }
 
         _gateways = gateways.ToArray();
+    }
+
+    /// <summary>Close a lost gateway's sessions on every shard, once their clients had the grace to resume elsewhere.</summary>
+    private async Task CloseSessionsOf(ulong gateway)
+    {
+        if (ReconnectGrace > TimeSpan.Zero) await Task.Delay(ReconnectGrace).ConfigureAwait(false);
+        if (Volatile.Read(ref _started) != 1) return;
+        foreach (var shard in _shards)
+            shard.Post(static s =>
+            {
+                var (target, gateway) = ((Shard, ulong))s!;
+                ShardDispatch.CloseSessionsOf(target.World, gateway);
+            }, (shard, gateway));
     }
 
     private void Maintain()

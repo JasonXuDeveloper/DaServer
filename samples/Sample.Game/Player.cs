@@ -39,6 +39,9 @@ public sealed class Player : Actor<PlayerState>
     }
 
     [Handle]
+    public void On(SessionResync e) => State.Session = e.Session; // reconnected: not offline, nothing else to resend
+
+    [Handle]
     public PlayerInfo On(GetInfo _) => new(Key, State.Name, State.MapId, State.Logins);
 
     [Handle]
