@@ -66,9 +66,9 @@ sequenceDiagram
 ## Run it
 
 ```bash
-dotnet run --project samples/Sample.AppHost                 # dashboard, 3 gateways, 10,000 bots for 60 s
-dotnet run --project samples/Sample.AppHost -- Bots=1000    # fewer bots
-aspire publish --project samples/Sample.AppHost             # Docker Compose files for the same topology
+dotnet run --project samples/mmo/Sample.AppHost                 # dashboard, 3 gateways, 10,000 bots for 60 s
+dotnet run --project samples/mmo/Sample.AppHost -- Bots=1000    # fewer bots
+aspire publish --project samples/mmo/Sample.AppHost             # Docker Compose files for the same topology
 ```
 
 Replicas are one argument in [AppHost.cs](Sample.AppHost/AppHost.cs): `AddNodes<Projects.Sample_MapServer>("map",

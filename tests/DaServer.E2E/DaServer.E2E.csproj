@@ -15,7 +15,7 @@
     </ItemGroup>
 
     <ItemGroup>
-        <ProjectReference Include="..\..\samples\Sample.AppHost\Sample.AppHost.csproj" />
+        <ProjectReference Include="..\..\samples\mmo\Sample.AppHost\Sample.AppHost.csproj" />
     </ItemGroup>
 
 </Project>
