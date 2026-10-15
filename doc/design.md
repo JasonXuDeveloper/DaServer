@@ -1,6 +1,6 @@
 # DaServer design
 
-DaServer is a .NET 10 framework for building **clusters**: game servers (many gateways, many map/logic nodes) and
+DaServer is a .NET 10 framework for building **clusters**: game servers (many client-facing nodes, many map/logic nodes) and
 other low-latency, high-concurrency backends (matchmaking, chat, trading, IoT fan-in). Developers write messages
 (`[NinoType, Message]` structs), actors and services with `[Handle]` methods, and ECS systems. Source generators write the
 rest: dispatchers, typed `Ask` overloads, wire ids, registration, entry points and query jobs.
@@ -18,7 +18,7 @@ Acceptance criteria and metrics are in [requirements.md](requirements.md); the r
 
 | Concept | What it is | Threading |
 |---|---|---|
-| **Node** | One process: a random `NodeId`, a cluster endpoint, optionally a client endpoint (gateway). It hosts every actor, service and system compiled into its project; there are no roles. | IO threads plus the shards it owns. |
+| **Node** | One process: a random `NodeId`, a cluster endpoint, optionally a client endpoint (it accepts clients). It hosts every actor, service and system compiled into its project; there are no roles. | IO threads plus the shards it owns. |
 | **Shard** | A single-threaded executor: one thread, a lock-free dispatch queue and an EasyEcs `World` holding everything else ([§9](#9-ecs-in-daserver)). A node runs N shards (default: one per core). | One dedicated thread. Every handler and system of the shard runs on it, so user code needs no locks. |
 | **Actor** | Keyed and stateful (player, map instance, room, guild): one loaded actor per id in the cluster, loaded on demand, turn-based. The loaded actor is an entity; its state is components (`Actor<TId, TState>`). | Its shard's thread. |
 | **Service** | Stateless (login, matchmaking, chat routing). One instance per shard; calls are load-balanced (local node first) and may overlap. | The shard thread that received the call. |
@@ -51,11 +51,11 @@ Everything a developer declares is one of these (ADR-035). The message type alon
 Access is per message type. The sample's map lets servers send `Enter` and `Leave` and lets the bound client send only
 `[FromClient]` messages `Move` and `Say`, so a client can never enter someone else's player. The flow is checked at
 build time (DAS006): pushing an internal message to a client, sending it from a client, or handling a push on a server
-fails the build; at run time gateways accept only `[FromClient]` messages.
+fails the build; at run time client-facing nodes accept only `[FromClient]` messages.
 
-Gateways and other nodes talk through framework frames (relayed client messages with their session, bindings, group
-membership, resumed sessions), never through business messages, so there is no fourth flow: a service hosted on a
-gateway node exchanges ordinary `[Message]`s with the rest of the cluster.
+Client-facing nodes and other nodes talk through framework frames (relayed client messages with their session,
+grants, group membership, resumed sessions), never through business messages, so there is no fourth flow: a service
+hosted on a client-facing node exchanges ordinary `[Message]`s with the rest of the cluster.
 
 Business code reaches the cluster only through `ICluster` (`Cluster` in actors and services, `world.Cluster()` in
 systems): messages, session binding, client groups. `Node` (lifecycle, membership, links) is not visible to it.
@@ -97,12 +97,12 @@ local node when it hosts one.
     or a client group, `key` its id). With a call id trailer (flag `HasCall`) it is a request; the status byte then
     carries the caller's time budget (ADR-028).
   - `Reply`: the call id trailer, the status, the reply (or a handler's error message).
-  - `Control`: link handshake and resume, gossip, client tickets and gateway choice; a call id makes it a call.
+  - `Control`: link handshake and resume, gossip, client tickets, node choice and keep-alive; a call id makes it a call.
 - A receiving node routes a message by its target alone: a hosted handler type goes to its shard, a session or group
   to the client connections, anything else on to the node hosting it.
-- A client leaves the target 0 to let its gateway pick the actor bound to its session or the service; it names an
-  actor only if that actor granted its session (ADR-051): the gateway checks the session's grants (at most 64, a
-  lock-free scan) and refuses anything else with `Forbidden`, before any actor is reached. Gateways copy the client's payload as is, add the session as the origin trailer
+- A client leaves the target 0 to let its node pick the actor bound to its session or the service; it names an
+  actor only if that actor granted its session (ADR-051): the node checks the session's grants (at most 64, a
+  lock-free scan) and refuses anything else with `Forbidden`, before any actor is reached. Client-facing nodes copy the client's payload as is, add the session as the origin trailer
   (flag `HasOrigin`, 16 bytes before the call id; handlers read it as `Caller`) and route it. They never deserialize
   payloads.
 
@@ -118,7 +118,7 @@ local node when it hosts one.
 | Receiving | Frames are parsed in place. Zero-byte reads mean an idle client connection holds no receive buffer, which matters with tens of thousands of sockets. |
 | Sending API | Messages are `in` struct parameters of generic methods (`Ask<TRequest, TReply>`, generated typed overloads), so `Cluster.Ask(playerId, new AddGold(10))` allocates nothing and boxes nothing. |
 | ECS | EasyEcs v4: struct components, `[ForEach]` struct jobs, singleton parameters resolved once per pass, zero allocations per tick. The runtime keeps per-actor state in components and visits only ready or busy actors. |
-| GC mode | Server GC, concurrent. Allocation tests hold the budget in steady state: < 8 B per call or message across shards and through a gateway (any per-message object would be >= 24 B), < 1 B per delivery of a gateway fan-out. |
+| GC mode | Server GC, concurrent. Allocation tests hold the budget in steady state: < 8 B per call or message across shards and through a client-facing node (any per-message object would be >= 24 B), < 1 B per delivery of a client fan-out. |
 
 ## 4. Latency
 
@@ -131,11 +131,11 @@ What a request costs, and what keeps it low:
 | No placement lookup | Rendezvous hashing over the gossiped view: every node computes the owner of a key locally. There is no directory service on the call path. |
 | Local first | Service handlers run on the calling node when it hosts them. |
 | Batching without delay | `TCP_NODELAY`. The send loop drains everything queued while the previous write was in flight, so batching costs no timer. |
-| Gateway pass-through | Gateways patch headers; they never deserialize payloads. One broadcast frame per gateway, `memcpy` per session. |
+| Client pass-through | Client-facing nodes patch headers; they never deserialize payloads. One broadcast frame per client-facing node, `memcpy` per session. |
 | Input as data | High-rate client input (movement) is written into components by the actor and integrated by `[ForEach]` systems on the next tick: one cache-friendly pass instead of a turn per message. |
 
-Planned (roadmap): placement hints to co-locate actors that talk a lot (a player next to its map), and a gateway shard
-that keeps session state as ECS components.
+Planned (roadmap): placement hints to co-locate actors that talk a lot (a player next to its map), and a client-connection
+shard that keeps session state as ECS components.
 
 ## 5. Reliability
 
@@ -146,7 +146,7 @@ that keeps session state as ECS components.
 | Deadlines | A request carries its caller's remaining time; each hop turns it into a local deadline and a shard drops a request that expired before it ran (ADR-028). Work nobody waits for is not done. |
 | Messages | At most once. Events that must not be lost are written to storage by the publisher first (outbox) and re-published on recovery; DaServer does not hide a broker inside the call path. |
 | Single loaded actor | Rendezvous hashing over the `Up` and `Suspect` nodes hosting the handler type (ADR-023): every node computes the same owner from the same view. A node loads an actor only if it is the owner in its own view; otherwise it forwards (hop limit 3) or answers `NotHosted`. When ownership changes, the old owner unloads (`OnUnload`, the persistence hook) and forwards its remaining mail. |
-| Sessions | A gateway owns its sockets. Bindings and groups live on the gateway; when a session closes, every actor it was bound to that handles `SessionClosed` receives it, so no actor keeps a dead session. |
+| Sessions | A client-facing node owns its sockets. Grants, bindings and groups live there; when a session closes, every actor it was bound or granted to that handles `SessionClosed` receives it, so no actor keeps a dead session. |
 | Graceful shutdown | `SIGTERM` → `Leaving` (pushed to every member) → stop loading actors → drain mailboxes → unload actors → exit. |
 | Backpressure | Shard dispatch queues and actor mailboxes are bounded and refuse with `Overloaded` (ADR-027). Links are not paused (their replies would stall too, ADR-027). A slow client hits the per-connection send backlog bound (256 KB) and is disconnected; it reconnects and resynchronizes (ADR-035). |
 | Dead connections | Silence closes a connection (ADR-053): idle directions carry a 24-byte `Ping`/`Pong`, any frame counts as life. Clients ping after 15 s idle and give up after 30 s without a frame (then resume); client-facing nodes close sessions silent for 45 s (then the reconnect grace); node links ping each gossip interval and reconnect after `SuspectAfter` of silence (then replay the resend window). |
@@ -243,7 +243,7 @@ removed at run time; placement moves only the keys of the node that joined or le
 address is tried) and moves to the client-facing node the entry names (ADR-026); reconnects go through the entries
 again; `ConnectAsync(new Uri("ws://node/clients/ws"))` connects over a WebSocket of the node's HTTP plane instead
 (browsers, WebGL builds; one or more whole frames per binary message, the same protocol). It sends the same messages as
-servers: `client.Ask(new Login(..))`, `client.Ask(new GetInfo())` (session actors need no id: the gateway uses the
+servers: `client.Ask(new Login(..))`, `client.Ask(new GetInfo())` (session actors need no id: the node uses the
 binding), `client.Send(roomId, new Say(..))` (actors that granted the session). Push handlers are `[Handle]` methods of any class,
 registered with `client.Register(obj)`; they run on the IO thread or, for game loops and UIs, on the application's thread through `ProcessCallbacks`.
 
@@ -274,7 +274,7 @@ Admission is the edge's: features add `IIngressFilter`s (`node.AddIngressFilter`
 outside before it is routed; the first refusal wins, with a status (`RateLimited`, `Overloaded`, `Forbidden`) and
 when to retry (a client gets it as `RpcException.RetryAfter`, carried in the refusal reply's key; HTTP maps it to
 `Retry-After`). Building blocks: `TokenBucket` (one owner, allocation-free), `ConcurrencyLimit` (shared,
-interlocked), `SignedToken` (content plus issued/expiry times, HMAC-SHA256 with the cluster secret: reconnect tickets,
+interlocked), `SignedToken` (content plus issued/expiry times, HMAC-SHA256 with the signing secret: reconnect tickets,
 admission tokens, internal HTTP auth). Timers are data too: `TimerWheel<T>` (a hashed wheel owned by one thread:
 O(1) schedule, cancel and fire, allocation-free) is advanced by its owner's loop.
 
@@ -325,7 +325,7 @@ other actors of the shard keep running, so one queue could not serve both purpos
 | `Fenced` | tag | the node was declared dead: removed without `OnUnload` (ADR-042) |
 | `Removing` | component | the loaded actor ends: mail is routed again (or failed with its status) |
 | `UnloadWhenIdle` | component | the actor unloads after this long without mail (`UnloadAfterIdle`) |
-| `ClientSessions` | component | client sessions the actor knows (closed for it when their gateway dies) |
+| `ClientSessions` | component | client sessions the actor knows (closed for it when their node dies) |
 | `ServiceCall` | tag | an entity per running asynchronous service call (ended like a turn) |
 | `ActorDirectory`, `ServiceDirectory` | singletons | loaded actors by id, service instances by handler type |
 | `TurnWatchers`, `ActorPools`, `ShardActivity` | singletons | pooled watchers; actor objects, mailboxes and session sets of removed actors (ADR-044); per-wake bookkeeping |
@@ -355,7 +355,7 @@ entities in the state it handles (a filter on tags), so nothing scans all actors
 
 ```csharp
 [NinoType, Message, FromClient] public partial record struct AddGold(int Amount) : IRequest<int>;
-[NinoType, Message] public partial record struct LoggedIn(SessionRef Session);
+[NinoType, Message] public partial record struct LoggedIn(ClientSession Session);
 
 public record struct Wallet(int Gold, int Logins) : IComponent;
 
@@ -395,8 +395,8 @@ node project is its business classes only.
   leave. Each node logs a stats line (CPU, allocation rate, GCs, sessions, actors, queue, rejected) every 30 s.
 - The cluster is described once in an Aspire AppHost with `DaServer.Aspire`:
   `AddDaServerCluster`, `AddNodes<TProject>(name, replicas)`, `.WithClients()` on a node group. Every node gets
-  a cluster endpoint and seeds (every other node), gateways a client endpoint (`DaServer__Clients__Port`);
-  `WithClientEndpoints(gateways)` hands their addresses to clients and bots as entries.
+  a cluster endpoint and seeds (every other node), client-facing groups (`WithClients`) a client endpoint (`DaServer__Clients__Port`);
+  `WithClientEndpoints(group)` hands their addresses to clients and bots as entries.
 - The same model runs locally (`dotnet run` on the AppHost, with the dashboard showing logs and OTLP metrics) and is
   published with `aspire publish`: Docker Compose via `AddDockerComposeEnvironment`, Kubernetes via
   `AddKubernetesEnvironment`. There are no hand-maintained deployment files.
