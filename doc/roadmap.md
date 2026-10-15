@@ -230,6 +230,10 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
       discovery only bootstraps it.
 - Not for node membership: `WithReference` service discovery alone (one load-balanced address, not membership), persistent project
   lifetimes (no replicas, fixed ports); fine for databases and user HTTP services.
+- [ ] A14 Production views: the published dashboard (on by default in Kubernetes/Compose environments) is kept for
+      diagnosis behind its login; durable views ship with the framework: DaServer metrics (members, shards, mailbox
+      backlog, call latency, drain phases) with a Grafana dashboard JSON and alert rules, the cluster view from the
+      admin `Membership` endpoint, orchestration state from Kubernetes itself (kubectl/k9s/Helm/cloud console).
 - Notes: the Aspire dashboard in deployments is diagnostic only (production observability is OTLP); Azure Container
   Apps exposes ingress, not per-replica addresses, so it is a later target than Kubernetes.
 
@@ -323,7 +327,12 @@ in separate commits.
       systems at a wake boundary, recreates actor objects over unchanged components; old turns finish on old code;
       the old context unloads when unused, weak-reference leak check, no forced GC; a changed Model/Contracts refuses
       and needs a rolling deploy) and config (validated snapshot, pinned per shard wake, cluster-wide trigger, version
-      in gossip). Benchmark the hot path before and after. (RandomGame, ET)
+      in gossip). HTTP endpoints (ADR-046) reload with the Logic assembly: the framework owns a reloadable
+      `EndpointDataSource` whose change token swaps the endpoint set (minimal API style handlers declared in Logic,
+      registered by the generator), in-flight requests finish on the old delegates; MVC controllers only through
+      `ApplicationPartManager` + `IActionDescriptorChangeProvider`, and the unload test must prove no MVC, routing or
+      System.Text.Json cache keeps the old context alive (JSON through source-generated contexts in Logic). Benchmark
+      the hot path before and after. (RandomGame, ET)
 - [ ] N11 Generated filters: `[Filter<T>]` with static `Before`/`After` inlined into the dispatchers (rate limits on
       `FromClient`, auth, metrics), nothing for handlers without filters. (Orleans call filters)
 - Not adopted: Orleans interface proxies, per-activation Task scheduling, grain directory / repartitioning,
