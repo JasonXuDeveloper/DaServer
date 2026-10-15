@@ -104,18 +104,38 @@ public class ReconnectTests : ClusterTest
     }
 
     [Test]
+    public async Task GrantsMoveToTheResumedSessionAndClosesReachGrantedActors()
+    {
+        var gateways = await StartCluster(TimeSpan.FromSeconds(1));
+        var client = await LogIn(gateways, 505);
+        Assert.That(await client.Ask(new Enter(new RoomId(70))), Is.True);
+
+        var reconnected = Reconnected(client);
+        client.DropConnection();
+        await reconnected;
+        await Eventually(() => Observed.Events.Contains("room-resync:70"), "the granted room did not learn the new session");
+        Assert.That(await client.Ask(new RoomId(70), new Exit()), Is.True, "the grant moved to the new session");
+
+        var other = await LogIn(gateways, 506);
+        Assert.That(await other.Ask(new Enter(new RoomId(71))), Is.True);
+        await other.DisposeAsync();
+        await Eventually(() => Observed.Events.Contains("room-closed:71"), "the granted room did not learn the close");
+    }
+
+    [Test]
     public void TicketsAreUnforgeableAndExpire()
     {
         byte[] secret = Encoding.UTF8.GetBytes("secret");
         var session = new SessionRef(7, 42);
-        SessionBinding[] bindings = [new(1, 100), new(2, 200)];
-        var ticket = new byte[ReconnectTicket.SizeOf(bindings.Length)];
-        ReconnectTicket.Write(ticket, secret, session, bindings, nowMs: 1000, lifetimeMs: 500);
+        SessionGrant[] grants = [new(1, 100, Bound: true), new(2, 200, Bound: false)];
+        var ticket = new byte[ReconnectTicket.SizeOf(grants.Length)];
+        ReconnectTicket.Write(ticket, secret, session, grants, nowMs: 1000, lifetimeMs: 500);
 
-        Assert.That(ReconnectTicket.TryRead(ticket, secret, 1200, out var read, out var readBindings), Is.True);
+        Assert.That(ReconnectTicket.TryRead(ticket, secret, 1200, out var read, out var readGrants), Is.True);
         Assert.That(read, Is.EqualTo(session));
-        Assert.That(ReconnectTicket.BindingCount(readBindings), Is.EqualTo(2));
-        Assert.That(ReconnectTicket.BindingAt(readBindings, 1), Is.EqualTo(bindings[1]));
+        Assert.That(ReconnectTicket.GrantCount(readGrants), Is.EqualTo(2));
+        Assert.That(ReconnectTicket.GrantAt(readGrants, 0), Is.EqualTo(grants[0]));
+        Assert.That(ReconnectTicket.GrantAt(readGrants, 1), Is.EqualTo(grants[1]));
 
         Assert.That(ReconnectTicket.TryRead(ticket, secret, 1500, out _, out _), Is.False, "expired");
         Assert.That(ReconnectTicket.TryRead(ticket, Encoding.UTF8.GetBytes("other"), 1200, out _, out _), Is.False, "another cluster");

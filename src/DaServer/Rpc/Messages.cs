@@ -88,7 +88,7 @@ public interface IMessageSender
 
 /// <summary>
 /// The gateway's session of a client closed (disconnect, kick, gateway crash). Delivered to every actor the session
-/// was bound to (<c>BindSession</c>) that handles it; for a lost connection, only once the client had
+/// was bound or granted to (<c>BindSession</c>, <c>GrantSession</c>) that handles it; for a lost connection, only once the client had
 /// <see cref="Runtime.NodeOptions.ReconnectGrace"/> to resume (and it did not).
 /// </summary>
 [NinoType, Message]
@@ -121,11 +121,28 @@ public readonly partial record struct LeaveGroup(ClientGroup Group);
 public readonly partial record struct Disconnect;
 
 /// <summary>
-/// Bind the session to an actor (<see cref="Runtime.Actor.BindSession"/>, asked so the actor resumes once it holds):
-/// the client's messages handled by actor type <see cref="HandlerType"/> reach <see cref="Key"/>; key 0 unbinds.
+/// Change what the session's client may address (<see cref="Runtime.Actor.BindSession"/>,
+/// <see cref="Runtime.Actor.GrantSession"/>, asked so the actor resumes once it holds) for actor
+/// (<see cref="HandlerType"/>, <see cref="Key"/>).
 /// </summary>
 [NinoType, Message]
-internal readonly partial record struct Bind(uint HandlerType, long Key);
+internal readonly partial record struct SessionAccess(uint HandlerType, long Key, AccessChange Change);
+
+/// <summary>What a <see cref="SessionAccess"/> changes.</summary>
+internal enum AccessChange : byte
+{
+    /// <summary>Grant the actor and make it the session's actor of its type (the target of messages naming no actor).</summary>
+    Bind,
+
+    /// <summary>The session has no actor of the type any more (its grant goes too).</summary>
+    Unbind,
+
+    /// <summary>The client may name the actor (<c>client.Send(id, ..)</c>).</summary>
+    Grant,
+
+    /// <summary>The client may not name the actor any more (a binding to it goes too).</summary>
+    Revoke,
+}
 
 /// <summary>Wire identity of message type <typeparamref name="T"/>: [WireId] or FNV-1a of its full name, computed once.</summary>
 public static class MessageType<T> where T : struct
@@ -181,7 +198,7 @@ public sealed class MessageHandlers
 }
 
 /// <summary>A message type game clients may send (<see cref="Clients.FromClientAttribute">[FromClient]</see>).</summary>
-public readonly record struct ClientMessageInfo(uint Id, Type Type, bool AnyId);
+public readonly record struct ClientMessageInfo(uint Id, Type Type);
 
 /// <summary>
 /// Process-wide registries filled by generated module initializers (no reflection scanning, no configuration): the
@@ -194,9 +211,9 @@ public static class MessageRegistry
     private static FrozenDictionary<Type, MessageHandlers> _handlerTypes = FrozenDictionary<Type, MessageHandlers>.Empty;
 
     /// <summary>Register a client message type. Idempotent per type; throws on wire-id collisions.</summary>
-    public static void RegisterClientMessage<T>(bool anyId) where T : struct
+    public static void RegisterClientMessage<T>() where T : struct
     {
-        var info = new ClientMessageInfo(MessageType<T>.Id, typeof(T), anyId);
+        var info = new ClientMessageInfo(MessageType<T>.Id, typeof(T));
         lock (Gate)
         {
             if (_clientMessages.TryGetValue(info.Id, out var existing))

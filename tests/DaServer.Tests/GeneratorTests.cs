@@ -61,7 +61,7 @@ public class GeneratorTests
             [NinoType, Message] public partial record struct Price(string Item, int Count) : IRequest<int>;
             [NinoType, Message] public partial record struct Restock(string Item);
             [NinoType, Message, FromClient] public partial record struct Move(float X, float Y);
-            [NinoType, Message, FromClient(AnyId = true)] public partial record struct Topic : IRequest<string?>;
+            [NinoType, Message, FromClient] public partial record struct Topic : IRequest<string?>;
             [NinoType, Message] public partial record struct Heal(int Hp) : IRequest<int>;
             [NinoType, Message] public partial record struct Opened;
             [NinoType, Message, ToClient] public partial record struct Shown;
@@ -96,8 +96,8 @@ public class GeneratorTests
         Assert.That(registration, Does.Contain("MessageRegistry.RegisterHandlers(typeof(global::Game.Screen)"), "client handlerType");
         Assert.That(sources, Has.Some.Contains("Ask<TAddr>(this global::DaServer.Rpc.IMessageSender sender, TAddr address, in global::Game.Heal request)"));
         Assert.That(sources, Has.Some.Contains("sender.Ask<global::Game.Topic, string?>(in request)"));
-        Assert.That(sources, Has.Some.Contains("RegisterClientMessage<global::Game.Move>(anyId: false)")
-            .And.Some.Contains("RegisterClientMessage<global::Game.Topic>(anyId: true)"));
+        Assert.That(sources, Has.Some.Contains("RegisterClientMessage<global::Game.Move>()")
+            .And.Some.Contains("RegisterClientMessage<global::Game.Topic>()"));
     }
 
     [TestCase("[NinoType, Message] public partial record struct Tick(int N); public sealed class Bad : Service { [Handle] void On(Tick e) { } }", "DAS001")]

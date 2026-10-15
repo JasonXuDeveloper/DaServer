@@ -31,7 +31,7 @@ internal sealed record HostedModel(string FullName, HostedKind Kind, EquatableAr
 internal sealed record RequestModel(string Namespace, string ClassName, string FullName, string ReplyType, bool Public);
 
 /// <summary>A <c>[FromClient]</c> message type: registered for client-facing nodes in its assembly.</summary>
-internal sealed record ClientMessageModel(string FullName, bool AnyId);
+internal sealed record ClientMessageModel(string FullName);
 
 /// <summary>
 /// Reads messages and hosted types from symbols. The single source of truth for validity: the generators call it
@@ -84,11 +84,9 @@ internal static class Shapes
     /// <summary>A <c>[FromClient]</c> message, or null (invalid ones are reported).</summary>
     public static ClientMessageModel? ReadClientMessage(INamedTypeSymbol type, Report? report = null)
     {
-        var attribute = GetAttribute(type, FromClientAttribute);
-        if (attribute == null) return null;
+        if (!HasAttribute(type, FromClientAttribute)) return null;
         if (!IsMessage(type, type.Locations.FirstOrDefault(), "[FromClient]", report)) return null;
-        bool anyId = attribute.NamedArguments.Any(a => a.Key == "AnyId" && a.Value.Value is true);
-        return new ClientMessageModel(type.ToDisplayString(Fqn), anyId);
+        return new ClientMessageModel(type.ToDisplayString(Fqn));
     }
 
     /// <summary>

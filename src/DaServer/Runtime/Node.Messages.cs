@@ -95,14 +95,15 @@ sealed partial class Node
     }
 
     /// <summary>
-    /// Bind (or unbind) a session to an actor (<see cref="Actor.BindSession"/>): a <see cref="Bind"/> asked of the session,
-    /// so it completes once the session's gateway applied it and the client's next message already reaches the actor.
+    /// Change what a session's client may address (<see cref="Actor.BindSession"/>, <see cref="Actor.GrantSession"/>):
+    /// asked of the session, so it completes once the session's node applied it and the client's next message already
+    /// reaches the actor.
     /// </summary>
-    internal ValueTask BindSession(SessionRef session, uint handlerTypeId, long key)
+    internal ValueTask ChangeAccess(SessionRef session, SessionAccess access)
     {
         var call = PendingCall<NoReply>.Rent(Shard.Current);
         var task = call.Done;
-        AskNode(MessageWriter.Write(new Bind(handlerTypeId, key)), AddressScopes.Session, MessageType<Bind>.Id,
+        AskNode(MessageWriter.Write(in access), AddressScopes.Session, MessageType<SessionAccess>.Id,
             session.GatewayNodeId, session.SessionId, call);
         return task;
     }

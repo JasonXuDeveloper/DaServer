@@ -74,7 +74,7 @@ public sealed class MessageGenerator : IIncrementalGenerator
         sb.Append($"    public static class Messages_{assembly}\n    {{\n");
         sb.Append("        [global::System.Runtime.CompilerServices.ModuleInitializer]\n        internal static void Register()\n        {\n");
         foreach (var m in messages)
-            sb.Append($"            global::DaServer.Rpc.MessageRegistry.RegisterClientMessage<{m.FullName}>(anyId: {(m.AnyId ? "true" : "false")});\n");
+            sb.Append($"            global::DaServer.Rpc.MessageRegistry.RegisterClientMessage<{m.FullName}>();\n");
         sb.Append("        }\n    }\n}\n");
         return sb.ToString();
     }

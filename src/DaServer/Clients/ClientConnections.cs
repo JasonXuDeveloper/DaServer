@@ -16,7 +16,7 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
     private Timer? _maintenance;
 
     /// <summary>A lost connection whose actors learn it at the end of the reconnect grace (unless the client resumed).</summary>
-    private readonly record struct PendingClose(SessionRef Session, SessionBinding[] Bindings);
+    private readonly record struct PendingClose(SessionRef Session, SessionGrant[] Grants);
 
     private readonly ConcurrentDictionary<long, Session> _sessions = new();
     private readonly ConcurrentDictionary<long, GroupMembers> _groups = new();
@@ -134,11 +134,11 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
     /// <summary>Messages to a client address that its node applies instead of delivering them to the client.</summary>
     private static class SessionOperations
     {
-        public static readonly uint Bind = MessageType<Bind>.Id, Join = MessageType<JoinGroup>.Id,
+        public static readonly uint Access = MessageType<SessionAccess>.Id, Join = MessageType<JoinGroup>.Id,
             Leave = MessageType<LeaveGroup>.Id, Disconnect = MessageType<Disconnect>.Id;
 
         public static bool Contains(uint messageId) =>
-            messageId == Join || messageId == Leave || messageId == Bind || messageId == Disconnect;
+            messageId == Join || messageId == Leave || messageId == Access || messageId == Disconnect;
     }
 
     private RpcStatus Apply(Session session, in FrameHeader header, ReadOnlySpan<byte> frame)
@@ -162,16 +162,45 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
         }
         else
         {
-            NinoDeserializer.Deserialize(out Bind bind, ref reader);
-            lock (_groupGate)
-            {
-                // A bound session also joins the actor's group, so Cluster.Send(actor.Group, ..) reaches it.
-                long previous = session.Bind(bind.HandlerType, bind.Key);
-                if (previous != 0 && previous != bind.Key) Leave(session, ClientGroup.Of(bind.HandlerType, previous).Id);
-                if (bind.Key != 0) Join(session, ClientGroup.Of(bind.HandlerType, bind.Key).Id);
-            }
-
+            NinoDeserializer.Deserialize(out SessionAccess access, ref reader);
+            var status = ChangeAccess(session, in access);
+            if (status != RpcStatus.Ok) return status;
             IssueTicket(session);
+        }
+
+        return RpcStatus.Ok;
+    }
+
+    /// <summary>
+    /// Apply a grant change. A granted session also joins the actor's group (so <c>Cluster.Send(actor.Group, ..)</c>
+    /// reaches it) and leaves it with the grant.
+    /// </summary>
+    private RpcStatus ChangeAccess(Session session, in SessionAccess access)
+    {
+        uint type = access.HandlerType;
+        long key = access.Key;
+        if (key == 0) return RpcStatus.Error;
+        lock (_groupGate)
+        {
+            switch (access.Change)
+            {
+                case AccessChange.Bind:
+                    long previous = session.KeyOf(type);
+                    if (previous == key) break;
+                    if (previous != 0 && session.Remove(type, previous)) Leave(session, ClientGroup.Of(type, previous).Id);
+                    if (!session.Grant(type, key, bound: true)) return RpcStatus.Overloaded;
+                    Join(session, ClientGroup.Of(type, key).Id);
+                    break;
+                case AccessChange.Grant:
+                    if (!session.Grant(type, key, bound: false)) return RpcStatus.Overloaded;
+                    Join(session, ClientGroup.Of(type, key).Id);
+                    break;
+                case AccessChange.Unbind or AccessChange.Revoke:
+                    if (session.Remove(type, key)) Leave(session, ClientGroup.Of(type, key).Id);
+                    break;
+                default:
+                    return RpcStatus.Error;
+            }
         }
 
         return RpcStatus.Ok;
@@ -230,11 +259,11 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
         }
 
         var sessionRef = new SessionRef(_node.Id, session.Id);
-        var bindings = session.Bindings;
-        if (bindings.Length == 0) return;
-        if (session.Explicit || ReconnectGrace == TimeSpan.Zero) ReportClosed(sessionRef, bindings);
+        var grants = session.Grants;
+        if (grants.Length == 0) return;
+        if (session.Explicit || ReconnectGrace == TimeSpan.Zero) ReportClosed(sessionRef, grants);
         else
-            lock (_graces) _graces.Schedule(ReconnectGrace, new PendingClose(sessionRef, bindings));
+            lock (_graces) _graces.Schedule(ReconnectGrace, new PendingClose(sessionRef, grants));
     }
 
     /// <summary>Timer thread, every 100 ms: report the lost connections whose grace ended, drop long-empty groups.</summary>
@@ -269,27 +298,27 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
     {
         public void OnTimer(in PendingClose close)
         {
-            if (!clients._stopped) clients.ReportClosed(close.Session, close.Bindings);
+            if (!clients._stopped) clients.ReportClosed(close.Session, close.Grants);
         }
     }
 
-    private void ReportClosed(SessionRef session, SessionBinding[] bindings)
+    private void ReportClosed(SessionRef session, SessionGrant[] grants)
     {
-        foreach (var binding in bindings)
-            _node.SendTo(binding.HandlerTypeId, binding.Key, new SessionClosed(session));
+        foreach (var grant in grants)
+            _node.SendTo(grant.HandlerTypeId, grant.Key, new SessionClosed(session));
     }
 
     /// <summary>How long a lost client may take to resume (the cluster's <see cref="NodeOptions.ReconnectGrace"/>) when tickets exist.</summary>
     private TimeSpan ReconnectGrace => _ticketSecret != null ? _node.Options.ReconnectGrace : TimeSpan.Zero;
 
-    /// <summary>Send the session's client a fresh reconnect ticket (after binding changes, and when the client asks).</summary>
+    /// <summary>Send the session's client a fresh reconnect ticket (after grant changes, and when the client asks).</summary>
     private void IssueTicket(Session session)
     {
-        var bindings = session.Bindings;
-        if (_ticketSecret == null || bindings.Length > ReconnectTicket.MaxBindings) return;
-        int size = ReconnectTicket.SizeOf(bindings.Length);
+        var grants = session.Grants;
+        if (_ticketSecret == null) return;
+        int size = ReconnectTicket.SizeOf(grants.Length);
         Span<byte> ticket = stackalloc byte[size];
-        ReconnectTicket.Write(ticket, _ticketSecret, new SessionRef(_node.Id, session.Id), bindings,
+        ReconnectTicket.Write(ticket, _ticketSecret, new SessionRef(_node.Id, session.Id), grants,
             DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), (long)options.TicketLifetime.TotalMilliseconds);
         var w = FrameWriter.Rent(FrameHeader.Size + size);
         w.WriteRaw(ticket);
@@ -297,35 +326,35 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
     }
 
     /// <summary>
-    /// A client that lost its connection presents its ticket on a new one: the new session takes over the bindings
-    /// (and the actors' groups), and every bound actor learns the new session (<see cref="SessionResync"/>) before the
+    /// A client that lost its connection presents its ticket on a new one: the new session takes over the grants
+    /// (and the actors' groups), and every granted actor learns the new session (<see cref="SessionResync"/>) before the
     /// client's next message, which travels behind it on the same links.
     /// </summary>
     private void ResumeSession(Session session, uint callId, ReadOnlySpan<byte> ticket)
     {
-        if (_ticketSecret == null || session.Bindings.Length != 0 ||
-            !ReconnectTicket.TryRead(ticket, _ticketSecret, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), out var previous, out var bindings))
+        if (_ticketSecret == null || session.Grants.Length != 0 ||
+            !ReconnectTicket.TryRead(ticket, _ticketSecret, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), out var previous, out var grants))
         {
             session.Sink.SendError(callId, RpcStatus.Forbidden);
             return;
         }
 
-        int count = ReconnectTicket.BindingCount(bindings);
+        int count = ReconnectTicket.GrantCount(grants);
         for (int i = 0; i < count; i++)
         {
-            var binding = ReconnectTicket.BindingAt(bindings, i);
+            var grant = ReconnectTicket.GrantAt(grants, i);
             lock (_groupGate)
             {
-                session.Bind(binding.HandlerTypeId, binding.Key);
-                Join(session, ClientGroup.Of(binding.HandlerTypeId, binding.Key).Id);
+                session.Grant(grant.HandlerTypeId, grant.Key, grant.Bound);
+                Join(session, ClientGroup.Of(grant.HandlerTypeId, grant.Key).Id);
             }
         }
 
         var current = new SessionRef(_node.Id, session.Id);
         for (int i = 0; i < count; i++)
         {
-            var binding = ReconnectTicket.BindingAt(bindings, i);
-            _node.SendTo(binding.HandlerTypeId, binding.Key, new SessionResync(current, previous));
+            var grant = ReconnectTicket.GrantAt(grants, i);
+            _node.SendTo(grant.HandlerTypeId, grant.Key, new SessionResync(current, previous));
         }
 
         IssueTicket(session);
@@ -464,8 +493,8 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
     }
 
     /// <summary>
-    /// Validate and route a client message (<see cref="Clients.FromClientAttribute">[FromClient]</see> messages only) to its handler: the actor the
-    /// client named (<see cref="Clients.FromClientAttribute.AnyId"/> messages only), else the actor of the type handling it that
+    /// Validate and route a client message (<see cref="FromClientAttribute">[FromClient]</see> messages only) to its
+    /// handler: the actor the client named (granted to the session only), else the actor of the type handling it that
     /// is bound to the session, else the service handling it. The session is the message's origin (<c>Caller</c> in the
     /// handler).
     /// </summary>
@@ -490,8 +519,8 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
         long key;
         if (named != 0)
         {
-            // The client named the actor: only for AnyId messages, and only an actor type handling the message.
-            if (!message.AnyId || !HandlesMessage(named, message.Id))
+            // The client named the actor: only one granted to its session (no actor is reached, let alone created, else).
+            if (!session.IsGranted(named, header.Key))
             {
                 if (replyId != 0) session.Sink.SendError(replyId, RpcStatus.Forbidden);
                 return;
@@ -520,18 +549,10 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
         else ingress.Ask(message.Id, handlerTypeId, key, body, origin, session.Sink, replyId, header.Budget); // the client's own timeout
     }
 
-    /// <summary>Whether actor type <paramref name="handlerTypeId"/> handles message <paramref name="messageId"/> in the cluster.</summary>
-    private bool HandlesMessage(uint handlerTypeId, uint messageId)
-    {
-        var routes = _node.View.Routes(messageId);
-        for (int i = 0; i < routes.Length; i++)
-            if (routes[i].HandlerTypeId == handlerTypeId && routes[i].Actor) return true;
-        return false;
-    }
 }
 
-/// <summary>Actor key a session is bound to for one actor handler type.</summary>
-internal readonly record struct SessionBinding(uint HandlerTypeId, long Key);
+/// <summary>An actor a session's client may name; <see cref="Bound"/>: also the session's actor of its type.</summary>
+internal readonly record struct SessionGrant(uint HandlerTypeId, long Key, bool Bound);
 
 /// <summary>A connected client on this gateway.</summary>
 internal sealed class Session(long id, IFrameChannel channel)
@@ -543,12 +564,16 @@ internal sealed class Session(long id, IFrameChannel channel)
     /// <summary>The client's message rate limit (<see cref="ClientOptions.MessagesPerSecond"/>; its receive loop owns it).</summary>
     public TokenBucket Limit;
 
-    private volatile SessionBinding[] _bindings = [];
+    /// <summary>Grants per session at most (they ride in the reconnect ticket and are scanned per named message).</summary>
+    public const int MaxGrants = 64;
+
+    private volatile SessionGrant[] _grants = [];
 
     /// <summary>
-    /// Actor keys bound by actors, one per handler type (<c>BindSession</c>): an immutable snapshot, read lock-free.
+    /// The actors the client may name (<c>GrantSession</c>), bound ones included (<c>BindSession</c>): an immutable
+    /// snapshot, read lock-free.
     /// </summary>
-    public SessionBinding[] Bindings => _bindings;
+    public SessionGrant[] Grants => _grants;
 
     /// <summary>Groups the session belongs to and its slot in each (changed under the gateway's group gate).</summary>
     public Dictionary<long, int> Groups { get; } = new();
@@ -562,38 +587,60 @@ internal sealed class Session(long id, IFrameChannel channel)
     /// <summary>Key bound for <paramref name="handlerTypeId"/>, 0 when unbound. Lock-free (client message path).</summary>
     public long KeyOf(uint handlerTypeId)
     {
-        var bindings = _bindings;
-        for (int i = 0; i < bindings.Length; i++)
-            if (bindings[i].HandlerTypeId == handlerTypeId) return bindings[i].Key;
+        var grants = _grants;
+        for (int i = 0; i < grants.Length; i++)
+            if (grants[i].HandlerTypeId == handlerTypeId && grants[i].Bound) return grants[i].Key;
         return 0;
     }
 
-    /// <summary>
-    /// Bind <paramref name="handlerTypeId"/> to <paramref name="key"/> (0 unbinds) and return the previous key.
-    /// Callers hold the gateway's group gate; the copy is published to lock-free readers by the volatile write.
-    /// </summary>
-    public long Bind(uint handlerTypeId, long key)
+    /// <summary>Whether the client may name actor (<paramref name="handlerTypeId"/>, <paramref name="key"/>). Lock-free.</summary>
+    public bool IsGranted(uint handlerTypeId, long key)
     {
-        var items = _bindings;
-        int i = 0;
-        while (i < items.Length && items[i].HandlerTypeId != handlerTypeId) i++;
-        long previous = i < items.Length ? items[i].Key : 0;
-        if (i == items.Length)
+        var grants = _grants;
+        for (int i = 0; i < grants.Length; i++)
+            if (grants[i].Key == key && grants[i].HandlerTypeId == handlerTypeId) return true;
+        return false;
+    }
+
+    /// <summary>
+    /// Grant an actor (<paramref name="bound"/>: also bind it; an existing grant is bound then); false when the session
+    /// holds <see cref="MaxGrants"/> already. Callers hold the gateway's group gate and unbind the previous actor of the
+    /// type first; the copy is published to lock-free readers by the volatile write.
+    /// </summary>
+    public bool Grant(uint handlerTypeId, long key, bool bound)
+    {
+        var items = _grants;
+        int i = IndexOf(items, handlerTypeId, key);
+        if (i < 0)
         {
-            if (key != 0) _bindings = [.. items, new SessionBinding(handlerTypeId, key)];
+            if (items.Length == MaxGrants) return false;
+            _grants = [.. items, new SessionGrant(handlerTypeId, key, bound)];
         }
-        else if (key == 0)
+        else if (bound && !items[i].Bound)
         {
-            _bindings = [.. items.AsSpan(0, i), .. items.AsSpan(i + 1)];
-        }
-        else
-        {
-            var next = (SessionBinding[])items.Clone();
-            next[i] = new SessionBinding(handlerTypeId, key);
-            _bindings = next;
+            var next = (SessionGrant[])items.Clone();
+            next[i] = items[i] with { Bound = true };
+            _grants = next;
         }
 
-        return previous;
+        return true;
+    }
+
+    /// <summary>Remove the grant (and binding) of an actor; false when it had none. Callers hold the gateway's group gate.</summary>
+    public bool Remove(uint handlerTypeId, long key)
+    {
+        var items = _grants;
+        int i = IndexOf(items, handlerTypeId, key);
+        if (i < 0) return false;
+        _grants = [.. items.AsSpan(0, i), .. items.AsSpan(i + 1)];
+        return true;
+    }
+
+    private static int IndexOf(SessionGrant[] items, uint handlerTypeId, long key)
+    {
+        for (int i = 0; i < items.Length; i++)
+            if (items[i].Key == key && items[i].HandlerTypeId == handlerTypeId) return i;
+        return -1;
     }
 }
 

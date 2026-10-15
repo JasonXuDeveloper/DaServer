@@ -69,7 +69,7 @@ public class AllocationTests : ClusterTest
         {
             var client = await Connect(gateway);
             client.Register(receiver);
-            await client.Ask(new RoomId(7), new Join());
+            await client.Ask(new Enter(new RoomId(7)));
         }
 
         var group = ClientGroup.Of(new RoomId(7)); // the room's Group
