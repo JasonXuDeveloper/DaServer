@@ -248,7 +248,7 @@ internal sealed class Membership : IDisposable
     // ------------------------------------------------------------------ wire
 
     /// <summary>Our table as pulses, written straight into a pooled frame.</summary>
-    private FrameWriter PulseFrame(uint op)
+    private FrameWriter PulseFrame()
     {
         FrameWriter w;
         Span<byte> pulse = stackalloc byte[Pulse.Size];
@@ -262,15 +262,12 @@ internal sealed class Membership : IDisposable
             }
         }
 
-        w.SetHeader(FrameKind.Control, 0, op, 0);
         return w;
     }
 
     private void SendPulses(PeerLink link)
     {
-        var w = PulseFrame(ControlOp.Gossip);
-        link.Send(w.Frame);
-        w.Dispose();
+        PulseFrame().SendControl(link, ControlOp.Gossip);
     }
 
     /// <summary>Handle a gossip control frame (IO thread). Answers go back on the same connection.</summary>
@@ -283,9 +280,7 @@ internal sealed class Membership : IDisposable
                 if (MergePulses(payload)) RequestCards(connection, payload);
                 if (op == ControlOp.Gossip)
                 {
-                    var w = PulseFrame(ControlOp.GossipReply);
-                    connection.Send(w.Frame);
-                    w.Dispose();
+                    PulseFrame().SendControl(connection, ControlOp.GossipReply);
                 }
 
                 break;
@@ -366,9 +361,7 @@ internal sealed class Membership : IDisposable
             }
         }
 
-        w.SetHeader(FrameKind.Control, 0, ControlOp.CardRequest, 0);
-        connection.Send(w.Frame);
-        w.Dispose();
+        w.SendControl(connection, ControlOp.CardRequest);
     }
 
     private void SendCards(Connection connection, ReadOnlySpan<byte> ids)
@@ -382,9 +375,7 @@ internal sealed class Membership : IDisposable
         var w = FrameWriter.Rent(1024);
         var nino = w.Nino;
         NinoSerializer.Serialize(cards.ToArray(), ref nino);
-        w.SetHeader(FrameKind.Control, 0, ControlOp.Cards, 0);
-        connection.Send(w.Frame);
-        w.Dispose();
+        w.SendControl(connection, ControlOp.Cards);
     }
 
     private void MergeCards(ClusterMember[] incoming)

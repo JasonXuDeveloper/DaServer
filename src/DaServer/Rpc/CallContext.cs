@@ -10,8 +10,23 @@ public interface IReplySink
     void SendReply(uint requestId, RpcStatus status, FrameWriter response);
 }
 
+/// <summary>A reply sink that writes the response frame to a stream of frames (a connection or a node link).</summary>
+internal interface IFrameSink : IReplySink, IFrameSender
+{
+    void IReplySink.SendReply(uint requestId, RpcStatus status, FrameWriter response)
+    {
+        response.SetHeader(FrameKind.Response, requestId, 0, 0, status);
+        Send(response.Frame);
+        response.Dispose();
+    }
+}
+
 internal static class ReplySinks
 {
+    /// <summary>Answer <paramref name="requestId"/> with an empty success.</summary>
+    public static void SendOk(this IReplySink sink, uint requestId) =>
+        sink.SendReply(requestId, RpcStatus.Ok, FrameWriter.Rent(FrameHeader.Size));
+
     /// <summary>Answer <paramref name="requestId"/> with an error <paramref name="status"/> and message.</summary>
     public static void SendError(this IReplySink sink, uint requestId, RpcStatus status, string? message)
     {

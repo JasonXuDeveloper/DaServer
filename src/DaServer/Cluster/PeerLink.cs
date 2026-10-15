@@ -13,7 +13,7 @@ namespace DaServer.Cluster;
 /// <para>The link also tracks the peer's stream to us (frames on the connection the peer opened): how much this node
 /// processed, acknowledged every <see cref="ResendWindow.ChunkSize"/> bytes and on the maintenance tick.</para>
 /// </summary>
-internal sealed class PeerLink : IReplySink, IDisposable
+internal sealed class PeerLink : IFrameSink, IDisposable
 {
     private const int MaxBacklogBytes = 64 * 1024 * 1024;
     private const int MaxConnectAttempts = 10;
@@ -43,14 +43,6 @@ internal sealed class PeerLink : IReplySink, IDisposable
         Host = host;
         Port = port;
         _window = new ResendWindow(node.Options.LinkResendWindow);
-    }
-
-    /// <summary>Reply to a request that node sent us: replies travel with everything else we send it.</summary>
-    public void SendReply(uint requestId, RpcStatus status, FrameWriter response)
-    {
-        response.SetHeader(FrameKind.Response, requestId, 0, 0, status);
-        Send(response.Frame);
-        response.Dispose();
     }
 
     public string Host { get; }
@@ -306,9 +298,7 @@ internal sealed class PeerLink : IReplySink, IDisposable
         var w = FrameWriter.Rent();
         var nino = w.Nino;
         NinoSerializer.Serialize(_node.Id, ref nino);
-        w.SetHeader(FrameKind.Control, 0, ControlOp.Resume, received);
-        connection.Send(w.Frame);
-        w.Dispose();
+        w.SendControl(connection, ControlOp.Resume, received);
     }
 
     /// <summary>A frame arrived on <paramref name="connection"/> (before it is handled; IO thread).</summary>
