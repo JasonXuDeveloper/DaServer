@@ -58,6 +58,34 @@ sealed partial class Node : IConnectionHandler
         }
     }
 
+    /// <summary>
+    /// Ask something node <paramref name="node"/> holds (a session operation): the frame (payload written) goes on the
+    /// ordered link to that node, so it arrives behind everything sent there before it. Takes ownership of
+    /// <paramref name="frame"/>.
+    /// </summary>
+    internal void AskNode(FrameWriter frame, uint scope, uint messageId, ulong node, long value, IPendingCall call)
+    {
+        PeerLink? link = node == Id ? null : LinkTo(node);
+        if (link == null && node != Id)
+        {
+            Refuse(frame, call, null, 0, RpcStatus.Disconnected);
+            return;
+        }
+
+        long timeout = (long)Options.CallTimeout.TotalMilliseconds;
+        if (!Pending.TryRegister(call, (int)timeout, out uint callId, link))
+        {
+            Refuse(frame, call, null, 0, RpcStatus.Overloaded);
+            return;
+        }
+
+        frame.SetCallId(callId);
+        frame.SetHeader(FrameKind.Message, scope, messageId, value, FrameHeader.EncodeBudget(timeout));
+        if (link == null) DeliverToAddress(scope, value, frame.Frame, _localSink);
+        else link.Send(frame.Frame);
+        frame.Dispose();
+    }
+
     /// <summary>Fail a request that cannot be sent: status-only, nothing formatted. Takes ownership of <paramref name="frame"/>.</summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static void Refuse(FrameWriter frame, IPendingCall? call, IReplySink? relaySink, uint relayCallId,

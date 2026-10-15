@@ -34,24 +34,6 @@ internal static class ControlOp
     /// <summary>Client to gateway (a call): which gateway should I use? Answer: a <see cref="GatewayEndpoint"/>.</summary>
     public const uint PickGateway = 4;
 
-    // Session operations (to the session's gateway): Key = session id, a call id when acknowledged,
-    // payload = scope (uint: actor handler type id for Bind/Unbind) + value (long: actor key or group id).
-
-    /// <summary>Gateway: bind a session to an actor (scope = handler type id, value = key).</summary>
-    public const uint Bind = 10;
-
-    /// <summary>Gateway: remove the session's binding to an actor handler type.</summary>
-    public const uint Unbind = 11;
-
-    /// <summary>Gateway: add a session to a group (payload = group id).</summary>
-    public const uint JoinGroup = 12;
-
-    /// <summary>Gateway: remove a session from a group (payload = group id).</summary>
-    public const uint LeaveGroup = 13;
-
-    /// <summary>Gateway: close a session (reported to its actors at once, no reconnect grace).</summary>
-    public const uint Disconnect = 14;
-
     // Client sessions (client and gateway): reconnect tickets (ADR-036).
 
     /// <summary>

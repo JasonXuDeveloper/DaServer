@@ -129,6 +129,29 @@ public readonly partial record struct SessionClosed(SessionRef Session);
 [NinoType, Message]
 public readonly partial record struct SessionResync(SessionRef Session, SessionRef Previous);
 
+// Session operations: messages to a client address that the node holding the session applies instead of delivering
+// them to the client. To a session (or the Caller): that session; to a client group: every member, on every node.
+// They travel on the same ordered link as the messages to the session, so what follows them sees their effect.
+
+/// <summary>Add the session (or every member of the group) to <see cref="Group"/>: <c>Cluster.Send(Caller, new JoinGroup(cell))</c>.</summary>
+[NinoType, Message(Flow.ToClient)]
+public readonly partial record struct JoinGroup(ClientGroup Group);
+
+/// <summary>Remove the session (or every member of the group) from <see cref="Group"/>.</summary>
+[NinoType, Message(Flow.ToClient)]
+public readonly partial record struct LeaveGroup(ClientGroup Group);
+
+/// <summary>Close the session (or every session of the group): its actors get <see cref="SessionClosed"/> at once, no reconnect grace.</summary>
+[NinoType, Message(Flow.ToClient)]
+public readonly partial record struct Disconnect;
+
+/// <summary>
+/// Bind the session to an actor (<see cref="Runtime.Actor.BindSession"/>, asked so the actor resumes once it holds):
+/// the client's messages handled by actor type <see cref="HandlerType"/> reach <see cref="Key"/>; key 0 unbinds.
+/// </summary>
+[NinoType, Message]
+internal readonly partial record struct Bind(uint HandlerType, long Key);
+
 /// <summary>Wire identity of message type <typeparamref name="T"/>: [WireId] or FNV-1a of its full name, computed once.</summary>
 public static class MessageType<T> where T : struct
 {

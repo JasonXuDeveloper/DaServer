@@ -345,7 +345,7 @@ public sealed class Room : Actor<RoomId>
     [Handle]
     public bool On(Join _)
     {
-        Cluster.JoinGroup(Caller, Group);
+        Cluster.Send(Caller, new JoinGroup(Group));
         return true;
     }
 

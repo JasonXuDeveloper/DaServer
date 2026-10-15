@@ -46,61 +46,17 @@ sealed partial class Node
 
     // ------------------------------------------------------------------ ICluster: sessions (any node)
 
-    public void JoinGroup(SessionRef session, ClientGroup group) => SendSessionControl(session, ControlOp.JoinGroup, 0, group.Id);
-
-    public void LeaveGroup(SessionRef session, ClientGroup group) => SendSessionControl(session, ControlOp.LeaveGroup, 0, group.Id);
-
-    public void Disconnect(SessionRef session) => SendSessionControl(session, ControlOp.Disconnect, 0, 0);
-
     /// <summary>
-    /// Bind (or unbind) a session to an actor (<see cref="Actor.BindSession"/>): completes once the session's gateway
-    /// applied it, so the client's next message already reaches the actor.
+    /// Bind (or unbind) a session to an actor (<see cref="Actor.BindSession"/>): a <see cref="Bind"/> asked of the session,
+    /// so it completes once the session's gateway applied it and the client's next message already reaches the actor.
     /// </summary>
-    internal ValueTask BindSession(SessionRef session, uint handlerTypeId, long key, bool bind)
+    internal ValueTask BindSession(SessionRef session, uint handlerTypeId, long key)
     {
-        uint op = bind ? ControlOp.Bind : ControlOp.Unbind;
-        if (session.GatewayNodeId == Id)
-        {
-            var w = SessionControl(op, 0, session.SessionId, handlerTypeId, key);
-            var status = OnSessionControl(op, session.SessionId, w.Payload);
-            w.Dispose();
-            return status == RpcStatus.Ok ? default : ValueTask.FromException(new RpcException(status));
-        }
-
-        var link = LinkTo(session.GatewayNodeId);
-        if (link == null) return ValueTask.FromException(new RpcException(RpcStatus.Disconnected));
         var call = PendingCall<NoReply>.Rent(Shard.Current);
         var task = call.Done;
-        if (!Pending.TryRegister(call, (int)Options.CallTimeout.TotalMilliseconds, out uint callId, link))
-        {
-            call.Fail(RpcStatus.Overloaded);
-            return task;
-        }
-
-        var frame = SessionControl(op, callId, session.SessionId, handlerTypeId, key);
-        link.Send(frame.Frame);
-        frame.Dispose();
+        AskNode(MessageWriter.Write(new Bind(handlerTypeId, key)), AddressScopes.Session, MessageType<Bind>.Id,
+            session.GatewayNodeId, session.SessionId, call);
         return task;
-    }
-
-    private void SendSessionControl(SessionRef session, uint op, uint scope, long value)
-    {
-        var w = SessionControl(op, 0, session.SessionId, scope, value);
-        if (session.GatewayNodeId == Id) OnSessionControl(op, session.SessionId, w.Payload);
-        else LinkTo(session.GatewayNodeId)?.Send(w.Frame);
-        w.Dispose();
-    }
-
-    /// <summary>A session control frame: Key = session id, payload = scope + value, a call id when acknowledged.</summary>
-    private static FrameWriter SessionControl(uint op, uint callId, long sessionId, uint scope, long value)
-    {
-        var w = FrameWriter.Rent(64);
-        var nino = w.Nino;
-        NinoSerializer.Serialize(scope, ref nino);
-        NinoSerializer.Serialize(value, ref nino);
-        if (callId != 0) w.SetCallId(callId);
-        w.SetHeader(FrameKind.Control, 0, op, sessionId);
-        return w;
     }
 
     /// <summary>
@@ -113,7 +69,7 @@ sealed partial class Node
         try
         {
             frame.SetHeader(FrameKind.Message, scope, messageId, value);
-            if (node == Id) DeliverToAddress(scope, value, frame.Frame);
+            if (node == Id) DeliverToAddress(scope, value, frame.Frame, null);
             else LinkTo(node)?.Send(frame.Frame);
         }
         finally
@@ -135,7 +91,7 @@ sealed partial class Node
             foreach (var member in View.UpMembers)
             {
                 if (member.ClientPort == 0 || member.Balancer) continue; // a balancer keeps no sessions
-                if (member.NodeId == Id) DeliverToGroup(value, frame.Frame);
+                if (member.NodeId == Id) DeliverToAddress(scope, value, frame.Frame, null);
                 else GetLink(member).Send(frame.Frame);
             }
         }
@@ -145,11 +101,86 @@ sealed partial class Node
         }
     }
 
-    /// <summary>A message to a session or client group of this node (from a link or sent here).</summary>
-    private void DeliverToAddress(uint scope, long value, ReadOnlySpan<byte> frame)
+    /// <summary>
+    /// A message to a session or client group of this node (from a link or sent here): delivered to the clients, or
+    /// applied when it is a session operation (answered to <paramref name="replyTo"/> when asked).
+    /// </summary>
+    private void DeliverToAddress(uint scope, long value, ReadOnlySpan<byte> frame, IReplySink? replyTo)
     {
-        if (scope == AddressScopes.Session || scope == AddressScopes.Origin) DeliverToSession(value, frame); // origins are sessions
-        else if (scope == AddressScopes.Group) DeliverToGroup(value, frame);
+        var header = FrameHeader.Read(frame);
+        bool operation = SessionOperations.Contains(header.MessageId);
+        if (scope == AddressScopes.Group)
+        {
+            if (operation) ApplyToGroup(value, in header, frame);
+            else DeliverToGroup(value, frame);
+            return;
+        }
+
+        if (!operation)
+        {
+            DeliverToSession(value, frame); // a session, or the origin of a client's message: the same here
+            return;
+        }
+
+        var status = _sessions.TryGetValue(value, out var session) ? Apply(session, in header, frame) : RpcStatus.Disconnected;
+        if (replyTo == null || !header.IsRequest) return;
+        uint callId = FrameHeader.CallIdOf(in header, frame);
+        if (status == RpcStatus.Ok) replyTo.SendOk(callId);
+        else replyTo.SendError(callId, status);
+    }
+
+    /// <summary>Messages to a client address that its node applies instead of delivering them to the client.</summary>
+    private static class SessionOperations
+    {
+        public static readonly uint Bind = MessageType<Bind>.Id, Join = MessageType<JoinGroup>.Id,
+            Leave = MessageType<LeaveGroup>.Id, Disconnect = MessageType<Disconnect>.Id;
+
+        public static bool Contains(uint messageId) =>
+            messageId == Join || messageId == Leave || messageId == Bind || messageId == Disconnect;
+    }
+
+    private RpcStatus Apply(Session session, in FrameHeader header, ReadOnlySpan<byte> frame)
+    {
+        var reader = new Reader(FrameHeader.PayloadOf(in header, frame));
+        uint id = header.MessageId;
+        if (id == SessionOperations.Join)
+        {
+            NinoDeserializer.Deserialize(out JoinGroup join, ref reader);
+            lock (_groupGate) Join(session, join.Group.Id);
+        }
+        else if (id == SessionOperations.Leave)
+        {
+            NinoDeserializer.Deserialize(out LeaveGroup leave, ref reader);
+            lock (_groupGate) Leave(session, leave.Group.Id);
+        }
+        else if (id == SessionOperations.Disconnect)
+        {
+            session.Explicit = true;
+            session.Connection.Close();
+        }
+        else
+        {
+            NinoDeserializer.Deserialize(out Bind bind, ref reader);
+            lock (_groupGate)
+            {
+                // A bound session also joins the actor's group, so Cluster.Send(actor.Group, ..) reaches it.
+                long previous = session.Bind(bind.HandlerType, bind.Key);
+                if (previous != 0 && previous != bind.Key) Leave(session, ClientGroup.Of(bind.HandlerType, previous).Id);
+                if (bind.Key != 0) Join(session, ClientGroup.Of(bind.HandlerType, bind.Key).Id);
+            }
+
+            IssueTicket(session);
+        }
+
+        return RpcStatus.Ok;
+    }
+
+    /// <summary>A session operation sent to a group: applied to each member of this node (a snapshot: it may change them).</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void ApplyToGroup(long groupId, in FrameHeader header, ReadOnlySpan<byte> frame)
+    {
+        if (!_groups.TryGetValue(groupId, out var group)) return;
+        foreach (var session in group.Snapshot()) Apply(session, in header, frame);
     }
 
     private void DeliverToSession(long sessionId, ReadOnlySpan<byte> frame)
@@ -184,61 +215,8 @@ sealed partial class Node
             case ControlOp.Cards:
                 Membership.OnGossip(connection, header.MessageId, payload);
                 break;
-            default:
-                var status = OnSessionControl(header.MessageId, header.Key, payload);
-                uint callId = FrameHeader.CallIdOf(in header, frame);
-                if (callId == 0) break;
-                if (status == RpcStatus.Ok) ConnectionReplySink.For(connection).SendOk(callId);
-                else ConnectionReplySink.For(connection).SendError(callId, status);
-                break;
+
         }
-    }
-
-    private RpcStatus OnSessionControl(uint op, long sessionId, ReadOnlySpan<byte> payload)
-    {
-        if (!_sessions.TryGetValue(sessionId, out var session)) return RpcStatus.Disconnected;
-        var reader = new Reader(payload);
-        NinoDeserializer.Deserialize(out uint scope, ref reader);
-        NinoDeserializer.Deserialize(out long value, ref reader);
-        switch (op)
-        {
-            case ControlOp.Bind:
-            {
-                // A bound session also joins the actor's group, so Cluster.Send(actor.Group, ..) reaches it.
-                lock (_groupGate)
-                {
-                    long previous = session.Bind(scope, value);
-                    if (previous != 0 && previous != value) Leave(session, ClientGroup.Of(scope, previous).Id);
-                    Join(session, ClientGroup.Of(scope, value).Id);
-                }
-
-                IssueTicket(session);
-                break;
-            }
-            case ControlOp.Unbind:
-            {
-                lock (_groupGate)
-                {
-                    long previous = session.Bind(scope, 0);
-                    if (previous != 0) Leave(session, ClientGroup.Of(scope, previous).Id);
-                }
-
-                IssueTicket(session);
-                break;
-            }
-            case ControlOp.JoinGroup:
-                lock (_groupGate) Join(session, value);
-                break;
-            case ControlOp.LeaveGroup:
-                lock (_groupGate) Leave(session, value);
-                break;
-            case ControlOp.Disconnect:
-                session.Explicit = true;
-                session.Connection.Close();
-                break;
-        }
-
-        return RpcStatus.Ok;
     }
 
     /// <summary>Add a session to a group (once). Caller holds the gate.</summary>
@@ -609,5 +587,11 @@ internal sealed class GroupMembers(long id)
             var members = _members;
             for (int i = 0; i < _count; i++) members[i].Connection.Send(frame);
         }
+    }
+
+    /// <summary>The members now (a copy: for operations that change memberships, a rare path).</summary>
+    public Session[] Snapshot()
+    {
+        lock (_gate) return _members.AsSpan(0, _count).ToArray();
     }
 }

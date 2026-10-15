@@ -157,6 +157,31 @@ public class GatewayTests : ClusterTest
     }
 
     [Test]
+    public async Task SessionOperationsSentToAGroupApplyToEveryMember()
+    {
+        // Two gateways: room 7's members on both join room 9's group, then room 9 is disconnected as a whole.
+        var gateways = new[] { await Start("gw-a", gateway: true), await Start("gw-b", gateway: true) };
+        await Converged();
+        var members = new ClusterClient[4];
+        var inboxes = new Inbox[members.Length];
+        for (int i = 0; i < members.Length; i++)
+        {
+            members[i] = await Connect(gateways[i % 2]);
+            members[i].Register(inboxes[i] = new Inbox());
+            await members[i].Ask(new RoomId(7), new Join());
+        }
+
+        var room9 = ClientGroup.Of(new RoomId(9));
+        gateways[0].Send(ClientGroup.Of(new RoomId(7)), new JoinGroup(room9));
+        await Task.Delay(200); // applied on both gateways
+        gateways[1].Send(room9, new Chat(default, "nine"));
+        await Eventually(() => inboxes.All(m => m.Chat.Contains("0:nine")), "a member did not join the group");
+
+        gateways[0].Send(room9, new Disconnect());
+        await Eventually(() => gateways.Sum(g => g.SessionCount) == 0, "the group's sessions were not closed");
+    }
+
+    [Test]
     public async Task AnOversizedClientFrameClosesTheSession()
     {
         var gateway = await Start("gw", gateway: true, configure: static o => o.MaxClientFrameSize = 1024);

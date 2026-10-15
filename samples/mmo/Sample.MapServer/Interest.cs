@@ -93,7 +93,7 @@ public struct MapGrid(MapId map) : IComponent
         foreach (int cell in Around(to, stackalloc int[9]))
         {
             if (from is { } f && Near(cell, f)) continue;
-            cluster.JoinGroup(session, grid.Viewers(cell));
+            cluster.Send(session, new JoinGroup(grid.Viewers(cell)));
             if (grid.Avatars[cell] is not { } others) continue;
             foreach (var other in others)
                 if (other != avatar) inView.Add(StateOf(other));
@@ -133,7 +133,7 @@ public sealed partial class DespawnSystem : EcsSystem
             cluster.Send(grid.Viewers(cell), new Gone(player));
             if (!entity.Has<SessionGone>())
                 foreach (int c in MapGrid.Around(cell, stackalloc int[9]))
-                    cluster.LeaveGroup(session, grid.Viewers(c));
+                    cluster.Send(session, new LeaveGroup(grid.Viewers(c)));
         }
 
         entity.Destroy();
@@ -173,7 +173,7 @@ public sealed partial class PlacementSystem : EcsSystem
 
         var cluster = world.Cluster();
         foreach (int c in MapGrid.Around(from, stackalloc int[9]))
-            if (!MapGrid.Near(c, to)) cluster.LeaveGroup(avatar.Session, grid.Viewers(c));
+            if (!MapGrid.Near(c, to)) cluster.Send(avatar.Session, new LeaveGroup(grid.Viewers(c)));
 
         MapGrid.View(ref grid, cluster, entity, avatar.Session, from, to);
     }
