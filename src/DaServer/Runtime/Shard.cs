@@ -3,7 +3,7 @@ namespace DaServer.Runtime;
 /// <summary>
 /// A single-threaded shard: one dedicated thread owning an EasyEcs <see cref="EasyEcs.World"/>, plus the lock-free
 /// dispatch queue other threads post to. Everything else is ECS: actors are entities (mailbox, turn and state components),
-/// directories and timers are singletons, and runtime systems in <see cref="ShardMessages"/> route and run messages.
+/// per-shard state (actor directory, activity) is singletons, and runtime systems in <see cref="ShardMessages"/> route and run messages.
 /// <para>Loop: on every wake the <see cref="ShardMessages"/> group runs (so messages never wait for a tick); at the
 /// tick rate the default group runs (simulation systems). User code never needs locks.</para>
 /// </summary>

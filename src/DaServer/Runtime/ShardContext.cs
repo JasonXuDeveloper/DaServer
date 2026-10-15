@@ -19,8 +19,8 @@ public static class ShardWorldExtensions
     public static long Tick(this World world) => world.Shard().TickCount;
 
     /// <summary>
-    /// The cluster: generated proxies hang off it (<c>world.Cluster().PlayerClient(group).OnMoved(..)</c>), plus session
-    /// binding and groups.
+    /// The cluster as systems see it: <c>world.Cluster().Send(mapId, new Move(..))</c>, <c>Publish</c>, pushes and
+    /// broadcasts.
     /// </summary>
     public static ICluster Cluster(this World world) => world.Shard().Node;
 }
