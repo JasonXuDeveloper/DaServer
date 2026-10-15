@@ -9,10 +9,13 @@ Messages are routed by type: a sender never names a server, so moving `Map` into
 |---|---|---|---|---|
 | [Sample.LoginServer](Sample.LoginServer) | `login` | `Account` service (stateless) | `Login` (client) | `Attach` to the player |
 | [Sample.GameServer](Sample.GameServer) | `game` | `Player` actor (id: `PlayerId`), `Realm` actor (one: `RealmId.The`), `RealmBroadcastSystem` | `Attach`; `GetInfo`, `EnterMap` (client); `PlayerOnline`, `PlayerOffline` | `Enter` / `Leave` to maps, `PlayerOnline` / `PlayerOffline` to the realm, `RealmStatus` to every client |
-| [Sample.MapServer](Sample.MapServer) | `map` | `Map` actor (id: `MapId`), movement and area-of-interest systems | `Enter`, `Leave`; `Move`, `Say` (client) | `Motion`, `Gone`, `Chat` to the clients that see the avatar |
+| [Sample.MapServer](Sample.MapServer) | `map` | `Map` actor (id: `MapId`), area-of-interest systems, `MovementSystem` (Sample.Shared) | `Enter`, `Leave`; `Move`, `Say` (client) | `Motion`, `Gone`, `Chat` to the clients that see the avatar |
 | [Sample.Gateway](Sample.Gateway) | `gateway` x3 | nothing: client sockets, session bindings, client groups, directing clients | | |
-| [Sample.Contracts](Sample.Contracts/Contracts.cs) | (library) | every message, with `[FromClient]` / `[ToClient]` where clients send or receive it | | |
-| [Sample.Bot](Sample.Bot) | `bots` | game clients (10,000 by default) | `Motion`, `Gone`, `Chat`, `RealmStatus` | `Login`, `EnterMap`, `Move`, `Say` |
+| [Sample.Contracts](Sample.Contracts/Contracts.cs) | (library) | every message, with `[FromClient]` / `[ToClient]` where clients send or receive it; the game's clock (`Timing`) | | |
+| [Sample.Shared](Sample.Shared) | (library, `<DaServerShared>`) | rules both sides run: `MovementSystem`, `MapGeometry` (the interest grid); the map server simulates with them, clients predict with them | | |
+| [Sample.Client](Sample.Client) | (library) | the game client's logic in an ECS world: a player entity, `Pushes` into components, prediction, input sent on change, the view kept to the 3x3; flows `Player.LogInAsync` / `EnterMapAsync` | `Motion`, `Gone`, `Chat`, `RealmStatus` | `Login`, `EnterMap`, `Move`, `Say` |
+| [Sample.Bot](Sample.Bot) | `bots` | the client run as a swarm of simulated players (`DaServer.Simulation`, 10,000 in the AppHost) with a planner at the controls (`Behavior`) | | |
+| [Sample.Tests](Sample.Tests) | (tests) | the shared rules and the client, without a cluster | | |
 
 `Player` and `Map` also handle `SessionClosed` / `SessionResync` when a bound session ends or resumes.
 
@@ -63,11 +66,32 @@ sequenceDiagram
     G-->>C: Motion
 ```
 
+## Bots
+
+A bot is the real client (`Sample.Client`) whose hands are a planner. `Behavior.cs` is the whole behavior:
+
+```csharp
+var d = new DomainBuilder<BotFact>();
+int wander = d.Primitive<Wandering>();                                  // a task is a component, done when removed
+int speak = d.Primitive<Speak>(requires: BotFact.ChatDue, clears: BotFact.ChatDue);
+int travel = d.Primitive<Travelling>(requires: BotFact.TravelDue, clears: BotFact.TravelDue);
+int play = d.Compound();
+d.Method(play, BotFact.TravelDue, travel, wander)                       // first method that holds wins
+    .Method(play, BotFact.ChatDue, speak, wander)
+    .Method(play, BotFact.None, wander);
+```
+
+`BotSenseSystem` writes the facts (what is due), and one system carries out each task on the client's own data:
+`WanderSystem` steers, `SpeakSystem` adds the client's `Speaking`, `TravelSystem` runs the client's
+`EnterMapAsync`. `Program.cs` starts the swarm, waits for every bot to hear the realm, measures a window and judges it:
+no gap in the realm broadcasts, no disconnect, no failed map change, p99 under the limit.
+
 ## Run it
 
 ```bash
 dotnet run --project samples/mmo/Sample.AppHost                 # dashboard, 3 gateways, 10,000 bots for 60 s
 dotnet run --project samples/mmo/Sample.AppHost -- Bots=1000    # fewer bots
+dotnet run --project samples/mmo/Sample.AppHost -- Maps=2 TravelEvery=5   # bots change maps every 5 s (the e2e test)
 aspire publish --project samples/mmo/Sample.AppHost             # Docker Compose files for the same topology
 ```
 

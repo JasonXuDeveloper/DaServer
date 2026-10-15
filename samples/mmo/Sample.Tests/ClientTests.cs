@@ -35,7 +35,7 @@ public class ClientTests
         await _client.DisposeAsync();
     }
 
-    private static Motion Motion(params Moved[] moved) => new([.. moved]);
+    private static Motion Motion(params Moved[] moved) => new(new MapId(1), [.. moved]);
 
     [Test]
     public void AvatarsInViewAreEntitiesUntilTheyAreGone()
@@ -47,7 +47,7 @@ public class ClientTests
         _world.Update(); // extrapolated between updates
         Assert.That(avatar.Get<Position>(), Is.EqualTo(new Position(161, 160)));
 
-        _pushes.On(new Gone(new PlayerId(2)));
+        _pushes.On(new Gone(new MapId(1), new PlayerId(2)));
         Assert.That(_player.Get<View>().Avatars, Is.Empty);
         Assert.That(avatar.IsAlive, Is.False);
     }

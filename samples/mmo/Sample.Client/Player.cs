@@ -7,8 +7,8 @@ namespace Sample.Client;
 
 /// <summary>
 /// A player's flows, as a game client runs them: create its entity for a connected client, log in, enter a map. Call
-/// them on the player's <see cref="ClientLoop"/> (<see cref="ClientLoop.Run{T}"/>): they touch its components after
-/// awaiting, and re-read them, never keeping a ref across an await.
+/// them on the thread of the player's world (a game's main loop; a simulated user's loop): they touch its components
+/// after awaiting, and re-read them, never keeping a ref across an await.
 /// </summary>
 public static class Player
 {
@@ -29,11 +29,34 @@ public static class Player
         return true;
     }
 
-    /// <summary>Enter <paramref name="map"/>: the bound player moves there and the map binds the session for input.</summary>
+    /// <summary>
+    /// Enter <paramref name="map"/>: the bound player moves there and the map binds the session for input. The view
+    /// starts empty and takes the new map's pushes at once (they may arrive before the reply, on another path); late
+    /// ones from the map left are dropped (<see cref="Pushes"/>).
+    /// </summary>
     public static async Task<bool> EnterMapAsync(Entity player, MapId map)
     {
-        if (!await player.Get<Link>().Client.Ask(new EnterMap(map))) return false;
+        var previous = player.Get<Me>().Map;
+        if (previous == map) return true;
+        Forget(player);
         player.Get<Me>().Map = map;
-        return true;
+        bool entered = false;
+        try
+        {
+            entered = await player.Get<Link>().Client.Ask(new EnterMap(map));
+            return entered;
+        }
+        finally
+        {
+            if (!entered && player.IsAlive && player.Get<Me>().Map == map) player.Get<Me>().Map = previous; // still there
+        }
+    }
+
+    /// <summary>Forget every avatar in view.</summary>
+    private static void Forget(Entity player)
+    {
+        var avatars = player.Get<View>().Avatars;
+        foreach (var avatar in avatars.Values) avatar.Destroy();
+        avatars.Clear();
     }
 }
