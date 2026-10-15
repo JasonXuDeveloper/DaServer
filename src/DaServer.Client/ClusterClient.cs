@@ -437,6 +437,15 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
         SendControl(FrameWriter.Rent(FrameHeader.Size), ControlOp.Ticket, null);
     }
 
+    /// <summary>Tests: the latest reconnect ticket, and resuming with any ticket (a replay).</summary>
+    internal byte[]? Ticket => Volatile.Read(ref _ticket);
+
+    internal ValueTask ResumeWith(byte[] ticket)
+    {
+        Volatile.Write(ref _ticket, ticket);
+        return ResumeAsync();
+    }
+
     /// <summary>Tests: lose the connection as a network failure would (no goodbye).</summary>
     internal void DropConnection() => _connection?.Close(new System.IO.IOException("Connection dropped"));
 

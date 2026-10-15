@@ -122,6 +122,70 @@ public class ReconnectTests : ClusterTest
         await Eventually(() => Observed.Events.Contains("room-closed:71"), "the granted room did not learn the close");
     }
 
+    /// <summary>A second client presents <paramref name="ticket"/>: the status it gets (Ok: resumed).</summary>
+    private async Task<RpcStatus> ResumeAs(Node[] gateways, byte[] ticket) => (await ResumeWith(gateways, ticket)).Status;
+
+    private async Task<(RpcStatus Status, ClusterClient Client)> ResumeWith(Node[] gateways, byte[] ticket)
+    {
+        var client = Track(new ClusterClient { AutoReconnect = false });
+        await client.ConnectAsync("127.0.0.1", gateways[1].ClientPort(), followRedirect: false);
+        try
+        {
+            await client.ResumeWith(ticket);
+            return (RpcStatus.Ok, client);
+        }
+        catch (RpcException e)
+        {
+            return (e.Status, client);
+        }
+    }
+
+    [Test]
+    public async Task ATicketResumesOnce()
+    {
+        var gateways = await StartCluster(TimeSpan.FromSeconds(5));
+        var client = await LogIn(gateways, 507);
+        var ticket = client.Ticket!;
+        var reconnected = Reconnected(client);
+        client.DropConnection();
+        await reconnected;
+
+        Assert.That(await ResumeAs(gateways, ticket), Is.EqualTo(RpcStatus.Forbidden), "a replayed ticket resumed again");
+        Assert.That(await client.Ask(new AddGold(1)), Is.EqualTo(1), "the resumed client kept its session");
+    }
+
+    [Test]
+    public async Task AWithdrawnGrantDoesNotComeBackWithAnOlderTicket()
+    {
+        var gateways = await StartCluster(TimeSpan.FromSeconds(5));
+        var client = await LogIn(gateways, 508);
+        Assert.That(await client.Ask(new Enter(new RoomId(72))), Is.True);
+        await Eventually(() => client.Ticket is { Length: > 0 } t && t.Length > ReconnectTicket.SizeOf(1), "no ticket with the room");
+        var older = client.Ticket!;
+        Assert.That(await client.Ask(new RoomId(72), new Exit()), Is.True); // the room revokes the grant
+        client.AutoReconnect = false;
+        client.DropConnection();
+
+        var (status, resumed) = await ResumeWith(gateways, older);
+        Assert.That(status, Is.EqualTo(RpcStatus.Ok), "the player binding is still held");
+        var exit = Assert.ThrowsAsync<RpcException>(async () => await resumed.Ask(new RoomId(72), new Exit()));
+        Assert.That(exit!.Status, Is.EqualTo(RpcStatus.Forbidden), "the revoked grant came back");
+        Assert.That(Observed.Events, Does.Not.Contain("room-resync:72"), "the room took a session it had revoked");
+    }
+
+    [Test]
+    public async Task NothingResumesAfterTheGrace()
+    {
+        var gateways = await StartCluster(TimeSpan.FromMilliseconds(300));
+        var client = await LogIn(gateways, 509);
+        var ticket = client.Ticket!;
+        client.AutoReconnect = false;
+        client.DropConnection();
+        await Eventually(() => Observed.Events.Contains("closed:509"), "the close was not reported");
+
+        Assert.That(await ResumeAs(gateways, ticket), Is.EqualTo(RpcStatus.Forbidden), "a closed session resumed");
+    }
+
     [Test]
     public void TicketsAreUnforgeableAndExpire()
     {

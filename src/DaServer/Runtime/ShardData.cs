@@ -77,10 +77,12 @@ internal struct ServiceCall : IComponent;
 
 /// <summary>
 /// Client sessions known to a loaded actor: those that called it or that it bound or granted. When a
-/// client-facing node dies without closing its sessions, the runtime delivers <see cref="SessionClosed"/> for them. Superseded:
-/// sessions a client resumed from (<see cref="SessionResync"/>), whose late close is not delivered.
+/// client-facing node dies without closing its sessions, the runtime delivers <see cref="SessionClosed"/> for them. Granted:
+/// the sessions it holds bound or granted now, the only ones a client may resume from (<see cref="SessionResync"/>).
+/// Superseded: sessions a client resumed from, whose late close is not delivered.
 /// </summary>
-internal readonly record struct ClientSessions(HashSet<ClientSession> Sessions, HashSet<ClientSession> Superseded) : IComponent;
+internal readonly record struct ClientSessions(
+    HashSet<ClientSession> Sessions, HashSet<ClientSession> Granted, HashSet<ClientSession> Superseded) : IComponent;
 
 // ---------------------------------------------------------------- shard singletons
 
@@ -108,7 +110,7 @@ internal readonly record struct ActorPools(
     public Queue<Envelope> RentMailbox() => Mailboxes.TryPop(out var queue) ? queue : new Queue<Envelope>();
 
     public ClientSessions RentSessions() =>
-        Sessions.TryPop(out var sessions) ? sessions : new ClientSessions(new HashSet<ClientSession>(), new HashSet<ClientSession>());
+        Sessions.TryPop(out var sessions) ? sessions : new ClientSessions(new HashSet<ClientSession>(), new HashSet<ClientSession>(), new HashSet<ClientSession>());
 
     /// <summary>Return what a removed actor held (its entity is destroyed and its mailbox drained).</summary>
     public void Return(Actor actor, Queue<Envelope> mailbox, in ClientSessions sessions, bool hasSessions)
@@ -125,6 +127,7 @@ internal readonly record struct ActorPools(
         if (hasSessions && Sessions.Count < Bound && sessions.Sessions.Count + sessions.Superseded.Count <= MaxPooledMailbox)
         {
             sessions.Sessions.Clear();
+            sessions.Granted.Clear();
             sessions.Superseded.Clear();
             Sessions.Push(sessions);
         }

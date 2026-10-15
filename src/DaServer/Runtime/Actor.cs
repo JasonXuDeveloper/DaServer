@@ -51,7 +51,7 @@ public abstract class Actor : ShardObject
 
     private ValueTask ChangeAccess(ClientSession session, AccessChange change)
     {
-        if (change is AccessChange.Bind or AccessChange.Grant) ActorSessions.Record(this, session);
+        ActorSessions.Change(this, session, change);
         return Shard.Node.ChangeAccess(session, new SessionAccess(HandlerType.Id, Key, change));
     }
 

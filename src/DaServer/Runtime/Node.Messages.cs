@@ -52,6 +52,18 @@ sealed partial class Node
         return task;
     }
 
+    /// <summary>
+    /// Ask a granted actor to accept a resumed session (<see cref="ActorSessions.Resync"/>): fails with
+    /// <see cref="RpcStatus.Forbidden"/> when the actor does not hold the previous session granted.
+    /// </summary>
+    internal ValueTask Resync(uint handlerTypeId, long key, in SessionResync resync)
+    {
+        var call = PendingCall<NoReply>.Rent(null);
+        var task = call.Done;
+        Request(MessageWriter.Write(in resync), MessageType<SessionResync>.Id, handlerTypeId, key, call, null, 0);
+        return task;
+    }
+
     /// <summary>To every service handling the message: serialized once, one frame per service type.</summary>
     public void Publish<T>(in T e) where T : struct
     {
