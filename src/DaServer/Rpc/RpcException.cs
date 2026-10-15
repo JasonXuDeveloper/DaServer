@@ -20,7 +20,7 @@ public sealed class RpcException : Exception
 
     public override string Message => Detail ?? Describe(Status);
 
-    /// <summary>The failure carried by an error response (its payload is the Nino-serialized message, if any).</summary>
+    /// <summary>The failure carried by an error reply (its payload is the Nino-serialized message, if any).</summary>
     public static RpcException FromPayload(RpcStatus status, ReadOnlySpan<byte> payload)
     {
         string? message = null;

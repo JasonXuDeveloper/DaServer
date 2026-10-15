@@ -2,8 +2,8 @@ namespace DaServer.Runtime;
 
 // Outgoing messages. To an actor: its id type names the actor type (handler type id), its value the instance; the
 // node owning that id is found by rendezvous hashing. To a service: the message id names the one service type handling
-// it (gossiped handlers in the ClusterView). Send and Publish travel as Message frames (RequestId = handler type id),
-// Ask as a Request frame (RequestId = call id; an actor request carries its handler type id as a trailer).
+// it (gossiped handlers in the ClusterView). Every message is a Message frame whose Target is the handler type id
+// (actor or service); Ask adds a call id trailer, answered by a Reply frame.
 sealed partial class Node
 {
     public void Send<TId, T>(TId id, in T message) where TId : struct, IActorId where T : struct =>
@@ -101,17 +101,28 @@ sealed partial class Node
         return handOver;
     }
 
-    /// <summary>Message frame from another node: to the shard of its handler type, or on to the right node.</summary>
-    private void OnInboundMessage(in FrameHeader header, ReadOnlySpan<byte> frame)
+    /// <summary>
+    /// Message frame from another node, by its target: a handler type goes to its shard (which forwards an actor this
+    /// node does not own), a session or client group to the gateway, anything else on to the node hosting it.
+    /// </summary>
+    private void OnInboundMessage(Connection connection, in FrameHeader header, ReadOnlySpan<byte> frame)
     {
-        var handlerType = HandlerTypeById(header.RequestId);
-        if (handlerType == null)
+        var handlerType = HandlerTypeById(header.Target);
+        if (handlerType != null)
         {
-            ForwardMessage(FrameWriter.CopyOf(frame));
-            return;
-        }
+            var copy = FrameWriter.CopyOf(frame);
+            IReplySink? sink = null;
+            if (header.IsRequest)
+            {
+                copy.Deadline = header.DeadlineOnArrival();
+                sink = ConnectionReplySink.For(connection);
+            }
 
-        Admit(SelectShard(handlerType.Id, handlerType.IsActor, header.Key), FrameWriter.CopyOf(frame), null);
+            Admit(SelectShard(handlerType.Id, handlerType.IsActor, header.Key), copy, sink);
+        }
+        else if (header.Target == AddressScopes.Session) DeliverToSession(header.Key, frame);
+        else if (header.Target == AddressScopes.Group) DeliverToGroup(header.Key, frame);
+        else Forward(FrameWriter.CopyOf(frame), header.IsRequest ? ConnectionReplySink.For(connection) : null);
     }
 
     /// <summary>
@@ -126,7 +137,7 @@ sealed partial class Node
         {
             var header = FrameHeader.Read(frame.Frame);
             if (header.Hops >= MaxHops) return;
-            if (View.TryGetHandlerTypeRoute(header.RequestId, out var route))
+            if (View.TryGetHandlerTypeRoute(header.Target, out var route))
                 handedOver = SendTo(in route, header.MessageId, header.Key, frame, (byte)(header.Hops + 1), header.Flags, handOver: true);
         }
         finally

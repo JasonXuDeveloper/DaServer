@@ -182,21 +182,14 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IAsyncDi
     /// </summary>
     private void Send(FrameWriter w, uint messageId, uint handlerTypeId, long key, IPendingCall? call)
     {
-        byte flags = 0;
-        if (handlerTypeId != 0)
-        {
-            w.WriteTarget(handlerTypeId);
-            flags = FrameFlags.ToActor;
-        }
-
         var budget = call != null ? FrameHeader.EncodeBudget((long)CallTimeout.TotalMilliseconds) : RpcStatus.Ok;
-        Transmit(w, call != null ? FrameKind.Request : FrameKind.OneWay, messageId, key, call, budget, flags);
+        Transmit(w, FrameKind.Message, handlerTypeId, messageId, key, call, budget);
     }
 
     /// <summary>A control frame to the gateway, answered when <paramref name="call"/> is set. Takes ownership of <paramref name="w"/>.</summary>
-    private void SendControl(FrameWriter w, uint op, IPendingCall? call) => Transmit(w, FrameKind.Control, op, 0, call, RpcStatus.Ok, 0);
+    private void SendControl(FrameWriter w, uint op, IPendingCall? call) => Transmit(w, FrameKind.Control, 0, op, 0, call, RpcStatus.Ok);
 
-    private void Transmit(FrameWriter w, FrameKind kind, uint messageId, long key, IPendingCall? call, RpcStatus budget, byte flags)
+    private void Transmit(FrameWriter w, FrameKind kind, uint target, uint messageId, long key, IPendingCall? call, RpcStatus budget)
     {
         var connection = _connection;
         try
@@ -207,16 +200,17 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IAsyncDi
                 return;
             }
 
-            uint requestId = 0;
-            if (call != null && !_pending.TryRegister(call, (int)CallTimeout.TotalMilliseconds, out requestId))
+            uint callId = 0;
+            if (call != null && !_pending.TryRegister(call, (int)CallTimeout.TotalMilliseconds, out callId))
             {
                 call.Fail(RpcStatus.Overloaded);
                 return;
             }
 
-            w.SetHeader(kind, requestId, messageId, key, budget, flags);
+            if (call != null) w.SetCallId(callId);
+            w.SetHeader(kind, target, messageId, key, budget);
             if (!connection.Send(w.Frame) && call != null)
-                _pending.Take(requestId)?.Fail(RpcStatus.Disconnected);
+                _pending.Take(callId)?.Fail(RpcStatus.Disconnected);
         }
         finally
         {
@@ -230,16 +224,15 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IAsyncDi
     {
         switch (header.Kind)
         {
-            case FrameKind.Response:
-                _pending.TryComplete(header.RequestId, header.Status, frame.Slice(FrameHeader.Size));
+            case FrameKind.Reply:
+                _pending.TryComplete(FrameHeader.CallIdOf(in header, frame), header.Status, FrameHeader.PayloadOf(in header, frame));
                 break;
-            case FrameKind.Push:
-            case FrameKind.Broadcast:
+            case FrameKind.Message: // to this session or one of its groups
                 if (_inbox != null) _inbox.TryEnqueue(FrameWriter.CopyOf(frame));
                 else DispatchCallback(frame);
                 break;
             case FrameKind.Control when header.MessageId == ControlOp.Ticket:
-                var ticket = frame.Slice(FrameHeader.Size);
+                var ticket = FrameHeader.PayloadOf(in header, frame);
                 long lifetime = ReconnectTicket.ExpiresMs(ticket) - ReconnectTicket.IssuedMs(ticket); // server clock: use only the span
                 // No binding (before login, after logout): nothing to resume.
                 Volatile.Write(ref _ticket, ticket.Length > ReconnectTicket.SizeOf(0) ? ticket.ToArray() : null);
@@ -323,7 +316,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IAsyncDi
     {
         var header = FrameHeader.Read(frame);
         if (!Volatile.Read(ref _handlers).TryGetValue(header.MessageId, out var handler)) return;
-        var reader = new Reader(frame.Slice(FrameHeader.Size));
+        var reader = new Reader(FrameHeader.PayloadOf(in header, frame));
         var context = default(CallContext);
         var task = handler.Dispatcher(handler.Target, ref reader, in context);
         if (task.IsCompleted) task.GetAwaiter().GetResult();

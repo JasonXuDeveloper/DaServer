@@ -2,49 +2,50 @@ using System.Threading.Tasks.Sources;
 
 namespace DaServer.Rpc;
 
-/// <summary>Where the response of an incoming request goes (a connection, the local pending table, ...).</summary>
+/// <summary>Where the reply of an incoming request goes (a connection, the local pending table, ...).</summary>
 public interface IReplySink
 {
     /// <summary>
-    /// Send <paramref name="response"/> (payload already written) as the response to <paramref name="requestId"/>.
-    /// Takes ownership of <paramref name="response"/>.
+    /// Send <paramref name="reply"/> (payload already written) as the reply to <paramref name="callId"/>.
+    /// Takes ownership of <paramref name="reply"/>.
     /// </summary>
-    void SendReply(uint requestId, RpcStatus status, FrameWriter response);
+    void SendReply(uint callId, RpcStatus status, FrameWriter reply);
 }
 
-/// <summary>A reply sink that writes the response frame to a stream of frames (a connection or a node link).</summary>
+/// <summary>A reply sink that writes the reply frame to a stream of frames (a connection or a node link).</summary>
 internal interface IFrameSink : IReplySink, IFrameSender
 {
-    void IReplySink.SendReply(uint requestId, RpcStatus status, FrameWriter response)
+    void IReplySink.SendReply(uint callId, RpcStatus status, FrameWriter reply)
     {
-        response.SetHeader(FrameKind.Response, requestId, 0, 0, status);
-        Send(response.Frame);
-        response.Dispose();
+        reply.SetCallId(callId);
+        reply.SetHeader(FrameKind.Reply, 0, 0, 0, status);
+        Send(reply.Frame);
+        reply.Dispose();
     }
 }
 
 internal static class ReplySinks
 {
-    /// <summary>Answer <paramref name="requestId"/> with an empty success.</summary>
-    public static void SendOk(this IReplySink sink, uint requestId) =>
-        sink.SendReply(requestId, RpcStatus.Ok, FrameWriter.Rent(FrameHeader.Size));
+    /// <summary>Answer <paramref name="callId"/> with an empty success.</summary>
+    public static void SendOk(this IReplySink sink, uint callId) =>
+        sink.SendReply(callId, RpcStatus.Ok, FrameWriter.Rent(FrameHeader.Size));
 
     /// <summary>
-    /// Answer <paramref name="requestId"/> with an error <paramref name="status"/>: a status-only frame (the runtime's
+    /// Answer <paramref name="callId"/> with an error <paramref name="status"/>: a status-only frame (the runtime's
     /// refusals, allocation-free), or with a <paramref name="message"/> (a handler's error).
     /// </summary>
-    public static void SendError(this IReplySink sink, uint requestId, RpcStatus status, string? message = null)
+    public static void SendError(this IReplySink sink, uint callId, RpcStatus status, string? message = null)
     {
         if (message == null)
         {
-            sink.SendReply(requestId, status, FrameWriter.Rent(FrameHeader.Size));
+            sink.SendReply(callId, status, FrameWriter.Rent(FrameHeader.Size));
             return;
         }
 
         var w = FrameWriter.Rent();
         var nino = w.Nino;
         NinoSerializer.Serialize(message, ref nino);
-        sink.SendReply(requestId, status, w);
+        sink.SendReply(callId, status, w);
     }
 }
 
@@ -57,22 +58,22 @@ public readonly struct CallContext
     [ThreadStatic] private static CallContext _current;
 
     public readonly IReplySink? Sink;
-    public readonly uint RequestId;
+    public readonly uint CallId;
 
     /// <summary>Client session that originated the call (through a gateway), or default for server-internal calls.</summary>
     public readonly SessionRef CallerSession;
 
-    public CallContext(IReplySink? sink, uint requestId, SessionRef caller)
+    public CallContext(IReplySink? sink, uint callId, SessionRef caller)
     {
         Sink = sink;
-        RequestId = requestId;
+        CallId = callId;
         CallerSession = caller;
     }
 
     /// <summary>Context of the call being dispatched on this thread (valid until the handler's first await).</summary>
     public static CallContext Current => _current;
 
-    public bool ExpectsReply => RequestId != 0 && Sink != null;
+    public bool ExpectsReply => CallId != 0 && Sink != null;
 
     /// <summary>Runtime use: set the ambient context around a dispatch.</summary>
     public static CallContext Enter(in CallContext context)
@@ -110,16 +111,16 @@ public readonly struct CallContext
         catch (Exception e)
         {
             w.Dispose();
-            ReplyError(RpcStatus.Error, "Response serialization failed: " + e.Message);
+            ReplyError(RpcStatus.Error, "Reply serialization failed: " + e.Message);
             return;
         }
 
-        Sink!.SendReply(RequestId, RpcStatus.Ok, w);
+        Sink!.SendReply(CallId, RpcStatus.Ok, w);
     }
 
     public void ReplyError(RpcStatus status, string? message)
     {
-        if (ExpectsReply) Sink!.SendError(RequestId, status, message);
+        if (ExpectsReply) Sink!.SendError(CallId, status, message);
     }
 
     public void ReplyException(Exception e)

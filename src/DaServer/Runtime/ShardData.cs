@@ -16,7 +16,7 @@ internal struct ShardRebalance : ISystemGroup;
 /// <summary>Runtime systems run a few times a second to find idle actors.</summary>
 internal struct ShardIdleScan : ISystemGroup;
 
-/// <summary>A message for an actor or service: the frame and where its response goes.</summary>
+/// <summary>A message for an actor or service: the frame and where its reply goes.</summary>
 internal readonly record struct Envelope(FrameWriter Frame, IReplySink? Sink);
 
 internal readonly record struct ActorAddress(uint HandlerTypeId, long Key);

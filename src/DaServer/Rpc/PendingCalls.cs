@@ -2,13 +2,13 @@ using System.Threading.Tasks.Sources;
 
 namespace DaServer.Rpc;
 
-/// <summary>A call waiting for its response.</summary>
+/// <summary>A call waiting for its reply.</summary>
 internal interface IPendingCall
 {
-    /// <summary>Shard of the caller: the response is completed on that shard thread (null: completed inline).</summary>
+    /// <summary>Shard of the caller: the reply is completed on that shard thread (null: completed inline).</summary>
     Shard? CallerShard { get; }
 
-    /// <summary>Complete with a response. Runs on an IO thread; payload is only valid during the call.</summary>
+    /// <summary>Complete with a reply. Runs on an IO thread; payload is only valid during the call.</summary>
     void Complete(RpcStatus status, ReadOnlySpan<byte> payload);
 
     /// <summary>
@@ -19,15 +19,15 @@ internal interface IPendingCall
 }
 
 /// <summary>
-/// Fixed-size table of in-flight calls indexed by request id. Lock-free, allocation-free.
-/// Request id = (slot generation &lt;&lt; IndexBits) | slot index, so a late response for a recycled slot
+/// Fixed-size table of in-flight calls indexed by call id. Lock-free, allocation-free.
+/// Call id = (slot generation &lt;&lt; IndexBits) | slot index, so a late reply for a recycled slot
 /// never completes the wrong call.
 /// </summary>
 internal sealed class PendingCallTable
 {
     private struct Entry
     {
-        public long Tag; // request id while active, 0 when free
+        public long Tag; // call id while active, 0 when free
         public IPendingCall? Call;
         public object? Owner;
         public long Deadline;
@@ -55,11 +55,11 @@ internal sealed class PendingCallTable
 
     /// <summary>Register <paramref name="call"/>; false when the table is full (the caller refuses it as <see cref="RpcStatus.Overloaded"/>).</summary>
     /// <param name="owner">Optional owner (e.g. the connection) for <see cref="FailOwnedBy"/>.</param>
-    public bool TryRegister(IPendingCall call, int timeoutMs, out uint requestId, object? owner = null)
+    public bool TryRegister(IPendingCall call, int timeoutMs, out uint callId, object? owner = null)
     {
         if (!_free.TryDequeue(out int index))
         {
-            requestId = 0;
+            callId = 0;
             return false;
         }
 
@@ -84,16 +84,16 @@ internal sealed class PendingCallTable
         {
         }
 
-        requestId = id;
+        callId = id;
         return true;
     }
 
-    /// <summary>Remove and return the call registered under <paramref name="requestId"/>, or null.</summary>
-    public IPendingCall? Take(uint requestId)
+    /// <summary>Remove and return the call registered under <paramref name="callId"/>, or null.</summary>
+    public IPendingCall? Take(uint callId)
     {
-        int index = (int)(requestId & _indexMask);
+        int index = (int)(callId & _indexMask);
         ref var e = ref _entries[index];
-        if (Interlocked.CompareExchange(ref e.Tag, 0, requestId) != requestId)
+        if (Interlocked.CompareExchange(ref e.Tag, 0, callId) != callId)
             return null;
 
         var call = e.Call;
@@ -103,9 +103,9 @@ internal sealed class PendingCallTable
         return call;
     }
 
-    public bool TryComplete(uint requestId, RpcStatus status, ReadOnlySpan<byte> payload)
+    public bool TryComplete(uint callId, RpcStatus status, ReadOnlySpan<byte> payload)
     {
-        var call = Take(requestId);
+        var call = Take(callId);
         if (call == null)
             return false; // timed out / already completed
 
@@ -170,7 +170,7 @@ internal readonly struct NoReply;
 /// Pooled, allocation-free awaitable for an in-flight call returning <typeparamref name="T"/> (<see cref="Task"/>), or
 /// nothing (<see cref="Done"/>, with <see cref="NoReply"/>).
 /// <para>Completion threading: when the caller is a shard thread (<see cref="CallerShard"/> set at creation) the
-/// runtime completes the call <b>on that shard thread</b> (the response is posted to the shard's mailbox), so the
+/// runtime completes the call <b>on that shard thread</b> (the reply is posted to the shard's mailbox), so the
 /// continuation runs inline there: no SynchronizationContext.Post, no thread-pool hop, no allocation. Callers outside
 /// a shard (tests, tools, the game client) get their continuation on the thread pool, queued as this object itself
 /// (<see cref="IThreadPoolWorkItem"/>), so that path allocates nothing either.</para>

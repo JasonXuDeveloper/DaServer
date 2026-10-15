@@ -72,17 +72,17 @@ public class InfrastructureTests
         Span<byte> buffer = stackalloc byte[FrameHeader.Size];
         var h = new FrameHeader
         {
-            Length = 1234, Kind = FrameKind.Request, Status = RpcStatus.Forbidden, Hops = 2, Flags = FrameFlags.HasCaller,
-            RequestId = 0xDEADBEEF, MessageId = 0x12345678, Key = -42,
+            Length = 1234, Kind = FrameKind.Message, Status = RpcStatus.Forbidden, Hops = 2, Flags = FrameFlags.HasCaller,
+            Target = 0xDEADBEEF, MessageId = 0x12345678, Key = -42,
         };
         h.Write(buffer);
         var r = FrameHeader.Read(buffer);
         Assert.That(r.Length, Is.EqualTo(1234));
-        Assert.That(r.Kind, Is.EqualTo(FrameKind.Request));
+        Assert.That(r.Kind, Is.EqualTo(FrameKind.Message));
         Assert.That(r.Status, Is.EqualTo(RpcStatus.Forbidden));
         Assert.That(r.Hops, Is.EqualTo(2));
         Assert.That(r.Flags, Is.EqualTo(FrameFlags.HasCaller));
-        Assert.That(r.RequestId, Is.EqualTo(0xDEADBEEF));
+        Assert.That(r.Target, Is.EqualTo(0xDEADBEEF));
         Assert.That(r.MessageId, Is.EqualTo(0x12345678));
         Assert.That(r.Key, Is.EqualTo(-42));
     }
@@ -93,12 +93,39 @@ public class InfrastructureTests
         using var w = FrameWriter.Rent(32);
         var nino = w.Nino;
         Nino.Core.NinoSerializer.Serialize(new string('x', 5000), ref nino);
-        w.SetHeader(FrameKind.OneWay, 0, 7, 9);
+        w.SetHeader(FrameKind.Message, 0, 7, 9);
         var header = FrameHeader.Read(w.Frame);
         Assert.That(header.Length, Is.EqualTo(w.Length));
         var reader = new Nino.Core.Reader(w.Payload);
         Nino.Core.NinoDeserializer.Deserialize(out string text, ref reader);
         Assert.That(text, Has.Length.EqualTo(5000));
+    }
+
+    [Test]
+    public void CallIdsAreTrailersRewrittenPerHop()
+    {
+        using var w = FrameWriter.Rent();
+        var nino = w.Nino;
+        Nino.Core.NinoSerializer.Serialize(new Add(5), ref nino);
+        int payload = w.Payload.Length;
+        w.SetCallId(41);
+        w.SetHeader(FrameKind.Message, 3, MessageType<Add>.Id, 9, flags: FrameFlags.HasCaller);
+        var header = FrameHeader.Read(w.Frame);
+        Assert.That(header.IsRequest, Is.True);
+        Assert.That(header.Flags, Is.EqualTo(FrameFlags.HasCall | FrameFlags.HasCaller));
+        Assert.That(FrameHeader.CallIdOf(in header, w.Frame), Is.EqualTo(41));
+        Assert.That(FrameHeader.PayloadOf(in header, w.Frame).Length, Is.EqualTo(payload), "the trailer is not payload");
+
+        // A relaying hop copies the frame and rewrites the call id in place: the frame does not grow.
+        using var relayed = FrameWriter.CopyOf(w.Frame);
+        relayed.SetCallId(77);
+        relayed.SetHeader(FrameKind.Message, 3, MessageType<Add>.Id, 9, hops: 1);
+        Assert.That(relayed.Length, Is.EqualTo(w.Length));
+        Assert.That(relayed.CallId, Is.EqualTo(77));
+        Assert.That(relayed.Payload.SequenceEqual(w.Payload), Is.True);
+        var reader = new Nino.Core.Reader(relayed.Payload);
+        Nino.Core.NinoDeserializer.Deserialize(out Add add, ref reader);
+        Assert.That(add.Delta, Is.EqualTo(5));
     }
 
     [Test]
