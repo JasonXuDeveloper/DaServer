@@ -108,7 +108,11 @@ Steady state allocates nothing: per message, call, reply, tick, broadcast, conne
       listener), L6 foreign awaits (a closure per await in a foreign UI-style context). H1 comes with N3b, H4 with N8,
       M2/M3/L2 with G step 6, M5/L3 with G step 8.
 - [ ] Z3 Prove it: an allocation test per hot path the audit finds uncovered (0 B per operation after warm-up) and
-      BenchmarkDotNet A/B (time and allocated) against the baseline (G step 0).
+      BenchmarkDotNet A/B (time and allocated) against the baseline (G step 0). Scenario benchmarks to add: a hot
+      actor (many concurrent callers on one key: the flash-sale shape), a burst beyond the mailbox and dispatch
+      bounds (refusal cost and time to drain), a dense area-of-interest cell (broadcast to one crowded cell). Surges
+      over time (p99, refusals, recovery) are load tests: `Sample.Bot` for crowded maps, the G5 HTTP load generator
+      for flash sales.
 - [ ] Z4 Keep it: CLAUDE.md rule plus analyzer coverage where a misuse is detectable in user code (e.g.
       `TaskCompletionSource`/`Task.Delay` in handlers and systems: use pooled framework awaitables and `SendAfter`).
 
@@ -179,7 +183,10 @@ Step plan (each step builds and keeps every test green; logic, docs, CI in separ
    Done: `ClientConnections` feature enabled by `DaServer:Clients` (`ClientOptions`), generic card entries and pulse
    slots (`ClusterMember` keeps no client fields), the actor side in `ActorSessions` with dispatch filters (ADR-050),
    the directory instead of the balancer role (`PickNode`, `GET /clients/endpoint`, `Redirect`, client entry
-   addresses; ADR-026). Left:
+   addresses; ADR-026), M2 (group objects pooled, empty groups removed lazily by the feature's 100 ms timer: group
+   churn allocates nothing), M3 (reconnect graces on a `TimerWheel`), a per-session rate limit
+   (`ClientOptions.MessagesPerSecond`/`Burst`, refusals with a retry hint). L2 kept: a binding change copies the
+   session's small bindings array (a login or map change, not per message). Left:
    transports (TCP on `DaServer.Net`; WebSocket through the HTTP plane in `DaServer.Hosting`), sessions, bindings,
    `GroupMembers` (M2 pool), address handlers for `SessionRef` and `ClientGroup` (fan-out to the nodes advertising
    the scope), resume tickets on `SignedToken` and grace timers on the timer wheel (M3), `BoundSessions` + filters for
