@@ -82,7 +82,7 @@ Everything a developer declares is one of these. The message type alone decides 
 | `Cluster.Ask(key, new M())` / `Send(key, ...)` | The actor of `key` of the one actor type handling `M` (one per cluster, on demand, turn-based). |
 | `Cluster.Ask(new M())` / `Send(...)` | The one service handling `M` (load-balanced, local first). |
 | `Cluster.Publish(key, e)` / `Publish(e)` | Every actor type handling `e` at that key / every service handling it, once each. |
-| `Cluster.Send(session, m)` / `Send(group, m)` | A client session / a client group (pushes; clients handle them with `[Handle]` too). |
+| `Cluster.Push(session, m)` / `Broadcast(group, m)` | A client session / a client group (pushes; clients handle them with `[Handle]` too). |
 
 | Element | Responsibility | Never |
 |---|---|---|
@@ -171,7 +171,7 @@ public sealed class Map : Actor<MapState>
         State.Avatars[CallerSession].Get<Velocity>() = new(m.VelocityX, m.VelocityY);
 
     [Handle]
-    public void On(Say m) => Cluster.Send(Group, new Chat(PlayerOf(CallerSession), m.Text));
+    public void On(Say m) => Cluster.Broadcast(Group, new Chat(PlayerOf(CallerSession), m.Text));
 }
 
 // ...and systems do the per-tick work, one responsibility each.
@@ -186,7 +186,7 @@ public sealed partial class RealmBroadcastSystem : EcsSystem        // every 5 t
     static void Broadcast(ref RealmState realm, World world)
     {
         if (++realm.Tick % 5 == 0)
-            world.Cluster().Send(ClientGroup.All, new RealmStatus(realm.Tick, realm.Online.Count, DateTime.UtcNow.Ticks));
+            world.Cluster().Broadcast(ClientGroup.All, new RealmStatus(world.Tick(), realm.Online.Count, DateTime.UtcNow.Ticks));
     }
 }
 

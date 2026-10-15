@@ -281,6 +281,17 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
 - Consequences: simple and ordered with binds (ADR-022). Revisit when deployments run tens of gateways with small
   groups; the roadmap keeps the item.
 
+## ADR-041 One verb per target
+- Context: `Send` meant four things by the type of its first argument: an actor (`Send(key, m)`), a service
+  (`Send(m)`), a client session (`Send(session, m)`) and a client group (`Send(group, m)`). A call site did not say
+  whether it reached servers or clients.
+- Decision: `Send`/`Ask` reach actors and services, `Publish` every handler, `Push(session, m)` one client session and
+  `Broadcast(group, m)` a client group. DAS006 checks `Flow.ToClient` on `Push`/`Broadcast` by name.
+- Alternatives: putting the actor key inside the message (the old `[ActorKey]`, removed by ADR-035) or typed addresses
+  (`Cluster.Actor(key).Send(m)`), which couple a sender to its receiver. `[NinoType, Message]` stays a pair: the Nino
+  generator only recognizes its own attribute, not a derived one.
+- Consequences: the target of every call is visible at the call site, and the verbs line up with `Flow`.
+
 ## ADR-040 One noun per concept
 - Context: "link" meant both a node-to-node connection (`PeerLink`) and the component pointing an entity at its actor
   (`ActorLink`); "implementation" named the actor or service type handling a message; the lifecycle mixed load/unload
