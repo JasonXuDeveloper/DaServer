@@ -73,8 +73,7 @@ Everything a developer declares is one of these. The message type alone decides 
 | Declaration | Meaning |
 |---|---|
 | `[NinoType, Message] partial record struct M` | A message between servers (actors and services on any node). |
-| `[Message, FromClient]` | Game clients may send it too. To an actor, it goes to the actor bound to the session. |
-| `[Message, FromClient(AnyId = true)]` | To an actor, the client chooses the id (public rooms). |
+| `[Message, FromClient]` | Game clients may send it too. To an actor, it goes to the actor bound to the session, or to the actor the client names if that actor granted the session (`GrantSession`). |
 | `[Message, ToClient]` | Servers push it to client sessions and groups; clients handle it. |
 | `[NinoType] partial record struct D` | Data inside messages (fields, replies), never sent on its own. Anything crossing the wire is `[NinoType]`. |
 | `... : IRequest<TReply>` | A request: answered with one `TReply`. |
@@ -97,11 +96,13 @@ Everything a developer declares is one of these. The message type alone decides 
 
 Business code reaches the cluster through `ICluster`: `Cluster` in actors and services, `world.Cluster()` in systems.
 `Caller` is who sent the running turn's message from outside the cluster, a client session (valid across its awaits;
-`Cluster.Send(Caller, m)` answers it, `BindSession(Caller)` binds it).
+`Cluster.Send(Caller, m)` answers it, `BindSession(Caller)` binds it, `GrantSession(Caller)` admits it).
 
 The runtime owns client sessions: an actor's `await BindSession(session)` routes the client's messages for that actor
-type to its id and puts the session in the actor's `Group`; when the session closes (or its gateway crashes),
-every actor it was bound to receives `SessionClosed`. A client that loses its connection reconnects on its own and
+type to its id and puts the session in the actor's `Group`; `await GrantSession(session)` lets the client name the
+actor (`client.Send(roomId, new Say(..))`: a room admitting a player) and puts it in the `Group` too. A client can
+name no other actor: anything else is refused at the edge. When the session closes (or its gateway crashes), every
+actor it was bound or granted to receives `SessionClosed`. A client that loses its connection reconnects on its own and
 resumes the session with a signed ticket: its actors receive `SessionResync` (send the full state again) instead, and
 `SessionClosed` only if it does not come back within 30 s.
 
