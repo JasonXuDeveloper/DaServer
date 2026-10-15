@@ -34,6 +34,27 @@ public interface IGroupAddress : IAddress
 }
 
 /// <summary>
+/// Who sent a message from outside the cluster: the node whose ingress let it in and its id there (today a client
+/// session on its gateway). Read in handlers as <c>Caller</c> (default for messages sent inside the cluster), and an
+/// address: <c>Cluster.Send(Caller, m)</c> reaches it (<c>Flow.ToClient</c> messages).
+/// </summary>
+[Nino.Core.NinoType]
+public readonly partial record struct Origin(ulong Node, long Id) : INodeAddress
+{
+    /// <summary>Bytes of an origin trailer.</summary>
+    internal const int Size = sizeof(ulong) + sizeof(long);
+
+    /// <summary>False for messages that started inside the cluster (a system, a timer, a server call).</summary>
+    public bool IsValid => Id != 0;
+
+    ulong INodeAddress.Node => Node;
+
+    long INodeAddress.Value => Id;
+
+    public override string ToString() => $"Origin({Node:x}:{Id})";
+}
+
+/// <summary>
 /// Address of a client session: the gateway node that holds the socket plus the session id on that gateway.
 /// Serializable, so actors can store it in components and message the client later (<c>Cluster.Send(session, m)</c>).
 /// </summary>
@@ -41,6 +62,9 @@ public interface IGroupAddress : IAddress
 public readonly partial record struct SessionRef(ulong GatewayNodeId, long SessionId) : INodeAddress
 {
     public bool IsValid => SessionId != 0;
+
+    /// <summary>The session a client message came from (<c>BindSession(Caller)</c>, a component field).</summary>
+    public static implicit operator SessionRef(Origin origin) => new(origin.Node, origin.Id);
 
     ulong INodeAddress.Node => GatewayNodeId;
 
@@ -89,6 +113,7 @@ public readonly partial record struct ClientGroup(long Id) : IGroupAddress
 internal static class AddressScopes
 {
     public static readonly uint Session = TypeId<SessionRef>.Value;
+    public static readonly uint Origin = TypeId<Origin>.Value;
     public static readonly uint Group = TypeId<ClientGroup>.Value;
 }
 

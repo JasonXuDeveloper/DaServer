@@ -57,23 +57,25 @@ public readonly struct CallContext
 {
     [ThreadStatic] private static CallContext _current;
 
-    public readonly IReplySink? Sink;
+    /// <summary>Where the reply goes (null for one-way messages).</summary>
+    public readonly IReplySink? ReplyTo;
+
     public readonly uint CallId;
 
-    /// <summary>Client session that originated the call (through a gateway), or default for server-internal calls.</summary>
-    public readonly SessionRef CallerSession;
+    /// <summary>Who sent the message from outside the cluster (a client session), or default for messages sent inside it.</summary>
+    public readonly Origin Origin;
 
-    public CallContext(IReplySink? sink, uint callId, SessionRef caller)
+    public CallContext(IReplySink? replyTo, uint callId, Origin origin)
     {
-        Sink = sink;
+        ReplyTo = replyTo;
         CallId = callId;
-        CallerSession = caller;
+        Origin = origin;
     }
 
     /// <summary>Context of the call being dispatched on this thread (valid until the handler's first await).</summary>
     public static CallContext Current => _current;
 
-    public bool ExpectsReply => CallId != 0 && Sink != null;
+    public bool ExpectsReply => CallId != 0 && ReplyTo != null;
 
     /// <summary>Runtime use: set the ambient context around a dispatch.</summary>
     public static CallContext Enter(in CallContext context)
@@ -115,12 +117,12 @@ public readonly struct CallContext
             return;
         }
 
-        Sink!.SendReply(CallId, RpcStatus.Ok, w);
+        ReplyTo!.SendReply(CallId, RpcStatus.Ok, w);
     }
 
     public void ReplyError(RpcStatus status, string? message)
     {
-        if (ExpectsReply) Sink!.SendError(CallId, status, message);
+        if (ExpectsReply) ReplyTo!.SendError(CallId, status, message);
     }
 
     public void ReplyException(Exception e)

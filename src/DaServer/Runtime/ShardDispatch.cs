@@ -6,9 +6,6 @@ namespace DaServer.Runtime;
 /// </summary>
 internal static class ShardDispatch
 {
-    /// <summary>Serialized size of a <see cref="SessionRef"/> caller prefix.</summary>
-    internal static readonly int SessionRefSize = NinoSerializer.Serialize(default(SessionRef)).Length;
-
     /// <summary>
     /// Route a received message (one-way or request): services run immediately; actor messages go to the owner's
     /// mailbox (loading it on first use) or are forwarded when another node owns the key. Takes ownership of
@@ -131,20 +128,11 @@ internal static class ShardDispatch
 
             var header = FrameHeader.Read(frame.Frame);
             uint callId = frame.CallId;
-            var payload = frame.Payload;
-            var caller = default(SessionRef);
-            if ((header.Flags & FrameFlags.HasCaller) != 0)
-            {
-                var callerReader = new Reader(payload);
-                NinoDeserializer.Deserialize(out caller, ref callerReader);
-                payload = payload.Slice(SessionRefSize);
-            }
-
-            var context = new CallContext(sink, callId, caller);
+            var context = new CallContext(sink, callId, frame.Origin);
             var previous = CallContext.Enter(in context);
             try
             {
-                var reader = new Reader(payload);
+                var reader = new Reader(frame.Payload);
                 var task = dispatcher(target, ref reader, in context);
                 if (!task.IsCompleted) return task;
                 task.GetAwaiter().GetResult();
@@ -192,10 +180,9 @@ internal static class ShardDispatch
             }
         }
         else if (header.MessageId == MessageType<SessionResync>.Id) ResyncSession(actor, envelope.Frame.Payload);
-        else if ((header.Flags & FrameFlags.HasCaller) != 0)
+        else if ((header.Flags & FrameFlags.HasOrigin) != 0)
         {
-            var reader = new Reader(envelope.Frame.Payload);
-            NinoDeserializer.Deserialize(out actor.TurnCaller, ref reader);
+            actor.TurnCaller = envelope.Frame.Origin;
             RecordSession(actor, actor.TurnCaller);
         }
 
@@ -228,7 +215,7 @@ internal static class ShardDispatch
         return true;
     }
 
-    /// <summary>The resumed session replaces the previous one; it is the session of the turn (<c>CallerSession</c>).</summary>
+    /// <summary>The resumed session replaces the previous one; it is the caller of the turn (<c>Caller</c>).</summary>
     private static void ResyncSession(Actor actor, ReadOnlySpan<byte> payload)
     {
         var reader = new Reader(payload);
@@ -237,7 +224,7 @@ internal static class ShardDispatch
         sessions.Sessions.Remove(resync.Previous);
         sessions.Superseded.Add(resync.Previous); // removed when its late SessionClosed arrives or its gateway dies
         sessions.Sessions.Add(resync.Session);
-        actor.TurnCaller = resync.Session;
+        actor.TurnCaller = new Origin(resync.Session.GatewayNodeId, resync.Session.SessionId);
     }
 
     /// <summary>

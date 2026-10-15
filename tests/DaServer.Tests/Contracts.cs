@@ -296,13 +296,13 @@ public sealed class AuthService : Service
 {
     [Handle]
     public async ValueTask<bool> On(Login m) =>
-        CallerSession.IsValid && m.Player.Value > 0 && await Cluster.Ask(m.Player, new Attach(CallerSession));
+        Caller.IsValid && m.Player.Value > 0 && await Cluster.Ask(m.Player, new Attach(Caller));
 
     [Handle]
     public ValueTask<bool> On(LoginAfterPushes m)
     {
         var text = new string('x', 2048); // 4 KB (UTF-16)
-        for (int i = 0; i < m.Pushes; i++) Cluster.Send(CallerSession, new Chat(default, text));
+        for (int i = 0; i < m.Pushes; i++) Cluster.Send(Caller, new Chat(default, text));
         return On(new Login(m.Player));
     }
 }
@@ -321,7 +321,7 @@ public sealed class Player : Actor<PlayerId, Wallet>
     [Handle]
     public async ValueTask<bool> On(Logout _)
     {
-        await UnbindSession(CallerSession);
+        await UnbindSession(Caller);
         return true;
     }
 
@@ -329,7 +329,7 @@ public sealed class Player : Actor<PlayerId, Wallet>
     public int On(AddGold m)
     {
         int gold = State.Gold += m.Amount;
-        if (CallerSession.IsValid) Cluster.Send(CallerSession, new GoldChanged(gold)); // push to the calling client
+        if (Caller.IsValid) Cluster.Send(Caller, new GoldChanged(gold)); // push to the calling client
         return gold;
     }
 
@@ -345,7 +345,7 @@ public sealed class Room : Actor<RoomId>
     [Handle]
     public bool On(Join _)
     {
-        Cluster.JoinGroup(CallerSession, Group);
+        Cluster.JoinGroup(Caller, Group);
         return true;
     }
 

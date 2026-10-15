@@ -48,8 +48,8 @@ public sealed class Player : Actor<PlayerId, PlayerState>
     {
         var previous = State.Map;
         if (previous == m.Map) return true;
-        if (previous != default) await Cluster.Ask(previous, new Leave(CallerSession));
-        await Cluster.Ask(m.Map, new Enter(Id, CallerSession)); // CallerSession holds for the whole turn
+        if (previous != default) await Cluster.Ask(previous, new Leave(Caller));
+        await Cluster.Ask(m.Map, new Enter(Id, Caller)); // Caller holds for the whole turn
         State.Map = m.Map;
         return true;
     }

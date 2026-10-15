@@ -141,7 +141,8 @@ sealed partial class Node
 
             Admit(SelectShard(handlerType.Id, handlerType.IsActor, header.Key), copy, sink);
         }
-        else if (header.Target == AddressScopes.Session || header.Target == AddressScopes.Group) DeliverToAddress(header.Target, header.Key, frame);
+        else if (header.Target == AddressScopes.Session || header.Target == AddressScopes.Origin || header.Target == AddressScopes.Group)
+            DeliverToAddress(header.Target, header.Key, frame);
         else Forward(FrameWriter.CopyOf(frame), header.IsRequest ? ConnectionReplySink.For(connection) : null);
     }
 

@@ -78,14 +78,14 @@ public sealed class Map : Actor<MapId, MapState>
     public void On(Move m)
     {
         // Input is data: MovementSystem integrates it, MotionSyncSystem tells the avatar's viewers.
-        if (!State.Avatars.TryGetValue(CallerSession, out var avatar)) return;
+        if (!State.Avatars.TryGetValue(Caller, out var avatar)) return;
         avatar.Get<Velocity>() = new Velocity(Math.Clamp(m.VelocityX, -MaxSpeed, MaxSpeed), Math.Clamp(m.VelocityY, -MaxSpeed, MaxSpeed));
     }
 
     [Handle]
     public void On(Say m)
     {
-        if (m.Text.Length <= MaxChatLength && State.Avatars.TryGetValue(CallerSession, out var avatar))
+        if (m.Text.Length <= MaxChatLength && State.Avatars.TryGetValue(Caller, out var avatar))
             Cluster.Send(Group, new Chat(avatar.Get<Avatar>().Player, m.Text));
     }
 

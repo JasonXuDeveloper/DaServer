@@ -104,7 +104,8 @@ sealed partial class Node
     }
 
     /// <summary>
-    /// A message (payload written) to something node <paramref name="node"/> holds: today a client session. Takes
+    /// A message (payload written) to something node <paramref name="node"/> holds: today a client session (by its
+    /// <see cref="SessionRef"/> or the <see cref="Origin"/> of its messages). Takes
     /// ownership of <paramref name="frame"/>.
     /// </summary>
     private void SendToNode(FrameWriter frame, uint scope, uint messageId, ulong node, long value)
@@ -147,7 +148,7 @@ sealed partial class Node
     /// <summary>A message to a session or client group of this node (from a link or sent here).</summary>
     private void DeliverToAddress(uint scope, long value, ReadOnlySpan<byte> frame)
     {
-        if (scope == AddressScopes.Session) DeliverToSession(value, frame);
+        if (scope == AddressScopes.Session || scope == AddressScopes.Origin) DeliverToSession(value, frame); // origins are sessions
         else if (scope == AddressScopes.Group) DeliverToGroup(value, frame);
     }
 
@@ -431,8 +432,8 @@ sealed partial class Node
     /// <summary>
     /// Validate and route a client message (<see cref="Flow.FromClient"/> messages only) to its handler: the actor the
     /// client named (<see cref="MessageAttribute.AnyId"/> messages only), else the actor of the type handling it that
-    /// is bound to the session, else the service handling it. The caller session is prepended for the handler
-    /// (<c>CallerSession</c>).
+    /// is bound to the session, else the service handling it. The session is the message's origin (<c>Caller</c> in the
+    /// handler).
     /// </summary>
     private void OnClientMessage(Session session, in FrameHeader header, ReadOnlySpan<byte> frame)
     {
@@ -472,18 +473,18 @@ sealed partial class Node
             (handlerTypeId, key) = (0, 0); // a service; Request/SendMessage answer NotHosted / drop when there is none
         }
 
-        var w = FrameWriter.Rent(frame.Length + 32);
-        var nino = w.Nino;
-        NinoSerializer.Serialize(new SessionRef(Id, session.Id), ref nino);
+        // The payload is copied as is; the origin is this gateway's session, whatever the client wrote.
+        var w = FrameWriter.Rent(FrameHeader.Size + body.Length + Origin.Size + sizeof(uint));
         w.WriteRaw(body);
+        w.SetOrigin(new Origin(Id, session.Id));
         if (replyId == 0)
         {
-            SendMessage(w, message.Id, handlerTypeId, key, FrameFlags.HasCaller);
+            SendMessage(w, message.Id, handlerTypeId, key);
             return;
         }
 
         w.Deadline = header.DeadlineOnArrival(); // the client's own timeout, when it sent one
-        Request(w, message.Id, handlerTypeId, key, null, session.Sink, replyId, flags: FrameFlags.HasCaller);
+        Request(w, message.Id, handlerTypeId, key, null, session.Sink, replyId);
     }
 
     /// <summary>Whether actor type <paramref name="handlerTypeId"/> handles message <paramref name="messageId"/> in the cluster.</summary>
