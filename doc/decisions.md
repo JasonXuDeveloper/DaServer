@@ -251,6 +251,10 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
 - Consequences: memory is bounded under any load; overload is visible to callers and in metrics. Pausing a link's
   receive while its target is full (true backpressure across nodes) is on the roadmap.
 
+- Rejected follow-up: pausing a node link's receive while a target shard is full (TCP backpressure). The link from B
+  to A also carries replies to A's own calls; pausing it stalls those turns until their timeouts, which can block
+  the very shard that is full. Refusing early is cheaper and visible to the caller.
+
 ## ADR-028 Request deadlines travel as a budget
 - Context: a caller that timed out still had its request run (and possibly relayed further) after it gave up, so a
   backlog kept doing work nobody waited for and recovery after a spike took longer than the spike.
@@ -272,6 +276,27 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
   ordering cases on gateway loss, and it only pays when there are many gateways and groups live on few of them.
 - Consequences: simple and ordered with binds (ADR-022). Revisit when deployments run tens of gateways with small
   groups; the roadmap keeps the item.
+
+## ADR-034 One write per connection per batch
+- Context: a connection's send loop woke on the first queued message, so a session in the 9 interest cells around a
+  player got up to 9 writes per update. Profiling the 10k-in-one-map scenario put a third of gateway time in send
+  loops (socket writes), against 4% in the fan-out copy.
+- Decision: `Connection.BeginSendBatch` (thread-local, nestable) defers send-loop wakes to the end of the batch. The
+  receive loop batches the frames of one receive buffer; a shard batches one wake (messages and tick).
+- Alternatives: a timed flush (adds latency to every message); shared reference-counted payloads with gather writes
+  (saves the copy, which profiling showed is not the cost).
+- Consequences: one write per connection per batch, no added latency beyond the batch itself, no allocation. 10k in
+  one map: gateway CPU 13-14% -> 11-12%, kernel time 30% -> 20%, p99 139 -> 106 ms.
+
+## ADR-033 Actors unload when idle, by their own declaration
+- Context: actors stayed loaded until their key moved, so actors used now and then (offline players, finished
+  matches) held memory forever.
+- Decision: `Actor.UnloadAfterIdle` (default zero: never). Actors that set it get an `UnloadWhenIdle` component; an
+  `IdleSystem` scans only those, ten times a second, and unloads the ones without mail for that long through the same
+  path as rebalancing (`OnUnload` as the last turn; mail arriving meanwhile loads the actor again). The mailbox records
+  when the actor last took mail.
+- Alternatives: a node-wide timeout (would unload maps and realms that are busy in systems but receive no mail).
+- Consequences: one store per ready actor on the mailbox path; RPC benchmark unchanged.
 
 ## ADR-032 Names from the distributed-server vocabulary
 - Context: several public names were borrowed from one framework (Orleans' `OnActivateAsync`) or described a mechanism

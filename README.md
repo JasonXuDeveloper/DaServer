@@ -211,7 +211,7 @@ cluster.AddNodes<Projects.Sample_Game>("game");                             // P
 cluster.AddGateways<Projects.Sample_Gateway>("gateway", replicas: 3);       // client sockets, no business code
 var balancer = cluster.AddBalancer<Projects.Sample_Gateway>("balancer");    // the one address clients know
 
-builder.AddProject<Projects.Sample_Bot>("bots").WithGateways(balancer).WithArgs("10000", "60", "200", "1", "0");
+builder.AddProject<Projects.Sample_Bot>("bots").WithGateways(balancer).WithArgs("10000", "60", "1", "1", "0");
 builder.Build().Run();
 ```
 
@@ -229,26 +229,30 @@ Measured on one 4-core VM (servers, bots and the kernel share it), Release build
 **10k-player scenario** ([Sample.AppHost](samples/Sample.AppHost), [Sample.Bot](samples/Sample.Bot)): a login
 node, a game node, 3 gateways and a balancer (the AppHost's topology, here as plain processes without telemetry).
 10,000 bots connect through the balancer, log in and enter a map; the realm broadcasts its status to every session
-every 5 ticks (20 ticks/s). Two input loads, 60 s measured window each:
+every 5 ticks (20 ticks/s). Three loads, 60 s measured window each:
 
-- **Moving** (the AppHost default): 200 maps of 50 players, every bot changes direction once a second, every position
-  change goes to the whole map each tick (one snapshot message per map per tick). No strings on the wire.
-- **Chatting**: 100 maps of 100 players, one chat message every 10 s per bot, sent to the map.
+- **One map** (the AppHost default): all 10,000 players in one map on one game node, each changing direction once a
+  second. Area of interest (the sample's `Interest.cs`): a 20x20 grid, each cell a client group, each player sees the
+  3x3 cells around it; updates carry velocity and go out when it changes (dead reckoning), every other tick.
+- **Many maps, full sync**: 200 maps of 50 players, every position of the map to every player every tick.
+- **Chatting**: 100 maps of 100 players, one chat line every 10 s per bot, sent to the map.
 
-| | Moving | Chatting |
-|---|---|---|
-| Realm broadcasts delivered (every bot every one, in order) | 2,400,000 | 2,400,000 |
-| Map traffic delivered to clients | ~10,000,000 positions/s | ~100,000 chat lines/s |
-| Broadcast latency (game system to bot callback) | p50 42.8 ms, p99 138.6 ms | p50 35.1 ms, p99 57.2 ms |
-| Game node | 2–3% CPU, 0–3 KB/s allocated | 2% CPU, ~32 KB/s (the chat strings it receives) |
-| Each gateway (~3,300 sessions) | 12–15% CPU, 0–2 KB/s allocated | 5–6% CPU, 0–7 KB/s allocated |
-| Login, balancer | 1% CPU, 0 KB/s | 1–2% CPU, 0 KB/s |
-| GCs on servers, disconnects, gaps | 0 | 0 |
+| | One map (AOI) | Many maps, full sync | Chatting |
+|---|---|---|---|
+| Realm broadcasts delivered (every bot every one, in order) | 2,400,000 | 2,400,000 | 2,400,000 |
+| Map traffic delivered to clients | ~2,500,000 positions/s | ~10,000,000 positions/s | ~100,000 lines/s |
+| Broadcast latency (game system to bot callback) | p50 46 ms, p99 106 ms | p50 43 ms, p99 139 ms | p50 35 ms, p99 57 ms |
+| Game node | 3% CPU, 0–5 KB/s allocated | 2–3% CPU, 0–3 KB/s | 2% CPU, ~32 KB/s (chat strings) |
+| Each gateway (~3,300 sessions) | 11–12% CPU, 0 KB/s | 12–15% CPU, 0–2 KB/s | 5–6% CPU, 0–7 KB/s |
+| GCs on servers, disconnects, gaps | 0 | 0 | 0 |
 
-(CPU is the share of all 4 cores; with Aspire's OTLP telemetry on, the exporter adds ~55 KB/s per node.) Latency is
-dominated by the bot process: while moving, the one bot process receiving 10M positions/s and the kernel's loopback
-take 90% of the machine. With 100 players per map (20M positions/s) the bots fall behind (p99 ~330 ms) while the
-servers still stay under 20% CPU each.
+(CPU is the share of all 4 cores; login and balancer stay at 1% and 0 KB/s; with Aspire's OTLP telemetry on, the
+exporter adds ~55 KB/s per node.) The bot process and the kernel's loopback use most of the machine, so latency is
+mostly theirs. Without area of interest, 10,000 players in one map is a bandwidth problem, not a CPU one: every
+position to everyone each tick is 10,000 x 10,000 x 20 = 2 billion entries a second (~40 GB/s); even with dead
+reckoning, every turn to everyone is 100 million entries (~2.4 GB/s) a second. On this machine both overflow the
+clients (the per-session send bound then disconnects them or, below it, memory grows to the bound) while the game
+node stays under 10% CPU.
 
 **Scale-out**: start 3,000 bots on 2 gateways (1,508 / 1,492 sessions), start a third gateway process with only a seed
 address, then 3,000 more bots: the balancer learns of it through gossip and sends it 1,961 of them (2,017 / 2,022 /
