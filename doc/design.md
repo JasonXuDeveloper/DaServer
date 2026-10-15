@@ -98,8 +98,7 @@ and enters the activation's mailbox, so it is turn-based. A service handler runs
   - `OneWay`: a client's one-way message to its gateway
   - `Push` (one session) / `Broadcast` (a group of sessions)
   - `Control` (gossip, session binding, groups, kick)
-  - `Ping` / `Pong`
-- Gateways route client frames by patching header fields and prepending the caller session. They never deserialize
+- Gateways route client frames with a new header and the caller session prepended to the payload. They never deserialize
   payloads.
 
 ## 3. Performance model (zero GC)
