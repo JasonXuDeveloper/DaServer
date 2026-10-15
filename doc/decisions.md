@@ -3,13 +3,14 @@
 Short records of non-obvious decisions, each stating the decision that holds now. Numbers are stable (gaps are
 records that no longer hold). Each: context → decision → consequences.
 
-## ADR-001 .NET 10 only, single runtime assembly
-- Context: supporting netstandard (Unity) and the server from shared sources duplicates code paths with `#if` and
-  rules out the APIs the hot paths need.
-- Decision: target `net10.0` only; one runtime assembly `DaServer` (server + client), plus `DaServer.Generator`,
-  `DaServer.Hosting` and `DaServer.Aspire`.
-- Consequences: use .NET 10 APIs freely (`Lock`, frozen collections, POH, `PoolingAsyncValueTaskMethodBuilder`,
-  C# 14). Clients on other runtimes (Unity) need a separate client package.
+## ADR-001 The server runs on the newest .NET; shared code also builds for netstandard2.1
+- Context: the hot paths need the newest runtime and its APIs, while contracts and the client SDK must run in Unity
+  (netstandard2.1) and on the previous .NET.
+- Decision: the server runtime (`DaServer`, `DaServer.Hosting`, `DaServer.Aspire`) targets one framework, the newest
+  .NET (ADR-054); what clients share (`DaServer.Abstractions`, `DaServer.Core`, `DaServer.Client`, ADR-052) also
+  builds for netstandard2.1 and the previous .NET, with the newer APIs behind `Platform` and internal polyfills.
+- Consequences: the server uses the newest APIs freely (`Lock`, frozen collections, POH, C# preview); shared code
+  pays a few `#if NET` lines, never a second implementation.
 
 ## ADR-002 Shards: single-threaded shards with a dispatch queue, not a thread-pool actor runtime
 - Context: a thread-pool actor runtime (as in a studied game server) resumes continuations on pool threads and funnels many
@@ -561,7 +562,7 @@ records that no longer hold). Each: context → decision → consequences.
   surges, belong at the CDN/SaaS edge to protect origins, and compose from the ingress primitives plus a queue actor
   (shown in `samples/flashsale`).
 - Consequences: dedicated client-facing nodes may carry high request volume (the actor interior stays zero-GC;
-  ADR-046). Abstractions and the client SDK cannot use net10-only language or runtime features. Redirect mode needs
+  ADR-046). Abstractions and the client SDK use newer runtime features only behind netstandard2.1 fallbacks (ADR-001). Redirect mode needs
   a public address per client-facing node; behind-LB mode leaves long connections unbalanced after a scale-out until
   clients reconnect.
 
@@ -630,17 +631,17 @@ records that no longer hold). Each: context → decision → consequences.
 - Decision: as Orleans (Core.Abstractions / Core / Client / Server), gRPC (Core.Api / Net.Common / Net.Client /
   AspNetCore.Server) and MagicOnion (Abstractions / Shared / Client / Server) do, four layers, each depending only on
   the one below:
-  - `DaServer.Abstractions` (netstandard2.1 + net10, namespace `DaServer`: one using in a contract file): what
+  - `DaServer.Abstractions` (netstandard2.1, net10.0, net11.0; namespace `DaServer`: one using in a contract file): what
     contract assemblies reference: `[Message]`, `[Handle]`,
     `[FromClient]`/`[ToClient]`, `[WireId]`, `IRequest`, addresses (`IActorId`, `ClientSession`, `ClientGroup`,
     `Origin`), `IMessageSender`, session messages, wire ids, the client message registry and generated-registration
     support.
-  - `DaServer.Core` (netstandard2.1 + net10): the wire and transport both sides run: `FrameHeader`/`RpcStatus`/
+  - `DaServer.Core` (netstandard2.1, net10.0, net11.0): the wire and transport both sides run: `FrameHeader`/`RpcStatus`/
     `ControlOp`, `FrameWriter`/`BufferPool`, `Connection`/`WebSocketChannel`, pending calls (`CompletionThread`: a thread
     that completes its own calls, a shard on servers), `CallContext`, `RpcException`, handler dispatch,
     `SignedToken`.
-  - `DaServer.Client` (netstandard2.1 + net10): `ClusterClient`.
-  - `DaServer` (net10): the server runtime (shards, actors, services, cluster, ingress, client connections), plus
+  - `DaServer.Client` (netstandard2.1, net10.0, net11.0): `ClusterClient`.
+  - `DaServer` (net11.0, ADR-054): the server runtime (shards, actors, services, cluster, ingress, client connections), plus
     `DaServer.Hosting` and `DaServer.Aspire`.
   The generator and analyzers ship with Abstractions, so every assembly using DaServer gets them. Newer BCL APIs are
   used on .NET and replaced on netstandard2.1 (`Platform`, internal polyfills of `Lock` and `FrozenDictionary`), so
@@ -675,4 +676,21 @@ records that no longer hold). Each: context → decision → consequences.
 - Consequences: a lost client is noticed within 45 s by its node and 30 s by itself (seconds with
   `CheckConnection`), a stuck link within a few seconds; idle connections exchange 24-byte frames every interval,
   which also keeps NAT and load balancer mappings open. Node timeouts must stay a few client intervals apart.
+
+## ADR-054 The server runtime targets .NET 11
+- Context: .NET 11 (STS, supported to about November 2028, the same horizon as .NET 10 LTS) is at RC2 with a go-live
+  license; GA is November 2026. Its gains are in the runtime (JIT, threading, the BCL's own async), so they were
+  measured, not assumed: the same code and BenchmarkDotNet suite hosted on each runtime, back to back on one machine.
+- Measured (.NET 10 -> .NET 11): calls with 1 / 64 / 1,024 in flight, local 25.0 -> 19.8 us, 515 -> 223 us,
+  4.50 -> 1.65 ms; remote 103 -> 101 us, 379 -> 335 us, 2.22 -> 1.66 ms; one-way messages local 1.93 us -> 641 ns,
+  remote 1.57 us -> 975 ns; the 3k/9k client scenario 14.0 -> 13.4 ms and 48.3 -> 45.6 ms; group broadcasts to
+  1k/5k clients 3-8% slower (5.09 -> 5.25 ms ... 27.8 -> 30.1 ms); allocations equal.
+- Decision: `DaServer`, `DaServer.Hosting`, `DaServer.Aspire`, the samples' nodes, tests and benchmarks target
+  `net11.0`; the shared packages add `net11.0` beside netstandard2.1 and net10.0 (ADR-001). `global.json` pins the 11.0
+  SDK (RC2 until GA, then the GA band); CI installs it from there. Runtime async (`runtime-async=on`) stays off until
+  measured on its own: the framework's hot paths have no async methods (pooled `IValueTaskSource`s).
+- Alternatives: stay on .NET 10 LTS (gives up 2x on concurrent calls); multi-target the server (doubles build and test
+  time for users who all deploy one runtime).
+- Consequences: servers need the .NET 11 runtime (x86-64-v2 or newer); BenchmarkDotNet 0.16 (preview) hosts .NET 11.
+  Broadcast fan-out is the one path that did not gain: profile it on .NET 11 (roadmap).
 

@@ -1,6 +1,6 @@
 # DaServer
 
-A general-purpose ECS distributed server framework for .NET 10, built for high performance and high concurrency: any
+A general-purpose ECS distributed server framework for .NET 11, built for high performance and high concurrency: any
 backend made of stateful entities (actors) and stateless services, spread over many nodes. The core knows no
 application scenario; an MMO cluster (login, gateways, game server, map servers) is one sample built on it
 ([samples/mmo](samples/mmo)).

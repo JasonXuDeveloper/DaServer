@@ -159,9 +159,9 @@ Step plan (each step builds and keeps every test green; logic, docs, CI in separ
    (`MessageFilters.Register<T>` / `Register(IMessageFilter)`, run by generated dispatchers; N11 generates into
    them), the HTTP plane minimum (generated entry point on `WebApplication`, Kestrel on `DaServer:HttpPort`,
    `MapAsk`/`MapSend` through the ingress, statuses to 429/503/504/403 with `Retry-After`, `DaServer-Budget` header;
-   one origin id space per node for sessions and HTTP requests); client connections use them. Left for step 6 with
-   the client feature: feature options bound from `DaServer:{Section}` and enabled by configuration, metrics
-   registration (pulse slots and card entries are done with step 6). The plan:
+   one origin id space per node for sessions and HTTP requests); client connections use them. Done since: feature
+   options bound from `DaServer:{name}` and enabled by configuration (`AddDaServerFeature`), metrics registration
+   (`INodeContext.AddGauge`), pulse slots and card entries. The plan:
    - `NodeFeature`: Configure, ConfigureShard(World), Start(INodeContext), OnViewChanged, OnMemberDead,
      `Drain(deadline)`, Stop(crashed), a readiness contribution, metrics registration; options bound from
      `DaServer:{Section}`; enabled by configuration.
@@ -202,7 +202,7 @@ Step plan (each step builds and keeps every test green; logic, docs, CI in separ
 7. Done: attributes `[FromClient]` / `[ToClient]` replace `Flow` on `[Message]`; `AnyId` is replaced by grants
    (ADR-051): `GrantSession`/`RevokeSession` admit a session to an actor, the edge refuses any other named actor.
 8. Packages (ADR-052), done: `DaServer.Abstractions` (contracts) ← `DaServer.Core` (shared wire and transport) ←
-   `DaServer.Client` / `DaServer` (server runtime); the first three build for netstandard2.1 + net10 and
+   `DaServer.Client` / `DaServer` (server runtime); the first three build for netstandard2.1, net10.0 and net11.0, and
    `samples/mmo/Sample.Contracts` builds for both. Generators split by output (ADR-012): `AskGenerator`,
    `RegistrationGenerator` (static-constructor registration, IL2CPP-safe), `EntryPointGenerator`,
    `PolyfillGenerator`. M5: call tables allocate slots in doubling chunks as calls in flight reach them
@@ -213,6 +213,8 @@ Step plan (each step builds and keeps every test green; logic, docs, CI in separ
    (`DaServer__ClientEndpoints__{i}`) replace `AddGateways`/`WithGateways`.
 8a. Names, done: `ClientSession(Node, Id)` (was `SessionRef(GatewayNodeId, SessionId)`), `NodeOptions.SigningSecret`
    (was `ClusterSecret`), contract types in the root `DaServer` namespace, `HandlerRegistry`; `ClusterClient` kept.
+8d. .NET 11 (ADR-054), done: the server runtime targets net11.0 (calls 2-2.7x faster under concurrency, messages
+   1.6-3x); open: profile group broadcasts on .NET 11 (3-8% slower there), measure `runtime-async=on`.
 8c. Generator cost, done (`GeneratorBenchmark`: 1,000 messages, 250 handler types, 5,000 call sites): symbol checks
    compare names in place instead of display strings, requests and handlers are found through the compiler's
    attribute index (`ForAttributeWithMetadataName`), a handler type is read once: full run 48.5 -> 36.0 ms
