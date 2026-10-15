@@ -73,7 +73,7 @@ internal sealed partial class Node : ICluster, IAsyncDisposable
         int shardCount = Math.Max(1, Options.Shards);
         _shards = new Shard[shardCount];
         for (int i = 0; i < shardCount; i++)
-            _shards[i] = new Shard(this, i, Options.ShardInboxCapacity, Options.TickRate);
+            _shards[i] = new Shard(this, i, Options.DispatchQueueCapacity, Options.TickRate);
         foreach (var shard in _shards) shard.Start();
 
         StartGateway();
@@ -201,7 +201,7 @@ internal sealed partial class Node : ICluster, IAsyncDisposable
     /// <summary>Messages waiting in all shard mailboxes (approximate, for metrics and load reporting).</summary>
     public int TotalQueueLength() => (int)Sum(static s => s.QueueLength);
 
-    /// <summary>Calls and events refused by full shard inboxes or actor mailboxes since start (backpressure).</summary>
+    /// <summary>Calls and events refused by full shard dispatch queues or actor mailboxes since start (backpressure).</summary>
     public long Rejected => Sum(static s => s.Rejected);
 
     /// <summary>Requests dropped unrun since start because their caller had already timed out.</summary>

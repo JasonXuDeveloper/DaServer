@@ -1,11 +1,12 @@
 namespace DaServer.Runtime;
 
 /// <summary>
-/// Drains the shard's cross-thread inbox: routes received frames (to service instances or actor mailboxes), completes
-/// this shard's outgoing calls, runs posted callbacks (await continuations) and tags ended turns (<see cref="TurnEnded"/>).
+/// Drains the shard's dispatch queue, which other threads post to: routes received frames (to service instances or actor
+/// mailboxes), completes this shard's outgoing calls, runs posted callbacks (await continuations) and tags ended turns
+/// (<see cref="TurnEnded"/>). <see cref="MailboxSystem"/> then runs the mail, one turn per actor.
 /// </summary>
 [UpdateInGroup<ShardMessages>]
-internal sealed class InboxSystem : EcsSystem
+internal sealed class DispatchSystem : EcsSystem
 {
     /// <summary>Upper bound per wake, so timers and the tick stay on time under a flood.</summary>
     private const int Budget = 4096;

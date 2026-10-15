@@ -2,7 +2,7 @@ namespace DaServer.Runtime;
 
 /// <summary>
 /// Turns the completion of a <see cref="Turn"/>'s task into data: its continuation posts the watcher to the shard,
-/// whose inbox tags the entity <see cref="TurnEnded"/>. Nothing polls running turns. Pooled per shard
+/// whose dispatch queue tags the entity <see cref="TurnEnded"/>. Nothing polls running turns. Pooled per shard
 /// (<see cref="TurnWatchers"/>); the continuation delegate is created once per watcher, so watching allocates nothing.
 /// </summary>
 internal sealed class TurnWatcher
@@ -33,7 +33,7 @@ internal sealed class TurnWatcher
         task.ConfigureAwait(false).GetAwaiter().UnsafeOnCompleted(watcher._completed);
     }
 
-    /// <summary>Inbox side (shard thread): mark the turn ended and return the watcher to the pool.</summary>
+    /// <summary>Dispatch side (shard thread): mark the turn ended and return the watcher to the pool.</summary>
     public void Ended(World world)
     {
         var entity = Entity;
