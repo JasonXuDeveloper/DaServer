@@ -2,7 +2,7 @@ namespace DaServer.Runtime;
 
 /// <summary>
 /// What business code (actors, services) can reach: the shard's ECS world and the cluster. Everything here is used
-/// from the shard thread only. The shard itself (its thread, inbox, callbacks) is not exposed: code that ran outside a
+/// from the shard thread only. The shard itself (its thread, dispatch queue, callbacks) is not exposed: code that ran outside a
 /// turn could interleave with an actor's awaiting turn. Time-based logic is ECS: a component with a due tick and a
 /// system comparing it to <see cref="ShardWorldExtensions.Tick"/>.
 /// </summary>

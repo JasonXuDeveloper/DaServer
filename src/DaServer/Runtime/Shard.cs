@@ -2,7 +2,7 @@ namespace DaServer.Runtime;
 
 /// <summary>
 /// A single-threaded shard: one dedicated thread owning an EasyEcs <see cref="EasyEcs.World"/>, plus the lock-free
-/// inbox other threads post to. Everything else is ECS: actors are entities (mailbox, turn and state components),
+/// dispatch queue other threads post to. Everything else is ECS: actors are entities (mailbox, turn and state components),
 /// directories and timers are singletons, and runtime systems in <see cref="ShardMessages"/> route and run messages.
 /// <para>Loop: on every wake the <see cref="ShardMessages"/> group runs (so messages never wait for a tick); at the
 /// tick rate the default group runs (simulation systems). User code never needs locks.</para>
@@ -11,7 +11,7 @@ internal sealed class Shard
 {
     [ThreadStatic] private static Shard? _current;
 
-    private readonly MpmcQueue<WorkItem> _inbox;
+    private readonly MpmcQueue<WorkItem> _dispatchQueue;
     private readonly ConcurrentQueue<WorkItem> _overflow = new(); // completions and callbacks when the ring is full
     private int _overflowCount;
     private readonly int _admitLimit;
@@ -26,12 +26,12 @@ internal sealed class Shard
     private const long IdleScanMs = 100;
     private int _actorCount;
 
-    internal Shard(Node node, int index, int mailboxCapacity, int tickRate)
+    internal Shard(Node node, int index, int dispatchQueueCapacity, int tickRate)
     {
         Node = node;
         Index = index;
-        _inbox = new MpmcQueue<WorkItem>(mailboxCapacity);
-        _admitLimit = mailboxCapacity;
+        _dispatchQueue = new MpmcQueue<WorkItem>(dispatchQueueCapacity);
+        _admitLimit = dispatchQueueCapacity;
         _tickInterval = Stopwatch.Frequency / Math.Max(1, tickRate);
         World = new World();
         _thread = new Thread(Run) { IsBackground = true, Name = $"{node.Options.Name}-shard-{index}" };
@@ -51,8 +51,8 @@ internal sealed class Shard
     /// <summary>Number of completed ticks.</summary>
     public long TickCount { get; private set; }
 
-    /// <summary>Work items waiting in the inbox (approximate, any thread).</summary>
-    public int QueueLength => _inbox.Count + Volatile.Read(ref _overflowCount);
+    /// <summary>Work items waiting in the dispatch queue (approximate, any thread).</summary>
+    public int QueueLength => _dispatchQueue.Count + Volatile.Read(ref _overflowCount);
 
     /// <summary>Calls and events refused because the shard or an actor mailbox was full (any thread).</summary>
     public long Rejected => Interlocked.Read(ref _rejected);
@@ -69,7 +69,7 @@ internal sealed class Shard
     internal void Start() => _thread.Start();
 
     /// <summary>
-    /// Thread-safe: admit a new call or event unless the inbox holds <see cref="NodeOptions.ShardInboxCapacity"/> items.
+    /// Thread-safe: admit a new call or event unless the dispatch queue holds <see cref="NodeOptions.DispatchQueueCapacity"/> items.
     /// New work is bounded so a flood cannot grow memory without limit; completions and callbacks (<see cref="Post"/>)
     /// always get in, because they finish work already admitted and are bounded by the calls in flight.
     /// </summary>
@@ -92,7 +92,7 @@ internal sealed class Shard
     /// <summary>Thread-safe: enqueue work and wake the shard if it is sleeping.</summary>
     internal void Post(in WorkItem item)
     {
-        if (!_inbox.TryEnqueue(item))
+        if (!_dispatchQueue.TryEnqueue(item))
         {
             _overflow.Enqueue(item);
             Interlocked.Increment(ref _overflowCount);
@@ -123,10 +123,10 @@ internal sealed class Shard
         _wake.Set();
     }
 
-    /// <summary>Inbox consumer (shard thread only, used by <see cref="InboxSystem"/>).</summary>
+    /// <summary>Dispatch queue consumer (shard thread only, used by <see cref="DispatchSystem"/>).</summary>
     internal bool TryTake(out WorkItem item)
     {
-        if (_inbox.TryDequeue(out item)) return true;
+        if (_dispatchQueue.TryDequeue(out item)) return true;
         if (Volatile.Read(ref _overflowCount) == 0 || !_overflow.TryDequeue(out item)) return false;
         Interlocked.Decrement(ref _overflowCount);
         return true;
@@ -221,7 +221,7 @@ internal sealed class Shard
 
         World.AddSingleton<ServiceDirectory>() = new ServiceDirectory(services);
 
-        World.AddSystem<InboxSystem>();
+        World.AddSystem<DispatchSystem>();
         World.AddSystem<TurnSystem>();
         World.AddSystem<MailboxSystem>();
         World.AddSystem<ServiceCallSystem>();
@@ -232,7 +232,7 @@ internal sealed class Shard
         foreach (var info in Node.HostedSystems) World.AddSystem(info.Factory());
     }
 
-    /// <summary>Stopping: every actor removed, no service call running, nothing left in the inbox.</summary>
+    /// <summary>Stopping: every actor removed, no service call running, nothing left in the dispatch queue.</summary>
     private bool IsDrained() =>
         World.GetSingleton<ActorDirectory>().Actors.Count == 0 &&
         !World.Any<ServiceCall>() &&

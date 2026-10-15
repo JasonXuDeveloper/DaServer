@@ -47,10 +47,10 @@ public sealed class NodeOptions
     public int TickRate { get; set; } = 20;
 
     /// <summary>
-    /// Calls and events waiting in a shard's inbox before new ones are refused with <see cref="Protocol.RpcStatus.Overloaded"/>
+    /// Calls and events waiting in a shard's dispatch queue before new ones are refused with <see cref="Protocol.RpcStatus.Overloaded"/>
     /// (one-way calls and messages are dropped).
     /// </summary>
-    public int ShardInboxCapacity { get; set; } = 64 * 1024;
+    public int DispatchQueueCapacity { get; set; } = 64 * 1024;
 
     /// <summary>Messages waiting for one actor before new ones are refused the same way.</summary>
     public int ActorMailboxCapacity { get; set; } = 4096;
