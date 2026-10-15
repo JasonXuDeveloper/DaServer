@@ -15,8 +15,8 @@ records that no longer hold). Each: context → decision → consequences.
 - Context: a thread-pool actor runtime (as in RandomGame) resumes continuations on pool threads and funnels many
   producers into queues built for one, which needs locks or careful ownership in user code.
 - Decision: each node runs N shards (default one per core), each a dedicated thread owning an EasyEcs `World`, a
-  bounded lock-free MPMC dispatch queue (new calls beyond its capacity are refused, ADR-027; completions and callbacks
-  always get in) and a fixed tick. Actors and service instances live in exactly one shard.
+  bounded lock-free MPMC dispatch queue for new calls and messages (refused beyond its capacity, ADR-027), a second
+  one for completions, callbacks and turn ends (never refused, drained first) and a fixed tick. Actors and service instances live in exactly one shard.
 - Consequences: no locks in user code; deterministic ordering per shard; messages are processed immediately (tick rate
   only drives systems). ECS systems are synchronous (EasyEcs 4); a handler that awaits suspends only its actor
   (a `Turn`), and the shard keeps running other actors and systems (ADR-037).
@@ -237,9 +237,12 @@ records that no longer hold). Each: context → decision → consequences.
   `ActorMailboxCapacity` an actor's mailbox; a call or message beyond either is refused with `RpcStatus.Overloaded`
   (requests get the status, one-way messages are dropped and counted in `daserver.shard.rejected`). Node links are
   never paused while a target shard is full: the link from B to A also carries replies to A's own calls, so pausing it
-  stalls those turns until their timeouts, which can block the very shard that is full.
+  stalls those turns until their timeouts, which can block the very shard that is full. Replies, continuations and
+  turn ends finish work already admitted, so they have a queue of their own (16k slots per shard, drained first):
+  sharing the full queue with new work would push them into an unbounded overflow exactly under overload. They are
+  bounded by the calls and turns in flight; a burst beyond the slots spills into a segment queue once.
 - Consequences: memory is bounded under any load; overload is visible to callers and in metrics, and refusing early
-  is cheaper than TCP backpressure.
+  is cheaper than TCP backpressure. Refusals are status-only (ADR-049).
 
 ## ADR-028 Request deadlines travel as a budget
 - Context: a caller that timed out may still have its request run (and relayed further) after it gave up, so a
@@ -465,7 +468,10 @@ records that no longer hold). Each: context → decision → consequences.
   build error. Constants and `static readonly` data stay allowed. Per-actor state goes into `Actor<TId, TState>` or
   other components of the actor's entity, shared state into singletons.
 - Consequences: the object is behaviour only, so persistence (N5), state handoff (N6) and hot reload (N9) touch data
-  alone and can swap the code freely.
+  alone and can swap the code freely. It is also reusable: a removed actor's object, mailbox queue and session sets
+  return to per-shard pools (`ActorPools`, bounded) and serve the next load of that type, so actor churn (logins,
+  short matches, idle unloads) allocates nothing. Code must not keep a reference to an actor object beyond its turns
+  (an un-awaited task that touches it after unload would reach the actor that reused it).
 
 ## ADR-045 DaServer is a general ECS distributed server framework
 - Context: a framework for high-concurrency backends must not read as one game server, yet it must cover what every
@@ -540,3 +546,18 @@ records that no longer hold). Each: context → decision → consequences.
   ADR-046). Abstractions and the client SDK cannot use net10-only language or runtime features. Redirect mode needs
   a public address per client-facing node; behind-LB mode leaves long connections unbalanced after a scale-out until
   clients reconnect.
+
+## ADR-049 Refusals are status-only
+- Context: the runtime refuses calls exactly when load is highest (full queues, a stale view, expired deadlines,
+  lost links). Formatting a message per refusal (`$"No node hosts actor type 0x{id:x8}"`), serializing it into the
+  error frame and building the exception at the refusing node turned overload into GC pressure on the node that is
+  already struggling.
+- Decision: refusals by the runtime (`NotHosted`, `Overloaded`, `Timeout`, `Disconnected`, `Forbidden`) are
+  response frames without payload. `RpcException.Message` describes the status with constant text; a handler's own
+  error keeps its message (`RpcException.Detail`, the only payload an error frame carries). `IPendingCall.Fail` takes
+  a status, so relayed calls pass refusals on without an exception; the pending-call table refuses as `Overloaded`
+  instead of throwing. Programming errors found on a cold path (a call to a message several services handle) still
+  carry text.
+- Consequences: refusing, relaying and timing out allocate nothing (`AllocationTests`); the caller still gets an
+  exception (N3b adds non-throwing status results). A refusal no longer names the type or message id: the caller's
+  stack trace names the call.
