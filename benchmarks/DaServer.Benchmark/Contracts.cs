@@ -37,7 +37,7 @@ public sealed class Room : Actor<RoomId>
     [Handle]
     public bool On(Join m)
     {
-        for (int i = 0; i < m.Groups; i++) Cluster.JoinGroup(Caller, GroupOf(i));
+        for (int i = 0; i < m.Groups; i++) Cluster.Send(Caller, new JoinGroup(GroupOf(i)));
         return true;
     }
 

@@ -16,13 +16,4 @@ public interface ICluster : IMessageSender
     /// serialized once, one frame per handler type. The publisher never depends on its handlers.
     /// </summary>
     void Publish<T>(in T e) where T : struct;
-
-    /// <summary>Add a session to a broadcast group (an actor's own <c>Group</c> is joined by <c>BindSession</c>).</summary>
-    void JoinGroup(SessionRef session, ClientGroup group);
-
-    /// <summary>Remove a session from a broadcast group.</summary>
-    void LeaveGroup(SessionRef session, ClientGroup group);
-
-    /// <summary>Disconnect a client session.</summary>
-    void Disconnect(SessionRef session);
 }

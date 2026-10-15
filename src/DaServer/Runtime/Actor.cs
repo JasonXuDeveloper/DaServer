@@ -33,11 +33,11 @@ public abstract class Actor : ShardObject
     protected ValueTask BindSession(SessionRef session)
     {
         ShardDispatch.RecordSession(this, session);
-        return Shard.Node.BindSession(session, HandlerType.Id, Key, bind: true);
+        return Shard.Node.BindSession(session, HandlerType.Id, Key);
     }
 
     /// <summary>Remove the session's binding to this actor type (it also leaves <see cref="Group"/>).</summary>
-    protected ValueTask UnbindSession(SessionRef session) => Shard.Node.BindSession(session, HandlerType.Id, Key, bind: false);
+    protected ValueTask UnbindSession(SessionRef session) => Shard.Node.BindSession(session, HandlerType.Id, 0);
 
     internal HandlerTypeInfo HandlerType { get; set; } = null!;
 
