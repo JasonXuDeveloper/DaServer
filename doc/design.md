@@ -98,7 +98,7 @@ local node when it hosts one.
     or a client group, `key` its id). With a call id trailer (flag `HasCall`) it is a request; the status byte then
     carries the caller's time budget (ADR-028).
   - `Reply`: the call id trailer, the status, the reply (or a handler's error message).
-  - `Control`: link handshake and resume, gossip, session binding, groups, disconnect; a call id makes it a call.
+  - `Control`: link handshake and resume, gossip, client tickets and gateway choice; a call id makes it a call.
 - A receiving node routes a message by its target alone: a hosted handler type goes to its shard, a session or group
   to the client connections, anything else on to the node hosting it.
 - A client leaves the target 0 to let its gateway pick the actor bound to its session or the service; it names the

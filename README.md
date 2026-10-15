@@ -86,7 +86,7 @@ Everything a developer declares is one of these. The message type alone decides 
 | `Cluster.Ask(id, new M())` / `Send(id, ...)` | The actor `id` (`MapId`, `PlayerId`: the id type names the actor type; one per cluster, on demand, turn-based). |
 | `Cluster.Ask(new M())` / `Send(...)` | The one service handling `M` (load-balanced, local first). |
 | `Cluster.Publish(e)` | Every service type handling `e`, once each. |
-| `Cluster.Send(session, m)` / `Send(group, m)` | A client session / a client group (`Flow.ToClient` messages; clients handle them with `[Handle]` too). |
+| `Cluster.Send(session, m)` / `Send(group, m)` | A client session / a client group (`Flow.ToClient` messages; clients handle them with `[Handle]` too). `JoinGroup`, `LeaveGroup` and `Disconnect` sent there are applied by the session's gateway. |
 
 | Element | Responsibility | Never |
 |---|---|---|
