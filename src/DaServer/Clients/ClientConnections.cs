@@ -284,7 +284,9 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
     /// </summary>
     private void CloseSilentSessions(long now)
     {
+        bool late = now - _nextSilenceSweep > 1000; // a stalled timer says nothing about the clients: no verdicts then
         _nextSilenceSweep = now + 1000;
+        if (late) return;
         long timeout = (long)options.ClientTimeout.TotalMilliseconds;
         foreach (var (_, session) in _sessions) KeepAlive.Check(session.Channel, now, 0, timeout);
     }

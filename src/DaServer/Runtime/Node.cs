@@ -337,14 +337,18 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
             }, (shard, clientNode));
     }
 
+    private long _lastMaintainMs; // the maintenance timer's thread only
+
     private void Maintain()
     {
         try
         {
             Pending.SweepExpired();
-            long now = Environment.TickCount64;
+            long now = Environment.TickCount64, last = _lastMaintainMs;
+            _lastMaintainMs = now;
             long interval = (long)Options.GossipInterval.TotalMilliseconds;
-            long timeout = Math.Max((long)Options.SuspectAfter.TotalMilliseconds, 3 * interval);
+            // A pass that runs late (a GC pause, a starved machine) says nothing about the links: ping, no verdicts.
+            long timeout = last != 0 && now - last > 1000 ? long.MaxValue : Math.Max((long)Options.SuspectAfter.TotalMilliseconds, 3 * interval);
             foreach (var link in Volatile.Read(ref _linkList))
             {
                 link.AcknowledgeReceived();
