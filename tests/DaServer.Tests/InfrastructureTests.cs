@@ -189,6 +189,11 @@ public class InfrastructureTests
 
         for (int i = 0; i < 100; i++) Assert.That(table.TryRegister(held, timeoutMs: 0, out _), Is.True);
         Assert.That(table.Capacity, Is.EqualTo(120), "chunks of 8, 16, 32, 64 slots");
+
+        var full = new PendingCallTable(4); // 16 slots: chunks of 8 and 8, not 8 and 16
+        for (int i = 0; i < 16; i++) Assert.That(full.TryRegister(held, timeoutMs: 0, out _), Is.True);
+        Assert.That(full.Capacity, Is.EqualTo(16), "the last chunk ends at the table's size");
+        Assert.That(full.TryRegister(held, timeoutMs: 0, out _), Is.False);
     }
 
     [Test]
