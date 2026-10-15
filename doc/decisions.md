@@ -488,8 +488,9 @@ records that no longer hold). Each: context → decision → consequences.
   one reloadable endpoint source for N9). Node-to-node and client traffic stays on DaServer's TCP links (zero GC,
   ordered, batched). HTTP handlers run on the thread pool and reach actors only through `ICluster`.
 - Consequences: nodes reference the ASP.NET Core shared framework (aspnet runtime image, a few MB of memory, tens of
-  ms of start-up); HTTP requests allocate like any ASP.NET request, so the HTTP plane is for low-frequency work, never
-  for per-tick or per-player traffic. Health endpoints are always mapped, admin endpoints require the cluster secret.
+  ms of start-up); HTTP requests allocate like any ASP.NET request: on nodes hosting actors the HTTP plane carries
+  low-frequency work, never per-tick or per-player traffic; dedicated HTTP edge nodes (ADR-048) may carry high
+  request volume, since the actor interior stays zero-GC. Health endpoints are always mapped, admin endpoints require the cluster secret.
 
 ## ADR-047 One message model: message, address, optional reply
 - Status: agreed; implemented in roadmap G0 (the code still has the verbs and frame kinds listed in the context).
@@ -508,3 +509,25 @@ records that no longer hold). Each: context → decision → consequences.
 - Consequences: sessions and groups are addresses of the gateway module, not core verbs; node-to-node and client wire
   protocols break once (pre-1.0, no rolling upgrade across it); the old verbs are removed outright, no aliases; send
   paths stay generic over struct addresses (no boxing, the kind is a JIT constant).
+
+## ADR-048 Ingress is core, edges are modules
+- Status: agreed; implemented in roadmap G steps 5-10.
+- Context: "gateway" covers three problems with different owners. Ingress (an external request becomes a cluster
+  message with an origin, a deadline, admission and a reply path) is needed by every edge: HTTP, connection gateways,
+  queue consumers. Long-lived client connections (sessions, push, groups, resume) are one class of application.
+  Surge admission (flash sale, ticketing, waiting rooms) is policy over ingress plus partitioned state. Load balancing,
+  TLS, CDN/WAF, Gateway API routes and autoscaling are solved by the platform, which cannot route to the node that
+  owns an actor, push to a session, fan out to cross-gateway groups or tie back-pressure to mailboxes.
+- Decision: the core offers ingress (origin, capped deadline, reply sink, raw pass-through, one hop to the owner from
+  the gossip view, load-aware early refusal), admission primitives (filters that reject with status + retry hint,
+  token bucket, signed tokens) and node features (`NodeFeature`, address handlers, pulse slots, drain, timer wheel,
+  public `DaServer.Net`). The HTTP plane (ADR-046) and `DaServer.Gateway` are its two consumers. The gateway is a
+  feature any node can enable (co-hosted for small clusters, dedicated groups in production); there is no balancer
+  role: every gateway answers "which gateway" from gossiped load, and the well-known address is the platform's LB or
+  DNS (redirect mode or behind-LB mode). Contracts live in `DaServer.Abstractions` and
+  `DaServer.Gateway.Abstractions`, both netstandard2.1 + net10 so Unity clients share messages and the client SDK.
+  Waiting rooms start in `samples/flashsale` and become `DaServer.Admission` when a second consumer exists.
+- Consequences: dedicated HTTP edge nodes may carry high request volume (they allocate per request like any ASP.NET
+  app; the interior stays zero-GC; ADR-046). The
+  Abstractions packages cannot use net10-only language or runtime features. Redirect mode needs a public address per
+  gateway; behind-LB mode leaves long connections unbalanced after a scale-out until clients reconnect.
