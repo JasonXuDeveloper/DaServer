@@ -1,7 +1,7 @@
 # DaServer
 
 .NET 10 framework for high-performance clusters (game servers: many gateways + many map/logic nodes, and other
-low-latency backends). Users write contracts, implementations, event handlers and ECS systems; source generators
+low-latency backends). Users write messages, actors and services with `[Handle]` methods, and ECS systems; source generators
 write the plumbing.
 Code, comments, commits and docs are in English.
 
@@ -28,8 +28,8 @@ src/DaServer/              runtime (net10.0): Protocol/ Buffers/ Concurrency/ Ne
   Runtime/ShardData.cs     shard ECS data: actor components (Mailbox, Turn, ...) and shard singletons
   Runtime/ShardDispatch.cs routing/invoke/retire operations shared by the runtime systems
   Runtime/Systems/         runtime systems (ShardMessages group): Inbox, Turn, Mailbox, ServiceTask, Timer, Rebalance
-src/DaServer.Generator/    incremental generators (ContractGenerator, HostGenerator incl. node entry point)
-                           + DaServerAnalyzer (DAS001-014);
+src/DaServer.Generator/    incremental generators (MessageGenerator, HostGenerator incl. node entry point)
+                           + DaServerAnalyzer (DAS001-005);
                            Shapes.cs reads symbols once for both, so "skipped by the generator" == "reported"
 src/DaServer.Hosting/      Generic Host integration, configuration, OpenTelemetry (OTLP when configured), shutdown
 src/DaServer.Aspire/       Aspire hosting integration: AddDaServerCluster / AddNodes / AddGateways / AddBalancer /
@@ -38,15 +38,15 @@ samples/                   Sample.Contracts / Sample.Login / Sample.Game / Sampl
                            no appsettings) / Sample.Bot (10k-bot e2e) /
                            Sample.AppHost (Aspire: run + publish)
 tests/DaServer.Tests/      NUnit: ClusterTest fixture, per-feature tests, generator/analyzer, allocation
-benchmarks/DaServer.Benchmark/   BenchmarkDotNet over real loopback sockets (RPC, events, broadcast fan-out)
+benchmarks/DaServer.Benchmark/   BenchmarkDotNet over real loopback sockets (requests, published messages, broadcast fan-out)
 doc/                       requirements.md, design.md, decisions.md, roadmap.md
 ```
 
 ## Engineering principles (apply to every change)
 
 1. **Performance is the first constraint; GC is part of performance.** Hot paths (send/receive, dispatch, replies,
-   mailbox, proxies, ECS ticks) allocate nothing in steady state: pooled `FrameWriter`/`BufferPool` (POH), struct
-   mailbox items, pooled `IValueTaskSource`s, struct proxies. No LINQ, closures, boxing, string formatting there.
+   mailbox, message sends, ECS ticks) allocate nothing in steady state: pooled `FrameWriter`/`BufferPool` (POH), struct
+   mailbox items, pooled `IValueTaskSource`s, `in` struct messages. No LINQ, closures, boxing, string formatting there.
 2. **CPU**: inline fast paths, `NoInlining` cold paths, no redundant bounds checks (only behind documented
    invariants), batch syscalls.
 3. **Memory / cache lines (64 bytes)**: pad contended fields onto separate lines, keep hot structs small, bound every
@@ -55,8 +55,8 @@ doc/                       requirements.md, design.md, decisions.md, roadmap.md
    cross-thread handoff only through mailboxes; shared runtime state is immutable snapshots swapped atomically.
 5. **Concise, elegant, no duplication**: generate repetitive code with the source generator; one shared core with
    thin typed wrappers; no copy-pasted variants.
-6. **Developers only write business code**: contracts (`[Service]`/`[Actor]`/`[ToClient]`, `[FromClient]` per method),
-   actors/services, events (`[NinoType]` structs, `[ActorKey]`) and `[Handle]` methods, EasyEcs systems with `[ForEach]`
+6. **Developers only write business code**: messages (`[NinoType]` structs, `IRequest<TReply>`,
+   `[ClientMessage]`), actors/services with `[Handle]` methods (ADR-035), EasyEcs systems with `[ForEach]`
    methods. Registration, routing, serialization, placement, entry points, orchestration are the framework's job;
    if users would write the same lines twice, generate them.
 7. **ECS all the way down**: the runtime follows the same ECS rules as user code (EasyEcs `doc/ecs-principles.md`):
@@ -71,7 +71,7 @@ doc/                       requirements.md, design.md, decisions.md, roadmap.md
 - Never block a shard thread on IO; never touch shard/actor state from another thread (post to the shard).
 - Never keep a `ref` into ECS storage across an `await`; re-acquire after awaiting.
 - Actors are turn-based: one message at a time including its awaits (no interleaving). Calls in a cycle (A awaits B
-  awaits A) deadlock until timeout: model such flows with one-way calls or events.
+  awaits A) deadlock until timeout: model such flows with one-way messages (`Send`/`Publish`).
 - Orchestration is the Aspire model (`samples/Sample.AppHost`); do not add hand-written compose/k8s files.
 - Wire ids are generated (FNV-1a); never renumber by hand except `[WireId]` to resolve a reported collision.
 - No topology strings (roles, node names) in code: a node hosts what its project compiles (ADR-017).

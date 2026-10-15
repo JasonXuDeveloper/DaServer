@@ -7,13 +7,13 @@ Keep this file current: tick items when done, add items when scope changes.
 - [x] Buffers: POH `BufferPool`, pooled `FrameWriter` (INinoBufferWriter)
 - [x] Concurrency: padded MPMC queue, object pool, allocation-free `AsyncSignal`
 - [x] Net: `Connection` (batched send, zero-byte reads, backlog bound), `Listener`
-- [x] RPC core: contract attributes, `RpcRegistry`, `CallContext` replies, pending-call table, pooled awaitables
+- [x] RPC core: messages (`IRequest<TReply>`, `MessageRegistry`), `CallContext` replies, pending-call table, pooled awaitables
 - [x] Shard runtime as ECS (ADR-013): actor entities with mailbox/turn components, runtime systems, system groups
 - [x] Turn-based actors (ADR-014), stateless services
 - [x] Node: shards, local/remote routing, forwarding/relay, reply sinks
 - [x] Cluster: push-pull gossip of pulses (cards once, ADR-031), seeds (static + DNS), failure detection, `ClusterView`, rendezvous placement,
       graceful leave + rebalancing
-- [x] Gateway: sessions, per-contract bindings, per-method `[FromClient]` access, push, `ClientGroup` broadcast fan-out
+- [x] Gateway: sessions, per-implementation bindings, per-message `[ClientMessage]` access, push, `ClientGroup` broadcast fan-out
       (O(1) membership, `All` is a group, no allocation per broadcast), `SessionClosed` to bound actors, client frame
       limit (ADR-025)
 - [x] Runtime-owned sessions: Bind joins the activation's group, `CallerSession` holds for the turn, a crashed gateway's
@@ -22,11 +22,11 @@ Keep this file current: tick items when done, add items when scope changes.
       (ADR-026)
 - [x] One ordered link per node direction: replies travel with binds, pushes and events (ADR-022)
 - [x] Placement: keys stay with suspect members, a dead node's keys move, deactivating actors keep their mail (ADR-023)
-- [x] Client: `ClusterClient` (generated proxies, keyless session-actor accessors, DNS endpoints over every resolved
+- [x] Client: `ClusterClient` (the same messages as servers, keyless session-actor messages, DNS endpoints over every resolved
       address, balancer redirect,
       callbacks inline or queued)
 - [x] Topology without roles (ADR-017), `ICluster` for business code (ADR-020), actor `Group`
-- [x] Cluster events: `[NinoType]` structs, `[ActorKey]`, `[Handle]`, gossiped handlers, mailbox delivery (ADR-019)
+- [x] Cluster events: `[NinoType]` structs, `Publish(key, e)`, `[Handle]`, gossiped handlers, mailbox delivery (ADR-019)
 - [x] Backpressure: bounded shard inbox and actor mailboxes refuse with `Overloaded` (ADR-027)
 - [x] Backpressure on links: decided against pausing a link's receive (ADR-027): the link also carries replies to
       the receiver's own calls, so a paused link stalls them until timeouts; full shards keep refusing with `Overloaded`
@@ -39,13 +39,13 @@ Keep this file current: tick items when done, add items when scope changes.
 - [ ] Persistence helpers
 
 ## Generator / analyzer (`src/DaServer.Generator`)
-- [x] Contracts: struct proxies, dispatcher switch, registration, method ids, cluster accessors
-- [x] Hosting: actor/service factories with handled events, EasyEcs system registration, contract assembly loading
+- [x] Messages (ADR-035): typed `Ask` overloads per request, one dispatcher per `[Handle]` method, client message
+      registration, message ids
+- [x] Hosting: actor/service factories with their handlers, client handler classes, EasyEcs system registration
 - [x] Node entry point generated when a node project has no `Program.cs` (ADR-021)
 - [x] Incremental rules: syntax predicates, equatable models, tracking names, cache test (ADR-016)
-- [x] `DaServerAnalyzer`: DAS001-DAS014 (wire types, keyed actor events, actor/service mix, contract attributes,
-      handler shape, event keys)
-- [x] Attributes instead of contract markers (ADR-018, revised)
+- [x] `DaServerAnalyzer`: DAS001-DAS005 (handlers, messages, wire types, id collisions, constructors)
+- [x] Messages instead of contracts: one concept for requests, one-way messages, events and pushes (ADR-035)
 
 ## Hosting / orchestration
 - [x] `DaServer.Hosting`: Generic Host, configuration, OpenTelemetry (OTLP), periodic stats line, graceful shutdown
@@ -72,6 +72,9 @@ Keep this file current: tick items when done, add items when scope changes.
       dead reckoning, ~2.5M positions/s, p99 106 ms); servers 0–5 KB/s, no GC; scale-out: a gateway started mid-run
       receives the new clients (test + process run)
 - [x] One write per connection per batch (ADR-034)
+- [x] Message-first model (ADR-035): contracts, proxies and `[ActorKey]` removed; client send backlog bound 256 KB
+      (a slow client is disconnected and resynchronizes on reconnect)
+- [ ] Auto-reconnect: signed reconnect tickets, `SessionClosed` after a grace period, `SessionResync`
 
 ## Quality
 - [x] Unit tests (queue, pool, frames, pending table, membership, placement)

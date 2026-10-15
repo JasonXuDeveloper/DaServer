@@ -3,25 +3,26 @@
 A .NET 10 framework for low-latency, high-concurrency clusters: game servers with many gateways and many map/logic
 nodes, and any backend made of stateful entities and stateless services.
 
-You write **contracts** (interfaces), **actors** and **services** that implement them, **event handlers** and **ECS
-systems**. Source generators write proxies, dispatchers, wire ids, registration and the node's entry point. The runtime handles shards, mailboxes, placement,
-discovery, gateways and serialization. Aspire runs the cluster locally and publishes it.
+You write **messages** (`[NinoType]` structs), **actors** and **services** with `[Handle]` methods, and **ECS
+systems**. Source generators write dispatchers, typed `Ask` overloads, wire ids, registration and the node's entry
+point. The runtime handles shards, mailboxes, placement, discovery, gateways and serialization. Aspire runs the cluster
+locally and publishes it.
 
-- **Zero GC on hot paths.** Struct proxies serialize arguments straight into pooled buffers. Dispatchers deserialize
-  straight from the received bytes. Awaitables are pooled, and broadcasts are serialized once.
+- **Zero GC on hot paths.** Messages serialize straight into pooled buffers. Dispatchers deserialize straight from
+  the received bytes. Awaitables are pooled, and broadcasts are serialized once.
 - **No locks in business code.** Every actor, service and system runs on its shard's single thread.
 - **Stateful and stateless.** Actors are keyed and placed on one node by rendezvous hashing. Services are
   load-balanced and prefer the local node. Nodes discover each other through gossip.
 - **ECS inside.** Actor state is an [EasyEcs](https://github.com/JasonXuDeveloper/EasyEcs) component on the
   actor's entity, so systems can process every actor of a shard in one cache-friendly pass.
-- **RPC, events and ECS.** Request/response and one-way calls through generated proxies; cluster events published
-  without knowing the handlers, delivered to actor mailboxes by key; per-tick logic in EasyEcs systems.
+- **Messages, not interfaces.** A message is routed to whoever handles it: `Ask` for a reply, `Send` one-way,
+  `Publish` to every handler. The sender never names the receiver's type; per-tick logic lives in EasyEcs systems.
 - **No hard-coded topology.** A node hosts what its project compiles. The AppHost lists projects and replica counts.
 - **Reliable links, bounded work.** One ordered stream per node pair resumes after a dropped connection (no loss, no
   duplicate). Requests carry their caller's deadline, and work nobody waits for is dropped. Full inboxes answer
-  `Overloaded` instead of growing.
-- **Misuse is a build error.** Analyzers DAS001–DAS014 cover DaServer contracts, handlers, event keys and wire types, and EECS001–EECS008
-  cover ECS, including the ECS principles.
+  `Overloaded` instead of growing; a client that cannot keep up is disconnected and resynchronizes on reconnect.
+- **Misuse is a build error.** Analyzers DAS001–DAS005 cover handlers, messages, wire types and id collisions, and
+  EECS001–EECS008 cover ECS, including the ECS principles.
 
 ## Architecture
 
@@ -57,41 +58,43 @@ flowchart LR
     end
 ```
 
-A call goes from the generated proxy into a pooled frame. A call to the same node goes straight to the target
-shard's mailbox; a call to another node is batched onto its TCP link. The target shard's thread runs the generated
-dispatcher, then the reply returns the same way and resumes the caller on its own shard.
+A message is serialized once into a pooled frame. A message for the same node goes straight to the target shard's
+mailbox; a message for another node is batched onto its TCP link. The target shard's thread runs the generated
+dispatcher; a reply returns the same way and resumes the caller on its own shard.
 
 ## Vocabulary
 
-Everything a developer declares is one of these. Attributes on the contract say how the target is chosen and what
-game clients may call.
+Everything a developer declares is one of these. The message type alone decides who handles it.
 
-| Declaration | Callers | Target |
-|---|---|---|
-| `[Service] interface IX` | servers | any node hosting it (load-balanced, local first) |
-| `[Actor] interface IX` | servers | the activation of a key (one per cluster, on demand, turn-based) |
-| `[FromClient]` on a method or a contract | also game clients | services: any; actors: the key bound to the session (`Cluster.Bind<IX>`) |
-| `[FromClient(AnyKey = true)]` | also game clients | actors: the client chooses the key |
-| `[ToClient] interface IX` | servers | one session or a client group (implemented by clients) |
-| `[NinoType]` struct, `[ActorKey]` on one member | `Cluster.Publish(e)` | each `[Handle]` service once; keyed: the actor activation of the key |
-| `[Handle] ValueTask On(E e)` | the event router | a method of an actor or service handling event `E` |
-| `partial class S : EcsSystem` with `[ForEach]` | the shard loop | every matching entity of the shard |
-| `[NinoType]` | | wire data; anything else crossing the wire is a build error |
+| Declaration | Meaning |
+|---|---|
+| `[NinoType] partial record struct M` | A message (anything crossing the wire is `[NinoType]`; anything else is a build error). |
+| `... : IRequest<TReply>` | A request: answered with one `TReply`. |
+| `[ClientMessage]` | Game clients may send it too. To an actor, it goes to the key bound to the session. |
+| `[ClientMessage(AnyKey = true)]` | To an actor, the client chooses the key (public rooms). |
+| `[Handle] R On(M m)` | A handler in an actor or service: `void`/`ValueTask`, or the reply/`ValueTask<TReply>` of a request. |
+| `partial class S : EcsSystem` with `[ForEach]` | Per-tick logic over every matching entity of the shard. |
+
+| Call | Target |
+|---|---|
+| `Cluster.Ask(key, new M())` / `Send(key, ...)` | The actor activation of `key` of the one actor type handling `M` (one per cluster, on demand, turn-based). |
+| `Cluster.Ask(new M())` / `Send(...)` | The one service handling `M` (load-balanced, local first). |
+| `Cluster.Publish(key, e)` / `Publish(e)` | Every actor type handling `e` at that key / every service handling it, once each. |
+| `Cluster.Send(session, m)` / `Send(group, m)` | A client session / a client group (pushes; clients handle them with `[Handle]` too). |
 
 | Element | Responsibility | Never |
 |---|---|---|
-| **Actor** | The network boundary of one keyed entity: validate a call or event, then write input as components. Lifecycle and persistence (`OnLoad`, `OnUnload`). | Per-tick logic (that belongs to systems). |
-| **Service** | Stateless request and event handling (login, matchmaking, routing). | Keep state between calls. |
+| **Actor** | The network boundary of one keyed entity: validate a message, then write input as components. Lifecycle and persistence (`OnLoad`, `OnUnload`). | Per-tick logic (that belongs to systems). |
+| **Service** | Stateless request and event handling (login, matchmaking, routing). | Keep state between messages. |
 | **Component / singleton** | Data of one entity (actor state is `Actor<TState>`) / of one shard world. | Logic. |
 | **System** | One per-tick responsibility over all matching entities of a shard. Stateless. | Reference other systems, perform IO. |
-| **Event** | A fact published to the cluster; the publisher does not know the handlers. | Commands to a specific receiver (that is a call). |
 
 Business code reaches the cluster through `ICluster`: `Cluster` in actors and services, `world.Cluster()` in systems.
 `CallerSession` is the client session of the running turn (valid across its awaits).
 
-The runtime owns client sessions: `Cluster.Bind<IX>(session, key)` routes the client's `IX` calls to that key and
-puts the session in the activation's `Group`; when the session closes (or its gateway crashes), every actor it was
-bound to receives `SessionClosed`.
+The runtime owns client sessions: an actor's `await BindSession(session)` routes the client's messages for that actor
+type to its key and puts the session in the activation's `Group`; when the session closes (or its gateway crashes),
+every actor it was bound to receives `SessionClosed`.
 
 ## Example
 
@@ -99,64 +102,71 @@ From [samples/](samples): login on a login node, players, maps and the realm on 
 nothing.
 
 ```csharp
-// Contracts (shared with clients).
-[Service, FromClient] public interface IAccount { ValueTask<LoginResult> Login(string name); }
-[Actor, FromClient]   public interface IPlayer { ValueTask EnterMap(long mapId); }
-[Actor] public interface IMap
-{
-    ValueTask Enter(long playerId, SessionRef session);
-    [FromClient] void Move(float vx, float vy);                       // one-way input from the bound client
-    [FromClient] void Chat(string text);
-}
-[ToClient] public interface IPlayerClient { void OnMoves(List<Moved> moves); void OnChat(long playerId, string text); void OnRealm(RealmStatus s); }
+// Messages (shared with clients).
+[NinoType, ClientMessage] public partial record struct Login(string Name) : IRequest<LoginResult>;
+[NinoType, ClientMessage] public partial record struct EnterMap(long MapId) : IRequest<bool>;
+[NinoType, ClientMessage] public partial record struct Move(float VelocityX, float VelocityY);   // one-way input
+[NinoType, ClientMessage] public partial record struct Say(string Text);
+[NinoType] public partial record struct Attach(SessionRef Session) : IRequest<bool>;            // server only
+[NinoType] public partial record struct Enter(long PlayerId, SessionRef Session) : IRequest<bool>;
+[NinoType] public partial record struct Chat(long PlayerId, string Text);                      // pushed to clients
 
-[NinoType] public readonly partial record struct PlayerLoggedIn([property: ActorKey] long Player, SessionRef Session);
-
-// Login project: binds the session and announces the login.
-public sealed class Account : Service, IAccount
+// Login project: a stateless service.
+public sealed class Account : Service
 {
-    public ValueTask<LoginResult> Login(string name)
+    [Handle]
+    public async ValueTask<LoginResult> On(Login m)
     {
-        long playerId = Accounts.IdOf(name);
-        Cluster.Bind<IPlayer>(CallerSession, playerId);               // the client's IPlayer calls now reach this key
-        Cluster.Publish(new PlayerLoggedIn(playerId, CallerSession)); // whoever cares handles it
-        return new(new LoginResult(true, playerId));
+        long playerId = Accounts.IdOf(m.Name);
+        bool attached = await Cluster.Ask(playerId, new Attach(CallerSession)); // reaches whoever handles Attach
+        return new LoginResult(attached, playerId);
     }
 }
 
-// Game project: actors turn calls and events into data...
-public sealed class Player : Actor<PlayerState>, IPlayer
+// Game project: actors turn messages into data...
+public sealed class Player : Actor<PlayerState>
 {
-    [Handle] public ValueTask On(PlayerLoggedIn e) { State.Logins++; return default; }
-    [Handle] public ValueTask On(SessionClosed e) { State.MapId = 0; return default; }
-
-    public async ValueTask EnterMap(long mapId)
+    [Handle]
+    public async ValueTask<bool> On(Attach m)
     {
-        await Cluster.Map(mapId).Enter(Key, CallerSession);        // generated proxy, zero allocation
-        State.MapId = mapId;                                       // re-read after awaiting
+        await BindSession(m.Session);               // the client's Player messages reach this key from now on
+        State.Logins++;                             // re-read after awaiting
+        return true;
     }
+
+    [Handle]
+    public async ValueTask<bool> On(EnterMap m)
+    {
+        await Cluster.Ask(m.MapId, new Enter(Key, CallerSession)); // zero allocation
+        State.MapId = m.MapId;
+        return true;
+    }
+
+    [Handle] public void On(SessionClosed _) => State.MapId = 0;
 }
 
 // Actor state is a component; field initializers run when the actor loads (no OnLoad boilerplate).
 public struct MapState() : IComponent
 {
     public readonly Dictionary<SessionRef, Entity> Avatars = new();
-    public readonly List<Moved> Moves = new();                     // this tick's changes, reused
 }
 
-public sealed class Map : Actor<MapState>, IMap
+public sealed class Map : Actor<MapState>
 {
-    public ValueTask Enter(long playerId, SessionRef session)
+    [Handle]
+    public async ValueTask<bool> On(Enter m)
     {
-        State.Avatars[session] = World.CreateEntity(new Position(), new Velocity(), new Avatar(playerId, Entity), new NetSync());
-        Cluster.Bind<IMap>(session, Key);                          // its input reaches this map, it sees Group broadcasts
-        return default;
+        State.Avatars[m.Session] = World.CreateEntity(new Position(), new Velocity(), new Avatar(m.PlayerId, Entity, m.Session));
+        await BindSession(m.Session);               // its input reaches this map, it sees Group broadcasts
+        return true;
     }
 
-    public void Move(float vx, float vy) =>                        // input is data: systems integrate it
-        State.Avatars[CallerSession].Get<Velocity>() = new(vx, vy);
+    [Handle]
+    public void On(Move m) =>                      // input is data: systems integrate it
+        State.Avatars[CallerSession].Get<Velocity>() = new(m.VelocityX, m.VelocityY);
 
-    public void Chat(string text) => Cluster.PlayerClient(Group).OnChat(PlayerOf(CallerSession), text);
+    [Handle]
+    public void On(Say m) => Cluster.Send(Group, new Chat(PlayerOf(CallerSession), m.Text));
 }
 
 // ...and systems do the per-tick work, one responsibility each.
@@ -165,35 +175,28 @@ public sealed partial class MovementSystem : EcsSystem
     [ForEach] static void Move(ref Position p, in Velocity v) => p = new(p.X + v.X, p.Y + v.Y);
 }
 
-public sealed partial class SnapshotSystem : EcsSystem              // one message per map per tick
-{
-    public override int Priority => 20;
-
-    [ForEach]
-    static void Send(ref MapState map, in ActorIdentity actor, World world) // the map actor's key and client group
-    {
-        if (map.Moves.Count == 0) return;
-        world.Cluster().PlayerClient(actor.Group).OnMoves(map.Moves); // serialized once, one frame per gateway
-        map.Moves.Clear();
-    }
-}
-
 public sealed partial class RealmBroadcastSystem : EcsSystem        // every 5 ticks, to every session of the cluster
 {
     [ForEach]
     static void Broadcast(ref RealmState realm, World world)
     {
         if (++realm.Tick % 5 == 0)
-            world.Cluster().PlayerClient(ClientGroup.All).OnRealm(new(realm.Tick, realm.Online.Count, DateTime.UtcNow.Ticks));
+            world.Cluster().Send(ClientGroup.All, new RealmStatus(realm.Tick, realm.Online.Count, DateTime.UtcNow.Ticks));
     }
 }
 
-// Client (bot, game): the same generated proxies, one well-known address.
+// Client (bot, game): the same messages, one well-known address.
+class Bot
+{
+    [Handle] public void On(Chat m) => Console.WriteLine(m.Text);   // pushes are handled like any message
+}
+
 var client = new ClusterClient();
+client.Register(new Bot());
 await client.ConnectAsync("play.example.com", 7100);          // directed to the least loaded gateway
-await client.Account().Login("alice");
-await client.Player().EnterMap(1);                                 // no key: the gateway uses the binding
-client.Map().Move(1, 0);
+await client.Ask(new Login("alice"));
+await client.Ask(new EnterMap(1));                            // no key: the gateway uses the session's binding
+client.Send(new Move(1, 0));
 ```
 
 A node project needs no `Program.cs`: the generator emits the entry point (Generic Host, configuration, OpenTelemetry,

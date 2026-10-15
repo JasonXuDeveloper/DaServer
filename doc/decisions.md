@@ -90,6 +90,7 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
 - Consequences: no name clash; "world" always means the ECS world.
 
 ## ADR-012 Source generation instead of registration code
+- Status: the contract-based generator below was replaced by `MessageGenerator` and per-handler dispatchers (ADR-035).
 - Decision: `ContractGenerator` emits, per contract, a struct proxy (arguments serialized straight into a pooled
   frame), a dispatcher switch (arguments deserialized straight from the received frame), wire ids, a module-initializer
   registration and cluster accessors (`Cluster.Player(key)`, `Cluster.Auth()`, `Cluster.PlayerClient(session)`,
@@ -151,6 +152,7 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
   host; references between projects decide what can be split.
 
 ## ADR-018 Attributes on contracts (revised: markers were replaced)
+- Status: superseded by ADR-035 (messages instead of contracts).
 - Context: the first version used `[ClientRouteible]`; the second used base interfaces (`IService`, `IPublicService`,
   `IActor`, `ISessionActor`, `IPublicActor`, `IClientCallback`, `IEvent`, `IKeyedEvent`, `IHandle<T>`). Markers made
   client access all-or-nothing per contract, so one actor needed two contracts for one audience split (`IMap` and
@@ -164,6 +166,7 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
   vocabulary table in the README covers every declaration.
 
 ## ADR-019 Cluster events are delivered through mailboxes, at most once
+- Status: delivery stands; ADR-035 made every message travel this way and replaced `[ActorKey]` by `Publish(key, e)`.
 - Context: EasyEcs had an in-world event bus, which is not an ECS concern (state changes are data) and could not
   cross shards or nodes. DaServer needed events between actors and services anywhere in the cluster.
 - Decision: `[NinoType]` event structs (keyed by a `[ActorKey]` member), handled by `[Handle]` methods of actors and services. Handlers are part of the
@@ -276,6 +279,35 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
   ordering cases on gateway loss, and it only pays when there are many gateways and groups live on few of them.
 - Consequences: simple and ordered with binds (ADR-022). Revisit when deployments run tens of gateways with small
   groups; the roadmap keeps the item.
+
+## ADR-035 Messages instead of contracts
+- Context: contracts were interfaces with attributes (`[Service]`, `[Actor]`, `[FromClient]`, `[ToClient]`), events
+  were structs with an `[ActorKey]` member, and every call went through a generated proxy (`Cluster.Player(42).AddGold(1)`).
+  Three ways to say "send this data somewhere" meant three sets of generated code, analyzer rules (DAS001-DAS014) and
+  concepts to learn, and a sender had to know the receiver's interface. Splitting one actor's audience (servers vs.
+  clients) needed per-method attributes; moving a method between actors broke every caller.
+- Decision: one concept, the message: a `[NinoType]` struct, answered when it implements `IRequest<TReply>`.
+  - Handlers are `[Handle]` methods of actors and services (and of any class on clients, for pushes). The message type
+    decides the handler: the cluster gossips `(message id, implementation id, actor)` per handler.
+  - `Ask(key, m)` / `Send(key, m)` go to the one actor type handling `M`; without a key, to the one service handling
+    it (more than one handler of the requested kind is an `Ambiguous` error). `Publish(key, e)` / `Publish(e)` reach
+    every handler once. The key is a parameter, so `[ActorKey]` and `IKeyed` are gone.
+  - `[ClientMessage]` marks what clients may send (`AnyKey = true`: the client chooses the actor key); otherwise the
+    gateway uses the key bound to the session for that actor type. Bindings are keyed by implementation id, and the
+    actor binds itself: `await BindSession(session)` (acknowledged by the gateway before it returns).
+  - Pushes are messages too: `Send(session, m)` / `Send(group, m)`, handled on clients by `[Handle]` methods of a
+    registered object.
+  - `MessageGenerator` emits typed `Ask` overloads per request (the reply type is inferred at the call site);
+    `HostGenerator` emits one dispatcher per handler. Analyzer rules shrink to DAS001-DAS005.
+  - Wire: the header field is `messageId` (FNV-1a of the message type's full name or `[WireId]`), the `Event` frame
+    kind became `Message` (one-way and published), and requests carry a `ToActor` flag.
+- Alternatives: keeping interfaces with a message-shaped escape hatch would have left two models; making the receiver
+  explicit (`Ask<Player>(...)`) couples senders to implementations again.
+- Consequences: senders depend on message types only, so handlers move between actors, services and projects without
+  touching callers. Hot paths are unchanged: messages are `in` structs of generic methods, serialized once into pooled
+  frames (allocation tests unchanged). A client that cannot drain its pushes (send backlog over 256 KB) is
+  disconnected rather than throttled; it reconnects and the server resends full state, which is cheaper and simpler
+  than per-session drop policies in a state-synchronized game.
 
 ## ADR-034 One write per connection per batch
 - Context: a connection's send loop woke on the first queued message, so a session in the 9 interest cells around a
