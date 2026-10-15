@@ -15,7 +15,7 @@ internal interface IPendingCall
     /// Fail with a status: status-only for the runtime's refusals (timeout, overload, lost connection: nothing
     /// formatted), with a <paramref name="message"/> only for programming errors found on a cold path.
     /// </summary>
-    void Fail(RpcStatus status, string? message = null);
+    void Fail(RpcStatus status, string? message = null, TimeSpan retryAfter = default);
 }
 
 /// <summary>
@@ -240,7 +240,8 @@ internal sealed class PendingCall<T> : IPendingCall, IValueTaskSource<T>, IValue
         Signal();
     }
 
-    public void Fail(RpcStatus status, string? message = null) => Fail(new RpcException(status, message));
+    public void Fail(RpcStatus status, string? message = null, TimeSpan retryAfter = default) =>
+        Fail(new RpcException(status, message, retryAfter));
 
     private void Fail(Exception error)
     {

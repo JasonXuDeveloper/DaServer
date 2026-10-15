@@ -49,6 +49,12 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
             throw new InvalidOperationException($"{typeof(TAddr)} already has a handler on this node");
     }
 
+    void INodeContext.AddIngressFilter(IIngressFilter filter)
+    {
+        if (_registering == null) throw new InvalidOperationException("Ingress filters are added in NodeFeature.Start");
+        _ingressFilters = [.. _ingressFilters, filter];
+    }
+
     /// <summary>The address scopes this node's features handle (advertised in its card).</summary>
     internal uint[] AdvertisedScopes() => [.. _addressHandlers.Keys];
 

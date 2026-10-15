@@ -54,6 +54,62 @@ public class IngressTests : ClusterTest
         gate.Set();
     }
 
+    [Test]
+    public async Task AFilterRefusesWithARetryHintThatReachesTheClient()
+    {
+        var gateway = await Start("gw", gateway: true, configure: static o => o.Features.Add(new LoginLimit()));
+        var client = await Connect(gateway);
+        var error = Assert.ThrowsAsync<RpcException>(async () => await client.Ask(new Login(new PlayerId(42))));
+        Assert.That(error!.Status, Is.EqualTo(RpcStatus.RateLimited));
+        Assert.That(error.RetryAfter, Is.EqualTo(TimeSpan.FromSeconds(2)));
+
+        IIngress ingress = ((INodeContext)gateway).Ingress;
+        var typed = Assert.ThrowsAsync<RpcException>(async () =>
+            await ingress.Ask<Login, bool>(new Login(new PlayerId(42)), new Origin(gateway.Id, 1), TimeSpan.FromSeconds(1)));
+        Assert.That((typed!.Status, typed.RetryAfter), Is.EqualTo((RpcStatus.RateLimited, TimeSpan.FromSeconds(2))));
+    }
+
+    [Test]
+    public void TokenBucketsAllowBurstsThenTheRate()
+    {
+        var bucket = new TokenBucket(rate: 10, burst: 3);
+        for (int i = 0; i < 3; i++) Assert.That(bucket.TryTake(out _), Is.True, "the burst");
+        Assert.That(bucket.TryTake(out var retryAfter), Is.False);
+        Assert.That(retryAfter, Is.InRange(TimeSpan.FromMilliseconds(50), TimeSpan.FromMilliseconds(100)));
+        Thread.Sleep(150);
+        Assert.That(bucket.TryTake(out _), Is.True, "refilled at the rate");
+
+        var limit = new ConcurrencyLimit(2);
+        Assert.That(limit.TryEnter() && limit.TryEnter(), Is.True);
+        Assert.That(limit.TryEnter(), Is.False);
+        limit.Exit();
+        Assert.That(limit.TryEnter(), Is.True);
+    }
+
+    [Test]
+    public void SignedTokensKeepTheirContentAndRefuseForgeries()
+    {
+        var secret = "cluster secret"u8.ToArray();
+        var token = new byte[SignedToken.SizeOf(4)];
+        "sale"u8.CopyTo(SignedToken.Content(token));
+        SignedToken.Sign(token, secret, nowMs: 1000, lifetimeMs: 500);
+
+        Assert.That(SignedToken.TryRead(token, secret, 1200, out var content) && content.SequenceEqual("sale"u8), Is.True);
+        Assert.That(SignedToken.TryRead(token, secret, 1500, out _), Is.False, "expired");
+        Assert.That(SignedToken.TryRead(token, "other"u8, 1200, out _), Is.False, "another cluster");
+        token[17] ^= 1;
+        Assert.That(SignedToken.TryRead(token, secret, 1200, out _), Is.False, "tampered");
+    }
+
+    /// <summary>Refuses every login for two seconds (an ingress filter of a feature).</summary>
+    private sealed class LoginLimit : NodeFeature, IIngressFilter
+    {
+        protected internal override void Start(INodeContext node) => node.AddIngressFilter(this);
+
+        public IngressDecision Check(uint messageId, uint target, long key, Origin origin) =>
+            messageId == MessageType<Login>.Id ? IngressDecision.Refuse(RpcStatus.RateLimited, TimeSpan.FromSeconds(2)) : IngressDecision.Admit;
+    }
+
     private sealed class CapturingSink : IReplySink
     {
         public readonly TaskCompletionSource<(uint, RpcStatus, byte[])> Reply = new(TaskCreationOptions.RunContinuationsAsynchronously);

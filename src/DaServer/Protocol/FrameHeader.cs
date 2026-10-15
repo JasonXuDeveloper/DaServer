@@ -43,7 +43,10 @@ public static class FrameFlags
         ((flags & HasCall) != 0 ? sizeof(uint) : 0) + ((flags & HasOrigin) != 0 ? Rpc.Origin.Size : 0);
 }
 
-/// <summary>Status carried by <see cref="FrameKind.Reply"/> frames.</summary>
+/// <summary>
+/// Status carried by <see cref="FrameKind.Reply"/> frames. A refusal at the edge may carry when to retry, in milliseconds,
+/// in the reply's <see cref="FrameHeader.Key"/> (0: no hint).
+/// </summary>
 public enum RpcStatus : byte
 {
     Ok = 0,
@@ -58,6 +61,8 @@ public enum RpcStatus : byte
     Disconnected = 6,
     /// <summary>The target shard or actor mailbox is full; nothing ran. The caller may back off and retry.</summary>
     Overloaded = 7,
+    /// <summary>The edge's admission refused the sender for now (a rate limit); nothing ran. Retry after the hint.</summary>
+    RateLimited = 8,
 }
 
 /// <summary>

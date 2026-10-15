@@ -31,6 +31,25 @@ internal static class ReplySinks
         sink.SendReply(callId, RpcStatus.Ok, FrameWriter.Rent(FrameHeader.Size));
 
     /// <summary>
+    /// Refuse <paramref name="callId"/> at the edge: a status-only reply with the time after which to retry (in the
+    /// reply's key, for clients) when the sink writes frames.
+    /// </summary>
+    public static void SendRefusal(this IReplySink sink, uint callId, RpcStatus status, TimeSpan retryAfter)
+    {
+        var reply = FrameWriter.Rent(FrameHeader.Size);
+        if (sink is IFrameSink frames && retryAfter > TimeSpan.Zero)
+        {
+            reply.SetCallId(callId);
+            reply.SetHeader(FrameKind.Reply, 0, 0, (long)Math.Ceiling(retryAfter.TotalMilliseconds), status);
+            frames.Send(reply.Frame);
+            reply.Dispose();
+            return;
+        }
+
+        sink.SendReply(callId, status, reply);
+    }
+
+    /// <summary>
     /// Answer <paramref name="callId"/> with an error <paramref name="status"/>: a status-only frame (the runtime's
     /// refusals, allocation-free), or with a <paramref name="message"/> (a handler's error).
     /// </summary>

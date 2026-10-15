@@ -68,6 +68,9 @@ public interface INodeContext
     /// The node advertises the scope in its membership card, so group messages reach the nodes that registered it.
     /// </summary>
     void HandleAddress<TAddr>(IAddressHandler handler) where TAddr : struct, IAddress;
+
+    /// <summary>Admit or refuse every message from outside before it is routed (<see cref="IIngressFilter"/>). Only from <see cref="NodeFeature.Start"/>.</summary>
+    void AddIngressFilter(IIngressFilter filter);
 }
 
 /// <summary>Receives the messages to one address type (<see cref="INodeContext.HandleAddress{TAddr}"/>).</summary>
