@@ -12,6 +12,15 @@ public sealed class ClientOptions
     /// <summary>Largest frame a client may send (what an untrusted client may make this node buffer).</summary>
     public int MaxFrameSize { get; set; } = 64 * 1024;
 
+    /// <summary>
+    /// Messages a client may send per second on average (0: no limit); beyond it requests are refused with
+    /// <see cref="Protocol.RpcStatus.RateLimited"/> and when to retry, one-way messages are dropped.
+    /// </summary>
+    public double MessagesPerSecond { get; set; }
+
+    /// <summary>Messages a client may send at once above <see cref="MessagesPerSecond"/>.</summary>
+    public double Burst { get; set; } = 100;
+
     /// <summary>Validity of a reconnect ticket; clients refresh theirs at half of it.</summary>
     public TimeSpan TicketLifetime { get; set; } = TimeSpan.FromMinutes(10);
 

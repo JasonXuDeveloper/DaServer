@@ -182,6 +182,20 @@ public class GatewayTests : ClusterTest
     }
 
     [Test]
+    public async Task ClientsOverTheirMessageRateAreRefusedWithARetryHint()
+    {
+        var gateway = await Start("gw", clients: static o => (o.MessagesPerSecond, o.Burst) = (1, 2));
+        await Start("game");
+        await Converged();
+        var client = await Connect(gateway);
+        Assert.That(await client.Ask(new Login(new PlayerId(9))), Is.True);
+        Assert.That(await client.Ask(new AddGold(1)), Is.EqualTo(1), "within the burst");
+        var refused = Assert.ThrowsAsync<RpcException>(async () => await client.Ask(new AddGold(1)));
+        Assert.That(refused!.Status, Is.EqualTo(RpcStatus.RateLimited));
+        Assert.That(refused.RetryAfter, Is.GreaterThan(TimeSpan.Zero).And.LessThanOrEqualTo(TimeSpan.FromSeconds(1)));
+    }
+
+    [Test]
     public async Task AnOversizedClientFrameClosesTheSession()
     {
         var gateway = await Start("gw", clients: static o => o.MaxFrameSize = 1024);

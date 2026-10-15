@@ -12,10 +12,17 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
 {
     private Node _node = null!;
     private volatile bool _stopped, _crashed;
+    private readonly TimerWheel<PendingClose> _graces = new(TimeSpan.FromMilliseconds(100)); // lost connections, under its lock
+    private Timer? _maintenance;
+
+    /// <summary>A lost connection whose actors learn it at the end of the reconnect grace (unless the client resumed).</summary>
+    private readonly record struct PendingClose(SessionRef Session, SessionBinding[] Bindings);
 
     private readonly ConcurrentDictionary<long, Session> _sessions = new();
     private readonly ConcurrentDictionary<long, GroupMembers> _groups = new();
     private readonly Lock _groupGate = new(); // membership changes (control path); fan-out takes only its group's lock
+    private readonly Stack<GroupMembers> _idleGroups = new(); // emptied groups for the next new ones (under the gate)
+    private const int MaxIdleGroups = 4096;
     private Listener? _listener;
     private GatewayHandler? _gatewayHandler;
     private byte[]? _ticketSecret; // reconnect tickets: null when the cluster has no secret
@@ -25,6 +32,9 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
 
     /// <summary>Connected client sessions.</summary>
     public int SessionCount => _sessions.Count;
+
+    /// <summary>The ids of the sessions now (tools and tests).</summary>
+    internal long[] SessionIds() => [.. _sessions.Keys];
 
     /// <summary>Where clients reach this node (after the node started).</summary>
     public ClientEndpoint Endpoint { get; private set; } = ClientEndpoint.Stay;
@@ -43,13 +53,17 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
         _listener = new Listener(new IPEndPoint(IPAddress.Parse(_node.Options.ListenAddress), options.Port), socket =>
         {
             var connection = new Connection(socket, _gatewayHandler, sessionOptions);
-            var session = new Session(context.NewOriginId(), connection); // a session is the origin of its messages
+            var session = new Session(context.NewOriginId(), connection) // a session is the origin of its messages
+            {
+                Limit = new TokenBucket(options.MessagesPerSecond, Math.Max(1, options.Burst)),
+            };
             connection.Tag = session;
             _sessions[session.Id] = session;
             lock (_groupGate) Join(session, ClientGroup.All.Id); // group 0 is a group like any other
             return connection;
         });
         _listener.Start();
+        _maintenance = new Timer(static s => ((ClientConnections)s!).Maintain(), this, 100, 100);
         Port = _listener.LocalEndPoint.Port;
         Endpoint = new ClientEndpoint(options.AdvertisedHost ?? _node.AdvertisedHost, Port);
         context.SetCardEntry(ClientKeys.Endpoint, $"{Endpoint.Host}:{Port}");
@@ -84,6 +98,7 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
 
     private void Close()
     {
+        _maintenance?.Dispose();
         _listener?.Dispose();
         foreach (var session in _sessions.Values) session.Connection.Close();
     }
@@ -185,14 +200,15 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
     /// <summary>Fan a frame out to every local session of a group (group 0 = every session). memcpy per session.</summary>
     private void DeliverToGroup(long groupId, ReadOnlySpan<byte> frame)
     {
-        if (_groups.TryGetValue(groupId, out var group)) group.Send(frame);
+        if (_groups.TryGetValue(groupId, out var group)) group.Send(groupId, frame);
     }
 
     /// <summary>Add a session to a group (once). Caller holds the gate.</summary>
     private void Join(Session session, long groupId)
     {
         if (session.Closed || session.Groups.ContainsKey(groupId)) return;
-        if (!_groups.TryGetValue(groupId, out var group)) _groups[groupId] = group = new GroupMembers(groupId);
+        if (!_groups.TryGetValue(groupId, out var group))
+            _groups[groupId] = group = (_idleGroups.TryPop(out var idle) ? idle : new GroupMembers()).For(groupId);
         group.Add(session);
     }
 
@@ -200,7 +216,7 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
     private void Leave(Session session, long groupId)
     {
         if (!session.Groups.ContainsKey(groupId) || !_groups.TryGetValue(groupId, out var group)) return;
-        if (group.Remove(session) == 0) _groups.TryRemove(groupId, out _);
+        if (group.Remove(session) == 0) group.EmptySince = Environment.TickCount64; // removed later if it stays empty
     }
 
     /// <summary>Drop the session from its groups and tell every actor it was bound to (<see cref="SessionClosed"/>).</summary>
@@ -223,14 +239,44 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
         var bindings = session.Bindings;
         if (bindings.Length == 0) return;
         if (session.Explicit || ReconnectGrace == TimeSpan.Zero) ReportClosed(sessionRef, bindings);
-        else _ = ReportClosedAfterGrace(sessionRef, bindings);
+        else
+            lock (_graces) _graces.Schedule(ReconnectGrace, new PendingClose(sessionRef, bindings));
     }
 
-    /// <summary>A lost connection: the client may resume within the grace (its actors then get SessionResync instead).</summary>
-    private async Task ReportClosedAfterGrace(SessionRef session, SessionBinding[] bindings)
+    /// <summary>Timer thread, every 100 ms: report the lost connections whose grace ended, drop long-empty groups.</summary>
+    private void Maintain()
     {
-        await Task.Delay(ReconnectGrace).ConfigureAwait(false);
-        if (!_stopped) ReportClosed(session, bindings);
+        var expired = new GraceExpired(this);
+        lock (_graces) _graces.Advance(ref expired);
+        if (Environment.TickCount64 >= _nextGroupSweep) SweepGroups();
+    }
+
+    /// <summary>
+    /// Empty groups stay in the table a while (a group emptied and joined again, as area-of-interest cells are, costs
+    /// nothing then); those empty for <see cref="EmptyGroupLifetimeMs"/> leave it for the pool. Bounds memory.
+    /// </summary>
+    private void SweepGroups()
+    {
+        long now = Environment.TickCount64;
+        _nextGroupSweep = now + EmptyGroupLifetimeMs;
+        lock (_groupGate)
+            foreach (var (id, group) in _groups)
+            {
+                if (group.Count != 0 || now - group.EmptySince < EmptyGroupLifetimeMs || id == ClientGroup.All.Id) continue;
+                _groups.TryRemove(id, out _);
+                if (_idleGroups.Count < MaxIdleGroups && group.Capacity <= GroupMembers.MaxPooledMembers) _idleGroups.Push(group);
+            }
+    }
+
+    private const long EmptyGroupLifetimeMs = 10_000;
+    private long _nextGroupSweep;
+
+    private readonly struct GraceExpired(ClientConnections clients) : ITimerHandler<PendingClose>
+    {
+        public void OnTimer(in PendingClose close)
+        {
+            if (!clients._stopped) clients.ReportClosed(close.Session, close.Bindings);
+        }
     }
 
     private void ReportClosed(SessionRef session, SessionBinding[] bindings)
@@ -402,6 +448,12 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
     private void OnClientMessage(Session session, in FrameHeader header, ReadOnlySpan<byte> frame)
     {
         uint replyId = FrameHeader.CallIdOf(in header, frame);
+        if (options.MessagesPerSecond > 0 && !session.Limit.TryTake(out var retryAfter)) // the connection's receive loop owns it
+        {
+            if (replyId != 0) session.Sink.SendRefusal(replyId, RpcStatus.RateLimited, retryAfter);
+            return;
+        }
+
         if (!MessageRegistry.TryGetClientMessage(header.MessageId, out var message))
         {
             if (replyId != 0) session.Sink.SendError(replyId, RpcStatus.Forbidden);
@@ -464,6 +516,9 @@ internal sealed class Session(long id, Connection connection)
     public Connection Connection { get; } = connection;
     public IReplySink Sink { get; } = new ConnectionReplySink(connection);
 
+    /// <summary>The client's message rate limit (<see cref="ClientOptions.MessagesPerSecond"/>; its receive loop owns it).</summary>
+    public TokenBucket Limit;
+
     private volatile SessionBinding[] _bindings = [];
 
     /// <summary>
@@ -525,11 +580,33 @@ internal sealed class Session(long id, Connection connection)
 /// nothing and allocates nothing. Lock order: group gate, group, connection send lock; <see cref="Connection.Send"/>
 /// never closes inline, so no close callback re-enters a group during a fan-out.
 /// </summary>
-internal sealed class GroupMembers(long id)
+internal sealed class GroupMembers
 {
     private readonly Lock _gate = new();
     private Session[] _members = new Session[4];
     private int _count;
+    private long _id;
+
+    /// <summary>Which group this is now (instances are pooled: an empty group's object serves the next new group).</summary>
+    public long Id => _id;
+
+    /// <summary>Members now (read under the gateway's group gate).</summary>
+    public int Count => _count;
+
+    /// <summary>When the group last became empty (<see cref="Environment.TickCount64"/>; under the gateway's group gate).</summary>
+    public long EmptySince;
+
+    /// <summary>Members arrays up to this length are pooled with their group object.</summary>
+    public const int MaxPooledMembers = 64;
+
+    public int Capacity => _members.Length;
+
+    /// <summary>Become group <paramref name="id"/> (an empty, pooled instance; under the gateway's group gate).</summary>
+    public GroupMembers For(long id)
+    {
+        lock (_gate) _id = id;
+        return this;
+    }
 
     public void Add(Session session)
     {
@@ -537,7 +614,7 @@ internal sealed class GroupMembers(long id)
         {
             if (_count == _members.Length) Array.Resize(ref _members, _count * 2);
             _members[_count] = session;
-            session.Groups[id] = _count++;
+            session.Groups[_id] = _count++;
         }
     }
 
@@ -546,23 +623,28 @@ internal sealed class GroupMembers(long id)
     {
         lock (_gate)
         {
-            session.Groups.Remove(id, out int slot);
+            session.Groups.Remove(_id, out int slot);
             var last = _members[--_count];
             _members[_count] = null!;
             if (slot != _count)
             {
                 _members[slot] = last;
-                last.Groups[id] = slot;
+                last.Groups[_id] = slot;
             }
 
             return _count;
         }
     }
 
-    public void Send(ReadOnlySpan<byte> frame)
+    /// <summary>
+    /// Send <paramref name="frame"/> to every member, if this is still group <paramref name="groupId"/> (a fan-out that
+    /// looked the group up just before it emptied and was reused must not reach the next group's members).
+    /// </summary>
+    public void Send(long groupId, ReadOnlySpan<byte> frame)
     {
         lock (_gate)
         {
+            if (_id != groupId) return;
             var members = _members;
             for (int i = 0; i < _count; i++) members[i].Connection.Send(frame);
         }

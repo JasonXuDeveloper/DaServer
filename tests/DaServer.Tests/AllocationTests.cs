@@ -99,6 +99,35 @@ public class AllocationTests : ClusterTest
     }
 
     [Test]
+    public async Task GroupChurnDoesNotAllocate()
+    {
+        // Sessions joining and leaving groups that come and go (area of interest cells as players move).
+        var gateway = await Start("gw", gateway: true, configure: o => o.GossipInterval = TimeSpan.FromHours(1));
+        for (int i = 0; i < 16; i++) await Connect(gateway);
+        await Eventually(() => gateway.SessionCount() == 16, "sessions");
+        var sessions = gateway.Feature<ClientConnections>()!.SessionIds().Select(id => new SessionRef(gateway.Id, id)).ToArray();
+
+        const int rounds = 5_000;
+        Churn(3 * rounds);
+        var meter = new AllocationMeter();
+        Churn(rounds);
+        long allocated = meter.Garbage;
+        Assert.That(allocated / (double)(rounds * sessions.Length * 2), Is.LessThan(1), $"{allocated} B for {rounds * sessions.Length * 2} joins and leaves");
+
+        void Churn(int count)
+        {
+            for (int round = 0; round < count; round++)
+            {
+                var group = ClientGroup.Of<GroupChurn>(round % 64); // groups emptied and created again
+                foreach (var session in sessions) gateway.Send(session, new JoinGroup(group));
+                foreach (var session in sessions) gateway.Send(session, new LeaveGroup(group));
+            }
+        }
+    }
+
+    private struct GroupChurn;
+
+    [Test]
     public async Task ClientCallsThroughAGatewayToAnotherNodeDoNotAllocate()
     {
         var gateway = await Start("gw", gateway: true, hosts: static _ => false, configure: o => o.GossipInterval = TimeSpan.FromHours(1));
