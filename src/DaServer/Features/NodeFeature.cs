@@ -86,6 +86,13 @@ public interface INodeContext
     void SetCardEntry(uint key, string value);
 
     /// <summary>
+    /// Report a gauge of this node (<c>daserver.clients.sessions</c>) on the DaServer meter: OpenTelemetry,
+    /// dotnet-counters and the Aspire dashboard see it. <paramref name="read"/> runs when a collector samples (any
+    /// thread). Only from <see cref="NodeFeature.Start"/>.
+    /// </summary>
+    void AddGauge(string name, string description, Func<long> read);
+
+    /// <summary>
     /// Run <paramref name="callback"/> on every shard's thread with its world (thread-safe; rare work such as reacting
     /// to a dead member: it allocates).
     /// </summary>

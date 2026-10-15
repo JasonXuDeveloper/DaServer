@@ -62,6 +62,7 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
         Endpoint = new ClientEndpoint(options.AdvertisedHost ?? _node.AdvertisedHost, Port);
         context.SetCardEntry(ClientKeys.Endpoint, $"{Endpoint.Host}:{Port}");
         context.AddPulse(ClientKeys.Sessions, () => _sessions.Count);
+        context.AddGauge("daserver.clients.sessions", "Connected client sessions", () => _sessions.Count);
     }
 
     /// <summary>Keys of what client-facing nodes publish: where clients connect, how many sessions they hold.</summary>

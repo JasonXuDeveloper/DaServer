@@ -61,6 +61,15 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
         _pulseSources = [.. _pulseSources, read];
     }
 
+    /// <summary>Gauges the node's features report (<see cref="INodeContext.AddGauge"/>).</summary>
+    internal (string Name, string Description, Func<long> Read)[] Gauges { get; private set; } = [];
+
+    void INodeContext.AddGauge(string name, string description, Func<long> read)
+    {
+        if (_registering == null) throw new InvalidOperationException("Gauges are added in NodeFeature.Start");
+        Gauges = [.. Gauges, (name, description, read)];
+    }
+
     void INodeContext.SetCardEntry(uint key, string value)
     {
         if (_registering == null) throw new InvalidOperationException("Card entries are set in NodeFeature.Start");

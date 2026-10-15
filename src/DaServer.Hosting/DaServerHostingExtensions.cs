@@ -1,3 +1,4 @@
+using DaServer.Features;
 using DaServer.Rpc;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -22,10 +23,7 @@ public static class DaServerHostingExtensions
     public static IHostApplicationBuilder AddDaServer(this IHostApplicationBuilder builder, string section = "DaServer")
     {
         builder.Services.Configure<NodeOptions>(builder.Configuration.GetSection(section));
-        var clients = builder.Configuration.GetSection($"{section}:Clients");
-        if (clients.Exists())
-            builder.Services.Configure<NodeOptions>(o => o.Features.Add(new DaServer.Clients.ClientConnections(
-                clients.Get<DaServer.Clients.ClientOptions>() ?? new DaServer.Clients.ClientOptions())));
+        builder.AddDaServerFeature<DaServer.Clients.ClientOptions>("Clients", static o => new DaServer.Clients.ClientConnections(o), section);
         builder.Services.AddSingleton(static sp =>
         {
             var options = sp.GetRequiredService<IOptions<NodeOptions>>().Value;
@@ -40,6 +38,20 @@ public static class DaServerHostingExtensions
             builder.Services.AddHostedService(sp => new NodeStatsLogger(sp.GetRequiredService<Node>(),
                 sp.GetRequiredService<ILogger<NodeStatsLogger>>(), statsInterval));
         builder.AddDaServerTelemetry();
+        return builder;
+    }
+
+    /// <summary>
+    /// Run a feature (<see cref="NodeFeature"/>) when its section <c>{section}:{name}</c> is configured: its options bind
+    /// from it (<c>DaServer__Clients__Port=7100</c> enables client connections). Built-in features are added by
+    /// <see cref="AddDaServer"/>; call this for your own.
+    /// </summary>
+    public static IHostApplicationBuilder AddDaServerFeature<TOptions>(this IHostApplicationBuilder builder, string name,
+        Func<TOptions, NodeFeature> create, string section = "DaServer") where TOptions : class, new()
+    {
+        var configuration = builder.Configuration.GetSection($"{section}:{name}");
+        if (configuration.Exists())
+            builder.Services.Configure<NodeOptions>(o => o.Features.Add(create(configuration.Get<TOptions>() ?? new TOptions())));
         return builder;
     }
 
@@ -64,10 +76,10 @@ public static class DaServerHostingExtensions
 /// <summary>Starts the node with the host and stops it gracefully (Leaving → drain → unload) on shutdown.</summary>
 internal sealed class NodeHostedService(Node node) : IHostedService
 {
-    public Task StartAsync(CancellationToken cancellationToken)
+    public async Task StartAsync(CancellationToken cancellationToken)
     {
-        NodeMetrics.Track(node);
-        return node.StartAsync(cancellationToken);
+        await node.StartAsync(cancellationToken);
+        NodeMetrics.Track(node); // after its features started: they have added their gauges
     }
 
     public Task StopAsync(CancellationToken cancellationToken) => node.StopAsync();
