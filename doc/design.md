@@ -19,7 +19,7 @@ Acceptance criteria and metrics are in [requirements.md](requirements.md); the r
 | Concept | What it is | Threading |
 |---|---|---|
 | **Node** | One process: a random `NodeId`, a cluster endpoint, optionally a client endpoint (gateway). It hosts every actor, service and system compiled into its project; there are no roles. | IO threads plus the shards it owns. |
-| **Shard** | A single-threaded executor: one thread, a lock-free inbox and an EasyEcs `World` holding everything else ([§9](#9-ecs-in-daserver)). A node runs N shards (default: one per core). | One dedicated thread. Every handler and system of the shard runs on it, so user code needs no locks. |
+| **Shard** | A single-threaded executor: one thread, a lock-free dispatch queue and an EasyEcs `World` holding everything else ([§9](#9-ecs-in-daserver)). A node runs N shards (default: one per core). | One dedicated thread. Every handler and system of the shard runs on it, so user code needs no locks. |
 | **Actor** | Keyed and stateful (player, map instance, room, guild): one loaded actor per id in the cluster, loaded on demand, turn-based. The loaded actor is an entity; its state is components (`Actor<TId, TState>`). | Its shard's thread. |
 | **Service** | Stateless (login, matchmaking, chat routing). One instance per shard; calls are load-balanced (local node first) and may overlap. | The shard thread that received the call. |
 | **Message** | A `[NinoType, Message]` struct; its `Flow` says whether clients send it or receive it. A request (`IRequest<TReply>`) is answered; anything else is one-way. Routed by its type to the handler: the sender never names the receiver's type. | Delivered to the handler's mailbox (actors) or shard (services). |
@@ -70,12 +70,12 @@ sequenceDiagram
     participant T as target shard
     C->>C: the message is serialized once into a pooled frame
     alt same node
-        C->>T: frame into the target shard's inbox (zero copy)
+        C->>T: frame into the target shard's dispatch queue (zero copy)
     else other node
         C->>L: frame copied into the link's batch buffer
-        L->>T: peer IO thread posts it to the target shard's inbox
+        L->>T: peer IO thread posts it to the target shard's dispatch queue
     end
-    T->>T: InboxSystem routes it to the actor's mailbox (or a service)
+    T->>T: DispatchSystem routes it to the actor's mailbox (or a service)
     T->>T: MailboxSystem runs the generated dispatcher, then the handler
     T-->>C: reply on the same path; the caller resumes on its own shard
 ```
@@ -121,7 +121,7 @@ What a request costs, and what keeps it low:
 
 | Technique | Effect |
 |---|---|
-| Wake on message | A shard waits on its inbox signal with a timeout set to the next tick, so message latency does not depend on the tick rate. Runtime systems run on every wake (`ShardMessages` group); simulation systems at the tick rate. |
+| Wake on message | A shard waits on its dispatch queue signal with a timeout set to the next tick, so message latency does not depend on the tick rate. Runtime systems run on every wake (`ShardMessages` group); simulation systems at the tick rate. |
 | At most two thread hops | Remote call: peer IO thread, then the target shard. Same-node calls skip the socket entirely; same-shard callers resume inline. |
 | No placement lookup | Rendezvous hashing over the gossiped view: every node computes the owner of a key locally. There is no directory service on the call path. |
 | Local first | Service handlers run on the calling node when it hosts them. |
@@ -136,14 +136,14 @@ that keeps session state as ECS components.
 
 | Layer | Guarantee |
 |---|---|
-| Ordering | FIFO per (sender → target actor): one link per node pair, one inbox per shard, one mailbox per actor. Messages of one sender keep their order (tests rely on it). |
+| Ordering | FIFO per (sender → target actor): one link per node pair, one dispatch queue per shard, one mailbox per actor. Messages of one sender keep their order (tests rely on it). |
 | Calls | At most once, with timeouts (`RpcStatus.Timeout`, `Disconnected`, `NotHosted`). Retrying is the caller's choice, and only for idempotent operations. |
 | Deadlines | A request carries its caller's remaining time; each hop turns it into a local deadline and a shard drops a request that expired before it ran (ADR-028). Work nobody waits for is not done. |
 | Messages | At most once. Events that must not be lost are written to storage by the publisher first (outbox) and re-published on recovery; DaServer does not hide a broker inside the call path. |
 | Single loaded actor | Rendezvous hashing over the `Up` nodes hosting the handler type: every node computes the same owner from the same view. A node loads an actor only if it is the owner in its own view; otherwise it forwards (hop limit 3) or answers `NotHosted`. When ownership changes, the old owner unloads (`OnUnload`, the persistence hook) and forwards its remaining mail. |
 | Sessions | A gateway owns its sockets. Bindings and groups live on the gateway; when a session closes, every actor it was bound to that handles `SessionClosed` receives it, so no actor keeps a dead session. |
 | Graceful shutdown | `SIGTERM` → `Leaving` (pushed to every member) → stop loading actors → drain mailboxes → unload actors → exit. |
-| Backpressure | Shard inboxes and actor mailboxes are bounded and refuse with `Overloaded` (ADR-027). Links are not paused (their replies would stall too, ADR-027). A slow client hits the per-connection send backlog bound (256 KB) and is disconnected; it reconnects and resynchronizes (ADR-035). |
+| Backpressure | Shard dispatch queues and actor mailboxes are bounded and refuse with `Overloaded` (ADR-027). Links are not paused (their replies would stall too, ADR-027). A slow client hits the per-connection send backlog bound (256 KB) and is disconnected; it reconnects and resynchronizes (ADR-035). |
 | Link resumption | A node link's stream survives disconnects (ADR-008): the sender keeps unacknowledged bytes, the new connection's Hello names the stream, the receiver answers how much it processed and the sender replays the rest before anything new. A network blip is a delay: nothing is lost or run twice, calls in flight keep waiting. Calls fail with `Disconnected` only when the stream cannot resume (peer restarted, unreachable, declared dead, or the window no longer holds what it needs). A client that loses its connection resumes its session on any gateway with a signed ticket; actors receive `SessionResync` instead of `SessionClosed` (ADR-036). |
 
 ## 6. Membership and discovery
@@ -253,7 +253,13 @@ inside a world.
 | Singleton | Data of one shard world (statistics, configuration). | Per-entity data. |
 | System | One per-tick responsibility; stateless; reads and writes components and singletons. | References to other systems, IO. |
 
-The shard runtime itself is ECS. `Shard` owns only the thread, the cross-thread inbox and the wake/tick loop:
+The shard runtime itself is ECS. `Shard` owns only the thread, the dispatch queue and the wake/tick loop.
+
+Messages pass two queues, as in Akka and Orleans (dispatcher, then mailbox). The **dispatch queue** is per shard and
+the only cross-thread handoff: IO threads, other shards and completed awaits post to it, because only the shard
+thread may touch ECS data. `DispatchSystem` drains it and sorts each frame into its actor's **mailbox** (a component).
+`MailboxSystem` runs mailboxes one turn at a time: while an actor awaits inside a handler, its own mail waits and the
+other actors of the shard keep running, so one queue could not serve both purposes.
 
 | Data | Kind | Meaning |
 |---|---|---|
@@ -270,7 +276,7 @@ The shard runtime itself is ECS. `Shard` owns only the thread, the cross-thread 
 
 ```mermaid
 flowchart LR
-    IN[inbox<br/>other threads post] --> I[InboxSystem<br/>route, complete requests,<br/>run continuations]
+    IN[dispatch queue<br/>other threads post] --> I[DispatchSystem<br/>route, complete requests,<br/>run continuations]
     I -->|Ready| M[MailboxSystem<br/>Ready, no Turn]
     I --> S[services]
     M -->|handler awaits: Turn| W((TurnWatcher))
@@ -346,5 +352,5 @@ node project is its business classes only.
 | Generator | Valid input compiles, every DAS rule fires from the analyzer, the entry point is generated only when missing, unrelated edits hit the incremental cache | `tests/DaServer.Tests` |
 | Integration | In-process clusters on loopback (`ClusterTest`): request semantics and ordering, turn-based actors, ECS systems over actor state, single loaded actor, failover, published messages (keyed, once per handler type, ordering, routing), gateway access by `Flow.FromClient`, binding isolation, broadcast (exact under churn), balancer, `SessionClosed` (close and gateway crash), backpressure, placement under suspicion | `tests/DaServer.Tests` |
 | Allocation | Steady-state cross-shard calls, keyed events, gateway fan-out and client calls through a gateway allocate nothing per message | `tests/DaServer.Tests` |
-| End to end | AppHost topology (login, game, 3 gateways, balancer) + `Sample.Bot` with 10k bots: fails on any gap, disconnect or p99 over the limit | `samples/` |
+| End to end | AppHost topology (login, game, 3 gateways, balancer) + `Sample.Bot` with 10k bots: fails on any gap, disconnect or p99 over the limit | `samples/mmo/` |
 | Benchmarks | BenchmarkDotNet on real loopback sockets: RPC at 1/64/1,024 outstanding calls (local and remote), keyed events (local and remote), group broadcast to 1k/5k client sockets, broadcast to everyone through 3 gateways (3k/9k) | `benchmarks/DaServer.Benchmark` |

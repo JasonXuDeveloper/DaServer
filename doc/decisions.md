@@ -281,6 +281,18 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
 - Consequences: simple and ordered with binds (ADR-022). Revisit when deployments run tens of gateways with small
   groups; the roadmap keeps the item.
 
+## ADR-045 DaServer is a general ECS distributed server framework
+- Context: the core had grown an MMO client edge (gateways, sessions, client groups, reconnect tickets, balancer,
+  `ClusterClient`, client message flow) and its samples sat at the top of `samples/`, so the framework read as a game
+  server rather than a framework.
+- Decision: DaServer is a general-purpose ECS distributed server framework for high performance and high
+  concurrency. The core (`src/DaServer`) offers ECS shards, actors and services, messages and RPC, membership,
+  placement, persistence and reload, plus extension points (node features, call origin, ingress, frame kinds, gossip
+  data, message filters). Scenario capabilities are optional modules built only on those public points (the client
+  edge becomes `DaServer.Gateway`, roadmap G1/G2); scenarios are samples (`samples/mmo`).
+- Consequences: nothing scenario-specific enters the core; a module that needs a core change gets a general
+  extension point, not a special case. Until G2 lands the gateway code still lives in the core assembly.
+
 ## ADR-044 Actors and services hold no fields (DAS007)
 - Context: an actor or service object is recreated whenever its actor loads, moves to another node or (later) its
   code is reloaded, and only components are persisted and handed over. A field on the object silently loses its value

@@ -49,13 +49,47 @@ reload); MMO roles (login, balancer, gateways, game, maps) exist only in samples
       `SessionClosed`/`SessionResync`, `ClientGroup` fan-out (`Push`/`Broadcast`), reconnect tickets, `ClusterClient`,
       balancer, `Flow.FromClient/ToClient` checks (DAS006 part), Aspire `AddGateways`/`AddBalancer`. Built only on
       public extension points; keeps zero allocation on fan-out (benchmark A/B before/after).
-- [ ] G3 Naming of the two message levels (agreed): the per-actor `Mailbox` component and `MailboxSystem` stay (the
+- [x] G3 Naming of the two message levels (agreed): the per-actor `Mailbox` component and `MailboxSystem` stay (the
       actor-model term: Erlang, Akka, Orleans). The shard's cross-thread queue becomes the dispatch queue and
       `InboxSystem` becomes `DispatchSystem` (Akka/Orleans "dispatcher": sorts frames into mailboxes or service calls,
       completes calls, runs continuations); `NodeOptions.ShardInboxCapacity` -> `DispatchQueueCapacity`. Two levels
       stay: only the shard thread touches ECS data, and an actor awaiting in a turn holds its own mail while others
       run. Document it in design.md.
 - [ ] G4 Docs: README/design describe the core first, the gateway module second, the MMO sample third.
+
+Step plan for G1/G2 (each step builds and keeps every test green; logic, docs, CI in separate commits):
+
+0. Baseline BenchmarkDotNet: Rpc, Message, Broadcast (1k/5k x 1/9), Scenario (3k/9k).
+1. `Origin(ulong NodeId, long Id)` in core: `FrameFlags.HasCaller` -> `HasOrigin` (raw 16-byte prefix),
+   `CallContext.Origin`, `Actor.TurnOrigin`, `ShardObject.Caller` replaces `CallerSession` (`SessionRef` converts
+   implicitly from `Origin` while it is still in core).
+2. Public plumbing on purpose (no InternalsVisibleTo for the module): `ConnectionReplySink`, `ReplySinks`,
+   `FrameWriter.Write<T>`/`WriteTarget` (replaces `MessageWriter`, also B4), `ActorType<TId>` (replaces
+   `ActorIds<TId>`), `TypeIds.Of<T>`, `ActorAddress`/`Actor.Address`, a public `CallTable` over the pending-call pool;
+   `ClusterClient` rewritten on public types only.
+3. Feature infrastructure, unused: `NodeFeature` (Configure frame kinds / ConfigureShard ECS / Start returns card
+   data / OnViewChanged / Connections / Stop(crashed)), `FeatureInfo` + `ServerRegistry.RegisterFeature`,
+   `FeatureSet` (sealed, slot-indexed) on `ICluster.Features`, `NodeOptions.Feature<T>()` + Hosting binding of
+   `DaServer:{Section}`, `INodeContext` (ingress Send/Ask with origin, SendFrame, CallNode, Post to shard),
+   `FeatureSetup.HandleFrames(kind, IFrameHandler)` (256-entry table), card `Features` + pulse `Connections`,
+   `MessageHandler.Filter` via `RegisterFilter<T>` (static, stateless). Core test with a toy feature.
+4. Gateway as a feature inside the DaServer assembly: (a) gateway card + immutable `GatewayPeer[]` snapshot, client
+   fields leave `ClusterMember`; (b) Push/Broadcast kinds (same numbers) + `SessionOp` frame, core `OnControl` keeps
+   core ops; (c) `BoundSessions` component + `SessionClosed`/`SessionResync` filters, dead-gateway close in the
+   feature, `ClientSessions`/`RecordSession`/`CloseSessionsOf` deleted; (d) `Push`/`Broadcast`/`JoinGroup`/
+   `LeaveGroup`/`Disconnect` become extensions, `this.BindSession`, `GatewayOptions` (`DaServer__Gateway__Port`,
+   ...), metric `daserver.connections`. Allocation tests after each sub-step.
+5. Attributes `[FromClient(AnyId)]` / `[ToClient]`; `Flow`/`AnyId` leave `[Message]`; `MessagesAssembly` ->
+   `DaServerRegistration` (module initializers of referenced assemblies run via HostGenerator anchors).
+6. Assembly move: `src/DaServer.Gateway` + `src/DaServer.Gateway.Generator` (client-message registration, DAS006
+   incl. `client.Register(x)` handler check), linked shared generator sources.
+7. Aspire split: core `AddDaServerCluster`/`AddNodes`; `src/DaServer.Gateway.Aspire` with `AddGateways`/
+   `AddBalancer`/`WithGateways` (namespace `Aspire.Hosting`).
+8. Tests split: core tests without Gateway; `tests/DaServer.Gateway.Tests`; architecture test (no
+   `*Session*|*Gateway*|*Client*` types in DaServer.dll).
+9. Benchmark A/B against step 0 (no regression; dispatch lighter), allocation tests < 1 B per delivery.
+10. Docs: ADR-045, design/README/samples/CLAUDE.md, node-to-node wire break noted. Later: `ShardFlush` group for
+    per-tick broadcast coalescing.
 
 ## Next: architecture borrowed from a studied game server, ET and Orleans (agreed scope, in this order)
 

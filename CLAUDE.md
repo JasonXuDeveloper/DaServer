@@ -1,8 +1,11 @@
 # DaServer
 
-.NET 10 framework for high-performance clusters (game servers: many gateways + many map/logic nodes, and other
-low-latency backends). Users write messages, actors and services with `[Handle]` methods, and ECS systems; source generators
-write the plumbing.
+**DaServer is a general-purpose ECS distributed server framework for high performance and high concurrency** (.NET 10).
+Users write messages, actors and services with `[Handle]` methods, and ECS systems; source generators write the
+plumbing. The core (`src/DaServer`) knows no application scenario: no game clients, sessions, gateways, logins or maps.
+Scenario-specific capabilities are optional modules (the client edge: `DaServer.Gateway`, roadmap G1/G2), and
+scenarios are samples (`samples/mmo`: login, balancer, gateways, game server, map servers). Nothing scenario-specific
+goes into the core.
 Code, comments, commits and docs are in English.
 
 **Start here when resuming work:** `doc/requirements.md` (what must hold, release checklist), `doc/roadmap.md` (what
@@ -25,10 +28,10 @@ EasyEcs comes from NuGet (`EasyEcsVersion` in `Directory.Build.props`). Use it a
 
 ```
 src/DaServer/              runtime (net10.0): Protocol/ Buffers/ Concurrency/ Net/ Rpc/ Runtime/ Cluster/ Gateway/ Client/
-  Runtime/Shard.cs         thread + cross-thread inbox + wake/tick loop (nothing else)
+  Runtime/Shard.cs         thread + dispatch queue (the cross-thread handoff) + wake/tick loop (nothing else)
   Runtime/ShardData.cs     shard ECS data: actor components and lifecycle tags (Mailbox, Ready, Turn, ...), singletons
   Runtime/ShardDispatch.cs routing/delivery/invoke operations shared by the runtime systems
-  Runtime/Systems/         runtime systems: Inbox, Turn, ServiceCall, Removal, Unload, Mailbox (ShardMessages group),
+  Runtime/Systems/         runtime systems: Dispatch, Turn, ServiceCall, Removal, Unload, Mailbox (ShardMessages group),
                            Rebalance (ShardRebalance), Idle (ShardIdleScan); each reacts to one lifecycle tag (ADR-037)
 src/DaServer.Generator/    incremental generators (MessageGenerator, HostGenerator incl. node entry point)
                            + DaServerAnalyzer (DAS001-007);
@@ -36,7 +39,7 @@ src/DaServer.Generator/    incremental generators (MessageGenerator, HostGenerat
 src/DaServer.Hosting/      Generic Host integration, configuration, OpenTelemetry (OTLP when configured), shutdown
 src/DaServer.Aspire/       Aspire hosting integration: AddDaServerCluster / AddNodes / AddGateways / AddBalancer /
                            WithGateways
-samples/                   Sample.Contracts / Sample.LoginServer / Sample.GameServer / Sample.MapServer / Sample.Gateway
+samples/mmo/               MMO scenario: Sample.Contracts / Sample.LoginServer / Sample.GameServer / Sample.MapServer / Sample.Gateway
                            (one project per server, no Program.cs,
                            no appsettings) / Sample.Bot (10k-bot e2e) /
                            Sample.AppHost (Aspire: run + publish)
@@ -75,9 +78,11 @@ doc/                       requirements.md, design.md, decisions.md, roadmap.md
 - Never keep a `ref` into ECS storage across an `await`; re-acquire after awaiting.
 - Actors are turn-based: one message at a time including its awaits (no interleaving). Calls in a cycle (A awaits B
   awaits A) deadlock until timeout: model such flows with one-way messages (`Send`/`Publish`).
-- Orchestration is the Aspire model (`samples/Sample.AppHost`); do not add hand-written compose/k8s files.
+- Orchestration is the Aspire model (`samples/mmo/Sample.AppHost`); do not add hand-written compose/k8s files.
 - Wire ids are generated (FNV-1a); never renumber by hand except `[WireId]` to resolve a reported collision.
 - No topology strings (roles, node names) in code: a node hosts what its project compiles (ADR-017).
+- The core is general (ADR-045): a feature needed by one kind of application goes into an optional module built on
+  public extension points, or into a sample; never into `src/DaServer`.
 - Business code sees `ICluster`, never `Node` (ADR-020).
 - Commits: logic, docs and CI in separate commits. The author is the repository owner; the committer is the
   environment's signing identity so the signature shows as Verified. No session links in commit messages.
