@@ -53,13 +53,7 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
         _listener = new Listener(new IPEndPoint(IPAddress.Parse(_node.Options.ListenAddress), options.Port), socket =>
         {
             var connection = new Connection(socket, _gatewayHandler, sessionOptions);
-            var session = new Session(context.NewOriginId(), connection) // a session is the origin of its messages
-            {
-                Limit = new TokenBucket(options.MessagesPerSecond, Math.Max(1, options.Burst)),
-            };
-            connection.Tag = session;
-            _sessions[session.Id] = session;
-            lock (_groupGate) Join(session, ClientGroup.All.Id); // group 0 is a group like any other
+            Open(connection);
             return connection;
         });
         _listener.Start();
@@ -100,7 +94,7 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
     {
         _maintenance?.Dispose();
         _listener?.Dispose();
-        foreach (var session in _sessions.Values) session.Connection.Close();
+        foreach (var session in _sessions.Values) session.Channel.Close();
     }
 
     /// <summary>Messages to the sessions, origins and client groups of this gateway.</summary>
@@ -164,7 +158,7 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
         else if (id == SessionOperations.Disconnect)
         {
             session.Explicit = true;
-            session.Connection.Close();
+            session.Channel.Close();
         }
         else
         {
@@ -194,7 +188,7 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
     private void DeliverToSession(long sessionId, ReadOnlySpan<byte> frame)
     {
         if (_sessions.TryGetValue(sessionId, out var session))
-            session.Connection.Send(frame);
+            session.Channel.Send(frame);
     }
 
     /// <summary>Fan a frame out to every local session of a group (group 0 = every session). memcpy per session.</summary>
@@ -299,7 +293,7 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
             DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), (long)options.TicketLifetime.TotalMilliseconds);
         var w = FrameWriter.Rent(FrameHeader.Size + size);
         w.WriteRaw(ticket);
-        w.SendControl(session.Connection, ControlOp.Ticket);
+        w.SendControl((IFrameSender)session.Sink, ControlOp.Ticket);
     }
 
     /// <summary>
@@ -389,11 +383,41 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
 
     // ------------------------------------------------------------------ client connections
 
-    private sealed class GatewayHandler(ClientConnections node) : IConnectionHandler
+    /// <summary>
+    /// A client connected over another transport (a WebSocket of the HTTP plane): it gets a session like a TCP client.
+    /// The channel's frames go to <see cref="Channels"/>.
+    /// </summary>
+    public void Open(IFrameChannel channel)
     {
-        public void OnFrame(Connection connection, in FrameHeader header, ReadOnlySpan<byte> frame)
+        var session = new Session(((INodeContext)_node).NewOriginId(), channel) // a session is the origin of its messages
         {
-            var session = (Session)connection.Tag!;
+            Limit = new TokenBucket(options.MessagesPerSecond, Math.Max(1, options.Burst)),
+        };
+        channel.Tag = session;
+        _sessions[session.Id] = session;
+        lock (_groupGate) Join(session, ClientGroup.All.Id); // group 0 is a group like any other
+    }
+
+    /// <summary>Largest frame a client may send (<see cref="ClientOptions.MaxFrameSize"/>).</summary>
+    public int MaxFrameSize => options.MaxFrameSize;
+
+    /// <summary>Bytes a client's channel may fall behind before it is closed (a slow consumer, like on TCP).</summary>
+    public int MaxPendingSendBytes { get; } = ConnectionOptions.ForClients().MaxPendingSendBytes;
+
+    /// <summary>Receives the frames of channels opened with <see cref="Open"/>.</summary>
+    public IChannelHandler Channels => _gatewayHandler!;
+
+    /// <summary>The frames of every client channel, TCP or not.</summary>
+    private sealed class GatewayHandler(ClientConnections node) : IConnectionHandler, IChannelHandler
+    {
+        public void OnFrame(Connection connection, in FrameHeader header, ReadOnlySpan<byte> frame) =>
+            OnFrame((IFrameChannel)connection, in header, frame);
+
+        public void OnClosed(Connection connection, Exception? error) => OnClosed((IFrameChannel)connection, error);
+
+        public void OnFrame(IFrameChannel channel, in FrameHeader header, ReadOnlySpan<byte> frame)
+        {
+            var session = (Session)channel.Tag!;
             switch (header.Kind)
             {
                 case FrameKind.Message:
@@ -403,14 +427,14 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
                     node.OnClientControl(session, in header, frame);
                     break;
                 default:
-                    connection.Close(new InvalidOperationException("Unexpected frame kind from client: " + header.Kind));
+                    channel.Close(new InvalidOperationException("Unexpected frame kind from client: " + header.Kind));
                     break;
             }
         }
 
-        public void OnClosed(Connection connection, Exception? error)
+        public void OnClosed(IFrameChannel channel, Exception? error)
         {
-            if (connection.Tag is Session session)
+            if (channel.Tag is Session session)
                 node.OnSessionClosed(session);
         }
     }
@@ -434,7 +458,7 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
                 if (callId != 0) session.Sink.SendOk(callId);
                 break;
             default:
-                session.Connection.Close(new InvalidOperationException("Unexpected control operation from client: " + header.MessageId));
+                session.Channel.Close(new InvalidOperationException("Unexpected control operation from client: " + header.MessageId));
                 break;
         }
     }
@@ -510,11 +534,11 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
 internal readonly record struct SessionBinding(uint HandlerTypeId, long Key);
 
 /// <summary>A connected client on this gateway.</summary>
-internal sealed class Session(long id, Connection connection)
+internal sealed class Session(long id, IFrameChannel channel)
 {
     public long Id { get; } = id;
-    public Connection Connection { get; } = connection;
-    public IReplySink Sink { get; } = new ConnectionReplySink(connection);
+    public IFrameChannel Channel { get; } = channel;
+    public IReplySink Sink { get; } = new ChannelSink(channel);
 
     /// <summary>The client's message rate limit (<see cref="ClientOptions.MessagesPerSecond"/>; its receive loop owns it).</summary>
     public TokenBucket Limit;
@@ -577,7 +601,7 @@ internal sealed class Session(long id, Connection connection)
 /// The sessions of one client group on this gateway. Membership changes (under the gateway's group gate) and fan-out
 /// both take the group's lock, so a fan-out reaches every session that joined before it (a Bind then a push on one
 /// link: the push reaches the session). Join and leave are O(1) (slot per session, swap-remove); a broadcast copies
-/// nothing and allocates nothing. Lock order: group gate, group, connection send lock; <see cref="Connection.Send"/>
+/// nothing and allocates nothing. Lock order: group gate, group, connection send lock; <see cref="IFrameChannel.Send"/>
 /// never closes inline, so no close callback re-enters a group during a fan-out.
 /// </summary>
 internal sealed class GroupMembers
@@ -646,7 +670,7 @@ internal sealed class GroupMembers
         {
             if (_id != groupId) return;
             var members = _members;
-            for (int i = 0; i < _count; i++) members[i].Connection.Send(frame);
+            for (int i = 0; i < _count; i++) members[i].Channel.Send(frame);
         }
     }
 
@@ -655,4 +679,10 @@ internal sealed class GroupMembers
     {
         lock (_gate) return _members.AsSpan(0, _count).ToArray();
     }
+}
+
+/// <summary>Replies and control frames to a client's channel.</summary>
+internal sealed class ChannelSink(IFrameChannel channel) : IFrameSink
+{
+    public void Send(ReadOnlySpan<byte> frame) => channel.Send(frame);
 }

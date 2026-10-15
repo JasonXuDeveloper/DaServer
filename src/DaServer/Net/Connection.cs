@@ -74,7 +74,7 @@ public sealed class ConnectionOptions
 /// <para>Receive: frames are parsed in place and handed to <see cref="IConnectionHandler.OnFrame"/>.</para>
 /// Steady state allocates nothing: buffers come from <see cref="BufferPool"/>, the two loops are allocated once.
 /// </summary>
-public sealed class Connection : IFrameSender
+public sealed class Connection : IFrameSender, IFrameChannel
 {
     private static readonly InvalidOperationException SlowConsumer =
         new("Send backlog exceeded MaxPendingSendBytes (slow consumer)");
