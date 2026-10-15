@@ -281,6 +281,16 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
 - Consequences: simple and ordered with binds (ADR-022). Revisit when deployments run tens of gateways with small
   groups; the roadmap keeps the item.
 
+## ADR-042 A node declared dead drops its actors without OnUnload
+- Context: a node that learns it was declared dead (a partition, a long pause) unloaded its actors normally, so
+  `OnUnload` saved their state after the cluster had already given their keys to other nodes: a stale save could
+  overwrite the new owner's.
+- Decision: on Dead every loaded actor is tagged `Fenced` and removed without `OnUnload`, as soon as its running turn
+  ends; its mail is routed again to the new owner. The node then rejoins with a higher incarnation (as Orleans fences a
+  silo that sees itself dead).
+- Consequences: work since the actor's last save is lost on that node, which is the price of a partition. A turn in
+  flight still finishes; stores that must reject late writes need versioned saves (future persistence helpers).
+
 ## ADR-041 One verb per target
 - Context: `Send` meant four things by the type of its first argument: an actor (`Send(key, m)`), a service
   (`Send(m)`), a client session (`Send(session, m)`) and a client group (`Send(group, m)`). A call site did not say
