@@ -79,6 +79,10 @@ doc/                       requirements.md, design.md, decisions.md, roadmap.md
 - Actors are turn-based: one message at a time including its awaits (no interleaving). Calls in a cycle (A awaits B
   awaits A) deadlock until timeout: model such flows with one-way messages (`Send`/`Publish`).
 - Orchestration is the Aspire model (`samples/mmo/Sample.AppHost`); do not add hand-written compose/k8s files.
+  What Aspire does not publish (probes, grace periods, Compose health checks, HPA/PDB) is added by `DaServer.Aspire`
+  through the publisher hooks (`PublishAsKubernetesService`, `PublishAsDockerComposeService`), never by hand.
+  Scaling decisions belong to the platform (HPA/KEDA); the framework makes joining and leaving safe, it is not an
+  autoscaler. `DaServer.Hosting.AddDaServer` is the framework's service defaults: no ASP.NET Core dependency in nodes.
 - Wire ids are generated (FNV-1a); never renumber by hand except `[WireId]` to resolve a reported collision.
 - No topology strings (roles, node names) in code: a node hosts what its project compiles (ADR-017).
 - The core is general (ADR-045): a feature needed by one kind of application goes into an optional module built on
