@@ -1,10 +1,10 @@
 namespace DaServer.Rpc;
 
 /// <summary>
-/// Stable wire ids. Method id = FNV-1a 32 of "Namespace.Interface.Method(ParamType,...)".
-/// The source generator computes the same value at compile time; keep both implementations identical.
+/// Stable wire ids: FNV-1a 32 of a message type's full name (UTF-16 code units), never 0.
+/// The analyzer computes the same value to report collisions at build time; keep both implementations identical.
 /// </summary>
-public static class RpcIds
+internal static class WireIds
 {
     private const uint FnvOffset = 2166136261;
     private const uint FnvPrime = 16777619;
@@ -22,4 +22,10 @@ public static class RpcIds
         // 0 is reserved for "no method"
         return hash == 0 ? 1u : hash;
     }
+}
+
+/// <summary>Id of type <typeparamref name="T"/>: FNV-1a of its full name, computed once (handler types, group scopes).</summary>
+internal static class TypeId<T>
+{
+    public static readonly uint Value = WireIds.Fnv1a(typeof(T).FullName ?? typeof(T).Name);
 }

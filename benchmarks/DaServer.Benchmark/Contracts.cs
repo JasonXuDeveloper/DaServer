@@ -45,9 +45,8 @@ public sealed class Room : Actor
         return true;
     }
 
-    private static readonly uint Cells = RpcIds.Fnv1a("DaServer.Benchmark.Cells");
 
-    private ClientGroup GroupOf(int index) => index == 0 ? Group : ClientGroup.Of(Cells, Key * 16 + index);
+    private ClientGroup GroupOf(int index) => index == 0 ? Group : ClientGroup.Of<Cells>(Key * 16 + index);
 }
 
 /// <summary>Client side: counts the ticks it receives.</summary>
@@ -55,3 +54,6 @@ internal sealed class Receiver(Countdown countdown)
 {
     [Handle] public void On(Tick _) => countdown.Signal();
 }
+
+/// <summary>Group scope of the benchmark's extra broadcast groups.</summary>
+public struct Cells;

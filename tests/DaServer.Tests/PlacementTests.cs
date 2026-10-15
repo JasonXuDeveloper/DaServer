@@ -10,8 +10,8 @@ public class PlacementTests
         NodeId = id, Name = "n" + id, Status = status,
         Handlers =
         [
-            new HostedHandler { MessageId = Message, HandlerTypeId = Actor, Actor = true },
-            new HostedHandler { MessageId = Message, HandlerTypeId = Service, Actor = false },
+            new HostedMessage { MessageId = Message, HandlerTypeId = Actor, Actor = true },
+            new HostedMessage { MessageId = Message, HandlerTypeId = Service, Actor = false },
         ],
     };
 

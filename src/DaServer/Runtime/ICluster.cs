@@ -11,13 +11,13 @@ public interface ICluster : IMessageSender
     ulong NodeId { get; }
 
     /// <summary>
-    /// Publish an event (a <c>[NinoType]</c> struct) to every service handling it (<see cref="HandleAttribute">[Handle]</see>):
+    /// Publish a message (a <c>[NinoType, Message]</c> struct) to every service handling it (<see cref="HandleAttribute">[Handle]</see>):
     /// serialized once, one frame per handler type. The publisher never depends on its handlers.
     /// </summary>
-    void Publish<TEvent>(in TEvent e) where TEvent : struct;
+    void Publish<T>(in T e) where T : struct;
 
     /// <summary>Publish an event to every service handling it and to every actor of <paramref name="key"/> handling it.</summary>
-    void Publish<TEvent>(long key, in TEvent e) where TEvent : struct;
+    void Publish<T>(long key, in T e) where T : struct;
 
     /// <summary>Push a message to one client session (its client handles it with a [Handle] method).</summary>
     void Push<T>(SessionRef session, in T message) where T : struct;

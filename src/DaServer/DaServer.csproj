@@ -14,6 +14,7 @@
     </ItemGroup>
 
     <ItemGroup>
+        <InternalsVisibleTo Include="DaServer.Hosting" />
         <InternalsVisibleTo Include="DaServer.Tests" />
         <InternalsVisibleTo Include="DaServer.Benchmark" />
     </ItemGroup>

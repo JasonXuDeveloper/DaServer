@@ -7,7 +7,7 @@ namespace DaServer.Runtime;
 /// <para>Loop: on every wake the <see cref="ShardMessages"/> group runs (so messages never wait for a tick); at the
 /// tick rate the default group runs (simulation systems). User code never needs locks.</para>
 /// </summary>
-public sealed class Shard
+internal sealed class Shard
 {
     [ThreadStatic] private static Shard? _current;
 
@@ -211,12 +211,12 @@ public sealed class Shard
         World.AddSingleton<TurnWatchers>() = new TurnWatchers(new Stack<TurnWatcher>());
 
         var services = new Dictionary<uint, object>();
-        foreach (var impl in Node.HostedHandlerTypes)
+        foreach (var handlerType in Node.HostedHandlerTypes)
         {
-            if (impl.IsActor) continue;
-            var instance = impl.Factory();
+            if (handlerType.IsActor) continue;
+            var instance = handlerType.Factory();
             if (instance is ShardObject shardObject) shardObject.Shard = this;
-            services[impl.Id] = instance;
+            services[handlerType.Id] = instance;
         }
 
         World.AddSingleton<ServiceDirectory>() = new ServiceDirectory(services);

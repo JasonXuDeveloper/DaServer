@@ -36,7 +36,6 @@ public struct MapGrid() : IComponent
     /// <summary>Changes go out every other tick (10 Hz): half the messages, clients extrapolate meanwhile.</summary>
     public const int SyncEveryTicks = 2;
 
-    private static readonly uint Scope = RpcIds.Fnv1a("Sample.MapServer.MapGrid");
 
     public readonly List<Entity>?[] Avatars = new List<Entity>?[Side * Side];
     public readonly List<Moved>?[] Changes = new List<Moved>?[Side * Side];
@@ -47,7 +46,7 @@ public struct MapGrid() : IComponent
         Math.Min((int)(p.Y / CellSize), Side - 1) * Side + Math.Min((int)(p.X / CellSize), Side - 1);
 
     /// <summary>The sessions that see <paramref name="cell"/> of map <paramref name="map"/>.</summary>
-    public static ClientGroup Viewers(long map, int cell) => ClientGroup.Of(Scope, map * Side * Side + cell);
+    public static ClientGroup Viewers(long map, int cell) => ClientGroup.Of<MapGrid>(map * Side * Side + cell);
 
     /// <summary>The cell at (<paramref name="dx"/>, <paramref name="dy"/>) from <paramref name="cell"/>; -1 outside the map.</summary>
     public static int Offset(int cell, int dx, int dy)

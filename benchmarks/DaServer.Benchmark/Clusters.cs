@@ -34,7 +34,7 @@ internal static class Clusters
     /// <summary>First key from <paramref name="start"/> whose <typeparamref name="TActor"/> lives on <paramref name="owner"/> in <paramref name="node"/>'s view.</summary>
     public static long KeyOwnedBy<TActor>(Node node, Node owner, long start = 1) where TActor : Actor
     {
-        uint handlerType = RpcIds.Fnv1a(typeof(TActor).FullName!);
+        uint handlerType = TypeId<TActor>.Value;
         long key = start;
         while (node.View.HandlerTypeOwner(handlerType, key)!.NodeId != owner.Id) key++;
         return key;

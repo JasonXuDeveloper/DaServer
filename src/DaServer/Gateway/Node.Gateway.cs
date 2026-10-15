@@ -2,7 +2,7 @@ namespace DaServer.Runtime;
 
 // Gateway capability (NodeOptions.ClientPort): client sessions, routing of client messages into the cluster, push and
 // group broadcast fan-out. Client messages are routed by patching header fields; payloads are never deserialized here.
-public sealed partial class Node
+sealed partial class Node
 {
     private readonly ConcurrentDictionary<long, Session> _sessions = new();
     private readonly ConcurrentDictionary<long, GroupMembers> _groups = new();
@@ -188,7 +188,7 @@ public sealed partial class Node
         {
             case ControlOp.Bind:
             {
-                // A bound session also joins the actor's group, so Cluster.Send(actor.Group, ..) reaches it.
+                // A bound session also joins the actor's group, so Cluster.Broadcast(actor.Group, ..) reaches it.
                 lock (_groupGate)
                 {
                     long previous = session.Bind(scope, value);
@@ -225,7 +225,7 @@ public sealed partial class Node
         return RpcStatus.Ok;
     }
 
-    /// <summary>Add a session to a group (once). CallerSession holds the gate.</summary>
+    /// <summary>Add a session to a group (once). Caller holds the gate.</summary>
     private void Join(Session session, long groupId)
     {
         if (session.Closed || session.Groups.ContainsKey(groupId)) return;
@@ -233,7 +233,7 @@ public sealed partial class Node
         group.Add(session);
     }
 
-    /// <summary>Remove a session from a group; empty groups are dropped (bounded memory). CallerSession holds the gate.</summary>
+    /// <summary>Remove a session from a group; empty groups are dropped (bounded memory). Caller holds the gate.</summary>
     private void Leave(Session session, long groupId)
     {
         if (!session.Groups.ContainsKey(groupId) || !_groups.TryGetValue(groupId, out var group)) return;

@@ -39,7 +39,7 @@ public sealed class Map : Actor<MapState>
         if (!State.Avatars.ContainsKey(session))
         {
             // Spread over the map by player id (a real game reads the saved position).
-            uint h = RpcIds.Fnv1a(playerId.ToString());
+            ulong h = (ulong)playerId * 0x9E3779B97F4A7C15UL >> 32;
             var spawn = new Position(h % 1000 / 1000f * MapGrid.Size, h / 1000 % 1000 / 1000f * MapGrid.Size);
             State.Avatars[session] = World.CreateEntity(spawn, new Velocity(), new Avatar(playerId, Entity, session));
             // PlacementSystem puts it into the grid on the next tick; MotionSyncSystem tells its viewers.

@@ -24,10 +24,13 @@ public readonly partial record struct ClientGroup(long Id)
     public static readonly ClientGroup All = new(0);
 
     /// <summary>
-    /// The group of <paramref name="key"/> within <paramref name="scope"/> (e.g. an actor handler type id): a 64-bit
-    /// mix of both, never <see cref="All"/>.
+    /// The group of <paramref name="key"/> within the scope <typeparamref name="TScope"/>, any type naming a feature
+    /// (<c>ClientGroup.Of&lt;MapGrid&gt;(cell)</c>). For an actor type it is that actor's <c>Group</c>.
     /// </summary>
-    public static ClientGroup Of(uint scope, long key)
+    public static ClientGroup Of<TScope>(long key) => Of(TypeId<TScope>.Value, key);
+
+    /// <summary>The group of <paramref name="key"/> within <paramref name="scope"/>: a 64-bit mix of both, never <see cref="All"/>.</summary>
+    internal static ClientGroup Of(uint scope, long key)
     {
         ulong x = ((ulong)scope << 32 | scope) ^ (ulong)key;
         x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9UL; // splitmix64 finalizer: neighbouring keys spread over the range

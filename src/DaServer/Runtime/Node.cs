@@ -7,7 +7,7 @@ namespace DaServer.Runtime;
 /// One process of the cluster: owns the shards, the cluster listener and links, membership and placement, and routes
 /// every message (<see cref="ICluster"/>).
 /// </summary>
-public sealed partial class Node : ICluster, IAsyncDisposable
+internal sealed partial class Node : ICluster, IAsyncDisposable
 {
     private readonly ConcurrentDictionary<(string Host, int Port), PeerLink> _links = new();
     private PeerLink[] _linkList = [];
@@ -148,7 +148,7 @@ public sealed partial class Node : ICluster, IAsyncDisposable
 
     /// <summary>Hosted handler type with placement/routing id <paramref name="handlerTypeId"/>, or null.</summary>
     internal HandlerTypeInfo? HandlerTypeById(uint handlerTypeId) =>
-        _handlerTypeById.TryGetValue(handlerTypeId, out var impl) ? impl : null;
+        _handlerTypeById.TryGetValue(handlerTypeId, out var handlerType) ? handlerType : null;
 
     /// <summary>
     /// The hosted handler type answering requests of <paramref name="messageId"/> sent to an actor or a service
@@ -156,7 +156,7 @@ public sealed partial class Node : ICluster, IAsyncDisposable
     /// or several of that kind handle it (an event: published to all of them, never asked).
     /// </summary>
     internal HandlerTypeInfo? RequestHandler(uint messageId, bool actor) =>
-        _requestHandlers.TryGetValue(RequestKey(messageId, actor), out var impl) ? impl : null;
+        _requestHandlers.TryGetValue(RequestKey(messageId, actor), out var handlerType) ? handlerType : null;
 
     private static ulong RequestKey(uint messageId, bool actor) => (ulong)messageId << 1 | (actor ? 1UL : 0UL);
 
@@ -167,15 +167,15 @@ public sealed partial class Node : ICluster, IAsyncDisposable
         var byId = new Dictionary<uint, HandlerTypeInfo>();
         var requests = new Dictionary<ulong, HandlerTypeInfo?>();
         var hosted = new List<HandlerTypeInfo>();
-        foreach (var impl in ServerRegistry.HandlerTypes)
+        foreach (var handlerType in ServerRegistry.HandlerTypes)
         {
-            if (hosts != null && !hosts(impl.Type)) continue;
-            hosted.Add(impl);
-            byId[impl.Id] = impl;
-            foreach (var handler in impl.Handlers.All)
+            if (hosts != null && !hosts(handlerType.Type)) continue;
+            hosted.Add(handlerType);
+            byId[handlerType.Id] = handlerType;
+            foreach (var handler in handlerType.Handlers.All)
             {
-                ulong key = RequestKey(handler.MessageId, impl.IsActor);
-                requests[key] = requests.ContainsKey(key) ? null : impl;
+                ulong key = RequestKey(handler.MessageId, handlerType.IsActor);
+                requests[key] = requests.ContainsKey(key) ? null : handlerType;
             }
         }
 
@@ -191,12 +191,12 @@ public sealed partial class Node : ICluster, IAsyncDisposable
     }
 
     /// <summary>What this node advertises in membership: the messages its handler types handle.</summary>
-    internal HostedHandler[] AdvertisedHandlers()
+    internal HostedMessage[] AdvertisedHandlers()
     {
-        var handlers = new List<HostedHandler>();
-        foreach (var impl in HostedHandlerTypes)
-        foreach (var handler in impl.Handlers.All)
-            handlers.Add(new HostedHandler { MessageId = handler.MessageId, HandlerTypeId = impl.Id, Actor = impl.IsActor });
+        var handlers = new List<HostedMessage>();
+        foreach (var handlerType in HostedHandlerTypes)
+        foreach (var handler in handlerType.Handlers.All)
+            handlers.Add(new HostedMessage { MessageId = handler.MessageId, HandlerTypeId = handlerType.Id, Actor = handlerType.IsActor });
         return handlers.ToArray();
     }
 

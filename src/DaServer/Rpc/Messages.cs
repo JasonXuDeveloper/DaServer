@@ -125,7 +125,7 @@ public readonly partial record struct SessionResync(SessionRef Session, SessionR
 public static class MessageType<T> where T : struct
 {
     public static readonly uint Id = typeof(T).GetCustomAttribute<WireIdAttribute>()?.Id ??
-                                     RpcIds.Fnv1a(typeof(T).FullName ?? typeof(T).Name);
+                                     WireIds.Fnv1a(typeof(T).FullName ?? typeof(T).Name);
 }
 
 /// <summary>
@@ -223,14 +223,11 @@ public static class MessageRegistry
     public static MessageHandlers HandlersOf(Type type)
     {
         if (Volatile.Read(ref _handlerTypes).TryGetValue(type, out var handlers)) return handlers;
-        RuntimeHelpersEnsure(type);
+        RuntimeHelpers.RunModuleConstructor(type.Module.ModuleHandle); // the assembly's generated registration
         return Volatile.Read(ref _handlerTypes).TryGetValue(type, out handlers)
             ? handlers
             : throw new InvalidOperationException($"{type} has no [Handle] methods (is the DaServer generator referenced by its assembly?)");
     }
-
-    private static void RuntimeHelpersEnsure(Type type) =>
-        System.Runtime.CompilerServices.RuntimeHelpers.RunModuleConstructor(type.Module.ModuleHandle);
 }
 
 /// <summary>Serialization of a message into a pooled frame (shared by the server and the client senders).</summary>

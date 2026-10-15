@@ -29,7 +29,7 @@ public static class NodeMetrics
             description: "Requests dropped unrun because their caller had already timed out");
     }
 
-    public static void Track(Node node)
+    internal static void Track(Node node)
     {
         lock (Nodes) Nodes.Add(node);
     }
