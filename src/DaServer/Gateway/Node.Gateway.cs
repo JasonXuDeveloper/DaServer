@@ -431,7 +431,7 @@ public sealed partial class Node
     }
 
     /// <summary>
-    /// Validate and route a client message (<see cref="ClientMessageAttribute"/> types only) to its handler: a service,
+    /// Validate and route a client message (<see cref="Flow.FromClient"/> messages only) to its handler: a service,
     /// or an actor on the key bound to the session (or the key the client chose: AnyKey). The caller session is
     /// prepended for the handler (<c>CallerSession</c>).
     /// </summary>

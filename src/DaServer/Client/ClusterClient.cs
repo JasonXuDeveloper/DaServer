@@ -16,8 +16,8 @@ using Nino.Core;
 namespace DaServer.Client;
 
 /// <summary>
-/// Client connection to a gateway (game client, bot, tool): sends <see cref="ClientMessageAttribute">[ClientMessage]</see>
-/// types (<c>client.Send(new Move(..))</c>, <c>await client.Ask(new GetInfo())</c>) and dispatches the messages servers
+/// Client connection to a gateway (game client, bot, tool): sends <see cref="Flow.FromClient"/> messages
+/// (<c>client.Send(new Move(..))</c>, <c>await client.Ask(new GetInfo())</c>) and dispatches the messages servers
 /// push to the [Handle] methods of registered handler objects (<see cref="Register"/>). When the connection is lost it
 /// reconnects on its own and resumes its session with the gateway's reconnect ticket (<see cref="Reconnected"/>).
 /// </summary>
@@ -168,10 +168,10 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IAsyncDi
 
     // ------------------------------------------------------------------ IMessageSender
 
-    /// <summary>A [ClientMessage] to the actor of <paramref name="key"/> (AnyKey messages: the client chooses the key).</summary>
+    /// <summary>A <see cref="Flow.FromClient"/> message to the actor of <paramref name="key"/> (AnyKey messages: the client chooses the key).</summary>
     public void Send<T>(long key, in T message) where T : struct => Send(MessageWriter.Write(in message), MessageType<T>.Id, key, null);
 
-    /// <summary>A [ClientMessage] to its service, or to the actor bound to this client's session.</summary>
+    /// <summary>A <see cref="Flow.FromClient"/> message to its service, or to the actor bound to this client's session.</summary>
     public void Send<T>(in T message) where T : struct => Send(MessageWriter.Write(in message), MessageType<T>.Id, 0, null);
 
     public ValueTask<TReply> Ask<TRequest, TReply>(long key, in TRequest request) where TRequest : struct, IRequest<TReply>
