@@ -271,6 +271,10 @@ interlocked), `SignedToken` (content plus issued/expiry times, HMAC-SHA256 with 
 admission tokens, internal HTTP auth). Timers are data too: `TimerWheel<T>` (a hashed wheel owned by one thread:
 O(1) schedule, cancel and fire, allocation-free) is advanced by its owner's loop.
 
+On the shard, generated dispatchers run the dispatch-stage filters after deserializing and before the handler
+(`MessageFilters.Register<T>(filter)` per message type, `MessageFilters.Register(IMessageFilter)` for all): a status
+other than `Ok` refuses the message (a request gets it as its reply). Without filters the check is two array lengths.
+
 ## 9. ECS in DaServer
 
 Business code and the runtime follow the same ECS rules (EasyEcs `doc/ecs-principles.md`). EasyEcs is data plus
