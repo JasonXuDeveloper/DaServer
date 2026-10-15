@@ -8,7 +8,7 @@ namespace DaServer.Client;
 /// </summary>
 public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannelHandler, IAsyncDisposable
 {
-    private readonly PendingCallTable _pending = new(14);
+    private readonly PendingCallTable _pending;
     private readonly Lock _handlersGate = new();
     private Dictionary<uint, (object Target, MessageDispatcher Dispatcher)> _handlers = new(); // copy on write
     private readonly MpmcQueue<FrameWriter>? _inbox;
@@ -41,8 +41,17 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
     /// false: callbacks run on the IO thread as frames arrive (bots, tools). true: frames are queued and run by
     /// <see cref="ProcessCallbacks"/> on the application's own thread (game loop / UI thread).
     /// </param>
-    public ClusterClient(bool queueCallbacks = false)
+    /// <param name="maxCallsInFlight">
+    /// Requests awaiting their reply at once (rounded up to a power of two, 16 to 2^24); one more fails at once with
+    /// <see cref="RpcStatus.Overloaded"/>. The table is allocated up front (about 48 bytes a slot), so a process running
+    /// thousands of clients (bots) keeps it small; a game client rarely has more than a few requests out.
+    /// </param>
+    public ClusterClient(bool queueCallbacks = false, int maxCallsInFlight = 256)
     {
+        if (maxCallsInFlight < 1) throw new ArgumentOutOfRangeException(nameof(maxCallsInFlight));
+        int bits = 4;
+        while (bits < 24 && 1 << bits < maxCallsInFlight) bits++;
+        _pending = new PendingCallTable(bits);
         if (queueCallbacks) _inbox = new MpmcQueue<FrameWriter>(64 * 1024);
     }
 

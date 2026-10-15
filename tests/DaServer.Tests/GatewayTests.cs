@@ -219,6 +219,23 @@ public class GatewayTests : ClusterTest
     }
 
     [Test]
+    public async Task ClientsBoundTheirCallsInFlight()
+    {
+        Observed.Release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var gateway = await Start("gw", gateway: true);
+        var client = Track(new ClusterClient(maxCallsInFlight: 16));
+        await client.ConnectAsync("127.0.0.1", gateway.ClientPort());
+
+        var waiting = Enumerable.Range(0, 16).Select(_ => client.Ask(new Stall()).AsTask()).ToArray();
+        var refused = Assert.ThrowsAsync<RpcException>(async () => await client.Ask(new Stall()));
+        Assert.That(refused!.Status, Is.EqualTo(RpcStatus.Overloaded), "one call more than the table holds");
+
+        Observed.Release.SetResult(true);
+        Assert.That(await Task.WhenAll(waiting), Is.All.True);
+        Assert.That(await client.Ask(new Stall()), Is.True, "the table has room again");
+    }
+
+    [Test]
     public async Task AnOversizedClientFrameClosesTheSession()
     {
         var gateway = await Start("gw", clients: static o => o.MaxFrameSize = 1024);

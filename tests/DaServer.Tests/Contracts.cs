@@ -222,6 +222,17 @@ public static class Observed
 
     /// <summary>Sum of what the tally services received.</summary>
     public static long Tallies;
+
+    /// <summary>What <see cref="Stall"/> requests wait for (reset by the test using it).</summary>
+    public static TaskCompletionSource<bool> Release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+}
+
+/// <summary>A client request answered only once the test releases it (calls in flight).</summary>
+[NinoType, Message, FromClient] public partial record struct Stall : IRequest<bool>;
+
+public sealed class StallService : Service
+{
+    [Handle] public async ValueTask<bool> On(Stall _) => await Observed.Release.Task;
 }
 
 // ---------------------------------------------------------------- services
