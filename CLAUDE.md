@@ -27,7 +27,8 @@ EasyEcs comes from NuGet (`EasyEcsVersion` in `Directory.Build.props`). Use it a
 ## Layout
 
 ```
-src/DaServer/              runtime (net10.0): Protocol/ Buffers/ Concurrency/ Net/ Rpc/ Runtime/ Cluster/ Gateway/ Client/
+src/DaServer/              runtime (net10.0): Protocol/ Buffers/ Concurrency/ Net/ Rpc/ Runtime/ Cluster/ Client/
+                           and the built-in capabilities on the feature points: Features/ Ingress/ Clients/
   Runtime/Shard.cs         thread + dispatch queue (the cross-thread handoff) + wake/tick loop (nothing else)
   Runtime/ShardData.cs     shard ECS data: actor components and lifecycle tags (Mailbox, Ready, Turn, ...), singletons
   Runtime/ShardDispatch.cs routing/delivery/invoke operations shared by the runtime systems
