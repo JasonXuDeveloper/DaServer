@@ -48,7 +48,7 @@ public sealed class NodeOptions
 
     /// <summary>
     /// Calls and events waiting in a shard's inbox before new ones are refused with <see cref="Protocol.RpcStatus.Overloaded"/>
-    /// (one-way calls and events are dropped).
+    /// (one-way calls and messages are dropped).
     /// </summary>
     public int ShardInboxCapacity { get; set; } = 64 * 1024;
 

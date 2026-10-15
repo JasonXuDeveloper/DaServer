@@ -11,7 +11,7 @@ public abstract class ClusterTest
     private readonly List<Node> _nodes = [];
     private readonly List<ClusterClient> _clients = [];
 
-    protected IReadOnlyList<Node> Nodes => _nodes;
+    private protected IReadOnlyList<Node> Nodes => _nodes;
 
     [TearDown]
     public async Task TearDownCluster()
@@ -23,7 +23,7 @@ public abstract class ClusterTest
     }
 
     /// <summary>Start a node; every node after the first joins through the first one.</summary>
-    protected async Task<Node> Start(string name, int shards = 2, bool gateway = false, Func<Type, bool>? hosts = null,
+    private protected async Task<Node> Start(string name, int shards = 2, bool gateway = false, Func<Type, bool>? hosts = null,
         Action<NodeOptions>? configure = null)
     {
         var options = new NodeOptions
@@ -50,7 +50,7 @@ public abstract class ClusterTest
     }
 
     /// <summary>Start <paramref name="count"/> nodes and wait until they all see each other.</summary>
-    protected async Task<Node[]> StartCluster(int count, int shards = 2)
+    private protected async Task<Node[]> StartCluster(int count, int shards = 2)
     {
         var nodes = new Node[count];
         for (int i = 0; i < count; i++) nodes[i] = await Start(((char)('a' + i)).ToString(), shards);
@@ -62,7 +62,7 @@ public abstract class ClusterTest
     protected Task Converged() =>
         Eventually(() => _nodes.All(n => n.View.UpMembers.Length == _nodes.Count), "cluster did not converge");
 
-    protected async Task Stop(Node node)
+    private protected async Task Stop(Node node)
     {
         await node.StopAsync();
         _nodes.Remove(node);
@@ -75,7 +75,7 @@ public abstract class ClusterTest
         return client;
     }
 
-    protected async Task<ClusterClient> Connect(Node gateway)
+    private protected async Task<ClusterClient> Connect(Node gateway)
     {
         var client = new ClusterClient();
         await client.ConnectAsync("127.0.0.1", gateway.ClientPort, followBalancer: false);
@@ -84,7 +84,7 @@ public abstract class ClusterTest
     }
 
     /// <summary>First key from <paramref name="start"/> whose actor of <paramref name="contractId"/> lives on <paramref name="owner"/>.</summary>
-    protected static long KeyOwnedBy<TActor>(Node owner, long start = 1) where TActor : Actor
+    private protected static long KeyOwnedBy<TActor>(Node owner, long start = 1) where TActor : Actor
     {
         long key = start;
         while (OwnerOf<TActor>(owner, key) != owner.Id) key++;
@@ -92,11 +92,8 @@ public abstract class ClusterTest
     }
 
     /// <summary>Node owning the <typeparamref name="TActor"/> of <paramref name="key"/> in <paramref name="node"/>'s view.</summary>
-    protected static ulong OwnerOf<TActor>(Node node, long key) where TActor : Actor =>
-        node.View.HandlerTypeOwner(HandlerTypeId<TActor>(), key)!.NodeId;
-
-    /// <summary>Placement identity of an actor or service type (FNV-1a of its full name).</summary>
-    protected static uint HandlerTypeId<T>() => RpcIds.Fnv1a(typeof(T).FullName!);
+    private protected static ulong OwnerOf<TActor>(Node node, long key) where TActor : Actor =>
+        node.View.HandlerTypeOwner(TypeId<TActor>.Value, key)!.NodeId;
 
     /// <summary>Polls a condition that depends on asynchronous delivery (membership, pushes to other sockets).</summary>
     protected static async Task Eventually(Func<bool> condition, string message, int timeoutMs = 10_000)

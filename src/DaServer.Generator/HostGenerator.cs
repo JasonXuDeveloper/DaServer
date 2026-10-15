@@ -97,7 +97,7 @@ public sealed class HostGenerator : IIncrementalGenerator
     {
         var sb = new StringBuilder(Header);
         sb.Append("using System.Runtime.CompilerServices;\nusing DaServer.Rpc;\nusing DaServer.Runtime;\n\nnamespace DaServer.Generated;\n\n");
-        sb.Append("/// <summary>Registers this assembly's DaServer handlerTypes and systems (generated).</summary>\n");
+        sb.Append("/// <summary>Registers this assembly's DaServer handler types and systems (generated).</summary>\n");
         sb.Append($"internal static class Registration_{info.AssemblyHint}\n{{\n    [ModuleInitializer]\n    internal static void Register()\n    {{\n");
 
         foreach (var anchor in info.ContractAnchors)

@@ -3,7 +3,7 @@ namespace DaServer.Runtime;
 // Outgoing messages. A message type is routed by its id to the handler types handling it (gossiped handlers in the
 // ClusterView): Send/Publish as one Message frame per handler type (RequestId = handler type id), Ask as
 // a Request frame (RequestId = call id; the receiver resolves its handler type by message id and kind).
-public sealed partial class Node
+sealed partial class Node
 {
     public void Send<T>(long key, in T message) where T : struct =>
         SendMessage(MessageWriter.Write(in message), MessageType<T>.Id, key, actor: true);
@@ -25,21 +25,21 @@ public sealed partial class Node
         return task;
     }
 
-    public void Publish<TEvent>(in TEvent e) where TEvent : struct => Publish(in e, 0, actors: false);
+    public void Publish<T>(in T e) where T : struct => Publish(in e, 0, actors: false);
 
-    public void Publish<TEvent>(long key, in TEvent e) where TEvent : struct => Publish(in e, key, actors: true);
+    public void Publish<T>(long key, in T e) where T : struct => Publish(in e, key, actors: true);
 
     /// <summary>To every handler type handling the event: services, and actor handlers of <paramref name="key"/>.</summary>
-    private void Publish<TEvent>(in TEvent e, long key, bool actors) where TEvent : struct
+    private void Publish<T>(in T e, long key, bool actors) where T : struct
     {
-        var routes = View.Routes(MessageType<TEvent>.Id);
+        var routes = View.Routes(MessageType<T>.Id);
         if (routes.Length == 0) return;
         var w = MessageWriter.Write(in e);
         try
         {
             for (int i = 0; i < routes.Length; i++)
                 if (actors || !routes[i].Actor)
-                    SendTo(in routes[i], MessageType<TEvent>.Id, key, w, hops: 0, flags: 0);
+                    SendTo(in routes[i], MessageType<T>.Id, key, w, hops: 0, flags: 0);
         }
         finally
         {
@@ -67,14 +67,14 @@ public sealed partial class Node
     }
 
     /// <summary>Deliver <paramref name="e"/> only to handler type <paramref name="handlerTypeId"/> (runtime notifications).</summary>
-    internal void SendTo<TEvent>(uint handlerTypeId, long key, in TEvent e) where TEvent : struct
+    internal void SendTo<T>(uint handlerTypeId, long key, in T e) where T : struct
     {
-        var routes = View.Routes(MessageType<TEvent>.Id);
+        var routes = View.Routes(MessageType<T>.Id);
         for (int i = 0; i < routes.Length; i++)
         {
             if (routes[i].HandlerTypeId != handlerTypeId) continue;
             var w = MessageWriter.Write(in e);
-            SendTo(in routes[i], MessageType<TEvent>.Id, key, w, hops: 0, flags: 0);
+            SendTo(in routes[i], MessageType<T>.Id, key, w, hops: 0, flags: 0);
             w.Dispose();
             return;
         }
@@ -95,14 +95,14 @@ public sealed partial class Node
     /// <summary>Message frame from another node: to the shard of its handler type, or on to the right node.</summary>
     private void OnInboundMessage(in FrameHeader header, ReadOnlySpan<byte> frame)
     {
-        var impl = HandlerTypeById(header.RequestId);
-        if (impl == null)
+        var handlerType = HandlerTypeById(header.RequestId);
+        if (handlerType == null)
         {
             ForwardMessage(FrameWriter.CopyOf(frame));
             return;
         }
 
-        Admit(SelectShard(impl.Id, impl.IsActor, header.Key), FrameWriter.CopyOf(frame), null);
+        Admit(SelectShard(handlerType.Id, handlerType.IsActor, header.Key), FrameWriter.CopyOf(frame), null);
     }
 
     /// <summary>
@@ -129,6 +129,6 @@ public sealed partial class Node
         }
     }
 
-    private static InvalidOperationException Ambiguous(uint messageId, bool actor) =>
-        new($"Message 0x{messageId:x8} has several {(actor ? "actor" : "service")} handlers: Publish it to reach them all");
+    private static RpcException Ambiguous(uint messageId, bool actor) =>
+        new(RpcStatus.Error, $"Message 0x{messageId:x8} has several {(actor ? "actor" : "service")} handlers: Publish it to reach them all");
 }

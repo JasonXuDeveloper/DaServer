@@ -11,7 +11,7 @@ public enum MemberStatus : byte
 
 /// <summary>A message type handled by a handler type hosted on a node (message routing and actor placement).</summary>
 [NinoType]
-public partial struct HostedHandler
+public partial struct HostedMessage
 {
     public uint MessageId;
     public uint HandlerTypeId;
@@ -38,7 +38,7 @@ public partial class ClusterMember
     public int ClientPort;
 
     /// <summary>Messages handled by the node's handler types.</summary>
-    public HostedHandler[] Handlers = [];
+    public HostedMessage[] Handlers = [];
 
     /// <summary>Bumped by the node itself to refute suspicion or announce a restart.</summary>
     public int Incarnation;

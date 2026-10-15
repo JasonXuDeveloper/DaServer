@@ -3,7 +3,7 @@ using System.Threading.Tasks.Sources;
 namespace DaServer.Rpc;
 
 /// <summary>A call waiting for its response.</summary>
-public interface IPendingCall
+internal interface IPendingCall
 {
     /// <summary>Shard of the caller: the response is completed on that shard thread (null: completed inline).</summary>
     Shard? CallerShard { get; }
@@ -19,7 +19,7 @@ public interface IPendingCall
 /// Request id = (slot generation &lt;&lt; IndexBits) | slot index, so a late response for a recycled slot
 /// never completes the wrong call.
 /// </summary>
-public sealed class PendingCallTable
+internal sealed class PendingCallTable
 {
     private struct Entry
     {
@@ -167,7 +167,7 @@ internal readonly struct NoReply;
 /// (<see cref="IThreadPoolWorkItem"/>), so that path allocates nothing either.</para>
 /// ExecutionContext (AsyncLocal) is intentionally not flowed across RPC awaits.
 /// </summary>
-public sealed class PendingCall<T> : IPendingCall, IValueTaskSource<T>, IValueTaskSource, IThreadPoolWorkItem
+internal sealed class PendingCall<T> : IPendingCall, IValueTaskSource<T>, IValueTaskSource, IThreadPoolWorkItem
 {
     private static readonly ObjectPool<PendingCall<T>> Pool = new(() => new PendingCall<T>(), 1024);
     private static readonly Action<object?> CompletedSentinel = static _ => { };
@@ -202,7 +202,7 @@ public sealed class PendingCall<T> : IPendingCall, IValueTaskSource<T>, IValueTa
     {
         if (status != RpcStatus.Ok)
         {
-            Fail(RpcErrors.FromPayload(status, payload));
+            Fail(RpcException.FromPayload(status, payload));
             return;
         }
 
@@ -311,27 +311,4 @@ public sealed class PendingCall<T> : IPendingCall, IValueTaskSource<T>, IValueTa
     }
 
     void IValueTaskSource.GetResult(short token) => GetResult(token);
-}
-
-/// <summary>Encoding of error payloads (a Nino string message).</summary>
-public static class RpcErrors
-{
-    public static RpcException FromPayload(RpcStatus status, ReadOnlySpan<byte> payload)
-    {
-        string? message = null;
-        if (!payload.IsEmpty)
-        {
-            try
-            {
-                var reader = new Reader(payload);
-                NinoDeserializer.Deserialize(out message, ref reader);
-            }
-            catch
-            {
-                // malformed error payload: keep status only
-            }
-        }
-
-        return new RpcException(status, message);
-    }
 }

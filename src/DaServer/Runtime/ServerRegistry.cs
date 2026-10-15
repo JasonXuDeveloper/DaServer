@@ -12,7 +12,7 @@ public sealed class HandlerTypeInfo(Type type, bool isActor, Func<object> factor
     public MessageHandlers Handlers { get; } = new(handlers);
 
     /// <summary>Identity of the handler type in placement, membership and routing (FNV-1a of the type name).</summary>
-    public uint Id { get; } = RpcIds.Fnv1a(type.FullName ?? type.Name);
+    public uint Id { get; } = WireIds.Fnv1a(type.FullName ?? type.Name); // == TypeId<T>.Value
 
     public override string ToString() => Type.FullName ?? Type.Name;
 }

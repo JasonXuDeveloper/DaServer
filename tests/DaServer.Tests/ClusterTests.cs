@@ -41,7 +41,7 @@ public class ClusterTests : ClusterTest
     public async Task MembersAdvertiseTheContractsTheyHost()
     {
         var (a, _) = await StartPair();
-        Assert.That(a.View.UpMembers.All(m => m.Handlers.Any(h => h.HandlerTypeId == HandlerTypeId<Counter>())));
+        Assert.That(a.View.UpMembers.All(m => m.Handlers.Any(h => h.HandlerTypeId == TypeId<Counter>.Value)));
     }
 
     [Test]

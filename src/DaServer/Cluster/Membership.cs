@@ -126,7 +126,7 @@ internal sealed class Membership : IDisposable
                 Status = MemberStatus.Up,
             };
             _members[_node.Id] = new Entry(_self, Stopwatch.GetTimestamp());
-            Publish();
+            PublishView();
         }
 
         int interval = (int)_node.Options.GossipInterval.TotalMilliseconds;
@@ -139,7 +139,7 @@ internal sealed class Membership : IDisposable
         lock (_gate)
         {
             UpdateSelf(MemberStatus.Leaving, _self.Incarnation);
-            Publish();
+            PublishView();
         }
 
         foreach (var member in View.Members)
@@ -162,7 +162,7 @@ internal sealed class Membership : IDisposable
                 _self.Load = _node.TotalQueueLength();
                 _self.Sessions = _node.SessionCount;
                 DetectFailures();
-                if (_changed) Publish();
+                if (_changed) PublishView();
                 targets = PickTargets();
             }
 
@@ -344,7 +344,7 @@ internal sealed class Membership : IDisposable
                 }
             }
 
-            if (_changed) Publish();
+            if (_changed) PublishView();
         }
 
         return unknown;
@@ -414,7 +414,7 @@ internal sealed class Membership : IDisposable
                 _changed = true;
             }
 
-            if (_changed) Publish();
+            if (_changed) PublishView();
         }
     }
 
@@ -450,7 +450,7 @@ internal sealed class Membership : IDisposable
         _changed = true; // the view must hold the new object (pulse fields are updated in place on it)
     }
 
-    private void Publish()
+    private void PublishView()
     {
         var members = new List<ClusterMember>(_members.Count);
         foreach (var entry in _members.Values) members.Add(entry.Info);

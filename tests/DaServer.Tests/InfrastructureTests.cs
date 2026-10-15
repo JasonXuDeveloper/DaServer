@@ -134,7 +134,7 @@ public class InfrastructureTests
         ClusterMember Member(ulong id) => new()
         {
             NodeId = id, Status = MemberStatus.Up,
-            Handlers = [new HostedHandler { MessageId = 7, HandlerTypeId = 70, Actor = true }],
+            Handlers = [new HostedMessage { MessageId = 7, HandlerTypeId = 70, Actor = true }],
         };
 
         var three = new ClusterView([Member(1), Member(2), Member(3)]);
@@ -179,7 +179,7 @@ public class InfrastructureTests
     public void MessageIdsAreTheHashOfTheTypeName()
     {
         // The analyzer checks collisions with the same hash at compile time; the runtime must agree.
-        Assert.That(MessageType<Add>.Id, Is.EqualTo(RpcIds.Fnv1a("DaServer.Tests.Add")));
-        Assert.That(MessageType<SessionClosed>.Id, Is.EqualTo(RpcIds.Fnv1a("DaServer.Rpc.SessionClosed")));
+        Assert.That(MessageType<Add>.Id, Is.EqualTo(WireIds.Fnv1a("DaServer.Tests.Add")));
+        Assert.That(MessageType<SessionClosed>.Id, Is.EqualTo(WireIds.Fnv1a("DaServer.Rpc.SessionClosed")));
     }
 }

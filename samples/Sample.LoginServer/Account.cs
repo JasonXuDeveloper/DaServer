@@ -18,7 +18,9 @@ public sealed class Account : Service
         if (string.IsNullOrWhiteSpace(m.Name) || m.Name.Length > MaxNameLength) return new LoginResult(false, 0);
 
         // A real game verifies a token against an account store here.
-        long playerId = (long)(RpcIds.Fnv1a(m.Name) & 0x7FFF_FFFF) + 1;
+        long playerId = 17;
+        foreach (char c in m.Name) playerId = (playerId * 31 + c) & 0x7FFF_FFFF;
+        playerId++; // ids start at 1
         bool attached = await Cluster.Ask(playerId, new Attach(CallerSession));
         return new LoginResult(attached, playerId);
     }

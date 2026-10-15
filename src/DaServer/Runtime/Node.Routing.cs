@@ -1,7 +1,7 @@
 namespace DaServer.Runtime;
 
 // Request routing (Ask): local shard or remote link; inbound frames -> shards; responses -> callers.
-public sealed partial class Node : IConnectionHandler
+sealed partial class Node : IConnectionHandler
 {
     private const int MaxHops = 3;
 
@@ -23,7 +23,7 @@ public sealed partial class Node : IConnectionHandler
         {
             if (!View.TryGetRoute(messageId, actor, out var route, out bool ambiguous))
                 throw ambiguous
-                    ? new RpcException(RpcStatus.Error, Ambiguous(messageId, actor).Message)
+                    ? Ambiguous(messageId, actor)
                     : new RpcException(RpcStatus.NotHosted, $"No {(actor ? "actor" : "service")} handles message 0x{messageId:x8}");
 
             var target = View.Target(in route, key, Id, (uint)Interlocked.Increment(ref _roundRobin));
@@ -147,9 +147,9 @@ public sealed partial class Node : IConnectionHandler
     private void OnInboundRequest(Connection connection, in FrameHeader header, ReadOnlySpan<byte> frame)
     {
         bool actor = (header.Flags & FrameFlags.ToActor) != 0;
-        var impl = RequestHandler(header.MessageId, actor);
+        var handlerType = RequestHandler(header.MessageId, actor);
         var sink = ConnectionReplySink.For(connection);
-        if (impl == null && !actor)
+        if (handlerType == null && !actor)
         {
             sink.SendError(header.RequestId, RpcStatus.NotHosted, $"No service handles message 0x{header.MessageId:x8} here");
             return;
@@ -158,7 +158,7 @@ public sealed partial class Node : IConnectionHandler
         // Actors not owned/hosted here are forwarded by the shard (it re-checks ownership on its own thread).
         var copy = FrameWriter.CopyOf(frame);
         copy.Deadline = header.DeadlineOnArrival();
-        Admit(SelectShard(impl?.Id ?? 0, actor, header.Key), copy, sink);
+        Admit(SelectShard(handlerType?.Id ?? 0, actor, header.Key), copy, sink);
     }
 
     /// <summary>Complete an outgoing call: on the caller's shard when it has one, inline otherwise.</summary>

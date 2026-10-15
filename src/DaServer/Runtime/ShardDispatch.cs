@@ -19,10 +19,10 @@ internal static class ShardDispatch
         var node = world.Shard().Node;
         var header = FrameHeader.Read(frame.Frame);
         bool request = header.Kind == FrameKind.Request;
-        var impl = request
+        var handlerType = request
             ? node.RequestHandler(header.MessageId, (header.Flags & FrameFlags.ToActor) != 0)
             : node.HandlerTypeById(header.RequestId);
-        var handler = impl?.Handlers.Of(header.MessageId);
+        var handler = handlerType?.Handlers.Of(header.MessageId);
         if (handler == null)
         {
             // Not hosted here (stale view at the sender): an actor message finds its owner, a service request fails.
@@ -33,33 +33,33 @@ internal static class ShardDispatch
             return;
         }
 
-        if (!impl!.IsActor)
-            Track(world, Invoke(handler.Dispatcher, ServiceOf(world, impl), frame, sink, world.Logger()));
-        else if (TryGetLoaded(world, impl.Id, header.Key, out var existing))
+        if (!handlerType!.IsActor)
+            Track(world, Invoke(handler.Dispatcher, ServiceOf(world, handlerType), frame, sink, world.Logger()));
+        else if (TryGetLoaded(world, handlerType.Id, header.Key, out var existing))
             Deliver(world, existing, new Envelope(frame, sink)); // even while unloading: its mail moves in order
-        else if (!OwnsHere(world, node, impl.Id, header.Key))
+        else if (!OwnsHere(world, node, handlerType.Id, header.Key))
             node.Forward(frame, sink);
         else
-            Deliver(world, ActorOf(world, impl, header.Key), new Envelope(frame, sink));
+            Deliver(world, ActorOf(world, handlerType, header.Key), new Envelope(frame, sink));
     }
 
     private static bool OwnsHere(World world, Node node, uint handlerTypeId, long key) =>
         node.IsLocalOwner(handlerTypeId, key) && !world.GetSingleton<ShardActivity>().Stopping;
 
-    private static object ServiceOf(World world, HandlerTypeInfo impl) =>
-        world.GetSingleton<ServiceDirectory>().Services[impl.Id];
+    private static object ServiceOf(World world, HandlerTypeInfo handlerType) =>
+        world.GetSingleton<ServiceDirectory>().Services[handlerType.Id];
 
     /// <summary>A loaded actor of this shard, including one being unloaded (new mail queues behind its mail).</summary>
     private static bool TryGetLoaded(World world, uint handlerTypeId, long key, out Entity actor) =>
         world.GetSingleton<ActorDirectory>().Actors.TryGetValue(new ActorId(handlerTypeId, key), out actor);
 
-    /// <summary>The loaded actor of (<paramref name="impl"/>, <paramref name="key"/>) on this shard, loaded on first use.</summary>
-    private static Entity ActorOf(World world, HandlerTypeInfo impl, long key)
+    /// <summary>The loaded actor of (<paramref name="handlerType"/>, <paramref name="key"/>) on this shard, loaded on first use.</summary>
+    private static Entity ActorOf(World world, HandlerTypeInfo handlerType, long key)
     {
-        var id = new ActorId(impl.Id, key);
+        var id = new ActorId(handlerType.Id, key);
         var actors = world.GetSingleton<ActorDirectory>().Actors;
         if (!actors.TryGetValue(id, out var entity))
-            actors[id] = entity = Activate(world, impl, id);
+            actors[id] = entity = Load(world, handlerType, id);
         return entity;
     }
 
@@ -87,10 +87,10 @@ internal static class ShardDispatch
     /// Create the actor's entity (link, identity, mailbox, the actor's own components) and start
     /// <see cref="Actor.OnLoad"/> as its first turn (<see cref="Loading"/>): mail waits until it completes.
     /// </summary>
-    private static Entity Activate(World world, HandlerTypeInfo impl, ActorId id)
+    private static Entity Load(World world, HandlerTypeInfo handlerType, ActorId id)
     {
-        var actor = (Actor)impl.Factory();
-        actor.HandlerType = impl;
+        var actor = (Actor)handlerType.Factory();
+        actor.HandlerType = handlerType;
         actor.Key = id.Key;
         actor.Shard = world.Shard();
         var entity = world.CreateEntity(new ActorRef(actor), new Mailbox(new()) { LastActive = Environment.TickCount64 },

@@ -48,7 +48,7 @@ public class AllocationTests : ClusterTest
             await client.Ask(7, new Join());
         }
 
-        var group = ClientGroup.Of(HandlerTypeId<Room>(), 7); // the room's Group
+        var group = ClientGroup.Of<Room>(7); // the room's Group
 
         // Server side and client side both count: serialize once, one copy per session, client dispatch.
         const int broadcasts = 5_000;

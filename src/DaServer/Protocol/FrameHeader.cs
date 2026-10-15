@@ -65,9 +65,9 @@ public enum RpcStatus : byte
 /// 4  byte   Kind
 /// 5  byte   Status     RpcStatus for responses; for requests the caller's time budget (see EncodeBudget), otherwise 0
 /// 6  byte   Hops       forwarding count (loop guard)
-/// 7  byte   Flags      reserved
-/// 8  uint32 RequestId  correlation id (0 for one-way / push; target handler type id for Event)
-/// 12 uint32 MessageId   globally unique method id (see RpcIds), event id or control op
+/// 7  byte   Flags      FrameFlags (HasCaller, ToActor)
+/// 8  uint32 RequestId  correlation id (requests); target handler type id (Message); 0 otherwise
+/// 12 uint32 MessageId  wire id of the message type (see WireIds) or control op
 /// 16 int64  Key        actor key / session id / group id
 /// </code>
 /// </summary>

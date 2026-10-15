@@ -22,7 +22,7 @@ internal static class Support
     public static readonly SymbolDisplayFormat Fqn = SymbolDisplayFormat.FullyQualifiedFormat
         .AddMiscellaneousOptions(SymbolDisplayMiscellaneousOptions.IncludeNullableReferenceTypeModifier);
 
-    /// <summary>FNV-1a 32, identical to DaServer.Rpc.RpcIds.Fnv1a (0 is reserved).</summary>
+    /// <summary>FNV-1a 32, identical to DaServer.Rpc.WireIds.Fnv1a (0 is reserved).</summary>
     public static uint Fnv1a(string text)
     {
         uint hash = 2166136261;
