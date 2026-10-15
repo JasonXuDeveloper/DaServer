@@ -26,8 +26,11 @@ public class HttpPlaneTests
             ["DaServer:Shards"] = "2",
             ["DaServer:StatsInterval"] = "0",
             ["DaServer:Clients:Port"] = "0",
+            ["DaServer:Probe:Level"] = "7",
         });
         builder.AddDaServer();
+        builder.AddDaServerFeature<ProbeOptions>("Probe", static o => new ProbeFeature(o));
+        builder.AddDaServerFeature<ProbeOptions>("Unconfigured", static o => new UnconfiguredFeature());
         builder.Services.Configure<NodeOptions>(static o => o.Features.Add(new LimitWhoAsks()));
         _app = builder.Build();
         _app.MapAsk<EchoText, string>("/echo");
@@ -45,6 +48,30 @@ public class HttpPlaneTests
         await _app.StopAsync();
         await _app.DisposeAsync();
     }
+
+    [Test]
+    public void FeaturesRunWhenTheirSectionIsConfiguredAndReportGauges()
+    {
+        var node = _app.Services.GetRequiredService<Node>();
+        Assert.That(node.Feature<ProbeFeature>()?.Level, Is.EqualTo(7), "options bound from DaServer:Probe");
+        Assert.That(node.Feature<UnconfiguredFeature>(), Is.Null, "no section, no feature");
+        Assert.That(node.Gauges.Select(static g => g.Name), Is.SupersetOf(new[] { "daserver.clients.sessions", "test.probe.level" }));
+        Assert.That(node.Gauges.Single(static g => g.Name == "test.probe.level").Read(), Is.EqualTo(7));
+    }
+
+    public sealed class ProbeOptions
+    {
+        public int Level { get; set; }
+    }
+
+    private sealed class ProbeFeature(ProbeOptions options) : NodeFeature
+    {
+        public int Level => options.Level;
+
+        protected internal override void Start(INodeContext node) => node.AddGauge("test.probe.level", "Probe level", () => options.Level);
+    }
+
+    private sealed class UnconfiguredFeature : NodeFeature;
 
     [Test]
     public async Task EndpointsAskServicesAndActors()
