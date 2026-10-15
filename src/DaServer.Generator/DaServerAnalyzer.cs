@@ -98,15 +98,15 @@ public sealed partial class DaServerAnalyzer
         var sender = method.IsExtensionMethod ? method.Parameters[0].Type : method.ContainingType;
         if (sender == null || !IsSender(sender)) return;
         var receiver = method.IsExtensionMethod ? Unwrap(invocation.Arguments.FirstOrDefault()?.Value) : Unwrap(invocation.Instance);
-        bool client = receiver != null && receiver.ToDisplayString() == Support.ClusterClientType;
+        bool client = Support.Is(receiver, Support.ClusterClientType);
 
         var message = method.Parameters[method.Parameters.Length - 1].Type;
         if (message is ITypeParameterSymbol) return; // generic plumbing: checked where the type is known
         int addressIndex = method.Parameters.Length - 2;
         var address = addressIndex >= (method.IsExtensionMethod ? 1 : 0) ? method.Parameters[addressIndex].Type : null;
         if (address is ITypeParameterSymbol) return;
-        bool toClient = address != null && Support.ClientAddresses.Contains(address.ToDisplayString());
-        bool notActor = address != null && !Implements(address, Support.ActorId);
+        bool toClient = address != null && IsClientAddress(address);
+        bool notActor = address != null && !Support.Implements(address, Support.ActorId);
 
         var location = invocation.Syntax.GetLocation();
         void Report(DiagnosticDescriptor d, Location? l, params object[] a) =>
@@ -120,13 +120,17 @@ public sealed partial class DaServerAnalyzer
             Shapes.CheckFlow(message, toClient, fromClient: client, location, usedBy, Report);
     }
 
-    private static bool Implements(ITypeSymbol type, string interfaceName) =>
-        type.AllInterfaces.Any(i => i.ToDisplayString() == interfaceName);
+    private static bool IsClientAddress(ITypeSymbol type)
+    {
+        foreach (var name in Support.ClientAddresses)
+            if (Support.Is(type, name)) return true;
+        return false;
+    }
 
     private static bool IsSender(ITypeSymbol type)
     {
         foreach (var name in Senders)
-            if (type.ToDisplayString() == name || type.AllInterfaces.Any(i => i.ToDisplayString() == name)) return true;
+            if (Support.Is(type, name) || Support.Implements(type, name)) return true;
         return false;
     }
 

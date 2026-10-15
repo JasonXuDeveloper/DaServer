@@ -40,8 +40,12 @@ internal sealed record ClientMessageModel(string FullName);
 internal static class Shapes
 {
     /// <summary>The reply type of a request struct (<c>IRequest&lt;TReply&gt;</c>), or null.</summary>
-    public static ITypeSymbol? ReplyOf(ITypeSymbol type) =>
-        type.AllInterfaces.FirstOrDefault(i => i.ConstructedFrom.ToDisplayString() == RequestInterface)?.TypeArguments[0];
+    public static ITypeSymbol? ReplyOf(ITypeSymbol type)
+    {
+        foreach (var i in type.AllInterfaces)
+            if (Is(i, RequestInterface)) return i.TypeArguments[0];
+        return null;
+    }
 
     /// <summary>
     /// A message type: a non-generic [NinoType, Message] struct (what crosses the wire as one message; plain [NinoType]
@@ -111,7 +115,7 @@ internal static class Shapes
     /// </summary>
     public static uint MessageId(ITypeSymbol type)
     {
-        var wireId = type.GetAttributes().FirstOrDefault(a => a.AttributeClass?.ToDisplayString() == WireIdAttribute);
+        var wireId = GetAttribute(type, WireIdAttribute);
         if (wireId?.ConstructorArguments.FirstOrDefault().Value is uint id) return id;
         string name = type.MetadataName;
         for (var outer = type.ContainingType; outer != null; outer = outer.ContainingType) name = outer.MetadataName + "+" + name;
@@ -136,9 +140,8 @@ internal static class Shapes
 
         if (type.SpecialType != SpecialType.None || type.TypeKind == TypeKind.Enum) return true;
         if (HasAttribute(type, NinoTypeAttribute)) return true;
-        if (type.IsUnmanagedType && type.AllInterfaces.Any(i => i.ToDisplayString() == ActorId)) return true;
-        if (type is INamedTypeSymbol named && named.ContainingNamespace?.ToDisplayString() is { } ns &&
-            (ns == "System" || ns.StartsWith("System.", System.StringComparison.Ordinal)))
+        if (type.IsUnmanagedType && Implements(type, ActorId)) return true;
+        if (type is INamedTypeSymbol named && InSystemNamespace(named))
             return named.TypeArguments.All(IsWireType);
         return false;
     }
@@ -203,11 +206,11 @@ internal static class Shapes
         if (reply == null)
         {
             if (method.ReturnsVoid) return HandlerReturn.Void;
-            return returnType?.ToDisplayString() == "System.Threading.Tasks.ValueTask" ? HandlerReturn.ValueTask : null;
+            return Is(returnType, "System.Threading.Tasks.ValueTask") ? HandlerReturn.ValueTask : null;
         }
 
         if (SymbolEqualityComparer.Default.Equals(method.ReturnType, reply)) return HandlerReturn.Reply;
-        return returnType is { IsGenericType: true } && returnType.ConstructedFrom.ToDisplayString() == "System.Threading.Tasks.ValueTask<TResult>" &&
+        return returnType is { IsGenericType: true } && Is(returnType, "System.Threading.Tasks.ValueTask`1") &&
                SymbolEqualityComparer.Default.Equals(returnType.TypeArguments[0], reply)
             ? HandlerReturn.ValueTaskOfReply
             : null;

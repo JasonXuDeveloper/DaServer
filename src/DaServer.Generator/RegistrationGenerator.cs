@@ -17,13 +17,25 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
 {
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
-        var hosted = context.SyntaxProvider
-            .CreateSyntaxProvider(static (node, _) => node is ClassDeclarationSyntax c &&
-                                                    (c.BaseList != null || c.Members.Any(static m => m is MethodDeclarationSyntax { AttributeLists.Count: > 0 })),
-                static (ctx, ct) => ctx.SemanticModel.GetDeclaredSymbol(ctx.Node, ct) is INamedTypeSymbol type ? Shapes.ReadHosted(type) : null)
+        // Types with [Handle] methods (actors, services, client handlers), found through the compiler's attribute index,
+        // and EcsSystem types (no attribute: classes with a base list, checked by symbol, allocation-free).
+        var handlerTypes = context.SyntaxProvider
+            .ForAttributeWithMetadataName(HandleAttribute, static (node, _) => node is MethodDeclarationSyntax,
+                static (ctx, _) => ctx.TargetSymbol.ContainingType is { } type && IsFirstHandler(type, ctx.TargetSymbol)
+                    ? Shapes.ReadHosted(type) // once per type, not once per [Handle] method
+                    : null)
             .Where(static t => t is not null)
-            .Collect()
-            .Select(static (all, _) => new EquatableArray<HostedModel>(all.Distinct().OrderBy(t => t!.FullName).ToArray()!))
+            .Collect();
+        var systems = context.SyntaxProvider
+            .CreateSyntaxProvider(static (node, _) => node is ClassDeclarationSyntax { BaseList: not null },
+                static (ctx, ct) => ctx.SemanticModel.GetDeclaredSymbol(ctx.Node, ct) is INamedTypeSymbol type && DerivesFrom(type, EcsSystem)
+                    ? Shapes.ReadHosted(type)
+                    : null)
+            .Where(static t => t is not null)
+            .Collect();
+        var hosted = handlerTypes.Combine(systems)
+            .Select(static (pair, _) => new EquatableArray<HostedModel>(
+                pair.Left.Concat(pair.Right).Distinct().OrderBy(t => t!.FullName).ToArray()!))
             .WithTrackingName("HostedTypes");
 
         var clientMessages = context.SyntaxProvider
@@ -53,13 +65,21 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
         });
     }
 
+    private static bool IsFirstHandler(INamedTypeSymbol type, ISymbol method)
+    {
+        foreach (var member in type.GetMembers())
+            if (member is IMethodSymbol && HasAttribute(member, HandleAttribute))
+                return SymbolEqualityComparer.Default.Equals(member, method);
+        return false;
+    }
+
     /// <summary>Generated registration classes of referenced assemblies ([GeneratedRegistration]).</summary>
     private static string[] ContractAssemblyAnchors(Compilation compilation)
     {
         var anchors = new List<string>();
         foreach (var assembly in compilation.SourceModule.ReferencedAssemblySymbols)
         foreach (var attribute in assembly.GetAttributes())
-            if (attribute.AttributeClass?.ToDisplayString() == "DaServer.GeneratedRegistrationAttribute" &&
+            if (Is(attribute.AttributeClass, "DaServer.GeneratedRegistrationAttribute") &&
                 attribute.ConstructorArguments.FirstOrDefault().Value is ITypeSymbol anchor)
                 anchors.Add(anchor.ToDisplayString(Fqn));
         anchors.Sort();

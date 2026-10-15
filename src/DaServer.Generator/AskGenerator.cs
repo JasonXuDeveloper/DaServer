@@ -8,7 +8,7 @@ namespace DaServer.Generator;
 /// <summary>
 /// For every request struct (<c>IRequest&lt;TReply&gt;</c>): a static class <c>{Request}Ask</c> of typed <c>Ask</c>
 /// overloads on <c>IMessageSender</c> (<c>await Cluster.Ask(playerId, new GetInfo())</c> returns the reply type without
-/// boxing the request). Incremental rules: syntax-only predicates, symbol-free equatable models, invalid input skipped
+/// boxing the request). Incremental rules: the compiler's attribute index ([Message]), symbol-free equatable models, invalid input skipped
 /// (DaServerAnalyzer reports it), tracking names on every stage.
 /// </summary>
 [Generator(LanguageNames.CSharp)]
@@ -18,9 +18,9 @@ public sealed class AskGenerator : IIncrementalGenerator
     {
         // A partial struct declared in several files yields the same model more than once: Distinct.
         var requests = context.SyntaxProvider
-            .CreateSyntaxProvider(static (node, _) => node is StructDeclarationSyntax { BaseList: not null } or
-                                                          RecordDeclarationSyntax { BaseList: not null, ClassOrStructKeyword.ValueText: "struct" },
-                static (ctx, ct) => ctx.SemanticModel.GetDeclaredSymbol(ctx.Node, ct) is INamedTypeSymbol type ? Shapes.ReadRequest(type) : null)
+            .ForAttributeWithMetadataName(MessageAttribute, static (node, _) => node is StructDeclarationSyntax or
+                    RecordDeclarationSyntax { ClassOrStructKeyword.ValueText: "struct" },
+                static (ctx, _) => Shapes.ReadRequest((INamedTypeSymbol)ctx.TargetSymbol))
             .Where(static m => m is not null)
             .Collect()
             .SelectMany(static (all, _) => all.Distinct())
