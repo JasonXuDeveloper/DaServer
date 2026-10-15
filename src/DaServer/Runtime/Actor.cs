@@ -85,5 +85,17 @@ public abstract class Actor<TState> : Actor where TState : struct, IComponent
     internal override void InitializeEntity(Entity entity) => entity.Add<TState>() = new TState();
 }
 
-/// <summary>Links an actor entity back to its activation (systems can reach the actor object).</summary>
-public record struct ActorLink(Actor Actor) : IComponent;
+/// <summary>
+/// The activation an actor entity belongs to: systems read its key and client group from it
+/// (<c>[ForEach] static void Send(ref MapGrid grid, in ActorLink actor, World world) => .. actor.Key ..</c>).
+/// </summary>
+public readonly record struct ActorLink(Actor Actor) : IComponent
+{
+    /// <summary>The actor's key (<see cref="Runtime.Actor.Key"/>).</summary>
+    public long Key => Actor.Key;
+
+    /// <summary>The actor's client group (<see cref="Runtime.Actor.Group"/>).</summary>
+    public ClientGroup Group => Actor.Group;
+
+    internal ActorId Id => new(Actor.Implementation.Id, Actor.Key);
+}

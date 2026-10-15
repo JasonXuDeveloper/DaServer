@@ -8,11 +8,10 @@ using Sample.Contracts;
 
 namespace Sample.GameServer;
 
-/// <summary>Who is online and the realm's tick counter.</summary>
+/// <summary>Who is online.</summary>
 public struct RealmState() : IComponent
 {
     public readonly HashSet<long> Online = new();
-    public long Tick;
 }
 
 /// <summary>The realm: players report in and out; <see cref="RealmBroadcastSystem"/> tells every client about it.</summary>
@@ -28,10 +27,9 @@ public sealed partial class RealmBroadcastSystem : EcsSystem
 {
     public const int EveryTicks = 5;
 
+    public override int UpdateInterval => EveryTicks;
+
     [ForEach]
-    private static void Broadcast(ref RealmState realm, World world)
-    {
-        if (++realm.Tick % EveryTicks != 0) return;
-        world.Cluster().Send(ClientGroup.All, new RealmStatus(realm.Tick, realm.Online.Count, DateTime.UtcNow.Ticks));
-    }
+    private static void Broadcast(in RealmState realm, World world) =>
+        world.Cluster().Send(ClientGroup.All, new RealmStatus(world.Tick(), realm.Online.Count, DateTime.UtcNow.Ticks));
 }

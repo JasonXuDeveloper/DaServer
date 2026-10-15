@@ -18,6 +18,12 @@ namespace DaServer.Runtime;
 /// </summary>
 public struct ShardMessages : ISystemGroup;
 
+/// <summary>Runtime systems run only after ownership may have changed (membership change, node Dead, shutdown).</summary>
+internal struct ShardRebalance : ISystemGroup;
+
+/// <summary>Runtime systems run a few times a second to find idle actors.</summary>
+internal struct ShardIdleScan : ISystemGroup;
+
 /// <summary>A message for an actor or service: the frame and where its response goes.</summary>
 internal readonly record struct Envelope(FrameWriter Frame, IReplySink? Sink);
 
@@ -25,22 +31,6 @@ internal readonly record struct ActorId(uint ImplementationId, long Key);
 
 // ---------------------------------------------------------------- actor components
 
-/// <summary>
-/// Who an actor entity is: systems read its key and client group from it
-/// (<c>[ForEach] void Send(ref MapState map, in ActorIdentity actor) => .. PlayerClient(actor.Group) ..</c>).
-/// </summary>
-public readonly struct ActorIdentity : IComponent
-{
-    internal readonly ActorId Id;
-
-    internal ActorIdentity(ActorId id) => Id = id;
-
-    /// <summary>The actor's key (<see cref="Actor.Key"/>).</summary>
-    public long Key => Id.Key;
-
-    /// <summary>The actor's client group (<see cref="Actor.Group"/>).</summary>
-    public ClientGroup Group => ClientGroup.Of(Id.ImplementationId, Id.Key);
-}
 
 /// <summary>
 /// Messages waiting for the actor. An actor runs one message (turn) at a time: the next starts when the previous
@@ -105,11 +95,6 @@ internal readonly record struct TurnWatchers(Stack<TurnWatcher> Pool) : ISinglet
 /// <summary>This shard's service instances by implementation id.</summary>
 internal readonly record struct ServiceDirectory(Dictionary<uint, object> Services) : ISingletonComponent;
 
-internal readonly record struct TimerEntry(Action<object?> Callback, object? State);
-
-/// <summary>Callbacks due at a <see cref="System.Diagnostics.Stopwatch"/> timestamp.</summary>
-internal readonly record struct ShardTimers(PriorityQueue<TimerEntry, long> Queue) : ISingletonComponent;
-
 /// <summary>Per-wake bookkeeping shared by the runtime systems and the shard loop.</summary>
 internal struct ShardActivity : ISingletonComponent
 {
@@ -119,7 +104,7 @@ internal struct ShardActivity : ISingletonComponent
     /// <summary>Messages <see cref="MailboxSystem"/> may still run during the current wake.</summary>
     public int MailBudget;
 
-    /// <summary>Ownership may have changed (membership view or shutdown): deactivate actors not owned here.</summary>
+    /// <summary>Ownership may have changed (membership view or shutdown): the shard runs <see cref="ShardRebalance"/>.</summary>
     public bool Rebalance;
 
     /// <summary>The shard is stopping: every actor is deactivated, no new activation starts.</summary>
@@ -130,6 +115,6 @@ internal struct ShardActivity : ISingletonComponent
     /// </summary>
     public bool RetireAll;
 
-    /// <summary><see cref="Environment.TickCount64"/> of the next idle-actor scan.</summary>
-    public long NextIdleScan;
+    /// <summary>Every activation leaves on the next rebalance, owned here or not.</summary>
+    public readonly bool LeaveAll => Stopping || RetireAll;
 }

@@ -18,7 +18,7 @@ internal sealed partial class MailboxSystem : EcsSystem
     internal static readonly QueryFilter Runnable = QueryFilter.Create().With<Ready>().Without<Turn>()
         .Without<Unloading>().Without<Retiring>();
 
-    public override int Priority => 8;
+    public override int Priority => 5;
 
     protected override void OnUpdate() => World.GetSingleton<ShardActivity>().MailBudget = Budget;
 
@@ -39,9 +39,8 @@ internal sealed partial class MailboxSystem : EcsSystem
             break;
         }
 
-        ref var after = ref world.GetSingleton<ShardActivity>(); // `activity` may be stale after handlers ran
-        after.MailBudget -= processed;
-        after.Processed += processed;
+        activity.MailBudget -= processed; // singletons never move: the ref survives the handlers' structural changes
+        activity.Processed += processed;
         if (pending.Count == 0) actor.Remove<Ready>();
     }
 }

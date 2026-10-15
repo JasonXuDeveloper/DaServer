@@ -13,12 +13,12 @@ internal sealed partial class RetireSystem : EcsSystem
     public override int Priority => 3;
 
     [ForEach]
-    private static void Retire(Entity actor, in Retiring retiring, in Mailbox mailbox, in ActorIdentity identity,
+    private static void Retire(Entity actor, in Retiring retiring, in Mailbox mailbox, in ActorLink link,
         ref ActorDirectory directory, World world)
     {
         var (status, message) = retiring;
         var pending = mailbox.Pending;
-        directory.Actors.Remove(identity.Id);
+        directory.Actors.Remove(link.Id);
         actor.Destroy(); // the refs above are invalid from here on
 
         while (pending.TryDequeue(out var envelope))
