@@ -290,12 +290,20 @@ public class AllocationTests : ClusterTest
         var sink = new StatusSink();
         const int calls = 2_000;
         for (int round = 0; round < 3; round++) Relay(calls);
-        var meter = new AllocationMeter();
-        Relay(calls);
-        long allocated = meter.Garbage;
 
-        Assert.That(sink.Timeout, Is.EqualTo(4 * calls));
-        Assert.That(node.Expired, Is.EqualTo(4 * calls), "the shard dropped the expired requests unrun");
+        // Each window waits for the 100 ms sweep, so it also counts whatever else the process allocates meanwhile (a
+        // thread pool thread injected, an earlier test's nodes finishing their shutdown). A steady per-call cost shows
+        // in every window: the quietest of three is the path's own.
+        long allocated = long.MaxValue;
+        for (int window = 0; window < 3; window++)
+        {
+            var meter = new AllocationMeter();
+            Relay(calls);
+            allocated = Math.Min(allocated, meter.Garbage);
+        }
+
+        Assert.That(sink.Timeout, Is.EqualTo(6 * calls));
+        Assert.That(node.Expired, Is.EqualTo(6 * calls), "the shard dropped the expired requests unrun");
         Assert.That(sink.PayloadBytes, Is.Zero, "status-only frames");
         Assert.That(allocated / (double)calls, Is.LessThan(8), $"{allocated} B for {calls} timeouts");
 
