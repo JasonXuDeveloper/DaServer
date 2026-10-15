@@ -57,6 +57,12 @@ internal struct Loading : IComponent;
 /// <summary>Tag: the actor must leave this shard (not owned here, idle, stopping); it starts unloading once idle.</summary>
 internal struct UnloadRequested : IComponent;
 
+/// <summary>
+/// Tag: the cluster declared this node dead and gave the actor's key to another node, so the actor is removed without
+/// <see cref="Actor.OnUnload"/>: a save now could overwrite what the new owner already wrote.
+/// </summary>
+internal struct Fenced : IComponent;
+
 /// <summary>Tag: the turn is <see cref="Actor.OnUnload"/>; mail arriving meanwhile is forwarded afterwards.</summary>
 internal struct Unloading : IComponent;
 
@@ -103,10 +109,8 @@ internal struct ShardActivity : ISingletonComponent
     public bool Stopping;
 
     /// <summary>
-    /// Unload every loaded actor once (the cluster declared this node Dead and moved its keys). New loads are allowed: they are legitimate once the node is Up again.
+    /// Remove every loaded actor once, without <see cref="Actor.OnUnload"/> (<see cref="Fenced"/>: the cluster declared this
+    /// node Dead and moved its keys). New loads are allowed: they are legitimate once the node is Up again.
     /// </summary>
     public bool DeclaredDead;
-
-    /// <summary>Every loaded actor leaves on the next rebalance, owned here or not.</summary>
-    public readonly bool UnloadAll => Stopping || DeclaredDead;
 }
