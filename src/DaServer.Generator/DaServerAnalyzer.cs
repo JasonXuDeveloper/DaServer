@@ -7,16 +7,14 @@ using Microsoft.CodeAnalysis.Diagnostics;
 namespace DaServer.Generator;
 
 /// <summary>
-/// Reports misuse of DaServer contracts and implementations. It shares <see cref="Shapes"/> with the generators, so
-/// "the generator skipped it" and "the analyzer reported it" always agree.
+/// Reports misuse of DaServer messages and handlers. It shares <see cref="Shapes"/> with the generators, so "the
+/// generator skipped it" and "the analyzer reported it" always agree.
 /// </summary>
 [DiagnosticAnalyzer(LanguageNames.CSharp)]
 public sealed class DaServerAnalyzer : DiagnosticAnalyzer
 {
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics { get; } = ImmutableArray.Create(
-        Rules.BadReturnType, Rules.BadParameter, Rules.GenericMember, Rules.CallbackMustBeVoid, Rules.IdCollision,
-        Rules.ActorBase, Rules.NoDefaultConstructor, Rules.NoMethods, Rules.NotWireType, Rules.UnkeyedActorEvent,
-        Rules.MixedKinds, Rules.BadContractAttributes, Rules.BadHandler, Rules.BadKey);
+        Rules.BadHandler, Rules.BadMessage, Rules.NotWireType, Rules.IdCollision, Rules.NoDefaultConstructor);
 
     public override void Initialize(AnalysisContext context)
     {
@@ -24,7 +22,7 @@ public sealed class DaServerAnalyzer : DiagnosticAnalyzer
         context.EnableConcurrentExecution();
         context.RegisterCompilationStartAction(start =>
         {
-            // Wire ids of every contract method in this compilation, for the collision check at the end.
+            // Wire ids of every message type declared in this compilation, for the collision check at the end.
             var ids = new ConcurrentDictionary<uint, (string Name, Location? Location)>();
             var collisions = new ConcurrentBag<Diagnostic>();
 
@@ -35,17 +33,15 @@ public sealed class DaServerAnalyzer : DiagnosticAnalyzer
                     symbolContext.ReportDiagnostic(Diagnostic.Create(d, l ?? type.Locations.FirstOrDefault(), a));
 
                 Shapes.ReadHosted(type, Report);
-                Shapes.ReadKeyedEvent(type, Report);
-                if (Shapes.ReadContract(type, Report) == null) return;
+                Shapes.ReadRequest(type, Report);
+                Shapes.ReadClientMessage(type, Report);
 
-                foreach (var method in type.GetMembers().OfType<IMethodSymbol>().Where(m => m.MethodKind == MethodKind.Ordinary))
-                {
-                    string name = type.ToDisplayString() + "." + method.Name;
-                    var location = method.Locations.FirstOrDefault();
-                    var existing = ids.GetOrAdd(Shapes.MethodId(type, method), (name, location));
-                    if (existing.Name != name)
-                        collisions.Add(Diagnostic.Create(Rules.IdCollision, location, name, existing.Name));
-                }
+                if (type.TypeKind != TypeKind.Struct || !Support.HasAttribute(type, Support.NinoTypeAttribute)) return;
+                string name = type.ToDisplayString();
+                var location = type.Locations.FirstOrDefault();
+                var existing = ids.GetOrAdd(Shapes.MessageId(type), (name, location));
+                if (existing.Name != name)
+                    collisions.Add(Diagnostic.Create(Rules.IdCollision, location, name, existing.Name));
             }, SymbolKind.NamedType);
 
             start.RegisterCompilationEndAction(end =>
@@ -60,53 +56,21 @@ internal static class Rules
 {
     private const string Category = "DaServer";
 
-    public static readonly DiagnosticDescriptor BadReturnType = new("DAS001", "Unsupported RPC return type",
-        "Method '{0}' of RPC contract '{1}' must return ValueTask, ValueTask<T> or void (one-way); Task is not allowed (it allocates)",
-        Category, DiagnosticSeverity.Error, true);
+    public static readonly DiagnosticDescriptor BadHandler = new("DAS001", "Invalid message handler",
+        "[Handle] method '{0}' must {1}", Category, DiagnosticSeverity.Error, true);
 
-    public static readonly DiagnosticDescriptor BadParameter = new("DAS002", "Unsupported RPC parameter",
-        "Parameter '{0}' of RPC method '{1}' must be passed by value (no ref/out/in/params)", Category,
-        DiagnosticSeverity.Error, true);
+    public static readonly DiagnosticDescriptor BadMessage = new("DAS002", "Invalid message type",
+        "'{0}' (used by {1}) {2}: a message is a non-generic [NinoType] struct", Category, DiagnosticSeverity.Error, true);
 
-    public static readonly DiagnosticDescriptor GenericMember = new("DAS003", "Generic RPC member",
-        "RPC contract '{0}' and its methods cannot be generic", Category, DiagnosticSeverity.Error, true);
-
-    public static readonly DiagnosticDescriptor CallbackMustBeVoid = new("DAS004", "Pushes are one-way",
-        "Method '{0}' of [ToClient] contract '{1}' must return void", Category, DiagnosticSeverity.Error, true);
-
-    public static readonly DiagnosticDescriptor IdCollision = new("DAS005", "RPC method id collision",
-        "Methods '{0}' and '{1}' hash to the same wire id; add [WireId] to one of them", Category,
-        DiagnosticSeverity.Error, true, customTags: WellKnownDiagnosticTags.CompilationEnd);
-
-    public static readonly DiagnosticDescriptor ActorBase = new("DAS006", "Actor implementation must derive from Actor",
-        "'{0}' implements actor contract '{1}' and must derive from DaServer.Runtime.Actor", Category,
-        DiagnosticSeverity.Error, true);
-
-    public static readonly DiagnosticDescriptor NoDefaultConstructor = new("DAS007", "Missing parameterless constructor",
-        "'{0}' must have a public parameterless constructor (the runtime creates one instance per shard/activation)",
-        Category, DiagnosticSeverity.Error, true);
-
-    public static readonly DiagnosticDescriptor NoMethods = new("DAS008", "Properties and events are not supported",
-        "RPC contract '{0}' may only declare methods (member '{1}')", Category, DiagnosticSeverity.Error, true);
-
-    public static readonly DiagnosticDescriptor NotWireType = new("DAS009", "Type cannot cross the wire",
+    public static readonly DiagnosticDescriptor NotWireType = new("DAS003", "Type cannot cross the wire",
         "'{0}' (used by {1}) must be a primitive, string, enum, array, BCL collection or a [NinoType] type", Category,
         DiagnosticSeverity.Error, true);
 
-    public static readonly DiagnosticDescriptor UnkeyedActorEvent = new("DAS010", "Actors handle keyed events only",
-        "Actor '{0}' handles '{1}', which has no [ActorKey] member: an actor event is delivered to the activation of the event's key",
+    public static readonly DiagnosticDescriptor IdCollision = new("DAS004", "Message id collision",
+        "Messages '{0}' and '{1}' hash to the same wire id; add [WireId] to one of them", Category,
+        DiagnosticSeverity.Error, true, customTags: WellKnownDiagnosticTags.CompilationEnd);
+
+    public static readonly DiagnosticDescriptor NoDefaultConstructor = new("DAS005", "Missing parameterless constructor",
+        "'{0}' must have a public parameterless constructor (the runtime creates one instance per shard/activation)",
         Category, DiagnosticSeverity.Error, true);
-
-    public static readonly DiagnosticDescriptor MixedKinds = new("DAS011", "Actor and service in one type",
-        "'{0}' implements both actor and service contracts; an implementation is either keyed (actor) or stateless (service)",
-        Category, DiagnosticSeverity.Error, true);
-
-    public static readonly DiagnosticDescriptor BadContractAttributes = new("DAS012", "Invalid contract attributes",
-        "'{0}': {1}", Category, DiagnosticSeverity.Error, true);
-
-    public static readonly DiagnosticDescriptor BadHandler = new("DAS013", "Invalid event handler",
-        "[Handle] method '{0}' must {1}", Category, DiagnosticSeverity.Error, true);
-
-    public static readonly DiagnosticDescriptor BadKey = new("DAS014", "Invalid event key",
-        "'{0}': {1}", Category, DiagnosticSeverity.Error, true);
 }

@@ -18,14 +18,14 @@ public class AllocationTests : ClusterTest
 
         // Two keys on different shards: every call crosses threads through the mailboxes.
         long other = 2;
-        while (await node.Counter(other).WhereAmI() == await node.Counter(1).WhereAmI()) other++;
+        while (await node.Ask(other, new WhereAmI()) == await node.Ask(1, new WhereAmI())) other++;
 
         // Warm up past tiered-JIT promotion, then measure. The counter is process-wide, so background runtime work
         // (timers, thread-pool bookkeeping: 0.15 B per call locally, up to ~2.5 B on a 2-core CI runner) is included;
         // anything per call would be >= 24 B (the smallest object), so 8 B still catches it.
         const int calls = 20_000;
-        await node.Counter(1).AddMany(other, 3 * calls);
-        long allocated = await node.Counter(1).AddMany(other, calls);
+        await node.Ask(1, new AddMany(other, 3 * calls));
+        long allocated = await node.Ask(1, new AddMany(other, calls));
         Assert.That(allocated / (double)calls, Is.LessThan(8), $"{allocated} B for {calls} calls");
     }
 
@@ -34,11 +34,11 @@ public class AllocationTests : ClusterTest
     {
         var node = await Start("alloc", configure: o => o.GossipInterval = TimeSpan.FromHours(1));
         long other = 2;
-        while (await node.Counter(other).WhereAmI() == await node.Counter(1).WhereAmI()) other++;
+        while (await node.Ask(other, new WhereAmI()) == await node.Ask(1, new WhereAmI())) other++;
 
         const int events = 20_000;
-        await node.Counter(1).PublishMany(other, 3 * events);
-        long allocated = await node.Counter(1).PublishMany(other, events);
+        await node.Ask(1, new PublishMany(other, 3 * events));
+        long allocated = await node.Ask(1, new PublishMany(other, events));
         Assert.That(allocated / (double)events, Is.LessThan(8), $"{allocated} B for {events} events"); // see above
     }
 
@@ -51,12 +51,11 @@ public class AllocationTests : ClusterTest
         for (int i = 0; i < members; i++)
         {
             var client = await Connect(gateway);
-            client.Register<IPlayerClient>(receiver);
-            await client.Room(7).Join();
+            client.Register(receiver);
+            await client.Ask(7, new Join());
         }
 
-        Assert.That(gateway.View.TryGetActorImplementation(RoomRpc.ContractId, out uint room));
-        var group = gateway.PlayerClient(ClientGroup.Of(room, 7));
+        var group = ClientGroup.Of(ImplementationId<Room>(), 7); // the room's Group
 
         // Server side and client side both count: serialize once, one copy per session, client dispatch.
         const int broadcasts = 5_000;
@@ -72,7 +71,7 @@ public class AllocationTests : ClusterTest
         {
             for (int i = 0; i < count; i++)
             {
-                group.OnGold(i);
+                gateway.Send(group, new GoldChanged(i));
                 if (i % 64 == 63) // stay within the clients' send backlog
                     WaitFor(ref receiver.Received, (long)(i + 1) * members);
             }
@@ -89,8 +88,7 @@ public class AllocationTests : ClusterTest
         var game = await Start("game", configure: o => o.GossipInterval = TimeSpan.FromHours(1));
         await Converged();
         var client = await Connect(gateway);
-        await client.Auth().Login(42); // binds the session to player 42 (on the game node)
-        var player = client.Player();
+        await client.Ask(new Login(42)); // binds the session to player 42 (on the game node)
 
         // One-way client input (the dominant client traffic) crossing gateway -> game.
         const int calls = 5_000;
@@ -110,8 +108,8 @@ public class AllocationTests : ClusterTest
         {
             for (int i = 1; i <= count; i++)
             {
-                player.Tip(1);
-                if (i % 500 == 0) await player.AddGold(0);
+                client.Send(new Tip(1));
+                if (i % 500 == 0) await client.Ask(new AddGold(0));
             }
         }
     }
@@ -152,14 +150,10 @@ public class AllocationTests : ClusterTest
         while (Volatile.Read(ref counter) < target) spin.SpinOnce();
     }
 
-    private sealed class GoldCounter : IPlayerClient
+    internal sealed class GoldCounter
     {
         public long Received;
 
-        public void OnChat(long from, string text)
-        {
-        }
-
-        public void OnGold(int gold) => Interlocked.Increment(ref Received);
+        [Handle] public void On(GoldChanged _) => Interlocked.Increment(ref Received);
     }
 }

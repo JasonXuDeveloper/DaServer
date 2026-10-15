@@ -5,209 +5,106 @@ using static DaServer.Generator.Support;
 
 namespace DaServer.Generator;
 
-internal enum ContractKind
+/// <summary>What a [Handle] method returns: nothing to reply, or the reply of a request.</summary>
+internal enum HandlerReturn
 {
-    Service,
+    Void,
+    ValueTask,
+    Reply,
+    ValueTaskOfReply,
+}
+
+/// <summary>A <c>[Handle]</c> method: the message type it takes and how it returns.</summary>
+internal sealed record HandlerModel(string MessageType, string Method, HandlerReturn Return);
+
+internal enum HostedKind
+{
+    System,
     Actor,
-    ToClient,
-}
-
-internal enum MethodShape
-{
-    OneWay,
-    Task,
-    TaskOfT,
-}
-
-/// <summary>How clients may call a method (mirrors DaServer.Rpc.ClientRoute).</summary>
-internal enum ClientRoute
-{
-    None,
     Service,
-    BoundKey,
-    AnyKey,
+
+    /// <summary>Any other class with [Handle] methods: a client-side handler object (<c>client.Register(obj)</c>).</summary>
+    ClientHandler,
 }
 
-internal sealed record ParameterModel(string Type, string Name);
+/// <summary>Symbol-free description of a type the host registers: actor, service, client handler or shard system.</summary>
+internal sealed record HostedModel(string FullName, HostedKind Kind, EquatableArray<HandlerModel> Handlers);
 
-internal sealed record MethodModel(string Name, uint Id, MethodShape Shape, string ResultType,
-    EquatableArray<ParameterModel> Parameters, ClientRoute Route);
+/// <summary>A request type (<c>IRequest&lt;TReply&gt;</c>): the generator emits its typed <c>Ask</c> overloads.</summary>
+internal sealed record RequestModel(string Namespace, string ClassName, string FullName, string ReplyType, bool Public);
 
-/// <summary>Symbol-free description of an RPC contract (cached by the incremental pipeline).</summary>
-internal sealed record ContractModel(string Namespace, string Name, string FullName, ContractKind Kind, uint Id,
-    EquatableArray<MethodModel> Methods)
-{
-    public string Accessor => StripInterfacePrefix(Name);
-    public string ProxyName => Accessor + "Proxy";
-    public string RpcClassName => Accessor + "Rpc";
-    public bool HasSessionMethods => Methods.Any(m => m.Route == ClientRoute.BoundKey);
-}
-
-/// <summary>A <c>[Handle]</c> method: the event it takes and whether it returns void.</summary>
-internal sealed record HandlerModel(string EventType, string Method, bool ReturnsVoid);
-
-/// <summary>Symbol-free description of a hosted implementation (contracts it serves, events it handles) or shard system.</summary>
-internal sealed record HostedModel(string FullName, bool IsSystem, ContractKind Kind, EquatableArray<string> Contracts,
-    EquatableArray<HandlerModel> Handlers);
-
-/// <summary>A struct with a <c>[ActorKey]</c> member: the generator implements DaServer.Rpc.IKeyed on it.</summary>
-internal sealed record KeyedEventModel(string Namespace, string Declaration, string Name, string Member);
+/// <summary>A [ClientMessage] type: registered for gateways in its assembly.</summary>
+internal sealed record ClientMessageModel(string FullName, bool AnyKey);
 
 /// <summary>
-/// Reads contracts, implementations and events from symbols. The single source of truth for validity: the generators
-/// call it without a reporter and skip invalid input; <see cref="DaServerAnalyzer"/> calls it with one and reports.
+/// Reads messages and hosted types from symbols. The single source of truth for validity: the generators call it
+/// without a reporter and skip invalid input; <see cref="DaServerAnalyzer"/> calls it with one and reports.
 /// </summary>
 internal static class Shapes
 {
-    private static readonly string[] KindAttributes = [ServiceAttribute, ActorAttribute, ToClientAttribute];
+    /// <summary>The reply type of a request struct (<c>IRequest&lt;TReply&gt;</c>), or null.</summary>
+    public static ITypeSymbol? ReplyOf(ITypeSymbol type) =>
+        type.AllInterfaces.FirstOrDefault(i => i.ConstructedFrom.ToDisplayString() == RequestInterface)?.TypeArguments[0];
 
-    public static ContractKind? KindOf(INamedTypeSymbol type)
+    /// <summary>
+    /// A message type: a non-generic [NinoType] struct (what crosses the wire as one message). Reports why not when
+    /// <paramref name="report"/> is set.
+    /// </summary>
+    public static bool IsMessage(ITypeSymbol type, Location? location, string usedBy, Report? report)
     {
-        if (type.TypeKind != TypeKind.Interface) return null;
-        if (HasAttribute(type, ActorAttribute)) return ContractKind.Actor;
-        if (HasAttribute(type, ServiceAttribute)) return ContractKind.Service;
-        if (HasAttribute(type, ToClientAttribute)) return ContractKind.ToClient;
-        return null;
-    }
-
-    public static ContractModel? ReadContract(INamedTypeSymbol type, Report? report = null)
-    {
-        if (KindOf(type) is not { } kind) return null;
-        bool valid = true;
-        var location = type.Locations.FirstOrDefault();
-        if (type.IsGenericType)
-        {
-            report?.Invoke(Rules.GenericMember, location, type.Name);
-            valid = false;
-        }
-
-        if (KindAttributes.Count(a => HasAttribute(type, a)) > 1)
-        {
-            report?.Invoke(Rules.BadContractAttributes, location, type.Name, "only one of [Service], [Actor] and [ToClient] applies");
-            valid = false;
-        }
-
-        var interfaceClient = GetAttribute(type, FromClientAttribute);
-
-        // Methods of the interface and of the interfaces it extends.
-        var methods = new List<MethodModel>();
-        foreach (var iface in new[] { type }.Concat(type.AllInterfaces))
-        foreach (var member in iface.GetMembers())
-        {
-            if (member is IMethodSymbol { MethodKind: MethodKind.Ordinary, IsStatic: false } method)
-            {
-                var model = ReadMethod(type, method, kind, ClientRouteOf(type, kind, method, interfaceClient, report), report);
-                if (model == null) valid = false;
-                else methods.Add(model);
-            }
-            else if (member is IPropertySymbol or IEventSymbol)
-            {
-                report?.Invoke(Rules.NoMethods, member.Locations.FirstOrDefault(), type.Name, member.Name);
-                valid = false;
-            }
-        }
-
-        if (!valid) return null;
-        string ns = type.ContainingNamespace.IsGlobalNamespace ? "" : type.ContainingNamespace.ToDisplayString();
-        return new ContractModel(ns, type.Name, type.ToDisplayString(Fqn), kind, Fnv1a(type.ToDisplayString()),
-            new EquatableArray<MethodModel>(methods.ToArray()));
-    }
-
-    /// <summary>[FromClient] on the method, else on the interface; AnyKey only on actors; never on [ToClient] contracts.</summary>
-    private static ClientRoute? ClientRouteOf(INamedTypeSymbol contract, ContractKind kind, IMethodSymbol method,
-        AttributeData? interfaceClient, Report? report)
-    {
-        var client = GetAttribute(method, FromClientAttribute) ?? interfaceClient;
-        if (client == null) return ClientRoute.None;
-        bool anyKey = client.NamedArguments.Any(a => a.Key == "AnyKey" && a.Value.Value is true);
-        string? problem = kind == ContractKind.ToClient ? "[FromClient] applies to [Service] and [Actor] methods, not [ToClient]"
-            : kind == ContractKind.Service && anyKey ? "AnyKey applies to actor methods only"
+        string? problem = type.TypeKind != TypeKind.Struct ? "must be a struct"
+            : !HasAttribute(type, NinoTypeAttribute) ? "must be a [NinoType] struct"
+            : type is INamedTypeSymbol { IsGenericType: true } ? "cannot be generic"
             : null;
-        if (problem != null)
-        {
-            report?.Invoke(Rules.BadContractAttributes, method.Locations.FirstOrDefault(), contract.Name + "." + method.Name, problem);
-            return null;
-        }
-
-        return kind == ContractKind.Service ? ClientRoute.Service : anyKey ? ClientRoute.AnyKey : ClientRoute.BoundKey;
+        if (problem == null) return true;
+        report?.Invoke(Rules.BadMessage, location, type.ToDisplayString(), usedBy, problem);
+        return false;
     }
 
-    private static MethodModel? ReadMethod(INamedTypeSymbol contract, IMethodSymbol method, ContractKind kind,
-        ClientRoute? route, Report? report)
+    /// <summary>A request struct with a valid reply type, or null (reported).</summary>
+    public static RequestModel? ReadRequest(INamedTypeSymbol type, Report? report = null)
     {
-        if (route == null) return null;
-        var location = method.Locations.FirstOrDefault();
-        if (method.IsGenericMethod)
+        var reply = ReplyOf(type);
+        if (reply == null) return null;
+        var location = type.Locations.FirstOrDefault();
+        if (!IsMessage(type, location, "IRequest", report)) return null;
+        if (!IsWireType(reply))
         {
-            report?.Invoke(Rules.GenericMember, location, contract.Name + "." + method.Name);
+            report?.Invoke(Rules.NotWireType, location, reply.ToDisplayString(), "the reply of " + type.Name);
             return null;
         }
 
-        MethodShape shape;
-        string resultType = "";
-        var returnType = method.ReturnType as INamedTypeSymbol;
-        string returnName = returnType?.ConstructedFrom.ToDisplayString() ?? "";
-        if (method.ReturnsVoid) shape = MethodShape.OneWay;
-        else if (returnName == "System.Threading.Tasks.ValueTask") shape = MethodShape.Task;
-        else if (returnName == "System.Threading.Tasks.ValueTask<TResult>")
-        {
-            shape = MethodShape.TaskOfT;
-            resultType = returnType!.TypeArguments[0].ToDisplayString(Fqn);
-            if (!IsWireType(returnType.TypeArguments[0]))
-            {
-                report?.Invoke(Rules.NotWireType, location, returnType.TypeArguments[0].ToDisplayString(), contract.Name + "." + method.Name);
-                return null;
-            }
-        }
-        else
-        {
-            report?.Invoke(Rules.BadReturnType, location, method.Name, contract.Name);
-            return null;
-        }
+        string ns = type.ContainingNamespace.IsGlobalNamespace ? "" : type.ContainingNamespace.ToDisplayString();
+        string name = ns.Length > 0 ? type.ToDisplayString().Substring(ns.Length + 1) : type.ToDisplayString();
+        return new RequestModel(ns, Identifier(name) + "Ask", type.ToDisplayString(Fqn), reply.ToDisplayString(Fqn),
+            IsPublic(type));
+    }
 
-        if (kind == ContractKind.ToClient && shape != MethodShape.OneWay)
-        {
-            report?.Invoke(Rules.CallbackMustBeVoid, location, method.Name, contract.Name);
-            return null;
-        }
-
-        var parameters = new List<ParameterModel>();
-        foreach (var p in method.Parameters)
-        {
-            if (p.RefKind != RefKind.None || p.IsParams)
-            {
-                report?.Invoke(Rules.BadParameter, p.Locations.FirstOrDefault(), p.Name, method.Name);
-                return null;
-            }
-
-            if (!IsWireType(p.Type))
-            {
-                report?.Invoke(Rules.NotWireType, p.Locations.FirstOrDefault(), p.Type.ToDisplayString(), contract.Name + "." + method.Name);
-                return null;
-            }
-
-            parameters.Add(new ParameterModel(p.Type.ToDisplayString(Fqn), "@" + p.Name));
-        }
-
-        return new MethodModel(method.Name, MethodId(contract, method), shape, resultType,
-            new EquatableArray<ParameterModel>(parameters.ToArray()), route.Value);
+    /// <summary>A [ClientMessage] struct, or null (reported).</summary>
+    public static ClientMessageModel? ReadClientMessage(INamedTypeSymbol type, Report? report = null)
+    {
+        var attribute = GetAttribute(type, ClientMessageAttribute);
+        if (attribute == null || !IsMessage(type, type.Locations.FirstOrDefault(), "[ClientMessage]", report)) return null;
+        bool anyKey = attribute.NamedArguments.Any(a => a.Key == "AnyKey" && a.Value.Value is true);
+        return new ClientMessageModel(type.ToDisplayString(Fqn), anyKey);
     }
 
     /// <summary>
-    /// Wire id: [WireId] override or FNV-1a of "Namespace.Contract.Method(ParamTypes)" (the contract, not the declaring
-    /// interface, so a contract extending another one never registers duplicate ids).
+    /// The runtime's wire id of a message type: [WireId] or FNV-1a of <c>Type.FullName</c> (nested types joined by '+').
     /// </summary>
-    public static uint MethodId(INamedTypeSymbol contract, IMethodSymbol method)
+    public static uint MessageId(ITypeSymbol type)
     {
-        var idAttribute = method.GetAttributes().FirstOrDefault(a => a.AttributeClass?.ToDisplayString() == WireIdAttribute);
-        return idAttribute?.ConstructorArguments.FirstOrDefault().Value is uint explicitId
-            ? explicitId
-            : Fnv1a($"{contract.ToDisplayString()}.{method.Name}({string.Join(",", method.Parameters.Select(p => p.Type.ToDisplayString()))})");
+        var wireId = type.GetAttributes().FirstOrDefault(a => a.AttributeClass?.ToDisplayString() == WireIdAttribute);
+        if (wireId?.ConstructorArguments.FirstOrDefault().Value is uint id) return id;
+        string name = type.MetadataName;
+        for (var outer = type.ContainingType; outer != null; outer = outer.ContainingType) name = outer.MetadataName + "+" + name;
+        if (!type.ContainingNamespace.IsGlobalNamespace) name = type.ContainingNamespace.ToDisplayString() + "." + name;
+        return Fnv1a(name);
     }
 
     /// <summary>
     /// Types that cross the wire: primitives, strings, enums, arrays and BCL generics of wire types, and [NinoType]
-    /// types. Anything else would fail at run time in the serializer, so it is a build error (DAS009).
+    /// types. Anything else would fail at run time in the serializer, so it is a build error.
     /// </summary>
     public static bool IsWireType(ITypeSymbol type)
     {
@@ -228,10 +125,11 @@ internal static class Shapes
     }
 
     /// <summary>
-    /// <c>[Handle]</c> methods of <paramref name="type"/>: one event parameter (a [NinoType] struct), void or ValueTask,
-    /// reachable from generated code, one handler per event type. Null when one is invalid.
+    /// <c>[Handle]</c> methods of <paramref name="type"/>: one message parameter by value, reachable from generated code,
+    /// one handler per message type; a request's handler returns its reply, other handlers void or ValueTask. Null
+    /// when one is invalid.
     /// </summary>
-    private static List<(HandlerModel Model, ITypeSymbol Event)>? ReadHandlers(INamedTypeSymbol type, Report? report)
+    public static List<(HandlerModel Model, ITypeSymbol Message)>? ReadHandlers(INamedTypeSymbol type, Report? report)
     {
         var handlers = new List<(HandlerModel, ITypeSymbol)>();
         bool valid = true;
@@ -240,113 +138,104 @@ internal static class Shapes
             if (!HasAttribute(method, HandleAttribute)) continue;
             var location = method.Locations.FirstOrDefault();
             string name = type.Name + "." + method.Name;
-            bool returnsVoid = method.ReturnsVoid;
-            var e = method.Parameters.Length == 1 && method.Parameters[0].RefKind == RefKind.None ? method.Parameters[0].Type : null;
-            if (e == null || method.IsStatic || method.IsGenericMethod || method.DeclaredAccessibility is Accessibility.Private or Accessibility.Protected ||
-                !(returnsVoid || method.ReturnType.ToDisplayString() == "System.Threading.Tasks.ValueTask"))
+            var message = method.Parameters.Length == 1 && method.Parameters[0].RefKind == RefKind.None ? method.Parameters[0].Type : null;
+            if (message == null || method.IsStatic || method.IsGenericMethod ||
+                method.DeclaredAccessibility is Accessibility.Private or Accessibility.Protected)
             {
-                report?.Invoke(Rules.BadHandler, location, name, "take one event parameter by value, return void or ValueTask and be public or internal");
+                report?.Invoke(Rules.BadHandler, location, name, "take one message parameter by value and be a public or internal instance method");
                 valid = false;
+                continue;
             }
-            else if (e.TypeKind != TypeKind.Struct || !HasAttribute(e, NinoTypeAttribute))
+
+            if (!IsMessage(message, location, "handler " + name, report))
             {
-                report?.Invoke(Rules.NotWireType, location, e.ToDisplayString(), "event handler " + name);
                 valid = false;
+                continue;
             }
-            else if (handlers.Any(h => SymbolEqualityComparer.Default.Equals(h.Item2, e)))
+
+            if (handlers.Any(h => SymbolEqualityComparer.Default.Equals(h.Item2, message)))
             {
-                report?.Invoke(Rules.BadHandler, location, name, "handle each event type once (" + e.Name + " has another handler)");
+                report?.Invoke(Rules.BadHandler, location, name, "be the only handler of " + message.Name + " in its type");
                 valid = false;
+                continue;
             }
-            else
+
+            var returns = ReturnOf(method, ReplyOf(message));
+            if (returns == null)
             {
-                handlers.Add((new HandlerModel(e.ToDisplayString(Fqn), method.Name, returnsVoid), e));
+                var reply = ReplyOf(message);
+                report?.Invoke(Rules.BadHandler, location, name, reply == null
+                    ? "return void or ValueTask (" + message.Name + " is not a request)"
+                    : "return " + reply.ToDisplayString() + " or ValueTask<" + reply.ToDisplayString() + "> (the reply of " + message.Name + ")");
+                valid = false;
+                continue;
             }
+
+            handlers.Add((new HandlerModel(message.ToDisplayString(Fqn), method.Name, returns.Value), message));
         }
 
         return valid ? handlers : null;
     }
 
-    /// <summary>A [ActorKey] member, or IKeyed implemented by hand (the runtime's own SessionClosed).</summary>
-    public static bool IsKeyed(ITypeSymbol type) =>
-        KeyMember(type) != null || type.AllInterfaces.Any(i => i.ToDisplayString() == "DaServer.Rpc.IKeyed");
-
-    private static ISymbol? KeyMember(ITypeSymbol type) =>
-        type.GetMembers().FirstOrDefault(m => m is IFieldSymbol or IPropertySymbol && HasAttribute(m, ActorKeyAttribute));
-
-    /// <summary>A struct with a [ActorKey] member: an integer member of a partial, non-nested struct, one per type.</summary>
-    public static KeyedEventModel? ReadKeyedEvent(INamedTypeSymbol type, Report? report = null)
+    private static HandlerReturn? ReturnOf(IMethodSymbol method, ITypeSymbol? reply)
     {
-        var keys = type.GetMembers().Where(m => m is IFieldSymbol or IPropertySymbol && HasAttribute(m, ActorKeyAttribute)).ToArray();
-        if (keys.Length == 0) return null;
-        var key = keys[0];
-        var keyType = key is IFieldSymbol f ? f.Type : ((IPropertySymbol)key).Type;
-        bool partial = type.DeclaringSyntaxReferences.All(r =>
-            r.GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.TypeDeclarationSyntax d && d.Modifiers.Any(m => m.ValueText == "partial"));
-        string? problem = keys.Length > 1 ? "an event has one [ActorKey]"
-            : type.TypeKind != TypeKind.Struct || !partial || type.ContainingType != null || type.IsGenericType
-                ? "[ActorKey] belongs to a partial, non-nested, non-generic struct"
-            : keyType.SpecialType is not (SpecialType.System_Int64 or SpecialType.System_Int32 or SpecialType.System_UInt32 or
-                SpecialType.System_Int16 or SpecialType.System_UInt16 or SpecialType.System_Byte or SpecialType.System_SByte)
-                ? "the key must be a long (or a smaller integer)"
-            : null;
-        if (problem != null)
+        var returnType = method.ReturnType as INamedTypeSymbol;
+        if (reply == null)
         {
-            report?.Invoke(Rules.BadKey, key.Locations.FirstOrDefault(), type.Name + "." + key.Name, problem);
-            return null;
+            if (method.ReturnsVoid) return HandlerReturn.Void;
+            return returnType?.ToDisplayString() == "System.Threading.Tasks.ValueTask" ? HandlerReturn.ValueTask : null;
         }
 
-        string ns = type.ContainingNamespace.IsGlobalNamespace ? "" : type.ContainingNamespace.ToDisplayString();
-        string declaration = (type.IsRecord ? "partial record struct " : "partial struct ") + type.Name;
-        return new KeyedEventModel(ns, declaration, type.Name, key.Name);
+        if (SymbolEqualityComparer.Default.Equals(method.ReturnType, reply)) return HandlerReturn.Reply;
+        return returnType is { IsGenericType: true } && returnType.ConstructedFrom.ToDisplayString() == "System.Threading.Tasks.ValueTask<TResult>" &&
+               SymbolEqualityComparer.Default.Equals(returnType.TypeArguments[0], reply)
+            ? HandlerReturn.ValueTaskOfReply
+            : null;
     }
 
     public static HostedModel? ReadHosted(INamedTypeSymbol type, Report? report = null)
     {
         if (type.TypeKind != TypeKind.Class || type.IsAbstract || type.IsStatic || type.IsGenericType) return null;
 
-        bool isSystem = DerivesFrom(type, EcsSystem);
-        var contracts = isSystem
-            ? []
-            : type.AllInterfaces.Where(i => KindOf(i) is ContractKind.Actor or ContractKind.Service).ToArray();
-        bool isActorType = DerivesFrom(type, ActorBase);
-        if (!isSystem && contracts.Length == 0 && !isActorType && !DerivesFrom(type, ServiceBase)) return null;
+        HostedKind kind = DerivesFrom(type, EcsSystem) ? HostedKind.System
+            : DerivesFrom(type, ActorBase) ? HostedKind.Actor
+            : DerivesFrom(type, ServiceBase) ? HostedKind.Service
+            : HostedKind.ClientHandler;
+        if (kind == HostedKind.System) return new HostedModel(type.ToDisplayString(Fqn), kind, default);
 
-        var handlers = isSystem ? new List<(HandlerModel Model, ITypeSymbol Event)>() : ReadHandlers(type, report);
-        bool valid = handlers != null;
-        var location = type.Locations.FirstOrDefault();
-        bool actorContract = contracts.Any(c => KindOf(c) == ContractKind.Actor);
-        bool isActor = actorContract || isActorType;
-        if (actorContract && !isActorType)
+        var handlers = ReadHandlers(type, report);
+        if (handlers == null || (kind == HostedKind.ClientHandler && handlers.Count == 0)) return null;
+        if (!IsReachable(type))
         {
-            report?.Invoke(Rules.ActorBase, location, type.Name, contracts.First(c => KindOf(c) == ContractKind.Actor).Name);
-            valid = false;
+            report?.Invoke(Rules.BadHandler, type.Locations.FirstOrDefault(), type.Name,
+                "be declared in a public or internal type (generated registration calls it)");
+            return null;
         }
 
-        if (isActor && (contracts.Any(c => KindOf(c) == ContractKind.Service) || DerivesFrom(type, ServiceBase)))
+        if (kind != HostedKind.ClientHandler &&
+            !type.InstanceConstructors.Any(c => c.Parameters.Length == 0 && c.DeclaredAccessibility == Accessibility.Public))
         {
-            report?.Invoke(Rules.MixedKinds, location, type.Name);
-            valid = false;
+            report?.Invoke(Rules.NoDefaultConstructor, type.Locations.FirstOrDefault(), type.Name);
+            return null;
         }
 
-        if (isActor && handlers != null)
-        {
-            foreach (var h in handlers.Where(h => !IsKeyed(h.Event)))
-            {
-                report?.Invoke(Rules.UnkeyedActorEvent, location, type.Name, h.Event.Name);
-                valid = false;
-            }
-        }
+        return new HostedModel(type.ToDisplayString(Fqn), kind,
+            new EquatableArray<HandlerModel>(handlers.Select(h => h.Model).OrderBy(h => h.MessageType).ToArray()));
+    }
 
-        if (!type.InstanceConstructors.Any(c => c.Parameters.Length == 0 && c.DeclaredAccessibility == Accessibility.Public))
-        {
-            report?.Invoke(Rules.NoDefaultConstructor, location, type.Name);
-            valid = false;
-        }
+    /// <summary>Accessible from generated code in the same assembly (no private or protected type on the way).</summary>
+    private static bool IsReachable(ISymbol symbol)
+    {
+        for (var s = symbol; s != null && s is not INamespaceSymbol; s = s.ContainingSymbol)
+            if (s.DeclaredAccessibility is Accessibility.Private or Accessibility.Protected or Accessibility.ProtectedAndInternal)
+                return false;
+        return true;
+    }
 
-        if (!valid) return null;
-        return new HostedModel(type.ToDisplayString(Fqn), isSystem, isActor ? ContractKind.Actor : ContractKind.Service,
-            new EquatableArray<string>(contracts.Select(c => c.ToDisplayString(Fqn)).ToArray()),
-            new EquatableArray<HandlerModel>(handlers!.Select(h => h.Model).OrderBy(h => h.EventType).ToArray()));
+    private static bool IsPublic(ISymbol symbol)
+    {
+        for (var s = symbol; s != null && s is not INamespaceSymbol; s = s.ContainingSymbol)
+            if (s.DeclaredAccessibility != Accessibility.Public) return false;
+        return true;
     }
 }

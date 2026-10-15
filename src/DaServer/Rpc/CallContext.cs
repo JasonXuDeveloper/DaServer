@@ -18,13 +18,7 @@ public interface IReplySink
 }
 
 /// <summary>
-/// Generated dispatcher: deserialize arguments for <paramref name="methodId"/> from <paramref name="reader"/>,
-/// invoke <paramref name="target"/> and reply through <paramref name="context"/>.
-/// </summary>
-public delegate ValueTask RpcDispatcher(object target, uint methodId, ref Reader reader, in CallContext context);
-
-/// <summary>
-/// Per-call context passed to generated dispatchers. A small struct: no allocation per call.
+/// Per-message context passed to generated dispatchers. A small struct: no allocation per call.
 /// Inside a handler, <see cref="Current"/> exposes it until the handler's first <c>await</c>.
 /// </summary>
 public readonly struct CallContext
@@ -33,7 +27,7 @@ public readonly struct CallContext
 
     public readonly IReplySink? Sink;
     public readonly uint RequestId;
-    public readonly uint MethodId;
+    public readonly uint MessageId;
 
     /// <summary>Actor key of the target (0 for services).</summary>
     public readonly long Key;
@@ -41,11 +35,11 @@ public readonly struct CallContext
     /// <summary>Client session that originated the call (through a gateway), or default for server-internal calls.</summary>
     public readonly SessionRef CallerSession;
 
-    public CallContext(IReplySink? sink, uint requestId, uint methodId, long key, SessionRef caller)
+    public CallContext(IReplySink? sink, uint requestId, uint messageId, long key, SessionRef caller)
     {
         Sink = sink;
         RequestId = requestId;
-        MethodId = methodId;
+        MessageId = messageId;
         Key = key;
         CallerSession = caller;
     }
@@ -89,12 +83,6 @@ public readonly struct CallContext
         }
 
         return AwaitReply(task, this);
-    }
-
-    public ValueTask UnknownMethod()
-    {
-        ReplyError(RpcStatus.UnknownMethod, "Unknown method " + MethodId.ToString("x8"));
-        return default;
     }
 
     public void ReplyValue<T>(T value)

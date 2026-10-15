@@ -32,7 +32,7 @@ public static class DaServerHostingExtensions
             return new Node(options);
         });
         builder.Services.AddSingleton<ICluster>(static sp => sp.GetRequiredService<Node>());
-        builder.Services.AddSingleton<IRpcInvoker>(static sp => sp.GetRequiredService<Node>());
+        builder.Services.AddSingleton<IMessageSender>(static sp => sp.GetRequiredService<Node>());
         builder.Services.AddHostedService<NodeHostedService>();
         var statsInterval = builder.Configuration.GetValue($"{section}:StatsInterval", TimeSpan.FromSeconds(30));
         if (statsInterval > TimeSpan.Zero)

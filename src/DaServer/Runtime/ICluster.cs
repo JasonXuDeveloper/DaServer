@@ -4,25 +4,30 @@ namespace DaServer.Runtime;
 
 /// <summary>
 /// What business code sees of the cluster (<c>Cluster</c> in actors and services, <c>world.Cluster()</c> in systems):
-/// generated proxies hang off it (<c>Cluster.Player(id).AddGold(10)</c>, <c>Cluster.PlayerClient(Group).OnMoved(..)</c>),
-/// plus session binding, client groups and events. Node lifecycle and internals are not part of it.
+/// messages to actors and services (<c>Cluster.Send(mapId, new Move(..))</c>, <c>await Cluster.Ask(playerId, new
+/// GetInfo())</c>), events, pushes to clients and client groups. Node lifecycle and internals are not part of it.
 /// </summary>
-public interface ICluster : IRpcInvoker
+public interface ICluster : IMessageSender
 {
     /// <summary>Id of the local node.</summary>
     ulong NodeId { get; }
 
     /// <summary>
-    /// Bind a client session to actor <typeparamref name="TActor"/> with <paramref name="key"/>: the client's calls to that
-    /// contract go to this key (the client cannot choose it), and the actor receives
-    /// <see cref="SessionClosed"/> when the session ends. A session has at most one key per contract.
+    /// Publish an event (a <c>[NinoType]</c> struct) to every service handling it (<see cref="HandleAttribute">[Handle]</see>):
+    /// serialized once, one frame per handling implementation. The publisher never depends on its handlers.
     /// </summary>
-    void Bind<TActor>(SessionRef session, long key) where TActor : class;
+    void Publish<TEvent>(in TEvent e) where TEvent : struct;
 
-    /// <summary>Remove the binding of <typeparamref name="TActor"/> from a session.</summary>
-    void Unbind<TActor>(SessionRef session) where TActor : class;
+    /// <summary>Publish an event to every service handling it and to every actor of <paramref name="key"/> handling it.</summary>
+    void Publish<TEvent>(long key, in TEvent e) where TEvent : struct;
 
-    /// <summary>Add a session to a broadcast group (usually an actor's <c>Group</c>).</summary>
+    /// <summary>Push a message to one client session (its client handles it with a [Handle] method).</summary>
+    void Send<T>(SessionRef session, in T message) where T : struct;
+
+    /// <summary>Broadcast a message to every session of a group on every gateway (serialized once).</summary>
+    void Send<T>(ClientGroup group, in T message) where T : struct;
+
+    /// <summary>Add a session to a broadcast group (an actor's own <c>Group</c> is joined by <c>BindSession</c>).</summary>
     void JoinGroup(SessionRef session, ClientGroup group);
 
     /// <summary>Remove a session from a broadcast group.</summary>
@@ -30,10 +35,4 @@ public interface ICluster : IRpcInvoker
 
     /// <summary>Disconnect a client session.</summary>
     void Disconnect(SessionRef session);
-
-    /// <summary>
-    /// Publish a cluster event (a <c>[NinoType]</c> struct) to every <see cref="HandleAttribute">[Handle]</see> method in
-    /// the cluster: serialized once, one frame per handling implementation. The publisher never depends on its handlers.
-    /// </summary>
-    void Publish<TEvent>(in TEvent e) where TEvent : struct;
 }

@@ -2,65 +2,59 @@ using System.Threading.Tasks;
 using DaServer.Rpc;
 using DaServer.Runtime;
 using EasyEcs;
+using Nino.Core;
 
 namespace DaServer.Benchmark;
 
-// Benchmark business code, written like user code: an actor with state in a component that also handles a keyed
-// event, a public room actor whose group clients join, and a client callback.
+// Benchmark business code, written like user code: an actor with state in a component that also handles an event, a
+// public room actor whose groups clients join, and a message pushed to clients.
 
-[Actor]
-public interface ICounter
-{
-    ValueTask<int> Add(int delta);
-}
+[NinoType] public partial record struct Add(int Delta) : IRequest<int>;
 
-[Actor, FromClient(AnyKey = true)]
-public interface IRoom
-{
-    ValueTask Join(int groups);
-    ValueTask Broadcast(int groups, int sequence);
-}
+/// <summary>Event published to a counter's key.</summary>
+[NinoType] public partial record struct Bumped(int By);
 
-[Nino.Core.NinoType]
-public readonly partial record struct Bumped([property: ActorKey] long Key, int By);
+/// <summary>Join the room's group, or <see cref="Groups"/> groups of it (cells around a player in a map).</summary>
+[NinoType, ClientMessage(AnyKey = true)] public partial record struct Join(int Groups) : IRequest<bool>;
 
-[ToClient]
-public interface IRoomClient
-{
-    void OnTick(int sequence);
-}
+/// <summary>One message to each of <see cref="Groups"/> groups in the same turn.</summary>
+[NinoType] public partial record struct Broadcast(int Groups, int Sequence) : IRequest<bool>;
+
+/// <summary>Pushed to clients.</summary>
+[NinoType] public partial record struct Tick(int Sequence);
 
 public record struct CounterState(int Value) : IComponent;
 
-public sealed class Counter : Actor<CounterState>, ICounter
+public sealed class Counter : Actor<CounterState>
 {
-    public ValueTask<int> Add(int delta) => new(State.Value += delta);
+    [Handle] public int On(Add m) => State.Value += m.Delta;
 
-    [Handle]
-    public ValueTask On(Bumped e)
-    {
-        State.Value += e.By;
-        return default;
-    }
+    [Handle] public void On(Bumped e) => State.Value += e.By;
 }
 
-public sealed class Room : Actor, IRoom
+public sealed class Room : Actor
 {
-    /// <summary>Join the room's group, or <paramref name="groups"/> groups of it (cells around a player in a map).</summary>
-    public ValueTask Join(int groups)
+    [Handle]
+    public bool On(Join m)
     {
-        for (int i = 0; i < groups; i++) Cluster.JoinGroup(CallerSession, GroupOf(i));
-        return default;
+        for (int i = 0; i < m.Groups; i++) Cluster.JoinGroup(CallerSession, GroupOf(i));
+        return true;
     }
 
-    /// <summary>One message to each of <paramref name="groups"/> groups in the same turn.</summary>
-    public ValueTask Broadcast(int groups, int sequence)
+    [Handle]
+    public bool On(Broadcast m)
     {
-        for (int i = 0; i < groups; i++) Cluster.RoomClient(GroupOf(i)).OnTick(sequence);
-        return default;
+        for (int i = 0; i < m.Groups; i++) Cluster.Send(GroupOf(i), new Tick(m.Sequence));
+        return true;
     }
 
     private static readonly uint Cells = RpcIds.Fnv1a("DaServer.Benchmark.Cells");
 
     private ClientGroup GroupOf(int index) => index == 0 ? Group : ClientGroup.Of(Cells, Key * 16 + index);
+}
+
+/// <summary>Client side: counts the ticks it receives.</summary>
+internal sealed class Receiver(Countdown countdown)
+{
+    [Handle] public void On(Tick _) => countdown.Signal();
 }

@@ -60,7 +60,7 @@ public sealed class ConnectionOptions
 
     public static ConnectionOptions ForClients() => new ConnectionOptions
     {
-        ReceiveBufferSize = 4 * 1024, ZeroByteReads = true, MaxPendingSendBytes = 1024 * 1024, SendBufferSize = 4 * 1024,
+        ReceiveBufferSize = 4 * 1024, ZeroByteReads = true, MaxPendingSendBytes = 256 * 1024, SendBufferSize = 4 * 1024,
     };
 
     public static ConnectionOptions ForNodeLinks() => new ConnectionOptions

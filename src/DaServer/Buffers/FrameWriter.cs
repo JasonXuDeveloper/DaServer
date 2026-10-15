@@ -68,7 +68,7 @@ public sealed class FrameWriter : INinoBufferWriter, IDisposable
     public int Length => _pos;
 
     /// <summary>Write the header (length is filled in automatically).</summary>
-    public void SetHeader(FrameKind kind, uint requestId, uint methodId, long key, RpcStatus status = RpcStatus.Ok,
+    public void SetHeader(FrameKind kind, uint requestId, uint messageId, long key, RpcStatus status = RpcStatus.Ok,
         byte flags = 0, byte hops = 0)
     {
         var h = new FrameHeader
@@ -79,7 +79,7 @@ public sealed class FrameWriter : INinoBufferWriter, IDisposable
             Hops = hops,
             Flags = flags,
             RequestId = requestId,
-            MethodId = methodId,
+            MessageId = messageId,
             Key = key,
         };
         h.Write(_buffer);

@@ -16,7 +16,7 @@ namespace DaServer.Runtime;
 
 /// <summary>
 /// One process of the cluster: owns the shards, the cluster listener and links, membership and placement, and routes
-/// every call made through generated proxies (<see cref="IRpcInvoker"/>).
+/// every message (<see cref="ICluster"/>).
 /// </summary>
 public sealed partial class Node : ICluster, IAsyncDisposable
 {
@@ -24,7 +24,7 @@ public sealed partial class Node : ICluster, IAsyncDisposable
     private PeerLink[] _linkList = [];
     private readonly ConcurrentDictionary<ulong, PeerLink> _introduced = new(); // node id -> link, from Hellos
     private Shard[] _shards = [];
-    private FrozenDictionary<uint, ImplementationInfo> _implementationByContract = FrozenDictionary<uint, ImplementationInfo>.Empty;
+    private FrozenDictionary<ulong, ImplementationInfo?> _requestHandlers = FrozenDictionary<ulong, ImplementationInfo?>.Empty;
     private FrozenDictionary<uint, ImplementationInfo> _implementationById = FrozenDictionary<uint, ImplementationInfo>.Empty;
     private Listener? _clusterListener;
     private Timer? _maintenance;
@@ -144,33 +144,36 @@ public sealed partial class Node : ICluster, IAsyncDisposable
         await Task.WhenAll(Array.ConvertAll(_shards, w => w.Stopped)).ConfigureAwait(false);
     }
 
-    /// <summary>Hosted implementation serving <paramref name="contract"/> on this node, or null.</summary>
-    internal ImplementationInfo? ImplementationOf(RpcContractInfo contract) =>
-        _implementationByContract.TryGetValue(contract.Id, out var impl) ? impl : null;
-
     /// <summary>Hosted implementation with placement/routing id <paramref name="implementationId"/>, or null.</summary>
     internal ImplementationInfo? ImplementationById(uint implementationId) =>
         _implementationById.TryGetValue(implementationId, out var impl) ? impl : null;
+
+    /// <summary>
+    /// The hosted implementation answering requests of <paramref name="messageId"/> sent to an actor or a service
+    /// (requests carry the message id, not the implementation: their RequestId field is the call's), or null when none
+    /// or several of that kind handle it (an event: published to all of them, never asked).
+    /// </summary>
+    internal ImplementationInfo? RequestHandler(uint messageId, bool actor) =>
+        _requestHandlers.TryGetValue(RequestKey(messageId, actor), out var impl) ? impl : null;
+
+    private static ulong RequestKey(uint messageId, bool actor) => (ulong)messageId << 1 | (actor ? 1UL : 0UL);
 
     /// <summary>Everything registered in the process, narrowed by <see cref="NodeOptions.Hosts"/> when set.</summary>
     private void ResolveHosting()
     {
         var hosts = Options.Hosts;
-        var byContract = new Dictionary<uint, ImplementationInfo>();
         var byId = new Dictionary<uint, ImplementationInfo>();
+        var requests = new Dictionary<ulong, ImplementationInfo?>();
         var hosted = new List<ImplementationInfo>();
         foreach (var impl in ServerRegistry.Implementations)
         {
             if (hosts != null && !hosts(impl.Type)) continue;
             hosted.Add(impl);
             byId[impl.Id] = impl;
-            foreach (var contractType in impl.Contracts)
+            foreach (var handler in impl.Handlers.All)
             {
-                ServerRegistry.EnsureLoaded(contractType);
-                var contract = RpcRegistry.GetContract(contractType);
-                if (byContract.TryGetValue(contract.Id, out var other))
-                    throw new InvalidOperationException($"{contract} is implemented by both {other} and {impl}");
-                byContract[contract.Id] = impl;
+                ulong key = RequestKey(handler.MessageId, impl.IsActor);
+                requests[key] = requests.ContainsKey(key) ? null : impl;
             }
         }
 
@@ -181,33 +184,18 @@ public sealed partial class Node : ICluster, IAsyncDisposable
 
         HostedImplementations = hosted.ToArray();
         HostedSystems = systems.ToArray();
-        _implementationByContract = byContract.ToFrozenDictionary();
+        _requestHandlers = requests.ToFrozenDictionary();
         _implementationById = byId.ToFrozenDictionary();
     }
 
-    /// <summary>What this node advertises in membership: services, actor implementations and event handlers.</summary>
-    internal (uint[] Services, HostedActor[] Actors, HostedHandler[] Handlers) AdvertisedContracts()
+    /// <summary>What this node advertises in membership: the messages its implementations handle.</summary>
+    internal HostedHandler[] AdvertisedHandlers()
     {
-        var services = new List<uint>();
-        var actors = new List<HostedActor>();
         var handlers = new List<HostedHandler>();
         foreach (var impl in HostedImplementations)
-        {
-            bool isActor = impl.Kind == RpcContractKind.Actor;
-            foreach (var contractType in impl.Contracts)
-            {
-                uint contractId = RpcRegistry.GetContract(contractType).Id;
-                if (isActor) actors.Add(new HostedActor { ContractId = contractId, ImplementationId = impl.Id });
-                else services.Add(contractId);
-            }
-
-            if (isActor && impl.Contracts.Length == 0)
-                actors.Add(new HostedActor { ContractId = 0, ImplementationId = impl.Id });
-            foreach (var handler in impl.Events)
-                handlers.Add(new HostedHandler { EventId = handler.EventId, ImplementationId = impl.Id, Actor = isActor });
-        }
-
-        return (services.ToArray(), actors.ToArray(), handlers.ToArray());
+        foreach (var handler in impl.Handlers.All)
+            handlers.Add(new HostedHandler { MessageId = handler.MessageId, ImplementationId = impl.Id, Actor = impl.IsActor });
+        return handlers.ToArray();
     }
 
     /// <summary>Active actor activations across all shards (approximate, for metrics).</summary>
@@ -304,8 +292,6 @@ public sealed partial class Node : ICluster, IAsyncDisposable
 /// <summary>Ownership checks used by shards (thin wrapper over the current <see cref="ClusterView"/>).</summary>
 internal sealed class NodePlacement(Node node)
 {
-    public bool IsLocalOwner(RpcContractInfo contract, long key) => node.View.ActorOwner(contract.Id, key)?.NodeId == node.Id;
-
     public bool IsLocalOwner(uint implementationId, long key) =>
         node.View.ImplementationOwner(implementationId, key)?.NodeId == node.Id;
 }

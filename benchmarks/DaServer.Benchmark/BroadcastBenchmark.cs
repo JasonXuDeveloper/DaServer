@@ -13,15 +13,10 @@ namespace DaServer.Benchmark;
 [MemoryDiagnoser]
 public class BroadcastBenchmark
 {
-    private sealed class Receiver(Countdown countdown) : IRoomClient
-    {
-        public void OnTick(int sequence) => countdown.Signal();
-    }
-
     private readonly Countdown _countdown = new();
     private Node[] _nodes = null!;
     private ClusterClient[] _clients = null!;
-    private RoomProxy _room;
+    private long _room;
     private int _sequence;
 
     [Params(1_000, 5_000)] public int Clients;
@@ -36,8 +31,7 @@ public class BroadcastBenchmark
         _nodes = await Clusters.Start(2, shards: 4, gateways: 1);
 
         // A room owned by the non-gateway node: the broadcast crosses the node link, then fans out at the gateway.
-        long room = 1;
-        while (_nodes[0].View.ActorOwner(RoomRpc.ContractId, room)!.NodeId != _nodes[1].Id) room++;
+        long room = Clusters.KeyOwnedBy<Room>(_nodes[0], _nodes[1]);
         var receiver = new Receiver(_countdown);
 
         _clients = new ClusterClient[Clients];
@@ -45,11 +39,11 @@ public class BroadcastBenchmark
         {
             var client = _clients[i] = new ClusterClient();
             await client.ConnectAsync("127.0.0.1", _nodes[0].ClientPort);
-            client.Register<IRoomClient>(receiver);
-            await client.Room(room).Join(Groups);
+            client.Register(receiver);
+            await client.Ask(room, new Join(Groups));
         }
 
-        _room = _nodes[1].Room(room);
+        _room = room;
     }
 
     [GlobalCleanup]
@@ -63,7 +57,7 @@ public class BroadcastBenchmark
     public async Task Broadcast()
     {
         var delivered = _countdown.Reset(Clients * Groups);
-        await _room.Broadcast(Groups, ++_sequence);
+        await _nodes[1].Ask(_room, new Broadcast(Groups, ++_sequence));
         await delivered;
     }
 }

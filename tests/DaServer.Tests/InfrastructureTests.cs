@@ -83,7 +83,7 @@ public class InfrastructureTests
         var h = new FrameHeader
         {
             Length = 1234, Kind = FrameKind.Request, Status = RpcStatus.Forbidden, Hops = 2, Flags = FrameFlags.HasCaller,
-            RequestId = 0xDEADBEEF, MethodId = 0x12345678, Key = -42,
+            RequestId = 0xDEADBEEF, MessageId = 0x12345678, Key = -42,
         };
         h.Write(buffer);
         var r = FrameHeader.Read(buffer);
@@ -93,7 +93,7 @@ public class InfrastructureTests
         Assert.That(r.Hops, Is.EqualTo(2));
         Assert.That(r.Flags, Is.EqualTo(FrameFlags.HasCaller));
         Assert.That(r.RequestId, Is.EqualTo(0xDEADBEEF));
-        Assert.That(r.MethodId, Is.EqualTo(0x12345678));
+        Assert.That(r.MessageId, Is.EqualTo(0x12345678));
         Assert.That(r.Key, Is.EqualTo(-42));
     }
 
@@ -144,7 +144,7 @@ public class InfrastructureTests
         ClusterMember Member(ulong id) => new()
         {
             NodeId = id, Status = MemberStatus.Up,
-            Actors = [new HostedActor { ContractId = 7, ImplementationId = 70 }],
+            Handlers = [new HostedHandler { MessageId = 7, ImplementationId = 70, Actor = true }],
         };
 
         var three = new ClusterView([Member(1), Member(2), Member(3)], 1);
@@ -153,9 +153,9 @@ public class InfrastructureTests
         int moved = 0;
         for (long key = 0; key < 10_000; key++)
         {
-            var before = three.ActorOwner(7, key)!.NodeId;
-            var after = four.ActorOwner(7, key)!.NodeId;
-            Assert.That(three.ActorOwner(7, key)!.NodeId, Is.EqualTo(before), "deterministic");
+            var before = three.ImplementationOwner(70, key)!.NodeId;
+            var after = four.ImplementationOwner(70, key)!.NodeId;
+            Assert.That(three.ImplementationOwner(70, key)!.NodeId, Is.EqualTo(before), "deterministic");
             if (before != after)
             {
                 moved++;
@@ -164,7 +164,6 @@ public class InfrastructureTests
         }
 
         Assert.That(moved, Is.InRange(2000, 3000), "about 1/4 of the keys move to the 4th node");
-        Assert.That(three.ImplementationOwner(70, 5)!.NodeId, Is.EqualTo(three.ActorOwner(7, 5)!.NodeId));
     }
 
     [Test]
@@ -187,12 +186,10 @@ public class InfrastructureTests
     }
 
     [Test]
-    public void RpcIdsMatchTheGenerator()
+    public void MessageIdsAreTheHashOfTheTypeName()
     {
-        // The generator computes ids at compile time; the runtime must agree.
-        Assert.That(RpcIds.Fnv1a("DaServer.Tests.ICounter.Add(int)"), Is.EqualTo(CounterRpc.AddId));
-        Assert.That(RpcIds.Fnv1a("DaServer.Tests.ICounter"), Is.EqualTo(CounterRpc.ContractId));
-        Assert.That(RpcRegistry.TryGetMethod(CounterRpc.AddId, out var method), Is.True);
-        Assert.That(method.Owner.Contract, Is.EqualTo(typeof(ICounter)));
+        // The analyzer checks collisions with the same hash at compile time; the runtime must agree.
+        Assert.That(MessageType<Add>.Id, Is.EqualTo(RpcIds.Fnv1a("DaServer.Tests.Add")));
+        Assert.That(MessageType<SessionClosed>.Id, Is.EqualTo(RpcIds.Fnv1a("DaServer.Rpc.SessionClosed")));
     }
 }

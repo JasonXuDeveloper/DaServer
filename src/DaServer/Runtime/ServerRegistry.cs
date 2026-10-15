@@ -6,29 +6,19 @@ using EasyEcs;
 
 namespace DaServer.Runtime;
 
-/// <summary>
-/// A hosted actor or service implementation (generated registration): the contracts it serves and the cluster events
-/// it handles.
-/// </summary>
-public sealed class ImplementationInfo(Type type, RpcContractKind kind, Func<object> factory, Type[] contracts,
-    EventHandlerInfo[] events)
+/// <summary>A hosted actor or service implementation and the messages it handles (generated registration).</summary>
+public sealed class ImplementationInfo(Type type, bool isActor, Func<object> factory, MessageHandler[] handlers)
 {
     public Type Type { get; } = type;
-    public RpcContractKind Kind { get; } = kind;
+
+    /// <summary>Keyed actor (one activation per key in the cluster) rather than a stateless service.</summary>
+    public bool IsActor { get; } = isActor;
+
     public Func<object> Factory { get; } = factory;
-    public Type[] Contracts { get; } = contracts;
-    public EventHandlerInfo[] Events { get; } = events;
+    public MessageHandlers Handlers { get; } = new(handlers);
 
-    /// <summary>Identity of the implementation in placement, membership and event routing (FNV-1a of the type name).</summary>
+    /// <summary>Identity of the implementation in placement, membership and routing (FNV-1a of the type name).</summary>
     public uint Id { get; } = RpcIds.Fnv1a(type.FullName ?? type.Name);
-
-    /// <summary>Handler of event <paramref name="eventId"/>, or null.</summary>
-    public EventHandlerInfo? HandlerOf(uint eventId)
-    {
-        foreach (var handler in Events)
-            if (handler.EventId == eventId) return handler;
-        return null;
-    }
 
     public override string ToString() => Type.FullName ?? Type.Name;
 }
@@ -82,16 +72,4 @@ public static class ServerRegistry
 
     /// <summary>Make sure the generated module initializer of <paramref name="type"/>'s assembly has run.</summary>
     public static void EnsureLoaded(Type type) => RuntimeHelpers.RunModuleConstructor(type.Module.ModuleHandle);
-}
-
-/// <summary>Contract id of <typeparamref name="TContract"/>, resolved once (registration forced on first use).</summary>
-internal static class ContractOf<TContract>
-{
-    public static readonly uint Id = Resolve();
-
-    private static uint Resolve()
-    {
-        ServerRegistry.EnsureLoaded(typeof(TContract));
-        return RpcRegistry.GetContract(typeof(TContract)).Id;
-    }
 }

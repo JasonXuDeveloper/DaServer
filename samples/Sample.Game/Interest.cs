@@ -72,7 +72,7 @@ public sealed class InterestGrid
                 if (other != avatar) _inView.Add(StateOf(other));
         }
 
-        if (_inView.Count > 0) cluster.PlayerClient(session).OnMoves(_inView);
+        if (_inView.Count > 0) cluster.Send(session, new Motion(_inView));
     }
 
     /// <summary>Queue a change of an avatar in <paramref name="cell"/> for the next sync.</summary>
@@ -89,7 +89,7 @@ public sealed class InterestGrid
         foreach (int cell in _changedCells)
         {
             var changes = _changes[cell]!;
-            cluster.PlayerClient(Viewers(map, cell)).OnMoves(changes);
+            cluster.Send(Viewers(map, cell), new Motion(changes));
             changes.Clear();
         }
 
@@ -103,11 +103,11 @@ public sealed class InterestGrid
         if (cell < 0) return;
         long player = avatar.Get<Avatar>().PlayerId;
         SwapRemove(_avatars[cell]!, avatar);
-        if (_changes[cell] is { } changes) // a queued change would bring it back after OnGone
+        if (_changes[cell] is { } changes) // a queued change would bring it back after Gone
             for (int i = changes.Count - 1; i >= 0; i--)
                 if (changes[i].PlayerId == player) changes.RemoveAt(i);
 
-        cluster.PlayerClient(Viewers(map, cell)).OnGone(player);
+        cluster.Send(Viewers(map, cell), new Gone(player));
         if (!leaveGroups) return;
         var session = avatar.Get<Avatar>().Session;
         for (int dy = -1; dy <= 1; dy++)

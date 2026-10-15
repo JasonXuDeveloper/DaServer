@@ -15,14 +15,15 @@ using Nino.Core;
 namespace DaServer.Client;
 
 /// <summary>
-/// Client connection to a gateway (game client, bot, tool). Implements <see cref="IRpcInvoker"/>, so the same generated proxies used on
-/// servers work here (the gateway accepts <c>[FromClient]</c> methods). Pushes and broadcasts are dispatched to registered
-/// <see cref="ToClientAttribute">[ToClient]</see> implementations.
+/// Client connection to a gateway (game client, bot, tool): sends <see cref="ClientMessageAttribute">[ClientMessage]</see>
+/// types (<c>client.Send(new Move(..))</c>, <c>await client.Ask(new GetInfo())</c>) and dispatches the messages servers
+/// push to the [Handle] methods of registered handler objects (<see cref="Register"/>).
 /// </summary>
-public sealed class ClusterClient : IRpcInvoker, IConnectionHandler, IAsyncDisposable
+public sealed class ClusterClient : IMessageSender, IConnectionHandler, IAsyncDisposable
 {
     private readonly PendingCallTable _pending = new(14);
-    private readonly Dictionary<uint, object> _callbacks = new();
+    private readonly Lock _handlersGate = new();
+    private Dictionary<uint, (object Target, MessageDispatcher Dispatcher)> _handlers = new(); // copy on write
     private readonly MpmcQueue<FrameWriter>? _inbox;
     private Connection? _connection;
 
@@ -95,11 +96,19 @@ public sealed class ClusterClient : IRpcInvoker, IConnectionHandler, IAsyncDispo
         Live.TryAdd(this, true);
     }
 
-    /// <summary>Register the implementation of a server-to-client contract.</summary>
-    public void Register<TCallback>(TCallback implementation) where TCallback : class
+    /// <summary>
+    /// Register an object whose [Handle] methods receive the messages servers push to this client (one handler per
+    /// message type: a later registration replaces an earlier one).
+    /// </summary>
+    public void Register(object handler)
     {
-        var contract = RpcRegistry.GetContract(typeof(TCallback));
-        lock (_callbacks) _callbacks[contract.Id] = implementation;
+        var handlers = MessageRegistry.HandlersOf(handler.GetType());
+        lock (_handlersGate)
+        {
+            var next = new Dictionary<uint, (object, MessageDispatcher)>(_handlers);
+            foreach (var h in handlers.All) next[h.MessageId] = (handler, h.Dispatcher);
+            Volatile.Write(ref _handlers, next);
+        }
     }
 
     /// <summary>Run queued callbacks on the calling thread (only when constructed with queueCallbacks: true).</summary>
@@ -124,28 +133,26 @@ public sealed class ClusterClient : IRpcInvoker, IConnectionHandler, IAsyncDispo
         return n;
     }
 
-    // ------------------------------------------------------------------ IRpcInvoker
+    // ------------------------------------------------------------------ IMessageSender
 
-    public ValueTask<T> Call<T>(FrameWriter request, uint methodId, RpcTargetKind kind, long key)
+    /// <summary>A [ClientMessage] to the actor of <paramref name="key"/> (AnyKey messages: the client chooses the key).</summary>
+    public void Send<T>(long key, in T message) where T : struct => Send(MessageWriter.Write(in message), MessageType<T>.Id, key, null);
+
+    /// <summary>A [ClientMessage] to its service, or to the actor bound to this client's session.</summary>
+    public void Send<T>(in T message) where T : struct => Send(MessageWriter.Write(in message), MessageType<T>.Id, 0, null);
+
+    public ValueTask<TReply> Ask<TRequest, TReply>(long key, in TRequest request) where TRequest : struct, IRequest<TReply>
     {
-        var call = PendingCall<T>.Rent(null);
+        var call = PendingCall<TReply>.Rent(null);
         var task = call.Task;
-        Send(request, methodId, key, call);
+        Send(MessageWriter.Write(in request), MessageType<TRequest>.Id, key, call);
         return task;
     }
 
-    public ValueTask CallVoid(FrameWriter request, uint methodId, RpcTargetKind kind, long key)
-    {
-        var call = PendingCall.Rent(null);
-        var task = call.Task;
-        Send(request, methodId, key, call);
-        return task;
-    }
+    public ValueTask<TReply> Ask<TRequest, TReply>(in TRequest request) where TRequest : struct, IRequest<TReply> =>
+        Ask<TRequest, TReply>(0, in request);
 
-    public void Send(FrameWriter request, uint methodId, RpcTargetKind kind, long key, ulong gatewayNodeId = 0) =>
-        Send(request, methodId, key, null);
-
-    private void Send(FrameWriter request, uint methodId, long key, IPendingCall? call, FrameKind requestKind = FrameKind.Request)
+    private void Send(FrameWriter request, uint messageId, long key, IPendingCall? call, FrameKind requestKind = FrameKind.Request)
     {
         var connection = _connection;
         try
@@ -154,7 +161,7 @@ public sealed class ClusterClient : IRpcInvoker, IConnectionHandler, IAsyncDispo
                 throw new RpcException(RpcStatus.Disconnected);
 
             uint requestId = call != null ? _pending.Register(call, (int)CallTimeout.TotalMilliseconds) : 0;
-            request.SetHeader(call != null ? requestKind : FrameKind.OneWay, requestId, methodId, key,
+            request.SetHeader(call != null ? requestKind : FrameKind.OneWay, requestId, messageId, key,
                 call != null && requestKind == FrameKind.Request ? FrameHeader.EncodeBudget((long)CallTimeout.TotalMilliseconds) : RpcStatus.Ok);
             if (!connection.Send(request.Frame) && call != null)
                 _pending.Take(requestId)?.Fail(new RpcException(RpcStatus.Disconnected));
@@ -196,14 +203,10 @@ public sealed class ClusterClient : IRpcInvoker, IConnectionHandler, IAsyncDispo
     private void DispatchCallback(ReadOnlySpan<byte> frame)
     {
         var header = FrameHeader.Read(frame);
-        if (!RpcRegistry.TryGetMethod(header.MethodId, out var method)) return;
-        object? target;
-        lock (_callbacks) _callbacks.TryGetValue(method.Owner.Id, out target);
-        if (target == null) return;
-
+        if (!Volatile.Read(ref _handlers).TryGetValue(header.MessageId, out var handler)) return;
         var reader = new Reader(frame.Slice(FrameHeader.Size));
-        var context = new CallContext(null, 0, header.MethodId, header.Key, default);
-        var task = method.Owner.Dispatcher(target, header.MethodId, ref reader, in context);
+        var context = new CallContext(null, 0, header.MessageId, header.Key, default);
+        var task = handler.Dispatcher(handler.Target, ref reader, in context);
         if (task.IsCompleted) task.GetAwaiter().GetResult();
     }
 

@@ -17,7 +17,6 @@ public class EventBenchmark
 
     private Node[] _nodes = null!;
     private long[] _keys = null!;
-    private CounterProxy[] _proxies = null!;
     private ValueTask<int>[] _flush = null!;
 
     [Params(RpcBenchmark.Target.Local, RpcBenchmark.Target.Remote)] public RpcBenchmark.Target Placement;
@@ -29,15 +28,12 @@ public class EventBenchmark
         var publisher = _nodes[0];
         var owner = Placement == RpcBenchmark.Target.Local ? _nodes[0] : _nodes[1];
         _keys = new long[Actors];
-        _proxies = new CounterProxy[Actors];
         _flush = new ValueTask<int>[Actors];
         long key = 0;
         for (int i = 0; i < Actors; i++)
         {
-            do key++; while (publisher.View.ActorOwner(CounterRpc.ContractId, key)!.NodeId != owner.Id);
-            _keys[i] = key;
-            _proxies[i] = publisher.Counter(key);
-            _proxies[i].Add(0).AsTask().GetAwaiter().GetResult(); // activate
+            _keys[i] = key = Clusters.KeyOwnedBy<Counter>(publisher, owner, key + 1);
+            publisher.Ask(key, new Add(0)).AsTask().GetAwaiter().GetResult(); // activate
         }
     }
 
@@ -48,10 +44,10 @@ public class EventBenchmark
     public async Task Events()
     {
         var cluster = _nodes[0];
-        for (int i = 0; i < Burst; i++) cluster.Publish(new Bumped(_keys[i % Actors], 1));
+        for (int i = 0; i < Burst; i++) cluster.Publish(_keys[i % Actors], new Bumped(1));
 
-        // Events and calls of one sender reach an actor in order: when the calls return, every event was handled.
-        for (int i = 0; i < Actors; i++) _flush[i] = _proxies[i].Add(0);
+        // Messages of one sender reach an actor in order: when the requests return, every event was handled.
+        for (int i = 0; i < Actors; i++) _flush[i] = cluster.Ask(_keys[i], new Add(0));
         for (int i = 0; i < Actors; i++) await _flush[i];
     }
 }

@@ -9,9 +9,10 @@ using static DaServer.Generator.Support;
 namespace DaServer.Generator;
 
 /// <summary>
-/// For assemblies referencing the DaServer runtime: one module initializer registering every actor/service
-/// implementation (with the events it handles) and every EasyEcs system, and forcing registration of referenced contract
-/// assemblies. No reflection scanning, no configuration strings, no hand-written registration list.
+/// For assemblies referencing the DaServer runtime: one module initializer registering every actor and service (with
+/// the dispatchers of its [Handle] methods), every client handler type and every EasyEcs system, and running the
+/// registration of referenced message assemblies. No reflection scanning, no configuration strings, no hand-written
+/// registration list.
 /// </summary>
 [Generator(LanguageNames.CSharp)]
 public sealed class HostGenerator : IIncrementalGenerator
@@ -19,7 +20,8 @@ public sealed class HostGenerator : IIncrementalGenerator
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
         var hosted = context.SyntaxProvider
-            .CreateSyntaxProvider(static (node, _) => node is ClassDeclarationSyntax { BaseList: not null },
+            .CreateSyntaxProvider(static (node, _) => node is ClassDeclarationSyntax c &&
+                                                    (c.BaseList != null || c.Members.Any(static m => m is MethodDeclarationSyntax { AttributeLists.Count: > 0 })),
                 static (ctx, ct) => ctx.SemanticModel.GetDeclaredSymbol(ctx.Node, ct) is INamedTypeSymbol type ? Shapes.ReadHosted(type) : null)
             .Where(static t => t is not null)
             .Collect()
@@ -81,13 +83,13 @@ public sealed class HostGenerator : IIncrementalGenerator
 
         """;
 
-    /// <summary>Anchor types of referenced assemblies marked [RpcContractsAssembly].</summary>
+    /// <summary>Anchor types of referenced assemblies marked [MessagesAssembly].</summary>
     private static string[] ContractAssemblyAnchors(Compilation compilation)
     {
         var anchors = new List<string>();
         foreach (var assembly in compilation.SourceModule.ReferencedAssemblySymbols)
         foreach (var attribute in assembly.GetAttributes())
-            if (attribute.AttributeClass?.ToDisplayString() == "DaServer.Rpc.RpcContractsAssemblyAttribute" &&
+            if (attribute.AttributeClass?.ToDisplayString() == "DaServer.Rpc.MessagesAssemblyAttribute" &&
                 attribute.ConstructorArguments.FirstOrDefault().Value is ITypeSymbol anchor)
                 anchors.Add(anchor.ToDisplayString(Fqn));
         anchors.Sort();
@@ -106,27 +108,39 @@ public sealed class HostGenerator : IIncrementalGenerator
 
         foreach (var t in types)
         {
-            if (t.IsSystem)
+            switch (t.Kind)
             {
-                sb.Append($"        ServerRegistry.RegisterSystem(new SystemInfo(typeof({t.FullName}), static () => new {t.FullName}()));\n");
-                continue;
+                case HostedKind.System:
+                    sb.Append($"        ServerRegistry.RegisterSystem(new SystemInfo(typeof({t.FullName}), static () => new {t.FullName}()));\n");
+                    continue;
+                case HostedKind.ClientHandler:
+                    sb.Append($"        MessageRegistry.RegisterHandlers(typeof({t.FullName}), ");
+                    break;
+                default:
+                    sb.Append($"        ServerRegistry.RegisterImplementation(new ImplementationInfo(typeof({t.FullName}), ");
+                    sb.Append($"{(t.Kind == HostedKind.Actor ? "true" : "false")},\n            static () => new {t.FullName}(), ");
+                    break;
             }
 
-            string contracts = string.Join(", ", t.Contracts.Select(c => $"typeof({c})"));
-            sb.Append($"        ServerRegistry.RegisterImplementation(new ImplementationInfo(typeof({t.FullName}), RpcContractKind.{t.Kind},\n");
-            sb.Append($"            static () => new {t.FullName}(), [{contracts}],\n            [");
+            sb.Append('[');
             foreach (var h in t.Handlers)
             {
-                // The handler's dispatcher: deserialize the event straight from the frame and call the [Handle] method.
-                string call = $"Unsafe.As<{t.FullName}>(target).{h.Method}(e)";
-                sb.Append($"\n                EventHandlerInfo.Of<{h.EventType}>(static (object target, uint _, ref global::Nino.Core.Reader reader, in CallContext __) =>\n");
-                sb.Append($"                {{\n                    global::Nino.Core.NinoDeserializer.Deserialize(out {h.EventType} e, ref reader);\n");
-                sb.Append(h.ReturnsVoid
-                    ? $"                    {call};\n                    return default;\n                }}),"
-                    : $"                    return {call};\n                }}),");
+                // Deserialize the message straight from the frame, call the [Handle] method, reply to a request.
+                string call = $"Unsafe.As<{t.FullName}>(target).{h.Method}(m)";
+                sb.Append($"\n            MessageHandler.Of<{h.MessageType}>(static (object target, ref global::Nino.Core.Reader reader, in CallContext context) =>\n");
+                sb.Append($"            {{\n                global::Nino.Core.NinoDeserializer.Deserialize(out {h.MessageType} m, ref reader);\n");
+                sb.Append(h.Return switch
+                {
+                    HandlerReturn.Void => $"                {call};\n                return default;\n",
+                    HandlerReturn.ValueTask => $"                return {call};\n",
+                    HandlerReturn.Reply => $"                context.ReplyValue({call});\n                return default;\n",
+                    _ => $"                return context.Reply({call});\n",
+                });
+                sb.Append("            }),");
             }
 
-            sb.Append(t.Handlers.Length > 0 ? "\n            ]));\n" : "]));\n");
+            sb.Append(t.Handlers.Length > 0 ? "\n        ]" : "]");
+            sb.Append(t.Kind == HostedKind.ClientHandler ? ");\n" : "));\n");
         }
 
         return sb.Append("    }\n}\n").ToString();

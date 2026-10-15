@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Linq;
 using System.Threading.Tasks;
 using DaServer.Client;
+using DaServer.Rpc;
 using DaServer.Runtime;
 using NUnit.Framework;
 
@@ -91,12 +92,19 @@ public abstract class ClusterTest
     }
 
     /// <summary>First key from <paramref name="start"/> whose actor of <paramref name="contractId"/> lives on <paramref name="owner"/>.</summary>
-    protected static long KeyOwnedBy(Node owner, uint contractId, long start = 1)
+    protected static long KeyOwnedBy<TActor>(Node owner, long start = 1) where TActor : Actor
     {
         long key = start;
-        while (owner.View.ActorOwner(contractId, key)!.NodeId != owner.Id) key++;
+        while (OwnerOf<TActor>(owner, key) != owner.Id) key++;
         return key;
     }
+
+    /// <summary>Node owning the <typeparamref name="TActor"/> of <paramref name="key"/> in <paramref name="node"/>'s view.</summary>
+    protected static ulong OwnerOf<TActor>(Node node, long key) where TActor : Actor =>
+        node.View.ImplementationOwner(ImplementationId<TActor>(), key)!.NodeId;
+
+    /// <summary>Placement identity of an actor or service type (FNV-1a of its full name).</summary>
+    protected static uint ImplementationId<T>() => RpcIds.Fnv1a(typeof(T).FullName!);
 
     /// <summary>Polls a condition that depends on asynchronous delivery (membership, pushes to other sockets).</summary>
     protected static async Task Eventually(Func<bool> condition, string message, int timeoutMs = 10_000)

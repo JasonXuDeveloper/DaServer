@@ -342,7 +342,7 @@ internal sealed class PeerLink : IDisposable
     {
         _acknowledged = received;
         Span<byte> frame = stackalloc byte[FrameHeader.Size];
-        new FrameHeader { Length = FrameHeader.Size, Kind = FrameKind.Control, MethodId = ControlOp.Acknowledge, Key = received }
+        new FrameHeader { Length = FrameHeader.Size, Kind = FrameKind.Control, MessageId = ControlOp.Acknowledge, Key = received }
             .Write(frame);
         connection.Send(frame);
     }
