@@ -231,13 +231,13 @@ var cluster = builder.AddDaServerCluster("sample");
 cluster.AddNodes<Projects.Sample_LoginServer>("login");                     // Account service
 cluster.AddNodes<Projects.Sample_GameServer>("game");                       // Player, Realm actors
 cluster.AddNodes<Projects.Sample_MapServer>("map");                         // Map actors, movement/AOI systems
-var gateways = cluster.AddGateways<Projects.Sample_Gateway>("gateway", replicas: 3); // client sockets, no business code
+var gateways = cluster.AddNodes<Projects.Sample_Gateway>("gateway", replicas: 3).WithClients(); // clients, no business code
 
-builder.AddProject<Projects.Sample_Bot>("bots").WithGateways(gateways).WithArgs("10000", "60", "1", "1", "0");
+builder.AddProject<Projects.Sample_Bot>("bots").WithClientEndpoints(gateways).WithArgs("10000", "60", "1", "1", "0");
 builder.Build().Run();
 ```
 
-`AddDaServerCluster` gives every node a name, a cluster endpoint and seeds; `AddGateways` adds a client endpoint (the
+`AddDaServerCluster` gives every node a name, a cluster endpoint and seeds; `WithClients` adds a client endpoint (the
 `DaServer:Clients` section). A client connects to any gateway (in production: the platform's load balancer or DNS name)
 and is directed to the less loaded of two (power of two choices over the gossiped session counts). There
 are no roles and no configuration files: what a node hosts is what its project compiles. Nodes export logs and

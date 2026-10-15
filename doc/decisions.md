@@ -135,8 +135,8 @@ records that no longer hold). Each: context → decision → consequences.
 ## ADR-015 Orchestration with Aspire
 - Context: hand-written Dockerfile, compose and Kubernetes files duplicate the topology (ports, seeds, projects) and
   drift from the code.
-- Decision: `DaServer.Aspire` describes a cluster in the AppHost (`AddDaServerCluster`, `AddNodes`, `AddGateways`,
-  `WithGateways`). The same model runs locally with the dashboard and publishes Docker Compose or
+- Decision: `DaServer.Aspire` describes a cluster in the AppHost (`AddDaServerCluster`, `AddNodes`, `WithClients`,
+  `WithClientEndpoints`). The same model runs locally with the dashboard and publishes Docker Compose or
   Kubernetes through Aspire publishers. Nodes export logs and metrics over OTLP when Aspire (or any collector)
   configures it. There are no hand-written deployment files.
 - Consequences: one source of truth for topology. Ports are assigned deterministically per node. Replicas are
@@ -155,7 +155,7 @@ records that no longer hold). Each: context → decision → consequences.
   AppHost, and a typo silently hosts nothing.
 - Decision: a node hosts every actor, service and system compiled into its process. Splitting the cluster means
   splitting projects (`Sample.LoginServer`, `Sample.GameServer`, `Sample.MapServer`, `Sample.Gateway`); the AppHost
-  lists projects and replica counts. Accepting clients is a capability (the `DaServer:Clients` section, `AddGateways`), not a role.
+  lists projects and replica counts. Accepting clients is a capability (the `DaServer:Clients` section, `WithClients`), not a role.
   In-process tests narrow hosting with `NodeOptions.Hosts`, a type filter.
 - Consequences: no topology strings anywhere (checked by the release checklist). The compiler decides what a node can
   host; references between projects decide what can be split.
@@ -285,7 +285,7 @@ records that no longer hold). Each: context → decision → consequences.
 - Context: Aspire's `WithReplicas` runs replicas as one resource behind a proxy with shared endpoints. Cluster
   members are addressed individually: each gossips its own cluster and client endpoint, links go to a specific node
   and clients are directed to a specific gateway.
-- Decision: `AddNodes` / `AddGateways` create one resource per replica (`gateway-0`, `gateway-1`, ...) with its own
+- Decision: `AddNodes` creates one resource per replica (`gateway-0`, `gateway-1`, ...) with its own
   endpoints, and every node gets every other node as a seed; clients get the gateways' addresses as entries. Deployments that do have per-replica DNS (Kubernetes headless services) use DNS seeds instead: a seed that
   resolves to several addresses yields one seed per address.
 - Consequences: replicas are visible and individually addressable on the dashboard; replica count is still a single

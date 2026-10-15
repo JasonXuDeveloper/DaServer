@@ -205,8 +205,9 @@ Step plan (each step builds and keeps every test green; logic, docs, CI in separ
    `DaServer.Client` / `DaServer` (server runtime); the first three build for netstandard2.1 + net10 and
    `samples/mmo/Sample.Contracts` builds for both. Generators split by output (ADR-012): `AskGenerator`,
    `RegistrationGenerator` (static-constructor registration, IL2CPP-safe), `EntryPointGenerator`,
-   `PolyfillGenerator`. Still open: M5 (a smaller client call table) and Aspire `AddNodes(...).WithClients(port)` /
-   `WithClientEndpoints` replacing `AddGateways`/`WithGateways`.
+   `PolyfillGenerator`. M5: the client call table is sized by `ClusterClient(maxCallsInFlight: 256)` (was 2^14
+   slots per client). Aspire: `AddNodes(...).WithClients()` and `WithClientEndpoints(group)`
+   (`DaServer__ClientEndpoints__{i}`) replace `AddGateways`/`WithGateways`.
 9. Tests: architecture test done (`ArchitectureTests`: package references point down only; the runtime's folders
    use no client-connection type); A/B against step 0 (no regression), allocation tests < 1 B per delivery.
 10. Docs: ADR-047/048, design/README/samples/CLAUDE.md, requirements R0/R2/R3/R6/R7/R11 (directory instead of
@@ -427,7 +428,7 @@ in separate commits.
 - [ ] B4 one serialize-into-pooled-frame helper; B5 `DeliverTo(nodeId, frame)` (local or link); B8 one pending-table
       scan; B9 registries; B10 shared hash helpers; B11 sample nits
 - [ ] Split `Node` into links and router (the gateway part leaves with G step 6); membership talks to the node
-      through an interface; one endpoint parser for seeds and `DaServer__Gateways`
+      through an interface; one endpoint parser for seeds and `DaServer__ClientEndpoints`
 - [ ] ECS misuse: the turn's caller (`Actor.TurnCaller`) as a component
 - Kept on purpose: B6 (local replies hand the frame over without a copy), B12 (the shard checks runnable actors after
   tick systems sent local mail)
@@ -443,7 +444,7 @@ in separate commits.
 
 ## Hosting / orchestration
 - [x] `DaServer.Hosting`: Generic Host, configuration, OpenTelemetry (OTLP), periodic stats line, graceful shutdown
-- [x] `DaServer.Aspire`: AddDaServerCluster / AddNodes / AddGateways / WithGateways; compose publishing
+- [x] `DaServer.Aspire`: AddDaServerCluster / AddNodes / WithClients / WithClientEndpoints; compose publishing
       (ADR-015); no configuration files in node projects
 - [x] 10k-player scenario: login, game, map, 3 gateways, 10k bots (Sample.Bot fails on any gap, disconnect or
       p99 over the limit); passes through Aspire (README "Performance")
