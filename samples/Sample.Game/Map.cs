@@ -9,25 +9,20 @@ using Sample.Contracts;
 namespace Sample.Game;
 
 // A map instance owns the spatial simulation of the players in it. Every avatar is an entity of the map's shard world:
-// the Map actor only turns calls into data (spawn, despawn, input components); systems do the per-tick work.
+// the Map actor only turns calls into data (spawn, despawn, input components); systems do the per-tick work, and
+// Interest.cs decides who hears about what (area of interest).
 
 public record struct Position(float X, float Y) : IComponent;
 public record struct Velocity(float X, float Y) : IComponent;
 
-/// <summary>Whose avatar it is and the map entity it lives in.</summary>
-public record struct Avatar(long PlayerId, Entity Map) : IComponent;
+/// <summary>Whose avatar it is, the map entity it lives in and the client session that controls it.</summary>
+public record struct Avatar(long PlayerId, Entity Map, SessionRef Session) : IComponent;
 
-/// <summary>Last position sent to clients (change detection by comparison: no tag churn).</summary>
-public record struct NetSync(float X, float Y) : IComponent;
-
-/// <summary>
-/// State of a map: its avatars by client session and the positions that changed this tick (sent as one message per
-/// tick, reused: no garbage per tick).
-/// </summary>
+/// <summary>State of a map: its avatars by client session and its interest grid.</summary>
 public struct MapState() : IComponent
 {
     public readonly Dictionary<SessionRef, Entity> Avatars = new();
-    public readonly List<Moved> Moves = new();
+    public readonly InterestGrid Grid = new();
 }
 
 public sealed class Map : Actor<MapState>, IMap
@@ -38,8 +33,13 @@ public sealed class Map : Actor<MapState>, IMap
     public ValueTask Enter(long playerId, SessionRef session)
     {
         if (!State.Avatars.ContainsKey(session))
-            State.Avatars[session] = World.CreateEntity(new Position(), new Velocity(), new Avatar(playerId, Entity),
-                new NetSync(float.NaN, float.NaN)); // NaN never equals a position: the first tick syncs it
+        {
+            // Spread over the map by player id (a real game reads the saved position).
+            uint h = RpcIds.Fnv1a(playerId.ToString());
+            var spawn = new Position(h % 1000 / 1000f * InterestGrid.Size, h / 1000 % 1000 / 1000f * InterestGrid.Size);
+            State.Avatars[session] = World.CreateEntity(spawn, new Velocity(), new Avatar(playerId, Entity, session),
+                new GridCell(-1), new MotionChanged(true)); // cell -1: InterestSystem places it on the next tick
+        }
 
         Cluster.Bind<IMap>(session, Key); // the client's input reaches this map and it sees the map's Group broadcasts
         return default;
@@ -48,22 +48,23 @@ public sealed class Map : Actor<MapState>, IMap
     public ValueTask Leave(SessionRef session)
     {
         Cluster.Unbind<IMap>(session);
-        Remove(session);
+        Remove(session, closed: false);
         return default;
     }
 
     [Handle]
     public ValueTask On(SessionClosed e)
     {
-        Remove(e.Session); // also delivered when the session's gateway crashed
+        Remove(e.Session, closed: true); // also delivered when the session's gateway crashed
         return default;
     }
 
     public void Move(float vx, float vy)
     {
-        // Input is data: MovementSystem integrates it on the next tick.
-        if (State.Avatars.TryGetValue(CallerSession, out var avatar))
-            avatar.Get<Velocity>() = new Velocity(Math.Clamp(vx, -MaxSpeed, MaxSpeed), Math.Clamp(vy, -MaxSpeed, MaxSpeed));
+        // Input is data: MovementSystem integrates it, the next sync tells the avatar's viewers.
+        if (!State.Avatars.TryGetValue(CallerSession, out var avatar)) return;
+        avatar.Get<Velocity>() = new Velocity(Math.Clamp(vx, -MaxSpeed, MaxSpeed), Math.Clamp(vy, -MaxSpeed, MaxSpeed));
+        avatar.Get<MotionChanged>() = new MotionChanged(true);
     }
 
     public void Chat(string text)
@@ -79,49 +80,26 @@ public sealed class Map : Actor<MapState>, IMap
         return default;
     }
 
-    private void Remove(SessionRef session)
+    private void Remove(SessionRef session, bool closed)
     {
-        if (State.Avatars.Remove(session, out var avatar)) avatar.Destroy();
+        if (!State.Avatars.Remove(session, out var avatar)) return;
+        State.Grid.Remove(Cluster, Key, avatar, leaveGroups: !closed); // a closed session left its groups already
+        avatar.Destroy();
     }
 }
 
-/// <summary>Integrates velocities inside the map bounds.</summary>
+/// <summary>Integrates velocities inside the map; an avatar stopped by the border tells its viewers.</summary>
 public sealed partial class MovementSystem : EcsSystem
 {
-    private const float Size = 1000f;
-
     [ForEach]
-    private static void Move(ref Position p, in Velocity v) =>
-        p = new Position(Math.Clamp(p.X + v.X, 0f, Size), Math.Clamp(p.Y + v.Y, 0f, Size));
-}
-
-/// <summary>Collects the positions that changed since the last sync into their map's snapshot.</summary>
-public sealed partial class PositionSyncSystem : EcsSystem
-{
-    public override int Priority => 10; // after movement
-
-    [ForEach]
-    private static void Sync(in Position p, ref NetSync sent, in Avatar avatar)
+    private static void Move(ref Position p, ref Velocity v, ref MotionChanged changed)
     {
-        if (p.X == sent.X && p.Y == sent.Y) return;
-        sent = new NetSync(p.X, p.Y);
-        avatar.Map.Get<MapState>().Moves.Add(new Moved(avatar.PlayerId, p.X, p.Y));
-    }
-}
-
-/// <summary>
-/// Sends each map's snapshot to the map's group: one message per map per tick, serialized once, one frame per gateway,
-/// fanned out there (n avatars moving cost n entries, not n x n messages).
-/// </summary>
-public sealed partial class SnapshotSystem : EcsSystem
-{
-    public override int Priority => 20; // after the snapshot is complete
-
-    [ForEach]
-    private static void Send(ref MapState map, in ActorIdentity actor, World world)
-    {
-        if (map.Moves.Count == 0) return;
-        world.Cluster().PlayerClient(actor.Group).OnMoves(map.Moves);
-        map.Moves.Clear();
+        if (v.X == 0 && v.Y == 0) return;
+        float x = p.X + v.X, y = p.Y + v.Y;
+        float cx = Math.Clamp(x, 0f, InterestGrid.Size), cy = Math.Clamp(y, 0f, InterestGrid.Size);
+        p = new Position(cx, cy);
+        if (cx == x && cy == y) return;
+        v = new Velocity(cx == x ? v.X : 0, cy == y ? v.Y : 0); // clients extrapolate: they must learn about the stop
+        changed = new MotionChanged(true);
     }
 }

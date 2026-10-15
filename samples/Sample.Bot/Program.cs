@@ -101,8 +101,13 @@ while (clock.Elapsed.TotalSeconds < seconds)
 
 // Results of the measured window.
 var latency = stats.Latency.Snapshot();
-long minReceived = long.MaxValue;
-foreach (var player in players) minReceived = Math.Min(minReceived, player.Received);
+long minReceived = long.MaxValue, positions = 0;
+foreach (var player in players)
+{
+    minReceived = Math.Min(minReceived, player.Received);
+    positions += Volatile.Read(ref player.Moves);
+}
+
 long disconnects = Interlocked.Read(ref stats.Disconnects);
 await Parallel.ForEachAsync(players, static (p, _) => p.Client.DisposeAsync());
 
@@ -111,6 +116,7 @@ Console.WriteLine($"realm broadcasts: {latency.Count} delivered, every bot recei
                   $"latency p50={latency.Percentile(0.50):F1}ms p99={p99:F1}ms p99.9={latency.Percentile(0.999):F1}ms max={latency.Max:F1}ms");
 var failures = new List<string>();
 if (minReceived == 0) failures.Add("a bot received no realm broadcast");
+if (movesPerSecond > 0 && positions == 0) failures.Add("no position update reached any bot");
 if (stats.Gaps > 0) failures.Add($"{stats.Gaps} realm broadcasts missed or out of order");
 if (disconnects > 0) failures.Add($"{disconnects} bots disconnected");
 if (p99 > maxP99Ms) failures.Add($"p99 latency {p99:F1}ms > {maxP99Ms}ms");
@@ -171,6 +177,8 @@ sealed class Bot(ClusterClient client, Stats stats) : IPlayerClient
     public long Moves, Chats;
 
     public void OnMoves(List<Moved> moves) => Moves += moves.Count;
+
+    public void OnGone(long playerId) { }
 
     public void OnChat(long playerId, string text) => Chats++;
 }

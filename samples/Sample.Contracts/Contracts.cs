@@ -14,9 +14,12 @@ public partial record struct LoginResult(bool Ok, long PlayerId);
 [NinoType]
 public partial record struct PlayerInfo(long Id, string Name, long MapId, int Logins);
 
-/// <summary>One avatar's new position (an entry of a map's per-tick snapshot).</summary>
+/// <summary>
+/// An avatar's position and velocity (per tick), sent when its velocity changes or it comes into view: clients
+/// extrapolate in between (dead reckoning), so a walking avatar costs nothing until it turns.
+/// </summary>
 [NinoType]
-public partial record struct Moved(long PlayerId, float X, float Y);
+public partial record struct Moved(long PlayerId, float X, float Y, float VelocityX, float VelocityY);
 
 /// <summary>Realm state every client sees (broadcast to every session of the cluster every few ticks).</summary>
 [NinoType]
@@ -68,8 +71,11 @@ public interface IRealm
 [ToClient]
 public interface IPlayerClient
 {
-    /// <summary>Positions that changed in the client's map this tick (one message per map per tick).</summary>
+    /// <summary>Avatars in view that changed direction, or that came into view (one message per map cell).</summary>
     void OnMoves(List<Moved> moves);
+
+    /// <summary>An avatar in view left the map.</summary>
+    void OnGone(long playerId);
 
     void OnChat(long playerId, string text);
 
