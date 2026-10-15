@@ -3,7 +3,7 @@ using DaServer.Rpc;
 using DaServer.Runtime;
 using Sample.Contracts;
 
-namespace Sample.Accounts;
+namespace Sample.LoginServer;
 
 /// <summary>
 /// Login: verifies the client and attaches its session to its player; it knows nothing about what the player does

@@ -90,9 +90,25 @@ public sealed partial class Node : ICluster, IAsyncDisposable
 
         Membership.Start(host, _clusterListener.LocalEndPoint.Port);
         _maintenance = new Timer(static s => ((Node)s!).Maintain(), this, 100, 100);
-        Logger.LogInformation("Node {Name} ({Id:x}) up on {Endpoint}, {Shards} shards, {Implementations} implementations, {Systems} systems",
-            Options.Name, Id, ClusterEndPoint, shardCount, HostedImplementations.Length, HostedSystems.Length);
+        Logger.LogInformation("Node {Name} ({Id:x}) up on {Endpoint}, {Shards} shards; actors: {Actors}; services: {Services}; systems: {Systems}",
+            Options.Name, Id, ClusterEndPoint, shardCount, Names(true), Names(false), SystemNames());
         return Task.CompletedTask;
+    }
+
+    /// <summary>What this node hosts, for the startup log (a node hosts what its project compiles, ADR-017).</summary>
+    private string Names(bool actors)
+    {
+        var names = new List<string>();
+        foreach (var impl in HostedImplementations)
+            if (impl.IsActor == actors) names.Add(impl.Type.Name);
+        return names.Count == 0 ? "none" : string.Join(", ", names);
+    }
+
+    private string SystemNames()
+    {
+        var names = new List<string>();
+        foreach (var system in HostedSystems) names.Add(system.Type.Name);
+        return names.Count == 0 ? "none" : string.Join(", ", names);
     }
 
     /// <summary>

@@ -4,7 +4,7 @@ using DaServer.Runtime;
 using EasyEcs;
 using Sample.Contracts;
 
-namespace Sample.Game;
+namespace Sample.GameServer;
 
 /// <summary>Persistent player state: the component on the actor's entity.</summary>
 public record struct PlayerState(string Name, long MapId, int Logins, SessionRef Session) : IComponent;
