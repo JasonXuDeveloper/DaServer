@@ -101,7 +101,7 @@ records that no longer hold). Each: context → decision → consequences.
   registers every actor and service with one dispatcher per `[Handle]` method, client handler classes and EasyEcs
   systems, runs the registration of referenced message assemblies, and emits the node entry point (ADR-021).
 - Consequences: no reflection, no configuration strings, no hand-maintained lists; misuse is a build error
-  (DAS001-DAS007, ADR-016).
+  (DAS001-DAS008, ADR-016).
 
 ## ADR-013 The shard runtime is ECS
 - Context: an imperative shard loop (drain a queue, sweep in-flight work, run timers, tick) with ad-hoc per-actor
@@ -138,7 +138,7 @@ records that no longer hold). Each: context → decision → consequences.
 ## ADR-016 Analyzer separate from generators
 - Context: generators that report diagnostics carry symbols and locations in their models, which defeats caching.
 - Decision: generators use syntax-only predicates and equatable, symbol-free models with tracking names, and report
-  nothing. `DaServerAnalyzer` reports DAS001–DAS007 (collisions in a compilation-end action), and reads symbols
+  nothing. `DaServerAnalyzer` reports DAS001–DAS008 (collisions in a compilation-end action), and reads symbols
   through the same `Shapes` code as the generators.
 - Consequences: edits that do not touch messages or handlers hit the cache (tested); "skipped by the generator" and
   "reported by the analyzer" cannot disagree.
@@ -168,10 +168,10 @@ records that no longer hold). Each: context → decision → consequences.
 
 ## ADR-020 Business code sees ICluster, not Node
 - Context: exposing `Node` gives business code lifecycle, membership and internals.
-- Decision: `ICluster` (`Send`/`Ask` of `IMessageSender`, `NodeId`, `Publish`, `Push`, `Broadcast`, `JoinGroup`,
+- Decision: `ICluster` (`Send`/`Ask` of `IMessageSender` over addresses, `NodeId`, `Publish`, `JoinGroup`,
   `LeaveGroup`, `Disconnect`); session binding is an actor operation (`BindSession`). Actors get a `Group` of their
-  own (`ClientGroup.Of(handler type id, id)`), so group ids of different features cannot collide. ADR-047 (agreed,
-  roadmap G0) reduces the verbs to `Send`, `Ask` and `Publish` over addresses.
+  own (`ClientGroup.Of(handler type id, id)`), so group ids of different features cannot collide. ADR-047 (roadmap G0
+  step 4) turns the remaining session operations into messages to the session.
 - Consequences: the surface business code can touch is small and testable; runtime refactors do not break it.
 
 ## ADR-021 Generated node entry point
@@ -341,8 +341,8 @@ records that no longer hold). Each: context → decision → consequences.
   - A `Flow.FromClient` message to an actor goes to the actor bound to the client's session for that actor type
     (`AnyId` lets the client name the actor); the actor binds itself: `await BindSession(session)` (acknowledged by
     the gateway before it returns).
-  - Pushes are messages too: `Push(session, m)` / `Broadcast(group, m)`, handled on clients by `[Handle]` methods of a
-    registered object.
+  - Messages to clients are sends to their address: `Send(session, m)` / `Send(group, m)`, handled on clients by
+    `[Handle]` methods of a registered object.
   - Generated code: ADR-012.
 - Alternatives: keeping interfaces with a message-shaped escape hatch would leave two models; making the receiver's
   type explicit (`Ask<Player>(...)`) couples senders to implementations.
@@ -406,9 +406,9 @@ records that no longer hold). Each: context → decision → consequences.
 - Decision: `[NinoType, Message]` is a message; plain `[NinoType]` is data. `[Message(Flow)]` says who sends it to
   whom: `Internal` (default, servers only), `FromClient` (clients may send it; `AnyId` lets them name the actor),
   `ToClient` (servers push it, clients handle it); flags combine. The analyzer checks handlers (servers never handle a
-  `ToClient`-only message, client handlers only `ToClient` ones) and call sites (`Push(session, m)` and
-  `Broadcast(group, m)` need `ToClient`, `ClusterClient` sends need `FromClient`, servers do not send
-  `ToClient`-only messages to each other): DAS006. Gateways also accept only `FromClient` messages at run time.
+  `ToClient`-only message, client handlers only `ToClient` ones) and call sites (a send to a session or group
+  address needs `ToClient`, `ClusterClient` sends need `FromClient`, servers do not send `ToClient`-only messages to
+  each other): DAS006. DAS008 rejects asking a session or group and clients addressing anything but actors. Gateways also accept only `FromClient` messages at run time.
   Agreed for roadmap G step 7: `Flow`/`AnyId` move to `[FromClient(AnyId)]` / `[ToClient]` attributes of the gateway
   module, so the core's `[Message]` carries no client concept (ADR-045).
 - Alternatives: marker interfaces (`IClientMessage`) would allow generic constraints, but a message's flow is
