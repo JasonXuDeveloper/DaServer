@@ -281,6 +281,17 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
 - Consequences: simple and ordered with binds (ADR-022). Revisit when deployments run tens of gateways with small
   groups; the roadmap keeps the item.
 
+## ADR-046 Two planes per node: DaServer TCP for data, ASP.NET Core for HTTP
+- Context: Kubernetes probes and Aspire health are HTTP; operators want admin commands; applications want REST
+  endpoints (webhooks, payment callbacks, HTTP login, back-office). A hand-written HTTP responder would re-implement
+  Kestrel and the official health-check middleware.
+- Decision: every node hosts Kestrel on a separate HTTP port for health (`/health` readiness, `/alive` liveness),
+  admin endpoints and user REST endpoints. Node-to-node and client traffic stays on DaServer's TCP links (zero GC,
+  ordered, batched). HTTP handlers run on the thread pool and reach actors only through `ICluster`.
+- Consequences: nodes reference the ASP.NET Core shared framework (aspnet runtime image, a few MB of memory, tens of
+  ms of start-up); HTTP requests allocate like any ASP.NET request, so the HTTP plane is for low-frequency work, never
+  for per-tick or per-player traffic. Health endpoints are always mapped, admin endpoints require the cluster secret.
+
 ## ADR-045 DaServer is a general ECS distributed server framework
 - Context: the core had grown an MMO client edge (gateways, sessions, client groups, reconnect tickets, balancer,
   `ClusterClient`, client message flow) and its samples sat at the top of `samples/`, so the framework read as a game

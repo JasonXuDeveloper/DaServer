@@ -82,7 +82,9 @@ doc/                       requirements.md, design.md, decisions.md, roadmap.md
   What Aspire does not publish (probes, grace periods, Compose health checks, HPA/PDB) is added by `DaServer.Aspire`
   through the publisher hooks (`PublishAsKubernetesService`, `PublishAsDockerComposeService`), never by hand.
   Scaling decisions belong to the platform (HPA/KEDA); the framework makes joining and leaving safe, it is not an
-  autoscaler. `DaServer.Hosting.AddDaServer` is the framework's service defaults: no ASP.NET Core dependency in nodes.
+  autoscaler. `DaServer.Hosting.AddDaServer` is the framework's service defaults. Nodes run ASP.NET Core for their HTTP plane
+  (health, admin, user REST endpoints, ADR-046); the data plane stays DaServer's own TCP links. HTTP code reaches
+  actors only through `ICluster`.
 - Wire ids are generated (FNV-1a); never renumber by hand except `[WireId]` to resolve a reported collision.
 - No topology strings (roles, node names) in code: a node hosts what its project compiles (ADR-017).
 - The core is general (ADR-045): a feature needed by one kind of application goes into an optional module built on
