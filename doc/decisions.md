@@ -281,6 +281,17 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
 - Consequences: simple and ordered with binds (ADR-022). Revisit when deployments run tens of gateways with small
   groups; the roadmap keeps the item.
 
+## ADR-039 EasyEcs from NuGet, used as its documentation teaches
+- Context: DaServer built against a sibling EasyEcs checkout, and parts of the runtime used EasyEcs against its own
+  guidance: systems gated themselves with flags and ran manual queries in `OnUpdate`, samples counted ticks in
+  components instead of `UpdateInterval`, an actor had two components for one identity, and an unused timer queue
+  (`Shard.Schedule`, `TimerSystem`) remained.
+- Decision: reference the `EasyEcs` package (4.0.1; it ships its generator and analyzer). Cadence is a system group the
+  shard loop updates when due (`ShardRebalance`, `ShardIdleScan`), so `RebalanceSystem` and `IdleSystem` are plain
+  `[ForEach]` methods; samples use `UpdateInterval`; `ActorLink` alone identifies an activation (`Key`, `Group`);
+  the timer queue is removed.
+- Consequences: no co-development checkout in builds or CI; EasyEcs changes reach DaServer through releases.
+
 ## ADR-038 `[Message]` marks messages and their flow
 - Context: any `[NinoType]` struct counted as a message, so data types (a reply, a struct inside a list) were
   indistinguishable from messages, wire-id collisions were checked for data that never travels alone, and nothing
