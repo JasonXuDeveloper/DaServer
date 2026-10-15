@@ -79,6 +79,8 @@ public class GeneratorTests
             }
             public sealed class Hero : Actor<HeroId>
             {
+                private const int MaxHp = 100;
+                private static readonly int[] Levels = [1, 2, 3];
                 [Handle] public void On(Move m) { }
                 [Handle] public ValueTask<int> On(Heal m) => new(m.Hp);
                 [Handle] public HeroId On(Spawn _) => Id; // ids cross the wire as they are
@@ -117,6 +119,9 @@ public class GeneratorTests
     [TestCase("[NinoType, Message] public partial record struct Tick; public static class Bad { public static void Go(DaServer.Client.ClusterClient c) => c.Send(new Tick()); }", "DAS006")]
     [TestCase("[NinoType, Message(Flow.ToClient)] public partial record struct Tick; public static class Bad { public static void Go(ICluster c) => c.Send(new Tick()); }", "DAS006")]
     [TestCase("[NinoType] public partial record struct Tick; public static class Bad { public static void Go(ICluster c) => c.Publish(new Tick()); }", "DAS002")]
+    [TestCase("[NinoType, Message] public partial record struct Tick; public sealed class Bad : Service { private int _count; [Handle] public void On(Tick e) => _count++; }", "DAS007")]
+    [TestCase("public readonly record struct BadId(long Value) : IActorId; public sealed class Bad : Actor<BadId> { public static int Total; }", "DAS007")]
+    [TestCase("public readonly record struct BadId(long Value) : IActorId; public sealed class Bad : Actor<BadId> { public string Name { get; set; } = \"\"; }", "DAS007")]
     public async Task MisuseIsReportedByTheAnalyzer(string source, string id)
     {
         var (_, diagnostics) = await Run(source);

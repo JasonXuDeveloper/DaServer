@@ -13,7 +13,7 @@ namespace DaServer.Generator;
 public sealed partial class DaServerAnalyzer : DiagnosticAnalyzer
 {
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics { get; } = ImmutableArray.Create(
-        Rules.BadHandler, Rules.BadMessage, Rules.NotWireType, Rules.IdCollision, Rules.NoDefaultConstructor, Rules.WrongFlow);
+        Rules.BadHandler, Rules.BadMessage, Rules.NotWireType, Rules.IdCollision, Rules.NoDefaultConstructor, Rules.WrongFlow, Rules.StatefulHandlerType);
 
     public override void Initialize(AnalysisContext context)
     {
@@ -34,6 +34,7 @@ public sealed partial class DaServerAnalyzer : DiagnosticAnalyzer
                 Shapes.ReadHosted(type, Report);
                 Shapes.ReadRequest(type, Report);
                 Shapes.ReadClientMessage(type, Report);
+                CheckStateless(type, Report);
 
                 if (type.TypeKind != TypeKind.Struct || !Support.HasAttribute(type, Support.MessageAttribute)) return;
                 if (!Shapes.IsMessage(type, type.Locations.FirstOrDefault(), "[Message]", Report)) return;
@@ -51,6 +52,29 @@ public sealed partial class DaServerAnalyzer : DiagnosticAnalyzer
                 foreach (var d in collisions) end.ReportDiagnostic(d);
             });
         });
+    }
+}
+
+/// <summary>Actors and services hold no state of their own: it lives in components and singletons.</summary>
+public sealed partial class DaServerAnalyzer
+{
+    /// <summary>
+    /// Mutable fields of an actor or service type (instance fields, auto-properties, static non-readonly fields): the
+    /// runtime recreates actor and service objects (load, move, code reload) and persists, moves and inspects components
+    /// only, so such state would be lost or shared across shard threads.
+    /// </summary>
+    private static void CheckStateless(INamedTypeSymbol type, Report report)
+    {
+        if (type.TypeKind != TypeKind.Class ||
+            !(Support.DerivesFrom(type, Support.ActorBase) || Support.DerivesFrom(type, Support.ServiceBase)))
+            return;
+
+        foreach (var member in type.GetMembers())
+        {
+            if (member is not IFieldSymbol field || field.IsConst || (field.IsStatic && field.IsReadOnly)) continue;
+            var named = field.AssociatedSymbol ?? field;
+            report(Rules.StatefulHandlerType, named.Locations.FirstOrDefault(), type.Name, named.Name);
+        }
     }
 }
 
@@ -120,6 +144,10 @@ internal static class Rules
 
     public static readonly DiagnosticDescriptor NoDefaultConstructor = new("DAS005", "Missing parameterless constructor",
         "'{0}' must have a public parameterless constructor (the runtime creates one instance per shard/loaded actor)",
+        Category, DiagnosticSeverity.Error, true);
+
+    public static readonly DiagnosticDescriptor StatefulHandlerType = new("DAS007", "Actor or service with fields",
+        "'{0}.{1}' holds state outside ECS: keep actor state in components (Actor<TId, TState>, Entity) and shared data in singletons",
         Category, DiagnosticSeverity.Error, true);
 
     public static readonly DiagnosticDescriptor WrongFlow = new("DAS006", "Message used against its flow",
