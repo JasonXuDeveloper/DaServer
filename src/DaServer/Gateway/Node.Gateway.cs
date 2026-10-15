@@ -460,18 +460,11 @@ sealed partial class Node
             (handlerTypeId, key) = (0, 0); // a service; Request/SendMessage answer NotHosted / drop when there is none
         }
 
-        // The payload is copied as is; the origin is this gateway's session, whatever the client wrote.
-        var w = FrameWriter.Rent(FrameHeader.Size + body.Length + Origin.Size + sizeof(uint));
-        w.WriteRaw(body);
-        w.SetOrigin(new Origin(Id, session.Id));
-        if (replyId == 0)
-        {
-            SendMessage(w, message.Id, handlerTypeId, key);
-            return;
-        }
-
-        w.Deadline = header.DeadlineOnArrival(); // the client's own timeout, when it sent one
-        Request(w, message.Id, handlerTypeId, key, null, session.Sink, replyId);
+        // The payload goes on as is; the origin is this gateway's session, whatever the client wrote.
+        IIngress ingress = this;
+        var origin = new Origin(Id, session.Id);
+        if (replyId == 0) ingress.Send(message.Id, handlerTypeId, key, body, origin);
+        else ingress.Ask(message.Id, handlerTypeId, key, body, origin, session.Sink, replyId, header.Budget); // the client's own timeout
     }
 
     /// <summary>Whether actor type <paramref name="handlerTypeId"/> handles message <paramref name="messageId"/> in the cluster.</summary>
