@@ -36,6 +36,26 @@ public class KeepAliveTests : ClusterTest
     }
 
     [Test]
+    public async Task ClientsThatOnlySendStillHearFromTheirNode()
+    {
+        // The client sends all the time and the node pushes nothing back: the client pings for lack of anything received.
+        var gateway = await Start("gw", gateway: true);
+        var client = Track(new ClusterClient
+        {
+            KeepAliveInterval = TimeSpan.FromMilliseconds(100),
+            ServerTimeout = TimeSpan.FromMilliseconds(600),
+        });
+        int disconnects = 0;
+        client.Disconnected += _ => Interlocked.Increment(ref disconnects);
+        await client.ConnectAsync("127.0.0.1", gateway.ClientPort());
+
+        for (var watch = System.Diagnostics.Stopwatch.StartNew(); watch.ElapsedMilliseconds < 2000; await Task.Delay(20))
+            client.Send(new Tip(1)); // one-way: nothing comes back
+        Assert.That(disconnects, Is.Zero);
+        Assert.That(client.IsConnected, Is.True);
+    }
+
+    [Test]
     public async Task ClientsNoticeASilentNodeAndProbesNoticeItSooner()
     {
         using var listener = new TcpListener(IPAddress.Loopback, 0); // accepts, never reads or answers

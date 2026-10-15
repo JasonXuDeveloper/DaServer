@@ -60,8 +60,8 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
     public TimeSpan CallTimeout { get; set; } = TimeSpan.FromSeconds(10);
 
     /// <summary>
-    /// When the client has sent nothing for this long it pings its node, which answers (ADR-053): the node then knows
-    /// the client is there, and the client hears from the node even when nothing is pushed. Keep it below the
+    /// When the client has sent or received nothing for this long it pings its node, which answers (ADR-053): the node
+    /// then knows the client is there, and the client hears from the node even when nothing is pushed. Keep it below the
     /// node's <c>ClientOptions.ClientTimeout</c> (45 s by default).
     /// </summary>
     public TimeSpan KeepAliveInterval { get; set; } = TimeSpan.FromSeconds(15);
