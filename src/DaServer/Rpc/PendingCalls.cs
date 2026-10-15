@@ -169,7 +169,15 @@ internal readonly struct NoReply;
 /// </summary>
 internal sealed class PendingCall<T> : IPendingCall, IValueTaskSource<T>, IValueTaskSource, IThreadPoolWorkItem
 {
+    /// <summary>Calls made outside shards (clients, tools, tests): their in-flight count is bounded by their table.</summary>
     private static readonly ObjectPool<PendingCall<T>> Pool = new(() => new PendingCall<T>(), 1024);
+
+    /// <summary>
+    /// Calls made by this shard thread. A shard rents and returns on its own thread (its continuations run there), so
+    /// the stack needs no synchronization and holds exactly the shard's peak number of calls in flight: a burst of any
+    /// width allocates only the first time.
+    /// </summary>
+    [ThreadStatic] private static Stack<PendingCall<T>>? _shardPool;
     private static readonly Action<object?> CompletedSentinel = static _ => { };
 
     private Action<object?>? _continuation;
@@ -186,7 +194,7 @@ internal sealed class PendingCall<T> : IPendingCall, IValueTaskSource<T>, IValue
 
     public static PendingCall<T> Rent(Shard? caller)
     {
-        var call = Pool.Rent();
+        var call = caller != null && _shardPool is { Count: > 0 } local ? local.Pop() : Pool.Rent();
         call.CallerShard = caller;
         return call;
     }
@@ -296,7 +304,7 @@ internal sealed class PendingCall<T> : IPendingCall, IValueTaskSource<T>, IValue
     public T GetResult(short token)
     {
         if (token != _version) throw new InvalidOperationException("Stale ValueTask token");
-        var (result, error) = (_result, _error);
+        var (result, error, shard) = (_result, _error, CallerShard);
         _result = default!;
         _error = null;
         _continuation = null;
@@ -304,7 +312,10 @@ internal sealed class PendingCall<T> : IPendingCall, IValueTaskSource<T>, IValue
         _capturedContext = null;
         CallerShard = null;
         _version++;
-        Pool.Return(this);
+        if (shard != null && ReferenceEquals(Shard.Current, shard))
+            (_shardPool ??= new Stack<PendingCall<T>>()).Push(this);
+        else
+            Pool.Return(this);
         if (error != null)
             System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(error);
         return result;

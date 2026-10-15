@@ -23,6 +23,20 @@ public class AllocationTests : ClusterTest
     }
 
     [Test]
+    public async Task BurstsOfConcurrentCallsDoNotAllocate()
+    {
+        // 2,000 calls in flight at once: above the old fixed pool sizes (1,024), below the callee's mailbox bound.
+        var node = await Start("alloc", configure: o => o.GossipInterval = TimeSpan.FromHours(1));
+        long other = 2;
+        while (await node.Ask(new CounterId(other), new WhereAmI()) == await node.Ask(new CounterId(1), new WhereAmI())) other++;
+
+        const int width = 2_000, rounds = 10;
+        await node.Ask(new CounterId(1), new AskInBursts(new CounterId(other), width, 3));
+        long allocated = await node.Ask(new CounterId(1), new AskInBursts(new CounterId(other), width, rounds));
+        Assert.That(allocated / (double)(width * rounds), Is.LessThan(8), $"{allocated} B for {width * rounds} calls");
+    }
+
+    [Test]
     public async Task KeyedEventsDoNotAllocate()
     {
         var node = await Start("alloc", configure: o => o.GossipInterval = TimeSpan.FromHours(1));
