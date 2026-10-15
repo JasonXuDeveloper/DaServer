@@ -4,8 +4,7 @@ Keep this file current: tick items when done, add items when scope changes.
 
 ## Development order (agreed: one item at a time, each proven before the next)
 
-1. Z2/Z3 zero GC fixes that keep the API: H2 reply watcher, M1 error paths, M2-M8, low items, missing allocation
-   tests (H3 done).
+1. Z2/Z3 zero GC fixes that keep the API: M1 error paths, M2-M8, low items, missing allocation tests (H3, H2 done).
 2. G1-G4 the core as a general framework, the client edge as the optional `DaServer.Gateway` module.
 3. T2 ECS bots and business isolation (bots use the gateway module).
 4. N2 `SendAfter`, N3 call cycles fail fast, N3b no sync-over-async (incl. the await-only `Reply<T>`, which also
@@ -143,7 +142,9 @@ Steady state allocates nothing: per message, call, reply, tick, broadcast, conne
       Concurrency=4096), many suspended async handlers, services (Send/Ask/Publish), Push and remote broadcast, group
       and binding churn, idle node (0 B/s), Overloaded/Timeout/NotHosted steady state, client callback queue and
       collection messages.
-- [ ] Z2 Fix in this order: H3 (done: per-shard call stacks, 64k frame/relay pools), H2, H2, H1, H4 (N8), M1, M6/M2/M3/M4/M7, M5, low items; hot paths first (message, call, reply, broadcast, dispatch), then per connection and per
+- [ ] Z2 Fix in this order: H3 (done: per-shard call stacks, 64k frame/relay pools), H2 (done: pooled
+      `ReplyWatcher<T>`, 264 -> 0 B per reply of a suspended handler; tests build optimized so async state machines
+      are structs as users ship them), H1, H4 (N8), M1, M6/M2/M3/M4/M7, M5, low items; hot paths first (message, call, reply, broadcast, dispatch), then per connection and per
       view change; pools bounded and allocation-free when warm. Replacements: pooled `IValueTaskSource`s, struct
       work items, static lambdas with state, cached delegates, pooled `FrameWriter`, `ArrayPool`/`stackalloc`, ring
       buffers, Nino ref deserialization.
@@ -178,6 +179,42 @@ signal, gateways drop their clients on stop and nothing is persisted yet (N5).
       (trades, purchases). Versioned saves reject a fenced node's late write (ADR-042).
 - [ ] D6 (with N5) Store flush and backpressure: the store's write queue is bounded, flushed in D2 before links close,
       and its health feeds readiness.
+
+## Next: Aspire and hosting best practices (A-items, with D1-D4; checked against Aspire 13.6)
+
+Aspire generates manifests and runs the local cluster; it never autoscales and publishes no grace period, no
+Compose health check and no probe except HTTP probes declared with `WithHttpProbe`. What a node needs from it:
+
+- [ ] A1 Health without ASP.NET Core: `DaServer.Hosting` registers `IHealthCheck`s (`daserver-ready`: joined and not
+      leaving/draining; `daserver-live`: shard stall watchdog, N3b) and serves `/health` and `/alive` on a small
+      separate port (`DaServer__HealthPort`), no Kestrel. `DaServer.Aspire` adds the `health` endpoint and readiness /
+      liveness / startup probes (`WithHttpProbe`, experimental ASPIREPROBES001), so `WaitFor` and the dashboard mean
+      "joined", not "process running".
+- [ ] A2 Drain budget published (D1): `WithDrain(grace)` sets the pod `terminationGracePeriodSeconds`, Compose
+      `stop_grace_period` and `DaServer__ShutdownTimeout` below it, plus an optional preStop sleep so endpoint removal
+      propagates before Leave; stateful groups default longer than stateless ones.
+- [ ] A3 Compose gaps: `PublishAsDockerComposeService` sets `healthcheck`, `stop_grace_period` and `restart` per node
+      (Aspire writes none and maps `WaitFor` to `service_started`).
+- [ ] A4 Publish mode = one workload per node group (with S4): `IsPublishMode` emits one Deployment with `replicas`,
+      a headless Service (`clusterIP: None`, `publishNotReadyAddresses` so joining pods gossip), pod-IP advertising
+      through the downward API; run mode keeps one resource per replica (ADR-030). HPA v2 / KEDA / PDB via
+      `PublishAsKubernetesService` + `AdditionalResources` (PDB and KEDA as small custom resource types).
+- [ ] A5 Dashboard: a cluster parent resource (`WithParentRelationship`) showing "n/n joined"; custom states Joining /
+      Joined / Draining / Suspected; commands Drain, Membership (JSON), Stats, Unload actor type (through the health
+      port's admin path, bound to localhost or the cluster secret). Usable from `aspire resource <node> <command>`,
+      MCP and tests.
+- [ ] A6 Tracing: an allocation-free `ActivitySource` for cross-node calls (spans only when a listener is attached),
+      added to `AddDaServer`'s OpenTelemetry setup. `AddDaServer` stays the framework's service defaults; no
+      ASP.NET-based ServiceDefaults project and no `Microsoft.Extensions.ServiceDiscovery` for node links (gossip seeds
+      and headless DNS stay).
+- [ ] A7 Store wiring (with N5): `cluster.WithActorStore(postgres.AddDatabase("actors"))` = `WithReference` +
+      `WaitFor` on stateful groups; persistent container lifetime in samples; store health feeds readiness (D6).
+- [ ] A8 Parameters and environments: shards per node, drain budget, replicas and HPA bounds as AppHost parameters
+      (become Helm values per `--environment`); `AddConnectionString` for an existing production database.
+- [ ] A9 Tests through Aspire: wait for the cluster resource to be healthy before bots; S6 scale/failover E2E through
+      the stop/start/Drain commands and `WithExplicitStart`.
+- Notes: the Aspire dashboard in deployments is diagnostic only (production observability is OTLP); Azure Container
+  Apps exposes ingress, not per-replica addresses, so it is a later target than Kubernetes.
 
 ## Next: elastic scaling (after N5/N6: moving stateful actors needs persistence and handoff)
 
