@@ -11,8 +11,26 @@ public sealed class HandlerTypeInfo(Type type, bool isActor, Func<object> factor
     public Func<object> Factory { get; } = factory;
     public MessageHandlers Handlers { get; } = new(handlers);
 
-    /// <summary>Identity of the handler type in placement, membership and routing (FNV-1a of the type name).</summary>
-    public uint Id { get; } = WireIds.Fnv1a(type.FullName ?? type.Name); // == TypeId<T>.Value
+    /// <summary>
+    /// The id type of an actor (<c>MapId</c> of <c>Map : Actor&lt;MapId, ..&gt;</c>); null for a service.
+    /// </summary>
+    public Type? IdType { get; } = isActor ? IdTypeOf(type) : null;
+
+    /// <summary>
+    /// Identity of the handler type in placement, membership and routing: <c>TypeId&lt;TId&gt;</c> of an actor's id type
+    /// (what senders name), <c>TypeId&lt;T&gt;</c> of a service type.
+    /// </summary>
+    public uint Id { get; } = Identity(isActor ? IdTypeOf(type) : type);
+
+    private static uint Identity(Type type) => WireIds.Fnv1a(type.FullName ?? type.Name); // == TypeId<T>.Value
+
+    private static Type IdTypeOf(Type actor)
+    {
+        for (var t = actor; t != null; t = t.BaseType)
+            if (t.IsGenericType && t.GetGenericTypeDefinition() == typeof(Actor<>))
+                return t.GetGenericArguments()[0];
+        throw new InvalidOperationException($"{actor} must derive from Actor<TId> or Actor<TId, TState>");
+    }
 
     public override string ToString() => Type.FullName ?? Type.Name;
 }
@@ -39,7 +57,14 @@ public static class ServerRegistry
         lock (Gate)
         {
             foreach (var existing in HandlerTypeList)
+            {
                 if (existing.Type == info.Type) return;
+                if (existing.Id == info.Id)
+                    throw new InvalidOperationException(existing.IdType == info.IdType && info.IdType != null
+                        ? $"{existing} and {info} share the id type {info.IdType}: each actor type needs its own"
+                        : $"{existing} and {info} hash to the same id");
+            }
+
             HandlerTypeList.Add(info);
         }
     }

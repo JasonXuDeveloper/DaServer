@@ -53,10 +53,11 @@ public sealed class MessageGenerator : IIncrementalGenerator
         sb.Append($"/// <summary>Typed <c>Ask</c> of <see cref=\"{r.FullName.Replace("global::", "")}\"/> (generated).</summary>\n");
         sb.Append("[global::System.ComponentModel.EditorBrowsable(global::System.ComponentModel.EditorBrowsableState.Never)]\n");
         sb.Append($"{access} static class {r.ClassName}\n{{\n");
-        sb.Append("    /// <summary>Ask the actor of <paramref name=\"key\"/> handling the request; completes with its reply.</summary>\n");
-        sb.Append($"    public static {reply} Ask(this global::DaServer.Rpc.IMessageSender sender, long key, in {r.FullName} request) =>\n");
-        sb.Append($"        sender.Ask<{r.FullName}, {r.ReplyType}>(key, in request);\n\n");
-        sb.Append("    /// <summary>Ask the service handling the request (from a client: or the actor bound to its session).</summary>\n");
+        sb.Append("    /// <summary>Ask the actor <paramref name=\"id\"/>; completes with its reply.</summary>\n");
+        sb.Append($"    public static {reply} Ask<TId>(this global::DaServer.Rpc.IMessageSender sender, TId id, in {r.FullName} request)\n");
+        sb.Append("        where TId : struct, global::DaServer.Rpc.IActorId =>\n");
+        sb.Append($"        sender.Ask<TId, {r.FullName}, {r.ReplyType}>(id, in request);\n\n");
+        sb.Append("    /// <summary>Ask the service handling the request (from a client: the actor bound to its session, else the service).</summary>\n");
         sb.Append($"    public static {reply} Ask(this global::DaServer.Rpc.IMessageSender sender, in {r.FullName} request) =>\n");
         sb.Append($"        sender.Ask<{r.FullName}, {r.ReplyType}>(in request);\n}}\n");
         return sb.ToString();
@@ -73,7 +74,7 @@ public sealed class MessageGenerator : IIncrementalGenerator
         sb.Append($"    public static class Messages_{assembly}\n    {{\n");
         sb.Append("        [global::System.Runtime.CompilerServices.ModuleInitializer]\n        internal static void Register()\n        {\n");
         foreach (var m in messages)
-            sb.Append($"            global::DaServer.Rpc.MessageRegistry.RegisterClientMessage<{m.FullName}>(anyKey: {(m.AnyKey ? "true" : "false")});\n");
+            sb.Append($"            global::DaServer.Rpc.MessageRegistry.RegisterClientMessage<{m.FullName}>(anyId: {(m.AnyId ? "true" : "false")});\n");
         sb.Append("        }\n    }\n}\n");
         return sb.ToString();
     }

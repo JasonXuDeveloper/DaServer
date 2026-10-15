@@ -59,7 +59,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IAsyncDi
 
     /// <summary>
     /// The session resumed on a new connection: messages reach the same actors again, and they resend the full state
-    /// (pushes sent while disconnected were lost). Groups joined by AnyKey messages are not restored: join them again.
+    /// (pushes sent while disconnected were lost). Groups joined by AnyId messages are not restored: join them again.
     /// </summary>
     public event Action? Reconnected;
 
@@ -93,7 +93,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IAsyncDi
         {
             var call = PendingCall<GatewayEndpoint>.Rent(null);
             var answer = call.Task;
-            Send(FrameWriter.Rent(FrameHeader.Size), ControlOp.PickGateway, 0, call, FrameKind.Control);
+            SendControl(FrameWriter.Rent(FrameHeader.Size), ControlOp.PickGateway, call);
             try
             {
                 return await answer.ConfigureAwait(false);
@@ -153,24 +153,50 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IAsyncDi
 
     // ------------------------------------------------------------------ IMessageSender
 
-    /// <summary>A <see cref="Flow.FromClient"/> message to the actor of <paramref name="key"/> (AnyKey messages: the client chooses the key).</summary>
-    public void Send<T>(long key, in T message) where T : struct => Send(MessageWriter.Write(in message), MessageType<T>.Id, key, null);
+    /// <summary>A <see cref="Flow.FromClient"/> message to the actor <paramref name="id"/> (<see cref="MessageAttribute.AnyId"/> messages only).</summary>
+    public void Send<TId, T>(TId id, in T message) where TId : struct, IActorId where T : struct =>
+        Send(MessageWriter.Write(in message), MessageType<T>.Id, ActorIds<TId>.HandlerTypeId, id.Value, null);
 
-    /// <summary>A <see cref="Flow.FromClient"/> message to its service, or to the actor bound to this client's session.</summary>
-    public void Send<T>(in T message) where T : struct => Send(MessageWriter.Write(in message), MessageType<T>.Id, 0, null);
+    /// <summary>A <see cref="Flow.FromClient"/> message to the actor bound to this client's session, or to its service.</summary>
+    public void Send<T>(in T message) where T : struct => Send(MessageWriter.Write(in message), MessageType<T>.Id, 0, 0, null);
 
-    public ValueTask<TReply> Ask<TRequest, TReply>(long key, in TRequest request) where TRequest : struct, IRequest<TReply>
+    public ValueTask<TReply> Ask<TId, TRequest, TReply>(TId id, in TRequest request)
+        where TId : struct, IActorId where TRequest : struct, IRequest<TReply> =>
+        Ask<TRequest, TReply>(in request, ActorIds<TId>.HandlerTypeId, id.Value);
+
+    public ValueTask<TReply> Ask<TRequest, TReply>(in TRequest request) where TRequest : struct, IRequest<TReply> =>
+        Ask<TRequest, TReply>(in request, 0, 0);
+
+    private ValueTask<TReply> Ask<TRequest, TReply>(in TRequest request, uint handlerTypeId, long key) where TRequest : struct
     {
         var call = PendingCall<TReply>.Rent(null);
         var task = call.Task;
-        Send(MessageWriter.Write(in request), MessageType<TRequest>.Id, key, call);
+        Send(MessageWriter.Write(in request), MessageType<TRequest>.Id, handlerTypeId, key, call);
         return task;
     }
 
-    public ValueTask<TReply> Ask<TRequest, TReply>(in TRequest request) where TRequest : struct, IRequest<TReply> =>
-        Ask<TRequest, TReply>(0, in request);
+    /// <summary>
+    /// A message (payload written) to actor (<paramref name="handlerTypeId"/>, <paramref name="key"/>), or with handler
+    /// type 0 to the session's actor or service handling it; a request when <paramref name="call"/> is set. Takes
+    /// ownership of <paramref name="w"/>.
+    /// </summary>
+    private void Send(FrameWriter w, uint messageId, uint handlerTypeId, long key, IPendingCall? call)
+    {
+        byte flags = 0;
+        if (handlerTypeId != 0)
+        {
+            w.WriteTarget(handlerTypeId);
+            flags = FrameFlags.ToActor;
+        }
 
-    private void Send(FrameWriter request, uint messageId, long key, IPendingCall? call, FrameKind requestKind = FrameKind.Request)
+        var budget = call != null ? FrameHeader.EncodeBudget((long)CallTimeout.TotalMilliseconds) : RpcStatus.Ok;
+        Transmit(w, call != null ? FrameKind.Request : FrameKind.OneWay, messageId, key, call, budget, flags);
+    }
+
+    /// <summary>A control frame to the gateway, answered when <paramref name="call"/> is set. Takes ownership of <paramref name="w"/>.</summary>
+    private void SendControl(FrameWriter w, uint op, IPendingCall? call) => Transmit(w, FrameKind.Control, op, 0, call, RpcStatus.Ok, 0);
+
+    private void Transmit(FrameWriter w, FrameKind kind, uint messageId, long key, IPendingCall? call, RpcStatus budget, byte flags)
     {
         var connection = _connection;
         try
@@ -179,9 +205,8 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IAsyncDi
                 throw new RpcException(RpcStatus.Disconnected);
 
             uint requestId = call != null ? _pending.Register(call, (int)CallTimeout.TotalMilliseconds) : 0;
-            request.SetHeader(call != null || requestKind == FrameKind.Control ? requestKind : FrameKind.OneWay, requestId, messageId, key,
-                call != null && requestKind == FrameKind.Request ? FrameHeader.EncodeBudget((long)CallTimeout.TotalMilliseconds) : RpcStatus.Ok);
-            if (!connection.Send(request.Frame) && call != null)
+            w.SetHeader(kind, requestId, messageId, key, budget, flags);
+            if (!connection.Send(w.Frame) && call != null)
                 _pending.Take(requestId)?.Fail(new RpcException(RpcStatus.Disconnected));
         }
         catch (RpcException e)
@@ -190,7 +215,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IAsyncDi
         }
         finally
         {
-            request.Dispose();
+            w.Dispose();
         }
     }
 
@@ -272,7 +297,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IAsyncDi
         var task = call.Done;
         var w = FrameWriter.Rent(FrameHeader.Size + ticket.Length);
         w.WriteRaw(ticket);
-        Send(w, ControlOp.ResumeSession, 0, call, FrameKind.Control);
+        SendControl(w, ControlOp.ResumeSession, call);
         return task;
     }
 
@@ -283,7 +308,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IAsyncDi
         long now = Environment.TickCount64;
         if (now < Volatile.Read(ref _refreshTicketAtMs)) return;
         Volatile.Write(ref _refreshTicketAtMs, now + 10_000); // until the new one arrives
-        Send(FrameWriter.Rent(FrameHeader.Size), ControlOp.Ticket, 0, null, FrameKind.Control);
+        SendControl(FrameWriter.Rent(FrameHeader.Size), ControlOp.Ticket, null);
     }
 
     /// <summary>Tests: lose the connection as a network failure would (no goodbye).</summary>
@@ -307,7 +332,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IAsyncDi
         {
             var call = PendingCall<NoReply>.Rent(null);
             var goodbye = call.Done;
-            Send(FrameWriter.Rent(FrameHeader.Size), ControlOp.Goodbye, 0, call, FrameKind.Control);
+            SendControl(FrameWriter.Rent(FrameHeader.Size), ControlOp.Goodbye, call);
             try
             {
                 await goodbye.AsTask().WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false);

@@ -15,7 +15,7 @@ public class RpcBenchmark
     }
 
     private Node[] _nodes = null!;
-    private long[] _keys = null!;
+    private CounterId[] _keys = null!;
     private ValueTask<int>[] _calls = null!;
 
     [Params(1, 64, 1024)] public int Concurrency;
@@ -30,12 +30,13 @@ public class RpcBenchmark
         var owner = Placement == Target.Local ? _nodes[0] : _nodes[1];
 
         // One actor per outstanding call, all owned by the target node, spread over its shards.
-        _keys = new long[Concurrency];
+        _keys = new CounterId[Concurrency];
         long key = 0;
         for (int i = 0; i < Concurrency; i++)
         {
-            _keys[i] = key = Clusters.KeyOwnedBy<Counter>(caller, owner, key + 1);
-            caller.Ask(key, new Add(0)).AsTask().GetAwaiter().GetResult(); // load the actor
+            _keys[i] = Clusters.IdOwnedBy<CounterId>(caller, owner, key + 1);
+            key = _keys[i].Value;
+            caller.Ask(_keys[i], new Add(0)).AsTask().GetAwaiter().GetResult(); // load the actor
         }
 
         _calls = new ValueTask<int>[Concurrency];

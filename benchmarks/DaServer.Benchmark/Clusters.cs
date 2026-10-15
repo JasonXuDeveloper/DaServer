@@ -31,13 +31,12 @@ internal static class Clusters
         return started;
     }
 
-    /// <summary>First key from <paramref name="start"/> whose <typeparamref name="TActor"/> lives on <paramref name="owner"/> in <paramref name="node"/>'s view.</summary>
-    public static long KeyOwnedBy<TActor>(Node node, Node owner, long start = 1) where TActor : Actor
+    /// <summary>First id from <paramref name="start"/> whose actor lives on <paramref name="owner"/> in <paramref name="node"/>'s view.</summary>
+    public static TId IdOwnedBy<TId>(Node node, Node owner, long start = 1) where TId : struct, IActorId
     {
-        uint handlerType = TypeId<TActor>.Value;
         long key = start;
-        while (node.View.HandlerTypeOwner(handlerType, key)!.NodeId != owner.Id) key++;
-        return key;
+        while (node.View.HandlerTypeOwner(ActorIds<TId>.HandlerTypeId, key)!.NodeId != owner.Id) key++;
+        return ActorIds<TId>.Of(key);
     }
 
     public static async Task Stop(IEnumerable<Node> nodes)

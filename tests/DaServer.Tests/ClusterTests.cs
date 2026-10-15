@@ -12,11 +12,11 @@ public class ClusterTests : ClusterTest
         var nodes = await StartCluster(3);
         for (long key = 1; key <= 30; key++)
         {
-            foreach (var node in nodes) await node.Ask(key, new Add(1));
-            Assert.That(await nodes[0].Ask(key, new Get()), Is.EqualTo(3), $"key {key} has more than one loaded actor");
+            foreach (var node in nodes) await node.Ask(new CounterId(key), new Add(1));
+            Assert.That(await nodes[0].Ask(new CounterId(key), new Get()), Is.EqualTo(3), $"key {key} has more than one loaded actor");
         }
 
-        var owners = Enumerable.Range(1, 30).Select(k => OwnerOf<Counter>(nodes[0], k));
+        var owners = Enumerable.Range(1, 30).Select(k => OwnerOf<CounterId>(nodes[0], k));
         Assert.That(owners.Distinct().Count(), Is.EqualTo(3), "keys spread over the cluster");
     }
 
@@ -24,9 +24,9 @@ public class ClusterTests : ClusterTest
     public async Task ActorsCallActorsOnOtherNodes()
     {
         var (a, b) = await StartPair();
-        long onA = KeyOwnedBy<Counter>(a), onB = KeyOwnedBy<Counter>(b);
-        Assert.That(await a.Ask(onA, new AddVia(onB, 5)), Is.EqualTo(5));
-        Assert.That(await b.Ask(onB, new Get()), Is.EqualTo(5));
+        long onA = KeyOwnedBy<CounterId>(a), onB = KeyOwnedBy<CounterId>(b);
+        Assert.That(await a.Ask(new CounterId(onA), new AddVia(new CounterId(onB), 5)), Is.EqualTo(5));
+        Assert.That(await b.Ask(new CounterId(onB), new Get()), Is.EqualTo(5));
     }
 
     [Test]
@@ -41,48 +41,48 @@ public class ClusterTests : ClusterTest
     public async Task MembersAdvertiseTheContractsTheyHost()
     {
         var (a, _) = await StartPair();
-        Assert.That(a.View.UpMembers.All(m => m.Handlers.Any(h => h.HandlerTypeId == TypeId<Counter>.Value)));
+        Assert.That(a.View.UpMembers.All(m => m.Handlers.Any(h => h.HandlerTypeId == ActorIds<CounterId>.HandlerTypeId)));
     }
 
     [Test]
     public async Task KeysMoveToSurvivorsWhenANodeLeaves()
     {
         var (a, b) = await StartPair();
-        long key = KeyOwnedBy<Counter>(b);
-        Assert.That(await a.Ask(key, new Add(7)), Is.EqualTo(7));
+        long key = KeyOwnedBy<CounterId>(b);
+        Assert.That(await a.Ask(new CounterId(key), new Add(7)), Is.EqualTo(7));
 
         await Stop(b); // graceful: Leaving is gossiped, b unloads its actors
         await Eventually(() => a.View.UpMembers.Length == 1, "a still sees b as Up");
 
         // Reactivated on a; in-memory state is gone (persist it in OnUnload / load in OnLoad).
-        Assert.That(await a.Ask(key, new Add(1)), Is.EqualTo(1));
-        Assert.That(OwnerOf<Counter>(a, key), Is.EqualTo(a.Id));
+        Assert.That(await a.Ask(new CounterId(key), new Add(1)), Is.EqualTo(1));
+        Assert.That(OwnerOf<CounterId>(a, key), Is.EqualTo(a.Id));
     }
 
     [Test]
     public async Task KeysMoveToSurvivorsWhenANodeCrashes()
     {
         var (a, b) = await StartPair();
-        long key = KeyOwnedBy<Counter>(b);
-        Assert.That(await a.Ask(key, new Add(3)), Is.EqualTo(3));
+        long key = KeyOwnedBy<CounterId>(b);
+        Assert.That(await a.Ask(new CounterId(key), new Add(3)), Is.EqualTo(3));
 
         await b.KillAsync(); // suspect first (keys stay), then dead (keys move)
-        await Eventually(() => OwnerOf<Counter>(a, key) == a.Id, "the key never moved");
-        Assert.That(await a.Ask(key, new Add(1)), Is.EqualTo(1), "reactivated on the survivor");
+        await Eventually(() => OwnerOf<CounterId>(a, key) == a.Id, "the key never moved");
+        Assert.That(await a.Ask(new CounterId(key), new Add(1)), Is.EqualTo(1), "reactivated on the survivor");
     }
 
     [Test]
     public async Task CallsInFlightToACrashedNodeFailWhenItIsDeclaredDead()
     {
         var (a, b) = await StartPair();
-        long key = KeyOwnedBy<Counter>(b);
-        Assert.That(await a.Ask(key, new Add(1)), Is.EqualTo(1));
+        long key = KeyOwnedBy<CounterId>(b);
+        Assert.That(await a.Ask(new CounterId(key), new Add(1)), Is.EqualTo(1));
 
         // Sent after the crash, while b is only suspect: the key stays on b and the calls wait in the link's stream.
         await b.KillAsync();
         var started = System.Diagnostics.Stopwatch.StartNew();
         var calls = new ValueTask<int>[100];
-        for (int i = 0; i < calls.Length; i++) calls[i] = a.Ask(key, new Add(1));
+        for (int i = 0; i < calls.Length; i++) calls[i] = a.Ask(new CounterId(key), new Add(1));
 
         foreach (var call in calls)
         {
@@ -92,7 +92,7 @@ public class ClusterTests : ClusterTest
 
         // Failed once the cluster declared b dead (DeadAfter 1.5 s), not at the 5 s call timeout.
         Assert.That(started.Elapsed, Is.LessThan(TimeSpan.FromSeconds(4)));
-        Assert.That(await a.Ask(key, new Add(1)), Is.EqualTo(1), "the key moved to the survivor");
+        Assert.That(await a.Ask(new CounterId(key), new Add(1)), Is.EqualTo(1), "the key moved to the survivor");
     }
 
     [Test]

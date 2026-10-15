@@ -8,11 +8,16 @@ namespace Sample.Contracts;
 // is answered. Plain [NinoType] types (replies, Moved) are data inside messages. Handlers are [Handle] methods; routing,
 // dispatch, wire ids, registration and discovery are generated or derived from them.
 
-/// <summary>Well-known actor keys.</summary>
-public static class Keys
+// ---------------------------------------------------------------- actor ids (one type per actor type)
+
+public readonly record struct PlayerId(long Value) : IActorId;
+
+public readonly record struct MapId(long Value) : IActorId;
+
+/// <summary>The realm: one actor for the whole cluster.</summary>
+public readonly record struct RealmId(long Value) : IActorId
 {
-    /// <summary>The realm actor (one loaded actor for the whole cluster).</summary>
-    public const long Realm = 1;
+    public static RealmId The => new(1);
 }
 
 // ---------------------------------------------------------------- client to server
@@ -22,18 +27,18 @@ public static class Keys
 public partial record struct Login(string Name) : IRequest<LoginResult>;
 
 [NinoType]
-public partial record struct LoginResult(bool Ok, long PlayerId);
+public partial record struct LoginResult(bool Ok, PlayerId Player);
 
 /// <summary>The client's own player (bound to the session at login).</summary>
 [NinoType, Message(Flow.FromClient)]
 public partial record struct GetInfo : IRequest<PlayerInfo>;
 
 [NinoType]
-public partial record struct PlayerInfo(long Id, string Name, long MapId, int Logins);
+public partial record struct PlayerInfo(PlayerId Id, string Name, MapId Map, int Logins);
 
 /// <summary>Move the client's player to a map instance (the map binds the session for input).</summary>
 [NinoType, Message(Flow.FromClient)]
-public partial record struct EnterMap(long MapId) : IRequest<bool>;
+public partial record struct EnterMap(MapId Map) : IRequest<bool>;
 
 /// <summary>Input to the map the session is bound to: a one-way stream.</summary>
 [NinoType, Message(Flow.FromClient)]
@@ -48,19 +53,19 @@ public partial record struct Say(string Text);
 [NinoType, Message]
 public partial record struct Attach(SessionRef Session) : IRequest<bool>;
 
-/// <summary>A player enters a map instance (keyed by map id) with its client session.</summary>
+/// <summary>A player enters a map instance with its client session.</summary>
 [NinoType, Message]
-public partial record struct Enter(long PlayerId, SessionRef Session) : IRequest<bool>;
+public partial record struct Enter(PlayerId Player, SessionRef Session) : IRequest<bool>;
 
 [NinoType, Message]
 public partial record struct Leave(SessionRef Session) : IRequest<bool>;
 
 /// <summary>To the realm: who is online.</summary>
 [NinoType, Message]
-public partial record struct PlayerOnline(long PlayerId);
+public partial record struct PlayerOnline(PlayerId Player);
 
 [NinoType, Message]
-public partial record struct PlayerOffline(long PlayerId);
+public partial record struct PlayerOffline(PlayerId Player);
 
 // ---------------------------------------------------------------- server to client
 
@@ -69,7 +74,7 @@ public partial record struct PlayerOffline(long PlayerId);
 /// extrapolate in between (dead reckoning), so a walking avatar costs nothing until it turns.
 /// </summary>
 [NinoType]
-public partial record struct Moved(long PlayerId, float X, float Y, float VelocityX, float VelocityY);
+public partial record struct Moved(PlayerId Player, float X, float Y, float VelocityX, float VelocityY);
 
 /// <summary>Avatars in view that changed direction, or that came into view (one message per map cell).</summary>
 [NinoType, Message(Flow.ToClient)]
@@ -77,10 +82,10 @@ public partial record struct Motion(List<Moved> Avatars);
 
 /// <summary>An avatar in view left the map.</summary>
 [NinoType, Message(Flow.ToClient)]
-public partial record struct Gone(long PlayerId);
+public partial record struct Gone(PlayerId Player);
 
 [NinoType, Message(Flow.ToClient)]
-public partial record struct Chat(long PlayerId, string Text);
+public partial record struct Chat(PlayerId Player, string Text);
 
 /// <summary>Realm state every client sees (broadcast to every session of the cluster every few ticks).</summary>
 [NinoType, Message(Flow.ToClient)]

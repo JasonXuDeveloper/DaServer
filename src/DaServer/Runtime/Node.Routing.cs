@@ -11,20 +11,21 @@ sealed partial class Node : IConnectionHandler
     internal IConnectionHandler ClusterHandler => this;
 
     /// <summary>
-    /// Route a request whose payload is already written to the handler type of the kind handling
-    /// <paramref name="messageId"/>. Exactly one of <paramref name="call"/> (local caller) or <paramref name="relaySink"/>
-    /// (forwarding a request made elsewhere, answered to that sink under <paramref name="relayRequestId"/>) is set.
-    /// Takes ownership of <paramref name="frame"/>.
+    /// Route a request whose payload is already written to actor (<paramref name="handlerTypeId"/>,
+    /// <paramref name="key"/>), or with handler type 0 to the one service handling <paramref name="messageId"/>.
+    /// Exactly one of <paramref name="call"/> (local caller) or <paramref name="relaySink"/> (forwarding a request made
+    /// elsewhere, answered to that sink under <paramref name="relayRequestId"/>) is set. Takes ownership of
+    /// <paramref name="frame"/>.
     /// </summary>
-    internal void Request(FrameWriter frame, uint messageId, long key, bool actor, IPendingCall? call,
+    internal void Request(FrameWriter frame, uint messageId, uint handlerTypeId, long key, IPendingCall? call,
         IReplySink? relaySink, uint relayRequestId, byte hops = 0, byte flags = 0)
     {
         try
         {
-            if (!View.TryGetRoute(messageId, actor, out var route, out bool ambiguous))
-                throw ambiguous
-                    ? Ambiguous(messageId, actor)
-                    : new RpcException(RpcStatus.NotHosted, $"No {(actor ? "actor" : "service")} handles message 0x{messageId:x8}");
+            if (!TryRoute(messageId, handlerTypeId, out var route))
+                throw new RpcException(RpcStatus.NotHosted, handlerTypeId != 0
+                    ? $"No node hosts actor type 0x{handlerTypeId:x8}"
+                    : $"No service handles message 0x{messageId:x8}");
 
             var target = View.Target(in route, key, Id, (uint)Interlocked.Increment(ref _roundRobin));
             if (target == null)
@@ -40,12 +41,17 @@ sealed partial class Node : IConnectionHandler
             if (frame.Deadline == 0) frame.Deadline = now + (long)Options.CallTimeout.TotalMilliseconds;
             uint requestId = Pending.Register(call, (int)Math.Max(1, frame.Deadline - now), link);
             var budget = FrameHeader.EncodeBudget(frame.Deadline - now);
-            if (actor) flags |= FrameFlags.ToActor;
+            if (handlerTypeId != 0 && (flags & FrameFlags.ToActor) == 0)
+            {
+                frame.WriteTarget(handlerTypeId); // a forwarded request already carries it
+                flags |= FrameFlags.ToActor;
+            }
+
             frame.SetHeader(FrameKind.Request, requestId, messageId, key, budget, flags, hops);
 
             if (local)
             {
-                Admit(SelectShard(route.HandlerTypeId, actor, key), frame, _localSink);
+                Admit(SelectShard(route.HandlerTypeId, route.Actor, key), frame, _localSink);
             }
             else
             {
@@ -81,7 +87,7 @@ sealed partial class Node : IConnectionHandler
             return;
         }
 
-        Request(frame, header.MessageId, header.Key, (header.Flags & FrameFlags.ToActor) != 0, null, sink!, header.RequestId,
+        Request(frame, header.MessageId, FrameHeader.TargetOf(in header, frame.Frame), header.Key, null, sink!, header.RequestId,
             (byte)(header.Hops + 1), header.Flags);
     }
 
@@ -146,10 +152,9 @@ sealed partial class Node : IConnectionHandler
 
     private void OnInboundRequest(Connection connection, in FrameHeader header, ReadOnlySpan<byte> frame)
     {
-        bool actor = (header.Flags & FrameFlags.ToActor) != 0;
-        var handlerType = RequestHandler(header.MessageId, actor);
+        uint handlerTypeId = FrameHeader.TargetOf(in header, frame);
         var sink = ConnectionReplySink.For(connection);
-        if (handlerType == null && !actor)
+        if (handlerTypeId == 0 && ServiceHandler(header.MessageId) == null)
         {
             sink.SendError(header.RequestId, RpcStatus.NotHosted, $"No service handles message 0x{header.MessageId:x8} here");
             return;
@@ -158,7 +163,7 @@ sealed partial class Node : IConnectionHandler
         // Actors not owned/hosted here are forwarded by the shard (it re-checks ownership on its own thread).
         var copy = FrameWriter.CopyOf(frame);
         copy.Deadline = header.DeadlineOnArrival();
-        Admit(SelectShard(handlerType?.Id ?? 0, actor, header.Key), copy, sink);
+        Admit(SelectShard(handlerTypeId, handlerTypeId != 0, header.Key), copy, sink);
     }
 
     /// <summary>Complete an outgoing call: on the caller's shard when it has one, inline otherwise.</summary>

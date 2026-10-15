@@ -84,16 +84,16 @@ public abstract class ClusterTest
     }
 
     /// <summary>First key from <paramref name="start"/> whose actor of <paramref name="contractId"/> lives on <paramref name="owner"/>.</summary>
-    private protected static long KeyOwnedBy<TActor>(Node owner, long start = 1) where TActor : Actor
+    private protected static long KeyOwnedBy<TId>(Node owner, long start = 1) where TId : struct, IActorId
     {
         long key = start;
-        while (OwnerOf<TActor>(owner, key) != owner.Id) key++;
+        while (OwnerOf<TId>(owner, key) != owner.Id) key++;
         return key;
     }
 
     /// <summary>Node owning the <typeparamref name="TActor"/> of <paramref name="key"/> in <paramref name="node"/>'s view.</summary>
-    private protected static ulong OwnerOf<TActor>(Node node, long key) where TActor : Actor =>
-        node.View.HandlerTypeOwner(TypeId<TActor>.Value, key)!.NodeId;
+    private protected static ulong OwnerOf<TId>(Node node, long key) where TId : struct, IActorId =>
+        node.View.HandlerTypeOwner(ActorIds<TId>.HandlerTypeId, key)!.NodeId;
 
     /// <summary>Polls a condition that depends on asynchronous delivery (membership, pushes to other sockets).</summary>
     protected static async Task Eventually(Func<bool> condition, string message, int timeoutMs = 10_000)

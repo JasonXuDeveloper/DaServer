@@ -8,6 +8,7 @@ public sealed class ClusterView
 {
     private readonly FrozenDictionary<ulong, ClusterMember> _members;
     private readonly FrozenDictionary<uint, ClusterMember[]> _handlerTypeNodes;
+    private readonly FrozenSet<uint> _actorTypes;
     private readonly FrozenDictionary<uint, MessageRoute[]> _routes;
 
     public ClusterView(IEnumerable<ClusterMember> members)
@@ -16,6 +17,7 @@ public sealed class ClusterView
         var handlerTypes = new Dictionary<uint, List<ClusterMember>>();
         var handlers = new Dictionary<uint, Dictionary<uint, bool>>();
         var upMembers = new List<ClusterMember>();
+        var actorTypes = new HashSet<uint>();
 
         foreach (var m in members)
         {
@@ -33,6 +35,7 @@ public sealed class ClusterView
                 if (!handlers.TryGetValue(handler.MessageId, out var byHandlerType))
                     handlers[handler.MessageId] = byHandlerType = new();
                 byHandlerType[handler.HandlerTypeId] = handler.Actor;
+                if (handler.Actor) actorTypes.Add(handler.HandlerTypeId);
                 if (!handlerTypes.TryGetValue(handler.HandlerTypeId, out var hosts))
                     handlerTypes[handler.HandlerTypeId] = hosts = new();
                 if (!hosts.Contains(m)) hosts.Add(m);
@@ -44,6 +47,7 @@ public sealed class ClusterView
         var handlerTypeArrays = new Dictionary<uint, ClusterMember[]>();
         foreach (var (k, v) in handlerTypes) handlerTypeArrays[k] = v.ToArray();
         _handlerTypeNodes = handlerTypeArrays.ToFrozenDictionary();
+        _actorTypes = actorTypes.ToFrozenSet();
         var routes = new Dictionary<uint, MessageRoute[]>();
         foreach (var (messageId, byHandlerType) in handlers)
         {
@@ -92,6 +96,16 @@ public sealed class ClusterView
     /// hashing over the Up and Suspect nodes hosting its handler type. Every node with the same view picks the same
     /// owner, and adding/removing a node only moves the keys that node wins/loses.
     /// </summary>
+    /// <summary>
+    /// The nodes hosting handler type <paramref name="handlerTypeId"/> (an actor type is named by its id type), if any.
+    /// </summary>
+    public bool TryGetHandlerTypeRoute(uint handlerTypeId, out MessageRoute route)
+    {
+        bool found = _handlerTypeNodes.TryGetValue(handlerTypeId, out var nodes);
+        route = new MessageRoute(handlerTypeId, _actorTypes.Contains(handlerTypeId), nodes ?? []);
+        return found;
+    }
+
     public ClusterMember? HandlerTypeOwner(uint handlerTypeId, long key) =>
         _handlerTypeNodes.TryGetValue(handlerTypeId, out var nodes) ? Rendezvous(nodes, handlerTypeId, key) : null;
 

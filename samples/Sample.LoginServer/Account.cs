@@ -15,13 +15,13 @@ public sealed class Account : Service
     [Handle]
     public async ValueTask<LoginResult> On(Login m)
     {
-        if (string.IsNullOrWhiteSpace(m.Name) || m.Name.Length > MaxNameLength) return new LoginResult(false, 0);
+        if (string.IsNullOrWhiteSpace(m.Name) || m.Name.Length > MaxNameLength) return new LoginResult(false, default);
 
         // A real game verifies a token against an account store here.
-        long playerId = 17;
-        foreach (char c in m.Name) playerId = (playerId * 31 + c) & 0x7FFF_FFFF;
-        playerId++; // ids start at 1
-        bool attached = await Cluster.Ask(playerId, new Attach(CallerSession));
-        return new LoginResult(attached, playerId);
+        long hash = 17;
+        foreach (char c in m.Name) hash = (hash * 31 + c) & 0x7FFF_FFFF;
+        var player = new PlayerId(hash + 1); // ids start at 1
+        bool attached = await Cluster.Ask(player, new Attach(CallerSession));
+        return new LoginResult(attached, player);
     }
 }

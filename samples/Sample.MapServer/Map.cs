@@ -13,7 +13,7 @@ public record struct Position(float X, float Y) : IComponent;
 public record struct Velocity(float X, float Y) : IComponent;
 
 /// <summary>Whose avatar it is, the map entity it lives in and the client session that controls it.</summary>
-public record struct Avatar(long PlayerId, Entity Map, SessionRef Session) : IComponent;
+public record struct Avatar(PlayerId Player, Entity Map, SessionRef Session) : IComponent;
 
 /// <summary>State of a map: its avatars by client session (its interest grid is <see cref="MapGrid"/>).</summary>
 public struct MapState() : IComponent
@@ -21,27 +21,27 @@ public struct MapState() : IComponent
     public readonly Dictionary<SessionRef, Entity> Avatars = new();
 }
 
-public sealed class Map : Actor<MapState>
+public sealed class Map : Actor<MapId, MapState>
 {
     private const float MaxSpeed = 5f;
     private const int MaxChatLength = 256;
 
     public override ValueTask OnLoad()
     {
-        Entity.Add<MapGrid>() = new MapGrid();
+        Entity.Add<MapGrid>() = new MapGrid(Id);
         return default;
     }
 
     [Handle]
     public async ValueTask<bool> On(Enter m)
     {
-        var (playerId, session) = (m.PlayerId, m.Session);
+        var (player, session) = (m.Player, m.Session);
         if (!State.Avatars.ContainsKey(session))
         {
             // Spread over the map by player id (a real game reads the saved position).
-            ulong h = (ulong)playerId * 0x9E3779B97F4A7C15UL >> 32;
+            ulong h = (ulong)player.Value * 0x9E3779B97F4A7C15UL >> 32;
             var spawn = new Position(h % 1000 / 1000f * MapGrid.Size, h / 1000 % 1000 / 1000f * MapGrid.Size);
-            State.Avatars[session] = World.CreateEntity(spawn, new Velocity(), new Avatar(playerId, Entity, session));
+            State.Avatars[session] = World.CreateEntity(spawn, new Velocity(), new Avatar(player, Entity, session));
             // PlacementSystem puts it into the grid on the next tick; MotionSyncSystem tells its viewers.
         }
 
@@ -53,13 +53,16 @@ public sealed class Map : Actor<MapState>
     public async ValueTask<bool> On(Leave m)
     {
         await UnbindSession(m.Session);
-        Despawn(m.Session, leaveGroups: true);
+        Despawn(m.Session);
         return true;
     }
 
     // Also delivered when the session's gateway crashed. A closed session already left its groups.
     [Handle]
-    public void On(SessionClosed e) => Despawn(e.Session, leaveGroups: false);
+    public void On(SessionClosed e)
+    {
+        if (Despawn(e.Session) is { } avatar) avatar.Add<SessionGone>();
+    }
 
     [Handle]
     public void On(SessionResync e)
@@ -83,20 +86,27 @@ public sealed class Map : Actor<MapState>
     public void On(Say m)
     {
         if (m.Text.Length <= MaxChatLength && State.Avatars.TryGetValue(CallerSession, out var avatar))
-            Cluster.Broadcast(Group, new Chat(avatar.Get<Avatar>().PlayerId, m.Text));
+            Cluster.Broadcast(Group, new Chat(avatar.Get<Avatar>().Player, m.Text));
     }
 
     public override ValueTask OnUnload()
     {
-        foreach (var avatar in State.Avatars.Values) avatar.Add<Despawning>() = new Despawning(LeaveGroups: false);
+        foreach (var avatar in State.Avatars.Values)
+        {
+            avatar.Add<Despawning>();
+            avatar.Add<SessionGone>(); // viewer groups are per map: they stay with it wherever it loads next
+        }
+
         State.Avatars.Clear();
         return default;
     }
 
     /// <summary>The avatar leaves the map: <see cref="DespawnSystem"/> removes it on the next tick.</summary>
-    private void Despawn(SessionRef session, bool leaveGroups)
+    private Entity? Despawn(SessionRef session)
     {
-        if (State.Avatars.Remove(session, out var avatar)) avatar.Add<Despawning>() = new Despawning(leaveGroups);
+        if (!State.Avatars.Remove(session, out var avatar)) return null;
+        avatar.Add<Despawning>();
+        return avatar;
     }
 }
 

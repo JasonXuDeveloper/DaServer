@@ -1,36 +1,38 @@
 namespace DaServer.Runtime;
 
-// Outgoing messages. A message type is routed by its id to the handler types handling it (gossiped handlers in the
-// ClusterView): Send/Publish as one Message frame per handler type (RequestId = handler type id), Ask as
-// a Request frame (RequestId = call id; the receiver resolves its handler type by message id and kind).
+// Outgoing messages. To an actor: its id type names the actor type (handler type id), its value the instance; the
+// node owning that id is found by rendezvous hashing. To a service: the message id names the one service type handling
+// it (gossiped handlers in the ClusterView). Send and Publish travel as Message frames (RequestId = handler type id),
+// Ask as a Request frame (RequestId = call id; an actor request carries its handler type id as a trailer).
 sealed partial class Node
 {
-    public void Send<T>(long key, in T message) where T : struct =>
-        SendMessage(MessageWriter.Write(in message), MessageType<T>.Id, key, actor: true);
+    public void Send<TId, T>(TId id, in T message) where TId : struct, IActorId where T : struct =>
+        SendTo(ActorIds<TId>.HandlerTypeId, id.Value, in message);
+
+    /// <summary>One-way message to actor (<paramref name="handlerTypeId"/>, <paramref name="key"/>).</summary>
+    internal void SendTo<T>(uint handlerTypeId, long key, in T message) where T : struct =>
+        SendMessage(MessageWriter.Write(in message), MessageType<T>.Id, handlerTypeId, key);
 
     public void Send<T>(in T message) where T : struct =>
-        SendMessage(MessageWriter.Write(in message), MessageType<T>.Id, 0, actor: false);
+        SendMessage(MessageWriter.Write(in message), MessageType<T>.Id, handlerTypeId: 0, key: 0);
 
-    public ValueTask<TReply> Ask<TRequest, TReply>(long key, in TRequest request) where TRequest : struct, IRequest<TReply> =>
-        Ask<TRequest, TReply>(in request, key, actor: true);
+    public ValueTask<TReply> Ask<TId, TRequest, TReply>(TId id, in TRequest request)
+        where TId : struct, IActorId where TRequest : struct, IRequest<TReply> =>
+        Ask<TRequest, TReply>(in request, ActorIds<TId>.HandlerTypeId, id.Value);
 
     public ValueTask<TReply> Ask<TRequest, TReply>(in TRequest request) where TRequest : struct, IRequest<TReply> =>
-        Ask<TRequest, TReply>(in request, 0, actor: false);
+        Ask<TRequest, TReply>(in request, handlerTypeId: 0, key: 0);
 
-    private ValueTask<TReply> Ask<TRequest, TReply>(in TRequest request, long key, bool actor) where TRequest : struct
+    private ValueTask<TReply> Ask<TRequest, TReply>(in TRequest request, uint handlerTypeId, long key) where TRequest : struct
     {
         var call = PendingCall<TReply>.Rent(Shard.Current);
         var task = call.Task;
-        Request(MessageWriter.Write(in request), MessageType<TRequest>.Id, key, actor, call, null, 0);
+        Request(MessageWriter.Write(in request), MessageType<TRequest>.Id, handlerTypeId, key, call, null, 0);
         return task;
     }
 
-    public void Publish<T>(in T e) where T : struct => Publish(in e, 0, actors: false);
-
-    public void Publish<T>(long key, in T e) where T : struct => Publish(in e, key, actors: true);
-
-    /// <summary>To every handler type handling the event: services, and actor handlers of <paramref name="key"/>.</summary>
-    private void Publish<T>(in T e, long key, bool actors) where T : struct
+    /// <summary>To every service handling the message: serialized once, one frame per service type.</summary>
+    public void Publish<T>(in T e) where T : struct
     {
         var routes = View.Routes(MessageType<T>.Id);
         if (routes.Length == 0) return;
@@ -38,8 +40,8 @@ sealed partial class Node
         try
         {
             for (int i = 0; i < routes.Length; i++)
-                if (actors || !routes[i].Actor)
-                    SendTo(in routes[i], MessageType<T>.Id, key, w, hops: 0, flags: 0);
+                if (!routes[i].Actor)
+                    SendTo(in routes[i], MessageType<T>.Id, 0, w, hops: 0, flags: 0);
         }
         finally
         {
@@ -48,17 +50,16 @@ sealed partial class Node
     }
 
     /// <summary>
-    /// One-way message to the one handler type of the kind handling <paramref name="messageId"/> (dropped when none
-    /// does: one-way delivery is at most once). Takes ownership of <paramref name="w"/>.
+    /// One-way message to actor (<paramref name="handlerTypeId"/>, <paramref name="key"/>), or with handler type 0 to the
+    /// one service handling <paramref name="messageId"/>. Dropped when nobody hosts the target: one-way delivery is at
+    /// most once. Takes ownership of <paramref name="w"/>.
     /// </summary>
-    internal void SendMessage(FrameWriter w, uint messageId, long key, bool actor, byte flags = 0)
+    internal void SendMessage(FrameWriter w, uint messageId, uint handlerTypeId, long key, byte flags = 0)
     {
         try
         {
-            if (View.TryGetRoute(messageId, actor, out var route, out bool ambiguous))
+            if (TryRoute(messageId, handlerTypeId, out var route))
                 SendTo(in route, messageId, key, w, hops: 0, flags);
-            else if (ambiguous)
-                throw Ambiguous(messageId, actor);
         }
         finally
         {
@@ -66,18 +67,13 @@ sealed partial class Node
         }
     }
 
-    /// <summary>Deliver <paramref name="e"/> only to handler type <paramref name="handlerTypeId"/> (runtime notifications).</summary>
-    internal void SendTo<T>(uint handlerTypeId, long key, in T e) where T : struct
+    /// <summary>The route of an actor type, or of the one service handling <paramref name="messageId"/> (handler type 0).</summary>
+    private bool TryRoute(uint messageId, uint handlerTypeId, out MessageRoute route)
     {
-        var routes = View.Routes(MessageType<T>.Id);
-        for (int i = 0; i < routes.Length; i++)
-        {
-            if (routes[i].HandlerTypeId != handlerTypeId) continue;
-            var w = MessageWriter.Write(in e);
-            SendTo(in routes[i], MessageType<T>.Id, key, w, hops: 0, flags: 0);
-            w.Dispose();
-            return;
-        }
+        if (handlerTypeId != 0) return View.TryGetHandlerTypeRoute(handlerTypeId, out route);
+        if (View.TryGetRoute(messageId, actor: false, out route, out bool ambiguous)) return true;
+        if (ambiguous) throw Ambiguous(messageId);
+        return false;
     }
 
     /// <summary>Send the message in <paramref name="w"/> (payload written) to the node handling <paramref name="route"/>.</summary>
@@ -107,7 +103,8 @@ sealed partial class Node
 
     /// <summary>
     /// Re-route a message this node cannot handle (stale view at the sender, ownership moved). Dropped after
-    /// <see cref="MaxHops"/> or when nobody handles it any more (at most once). Takes ownership of <paramref name="frame"/>.
+    /// <see cref="MaxHops"/> or when nobody hosts its handler type any more (at most once). Takes ownership of
+    /// <paramref name="frame"/>.
     /// </summary>
     internal void ForwardMessage(FrameWriter frame)
     {
@@ -115,13 +112,8 @@ sealed partial class Node
         {
             var header = FrameHeader.Read(frame.Frame);
             if (header.Hops >= MaxHops) return;
-            var routes = View.Routes(header.MessageId);
-            for (int i = 0; i < routes.Length; i++)
-            {
-                if (routes[i].HandlerTypeId != header.RequestId) continue;
-                SendTo(in routes[i], header.MessageId, header.Key, frame, (byte)(header.Hops + 1), header.Flags);
-                return;
-            }
+            if (View.TryGetHandlerTypeRoute(header.RequestId, out var route))
+                SendTo(in route, header.MessageId, header.Key, frame, (byte)(header.Hops + 1), header.Flags);
         }
         finally
         {
@@ -129,6 +121,6 @@ sealed partial class Node
         }
     }
 
-    private static RpcException Ambiguous(uint messageId, bool actor) =>
-        new(RpcStatus.Error, $"Message 0x{messageId:x8} has several {(actor ? "actor" : "service")} handlers: Publish it to reach them all");
+    private static RpcException Ambiguous(uint messageId) =>
+        new(RpcStatus.Error, $"Message 0x{messageId:x8} has several service handlers: Publish it to reach them all");
 }

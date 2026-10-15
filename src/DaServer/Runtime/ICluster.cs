@@ -3,7 +3,7 @@ namespace DaServer.Runtime;
 /// <summary>
 /// What business code sees of the cluster (<c>Cluster</c> in actors and services, <c>world.Cluster()</c> in systems):
 /// messages to actors and services (<c>Cluster.Send(mapId, new Move(..))</c>, <c>await Cluster.Ask(playerId, new
-/// GetInfo())</c>), events, pushes to clients and client groups. Node lifecycle and internals are not part of it.
+/// GetInfo())</c>), published messages, pushes to clients and client groups. Node lifecycle and internals are not part of it.
 /// </summary>
 public interface ICluster : IMessageSender
 {
@@ -15,9 +15,6 @@ public interface ICluster : IMessageSender
     /// serialized once, one frame per handler type. The publisher never depends on its handlers.
     /// </summary>
     void Publish<T>(in T e) where T : struct;
-
-    /// <summary>Publish an event to every service handling it and to every actor of <paramref name="key"/> handling it.</summary>
-    void Publish<T>(long key, in T e) where T : struct;
 
     /// <summary>Push a message to one client session (its client handles it with a [Handle] method).</summary>
     void Push<T>(SessionRef session, in T message) where T : struct;
