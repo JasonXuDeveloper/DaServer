@@ -13,15 +13,15 @@ Keep this file current: tick items when done, add items when scope changes.
 - [x] Node: shards, local/remote routing, forwarding/relay, reply sinks
 - [x] Cluster: push-pull gossip of pulses (cards once, ADR-031), seeds (static + DNS), failure detection, `ClusterView`, rendezvous placement,
       graceful leave + rebalancing
-- [x] Gateway: sessions, per-implementation bindings, per-message `Flow.FromClient` access, push, `ClientGroup` broadcast fan-out
+- [x] Gateway: sessions, per-handler-type bindings, per-message `Flow.FromClient` access, push, `ClientGroup` broadcast fan-out
       (O(1) membership, `All` is a group, no allocation per broadcast), `SessionClosed` to bound actors, client frame
       limit (ADR-025)
-- [x] Runtime-owned sessions: Bind joins the activation's group, `CallerSession` holds for the turn, a crashed gateway's
+- [x] Runtime-owned sessions: Bind joins the actor's group, `CallerSession` holds for the turn, a crashed gateway's
       sessions close (ADR-024)
 - [x] Balancers and client gateway discovery (power of two choices; clients wait while the cluster forms)
       (ADR-026)
 - [x] One ordered link per node direction: replies travel with binds, pushes and events (ADR-022)
-- [x] Placement: keys stay with suspect members, a dead node's keys move, deactivating actors keep their mail (ADR-023)
+- [x] Placement: keys stay with suspect members, a dead node's keys move, unloading actors keep their mail (ADR-023)
 - [x] Client: `ClusterClient` (the same messages as servers, keyless session-actor messages, DNS endpoints over every resolved
       address, balancer redirect,
       callbacks inline or queued)
@@ -67,7 +67,7 @@ Keep this file current: tick items when done, add items when scope changes.
       message on gateways, no GC (README "Performance")
 - [x] Checklist 6: R1-R11 and E1-E10 hold; open items are the unchecked roadmap entries
 - [x] Naming review (ADR-032): `[FromClient]`/`[ToClient]`, `[ActorKey]`, `OnLoad`/`OnUnload`, `CallerSession`,
-      balancers; actor state from field initializers, `ActorLink` for systems
+      balancers; actor state from field initializers, `ActorRef` for systems
 - [x] Moving scenarios: 10,000 bots in 200 maps (full sync, ~10M positions/s, p99 139 ms) and in one map (AOI and
       dead reckoning, ~2.5M positions/s, p99 106 ms); servers 0–5 KB/s, no GC; scale-out: a gateway started mid-run
       receives the new clients (test + process run)
@@ -76,12 +76,12 @@ Keep this file current: tick items when done, add items when scope changes.
       (a slow client is disconnected and resynchronizes on reconnect)
 - [x] Auto-reconnect (ADR-036): signed reconnect tickets, `SessionClosed` after a grace period, `SessionResync`,
       Aspire-generated cluster secret
-- [x] Lifecycle as tags (ADR-037): turn ends posted by `TurnWatcher` (no polling), `Ready`/`Loading`/`Unloading`/
-      `Deactivating`/`Retiring` with one system each; sample grid as data + systems (`DespawnSystem`, `PlacementSystem`)
+- [x] Lifecycle as tags (ADR-037): turn ends posted by `TurnWatcher` (no polling), `Ready`/`Loading`/`UnloadRequested`/
+      `Unloading`/`Removing` with one system each; sample grid as data + systems (`DespawnSystem`, `PlacementSystem`)
 - [x] `[Message]` (ADR-038): `[NinoType, Message]` is a message, plain `[NinoType]` is data; `Flow` (`Internal`,
       `FromClient`, `ToClient`) checked at build time (DAS006); `[ClientMessage]` removed
 - [x] EasyEcs from NuGet, used as its docs teach (ADR-039): cadence as system groups (`ShardRebalance`,
-      `ShardIdleScan`), `UpdateInterval` in samples, `ActorLink` as the only identity, timer queue removed
+      `ShardIdleScan`), `UpdateInterval` in samples, `ActorRef` as the only identity, timer queue removed
 
 ## Quality
 - [x] Unit tests (queue, pool, frames, pending table, membership, placement)
