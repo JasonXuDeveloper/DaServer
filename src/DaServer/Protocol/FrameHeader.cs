@@ -28,12 +28,19 @@ public static class FrameFlags
     /// <summary>The frame ends with a 4-byte call id (uint32): a request, its reply, or a control call.</summary>
     public const byte HasCall = 1;
 
-    /// <summary>Payload starts with the serialized <see cref="Rpc.SessionRef"/> of the client that made the call.</summary>
-    public const byte HasCaller = 2;
+    /// <summary>
+    /// After the payload: the 16-byte <see cref="Rpc.Origin"/> of the message (node uint64, id int64), set by the ingress
+    /// that let it into the cluster and kept by every hop. Before the call id.
+    /// </summary>
+    public const byte HasOrigin = 2;
+
+    /// <summary>The flags that name trailers.</summary>
+    public const byte Trailers = HasCall | HasOrigin;
 
     /// <summary>Bytes of the trailers a frame with <paramref name="flags"/> ends with.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static int TrailerSize(byte flags) => (flags & HasCall) != 0 ? sizeof(uint) : 0;
+    public static int TrailerSize(byte flags) =>
+        ((flags & HasCall) != 0 ? sizeof(uint) : 0) + ((flags & HasOrigin) != 0 ? Rpc.Origin.Size : 0);
 }
 
 /// <summary>Status carried by <see cref="FrameKind.Reply"/> frames.</summary>
@@ -60,13 +67,14 @@ public enum RpcStatus : byte
 /// 4  byte   Kind
 /// 5  byte   Status     RpcStatus for replies; for requests the caller's time budget (see EncodeBudget), otherwise 0
 /// 6  byte   Hops       forwarding count (loop guard)
-/// 7  byte   Flags      FrameFlags (HasCall, HasCaller)
+/// 7  byte   Flags      FrameFlags (HasCall, HasOrigin)
 /// 8  uint32 Target     who handles a message: an actor or service handler type id, or an address scope (sessions,
 ///                      client groups); 0 in replies and control frames, and from clients that leave the choice to
 ///                      their node (the actor bound to the session, else the service)
 /// 12 uint32 MessageId  wire id of the message type (see WireIds) or control op
 /// 16 int64  Key        actor key / session id / group id (0 for services)
 /// ..        payload
+/// ..        origin (uint64 node, int64 id) when HasOrigin
 /// ..        uint32 call id when HasCall
 /// </code>
 /// </summary>
@@ -110,6 +118,14 @@ public struct FrameHeader
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static uint CallIdOf(in FrameHeader header, ReadOnlySpan<byte> frame) =>
         (header.Flags & FrameFlags.HasCall) != 0 ? BinaryPrimitives.ReadUInt32LittleEndian(frame[(header.Length - sizeof(uint))..]) : 0;
+
+    /// <summary>The origin trailer of a frame (<see cref="FrameFlags.HasOrigin"/>), default when it has none.</summary>
+    public static Rpc.Origin OriginOf(in FrameHeader header, ReadOnlySpan<byte> frame)
+    {
+        if ((header.Flags & FrameFlags.HasOrigin) == 0) return default;
+        var at = frame[(header.Length - FrameFlags.TrailerSize(header.Flags))..];
+        return new Rpc.Origin(BinaryPrimitives.ReadUInt64LittleEndian(at), BinaryPrimitives.ReadInt64LittleEndian(at[sizeof(ulong)..]));
+    }
 
     /// <summary>The payload of a frame: between the header and the trailers.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

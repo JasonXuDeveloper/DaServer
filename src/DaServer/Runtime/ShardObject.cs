@@ -23,10 +23,11 @@ public abstract class ShardObject
     protected ILogger Logger => Shard.Node.Logger;
 
     /// <summary>
-    /// The client session that sent the current message (invalid for messages from servers). In an actor it
-    /// holds for the whole turn, awaits included; in a service (whose calls may overlap) until the first <c>await</c>.
+    /// Who sent the current message from outside the cluster: a client session (<c>Cluster.Send(Caller, m)</c>,
+    /// <c>BindSession(Caller)</c>); invalid for messages sent inside the cluster. In an actor it holds for the whole turn,
+    /// awaits included; in a service (whose calls may overlap) until the first <c>await</c>.
     /// </summary>
-    protected SessionRef CallerSession => this is Actor actor ? actor.TurnCaller : CallContext.Current.CallerSession;
+    protected Origin Caller => this is Actor actor ? actor.TurnCaller : CallContext.Current.Origin;
 }
 
 /// <summary>

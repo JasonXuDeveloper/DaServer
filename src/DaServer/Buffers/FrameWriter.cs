@@ -43,7 +43,7 @@ public sealed class FrameWriter : INinoBufferWriter, IDisposable
         w._buffer = BufferPool.Rent(Math.Max(frame.Length, FrameHeader.Size));
         frame.CopyTo(w._buffer);
         w._pos = frame.Length;
-        w._trailers = (byte)(frame[7] & FrameFlags.HasCall);
+        w._trailers = (byte)(frame[7] & FrameFlags.Trailers);
         w.Deadline = 0;
         return w;
     }
@@ -64,6 +64,17 @@ public sealed class FrameWriter : INinoBufferWriter, IDisposable
 
     /// <summary>The call id trailer (<see cref="FrameFlags.HasCall"/>), 0 when the frame has none.</summary>
     public uint CallId => (_trailers & FrameFlags.HasCall) != 0 ? BinaryPrimitives.ReadUInt32LittleEndian(_buffer.AsSpan(_pos - sizeof(uint))) : 0;
+
+    /// <summary>The origin trailer (<see cref="FrameFlags.HasOrigin"/>), default when the frame has none.</summary>
+    public Origin Origin
+    {
+        get
+        {
+            if ((_trailers & FrameFlags.HasOrigin) == 0) return default;
+            var at = _buffer.AsSpan(_pos - FrameFlags.TrailerSize(_trailers));
+            return new Origin(BinaryPrimitives.ReadUInt64LittleEndian(at), BinaryPrimitives.ReadInt64LittleEndian(at[sizeof(ulong)..]));
+        }
+    }
 
     public int Length => _pos;
 
@@ -89,7 +100,7 @@ public sealed class FrameWriter : INinoBufferWriter, IDisposable
             Kind = kind,
             Status = status,
             Hops = hops,
-            Flags = (byte)((flags & ~FrameFlags.HasCall) | _trailers),
+            Flags = (byte)((flags & ~FrameFlags.Trailers) | _trailers),
             Target = target,
             MessageId = messageId,
             Key = key,
@@ -111,6 +122,31 @@ public sealed class FrameWriter : INinoBufferWriter, IDisposable
         }
 
         BinaryPrimitives.WriteUInt32LittleEndian(_buffer.AsSpan(_pos - sizeof(uint)), callId);
+    }
+
+    /// <summary>
+    /// Set the origin trailer (after the payload, before the call id): written once, by the ingress that lets the message
+    /// into the cluster.
+    /// </summary>
+    public void SetOrigin(Origin origin)
+    {
+        if ((_trailers & FrameFlags.HasOrigin) == 0)
+        {
+            uint callId = CallId;
+            if ((_trailers & FrameFlags.HasCall) != 0) _pos -= sizeof(uint); // the call id moves behind the origin
+            GetSpan(Origin.Size);
+            _pos += Origin.Size;
+            _trailers |= FrameFlags.HasOrigin;
+            if ((_trailers & FrameFlags.HasCall) != 0)
+            {
+                _trailers &= unchecked((byte)~FrameFlags.HasCall);
+                SetCallId(callId);
+            }
+        }
+
+        var at = _buffer.AsSpan(_pos - FrameFlags.TrailerSize(_trailers));
+        BinaryPrimitives.WriteUInt64LittleEndian(at, origin.Node);
+        BinaryPrimitives.WriteInt64LittleEndian(at[sizeof(ulong)..], origin.Id);
     }
 
     /// <summary>Append raw bytes to the payload (before any trailer).</summary>

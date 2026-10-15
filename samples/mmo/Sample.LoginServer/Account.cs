@@ -21,7 +21,7 @@ public sealed class Account : Service
         long hash = 17;
         foreach (char c in m.Name) hash = (hash * 31 + c) & 0x7FFF_FFFF;
         var player = new PlayerId(hash + 1); // ids start at 1
-        bool attached = await Cluster.Ask(player, new Attach(CallerSession));
+        bool attached = await Cluster.Ask(player, new Attach(Caller));
         return new LoginResult(attached, player);
     }
 }

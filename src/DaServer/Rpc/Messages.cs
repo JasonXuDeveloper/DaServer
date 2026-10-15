@@ -36,7 +36,7 @@ public enum Flow
     Internal = 0,
 
     /// <summary>
-    /// Game clients may send it through a gateway, which adds the client's session (<c>CallerSession</c>). Handled by a
+    /// Game clients may send it through a gateway, whose session is its origin (<c>Caller</c>). Handled by a
     /// service: any node hosting it. Handled by an actor: the actor bound to the session (<c>BindSession</c>), so a
     /// client never reaches another player's actor, unless <see cref="MessageAttribute.AnyId"/> is set.
     /// </summary>
@@ -122,7 +122,7 @@ public readonly partial record struct SessionClosed(SessionRef Session);
 /// <summary>
 /// A client that lost its connection resumed on a gateway: <see cref="Session"/> replaces <see cref="Previous"/> and is
 /// already bound to every actor <see cref="Previous"/> was bound to (and in their groups). Delivered to each of them
-/// that handles it, as the session of the turn (<c>CallerSession</c>): update the stored session, rejoin other groups
+/// that handles it, as the session of the turn (<c>Caller</c>): update the stored session, rejoin other groups
 /// and send the client its full state (pushes sent meanwhile were lost). <see cref="SessionClosed"/> for
 /// <see cref="Previous"/> is not delivered afterwards.
 /// </summary>
