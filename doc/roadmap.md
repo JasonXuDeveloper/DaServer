@@ -95,12 +95,38 @@ Step plan for G1/G2 (each step builds and keeps every test green; logic, docs, C
 
 Steady state allocates nothing: per message, call, reply, tick, broadcast, connection, gossip round and timer.
 
-- [ ] Z1 Audit every runtime path (src/DaServer, Hosting, generated dispatchers and `Ask` overloads, what samples
+- [x] Z1 Audit every runtime path (src/DaServer, Hosting, generated dispatchers and `Ask` overloads, what samples
       teach): `TaskCompletionSource`/`Task`/timers/`CancellationTokenSource` per operation, unpooled awaitables, async
       state machines, closures and per-call delegates, LINQ, boxed enumerators, `params`, string formatting and
       logging without guards, boxing (structs in object fields), per-operation arrays/lists/records, Nino collection
       and string deserialization per message (N8), gossip/membership rebuilds, reconnect tickets, metrics.
-- [ ] Z2 Fix by priority: hot paths first (message, call, reply, broadcast, dispatch), then per connection and per
+      Findings (audit of this branch, fix order below):
+      - H1 user `async ValueTask` handlers use the default builder: one state-machine box per suspended call (the
+        samples teach it). Fix: shard-pooled builder through the await-only `Reply<T>` handler type (N3b.4) or an
+        analyzer + code fix adding the builder; update samples.
+      - H2 `CallContext.AwaitReply` (pooled builder hits its per-thread cache cap; `ConfigureAwait(true)` allocates a
+        context continuation per await). Fix: pooled `ReplyWatcher<T>` like `TurnWatcher`.
+      - H3 pool caps below in-flight bounds (PendingCall<T> 1024, RelayCall 1024, FrameWriter 4096): bursts allocate
+        and drop. Fix: per-shard-thread stacks for PendingCall, caps 64k (configurable) for frames and relays.
+      - H4 Nino collections/strings per message (`Motion` list per client, strings in Say/Chat/replies). Fix: N8
+        `DeserializeRef` into a per-thread instance for messages with collections; handlers must not keep refs.
+      - M1 error paths allocate exactly under overload (interpolated NotHosted/Overloaded strings, `RpcException` per
+        timeout). Fix: status-only frames, lazy exception message, non-throwing status results (N3b).
+      - M2 `GroupMembers` created/removed per bind and AOI join/leave. Fix: pool + lazy removal from the maintain timer.
+      - M3 `Task.Delay` + async per lost connection (grace) and boxed tuples per shard on gateway loss. Fix: timer heap
+        drained by the maintain timer, cached state objects.
+      - M4 per actor load: actor object, `Queue<Envelope>`, two HashSets. Fix: per-shard pools refilled on removal.
+      - M5 `ClusterClient` pending table 2^14 (≈917 KB LOH per client). Fix: 256 by default, configurable.
+      - M6 dispatch queue overflow `ConcurrentQueue` segments. Fix: second bounded ring for completions/callbacks.
+      - M7 resend window chunks exceed the 64 KB pool budget across backlogged links. Fix: per-window free list.
+      - M8 string concatenation on hostile client rejects. Fix: constant/precomputed messages.
+      - L1-L7 rare (view rebuilds, binding arrays, client sweeper enumerator, metrics tags, reconnects, foreign awaits,
+        local Send copy): fix where trivial.
+      Missing allocation tests: remote Ask, client Ask through a gateway, concurrency above pool caps (RpcBenchmark
+      Concurrency=4096), many suspended async handlers, services (Send/Ask/Publish), Push and remote broadcast, group
+      and binding churn, idle node (0 B/s), Overloaded/Timeout/NotHosted steady state, client callback queue and
+      collection messages.
+- [ ] Z2 Fix in this order: H3, H2, H1, H4 (N8), M1, M6/M2/M3/M4/M7, M5, low items; hot paths first (message, call, reply, broadcast, dispatch), then per connection and per
       view change; pools bounded and allocation-free when warm. Replacements: pooled `IValueTaskSource`s, struct
       work items, static lambdas with state, cached delegates, pooled `FrameWriter`, `ArrayPool`/`stackalloc`, ring
       buffers, Nino ref deserialization.
