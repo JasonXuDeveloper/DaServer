@@ -281,6 +281,23 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
 - Consequences: simple and ordered with binds (ADR-022). Revisit when deployments run tens of gateways with small
   groups; the roadmap keeps the item.
 
+## ADR-047 One message model: message, address, optional reply
+- Context: messages and RPC are one thing, but the API had nine operations (`Send`, `Ask`, `Publish`, `Push`,
+  `Broadcast`, `JoinGroup`, `LeaveGroup`, `Disconnect`, `BindSession`) and the wire seven frame kinds plus a trailer
+  (`ToActor`) and a prefix (`HasCaller`), because `RequestId` meant either a call id or a target. Most of the extra
+  verbs were one scenario (client sessions) in the core.
+- Decision: four concepts: message, address, optional reply (a request is a message whose type declares a reply),
+  origin (who caused it; set only by ingress). Addresses are structs: `IActorId` (keyed, rendezvous), the one service
+  (balanced), `INodeAddress` (pinned to a node, handled by the feature owning its scope) and `IGroupAddress`
+  (fan-out to the nodes advertising its scope). Verbs: `Send` and `Ask` (kept apart: `Ask` holds the turn and a cycle
+  deadlocks, so the call site must show it, as Akka Tell/Ask), `Publish` (every service type handling the message; no
+  address value), `SendAfter` (N2). Wire: `Message`, `Reply`, `Control` (link protocol only); `Target` always set;
+  header extensions by flag. Supersedes ADR-041: since ADR-043 the address type names the target at the call site,
+  and DAS006 checks `[ToClient]` by address kind.
+- Consequences: sessions and groups are addresses of the gateway module, not core verbs; node-to-node and client wire
+  protocols break once (pre-1.0, no rolling upgrade across it); `Push`/`Broadcast` stay one release as obsolete
+  aliases; send paths stay generic over struct addresses (no boxing, the kind is a JIT constant).
+
 ## ADR-046 Two planes per node: DaServer TCP for data, ASP.NET Core for HTTP
 - Context: Kubernetes probes and Aspire health are HTTP; operators want admin commands; applications want REST
   endpoints (webhooks, payment callbacks, HTTP login, back-office). A hand-written HTTP responder would re-implement
@@ -341,7 +358,7 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
 - Consequences: work since the actor's last save is lost on that node, which is the price of a partition. A turn in
   flight still finishes; stores that must reject late writes need versioned saves (future persistence helpers).
 
-## ADR-041 One verb per target
+## ADR-041 One verb per target (superseded by ADR-047)
 - Context: `Send` meant four things by the type of its first argument: an actor (`Send(key, m)`), a service
   (`Send(m)`), a client session (`Send(session, m)`) and a client group (`Send(group, m)`). A call site did not say
   whether it reached servers or clients.
