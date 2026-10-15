@@ -128,6 +128,25 @@ public sealed class Counter : Actor<CounterId, CounterState>
 
     [Handle]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
+    public async ValueTask<long> On(ServiceTraffic m)
+    {
+        // Each round: a one-way message, a published event (two services) and a request to services; the request
+        // returns after the others on the same path (one shard queue locally, one ordered link remotely).
+        for (int i = 0; i < 100; i++) await Round(Cluster); // warm-up
+        long before = GC.GetTotalAllocatedBytes(precise: true);
+        for (int i = 0; i < m.Count; i++) await Round(Cluster);
+        return GC.GetTotalAllocatedBytes(precise: true) - before;
+
+        static ValueTask<int> Round(ICluster cluster)
+        {
+            cluster.Send(new Tally(1));
+            cluster.Publish(new Tallied(1));
+            return cluster.Ask(new TallyAsk(1));
+        }
+    }
+
+    [Handle]
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     public async ValueTask<long> On(SendMany m)
     {
         // Bursts of 100 one-way messages, each followed by a request (messages of one sender reach an actor in order):
@@ -200,6 +219,9 @@ public static class Observed
 
     /// <summary><see cref="Knock"/>s handled by guests (counted without allocating).</summary>
     public static long Knocks;
+
+    /// <summary>Sum of what the tally services received.</summary>
+    public static long Tallies;
 }
 
 // ---------------------------------------------------------------- services
@@ -223,6 +245,29 @@ public sealed class EchoService : Service
 public sealed class AuditService : Service
 {
     [Handle] public void On(Ping e) => Observed.Events.Enqueue($"audit:{e.Id}");
+}
+
+/// <summary>Service traffic without payload allocations (allocation tests): one-way, request and published event.</summary>
+[NinoType, Message] public partial record struct Tally(int By);
+[NinoType, Message] public partial record struct TallyAsk(int By) : IRequest<int>;
+[NinoType, Message] public partial record struct Tallied(int By);
+
+/// <summary>Drives <see cref="TallyService"/> from an actor: bytes allocated meanwhile.</summary>
+[NinoType, Message] public partial record struct ServiceTraffic(int Count) : IRequest<long>;
+
+public sealed class TallyService : Service
+{
+    [Handle] public void On(Tally m) => Interlocked.Add(ref Observed.Tallies, m.By);
+
+    [Handle] public int On(TallyAsk m) => (int)Interlocked.Add(ref Observed.Tallies, m.By);
+
+    [Handle] public void On(Tallied m) => Interlocked.Add(ref Observed.Tallies, m.By);
+}
+
+/// <summary>A second service handling <see cref="Tallied"/>: a publish reaches both.</summary>
+public sealed class TallyAuditService : Service
+{
+    [Handle] public void On(Tallied m) => Interlocked.Add(ref Observed.Tallies, m.By);
 }
 
 // ---------------------------------------------------------------- client-facing: login, player, rooms
