@@ -16,7 +16,7 @@ var cluster = builder.AddDaServerCluster("sample");
 cluster.AddNodes<Projects.Sample_LoginServer>("login");                    // Account service
 cluster.AddNodes<Projects.Sample_GameServer>("game");                      // Player and Realm actors
 cluster.AddNodes<Projects.Sample_MapServer>("map");                        // Map actors + movement/interest systems
-var gateways = cluster.AddGateways<Projects.Sample_Gateway>("gateway", replicas: 3); // client connections, no business code
+var gateways = cluster.AddNodes<Projects.Sample_Gateway>("gateway", replicas: 3).WithClients(); // clients, no business code
 
 // 10k players moving in one map on one map node while the realm broadcasts to everyone every 5 ticks. Each player sees
 // the 3x3 cells around it (area of interest) and hears about avatars only when they turn (dead reckoning): about
@@ -26,7 +26,7 @@ var gateways = cluster.AddGateways<Projects.Sample_Gateway>("gateway", replicas:
 int bots = builder.Configuration.GetValue("Bots", 10_000);
 int seconds = builder.Configuration.GetValue("Seconds", 60);
 builder.AddProject<Projects.Sample_Bot>("bots")
-    .WithGateways(gateways)
+    .WithClientEndpoints(gateways)
     .WithArgs(bots.ToString(), seconds.ToString(), "1", "1", "0");
 
 builder.Build().Run();

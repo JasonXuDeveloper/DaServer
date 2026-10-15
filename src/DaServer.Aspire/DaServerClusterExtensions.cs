@@ -3,8 +3,9 @@ using Aspire.Hosting.ApplicationModel;
 namespace Aspire.Hosting;
 
 /// <summary>
-/// Declares a DaServer cluster in an Aspire AppHost. Every node gets a cluster endpoint, the seed list (every other
-/// node) and, for gateways, a client endpoint; nodes discover each other through gossip. A node hosts every actor,
+/// Declares a DaServer cluster in an Aspire AppHost. Every node gets a cluster endpoint and the seed list (every other
+/// node), client-facing node groups a client endpoint each (<see cref="DaServerNodeGroup.WithClients"/>); nodes
+/// discover each other through gossip. A node hosts every actor,
 /// service and system compiled into its project, so the topology is the list of projects and replica counts. The same model runs
 /// locally (<c>dotnet run</c> on the AppHost, with the dashboard) and publishes to Docker Compose or Kubernetes
 /// (<c>aspire publish</c>) without hand-written deployment files.
@@ -13,33 +14,36 @@ namespace Aspire.Hosting;
 /// <code>
 /// var cluster = builder.AddDaServerCluster("cluster");
 /// cluster.AddNodes&lt;Projects.Sample_MapServer&gt;("map", replicas: 3);
-/// var gateways = cluster.AddGateways&lt;Projects.Sample_Gateway&gt;("gateway", replicas: 2);
-/// builder.AddProject&lt;Projects.Bot&gt;("bots").WithGateways(gateways);
+/// var gateways = cluster.AddNodes&lt;Projects.Sample_Gateway&gt;("gateway", replicas: 2).WithClients();
+/// builder.AddProject&lt;Projects.Bot&gt;("bots").WithClientEndpoints(gateways);
 /// </code>
 /// </example>
 public static class DaServerClusterExtensions
 {
     /// <summary>
     /// Start a cluster declaration. Ports are assigned in order from <paramref name="clusterPortBase"/> (node links)
-    /// and <paramref name="clientPortBase"/> (gateway client sockets), so a local run is predictable and every
+    /// and <paramref name="clientPortBase"/> (client sockets of client-facing nodes), so a local run is predictable and every
     /// container in a published deployment listens on a known port.
     /// </summary>
     public static DaServerCluster AddDaServerCluster(this IDistributedApplicationBuilder builder, string name,
         int clusterPortBase = 7000, int clientPortBase = 7100) =>
         new(builder, name, clusterPortBase, clientPortBase);
 
-    /// <summary>Pass the client endpoints of <paramref name="gateways"/> as <c>DaServer__Gateways__{i}</c> (host:port).</summary>
-    public static IResourceBuilder<T> WithGateways<T>(this IResourceBuilder<T> resource, DaServerNodeGroup gateways)
+    /// <summary>
+    /// Pass the client endpoints of <paramref name="gateways"/> as <c>DaServer__ClientEndpoints__{i}</c> (host:port), the
+    /// entry addresses a client connects through.
+    /// </summary>
+    public static IResourceBuilder<T> WithClientEndpoints<T>(this IResourceBuilder<T> resource, DaServerNodeGroup gateways)
         where T : IResourceWithEnvironment, IResourceWithWaitSupport
     {
         if (gateways.ClientEndpoints.Count == 0)
-            throw new ArgumentException($"Node group '{gateways.Name}' has no client endpoints (declare it with AddGateways)");
+            throw new ArgumentException($"Node group '{gateways.Name}' accepts no clients (call WithClients on it)");
 
         for (int i = 0; i < gateways.Nodes.Count; i++) resource.WaitFor(gateways.Nodes[i]);
         return resource.WithEnvironment(context =>
         {
             for (int i = 0; i < gateways.ClientEndpoints.Count; i++)
-                context.EnvironmentVariables[$"DaServer__Gateways__{i}"] =
+                context.EnvironmentVariables[$"DaServer__ClientEndpoints__{i}"] =
                     gateways.ClientEndpoints[i].Property(EndpointProperty.HostAndPort);
         });
     }
@@ -73,21 +77,10 @@ public sealed class DaServerCluster
     /// (<c>{name}-0</c>, <c>{name}-1</c>, ...) because cluster members are addressed individually, not through a load
     /// balancer.
     /// </summary>
-    public DaServerNodeGroup AddNodes<TProject>(string name, int replicas = 1) where TProject : IProjectMetadata, new() =>
-        Add<TProject>(name, replicas, gateway: false);
-
-    /// <summary>
-    /// Add <paramref name="replicas"/> nodes running <typeparamref name="TProject"/> that also accept clients (an external
-    /// client endpoint each). Pass the group to <see cref="DaServerClusterExtensions.WithGateways{T}"/> of a client.
-    /// </summary>
-    public DaServerNodeGroup AddGateways<TProject>(string name, int replicas = 1) where TProject : IProjectMetadata, new() =>
-        Add<TProject>(name, replicas, gateway: true);
-
-    private DaServerNodeGroup Add<TProject>(string name, int replicas, bool gateway) where TProject : IProjectMetadata, new()
+    public DaServerNodeGroup AddNodes<TProject>(string name, int replicas = 1) where TProject : IProjectMetadata, new()
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(replicas, 1);
         var nodes = new List<IResourceBuilder<ProjectResource>>(replicas);
-        var clientEndpoints = new List<EndpointReference>();
 
         for (int i = 0; i < replicas; i++)
         {
@@ -99,13 +92,6 @@ public sealed class DaServerCluster
                     env: "DaServer__ClusterPort", isProxied: false);
             var self = node.GetEndpoint("cluster");
             _clusterEndpoints.Add(self);
-
-            if (gateway)
-            {
-                node.WithEndpoint(port: _nextClientPort, targetPort: _nextClientPort++, scheme: "tcp", name: "client",
-                    env: "DaServer__Clients__Port", isProxied: false, isExternal: true);
-                clientEndpoints.Add(node.GetEndpoint("client"));
-            }
 
             // Evaluated when the node starts, so it sees nodes declared after it: seeds are every other member.
             node.WithEnvironment(context =>
@@ -119,18 +105,49 @@ public sealed class DaServerCluster
             nodes.Add(node);
         }
 
-        return new DaServerNodeGroup(name, nodes, clientEndpoints);
+        return new DaServerNodeGroup(this, name, nodes);
     }
+
+    /// <summary>The next client port (client-facing node groups take one per node, in declaration order).</summary>
+    internal int NextClientPort() => _nextClientPort++;
 }
 
-/// <summary>Nodes added by one <see cref="DaServerCluster.AddNodes{TProject}"/> or <see cref="DaServerCluster.AddGateways{TProject}"/> call.</summary>
-public sealed class DaServerNodeGroup(string name, IReadOnlyList<IResourceBuilder<ProjectResource>> nodes,
-    IReadOnlyList<EndpointReference> clientEndpoints)
+/// <summary>Nodes added by one <see cref="DaServerCluster.AddNodes{TProject}"/> call.</summary>
+public sealed class DaServerNodeGroup
 {
-    public string Name { get; } = name;
+    private readonly DaServerCluster _cluster;
+    private readonly List<EndpointReference> _clientEndpoints = [];
 
-    public IReadOnlyList<IResourceBuilder<ProjectResource>> Nodes { get; } = nodes;
+    internal DaServerNodeGroup(DaServerCluster cluster, string name, IReadOnlyList<IResourceBuilder<ProjectResource>> nodes)
+    {
+        _cluster = cluster;
+        Name = name;
+        Nodes = nodes;
+    }
 
-    /// <summary>Client endpoints (gateway groups only).</summary>
-    public IReadOnlyList<EndpointReference> ClientEndpoints { get; } = clientEndpoints;
+    public string Name { get; }
+
+    public IReadOnlyList<IResourceBuilder<ProjectResource>> Nodes { get; }
+
+    /// <summary>Client endpoints (after <see cref="WithClients"/>).</summary>
+    public IReadOnlyList<EndpointReference> ClientEndpoints => _clientEndpoints;
+
+    /// <summary>
+    /// The nodes accept clients: an external client endpoint each (<c>DaServer__Clients__Port</c>, which enables the
+    /// client connections feature). Pass the group to
+    /// <see cref="DaServerClusterExtensions.WithClientEndpoints{T}"/> of a client.
+    /// </summary>
+    public DaServerNodeGroup WithClients()
+    {
+        if (_clientEndpoints.Count != 0) return this;
+        foreach (var node in Nodes)
+        {
+            int port = _cluster.NextClientPort();
+            node.WithEndpoint(port: port, targetPort: port, scheme: "tcp", name: "client",
+                env: "DaServer__Clients__Port", isProxied: false, isExternal: true);
+            _clientEndpoints.Add(node.GetEndpoint("client"));
+        }
+
+        return this;
+    }
 }
