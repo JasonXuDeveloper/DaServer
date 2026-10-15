@@ -153,16 +153,25 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IAsyncDi
 
     // ------------------------------------------------------------------ IMessageSender
 
-    /// <summary>A <see cref="Flow.FromClient"/> message to the actor <paramref name="id"/> (<see cref="MessageAttribute.AnyId"/> messages only).</summary>
-    public void Send<TId, T>(TId id, in T message) where TId : struct, IActorId where T : struct =>
-        Send(MessageWriter.Write(in message), MessageType<T>.Id, ActorIds<TId>.HandlerTypeId, id.Value, null);
+    /// <summary>
+    /// A <see cref="Flow.FromClient"/> message to the actor <paramref name="address"/> (<see cref="MessageAttribute.AnyId"/>
+    /// messages only). Clients address actors only (DAS008).
+    /// </summary>
+    public void Send<TAddr, T>(TAddr address, in T message) where TAddr : struct, IAddress where T : struct =>
+        Send(MessageWriter.Write(in message), MessageType<T>.Id, ActorScope<TAddr>(), Addresses<TAddr>.Value(in address), null);
 
     /// <summary>A <see cref="Flow.FromClient"/> message to the actor bound to this client's session, or to its service.</summary>
     public void Send<T>(in T message) where T : struct => Send(MessageWriter.Write(in message), MessageType<T>.Id, 0, 0, null);
 
-    public ValueTask<TReply> Ask<TId, TRequest, TReply>(TId id, in TRequest request)
-        where TId : struct, IActorId where TRequest : struct, IRequest<TReply> =>
-        Ask<TRequest, TReply>(in request, ActorIds<TId>.HandlerTypeId, id.Value);
+    public ValueTask<TReply> Ask<TAddr, TRequest, TReply>(TAddr address, in TRequest request)
+        where TAddr : struct, IAddress where TRequest : struct, IRequest<TReply> =>
+        Ask<TRequest, TReply>(in request, ActorScope<TAddr>(), Addresses<TAddr>.Value(in address));
+
+    private static uint ActorScope<TAddr>() where TAddr : struct, IAddress =>
+        Addresses<TAddr>.Kind == AddressKind.Actor ? Addresses<TAddr>.Scope : throw NotAnActor(typeof(TAddr));
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static InvalidOperationException NotAnActor(Type type) => new($"A client sends to actors and services only, not to {type}");
 
     public ValueTask<TReply> Ask<TRequest, TReply>(in TRequest request) where TRequest : struct, IRequest<TReply> =>
         Ask<TRequest, TReply>(in request, 0, 0);

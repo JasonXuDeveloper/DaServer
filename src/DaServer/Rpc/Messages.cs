@@ -6,11 +6,11 @@ namespace DaServer.Rpc;
 // Message-first: a message is a [NinoType, Message] struct, a handler is a [Handle] method taking it. Nothing else is
 // declared. Plain [NinoType] types are data inside messages (fields, replies), never sent on their own.
 //
-//   Cluster.Send(mapId, msg)      one-way to the actor with that id (its id type names the actor type)
+//   Cluster.Send(address, msg)    one-way to an address: an actor id (its type names the actor type), a client session
+//                                 or a client group (Flow.ToClient messages)
 //   Cluster.Send(msg)             one-way to the service handling msg
 //   Cluster.Ask(mapId, request)   request/reply: request implements IRequest<TReply>, its handler returns TReply
 //   Cluster.Publish(e)            to every service handling e
-//   Cluster.Push(session, msg)    push to one client; Broadcast(group, msg) to a client group
 //   client.Send(msg) / Ask(..)    clients send Flow.FromClient messages: to the actor bound to their session, else a service
 
 /// <summary>
@@ -42,7 +42,7 @@ public enum Flow
     /// </summary>
     FromClient = 1,
 
-    /// <summary>Servers push it to client sessions and groups (<c>Push(session, m)</c>, <c>Broadcast(group, m)</c>), handled on clients.</summary>
+    /// <summary>Servers send it to client sessions and groups (<c>Send(session, m)</c>, <c>Send(group, m)</c>), handled on clients.</summary>
     ToClient = 2,
 }
 
@@ -91,8 +91,11 @@ public sealed class MessagesAssemblyAttribute(Type anchor) : Attribute
 /// </summary>
 public interface IMessageSender
 {
-    /// <summary>One-way message to the actor <paramref name="id"/> (<c>Cluster.Send(mapId, new Move(..))</c>).</summary>
-    void Send<TId, T>(TId id, in T message) where TId : struct, IActorId where T : struct;
+    /// <summary>
+    /// One-way message to <paramref name="address"/>: an actor (<c>Cluster.Send(mapId, new Move(..))</c>), a client
+    /// session or a client group (servers only, <c>Flow.ToClient</c> messages).
+    /// </summary>
+    void Send<TAddr, T>(TAddr address, in T message) where TAddr : struct, IAddress where T : struct;
 
     /// <summary>
     /// One-way message to the service handling <typeparamref name="T"/> (from a client: also to the actor bound to the
@@ -101,8 +104,8 @@ public interface IMessageSender
     void Send<T>(in T message) where T : struct;
 
     [EditorBrowsable(EditorBrowsableState.Never)]
-    ValueTask<TReply> Ask<TId, TRequest, TReply>(TId id, in TRequest request)
-        where TId : struct, IActorId where TRequest : struct, IRequest<TReply>;
+    ValueTask<TReply> Ask<TAddr, TRequest, TReply>(TAddr address, in TRequest request)
+        where TAddr : struct, IAddress where TRequest : struct, IRequest<TReply>;
 
     [EditorBrowsable(EditorBrowsableState.Never)]
     ValueTask<TReply> Ask<TRequest, TReply>(in TRequest request) where TRequest : struct, IRequest<TReply>;

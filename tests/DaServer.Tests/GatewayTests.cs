@@ -65,7 +65,7 @@ public class GatewayTests : ClusterTest
         client.Register(inbox);
         await client.Ask(new Login(new PlayerId(42)));
 
-        gateway.Broadcast(ClientGroup.Of(new PlayerId(42)), new GoldChanged(7)); // the player's Group: joined by BindSession
+        gateway.Send(ClientGroup.Of(new PlayerId(42)), new GoldChanged(7)); // the player's Group: joined by BindSession
         await Eventually(() => inbox.Gold == 7, "the bound session is not in the actor's group");
     }
 
@@ -148,7 +148,7 @@ public class GatewayTests : ClusterTest
         for (int i = 0; i < clients.Length; i += 3) await clients[i].DisposeAsync();
         await Eventually(() => gateway.SessionCount == 20, "sessions did not close");
         gateway.Send(new RoomId(7), new Say("hello"));
-        gateway.Broadcast(ClientGroup.All, new Chat(default, "all"));
+        gateway.Send(ClientGroup.All, new Chat(default, "all"));
 
         var open = Enumerable.Range(0, clients.Length).Where(i => i % 3 != 0).Select(i => inboxes[i]).ToArray();
         await Eventually(() => open.All(m => m.Chat.Count == 2), "a member missed a broadcast");

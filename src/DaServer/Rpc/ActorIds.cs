@@ -9,7 +9,7 @@ namespace DaServer.Rpc;
 /// (<c>Map : Actor&lt;MapId, MapState&gt;</c>): the id type names the actor type on the wire and in placement.
 /// An id type is a struct holding exactly one <c>long</c>; it can travel inside messages.
 /// </summary>
-public interface IActorId
+public interface IActorId : IAddress
 {
     /// <summary>The number of the actor among those of its type (player id, map instance id, ...).</summary>
     long Value { get; }

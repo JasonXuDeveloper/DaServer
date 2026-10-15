@@ -88,7 +88,7 @@ public class AllocationTests : ClusterTest
         {
             for (int i = 0; i < count; i++)
             {
-                gateway.Broadcast(group, new GoldChanged(i));
+                gateway.Send(group, new GoldChanged(i));
                 if (i % 64 == 63) // stay within the clients' send backlog
                     WaitFor(ref receiver.Received, (long)(i + 1) * members);
             }

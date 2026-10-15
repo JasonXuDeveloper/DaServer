@@ -138,7 +138,7 @@ internal static class Shapes
 
         if (type.SpecialType != SpecialType.None || type.TypeKind == TypeKind.Enum) return true;
         if (HasAttribute(type, NinoTypeAttribute)) return true;
-        if (type.IsUnmanagedType && type.AllInterfaces.Any(i => i.ToDisplayString() == "DaServer.Rpc.IActorId")) return true;
+        if (type.IsUnmanagedType && type.AllInterfaces.Any(i => i.ToDisplayString() == ActorId)) return true;
         if (type is INamedTypeSymbol named && named.ContainingNamespace?.ToDisplayString() is { } ns &&
             (ns == "System" || ns.StartsWith("System.", System.StringComparison.Ordinal)))
             return named.TypeArguments.All(IsWireType);

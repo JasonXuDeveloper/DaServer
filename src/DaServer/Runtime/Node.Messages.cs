@@ -6,8 +6,22 @@ namespace DaServer.Runtime;
 // (actor or service); Ask adds a call id trailer, answered by a Reply frame.
 sealed partial class Node
 {
-    public void Send<TId, T>(TId id, in T message) where TId : struct, IActorId where T : struct =>
-        SendTo(ActorIds<TId>.HandlerTypeId, id.Value, in message);
+    public void Send<TAddr, T>(TAddr address, in T message) where TAddr : struct, IAddress where T : struct
+    {
+        var w = MessageWriter.Write(in message);
+        switch (Addresses<TAddr>.Kind) // a JIT constant: the other branches vanish
+        {
+            case AddressKind.Actor:
+                SendMessage(w, MessageType<T>.Id, Addresses<TAddr>.Scope, Addresses<TAddr>.Value(in address));
+                break;
+            case AddressKind.Node:
+                SendToNode(w, Addresses<TAddr>.Scope, MessageType<T>.Id, Addresses<TAddr>.Node(in address), Addresses<TAddr>.Value(in address));
+                break;
+            default:
+                SendToGroup(w, Addresses<TAddr>.Scope, MessageType<T>.Id, Addresses<TAddr>.Value(in address));
+                break;
+        }
+    }
 
     /// <summary>One-way message to actor (<paramref name="handlerTypeId"/>, <paramref name="key"/>).</summary>
     internal void SendTo<T>(uint handlerTypeId, long key, in T message) where T : struct =>
@@ -16,9 +30,16 @@ sealed partial class Node
     public void Send<T>(in T message) where T : struct =>
         SendMessage(MessageWriter.Write(in message), MessageType<T>.Id, handlerTypeId: 0, key: 0);
 
-    public ValueTask<TReply> Ask<TId, TRequest, TReply>(TId id, in TRequest request)
-        where TId : struct, IActorId where TRequest : struct, IRequest<TReply> =>
-        Ask<TRequest, TReply>(in request, ActorIds<TId>.HandlerTypeId, id.Value);
+    public ValueTask<TReply> Ask<TAddr, TRequest, TReply>(TAddr address, in TRequest request)
+        where TAddr : struct, IAddress where TRequest : struct, IRequest<TReply> =>
+        Addresses<TAddr>.Kind == AddressKind.Actor
+            ? Ask<TRequest, TReply>(in request, Addresses<TAddr>.Scope, Addresses<TAddr>.Value(in address))
+            : NotAskable<TAddr, TReply>();
+
+    /// <summary>Sessions and groups are sent to, not asked (DAS008 reports it at build time).</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static ValueTask<TReply> NotAskable<TAddr, TReply>() =>
+        ValueTask.FromException<TReply>(new RpcException(RpcStatus.Error, $"{typeof(TAddr)} cannot be asked: send to it"));
 
     public ValueTask<TReply> Ask<TRequest, TReply>(in TRequest request) where TRequest : struct, IRequest<TReply> =>
         Ask<TRequest, TReply>(in request, handlerTypeId: 0, key: 0);
@@ -120,8 +141,7 @@ sealed partial class Node
 
             Admit(SelectShard(handlerType.Id, handlerType.IsActor, header.Key), copy, sink);
         }
-        else if (header.Target == AddressScopes.Session) DeliverToSession(header.Key, frame);
-        else if (header.Target == AddressScopes.Group) DeliverToGroup(header.Key, frame);
+        else if (header.Target == AddressScopes.Session || header.Target == AddressScopes.Group) DeliverToAddress(header.Target, header.Key, frame);
         else Forward(FrameWriter.CopyOf(frame), header.IsRequest ? ConnectionReplySink.For(connection) : null);
     }
 

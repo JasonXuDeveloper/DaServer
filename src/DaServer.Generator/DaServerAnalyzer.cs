@@ -13,7 +13,7 @@ namespace DaServer.Generator;
 public sealed partial class DaServerAnalyzer : DiagnosticAnalyzer
 {
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics { get; } = ImmutableArray.Create(
-        Rules.BadHandler, Rules.BadMessage, Rules.NotWireType, Rules.IdCollision, Rules.NoDefaultConstructor, Rules.WrongFlow, Rules.StatefulHandlerType);
+        Rules.BadHandler, Rules.BadMessage, Rules.NotWireType, Rules.IdCollision, Rules.NoDefaultConstructor, Rules.WrongFlow, Rules.StatefulHandlerType, Rules.WrongAddress);
 
     public override void Initialize(AnalysisContext context)
     {
@@ -84,31 +84,43 @@ public sealed partial class DaServerAnalyzer
     private static readonly string[] Senders = ["DaServer.Rpc.IMessageSender", "DaServer.Runtime.ICluster", Support.ClusterClientType];
 
     /// <summary>
-    /// <c>Send</c> / <c>Ask</c> / <c>Publish</c> / <c>Push</c> / <c>Broadcast</c> of the cluster or a client: the last
-    /// parameter is the message. <c>Push</c> to a session and <c>Broadcast</c> to a group need <c>Flow.ToClient</c>; a <c>ClusterClient</c> needs <c>Flow.FromClient</c>; servers may not
-    /// send <c>Flow.ToClient</c>-only messages to each other.
+    /// <c>Send</c> / <c>Ask</c> / <c>Publish</c> of the cluster or a client: the last parameter is the message, the one
+    /// before it (when there is one besides the sender) the address. A session or group address needs
+    /// <c>Flow.ToClient</c> and is sent to, never asked; a <c>ClusterClient</c> needs <c>Flow.FromClient</c> and
+    /// addresses actors only; servers may not send <c>Flow.ToClient</c>-only messages to each other.
     /// </summary>
     private static void CheckSend(OperationAnalysisContext context)
     {
         var invocation = (IInvocationOperation)context.Operation;
         var method = invocation.TargetMethod;
-        if (method.Name is not ("Send" or "Ask" or "Publish" or "Push" or "Broadcast") || method.Parameters.Length == 0) return;
+        if (method.Name is not ("Send" or "Ask" or "Publish") || method.Parameters.Length == 0) return;
 
         var sender = method.IsExtensionMethod ? method.Parameters[0].Type : method.ContainingType;
         if (sender == null || !IsSender(sender)) return;
         var receiver = method.IsExtensionMethod ? Unwrap(invocation.Arguments.FirstOrDefault()?.Value) : Unwrap(invocation.Instance);
         bool client = receiver != null && receiver.ToDisplayString() == Support.ClusterClientType;
-        bool push = method.Name is "Push" or "Broadcast";
 
         var message = method.Parameters[method.Parameters.Length - 1].Type;
         if (message is ITypeParameterSymbol) return; // generic plumbing: checked where the type is known
+        int addressIndex = method.Parameters.Length - 2;
+        var address = addressIndex >= (method.IsExtensionMethod ? 1 : 0) ? method.Parameters[addressIndex].Type : null;
+        if (address is ITypeParameterSymbol) return;
+        bool toClient = address != null && (Implements(address, Support.NodeAddress) || Implements(address, Support.GroupAddress));
+
         var location = invocation.Syntax.GetLocation();
         void Report(DiagnosticDescriptor d, Location? l, params object[] a) =>
             context.ReportDiagnostic(Diagnostic.Create(d, l ?? location, a));
         string usedBy = method.Name;
-        if (Shapes.IsMessage(message, location, usedBy, Report))
-            Shapes.CheckFlow(message, toClient: push, fromClient: client, location, usedBy, Report);
+        if (toClient && method.Name == "Ask")
+            Report(Rules.WrongAddress, location, address!.ToDisplayString(), "is a session or group: send to it, it cannot be asked");
+        else if (client && address != null && !Implements(address, Support.ActorId))
+            Report(Rules.WrongAddress, location, address.ToDisplayString(), "is not an actor id: clients send to actors and services only");
+        else if (Shapes.IsMessage(message, location, usedBy, Report))
+            Shapes.CheckFlow(message, toClient, fromClient: client, location, usedBy, Report);
     }
+
+    private static bool Implements(ITypeSymbol type, string interfaceName) =>
+        type.AllInterfaces.Any(i => i.ToDisplayString() == interfaceName);
 
     private static bool IsSender(ITypeSymbol type)
     {
@@ -152,4 +164,7 @@ internal static class Rules
 
     public static readonly DiagnosticDescriptor WrongFlow = new("DAS006", "Message used against its flow",
         "'{0}' (used by {1}) {2}", Category, DiagnosticSeverity.Error, true);
+
+    public static readonly DiagnosticDescriptor WrongAddress = new("DAS008", "Wrong kind of address",
+        "'{0}' {1}", Category, DiagnosticSeverity.Error, true);
 }
