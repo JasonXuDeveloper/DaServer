@@ -48,7 +48,7 @@ src/DaServer.Hosting/      Generic Host integration, configuration, OpenTelemetr
 src/DaServer.Aspire/       Aspire hosting integration: AddDaServerCluster / AddNodes / WithClients /
                            WithClientEndpoints
 samples/mmo/               MMO scenario: Sample.Contracts / Sample.Shared (rules both sides run) / Sample.Client (the game
-                           client as ECS) / Sample.LoginServer / Sample.GameServer / Sample.MapServer / Sample.Gateway
+                           client as ECS) / Sample.LoginServer / Sample.GameServer / Sample.MapServer / Sample.GatewayServer
                            (one project per server, no Program.cs, no appsettings) / Sample.Bot (the client as a swarm
                            with an HTN behavior: 10k-bot load test and e2e) / Sample.Tests / Sample.AppHost (Aspire)
 tests/DaServer.Tests/      NUnit: ClusterTest fixture, per-feature tests, generator/analyzer, allocation, architecture

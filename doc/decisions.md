@@ -155,7 +155,7 @@ records that no longer hold). Each: context → decision → consequences.
 - Context: role strings on implementations and in configuration repeat the topology in code, configuration and the
   AppHost, and a typo silently hosts nothing.
 - Decision: a node hosts every actor, service and system compiled into its process. Splitting the cluster means
-  splitting projects (`Sample.LoginServer`, `Sample.GameServer`, `Sample.MapServer`, `Sample.Gateway`); the AppHost
+  splitting projects (`Sample.LoginServer`, `Sample.GameServer`, `Sample.MapServer`, `Sample.GatewayServer`); the AppHost
   lists projects and replica counts. Accepting clients is a capability (the `DaServer:Clients` section, `WithClients`), not a role.
   In-process tests narrow hosting with `NodeOptions.Hosts`, a type filter.
 - Consequences: no topology strings anywhere (checked by the release checklist). The compiler decides what a node can
