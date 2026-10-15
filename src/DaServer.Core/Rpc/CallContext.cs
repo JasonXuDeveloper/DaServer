@@ -113,7 +113,10 @@ public readonly struct CallContext
     {
         if (task.IsCompletedSuccessfully)
         {
-            ReplyValue(task.Result);
+            if (DeferredReply<T>.Used && DeferredReply<T>.TryTake(out var deferred)) // ReplyWhen: the turn ends now
+                deferred.Start(this);
+            else
+                ReplyValue(task.Result);
             return default;
         }
 
@@ -217,4 +220,138 @@ internal sealed class ReplyWatcher<T> : IValueTaskSource
         _context = default;
         (_pool ??= new Stack<ReplyWatcher<T>>()).Push(this);
     }
+}
+
+/// <summary>
+/// A reply sent once a task completes, after its handler's turn ended (<c>ShardObject.ReplyWhen</c>): the handler
+/// returned at once, so its actor takes its next message while the task (an access change, a call, a save) is
+/// pending. The handler leaves a prepared watcher in a thread-static slot that the generated dispatcher's
+/// <see cref="CallContext.Reply{T}"/> takes right away on the same thread. Watchers are pooled per thread; replying
+/// allocates nothing.
+/// </summary>
+internal abstract class DeferredReply<T>
+{
+    /// <summary>Whether any handler replied later with <typeparamref name="T"/>: until then replies skip the slot.</summary>
+    internal static volatile bool Used;
+
+    [ThreadStatic] private static DeferredReply<T>? _pending;
+
+    private protected T Value = default!;
+    private protected CallContext Context;
+
+    /// <summary>Leave <paramref name="watcher"/> for the dispatcher (the handler's own return value is ignored).</summary>
+    private protected static void Leave(DeferredReply<T> watcher, T reply)
+    {
+        if (_pending != null) throw new InvalidOperationException("ReplyWhen: one per handler, as what it returns (DAS011)");
+        watcher.Value = reply;
+        Used = true;
+        _pending = watcher;
+    }
+
+    public static bool TryTake(out DeferredReply<T> watcher)
+    {
+        watcher = _pending!;
+        _pending = null;
+        return watcher != null;
+    }
+
+    /// <summary>Reply to <paramref name="context"/> once the task completes (now, if it has).</summary>
+    public abstract void Start(CallContext context);
+
+    private protected void Reply(Exception? error)
+    {
+        var (value, context) = (Value, Context);
+        (Value, Context) = (default!, default);
+        Return();
+        if (error == null) context.ReplyValue(value);
+        else context.ReplyException(error);
+    }
+
+    private protected abstract void Return();
+}
+
+/// <summary><see cref="DeferredReply{T}"/> after a <see cref="ValueTask"/>.</summary>
+internal sealed class DeferredAfter<T> : DeferredReply<T>
+{
+    [ThreadStatic] private static Stack<DeferredAfter<T>>? _pool;
+    private readonly Action _completed;
+    private ValueTask _task;
+
+    private DeferredAfter() => _completed = Completed;
+
+    public static void Set(ValueTask done, T reply)
+    {
+        var watcher = _pool is { Count: > 0 } pool ? pool.Pop() : new DeferredAfter<T>();
+        watcher._task = done;
+        Leave(watcher, reply);
+    }
+
+    public override void Start(CallContext context)
+    {
+        Context = context;
+        if (_task.IsCompleted) Completed();
+        else _task.ConfigureAwait(false).GetAwaiter().UnsafeOnCompleted(_completed);
+    }
+
+    private void Completed()
+    {
+        var task = _task;
+        _task = default;
+        try
+        {
+            task.GetAwaiter().GetResult();
+        }
+        catch (Exception e)
+        {
+            Reply(e);
+            return;
+        }
+
+        Reply(null);
+    }
+
+    private protected override void Return() => (_pool ??= new Stack<DeferredAfter<T>>()).Push(this);
+}
+
+/// <summary><see cref="DeferredReply{T}"/> after a <see cref="ValueTask{TResult}"/> (a call whose result is not the reply).</summary>
+internal sealed class DeferredAfter<TDone, T> : DeferredReply<T>
+{
+    [ThreadStatic] private static Stack<DeferredAfter<TDone, T>>? _pool;
+    private readonly Action _completed;
+    private ValueTask<TDone> _task;
+
+    private DeferredAfter() => _completed = Completed;
+
+    public static void Set(ValueTask<TDone> done, T reply)
+    {
+        var watcher = _pool is { Count: > 0 } pool ? pool.Pop() : new DeferredAfter<TDone, T>();
+        watcher._task = done;
+        Leave(watcher, reply);
+    }
+
+    public override void Start(CallContext context)
+    {
+        Context = context;
+        if (_task.IsCompleted) Completed();
+        else _task.ConfigureAwait(false).GetAwaiter().UnsafeOnCompleted(_completed);
+    }
+
+    private void Completed()
+    {
+        var task = _task;
+        _task = default;
+        try
+        {
+            task.GetAwaiter().GetResult();
+        }
+        catch (Exception e)
+        {
+            Reply(e);
+            return;
+        }
+
+        Reply(null);
+    }
+
+    private protected override void Return() => (_pool ??= new Stack<DeferredAfter<TDone, T>>()).Push(this);
 }

@@ -115,4 +115,20 @@ public class SingleNodeTests : ClusterTest
         var error = Assert.ThrowsAsync<RpcException>(async () => await _node.Ask(new Guarded(-1)));
         Assert.That(error!.Status, Is.EqualTo(RpcStatus.Forbidden));
     }
+
+    [Test]
+    public async Task ARepliedLaterRequestEndsItsTurnAtOnce()
+    {
+        var node = _node;
+        var counter = new CounterId(31);
+        Assert.That(await node.Ask(counter, new Add(5)), Is.EqualTo(5));
+
+        var later = node.Ask(counter, new AnswerLater(500, Fail: false)).AsTask();
+        Assert.That(await node.Ask(counter, new Add(1)), Is.EqualTo(6), "the actor took its next message while the reply waits");
+        Assert.That(later.IsCompleted, Is.False);
+        Assert.That(await later, Is.EqualTo(5), "the value given when the turn ended");
+
+        var failed = Assert.ThrowsAsync<RpcException>(async () => await node.Ask(counter, new AnswerLater(0, Fail: true)));
+        Assert.That(failed!.Status, Is.EqualTo(RpcStatus.Error), "a failed task is replied as the failure");
+    }
 }
