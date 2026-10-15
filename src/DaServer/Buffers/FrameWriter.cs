@@ -59,7 +59,6 @@ public sealed class FrameWriter : INinoBufferWriter, IDisposable
 
     public int Length => _pos;
 
-    /// <summary>Write the header (length is filled in automatically).</summary>
     /// <summary>Finish a control frame, send it to <paramref name="target"/> and return this writer to the pool.</summary>
     internal void SendControl(IFrameSender target, uint op, long key = 0, uint requestId = 0)
     {
@@ -68,6 +67,7 @@ public sealed class FrameWriter : INinoBufferWriter, IDisposable
         Dispose();
     }
 
+    /// <summary>Write the header (length is filled in automatically).</summary>
     public void SetHeader(FrameKind kind, uint requestId, uint messageId, long key, RpcStatus status = RpcStatus.Ok,
         byte flags = 0, byte hops = 0)
     {
@@ -86,6 +86,13 @@ public sealed class FrameWriter : INinoBufferWriter, IDisposable
     }
 
     /// <summary>Append raw bytes to the payload.</summary>
+    /// <summary>Append the target handler type of an actor request (<see cref="FrameFlags.ToActor"/>).</summary>
+    internal void WriteTarget(uint handlerTypeId)
+    {
+        BinaryPrimitives.WriteUInt32LittleEndian(GetSpan(sizeof(uint)), handlerTypeId);
+        _pos += sizeof(uint);
+    }
+
     public void WriteRaw(ReadOnlySpan<byte> bytes)
     {
         bytes.CopyTo(GetSpan(bytes.Length));

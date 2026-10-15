@@ -4,8 +4,8 @@ namespace DaServer.Protocol;
 public enum FrameKind : byte
 {
     /// <summary>
-    /// Message expecting a <see cref="Response"/> with the same request id (<c>Ask</c>): message id, key; the handling
-    /// handler type is the receiver's one for (message, <see cref="FrameFlags.ToActor"/>).
+    /// Message expecting a <see cref="Response"/> with the same request id (<c>Ask</c>): message id, key; an actor's
+    /// handler type trails the payload (<see cref="FrameFlags.ToActor"/>), a service is the one handling the message.
     /// </summary>
     Request = 1,
 
@@ -37,7 +37,10 @@ public static class FrameFlags
     /// <summary>Payload starts with the serialized <see cref="Rpc.SessionRef"/> of the client that made the call.</summary>
     public const byte HasCaller = 1;
 
-    /// <summary>A <see cref="FrameKind.Request"/> for an actor handler (else for a service handler).</summary>
+    /// <summary>
+    /// A <see cref="FrameKind.Request"/> for an actor: the frame ends with the actor's handler type id (uint32; the
+    /// header's RequestId is the call's). Without it, a request is for the one service handling its message.
+    /// </summary>
     public const byte ToActor = 2;
 }
 
@@ -105,6 +108,15 @@ public struct FrameHeader
         Kind == FrameKind.Request && Status != 0 ? Environment.TickCount64 + (byte)Status * BudgetUnitMs : 0;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    /// <summary>
+    /// The handler type a frame targets: a Message frame's RequestId, an actor request's trailer
+    /// (<see cref="FrameFlags.ToActor"/>), 0 for a service request (its message names it).
+    /// </summary>
+    public static uint TargetOf(in FrameHeader header, ReadOnlySpan<byte> frame) =>
+        header.Kind == FrameKind.Message ? header.RequestId
+        : (header.Flags & FrameFlags.ToActor) != 0 ? BinaryPrimitives.ReadUInt32LittleEndian(frame[(header.Length - sizeof(uint))..])
+        : 0;
+
     public static FrameHeader Read(ReadOnlySpan<byte> s)
     {
         FrameHeader h;

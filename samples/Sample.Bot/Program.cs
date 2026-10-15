@@ -37,7 +37,7 @@ await Parallel.ForAsync(0, bots, new ParallelOptions { MaxDegreeOfParallelism = 
     var login = await RetryFor(() => client.Ask(new Login("bot-" + i)), static e => e is RpcException { Status: RpcStatus.NotHosted });
     if (!login.Ok) throw new InvalidOperationException("login failed for bot " + i);
     // The gateway routes this to the player bound at login, and the map binds the session for input.
-    await RetryFor(() => client.Ask(new EnterMap(1 + i % maps)), static e => e is RpcException { Status: RpcStatus.NotHosted });
+    await RetryFor(() => client.Ask(new EnterMap(new MapId(1 + i % maps))), static e => e is RpcException { Status: RpcStatus.NotHosted });
 });
 Console.WriteLine($"{bots} bots online in {online.Elapsed.TotalSeconds:F1}s ({maps} maps)");
 

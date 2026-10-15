@@ -15,7 +15,7 @@ internal sealed partial class RemovalSystem : EcsSystem
     {
         var (status, message) = removing;
         var pending = mailbox.Pending;
-        directory.Actors.Remove(self.Id);
+        directory.Actors.Remove(self.Address);
         actor.Destroy(); // the refs above are invalid from here on
 
         while (pending.TryDequeue(out var envelope))

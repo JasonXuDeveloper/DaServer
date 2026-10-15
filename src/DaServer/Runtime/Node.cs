@@ -13,7 +13,7 @@ internal sealed partial class Node : ICluster, IAsyncDisposable
     private PeerLink[] _linkList = [];
     private readonly ConcurrentDictionary<ulong, PeerLink> _introduced = new(); // node id -> link, from Hellos
     private Shard[] _shards = [];
-    private FrozenDictionary<ulong, HandlerTypeInfo?> _requestHandlers = FrozenDictionary<ulong, HandlerTypeInfo?>.Empty;
+    private FrozenDictionary<uint, HandlerTypeInfo?> _serviceHandlers = FrozenDictionary<uint, HandlerTypeInfo?>.Empty;
     private FrozenDictionary<uint, HandlerTypeInfo> _handlerTypeById = FrozenDictionary<uint, HandlerTypeInfo>.Empty;
     private Listener? _clusterListener;
     private Timer? _maintenance;
@@ -151,32 +151,27 @@ internal sealed partial class Node : ICluster, IAsyncDisposable
         _handlerTypeById.TryGetValue(handlerTypeId, out var handlerType) ? handlerType : null;
 
     /// <summary>
-    /// The hosted handler type answering requests of <paramref name="messageId"/> sent to an actor or a service
-    /// (requests carry the message id, not the handler type: their RequestId field is the call's), or null when none
-    /// or several of that kind handle it (an event: published to all of them, never asked).
+    /// The hosted service answering requests of <paramref name="messageId"/> (a service request names its message, not
+    /// its handler type), or null when none or several handle it (an event: published to all of them, never asked).
     /// </summary>
-    internal HandlerTypeInfo? RequestHandler(uint messageId, bool actor) =>
-        _requestHandlers.TryGetValue(RequestKey(messageId, actor), out var handlerType) ? handlerType : null;
-
-    private static ulong RequestKey(uint messageId, bool actor) => (ulong)messageId << 1 | (actor ? 1UL : 0UL);
+    internal HandlerTypeInfo? ServiceHandler(uint messageId) =>
+        _serviceHandlers.TryGetValue(messageId, out var handlerType) ? handlerType : null;
 
     /// <summary>Everything registered in the process, narrowed by <see cref="NodeOptions.Hosts"/> when set.</summary>
     private void ResolveHosting()
     {
         var hosts = Options.Hosts;
         var byId = new Dictionary<uint, HandlerTypeInfo>();
-        var requests = new Dictionary<ulong, HandlerTypeInfo?>();
+        var services = new Dictionary<uint, HandlerTypeInfo?>();
         var hosted = new List<HandlerTypeInfo>();
         foreach (var handlerType in ServerRegistry.HandlerTypes)
         {
             if (hosts != null && !hosts(handlerType.Type)) continue;
             hosted.Add(handlerType);
             byId[handlerType.Id] = handlerType;
+            if (handlerType.IsActor) continue;
             foreach (var handler in handlerType.Handlers.All)
-            {
-                ulong key = RequestKey(handler.MessageId, handlerType.IsActor);
-                requests[key] = requests.ContainsKey(key) ? null : handlerType;
-            }
+                services[handler.MessageId] = services.ContainsKey(handler.MessageId) ? null : handlerType;
         }
 
         var systems = new List<SystemInfo>();
@@ -186,7 +181,7 @@ internal sealed partial class Node : ICluster, IAsyncDisposable
 
         HostedHandlerTypes = hosted.ToArray();
         HostedSystems = systems.ToArray();
-        _requestHandlers = requests.ToFrozenDictionary();
+        _serviceHandlers = services.ToFrozenDictionary();
         _handlerTypeById = byId.ToFrozenDictionary();
     }
 

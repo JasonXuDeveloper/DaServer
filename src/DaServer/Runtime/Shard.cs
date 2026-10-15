@@ -207,7 +207,7 @@ internal sealed class Shard
     {
         World.AddSingleton<ShardContext>() = new ShardContext(this);
         World.AddSingleton<ShardActivity>();
-        World.AddSingleton<ActorDirectory>() = new ActorDirectory(new Dictionary<ActorId, Entity>());
+        World.AddSingleton<ActorDirectory>() = new ActorDirectory(new Dictionary<ActorAddress, Entity>());
         World.AddSingleton<TurnWatchers>() = new TurnWatchers(new Stack<TurnWatcher>());
 
         var services = new Dictionary<uint, object>();

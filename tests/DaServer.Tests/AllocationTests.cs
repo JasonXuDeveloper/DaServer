@@ -11,14 +11,14 @@ public class AllocationTests : ClusterTest
 
         // Two keys on different shards: every call crosses threads through the mailboxes.
         long other = 2;
-        while (await node.Ask(other, new WhereAmI()) == await node.Ask(1, new WhereAmI())) other++;
+        while (await node.Ask(new CounterId(other), new WhereAmI()) == await node.Ask(new CounterId(1), new WhereAmI())) other++;
 
         // Warm up past tiered-JIT promotion, then measure. The counter is process-wide, so background runtime work
         // (timers, thread-pool bookkeeping: 0.15 B per call locally, up to ~2.5 B on a 2-core CI runner) is included;
         // anything per call would be >= 24 B (the smallest object), so 8 B still catches it.
         const int calls = 20_000;
-        await node.Ask(1, new AddMany(other, 3 * calls));
-        long allocated = await node.Ask(1, new AddMany(other, calls));
+        await node.Ask(new CounterId(1), new AddMany(new CounterId(other), 3 * calls));
+        long allocated = await node.Ask(new CounterId(1), new AddMany(new CounterId(other), calls));
         Assert.That(allocated / (double)calls, Is.LessThan(8), $"{allocated} B for {calls} calls");
     }
 
@@ -27,11 +27,11 @@ public class AllocationTests : ClusterTest
     {
         var node = await Start("alloc", configure: o => o.GossipInterval = TimeSpan.FromHours(1));
         long other = 2;
-        while (await node.Ask(other, new WhereAmI()) == await node.Ask(1, new WhereAmI())) other++;
+        while (await node.Ask(new CounterId(other), new WhereAmI()) == await node.Ask(new CounterId(1), new WhereAmI())) other++;
 
         const int events = 20_000;
-        await node.Ask(1, new PublishMany(other, 3 * events));
-        long allocated = await node.Ask(1, new PublishMany(other, events));
+        await node.Ask(new CounterId(1), new SendMany(new CounterId(other), 3 * events));
+        long allocated = await node.Ask(new CounterId(1), new SendMany(new CounterId(other), events));
         Assert.That(allocated / (double)events, Is.LessThan(8), $"{allocated} B for {events} events"); // see above
     }
 
@@ -45,10 +45,10 @@ public class AllocationTests : ClusterTest
         {
             var client = await Connect(gateway);
             client.Register(receiver);
-            await client.Ask(7, new Join());
+            await client.Ask(new RoomId(7), new Join());
         }
 
-        var group = ClientGroup.Of<Room>(7); // the room's Group
+        var group = ClientGroup.Of(new RoomId(7)); // the room's Group
 
         // Server side and client side both count: serialize once, one copy per session, client dispatch.
         const int broadcasts = 5_000;
@@ -81,7 +81,7 @@ public class AllocationTests : ClusterTest
         var game = await Start("game", configure: o => o.GossipInterval = TimeSpan.FromHours(1));
         await Converged();
         var client = await Connect(gateway);
-        await client.Ask(new Login(42)); // binds the session to player 42 (on the game node)
+        await client.Ask(new Login(new PlayerId(42))); // binds the session to player 42 (on the game node)
 
         // One-way client input (the dominant client traffic) crossing gateway -> game.
         const int calls = 5_000;

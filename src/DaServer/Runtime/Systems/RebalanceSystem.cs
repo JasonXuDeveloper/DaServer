@@ -16,7 +16,7 @@ internal sealed partial class RebalanceSystem : EcsSystem
             actor.Add<UnloadRequested>();
             actor.Add<Fenced>();
         }
-        else if (activity.Stopping || !world.Shard().Node.IsLocalOwner(self.Actor.HandlerType.Id, self.Key))
+        else if (activity.Stopping || !world.Shard().Node.IsLocalOwner(self.Actor.HandlerType.Id, self.Actor.Key))
             actor.Add<UnloadRequested>();
     }
 }

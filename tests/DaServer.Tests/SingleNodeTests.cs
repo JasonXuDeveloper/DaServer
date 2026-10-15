@@ -11,30 +11,30 @@ public class SingleNodeTests : ClusterTest
     [Test]
     public async Task ActorsKeepStatePerKey()
     {
-        Assert.That(await _node.Ask(1, new Add(5)), Is.EqualTo(5));
-        Assert.That(await _node.Ask(1, new Add(2)), Is.EqualTo(7));
-        Assert.That(await _node.Ask(2, new Get()), Is.Zero);
-        Assert.That(await _node.Ask(1, new EchoPoint(new Point(1, 2))), Is.EqualTo(new Point(2, 2)));
+        Assert.That(await _node.Ask(new CounterId(1), new Add(5)), Is.EqualTo(5));
+        Assert.That(await _node.Ask(new CounterId(1), new Add(2)), Is.EqualTo(7));
+        Assert.That(await _node.Ask(new CounterId(2), new Get()), Is.Zero);
+        Assert.That(await _node.Ask(new CounterId(1), new EchoPoint(new Point(1, 2))), Is.EqualTo(new Point(2, 2)));
     }
 
     [Test]
     public async Task IdleActorsUnloadAndLoadAgainOnTheNextMessage()
     {
         const long key = 501;
-        Assert.That(await _node.Ask(key, new Visit()), Is.EqualTo(1));
+        Assert.That(await _node.Ask(new VisitorId(key), new Visit()), Is.EqualTo(1));
 
         // Kept loaded while it receives mail more often than its UnloadAfterIdle (300 ms).
         for (int i = 2; i <= 5; i++)
         {
             await Task.Delay(100);
-            Assert.That(await _node.Ask(key, new Visit()), Is.EqualTo(i));
+            Assert.That(await _node.Ask(new VisitorId(key), new Visit()), Is.EqualTo(i));
         }
 
         Assert.That(Observed.Events, Has.No.Member($"unload:{key}"));
         await Eventually(() => Observed.Events.Contains($"unload:{key}"), "the idle actor was not unloaded");
         await Eventually(() => _node.ActorCount == 0, "the unloaded actor is still in the directory");
 
-        Assert.That(await _node.Ask(key, new Visit()), Is.EqualTo(1), "loaded again with fresh state");
+        Assert.That(await _node.Ask(new VisitorId(key), new Visit()), Is.EqualTo(1), "loaded again with fresh state");
         Assert.That(Observed.Events.Count(e => e == $"load:{key}"), Is.EqualTo(2));
     }
 
@@ -42,43 +42,43 @@ public class SingleNodeTests : ClusterTest
     public async Task ActorsOfANodeDeclaredDeadAreRemovedWithoutUnload()
     {
         const long key = 502;
-        Assert.That(await _node.Ask(key, new Visit()), Is.EqualTo(1));
+        Assert.That(await _node.Ask(new VisitorId(key), new Visit()), Is.EqualTo(1));
 
         // The cluster gave the key to another node: a save from OnUnload could overwrite the new owner's state.
         foreach (var shard in _node.Shards) shard.RequestUnloadAll();
         await Eventually(() => _node.ActorCount == 0, "the fenced actor is still in the directory");
         Assert.That(Observed.Events, Has.No.Member($"unload:{key}"));
 
-        Assert.That(await _node.Ask(key, new Visit()), Is.EqualTo(1), "loaded again once the node is Up");
+        Assert.That(await _node.Ask(new VisitorId(key), new Visit()), Is.EqualTo(1), "loaded again once the node is Up");
     }
 
     [Test]
     public async Task CallsFromOneSenderArriveInOrder()
     {
-        _node.Send(3, new Bump());    // one-way messages are queued before the request below
-        _node.Send(3, new Bump());
-        Assert.That(await _node.Ask(3, new Get()), Is.EqualTo(2));
-        await _node.Ask(3, new Reset());
-        Assert.That(await _node.Ask(3, new Get()), Is.Zero);
+        _node.Send(new CounterId(3), new Bump());    // one-way messages are queued before the request below
+        _node.Send(new CounterId(3), new Bump());
+        Assert.That(await _node.Ask(new CounterId(3), new Get()), Is.EqualTo(2));
+        await _node.Ask(new CounterId(3), new Reset());
+        Assert.That(await _node.Ask(new CounterId(3), new Get()), Is.Zero);
     }
 
     [Test]
     public async Task ConcurrentCallsToOneActorAreSerialized()
     {
-        var results = await Task.WhenAll(Enumerable.Range(0, 1000).Select(_ => _node.Ask(4, new Add(1)).AsTask()));
+        var results = await Task.WhenAll(Enumerable.Range(0, 1000).Select(_ => _node.Ask(new CounterId(4), new Add(1)).AsTask()));
         Assert.That(results.Order(), Is.EqualTo(Enumerable.Range(1, 1000)), "no lost or duplicated updates");
 
-        string shard = await _node.Ask(4, new WhereAmI());
+        string shard = await _node.Ask(new CounterId(4), new WhereAmI());
         Assert.That(shard, Does.Contain("shard"));
-        Assert.That(await _node.Ask(4, new WhereAmI()), Is.EqualTo(shard), "an actor stays on one shard");
+        Assert.That(await _node.Ask(new CounterId(4), new WhereAmI()), Is.EqualTo(shard), "an actor stays on one shard");
     }
 
     [Test]
     public async Task AwaitsResumeOnTheActorsShard()
     {
-        Assert.That(await _node.Ask(10, new AddVia(11, 3)), Is.EqualTo(3));
-        Assert.That(await _node.Ask(11, new Get()), Is.EqualTo(3));
-        Assert.That(await _node.Ask(12, new SlowAdd(4)), Is.EqualTo(4));
+        Assert.That(await _node.Ask(new CounterId(10), new AddVia(new CounterId(11), 3)), Is.EqualTo(3));
+        Assert.That(await _node.Ask(new CounterId(11), new Get()), Is.EqualTo(3));
+        Assert.That(await _node.Ask(new CounterId(12), new SlowAdd(4)), Is.EqualTo(4));
     }
 
     [Test]
@@ -91,19 +91,19 @@ public class SingleNodeTests : ClusterTest
     [Test]
     public async Task ExceptionsBecomeRpcErrorsAndTheActorSurvives()
     {
-        var error = Assert.ThrowsAsync<RpcException>(async () => await _node.Ask(5, new Fail("boom")));
+        var error = Assert.ThrowsAsync<RpcException>(async () => await _node.Ask(new CounterId(5), new Fail("boom")));
         Assert.That(error!.Status, Is.EqualTo(RpcStatus.Error));
         Assert.That(error.Message, Does.Contain("boom"));
-        Assert.That(await _node.Ask(5, new Add(1)), Is.EqualTo(1));
+        Assert.That(await _node.Ask(new CounterId(5), new Add(1)), Is.EqualTo(1));
     }
 
     [Test]
     public async Task SystemsProcessActorStateEveryTick()
     {
-        await _node.Ask(6, new Grow()); // the actor writes input; GrowthSystem does the per-tick work
-        int first = await _node.Ask(6, new Get());
+        await _node.Ask(new CounterId(6), new Grow()); // the actor writes input; GrowthSystem does the per-tick work
+        int first = await _node.Ask(new CounterId(6), new Get());
         await Task.Delay(TimeSpan.FromMilliseconds(100)); // 50 ticks/s
-        Assert.That(await _node.Ask(6, new Get()), Is.GreaterThan(first));
-        Assert.That(await _node.Ask(7, new Get()), Is.Zero, "only growing counters grow");
+        Assert.That(await _node.Ask(new CounterId(6), new Get()), Is.GreaterThan(first));
+        Assert.That(await _node.Ask(new CounterId(7), new Get()), Is.Zero, "only growing counters grow");
     }
 }

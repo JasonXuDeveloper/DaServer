@@ -32,7 +32,7 @@ public class ReconnectTests : ClusterTest
     {
         var client = Track(new ClusterClient());
         await client.ConnectAsync("127.0.0.1", balancer.ClientPort);
-        Assert.That(await client.Ask(new Login(player)), Is.True);
+        Assert.That(await client.Ask(new Login(new PlayerId(player))), Is.True);
         return client;
     }
 
@@ -59,7 +59,7 @@ public class ReconnectTests : ClusterTest
 
         Assert.That(await client.Ask(new AddGold(1)), Is.EqualTo(6), "the binding moved to the new session");
         Assert.That(Observed.Events, Does.Contain("resync:501"));
-        gateways[0].Broadcast(ClientGroup.Of<Player>(501), new GoldChanged(9));
+        gateways[0].Broadcast(ClientGroup.Of(new PlayerId(501)), new GoldChanged(9));
         await Eventually(() => inbox.Gold == 9, "the new session is in the actor's group");
 
         await Task.Delay(1500); // past the grace: the lost session's close must not reach the player

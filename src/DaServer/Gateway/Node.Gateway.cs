@@ -414,9 +414,10 @@ sealed partial class Node
     }
 
     /// <summary>
-    /// Validate and route a client message (<see cref="Flow.FromClient"/> messages only) to its handler: a service,
-    /// or an actor on the key bound to the session (or the key the client chose: AnyKey). The caller session is
-    /// prepended for the handler (<c>CallerSession</c>).
+    /// Validate and route a client message (<see cref="Flow.FromClient"/> messages only) to its handler: the actor the
+    /// client named (<see cref="MessageAttribute.AnyId"/> messages only), else the actor of the type handling it that
+    /// is bound to the session, else the service handling it. The caller session is prepended for the handler
+    /// (<c>CallerSession</c>).
     /// </summary>
     private void OnClientMessage(Session session, in FrameHeader header, ReadOnlySpan<byte> frame)
     {
@@ -427,32 +428,56 @@ sealed partial class Node
             return;
         }
 
-        bool actor = View.TryGetRoute(message.Id, actor: true, out var route, out _);
-        if (!actor && !View.TryGetRoute(message.Id, actor: false, out route, out _))
+        uint named = FrameHeader.TargetOf(in header, frame);
+        var body = frame[FrameHeader.Size..(named != 0 ? header.Length - sizeof(uint) : header.Length)];
+        uint handlerTypeId;
+        long key;
+        if (named != 0)
         {
-            if (replyId != 0) session.Sink.SendError(replyId, RpcStatus.NotHosted, "No handler for " + message.Type.Name);
-            return;
-        }
+            // The client named the actor: only for AnyId messages, and only an actor type handling the message.
+            if (!message.AnyId || !HandlesMessage(named, message.Id))
+            {
+                if (replyId != 0) session.Sink.SendError(replyId, RpcStatus.Forbidden, message.Type.Name + " cannot be sent to that actor");
+                return;
+            }
 
-        long key = !actor ? 0 : message.AnyKey ? header.Key : session.KeyOf(route.HandlerTypeId);
-        if (actor && key == 0 && !message.AnyKey)
+            (handlerTypeId, key) = (named, header.Key);
+        }
+        else if (View.TryGetRoute(message.Id, actor: true, out var route, out _))
         {
-            if (replyId != 0) session.Sink.SendError(replyId, RpcStatus.Forbidden, "Session not bound to a handler of " + message.Type.Name);
-            return;
+            (handlerTypeId, key) = (route.HandlerTypeId, session.KeyOf(route.HandlerTypeId));
+            if (key == 0)
+            {
+                if (replyId != 0) session.Sink.SendError(replyId, RpcStatus.Forbidden, "Session not bound to a handler of " + message.Type.Name);
+                return;
+            }
+        }
+        else
+        {
+            (handlerTypeId, key) = (0, 0); // a service; Request/SendMessage answer NotHosted / drop when there is none
         }
 
         var w = FrameWriter.Rent(frame.Length + 32);
         var nino = w.Nino;
         NinoSerializer.Serialize(new SessionRef(Id, session.Id), ref nino);
-        w.WriteRaw(frame.Slice(FrameHeader.Size));
+        w.WriteRaw(body);
         if (replyId == 0)
         {
-            SendMessage(w, message.Id, key, actor, FrameFlags.HasCaller);
+            SendMessage(w, message.Id, handlerTypeId, key, FrameFlags.HasCaller);
             return;
         }
 
         w.Deadline = header.DeadlineOnArrival(); // the client's own timeout, when it sent one
-        Request(w, message.Id, key, actor, null, session.Sink, replyId, flags: FrameFlags.HasCaller);
+        Request(w, message.Id, handlerTypeId, key, null, session.Sink, replyId, flags: FrameFlags.HasCaller);
+    }
+
+    /// <summary>Whether actor type <paramref name="handlerTypeId"/> handles message <paramref name="messageId"/> in the cluster.</summary>
+    private bool HandlesMessage(uint handlerTypeId, uint messageId)
+    {
+        var routes = View.Routes(messageId);
+        for (int i = 0; i < routes.Length; i++)
+            if (routes[i].HandlerTypeId == handlerTypeId && routes[i].Actor) return true;
+        return false;
     }
 }
 

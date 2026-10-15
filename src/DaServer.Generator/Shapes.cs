@@ -31,7 +31,7 @@ internal sealed record HostedModel(string FullName, HostedKind Kind, EquatableAr
 internal sealed record RequestModel(string Namespace, string ClassName, string FullName, string ReplyType, bool Public);
 
 /// <summary>A <c>Flow.FromClient</c> message type: registered for gateways in its assembly.</summary>
-internal sealed record ClientMessageModel(string FullName, bool AnyKey);
+internal sealed record ClientMessageModel(string FullName, bool AnyId);
 
 /// <summary>
 /// Reads messages and hosted types from symbols. The single source of truth for validity: the generators call it
@@ -87,8 +87,8 @@ internal static class Shapes
         var attribute = GetAttribute(type, MessageAttribute);
         if (attribute == null || (FlowOf(type) & FlowFromClient) == 0) return null;
         if (!IsMessage(type, type.Locations.FirstOrDefault(), "[Message(Flow.FromClient)]", report)) return null;
-        bool anyKey = attribute.NamedArguments.Any(a => a.Key == "AnyKey" && a.Value.Value is true);
-        return new ClientMessageModel(type.ToDisplayString(Fqn), anyKey);
+        bool anyId = attribute.NamedArguments.Any(a => a.Key == "AnyId" && a.Value.Value is true);
+        return new ClientMessageModel(type.ToDisplayString(Fqn), anyId);
     }
 
     /// <summary>
@@ -122,8 +122,9 @@ internal static class Shapes
     }
 
     /// <summary>
-    /// Types that cross the wire: primitives, strings, enums, arrays and BCL generics of wire types, and [NinoType]
-    /// types. Anything else would fail at run time in the serializer, so it is a build error.
+    /// Types that cross the wire: primitives, strings, enums, arrays and BCL generics of wire types, [NinoType] types
+    /// and actor ids (unmanaged, copied as is). Anything else would fail at run time in the serializer, so it is a
+    /// build error.
     /// </summary>
     public static bool IsWireType(ITypeSymbol type)
     {
@@ -137,6 +138,7 @@ internal static class Shapes
 
         if (type.SpecialType != SpecialType.None || type.TypeKind == TypeKind.Enum) return true;
         if (HasAttribute(type, NinoTypeAttribute)) return true;
+        if (type.IsUnmanagedType && type.AllInterfaces.Any(i => i.ToDisplayString() == "DaServer.Rpc.IActorId")) return true;
         if (type is INamedTypeSymbol named && named.ContainingNamespace?.ToDisplayString() is { } ns &&
             (ns == "System" || ns.StartsWith("System.", System.StringComparison.Ordinal)))
             return named.TypeArguments.All(IsWireType);

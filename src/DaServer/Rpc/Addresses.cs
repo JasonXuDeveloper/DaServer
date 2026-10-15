@@ -25,9 +25,12 @@ public readonly partial record struct ClientGroup(long Id)
 
     /// <summary>
     /// The group of <paramref name="key"/> within the scope <typeparamref name="TScope"/>, any type naming a feature
-    /// (<c>ClientGroup.Of&lt;MapGrid&gt;(cell)</c>). For an actor type it is that actor's <c>Group</c>.
+    /// (<c>ClientGroup.Of&lt;MapGrid&gt;(cell)</c>).
     /// </summary>
     public static ClientGroup Of<TScope>(long key) => Of(TypeId<TScope>.Value, key);
+
+    /// <summary>The <c>Group</c> of actor <paramref name="id"/> (<c>ClientGroup.Of(new RoomId(7))</c>).</summary>
+    public static ClientGroup Of<TId>(TId id) where TId : struct, IActorId => Of(ActorIds<TId>.HandlerTypeId, id.Value);
 
     /// <summary>The group of <paramref name="key"/> within <paramref name="scope"/>: a 64-bit mix of both, never <see cref="All"/>.</summary>
     internal static ClientGroup Of(uint scope, long key)

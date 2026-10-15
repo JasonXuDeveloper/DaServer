@@ -6,14 +6,15 @@ namespace DaServer.Rpc;
 // Message-first: a message is a [NinoType, Message] struct, a handler is a [Handle] method taking it. Nothing else is
 // declared. Plain [NinoType] types are data inside messages (fields, replies), never sent on their own.
 //
-//   Cluster.Send(key, msg)        one-way to the actor of that key handling msg   (Send(msg): the service handling it)
-//   Cluster.Ask(key, request)     request/reply: request implements IRequest<TReply>, its handler returns TReply
-//   Cluster.Publish(e)            to every handler of e (services); Publish(key, e) also reaches actor handlers of key
+//   Cluster.Send(mapId, msg)      one-way to the actor with that id (its id type names the actor type)
+//   Cluster.Send(msg)             one-way to the service handling msg
+//   Cluster.Ask(mapId, request)   request/reply: request implements IRequest<TReply>, its handler returns TReply
+//   Cluster.Publish(e)            to every service handling e
 //   Cluster.Push(session, msg)    push to one client; Broadcast(group, msg) to a client group
-//   client.Send(msg) / Ask(..)    clients send Flow.FromClient messages; actor handlers get the key bound to the session
+//   client.Send(msg) / Ask(..)    clients send Flow.FromClient messages: to the actor bound to their session, else a service
 
 /// <summary>
-/// A message answered with a <typeparamref name="TReply"/>: <c>Cluster.Ask(key, new GetInfo())</c>. Its handler
+/// A message answered with a <typeparamref name="TReply"/>: <c>Cluster.Ask(playerId, new GetInfo())</c>. Its handler
 /// returns <typeparamref name="TReply"/> or <c>ValueTask&lt;TReply&gt;</c>. A marker only (never boxed: the generated
 /// <c>Ask</c> overloads take the struct itself).
 /// </summary>
@@ -36,8 +37,8 @@ public enum Flow
 
     /// <summary>
     /// Game clients may send it through a gateway, which adds the client's session (<c>CallerSession</c>). Handled by a
-    /// service: any node hosting it. Handled by an actor: the key bound to the session (<c>BindSession</c>), so a
-    /// client never reaches another player's actor, unless <see cref="MessageAttribute.AnyKey"/> is set.
+    /// service: any node hosting it. Handled by an actor: the actor bound to the session (<c>BindSession</c>), so a
+    /// client never reaches another player's actor, unless <see cref="MessageAttribute.AnyId"/> is set.
     /// </summary>
     FromClient = 1,
 
@@ -56,8 +57,11 @@ public sealed class MessageAttribute(Flow flow = Flow.Internal) : Attribute
 {
     public Flow Flow { get; } = flow;
 
-    /// <summary><see cref="Flow.FromClient"/> to actors only: the client chooses the key (public actors: rooms, leaderboards).</summary>
-    public bool AnyKey { get; set; }
+    /// <summary>
+    /// <see cref="Flow.FromClient"/> to actors only: the client names the actor (<c>client.Send(roomId, new Say(..))</c>;
+    /// public actors: rooms, leaderboards).
+    /// </summary>
+    public bool AnyId { get; set; }
 }
 
 /// <summary>
@@ -87,8 +91,8 @@ public sealed class MessagesAssemblyAttribute(Type anchor) : Attribute
 /// </summary>
 public interface IMessageSender
 {
-    /// <summary>One-way message to the actor of <paramref name="key"/> handling <typeparamref name="T"/>.</summary>
-    void Send<T>(long key, in T message) where T : struct;
+    /// <summary>One-way message to the actor <paramref name="id"/> (<c>Cluster.Send(mapId, new Move(..))</c>).</summary>
+    void Send<TId, T>(TId id, in T message) where TId : struct, IActorId where T : struct;
 
     /// <summary>
     /// One-way message to the service handling <typeparamref name="T"/> (from a client: also to the actor bound to the
@@ -97,7 +101,8 @@ public interface IMessageSender
     void Send<T>(in T message) where T : struct;
 
     [EditorBrowsable(EditorBrowsableState.Never)]
-    ValueTask<TReply> Ask<TRequest, TReply>(long key, in TRequest request) where TRequest : struct, IRequest<TReply>;
+    ValueTask<TReply> Ask<TId, TRequest, TReply>(TId id, in TRequest request)
+        where TId : struct, IActorId where TRequest : struct, IRequest<TReply>;
 
     [EditorBrowsable(EditorBrowsableState.Never)]
     ValueTask<TReply> Ask<TRequest, TReply>(in TRequest request) where TRequest : struct, IRequest<TReply>;
@@ -175,7 +180,7 @@ public sealed class MessageHandlers
 }
 
 /// <summary>A message type game clients may send (<see cref="Flow.FromClient"/>).</summary>
-public readonly record struct ClientMessageInfo(uint Id, Type Type, bool AnyKey);
+public readonly record struct ClientMessageInfo(uint Id, Type Type, bool AnyId);
 
 /// <summary>
 /// Process-wide registries filled by generated module initializers (no reflection scanning, no configuration): the
@@ -188,9 +193,9 @@ public static class MessageRegistry
     private static FrozenDictionary<Type, MessageHandlers> _handlerTypes = FrozenDictionary<Type, MessageHandlers>.Empty;
 
     /// <summary>Register a client message type. Idempotent per type; throws on wire-id collisions.</summary>
-    public static void RegisterClientMessage<T>(bool anyKey) where T : struct
+    public static void RegisterClientMessage<T>(bool anyId) where T : struct
     {
-        var info = new ClientMessageInfo(MessageType<T>.Id, typeof(T), anyKey);
+        var info = new ClientMessageInfo(MessageType<T>.Id, typeof(T), anyId);
         lock (Gate)
         {
             if (_clientMessages.TryGetValue(info.Id, out var existing))

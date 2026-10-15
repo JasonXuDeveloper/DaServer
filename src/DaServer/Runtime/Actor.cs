@@ -1,17 +1,22 @@
 namespace DaServer.Runtime;
 
 /// <summary>
-/// Base class of stateful, keyed actors: one loaded actor per key in the cluster, placed by rendezvous hashing over the
-/// nodes hosting the type, loaded on demand, one message at a time. Messages arrive at its [Handle] methods
-/// (<c>Cluster.Send(key, msg)</c>, <c>Cluster.Ask(key, request)</c>). A loaded actor is an entity of its shard's ECS
-/// world: keep state in components on <see cref="Entity"/> so shard systems can process every actor of the shard in one
-/// pass. Messages run on the shard thread one at a time, awaits included (no locks).
+/// Base of every actor (derive from <see cref="Actor{TId}"/> or <see cref="Actor{TId,TState}"/>): one loaded actor per
+/// id in the cluster, placed by rendezvous hashing over the nodes hosting the type, loaded on demand, one message at a
+/// time. Messages arrive at its [Handle] methods (<c>Cluster.Send(mapId, msg)</c>, <c>Cluster.Ask(mapId, request)</c>).
+/// A loaded actor is an entity of its shard's ECS world: state lives in components on <see cref="Entity"/>, so shard
+/// systems process every actor of the shard in one pass. Messages run on the shard thread one at a time, awaits
+/// included (no locks).
 /// </summary>
 /// <remarks>Refs into components are valid until the next structural change: never keep one across an <c>await</c>.</remarks>
 public abstract class Actor : ShardObject
 {
-    /// <summary>Actor key (player id, map instance id, ...).</summary>
-    public long Key { get; internal set; }
+    private protected Actor()
+    {
+    }
+
+    /// <summary>The value of the actor's id (<see cref="Actor{TId}.Id"/>).</summary>
+    internal long Key { get; set; }
 
     /// <summary>
     /// The actor's client group: sessions bound to it (<see cref="BindSession"/>) or that joined it receive
@@ -67,12 +72,19 @@ public abstract class Actor : ShardObject
     }
 }
 
+/// <summary>An actor addressed by <typeparamref name="TId"/> (<c>Room : Actor&lt;RoomId&gt;</c>).</summary>
+public abstract class Actor<TId> : Actor where TId : struct, IActorId
+{
+    /// <summary>The actor's id (player id, map instance id, ...).</summary>
+    public TId Id => ActorIds<TId>.Of(Key);
+}
+
 /// <summary>
 /// An actor whose state is one component, added to its entity on load: <c>State.Gold += 10</c>. Systems query it like
 /// any component (<c>[ForEach] void Regen(ref PlayerState s)</c> runs over every player of the shard). The state starts
 /// as <c>new TState()</c>, so field initializers run: <c>public HashSet&lt;long&gt; Online = new();</c>.
 /// </summary>
-public abstract class Actor<TState> : Actor where TState : struct, IComponent
+public abstract class Actor<TId, TState> : Actor<TId> where TId : struct, IActorId where TState : struct, IComponent
 {
     /// <summary>The actor's state (a ref into ECS storage: re-read it after an <c>await</c>).</summary>
     protected ref TState State => ref Entity.Get<TState>();
@@ -81,16 +93,20 @@ public abstract class Actor<TState> : Actor where TState : struct, IComponent
 }
 
 /// <summary>
-/// The loaded actor an actor entity belongs to: systems read its key and client group from it
-/// (<c>[ForEach] static void Send(ref MapGrid grid, in ActorRef actor, World world) => .. actor.Key ..</c>).
+/// The loaded actor an actor entity belongs to: systems read its id and client group from it
+/// (<c>[ForEach] static void Send(ref MapGrid grid, in ActorRef self, World world) => .. self.Id&lt;MapId&gt;() ..</c>).
 /// </summary>
 public readonly record struct ActorRef(Actor Actor) : IComponent
 {
-    /// <summary>The actor's key (<see cref="Runtime.Actor.Key"/>).</summary>
-    public long Key => Actor.Key;
+    /// <summary>The actor's id, of its id type <typeparamref name="TId"/>.</summary>
+    public TId Id<TId>() where TId : struct, IActorId =>
+        Actor.HandlerType.Id == ActorIds<TId>.HandlerTypeId ? ActorIds<TId>.Of(Actor.Key) : throw WrongIdType(typeof(TId));
 
     /// <summary>The actor's client group (<see cref="Runtime.Actor.Group"/>).</summary>
     public ClientGroup Group => Actor.Group;
 
-    internal ActorId Id => new(Actor.HandlerType.Id, Actor.Key);
+    internal ActorAddress Address => new(Actor.HandlerType.Id, Actor.Key);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private InvalidOperationException WrongIdType(Type type) => new($"{Actor.HandlerType} is not addressed by {type}");
 }

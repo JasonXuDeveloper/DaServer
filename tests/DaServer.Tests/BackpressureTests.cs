@@ -8,13 +8,13 @@ public class BackpressureTests : ClusterTest
     {
         var node = await Start("single", shards: 1, configure: static o => o.ActorMailboxCapacity = 4);
         // Each request awaits 10 ms inside its turn, so the requests pile up behind the first one.
-        var statuses = await Task.WhenAll(Enumerable.Range(0, 50).Select(_ => StatusOf(node.Ask(1, new SlowAdd(1)))));
+        var statuses = await Task.WhenAll(Enumerable.Range(0, 50).Select(_ => StatusOf(node.Ask(new CounterId(1), new SlowAdd(1)))));
 
         int ok = statuses.Count(s => s == RpcStatus.Ok), overloaded = statuses.Count(s => s == RpcStatus.Overloaded);
         Assert.That(ok + overloaded, Is.EqualTo(50), "every call either ran or was refused");
         // All 50 may arrive before the first turn starts (loaded actor): then exactly the capacity is admitted.
         Assert.That(ok, Is.InRange(4, 49), "the mailbox capacity was used");
-        Assert.That(await node.Ask(1, new Get()), Is.EqualTo(ok), "refused calls did not run");
+        Assert.That(await node.Ask(new CounterId(1), new Get()), Is.EqualTo(ok), "refused calls did not run");
         Assert.That(node.Rejected, Is.EqualTo(overloaded));
     }
 
@@ -27,7 +27,7 @@ public class BackpressureTests : ClusterTest
         shard.Post(static g => ((ManualResetEventSlim)g!).Wait(), gate); // the shard is busy until the gate opens
         await Eventually(() => shard.QueueLength == 0, "the shard took the blocking callback");
 
-        var calls = Enumerable.Range(0, 100).Select(_ => StatusOf(node.Ask(1, new Add(1)))).ToArray();
+        var calls = Enumerable.Range(0, 100).Select(_ => StatusOf(node.Ask(new CounterId(1), new Add(1)))).ToArray();
         int refused = calls.Count(c => c.IsCompleted);
         Assert.That(refused, Is.EqualTo(100 - 16), "calls beyond the capacity fail fast while the shard is busy");
         Assert.That(calls.Where(c => c.IsCompleted).All(c => c.Result == RpcStatus.Overloaded));
@@ -35,7 +35,7 @@ public class BackpressureTests : ClusterTest
         gate.Set();
         var statuses = await Task.WhenAll(calls);
         Assert.That(statuses.Count(s => s == RpcStatus.Ok), Is.EqualTo(16));
-        Assert.That(await node.Ask(1, new Get()), Is.EqualTo(16), "admitted calls ran once the shard caught up");
+        Assert.That(await node.Ask(new CounterId(1), new Get()), Is.EqualTo(16), "admitted calls ran once the shard caught up");
         Assert.That(node.Rejected, Is.EqualTo(84));
     }
 
@@ -48,12 +48,12 @@ public class BackpressureTests : ClusterTest
         shard.Post(static g => ((ManualResetEventSlim)g!).Wait(), gate); // the shard is busy until the gate opens
         await Eventually(() => shard.QueueLength == 0, "the shard took the blocking callback");
 
-        var calls = Enumerable.Range(0, 10).Select(_ => StatusOf(node.Ask(1, new Add(1)))).ToArray();
+        var calls = Enumerable.Range(0, 10).Select(_ => StatusOf(node.Ask(new CounterId(1), new Add(1)))).ToArray();
         Assert.That(await Task.WhenAll(calls), Is.All.EqualTo(RpcStatus.Timeout), "the callers gave up");
         await Task.Delay(100); // deadlines are best effort at millisecond granularity: stay clear of the boundary
 
         gate.Set();
-        Assert.That(await node.Ask(1, new Get()), Is.Zero, "requests whose caller timed out were not run");
+        Assert.That(await node.Ask(new CounterId(1), new Get()), Is.Zero, "requests whose caller timed out were not run");
         Assert.That(node.Expired, Is.EqualTo(10));
     }
 
@@ -69,12 +69,12 @@ public class BackpressureTests : ClusterTest
         shard.Post(static g => ((ManualResetEventSlim)g!).Wait(), gate);
         await Eventually(() => shard.QueueLength == 0, "the shard took the blocking callback");
 
-        var calls = Enumerable.Range(0, 10).Select(_ => StatusOf(caller.Ask(1, new Add(1)))).ToArray();
+        var calls = Enumerable.Range(0, 10).Select(_ => StatusOf(caller.Ask(new CounterId(1), new Add(1)))).ToArray();
         Assert.That(await Task.WhenAll(calls), Is.All.EqualTo(RpcStatus.Timeout));
         await Task.Delay(100);
 
         gate.Set();
-        Assert.That(await caller.Ask(1, new Get()), Is.Zero, "the remote node did not run requests past their deadline");
+        Assert.That(await caller.Ask(new CounterId(1), new Get()), Is.Zero, "the remote node did not run requests past their deadline");
         Assert.That(target.Expired, Is.EqualTo(10));
     }
 

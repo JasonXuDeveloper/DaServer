@@ -18,16 +18,15 @@ internal static class ShardDispatch
     {
         var node = world.Shard().Node;
         var header = FrameHeader.Read(frame.Frame);
-        bool request = header.Kind == FrameKind.Request;
-        var handlerType = request
-            ? node.RequestHandler(header.MessageId, (header.Flags & FrameFlags.ToActor) != 0)
-            : node.HandlerTypeById(header.RequestId);
+        uint target = FrameHeader.TargetOf(in header, frame.Frame);
+        var handlerType = target != 0 ? node.HandlerTypeById(target) : node.ServiceHandler(header.MessageId);
         var handler = handlerType?.Handlers.Of(header.MessageId);
         if (handler == null)
         {
             // Not hosted here (stale view at the sender): an actor message finds its owner, a service request fails.
-            if (request && (header.Flags & FrameFlags.ToActor) == 0)
-                Fail(frame, sink, RpcStatus.NotHosted, "No service handles the message here");
+            // An actor type that does not handle the message fails at its owner the same way (wrong id type).
+            if (target == 0 || (handlerType != null && handlerType.IsActor))
+                Fail(frame, sink, RpcStatus.NotHosted, "Nothing here handles the message");
             else
                 node.Forward(frame, sink);
             return;
@@ -51,12 +50,12 @@ internal static class ShardDispatch
 
     /// <summary>A loaded actor of this shard, including one being unloaded (new mail queues behind its mail).</summary>
     private static bool TryGetLoaded(World world, uint handlerTypeId, long key, out Entity actor) =>
-        world.GetSingleton<ActorDirectory>().Actors.TryGetValue(new ActorId(handlerTypeId, key), out actor);
+        world.GetSingleton<ActorDirectory>().Actors.TryGetValue(new ActorAddress(handlerTypeId, key), out actor);
 
     /// <summary>The loaded actor of (<paramref name="handlerType"/>, <paramref name="key"/>) on this shard, loaded on first use.</summary>
     private static Entity ActorOf(World world, HandlerTypeInfo handlerType, long key)
     {
-        var id = new ActorId(handlerType.Id, key);
+        var id = new ActorAddress(handlerType.Id, key);
         var actors = world.GetSingleton<ActorDirectory>().Actors;
         if (!actors.TryGetValue(id, out var entity))
             actors[id] = entity = Load(world, handlerType, id);
@@ -87,7 +86,7 @@ internal static class ShardDispatch
     /// Create the actor's entity (link, identity, mailbox, the actor's own components) and start
     /// <see cref="Actor.OnLoad"/> as its first turn (<see cref="Loading"/>): mail waits until it completes.
     /// </summary>
-    private static Entity Load(World world, HandlerTypeInfo handlerType, ActorId id)
+    private static Entity Load(World world, HandlerTypeInfo handlerType, ActorAddress id)
     {
         var actor = (Actor)handlerType.Factory();
         actor.HandlerType = handlerType;

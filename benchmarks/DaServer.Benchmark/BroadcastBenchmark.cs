@@ -13,7 +13,7 @@ public class BroadcastBenchmark
     private readonly Countdown _countdown = new();
     private Node[] _nodes = null!;
     private ClusterClient[] _clients = null!;
-    private long _room;
+    private RoomId _room;
     private int _sequence;
 
     [Params(1_000, 5_000)] public int Clients;
@@ -28,7 +28,7 @@ public class BroadcastBenchmark
         _nodes = await Clusters.Start(2, shards: 4, gateways: 1);
 
         // A room owned by the non-gateway node: the broadcast crosses the node link, then fans out at the gateway.
-        long room = Clusters.KeyOwnedBy<Room>(_nodes[0], _nodes[1]);
+        var room = Clusters.IdOwnedBy<RoomId>(_nodes[0], _nodes[1]);
         var receiver = new Receiver(_countdown);
 
         _clients = new ClusterClient[Clients];

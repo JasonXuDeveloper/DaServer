@@ -11,12 +11,12 @@ public class EventTests : ClusterTest
     {
         var nodes = await StartCluster(3);
         for (long key = 1; key <= 20; key++)
-            nodes[(int)(key % 3)].Publish(key, new CounterBumped((int)key));
+            nodes[(int)(key % 3)].Send(new CounterId(key), new CounterBumped((int)key));
 
         for (long key = 1; key <= 20; key++)
         {
             long k = key;
-            await Eventually(async () => await nodes[0].Ask(k, new Get()) == k, $"event for key {k} not applied");
+            await Eventually(async () => await nodes[0].Ask(new CounterId(k), new Get()) == k, $"event for key {k} not applied");
         }
     }
 
@@ -24,8 +24,8 @@ public class EventTests : ClusterTest
     public async Task EventsAndCallsOfOneSenderStayInOrder()
     {
         var node = await Start("solo");
-        for (int i = 0; i < 100; i++) node.Publish(5, new CounterBumped(1));
-        Assert.That(await node.Ask(5, new Get()), Is.EqualTo(100), "the call queued behind the events");
+        for (int i = 0; i < 100; i++) node.Send(new CounterId(5), new CounterBumped(1));
+        Assert.That(await node.Ask(new CounterId(5), new Get()), Is.EqualTo(100), "the call queued behind the events");
     }
 
     [Test]
@@ -58,8 +58,8 @@ public class EventTests : ClusterTest
         var b = await Start("b");
         await Converged();
 
-        a.Publish(3, new CounterBumped(7)); // a hosts no counters: delivered on b
-        await Eventually(async () => await b.Ask(3, new Get()) == 7, "event not routed to the hosting node");
-        Assert.That(OwnerOf<Counter>(b, 3), Is.EqualTo(b.Id));
+        a.Send(new CounterId(3), new CounterBumped(7)); // a hosts no counters: delivered on b
+        await Eventually(async () => await b.Ask(new CounterId(3), new Get()) == 7, "event not routed to the hosting node");
+        Assert.That(OwnerOf<CounterId>(b, 3), Is.EqualTo(b.Id));
     }
 }

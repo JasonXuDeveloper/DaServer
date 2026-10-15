@@ -8,6 +8,11 @@ namespace DaServer.Tests;
 
 [NinoType] public partial record struct Point(int X, int Y);
 
+public readonly record struct CounterId(long Value) : IActorId;
+public readonly record struct VisitorId(long Value) : IActorId;
+public readonly record struct PlayerId(long Value) : IActorId;
+public readonly record struct RoomId(long Value) : IActorId;
+
 // ---------------------------------------------------------------- counter (actor)
 
 [NinoType, Message] public partial record struct Add(int Delta) : IRequest<int>;
@@ -16,14 +21,14 @@ namespace DaServer.Tests;
 [NinoType, Message] public partial record struct Reset : IRequest<bool>;
 [NinoType, Message] public partial record struct WhereAmI : IRequest<string>;              // shard thread name
 [NinoType, Message] public partial record struct EchoPoint(Point Point) : IRequest<Point>;
-[NinoType, Message] public partial record struct AddVia(long Other, int Delta) : IRequest<int>; // actor -> actor request
+[NinoType, Message] public partial record struct AddVia(CounterId Other, int Delta) : IRequest<int>; // actor -> actor request
 [NinoType, Message] public partial record struct Fail(string Message) : IRequest<bool>;
 [NinoType, Message] public partial record struct SlowAdd(int Delta) : IRequest<int>;       // awaits a foreign Task.Delay
 [NinoType, Message] public partial record struct Grow : IRequest<bool>;                    // input for GrowthSystem
-[NinoType, Message] public partial record struct AddMany(long Other, int Count) : IRequest<long>;     // bytes allocated meanwhile
-[NinoType, Message] public partial record struct PublishMany(long Other, int Count) : IRequest<long>; // bytes allocated meanwhile
+[NinoType, Message] public partial record struct AddMany(CounterId Other, int Count) : IRequest<long>;     // bytes allocated meanwhile
+[NinoType, Message] public partial record struct SendMany(CounterId Other, int Count) : IRequest<long>;    // bytes allocated meanwhile
 
-/// <summary>Event: delivered to the counter of the key it is published with.</summary>
+/// <summary>One-way: sent in bursts (allocation test, events test).</summary>
 [NinoType, Message] public partial record struct CounterBumped(int By);
 
 public record struct CounterState(int Value) : IComponent;
@@ -31,7 +36,7 @@ public record struct CounterState(int Value) : IComponent;
 /// <summary>Tag: the counter grows by one every tick (written by the actor, processed by GrowthSystem).</summary>
 public struct Growing : IComponent;
 
-public sealed class Counter : Actor<CounterState>
+public sealed class Counter : Actor<CounterId, CounterState>
 {
     [Handle] public void On(CounterBumped e) => State.Value += e.By;
 
@@ -89,17 +94,17 @@ public sealed class Counter : Actor<CounterState>
 
     [Handle]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
-    public async ValueTask<long> On(PublishMany m)
+    public async ValueTask<long> On(SendMany m)
     {
-        // Bursts of 100 events, each followed by a request (messages of one sender reach an actor in order): steady
-        // state with bounded frames in flight, as in a running server.
+        // Bursts of 100 one-way messages, each followed by a request (messages of one sender reach an actor in order):
+        // steady state with bounded frames in flight, as in a running server.
         const int burst = 100;
-        for (int i = 0; i < burst; i++) Cluster.Publish(m.Other, new CounterBumped(1));
+        for (int i = 0; i < burst; i++) Cluster.Send(m.Other, new CounterBumped(1));
         await Cluster.Ask(m.Other, new Get());
         long before = GC.GetTotalAllocatedBytes(precise: true);
         for (int sent = 0; sent < m.Count; sent += burst)
         {
-            for (int i = 0; i < burst; i++) Cluster.Publish(m.Other, new CounterBumped(1));
+            for (int i = 0; i < burst; i++) Cluster.Send(m.Other, new CounterBumped(1));
             await Cluster.Ask(m.Other, new Get());
         }
 
@@ -123,19 +128,19 @@ public sealed partial class GrowthSystem : EcsSystem
 
 public record struct Visits(int Count) : IComponent;
 
-public sealed class Visitor : Actor<Visits>
+public sealed class Visitor : Actor<VisitorId, Visits>
 {
     public override TimeSpan UnloadAfterIdle => TimeSpan.FromMilliseconds(300);
 
     public override ValueTask OnLoad()
     {
-        Observed.Events.Enqueue($"load:{Key}");
+        Observed.Events.Enqueue($"load:{Id.Value}");
         return default;
     }
 
     public override ValueTask OnUnload()
     {
-        Observed.Events.Enqueue($"unload:{Key}");
+        Observed.Events.Enqueue($"unload:{Id.Value}");
         return default;
     }
 
@@ -173,10 +178,10 @@ public sealed class AuditService : Service
 
 // ---------------------------------------------------------------- client-facing: login, player, rooms
 
-[NinoType, Message(Flow.FromClient)] public partial record struct Login(long PlayerId) : IRequest<bool>;
+[NinoType, Message(Flow.FromClient)] public partial record struct Login(PlayerId Player) : IRequest<bool>;
 
 /// <summary>Logs in behind a burst of 4 KB pushes to the caller (the binding must not be overtaken).</summary>
-[NinoType, Message(Flow.FromClient)] public partial record struct LoginAfterPushes(long PlayerId, int Pushes) : IRequest<bool>;
+[NinoType, Message(Flow.FromClient)] public partial record struct LoginAfterPushes(PlayerId Player, int Pushes) : IRequest<bool>;
 
 [NinoType, Message(Flow.FromClient)] public partial record struct Logout : IRequest<bool>;
 [NinoType, Message(Flow.FromClient)] public partial record struct AddGold(int Amount) : IRequest<int>;
@@ -185,32 +190,32 @@ public sealed class AuditService : Service
 /// <summary>Server-only: the login service attaches a client session to its player.</summary>
 [NinoType, Message] public partial record struct Attach(SessionRef Session) : IRequest<bool>;
 
-/// <summary>A public chat room: clients choose the room id.</summary>
-[NinoType, Message(Flow.FromClient, AnyKey = true)] public partial record struct Join : IRequest<bool>;
-[NinoType, Message(Flow.FromClient, AnyKey = true)] public partial record struct Say(string Text);
+/// <summary>A public chat room: clients name the room (<c>client.Send(roomId, ..)</c>).</summary>
+[NinoType, Message(Flow.FromClient, AnyId = true)] public partial record struct Join : IRequest<bool>;
+[NinoType, Message(Flow.FromClient, AnyId = true)] public partial record struct Say(string Text);
 
 // Pushes (server to client).
-[NinoType, Message(Flow.ToClient)] public partial record struct Chat(long From, string Text);
+[NinoType, Message(Flow.ToClient)] public partial record struct Chat(RoomId From, string Text);
 [NinoType, Message(Flow.ToClient)] public partial record struct GoldChanged(int Gold);
 
 public sealed class AuthService : Service
 {
     [Handle]
     public async ValueTask<bool> On(Login m) =>
-        CallerSession.IsValid && m.PlayerId > 0 && await Cluster.Ask(m.PlayerId, new Attach(CallerSession));
+        CallerSession.IsValid && m.Player.Value > 0 && await Cluster.Ask(m.Player, new Attach(CallerSession));
 
     [Handle]
     public ValueTask<bool> On(LoginAfterPushes m)
     {
         var text = new string('x', 2048); // 4 KB (UTF-16)
-        for (int i = 0; i < m.Pushes; i++) Cluster.Push(CallerSession, new Chat(0, text));
-        return On(new Login(m.PlayerId));
+        for (int i = 0; i < m.Pushes; i++) Cluster.Push(CallerSession, new Chat(default, text));
+        return On(new Login(m.Player));
     }
 }
 
 public record struct Wallet(int Gold) : IComponent;
 
-public sealed class Player : Actor<Wallet>
+public sealed class Player : Actor<PlayerId, Wallet>
 {
     [Handle]
     public async ValueTask<bool> On(Attach m)
@@ -236,12 +241,12 @@ public sealed class Player : Actor<Wallet>
 
     [Handle] public void On(Tip m) => State.Gold += m.Amount;
 
-    [Handle] public void On(SessionClosed _) => Observed.Events.Enqueue($"closed:{Key}");
+    [Handle] public void On(SessionClosed _) => Observed.Events.Enqueue($"closed:{Id.Value}");
 
-    [Handle] public void On(SessionResync _) => Observed.Events.Enqueue($"resync:{Key}");
+    [Handle] public void On(SessionResync _) => Observed.Events.Enqueue($"resync:{Id.Value}");
 }
 
-public sealed class Room : Actor
+public sealed class Room : Actor<RoomId>
 {
     [Handle]
     public bool On(Join _)
@@ -250,5 +255,5 @@ public sealed class Room : Actor
         return true;
     }
 
-    [Handle] public void On(Say m) => Cluster.Broadcast(Group, new Chat(Key, m.Text));
+    [Handle] public void On(Say m) => Cluster.Broadcast(Group, new Chat(Id, m.Text));
 }

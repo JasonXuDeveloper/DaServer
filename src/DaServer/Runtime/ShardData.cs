@@ -19,7 +19,7 @@ internal struct ShardIdleScan : ISystemGroup;
 /// <summary>A message for an actor or service: the frame and where its response goes.</summary>
 internal readonly record struct Envelope(FrameWriter Frame, IReplySink? Sink);
 
-internal readonly record struct ActorId(uint HandlerTypeId, long Key);
+internal readonly record struct ActorAddress(uint HandlerTypeId, long Key);
 
 // ---------------------------------------------------------------- actor components
 
@@ -85,7 +85,7 @@ internal readonly record struct ClientSessions(HashSet<SessionRef> Sessions, Has
 // ---------------------------------------------------------------- shard singletons
 
 /// <summary>Loaded actors of this shard by id.</summary>
-internal readonly record struct ActorDirectory(Dictionary<ActorId, Entity> Actors) : ISingletonComponent;
+internal readonly record struct ActorDirectory(Dictionary<ActorAddress, Entity> Actors) : ISingletonComponent;
 
 /// <summary>Idle <see cref="TurnWatcher"/>s (bounded by the turns in flight).</summary>
 internal readonly record struct TurnWatchers(Stack<TurnWatcher> Pool) : ISingletonComponent;
