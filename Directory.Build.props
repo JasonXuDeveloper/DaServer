@@ -16,4 +16,9 @@
         <!-- NU5104: a release depending on a prerelease package (Nino 4 is in beta). -->
         <NoWarn>$(NoWarn);NU5104</NoWarn>
     </PropertyGroup>
+    <!-- Lets the DaServer analyzer and generators read <DaServerShared> (shared logic: DAS010, [SharedLogic]); the
+         Abstractions package carries the same item for its users (buildTransitive). -->
+    <ItemGroup>
+        <CompilerVisibleProperty Include="DaServerShared" />
+    </ItemGroup>
 </Project>

@@ -1,0 +1,6 @@
+<Project>
+    <!-- Lets the DaServer analyzer and generators read <DaServerShared>true</DaServerShared> (shared logic, DAS010). -->
+    <ItemGroup>
+        <CompilerVisibleProperty Include="DaServerShared" />
+    </ItemGroup>
+</Project>

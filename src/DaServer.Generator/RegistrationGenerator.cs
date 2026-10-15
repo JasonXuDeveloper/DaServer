@@ -53,15 +53,29 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
                 c.GetTypeByMetadataName("DaServer.Runtime.ServerRegistry") != null,
                 HasModuleInitializers(c),
                 Identifier(c.AssemblyName ?? "Assembly"),
-                new EquatableArray<string>(ContractAssemblyAnchors(c))))
+                new EquatableArray<string>(ContractAssemblyAnchors(c)),
+                new EquatableArray<string>(SharedSystems(c))))
             .WithTrackingName("RegistrationAssembly");
 
         context.RegisterSourceOutput(hosted.Combine(clientMessages).Combine(assembly), static (spc, input) =>
         {
             var ((types, messages), info) = input;
-            if (!info.ReferencesCore) types = default; // handler registration lives in DaServer.Core
-            if (types.Length + messages.Length + info.ContractAnchors.Length == 0) return;
-            spc.AddSource("DaServer.Registration.g.cs", SourceText.From(Emit(types, messages, info), Encoding.UTF8));
+            // Handler registration lives in DaServer.Core; actors, services and systems need the server runtime.
+            if (!info.ReferencesCore) types = default;
+            else if (!info.ReferencesRuntime)
+                types = new EquatableArray<HostedModel>(types.Where(static t => t.Kind == HostedKind.ClientHandler).ToArray());
+            var sharedSystems = info.ReferencesRuntime ? info.SharedSystems : default;
+            if (types.Length + messages.Length + info.ContractAnchors.Length + sharedSystems.Length == 0) return;
+            spc.AddSource("DaServer.Registration.g.cs", SourceText.From(Emit(types, messages, sharedSystems, info), Encoding.UTF8));
+        });
+
+        // An assembly built with <DaServerShared>true</DaServerShared> says so, for the nodes that reference it.
+        var shared = context.AnalyzerConfigOptionsProvider
+            .Select(static (o, _) => IsShared(o.GlobalOptions))
+            .WithTrackingName("SharedLogic");
+        context.RegisterSourceOutput(shared, static (spc, isShared) =>
+        {
+            if (isShared) spc.AddSource("DaServer.SharedLogic.g.cs", SourceText.From(Header + "[assembly: global::DaServer.SharedLogic]\n", Encoding.UTF8));
         });
     }
 
@@ -86,7 +100,38 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
         return anchors.ToArray();
     }
 
-    private static string Emit(EquatableArray<HostedModel> types, EquatableArray<ClientMessageModel> messages, AssemblyModel info)
+    /// <summary>Whether the project sets <c>&lt;DaServerShared&gt;true&lt;/DaServerShared&gt;</c> (made visible by DaServer's build props).</summary>
+    internal static bool IsShared(Microsoft.CodeAnalysis.Diagnostics.AnalyzerConfigOptions options) =>
+        options.TryGetValue("build_property.DaServerShared", out var value) &&
+        string.Equals(value, "true", System.StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>The EcsSystem types of referenced shared-logic assemblies ([SharedLogic]): this node runs them too.</summary>
+    private static string[] SharedSystems(Compilation compilation)
+    {
+        var systems = new List<string>();
+        foreach (var assembly in compilation.SourceModule.ReferencedAssemblySymbols)
+        {
+            bool isShared = false;
+            foreach (var attribute in assembly.GetAttributes())
+                isShared |= Is(attribute.AttributeClass, "DaServer.SharedLogicAttribute");
+            if (isShared) CollectSystems(assembly.GlobalNamespace, systems);
+        }
+
+        systems.Sort(System.StringComparer.Ordinal);
+        return systems.ToArray();
+    }
+
+    private static void CollectSystems(INamespaceSymbol ns, List<string> systems)
+    {
+        foreach (var type in ns.GetTypeMembers())
+            if (type is { DeclaredAccessibility: Accessibility.Public, IsAbstract: false, IsGenericType: false } &&
+                DerivesFrom(type, EcsSystem))
+                systems.Add(type.ToDisplayString(Fqn));
+        foreach (var inner in ns.GetNamespaceMembers()) CollectSystems(inner, systems);
+    }
+
+    private static string Emit(EquatableArray<HostedModel> types, EquatableArray<ClientMessageModel> messages,
+        EquatableArray<string> sharedSystems, AssemblyModel info)
     {
         var sb = new StringBuilder(Header);
         sb.Append("using System.Runtime.CompilerServices;\nusing DaServer;\n");
@@ -102,6 +147,8 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
             sb.Append($"        RuntimeHelpers.RunClassConstructor(typeof({anchor}).TypeHandle);\n");
         foreach (var m in messages)
             sb.Append($"        global::DaServer.ClientMessages.Register<{m.FullName}>();\n");
+        foreach (var system in sharedSystems)
+            sb.Append($"        ServerRegistry.RegisterSystem(new SystemInfo(typeof({system}), static () => new {system}()));\n");
 
         foreach (var t in types)
         {
@@ -167,5 +214,6 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
     private static bool HasModuleInitializers(Compilation c) =>
         c.GetTypeByMetadataName("System.Runtime.CompilerServices.ModuleInitializerAttribute") != null;
 
-    private sealed record AssemblyModel(bool ReferencesCore, bool ReferencesRuntime, bool ModuleInitializer, string AssemblyHint, EquatableArray<string> ContractAnchors);
+    private sealed record AssemblyModel(bool ReferencesCore, bool ReferencesRuntime, bool ModuleInitializer, string AssemblyHint,
+        EquatableArray<string> ContractAnchors, EquatableArray<string> SharedSystems);
 }
