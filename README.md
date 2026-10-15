@@ -287,7 +287,7 @@ dotnet test DaServer.slnx
 dotnet run -c Release --project benchmarks/DaServer.Benchmark -- --filter '*'
 ```
 
-EasyEcs is taken from the sibling checkout `../EasyEcs` when it exists, otherwise from NuGet.
+EasyEcs comes from NuGet (`EasyEcsVersion` in `Directory.Build.props`).
 
 ## Documentation
 

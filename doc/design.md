@@ -258,7 +258,7 @@ The shard runtime itself is ECS. `Shard` owns only the thread, the cross-thread 
 
 | Data | Kind | Meaning |
 |---|---|---|
-| `ActorLink`, `ActorIdentity` | components | the activation object and its directory key |
+| `ActorLink` | component | the activation object (its key and client group for systems) |
 | `Mailbox` | component | messages waiting for the actor (a turn at a time) |
 | `Ready` | tag | the mailbox has mail |
 | `Turn` | component | the asynchronous message, load or unload in progress (present = busy) |
@@ -267,7 +267,7 @@ The shard runtime itself is ECS. `Shard` owns only the thread, the cross-thread 
 | `Retiring` | component | the activation ends: mail is routed again (or failed with its status) |
 | `ServiceCall` | tag | an entity per running asynchronous service call (ended like a turn) |
 | `ActorDirectory`, `ServiceDirectory` | singletons | activations by id, service instances by implementation |
-| `TurnWatchers`, `ShardTimers`, `ShardActivity` | singletons | pooled watchers, timers, per-wake bookkeeping |
+| `TurnWatchers`, `ShardActivity` | singletons | pooled watchers, per-wake bookkeeping |
 
 ```mermaid
 flowchart LR
@@ -280,8 +280,12 @@ flowchart LR
     T -->|Retiring| RT[RetireSystem<br/>destroy, route mail again]
     R[RebalanceSystem / IdleSystem] -->|Unloading| U[UnloadSystem<br/>OnUnload when idle]
     U -->|Deactivating + Turn| W
-    TM[TimerSystem]
 ```
+
+Cadence belongs to the shard loop, behavior to systems (EasyEcs system groups): `ShardMessages` runs on every wake,
+`ShardRebalance` only after ownership may have changed, `ShardIdleScan` a few times a second, the default group at
+the tick rate. So every runtime system is a plain `[ForEach]` over the entities in one state, with no gating flags or
+manual queries.
 
 The only per-message work is a dictionary lookup, a queue push and the handler. Every system visits only the
 entities in the state it handles (a filter on tags), so nothing scans all actors and nothing polls running turns.

@@ -67,7 +67,7 @@ Keep this file current: tick items when done, add items when scope changes.
       message on gateways, no GC (README "Performance")
 - [x] Checklist 6: R1-R11 and E1-E10 hold; open items are the unchecked roadmap entries
 - [x] Naming review (ADR-032): `[FromClient]`/`[ToClient]`, `[ActorKey]`, `OnLoad`/`OnUnload`, `CallerSession`,
-      balancers; actor state from field initializers, `ActorIdentity` for systems
+      balancers; actor state from field initializers, `ActorLink` for systems
 - [x] Moving scenarios: 10,000 bots in 200 maps (full sync, ~10M positions/s, p99 139 ms) and in one map (AOI and
       dead reckoning, ~2.5M positions/s, p99 106 ms); servers 0–5 KB/s, no GC; scale-out: a gateway started mid-run
       receives the new clients (test + process run)
@@ -80,6 +80,8 @@ Keep this file current: tick items when done, add items when scope changes.
       `Deactivating`/`Retiring` with one system each; sample grid as data + systems (`DespawnSystem`, `PlacementSystem`)
 - [x] `[Message]` (ADR-038): `[NinoType, Message]` is a message, plain `[NinoType]` is data; `Flow` (`Internal`,
       `FromClient`, `ToClient`) checked at build time (DAS006); `[ClientMessage]` removed
+- [x] EasyEcs from NuGet, used as its docs teach (ADR-039): cadence as system groups (`ShardRebalance`,
+      `ShardIdleScan`), `UpdateInterval` in samples, `ActorLink` as the only identity, timer queue removed
 
 ## Quality
 - [x] Unit tests (queue, pool, frames, pending table, membership, placement)
@@ -89,7 +91,7 @@ Keep this file current: tick items when done, add items when scope changes.
       another node allocate nothing per message
 - [x] BenchmarkDotNet suite: RPC (1/64/1024, local/remote), keyed events (local/remote), group broadcast (1k/5k
       sockets), broadcast to everyone through 3 gateways (3k/9k sockets)
-- [x] CI workflow (build, test, sibling EasyEcs checkout)
+- [x] CI workflow (build, test, end to end; EasyEcs from NuGet)
 - [x] Requirements and release checklist ([requirements.md](requirements.md))
 - [x] Record benchmark numbers of this release in the README
 - [x] Test: calls in flight to a crashed node fail when it is declared dead

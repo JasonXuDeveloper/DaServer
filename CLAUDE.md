@@ -17,8 +17,9 @@ dotnet test DaServer.slnx                                              # unit + 
 dotnet run -c Release --project benchmarks/DaServer.Benchmark -- --filter '*'   # BenchmarkDotNet only
 ```
 
-EasyEcs is consumed from the sibling checkout `../EasyEcs` when present (co-development), otherwise from NuGet
-(`Directory.Build.props`).
+EasyEcs comes from NuGet (`EasyEcsVersion` in `Directory.Build.props`). Use it as its docs teach
+(https://github.com/JasonXuDeveloper/EasyEcs/tree/master/doc): `[ForEach]` systems, groups for cadence,
+`UpdateInterval`, data instead of flags.
 
 ## Layout
 
@@ -27,8 +28,8 @@ src/DaServer/              runtime (net10.0): Protocol/ Buffers/ Concurrency/ Ne
   Runtime/Shard.cs         thread + cross-thread inbox + wake/tick loop (nothing else)
   Runtime/ShardData.cs     shard ECS data: actor components and lifecycle tags (Mailbox, Ready, Turn, ...), singletons
   Runtime/ShardDispatch.cs routing/delivery/invoke operations shared by the runtime systems
-  Runtime/Systems/         runtime systems (ShardMessages group): Inbox, Turn, ServiceCall, Retire, Timer, Rebalance,
-                           Idle, Unload, Mailbox (each reacts to one lifecycle tag, ADR-037)
+  Runtime/Systems/         runtime systems: Inbox, Turn, ServiceCall, Retire, Unload, Mailbox (ShardMessages group),
+                           Rebalance (ShardRebalance), Idle (ShardIdleScan); each reacts to one lifecycle tag (ADR-037)
 src/DaServer.Generator/    incremental generators (MessageGenerator, HostGenerator incl. node entry point)
                            + DaServerAnalyzer (DAS001-006);
                            Shapes.cs reads symbols once for both, so "skipped by the generator" == "reported"
