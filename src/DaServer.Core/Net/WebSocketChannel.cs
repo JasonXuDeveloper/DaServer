@@ -95,7 +95,7 @@ public sealed class WebSocketChannel(WebSocket socket, IChannelHandler handler, 
 
         if (overflow)
         {
-            ThreadPool.UnsafeQueueUserWorkItem(static c => c.Close(SlowConsumer), this, preferLocal: false);
+            Platform.Queue(static c => c.Close(SlowConsumer), this);
             return false;
         }
 

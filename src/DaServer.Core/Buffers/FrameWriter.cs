@@ -16,7 +16,7 @@ public sealed class FrameWriter : INinoBufferWriter, IDisposable
     private byte _trailers; // FrameFlags of the trailers written so far (written into the header by SetHeader)
 
     /// <summary>
-    /// When the request in this frame is no longer worth running (<see cref="Environment.TickCount64"/>; 0 = never):
+    /// When the request in this frame is no longer worth running (<see cref="Platform.Milliseconds"/>; 0 = never):
     /// its caller has given up. Set where the request enters this process, checked right before it runs.
     /// </summary>
     internal long Deadline;

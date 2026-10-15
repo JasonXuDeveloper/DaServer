@@ -18,7 +18,7 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
     /// <summary>A lost connection whose actors learn it at the end of the reconnect grace (unless the client resumed).</summary>
     private readonly record struct PendingClose(SessionRef Session, SessionGrant[] Grants);
 
-    private readonly ConcurrentDictionary<long, Session> _sessions = new();
+    private readonly ConcurrentDictionary<long, ClientSession> _sessions = new();
     private readonly ConcurrentDictionary<long, GroupMembers> _groups = new();
     private readonly Lock _groupGate = new(); // membership changes (control path); fan-out takes only its group's lock
     private readonly Stack<GroupMembers> _idleGroups = new(); // emptied groups for the next new ones (under the gate)
@@ -141,7 +141,7 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
             messageId == Join || messageId == Leave || messageId == Access || messageId == Disconnect;
     }
 
-    private RpcStatus Apply(Session session, in FrameHeader header, ReadOnlySpan<byte> frame)
+    private RpcStatus Apply(ClientSession session, in FrameHeader header, ReadOnlySpan<byte> frame)
     {
         var reader = new Reader(FrameHeader.PayloadOf(in header, frame));
         uint id = header.MessageId;
@@ -175,7 +175,7 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
     /// Apply a grant change. A granted session also joins the actor's group (so <c>Cluster.Send(actor.Group, ..)</c>
     /// reaches it) and leaves it with the grant.
     /// </summary>
-    private RpcStatus ChangeAccess(Session session, in SessionAccess access)
+    private RpcStatus ChangeAccess(ClientSession session, in SessionAccess access)
     {
         uint type = access.HandlerType;
         long key = access.Key;
@@ -227,7 +227,7 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
     }
 
     /// <summary>Add a session to a group (once). Caller holds the gate.</summary>
-    private void Join(Session session, long groupId)
+    private void Join(ClientSession session, long groupId)
     {
         if (session.Closed || session.Groups.ContainsKey(groupId)) return;
         if (!_groups.TryGetValue(groupId, out var group))
@@ -236,14 +236,14 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
     }
 
     /// <summary>Remove a session from a group; empty groups are dropped (bounded memory). Caller holds the gate.</summary>
-    private void Leave(Session session, long groupId)
+    private void Leave(ClientSession session, long groupId)
     {
         if (!session.Groups.ContainsKey(groupId) || !_groups.TryGetValue(groupId, out var group)) return;
         if (group.Remove(session) == 0) group.EmptySince = Environment.TickCount64; // removed later if it stays empty
     }
 
     /// <summary>Drop the session from its groups and tell every actor it was bound to (<see cref="SessionClosed"/>).</summary>
-    private void OnSessionClosed(Session session)
+    private void OnSessionClosed(ClientSession session)
     {
         _sessions.TryRemove(session.Id, out _);
         if (_crashed) return; // a crashed node tells nobody
@@ -312,14 +312,15 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
     private TimeSpan ReconnectGrace => _ticketSecret != null ? _node.Options.ReconnectGrace : TimeSpan.Zero;
 
     /// <summary>Send the session's client a fresh reconnect ticket (after grant changes, and when the client asks).</summary>
-    private void IssueTicket(Session session)
+    private void IssueTicket(ClientSession session)
     {
         var grants = session.Grants;
         if (_ticketSecret == null) return;
-        int size = ReconnectTicket.SizeOf(grants.Length);
+        int size = grants.Length == 0 ? 0 : ReconnectTicket.SizeOf(grants.Length); // empty: nothing to resume
         Span<byte> ticket = stackalloc byte[size];
-        ReconnectTicket.Write(ticket, _ticketSecret, new SessionRef(_node.Id, session.Id), grants,
-            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), (long)options.TicketLifetime.TotalMilliseconds);
+        if (size > 0)
+            ReconnectTicket.Write(ticket, _ticketSecret, new SessionRef(_node.Id, session.Id), grants,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), (long)options.TicketLifetime.TotalMilliseconds);
         var w = FrameWriter.Rent(FrameHeader.Size + size);
         w.WriteRaw(ticket);
         w.SendControl((IFrameSender)session.Sink, ControlOp.Ticket);
@@ -330,7 +331,7 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
     /// (and the actors' groups), and every granted actor learns the new session (<see cref="SessionResync"/>) before the
     /// client's next message, which travels behind it on the same links.
     /// </summary>
-    private void ResumeSession(Session session, uint callId, ReadOnlySpan<byte> ticket)
+    private void ResumeSession(ClientSession session, uint callId, ReadOnlySpan<byte> ticket)
     {
         if (_ticketSecret == null || session.Grants.Length != 0 ||
             !ReconnectTicket.TryRead(ticket, _ticketSecret, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), out var previous, out var grants))
@@ -395,7 +396,7 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
         return new ClientEndpoint(endpoint[..colon], int.Parse(endpoint.AsSpan(colon + 1)));
     }
 
-    private void PickNode(Session session, uint callId)
+    private void PickNode(ClientSession session, uint callId)
     {
         var w = FrameWriter.Rent(64);
         var nino = w.Nino;
@@ -418,7 +419,7 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
     /// </summary>
     public void Open(IFrameChannel channel)
     {
-        var session = new Session(((INodeContext)_node).NewOriginId(), channel) // a session is the origin of its messages
+        var session = new ClientSession(((INodeContext)_node).NewOriginId(), channel) // a session is the origin of its messages
         {
             Limit = new TokenBucket(options.MessagesPerSecond, Math.Max(1, options.Burst)),
         };
@@ -446,7 +447,7 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
 
         public void OnFrame(IFrameChannel channel, in FrameHeader header, ReadOnlySpan<byte> frame)
         {
-            var session = (Session)channel.Tag!;
+            var session = (ClientSession)channel.Tag!;
             switch (header.Kind)
             {
                 case FrameKind.Message:
@@ -463,12 +464,12 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
 
         public void OnClosed(IFrameChannel channel, Exception? error)
         {
-            if (channel.Tag is Session session)
+            if (channel.Tag is ClientSession session)
                 node.OnSessionClosed(session);
         }
     }
 
-    private void OnClientControl(Session session, in FrameHeader header, ReadOnlySpan<byte> frame)
+    private void OnClientControl(ClientSession session, in FrameHeader header, ReadOnlySpan<byte> frame)
     {
         uint callId = FrameHeader.CallIdOf(in header, frame);
         switch (header.MessageId)
@@ -498,7 +499,7 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
     /// is bound to the session, else the service handling it. The session is the message's origin (<c>Caller</c> in the
     /// handler).
     /// </summary>
-    private void OnClientMessage(Session session, in FrameHeader header, ReadOnlySpan<byte> frame)
+    private void OnClientMessage(ClientSession session, in FrameHeader header, ReadOnlySpan<byte> frame)
     {
         uint replyId = FrameHeader.CallIdOf(in header, frame);
         if (options.MessagesPerSecond > 0 && !session.Limit.TryTake(out var retryAfter)) // the connection's receive loop owns it
@@ -507,7 +508,7 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
             return;
         }
 
-        if (!MessageRegistry.TryGetClientMessage(header.MessageId, out var message))
+        if (!ClientMessages.TryGet(header.MessageId, out var message))
         {
             if (replyId != 0) session.Sink.SendError(replyId, RpcStatus.Forbidden);
             return;
@@ -555,7 +556,7 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
 internal readonly record struct SessionGrant(uint HandlerTypeId, long Key, bool Bound);
 
 /// <summary>A connected client on this gateway.</summary>
-internal sealed class Session(long id, IFrameChannel channel)
+internal sealed class ClientSession(long id, IFrameChannel channel)
 {
     public long Id { get; } = id;
     public IFrameChannel Channel { get; } = channel;
@@ -654,7 +655,7 @@ internal sealed class Session(long id, IFrameChannel channel)
 internal sealed class GroupMembers
 {
     private readonly Lock _gate = new();
-    private Session[] _members = new Session[4];
+    private ClientSession[] _members = new ClientSession[4];
     private int _count;
     private long _id;
 
@@ -679,7 +680,7 @@ internal sealed class GroupMembers
         return this;
     }
 
-    public void Add(Session session)
+    public void Add(ClientSession session)
     {
         lock (_gate)
         {
@@ -690,7 +691,7 @@ internal sealed class GroupMembers
     }
 
     /// <summary>Remove <paramref name="session"/> (a member); returns the members left.</summary>
-    public int Remove(Session session)
+    public int Remove(ClientSession session)
     {
         lock (_gate)
         {
@@ -722,7 +723,7 @@ internal sealed class GroupMembers
     }
 
     /// <summary>The members now (a copy: for operations that change memberships, a rare path).</summary>
-    public Session[] Snapshot()
+    public ClientSession[] Snapshot()
     {
         lock (_gate) return _members.AsSpan(0, _count).ToArray();
     }

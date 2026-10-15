@@ -27,7 +27,7 @@ public static class SignedToken
     {
         BinaryPrimitives.WriteInt64LittleEndian(token, nowMs);
         BinaryPrimitives.WriteInt64LittleEndian(token[8..], nowMs + lifetimeMs);
-        HMACSHA256.HashData(secret, token[..^MacSize], token[^MacSize..]);
+        Mac(secret, token[..^MacSize], token[^MacSize..]);
     }
 
     /// <summary>
@@ -39,10 +39,20 @@ public static class SignedToken
         content = default;
         if (token.Length < Overhead) return false;
         Span<byte> mac = stackalloc byte[MacSize];
-        HMACSHA256.HashData(secret, token[..^MacSize], mac);
+        Mac(secret, token[..^MacSize], mac);
         if (!CryptographicOperations.FixedTimeEquals(mac, token[^MacSize..]) || ExpiresMs(token) <= nowMs) return false;
         content = token[TimesSize..^MacSize];
         return true;
+    }
+
+    private static void Mac(ReadOnlySpan<byte> secret, ReadOnlySpan<byte> data, Span<byte> mac)
+    {
+#if NET
+        HMACSHA256.HashData(secret, data, mac);
+#else
+        using var hmac = new HMACSHA256(secret.ToArray());
+        hmac.TryComputeHash(data, mac, out _);
+#endif
     }
 
     public static long IssuedMs(ReadOnlySpan<byte> token) => BinaryPrimitives.ReadInt64LittleEndian(token);

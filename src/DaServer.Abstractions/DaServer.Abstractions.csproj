@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <!-- netstandard2.1: contract assemblies shared with Unity and other .NET clients. -->
+        <TargetFrameworks>netstandard2.1;net10.0</TargetFrameworks>
+        <RootNamespace>DaServer</RootNamespace>
+        <Description>DaServer contracts: message, handler and client attributes, requests, addresses, wire ids. Referenced by contract assemblies shared between servers and clients.</Description>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Nino" Version="$(NinoVersion)" />
+    </ItemGroup>
+
+    <!-- The generators and analyzers ship in this package, so every assembly using DaServer runs them. -->
+    <ItemGroup>
+        <ProjectReference Include="..\DaServer.Generator\DaServer.Generator.csproj" ReferenceOutputAssembly="false" PrivateAssets="all" />
+        <None Include="..\DaServer.Generator\bin\$(Configuration)\netstandard2.0\DaServer.Generator.dll" Pack="true"
+              PackagePath="analyzers/dotnet/cs" Visible="false" />
+    </ItemGroup>
+
+    <!-- Newer BCL types this code uses, for netstandard2.1 only (internal; Core and Client see them as friends). -->
+    <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.1'">
+        <Compile Include="..\Polyfills\**\*.cs" LinkBase="Polyfills" />
+        <PackageReference Include="System.Runtime.CompilerServices.Unsafe" Version="6.1.2" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <InternalsVisibleTo Include="DaServer.Core" />
+        <InternalsVisibleTo Include="DaServer.Client" />
+        <InternalsVisibleTo Include="DaServer" />
+        <InternalsVisibleTo Include="DaServer.Hosting" />
+        <InternalsVisibleTo Include="DaServer.Tests" />
+        <InternalsVisibleTo Include="DaServer.Benchmark" />
+    </ItemGroup>
+
+</Project>

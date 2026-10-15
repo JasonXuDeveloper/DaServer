@@ -39,7 +39,8 @@ public class GeneratorTests
     private static SyntaxTree Parse(string source) => CSharpSyntaxTree.ParseText(Usings + source, ParseOptions);
 
     private static GeneratorDriver Driver() => CSharpGeneratorDriver.Create(
-        [new MessageGenerator().AsSourceGenerator(), new HostGenerator().AsSourceGenerator()], parseOptions: ParseOptions,
+        [new AskGenerator().AsSourceGenerator(), new RegistrationGenerator().AsSourceGenerator(), new EntryPointGenerator().AsSourceGenerator(),
+            new PolyfillGenerator().AsSourceGenerator()], parseOptions: ParseOptions,
         driverOptions: new GeneratorDriverOptions(IncrementalGeneratorOutputKind.None, trackIncrementalGeneratorSteps: true));
 
     /// <summary>Generated sources and every error or DASxxx diagnostic (generator, compiler and analyzer).</summary>
@@ -96,8 +97,8 @@ public class GeneratorTests
         Assert.That(registration, Does.Contain("MessageRegistry.RegisterHandlers(typeof(global::Game.Screen)"), "client handlerType");
         Assert.That(sources, Has.Some.Contains("Ask<TAddr>(this global::DaServer.Rpc.IMessageSender sender, TAddr address, in global::Game.Heal request)"));
         Assert.That(sources, Has.Some.Contains("sender.Ask<global::Game.Topic, string?>(in request)"));
-        Assert.That(sources, Has.Some.Contains("RegisterClientMessage<global::Game.Move>()")
-            .And.Some.Contains("RegisterClientMessage<global::Game.Topic>()"));
+        Assert.That(sources, Has.Some.Contains("ClientMessages.Register<global::Game.Move>()")
+            .And.Some.Contains("ClientMessages.Register<global::Game.Topic>()"));
     }
 
     [TestCase("[NinoType, Message] public partial record struct Tick(int N); public sealed class Bad : Service { [Handle] void On(Tick e) { } }", "DAS001")]

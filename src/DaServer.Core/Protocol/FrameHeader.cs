@@ -117,10 +117,10 @@ public struct FrameHeader
     /// <summary>The time budget a request carries (zero: none).</summary>
     public readonly TimeSpan Budget => IsRequest ? TimeSpan.FromMilliseconds((byte)Status * BudgetUnitMs) : TimeSpan.Zero;
 
-    /// <summary>Deadline (<see cref="Environment.TickCount64"/>) of a request that arrived now, 0 when it has none.</summary>
+    /// <summary>Deadline (<see cref="Platform.Milliseconds"/>) of a request that arrived now, 0 when it has none.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public readonly long DeadlineOnArrival() =>
-        IsRequest && Status != 0 ? Environment.TickCount64 + (byte)Status * BudgetUnitMs : 0;
+        IsRequest && Status != 0 ? Platform.Milliseconds + (byte)Status * BudgetUnitMs : 0;
 
     /// <summary>The call id of a frame (<see cref="FrameFlags.HasCall"/>), 0 when it has none.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

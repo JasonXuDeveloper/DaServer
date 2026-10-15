@@ -42,7 +42,7 @@ internal static class ReconnectTicket
         grants = default;
         if (!SignedToken.TryRead(ticket, secret, nowMs, out var content) || content.Length < HeaderSize) return false;
         int count = BinaryPrimitives.ReadInt32LittleEndian(content[16..]);
-        if (count < 0 || count > Session.MaxGrants || content.Length != HeaderSize + count * GrantSize) return false;
+        if (count < 0 || count > ClientSession.MaxGrants || content.Length != HeaderSize + count * GrantSize) return false;
 
         session = new SessionRef(BinaryPrimitives.ReadUInt64LittleEndian(content), BinaryPrimitives.ReadInt64LittleEndian(content[8..]));
         grants = content[HeaderSize..];

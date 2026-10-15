@@ -208,7 +208,7 @@ sealed partial class Node : IConnectionHandler
         var call = Pending.Take(callId);
         if (call == null) return; // timed out or failed already
 
-        if (call.CallerShard is { } shard)
+        if (call.Caller is Shard shard)
             shard.Post(new WorkItem(WorkKind.Complete, call, FrameWriter.CopyOf(frame)));
         else
             call.Complete(status, FrameHeader.PayloadOf(FrameHeader.Read(frame), frame));
@@ -295,7 +295,7 @@ sealed partial class Node : IConnectionHandler
             }
 
             reply.SetHeader(FrameKind.Reply, 0, 0, 0, status); // local: no call id trailer needed
-            if (call.CallerShard is { } shard)
+            if (call.Caller is Shard shard)
             {
                 shard.Post(new WorkItem(WorkKind.Complete, call, reply)); // zero copy: the frame is handed over
             }
@@ -312,7 +312,7 @@ sealed partial class Node : IConnectionHandler
     {
         private static readonly ObjectPool<RelayCall> Pool = new(() => new RelayCall(), 1 << 16); // calls relayed at once by a gateway
 
-        public Shard? CallerShard => null; // forwarded inline from the IO thread
+        public CallerThread? Caller => null; // forwarded inline from the IO thread
 
         private IReplySink _sink = null!;
         private uint _callId;
