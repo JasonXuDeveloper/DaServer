@@ -372,8 +372,13 @@ internal sealed class PendingCall<T> : IPendingCall, IValueTaskSource<T>, IValue
         var context = _capturedContext;
         if (context != null)
             PostTo(context, continuation, _continuationState); // foreign UI-style contexts only
-        else if (Caller != null)
-            continuation(_continuationState); // completed on the caller's shard thread
+        else if (Caller is { } caller)
+        {
+            // Replies are handed to the caller's thread before they complete; a failure (timeout, lost link) completes
+            // wherever it is found (the maintenance timer, an IO thread): the caller's code must still resume on its own thread.
+            if (ReferenceEquals(CompletionThread.Current, caller)) continuation(_continuationState);
+            else caller.Post(continuation, _continuationState);
+        }
         else
             Queue(continuation);
     }

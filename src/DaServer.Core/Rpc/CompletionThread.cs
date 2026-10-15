@@ -13,4 +13,7 @@ internal abstract class CompletionThread
 
     /// <summary>Mark the calling thread as this one (null: none) while it runs.</summary>
     protected static void SetCurrent(CompletionThread? thread) => _current = thread;
+
+    /// <summary>Run <paramref name="callback"/> on this thread (thread-safe, never inline): a continuation of a call made here.</summary>
+    public abstract void Post(Action<object?> callback, object? state);
 }

@@ -117,7 +117,7 @@ internal sealed class Shard : CompletionThread
     }
 
     /// <summary>Run <paramref name="callback"/> on this shard's thread (thread-safe, allocation-free).</summary>
-    public void Post(Action<object?> callback, object? state) => Post(new WorkItem(WorkKind.Callback, callback, state));
+    public override void Post(Action<object?> callback, object? state) => Post(new WorkItem(WorkKind.Callback, callback, state));
 
     /// <summary>Thread-safe: ownership may have changed; actors this node no longer owns are unloaded.</summary>
     internal void RequestRebalance() =>

@@ -26,6 +26,7 @@ public readonly record struct RoomId(long Value) : IActorId;
 [NinoType, Message] public partial record struct Fail(string Message) : IRequest<bool>;
 [NinoType, Message] public partial record struct SlowAdd(int Delta) : IRequest<int>;       // awaits a foreign Task.Delay
 [NinoType, Message] public partial record struct Grow : IRequest<bool>;                    // input for GrowthSystem
+[NinoType, Message] public partial record struct AskAndFail(CounterId Other);            // completes Reports.ResumedOnShard
 [NinoType, Message] public partial record struct AddMany(CounterId Other, int Count) : IRequest<long>;     // bytes allocated meanwhile
 [NinoType, Message] public partial record struct SendMany(CounterId Other, int Count) : IRequest<long>;    // bytes allocated meanwhile
 [NinoType, Message] public partial record struct AddViaMany(CounterId Via, CounterId Target, int Count) : IRequest<long>; // bytes allocated meanwhile
@@ -35,6 +36,13 @@ public readonly record struct RoomId(long Value) : IActorId;
 [NinoType, Message] public partial record struct CounterBumped(int By);
 
 public record struct CounterState(int Value) : IComponent;
+
+/// <summary>What handlers report to the test that drives them.</summary>
+public static class Reports
+{
+    /// <summary>Whether the last <see cref="AskAndFail"/> resumed on its shard after its call failed.</summary>
+    public static TaskCompletionSource<bool> ResumedOnShard = new();
+}
 
 /// <summary>Tag: the counter grows by one every tick (written by the actor, processed by GrowthSystem).</summary>
 public struct Growing : IComponent;
@@ -77,6 +85,21 @@ public sealed class Counter : Actor<CounterId, CounterState>
         await Task.Delay(10);
         if (Shard.Current != shard) throw new InvalidOperationException("continuation left the shard thread");
         return State.Value += m.Delta;
+    }
+
+    [Handle]
+    public async ValueTask On(AskAndFail m)
+    {
+        var shard = Shard.Current;
+        try
+        {
+            await Cluster.Ask(m.Other, new Add(1));
+        }
+        catch (RpcException)
+        {
+        }
+
+        Reports.ResumedOnShard.TrySetResult(Shard.Current == shard);
     }
 
     [Handle]
