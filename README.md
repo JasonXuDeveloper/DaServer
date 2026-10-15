@@ -18,13 +18,14 @@ locally and publishes it.
 - **ECS inside.** Actor state is an [EasyEcs](https://github.com/JasonXuDeveloper/EasyEcs) component on the
   actor's entity, so systems can process every actor of a shard in one cache-friendly pass.
 - **Messages, not interfaces.** A message is routed to whoever handles it: `Ask` for a reply, `Send` one-way,
-  `Publish` to every handler. The sender never names the receiver's type; per-tick logic lives in EasyEcs systems.
+  `Publish` to every service handling it. The sender never names the receiver's type; per-tick logic lives in EasyEcs
+  systems.
 - **No hard-coded topology.** A node hosts what its project compiles. The AppHost lists projects and replica counts.
 - **Reliable links, bounded work.** One ordered stream per node pair resumes after a dropped connection (no loss, no
   duplicate). Requests carry their caller's deadline, and work nobody waits for is dropped. Full dispatch queues and mailboxes answer
   `Overloaded` instead of growing; a client that cannot keep up is disconnected and resynchronizes on reconnect.
-- **Misuse is a build error.** Analyzers DAS001–DAS007 cover handlers, messages, wire types and id collisions, and
-  EECS001–EECS008 cover ECS, including the ECS principles.
+- **Misuse is a build error.** Analyzers DAS001–DAS007 cover handlers, messages, wire types, id collisions, message
+  flow and stateless actors and services, and EECS001–EECS008 cover ECS, including the ECS principles.
 
 ## Architecture
 
@@ -52,17 +53,18 @@ flowchart LR
         IO[IO threads<br/>sockets, batching] --> M1
         IO --> M2
         subgraph s1 [shard 0: one thread]
-            M1[mailbox] --> W1[actors, services<br/>EasyEcs World + systems]
+            M1[dispatch queue] --> W1[actor mailboxes, services<br/>EasyEcs World + systems]
         end
         subgraph s2 [shard 1: one thread]
-            M2[mailbox] --> W2[actors, services<br/>EasyEcs World + systems]
+            M2[dispatch queue] --> W2[actor mailboxes, services<br/>EasyEcs World + systems]
         end
     end
 ```
 
 A message is serialized once into a pooled frame. A message for the same node goes straight to the target shard's
-mailbox; a message for another node is batched onto its TCP link. The target shard's thread runs the generated
-dispatcher; a reply returns the same way and resumes the caller on its own shard.
+dispatch queue; a message for another node is batched onto its TCP link. The target shard's thread sorts it into the
+actor's mailbox (or hands it to a service) and runs the generated dispatcher; a reply returns the same way and resumes
+the caller on its own shard.
 
 ## Vocabulary
 
@@ -177,7 +179,8 @@ public sealed class Map : Actor<MapId, MapState>
         State.Avatars[CallerSession].Get<Velocity>() = new(m.VelocityX, m.VelocityY);
 
     [Handle]
-    public void On(Say m) => Cluster.Broadcast(Group, new Chat(PlayerOf(CallerSession), m.Text));
+    public void On(Say m) =>
+        Cluster.Broadcast(Group, new Chat(State.Avatars[CallerSession].Get<Avatar>().Player, m.Text));
 }
 
 // ...and systems do the per-tick work, one responsibility each.
@@ -188,12 +191,11 @@ public sealed partial class MovementSystem : EcsSystem
 
 public sealed partial class RealmBroadcastSystem : EcsSystem        // every 5 ticks, to every session of the cluster
 {
+    public override int UpdateInterval => 5;
+
     [ForEach]
-    static void Broadcast(ref RealmState realm, World world)
-    {
-        if (++realm.Tick % 5 == 0)
-            world.Cluster().Broadcast(ClientGroup.All, new RealmStatus(world.Tick(), realm.Online.Count, DateTime.UtcNow.Ticks));
-    }
+    static void Broadcast(in RealmState realm, World world) =>
+        world.Cluster().Broadcast(ClientGroup.All, new RealmStatus(world.Tick(), realm.Online.Count, DateTime.UtcNow.Ticks));
 }
 
 // Client (bot, game): the same messages, one well-known address.
@@ -244,22 +246,21 @@ Measured on one 4-core VM (servers, bots and the kernel share it), Release build
 **10k-player scenario** ([Sample.AppHost](samples/mmo/Sample.AppHost), [Sample.Bot](samples/mmo/Sample.Bot)): a login
 node, a game node, a map node, 3 gateways and a balancer (the AppHost's topology, here as plain processes without telemetry).
 10,000 bots connect through the balancer, log in and enter a map; the realm broadcasts its status to every session
-every 5 ticks (20 ticks/s). Three loads, 60 s measured window each:
+every 5 ticks (20 ticks/s). Two loads, 60 s measured window each:
 
 - **One map** (the AppHost default): all 10,000 players in one map on one map node, each changing direction once a
   second. Area of interest (the sample's `Interest.cs`): a 20x20 grid, each cell a client group, each player sees the
   3x3 cells around it; updates carry velocity and go out when it changes (dead reckoning), every other tick.
-- **Many maps, full sync**: 200 maps of 50 players, every position of the map to every player every tick.
 - **Chatting**: 100 maps of 100 players, one chat line every 10 s per bot, sent to the map.
 
-| | One map (AOI) | Many maps, full sync | Chatting |
-|---|---|---|---|
-| Realm broadcasts delivered (every bot every one, in order) | 2,400,000 | 2,400,000 | 2,400,000 |
-| Map traffic delivered to clients | ~2,500,000 positions/s | ~10,000,000 positions/s | ~100,000 lines/s |
-| Broadcast latency (game system to bot callback) | p50 46 ms, p99 106 ms | p50 43 ms, p99 139 ms | p50 35 ms, p99 57 ms |
-| Game node | 3% CPU, 0–5 KB/s allocated | 2–3% CPU, 0–3 KB/s | 2% CPU, ~32 KB/s (chat strings) |
-| Each gateway (~3,300 sessions) | 11–12% CPU, 0 KB/s | 12–15% CPU, 0–2 KB/s | 5–6% CPU, 0–7 KB/s |
-| GCs on servers, disconnects, gaps | 0 | 0 | 0 |
+| | One map (AOI) | Chatting |
+|---|---|---|
+| Realm broadcasts delivered (every bot every one, in order) | 2,400,000 | 2,400,000 |
+| Map traffic delivered to clients | ~2,500,000 positions/s | ~100,000 lines/s |
+| Broadcast latency (game system to bot callback) | p50 46 ms, p99 106 ms | p50 35 ms, p99 57 ms |
+| Game node | 3% CPU, 0–5 KB/s allocated | 2% CPU, ~32 KB/s (chat strings) |
+| Each gateway (~3,300 sessions) | 11–12% CPU, 0 KB/s | 5–6% CPU, 0–7 KB/s |
+| GCs on servers, disconnects, gaps | 0 | 0 |
 
 (CPU is the share of all 4 cores; login and balancer stay at 1% and 0 KB/s; with Aspire's OTLP telemetry on, the
 exporter adds ~55 KB/s per node.) The bot process and the kernel's loopback use most of the machine, so latency is
@@ -281,7 +282,7 @@ address, then 3,000 more bots: the balancer learns of it through gossip and send
 | | 9,000 clients | 38.8 ms | 16.6 KB |
 | Group broadcast through 1 gateway | 1,000 clients | 5.0 ms | 456 B |
 | | 5,000 clients | 21.5 ms | 895 B |
-| Keyed events to 64 actors, bursts of 1,024 (per event) | same node / other node | 4.2 µs / 2.5 µs | 0 |
+| One-way messages to 64 actors, bursts of 1,024 (per message) | same node / other node | 4.2 µs / 2.5 µs | 0 |
 | 1,024 concurrent actor calls, all completed | same node / other node | 3.4 ms / 2.1 ms | 252 B |
 | 1 actor call, round trip | same node / other node | 34 µs / 128 µs | 104 B / 167 B |
 

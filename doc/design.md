@@ -81,9 +81,10 @@ sequenceDiagram
 ```
 
 Every message takes this path. The route comes from the handlers every node gossips: `(message id, handler type id,
-actor)`. `Ask` and `Send` need exactly one handler type of the requested kind; `Publish` serializes once
-and sends one `Message` frame per handler type. A message to an actor is routed to the owner of its key
-and enters the actor's mailbox, so it is turn-based. A service handler runs on the local node when it hosts one.
+actor)`. To an actor, the id type names the handler type; without an id, exactly one service type may handle the
+message; `Publish` serializes once and sends one `Message` frame per service type handling it. A message to an actor
+is routed to the owner of its id and enters the actor's mailbox, so it is turn-based. A service handler runs on the
+local node when it hosts one.
 
 ## 2. Wire protocol
 
@@ -93,13 +94,16 @@ and enters the actor's mailbox, so it is turn-based. A service handler runs on t
   build errors (DAS004) and registration errors at runtime. Handler type ids are FNV-1a of the actor or service
   type's full name.
 - Frame kinds:
-  - `Request` (`requestId` is the call id; flag `ToActor` selects actor or service handlers) / `Response`
-  - `Message` (one-way and published): `requestId` is the target handler type, `key` the actor key
+  - `Request` (`requestId` is the call id; a request to an actor ends with its handler type id, flag `ToActor`) /
+    `Response`
+  - `Message` (one-way and published): `requestId` is the target handler type, `key` the actor id
   - `OneWay`: a client's one-way message to its gateway
   - `Push` (one session) / `Broadcast` (a group of sessions)
-  - `Control` (gossip, session binding, groups, kick)
-- Gateways route client frames with a new header and the caller session prepended to the payload. They never deserialize
-  payloads.
+  - `Control` (link handshake and resume, gossip, session binding, groups, disconnect)
+- Gateways route client frames with a new header and the caller session prepended to the payload (flag `HasCaller`).
+  They never deserialize payloads.
+- Agreed next (ADR-047, roadmap G0): three frame kinds (`Message`, `Reply`, `Control`), a target always set, header
+  extensions by flag instead of the trailer and the prefix.
 
 ## 3. Performance model (zero GC)
 
@@ -111,9 +115,9 @@ and enters the actor's mailbox, so it is turn-based. A service handler runs on t
 | Awaiting | `PendingCall<T>` is a pooled `IValueTaskSource<T>`. Dispatch helpers use `PoolingAsyncValueTaskMethodBuilder`. A synchronously completed handler replies without any state machine. |
 | Sending | Each connection copies frames into one batch buffer under a short lock. One send loop swaps and writes whole batches, so N frames cost one syscall. A broadcast serializes once and fans out by `memcpy`. |
 | Receiving | Frames are parsed in place. Zero-byte reads mean an idle client connection holds no receive buffer, which matters with tens of thousands of sockets. |
-| Sending API | Messages are `in` struct parameters of generic methods (`Ask<TRequest, TReply>`, generated typed overloads), so `Cluster.Ask(42, new AddGold(10))` allocates nothing and boxes nothing. |
+| Sending API | Messages are `in` struct parameters of generic methods (`Ask<TRequest, TReply>`, generated typed overloads), so `Cluster.Ask(playerId, new AddGold(10))` allocates nothing and boxes nothing. |
 | ECS | EasyEcs v4: struct components, `[ForEach]` struct jobs, singleton parameters resolved once per pass, zero allocations per tick. The runtime keeps per-actor state in components and visits only ready or busy actors. |
-| GC mode | Server GC, concurrent. Allocation tests hold the budget: < 1 B per request and per message in steady state. |
+| GC mode | Server GC, concurrent. Allocation tests hold the budget in steady state: < 8 B per call or message across shards and through a gateway (any per-message object would be >= 24 B), < 1 B per delivery of a gateway fan-out. |
 
 ## 4. Latency
 
@@ -140,7 +144,7 @@ that keeps session state as ECS components.
 | Calls | At most once, with timeouts (`RpcStatus.Timeout`, `Disconnected`, `NotHosted`). Retrying is the caller's choice, and only for idempotent operations. |
 | Deadlines | A request carries its caller's remaining time; each hop turns it into a local deadline and a shard drops a request that expired before it ran (ADR-028). Work nobody waits for is not done. |
 | Messages | At most once. Events that must not be lost are written to storage by the publisher first (outbox) and re-published on recovery; DaServer does not hide a broker inside the call path. |
-| Single loaded actor | Rendezvous hashing over the `Up` nodes hosting the handler type: every node computes the same owner from the same view. A node loads an actor only if it is the owner in its own view; otherwise it forwards (hop limit 3) or answers `NotHosted`. When ownership changes, the old owner unloads (`OnUnload`, the persistence hook) and forwards its remaining mail. |
+| Single loaded actor | Rendezvous hashing over the `Up` and `Suspect` nodes hosting the handler type (ADR-023): every node computes the same owner from the same view. A node loads an actor only if it is the owner in its own view; otherwise it forwards (hop limit 3) or answers `NotHosted`. When ownership changes, the old owner unloads (`OnUnload`, the persistence hook) and forwards its remaining mail. |
 | Sessions | A gateway owns its sockets. Bindings and groups live on the gateway; when a session closes, every actor it was bound to that handles `SessionClosed` receives it, so no actor keeps a dead session. |
 | Graceful shutdown | `SIGTERM` → `Leaving` (pushed to every member) → stop loading actors → drain mailboxes → unload actors → exit. |
 | Backpressure | Shard dispatch queues and actor mailboxes are bounded and refuse with `Overloaded` (ADR-027). Links are not paused (their replies would stall too, ADR-027). A slow client hits the per-connection send backlog bound (256 KB) and is disconnected; it reconnects and resynchronizes (ADR-035). |
@@ -221,8 +225,8 @@ sequenceDiagram
 - **Push and broadcast.** `Cluster.Push(session, m)` pushes to one session. `Cluster.Broadcast(Group, m)` (every
   actor has its own group) serializes once and sends one frame per gateway, which fans out locally (ADR-025).
   `ClientGroup.All` reaches every session of the cluster (the sample's realm status every 5 ticks).
-- **Batch per tick.** Systems collect changes into the map's state and one system sends them as one message per map
-  per tick: n moving avatars cost n entries, not n x n messages.
+- **Batch per tick.** Systems collect changes into the map's grid and one system sends them as one message per
+  changed cell every other tick: n moving avatars cost n entries, not n x n messages.
 - **Measured.** 10k bots through a balancer and 3 gateways to one game node and one map node: see the README's Performance section.
 
 ### Backend cluster without clients
@@ -235,7 +239,7 @@ removed at run time; placement moves only the keys of the node that joined or le
 
 `ClusterClient` connects to a gateway (`host:port`, DNS names included); given a balancer address it moves to the
 gateway the balancer names (ADR-026), waiting while the cluster forms. It sends the same messages as
-servers: `client.Ask(new Login(..))`, `client.Ask(new GetInfo())` (session actors need no key: the gateway uses the
+servers: `client.Ask(new Login(..))`, `client.Ask(new GetInfo())` (session actors need no id: the gateway uses the
 binding), `client.Ask(roomId, new Join())` (`AnyId` messages). Push handlers are `[Handle]` methods of any class,
 registered with `client.Register(obj)`; they run on the IO thread or, for game loops and UIs, on the application's thread through `ProcessCallbacks`.
 
@@ -263,13 +267,16 @@ other actors of the shard keep running, so one queue could not serve both purpos
 
 | Data | Kind | Meaning |
 |---|---|---|
-| `ActorRef` | component | the loaded actor object (its key and client group for systems) |
-| `Mailbox` | component | messages waiting for the actor (a turn at a time) |
+| `ActorRef` | component | the loaded actor object (its id and client group for systems) |
+| `Mailbox` | component | messages waiting for the actor (a turn at a time) and when it last took mail |
 | `Ready` | tag | the mailbox has mail |
 | `Turn` | component | the asynchronous message, load or unload in progress (present = busy) |
 | `TurnEnded` | tag | the turn's task completed (posted by its `TurnWatcher`, never polled) |
 | `Loading`, `UnloadRequested`, `Unloading` | tags | `OnLoad` running; asked to leave; `OnUnload` running |
+| `Fenced` | tag | the node was declared dead: removed without `OnUnload` (ADR-042) |
 | `Removing` | component | the loaded actor ends: mail is routed again (or failed with its status) |
+| `UnloadWhenIdle` | component | the actor unloads after this long without mail (`UnloadAfterIdle`) |
+| `ClientSessions` | component | client sessions the actor knows (closed for it when their gateway dies) |
 | `ServiceCall` | tag | an entity per running asynchronous service call (ended like a turn) |
 | `ActorDirectory`, `ServiceDirectory` | singletons | loaded actors by id, service instances by handler type |
 | `TurnWatchers`, `ShardActivity` | singletons | pooled watchers, per-wake bookkeeping |
@@ -350,7 +357,7 @@ node project is its business classes only.
 |---|---|---|
 | Unit | Queues, buffer pool, frame parsing, pending-call table, membership merge, rendezvous placement | `tests/DaServer.Tests` |
 | Generator | Valid input compiles, every DAS rule fires from the analyzer, the entry point is generated only when missing, unrelated edits hit the incremental cache | `tests/DaServer.Tests` |
-| Integration | In-process clusters on loopback (`ClusterTest`): request semantics and ordering, turn-based actors, ECS systems over actor state, single loaded actor, failover, published messages (keyed, once per handler type, ordering, routing), gateway access by `Flow.FromClient`, binding isolation, broadcast (exact under churn), balancer, `SessionClosed` (close and gateway crash), backpressure, placement under suspicion | `tests/DaServer.Tests` |
-| Allocation | Steady-state cross-shard calls, keyed events, gateway fan-out and client calls through a gateway allocate nothing per message | `tests/DaServer.Tests` |
-| End to end | AppHost topology (login, game, 3 gateways, balancer) + `Sample.Bot` with 10k bots: fails on any gap, disconnect or p99 over the limit | `samples/mmo/` |
-| Benchmarks | BenchmarkDotNet on real loopback sockets: RPC at 1/64/1,024 outstanding calls (local and remote), keyed events (local and remote), group broadcast to 1k/5k client sockets, broadcast to everyone through 3 gateways (3k/9k) | `benchmarks/DaServer.Benchmark` |
+| Integration | In-process clusters on loopback (`ClusterTest`): request semantics and ordering, turn-based actors, ECS systems over actor state, single loaded actor, idle unloading, failover, fencing, one-way and published messages (to actors on any node, once per service type, ordering, routing), resumable links, deadlines, gateway access by `Flow.FromClient`, binding isolation, broadcast (exact under churn), balancer, `SessionClosed` (close and gateway crash), session resumption, backpressure, placement under suspicion | `tests/DaServer.Tests` |
+| Allocation | Steady-state cross-shard calls, replies of suspended handlers, bursts of concurrent calls, one-way messages, gateway fan-out, client messages through a gateway and gossip rounds allocate nothing per operation | `tests/DaServer.Tests` |
+| End to end | AppHost topology (login, game, map, 3 gateways, balancer) + `Sample.Bot`: 10k bots locally, 1,000 in CI (`tests/DaServer.E2E`); fails on any gap, disconnect or p99 over the limit | `samples/mmo/`, `tests/DaServer.E2E` |
+| Benchmarks | BenchmarkDotNet on real loopback sockets: RPC at 1/64/1,024 outstanding calls (local and remote), one-way messages to actors (local and remote), group broadcast to 1k/5k client sockets in 1 or 9 groups, broadcast to everyone through 3 gateways (3k/9k) | `benchmarks/DaServer.Benchmark` |
