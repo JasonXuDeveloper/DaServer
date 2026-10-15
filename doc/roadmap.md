@@ -5,9 +5,9 @@ Keep this file current: tick items when done, add items when scope changes.
 ## Development order (agreed: one item at a time, each proven before the next)
 
 1. Z2 core hot paths (H3, H2 done): M1 status-only error frames, M6 bounded completion ring, M4, M7, low items in
-   core, missing core allocation tests. M2/M3/M5 move with the gateway (G steps 6 and 8); H1 comes with N3b, H4 with N8.
-2. G0-G2 (step plan below): one message model (ADR-047), core ingress and features, the connection gateway as the
-   optional module, package split (ADR-048).
+   core, missing core allocation tests. M2/M3/M5 move with client connections (G steps 6 and 8); H1 comes with N3b, H4 with N8.
+2. G0-G2 (step plan below): one message model (ADR-047), feature points and ingress, client connections as a
+   built-in feature, Abstractions and Client packages (ADR-048).
 3. T2 ECS bots and business isolation (bots use the gateway module).
 4. N2 `SendAfter` (the delayed send primitive, per-shard timer wheel), N3 call cycles fail fast (`Chain` header
    extension), N3b no sync-over-async (incl. the await-only `Reply<T>`, which also fixes H1).
@@ -21,8 +21,8 @@ Keep this file current: tick items when done, add items when scope changes.
 11. S1-S6 elastic scaling.
 12. N9 hot reload.
 13. N4 route completeness, N11 generated filters (on the G filter point), K3-K5, open cleanup, quality items. Later
-    optional modules: `DaServer.Reminders`, `DaServer.Topics`, leases for strict singletons, G6
-    `DaServer.Admission`.
+    optional modules: `DaServer.Reminders`, `DaServer.Topics`, leases for strict singletons; G6 admission
+    primitives from the flash-sale sample.
 EasyEcs in parallel when DaServer waits on benchmarks: the Friflo gap, comparison tables in the docs.
 
 ## Runtime (`src/DaServer`)
@@ -108,28 +108,25 @@ Steady state allocates nothing: per message, call, reply, tick, broadcast, conne
 - [ ] Z4 Keep it: CLAUDE.md rule plus analyzer coverage where a misuse is detectable in user code (e.g.
       `TaskCompletionSource`/`Task.Delay` in handlers and systems: use pooled framework awaitables and `SendAfter`).
 
-## Next: one message model, ingress in core, the connection gateway as an optional module (G0-G6, agreed)
+## Next: one message model, built-in ingress and client connections (G0-G6, agreed)
 
-The core is a general distributed ECS framework; MMO roles exist only in samples (ADR-045). "Gateway" is three
-problems (ADR-048): ingress (an external request becomes a cluster message: origin, deadline, admission, reply path)
-is core; the connection edge (long-lived sockets, sessions, push, groups, resume) is the optional `DaServer.Gateway`
-module; surge admission (waiting room, flash sale) is policy over ingress (sample first, `DaServer.Admission` when a
-second consumer exists). L4/L7 load balancing, TLS, CDN/WAF, Gateway API routes and autoscaling stay with the platform.
+One framework (ADR-045, ADR-048): ingress (`DaServer.Ingress`) and client connections (`DaServer.Clients`) are
+built-in capabilities on public feature points, off unless configured; business domains live in samples. Load
+balancing, TLS, CDN/WAF, Gateway API routes and autoscaling stay with the platform.
 
 - [ ] G0 One message model (ADR-047), steps 1-4: `Send`/`Ask`/`Publish` plus addresses (`IActorId` keyed,
       `INodeAddress` pinned, `IGroupAddress` fan-out; scope = `TypeId<TAddr>`, kind a JIT constant per address type);
       `Push`/`Broadcast`/`JoinGroup`/`LeaveGroup`/`Disconnect`/`BindSession` become messages to session / group
       addresses (removed, no aliases). Wire: `Message`/`Reply`/`Control`, `Target` always set, header extensions by
       flag (`CallId`, `Origin` 16 B, `Chain`, `Trace`). Wire break, no rolling upgrade across it (pre-1.0).
-- [ ] G1 Core ingress and feature points, step 5, proven by two consumers (a toy connection feature and the HTTP
-      plane), so the API is not gateway-shaped.
-- [ ] G2 The connection gateway as the optional module, steps 6-10.
+- [ ] G1 Feature points and ingress, step 5, proven by two consumers (client connections and the HTTP plane).
+- [ ] G2 Client connections as a built-in feature, packages, tests, docs: steps 6-10.
 - [ ] G5 `samples/flashsale` (after N5): HTTP edge with admission and a waiting room (signed queue tokens, release
       paced by capacity), `StockShard` actors keyed (sku, shard) so the turn is the atomic decrement (no lock, no
       Redis), `Order` actors keyed (user, sale) so retries are idempotent, async order pipeline, push or poll for the
       result; AppHost + HTTP load generator; E2E.
-- [ ] G6 `DaServer.Admission` once the flash-sale waiting room and the MMO login queue both use it: waiting room,
-      admission tokens, fair queue per origin.
+- [ ] G6 Waiting room / admission tokens / fair queue move from the sample into `DaServer.Ingress` once a second
+      domain (e.g. the MMO login queue) uses them.
 
 Step plan (each step builds and keeps every test green; logic, docs, CI in separate commits):
 
@@ -142,10 +139,10 @@ Step plan (each step builds and keeps every test green; logic, docs, CI in separ
 3. `Origin(ulong Node, long Id)`: raw 16-byte extension, `CallContext(ReplyTo, Origin)`, `ShardObject.Caller`
    replaces `CallerSession` (`SessionRef` converts implicitly from `Origin`).
 4. Session operations become messages to `SessionRef` (Bind is an `Ask`, so ADR-022 ordering holds).
-5. Core ingress and features (`DaServer.Features`, `DaServer.Ingress`):
+5. Feature points and ingress (`DaServer.Features`, `DaServer.Ingress`):
    - `NodeFeature`: Configure, ConfigureShard(World), Start(INodeContext), OnViewChanged, OnMemberDead,
-     `Drain(deadline)`, Stop(crashed), a readiness contribution, metrics registration; discovered from referenced
-     assemblies (module initializer), options bound from `DaServer:{Section}`.
+     `Drain(deadline)`, Stop(crashed), a readiness contribution, metrics registration; options bound from
+     `DaServer:{Section}`; enabled by configuration.
    - `HandleAddress<TAddr>(IAddressHandler)`: runs on the IO thread with the raw frame, never blocks; hosted address
      scopes gossiped in the card; fixed pulse slots assigned at registration (sessions, in-flight, ...).
    - `INodeContext.Ingress`: `Send`/`Ask` to any address with origin, deadline (capped budget) and a public
@@ -154,39 +151,36 @@ Step plan (each step builds and keeps every test green; logic, docs, CI in separ
    - Admission primitives: ingress filter stage (reject with status + retry-after), `RateLimited` / `Overloaded`
      statuses with a retry hint, an allocation-free token bucket / concurrency limit, `SignedToken` (HMAC with the
      cluster secret: resume tickets, admission tokens, internal HTTP auth).
-   - One timer wheel implementation (IO side here, per-shard for N2), public `DaServer.Net` (`Connection`,
-     `Listener`, `ConnectionOptions`, `IConnectionHandler`, batched send) for transports.
+   - One timer wheel implementation (IO side here, per-shard for N2); `DaServer.Net` (`Connection`, `Listener`,
+     batched send) as the transport base.
    - Message filters (`RegisterFilter<T>`, static/generic, ingress and dispatch stages; N11 generates into them).
    - The HTTP plane minimum pulled forward from A1: Kestrel minimal APIs in `DaServer.Hosting`, `MapAsk`/`MapSend`
-     helpers, status -> 429/503 + `Retry-After`, deadline header -> budget. Proves the ingress API with a second
-     consumer; a test with a toy connection feature and a toy HTTP endpoint.
-6. Gateway as a feature inside the DaServer assembly: `ITransport` (TCP on `DaServer.Net`), sessions, bindings,
+     helpers, status -> 429/503 + `Retry-After`, deadline header -> budget. Tests with a toy feature and a toy HTTP
+     endpoint.
+6. Client connections as a feature (`src/DaServer/Clients`, namespace `DaServer.Clients`), enabled by a client port:
+   transports (TCP on `DaServer.Net`; WebSocket through the HTTP plane in `DaServer.Hosting`), sessions, bindings,
    `GroupMembers` (M2 pool), address handlers for `SessionRef` and `ClientGroup` (fan-out to the nodes advertising
-   the scope, so co-hosted gateways work), resume tickets on `SignedToken` and grace timers on the timer wheel (M3),
-   `BoundSessions` + filters for `SessionClosed`/`SessionResync` (special cases leave `ShardDispatch`), dead-gateway
-   close through a system, ingress checks (size, FromClient set, destination, per-session rate limit, origin
-   overwrite, budget cap), `GatewayOptions`, `Drain` (readiness off, leave the directory, staggered move + ticket,
-   close the listener). The balancer role goes: every gateway answers "which gateway" (power of two over gossiped
-   sessions) as a control op and `GET /gateway`; the well-known address is the platform LB / DNS; redirect mode
-   (per-gateway public address) or behind-LB mode. `ClusterMember` loses `ClientPort`/`ClientHost`/`Sessions`/
-   `Balancer`.
-7. Attributes `[FromClient(AnyId)]` / `[ToClient]` in the gateway contracts package; core `[Message]` has no `Flow`.
-8. Packages (acyclic; the core never references an extension):
-   `DaServer.Abstractions` (netstandard2.1 + net10: `[Message]`, `IRequest`, addresses, `Origin`, `RpcStatus`,
-   `FrameHeader`, wire ids, `TypeIds`; no runtime, no EasyEcs; `TypeId<T>` static classes, no static abstract members),
-   `DaServer` (core), `DaServer.Generator`, `DaServer.Hosting`, `DaServer.Aspire`,
-   `DaServer.Gateway.Abstractions` (netstandard2.1 + net10: `SessionRef`, `ClientGroup`, `[FromClient]`/`[ToClient]`,
-   `SessionClosed`/`SessionResync`, client control ops), `DaServer.Gateway`, `DaServer.Gateway.Client` (SDK on
-   `Gateway.Abstractions` only, M5 smaller table; usable from Unity), `DaServer.Gateway.Analyzers` (DAS006 client
-   flow by address kind), `DaServer.Gateway.Aspire` (`AddGateways(...)`, `WithGateways`; no `AddBalancer`). Later:
-   `DaServer.Gateway.WebSocket` (Kestrel), Kcp/Quic transports.
-9. Tests: `tests/DaServer.Tests` (core, toy feature, toy HTTP ingress), `tests/DaServer.Gateway.Tests`,
-   `tests/DaServer.Architecture.Tests` (type names and assembly references: DaServer.dll has no
-   `*Session*|*Gateway*|*Client*` types and references no extension; Abstractions reference no runtime or EasyEcs);
-   benchmarks split into `DaServer.Benchmark` (Rpc, Message) and `DaServer.Gateway.Benchmark` (Broadcast, Scenario);
-   A/B against step 0 (no regression), allocation tests < 1 B per delivery.
-10. Docs: ADR-047/048, design/README/samples/CLAUDE.md (core first, gateway module second, MMO sample third),
-    requirements R0/R2/R6/R7, wire break noted; `samples/mmo` uses gateways with the directory instead of a balancer.
+   the scope), resume tickets on `SignedToken` and grace timers on the timer wheel (M3), `BoundSessions` + filters for
+   `SessionClosed`/`SessionResync` (special cases leave `ShardDispatch`), dead-node session close through a system,
+   ingress checks (size, `[FromClient]` set, destination, per-session rate limit, origin overwrite, budget cap),
+   `ClientOptions` (`DaServer__Clients__Port`, ...), `Drain` (readiness off, leave the directory, staggered move +
+   ticket, close the listener). The balancer role goes: every client-facing node answers "which node" (power of two
+   over gossiped sessions) as a control op and `GET /clients/endpoint`; the well-known address is the platform LB /
+   DNS; redirect mode or behind-LB mode. `ClusterMember` keeps no client fields (they are feature card data).
+7. Attributes `[FromClient(AnyId)]` / `[ToClient]` replace `Flow`/`AnyId` on `[Message]`.
+8. Packages: `DaServer.Abstractions` (netstandard2.1 + net10: `[Message]`, `[FromClient]`/`[ToClient]`,
+   `IRequest`, addresses incl. `SessionRef`/`ClientGroup`, `Origin`, `RpcStatus`, `FrameHeader`, wire ids,
+   `TypeIds`, `SessionClosed`/`SessionResync`; no runtime, no EasyEcs; `TypeId<T>` static classes, no static
+   abstract members), `DaServer` (runtime incl. Ingress and Clients, generator and analyzers bundled), `DaServer.Client`
+   (SDK on Abstractions only, `ClusterClient`, M5 smaller table; netstandard2.1 + net10, Unity), `DaServer.Hosting`,
+   `DaServer.Aspire` (`AddNodes(...).WithClients(port)` replaces `AddGateways`/`AddBalancer`; `WithClientEndpoints`
+   replaces `WithGateways`).
+9. Tests: architecture test (`DaServer.Runtime`/`Cluster`/`Rpc` reference no `DaServer.Clients` type;
+   Abstractions and Client reference no runtime or EasyEcs); client tests stay in `tests/DaServer.Tests`; A/B against
+   step 0 (no regression), allocation tests < 1 B per delivery.
+10. Docs: ADR-047/048, design/README/samples/CLAUDE.md, requirements R0/R2/R3/R6/R7/R11 (directory instead of
+    balancer), wire break noted; `samples/mmo` drops the balancer project and `Sample.Gateway` becomes a client-facing
+    node group in the AppHost.
 
 ## Next: graceful shutdown and no data loss
 

@@ -2,10 +2,10 @@
 
 **DaServer is a general-purpose ECS distributed server framework for high performance and high concurrency** (.NET 10).
 Users write messages, actors and services with `[Handle]` methods, and ECS systems; source generators write the
-plumbing. The core (`src/DaServer`) knows no application scenario: no game clients, sessions, gateways, logins or maps.
-Scenario-specific capabilities are optional modules (the client edge: `DaServer.Gateway`, roadmap G1/G2), and
-scenarios are samples (`samples/mmo`: login, balancer, gateways, game server, map servers). Nothing scenario-specific
-goes into the core.
+plumbing. The framework covers what every real-time backend needs (actors, services, messaging, membership,
+placement, persistence, ingress, client connections; ADR-045/048) and knows no business domain: logins, maps,
+matchmaking, inventories live in samples (`samples/mmo`) or user code. Load balancing, TLS and autoscaling are the
+platform's.
 Code, comments, commits and docs are in English.
 
 **Start here when resuming work:** `doc/requirements.md` (what must hold, release checklist), `doc/roadmap.md` (what
@@ -87,8 +87,9 @@ doc/                       requirements.md, design.md, decisions.md, roadmap.md
   actors only through `ICluster`.
 - Wire ids are generated (FNV-1a); never renumber by hand except `[WireId]` to resolve a reported collision.
 - No topology strings (roles, node names) in code: a node hosts what its project compiles (ADR-017).
-- The core is general (ADR-045): a feature needed by one kind of application goes into an optional module built on
-  public extension points, or into a sample; never into `src/DaServer`.
+- The framework is general (ADR-045): a capability enters only if backends of different domains need it, in its own
+  namespace on the public feature points, off unless configured; the runtime never depends on it. Domain logic goes
+  into samples.
 - Business code sees `ICluster`, never `Node` (ADR-020).
 - Nothing stale: a replaced API is deleted, not kept as an `[Obsolete]` alias (pre-1.0); docs describe what is true
   now (a superseded ADR is removed or rewritten, no "first version used..." history, no dead roadmap items).

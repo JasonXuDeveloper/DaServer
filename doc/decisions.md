@@ -468,15 +468,18 @@ records that no longer hold). Each: context → decision → consequences.
   alone and can swap the code freely.
 
 ## ADR-045 DaServer is a general ECS distributed server framework
-- Context: a client edge (gateways, sessions, client groups, reconnect tickets, balancer, `ClusterClient`, client
-  message flow) inside the core, and game samples at the top of `samples/`, make the framework read as a game server.
+- Context: a framework for high-concurrency backends must not read as one game server, yet it must cover what every
+  real-time backend needs.
 - Decision: DaServer is a general-purpose ECS distributed server framework for high performance and high
-  concurrency. The core (`src/DaServer`) offers ECS shards, actors and services, messages and RPC, membership,
-  placement, persistence and reload, plus extension points (node features, call origin, ingress, frame kinds, gossip
-  data, message filters). Scenario capabilities are optional modules built only on those public points (the client
-  edge becomes `DaServer.Gateway`, roadmap G1/G2); scenarios are samples (`samples/mmo`).
-- Consequences: nothing scenario-specific enters the core; a module that needs a core change gets a general
-  extension point, not a special case. Until G2 lands the gateway code still lives in the core assembly.
+  concurrency. The framework covers the capabilities any such backend needs: ECS shards, actors and services,
+  messages and RPC, membership, placement, persistence, reload, ingress and client connections (sessions, push,
+  groups, resume; chat, IoT, market data, collaboration and games all need them, ADR-048). Business domains are not
+  part of it: logins, maps, interest management, matchmaking, inventories live in samples (`samples/mmo`,
+  `samples/flashsale`) or user code.
+- Consequences: a capability enters the framework only if backends of different domains need it; it is built on the
+  same public extension points users have (node features, ingress, address handlers, filters), lives in its own
+  namespace and is off unless configured. The runtime (`DaServer.Runtime`, `DaServer.Cluster`, `DaServer.Rpc`) never
+  depends on a capability namespace (`DaServer.Clients`); an architecture test checks it.
 
 ## ADR-046 Two planes per node: DaServer TCP for data, ASP.NET Core for HTTP
 - Status: agreed; implemented in roadmap A1 (nodes have no HTTP plane yet).
@@ -510,24 +513,29 @@ records that no longer hold). Each: context → decision → consequences.
   protocols break once (pre-1.0, no rolling upgrade across it); the old verbs are removed outright, no aliases; send
   paths stay generic over struct addresses (no boxing, the kind is a JIT constant).
 
-## ADR-048 Ingress is core, edges are modules
+## ADR-048 Ingress and client connections are built in; load balancing stays with the platform
 - Status: agreed; implemented in roadmap G steps 5-10.
-- Context: "gateway" covers three problems with different owners. Ingress (an external request becomes a cluster
-  message with an origin, a deadline, admission and a reply path) is needed by every edge: HTTP, connection gateways,
-  queue consumers. Long-lived client connections (sessions, push, groups, resume) are one class of application.
-  Surge admission (flash sale, ticketing, waiting rooms) is policy over ingress plus partitioned state. Load balancing,
-  TLS, CDN/WAF, Gateway API routes and autoscaling are solved by the platform, which cannot route to the node that
-  owns an actor, push to a session, fan out to cross-gateway groups or tie back-pressure to mailboxes.
-- Decision: the core offers ingress (origin, capped deadline, reply sink, raw pass-through, one hop to the owner from
-  the gossip view, load-aware early refusal), admission primitives (filters that reject with status + retry hint,
-  token bucket, signed tokens) and node features (`NodeFeature`, address handlers, pulse slots, drain, timer wheel,
-  public `DaServer.Net`). The HTTP plane (ADR-046) and `DaServer.Gateway` are its two consumers. The gateway is a
-  feature any node can enable (co-hosted for small clusters, dedicated groups in production); there is no balancer
-  role: every gateway answers "which gateway" from gossiped load, and the well-known address is the platform's LB or
-  DNS (redirect mode or behind-LB mode). Contracts live in `DaServer.Abstractions` and
-  `DaServer.Gateway.Abstractions`, both netstandard2.1 + net10 so Unity clients share messages and the client SDK.
-  Waiting rooms start in `samples/flashsale` and become `DaServer.Admission` when a second consumer exists.
-- Consequences: dedicated HTTP edge nodes may carry high request volume (they allocate per request like any ASP.NET
-  app; the interior stays zero-GC; ADR-046). The
-  Abstractions packages cannot use net10-only language or runtime features. Redirect mode needs a public address per
-  gateway; behind-LB mode leaves long connections unbalanced after a scale-out until clients reconnect.
+- Context: "gateway" covers three problems. Ingress (an external request becomes a cluster message with an origin,
+  a deadline, admission and a reply path) is needed by every edge. Long-lived client connections (sessions, push,
+  groups, resume) are needed by every real-time backend. Surge admission (flash sale, ticketing, waiting rooms) is
+  policy over ingress plus partitioned state. Load balancing, TLS, CDN/WAF, Gateway API routes and autoscaling are
+  solved by the platform, which cannot route to the node that owns an actor, push to a session, fan out to groups
+  across nodes or tie back-pressure to mailboxes. Splitting the connection layer into its own package family made
+  one framework look like two products.
+- Decision: one framework. `DaServer.Ingress` (origin, capped deadline, reply sink, raw pass-through, one hop to the
+  owner from the gossip view, load-aware early refusal, filters that reject with status + retry hint, token bucket,
+  signed tokens) and `DaServer.Clients` (client connections as a node feature: transports, sessions, `SessionRef` and
+  `ClientGroup` addresses, push and fan-out, resume tickets, a directory answering "which node to connect to") are
+  namespaces of the `DaServer` assembly, built on the public feature points. A node accepts clients when a client
+  port is configured; "gateway" is only a deployment word for such a node group (co-hosted in small clusters,
+  dedicated in production). There is no balancer role: any client-facing node answers the directory, and the
+  well-known address is the platform's LB or DNS (redirect mode or behind-LB mode). The HTTP plane (ADR-046) is the
+  second ingress consumer; WebSocket clients connect through it. Packages: `DaServer.Abstractions` (contracts:
+  attributes, `IRequest`, addresses incl. `SessionRef`/`ClientGroup`, `Origin`, wire ids; netstandard2.1 + net10),
+  `DaServer` (runtime + generator and analyzers), `DaServer.Client` (client SDK on Abstractions; netstandard2.1 +
+  net10, Unity), `DaServer.Hosting`, `DaServer.Aspire`. Waiting rooms stay in `samples/flashsale` until a second
+  domain needs them.
+- Consequences: dedicated client-facing nodes may carry high request volume (the actor interior stays zero-GC;
+  ADR-046). Abstractions and the client SDK cannot use net10-only language or runtime features. Redirect mode needs
+  a public address per client-facing node; behind-LB mode leaves long connections unbalanced after a scale-out until
+  clients reconnect.
