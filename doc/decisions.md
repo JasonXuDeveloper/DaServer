@@ -281,6 +281,22 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
 - Consequences: simple and ordered with binds (ADR-022). Revisit when deployments run tens of gateways with small
   groups; the roadmap keeps the item.
 
+## ADR-043 Typed actor ids name the actor type
+- Context: actors were addressed by `(key, message)`: a bare `long` whose meaning depended on which actor type
+  handled the message. A player id could be passed where a map id was meant, a message handled by two actor types was
+  `Ambiguous`, and `Publish(key, e)` reached every actor type at the same number.
+- Decision: each actor type declares its own id type in contracts (`readonly record struct MapId(long Value) :
+  IActorId`) and derives from `Actor<MapId, MapState>` (`Id` is typed). `Send(id, m)` / `Ask(id, m)` route by the id
+  type: its type id (FNV of the full name) is the actor's handler type id, so placement and the wire use the id type
+  and messages need no owner. Two actor types may not share an id type. Actor requests carry the handler type id as a
+  4-byte trailer after the Nino payload (`FrameFlags.ToActor`; Nino ignores trailing bytes), messages carry it in the
+  header's request id. `Publish` reaches services only; actors are told one by one with `Send`. A client may name an
+  actor only with an `AnyId` message whose handler is that actor type; otherwise the session binding decides.
+- Alternatives: keep `long` keys with a generated per-actor proxy (`Cluster.Map(id).Enter(..)`), rejected by ADR-035;
+  put the id inside the message (the old `[ActorKey]`), which couples messages to one receiver.
+- Consequences: the compiler checks targets, ids are plain data that travel inside messages (`Enter(PlayerId)`), and
+  the same message can be handled by several actor types. Ids are one `long` (checked once per id type).
+
 ## ADR-042 A node declared dead drops its actors without OnUnload
 - Context: a node that learns it was declared dead (a partition, a long pause) unloaded its actors normally, so
   `OnUnload` saved their state after the cluster had already given their keys to other nodes: a stale save could

@@ -11,7 +11,7 @@ locally and publishes it.
 - **Zero GC on hot paths.** Messages serialize straight into pooled buffers. Dispatchers deserialize straight from
   the received bytes. Awaitables are pooled, and broadcasts are serialized once.
 - **No locks in business code.** Every actor, service and system runs on its shard's single thread.
-- **Stateful and stateless.** Actors are keyed and placed on one node by rendezvous hashing. Services are
+- **Stateful and stateless.** Actors have typed ids (`PlayerId`, `MapId`) and are placed on one node by rendezvous hashing. Services are
   load-balanced and prefer the local node. Nodes discover each other through gossip.
 - **ECS inside.** Actor state is an [EasyEcs](https://github.com/JasonXuDeveloper/EasyEcs) component on the
   actor's entity, so systems can process every actor of a shard in one cache-friendly pass.
@@ -69,8 +69,8 @@ Everything a developer declares is one of these. The message type alone decides 
 | Declaration | Meaning |
 |---|---|
 | `[NinoType, Message] partial record struct M` | A message between servers (actors and services on any node). |
-| `[Message(Flow.FromClient)]` | Game clients may send it too. To an actor, it goes to the key bound to the session. |
-| `[Message(Flow.FromClient, AnyKey = true)]` | To an actor, the client chooses the key (public rooms). |
+| `[Message(Flow.FromClient)]` | Game clients may send it too. To an actor, it goes to the actor bound to the session. |
+| `[Message(Flow.FromClient, AnyId = true)]` | To an actor, the client chooses the id (public rooms). |
 | `[Message(Flow.ToClient)]` | Servers push it to client sessions and groups; clients handle it. |
 | `[NinoType] partial record struct D` | Data inside messages (fields, replies), never sent on its own. Anything crossing the wire is `[NinoType]`. |
 | `... : IRequest<TReply>` | A request: answered with one `TReply`. |
@@ -79,23 +79,23 @@ Everything a developer declares is one of these. The message type alone decides 
 
 | Call | Target |
 |---|---|
-| `Cluster.Ask(key, new M())` / `Send(key, ...)` | The actor of `key` of the one actor type handling `M` (one per cluster, on demand, turn-based). |
+| `Cluster.Ask(id, new M())` / `Send(id, ...)` | The actor `id` (`MapId`, `PlayerId`: the id type names the actor type; one per cluster, on demand, turn-based). |
 | `Cluster.Ask(new M())` / `Send(...)` | The one service handling `M` (load-balanced, local first). |
-| `Cluster.Publish(key, e)` / `Publish(e)` | Every actor type handling `e` at that key / every service handling it, once each. |
+| `Cluster.Publish(e)` | Every service type handling `e`, once each. |
 | `Cluster.Push(session, m)` / `Broadcast(group, m)` | A client session / a client group (pushes; clients handle them with `[Handle]` too). |
 
 | Element | Responsibility | Never |
 |---|---|---|
-| **Actor** | The network boundary of one keyed entity: validate a message, then write input as components. Lifecycle and persistence (`OnLoad`, `OnUnload`). | Per-tick logic (that belongs to systems). |
+| **Actor** | The network boundary of one entity with an id: validate a message, then write input as components. Lifecycle and persistence (`OnLoad`, `OnUnload`). | Per-tick logic (that belongs to systems). |
 | **Service** | Stateless request and event handling (login, matchmaking, routing). | Keep state between messages. |
-| **Component / singleton** | Data of one entity (actor state is `Actor<TState>`) / of one shard world. | Logic. |
+| **Component / singleton** | Data of one entity (actor state is `Actor<TId, TState>`) / of one shard world. | Logic. |
 | **System** | One per-tick responsibility over all matching entities of a shard. Stateless. | Reference other systems, perform IO. |
 
 Business code reaches the cluster through `ICluster`: `Cluster` in actors and services, `world.Cluster()` in systems.
 `CallerSession` is the client session of the running turn (valid across its awaits).
 
 The runtime owns client sessions: an actor's `await BindSession(session)` routes the client's messages for that actor
-type to its key and puts the session in the actor's `Group`; when the session closes (or its gateway crashes),
+type to its id and puts the session in the actor's `Group`; when the session closes (or its gateway crashes),
 every actor it was bound to receives `SessionClosed`. A client that loses its connection reconnects on its own and
 resumes the session with a signed ticket: its actors receive `SessionResync` (send the full state again) instead, and
 `SessionClosed` only if it does not come back within 30 s.
@@ -107,14 +107,18 @@ server, a game server (players, the realm), a map server (maps, movement, area o
 business code.
 
 ```csharp
+// Ids (one type per actor type: the id type names the actor, so a player id never reaches a map).
+public readonly record struct PlayerId(long Value) : IActorId;
+public readonly record struct MapId(long Value) : IActorId;
+
 // Messages (shared with clients).
 [NinoType, Message(Flow.FromClient)] public partial record struct Login(string Name) : IRequest<LoginResult>;
-[NinoType, Message(Flow.FromClient)] public partial record struct EnterMap(long MapId) : IRequest<bool>;
+[NinoType, Message(Flow.FromClient)] public partial record struct EnterMap(MapId Map) : IRequest<bool>;
 [NinoType, Message(Flow.FromClient)] public partial record struct Move(float VelocityX, float VelocityY); // input
 [NinoType, Message(Flow.FromClient)] public partial record struct Say(string Text);
 [NinoType, Message] public partial record struct Attach(SessionRef Session) : IRequest<bool>;  // servers only
-[NinoType, Message] public partial record struct Enter(long PlayerId, SessionRef Session) : IRequest<bool>;
-[NinoType, Message(Flow.ToClient)] public partial record struct Chat(long PlayerId, string Text); // pushed
+[NinoType, Message] public partial record struct Enter(PlayerId Player, SessionRef Session) : IRequest<bool>;
+[NinoType, Message(Flow.ToClient)] public partial record struct Chat(PlayerId Player, string Text); // pushed
 
 // Login project: a stateless service.
 public sealed class Account : Service
@@ -122,19 +126,19 @@ public sealed class Account : Service
     [Handle]
     public async ValueTask<LoginResult> On(Login m)
     {
-        long playerId = Accounts.IdOf(m.Name);
-        bool attached = await Cluster.Ask(playerId, new Attach(CallerSession)); // reaches whoever handles Attach
-        return new LoginResult(attached, playerId);
+        var player = Accounts.IdOf(m.Name);                                    // a PlayerId
+        bool attached = await Cluster.Ask(player, new Attach(CallerSession)); // the Player actor of that id
+        return new LoginResult(attached, player);
     }
 }
 
 // Game project: actors turn messages into data...
-public sealed class Player : Actor<PlayerState>
+public sealed class Player : Actor<PlayerId, PlayerState>
 {
     [Handle]
     public async ValueTask<bool> On(Attach m)
     {
-        await BindSession(m.Session);               // the client's Player messages reach this key from now on
+        await BindSession(m.Session);               // the client's Player messages reach this player from now on
         State.Logins++;                             // re-read after awaiting
         return true;
     }
@@ -142,12 +146,12 @@ public sealed class Player : Actor<PlayerState>
     [Handle]
     public async ValueTask<bool> On(EnterMap m)
     {
-        await Cluster.Ask(m.MapId, new Enter(Key, CallerSession)); // zero allocation
-        State.MapId = m.MapId;
+        await Cluster.Ask(m.Map, new Enter(Id, CallerSession)); // zero allocation
+        State.Map = m.Map;
         return true;
     }
 
-    [Handle] public void On(SessionClosed _) => State.MapId = 0;
+    [Handle] public void On(SessionClosed _) => State.Map = default;
 }
 
 // Actor state is a component; field initializers run when the actor loads (no OnLoad boilerplate).
@@ -156,12 +160,12 @@ public struct MapState() : IComponent
     public readonly Dictionary<SessionRef, Entity> Avatars = new();
 }
 
-public sealed class Map : Actor<MapState>
+public sealed class Map : Actor<MapId, MapState>
 {
     [Handle]
     public async ValueTask<bool> On(Enter m)
     {
-        State.Avatars[m.Session] = World.CreateEntity(new Position(), new Velocity(), new Avatar(m.PlayerId, Entity, m.Session));
+        State.Avatars[m.Session] = World.CreateEntity(new Position(), new Velocity(), new Avatar(m.Player, Entity, m.Session));
         await BindSession(m.Session);               // its input reaches this map, it sees Group broadcasts
         return true;
     }
@@ -200,7 +204,7 @@ var client = new ClusterClient();
 client.Register(new Bot());
 await client.ConnectAsync("play.example.com", 7100);          // directed to the least loaded gateway
 await client.Ask(new Login("alice"));
-await client.Ask(new EnterMap(1));                            // no key: the gateway uses the session's binding
+await client.Ask(new EnterMap(new MapId(1)));               // to the bound player (session binding)
 client.Send(new Move(1, 0));
 ```
 
