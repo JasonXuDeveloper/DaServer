@@ -649,6 +649,8 @@ records that no longer hold). Each: context → decision → consequences.
   - `DaServer.Client` (netstandard2.1, net10.0, net11.0): `ClusterClient`.
   - `DaServer` (net11.0, ADR-054): the server runtime (shards, actors, services, cluster, ingress, client connections), plus
     `DaServer.Hosting` and `DaServer.Aspire`.
+  - `DaServer.Simulation` (net10.0, net11.0; on Client and EasyEcs, not the server): simulated users for end-to-end,
+    load and behavior tests (ADR-056).
   The generator and analyzers ship with Abstractions, so every assembly using DaServer gets them. Newer BCL APIs are
   used on .NET and replaced on netstandard2.1 (`Platform`, internal polyfills of `Lock` and `FrozenDictionary`), so
   servers pay nothing for the shared code. An architecture test enforces the references.
@@ -705,23 +707,54 @@ records that no longer hold). Each: context → decision → consequences.
 - Context: the sample's bot called the protocol directly (log in, send random `Move`s, count pushes): a second
   client written for the test, so the end-to-end and load tests proved the servers against code no player runs, and
   rules both sides need (movement, the interest grid) lived in the map server only. ET runs its robots as real
-  clients (each robot a fiber running the client's scenes); a studied game server-style bots mirror that.
+  clients (each robot a fiber running the client's scenes).
 - Decision: three layers in samples. `Sample.Shared` (`<DaServerShared>true</DaServerShared>`) holds rules and ECS
   systems both sides run (`MovementSystem`, `MapGeometry`); the generator marks it `[assembly: SharedLogic]` and a
   node project referencing it runs its public systems on every shard, as its own; DAS010 makes a reference from a
   shared assembly to the server runtime or the transport (`DaServer`, `DaServer.Hosting`, `DaServer.Core`,
-  `DaServer.Client`) a build error. `Sample.Client` is the game client's logic as data and systems: a player entity
-  per connected client, pushes handled into components on the world's thread (`PushSystem` drains the client's
-  callback queue), prediction with the shared rules, input sent when it changes, the view kept to the 3x3; flows
-  (log in, enter a map) are awaits on a `ClientLoop` (a `SynchronizationContext` with its own thread: pushes as they
-  arrive, the simulation at the server's tick rate). Per-player state lives on the player entity, never in world
-  singletons, so one world holds one player in a game and thousands in a bot process. `Sample.Bot` is the client plus
-  an input source (`BotInputSystem` writes `Steering`/`Speaking` as a UI would) and measurement (`MeasureSystem`),
-  one loop per core.
+  `DaServer.Client`) a build error. `Sample.Client` is the game client's logic as data and systems
+  (`ClientSystems`): a player entity per connected client, pushes handled into components on the world's thread
+  (`PushSystem` drains the client's callback queue), prediction with the shared rules, input sent when it changes,
+  the view kept to the 3x3, late pushes of a map the player left dropped (they carry the map id); flows (log in,
+  enter a map) are awaits on the world's thread. Per-player state lives on the player entity, never in world
+  singletons, so one world holds one player in a game and thousands in a bot process. `Sample.Bot` is the client run
+  as simulated users (ADR-056) with a behavior domain at the controls (change maps, chat, wander) and its
+  measurements.
 - Alternatives: a fiber (an isolated world, scheduler and mailbox) per robot as in ET: 10,000 worlds polled every
   millisecond for the isolation a player entity already gives; systems over many players batch the same work.
   Keeping protocol-level bots: cheap, but tests the servers against a client nobody ships.
 - Consequences: the end-to-end test and the load test run the client a player runs; a client change is load-tested
-  by the next run. Bots now hold what a client holds (avatars in view as entities), which costs memory a protocol bot
+  by the next run. Bots hold what a client holds (avatars in view as entities), which costs memory a protocol bot
   did not spend. Shared systems run on every node that references the shared assembly, so a node references it only
   when it simulates what the rules are about (the map server does; the game server does not).
+
+## ADR-056 Simulated users are a framework package: client worlds, HTN planning as data, swarms
+- Context: every backend built on DaServer needs to test itself with realistic users: players in a game, buyers in a
+  flash sale, fans in a ticket queue, members of a chat. A sample-only bot would be rewritten by each of them. Behavior
+  beyond scripts (decide what to do next from what is true now, several steps ahead) is what game AI solves with
+  priority selectors (ET's AI handlers: the first handler whose check passes runs as a cancellable coroutine) and
+  hierarchical task networks (HTN: compound tasks decomposed by ordered methods into primitive tasks, with
+  preconditions and effects).
+- Decision: `DaServer.Simulation`, a client-side package (ADR-052; it never references the server runtime, so it
+  runs against any cluster):
+  - `ClientLoop`: a client world on its own thread, a `SynchronizationContext` so flows awaited on it resume there;
+    each pass runs posted work and the client's arrival handling, the world's systems tick at the servers' rate.
+  - Planning as ECS data (`DaServer.Simulation.Planning`): facts are a bit set component (`Facts`) written by sensor
+    systems; a domain is a singleton of plain tables (`HtnDomain`: tasks, methods, steps; conditions and effects are
+    bit masks), built once with `DomainBuilder<TFact>`; a plan is a component of task ids (`Plan`, inline buffer).
+    `PlannerSystem` decomposes on a copy of the facts (method order, effects, backtracking) and starts tasks one at
+    a time; a primitive task is a component, started by adding it and done when the system carrying it out removes
+    it. Planning allocates nothing and holds no references; a priority selector is a root with one task per method,
+    so one mechanism covers both.
+  - `Swarm`: users spread over one loop per core, started in waves (`MaxStarting`), worlds configured on their own
+    threads, sums read on each loop's thread, a measured window with a shared `Meter` (latency histogram, named
+    counters, disconnects) reachable from systems as the `Measurements` singleton. Passing is the scenario's call.
+  A scenario writes only its fact enum, its domain, its sensor and task systems, how a user starts, and its verdict.
+- Alternatives: coroutine behaviors (ET): state hidden on await stacks, one timer and one coroutine per agent,
+  handlers found by reflection; behavior trees: a tree walk per agent per tick, state in node objects; goal-oriented
+  action planning: a search per agent, costlier than ordered decomposition for scripted users; keeping it in samples:
+  every other sample (G5's flash sale) would copy it.
+- Consequences: the MMO sample's bots are a `Swarm` of `Sample.Client` players with a three-method domain (change
+  maps, chat, wander); the flash sale's buyers will be another domain over the same package. In-process cluster tests
+  (P1 `DaServer.Testing`) stay a separate, server-side package. Server-side NPC planning would reuse the same model in
+  user code; the framework does not ship a server AI.
