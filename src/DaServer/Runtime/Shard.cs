@@ -1,16 +1,3 @@
-using System;
-using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.Threading;
-using System.Threading.Tasks;
-using DaServer.Buffers;
-using DaServer.Net;
-using DaServer.Concurrency;
-using DaServer.Rpc;
-using EasyEcs;
-using Microsoft.Extensions.Logging;
-
 namespace DaServer.Runtime;
 
 /// <summary>
@@ -20,7 +7,7 @@ namespace DaServer.Runtime;
 /// <para>Loop: on every wake the <see cref="ShardMessages"/> group runs (so messages never wait for a tick); at the
 /// tick rate the default group runs (simulation systems). User code never needs locks.</para>
 /// </summary>
-public sealed class Shard : IDisposable
+public sealed class Shard
 {
     [ThreadStatic] private static Shard? _current;
 
@@ -135,8 +122,6 @@ public sealed class Shard : IDisposable
         _stopRequested = true;
         _wake.Set();
     }
-
-    public void Dispose() => RequestStop();
 
     /// <summary>Inbox consumer (shard thread only, used by <see cref="InboxSystem"/>).</summary>
     internal bool TryTake(out WorkItem item)

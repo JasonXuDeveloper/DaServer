@@ -1,7 +1,4 @@
-using System;
-using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
-using System.Threading;
 
 namespace DaServer.Concurrency;
 
@@ -48,8 +45,6 @@ public sealed class MpmcQueue<T>
             return count < 0 ? 0 : (int)Math.Min(count, _slots.Length);
         }
     }
-
-    public bool IsEmpty => Count == 0;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool TryEnqueue(in T item)

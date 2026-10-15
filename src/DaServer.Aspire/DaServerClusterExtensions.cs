@@ -1,5 +1,3 @@
-using System;
-using System.Collections.Generic;
 using Aspire.Hosting.ApplicationModel;
 
 namespace Aspire.Hosting;
@@ -108,7 +106,6 @@ public sealed class DaServerCluster
         {
             string nodeName = $"{name}-{i}";
             var node = _builder.AddProject<TProject>(nodeName)
-                .WithAnnotation(new DaServerNodeAnnotation(Name))
                 .WithEnvironment("DaServer__Name", nodeName)
                 .WithEnvironment("DaServer__ClusterSecret", _secret)
                 .WithEndpoint(port: _nextClusterPort, targetPort: _nextClusterPort++, scheme: "tcp", name: "cluster",
@@ -150,6 +147,3 @@ public sealed class DaServerNodeGroup(string name, IReadOnlyList<IResourceBuilde
     /// <summary>Client endpoints (gateway groups only).</summary>
     public IReadOnlyList<EndpointReference> ClientEndpoints { get; } = clientEndpoints;
 }
-
-/// <summary>Marks a resource as a member of a DaServer cluster (for tooling and publishers).</summary>
-public sealed record DaServerNodeAnnotation(string Cluster) : IResourceAnnotation;

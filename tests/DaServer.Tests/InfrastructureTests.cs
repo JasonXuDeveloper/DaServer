@@ -1,14 +1,4 @@
-using System;
-using System.Collections.Concurrent;
-using System.Linq;
-using System.Threading;
-using System.Threading.Tasks;
-using DaServer.Buffers;
-using DaServer.Cluster;
 using DaServer.Concurrency;
-using DaServer.Protocol;
-using DaServer.Rpc;
-using NUnit.Framework;
 
 namespace DaServer.Tests;
 
@@ -147,8 +137,8 @@ public class InfrastructureTests
             Handlers = [new HostedHandler { MessageId = 7, ImplementationId = 70, Actor = true }],
         };
 
-        var three = new ClusterView([Member(1), Member(2), Member(3)], 1);
-        var four = new ClusterView([Member(1), Member(2), Member(3), Member(4)], 2);
+        var three = new ClusterView([Member(1), Member(2), Member(3)]);
+        var four = new ClusterView([Member(1), Member(2), Member(3), Member(4)]);
 
         int moved = 0;
         for (long key = 0; key < 10_000; key++)

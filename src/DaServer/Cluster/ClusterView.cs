@@ -1,7 +1,3 @@
-using System.Collections.Frozen;
-using System.Collections.Generic;
-using System.Runtime.CompilerServices;
-
 namespace DaServer.Cluster;
 
 /// <summary>
@@ -14,9 +10,8 @@ public sealed class ClusterView
     private readonly FrozenDictionary<uint, ClusterMember[]> _implementationNodes;
     private readonly FrozenDictionary<uint, MessageRoute[]> _routes;
 
-    public ClusterView(IEnumerable<ClusterMember> members, long version)
+    public ClusterView(IEnumerable<ClusterMember> members)
     {
-        Version = version;
         var all = new Dictionary<ulong, ClusterMember>();
         var implementations = new Dictionary<uint, List<ClusterMember>>();
         var handlers = new Dictionary<uint, Dictionary<uint, bool>>();
@@ -60,9 +55,6 @@ public sealed class ClusterView
 
         _routes = routes.ToFrozenDictionary();
     }
-
-    /// <summary>Monotonic version of the view (incremented on every change).</summary>
-    public long Version { get; }
 
     public ClusterMember[] UpMembers { get; }
 

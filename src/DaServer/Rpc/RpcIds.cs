@@ -6,8 +6,8 @@ namespace DaServer.Rpc;
 /// </summary>
 public static class RpcIds
 {
-    public const uint FnvOffset = 2166136261;
-    public const uint FnvPrime = 16777619;
+    private const uint FnvOffset = 2166136261;
+    private const uint FnvPrime = 16777619;
 
     public static uint Fnv1a(string text)
     {

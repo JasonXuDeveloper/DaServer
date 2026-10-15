@@ -1,4 +1,3 @@
-using System.Threading.Tasks;
 using DaServer.Rpc;
 using DaServer.Runtime;
 using Sample.Contracts;

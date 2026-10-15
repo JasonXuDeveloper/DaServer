@@ -1,9 +1,3 @@
-using System;
-using System.Runtime.CompilerServices;
-using DaServer.Concurrency;
-using DaServer.Protocol;
-using Nino.Core;
-
 namespace DaServer.Buffers;
 
 /// <summary>
@@ -63,8 +57,6 @@ public sealed class FrameWriter : INinoBufferWriter, IDisposable
     /// <summary>Payload after the header.</summary>
     public ReadOnlySpan<byte> Payload => new ReadOnlySpan<byte>(_buffer, FrameHeader.Size, _pos - FrameHeader.Size);
 
-    public byte[] Buffer => _buffer;
-
     public int Length => _pos;
 
     /// <summary>Write the header (length is filled in automatically).</summary>
@@ -91,9 +83,6 @@ public sealed class FrameWriter : INinoBufferWriter, IDisposable
         bytes.CopyTo(GetSpan(bytes.Length));
         _pos += bytes.Length;
     }
-
-    /// <summary>Discard the payload, keep the buffer (reuse for another frame).</summary>
-    public void ResetPayload() => _pos = FrameHeader.Size;
 
     public void Dispose()
     {

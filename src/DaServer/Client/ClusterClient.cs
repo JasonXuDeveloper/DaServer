@@ -1,18 +1,3 @@
-using System;
-using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.Net;
-using System.Threading;
-using System.Threading.Tasks;
-using DaServer.Buffers;
-using DaServer.Cluster;
-using DaServer.Concurrency;
-using DaServer.Net;
-using DaServer.Protocol;
-using DaServer.Rpc;
-using DaServer.Runtime;
-using Nino.Core;
-
 namespace DaServer.Client;
 
 /// <summary>
@@ -283,8 +268,8 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IAsyncDi
     private ValueTask ResumeAsync()
     {
         var ticket = Volatile.Read(ref _ticket)!;
-        var call = PendingCall.Rent(null);
-        var task = call.Task;
+        var call = PendingCall<NoReply>.Rent(null);
+        var task = call.Done;
         var w = FrameWriter.Rent(FrameHeader.Size + ticket.Length);
         w.WriteRaw(ticket);
         Send(w, ControlOp.ResumeSession, 0, call, FrameKind.Control);
@@ -309,7 +294,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IAsyncDi
         var header = FrameHeader.Read(frame);
         if (!Volatile.Read(ref _handlers).TryGetValue(header.MessageId, out var handler)) return;
         var reader = new Reader(frame.Slice(FrameHeader.Size));
-        var context = new CallContext(null, 0, header.MessageId, header.Key, default);
+        var context = default(CallContext);
         var task = handler.Dispatcher(handler.Target, ref reader, in context);
         if (task.IsCompleted) task.GetAwaiter().GetResult();
     }
@@ -320,8 +305,8 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IAsyncDi
         _disposed = true;
         if (IsConnected)
         {
-            var call = PendingCall.Rent(null);
-            var goodbye = call.Task;
+            var call = PendingCall<NoReply>.Rent(null);
+            var goodbye = call.Done;
             Send(FrameWriter.Rent(FrameHeader.Size), ControlOp.Goodbye, 0, call, FrameKind.Control);
             try
             {

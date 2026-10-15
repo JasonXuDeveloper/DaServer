@@ -1,17 +1,3 @@
-using System;
-using System.Collections.Generic;
-using System.Buffers.Binary;
-using System.Diagnostics;
-using System.Net;
-using System.Net.Sockets;
-using System.Threading;
-using DaServer.Buffers;
-using DaServer.Net;
-using DaServer.Protocol;
-using DaServer.Runtime;
-using Microsoft.Extensions.Logging;
-using Nino.Core;
-
 namespace DaServer.Cluster;
 
 /// <summary>Control operations carried in <see cref="FrameKind.Control"/> frames (MessageId field).</summary>
@@ -97,7 +83,6 @@ internal sealed class Membership : IDisposable
     private readonly Dictionary<ulong, Entry> _members = new();
     private ClusterView _view;
     private ClusterMember _self = new();
-    private long _version;
     private Timer? _timer;
     private bool _changed;
     private List<(string Host, int Port)>? _seeds;
@@ -116,14 +101,12 @@ internal sealed class Membership : IDisposable
     public Membership(Node node)
     {
         _node = node;
-        _view = new ClusterView([], 0);
+        _view = new ClusterView([]);
     }
 
     public ClusterView View => Volatile.Read(ref _view);
 
     public ClusterMember Self => Volatile.Read(ref _self);
-
-    public bool SelfIsUp => Self.Status == MemberStatus.Up;
 
     public void Start(string host, int port)
     {
@@ -472,7 +455,7 @@ internal sealed class Membership : IDisposable
         var members = new List<ClusterMember>(_members.Count);
         foreach (var entry in _members.Values) members.Add(entry.Info);
         var old = _view;
-        var view = new ClusterView(members, ++_version);
+        var view = new ClusterView(members);
         Volatile.Write(ref _view, view);
         _changed = false;
 

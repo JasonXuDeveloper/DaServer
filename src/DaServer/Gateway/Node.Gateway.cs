@@ -1,18 +1,3 @@
-using System;
-using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.Net;
-using System.Threading;
-using System.Threading.Tasks;
-using DaServer.Buffers;
-using DaServer.Cluster;
-using DaServer.Concurrency;
-using DaServer.Net;
-using DaServer.Protocol;
-using DaServer.Rpc;
-using Microsoft.Extensions.Logging;
-using Nino.Core;
-
 namespace DaServer.Runtime;
 
 // Gateway capability (NodeOptions.ClientPort): client sessions, routing of client messages into the cluster, push and
@@ -90,8 +75,8 @@ public sealed partial class Node
 
         var link = LinkTo(session.GatewayNodeId);
         if (link == null) return ValueTask.FromException(new RpcException(RpcStatus.Disconnected, "Gateway is gone"));
-        var call = PendingCall.Rent(Shard.Current);
-        var task = call.Task;
+        var call = PendingCall<NoReply>.Rent(Shard.Current);
+        var task = call.Done;
         uint requestId = Pending.Register(call, (int)Options.CallTimeout.TotalMilliseconds, link);
         var frame = SessionControl(op, requestId, session.SessionId, implementationId, key);
         link.Send(frame.Frame);
@@ -188,7 +173,7 @@ public sealed partial class Node
                 var status = OnSessionControl(header.MessageId, header.Key, payload);
                 if (header.RequestId == 0) break;
                 if (status == RpcStatus.Ok) ConnectionReplySink.For(connection).SendReply(header.RequestId, status, FrameWriter.Rent(FrameHeader.Size));
-                else ReplyError(ConnectionReplySink.For(connection), header.RequestId, status, "Session is gone");
+                else ConnectionReplySink.For(connection).SendError(header.RequestId, status, "Session is gone");
                 break;
         }
     }
@@ -204,10 +189,9 @@ public sealed partial class Node
             case ControlOp.Bind:
             {
                 // A bound session also joins the actor's group, so Cluster.Send(actor.Group, ..) reaches it.
-                long previous = session.KeyOf(scope);
-                session.Bindings.Set(scope, new SessionBinding(scope, value), static (b, id) => b.ImplementationId == id);
                 lock (_groupGate)
                 {
+                    long previous = session.Bind(scope, value);
                     if (previous != 0 && previous != value) Leave(session, ClientGroup.Of(scope, previous).Id);
                     Join(session, ClientGroup.Of(scope, value).Id);
                 }
@@ -217,9 +201,12 @@ public sealed partial class Node
             }
             case ControlOp.Unbind:
             {
-                long previous = session.KeyOf(scope);
-                session.Bindings.Remove(scope, static (b, id) => b.ImplementationId == id);
-                if (previous != 0) lock (_groupGate) Leave(session, ClientGroup.Of(scope, previous).Id);
+                lock (_groupGate)
+                {
+                    long previous = session.Bind(scope, 0);
+                    if (previous != 0) Leave(session, ClientGroup.Of(scope, previous).Id);
+                }
+
                 IssueTicket(session);
                 break;
             }
@@ -270,7 +257,7 @@ public sealed partial class Node
         }
 
         var sessionRef = new SessionRef(Id, session.Id);
-        var bindings = session.Bindings.Items;
+        var bindings = session.Bindings;
         if (bindings.Length == 0) return;
         if (session.Explicit || ReconnectGrace == TimeSpan.Zero) ReportClosed(sessionRef, bindings);
         else _ = ReportClosedAfterGrace(sessionRef, bindings);
@@ -295,7 +282,7 @@ public sealed partial class Node
     /// <summary>Send the session's client a fresh reconnect ticket (after binding changes, and when the client asks).</summary>
     private void IssueTicket(Session session)
     {
-        var bindings = session.Bindings.Items;
+        var bindings = session.Bindings;
         if (_ticketSecret == null || bindings.Length > ReconnectTicket.MaxBindings) return;
         int size = ReconnectTicket.SizeOf(bindings.Length);
         Span<byte> ticket = stackalloc byte[size];
@@ -315,10 +302,10 @@ public sealed partial class Node
     /// </summary>
     private void ResumeSession(Session session, uint requestId, ReadOnlySpan<byte> ticket)
     {
-        if (_ticketSecret == null || session.Bindings.Items.Length != 0 ||
+        if (_ticketSecret == null || session.Bindings.Length != 0 ||
             !ReconnectTicket.TryRead(ticket, _ticketSecret, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), out var previous, out var bindings))
         {
-            ReplyError(session.Sink, requestId, RpcStatus.Forbidden, "Invalid or expired reconnect ticket");
+            session.Sink.SendError(requestId, RpcStatus.Forbidden, "Invalid or expired reconnect ticket");
             return;
         }
 
@@ -326,8 +313,11 @@ public sealed partial class Node
         for (int i = 0; i < count; i++)
         {
             var binding = ReconnectTicket.BindingAt(bindings, i);
-            session.Bindings.Set(binding.ImplementationId, binding, static (b, id) => b.ImplementationId == id);
-            lock (_groupGate) Join(session, ClientGroup.Of(binding.ImplementationId, binding.Key).Id);
+            lock (_groupGate)
+            {
+                session.Bind(binding.ImplementationId, binding.Key);
+                Join(session, ClientGroup.Of(binding.ImplementationId, binding.Key).Id);
+            }
         }
 
         var current = new SessionRef(Id, session.Id);
@@ -361,7 +351,7 @@ public sealed partial class Node
 
         if (first == null)
         {
-            ReplyError(session.Sink, requestId, RpcStatus.NotHosted, "No gateway accepts sessions");
+            session.Sink.SendError(requestId, RpcStatus.NotHosted, "No gateway accepts sessions");
             return;
         }
 
@@ -388,11 +378,6 @@ public sealed partial class Node
                     break;
                 case FrameKind.Control:
                     node.OnClientControl(session, in header, frame);
-                    break;
-                case FrameKind.Ping:
-                    Span<byte> pong = stackalloc byte[FrameHeader.Size];
-                    new FrameHeader { Length = FrameHeader.Size, Kind = FrameKind.Pong }.Write(pong);
-                    connection.Send(pong);
                     break;
                 default:
                     connection.Close(new InvalidOperationException("Unexpected frame kind from client: " + header.Kind));
@@ -440,21 +425,21 @@ public sealed partial class Node
         uint replyId = header.Kind == FrameKind.Request ? header.RequestId : 0;
         if (!MessageRegistry.TryGetClientMessage(header.MessageId, out var message))
         {
-            if (replyId != 0) ReplyError(session.Sink, replyId, RpcStatus.Forbidden, "Not a client message");
+            if (replyId != 0) session.Sink.SendError(replyId, RpcStatus.Forbidden, "Not a client message");
             return;
         }
 
         bool actor = View.TryGetRoute(message.Id, actor: true, out var route, out _);
         if (!actor && !View.TryGetRoute(message.Id, actor: false, out route, out _))
         {
-            if (replyId != 0) ReplyError(session.Sink, replyId, RpcStatus.NotHosted, "No handler for " + message.Type.Name);
+            if (replyId != 0) session.Sink.SendError(replyId, RpcStatus.NotHosted, "No handler for " + message.Type.Name);
             return;
         }
 
         long key = !actor ? 0 : message.AnyKey ? header.Key : session.KeyOf(route.ImplementationId);
         if (actor && key == 0 && !message.AnyKey)
         {
-            if (replyId != 0) ReplyError(session.Sink, replyId, RpcStatus.Forbidden, "Session not bound to a handler of " + message.Type.Name);
+            if (replyId != 0) session.Sink.SendError(replyId, RpcStatus.Forbidden, "Session not bound to a handler of " + message.Type.Name);
             return;
         }
 
@@ -483,8 +468,12 @@ internal sealed class Session(long id, Connection connection)
     public Connection Connection { get; } = connection;
     public ConnectionReplySink Sink { get; } = new(connection);
 
-    /// <summary>Actor keys bound by actors, one per implementation (<c>BindSession</c>).</summary>
-    public CopyOnWriteArray<SessionBinding> Bindings { get; } = new();
+    private volatile SessionBinding[] _bindings = [];
+
+    /// <summary>
+    /// Actor keys bound by actors, one per implementation (<c>BindSession</c>): an immutable snapshot, read lock-free.
+    /// </summary>
+    public SessionBinding[] Bindings => _bindings;
 
     /// <summary>Groups the session belongs to and its slot in each (changed under the gateway's group gate).</summary>
     public Dictionary<long, int> Groups { get; } = new();
@@ -498,10 +487,38 @@ internal sealed class Session(long id, Connection connection)
     /// <summary>Key bound for <paramref name="implementationId"/>, 0 when unbound. Lock-free (client message path).</summary>
     public long KeyOf(uint implementationId)
     {
-        var bindings = Bindings.Items;
+        var bindings = _bindings;
         for (int i = 0; i < bindings.Length; i++)
             if (bindings[i].ImplementationId == implementationId) return bindings[i].Key;
         return 0;
+    }
+
+    /// <summary>
+    /// Bind <paramref name="implementationId"/> to <paramref name="key"/> (0 unbinds) and return the previous key.
+    /// Callers hold the gateway's group gate; the copy is published to lock-free readers by the volatile write.
+    /// </summary>
+    public long Bind(uint implementationId, long key)
+    {
+        var items = _bindings;
+        int i = 0;
+        while (i < items.Length && items[i].ImplementationId != implementationId) i++;
+        long previous = i < items.Length ? items[i].Key : 0;
+        if (i == items.Length)
+        {
+            if (key != 0) _bindings = [.. items, new SessionBinding(implementationId, key)];
+        }
+        else if (key == 0)
+        {
+            _bindings = [.. items.AsSpan(0, i), .. items.AsSpan(i + 1)];
+        }
+        else
+        {
+            var next = (SessionBinding[])items.Clone();
+            next[i] = new SessionBinding(implementationId, key);
+            _bindings = next;
+        }
+
+        return previous;
     }
 }
 
