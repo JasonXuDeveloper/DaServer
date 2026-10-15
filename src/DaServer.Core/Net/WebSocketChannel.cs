@@ -133,6 +133,15 @@ public sealed class WebSocketChannel(WebSocket socket, IChannelHandler handler, 
                     await socket.SendAsync(new ReadOnlyMemory<byte>(sending, 0, length), WebSocketMessageType.Binary,
                         endOfMessage: true, CancellationToken.None).ConfigureAwait(false);
                 }
+
+                // Idle: hold no send memory (the next send rents a buffer).
+                byte[] spare = [];
+                lock (_sendLock)
+                    if (_pendingLength == 0)
+                        (spare, _pending) = (_pending, []);
+                BufferPool.Return(spare);
+                BufferPool.Return(sending);
+                sending = [];
             }
         }
         catch (Exception e)
