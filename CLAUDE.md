@@ -31,7 +31,7 @@ src/DaServer/              runtime (net10.0): Protocol/ Buffers/ Concurrency/ Ne
   Runtime/Systems/         runtime systems: Inbox, Turn, ServiceCall, Removal, Unload, Mailbox (ShardMessages group),
                            Rebalance (ShardRebalance), Idle (ShardIdleScan); each reacts to one lifecycle tag (ADR-037)
 src/DaServer.Generator/    incremental generators (MessageGenerator, HostGenerator incl. node entry point)
-                           + DaServerAnalyzer (DAS001-006);
+                           + DaServerAnalyzer (DAS001-007);
                            Shapes.cs reads symbols once for both, so "skipped by the generator" == "reported"
 src/DaServer.Hosting/      Generic Host integration, configuration, OpenTelemetry (OTLP when configured), shutdown
 src/DaServer.Aspire/       Aspire hosting integration: AddDaServerCluster / AddNodes / AddGateways / AddBalancer /

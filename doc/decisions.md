@@ -281,6 +281,16 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
 - Consequences: simple and ordered with binds (ADR-022). Revisit when deployments run tens of gateways with small
   groups; the roadmap keeps the item.
 
+## ADR-044 Actors and services hold no fields (DAS007)
+- Context: an actor or service object is recreated whenever its actor loads, moves to another node or (later) its
+  code is reloaded, and only components are persisted and handed over. A field on the object silently loses its value
+  on those paths; a mutable static field is shared by every shard thread.
+- Decision: DAS007 makes instance fields, auto-properties and non-readonly static fields of `Actor`/`Service` types a
+  build error. Constants and `static readonly` data stay allowed. Per-actor state goes into `Actor<TId, TState>` or
+  other components of the actor's entity, shared state into singletons.
+- Consequences: the object is behaviour only, so persistence (N5), state handoff (N6) and hot reload (N9) touch data
+  alone and can swap the code freely.
+
 ## ADR-043 Typed actor ids name the actor type
 - Context: actors were addressed by `(key, message)`: a bare `long` whose meaning depended on which actor type
   handled the message. A player id could be passed where a map id was meant, a message handled by two actor types was

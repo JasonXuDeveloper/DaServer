@@ -59,6 +59,8 @@ in separate commits.
 - [ ] N1 Stateless handler types and a fixed/reloadable split: DAS007 (no mutable fields on actors and services; state
       in components and singletons); projects Contracts (messages) + Model (components, singletons: never reloaded) +
       Logic (actors, services, systems: reloadable). Prerequisite of N5 and N9. (a studied game server, ET)
+      - [x] DAS007 (ADR-044)
+      - [ ] Contracts / Model / Logic split of the samples
 - [ ] N2 `SendAfter(delay, ...)`: per-shard timer wheel of serialized frames, cancellable, delivered as ordinary
       mail (turn-based, follows moved keys), zero allocation; replaces `await Task.Delay` in handlers; DAS008 for
       `Task.Delay`/blocking calls in handlers. (ET timers as data, Orleans timers)
