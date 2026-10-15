@@ -7,11 +7,15 @@ namespace DaServer.Rpc;
 /// </summary>
 public sealed class RpcException : Exception
 {
-    public RpcException(RpcStatus status, string? message = null)
+    public RpcException(RpcStatus status, string? message = null, TimeSpan retryAfter = default)
     {
         Status = status;
         Detail = message;
+        RetryAfter = retryAfter;
     }
+
+    /// <summary>When the edge that refused the call says it may be retried (zero: no hint).</summary>
+    public TimeSpan RetryAfter { get; }
 
     public RpcStatus Status { get; }
 
@@ -51,6 +55,7 @@ public sealed class RpcException : Exception
                                "not that actor, no bound actor, or an invalid reconnect ticket)",
         RpcStatus.Disconnected => "Disconnected: the connection or the target's node was lost before the reply",
         RpcStatus.Overloaded => "Overloaded: a dispatch queue, actor mailbox or in-flight call table is full; nothing ran",
+        RpcStatus.RateLimited => "RateLimited: the edge's admission refused the sender for now; nothing ran",
         _ => "Unknown status",
     };
 }

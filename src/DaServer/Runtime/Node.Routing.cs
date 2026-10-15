@@ -291,13 +291,13 @@ sealed partial class Node : IConnectionHandler
         public Shard? CallerShard => null; // forwarded inline from the IO thread
 
         private IReplySink _sink = null!;
-        private uint _requestId;
+        private uint _callId;
 
         public static RelayCall Rent(IReplySink sink, uint callId)
         {
             var call = Pool.Rent();
             call._sink = sink;
-            call._requestId = callId;
+            call._callId = callId;
             return call;
         }
 
@@ -305,22 +305,23 @@ sealed partial class Node : IConnectionHandler
         {
             var w = FrameWriter.Rent(FrameHeader.Size + payload.Length);
             w.WriteRaw(payload);
-            var (sink, id) = (_sink, _requestId);
+            var (sink, id) = (_sink, _callId);
             Release();
             sink.SendReply(id, status, w);
         }
 
-        public void Fail(RpcStatus status, string? message = null)
+        public void Fail(RpcStatus status, string? message = null, TimeSpan retryAfter = default)
         {
-            var (sink, id) = (_sink, _requestId);
+            var (sink, id) = (_sink, _callId);
             Release();
-            sink.SendError(id, status, message);
+            if (retryAfter > TimeSpan.Zero) sink.SendRefusal(id, status, retryAfter);
+            else sink.SendError(id, status, message);
         }
 
         private void Release()
         {
             _sink = null!;
-            _requestId = 0;
+            _callId = 0;
             Pool.Return(this);
         }
     }

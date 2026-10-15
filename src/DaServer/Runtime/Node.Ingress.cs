@@ -3,14 +3,26 @@ namespace DaServer.Runtime;
 // Ingress (IIngress): messages from outside the cluster enter with an origin and a capped deadline.
 sealed partial class Node : IIngress
 {
+    private IIngressFilter[] _ingressFilters = []; // fixed once the features started
+
     IIngress INodeContext.Ingress => this;
 
-    public void Send(uint messageId, uint target, long key, ReadOnlySpan<byte> payload, Origin origin) =>
-        SendMessage(Received(payload, origin), messageId, target, key);
+    public void Send(uint messageId, uint target, long key, ReadOnlySpan<byte> payload, Origin origin)
+    {
+        if (Admit(messageId, target, key, origin).Admitted)
+            SendMessage(Received(payload, origin), messageId, target, key);
+    }
 
     public void Ask(uint messageId, uint target, long key, ReadOnlySpan<byte> payload, Origin origin, IReplySink replyTo,
         uint callId, TimeSpan budget)
     {
+        var decision = Admit(messageId, target, key, origin);
+        if (!decision.Admitted)
+        {
+            replyTo.SendRefusal(callId, decision.Status, decision.RetryAfter);
+            return;
+        }
+
         var frame = Received(payload, origin);
         frame.Deadline = DeadlineOf(budget);
         Request(frame, messageId, target, key, null, replyTo, callId, refuseLoaded: true);
@@ -29,6 +41,8 @@ sealed partial class Node : IIngress
     private ValueTask<TReply> AskFromOutside<TRequest, TReply>(in TRequest request, uint target, long key, Origin origin, TimeSpan budget)
         where TRequest : struct
     {
+        var decision = Admit(MessageType<TRequest>.Id, target, key, origin);
+        if (!decision.Admitted) return Refused<TReply>(decision);
         var call = PendingCall<TReply>.Rent(Shard.Current);
         var task = call.Task;
         var frame = MessageWriter.Write(in request);
@@ -37,6 +51,22 @@ sealed partial class Node : IIngress
         Request(frame, MessageType<TRequest>.Id, target, key, call, null, 0, refuseLoaded: true);
         return task;
     }
+
+    /// <summary>The ingress filters' verdict: the first refusal, else admitted.</summary>
+    private IngressDecision Admit(uint messageId, uint target, long key, Origin origin)
+    {
+        foreach (var filter in _ingressFilters)
+        {
+            var decision = filter.Check(messageId, target, key, origin);
+            if (!decision.Admitted) return decision;
+        }
+
+        return IngressDecision.Admit;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static ValueTask<TReply> Refused<TReply>(IngressDecision decision) =>
+        ValueTask.FromException<TReply>(new RpcException(decision.Status, null, decision.RetryAfter));
 
     /// <summary>A frame holding a message received from outside (payload as is) and its origin.</summary>
     private static FrameWriter Received(ReadOnlySpan<byte> payload, Origin origin)

@@ -233,6 +233,9 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IAsyncDi
     {
         switch (header.Kind)
         {
+            case FrameKind.Reply when header.Status != RpcStatus.Ok && header.Key > 0: // refused at the edge, with a retry hint
+                _pending.Take(FrameHeader.CallIdOf(in header, frame))?.Fail(header.Status, null, TimeSpan.FromMilliseconds(header.Key));
+                break;
             case FrameKind.Reply:
                 _pending.TryComplete(FrameHeader.CallIdOf(in header, frame), header.Status, FrameHeader.PayloadOf(in header, frame));
                 break;
@@ -242,7 +245,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IAsyncDi
                 break;
             case FrameKind.Control when header.MessageId == ControlOp.Ticket:
                 var ticket = FrameHeader.PayloadOf(in header, frame);
-                long lifetime = ReconnectTicket.ExpiresMs(ticket) - ReconnectTicket.IssuedMs(ticket); // server clock: use only the span
+                long lifetime = SignedToken.ExpiresMs(ticket) - SignedToken.IssuedMs(ticket); // server clock: use only the span
                 // No binding (before login, after logout): nothing to resume.
                 Volatile.Write(ref _ticket, ticket.Length > ReconnectTicket.SizeOf(0) ? ticket.ToArray() : null);
                 Volatile.Write(ref _refreshTicketAtMs, Environment.TickCount64 + lifetime / 2);
