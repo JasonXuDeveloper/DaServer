@@ -188,7 +188,7 @@ public sealed class Shard : IDisposable
                 activity = ref World.GetSingleton<ShardActivity>();
                 Volatile.Write(ref _actorCount, World.GetSingleton<ActorDirectory>().Actors.Count);
                 if (activity.Stopping && IsDrained()) break;
-                if (activity.Processed == 0 && World.GetSingleton<ReadyActors>().Queue.Count == 0)
+                if (activity.Processed == 0 && !World.Any<Mailbox>(MailboxSystem.Runnable))
                     Sleep(nextTick);
             }
         }
@@ -216,8 +216,7 @@ public sealed class Shard : IDisposable
         World.AddSingleton<ShardContext>() = new ShardContext(this);
         World.AddSingleton<ShardActivity>();
         World.AddSingleton<ActorDirectory>() = new ActorDirectory(new Dictionary<ActorId, Entity>());
-        World.AddSingleton<ReadyActors>() = new ReadyActors(new Queue<Entity>());
-        World.AddSingleton<ServiceTasks>() = new ServiceTasks(new List<ValueTask>());
+        World.AddSingleton<TurnWatchers>() = new TurnWatchers(new Stack<TurnWatcher>());
         World.AddSingleton<ShardTimers>() = new ShardTimers(new PriorityQueue<TimerEntry, long>());
 
         var services = new Dictionary<uint, object>();
@@ -234,17 +233,19 @@ public sealed class Shard : IDisposable
         World.AddSystem<InboxSystem>();
         World.AddSystem<TurnSystem>();
         World.AddSystem<MailboxSystem>();
-        World.AddSystem<ServiceTaskSystem>();
+        World.AddSystem<ServiceCallSystem>();
+        World.AddSystem<RetireSystem>();
         World.AddSystem<TimerSystem>();
         World.AddSystem<RebalanceSystem>();
         World.AddSystem<IdleSystem>();
+        World.AddSystem<UnloadSystem>();
         foreach (var info in Node.HostedSystems) World.AddSystem(info.Factory());
     }
 
     /// <summary>Stopping: every actor retired, no service call running, nothing left in the inbox.</summary>
     private bool IsDrained() =>
         World.GetSingleton<ActorDirectory>().Actors.Count == 0 &&
-        World.GetSingleton<ServiceTasks>().Tasks.Count == 0 &&
+        !World.Any<ServiceCall>() &&
         QueueLength == 0;
 
     private void Sleep(long nextTick)
