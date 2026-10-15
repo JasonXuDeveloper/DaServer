@@ -9,10 +9,7 @@
         <Authors>JasonXuDeveloper</Authors>
         <RepositoryUrl>https://github.com/JasonXuDeveloper/DaServer</RepositoryUrl>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
-        <!-- EasyEcs: use the sibling checkout when present (co-development), otherwise the NuGet package -->
-        <EasyEcsProject>$(MSBuildThisFileDirectory)../EasyEcs/EasyEcs.Core/EasyEcs.Core.csproj</EasyEcsProject>
-        <EasyEcsGeneratorProject>$(MSBuildThisFileDirectory)../EasyEcs/EasyEcs.Generator/EasyEcs.Generator.csproj</EasyEcsGeneratorProject>
-        <EasyEcsVersion>4.0.0</EasyEcsVersion>
+        <EasyEcsVersion>4.0.1</EasyEcsVersion>
         <NinoVersion>4.0.0-beta.47</NinoVersion>
     </PropertyGroup>
 </Project>

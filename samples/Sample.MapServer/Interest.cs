@@ -44,7 +44,6 @@ public struct MapGrid() : IComponent
     public readonly List<Moved>?[] Changes = new List<Moved>?[Side * Side];
     public readonly List<int> ChangedCells = new();
     public readonly List<Moved> Scratch = new();
-    public long Tick;
 
     public static int CellOf(in Position p) =>
         Math.Min((int)(p.Y / CellSize), Side - 1) * Side + Math.Min((int)(p.X / CellSize), Side - 1);
@@ -119,7 +118,7 @@ public sealed partial class DespawnSystem : EcsSystem
                     if (changes[i].PlayerId == player) changes.RemoveAt(i);
 
             var cluster = world.Cluster();
-            long map = avatar.Map.Get<ActorIdentity>().Key;
+            long map = avatar.Map.Get<ActorLink>().Key;
             cluster.Send(MapGrid.Viewers(map, cell), new Gone(player));
             if (leaveGroups)
                 for (int dy = -1; dy <= 1; dy++)
@@ -148,7 +147,7 @@ public sealed partial class PlacementSystem : EcsSystem
         entity.Add<GridCell>() = new GridCell(to); // `p` and `avatar` are invalid from here on
         ref var grid = ref map.Get<MapGrid>();
         (grid.Avatars[to] ??= new()).Add(entity);
-        MapGrid.View(ref grid, world.Cluster(), map.Get<ActorIdentity>().Key, entity, session, from: null, to);
+        MapGrid.View(ref grid, world.Cluster(), map.Get<ActorLink>().Key, entity, session, from: null, to);
     }
 
     [ForEach]
@@ -163,7 +162,7 @@ public sealed partial class PlacementSystem : EcsSystem
         (grid.Avatars[to] ??= new()).Add(entity);
 
         var cluster = world.Cluster();
-        long map = avatar.Map.Get<ActorIdentity>().Key;
+        long map = avatar.Map.Get<ActorLink>().Key;
         for (int dy = -1; dy <= 1; dy++)
         for (int dx = -1; dx <= 1; dx++)
         {
@@ -179,7 +178,7 @@ public sealed partial class PlacementSystem : EcsSystem
     {
         var (map, session, at) = (avatar.Map, avatar.Session, cell.Index);
         entity.Remove<Resynced>();
-        MapGrid.View(ref map.Get<MapGrid>(), world.Cluster(), map.Get<ActorIdentity>().Key, entity, session, from: null, at);
+        MapGrid.View(ref map.Get<MapGrid>(), world.Cluster(), map.Get<ActorLink>().Key, entity, session, from: null, at);
     }
 }
 
@@ -220,11 +219,11 @@ public sealed partial class MotionSyncSystem : EcsSystem
 public sealed partial class SnapshotSystem : EcsSystem
 {
     public override int Priority => 30;
+    public override int UpdateInterval => MapGrid.SyncEveryTicks;
 
     [ForEach]
-    private static void Send(ref MapGrid grid, in ActorIdentity actor, World world)
+    private static void Send(ref MapGrid grid, in ActorLink actor, World world)
     {
-        if (++grid.Tick % MapGrid.SyncEveryTicks != 0) return;
         var cluster = world.Cluster();
         foreach (int cell in grid.ChangedCells)
         {

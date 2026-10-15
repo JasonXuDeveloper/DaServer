@@ -9,7 +9,7 @@ namespace DaServer.Runtime;
 [UpdateInGroup<ShardMessages>]
 internal sealed partial class UnloadSystem : EcsSystem
 {
-    public override int Priority => 7;
+    public override int Priority => 4;
 
     [ForEach, With<Unloading>, Without<Turn>, Without<Retiring>]
     private static void Begin(Entity actor, in ActorLink link, World world)

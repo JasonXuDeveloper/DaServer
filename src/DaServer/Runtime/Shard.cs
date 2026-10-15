@@ -36,6 +36,7 @@ public sealed class Shard : IDisposable
     private readonly TaskCompletionSource _stopped = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private volatile bool _stopRequested;
     private readonly long _tickInterval; // Stopwatch ticks
+    private const long IdleScanMs = 100;
     private int _actorCount;
 
     internal Shard(Node node, int index, int mailboxCapacity, int tickRate)
@@ -117,14 +118,6 @@ public sealed class Shard : IDisposable
     /// <summary>Run <paramref name="callback"/> on this shard's thread (thread-safe, allocation-free).</summary>
     public void Post(Action<object?> callback, object? state) => Post(new WorkItem(WorkKind.Callback, callback, state));
 
-    /// <summary>Run <paramref name="callback"/> on the shard thread after <paramref name="delay"/>. Shard thread only.</summary>
-    public void Schedule(TimeSpan delay, Action<object?> callback, object? state)
-    {
-        AssertShardThread();
-        long due = Stopwatch.GetTimestamp() + (long)(delay.TotalSeconds * Stopwatch.Frequency);
-        World.GetSingleton<ShardTimers>().Queue.Enqueue(new TimerEntry(callback, state), due);
-    }
-
     /// <summary>Thread-safe: ownership may have changed; actors this node no longer owns are deactivated.</summary>
     internal void RequestRebalance() =>
         Post(static s => ((Shard)s!).World.GetSingleton<ShardActivity>().Rebalance = true, this);
@@ -164,14 +157,29 @@ public sealed class Shard : IDisposable
         {
             CreateWorld();
             long nextTick = Stopwatch.GetTimestamp() + _tickInterval;
+            long nextIdleScan = 0;
+            ref var activity = ref World.GetSingleton<ShardActivity>(); // singletons never move
             while (true)
             {
-                ref var activity = ref World.GetSingleton<ShardActivity>();
                 activity.Processed = 0;
                 if (_stopRequested && !activity.Stopping) activity.Stopping = activity.Rebalance = true;
 
                 using (Connection.BeginSendBatch()) // everything this wake sends leaves in one write per connection
                 {
+                    // Cadence is the loop's job; each group's systems only do their one thing.
+                    if (activity.Rebalance)
+                    {
+                        activity.Rebalance = false;
+                        World.Update<ShardRebalance>();
+                        activity.RetireAll = false;
+                    }
+
+                    if (Environment.TickCount64 >= nextIdleScan)
+                    {
+                        nextIdleScan = Environment.TickCount64 + IdleScanMs;
+                        World.Update<ShardIdleScan>();
+                    }
+
                     World.Update<ShardMessages>();
 
                     long now = Stopwatch.GetTimestamp();
@@ -185,7 +193,6 @@ public sealed class Shard : IDisposable
                     }
                 }
 
-                activity = ref World.GetSingleton<ShardActivity>();
                 Volatile.Write(ref _actorCount, World.GetSingleton<ActorDirectory>().Actors.Count);
                 if (activity.Stopping && IsDrained()) break;
                 if (activity.Processed == 0 && !World.Any<Mailbox>(MailboxSystem.Runnable))
@@ -217,7 +224,6 @@ public sealed class Shard : IDisposable
         World.AddSingleton<ShardActivity>();
         World.AddSingleton<ActorDirectory>() = new ActorDirectory(new Dictionary<ActorId, Entity>());
         World.AddSingleton<TurnWatchers>() = new TurnWatchers(new Stack<TurnWatcher>());
-        World.AddSingleton<ShardTimers>() = new ShardTimers(new PriorityQueue<TimerEntry, long>());
 
         var services = new Dictionary<uint, object>();
         foreach (var impl in Node.HostedImplementations)
@@ -235,7 +241,6 @@ public sealed class Shard : IDisposable
         World.AddSystem<MailboxSystem>();
         World.AddSystem<ServiceCallSystem>();
         World.AddSystem<RetireSystem>();
-        World.AddSystem<TimerSystem>();
         World.AddSystem<RebalanceSystem>();
         World.AddSystem<IdleSystem>();
         World.AddSystem<UnloadSystem>();
@@ -250,26 +255,15 @@ public sealed class Shard : IDisposable
 
     private void Sleep(long nextTick)
     {
-        long wakeAt = nextTick;
-        if (World.GetSingleton<ShardTimers>().Queue.TryPeek(out _, out long timerDue) && timerDue < wakeAt)
-            wakeAt = timerDue;
-
         Interlocked.Exchange(ref _sleeping, 1);
         if (QueueLength == 0 && !_stopRequested)
         {
-            long remaining = wakeAt - Stopwatch.GetTimestamp();
+            long remaining = nextTick - Stopwatch.GetTimestamp();
             if (remaining > 0)
                 _wake.Wait(TimeSpan.FromSeconds((double)remaining / Stopwatch.Frequency));
         }
 
         Volatile.Write(ref _sleeping, 0);
         _wake.Reset();
-    }
-
-    [Conditional("DEBUG")]
-    private void AssertShardThread()
-    {
-        if (_current != this)
-            throw new InvalidOperationException($"Shard {Index} API called from outside its thread");
     }
 }

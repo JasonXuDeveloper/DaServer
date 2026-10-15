@@ -3,30 +3,16 @@ using EasyEcs;
 namespace DaServer.Runtime;
 
 /// <summary>
-/// After a membership change (or on shutdown), asks the actors this node no longer owns to leave
-/// (<see cref="Unloading"/>); busy ones leave when their turn ends. Runs only when asked
-/// (<see cref="ShardActivity.Rebalance"/>).
+/// Asks the actors this node no longer owns (all of them when stopping or retired) to leave (<see cref="Unloading"/>);
+/// busy ones leave when their turn ends. Runs only after ownership may have changed (<see cref="ShardRebalance"/>).
 /// </summary>
-[UpdateInGroup<ShardMessages>]
-internal sealed class RebalanceSystem : EcsSystem
+[UpdateInGroup<ShardRebalance>]
+internal sealed partial class RebalanceSystem : EcsSystem
 {
-    private static readonly QueryFilter Staying = QueryFilter.Create().Without<Unloading>().Without<Deactivating>()
-        .Without<Retiring>();
-
-    public override int Priority => 5;
-
-    protected override void OnUpdate()
+    [ForEach, Without<Unloading>, Without<Deactivating>, Without<Retiring>]
+    private static void Leave(Entity actor, in ActorLink link, in ShardActivity activity, World world)
     {
-        ref var activity = ref World.GetSingleton<ShardActivity>();
-        if (!activity.Rebalance) return;
-        bool all = activity.Stopping || activity.RetireAll;
-        activity.Rebalance = activity.RetireAll = false;
-
-        var placement = World.Shard().Node.Placement;
-        foreach (var item in World.Query<ActorIdentity>(Staying))
-        {
-            var id = item.Component1.Id;
-            if (all || !placement.IsLocalOwner(id.ImplementationId, id.Key)) item.Entity.Add<Unloading>();
-        }
+        if (activity.LeaveAll || !world.Shard().Node.Placement.IsLocalOwner(link.Actor.Implementation.Id, link.Key))
+            actor.Add<Unloading>();
     }
 }

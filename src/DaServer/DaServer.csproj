@@ -9,13 +9,7 @@
     <ItemGroup>
         <PackageReference Include="Nino" Version="$(NinoVersion)" />
         <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.13" />
-    </ItemGroup>
-
-    <ItemGroup Condition="Exists('$(EasyEcsProject)')">
-        <ProjectReference Include="$(EasyEcsProject)" />
-        <ProjectReference Include="$(EasyEcsGeneratorProject)" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
-    </ItemGroup>
-    <ItemGroup Condition="!Exists('$(EasyEcsProject)')">
+        <!-- The package ships its generator and analyzer, which flow to every project referencing DaServer. -->
         <PackageReference Include="EasyEcs" Version="$(EasyEcsVersion)" />
     </ItemGroup>
 
