@@ -235,7 +235,7 @@ var cluster = builder.AddDaServerCluster("sample");
 cluster.AddNodes<Projects.Sample_LoginServer>("login");                     // Account service
 cluster.AddNodes<Projects.Sample_GameServer>("game");                       // Player, Realm actors
 cluster.AddNodes<Projects.Sample_MapServer>("map");                         // Map actors, movement/AOI systems
-var gateways = cluster.AddNodes<Projects.Sample_Gateway>("gateway", replicas: 3).WithClients(); // clients, no business code
+var gateways = cluster.AddNodes<Projects.Sample_GatewayServer>("gateway", replicas: 3).WithClients(); // clients, no business code
 
 builder.AddProject<Projects.Sample_Bot>("bots").WithClientEndpoints(gateways).WithArgs("10000", "60", "1", "1", "0"); // simulated players
 builder.Build().Run();

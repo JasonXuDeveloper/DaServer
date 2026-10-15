@@ -174,7 +174,7 @@ shard that keeps session state as ECS components.
 flowchart TB
     C[clients] -. "connect to any (well-known address), directed to the less loaded" .-> G1
     C --> G1 & G2
-    subgraph gateways [Sample.Gateway: client sockets, bindings, groups, fan-out; no business code]
+    subgraph gateways [Sample.GatewayServer: client sockets, bindings, groups, fan-out; no business code]
         G1[gateway-0]
         G2[gateway-1]
     end
