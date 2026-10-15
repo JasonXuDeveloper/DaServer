@@ -8,7 +8,8 @@ namespace DaServer.Buffers;
 /// <remarks>Ownership: whoever holds the instance must call <see cref="Dispose"/> exactly once.</remarks>
 public sealed class FrameWriter : INinoBufferWriter, IDisposable
 {
-    private static readonly ObjectPool<FrameWriter> Pool = new ObjectPool<FrameWriter>(() => new FrameWriter(), 4096);
+    /// <summary>Frames in flight per process (queued in shards, mailboxes and links): bursts below it allocate once.</summary>
+    private static readonly ObjectPool<FrameWriter> Pool = new ObjectPool<FrameWriter>(() => new FrameWriter(), 1 << 16);
 
     private byte[] _buffer = Array.Empty<byte>();
     private int _pos;

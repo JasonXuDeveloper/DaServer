@@ -27,6 +27,7 @@ public readonly record struct RoomId(long Value) : IActorId;
 [NinoType, Message] public partial record struct Grow : IRequest<bool>;                    // input for GrowthSystem
 [NinoType, Message] public partial record struct AddMany(CounterId Other, int Count) : IRequest<long>;     // bytes allocated meanwhile
 [NinoType, Message] public partial record struct SendMany(CounterId Other, int Count) : IRequest<long>;    // bytes allocated meanwhile
+[NinoType, Message] public partial record struct AskInBursts(CounterId Other, int Width, int Rounds) : IRequest<long>; // bytes allocated meanwhile
 
 /// <summary>One-way: sent in bursts (allocation test, events test).</summary>
 [NinoType, Message] public partial record struct CounterBumped(int By);
@@ -90,6 +91,25 @@ public sealed class Counter : Actor<CounterId, CounterState>
         long before = GC.GetTotalAllocatedBytes(precise: true);
         for (int i = 0; i < m.Count; i++) await Cluster.Ask(m.Other, new Add(1));
         return GC.GetTotalAllocatedBytes(precise: true) - before;
+    }
+
+    [Handle]
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
+    public async ValueTask<long> On(AskInBursts m)
+    {
+        // Width calls in flight at once, then all awaited: more than any fixed pool size must not allocate when warm.
+        var pending = new ValueTask<int>[m.Width];
+        await Burst(Cluster, m, pending); // warm-up
+        long before = GC.GetTotalAllocatedBytes(precise: true);
+        for (int round = 0; round < m.Rounds; round++) await Burst(Cluster, m, pending);
+        return GC.GetTotalAllocatedBytes(precise: true) - before;
+
+        [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+        static async ValueTask Burst(ICluster cluster, AskInBursts m, ValueTask<int>[] pending)
+        {
+            for (int i = 0; i < pending.Length; i++) pending[i] = cluster.Ask(m.Other, new Add(1));
+            for (int i = 0; i < pending.Length; i++) await pending[i];
+        }
     }
 
     [Handle]
