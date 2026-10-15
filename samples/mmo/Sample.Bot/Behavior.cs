@@ -7,7 +7,7 @@ using Sample.Contracts;
 namespace Sample.Bot;
 
 // What a bot does, as a planning domain: change maps when due, say something when due, otherwise wander. Facts come
-// from the bot's schedule (BotSenseSystem); each task is a component carried out by one system, on the client's own
+// from the bot's schedule (SenseSystem); each task is a component carried out by one system, on the client's own
 // data (Steering, Speaking, EnterMapAsync): a bot is a player whose hands are a planner.
 
 [Flags]
@@ -41,7 +41,7 @@ public struct Bot(uint seed, int turnEveryMs, int chatEveryMs, int travelEveryMs
 public record struct Wandering(long Until) : IComponent;
 
 /// <summary>Task: say something.</summary>
-public struct Speak : IComponent;
+public struct Chatting : IComponent;
 
 /// <summary>Task: move to another map (0: not started; removed when the client's flow completed).</summary>
 public record struct Travelling(MapId To) : IComponent;
@@ -49,12 +49,12 @@ public record struct Travelling(MapId To) : IComponent;
 public static class Behavior
 {
     /// <summary>The systems of a bot's behavior: its sensor, the planner and one system per task.</summary>
-    public static void AddSystems(World world)
+    public static void AddTo(World world)
     {
-        world.AddSystem<BotSenseSystem>();
+        world.AddSystem<SenseSystem>();
         world.AddSystem<PlannerSystem>();
         world.AddSystem<WanderSystem>();
-        world.AddSystem<SpeakSystem>();
+        world.AddSystem<ChatSystem>();
         world.AddSystem<TravelSystem>();
     }
 
@@ -63,18 +63,18 @@ public static class Behavior
     {
         var d = new DomainBuilder<BotFact>();
         int wander = d.Primitive<Wandering>();
-        int speak = d.Primitive<Speak>(requires: BotFact.ChatDue, clears: BotFact.ChatDue);
+        int chat = d.Primitive<Chatting>(requires: BotFact.ChatDue, clears: BotFact.ChatDue);
         int travel = d.Primitive<Travelling>(requires: BotFact.TravelDue, clears: BotFact.TravelDue);
         int play = d.Compound();
         d.Method(play, BotFact.TravelDue, travel, wander) // change maps, then look around
-            .Method(play, BotFact.ChatDue, speak, wander)
+            .Method(play, BotFact.ChatDue, chat, wander)
             .Method(play, BotFact.None, wander);
         return d.Build(play);
     }
 }
 
 /// <summary>Sensor: what is due, from the bot's schedule.</summary>
-public sealed partial class BotSenseSystem : EcsSystem
+public sealed partial class SenseSystem : EcsSystem
 {
     public override int Priority => -40; // before planning
 
@@ -111,16 +111,16 @@ public sealed partial class WanderSystem : EcsSystem
     }
 }
 
-/// <summary>Carries out <see cref="Speak"/>: the client says it (and removes <see cref="Speaking"/> once sent).</summary>
-public sealed partial class SpeakSystem : EcsSystem
+/// <summary>Carries out <see cref="Chatting"/>: the client says it (and removes <see cref="Speaking"/> once sent).</summary>
+public sealed partial class ChatSystem : EcsSystem
 {
     public override int Priority => -20;
 
-    [ForEach, With<Speak>]
+    [ForEach, With<Chatting>]
     private static void Say(Entity bot, ref Bot b)
     {
         b.NextChat = Environment.TickCount64 + b.ChatEveryMs;
-        bot.Remove<Speak>();
+        bot.Remove<Chatting>();
         bot.Add<Speaking>() = new Speaking("hello");
     }
 }
