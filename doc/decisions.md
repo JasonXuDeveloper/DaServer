@@ -20,7 +20,7 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
 
 ## ADR-003 Completing RPCs on the caller's shard (no SynchronizationContext.Post)
 - Context: `ManualResetValueTaskSourceCore` with a captured SynchronizationContext allocates a Tuple per Post.
-- Decision: `PendingCallBase` is a custom pooled `IValueTaskSource` that records the caller's shard; responses are
+- Decision: `PendingCall<T>` is a custom pooled `IValueTaskSource` that records the caller's shard; responses are
   posted to that shard's mailbox and completed there, running the continuation inline. A `ShardSynchronizationContext`
   is still installed so foreign awaits (DB drivers, Task.Delay) marshal back to the shard thread.
 - Consequences: zero allocation per awaited RPC; ExecutionContext/AsyncLocal does not flow across RPC awaits.
@@ -198,7 +198,7 @@ Short records of non-obvious decisions. Newest last. Each: context → decision 
   travelled on its outgoing link, so a reply could overtake a `Bind` sent before it (the client called the actor
   before the gateway knew the binding).
 - Decision: a node names itself with a `Hello` control frame on every link it opens; the receiver then sends replies
-  to that node through its own outgoing link to it (`LinkReplySink`). Everything node A sends to node B, replies
+  to that node through its own outgoing link to it (`PeerLink` is the reply sink). Everything node A sends to node B, replies
   included, is one ordered TCP stream.
 - Consequences: "the binding is in place when the call that made it returns" holds (tested with a push burst before
   the bind). A dropped connection resumes the stream (ADR-008).
