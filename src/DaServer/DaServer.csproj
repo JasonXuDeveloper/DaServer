@@ -1,13 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
-        <TargetFramework>net10.0</TargetFramework>
+        <TargetFramework>net11.0</TargetFramework>
         <RootNamespace>DaServer</RootNamespace>
         <Description>DaServer server runtime: ECS shards, actors and services, messaging, cluster membership, ingress and client connections.</Description>
     </PropertyGroup>
 
     <ItemGroup>
-        <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.13" />
         <!-- The package ships its generator and analyzer, which flow to every project referencing DaServer. -->
         <PackageReference Include="EasyEcs" Version="$(EasyEcsVersion)" />
     </ItemGroup>

@@ -2,7 +2,7 @@
 
     <PropertyGroup>
         <OutputType>Exe</OutputType>
-        <TargetFramework>net10.0</TargetFramework>
+        <TargetFramework>net11.0</TargetFramework>
         <IsPackable>false</IsPackable>
         <UserSecretsId>daserver-sample-apphost</UserSecretsId>
         <!-- The sample runs through `dotnet run`; the Aspire CLI bundle is optional. -->

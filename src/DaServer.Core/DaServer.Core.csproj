@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
-        <TargetFrameworks>netstandard2.1;net10.0</TargetFrameworks>
+        <TargetFrameworks>netstandard2.1;net10.0;net11.0</TargetFrameworks>
         <RootNamespace>DaServer</RootNamespace>
         <Description>DaServer wire protocol and transport shared by servers and clients: frames, pooled buffers, connections (TCP, WebSocket), calls and handler dispatch.</Description>
     </PropertyGroup>
