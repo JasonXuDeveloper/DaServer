@@ -96,10 +96,17 @@ records that no longer hold). Each: context → decision → consequences.
 - Consequences: no name clash; "world" always means the ECS world.
 
 ## ADR-012 Source generation instead of registration code
-- Decision: `MessageGenerator` emits typed `Ask` overloads per request and registers `[FromClient]` messages for
-  gateways in a module initializer of the declaring assembly (marked `[assembly: MessagesAssembly]`). `HostGenerator`
-  registers every actor and service with one dispatcher per `[Handle]` method, client handler classes and EasyEcs
-  systems, runs the registration of referenced message assemblies, and emits the node entry point (ADR-021).
+- Decision: each generator writes one kind of code. `AskGenerator`: a `{Request}Ask` class of typed `Ask` overloads
+  per request. `RegistrationGenerator`: one `DaServer.Generated.Registration_{Assembly}` class per assembly whose
+  static constructor runs the registrations of referenced assemblies, then registers the assembly's `[FromClient]`
+  messages, client handler classes and, with the server runtime, its actors and services (one dispatcher per
+  `[Handle]` method) and EasyEcs systems; `[assembly: GeneratedRegistration(typeof(..))]` names it.
+  `EntryPointGenerator`: the node entry point (ADR-021). `PolyfillGenerator`: `IsExternalInit` for contract
+  assemblies built for netstandard2.1.
+- Registration runs in a static constructor because that runs exactly once on every runtime, Unity's IL2CPP included:
+  `Registrations.Run(assembly)` triggers it (the client SDK does on `Register(handler)`, and every registration
+  triggers those of the assemblies it references). On .NET the class also triggers itself from a module initializer
+  when its assembly loads, so a server needs no call; targets without module initializers (netstandard2.1) get none.
 - Consequences: no reflection, no configuration strings, no hand-maintained lists; misuse is a build error
   (DAS001-DAS008, ADR-016).
 
@@ -175,7 +182,7 @@ records that no longer hold). Each: context → decision → consequences.
 
 ## ADR-021 Generated node entry point
 - Context: every node project would carry the same three-line `Program.cs`.
-- Decision: `HostGenerator` emits `DaServer.Generated.NodeProgram.Main` (Generic Host + `AddDaServer`) for an
+- Decision: `EntryPointGenerator` emits `DaServer.Generated.NodeProgram.Main` (WebApplication + `AddDaServer`) for an
   executable that references `DaServer.Hosting` and declares no entry point. Writing a `Program.cs` opts out.
 - Consequences: a node project is business classes only; names, ports and seeds come from the AppHost (environment).
 
@@ -550,10 +557,7 @@ records that no longer hold). Each: context → decision → consequences.
   port is configured; "gateway" is only a deployment word for such a node group (co-hosted in small clusters,
   dedicated in production). There is no balancer role: any client-facing node answers the directory, and the
   well-known address is the platform's LB or DNS (redirect mode or behind-LB mode). The HTTP plane (ADR-046) is the
-  second ingress consumer; WebSocket clients connect through it. Packages: `DaServer.Abstractions` (contracts:
-  attributes, `IRequest`, addresses incl. `SessionRef`/`ClientGroup`, `Origin`, wire ids; netstandard2.1 + net10),
-  `DaServer` (runtime + generator and analyzers), `DaServer.Client` (client SDK on Abstractions; netstandard2.1 +
-  net10, Unity), `DaServer.Hosting`, `DaServer.Aspire`. Waiting rooms are not part of the framework: they are policy for human traffic
+  second ingress consumer; WebSocket clients connect through it. Packages: ADR-052. Waiting rooms are not part of the framework: they are policy for human traffic
   surges, belong at the CDN/SaaS edge to protect origins, and compose from the ingress primitives plus a queue actor
   (shown in `samples/flashsale`).
 - Consequences: dedicated client-facing nodes may carry high request volume (the actor interior stays zero-GC;
@@ -616,3 +620,31 @@ records that no longer hold). Each: context → decision → consequences.
 - Consequences: `[FromClient]` has no options; an unknown or unadmitted id costs the edge a scan and a reply, never an
   actor activation or a load. Entering a room is a request to something that may admit (a lobby service asking the
   room, or the room's own bound player flow).
+
+## ADR-052 Four packages: contracts, shared wire, client, server
+- Context: contract assemblies (messages, ids) are shared by servers and clients, Unity clients included, so they and
+  the client SDK must build for netstandard2.1 and must not pull in the server runtime or EasyEcs. Client and server
+  speak the same protocol over the same transport (frames, pooled buffers, TCP and WebSocket connections, pending
+  calls, handler dispatch); writing it twice would duplicate the protocol, and making the server depend on a package
+  called "Client" (or putting sockets into "Abstractions") would misname what the packages are.
+- Decision: as Orleans (Core.Abstractions / Core / Client / Server), gRPC (Core.Api / Net.Common / Net.Client /
+  AspNetCore.Server) and MagicOnion (Abstractions / Shared / Client / Server) do, four layers, each depending only on
+  the one below:
+  - `DaServer.Abstractions` (netstandard2.1 + net10): what contract assemblies reference: `[Message]`, `[Handle]`,
+    `[FromClient]`/`[ToClient]`, `[WireId]`, `IRequest`, addresses (`IActorId`, `SessionRef`, `ClientGroup`,
+    `Origin`), `IMessageSender`, session messages, wire ids, the client message registry and generated-registration
+    support.
+  - `DaServer.Core` (netstandard2.1 + net10): the wire and transport both sides run: `FrameHeader`/`RpcStatus`/
+    `ControlOp`, `FrameWriter`/`BufferPool`, `Connection`/`WebSocketChannel`, pending calls (`CallerThread`: a thread
+    that completes its own calls, a shard on servers), `CallContext`, `RpcException`, handler dispatch,
+    `SignedToken`.
+  - `DaServer.Client` (netstandard2.1 + net10): `ClusterClient`.
+  - `DaServer` (net10): the server runtime (shards, actors, services, cluster, ingress, client connections), plus
+    `DaServer.Hosting` and `DaServer.Aspire`.
+  The generator and analyzers ship with Abstractions, so every assembly using DaServer gets them. Newer BCL APIs are
+  used on .NET and replaced on netstandard2.1 (`Platform`, internal polyfills of `Lock` and `FrozenDictionary`), so
+  servers pay nothing for the shared code. An architecture test enforces the references.
+- Alternatives: transport inside the client package (the server would depend on "Client"); inside Abstractions
+  (every contract assembly carries sockets); a separate client transport (two implementations of one protocol).
+- Consequences: a Unity client references Abstractions, Core and Client (one package reference, the rest are
+  dependencies); contract projects reference Abstractions only.

@@ -201,16 +201,14 @@ Step plan (each step builds and keeps every test green; logic, docs, CI in separ
    DNS; redirect mode or behind-LB mode. `ClusterMember` keeps no client fields (they are feature card data).
 7. Done: attributes `[FromClient]` / `[ToClient]` replace `Flow` on `[Message]`; `AnyId` is replaced by grants
    (ADR-051): `GrantSession`/`RevokeSession` admit a session to an actor, the edge refuses any other named actor.
-8. Packages: `DaServer.Abstractions` (netstandard2.1 + net10: `[Message]`, `[FromClient]`/`[ToClient]`,
-   `IRequest`, addresses incl. `SessionRef`/`ClientGroup`, `Origin`, `RpcStatus`, `FrameHeader`, wire ids,
-   `TypeIds`, `SessionClosed`/`SessionResync`; no runtime, no EasyEcs; `TypeId<T>` static classes, no static
-   abstract members), `DaServer` (runtime incl. Ingress and Clients, generator and analyzers bundled), `DaServer.Client`
-   (SDK on Abstractions only, `ClusterClient`, M5 smaller table; netstandard2.1 + net10, Unity), `DaServer.Hosting`,
-   `DaServer.Aspire` (`AddNodes(...).WithClients(port)` replaces `AddGateways`/`AddBalancer`; `WithClientEndpoints`
-   replaces `WithGateways`).
-9. Tests: architecture test (`DaServer.Runtime`/`Cluster`/`Rpc` reference no `DaServer.Clients` type;
-   Abstractions and Client reference no runtime or EasyEcs); client tests stay in `tests/DaServer.Tests`; A/B against
-   step 0 (no regression), allocation tests < 1 B per delivery.
+8. Packages (ADR-052), done: `DaServer.Abstractions` (contracts) ← `DaServer.Core` (shared wire and transport) ←
+   `DaServer.Client` / `DaServer` (server runtime); the first three build for netstandard2.1 + net10 and
+   `samples/mmo/Sample.Contracts` builds for both. Generators split by output (ADR-012): `AskGenerator`,
+   `RegistrationGenerator` (static-constructor registration, IL2CPP-safe), `EntryPointGenerator`,
+   `PolyfillGenerator`. Still open: M5 (a smaller client call table) and Aspire `AddNodes(...).WithClients(port)` /
+   `WithClientEndpoints` replacing `AddGateways`/`WithGateways`.
+9. Tests: architecture test done (`ArchitectureTests`: package references point down only; the runtime's folders
+   use no client-connection type); A/B against step 0 (no regression), allocation tests < 1 B per delivery.
 10. Docs: ADR-047/048, design/README/samples/CLAUDE.md, requirements R0/R2/R3/R6/R7/R11 (directory instead of
     balancer), wire break noted; `samples/mmo` drops the balancer project and `Sample.Gateway` becomes a client-facing
     node group in the AppHost.
@@ -317,7 +315,7 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
 
 ## Next: packages and other core gaps (P, K)
 - [ ] P1 `DaServer.Testing` (with N5): the in-process cluster as a public package, `TimeProvider` and deterministic
-      shard stepping, so users test their own actors and systems. (`DaServer.Abstractions` is G step 8.)
+      shard stepping, so users test their own actors and systems. (`DaServer.Abstractions` exists: ADR-052.)
 - [ ] K1 Pluggable placement strategy per actor type: rendezvous hash (default), prefer caller node, load aware,
       sticky (S3).
 - [ ] K2 Owner table per handler type rebuilt on view change (jump/Maglev hash) instead of O(nodes) rendezvous per send.
