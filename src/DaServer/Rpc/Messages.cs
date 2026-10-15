@@ -9,7 +9,7 @@ namespace DaServer.Rpc;
 //   Cluster.Send(key, msg)        one-way to the actor of that key handling msg   (Send(msg): the service handling it)
 //   Cluster.Ask(key, request)     request/reply: request implements IRequest<TReply>, its handler returns TReply
 //   Cluster.Publish(e)            to every handler of e (services); Publish(key, e) also reaches actor handlers of key
-//   Cluster.Send(session, msg)    push to one client; Send(group, msg) broadcasts to a client group
+//   Cluster.Push(session, msg)    push to one client; Broadcast(group, msg) to a client group
 //   client.Send(msg) / Ask(..)    clients send Flow.FromClient messages; actor handlers get the key bound to the session
 
 /// <summary>
@@ -41,7 +41,7 @@ public enum Flow
     /// </summary>
     FromClient = 1,
 
-    /// <summary>Servers push it to client sessions and groups (<c>Send(session, m)</c>), handled on clients.</summary>
+    /// <summary>Servers push it to client sessions and groups (<c>Push(session, m)</c>, <c>Broadcast(group, m)</c>), handled on clients.</summary>
     ToClient = 2,
 }
 

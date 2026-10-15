@@ -46,10 +46,10 @@ public sealed partial class Node
 
     // ------------------------------------------------------------------ ICluster: sessions (any node)
 
-    public void Send<T>(SessionRef session, in T message) where T : struct =>
+    public void Push<T>(SessionRef session, in T message) where T : struct =>
         SendToClients(MessageWriter.Write(in message), MessageType<T>.Id, group: false, session.SessionId, session.GatewayNodeId);
 
-    public void Send<T>(ClientGroup group, in T message) where T : struct =>
+    public void Broadcast<T>(ClientGroup group, in T message) where T : struct =>
         SendToClients(MessageWriter.Write(in message), MessageType<T>.Id, group: true, group.Id, 0);
 
     public void JoinGroup(SessionRef session, ClientGroup group) => SendSessionControl(session, ControlOp.JoinGroup, 0, group.Id);

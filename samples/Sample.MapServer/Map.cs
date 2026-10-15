@@ -83,7 +83,7 @@ public sealed class Map : Actor<MapState>
     public void On(Say m)
     {
         if (m.Text.Length <= MaxChatLength && State.Avatars.TryGetValue(CallerSession, out var avatar))
-            Cluster.Send(Group, new Chat(avatar.Get<Avatar>().PlayerId, m.Text));
+            Cluster.Broadcast(Group, new Chat(avatar.Get<Avatar>().PlayerId, m.Text));
     }
 
     public override ValueTask OnUnload()

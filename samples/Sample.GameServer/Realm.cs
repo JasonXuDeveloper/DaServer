@@ -28,5 +28,5 @@ public sealed partial class RealmBroadcastSystem : EcsSystem
 
     [ForEach]
     private static void Broadcast(in RealmState realm, World world) =>
-        world.Cluster().Send(ClientGroup.All, new RealmStatus(world.Tick(), realm.Online.Count, DateTime.UtcNow.Ticks));
+        world.Cluster().Broadcast(ClientGroup.All, new RealmStatus(world.Tick(), realm.Online.Count, DateTime.UtcNow.Ticks));
 }

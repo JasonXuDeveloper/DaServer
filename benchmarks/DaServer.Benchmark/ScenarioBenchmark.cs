@@ -46,7 +46,7 @@ public class ScenarioBenchmark
     public Task BroadcastToEveryone()
     {
         var delivered = _countdown.Reset(Clients);
-        _nodes[3].Send(ClientGroup.All, new Tick(++_sequence)); // from the game node, like the realm system
+        _nodes[3].Broadcast(ClientGroup.All, new Tick(++_sequence)); // from the game node, like the realm system
         return delivered;
     }
 }

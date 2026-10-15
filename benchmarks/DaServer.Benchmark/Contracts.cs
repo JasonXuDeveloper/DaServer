@@ -41,7 +41,7 @@ public sealed class Room : Actor
     [Handle]
     public bool On(Broadcast m)
     {
-        for (int i = 0; i < m.Groups; i++) Cluster.Send(GroupOf(i), new Tick(m.Sequence));
+        for (int i = 0; i < m.Groups; i++) Cluster.Broadcast(GroupOf(i), new Tick(m.Sequence));
         return true;
     }
 

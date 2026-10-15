@@ -203,7 +203,7 @@ public sealed class AuthService : Service
     public ValueTask<bool> On(LoginAfterPushes m)
     {
         var text = new string('x', 2048); // 4 KB (UTF-16)
-        for (int i = 0; i < m.Pushes; i++) Cluster.Send(CallerSession, new Chat(0, text));
+        for (int i = 0; i < m.Pushes; i++) Cluster.Push(CallerSession, new Chat(0, text));
         return On(new Login(m.PlayerId));
     }
 }
@@ -230,7 +230,7 @@ public sealed class Player : Actor<Wallet>
     public int On(AddGold m)
     {
         int gold = State.Gold += m.Amount;
-        if (CallerSession.IsValid) Cluster.Send(CallerSession, new GoldChanged(gold)); // push to the calling client
+        if (CallerSession.IsValid) Cluster.Push(CallerSession, new GoldChanged(gold)); // push to the calling client
         return gold;
     }
 
@@ -250,5 +250,5 @@ public sealed class Room : Actor
         return true;
     }
 
-    [Handle] public void On(Say m) => Cluster.Send(Group, new Chat(Key, m.Text));
+    [Handle] public void On(Say m) => Cluster.Broadcast(Group, new Chat(Key, m.Text));
 }
