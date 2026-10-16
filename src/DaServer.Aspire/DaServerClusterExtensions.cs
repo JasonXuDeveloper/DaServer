@@ -1,5 +1,6 @@
 #pragma warning disable ASPIREPROBES001 // HTTP probes: experimental in Aspire 13.6, what Kubernetes publishing needs
 using Aspire.Hosting.ApplicationModel;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Aspire.Hosting;
 
@@ -58,6 +59,7 @@ public sealed class DaServerCluster
     private readonly IResourceBuilder<ParameterResource> _secret;
     private readonly List<EndpointReference> _clusterEndpoints = [];
     private readonly List<IResourceBuilder<ProjectResource>> _nodes = [];
+    private readonly List<DaServerNodeGroup> _groups = [];
     private int _nextClusterPort;
     private int _nextClientPort;
 
@@ -71,6 +73,23 @@ public sealed class DaServerCluster
             secret: true, persist: true);
         _nextClusterPort = clusterPortBase;
         _nextClientPort = clientPortBase;
+        if (builder.ExecutionContext.IsRunMode)
+        {
+            builder.Services.AddHostedService(sp => new NodesStopFirst(this, sp.GetRequiredService<ResourceNotificationService>(), sp.GetRequiredService<ResourceCommandService>(),
+                sp.GetRequiredService<Microsoft.Extensions.Hosting.IHostApplicationLifetime>(),
+                sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<NodesStopFirst>>()));
+        }
+    }
+
+    /// <summary>The longest stop budget of the cluster's node groups, plus the margin a node's host adds.</summary>
+    internal TimeSpan StopBudget
+    {
+        get
+        {
+            var longest = TimeSpan.Zero;
+            foreach (var group in _groups) if (group.ShutdownTimeout > longest) longest = group.ShutdownTimeout;
+            return longest + StopMargin;
+        }
     }
 
     public string Name { get; }
@@ -119,6 +138,7 @@ public sealed class DaServerCluster
         }
 
         var group = new DaServerNodeGroup(this, name, nodes);
+        _groups.Add(group);
         // The platform's grace period follows the stop budget, for the environments the model publishes to (each hook
         // requires its environment, which may be added after the nodes).
         _builder.Eventing.Subscribe<BeforeStartEvent>((e, _) =>
