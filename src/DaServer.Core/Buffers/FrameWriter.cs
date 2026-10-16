@@ -151,6 +151,9 @@ public sealed class FrameWriter : INinoBufferWriter, IDisposable
         return _buffer.AsSpan(_pos - after - size, size);
     }
 
+    /// <summary>Bytes already written at <paramref name="offset"/> (to patch a length written ahead of its data).</summary>
+    internal Span<byte> Written(int offset, int length) => _buffer.AsSpan(offset, length);
+
     /// <summary>Append raw bytes to the payload (before any trailer).</summary>
     public void WriteRaw(ReadOnlySpan<byte> bytes)
     {

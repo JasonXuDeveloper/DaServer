@@ -10,7 +10,7 @@ internal sealed partial class UnloadSystem : EcsSystem
 {
     public override int Priority => 4;
 
-    [ForEach, With<UnloadRequested>, Without<Turn>, Without<Removing>, Without<Fenced>]
+    [ForEach, With<UnloadRequested>, Without<Turn>, Without<Removing>, Without<Fenced>, Without<Loading>, Without<FinalSave>]
     private static void Begin(Entity actor, in ActorRef self, World world)
     {
         var target = self.Actor;

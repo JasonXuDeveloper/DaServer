@@ -54,7 +54,8 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
                 HasModuleInitializers(c),
                 Identifier(c.AssemblyName ?? "Assembly"),
                 new EquatableArray<string>(ContractAssemblyAnchors(c)),
-                new EquatableArray<string>(SharedSystems(c))))
+                new EquatableArray<string>(SharedSystems(c)),
+                new EquatableArray<string>(PersistedComponents(c))))
             .WithTrackingName("RegistrationAssembly");
 
         context.RegisterSourceOutput(hosted.Combine(clientMessages).Combine(assembly), static (spc, input) =>
@@ -65,7 +66,8 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
             else if (!info.ReferencesRuntime)
                 types = new EquatableArray<HostedModel>(types.Where(static t => t.Kind == HostedKind.ClientHandler).ToArray());
             var sharedSystems = info.ReferencesRuntime ? info.SharedSystems : default;
-            if (types.Length + messages.Length + info.ContractAnchors.Length + sharedSystems.Length == 0) return;
+            int persisted = info.ReferencesRuntime ? info.Persisted.Length : 0;
+            if (types.Length + messages.Length + info.ContractAnchors.Length + sharedSystems.Length + persisted == 0) return;
             spc.AddSource("DaServer.Registration.g.cs", SourceText.From(Emit(types, messages, sharedSystems, info), Encoding.UTF8));
         });
 
@@ -121,6 +123,42 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
         return systems.ToArray();
     }
 
+    /// <summary>
+    /// The <c>[Persist]</c> components of this compilation and the assemblies it references (components projects): the
+    /// node registers them so actor records can hold them (ADR-068). Entries are "type|wire id".
+    /// </summary>
+    private static string[] PersistedComponents(Compilation compilation)
+    {
+        var found = new List<string>();
+        CollectPersisted(compilation.Assembly.GlobalNamespace, found);
+        foreach (var assembly in compilation.SourceModule.ReferencedAssemblySymbols)
+            if (DeclaresComponents(assembly)) CollectPersisted(assembly.GlobalNamespace, found);
+        found.Sort(System.StringComparer.Ordinal);
+        return found.ToArray();
+    }
+
+    private static readonly string[] FrameworkAssemblies =
+        ["DaServer", "DaServer.Core", "DaServer.Abstractions", "DaServer.Client", "DaServer.Hosting", "DaServer.Simulation"];
+
+    /// <summary>Only application assemblies that can hold [Persist] components are walked (they see the attribute).</summary>
+    private static bool DeclaresComponents(IAssemblySymbol assembly)
+    {
+        if (System.Array.IndexOf(FrameworkAssemblies, assembly.Name) >= 0) return false;
+        foreach (var module in assembly.Modules)
+        foreach (var reference in module.ReferencedAssemblies)
+            if (reference.Name == "DaServer.Abstractions") return true;
+        return false;
+    }
+
+    private static void CollectPersisted(INamespaceSymbol ns, List<string> found)
+    {
+        foreach (var type in ns.GetTypeMembers())
+            if (type is { TypeKind: TypeKind.Struct, DeclaredAccessibility: Accessibility.Public, IsGenericType: false } &&
+                HasAttribute(type, PersistAttribute))
+                found.Add(type.ToDisplayString(Fqn) + "|" + Shapes.MessageId(type));
+        foreach (var inner in ns.GetNamespaceMembers()) CollectPersisted(inner, found);
+    }
+
     private static void CollectSystems(INamespaceSymbol ns, List<string> systems)
     {
         foreach (var type in ns.GetTypeMembers())
@@ -149,6 +187,12 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
             sb.Append($"        global::DaServer.ClientMessages.Register<{m.FullName}>();\n");
         foreach (var system in sharedSystems)
             sb.Append($"        ServerRegistry.RegisterSystem(new SystemInfo(typeof({system}), static () => new {system}()));\n");
+        if (info.ReferencesRuntime)
+            foreach (var entry in info.Persisted) // "type|wire id": the [Persist] components of the components projects
+            {
+                int bar = entry.LastIndexOf('|');
+                sb.Append($"        ServerRegistry.RegisterPersistent<{entry.Substring(0, bar)}>({entry.Substring(bar + 1)}u);\n");
+            }
 
         foreach (var t in types)
         {
@@ -215,5 +259,5 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
         c.GetTypeByMetadataName("System.Runtime.CompilerServices.ModuleInitializerAttribute") != null;
 
     private sealed record AssemblyModel(bool ReferencesCore, bool ReferencesRuntime, bool ModuleInitializer, string AssemblyHint,
-        EquatableArray<string> ContractAnchors, EquatableArray<string> SharedSystems);
+        EquatableArray<string> ContractAnchors, EquatableArray<string> SharedSystems, EquatableArray<string> Persisted);
 }

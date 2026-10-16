@@ -44,6 +44,12 @@ public sealed class NodeOptions
     public TimeSpan CallTimeout { get; set; } = TimeSpan.FromSeconds(10);
 
     /// <summary>
+    /// Where actors' <see cref="PersistAttribute">[Persist]</see> components are stored (ADR-068). Null (default):
+    /// nothing is persisted, actors start from <see cref="Actor.OnLoad"/> every time.
+    /// </summary>
+    public Persistence.IActorStore? ActorStore { get; set; }
+
+    /// <summary>
     /// The whole graceful stop (leave, drain, unload every actor, close) must fit in this budget: past it the node
     /// reports the actors that were not unloaded and exits instead of hanging. The host's shutdown timeout and the
     /// platform's grace period are set above it (DaServer.Hosting, DaServer.Aspire), so the platform never kills a node

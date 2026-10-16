@@ -5,6 +5,7 @@ global using DaServer.Concurrency;
 global using DaServer.Features;
 global using DaServer.Ingress;
 global using DaServer.Net;
+global using DaServer.Persistence;
 global using DaServer.Protocol;
 global using DaServer.Rpc;
 global using DaServer.Runtime;
