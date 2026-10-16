@@ -205,13 +205,15 @@ public sealed partial class RealmBroadcastSystem : EcsSystem        // every 5 t
 
 // Client (bot, game): the same messages, one well-known address.
 var client = new ClusterClient();
-client.Register(new Pushes());
-await client.ConnectAsync("play.example.com", 7100);          // directed to a less loaded client-facing node
+client.Register(new ChatLog());                             // what servers push to this client
+await client.ConnectAsync("play.example.com", 7100);        // the platform's load balancer or DNS name: the node reached
+                                                            // there may answer "connect to node X instead" (the less
+                                                            // loaded of two), and the client reconnects to X directly
 await client.Ask(new Login("alice"));
 await client.Ask(new EnterMap(new MapId(1)));               // to the bound player (session binding)
 client.Send(new Move(1, 0));
 
-class Pushes
+class ChatLog
 {
     [Handle] public void On(Chat m) => Console.WriteLine(m.Text);   // pushes are handled like any message
 }
@@ -244,8 +246,10 @@ builder.Build().Run();
 ```
 
 `AddDaServerCluster` gives every node a name, a cluster endpoint and seeds; `WithClientConnections` adds a client endpoint (the
-`DaServer:Clients` section). A client connects to any client-facing node (in production: the platform's load balancer or DNS name)
-and is directed to the less loaded of two (power of two choices over the gossiped session counts). There
+`DaServer:Clients` section). A client connects to any client-facing node (in production: the platform's load balancer or DNS name);
+that node picks the less loaded of two client-facing nodes from the gossiped session counts (power of two choices)
+and, if it is another one, answers with its address, and the client connects there directly (`Redirect`, ADR-026):
+the balancer only spreads first connections, no traffic is forwarded through it or between nodes. There
 are no roles and no configuration files: what a node hosts is what its project compiles. Nodes export logs and
 metrics over OpenTelemetry, which feeds the Aspire dashboard. The same model runs with
 `dotnet run --project samples/mmo/Sample.AppHost` and publishes with `aspire publish` (`AddKubernetesEnvironment` for
