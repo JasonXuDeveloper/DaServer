@@ -23,6 +23,8 @@ cluster.AddNodes<Projects.Sample_LoginServer>("login");                    // Ac
 cluster.AddNodes<Projects.Sample_GameServer>("game").WithActorStore(actors); // Player and Realm actors
 cluster.AddNodes<Projects.Sample_MapServer>("map");                        // Map actors + movement/interest systems
 var gateways = cluster.AddNodes<Projects.Sample_GatewayServer>("gateway", replicas: 3).WithClientConnections(); // clients, no business code
+// Pushes to a client leave on a 2 ms beat: a session's positions and broadcasts within it share one write (ADR-070).
+foreach (var gateway in gateways.Nodes) gateway.WithEnvironment("DaServer__Clients__FlushInterval", "00:00:00.002");
 
 // 10k players moving in one map on one map node while the realm broadcasts to everyone every 5 ticks. Each player sees
 // the 3x3 cells around it (area of interest) and hears about avatars only when they turn (dead reckoning): about
