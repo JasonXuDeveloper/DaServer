@@ -841,3 +841,24 @@ records that no longer hold). Each: context → decision → consequences.
   stack (not possible from managed code without a diagnostics session).
 - Consequences: the waits the analyzer can see do not compile; the rest (a long loop, a wait inside a library) are
   visible within `StallAfter`. Tests that need a foreign await on purpose suppress DAS009 locally.
+
+## ADR-061 Systems do not ask: local reads, intents and outcomes
+- Context: a system sometimes needs another owner's data or decision (may this NPC step on that cell, may this
+  player take that item). Systems run once per tick and do not await. A reply that arrives ticks later is about a
+  state that may have changed meanwhile, so acting on it is a check-then-act race across owners.
+- Decision: systems do not `Ask` (DAS012). They work in one of two ways:
+  - They read what lives on their shard, synchronously and consistently. Placement keeps together what is read
+    together: the map's grid and the NPCs that walk it live on the map's shard, and N7 placement affinity
+    generalises this.
+  - They send an intent (`Send`) to the owner of the data. The owner validates it against its current state, applies
+    or refuses it, and sends the outcome back as a one-way message. A handler writes that outcome into components for
+    the next tick.
+  This matches ECS networking elsewhere: Unity Netcode for Entities sends requests as entities and answers with
+  another one-way command; Entitas sync applies received commands at the start of a tick.
+- Alternatives:
+  - The reply as a component on the asking entity: still check-then-act on a stale answer, and one more mechanism.
+  - Turns for systems (a system awaiting per entity): per-entity state machines, interleaving with the entity's mail,
+    and a tick that no longer finishes in one pass.
+- Consequences: no new API. The owner is the only one that decides, so an intent can never apply to stale data.
+  Actors still `await` inside handlers: a turn holds only its actor.
+

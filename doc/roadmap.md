@@ -390,10 +390,10 @@ in separate commits.
       1. Done: DAS009 (error) in actors, services and systems: `.Result`, `.Wait()`, `GetAwaiter().GetResult()`,
          `AsTask().Wait*`, `Thread.Sleep`, `Task.Delay`, `SemaphoreSlim.Wait`, `Monitor.Enter`/`lock` waits; the
          message names the replacement for the context.
-      2. Replacements: handlers `await` (a turn: only that actor waits); delays use `SendAfter` (N2, the actor stays
-         free); systems use requests as data: `Cluster.Ask(target, request, replyTo: entity)` delivers the reply as a
-         `Reply<TReply>` component (or a `CallFailed` tag) on that entity for a later `[ForEach]` system (no
-         continuation, zero allocation).
+      2. Done (ADR-061): handlers `await` (a turn: only that actor waits); delays use `SendAfter` (N2); systems
+         never wait for replies (DAS012): they read data kept on their shard (N7 placement affinity co-locates what a
+         system reads), or send an intent to the owner of the data, which validates it against its current state and
+         sends the outcome back as a message that a handler writes into components.
       3. Done: reading a pooled call's result before completion throws; a stall watchdog reports a shard pass longer
          than `NodeOptions.StallAfter` (1 s) once per pass, in the log and as `Node.StalledShards`
          (`daserver.shard.stalled`); the `daserver-live` health check (A-items) reads it. A managed thread cannot

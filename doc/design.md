@@ -417,7 +417,7 @@ What the generators write:
 | `EntryPointGenerator` | `NodeProgram.Main` when a node project has no `Program.cs` (ADR-021) |
 | `PolyfillGenerator` | `IsExternalInit` for contract assemblies built for netstandard2.1 |
 | EasyEcs `SystemGenerator` | `[ForEach]` struct jobs (components, singletons, entity, world parameters) and `GeneratedUpdate` |
-| Analyzers | DAS001–DAS011 (handlers, messages, wire types, id collisions, constructors, message flow, stateless actors and services, address kinds, synchronous waits on shard threads, shared logic, ReplyWhen placement), EECS001–EECS008 (ECS rules) |
+| Analyzers | DAS001–DAS012 (handlers, messages, wire types, id collisions, constructors, message flow, stateless actors and services, address kinds, synchronous waits on shard threads, shared logic, ReplyWhen placement, systems that ask), EECS001–EECS008 (ECS rules) |
 
 The generators follow the incremental-generator rules: syntax-only predicates, equatable models, tracking names, and
 no diagnostics. There is no reflection scanning, no configuration string and no hand-written registration list. A
