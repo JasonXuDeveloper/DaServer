@@ -26,7 +26,7 @@ internal sealed class Shard : CompletionThread
     private int _sleeping;
     private readonly Thread _thread;
     private readonly TaskCompletionSource _stopped = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private volatile bool _stopRequested;
+    private volatile bool _stopRequested, _stopFenced;
     private readonly long _tickInterval; // Stopwatch ticks
     private const long IdleScanMs = 100;
     private int _actorCount;
@@ -140,8 +140,10 @@ internal sealed class Shard : CompletionThread
             activity.DeclaredDead = activity.Rebalance = true;
         }, this);
 
-    internal void RequestStop()
+    /// <summary>Stop the shard: unload every actor (<paramref name="fenced"/>: remove them without <see cref="Actor.OnUnload"/>).</summary>
+    internal void RequestStop(bool fenced = false)
     {
+        _stopFenced = fenced;
         _stopRequested = true;
         _wake.Set();
     }
@@ -178,7 +180,11 @@ internal sealed class Shard : CompletionThread
             {
                 Volatile.Write(ref _passStartedMs, Environment.TickCount64);
                 activity.Processed = 0;
-                if (_stopRequested && !activity.Stopping) activity.Stopping = activity.Rebalance = true;
+                if (_stopRequested && !activity.Stopping)
+                {
+                    activity.Stopping = activity.Rebalance = true;
+                    activity.DeclaredDead |= _stopFenced; // a downed node saves nothing: the majority owns the keys now
+                }
 
                 using (Connection.BeginSendBatch()) // everything this wake sends leaves in one write per connection
                 {
