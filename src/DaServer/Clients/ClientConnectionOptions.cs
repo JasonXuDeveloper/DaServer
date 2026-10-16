@@ -43,4 +43,12 @@ public sealed class ClientConnectionOptions
     /// other nodes (resuming their sessions) gradually rather than all at once. Part of the node's stop budget.
     /// </summary>
     public TimeSpan DrainSpread { get; set; } = TimeSpan.FromSeconds(3);
+
+    /// <summary>
+    /// Write to clients on this beat instead of at once (zero, the default: at once). What a session receives within one
+    /// interval (a map's positions, a broadcast from another node) leaves in one write, from one flush thread: fewer
+    /// writes for the node and fewer reads for the client, everything sent to clients (replies included) up to one
+    /// interval later. For high-rate pushes on many sessions (a game's tick); keep it below the tick.
+    /// </summary>
+    public TimeSpan FlushInterval { get; set; }
 }

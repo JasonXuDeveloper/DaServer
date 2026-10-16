@@ -14,6 +14,7 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
     private volatile bool _stopped, _crashed;
     private readonly TimerWheel<PendingClose> _graces = new(TimeSpan.FromMilliseconds(100)); // lost connections, under its lock
     private Timer? _maintenance;
+    private SendFlusher? _flusher; // with FlushInterval: writes the sessions on its beat
 
     /// <summary>A lost connection whose actors learn it at the end of the resume grace (unless the client resumed).</summary>
     private readonly record struct PendingClose(ClientSession Session, SessionGrant[] Grants);
@@ -50,6 +51,7 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
         if (_node.Options.SigningSecret is { Length: > 0 } secret) _ticketSecret = System.Text.Encoding.UTF8.GetBytes(secret);
         var sessionOptions = ConnectionOptions.ForSessions();
         sessionOptions.MaxFrameSize = options.MaxFrameSize; // what an untrusted client may make us buffer
+        if (options.FlushInterval > TimeSpan.Zero) sessionOptions.Flusher = _flusher = new SendFlusher(options.FlushInterval, "client-flush");
         _listener = new Listener(new IPEndPoint(IPAddress.Parse(_node.Options.ListenAddress), options.Port), socket =>
         {
             var connection = new Connection(socket, _sessionHandler, sessionOptions);
@@ -110,6 +112,7 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
     {
         _maintenance?.Dispose();
         _listener?.Dispose();
+        _flusher?.Dispose(); // its last beat writes what was queued
         foreach (var session in _sessions.Values) session.Channel.Close();
     }
 
