@@ -37,10 +37,10 @@ records that no longer hold). Each: context → decision → consequences.
   or an address scope (sessions, client groups), so a receiver routes a frame with one lookup. The call id is a
   4-byte trailer (`HasCall`): the payload is serialized before routing picks the call id, and every hop that relays a
   request rewrites it in place, so neither needs to move the payload. Message id = FNV-1a 32 of the message type's
-  full name (or its `[WireId]`), computed once per type at run time and by the analyzer at build time; handler type
+  full name (or its `[TypeId]`), computed once per type at run time and by the analyzer at build time; handler type
   ids are FNV-1a of the actor id type or service type name.
 - Consequences: client-facing nodes route by patching header fields without parsing payloads; collisions are build errors
-  (DAS004) and registration errors, resolvable with `[WireId]`. A request costs the same bytes as a one-way message
+  (DAS004) and registration errors, resolvable with `[TypeId]`. A request costs the same bytes as a one-way message
   plus its call id; a reply carries the call id as a trailer too (4 bytes).
 
 ## ADR-006 Connection send path: copy into a per-connection batch
@@ -315,7 +315,7 @@ records that no longer hold). Each: context → decision → consequences.
   `System.Reflection.MemberInfo`), `ListenAddress` / `DispatchQueueCapacity` (what they configure). Actor state starts
   as `new TState()` (field initializers of a state struct run, so `OnLoad` is only for loading), and systems read an
   actor's id and group from its public `ActorRef` component instead of copying them into state.
-- Consequences: wire ids do not depend on these names (message and handler type names are hashed).
+- Consequences: type ids do not depend on these names (message and handler type names are hashed).
 
 ## ADR-033 Actors unload when idle, by their own declaration
 - Context: actors that stay loaded until their key moves make actors used now and then (offline players, finished
@@ -646,8 +646,8 @@ records that no longer hold). Each: context → decision → consequences.
   the one below:
   - `DaServer.Abstractions` (netstandard2.1, net10.0, net11.0; namespace `DaServer`: one using in a contract file): what
     contract assemblies reference: `[Message]`, `[Handle]`,
-    `[FromClient]`/`[ToClient]`, `[WireId]`, `IRequest`, addresses (`IActorId`, `ClientSession`, `ClientGroup`,
-    `Origin`), `IMessageSender`, session messages, wire ids, the client message registry and generated-registration
+    `[FromClient]`/`[ToClient]`, `[TypeId]`, `IRequest`, addresses (`IActorId`, `ClientSession`, `ClientGroup`,
+    `Origin`), `IMessageSender`, session messages, type ids, the client message registry and generated-registration
     support.
   - `DaServer.Core` (netstandard2.1, net10.0, net11.0): the wire and transport both sides run: `FrameHeader`/`RpcStatus`/
     `ControlOp`, `FrameWriter`/`BufferPool`, `Connection`/`WebSocketChannel`, pending calls (`CompletionThread`: a thread
@@ -1000,8 +1000,8 @@ records that no longer hold). Each: context → decision → consequences.
   saves serialized entities by hand. Akka.NET and Proto.Actor journal events.
 - Decision:
   - **What:** an actor's `[Persist]` components (Nino structs in a components project) form one record, keyed by
-    (handler type id, key). The record has a section per component: wire id (FNV-1a of the full name, `[WireId]` to
-    keep it across a rename), length, Nino bytes. Adding or removing a persisted component never breaks a stored
+    (handler type id, key). The record has a section per component: type id (FNV-1a of the full name, `[TypeId]` to
+    keep it across a rename; the same id messages carry on the wire), length, Nino bytes. Adding or removing a persisted component never breaks a stored
     record. Transient data (grids, caches, tags) is rebuilt on load. Relational and queried data (accounts,
     payments, mail, rankings) stays in services with the user's ORM.
   - **When:**

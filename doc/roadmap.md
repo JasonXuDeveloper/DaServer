@@ -420,7 +420,7 @@ in separate commits.
 - [ ] N7 Placement affinity: an actor type may declare a placement key (`PlacementKey(key)`), hashed instead of the
       key: same placement key = same node (and shard); zones without topology strings, no directory. (ET addresses)
 - [ ] N5 Persistence as ECS (ADR-068). Done: `[Persist]` components of an actor form one record (a section per component
-      wire id); `LoadSystem` batches the loads of a wake and restores components before `OnLoad`; `CheckpointSystem`
+      type id); `LoadSystem` batches the loads of a wake and restores components before `OnLoad`; `CheckpointSystem`
       writes changed records every `Actor.SaveEvery` (30 s, unchanged skipped by hash), `PersistSystem` writes
       `SaveNow` and unloaded actors (removed once written); `StoreSystem` keeps one load and one save batch in flight
       per shard; a rejected versioned write fences the local copy; `IActorStore` + `InMemoryActorStore`; DAS014.
