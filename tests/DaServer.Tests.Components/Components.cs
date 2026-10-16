@@ -27,5 +27,8 @@ public struct Idle : IComponent;
 /// <summary>A bank account's balance: persisted (ADR-068).</summary>
 [NinoType, Persist] public partial record struct Ledger(int Gold) : IComponent;
 
+/// <summary>Tag: the ledger earns one gold every tick (InterestSystem), so its record changes all the time.</summary>
+public struct Earning : IComponent;
+
 /// <summary>Deposits so far: persisted beside the ledger (a record has a section per component).</summary>
 [NinoType, Persist] public partial record struct Deposits(int Count) : IComponent;
