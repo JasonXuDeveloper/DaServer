@@ -26,6 +26,7 @@
         <ProjectReference Include="..\..\src\DaServer.Simulation\DaServer.Simulation.csproj" />
         <ProjectReference Include="..\..\src\DaServer.Hosting\DaServer.Hosting.csproj" />
         <ProjectReference Include="..\..\src\DaServer.Persistence.PostgreSql\DaServer.Persistence.PostgreSql.csproj" />
+        <ProjectReference Include="..\..\src\DaServer.Testing\DaServer.Testing.csproj" />
         <ProjectReference Include="..\..\src\DaServer.Generator\DaServer.Generator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="true" />
     </ItemGroup>
 

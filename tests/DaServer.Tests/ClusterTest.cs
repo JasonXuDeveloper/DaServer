@@ -3,8 +3,8 @@ using System.Diagnostics;
 namespace DaServer.Tests;
 
 /// <summary>
-/// Base class of integration tests: an in-process cluster on loopback with fast membership timings, torn down after
-/// every test (nodes and clients).
+/// Base class of the framework's integration tests: an in-process cluster on loopback with the test node options of
+/// <c>DaServer.Testing</c>, plus access to node internals; torn down after every test (nodes and clients).
 /// </summary>
 public abstract class ClusterTest
 {
@@ -28,20 +28,8 @@ public abstract class ClusterTest
     private protected async Task<Node> Start(string name, int shards = 2, bool gateway = false, Func<Type, bool>? hosts = null,
         Action<NodeOptions>? configure = null, Action<ClientConnectionOptions>? clients = null)
     {
-        var options = new NodeOptions
-        {
-            Name = name,
-            ListenAddress = "127.0.0.1",
-            ClusterPort = 0,
-            Shards = shards,
-            TickRate = 50,
-            Seeds = _nodes.Count == 0 ? [] : [$"127.0.0.1:{_nodes[0].ClusterEndPoint.Port}"],
-            Hosts = hosts,
-            GossipInterval = TimeSpan.FromMilliseconds(100),
-            SuspectAfter = TimeSpan.FromMilliseconds(600),
-            DeadAfter = TimeSpan.FromMilliseconds(1500),
-            CallTimeout = TimeSpan.FromSeconds(5),
-        };
+        var options = DaServer.Testing.TestCluster.NodeOptionsFor(name, shards, tickRate: 50, _nodes.Count == 0 ? null : _nodes[0]);
+        options.Hosts = hosts;
         if (gateway || clients != null)
         {
             var clientOptions = new ClientConnectionOptions();
