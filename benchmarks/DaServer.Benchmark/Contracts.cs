@@ -119,3 +119,23 @@ public sealed class Scheduler : Actor<SchedulerId>
         return true;
     }
 }
+
+// ---------------------------------------------------------------- persistence (PersistenceBenchmark)
+
+public readonly record struct VaultId(long Value) : IActorId;
+
+[NinoType, Message] public partial record struct Put(long Amount) : IRequest<long>;
+
+/// <summary>Holds coins ([Persist]); a put is a critical change, written at once (SaveNow).</summary>
+public sealed class Vault : Actor<VaultId, Coins>
+{
+    public override TimeSpan SaveEvery => TimeSpan.Zero;
+
+    [Handle]
+    public long On(Put m)
+    {
+        if (m.Amount == 0) return State.Amount;
+        Entity.Add<SaveNow>();
+        return State.Amount += m.Amount;
+    }
+}
