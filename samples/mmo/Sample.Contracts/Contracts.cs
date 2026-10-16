@@ -6,7 +6,7 @@ namespace Sample.Contracts;
 // Messages shared by servers and clients. A message is a [NinoType, Message] struct, sent between servers; [FromClient]
 // lets clients send it and [ToClient] lets servers send it to clients; IRequest<TReply> marks what
 // is answered. Plain [NinoType] types (replies, Moved) are data inside messages. Handlers are [Handle] methods; routing,
-// dispatch, wire ids, registration and discovery are generated or derived from them.
+// dispatch, type ids, registration and discovery are generated or derived from them.
 
 // ---------------------------------------------------------------- actor ids (one type per actor type)
 

@@ -62,7 +62,7 @@ public static class FrameFlags
 /// 8  uint32 Target     who handles a message: an actor or service handler type id, or an address scope (sessions,
 ///                      client groups); 0 in replies and control frames, and from clients that leave the choice to
 ///                      their node (the actor bound to the session, else the service)
-/// 12 uint32 MessageId  wire id of the message type (see WireIds) or control op
+/// 12 uint32 MessageId  type id of the message type (see TypeIds) or control op
 /// 16 int64  Key        actor key / session id / group id (0 for services)
 /// ..        payload
 /// ..        int64 call chain when HasChain

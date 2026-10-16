@@ -18,7 +18,7 @@ public sealed class MessageHandler(uint messageId, MessageDispatcher dispatcher,
 
     /// <summary>Handler registration for <typeparamref name="T"/>; <paramref name="dispatcher"/> is generated.</summary>
     public static MessageHandler Of<T>(MessageDispatcher dispatcher) where T : struct =>
-        new(MessageType<T>.WireId, dispatcher, typeof(T));
+        new(TypeId<T>.Value, dispatcher, typeof(T));
 
     public override string ToString() => MessageType.FullName ?? MessageType.Name;
 }
@@ -36,7 +36,7 @@ public sealed class MessageHandlers
         {
             if (byId.TryGetValue(handler.MessageId, out var other))
                 throw new InvalidOperationException(
-                    $"Message id collision 0x{handler.MessageId:x8}: {handler} and {other}. Use [WireId] on one of them.");
+                    $"Message id collision 0x{handler.MessageId:x8}: {handler} and {other}. Use [TypeId] on one of them.");
             byId[handler.MessageId] = handler;
         }
 

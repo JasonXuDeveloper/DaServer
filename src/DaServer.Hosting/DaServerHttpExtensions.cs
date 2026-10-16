@@ -89,7 +89,7 @@ public static class DaServerHttpExtensions
         endpoints.MapPost(pattern, static (T message, Node node) =>
         {
             IIngress ingress = ((Features.INodeContext)node).Ingress;
-            ingress.Send(MessageType<T>.WireId, 0, 0, Nino.Core.NinoSerializer.Serialize(message), OriginOf(node));
+            ingress.Send(TypeId<T>.Value, 0, 0, Nino.Core.NinoSerializer.Serialize(message), OriginOf(node));
             return Results.Accepted();
         });
 

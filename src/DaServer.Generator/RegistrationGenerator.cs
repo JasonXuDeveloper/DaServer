@@ -125,7 +125,7 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
 
     /// <summary>
     /// The <c>[Persist]</c> components of this compilation and the assemblies it references (components projects): the
-    /// node registers them so actor records can hold them (ADR-068). Entries are "type|wire id".
+    /// node registers them so actor records can hold them (ADR-068). Entries are "type|type id".
     /// </summary>
     private static string[] PersistedComponents(Compilation compilation)
     {
@@ -155,7 +155,7 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
         foreach (var type in ns.GetTypeMembers())
             if (type is { TypeKind: TypeKind.Struct, DeclaredAccessibility: Accessibility.Public, IsGenericType: false } &&
                 HasAttribute(type, PersistAttribute))
-                found.Add(type.ToDisplayString(Fqn) + "|" + Shapes.MessageId(type));
+                found.Add(type.ToDisplayString(Fqn) + "|" + Shapes.TypeIdOf(type));
         foreach (var inner in ns.GetNamespaceMembers()) CollectPersisted(inner, found);
     }
 
@@ -188,7 +188,7 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
         foreach (var system in sharedSystems)
             sb.Append($"        ServerRegistry.RegisterSystem(new SystemInfo(typeof({system}), static () => new {system}()));\n");
         if (info.ReferencesRuntime)
-            foreach (var entry in info.Persisted) // "type|wire id": the [Persist] components of the components projects
+            foreach (var entry in info.Persisted) // "type|type id": the [Persist] components of the components projects
             {
                 int bar = entry.LastIndexOf('|');
                 sb.Append($"        ServerRegistry.RegisterPersistent<{entry.Substring(0, bar)}>({entry.Substring(bar + 1)}u);\n");

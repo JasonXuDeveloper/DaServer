@@ -112,7 +112,7 @@ public class GeneratorTests
     [TestCase("[NinoType] public partial record struct Tick(int N); public sealed class Bad : Service { [Handle] public void On(Tick e) { } }", "DAS002")]
     [TestCase("public struct Bad : IRequest<int> { }", "DAS002")]
     [TestCase("public struct Data { } [NinoType, Message] public partial record struct Bad : IRequest<Data>;", "DAS003")]
-    [TestCase("[NinoType, Message, WireId(5)] public partial record struct A; [NinoType, Message, WireId(5)] public partial record struct B;", "DAS004")]
+    [TestCase("[NinoType, Message, TypeId(5)] public partial record struct A; [NinoType, Message, TypeId(5)] public partial record struct B;", "DAS004")]
     [TestCase("[NinoType, Message] public partial record struct Tick; public sealed class Bad : Service { public Bad(int x) { } [Handle] public void On(Tick e) { } }", "DAS005")]
     [TestCase("[NinoType, Message, ToClient] public partial record struct Tick; public sealed class Bad : Service { [Handle] public void On(Tick e) { } }", "DAS006")]
     [TestCase("[NinoType, Message] public partial record struct Tick; public sealed class Ui { [Handle] public void On(Tick e) { } }", "DAS006")]

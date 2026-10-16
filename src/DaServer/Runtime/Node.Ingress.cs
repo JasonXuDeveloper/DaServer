@@ -44,14 +44,14 @@ sealed partial class Node : IIngress
     private ValueTask<TReply> AskFromOutside<TRequest, TReply>(in TRequest request, uint target, long key, Origin origin, TimeSpan budget)
         where TRequest : struct
     {
-        var decision = Admit(MessageType<TRequest>.WireId, target, key, origin);
+        var decision = Admit(TypeId<TRequest>.Value, target, key, origin);
         if (!decision.Admitted) return Refused<TReply>(decision);
         var call = PendingCall<TReply>.Rent(Shard.Current);
         var task = call.Task;
         var frame = MessageWriter.Write(in request);
         frame.SetOrigin(origin);
         frame.Deadline = DeadlineOf(budget);
-        Request(frame, MessageType<TRequest>.WireId, target, key, call, null, 0, refuseLoaded: true);
+        Request(frame, TypeId<TRequest>.Value, target, key, call, null, 0, refuseLoaded: true);
         return task;
     }
 

@@ -22,7 +22,7 @@ public sealed class HandlerTypeInfo(Type type, bool isActor, Func<object> factor
     /// </summary>
     public uint Id { get; } = Identity(isActor ? IdTypeOf(type) : type);
 
-    private static uint Identity(Type type) => WireIds.Fnv1a(type.FullName ?? type.Name); // == TypeId<T>.Value
+    private static uint Identity(Type type) => TypeIds.Of(type); // == TypeId<T>.Value
 
     private static Type IdTypeOf(Type actor)
     {
@@ -82,18 +82,18 @@ public static class ServerRegistry
     private static readonly List<Persistence.PersistentType> PersistentList = new();
 
     /// <summary>A persisted component type (<see cref="PersistAttribute"/>) of a components project the node references.</summary>
-    public static void RegisterPersistent<T>(uint wireId) where T : struct, IComponent
+    public static void RegisterPersistent<T>(uint typeId) where T : struct, IComponent
     {
         lock (Gate)
         {
             foreach (var existing in PersistentList)
             {
                 if (existing.Type == typeof(T)) return;
-                if (existing.WireId == wireId)
-                    throw new InvalidOperationException($"Persisted components {existing.Type} and {typeof(T)} hash to the same wire id: add [WireId] to one");
+                if (existing.TypeId == typeId)
+                    throw new InvalidOperationException($"Persisted components {existing.Type} and {typeof(T)} hash to the same type id: add [TypeId] to one");
             }
 
-            PersistentList.Add(new Persistence.PersistentType<T>(wireId));
+            PersistentList.Add(new Persistence.PersistentType<T>(typeId));
         }
     }
 

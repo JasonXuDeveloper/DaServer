@@ -88,13 +88,13 @@ internal static class ActorSessions
             if (lost == null || lost.Count == 0) continue;
 
             var actor = item.Component2.Actor;
-            bool handles = actor.HandlerType.Handlers.Of(MessageType<SessionClosed>.WireId) != null;
+            bool handles = actor.HandlerType.Handlers.Of(TypeId<SessionClosed>.Value) != null;
             foreach (var session in lost)
             {
                 sessions.Remove(session);
                 if (!handles) continue;
                 var w = MessageWriter.Write(new SessionClosed(session));
-                w.SetHeader(FrameKind.Message, actor.HandlerType.Id, MessageType<SessionClosed>.WireId, actor.Key);
+                w.SetHeader(FrameKind.Message, actor.HandlerType.Id, TypeId<SessionClosed>.Value, actor.Key);
                 ShardDispatch.Deliver(world, item.Entity, new Envelope(w, null));
             }
         }

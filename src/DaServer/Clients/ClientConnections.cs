@@ -150,8 +150,8 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
     /// <summary>Messages to a client address that its node applies instead of delivering them to the client.</summary>
     private static class SessionOperations
     {
-        public static readonly uint Access = MessageType<SessionAccess>.WireId, Join = MessageType<JoinGroup>.WireId,
-            Leave = MessageType<LeaveGroup>.WireId, Disconnect = MessageType<Disconnect>.WireId;
+        public static readonly uint Access = TypeId<SessionAccess>.Value, Join = TypeId<JoinGroup>.Value,
+            Leave = TypeId<LeaveGroup>.Value, Disconnect = TypeId<Disconnect>.Value;
 
         public static bool Contains(uint messageId) =>
             messageId == Join || messageId == Leave || messageId == Access || messageId == Disconnect;
