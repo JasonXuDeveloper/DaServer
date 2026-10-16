@@ -4,6 +4,7 @@
 
     <ItemGroup>
         <ProjectReference Include="..\Sample.GameServer.Components\Sample.GameServer.Components.csproj" />
+        <ProjectReference Include="..\..\..\src\DaServer.Persistence.PostgreSql\DaServer.Persistence.PostgreSql.csproj" />
     </ItemGroup>
 
 </Project>

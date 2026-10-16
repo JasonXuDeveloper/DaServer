@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Builder;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.AddDaServer();
+builder.AddPostgreSqlActorStore(); // player profiles ([Persist]); the AppHost passes the "actors" database
 var app = builder.Build();
 app.MapDaServer();
 app.Run();
