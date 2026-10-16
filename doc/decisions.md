@@ -340,11 +340,9 @@ records that no longer hold). Each: context → decision → consequences.
 - Decision: `Connection.BeginSendBatch` (thread-local, nestable) defers send-loop wakes to the end of the batch. The
   receive loop batches the frames of one receive buffer; a shard batches one wake (messages and tick).
 - Alternatives:
-  - A timed flush per client connection, as a studied game server and ET flush once per logic frame. It was measured on 10k
-    lean bots in one map with a 2 ms beat for one-way pushes (replies at once). Gateway `sendto` calls fell 42% and bot
-    CPU fell from 213% to 176%, but gateway CPU rose from 45% to 58% per node: one beat thread waking thousands of
-    send loops costs more thread-pool wake-ups (futex calls doubled) than the writes it saves. It also adds latency to
-    every push. A shard already flushes once per tick, so each session gets about one write per map tick.
+  - A timed flush that wakes each connection's send loop: gateway `sendto` calls fell 42%, but one beat thread waking
+    thousands of send loops cost more thread-pool wake-ups than the writes it saved (gateway CPU 45% -> 58%). The beat
+    that writes directly instead, without waking anything, is ADR-070 (opt-in).
   - Reading what the kernel already holds on a link before flushing: no change in writes or CPU (the chunks of a
     tick are not queued yet when the first one is parsed).
   - Shared reference-counted payloads with gather writes: they save the copy, which profiling showed is not the cost.
@@ -1076,4 +1074,29 @@ records that no longer hold). Each: context → decision → consequences.
 - Consequences: about 32 s: 6 s of the testing host, about 7 s of seven processes starting cold through `dotnet run` on
   four cores (a node alone is up in 0.5 s), 2 s of health polling, 13 s of bots (10 s measured), 4 s of stopping.
   The phases are printed in the test log.
+
+## ADR-070 Client writes on a beat, written directly (opt-in)
+- Context: a client-facing node writes each session once per batch (ADR-034). In the 10k-in-one-map scenario a session
+  gets positions from the map node and broadcasts from the game node, each its own batch: about 14 writes a second per
+  session, each a thread-pool wake of the session's send loop and a `send`, and as many reads on the client. On one
+  4-core VM shared with 10,000 bots this saturated the cores (broadcast p99 over 500 ms, slow-consumer drops).
+  Measured and rejected: writing at the end of a batch on the calling thread (5,000 sends in a row on one thread
+  doubled a broadcast's time, and concurrent remote calls got 2-3x slower without the send loop's coalescing);
+  resuming send loops through per-core queues (Kestrel's IOQueue; broadcasts 20-30% slower without work stealing).
+- Decision: `ClientConnectionOptions.FlushInterval` (zero by default: written at once). When set, a session's
+  connection gets a `SendFlusher`: `Send` queues the frame and lists the connection once when its queue goes from
+  empty to not empty; one flush thread per node writes every listed connection on each beat with a non-blocking
+  `send`, waking nothing. What the socket does not take goes to the connection's carry loop, which owns the writer
+  until it has written that and whatever queued meanwhile. Node links, replies between nodes and connections without
+  a flusher keep the send loop unchanged. The sample's gateways use 2 ms.
+- Alternatives: a beat equal to the tick (50 ms: more merging, a tick of latency); merging across sessions (no such
+  syscall for TCP in .NET; io_uring is not in .NET 11); splitting a beat into parts of 256 connections on the thread
+  pool (idle cores: broadcast to 1,000 clients 18.6 -> 8.5 ms, to 5,000 80 -> 31 ms; saturated 4 cores: p99 141-182 ->
+  237-795 ms, the parts queue behind the receive loops).
+- Consequences: everything sent to a client, replies included, leaves up to one interval later. 10,000 bots in one
+  map on one 4-core VM: without it p99 559 ms and failed; 10 ms 190 ms, 5 ms 169 ms, 2 ms 163 ms, 1 ms 170 ms, with
+  no drop or gap, the bots' allocations 5.9 MB/s -> 0.3 MB/s (they keep up, so nothing is resent).
+  On idle cores the beat costs latency (BDN `BroadcastBenchmark`, 2 ms against none: 1,000 clients 6.5 -> 18.6 ms,
+  5,000 33 -> 80 ms; `ScenarioBenchmark` 9,000 clients 61 -> 69 ms) for half the thread-pool work items: it is for
+  nodes whose cores are the limit, hence off by default.
 
