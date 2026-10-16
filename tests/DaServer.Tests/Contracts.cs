@@ -315,6 +315,34 @@ public sealed class StallService : Service
     [Handle] public async Reply<bool> On(Stall _) => await Observed.Release.Task;
 }
 
+// ---------------------------------------------------------------- persistence (ADR-068)
+
+public readonly record struct BankId(long Value) : IActorId;
+
+[NinoType, Message] public partial record struct Deposit(int Gold, bool Critical) : IRequest<int>;
+[NinoType, Message] public partial record struct Balance : IRequest<int>;
+[NinoType, Message] public partial record struct DepositCount : IRequest<int>;
+
+/// <summary>Keys below 100 checkpoint every 100 ms, keys from 100 only on unload (or with SaveNow).</summary>
+public sealed class Bank : Actor<BankId, Ledger>
+{
+    public override TimeSpan SaveEvery => Key < 100 ? TimeSpan.FromMilliseconds(100) : TimeSpan.Zero;
+
+    [Handle]
+    public int On(Deposit m)
+    {
+        State.Gold += m.Gold;
+        if (!Entity.Has<Deposits>()) Entity.Add<Deposits>();
+        Entity.Get<Deposits>().Count++;
+        if (m.Critical) Entity.Add<SaveNow>();
+        return State.Gold;
+    }
+
+    [Handle] public int On(Balance _) => State.Gold;
+
+    [Handle] public int On(DepositCount _) => Entity.Has<Deposits>() ? Entity.Get<Deposits>().Count : 0;
+}
+
 // ---------------------------------------------------------------- supervision (OnError)
 
 public readonly record struct FragileId(long Value) : IActorId;

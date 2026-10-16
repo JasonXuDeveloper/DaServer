@@ -1,4 +1,5 @@
 using EasyEcs;
+using Nino.Core;
 
 namespace DaServer.Tests;
 
@@ -22,3 +23,9 @@ public struct Eat : IComponent;
 public struct Nap : IComponent;
 
 public struct Idle : IComponent;
+
+/// <summary>A bank account's balance: persisted (ADR-068).</summary>
+[NinoType, Persist] public partial record struct Ledger(int Gold) : IComponent;
+
+/// <summary>Deposits so far: persisted beside the ledger (a record has a section per component).</summary>
+[NinoType, Persist] public partial record struct Deposits(int Count) : IComponent;

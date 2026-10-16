@@ -89,6 +89,30 @@ public class AllocationTests : ClusterTest
     }
 
     [Test, Retry(3)]
+    public async Task CheckpointsOfUnchangedActorsDoNotAllocate()
+    {
+        // 99 actors checkpointing every 100 ms: each check serializes the record into a pooled frame and hashes it.
+        var node = await Start("alloc", configure: o =>
+        {
+            o.GossipInterval = TimeSpan.FromHours(1);
+            o.ActorStore = new DaServer.Persistence.InMemoryActorStore();
+        });
+        for (int i = 1; i < 100; i++) await node.Ask(new BankId(i), new Deposit(1, false));
+        Thread.Sleep(1000); // first checkpoints written, pools warm
+        // ~1,000 checkpoints a second: anything allocated per checkpoint would be >= 24 KB/s; the test process alone
+        // makes about 1.7 KB/s (see IdleNodesDoNotAllocate), so the quietest of a few windows is compared.
+        long quietest = long.MaxValue;
+        for (int second = 0; second < 4; second++)
+        {
+            var meter = new AllocationMeter();
+            Thread.Sleep(1000);
+            quietest = Math.Min(quietest, meter.Garbage);
+        }
+
+        Assert.That(quietest, Is.LessThan(8 * 1024), $"{quietest} B/s while checkpointing");
+    }
+
+    [Test, Retry(3)]
     public async Task KeyedEventsDoNotAllocate()
     {
         var node = await Start("alloc", configure: o => o.GossipInterval = TimeSpan.FromHours(1));
