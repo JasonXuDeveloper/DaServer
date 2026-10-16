@@ -113,6 +113,13 @@ Steady state allocates nothing: per message, call, reply, tick, broadcast, conne
       bounds (refusal cost and time to drain), a dense area-of-interest cell (broadcast to one crowded cell). Surges
       over time (p99, refusals, recovery) are load tests: `Sample.Bot` for crowded maps, the G5 HTTP load generator
       for flash sales.
+- [ ] Z5 Relay frame flush: client-facing nodes write each session at most once per frame from a few flush threads
+      that own a slice of the sessions and write without a thread-pool hop (RandomGame, ET). Today each session gets
+      one write per arriving batch: in the 10k scenario 10 Hz `Motion` plus 4 Hz realm broadcasts from another node =
+      14 writes a second per session, about frames x connections. A beat that only wakes send loops was measured and
+      rejected (ADR-034); this one must merge them into ~10 and cost no more CPU. Proven with BDN and the 10k E2E.
+      Independent of it: .NET's io_uring socket engine (opt-in PR, not shipped) would cut the cost per write
+      without changes here.
 - [ ] Z4 Keep it: CLAUDE.md rule plus analyzer coverage where a misuse is detectable in user code (e.g.
       `TaskCompletionSource`/`Task.Delay` in handlers and systems: use pooled framework awaitables and `SendAfter`).
 
