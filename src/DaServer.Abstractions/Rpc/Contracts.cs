@@ -104,11 +104,11 @@ public interface IMessageSender
     void Send<T>(in T message) where T : struct;
 
     [EditorBrowsable(EditorBrowsableState.Never)]
-    ValueTask<TReply> Ask<TAddr, TRequest, TReply>(TAddr address, in TRequest request)
+    Reply<TReply> Ask<TAddr, TRequest, TReply>(TAddr address, in TRequest request)
         where TAddr : struct, IAddress where TRequest : struct, IRequest<TReply>;
 
     [EditorBrowsable(EditorBrowsableState.Never)]
-    ValueTask<TReply> Ask<TRequest, TReply>(in TRequest request) where TRequest : struct, IRequest<TReply>;
+    Reply<TReply> Ask<TRequest, TReply>(in TRequest request) where TRequest : struct, IRequest<TReply>;
 }
 
 /// <summary>

@@ -78,6 +78,17 @@ public class AllocationTests : ClusterTest
     }
 
     [Test]
+    public async Task BurstsOfSuspendedHandlersDoNotAllocate()
+    {
+        // 2,000 actors suspended in async Reply<T> handlers at once: their state machines live in pooled boxes.
+        var node = await Start("alloc", configure: o => o.GossipInterval = TimeSpan.FromHours(1));
+        const int width = 2_000, rounds = 10;
+        await node.Ask(new CounterId(1), new SuspendInBursts(1_000, new CounterId(2), width, 20));
+        long allocated = await node.Ask(new CounterId(1), new SuspendInBursts(1_000, new CounterId(2), width, rounds));
+        Assert.That(allocated / (double)(width * rounds), Is.LessThan(8), $"{allocated} B for {width * rounds} suspended handlers");
+    }
+
+    [Test]
     public async Task KeyedEventsDoNotAllocate()
     {
         var node = await Start("alloc", configure: o => o.GossipInterval = TimeSpan.FromHours(1));

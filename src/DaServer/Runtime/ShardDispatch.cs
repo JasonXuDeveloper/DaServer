@@ -121,7 +121,7 @@ internal static class ShardDispatch
         var idle = actor.UnloadAfterIdle;
         if (idle > TimeSpan.Zero) entity.Add<UnloadWhenIdle>() = new UnloadWhenIdle((long)idle.TotalMilliseconds);
         actor.InitializeEntity(entity);
-        TurnWatcher.Begin(world, entity, Start(static a => a.OnLoad(), actor));
+        TurnWatcher.Begin(world, entity, Start(static a => a.OnLoad().AsValueTask(), actor));
         return entity;
     }
 

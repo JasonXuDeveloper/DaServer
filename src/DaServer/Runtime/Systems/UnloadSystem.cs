@@ -16,7 +16,7 @@ internal sealed partial class UnloadSystem : EcsSystem
         var target = self.Actor;
         actor.Remove<UnloadRequested>();
         actor.Add<Unloading>();
-        TurnWatcher.Begin(world, actor, ShardDispatch.Start(static a => a.OnUnload(), target));
+        TurnWatcher.Begin(world, actor, ShardDispatch.Start(static a => a.OnUnload().AsValueTask(), target));
     }
 
     [ForEach, With<UnloadRequested>, With<Fenced>, Without<Turn>, Without<Removing>]

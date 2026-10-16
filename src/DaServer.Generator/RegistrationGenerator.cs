@@ -178,9 +178,9 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
                 sb.Append(h.Return switch
                 {
                     HandlerReturn.Void => $"                {call};\n                return default;\n",
-                    HandlerReturn.ValueTask => $"                return {call};\n",
-                    HandlerReturn.Reply => $"                context.ReplyValue({call});\n                return default;\n",
-                    _ => $"                return context.Reply({call});\n",
+                    HandlerReturn.Later => $"                return {call}.AsValueTask();\n",
+                    HandlerReturn.Value => $"                context.ReplyValue({call});\n                return default;\n",
+                    _ => $"                return context.Reply({call}.AsValueTask());\n",
                 });
                 sb.Append("            }),");
             }

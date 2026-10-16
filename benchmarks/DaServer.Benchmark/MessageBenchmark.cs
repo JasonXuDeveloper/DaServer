@@ -13,7 +13,7 @@ public class MessageBenchmark
 
     private Node[] _nodes = null!;
     private CounterId[] _keys = null!;
-    private ValueTask<int>[] _flush = null!;
+    private Reply<int>[] _flush = null!;
 
     [Params(RpcBenchmark.Target.Local, RpcBenchmark.Target.Remote)] public RpcBenchmark.Target Placement;
 
@@ -24,7 +24,7 @@ public class MessageBenchmark
         var publisher = _nodes[0];
         var owner = Placement == RpcBenchmark.Target.Local ? _nodes[0] : _nodes[1];
         _keys = new CounterId[Actors];
-        _flush = new ValueTask<int>[Actors];
+        _flush = new Reply<int>[Actors];
         long key = 0;
         for (int i = 0; i < Actors; i++)
         {

@@ -57,7 +57,7 @@ public class BackpressureTests : ClusterTest
         using var gate = new ManualResetEventSlim();
         node.Shards[0].Post(static g => ((ManualResetEventSlim)g!).Wait(), gate);
         var call = node.Ask(new CounterId(1), new Add(1));
-        Assert.That(() => call.Result, Throws.InvalidOperationException, "a pooled call cannot block: it throws instead");
+        Assert.That(() => call.AsValueTask().Result, Throws.InvalidOperationException, "a pooled call cannot block: it throws instead");
         gate.Set();
     }
 
@@ -120,7 +120,7 @@ public class BackpressureTests : ClusterTest
         Assert.That(target.Expired, Is.EqualTo(10));
     }
 
-    private static async Task<RpcStatus> StatusOf<T>(ValueTask<T> call)
+    private static async Task<RpcStatus> StatusOf<T>(Reply<T> call)
     {
         try
         {

@@ -37,6 +37,7 @@ public readonly record struct RoomId(long Value) : IActorId;
 [NinoType, Message] public partial record struct SendMany(CounterId Other, int Count) : IRequest<long>;    // bytes allocated meanwhile
 [NinoType, Message] public partial record struct AddViaMany(CounterId Via, CounterId Target, int Count) : IRequest<long>; // bytes allocated meanwhile
 [NinoType, Message] public partial record struct AskInBursts(CounterId Other, int Width, int Rounds) : IRequest<long>; // bytes allocated meanwhile
+[NinoType, Message] public partial record struct SuspendInBursts(long FirstVia, CounterId Target, int Width, int Rounds) : IRequest<long>; // bytes allocated meanwhile
 
 /// <summary>One-way: sent in bursts (allocation test, events test).</summary>
 [NinoType, Message] public partial record struct CounterBumped(int By);
@@ -75,8 +76,7 @@ public sealed class Counter : Actor<CounterId, CounterState>
     [Handle] public Point On(EchoPoint m) => m.Point with { X = m.Point.X + 1 };
 
     [Handle]
-    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
-    public async ValueTask<int> On(AddVia m)
+    public async Reply<int> On(AddVia m)
     {
         int other = await Cluster.Ask(m.Other, new Add(m.Delta));
         return State.Value += other; // back on this shard's thread: no locks needed
@@ -85,7 +85,7 @@ public sealed class Counter : Actor<CounterId, CounterState>
     [Handle] public bool On(Fail m) => throw new InvalidOperationException(m.Message);
 
     [Handle]
-    public async ValueTask<int> On(SlowAdd m)
+    public async Reply<int> On(SlowAdd m)
     {
         var shard = Shard.Current;
 #pragma warning disable DAS009 // on purpose: a foreign await must resume on the shard
@@ -96,7 +96,7 @@ public sealed class Counter : Actor<CounterId, CounterState>
     }
 
     [Handle]
-    public async ValueTask On(AskAndFail m)
+    public async Reply On(AskAndFail m)
     {
         var shard = Shard.Current;
         try
@@ -121,11 +121,10 @@ public sealed class Counter : Actor<CounterId, CounterState>
         return true;
     }
 
-    [Handle] public ValueTask<int> On(ConfirmVia m) => ReplyWhen(Cluster.Ask(m.Target, new Add(1)), State.Value);
+    [Handle] public Reply<int> On(ConfirmVia m) => ReplyWhen(Cluster.Ask(m.Target, new Add(1)), State.Value);
 
     [Handle]
-    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
-    public async ValueTask<long> On(ConfirmViaMany m)
+    public async Reply<long> On(ConfirmViaMany m)
     {
         for (int i = 0; i < 100; i++) await Cluster.Ask(m.Via, new ConfirmVia(m.Target)); // warm-up
         long before = GC.GetTotalAllocatedBytes(precise: true);
@@ -134,9 +133,9 @@ public sealed class Counter : Actor<CounterId, CounterState>
     }
 
     [Handle]
-    public ValueTask<int> On(AnswerLater m) =>
+    public Reply<int> On(AnswerLater m) =>
 #pragma warning disable DAS009 // on purpose: a foreign task completing later, off the shard
-        ReplyWhen(m.Fail ? ValueTask.FromException(new InvalidOperationException("later")) : new ValueTask(Task.Delay(m.Ms)), State.Value);
+        ReplyWhen(new Reply(m.Fail ? ValueTask.FromException(new InvalidOperationException("later")) : new ValueTask(Task.Delay(m.Ms))), State.Value);
 #pragma warning restore DAS009
 
     [Handle]
@@ -147,8 +146,7 @@ public sealed class Counter : Actor<CounterId, CounterState>
     }
 
     [Handle]
-    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
-    public async ValueTask<long> On(AddMany m)
+    public async Reply<long> On(AddMany m)
     {
         for (int i = 0; i < 100; i++) await Cluster.Ask(m.Other, new Add(1)); // warm-up: pools, JIT
         long before = GC.GetTotalAllocatedBytes(precise: true);
@@ -157,8 +155,7 @@ public sealed class Counter : Actor<CounterId, CounterState>
     }
 
     [Handle]
-    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
-    public async ValueTask<long> On(AddViaMany m)
+    public async Reply<long> On(AddViaMany m)
     {
         // Every call suspends in the callee (it awaits a third actor), so each reply goes through the reply watcher.
         for (int i = 0; i < 100; i++) await Cluster.Ask(m.Via, new AddVia(m.Target, 1)); // warm-up
@@ -168,18 +165,16 @@ public sealed class Counter : Actor<CounterId, CounterState>
     }
 
     [Handle]
-    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
-    public async ValueTask<long> On(AskInBursts m)
+    public async Reply<long> On(AskInBursts m)
     {
         // Width calls in flight at once, then all awaited: more than any fixed pool size must not allocate when warm.
-        var pending = new ValueTask<int>[m.Width];
+        var pending = new Reply<int>[m.Width];
         await Burst(Cluster, m, pending); // warm-up
         long before = GC.GetTotalAllocatedBytes(precise: true);
         for (int round = 0; round < m.Rounds; round++) await Burst(Cluster, m, pending);
         return GC.GetTotalAllocatedBytes(precise: true) - before;
 
-        [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
-        static async ValueTask Burst(ICluster cluster, AskInBursts m, ValueTask<int>[] pending)
+        static async Reply Burst(ICluster cluster, AskInBursts m, Reply<int>[] pending)
         {
             for (int i = 0; i < pending.Length; i++) pending[i] = cluster.Ask(m.Other, new Add(1));
             for (int i = 0; i < pending.Length; i++) await pending[i];
@@ -187,8 +182,24 @@ public sealed class Counter : Actor<CounterId, CounterState>
     }
 
     [Handle]
-    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
-    public async ValueTask<long> On(ServiceTraffic m)
+    public async Reply<long> On(SuspendInBursts m)
+    {
+        // Width actors at once each suspend in an async handler (AddVia awaits Target): Width boxes alive together.
+        var pending = new Reply<int>[m.Width];
+        await Burst(Cluster, m, pending); // warm-up
+        long before = GC.GetTotalAllocatedBytes(precise: true);
+        for (int round = 0; round < m.Rounds; round++) await Burst(Cluster, m, pending);
+        return GC.GetTotalAllocatedBytes(precise: true) - before;
+
+        static async Reply Burst(ICluster cluster, SuspendInBursts m, Reply<int>[] pending)
+        {
+            for (int i = 0; i < pending.Length; i++) pending[i] = cluster.Ask(new CounterId(m.FirstVia + i), new AddVia(m.Target, 1));
+            for (int i = 0; i < pending.Length; i++) await pending[i];
+        }
+    }
+
+    [Handle]
+    public async Reply<long> On(ServiceTraffic m)
     {
         // Each round: a one-way message, a published event (two services) and a request to services; the request
         // returns after the others on the same path (one shard queue locally, one ordered link remotely).
@@ -197,7 +208,7 @@ public sealed class Counter : Actor<CounterId, CounterState>
         for (int i = 0; i < m.Count; i++) await Round(Cluster);
         return GC.GetTotalAllocatedBytes(precise: true) - before;
 
-        static ValueTask<int> Round(ICluster cluster)
+        static Reply<int> Round(ICluster cluster)
         {
             cluster.Send(new Tally(1));
             cluster.Publish(new Tallied(1));
@@ -206,8 +217,7 @@ public sealed class Counter : Actor<CounterId, CounterState>
     }
 
     [Handle]
-    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
-    public async ValueTask<long> On(SendMany m)
+    public async Reply<long> On(SendMany m)
     {
         // Bursts of 100 one-way messages, each followed by a request (messages of one sender reach an actor in order):
         // steady state with bounded frames in flight, as in a running server.
@@ -245,13 +255,13 @@ public sealed class Visitor : Actor<VisitorId, Visits>
 {
     public override TimeSpan UnloadAfterIdle => TimeSpan.FromMilliseconds(300);
 
-    public override ValueTask OnLoad()
+    public override Reply OnLoad()
     {
         Observed.Events.Enqueue($"load:{Id.Value}");
         return default;
     }
 
-    public override ValueTask OnUnload()
+    public override Reply OnUnload()
     {
         Observed.Events.Enqueue($"unload:{Id.Value}");
         return default;
@@ -292,7 +302,7 @@ public static class Observed
 
 public sealed class StallService : Service
 {
-    [Handle] public async ValueTask<bool> On(Stall _) => await Observed.Release.Task;
+    [Handle] public async Reply<bool> On(Stall _) => await Observed.Release.Task;
 }
 
 // ---------------------------------------------------------------- call chains (actors asking each other)
@@ -311,7 +321,7 @@ public readonly record struct LoopId(long Value) : IActorId;
 public sealed class Looper : Actor<LoopId>
 {
     [Handle]
-    public async ValueTask<int> On(Hop m)
+    public async Reply<int> On(Hop m)
     {
         if (m.At == m.Path.Length - 1) return m.At;
         var next = m with { At = m.At + 1 };
@@ -319,7 +329,7 @@ public sealed class Looper : Actor<LoopId>
     }
 
     [Handle]
-    public async ValueTask<int> On(Hold m)
+    public async Reply<int> On(Hold m)
     {
 #pragma warning disable DAS009 // on purpose: a turn that holds its actor
         await Task.Delay(m.Ms);
@@ -334,7 +344,7 @@ public sealed class Looper : Actor<LoopId>
 /// <summary>Passes a hop on: a service in the middle of a chain keeps it.</summary>
 public sealed class LoopService : Service
 {
-    [Handle] public ValueTask<int> On(PassOn m) => Cluster.Ask(new LoopId(m.Hop.Path[m.Hop.At]), m.Hop);
+    [Handle] public Reply<int> On(PassOn m) => Cluster.Ask(new LoopId(m.Hop.Path[m.Hop.At]), m.Hop);
 }
 
 // ---------------------------------------------------------------- services
@@ -422,17 +432,17 @@ public sealed class TallyAuditService : Service
 public sealed class LobbyService : Service
 {
     [Handle]
-    public async ValueTask<bool> On(Enter m) => m.Room.Value > 0 && await Cluster.Ask(m.Room, new Admit(Caller));
+    public async Reply<bool> On(Enter m) => m.Room.Value > 0 && await Cluster.Ask(m.Room, new Admit(Caller));
 }
 
 public sealed class AuthService : Service
 {
     [Handle]
-    public async ValueTask<bool> On(Login m) =>
+    public async Reply<bool> On(Login m) =>
         Caller.IsValid && m.Player.Value > 0 && await Cluster.Ask(m.Player, new Attach(Caller));
 
     [Handle]
-    public ValueTask<bool> On(LoginAfterPushes m)
+    public Reply<bool> On(LoginAfterPushes m)
     {
         var text = new string('x', 2048); // 4 KB (UTF-16)
         for (int i = 0; i < m.Pushes; i++) Cluster.Send(Caller, new Chat(default, text));
@@ -445,14 +455,14 @@ public record struct Wallet(int Gold) : IComponent;
 public sealed class Player : Actor<PlayerId, Wallet>
 {
     [Handle]
-    public async ValueTask<bool> On(Attach m)
+    public async Reply<bool> On(Attach m)
     {
         await BindSession(m.Session);
         return true;
     }
 
     [Handle]
-    public async ValueTask<bool> On(Logout _)
+    public async Reply<bool> On(Logout _)
     {
         await UnbindSession(Caller);
         return true;
@@ -476,7 +486,7 @@ public sealed class Player : Actor<PlayerId, Wallet>
 public sealed class Room : Actor<RoomId>
 {
     [Handle]
-    public async ValueTask<bool> On(Admit m)
+    public async Reply<bool> On(Admit m)
     {
         await GrantSession(m.Session); // the session joins Group with the grant
         return true;
@@ -485,7 +495,7 @@ public sealed class Room : Actor<RoomId>
     [Handle] public void On(Say m) => Cluster.Send(Group, new Chat(Id, m.Text));
 
     [Handle]
-    public async ValueTask<bool> On(Exit _)
+    public async Reply<bool> On(Exit _)
     {
         await RevokeSession(Caller);
         return true;

@@ -34,7 +34,7 @@ public sealed class AskGenerator : IIncrementalGenerator
         var sb = new StringBuilder(Header);
         if (r.Namespace.Length > 0) sb.Append($"namespace {r.Namespace};\n\n");
         string access = r.Public ? "public" : "internal";
-        string reply = $"global::System.Threading.Tasks.ValueTask<{r.ReplyType}>";
+        string reply = $"global::DaServer.Reply<{r.ReplyType}>";
         sb.Append($"/// <summary>Typed <c>Ask</c> of <see cref=\"{r.FullName.Replace("global::", "")}\"/> (generated).</summary>\n");
         sb.Append("[global::System.ComponentModel.EditorBrowsable(global::System.ComponentModel.EditorBrowsableState.Never)]\n");
         sb.Append($"{access} static class {r.ClassName}\n{{\n");

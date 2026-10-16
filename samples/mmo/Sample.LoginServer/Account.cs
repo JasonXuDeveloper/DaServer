@@ -14,7 +14,7 @@ public sealed class Account : Service
     private const int MaxNameLength = 32;
 
     [Handle]
-    public async ValueTask<LoginResult> On(Login m)
+    public async Reply<LoginResult> On(Login m)
     {
         if (string.IsNullOrWhiteSpace(m.Name) || m.Name.Length > MaxNameLength) return new LoginResult(false, default);
 

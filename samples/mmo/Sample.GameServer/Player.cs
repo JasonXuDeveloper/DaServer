@@ -12,7 +12,7 @@ public record struct PlayerState(string Name, MapId Map, int Logins, ClientSessi
 /// <summary>The player: its own state, and which map it is in. The map simulates the avatar.</summary>
 public sealed class Player : Actor<PlayerId, PlayerState>
 {
-    public override ValueTask OnLoad()
+    public override Reply OnLoad()
     {
         // Load from storage here (await is fine: messages wait until loading completes).
         State.Name = "player-" + Id.Value;
@@ -20,7 +20,7 @@ public sealed class Player : Actor<PlayerId, PlayerState>
     }
 
     [Handle]
-    public async ValueTask<bool> On(Attach m)
+    public async Reply<bool> On(Attach m)
     {
         await BindSession(m.Session); // the client's GetInfo/EnterMap reach this player from now on
         State.Logins++;               // State is re-read after awaiting (never hold the ref across await)
@@ -45,7 +45,7 @@ public sealed class Player : Actor<PlayerId, PlayerState>
     public PlayerInfo On(GetInfo _) => new(Id, State.Name, State.Map, State.Logins);
 
     [Handle]
-    public async ValueTask<bool> On(EnterMap m)
+    public async Reply<bool> On(EnterMap m)
     {
         var previous = State.Map;
         if (previous == m.Map) return true;

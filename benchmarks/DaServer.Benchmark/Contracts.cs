@@ -38,7 +38,7 @@ public sealed class Counter : Actor<CounterId, CounterState>
 
 public sealed class Lobby : Service
 {
-    [Handle] public ValueTask<bool> On(Join m) => Cluster.Ask(m.Room, new Admit(Caller, m.Groups));
+    [Handle] public Reply<bool> On(Join m) => Cluster.Ask(m.Room, new Admit(Caller, m.Groups));
 }
 
 public sealed class Room : Actor<RoomId>
@@ -85,8 +85,7 @@ public record struct GateState(int Entered) : IComponent;
 public sealed class Gate : Actor<GateId, GateState>
 {
     [Handle]
-    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
-    public async ValueTask<bool> On(EnterAwaited m)
+    public async Reply<bool> On(EnterAwaited m)
     {
         State.Entered++;
         await Cluster.Ask(m.Ledger, new Add(1));
@@ -94,7 +93,7 @@ public sealed class Gate : Actor<GateId, GateState>
     }
 
     [Handle]
-    public ValueTask<bool> On(EnterDeferred m)
+    public Reply<bool> On(EnterDeferred m)
     {
         State.Entered++;
         return ReplyWhen(Cluster.Ask(m.Ledger, new Add(1)), true);

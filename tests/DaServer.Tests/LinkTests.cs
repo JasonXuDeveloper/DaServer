@@ -40,7 +40,7 @@ public class LinkTests : ClusterTest
 
         // Replies travel on b's link to a: drop it (from a's side, the connection b opened) while calls are in flight.
         const int calls = 2_000;
-        var pending = new ValueTask<int>[calls];
+        var pending = new Reply<int>[calls];
         for (int i = 0; i < calls; i++)
         {
             pending[i] = a.Ask(new CounterId(key), new Add(1));
