@@ -22,13 +22,14 @@ var gateways = cluster.AddNodes<Projects.Sample_GatewayServer>("gateway", replic
 // the 3x3 cells around it (area of interest) and hears about avatars only when they turn (dead reckoning): about
 // 2.5 million position updates a second reach the bots, no strings involved. Bots, Seconds, Maps and TravelEvery (s
 // between a bot's map changes, 0 = never) can be overridden (`dotnet run -- Bots=1000`; the e2e test changes maps).
-// Bot arguments: bots, seconds, maps, turns per second, chat every n seconds (0 = off), max p99 ms, change map every n s.
+// Bot options: `dotnet run --project samples/mmo/Sample.Bot -- --help`.
 int bots = builder.Configuration.GetValue("Bots", 10_000);
 int seconds = builder.Configuration.GetValue("Seconds", 60);
 int maps = builder.Configuration.GetValue("Maps", 1);
 int travelEvery = builder.Configuration.GetValue("TravelEvery", 0);
 builder.AddProject<Projects.Sample_Bot>("bots")
     .WithClientEndpoints(gateways)
-    .WithArgs(bots.ToString(), seconds.ToString(), maps.ToString(), "1", "0", "250", travelEvery.ToString());
+    .WithArgs("--bots", bots.ToString(), "--seconds", seconds.ToString(), "--maps", maps.ToString(),
+        "--turns-per-second", "1", "--chat-every", "0", "--travel-every", travelEvery.ToString());
 
 builder.Build().Run();
