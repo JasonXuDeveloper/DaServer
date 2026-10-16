@@ -86,7 +86,9 @@ is routed to the owner of its id and enters the actor's mailbox, so it is turn-b
 handler takes no other message until it returns, while its shard runs other actors. A handler that only waits for an
 acknowledgement before replying (a binding, a call, a save) returns `ReplyWhen(task, reply)` instead (ADR-057): the
 turn ends at once and the reply follows the task, so a hot actor serves callers at CPU speed rather than one per round
-trip. A service handler runs on the local node when it hosts one.
+trip. A delay is a message sent later, not an await: `Cluster.SendAfter(delay, address, message)` serializes it now
+and the shard's timer wheel (a singleton) sends it when due, as ordinary mail (ADR-058). A service handler runs on the
+local node when it hosts one.
 
 ## 2. Wire protocol
 

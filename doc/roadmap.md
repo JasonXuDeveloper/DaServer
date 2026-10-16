@@ -371,9 +371,10 @@ in separate commits.
 - [ ] N1 Fixed/reloadable split on top of stateless handler types (DAS007, ADR-044): projects Contracts (messages) +
       Model (components, singletons: never reloaded) + Logic (actors, services, systems: reloadable), samples
       included. Prerequisite of N5 and N9. (a studied game server, ET)
-- [ ] N2 `SendAfter(delay, ...)`: per-shard timer wheel of serialized frames, cancellable, delivered as ordinary
-      mail (turn-based, follows moved keys), zero allocation; replaces `await Task.Delay` in handlers (DAS009 of N3b
-      points to it). (ET timers as data, Orleans timers)
+- [x] N2 `SendAfter(delay, address, message)` / `CancelSend(timer)` (ADR-058): per-shard timer wheel of serialized
+      frames (`ShardTimers`, `TimerSystem`), delivered as ordinary mail when due (follows moved keys), 5 ms resolution,
+      zero allocation (`DelayedSendsDoNotAllocate`, `TimerBenchmark`); DAS009 of N3b points `await Task.Delay` to it.
+      (ET timers as data, Orleans timers)
 - [ ] N3 Call cycles fail fast: a chain id travels with requests (the `Chain` header extension of G0); mail carrying
       the running turn's chain id is answered `CallCycle` at once instead of waiting for the timeout. (Orleans call
       chains)
