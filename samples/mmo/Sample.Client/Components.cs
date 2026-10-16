@@ -6,8 +6,9 @@ using Sample.Shared;
 namespace Sample.Client;
 
 // The client's state as data. A player entity per connected client (one in a game, many in a bot process) carries the
-// components below and its own avatar's predicted Position and Velocity (the shared MovementSystem moves it); each
-// avatar in view is an entity with a Track. Pushes and systems change them on the world's thread only.
+// components below and its own avatar's predicted Position and Velocity (the shared MovementSystem moves it); the
+// avatars in view are its View's data (what this player knows of others: a game's renderer makes its own entities of
+// them). Pushes and systems change them on the world's thread only.
 
 /// <summary>The player's connection to the cluster.</summary>
 public record struct Link(ClusterClient Client) : IComponent;
@@ -24,10 +25,10 @@ public record struct SentSteering(float X, float Y) : IComponent;
 /// <summary>A line the player says; sent and removed on the next tick.</summary>
 public record struct Speaking(string Text) : IComponent;
 
-/// <summary>The avatars in view, by player (their entities).</summary>
+/// <summary>The avatars in view, by player.</summary>
 public struct View() : IComponent
 {
-    public readonly Dictionary<PlayerId, Entity> Avatars = new();
+    public readonly Dictionary<PlayerId, Track> Avatars = new();
     public readonly List<PlayerId> Leaving = new(); // scratch of ViewSystem (no garbage per pass)
 }
 
@@ -35,7 +36,7 @@ public struct View() : IComponent
 /// Another player's avatar: where it was and how it moved when the map last said so. Its position now is extrapolated
 /// on demand (dead reckoning), not integrated every tick: a client sees hundreds of avatars.
 /// </summary>
-public record struct Track(Position At, Velocity Velocity, long AtMs) : IComponent
+public readonly record struct Track(Position At, Velocity Velocity, long AtMs)
 {
     public readonly Position Now(long nowMs)
     {

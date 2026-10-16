@@ -11,12 +11,17 @@ namespace Sample.Client;
 /// </summary>
 public static class Player
 {
-    /// <summary>The player entity of <paramref name="client"/>; the client's pushes become its data.</summary>
-    public static Entity Create(World world, ClusterClient client)
+    /// <summary>
+    /// The player entity of <paramref name="client"/>; the client's pushes become its data. Without a
+    /// <paramref name="view"/> it keeps no track of other avatars (a load test's lean client: the servers' and the
+    /// network's work is the same, the client's presentation state is skipped).
+    /// </summary>
+    public static Entity Create(World world, ClusterClient client, bool view = true)
     {
         var player = world.CreateEntity(new Link(client), new Me(), new Position(), new Velocity(), new Steering(),
-            new SentSteering(), new View(), new Realm(), new Heard());
-        client.Register(new Pushes(world, player));
+            new SentSteering(), new Realm(), new Heard());
+        if (view) player.Add<View>() = new View();
+        client.Register(new Pushes(player));
         return player;
     }
 
@@ -35,7 +40,7 @@ public static class Player
     {
         var previous = player.Get<Me>().Map;
         if (previous == map) return true;
-        Forget(player);
+        if (player.TryGet<View>(out var view)) view.Avatars.Clear();
         player.Get<Me>().Map = map;
         bool entered = false;
         try
@@ -46,12 +51,5 @@ public static class Player
         {
             if (!entered && player.IsAlive) player.Get<Me>().Map = previous; // still there
         }
-    }
-
-    private static void Forget(Entity player)
-    {
-        var avatars = player.Get<View>().Avatars;
-        foreach (var avatar in avatars.Values) avatar.Destroy();
-        avatars.Clear();
     }
 }

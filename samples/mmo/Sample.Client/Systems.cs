@@ -70,13 +70,9 @@ public sealed partial class ViewSystem : EcsSystem
     {
         int cell = MapGeometry.CellOf(position);
         long now = Environment.TickCount64;
-        foreach (var (player, avatar) in view.Avatars)
-            if (!MapGeometry.Near(MapGeometry.CellOf(avatar.Get<Track>().Now(now)), cell)) view.Leaving.Add(player);
-        foreach (var player in view.Leaving)
-        {
-            view.Avatars.Remove(player, out var avatar);
-            avatar.Destroy();
-        }
+        foreach (var (player, track) in view.Avatars)
+            if (!MapGeometry.Near(MapGeometry.CellOf(track.Now(now)), cell)) view.Leaving.Add(player);
+        foreach (var player in view.Leaving) view.Avatars.Remove(player);
 
         view.Leaving.Clear();
     }

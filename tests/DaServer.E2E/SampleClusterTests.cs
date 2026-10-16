@@ -16,12 +16,12 @@ public class SampleClusterTests
     [Test, CancelAfter(600_000)]
     public async Task BotsPassAgainstTheSampleCluster(CancellationToken cancellationToken)
     {
-        // CI: 1,000 bots in 2 maps, changing maps every 5 s. E2E_* variables run other loads (the README's 10k scenario:
-        // E2E_BOTS=10000 E2E_MAPS=1 E2E_TRAVEL=0 E2E_SECONDS=60).
+        // CI: 1,000 full clients (keeping their view) in 2 maps, changing maps every 5 s. E2E_* variables run other loads
+        // (the README's 10k scenario: E2E_BOTS=10000 E2E_MAPS=1 E2E_TRAVEL=0 E2E_SECONDS=60 E2E_LEAN=true).
         static string Get(string name, string fallback) => Environment.GetEnvironmentVariable("E2E_" + name) ?? fallback;
         var builder = await DistributedApplicationTestingBuilder.CreateAsync<Projects.Sample_AppHost>(
             [$"Bots={Get("BOTS", "1000")}", $"Seconds={Get("SECONDS", "15")}", $"Maps={Get("MAPS", "2")}",
-                $"TravelEvery={Get("TRAVEL", "5")}"], cancellationToken);
+                $"TravelEvery={Get("TRAVEL", "5")}", $"Lean={Get("LEAN", "false")}"], cancellationToken);
         await using var app = await builder.BuildAsync(cancellationToken);
         await app.StartAsync(cancellationToken);
 
