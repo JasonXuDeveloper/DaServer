@@ -14,12 +14,16 @@ public sealed partial class DaServerAnalyzer
     private const string SendLater = "send a message later with Cluster.SendAfter (the actor stays free), or give a system an UpdateInterval";
     private const string NoLocks = "shard state needs no lock: one thread runs it, and other threads reach it through messages";
 
+    /// <summary>Whether code of <paramref name="type"/> runs on a shard thread (an actor, a service or a system).</summary>
+    private static bool OnShard(INamedTypeSymbol? type, out bool system)
+    {
+        system = type != null && Support.DerivesFrom(type, Support.EcsSystem);
+        return type != null && (system || Support.DerivesFrom(type, Support.ActorBase) || Support.DerivesFrom(type, Support.ServiceBase));
+    }
+
     private static void CheckBlocking(OperationAnalysisContext context)
     {
-        var type = context.ContainingSymbol.ContainingType;
-        if (type == null) return;
-        bool system = Support.DerivesFrom(type, Support.EcsSystem);
-        if (!(system || Support.DerivesFrom(type, Support.ActorBase) || Support.DerivesFrom(type, Support.ServiceBase))) return;
+        if (!OnShard(context.ContainingSymbol.ContainingType, out bool system)) return;
 
         if (system && context.Operation is IInvocationOperation { TargetMethod.Name: "Ask" } ask && IsCluster(ask.TargetMethod.IsExtensionMethod ? Unwrap(ask.Arguments.FirstOrDefault()?.Value) : Unwrap(ask.Instance)))
         {

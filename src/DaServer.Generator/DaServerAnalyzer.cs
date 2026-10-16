@@ -13,7 +13,7 @@ namespace DaServer.Generator;
 public sealed partial class DaServerAnalyzer : DiagnosticAnalyzer
 {
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics { get; } = ImmutableArray.Create(
-        Rules.BadHandler, Rules.BadMessage, Rules.NotWireType, Rules.IdCollision, Rules.NoDefaultConstructor, Rules.WrongFlow, Rules.StatefulHandlerType, Rules.WrongAddress, Rules.SharedReferencesServer, Rules.MisplacedReplyWhen, Rules.BlockingCall, Rules.AskInSystem, Rules.ComponentInLogic, Rules.BadPersisted);
+        Rules.BadHandler, Rules.BadMessage, Rules.NotWireType, Rules.IdCollision, Rules.NoDefaultConstructor, Rules.WrongFlow, Rules.StatefulHandlerType, Rules.WrongAddress, Rules.SharedReferencesServer, Rules.MisplacedReplyWhen, Rules.BlockingCall, Rules.AskInSystem, Rules.ComponentInLogic, Rules.BadPersisted, Rules.OffShard);
 
     public override void Initialize(AnalysisContext context)
     {
@@ -52,6 +52,7 @@ public sealed partial class DaServerAnalyzer : DiagnosticAnalyzer
             start.RegisterOperationAction(CheckSend, OperationKind.Invocation);
             start.RegisterOperationAction(CheckReplyWhen, OperationKind.Invocation);
             start.RegisterOperationAction(CheckBlocking, OperationKind.Invocation, OperationKind.PropertyReference, OperationKind.Lock);
+            start.RegisterOperationAction(CheckOffShard, OperationKind.Invocation, OperationKind.ObjectCreation);
 
             start.RegisterCompilationEndAction(end =>
             {
@@ -268,6 +269,9 @@ internal static class Rules
 
     public static readonly DiagnosticDescriptor BadPersisted = new("DAS014", "Invalid persisted component",
         "[Persist] '{0}' {1}", Category, DiagnosticSeverity.Error, true);
+
+    public static readonly DiagnosticDescriptor OffShard = new("DAS015", "Work started off the shard thread",
+        "'{0}' {1}", Category, DiagnosticSeverity.Error, true);
 
     public static readonly DiagnosticDescriptor WrongAddress = new("DAS008", "Wrong kind of address",
         "'{0}' {1}", Category, DiagnosticSeverity.Error, true);
