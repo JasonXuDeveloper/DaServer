@@ -23,7 +23,7 @@ locally and publishes it.
 - **No hard-coded topology.** A node hosts what its project compiles. The AppHost lists projects and replica counts.
 - **Reliable links, bounded work.** One ordered stream per node pair resumes after a dropped connection (no loss, no
   duplicate). Requests carry their caller's deadline, and work nobody waits for is dropped. Full dispatch queues and mailboxes answer
-  `Overloaded` instead of growing; a client that cannot keep up is disconnected and resynchronizes on reconnect.
+  `Overloaded` instead of growing; a client that cannot keep up is disconnected and resynchronizes when it resumes.
 - **Misuse is a build error.** Analyzers DAS001–DAS011 cover handlers, messages, wire types, id collisions, message
   flow, stateless actors and services, shared logic and replies sent later, and EECS001–EECS008 cover ECS, including the ECS principles.
 
@@ -106,7 +106,7 @@ type to its id and puts the session in the actor's `Group`; `await GrantSession(
 actor (`client.Send(roomId, new Say(..))`: a room admitting a player) and puts it in the `Group` too. A client can
 name no other actor: anything else is refused at the edge. When the session closes (or its node crashes), every
 actor it was bound or granted to receives `SessionClosed`. A client that loses its connection reconnects on its own and
-resumes the session with a signed ticket: its actors receive `SessionResync` (send the full state again) instead, and
+resumes the session with a signed ticket: its actors receive `SessionResumed` (send the full state again) instead, and
 `SessionClosed` only if it does not come back within 30 s.
 
 ## Example
@@ -237,13 +237,13 @@ var cluster = builder.AddDaServerCluster("sample");
 cluster.AddNodes<Projects.Sample_LoginServer>("login");                     // Account service
 cluster.AddNodes<Projects.Sample_GameServer>("game");                       // Player, Realm actors
 cluster.AddNodes<Projects.Sample_MapServer>("map");                         // Map actors, movement/AOI systems
-var gateways = cluster.AddNodes<Projects.Sample_GatewayServer>("gateway", replicas: 3).WithClients(); // clients, no business code
+var gateways = cluster.AddNodes<Projects.Sample_GatewayServer>("gateway", replicas: 3).WithClientConnections(); // clients, no business code
 
 builder.AddProject<Projects.Sample_Bot>("bots").WithClientEndpoints(gateways).WithArgs("--bots", "10000", "--seconds", "60"); // simulated players
 builder.Build().Run();
 ```
 
-`AddDaServerCluster` gives every node a name, a cluster endpoint and seeds; `WithClients` adds a client endpoint (the
+`AddDaServerCluster` gives every node a name, a cluster endpoint and seeds; `WithClientConnections` adds a client endpoint (the
 `DaServer:Clients` section). A client connects to any client-facing node (in production: the platform's load balancer or DNS name)
 and is directed to the less loaded of two (power of two choices over the gossiped session counts). There
 are no roles and no configuration files: what a node hosts is what its project compiles. Nodes export logs and
