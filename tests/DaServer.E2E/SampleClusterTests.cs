@@ -22,6 +22,13 @@ public class SampleClusterTests
         var builder = await DistributedApplicationTestingBuilder.CreateAsync<Projects.Sample_AppHost>(
             [$"Bots={Get("BOTS", "1000")}", $"Seconds={Get("SECONDS", "15")}", $"Maps={Get("MAPS", "2")}",
                 $"TravelEvery={Get("TRAVEL", "5")}", $"Lean={Get("LEAN", "false")}"], cancellationToken);
+
+        // The testing builder runs no dashboard but still points every resource at its OTLP endpoint: the nodes would
+        // retry exports to nothing all run long and wait out the export timeout (10 s) on shutdown.
+        foreach (var resource in builder.Resources.OfType<IResourceWithEnvironment>())
+            resource.Annotations.Add(new EnvironmentCallbackAnnotation(static context =>
+                context.EnvironmentVariables.Remove("OTEL_EXPORTER_OTLP_ENDPOINT")));
+
         await using var app = await builder.BuildAsync(cancellationToken);
         await app.StartAsync(cancellationToken);
 
