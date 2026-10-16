@@ -44,6 +44,13 @@ public sealed class NodeOptions
     public TimeSpan CallTimeout { get; set; } = TimeSpan.FromSeconds(10);
 
     /// <summary>
+    /// The shards' clock: ticks, delayed sends (<c>SendAfter</c>), idle unloading, checkpoints, and <c>Time</c> in actors,
+    /// services and systems. Transport keeps real time (call deadlines, keep-alives, membership). Tests pass a manual
+    /// clock (<c>DaServer.Testing</c>) and move it on step by step.
+    /// </summary>
+    public TimeProvider TimeProvider { get; set; } = TimeProvider.System;
+
+    /// <summary>
     /// Where actors' <see cref="PersistAttribute">[Persist]</see> components are stored (ADR-068). Null (default):
     /// nothing is persisted, actors start from <see cref="Actor.OnLoad"/> every time.
     /// </summary>

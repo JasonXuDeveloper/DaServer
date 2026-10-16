@@ -23,7 +23,7 @@ internal sealed partial class MailboxSystem : EcsSystem
     private static void Run(Entity actor, ref Mailbox mailbox, in ActorRef self, ref ShardActivity activity, World world)
     {
         if (activity.MailBudget <= 0) return; // continue next wake (the actor stays Ready)
-        mailbox.LastActive = Environment.TickCount64;
+        mailbox.LastActive = activity.NowMs;
         var pending = mailbox.Pending; // the queue outlives refs invalidated by handlers' structural changes
         var target = self.Actor;
         int processed = 0;
