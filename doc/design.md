@@ -82,8 +82,11 @@ sequenceDiagram
 Every message takes this path. The route comes from the handlers every node gossips: `(message id, handler type id,
 actor)`. To an actor, the id type names the handler type; without an id, exactly one service type may handle the
 message; `Publish` serializes once and sends one `Message` frame per service type handling it. A message to an actor
-is routed to the owner of its id and enters the actor's mailbox, so it is turn-based. A service handler runs on the
-local node when it hosts one.
+is routed to the owner of its id and enters the actor's mailbox, so it is turn-based: an actor awaiting inside a
+handler takes no other message until it returns, while its shard runs other actors. A handler that only waits for an
+acknowledgement before replying (a binding, a call, a save) returns `ReplyWhen(task, reply)` instead (ADR-057): the
+turn ends at once and the reply follows the task, so a hot actor serves callers at CPU speed rather than one per round
+trip. A service handler runs on the local node when it hosts one.
 
 ## 2. Wire protocol
 
@@ -245,7 +248,9 @@ again; `ConnectAsync(new Uri("ws://node/clients/ws"))` connects over a WebSocket
 (browsers, WebGL builds; one or more whole frames per binary message, the same protocol). It sends the same messages as
 servers: `client.Ask(new Login(..))`, `client.Ask(new GetInfo())` (session actors need no id: the node uses the
 binding), `client.Send(roomId, new Say(..))` (actors that granted the session). Push handlers are `[Handle]` methods of any class,
-registered with `client.Register(obj)`; they run on the IO thread or, for game loops and UIs, on the application's thread through `ProcessCallbacks`.
+registered with `client.Register(obj)`; every registered object handling a push receives it, in registration order (the
+game's state and a measurement subscribe separately: a messaging-layer fan-out, apart from any ECS world). They run on
+the IO thread or, for game loops and UIs, on the application's thread through `ProcessCallbacks`.
 
 ### Simulated users
 
@@ -407,7 +412,7 @@ What the generators write:
 | `EntryPointGenerator` | `NodeProgram.Main` when a node project has no `Program.cs` (ADR-021) |
 | `PolyfillGenerator` | `IsExternalInit` for contract assemblies built for netstandard2.1 |
 | EasyEcs `SystemGenerator` | `[ForEach]` struct jobs (components, singletons, entity, world parameters) and `GeneratedUpdate` |
-| Analyzers | DAS001–DAS008 (handlers, messages, wire types, id collisions, constructors, message flow, stateless actors and services, address kinds), EECS001–EECS008 (ECS rules) |
+| Analyzers | DAS001–DAS011 (handlers, messages, wire types, id collisions, constructors, message flow, stateless actors and services, address kinds, shared logic, ReplyWhen placement), EECS001–EECS008 (ECS rules) |
 
 The generators follow the incremental-generator rules: syntax-only predicates, equatable models, tracking names, and
 no diagnostics. There is no reflection scanning, no configuration string and no hand-written registration list. A
