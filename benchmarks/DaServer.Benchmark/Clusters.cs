@@ -4,7 +4,8 @@ namespace DaServer.Benchmark;
 internal static class Clusters
 {
     /// <summary>Start <paramref name="nodes"/> nodes; the first <paramref name="gateways"/> accept clients.</summary>
-    public static async Task<Node[]> Start(int nodes, int shards, int gateways = 0, Action<NodeOptions>? configure = null)
+    public static async Task<Node[]> Start(int nodes, int shards, int gateways = 0, Action<NodeOptions>? configure = null,
+        TimeSpan clientFlush = default)
     {
         var started = new Node[nodes];
         for (int i = 0; i < nodes; i++)
@@ -17,7 +18,7 @@ internal static class Clusters
                 Seeds = i == 0 ? [] : [$"127.0.0.1:{started[0].ClusterEndPoint.Port}"],
                 GossipInterval = TimeSpan.FromMilliseconds(100),
             };
-            if (i < gateways) options.Features.Add(new ClientConnections(new ClientConnectionOptions()));
+            if (i < gateways) options.Features.Add(new ClientConnections(new ClientConnectionOptions { FlushInterval = clientFlush }));
             configure?.Invoke(options);
             started[i] = new Node(options);
             await started[i].StartAsync();
