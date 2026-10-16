@@ -402,9 +402,12 @@ in separate commits.
       (RandomGame write-behind, ET serialized components, Orleans IPersistentState + ETags)
 - [ ] N6 State handoff on moves: the old owner sends the same bytes to the new owner on the ordered link ahead of the
       forwarded mail; the store is the fallback. (ET transfer, Orleans migration)
-- [ ] N8 Collections in messages without allocation: use Nino's own ref deserialization (`[NinoRefDeserialization]`
-      factories, deserializing into a reused instance) for messages with arrays/lists instead of a new mechanism.
-      (ET pooled messages, as RandomGame does with Nino)
+- [ ] N8 Collections in messages without allocation: use Nino's own ref deserialization (`DeserializeRef` into a
+      reused instance) for messages with arrays/lists instead of a new mechanism. Waiting for Nino 4.0.0-rc.1: in
+      4.0.0-beta.47 `DeserializeRef` reuses the lists of a struct with fields (0 B per message) but fills nothing in a
+      positional record struct (our messages). Now the bottleneck of the 10k one-map scenario: every `Motion` push
+      allocates its `List<Moved>` once per subscribed handler (bots: ~130 MB/s with two). (ET pooled messages, as
+      RandomGame does with Nino)
 - [ ] N9 Hot reload: code (Logic assembly in a collectible load context; each shard swaps handler registry and
       systems at a wake boundary, recreates actor objects over unchanged components; old turns finish on old code;
       the old context unloads when unused, weak-reference leak check, no forced GC; a changed Model/Contracts refuses
