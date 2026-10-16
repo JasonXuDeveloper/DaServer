@@ -261,8 +261,9 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
       probes (`WithHttpProbe`, ASPIREPROBES001) for Kubernetes. Users map REST endpoints in their node project (admin,
       webhooks, payment callbacks, HTTP login); an endpoint reaches actors only through `ICluster` (Ask/Send post to
       the shard), never shard state.
-- [ ] A2 Drain budget published (D1). Done for Compose (`WithShutdownTimeout`); Kubernetes
-      `terminationGracePeriodSeconds` waits for a stable `Aspire.Hosting.Kubernetes` (13.6.1 is preview only): `WithDrain(grace)` sets the pod `terminationGracePeriodSeconds`, Compose
+- [x] A2 Drain budget published (D1): `WithShutdownTimeout` sets Compose `stop_grace_period` and Kubernetes
+      `terminationGracePeriodSeconds` (budget + 5 s) for whichever environment the model publishes to. Open: preStop
+      sleep. Original scope: `WithDrain(grace)` sets the pod `terminationGracePeriodSeconds`, Compose
       `stop_grace_period` and `DaServer__ShutdownTimeout` below it, plus an optional preStop sleep so endpoint removal
       propagates before Leave; stateful groups default longer than stateless ones.
 - [ ] A3 Compose gaps: done: `stop_grace_period` and `restart: unless-stopped` per node. Open: a `healthcheck` needs a
