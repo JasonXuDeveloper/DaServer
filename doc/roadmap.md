@@ -113,29 +113,13 @@ Steady state allocates nothing: per message, call, reply, tick, broadcast, conne
       bounds (refusal cost and time to drain), a dense area-of-interest cell (broadcast to one crowded cell). Surges
       over time (p99, refusals, recovery) are load tests: `Sample.Bot` for crowded maps, the G5 HTTP load generator
       for flash sales.
-- [ ] Z5 Relay frame flush: client-facing nodes write each session at most once per frame from a few flush threads
-      that own a slice of the sessions and write without a thread-pool hop (RandomGame, ET). Today each session gets
-      one write per arriving batch: in the 10k scenario 10 Hz `Motion` plus 4 Hz realm broadcasts from another node =
-      14 writes a second per session, about frames x connections. A beat that only wakes send loops was measured and
-      rejected (ADR-034); this one must merge them into ~10 and cost no more CPU. Proven with BDN and the 10k E2E.
-      Measured since (ThreadingDiagnoser, same VM): a broadcast to 5,000 sessions in 9 groups costs ~10,000 thread-pool
-      work items, one send-loop wake per session and one receive continuation per client; writing at the end of a
-      send batch on the calling thread (no wake) halved them but doubled the broadcast's time (5,000 sends in a row on
-      one thread instead of four) and made concurrent remote calls 2-3x slower (each sender wrote alone, so writes
-      stopped coalescing): rejected. Resuming the send loops through a few per-core queues (Kestrel's IOQueue: one
-      work item drains many wakes) halved the work items too, but broadcasts took 20-30% longer: a static split of the
-      sessions over 4 queues loses the thread pool's work stealing: rejected. The thread pool's per-connection wake is
-      not the cost; the sends are. What remains is fewer sends per session: merge a session's frames of one tick
-      (positions, broadcasts) into one write, at most one tick later, configurable.
-      On this 4-core VM the one-map scenario passes at 5,000 bots (p99 94.6 ms, the bot process allocating 208 KB/s,
-      31 ms of GC pauses) and fails at 10,000 for the current and the old code alike (the old code worse: 10,991
-      disconnects): servers and 10,000 clients saturate the cores, clients fall behind, the gateways drop them as slow
-      consumers and the reconnects then allocate (18.5 MB/s in the bots). The 10k numbers in the README were taken on a
-      faster VM. io_uring is not used: .NET 11
-      has no io_uring sockets (dotnet/runtime#124374 closed unmerged), and container runtimes often block it; revisit
-      when the runtime ships it.
-      Independent of it: .NET's io_uring socket engine (opt-in PR, not shipped) would cut the cost per write
-      without changes here.
+- [x] Z5 Client writes on a beat (ADR-070): `ClientConnectionOptions.FlushInterval` (off by default; the sample uses
+      2 ms) writes each session once per beat from one flush thread, directly, without waking send loops; a full socket
+      hands the rest to the connection's carry loop. Clients keep their receive buffers (no zero-byte read per push);
+      node-side sessions still release idle ones. The 10k-in-one-map scenario on one 4-core VM shared with the bots:
+      p99 1,010 ms with drops -> 432 ms (client buffers) -> 163 ms with a 2 ms beat, no drop or gap. Rejected on the
+      way, with numbers in ADR-070: writing at the end of a batch on the calling thread, per-core resume queues
+      (Kestrel's IOQueue), io_uring (not in .NET 11).
 - [ ] Z4 Keep it: CLAUDE.md rule plus analyzer coverage where a misuse is detectable in user code (e.g.
       `TaskCompletionSource`/`Task.Delay` in handlers and systems: use pooled framework awaitables and `SendAfter`).
 
