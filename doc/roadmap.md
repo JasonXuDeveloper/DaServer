@@ -73,7 +73,7 @@ Steady state allocates nothing: per message, call, reply, tick, broadcast, conne
       logging without guards, boxing (structs in object fields), per-operation arrays/lists/records, Nino collection
       and string deserialization per message (N8), gossip/membership rebuilds, resume tickets, metrics.
       Findings (audit of this branch, fix order below):
-      - H1 user `async ValueTask` handlers use the default builder: one state-machine box per suspended call (the
+      - H1 (fixed by N3b.4, ADR-062) user `async ValueTask` handlers used the default builder: one state-machine box per suspended call (the
         samples teach it). Fix: shard-pooled builder through the await-only `Reply<T>` handler type (N3b.4) or an
         analyzer + code fix adding the builder; update samples.
       - H2 `CallContext.AwaitReply` (pooled builder hits its per-thread cache cap; `ConfigureAwait(true)` allocates a
@@ -386,7 +386,7 @@ in separate commits.
 - [x] N3 Call cycles fail fast (ADR-059): requests carry the asking turn's call chain (`HasChain` trailer, kept through
       actors and services and across the turn's awaits); a request reaching an actor whose pending turn has its chain
       is answered `CallCycle` at once (`CallCycleTests`). (Orleans call chains)
-- [ ] N3b No sync-over-async on shard threads (agreed: all four layers):
+- [x] N3b No sync-over-async on shard threads (agreed: all four layers):
       1. Done: DAS009 (error) in actors, services and systems: `.Result`, `.Wait()`, `GetAwaiter().GetResult()`,
          `AsTask().Wait*`, `Thread.Sleep`, `Task.Delay`, `SemaphoreSlim.Wait`, `Monitor.Enter`/`lock` waits; the
          message names the replacement for the context.
@@ -398,8 +398,11 @@ in separate commits.
          than `NodeOptions.StallAfter` (1 s) once per pass, in the log and as `Node.StalledShards`
          (`daserver.shard.stalled`); the `daserver-live` health check (A-items) reads it. A managed thread cannot
          read another thread's stack, so the log names the shard, not the blocking frame.
-      4. `Ask` returns a framework awaitable (`Reply<T>`-style, await-only: no `.Result`/`.Wait`/`AsTask`), whose
-         awaiter throws instead of blocking when read before completion; `Cluster.WhenAll(...)` combinators.
+      4. Done (ADR-062): `Ask` returns `Reply<T>`, await-only (no `.Result`/`.Wait`; `AsTask()` for code outside
+         shards), and handlers return `T`, `Reply<T>`, `void` or `Reply`: an `async Reply<T>` handler keeps its state
+         machine in a box pooled per thread and method, so awaiting allocates nothing (H1). `Task.WhenAll` over
+         `AsTask()` serves combinators outside shards; inside a turn, awaiting calls one after the other already
+         overlaps them when they are started first.
 - [ ] N4 Route completeness check: one handler type per request / one-way message kind across all node projects,
       a handler for every `FromClient` message; run in tests and at AppHost start. (Orleans compile-time interfaces)
 - [ ] N7 Placement affinity: an actor type may declare a placement key (`PlacementKey(key)`), hashed instead of the
