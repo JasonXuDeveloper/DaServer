@@ -45,5 +45,10 @@ internal sealed class PositionTelemetry(Counter positions)
 {
     public const int Every = 16;
 
-    [Handle] public void On(Motion m) => positions.Add(m.Avatars.Count * Every);
+    [Handle]
+    public void On(Motion m)
+    {
+        positions.Add(m.Avatars.Items.Count * Every);
+        m.Avatars.Return();
+    }
 }

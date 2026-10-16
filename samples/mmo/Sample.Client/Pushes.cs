@@ -14,11 +14,17 @@ internal sealed class Pushes(World world, Entity player)
     [Handle]
     public void On(Motion m)
     {
+        Apply(m);
+        m.Avatars.Return();
+    }
+
+    private void Apply(in Motion m)
+    {
         var me = player.Get<Me>();
         if (m.Map != me.Map) return;
         var avatars = player.Get<View>().Avatars;
         long now = Environment.TickCount64;
-        foreach (var moved in m.Avatars)
+        foreach (var moved in m.Avatars.Items)
         {
             var at = new Position(moved.X, moved.Y);
             var velocity = new Velocity(moved.VelocityX, moved.VelocityY);

@@ -42,9 +42,9 @@ public struct MapGrid(MapId map) : IComponent
     public readonly MapId Map = map;
 
     public readonly List<Entity>?[] Avatars = new List<Entity>?[Side * Side];
-    public readonly List<Moved>?[] Changes = new List<Moved>?[Side * Side];
+    public readonly Moves?[] Changes = new Moves?[Side * Side];
     public readonly List<int> ChangedCells = new();
-    public readonly List<Moved> Scratch = new();
+    public readonly Moves Scratch = new();
 
     /// <summary>The sessions that see <paramref name="cell"/> of this map.</summary>
     public readonly ClientGroup Viewers(int cell) => ClientGroup.Of<MapGrid>(Map.Value * Side * Side + cell);
@@ -62,7 +62,7 @@ public struct MapGrid(MapId map) : IComponent
     /// </summary>
     public static void View(ref MapGrid grid, ICluster cluster, Entity avatar, ClientSession session, int? from, int to)
     {
-        var inView = grid.Scratch;
+        var inView = grid.Scratch.Items;
         inView.Clear();
         foreach (int cell in Around(to, stackalloc int[9]))
         {
@@ -73,7 +73,7 @@ public struct MapGrid(MapId map) : IComponent
                 if (other != avatar) inView.Add(StateOf(other));
         }
 
-        if (inView.Count > 0) cluster.Send(session, new Motion(grid.Map, inView));
+        if (inView.Count > 0) cluster.Send(session, new Motion(grid.Map, grid.Scratch));
     }
 
     public static void SwapRemove(List<Entity> list, Entity item)
@@ -99,7 +99,7 @@ public sealed partial class DespawnSystem : EcsSystem
             int cell = placed.Index;
             ref var grid = ref avatar.Map.Get<MapGrid>();
             MapGrid.SwapRemove(grid.Avatars[cell]!, entity);
-            if (grid.Changes[cell] is { } changes) // a queued change would bring it back after Gone
+            if (grid.Changes[cell]?.Items is { } changes) // a queued change would bring it back after Gone
                 for (int i = changes.Count - 1; i >= 0; i--)
                     if (changes[i].Player == player) changes.RemoveAt(i);
 
@@ -188,7 +188,7 @@ public sealed partial class MotionSyncSystem : EcsSystem
 
     private static void Queue(ref MapGrid grid, int cell, Entity avatar)
     {
-        var changes = grid.Changes[cell] ??= new();
+        var changes = (grid.Changes[cell] ??= new()).Items;
         if (changes.Count == 0) grid.ChangedCells.Add(cell);
         changes.Add(MapGrid.StateOf(avatar));
     }
@@ -208,7 +208,7 @@ public sealed partial class SnapshotSystem : EcsSystem
         {
             var changes = grid.Changes[cell]!;
             cluster.Send(grid.Viewers(cell), new Motion(grid.Map, changes));
-            changes.Clear();
+            changes.Items.Clear();
         }
 
         grid.ChangedCells.Clear();
