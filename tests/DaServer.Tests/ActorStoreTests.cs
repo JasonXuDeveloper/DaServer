@@ -16,6 +16,17 @@ public sealed class Stores(string kind) : IAsyncDisposable
 
     public static IEnumerable<string> Kinds() => [Memory, PostgreSql];
 
+    public bool IsPostgreSql => kind == PostgreSql;
+
+    /// <summary>Close every other connection to the test database on the server's side (a restart, a failover).</summary>
+    public static async Task DropConnections()
+    {
+        await using var dataSource = NpgsqlDataSource.Create(ConnectionString!);
+        await using var kill = dataSource.CreateCommand(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid()");
+        await kill.ExecuteNonQueryAsync();
+    }
+
     public IActorStore Create()
     {
         if (kind == Memory) return new InMemoryActorStore();
@@ -95,5 +106,21 @@ public class ActorStoreTests(string kind)
         var records = await Load(store, keys);
         for (int i = 0; i < keys.Length; i++)
             Assert.That(BitConverter.ToInt32(records[i].Data.Span), Is.EqualTo(keys.Length - 1 - i), "records come back in the keys' order");
+    }
+
+    [Test]
+    public async Task AStoreRecoversFromLostConnections()
+    {
+        var store = _stores.Create();
+        if (!_stores.IsPostgreSql) Assert.Ignore("only a database has connections to lose");
+        Assert.That(await Save(store, new StoredWrite(A, 0, new byte[] { 1 })), Is.EqualTo(new[] { true }));
+        await Stores.DropConnections();
+
+        // The call that finds its connection gone may fail (the shard retries it); the next one reconnects.
+        try { await Save(store, new StoredWrite(A, 1, new byte[] { 2 })); }
+        catch (Npgsql.NpgsqlException) { }
+        var record = (await Load(store, A))[0];
+        if (record.Version == 1) Assert.That(await Save(store, new StoredWrite(A, 1, new byte[] { 2 })), Is.EqualTo(new[] { true }));
+        Assert.That((await Load(store, A))[0].Data.ToArray(), Is.EqualTo(new byte[] { 2 }));
     }
 }

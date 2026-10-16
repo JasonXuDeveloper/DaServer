@@ -239,6 +239,13 @@ public sealed partial class GrowthSystem : EcsSystem
     private static void Grow(ref CounterState counter) => counter.Value++;
 }
 
+/// <summary>Earning ledgers grow every tick: their records change between any two checkpoints.</summary>
+public sealed partial class InterestSystem : EcsSystem
+{
+    [ForEach, With<Earning>]
+    private static void Earn(ref Ledger ledger) => ledger.Gold++;
+}
+
 /// <summary>A request no type handles.</summary>
 [NinoType, Message] public partial record struct Unhandled : IRequest<int>;
 
@@ -323,6 +330,7 @@ public readonly record struct BankId(long Value) : IActorId;
 [NinoType, Message] public partial record struct Balance : IRequest<int>;
 [NinoType, Message] public partial record struct DepositCount : IRequest<int>;
 [NinoType, Message] public partial record struct DepositTwice(int Gold, BankId Other) : IRequest<int>;
+[NinoType, Message] public partial record struct Earn : IRequest<bool>;
 
 /// <summary>Keys below 100 checkpoint every 100 ms, keys from 100 only on unload (or with SaveNow).</summary>
 public sealed class Bank : Actor<BankId, Ledger>
@@ -350,6 +358,13 @@ public sealed class Bank : Actor<BankId, Ledger>
     }
 
     [Handle] public int On(Balance _) => State.Gold;
+
+    [Handle]
+    public bool On(Earn _)
+    {
+        if (!Entity.Has<Earning>()) Entity.Add<Earning>();
+        return true;
+    }
 
     [Handle] public int On(DepositCount _) => Entity.Has<Deposits>() ? Entity.Get<Deposits>().Count : 0;
 }

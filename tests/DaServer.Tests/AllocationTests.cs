@@ -112,6 +112,54 @@ public class AllocationTests : ClusterTest
         Assert.That(quietest, Is.LessThan(8 * 1024), $"{quietest} B/s while checkpointing");
     }
 
+    /// <summary>Accepts every write at once: what is measured is the runtime's side of saving.</summary>
+    private sealed class AcceptingStore : DaServer.Persistence.IActorStore
+    {
+        public long Writes;
+
+        public ValueTask LoadAsync(ReadOnlyMemory<DaServer.Persistence.StoredKey> keys, Memory<DaServer.Persistence.StoredRecord> records,
+            CancellationToken cancellationToken = default)
+        {
+            records.Span.Clear();
+            return default;
+        }
+
+        public ValueTask SaveAsync(ReadOnlyMemory<DaServer.Persistence.StoredWrite> writes, Memory<bool> accepted,
+            CancellationToken cancellationToken = default)
+        {
+            accepted.Span.Fill(true);
+            Interlocked.Add(ref Writes, writes.Length);
+            return default;
+        }
+    }
+
+    [Test, Retry(3)]
+    public async Task SavingChangedRecordsDoesNotAllocate()
+    {
+        // 99 actors whose record changes every tick, checkpointed every 100 ms: about 1,000 writes a second, each
+        // serialized into a pooled frame, batched and applied.
+        var store = new AcceptingStore();
+        var node = await Start("alloc", configure: o =>
+        {
+            o.GossipInterval = TimeSpan.FromHours(1);
+            o.ActorStore = store;
+        });
+        for (int i = 1; i < 100; i++) await node.Ask(new BankId(i), new Earn());
+        Thread.Sleep(1000);
+        long before = Interlocked.Read(ref store.Writes);
+        long quietest = long.MaxValue;
+        for (int second = 0; second < 4; second++)
+        {
+            var meter = new AllocationMeter();
+            Thread.Sleep(1000);
+            quietest = Math.Min(quietest, meter.Garbage);
+        }
+
+        long written = Interlocked.Read(ref store.Writes) - before;
+        Assert.That(written, Is.GreaterThan(2_000), "the records changed and were written");
+        Assert.That(quietest, Is.LessThan(8 * 1024), $"{quietest} B/s while writing {written / 4} changed records a second");
+    }
+
     [Test, Retry(3)]
     public async Task KeyedEventsDoNotAllocate()
     {
