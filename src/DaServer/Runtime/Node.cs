@@ -260,9 +260,28 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
         await StopShards().ConfigureAwait(false);
     }
 
-    private Task StopShards()
+    /// <summary>The node downed itself (minority side of a split brain): the host exits so the platform restarts it.</summary>
+    public event Action? Downed;
+
+    /// <summary>
+    /// Membership found this node on the minority side: stop at once without announcing Leaving or saving (the majority
+    /// owns the keys now and may already run the actors), then tell the host.
+    /// </summary>
+    internal async Task DownAsync(int reachable, int lost)
     {
-        foreach (var shard in _shards) shard.RequestStop();
+        if (Interlocked.Exchange(ref _started, 2) != 1) return;
+        Logger.LogCritical("Node {Name} reaches {Reachable} of the cluster's members and lost {Lost}: on the minority side " +
+                           "of a split, it stops without saving and exits", Options.Name, reachable, lost);
+        _killed = true;
+        CloseLinks();
+        foreach (var feature in Options.Features) feature.Stop(crashed: true);
+        await StopShards(fenced: true).ConfigureAwait(false);
+        Downed?.Invoke();
+    }
+
+    private Task StopShards(bool fenced = false)
+    {
+        foreach (var shard in _shards) shard.RequestStop(fenced);
         return Task.WhenAll(Array.ConvertAll(_shards, static s => s.Stopped));
     }
 

@@ -21,6 +21,10 @@ internal sealed class Membership : IDisposable
     private List<(string Host, int Port)>? _seeds;
     private readonly ClusterMember[] _targets = new ClusterMember[Fanout];
     private int _inRound;
+    private long _lastRoundAt;
+
+    /// <summary>Tests: a partition. Gossip to these cluster ports is dropped (both sides set it for the other).</summary>
+    internal HashSet<int>? BlockedPorts;
     private long _seedsResolvedAt;
 
     private static readonly TimeSpan SeedRefresh = TimeSpan.FromSeconds(5);
@@ -95,6 +99,7 @@ internal sealed class Membership : IDisposable
                 _self.Heartbeat++;
                 _self.Load = _node.TotalQueueLength();
                 _node.ReadPulses(_self.PulseValues);
+                CompensatePause();
                 DetectFailures();
                 if (_changed) PublishView();
                 targets = PickTargets();
@@ -121,12 +126,41 @@ internal sealed class Membership : IDisposable
         }
     }
 
+    /// <summary>
+    /// A round that runs late means this process was paused (GC, a starved CPU, a stopped container): the silence of
+    /// the others since is ours, not theirs. Their progress clocks move forward by the pause, so no member is suspected
+    /// or declared dead for it; real failures still surface a few rounds later. Under the gate.
+    /// </summary>
+    private void CompensatePause()
+    {
+        long now = Stopwatch.GetTimestamp(), last = _lastRoundAt;
+        _lastRoundAt = now;
+        long interval = (long)(_node.Options.GossipInterval.TotalSeconds * Stopwatch.Frequency);
+        if (last == 0 || now - last <= 3 * interval) return;
+        long pause = now - last - interval;
+        foreach (var entry in _members.Values) entry.LastProgress += pause;
+        _node.Logger.LogWarning("Membership round ran {Ms} ms late (a pause of this process): failure verdicts deferred",
+            pause * 1000 / Stopwatch.Frequency);
+    }
+
+    /// <summary>Tests: age every member's progress as a pause of this process of <paramref name="pause"/> would.</summary>
+    internal void SimulatePause(TimeSpan pause)
+    {
+        long ticks = (long)(pause.TotalSeconds * Stopwatch.Frequency);
+        lock (_gate)
+        {
+            _lastRoundAt -= ticks;
+            foreach (var entry in _members.Values) entry.LastProgress -= ticks;
+        }
+    }
+
     private void DetectFailures()
     {
         long now = Stopwatch.GetTimestamp();
         long suspect = (long)(_node.Options.SuspectAfter.TotalSeconds * Stopwatch.Frequency);
         long dead = (long)(_node.Options.DeadAfter.TotalSeconds * Stopwatch.Frequency);
         List<ulong>? remove = null;
+        bool died = false;
 
         foreach (var (id, entry) in _members)
         {
@@ -142,6 +176,7 @@ internal sealed class Membership : IDisposable
             {
                 SetStatus(entry, MemberStatus.Dead);
                 _node.Logger.LogWarning("Member {Member} is dead", entry.Info.Name);
+                died = true;
             }
             else if (silent > suspect && status != MemberStatus.Suspect)
             {
@@ -150,9 +185,40 @@ internal sealed class Membership : IDisposable
             }
         }
 
+        if (died && _node.Options.KeepMajority) CheckMajority();
         if (remove == null) return;
         foreach (var id in remove) _members.Remove(id);
         _changed = true;
+    }
+
+    /// <summary>
+    /// Keep-majority downing (ADR-064), when members just died: this side keeps running only if it reaches more of the
+    /// cluster than it lost (a tie keeps the side with the lowest node id). Dead members count until they are forgotten;
+    /// members that left do not count. Under the gate.
+    /// </summary>
+    private void CheckMajority()
+    {
+        int reachable = 0, lost = 0;
+        ulong lowestReachable = ulong.MaxValue, lowestLost = ulong.MaxValue;
+        foreach (var entry in _members.Values)
+        {
+            var info = entry.Info;
+            if (info.Status == MemberStatus.Leaving) continue;
+            if (info.Status == MemberStatus.Dead)
+            {
+                lost++;
+                lowestLost = Math.Min(lowestLost, info.NodeId);
+            }
+            else
+            {
+                reachable++;
+                lowestReachable = Math.Min(lowestReachable, info.NodeId);
+            }
+        }
+
+        if (reachable + lost < 3) return; // a crash and a partition look the same: keep running
+        if (reachable > lost || (reachable == lost && lowestReachable < lowestLost)) return;
+        _ = Task.Run(() => _node.DownAsync(reachable, lost)); // not under the gate: stopping closes membership
     }
 
     private void SetStatus(Entry entry, MemberStatus status)
@@ -201,6 +267,7 @@ internal sealed class Membership : IDisposable
 
     private void SendPulses(PeerLink link)
     {
+        if (BlockedPorts is { } blocked && blocked.Contains(link.Port)) return;
         PulseFrame().SendControl(link, ControlOp.Gossip);
     }
 

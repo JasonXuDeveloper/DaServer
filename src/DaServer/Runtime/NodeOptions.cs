@@ -81,6 +81,15 @@ public sealed class NodeOptions
     /// </summary>
     public TimeSpan ResumeGrace { get; set; } = TimeSpan.FromSeconds(30);
 
+    /// <summary>
+    /// Split brain (ADR-064): a node that finds itself on the minority side when members die (it reaches fewer of the
+    /// cluster's members than it lost; in a tie, the side without the lowest node id) stops at once, without saving,
+    /// and exits so the platform restarts it into the majority. Clusters of fewer than three members never down
+    /// themselves (a crash and a partition look the same there). Off: both sides keep running and may load the same
+    /// actor twice.
+    /// </summary>
+    public bool KeepMajority { get; set; } = true;
+
     public TimeSpan GossipInterval { get; set; } = TimeSpan.FromSeconds(1);
     public TimeSpan SuspectAfter { get; set; } = TimeSpan.FromSeconds(3);
     public TimeSpan DeadAfter { get; set; } = TimeSpan.FromSeconds(10);
