@@ -118,6 +118,7 @@ internal readonly record struct ActorPools(
         actor.Key = 0;
         actor.Entity = default;
         actor.TurnCaller = default;
+        actor.TurnChain = 0;
         if (!Actors.TryGetValue(actor.HandlerType.Id, out var actors))
             Actors[actor.HandlerType.Id] = actors = new Stack<Actor>();
         if (actors.Count < Bound) actors.Push(actor);
@@ -132,6 +133,17 @@ internal readonly record struct ActorPools(
             Sessions.Push(sessions);
         }
     }
+}
+
+/// <summary>
+/// Chains of the turns this shard starts for messages that carry none (ADR-059): consecutive values from a random start,
+/// so chains of different shards and nodes do not meet.
+/// </summary>
+internal struct CallChains : ISingletonComponent
+{
+    public long Last;
+
+    public long Next() => ++Last == 0 ? ++Last : Last;
 }
 
 /// <summary>Idle <see cref="TurnWatcher"/>s (bounded by the turns in flight).</summary>

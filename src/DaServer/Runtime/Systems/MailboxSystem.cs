@@ -33,6 +33,7 @@ internal sealed partial class MailboxSystem : EcsSystem
             var task = ShardDispatch.Invoke(target, in envelope);
             if (task.IsCompleted)
             {
+                target.TurnChain = 0;
                 task.GetAwaiter().GetResult(); // completed while being dispatched: release a pooled source (errors were replied)
                 continue;
             }

@@ -33,7 +33,7 @@ internal static class ShardDispatch
         }
 
         if (!handlerType!.IsActor)
-            Track(world, Invoke(handler.Dispatcher, ServiceOf(world, handlerType), frame, sink, world.Logger()));
+            Track(world, Invoke(handler.Dispatcher, ServiceOf(world, handlerType), frame, sink, world.Logger(), ChainOf(world, frame)));
         else if (TryGetLoaded(world, handlerType.Id, header.Key, out var existing))
             Deliver(world, existing, new Envelope(frame, sink)); // even while unloading: its mail moves in order
         else if (!OwnsHere(world, node, handlerType.Id, header.Key))
@@ -81,6 +81,16 @@ internal static class ShardDispatch
     /// </summary>
     public static void Deliver(World world, Entity actor, in Envelope envelope)
     {
+        long chain = envelope.Frame.Chain;
+        if (chain != 0 && actor.Get<ActorRef>().Actor.TurnChain == chain && actor.TryGet<Turn>(out var turn) && !turn.Task.IsCompleted)
+        {
+            // The running turn waits for this request (directly or through others): queued, it would wait for the turn.
+            // A turn that completed (it replied, its end is not processed yet) waits for nothing: the caller's next
+            // request in the same chain queues.
+            Fail(envelope.Frame, envelope.Sink, RpcStatus.CallCycle);
+            return;
+        }
+
         ref var mailbox = ref actor.Get<Mailbox>();
         var shard = world.Shard();
         if (mailbox.Pending.Count >= shard.Node.Options.ActorMailboxCapacity)
@@ -134,7 +144,7 @@ internal static class ShardDispatch
     /// logged when nobody waits for a reply (one-way call, event). Disposes <paramref name="frame"/>.
     /// </summary>
     public static System.Threading.Tasks.ValueTask Invoke(MessageDispatcher dispatcher, object target, FrameWriter frame,
-        IReplySink? sink, ILogger logger)
+        IReplySink? sink, ILogger logger, long chain)
     {
         try
         {
@@ -148,6 +158,8 @@ internal static class ShardDispatch
             uint callId = frame.CallId;
             var context = new CallContext(sink, callId, frame.Origin);
             var previous = CallContext.Enter(in context);
+            long previousChain = CallChain.Current;
+            CallChain.Current = chain; // the requests this handler makes carry it (its awaits restore it, PendingCall)
             try
             {
                 var reader = new Reader(frame.Payload);
@@ -165,12 +177,21 @@ internal static class ShardDispatch
             finally
             {
                 CallContext.Exit(in previous);
+                CallChain.Current = previousChain;
             }
         }
         finally
         {
             frame.Dispose();
         }
+    }
+
+    /// <summary>The call chain a message runs in: the one its request carries, else a new one (ADR-059).</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static long ChainOf(World world, FrameWriter frame)
+    {
+        long chain = frame.Chain;
+        return chain != 0 ? chain : world.GetSingleton<CallChains>().Next();
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -196,7 +217,8 @@ internal static class ShardDispatch
 
         if (header.MessageId == MessageType<SessionResumed>.WireId) return Resume(actor, in envelope);
         var dispatcher = actor.HandlerType.Handlers.Of(header.MessageId)!.Dispatcher; // validated by Route
-        return Invoke(dispatcher, actor, envelope.Frame, envelope.Sink, actor.Shard.Node.Logger);
+        actor.TurnChain = ChainOf(actor.Shard.World, envelope.Frame); // cleared when the turn ends
+        return Invoke(dispatcher, actor, envelope.Frame, envelope.Sink, actor.Shard.Node.Logger, actor.TurnChain);
     }
 
     /// <summary>
@@ -217,7 +239,7 @@ internal static class ShardDispatch
         }
 
         if (accepted && actor.HandlerType.Handlers.Of(MessageType<SessionResumed>.WireId) is { } handler)
-            return Invoke(handler.Dispatcher, actor, frame, null, actor.Shard.Node.Logger);
+            return Invoke(handler.Dispatcher, actor, frame, null, actor.Shard.Node.Logger, actor.TurnChain = ChainOf(actor.Shard.World, frame));
         frame.Dispose();
         return default;
     }

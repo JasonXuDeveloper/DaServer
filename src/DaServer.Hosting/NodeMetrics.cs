@@ -25,6 +25,8 @@ public static class NodeMetrics
             description: "Calls and events refused because a shard or actor mailbox was full");
         Meter.CreateObservableCounter("daserver.shard.expired", () => Sample(static n => n.Expired),
             description: "Requests dropped unrun because their caller had already timed out");
+        Meter.CreateObservableGauge("daserver.shard.stalled", () => Sample(static n => n.StalledShards),
+            description: "Shards whose current pass runs longer than StallAfter (a blocked shard thread)");
     }
 
     private static readonly HashSet<string> FeatureGauges = new();

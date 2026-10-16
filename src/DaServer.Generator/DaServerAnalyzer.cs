@@ -13,7 +13,7 @@ namespace DaServer.Generator;
 public sealed partial class DaServerAnalyzer : DiagnosticAnalyzer
 {
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics { get; } = ImmutableArray.Create(
-        Rules.BadHandler, Rules.BadMessage, Rules.NotWireType, Rules.IdCollision, Rules.NoDefaultConstructor, Rules.WrongFlow, Rules.StatefulHandlerType, Rules.WrongAddress, Rules.SharedReferencesServer, Rules.MisplacedReplyWhen);
+        Rules.BadHandler, Rules.BadMessage, Rules.NotWireType, Rules.IdCollision, Rules.NoDefaultConstructor, Rules.WrongFlow, Rules.StatefulHandlerType, Rules.WrongAddress, Rules.SharedReferencesServer, Rules.MisplacedReplyWhen, Rules.BlockingCall);
 
     public override void Initialize(AnalysisContext context)
     {
@@ -48,6 +48,7 @@ public sealed partial class DaServerAnalyzer : DiagnosticAnalyzer
 
             start.RegisterOperationAction(CheckSend, OperationKind.Invocation);
             start.RegisterOperationAction(CheckReplyWhen, OperationKind.Invocation);
+            start.RegisterOperationAction(CheckBlocking, OperationKind.Invocation, OperationKind.PropertyReference, OperationKind.Lock);
 
             start.RegisterCompilationEndAction(end =>
             {
@@ -215,6 +216,9 @@ internal static class Rules
     public static readonly DiagnosticDescriptor MisplacedReplyWhen = new("DAS011", "ReplyWhen outside a return",
         "ReplyWhen must be what a handler that is not async returns: 'return ReplyWhen(task, reply);'", Category,
         DiagnosticSeverity.Error, true);
+
+    public static readonly DiagnosticDescriptor BlockingCall = new("DAS009", "Synchronous wait on a shard thread",
+        "'{0}' blocks the shard thread, and every actor of the shard with it: {1}", Category, DiagnosticSeverity.Error, true);
 
     public static readonly DiagnosticDescriptor WrongAddress = new("DAS008", "Wrong kind of address",
         "'{0}' {1}", Category, DiagnosticSeverity.Error, true);

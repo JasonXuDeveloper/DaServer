@@ -44,6 +44,13 @@ public sealed class NodeOptions
     public TimeSpan CallTimeout { get; set; } = TimeSpan.FromSeconds(10);
 
     /// <summary>
+    /// A shard pass running longer than this is a stall: something on the shard thread waits synchronously or loops
+    /// (DAS009 reports the waits it can see), and every actor of the shard waits with it. It is logged and counted
+    /// (<see cref="Node.StalledShards"/>).
+    /// </summary>
+    public TimeSpan StallAfter { get; set; } = TimeSpan.FromSeconds(1);
+
+    /// <summary>
     /// Requests from outside the cluster (<see cref="DaServer.Ingress.IIngress"/>) are refused with
     /// <see cref="Protocol.RpcStatus.Overloaded"/> before they are sent when the target node gossiped at least this many
     /// queued messages: an overloaded node is not sent more work it would refuse anyway. 0 (default): no check.

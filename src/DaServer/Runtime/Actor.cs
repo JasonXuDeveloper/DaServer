@@ -60,6 +60,12 @@ public abstract class Actor : ShardObject
     /// <summary>Origin of the message whose turn is running (kept across its awaits: turns never interleave).</summary>
     internal Origin TurnCaller;
 
+    /// <summary>
+    /// Call chain of the turn running now (0: none): a request carrying it would wait for this turn, it fails with
+    /// <see cref="RpcStatus.CallCycle"/> (ADR-059).
+    /// </summary>
+    internal long TurnChain;
+
     /// <summary>The actor's entity (carries an <see cref="ActorRef"/> back to this object).</summary>
     public Entity Entity { get; internal set; }
 

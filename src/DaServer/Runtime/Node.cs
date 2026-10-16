@@ -338,6 +338,32 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
     }
 
     private long _lastMaintainMs; // the maintenance timer's thread only
+    private long[]? _stallReported; // per shard: the pass already reported (the maintenance timer's thread only)
+    private int _stalledShards;
+
+    /// <summary>Shards whose current pass has run longer than <see cref="NodeOptions.StallAfter"/>.</summary>
+    public int StalledShards => Volatile.Read(ref _stalledShards);
+
+    /// <summary>The stall watchdog: a shard thread away from its loop longer than the threshold is reported once per pass.</summary>
+    private void CheckStalls(long now)
+    {
+        var reported = _stallReported ??= new long[_shards.Length];
+        long limit = (long)Options.StallAfter.TotalMilliseconds;
+        int stalled = 0;
+        for (int i = 0; i < _shards.Length; i++)
+        {
+            long ms = _shards[i].PassMs(now);
+            if (ms < limit) continue;
+            stalled++;
+            long passStart = now - ms;
+            if (reported[i] == passStart) continue;
+            reported[i] = passStart;
+            Logger.LogWarning("Shard {Shard} of {Node} has been in one pass for {Ms} ms: a handler or system blocks its thread " +
+                              "(a synchronous wait, DAS009, or a long loop) and its actors wait", i, Options.Name, ms);
+        }
+
+        Volatile.Write(ref _stalledShards, stalled);
+    }
 
     private void Maintain()
     {
@@ -354,6 +380,8 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
                 link.AcknowledgeReceived();
                 link.CheckAlive(now, interval, timeout);
             }
+
+            CheckStalls(now);
         }
         catch (Exception e)
         {

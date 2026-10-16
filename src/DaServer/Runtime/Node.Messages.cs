@@ -90,7 +90,10 @@ sealed partial class Node
     {
         var call = PendingCall<TReply>.Rent(Shard.Current);
         var task = call.Task;
-        Request(MessageWriter.Write(in request), MessageType<TRequest>.WireId, handlerTypeId, key, call, null, 0);
+        var frame = MessageWriter.Write(in request);
+        long chain = CallChain.Current;
+        if (chain != 0) frame.SetChain(chain); // the asking turn's chain (ADR-059)
+        Request(frame, MessageType<TRequest>.WireId, handlerTypeId, key, call, null, 0);
         return task;
     }
 

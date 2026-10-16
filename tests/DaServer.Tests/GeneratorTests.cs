@@ -128,6 +128,11 @@ public class GeneratorTests
     [TestCase("[NinoType, Message, FromClient, ToClient] public partial record struct Tick; public static class Bad { public static void Go(DaServer.Client.ClusterClient c) => c.Send(ClientGroup.All, new Tick()); }", "DAS008")]
     [TestCase("public readonly record struct BadId(long Value) : IActorId; [NinoType, Message] public partial record struct Q : IRequest<int>; public sealed class Bad : Actor<BadId> { [Handle] public async ValueTask<int> On(Q m) => await ReplyWhen(default, 1); }", "DAS011")]
     [TestCase("public readonly record struct BadId(long Value) : IActorId; [NinoType, Message] public partial record struct Q : IRequest<int>; public sealed class Bad : Actor<BadId> { [Handle] public ValueTask<int> On(Q m) { var r = ReplyWhen(default, 1); return r; } }", "DAS011")]
+    [TestCase("public readonly record struct BadId(long Value) : IActorId; [NinoType, Message] public partial record struct Q : IRequest<int>; public sealed class Bad : Actor<BadId> { [Handle] public int On(Q m) => Cluster.Ask(Id, new Q()).Result; }", "DAS009")]
+    [TestCase("public readonly record struct BadId(long Value) : IActorId; [NinoType, Message] public partial record struct Q : IRequest<int>; public sealed class Bad : Actor<BadId> { [Handle] public int On(Q m) => Cluster.Ask(Id, new Q()).AsTask().GetAwaiter().GetResult(); }", "DAS009")]
+    [TestCase("[NinoType, Message] public partial record struct Q : IRequest<int>; public sealed class Bad : Service { [Handle] public async ValueTask<int> On(Q m) { await Task.Delay(10); return 1; } }", "DAS009")]
+    [TestCase("[NinoType, Message] public partial record struct Q : IRequest<int>; public sealed class Bad : Service { private static readonly object Gate = new(); [Handle] public int On(Q m) { lock (Gate) return 1; } }", "DAS009")]
+    [TestCase("public partial class Bad : EasyEcs.EcsSystem { protected override void OnUpdate() => System.Threading.Thread.Sleep(1); }", "DAS009")]
     public async Task MisuseIsReportedByTheAnalyzer(string source, string id)
     {
         var (_, diagnostics) = await Run(source);

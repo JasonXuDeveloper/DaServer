@@ -300,6 +300,7 @@ internal sealed class PendingCall<T> : IPendingCall, IValueTaskSource<T>, IValue
     /// </summary>
     [ThreadStatic] private static Stack<PendingCall<T>>? _shardPool;
     private static readonly Action<object?> CompletedSentinel = static _ => { };
+    private static readonly Action<object?> ResumeQueued = static call => ((PendingCall<T>)call!).Resume(((PendingCall<T>)call!)._queued!);
 
     private Action<object?>? _continuation;
     private Action<object?>? _queued; // continuation handed to the thread pool (see Execute)
@@ -308,6 +309,7 @@ internal sealed class PendingCall<T> : IPendingCall, IValueTaskSource<T>, IValue
     private Exception? _error;
     private T _result = default!;
     private short _version;
+    private long _chain; // the caller's call chain, restored around its continuation
 
     private PendingCall()
     {
@@ -317,6 +319,7 @@ internal sealed class PendingCall<T> : IPendingCall, IValueTaskSource<T>, IValue
     {
         var call = caller != null && _shardPool is { Count: > 0 } local ? local.Pop() : Pool.Rent();
         call.Caller = caller;
+        call._chain = caller != null ? CallChain.Current : 0;
         return call;
     }
 
@@ -378,11 +381,33 @@ internal sealed class PendingCall<T> : IPendingCall, IValueTaskSource<T>, IValue
         {
             // Replies are handed to the caller's thread before they complete; a failure (timeout, lost link) completes
             // wherever it is found (the maintenance timer, an IO thread): the caller's code must still resume on its own thread.
-            if (ReferenceEquals(CompletionThread.Current, caller)) continuation(_continuationState);
-            else caller.Post(continuation, _continuationState);
+            if (ReferenceEquals(CompletionThread.Current, caller)) Resume(continuation);
+            else PostToCaller(caller, continuation);
         }
         else
             Queue(continuation);
+    }
+
+    private void PostToCaller(CompletionThread caller, Action<object?> continuation)
+    {
+        _queued = continuation;
+        caller.Post(ResumeQueued, this);
+    }
+
+    /// <summary>Run the continuation on the caller's thread, in the caller's call chain.</summary>
+    private void Resume(Action<object?> continuation)
+    {
+        _queued = null;
+        var previous = CallChain.Current;
+        CallChain.Current = _chain;
+        try
+        {
+            continuation(_continuationState); // resets this object: read everything before
+        }
+        finally
+        {
+            CallChain.Current = previous;
+        }
     }
 
     private void Queue(Action<object?> continuation)
@@ -432,13 +457,19 @@ internal sealed class PendingCall<T> : IPendingCall, IValueTaskSource<T>, IValue
 
         _continuationState = state;
         if (Interlocked.CompareExchange(ref _continuation, continuation, null) != null)
-            Queue(continuation); // completed between the awaiter's IsCompleted check and now: never run inline here
+        {
+            // Completed between the awaiter's IsCompleted check and now: never run inline here, and resume a shard's
+            // code on its shard.
+            if (Caller is { } caller && _capturedContext == null) PostToCaller(caller, continuation);
+            else Queue(continuation);
+        }
     }
 
     /// <summary>Return the result (or throw the stored error) and reset for reuse.</summary>
     public T GetResult(short token)
     {
         if (token != _version) throw new InvalidOperationException("Stale ValueTask token");
+        if (!ReferenceEquals(Volatile.Read(ref _continuation), CompletedSentinel)) NotCompleted();
         var (result, error, caller) = (_result, _error, Caller);
         _result = default!;
         _error = null;
@@ -457,4 +488,12 @@ internal sealed class PendingCall<T> : IPendingCall, IValueTaskSource<T>, IValue
     }
 
     void IValueTaskSource.GetResult(short token) => GetResult(token);
+
+    /// <summary>
+    /// <c>.Result</c> or <c>GetAwaiter().GetResult()</c> on a call still in flight: a pooled source cannot block, and a
+    /// shard thread waiting for its own reply would never get it (DAS009 reports such waits in handlers and systems).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void NotCompleted() =>
+        throw new InvalidOperationException("The call has not completed: await it (a call's result is read once, after it completes)");
 }

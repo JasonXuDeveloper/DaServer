@@ -13,6 +13,7 @@ internal sealed partial class TurnSystem : EcsSystem
     private static void EndCall(Entity actor, in Turn turn, in ActorRef self, World world)
     {
         var error = TurnWatcher.Result(in turn);
+        self.Actor.TurnChain = 0;
         actor.Remove<Turn, TurnEnded>(); // `turn` is invalid from here on
         if (error != null) world.Logger().LogError(error, "Call of {Actor} failed", self.Actor);
     }

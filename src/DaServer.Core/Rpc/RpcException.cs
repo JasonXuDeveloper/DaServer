@@ -56,6 +56,8 @@ public sealed class RpcException : Exception
         RpcStatus.Disconnected => "Disconnected: the connection or the target's node was lost before the reply",
         RpcStatus.Overloaded => "Overloaded: a dispatch queue, actor mailbox or in-flight call table is full; nothing ran",
         RpcStatus.RateLimited => "RateLimited: the edge's admission refused the sender for now; nothing ran",
+        RpcStatus.CallCycle => "CallCycle: the target actor's running turn waits for this request (a call cycle); nothing ran. " +
+                               "Use a one-way message for one direction",
         _ => "Unknown status",
     };
 }
