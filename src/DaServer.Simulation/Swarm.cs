@@ -1,4 +1,7 @@
+using System.Net;
 using DaServer.Client;
+using DaServer.Protocol;
+using DaServer.Rpc;
 using EasyEcs;
 
 namespace DaServer.Simulation;
@@ -23,28 +26,42 @@ public sealed class SwarmOptions
 }
 
 /// <summary>One simulated user being started: its index, its client and the world it lives in.</summary>
-public readonly record struct SimulatedUser(int Index, ClusterClient Client, World World);
+public readonly record struct SimulatedUser(int Index, ClusterClient Client, World World)
+{
+    /// <summary>Connect through <paramref name="endpoints"/>, retrying while the cluster is not reachable yet.</summary>
+    public Task ConnectAsync(IReadOnlyList<DnsEndPoint> endpoints)
+    {
+        var client = Client;
+        return Swarm.Retry(async () =>
+        {
+            await client.ConnectAsync(endpoints);
+            return true;
+        }, static e => e is not RpcException);
+    }
+}
 
 /// <summary>
 /// Thousands of simulated users against a cluster: a user is an entity in one of several client worlds (one
 /// <see cref="ClientLoop"/> per core), driven by systems (scripted or planned, <see cref="Planning"/>) exactly as a real
-/// client's UI would drive it. The swarm starts them in waves, waits for a condition, measures a window and reads
-/// per-world numbers on each loop's own thread; what counts as passing is the scenario's.
+/// client's UI would drive it. The swarm starts them in waves, waits for a condition, measures a window (a report line
+/// every interval) and judges it: <see cref="CounterKind.Failure"/> counters, the latency limit and the scenario's own
+/// checks (<see cref="SwarmResult.Expect"/>).
 /// </summary>
 public sealed class Swarm : IAsyncDisposable
 {
     private readonly SwarmOptions _options;
     private readonly ClientLoop[] _loops;
     private ClusterClient[] _clients = [];
+    private int _disconnectsLogged;
 
     public Swarm(SwarmOptions options)
     {
         _options = options;
         _loops = new ClientLoop[Math.Max(1, options.Loops)];
+        var meter = Meter;
         for (int i = 0; i < _loops.Length; i++)
         {
             _loops[i] = new ClientLoop("swarm-" + i, options.TickRate, options.OnPass);
-            var meter = Meter;
             _ = _loops[i].Run(world =>
             {
                 world.AddSingleton<Measurements>() = new Measurements(meter);
@@ -63,11 +80,16 @@ public sealed class Swarm : IAsyncDisposable
     /// </summary>
     public async Task StartAsync(int users, Func<ClusterClient> client, Func<SimulatedUser, Task> start)
     {
+        var started = System.Diagnostics.Stopwatch.StartNew();
         _clients = new ClusterClient[users];
         await Parallel.ForAsync(0, users, new ParallelOptions { MaxDegreeOfParallelism = _options.MaxStarting }, async (i, _) =>
         {
             var c = _clients[i] = client();
-            c.Disconnected += _ => Meter.Disconnects.Add();
+            c.Disconnected += e =>
+            {
+                Meter.Disconnects.Add();
+                if (Interlocked.Increment(ref _disconnectsLogged) <= 5) Console.WriteLine($"user {i} disconnected: {e?.Message}");
+            };
             var loop = _loops[i % _loops.Length];
             await loop.Run(async () =>
             {
@@ -75,6 +97,7 @@ public sealed class Swarm : IAsyncDisposable
                 return true;
             });
         });
+        Console.WriteLine($"{users} users started in {started.Elapsed.TotalSeconds:F1}s on {_loops.Length} client loops");
     }
 
     /// <summary>The sum of <paramref name="count"/> over every world, each read on its loop.</summary>
@@ -85,11 +108,20 @@ public sealed class Swarm : IAsyncDisposable
         return total;
     }
 
-    /// <summary>Wait until <paramref name="pending"/> sums to 0 over every world, or <paramref name="timeout"/>; false on timeout.</summary>
-    public async Task<bool> WaitAsync(Func<World, long> pending, TimeSpan timeout)
+    /// <summary>How many entities of every world match <paramref name="match"/> (read on each loop).</summary>
+    public Task<long> CountAsync<T>(Func<T, bool> match) where T : struct, IComponent => SumAsync(world =>
+    {
+        long n = 0;
+        foreach (var item in world.Query<T>())
+            if (match(item.Component1)) n++;
+        return n;
+    });
+
+    /// <summary>Wait until <paramref name="pending"/> is 0, or <paramref name="timeout"/>; false on timeout.</summary>
+    public async Task<bool> WaitAsync(Func<Task<long>> pending, TimeSpan timeout)
     {
         var deadline = DateTime.UtcNow + timeout;
-        while (await SumAsync(pending) > 0)
+        while (await pending() > 0)
         {
             if (DateTime.UtcNow >= deadline) return false;
             await Task.Delay(100);
@@ -99,35 +131,52 @@ public sealed class Swarm : IAsyncDisposable
     }
 
     /// <summary>
-    /// The measured window: <see cref="Meter.Start"/>, then <paramref name="report"/> every
-    /// <paramref name="every"/> with the latencies of that interval and its length, until <paramref name="duration"/>.
-    /// Returns what the simulation itself cost the process meanwhile.
+    /// The measured window: counters and latencies start from zero, a line every <paramref name="every"/> (latency
+    /// of the interval, rates per second, totals and failures), until <paramref name="duration"/>. The result holds the
+    /// window's latencies, what the simulation cost the process, and the failures judged so far.
     /// </summary>
-    public async Task<ProcessCost> MeasureAsync(TimeSpan duration, TimeSpan every, Func<Histogram, TimeSpan, Task> report)
+    public async Task<SwarmResult> MeasureAsync(TimeSpan duration, TimeSpan every, double maxP99Ms = double.PositiveInfinity)
     {
         var before = ProcessCost.Now();
         Meter.Start();
         var clock = System.Diagnostics.Stopwatch.StartNew();
         var window = Meter.Latency.Snapshot();
+        var counts = Meter.Counters.Select(static c => c.Value).ToArray();
         var last = TimeSpan.Zero;
         while (clock.Elapsed < duration)
         {
             var wait = duration - clock.Elapsed;
             await Task.Delay(wait < every ? wait : every);
             var now = Meter.Latency.Snapshot();
-            await report(window.Until(now), clock.Elapsed - last);
-            (window, last) = (now, clock.Elapsed);
+            double seconds = (clock.Elapsed - last).TotalSeconds;
+            var counters = Meter.Counters;
+            var line = new System.Text.StringBuilder($"t={clock.Elapsed.TotalSeconds,4:F0}s latency {window.Until(now)}");
+            for (int i = 0; i < counters.Count; i++)
+            {
+                long value = counters[i].Value, previous = i < counts.Length ? counts[i] : 0;
+                line.Append(counters[i].Kind == CounterKind.Rate
+                    ? $" {counters[i].Name}/s={(value - previous) / seconds:F0}"
+                    : $" {counters[i].Name}={value}");
+            }
+
+            Console.WriteLine(line);
+            (window, counts, last) = (now, counters.Select(static c => c.Value).ToArray(), clock.Elapsed);
         }
 
         Meter.Measuring = false;
-        return ProcessCost.Now() - before;
+        var result = new SwarmResult(Meter.Latency.Snapshot(), ProcessCost.Now() - before);
+        foreach (var counter in Meter.Counters)
+            result.Expect(counter.Kind != CounterKind.Failure || counter.Value == 0, counter.ToString());
+        double p99 = result.Latency.Percentile(0.99);
+        result.Expect(p99 <= maxP99Ms, $"p99 latency {p99:F1}ms > {maxP99Ms}ms");
+        return result;
     }
 
     /// <summary>
-    /// Retry <paramref name="call"/> while it fails with what <paramref name="transient"/> accepts (a cluster still
-    /// starting), every half second, up to <paramref name="attempts"/> times.
+    /// Retry an idempotent <paramref name="call"/> while it fails with what <paramref name="transient"/> accepts
+    /// (default: the cluster is starting or momentarily full: NotHosted, Timeout, Overloaded), every half second.
     /// </summary>
-    public static async Task<T> Retry<T>(Func<Task<T>> call, Func<Exception, bool> transient, int attempts = 60)
+    public static async Task<T> Retry<T>(Func<Task<T>> call, Func<Exception, bool>? transient = null, int attempts = 60)
     {
         for (int attempt = 1; ; attempt++)
         {
@@ -135,37 +184,18 @@ public sealed class Swarm : IAsyncDisposable
             {
                 return await call();
             }
-            catch (Exception e) when (attempt < attempts && transient(e))
+            catch (Exception e) when (attempt < attempts && (transient ?? Starting)(e))
             {
                 await Task.Delay(500);
             }
         }
     }
 
+    private static bool Starting(Exception e) => e is RpcException { Status: RpcStatus.NotHosted or RpcStatus.Timeout or RpcStatus.Overloaded };
+
     public async ValueTask DisposeAsync()
     {
         await Parallel.ForEachAsync(_clients, static (c, _) => c?.DisposeAsync() ?? default);
         foreach (var loop in _loops) loop.Dispose();
-    }
-}
-
-/// <summary>What the process spent: CPU, managed allocations and collections per generation (over a window: a difference).</summary>
-public readonly record struct ProcessCost(TimeSpan Elapsed, TimeSpan Cpu, long Allocated, int Gen0, int Gen1, int Gen2)
-{
-    public static ProcessCost Now()
-    {
-        using var process = System.Diagnostics.Process.GetCurrentProcess();
-        return new ProcessCost(TimeSpan.FromTicks(System.Diagnostics.Stopwatch.GetTimestamp() * TimeSpan.TicksPerSecond / System.Diagnostics.Stopwatch.Frequency),
-            process.TotalProcessorTime, GC.GetTotalAllocatedBytes(), GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2));
-    }
-
-    public static ProcessCost operator -(ProcessCost a, ProcessCost b) =>
-        new(a.Elapsed - b.Elapsed, a.Cpu - b.Cpu, a.Allocated - b.Allocated, a.Gen0 - b.Gen0, a.Gen1 - b.Gen1, a.Gen2 - b.Gen2);
-
-    public override string ToString()
-    {
-        double seconds = Math.Max(Elapsed.TotalSeconds, 1e-9);
-        return $"cpu={Cpu.TotalSeconds / seconds / Environment.ProcessorCount:P0} of {Environment.ProcessorCount} cores, " +
-               $"allocated={Allocated / seconds / 1024:F0} KB/s, gc gen0/1/2={Gen0}/{Gen1}/{Gen2}";
     }
 }
