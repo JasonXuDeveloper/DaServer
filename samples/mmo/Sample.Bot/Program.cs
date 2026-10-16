@@ -41,15 +41,16 @@ internal static class Scenario
             },
         });
         var meter = swarm.Meter;
-        var (positions, lines, gaps) = (meter.Counter("positions", CounterKind.Rate), meter.Counter("chat", CounterKind.Rate),
-            meter.Counter("gaps", CounterKind.Failure));
+        var (positions, lines, gaps) = (meter.Counter("positions (sampled)", CounterKind.Rate),
+            meter.Counter("chat", CounterKind.Rate), meter.Counter("gaps", CounterKind.Failure));
         var telemetry = new Telemetry[bots];
 
         await swarm.StartAsync(bots, static () => new ClusterClient(callbackQueue: 1024), async user =>
         {
             int i = user.Index;
             await user.ConnectAsync(endpoints);
-            user.Client.Register(telemetry[i] = new Telemetry(meter, positions, lines, gaps));
+            user.Client.Register(telemetry[i] = new Telemetry(meter, lines, gaps));
+            if (i % PositionTelemetry.Every == 0) user.Client.Register(new PositionTelemetry(positions));
             var player = Player.Create(user.World, user.Client);
             if (!await Swarm.Retry(() => Player.LogInAsync(player, "bot-" + i))) throw new InvalidOperationException("login refused: bot-" + i);
             await Swarm.Retry(() => Player.EnterMapAsync(player, new MapId(1 + i % maps)));
