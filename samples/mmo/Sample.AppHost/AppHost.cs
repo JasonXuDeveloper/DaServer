@@ -7,7 +7,9 @@ using Aspire.Hosting;
 using Microsoft.Extensions.Configuration;
 
 var builder = DistributedApplication.CreateBuilder(args);
-builder.AddDockerComposeEnvironment("compose");
+// Where `aspire publish` writes the cluster: Docker Compose (default) or Kubernetes (`-- Publish=k8s`, a Helm chart).
+if (builder.Configuration["Publish"] == "k8s") builder.AddKubernetesEnvironment("k8s");
+else builder.AddDockerComposeEnvironment("compose");
 
 // One project per server: a node hosts exactly the actors, services and systems its project compiles (its startup log
 // lists them). The topology is projects and replica counts; ports, names and seeds are assigned here, discovery
