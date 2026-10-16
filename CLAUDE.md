@@ -41,15 +41,15 @@ src/DaServer/              server runtime (net11.0): Runtime/ Cluster/ Rpc/ Net/
   Runtime/ShardDispatch.cs routing/delivery/invoke operations shared by the runtime systems
   Runtime/Systems/         runtime systems: Dispatch, Turn, ServiceCall, Removal, Unload, Mailbox (ShardMessages group),
                            Rebalance (ShardRebalance), Idle (ShardIdleScan); each reacts to one lifecycle tag (ADR-037)
-src/DaServer.Generator/    incremental generators (AskGenerator, RegistrationGenerator, EntryPointGenerator,
-                           PolyfillGenerator) + DaServerAnalyzer (DAS001-013);
+src/DaServer.Generator/    incremental generators (AskGenerator, RegistrationGenerator, PolyfillGenerator) + DaServerAnalyzer
+                           (DAS001-014);
                            Shapes.cs reads symbols once for both, so "skipped by the generator" == "reported"
 src/DaServer.Hosting/      Generic Host integration, configuration, OpenTelemetry (OTLP when configured), shutdown
 src/DaServer.Aspire/       Aspire hosting integration: AddDaServerCluster / AddNodes / WithClientConnections /
                            WithClientEndpoints
 samples/mmo/               MMO scenario: Sample.Contracts / Sample.Shared (rules both sides run) / Sample.Client (the game
                            client as ECS) / Sample.LoginServer / Sample.GameServer / Sample.MapServer / Sample.GatewayServer
-                           (one project per server, no Program.cs, no appsettings; a server's components in
+                           (one project per server, a five-line Program.cs, no appsettings; a server's components in
                            Sample.XServer.Components, DAS013) / Sample.Bot (the client as a swarm
                            with an HTN behavior: 10k-bot load test and e2e) / Sample.Tests / Sample.AppHost (Aspire)
 tests/DaServer.Tests/      NUnit: ClusterTest fixture, per-feature tests, generator/analyzer, allocation, architecture
@@ -74,8 +74,8 @@ doc/                       requirements.md, design.md, decisions.md, roadmap.md
    thin typed wrappers; no copy-pasted variants.
 6. **Developers only write business code**: messages (`[NinoType, Message]` structs, `IRequest<TReply>`,
    `[FromClient]`/`[ToClient]` when clients send or receive them), actors/services with `[Handle]` methods (ADR-035), EasyEcs systems with `[ForEach]`
-   methods. Registration, routing, serialization, placement, entry points, orchestration are the framework's job;
-   if users would write the same lines twice, generate them.
+   methods. Registration, routing, serialization, placement, orchestration are the framework's job (a node's
+   Program.cs is five lines, ADR-021); if users would write the same lines twice, generate them.
 7. **ECS all the way down**: the runtime follows the same ECS rules as user code (EasyEcs `doc/ecs-principles.md`):
    actors are entities, per-actor runtime state is components, per-shard state is singletons, each runtime system does
    one job. Actors only turn calls into data; per-tick logic lives in systems.

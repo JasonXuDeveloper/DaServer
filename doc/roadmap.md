@@ -163,7 +163,7 @@ What G delivered (each step kept every test green):
    typed, origin, capped deadline, `IngressLoadLimit` early refusal), admission (`IIngressFilter`, `RateLimited` with
    a retry hint, `TokenBucket`, `ConcurrencyLimit`, `SignedToken`), `TimerWheel<T>` (hashed wheel, one owner, O(1),
    allocation-free), dispatch-stage message filters (`MessageFilters.Register<T>` / `Register(IMessageFilter)`, run
-   by generated dispatchers; N11 generates into them), the HTTP plane minimum (generated entry point on
+   by generated dispatchers; N11 generates into them), the HTTP plane minimum (nodes on
    `WebApplication`, Kestrel on `DaServer:HttpPort`, `MapAsk`/`MapSend` through the ingress, statuses to
    429/503/504/403 with `Retry-After`, `DaServer-Budget` header; one origin id space per node for sessions and HTTP
    requests).
@@ -180,8 +180,7 @@ What G delivered (each step kept every test green):
 8. Packages (ADR-052): `DaServer.Abstractions` (contracts) <- `DaServer.Core` (shared wire and transport) <-
    `DaServer.Client` / `DaServer` (server runtime); the first three build for netstandard2.1, net10.0 and net11.0, and
    `samples/mmo/Sample.Contracts` builds for both. Generators split by output (ADR-012): `AskGenerator`,
-   `RegistrationGenerator` (static-constructor registration, IL2CPP-safe), `EntryPointGenerator`,
-   `PolyfillGenerator`. M5: call tables allocate slots in doubling chunks as calls in flight reach them
+   `RegistrationGenerator` (static-constructor registration, IL2CPP-safe), `PolyfillGenerator`. M5: call tables allocate slots in doubling chunks as calls in flight reach them
    (`ClusterClient(maxPendingCalls: 4096)` is only a bound), connections with `ReleaseIdleBuffers` hold no send
    buffer when idle, clients share handler tables: 10k sample bots use 182 MB resident / 80 MB managed. Aspire:
    `AddNodes(...).WithClientConnections()` and `WithClientEndpoints(group)` (`DaServer__ClientEndpoints__{i}`).
@@ -267,8 +266,8 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
       `stop_grace_period` and `DaServer__ShutdownTimeout` below it, plus an optional preStop sleep so endpoint removal
       propagates before Leave; stateful groups default longer than stateless ones.
 - [ ] A3 Compose gaps: done: `stop_grace_period` and `restart: unless-stopped` per node. Open: a `healthcheck` needs a
-      probe command inside the image (the .NET runtime images ship no curl/wget): a `--health` mode of the generated
-      entry point that calls `/health` on its own port.
+      probe command inside the image (the .NET runtime images ship no curl/wget): a `--health` mode of
+      `AddDaServer` that calls `/health` on the node's own port and exits.
 - [ ] A4 Publish mode = one workload per node group (with S4): `IsPublishMode` emits one Deployment with `replicas`,
       a headless Service (`clusterIP: None`, `publishNotReadyAddresses` so joining pods gossip), pod-IP advertising
       through the downward API; run mode keeps one resource per replica (ADR-030). HPA v2 / KEDA / PDB via
@@ -463,7 +462,7 @@ in separate commits.
 - [x] Messages instead of contracts (ADR-035): typed `Ask` overloads per request, one dispatcher per `[Handle]`
       method, client message registration, message ids
 - [x] Hosting: actor/service factories with their handlers, client handler classes, EasyEcs system registration
-- [x] Node entry point generated when a node project has no `Program.cs` (ADR-021)
+- [x] A node's `Program.cs` is five lines: `AddDaServer`, `MapDaServer` (ADR-021)
 - [x] Incremental rules: syntax predicates, equatable models, tracking names, cache test (ADR-016)
 - [x] `DaServerAnalyzer`: DAS001-DAS011 (handlers, messages, wire types, id collisions, constructors, message flow
       (ADR-038), stateless actors and services (ADR-044), address kinds (ADR-047), shared logic (ADR-055), ReplyWhen

@@ -6,7 +6,7 @@ application scenario; an MMO cluster (login, gateways, game server, map servers)
 ([samples/mmo](samples/mmo)).
 
 You write **messages** (`[NinoType, Message]` structs), **actors** and **services** with `[Handle]` methods, and **ECS
-systems**. Source generators write dispatchers, typed `Ask` overloads, registration and the node's entry point; wire
+systems**. Source generators write dispatchers, typed `Ask` overloads, and registration; type
 ids are FNV-1a hashes of the type names. The runtime handles shards, mailboxes, placement, discovery, client connections and serialization. Aspire runs the cluster
 locally and publishes it.
 
@@ -219,8 +219,16 @@ class ChatLog
 }
 ```
 
-A node project needs no `Program.cs`: the generator emits the entry point (Generic Host, configuration, OpenTelemetry,
-a periodic stats line, graceful shutdown). Write one to customize the host.
+A node's `Program.cs` is five lines; `AddDaServer` brings the node, configuration, health checks, OpenTelemetry, a
+periodic stats line and graceful shutdown, and each capability is one more line:
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+builder.AddDaServer();
+var app = builder.Build();
+app.MapDaServer();   // /health, /alive; map your own endpoints next to it
+app.Run();
+```
 
 Packages (ADR-052): contract projects reference `DaServer.Abstractions`; clients (Unity through netstandard2.1, bots,
 tools) reference `DaServer.Client`; node projects reference `DaServer.Hosting` (server runtime `DaServer`). The wire

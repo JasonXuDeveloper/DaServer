@@ -102,7 +102,7 @@ records that no longer hold). Each: context → decision → consequences.
   static constructor runs the registrations of referenced assemblies, then registers the assembly's `[FromClient]`
   messages, client handler classes and, with the server runtime, its actors and services (one dispatcher per
   `[Handle]` method) and EasyEcs systems; `[assembly: GeneratedRegistration(typeof(..))]` names it.
-  `EntryPointGenerator`: the node entry point (ADR-021). `PolyfillGenerator`: `IsExternalInit` for contract
+  `PolyfillGenerator`: `IsExternalInit` for contract
   assemblies built for netstandard2.1.
 - Registration runs in a static constructor because that runs exactly once on every runtime, Unity's IL2CPP included:
   `Registrations.Run(assembly)` triggers it (the client SDK does on `Register(handler)`, and every registration
@@ -181,11 +181,17 @@ records that no longer hold). Each: context → decision → consequences.
   own (`ClientGroup.Of(handler type id, id)`), so group ids of different features cannot collide.
 - Consequences: the surface business code can touch is small and testable; runtime refactors do not break it.
 
-## ADR-021 Generated node entry point
-- Context: every node project would carry the same three-line `Program.cs`.
-- Decision: `EntryPointGenerator` emits `DaServer.Generated.NodeProgram.Main` (WebApplication + `AddDaServer`) for an
-  executable that references `DaServer.Hosting` and declares no entry point. Writing a `Program.cs` opts out.
-- Consequences: a node project is business classes only; names, ports and seeds come from the AppHost (environment).
+## ADR-021 A node's Program.cs is short and written by hand
+- Context: a node needs a host (configuration, logging, shutdown, the HTTP plane). Orleans (`UseOrleans`) and Aspire
+  (`AddServiceDefaults`, `AddNpgsqlDataSource`) put this in a short `Program.cs`, one line per capability.
+- Decision: a node project has a `Program.cs` of five lines: `WebApplication.CreateBuilder`, `AddDaServer`, `Build`,
+  `MapDaServer`, `Run`. A capability is one more line (`AddPostgreSqlActorStore("actors")`). No entry point is
+  generated, and no capability turns on just because a package is referenced.
+- Alternatives: a generated entry point when the project has none. It saves five lines, but a node then has no visible
+  place to add a store, an endpoint or a service, debugging has no start, and capabilities would have to turn on by
+  reference (a hidden rule).
+- Consequences: what a node runs is readable in one file. Names, ports, seeds and connection strings come from the
+  AppHost (environment).
 
 ## ADR-022 One ordered stream per node direction
 - Context: if a node answers requests on the accepted connection while its own binds, pushes and messages to the
@@ -983,8 +989,8 @@ records that no longer hold). Each: context → decision → consequences.
     in a components project that references contracts and EasyEcs only (`Sample.MapServer.Components`).
   - DAS007: actors, services and server systems hold no fields. A system's state is a singleton.
   - Not split: contracts (already their own project, shared with clients); shared logic (`DaServerShared`: clients run
-    it, so it is never reloaded and may hold both); the node host (the generated entry point can load the node
-    project's own assembly collectibly, so the node project is the reloadable logic, N9).
+    it, so it is never reloaded and may hold both); the node host (its `Program.cs` can load the node project's own
+    assembly collectibly, so the node project is the reloadable logic, N9).
   - Projects are recognised by what they reference: no property to set, no extra host project.
 - How a reload works (N9): there is no cluster-wide stop. Each shard swaps its handler table and system list between
   two passes, on its own thread (the only one touching its world), in the time of one pass. Turns in flight finish on
