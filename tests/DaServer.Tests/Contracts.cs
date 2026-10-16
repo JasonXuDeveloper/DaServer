@@ -320,6 +320,16 @@ public readonly record struct LoopId(long Value) : IActorId;
 
 public sealed class Looper : Actor<LoopId>
 {
+    /// <summary>Keys whose unload never finishes (a save that hangs): the stop budget test.</summary>
+    public const long HangsOnUnload = 999;
+
+    public override async Reply OnUnload()
+    {
+#pragma warning disable DAS009 // on purpose: a save that does not finish within the stop budget
+        if (Key == HangsOnUnload) await Task.Delay(Timeout.Infinite);
+#pragma warning restore DAS009
+    }
+
     [Handle]
     public async Reply<int> On(Hop m)
     {

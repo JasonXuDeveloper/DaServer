@@ -77,11 +77,26 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
     /// </summary>
     private readonly Dictionary<ulong, (int Reported, int Directed)> _directed = new();
 
-    /// <summary>The node is leaving: stop accepting clients and close the sessions (their actors learn it now).</summary>
-    protected internal override ValueTask DrainAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// The node is leaving: accept no more clients (the directory already skips a leaving node), then close the
+    /// connections in waves over <see cref="ClientConnectionOptions.DrainSpread"/>. Each client reconnects through its
+    /// endpoints and resumes its session on another node (ADR-036), so its actors see no close; spreading the waves keeps
+    /// the other nodes from receiving every client at once. The stop budget cuts the waves short.
+    /// </summary>
+    protected internal override async ValueTask DrainAsync(CancellationToken cancellationToken)
     {
+        _listener?.Dispose();
+        var sessions = _sessions.Values.ToArray(); // once per stop
+        int waves = Math.Clamp(sessions.Length / 100, 1, 20);
+        var pause = options.DrainSpread / waves;
+        for (int wave = 0; wave < waves && !cancellationToken.IsCancellationRequested; wave++)
+        {
+            for (int i = wave; i < sessions.Length; i += waves) sessions[i].Channel.Close();
+            if (wave < waves - 1)
+                await Task.Delay(pause, cancellationToken).ContinueWith(static _ => { }, TaskScheduler.Default).ConfigureAwait(false);
+        }
+
         Close();
-        return default;
     }
 
     protected internal override void Stop(bool crashed)

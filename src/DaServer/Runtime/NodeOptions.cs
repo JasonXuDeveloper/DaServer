@@ -44,6 +44,14 @@ public sealed class NodeOptions
     public TimeSpan CallTimeout { get; set; } = TimeSpan.FromSeconds(10);
 
     /// <summary>
+    /// The whole graceful stop (leave, drain, unload every actor, close) must fit in this budget: past it the node
+    /// reports the actors that were not unloaded and exits instead of hanging. The host's shutdown timeout and the
+    /// platform's grace period are set above it (DaServer.Hosting, DaServer.Aspire), so the platform never kills a node
+    /// that is still saving.
+    /// </summary>
+    public TimeSpan ShutdownTimeout { get; set; } = TimeSpan.FromSeconds(25);
+
+    /// <summary>
     /// A shard pass running longer than this is a stall: something on the shard thread waits synchronously or loops
     /// (DAS009 reports the waits it can see), and every actor of the shard waits with it. It is logged and counted
     /// (<see cref="Node.StalledShards"/>).

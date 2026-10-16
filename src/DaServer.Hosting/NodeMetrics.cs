@@ -31,12 +31,17 @@ public static class NodeMetrics
 
     private static readonly HashSet<string> FeatureGauges = new();
 
+    private static readonly Histogram<double> StopPhases = Meter.CreateHistogram<double>("daserver.stop.phase.duration", "ms",
+        "Duration of each phase of a graceful stop (leave, drain, unload, close)");
+
     /// <summary>Report <paramref name="node"/> (once it started: its features have added their gauges).</summary>
     internal static void Track(Node node)
     {
         lock (Nodes)
         {
             Nodes.Add(node);
+            node.StopPhase += static (phase, elapsed) =>
+                StopPhases.Record(elapsed.TotalMilliseconds, new KeyValuePair<string, object?>("phase", phase));
             foreach (var (name, description, _) in node.Gauges)
                 if (FeatureGauges.Add(name))
                     Meter.CreateObservableGauge(name, () => SampleGauge(name), description: description);

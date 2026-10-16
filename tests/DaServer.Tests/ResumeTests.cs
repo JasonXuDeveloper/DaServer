@@ -64,6 +64,24 @@ public class ResumeTests : ClusterTest
     }
 
     [Test]
+    public async Task ClientsOfALeavingGatewayMoveAndResumeOnAnother()
+    {
+        var gateways = await StartCluster(TimeSpan.FromSeconds(1));
+        var client = await LogIn(gateways, 510);
+        await Eventually(() => gateways.Sum(g => g.SessionCount()) == 1, "the entry connection was not closed");
+        var leaving = gateways.Single(g => g.SessionCount() == 1);
+
+        var reconnected = Reconnected(client);
+        await Stop(leaving); // graceful: listener closed, connections closed in waves
+        await reconnected;
+
+        Assert.That(await client.Ask(new AddGold(1)), Is.EqualTo(1), "the session resumed on the other node");
+        Assert.That(gateways.Single(g => g != leaving).SessionCount(), Is.EqualTo(1));
+        await Task.Delay(3000); // the leaving node is gone and the grace passed: the resumed session is not reported closed
+        Assert.That(Observed.Events, Does.Not.Contain("closed:510"));
+    }
+
+    [Test]
     public async Task ClientsOfACrashedGatewayResumeOnAnother()
     {
         var gateways = await StartCluster(TimeSpan.FromSeconds(2));

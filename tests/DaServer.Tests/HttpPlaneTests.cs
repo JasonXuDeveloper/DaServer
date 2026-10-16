@@ -50,6 +50,18 @@ public class HttpPlaneTests
     }
 
     [Test]
+    public async Task HealthSaysReadyOnceJoinedAndAliveWhileNoShardStalls()
+    {
+        var node = _app.Services.GetRequiredService<Node>();
+        await Task.Run(async () => { while (!node.IsReady) await Task.Delay(10); });
+        Assert.That((await _http.GetAsync("/health")).StatusCode, Is.EqualTo(HttpStatusCode.OK), "ready: joined and not leaving");
+        Assert.That((await _http.GetAsync("/alive")).StatusCode, Is.EqualTo(HttpStatusCode.OK), "alive: no stalled shard");
+        var host = _app.Services.GetRequiredService<Microsoft.Extensions.Options.IOptions<Microsoft.Extensions.Hosting.HostOptions>>().Value;
+        Assert.That(host.ShutdownTimeout, Is.EqualTo(node.Options.ShutdownTimeout + DaServerHostingExtensions.ShutdownMargin),
+            "the host waits longer than the node's stop budget");
+    }
+
+    [Test]
     public void FeaturesRunWhenTheirSectionIsConfiguredAndReportGauges()
     {
         var node = _app.Services.GetRequiredService<Node>();

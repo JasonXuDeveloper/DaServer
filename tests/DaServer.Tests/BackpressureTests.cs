@@ -51,6 +51,22 @@ public class BackpressureTests : ClusterTest
     }
 
     [Test]
+    public async Task AStopThatExceedsItsBudgetReportsAndReturns()
+    {
+        var node = await Start("single", shards: 1, configure: static o => o.ShutdownTimeout = TimeSpan.FromMilliseconds(500));
+        Assert.That(await node.Ask(new LoopId(Looper.HangsOnUnload), new Hop([Looper.HangsOnUnload], 0, false)), Is.Zero);
+        Assert.That(node.IsReady, Is.True);
+        var phases = new List<string>();
+        node.StopPhase += (phase, _) => phases.Add(phase);
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        await node.StopAsync();
+        Assert.That(watch.Elapsed, Is.LessThan(TimeSpan.FromSeconds(3)), "the stop ends at its budget, not when the hung save ends");
+        Assert.That(node.IsReady, Is.False, "a stopping node is not ready");
+        Assert.That(phases, Is.EqualTo(new[] { "leave", "drain", "unload", "close" }));
+        Assert.That(node.Shards[0].ActorCount, Is.EqualTo(1), "the actor whose save hangs was reported, not waited for");
+    }
+
+    [Test]
     public async Task ReadingACallsResultBeforeItCompletedThrows()
     {
         var node = await Start("single", shards: 1);

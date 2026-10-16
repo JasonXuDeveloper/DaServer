@@ -2,6 +2,7 @@ using DaServer.Features;
 using DaServer.Rpc;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -13,6 +14,12 @@ namespace DaServer.Hosting;
 
 public static class DaServerHostingExtensions
 {
+    /// <summary>What the host and the platform add to <see cref="NodeOptions.ShutdownTimeout"/> before cutting a node off.</summary>
+    public static readonly TimeSpan ShutdownMargin = TimeSpan.FromSeconds(5);
+
+    /// <summary>Tag of the liveness check (<c>/alive</c>): a node that fails it is restarted, not just taken out of rotation.</summary>
+    public const string LiveTag = "live";
+
     /// <summary>
     /// Run a DaServer <see cref="Node"/> in this host. Options bind from the <paramref name="section"/> configuration
     /// section (appsettings, environment variables such as <c>DaServer__Clients__Port=7100</c>, command line). Features
@@ -33,6 +40,12 @@ public static class DaServerHostingExtensions
         builder.Services.AddSingleton<ICluster>(static sp => sp.GetRequiredService<Node>());
         builder.Services.AddSingleton<IMessageSender>(static sp => sp.GetRequiredService<Node>());
         builder.Services.AddHostedService<NodeHostedService>();
+        // The host waits a little longer than the node's own stop budget, so the node reports instead of being cut off.
+        builder.Services.AddOptions<HostOptions>().Configure<IOptions<NodeOptions>>(static (host, node) =>
+            host.ShutdownTimeout = node.Value.ShutdownTimeout + ShutdownMargin);
+        builder.Services.AddHealthChecks()
+            .AddCheck<NodeReadiness>("daserver-ready")
+            .AddCheck<NodeLiveness>("daserver-live", tags: [LiveTag]);
         var statsInterval = builder.Configuration.GetValue($"{section}:StatsInterval", TimeSpan.FromSeconds(30));
         if (statsInterval > TimeSpan.Zero)
             builder.Services.AddHostedService(sp => new NodeStatsLogger(sp.GetRequiredService<Node>(),
@@ -82,5 +95,20 @@ internal sealed class NodeHostedService(Node node) : IHostedService
         NodeMetrics.Track(node); // after its features started: they have added their gauges
     }
 
-    public Task StopAsync(CancellationToken cancellationToken) => node.StopAsync();
+    public Task StopAsync(CancellationToken cancellationToken) => node.StopAsync(cancellationToken);
+}
+
+/// <summary>Ready: joined, Up and not leaving (<c>/health</c>; platforms route traffic only to ready nodes).</summary>
+internal sealed class NodeReadiness(Node node) : IHealthCheck
+{
+    public Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken cancellationToken = default) =>
+        Task.FromResult(node.IsReady ? HealthCheckResult.Healthy() : HealthCheckResult.Unhealthy("not joined, or leaving"));
+}
+
+/// <summary>Live: no shard thread stalled (<c>/alive</c>; a stalled node is restarted).</summary>
+internal sealed class NodeLiveness(Node node) : IHealthCheck
+{
+    public Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken cancellationToken = default) =>
+        Task.FromResult(node.StalledShards == 0 ? HealthCheckResult.Healthy()
+            : HealthCheckResult.Unhealthy($"{node.StalledShards} shard(s) stalled longer than {node.Options.StallAfter}"));
 }

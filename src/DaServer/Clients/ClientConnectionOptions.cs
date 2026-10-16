@@ -37,4 +37,10 @@ public sealed class ClientConnectionOptions
     /// them. False when the nodes sit behind a load balancer without addresses of their own: clients stay.
     /// </summary>
     public bool Redirect { get; set; } = true;
+
+    /// <summary>
+    /// When the node leaves, its clients' connections are closed in waves over this time, so they reconnect to the
+    /// other nodes (resuming their sessions) gradually rather than all at once. Part of the node's stop budget.
+    /// </summary>
+    public TimeSpan DrainSpread { get; set; } = TimeSpan.FromSeconds(3);
 }
