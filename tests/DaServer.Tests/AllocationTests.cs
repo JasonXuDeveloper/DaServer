@@ -112,33 +112,12 @@ public class AllocationTests : ClusterTest
         Assert.That(quietest, Is.LessThan(8 * 1024), $"{quietest} B/s while checkpointing");
     }
 
-    /// <summary>Accepts every write at once: what is measured is the runtime's side of saving.</summary>
-    private sealed class AcceptingStore : DaServer.Persistence.IActorStore
-    {
-        public long Writes;
-
-        public ValueTask LoadAsync(ReadOnlyMemory<DaServer.Persistence.StoredKey> keys, Memory<DaServer.Persistence.StoredRecord> records,
-            CancellationToken cancellationToken = default)
-        {
-            records.Span.Clear();
-            return default;
-        }
-
-        public ValueTask SaveAsync(ReadOnlyMemory<DaServer.Persistence.StoredWrite> writes, Memory<bool> accepted,
-            CancellationToken cancellationToken = default)
-        {
-            accepted.Span.Fill(true);
-            Interlocked.Add(ref Writes, writes.Length);
-            return default;
-        }
-    }
-
     [Test, Retry(3)]
     public async Task SavingChangedRecordsDoesNotAllocate()
     {
         // 99 actors whose record changes every tick, checkpointed every 100 ms: about 1,000 writes a second, each
-        // serialized into a pooled frame, batched and applied.
-        var store = new AcceptingStore();
+        // serialized into a pooled frame, batched, stored (in place, like a database row) and applied.
+        var store = new DaServer.Persistence.InMemoryActorStore();
         var node = await Start("alloc", configure: o =>
         {
             o.GossipInterval = TimeSpan.FromHours(1);
@@ -146,7 +125,7 @@ public class AllocationTests : ClusterTest
         });
         for (int i = 1; i < 100; i++) await node.Ask(new BankId(i), new Earn());
         Thread.Sleep(1000);
-        long before = Interlocked.Read(ref store.Writes);
+        long before = await Versions(store);
         long quietest = long.MaxValue;
         for (int second = 0; second < 4; second++)
         {
@@ -155,9 +134,21 @@ public class AllocationTests : ClusterTest
             quietest = Math.Min(quietest, meter.Garbage);
         }
 
-        long written = Interlocked.Read(ref store.Writes) - before;
+        long written = await Versions(store) - before;
         Assert.That(written, Is.GreaterThan(2_000), "the records changed and were written");
         Assert.That(quietest, Is.LessThan(8 * 1024), $"{quietest} B/s while writing {written / 4} changed records a second");
+    }
+
+    /// <summary>The sum of the banks' record versions: one per write.</summary>
+    private static async Task<long> Versions(DaServer.Persistence.IActorStore store)
+    {
+        var keys = new DaServer.Persistence.StoredKey[99];
+        for (int i = 0; i < keys.Length; i++) keys[i] = new DaServer.Persistence.StoredKey(ActorIds<BankId>.HandlerTypeId, i + 1);
+        var records = new DaServer.Persistence.StoredRecord[keys.Length];
+        await store.LoadAsync(keys, records);
+        long sum = 0;
+        foreach (var record in records) sum += record.Version;
+        return sum;
     }
 
     [Test, Retry(3)]
