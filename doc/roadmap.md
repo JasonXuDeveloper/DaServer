@@ -122,8 +122,16 @@ Steady state allocates nothing: per message, call, reply, tick, broadcast, conne
       work items, one send-loop wake per session and one receive continuation per client; writing at the end of a
       send batch on the calling thread (no wake) halved them but doubled the broadcast's time (5,000 sends in a row on
       one thread instead of four) and made concurrent remote calls 2-3x slower (each sender wrote alone, so writes
-      stopped coalescing): rejected. Next to try: flush threads writing slices of the batched sessions in parallel,
-      only for large fan-outs, keeping the send loop's coalescing for everything else. io_uring is not used: .NET 11
+      stopped coalescing): rejected. Resuming the send loops through a few per-core queues (Kestrel's IOQueue: one
+      work item drains many wakes) halved the work items too, but broadcasts took 20-30% longer: a static split of the
+      sessions over 4 queues loses the thread pool's work stealing: rejected. The thread pool's per-connection wake is
+      not the cost; the sends are. What remains is fewer sends per session: merge a session's frames of one tick
+      (positions, broadcasts) into one write, at most one tick later, configurable.
+      On this 4-core VM the one-map scenario passes at 5,000 bots (p99 94.6 ms, the bot process allocating 208 KB/s,
+      31 ms of GC pauses) and fails at 10,000 for the current and the old code alike (the old code worse: 10,991
+      disconnects): servers and 10,000 clients saturate the cores, clients fall behind, the gateways drop them as slow
+      consumers and the reconnects then allocate (18.5 MB/s in the bots). The 10k numbers in the README were taken on a
+      faster VM. io_uring is not used: .NET 11
       has no io_uring sockets (dotnet/runtime#124374 closed unmerged), and container runtimes often block it; revisit
       when the runtime ships it.
       Independent of it: .NET's io_uring socket engine (opt-in PR, not shipped) would cut the cost per write
