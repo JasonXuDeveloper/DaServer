@@ -107,7 +107,11 @@ internal sealed class NodeHostedService(Node node, IHostApplicationLifetime life
         NodeMetrics.Track(node); // after its features started: they have added their gauges
     }
 
-    public Task StopAsync(CancellationToken cancellationToken) => node.StopAsync(cancellationToken);
+    public async Task StopAsync(CancellationToken cancellationToken)
+    {
+        await node.StopAsync(cancellationToken);
+        if (!node.StoppedClean) Environment.ExitCode = 1; // state was lost: not a clean exit for the platform
+    }
 }
 
 /// <summary>Ready: joined, Up and not leaving (<c>/health</c>; platforms route traffic only to ready nodes).</summary>
