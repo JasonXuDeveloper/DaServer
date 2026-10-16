@@ -17,9 +17,15 @@ public sealed partial class DaServerAnalyzer
     private static void CheckBlocking(OperationAnalysisContext context)
     {
         var type = context.ContainingSymbol.ContainingType;
-        if (type == null || !(Support.DerivesFrom(type, Support.ActorBase) || Support.DerivesFrom(type, Support.ServiceBase) ||
-                              Support.DerivesFrom(type, Support.EcsSystem)))
+        if (type == null) return;
+        bool system = Support.DerivesFrom(type, Support.EcsSystem);
+        if (!(system || Support.DerivesFrom(type, Support.ActorBase) || Support.DerivesFrom(type, Support.ServiceBase))) return;
+
+        if (system && context.Operation is IInvocationOperation { TargetMethod.Name: "Ask" } ask && IsCluster(ask.TargetMethod.IsExtensionMethod ? Unwrap(ask.Arguments.FirstOrDefault()?.Value) : Unwrap(ask.Instance)))
+        {
+            context.ReportDiagnostic(Diagnostic.Create(Rules.AskInSystem, ask.Syntax.GetLocation()));
             return;
+        }
 
         var (what, replacement) = context.Operation switch
         {
@@ -53,6 +59,9 @@ public sealed partial class DaServerAnalyzer
                 return (null, null);
         }
     }
+
+    private static bool IsCluster(ITypeSymbol? type) => type != null && (
+        Support.Is(type, "DaServer.Runtime.ICluster") || Support.Implements(type, "DaServer.Runtime.ICluster"));
 
     private static bool IsTask(INamedTypeSymbol type) =>
         type.ContainingNamespace?.ToDisplayString() == "System.Threading.Tasks" && type.Name is "Task" or "ValueTask";

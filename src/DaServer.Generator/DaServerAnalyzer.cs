@@ -13,7 +13,7 @@ namespace DaServer.Generator;
 public sealed partial class DaServerAnalyzer : DiagnosticAnalyzer
 {
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics { get; } = ImmutableArray.Create(
-        Rules.BadHandler, Rules.BadMessage, Rules.NotWireType, Rules.IdCollision, Rules.NoDefaultConstructor, Rules.WrongFlow, Rules.StatefulHandlerType, Rules.WrongAddress, Rules.SharedReferencesServer, Rules.MisplacedReplyWhen, Rules.BlockingCall);
+        Rules.BadHandler, Rules.BadMessage, Rules.NotWireType, Rules.IdCollision, Rules.NoDefaultConstructor, Rules.WrongFlow, Rules.StatefulHandlerType, Rules.WrongAddress, Rules.SharedReferencesServer, Rules.MisplacedReplyWhen, Rules.BlockingCall, Rules.AskInSystem);
 
     public override void Initialize(AnalysisContext context)
     {
@@ -219,6 +219,10 @@ internal static class Rules
 
     public static readonly DiagnosticDescriptor BlockingCall = new("DAS009", "Synchronous wait on a shard thread",
         "'{0}' blocks the shard thread, and every actor of the shard with it: {1}", Category, DiagnosticSeverity.Error, true);
+
+    public static readonly DiagnosticDescriptor AskInSystem = new("DAS012", "A system asks",
+        "Systems do not wait for replies (an answer arriving ticks later may be stale): read data kept on this shard, or Send an intent to the owner of the data, which validates it and sends the outcome back as a message",
+        Category, DiagnosticSeverity.Error, true);
 
     public static readonly DiagnosticDescriptor WrongAddress = new("DAS008", "Wrong kind of address",
         "'{0}' {1}", Category, DiagnosticSeverity.Error, true);

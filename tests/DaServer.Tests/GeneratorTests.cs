@@ -133,6 +133,7 @@ public class GeneratorTests
     [TestCase("[NinoType, Message] public partial record struct Q : IRequest<int>; public sealed class Bad : Service { [Handle] public async ValueTask<int> On(Q m) { await Task.Delay(10); return 1; } }", "DAS009")]
     [TestCase("[NinoType, Message] public partial record struct Q : IRequest<int>; public sealed class Bad : Service { private static readonly object Gate = new(); [Handle] public int On(Q m) { lock (Gate) return 1; } }", "DAS009")]
     [TestCase("public partial class Bad : EasyEcs.EcsSystem { protected override void OnUpdate() => System.Threading.Thread.Sleep(1); }", "DAS009")]
+    [TestCase("public readonly record struct BadId(long Value) : IActorId; [NinoType, Message] public partial record struct Q : IRequest<int>; public partial class Bad : EasyEcs.EcsSystem { protected override void OnUpdate() => _ = World.Cluster().Ask(new BadId(1), new Q()); }", "DAS012")]
     public async Task MisuseIsReportedByTheAnalyzer(string source, string id)
     {
         var (_, diagnostics) = await Run(source);
