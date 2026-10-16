@@ -203,6 +203,8 @@ internal sealed class ReplyWatcher<T> : IValueTaskSource
         catch (Exception e)
         {
             context.ReplyException(e);
+            _core.SetException(e); // the turn fails too: the runtime counts it and applies the actor's OnError
+            return;
         }
 
         _core.SetResult(true);

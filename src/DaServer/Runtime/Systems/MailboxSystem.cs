@@ -35,6 +35,7 @@ internal sealed partial class MailboxSystem : EcsSystem
             {
                 target.TurnChain = 0;
                 task.GetAwaiter().GetResult(); // completed while being dispatched: release a pooled source (errors were replied)
+                if (actor.Has<UnloadRequested>()) break; // its handler failed and it reloads: the rest waits for the new one
                 continue;
             }
             TurnWatcher.Begin(world, actor, task);

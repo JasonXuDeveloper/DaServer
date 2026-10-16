@@ -23,6 +23,8 @@ public static class NodeMetrics
             description: "Active loaded actors");
         Meter.CreateObservableCounter("daserver.shard.rejected", () => Sample(static n => n.Rejected),
             description: "Calls and events refused because a shard or actor mailbox was full");
+        Meter.CreateObservableCounter("daserver.handler.failed", () => Sample(static n => n.Failed),
+            description: "Messages whose handler threw (poison messages show up here)");
         Meter.CreateObservableCounter("daserver.shard.expired", () => Sample(static n => n.Expired),
             description: "Requests dropped unrun because their caller had already timed out");
         Meter.CreateObservableGauge("daserver.shard.stalled", () => Sample(static n => n.StalledShards),

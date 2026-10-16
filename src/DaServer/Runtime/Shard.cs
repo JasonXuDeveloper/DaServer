@@ -22,6 +22,7 @@ internal sealed class Shard : CompletionThread
     private int _overflowCount;
     private long _rejected;
     private long _expired;
+    private long _failed;
     private readonly ManualResetEventSlim _wake = new(false, spinCount: 0);
     private int _sleeping;
     private readonly Thread _thread;
@@ -66,6 +67,9 @@ internal sealed class Shard : CompletionThread
     /// <summary>Requests dropped unrun because their caller had already timed out (the call carried a deadline).</summary>
     public long Expired => Interlocked.Read(ref _expired);
 
+    /// <summary>Messages whose handler failed (threw) on this shard since start: poison messages show up here.</summary>
+    public long Failed => Interlocked.Read(ref _failed);
+
     /// <summary>Active loaded actors (approximate, any thread).</summary>
     public int ActorCount => Volatile.Read(ref _actorCount);
 
@@ -103,6 +107,8 @@ internal sealed class Shard : CompletionThread
     internal void CountRejected() => Interlocked.Increment(ref _rejected);
 
     internal void CountExpired() => Interlocked.Increment(ref _expired);
+
+    internal void CountFailed() => Interlocked.Increment(ref _failed);
 
     /// <summary>Thread-safe: enqueue a completion, callback or turn end and wake the shard if it is sleeping.</summary>
     internal void Post(in WorkItem item)

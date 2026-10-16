@@ -66,6 +66,21 @@ public class BackpressureTests : ClusterTest
         Assert.That(node.Shards[0].ActorCount, Is.EqualTo(1), "the actor whose save hangs was reported, not waited for");
     }
 
+    [TestCase(false)]
+    [TestCase(true)]
+    public async Task AFailedHandlerIsCountedAndItsActorResumesOrReloads(bool async)
+    {
+        var node = await Start("single", shards: 1);
+        Assert.That(await node.Ask(new FragileId(1), new Spoil(5, false, async)), Is.EqualTo(5));
+        Assert.ThrowsAsync<RpcException>(async () => await node.Ask(new FragileId(1), new Spoil(1, true, async)));
+        Assert.That(await node.Ask(new FragileId(1), new Spoil(0, false, async)), Is.EqualTo(6), "Resume keeps the half-changed state");
+
+        Assert.That(await node.Ask(new FragileId(100), new Spoil(5, false, async)), Is.EqualTo(5));
+        Assert.ThrowsAsync<RpcException>(async () => await node.Ask(new FragileId(100), new Spoil(1, true, async)));
+        Assert.That(await node.Ask(new FragileId(100), new Spoil(0, false, async)), Is.Zero, "Reload dropped it unsaved: loaded again");
+        Assert.That(node.Failed, Is.EqualTo(2), "each failure is counted");
+    }
+
     [Test]
     public async Task ReadingACallsResultBeforeItCompletedThrows()
     {

@@ -348,6 +348,9 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
     /// <summary>Requests dropped unrun since start because their caller had already timed out.</summary>
     public long Expired => Sum(static s => s.Expired);
 
+    /// <summary>Messages whose handler failed since start (all shards).</summary>
+    public long Failed => Sum(static s => s.Failed);
+
     private long Sum(Func<Shard, long> value)
     {
         long total = 0;
