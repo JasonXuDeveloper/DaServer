@@ -112,13 +112,31 @@ public sealed class DaServerCluster
         }
 
         var group = new DaServerNodeGroup(this, name, nodes);
-        foreach (var node in nodes)
-            node.PublishAsDockerComposeService((_, service) =>
+        // The platform's grace period follows the stop budget, for the environments the model publishes to (each hook
+        // requires its environment, which may be added after the nodes).
+        _builder.Eventing.Subscribe<BeforeStartEvent>((e, _) =>
+        {
+            int grace = (int)Math.Ceiling((group.ShutdownTimeout + StopMargin).TotalSeconds);
+            bool compose = e.Model.Resources.OfType<Docker.DockerComposeEnvironmentResource>().Any();
+            bool kubernetes = e.Model.Resources.OfType<Kubernetes.KubernetesEnvironmentResource>().Any();
+            foreach (var node in nodes)
             {
-                // Compose stops a container after 10 s by default: give the node its whole stop budget plus a margin.
-                service.StopGracePeriod = $"{(int)Math.Ceiling((group.ShutdownTimeout + StopMargin).TotalSeconds)}s";
-                service.Restart = "unless-stopped";
-            });
+                // Compose stops a container after 10 s by default, Kubernetes kills a pod after 30 s.
+                if (compose)
+                    node.PublishAsDockerComposeService((_, service) =>
+                    {
+                        service.StopGracePeriod = $"{grace}s";
+                        service.Restart = "unless-stopped";
+                    });
+                if (kubernetes)
+                    node.PublishAsKubernetesService(resource =>
+                    {
+                        if (resource.Workload?.PodTemplate.Spec is { } pod) pod.TerminationGracePeriodSeconds = grace;
+                    });
+            }
+
+            return Task.CompletedTask;
+        });
         return group;
     }
 
