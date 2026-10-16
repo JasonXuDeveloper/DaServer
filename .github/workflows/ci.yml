@@ -7,6 +7,15 @@ on:
 jobs:
   build-test:
     runs-on: ubuntu-latest
+    # The PostgreSQL actor store's tests run against it (DASERVER_TEST_POSTGRES); the e2e starts its own through Aspire.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: daserver_test
+        ports: ["5432:5432"]
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
         with:
@@ -22,6 +31,8 @@ jobs:
 
       - name: Test
         working-directory: DaServer
+        env:
+          DASERVER_TEST_POSTGRES: Host=localhost;Username=postgres;Password=postgres;Database=daserver_test
         run: dotnet test tests/DaServer.Tests -c Release --no-build --blame-hang-timeout 120s
 
       - name: Sample tests
