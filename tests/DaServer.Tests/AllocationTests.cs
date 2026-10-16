@@ -165,9 +165,11 @@ public class AllocationTests : ClusterTest
     }
 
     [Test, Retry(3)]
-    public async Task GatewayFanOutDoesNotAllocate()
+    public async Task GatewayFanOutDoesNotAllocate([Values(0, 2)] int flushMs)
     {
-        var gateway = await Start("gw", gateway: true, configure: o => o.GossipInterval = TimeSpan.FromHours(1));
+        // Written at once, or on a 2 ms beat (ClientConnectionOptions.FlushInterval).
+        var gateway = await Start("gw", gateway: true, configure: o => o.GossipInterval = TimeSpan.FromHours(1),
+            clients: o => o.FlushInterval = TimeSpan.FromMilliseconds(flushMs));
         var receiver = new GoldCounter();
         const int members = 16;
         for (int i = 0; i < members; i++)
