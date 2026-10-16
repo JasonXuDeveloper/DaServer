@@ -221,7 +221,7 @@ internal static class Rules
         "'{0}' blocks the shard thread, and every actor of the shard with it: {1}", Category, DiagnosticSeverity.Error, true);
 
     public static readonly DiagnosticDescriptor AskInSystem = new("DAS012", "A system asks",
-        "Systems do not wait for replies (an answer arriving ticks later may be stale): read data kept on this shard, or Send an intent to the owner of the data, which validates it and sends the outcome back as a message",
+        "Systems do not wait for replies (an answer arriving ticks later may be stale): read and write the components of this world directly (queries, Entity handles), or Send an intent to the owner of data in another world, which validates it and sends the outcome back as a message",
         Category, DiagnosticSeverity.Error, true);
 
     public static readonly DiagnosticDescriptor WrongAddress = new("DAS008", "Wrong kind of address",
