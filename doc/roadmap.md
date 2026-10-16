@@ -118,6 +118,14 @@ Steady state allocates nothing: per message, call, reply, tick, broadcast, conne
       one write per arriving batch: in the 10k scenario 10 Hz `Motion` plus 4 Hz realm broadcasts from another node =
       14 writes a second per session, about frames x connections. A beat that only wakes send loops was measured and
       rejected (ADR-034); this one must merge them into ~10 and cost no more CPU. Proven with BDN and the 10k E2E.
+      Measured since (ThreadingDiagnoser, same VM): a broadcast to 5,000 sessions in 9 groups costs ~10,000 thread-pool
+      work items, one send-loop wake per session and one receive continuation per client; writing at the end of a
+      send batch on the calling thread (no wake) halved them but doubled the broadcast's time (5,000 sends in a row on
+      one thread instead of four) and made concurrent remote calls 2-3x slower (each sender wrote alone, so writes
+      stopped coalescing): rejected. Next to try: flush threads writing slices of the batched sessions in parallel,
+      only for large fan-outs, keeping the send loop's coalescing for everything else. io_uring is not used: .NET 11
+      has no io_uring sockets (dotnet/runtime#124374 closed unmerged), and container runtimes often block it; revisit
+      when the runtime ships it.
       Independent of it: .NET's io_uring socket engine (opt-in PR, not shipped) would cut the cost per write
       without changes here.
 - [ ] Z4 Keep it: CLAUDE.md rule plus analyzer coverage where a misuse is detectable in user code (e.g.
@@ -428,6 +436,12 @@ in separate commits.
       `PersistenceBenchmark`. Relational business
       data (accounts, payments, mail, auctions) stays in the user's ORM inside services. (a studied game server write-behind, ET
       serialized components, Orleans IPersistentState + ETags)
+- [x] Z7 A/B against d676d2a on one VM (default job, both built here; the VM is slower than when README numbers were
+      taken, so only same-machine pairs compare): calls 26-74% faster (1 local call 60.1 -> 16.5 us, 1,024 local
+      5,435 -> 1,391 us), one-way messages 54-88% faster (local 5.26 us -> 0.64 us), allocations equal or lower. Group
+      broadcasts measured +1% to +32% and the broadcast scenario +7% / +13%, but repeated runs of one build vary by
+      +-25% on this VM (35-46 ms for the same 5,000 x 9 case); a bisection on single runs pointed at a commit that two
+      interleaved runs then cleared. Broadcast work goes to Z5.
 - [ ] Z6 .NET 11 features to measure with BDN: runtime async (`<Features>runtime-async=on</Features>`, preview; pooled
       builders such as `Reply<T>` opt out) on the call and handler paths; Zstandard (`System.IO.Compression`) for large
       actor records. Already in effect without changes: JIT bounds-check and devirtualization work, continuations that

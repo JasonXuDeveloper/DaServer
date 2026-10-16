@@ -1062,13 +1062,18 @@ records that no longer hold). Each: context → decision → consequences.
 - Decision:
   - The e2e removes every `OTEL_*` variable and sets `DOTNET_CLI_TELEMETRY_OPTOUT`, uses a fresh database, gives
     every node and database three minutes to become healthy (failing with the resource and its health report), stops
-    the nodes first (as a platform stops a deployment) and checks that every player's record was written.
-  - The sample's PostgreSQL has a persistent lifetime: stopping the AppHost never takes it from the nodes' last saves.
+    the AppHost and checks that every node exited with 0 (every player saved before the database stopped).
+  - `DaServer.Aspire` stops a cluster's nodes before the AppHost's other resources: when the AppHost is asked to stop,
+    the nodes get SIGTERM from an `ApplicationStopping` callback (registered last, so it runs before Aspire's own
+    shutdown; nodes that exit after it began leave the orchestrator waiting out the whole shutdown timeout), and each
+    node's exit code is logged. A node exits with 1 when its stop lost state (`Node.StoppedClean`). Windows falls back
+    to Aspire's stop command.
+  - The sample's PostgreSQL also has a persistent lifetime: the next run reuses the running container.
   - `WithActorStore` adds `WaitFor` only when publishing (Compose orders start and stop by it); run locally, nodes
     start beside the database and their readiness includes it.
   - The e2e measures 10 s (two map changes) with 1,000 bots; long and large runs (10k bots) are the same test with
     `E2E_*` variables, run on demand, not on every commit. Behavior is covered by the in-process cluster tests.
-- Consequences: about 34 s (Release): 6 s of the testing host, about 7 s of seven processes starting cold through
-  `dotnet run` on four cores (a node alone is up in 0.5 s), 2 s of health polling, 14 s of bots, 5 s of stopping.
+- Consequences: about 32 s: 6 s of the testing host, about 7 s of seven processes starting cold through `dotnet run` on
+  four cores (a node alone is up in 0.5 s), 2 s of health polling, 13 s of bots (10 s measured), 4 s of stopping.
   The phases are printed in the test log.
 
