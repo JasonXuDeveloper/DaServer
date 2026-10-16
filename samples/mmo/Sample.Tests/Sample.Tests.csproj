@@ -13,9 +13,13 @@
         <PackageReference Include="NUnit.Analyzers" Version="4.15.0" />
     </ItemGroup>
 
-    <!-- The sample's shared rules and client logic, tested without a cluster. -->
+    <!-- The sample's shared rules and client logic, tested without a cluster; its servers, in an in-process cluster. -->
     <ItemGroup>
         <ProjectReference Include="..\Sample.Client\Sample.Client.csproj" />
+        <ProjectReference Include="..\Sample.LoginServer\Sample.LoginServer.csproj" />
+        <ProjectReference Include="..\Sample.GameServer\Sample.GameServer.csproj" />
+        <ProjectReference Include="..\Sample.MapServer\Sample.MapServer.csproj" />
+        <ProjectReference Include="..\..\..\src\DaServer.Testing\DaServer.Testing.csproj" />
         <ProjectReference Include="..\..\..\src\DaServer.Generator\DaServer.Generator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
     </ItemGroup>
 
