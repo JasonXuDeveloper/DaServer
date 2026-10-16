@@ -227,8 +227,9 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
     }
 
     /// <summary>
-    /// Register an object whose [Handle] methods receive the messages servers push to this client (one handler per
-    /// message type: a later registration replaces an earlier one).
+    /// Register an object whose [Handle] methods receive the messages servers push to this client. Every registered
+    /// object handling a message receives it, in registration order (the game's state and a measurement each subscribe
+    /// to what they need).
     /// </summary>
     public void Register(object handler)
     {
@@ -480,14 +481,13 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
     {
         var header = FrameHeader.Read(frame);
         var registered = Volatile.Read(ref _handlers);
-        for (int i = registered.Length - 1; i >= 0; i--) // the latest registration handling the message wins
+        for (int i = 0; i < registered.Length; i++)
         {
             if (registered[i].Handlers.Of(header.MessageId) is not { } handler) continue;
             var reader = new Reader(FrameHeader.PayloadOf(in header, frame));
             var context = default(CallContext);
             var task = handler.Dispatcher(registered[i].Target, ref reader, in context);
             if (task.IsCompleted) task.GetAwaiter().GetResult();
-            return;
         }
     }
 
