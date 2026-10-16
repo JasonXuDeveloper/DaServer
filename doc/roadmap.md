@@ -320,8 +320,9 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
       the signing secret (once within a minute: no replay); an accepted connection is read only after it
       (`LinkAuthTests`). Links are authenticated, not encrypted: TLS stays the platform's (service mesh, private
       network).
-- [ ] C4 Supervision: per actor type `OnError` policy (Resume default, Reload = unload and reload state); poison
-      message counter and metric.
+- [x] C4 Supervision (ADR-066): `Actor.OnError(exception)` returns `ErrorAction.Resume` (default) or `Reload` (removed
+      without saving, the next message loads it again); every failed handler is counted (`Node.Failed`,
+      `daserver.handler.failed`).
 
 ## Next: versioning and rolling upgrades (V, before S)
 - [ ] V1 Generated wire manifest (message ids, field layout) committed with a baseline test: fields are append-only,

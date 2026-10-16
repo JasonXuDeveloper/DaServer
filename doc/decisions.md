@@ -952,3 +952,20 @@ records that no longer hold). Each: context → decision → consequences.
 - Consequences: nodes need clocks within a minute of each other, which NTP gives. Links are authenticated but not
   encrypted. A node of another protocol version is refused until rolling upgrades (V) define compatibility.
 
+## ADR-066 Supervision is a decision per actor type
+- Context: a handler that throws leaves its actor's state as far as it got. Some actor types tolerate that (counters,
+  rooms); others must not continue from a half-applied change (a trade, an inventory move). Repeated failures of one
+  message type had no signal.
+- Decision:
+  - `Actor.OnError(Exception)` returns what to do. `ErrorAction.Resume` (the default) keeps the actor.
+    `ErrorAction.Reload` removes it without `OnUnload`, as a fenced actor is removed, and its next message loads it
+    again from storage.
+  - The caller receives the error either way. A request handler that fails after suspending replies the error and
+    faults its turn, so asynchronous failures reach `OnError` like synchronous ones.
+  - Every failed handler, actor or service, is counted (`Node.Failed`, metric `daserver.handler.failed`).
+- Alternatives:
+  - Akka-style supervisor hierarchies with restart strategies: no actor hierarchy exists here (actors are entities
+    addressed by id), and backoff or escalation would add concepts for a decision one method can make.
+  - Stopping the actor for good: the next message would load it anyway, since actors are virtual.
+- Consequences: Reload only helps once state is persisted (N5): until then it resets the actor to its `OnLoad` state.
+
