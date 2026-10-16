@@ -1,4 +1,5 @@
 using EasyEcs;
+using Nino.Core;
 
 namespace DaServer.Benchmark;
 
@@ -18,3 +19,6 @@ public struct Idle : IComponent;
 
 /// <summary>Needs change every tick (Replanning) or never (Running).</summary>
 public record struct Restless(bool Changing) : IComponent;
+
+/// <summary>A vault's coins: kept in the actor store.</summary>
+[NinoType, Persist] public partial record struct Coins(long Amount) : IComponent;
