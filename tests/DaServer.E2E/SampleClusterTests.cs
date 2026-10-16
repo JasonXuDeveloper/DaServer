@@ -29,8 +29,16 @@ public class SampleClusterTests
             resource.Annotations.Add(new EnvironmentCallbackAnnotation(static context =>
                 context.EnvironmentVariables.Remove("OTEL_EXPORTER_OTLP_ENDPOINT")));
 
+        // A fresh database per run: the sample keeps its actor store on a volume, initialized with the password of the
+        // run that created it, while the testing builder generates a new one each time.
+        foreach (var container in builder.Resources.OfType<ContainerResource>())
+            foreach (var volume in container.Annotations.OfType<ContainerMountAnnotation>().ToList())
+                container.Annotations.Remove(volume);
+
         await using var app = await builder.BuildAsync(cancellationToken);
         await app.StartAsync(cancellationToken);
+        await EveryResourceHealthy(app, builder.Resources.Where(r => r is ProjectResource { Name: not "bots" } or IResourceWithConnectionString),
+            TimeSpan.FromMinutes(3), cancellationToken);
 
         // The bots' output goes to the test log: a failure says why (gaps, disconnects, latency, failed map changes).
         var logs = app.Services.GetRequiredService<ResourceLoggerService>();
@@ -47,5 +55,31 @@ public class SampleClusterTests
                  e.Snapshot.State?.Text == KnownResourceStates.FailedToStart, cancellationToken);
 
         Assert.That(finished.Snapshot.ExitCode, Is.EqualTo(0), $"bots ended {finished.Snapshot.State?.Text}");
+    }
+
+    /// <summary>
+    /// Fail fast and say why when the cluster does not come up (a database refusing its password, a node that never
+    /// joins): the bots would otherwise wait for it until the test's own timeout.
+    /// </summary>
+    private static async Task EveryResourceHealthy(DistributedApplication app, IEnumerable<IResource> resources, TimeSpan limit,
+        CancellationToken cancellationToken)
+    {
+        var notifications = app.Services.GetRequiredService<ResourceNotificationService>();
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(limit);
+        foreach (var resource in resources)
+        {
+            try
+            {
+                await notifications.WaitForResourceHealthyAsync(resource.Name, timeout.Token);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                string why = notifications.TryGetCurrentState(resource.Name, out var current)
+                    ? $"{current.Snapshot.State?.Text}; " + string.Join("; ", current.Snapshot.HealthReports.Select(r => $"{r.Name}: {r.Status} {r.Description} {r.ExceptionText}"))
+                    : "no state";
+                Assert.Fail($"'{resource.Name}' was not healthy within {limit}: {why}");
+            }
+        }
     }
 }

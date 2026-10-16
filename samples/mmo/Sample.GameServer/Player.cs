@@ -6,13 +6,15 @@ using Sample.Contracts;
 
 namespace Sample.GameServer;
 
-/// <summary>The player: its own state, and which map it is in. The map simulates the avatar.</summary>
+/// <summary>
+/// The player: its profile (stored, restored before <see cref="OnLoad"/>), and which map it is in. The map simulates
+/// the avatar.
+/// </summary>
 public sealed class Player : Actor<PlayerId, PlayerState>
 {
     public override Reply OnLoad()
     {
-        // Load from storage here (await is fine: messages wait until loading completes).
-        State.Name = "player-" + Id.Value;
+        if (!Entity.Has<PlayerProfile>()) Entity.Add<PlayerProfile>() = new PlayerProfile("player-" + Id.Value, 0); // a new player
         return default;
     }
 
@@ -20,7 +22,7 @@ public sealed class Player : Actor<PlayerId, PlayerState>
     public async Reply<bool> On(Attach m)
     {
         await BindSession(m.Session); // the client's GetInfo/EnterMap reach this player from now on
-        State.Logins++;               // State is re-read after awaiting (never hold the ref across await)
+        Entity.Get<PlayerProfile>().Logins++; // components are re-read after awaiting (never hold a ref across await)
         State.Session = m.Session;
         Cluster.Send(RealmId.The, new PlayerOnline(Id));
         return true;
@@ -39,7 +41,11 @@ public sealed class Player : Actor<PlayerId, PlayerState>
     public void On(SessionResumed e) => State.Session = e.Session; // resumed: not offline, nothing else to resend
 
     [Handle]
-    public PlayerInfo On(GetInfo _) => new(Id, State.Name, State.Map, State.Logins);
+    public PlayerInfo On(GetInfo _)
+    {
+        ref var profile = ref Entity.Get<PlayerProfile>();
+        return new PlayerInfo(Id, profile.Name, State.Map, profile.Logins);
+    }
 
     [Handle]
     public async Reply<bool> On(EnterMap m)

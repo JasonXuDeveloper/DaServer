@@ -29,6 +29,12 @@ public static class DaServerHostingExtensions
     /// </summary>
     public static IHostApplicationBuilder AddDaServer(this IHostApplicationBuilder builder, string section = "DaServer")
     {
+        // Defaults below every other source (appsettings, environment, command line override them): ASP.NET Core's
+        // per-request information logs would drown a node's own logs under health probes.
+        builder.Configuration.Sources.Insert(0, new Microsoft.Extensions.Configuration.Memory.MemoryConfigurationSource
+        {
+            InitialData = [new("Logging:LogLevel:Microsoft.AspNetCore", "Warning")],
+        });
         builder.Services.Configure<NodeOptions>(builder.Configuration.GetSection(section));
         builder.AddDaServerFeature<DaServer.Clients.ClientConnectionOptions>("Clients", static o => new DaServer.Clients.ClientConnections(o), section);
         builder.Services.AddSingleton(static sp =>
