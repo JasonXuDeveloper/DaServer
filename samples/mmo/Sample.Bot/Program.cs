@@ -24,8 +24,10 @@ internal static class Scenario
     /// <param name="chatEvery">Seconds between a bot's chat lines (0: never).</param>
     /// <param name="travelEvery">Seconds between a bot's map changes (0: never).</param>
     /// <param name="maxP99">Realm broadcast p99 latency limit, ms.</param>
+    /// <param name="lean">Bots keep no view of other avatars: the servers' and the network's load is the same, the
+    /// clients' presentation state is skipped (load tests with the servers on the same machine).</param>
     public static async Task<int> RunAsync(int bots = 1000, int seconds = 30, int maps = 0, int turnsPerSecond = 1,
-        int chatEvery = 10, int travelEvery = 0, int maxP99 = 250)
+        int chatEvery = 10, int travelEvery = 0, int maxP99 = 250, bool lean = false)
     {
         if (maps <= 0) maps = Math.Max(1, bots / 100);
         var endpoints = Endpoints.FromEnvironment();
@@ -45,13 +47,13 @@ internal static class Scenario
             meter.Counter("chat", SwarmCounterKind.Rate), meter.Counter("gaps", SwarmCounterKind.Failure));
         var telemetry = new Telemetry[bots];
 
-        await swarm.StartAsync(bots, static () => new ClusterClient(callbackQueueCapacity: 1024), async user =>
+        await swarm.StartAsync(bots, static () => new ClusterClient(callbackQueueCapacity: 256), async user =>
         {
             int i = user.Index;
             await user.ConnectAsync(endpoints);
             user.Client.Register(telemetry[i] = new Telemetry(meter, lines, gaps));
             if (i % PositionTelemetry.Every == 0) user.Client.Register(new PositionTelemetry(positions));
-            var player = Player.Create(user.World, user.Client);
+            var player = Player.Create(user.World, user.Client, view: !lean);
             if (!await Swarm.Retry(() => Player.LogInAsync(player, "bot-" + i))) throw new InvalidOperationException("login refused: bot-" + i);
             await Swarm.Retry(() => Player.EnterMapAsync(player, new MapId(1 + i % maps)));
             // Schedules start spread over a second, so input does not come in waves.

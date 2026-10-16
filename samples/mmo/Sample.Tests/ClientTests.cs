@@ -24,7 +24,7 @@ public class ClientTests
         _player = Player.Create(_world, _client);
         _player.Get<Me>() = new Me(new PlayerId(1), new MapId(1));
         _player.Get<Position>() = new Position(150, 150); // cell (1, 1)
-        _pushes = new Pushes(_world, _player);
+        _pushes = new Pushes(_player);
     }
 
     [TearDown]
@@ -36,20 +36,18 @@ public class ClientTests
 
     private static Motion Motion(params Moved[] moved) => new(new MapId(1), new Moves { Items = [.. moved] });
 
-    private Dictionary<PlayerId, Entity> Avatars => _player.Get<View>().Avatars;
+    private Dictionary<PlayerId, Track> Avatars => _player.Get<View>().Avatars;
 
     [Test]
     public void AvatarsInViewAreTrackedUntilTheyAreGone()
     {
         _pushes.On(Motion(new Moved(new PlayerId(2), 160, 160, 1, 0)));
-        var track = Avatars[new PlayerId(2)].Get<Track>();
+        var track = Avatars[new PlayerId(2)];
         Assert.That(track.Now(track.AtMs + 1000), Is.EqualTo(new Position(160 + Timing.TickRate, 160)), "extrapolated per tick");
         Assert.That(track.Now(track.AtMs + 1_000_000).X, Is.EqualTo(MapGeometry.Size), "the border stops it");
 
-        var avatar = Avatars[new PlayerId(2)];
         _pushes.On(new Gone(new MapId(1), new PlayerId(2)));
         Assert.That(Avatars, Is.Empty);
-        Assert.That(avatar.IsAlive, Is.False);
     }
 
     [Test]
