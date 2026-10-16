@@ -19,7 +19,7 @@ internal static class Support
 
     /// <summary>Who a message travels between, besides servers (bits of <see cref="Shapes.FlowOf"/>).</summary>
     public const int FlowFromClient = 1, FlowToClient = 2;
-    public const string WireIdAttribute = "DaServer.WireIdAttribute";
+    public const string TypeIdAttribute = "DaServer.TypeIdAttribute";
     public const string RequestInterface = "DaServer.IRequest`1";
     public const string NinoTypeAttribute = "Nino.Core.NinoTypeAttribute";
     public const string ActorBase = "DaServer.Runtime.Actor";
@@ -30,7 +30,7 @@ internal static class Support
     public static readonly SymbolDisplayFormat Fqn = SymbolDisplayFormat.FullyQualifiedFormat
         .AddMiscellaneousOptions(SymbolDisplayMiscellaneousOptions.IncludeNullableReferenceTypeModifier);
 
-    /// <summary>FNV-1a 32, identical to DaServer.WireIds.Fnv1a (0 is reserved).</summary>
+    /// <summary>FNV-1a 32, identical to DaServer.TypeIds.Fnv1a (0 is reserved).</summary>
     public static uint Fnv1a(string text)
     {
         uint hash = 2166136261;

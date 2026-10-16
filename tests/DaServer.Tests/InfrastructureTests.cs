@@ -110,7 +110,7 @@ public class InfrastructureTests
         int payload = w.Payload.Length;
         w.SetCallId(41);
         w.SetOrigin(new Origin(7, 8)); // after the call id: the call id moves behind it
-        w.SetHeader(FrameKind.Message, 3, MessageType<Add>.WireId, 9);
+        w.SetHeader(FrameKind.Message, 3, TypeId<Add>.Value, 9);
         var header = FrameHeader.Read(w.Frame);
         Assert.That(header.IsRequest, Is.True);
         Assert.That(header.Flags, Is.EqualTo(FrameFlags.HasCall | FrameFlags.HasOrigin));
@@ -121,7 +121,7 @@ public class InfrastructureTests
         // A relaying hop copies the frame and rewrites the call id in place: the frame does not grow.
         using var relayed = FrameWriter.CopyOf(w.Frame);
         relayed.SetCallId(77);
-        relayed.SetHeader(FrameKind.Message, 3, MessageType<Add>.WireId, 9, hops: 1);
+        relayed.SetHeader(FrameKind.Message, 3, TypeId<Add>.Value, 9, hops: 1);
         Assert.That(relayed.Length, Is.EqualTo(w.Length));
         Assert.That(relayed.CallId, Is.EqualTo(77));
         Assert.That(relayed.Origin, Is.EqualTo(new Origin(7, 8)), "the origin travels on");
@@ -343,10 +343,15 @@ public class InfrastructureTests
     }
 
     [Test]
-    public void MessageIdsAreTheHashOfTheTypeName()
+    public void TypeIdsAreTheHashOfTheTypeNameUnlessSet()
     {
         // The analyzer checks collisions with the same hash at compile time; the runtime must agree.
-        Assert.That(MessageType<Add>.WireId, Is.EqualTo(WireIds.Fnv1a("DaServer.Tests.Add")));
-        Assert.That(MessageType<SessionClosed>.WireId, Is.EqualTo(WireIds.Fnv1a("DaServer.SessionClosed")));
+        Assert.That(TypeId<Add>.Value, Is.EqualTo(TypeIds.Fnv1a("DaServer.Tests.Add")));
+        Assert.That(TypeId<SessionClosed>.Value, Is.EqualTo(TypeIds.Fnv1a("DaServer.SessionClosed")));
+        // A renamed type keeps its identity (and its stored records) with [TypeId].
+        Assert.That(TypeId<Renamed>.Value, Is.EqualTo(0x5EED_0001u));
     }
+
+    [TypeId(0x5EED_0001)]
+    private struct Renamed;
 }

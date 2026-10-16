@@ -267,10 +267,10 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
     /// address actors only (DAS008).
     /// </summary>
     public void Send<TAddr, T>(TAddr address, in T message) where TAddr : struct, IAddress where T : struct =>
-        Send(MessageWriter.Write(in message), MessageType<T>.WireId, ActorScope<TAddr>(), Addresses<TAddr>.Value(in address), null);
+        Send(MessageWriter.Write(in message), TypeId<T>.Value, ActorScope<TAddr>(), Addresses<TAddr>.Value(in address), null);
 
     /// <summary>A <see cref="FromClientAttribute">[FromClient]</see> message to the actor bound to this client's session, or to its service.</summary>
-    public void Send<T>(in T message) where T : struct => Send(MessageWriter.Write(in message), MessageType<T>.WireId, 0, 0, null);
+    public void Send<T>(in T message) where T : struct => Send(MessageWriter.Write(in message), TypeId<T>.Value, 0, 0, null);
 
     public Reply<TReply> Ask<TAddr, TRequest, TReply>(TAddr address, in TRequest request)
         where TAddr : struct, IAddress where TRequest : struct, IRequest<TReply> =>
@@ -289,7 +289,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
     {
         var call = PendingCall<TReply>.Rent(null);
         var task = call.Task;
-        Send(MessageWriter.Write(in request), MessageType<TRequest>.WireId, handlerTypeId, key, call);
+        Send(MessageWriter.Write(in request), TypeId<TRequest>.Value, handlerTypeId, key, call);
         return new Reply<TReply>(task);
     }
 

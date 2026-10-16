@@ -4,11 +4,11 @@ namespace DaServer.Persistence;
 /// A persisted component type (<see cref="PersistAttribute"/>): writes and restores its section of a record. Registered
 /// by the generated registration of the node (<see cref="ServerRegistry.RegisterPersistent{T}"/>), one per type.
 /// </summary>
-internal abstract class PersistentType(Type type, uint wireId)
+internal abstract class PersistentType(Type type, uint typeId)
 {
     public Type Type { get; } = type;
 
-    public uint WireId { get; } = wireId;
+    public uint TypeId { get; } = typeId;
 
     /// <summary>Append this component's section to <paramref name="record"/> when <paramref name="entity"/> has it.</summary>
     public abstract void Write(Entity entity, FrameWriter record);
@@ -17,14 +17,14 @@ internal abstract class PersistentType(Type type, uint wireId)
     public abstract void Read(Entity entity, ReadOnlySpan<byte> section);
 }
 
-internal sealed class PersistentType<T>(uint wireId) : PersistentType(typeof(T), wireId) where T : struct, IComponent
+internal sealed class PersistentType<T>(uint typeId) : PersistentType(typeof(T), typeId) where T : struct, IComponent
 {
     public override void Write(Entity entity, FrameWriter record)
     {
         if (!entity.Has<T>()) return;
         int at = record.Length;
         var head = record.GetSpan(Records.SectionHeader);
-        BinaryPrimitives.WriteUInt32LittleEndian(head, WireId);
+        BinaryPrimitives.WriteUInt32LittleEndian(head, TypeId);
         record.Advance(Records.SectionHeader);
         var nino = record.Nino;
         NinoSerializer.Serialize(entity.Get<T>(), ref nino);
@@ -41,7 +41,7 @@ internal sealed class PersistentType<T>(uint wireId) : PersistentType(typeof(T),
 }
 
 /// <summary>
-/// An actor's record: a section per persisted component it has, each <c>[uint wire id][int length][Nino bytes]</c>.
+/// An actor's record: a section per persisted component it has, each <c>[uint type id][int length][Nino bytes]</c>.
 /// Sections of types this node does not know (a component removed from the code) are skipped on load and dropped on
 /// the next save; a component added later is simply missing from older records.
 /// </summary>

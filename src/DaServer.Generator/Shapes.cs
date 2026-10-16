@@ -111,12 +111,12 @@ internal static class Shapes
     }
 
     /// <summary>
-    /// The runtime's wire id of a message type: [WireId] or FNV-1a of <c>Type.FullName</c> (nested types joined by '+').
+    /// The runtime's type id of a message type: [TypeId] or FNV-1a of <c>Type.FullName</c> (nested types joined by '+').
     /// </summary>
-    public static uint MessageId(ITypeSymbol type)
+    public static uint TypeIdOf(ITypeSymbol type)
     {
-        var wireId = GetAttribute(type, WireIdAttribute);
-        if (wireId?.ConstructorArguments.FirstOrDefault().Value is uint id) return id;
+        var typeId = GetAttribute(type, TypeIdAttribute);
+        if (typeId?.ConstructorArguments.FirstOrDefault().Value is uint id) return id;
         string name = type.MetadataName;
         for (var outer = type.ContainingType; outer != null; outer = outer.ContainingType) name = outer.MetadataName + "+" + name;
         if (!type.ContainingNamespace.IsGlobalNamespace) name = type.ContainingNamespace.ToDisplayString() + "." + name;

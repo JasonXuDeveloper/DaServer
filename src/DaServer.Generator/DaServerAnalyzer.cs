@@ -44,7 +44,7 @@ public sealed partial class DaServerAnalyzer : DiagnosticAnalyzer
                 if (!Shapes.IsMessage(type, type.Locations.FirstOrDefault(), "[Message]", Report)) return;
                 string name = type.ToDisplayString();
                 var location = type.Locations.FirstOrDefault();
-                var existing = ids.GetOrAdd(Shapes.MessageId(type), (name, location));
+                var existing = ids.GetOrAdd(Shapes.TypeIdOf(type), (name, location));
                 if (existing.Name != name)
                     collisions.Add(Diagnostic.Create(Rules.IdCollision, location, name, existing.Name));
             }, SymbolKind.NamedType);
@@ -233,7 +233,7 @@ internal static class Rules
         DiagnosticSeverity.Error, true);
 
     public static readonly DiagnosticDescriptor IdCollision = new("DAS004", "Message id collision",
-        "Messages '{0}' and '{1}' hash to the same wire id; add [WireId] to one of them", Category,
+        "Messages '{0}' and '{1}' hash to the same type id; add [TypeId] to one of them", Category,
         DiagnosticSeverity.Error, true, customTags: WellKnownDiagnosticTags.CompilationEnd);
 
     public static readonly DiagnosticDescriptor NoDefaultConstructor = new("DAS005", "Missing parameterless constructor",

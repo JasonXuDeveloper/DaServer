@@ -16,7 +16,7 @@ internal static class ShardDispatch
         var node = world.Shard().Node;
         var header = FrameHeader.Read(frame.Frame);
         var handlerType = node.HandlerTypeById(header.Target);
-        if (header.MessageId == MessageType<SessionResumed>.WireId && handlerType is { IsActor: true })
+        if (header.MessageId == TypeId<SessionResumed>.Value && handlerType is { IsActor: true })
         {
             RouteResume(world, handlerType, frame, sink, in header);
             return;
@@ -243,7 +243,7 @@ internal static class ShardDispatch
             ActorSessions.Record(actor, actor.TurnCaller);
         }
 
-        if (header.MessageId == MessageType<SessionResumed>.WireId) return Resume(actor, in envelope);
+        if (header.MessageId == TypeId<SessionResumed>.Value) return Resume(actor, in envelope);
         var dispatcher = actor.HandlerType.Handlers.Of(header.MessageId)!.Dispatcher; // validated by Route
         actor.TurnChain = ChainOf(actor.Shard.World, envelope.Frame); // cleared when the turn ends
         return Invoke(dispatcher, actor, envelope.Frame, envelope.Sink, actor.Shard.Node.Logger, actor.TurnChain);
@@ -266,7 +266,7 @@ internal static class ShardDispatch
             else sink.SendError(frame.CallId, RpcStatus.Forbidden);
         }
 
-        if (accepted && actor.HandlerType.Handlers.Of(MessageType<SessionResumed>.WireId) is { } handler)
+        if (accepted && actor.HandlerType.Handlers.Of(TypeId<SessionResumed>.Value) is { } handler)
             return Invoke(handler.Dispatcher, actor, frame, null, actor.Shard.Node.Logger, actor.TurnChain = ChainOf(actor.Shard.World, frame));
         frame.Dispose();
         return default;

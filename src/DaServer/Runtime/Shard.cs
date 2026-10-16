@@ -271,7 +271,7 @@ internal sealed class Shard : CompletionThread
         World.AddSingleton<ServiceDirectory>() = new ServiceDirectory(services);
         var persisted = ServerRegistry.PersistentTypes;
         World.AddSingleton<ShardStore>() = new ShardStore(persisted.Length > 0 ? Node.Options.ActorStore : null, persisted,
-            persisted.ToFrozenDictionary(static t => t.WireId), new LoadBatch(this), new SaveBatch(this));
+            persisted.ToFrozenDictionary(static t => t.TypeId), new LoadBatch(this), new SaveBatch(this));
 
         World.AddSystem<TimerSystem>();
         World.AddSystem<DispatchSystem>();
