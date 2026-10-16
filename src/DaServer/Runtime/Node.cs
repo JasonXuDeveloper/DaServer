@@ -177,10 +177,29 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
     /// Graceful shutdown: announce Leaving (so callers stop routing here), drain shards (in-flight calls, actor
     /// unload), then close links.
     /// </summary>
-    public async Task StopAsync()
+    /// <summary>
+    /// Ready for work: started, Up in its own view and not leaving (the readiness health check: platforms route
+    /// clients and traffic only to ready nodes).
+    /// </summary>
+    public bool IsReady => Volatile.Read(ref _started) == 1 && View.TryGetMember(Id, out var self) && self.Status == MemberStatus.Up;
+
+    /// <summary>Called after each phase of a graceful stop with its name and duration (the shutdown metric).</summary>
+    internal event Action<string, TimeSpan>? StopPhase;
+
+    /// <summary>
+    /// Leave the cluster gracefully within <see cref="NodeOptions.ShutdownTimeout"/> (or until
+    /// <paramref name="cancellationToken"/>, the host's own limit, fires): announce Leaving so callers reroute, drain the
+    /// features (client connections close their sessions), unload every actor (<see cref="Actor.OnUnload"/>), close the
+    /// links. Each phase is logged with its duration; actors still loaded at the deadline are reported, not waited for.
+    /// </summary>
+    public async Task StopAsync(CancellationToken cancellationToken = default)
     {
         if (Interlocked.Exchange(ref _started, 2) != 1)
             return;
+
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        budget.CancelAfter(Options.ShutdownTimeout);
+        var phase = System.Diagnostics.Stopwatch.StartNew();
 
         // Leave() pushes Leaving to every member directly; give those frames time to be delivered (not a gossip
         // round: that can be long), and skip the wait when there is nobody to tell.
@@ -188,13 +207,40 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
         bool hasPeers = false;
         foreach (var member in View.Members) hasPeers |= member.NodeId != Id;
         if (hasPeers)
-            await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(Options.GossipInterval.TotalMilliseconds, 500))).ConfigureAwait(false);
+            await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(Options.GossipInterval.TotalMilliseconds, 500)), budget.Token)
+                .ContinueWith(static _ => { }, TaskScheduler.Default).ConfigureAwait(false);
+        Phase("leave", phase);
 
-        foreach (var feature in Options.Features) await feature.DrainAsync(CancellationToken.None).ConfigureAwait(false);
-        await StopShards().ConfigureAwait(false);
+        foreach (var feature in Options.Features) await feature.DrainAsync(budget.Token).ConfigureAwait(false);
+        Phase("drain", phase);
+
+        var stopped = StopShards();
+        await Task.WhenAny(stopped, Task.Delay(Timeout.Infinite, budget.Token)).ConfigureAwait(false);
+        if (!stopped.IsCompleted) ReportUnloaded();
+        Phase("unload", phase);
+
         foreach (var feature in Options.Features) feature.Stop(crashed: false);
         CloseLinks();
+        Phase("close", phase);
         Logger.LogInformation("Node {Name} ({Id:x}) stopped", Options.Name, Id);
+    }
+
+    private void Phase(string name, System.Diagnostics.Stopwatch watch)
+    {
+        var elapsed = watch.Elapsed;
+        watch.Restart();
+        Logger.LogInformation("Stop {Phase} of {Node}: {Ms} ms", name, Options.Name, (long)elapsed.TotalMilliseconds);
+        StopPhase?.Invoke(name, elapsed);
+    }
+
+    /// <summary>The budget ran out while actors were unloading: say how many were not saved (their shards keep trying).</summary>
+    private void ReportUnloaded()
+    {
+        foreach (var shard in _shards)
+            if (shard.ActorCount > 0)
+                Logger.LogError("Shutdown budget ({Budget}) exceeded: shard {Shard} of {Node} still holds {Actors} actors whose " +
+                                "OnUnload did not finish (their state since the last save is lost)", Options.ShutdownTimeout,
+                    shard.Index, Options.Name, shard.ActorCount);
     }
 
     public async ValueTask DisposeAsync() => await StopAsync().ConfigureAwait(false);
