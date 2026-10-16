@@ -117,9 +117,11 @@ Steady state allocates nothing: per message, call, reply, tick, broadcast, conne
       2 ms) writes each session once per beat from one flush thread, directly, without waking send loops; a full socket
       hands the rest to the connection's carry loop. Clients keep their receive buffers (no zero-byte read per push);
       node-side sessions still release idle ones. The 10k-in-one-map scenario on one 4-core VM shared with the bots:
-      p99 1,010 ms with drops -> 432 ms (client buffers) -> 163 ms with a 2 ms beat, no drop or gap. Rejected on the
+      p99 1,010 ms with drops -> 432 ms (client buffers) -> 163 ms with a 2 ms beat, no drop or gap; through Aspire
+      (`tests/DaServer.E2E`, 10,000 bots, one map, 60 s): E2E OK, p50 75 ms, p99 199 ms, six nodes exit 0. Rejected on the
       way, with numbers in ADR-070: writing at the end of a batch on the calling thread, per-core resume queues
-      (Kestrel's IOQueue), io_uring (not in .NET 11).
+      (Kestrel's IOQueue), io_uring (not in .NET 11), a beat split across the thread pool (faster on idle cores,
+      p99 up to 795 ms on saturated ones).
 - [ ] Z4 Keep it: CLAUDE.md rule plus analyzer coverage where a misuse is detectable in user code (e.g.
       `TaskCompletionSource`/`Task.Delay` in handlers and systems: use pooled framework awaitables and `SendAfter`).
 

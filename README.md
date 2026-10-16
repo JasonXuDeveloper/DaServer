@@ -286,8 +286,8 @@ Kubernetes).
 Measured on one 4-core VM (servers, bots and the kernel share it), Release builds.
 
 **10k-player scenario** ([Sample.AppHost](samples/mmo/Sample.AppHost), [Sample.Bot](samples/mmo/Sample.Bot)): a login
-node, a game node, a map node and 3 gateways (the AppHost's topology, here as plain processes without telemetry; these
-numbers were taken with a fourth gateway that only directed clients, re-measured at the G release check). 10,000 bots
+node, a game node, a map node and 3 gateways writing to clients on a 2 ms beat (ADR-070; the AppHost's topology, the
+one-map column through Aspire with `tests/DaServer.E2E`, the chatting column as plain processes). 10,000 bots
 connect through a gateway's address and are directed to the less loaded gateway, log in and enter a map; the realm broadcasts its status to every session
 every 5 ticks (20 ticks/s). Two loads, 60 s measured window each:
 
@@ -300,7 +300,7 @@ every 5 ticks (20 ticks/s). Two loads, 60 s measured window each:
 |---|---|---|
 | Realm broadcasts delivered (every bot every one, in order) | 2,400,000 | 2,400,000 |
 | Map traffic delivered to clients | ~2,500,000 positions/s | ~100,000 lines/s |
-| Broadcast latency (game system to bot callback) | p50 46 ms, p99 106 ms | p50 35 ms, p99 57 ms |
+| Broadcast latency (game system to bot callback) | p50 75 ms, p99 199 ms, p99.9 250 ms | p50 35 ms, p99 57 ms |
 | Game node | 3% CPU, 0–5 KB/s allocated | 2% CPU, ~32 KB/s (chat strings) |
 | Each gateway (~3,300 sessions) | 11–12% CPU, 0 KB/s | 5–6% CPU, 0–7 KB/s |
 | GCs on servers, disconnects, gaps | 0 | 0 |
