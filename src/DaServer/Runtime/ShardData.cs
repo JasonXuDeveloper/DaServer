@@ -32,7 +32,7 @@ internal struct Mailbox(Queue<Envelope> pending) : IComponent
 {
     public readonly Queue<Envelope> Pending = pending;
 
-    /// <summary><see cref="Environment.TickCount64"/> when the actor last took mail (idle unloading).</summary>
+    /// <summary><see cref="ShardActivity.NowMs"/> when the actor last took mail (idle unloading).</summary>
     public long LastActive;
 }
 
@@ -160,6 +160,12 @@ internal struct ShardActivity : ISingletonComponent
 
     /// <summary>Messages <see cref="MailboxSystem"/> may still run during the current wake.</summary>
     public int MailBudget;
+
+    /// <summary>
+    /// Milliseconds on the shard clock (<see cref="NodeOptions.TimeProvider"/>) when the current wake started: the time
+    /// of idle unloading and checkpoints, so a manual clock (tests) moves them too.
+    /// </summary>
+    public long NowMs;
 
     /// <summary>Ownership may have changed (membership view or shutdown): the shard runs <see cref="ShardRebalance"/>.</summary>
     public bool Rebalance;

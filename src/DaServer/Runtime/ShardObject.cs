@@ -22,6 +22,9 @@ public abstract class ShardObject
 
     protected ILogger Logger => Shard.Node.Logger;
 
+    /// <summary>The shards' clock (<see cref="NodeOptions.TimeProvider"/>): what tests move on with a manual clock.</summary>
+    protected TimeProvider Time => Shard.Node.Options.TimeProvider;
+
     /// <summary>
     /// Who sent the current message from outside the cluster: a client session (<c>Cluster.Send(Caller, m)</c>,
     /// <c>BindSession(Caller)</c>, <c>GrantSession(Caller)</c>) or an HTTP request of the HTTP plane; invalid for

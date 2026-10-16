@@ -12,6 +12,9 @@ public static class ShardWorldExtensions
     /// </summary>
     public static long Tick(this World world) => world.Shard().TickCount;
 
+    /// <summary>The shards' clock (<see cref="NodeOptions.TimeProvider"/>): what tests move on with a manual clock.</summary>
+    public static TimeProvider Time(this World world) => world.Shard().Node.Options.TimeProvider;
+
     /// <summary>
     /// The cluster as systems see it: <c>world.Cluster().Send(mapId, new Move(..))</c>, <c>Publish</c>, pushes and
     /// broadcasts.

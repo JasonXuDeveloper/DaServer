@@ -44,7 +44,7 @@ internal sealed partial class LoadSystem : EcsSystem
                 long every = (long)actor.SaveEvery.TotalMilliseconds;
                 entity.Add<Stored>() = new Stored
                 {
-                    Version = records[i].Version, Hash = hash, EveryMs = every, DueMs = Environment.TickCount64 + every,
+                    Version = records[i].Version, Hash = hash, EveryMs = every, DueMs = world.GetSingleton<ShardActivity>().NowMs + every,
                 };
             }
             catch (Exception e)
@@ -76,15 +76,15 @@ internal sealed partial class PersistSystem : EcsSystem
     // Records are taken between turns only (Without<Turn>): a turn suspended at an await may have changed half of what
     // its message changes, and the record is always the state after whole messages.
     [ForEach, With<SaveNow>, Without<Saving>, Without<Turn>]
-    private static void Now(Entity actor, ref Stored stored, in ActorRef self, in ShardStore store)
+    private static void Now(Entity actor, ref Stored stored, in ActorRef self, in ShardStore store, in ShardActivity activity)
     {
-        if (Queue(actor, ref stored, self.Actor, in store) != Outcome.Busy) actor.Remove<SaveNow>();
+        if (Queue(actor, ref stored, self.Actor, in store, activity.NowMs) != Outcome.Busy) actor.Remove<SaveNow>();
     }
 
     [ForEach, With<FinalSave>, Without<Saving>]
-    private static void Final(Entity actor, ref Stored stored, in ActorRef self, in ShardStore store)
+    private static void Final(Entity actor, ref Stored stored, in ActorRef self, in ShardStore store, in ShardActivity activity)
     {
-        if (Queue(actor, ref stored, self.Actor, in store) != Outcome.Unchanged) return;
+        if (Queue(actor, ref stored, self.Actor, in store, activity.NowMs) != Outcome.Unchanged) return;
         actor.Remove<FinalSave>();
         actor.Add<Removing>() = new Removing(RpcStatus.Ok, null); // nothing changed since the last write
     }
@@ -93,9 +93,8 @@ internal sealed partial class PersistSystem : EcsSystem
     /// Serialize the actor's record into the shard's save batch unless it equals what was last written. The ref
     /// <paramref name="stored"/> is invalid afterwards (the actor gains <see cref="Saving"/>).
     /// </summary>
-    internal static Outcome Queue(Entity actor, ref Stored stored, Actor target, in ShardStore store)
+    internal static Outcome Queue(Entity actor, ref Stored stored, Actor target, in ShardStore store, long now)
     {
-        long now = Environment.TickCount64;
         if (now < stored.RetryAtMs || store.Saves.InFlight || store.Saves.Full) return Outcome.Busy;
         if (stored.EveryMs > 0) stored.DueMs = now + stored.EveryMs;
         var record = Records.Write(actor, store.Types);
@@ -118,7 +117,7 @@ internal sealed partial class PersistSystem : EcsSystem
         if (error != null) world.Logger().LogError(error, "Saving {Count} records failed: retried in a second", batch.Count);
         var accepted = batch.Accepted;
         var writes = batch.Writes;
-        long now = Environment.TickCount64;
+        long now = world.GetSingleton<ShardActivity>().NowMs;
         for (int i = 0; i < batch.Count; i++)
         {
             var actor = batch.Entities[i];
@@ -165,9 +164,10 @@ internal sealed partial class PersistSystem : EcsSystem
 internal sealed partial class CheckpointSystem : EcsSystem
 {
     [ForEach, Without<Saving>, Without<FinalSave>, Without<Unloading>, Without<Removing>, Without<Turn>]
-    private static void Due(Entity actor, ref Stored stored, in ActorRef self, in ShardStore store)
+    private static void Due(Entity actor, ref Stored stored, in ActorRef self, in ShardStore store, in ShardActivity activity)
     {
-        if (stored.EveryMs > 0 && Environment.TickCount64 >= stored.DueMs) PersistSystem.Queue(actor, ref stored, self.Actor, in store);
+        if (stored.EveryMs > 0 && activity.NowMs >= stored.DueMs)
+            PersistSystem.Queue(actor, ref stored, self.Actor, in store, activity.NowMs);
     }
 }
 

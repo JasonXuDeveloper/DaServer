@@ -28,7 +28,8 @@ internal sealed class Shard : CompletionThread
     private readonly Thread _thread;
     private readonly TaskCompletionSource _stopped = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private volatile bool _stopRequested, _stopFenced;
-    private readonly long _tickInterval; // Stopwatch ticks
+    private readonly TimeProvider _time; // the shard clock (NodeOptions.TimeProvider)
+    private readonly long _tickInterval, _timerWake; // in the clock's timestamp units
     private const long IdleScanMs = 100;
     private int _actorCount;
 
@@ -38,7 +39,9 @@ internal sealed class Shard : CompletionThread
         Index = index;
         _dispatchQueue = new MpmcQueue<WorkItem>(dispatchQueueCapacity);
         _completionQueue = new MpmcQueue<WorkItem>(CompletionQueueCapacity);
-        _tickInterval = Stopwatch.Frequency / Math.Max(1, tickRate);
+        _time = node.Options.TimeProvider;
+        _tickInterval = _time.TimestampFrequency / Math.Max(1, tickRate);
+        _timerWake = (long)(ShardTimers.Resolution.TotalSeconds * _time.TimestampFrequency);
         World = new World();
         _thread = new Thread(Run) { IsBackground = true, Name = $"{node.Options.Name}-shard-{index}" };
     }
@@ -125,7 +128,7 @@ internal sealed class Shard : CompletionThread
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void Wake()
+    internal void Wake()
     {
         if (Volatile.Read(ref _sleeping) != 0)
             _wake.Set();
@@ -179,13 +182,15 @@ internal sealed class Shard : CompletionThread
         try
         {
             CreateWorld();
-            long nextTick = Stopwatch.GetTimestamp() + _tickInterval;
+            long nextTick = _time.GetTimestamp() + _tickInterval;
             long nextIdleScan = 0;
             ref var activity = ref World.GetSingleton<ShardActivity>(); // singletons never move
             while (true)
             {
                 Volatile.Write(ref _passStartedMs, Environment.TickCount64);
                 activity.Processed = 0;
+                long now = _time.GetTimestamp();
+                activity.NowMs = now * 1000 / _time.TimestampFrequency;
                 if (_stopRequested && !activity.Stopping)
                 {
                     activity.Stopping = activity.Rebalance = true;
@@ -202,15 +207,14 @@ internal sealed class Shard : CompletionThread
                         activity.DeclaredDead = false;
                     }
 
-                    if (Environment.TickCount64 >= nextIdleScan)
+                    if (activity.NowMs >= nextIdleScan)
                     {
-                        nextIdleScan = Environment.TickCount64 + IdleScanMs;
+                        nextIdleScan = activity.NowMs + IdleScanMs;
                         World.Update<ShardIdleScan>();
                     }
 
                     World.Update<ShardMessages>();
 
-                    long now = Stopwatch.GetTimestamp();
                     if (now >= nextTick)
                     {
                         TickCount++;
@@ -225,7 +229,7 @@ internal sealed class Shard : CompletionThread
                 if (activity.Stopping && IsDrained()) break;
                 if (activity.Processed == 0 && !World.Any<Mailbox>(MailboxSystem.Runnable))
                     Sleep(World.GetSingleton<ShardTimers>().Wheel.Count == 0 ? nextTick
-                        : Math.Min(nextTick, Stopwatch.GetTimestamp() + TimerWake)); // a delayed send waits for no tick
+                        : Math.Min(nextTick, _time.GetTimestamp() + _timerWake)); // a delayed send waits for no tick
             }
         }
         catch (Exception e)
@@ -253,7 +257,7 @@ internal sealed class Shard : CompletionThread
         World.AddSingleton<ShardContext>() = new ShardContext(this);
         World.AddSingleton<ShardActivity>();
         World.AddSingleton<CallChains>() = new CallChains { Last = Random.Shared.NextInt64() };
-        World.AddSingleton<ShardTimers>() = new ShardTimers(new TimerWheel<DelayedSend>(ShardTimers.Resolution));
+        World.AddSingleton<ShardTimers>() = new ShardTimers(new TimerWheel<DelayedSend>(ShardTimers.Resolution, time: _time));
         World.AddSingleton<ActorDirectory>() = new ActorDirectory(new Dictionary<ActorAddress, Entity>());
         World.AddSingleton<TurnWatchers>() = new TurnWatchers(new Stack<TurnWatcher>());
         World.AddSingleton<ActorPools>() = new ActorPools(new Dictionary<uint, Stack<Actor>>(), new Stack<Queue<Envelope>>(),
@@ -296,17 +300,15 @@ internal sealed class Shard : CompletionThread
         !World.Any<ServiceCall>() &&
         QueueLength == 0;
 
-    private static readonly long TimerWake = (long)(ShardTimers.Resolution.TotalSeconds * Stopwatch.Frequency);
-
     private void Sleep(long nextTick)
     {
         Interlocked.Exchange(ref _sleeping, 1);
         Volatile.Write(ref _passStartedMs, 0);
         if (QueueLength == 0 && !_stopRequested)
         {
-            long remaining = nextTick - Stopwatch.GetTimestamp();
-            if (remaining > 0)
-                _wake.Wait(TimeSpan.FromSeconds((double)remaining / Stopwatch.Frequency));
+            long remaining = nextTick - _time.GetTimestamp();
+            if (remaining > 0) // a manual clock (tests) wakes the shard itself when it moves on (Wake)
+                _wake.Wait(TimeSpan.FromSeconds(Math.Min(1, (double)remaining / _time.TimestampFrequency)));
         }
 
         Volatile.Write(ref _sleeping, 0);

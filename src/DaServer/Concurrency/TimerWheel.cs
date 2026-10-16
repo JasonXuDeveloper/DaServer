@@ -23,16 +23,20 @@ public sealed class TimerWheel<T>
         public int Generation;
     }
 
-    private readonly long _tickTimestamps; // Stopwatch ticks per wheel tick
+    private readonly TimeProvider _time;
+    private readonly long _tickTimestamps; // clock timestamp units per wheel tick
     private readonly int[] _heads;
     private Entry[] _entries = new Entry[64];
     private int _free = -1, _used;
     private long _current; // last tick advanced to
-    private readonly long _origin = Stopwatch.GetTimestamp();
+    private readonly long _origin;
 
-    public TimerWheel(TimeSpan tick, int slots = 512)
+    /// <param name="time">The clock (default: the system's); a manual one (tests) fires timers as it moves on.</param>
+    public TimerWheel(TimeSpan tick, int slots = 512, TimeProvider? time = null)
     {
-        _tickTimestamps = Math.Max(1, (long)(tick.TotalSeconds * Stopwatch.Frequency));
+        _time = time ?? TimeProvider.System;
+        _origin = _time.GetTimestamp();
+        _tickTimestamps = Math.Max(1, (long)(tick.TotalSeconds * _time.TimestampFrequency));
         _heads = new int[slots];
         Array.Fill(_heads, -1);
     }
@@ -50,8 +54,8 @@ public sealed class TimerWheel<T>
         int index = Allocate();
         ref var e = ref _entries[index];
         e.Item = item;
-        long ticks = (long)Math.Ceiling(Math.Max(0, delay.TotalSeconds) * Stopwatch.Frequency / _tickTimestamps);
-        e.Due = Math.Max(TickOf(Stopwatch.GetTimestamp()), _current) + ticks + 1;
+        long ticks = (long)Math.Ceiling(Math.Max(0, delay.TotalSeconds) * _time.TimestampFrequency / _tickTimestamps);
+        e.Due = Math.Max(TickOf(_time.GetTimestamp()), _current) + ticks + 1;
         Link(index);
         Count++;
         return (long)(e.Generation & GenerationMask) << 32 | (uint)index;
@@ -77,7 +81,7 @@ public sealed class TimerWheel<T>
     /// <summary>Fire every timer due by now, in due order per tick. A handler may schedule and cancel timers.</summary>
     public int Advance<THandler>(ref THandler handler) where THandler : ITimerHandler<T>
     {
-        long now = TickOf(Stopwatch.GetTimestamp());
+        long now = TickOf(_time.GetTimestamp());
         int fired = 0;
         while (_current < now)
         {

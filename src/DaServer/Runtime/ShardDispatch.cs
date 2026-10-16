@@ -115,7 +115,7 @@ internal static class ShardDispatch
         actor.HandlerType = handlerType;
         actor.Key = id.Key;
         actor.Shard = world.Shard();
-        var entity = world.CreateEntity(new ActorRef(actor), new Mailbox(pools.RentMailbox()) { LastActive = Environment.TickCount64 },
+        var entity = world.CreateEntity(new ActorRef(actor), new Mailbox(pools.RentMailbox()) { LastActive = world.GetSingleton<ShardActivity>().NowMs },
             new Loading());
         actor.Entity = entity;
         var idle = actor.UnloadAfterIdle;

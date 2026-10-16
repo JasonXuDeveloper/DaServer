@@ -8,8 +8,8 @@ namespace DaServer.Runtime;
 internal sealed partial class IdleSystem : EcsSystem
 {
     [ForEach, Without<Ready>, Without<Turn>, Without<UnloadRequested>, Without<Unloading>, Without<Removing>]
-    private static void Leave(Entity actor, in Mailbox mailbox, in UnloadWhenIdle idle)
+    private static void Leave(Entity actor, in Mailbox mailbox, in UnloadWhenIdle idle, in ShardActivity activity)
     {
-        if (Environment.TickCount64 - mailbox.LastActive >= idle.Milliseconds) actor.Add<UnloadRequested>();
+        if (activity.NowMs - mailbox.LastActive >= idle.Milliseconds) actor.Add<UnloadRequested>();
     }
 }
