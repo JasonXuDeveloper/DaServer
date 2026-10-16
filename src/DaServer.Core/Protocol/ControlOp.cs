@@ -3,6 +3,9 @@ namespace DaServer.Protocol;
 /// <summary>Control operations carried in <see cref="FrameKind.Control"/> frames (MessageId field).</summary>
 internal static class ControlOp
 {
+    /// <summary>Version of the link protocol, in every Hello: nodes speaking another one are refused (V-items relax this).</summary>
+    public const int LinkVersion = 1;
+
     /// <summary>Push gossip: payload = the sender's table as <c>MemberPulse</c>s; answered with <c>GossipReply</c>.</summary>
     public const uint Gossip = 1;
 

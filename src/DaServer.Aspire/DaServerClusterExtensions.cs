@@ -88,6 +88,7 @@ public sealed class DaServerCluster
             string nodeName = $"{name}-{i}";
             var node = _builder.AddProject<TProject>(nodeName)
                 .WithEnvironment("DaServer__Name", nodeName)
+                .WithEnvironment("DaServer__ClusterName", Name)
                 .WithEnvironment("DaServer__SigningSecret", _secret)
                 .WithEndpoint(port: _nextClusterPort, targetPort: _nextClusterPort++, scheme: "tcp", name: "cluster",
                     env: "DaServer__ClusterPort", isProxied: false)
