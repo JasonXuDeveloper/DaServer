@@ -4,7 +4,7 @@ using DaServer.Net;
 
 namespace DaServer.Tests;
 
-/// <summary>A connection's send side: written at once while the socket takes it, by the send loop once it is full.</summary>
+/// <summary>A connection's send side: queued frames reach the peer whole and in order, written at once or on a flusher's beat.</summary>
 public class ConnectionTests
 {
     private sealed class NoFrames : IConnectionHandler
@@ -31,13 +31,15 @@ public class ConnectionTests
         return w.Frame.ToArray();
     }
 
-    [Test, CancelAfter(30_000)]
-    public async Task ASenderOutrunningItsReaderLosesNothingAndKeepsOrder(CancellationToken cancellationToken)
+    [TestCase(false), TestCase(true), CancelAfter(30_000)]
+    public async Task ASenderOutrunningItsReaderLosesNothingAndKeepsOrder(bool flushed, CancellationToken cancellationToken)
     {
-        // 4 threads send 8 MB in all while the peer reads nothing: the socket's buffers fill, flushes hand the rest to
-        // the send loop, writers change hands. Then the peer reads: every frame arrives, each thread's in order.
+        // 4 threads send 8 MB in all while the peer reads nothing: the socket's buffers fill (flushed: a beat's write
+        // hits WouldBlock and the carry loop takes over the writer). Then the peer reads: every frame arrives, each
+        // thread's in order.
         const int threads = 4, frames = 500, payload = 4096;
-        var (sender, reader, listener) = await Pair(new ConnectionOptions { MaxPendingSendBytes = 64 * 1024 * 1024 });
+        using var flusher = flushed ? new SendFlusher(TimeSpan.FromMilliseconds(2)) : null;
+        var (sender, reader, listener) = await Pair(new ConnectionOptions { MaxPendingSendBytes = 64 * 1024 * 1024, Flusher = flusher });
         using var _ = listener.Server;
         using var __ = reader;
         var sending = Enumerable.Range(0, threads).Select(t => Task.Run(() =>
