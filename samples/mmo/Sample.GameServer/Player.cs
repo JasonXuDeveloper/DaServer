@@ -6,9 +6,6 @@ using Sample.Contracts;
 
 namespace Sample.GameServer;
 
-/// <summary>Persistent player state: the component on the actor's entity.</summary>
-public record struct PlayerState(string Name, MapId Map, int Logins, ClientSession Session) : IComponent;
-
 /// <summary>The player: its own state, and which map it is in. The map simulates the avatar.</summary>
 public sealed class Player : Actor<PlayerId, PlayerState>
 {

@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net11.0</TargetFramework>
+        <IsPackable>false</IsPackable>
+        <!-- The map server's components: the data its actors and systems work on. Not reloaded with the server's logic, so it references
+             contracts, shared rules and EasyEcs, never the server runtime (DAS013, ADR-067). -->
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\Sample.Shared\Sample.Shared.csproj" />
+        <ProjectReference Include="..\..\..\src\DaServer.Generator\DaServer.Generator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+    </ItemGroup>
+
+</Project>

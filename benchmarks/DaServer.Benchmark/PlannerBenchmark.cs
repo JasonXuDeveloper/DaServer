@@ -13,13 +13,7 @@ public enum Need : ulong
     Tired = 4,
 }
 
-public struct Fetch : IComponent;
-public struct Eat : IComponent;
-public struct Nap : IComponent;
-public struct Idle : IComponent;
 
-/// <summary>Needs change every tick (Replanning) or never (Running).</summary>
-public record struct Restless(bool Changing) : IComponent;
 
 public sealed partial class NeedsSystem : EcsSystem
 {

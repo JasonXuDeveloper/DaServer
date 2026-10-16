@@ -12,15 +12,6 @@ namespace Sample.MapServer;
 // Interest.cs decides who hears about what (area of interest). Movement itself is a shared rule (Sample.Shared:
 // MovementSystem), the same clients predict with.
 
-/// <summary>Whose avatar it is, the map entity it lives in and the client session that controls it.</summary>
-public record struct Avatar(PlayerId Player, Entity Map, ClientSession Session) : IComponent;
-
-/// <summary>State of a map: its avatars by client session (its interest grid is <see cref="MapGrid"/>).</summary>
-public struct MapState() : IComponent
-{
-    public readonly Dictionary<ClientSession, Entity> Avatars = new();
-}
-
 public sealed class Map : Actor<MapId, MapState>
 {
     private const int MaxChatLength = 256;

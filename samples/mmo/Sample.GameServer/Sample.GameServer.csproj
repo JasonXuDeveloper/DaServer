@@ -2,4 +2,8 @@
 
     <Import Project="..\ServerNode.props" />
 
+    <ItemGroup>
+        <ProjectReference Include="..\Sample.GameServer.Components\Sample.GameServer.Components.csproj" />
+    </ItemGroup>
+
 </Project>

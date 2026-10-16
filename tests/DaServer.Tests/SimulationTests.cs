@@ -13,10 +13,6 @@ public enum Need : ulong
     Tired = 4,
 }
 
-public struct Fetch : IComponent;
-public struct Eat : IComponent;
-public struct Nap : IComponent;
-public struct Idle : IComponent;
 
 /// <summary>Test agents' world: needs change every tick and every task is done in one, so every agent plans every tick.</summary>
 public sealed partial class NeedsSystem : EcsSystem

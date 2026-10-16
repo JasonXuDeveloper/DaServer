@@ -42,7 +42,6 @@ public readonly record struct RoomId(long Value) : IActorId;
 /// <summary>One-way: sent in bursts (allocation test, events test).</summary>
 [NinoType, Message] public partial record struct CounterBumped(int By);
 
-public record struct CounterState(int Value) : IComponent;
 
 /// <summary>What handlers report to the test that drives them.</summary>
 public static class Reports
@@ -51,8 +50,6 @@ public static class Reports
     public static TaskCompletionSource<bool> ResumedOnShard = new();
 }
 
-/// <summary>Tag: the counter grows by one every tick (written by the actor, processed by GrowthSystem).</summary>
-public struct Growing : IComponent;
 
 public sealed class Counter : Actor<CounterId, CounterState>
 {
@@ -249,7 +246,6 @@ public sealed partial class GrowthSystem : EcsSystem
 
 [NinoType, Message] public partial record struct Visit : IRequest<int>;
 
-public record struct Visits(int Count) : IComponent;
 
 public sealed class Visitor : Actor<VisitorId, Visits>
 {
@@ -264,6 +260,20 @@ public sealed class Visitor : Actor<VisitorId, Visits>
     public override Reply OnUnload()
     {
         Observed.Events.Enqueue($"unload:{Id.Value}");
+        return default;
+    }
+
+    [Handle] public int On(Visit _) => ++State.Count;
+}
+
+/// <summary>A visitor that is never unloaded for idleness: only removal paths unload it.</summary>
+public readonly record struct KeeperId(long Value) : IActorId;
+
+public sealed class Keeper : Actor<KeeperId, Visits>
+{
+    public override Reply OnUnload()
+    {
+        Observed.Events.Enqueue($"keeper-unload:{Id.Value}");
         return default;
     }
 
@@ -309,7 +319,6 @@ public sealed class StallService : Service
 
 public readonly record struct FragileId(long Value) : IActorId;
 
-public record struct FragileState(int Value) : IComponent;
 
 /// <summary>Add, then fail half-way when <see cref="Fail"/> (synchronously or after an await): the state is half-changed.</summary>
 [NinoType, Message] public partial record struct Spoil(int Delta, bool Fail, bool Async) : IRequest<int>;
@@ -484,7 +493,6 @@ public sealed class AuthService : Service
     }
 }
 
-public record struct Wallet(int Gold) : IComponent;
 
 public sealed class Player : Actor<PlayerId, Wallet>
 {

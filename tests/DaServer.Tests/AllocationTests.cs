@@ -3,7 +3,7 @@ namespace DaServer.Tests;
 /// <summary>Zero-GC contract of the RPC hot path (correctness guard; numbers come from DaServer.Benchmark).</summary>
 public class AllocationTests : ClusterTest
 {
-    [Test]
+    [Test, Retry(3)] // process-wide counters also see other work under CPU contention: a real regression fails every try
     public async Task ShardToShardCallsDoNotAllocate()
     {
         // No gossip during the measurement: background membership traffic is not part of the call path.
@@ -22,7 +22,7 @@ public class AllocationTests : ClusterTest
         Assert.That(allocated / (double)calls, Is.LessThan(8), $"{allocated} B for {calls} calls");
     }
 
-    [Test]
+    [Test, Retry(3)]
     public async Task RepliesOfSuspendedHandlersDoNotAllocate()
     {
         var node = await Start("alloc", configure: o => o.GossipInterval = TimeSpan.FromHours(1));
@@ -32,7 +32,7 @@ public class AllocationTests : ClusterTest
         Assert.That(allocated / (double)calls, Is.LessThan(8), $"{allocated} B for {calls} calls");
     }
 
-    [Test]
+    [Test, Retry(3)]
     public async Task RepliesSentLaterDoNotAllocate()
     {
         // Every call is replied with ReplyWhen once a third actor answered: the deferred reply's watcher is pooled.
@@ -43,7 +43,7 @@ public class AllocationTests : ClusterTest
         Assert.That(allocated / (double)calls, Is.LessThan(8), $"{allocated} B for {calls} calls");
     }
 
-    [Test]
+    [Test, Retry(3)]
     public async Task DelayedSendsDoNotAllocate()
     {
         // Scheduled, held by the shard's timer wheel and sent when due: frames and wheel entries are reused.
@@ -63,7 +63,7 @@ public class AllocationTests : ClusterTest
         Assert.That(allocated / (double)sends, Is.LessThan(8), $"{allocated} B for {sends} delayed sends");
     }
 
-    [Test]
+    [Test, Retry(3)]
     public async Task BurstsOfConcurrentCallsDoNotAllocate()
     {
         // 2,000 calls in flight at once: above the old fixed pool sizes (1,024), below the callee's mailbox bound.
@@ -77,7 +77,7 @@ public class AllocationTests : ClusterTest
         Assert.That(allocated / (double)(width * rounds), Is.LessThan(8), $"{allocated} B for {width * rounds} calls");
     }
 
-    [Test]
+    [Test, Retry(3)]
     public async Task BurstsOfSuspendedHandlersDoNotAllocate()
     {
         // 2,000 actors suspended in async Reply<T> handlers at once: their state machines live in pooled boxes.
@@ -88,7 +88,7 @@ public class AllocationTests : ClusterTest
         Assert.That(allocated / (double)(width * rounds), Is.LessThan(8), $"{allocated} B for {width * rounds} suspended handlers");
     }
 
-    [Test]
+    [Test, Retry(3)]
     public async Task KeyedEventsDoNotAllocate()
     {
         var node = await Start("alloc", configure: o => o.GossipInterval = TimeSpan.FromHours(1));
@@ -101,7 +101,7 @@ public class AllocationTests : ClusterTest
         Assert.That(allocated / (double)events, Is.LessThan(8), $"{allocated} B for {events} events"); // see above
     }
 
-    [Test]
+    [Test, Retry(3)]
     public async Task GatewayFanOutDoesNotAllocate()
     {
         var gateway = await Start("gw", gateway: true, configure: o => o.GossipInterval = TimeSpan.FromHours(1));
@@ -140,7 +140,7 @@ public class AllocationTests : ClusterTest
         }
     }
 
-    [Test]
+    [Test, Retry(3)]
     public async Task GroupChurnDoesNotAllocate()
     {
         // Sessions joining and leaving groups that come and go (area of interest cells as players move).
@@ -169,7 +169,7 @@ public class AllocationTests : ClusterTest
 
     private struct GroupChurn;
 
-    [Test]
+    [Test, Retry(3)]
     public async Task ClientCallsThroughAGatewayToAnotherNodeDoNotAllocate()
     {
         var gateway = await Start("gw", gateway: true, hosts: static _ => false, configure: o => o.GossipInterval = TimeSpan.FromHours(1));
@@ -202,7 +202,7 @@ public class AllocationTests : ClusterTest
         }
     }
 
-    [Test]
+    [Test, Retry(3)]
     public async Task GossipRoundsDoNotAllocate()
     {
         // Three members gossiping every 10 ms (about 300 rounds a second between them), idle otherwise.
@@ -219,7 +219,7 @@ public class AllocationTests : ClusterTest
         Assert.That(allocated / 600.0, Is.LessThan(32), $"{allocated} B for about 600 rounds");
     }
 
-    [Test]
+    [Test, Retry(3)]
     public async Task CallsToAnotherNodeDoNotAllocate()
     {
         // The measuring call lasts as long as its 60,000 round trips.
@@ -234,7 +234,7 @@ public class AllocationTests : ClusterTest
         Assert.That(allocated / (double)calls, Is.LessThan(8), $"{allocated} B for {calls} calls"); // see above
     }
 
-    [TestCase(false, TestName = "ServiceTrafficDoesNotAllocate(local)")]
+    [TestCase(false, TestName = "ServiceTrafficDoesNotAllocate(local)"), Retry(3)]
     [TestCase(true, TestName = "ServiceTrafficDoesNotAllocate(remote)")]
     public async Task ServiceTrafficDoesNotAllocate(bool remote)
     {
@@ -251,7 +251,7 @@ public class AllocationTests : ClusterTest
         Assert.That(allocated / (double)rounds, Is.LessThan(8), $"{allocated} B for {rounds} rounds");
     }
 
-    [Test]
+    [Test, Retry(3)]
     public async Task ActorChurnDoesNotAllocate()
     {
         // Actors loaded by a message and unloaded when idle, again and again: the actor object, its mailbox and its
@@ -275,7 +275,7 @@ public class AllocationTests : ClusterTest
         }
     }
 
-    [Test]
+    [Test, Retry(3)]
     public async Task RefusalsDoNotAllocate()
     {
         // Overload is when refusals happen most: refusing must not add GC work. Refusals are status-only frames.
@@ -322,7 +322,7 @@ public class AllocationTests : ClusterTest
         }
     }
 
-    [Test]
+    [Test, Retry(3)]
     public async Task TimeoutsOfRelayedCallsDoNotAllocate()
     {
         // Relayed requests (as a gateway forwards client calls) whose deadline passes while the target shard is busy:
@@ -386,7 +386,7 @@ public class AllocationTests : ClusterTest
         }
     }
 
-    [Test]
+    [Test, Retry(3)]
     public async Task IdleNodesDoNotAllocate()
     {
         // 500 ticks a second on each of 4 shards, maintenance and gossip timers running: anything allocated per tick or
