@@ -47,7 +47,7 @@ public struct Chatting : IComponent;
 public struct Travelling : IComponent;
 
 /// <summary>The scenario's failure counter, as a singleton of every loop's world.</summary>
-public readonly record struct Trips(Counter Failed) : ISingletonComponent;
+public readonly record struct Trips(SwarmCounter Failed) : ISingletonComponent;
 
 public static class Behavior
 {
@@ -66,10 +66,10 @@ public static class Behavior
     }
 
     /// <summary>The bot's systems: its sensor, the planner and one system per task.</summary>
-    public static void AddTo(World world, Meter meter)
+    public static void AddTo(World world, SwarmMeter meter)
     {
         world.AddSingleton<HtnDomain>() = Domain();
-        world.AddSingleton<Trips>() = new Trips(meter.Counter("failed map changes", CounterKind.Failure));
+        world.AddSingleton<Trips>() = new Trips(meter.Counter("failed map changes", SwarmCounterKind.Failure));
         world.AddSystem<SenseSystem>();
         world.AddSystem<PlannerSystem>();
         world.AddSystem<WanderSystem>();

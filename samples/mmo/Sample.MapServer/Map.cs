@@ -64,9 +64,9 @@ public sealed class Map : Actor<MapId, MapState>
     }
 
     [Handle]
-    public void On(SessionResync e)
+    public void On(SessionResumed e)
     {
-        // The client reconnected: same avatar, new session. It lost the pushes meanwhile, so it gets its view again.
+        // The client resumed: same avatar, new session. It lost the pushes meanwhile, so it gets its view again.
         if (!State.Avatars.Remove(e.Previous, out var avatar)) return;
         State.Avatars[e.Session] = avatar;
         avatar.Get<Avatar>().Session = e.Session;

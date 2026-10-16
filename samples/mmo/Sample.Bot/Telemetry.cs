@@ -9,7 +9,7 @@ namespace Sample.Bot;
 /// state): realm broadcast latency from the game node's system to here, gaps in their sequence, chat lines received.
 /// Counting happens on the bot's loop; the meter's counters are striped.
 /// </summary>
-internal sealed class Telemetry(Meter meter, Counter lines, Counter gaps)
+internal sealed class Telemetry(SwarmMeter meter, SwarmCounter lines, SwarmCounter gaps)
 {
     private long _lastTick, _measured;
 
@@ -41,7 +41,7 @@ internal sealed class Telemetry(Meter meter, Counter lines, Counter gaps)
 /// A sampled bot also counts the positions it receives (every <see cref="Every"/>th bot, reported times
 /// <see cref="Every"/>): a subscriber deserializes each push again, and positions are the bulk of the traffic.
 /// </summary>
-internal sealed class PositionTelemetry(Counter positions)
+internal sealed class PositionTelemetry(SwarmCounter positions)
 {
     public const int Every = 16;
 

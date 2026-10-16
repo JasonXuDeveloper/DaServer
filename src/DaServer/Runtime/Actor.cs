@@ -40,7 +40,7 @@ public abstract class Actor : ShardObject
     /// Grant a client session this actor: its client may name it (<c>client.Send(roomId, new Say(..))</c>; a client
     /// can name only actors granted to its session, anything else is refused at the edge without reaching an actor),
     /// the session joins <see cref="Group"/>, and the actor receives <see cref="SessionClosed"/> when the session
-    /// ends and <see cref="SessionResync"/> when it resumes. The actor decides who may address it, in one place (a
+    /// ends and <see cref="SessionResumed"/> when it resumes. The actor decides who may address it, in one place (a
     /// room admitting a player); grants are bounded per session (<see cref="RpcStatus.Overloaded"/> beyond).
     /// Completes once the session's node applied it.
     /// </summary>

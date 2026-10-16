@@ -5,7 +5,7 @@ namespace DaServer.Clients;
 /// <see cref="SignedToken"/> issued by the session's node after every grant change; nodes keep no state for it.
 /// </summary>
 /// <remarks>Content (little endian): node id, session id, grant count, grants (handler type id, key, bound).</remarks>
-internal static class ReconnectTicket
+internal static class ResumeTicket
 {
     private const int HeaderSize = 8 + 8 + 4;
     private const int GrantSize = 4 + 8 + 1;

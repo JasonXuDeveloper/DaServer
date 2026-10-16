@@ -17,7 +17,7 @@ internal static class Clusters
                 Seeds = i == 0 ? [] : [$"127.0.0.1:{started[0].ClusterEndPoint.Port}"],
                 GossipInterval = TimeSpan.FromMilliseconds(100),
             };
-            if (i < gateways) options.Features.Add(new ClientConnections(new ClientOptions()));
+            if (i < gateways) options.Features.Add(new ClientConnections(new ClientConnectionOptions()));
             started[i] = new Node(options);
             await started[i].StartAsync();
         }

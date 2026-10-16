@@ -27,7 +27,7 @@ public class IngressTests : ClusterTest
         var payload = Nino.Core.NinoSerializer.Serialize(new Add(5));
         var sink = new CapturingSink();
         long key = KeyOwnedBy<CounterId>(owner);
-        ingress.Ask(MessageType<Add>.Id, ActorIds<CounterId>.HandlerTypeId, key, payload, new Origin(edge.Id, 1), sink, 77, TimeSpan.FromSeconds(5));
+        ingress.Ask(MessageType<Add>.WireId, ActorIds<CounterId>.HandlerTypeId, key, payload, new Origin(edge.Id, 1), sink, 77, TimeSpan.FromSeconds(5));
         var (callId, status, reply) = await sink.Reply.Task;
         Assert.That((callId, status), Is.EqualTo((77u, RpcStatus.Ok)));
         var reader = new Nino.Core.Reader(reply);
@@ -106,8 +106,8 @@ public class IngressTests : ClusterTest
     {
         protected internal override void Start(INodeContext node) => node.AddIngressFilter(this);
 
-        public IngressDecision Check(uint messageId, uint target, long key, Origin origin) =>
-            messageId == MessageType<Login>.Id ? IngressDecision.Refuse(RpcStatus.RateLimited, TimeSpan.FromSeconds(2)) : IngressDecision.Admit;
+        public IngressDecision Admit(uint messageId, uint target, long key, Origin origin) =>
+            messageId == MessageType<Login>.WireId ? IngressDecision.Refuse(RpcStatus.RateLimited, TimeSpan.FromSeconds(2)) : IngressDecision.Admit;
     }
 
     private sealed class CapturingSink : IReplySink

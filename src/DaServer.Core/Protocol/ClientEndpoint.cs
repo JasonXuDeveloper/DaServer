@@ -1,4 +1,4 @@
-namespace DaServer.Rpc;
+namespace DaServer.Protocol;
 
 /// <summary>Where a client should connect: a client-facing node's public host and client port (the directory's answer).</summary>
 [Nino.Core.NinoType]

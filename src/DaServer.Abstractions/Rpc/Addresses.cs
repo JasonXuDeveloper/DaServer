@@ -12,7 +12,7 @@ public interface IAddress;
 
 /// <summary>
 /// Something one node holds (a client session on its client-facing node): a struct of exactly a <c>ulong</c> node id then a
-/// <c>long</c> value, in that order.
+/// <c>long</c> id, in that order.
 /// </summary>
 public interface INodeAddress : IAddress
 {
@@ -20,7 +20,7 @@ public interface INodeAddress : IAddress
     ulong Node { get; }
 
     /// <summary>Which one on that node (session id, ...).</summary>
-    long Value { get; }
+    long Id { get; }
 }
 
 /// <summary>
@@ -30,7 +30,7 @@ public interface INodeAddress : IAddress
 public interface IGroupAddress : IAddress
 {
     /// <summary>Which group.</summary>
-    long Value { get; }
+    long Id { get; }
 }
 
 /// <summary>
@@ -47,10 +47,6 @@ public readonly partial record struct Origin(ulong Node, long Id) : INodeAddress
 
     /// <summary>False for messages that started inside the cluster (a system, a timer, a server call).</summary>
     public bool IsValid => Id != 0;
-
-    ulong INodeAddress.Node => Node;
-
-    long INodeAddress.Value => Id;
 
     public override string ToString() => $"Origin({Node:x}:{Id})";
 }
@@ -70,8 +66,6 @@ public readonly partial record struct ClientSession(ulong Node, long Id) : INode
     /// </summary>
     public static implicit operator ClientSession(Origin origin) => new(origin.Node, origin.Id);
 
-    long INodeAddress.Value => Id;
-
     public override string ToString() => $"Session({Node:x}:{Id})";
 }
 
@@ -83,8 +77,6 @@ public readonly partial record struct ClientSession(ulong Node, long Id) : INode
 [Nino.Core.NinoType]
 public readonly partial record struct ClientGroup(long Id) : IGroupAddress
 {
-    long IGroupAddress.Value => Id;
-
     /// <summary>Every connected session of the cluster.</summary>
     public static readonly ClientGroup All = new(0);
 
@@ -140,14 +132,14 @@ internal static class Addresses<TAddr> where TAddr : struct, IAddress
     /// <summary>The actor key, session id or group id.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static long Value(in TAddr address) =>
-        Kind == AddressKind.Node ? Unsafe.As<TAddr, NodeLayout>(ref Unsafe.AsRef(in address)).Value
+        Kind == AddressKind.Node ? Unsafe.As<TAddr, NodeLayout>(ref Unsafe.AsRef(in address)).Id
         : Unsafe.As<TAddr, long>(ref Unsafe.AsRef(in address));
 
     /// <summary>The node of an <see cref="INodeAddress"/>.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static ulong Node(in TAddr address) => Unsafe.As<TAddr, NodeLayout>(ref Unsafe.AsRef(in address)).Node;
 
-    private readonly record struct NodeLayout(ulong Node, long Value);
+    private readonly record struct NodeLayout(ulong Node, long Id);
 
     /// <summary>
     /// The kind, after checking that the type's layout is what <see cref="Value"/> and <see cref="Node"/> read: a value
@@ -158,18 +150,18 @@ internal static class Addresses<TAddr> where TAddr : struct, IAddress
         var probe = new NodeLayout(0x0102030405060708UL, 0x1112131415161718L);
         if (default(TAddr) is IActorId or IGroupAddress)
         {
-            long value = probe.Value;
+            long value = probe.Id;
             var address = Unsafe.SizeOf<TAddr>() == sizeof(long) ? Unsafe.As<long, TAddr>(ref value) : default;
             if (address is IActorId actor && actor.Value == value) return AddressKind.Actor;
-            if (address is IGroupAddress group && group.Value == value) return AddressKind.Group;
+            if (address is IGroupAddress group && group.Id == value) return AddressKind.Group;
         }
         else if (default(TAddr) is INodeAddress && Unsafe.SizeOf<TAddr>() == Unsafe.SizeOf<NodeLayout>())
         {
             var node = (INodeAddress)Unsafe.As<NodeLayout, TAddr>(ref probe);
-            if (node.Node == probe.Node && node.Value == probe.Value) return AddressKind.Node;
+            if (node.Node == probe.Node && node.Id == probe.Id) return AddressKind.Node;
         }
 
         throw new InvalidOperationException(
-            $"Address type {typeof(TAddr)} must be an IActorId or IGroupAddress holding exactly one long, or an INodeAddress holding a ulong node then a long value");
+            $"Address type {typeof(TAddr)} must be an IActorId or IGroupAddress holding exactly one long, or an INodeAddress holding a ulong node then a long id");
     }
 }
