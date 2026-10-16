@@ -993,3 +993,40 @@ records that no longer hold). Each: context → decision → consequences.
 - Consequences: one components project per server that has data. Changing a component's layout is a rolling deploy;
   changing behaviour is a reload. Data and behaviour are split exactly as ECS splits them.
 
+## ADR-068 Actor records: [Persist] components, saved by systems, versioned
+- Context: actors are loaded on demand and moved between nodes, so their state needs a store. Orleans writes a grain's
+  state object when the grain asks (`WriteStateAsync`, one row per grain, an ETag). RandomGame writes MongoDB
+  documents per type, marked dirty by hand and written back in batches; a renamed class loses its collection. ET
+  saves serialized entities by hand. Akka.NET and Proto.Actor journal events.
+- Decision:
+  - **What:** an actor's `[Persist]` components (Nino structs in a components project) form one record, keyed by
+    (handler type id, key). The record has a section per component: wire id (FNV-1a of the full name, `[WireId]` to
+    keep it across a rename), length, Nino bytes. Adding or removing a persisted component never breaks a stored
+    record. Transient data (grids, caches, tags) is rebuilt on load. Relational and queried data (accounts,
+    payments, mail, rankings) stays in services with the user's ORM.
+  - **When:**
+    - On unload, always: the actor is removed only once its record is written, so a graceful stop loses nothing.
+    - Every `Actor.SaveEvery` (30 s by default; zero means only on unload) if the record changed. A crash loses at
+      most that much.
+    - At once for an entity tagged `SaveNow` (critical changes).
+    - Unchanged records are skipped by comparing hashes, so there is no dirty marking by hand.
+  - **How:** loading and saving are ECS steps on the shard thread.
+    - `LoadSystem` collects the actors waiting for their record. The batch is loaded in one call, and its components
+      are restored before `OnLoad` runs.
+    - `CheckpointSystem` and `PersistSystem` serialize records into pooled frames.
+    - `StoreSystem` keeps one load batch and one save batch (at most 512 records) in flight per shard. IO never runs
+      on the shard thread, and the backlog is bounded.
+  - **Versions:** every write names the version it replaces. A store that holds another version means another node
+    owns the actor (a split, a late write after being declared dead). The write is refused and the local copy is
+    fenced, removed without another save.
+  - **Backends:** `IActorStore` (`LoadAsync` and `SaveAsync` over batches) is all a backend implements.
+    `InMemoryActorStore` serves tests and development; PostgreSQL is the default for deployments.
+- Alternatives:
+  - A write per turn: no loss, but write volume and latency grow with traffic.
+  - Explicit saves in handlers: forgotten saves, and saves while the state is half-changed.
+  - One table or collection per component type: a load becomes many queries, and renames break storage.
+  - Event sourcing: out of core; it can be built as a pattern on actors.
+- Consequences: an actor's load waits one store round trip, batched per wake. A store outage delays unloads and stops,
+  bounded by the stop budget, which reports what was not saved. Records are opaque bytes for performance; inspecting
+  them needs the components' types.
+

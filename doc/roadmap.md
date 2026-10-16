@@ -242,11 +242,11 @@ Nothing is persisted yet (N5): D5-D6 come with it.
 - [ ] D4 Tests: done: a stop that exceeds its budget reports the unsaved actors and returns
       (`AStopThatExceedsItsBudgetReportsAndReturns`); a leaving gateway's clients keep their sessions. Open with N5: a
       stop under load loses no acknowledged write; Kill loses at most what the persistence policy allows.
-- [ ] D5 (with N5) Persistence that survives a crash: per actor type a save policy: on unload (default), write-behind
-      with a maximum dirty age (checkpoint every N seconds), and immediate saves for declared critical changes
-      (trades, purchases). Versioned saves reject a fenced node's late write (ADR-042).
-- [ ] D6 (with N5) Store flush and backpressure: the store's write queue is bounded, flushed in D2 before links close,
-      and its health feeds readiness.
+- [x] D5 Persistence that survives a crash (ADR-068): on unload always, a checkpoint every `Actor.SaveEvery` when the
+      record changed, `SaveNow` for critical changes; versioned saves reject a stale owner's late write.
+- [ ] D6 Store flush and backpressure. Done: one save batch (at most 512 records) in flight per shard; the stop's unload
+      phase waits for every final write (actors are removed only once written); a failing store is retried every second.
+      Open: store health in readiness (with the PostgreSQL store).
 
 ## Next: Aspire and hosting best practices (A-items, with D1-D4; checked against Aspire 13.6)
 
@@ -419,13 +419,14 @@ in separate commits.
       a handler for every `FromClient` message; run in tests and at AppHost start. (Orleans compile-time interfaces)
 - [ ] N7 Placement affinity: an actor type may declare a placement key (`PlacementKey(key)`), hashed instead of the
       key: same placement key = same node (and shard); zones without topology strings, no directory. (ET addresses)
-- [ ] N5 Persistence as ECS: `[Persist]` components of an actor form one record (sections by component wire id);
-      `LoadSystem` batches the loads of one wake; `PersistSystem` (cadence group) serializes on the shard into pooled
-      buffers, skips unchanged state by hash, hands bytes to a bounded IO queue; `SaveNow` tag for critical changes;
-      unload waits for the last write; versioned writes (conflict = fenced). `IActorStore` (LoadMany / SaveMany with
-      expected version) is all a backend implements: PostgreSQL (default, Aspire `WithActorStore`) and in-memory
-      (tests). Relational business data (accounts, payments, mail, auctions) stays in the user's ORM inside services.
-      (RandomGame write-behind, ET serialized components, Orleans IPersistentState + ETags)
+- [ ] N5 Persistence as ECS (ADR-068). Done: `[Persist]` components of an actor form one record (a section per component
+      wire id); `LoadSystem` batches the loads of a wake and restores components before `OnLoad`; `CheckpointSystem`
+      writes changed records every `Actor.SaveEvery` (30 s, unchanged skipped by hash), `PersistSystem` writes
+      `SaveNow` and unloaded actors (removed once written); `StoreSystem` keeps one load and one save batch in flight
+      per shard; a rejected versioned write fences the local copy; `IActorStore` + `InMemoryActorStore`; DAS014.
+      Open: the PostgreSQL store (`DaServer.Persistence.PostgreSql`, Aspire `WithActorStore`, A7). Relational business
+      data (accounts, payments, mail, auctions) stays in the user's ORM inside services. (RandomGame write-behind, ET
+      serialized components, Orleans IPersistentState + ETags)
 - [ ] N6 State handoff on moves: the old owner sends the same bytes to the new owner on the ordered link ahead of the
       forwarded mail; the store is the fallback. (ET transfer, Orleans migration)
 - [ ] N8 Collections in messages without allocation: use Nino's own ref deserialization (`DeserializeRef` into a
