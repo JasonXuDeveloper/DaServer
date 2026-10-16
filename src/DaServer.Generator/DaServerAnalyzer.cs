@@ -13,7 +13,7 @@ namespace DaServer.Generator;
 public sealed partial class DaServerAnalyzer : DiagnosticAnalyzer
 {
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics { get; } = ImmutableArray.Create(
-        Rules.BadHandler, Rules.BadMessage, Rules.NotWireType, Rules.IdCollision, Rules.NoDefaultConstructor, Rules.WrongFlow, Rules.StatefulHandlerType, Rules.WrongAddress, Rules.SharedReferencesServer, Rules.MisplacedReplyWhen, Rules.BlockingCall, Rules.AskInSystem);
+        Rules.BadHandler, Rules.BadMessage, Rules.NotWireType, Rules.IdCollision, Rules.NoDefaultConstructor, Rules.WrongFlow, Rules.StatefulHandlerType, Rules.WrongAddress, Rules.SharedReferencesServer, Rules.MisplacedReplyWhen, Rules.BlockingCall, Rules.AskInSystem, Rules.ComponentInLogic);
 
     public override void Initialize(AnalysisContext context)
     {
@@ -25,6 +25,7 @@ public sealed partial class DaServerAnalyzer : DiagnosticAnalyzer
             // Wire ids of every message type declared in this compilation, for the collision check at the end.
             var ids = new ConcurrentDictionary<uint, (string Name, Location? Location)>();
             var collisions = new ConcurrentBag<Diagnostic>();
+            bool logic = IsLogic(start.Compilation, start.Options);
 
             start.RegisterSymbolAction(symbolContext =>
             {
@@ -35,7 +36,8 @@ public sealed partial class DaServerAnalyzer : DiagnosticAnalyzer
                 Shapes.ReadHosted(type, Report);
                 Shapes.ReadRequest(type, Report);
                 Shapes.ReadClientMessage(type, Report);
-                CheckStateless(type, Report);
+                CheckStateless(type, logic, Report);
+                if (logic) CheckNoComponents(type, Report);
 
                 if (type.TypeKind != TypeKind.Struct || !Support.HasAttribute(type, Support.MessageAttribute)) return;
                 if (!Shapes.IsMessage(type, type.Locations.FirstOrDefault(), "[Message]", Report)) return;
@@ -97,14 +99,15 @@ public sealed partial class DaServerAnalyzer
 public sealed partial class DaServerAnalyzer
 {
     /// <summary>
-    /// Mutable fields of an actor or service type (instance fields, auto-properties, static non-readonly fields): the
-    /// runtime recreates actor and service objects (load, move, code reload) and persists, moves and inspects components
-    /// only, so such state would be lost or shared across shard threads.
+    /// Mutable fields of an actor, service or server system type (instance fields, auto-properties, static non-readonly
+    /// fields): the runtime recreates these objects (load, move, code reload) and persists, moves and inspects
+    /// components only, so such state would be lost or shared across shard threads. A system's own state is a singleton.
     /// </summary>
-    private static void CheckStateless(INamedTypeSymbol type, Report report)
+    private static void CheckStateless(INamedTypeSymbol type, bool logic, Report report)
     {
         if (type.TypeKind != TypeKind.Class ||
-            !(Support.DerivesFrom(type, Support.ActorBase) || Support.DerivesFrom(type, Support.ServiceBase)))
+            !(Support.DerivesFrom(type, Support.ActorBase) || Support.DerivesFrom(type, Support.ServiceBase) ||
+              (logic && Support.DerivesFrom(type, Support.EcsSystem))))
             return;
 
         foreach (var member in type.GetMembers())
@@ -180,6 +183,30 @@ public sealed partial class DaServerAnalyzer
     }
 }
 
+/// <summary>
+/// Components and the logic over them live in separate projects (ADR-067): a project on the server runtime (its actors,
+/// services and systems are what a reload replaces) declares no component or singleton; those live in a components
+/// project, which is never reloaded, so their types (the keys of ECS storage) stay the same. Shared logic is exempt: it
+/// is never reloaded (clients run it too).
+/// </summary>
+public sealed partial class DaServerAnalyzer
+{
+    private static bool IsLogic(Compilation compilation, AnalyzerOptions options)
+    {
+        if (RegistrationGenerator.IsShared(options.AnalyzerConfigOptionsProvider.GlobalOptions)) return false;
+        foreach (var reference in compilation.ReferencedAssemblyNames)
+            if (reference.Name == "DaServer") return true;
+        return false;
+    }
+
+    private static void CheckNoComponents(INamedTypeSymbol type, Report report)
+    {
+        if (type.TypeKind != TypeKind.Struct || type.IsImplicitlyDeclared) return;
+        if (Support.Implements(type, "EasyEcs.IComponent") || Support.Implements(type, "EasyEcs.ISingletonComponent"))
+            report(Rules.ComponentInLogic, type.Locations.FirstOrDefault(), type.Name);
+    }
+}
+
 internal static class Rules
 {
     private const string Category = "DaServer";
@@ -202,8 +229,8 @@ internal static class Rules
         "'{0}' must have a public parameterless constructor (the runtime creates one instance per shard/loaded actor)",
         Category, DiagnosticSeverity.Error, true);
 
-    public static readonly DiagnosticDescriptor StatefulHandlerType = new("DAS007", "Actor or service with fields",
-        "'{0}.{1}' holds state outside ECS: keep actor state in components (Actor<TId, TState>, Entity) and shared data in singletons",
+    public static readonly DiagnosticDescriptor StatefulHandlerType = new("DAS007", "Actor, service or system with fields",
+        "'{0}.{1}' holds state outside ECS: keep actor state in components (Actor<TId, TState>, Entity), a system's and shared data in singletons",
         Category, DiagnosticSeverity.Error, true);
 
     public static readonly DiagnosticDescriptor WrongFlow = new("DAS006", "Message used against its flow",
@@ -222,6 +249,10 @@ internal static class Rules
 
     public static readonly DiagnosticDescriptor AskInSystem = new("DAS012", "A system asks",
         "Systems do not wait for replies (an answer arriving ticks later may be stale): read and write the components of this world directly (queries, Entity handles), or Send an intent to the owner of data in another world, which validates it and sends the outcome back as a message",
+        Category, DiagnosticSeverity.Error, true);
+
+    public static readonly DiagnosticDescriptor ComponentInLogic = new("DAS013", "Component declared beside logic",
+        "Component '{0}' is declared in a project that runs on the server runtime: declare it in a components project (it references contracts and EasyEcs, not the DaServer runtime), so the data outlives a reload of this project's actors, services and systems",
         Category, DiagnosticSeverity.Error, true);
 
     public static readonly DiagnosticDescriptor WrongAddress = new("DAS008", "Wrong kind of address",
