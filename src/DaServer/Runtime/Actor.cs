@@ -88,6 +88,14 @@ public abstract class Actor : ShardObject
     /// </summary>
     public virtual TimeSpan UnloadAfterIdle => TimeSpan.Zero;
 
+    /// <summary>
+    /// A handler of this actor failed (threw, or its reply failed): what to do with the actor (C4). <see cref="ErrorAction.Resume"/>
+    /// (default) keeps it and takes the next message; <see cref="ErrorAction.Reload"/> drops it without saving, so the
+    /// next message loads it again from storage (its state may be inconsistent after a half-applied change). The caller
+    /// gets the error either way. Runs on the shard thread; keep it a decision, not work.
+    /// </summary>
+    public virtual ErrorAction OnError(Exception error) => ErrorAction.Resume;
+
     /// <summary>Components every loaded actor starts with (the entity already has <see cref="ActorRef"/>).</summary>
     internal virtual void InitializeEntity(Entity entity)
     {
@@ -132,3 +140,14 @@ public readonly record struct ActorRef(Actor Actor) : IComponent
     [MethodImpl(MethodImplOptions.NoInlining)]
     private InvalidOperationException WrongIdType(Type type) => new($"{Actor.HandlerType} is not addressed by {type}");
 }
+
+/// <summary>What happens to an actor whose handler failed (<see cref="Actor.OnError"/>).</summary>
+public enum ErrorAction
+{
+    /// <summary>Keep the actor and its state; the next message runs.</summary>
+    Resume,
+
+    /// <summary>Remove the actor without saving; the next message loads it again.</summary>
+    Reload,
+}
+

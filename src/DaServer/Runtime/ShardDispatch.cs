@@ -172,6 +172,7 @@ internal static class ShardDispatch
             {
                 if (context.ExpectsReply) context.ReplyException(e);
                 else LogUnobserved(logger, e, target, in header);
+                Failed(target, e);
                 return default;
             }
             finally
@@ -192,6 +193,32 @@ internal static class ShardDispatch
     {
         long chain = frame.Chain;
         return chain != 0 ? chain : world.GetSingleton<CallChains>().Next();
+    }
+
+    /// <summary>
+    /// A handler of <paramref name="target"/> failed (synchronously, or its turn faulted): count it, and apply the actor's
+    /// <see cref="Actor.OnError"/> (C4). Reload removes the actor without saving once it is idle; its mail loads it again.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void Failed(object target, Exception error)
+    {
+        Shard.Current?.CountFailed();
+        if (target is not Actor actor || actor.Entity == default || !actor.Entity.IsAlive) return;
+        ErrorAction action;
+        try
+        {
+            action = actor.OnError(error);
+        }
+        catch (Exception e)
+        {
+            actor.Shard.Node.Logger.LogError(e, "OnError of {Actor} failed", actor);
+            action = ErrorAction.Resume;
+        }
+
+        var entity = actor.Entity;
+        if (action != ErrorAction.Reload || entity.Has<UnloadRequested>() || entity.Has<Unloading>() || entity.Has<Removing>()) return;
+        entity.Add<UnloadRequested>();
+        entity.Add<Fenced>(); // nothing is saved: the state may be half-changed
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
