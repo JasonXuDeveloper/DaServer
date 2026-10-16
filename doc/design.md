@@ -323,7 +323,7 @@ other than `Ok` refuses the message (a request gets it as its reply). Without fi
 
 ### HTTP plane
 
-Every node is an ASP.NET Core `WebApplication` (the generated entry point; ADR-046): Kestrel on `DaServer:HttpPort`
+Every node is an ASP.NET Core `WebApplication` (its `Program.cs`, ADR-021; ADR-046): Kestrel on `DaServer:HttpPort`
 next to the TCP data plane. Endpoints reach actors only through messages: `app.MapAsk<TRequest, TReply>(pattern)`
 (the JSON body asked of the service), `app.MapAsk<TId, TRequest, TReply>("/x/{id}")` (of an actor),
 `app.MapSend<T>(pattern)` (one-way, 202). Each request enters through the ingress with an origin of its own and the
@@ -419,7 +419,6 @@ What the generators write:
 |---|---|
 | `AskGenerator` | a `{Request}Ask` class of typed `Ask` overloads per request (`Cluster.Ask(playerId, new AddGold(1))` infers the reply type) |
 | `RegistrationGenerator` | `Registration_{Assembly}`: registrations of referenced assemblies first, then `[FromClient]` messages, client handler classes, actors and services (one dispatcher per `[Handle]` method), every `EcsSystem`; run once by its static constructor (ADR-012) |
-| `EntryPointGenerator` | `NodeProgram.Main` when a node project has no `Program.cs` (ADR-021) |
 | `PolyfillGenerator` | `IsExternalInit` for contract assemblies built for netstandard2.1 |
 | EasyEcs `SystemGenerator` | `[ForEach]` struct jobs (components, singletons, entity, world parameters) and `GeneratedUpdate` |
 | Analyzers | DAS001–DAS013 (handlers, messages, wire types, id collisions, constructors, message flow, stateless actors, services and systems, address kinds, synchronous waits on shard threads, shared logic, ReplyWhen placement, systems that ask, components apart from logic), EECS001–EECS008 (ECS rules) |
@@ -447,7 +446,7 @@ node project is its business classes only.
 | Level | What | Where |
 |---|---|---|
 | Unit | Queues, buffer pool, frame parsing, pending-call table, membership merge, rendezvous placement | `tests/DaServer.Tests` |
-| Generator | Valid input compiles, every DAS rule fires from the analyzer, the entry point is generated only when missing, unrelated edits hit the incremental cache | `tests/DaServer.Tests` |
+| Generator | Valid input compiles, every DAS rule fires from the analyzer, unrelated edits hit the incremental cache | `tests/DaServer.Tests` |
 | Integration | In-process clusters on loopback (`ClusterTest`): request semantics and ordering, turn-based actors, ECS systems over actor state, single loaded actor, idle unloading, failover, fencing, one-way and published messages (to actors on any node, once per service type, ordering, routing), resumable links, deadlines, client access by `[FromClient]`, binding isolation, broadcast (exact under churn), the directory, `SessionClosed` (close and client-facing node crash), session resumption, backpressure, placement under suspicion | `tests/DaServer.Tests` |
 | Allocation | Steady-state cross-shard calls, replies of suspended handlers, bursts of concurrent calls, one-way messages, client fan-out, client messages through a client-facing node and gossip rounds allocate nothing per operation | `tests/DaServer.Tests` |
 | End to end | AppHost topology (login, game, map, 3 client-facing gateway nodes) + `Sample.Bot`: 10k bots locally, 1,000 in CI (`tests/DaServer.E2E`); fails on any gap, disconnect or p99 over the limit | `samples/mmo/`, `tests/DaServer.E2E` |
