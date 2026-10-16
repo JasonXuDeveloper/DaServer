@@ -34,13 +34,21 @@ public static class FrameFlags
     /// </summary>
     public const byte HasOrigin = 2;
 
+    /// <summary>
+    /// After the payload, first of the trailers: the 8-byte call chain of a request (int64), the chain of the turn
+    /// that asked: every request a turn makes, directly or through others, carries it, so a request that reaches an
+    /// actor whose running turn has the same chain would wait for itself and fails at once (<see cref="RpcStatus.CallCycle"/>).
+    /// </summary>
+    public const byte HasChain = 4;
+
     /// <summary>The flags that name trailers.</summary>
-    public const byte Trailers = HasCall | HasOrigin;
+    public const byte Trailers = HasCall | HasOrigin | HasChain;
 
     /// <summary>Bytes of the trailers a frame with <paramref name="flags"/> ends with.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int TrailerSize(byte flags) =>
-        ((flags & HasCall) != 0 ? sizeof(uint) : 0) + ((flags & HasOrigin) != 0 ? Origin.Size : 0);
+        ((flags & HasCall) != 0 ? sizeof(uint) : 0) + ((flags & HasOrigin) != 0 ? Origin.Size : 0) +
+        ((flags & HasChain) != 0 ? sizeof(long) : 0);
 }
 
 /// <summary>
@@ -50,13 +58,14 @@ public static class FrameFlags
 /// 4  byte   Kind
 /// 5  byte   Status     RpcStatus for replies; for requests the caller's time budget (see EncodeBudget), otherwise 0
 /// 6  byte   Hops       forwarding count (loop guard)
-/// 7  byte   Flags      FrameFlags (HasCall, HasOrigin)
+/// 7  byte   Flags      FrameFlags (HasCall, HasOrigin, HasChain)
 /// 8  uint32 Target     who handles a message: an actor or service handler type id, or an address scope (sessions,
 ///                      client groups); 0 in replies and control frames, and from clients that leave the choice to
 ///                      their node (the actor bound to the session, else the service)
 /// 12 uint32 MessageId  wire id of the message type (see WireIds) or control op
 /// 16 int64  Key        actor key / session id / group id (0 for services)
 /// ..        payload
+/// ..        int64 call chain when HasChain
 /// ..        origin (uint64 node, int64 id) when HasOrigin
 /// ..        uint32 call id when HasCall
 /// </code>
@@ -109,7 +118,7 @@ public struct FrameHeader
     public static Origin OriginOf(in FrameHeader header, ReadOnlySpan<byte> frame)
     {
         if ((header.Flags & FrameFlags.HasOrigin) == 0) return default;
-        var at = frame[(header.Length - FrameFlags.TrailerSize(header.Flags))..];
+        var at = frame[(header.Length - FrameFlags.TrailerSize((byte)(header.Flags & ~FrameFlags.HasChain)))..];
         return new Origin(BinaryPrimitives.ReadUInt64LittleEndian(at), BinaryPrimitives.ReadInt64LittleEndian(at[sizeof(ulong)..]));
     }
 

@@ -88,7 +88,9 @@ public sealed class Counter : Actor<CounterId, CounterState>
     public async ValueTask<int> On(SlowAdd m)
     {
         var shard = Shard.Current;
+#pragma warning disable DAS009 // on purpose: a foreign await must resume on the shard
         await Task.Delay(10);
+#pragma warning restore DAS009
         if (Shard.Current != shard) throw new InvalidOperationException("continuation left the shard thread");
         return State.Value += m.Delta;
     }
@@ -133,7 +135,9 @@ public sealed class Counter : Actor<CounterId, CounterState>
 
     [Handle]
     public ValueTask<int> On(AnswerLater m) =>
+#pragma warning disable DAS009 // on purpose: a foreign task completing later, off the shard
         ReplyWhen(m.Fail ? ValueTask.FromException(new InvalidOperationException("later")) : new ValueTask(Task.Delay(m.Ms)), State.Value);
+#pragma warning restore DAS009
 
     [Handle]
     public bool On(Grow _)
@@ -289,6 +293,48 @@ public static class Observed
 public sealed class StallService : Service
 {
     [Handle] public async ValueTask<bool> On(Stall _) => await Observed.Release.Task;
+}
+
+// ---------------------------------------------------------------- call chains (actors asking each other)
+
+public readonly record struct LoopId(long Value) : IActorId;
+
+/// <summary>
+/// Ask <see cref="Path"/>'s first actor to ask the rest in turn (<see cref="ViaService"/>: through
+/// <see cref="LoopService"/>); the last one answers. A path that returns to an actor still waiting is a call cycle.
+/// </summary>
+[NinoType, Message] public partial record struct Hop(long[] Path, int At, bool ViaService) : IRequest<int>;
+
+/// <summary>Hold the turn for <see cref="Ms"/> (another caller's request queues behind it).</summary>
+[NinoType, Message] public partial record struct Hold(int Ms) : IRequest<int>;
+
+public sealed class Looper : Actor<LoopId>
+{
+    [Handle]
+    public async ValueTask<int> On(Hop m)
+    {
+        if (m.At == m.Path.Length - 1) return m.At;
+        var next = m with { At = m.At + 1 };
+        return m.ViaService ? await Cluster.Ask(new PassOn(next)) : await Cluster.Ask(new LoopId(m.Path[next.At]), next);
+    }
+
+    [Handle]
+    public async ValueTask<int> On(Hold m)
+    {
+#pragma warning disable DAS009 // on purpose: a turn that holds its actor
+        await Task.Delay(m.Ms);
+#pragma warning restore DAS009
+        return m.Ms;
+    }
+}
+
+/// <summary>A hop through <see cref="LoopService"/>.</summary>
+[NinoType, Message] public partial record struct PassOn(Hop Hop) : IRequest<int>;
+
+/// <summary>Passes a hop on: a service in the middle of a chain keeps it.</summary>
+public sealed class LoopService : Service
+{
+    [Handle] public ValueTask<int> On(PassOn m) => Cluster.Ask(new LoopId(m.Hop.Path[m.Hop.At]), m.Hop);
 }
 
 // ---------------------------------------------------------------- services

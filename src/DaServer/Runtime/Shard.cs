@@ -69,6 +69,15 @@ internal sealed class Shard : CompletionThread
     /// <summary>Active loaded actors (approximate, any thread).</summary>
     public int ActorCount => Volatile.Read(ref _actorCount);
 
+    private long _passStartedMs; // Environment.TickCount64 when the running pass started, 0 while asleep
+
+    /// <summary>How long the shard thread has been in its current pass (0 while it sleeps): the stall watchdog's input.</summary>
+    internal long PassMs(long now)
+    {
+        long started = Volatile.Read(ref _passStartedMs);
+        return started == 0 ? 0 : now - started;
+    }
+
     /// <summary>Completes when the shard thread has exited.</summary>
     public Task Stopped => _stopped.Task;
 
@@ -167,6 +176,7 @@ internal sealed class Shard : CompletionThread
             ref var activity = ref World.GetSingleton<ShardActivity>(); // singletons never move
             while (true)
             {
+                Volatile.Write(ref _passStartedMs, Environment.TickCount64);
                 activity.Processed = 0;
                 if (_stopRequested && !activity.Stopping) activity.Stopping = activity.Rebalance = true;
 
@@ -230,6 +240,7 @@ internal sealed class Shard : CompletionThread
     {
         World.AddSingleton<ShardContext>() = new ShardContext(this);
         World.AddSingleton<ShardActivity>();
+        World.AddSingleton<CallChains>() = new CallChains { Last = Random.Shared.NextInt64() };
         World.AddSingleton<ShardTimers>() = new ShardTimers(new TimerWheel<DelayedSend>(ShardTimers.Resolution));
         World.AddSingleton<ActorDirectory>() = new ActorDirectory(new Dictionary<ActorAddress, Entity>());
         World.AddSingleton<TurnWatchers>() = new TurnWatchers(new Stack<TurnWatcher>());
@@ -271,6 +282,7 @@ internal sealed class Shard : CompletionThread
     private void Sleep(long nextTick)
     {
         Interlocked.Exchange(ref _sleeping, 1);
+        Volatile.Write(ref _passStartedMs, 0);
         if (QueueLength == 0 && !_stopRequested)
         {
             long remaining = nextTick - Stopwatch.GetTimestamp();

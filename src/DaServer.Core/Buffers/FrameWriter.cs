@@ -71,10 +71,14 @@ public sealed class FrameWriter : INinoBufferWriter, IDisposable
         get
         {
             if ((_trailers & FrameFlags.HasOrigin) == 0) return default;
-            var at = _buffer.AsSpan(_pos - FrameFlags.TrailerSize(_trailers));
+            var at = _buffer.AsSpan(_pos - FrameFlags.TrailerSize((byte)(_trailers & ~FrameFlags.HasChain)));
             return new Origin(BinaryPrimitives.ReadUInt64LittleEndian(at), BinaryPrimitives.ReadInt64LittleEndian(at[sizeof(ulong)..]));
         }
     }
+
+    /// <summary>The call chain trailer (<see cref="FrameFlags.HasChain"/>), 0 when the frame has none.</summary>
+    public long Chain =>
+        (_trailers & FrameFlags.HasChain) != 0 ? BinaryPrimitives.ReadInt64LittleEndian(_buffer.AsSpan(_pos - FrameFlags.TrailerSize(_trailers))) : 0;
 
     public int Length => _pos;
 
@@ -112,17 +116,7 @@ public sealed class FrameWriter : INinoBufferWriter, IDisposable
     /// Set the call id trailer (after the payload): appended once, rewritten in place by every hop that relays the
     /// request under its own call id.
     /// </summary>
-    public void SetCallId(uint callId)
-    {
-        if ((_trailers & FrameFlags.HasCall) == 0)
-        {
-            GetSpan(sizeof(uint));
-            _pos += sizeof(uint);
-            _trailers |= FrameFlags.HasCall;
-        }
-
-        BinaryPrimitives.WriteUInt32LittleEndian(_buffer.AsSpan(_pos - sizeof(uint)), callId);
-    }
+    public void SetCallId(uint callId) => BinaryPrimitives.WriteUInt32LittleEndian(Trailer(FrameFlags.HasCall, sizeof(uint), 0), callId);
 
     /// <summary>
     /// Set the origin trailer (after the payload, before the call id): written once, by the ingress that lets the message
@@ -130,23 +124,31 @@ public sealed class FrameWriter : INinoBufferWriter, IDisposable
     /// </summary>
     public void SetOrigin(Origin origin)
     {
-        if ((_trailers & FrameFlags.HasOrigin) == 0)
-        {
-            uint callId = CallId;
-            if ((_trailers & FrameFlags.HasCall) != 0) _pos -= sizeof(uint); // the call id moves behind the origin
-            GetSpan(Origin.Size);
-            _pos += Origin.Size;
-            _trailers |= FrameFlags.HasOrigin;
-            if ((_trailers & FrameFlags.HasCall) != 0)
-            {
-                _trailers &= unchecked((byte)~FrameFlags.HasCall);
-                SetCallId(callId);
-            }
-        }
-
-        var at = _buffer.AsSpan(_pos - FrameFlags.TrailerSize(_trailers));
+        var at = Trailer(FrameFlags.HasOrigin, Origin.Size, FrameFlags.HasCall);
         BinaryPrimitives.WriteUInt64LittleEndian(at, origin.Node);
         BinaryPrimitives.WriteInt64LittleEndian(at[sizeof(ulong)..], origin.Id);
+    }
+
+    /// <summary>Set the call chain trailer (after the payload, before the origin): written by the node that sends the request.</summary>
+    public void SetChain(long chain) =>
+        BinaryPrimitives.WriteInt64LittleEndian(Trailer(FrameFlags.HasChain, sizeof(long), FrameFlags.HasCall | FrameFlags.HasOrigin), chain);
+
+    /// <summary>
+    /// The bytes of trailer <paramref name="flag"/>, inserted on first use in front of the trailers named by
+    /// <paramref name="following"/> (which move back by <paramref name="size"/>).
+    /// </summary>
+    private Span<byte> Trailer(byte flag, int size, byte following)
+    {
+        int after = FrameFlags.TrailerSize((byte)(_trailers & following));
+        if ((_trailers & flag) == 0)
+        {
+            GetSpan(size);
+            _buffer.AsSpan(_pos - after, after).CopyTo(_buffer.AsSpan(_pos - after + size));
+            _pos += size;
+            _trailers |= flag;
+        }
+
+        return _buffer.AsSpan(_pos - after - size, size);
     }
 
     /// <summary>Append raw bytes to the payload (before any trailer).</summary>

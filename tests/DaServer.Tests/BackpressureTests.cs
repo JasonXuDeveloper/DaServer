@@ -40,6 +40,28 @@ public class BackpressureTests : ClusterTest
     }
 
     [Test]
+    public async Task AShardThreadBlockedLongerThanStallAfterIsReported()
+    {
+        var node = await Start("single", shards: 1, configure: static o => o.StallAfter = TimeSpan.FromMilliseconds(200));
+        using var gate = new ManualResetEventSlim();
+        node.Shards[0].Post(static g => ((ManualResetEventSlim)g!).Wait(), gate); // what DAS009 reports in user code
+        await Eventually(() => node.StalledShards == 1, "the watchdog reports the blocked shard");
+        gate.Set();
+        await Eventually(() => node.StalledShards == 0, "and clears it once the shard is back in its loop");
+    }
+
+    [Test]
+    public async Task ReadingACallsResultBeforeItCompletedThrows()
+    {
+        var node = await Start("single", shards: 1);
+        using var gate = new ManualResetEventSlim();
+        node.Shards[0].Post(static g => ((ManualResetEventSlim)g!).Wait(), gate);
+        var call = node.Ask(new CounterId(1), new Add(1));
+        Assert.That(() => call.Result, Throws.InvalidOperationException, "a pooled call cannot block: it throws instead");
+        gate.Set();
+    }
+
+    [Test]
     public async Task RequestsWhoseCallerTimedOutDoNotRun()
     {
         var node = await Start("single", shards: 1, configure: static o => o.CallTimeout = TimeSpan.FromMilliseconds(200));

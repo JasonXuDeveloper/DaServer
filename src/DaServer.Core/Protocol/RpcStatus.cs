@@ -20,4 +20,9 @@ public enum RpcStatus : byte
     Overloaded = 7,
     /// <summary>The edge's admission refused the sender for now (a rate limit); nothing ran. Retry after the hint.</summary>
     RateLimited = 8,
+    /// <summary>
+    /// The request reached an actor whose running turn waits for it (A asks B, B asks A): it would wait until the
+    /// timeout, so it fails at once. Nothing ran. Model such flows with one-way messages.
+    /// </summary>
+    CallCycle = 9,
 }
