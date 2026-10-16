@@ -27,7 +27,7 @@ EasyEcs comes from NuGet (`EasyEcsVersion` in `Directory.Build.props`). Use it a
 ## Layout
 
 ```
-src/DaServer.Abstractions/ contracts (netstandard2.1, net10.0, net11.0): attributes, IRequest, addresses, wire ids (ADR-052)
+src/DaServer.Abstractions/ contracts (netstandard2.1, net10.0, net11.0): attributes, IRequest, addresses, type ids (ADR-052)
 src/DaServer.Core/         wire and transport shared by servers and clients (netstandard2.1, net10.0, net11.0): Protocol/
                            Buffers/ Net/ Rpc/ (calls, dispatch) Concurrency/
 src/DaServer.Client/       client SDK (netstandard2.1, net10.0, net11.0): ClusterClient
@@ -96,7 +96,8 @@ doc/                       requirements.md, design.md, decisions.md, roadmap.md
   autoscaler. `DaServer.Hosting.AddDaServer` is the framework's service defaults. Nodes run ASP.NET Core for their HTTP plane
   (health, admin, user REST endpoints, ADR-046); the data plane stays DaServer's own TCP links. HTTP code reaches
   actors only through `ICluster`.
-- Wire ids are generated (FNV-1a); never renumber by hand except `[WireId]` to resolve a reported collision.
+- Type ids (messages on the wire, actor id types, services, persisted components) are generated (FNV-1a); set one by
+  hand only with `[TypeId]`, to resolve a reported collision or to keep a renamed type's identity and stored records.
 - No topology strings (roles, node names) in code: a node hosts what its project compiles (ADR-017).
 - The framework is general (ADR-045): a capability enters only if backends of different domains need it, in its own
   namespace on the public feature points, off unless configured; the runtime never depends on it. Domain logic goes
