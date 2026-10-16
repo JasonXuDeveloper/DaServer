@@ -130,7 +130,7 @@ public sealed partial class DaServerAnalyzer
     {
         var invocation = (IInvocationOperation)context.Operation;
         var method = invocation.TargetMethod;
-        if (method.Name is not ("Send" or "Ask" or "Publish") || method.Parameters.Length == 0) return;
+        if (method.Name is not ("Send" or "SendAfter" or "Ask" or "Publish") || method.Parameters.Length == 0) return;
 
         var sender = method.IsExtensionMethod ? method.Parameters[0].Type : method.ContainingType;
         if (sender == null || !IsSender(sender)) return;
@@ -141,6 +141,7 @@ public sealed partial class DaServerAnalyzer
         if (message is ITypeParameterSymbol) return; // generic plumbing: checked where the type is known
         int addressIndex = method.Parameters.Length - 2;
         var address = addressIndex >= (method.IsExtensionMethod ? 1 : 0) ? method.Parameters[addressIndex].Type : null;
+        if (Support.Is(address, "System.TimeSpan")) address = null; // SendAfter's delay, not an address
         if (address is ITypeParameterSymbol) return;
         bool toClient = address != null && IsClientAddress(address);
         bool notActor = address != null && !Support.Implements(address, Support.ActorId);

@@ -202,7 +202,8 @@ internal sealed class Shard : CompletionThread
                 Volatile.Write(ref _actorCount, World.GetSingleton<ActorDirectory>().Actors.Count);
                 if (activity.Stopping && IsDrained()) break;
                 if (activity.Processed == 0 && !World.Any<Mailbox>(MailboxSystem.Runnable))
-                    Sleep(nextTick);
+                    Sleep(World.GetSingleton<ShardTimers>().Wheel.Count == 0 ? nextTick
+                        : Math.Min(nextTick, Stopwatch.GetTimestamp() + TimerWake)); // a delayed send waits for no tick
             }
         }
         catch (Exception e)
@@ -213,6 +214,7 @@ internal sealed class Shard : CompletionThread
         {
             try
             {
+                if (World.HasSingleton<ShardTimers>()) World.GetSingleton<ShardTimers>().Drop();
                 World.Dispose();
             }
             finally
@@ -228,6 +230,7 @@ internal sealed class Shard : CompletionThread
     {
         World.AddSingleton<ShardContext>() = new ShardContext(this);
         World.AddSingleton<ShardActivity>();
+        World.AddSingleton<ShardTimers>() = new ShardTimers(new TimerWheel<DelayedSend>(ShardTimers.Resolution));
         World.AddSingleton<ActorDirectory>() = new ActorDirectory(new Dictionary<ActorAddress, Entity>());
         World.AddSingleton<TurnWatchers>() = new TurnWatchers(new Stack<TurnWatcher>());
         World.AddSingleton<ActorPools>() = new ActorPools(new Dictionary<uint, Stack<Actor>>(), new Stack<Queue<Envelope>>(),
@@ -244,6 +247,7 @@ internal sealed class Shard : CompletionThread
 
         World.AddSingleton<ServiceDirectory>() = new ServiceDirectory(services);
 
+        World.AddSystem<TimerSystem>();
         World.AddSystem<DispatchSystem>();
         World.AddSystem<TurnSystem>();
         World.AddSystem<MailboxSystem>();
@@ -261,6 +265,8 @@ internal sealed class Shard : CompletionThread
         World.GetSingleton<ActorDirectory>().Actors.Count == 0 &&
         !World.Any<ServiceCall>() &&
         QueueLength == 0;
+
+    private static readonly long TimerWake = (long)(ShardTimers.Resolution.TotalSeconds * Stopwatch.Frequency);
 
     private void Sleep(long nextTick)
     {

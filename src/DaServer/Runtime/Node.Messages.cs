@@ -23,6 +23,48 @@ sealed partial class Node
         }
     }
 
+    public long SendAfter<TAddr, T>(TimeSpan delay, TAddr address, in T message) where TAddr : struct, IAddress where T : struct =>
+        Schedule(delay, new DelayedSend(MessageWriter.Write(in message), Addresses<TAddr>.Kind, Addresses<TAddr>.Scope, MessageType<T>.Id,
+            Addresses<TAddr>.Kind == AddressKind.Node ? Addresses<TAddr>.Node(in address) : 0, Addresses<TAddr>.Value(in address)));
+
+    public long SendAfter<T>(TimeSpan delay, in T message) where T : struct =>
+        Schedule(delay, new DelayedSend(MessageWriter.Write(in message), AddressKind.Actor, 0, MessageType<T>.Id, 0, 0));
+
+    public bool CancelSend(long timer) => Shard.Current is { } shard && shard.Node == this &&
+                                          shard.World.GetSingleton<ShardTimers>().Cancel(shard.Index, timer);
+
+    private long Schedule(TimeSpan delay, in DelayedSend send)
+    {
+        if (Shard.Current is not { } shard || shard.Node != this)
+        {
+            send.Frame.Dispose();
+            throw NotOnShard();
+        }
+
+        return shard.World.GetSingleton<ShardTimers>().Schedule(shard.Index, delay, in send);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static InvalidOperationException NotOnShard() =>
+        new("SendAfter runs on a shard thread (in actors, services and systems): its timers are the shard's data");
+
+    /// <summary>Send a message whose payload is written (a delayed send that is due), by its address kind. Takes ownership of <paramref name="w"/>.</summary>
+    internal void Deliver(FrameWriter w, AddressKind kind, uint scope, uint messageId, ulong node, long value)
+    {
+        switch (kind)
+        {
+            case AddressKind.Actor:
+                SendMessage(w, messageId, scope, value);
+                break;
+            case AddressKind.Node:
+                SendToNode(w, scope, messageId, node, value);
+                break;
+            default:
+                SendToGroup(w, scope, messageId, value);
+                break;
+        }
+    }
+
     /// <summary>One-way message to actor (<paramref name="handlerTypeId"/>, <paramref name="key"/>).</summary>
     internal void SendTo<T>(uint handlerTypeId, long key, in T message) where T : struct =>
         SendMessage(MessageWriter.Write(in message), MessageType<T>.Id, handlerTypeId, key);
