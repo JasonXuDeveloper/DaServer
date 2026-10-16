@@ -195,7 +195,10 @@ public sealed class Swarm : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        await Parallel.ForEachAsync(_clients, static (c, _) => c?.DisposeAsync() ?? default);
+        // Every client says goodbye at once: one round trip for all, not one per client and core.
+        var goodbyes = new Task[_clients.Length];
+        for (int i = 0; i < goodbyes.Length; i++) goodbyes[i] = _clients[i]?.DisposeAsync().AsTask() ?? Task.CompletedTask;
+        await Task.WhenAll(goodbyes);
         foreach (var loop in _loops) loop.Dispose();
     }
 }
