@@ -1,3 +1,4 @@
+#pragma warning disable ASPIREPROBES001 // HTTP probes: experimental in Aspire 13.6, what Kubernetes publishing needs
 using Aspire.Hosting.ApplicationModel;
 
 namespace Aspire.Hosting;
@@ -89,7 +90,12 @@ public sealed class DaServerCluster
                 .WithEnvironment("DaServer__Name", nodeName)
                 .WithEnvironment("DaServer__SigningSecret", _secret)
                 .WithEndpoint(port: _nextClusterPort, targetPort: _nextClusterPort++, scheme: "tcp", name: "cluster",
-                    env: "DaServer__ClusterPort", isProxied: false);
+                    env: "DaServer__ClusterPort", isProxied: false)
+                // The HTTP plane (ADR-046): health for WaitFor and the dashboard, probes for Kubernetes. Ready = joined
+                // and not leaving (traffic and dependants wait for it); alive = no stalled shard (restart otherwise).
+                .WithHttpEndpoint(name: "http", env: "DaServer__HttpPort")
+                .WithHttpProbe(ProbeType.Readiness, "/health", endpointName: "http")
+                .WithHttpProbe(ProbeType.Liveness, "/alive", initialDelaySeconds: 10, endpointName: "http");
             var self = node.GetEndpoint("cluster");
             _clusterEndpoints.Add(self);
 
@@ -105,8 +111,19 @@ public sealed class DaServerCluster
             nodes.Add(node);
         }
 
-        return new DaServerNodeGroup(this, name, nodes);
+        var group = new DaServerNodeGroup(this, name, nodes);
+        foreach (var node in nodes)
+            node.PublishAsDockerComposeService((_, service) =>
+            {
+                // Compose stops a container after 10 s by default: give the node its whole stop budget plus a margin.
+                service.StopGracePeriod = $"{(int)Math.Ceiling((group.ShutdownTimeout + StopMargin).TotalSeconds)}s";
+                service.Restart = "unless-stopped";
+            });
+        return group;
     }
+
+    /// <summary>What the platform waits beyond a node's stop budget before killing it (the host's own margin is 5 s).</summary>
+    private static readonly TimeSpan StopMargin = TimeSpan.FromSeconds(5);
 
     /// <summary>The next client port (client-facing node groups take one per node, in declaration order).</summary>
     internal int NextClientPort() => _nextClientPort++;
@@ -128,6 +145,22 @@ public sealed class DaServerNodeGroup
     public string Name { get; }
 
     public IReadOnlyList<IResourceBuilder<ProjectResource>> Nodes { get; }
+
+    /// <summary>The nodes' stop budget (<see cref="WithShutdownTimeout"/>; 25 s, the node's default).</summary>
+    public TimeSpan ShutdownTimeout { get; private set; } = TimeSpan.FromSeconds(25);
+
+    /// <summary>
+    /// Give the nodes <paramref name="budget"/> to stop gracefully (leave, drain clients, unload and save every actor):
+    /// sets <c>DaServer__ShutdownTimeout</c>, and the published grace period (Compose <c>stop_grace_period</c>) above it,
+    /// so the platform never kills a node that is still saving. Stateful groups need more than stateless ones.
+    /// </summary>
+    public DaServerNodeGroup WithShutdownTimeout(TimeSpan budget)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(budget, TimeSpan.Zero);
+        ShutdownTimeout = budget;
+        foreach (var node in Nodes) node.WithEnvironment("DaServer__ShutdownTimeout", budget.ToString());
+        return this;
+    }
 
     /// <summary>Client endpoints (after <see cref="WithClientConnections"/>).</summary>
     public IReadOnlyList<EndpointReference> ClientEndpoints => _clientEndpoints;
