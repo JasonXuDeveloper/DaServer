@@ -5,7 +5,7 @@ namespace DaServer.Benchmark;
 /// mailboxes) or by another node (TCP link), fully handled. One operation = one message (sent, routed by actor id,
 /// delivered to the actor's mailbox, handled).
 /// </summary>
-[MemoryDiagnoser]
+[MemoryDiagnoser, ThreadingDiagnoser]
 public class MessageBenchmark
 {
     private const int Actors = 64;

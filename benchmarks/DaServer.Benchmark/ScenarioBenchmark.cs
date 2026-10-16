@@ -9,7 +9,7 @@ namespace DaServer.Benchmark;
 /// one copy per session). Allocations include the clients' receive path. The full scenario with 10k bots in separate
 /// processes is Sample.Bot; 9k is the most one process can hold here (both socket ends, 20k descriptors).
 /// </summary>
-[MemoryDiagnoser]
+[MemoryDiagnoser, ThreadingDiagnoser]
 public class ScenarioBenchmark
 {
     private readonly Countdown _countdown = new();

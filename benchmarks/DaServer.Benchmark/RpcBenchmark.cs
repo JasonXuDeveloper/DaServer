@@ -5,7 +5,7 @@ namespace DaServer.Benchmark;
 /// (shard mailboxes, no socket) or on another node (batched TCP link, both directions). One operation =
 /// <see cref="Concurrency"/> calls issued together and all completed.
 /// </summary>
-[MemoryDiagnoser]
+[MemoryDiagnoser, ThreadingDiagnoser]
 public class RpcBenchmark
 {
     public enum Target

@@ -7,7 +7,7 @@ namespace DaServer.Benchmark;
 /// gateway. One operation = one broadcast to each of <see cref="Groups"/> groups every client joined (as a player
 /// hears the 3x3 cells around it), fully delivered (each serialized once, one frame to the gateway, one copy per session).
 /// </summary>
-[MemoryDiagnoser]
+[MemoryDiagnoser, ThreadingDiagnoser]
 public class BroadcastBenchmark
 {
     private readonly Countdown _countdown = new();
