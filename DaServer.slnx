@@ -7,6 +7,7 @@
     <Project Path="src/DaServer/DaServer.csproj" />
     <Project Path="src/DaServer.Generator/DaServer.Generator.csproj" />
     <Project Path="src/DaServer.Hosting/DaServer.Hosting.csproj" />
+    <Project Path="src/DaServer.Persistence.PostgreSql/DaServer.Persistence.PostgreSql.csproj" />
     <Project Path="src/DaServer.Aspire/DaServer.Aspire.csproj" />
   </Folder>
   <Folder Name="/samples/mmo/">

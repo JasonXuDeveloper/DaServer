@@ -23,6 +23,7 @@ internal sealed partial class LoadSystem : EcsSystem
     internal static void Apply(World world, LoadBatch batch)
     {
         var error = batch.TakeResult();
+        if (error != null) world.Logger().LogError(error, "Loading {Count} records failed: their callers get Error", batch.Count);
         var store = world.GetSingleton<ShardStore>();
         var records = batch.Records;
         var entities = batch.Entities;
@@ -48,7 +49,7 @@ internal sealed partial class LoadSystem : EcsSystem
             }
             catch (Exception e)
             {
-                world.Logger().LogError(e, "Loading the record of {Actor} failed", actor);
+                if (e != error) world.Logger().LogError(e, "Restoring the record of {Actor} failed", actor); // the batch's error is logged once
                 entity.Add<Removing>() = new Removing(RpcStatus.Error, "Loading the actor's record failed: " + e.Message);
                 continue;
             }
@@ -72,7 +73,9 @@ internal sealed partial class PersistSystem : EcsSystem
 
     internal enum Outcome { Queued, Unchanged, Busy }
 
-    [ForEach, With<SaveNow>, Without<Saving>]
+    // Records are taken between turns only (Without<Turn>): a turn suspended at an await may have changed half of what
+    // its message changes, and the record is always the state after whole messages.
+    [ForEach, With<SaveNow>, Without<Saving>, Without<Turn>]
     private static void Now(Entity actor, ref Stored stored, in ActorRef self, in ShardStore store)
     {
         if (Queue(actor, ref stored, self.Actor, in store) != Outcome.Busy) actor.Remove<SaveNow>();
@@ -161,7 +164,7 @@ internal sealed partial class PersistSystem : EcsSystem
 [UpdateInGroup<ShardIdleScan>]
 internal sealed partial class CheckpointSystem : EcsSystem
 {
-    [ForEach, Without<Saving>, Without<FinalSave>, Without<Unloading>, Without<Removing>]
+    [ForEach, Without<Saving>, Without<FinalSave>, Without<Unloading>, Without<Removing>, Without<Turn>]
     private static void Due(Entity actor, ref Stored stored, in ActorRef self, in ShardStore store)
     {
         if (stored.EveryMs > 0 && Environment.TickCount64 >= stored.DueMs) PersistSystem.Queue(actor, ref stored, self.Actor, in store);

@@ -2,13 +2,22 @@ using DaServer.Persistence;
 
 namespace DaServer.Tests;
 
-/// <summary>Actor records (N5, ADR-068): [Persist] components outlive unloads, stops and crashes; stale owners are fenced.</summary>
-public class PersistenceTests : ClusterTest
+/// <summary>
+/// Actor records (N5, ADR-068): [Persist] components outlive unloads, stops and crashes; stale owners are fenced. Runs
+/// against every store (<see cref="Stores"/>).
+/// </summary>
+[TestFixtureSource(typeof(Stores), nameof(Stores.Kinds))]
+public class PersistenceTests(string kind) : ClusterTest
 {
+    private readonly Stores _stores = new(kind);
+
+    [OneTimeTearDown]
+    public Task DropStores() => _stores.DisposeAsync().AsTask();
+
     /// <summary>Counts the writes that reach a store.</summary>
-    private sealed class CountingStore : IActorStore
+    private sealed class CountingStore(IActorStore inner) : IActorStore
     {
-        public readonly InMemoryActorStore Inner = new();
+        public readonly IActorStore Inner = inner;
         public int Writes;
 
         public ValueTask LoadAsync(ReadOnlyMemory<StoredKey> keys, Memory<StoredRecord> records, CancellationToken ct = default) =>
@@ -31,7 +40,7 @@ public class PersistenceTests : ClusterTest
     [Test]
     public async Task StateSurvivesAGracefulStop()
     {
-        var store = new CountingStore();
+        var store = new CountingStore(_stores.Create());
         var first = await StartWith(store);
         Assert.That(await first.Ask(new BankId(100), new Deposit(5, false)), Is.EqualTo(5));
         Assert.That(await first.Ask(new BankId(100), new Deposit(2, false)), Is.EqualTo(7));
@@ -47,7 +56,7 @@ public class PersistenceTests : ClusterTest
     [Test]
     public async Task CheckpointsSurviveACrashAndUnchangedRecordsAreNotWritten()
     {
-        var store = new CountingStore();
+        var store = new CountingStore(_stores.Create());
         var first = await StartWith(store);
         Assert.That(await first.Ask(new BankId(1), new Deposit(3, false)), Is.EqualTo(3));
         await Eventually(() => store.Writes == 1, "the change was checkpointed (SaveEvery 100 ms)");
@@ -62,7 +71,7 @@ public class PersistenceTests : ClusterTest
     [Test]
     public async Task SaveNowWritesACriticalChangeAtOnce()
     {
-        var store = new CountingStore();
+        var store = new CountingStore(_stores.Create());
         var first = await StartWith(store);
         Assert.That(await first.Ask(new BankId(101), new Deposit(9, Critical: true)), Is.EqualTo(9));
         await Eventually(() => store.Writes == 1, "SaveNow wrote without waiting for an unload");
@@ -73,15 +82,28 @@ public class PersistenceTests : ClusterTest
     }
 
     [Test]
+    public async Task RecordsHoldWholeTurnsOnly()
+    {
+        var store = new CountingStore(_stores.Create());
+        var first = await StartWith(store);
+        Assert.That(await first.Ask(new BankId(103), new DepositTwice(5, new BankId(104))), Is.EqualTo(10));
+        await Eventually(() => store.Writes == 1, "SaveNow wrote once the turn ended");
+        await first.KillAsync();
+
+        var second = await StartWith(store, "after");
+        Assert.That(await second.Ask(new BankId(103), new Balance()), Is.EqualTo(10), "not the state halfway through the turn");
+    }
+
+    [Test]
     public async Task AStaleOwnerIsFencedByTheRecordsVersion()
     {
         // Two nodes that cannot see each other (as in a split) both load the actor from one store.
-        var store = new InMemoryActorStore();
+        var store = new CountingStore(_stores.Create());
         var a = await StartWith(store, "a", cluster: "left");
         var b = await StartWith(store, "b", cluster: "right");
         Assert.That(await b.Ask(new BankId(102), new Balance()), Is.Zero, "b holds the actor at version 0");
         Assert.That(await a.Ask(new BankId(102), new Deposit(1, Critical: true)), Is.EqualTo(1));
-        await Eventually(() => store.Count == 1, "a wrote version 1");
+        await Eventually(() => store.Writes == 1, "a wrote version 1");
         Assert.That(await b.Ask(new BankId(102), new Deposit(10, Critical: true)), Is.EqualTo(10), "b's copy is stale");
         await Eventually(() => a.ActorCount + b.ActorCount == 1, "the later writer was refused and dropped its copy");
         Assert.That(await b.Ask(new BankId(102), new Balance()) + await a.Ask(new BankId(102), new Balance()), Is.EqualTo(2),

@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net11.0</TargetFramework>
+        <RootNamespace>DaServer.Persistence</RootNamespace>
+        <Description>PostgreSQL store of DaServer actor records: one row per actor, batched loads, batched versioned writes.</Description>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Npgsql" Version="10.0.3" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\DaServer.Hosting\DaServer.Hosting.csproj" />
+    </ItemGroup>
+
+</Project>

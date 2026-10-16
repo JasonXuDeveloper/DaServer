@@ -322,6 +322,7 @@ public readonly record struct BankId(long Value) : IActorId;
 [NinoType, Message] public partial record struct Deposit(int Gold, bool Critical) : IRequest<int>;
 [NinoType, Message] public partial record struct Balance : IRequest<int>;
 [NinoType, Message] public partial record struct DepositCount : IRequest<int>;
+[NinoType, Message] public partial record struct DepositTwice(int Gold, BankId Other) : IRequest<int>;
 
 /// <summary>Keys below 100 checkpoint every 100 ms, keys from 100 only on unload (or with SaveNow).</summary>
 public sealed class Bank : Actor<BankId, Ledger>
@@ -336,6 +337,16 @@ public sealed class Bank : Actor<BankId, Ledger>
         Entity.Get<Deposits>().Count++;
         if (m.Critical) Entity.Add<SaveNow>();
         return State.Gold;
+    }
+
+    /// <summary>A critical change in two steps with an await between them: the record holds both or neither.</summary>
+    [Handle]
+    public async Reply<int> On(DepositTwice m)
+    {
+        State.Gold += m.Gold;
+        Entity.Add<SaveNow>();
+        await Cluster.Ask(m.Other, new Balance());
+        return State.Gold += m.Gold;
     }
 
     [Handle] public int On(Balance _) => State.Gold;
