@@ -394,9 +394,9 @@ in separate commits.
          `AsTask().Wait*`, `Thread.Sleep`, `Task.Delay`, `SemaphoreSlim.Wait`, `Monitor.Enter`/`lock` waits; the
          message names the replacement for the context.
       2. Done (ADR-061): handlers `await` (a turn: only that actor waits); delays use `SendAfter` (N2); systems
-         never wait for replies (DAS012): they read data kept on their shard (N7 placement affinity co-locates what a
-         system reads), or send an intent to the owner of the data, which validates it against its current state and
-         sends the outcome back as a message that a handler writes into components.
+         never wait for replies (DAS012): in their own world they query and `ref` components directly, other entities'
+         through `Entity` handles (N7 placement affinity puts what is read together in one world); data in another
+         world gets an intent, validated by its owner, whose outcome comes back as a message.
       3. Done: reading a pooled call's result before completion throws; a stall watchdog reports a shard pass longer
          than `NodeOptions.StallAfter` (1 s) once per pass, in the log and as `Node.StalledShards`
          (`daserver.shard.stalled`); the `daserver-live` health check (A-items) reads it. A managed thread cannot

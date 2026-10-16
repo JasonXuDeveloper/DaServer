@@ -842,26 +842,31 @@ records that no longer hold). Each: context → decision → consequences.
 - Consequences: the waits the analyzer can see do not compile; the rest (a long loop, a wait inside a library) are
   visible within `StallAfter`. Tests that need a foreign await on purpose suppress DAS009 locally.
 
-## ADR-061 Systems do not ask: local reads, intents and outcomes
-- Context: a system sometimes needs another owner's data or decision (may this NPC step on that cell, may this
-  player take that item). Systems run once per tick and do not await. A reply that arrives ticks later is about a
-  state that may have changed meanwhile, so acting on it is a check-then-act race across owners.
-- Decision: systems do not `Ask` (DAS012). They work in one of two ways:
-  - They read what lives on their shard, synchronously and consistently. Placement keeps together what is read
-    together: the map's grid and the NPCs that walk it live on the map's shard, and N7 placement affinity
-    generalises this.
-  - They send an intent (`Send`) to the owner of the data. The owner validates it against its current state, applies
-    or refuses it, and sends the outcome back as a one-way message. A handler writes that outcome into components for
-    the next tick.
-  This matches ECS networking elsewhere: Unity Netcode for Entities sends requests as entities and answers with
-  another one-way command; Entitas sync applies received commands at the start of a tick.
+## ADR-061 Systems read and write components; other worlds get messages
+- Context: a system sometimes needs another entity's data or decision (may this NPC step on that cell, may this
+  player take that item). Each shard is one EasyEcs world. Actors are entities of their shard's world, so their state
+  is components there.
+- Decision:
+  - In its own world a system does what every ECS system does. It queries with `[ForEach]` and reads and writes
+    components through `ref`, its own entity's or another's. Relations are `Entity` handles kept in components and
+    validated on access. For example, an avatar's `Avatar.Map` is the map's entity, and `PlacementSystem` writes the
+    map's `MapGrid` through it. There is no message, no await and no reply: within a world, data and ordering
+    (`Priority`) are the whole protocol (EasyEcs ecs-principles).
+  - Placement decides what shares a world. Keys that must be read together are put on one shard: the map's grid and
+    the NPCs that walk it live in the map's world, and N7 placement affinity generalises this.
+  - Data in another world (another shard or node) cannot be referenced. A system sends an intent there (`Send`). The
+    owner of the data validates the intent against its current state, applies or refuses it, and sends the outcome
+    back as a one-way message, which a handler writes into components for the next tick. Systems do not `Ask`
+    (DAS012): an answer that arrives ticks later describes a state that may have changed, so acting on it is a
+    check-then-act race across worlds.
+  This is SpatialOS's split: the authoritative worker writes, others send commands. Unity Netcode for Entities and
+  Entitas sync also exchange one-way commands between worlds, applied at a tick boundary.
 - Alternatives:
-  - The reply as a component on the asking entity: still check-then-act on a stale answer, and one more mechanism.
+  - The reply as a component on the asking entity: still check-then-act on a stale answer.
   - Turns for systems (a system awaiting per entity): per-entity state machines, interleaving with the entity's mail,
     and a tick that no longer finishes in one pass.
-- Consequences: no new API. The owner is the only one that decides, so an intent can never apply to stale data.
-  Actors still `await` inside handlers: a turn holds only its actor.
-
+- Consequences: no new API. A system in the right world writes directly. Across worlds, only the owner decides, so
+  an intent never applies to stale data. Actors still `await` inside handlers: a turn holds only its actor.
 
 ## ADR-062 Reply<T>: the awaitable of calls and asynchronous handlers
 - Context: handlers written `async ValueTask<T>` box their state machine on every suspension (H1). The pooling
