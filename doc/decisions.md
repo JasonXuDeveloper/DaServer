@@ -776,3 +776,19 @@ records that no longer hold). Each: context → decision → consequences.
 - Consequences: `HotActorBenchmark` (1,024 callers through one actor waiting for another node): 143.8 ms awaited,
   3.1 ms with `ReplyWhen`, 236 B vs 114 B per batch; `RepliesSentLaterDoNotAllocate` holds < 8 B per call. The sample's
   maps reply to `Enter` and `Leave` this way.
+
+## ADR-058 Delays are messages sent later, held by the shard
+- Context: `await Task.Delay` in a handler holds the actor's turn for the whole delay, allocates a timer and a task,
+  and resumes through the thread pool; every backend needs delays (retries, cooldowns, timeouts of business flows,
+  scheduled ticks of one actor).
+- Decision: `ICluster.SendAfter(delay, address, message)` (and to a service) serializes the message at once into a
+  pooled frame and schedules it in the calling shard's timer wheel (`ShardTimers` singleton, `TimerWheel<T>`: hashed,
+  O(1), 5 ms resolution); `TimerSystem` routes what is due exactly like a `Send` made then, so the message follows an
+  actor that moved and is ordinary mail (turn-based, bounded by the mailbox). `CancelSend(handle)` cancels on the
+  scheduling shard (its index is in the handle's top byte, another shard's handle is refused). The shard sleeps no
+  longer than the resolution while a send waits; sends still pending when the shard stops are dropped (one-way
+  delivery is at most once). Calling it off a shard thread throws: timers are a shard's data.
+- Alternatives: one wheel per node (a lock or a hop per schedule); `Task.Delay` continuations (allocations, a held
+  turn); durable reminders (a store; they come with persistence, N5, and are a different guarantee).
+- Consequences: `DelayedSendsDoNotAllocate` holds < 8 B per send; `TimerBenchmark` shows 0 B, a mean dominated by one
+  wheel slot shared by the batch. Delayed sends do not survive a restart.
