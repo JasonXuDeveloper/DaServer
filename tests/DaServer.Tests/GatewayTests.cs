@@ -22,6 +22,8 @@ public class GatewayTests : ClusterTest
         var client = await Connect(gateway);
         var inbox = new Inbox();
         client.Register(inbox);
+        var observer = new Inbox(); // every registered handler of a push receives it
+        client.Register(observer);
 
         var unbound = Assert.ThrowsAsync<RpcException>(async () => await client.Ask(new AddGold(1)));
         Assert.That(unbound!.Status, Is.EqualTo(RpcStatus.Forbidden), "session actors need a binding");
@@ -33,7 +35,7 @@ public class GatewayTests : ClusterTest
         Assert.That(await client.Ask(new PlayerId(42), new AddGold(0)), Is.EqualTo(10), "its bound actor is granted");
         Assert.That(await client.Ask(new AddGold(5)), Is.EqualTo(15));
         Assert.That(await gateway.Ask(new PlayerId(42), new AddGold(0)), Is.EqualTo(15));
-        await Eventually(() => inbox.Gold == 15, "push to the session was not delivered");
+        await Eventually(() => inbox.Gold == 15 && observer.Gold == 15, "push to the session was not delivered to both handlers");
 
         await client.Ask(new Logout());
         var unboundAgain = Assert.ThrowsAsync<RpcException>(async () => await client.Ask(new AddGold(1)));
