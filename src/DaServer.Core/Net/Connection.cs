@@ -56,9 +56,19 @@ public sealed class ConnectionOptions
     /// <summary>Receives a copy of the outgoing stream (node links, see <see cref="ISendTap"/>).</summary>
     internal ISendTap? Tap { get; set; }
 
-    public static ConnectionOptions ForClients() => new ConnectionOptions
+    /// <summary>A node's side of client sessions: many mostly idle sockets, so idle ones hold no buffer.</summary>
+    public static ConnectionOptions ForSessions() => new ConnectionOptions
     {
         ReceiveBufferSize = 4 * 1024, ReleaseIdleBuffers = true, MaxPendingSendBytes = 256 * 1024, SendBufferSize = 4 * 1024,
+    };
+
+    /// <summary>
+    /// A client's connection: one busy socket, so it keeps its buffers (a zero-byte read before every receive costs a
+    /// system call per push, to save 4 KB).
+    /// </summary>
+    public static ConnectionOptions ForClients() => new ConnectionOptions
+    {
+        ReceiveBufferSize = 4 * 1024, ReleaseIdleBuffers = false, MaxPendingSendBytes = 256 * 1024, SendBufferSize = 4 * 1024,
     };
 
     public static ConnectionOptions ForNodeLinks() => new ConnectionOptions
