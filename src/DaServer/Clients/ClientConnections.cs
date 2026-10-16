@@ -48,7 +48,7 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
         context.HandleAddress<Origin>(addresses); // the origin of a client's message is its session
         context.HandleAddress<ClientGroup>(addresses);
         if (_node.Options.SigningSecret is { Length: > 0 } secret) _ticketSecret = System.Text.Encoding.UTF8.GetBytes(secret);
-        var sessionOptions = ConnectionOptions.ForClients();
+        var sessionOptions = ConnectionOptions.ForSessions();
         sessionOptions.MaxFrameSize = options.MaxFrameSize; // what an untrusted client may make us buffer
         _listener = new Listener(new IPEndPoint(IPAddress.Parse(_node.Options.ListenAddress), options.Port), socket =>
         {
@@ -504,7 +504,7 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
     public int MaxFrameSize => options.MaxFrameSize;
 
     /// <summary>Bytes a client's channel may fall behind before it is closed (a slow consumer, like on TCP).</summary>
-    public int MaxPendingSendBytes { get; } = ConnectionOptions.ForClients().MaxPendingSendBytes;
+    public int MaxPendingSendBytes { get; } = ConnectionOptions.ForSessions().MaxPendingSendBytes;
 
     /// <summary>Receives the frames of channels opened with <see cref="Open"/>.</summary>
     public IChannelHandler Channels => _sessionHandler!;
