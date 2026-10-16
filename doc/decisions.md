@@ -895,7 +895,8 @@ records that no longer hold). Each: context → decision → consequences.
   client-facing node lost their connection all at once.
 - Decision:
   - `NodeOptions.ShutdownTimeout` (25 s) is the stop's budget. `StopAsync` honors the host's token too. The host
-    waits the budget + 5 s, and the published Compose grace period is the budget + 5 s. Past the budget the node
+    waits the budget + 5 s, and the published grace period (Compose `stop_grace_period`, Kubernetes
+    `terminationGracePeriodSeconds`) is the budget + 5 s. Past the budget the node
     logs, per shard, the actors still loaded (their `OnUnload` did not finish) and exits.
   - The stop runs in phases, each logged and recorded with its duration (`daserver.stop.phase.duration`): leave,
     drain, unload, close.
