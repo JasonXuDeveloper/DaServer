@@ -24,8 +24,8 @@ locally and publishes it.
 - **Reliable links, bounded work.** One ordered stream per node pair resumes after a dropped connection (no loss, no
   duplicate). Requests carry their caller's deadline, and work nobody waits for is dropped. Full dispatch queues and mailboxes answer
   `Overloaded` instead of growing; a client that cannot keep up is disconnected and resynchronizes on reconnect.
-- **Misuse is a build error.** Analyzers DAS001–DAS008 cover handlers, messages, wire types, id collisions, message
-  flow and stateless actors and services, and EECS001–EECS008 cover ECS, including the ECS principles.
+- **Misuse is a build error.** Analyzers DAS001–DAS011 cover handlers, messages, wire types, id collisions, message
+  flow, stateless actors and services, shared logic and replies sent later, and EECS001–EECS008 cover ECS, including the ECS principles.
 
 ## Architecture
 
@@ -97,7 +97,9 @@ Everything a developer declares is one of these. The message type alone decides 
 Business code reaches the cluster through `ICluster`: `Cluster` in actors and services, `world.Cluster()` in systems.
 `Caller` is who sent the running turn's message from outside the cluster, a client session (in actors valid across the
 turn's awaits, in services until the first await;
-`Cluster.Send(Caller, m)` answers it, `BindSession(Caller)` binds it, `GrantSession(Caller)` admits it).
+`Cluster.Send(Caller, m)` answers it, `BindSession(Caller)` binds it, `GrantSession(Caller)` admits it). A handler that
+only waits for an acknowledgement returns `ReplyWhen(BindSession(m.Session), true)`: its actor takes the next message
+at once and the reply follows the binding (ADR-057).
 
 The runtime owns client sessions: an actor's `await BindSession(session)` routes the client's messages for that actor
 type to its id and puts the session in the actor's `Group`; `await GrantSession(session)` lets the client name the

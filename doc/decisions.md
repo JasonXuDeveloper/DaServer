@@ -109,7 +109,7 @@ records that no longer hold). Each: context → decision → consequences.
   triggers those of the assemblies it references). On .NET the class also triggers itself from a module initializer
   when its assembly loads, so a server needs no call; targets without module initializers (netstandard2.1) get none.
 - Consequences: no reflection, no configuration strings, no hand-maintained lists; misuse is a build error
-  (DAS001-DAS008, ADR-016).
+  (DAS001-DAS011, ADR-016).
 
 ## ADR-013 The shard runtime is ECS
 - Context: an imperative shard loop (drain a queue, sweep in-flight work, run timers, tick) with ad-hoc per-actor
@@ -146,7 +146,7 @@ records that no longer hold). Each: context → decision → consequences.
 ## ADR-016 Analyzer separate from generators
 - Context: generators that report diagnostics carry symbols and locations in their models, which defeats caching.
 - Decision: generators use syntax-only predicates and equatable, symbol-free models with tracking names, and report
-  nothing. `DaServerAnalyzer` reports DAS001–DAS008 (collisions in a compilation-end action), and reads symbols
+  nothing. `DaServerAnalyzer` reports DAS001–DAS011 (collisions in a compilation-end action), and reads symbols
   through the same `Shapes` code as the generators.
 - Consequences: edits that do not touch messages or handlers hit the cache (tested); "skipped by the generator" and
   "reported by the analyzer" cannot disagree.
@@ -758,3 +758,21 @@ records that no longer hold). Each: context → decision → consequences.
   maps, chat, wander); the flash sale's buyers will be another domain over the same package. In-process cluster tests
   (P1 `DaServer.Testing`) stay a separate, server-side package. Server-side NPC planning would reuse the same model in
   user code; the framework does not ship a server AI.
+
+## ADR-057 ReplyWhen: a reply that waits without holding the turn
+- Context: actors are turn-based (ADR-002): an actor awaiting inside a handler takes no other message until the
+  handler returns. A handler that only waits for an acknowledgement before replying (a map binding the entering
+  player's session: `await BindSession(session); return true;`) therefore serves one caller per round trip; 10,000
+  players entering two maps queued behind those round trips and were refused (`Overloaded`). The await is needed for
+  ordering (the client's next message must find the binding), not for the actor's state.
+- Decision: `return ReplyWhen(task, reply);` (actors and services, `ValueTask` or `ValueTask<T>` tasks) ends the turn
+  at once and replies `reply` when the task completes, its failure instead. The handler leaves a pooled watcher in a
+  thread-static slot that the generated dispatcher's `CallContext.Reply` takes on the same thread (one volatile read
+  for reply types never used with it): no allocation per call. DAS011 keeps `ReplyWhen` to the returned expression of
+  a handler that is not `async`, so nothing of the handler runs after the turn ended.
+- Alternatives: reentrancy (Orleans `[AlwaysInterleave]`, interleaving turns) gives up the turn guarantee for the
+  whole handler; a one-way access change followed by a push on the same link changes the business protocol (wait for
+  a push instead of a reply); per-region actors only spread the queue.
+- Consequences: `HotActorBenchmark` (1,024 callers through one actor waiting for another node): 143.8 ms awaited,
+  3.1 ms with `ReplyWhen`, 236 B vs 114 B per batch; `RepliesSentLaterDoNotAllocate` holds < 8 B per call. The sample's
+  maps reply to `Enter` and `Leave` this way.

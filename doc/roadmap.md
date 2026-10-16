@@ -438,8 +438,9 @@ in separate commits.
 - [x] Hosting: actor/service factories with their handlers, client handler classes, EasyEcs system registration
 - [x] Node entry point generated when a node project has no `Program.cs` (ADR-021)
 - [x] Incremental rules: syntax predicates, equatable models, tracking names, cache test (ADR-016)
-- [x] `DaServerAnalyzer`: DAS001-DAS008 (handlers, messages, wire types, id collisions, constructors, message flow
-      (ADR-038), stateless actors and services (ADR-044), address kinds (ADR-047))
+- [x] `DaServerAnalyzer`: DAS001-DAS011 (handlers, messages, wire types, id collisions, constructors, message flow
+      (ADR-038), stateless actors and services (ADR-044), address kinds (ADR-047), shared logic (ADR-055), ReplyWhen
+      placement (ADR-057))
 
 ## Hosting / orchestration
 - [x] `DaServer.Hosting`: Generic Host, configuration, OpenTelemetry (OTLP), periodic stats line, graceful shutdown

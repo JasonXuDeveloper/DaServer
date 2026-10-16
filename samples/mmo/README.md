@@ -83,8 +83,11 @@ d.Method(play, BotFact.TravelDue, travel, wander)                       // first
 
 `SenseSystem` writes the facts (what is due), and one system carries out each task on the client's own data:
 `WanderSystem` steers, `ChatSystem` adds the client's `Speaking`, `TravelSystem` runs the client's
-`EnterMapAsync`. `Program.cs` starts the swarm, waits for every bot to hear the realm, measures a window and judges it:
-no gap in the realm broadcasts, no disconnect, no failed map change, p99 under the limit.
+`EnterMapAsync` as a `TaskFlow`. `Telemetry.cs` is a second subscriber of each bot's pushes (the client's own handler
+writes the game state): realm broadcast latency and gaps, positions and chat lines. `Program.cs` is the scenario's
+options (ConsoleAppFramework: `dotnet run --project samples/mmo/Sample.Bot -- --help`), how a bot starts, and its
+verdict; the swarm reports each interval and judges the window: no gap, no disconnect, no failed map change, p99
+under the limit.
 
 ## Run it
 
