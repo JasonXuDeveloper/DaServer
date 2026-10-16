@@ -42,7 +42,7 @@ src/DaServer/              server runtime (net11.0): Runtime/ Cluster/ Rpc/ Net/
   Runtime/Systems/         runtime systems: Dispatch, Turn, ServiceCall, Removal, Unload, Mailbox (ShardMessages group),
                            Rebalance (ShardRebalance), Idle (ShardIdleScan); each reacts to one lifecycle tag (ADR-037)
 src/DaServer.Generator/    incremental generators (AskGenerator, RegistrationGenerator, EntryPointGenerator,
-                           PolyfillGenerator) + DaServerAnalyzer (DAS001-008, DAS010-011);
+                           PolyfillGenerator) + DaServerAnalyzer (DAS001-011);
                            Shapes.cs reads symbols once for both, so "skipped by the generator" == "reported"
 src/DaServer.Hosting/      Generic Host integration, configuration, OpenTelemetry (OTLP when configured), shutdown
 src/DaServer.Aspire/       Aspire hosting integration: AddDaServerCluster / AddNodes / WithClientConnections /
@@ -87,7 +87,7 @@ doc/                       requirements.md, design.md, decisions.md, roadmap.md
 - Never block a shard thread on IO; never touch shard/actor state from another thread (post to the shard).
 - Never keep a `ref` into ECS storage across an `await`; re-acquire after awaiting.
 - Actors are turn-based: one message at a time including its awaits (no interleaving). Calls in a cycle (A awaits B
-  awaits A) deadlock until timeout: model such flows with one-way messages (`Send`/`Publish`).
+  awaits A) fail at once with `CallCycle` (ADR-059): model such flows with one-way messages (`Send`/`Publish`).
 - Orchestration is the Aspire model (`samples/mmo/Sample.AppHost`); do not add hand-written compose/k8s files.
   What Aspire does not publish (probes, grace periods, Compose health checks, HPA/PDB) is added by `DaServer.Aspire`
   through the publisher hooks (`PublishAsKubernetesService`, `PublishAsDockerComposeService`), never by hand.

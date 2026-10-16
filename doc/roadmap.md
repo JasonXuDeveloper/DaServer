@@ -376,19 +376,21 @@ in separate commits.
       frames (`ShardTimers`, `TimerSystem`), delivered as ordinary mail when due (follows moved keys), 5 ms resolution,
       zero allocation (`DelayedSendsDoNotAllocate`, `TimerBenchmark`); DAS009 of N3b points `await Task.Delay` to it.
       (ET timers as data, Orleans timers)
-- [ ] N3 Call cycles fail fast: a chain id travels with requests (the `Chain` header extension of G0); mail carrying
-      the running turn's chain id is answered `CallCycle` at once instead of waiting for the timeout. (Orleans call
-      chains)
+- [x] N3 Call cycles fail fast (ADR-059): requests carry the asking turn's call chain (`HasChain` trailer, kept through
+      actors and services and across the turn's awaits); a request reaching an actor whose pending turn has its chain
+      is answered `CallCycle` at once (`CallCycleTests`). (Orleans call chains)
 - [ ] N3b No sync-over-async on shard threads (agreed: all four layers):
-      1. DAS009 (error) in actors, services and systems: `.Result`, `.Wait()`, `GetAwaiter().GetResult()`,
+      1. Done: DAS009 (error) in actors, services and systems: `.Result`, `.Wait()`, `GetAwaiter().GetResult()`,
          `AsTask().Wait*`, `Thread.Sleep`, `Task.Delay`, `SemaphoreSlim.Wait`, `Monitor.Enter`/`lock` waits; the
          message names the replacement for the context.
       2. Replacements: handlers `await` (a turn: only that actor waits); delays use `SendAfter` (N2, the actor stays
          free); systems use requests as data: `Cluster.Ask(target, request, replyTo: entity)` delivers the reply as a
          `Reply<TReply>` component (or a `CallFailed` tag) on that entity for a later `[ForEach]` system (no
          continuation, zero allocation).
-      3. Runtime: reading a pooled call's result before completion throws; a shard stall watchdog (shard thread away
-         from its loop longer than a threshold) logs the stack and marks the node degraded in health checks.
+      3. Done: reading a pooled call's result before completion throws; a stall watchdog reports a shard pass longer
+         than `NodeOptions.StallAfter` (1 s) once per pass, in the log and as `Node.StalledShards`
+         (`daserver.shard.stalled`); the `daserver-live` health check (A-items) reads it. A managed thread cannot
+         read another thread's stack, so the log names the shard, not the blocking frame.
       4. `Ask` returns a framework awaitable (`Reply<T>`-style, await-only: no `.Result`/`.Wait`/`AsTask`), whose
          awaiter throws instead of blocking when read before completion; `Cluster.WhenAll(...)` combinators.
 - [ ] N4 Route completeness check: one handler type per request / one-way message kind across all node projects,

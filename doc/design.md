@@ -87,8 +87,10 @@ handler takes no other message until it returns, while its shard runs other acto
 acknowledgement before replying (a binding, a call, a save) returns `ReplyWhen(task, reply)` instead (ADR-057): the
 turn ends at once and the reply follows the task, so a hot actor serves callers at CPU speed rather than one per round
 trip. A delay is a message sent later, not an await: `Cluster.SendAfter(delay, address, message)` serializes it now
-and the shard's timer wheel (a singleton) sends it when due, as ordinary mail (ADR-058). A service handler runs on the
-local node when it hosts one.
+and the shard's timer wheel (a singleton) sends it when due, as ordinary mail (ADR-058). A turn waiting for a request
+that comes back to its own actor (A asks B, B asks A) would wait until the timeout: every request carries the call chain
+of the turn that made it, kept through the actors and services it passes, and one that reaches an actor whose running
+turn has that chain fails at once with `CallCycle` (ADR-059). A service handler runs on the local node when it hosts one.
 
 ## 2. Wire protocol
 
@@ -147,7 +149,7 @@ shard that keeps session state as ECS components.
 | Layer | Guarantee |
 |---|---|
 | Ordering | FIFO per (sender → target actor): one link per node pair, one dispatch queue per shard, one mailbox per actor. Messages of one sender keep their order (tests rely on it). |
-| Calls | At most once, with timeouts (`RpcStatus.Timeout`, `Disconnected`, `NotHosted`). Retrying is the caller's choice, and only for idempotent operations. |
+| Calls | At most once, with timeouts (`RpcStatus.Timeout`, `Disconnected`, `NotHosted`); a call cycle fails at once (`CallCycle`, ADR-059). Retrying is the caller's choice, and only for idempotent operations. |
 | Deadlines | A request carries its caller's remaining time; each hop turns it into a local deadline and a shard drops a request that expired before it ran (ADR-028). Work nobody waits for is not done. |
 | Messages | At most once. Events that must not be lost are written to storage by the publisher first (outbox) and re-published on recovery; DaServer does not hide a broker inside the call path. |
 | Single loaded actor | Rendezvous hashing over the `Up` and `Suspect` nodes hosting the handler type (ADR-023): every node computes the same owner from the same view. A node loads an actor only if it is the owner in its own view; otherwise it forwards (hop limit 3) or answers `NotHosted`. When ownership changes, the old owner unloads (`OnUnload`, the persistence hook) and forwards its remaining mail. |
@@ -415,7 +417,7 @@ What the generators write:
 | `EntryPointGenerator` | `NodeProgram.Main` when a node project has no `Program.cs` (ADR-021) |
 | `PolyfillGenerator` | `IsExternalInit` for contract assemblies built for netstandard2.1 |
 | EasyEcs `SystemGenerator` | `[ForEach]` struct jobs (components, singletons, entity, world parameters) and `GeneratedUpdate` |
-| Analyzers | DAS001–DAS011 (handlers, messages, wire types, id collisions, constructors, message flow, stateless actors and services, address kinds, shared logic, ReplyWhen placement), EECS001–EECS008 (ECS rules) |
+| Analyzers | DAS001–DAS011 (handlers, messages, wire types, id collisions, constructors, message flow, stateless actors and services, address kinds, synchronous waits on shard threads, shared logic, ReplyWhen placement), EECS001–EECS008 (ECS rules) |
 
 The generators follow the incremental-generator rules: syntax-only predicates, equatable models, tracking names, and
 no diagnostics. There is no reflection scanning, no configuration string and no hand-written registration list. A
