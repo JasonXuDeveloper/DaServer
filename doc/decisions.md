@@ -129,8 +129,8 @@ records that no longer hold). Each: context → decision → consequences.
   it, unlike the actor model most developers expect.
 - Decision: one message at a time per actor, including its awaits (`Turn` component). Services stay concurrent
   (stateless).
-- Consequences: no interleaving bugs in actor state. Call cycles (A awaits B awaits A) deadlock until the call timeout
-  (roadmap N3 makes them fail fast); use one-way messages for such flows. A `[Reentrant]` opt-in can be added if a
+- Consequences: no interleaving bugs in actor state. Call cycles (A awaits B awaits A) cannot complete: they fail at
+  once with `CallCycle` (ADR-059); use one-way messages for such flows. A `[Reentrant]` opt-in can be added if a
   real need appears.
 
 ## ADR-015 Orchestration with Aspire
@@ -799,3 +799,45 @@ records that no longer hold). Each: context → decision → consequences.
   turn); durable reminders (a store; they come with persistence, N5, and are a different guarantee).
 - Consequences: `DelayedSendsDoNotAllocate` holds < 8 B per send; `TimerBenchmark` shows 0 B, a mean dominated by one
   wheel slot shared by the batch. Delayed sends do not survive a restart.
+
+## ADR-059 Call cycles fail at once through call chains
+- Context: actors are turn-based, so a request that comes back to an actor whose turn waits for it (A asks B, B asks
+  A; A asks itself; a chain through services) waits until the call timeout (10 s by default), holding both actors and
+  their callers. The cause is a design error that should be visible at once, as Orleans reports with call chains.
+- Decision:
+  - Every turn and service call runs in a call chain: the one its request carries (`FrameFlags.HasChain`, an 8-byte
+    trailer in front of the origin), else a new one from the shard's `CallChains` singleton (consecutive values from a
+    random start).
+  - `Ask` writes the running chain into the request. The chain is a thread-static set around the dispatch and restored
+    around each continuation of a call the turn awaited (`PendingCall` remembers it), so it survives the turn's awaits
+    at no cost.
+  - An actor records its turn's chain. A request that reaches it carrying that chain while the turn's task is still
+    pending is refused with `RpcStatus.CallCycle` without running. One-way messages carry no chain: they never wait.
+- Alternatives:
+  - A call stack of actor addresses in every request (exact path in the error, but grows with every hop).
+  - Reentrancy, as Orleans allows per grain type: it gives up turn-based state, which ECS actors rely on.
+  - Detection by timeout only: today's behaviour.
+- Consequences:
+  - Cycles fail at once (`CallCycleTests`, on one node, across nodes, through a service, an actor asking itself).
+  - A request in the chain of a turn that is still running fails even when that turn does not wait for it (it asked
+    without awaiting and awaits something else): such flows are one-way messages.
+  - Awaits of foreign tasks (`Task.Delay`) resume without the chain, so requests after them start a new chain. Those
+    cycles are found by the timeout only, as before.
+  - Requests made by turns grow by 8 bytes; nothing is allocated.
+
+## ADR-060 No synchronous waits on shard threads
+- Context: one thread runs every actor of a shard. A synchronous wait in a handler or system (`.Result`, `.Wait()`,
+  `GetAwaiter().GetResult()`, `Thread.Sleep`, `Task.Delay` awaited inside a turn, locks) stops all of them, and a wait
+  for a reply that the same shard must deliver never ends. Pooled awaitables make it worse: they cannot block, so a
+  premature read returned garbage.
+- Decision:
+  - DAS009 (error) reports such waits in actors, services and systems, naming the replacement: `await` (only the
+    turn waits), `Cluster.SendAfter` or a system's `UpdateInterval` for delays, nothing for locks (one thread owns
+    shard state).
+  - Reading a pooled call's result before it completed throws instead of returning garbage.
+  - A watchdog on the node's maintenance timer reports a shard pass longer than `NodeOptions.StallAfter` once per
+    pass (log, `Node.StalledShards`, `daserver.shard.stalled`).
+- Alternatives: a dedicated thread per blocking call (hides the bug, costs a thread); sampling the stuck thread's
+  stack (not possible from managed code without a diagnostics session).
+- Consequences: the waits the analyzer can see do not compile; the rest (a long loop, a wait inside a library) are
+  visible within `StallAfter`. Tests that need a foreign await on purpose suppress DAS009 locally.
