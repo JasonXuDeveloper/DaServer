@@ -23,22 +23,34 @@ public class SampleClusterTests
             [$"Bots={Get("BOTS", "1000")}", $"Seconds={Get("SECONDS", "15")}", $"Maps={Get("MAPS", "2")}",
                 $"TravelEvery={Get("TRAVEL", "5")}", $"Lean={Get("LEAN", "false")}"], cancellationToken);
 
-        // The testing builder runs no dashboard but still points every resource at its OTLP endpoint: the nodes would
-        // retry exports to nothing all run long and wait out the export timeout (10 s) on shutdown.
+        // The testing builder runs no dashboard but still gives every resource the OTLP variables. The nodes would export
+        // to nothing all run long, and the .NET 11 CLI behind `dotnet run` turns its own OTLP telemetry on whenever any
+        // OTEL_EXPORTER_OTLP_* variable is present: each process would wait out the export timeout (10 s) when it exits.
         foreach (var resource in builder.Resources.OfType<IResourceWithEnvironment>())
             resource.Annotations.Add(new EnvironmentCallbackAnnotation(static context =>
-                context.EnvironmentVariables.Remove("OTEL_EXPORTER_OTLP_ENDPOINT")));
+            {
+                foreach (var name in context.EnvironmentVariables.Keys.Where(static k => k.StartsWith("OTEL_", StringComparison.Ordinal)).ToList())
+                    context.EnvironmentVariables.Remove(name);
+                context.EnvironmentVariables["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1";
+            }));
 
-        // A fresh database per run: the sample keeps its actor store on a volume, initialized with the password of the
-        // run that created it, while the testing builder generates a new one each time.
+        // A fresh database per run, gone with the test: the sample keeps its actor store in a persistent container on a
+        // volume, initialized with the password of the run that created it, while the testing builder generates a new
+        // one each time.
         foreach (var container in builder.Resources.OfType<ContainerResource>())
-            foreach (var volume in container.Annotations.OfType<ContainerMountAnnotation>().ToList())
-                container.Annotations.Remove(volume);
+            foreach (var annotation in container.Annotations.Where(static a => a is ContainerMountAnnotation or ContainerLifetimeAnnotation).ToList())
+                container.Annotations.Remove(annotation);
+
+        // Where the time goes, in the test log: start, cluster healthy, bots done, cluster stopped.
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        void Phase(string what) => TestContext.Progress.WriteLine($"[e2e] {what} at {clock.Elapsed.TotalSeconds:F1} s");
 
         await using var app = await builder.BuildAsync(cancellationToken);
         await app.StartAsync(cancellationToken);
+        Phase("resources started");
         await EveryResourceHealthy(app, builder.Resources.Where(r => r is ProjectResource { Name: not "bots" } or IResourceWithConnectionString),
             TimeSpan.FromMinutes(3), cancellationToken);
+        Phase("cluster healthy");
 
         // The bots' output goes to the test log: a failure says why (gaps, disconnects, latency, failed map changes).
         var logs = app.Services.GetRequiredService<ResourceLoggerService>();
@@ -54,7 +66,22 @@ public class SampleClusterTests
             e => e.Snapshot.State?.Text == KnownResourceStates.Finished || e.Snapshot.State?.Text == KnownResourceStates.Exited ||
                  e.Snapshot.State?.Text == KnownResourceStates.FailedToStart, cancellationToken);
 
+        Phase("bots finished");
         Assert.That(finished.Snapshot.ExitCode, Is.EqualTo(0), $"bots ended {finished.Snapshot.State?.Text}");
+        // The nodes stop first, gracefully (leave, drain, unload and save every actor), as a platform stops a deployment;
+        // then the rest. Stopping everything at once would take the database away from the nodes' last saves.
+        var commands = app.Services.GetRequiredService<ResourceCommandService>();
+        await Task.WhenAll(builder.Resources.OfType<ProjectResource>().Where(static r => r.Name != "bots").Select(r =>
+            commands.ExecuteCommandAsync(r.Name, KnownResourceCommands.StopCommand, cancellationToken)));
+        Phase("nodes stopped");
+
+        // Every player's profile was saved on the way out (the store is the record of what survived the stop).
+        await using (var database = Npgsql.NpgsqlDataSource.Create((await app.GetConnectionStringAsync("actors", cancellationToken))!))
+        await using (var count = database.CreateCommand("SELECT count(*) FROM daserver_actors"))
+            Assert.That(Convert.ToInt64(await count.ExecuteScalarAsync(cancellationToken)), Is.EqualTo(long.Parse(Get("BOTS", "1000"))),
+                "a record per player");
+        await app.StopAsync(cancellationToken);
+        Phase("cluster stopped");
     }
 
     /// <summary>

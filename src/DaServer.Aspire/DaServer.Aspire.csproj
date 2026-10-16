@@ -10,6 +10,8 @@
         <PackageReference Include="Aspire.Hosting" Version="13.6.1" />
         <PackageReference Include="Aspire.Hosting.Docker" Version="13.6.1" />
         <PackageReference Include="Aspire.Hosting.Kubernetes" Version="13.6.1-preview.1.26506.6" />
+        <!-- Aspire.Hosting 13.6.1 brings MessagePack 2.5.302 (GHSA-qhrr-8q5h-9q3h) through StreamJsonRpc: the patched 2.5 release. -->
+        <PackageReference Include="MessagePack" Version="2.5.307" />
     </ItemGroup>
 
 </Project>

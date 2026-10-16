@@ -15,8 +15,10 @@ else builder.AddDockerComposeEnvironment("compose");
 // lists them). The topology is projects and replica counts; ports, names and seeds are assigned here, discovery
 // (gossip) and client placement (the gateways' directory) are automatic. Who talks to whom: samples/mmo/README.md.
 var cluster = builder.AddDaServerCluster("sample");
-// Actor records ([Persist] components, here player profiles) live in PostgreSQL; the volume keeps them across runs.
-var actors = builder.AddPostgres("postgres").WithDataVolume().AddDatabase("actors");
+// Actor records ([Persist] components, here player profiles) live in PostgreSQL. The database outlives the AppHost
+// (persistent lifetime, a data volume): stopping the AppHost stops every resource at once, and the nodes still save
+// their actors on the way out; the next run reuses the running container.
+var actors = builder.AddPostgres("postgres").WithLifetime(ContainerLifetime.Persistent).WithDataVolume().AddDatabase("actors");
 cluster.AddNodes<Projects.Sample_LoginServer>("login");                    // Account service
 cluster.AddNodes<Projects.Sample_GameServer>("game").WithActorStore(actors); // Player and Realm actors
 cluster.AddNodes<Projects.Sample_MapServer>("map");                        // Map actors + movement/interest systems
