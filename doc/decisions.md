@@ -910,3 +910,27 @@ records that no longer hold). Each: context → decision → consequences.
 - Consequences: the budget is the user's choice per node group (`WithShutdownTimeout`). Stateful groups need room for
   their saves (N5).
 
+## ADR-064 Failure detection tolerates pauses; the minority side of a split downs itself
+- Context: a node that stalls (a GC pause, a starved CPU, a frozen container) used to wake up to silent peers and
+  declare them all dead. A network split left both sides running, so each side loaded the keys it believed it owned:
+  the same actor twice.
+- Decision:
+  - Pauses: membership measures each member's silence on this node's clock. A round that runs more than three
+    intervals late moves every member's progress forward by the pause, so verdicts wait for real silence. Heartbeats
+    spread by gossip through any member, so a peer's progress arrives indirectly too.
+  - Splits: when members die, keep-majority decides (on by default, `NodeOptions.KeepMajority`). A node that reaches
+    fewer of the cluster's members than it lost stops at once. In a tie, the side holding the lowest node id stays.
+    Members that left do not count, and dead ones count until they are forgotten. A downed node saves nothing,
+    because the majority already owns its keys; it raises `Node.Downed`, and the host exits with code 1 so the
+    platform restarts it into the majority.
+  - Clusters of fewer than three members never down themselves: there a crash and a split look the same, and
+    downing would turn every crash into an outage.
+- Alternatives:
+  - Phi-accrual detection: it adapts thresholds to jitter, but not to this node's own pause, which is the failure
+    seen in practice.
+  - A minority that only refuses ownership and waits: it holds the process alive with stale state; a restart is
+    simpler and the platform already does it.
+  - An external lease (Kubernetes Lease, PostgreSQL) for strict ownership: later, as a module with persistence.
+- Consequences: losing half the nodes at once stops the other half too. Deployments need at least three members per
+  cluster for split safety, and rolling deploys take nodes down one at a time.
+

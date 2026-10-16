@@ -309,10 +309,13 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
   Apps exposes ingress, not per-replica addresses, so it is a later target than Kubernetes.
 
 ## Next: cluster hardening (C, before N5)
-- [ ] C1 Failure detection robust to GC/CPU pauses: SWIM indirect probes (ping-req through k members) or a phi-accrual
-      detector over pulse arrivals; suspicion before death.
-- [ ] C2 Split brain: a downing rule in core (keep-majority / static quorum: the minority side stops itself), plus an
-      optional authoritative lease store (Kubernetes Lease, PostgreSQL) as a module for strict ownership.
+- [x] C1 Failure detection robust to pauses (ADR-064): heartbeats travel by gossip through any member (indirect by
+      nature, suspicion before death); a round that runs late moves every member's progress clock forward by this
+      process's pause, so its own GC or CPU stall declares nobody dead (`APauseOfThisProcessDeclaresNobodyDead`).
+- [x] C2 Split brain (ADR-064): keep-majority downing in core, on by default (`NodeOptions.KeepMajority`): the
+      minority side stops without saving and exits for a restart; ties keep the lowest node id; clusters under three
+      members never down. Open: an optional authoritative lease store (Kubernetes Lease, PostgreSQL) as a module for
+      strict ownership, with N5.
 - [ ] C3 Node authentication: HMAC challenge in Hello with the signing secret, cluster id and protocol version in
       Hello; a process that only reaches the port can no longer join.
 - [ ] C4 Supervision: per actor type `OnError` policy (Resume default, Reload = unload and reload state); poison
