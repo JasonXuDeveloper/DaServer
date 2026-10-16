@@ -32,7 +32,8 @@ public static class DaServerClusterExtensions
 
     /// <summary>
     /// Pass the client endpoints of <paramref name="nodes"/> as <c>DaServer__ClientEndpoints__{i}</c> (host:port), the
-    /// entry addresses a client connects through.
+    /// entry addresses a client connects through. The client starts once every node of the cluster declared so far is
+    /// ready, not only the client-facing ones: a client that logs in before the nodes hosting its actors are up fails.
     /// </summary>
     public static IResourceBuilder<T> WithClientEndpoints<T>(this IResourceBuilder<T> resource, DaServerNodeGroup nodes)
         where T : IResourceWithEnvironment, IResourceWithWaitSupport
@@ -40,7 +41,7 @@ public static class DaServerClusterExtensions
         if (nodes.ClientEndpoints.Count == 0)
             throw new ArgumentException($"Node group '{nodes.Name}' accepts no clients (call WithClientConnections on it)");
 
-        for (int i = 0; i < nodes.Nodes.Count; i++) resource.WaitFor(nodes.Nodes[i]);
+        foreach (var node in nodes.Cluster.Nodes) resource.WaitFor(node);
         return resource.WithEnvironment(context =>
         {
             for (int i = 0; i < nodes.ClientEndpoints.Count; i++)
@@ -56,6 +57,7 @@ public sealed class DaServerCluster
     private readonly IDistributedApplicationBuilder _builder;
     private readonly IResourceBuilder<ParameterResource> _secret;
     private readonly List<EndpointReference> _clusterEndpoints = [];
+    private readonly List<IResourceBuilder<ProjectResource>> _nodes = [];
     private int _nextClusterPort;
     private int _nextClientPort;
 
@@ -72,6 +74,9 @@ public sealed class DaServerCluster
     }
 
     public string Name { get; }
+
+    /// <summary>Every node declared so far, of every group.</summary>
+    public IReadOnlyList<IResourceBuilder<ProjectResource>> Nodes => _nodes;
 
     /// <summary>
     /// Add <paramref name="replicas"/> nodes running <typeparamref name="TProject"/>. Each replica is its own resource
@@ -110,6 +115,7 @@ public sealed class DaServerCluster
                         context.EnvironmentVariables[$"DaServer__Seeds__{seed++}"] = other.Property(EndpointProperty.HostAndPort);
             });
             nodes.Add(node);
+            _nodes.Add(node);
         }
 
         var group = new DaServerNodeGroup(this, name, nodes);
@@ -163,6 +169,9 @@ public sealed class DaServerNodeGroup
 
     public string Name { get; }
 
+    /// <summary>The cluster the group belongs to.</summary>
+    public DaServerCluster Cluster => _cluster;
+
     public IReadOnlyList<IResourceBuilder<ProjectResource>> Nodes { get; }
 
     /// <summary>The nodes' stop budget (<see cref="WithShutdownTimeout"/>; 25 s, the node's default).</summary>
@@ -178,6 +187,18 @@ public sealed class DaServerNodeGroup
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(budget, TimeSpan.Zero);
         ShutdownTimeout = budget;
         foreach (var node in Nodes) node.WithEnvironment("DaServer__ShutdownTimeout", budget.ToString());
+        return this;
+    }
+
+    /// <summary>
+    /// The nodes keep their actor records (ADR-068) in <paramref name="store"/>, a database resource
+    /// (<c>builder.AddPostgres("pg").AddDatabase("actors")</c>): its connection string as
+    /// <c>ConnectionStrings__{connectionName}</c>, which <c>AddPostgreSqlActorStore(connectionName)</c> in the node's
+    /// Program.cs reads. The nodes start once the database is up.
+    /// </summary>
+    public DaServerNodeGroup WithActorStore(IResourceBuilder<IResourceWithConnectionString> store, string connectionName = "actors")
+    {
+        foreach (var node in Nodes) node.WithReference(store, connectionName).WaitFor(store);
         return this;
     }
 
