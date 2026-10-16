@@ -153,6 +153,7 @@ shard that keeps session state as ECS components.
 | Deadlines | A request carries its caller's remaining time; each hop turns it into a local deadline and a shard drops a request that expired before it ran (ADR-028). Work nobody waits for is not done. |
 | Messages | At most once. Events that must not be lost are written to storage by the publisher first (outbox) and re-published on recovery; DaServer does not hide a broker inside the call path. |
 | Single loaded actor | Rendezvous hashing over the `Up` and `Suspect` nodes hosting the handler type (ADR-023): every node computes the same owner from the same view. A node loads an actor only if it is the owner in its own view; otherwise it forwards (hop limit 3) or answers `NotHosted`. When ownership changes, the old owner unloads (`OnUnload`, the persistence hook) and forwards its remaining mail. |
+| Actor state | `[Persist]` components form one record per actor in the actor store (ADR-068): restored before `OnLoad`, written on unload, every `SaveEvery` while changed and at once with `SaveNow`; versioned, so a stale owner's write is refused and its copy dropped. A graceful stop loses nothing; a crash loses at most `SaveEvery` of changes. |
 | Sessions | A client-facing node owns its sockets. Grants, bindings and groups live there; when a session closes, every actor it was bound or granted to that handles `SessionClosed` receives it, so no actor keeps a dead session. |
 | Graceful shutdown | `SIGTERM` → `Leaving` (pushed to every member) → stop loading actors → drain mailboxes → unload actors → exit. |
 | Backpressure | Shard dispatch queues and actor mailboxes are bounded and refuse with `Overloaded` (ADR-027). Links are not paused (their replies would stall too, ADR-027). A slow client hits the per-connection send backlog bound (256 KB) and is disconnected; it reconnects and resynchronizes (ADR-035). |
@@ -421,7 +422,7 @@ What the generators write:
 | `RegistrationGenerator` | `Registration_{Assembly}`: registrations of referenced assemblies first, then `[FromClient]` messages, client handler classes, actors and services (one dispatcher per `[Handle]` method), every `EcsSystem`; run once by its static constructor (ADR-012) |
 | `PolyfillGenerator` | `IsExternalInit` for contract assemblies built for netstandard2.1 |
 | EasyEcs `SystemGenerator` | `[ForEach]` struct jobs (components, singletons, entity, world parameters) and `GeneratedUpdate` |
-| Analyzers | DAS001–DAS013 (handlers, messages, wire types, id collisions, constructors, message flow, stateless actors, services and systems, address kinds, synchronous waits on shard threads, shared logic, ReplyWhen placement, systems that ask, components apart from logic), EECS001–EECS008 (ECS rules) |
+| Analyzers | DAS001–DAS015 (handlers, messages, wire types, id collisions, constructors, message flow, stateless actors, services and systems, address kinds, synchronous waits on shard threads, shared logic, ReplyWhen placement, systems that ask, components apart from logic, persisted components, work started off the shard thread), EECS001–EECS008 (ECS rules) |
 
 The generators follow the incremental-generator rules: syntax-only predicates, equatable models, tracking names, and
 no diagnostics. There is no reflection scanning, no configuration string and no hand-written registration list. A

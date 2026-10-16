@@ -243,9 +243,9 @@ Nothing is persisted yet (N5): D5-D6 come with it.
       stop under load loses no acknowledged write; Kill loses at most what the persistence policy allows.
 - [x] D5 Persistence that survives a crash (ADR-068): on unload always, a checkpoint every `Actor.SaveEvery` when the
       record changed, `SaveNow` for critical changes; versioned saves reject a stale owner's late write.
-- [ ] D6 Store flush and backpressure. Done: one save batch (at most 512 records) in flight per shard; the stop's unload
-      phase waits for every final write (actors are removed only once written); a failing store is retried every second.
-      Open: store health in readiness (with the PostgreSQL store).
+- [x] D6 Store flush and backpressure: one save batch (at most 512 records) in flight per shard; the stop's unload phase
+      waits for every final write (actors are removed only once written); a failing store is retried every second; the
+      store's health joins readiness (`daserver-store`).
 
 ## Next: Aspire and hosting best practices (A-items, with D1-D4; checked against Aspire 13.6)
 
@@ -281,8 +281,9 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
       and the actor calls it causes are one trace. `AddDaServer` is the framework's service defaults (the template's
       content: OTel, health, `ConfigureHttpClientDefaults` with service discovery and resilience for user HttpClients),
       no separate ServiceDefaults project.
-- [ ] A7 Store wiring (with N5): `cluster.WithActorStore(postgres.AddDatabase("actors"))` = `WithReference` +
-      `WaitFor` on stateful groups; persistent container lifetime in samples; store health feeds readiness (D6).
+- [x] A7 Store wiring: `group.WithActorStore(postgres.AddDatabase("actors"))` (`WithReference` + `WaitFor` on the
+      group's nodes), `builder.AddPostgreSqlActorStore()` in the node's Program.cs; the sample keeps player profiles in
+      PostgreSQL on a data volume. Clients wait for every node of the cluster (`WithClientEndpoints`).
 - [ ] A8 Parameters and environments: shards per node, drain budget, replicas and HPA bounds as AppHost parameters
       (become Helm values per `--environment`); `AddConnectionString` for an existing production database.
 - [ ] A9 Tests through Aspire: wait for the cluster resource to be healthy before bots; S6 scale/failover E2E through
@@ -418,14 +419,19 @@ in separate commits.
       a handler for every `FromClient` message; run in tests and at AppHost start. (Orleans compile-time interfaces)
 - [ ] N7 Placement affinity: an actor type may declare a placement key (`PlacementKey(key)`), hashed instead of the
       key: same placement key = same node (and shard); zones without topology strings, no directory. (ET addresses)
-- [ ] N5 Persistence as ECS (ADR-068). Done: `[Persist]` components of an actor form one record (a section per component
+- [x] N5 Persistence as ECS (ADR-068): `[Persist]` components of an actor form one record (a section per component
       type id); `LoadSystem` batches the loads of a wake and restores components before `OnLoad`; `CheckpointSystem`
       writes changed records every `Actor.SaveEvery` (30 s, unchanged skipped by hash), `PersistSystem` writes
       `SaveNow` and unloaded actors (removed once written); `StoreSystem` keeps one load and one save batch in flight
-      per shard; a rejected versioned write fences the local copy; `IActorStore` + `InMemoryActorStore`; DAS014.
-      Open: the PostgreSQL store (`DaServer.Persistence.PostgreSql`, Aspire `WithActorStore`, A7). Relational business
+      per shard; a rejected versioned write fences the local copy; `IActorStore`, `InMemoryActorStore` and
+      `PostgreSqlActorStore` (`DaServer.Persistence.PostgreSql`: a row per actor, one round trip per batch); DAS014;
+      `PersistenceBenchmark`. Relational business
       data (accounts, payments, mail, auctions) stays in the user's ORM inside services. (a studied game server write-behind, ET
       serialized components, Orleans IPersistentState + ETags)
+- [ ] Z6 .NET 11 features to measure with BDN: runtime async (`<Features>runtime-async=on</Features>`, preview; pooled
+      builders such as `Reply<T>` opt out) on the call and handler paths; Zstandard (`System.IO.Compression`) for large
+      actor records. Already in effect without changes: JIT bounds-check and devirtualization work, continuations that
+      skip `ExecutionContext` restore when nothing flows.
 - [ ] N6 State handoff on moves: the old owner sends the same bytes to the new owner on the ordered link ahead of the
       forwarded mail; the store is the fallback. (ET transfer, Orleans migration)
 - [ ] N8 Collections in messages without allocation: use Nino's own ref deserialization (`DeserializeRef` into a

@@ -847,6 +847,13 @@ records that no longer hold). Each: context → decision → consequences.
   stack (not possible from managed code without a diagnostics session).
 - Consequences: the waits the analyzer can see do not compile; the rest (a long loop, a wait inside a library) are
   visible within `StallAfter`. Tests that need a foreign await on purpose suppress DAS009 locally.
+- The other half of the same rule, DAS015 (error): actors, services and systems start no work on other threads:
+  `Task.Run`, `TaskFactory.StartNew`, `ContinueWith`, `ThreadPool`, `Parallel`, `new Thread`, timers,
+  `ConfigureAwait(false)`. Their state needs no locks because one thread owns it, and code that runs elsewhere would
+  touch it unguarded. The rule is all or nothing on purpose (not "only delegates that touch state"): users never weigh
+  which off-thread code is safe. Awaiting stays allowed, asynchronous IO included: the shard's synchronization
+  context brings continuations back within the turn. Concurrency comes from many actors on many shards; heavy work is
+  split over actors or services.
 
 ## ADR-061 Systems read and write components; other worlds get messages
 - Context: a system sometimes needs another entity's data or decision (may this NPC step on that cell, may this
@@ -1010,7 +1017,8 @@ records that no longer hold). Each: context → decision → consequences.
     keep it across a rename; the same id messages carry on the wire), length, Nino bytes. Adding or removing a persisted component never breaks a stored
     record. Transient data (grids, caches, tags) is rebuilt on load. Relational and queried data (accounts,
     payments, mail, rankings) stays in services with the user's ORM.
-  - **When:**
+  - **When:** between turns only, never while a turn is suspended at an await (it may have changed half of what its
+    message changes), so a record always holds the state after whole messages:
     - On unload, always: the actor is removed only once its record is written, so a graceful stop loses nothing.
     - Every `Actor.SaveEvery` (30 s by default; zero means only on unload) if the record changed. A crash loses at
       most that much.
@@ -1026,7 +1034,16 @@ records that no longer hold). Each: context → decision → consequences.
     owns the actor (a split, a late write after being declared dead). The write is refused and the local copy is
     fenced, removed without another save.
   - **Backends:** `IActorStore` (`LoadAsync` and `SaveAsync` over batches) is all a backend implements.
-    `InMemoryActorStore` serves tests and development; PostgreSQL is the default for deployments.
+    `InMemoryActorStore` serves tests and development, and behaves like a database: versioned, and writing in place
+    (a buffer per key), so tests measure the same allocation-free saves. `PostgreSqlActorStore` is the default for deployments: one
+    table `(type_id, key, version, data bytea, updated_at)`, created on first use, written with Npgsql and no ORM (the
+    record is opaque bytes, so the schema never follows the components). A batch is one prepared statement on a
+    connection kept per call in flight: loads one query over `unnest(type ids, keys)`, saves one statement over
+    `unnest(type ids, keys, expected versions, data)` that inserts first writes (`ON CONFLICT DO NOTHING`), updates
+    rows still at their expected version and returns the accepted ordinals. The record bytes are the shard's pooled
+    buffers, passed without copying; the columns are pooled lists. 1,024 critical saves cost about 11 ms and 11 KB.
+    `AddPostgreSqlActorStore()` in Program.cs wires it and adds the database to readiness; the AppHost passes the
+    connection string (`WithActorStore`).
 - Alternatives:
   - A write per turn: no loss, but write volume and latency grow with traffic.
   - Explicit saves in handlers: forgotten saves, and saves while the state is half-changed.
@@ -1035,4 +1052,23 @@ records that no longer hold). Each: context → decision → consequences.
 - Consequences: an actor's load waits one store round trip, batched per wake. A store outage delays unloads and stops,
   bounded by the stop budget, which reports what was not saved. Records are opaque bytes for performance; inspecting
   them needs the components' types.
+
+## ADR-069 The e2e is a smoke test of the deployed model, timed by phase
+- Context: the e2e starts the sample's AppHost (PostgreSQL, six nodes, bots) through Aspire.Hosting.Testing. It took
+  60 to 70 s for 15 s of load. Measured causes: the .NET 11 CLI behind `dotnet run` exports its own telemetry whenever
+  an `OTEL_EXPORTER_OTLP_*` variable is present and waited out a 10 s export timeout on every exit; stopping an AppHost
+  stops every resource at once, so the database died before the nodes' final saves and the node was killed after
+  retrying; a node waited for the database before starting.
+- Decision:
+  - The e2e removes every `OTEL_*` variable and sets `DOTNET_CLI_TELEMETRY_OPTOUT`, uses a fresh database, gives
+    every node and database three minutes to become healthy (failing with the resource and its health report), stops
+    the nodes first (as a platform stops a deployment) and checks that every player's record was written.
+  - The sample's PostgreSQL has a persistent lifetime: stopping the AppHost never takes it from the nodes' last saves.
+  - `WithActorStore` adds `WaitFor` only when publishing (Compose orders start and stop by it); run locally, nodes
+    start beside the database and their readiness includes it.
+  - The e2e measures 10 s (two map changes) with 1,000 bots; long and large runs (10k bots) are the same test with
+    `E2E_*` variables, run on demand, not on every commit. Behavior is covered by the in-process cluster tests.
+- Consequences: about 34 s (Release): 6 s of the testing host, about 7 s of seven processes starting cold through
+  `dotnet run` on four cores (a node alone is up in 0.5 s), 2 s of health polling, 14 s of bots, 5 s of stopping.
+  The phases are printed in the test log.
 
