@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net11.0</TargetFramework>
+        <Description>In-process DaServer clusters for tests: real nodes on loopback, a manual clock and ticks stepped by the test.</Description>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <InternalsVisibleTo Include="DaServer.Tests" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\DaServer\DaServer.csproj" />
+        <ProjectReference Include="..\DaServer.Client\DaServer.Client.csproj" />
+    </ItemGroup>
+
+</Project>
