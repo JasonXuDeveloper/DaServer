@@ -18,7 +18,7 @@ public sealed class MessageHandler(uint messageId, MessageDispatcher dispatcher,
 
     /// <summary>Handler registration for <typeparamref name="T"/>; <paramref name="dispatcher"/> is generated.</summary>
     public static MessageHandler Of<T>(MessageDispatcher dispatcher) where T : struct =>
-        new(MessageType<T>.Id, dispatcher, typeof(T));
+        new(MessageType<T>.WireId, dispatcher, typeof(T));
 
     public override string ToString() => MessageType.FullName ?? MessageType.Name;
 }

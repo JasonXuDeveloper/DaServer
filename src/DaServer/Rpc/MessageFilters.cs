@@ -10,7 +10,7 @@ public delegate RpcStatus MessageFilter<T>(object target, in T message, in CallC
 /// <summary>A filter for every message type (authorization, metrics): generic, so it reads messages without boxing.</summary>
 public interface IMessageFilter
 {
-    RpcStatus Check<T>(object target, in T message, in CallContext context) where T : struct;
+    RpcStatus Admit<T>(object target, in T message, in CallContext context) where T : struct;
 }
 
 /// <summary>
@@ -22,13 +22,17 @@ public static class MessageFilters
     private static readonly Lock Gate = new();
     internal static IMessageFilter[] All = [];
 
-    /// <summary>Run <paramref name="filter"/> for every message.</summary>
+    /// <summary>
+    /// Run <paramref name="filter"/> for every message, process-wide (every node of the process), on the shard right
+    /// before the handler, whatever the message's origin. Per-node admission of messages from outside, before they are
+    /// routed, is <c>INodeContext.AddIngressFilter</c>.
+    /// </summary>
     public static void Register(IMessageFilter filter)
     {
         lock (Gate) All = [.. All, filter];
     }
 
-    /// <summary>Run <paramref name="filter"/> for messages of type <typeparamref name="T"/>.</summary>
+    /// <summary>Run <paramref name="filter"/> for messages of type <typeparamref name="T"/> (process-wide, like <see cref="Register(IMessageFilter)"/>).</summary>
     public static void Register<T>(MessageFilter<T> filter) where T : struct
     {
         lock (Gate) MessageFilters<T>.Typed = [.. MessageFilters<T>.Typed, filter];
@@ -48,15 +52,15 @@ public static class MessageFilters<T> where T : struct
     public static bool Admit(object target, in T message, in CallContext context)
     {
         if (MessageFilters.All.Length == 0 && Typed.Length == 0) return true;
-        return Check(target, in message, in context);
+        return RunFilters(target, in message, in context);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static bool Check(object target, in T message, in CallContext context)
+    private static bool RunFilters(object target, in T message, in CallContext context)
     {
         foreach (var filter in MessageFilters.All)
         {
-            var status = filter.Check(target, in message, in context);
+            var status = filter.Admit(target, in message, in context);
             if (status != RpcStatus.Ok) return Refuse(status, in context);
         }
 

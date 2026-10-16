@@ -9,11 +9,11 @@ namespace DaServer.Simulation;
 /// </summary>
 public static class TaskFlow
 {
-    public static void Start<TTask>(Entity agent, Func<Task<bool>> flow, Counter? failures = null) where TTask : struct, IComponent =>
+    public static void Start<TTask>(Entity agent, Func<Task<bool>> flow, SwarmCounter? failures = null) where TTask : struct, IComponent =>
         (SynchronizationContext.Current ?? throw new InvalidOperationException("Start flows on a client loop"))
         .Post(static async s =>
         {
-            var (agent, flow, failures) = ((Entity, Func<Task<bool>>, Counter?))s!;
+            var (agent, flow, failures) = ((Entity, Func<Task<bool>>, SwarmCounter?))s!;
             try
             {
                 if (!await flow()) failures?.Add();

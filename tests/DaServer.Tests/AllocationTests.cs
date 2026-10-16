@@ -283,7 +283,7 @@ public class AllocationTests : ClusterTest
             var add = FrameWriter.Rent();
             var nino = add.Nino;
             Nino.Core.NinoSerializer.Serialize(new Add(1), ref nino);
-            node.Request(add, MessageType<Add>.Id, ActorIds<CounterId>.HandlerTypeId, 1, null, sink, 1);
+            node.Request(add, MessageType<Add>.WireId, ActorIds<CounterId>.HandlerTypeId, 1, null, sink, 1);
         }
 
         const int refusals = 10_000;
@@ -304,7 +304,7 @@ public class AllocationTests : ClusterTest
             {
                 var frame = FrameWriter.Rent(FrameHeader.Size);
                 frame.SetCallId(1);
-                frame.SetHeader(FrameKind.Message, ActorIds<CounterId>.HandlerTypeId, MessageType<Add>.Id, 1);
+                frame.SetHeader(FrameKind.Message, ActorIds<CounterId>.HandlerTypeId, MessageType<Add>.WireId, 1);
                 Node.Admit(shard, frame, sink); // full shard: Overloaded
                 node.Request(FrameWriter.Rent(FrameHeader.Size), 0xDEAD, 0, 0, null, sink, 1); // nobody: NotHosted
             }
@@ -350,7 +350,7 @@ public class AllocationTests : ClusterTest
                 var nino = frame.Nino;
                 Nino.Core.NinoSerializer.Serialize(new Add(1), ref nino);
                 frame.Deadline = Environment.TickCount64 + 1;
-                node.Request(frame, MessageType<Add>.Id, ActorIds<CounterId>.HandlerTypeId, 1, null, sink, (uint)i + 1);
+                node.Request(frame, MessageType<Add>.WireId, ActorIds<CounterId>.HandlerTypeId, 1, null, sink, (uint)i + 1);
             }
 
             WaitFor(ref sink.Timeout, timedOut);

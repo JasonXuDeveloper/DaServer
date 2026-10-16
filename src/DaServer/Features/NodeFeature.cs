@@ -77,7 +77,7 @@ public interface INodeContext
 
     /// <summary>
     /// Gossip a counter of this node every round (sessions held, requests in flight): other nodes read it with
-    /// <see cref="ClusterMember.PulseValue"/>. <paramref name="read"/> runs on the gossip timer, once a round. At most
+    /// <see cref="ClusterMember.Pulse"/>. <paramref name="read"/> runs on the gossip timer, once a round. At most
     /// three per node. Only from <see cref="NodeFeature.Start"/>.
     /// </summary>
     void AddPulse(uint key, Func<int> read);
@@ -98,7 +98,11 @@ public interface INodeContext
     /// </summary>
     void PostToShards(Action<World, object?> callback, object? state);
 
-    /// <summary>Admit or refuse every message from outside before it is routed (<see cref="IIngressFilter"/>). Only from <see cref="NodeFeature.Start"/>.</summary>
+    /// <summary>
+    /// Admit or refuse every message from outside (clients, the HTTP plane) at this node's edge, before it is routed
+    /// (<see cref="IIngressFilter"/>). Only from <see cref="NodeFeature.Start"/>. Process-wide checks of every message
+    /// on the shard right before its handler, inside the cluster too, are <c>MessageFilters.Register</c>.
+    /// </summary>
     void AddIngressFilter(IIngressFilter filter);
 }
 

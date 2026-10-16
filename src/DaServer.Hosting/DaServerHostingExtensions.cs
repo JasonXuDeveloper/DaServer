@@ -23,7 +23,7 @@ public static class DaServerHostingExtensions
     public static IHostApplicationBuilder AddDaServer(this IHostApplicationBuilder builder, string section = "DaServer")
     {
         builder.Services.Configure<NodeOptions>(builder.Configuration.GetSection(section));
-        builder.AddDaServerFeature<DaServer.Clients.ClientOptions>("Clients", static o => new DaServer.Clients.ClientConnections(o), section);
+        builder.AddDaServerFeature<DaServer.Clients.ClientConnectionOptions>("Clients", static o => new DaServer.Clients.ClientConnections(o), section);
         builder.Services.AddSingleton(static sp =>
         {
             var options = sp.GetRequiredService<IOptions<NodeOptions>>().Value;

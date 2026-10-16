@@ -156,7 +156,7 @@ public class GeneratorTests
     public void NodesRunTheSystemsOfSharedLogicTheyReference()
     {
         var shared = CSharpCompilation.Create("Rules", [Parse("""
-            [assembly: SharedLogic]
+            [assembly: DaServerShared]
             namespace Rules;
             public sealed class Glide : EasyEcs.EcsSystem { }
             internal sealed class Hidden : EasyEcs.EcsSystem { }

@@ -424,7 +424,7 @@ public sealed class Player : Actor<PlayerId, Wallet>
 
     [Handle] public void On(SessionClosed _) => Observed.Events.Enqueue($"closed:{Id.Value}");
 
-    [Handle] public void On(SessionResync _) => Observed.Events.Enqueue($"resync:{Id.Value}");
+    [Handle] public void On(SessionResumed _) => Observed.Events.Enqueue($"resumed:{Id.Value}");
 }
 
 public sealed class Room : Actor<RoomId>
@@ -447,5 +447,5 @@ public sealed class Room : Actor<RoomId>
 
     [Handle] public void On(SessionClosed _) => Observed.Events.Enqueue($"room-closed:{Id.Value}");
 
-    [Handle] public void On(SessionResync _) => Observed.Events.Enqueue($"room-resync:{Id.Value}");
+    [Handle] public void On(SessionResumed _) => Observed.Events.Enqueue($"room-resumed:{Id.Value}");
 }

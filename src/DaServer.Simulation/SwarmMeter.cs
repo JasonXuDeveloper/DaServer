@@ -4,7 +4,7 @@ using EasyEcs;
 namespace DaServer.Simulation;
 
 /// <summary>How a counter is reported and judged.</summary>
-public enum CounterKind
+public enum SwarmCounterKind
 {
     /// <summary>A total, reported as is.</summary>
     Total,
@@ -18,33 +18,33 @@ public enum CounterKind
 
 /// <summary>
 /// What a swarm measures: a latency histogram and named counters, shared by every loop (systems reach it through the
-/// <see cref="Measurements"/> singleton, message handlers hold it). <see cref="Measuring"/> marks the window that counts.
+/// <see cref="SwarmMetrics"/> singleton, message handlers hold it). <see cref="Measuring"/> marks the window that counts.
 /// </summary>
-public sealed class Meter
+public sealed class SwarmMeter
 {
     private readonly Lock _gate = new();
-    private Counter[] _counters = [];
+    private SwarmCounter[] _counters = [];
 
-    public Meter() => Disconnects = Counter("disconnects", CounterKind.Failure);
+    public SwarmMeter() => Disconnects = Counter("disconnects", SwarmCounterKind.Failure);
 
-    public Histogram Latency { get; } = new();
-    public Counter Disconnects { get; }
+    public LatencyHistogram Latency { get; } = new();
+    public SwarmCounter Disconnects { get; }
     public volatile bool Measuring;
 
     /// <summary>The counter named <paramref name="name"/> (get it at setup: counting allocates nothing).</summary>
-    public Counter Counter(string name, CounterKind kind = CounterKind.Total)
+    public SwarmCounter Counter(string name, SwarmCounterKind kind = SwarmCounterKind.Total)
     {
         lock (_gate)
         {
             foreach (var existing in _counters)
                 if (existing.Name == name) return existing;
-            var counter = new Counter(name, kind);
+            var counter = new SwarmCounter(name, kind);
             _counters = [.. _counters, counter];
             return counter;
         }
     }
 
-    public IReadOnlyList<Counter> Counters => Volatile.Read(ref _counters);
+    public IReadOnlyList<SwarmCounter> Counters => Volatile.Read(ref _counters);
 
     /// <summary>Start the measured window: latencies and counters start from zero.</summary>
     public void Start()
@@ -56,7 +56,7 @@ public sealed class Meter
 }
 
 /// <summary>A count shared by every loop, striped so that loops counting at once do not contend.</summary>
-public sealed class Counter(string name, CounterKind kind)
+public sealed class SwarmCounter(string name, SwarmCounterKind kind)
 {
     private const int Stripes = 16;
 
@@ -69,7 +69,7 @@ public sealed class Counter(string name, CounterKind kind)
     private readonly Stripe[] _stripes = new Stripe[Stripes];
 
     public string Name { get; } = name;
-    public CounterKind Kind { get; } = kind;
+    public SwarmCounterKind Kind { get; } = kind;
 
     public long Value
     {
@@ -92,10 +92,10 @@ public sealed class Counter(string name, CounterKind kind)
 }
 
 /// <summary>The swarm's meter, as a singleton of every loop's world.</summary>
-public readonly record struct Measurements(Meter Meter) : ISingletonComponent;
+public readonly record struct SwarmMetrics(SwarmMeter Meter) : ISingletonComponent;
 
 /// <summary>Lock-free latency histogram: 0.1 ms buckets up to 5 s.</summary>
-public sealed class Histogram
+public sealed class LatencyHistogram
 {
     private const double BucketMs = 0.1;
     private readonly long[] _buckets = new long[50_001];
@@ -109,18 +109,18 @@ public sealed class Histogram
     public void Clear() => Array.Clear(_buckets);
 
     /// <summary>A copy of what was recorded so far (with <see cref="Count"/>, <see cref="Max"/> and percentiles).</summary>
-    public Histogram Snapshot()
+    public LatencyHistogram Snapshot()
     {
-        var copy = new Histogram();
+        var copy = new LatencyHistogram();
         for (int i = 0; i < _buckets.Length; i++) copy._buckets[i] = Volatile.Read(ref _buckets[i]);
         copy.Summarize();
         return copy;
     }
 
     /// <summary>What <paramref name="later"/> (a snapshot) recorded after this one.</summary>
-    public Histogram Until(Histogram later)
+    public LatencyHistogram Until(LatencyHistogram later)
     {
-        var interval = new Histogram();
+        var interval = new LatencyHistogram();
         for (int i = 0; i < _buckets.Length; i++) interval._buckets[i] = later._buckets[i] - _buckets[i];
         interval.Summarize();
         return interval;

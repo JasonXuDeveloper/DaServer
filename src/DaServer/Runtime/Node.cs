@@ -56,7 +56,7 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
     void INodeContext.AddPulse(uint key, Func<int> read)
     {
         if (_registering == null) throw new InvalidOperationException("Pulses are added in NodeFeature.Start");
-        if (_pulseKeys.Length == Pulse.Slots) throw new InvalidOperationException($"A node gossips at most {Pulse.Slots} feature counters");
+        if (_pulseKeys.Length == MemberPulse.Slots) throw new InvalidOperationException($"A node gossips at most {MemberPulse.Slots} feature counters");
         _pulseKeys = [.. _pulseKeys, key];
         _pulseSources = [.. _pulseSources, read];
     }
@@ -322,12 +322,12 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
     }
 
     /// <summary>How long a lost client may take to resume elsewhere before its actors learn it is gone (tickets need the secret).</summary>
-    private TimeSpan ReconnectGrace => Options.SigningSecret is { Length: > 0 } ? Options.ReconnectGrace : TimeSpan.Zero;
+    private TimeSpan ResumeGrace => Options.SigningSecret is { Length: > 0 } ? Options.ResumeGrace : TimeSpan.Zero;
 
     /// <summary>Close a lost client-facing node's sessions on every shard, once their clients had the grace to resume elsewhere.</summary>
     private async Task CloseSessionsOf(ulong clientNode)
     {
-        if (ReconnectGrace > TimeSpan.Zero) await Task.Delay(ReconnectGrace).ConfigureAwait(false);
+        if (ResumeGrace > TimeSpan.Zero) await Task.Delay(ResumeGrace).ConfigureAwait(false);
         if (Volatile.Read(ref _started) != 1) return;
         foreach (var shard in _shards)
             shard.Post(static s =>

@@ -26,7 +26,7 @@ public abstract class ClusterTest
     /// <param name="gateway">Run client connections (on any free port).</param>
     /// <param name="clients">Adjust the client connections' options (implies <paramref name="gateway"/>).</param>
     private protected async Task<Node> Start(string name, int shards = 2, bool gateway = false, Func<Type, bool>? hosts = null,
-        Action<NodeOptions>? configure = null, Action<ClientOptions>? clients = null)
+        Action<NodeOptions>? configure = null, Action<ClientConnectionOptions>? clients = null)
     {
         var options = new NodeOptions
         {
@@ -44,7 +44,7 @@ public abstract class ClusterTest
         };
         if (gateway || clients != null)
         {
-            var clientOptions = new ClientOptions();
+            var clientOptions = new ClientConnectionOptions();
             clients?.Invoke(clientOptions);
             options.Features.Add(new ClientConnections(clientOptions));
         }

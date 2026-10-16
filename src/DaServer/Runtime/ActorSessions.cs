@@ -4,7 +4,7 @@ namespace DaServer.Runtime;
 /// The actor side of client sessions, on every node hosting actors (ADR-050): each loaded actor keeps the sessions it
 /// knows (<see cref="ClientSessions"/>: its callers and the sessions it bound), so a session that ends reaches it as
 /// <see cref="SessionClosed"/> even when the node holding the session crashed, and the sessions it holds granted, the
-/// only ones a client may resume from (<see cref="Resync"/>). Closes are handled by a dispatch filter, resyncs by the
+/// only ones a client may resume from (<see cref="Resume"/>). Closes are handled by a dispatch filter, resumes by the
 /// runtime before the actor's handler runs; other messages pay nothing.
 /// </summary>
 internal static class ActorSessions
@@ -55,18 +55,18 @@ internal static class ActorSessions
     }
 
     /// <summary>
-    /// A client resumes <see cref="SessionResync.Previous"/> on a new session: accepted only while the actor holds the
+    /// A client resumes <see cref="SessionResumed.Previous"/> on a new session: accepted only while the actor holds the
     /// previous session granted (not withdrawn, not closed, not resumed already: a ticket is good for one resume of what
     /// is still granted). The new session replaces it and is the caller of the turn (<c>Caller</c>).
     /// </summary>
-    public static bool Resync(Actor actor, in SessionResync resync)
+    public static bool Resume(Actor actor, in SessionResumed resumed)
     {
-        if (!actor.Entity.TryGet<ClientSessions>(out var sessions) || !sessions.Granted.Remove(resync.Previous)) return false;
-        sessions.Sessions.Remove(resync.Previous);
-        sessions.Superseded.Add(resync.Previous); // removed when its late SessionClosed arrives or its node dies
-        sessions.Sessions.Add(resync.Session);
-        sessions.Granted.Add(resync.Session);
-        actor.TurnCaller = new Origin(resync.Session.Node, resync.Session.Id);
+        if (!actor.Entity.TryGet<ClientSessions>(out var sessions) || !sessions.Granted.Remove(resumed.Previous)) return false;
+        sessions.Sessions.Remove(resumed.Previous);
+        sessions.Superseded.Add(resumed.Previous); // removed when its late SessionClosed arrives or its node dies
+        sessions.Sessions.Add(resumed.Session);
+        sessions.Granted.Add(resumed.Session);
+        actor.TurnCaller = new Origin(resumed.Session.Node, resumed.Session.Id);
         return true;
     }
 
@@ -88,13 +88,13 @@ internal static class ActorSessions
             if (lost == null || lost.Count == 0) continue;
 
             var actor = item.Component2.Actor;
-            bool handles = actor.HandlerType.Handlers.Of(MessageType<SessionClosed>.Id) != null;
+            bool handles = actor.HandlerType.Handlers.Of(MessageType<SessionClosed>.WireId) != null;
             foreach (var session in lost)
             {
                 sessions.Remove(session);
                 if (!handles) continue;
                 var w = MessageWriter.Write(new SessionClosed(session));
-                w.SetHeader(FrameKind.Message, actor.HandlerType.Id, MessageType<SessionClosed>.Id, actor.Key);
+                w.SetHeader(FrameKind.Message, actor.HandlerType.Id, MessageType<SessionClosed>.WireId, actor.Key);
                 ShardDispatch.Deliver(world, item.Entity, new Envelope(w, null));
             }
         }

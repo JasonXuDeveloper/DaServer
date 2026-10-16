@@ -12,23 +12,23 @@ sealed partial class Node
         switch (Addresses<TAddr>.Kind) // a JIT constant: the other branches vanish
         {
             case AddressKind.Actor:
-                SendMessage(w, MessageType<T>.Id, Addresses<TAddr>.Scope, Addresses<TAddr>.Value(in address));
+                SendMessage(w, MessageType<T>.WireId, Addresses<TAddr>.Scope, Addresses<TAddr>.Value(in address));
                 break;
             case AddressKind.Node:
-                SendToNode(w, Addresses<TAddr>.Scope, MessageType<T>.Id, Addresses<TAddr>.Node(in address), Addresses<TAddr>.Value(in address));
+                SendToNode(w, Addresses<TAddr>.Scope, MessageType<T>.WireId, Addresses<TAddr>.Node(in address), Addresses<TAddr>.Value(in address));
                 break;
             default:
-                SendToGroup(w, Addresses<TAddr>.Scope, MessageType<T>.Id, Addresses<TAddr>.Value(in address));
+                SendToGroup(w, Addresses<TAddr>.Scope, MessageType<T>.WireId, Addresses<TAddr>.Value(in address));
                 break;
         }
     }
 
     public long SendAfter<TAddr, T>(TimeSpan delay, TAddr address, in T message) where TAddr : struct, IAddress where T : struct =>
-        Schedule(delay, new DelayedSend(MessageWriter.Write(in message), Addresses<TAddr>.Kind, Addresses<TAddr>.Scope, MessageType<T>.Id,
+        Schedule(delay, new DelayedSend(MessageWriter.Write(in message), Addresses<TAddr>.Kind, Addresses<TAddr>.Scope, MessageType<T>.WireId,
             Addresses<TAddr>.Kind == AddressKind.Node ? Addresses<TAddr>.Node(in address) : 0, Addresses<TAddr>.Value(in address)));
 
     public long SendAfter<T>(TimeSpan delay, in T message) where T : struct =>
-        Schedule(delay, new DelayedSend(MessageWriter.Write(in message), AddressKind.Actor, 0, MessageType<T>.Id, 0, 0));
+        Schedule(delay, new DelayedSend(MessageWriter.Write(in message), AddressKind.Actor, 0, MessageType<T>.WireId, 0, 0));
 
     public bool CancelSend(long timer) => Shard.Current is { } shard && shard.Node == this &&
                                           shard.World.GetSingleton<ShardTimers>().Cancel(shard.Index, timer);
@@ -67,10 +67,10 @@ sealed partial class Node
 
     /// <summary>One-way message to actor (<paramref name="handlerTypeId"/>, <paramref name="key"/>).</summary>
     internal void SendTo<T>(uint handlerTypeId, long key, in T message) where T : struct =>
-        SendMessage(MessageWriter.Write(in message), MessageType<T>.Id, handlerTypeId, key);
+        SendMessage(MessageWriter.Write(in message), MessageType<T>.WireId, handlerTypeId, key);
 
     public void Send<T>(in T message) where T : struct =>
-        SendMessage(MessageWriter.Write(in message), MessageType<T>.Id, handlerTypeId: 0, key: 0);
+        SendMessage(MessageWriter.Write(in message), MessageType<T>.WireId, handlerTypeId: 0, key: 0);
 
     public ValueTask<TReply> Ask<TAddr, TRequest, TReply>(TAddr address, in TRequest request)
         where TAddr : struct, IAddress where TRequest : struct, IRequest<TReply> =>
@@ -90,36 +90,36 @@ sealed partial class Node
     {
         var call = PendingCall<TReply>.Rent(Shard.Current);
         var task = call.Task;
-        Request(MessageWriter.Write(in request), MessageType<TRequest>.Id, handlerTypeId, key, call, null, 0);
+        Request(MessageWriter.Write(in request), MessageType<TRequest>.WireId, handlerTypeId, key, call, null, 0);
         return task;
     }
 
     /// <summary>
-    /// Ask a granted actor to accept a resumed session (<see cref="ActorSessions.Resync"/>): fails with
+    /// Ask a granted actor to accept a resumed session (<see cref="ActorSessions.Resume"/>): fails with
     /// <see cref="RpcStatus.Forbidden"/> when the actor does not hold the previous session granted.
     /// </summary>
-    internal ValueTask Resync(uint handlerTypeId, long key, in SessionResync resync)
+    internal ValueTask Resume(uint handlerTypeId, long key, in SessionResumed resumed)
     {
         var call = PendingCall<NoReply>.Rent(null);
         var task = call.Done;
-        Request(MessageWriter.Write(in resync), MessageType<SessionResync>.Id, handlerTypeId, key, call, null, 0);
+        Request(MessageWriter.Write(in resumed), MessageType<SessionResumed>.WireId, handlerTypeId, key, call, null, 0);
         return task;
     }
 
     /// <summary>To every service handling the message: serialized once, one frame per service type.</summary>
-    public void Publish<T>(in T e) where T : struct
+    public void Publish<T>(in T message) where T : struct
     {
-        var routes = View.Routes(MessageType<T>.Id);
+        var routes = View.Routes(MessageType<T>.WireId);
         int last = routes.Length - 1;
         while (last >= 0 && routes[last].Actor) last--;
         if (last < 0) return;
-        var w = MessageWriter.Write(in e);
+        var w = MessageWriter.Write(in message);
         bool handedOver = false;
         try
         {
             for (int i = 0; i <= last; i++)
                 if (!routes[i].Actor)
-                    handedOver = SendTo(in routes[i], MessageType<T>.Id, 0, w, hops: 0, flags: 0, handOver: i == last);
+                    handedOver = SendTo(in routes[i], MessageType<T>.WireId, 0, w, hops: 0, flags: 0, handOver: i == last);
         }
         finally
         {
@@ -157,7 +157,7 @@ sealed partial class Node
     {
         var call = PendingCall<NoReply>.Rent(Shard.Current);
         var task = call.Done;
-        AskNode(MessageWriter.Write(in access), AddressScopes.Session, MessageType<SessionAccess>.Id,
+        AskNode(MessageWriter.Write(in access), AddressScopes.Session, MessageType<SessionAccess>.WireId,
             session.Node, session.Id, call);
         return task;
     }

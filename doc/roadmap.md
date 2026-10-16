@@ -50,7 +50,8 @@ EasyEcs in parallel when DaServer waits on benchmarks: the Friflo gap, compariso
 - [x] One ordered link per node direction: replies travel with binds, pushes and events (ADR-022)
 - [x] Placement: keys stay with suspect members, a dead node's keys move, unloading actors keep their mail (ADR-023)
 - [x] Client: `ClusterClient` (the same messages as servers, session-bound actor messages without an id, DNS
-      endpoints over every resolved address, entry addresses and the directory's redirect, callbacks inline or queued)
+      endpoints over every resolved address, entry addresses and moving to the node the directory names, callbacks
+      inline or queued)
 - [x] Topology without roles (ADR-017), `ICluster` for business code (ADR-020), actor `Group`
 - [x] One-way and published messages: `Send`, `Publish` to every handling service, gossiped handlers, mailbox
       delivery (ADR-019)
@@ -70,7 +71,7 @@ Steady state allocates nothing: per message, call, reply, tick, broadcast, conne
       teach): `TaskCompletionSource`/`Task`/timers/`CancellationTokenSource` per operation, unpooled awaitables, async
       state machines, closures and per-call delegates, LINQ, boxed enumerators, `params`, string formatting and
       logging without guards, boxing (structs in object fields), per-operation arrays/lists/records, Nino collection
-      and string deserialization per message (N8), gossip/membership rebuilds, reconnect tickets, metrics.
+      and string deserialization per message (N8), gossip/membership rebuilds, resume tickets, metrics.
       Findings (audit of this branch, fix order below):
       - H1 user `async ValueTask` handlers use the default builder: one state-machine box per suspended call (the
         samples teach it). Fix: shard-pooled builder through the await-only `Reply<T>` handler type (N3b.4) or an
@@ -162,8 +163,8 @@ What G delivered (each step kept every test green):
 6. Client connections as a feature (`DaServer.Clients`, enabled by `DaServer:Clients`): generic card entries and
    pulse slots (`ClusterMember` keeps no client fields), the actor side in `ActorSessions` (ADR-050), the directory
    (`PickNode`, `GET /clients/endpoint`, `Redirect`, client entry addresses; ADR-026), M2 (group objects pooled, empty
-   groups removed lazily: group churn allocates nothing), M3 (reconnect graces on a `TimerWheel`), a per-session rate
-   limit (`ClientOptions.MessagesPerSecond`/`Burst`), WebSocket transport (`WebSocketChannel` behind `IFrameChannel`,
+   groups removed lazily: group churn allocates nothing), M3 (resume graces on a `TimerWheel`), a per-session rate
+   limit (`ClientConnectionOptions.MessagesPerSecond`/`Burst`), WebSocket transport (`WebSocketChannel` behind `IFrameChannel`,
    `/clients/ws`, `ClusterClient.ConnectAsync(Uri)`). L2 kept: a grant change copies the session's small grants
    array (a login or map change, not per message). Moving clients off a draining node with tickets is D3; today a
    leaving node closes its listener and sessions.
@@ -174,9 +175,9 @@ What G delivered (each step kept every test green):
    `samples/mmo/Sample.Contracts` builds for both. Generators split by output (ADR-012): `AskGenerator`,
    `RegistrationGenerator` (static-constructor registration, IL2CPP-safe), `EntryPointGenerator`,
    `PolyfillGenerator`. M5: call tables allocate slots in doubling chunks as calls in flight reach them
-   (`ClusterClient(maxCallsInFlight: 4096)` is only a bound), connections with `ReleaseIdleBuffers` hold no send
+   (`ClusterClient(maxPendingCalls: 4096)` is only a bound), connections with `ReleaseIdleBuffers` hold no send
    buffer when idle, clients share handler tables: 10k sample bots use 182 MB resident / 80 MB managed. Aspire:
-   `AddNodes(...).WithClients()` and `WithClientEndpoints(group)` (`DaServer__ClientEndpoints__{i}`).
+   `AddNodes(...).WithClientConnections()` and `WithClientEndpoints(group)` (`DaServer__ClientEndpoints__{i}`).
    Names: `ClientSession(Node, Id)`, `NodeOptions.SigningSecret`, contract types in the root `DaServer` namespace,
    `HandlerRegistry`, `ClusterClient`.
 9. .NET 11 (ADR-054): the server runtime targets net11.0 (local calls 2.3-2.7x faster under concurrency, remote
@@ -365,7 +366,7 @@ in separate commits.
 - [x] T2 ECS bots and business isolation (ADR-055, ADR-056): `Sample.Shared` (rules both sides run; DAS010 keeps the
       server and the transport out), `Sample.Client` (the game client as ECS data and systems), `Sample.Bot` (that
       client as a `DaServer.Simulation` swarm with an HTN behavior: change maps, chat, wander), `Sample.Tests`; the
-      e2e test changes maps every 5 s. `DaServer.Simulation`: `ClientLoop`, HTN planning as ECS data, `Swarm`/`Meter`.
+      e2e test changes maps every 5 s. `DaServer.Simulation`: `ClientLoop`, HTN planning as ECS data, `Swarm`/`SwarmMeter`.
 - [ ] Optional sample: server-side NPCs (patrol, chase, flee) planned with the same HTN model in a map server, to
       show heavy AI batched on shards without allocation.
 - [ ] N1 Fixed/reloadable split on top of stateless handler types (DAS007, ADR-044): projects Contracts (messages) +
@@ -445,7 +446,7 @@ in separate commits.
 
 ## Hosting / orchestration
 - [x] `DaServer.Hosting`: Generic Host, configuration, OpenTelemetry (OTLP), periodic stats line, graceful shutdown
-- [x] `DaServer.Aspire`: AddDaServerCluster / AddNodes / WithClients / WithClientEndpoints; compose publishing
+- [x] `DaServer.Aspire`: AddDaServerCluster / AddNodes / WithClientConnections / WithClientEndpoints; compose publishing
       (ADR-015); no configuration files in node projects
 - [x] 10k-player scenario: login, game, map, 3 gateways, 10k bots (Sample.Bot fails on any gap, disconnect or
       p99 over the limit); passes through Aspire (README "Performance")
@@ -469,8 +470,8 @@ in separate commits.
       receives the new clients (test + process run)
 - [x] One write per connection per batch (ADR-034)
 - [x] Message-first model (ADR-035); client send backlog bound 256 KB (a slow client is disconnected and
-      resynchronizes on reconnect)
-- [x] Auto-reconnect (ADR-036): signed reconnect tickets, `SessionClosed` after a grace period, `SessionResync`,
+      resynchronizes when it resumes)
+- [x] Auto-reconnect (ADR-036): signed resume tickets, `SessionClosed` after a grace period, `SessionResumed`,
       Aspire-generated signing secret
 - [x] Lifecycle as tags (ADR-037): turn ends posted by `TurnWatcher` (no polling), `Ready`/`Loading`/`UnloadRequested`/
       `Unloading`/`Removing` with one system each; sample grid as data + systems (`DespawnSystem`, `PlacementSystem`)

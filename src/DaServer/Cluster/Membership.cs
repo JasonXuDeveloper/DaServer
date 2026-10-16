@@ -3,7 +3,7 @@ namespace DaServer.Cluster;
 /// <summary>
 /// Gossip-based membership with heartbeat-staleness failure detection (no clock synchronisation needed):
 /// every <see cref="NodeOptions.GossipInterval"/> a node bumps its heartbeat and exchanges its member table with up to
-/// three random peers (push-pull) as fixed-size <see cref="Pulse"/>s; full cards travel only to nodes that ask for
+/// three random peers (push-pull) as fixed-size <see cref="MemberPulse"/>s; full cards travel only to nodes that ask for
 /// them, so a steady-state round allocates nothing. A member whose heartbeat has not advanced for SuspectAfter becomes Suspect, after
 /// DeadAfter Dead; a node that learns it is suspected refutes by bumping its incarnation.
 /// </summary>
@@ -185,13 +185,13 @@ internal sealed class Membership : IDisposable
     private FrameWriter PulseFrame()
     {
         FrameWriter w;
-        Span<byte> pulse = stackalloc byte[Pulse.Size];
+        Span<byte> pulse = stackalloc byte[MemberPulse.Size];
         lock (_gate)
         {
-            w = FrameWriter.Rent(FrameHeader.Size + _members.Count * Pulse.Size);
+            w = FrameWriter.Rent(FrameHeader.Size + _members.Count * MemberPulse.Size);
             foreach (var entry in _members.Values)
             {
-                Pulse.Of(entry.Info).Write(pulse);
+                MemberPulse.Of(entry.Info).Write(pulse);
                 w.WriteRaw(pulse);
             }
         }
@@ -236,9 +236,9 @@ internal sealed class Membership : IDisposable
         lock (_gate)
         {
             long now = Stopwatch.GetTimestamp();
-            for (; pulses.Length >= Pulse.Size; pulses = pulses.Slice(Pulse.Size))
+            for (; pulses.Length >= MemberPulse.Size; pulses = pulses.Slice(MemberPulse.Size))
             {
-                var pulse = Pulse.Read(pulses);
+                var pulse = MemberPulse.Read(pulses);
                 if (pulse.NodeId == _node.Id)
                 {
                     Refute(pulse.Status, pulse.Incarnation);
@@ -282,9 +282,9 @@ internal sealed class Membership : IDisposable
         Span<byte> id = stackalloc byte[sizeof(ulong)];
         lock (_gate)
         {
-            for (; pulses.Length >= Pulse.Size; pulses = pulses.Slice(Pulse.Size))
+            for (; pulses.Length >= MemberPulse.Size; pulses = pulses.Slice(MemberPulse.Size))
             {
-                ulong nodeId = Pulse.Read(pulses).NodeId;
+                ulong nodeId = MemberPulse.Read(pulses).NodeId;
                 if (nodeId == _node.Id || _members.ContainsKey(nodeId)) continue;
                 BinaryPrimitives.WriteUInt64LittleEndian(id, nodeId);
                 w.WriteRaw(id);

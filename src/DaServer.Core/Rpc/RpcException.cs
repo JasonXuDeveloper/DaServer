@@ -52,7 +52,7 @@ public sealed class RpcException : Exception
         RpcStatus.NotHosted => "NotHosted: no node hosts the target (stale view, nothing registered, or too many forwarding hops)",
         RpcStatus.Timeout => "Timeout: no reply within the call's deadline",
         RpcStatus.Forbidden => "Forbidden: a client may not send this message to this target (not a client message, " +
-                               "not that actor, no bound actor, or an invalid reconnect ticket)",
+                               "not that actor, no bound actor, or an invalid resume ticket)",
         RpcStatus.Disconnected => "Disconnected: the connection or the target's node was lost before the reply",
         RpcStatus.Overloaded => "Overloaded: a dispatch queue, actor mailbox or in-flight call table is full; nothing ran",
         RpcStatus.RateLimited => "RateLimited: the edge's admission refused the sender for now; nothing ran",

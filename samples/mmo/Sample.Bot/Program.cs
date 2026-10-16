@@ -41,11 +41,11 @@ internal static class Scenario
             },
         });
         var meter = swarm.Meter;
-        var (positions, lines, gaps) = (meter.Counter("positions (sampled)", CounterKind.Rate),
-            meter.Counter("chat", CounterKind.Rate), meter.Counter("gaps", CounterKind.Failure));
+        var (positions, lines, gaps) = (meter.Counter("positions (sampled)", SwarmCounterKind.Rate),
+            meter.Counter("chat", SwarmCounterKind.Rate), meter.Counter("gaps", SwarmCounterKind.Failure));
         var telemetry = new Telemetry[bots];
 
-        await swarm.StartAsync(bots, static () => new ClusterClient(callbackQueue: 1024), async user =>
+        await swarm.StartAsync(bots, static () => new ClusterClient(callbackQueueCapacity: 1024), async user =>
         {
             int i = user.Index;
             await user.ConnectAsync(endpoints);

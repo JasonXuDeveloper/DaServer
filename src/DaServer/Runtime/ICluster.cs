@@ -15,7 +15,7 @@ public interface ICluster : IMessageSender
     /// Publish a message (a <c>[NinoType, Message]</c> struct) to every service handling it (<see cref="HandleAttribute">[Handle]</see>):
     /// serialized once, one frame per handler type. The publisher never depends on its handlers.
     /// </summary>
-    void Publish<T>(in T e) where T : struct;
+    void Publish<T>(in T message) where T : struct;
 
     /// <summary>
     /// Send <paramref name="message"/> to <paramref name="address"/> once <paramref name="delay"/> has passed (timers as
