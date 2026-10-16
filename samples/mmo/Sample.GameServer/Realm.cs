@@ -6,12 +6,6 @@ using Sample.Contracts;
 
 namespace Sample.GameServer;
 
-/// <summary>Who is online.</summary>
-public struct RealmState() : IComponent
-{
-    public readonly HashSet<PlayerId> Online = new();
-}
-
 /// <summary>The realm: players report in and out; <see cref="RealmBroadcastSystem"/> tells every client about it.</summary>
 public sealed class Realm : Actor<RealmId, RealmState>
 {

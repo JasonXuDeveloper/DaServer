@@ -42,14 +42,14 @@ public class SingleNodeTests : ClusterTest
     public async Task ActorsOfANodeDeclaredDeadAreRemovedWithoutUnload()
     {
         const long key = 502;
-        Assert.That(await _node.Ask(new VisitorId(key), new Visit()), Is.EqualTo(1));
+        Assert.That(await _node.Ask(new KeeperId(key), new Visit()), Is.EqualTo(1));
 
         // The cluster gave the key to another node: a save from OnUnload could overwrite the new owner's state.
         foreach (var shard in _node.Shards) shard.RequestUnloadAll();
         await Eventually(() => _node.ActorCount == 0, "the fenced actor is still in the directory");
-        Assert.That(Observed.Events, Has.No.Member($"unload:{key}"));
+        Assert.That(Observed.Events, Has.No.Member($"keeper-unload:{key}"));
 
-        Assert.That(await _node.Ask(new VisitorId(key), new Visit()), Is.EqualTo(1), "loaded again once the node is Up");
+        Assert.That(await _node.Ask(new KeeperId(key), new Visit()), Is.EqualTo(1), "loaded again once the node is Up");
     }
 
     [Test]

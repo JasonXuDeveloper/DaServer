@@ -14,41 +14,13 @@ namespace Sample.MapServer;
 // (dead reckoning), so 10,000 players in one map cost each client the turns of the ~200 avatars around it, instead of
 // every position of everyone every tick (10,000 x 10,000 x 20/s).
 //
-// Data: MapGrid on the map entity, GridCell / SentMotion / Despawning / Resynced on avatars. Behavior: one system per
-// step, in tick order: DespawnSystem, (movement), PlacementSystem, MotionSyncSystem, SnapshotSystem.
+// Data (Sample.MapServer.Components): MapGrid on the map entity, GridCell / SentMotion / Despawning / Resynced on
+// avatars. Behavior: one system per step, in tick order: DespawnSystem, (movement), PlacementSystem, MotionSyncSystem,
+// SnapshotSystem.
 
-/// <summary>The grid cell of a placed avatar (an avatar without it enters the grid on the next tick).</summary>
-public record struct GridCell(int Index) : IComponent;
-
-/// <summary>The motion the avatar's viewers last heard about (compared every tick: no flag to keep in sync).</summary>
-public record struct SentMotion(Velocity Velocity, int Cell) : IComponent;
-
-/// <summary>Tag: the avatar leaves its map.</summary>
-public struct Despawning : IComponent;
-
-/// <summary>Tag: the avatar's session closed, so it already left every group (nothing to leave on despawn).</summary>
-public struct SessionGone : IComponent;
-
-/// <summary>Tag: the avatar's client resumed on a new session, which must view the avatar's 3x3 again.</summary>
-public struct Resynced : IComponent;
-
-/// <summary>A map's cells: who is in each one, and the changes not sent yet (lists reused: no garbage per tick).</summary>
-public struct MapGrid(MapId map) : IComponent
+/// <summary>Grid operations the interest systems share (the grid itself is data: <see cref="MapGrid"/>).</summary>
+internal static class Interest
 {
-    /// <summary>Changes go out every other tick (10 Hz): half the messages, clients extrapolate meanwhile.</summary>
-    public const int SyncEveryTicks = 2;
-
-    /// <summary>The map this grid belongs to (its viewer groups are per map).</summary>
-    public readonly MapId Map = map;
-
-    public readonly List<Entity>?[] Avatars = new List<Entity>?[Side * Side];
-    public readonly Moves?[] Changes = new Moves?[Side * Side];
-    public readonly List<int> ChangedCells = new();
-    public readonly Moves Scratch = new();
-
-    /// <summary>The sessions that see <paramref name="cell"/> of this map.</summary>
-    public readonly ClientGroup Viewers(int cell) => ClientGroup.Of<MapGrid>(Map.Value * Side * Side + cell);
-
     public static Moved StateOf(Entity avatar)
     {
         var p = avatar.Get<Position>();
@@ -98,7 +70,7 @@ public sealed partial class DespawnSystem : EcsSystem
         {
             int cell = placed.Index;
             ref var grid = ref avatar.Map.Get<MapGrid>();
-            MapGrid.SwapRemove(grid.Avatars[cell]!, entity);
+            Interest.SwapRemove(grid.Avatars[cell]!, entity);
             if (grid.Changes[cell]?.Items is { } changes) // a queued change would bring it back after Gone
                 for (int i = changes.Count - 1; i >= 0; i--)
                     if (changes[i].Player == player) changes.RemoveAt(i);
@@ -131,7 +103,7 @@ public sealed partial class PlacementSystem : EcsSystem
         entity.Add<GridCell>() = new GridCell(to); // `p` and `avatar` are invalid from here on
         ref var grid = ref map.Get<MapGrid>();
         (grid.Avatars[to] ??= new()).Add(entity);
-        MapGrid.View(ref grid, world.Cluster(), entity, session, from: null, to);
+        Interest.View(ref grid, world.Cluster(), entity, session, from: null, to);
     }
 
     [ForEach]
@@ -142,14 +114,14 @@ public sealed partial class PlacementSystem : EcsSystem
         cell = new GridCell(to);
 
         ref var grid = ref avatar.Map.Get<MapGrid>();
-        MapGrid.SwapRemove(grid.Avatars[from]!, entity);
+        Interest.SwapRemove(grid.Avatars[from]!, entity);
         (grid.Avatars[to] ??= new()).Add(entity);
 
         var cluster = world.Cluster();
         foreach (int c in Around(from, stackalloc int[9]))
             if (!Near(c, to)) cluster.Send(avatar.Session, new LeaveGroup(grid.Viewers(c)));
 
-        MapGrid.View(ref grid, cluster, entity, avatar.Session, from, to);
+        Interest.View(ref grid, cluster, entity, avatar.Session, from, to);
     }
 
     [ForEach, With<Resynced>]
@@ -157,7 +129,7 @@ public sealed partial class PlacementSystem : EcsSystem
     {
         var (map, session, at) = (avatar.Map, avatar.Session, cell.Index);
         entity.Remove<Resynced>();
-        MapGrid.View(ref map.Get<MapGrid>(), world.Cluster(), entity, session, from: null, at);
+        Interest.View(ref map.Get<MapGrid>(), world.Cluster(), entity, session, from: null, at);
     }
 }
 
@@ -190,7 +162,7 @@ public sealed partial class MotionSyncSystem : EcsSystem
     {
         var changes = (grid.Changes[cell] ??= new()).Items;
         if (changes.Count == 0) grid.ChangedCells.Add(cell);
-        changes.Add(MapGrid.StateOf(avatar));
+        changes.Add(Interest.StateOf(avatar));
     }
 }
 

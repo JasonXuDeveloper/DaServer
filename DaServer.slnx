@@ -13,19 +13,23 @@
     <Project Path="samples/mmo/Sample.Contracts/Sample.Contracts.csproj" />
     <Project Path="samples/mmo/Sample.Shared/Sample.Shared.csproj" />
     <Project Path="samples/mmo/Sample.Client/Sample.Client.csproj" />
+    <Project Path="samples/mmo/Sample.GameServer.Components/Sample.GameServer.Components.csproj" />
     <Project Path="samples/mmo/Sample.GameServer/Sample.GameServer.csproj" />
     <Project Path="samples/mmo/Sample.GatewayServer/Sample.GatewayServer.csproj" />
     <Project Path="samples/mmo/Sample.LoginServer/Sample.LoginServer.csproj" />
+    <Project Path="samples/mmo/Sample.MapServer.Components/Sample.MapServer.Components.csproj" />
     <Project Path="samples/mmo/Sample.MapServer/Sample.MapServer.csproj" />
     <Project Path="samples/mmo/Sample.Bot/Sample.Bot.csproj" />
     <Project Path="samples/mmo/Sample.AppHost/Sample.AppHost.csproj" />
     <Project Path="samples/mmo/Sample.Tests/Sample.Tests.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/DaServer.Tests.Components/DaServer.Tests.Components.csproj" />
     <Project Path="tests/DaServer.Tests/DaServer.Tests.csproj" />
     <Project Path="tests/DaServer.E2E/DaServer.E2E.csproj" />
   </Folder>
   <Folder Name="/benchmarks/">
+    <Project Path="benchmarks/DaServer.Benchmark.Components/DaServer.Benchmark.Components.csproj" />
     <Project Path="benchmarks/DaServer.Benchmark/DaServer.Benchmark.csproj" />
   </Folder>
 </Solution>

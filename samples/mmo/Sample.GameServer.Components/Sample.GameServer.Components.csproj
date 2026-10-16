@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net11.0</TargetFramework>
+        <IsPackable>false</IsPackable>
+        <!-- The game server's components: the data its actors and systems work on. Not reloaded with the server's logic, so it references
+             contracts, shared rules and EasyEcs, never the server runtime (DAS013, ADR-067). -->
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\Sample.Contracts\Sample.Contracts.csproj" />
+        <PackageReference Include="EasyEcs" Version="$(EasyEcsVersion)" />
+        <ProjectReference Include="..\..\..\src\DaServer.Generator\DaServer.Generator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+    </ItemGroup>
+
+</Project>

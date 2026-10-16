@@ -27,7 +27,6 @@ public readonly record struct RoomId(long Value) : IActorId;
 /// <summary>Pushed to clients.</summary>
 [NinoType, Message, ToClient] public partial record struct Tick(int Sequence);
 
-public record struct CounterState(int Value) : IComponent;
 
 public sealed class Counter : Actor<CounterId, CounterState>
 {
@@ -80,7 +79,6 @@ public readonly record struct GateId(long Value) : IActorId;
 /// <summary>The same, replied when the acknowledgement arrives while the gate takes its next caller (ReplyWhen).</summary>
 [NinoType, Message] public partial record struct EnterDeferred(CounterId Ledger) : IRequest<bool>;
 
-public record struct GateState(int Entered) : IComponent;
 
 public sealed class Gate : Actor<GateId, GateState>
 {

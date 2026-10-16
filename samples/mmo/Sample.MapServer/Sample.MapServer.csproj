@@ -3,6 +3,7 @@
     <Import Project="..\ServerNode.props" />
 
     <ItemGroup>
+        <ProjectReference Include="..\Sample.MapServer.Components\Sample.MapServer.Components.csproj" />
         <ProjectReference Include="..\Sample.Shared\Sample.Shared.csproj" />
     </ItemGroup>
 
