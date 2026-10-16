@@ -22,7 +22,7 @@ public sealed class SwarmOptions
     public Action<World>? OnPass { get; init; }
 
     /// <summary>Set up each loop's world (systems, singletons; counters of the swarm's meter), on its thread, before any user starts.</summary>
-    public Action<World, Meter>? Configure { get; init; }
+    public Action<World, SwarmMeter>? Configure { get; init; }
 }
 
 /// <summary>One simulated user being started: its index, its client and the world it lives in.</summary>
@@ -44,7 +44,7 @@ public readonly record struct SimulatedUser(int Index, ClusterClient Client, Wor
 /// Thousands of simulated users against a cluster: a user is an entity in one of several client worlds (one
 /// <see cref="ClientLoop"/> per core), driven by systems (scripted or planned, <see cref="Planning"/>) exactly as a real
 /// client's UI would drive it. The swarm starts them in waves, waits for a condition, measures a window (a report line
-/// every interval) and judges it: <see cref="CounterKind.Failure"/> counters, the latency limit and the scenario's own
+/// every interval) and judges it: <see cref="SwarmCounterKind.Failure"/> counters, the latency limit and the scenario's own
 /// checks (<see cref="SwarmResult.Expect"/>).
 /// </summary>
 public sealed class Swarm : IAsyncDisposable
@@ -64,13 +64,13 @@ public sealed class Swarm : IAsyncDisposable
             _loops[i] = new ClientLoop("swarm-" + i, options.TickRate, options.OnPass);
             _ = _loops[i].Run(world =>
             {
-                world.AddSingleton<Measurements>() = new Measurements(meter);
+                world.AddSingleton<SwarmMetrics>() = new SwarmMetrics(meter);
                 options.Configure?.Invoke(world, meter);
             });
         }
     }
 
-    public Meter Meter { get; } = new();
+    public SwarmMeter Meter { get; } = new();
     public IReadOnlyList<ClientLoop> Loops => _loops;
 
     /// <summary>
@@ -154,7 +154,7 @@ public sealed class Swarm : IAsyncDisposable
             for (int i = 0; i < counters.Count; i++)
             {
                 long value = counters[i].Value, previous = i < counts.Length ? counts[i] : 0;
-                line.Append(counters[i].Kind == CounterKind.Rate
+                line.Append(counters[i].Kind == SwarmCounterKind.Rate
                     ? $" {counters[i].Name}/s={(value - previous) / seconds:F0}"
                     : $" {counters[i].Name}={value}");
             }
@@ -166,7 +166,7 @@ public sealed class Swarm : IAsyncDisposable
         Meter.Measuring = false;
         var result = new SwarmResult(Meter.Latency.Snapshot(), ProcessCost.Now() - before);
         foreach (var counter in Meter.Counters)
-            result.Expect(counter.Kind != CounterKind.Failure || counter.Value == 0, counter.ToString());
+            result.Expect(counter.Kind != SwarmCounterKind.Failure || counter.Value == 0, counter.ToString());
         double p99 = result.Latency.Percentile(0.99);
         result.Expect(p99 <= maxP99Ms, $"p99 latency {p99:F1}ms > {maxP99Ms}ms");
         return result;

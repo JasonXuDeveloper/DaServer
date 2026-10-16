@@ -37,9 +37,9 @@ public class FeatureTests : ClusterTest
             await Start("dup", configure: o => o.Features.AddRange([feature, duplicate])));
     }
 
-    private readonly record struct ProbeAddress(ulong Node, long Value) : INodeAddress;
+    private readonly record struct ProbeAddress(ulong Node, long Id) : INodeAddress;
 
-    private readonly record struct ProbeGroup(long Value) : IGroupAddress;
+    private readonly record struct ProbeGroup(long Id) : IGroupAddress;
 
     private sealed class ProbeFeature : NodeFeature, IAddressHandler
     {

@@ -20,7 +20,7 @@ public readonly record struct IngressDecision(RpcStatus Status, TimeSpan RetryAf
 /// </summary>
 public interface IIngressFilter
 {
-    IngressDecision Check(uint messageId, uint target, long key, Origin origin);
+    IngressDecision Admit(uint messageId, uint target, long key, Origin origin);
 }
 
 /// <summary>

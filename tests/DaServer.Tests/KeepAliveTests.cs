@@ -9,7 +9,7 @@ public class KeepAliveTests : ClusterTest
     [Test]
     public async Task ANodeClosesClientsThatGoSilent()
     {
-        var gateway = await Start("gw", gateway: true, clients: static o => o.ClientTimeout = TimeSpan.FromMilliseconds(300));
+        var gateway = await Start("gw", gateway: true, clients: static o => o.IdleTimeout = TimeSpan.FromMilliseconds(300));
         using var silent = new TcpClient(); // connects, then sends nothing: a vanished client
         await silent.ConnectAsync(IPAddress.Loopback, gateway.ClientPort());
         await Eventually(() => gateway.SessionCount() == 1, "the session did not open");
@@ -19,7 +19,7 @@ public class KeepAliveTests : ClusterTest
     [Test]
     public async Task IdleClientsPingAndStayConnected()
     {
-        var gateway = await Start("gw", gateway: true, clients: static o => o.ClientTimeout = TimeSpan.FromMilliseconds(600));
+        var gateway = await Start("gw", gateway: true, clients: static o => o.IdleTimeout = TimeSpan.FromMilliseconds(600));
         var client = Track(new ClusterClient
         {
             KeepAliveInterval = TimeSpan.FromMilliseconds(100),

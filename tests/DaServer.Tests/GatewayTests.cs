@@ -225,7 +225,7 @@ public class GatewayTests : ClusterTest
     {
         Observed.Release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var gateway = await Start("gw", gateway: true);
-        var client = Track(new ClusterClient(maxCallsInFlight: 16));
+        var client = Track(new ClusterClient(maxPendingCalls: 16));
         await client.ConnectAsync("127.0.0.1", gateway.ClientPort());
 
         var waiting = Enumerable.Range(0, 16).Select(_ => client.Ask(new Stall()).AsTask()).ToArray();

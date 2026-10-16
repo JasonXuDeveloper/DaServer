@@ -4,7 +4,7 @@ namespace Aspire.Hosting;
 
 /// <summary>
 /// Declares a DaServer cluster in an Aspire AppHost. Every node gets a cluster endpoint and the seed list (every other
-/// node), client-facing node groups a client endpoint each (<see cref="DaServerNodeGroup.WithClients"/>); nodes
+/// node), client-facing node groups a client endpoint each (<see cref="DaServerNodeGroup.WithClientConnections"/>); nodes
 /// discover each other through gossip. A node hosts every actor,
 /// service and system compiled into its project, so the topology is the list of projects and replica counts. The same model runs
 /// locally (<c>dotnet run</c> on the AppHost, with the dashboard) and publishes to Docker Compose or Kubernetes
@@ -14,7 +14,7 @@ namespace Aspire.Hosting;
 /// <code>
 /// var cluster = builder.AddDaServerCluster("cluster");
 /// cluster.AddNodes&lt;Projects.Sample_MapServer&gt;("map", replicas: 3);
-/// var gateways = cluster.AddNodes&lt;Projects.Sample_GatewayServer&gt;("gateway", replicas: 2).WithClients();
+/// var gateways = cluster.AddNodes&lt;Projects.Sample_GatewayServer&gt;("gateway", replicas: 2).WithClientConnections();
 /// builder.AddProject&lt;Projects.Bot&gt;("bots").WithClientEndpoints(gateways);
 /// </code>
 /// </example>
@@ -37,7 +37,7 @@ public static class DaServerClusterExtensions
         where T : IResourceWithEnvironment, IResourceWithWaitSupport
     {
         if (nodes.ClientEndpoints.Count == 0)
-            throw new ArgumentException($"Node group '{nodes.Name}' accepts no clients (call WithClients on it)");
+            throw new ArgumentException($"Node group '{nodes.Name}' accepts no clients (call WithClientConnections on it)");
 
         for (int i = 0; i < nodes.Nodes.Count; i++) resource.WaitFor(nodes.Nodes[i]);
         return resource.WithEnvironment(context =>
@@ -62,7 +62,7 @@ public sealed class DaServerCluster
     {
         _builder = builder;
         Name = name;
-        // Signs client reconnect tickets: generated once and kept (user secrets locally, a deployment parameter when
+        // Signs client resume tickets: generated once and kept (user secrets locally, a deployment parameter when
         // published), the same for every node.
         _secret = builder.AddParameter($"{name}-secret", new GenerateParameterDefault { MinLength = 32, Special = false },
             secret: true, persist: true);
@@ -129,7 +129,7 @@ public sealed class DaServerNodeGroup
 
     public IReadOnlyList<IResourceBuilder<ProjectResource>> Nodes { get; }
 
-    /// <summary>Client endpoints (after <see cref="WithClients"/>).</summary>
+    /// <summary>Client endpoints (after <see cref="WithClientConnections"/>).</summary>
     public IReadOnlyList<EndpointReference> ClientEndpoints => _clientEndpoints;
 
     /// <summary>
@@ -137,7 +137,7 @@ public sealed class DaServerNodeGroup
     /// client connections feature). Pass the group to
     /// <see cref="DaServerClusterExtensions.WithClientEndpoints{T}"/> of a client.
     /// </summary>
-    public DaServerNodeGroup WithClients()
+    public DaServerNodeGroup WithClientConnections()
     {
         if (_clientEndpoints.Count != 0) return this;
         foreach (var node in Nodes)

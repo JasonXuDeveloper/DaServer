@@ -4,7 +4,7 @@ namespace DaServer.Client;
 /// Connection of a client (game, bot, tool) to the cluster's client-facing nodes: sends <see cref="FromClientAttribute">[FromClient]</see> messages
 /// (<c>client.Send(new Move(..))</c>, <c>await client.Ask(new GetInfo())</c>) and dispatches the messages servers
 /// push to the [Handle] methods of registered handler objects (<see cref="Register"/>). When the connection is lost it
-/// reconnects on its own and resumes its session with its reconnect ticket (<see cref="Reconnected"/>).
+/// reconnects on its own and resumes its session with its resume ticket (<see cref="Reconnected"/>).
 /// </summary>
 public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannelHandler, IAsyncDisposable
 {
@@ -16,14 +16,14 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
     private readonly MpmcQueue<FrameWriter>? _inbox;
     private IFrameChannel? _connection;
     private Uri? _webSocket; // connected over a WebSocket (reconnects go there again)
-    private DnsEndPoint[] _entries = [];  // the well-known addresses (reconnects start there again)
+    private DnsEndPoint[] _endpoints = []; // the well-known addresses (reconnects start there again)
     #if NET
-    private int _nextEntry = Random.Shared.Next();
+    private int _nextEndpoint = Random.Shared.Next();
 #else
-    private int _nextEntry = new Random().Next();
-#endif // spreads clients over the entries
+    private int _nextEndpoint = new Random().Next();
+#endif // spreads clients over the endpoints
     private bool _followRedirect;
-    private byte[]? _ticket;          // latest reconnect ticket from the node (null: nothing to resume)
+    private byte[]? _ticket;          // latest resume ticket from the node (null: nothing to resume)
     private long _refreshTicketAtMs;  // local clock
     private int _reconnecting;
     private volatile bool _disposed;
@@ -52,23 +52,23 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
 
     private static long _lastSweepMs;
 
-    /// <param name="callbackQueue">
+    /// <param name="callbackQueueCapacity">
     /// 0: callbacks run on the IO thread as frames arrive (tools, tests). Otherwise frames wait, up to this many, for
     /// <see cref="ProcessCallbacks"/> on the application's own thread (a game loop, a UI thread, a client world); a client
     /// that falls further behind is disconnected as a slow consumer and resumes (its actors resend the state).
     /// </param>
-    /// <param name="maxCallsInFlight">
+    /// <param name="maxPendingCalls">
     /// Requests awaiting their reply at once (rounded up to a power of two, 16 to 2^24); one more fails at once with
     /// <see cref="RpcStatus.Overloaded"/>. Memory follows the peak actually in flight (slots come in doubling chunks), not this bound.
     /// </param>
-    public ClusterClient(int callbackQueue = 0, int maxCallsInFlight = 4096)
+    public ClusterClient(int callbackQueueCapacity = 0, int maxPendingCalls = 4096)
     {
-        if (maxCallsInFlight < 1) throw new ArgumentOutOfRangeException(nameof(maxCallsInFlight));
+        if (maxPendingCalls < 1) throw new ArgumentOutOfRangeException(nameof(maxPendingCalls));
         int bits = 4;
-        while (bits < 24 && 1 << bits < maxCallsInFlight) bits++;
+        while (bits < 24 && 1 << bits < maxPendingCalls) bits++;
         _pending = new PendingCallTable(bits);
-        if (callbackQueue < 0) throw new ArgumentOutOfRangeException(nameof(callbackQueue));
-        if (callbackQueue > 0) _inbox = new MpmcQueue<FrameWriter>(callbackQueue);
+        if (callbackQueueCapacity < 0) throw new ArgumentOutOfRangeException(nameof(callbackQueueCapacity));
+        if (callbackQueueCapacity > 0) _inbox = new MpmcQueue<FrameWriter>(callbackQueueCapacity);
     }
 
     public TimeSpan CallTimeout { get; set; } = TimeSpan.FromSeconds(10);
@@ -76,7 +76,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
     /// <summary>
     /// When the client has sent or received nothing for this long it pings its node, which answers (ADR-053): the node
     /// then knows the client is there, and the client hears from the node even when nothing is pushed. Keep it below the
-    /// node's <c>ClientOptions.ClientTimeout</c> (45 s by default).
+    /// node's <c>ClientConnectionOptions.IdleTimeout</c> (45 s by default).
     /// </summary>
     public TimeSpan KeepAliveInterval { get; set; } = TimeSpan.FromSeconds(15);
 
@@ -123,7 +123,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
 
     /// <summary>
     /// How long to keep trying (exponential backoff up to 5 s between attempts). Servers wait
-    /// <c>NodeOptions.ReconnectGrace</c> (30 s by default) before they report the session closed.
+    /// <c>NodeOptions.ResumeGrace</c> (30 s by default) before they report the session closed.
     /// </summary>
     public TimeSpan ReconnectTimeout { get; set; } = TimeSpan.FromSeconds(30);
 
@@ -133,7 +133,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
     /// <summary>
     /// The session resumed on a new connection: messages reach the same actors again, and they resend the full state
     /// (pushes sent while disconnected were lost). Grants and bindings are restored (with the groups of those actors);
-    /// other groups are rejoined by the actors on <c>SessionResync</c>.
+    /// other groups are rejoined by the actors on <c>SessionResumed</c>.
     /// </summary>
     public event Action? Reconnected;
 
@@ -164,12 +164,12 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
         Live.TryAdd(this, true);
     }
 
-    /// <summary>Connect through the first reachable of <paramref name="entries"/> (tried in turn, starting at a random one).</summary>
-    public async ValueTask ConnectAsync(IReadOnlyList<DnsEndPoint> entries, bool followRedirect = true, CancellationToken cancellationToken = default)
+    /// <summary>Connect through the first reachable of <paramref name="endpoints"/> (tried in turn, starting at a random one).</summary>
+    public async ValueTask ConnectAsync(IReadOnlyList<DnsEndPoint> endpoints, bool followRedirect = true, CancellationToken cancellationToken = default)
     {
-        if (entries.Count == 0) throw new ArgumentException("No entry address", nameof(entries));
-        (_entries, _followRedirect, _webSocket) = ([.. entries], followRedirect, null);
-        await ConnectToEntryAsync(cancellationToken).ConfigureAwait(false);
+        if (endpoints.Count == 0) throw new ArgumentException("No endpoint", nameof(endpoints));
+        (_endpoints, _followRedirect, _webSocket) = ([.. endpoints], followRedirect, null);
+        await ConnectToEndpointAsync(cancellationToken).ConfigureAwait(false);
         if (!followRedirect) return;
 
         var pick = await PickNodeAsync().ConfigureAwait(false);
@@ -182,11 +182,11 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
         }
         catch (Exception e) when (e is System.Net.Sockets.SocketException or IOException)
         {
-            return; // the named node is gone or unreachable from here: the entry node serves as well
+            return; // the named node is gone or unreachable from here: the first node serves as well
         }
 
-        var entry = Interlocked.Exchange(ref _connection, (IFrameChannel)moved);
-        entry?.Close(); // closed on purpose: not a disconnect (no longer the current connection)
+        var first = Interlocked.Exchange(ref _connection, (IFrameChannel)moved);
+        first?.Close(); // closed on purpose: not a disconnect (no longer the current connection)
     }
 
     private ValueTask<ClientEndpoint> PickNodeAsync()
@@ -197,15 +197,15 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
         return answer;
     }
 
-    private async ValueTask ConnectToEntryAsync(CancellationToken cancellationToken)
+    private async ValueTask ConnectToEndpointAsync(CancellationToken cancellationToken)
     {
         Exception? last = null;
-        for (int i = 0; i < _entries.Length; i++)
+        for (int i = 0; i < _endpoints.Length; i++)
         {
-            var entry = _entries[(int)((uint)Interlocked.Increment(ref _nextEntry) % (uint)_entries.Length)];
+            var endpoint = _endpoints[(int)((uint)Interlocked.Increment(ref _nextEndpoint) % (uint)_endpoints.Length)];
             try
             {
-                await ConnectToAsync(entry.Host, entry.Port, cancellationToken).ConfigureAwait(false);
+                await ConnectToAsync(endpoint.Host, endpoint.Port, cancellationToken).ConfigureAwait(false);
                 return;
             }
             catch (Exception e) when (e is System.Net.Sockets.SocketException or IOException)
@@ -237,7 +237,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
         lock (_handlersGate) Volatile.Write(ref _handlers, [.. _handlers, (handler, handlers)]);
     }
 
-    /// <summary>Run queued callbacks on the calling thread (only when constructed with a callbackQueue).</summary>
+    /// <summary>Run queued callbacks on the calling thread (only when constructed with a callbackQueueCapacity).</summary>
     public int ProcessCallbacks(int max = int.MaxValue)
     {
         if (_inbox == null) return 0;
@@ -267,10 +267,10 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
     /// address actors only (DAS008).
     /// </summary>
     public void Send<TAddr, T>(TAddr address, in T message) where TAddr : struct, IAddress where T : struct =>
-        Send(MessageWriter.Write(in message), MessageType<T>.Id, ActorScope<TAddr>(), Addresses<TAddr>.Value(in address), null);
+        Send(MessageWriter.Write(in message), MessageType<T>.WireId, ActorScope<TAddr>(), Addresses<TAddr>.Value(in address), null);
 
     /// <summary>A <see cref="FromClientAttribute">[FromClient]</see> message to the actor bound to this client's session, or to its service.</summary>
-    public void Send<T>(in T message) where T : struct => Send(MessageWriter.Write(in message), MessageType<T>.Id, 0, 0, null);
+    public void Send<T>(in T message) where T : struct => Send(MessageWriter.Write(in message), MessageType<T>.WireId, 0, 0, null);
 
     public ValueTask<TReply> Ask<TAddr, TRequest, TReply>(TAddr address, in TRequest request)
         where TAddr : struct, IAddress where TRequest : struct, IRequest<TReply> =>
@@ -289,7 +289,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
     {
         var call = PendingCall<TReply>.Rent(null);
         var task = call.Task;
-        Send(MessageWriter.Write(in request), MessageType<TRequest>.Id, handlerTypeId, key, call);
+        Send(MessageWriter.Write(in request), MessageType<TRequest>.WireId, handlerTypeId, key, call);
         return task;
     }
 
@@ -385,7 +385,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
 
     private void OnClosed(IFrameChannel connection, Exception? error)
     {
-        if (connection != _connection) return; // the entry connection, left on purpose
+        if (connection != _connection) return; // the first connection, left on purpose
         Volatile.Write(ref _probeDeadlineMs, 0); // a probe of this connection must not close the next one
         _pending.FailAll(RpcStatus.Disconnected);
         if (Volatile.Read(ref _reconnecting) != 0) return; // an attempt of the running reconnect failed: it retries
@@ -394,7 +394,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
             _ = ReconnectAsync();
     }
 
-    /// <summary>Connect again (through the entry addresses: the cluster picks a live node) and resume the session.</summary>
+    /// <summary>Connect again (through the endpoints: the cluster picks a live node) and resume the session.</summary>
     private async Task ReconnectAsync()
     {
         Exception? error = null;
@@ -407,7 +407,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
             try
             {
                 if (_webSocket != null) await ConnectAsync(_webSocket).ConfigureAwait(false);
-                else await ConnectAsync(_entries, _followRedirect).ConfigureAwait(false);
+                else await ConnectAsync(_endpoints, _followRedirect).ConfigureAwait(false);
                 await ResumeAsync().ConfigureAwait(false);
                 Volatile.Write(ref _reconnecting, 0);
                 Reconnected?.Invoke();
@@ -453,7 +453,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
         SendControl(FrameWriter.Rent(FrameHeader.Size), ControlOp.Ticket, null);
     }
 
-    /// <summary>Tests: the latest reconnect ticket, and resuming with any ticket (a replay).</summary>
+    /// <summary>Tests: the latest resume ticket, and resuming with any ticket (a replay).</summary>
     internal byte[]? Ticket => Volatile.Read(ref _ticket);
 
     internal ValueTask ResumeWith(byte[] ticket)
@@ -475,7 +475,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
     }
 
     private static readonly InvalidOperationException CallbacksBehind =
-        new("Pushes waiting for ProcessCallbacks exceeded the client's callbackQueue (slow consumer)");
+        new("Pushes waiting for ProcessCallbacks exceeded the client's callbackQueueCapacity (slow consumer)");
 
     private void DispatchCallback(ReadOnlySpan<byte> frame)
     {
@@ -491,7 +491,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
         }
     }
 
-    /// <summary>Close on purpose: the node reports the session closed at once (no reconnect grace).</summary>
+    /// <summary>Close on purpose: the node reports the session closed at once (no resume grace).</summary>
     public async ValueTask DisposeAsync()
     {
         _disposed = true;

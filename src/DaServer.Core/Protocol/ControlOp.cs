@@ -3,10 +3,10 @@ namespace DaServer.Protocol;
 /// <summary>Control operations carried in <see cref="FrameKind.Control"/> frames (MessageId field).</summary>
 internal static class ControlOp
 {
-    /// <summary>Push gossip: payload = the sender's table as <c>Pulse</c>s; answered with <c>GossipReply</c>.</summary>
+    /// <summary>Push gossip: payload = the sender's table as <c>MemberPulse</c>s; answered with <c>GossipReply</c>.</summary>
     public const uint Gossip = 1;
 
-    /// <summary>Pull half of push-pull gossip: payload = <c>Pulse</c>s.</summary>
+    /// <summary>Pull half of push-pull gossip: payload = <c>MemberPulse</c>s.</summary>
     public const uint GossipReply = 2;
 
     /// <summary>
@@ -34,18 +34,18 @@ internal static class ControlOp
     /// <summary>Client to its node (a call): which node should I use? Answer: a <see cref="ClientEndpoint"/> (or stay).</summary>
     public const uint PickNode = 4;
 
-    // Client sessions (client and client-facing node): reconnect tickets (ADR-036).
+    // Client sessions (client and client-facing node): resume tickets (ADR-036).
 
     /// <summary>
-    /// Node to client: payload = the session's current reconnect ticket (after every grant change). Client to
+    /// Node to client: payload = the session's current resume ticket (after every grant change). Client to
     /// node (no payload): send me a fresh one.
     /// </summary>
     public const uint Ticket = 15;
 
-    /// <summary>Client to node (a request): payload = a reconnect ticket; resume the session it names here.</summary>
+    /// <summary>Client to node (a request): payload = a resume ticket; resume the session it names here.</summary>
     public const uint ResumeSession = 16;
 
-    /// <summary>Client to node (a request): the client closes on purpose (no reconnect grace).</summary>
+    /// <summary>Client to node (a request): the client closes on purpose (no resume grace).</summary>
     public const uint Goodbye = 17;
 
     /// <summary>Either side, on a connection it has sent nothing on for a while (<see cref="Net.KeepAlive"/>): answer with <see cref="Pong"/>.</summary>

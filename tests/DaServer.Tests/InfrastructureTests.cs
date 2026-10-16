@@ -110,7 +110,7 @@ public class InfrastructureTests
         int payload = w.Payload.Length;
         w.SetCallId(41);
         w.SetOrigin(new Origin(7, 8)); // after the call id: the call id moves behind it
-        w.SetHeader(FrameKind.Message, 3, MessageType<Add>.Id, 9);
+        w.SetHeader(FrameKind.Message, 3, MessageType<Add>.WireId, 9);
         var header = FrameHeader.Read(w.Frame);
         Assert.That(header.IsRequest, Is.True);
         Assert.That(header.Flags, Is.EqualTo(FrameFlags.HasCall | FrameFlags.HasOrigin));
@@ -121,7 +121,7 @@ public class InfrastructureTests
         // A relaying hop copies the frame and rewrites the call id in place: the frame does not grow.
         using var relayed = FrameWriter.CopyOf(w.Frame);
         relayed.SetCallId(77);
-        relayed.SetHeader(FrameKind.Message, 3, MessageType<Add>.Id, 9, hops: 1);
+        relayed.SetHeader(FrameKind.Message, 3, MessageType<Add>.WireId, 9, hops: 1);
         Assert.That(relayed.Length, Is.EqualTo(w.Length));
         Assert.That(relayed.CallId, Is.EqualTo(77));
         Assert.That(relayed.Origin, Is.EqualTo(new Origin(7, 8)), "the origin travels on");
@@ -326,10 +326,10 @@ public class InfrastructureTests
     [Test]
     public void PulsesRoundTrip()
     {
-        var pulse = new Pulse(0xDEADBEEF12345678, 7, 1L << 40, MemberStatus.Suspect, 123, 4567, -1, int.MaxValue);
-        Span<byte> wire = stackalloc byte[Pulse.Size];
+        var pulse = new MemberPulse(0xDEADBEEF12345678, 7, 1L << 40, MemberStatus.Suspect, 123, 4567, -1, int.MaxValue);
+        Span<byte> wire = stackalloc byte[MemberPulse.Size];
         pulse.Write(wire);
-        Assert.That(Pulse.Read(wire), Is.EqualTo(pulse));
+        Assert.That(MemberPulse.Read(wire), Is.EqualTo(pulse));
     }
 
     [Test]
@@ -346,7 +346,7 @@ public class InfrastructureTests
     public void MessageIdsAreTheHashOfTheTypeName()
     {
         // The analyzer checks collisions with the same hash at compile time; the runtime must agree.
-        Assert.That(MessageType<Add>.Id, Is.EqualTo(WireIds.Fnv1a("DaServer.Tests.Add")));
-        Assert.That(MessageType<SessionClosed>.Id, Is.EqualTo(WireIds.Fnv1a("DaServer.SessionClosed")));
+        Assert.That(MessageType<Add>.WireId, Is.EqualTo(WireIds.Fnv1a("DaServer.Tests.Add")));
+        Assert.That(MessageType<SessionClosed>.WireId, Is.EqualTo(WireIds.Fnv1a("DaServer.SessionClosed")));
     }
 }

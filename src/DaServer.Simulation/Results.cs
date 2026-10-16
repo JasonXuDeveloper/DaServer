@@ -1,11 +1,11 @@
 namespace DaServer.Simulation;
 
 /// <summary>A measured window: its latencies, what it cost the process, and what failed.</summary>
-public sealed class SwarmResult(Histogram latency, ProcessCost cost)
+public sealed class SwarmResult(LatencyHistogram latency, ProcessCost cost)
 {
     private readonly List<string> _failures = [];
 
-    public Histogram Latency { get; } = latency;
+    public LatencyHistogram Latency { get; } = latency;
     public ProcessCost Cost { get; } = cost;
     public IReadOnlyList<string> Failures => _failures;
 

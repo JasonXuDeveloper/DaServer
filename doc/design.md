@@ -154,8 +154,8 @@ shard that keeps session state as ECS components.
 | Sessions | A client-facing node owns its sockets. Grants, bindings and groups live there; when a session closes, every actor it was bound or granted to that handles `SessionClosed` receives it, so no actor keeps a dead session. |
 | Graceful shutdown | `SIGTERM` → `Leaving` (pushed to every member) → stop loading actors → drain mailboxes → unload actors → exit. |
 | Backpressure | Shard dispatch queues and actor mailboxes are bounded and refuse with `Overloaded` (ADR-027). Links are not paused (their replies would stall too, ADR-027). A slow client hits the per-connection send backlog bound (256 KB) and is disconnected; it reconnects and resynchronizes (ADR-035). |
-| Dead connections | Silence closes a connection (ADR-053): idle directions carry a 24-byte `Ping`/`Pong`, any frame counts as life. Clients ping after 15 s idle and give up after 30 s without a frame (then resume); client-facing nodes close sessions silent for 45 s (then the reconnect grace); node links ping each gossip interval and reconnect after max(`SuspectAfter`, three gossip intervals) of silence (then replay the resend window). |
-| Link resumption | A node link's stream survives disconnects (ADR-008): the sender keeps unacknowledged bytes, the new connection's Hello names the stream, the receiver answers how much it processed and the sender replays the rest before anything new. A network blip is a delay: nothing is lost or run twice, calls in flight keep waiting. Calls fail with `Disconnected` only when the stream cannot resume (peer restarted, unreachable, declared dead, or the window no longer holds what it needs). A client that loses its connection resumes its session on any client-facing node with a signed ticket; actors receive `SessionResync` instead of `SessionClosed` (ADR-036). |
+| Dead connections | Silence closes a connection (ADR-053): idle directions carry a 24-byte `Ping`/`Pong`, any frame counts as life. Clients ping after 15 s idle and give up after 30 s without a frame (then resume); client-facing nodes close sessions silent for 45 s (then the resume grace); node links ping each gossip interval and reconnect after max(`SuspectAfter`, three gossip intervals) of silence (then replay the resend window). |
+| Link resumption | A node link's stream survives disconnects (ADR-008): the sender keeps unacknowledged bytes, the new connection's Hello names the stream, the receiver answers how much it processed and the sender replays the rest before anything new. A network blip is a delay: nothing is lost or run twice, calls in flight keep waiting. Calls fail with `Disconnected` only when the stream cannot resume (peer restarted, unreachable, declared dead, or the window no longer holds what it needs). A client that loses its connection resumes its session on any client-facing node with a signed ticket; actors receive `SessionResumed` instead of `SessionClosed` (ADR-036). |
 
 ## 6. Membership and discovery
 
@@ -245,8 +245,8 @@ removed at run time; placement moves only the keys of the node that joined or le
 ## 8. Clients
 
 `ClusterClient` connects through one or several entry addresses (`host:port`, DNS names included: every resolved
-address is tried) and moves to the client-facing node the entry names (ADR-026); reconnects go through the entries
-again; `ConnectAsync(new Uri("ws://node/clients/ws"))` connects over a WebSocket of the node's HTTP plane instead
+address is tried) and moves to the client-facing node the answering node names (ADR-026); reconnects go through the same
+addresses again; `ConnectAsync(new Uri("ws://node/clients/ws"))` connects over a WebSocket of the node's HTTP plane instead
 (browsers, WebGL builds; one or more whole frames per binary message, the same protocol). It sends the same messages as
 servers: `client.Ask(new Login(..))`, `client.Ask(new GetInfo())` (session actors need no id: the node uses the
 binding), `client.Send(roomId, new Say(..))` (actors that granted the session). Push handlers are `[Handle]` methods of any class,
@@ -263,7 +263,7 @@ tick rate. A user is an entity; what it does is planned as data: sensor systems 
 `HtnDomain` singleton holds tasks, methods and steps as tables with bit-mask conditions and effects, and
 `PlannerSystem` decomposes the root task on a copy of the facts (method order, effects, backtracking) into a `Plan`
 of task ids. A primitive task is a component: added to start it, removed by the system that carries it out. The
-swarm's `Meter` (latency histogram, counters) is a singleton of every world; the scenario judges the window.
+swarm's `SwarmMeter` (latency histogram, counters) is a singleton of every world; the scenario judges the window.
 
 ```mermaid
 flowchart LR
@@ -286,8 +286,8 @@ raw frame (never blocking). Node addresses go to the node they name; the scope o
 in the node's card, and a message to a group address goes once to every Up node advertising its scope. The runtime
 never depends on a feature: the receiving node routes a frame by its target, a handler type to its shard or an address
 scope to the feature registered for it. Features publish values on the node's card (`SetCardEntry`: an endpoint) and
-gossip up to three counters in its pulse (`AddPulse`: sessions held), read on other nodes as `member.Entry(key)` and
-`member.PulseValue(key)`; `AddGauge` reports a gauge on the DaServer meter (OpenTelemetry, dotnet-counters, the
+gossip up to three counters in its pulse (`AddPulse`: sessions held), read on other nodes as `member.CardEntry(key)` and
+`member.Pulse(key)`; `AddGauge` reports a gauge on the DaServer meter (OpenTelemetry, dotnet-counters, the
 dashboard); `PostToShards` runs rare work on every shard. A hosted node runs a feature when its configuration section
 exists: `builder.AddDaServerFeature<TOptions>(name, create)` binds `DaServer:{name}` and adds the feature (built-in
 ones are added by `AddDaServer`). Client connections are the first consumer (`ClientConnections`, enabled by the
@@ -301,16 +301,17 @@ ingress assigns (handlers read it as `Caller`) and a deadline capped at `CallTim
 its view (one hop). With `IngressLoadLimit` set, a request whose target node gossiped that many queued messages is
 refused with `Overloaded` before it is sent. Client connections send every client message through it.
 
-Admission is the edge's: features add `IIngressFilter`s (`node.AddIngressFilter`), run for every message from
-outside before it is routed; the first refusal wins, with a status (`RateLimited`, `Overloaded`, `Forbidden`) and
+Admission is the edge's: features add `IIngressFilter`s per node (`node.AddIngressFilter`), whose `Admit` runs for
+every message from outside before it is routed; the first refusal wins, with a status (`RateLimited`, `Overloaded`, `Forbidden`) and
 when to retry (a client gets it as `RpcException.RetryAfter`, carried in the refusal reply's key; HTTP maps it to
 `Retry-After`). Building blocks: `TokenBucket` (one owner, allocation-free), `ConcurrencyLimit` (shared,
-interlocked), `SignedToken` (content plus issued/expiry times, HMAC-SHA256 with the signing secret: reconnect tickets today,
+interlocked), `SignedToken` (content plus issued/expiry times, HMAC-SHA256 with the signing secret: resume tickets today,
 a building block for admission tokens). Timers are data too: `TimerWheel<T>` (a hashed wheel owned by one thread:
 O(1) schedule, cancel and fire, allocation-free) is advanced by its owner's loop.
 
 On the shard, generated dispatchers run the dispatch-stage filters after deserializing and before the handler
-(`MessageFilters.Register<T>(filter)` per message type, `MessageFilters.Register(IMessageFilter)` for all): a status
+(registered process-wide: `MessageFilters.Register<T>(filter)` per message type, `MessageFilters.Register(IMessageFilter)`
+for all, whose `Admit` runs for every message): a status
 other than `Ok` refuses the message (a request gets it as its reply). Without filters the check is two array lengths.
 
 ### HTTP plane
@@ -426,8 +427,8 @@ node project is its business classes only.
   environment the AppHost sets, bound by `DaServer.Hosting` on the Generic Host. `SIGTERM` triggers a graceful
   leave. Each node logs a stats line (CPU, allocation rate, GCs, sessions, actors, queue, rejected) every 30 s.
 - The cluster is described once in an Aspire AppHost with `DaServer.Aspire`:
-  `AddDaServerCluster`, `AddNodes<TProject>(name, replicas)`, `.WithClients()` on a node group. Every node gets
-  a cluster endpoint and seeds (every other node), client-facing groups (`WithClients`) a client endpoint (`DaServer__Clients__Port`);
+  `AddDaServerCluster`, `AddNodes<TProject>(name, replicas)`, `.WithClientConnections()` on a node group. Every node gets
+  a cluster endpoint and seeds (every other node), client-facing groups (`WithClientConnections`) a client endpoint (`DaServer__Clients__Port`);
   `WithClientEndpoints(group)` hands their addresses to clients and bots as entries.
 - The same model runs locally (`dotnet run` on the AppHost, with the dashboard showing logs and OTLP metrics) and is
   published with `aspire publish`: Docker Compose via `AddDockerComposeEnvironment`, Kubernetes via

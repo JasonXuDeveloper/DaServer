@@ -70,7 +70,7 @@ public sealed class GeneratedRegistrationAttribute(Type registration) : Attribut
 /// </summary>
 [AttributeUsage(AttributeTargets.Assembly)]
 [EditorBrowsable(EditorBrowsableState.Never)]
-public sealed class SharedLogicAttribute : Attribute;
+public sealed class DaServerSharedAttribute : Attribute;
 
 /// <summary>Runs the generated registrations of an assembly (<see cref="GeneratedRegistrationAttribute"/>).</summary>
 [EditorBrowsable(EditorBrowsableState.Never)]
@@ -114,7 +114,7 @@ public interface IMessageSender
 /// <summary>
 /// A client's session closed (disconnect, kick, crash of its node). Delivered to every actor the session
 /// was bound or granted to (<c>BindSession</c>, <c>GrantSession</c>) that handles it; for a lost connection, only once the client had
-/// <see cref="Runtime.NodeOptions.ReconnectGrace"/> to resume (and it did not).
+/// <see cref="Runtime.NodeOptions.ResumeGrace"/> to resume (and it did not).
 /// </summary>
 [NinoType, Message]
 public readonly partial record struct SessionClosed(ClientSession Session);
@@ -128,7 +128,7 @@ public readonly partial record struct SessionClosed(ClientSession Session);
 /// <see cref="Previous"/> is not delivered afterwards.
 /// </summary>
 [NinoType, Message]
-public readonly partial record struct SessionResync(ClientSession Session, ClientSession Previous);
+public readonly partial record struct SessionResumed(ClientSession Session, ClientSession Previous);
 
 // Session operations: messages to a client address that the node holding the session applies instead of delivering
 // them to the client. To a session (or the Caller): that session; to a client group: every member, on every node.
@@ -142,7 +142,7 @@ public readonly partial record struct JoinGroup(ClientGroup Group);
 [NinoType, Message, ToClient]
 public readonly partial record struct LeaveGroup(ClientGroup Group);
 
-/// <summary>Close the session (or every session of the group): its actors get <see cref="SessionClosed"/> at once, no reconnect grace.</summary>
+/// <summary>Close the session (or every session of the group): its actors get <see cref="SessionClosed"/> at once, no resume grace.</summary>
 [NinoType, Message, ToClient]
 public readonly partial record struct Disconnect;
 
@@ -173,6 +173,6 @@ internal enum AccessChange : byte
 /// <summary>Wire identity of message type <typeparamref name="T"/>: [WireId] or FNV-1a of its full name, computed once.</summary>
 public static class MessageType<T> where T : struct
 {
-    public static readonly uint Id = typeof(T).GetCustomAttribute<WireIdAttribute>()?.Id ??
-                                     WireIds.Fnv1a(typeof(T).FullName ?? typeof(T).Name);
+    public static readonly uint WireId = typeof(T).GetCustomAttribute<WireIdAttribute>()?.Id ??
+                                         WireIds.Fnv1a(typeof(T).FullName ?? typeof(T).Name);
 }

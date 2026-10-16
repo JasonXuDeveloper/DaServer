@@ -16,7 +16,7 @@ public static class ClientMessages
     /// <summary>Register a client message type. Idempotent per type; throws on wire-id collisions.</summary>
     public static void Register<T>() where T : struct
     {
-        var info = new ClientMessageInfo(MessageType<T>.Id, typeof(T));
+        var info = new ClientMessageInfo(MessageType<T>.WireId, typeof(T));
         lock (Gate)
         {
             if (_messages.TryGetValue(info.Id, out var existing))

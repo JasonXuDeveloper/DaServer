@@ -115,7 +115,7 @@ public class HttpPlaneTests
     {
         protected internal override void Start(DaServer.Features.INodeContext node) => node.AddIngressFilter(this);
 
-        public IngressDecision Check(uint messageId, uint target, long key, Origin origin) =>
-            messageId == MessageType<WhoAsks>.Id ? IngressDecision.Refuse(RpcStatus.RateLimited, TimeSpan.FromSeconds(3)) : IngressDecision.Admit;
+        public IngressDecision Admit(uint messageId, uint target, long key, Origin origin) =>
+            messageId == MessageType<WhoAsks>.WireId ? IngressDecision.Refuse(RpcStatus.RateLimited, TimeSpan.FromSeconds(3)) : IngressDecision.Admit;
     }
 }
