@@ -333,8 +333,15 @@ records that no longer hold). Each: context → decision → consequences.
   (socket writes), against 4% in the fan-out copy.
 - Decision: `Connection.BeginSendBatch` (thread-local, nestable) defers send-loop wakes to the end of the batch. The
   receive loop batches the frames of one receive buffer; a shard batches one wake (messages and tick).
-- Alternatives: a timed flush (adds latency to every message); shared reference-counted payloads with gather writes
-  (saves the copy, which profiling showed is not the cost).
+- Alternatives:
+  - A timed flush per client connection, as a studied game server and ET flush once per logic frame. It was measured on 10k
+    lean bots in one map with a 2 ms beat for one-way pushes (replies at once). Gateway `sendto` calls fell 42% and bot
+    CPU fell from 213% to 176%, but gateway CPU rose from 45% to 58% per node: one beat thread waking thousands of
+    send loops costs more thread-pool wake-ups (futex calls doubled) than the writes it saves. It also adds latency to
+    every push. A shard already flushes once per tick, so each session gets about one write per map tick.
+  - Reading what the kernel already holds on a link before flushing: no change in writes or CPU (the chunks of a
+    tick are not queued yet when the first one is parsed).
+  - Shared reference-counted payloads with gather writes: they save the copy, which profiling showed is not the cost.
 - Consequences: one write per connection per batch, no added latency beyond the batch itself, no allocation. 10k in
   one map: gateway CPU 13-14% -> 11-12%, kernel time 30% -> 20%, p99 139 -> 106 ms.
 
