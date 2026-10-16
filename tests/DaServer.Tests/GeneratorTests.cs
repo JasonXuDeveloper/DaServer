@@ -66,6 +66,7 @@ public class GeneratorTests
             [NinoType, Message] public partial record struct Opened;
             [NinoType, Message, ToClient] public partial record struct Shown;
             [NinoType, Message] public partial record struct Spawn : IRequest<HeroId>;
+            [NinoType, Message] public partial record struct Plan(int Steps) : IRequest<int>;
             public readonly record struct RoomId(long Value) : IActorId;
             public readonly record struct HeroId(long Value) : IActorId;
             public sealed class Shop : Service
@@ -85,6 +86,8 @@ public class GeneratorTests
                 [Handle] public void On(Move m) { }
                 [Handle] public Reply<int> On(Heal m) => new(m.Hp);
                 [Handle] public HeroId On(Spawn _) => Id; // ids cross the wire as they are
+                // Awaiting comes back to the shard within the turn: no DAS015.
+                [Handle] public async Reply<int> On(Plan m) { await Task.Yield(); await Task.CompletedTask.ConfigureAwait(true); return m.Steps; }
             }
             public sealed class Screen { [Handle] public void On(Shown _) { } }
             """);
@@ -134,6 +137,10 @@ public class GeneratorTests
     [TestCase("[NinoType, Message] public partial record struct Q : IRequest<int>; public sealed class Bad : Service { private static readonly object Gate = new(); [Handle] public int On(Q m) { lock (Gate) return 1; } }", "DAS009")]
     [TestCase("public partial class Bad : EasyEcs.EcsSystem { protected override void OnUpdate() => System.Threading.Thread.Sleep(1); }", "DAS009")]
     [TestCase("public readonly record struct BadId(long Value) : IActorId; [NinoType, Message] public partial record struct Q : IRequest<int>; public partial class Bad : EasyEcs.EcsSystem { protected override void OnUpdate() => _ = World.Cluster().Ask(new BadId(1), new Q()); }", "DAS012")]
+    [TestCase("public readonly record struct BadId(long Value) : IActorId; [NinoType, Message] public partial record struct Q : IRequest<int>; public sealed class Bad : Actor<BadId> { [Handle] public async Reply<int> On(Q m) { await Cluster.Ask(Id, new Q()).AsValueTask().ConfigureAwait(false); return 1; } }", "DAS015")]
+    [TestCase("public readonly record struct BadId(long Value) : IActorId; [NinoType, Message] public partial record struct Q : IRequest<int>; public sealed class Bad : Actor<BadId> { [Handle] public async Reply<int> On(Q m) { await Task.Run(() => 1); return 1; } }", "DAS015")]
+    [TestCase("public readonly record struct BadId(long Value) : IActorId; [NinoType, Message] public partial record struct Q : IRequest<int>; public sealed class Bad : Actor<BadId> { [Handle] public int On(Q m) { System.Threading.ThreadPool.QueueUserWorkItem(_ => { }); return 1; } }", "DAS015")]
+    [TestCase("public partial class Bad : EasyEcs.EcsSystem { protected override void OnUpdate() => System.Threading.Tasks.Parallel.For(0, 4, static i => { }); }", "DAS015")]
     [TestCase("public partial class Bad : EasyEcs.EcsSystem { private int _ticks; protected override void OnUpdate() => _ticks++; }", "DAS007")]
     [TestCase("public record struct Hp(int Value) : EasyEcs.IComponent;", "DAS013")]
     [TestCase("[Persist] public partial class Bad { }", "DAS014")]
