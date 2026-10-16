@@ -11,7 +11,7 @@ public class HotActorBenchmark
 {
     private const int Callers = 1024;
 
-    public enum Reply
+    public enum ReplyMode
     {
         Awaited,
         Deferred,
@@ -20,9 +20,9 @@ public class HotActorBenchmark
     private Node[] _nodes = null!;
     private GateId _gate;
     private CounterId[] _ledgers = null!;
-    private readonly ValueTask<bool>[] _calls = new ValueTask<bool>[Callers];
+    private readonly Reply<bool>[] _calls = new Reply<bool>[Callers];
 
-    [Params(Reply.Awaited, Reply.Deferred)] public Reply Mode;
+    [Params(ReplyMode.Awaited, ReplyMode.Deferred)] public ReplyMode Mode;
 
     [GlobalSetup]
     public void Setup()
@@ -51,7 +51,7 @@ public class HotActorBenchmark
         for (int i = 0; i < Callers; i++)
         {
             var ledger = _ledgers[i % _ledgers.Length];
-            _calls[i] = Mode == Reply.Awaited ? caller.Ask(_gate, new EnterAwaited(ledger)) : caller.Ask(_gate, new EnterDeferred(ledger));
+            _calls[i] = Mode == ReplyMode.Awaited ? caller.Ask(_gate, new EnterAwaited(ledger)) : caller.Ask(_gate, new EnterDeferred(ledger));
         }
 
         for (int i = 0; i < Callers; i++) await _calls[i];

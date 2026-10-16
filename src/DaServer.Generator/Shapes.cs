@@ -2,13 +2,13 @@ using static DaServer.Generator.Support;
 
 namespace DaServer.Generator;
 
-/// <summary>What a [Handle] method returns: nothing to reply, or the reply of a request.</summary>
+/// <summary>What a [Handle] method returns: nothing to reply, or the reply of a request, now or later (<c>Reply</c>).</summary>
 internal enum HandlerReturn
 {
     Void,
-    ValueTask,
-    Reply,
-    ValueTaskOfReply,
+    Later,
+    Value,
+    ValueLater,
 }
 
 /// <summary>A <c>[Handle]</c> method: the message type it takes and how it returns.</summary>
@@ -148,7 +148,7 @@ internal static class Shapes
 
     /// <summary>
     /// <c>[Handle]</c> methods of <paramref name="type"/>: one message parameter by value, reachable from generated code,
-    /// one handler per message type; a request's handler returns its reply, other handlers void or ValueTask. Null
+    /// one handler per message type; a request's handler returns its reply (or Reply of it), other handlers void or Reply. Null
     /// when one is invalid.
     /// </summary>
     public static List<(HandlerModel Model, ITypeSymbol Message)>? ReadHandlers(INamedTypeSymbol type, bool client, Report? report)
@@ -188,8 +188,8 @@ internal static class Shapes
             {
                 var reply = ReplyOf(message);
                 report?.Invoke(Rules.BadHandler, location, name, reply == null
-                    ? "return void or ValueTask (" + message.Name + " is not a request)"
-                    : "return " + reply.ToDisplayString() + " or ValueTask<" + reply.ToDisplayString() + "> (the reply of " + message.Name + ")");
+                    ? "return void or Reply (" + message.Name + " is not a request)"
+                    : "return " + reply.ToDisplayString() + " or Reply<" + reply.ToDisplayString() + "> (the reply of " + message.Name + ")");
                 valid = false;
                 continue;
             }
@@ -206,13 +206,13 @@ internal static class Shapes
         if (reply == null)
         {
             if (method.ReturnsVoid) return HandlerReturn.Void;
-            return Is(returnType, "System.Threading.Tasks.ValueTask") ? HandlerReturn.ValueTask : null;
+            return Is(returnType, "DaServer.Reply") ? HandlerReturn.Later : null;
         }
 
-        if (SymbolEqualityComparer.Default.Equals(method.ReturnType, reply)) return HandlerReturn.Reply;
-        return returnType is { IsGenericType: true } && Is(returnType, "System.Threading.Tasks.ValueTask`1") &&
+        if (SymbolEqualityComparer.Default.Equals(method.ReturnType, reply)) return HandlerReturn.Value;
+        return returnType is { IsGenericType: true } && Is(returnType, "DaServer.Reply`1") &&
                SymbolEqualityComparer.Default.Equals(returnType.TypeArguments[0], reply)
-            ? HandlerReturn.ValueTaskOfReply
+            ? HandlerReturn.ValueLater
             : null;
     }
 

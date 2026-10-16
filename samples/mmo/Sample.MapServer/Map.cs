@@ -25,14 +25,14 @@ public sealed class Map : Actor<MapId, MapState>
 {
     private const int MaxChatLength = 256;
 
-    public override ValueTask OnLoad()
+    public override Reply OnLoad()
     {
         Entity.Add<MapGrid>() = new MapGrid(Id);
         return default;
     }
 
     [Handle]
-    public ValueTask<bool> On(Enter m)
+    public Reply<bool> On(Enter m)
     {
         var (player, session) = (m.Player, m.Session);
         if (!State.Avatars.ContainsKey(session))
@@ -50,7 +50,7 @@ public sealed class Map : Actor<MapId, MapState>
     }
 
     [Handle]
-    public ValueTask<bool> On(Leave m)
+    public Reply<bool> On(Leave m)
     {
         Despawn(m.Session);
         return ReplyWhen(UnbindSession(m.Session), true);
@@ -88,7 +88,7 @@ public sealed class Map : Actor<MapId, MapState>
             Cluster.Send(Group, new Chat(avatar.Get<Avatar>().Player, m.Text));
     }
 
-    public override ValueTask OnUnload()
+    public override Reply OnUnload()
     {
         foreach (var avatar in State.Avatars.Values)
         {

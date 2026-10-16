@@ -37,16 +37,16 @@ public abstract class ShardObject
     /// handler that is not <c>async</c>, after the handler's last use of its state (DAS011): <c>return
     /// ReplyWhen(BindSession(m.Session), true);</c>.
     /// </summary>
-    protected static ValueTask<T> ReplyWhen<T>(ValueTask done, T reply)
+    protected static Reply<T> ReplyWhen<T>(Reply done, T reply)
     {
-        DeferredAfter<T>.Set(done, reply);
+        DeferredAfter<T>.Set(done.AsValueTask(), reply);
         return default;
     }
 
-    /// <inheritdoc cref="ReplyWhen{T}(ValueTask, T)"/>
-    protected static ValueTask<T> ReplyWhen<TDone, T>(ValueTask<TDone> done, T reply)
+    /// <inheritdoc cref="ReplyWhen{T}(Reply, T)"/>
+    protected static Reply<T> ReplyWhen<TDone, T>(Reply<TDone> done, T reply)
     {
-        DeferredAfter<TDone, T>.Set(done, reply);
+        DeferredAfter<TDone, T>.Set(done.AsValueTask(), reply);
         return default;
     }
 }

@@ -72,7 +72,7 @@ sealed partial class Node
     public void Send<T>(in T message) where T : struct =>
         SendMessage(MessageWriter.Write(in message), MessageType<T>.WireId, handlerTypeId: 0, key: 0);
 
-    public ValueTask<TReply> Ask<TAddr, TRequest, TReply>(TAddr address, in TRequest request)
+    public Reply<TReply> Ask<TAddr, TRequest, TReply>(TAddr address, in TRequest request)
         where TAddr : struct, IAddress where TRequest : struct, IRequest<TReply> =>
         Addresses<TAddr>.Kind == AddressKind.Actor
             ? Ask<TRequest, TReply>(in request, Addresses<TAddr>.Scope, Addresses<TAddr>.Value(in address))
@@ -80,13 +80,13 @@ sealed partial class Node
 
     /// <summary>Sessions and groups are sent to, not asked (DAS008 reports it at build time).</summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static ValueTask<TReply> NotAskable<TAddr, TReply>() =>
-        ValueTask.FromException<TReply>(new RpcException(RpcStatus.Error, $"{typeof(TAddr)} cannot be asked: send to it"));
+    private static Reply<TReply> NotAskable<TAddr, TReply>() =>
+        new(ValueTask.FromException<TReply>(new RpcException(RpcStatus.Error, $"{typeof(TAddr)} cannot be asked: send to it")));
 
-    public ValueTask<TReply> Ask<TRequest, TReply>(in TRequest request) where TRequest : struct, IRequest<TReply> =>
+    public Reply<TReply> Ask<TRequest, TReply>(in TRequest request) where TRequest : struct, IRequest<TReply> =>
         Ask<TRequest, TReply>(in request, handlerTypeId: 0, key: 0);
 
-    private ValueTask<TReply> Ask<TRequest, TReply>(in TRequest request, uint handlerTypeId, long key) where TRequest : struct
+    private Reply<TReply> Ask<TRequest, TReply>(in TRequest request, uint handlerTypeId, long key) where TRequest : struct
     {
         var call = PendingCall<TReply>.Rent(Shard.Current);
         var task = call.Task;
@@ -94,7 +94,7 @@ sealed partial class Node
         long chain = CallChain.Current;
         if (chain != 0) frame.SetChain(chain); // the asking turn's chain (ADR-059)
         Request(frame, MessageType<TRequest>.WireId, handlerTypeId, key, call, null, 0);
-        return task;
+        return new Reply<TReply>(task);
     }
 
     /// <summary>

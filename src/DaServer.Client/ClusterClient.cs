@@ -272,7 +272,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
     /// <summary>A <see cref="FromClientAttribute">[FromClient]</see> message to the actor bound to this client's session, or to its service.</summary>
     public void Send<T>(in T message) where T : struct => Send(MessageWriter.Write(in message), MessageType<T>.WireId, 0, 0, null);
 
-    public ValueTask<TReply> Ask<TAddr, TRequest, TReply>(TAddr address, in TRequest request)
+    public Reply<TReply> Ask<TAddr, TRequest, TReply>(TAddr address, in TRequest request)
         where TAddr : struct, IAddress where TRequest : struct, IRequest<TReply> =>
         Ask<TRequest, TReply>(in request, ActorScope<TAddr>(), Addresses<TAddr>.Value(in address));
 
@@ -282,15 +282,15 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static InvalidOperationException NotAnActor(Type type) => new($"A client sends to actors and services only, not to {type}");
 
-    public ValueTask<TReply> Ask<TRequest, TReply>(in TRequest request) where TRequest : struct, IRequest<TReply> =>
+    public Reply<TReply> Ask<TRequest, TReply>(in TRequest request) where TRequest : struct, IRequest<TReply> =>
         Ask<TRequest, TReply>(in request, 0, 0);
 
-    private ValueTask<TReply> Ask<TRequest, TReply>(in TRequest request, uint handlerTypeId, long key) where TRequest : struct
+    private Reply<TReply> Ask<TRequest, TReply>(in TRequest request, uint handlerTypeId, long key) where TRequest : struct
     {
         var call = PendingCall<TReply>.Rent(null);
         var task = call.Task;
         Send(MessageWriter.Write(in request), MessageType<TRequest>.WireId, handlerTypeId, key, call);
-        return task;
+        return new Reply<TReply>(task);
     }
 
     /// <summary>

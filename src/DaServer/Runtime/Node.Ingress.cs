@@ -34,7 +34,7 @@ sealed partial class Node : IIngress
     ValueTask<TReply> IIngress.Ask<TAddr, TRequest, TReply>(TAddr address, in TRequest request, Origin origin, TimeSpan budget) =>
         Addresses<TAddr>.Kind == AddressKind.Actor
             ? AskFromOutside<TRequest, TReply>(in request, Addresses<TAddr>.Scope, Addresses<TAddr>.Value(in address), origin, budget)
-            : NotAskable<TAddr, TReply>();
+            : NotAskable<TAddr, TReply>().AsValueTask();
 
     ValueTask<TReply> IIngress.Ask<TRequest, TReply>(in TRequest request, Origin origin, TimeSpan budget) =>
         AskFromOutside<TRequest, TReply>(in request, 0, 0, origin, budget);

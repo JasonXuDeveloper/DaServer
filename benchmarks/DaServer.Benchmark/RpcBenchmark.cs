@@ -16,7 +16,7 @@ public class RpcBenchmark
 
     private Node[] _nodes = null!;
     private CounterId[] _keys = null!;
-    private ValueTask<int>[] _calls = null!;
+    private Reply<int>[] _calls = null!;
 
     [Params(1, 64, 1024)] public int Concurrency;
 
@@ -39,7 +39,7 @@ public class RpcBenchmark
             caller.Ask(_keys[i], new Add(0)).AsTask().GetAwaiter().GetResult(); // load the actor
         }
 
-        _calls = new ValueTask<int>[Concurrency];
+        _calls = new Reply<int>[Concurrency];
     }
 
     [GlobalCleanup]

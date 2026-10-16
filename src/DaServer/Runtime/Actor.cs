@@ -31,10 +31,10 @@ public abstract class Actor : ShardObject
     /// actor (<see cref="GrantSession"/>). Completes once the session's node applied it, so the client's next message
     /// already arrives here.
     /// </summary>
-    protected ValueTask BindSession(ClientSession session) => ChangeAccess(session, AccessChange.Bind);
+    protected Reply BindSession(ClientSession session) => ChangeAccess(session, AccessChange.Bind);
 
     /// <summary>Remove the session's binding to this actor and its grant (it also leaves <see cref="Group"/>).</summary>
-    protected ValueTask UnbindSession(ClientSession session) => ChangeAccess(session, AccessChange.Unbind);
+    protected Reply UnbindSession(ClientSession session) => ChangeAccess(session, AccessChange.Unbind);
 
     /// <summary>
     /// Grant a client session this actor: its client may name it (<c>client.Send(roomId, new Say(..))</c>; a client
@@ -44,15 +44,15 @@ public abstract class Actor : ShardObject
     /// room admitting a player); grants are bounded per session (<see cref="RpcStatus.Overloaded"/> beyond).
     /// Completes once the session's node applied it.
     /// </summary>
-    protected ValueTask GrantSession(ClientSession session) => ChangeAccess(session, AccessChange.Grant);
+    protected Reply GrantSession(ClientSession session) => ChangeAccess(session, AccessChange.Grant);
 
     /// <summary>Withdraw the session's grant of this actor (a binding to it goes too; it also leaves <see cref="Group"/>).</summary>
-    protected ValueTask RevokeSession(ClientSession session) => ChangeAccess(session, AccessChange.Revoke);
+    protected Reply RevokeSession(ClientSession session) => ChangeAccess(session, AccessChange.Revoke);
 
-    private ValueTask ChangeAccess(ClientSession session, AccessChange change)
+    private Reply ChangeAccess(ClientSession session, AccessChange change)
     {
         ActorSessions.Change(this, session, change);
-        return Shard.Node.ChangeAccess(session, new SessionAccess(HandlerType.Id, Key, change));
+        return new Reply(Shard.Node.ChangeAccess(session, new SessionAccess(HandlerType.Id, Key, change)));
     }
 
     internal HandlerTypeInfo HandlerType { get; set; } = null!;
@@ -73,13 +73,13 @@ public abstract class Actor : ShardObject
     /// The actor is loaded on this node (first message for its key, or its key moved here): read its state from storage
     /// here. Messages wait until it completes.
     /// </summary>
-    public virtual ValueTask OnLoad() => default;
+    public virtual Reply OnLoad() => default;
 
     /// <summary>
     /// The actor leaves this node (its key moved, it was idle for <see cref="UnloadAfterIdle"/>, the node shuts down):
     /// save its state here.
     /// </summary>
-    public virtual ValueTask OnUnload() => default;
+    public virtual Reply OnUnload() => default;
 
     /// <summary>
     /// Unload the actor after it received no message for this long (zero, the default: stay loaded until the key moves

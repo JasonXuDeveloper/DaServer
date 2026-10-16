@@ -71,7 +71,7 @@ public class GeneratorTests
             public sealed class Shop : Service
             {
                 [Handle] public int On(Price m) => m.Count;
-                [Handle] public ValueTask On(Restock m) => default;
+                [Handle] public Reply On(Restock m) => default;
             }
             public sealed class Room : Actor<RoomId>
             {
@@ -83,7 +83,7 @@ public class GeneratorTests
                 private const int MaxHp = 100;
                 private static readonly int[] Levels = [1, 2, 3];
                 [Handle] public void On(Move m) { }
-                [Handle] public ValueTask<int> On(Heal m) => new(m.Hp);
+                [Handle] public Reply<int> On(Heal m) => new(m.Hp);
                 [Handle] public HeroId On(Spawn _) => Id; // ids cross the wire as they are
             }
             public sealed class Screen { [Handle] public void On(Shown _) { } }
@@ -92,7 +92,7 @@ public class GeneratorTests
         string registration = sources.Single(s => s.Contains("RegisterHandlerType"));
         Assert.That(registration, Does.Contain("typeof(global::Game.Room), true").And.Contain("typeof(global::Game.Shop), false"));
         Assert.That(registration, Does.Contain("context.ReplyValue(Unsafe.As<global::Game.Shop>(target).On(m))"), "a reply returned synchronously");
-        Assert.That(registration, Does.Contain("return context.Reply(Unsafe.As<global::Game.Hero>(target).On(m))"), "a reply returned later");
+        Assert.That(registration, Does.Contain("return context.Reply(Unsafe.As<global::Game.Hero>(target).On(m).AsValueTask())"), "a reply returned later");
         Assert.That(registration, Does.Contain("HandlerRegistry.RegisterHandlers(typeof(global::Game.Screen)"), "client handlerType");
         Assert.That(sources, Has.Some.Contains("Ask<TAddr>(this global::DaServer.IMessageSender sender, TAddr address, in global::Game.Heal request)"));
         Assert.That(sources, Has.Some.Contains("sender.Ask<global::Game.Topic, string?>(in request)"));
@@ -104,7 +104,7 @@ public class GeneratorTests
     [TestCase("[NinoType, Message] public partial record struct Tick(int N); public sealed class Bad : Service { [Handle] public void On(ref Tick e) { } }", "DAS001")]
     [TestCase("[NinoType, Message] public partial record struct Tick(int N); public sealed class Bad : Service { [Handle] public int On(Tick e) => 0; }", "DAS001")]
     [TestCase("[NinoType, Message] public partial record struct Ask : IRequest<int>; public sealed class Bad : Service { [Handle] public void On(Ask e) { } }", "DAS001")]
-    [TestCase("[NinoType, Message] public partial record struct Ask : IRequest<int>; public sealed class Bad : Service { [Handle] public ValueTask<long> On(Ask e) => default; }", "DAS001")]
+    [TestCase("[NinoType, Message] public partial record struct Ask : IRequest<int>; public sealed class Bad : Service { [Handle] public Reply<long> On(Ask e) => default; }", "DAS001")]
     [TestCase("[NinoType, Message] public partial record struct Tick(int N); public sealed class Bad : Service { [Handle] public void A(Tick e) { } [Handle] public void B(Tick e) { } }", "DAS001")]
     [TestCase("public struct Tick { } public sealed class Bad : Service { [Handle] public void On(Tick e) { } }", "DAS002")]
     [TestCase("[NinoType] public partial class Tick { } public sealed class Bad : Service { [Handle] public void On(Tick e) { } }", "DAS002")]
@@ -123,14 +123,14 @@ public class GeneratorTests
     [TestCase("[NinoType, Message] public partial record struct Tick; public sealed class Bad : Service { private int _count; [Handle] public void On(Tick e) => _count++; }", "DAS007")]
     [TestCase("public readonly record struct BadId(long Value) : IActorId; public sealed class Bad : Actor<BadId> { public static int Total; }", "DAS007")]
     [TestCase("public readonly record struct BadId(long Value) : IActorId; public sealed class Bad : Actor<BadId> { public string Name { get; set; } = \"\"; }", "DAS007")]
-    [TestCase("[NinoType, Message, ToClient] public partial record struct Ping : IRequest<int>; [NinoType, Message] public partial record struct Tick; public sealed class Bad : Service { [Handle] public async ValueTask On(Tick e) => await Cluster.Ask(Caller, new Ping()); }", "DAS008")]
-    [TestCase("[NinoType, Message, ToClient] public partial record struct Ping : IRequest<int>; public static class Bad { public static ValueTask<int> Go(ICluster c) => c.Ask(ClientGroup.All, new Ping()); }", "DAS008")]
+    [TestCase("[NinoType, Message, ToClient] public partial record struct Ping : IRequest<int>; [NinoType, Message] public partial record struct Tick; public sealed class Bad : Service { [Handle] public async Reply On(Tick e) => await Cluster.Ask(Caller, new Ping()); }", "DAS008")]
+    [TestCase("[NinoType, Message, ToClient] public partial record struct Ping : IRequest<int>; public static class Bad { public static Reply<int> Go(ICluster c) => c.Ask(ClientGroup.All, new Ping()); }", "DAS008")]
     [TestCase("[NinoType, Message, FromClient, ToClient] public partial record struct Tick; public static class Bad { public static void Go(DaServer.Client.ClusterClient c) => c.Send(ClientGroup.All, new Tick()); }", "DAS008")]
-    [TestCase("public readonly record struct BadId(long Value) : IActorId; [NinoType, Message] public partial record struct Q : IRequest<int>; public sealed class Bad : Actor<BadId> { [Handle] public async ValueTask<int> On(Q m) => await ReplyWhen(default, 1); }", "DAS011")]
-    [TestCase("public readonly record struct BadId(long Value) : IActorId; [NinoType, Message] public partial record struct Q : IRequest<int>; public sealed class Bad : Actor<BadId> { [Handle] public ValueTask<int> On(Q m) { var r = ReplyWhen(default, 1); return r; } }", "DAS011")]
-    [TestCase("public readonly record struct BadId(long Value) : IActorId; [NinoType, Message] public partial record struct Q : IRequest<int>; public sealed class Bad : Actor<BadId> { [Handle] public int On(Q m) => Cluster.Ask(Id, new Q()).Result; }", "DAS009")]
+    [TestCase("public readonly record struct BadId(long Value) : IActorId; [NinoType, Message] public partial record struct Q : IRequest<int>; public sealed class Bad : Actor<BadId> { [Handle] public async Reply<int> On(Q m) => await ReplyWhen(default, 1); }", "DAS011")]
+    [TestCase("public readonly record struct BadId(long Value) : IActorId; [NinoType, Message] public partial record struct Q : IRequest<int>; public sealed class Bad : Actor<BadId> { [Handle] public Reply<int> On(Q m) { var r = ReplyWhen(default, 1); return r; } }", "DAS011")]
+    [TestCase("public readonly record struct BadId(long Value) : IActorId; [NinoType, Message] public partial record struct Q : IRequest<int>; public sealed class Bad : Actor<BadId> { [Handle] public int On(Q m) => Cluster.Ask(Id, new Q()).AsValueTask().Result; }", "DAS009")]
     [TestCase("public readonly record struct BadId(long Value) : IActorId; [NinoType, Message] public partial record struct Q : IRequest<int>; public sealed class Bad : Actor<BadId> { [Handle] public int On(Q m) => Cluster.Ask(Id, new Q()).AsTask().GetAwaiter().GetResult(); }", "DAS009")]
-    [TestCase("[NinoType, Message] public partial record struct Q : IRequest<int>; public sealed class Bad : Service { [Handle] public async ValueTask<int> On(Q m) { await Task.Delay(10); return 1; } }", "DAS009")]
+    [TestCase("[NinoType, Message] public partial record struct Q : IRequest<int>; public sealed class Bad : Service { [Handle] public async Reply<int> On(Q m) { await Task.Delay(10); return 1; } }", "DAS009")]
     [TestCase("[NinoType, Message] public partial record struct Q : IRequest<int>; public sealed class Bad : Service { private static readonly object Gate = new(); [Handle] public int On(Q m) { lock (Gate) return 1; } }", "DAS009")]
     [TestCase("public partial class Bad : EasyEcs.EcsSystem { protected override void OnUpdate() => System.Threading.Thread.Sleep(1); }", "DAS009")]
     [TestCase("public readonly record struct BadId(long Value) : IActorId; [NinoType, Message] public partial record struct Q : IRequest<int>; public partial class Bad : EasyEcs.EcsSystem { protected override void OnUpdate() => _ = World.Cluster().Ask(new BadId(1), new Q()); }", "DAS012")]

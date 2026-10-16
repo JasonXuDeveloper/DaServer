@@ -81,7 +81,7 @@ public class ClusterTests : ClusterTest
         // Sent after the crash, while b is only suspect: the key stays on b and the calls wait in the link's stream.
         await b.KillAsync();
         var started = System.Diagnostics.Stopwatch.StartNew();
-        var calls = new ValueTask<int>[100];
+        var calls = new Reply<int>[100];
         for (int i = 0; i < calls.Length; i++) calls[i] = a.Ask(new CounterId(key), new Add(1));
 
         foreach (var call in calls)

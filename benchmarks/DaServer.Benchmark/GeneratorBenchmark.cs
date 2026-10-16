@@ -107,7 +107,7 @@ public class GeneratorBenchmark
     private static string Calls()
     {
         var sb = new System.Text.StringBuilder("using System.Threading.Tasks; using DaServer; using DaServer.Runtime; namespace Game;\n");
-        sb.Append("public sealed class Traffic : Service {\n  [Handle] public async ValueTask On(M1 _) {\n");
+        sb.Append("public sealed class Traffic : Service {\n  [Handle] public async Reply On(M1 _) {\n");
         for (int i = 0; i < CallSites; i++)
         {
             int m = i % Messages;
