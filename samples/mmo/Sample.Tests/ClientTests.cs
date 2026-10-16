@@ -34,7 +34,7 @@ public class ClientTests
         await _client.DisposeAsync();
     }
 
-    private static Motion Motion(params Moved[] moved) => new(new MapId(1), [.. moved]);
+    private static Motion Motion(params Moved[] moved) => new(new MapId(1), new Moves { Items = [.. moved] });
 
     private Dictionary<PlayerId, Entity> Avatars => _player.Get<View>().Avatars;
 
@@ -60,7 +60,7 @@ public class ClientTests
         Assert.That(_player.Get<Velocity>(), Is.EqualTo(new Velocity(0, 2)));
         Assert.That(Avatars, Is.Empty, "the own avatar is the player, not a tracked one");
 
-        _pushes.On(new Motion(new MapId(9), [new Moved(new PlayerId(5), 150, 150, 0, 0)]));
+        _pushes.On(new Motion(new MapId(9), new Moves { Items = [new Moved(new PlayerId(5), 150, 150, 0, 0)] }));
         Assert.That(Avatars, Is.Empty, "a push of a map the player is not in");
     }
 
