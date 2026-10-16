@@ -254,6 +254,22 @@ A node keeps records in PostgreSQL with one line in its Program.cs, `builder.Add
 AppHost passes the database: `cluster.AddNodes<Projects.Sample_GameServer>("game").WithActorStore(actors)`.
 Relational, queried data (accounts, payments, rankings) belongs in services with your own data access.
 
+## Testing
+
+`DaServer.Testing` starts real nodes in the test process (loopback, the production runtime and wire). With a manual
+clock the test decides when ticks happen: each `TickAsync` runs one tick on every shard and fires what fell due
+(`SendAfter`, idle unloads, checkpoints), so per-tick logic is counted exactly
+([Sample.Tests/ServerTests.cs](samples/mmo/Sample.Tests/ServerTests.cs)).
+
+```csharp
+await using var cluster = await TestCluster.StartAsync(o => { o.ManualTime = true; o.ClientConnections = true; });
+var client = await cluster.ConnectAsync(heard);           // an object with [Handle] methods for the pushes
+await client.Ask(new Login("ann"));
+await cluster.TickAsync(15);                              // exactly 15 ticks on every shard
+```
+
+Actors, services and systems read time from `Time` (`world.Time()` in systems), the clock tests move.
+
 ## Orchestration with Aspire
 
 ```csharp

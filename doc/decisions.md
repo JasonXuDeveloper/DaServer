@@ -1100,3 +1100,22 @@ records that no longer hold). Each: context → decision → consequences.
   5,000 33 -> 80 ms; `ScenarioBenchmark` 9,000 clients 61 -> 69 ms) for half the thread-pool work items: it is for
   nodes whose cores are the limit, hence off by default.
 
+## ADR-071 Tests drive the shards' clock
+- Context: users test actors, services and systems whose behavior depends on time: per-tick systems, `SendAfter`,
+  idle unloading, checkpoints. On real time such tests sleep and assert ranges ("about 20 ticks"), which is slow and
+  flaky; a test harness of our own (`ClusterTest`) was internal.
+- Decision: `NodeOptions.TimeProvider` is the shards' clock. The shard loop schedules ticks and timers on it, a wake's
+  start time is `ShardActivity.NowMs` (what idle unloading and checkpoints compare with), and user code reads it as
+  `Time` / `world.Time()`. Transport keeps real time: call deadlines, keep-alives, membership and links run over real
+  sockets. `DaServer.Testing` ships `TestCluster`: real nodes in the test process with fast membership timings and,
+  with `ManualTime`, a clock that starts at 2000-01-01 and moves only in `TickAsync`/`AdvanceAsync`, one tick
+  interval at a time, waiting for every shard to run that tick. Messages still flow as they arrive. The manual
+  clock refuses timers (shard code delays with `SendAfter`, DAS015).
+- Alternatives: a simulated network with a single-threaded scheduler (fully deterministic, but a second runtime to
+  keep true to the real one); `FakeTimeProvider` (its timers fire on advance, but nothing in shard code may use
+  timers, and stepping must wait for the shards anyway); faking time for membership too (gossip and failure
+  detection on a frozen clock over real sockets would declare nothing or everything dead).
+- Consequences: a test counts what systems send per tick exactly (`Sample.Tests`: one realm status every 5 ticks).
+  The shard loop reads the clock through a virtual call once per wake. The framework's own
+  integration tests and users' tests start nodes with the same options.
+

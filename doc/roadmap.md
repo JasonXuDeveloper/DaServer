@@ -333,8 +333,10 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
 - [ ] V3 During a rolling upgrade route only to nodes that understand the message (manifest per version in the view).
 
 ## Next: packages and other core gaps (P, K)
-- [ ] P1 `DaServer.Testing` (with N5): the in-process cluster as a public package, `TimeProvider` and deterministic
-      shard stepping, so users test their own actors and systems. (`DaServer.Abstractions` exists: ADR-052.)
+- [x] P1 `DaServer.Testing` (ADR-071): `TestCluster` starts real nodes in the test process; `NodeOptions.TimeProvider`
+      is the shards' clock (ticks, `SendAfter`, idle unloads, checkpoints, `Time` in actors, services and systems);
+      with `ManualTime` the test steps ticks (`TickAsync`, `AdvanceAsync`), each run once on every shard. The
+      framework's `ClusterTest` builds on its node options; `Sample.Tests` tests the sample's servers with it.
 - [ ] K1 Pluggable placement strategy per actor type: rendezvous hash (default), prefer caller node, load aware,
       sticky (S3).
 - [ ] K2 Owner table per handler type rebuilt on view change (jump/Maglev hash) instead of O(nodes) rendezvous per send.

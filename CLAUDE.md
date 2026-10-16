@@ -46,6 +46,7 @@ src/DaServer.Generator/    incremental generators (AskGenerator, RegistrationGen
                            Shapes.cs reads symbols once for both, so "skipped by the generator" == "reported"
 src/DaServer.Hosting/      Generic Host integration, configuration, OpenTelemetry (OTLP when configured), shutdown
 src/DaServer.Persistence.PostgreSql/  actor records in PostgreSQL (ADR-068): PostgreSqlActorStore, AddPostgreSqlActorStore
+src/DaServer.Testing/      in-process clusters for users' tests (ADR-071): TestCluster, a manual clock, stepped ticks
 src/DaServer.Aspire/       Aspire hosting integration: AddDaServerCluster / AddNodes / WithClientConnections /
                            WithClientEndpoints
 samples/mmo/               MMO scenario: Sample.Contracts / Sample.Shared (rules both sides run) / Sample.Client (the game
