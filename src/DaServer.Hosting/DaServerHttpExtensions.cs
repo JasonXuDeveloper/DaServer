@@ -44,7 +44,7 @@ public static class DaServerHttpExtensions
     public static WebApplication MapDaServer(this WebApplication app)
     {
         if (app.Services.GetRequiredService<Node>().Feature<DaServer.Clients.ClientConnections>() is not { } clients) return app;
-        app.MapGet("/clients/endpoint", () => Results.Json(clients.Pick() is { Host.Length: > 0 } other ? other : clients.Endpoint));
+        app.MapGet("/clients/endpoint", () => Results.Json(clients.Direct() is { Host.Length: > 0 } other ? other : clients.Endpoint));
         app.UseWebSockets();
         app.Map("/clients/ws", async (HttpContext http) =>
         {
@@ -85,7 +85,7 @@ public static class DaServerHttpExtensions
         endpoints.MapPost(pattern, static (T message, Node node) =>
         {
             IIngress ingress = ((Features.INodeContext)node).Ingress;
-            ingress.Send(MessageType<T>.Id, 0, 0, Nino.Core.NinoSerializer.Serialize(message), OriginOf(node));
+            ingress.Send(MessageType<T>.WireId, 0, 0, Nino.Core.NinoSerializer.Serialize(message), OriginOf(node));
             return Results.Accepted();
         });
 

@@ -72,10 +72,10 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
         // An assembly built with <DaServerShared>true</DaServerShared> says so, for the nodes that reference it.
         var shared = context.AnalyzerConfigOptionsProvider
             .Select(static (o, _) => IsShared(o.GlobalOptions))
-            .WithTrackingName("SharedLogic");
+            .WithTrackingName("DaServerShared");
         context.RegisterSourceOutput(shared, static (spc, isShared) =>
         {
-            if (isShared) spc.AddSource("DaServer.SharedLogic.g.cs", SourceText.From(Header + "[assembly: global::DaServer.SharedLogic]\n", Encoding.UTF8));
+            if (isShared) spc.AddSource("DaServer.Shared.g.cs", SourceText.From(Header + "[assembly: global::DaServer.DaServerShared]\n", Encoding.UTF8));
         });
     }
 
@@ -105,7 +105,7 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
         options.TryGetValue("build_property.DaServerShared", out var value) &&
         string.Equals(value, "true", System.StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>The EcsSystem types of referenced shared-logic assemblies ([SharedLogic]): this node runs them too.</summary>
+    /// <summary>The EcsSystem types of referenced shared-logic assemblies ([DaServerShared]): this node runs them too.</summary>
     private static string[] SharedSystems(Compilation compilation)
     {
         var systems = new List<string>();
@@ -113,7 +113,7 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
         {
             bool isShared = false;
             foreach (var attribute in assembly.GetAttributes())
-                isShared |= Is(attribute.AttributeClass, "DaServer.SharedLogicAttribute");
+                isShared |= Is(attribute.AttributeClass, "DaServer.DaServerSharedAttribute");
             if (isShared) CollectSystems(assembly.GlobalNamespace, systems);
         }
 

@@ -5,17 +5,17 @@ namespace DaServer.Clients;
 /// deployment's "gateway"), get a session, and their <see cref="FromClientAttribute">[FromClient]</see> messages enter the cluster through
 /// the node's ingress with the session as origin. Messages to sessions and client groups are pushed to the sockets
 /// (a group message is serialized once and fanned out here); session operations (<see cref="JoinGroup"/>,
-/// <see cref="LeaveGroup"/>, <see cref="Disconnect"/>, bindings) are applied here; reconnect tickets let a client
+/// <see cref="LeaveGroup"/>, <see cref="Disconnect"/>, bindings) are applied here; resume tickets let a client
 /// resume on any client-facing node. Payloads are never deserialized on the way in.
 /// </summary>
-public sealed class ClientConnections(ClientOptions options) : NodeFeature
+public sealed class ClientConnections(ClientConnectionOptions options) : NodeFeature
 {
     private Node _node = null!;
     private volatile bool _stopped, _crashed;
     private readonly TimerWheel<PendingClose> _graces = new(TimeSpan.FromMilliseconds(100)); // lost connections, under its lock
     private Timer? _maintenance;
 
-    /// <summary>A lost connection whose actors learn it at the end of the reconnect grace (unless the client resumed).</summary>
+    /// <summary>A lost connection whose actors learn it at the end of the resume grace (unless the client resumed).</summary>
     private readonly record struct PendingClose(ClientSession Session, SessionGrant[] Grants);
 
     private readonly ConcurrentDictionary<long, SessionState> _sessions = new();
@@ -25,7 +25,7 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
     private const int MaxIdleGroups = 4096;
     private Listener? _listener;
     private SessionHandler? _sessionHandler;
-    private byte[]? _ticketSecret; // reconnect tickets: null when the cluster has no secret
+    private byte[]? _ticketSecret; // resume tickets: null when the cluster has no secret
 
     /// <summary>The port clients connect to (after the node started).</summary>
     public int Port { get; private set; }
@@ -135,8 +135,8 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
     /// <summary>Messages to a client address that its node applies instead of delivering them to the client.</summary>
     private static class SessionOperations
     {
-        public static readonly uint Access = MessageType<SessionAccess>.Id, Join = MessageType<JoinGroup>.Id,
-            Leave = MessageType<LeaveGroup>.Id, Disconnect = MessageType<Disconnect>.Id;
+        public static readonly uint Access = MessageType<SessionAccess>.WireId, Join = MessageType<JoinGroup>.WireId,
+            Leave = MessageType<LeaveGroup>.WireId, Disconnect = MessageType<Disconnect>.WireId;
 
         public static bool Contains(uint messageId) =>
             messageId == Join || messageId == Leave || messageId == Access || messageId == Disconnect;
@@ -263,9 +263,9 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
 
         var sessionRef = new ClientSession(_node.Id, session.Id);
         if (grants.Length == 0) return;
-        if (session.Explicit || ReconnectGrace == TimeSpan.Zero) ReportClosed(sessionRef, grants);
+        if (session.Explicit || ResumeGrace == TimeSpan.Zero) ReportClosed(sessionRef, grants);
         else
-            lock (_graces) _graces.Schedule(ReconnectGrace, new PendingClose(sessionRef, grants));
+            lock (_graces) _graces.Schedule(ResumeGrace, new PendingClose(sessionRef, grants));
     }
 
     /// <summary>Timer thread, every 100 ms: report the lost connections whose grace ended, drop long-empty groups.</summary>
@@ -279,7 +279,7 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
     }
 
     /// <summary>
-    /// Once a second: close the connections of clients that sent nothing for <see cref="ClientOptions.ClientTimeout"/>
+    /// Once a second: close the connections of clients that sent nothing for <see cref="ClientConnectionOptions.IdleTimeout"/>
     /// (two comparisons per session; idle clients ping, so only lost ones go quiet).
     /// </summary>
     private void CloseSilentSessions(long now)
@@ -287,7 +287,7 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
         bool late = now - _nextSilenceSweep > 1000; // a stalled timer says nothing about the clients: no verdicts then
         _nextSilenceSweep = now + 1000;
         if (late) return;
-        long timeout = (long)options.ClientTimeout.TotalMilliseconds;
+        long timeout = (long)options.IdleTimeout.TotalMilliseconds;
         foreach (var (_, session) in _sessions) KeepAlive.Check(session.Channel, now, 0, timeout);
     }
 
@@ -327,18 +327,18 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
             _node.SendTo(grant.HandlerTypeId, grant.Key, new SessionClosed(session));
     }
 
-    /// <summary>How long a lost client may take to resume (the cluster's <see cref="NodeOptions.ReconnectGrace"/>) when tickets exist.</summary>
-    private TimeSpan ReconnectGrace => _ticketSecret != null ? _node.Options.ReconnectGrace : TimeSpan.Zero;
+    /// <summary>How long a lost client may take to resume (the cluster's <see cref="NodeOptions.ResumeGrace"/>) when tickets exist.</summary>
+    private TimeSpan ResumeGrace => _ticketSecret != null ? _node.Options.ResumeGrace : TimeSpan.Zero;
 
-    /// <summary>Send the session's client a fresh reconnect ticket (after grant changes, and when the client asks).</summary>
+    /// <summary>Send the session's client a fresh resume ticket (after grant changes, and when the client asks).</summary>
     private void IssueTicket(SessionState session)
     {
         var grants = session.Grants;
         if (_ticketSecret == null) return;
-        int size = grants.Length == 0 ? 0 : ReconnectTicket.SizeOf(grants.Length); // empty: nothing to resume
+        int size = grants.Length == 0 ? 0 : ResumeTicket.SizeOf(grants.Length); // empty: nothing to resume
         Span<byte> ticket = stackalloc byte[size];
         if (size > 0)
-            ReconnectTicket.Write(ticket, _ticketSecret, new ClientSession(_node.Id, session.Id), grants,
+            ResumeTicket.Write(ticket, _ticketSecret, new ClientSession(_node.Id, session.Id), grants,
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), (long)options.TicketLifetime.TotalMilliseconds);
         var w = FrameWriter.Rent(FrameHeader.Size + size);
         w.WriteRaw(ticket);
@@ -347,23 +347,23 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
 
     /// <summary>
     /// A client that lost its connection presents its ticket on a new one. The ticket only names what the session held:
-    /// each actor in it is asked (<see cref="SessionResync"/>) and accepts only while it still holds the previous session
+    /// each actor in it is asked (<see cref="SessionResumed"/>) and accepts only while it still holds the previous session
     /// granted, so a withdrawn grant, a closed session or a ticket used once already resumes nothing. The new session
     /// takes over what was accepted (and the actors' groups), then the client gets its reply: its next messages reach
-    /// actors that already know the new session. Cold path (a reconnect): it allocates.
+    /// actors that already know the new session. Cold path (a resume): it allocates.
     /// </summary>
     private void ResumeSession(SessionState session, uint callId, ReadOnlySpan<byte> ticket)
     {
         if (_ticketSecret == null || session.Grants.Length != 0 ||
-            !ReconnectTicket.TryRead(ticket, _ticketSecret, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), out var previous, out var granted) ||
+            !ResumeTicket.TryRead(ticket, _ticketSecret, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), out var previous, out var granted) ||
             Interlocked.Exchange(ref session.Resuming, 1) != 0)
         {
             session.Sink.SendError(callId, RpcStatus.Forbidden);
             return;
         }
 
-        var grants = new SessionGrant[ReconnectTicket.GrantCount(granted)];
-        for (int i = 0; i < grants.Length; i++) grants[i] = ReconnectTicket.GrantAt(granted, i);
+        var grants = new SessionGrant[ResumeTicket.GrantCount(granted)];
+        for (int i = 0; i < grants.Length; i++) grants[i] = ResumeTicket.GrantAt(granted, i);
         _ = ResumeAsync(session, callId, previous, grants);
     }
 
@@ -371,7 +371,7 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
     {
         var current = new ClientSession(_node.Id, session.Id);
         var answers = new Task<bool>[grants.Length];
-        for (int i = 0; i < grants.Length; i++) answers[i] = Accepts(grants[i], new SessionResync(current, previous));
+        for (int i = 0; i < grants.Length; i++) answers[i] = Accepts(grants[i], new SessionResumed(current, previous));
         var accepted = await Task.WhenAll(answers).ConfigureAwait(false);
 
         int taken = 0;
@@ -406,11 +406,11 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
         session.Sink.SendOk(callId);
     }
 
-    private async Task<bool> Accepts(SessionGrant grant, SessionResync resync)
+    private async Task<bool> Accepts(SessionGrant grant, SessionResumed resumed)
     {
         try
         {
-            await _node.Resync(grant.HandlerTypeId, grant.Key, in resync).ConfigureAwait(false);
+            await _node.Resume(grant.HandlerTypeId, grant.Key, in resumed).ConfigureAwait(false);
             return true;
         }
         catch (RpcException)
@@ -422,16 +422,16 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
     /// <summary>
     /// Where a client should connect (the directory): the less loaded of two random client-facing nodes (power of two
     /// choices: even spread from gossiped counts, no herd on the single least loaded one while counts are stale), or
-    /// <see cref="ClientEndpoint.Stay"/> when that is this node or clients are not redirected.
+    /// <see cref="ClientEndpoint.Stay"/> when that is this node or <see cref="ClientConnectionOptions.Redirect"/> is off.
     /// </summary>
-    public ClientEndpoint Pick()
+    public ClientEndpoint Direct()
     {
         if (!options.Redirect) return ClientEndpoint.Stay;
         ClusterMember? first = null, second = null;
         int candidates = 0;
         foreach (var member in _node.View.NodesWithScope(AddressScopes.Group))
         {
-            if (member.Entry(ClientKeys.Endpoint) == null) continue;
+            if (member.CardEntry(ClientKeys.Endpoint) == null) continue;
             candidates++;
             // Reservoir sampling of two distinct candidates in one pass.
             if (Random.Shared.Next(candidates) == 0) (first, second) = (member, first);
@@ -439,16 +439,16 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
         }
 
         if (first == null) return ClientEndpoint.Stay;
-        ClusterMember pick;
+        ClusterMember target;
         lock (_directed)
         {
-            pick = second != null && ExpectedSessions(second) < ExpectedSessions(first) ? second : first;
-            int reported = pick.PulseValue(ClientKeys.Sessions);
-            _directed[pick.NodeId] = (reported, ExpectedSessions(pick) - reported + 1);
+            target = second != null && ExpectedSessions(second) < ExpectedSessions(first) ? second : first;
+            int reported = target.Pulse(ClientKeys.Sessions);
+            _directed[target.NodeId] = (reported, ExpectedSessions(target) - reported + 1);
         }
 
-        if (pick.NodeId == _node.Id) return ClientEndpoint.Stay;
-        string endpoint = pick.Entry(ClientKeys.Endpoint)!;
+        if (target.NodeId == _node.Id) return ClientEndpoint.Stay;
+        string endpoint = target.CardEntry(ClientKeys.Endpoint)!;
         int colon = endpoint.LastIndexOf(':');
         return new ClientEndpoint(endpoint[..colon], int.Parse(endpoint.AsSpan(colon + 1)));
     }
@@ -457,14 +457,14 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
     {
         var w = FrameWriter.Rent(64);
         var nino = w.Nino;
-        NinoSerializer.Serialize(Pick(), ref nino);
+        NinoSerializer.Serialize(Direct(), ref nino);
         session.Sink.SendReply(callId, RpcStatus.Ok, w);
     }
 
     /// <summary>Sessions a client-facing node has, as far as this node knows (its gossiped count plus clients sent since). Under the lock.</summary>
     private int ExpectedSessions(ClusterMember member)
     {
-        int reported = member.PulseValue(ClientKeys.Sessions);
+        int reported = member.Pulse(ClientKeys.Sessions);
         return _directed.TryGetValue(member.NodeId, out var d) && d.Reported == reported ? reported + d.Directed : reported;
     }
 
@@ -485,7 +485,7 @@ public sealed class ClientConnections(ClientOptions options) : NodeFeature
         lock (_groupGate) Join(session, ClientGroup.All.Id); // group 0 is a group like any other
     }
 
-    /// <summary>Largest frame a client may send (<see cref="ClientOptions.MaxFrameSize"/>).</summary>
+    /// <summary>Largest frame a client may send (<see cref="ClientConnectionOptions.MaxFrameSize"/>).</summary>
     public int MaxFrameSize => options.MaxFrameSize;
 
     /// <summary>Bytes a client's channel may fall behind before it is closed (a slow consumer, like on TCP).</summary>
@@ -624,10 +624,10 @@ internal sealed class SessionState(long id, IFrameChannel channel)
     public IFrameChannel Channel { get; } = channel;
     public IReplySink Sink { get; } = new ChannelSink(channel);
 
-    /// <summary>The client's message rate limit (<see cref="ClientOptions.MessagesPerSecond"/>; its receive loop owns it).</summary>
+    /// <summary>The client's message rate limit (<see cref="ClientConnectionOptions.MessagesPerSecond"/>; its receive loop owns it).</summary>
     public TokenBucket Limit;
 
-    /// <summary>Grants per session at most (they ride in the reconnect ticket and are scanned per named message).</summary>
+    /// <summary>Grants per session at most (they ride in the resume ticket and are scanned per named message).</summary>
     public const int MaxGrants = 64;
 
     private volatile SessionGrant[] _grants = [];
@@ -647,7 +647,7 @@ internal sealed class SessionState(long id, IFrameChannel channel)
     /// <summary>1 once the client presented a ticket: a session resumes at most once.</summary>
     public int Resuming;
 
-    /// <summary>Closed on purpose (client goodbye, <c>Disconnect</c>): its actors learn it at once, no reconnect grace.</summary>
+    /// <summary>Closed on purpose (client goodbye, <c>Disconnect</c>): its actors learn it at once, no resume grace.</summary>
     public volatile bool Explicit;
 
     /// <summary>Key bound for <paramref name="handlerTypeId"/>, 0 when unbound. Lock-free (client message path).</summary>

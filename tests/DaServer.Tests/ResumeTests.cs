@@ -3,13 +3,13 @@ using System.Text;
 
 namespace DaServer.Tests;
 
-/// <summary>Reconnect tickets: a client that lost its connection resumes its session; actors see no close.</summary>
-public class ReconnectTests : ClusterTest
+/// <summary>Resume tickets: a client that lost its connection resumes its session; actors see no close.</summary>
+public class ResumeTests : ClusterTest
 {
     private static Action<NodeOptions> Secret(TimeSpan grace) => o =>
     {
         o.SigningSecret = "test-secret";
-        o.ReconnectGrace = grace;
+        o.ResumeGrace = grace;
     };
 
     private async Task<Node[]> StartCluster(TimeSpan grace)
@@ -55,7 +55,7 @@ public class ReconnectTests : ClusterTest
         await reconnected;
 
         Assert.That(await client.Ask(new AddGold(1)), Is.EqualTo(6), "the binding moved to the new session");
-        Assert.That(Observed.Events, Does.Contain("resync:501"));
+        Assert.That(Observed.Events, Does.Contain("resumed:501"));
         gateways[0].Send(ClientGroup.Of(new PlayerId(501)), new GoldChanged(9));
         await Eventually(() => inbox.Gold == 9, "the new session is in the actor's group");
 
@@ -113,7 +113,7 @@ public class ReconnectTests : ClusterTest
         var reconnected = Reconnected(client);
         client.DropConnection();
         await reconnected;
-        await Eventually(() => Observed.Events.Contains("room-resync:70"), "the granted room did not learn the new session");
+        await Eventually(() => Observed.Events.Contains("room-resumed:70"), "the granted room did not learn the new session");
         Assert.That(await client.Ask(new RoomId(70), new Exit()), Is.True, "the grant moved to the new session");
 
         var other = await LogIn(gateways, 506);
@@ -160,7 +160,7 @@ public class ReconnectTests : ClusterTest
         var gateways = await StartCluster(TimeSpan.FromSeconds(5));
         var client = await LogIn(gateways, 508);
         Assert.That(await client.Ask(new Enter(new RoomId(72))), Is.True);
-        await Eventually(() => client.Ticket is { Length: > 0 } t && t.Length > ReconnectTicket.SizeOf(1), "no ticket with the room");
+        await Eventually(() => client.Ticket is { Length: > 0 } t && t.Length > ResumeTicket.SizeOf(1), "no ticket with the room");
         var older = client.Ticket!;
         Assert.That(await client.Ask(new RoomId(72), new Exit()), Is.True); // the room revokes the grant
         client.AutoReconnect = false;
@@ -170,7 +170,7 @@ public class ReconnectTests : ClusterTest
         Assert.That(status, Is.EqualTo(RpcStatus.Ok), "the player binding is still held");
         var exit = Assert.ThrowsAsync<RpcException>(async () => await resumed.Ask(new RoomId(72), new Exit()));
         Assert.That(exit!.Status, Is.EqualTo(RpcStatus.Forbidden), "the revoked grant came back");
-        Assert.That(Observed.Events, Does.Not.Contain("room-resync:72"), "the room took a session it had revoked");
+        Assert.That(Observed.Events, Does.Not.Contain("room-resumed:72"), "the room took a session it had revoked");
     }
 
     [Test]
@@ -192,19 +192,19 @@ public class ReconnectTests : ClusterTest
         byte[] secret = Encoding.UTF8.GetBytes("secret");
         var session = new ClientSession(7, 42);
         SessionGrant[] grants = [new(1, 100, Bound: true), new(2, 200, Bound: false)];
-        var ticket = new byte[ReconnectTicket.SizeOf(grants.Length)];
-        ReconnectTicket.Write(ticket, secret, session, grants, nowMs: 1000, lifetimeMs: 500);
+        var ticket = new byte[ResumeTicket.SizeOf(grants.Length)];
+        ResumeTicket.Write(ticket, secret, session, grants, nowMs: 1000, lifetimeMs: 500);
 
-        Assert.That(ReconnectTicket.TryRead(ticket, secret, 1200, out var read, out var readGrants), Is.True);
+        Assert.That(ResumeTicket.TryRead(ticket, secret, 1200, out var read, out var readGrants), Is.True);
         Assert.That(read, Is.EqualTo(session));
-        Assert.That(ReconnectTicket.GrantCount(readGrants), Is.EqualTo(2));
-        Assert.That(ReconnectTicket.GrantAt(readGrants, 0), Is.EqualTo(grants[0]));
-        Assert.That(ReconnectTicket.GrantAt(readGrants, 1), Is.EqualTo(grants[1]));
+        Assert.That(ResumeTicket.GrantCount(readGrants), Is.EqualTo(2));
+        Assert.That(ResumeTicket.GrantAt(readGrants, 0), Is.EqualTo(grants[0]));
+        Assert.That(ResumeTicket.GrantAt(readGrants, 1), Is.EqualTo(grants[1]));
 
-        Assert.That(ReconnectTicket.TryRead(ticket, secret, 1500, out _, out _), Is.False, "expired");
-        Assert.That(ReconnectTicket.TryRead(ticket, Encoding.UTF8.GetBytes("other"), 1200, out _, out _), Is.False, "another cluster");
+        Assert.That(ResumeTicket.TryRead(ticket, secret, 1500, out _, out _), Is.False, "expired");
+        Assert.That(ResumeTicket.TryRead(ticket, Encoding.UTF8.GetBytes("other"), 1200, out _, out _), Is.False, "another cluster");
         ticket[30] ^= 1; // another session
-        Assert.That(ReconnectTicket.TryRead(ticket, secret, 1200, out _, out _), Is.False, "tampered");
-        Assert.That(ReconnectTicket.TryRead(ticket.AsSpan(0, 20), secret, 1200, out _, out _), Is.False, "truncated");
+        Assert.That(ResumeTicket.TryRead(ticket, secret, 1200, out _, out _), Is.False, "tampered");
+        Assert.That(ResumeTicket.TryRead(ticket.AsSpan(0, 20), secret, 1200, out _, out _), Is.False, "truncated");
     }
 }

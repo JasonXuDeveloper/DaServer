@@ -53,8 +53,8 @@ public sealed class NodeOptions
     /// <summary>
     /// Secret shared by every node of the cluster for signing (configuration <c>DaServer__SigningSecret</c>; Aspire
     /// generates one). It secures nothing else (node links are not authenticated with it). Client-facing nodes sign
-    /// reconnect tickets with it, so a client that lost its connection resumes its session on
-    /// any of them (<see cref="SessionResync"/>); features sign their tokens with it. Null: no tickets, a lost
+    /// resume tickets with it, so a client that lost its connection resumes its session on
+    /// any of them (<see cref="SessionResumed"/>); features sign their tokens with it. Null: no tickets, a lost
     /// connection closes the session at once.
     /// </summary>
     public string? SigningSecret { get; set; }
@@ -64,7 +64,7 @@ public sealed class NodeOptions
     /// (when <see cref="SigningSecret"/> is set). A client that resumes in time is never reported closed; an explicit
     /// close (client dispose, <c>Disconnect</c>) is reported at once.
     /// </summary>
-    public TimeSpan ReconnectGrace { get; set; } = TimeSpan.FromSeconds(30);
+    public TimeSpan ResumeGrace { get; set; } = TimeSpan.FromSeconds(30);
 
     public TimeSpan GossipInterval { get; set; } = TimeSpan.FromSeconds(1);
     public TimeSpan SuspectAfter { get; set; } = TimeSpan.FromSeconds(3);

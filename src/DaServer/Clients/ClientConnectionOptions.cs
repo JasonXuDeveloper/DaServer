@@ -1,7 +1,7 @@
 namespace DaServer.Clients;
 
 /// <summary>Client connections of a node (<c>DaServer:Clients</c> in configuration; the section enables them).</summary>
-public sealed class ClientOptions
+public sealed class ClientConnectionOptions
 {
     /// <summary>Port clients connect to (0: any free port, for tests).</summary>
     public int Port { get; set; }
@@ -23,12 +23,12 @@ public sealed class ClientOptions
 
     /// <summary>
     /// A client that sent nothing for this long is gone (half-open TCP, a dropped NAT mapping, a switched network, an
-    /// app in the background): its connection is closed as lost, so its session waits out the reconnect grace (ADR-053).
+    /// app in the background): its connection is closed as lost, so its session waits out the resume grace (ADR-053).
     /// Idle clients ping (<c>ClusterClient.KeepAliveInterval</c>, 15 s): keep this a few intervals above it.
     /// </summary>
-    public TimeSpan ClientTimeout { get; set; } = TimeSpan.FromSeconds(45);
+    public TimeSpan IdleTimeout { get; set; } = TimeSpan.FromSeconds(45);
 
-    /// <summary>Validity of a reconnect ticket; clients refresh theirs at half of it.</summary>
+    /// <summary>Validity of a resume ticket; clients refresh theirs at half of it.</summary>
     public TimeSpan TicketLifetime { get; set; } = TimeSpan.FromMinutes(10);
 
     /// <summary>

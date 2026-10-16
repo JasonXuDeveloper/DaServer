@@ -78,7 +78,7 @@ internal struct ServiceCall : IComponent;
 /// <summary>
 /// Client sessions known to a loaded actor: those that called it or that it bound or granted. When a
 /// client-facing node dies without closing its sessions, the runtime delivers <see cref="SessionClosed"/> for them. Granted:
-/// the sessions it holds bound or granted now, the only ones a client may resume from (<see cref="SessionResync"/>).
+/// the sessions it holds bound or granted now, the only ones a client may resume from (<see cref="SessionResumed"/>).
 /// Superseded: sessions a client resumed from, whose late close is not delivered.
 /// </summary>
 internal readonly record struct ClientSessions(

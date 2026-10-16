@@ -22,7 +22,7 @@ public partial struct HostedMessage
 
 /// <summary>
 /// Description of a cluster member: its card (identity, endpoints, handled messages: fixed for the node's lifetime, sent
-/// once to each node that meets it) and its pulse (<see cref="Pulse"/>, gossiped every round). Incarnation and status
+/// once to each node that meets it) and its pulse (<see cref="MemberPulse"/>, gossiped every round). Incarnation and status
 /// changes publish a copy; heartbeat, load and session counts are updated in place, so the view always shows the
 /// latest load hints without being rebuilt (readers may see a hint one round old).
 /// </summary>
@@ -54,21 +54,21 @@ public partial class ClusterMember
     /// <summary>The keys of the node's pulse slots in slot order (counters its features gossip every round).</summary>
     public uint[] PulseKeys = [];
 
-    /// <summary>The pulse slots' values (<see cref="Pulse.Slots"/>), updated in place by every gossip round.</summary>
-    public int[] PulseValues = new int[Pulse.Slots];
+    /// <summary>The pulse slots' values (<see cref="MemberPulse.Slots"/>), updated in place by every gossip round.</summary>
+    public int[] PulseValues = new int[MemberPulse.Slots];
 
     /// <summary>What the node's features publish about it (an endpoint, a mode): set once at start.</summary>
     public CardEntry[] Entries = [];
 
     /// <summary>The value the member gossips under <paramref name="key"/> (<see cref="INodeContext.AddPulse"/>), 0 when none.</summary>
-    public int PulseValue(uint key)
+    public int Pulse(uint key)
     {
         int slot = Array.IndexOf(PulseKeys, key);
         return slot >= 0 && slot < PulseValues.Length ? Volatile.Read(ref PulseValues[slot]) : 0;
     }
 
     /// <summary>The member's card entry <paramref name="key"/> (<see cref="INodeContext.SetCardEntry"/>), or null.</summary>
-    public string? Entry(uint key)
+    public string? CardEntry(uint key)
     {
         foreach (var entry in Entries)
             if (entry.Key == key) return entry.Value;
@@ -88,7 +88,7 @@ public partial class ClusterMember
     public ClusterMember Clone() => (ClusterMember)MemberwiseClone();
 
     /// <summary>Gossip merge order: higher incarnation, then worse status, then higher heartbeat wins.</summary>
-    public bool Supersedes(ClusterMember other) => Pulse.Of(this).Supersedes(other);
+    public bool Supersedes(ClusterMember other) => MemberPulse.Of(this).Supersedes(other);
 
     public override string ToString() => $"{Name}({NodeId:x}) {Host}:{Port} {Status} inc={Incarnation} hb={Heartbeat}";
 }
@@ -97,7 +97,7 @@ public partial class ClusterMember
 /// The part of a member that changes while it runs: what a gossip round carries for every member (37 bytes, written
 /// and read in place, so a round allocates nothing). Unknown node ids are answered with full cards.
 /// </summary>
-internal readonly record struct Pulse(ulong NodeId, int Incarnation, long Heartbeat, MemberStatus Status, int Load,
+internal readonly record struct MemberPulse(ulong NodeId, int Incarnation, long Heartbeat, MemberStatus Status, int Load,
     int Slot0, int Slot1, int Slot2)
 {
     /// <summary>Counters features may gossip per node (<see cref="INodeContext.AddPulse"/>).</summary>
@@ -105,7 +105,7 @@ internal readonly record struct Pulse(ulong NodeId, int Incarnation, long Heartb
 
     public const int Size = 8 + 4 + 8 + 1 + 4 + Slots * 4;
 
-    public static Pulse Of(ClusterMember m)
+    public static MemberPulse Of(ClusterMember m)
     {
         var v = m.PulseValues;
         return new(m.NodeId, m.Incarnation, m.Heartbeat, m.Status, m.Load, Slot(v, 0), Slot(v, 1), Slot(v, 2));
@@ -142,7 +142,7 @@ internal readonly record struct Pulse(ulong NodeId, int Incarnation, long Heartb
         BinaryPrimitives.WriteInt32LittleEndian(s.Slice(33), Slot2);
     }
 
-    public static Pulse Read(ReadOnlySpan<byte> s) => new(
+    public static MemberPulse Read(ReadOnlySpan<byte> s) => new(
         BinaryPrimitives.ReadUInt64LittleEndian(s),
         BinaryPrimitives.ReadInt32LittleEndian(s.Slice(8)),
         BinaryPrimitives.ReadInt64LittleEndian(s.Slice(12)),

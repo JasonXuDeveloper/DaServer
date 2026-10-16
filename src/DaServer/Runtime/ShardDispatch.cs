@@ -16,9 +16,9 @@ internal static class ShardDispatch
         var node = world.Shard().Node;
         var header = FrameHeader.Read(frame.Frame);
         var handlerType = node.HandlerTypeById(header.Target);
-        if (header.MessageId == MessageType<SessionResync>.Id && handlerType is { IsActor: true })
+        if (header.MessageId == MessageType<SessionResumed>.WireId && handlerType is { IsActor: true })
         {
-            RouteResync(world, handlerType, frame, sink, in header);
+            RouteResume(world, handlerType, frame, sink, in header);
             return;
         }
 
@@ -43,10 +43,10 @@ internal static class ShardDispatch
     }
 
     /// <summary>
-    /// A resync goes to every granted actor, whether it handles <see cref="SessionResync"/> or not; one not loaded has no
+    /// A resume goes to every granted actor, whether it handles <see cref="SessionResumed"/> or not; one not loaded has no
     /// granted session, so it is refused without loading it.
     /// </summary>
-    private static void RouteResync(World world, HandlerTypeInfo handlerType, FrameWriter frame, IReplySink? sink, in FrameHeader header)
+    private static void RouteResume(World world, HandlerTypeInfo handlerType, FrameWriter frame, IReplySink? sink, in FrameHeader header)
     {
         var node = world.Shard().Node;
         if (TryGetLoaded(world, handlerType.Id, header.Key, out var existing)) Deliver(world, existing, new Envelope(frame, sink));
@@ -194,7 +194,7 @@ internal static class ShardDispatch
             ActorSessions.Record(actor, actor.TurnCaller);
         }
 
-        if (header.MessageId == MessageType<SessionResync>.Id) return Resync(actor, in envelope);
+        if (header.MessageId == MessageType<SessionResumed>.WireId) return Resume(actor, in envelope);
         var dispatcher = actor.HandlerType.Handlers.Of(header.MessageId)!.Dispatcher; // validated by Route
         return Invoke(dispatcher, actor, envelope.Frame, envelope.Sink, actor.Shard.Node.Logger);
     }
@@ -204,19 +204,19 @@ internal static class ShardDispatch
     /// delivered to the actor's handler, if any, as a one-way message from the new session.
     /// </summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static System.Threading.Tasks.ValueTask Resync(Actor actor, in Envelope envelope)
+    private static System.Threading.Tasks.ValueTask Resume(Actor actor, in Envelope envelope)
     {
         var frame = envelope.Frame;
         var reader = new Reader(frame.Payload);
-        NinoDeserializer.Deserialize(out SessionResync resync, ref reader);
-        bool accepted = ActorSessions.Resync(actor, in resync);
+        NinoDeserializer.Deserialize(out SessionResumed resumed, ref reader);
+        bool accepted = ActorSessions.Resume(actor, in resumed);
         if (frame.CallId != 0 && envelope.Sink is { } sink)
         {
             if (accepted) sink.SendOk(frame.CallId);
             else sink.SendError(frame.CallId, RpcStatus.Forbidden);
         }
 
-        if (accepted && actor.HandlerType.Handlers.Of(MessageType<SessionResync>.Id) is { } handler)
+        if (accepted && actor.HandlerType.Handlers.Of(MessageType<SessionResumed>.WireId) is { } handler)
             return Invoke(handler.Dispatcher, actor, frame, null, actor.Shard.Node.Logger);
         frame.Dispose();
         return default;
