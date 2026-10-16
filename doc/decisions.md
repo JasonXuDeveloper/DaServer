@@ -883,3 +883,24 @@ records that no longer hold). Each: context → decision → consequences.
 - Consequences: an awaiting handler allocates nothing once warm (`RepliesOfSuspendedHandlersDoNotAllocate` without
   any attribute); user code names one awaitable. ExecutionContext does not flow into a resumed handler, as before for
   calls.
+
+## ADR-063 A graceful stop has a budget, phases and readiness
+- Context: platforms send SIGTERM and kill later (Kubernetes 30 s, Compose 10 s by default). A stop that saves actors
+  can take longer than the platform waits, and one that hangs blocks a rolling deploy. Clients of a leaving
+  client-facing node lost their connection all at once.
+- Decision:
+  - `NodeOptions.ShutdownTimeout` (25 s) is the stop's budget. `StopAsync` honors the host's token too. The host
+    waits the budget + 5 s, and the published Compose grace period is the budget + 5 s. Past the budget the node
+    logs, per shard, the actors still loaded (their `OnUnload` did not finish) and exits.
+  - The stop runs in phases, each logged and recorded with its duration (`daserver.stop.phase.duration`): leave,
+    drain, unload, close.
+  - `/health` is readiness: joined, Up and not leaving. `/alive` is liveness: no stalled shard. Aspire declares both
+    as HTTP probes, so `WaitFor` and the dashboard use readiness.
+  - A leaving client-facing node closes its listener, then its connections in waves over `DrainSpread`. Clients
+    resume their sessions on other nodes; actors see no close.
+- Alternatives:
+  - An unbounded stop: a hung save blocks the deploy, and the platform kills the node anyway.
+  - Telling clients to move with a new control message: the resume path already moves them, with no new protocol.
+- Consequences: the budget is the user's choice per node group (`WithShutdownTimeout`). Stateful groups need room for
+  their saves (N5).
+

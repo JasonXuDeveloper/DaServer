@@ -227,20 +227,21 @@ and calls `IHostedService.StopAsync` with a token that fires at `HostOptions.Shu
 after it the process exits whatever is still running. Platforms send SIGTERM and kill later: Kubernetes after
 `terminationGracePeriodSeconds` (30 s default), Docker Compose after `stop_grace_period` (10 s default). SIGKILL,
 OOM kills, crashes and power loss give no signal at all, so no shutdown code can be the only protection.
-Today `NodeHostedService.StopAsync` ignores the token, no time limit is configured anywhere, there is no readiness
-signal, client-facing nodes drop their clients on stop and nothing is persisted yet (N5).
+Nothing is persisted yet (N5): D5-D6 come with it.
 
-- [ ] D1 One shutdown budget: `NodeOptions.ShutdownTimeout` (default 25 s) drives `HostOptions.ShutdownTimeout`
-      and the published Kubernetes grace period / Compose `stop_grace_period` (budget + margin), so the platform never
-      kills a node that is still saving. `StopAsync` honors the token; past the deadline it logs which actors were not
-      saved instead of hanging.
-- [ ] D2 Ordered stop: readiness off -> Leaving (callers reroute) -> stop accepting new external connections and new
-      calls -> finish in-flight turns and calls -> unload every actor (`OnUnload`, parallel, bounded) -> flush the store
-      -> close links -> exit. Each phase logged with its duration and exported as a metric.
-- [ ] D3 Client-facing nodes drain: clients are told to move (resume ticket to another node, staggered) before the
-      listener closes; the directory stops directing clients to a leaving node.
-- [ ] D4 Tests: SIGTERM-style stop under load loses no acknowledged write and no session; a stop that exceeds its
-      budget reports the unsaved actors; Kill (crash) loses at most what the persistence policy allows.
+- [x] D1 One shutdown budget (ADR-063): `NodeOptions.ShutdownTimeout` (25 s) bounds `StopAsync`, which honors the
+      host's token; the host waits 5 s longer, Compose `stop_grace_period` is the budget + 5 s
+      (`DaServerNodeGroup.WithShutdownTimeout`). Past the deadline the node logs, per shard, the actors whose
+      `OnUnload` did not finish, and exits instead of hanging.
+- [x] D2 Ordered stop: readiness off (`/health` fails once Leaving) -> Leaving (callers reroute) -> drain features
+      (client connections) -> unload every actor -> close links. Each phase is logged with its duration and recorded
+      as `daserver.stop.phase.duration` (phase tag). Store flush joins with N5 (D6).
+- [x] D3 Client-facing nodes drain: the listener closes, connections close in waves over
+      `ClientConnectionOptions.DrainSpread` (3 s); clients reconnect through their endpoints and resume their sessions
+      on other nodes (the directory only lists Up nodes). `ClientsOfALeavingGatewayMoveAndResumeOnAnother`.
+- [ ] D4 Tests: done: a stop that exceeds its budget reports the unsaved actors and returns
+      (`AStopThatExceedsItsBudgetReportsAndReturns`); a leaving gateway's clients keep their sessions. Open with N5: a
+      stop under load loses no acknowledged write; Kill loses at most what the persistence policy allows.
 - [ ] D5 (with N5) Persistence that survives a crash: per actor type a save policy: on unload (default), write-behind
       with a maximum dirty age (checkpoint every N seconds), and immediate saves for declared critical changes
       (trades, purchases). Versioned saves reject a fenced node's late write (ADR-042).
@@ -252,7 +253,7 @@ signal, client-facing nodes drop their clients on stop and nothing is persisted 
 Aspire generates manifests and runs the local cluster; it never autoscales and publishes no grace period, no
 Compose health check and no probe except HTTP probes declared with `WithHttpProbe`. What a node needs from it:
 
-- [ ] A1 HTTP plane on ASP.NET Core (ADR-046): every node runs Kestrel on a separate HTTP port (`DaServer__HttpPort`,
+- [x] A1 HTTP plane on ASP.NET Core (ADR-046): every node runs Kestrel on a separate HTTP port (`DaServer__HttpPort`,
       Aspire endpoint `http`) next to its own TCP data plane. Official health checks: `daserver-ready` (joined, not
       leaving/draining, store healthy) mapped to `/health`, `daserver-live` (shard stall watchdog, N3b) tagged `live`
       and mapped to `/alive`, always on (not Development-only like the template). `DaServer.Aspire` declares the
@@ -260,11 +261,13 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
       probes (`WithHttpProbe`, ASPIREPROBES001) for Kubernetes. Users map REST endpoints in their node project (admin,
       webhooks, payment callbacks, HTTP login); an endpoint reaches actors only through `ICluster` (Ask/Send post to
       the shard), never shard state.
-- [ ] A2 Drain budget published (D1): `WithDrain(grace)` sets the pod `terminationGracePeriodSeconds`, Compose
+- [ ] A2 Drain budget published (D1). Done for Compose (`WithShutdownTimeout`); Kubernetes
+      `terminationGracePeriodSeconds` waits for a stable `Aspire.Hosting.Kubernetes` (13.6.1 is preview only): `WithDrain(grace)` sets the pod `terminationGracePeriodSeconds`, Compose
       `stop_grace_period` and `DaServer__ShutdownTimeout` below it, plus an optional preStop sleep so endpoint removal
       propagates before Leave; stateful groups default longer than stateless ones.
-- [ ] A3 Compose gaps: `PublishAsDockerComposeService` sets `healthcheck`, `stop_grace_period` and `restart` per node
-      (Aspire writes none and maps `WaitFor` to `service_started`).
+- [ ] A3 Compose gaps: done: `stop_grace_period` and `restart: unless-stopped` per node. Open: a `healthcheck` needs a
+      probe command inside the image (the .NET runtime images ship no curl/wget): a `--health` mode of the generated
+      entry point that calls `/health` on its own port.
 - [ ] A4 Publish mode = one workload per node group (with S4): `IsPublishMode` emits one Deployment with `replicas`,
       a headless Service (`clusterIP: None`, `publishNotReadyAddresses` so joining pods gossip), pod-IP advertising
       through the downward API; run mode keeps one resource per replica (ADR-030). HPA v2 / KEDA / PDB via
