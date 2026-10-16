@@ -32,7 +32,7 @@ src/DaServer.Core/         wire and transport shared by servers and clients (net
                            Buffers/ Net/ Rpc/ (calls, dispatch) Concurrency/
 src/DaServer.Client/       client SDK (netstandard2.1, net10.0, net11.0): ClusterClient
 src/DaServer.Simulation/   simulated users (client side, net10.0/net11.0): ClientLoop, Planning/ (HTN as ECS data),
-                           Swarm + Meter (ADR-056)
+                           Swarm + SwarmMeter (ADR-056)
 src/Polyfills/             Lock, IsExternalInit, FrozenDictionary for netstandard2.1 (compiled into Abstractions)
 src/DaServer/              server runtime (net11.0): Runtime/ Cluster/ Rpc/ Net/ Concurrency/ and the built-in capabilities on the
                            feature points: Features/ Ingress/ Clients/
@@ -45,7 +45,7 @@ src/DaServer.Generator/    incremental generators (AskGenerator, RegistrationGen
                            PolyfillGenerator) + DaServerAnalyzer (DAS001-008, DAS010-011);
                            Shapes.cs reads symbols once for both, so "skipped by the generator" == "reported"
 src/DaServer.Hosting/      Generic Host integration, configuration, OpenTelemetry (OTLP when configured), shutdown
-src/DaServer.Aspire/       Aspire hosting integration: AddDaServerCluster / AddNodes / WithClients /
+src/DaServer.Aspire/       Aspire hosting integration: AddDaServerCluster / AddNodes / WithClientConnections /
                            WithClientEndpoints
 samples/mmo/               MMO scenario: Sample.Contracts / Sample.Shared (rules both sides run) / Sample.Client (the game
                            client as ECS) / Sample.LoginServer / Sample.GameServer / Sample.MapServer / Sample.GatewayServer

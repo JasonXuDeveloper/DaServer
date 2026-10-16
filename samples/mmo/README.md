@@ -17,7 +17,7 @@ Messages are routed by type: a sender never names a server, so moving `Map` into
 | [Sample.Bot](Sample.Bot) | `bots` | the client run as a swarm of simulated players (`DaServer.Simulation`, 10,000 in the AppHost) with a planner at the controls (`Behavior`) | | |
 | [Sample.Tests](Sample.Tests) | (tests) | the shared rules and the client, without a cluster | | |
 
-`Player` and `Map` also handle `SessionClosed` / `SessionResync` when a bound session ends or resumes.
+`Player` and `Map` also handle `SessionClosed` / `SessionResumed` when a bound session ends or resumes.
 
 ```mermaid
 flowchart LR
