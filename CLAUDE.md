@@ -42,9 +42,10 @@ src/DaServer/              server runtime (net11.0): Runtime/ Cluster/ Rpc/ Net/
   Runtime/Systems/         runtime systems: Dispatch, Turn, ServiceCall, Removal, Unload, Mailbox (ShardMessages group),
                            Rebalance (ShardRebalance), Idle (ShardIdleScan); each reacts to one lifecycle tag (ADR-037)
 src/DaServer.Generator/    incremental generators (AskGenerator, RegistrationGenerator, PolyfillGenerator) + DaServerAnalyzer
-                           (DAS001-014);
+                           (DAS001-015);
                            Shapes.cs reads symbols once for both, so "skipped by the generator" == "reported"
 src/DaServer.Hosting/      Generic Host integration, configuration, OpenTelemetry (OTLP when configured), shutdown
+src/DaServer.Persistence.PostgreSql/  actor records in PostgreSQL (ADR-068): PostgreSqlActorStore, AddPostgreSqlActorStore
 src/DaServer.Aspire/       Aspire hosting integration: AddDaServerCluster / AddNodes / WithClientConnections /
                            WithClientEndpoints
 samples/mmo/               MMO scenario: Sample.Contracts / Sample.Shared (rules both sides run) / Sample.Client (the game
@@ -85,7 +86,8 @@ doc/                       requirements.md, design.md, decisions.md, roadmap.md
 
 ## Rules
 
-- Never block a shard thread on IO; never touch shard/actor state from another thread (post to the shard).
+- Never block a shard thread on IO; never touch shard/actor state from another thread (post to the shard). Shard code
+  (actors, services, systems) starts no work on other threads (DAS015): it awaits, and continuations come back.
 - Never keep a `ref` into ECS storage across an `await`; re-acquire after awaiting.
 - Actors are turn-based: one message at a time including its awaits (no interleaving). Calls in a cycle (A awaits B
   awaits A) fail at once with `CallCycle` (ADR-059): model such flows with one-way messages (`Send`/`Publish`).

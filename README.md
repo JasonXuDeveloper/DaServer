@@ -24,8 +24,9 @@ locally and publishes it.
 - **Reliable links, bounded work.** One ordered stream per node pair resumes after a dropped connection (no loss, no
   duplicate). Requests carry their caller's deadline, and work nobody waits for is dropped. Full dispatch queues and mailboxes answer
   `Overloaded` instead of growing; a client that cannot keep up is disconnected and resynchronizes when it resumes.
-- **Misuse is a build error.** Analyzers DAS001–DAS011 cover handlers, messages, wire types, id collisions, message
-  flow, stateless actors and services, shared logic and replies sent later, and EECS001–EECS008 cover ECS, including the ECS principles.
+- **Misuse is a build error.** Analyzers DAS001–DAS015 cover handlers, messages, wire types, id collisions, message
+  flow, stateless actors and services, shared logic, replies sent later, waits and threads on shards, components apart
+  from logic and persisted components, and EECS001–EECS008 cover ECS, including the ECS principles.
 
 ## Architecture
 
@@ -231,11 +232,27 @@ app.Run();
 ```
 
 Packages (ADR-052): contract projects reference `DaServer.Abstractions`; clients (Unity through netstandard2.1, bots,
-tools) reference `DaServer.Client`; node projects reference `DaServer.Hosting` (server runtime `DaServer`). The wire
+tools) reference `DaServer.Client`; node projects reference `DaServer.Hosting` (server runtime `DaServer`), and
+`DaServer.Persistence.PostgreSql` when they keep actor records. The wire
 and transport both sides share are `DaServer.Core`. The generator ships with Abstractions. `DaServer.Simulation`
 (client side, ADR-056) runs thousands of simulated users against a cluster for end-to-end and load tests: client
 worlds on their own threads, behavior as HTN planning over ECS data, swarms that measure and judge
 ([samples/mmo](samples/mmo#bots) drives its real game client with it).
+
+## Persistence
+
+Components marked `[Persist]` (Nino structs in a components project) are an actor's stored state (ADR-068). The
+runtime restores them before `OnLoad` when the actor loads, on any node, writes them when it unloads and every
+`SaveEvery` (30 s) while they changed, and at once for an entity tagged `SaveNow`. Writes are versioned: a node that
+lost ownership cannot overwrite the new owner's state. Components without `[Persist]` (sessions, caches) are rebuilt.
+
+```csharp
+[NinoType, Persist] public partial record struct PlayerProfile(string Name, int Logins) : IComponent;
+```
+
+A node keeps records in PostgreSQL with one line in its Program.cs, `builder.AddPostgreSqlActorStore()`, and the
+AppHost passes the database: `cluster.AddNodes<Projects.Sample_GameServer>("game").WithActorStore(actors)`.
+Relational, queried data (accounts, payments, rankings) belongs in services with your own data access.
 
 ## Orchestration with Aspire
 
@@ -245,7 +262,8 @@ builder.AddDockerComposeEnvironment("compose");            // `aspire publish` w
 
 var cluster = builder.AddDaServerCluster("sample");
 cluster.AddNodes<Projects.Sample_LoginServer>("login");                     // Account service
-cluster.AddNodes<Projects.Sample_GameServer>("game");                       // Player, Realm actors
+var actors = builder.AddPostgres("postgres").WithDataVolume().AddDatabase("actors");
+cluster.AddNodes<Projects.Sample_GameServer>("game").WithActorStore(actors); // Player, Realm actors
 cluster.AddNodes<Projects.Sample_MapServer>("map");                         // Map actors, movement/AOI systems
 var gateways = cluster.AddNodes<Projects.Sample_GatewayServer>("gateway", replicas: 3).WithClientConnections(); // clients, no business code
 
