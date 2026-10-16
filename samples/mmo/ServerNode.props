@@ -1,6 +1,5 @@
 <Project>
-    <!-- Shared by the sample's node projects: a node hosts every actor, service and system compiled into its project.
-         No Program.cs: the DaServer generator emits the entry point (Generic Host + AddDaServer). -->
+    <!-- Shared by the sample's node projects: a node hosts every actor, service and system compiled into its project. -->
 
     <PropertyGroup>
         <OutputType>Exe</OutputType>

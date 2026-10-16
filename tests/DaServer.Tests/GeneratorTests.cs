@@ -38,7 +38,7 @@ public class GeneratorTests
     private static SyntaxTree Parse(string source) => CSharpSyntaxTree.ParseText(Usings + source, ParseOptions);
 
     private static GeneratorDriver Driver() => CSharpGeneratorDriver.Create(
-        [new AskGenerator().AsSourceGenerator(), new RegistrationGenerator().AsSourceGenerator(), new EntryPointGenerator().AsSourceGenerator(),
+        [new AskGenerator().AsSourceGenerator(), new RegistrationGenerator().AsSourceGenerator(),
             new PolyfillGenerator().AsSourceGenerator()], parseOptions: ParseOptions,
         driverOptions: new GeneratorDriverOptions(IncrementalGeneratorOutputKind.None, trackIncrementalGeneratorSteps: true));
 
@@ -194,22 +194,6 @@ public class GeneratorTests
         public override AnalyzerConfigOptions GlobalOptions { get; } = new Options(true);
         public override AnalyzerConfigOptions GetOptions(SyntaxTree tree) => new Options(false);
         public override AnalyzerConfigOptions GetOptions(AdditionalText textFile) => new Options(false);
-    }
-
-    [Test]
-    public void NodeExecutablesGetAnEntryPointUnlessTheyWriteOne()
-    {
-        const string node = "[NinoType, Message] public partial record struct Price(int N) : IRequest<int>; public sealed class Shop : Service { [Handle] public int On(Price m) => m.N; }";
-        Driver().RunGeneratorsAndUpdateCompilation(Compile(OutputKind.ConsoleApplication, Parse(node)), out var generated, out _);
-        Assert.That(generated.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error), Is.Empty);
-        Assert.That(generated.GetEntryPoint(default)?.ContainingType.ToDisplayString(), Is.EqualTo("DaServer.Generated.NodeProgram"));
-
-        var own = Parse(node + " public static class Program { public static void Main() { } }");
-        Driver().RunGeneratorsAndUpdateCompilation(Compile(OutputKind.ConsoleApplication, own), out var custom, out _);
-        Assert.That(custom.GetEntryPoint(default)?.ContainingType.Name, Is.EqualTo("Program"), "a written entry point wins");
-
-        Driver().RunGeneratorsAndUpdateCompilation(Compile(Parse(node)), out var library, out _);
-        Assert.That(library.SyntaxTrees.Any(t => t.FilePath.EndsWith("DaServer.Program.g.cs")), Is.False, "libraries get none");
     }
 
     [Test]

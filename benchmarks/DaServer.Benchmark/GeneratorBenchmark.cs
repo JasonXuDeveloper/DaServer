@@ -70,8 +70,7 @@ public class GeneratorBenchmark
 #pragma warning restore RS1041, RS1036, RS2008
 
     private static GeneratorDriver Driver() => CSharpGeneratorDriver.Create(
-        [new AskGenerator().AsSourceGenerator(), new RegistrationGenerator().AsSourceGenerator(),
-            new EntryPointGenerator().AsSourceGenerator(), new PolyfillGenerator().AsSourceGenerator()],
+        [new AskGenerator().AsSourceGenerator(), new RegistrationGenerator().AsSourceGenerator(), new PolyfillGenerator().AsSourceGenerator()],
         parseOptions: ParseOptions);
 
     private static SyntaxTree Parse(string source) => CSharpSyntaxTree.ParseText(source, ParseOptions);
