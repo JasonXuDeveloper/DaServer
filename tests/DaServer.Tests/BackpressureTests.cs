@@ -64,6 +64,7 @@ public class BackpressureTests : ClusterTest
         Assert.That(node.IsReady, Is.False, "a stopping node is not ready");
         Assert.That(phases, Is.EqualTo(new[] { "leave", "drain", "unload", "close" }));
         Assert.That(node.Shards[0].ActorCount, Is.EqualTo(1), "the actor whose save hangs was reported, not waited for");
+        Assert.That(node.StoppedClean, Is.False, "the host exits with an error: state was lost");
     }
 
     [TestCase(false)]

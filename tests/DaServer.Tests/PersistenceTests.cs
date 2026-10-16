@@ -47,6 +47,7 @@ public class PersistenceTests(string kind) : ClusterTest
         Assert.That(store.Writes, Is.Zero, "SaveEvery zero: nothing written before the unload");
         await Stop(first);
         Assert.That(store.Writes, Is.EqualTo(1), "the unload wrote the record once");
+        Assert.That(first.StoppedClean, Is.True, "every actor was saved within the budget");
 
         var second = await StartWith(store);
         Assert.That(await second.Ask(new BankId(100), new Balance()), Is.EqualTo(7), "the ledger came back");

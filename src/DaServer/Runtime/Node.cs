@@ -239,8 +239,15 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
     }
 
     /// <summary>The budget ran out while actors were unloading: say how many were not saved (their shards keep trying).</summary>
+    /// <summary>
+    /// After <see cref="StopAsync"/>: whether every actor was unloaded (and its record written) within the stop budget.
+    /// The host exits with an error otherwise, so the platform sees a stop that lost state.
+    /// </summary>
+    public bool StoppedClean { get; private set; } = true;
+
     private void ReportUnloaded()
     {
+        StoppedClean = false;
         foreach (var shard in _shards)
             if (shard.ActorCount > 0)
                 Logger.LogError("Shutdown budget ({Budget}) exceeded: shard {Shard} of {Node} still holds {Actors} actors whose " +
