@@ -969,3 +969,27 @@ records that no longer hold). Each: context → decision → consequences.
   - Stopping the actor for good: the next message would load it anyway, since actors are virtual.
 - Consequences: Reload only helps once state is persisted (N5): until then it resets the actor to its `OnLoad` state.
 
+## ADR-067 Components and logic live in separate projects; the node project is the reloadable logic
+- Context: hot reload (N9) replaces code while actors keep their state. EasyEcs stores components by type. A
+  component declared in the reloaded assembly becomes a different type after the reload, and the stored data is
+  unreachable. Logic that keeps state in object fields loses it the same way.
+- What other projects do: a studied game server keeps components in `a studied game server.Server` and systems, handlers and extensions in
+  `a studied game server.Server.HotReload`, with analyzers and a generator that runs only in the reloadable project. ET splits
+  Model (entities and components) from Hotfix (systems) and forbids fields in Hotfix through analyzers. Orleans does
+  not reload code, so its grains keep their state classes beside them.
+- Decision: split only what a reload needs, in the application layer. The framework's own runtime is never reloaded
+  (it updates by a rolling deploy) and is not split.
+  - DAS013: a project on the server runtime (it references `DaServer`) declares no component or singleton. They live
+    in a components project that references contracts and EasyEcs only (`Sample.MapServer.Components`).
+  - DAS007: actors, services and server systems hold no fields. A system's state is a singleton.
+  - Not split: contracts (already their own project, shared with clients); shared logic (`DaServerShared`: clients run
+    it, so it is never reloaded and may hold both); the node host (the generated entry point can load the node
+    project's own assembly collectibly, so the node project is the reloadable logic, N9).
+  - Projects are recognised by what they reference: no property to set, no extra host project.
+- How a reload works (N9): there is no cluster-wide stop. Each shard swaps its handler table and system list between
+  two passes, on its own thread (the only one touching its world), in the time of one pass. Turns in flight finish on
+  the old code. Components and singletons stay where they are, because their types did not change. a studied game server stops
+  the world and forces a GC instead.
+- Consequences: one components project per server that has data. Changing a component's layout is a rolling deploy;
+  changing behaviour is a reload. Data and behaviour are split exactly as ECS splits them.
+

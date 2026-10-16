@@ -386,9 +386,11 @@ in separate commits.
       e2e test changes maps every 5 s. `DaServer.Simulation`: `ClientLoop`, HTN planning as ECS data, `Swarm`/`SwarmMeter`.
 - [ ] Optional sample: server-side NPCs (patrol, chase, flee) planned with the same HTN model in a map server, to
       show heavy AI batched on shards without allocation.
-- [ ] N1 Fixed/reloadable split on top of stateless handler types (DAS007, ADR-044): projects Contracts (messages) +
-      Model (components, singletons: never reloaded) + Logic (actors, services, systems: reloadable), samples
-      included. Prerequisite of N5 and N9. (a studied game server, ET)
+- [x] N1 Components apart from logic (ADR-067): an application project on the server runtime declares no component
+      or singleton (DAS013) and its systems hold no fields (DAS007); components live in `X.Components` projects
+      (contracts and EasyEcs only), which a reload never replaces. Shared logic is exempt (clients run it, it never
+      reloads); the node project is the reloadable logic itself (no separate host project). Samples, tests and
+      benchmarks follow it. (a studied game server Server/HotReload, ET Model/Hotfix)
 - [x] N2 `SendAfter(delay, address, message)` / `CancelSend(timer)` (ADR-058): per-shard timer wheel of serialized
       frames (`ShardTimers`, `TimerSystem`), delivered as ordinary mail when due (follows moved keys), 5 ms resolution,
       zero allocation (`DelayedSendsDoNotAllocate`, `TimerBenchmark`); DAS009 of N3b points `await Task.Delay` to it.

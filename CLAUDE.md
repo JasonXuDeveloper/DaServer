@@ -42,14 +42,15 @@ src/DaServer/              server runtime (net11.0): Runtime/ Cluster/ Rpc/ Net/
   Runtime/Systems/         runtime systems: Dispatch, Turn, ServiceCall, Removal, Unload, Mailbox (ShardMessages group),
                            Rebalance (ShardRebalance), Idle (ShardIdleScan); each reacts to one lifecycle tag (ADR-037)
 src/DaServer.Generator/    incremental generators (AskGenerator, RegistrationGenerator, EntryPointGenerator,
-                           PolyfillGenerator) + DaServerAnalyzer (DAS001-012);
+                           PolyfillGenerator) + DaServerAnalyzer (DAS001-013);
                            Shapes.cs reads symbols once for both, so "skipped by the generator" == "reported"
 src/DaServer.Hosting/      Generic Host integration, configuration, OpenTelemetry (OTLP when configured), shutdown
 src/DaServer.Aspire/       Aspire hosting integration: AddDaServerCluster / AddNodes / WithClientConnections /
                            WithClientEndpoints
 samples/mmo/               MMO scenario: Sample.Contracts / Sample.Shared (rules both sides run) / Sample.Client (the game
                            client as ECS) / Sample.LoginServer / Sample.GameServer / Sample.MapServer / Sample.GatewayServer
-                           (one project per server, no Program.cs, no appsettings) / Sample.Bot (the client as a swarm
+                           (one project per server, no Program.cs, no appsettings; a server's components in
+                           Sample.XServer.Components, DAS013) / Sample.Bot (the client as a swarm
                            with an HTN behavior: 10k-bot load test and e2e) / Sample.Tests / Sample.AppHost (Aspire)
 tests/DaServer.Tests/      NUnit: ClusterTest fixture, per-feature tests, generator/analyzer, allocation, architecture
 tests/DaServer.E2E/        the AppHost with 1,000 bots through Aspire.Hosting.Testing
