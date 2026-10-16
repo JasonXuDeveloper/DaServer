@@ -67,12 +67,19 @@ public sealed class NodeOptions
 
     /// <summary>
     /// Secret shared by every node of the cluster for signing (configuration <c>DaServer__SigningSecret</c>; Aspire
-    /// generates one). It secures nothing else (node links are not authenticated with it). Client-facing nodes sign
+    /// generates one). Nodes prove it when they open a link (ADR-065): a process that only reaches the cluster port
+    /// cannot join without it. Client-facing nodes sign
     /// resume tickets with it, so a client that lost its connection resumes its session on
     /// any of them (<see cref="SessionResumed"/>); features sign their tokens with it. Null: no tickets, a lost
     /// connection closes the session at once.
     /// </summary>
     public string? SigningSecret { get; set; }
+
+    /// <summary>
+    /// The cluster's name: nodes of another cluster that reach this one's port are refused (two environments sharing
+    /// a network, a test cluster pointed at production seeds). Aspire sets the cluster resource's name.
+    /// </summary>
+    public string ClusterName { get; set; } = "daserver";
 
     /// <summary>
     /// How long actors wait for a client that lost its connection before they receive <see cref="SessionClosed"/>
