@@ -21,6 +21,9 @@ public static class MapGeometry
 
     public static Velocity Clamp(float x, float y) => new(Math.Clamp(x, -MaxSpeed, MaxSpeed), Math.Clamp(y, -MaxSpeed, MaxSpeed));
 
+    /// <summary>The nearest point of the map: the border stops an avatar.</summary>
+    public static Position Inside(Position p) => new(Math.Clamp(p.X, 0f, Size), Math.Clamp(p.Y, 0f, Size));
+
     public static int CellOf(in Position p) =>
         Math.Min((int)(p.Y / CellSize), Side - 1) * Side + Math.Min((int)(p.X / CellSize), Side - 1);
 
@@ -53,10 +56,9 @@ public sealed partial class MovementSystem : EcsSystem
     private static void Move(ref Position p, ref Velocity v)
     {
         if (v.X == 0 && v.Y == 0) return;
-        float x = p.X + v.X, y = p.Y + v.Y;
-        float cx = Math.Clamp(x, 0f, MapGeometry.Size), cy = Math.Clamp(y, 0f, MapGeometry.Size);
-        p = new Position(cx, cy);
-        if (cx == x && cy == y) return;
-        v = new Velocity(cx == x ? v.X : 0, cy == y ? v.Y : 0); // clients extrapolate: they must learn about the stop
+        var next = new Position(p.X + v.X, p.Y + v.Y);
+        p = MapGeometry.Inside(next);
+        if (p == next) return;
+        v = new Velocity(p.X == next.X ? v.X : 0, p.Y == next.Y ? v.Y : 0); // clients extrapolate: they must learn about the stop
     }
 }

@@ -4,7 +4,7 @@ using Sample.Shared;
 
 namespace Sample.Client;
 
-/// <summary>The client's systems, for the world that holds its players (a game's, or a simulated users' loop).</summary>
+/// <summary>The client's systems, for the world that holds its players (a game's, or a swarm's loop).</summary>
 public static class ClientSystems
 {
     public static void AddTo(World world)
@@ -12,12 +12,15 @@ public static class ClientSystems
         world.AddSystem<PushSystem>();
         world.AddSystem<SteeringSystem>();
         world.AddSystem<MovementSystem>();
-        world.AddSystem<ViewSystem>();
         world.AddSystem<SpeakingSystem>();
+        world.AddSystem<ViewSystem>();
     }
+
+    /// <summary>What the loop runs on every pass, between ticks: pushes as they arrive.</summary>
+    public static void OnPass(World world) => world.Update<ClientPushes>();
 }
 
-/// <summary>Pushes: run as soon as they arrive (every pass of the client's loop), not at the simulation's tick rate.</summary>
+/// <summary>Pushes: handled as soon as they arrive (every pass of the client's loop), not at the simulation's tick rate.</summary>
 public struct ClientPushes : ISystemGroup;
 
 /// <summary>Runs each player's queued pushes on the world's thread (<see cref="Pushes"/>).</summary>
@@ -38,7 +41,7 @@ public sealed partial class SteeringSystem : EcsSystem
     {
         if (me.Map.Value == 0 || (steering.X == sent.X && steering.Y == sent.Y)) return; // input goes to the map it is in
         sent = new SentSteering(steering.X, steering.Y);
-        velocity = MapGeometry.Clamp(steering.X, steering.Y); // the server clamps the same way
+        velocity = MapGeometry.Clamp(steering.X, steering.Y); // the map clamps the same way
         link.Client.Send(new Move(steering.X, steering.Y));
     }
 }
@@ -55,18 +58,26 @@ public sealed partial class SpeakingSystem : EcsSystem
 }
 
 /// <summary>
-/// Avatars that left the 3x3 cells around the viewer's own avatar are out of view: the server no longer reports them,
-/// so the client forgets them (the same grid rule the map uses).
+/// Forgets the avatars that left the 3x3 cells around the player's own avatar: the map no longer reports them (the
+/// same grid rule). Twice a second is plenty for what is out of sight.
 /// </summary>
 public sealed partial class ViewSystem : EcsSystem
 {
-    public override int Priority => 10; // after movement
+    public override int UpdateInterval => Timing.TickRate / 2;
 
     [ForEach]
-    private static void Forget(Entity avatar, in Remote remote, in Position position)
+    private static void Forget(in Position position, in View view)
     {
-        if (MapGeometry.Near(MapGeometry.CellOf(position), MapGeometry.CellOf(remote.Viewer.Get<Position>()))) return;
-        remote.Viewer.Get<View>().Avatars.Remove(remote.Player);
-        avatar.Destroy();
+        int cell = MapGeometry.CellOf(position);
+        long now = Environment.TickCount64;
+        foreach (var (player, avatar) in view.Avatars)
+            if (!MapGeometry.Near(MapGeometry.CellOf(avatar.Get<Track>().Now(now)), cell)) view.Leaving.Add(player);
+        foreach (var player in view.Leaving)
+        {
+            view.Avatars.Remove(player, out var avatar);
+            avatar.Destroy();
+        }
+
+        view.Leaving.Clear();
     }
 }

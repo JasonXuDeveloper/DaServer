@@ -1,14 +1,14 @@
-using EasyEcs;
 using DaServer.Simulation;
 using DaServer.Simulation.Planning;
+using EasyEcs;
 using Sample.Client;
 using Sample.Contracts;
 
 namespace Sample.Bot;
 
-// What a bot does, as a planning domain: change maps when due, say something when due, otherwise wander. Facts come
-// from the bot's schedule (SenseSystem); each task is a component carried out by one system, on the client's own
-// data (Steering, Speaking, EnterMapAsync): a bot is a player whose hands are a planner.
+// What a bot does, as a planning domain: change maps when due, chat when due, otherwise wander. Facts come from the
+// bot's schedule (SenseSystem); each task is a component carried out by one system on the client's own data
+// (Steering, Speaking, EnterMapAsync): a bot is a player whose hands are a planner.
 
 [Flags]
 public enum BotFact : ulong
@@ -43,21 +43,14 @@ public record struct Wandering(long Until) : IComponent;
 /// <summary>Task: say something.</summary>
 public struct Chatting : IComponent;
 
-/// <summary>Task: move to another map (0: not started; removed when the client's flow completed).</summary>
-public record struct Travelling(MapId To) : IComponent;
+/// <summary>Task: move to another map (the client's own flow, <see cref="TaskFlow"/>).</summary>
+public struct Travelling : IComponent;
+
+/// <summary>The scenario's failure counter, as a singleton of every loop's world.</summary>
+public readonly record struct Trips(Counter Failed) : ISingletonComponent;
 
 public static class Behavior
 {
-    /// <summary>The systems of a bot's behavior: its sensor, the planner and one system per task.</summary>
-    public static void AddTo(World world)
-    {
-        world.AddSystem<SenseSystem>();
-        world.AddSystem<PlannerSystem>();
-        world.AddSystem<WanderSystem>();
-        world.AddSystem<ChatSystem>();
-        world.AddSystem<TravelSystem>();
-    }
-
     /// <summary>The bots' domain: the first method whose condition holds, in order.</summary>
     public static HtnDomain Domain()
     {
@@ -70,6 +63,18 @@ public static class Behavior
             .Method(play, BotFact.ChatDue, chat, wander)
             .Method(play, BotFact.None, wander);
         return d.Build(play);
+    }
+
+    /// <summary>The bot's systems: its sensor, the planner and one system per task.</summary>
+    public static void AddTo(World world, Meter meter)
+    {
+        world.AddSingleton<HtnDomain>() = Domain();
+        world.AddSingleton<Trips>() = new Trips(meter.Counter("failed map changes", CounterKind.Failure));
+        world.AddSystem<SenseSystem>();
+        world.AddSystem<PlannerSystem>();
+        world.AddSystem<WanderSystem>();
+        world.AddSystem<ChatSystem>();
+        world.AddSystem<TravelSystem>();
     }
 }
 
@@ -111,13 +116,13 @@ public sealed partial class WanderSystem : EcsSystem
     }
 }
 
-/// <summary>Carries out <see cref="Chatting"/>: the client says it (and removes <see cref="Speaking"/> once sent).</summary>
+/// <summary>Carries out <see cref="Chatting"/>: the client says it.</summary>
 public sealed partial class ChatSystem : EcsSystem
 {
     public override int Priority => -20;
 
     [ForEach, With<Chatting>]
-    private static void Say(Entity bot, ref Bot b)
+    private static void Chat(Entity bot, ref Bot b)
     {
         b.NextChat = Environment.TickCount64 + b.ChatEveryMs;
         bot.Remove<Chatting>();
@@ -125,35 +130,18 @@ public sealed partial class ChatSystem : EcsSystem
     }
 }
 
-/// <summary>Carries out <see cref="Travelling"/>: the client's own flow, after this tick (it changes the world).</summary>
+/// <summary>Carries out <see cref="Travelling"/>: the client's own flow to another map.</summary>
 public sealed partial class TravelSystem : EcsSystem
 {
     public override int Priority => -20;
 
-    [ForEach]
-    private static void Travel(Entity bot, ref Travelling travelling, ref Bot b, in Me me, in BotMeters meters)
+    [ForEach, With<Travelling>]
+    private static void Travel(Entity bot, ref Bot b, in Me me, in Trips trips)
     {
-        if (travelling.To.Value != 0) return; // on the way
+        if (b.NextTravel > Environment.TickCount64) return; // on the way
         b.NextTravel = Environment.TickCount64 + b.TravelEveryMs;
         long from = me.Map.Value - 1; // map ids are 1..Maps
         var to = new MapId(1 + (from + 1 + (long)(b.Next() * (b.Maps - 1))) % b.Maps); // any other map
-        travelling = new Travelling(to);
-        SynchronizationContext.Current!.Post(static s => Go(((Entity, MapId, Counter))s!), (bot, to, meters.FailedTrips));
-    }
-
-    private static async void Go((Entity Bot, MapId To, Counter Failed) trip)
-    {
-        try
-        {
-            if (!await Player.EnterMapAsync(trip.Bot, trip.To)) trip.Failed.Add();
-        }
-        catch (Exception)
-        {
-            trip.Failed.Add();
-        }
-        finally
-        {
-            if (trip.Bot.IsAlive) trip.Bot.Remove<Travelling>();
-        }
+        TaskFlow.Start<Travelling>(bot, () => Player.EnterMapAsync(bot, to), trips.Failed);
     }
 }

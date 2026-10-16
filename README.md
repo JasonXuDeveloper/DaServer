@@ -237,7 +237,7 @@ cluster.AddNodes<Projects.Sample_GameServer>("game");                       // P
 cluster.AddNodes<Projects.Sample_MapServer>("map");                         // Map actors, movement/AOI systems
 var gateways = cluster.AddNodes<Projects.Sample_GatewayServer>("gateway", replicas: 3).WithClients(); // clients, no business code
 
-builder.AddProject<Projects.Sample_Bot>("bots").WithClientEndpoints(gateways).WithArgs("10000", "60", "1", "1", "0"); // simulated players
+builder.AddProject<Projects.Sample_Bot>("bots").WithClientEndpoints(gateways).WithArgs("--bots", "10000", "--seconds", "60"); // simulated players
 builder.Build().Run();
 ```
 
