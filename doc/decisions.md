@@ -772,7 +772,7 @@ records that no longer hold). Each: context → decision → consequences.
   player's session: `await BindSession(session); return true;`) therefore serves one caller per round trip; 10,000
   players entering two maps queued behind those round trips and were refused (`Overloaded`). The await is needed for
   ordering (the client's next message must find the binding), not for the actor's state.
-- Decision: `return ReplyWhen(task, reply);` (actors and services, `ValueTask` or `ValueTask<T>` tasks) ends the turn
+- Decision: `return ReplyWhen(task, reply);` (actors and services, `Reply` or `Reply<T>` tasks) ends the turn
   at once and replies `reply` when the task completes, its failure instead. The handler leaves a pooled watcher in a
   thread-static slot that the generated dispatcher's `CallContext.Reply` takes on the same thread (one volatile read
   for reply types never used with it): no allocation per call. DAS011 keeps `ReplyWhen` to the returned expression of
@@ -862,3 +862,24 @@ records that no longer hold). Each: context → decision → consequences.
 - Consequences: no new API. The owner is the only one that decides, so an intent can never apply to stale data.
   Actors still `await` inside handlers: a turn holds only its actor.
 
+
+## ADR-062 Reply<T>: the awaitable of calls and asynchronous handlers
+- Context: handlers written `async ValueTask<T>` box their state machine on every suspension (H1). The pooling
+  builder needs an attribute on every handler and caches too few boxes for a shard with thousands of suspended turns.
+  A `ValueTask<T>` also exposes `.Result`, which on a pooled call is a wait that cannot work (ADR-060).
+- Decision:
+  - `Reply<T>` and `Reply` (Abstractions, namespace `DaServer`) wrap a `ValueTask`. `Ask` returns `Reply<T>`.
+    Handlers return `T`, `Reply<T>`, `void` or `Reply`; the access operations (`BindSession`, `GrantSession`, ...)
+    and lifecycle hooks (`OnLoad`, `OnUnload`) return `Reply`.
+  - Both types carry their builder (`ReplyMethodBuilder`). It keeps no box while a method completes synchronously.
+    On the first suspension it moves the state machine into a box pooled per thread and state machine type, bounded
+    at 4096 idle boxes. The box returns to the pool when its result is read.
+  - The types expose `GetAwaiter`, `AsValueTask` (the runtime, combinators) and `AsTask` (code outside shards). They
+    have no `.Result`; a `T` converts to `Reply<T>`.
+- Alternatives:
+  - Keep `ValueTask` and require `[AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]` through an
+    analyzer: a line of plumbing on every handler, and a small cache.
+  - A custom awaitable without `ValueTask` inside: more code for the same result.
+- Consequences: an awaiting handler allocates nothing once warm (`RepliesOfSuspendedHandlersDoNotAllocate` without
+  any attribute); user code names one awaitable. ExecutionContext does not flow into a resumed handler, as before for
+  calls.

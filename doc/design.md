@@ -37,7 +37,7 @@ Everything a developer declares is one of these (ADR-035). The message type alon
 | `[Message, ToClient]` | servers push it to sessions and groups; only clients handle it |
 | `[NinoType]` alone | data inside messages; anything else crossing the wire is a build error (DAS003) |
 | `M : IRequest<TReply>` | a request, answered with one `TReply` |
-| `[Handle]` method of an `Actor`/`Service` | handles one message type; returns `void`/`ValueTask`, or a request's reply/`ValueTask<TReply>` |
+| `[Handle]` method of an `Actor`/`Service` | handles one message type; returns `void`/`Reply`, or a request's reply/`Reply<TReply>` (`Ask` returns `Reply<TReply>` too) |
 | `[Handle]` method of any other class | client-side handler of pushes (`client.Register(obj)`) |
 | `class S : EcsSystem` with `[ForEach]` | per-tick logic over every matching entity of the shard |
 
@@ -120,7 +120,7 @@ turn has that chain fails at once with `CallCycle` (ADR-059). A service handler 
 | Message objects | None. Messages are structs serialized straight into pooled `FrameWriter` buffers; dispatchers deserialize straight from the received bytes. |
 | Buffers | `BufferPool`: power-of-two buckets on the **Pinned Object Heap**, each bucket bounded by a byte budget (64 MB). Sockets use the buffers without pinning, and they never fragment gen0/1/2. |
 | Queues | Bounded Vyukov MPMC rings with struct slots. Producer and consumer cursors are padded onto separate 64-byte cache lines. |
-| Awaiting | `PendingCall<T>` is a pooled `IValueTaskSource<T>`. A suspended handler's reply is awaited by a pooled `ReplyWatcher<T>`; a synchronously completed handler replies without any state machine. |
+| Awaiting | `PendingCall<T>` is a pooled `IValueTaskSource<T>`. An `async Reply<T>` handler keeps its suspended state in a box pooled per thread and state machine (`ReplyMethodBuilder`, ADR-062); its reply is awaited by a pooled `ReplyWatcher<T>`; a synchronously completed handler replies without any state machine. |
 | Sending | Each connection copies frames into one batch buffer under a short lock. One send loop swaps and writes whole batches, so N frames cost one syscall. A broadcast serializes once and fans out by `memcpy`. |
 | Receiving | Frames are parsed in place. Zero-byte reads mean an idle client connection holds no receive buffer, which matters with tens of thousands of sockets. |
 | Sending API | Messages are `in` struct parameters of generic methods (`Ask<TRequest, TReply>`, generated typed overloads), so `Cluster.Ask(playerId, new AddGold(10))` allocates nothing and boxes nothing. |

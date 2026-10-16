@@ -77,7 +77,7 @@ Everything a developer declares is one of these. The message type alone decides 
 | `[Message, ToClient]` | Servers push it to client sessions and groups; clients handle it. |
 | `[NinoType] partial record struct D` | Data inside messages (fields, replies), never sent on its own. Anything crossing the wire is `[NinoType]`. |
 | `... : IRequest<TReply>` | A request: answered with one `TReply`. |
-| `[Handle] R On(M m)` | A handler in an actor or service: `void`/`ValueTask`, or the reply/`ValueTask<TReply>` of a request. |
+| `[Handle] R On(M m)` | A handler in an actor or service: `void`/`Reply`, or the reply/`Reply<TReply>` of a request (`async Reply<T>` handlers allocate nothing when they await). |
 | `partial class S : EcsSystem` with `[ForEach]` | Per-tick logic over every matching entity of the shard. |
 
 | Call | Target |
@@ -133,7 +133,7 @@ public readonly record struct MapId(long Value) : IActorId;
 public sealed class Account : Service
 {
     [Handle]
-    public async ValueTask<LoginResult> On(Login m)
+    public async Reply<LoginResult> On(Login m)
     {
         var player = new PlayerId(Hash(m.Name));                               // a real game looks the account up
         bool attached = await Cluster.Ask(player, new Attach(Caller)); // the Player actor of that id
@@ -145,7 +145,7 @@ public sealed class Account : Service
 public sealed class Player : Actor<PlayerId, PlayerState>
 {
     [Handle]
-    public async ValueTask<bool> On(Attach m)
+    public async Reply<bool> On(Attach m)
     {
         await BindSession(m.Session);               // the client's Player messages reach this player from now on
         State.Logins++;                             // re-read after awaiting
@@ -153,7 +153,7 @@ public sealed class Player : Actor<PlayerId, PlayerState>
     }
 
     [Handle]
-    public async ValueTask<bool> On(EnterMap m)
+    public async Reply<bool> On(EnterMap m)
     {
         await Cluster.Ask(m.Map, new Enter(Id, Caller)); // the call allocates nothing
         State.Map = m.Map;
@@ -172,7 +172,7 @@ public struct MapState() : IComponent
 public sealed class Map : Actor<MapId, MapState>
 {
     [Handle]
-    public async ValueTask<bool> On(Enter m)
+    public async Reply<bool> On(Enter m)
     {
         State.Avatars[m.Session] = World.CreateEntity(new Position(), new Velocity(), new Avatar(m.Player, Entity, m.Session));
         await BindSession(m.Session);               // its input reaches this map, it sees Group broadcasts
