@@ -19,12 +19,15 @@ public class ScenarioBenchmark
 
     [Params(3_000, 9_000)] public int Clients;
 
+    /// <summary>Client writes on a beat of this many ms (ClientConnectionOptions.FlushInterval; 0: at once).</summary>
+    [Params(0, 2)] public int FlushMs;
+
     [GlobalSetup]
     public void Setup() => SetupAsync().GetAwaiter().GetResult();
 
     private async Task SetupAsync()
     {
-        _nodes = await Clusters.Start(4, shards: 4, gateways: 3);
+        _nodes = await Clusters.Start(4, shards: 4, gateways: 3, clientFlush: TimeSpan.FromMilliseconds(FlushMs));
         var receiver = new Receiver(_countdown);
         _clients = new ClusterClient[Clients];
         for (int i = 0; i < Clients; i++)

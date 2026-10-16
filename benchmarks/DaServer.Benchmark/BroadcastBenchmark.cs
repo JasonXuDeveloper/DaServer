@@ -18,6 +18,9 @@ public class BroadcastBenchmark
 
     [Params(1_000, 5_000)] public int Clients;
 
+    /// <summary>Client writes on a beat of this many ms (ClientConnectionOptions.FlushInterval; 0: at once).</summary>
+    [Params(0, 2)] public int FlushMs;
+
     [Params(1, 9)] public int Groups;
 
     [GlobalSetup]
@@ -25,7 +28,7 @@ public class BroadcastBenchmark
 
     private async Task SetupAsync()
     {
-        _nodes = await Clusters.Start(2, shards: 4, gateways: 1);
+        _nodes = await Clusters.Start(2, shards: 4, gateways: 1, clientFlush: TimeSpan.FromMilliseconds(FlushMs));
 
         // A room owned by the non-gateway node: the broadcast crosses the node link, then fans out at the gateway.
         var room = Clusters.IdOwnedBy<RoomId>(_nodes[0], _nodes[1]);
