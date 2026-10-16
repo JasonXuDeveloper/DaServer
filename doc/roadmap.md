@@ -316,8 +316,10 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
       minority side stops without saving and exits for a restart; ties keep the lowest node id; clusters under three
       members never down. Open: an optional authoritative lease store (Kubernetes Lease, PostgreSQL) as a module for
       strict ownership, with N5.
-- [ ] C3 Node authentication: HMAC challenge in Hello with the signing secret, cluster id and protocol version in
-      Hello; a process that only reaches the port can no longer join.
+- [x] C3 Node authentication (ADR-065): Hello carries the link protocol version, the cluster name and an HMAC of
+      the signing secret (once within a minute: no replay); an accepted connection is read only after it
+      (`LinkAuthTests`). Links are authenticated, not encrypted: TLS stays the platform's (service mesh, private
+      network).
 - [ ] C4 Supervision: per actor type `OnError` policy (Resume default, Reload = unload and reload state); poison
       message counter and metric.
 
