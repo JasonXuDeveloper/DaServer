@@ -38,7 +38,7 @@ public static class DaServerHttpExtensions
     }
 
     /// <summary>
-    /// Map the node's own endpoints (the generated entry point does; a written Program.cs calls it after <c>Build</c>):
+    /// Map the node's own endpoints (Program.cs calls it after <c>Build</c>):
     /// <c>/health</c> (ready: joined, not leaving) and <c>/alive</c> (no stalled shard).
     /// On client-facing nodes: <c>GET /clients/endpoint</c>, where a client should connect (clients that bootstrap over
     /// HTTP), and <c>/clients/ws</c>, client connections over WebSocket (browsers, WebGL builds).
