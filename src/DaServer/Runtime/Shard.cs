@@ -269,6 +269,9 @@ internal sealed class Shard : CompletionThread
         }
 
         World.AddSingleton<ServiceDirectory>() = new ServiceDirectory(services);
+        var persisted = ServerRegistry.PersistentTypes;
+        World.AddSingleton<ShardStore>() = new ShardStore(persisted.Length > 0 ? Node.Options.ActorStore : null, persisted,
+            persisted.ToFrozenDictionary(static t => t.WireId), new LoadBatch(this), new SaveBatch(this));
 
         World.AddSystem<TimerSystem>();
         World.AddSystem<DispatchSystem>();
@@ -279,6 +282,10 @@ internal sealed class Shard : CompletionThread
         World.AddSystem<RebalanceSystem>();
         World.AddSystem<IdleSystem>();
         World.AddSystem<UnloadSystem>();
+        World.AddSystem<LoadSystem>();
+        World.AddSystem<PersistSystem>();
+        World.AddSystem<CheckpointSystem>();
+        World.AddSystem<StoreSystem>();
         foreach (var info in Node.HostedSystems) World.AddSystem(info.Factory());
         foreach (var feature in Node.Options.Features) feature.ConfigureShard(World);
     }

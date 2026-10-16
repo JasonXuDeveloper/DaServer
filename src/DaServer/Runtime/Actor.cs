@@ -89,6 +89,14 @@ public abstract class Actor : ShardObject
     public virtual TimeSpan UnloadAfterIdle => TimeSpan.Zero;
 
     /// <summary>
+    /// With a store (<see cref="NodeOptions.ActorStore"/>): the actor's <see cref="PersistAttribute">[Persist]</see>
+    /// components are written at most this long after they changed (a crash loses at most this much), besides on
+    /// unload. Zero: only on unload. A critical change (a trade, a purchase) writes at once: add <see cref="SaveNow"/>.
+    /// Read once when the actor loads.
+    /// </summary>
+    public virtual TimeSpan SaveEvery => TimeSpan.FromSeconds(30);
+
+    /// <summary>
     /// A handler of this actor failed (threw, or its reply failed): what to do with the actor (C4). <see cref="ErrorAction.Resume"/>
     /// (default) keeps it and takes the next message; <see cref="ErrorAction.Reload"/> drops it without saving, so the
     /// next message loads it again from storage (its state may be inconsistent after a half-applied change). The caller
@@ -150,4 +158,10 @@ public enum ErrorAction
     /// <summary>Remove the actor without saving; the next message loads it again.</summary>
     Reload,
 }
+
+/// <summary>
+/// Tag: write the actor's record now (ADR-068), for a change that must survive a crash (a trade, a purchase):
+/// <c>Entity.Add&lt;SaveNow&gt;()</c>. Removed once the write is queued; an unchanged record is not written.
+/// </summary>
+public struct SaveNow : IComponent;
 

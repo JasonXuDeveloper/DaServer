@@ -38,6 +38,7 @@ internal sealed partial class TurnSystem : EcsSystem
         var error = TurnWatcher.Result(in turn);
         if (error != null) world.Logger().LogError(error, "Unload of {Actor} failed", self.Actor);
         actor.Remove<Turn, TurnEnded>();
-        actor.Add<Removing>() = new Removing(RpcStatus.Ok, null);
+        if (actor.Has<Stored>()) actor.Add<FinalSave>(); // removed once its record is written (PersistSystem)
+        else actor.Add<Removing>() = new Removing(RpcStatus.Ok, null);
     }
 }

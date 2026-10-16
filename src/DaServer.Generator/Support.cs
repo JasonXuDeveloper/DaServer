@@ -7,6 +7,7 @@ internal static class Support
 
     public const string HandleAttribute = "DaServer.HandleAttribute";
     public const string MessageAttribute = "DaServer.MessageAttribute";
+    public const string PersistAttribute = "DaServer.PersistAttribute";
     public const string ClusterClientType = "DaServer.Client.ClusterClient";
     public const string ActorId = "DaServer.IActorId";
 

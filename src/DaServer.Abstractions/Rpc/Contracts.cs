@@ -41,6 +41,16 @@ public sealed class HandleAttribute : Attribute;
 public sealed class MessageAttribute : Attribute;
 
 /// <summary>
+/// The component is part of its actor's stored record (ADR-068): saved when the actor unloads and every
+/// <c>Actor.SaveEvery</c> while it changed, restored before <c>OnLoad</c> when the actor loads again. A
+/// <c>[NinoType]</c> struct component in a components project; its section in the record is keyed by its wire id
+/// (FNV-1a of its full name, <see cref="WireIdAttribute"/> to keep one across a rename), so adding or removing a
+/// persisted component never breaks a stored record.
+/// </summary>
+[AttributeUsage(AttributeTargets.Struct)]
+public sealed class PersistAttribute : Attribute;
+
+/// <summary>
 /// Overrides the wire id of a message type (FNV-1a of its full name by default). Only to resolve a reported collision
 /// or to keep compatibility after renaming a message.
 /// </summary>

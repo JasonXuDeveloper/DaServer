@@ -13,7 +13,7 @@ namespace DaServer.Generator;
 public sealed partial class DaServerAnalyzer : DiagnosticAnalyzer
 {
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics { get; } = ImmutableArray.Create(
-        Rules.BadHandler, Rules.BadMessage, Rules.NotWireType, Rules.IdCollision, Rules.NoDefaultConstructor, Rules.WrongFlow, Rules.StatefulHandlerType, Rules.WrongAddress, Rules.SharedReferencesServer, Rules.MisplacedReplyWhen, Rules.BlockingCall, Rules.AskInSystem, Rules.ComponentInLogic);
+        Rules.BadHandler, Rules.BadMessage, Rules.NotWireType, Rules.IdCollision, Rules.NoDefaultConstructor, Rules.WrongFlow, Rules.StatefulHandlerType, Rules.WrongAddress, Rules.SharedReferencesServer, Rules.MisplacedReplyWhen, Rules.BlockingCall, Rules.AskInSystem, Rules.ComponentInLogic, Rules.BadPersisted);
 
     public override void Initialize(AnalysisContext context)
     {
@@ -38,6 +38,7 @@ public sealed partial class DaServerAnalyzer : DiagnosticAnalyzer
                 Shapes.ReadClientMessage(type, Report);
                 CheckStateless(type, logic, Report);
                 if (logic) CheckNoComponents(type, Report);
+                CheckPersisted(type, Report);
 
                 if (type.TypeKind != TypeKind.Struct || !Support.HasAttribute(type, Support.MessageAttribute)) return;
                 if (!Shapes.IsMessage(type, type.Locations.FirstOrDefault(), "[Message]", Report)) return;
@@ -199,6 +200,16 @@ public sealed partial class DaServerAnalyzer
         return false;
     }
 
+    /// <summary>A [Persist] type is a [NinoType] struct component: its bytes are a section of its actor's record.</summary>
+    private static void CheckPersisted(INamedTypeSymbol type, Report report)
+    {
+        if (!Support.HasAttribute(type, Support.PersistAttribute)) return;
+        if (type.TypeKind != TypeKind.Struct || !Support.Implements(type, "EasyEcs.IComponent") || type.IsGenericType)
+            report(Rules.BadPersisted, type.Locations.FirstOrDefault(), type.Name, "must be a non-generic struct component (EasyEcs.IComponent)");
+        else if (!Support.HasAttribute(type, Support.NinoTypeAttribute))
+            report(Rules.BadPersisted, type.Locations.FirstOrDefault(), type.Name, "must be a [NinoType]: its record section is its Nino bytes");
+    }
+
     private static void CheckNoComponents(INamedTypeSymbol type, Report report)
     {
         if (type.TypeKind != TypeKind.Struct || type.IsImplicitlyDeclared) return;
@@ -254,6 +265,9 @@ internal static class Rules
     public static readonly DiagnosticDescriptor ComponentInLogic = new("DAS013", "Component declared beside logic",
         "Component '{0}' is declared in a project that runs on the server runtime: declare it in a components project (it references contracts and EasyEcs, not the DaServer runtime), so the data outlives a reload of this project's actors, services and systems",
         Category, DiagnosticSeverity.Error, true);
+
+    public static readonly DiagnosticDescriptor BadPersisted = new("DAS014", "Invalid persisted component",
+        "[Persist] '{0}' {1}", Category, DiagnosticSeverity.Error, true);
 
     public static readonly DiagnosticDescriptor WrongAddress = new("DAS008", "Wrong kind of address",
         "'{0}' {1}", Category, DiagnosticSeverity.Error, true);

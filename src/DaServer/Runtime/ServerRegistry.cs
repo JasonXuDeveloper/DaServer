@@ -79,6 +79,29 @@ public static class ServerRegistry
         }
     }
 
+    private static readonly List<Persistence.PersistentType> PersistentList = new();
+
+    /// <summary>A persisted component type (<see cref="PersistAttribute"/>) of a components project the node references.</summary>
+    public static void RegisterPersistent<T>(uint wireId) where T : struct, IComponent
+    {
+        lock (Gate)
+        {
+            foreach (var existing in PersistentList)
+            {
+                if (existing.Type == typeof(T)) return;
+                if (existing.WireId == wireId)
+                    throw new InvalidOperationException($"Persisted components {existing.Type} and {typeof(T)} hash to the same wire id: add [WireId] to one");
+            }
+
+            PersistentList.Add(new Persistence.PersistentType<T>(wireId));
+        }
+    }
+
+    internal static Persistence.PersistentType[] PersistentTypes
+    {
+        get { lock (Gate) return PersistentList.ToArray(); }
+    }
+
     public static HandlerTypeInfo[] HandlerTypes
     {
         get { lock (Gate) return HandlerTypeList.ToArray(); }
