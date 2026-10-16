@@ -44,6 +44,26 @@ public class AllocationTests : ClusterTest
     }
 
     [Test]
+    public async Task DelayedSendsDoNotAllocate()
+    {
+        // Scheduled, held by the shard's timer wheel and sent when due: frames and wheel entries are reused.
+        var node = await Start("alloc", configure: o => o.GossipInterval = TimeSpan.FromHours(1));
+        const int sends = 2_000; // below the target's mailbox bound
+        var (scheduler, target) = (new CounterId(1), new CounterId(2));
+        for (int round = 1; round <= 3; round++) // warm-up: wheel entries, frames
+        {
+            await node.Ask(scheduler, new BumpManyLater(target, sends));
+            await Eventually(async () => await node.Ask(target, new Get()) == round * sends, "the delayed sends did not arrive");
+        }
+
+        long before = GC.GetTotalAllocatedBytes(precise: true);
+        await node.Ask(scheduler, new BumpManyLater(target, sends));
+        await Eventually(async () => await node.Ask(target, new Get()) == 4 * sends, "the delayed sends did not arrive");
+        long allocated = GC.GetTotalAllocatedBytes(precise: true) - before;
+        Assert.That(allocated / (double)sends, Is.LessThan(8), $"{allocated} B for {sends} delayed sends");
+    }
+
+    [Test]
     public async Task BurstsOfConcurrentCallsDoNotAllocate()
     {
         // 2,000 calls in flight at once: above the old fixed pool sizes (1,024), below the callee's mailbox bound.

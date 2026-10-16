@@ -27,6 +27,9 @@ public readonly record struct RoomId(long Value) : IActorId;
 [NinoType, Message] public partial record struct SlowAdd(int Delta) : IRequest<int>;       // awaits a foreign Task.Delay
 [NinoType, Message] public partial record struct Grow : IRequest<bool>;                    // input for GrowthSystem
 [NinoType, Message] public partial record struct AnswerLater(int Ms, bool Fail) : IRequest<int>;
+[NinoType, Message] public partial record struct BumpLater(CounterId Target, int Ms, int By) : IRequest<long>; // SendAfter: the timer
+[NinoType, Message] public partial record struct CancelBump(long Timer) : IRequest<bool>;
+[NinoType, Message] public partial record struct BumpManyLater(CounterId Target, int Count) : IRequest<bool>;
 [NinoType, Message] public partial record struct ConfirmVia(CounterId Target) : IRequest<int>; // replied when Target answered (ReplyWhen)
 [NinoType, Message] public partial record struct ConfirmViaMany(CounterId Via, CounterId Target, int Count) : IRequest<long>; // bytes allocated meanwhile // replied after Ms, the turn ends at once
 [NinoType, Message] public partial record struct AskAndFail(CounterId Other);            // completes Reports.ResumedOnShard
@@ -103,6 +106,17 @@ public sealed class Counter : Actor<CounterId, CounterState>
         }
 
         Reports.ResumedOnShard.TrySetResult(Shard.Current == shard);
+    }
+
+    [Handle] public long On(BumpLater m) => Cluster.SendAfter(TimeSpan.FromMilliseconds(m.Ms), m.Target, new CounterBumped(m.By));
+
+    [Handle] public bool On(CancelBump m) => Cluster.CancelSend(m.Timer);
+
+    [Handle]
+    public bool On(BumpManyLater m)
+    {
+        for (int i = 0; i < m.Count; i++) Cluster.SendAfter(TimeSpan.Zero, m.Target, new CounterBumped(1));
+        return true;
     }
 
     [Handle] public ValueTask<int> On(ConfirmVia m) => ReplyWhen(Cluster.Ask(m.Target, new Add(1)), State.Value);

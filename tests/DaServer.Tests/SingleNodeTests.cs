@@ -131,4 +131,22 @@ public class SingleNodeTests : ClusterTest
         var failed = Assert.ThrowsAsync<RpcException>(async () => await node.Ask(counter, new AnswerLater(0, Fail: true)));
         Assert.That(failed!.Status, Is.EqualTo(RpcStatus.Error), "a failed task is replied as the failure");
     }
+
+    [Test]
+    public async Task DelayedSendsArriveLaterAndCanBeCancelled()
+    {
+        var (scheduler, target) = (new CounterId(41), new CounterId(42));
+        long timer = await _node.Ask(scheduler, new BumpLater(target, 300, 5));
+        Assert.That(await _node.Ask(target, new Get()), Is.Zero, "not before its delay");
+        await Eventually(async () => await _node.Ask(target, new Get()) == 5, "the delayed send did not arrive");
+        Assert.That(await _node.Ask(scheduler, new CancelBump(timer)), Is.False, "already sent");
+
+        long cancelled = await _node.Ask(scheduler, new BumpLater(target, 300, 7));
+        Assert.That(await _node.Ask(scheduler, new CancelBump(cancelled)), Is.True);
+        await Task.Delay(500);
+        Assert.That(await _node.Ask(target, new Get()), Is.EqualTo(5), "a cancelled send is never sent");
+
+        Assert.Throws<InvalidOperationException>(() => _node.SendAfter(TimeSpan.Zero, target, new CounterBumped(1)),
+            "timers are a shard's data: off a shard thread there is none");
+    }
 }

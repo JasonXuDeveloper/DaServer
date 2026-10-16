@@ -44,7 +44,7 @@ public sealed class TimerWheel<T>
     /// Fire <paramref name="item"/> once <paramref name="delay"/> has passed: never earlier, at most two ticks later (the
     /// current tick is partly over, and the delay rounds up to whole ticks).
     /// </summary>
-    /// <returns>A handle for <see cref="Cancel"/>.</returns>
+    /// <returns>A handle for <see cref="Cancel"/> (its top 8 bits are 0: owners may tag handles there).</returns>
     public long Schedule(TimeSpan delay, in T item)
     {
         int index = Allocate();
@@ -54,16 +54,21 @@ public sealed class TimerWheel<T>
         e.Due = Math.Max(TickOf(Stopwatch.GetTimestamp()), _current) + ticks + 1;
         Link(index);
         Count++;
-        return (long)e.Generation << 32 | (uint)index;
+        return (long)(e.Generation & GenerationMask) << 32 | (uint)index;
     }
 
     /// <summary>Cancel a scheduled timer; false when it already fired or was cancelled.</summary>
-    public bool Cancel(long handle)
+    public bool Cancel(long handle) => Cancel(handle, out _);
+
+    /// <summary>Cancel a scheduled timer and get its item back (to release what it holds).</summary>
+    public bool Cancel(long handle, out T item)
     {
+        item = default!;
         int index = (int)(uint)handle;
         if ((uint)index >= (uint)_used) return false;
         ref var e = ref _entries[index];
-        if (e.Slot < 0 || e.Generation != (int)(handle >> 32)) return false;
+        if (e.Slot < 0 || (e.Generation & GenerationMask) != (int)(handle >> 32 & GenerationMask)) return false;
+        item = e.Item;
         Unlink(index);
         Release(index);
         return true;
@@ -97,6 +102,22 @@ public sealed class TimerWheel<T>
 
         return fired;
     }
+
+    /// <summary>Hand every scheduled timer to <paramref name="handler"/> without waiting for it, and empty the wheel (shutdown).</summary>
+    public void Clear<THandler>(ref THandler handler) where THandler : ITimerHandler<T>
+    {
+        for (int slot = 0; slot < _heads.Length; slot++)
+            while (_heads[slot] >= 0)
+            {
+                int index = _heads[slot];
+                var item = _entries[index].Item;
+                Unlink(index);
+                Release(index);
+                handler.OnTimer(in item);
+            }
+    }
+
+    private const int GenerationMask = 0xFF_FFFF;
 
     private long TickOf(long timestamp) => (timestamp - _origin) / _tickTimestamps;
 

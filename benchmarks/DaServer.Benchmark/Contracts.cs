@@ -100,3 +100,25 @@ public sealed class Gate : Actor<GateId, GateState>
         return ReplyWhen(Cluster.Ask(m.Ledger, new Add(1)), true);
     }
 }
+
+// ---------------------------------------------------------------- delayed sends
+
+/// <summary>Send <see cref="Count"/> one-way bumps to the target, now (Send) or through the shard's timers (SendAfter).</summary>
+[NinoType, Message] public partial record struct Bumps(CounterId Target, int Count, bool Delayed) : IRequest<bool>;
+
+public readonly record struct SchedulerId(long Value) : IActorId;
+
+public sealed class Scheduler : Actor<SchedulerId>
+{
+    [Handle]
+    public bool On(Bumps m)
+    {
+        for (int i = 0; i < m.Count; i++)
+        {
+            if (m.Delayed) Cluster.SendAfter(TimeSpan.Zero, m.Target, new Bumped(1));
+            else Cluster.Send(m.Target, new Bumped(1));
+        }
+
+        return true;
+    }
+}
