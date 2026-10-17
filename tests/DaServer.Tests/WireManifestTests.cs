@@ -45,8 +45,8 @@ public class WireManifestTests
         Game.Badge (null flag, positional, id 0D604888)
         - Id: int raw(4)
         Game.Cell (no header, positional, raw, id 10406113)
-        - Row: int raw(4)
-        - Column: int raw(4)
+        - Row: int@0 raw(4)
+        - Column: int@4 raw(4)
         Game.Circle (null flag, positional, tracked, id AD28B007)
         - X: int raw(4)
         - X: int raw(4)
@@ -67,11 +67,11 @@ public class WireManifestTests
         Game.Look (no header, positional, raw, id 5EB8F11A)
         = Game.View
         Game.Move (no header, positional, raw, id EBFC19FC)
-        - Hero: Game.HeroId raw {Value: long}
-        - X: float raw(4)
-        - Y: float raw(4)
+        - Hero: Game.HeroId@0 raw(8){Value:long@0:raw(8)}
+        - X: float@8 raw(4)
+        - Y: float@12 raw(4)
         Game.Paint (no header, positional, id D6BE6A7F)
-        - At: Game.Cell raw
+        - At: Game.Cell raw(8){Row:int@0:raw(4),Column:int@4:raw(4)}
         - Kind: Game.Kind raw(1)
         - Color: string Nino.Core.StringFormatter
         - Trail: Game.Cell[] Nino.Core.UnmanagedArrayFormatter<Game.Cell>
@@ -94,8 +94,8 @@ public class WireManifestTests
         Game.Tile (no header, positional, id 4206B509)
         - Sides: int raw(4)
         Game.View (no header, positional, raw, id 37003A50)
-        - Range: int raw(4)
-        - Zoom: int raw(4)
+        - Range: int@0 raw(4)
+        - Zoom: int@4 raw(4)
         """;
 
     [Test]
@@ -105,7 +105,7 @@ public class WireManifestTests
         // and type id; members in Nino's order (an interface's first, the primary constructor's properties first,
         // [NinoIgnore] skipped, [NinoMember] order without autoCollect, get-only properties only when a constructor
         // takes them, a hidden base member named with its type) and how each is written; plus what the manifest adds:
-        // an unmanaged struct without its own layout (an id) with its fields, replies.
+        // replies. Raw memory is Nino's to spell out: every field with its offset, nested structs included.
         string text = ManifestOf(GeneratorTests.Compile(GeneratorTests.Parse(Types)));
         Assert.That(text[text.IndexOf("Game.", StringComparison.Ordinal)..], Is.EqualTo(Recorded.Replace("\r", "") + "\n"));
     }
@@ -129,6 +129,7 @@ public class WireManifestTests
     [TestCase("public partial struct Spin", "public partial class Spin", "DAS017", TestName = "A struct that becomes a class breaks")]
     [TestCase("enum Kind : byte", "enum Kind : int", "DAS017", TestName = "An enum's underlying type is part of the layout")]
     [TestCase(" private int _hidden;", "", "DAS017", TestName = "A struct that turns raw changes its bytes")]
+    [TestCase("Pack = 4)", "Pack = 4, Size = 16)", "DAS017", TestName = "A raw struct's size is part of its layout")]
     [TestCase("private byte _shade;", "private short _shade;", "", TestName = "A field Nino does not serialize is not part of the layout")]
     [TestCase("public int Size; public int Sides", "public int Sides { get; set; } public int Size", "", TestName = "An interface's members come first whatever the class's order")]
     [TestCase("namespace Game;", "namespace Game; [NinoType, Message] public partial record struct Jump(int H);", "DAS018", TestName = "A new type must be recorded")]
@@ -174,8 +175,9 @@ public class WireManifestTests
         string fromSource = ManifestOf(GeneratorTests.Compile(GeneratorTests.Parse(UsesShared)).AddReferences(shared.ToMetadataReference()));
         string fromMetadata = ManifestOf(GeneratorTests.Compile(GeneratorTests.Parse(UsesShared)).AddReferences(MetadataReference.CreateFromImage(image.ToArray())));
         Assert.That(fromSource, Is.EqualTo(fromMetadata));
-        Assert.That(fromSource, Does.Contain("- Where: Shared.Pos raw {X: int, _y: int}"), "a plain struct of another assembly: its fields");
-        Assert.That(fromSource, Does.Contain("- At: Shared.Spot raw no header, positional, raw"), "another assembly's [NinoType]: its layout inline");
+        Assert.That(fromSource, Does.Contain("- Where: Shared.Pos raw(8){X:int@0:raw(4),_y:int@4:raw(4)}"), "a plain struct of another assembly: its fields");
+        Assert.That(fromSource, Does.Contain("- At: Shared.Spot@0 raw(16){Floor:byte@0:raw(1),Cell:long@8:raw(8)} (no header, positional, raw, id F975C19A)"),
+            "another assembly's [NinoType]: its encoding and id");
 
         // A new subtype of another assembly's [NinoType] base: older builds of this one cannot read its type id.
         var subtype = GeneratorTests.Compile(GeneratorTests.Parse(UsesShared + "public partial class Quest : Shared.Event { }"))

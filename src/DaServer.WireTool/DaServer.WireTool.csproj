@@ -9,6 +9,8 @@
         <RollForward>Major</RollForward>
         <IsPackable>false</IsPackable>
         <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+        <!-- The tool itself has no wire types; writing its manifest would run it while it is being built. -->
+        <DaServerWireManifestSkip>true</DaServerWireManifestSkip>
     </PropertyGroup>
 
     <ItemGroup>

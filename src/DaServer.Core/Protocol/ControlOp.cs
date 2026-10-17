@@ -3,7 +3,7 @@ namespace DaServer.Protocol;
 /// <summary>Control operations carried in <see cref="FrameKind.Control"/> frames (MessageId field).</summary>
 internal static class ControlOp
 {
-    /// <summary>Version of the link protocol, in every Hello: nodes speaking another one are refused (2: Nino 4 rc.1's format).</summary>
+    /// <summary>Version of the link protocol, in every Hello: nodes speaking another one are refused (2: Nino 4's format).</summary>
     public const int LinkVersion = 2;
 
     /// <summary>Version of the client protocol, in every <see cref="ClientHello"/>: clients speaking another one are refused (2: no node picking).</summary>
