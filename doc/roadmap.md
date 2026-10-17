@@ -565,9 +565,11 @@ and cards, a manual clock), fails before its fix, and passes after it.
       it is back (`AClientFacingNodeFalselyDeclaredDeadKeepsItsSessions`).
 - [x] M6 Actors already asked to leave, unloading or holding a final save were not fenced by a later Dead verdict (they
       unloaded as planned and wrote): every copy not yet removed is fenced (`AnActorAskedToLeaveIsFencedWhenItsNodeIsDeclaredDead`).
-- [ ] M7 persistently late ticks freeze failure detection; M8 a Hello's endpoint and receiver are not signed; M9 two
-      spellings of one seed fight over one inbound slot; M10 stale pulses lower heartbeats; M11 `_introduced` keeps
-      forgotten nodes.
+- [x] M7 A process late on every tick credited every gap to the others' clocks (a dead member kept its keys): one pause
+      is excused per DeadAfter (`ANodeLateOnEveryTickStillDeclaresTheDeadDead`). M10 a worse status at an older heartbeat
+      lowered the heartbeat, so stale pulses counted as progress: the newest is kept (`AStalePulseDoesNotLowerAHeartbeat`).
+      M11 introductions were kept for nodes that left: dropped once the view lists them (`ANodeThatLeftIsForgottenEverywhere`).
+- [ ] M8 a Hello's endpoint and receiver are not signed; M9 two spellings of one seed fight over one inbound slot.
 - [x] S1 An actor that moved forgot its client sessions (resume refused, the mmo's map changes Forbidden): sessions
       travel in the handoff record, never stored (`AClientResumesWithAnActorThatMovedToAnotherNode`).
 - [ ] S2 A resume cut off after the actors accepted it leaves the session unrecoverable (revert to the previous
