@@ -525,8 +525,10 @@ and cards, a manual clock), fails before its fix, and passes after it.
       loses (ADR-068 revision, store contract).
 - [x] P5 A failed write waited for the next checkpoint: it is retried after the delay (`AFailedCriticalSaveIsRetriedSoon`);
       P7 loads go in batches of at most 512 (`LoadsWaitingForASlowStoreGoInBoundedBatches`).
-- [ ] P6 a failed load fails the whole batch without a retry; P8 call cycles through OnLoad/OnUnload end by timeout
-      only; P9 store calls and turns have no bound but the stop budget.
+- [x] P6 A failed load failed the batch's callers at once: retried after 200 ms until the call timeout
+      (`ALoadThatFailsIsRetriedWithinTheCallTimeout`).
+- [ ] P8 call cycles through OnLoad/OnUnload end by timeout only; P9 store calls and turns have no bound but the stop
+      budget.
 - [x] H1 The new owner stopped waiting for the record after the call timeout while the old owner still ran the actor
       (duplicate activation): it asks again while the previous owner is alive and loads only once it is dead
       (`ANewOwnerWaitsForTheRecordWhileThePreviousOneHoldsTheActor`).
@@ -556,7 +558,8 @@ and cards, a manual clock), fails before its fix, and passes after it.
       (`APauseLongerThanDeadAfterFencesThisNode`).
 - [x] M4/H10 Two coordinators wrote one table version: the view's coordinator's wins, a coordinator publishes above
       every version it saw (`TablesOfOneVersionFromTwoCoordinatorsConverge`).
-- [ ] M5 A client-facing node falsely declared Dead then refuting has its sessions closed after the grace anyway.
+- [x] M5 A client-facing node falsely declared dead then refuting had its sessions closed after the grace: skipped when
+      it is back (`AClientFacingNodeFalselyDeclaredDeadKeepsItsSessions`).
 - [ ] M6 Leave racing a Dead verdict: `Refute` now fences a leaving node, but actors already asked to unload are not
       fenced by a later DeclaredDead (`RebalanceSystem.Leave` skips them), and no test forces a leave whose record
       cannot reach its new owner yet; M7 persistently late ticks freeze failure detection; M8 a
