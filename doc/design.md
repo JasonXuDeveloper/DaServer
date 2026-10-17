@@ -104,7 +104,8 @@ turn has that chain fails at once with `CallCycle` (ADR-059). A service handler 
     or a client group, `key` its id). With a call id trailer (flag `HasCall`) it is a request; the status byte then
     carries the caller's time budget (ADR-028).
   - `Reply`: the call id trailer, the status, the reply (or a handler's error message).
-  - `Control`: link handshake and resume, gossip, client tickets, node choice and keep-alive; a call id makes it a call.
+  - `Control`: link handshake and resume, gossip, client hello, tickets, resume, retire and keep-alive; a call id makes
+    it a call.
 - A receiving node routes a message by its target alone: a hosted handler type goes to its shard, a session or group
   to the client connections, anything else on to the node hosting it.
 - A client leaves the target 0 to let its node pick the actor bound to its session or the service; it names an
@@ -171,7 +172,7 @@ shard that keeps session state as ECS components.
 - Seeds come from static `host:port` entries or DNS names (a Kubernetes headless service resolves to every pod). A
   node joins through any reachable seed.
 - Gossip runs every second (configurable), from each node to up to 3 random peers (push-pull). A round carries one
-  37-byte pulse per member (`NodeId`, incarnation, heartbeat, status, load, three feature slots such as sessions), written and read in place; a
+  37-byte pulse per member (`NodeId`, incarnation, heartbeat, status, load, three feature slots), written and read in place; a
   member's card (endpoints, hosted handlers: message id, handler type id, actor or service) is sent only to nodes that do
   not know it yet (ADR-031). A steady-state round allocates nothing.
 - Failure detection doesn't depend on synchronized clocks: a member whose heartbeat hasn't advanced for
@@ -191,7 +192,7 @@ shard that keeps session state as ECS components.
 
 ```mermaid
 flowchart TB
-    C[clients] -. "connect to any (well-known address), directed to the less loaded" .-> G1
+    C[clients] -. "connect through the load balancer (well-known address), stay there" .-> G1
     C --> G1 & G2
     subgraph gateways [Sample.GatewayServer: client sockets, bindings, groups, fan-out; no business code]
         G1[gateway-0]
@@ -259,8 +260,8 @@ removed at run time; placement moves only the keys of the node that joined or le
 ## 8. Clients
 
 `ClusterClient` connects through one or several entry addresses (`host:port`, DNS names included: every resolved
-address is tried) and moves to the client-facing node the answering node names (ADR-026); reconnects go through the same
-addresses again; `ConnectAsync(new Uri("ws://node/clients/ws"))` connects over a WebSocket of the node's HTTP plane instead
+address is tried) and stays on the client-facing node the load balancer gave it (ADR-026); reconnects and moves (the
+node's `Retire`: make before break) go through the same addresses again; `ConnectAsync(new Uri("ws://node/clients/ws"))` connects over a WebSocket of the node's HTTP plane instead
 (browsers, WebGL builds; one or more whole frames per binary message, the same protocol). It sends the same messages as
 servers: `client.Ask(new Login(..))`, `client.Ask(new GetInfo())` (session actors need no id: the node uses the
 binding), `client.Send(roomId, new Say(..))` (actors that granted the session). Push handlers are `[Handle]` methods of any class,
@@ -300,13 +301,13 @@ raw frame (never blocking). Node addresses go to the node they name; the scope o
 in the node's card, and a message to a group address goes once to every Up node advertising its scope. The runtime
 never depends on a feature: the receiving node routes a frame by its target, a handler type to its shard or an address
 scope to the feature registered for it. Features publish values on the node's card (`SetCardEntry`: an endpoint) and
-gossip up to three counters in its pulse (`AddPulse`: sessions held), read on other nodes as `member.CardEntry(key)` and
+gossip up to three counters in its pulse (`AddPulse`), read on other nodes as `member.CardEntry(key)` and
 `member.Pulse(key)`; `AddGauge` reports a gauge on the DaServer meter (OpenTelemetry, dotnet-counters, the
 dashboard); `PostToShards` runs rare work on every shard. A hosted node runs a feature when its configuration section
 exists: `builder.AddDaServerFeature<TOptions>(name, create)` binds `DaServer:{name}` and adds the feature (built-in
 ones are added by `AddDaServer`). Client connections are the first consumer (`ClientConnections`, enabled by the
-`DaServer:Clients` section; ADR-050): sessions, origins and client groups, the endpoint and session count clients are
-directed by, the `daserver.clients.sessions` gauge.
+`DaServer:Clients` section; ADR-050): sessions, origins and client groups, resume and retire, the
+`daserver.clients.sessions` gauge.
 
 `node.Ingress` (`IIngress`) lets messages from outside in: raw (`Send`/`Ask` with message id, target, key and the
 payload as received, never deserialized; the reply goes to the ingress's `IReplySink` under its call id) or typed
@@ -433,7 +434,7 @@ What the generators write:
 | `RegistrationGenerator` | `Registration_{Assembly}`: registrations of referenced assemblies first, then `[FromClient]` messages, client handler classes, actors and services (one dispatcher per `[Handle]` method), every `EcsSystem`; run once by its static constructor (ADR-012) |
 | `PolyfillGenerator` | `IsExternalInit` for contract assemblies built for netstandard2.1 |
 | EasyEcs `SystemGenerator` | `[ForEach]` struct jobs (components, singletons, entity, world parameters) and `GeneratedUpdate` |
-| Analyzers | DAS001–DAS016 (handlers, messages, wire types, id collisions, constructors, message flow, stateless actors, services and systems, address kinds, synchronous waits on shard threads, shared logic, ReplyWhen placement, systems that ask, components apart from logic, persisted and handed-off components, work started off the shard thread, placement on non-id types), EECS001–EECS008 (ECS rules) |
+| Analyzers | DAS001–DAS018 (handlers, messages, wire types, id collisions, constructors, message flow, stateless actors, services and systems, address kinds, synchronous waits on shard threads, shared logic, ReplyWhen placement, systems that ask, components apart from logic, persisted and handed-off components, work started off the shard thread, placement on non-id types, wire layouts against the committed manifest), EECS001–EECS008 (ECS rules) |
 
 The generators follow the incremental-generator rules: syntax-only predicates, equatable models, tracking names, and
 no diagnostics. There is no reflection scanning, no configuration string and no hand-written registration list. A
@@ -445,12 +446,16 @@ node project is its business classes only.
   environment the AppHost sets, bound by `DaServer.Hosting` on the Generic Host. `SIGTERM` triggers a graceful
   leave. Each node logs a stats line (CPU, allocation rate, GCs, sessions, actors, queue, rejected) every 30 s.
 - The cluster is described once in an Aspire AppHost with `DaServer.Aspire`:
-  `AddDaServerCluster`, `AddNodes<TProject>(name, replicas)`, `.WithClientConnections()` on a node group. Every node gets
-  a cluster endpoint and seeds (every other node), client-facing groups (`WithClientConnections`) a client endpoint (`DaServer__Clients__Port`);
-  `WithClientEndpoints(group)` hands their addresses to clients and bots as entries.
-- The same model runs locally (`dotnet run` on the AppHost, with the dashboard showing logs and OTLP metrics) and is
-  published with `aspire publish`: Docker Compose via `AddDockerComposeEnvironment`, Kubernetes via
-  `AddKubernetesEnvironment`. There are no hand-maintained deployment files.
+  `AddDaServerCluster`, `AddNodes<TProject>(name, replicas)`, `.WithClientConnections()` on a node group;
+  `WithClientEndpoints(group)` hands the group's client addresses to clients and bots as entries (ADR-030).
+  - Run (`dotnet run` on the AppHost, the dashboard showing logs, traces and metrics): a resource per replica on ports
+    of its own, seeded with every other node.
+  - Published (`aspire publish`; Docker Compose via `AddDockerComposeEnvironment`, Kubernetes via
+    `AddKubernetesEnvironment`, both samples switch with `Publish=k8s`): a workload per group with its replicas, the
+    same ports on every replica, each advertising its own address, seeds through each group's DNS name (the Compose
+    service; a headless `{group}-peers` Service on Kubernetes), a preStop pause and a grace period from the stop
+    budget. Scaling policy (HPA, VPA, PDB, the load balancer) is the application's, added in its AppHost through the
+    same publisher hooks. There are no hand-maintained deployment files.
 - In-process tests run several nodes in one process with `NodeOptions.Hosts` (a type filter).
 
 ## 12. Quality gates

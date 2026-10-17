@@ -112,8 +112,8 @@ Steady state allocates nothing: per message, call, reply, tick, broadcast, conne
       BenchmarkDotNet A/B against the baseline is done (G step 12). Scenario benchmarks to add: a hot
       actor (many concurrent callers on one key: the flash-sale shape), a burst beyond the mailbox and dispatch
       bounds (refusal cost and time to drain), a dense area-of-interest cell (broadcast to one crowded cell). Surges
-      over time (p99, refusals, recovery) are load tests: `Sample.Bot` for crowded maps, the G5 HTTP load generator
-      for flash sales.
+      over time (p99, refusals, recovery) are load tests: `Sample.Bot` for crowded maps, `FlashSale.Crowd` (client
+      protocol) for flash sales.
 - [x] Z5 Client writes on a beat (ADR-070): `ClientConnectionOptions.FlushInterval` (off by default; the sample uses
       2 ms) writes each session once per beat from one flush thread, directly, without waking send loops; a full socket
       hands the rest to the connection's carry loop. Clients keep their receive buffers (no zero-byte read per push);
@@ -185,8 +185,8 @@ What G delivered (each step kept every test green):
    groups removed lazily: group churn allocates nothing), M3 (resume graces on a `TimerWheel`), a per-session rate
    limit (`ClientConnectionOptions.MessagesPerSecond`/`Burst`), WebSocket transport (`WebSocketChannel` behind `IFrameChannel`,
    `/clients/ws`, `ClusterClient.ConnectAsync(Uri)`). L2 kept: a grant change copies the session's small grants
-   array (a login or map change, not per message). Moving clients off a draining node with tickets is D3; today a
-   leaving node closes its listener and sessions.
+   array (a login or map change, not per message). Moving clients off a draining node is D3 (retired in waves, make
+   before break).
 7. `[FromClient]` / `[ToClient]` on `[Message]`; grants (ADR-051): `GrantSession`/`RevokeSession` admit a session to an
    actor, the edge refuses any other named actor; resuming asks the granted actors (ADR-036).
 8. Packages (ADR-052): `DaServer.Abstractions` (contracts) <- `DaServer.Core` (shared wire and transport) <-
@@ -238,8 +238,6 @@ and calls `IHostedService.StopAsync` with a token that fires at `HostOptions.Shu
 after it the process exits whatever is still running. Platforms send SIGTERM and kill later: Kubernetes after
 `terminationGracePeriodSeconds` (30 s default), Docker Compose after `stop_grace_period` (10 s default). SIGKILL,
 OOM kills, crashes and power loss give no signal at all, so no shutdown code can be the only protection.
-Nothing is persisted yet (N5): D5-D6 come with it.
-
 - [x] D1 One shutdown budget (ADR-063): `NodeOptions.ShutdownTimeout` (25 s) bounds `StopAsync`, which honors the
       host's token; the host waits 5 s longer, Compose `stop_grace_period` is the budget + 10 s
       (`DaServerNodeGroup.WithShutdownTimeout`). Past the deadline the node logs, per shard, the actors whose
@@ -247,17 +245,17 @@ Nothing is persisted yet (N5): D5-D6 come with it.
 - [x] D2 Ordered stop: readiness off (`/health` fails once Leaving) -> Leaving (callers reroute) -> drain features
       (client connections) -> unload every actor -> close links. Each phase is logged with its duration and recorded
       as `daserver.stop.phase.duration` (phase tag). Store flush joins with N5 (D6).
-- [x] D3 Client-facing nodes drain: the listener closes, connections close in waves over
-      `ClientConnectionOptions.DrainSpread` (3 s); clients reconnect through their endpoints and resume their sessions
-      on other nodes (readiness turned the balancer away first). `ClientsOfALeavingGatewayMoveAndResumeOnAnother`.
+- [x] D3 Client-facing nodes drain: the listener closes, clients are retired in waves over
+      `ClientConnectionOptions.DrainSpread` (3 s) and move to other nodes, make before break (ADR-026; readiness turned
+      the balancer away first); the stop waits up to `RetireGrace` for them. `ClientsOfALeavingGatewayMoveAndResumeOnAnother`.
 - [ ] D4 Tests: done: a stop that exceeds its budget reports the unsaved actors and returns
-      (`AStopThatExceedsItsBudgetReportsAndReturns`); a leaving gateway's clients keep their sessions. Open with N5: a
+      (`AStopThatExceedsItsBudgetReportsAndReturns`); a leaving gateway's clients keep their sessions. Open: a
       stop under load loses no acknowledged write; Kill loses at most what the persistence policy allows.
 - [x] D5 Persistence that survives a crash (ADR-068): on unload always, a checkpoint every `Actor.SaveEvery` when the
       record changed, `SaveNow` for critical changes; versioned saves reject a stale owner's late write.
 - [x] D6 Store flush and backpressure: one save batch (at most 512 records) in flight per shard; the stop's unload phase
       waits for every final write (actors are removed only once written); a failing store is retried every second; the
-      store's health joins readiness (`daserver-store`).
+      store's health joins readiness (the Aspire.Npgsql data source's own health check).
 
 ## Next: Aspire and hosting best practices (A-items, with D1-D4; checked against Aspire 13.6)
 
@@ -268,21 +266,19 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
       Aspire endpoint `http`) next to its own TCP data plane. Official health checks: `daserver-ready` (joined, not
       leaving/draining, store healthy) mapped to `/health`, `daserver-live` (shard stall watchdog, N3b) tagged `live`
       and mapped to `/alive`, always on (not Development-only like the template). `DaServer.Aspire` declares the
-      endpoint, `WithHttpHealthCheck("/health")` (local `WaitFor` and dashboard) and readiness / liveness / startup
-      probes (`WithHttpProbe`, ASPIREPROBES001) for Kubernetes. Users map REST endpoints in their node project (admin,
+      endpoint and readiness / liveness probes (`WithHttpProbe`, ASPIREPROBES001: Kubernetes probes, and the HTTP health
+      check local `WaitFor` and the dashboard use). Users map REST endpoints in their node project (admin,
       webhooks, payment callbacks, HTTP login); an endpoint reaches actors only through `ICluster` (Ask/Send post to
       the shard), never shard state.
 - [x] A2 Drain budget published (D1): `WithShutdownTimeout` sets Compose `stop_grace_period` and Kubernetes
-      `terminationGracePeriodSeconds` (budget + 10 s: the host's 5 s margin and 5 s more) for whichever environment the model publishes to. Open: preStop
-      sleep. Original scope: `WithDrain(grace)` sets the pod `terminationGracePeriodSeconds`, Compose
-      `stop_grace_period` and `DaServer__ShutdownTimeout` below it, plus an optional preStop sleep so endpoint removal
-      propagates before Leave; stateful groups default longer than stateless ones.
+      `terminationGracePeriodSeconds` (budget + 10 s: the host's 5 s margin and 5 s more) for whichever environment the model publishes to, and on Kubernetes a 5 s
+      preStop sleep (counted in the grace period) so endpoint removal propagates before the node leaves.
 - [ ] A3 Compose gaps: done: `stop_grace_period` and `restart: unless-stopped` per node. Open: a `healthcheck` needs a
       probe command inside the image (the .NET runtime images ship no curl/wget): a `--health` mode of
       `AddDaServer` that calls `/health` on the node's own port and exits.
-- [ ] A4 Publish mode = one workload per node group (with S4): `IsPublishMode` emits one Deployment with `replicas`,
-      a headless Service (`clusterIP: None`, `publishNotReadyAddresses` so joining pods gossip), pod-IP advertising
-      through the downward API; run mode keeps one resource per replica (ADR-030).
+- [x] A4 Publish mode = one workload per node group (ADR-030): a Compose service with `deploy.replicas` or a
+      Deployment with `replicas`; a headless `{group}-peers` Service (`clusterIP: None`, `publishNotReadyAddresses` so
+      joining pods gossip); a node in a container advertises its own address; run mode keeps one resource per replica.
 - [ ] A5 Dashboard: a cluster parent resource (`WithParentRelationship`) showing "n/n joined"; custom states Joining /
       Joined / Draining / Suspected; commands Drain, Membership (JSON), Stats, Unload actor type (admin endpoints on the HTTP
       plane, authorized with the signing secret). Usable from `aspire resource <node> <command>`,
@@ -292,8 +288,8 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
       and the actor calls it causes are one trace. `AddDaServer` is the framework's service defaults (the template's
       content: OTel, health, `ConfigureHttpClientDefaults` with service discovery and resilience for user HttpClients),
       no separate ServiceDefaults project.
-- [x] A7 Store wiring: `group.WithActorStore(postgres.AddDatabase("actors"))` (`WithReference` + `WaitFor` on the
-      group's nodes), `builder.AddPostgreSqlActorStore()` in the node's Program.cs; the sample keeps player profiles in
+- [x] A7 Store wiring: `group.WithActorStore(postgres.AddDatabase("actors"))` (`WithReference` on the group's nodes,
+      `WaitFor` when published, ADR-069), `builder.AddPostgreSqlActorStore()` in the node's Program.cs; the sample keeps player profiles in
       PostgreSQL on a data volume. Clients wait for every node of the cluster (`WithClientEndpoints`).
 - [ ] A8 Parameters and environments: shards per node, drain budget, replicas and HPA bounds as AppHost parameters
       (become Helm values per `--environment`); `AddConnectionString` for an existing production database.
@@ -391,23 +387,25 @@ stateful, maps being heavy actors.
       `/metrics` endpoint on the HTTP plane by default (OTLP as now); the default scaling metric is the shards' busy
       ratio.
 - [ ] S2 Scale-in is a drain: SIGTERM -> graceful Leave -> actors hand off (N6) or unload and save (N5) -> exit within
-      the termination grace period; readiness turns false first. Gateways drain by directing their clients to other
-      gateways over time (resume tickets) instead of dropping them.
+      the termination grace period; readiness turns false first. Gateways drain by retiring their clients in waves
+      (make before break, ADR-026).
 - [ ] S3 Slot allocation (ADR-074): a coordinator (the oldest Up node, agreed: an `UpSince` field appended to the
       version-tolerant card) may override the rendezvous owners of slots and
       gossips the overrides as a versioned table: load-aware rebalancing moves whole slots from hot to cold nodes
       (handoff, N6, a few at a time, Akka's least-shard allocation); per actor type a move policy, so heavy actors
       (maps) stay where they are loaded and only new keys go to a new node (sticky slots), and a scale-out never
       moves a map with players in it.
-- [ ] S4 Generated manifests (needs A4: one workload per group in publish mode). `DaServer.Aspire` adds only what
-      follows from DaServer (agreed): probes, grace period, a preStop wait so the balancer lets go before the listener
-      closes (ADR-026), the client ports as external endpoints. Scaling policy is each application's, added in its
-      AppHost through Aspire's publisher hooks; the samples show it: the MMO sample's gateways behind a LoadBalancer
-      and a PodDisruptionBudget for its stateful groups, the flash sale's gateways under an HPA on the S1 metric and a
-      VPA in recommendation mode. Publish snapshot tests check both. Plain Deployments: identity comes from gossip
-      incarnations and state from the store, so no StatefulSet is needed.
-- [ ] S5 Vertical scaling: shards follow the CPU limit (cgroup-aware core count), documented and tested; a VPA is
-      the application's (applying it restarts pods, i.e. a drain and a rejoin: recommendation mode for stateful groups).
+- [ ] S4 Generated manifests. Done: `DaServer.Aspire` adds only what follows from DaServer (probes, grace period, the
+      preStop wait, one workload per group with its peers Service, client ports as external endpoints); scaling policy
+      is each application's, in its AppHost (`Platform.cs`): the MMO sample's gateways behind a LoadBalancer, PDBs and
+      in-place VPAs for game and map; the flash sale's sale nodes under an HPA on CPU and a VPA in recommendation
+      mode. Plain Deployments: identity comes from gossip incarnations and state from the store, no StatefulSet.
+      Open: publish snapshot tests (both samples, both environments; `helm lint` on the chart) and an HPA on the S1
+      metrics once they are exported.
+- [ ] S5 Vertical scaling: shards follow the CPU limit (cgroup-aware core count), documented and tested. A VPA is the
+      application's: in place where it can (the mmo sample: CPU resized in place, a memory change restarts the
+      container so the GC heap limit follows; an eviction is a drain and a rejoin), recommendations only where a
+      restart must wait (the flash sale).
 - [ ] S6 Prove it: E2E that scales a stateful group out and in under load (10k bots) with no lost state, no dropped
       session and bounded latency spikes.
 
@@ -528,10 +526,11 @@ in separate commits.
   - [x] One host:port parser (`HostPort`, IPv6 in brackets); `[LoggerMessage]` on message and actor failures, the
         dropped-backlog warning at most every 10 s with a count.
 - Audit round 3 (agreed):
-  - [ ] Planned reconnects make before they break (ClientVersion 3, `ControlOp.Retire`): at `MaxConnectionAge` or a
-        drain the node asks the client to move; it connects and resumes on a new connection while the old one keeps
-        receiving, and the old one closes once the actors switched, so no push is lost. A lost connection still resumes
-        with the ticket and the actors' full state (ADR-036). Test: no push lost across an age rotation under load.
+  - [x] Planned reconnects make before they break (ClientVersion 3, `ControlOp.Retire`, ADR-026): at
+        `MaxConnectionAge` or a drain the node asks the client to move; it resumes on a new connection while the old one
+        keeps working, then leaves the old one once its calls are answered; the node closes it after `RetireGrace`
+        whatever the client does. `ResumeTests.AConnectionRetiredForItsAgeLosesNoPush`: every call answered and every
+        push received across several moves.
   - [ ] mmo: a VPA in `InPlaceOrRecreate` for game and map nodes (memory grows in place; an eviction is a graceful
         leave with handoff, one at a time under the PDB); flashsale keeps recommendations only (nothing restarts during
         a sale). Document that .NET reads CPU and memory limits at start (shard count, GC heap limit).
@@ -567,6 +566,8 @@ in separate commits.
   disruption budget for game nodes; flashsale: an HPA, a VPA recommending requests). No StatefulSet (identity from gossip incarnations, state in the store), no etcd or
   Kubernetes API access (DNS seeds only); secrets are Aspire secret parameters (a Kubernetes Secret, a Compose
   `.env`); a migration Job is the application's.
+- [ ] Nino rc.4: `NinoSerializer.Serialize<T>(in T, IBufferWriter<byte>)`; then `FrameWriter.Write<T>(in T)` (no copy of a
+      large struct per write; BDN on Message/Broadcast).
 - [ ] Evaluate Kestrel's raw TCP (`ListenOptions.UseConnectionHandler`, pipelines, TLS) for client and link
       connections against the own `Connection`/`Listener` (batched sends, zero-byte reads, POH buffers): BDN on
       Message/Rpc/Broadcast/Scenario and allocation tests; switch only if neither time nor allocation regresses.
@@ -588,20 +589,20 @@ in separate commits.
 - [x] Hosting: actor/service factories with their handlers, client handler classes, EasyEcs system registration
 - [x] A node's `Program.cs` is five lines: `AddDaServer`, `MapDaServer` (ADR-021)
 - [x] Incremental rules: syntax predicates, equatable models, tracking names, cache test (ADR-016)
-- [x] `DaServerAnalyzer`: DAS001-DAS011 (handlers, messages, wire types, id collisions, constructors, message flow
+- [x] `DaServerAnalyzer`: DAS001-DAS018 (handlers, messages, wire types, id collisions, constructors, message flow
       (ADR-038), stateless actors and services (ADR-044), address kinds (ADR-047), shared logic (ADR-055), ReplyWhen
       placement (ADR-057))
 
 ## Hosting / orchestration
 - [x] `DaServer.Hosting`: Generic Host, configuration, OpenTelemetry (OTLP), periodic stats line, graceful shutdown
-- [x] `DaServer.Aspire`: AddDaServerCluster / AddNodes / WithClientConnections / WithClientEndpoints; compose publishing
-      (ADR-015); no configuration files in node projects
+- [x] `DaServer.Aspire`: AddDaServerCluster / AddNodes / WithClientConnections / WithClientEndpoints; Compose and
+      Kubernetes publishing (ADR-015, ADR-030); no configuration files in node projects
 - [x] 10k-player scenario: login, game, map, 3 gateways, 10k bots (Sample.Bot fails on any gap, disconnect or
       p99 over the limit); passes through Aspire (README "Performance")
 - [x] E2E in CI: `tests/DaServer.E2E` runs the AppHost with `Aspire.Hosting.Testing` (1000 bots in CI) and
       fails unless the bot exits 0
-- [x] Aspire: one resource per replica (members are addressed individually), DNS seeds for headless services
-      (ADR-030)
+- [x] Aspire: run, one resource per replica (members are addressed individually); published, one workload per group
+      seeded through its DNS name (ADR-030)
 
 ## Release review (before G; re-recorded after T2, see "Open after G")
 - [x] Checklist 1-3: 0 warnings, 0 errors; 80 unit/integration tests and the end-to-end test pass (CI green); topology

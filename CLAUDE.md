@@ -29,13 +29,14 @@ EasyEcs comes from NuGet (`EasyEcsVersion` in `Directory.Build.props`). Use it a
 ```
 src/DaServer.Abstractions/ contracts (netstandard2.1, net10.0, net11.0): attributes, IRequest, addresses, type ids (ADR-052)
 src/DaServer.Core/         wire and transport shared by servers and clients (netstandard2.1, net10.0, net11.0): Protocol/
-                           Buffers/ Net/ Rpc/ (calls, dispatch) Concurrency/ Diagnostics/ (ProcessCost)
+                           Buffers/ Net/ (FrameChannel: Connection, WebSocketChannel; SendQueue, SendFlusher, HostPort)
+                           Rpc/ (calls, dispatch) Concurrency/ (ObjectPool, Backoff, Platform) Diagnostics/ (ProcessCost)
 src/DaServer.Client/       client SDK (netstandard2.1, net10.0, net11.0): ClusterClient
 src/DaServer.Simulation/   simulated users (client side, net10.0/net11.0): ClientLoop, Planning/ (HTN as ECS data),
                            Swarm + SwarmMeter (ADR-056)
 src/Polyfills/             Lock, IsExternalInit, FrozenDictionary for netstandard2.1 (compiled into Abstractions)
-src/DaServer/              server runtime (net11.0): Runtime/ Cluster/ Rpc/ Net/ Concurrency/ and the built-in capabilities on the
-                           feature points: Features/ Ingress/ Clients/
+src/DaServer/              server runtime (net11.0): Runtime/ Cluster/ Rpc/ Net/ Concurrency/ Persistence/ and the built-in
+                           capabilities on the feature points: Features/ Ingress/ (signed tokens) Clients/
   Runtime/Shard.cs         thread + dispatch queue (the cross-thread handoff) + wake/tick loop (nothing else)
   Runtime/ShardData.cs     shard ECS data: actor components and lifecycle tags (Mailbox, Ready, Turn, ...), singletons
   Runtime/ShardDispatch.cs routing/delivery/invoke operations shared by the runtime systems

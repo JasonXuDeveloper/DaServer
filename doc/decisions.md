@@ -109,7 +109,7 @@ records that no longer hold). Each: context → decision → consequences.
   triggers those of the assemblies it references). On .NET the class also triggers itself from a module initializer
   when its assembly loads, so a server needs no call; targets without module initializers (netstandard2.1) get none.
 - Consequences: no reflection, no configuration strings, no hand-maintained lists; misuse is a build error
-  (DAS001-DAS011, ADR-016).
+  (DAS001-DAS018, ADR-016).
 
 ## ADR-013 The shard runtime is ECS
 - Context: an imperative shard loop (drain a queue, sweep in-flight work, run timers, tick) with ad-hoc per-actor
@@ -140,13 +140,14 @@ records that no longer hold). Each: context → decision → consequences.
   `WithClientEndpoints`). The same model runs locally with the dashboard and publishes Docker Compose or
   Kubernetes through Aspire publishers. Nodes export logs and metrics over OTLP when Aspire (or any collector)
   configures it. There are no hand-written deployment files.
-- Consequences: one source of truth for topology. Ports are assigned deterministically per node. Replicas are
-  separate resources because cluster members are addressed individually, not through a load balancer (ADR-030).
+- Consequences: one source of truth for topology. Run locally, ports are assigned deterministically per node and
+  replicas are separate resources (cluster members are addressed individually); published, a group is one workload
+  with replicas that the platform scales (ADR-030).
 
 ## ADR-016 Analyzer separate from generators
 - Context: generators that report diagnostics carry symbols and locations in their models, which defeats caching.
 - Decision: generators use syntax-only predicates and equatable, symbol-free models with tracking names, and report
-  nothing. `DaServerAnalyzer` reports DAS001–DAS011 (collisions in a compilation-end action), and reads symbols
+  nothing. `DaServerAnalyzer` reports DAS001–DAS018 (collisions in a compilation-end action), and reads symbols
   through the same `Shapes` code as the generators.
 - Consequences: edits that do not touch messages or handlers hit the cache (tested); "skipped by the generator" and
   "reported by the analyzer" cannot disagree.
@@ -248,9 +249,13 @@ records that no longer hold). Each: context → decision → consequences.
 - Decision: a client connects through one or several entry addresses (the balancer, a DNS name: every resolved
   address is tried; reconnects use them again) and stays on the node it reached; actors are reachable from any
   client-facing node, so no client needs a particular one. `ClientConnectionOptions.MaxConnectionAge` (off by default,
-  jittered by a tenth) closes connections older than it; their clients reconnect through the entry addresses and
-  resume their sessions (ADR-036), so after a scale-out the old connections spread over the new nodes too and actors
-  see nothing. A leaving node drains in waves the same way (D3).
+  jittered by a tenth, on the node's clock) retires connections older than it, and a leaving node retires its
+  connections in waves (D3): the node sends `ControlOp.Retire` (client protocol 3), the client resumes its session
+  (ADR-036) on a new connection through the entry addresses while the old one keeps working, switches, waits for the
+  calls made on the old one and says goodbye on it. Make before break, as HTTP/2's GOAWAY: no push or call is lost, and
+  after a scale-out the old connections spread over the new nodes too. The node decides: a client that does not move
+  within `RetireGrace` (10 s) is closed and reconnects as after a lost connection; a client without a session to
+  resume is closed at once. The new connection is admitted by its signed, single-use ticket alone.
 - Alternatives: the cluster names the node to connect to (removed: a second balancer, with an address per node the
   platform does not give); shedding only above the group's average (more precise, but cluster logic a maximum age
   does without); an edge tier in front of the client-facing nodes (ET's router: another hop; for UDP transports).
@@ -317,8 +322,7 @@ records that no longer hold). Each: context → decision → consequences.
   growing with the square of the cluster size, and allocates new member objects on every receiver; a view that keeps
   the load hints of the last status change never shows client-facing nodes filling up.
 - Decision: a member is its card (identity, endpoint, hosted handlers and address scopes, its features' card
-  entries: fixed while it runs) plus its pulse (incarnation, heartbeat, status, load and three feature slots such as
-  sessions: 37 bytes). Gossip and its reply carry pulses, written into a pooled frame and read in place; a pulse naming
+  entries: fixed while it runs) plus its pulse (incarnation, heartbeat, status, load and three feature slots: 37 bytes). Gossip and its reply carry pulses, written into a pooled frame and read in place; a pulse naming
   an unknown node is answered with `CardRequest`/`Cards`. Pulses update members in place; incarnation and status
   changes publish a copy and rebuild the view.
 - Consequences: a steady-state round allocates nothing (allocation test at 300 rounds/s); idle nodes in the 10k
@@ -394,14 +398,15 @@ records that no longer hold). Each: context → decision → consequences.
 - Decision: the session's client-facing node sends its client a resume ticket after every grant change: session, grants
   (handler type id, key, bound) and expiry, signed with HMAC-SHA256 of the signing secret (`DaServer__SigningSecret`,
   generated by Aspire). Client-facing nodes keep no state for it, so any client-facing node accepts it. `ClusterClient` reconnects through
-  its entry addresses (a live node directs it) with exponential backoff and presents the ticket. The ticket only
+  its entry addresses with a jittered backoff and presents the ticket. The ticket only
   names what the session held: the node asks every actor in it (`SessionResumed(Session, Previous)`, answered by the
   runtime before the actor's handler runs), and an actor accepts only while it holds `Previous` bound or granted
   (actors keep that set with their sessions). So a ticket resumes at most once, a revoked grant or a closed session
   (past the grace) does not come back, and an unloaded actor (which forgot its sessions) refuses without loading. The
   new session takes over what was accepted and the actors' groups, then the client gets its reply, so its next
   message reaches actors that know the new session; a ticket nothing accepts is refused. Actors swap the session and send
-  the full state; pushes sent meanwhile are lost by design (state, not a log). A lost connection is reported as
+  the full state; after a lost connection, pushes sent meanwhile are lost by design (state, not a log); a planned move
+  (ADR-026) keeps the old connection until the actors switched, so it loses nothing. A lost connection is reported as
   `SessionClosed` only after `ResumeGrace` (30 s), also for a crashed client-facing node; the runtime drops the late
   `SessionClosed` of a resumed session. An explicit close (client dispose, `Disconnect`) is reported at once. Tickets
   live `ClientConnectionOptions.TicketLifetime` (10 min); clients refresh theirs at half of it.
