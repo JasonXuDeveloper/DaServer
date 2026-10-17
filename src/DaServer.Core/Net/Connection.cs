@@ -1,18 +1,5 @@
 namespace DaServer.Net;
 
-/// <summary>Receives frames and lifecycle events of a <see cref="Connection"/>.</summary>
-public interface IConnectionHandler
-{
-    /// <summary>
-    /// Called on the connection's receive loop for every complete frame. <paramref name="frame"/> (header included)
-    /// is only valid during the call: copy it if it must outlive the call. Must not block.
-    /// </summary>
-    void OnFrame(Connection connection, in FrameHeader header, ReadOnlySpan<byte> frame);
-
-    /// <summary>Called exactly once when the connection closes.</summary>
-    void OnClosed(Connection connection, Exception? error);
-}
-
 /// <summary>Anything frames are written to: a connection or a node link.</summary>
 internal interface IFrameSender
 {
@@ -98,7 +85,7 @@ public sealed class ConnectionOptions
 /// Framed TCP connection.
 /// <para>Send: frames are copied into a per-connection batch buffer under a short lock; one send loop swaps and
 /// writes whole batches, so N small frames cost one syscall and broadcasting serializes once then memcpy's.</para>
-/// <para>Receive: frames are parsed in place and handed to <see cref="IConnectionHandler.OnFrame"/>.</para>
+/// <para>Receive: frames are parsed in place and handed to <see cref="IChannelHandler.OnFrame"/>.</para>
 /// Steady state allocates nothing: buffers come from <see cref="BufferPool"/>, the two loops are allocated once.
 /// </summary>
 public sealed class Connection : IFrameSender, IFrameChannel
@@ -109,7 +96,7 @@ public sealed class Connection : IFrameSender, IFrameChannel
     private int _overflowed;
 
     private readonly Socket _socket;
-    private readonly IConnectionHandler _handler;
+    private readonly IChannelHandler _handler;
     private readonly ConnectionOptions _options;
     private readonly AsyncSignal _sendSignal = new AsyncSignal();
     private readonly Lock _sendLock = new Lock();
@@ -125,7 +112,7 @@ public sealed class Connection : IFrameSender, IFrameChannel
     private long _lastReceivedMs = Platform.Milliseconds;
     private long _lastSentMs = Platform.Milliseconds;
 
-    public Connection(Socket socket, IConnectionHandler handler, ConnectionOptions? options = null)
+    public Connection(Socket socket, IChannelHandler handler, ConnectionOptions? options = null)
     {
         _socket = socket;
         _handler = handler;
@@ -150,12 +137,12 @@ public sealed class Connection : IFrameSender, IFrameChannel
     /// Connect to a host name or address. A name is connected through every address it resolves to ("localhost" is ::1
     /// first on many hosts while the peer may listen on IPv4 only, or the reverse), not only the first one.
     /// </summary>
-    public static ValueTask<Connection> ConnectAsync(string host, int port, IConnectionHandler handler,
+    public static ValueTask<Connection> ConnectAsync(string host, int port, IChannelHandler handler,
         ConnectionOptions? options = null, CancellationToken cancellationToken = default) =>
         ConnectAsync(IPAddress.TryParse(host, out var ip) ? new IPEndPoint(ip, port) : new DnsEndPoint(host, port),
             handler, options, cancellationToken);
 
-    public static async ValueTask<Connection> ConnectAsync(EndPoint endPoint, IConnectionHandler handler,
+    public static async ValueTask<Connection> ConnectAsync(EndPoint endPoint, IChannelHandler handler,
         ConnectionOptions? options = null, CancellationToken cancellationToken = default)
     {
         // A DnsEndPoint (host name: containers, Aspire service discovery) has no family: use a dual-mode socket.

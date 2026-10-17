@@ -5,21 +5,21 @@ namespace DaServer.Tests;
 /// <summary>A client connection starts with the client's hello: another protocol version is told why and disconnected.</summary>
 public class ClientProtocolTests : ClusterTest
 {
-    private sealed class Recorder : IConnectionHandler
+    private sealed class Recorder : IChannelHandler
     {
         public readonly TaskCompletionSource<(RpcStatus Status, string? Text)> Reply = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public readonly TaskCompletionSource Closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public int Frames;
 
-        public void OnFrame(Connection connection, in FrameHeader header, ReadOnlySpan<byte> frame)
+        public void OnFrame(IFrameChannel connection, in FrameHeader header, ReadOnlySpan<byte> frame)
         {
             Interlocked.Increment(ref Frames);
             var payload = FrameHeader.PayloadOf(in header, frame);
             Reply.TrySetResult((header.Status, payload.IsEmpty ? null : Nino.Core.NinoDeserializer.Deserialize<string>(payload)));
         }
 
-        public void OnClosed(Connection connection, Exception? error) => Closed.TrySetResult();
+        public void OnClosed(IFrameChannel connection, Exception? error) => Closed.TrySetResult();
 
         public Connection? Connection;
     }

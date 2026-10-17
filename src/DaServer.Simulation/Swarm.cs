@@ -114,10 +114,10 @@ public sealed class Swarm : IAsyncDisposable
     /// <summary>Wait until <paramref name="pending"/> is 0, or <paramref name="timeout"/>; false on timeout.</summary>
     public async Task<bool> WaitAsync(Func<Task<long>> pending, TimeSpan timeout)
     {
-        var deadline = DateTime.UtcNow + timeout;
+        var watch = System.Diagnostics.Stopwatch.StartNew();
         while (await pending() > 0)
         {
-            if (DateTime.UtcNow >= deadline) return false;
+            if (watch.Elapsed >= timeout) return false;
             await Task.Delay(100);
         }
 
@@ -179,7 +179,8 @@ public sealed class Swarm : IAsyncDisposable
 
     /// <summary>
     /// Retry an idempotent <paramref name="call"/> while it fails with what <paramref name="transient"/> accepts
-    /// (default: the cluster is starting or momentarily full: NotHosted, Timeout, Overloaded), every half second.
+    /// (default: the cluster is starting or momentarily full: NotHosted, Timeout, Overloaded), after the wait the refusal
+    /// names (<see cref="RpcException.RetryAfter"/>) and at least half a second.
     /// </summary>
     public static async Task<T> Retry<T>(Func<Task<T>> call, Func<Exception, bool>? transient = null, int attempts = 60)
     {
@@ -191,7 +192,8 @@ public sealed class Swarm : IAsyncDisposable
             }
             catch (Exception e) when (attempt < attempts && (transient ?? Starting)(e))
             {
-                await Task.Delay(500);
+                var hint = e is RpcException rpc ? rpc.RetryAfter : TimeSpan.Zero;
+                await Task.Delay(hint > TimeSpan.FromMilliseconds(500) ? hint : TimeSpan.FromMilliseconds(500));
             }
         }
     }

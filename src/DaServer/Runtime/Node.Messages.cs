@@ -265,14 +265,14 @@ sealed partial class Node
             if (header.IsRequest)
             {
                 copy.Deadline = header.DeadlineOnArrival();
-                sink = ConnectionReplySink.For(connection);
+                sink = ChannelSink.For(connection);
             }
 
             Admit(SelectShard(handlerType.Id, handlerType.IsActor, header.Key), copy, sink);
         }
         else if (_addressHandlers.TryGetValue(header.Target, out var addresses))
-            addresses.OnMessage(in header, frame, header.IsRequest ? ConnectionReplySink.For(connection) : null);
-        else Forward(FrameWriter.CopyOf(frame), header.IsRequest ? ConnectionReplySink.For(connection) : null);
+            addresses.OnMessage(in header, frame, header.IsRequest ? ChannelSink.For(connection) : null);
+        else Forward(FrameWriter.CopyOf(frame), header.IsRequest ? ChannelSink.For(connection) : null);
     }
 
     /// <summary>

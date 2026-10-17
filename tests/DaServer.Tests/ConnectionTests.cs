@@ -7,10 +7,10 @@ namespace DaServer.Tests;
 /// <summary>A connection's send side: queued frames reach the peer whole and in order, written at once or on a flusher's beat.</summary>
 public class ConnectionTests
 {
-    private sealed class NoFrames : IConnectionHandler
+    private sealed class NoFrames : IChannelHandler
     {
-        public void OnFrame(Connection connection, in FrameHeader header, ReadOnlySpan<byte> frame) { }
-        public void OnClosed(Connection connection, Exception? error) { }
+        public void OnFrame(IFrameChannel connection, in FrameHeader header, ReadOnlySpan<byte> frame) { }
+        public void OnClosed(IFrameChannel connection, Exception? error) { }
     }
 
     /// <summary>A sender connected to a raw socket the test reads (or does not read yet).</summary>

@@ -1,13 +1,13 @@
 namespace DaServer.Runtime;
 
 // Request routing (Ask): local shard or remote link; inbound frames -> shards; replies -> callers.
-sealed partial class Node : IConnectionHandler
+sealed partial class Node : IChannelHandler
 {
     private const int MaxHops = 3;
 
     private readonly LocalReplySink _localSink;
 
-    internal IConnectionHandler ClusterHandler => this;
+    internal IChannelHandler ClusterHandler => this;
 
     /// <summary>
     /// Route a request whose payload is already written to actor (<paramref name="handlerTypeId"/>,
@@ -151,8 +151,9 @@ sealed partial class Node : IConnectionHandler
 
     // ------------------------------------------------------------------ inbound frames (cluster links)
 
-    void IConnectionHandler.OnFrame(Connection connection, in FrameHeader header, ReadOnlySpan<byte> frame)
+    void IChannelHandler.OnFrame(IFrameChannel channel, in FrameHeader header, ReadOnlySpan<byte> frame)
     {
+        var connection = (Connection)channel; // node links are TCP connections
         if (_killed)
         {
             connection.Close();
@@ -180,10 +181,10 @@ sealed partial class Node : IConnectionHandler
         }
     }
 
-    void IConnectionHandler.OnClosed(Connection connection, Exception? error)
+    void IChannelHandler.OnClosed(IFrameChannel channel, Exception? error)
     {
-        if (connection.Tag is PeerLink link)
-            link.OnConnectionClosed(connection, error);
+        if (channel.Tag is PeerLink link)
+            link.OnConnectionClosed((Connection)channel, error);
     }
 
     private void OnControl(Connection connection, in FrameHeader header, ReadOnlySpan<byte> frame)
@@ -382,23 +383,21 @@ sealed partial class Node : IConnectionHandler
     }
 }
 
-/// <summary>Replies to a request that arrived on a connection (one instance per connection, created once).</summary>
-internal sealed class ConnectionReplySink(Connection connection) : IFrameSink
+/// <summary>Replies and control frames back on a channel: a client's, or a connection a request arrived on.</summary>
+internal sealed class ChannelSink(IFrameChannel channel) : IFrameSink
 {
     /// <summary>
-    /// Where replies to a request received on <paramref name="connection"/> go: the link back to the node that named
-    /// itself with a Hello (one ordered stream per direction), else this connection (created once per connection).
+    /// Where replies to a request received on <paramref name="channel"/> go: the link back to the node that named
+    /// itself with a Hello (one ordered stream per direction), else the channel itself (its sink created once).
     /// </summary>
-    public static IReplySink For(Connection connection)
+    public static IReplySink For(IFrameChannel channel)
     {
-        if (connection.Tag is PeerLink link) return link;
-        if (connection.Tag is ConnectionReplySink sink) return sink;
-        sink = new ConnectionReplySink(connection);
-        connection.Tag = sink;
+        if (channel.Tag is PeerLink link) return link;
+        if (channel.Tag is ChannelSink sink) return sink;
+        sink = new ChannelSink(channel);
+        channel.Tag = sink;
         return sink;
     }
 
-    public Connection Connection { get; } = connection;
-
-    public void Send(ReadOnlySpan<byte> frame) => Connection.Send(frame);
+    public void Send(ReadOnlySpan<byte> frame) => channel.Send(frame);
 }

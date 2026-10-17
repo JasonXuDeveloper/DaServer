@@ -13,7 +13,6 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
     private Node _node = null!;
     private volatile bool _stopped, _crashed;
     private readonly TimerWheel<PendingClose> _graces = new(TimeSpan.FromMilliseconds(100)); // lost connections, under its lock
-    private Timer? _maintenance;
     private SendFlusher? _flusher; // with FlushInterval: writes the sessions on its beat
 
     /// <summary>A lost connection whose actors learn it at the end of the resume grace (unless the client resumed).</summary>
@@ -56,7 +55,6 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
             return connection;
         });
         _listener.Start();
-        _maintenance = new Timer(static s => ((ClientConnections)s!).Maintain(), this, 100, 100);
         Port = _listener.LocalEndPoint.Port;
         context.AddGauge("daserver.clients.sessions", "Connected client sessions", () => _sessions.Count);
     }
@@ -92,7 +90,6 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
 
     private void Close()
     {
-        _maintenance?.Dispose();
         _listener?.Dispose();
         _flusher?.Flush(); // the sessions' last frames, before they close
         foreach (var session in _sessions.Values) session.Channel.Close();
@@ -268,14 +265,14 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
             lock (_graces) _graces.Schedule(ResumeGrace, new PendingClose(sessionRef, grants));
     }
 
-    /// <summary>Timer thread, every 100 ms: report the lost connections whose grace ended, drop long-empty groups.</summary>
-    private void Maintain()
+    /// <summary>Report the lost connections whose grace ended, drop long-empty groups, close silent and aged connections.</summary>
+    protected internal override void Maintain(long nowMs, bool late)
     {
+        if (_stopped) return;
         var expired = new GraceExpired(this);
         lock (_graces) _graces.Advance(ref expired);
-        long now = Environment.TickCount64;
-        if (now >= _nextGroupSweep) SweepGroups();
-        if (now >= _nextSilenceSweep) CloseSilentSessions(now);
+        if (nowMs >= _nextGroupSweep) SweepGroups();
+        if (nowMs >= _nextSilenceSweep) CloseSilentSessions(nowMs, late);
     }
 
     /// <summary>
@@ -284,9 +281,8 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
     /// <see cref="ClientConnectionOptions.MaxConnectionAge"/>: those clients reconnect through the load balancer and
     /// resume their sessions, so after a scale-out connections spread over the new nodes too.
     /// </summary>
-    private void CloseSilentSessions(long now)
+    private void CloseSilentSessions(long now, bool late)
     {
-        bool late = now - _nextSilenceSweep > 1000; // a stalled timer says nothing about the clients: no verdicts then
         _nextSilenceSweep = now + 1000;
         if (late) return;
         long timeout = (long)options.IdleTimeout.TotalMilliseconds;
@@ -452,13 +448,8 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
     public IChannelHandler Channels => _sessionHandler!;
 
     /// <summary>The frames of every client channel, TCP or not.</summary>
-    private sealed class SessionHandler(ClientConnections node) : IConnectionHandler, IChannelHandler
+    private sealed class SessionHandler(ClientConnections node) : IChannelHandler
     {
-        public void OnFrame(Connection connection, in FrameHeader header, ReadOnlySpan<byte> frame) =>
-            OnFrame((IFrameChannel)connection, in header, frame);
-
-        public void OnClosed(Connection connection, Exception? error) => OnClosed((IFrameChannel)connection, error);
-
         public void OnFrame(IFrameChannel channel, in FrameHeader header, ReadOnlySpan<byte> frame)
         {
             var session = (SessionState)channel.Tag!;
@@ -790,10 +781,4 @@ internal sealed class GroupMembers
     {
         lock (_gate) return _members.AsSpan(0, _count).ToArray();
     }
-}
-
-/// <summary>Replies and control frames to a client's channel.</summary>
-internal sealed class ChannelSink(IFrameChannel channel) : IFrameSink
-{
-    public void Send(ReadOnlySpan<byte> frame) => channel.Send(frame);
 }

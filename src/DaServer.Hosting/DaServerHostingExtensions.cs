@@ -99,8 +99,10 @@ public static class DaServerHostingExtensions
 }
 
 /// <summary>Starts the node with the host and stops it gracefully (Leaving → drain → unload) on shutdown.</summary>
-internal sealed class NodeHostedService(Node node, IHostApplicationLifetime lifetime) : IHostedService
+internal sealed class NodeHostedService(Node node, IHostApplicationLifetime lifetime, System.Diagnostics.Metrics.IMeterFactory meters) : IHostedService
 {
+    private NodeMetrics? _metrics;
+
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         // Downed on the minority side of a split: exit with an error so the platform restarts the node into the majority.
@@ -110,12 +112,13 @@ internal sealed class NodeHostedService(Node node, IHostApplicationLifetime life
             lifetime.StopApplication();
         };
         await node.StartAsync(cancellationToken);
-        NodeMetrics.Track(node); // after its features started: they have added their gauges
+        _metrics = new NodeMetrics(node, meters); // after its features started: they have added their gauges
     }
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
         await node.StopAsync(cancellationToken);
+        _metrics?.Dispose(); // a stopped node is not sampled (nor kept alive) any more
         if (!node.StoppedClean) Environment.ExitCode = 1; // state was lost: not a clean exit for the platform
     }
 }

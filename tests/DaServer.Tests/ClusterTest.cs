@@ -29,17 +29,11 @@ public abstract class ClusterTest
     {
         var options = TestNodes.NodeOptionsFor(name, shards, tickRate: 50, _nodes.Count == 0 ? null : _nodes[0]);
         options.Hosts = hosts;
-        if (gateway || clients != null)
-        {
-            var clientOptions = new ClientConnectionOptions();
-            clients?.Invoke(clientOptions);
-            options.Features.Add(new ClientConnections(clientOptions));
-        }
-
         configure?.Invoke(options);
+        var clientOptions = gateway || clients != null ? new ClientConnectionOptions() : null;
+        if (clientOptions != null) clients?.Invoke(clientOptions);
 
-        var node = new Node(options);
-        await node.StartAsync();
+        var node = await TestNodes.StartAsync(options, clientOptions);
         _nodes.Add(node);
         return node;
     }

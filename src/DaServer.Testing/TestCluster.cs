@@ -123,11 +123,8 @@ public sealed class TestCluster : IAsyncDisposable
     {
         var options = TestNodes.NodeOptionsFor("node-" + index, _options.Shards, _options.TickRate, _nodes.Count == 0 ? null : _nodes[0]);
         options.TimeProvider = Time;
-        if (index == 0 && _options.ClientConnections) options.Features.Add(new ClientConnections(new ClientConnectionOptions()));
         _options.ConfigureNode?.Invoke(index, options);
-
-        var node = new Node(options);
-        await node.StartAsync().ConfigureAwait(false);
+        var node = await TestNodes.StartAsync(options, index == 0 && _options.ClientConnections ? new ClientConnectionOptions() : null).ConfigureAwait(false);
         _nodes.Add(node);
         return node;
     }
