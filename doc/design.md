@@ -159,7 +159,7 @@ shard that keeps session state as ECS components.
 | Calls | At most once, with timeouts (`RpcStatus.Timeout`, `Disconnected`, `NotHosted`); a call cycle fails at once (`CallCycle`, ADR-059). Retrying is the caller's choice, and only for idempotent operations. |
 | Deadlines | A request carries its caller's remaining time; each hop turns it into a local deadline and a shard drops a request that expired before it ran (ADR-028). Work nobody waits for is not done. |
 | Messages | At most once. Events that must not be lost are written to storage by the publisher first (outbox) and re-published on recovery; DaServer does not hide a broker inside the call path. |
-| Single loaded actor | Keys hash into 4,096 slots, each owned by rendezvous hashing over the `Up` and `Suspect` nodes hosting the handler type (ADR-023, ADR-074; by the id's `Placement` for `IPlaced` id types, ADR-073): every node computes the same owner from the same view. A node loads an actor only if it is the owner in its own view; otherwise it forwards (hop limit 3) or answers `NotHosted`. When ownership changes, the old owner unloads (`OnUnload`), hands its record to the new owner (ADR-072; the store when that fails) and forwards its remaining mail behind it. |
+| Single loaded actor | Keys hash into 4,096 slots, each owned by rendezvous hashing over the `Up` and `Suspect` nodes hosting the handler type (ADR-023, ADR-074; by the id's `Placement` for `IPlaced` id types, ADR-073), unless the coordinator's slot table says otherwise (ADR-079: the oldest Up member pins the loaded slots of `[Sticky]` types where they are and moves slots of other types from the most to the least loaded node, a few per round): every node computes the same owner from the same view and table. A node loads an actor only if it is the owner in its own view; otherwise it forwards (hop limit 3) or answers `NotHosted`. When ownership changes, the old owner unloads (`OnUnload`), hands its record to the new owner (ADR-072; the store when that fails) and forwards its remaining mail behind it. |
 | Actor state | `[Persist]` components form one record per actor in the actor store (ADR-068): restored before `OnLoad`, written on unload, every `SaveEvery` while changed and at once with `SaveNow`; versioned, so a stale owner's write is refused and its copy dropped. A graceful stop loses nothing; a crash loses at most `SaveEvery` of changes. |
 | Sessions | A client-facing node owns its sockets. Grants, bindings and groups live there; when a session closes, every actor it was bound or granted to that handles `SessionClosed` receives it, so no actor keeps a dead session. |
 | Graceful shutdown | `SIGTERM` → `Leaving` (pushed to every member) → stop loading actors → drain mailboxes → unload actors → exit. |
@@ -308,6 +308,11 @@ exists: `builder.AddDaServerFeature<TOptions>(name, create)` binds `DaServer:{na
 ones are added by `AddDaServer`). Client connections are the first consumer (`ClientConnections`, enabled by the
 `DaServer:Clients` section; ADR-050): sessions, origins and client groups, resume and retire, the
 `daserver.clients.sessions` gauge.
+
+Every node exports its metrics on the `DaServer` meter, scraped from `/metrics` on the HTTP plane (Prometheus format,
+always on) and pushed over OTLP when a collector is configured: members, actors, queue length, refusals, failures,
+expired requests, stalled shards, the shards' busy ratio (the default scaling signal for an HPA through the Prometheus
+adapter or KEDA), tick overruns, and the features' gauges.
 
 `node.Ingress` (`IIngress`) lets messages from outside in: raw (`Send`/`Ask` with message id, target, key and the
 payload as received, never deserialized; the reply goes to the ingress's `IReplySink` under its call id) or typed
