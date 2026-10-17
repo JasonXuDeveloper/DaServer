@@ -8,6 +8,7 @@ public sealed class ClusterView
 {
     private readonly FrozenDictionary<ulong, ClusterMember> _members;
     private readonly FrozenDictionary<uint, ClusterMember[]> _handlerTypeNodes;
+    private readonly FrozenDictionary<uint, ushort[]> _slotOwners; // actor handler types: slot -> index into their nodes
     private readonly FrozenSet<uint> _actorTypes;
     private readonly FrozenDictionary<uint, MessageRoute[]> _routes;
     private readonly FrozenDictionary<uint, ClusterMember[]> _scopeNodes;
@@ -58,12 +59,15 @@ public sealed class ClusterView
         foreach (var (k, v) in handlerTypes) handlerTypeArrays[k] = v.ToArray();
         _handlerTypeNodes = handlerTypeArrays.ToFrozenDictionary();
         _actorTypes = actorTypes.ToFrozenSet();
+        var slotOwners = new Dictionary<uint, ushort[]>();
+        foreach (uint actorType in actorTypes) slotOwners[actorType] = SlotOwners(handlerTypeArrays[actorType], actorType);
+        _slotOwners = slotOwners.ToFrozenDictionary();
         var routes = new Dictionary<uint, MessageRoute[]>();
         foreach (var (messageId, byHandlerType) in handlers)
         {
             var list = new List<MessageRoute>();
             foreach (var (handlerType, actor) in byHandlerType)
-                list.Add(new MessageRoute(handlerType, actor, handlerTypeArrays[handlerType]));
+                list.Add(new MessageRoute(handlerType, actor, handlerTypeArrays[handlerType]) { Owners = actor ? slotOwners[handlerType] : null });
             routes[messageId] = list.ToArray();
         }
 
@@ -118,32 +122,69 @@ public sealed class ClusterView
     public bool TryGetHandlerTypeRoute(uint handlerTypeId, out MessageRoute route)
     {
         bool found = _handlerTypeNodes.TryGetValue(handlerTypeId, out var nodes);
-        route = new MessageRoute(handlerTypeId, _actorTypes.Contains(handlerTypeId), nodes ?? []);
+        bool actor = _actorTypes.Contains(handlerTypeId);
+        route = new MessageRoute(handlerTypeId, actor, nodes ?? []) { Owners = actor ? _slotOwners[handlerTypeId] : null };
         return found;
     }
 
     public ClusterMember? HandlerTypeOwner(uint handlerTypeId, long key) =>
-        _handlerTypeNodes.TryGetValue(handlerTypeId, out var nodes) ? Rendezvous(nodes, handlerTypeId, key, 0) : null;
+        _handlerTypeNodes.TryGetValue(handlerTypeId, out var nodes) && _slotOwners.TryGetValue(handlerTypeId, out var owners)
+            ? nodes[owners[Slot(handlerTypeId, key)]]
+            : null;
 
     /// <summary>
     /// The owner the key would have without node <paramref name="excluded"/>: where it was before that node joined
-    /// (rendezvous hashing moves only the keys a new node wins).
+    /// (rendezvous hashing moves only the slots a new node wins).
     /// </summary>
-    public ClusterMember? HandlerTypeOwnerWithout(uint handlerTypeId, long key, ulong excluded) =>
-        _handlerTypeNodes.TryGetValue(handlerTypeId, out var nodes) ? Rendezvous(nodes, handlerTypeId, key, excluded) : null;
-
-    private static ClusterMember? Rendezvous(ClusterMember[] nodes, uint handlerTypeId, long key, ulong excluded)
+    public ClusterMember? HandlerTypeOwnerWithout(uint handlerTypeId, long key, ulong excluded)
     {
-        uint group = Placements.Of(handlerTypeId, ref key); // a placed id type hashes its placement (ADR-073)
-        ClusterMember? best = null;
+        if (!_handlerTypeNodes.TryGetValue(handlerTypeId, out var nodes)) return null;
+        int best = Rendezvous(nodes, GroupOf(handlerTypeId), Slot(handlerTypeId, key), excluded);
+        return best < 0 ? null : nodes[best];
+    }
+
+    /// <summary>
+    /// Actor keys hash into this many slots (ADR-074); a view gives each slot of an actor type an owner among the
+    /// type's nodes by rendezvous hashing, so finding a key's node is one table read, and a node joining or leaving
+    /// moves only the slots it wins or held.
+    /// </summary>
+    internal const int Slots = 4096;
+
+    /// <summary>The slot of actor (<paramref name="handlerTypeId"/>, <paramref name="key"/>): of its placement for placed id types (ADR-073).</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static int Slot(uint handlerTypeId, long key)
+    {
+        Placements.Of(handlerTypeId, ref key);
+        return (int)(Weight(0, 0, key) & (Slots - 1));
+    }
+
+    /// <summary>What the slots of a type are ranked by: its own id, or 0 for placed id types, so they meet those of other types.</summary>
+    private static uint GroupOf(uint handlerTypeId)
+    {
+        long probe = 0;
+        return Placements.Of(handlerTypeId, ref probe);
+    }
+
+    private static ushort[] SlotOwners(ClusterMember[] nodes, uint handlerTypeId)
+    {
+        var owners = new ushort[Slots];
+        uint group = GroupOf(handlerTypeId);
+        for (int slot = 0; slot < Slots; slot++) owners[slot] = (ushort)Math.Max(0, Rendezvous(nodes, group, slot, 0));
+        return owners;
+    }
+
+    /// <summary>The index of the node with the highest weight for (<paramref name="group"/>, <paramref name="slot"/>), or -1.</summary>
+    private static int Rendezvous(ClusterMember[] nodes, uint group, int slot, ulong excluded)
+    {
+        int best = -1;
         ulong bestWeight = 0;
         for (int i = 0; i < nodes.Length; i++)
         {
             if (nodes[i].NodeId == excluded && excluded != 0) continue;
-            ulong weight = Weight(nodes[i].NodeId, group, key);
-            if (best == null || weight > bestWeight)
+            ulong weight = Weight(nodes[i].NodeId, group, slot);
+            if (best < 0 || weight > bestWeight)
             {
-                best = nodes[i];
+                best = i;
                 bestWeight = weight;
             }
         }
@@ -157,7 +198,7 @@ public sealed class ClusterView
     /// </summary>
     public ClusterMember? Target(in MessageRoute route, long key, ulong localNodeId)
     {
-        if (route.Actor) return Rendezvous(route.Nodes, route.HandlerTypeId, key, 0);
+        if (route.Actor) return route.Nodes.Length == 0 ? null : route.Nodes[route.Owners![Slot(route.HandlerTypeId, key)]];
         foreach (var node in route.Nodes)
             if (node.NodeId == localNodeId) return node;
         return route.Nodes.Length == 0 ? null : route.Nodes[(int)(Spread.Next() % (uint)route.Nodes.Length)];
@@ -175,4 +216,8 @@ public sealed class ClusterView
 }
 
 /// <summary>One handler type handling a message type, and the nodes hosting it.</summary>
-public readonly record struct MessageRoute(uint HandlerTypeId, bool Actor, ClusterMember[] Nodes);
+public readonly record struct MessageRoute(uint HandlerTypeId, bool Actor, ClusterMember[] Nodes)
+{
+    /// <summary>For actor handler types: the owner of each key slot, as an index into <see cref="Nodes"/> (ADR-074).</summary>
+    internal ushort[]? Owners { get; init; }
+}
