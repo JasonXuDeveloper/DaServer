@@ -10,7 +10,8 @@ namespace DaServer.Net;
 /// </summary>
 public sealed class SendFlusher : IDisposable
 {
-    private readonly Lock _gate = new();
+    private static readonly Dictionary<TimeSpan, SendFlusher> SharedByInterval = new();
+    private readonly Lock _gate = new(), _beat = new();
     private List<Connection> _queued = new(), _writing = new();
     private readonly TimeSpan _interval;
     private readonly Thread _thread;
@@ -23,6 +24,22 @@ public sealed class SendFlusher : IDisposable
         _thread = new Thread(Run) { IsBackground = true, Name = name };
         _thread.Start();
     }
+
+    /// <summary>
+    /// The process's flusher of <paramref name="interval"/>: every connection with that beat shares its thread (a node's
+    /// sessions, a process's clients). Lives as long as the process; not disposed.
+    /// </summary>
+    public static SendFlusher Shared(TimeSpan interval)
+    {
+        lock (SharedByInterval) // cold: once per connection or node
+        {
+            if (!SharedByInterval.TryGetValue(interval, out var flusher)) SharedByInterval[interval] = flusher = new SendFlusher(interval);
+            return flusher;
+        }
+    }
+
+    /// <summary>Write what is queued now, without waiting for the beat (a node writes its sessions' last frames before closing them).</summary>
+    public void Flush() => Beat();
 
     internal void Add(Connection connection)
     {
@@ -42,10 +59,13 @@ public sealed class SendFlusher : IDisposable
 
     private void Beat()
     {
-        lock (_gate) (_queued, _writing) = (_writing, _queued);
-        var writing = _writing;
-        for (int i = 0; i < writing.Count; i++) writing[i].FlushNow();
-        writing.Clear();
+        lock (_beat) // the beat's thread, or a Flush
+        {
+            lock (_gate) (_queued, _writing) = (_writing, _queued);
+            var writing = _writing;
+            for (int i = 0; i < writing.Count; i++) writing[i].FlushNow();
+            writing.Clear();
+        }
     }
 
     public void Dispose()

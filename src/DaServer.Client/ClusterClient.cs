@@ -74,6 +74,17 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
     public TimeSpan CallTimeout { get; set; } = TimeSpan.FromSeconds(10);
 
     /// <summary>
+    /// Write requests on a beat instead of at once (zero by default): what the client sends within one interval leaves
+    /// in one write, from a flush thread the process's clients share (<see cref="SendFlusher"/>, ADR-070). For clients
+    /// that send many requests at once (load generators, bots, server-side callers); a player's client keeps the
+    /// default. Set before connecting; TCP connections only.
+    /// </summary>
+    public TimeSpan FlushInterval { get; set; }
+
+    /// <summary>The options of a new TCP connection: the client defaults, on the beat of <see cref="FlushInterval"/>.</summary>
+    private ConnectionOptions NewConnectionOptions() => ConnectionOptions.ForClients().FlushedEvery(FlushInterval);
+
+    /// <summary>
     /// When the client has sent or received nothing for this long it pings its node, which answers (ADR-053): the node
     /// then knows the client is there, and the client hears from the node even when nothing is pushed. Keep it below the
     /// node's <c>ClientConnectionOptions.IdleTimeout</c> (45 s by default).
@@ -177,7 +188,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
         Connection moved;
         try
         {
-            moved = await Connection.ConnectAsync(pick.Host, pick.Port, this, ConnectionOptions.ForClients(), cancellationToken)
+            moved = await Connection.ConnectAsync(pick.Host, pick.Port, this, NewConnectionOptions(), cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (Exception e) when (e is System.Net.Sockets.SocketException or IOException)
@@ -219,7 +230,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
 
     private async ValueTask ConnectToAsync(string host, int port, CancellationToken cancellationToken)
     {
-        var connection = await Connection.ConnectAsync(host, port, this, ConnectionOptions.ForClients(), cancellationToken)
+        var connection = await Connection.ConnectAsync(host, port, this, NewConnectionOptions(), cancellationToken)
             .ConfigureAwait(false);
         _connection = connection;
         GC.KeepAlive(Sweeper);
