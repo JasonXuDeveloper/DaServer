@@ -28,7 +28,11 @@ public sealed class NodeOptions
     /// <summary>Seed endpoints "host:port" (DNS names resolve to every address, e.g. a Kubernetes headless service).</summary>
     public List<string> Seeds { get; set; } = new();
 
-    /// <summary>Number of shards (single-threaded shards); default one per core.</summary>
+    /// <summary>
+    /// Number of shards (single-threaded shards); default one per core the process may use:
+    /// <see cref="Environment.ProcessorCount"/>, which follows a container's CPU limit (cgroup quota, rounded up) and
+    /// <c>DOTNET_PROCESSOR_COUNT</c>. Read at start: a pod resized in place keeps its shards until it restarts.
+    /// </summary>
     public int Shards { get; set; } = Environment.ProcessorCount;
 
     /// <summary>ECS tick rate of every shard (Hz).</summary>
