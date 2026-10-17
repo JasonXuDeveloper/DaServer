@@ -77,7 +77,7 @@ Everything a developer declares is one of these. The message type alone decides 
 | `[NinoType, Message] partial record struct M` | A message between servers (actors and services on any node). |
 | `[Message, FromClient]` | Game clients may send it too. To an actor, it goes to the actor bound to the session, or to the actor the client names if that actor granted the session (`GrantSession`). |
 | `[Message, ToClient]` | Servers push it to client sessions and groups; clients handle it. |
-| `[NinoType] partial record struct D` | Data inside messages (fields, replies), never sent on its own. Anything crossing the wire is `[NinoType]`. |
+| `[NinoType] partial record struct D` | Data inside messages (fields, replies), never sent on its own. Anything crossing the wire is `[NinoType]` or an unmanaged struct (an id). A list in a message goes in a `[NinoPooled]` class the handler returns (`ReturnToPool()`). |
 | `... : IRequest<TReply>` | A request: answered with one `TReply`. |
 | `[Handle] R On(M m)` | A handler in an actor or service: `void`/`Reply`, or the reply/`Reply<TReply>` of a request (`async Reply<T>` handlers allocate nothing when they await). |
 | `partial class S : EcsSystem` with `[ForEach]` | Per-tick logic over every matching entity of the shard. |
@@ -124,13 +124,13 @@ public readonly record struct PlayerId(long Value) : IActorId;
 public readonly record struct MapId(long Value) : IActorId;
 
 // Messages (shared with clients).
-[NinoType, Message, FromClient] public partial record struct Login(string Name) : IRequest<LoginResult>;
+[NinoType, Message, FromClient] public partial record struct Login([property: NinoUtf8] string Name) : IRequest<LoginResult>;
 [NinoType, Message, FromClient] public partial record struct EnterMap(MapId Map) : IRequest<bool>;
 [NinoType, Message, FromClient] public partial record struct Move(float VelocityX, float VelocityY); // input
-[NinoType, Message, FromClient] public partial record struct Say(string Text);
+[NinoType, Message, FromClient] public partial record struct Say([property: NinoUtf8] string Text);
 [NinoType, Message] public partial record struct Attach(ClientSession Session) : IRequest<bool>;  // servers only
 [NinoType, Message] public partial record struct Enter(PlayerId Player, ClientSession Session) : IRequest<bool>;
-[NinoType, Message, ToClient] public partial record struct Chat(PlayerId Player, string Text); // pushed
+[NinoType, Message, ToClient] public partial record struct Chat(PlayerId Player, [property: NinoUtf8] string Text); // pushed
 
 // Login project: a stateless service.
 public sealed class Account : Service
@@ -243,13 +243,14 @@ worlds on their own threads, behavior as HTN planning over ECS data, swarms that
 
 ## Persistence
 
-Components marked `[Persist]` (Nino structs in a components project) are an actor's stored state (ADR-068). The
+Components marked `[Persist]` (version-tolerant Nino structs in a components project, DAS014) are an actor's stored
+state (ADR-068). The
 runtime restores them before `OnLoad` when the actor loads, on any node, writes them when it unloads and every
 `SaveEvery` (30 s) while they changed, and at once for an entity tagged `SaveNow`. Writes are versioned: a node that
 lost ownership cannot overwrite the new owner's state. Components without `[Persist]` (sessions, caches) are rebuilt.
 
 ```csharp
-[NinoType, Persist] public partial record struct PlayerProfile(string Name, int Logins) : IComponent;
+[NinoType(format: NinoFormat.VersionTolerant), Persist] public partial record struct PlayerProfile(string Name, int Logins) : IComponent;
 ```
 
 When an actor changes node (scaling out or in, a node stopping), its record goes straight to the new owner on the
@@ -278,10 +279,10 @@ Actors, services and systems read time from `Time` (`world.Time()` in systems), 
 
 ## Rolling upgrades
 
-Old and new nodes run side by side while a deployment rolls. Message and component layouts are frozen: a new field
-goes into a new message or a new persisted component. Each project commits a `wire.manifest`; the build fails
-(DAS017) when a change would break the other build and asks to record new types (DAS018) with
-`dotnet build -p:UpdateWireManifest=true`. While builds differ, a message goes only to nodes whose build handles it
+Old and new nodes run side by side while a deployment rolls. Message layouts are frozen: a new field goes into a new
+message. Persisted components are version tolerant, so they take new fields at their end. Each project commits a
+`wire.manifest`; the build fails (DAS017) when a change would break the other build and asks to record the rest
+(DAS018) with `dotnet build -p:UpdateWireManifest=true`. While builds differ, a message goes only to nodes whose build handles it
 (ADR-076, ADR-077).
 
 ## Samples
