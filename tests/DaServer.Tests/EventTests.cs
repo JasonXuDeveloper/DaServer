@@ -60,6 +60,6 @@ public class EventTests : ClusterTest
 
         a.Send(new CounterId(3), new CounterBumped(7)); // a hosts no counters: delivered on b
         await Eventually(async () => await b.Ask(new CounterId(3), new Get()) == 7, "event not routed to the hosting node");
-        Assert.That(OwnerOf<CounterId>(b, 3), Is.EqualTo(b.Id));
+        Assert.That(b.OwnerOf<CounterId>(3), Is.EqualTo(b.Id));
     }
 }

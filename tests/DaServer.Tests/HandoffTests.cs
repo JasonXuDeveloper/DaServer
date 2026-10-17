@@ -55,7 +55,7 @@ public class HandoffTests(string kind) : ClusterTest
         int moved = 0;
         for (int key = 100; key < 140; key++)
         {
-            if (OwnerOf<BankId>(a, key) == b.Id) moved++;
+            if (a.OwnerOf<BankId>(key) == b.Id) moved++;
             Assert.That(await a.Ask(new BankId(key), new Balance()), Is.EqualTo(key), "the ledger moved");
             Assert.That(await b.Ask(new BankId(key), new Hit()), Is.EqualTo(2), "so did the [Handoff] streak");
         }

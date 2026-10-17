@@ -40,7 +40,7 @@ public sealed class TestCluster : IAsyncDisposable
         try
         {
             for (int i = 0; i < options.Nodes; i++) await cluster.AddNodeAsync(i);
-            await cluster.WaitUntilAsync(cluster.Converged, TimeSpan.FromSeconds(10), "the nodes did not see each other");
+            await cluster.WaitUntilAsync(() => TestNodes.Converged(cluster._nodes), TimeSpan.FromSeconds(10), "the nodes did not see each other");
             return cluster;
         }
         catch
@@ -104,15 +104,8 @@ public sealed class TestCluster : IAsyncDisposable
     }
 
     /// <summary>Poll <paramref name="condition"/> (asynchronous delivery: pushes, other nodes) until it holds.</summary>
-    public async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout, string? message = null)
-    {
-        var watch = Stopwatch.StartNew();
-        while (!condition())
-        {
-            if (watch.Elapsed > timeout) throw new TimeoutException(message ?? "The condition did not hold in time");
-            await Task.Delay(5).ConfigureAwait(false);
-        }
-    }
+    public Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout, string? message = null) =>
+        TestNodes.WaitUntilAsync(condition, timeout, message);
 
     /// <summary>Stop the nodes (actors unload, records are written) and dispose the clients.</summary>
     public async ValueTask DisposeAsync()
@@ -128,7 +121,7 @@ public sealed class TestCluster : IAsyncDisposable
     /// <summary>Start node <paramref name="index"/>; every node after the first joins through the first one.</summary>
     internal async Task<Node> AddNodeAsync(int index, Action<NodeOptions>? configure = null)
     {
-        var options = NodeOptionsFor("node-" + index, _options.Shards, _options.TickRate, _nodes.Count == 0 ? null : _nodes[0]);
+        var options = TestNodes.NodeOptionsFor("node-" + index, _options.Shards, _options.TickRate, _nodes.Count == 0 ? null : _nodes[0]);
         options.TimeProvider = Time;
         if (index == 0 && _options.ClientConnections) options.Features.Add(new ClientConnections(new ClientConnectionOptions()));
         _options.ConfigureNode?.Invoke(index, options);
@@ -138,26 +131,5 @@ public sealed class TestCluster : IAsyncDisposable
         await node.StartAsync().ConfigureAwait(false);
         _nodes.Add(node);
         return node;
-    }
-
-    /// <summary>A test node's options: loopback, any free port, fast membership timings, joining through <paramref name="seed"/>.</summary>
-    internal static NodeOptions NodeOptionsFor(string name, int shards, int tickRate, Node? seed) => new()
-    {
-        Name = name,
-        ListenAddress = "127.0.0.1",
-        Shards = shards,
-        TickRate = tickRate,
-        Seeds = seed == null ? new() : new() { "127.0.0.1:" + seed.ClusterEndPoint.Port },
-        GossipInterval = TimeSpan.FromMilliseconds(100),
-        SuspectAfter = TimeSpan.FromMilliseconds(600),
-        DeadAfter = TimeSpan.FromMilliseconds(1500),
-        CallTimeout = TimeSpan.FromSeconds(5),
-    };
-
-    private bool Converged()
-    {
-        foreach (var node in _nodes)
-            if (node.View.UpMembers.Length != _nodes.Count) return false;
-        return true;
     }
 }

@@ -7,6 +7,7 @@
 
     <ItemGroup>
         <InternalsVisibleTo Include="DaServer.Tests" />
+        <InternalsVisibleTo Include="DaServer.Benchmark" />
     </ItemGroup>
 
     <ItemGroup>
