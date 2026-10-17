@@ -1234,11 +1234,14 @@ records that no longer hold). Each: context → decision → consequences.
   members: parents and [NinoType] interfaces first, a base's non-public non-protected members skipped, the leaf's
   `[NinoExplicitOrder]`), each field's type as its bytes depend on it (enums with their underlying type, arrays and
   generic arguments element by element, types without their own entry, such as ids and other assemblies' types,
-  inline) and a request's reply. The analyzer fails the build on any change to a recorded type (DAS017) and asks to
-  record new types (DAS018) with `dotnet build -p:UpdateWireManifest=true` (which still stops on DAS017;
+  inline) and a request's reply. The analyzer fails the build on any change to a recorded type and on a new
+  subtype of one, whose type id older builds cannot read where the base is expected (DAS017), and asks to record
+  other new types (DAS018) with `dotnet build -p:UpdateWireManifest=true` (which still stops on DAS017;
   `=force` records a deliberate break). A project without a manifest is not checked. `WirePayload.Read` reads every
-  message, reply and record section: a value-only payload shorter than its type (truncated, hostile) is refused
-  before Nino would read past its end.
+  message, reply and record section: a value-only payload shorter than its type and type id (truncated, hostile)
+  is refused before Nino would read past its end. The generator and the analyzer walk the same types (generated
+  files included, Nino's own private-member proxies excluded); other assemblies' types are described by what their
+  metadata shows, so the IDE and the command line agree.
 - Alternatives: appending with zero-padding (unsound inside padding, needs the full memory layout computed);
   `WEAK_VERSION_TOLERANCE` (a format change); a length prefix per message (bytes and a copy on every message); field
   tags (protobuf: bytes and CPU on every field). Nino's next major version is to be reviewed for tolerant reads

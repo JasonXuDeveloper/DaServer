@@ -343,7 +343,8 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
 - Waiting on Nino's next major version (the user will say when it lands; revisit V1 and N8 then), measured on
   4.0.0-beta.47:
   - Value-only types are read as memory without a length check (`WirePayload` refuses shorter payloads first); an
-    appended field can land in the old trailing padding, so zero-padding cannot make appending safe.
+    appended field can land in the old trailing padding, so zero-padding cannot make appending safe. Member-by-member
+    reads also look up to 8 bytes past a truncated payload before they throw (`Reader` reads, then slices).
   - `WEAK_VERSION_TOLERANCE` tolerates only a buffer that has ended, not one cut inside a value block, and it changes
     the wire format (unmanaged runs written field by field): unusable as a version switch.
   - `Reader` does not expose the bytes left, so tolerant reads have to wrap it at every call site.
