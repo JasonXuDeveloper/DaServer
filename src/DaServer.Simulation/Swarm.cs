@@ -111,15 +111,6 @@ public sealed class Swarm : IAsyncDisposable
         return total;
     }
 
-    /// <summary>How many entities of every world match <paramref name="match"/> (read on each loop).</summary>
-    public Task<long> CountAsync<T>(Func<T, bool> match) where T : struct, IComponent => SumAsync(world =>
-    {
-        long n = 0;
-        foreach (var item in world.Query<T>())
-            if (match(item.Component1)) n++;
-        return n;
-    });
-
     /// <summary>Wait until <paramref name="pending"/> is 0, or <paramref name="timeout"/>; false on timeout.</summary>
     public async Task<bool> WaitAsync(Func<Task<long>> pending, TimeSpan timeout)
     {

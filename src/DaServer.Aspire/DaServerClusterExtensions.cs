@@ -167,8 +167,12 @@ public sealed class DaServerCluster
         return group;
     }
 
-    /// <summary>What the platform waits beyond a node's stop budget before killing it (the host's own margin is 5 s).</summary>
-    internal static readonly TimeSpan StopMargin = TimeSpan.FromSeconds(5);
+    /// <summary>
+    /// What the platform waits beyond a node's stop budget before killing it: the host's own margin
+    /// (<c>DaServerHostingExtensions.ShutdownMargin</c>, 5 s: the host gives up at budget + 5 s; the AppHost does not
+    /// reference the node's packages) and 5 s more, so the kill never lands while the host is still stopping.
+    /// </summary>
+    internal static readonly TimeSpan StopMargin = TimeSpan.FromSeconds(10);
 
     /// <summary>The next client port (client-facing node groups take one per node, in declaration order).</summary>
     internal int NextClientPort() => _nextClientPort++;
@@ -194,7 +198,7 @@ public sealed class DaServerNodeGroup
 
     public IReadOnlyList<IResourceBuilder<ProjectResource>> Nodes { get; }
 
-    /// <summary>The nodes' stop budget (<see cref="WithShutdownTimeout"/>; 25 s, the node's default).</summary>
+    /// <summary>The nodes' stop budget (<see cref="WithShutdownTimeout"/>; 25 s, the node's default, <c>NodeOptions.ShutdownTimeout</c>).</summary>
     public TimeSpan ShutdownTimeout { get; private set; } = TimeSpan.FromSeconds(25);
 
     /// <summary>How long the platform waits for a node of this group before killing it: the stop budget and a margin.</summary>

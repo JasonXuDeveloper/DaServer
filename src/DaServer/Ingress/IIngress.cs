@@ -29,7 +29,4 @@ public interface IIngress
 
     /// <summary>A typed request from outside to the service handling <typeparamref name="TRequest"/>.</summary>
     ValueTask<TReply> Ask<TRequest, TReply>(in TRequest request, Origin origin, TimeSpan budget) where TRequest : struct, IRequest<TReply>;
-
-    /// <summary>The load node <paramref name="nodeId"/> gossiped (messages queued in its shards), 0 when unknown.</summary>
-    int LoadOf(ulong nodeId);
 }

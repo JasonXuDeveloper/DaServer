@@ -36,6 +36,7 @@ public class HttpPlaneTests
         _app.MapAsk<EchoText, string>("/echo");
         _app.MapAsk<CounterId, Add, int>("/counters/{id}/add");
         _app.MapAsk<WhoAsks, long>("/who");
+        _app.MapSend<Tally>("/tally");
         _app.MapDaServer();
         await _app.StartAsync();
         _http = new HttpClient { BaseAddress = new Uri(_app.Urls.First()) };
@@ -102,6 +103,19 @@ public class HttpPlaneTests
         var refused = await _http.PostAsJsonAsync("/who", new { });
         Assert.That(refused.StatusCode, Is.EqualTo(HttpStatusCode.TooManyRequests));
         Assert.That(refused.Headers.RetryAfter?.Delta, Is.EqualTo(TimeSpan.FromSeconds(3)));
+    }
+
+    [Test]
+    public async Task APostSendsAOneWayMessageToItsService()
+    {
+        long before = Interlocked.Read(ref Observed.Tallies);
+        var response = await _http.PostAsJsonAsync("/tally", new { By = 3 });
+        Assert.That(response.StatusCode, Is.EqualTo(HttpStatusCode.Accepted));
+        await Task.Run(async () =>
+        {
+            for (int i = 0; i < 500 && Interlocked.Read(ref Observed.Tallies) - before < 3; i++) await Task.Delay(10);
+        });
+        Assert.That(Interlocked.Read(ref Observed.Tallies) - before, Is.EqualTo(3));
     }
 
     [Test]

@@ -18,11 +18,12 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
     private IFrameChannel? _introduced; // the connection whose hello was answered: the only one other frames go on
     private Uri? _webSocket; // connected over a WebSocket (reconnects go there again)
     private DnsEndPoint[] _endpoints = []; // the well-known addresses (reconnects start there again)
-    #if NET
+    // A random first endpoint spreads clients over the endpoints.
+#if NET
     private int _nextEndpoint = Random.Shared.Next();
 #else
     private int _nextEndpoint = new Random().Next();
-#endif // spreads clients over the endpoints
+#endif
     private byte[]? _ticket;          // latest resume ticket from the node (null: nothing to resume)
     private long _refreshTicketAtMs;  // local clock
     private int _reconnecting;
@@ -313,7 +314,10 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
     private void Send(FrameWriter w, uint messageId, uint handlerTypeId, long key, IPendingCall? call)
     {
         var budget = call != null ? FrameHeader.EncodeBudget((long)CallTimeout.TotalMilliseconds) : RpcStatus.Ok;
-        Transmit(w, FrameKind.Message, handlerTypeId, messageId, key, call, budget);
+        // While reconnecting the new connection's session is not the resumed one yet: a message on it would reach no
+        // bound actor, so it fails (or is dropped) as on a lost connection until the session is resumed.
+        if (Volatile.Read(ref _reconnecting) != 0) Transmit(null, w, FrameKind.Message, handlerTypeId, messageId, key, call, budget);
+        else Transmit(w, FrameKind.Message, handlerTypeId, messageId, key, call, budget);
     }
 
     /// <summary>A control frame to the node, answered when <paramref name="call"/> is set. Takes ownership of <paramref name="w"/>.</summary>
