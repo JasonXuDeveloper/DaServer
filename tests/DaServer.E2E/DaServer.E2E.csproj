@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-    <!-- End to end: the sample AppHost (login, game, 3 gateways, balancer, bots) started by Aspire's test host. -->
+    <!-- End to end: the samples' AppHosts (the MMO with its bots, the flash sale with its crowd) started by Aspire's test host. -->
     <PropertyGroup>
         <TargetFramework>net11.0</TargetFramework>
         <IsPackable>false</IsPackable>
@@ -16,6 +16,7 @@
 
     <ItemGroup>
         <ProjectReference Include="..\..\samples\mmo\Sample.AppHost\Sample.AppHost.csproj" />
+        <ProjectReference Include="..\..\samples\flashsale\FlashSale.AppHost\FlashSale.AppHost.csproj" />
     </ItemGroup>
 
 </Project>
