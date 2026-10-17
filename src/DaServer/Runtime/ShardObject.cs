@@ -42,14 +42,14 @@ public abstract class ShardObject
     /// </summary>
     protected static Reply<T> ReplyWhen<T>(Reply done, T reply)
     {
-        DeferredAfter<T>.Set(done.AsValueTask(), reply);
+        DeferredAfter<Done, T>.Set(new Done(done.AsValueTask()), reply);
         return default;
     }
 
     /// <inheritdoc cref="ReplyWhen{T}(Reply, T)"/>
     protected static Reply<T> ReplyWhen<TDone, T>(Reply<TDone> done, T reply)
     {
-        DeferredAfter<TDone, T>.Set(done.AsValueTask(), reply);
+        DeferredAfter<Done<TDone>, T>.Set(new Done<TDone>(done.AsValueTask()), reply);
         return default;
     }
 }
