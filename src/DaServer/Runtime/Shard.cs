@@ -103,6 +103,12 @@ internal sealed class Shard : CompletionThread
     /// </summary>
     internal bool TryAdmit(FrameWriter frame, IReplySink? sink)
     {
+        if (Volatile.Read(ref _closed) != 0)
+        {
+            Closed(frame, sink); // the shard stopped (its node leaves)
+            return true;
+        }
+
         if (!_dispatchQueue.TryEnqueue(new WorkItem(WorkKind.Dispatch, frame, sink)))
         {
             CountRejected();
@@ -110,7 +116,22 @@ internal sealed class Shard : CompletionThread
         }
 
         Wake();
+        if (Volatile.Read(ref _closed) != 0) ForwardQueued(); // it stopped as this frame went in: nobody else takes it
         return true;
+    }
+
+    private int _closed; // 1 once the shard's loop ended: admitted frames go on to their owner instead of waiting
+
+    /// <summary>The shard stopped: what is still admitted goes on to the keys' owners (any thread).</summary>
+    private void ForwardQueued()
+    {
+        while (_dispatchQueue.TryDequeue(out var item)) Closed((FrameWriter)item.A!, (IReplySink?)item.B);
+    }
+
+    /// <summary>A frame for a stopped shard: a handoff frame is answered here (it holds nothing), mail goes on to its key's owner.</summary>
+    private void Closed(FrameWriter frame, IReplySink? sink)
+    {
+        if (!Persistence.Handoff.Bounce(Node, frame)) Node.Forward(frame, sink);
     }
 
     internal void CountRejected() => Interlocked.Increment(ref _rejected.Value);
@@ -255,6 +276,8 @@ internal sealed class Shard : CompletionThread
         }
         finally
         {
+            Volatile.Write(ref _closed, 1);
+            ForwardQueued();
             try
             {
                 if (World.HasSingleton<ShardTimers>()) World.GetSingleton<ShardTimers>().Drop();
