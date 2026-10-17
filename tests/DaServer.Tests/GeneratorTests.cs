@@ -145,6 +145,7 @@ public class GeneratorTests
     [TestCase("public record struct Hp(int Value) : EasyEcs.IComponent;", "DAS013")]
     [TestCase("[Persist] public partial class Bad { }", "DAS014")]
     [TestCase("[Handoff] public partial class Bad { }", "DAS014")]
+    [TestCase("public partial struct Bad : IPlaced { public long Placement => 0; }", "DAS016")]
     public async Task MisuseIsReportedByTheAnalyzer(string source, string id)
     {
         var (_, diagnostics) = await Run(source);
