@@ -1107,6 +1107,11 @@ records that no longer hold). Each: context → decision → consequences.
   5,000 33 -> 80 ms; `ScenarioBenchmark` 9,000 clients 61 -> 69 ms) for half the thread-pool work items: it is for
   nodes whose cores are the limit, hence off by default.
 
+- Clients too (`ClusterClient.FlushInterval`, off by default): a process's connections with one interval share one
+  flush thread (`SendFlusher.Shared`, `ConnectionOptions.FlushedEvery`, used by both sides), for clients that send
+  many requests at once (load generators, bots, server-side callers). The flash sale's crowd, 3,000,000 buyers on
+  one node: 1 ms beat against none, 19.7 -> 13.2 s, 350,000 -> 548,000 requests a second steady, node CPU 1.64 ->
+  1.51 cores (the crowd spent half its CPU in `send` and on the connection's lock).
 ## ADR-071 Tests drive the shards' clock
 - Context: users test actors, services and systems whose behavior depends on time: per-tick systems, `SendAfter`,
   idle unloading, checkpoints. On real time such tests sleep and assert ranges ("about 20 ticks"), which is slow and
