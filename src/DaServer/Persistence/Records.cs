@@ -42,25 +42,46 @@ internal sealed class PersistentType<T>(uint typeId, bool stored) : PersistentTy
 }
 
 /// <summary>
-/// An actor's record: a section per persisted component it has, each <c>[uint type id][int length][Nino bytes]</c>.
-/// Sections of types this node does not know (a component removed from the code) are skipped on load and dropped on
-/// the next save; a component added later is simply missing from older records.
+/// An actor's record: a 4-byte format header (<c>"DR"</c> and <see cref="Version"/>), then a section per persisted
+/// component it has, each <c>[uint type id][int length][Nino bytes]</c>. Nino's bytes carry no format version of their
+/// own, so a record written in another format (an older Nino) is refused instead of misread. Sections of types this
+/// node does not know (a component removed from the code) are skipped on load and dropped on the next save; a component
+/// added later is simply missing from older records.
 /// </summary>
 internal static class Records
 {
     public const int SectionHeader = sizeof(uint) + sizeof(int);
 
+    /// <summary>"DR" (DaServer record), then the format version: 1 is Nino 4's format.</summary>
+    private const ushort Magic = 0x5244, Version = 1;
+
     /// <summary>Write the sections of <paramref name="entity"/> into a pooled frame (its payload is the record).</summary>
     public static FrameWriter Write(Entity entity, PersistentType[] types)
     {
         var record = FrameWriter.Rent(1024);
-        foreach (var type in types) type.Write(entity, record);
+        WriteSections(entity, types, record);
         return record;
+    }
+
+    /// <summary>Append the format header and the sections of <paramref name="entity"/>'s <paramref name="types"/> to <paramref name="record"/>.</summary>
+    public static void WriteSections(Entity entity, PersistentType[] types, FrameWriter record)
+    {
+        var head = record.GetSpan(sizeof(uint));
+        BinaryPrimitives.WriteUInt16LittleEndian(head, Magic);
+        BinaryPrimitives.WriteUInt16LittleEndian(head[sizeof(ushort)..], Version);
+        record.Advance(sizeof(uint));
+        foreach (var type in types) type.Write(entity, record);
     }
 
     /// <summary>Restore the sections of <paramref name="data"/> onto <paramref name="entity"/>.</summary>
     public static void Read(Entity entity, ReadOnlySpan<byte> data, FrozenDictionary<uint, PersistentType> types)
     {
+        if (data.IsEmpty) return; // no record yet
+        if (data.Length < sizeof(uint) || BinaryPrimitives.ReadUInt16LittleEndian(data) != Magic)
+            throw new InvalidDataException("Not an actor record of this format (no DaServer record header)");
+        ushort version = BinaryPrimitives.ReadUInt16LittleEndian(data[sizeof(ushort)..]);
+        if (version != Version) throw new InvalidDataException($"Actor record format {version}, this node reads {Version}");
+        data = data[sizeof(uint)..];
         while (data.Length >= SectionHeader)
         {
             uint id = BinaryPrimitives.ReadUInt32LittleEndian(data);
