@@ -9,14 +9,15 @@ namespace DaServer.Runtime;
 /// </summary>
 internal static class ActorSessions
 {
-    static ActorSessions()
+    private static int _registered;
+
+    /// <summary>Install the filter (once per process; nodes call it when they start).</summary>
+    public static void Register()
     {
+        if (Interlocked.Exchange(ref _registered, 1) != 0) return;
         MessageFilters.Register<SessionClosed>(static (object target, in SessionClosed closed, in CallContext _) =>
             target is Actor actor && !Forget(actor, closed.Session) ? RpcStatus.NotHosted : RpcStatus.Ok);
     }
-
-    /// <summary>Install the filters (once per process; nodes call it when they start).</summary>
-    public static void Register() => RuntimeHelpers.RunClassConstructor(typeof(ActorSessions).TypeHandle);
 
     /// <summary>Remember a client session of a loaded actor (a hash lookup; allocates once per new session).</summary>
     public static void Record(Actor actor, ClientSession session) => SessionsOf(actor).Sessions.Add(session);
