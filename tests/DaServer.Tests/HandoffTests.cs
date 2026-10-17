@@ -240,6 +240,70 @@ public class HandoffTests(string kind) : ClusterTest
     }
 
     [Test]
+    public async Task ARecordThatArrivesAfterItsKeyMovedOnFollowsIt([Values] bool askedFirst)
+    {
+        // K moves from a to b, then on to c before b took a's record (b is busy): b cannot take it any more. Without a
+        // store the record is the only copy of K's state: it must go on to c (whether c asked b first or not), not be
+        // refused and lost.
+        var a = await StartWith(null, "a");
+        var b = await StartWith(null, "b");
+        var c = await StartWith(null, "c");
+        await Converged();
+        long key = 400;
+        while (a.OwnerOf<BankId>(key) != a.Id) key++;
+        Assert.That(await a.Ask(new BankId(key), new Deposit(5, false)), Is.EqualTo(5));
+        uint type = ActorIds<BankId>.HandlerTypeId;
+        var slot = (ushort)ClusterView.Slot(type, key);
+        void ApplyEverywhere(SlotTable table)
+        {
+            foreach (var node in new[] { a, b, c }) node.Membership.Apply(table);
+        }
+
+        using var gate = new ManualResetEventSlim();
+        b.PostToEveryShard(static (_, g) => g.Wait(TimeSpan.FromSeconds(10)), gate);
+        ApplyEverywhere(new SlotTable { Version = 1000, Coordinator = a.Id, Overrides = [new SlotOverride(type, slot, b.Id)] });
+        await Task.Delay(200); // a sent K's record to b, where it waits
+        ApplyEverywhere(new SlotTable { Version = 1001, Coordinator = a.Id, Overrides = [new SlotOverride(type, slot, c.Id)] });
+        if (askedFirst)
+        {
+            c.Send(new BankId(key), new Deposit(2, false)); // c asks b, the previous owner in its view
+            await Task.Delay(200);
+        }
+
+        gate.Set();
+        if (!askedFirst) c.Send(new BankId(key), new Deposit(2, false));
+        await Eventually(() => c.Ask(new BankId(key), new Balance()).AsTask().Result == 7, "K's state reached c: a's 5 then c's 2");
+    }
+
+    [Test]
+    public async Task ANodeThatHeldAKeyBrieflyWaitsForItsPreviousOwner()
+    {
+        // K moves from a to b and on to c while a's copy is in a long turn. c asks b, its previous owner; b never got K
+        // but took it from a moments ago: it must not answer "none" (c would start K empty, without a store) but wait
+        // for a, whose record then goes to c.
+        var a = await StartWith(null, "a");
+        var b = await StartWith(null, "b");
+        var c = await StartWith(null, "c");
+        await Converged();
+        long key = 400;
+        while (a.OwnerOf<BankId>(key) != a.Id) key++;
+        Assert.That(await a.Ask(new BankId(key), new Deposit(5, false)), Is.EqualTo(5));
+        TurnGate.Current = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var held = a.Ask(new BankId(key), new HoldTurn()).AsTask();
+        uint type = ActorIds<BankId>.HandlerTypeId;
+        var slot = (ushort)ClusterView.Slot(type, key);
+        foreach (var node in new[] { a, b, c })
+            node.Membership.Apply(new SlotTable { Version = 1000, Coordinator = a.Id, Overrides = [new SlotOverride(type, slot, b.Id)] });
+        foreach (var node in new[] { a, b, c })
+            node.Membership.Apply(new SlotTable { Version = 1001, Coordinator = a.Id, Overrides = [new SlotOverride(type, slot, c.Id)] });
+        c.Send(new BankId(key), new Deposit(2, false)); // c asks b
+        await Task.Delay(300);
+        TurnGate.Current.TrySetResult();
+        await held;
+        await Eventually(() => c.Ask(new BankId(key), new Balance()).AsTask().Result == 7, "K's state reached c: a's 5 then c's 2");
+    }
+
+    [Test]
     public async Task WithoutAStoreStateStillMoves()
     {
         var a = await StartWith(null, "a");
