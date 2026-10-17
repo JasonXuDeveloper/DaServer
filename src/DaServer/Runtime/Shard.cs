@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 namespace DaServer.Runtime;
 
 /// <summary>
@@ -20,18 +21,16 @@ internal sealed class Shard : CompletionThread
     private readonly MpmcQueue<WorkItem> _completionQueue; // work that finishes admitted work: never refused
     private readonly ConcurrentQueue<WorkItem> _overflow = new(); // only when the completion ring is full
     private int _overflowCount;
-    private long _rejected;
-    private long _expired;
-    private long _failed;
+    private PaddedLong _rejected; // producers count refusals exactly under overload: a line of its own
+    private ShardCounters _counters; // written by the shard thread every pass: away from what producers read
     private readonly ManualResetEventSlim _wake = new(false, spinCount: 0);
-    private int _sleeping;
+    private PaddedLong _sleeping; // read by every producer on every post: never next to what the shard writes
     private readonly Thread _thread;
     private readonly TaskCompletionSource _stopped = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private volatile bool _stopRequested, _stopFenced;
     private readonly TimeProvider _time; // the shard clock (NodeOptions.TimeProvider)
     private readonly long _tickInterval, _timerWake; // in the clock's timestamp units
     private const long IdleScanMs = 100;
-    private int _actorCount;
 
     internal Shard(Node node, int index, int dispatchQueueCapacity, int tickRate)
     {
@@ -59,29 +58,27 @@ internal sealed class Shard : CompletionThread
     public World World { get; }
 
     /// <summary>Number of completed ticks.</summary>
-    public long TickCount { get; private set; }
+    public long TickCount => Volatile.Read(ref _counters.TickCount);
 
     /// <summary>Work items waiting in the dispatch queue (approximate, any thread).</summary>
     public int QueueLength => _dispatchQueue.Count + _completionQueue.Count + Volatile.Read(ref _overflowCount);
 
     /// <summary>Calls and events refused because the shard or an actor mailbox was full (any thread).</summary>
-    public long Rejected => Interlocked.Read(ref _rejected);
+    public long Rejected => Interlocked.Read(ref _rejected.Value);
 
     /// <summary>Requests dropped unrun because their caller had already timed out (the call carried a deadline).</summary>
-    public long Expired => Interlocked.Read(ref _expired);
+    public long Expired => Volatile.Read(ref _counters.Expired);
 
     /// <summary>Messages whose handler failed (threw) on this shard since start: poison messages show up here.</summary>
-    public long Failed => Interlocked.Read(ref _failed);
+    public long Failed => Volatile.Read(ref _counters.Failed);
 
     /// <summary>Active loaded actors (approximate, any thread).</summary>
-    public int ActorCount => Volatile.Read(ref _actorCount);
-
-    private long _passStartedMs; // Environment.TickCount64 when the running pass started, 0 while asleep
+    public int ActorCount => Volatile.Read(ref _counters.ActorCount);
 
     /// <summary>How long the shard thread has been in its current pass (0 while it sleeps): the stall watchdog's input.</summary>
     internal long PassMs(long now)
     {
-        long started = Volatile.Read(ref _passStartedMs);
+        long started = Volatile.Read(ref _counters.PassStartedMs);
         return started == 0 ? 0 : now - started;
     }
 
@@ -107,11 +104,13 @@ internal sealed class Shard : CompletionThread
         return true;
     }
 
-    internal void CountRejected() => Interlocked.Increment(ref _rejected);
+    internal void CountRejected() => Interlocked.Increment(ref _rejected.Value);
 
-    internal void CountExpired() => Interlocked.Increment(ref _expired);
+    /// <summary>On the shard's own thread only (no interlocked add: nobody else writes it).</summary>
+    internal void CountExpired() => Volatile.Write(ref _counters.Expired, _counters.Expired + 1);
 
-    internal void CountFailed() => Interlocked.Increment(ref _failed);
+    /// <summary>On the shard's own thread only.</summary>
+    internal void CountFailed() => Volatile.Write(ref _counters.Failed, _counters.Failed + 1);
 
     /// <summary>Thread-safe: enqueue a completion, callback or turn end and wake the shard if it is sleeping.</summary>
     internal void Post(in WorkItem item)
@@ -134,7 +133,7 @@ internal sealed class Shard : CompletionThread
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void Wake()
     {
-        if (Volatile.Read(ref _sleeping) != 0 && Interlocked.Exchange(ref _sleeping, 0) != 0)
+        if (Volatile.Read(ref _sleeping.Value) != 0 && Interlocked.Exchange(ref _sleeping.Value, 0) != 0)
             _wake.Set();
     }
 
@@ -192,7 +191,7 @@ internal sealed class Shard : CompletionThread
             ref var activity = ref World.GetSingleton<ShardActivity>(); // singletons never move
             while (true)
             {
-                Volatile.Write(ref _passStartedMs, Environment.TickCount64);
+                Volatile.Write(ref _counters.PassStartedMs, Environment.TickCount64);
                 activity.Processed = 0;
                 long now = _time.GetTimestamp();
                 activity.NowMs = now * 1000 / _time.TimestampFrequency;
@@ -222,7 +221,7 @@ internal sealed class Shard : CompletionThread
 
                     if (now >= nextTick)
                     {
-                        TickCount++;
+                        Volatile.Write(ref _counters.TickCount, _counters.TickCount + 1);
                         World.Update();
                         nextTick += _tickInterval;
                         if (now - nextTick > _tickInterval * 5)
@@ -230,7 +229,8 @@ internal sealed class Shard : CompletionThread
                     }
                 }
 
-                Volatile.Write(ref _actorCount, World.GetSingleton<ActorDirectory>().Actors.Count);
+                int actors = World.GetSingleton<ActorDirectory>().Actors.Count;
+                if (actors != _counters.ActorCount) Volatile.Write(ref _counters.ActorCount, actors); // written only when it changes
                 if (activity.Stopping && IsDrained()) break;
                 bool idle = activity.Processed == 0 && !World.Any<Mailbox>(MailboxSystem.Runnable);
                 if (idle)
@@ -324,8 +324,8 @@ internal sealed class Shard : CompletionThread
                 Thread.SpinWait(SpinRound);
             }
 
-        Interlocked.Exchange(ref _sleeping, 1);
-        Volatile.Write(ref _passStartedMs, 0);
+        Interlocked.Exchange(ref _sleeping.Value, 1);
+        Volatile.Write(ref _counters.PassStartedMs, 0);
         if (QueueLength == 0 && !_stopRequested)
         {
             long remaining = nextTick - _time.GetTimestamp();
@@ -333,7 +333,21 @@ internal sealed class Shard : CompletionThread
                 _wake.Wait(TimeSpan.FromSeconds(Math.Min(1, (double)remaining / _time.TimestampFrequency)));
         }
 
-        Volatile.Write(ref _sleeping, 0);
+        Volatile.Write(ref _sleeping.Value, 0);
         _wake.Reset(); // a waker that cleared the flag may still set it: the next sleep then returns at once, harmlessly
     }
+}
+
+/// <summary>
+/// What a shard's thread writes every pass, read by the node's metrics and watchdog: on lines of their own, padded on
+/// both sides (see <see cref="PaddedLong"/>), so producers reading the shard's other fields do not miss on every pass.
+/// </summary>
+[StructLayout(LayoutKind.Explicit, Size = 128)]
+internal struct ShardCounters
+{
+    [FieldOffset(64)] public long PassStartedMs; // Environment.TickCount64 when the running pass started, 0 while asleep
+    [FieldOffset(72)] public long TickCount;
+    [FieldOffset(80)] public long Expired;
+    [FieldOffset(88)] public long Failed;
+    [FieldOffset(96)] public int ActorCount;
 }

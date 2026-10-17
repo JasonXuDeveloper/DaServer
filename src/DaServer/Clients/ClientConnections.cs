@@ -75,7 +75,7 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
         {
             for (int i = wave; i < sessions.Length; i += waves) sessions[i].Channel.Close();
             if (wave < waves - 1)
-                await Task.Delay(pause, cancellationToken).ContinueWith(static _ => { }, TaskScheduler.Default).ConfigureAwait(false);
+                await Task.Delay(pause, cancellationToken).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing); // cut short: no throw
         }
 
         Close();

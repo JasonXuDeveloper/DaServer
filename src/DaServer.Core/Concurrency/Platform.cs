@@ -21,6 +21,19 @@ internal static class Platform
 #endif
     }
 
+    /// <summary>The number of leading zero bits of <paramref name="value"/> (32 for 0): one instruction on .NET.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int LeadingZeroCount(uint value)
+    {
+#if NET
+        return System.Numerics.BitOperations.LeadingZeroCount(value);
+#else
+        int n = 32;
+        for (; value != 0; value >>= 1) n--;
+        return n;
+#endif
+    }
+
     /// <summary>Run <paramref name="action"/> on the thread pool (cold paths: closing a connection off the caller's thread).</summary>
     public static void Queue<TState>(Action<TState> action, TState state) where TState : class
     {

@@ -73,26 +73,9 @@ internal sealed class PendingCallTable
 
     // Chunk k holds FirstChunk << k slots and starts at slot FirstChunk * (2^k - 1); the last one ends at the table's size.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static int ChunkOf(int index) => 31 - LeadingZeros((uint)(index >> FirstChunkBits) + 1);
+    private static int ChunkOf(int index) => 31 - Platform.LeadingZeroCount((uint)(index >> FirstChunkBits) + 1);
 
     private static int StartOf(int chunk) => FirstChunk * ((1 << chunk) - 1);
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static int LeadingZeros(uint value)
-    {
-#if NET
-        return System.Numerics.BitOperations.LeadingZeroCount(value);
-#else
-        int n = 32;
-        while (value != 0)
-        {
-            value >>= 1;
-            n--;
-        }
-
-        return n;
-#endif
-    }
 
     // Invariant: a chunk exists for every index below _allocated (it is published before the index is handed out).
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

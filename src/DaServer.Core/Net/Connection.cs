@@ -262,7 +262,7 @@ public sealed class Connection : IFrameSender, IFrameChannel
                             offset += sent;
                         }
 
-                        Volatile.Write(ref _lastSentMs, Platform.Milliseconds);
+                        KeepAlive.Touch(ref _lastSentMs);
                     }
                     finally
                     {
@@ -328,7 +328,7 @@ public sealed class Connection : IFrameSender, IFrameChannel
                 return;
             }
 
-            Volatile.Write(ref _lastSentMs, Platform.Milliseconds);
+            KeepAlive.Touch(ref _lastSentMs);
             _queue.Release(batch);
         }
 
@@ -361,7 +361,7 @@ public sealed class Connection : IFrameSender, IFrameChannel
                         offset += sent;
                     }
 
-                    Volatile.Write(ref _lastSentMs, Platform.Milliseconds);
+                    KeepAlive.Touch(ref _lastSentMs);
                     _queue.Release(batch);
                     if (!_queue.TryTake(out batch, out length)) break;
                     offset = 0;
@@ -411,7 +411,7 @@ public sealed class Connection : IFrameSender, IFrameChannel
                     SocketFlags.None).ConfigureAwait(false);
                 if (read == 0)
                     break; // graceful close
-                Volatile.Write(ref _lastReceivedMs, Platform.Milliseconds);
+                KeepAlive.Touch(ref _lastReceivedMs);
 
                 filled += read;
 

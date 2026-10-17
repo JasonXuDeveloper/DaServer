@@ -230,7 +230,7 @@ internal abstract class DeferredReply<T>
     {
         if (_pending != null) throw new InvalidOperationException("ReplyWhen: one per handler, as what it returns (DAS011)");
         watcher.Value = reply;
-        Used = true;
+        if (!Used) Used = true; // read on every reply of every shard: written once
         _pending = watcher;
     }
 

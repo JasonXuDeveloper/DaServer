@@ -85,14 +85,7 @@ public static class BufferPool
     private static int BucketIndex(int length)
     {
         if (length <= MinSize) return 0;
-        // ceil(log2(length)) - MinShift
-#if NET
-        int log = 32 - System.Numerics.BitOperations.LeadingZeroCount((uint)(length - 1));
-#else
-        int log = 0;
-        for (uint v = (uint)(length - 1); v != 0; v >>= 1) log++;
-#endif
-        return log - MinShift;
+        return 32 - Platform.LeadingZeroCount((uint)(length - 1)) - MinShift; // ceil(log2(length)) - MinShift
     }
 
 
