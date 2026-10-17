@@ -23,10 +23,11 @@ internal static class Crowd
     /// <param name="connections">Client connections the buyers share (a buyer is a flow, not a socket).</param>
     /// <param name="inFlight">Buyers in progress per connection.</param>
     /// <param name="pollMs">How often a waiting buyer asks whether it is admitted.</param>
+    /// <param name="flushMs">Requests leave each connection on this beat (<c>ClusterClient.FlushInterval</c>; 0: at once).</param>
     /// <param name="webSocket">Connect over WebSocket (ws://host:port/clients/ws), as browsers do, instead of TCP.</param>
     /// <param name="sale">The sale's number.</param>
     public static async Task<int> RunAsync(int buyers = 1_000_000, int units = 100, int perSecond = 0, int connections = 64,
-        int inFlight = 256, int pollMs = 500, string webSocket = "", long sale = 1)
+        int inFlight = 256, int pollMs = 500, int flushMs = 1, string webSocket = "", long sale = 1)
     {
         var endpoints = Endpoints.FromEnvironment();
         await using var swarm = new Swarm(new SwarmOptions { Loops = Math.Min(Environment.ProcessorCount, connections) });
@@ -36,7 +37,7 @@ internal static class Crowd
         var changed = meter.Counter("retries answered differently", SwarmCounterKind.Failure);
         var confirmed = new ConcurrentDictionary<long, bool>();
         var clients = new ClusterClient[connections];
-        await swarm.StartAsync(connections, () => new ClusterClient(maxPendingCalls: inFlight * 2), async user =>
+        await swarm.StartAsync(connections, () => new ClusterClient(maxPendingCalls: inFlight * 2) { FlushInterval = TimeSpan.FromMilliseconds(flushMs) }, async user =>
         {
             clients[user.Index] = user.Client;
             if (webSocket.Length > 0) await Swarm.Retry(async () => { await user.Client.ConnectAsync(new Uri(webSocket)); return true; });
