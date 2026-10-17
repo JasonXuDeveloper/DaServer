@@ -79,10 +79,6 @@ sealed partial class Node : IIngress
     }
 
     /// <summary>When an outside caller's request stops being worth running: its budget, at most the node's call timeout.</summary>
-    private long DeadlineOf(TimeSpan budget)
-    {
-        long max = (long)Options.CallTimeout.TotalMilliseconds;
-        long ms = budget > TimeSpan.Zero ? Math.Min((long)budget.TotalMilliseconds, max) : max;
-        return Environment.TickCount64 + Math.Max(1, ms);
-    }
+    private long DeadlineOf(TimeSpan budget) =>
+        PendingCallTable.DeadlineAfter(budget > TimeSpan.Zero && budget < Options.CallTimeout ? budget : Options.CallTimeout);
 }

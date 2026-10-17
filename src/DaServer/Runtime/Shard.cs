@@ -191,7 +191,7 @@ internal sealed class Shard : CompletionThread
             ref var activity = ref World.GetSingleton<ShardActivity>(); // singletons never move
             while (true)
             {
-                Volatile.Write(ref _counters.PassStartedMs, Environment.TickCount64);
+                Volatile.Write(ref _counters.PassStartedMs, Platform.Milliseconds);
                 activity.Processed = 0;
                 long now = _time.GetTimestamp();
                 activity.NowMs = now * 1000 / _time.TimestampFrequency;
@@ -241,7 +241,7 @@ internal sealed class Shard : CompletionThread
         }
         catch (Exception e)
         {
-            Node.Logger.LogCritical(e, "Shard {Shard} crashed", Index);
+            Log.ShardCrashed(Node.Logger, e, Index);
         }
         finally
         {
@@ -345,7 +345,7 @@ internal sealed class Shard : CompletionThread
 [StructLayout(LayoutKind.Explicit, Size = 128)]
 internal struct ShardCounters
 {
-    [FieldOffset(64)] public long PassStartedMs; // Environment.TickCount64 when the running pass started, 0 while asleep
+    [FieldOffset(64)] public long PassStartedMs; // Platform.Milliseconds when the running pass started, 0 while asleep
     [FieldOffset(72)] public long TickCount;
     [FieldOffset(80)] public long Expired;
     [FieldOffset(88)] public long Failed;

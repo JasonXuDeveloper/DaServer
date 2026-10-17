@@ -262,7 +262,7 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
     private void Leave(SessionState session, long groupId)
     {
         if (!session.Groups.ContainsKey(groupId) || !_groups.TryGetValue(groupId, out var group)) return;
-        if (group.Remove(session) == 0) group.EmptySince = Environment.TickCount64; // removed later if it stays empty
+        if (group.Remove(session) == 0) group.EmptySince = Platform.Milliseconds; // removed later if it stays empty
     }
 
     /// <summary>Drop the session from its groups and tell every actor it was bound to (<see cref="SessionClosed"/>).</summary>
@@ -296,7 +296,7 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
         if (_stopped) return;
         var expired = new GraceExpired(this);
         lock (_graces) _graces.Advance(ref expired);
-        if (nowMs >= _nextGroupSweep) SweepGroups();
+        if (nowMs >= _nextGroupSweep) SweepGroups(nowMs);
         if (nowMs >= _nextSilenceSweep) CloseSilentSessions(nowMs, late);
     }
 
@@ -325,9 +325,8 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
     /// Empty groups stay in the table a while (a group emptied and joined again, as area-of-interest cells are, costs
     /// nothing then); those empty for <see cref="EmptyGroupLifetimeMs"/> leave it for the pool. Bounds memory.
     /// </summary>
-    private void SweepGroups()
+    private void SweepGroups(long now)
     {
-        long now = Environment.TickCount64;
         _nextGroupSweep = now + EmptyGroupLifetimeMs;
         lock (_groupGate)
             foreach (var (id, group) in _groups)
@@ -749,7 +748,7 @@ internal sealed class GroupMembers
     /// <summary>Members now (read under the group gate).</summary>
     public int Count => _count;
 
-    /// <summary>When the group last became empty (<see cref="Environment.TickCount64"/>; under the group gate).</summary>
+    /// <summary>When the group last became empty (<see cref="Platform.Milliseconds"/>; under the group gate).</summary>
     public long EmptySince;
 
     /// <summary>Members arrays up to this length are pooled with their group object.</summary>

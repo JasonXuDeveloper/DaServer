@@ -115,7 +115,7 @@ internal static class Handoff
             var node = world.Shard().Node;
             bool loaded = world.GetSingleton<ActorDirectory>().Actors.TryGetValue(new ActorAddress(handlerType.Id, header.Key), out var entity);
             if (op == Record)
-                Notify(node, from, Answer, handlerType.Id, header.Key, Restore(world, handlerType, header.Key, payload, loaded, entity) ? (byte)1 : (byte)0);
+                Notify(node, from, Answer, handlerType.Id, header.Key, Restore(world, handlerType, header.Key, payload, loaded, entity, from) ? (byte)1 : (byte)0);
             else if (op == Request)
             {
                 if (!loaded) Notify(node, from, None, handlerType.Id, header.Key, 0);
@@ -145,12 +145,16 @@ internal static class Handoff
     }
 
     /// <summary>
-    /// Take a record: for an actor waiting for it, or a new one this shard owns. Refused for an actor already running
-    /// here (it loaded from the store meanwhile; the sender writes its record, versions settle who wins).
+    /// Take a record: for an actor waiting for it, or a new one this shard owns, or one its sender owns in this node's
+    /// view (the sender gives its own key away: its view is ahead of this one, it is leaving and this node has not
+    /// heard yet). Refused for an actor already running here (it loaded from the store meanwhile; the sender writes its
+    /// record, versions settle who wins) and while this shard stops.
     /// </summary>
-    private static bool Restore(World world, HandlerTypeInfo handlerType, long key, ReadOnlySpan<byte> payload, bool loaded, Entity entity)
+    private static bool Restore(World world, HandlerTypeInfo handlerType, long key, ReadOnlySpan<byte> payload, bool loaded, Entity entity,
+        ulong from)
     {
-        if (loaded ? !entity.Has<AwaitingHandoff>() : !ShardDispatch.Owns(world, handlerType.Id, key)) return false;
+        if (loaded ? !entity.Has<AwaitingHandoff>() : !ShardDispatch.Owns(world, handlerType.Id, key) && !SendersOwn(world, handlerType.Id, key, from))
+            return false;
         if (loaded) entity.Remove<AwaitingHandoff>();
         else entity = ShardDispatch.Adopt(world, handlerType, key);
         var actor = entity.Get<ActorRef>().Actor;
@@ -161,7 +165,7 @@ internal static class Handoff
         }
         catch (Exception e)
         {
-            world.Logger().LogError(e, "The record handed over for {Actor} could not be read: it loads from the store", actor);
+            Log.HandoffUnreadable(world.Logger(), e, actor);
             if (loaded) ShardDispatch.BeginLoad(world, entity, actor);
             else entity.Add<Removing>() = new Removing(RpcStatus.Ok, null); // nothing queued yet
             return false;
@@ -182,6 +186,9 @@ internal static class Handoff
         TurnWatcher.Begin(world, entity, ShardDispatch.Start(static a => a.OnLoad().AsValueTask(), actor));
         return true;
     }
+
+    private static bool SendersOwn(World world, uint handlerTypeId, long key, ulong from) =>
+        !world.GetSingleton<ShardActivity>().Stopping && world.Shard().Node.View.HandlerTypeOwner(handlerTypeId, key)?.NodeId == from;
 
     private static bool Notify(Node node, ulong to, uint op, uint handlerTypeId, long key, byte value)
     {

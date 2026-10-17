@@ -42,7 +42,7 @@ internal sealed class DispatchSystem : EcsSystem
             }
             catch (System.Exception e)
             {
-                world.Logger().LogError(e, "Unhandled exception in shard {Shard}", shard.Index);
+                Log.ShardFailed(world.Logger(), e, shard.Index);
             }
         }
 

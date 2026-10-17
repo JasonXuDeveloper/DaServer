@@ -1,4 +1,4 @@
-using System.Diagnostics;
+using DaServer.Concurrency;
 using DaServer.Clients;
 using DaServer.Runtime;
 
@@ -55,24 +55,13 @@ internal static class TestNodes
     public static int SessionCount(this Node node) => node.Feature<ClientConnections>()?.SessionCount ?? 0;
 
     /// <summary>Poll <paramref name="condition"/> (asynchronous delivery: pushes, other nodes) until it holds.</summary>
-    public static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout, string? message = null)
-    {
-        var watch = Stopwatch.StartNew();
-        while (!condition())
-        {
-            if (watch.Elapsed > timeout) throw new TimeoutException(message ?? "The condition did not hold in time");
-            await Task.Delay(5).ConfigureAwait(false);
-        }
-    }
+    public static Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout, string? message = null) =>
+        WaitUntilAsync(() => new ValueTask<bool>(condition()), timeout, message);
 
     /// <summary>Poll an asynchronous condition (a call into the cluster) until it holds.</summary>
     public static async Task WaitUntilAsync(Func<ValueTask<bool>> condition, TimeSpan timeout, string? message = null)
     {
-        var watch = Stopwatch.StartNew();
-        while (!await condition().ConfigureAwait(false))
-        {
-            if (watch.Elapsed > timeout) throw new TimeoutException(message ?? "The condition did not hold in time");
-            await Task.Delay(5).ConfigureAwait(false);
-        }
+        if (!await Poll.UntilAsync(condition, timeout, TimeSpan.FromMilliseconds(5)).ConfigureAwait(false))
+            throw new TimeoutException(message ?? "The condition did not hold in time");
     }
 }

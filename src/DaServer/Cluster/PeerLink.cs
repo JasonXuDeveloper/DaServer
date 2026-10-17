@@ -137,7 +137,7 @@ internal sealed class PeerLink : IFrameSink, IDisposable
                 lock (_gate) giveUp = _disposed || attempt >= MaxConnectAttempts;
                 if (giveUp)
                 {
-                    _node.Logger.LogWarning(e, "Link {Host}:{Port} unreachable, dropping its stream", Host, Port);
+                    Log.LinkUnreachable(_node.Logger, e, Host, Port);
                     Restart(connecting: false);
                     return;
                 }
@@ -163,7 +163,7 @@ internal sealed class PeerLink : IFrameSink, IDisposable
                 // stream id either, so the stream continues here from offset 0.
                 DropStream(newId: false);
                 failCalls = true;
-                _node.Logger.LogInformation("Link {Host}:{Port}: peer restarted, stream restarted", Host, Port);
+                Log.LinkPeerRestarted(_node.Logger, Host, Port);
             }
 
             _peerId = peerId;
@@ -172,7 +172,7 @@ internal sealed class PeerLink : IFrameSink, IDisposable
                 // The window no longer holds what the peer needs: start a new stream on a new connection.
                 DropStream(newId: true);
                 failCalls = true;
-                _node.Logger.LogWarning("Link {Host}:{Port}: stream could not resume, restarted", Host, Port);
+                Log.LinkRestarted(_node.Logger, Host, Port);
                 stale = connection; // said Hello with the old stream id
                 _connecting = false;
                 StartConnecting();
@@ -221,8 +221,7 @@ internal sealed class PeerLink : IFrameSink, IDisposable
                 return; // the inbound connection (its state stays until the peer resumes) or an old one
             }
 
-            _node.Logger.LogInformation("Link {Host}:{Port} closed ({Reason}), resuming", Host, Port,
-                error?.Message ?? "remote close");
+            Log.LinkClosed(_node.Logger, Host, Port, error?.Message ?? "remote close");
             if (connection == _connection) _connecting = false;
             StartConnecting();
         }
