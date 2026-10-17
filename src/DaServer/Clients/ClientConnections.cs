@@ -333,8 +333,7 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
             _node.SendTo(grant.HandlerTypeId, grant.Key, new SessionClosed(session));
     }
 
-    /// <summary>How long a lost client may take to resume (the cluster's <see cref="NodeOptions.ResumeGrace"/>) when tickets exist.</summary>
-    private TimeSpan ResumeGrace => _ticketSecret != null ? _node.Options.ResumeGrace : TimeSpan.Zero;
+    private TimeSpan ResumeGrace => _node.Options.EffectiveResumeGrace;
 
     /// <summary>Send the session's client a fresh resume ticket (after grant changes, and when the client asks).</summary>
     private void IssueTicket(SessionState session)

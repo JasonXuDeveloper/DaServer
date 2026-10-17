@@ -39,8 +39,6 @@ sealed partial class Node : IIngress
     ValueTask<TReply> IIngress.Ask<TRequest, TReply>(in TRequest request, Origin origin, TimeSpan budget) =>
         AskFromOutside<TRequest, TReply>(in request, 0, 0, origin, budget);
 
-    public int LoadOf(ulong nodeId) => View.TryGetMember(nodeId, out var member) ? member.Load : 0;
-
     private ValueTask<TReply> AskFromOutside<TRequest, TReply>(in TRequest request, uint target, long key, Origin origin, TimeSpan budget)
         where TRequest : struct
     {

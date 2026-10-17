@@ -78,12 +78,6 @@ public class IngressTests : ClusterTest
         Assert.That(retryAfter, Is.InRange(TimeSpan.FromMilliseconds(50), TimeSpan.FromMilliseconds(100)));
         Thread.Sleep(150);
         Assert.That(bucket.TryTake(out _), Is.True, "refilled at the rate");
-
-        var limit = new ConcurrencyLimit(2);
-        Assert.That(limit.TryEnter() && limit.TryEnter(), Is.True);
-        Assert.That(limit.TryEnter(), Is.False);
-        limit.Exit();
-        Assert.That(limit.TryEnter(), Is.True);
     }
 
     [Test]

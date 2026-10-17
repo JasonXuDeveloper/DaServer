@@ -119,13 +119,12 @@ public sealed class TestCluster : IAsyncDisposable
     internal IReadOnlyList<Node> Nodes => _nodes;
 
     /// <summary>Start node <paramref name="index"/>; every node after the first joins through the first one.</summary>
-    internal async Task<Node> AddNodeAsync(int index, Action<NodeOptions>? configure = null)
+    internal async Task<Node> AddNodeAsync(int index)
     {
         var options = TestNodes.NodeOptionsFor("node-" + index, _options.Shards, _options.TickRate, _nodes.Count == 0 ? null : _nodes[0]);
         options.TimeProvider = Time;
         if (index == 0 && _options.ClientConnections) options.Features.Add(new ClientConnections(new ClientConnectionOptions()));
         _options.ConfigureNode?.Invoke(index, options);
-        configure?.Invoke(options);
 
         var node = new Node(options);
         await node.StartAsync().ConfigureAwait(false);

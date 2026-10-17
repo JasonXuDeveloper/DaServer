@@ -25,7 +25,7 @@ public interface IIngressFilter
 
 /// <summary>
 /// Allows <c>rate</c> operations a second on average and bursts of up to <c>burst</c>, without allocating. Not thread-safe:
-/// one owner (a connection's receive loop, a lock the caller holds); <see cref="ConcurrencyLimit"/> is the shared kind.
+/// one owner (a connection's receive loop, a lock the caller holds).
 /// </summary>
 public struct TokenBucket(double rate, double burst)
 {
@@ -49,22 +49,4 @@ public struct TokenBucket(double rate, double burst)
         retryAfter = TimeSpan.FromSeconds((1 - _tokens) / _rate);
         return false;
     }
-}
-
-/// <summary>At most <c>limit</c> operations in progress at once (thread-safe, allocation-free).</summary>
-public sealed class ConcurrencyLimit(int limit)
-{
-    private int _current;
-
-    public int Current => Volatile.Read(ref _current);
-
-    /// <summary>Start an operation if the limit allows it; every true must be followed by one <see cref="Exit"/>.</summary>
-    public bool TryEnter()
-    {
-        if (Interlocked.Increment(ref _current) <= limit) return true;
-        Interlocked.Decrement(ref _current);
-        return false;
-    }
-
-    public void Exit() => Interlocked.Decrement(ref _current);
 }

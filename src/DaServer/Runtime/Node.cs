@@ -461,7 +461,7 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
     }
 
     /// <summary>How long a lost client may take to resume elsewhere before its actors learn it is gone (tickets need the secret).</summary>
-    private TimeSpan ResumeGrace => Options.SigningSecret is { Length: > 0 } ? Options.ResumeGrace : TimeSpan.Zero;
+    private TimeSpan ResumeGrace => Options.EffectiveResumeGrace;
 
     /// <summary>Close a lost client-facing node's sessions on every shard, once their clients had the grace to resume elsewhere.</summary>
     private async Task CloseSessionsOf(ulong clientNode)

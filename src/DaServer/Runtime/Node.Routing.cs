@@ -341,7 +341,7 @@ sealed partial class Node : IConnectionHandler
     /// <summary>Forwards the reply of a relayed call to the original caller's sink under its call id.</summary>
     private sealed class RelayCall : IPendingCall
     {
-        private static readonly ObjectPool<RelayCall> Pool = new(() => new RelayCall(), 1 << 16); // calls relayed at once by a client-facing nodeateway
+        private static readonly ObjectPool<RelayCall> Pool = new(() => new RelayCall(), 1 << 16); // calls relayed at once by a client-facing node
 
         public CompletionThread? Caller => null; // forwarded inline from the IO thread
 

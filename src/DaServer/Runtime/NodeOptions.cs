@@ -101,6 +101,9 @@ public sealed class NodeOptions
     /// </summary>
     public TimeSpan ResumeGrace { get; set; } = TimeSpan.FromSeconds(30);
 
+    /// <summary><see cref="ResumeGrace"/> where clients can resume at all (tickets need a <see cref="SigningSecret"/>), else zero.</summary>
+    internal TimeSpan EffectiveResumeGrace => SigningSecret is { Length: > 0 } ? ResumeGrace : TimeSpan.Zero;
+
     /// <summary>
     /// Split brain (ADR-064): a node that finds itself on the minority side when members die (it reaches fewer of the
     /// cluster's members than it lost; in a tie, the side without the lowest node id) stops at once, without saving,

@@ -33,6 +33,22 @@ public class ResumeTests : ClusterTest
         return client;
     }
 
+    /// <summary>A call retried while it meets a connection closed for its age (what an application does on <c>Disconnected</c>).</summary>
+    private static async Task<T> Retried<T>(Func<ValueTask<T>> call)
+    {
+        for (int attempt = 0; ; attempt++)
+        {
+            try
+            {
+                return await call();
+            }
+            catch (RpcException e) when (e.Status == RpcStatus.Disconnected && attempt < 20)
+            {
+                await Task.Delay(100);
+            }
+        }
+    }
+
     private static Task Reconnected(ClusterClient client)
     {
         var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -92,7 +108,7 @@ public class ResumeTests : ClusterTest
             later = ((IPEndPoint)probe.LocalEndpoint).Port;
         }
 
-        static void Aged(ClientConnectionOptions o) => o.MaxConnectionAge = TimeSpan.FromSeconds(1);
+        static void Aged(ClientConnectionOptions o) => o.MaxConnectionAge = TimeSpan.FromSeconds(3); // past the logins and their tickets
         var first = await Start("gw-0", gateway: true, hosts: static _ => false, configure: Secret(TimeSpan.FromSeconds(5)), clients: Aged);
         await Start("game", configure: Secret(TimeSpan.FromSeconds(5)));
         await Converged();
@@ -101,7 +117,9 @@ public class ResumeTests : ClusterTest
         {
             clients[i] = Track(new ClusterClient());
             await clients[i].ConnectAsync([new DnsEndPoint("127.0.0.1", first.ClientPort()), new DnsEndPoint("127.0.0.1", later)]);
-            Assert.That(await clients[i].Ask(new Login(new PlayerId(600 + i))), Is.True);
+            var client = clients[i];
+            long player = 600 + i;
+            Assert.That(await Retried(() => client.Ask(new Login(new PlayerId(player))).AsValueTask()), Is.True);
         }
 
         // Scale out: connections older than their age close, and their clients reconnect through the entry addresses.
@@ -110,7 +128,7 @@ public class ResumeTests : ClusterTest
         await Converged();
         await Eventually(() => second.SessionCount() >= 5, "no connection moved to the new node", 15_000);
         foreach (var client in clients)
-            Assert.That(await client.Ask(new AddGold(1)), Is.GreaterThan(0), "every session resumed where it reconnected");
+            Assert.That(await Retried(() => client.Ask(new AddGold(1)).AsValueTask()), Is.GreaterThan(0), "every session resumed where it reconnected");
         Assert.That(Observed.Events.Where(e => e.StartsWith("closed:6", StringComparison.Ordinal)), Is.Empty, "no player saw a close");
     }
 
