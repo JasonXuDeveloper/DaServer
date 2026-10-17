@@ -217,7 +217,7 @@ public class GeneratorTests
         foreach (var result in driver.GetRunResult().Results)
         foreach (var (name, steps) in result.TrackedSteps)
         {
-            if (name is not ("Requests" or "ClientMessages" or "HostedTypes" or "UserEntryPoint" or "WireTypes")) continue;
+            if (name is not ("Requests" or "ClientMessages" or "HostedTypes" or "UserEntryPoint" or "WireManifest")) continue;
             Assert.That(steps.SelectMany(s => s.Outputs).Select(o => o.Reason),
                 Is.All.AnyOf(IncrementalStepRunReason.Cached, IncrementalStepRunReason.Unchanged), name);
         }

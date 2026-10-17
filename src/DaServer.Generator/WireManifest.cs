@@ -31,31 +31,36 @@ internal static class WireManifest
     /// <summary>The manifest entry of <paramref name="type"/>, or null when Nino does not serialize it (not a public [NinoType] of source).</summary>
     public static WireType? Read(INamedTypeSymbol type)
     {
-        if (type.DeclaredAccessibility != Accessibility.Public || !IsNinoType(type) || !type.Locations.Any(l => l.IsInSource))
-            return null;
+        if (!HasEntry(type)) return null;
         var (encoding, members) = Layout(type);
         var fields = new List<WireField>();
-        foreach (var (name, fieldType) in members) fields.Add(new WireField(name, Render(fieldType, type.ContainingAssembly, 0)));
-        string? reply = Shapes.ReplyOf(type) is { } r ? Render(r, type.ContainingAssembly, 0) : null;
+        foreach (var (name, fieldType) in members) fields.Add(new WireField(name, Render(fieldType, type.ContainingAssembly, Open(type))));
+        string? reply = Shapes.ReplyOf(type) is { } r ? Render(r, type.ContainingAssembly, Open(type)) : null;
         return new WireType(Name(type), encoding, new(fields.ToArray()), reply);
     }
 
     private static string Name(ITypeSymbol type) => type.ToDisplayString(TypeFormat);
 
+    private static HashSet<ITypeSymbol> Open(ITypeSymbol type) => new(SymbolEqualityComparer.Default) { type };
+
+    /// <summary>Whether <paramref name="type"/> has its own manifest entry: a public type of source Nino serializes.</summary>
+    public static bool HasEntry(INamedTypeSymbol type) =>
+        type.DeclaredAccessibility == Accessibility.Public && type.Locations.Any(l => l.IsInSource) && IsNinoType(type);
+
     /// <summary>
-    /// How Nino writes <paramref name="type"/>: a value-only struct without [NinoType] parents as its memory (every
-    /// field, private ones too, in declaration order, with its <c>[StructLayout]</c>); a class or a struct with [NinoType]
-    /// parents behind a type id; otherwise its members (Nino's rules).
+    /// How Nino writes <paramref name="type"/>: a value-only struct as its memory (every field, private ones too, in
+    /// declaration order, with its <c>[StructLayout]</c>), behind a type id when it has [NinoType] parents; a class or
+    /// another struct with [NinoType] parents as its members behind a type id; otherwise its members (Nino's rules).
     /// </summary>
     private static (string Encoding, List<(string Name, ITypeSymbol Type)> Members) Layout(INamedTypeSymbol type)
     {
         bool parents = Parents(type).Any();
-        if (type.IsUnmanagedType && type.TypeKind == TypeKind.Struct && !parents)
+        if (type.IsUnmanagedType && type.TypeKind == TypeKind.Struct)
         {
             string layout = Support.GetAttribute(type, "System.Runtime.InteropServices.StructLayoutAttribute") is { } a
                 ? "(" + string.Join(", ", a.ConstructorArguments.Select(c => c.Value?.ToString()).Concat(a.NamedArguments.Select(n => n.Key + "=" + n.Value.Value))) + ")"
                 : "";
-            return ("memory" + layout, MemoryFields(type));
+            return ((parents ? "typed memory" : "memory") + layout, MemoryFields(type));
         }
 
         return (type.TypeKind == TypeKind.Struct && !parents ? "members" : "typed members", NinoMembers(type));
@@ -66,18 +71,21 @@ internal static class WireManifest
     /// element by element; a type without its own manifest entry here (another assembly's, a plain struct, an id)
     /// with its fields inline, so a change there shows here.
     /// </summary>
-    private static string Render(ITypeSymbol type, IAssemblySymbol home, int depth)
+    private static string Render(ITypeSymbol type, IAssemblySymbol home, HashSet<ITypeSymbol> open)
     {
-        if (type is IArrayTypeSymbol array) return Render(array.ElementType, home, depth) + "[" + new string(',', array.Rank - 1) + "]";
-        if (type is not INamedTypeSymbol named || depth > 6) return Name(type);
+        if (type is IArrayTypeSymbol array) return Render(array.ElementType, home, open) + "[" + new string(',', array.Rank - 1) + "]";
+        if (type is not INamedTypeSymbol named) return Name(type);
         if (named is { TypeKind: TypeKind.Enum, EnumUnderlyingType: { } underlying }) return Name(named) + "(" + Name(underlying) + ")";
         if (named.IsGenericType && named.TypeArguments.Length > 0 && (named.SpecialType != SpecialType.None || Support.InSystemNamespace(named)))
-            return Name(named.ConstructedFrom).Split('<')[0] + "<" + string.Join(", ", named.TypeArguments.Select(t => Render(t, home, depth + 1))) + ">";
+            return Name(named.ConstructedFrom).Split('<')[0] + "<" + string.Join(", ", named.TypeArguments.Select(t => Render(t, home, open))) + ">";
         if (named.SpecialType != SpecialType.None || Support.InSystemNamespace(named) || named.TypeKind is not (TypeKind.Struct or TypeKind.Class))
             return Name(named);
-        if (SymbolEqualityComparer.Default.Equals(named.ContainingAssembly, home) && Read(named) != null) return Name(named);
+        // Its own entry here records it; a type already being rendered (it refers to itself) is named only.
+        if (SymbolEqualityComparer.Default.Equals(named.ContainingAssembly, home) && HasEntry(named) || !open.Add(named)) return Name(named);
         var (encoding, members) = Layout(named);
-        return Name(named) + " " + encoding + " {" + string.Join(", ", members.Select(m => m.Name + ": " + Render(m.Type, home, depth + 1))) + "}";
+        string inline = Name(named) + " " + encoding + " {" + string.Join(", ", members.Select(m => m.Name + ": " + Render(m.Type, home, open))) + "}";
+        open.Remove(named);
+        return inline;
     }
 
     /// <summary>The instance fields of a value-only struct in memory order (Nino copies its memory, private fields included).</summary>
@@ -136,6 +144,7 @@ internal static class WireManifest
 
         var members = new List<(string, ITypeSymbol)>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
+        // The encoding note travels with the name (`Text utf8: string`), after names were matched for order and once.
         var visited = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
         void AddLevel(INamedTypeSymbol level)
         {
@@ -144,7 +153,7 @@ internal static class WireManifest
             var collected = Collected(level, type, auto, nonPublic);
             if (order.Count > 0) collected = collected.OrderBy(m => order.TryGetValue(m.Name, out int i) ? i : int.MaxValue).ToList();
             foreach (var member in collected)
-                if (seen.Add(member.Name)) members.Add(member);
+                if (seen.Add(member.Name)) members.Add((member.Name + member.Encoding, member.Type));
         }
 
         AddLevel(type);
@@ -152,7 +161,7 @@ internal static class WireManifest
     }
 
     /// <summary>One level's members as Nino collects them (Nino's parser: fields, settable properties, a record's primary constructor).</summary>
-    private static List<(string Name, ITypeSymbol Type)> Collected(INamedTypeSymbol level, INamedTypeSymbol leaf, bool auto, bool nonPublic)
+    private static List<(string Name, ITypeSymbol Type, string Encoding)> Collected(INamedTypeSymbol level, INamedTypeSymbol leaf, bool auto, bool nonPublic)
     {
         var members = new List<ISymbol>();
         foreach (var member in level.GetMembers())
@@ -191,7 +200,16 @@ internal static class WireManifest
             kept.Add((member, member.Name, memberType));
         }
 
-        return kept.OrderBy(m => index[m.Name]).Select(m => (m.Name, m.Type)).ToList();
+        return kept.OrderBy(m => index[m.Name]).Select(m => (m.Name, m.Type, Encoding(m.Symbol))).ToList();
+    }
+
+    /// <summary>What changes a member's bytes beyond its type: <c>[NinoUtf8]</c>, a <c>[NinoCustomFormatter]</c>.</summary>
+    private static string Encoding(ISymbol member)
+    {
+        if (Support.HasAttribute(member, "Nino.Core.NinoUtf8Attribute")) return " utf8";
+        return Support.GetAttribute(member, "Nino.Core.NinoCustomFormatterAttribute") is { ConstructorArguments: { Length: > 0 } a }
+            ? " via " + a[0].Value
+            : "";
     }
 
     /// <summary>The manifest text of <paramref name="types"/>, sorted by name.</summary>
@@ -231,7 +249,7 @@ internal static class WireManifest
             {
                 int open = line.IndexOf(" (", StringComparison.Ordinal);
                 string name = open < 0 ? line : line.Substring(0, open);
-                string encoding = open < 0 ? "" : line.Substring(open + 2).TrimEnd(')');
+                string encoding = open < 0 ? "" : line.Substring(open + 2, line.Length - open - 2 - (line.EndsWith(")", StringComparison.Ordinal) ? 1 : 0));
                 current = entries[name] = new Entry(name, encoding, [], i);
             }
         }
