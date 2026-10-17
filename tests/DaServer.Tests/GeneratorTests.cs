@@ -67,6 +67,8 @@ public class GeneratorTests
             [NinoType, Message, ToClient] public partial record struct Shown;
             [NinoType, Message] public partial record struct Spawn : IRequest<HeroId>;
             [NinoType, Message] public partial record struct Plan(int Steps) : IRequest<int>;
+            [NinoType, Message] public partial record struct Where : IRequest<Spot>;
+            public struct Spot { public int X, Y; }
             public readonly record struct RoomId(long Value) : IActorId;
             public readonly record struct HeroId(long Value) : IActorId;
             public sealed class Shop : Service
@@ -114,7 +116,9 @@ public class GeneratorTests
     [TestCase("[Message, FromClient] public struct Bad { }", "DAS002")]
     [TestCase("[NinoType] public partial record struct Tick(int N); public sealed class Bad : Service { [Handle] public void On(Tick e) { } }", "DAS002")]
     [TestCase("public struct Bad : IRequest<int> { }", "DAS002")]
-    [TestCase("public struct Data { } [NinoType, Message] public partial record struct Bad : IRequest<Data>;", "DAS003")]
+    [TestCase("public class Data { } [NinoType, Message] public partial record struct Bad : IRequest<Data>;", "DAS003")]
+    [TestCase("[NinoType, Message] public partial record struct Bad : IRequest<System.Action>;", "DAS003")]
+    [TestCase("[NinoType, Message] public partial record struct Bad : IRequest<object>;", "DAS003")]
     [TestCase("[NinoType, Message, NinoFormerName(\"X\")] public partial record struct A; [NinoType, Message, NinoFormerName(\"X\")] public partial record struct B;", "DAS004")]
     [TestCase("[NinoType, Message] public partial record struct Tick; public sealed class Bad : Service { public Bad(int x) { } [Handle] public void On(Tick e) { } }", "DAS005")]
     [TestCase("[NinoType, Message, ToClient] public partial record struct Tick; public sealed class Bad : Service { [Handle] public void On(Tick e) { } }", "DAS006")]
