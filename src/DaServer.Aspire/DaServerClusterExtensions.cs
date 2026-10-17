@@ -87,8 +87,8 @@ public sealed class DaServerCluster
         get
         {
             var longest = TimeSpan.Zero;
-            foreach (var group in _groups) if (group.ShutdownTimeout > longest) longest = group.ShutdownTimeout;
-            return longest + StopMargin;
+            foreach (var group in _groups) if (group.StopGrace > longest) longest = group.StopGrace;
+            return longest;
         }
     }
 
@@ -143,7 +143,7 @@ public sealed class DaServerCluster
         // requires its environment, which may be added after the nodes).
         _builder.Eventing.Subscribe<BeforeStartEvent>((e, _) =>
         {
-            int grace = (int)Math.Ceiling((group.ShutdownTimeout + StopMargin).TotalSeconds);
+            int grace = (int)Math.Ceiling(group.StopGrace.TotalSeconds);
             bool compose = e.Model.Resources.OfType<Docker.DockerComposeEnvironmentResource>().Any();
             bool kubernetes = e.Model.Resources.OfType<Kubernetes.KubernetesEnvironmentResource>().Any();
             foreach (var node in nodes)
@@ -168,7 +168,7 @@ public sealed class DaServerCluster
     }
 
     /// <summary>What the platform waits beyond a node's stop budget before killing it (the host's own margin is 5 s).</summary>
-    private static readonly TimeSpan StopMargin = TimeSpan.FromSeconds(5);
+    internal static readonly TimeSpan StopMargin = TimeSpan.FromSeconds(5);
 
     /// <summary>The next client port (client-facing node groups take one per node, in declaration order).</summary>
     internal int NextClientPort() => _nextClientPort++;
@@ -196,6 +196,9 @@ public sealed class DaServerNodeGroup
 
     /// <summary>The nodes' stop budget (<see cref="WithShutdownTimeout"/>; 25 s, the node's default).</summary>
     public TimeSpan ShutdownTimeout { get; private set; } = TimeSpan.FromSeconds(25);
+
+    /// <summary>How long the platform waits for a node of this group before killing it: the stop budget and a margin.</summary>
+    internal TimeSpan StopGrace => ShutdownTimeout + DaServerCluster.StopMargin;
 
     /// <summary>
     /// Give the nodes <paramref name="budget"/> to stop gracefully (leave, drain clients, unload and save every actor):

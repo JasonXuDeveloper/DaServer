@@ -169,10 +169,8 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
         await socket.ConnectAsync(webSocket, cancellationToken).ConfigureAwait(false);
         var channel = new WebSocketChannel(socket, this, FrameHeader.MaxFrameSize, ConnectionOptions.ForClients().MaxPendingSendBytes);
         _webSocket = webSocket;
-        _connection = channel;
+        Attach(channel);
         _ = channel.RunAsync();
-        GC.KeepAlive(Sweeper);
-        Live.TryAdd(this, true);
     }
 
     /// <summary>Connect through the first reachable of <paramref name="endpoints"/> (tried in turn, starting at a random one).</summary>
@@ -230,9 +228,13 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
 
     private async ValueTask ConnectToAsync(string host, int port, CancellationToken cancellationToken)
     {
-        var connection = await Connection.ConnectAsync(host, port, this, NewConnectionOptions(), cancellationToken)
-            .ConfigureAwait(false);
-        _connection = connection;
+        Attach(await Connection.ConnectAsync(host, port, this, NewConnectionOptions(), cancellationToken).ConfigureAwait(false));
+    }
+
+    /// <summary>Make <paramref name="channel"/> the current connection; the sweeper watches this client's calls from now on.</summary>
+    private void Attach(IFrameChannel channel)
+    {
+        _connection = channel;
         GC.KeepAlive(Sweeper);
         Live.TryAdd(this, true);
     }

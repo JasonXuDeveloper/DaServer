@@ -135,7 +135,7 @@ internal sealed class Membership : IDisposable
     {
         long now = Stopwatch.GetTimestamp(), last = _lastRoundAt;
         _lastRoundAt = now;
-        long interval = (long)(_node.Options.GossipInterval.TotalSeconds * Stopwatch.Frequency);
+        long interval = Ticks(_node.Options.GossipInterval);
         if (last == 0 || now - last <= 3 * interval) return;
         long pause = now - last - interval;
         foreach (var entry in _members.Values) entry.LastProgress += pause;
@@ -146,7 +146,7 @@ internal sealed class Membership : IDisposable
     /// <summary>Tests: age every member's progress as a pause of this process of <paramref name="pause"/> would.</summary>
     internal void SimulatePause(TimeSpan pause)
     {
-        long ticks = (long)(pause.TotalSeconds * Stopwatch.Frequency);
+        long ticks = Ticks(pause);
         lock (_gate)
         {
             _lastRoundAt -= ticks;
@@ -154,11 +154,13 @@ internal sealed class Membership : IDisposable
         }
     }
 
+    /// <summary><paramref name="time"/> in <see cref="Stopwatch"/> ticks (the progress clocks' unit).</summary>
+    private static long Ticks(TimeSpan time) => (long)(time.TotalSeconds * Stopwatch.Frequency);
+
     private void DetectFailures()
     {
         long now = Stopwatch.GetTimestamp();
-        long suspect = (long)(_node.Options.SuspectAfter.TotalSeconds * Stopwatch.Frequency);
-        long dead = (long)(_node.Options.DeadAfter.TotalSeconds * Stopwatch.Frequency);
+        long suspect = Ticks(_node.Options.SuspectAfter), dead = Ticks(_node.Options.DeadAfter);
         List<ulong>? remove = null;
         bool died = false;
 
