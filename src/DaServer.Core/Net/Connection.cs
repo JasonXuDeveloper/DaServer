@@ -72,6 +72,16 @@ public sealed class ConnectionOptions
     /// A client's connection: one busy socket, so it keeps its buffers (a zero-byte read before every receive costs a
     /// system call per push, to save 4 KB).
     /// </summary>
+    /// <summary>
+    /// These options with connections writing on a beat of <paramref name="interval"/> (the process's shared flusher,
+    /// <see cref="SendFlusher.Shared"/>), or at once when it is zero.
+    /// </summary>
+    public ConnectionOptions FlushedEvery(TimeSpan interval)
+    {
+        if (interval > TimeSpan.Zero) Flusher = SendFlusher.Shared(interval);
+        return this;
+    }
+
     public static ConnectionOptions ForClients() => new ConnectionOptions
     {
         ReceiveBufferSize = 4 * 1024, ReleaseIdleBuffers = false, MaxPendingSendBytes = 256 * 1024, SendBufferSize = 4 * 1024,

@@ -49,9 +49,9 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
         context.HandleAddress<Origin>(addresses); // the origin of a client's message is its session
         context.HandleAddress<ClientGroup>(addresses);
         if (_node.Options.SigningSecret is { Length: > 0 } secret) _ticketSecret = System.Text.Encoding.UTF8.GetBytes(secret);
-        var sessionOptions = ConnectionOptions.ForSessions();
+        var sessionOptions = ConnectionOptions.ForSessions().FlushedEvery(options.FlushInterval);
         sessionOptions.MaxFrameSize = options.MaxFrameSize; // what an untrusted client may make us buffer
-        if (options.FlushInterval > TimeSpan.Zero) sessionOptions.Flusher = _flusher = new SendFlusher(options.FlushInterval, "client-flush");
+        _flusher = sessionOptions.Flusher;
         _listener = new Listener(new IPEndPoint(IPAddress.Parse(_node.Options.ListenAddress), options.Port), socket =>
         {
             var connection = new Connection(socket, _sessionHandler, sessionOptions);
@@ -112,7 +112,7 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
     {
         _maintenance?.Dispose();
         _listener?.Dispose();
-        _flusher?.Dispose(); // its last beat writes what was queued
+        _flusher?.Flush(); // the sessions' last frames, before they close
         foreach (var session in _sessions.Values) session.Channel.Close();
     }
 
