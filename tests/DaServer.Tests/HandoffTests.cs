@@ -126,6 +126,35 @@ public class HandoffTests(string kind) : ClusterTest
     }
 
     [Test]
+    public async Task ANewOwnerWaitsForTheRecordWhileThePreviousOneHoldsTheActor()
+    {
+        // K moves from a to b while a's copy is in a long turn (it cannot unload yet). b gets mail for K first and asks a
+        // for the record; a still holds K past the handoff timeout. b must keep waiting for the record (a is alive), not
+        // load K from the store and run it beside a's copy.
+        var store = new WatchedStore(_stores.Create());
+        var a = await Start("a", configure: o => { o.ActorStore = store; o.CallTimeout = TimeSpan.FromMilliseconds(500); });
+        var b = await Start("b", configure: o => { o.ActorStore = store; o.CallTimeout = TimeSpan.FromMilliseconds(500); });
+        await Converged();
+        long key = 100;
+        while (a.OwnerOf<BankId>(key) != a.Id) key++;
+        Assert.That(await a.Ask(new BankId(key), new Deposit(5, false)), Is.EqualTo(5));
+        TurnGate.Current = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var held = a.Ask(new BankId(key), new HoldTurn()).AsTask();
+
+        int slot = ClusterView.Slot(ActorIds<BankId>.HandlerTypeId, key);
+        var table = new SlotTable { Version = 1000, Coordinator = a.Id, Overrides = [new SlotOverride(ActorIds<BankId>.HandlerTypeId, (ushort)slot, b.Id)] };
+        a.Membership.Apply(table);
+        b.Membership.Apply(table);
+        b.Send(new BankId(key), new Deposit(2, false)); // b creates K and asks a for its record
+        await Task.Delay(1500); // three handoff timeouts
+        TurnGate.Current.TrySetResult();
+        try { await held; } catch (RpcException) { } // its caller may have timed out meanwhile
+
+        await Eventually(() => b.Ask(new BankId(key), new Balance()).AsTask().Result == 7, "one copy: a's 5 then b's 2");
+        Assert.That(store.Loads, Is.EqualTo(1), "only a's first load read the store");
+    }
+
+    [Test]
     public async Task WithoutAStoreStateStillMoves()
     {
         var a = await StartWith(null, "a");
