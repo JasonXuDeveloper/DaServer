@@ -24,7 +24,7 @@ public readonly record struct RealmId(long Value) : IActorId
 
 /// <summary>Log in (handled by the login service; nothing is bound to the session before).</summary>
 [NinoType, Message, FromClient]
-public partial record struct Login(string Name) : IRequest<LoginResult>;
+public partial record struct Login([property: NinoUtf8] string Name) : IRequest<LoginResult>;
 
 [NinoType]
 public partial record struct LoginResult(bool Ok, PlayerId Player);
@@ -34,7 +34,7 @@ public partial record struct LoginResult(bool Ok, PlayerId Player);
 public partial record struct GetInfo : IRequest<PlayerInfo>;
 
 [NinoType]
-public partial record struct PlayerInfo(PlayerId Id, string Name, MapId Map, int Logins);
+public partial record struct PlayerInfo(PlayerId Id, [property: NinoUtf8] string Name, MapId Map, int Logins);
 
 /// <summary>Move the client's player to a map instance (the map binds the session for input).</summary>
 [NinoType, Message, FromClient]
@@ -45,7 +45,7 @@ public partial record struct EnterMap(MapId Map) : IRequest<bool>;
 public partial record struct Move(float VelocityX, float VelocityY);
 
 [NinoType, Message, FromClient]
-public partial record struct Say(string Text);
+public partial record struct Say([property: NinoUtf8] string Text);
 
 // ---------------------------------------------------------------- server to server
 
@@ -106,7 +106,7 @@ public sealed partial class Moves
 public partial record struct Gone(MapId Map, PlayerId Player);
 
 [NinoType, Message, ToClient]
-public partial record struct Chat(PlayerId Player, string Text);
+public partial record struct Chat(PlayerId Player, [property: NinoUtf8] string Text);
 
 /// <summary>Realm state every client sees (broadcast to every session of the cluster every <see cref="Timing.RealmStatusEveryTicks"/> ticks).</summary>
 [NinoType, Message, ToClient]

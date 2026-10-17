@@ -29,4 +29,25 @@ public class ContractTests
             return count;
         }
     }
+
+    [Test]
+    public void PushesHeldByManyHandlersAtOnceStillComeFromThePool()
+    {
+        // Each handler of a push deserializes its own copy (a client's game state, a bot's telemetry), and a burst
+        // can hold many before they go back: beyond a thread's own pool stack (64) the shared stack takes them.
+        const int Held = 200;
+        byte[] payload = NinoSerializer.Serialize(new Motion(new MapId(1), new Moves { Items = [new Moved(new PlayerId(1), 1, 1, 0, 0)] }));
+        var held = new Moves[Held];
+        void Burst()
+        {
+            for (int i = 0; i < Held; i++) held[i] = NinoDeserializer.Deserialize<Motion>(payload).Avatars;
+            for (int i = 0; i < Held; i++) held[i].ReturnToPool();
+        }
+
+        Burst();
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        for (int i = 0; i < 100; i++) Burst();
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        Assert.That(allocated / (100.0 * Held), Is.LessThan(1), $"{allocated} B for 100 bursts of {Held} pushes held at once");
+    }
 }
