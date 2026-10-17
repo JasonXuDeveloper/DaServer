@@ -15,13 +15,7 @@ public interface IReplySink
 /// <summary>A reply sink that writes the reply frame to a stream of frames (a connection or a node link).</summary>
 internal interface IFrameSink : IReplySink, IFrameSender
 {
-    void IReplySink.SendReply(uint callId, RpcStatus status, FrameWriter reply)
-    {
-        reply.SetCallId(callId);
-        reply.SetHeader(FrameKind.Reply, 0, 0, 0, status);
-        Send(reply.Frame);
-        reply.Dispose();
-    }
+    void IReplySink.SendReply(uint callId, RpcStatus status, FrameWriter reply) => reply.SendReply(this, callId, status);
 }
 
 internal static class ReplySinks
@@ -38,15 +32,9 @@ internal static class ReplySinks
     {
         var reply = FrameWriter.Rent(FrameHeader.Size);
         if (sink is IFrameSink frames && retryAfter > TimeSpan.Zero)
-        {
-            reply.SetCallId(callId);
-            reply.SetHeader(FrameKind.Reply, 0, 0, (long)Math.Ceiling(retryAfter.TotalMilliseconds), status);
-            frames.Send(reply.Frame);
-            reply.Dispose();
-            return;
-        }
-
-        sink.SendReply(callId, status, reply);
+            reply.SendReply(frames, callId, status, (long)Math.Ceiling(retryAfter.TotalMilliseconds));
+        else
+            sink.SendReply(callId, status, reply);
     }
 
     /// <summary>

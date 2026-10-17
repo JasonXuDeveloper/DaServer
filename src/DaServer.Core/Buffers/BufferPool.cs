@@ -61,6 +61,16 @@ public static class BufferPool
         Buckets[bucket].TryEnqueue(buffer);
     }
 
+    /// <summary>Replace <paramref name="buffer"/> with a rented one of at least <paramref name="size"/> bytes holding its first <paramref name="used"/> bytes; the old one goes back.</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void Grow(ref byte[] buffer, int used, int size)
+    {
+        var grown = Rent(size);
+        System.Buffer.BlockCopy(buffer, 0, grown, 0, used);
+        Return(buffer);
+        buffer = grown;
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static int BucketIndex(int length)
     {

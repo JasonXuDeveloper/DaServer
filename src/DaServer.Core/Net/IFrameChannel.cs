@@ -29,3 +29,14 @@ public interface IChannelHandler
     /// <summary>Called exactly once when the channel closes.</summary>
     void OnClosed(IFrameChannel channel, Exception? error);
 }
+
+internal static class FrameChannels
+{
+    /// <summary>Send a header-only control frame (<see cref="ControlOp"/>; <paramref name="key"/> its argument).</summary>
+    public static void SendControl(this IFrameChannel channel, uint op, long key = 0)
+    {
+        Span<byte> frame = stackalloc byte[FrameHeader.Size];
+        new FrameHeader { Length = FrameHeader.Size, Kind = FrameKind.Control, MessageId = op, Key = key }.Write(frame);
+        channel.Send(frame);
+    }
+}

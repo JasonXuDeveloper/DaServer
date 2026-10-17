@@ -106,7 +106,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
     {
         if (_connection is not { IsClosed: false } connection) return;
         Volatile.Write(ref _probeDeadlineMs, Platform.Milliseconds + (long)(timeout ?? TimeSpan.FromSeconds(5)).TotalMilliseconds);
-        KeepAlive.Send(connection, ControlOp.Ping);
+        connection.SendControl(ControlOp.Ping);
     }
 
     private long _probeDeadlineMs; // 0: no probe waiting for its pong

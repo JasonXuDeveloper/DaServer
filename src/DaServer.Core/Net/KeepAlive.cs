@@ -29,17 +29,10 @@ public static class KeepAlive
             return false;
         }
 
-        if (intervalMs > 0 && nowMs - Math.Min(channel.LastSentMs, channel.LastReceivedMs) >= intervalMs) Send(channel, ControlOp.Ping);
+        if (intervalMs > 0 && nowMs - Math.Min(channel.LastSentMs, channel.LastReceivedMs) >= intervalMs) channel.SendControl(ControlOp.Ping);
         return true;
     }
 
     /// <summary>Answer a ping (any side; on the connection it arrived on).</summary>
-    public static void Pong(IFrameChannel channel) => Send(channel, ControlOp.Pong);
-
-    internal static void Send(IFrameChannel channel, uint op)
-    {
-        Span<byte> frame = stackalloc byte[FrameHeader.Size];
-        new FrameHeader { Length = FrameHeader.Size, Kind = FrameKind.Control, MessageId = op }.Write(frame);
-        channel.Send(frame);
-    }
+    public static void Pong(IFrameChannel channel) => channel.SendControl(ControlOp.Pong);
 }

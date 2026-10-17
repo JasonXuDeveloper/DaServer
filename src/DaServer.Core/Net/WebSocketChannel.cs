@@ -62,12 +62,7 @@ public sealed class WebSocketChannel(WebSocket socket, IChannelHandler handler, 
             else
             {
                 if (required > _pending.Length)
-                {
-                    var grown = BufferPool.Rent(Math.Max(required, 16 * 1024));
-                    _pending.AsSpan(0, _pendingLength).CopyTo(grown);
-                    BufferPool.Return(_pending);
-                    _pending = grown;
-                }
+                    BufferPool.Grow(ref _pending, _pendingLength, Math.Max(required, 16 * 1024));
 
                 frame.CopyTo(_pending.AsSpan(_pendingLength));
                 wake = _pendingLength == 0;
@@ -159,10 +154,7 @@ public sealed class WebSocketChannel(WebSocket socket, IChannelHandler handler, 
                     {
                         if (buffer.Length >= Math.Max(maxFrameSize, maxPendingSendBytes))
                             throw new InvalidOperationException("WebSocket message too large");
-                        var grown = BufferPool.Rent(buffer.Length * 2);
-                        buffer.AsSpan(0, filled).CopyTo(grown);
-                        BufferPool.Return(buffer);
-                        buffer = grown;
+                        BufferPool.Grow(ref buffer, filled, buffer.Length * 2);
                     }
 
                     result = await socket.ReceiveAsync(buffer.AsMemory(filled), CancellationToken.None).ConfigureAwait(false);
@@ -185,10 +177,8 @@ public sealed class WebSocketChannel(WebSocket socket, IChannelHandler handler, 
         using (Connection.BeginSendBatch()) // as on TCP: what these frames cause leaves in one write per connection
             while (!message.IsEmpty)
             {
-                if (message.Length < FrameHeader.Size) throw new InvalidOperationException("Partial frame in a WebSocket message");
-                var header = FrameHeader.Read(message);
-                if (header.Length < FrameHeader.Size || header.Length > maxFrameSize || header.Length > message.Length)
-                    throw new InvalidOperationException("Invalid frame length " + header.Length);
+                if (!FrameHeader.TryReadFrame(message, maxFrameSize, out var header))
+                    throw new InvalidOperationException("Partial frame in a WebSocket message");
                 handler.OnFrame(this, in header, message[..header.Length]);
                 message = message[header.Length..];
             }

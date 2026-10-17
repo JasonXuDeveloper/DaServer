@@ -222,7 +222,7 @@ public sealed class Connection : IFrameSender, IFrameChannel
             else
             {
                 if (required > _pending.Length)
-                    GrowPending(required);
+                    BufferPool.Grow(ref _pending, _pendingLength, Math.Max(_options.SendBufferSize, Math.Max(_pending.Length * 2, required)));
 
                 frame.CopyTo(new Span<byte>(_pending, _pendingLength, frame.Length));
                 wake = _pendingLength == 0;
@@ -297,16 +297,6 @@ public sealed class Connection : IFrameSender, IFrameChannel
         {
             // handler errors must not escape the IO loops
         }
-    }
-
-    private void GrowPending(int required)
-    {
-        int size = Math.Max(_options.SendBufferSize, Math.Max(_pending.Length * 2, required));
-        var next = BufferPool.Rent(size);
-        if (_pendingLength > 0)
-            Buffer.BlockCopy(_pending, 0, next, 0, _pendingLength);
-        BufferPool.Return(_pending);
-        _pending = next;
     }
 
     private async Task SendLoop()
@@ -581,10 +571,7 @@ public sealed class Connection : IFrameSender, IFrameChannel
                 if (needed > buffer.Length)
                 {
                     // A frame larger than the current buffer: grow to fit it.
-                    var bigger = BufferPool.Rent(needed);
-                    Buffer.BlockCopy(buffer, 0, bigger, 0, filled);
-                    BufferPool.Return(buffer);
-                    buffer = bigger;
+                    BufferPool.Grow(ref buffer, filled, needed);
                 }
                 else if (filled == 0 && buffer.Length > _options.ReceiveBufferSize * 4)
                 {
@@ -610,24 +597,14 @@ public sealed class Connection : IFrameSender, IFrameChannel
     private int ParseFrames(byte[] buffer, int filled, out int needed)
     {
         int offset = 0;
-        needed = 0;
-        while (filled - offset >= FrameHeader.Size)
+        FrameHeader header;
+        while (FrameHeader.TryReadFrame(new ReadOnlySpan<byte>(buffer, offset, filled - offset), _options.MaxFrameSize, out header))
         {
-            var span = new ReadOnlySpan<byte>(buffer, offset, filled - offset);
-            var header = FrameHeader.Read(span);
-            if (header.Length < FrameHeader.Size || header.Length > _options.MaxFrameSize)
-                throw new InvalidOperationException("Invalid frame length " + header.Length);
-
-            if (header.Length > span.Length)
-            {
-                needed = header.Length;
-                break;
-            }
-
-            _handler.OnFrame(this, in header, span.Slice(0, header.Length));
+            _handler.OnFrame(this, in header, new ReadOnlySpan<byte>(buffer, offset, header.Length));
             offset += header.Length;
         }
 
+        needed = header.Length;
         return offset;
     }
 }
