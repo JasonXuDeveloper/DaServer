@@ -503,6 +503,31 @@ in separate commits.
   reload with forced GC, manual dirty marking. GM commands (N10) are out of scope for now.
 
 ## Open cleanup (review rounds)
+- Audit round 2 (agreed; each change with tests and BenchmarkDotNet where a hot path changes):
+  - [x] Cache lines: a shard's per-pass counters and its sleeping flag on lines of their own, its own counters
+        without `Interlocked`, the actor count written when it changes; channels touch their activity stamps at most
+        every 100 ms; `DeferredReply.Used` written once.
+  - [ ] Pools and the call table: a thread-local magazine in `ObjectPool` (one CAS per batch, not per item); call
+        table entries 40 B -> 32 B (int tag, absolute ms deadline: one clock read less per call). New contention
+        benchmark (1/4/16 concurrent callers).
+  - [ ] Group fan-out: a channel array next to the members (half the pointer hops per member); the channel shell
+        (send switch, closed flag, tag, stamps) shared by TCP and WebSocket, the send queue inline.
+  - [ ] Routing: one table per view (nodes, owners, actor kind, placement) found by one lookup per request.
+  - [ ] Small: the flusher's registrations in the thread's send batch (one lock per batch); the swarm's latency
+        histogram per loop, log-linear buckets.
+  - [ ] One clock for the control plane: resume graces, call timeouts, membership timings on
+        `NodeOptions.TimeProvider` (steppable in `TestCluster`), hot paths on `Platform.Milliseconds`.
+  - [ ] One backoff with full jitter (client reconnect, node links, swarm retries).
+  - [ ] Generated registration uses `TypeId<T>` (no literal ids); a test pins `Shapes.TypeIdOf` == `NinoTypeId.Of`
+        (nested, namespaced, `[NinoFormerName]`).
+  - [ ] One endpoint parser (`IPEndPoint.TryParse`, then host:port); `[LoggerMessage]` on per-message and failure
+        logs, a dropped-backlog warning once per interval with a count.
+- Deployment (agreed): one AppHost publishes to Docker Compose or Kubernetes (`Publish=compose|k8s`); in publish
+  mode a node group is one workload with replicas (A4): no container names, no fixed host ports per replica, seeds
+  through the group's DNS name (Compose service DNS, Kubernetes headless Service), each replica advertising its own
+  address; both samples. No StatefulSet (identity from gossip incarnations, state in the store), no etcd or
+  Kubernetes API access (DNS seeds only); secrets are Aspire secret parameters (a Kubernetes Secret, a Compose
+  `.env`); a migration Job is the application's.
 - [ ] Evaluate Kestrel's raw TCP (`ListenOptions.UseConnectionHandler`, pipelines, TLS) for client and link
       connections against the own `Connection`/`Listener` (batched sends, zero-byte reads, POH buffers): BDN on
       Message/Rpc/Broadcast/Scenario and allocation tests; switch only if neither time nor allocation regresses.
