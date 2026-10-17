@@ -3,9 +3,9 @@ using DaServer.Client;
 namespace DaServer.Tests;
 
 /// <summary>
-/// Make before break (ADR-026), interleaving by interleaving against a <see cref="ScriptedNode"/>: what a real network
-/// leaves to chance (a move while a sender holds the old connection, a node that dies with calls in flight, a refused
-/// resume) is forced here, so the outcome does not depend on a machine's speed.
+/// Moves (make before break, ADR-026) and reconnects, interleaving by interleaving against a <see cref="ScriptedNode"/>:
+/// what a real network leaves to chance (a move while a sender holds the old connection, a node that dies with calls in
+/// flight, a refused or slow resume, a dispose mid-way) is forced here, so the outcome does not depend on a machine's speed.
 /// </summary>
 public class ClientMoveTests
 {
@@ -174,5 +174,82 @@ public class ClientMoveTests
             await Until(() => node[i].IsClosed);
             Assert.That(node[i].Sent[^1], Is.EqualTo((FrameKind.Control, ControlOp.Goodbye)), $"connection {i}: the goodbye came last");
         }
+    }
+
+    [Test]
+    public async Task CallsOfTheOldConnectionFailWhenItDiesWhileTheMoveResumes()
+    {
+        var (client, node) = await Connected();
+        var old = node[0];
+        old.Hold();
+        var call = client.Ask(new AddGold(1)).AsTask();
+        node.HoldResumes();
+        var moved = Moved(client);
+        old.Retire();
+        await Until(() => node.Count == 2);
+
+        old.Close(new IOException("node crashed"));
+        var failure = Assert.ThrowsAsync<RpcException>(async () => await call.WaitAsync(TimeSpan.FromSeconds(2)));
+        Assert.That(failure!.Status, Is.EqualTo(RpcStatus.Disconnected), "not after the 30 s call timeout");
+        node.ReleaseResumes();
+        await moved;
+        Assert.That(await client.Ask(new AddGold(1)), Is.EqualTo(1));
+    }
+
+    [Test]
+    public async Task ADisposeDuringAReconnectEndsTheSessionAtOnce()
+    {
+        var (client, node) = await Connected();
+        bool reconnected = false;
+        client.Reconnected += () => reconnected = true;
+        node.HoldResumes();
+        client.DropConnection();
+        await Until(() => node.Count == 2);
+
+        await client.DisposeAsync();
+        node.ReleaseResumes();
+        await Until(() => node[1].IsClosed);
+        Assert.That(reconnected, Is.False);
+        Assert.That(node[1].Sent, Has.Member((FrameKind.Control, ControlOp.Goodbye)), "the node reports the session closed at once");
+    }
+
+    [Test]
+    public async Task ADisposeDuringAMoveEndsTheSessionAtOnce()
+    {
+        var (client, node) = await Connected();
+        node.HoldResumes();
+        node[0].Retire();
+        await Until(() => node.Count == 2);
+
+        await client.DisposeAsync();
+        node.ReleaseResumes();
+        await Until(() => node[1].IsClosed);
+        Assert.That(node[1].Sent, Has.Member((FrameKind.Control, ControlOp.Goodbye)));
+    }
+
+    [Test]
+    public async Task AProbeOfTheOldConnectionDoesNotCloseTheNewOne()
+    {
+        var (client, node) = await Connected();
+        node[0].Pongs = false;
+        client.CheckConnection(TimeSpan.FromMilliseconds(300));
+        var moved = Moved(client);
+        node[0].Retire();
+        await moved;
+        await Until(() => node[0].IsClosed);
+        await Task.Delay(600); // past the probe's deadline: sweeps every 100 ms
+        Assert.That(node[1].IsClosed, Is.False, "the probe was of the connection the session left");
+    }
+
+    [Test]
+    public async Task AReconnectEndsWithItsTimeoutWhenNoNodeAnswers()
+    {
+        var (client, node) = await Connected();
+        client.ReconnectTimeout = TimeSpan.FromSeconds(1);
+        var failed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        client.ReconnectFailed += _ => failed.TrySetResult();
+        node.Unresponsive = true;
+        client.DropConnection();
+        await failed.Task.WaitAsync(TimeSpan.FromSeconds(4)); // not the 30 s call timeout of a hello nobody answers
     }
 }
