@@ -2,13 +2,13 @@
 # Positional layouts are frozen, version-tolerant types take new fields at their end, keyed types any key that keeps
 # its type. Record changes: dotnet build -p:UpdateWireManifest=true
 FlashSale.Contracts.Admitted (no header, positional, raw, id B8DA0D57)
-- Position: long raw(8)
+- Position: long@0 raw(8)
 = FlashSale.Contracts.Admission
 FlashSale.Contracts.Buy (no header, positional, raw, id C5A8DB01)
 = FlashSale.Contracts.OrderStatus
 FlashSale.Contracts.CheckIn (no header, positional, raw, id FD4188EE)
-- Sale: long raw(8)
-- Position: long raw(8)
+- Sale: long@0 raw(8)
+- Position: long@8 raw(8)
 = FlashSale.Contracts.Admission
 FlashSale.Contracts.Describe (no header, positional, raw, id F46F6D32)
 = FlashSale.Contracts.SaleInfo
@@ -17,40 +17,40 @@ FlashSale.Contracts.GetOrder (no header, positional, raw, id 53DE7717)
 FlashSale.Contracts.Join (no header, positional, raw, id 3AF48A85)
 = long
 FlashSale.Contracts.Open (no header, positional, raw, id B759F5AB)
-- PerSecond: int raw(4)
+- PerSecond: int@0 raw(4)
 = bool
 FlashSale.Contracts.OpenSale (no header, positional, raw, id ABDA3850)
-- Sale: long raw(8)
-- Units: int raw(4)
-- PerSecond: int raw(4)
+- Sale: long@0 raw(8)
+- Units: int@8 raw(4)
+- PerSecond: int@12 raw(4)
 = bool
 FlashSale.Contracts.OrderOf (no header, positional, raw, id 563E0F58)
-- Sale: long raw(8)
-- User: long raw(8)
+- Sale: long@0 raw(8)
+- User: long@8 raw(8)
 = FlashSale.Contracts.OrderStatus
 FlashSale.Contracts.PlaceOrder (no header, positional, raw, id CF33379A)
-- Sale: long raw(8)
-- User: long raw(8)
-- Position: long raw(8)
+- Sale: long@0 raw(8)
+- User: long@8 raw(8)
+- Position: long@16 raw(8)
 = FlashSale.Contracts.OrderStatus
 FlashSale.Contracts.QueueUp (no header, positional, raw, id F69C10CB)
-- Sale: long raw(8)
+- Sale: long@0 raw(8)
 = long
 FlashSale.Contracts.Restock (no header, positional, raw, id 25457718)
-- Units: int raw(4)
+- Units: int@0 raw(4)
 = bool
 FlashSale.Contracts.SaleInfo (no header, positional, id 2098BD32)
 - Queued: bool raw(1)
 - SoldOut: bool raw(1)
 - Buyers: long[] Nino.Core.UnmanagedArrayFormatter<long>
 FlashSale.Contracts.SaleStock (no header, positional, raw, id 5F7ACF8C)
-- Sale: long raw(8)
+- Sale: long@0 raw(8)
 = int
 FlashSale.Contracts.ShardEmpty (no header, positional, id 2288AD46)
 - Shard: int raw(4)
 - Buyers: long[] Nino.Core.UnmanagedArrayFormatter<long>
 FlashSale.Contracts.TakeOne (no header, positional, raw, id 353A02A0)
-- User: long raw(8)
+- User: long@0 raw(8)
 = bool
 FlashSale.Contracts.UnitsLeft (no header, positional, raw, id 82866AA9)
 = int

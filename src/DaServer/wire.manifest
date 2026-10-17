@@ -19,9 +19,9 @@ DaServer.Cluster.ClusterMember (null flag, version tolerant, id 22E5D45D)
 - PulseValues: int[] Nino.Core.UnmanagedArrayFormatter<int>
 - Entries: DaServer.Cluster.CardEntry[] Nino.Core.ArrayFormatter<DaServer.Cluster.CardEntry, nested>
 DaServer.Cluster.HostedMessage (no header, positional, raw, id 4FBDF5E5)
-- MessageId: uint raw(4)
-- HandlerTypeId: uint raw(4)
-- Actor: bool raw(1)
+- MessageId: uint@0 raw(4)
+- HandlerTypeId: uint@4 raw(4)
+- Actor: bool@8 raw(1)
 DaServer.Cluster.LinkHello (null flag, version tolerant, id 17E14E65)
 - Version: int raw(4)
 - Cluster: string Nino.Core.StringFormatter

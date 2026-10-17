@@ -2,24 +2,24 @@
 # Positional layouts are frozen, version-tolerant types take new fields at their end, keyed types any key that keeps
 # its type. Record changes: dotnet build -p:UpdateWireManifest=true
 DaServer.ClientGroup (no header, positional, raw, id 3B5CC29D)
-- Id: long raw(8)
+- Id: long@0 raw(8)
 DaServer.ClientSession (no header, positional, raw, id 55AFFF04)
-- Node: ulong raw(8)
-- Id: long raw(8)
+- Node: ulong@0 raw(8)
+- Id: long@8 raw(8)
 DaServer.Disconnect (no header, positional, raw, id EA53DAFB)
 DaServer.JoinGroup (no header, positional, raw, id 700F22AE)
-- Group: DaServer.ClientGroup raw
+- Group: DaServer.ClientGroup@0 raw(8){Id:long@0:raw(8)}
 DaServer.LeaveGroup (no header, positional, raw, id B20D4EBF)
-- Group: DaServer.ClientGroup raw
+- Group: DaServer.ClientGroup@0 raw(8){Id:long@0:raw(8)}
 DaServer.Origin (no header, positional, raw, id C7F4636F)
-- Node: ulong raw(8)
-- Id: long raw(8)
+- Node: ulong@0 raw(8)
+- Id: long@8 raw(8)
 DaServer.SessionAccess (no header, positional, raw, id D457C861)
-- HandlerType: uint raw(4)
-- Key: long raw(8)
-- Change: DaServer.AccessChange raw(1)
+- HandlerType: uint@0 raw(4)
+- Key: long@8 raw(8)
+- Change: DaServer.AccessChange@16 raw(1)
 DaServer.SessionClosed (no header, positional, raw, id 60279907)
-- Session: DaServer.ClientSession raw
+- Session: DaServer.ClientSession@0 raw(16){Node:ulong@0:raw(8),Id:long@8:raw(8)}
 DaServer.SessionResumed (no header, positional, raw, id EDA9CFA8)
-- Session: DaServer.ClientSession raw
-- Previous: DaServer.ClientSession raw
+- Session: DaServer.ClientSession@0 raw(16){Node:ulong@0:raw(8),Id:long@8:raw(8)}
+- Previous: DaServer.ClientSession@16 raw(16){Node:ulong@0:raw(8),Id:long@8:raw(8)}
