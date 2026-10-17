@@ -73,6 +73,18 @@ public class MembershipTests : ClusterTest
     }
 
     [Test]
+    public async Task ASeedSpelledOtherwiseIsOneLink()
+    {
+        // b's seed names a as "localhost", a's card says 127.0.0.1: two links to a would each say hello on a's one
+        // inbound slot for b, and every reconnect of either would close the other's connection and reset its stream.
+        var a = await Start("a");
+        var b = await Start("b", configure: o => o.Seeds = ["localhost:" + a.ClusterEndPoint.Port]);
+        await Converged();
+        Assert.That(await b.Ask(new CounterId(KeyOwnedBy<CounterId>(a)), new Add(1)), Is.EqualTo(1));
+        Assert.That(b.LinksTo(a.Id), Is.EqualTo(1));
+    }
+
+    [Test]
     public async Task TheMinoritySideOfASplitDownsItselfAndTheMajorityKeepsRunning()
     {
         var nodes = await StartCluster(3);

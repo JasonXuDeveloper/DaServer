@@ -290,6 +290,15 @@ sealed partial class Node : IChannelHandler
     /// its Hello. A client's call can reach a node before that node's view lists the client-facing node; the access
     /// changes and pushes it causes must still reach that node (ahead of the reply, on the same link).
     /// </summary>
+    /// <summary>Tests: how many links reach node <paramref name="nodeId"/> (one per node).</summary>
+    internal int LinksTo(ulong nodeId)
+    {
+        int count = 0;
+        foreach (var link in Volatile.Read(ref _linkList))
+            if (link.PeerId == nodeId) count++;
+        return count;
+    }
+
     /// <summary>Tests: whether this node keeps the link node <paramref name="nodeId"/> introduced itself on.</summary>
     internal bool Introduced(ulong nodeId) => _introduced.ContainsKey(nodeId);
 
@@ -304,7 +313,22 @@ sealed partial class Node : IChannelHandler
     }
 
     /// <summary>The link to <paramref name="member"/> (cached on the member: no lookup on the send path).</summary>
-    internal PeerLink GetLink(ClusterMember member) => member.Link ??= GetLink(member.Host, member.Port);
+    internal PeerLink GetLink(ClusterMember member) => member.Link ??= LinkFor(member);
+
+    /// <summary>
+    /// One link per node: a link that already reaches the member under another address (a seed spelled otherwise:
+    /// "localhost" for 127.0.0.1, a name for the address on its card) serves it under its card's address too. Two
+    /// links would each say hello on the member's one inbound slot for this node and take it from each other.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private PeerLink LinkFor(ClusterMember member)
+    {
+        if (_links.TryGetValue((member.Host, member.Port), out var link)) return link;
+        foreach (var other in Volatile.Read(ref _linkList))
+            if (other.PeerId == member.NodeId)
+                return _links.GetOrAdd((member.Host, member.Port), other);
+        return AddLink(member.Host, member.Port);
+    }
 
     internal PeerLink GetLink(string host, int port) =>
         _links.TryGetValue((host, port), out var link) ? link : AddLink(host, port);
