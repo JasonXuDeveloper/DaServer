@@ -54,8 +54,10 @@ samples/mmo/               MMO scenario: Sample.Contracts / Sample.Shared (rules
                            (one project per server, a five-line Program.cs, no appsettings; a server's components in
                            Sample.XServer.Components, DAS013) / Sample.Bot (the client as a swarm
                            with an HTN behavior: 10k-bot load test and e2e) / Sample.Tests / Sample.AppHost (Aspire)
+samples/flashsale/         flash sale over HTTP: FlashSale.Contracts / .Components / .Server (stock shards, orders, waiting
+                           room, HTTP API) / .Load (the crowd) / .Tests / .AppHost
 tests/DaServer.Tests/      NUnit: ClusterTest fixture, per-feature tests, generator/analyzer, allocation, architecture
-tests/DaServer.E2E/        the AppHost with 1,000 bots through Aspire.Hosting.Testing
+tests/DaServer.E2E/        the AppHosts through Aspire.Hosting.Testing: 1,000 bots, 100,000 buyers
 benchmarks/DaServer.Benchmark/   BenchmarkDotNet over real loopback sockets (requests, one-way messages, broadcast fan-out,
                            scenarios) and generator cost
 doc/                       requirements.md, design.md, decisions.md, roadmap.md

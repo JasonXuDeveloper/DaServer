@@ -276,6 +276,12 @@ await cluster.TickAsync(15);                              // exactly 15 ticks on
 
 Actors, services and systems read time from `Time` (`world.Time()` in systems), the clock tests move.
 
+## Samples
+
+- [`samples/mmo`](samples/mmo): an MMO (login, game, maps, gateways) with 10,000 bots that run the real client.
+- [`samples/flashsale`](samples/flashsale): a million buyers for 100 units over HTTP: waiting room, sharded stock,
+  idempotent orders.
+
 ## Orchestration with Aspire
 
 ```csharp
