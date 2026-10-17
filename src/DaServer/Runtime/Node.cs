@@ -152,13 +152,13 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
     internal bool IsLocalOwner(uint handlerTypeId, long key) => View.HandlerTypeOwner(handlerTypeId, key)?.NodeId == Id;
 
     private ClusterView? _lastView;
-    private long _viewChangedMs;
+    private RecentView[] _recentViews = [];
 
-    /// <summary>The view before the current one: who owned a key before it moved here (<see cref="Handoff"/>).</summary>
-    internal ClusterView? PreviousView { get; private set; }
-
-    /// <summary>Milliseconds (real time) since the view last changed: how long keys may still be on their way.</summary>
-    internal long SinceViewChangeMs => Platform.Milliseconds - Volatile.Read(ref _viewChangedMs);
+    /// <summary>
+    /// The views replaced within the handoff timeout, newest first (at most <see cref="RecentView.Kept"/>): who held a key
+    /// before it moved here, and whether its record may still be on its way (<see cref="Handoff"/>). A snapshot.
+    /// </summary>
+    internal RecentView[] RecentViews => Volatile.Read(ref _recentViews);
 
     /// <summary>
     /// Send a frame (header written) to node <paramref name="nodeId"/>, to the shard of its actor: through the link to it
@@ -353,8 +353,8 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
     internal void OnViewChanged()
     {
         var view = View;
-        PreviousView = Interlocked.Exchange(ref _lastView, view); // before the shards rebalance: new owners ask the previous ones
-        Volatile.Write(ref _viewChangedMs, Platform.Milliseconds);
+        // Before the shards rebalance: new owners ask the previous ones.
+        if (Interlocked.Exchange(ref _lastView, view) is { } replaced) Volatile.Write(ref _recentViews, RecentView.Push(_recentViews, replaced, Options));
         foreach (var shard in _shards) shard.RequestRebalance();
 
         // Calls waiting on a dead member's link fail now instead of at their timeout (its stream cannot resume).
