@@ -25,7 +25,7 @@ public sealed partial class DaServerAnalyzer
         var text = manifest.GetText(context.CancellationToken);
         if (text == null) return;
         var baseline = WireManifest.Parse(text.ToString());
-        var types = WireManifest.All(context.Compilation, context.CancellationToken);
+        var types = WireManifest.All(context.Compilation.Assembly, context.CancellationToken);
         var current = types.Select(t => t.Type).ToList();
         var locations = new Dictionary<string, Location?>(StringComparer.Ordinal);
         foreach (var (type, symbol) in types) locations[type.Name] = symbol.Locations.FirstOrDefault();

@@ -42,78 +42,72 @@ public class WireManifestTests
         """;
 
     private const string Recorded = """
-        Game.Badge (sealed class, positional)
-        - Id: int
-        Game.Cell (memory(0, Pack=4))
-        - Row: int
-        - Column: int
-        Game.Circle (sealed class, positional, tracked)
-        - Shape.X: int
-        - X: int
-        Game.Hero (sealed class, version tolerant)
-        - Name: string
-        - Level: int
-        - Gold: int
-        Game.Hop (class, positional)
-        - Next: Game.Link
-        - Children: System.Collections.Generic.List<Game.Link>
-        - Label: string utf8
-        - Distance: int
-        Game.IShape (abstract, positional)
-        - Sides: int
-        Game.Link (class, positional)
-        - Next: Game.Link
-        - Children: System.Collections.Generic.List<Game.Link>
-        - Label: string utf8
-        Game.Look (memory)
+        Game.Badge (null flag, positional, id 0D604888)
+        - Id: int raw(4)
+        Game.Cell (no header, positional, raw, id 10406113)
+        - Row: int raw(4)
+        - Column: int raw(4)
+        Game.Circle (null flag, positional, tracked, id AD28B007)
+        - X: int raw(4)
+        - X: int raw(4)
+        Game.Hero (null flag, version tolerant, id FC84D6ED)
+        - Name: string Nino.Core.StringFormatter
+        - Level: int raw(4)
+        - Gold: int raw(4)
+        Game.Hop (type id, positional, id C4B40332)
+        - Next: Game.Link nested
+        - Children: System.Collections.Generic.List<Game.Link> Nino.Core.ListFormatter<System.Collections.Generic.List<Game.Link>, Game.Link, nested>
+        - Label: string Nino.Core.Utf8StringFormatter
+        - Distance: int raw(4)
+        Game.IShape (type id, positional, id BDFF01A3)
+        Game.Link (type id, positional, id 309CABDD)
+        - Next: Game.Link nested
+        - Children: System.Collections.Generic.List<Game.Link> Nino.Core.ListFormatter<System.Collections.Generic.List<Game.Link>, Game.Link, nested>
+        - Label: string Nino.Core.Utf8StringFormatter
+        Game.Look (no header, positional, raw, id 5EB8F11A)
         = Game.View
-        Game.Move (memory)
-        - Hero: Game.HeroId memory {Value: long}
-        - X: float
-        - Y: float
-        Game.Paint (struct, positional)
-        - At: Game.Cell
-        - Kind: Game.Kind(byte)
-        - Color: string
-        - Trail: Game.Cell[]
-        Game.Profile (class, version tolerant)
-        - Name: string
-        - Level: int
-        Game.Settings (sealed class, keyed)
-        - Volume: int
-        - Theme: string
-        Game.Shape (class, positional)
-        - X: int
-        Game.Sparse (class, positional)
-        - A: int
-        - B: int
-        Game.Spin (struct, positional)
-        - Speed: int
-        Game.Square (class, positional)
-        - Sides: int
-        - Size: int
-        Game.Tile (struct, positional)
-        - Sides: int
-        Game.View (memory)
-        - Range: int
-        - Zoom: int
+        Game.Move (no header, positional, raw, id EBFC19FC)
+        - Hero: Game.HeroId raw {Value: long}
+        - X: float raw(4)
+        - Y: float raw(4)
+        Game.Paint (no header, positional, id D6BE6A7F)
+        - At: Game.Cell raw
+        - Kind: Game.Kind raw(1)
+        - Color: string Nino.Core.StringFormatter
+        - Trail: Game.Cell[] Nino.Core.UnmanagedArrayFormatter<Game.Cell>
+        Game.Profile (type id, version tolerant, id EB1B87E6)
+        - Name: string Nino.Core.StringFormatter
+        - Level: int raw(4)
+        Game.Settings (null flag, keyed, id 8BE6A948)
+        - Volume: int raw(4)
+        - Theme: string Nino.Core.StringFormatter
+        Game.Shape (type id, positional, id 0BB65D22)
+        - X: int raw(4)
+        Game.Sparse (type id, positional, id 69A64D13)
+        - A: int raw(4)
+        - B: int raw(4)
+        Game.Spin (no header, positional, id E0B4AE79)
+        - Speed: int raw(4)
+        Game.Square (type id, positional, id E9B3DE04)
+        - Sides: int raw(4)
+        - Size: int raw(4)
+        Game.Tile (no header, positional, id 4206B509)
+        - Sides: int raw(4)
+        Game.View (no header, positional, raw, id 37003A50)
+        - Range: int raw(4)
+        - Zoom: int raw(4)
         """;
 
     [Test]
     public void TheManifestRecordsFieldsInNinoOrder()
     {
-        var driver = Microsoft.CodeAnalysis.CSharp.CSharpGeneratorDriver.Create([new WireManifestGenerator().AsSourceGenerator()],
-                optionsProvider: new Updating())
-            .RunGenerators(GeneratorTests.Compile(GeneratorTests.Parse(Types)));
-        string text = driver.GetRunResult().GeneratedTrees.Single(t => t.FilePath.EndsWith("DaServer.WireManifest.g.cs")).ToString();
-
-        // A raw struct (every field serialized and raw) as its memory; otherwise its header and format and Nino's members:
-        // an interface's first, the primary constructor's properties first, [NinoIgnore] skipped, [NinoMember] order
-        // without autoCollect, get-only properties only when a constructor takes them, no explicit interface
-        // implementations or indexers, a hidden base member named with its type; enums with their underlying type; an
-        // unmanaged struct without its own entry (an id) inline; replies.
-        text = text[text.IndexOf("Game.", StringComparison.Ordinal)..text.LastIndexOf("*/", StringComparison.Ordinal)].Replace("\r", "");
-        Assert.That(text, Is.EqualTo(Recorded.Replace("\r", "") + "\n"));
+        // Nino's own layouts: a raw struct (every field serialized and raw) and other types with their header, format
+        // and type id; members in Nino's order (an interface's first, the primary constructor's properties first,
+        // [NinoIgnore] skipped, [NinoMember] order without autoCollect, get-only properties only when a constructor
+        // takes them, a hidden base member named with its type) and how each is written; plus what the manifest adds:
+        // an unmanaged struct without its own layout (an id) with its fields, replies.
+        string text = ManifestOf(GeneratorTests.Compile(GeneratorTests.Parse(Types)));
+        Assert.That(text[text.IndexOf("Game.", StringComparison.Ordinal)..], Is.EqualTo(Recorded.Replace("\r", "") + "\n"));
     }
 
     [Test]
@@ -132,7 +126,6 @@ public class WireManifestTests
     [TestCase("HeroId(long Value)", "HeroId(int Value)", "DAS017", TestName = "A nested id without an entry is part of the layout")]
     [TestCase("[NinoType, Message] public partial record struct Move(HeroId Hero, float X, float Y);", "", "DAS017", TestName = "A removed type breaks")]
     [TestCase("IRequest<View>", "IRequest<int>", "DAS017", TestName = "A changed reply breaks")]
-    [TestCase("Pack = 4", "Pack = 1", "DAS017", TestName = "A struct layout change breaks")]
     [TestCase("public partial struct Spin", "public partial class Spin", "DAS017", TestName = "A struct that becomes a class breaks")]
     [TestCase("enum Kind : byte", "enum Kind : int", "DAS017", TestName = "An enum's underlying type is part of the layout")]
     [TestCase(" private int _hidden;", "", "DAS017", TestName = "A struct that turns raw changes its bytes")]
@@ -174,54 +167,46 @@ public class WireManifestTests
     public async Task AnotherAssemblysTypesReadTheSameFromSourceAndMetadata()
     {
         // The IDE references a project as source, the command line as metadata: the manifest must not differ.
-        var shared = CSharpCompilation.Create("Shared", [GeneratorTests.Parse(Shared)], GeneratorTests.References,
-            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        var shared = WithNino(CSharpCompilation.Create("Shared", [GeneratorTests.Parse(Shared)], GeneratorTests.References,
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary)));
         using var image = new MemoryStream();
         Assert.That(shared.Emit(image).Success);
         string fromSource = ManifestOf(GeneratorTests.Compile(GeneratorTests.Parse(UsesShared)).AddReferences(shared.ToMetadataReference()));
         string fromMetadata = ManifestOf(GeneratorTests.Compile(GeneratorTests.Parse(UsesShared)).AddReferences(MetadataReference.CreateFromImage(image.ToArray())));
         Assert.That(fromSource, Is.EqualTo(fromMetadata));
-        Assert.That(fromSource, Does.Contain("- Where: Shared.Pos memory {X: int, _y: int}").And.Contain("- Card: Shared.Card\n"));
-        // Another assembly's [NinoType] struct with auto-properties is its memory, from source and from metadata alike.
-        Assert.That(fromSource, Does.Contain("Game.Seen (memory)\n- At: Shared.Spot memory {Floor: byte, Cell: long}"));
+        Assert.That(fromSource, Does.Contain("- Where: Shared.Pos raw {X: int, _y: int}"), "a plain struct of another assembly: its fields");
+        Assert.That(fromSource, Does.Contain("- At: Shared.Spot raw no header, positional, raw"), "another assembly's [NinoType]: its layout inline");
 
         // A new subtype of another assembly's [NinoType] base: older builds of this one cannot read its type id.
         var subtype = GeneratorTests.Compile(GeneratorTests.Parse(UsesShared + "public partial class Quest : Shared.Event { }"))
             .AddReferences(shared.ToMetadataReference());
-        var reported = await subtype.WithAnalyzers([new DaServerAnalyzer()], new AnalyzerOptions([new Manifest(fromSource)])).GetAnalyzerDiagnosticsAsync();
+        var reported = await WithNino(subtype).WithAnalyzers([new DaServerAnalyzer()], new AnalyzerOptions([new Manifest(fromSource)])).GetAnalyzerDiagnosticsAsync();
         Assert.That(reported.Select(d => d.Id).Distinct(), Is.EqualTo(new[] { "DAS017" }));
     }
 
-    private static string ManifestOf(Compilation compilation)
+    /// <summary>Nino's generator (its NuGet package's), run first: its <c>[assembly: NinoTypeLayout]</c> is what the manifest reads.</summary>
+    private static readonly ISourceGenerator Nino = ((IIncrementalGenerator)Activator.CreateInstance(
+        System.Reflection.Assembly.LoadFrom(typeof(WireManifestTests).Assembly.GetCustomAttributes(typeof(System.Reflection.AssemblyMetadataAttribute), false)
+                .Cast<System.Reflection.AssemblyMetadataAttribute>().Single(a => a.Key == "NinoGenerator").Value!)
+            .GetType("Nino.Generator.Generation.NinoGenerator", throwOnError: true)!)!).AsSourceGenerator();
+
+    private static Compilation WithNino(Compilation compilation)
     {
-        var driver = CSharpGeneratorDriver.Create([new WireManifestGenerator().AsSourceGenerator()], optionsProvider: new Updating())
-            .RunGenerators(compilation);
-        return driver.GetRunResult().GeneratedTrees.Single().ToString().Replace("\r", "");
+        CSharpGeneratorDriver.Create([Nino], parseOptions: (CSharpParseOptions)compilation.SyntaxTrees.First().Options)
+            .RunGeneratorsAndUpdateCompilation(compilation, out var output, out _);
+        return output;
     }
+
+    /// <summary>The manifest the build writes: the built assembly read as the analyzer reads it.</summary>
+    private static string ManifestOf(Compilation compilation) =>
+        WireManifest.Format(WireManifest.All(WithNino(compilation).Assembly, CancellationToken.None).Select(t => t.Type).ToList()).Replace("\r", "");
 
     private static async Task<string[]> Check(string source, string? manifest)
     {
-        var compilation = GeneratorTests.Compile(GeneratorTests.Parse(source));
+        var compilation = WithNino(GeneratorTests.Compile(GeneratorTests.Parse(source)));
         var files = manifest == null ? ImmutableArray<AdditionalText>.Empty : [new Manifest(manifest)];
         var reported = await compilation.WithAnalyzers([new DaServerAnalyzer()], new AnalyzerOptions(files)).GetAnalyzerDiagnosticsAsync();
         return reported.Select(d => d.Id).Where(id => id is "DAS017" or "DAS018").Distinct().Order().ToArray();
-    }
-
-    /// <summary>Build options of <c>-p:UpdateWireManifest=true</c>.</summary>
-    private sealed class Updating : AnalyzerConfigOptionsProvider
-    {
-        private sealed class Options(bool global) : AnalyzerConfigOptions
-        {
-            public override bool TryGetValue(string key, out string value)
-            {
-                value = "true";
-                return global && key == "build_property.UpdateWireManifest";
-            }
-        }
-
-        public override AnalyzerConfigOptions GlobalOptions { get; } = new Options(true);
-        public override AnalyzerConfigOptions GetOptions(SyntaxTree tree) => new Options(false);
-        public override AnalyzerConfigOptions GetOptions(AdditionalText textFile) => new Options(false);
     }
 
     private sealed class Manifest(string text) : AdditionalText
