@@ -531,6 +531,10 @@ records that no longer hold). Each: context → decision → consequences.
   ms of start-up); HTTP requests allocate like any ASP.NET request: on nodes hosting actors the HTTP plane carries
   low-frequency work, never per-tick or per-player traffic; dedicated HTTP edge nodes (ADR-048) may carry high
   request volume, since the actor interior stays zero-GC. Health endpoints (always on) and admin endpoints (authorized with the signing secret) come with A1.
+  The node's defaults keep a request cheap: hosting diagnostics off (any level enabled there starts an Activity per
+  request whether or not anything traces) and no `Server` header. Flash sale crowd, one 4-core VM: 18,100 -> 22,600
+  requests per node core, p99 262 -> 131 ms. What remains is a `recv` and a `send` per request (HTTP/1.1 without
+  pipelining): high request rates from many small clients belong on the client protocol, which batches.
 
 ## ADR-047 One message model: message, address, optional reply
 - Context: messages and RPC are one thing; an API with a verb per target (push to a session, broadcast to a group,
