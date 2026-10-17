@@ -287,7 +287,7 @@ sealed partial class Node
         {
             var header = FrameHeader.Read(frame.Frame);
             if (header.Hops >= MaxHops) return;
-            if (View.TryGetHandlerTypeRoute(header.Target, out var route))
+            if (TryRoute(header.MessageId, header.Target, out var route, out _)) // a service among the builds that handle it
                 handedOver = SendTo(in route, header.MessageId, header.Key, frame, (byte)(header.Hops + 1), header.Flags, handOver: true);
         }
         finally
