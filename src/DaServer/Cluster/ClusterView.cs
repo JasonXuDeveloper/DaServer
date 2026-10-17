@@ -123,14 +123,22 @@ public sealed class ClusterView
     }
 
     public ClusterMember? HandlerTypeOwner(uint handlerTypeId, long key) =>
-        _handlerTypeNodes.TryGetValue(handlerTypeId, out var nodes) ? Rendezvous(nodes, handlerTypeId, key) : null;
+        _handlerTypeNodes.TryGetValue(handlerTypeId, out var nodes) ? Rendezvous(nodes, handlerTypeId, key, 0) : null;
 
-    private static ClusterMember? Rendezvous(ClusterMember[] nodes, uint handlerTypeId, long key)
+    /// <summary>
+    /// The owner the key would have without node <paramref name="excluded"/>: where it was before that node joined
+    /// (rendezvous hashing moves only the keys a new node wins).
+    /// </summary>
+    public ClusterMember? HandlerTypeOwnerWithout(uint handlerTypeId, long key, ulong excluded) =>
+        _handlerTypeNodes.TryGetValue(handlerTypeId, out var nodes) ? Rendezvous(nodes, handlerTypeId, key, excluded) : null;
+
+    private static ClusterMember? Rendezvous(ClusterMember[] nodes, uint handlerTypeId, long key, ulong excluded)
     {
         ClusterMember? best = null;
         ulong bestWeight = 0;
         for (int i = 0; i < nodes.Length; i++)
         {
+            if (nodes[i].NodeId == excluded && excluded != 0) continue;
             ulong weight = Weight(nodes[i].NodeId, handlerTypeId, key);
             if (best == null || weight > bestWeight)
             {
@@ -148,7 +156,7 @@ public sealed class ClusterView
     /// </summary>
     public ClusterMember? Target(in MessageRoute route, long key, ulong localNodeId)
     {
-        if (route.Actor) return Rendezvous(route.Nodes, route.HandlerTypeId, key);
+        if (route.Actor) return Rendezvous(route.Nodes, route.HandlerTypeId, key, 0);
         foreach (var node in route.Nodes)
             if (node.NodeId == localNodeId) return node;
         return route.Nodes.Length == 0 ? null : route.Nodes[(int)(Spread.Next() % (uint)route.Nodes.Length)];

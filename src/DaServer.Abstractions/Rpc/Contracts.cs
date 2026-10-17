@@ -51,6 +51,14 @@ public sealed class MessageAttribute : Attribute;
 public sealed class PersistAttribute : Attribute;
 
 /// <summary>
+/// The component moves with its actor when the actor changes node (scaling, a node stopping), but is not stored
+/// (ADR-072): in-memory state worth keeping across a move (a fight in progress, cooldowns) that a restart may lose.
+/// <c>[Persist]</c> components always move. A <c>[NinoType]</c> struct component in a components project.
+/// </summary>
+[AttributeUsage(AttributeTargets.Struct)]
+public sealed class HandoffAttribute : Attribute;
+
+/// <summary>
 /// Sets the type id of a type (FNV-1a of its full name by default): the identity that messages carry on the wire, that
 /// routes to an actor id type or service, and that keys a persisted component's section in actor records. Only to
 /// resolve a reported collision or to keep a type's identity (and its stored data) after renaming it.

@@ -81,8 +81,11 @@ public static class ServerRegistry
 
     private static readonly List<Persistence.PersistentType> PersistentList = new();
 
-    /// <summary>A persisted component type (<see cref="PersistAttribute"/>) of a components project the node references.</summary>
-    public static void RegisterPersistent<T>(uint typeId) where T : struct, IComponent
+    /// <summary>
+    /// A component type of a components project the node references that is part of actor records: stored and moved
+    /// (<see cref="PersistAttribute"/>, <paramref name="stored"/>) or only moved (<see cref="HandoffAttribute"/>).
+    /// </summary>
+    public static void RegisterPersistent<T>(uint typeId, bool stored) where T : struct, IComponent
     {
         lock (Gate)
         {
@@ -93,7 +96,7 @@ public static class ServerRegistry
                     throw new InvalidOperationException($"Persisted components {existing.Type} and {typeof(T)} hash to the same type id: add [TypeId] to one");
             }
 
-            PersistentList.Add(new Persistence.PersistentType<T>(typeId));
+            PersistentList.Add(new Persistence.PersistentType<T>(typeId, stored));
         }
     }
 
