@@ -526,9 +526,9 @@ and cards, a manual clock), fails before its fix, and passes after it.
 - [ ] P5 A failed SaveNow waits for the next checkpoint (retry it at once); P6 a failed load fails the whole batch
       without a retry; P7 the load batch has no size cap; P8 call cycles through OnLoad/OnUnload end by timeout only;
       P9 store calls and turns have no bound but the stop budget.
-- [ ] H1 The new owner stops waiting for the record after the call timeout while the old owner still runs the actor
-      (duplicate activation): the old owner answers "held", the new one waits until the record, "none" or a Dead
-      verdict.
+- [x] H1 The new owner stopped waiting for the record after the call timeout while the old owner still ran the actor
+      (duplicate activation): it asks again while the previous owner is alive and loads only once it is dead
+      (`ANewOwnerWaitsForTheRecordWhileThePreviousOneHoldsTheActor`).
 - [ ] H2 "None" from a node that still owns the key in its view, which then loads it (duplicate activation while
       views converge): a disowned key is forwarded for the handoff timeout.
 - [ ] H3 `PreviousView` holds one change: a leave then a table change asks the wrong node (a ring of recent views).
