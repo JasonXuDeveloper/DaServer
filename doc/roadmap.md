@@ -139,15 +139,19 @@ balancing, TLS, CDN/WAF, Gateway API routes and autoscaling stay with the platfo
       upgrade across it (pre-1.0). A/B of the G work against the baseline: G step 9 below and the README.
 - [x] G1 Feature points and ingress, step 5, proven by two consumers (client connections and the HTTP plane).
 - [x] G2 Client connections as a built-in feature, grants, packages, keep-alive, .NET 11, tests, docs: steps 6-10.
-- [x] G5 `samples/flashsale`: buyers over the client protocol (TCP or WebSocket) to a stateless `Gate` service; a
-      waiting room actor admitting at the sale's pace (`AdmissionSystem`), 16 `StockShard` actors per sale (the turn
-      is the atomic decrement), `Order` actors keyed (user, sale) so retries get the same answer, a sold-out short cut
-      (shards tell the room); `FlashSale.Crowd` is a `DaServer.Simulation` swarm (`MeasureUntilAsync`), AppHost, E2E
-      (100,000 buyers in CI). 1,000,000 buyers for 100 units, two nodes and the crowd on one 4-core VM: 6.9 s,
-      1,035,429 requests (150,000/s, 262,000/s at peak), about 79,000 per node core, exactly 100 sold; over WebSocket
-      8.4 s. The same crowd over HTTP (removed, ADR-046): 22,600 per node core.
-- [ ] G6 The waiting room is one actor: every buyer's queue request goes through one shard thread (the peak above).
-      Shard the queue (rooms per sale shard, admitted in turn) if a sale needs more than that.
+- [x] G5 `samples/flashsale`: buyers over the client protocol (TCP or WebSocket) to a stateless `Gate` service on
+      every node; 16 `StockShard` actors per sale (the turn is the atomic decrement), `Order` actors keyed (user,
+      sale) so retries get the same answer, the `Sale` actor collecting the shards' buyers so each shard's gate answers
+      the late crowd itself; an optional queue (`PerSecond`, `AdmissionSystem`). `FlashSale.Crowd` is a
+      `DaServer.Simulation` swarm (`MeasureUntilAsync`); AppHost, E2E (100,000 buyers in CI); the README compares it
+      with the usual designs. One 4-core VM with the crowd on it: 3,000,000 buyers on one node, 6,000,101 requests in
+      19.4 s (335,000-386,000/s steady, 1.7 node cores); the machine is the limit.
+- [ ] G7 Browser clients: `DaServer.Client.Browser`, the client (contracts, Nino's generated code, `ClusterClient`)
+      compiled to `browser-wasm` over the browser's WebSocket, with a thin `[JSExport]` API for JS (connect, send, ask,
+      push callbacks); no TS code generation. Prove: the flash sale from a browser page. Unity WebGL (IL2CPP) needs a
+      jslib WebSocket transport for the existing client instead.
+- [ ] P2 Optional `DaServer.Persistence.Redis`: actor records in Redis (versioned writes in Lua) for teams that run
+      Redis already; durability is Redis's (AOF). Decide with the user before building it.
 - Not in the framework: waiting rooms (virtual queues for human surges). They are policy for one kind of traffic,
   belong at the very edge (CDN/SaaS) to protect origins, and compose from ingress primitives (admission filters,
   token bucket, load-aware refusal) plus a queue actor; `samples/flashsale` shows the pattern.
