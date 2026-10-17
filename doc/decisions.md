@@ -294,14 +294,23 @@ records that no longer hold). Each: context → decision → consequences.
 - Consequences: simple and ordered with binds (ADR-022). Revisit when deployments run tens of client-facing nodes with small
   groups; the roadmap keeps the item.
 
-## ADR-030 One Aspire resource per replica
-- Context: Aspire's `WithReplicas` runs replicas as one resource behind a proxy with shared endpoints. Cluster
-  members are addressed individually: each gossips its own cluster endpoint and links go to a specific node.
-- Decision: `AddNodes` creates one resource per replica (`gateway-0`, `gateway-1`, ...) with its own
-  endpoints, and every node gets every other node as a seed; clients get the client-facing nodes' addresses as entries. Deployments that do have per-replica DNS (Kubernetes headless services) use DNS seeds instead: a seed that
-  resolves to several addresses yields one seed per address.
-- Consequences: replicas are visible and individually addressable on the dashboard; replica count is still a single
-  argument, and no endpoints are configured by hand.
+## ADR-030 Run: a resource per replica; published: a workload per group
+- Context: cluster members are addressed individually: each gossips its own cluster endpoint and links go to a
+  specific node. Run locally, Aspire's `WithReplicas` puts replicas behind one proxy with shared endpoints. Published,
+  a resource per replica becomes a Compose service or Deployment per replica, with container names, fixed host ports
+  and seeds naming each one: the platform cannot scale it, and a replica it adds would find nobody.
+- Decision: run mode creates one resource per replica (`gateway-0`, `gateway-1`, ...) with its own ports, every node
+  seeded with every other one. Publish mode creates one workload per group with its replica count (a Compose service
+  with `deploy.replicas`, a Kubernetes Deployment): every replica listens on the same ports, is named after its host
+  (`Environment.MachineName`: the pod's name) and advertises its own address (a node in a container advertises the
+  container's IP when no host is configured), and the seeds are each group's DNS name, which resolves to every replica
+  (a Compose service name; on Kubernetes a headless `{group}-peers` Service that lists pods before they are ready, since
+  a node joins before it is ready). A seed that resolves to several addresses yields one seed per address; a node skips
+  itself. Client entries are the group's own name (the platform's Service or load balancer in front of the replicas).
+- Consequences: replicas are visible and individually addressable on the dashboard; published deployments scale with
+  the platform's tools (`kubectl scale`, an HPA, `docker compose up --scale`), and nothing is configured by hand. No
+  StatefulSet: a node's identity is its gossip incarnation and its actors' state lives in the store, so pods need no
+  stable names or volumes. No Kubernetes API access (no RBAC): DNS is the only discovery.
 
 ## ADR-031 Gossip carries pulses, cards travel once
 - Context: serializing the whole member table every round costs about 10 KB/s per idle node at one round a second,
