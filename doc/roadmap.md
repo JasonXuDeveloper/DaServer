@@ -386,9 +386,9 @@ stateful, maps being heavy actors.
       overrun, loaded actors per type, connections, CPU), documented as scaling metrics. Agreed: a Prometheus
       `/metrics` endpoint on the HTTP plane by default (OTLP as now); the default scaling metric is the shards' busy
       ratio.
-- [ ] S2 Scale-in is a drain: SIGTERM -> graceful Leave -> actors hand off (N6) or unload and save (N5) -> exit within
-      the termination grace period; readiness turns false first. Gateways drain by retiring their clients in waves
-      (make before break, ADR-026).
+- [x] S2 Scale-in is a drain: SIGTERM -> readiness off -> graceful Leave -> actors hand off (N6) or unload and save
+      (N5) -> exit within the termination grace period (D1-D3, the preStop pause first); gateways retire their clients
+      in waves (make before break, ADR-026). `HandoffTests`, `ClientsOfALeavingGatewayMoveAndResumeOnAnother`.
 - [ ] S3 Slot allocation (ADR-074): a coordinator (the oldest Up node, agreed: an `UpSince` field appended to the
       version-tolerant card) may override the rendezvous owners of slots and
       gossips the overrides as a versioned table: load-aware rebalancing moves whole slots from hot to cold nodes
@@ -402,10 +402,11 @@ stateful, maps being heavy actors.
       mode. Plain Deployments: identity comes from gossip incarnations and state from the store, no StatefulSet.
       Open: publish snapshot tests (both samples, both environments; `helm lint` on the chart) and an HPA on the S1
       metrics once they are exported.
-- [ ] S5 Vertical scaling: shards follow the CPU limit (cgroup-aware core count), documented and tested. A VPA is the
+- [x] S5 Vertical scaling: shards follow the CPU limit (`Environment.ProcessorCount` honors the cgroup quota and
+      `DOTNET_PROCESSOR_COUNT`; documented on `NodeOptions.Shards`). A VPA is the
       application's: in place where it can (the mmo sample: CPU resized in place, a memory change restarts the
       container so the GC heap limit follows; an eviction is a drain and a rejoin), recommendations only where a
-      restart must wait (the flash sale).
+      restart must wait (the flash sale). The node reads its limits at start.
 - [ ] S6 Prove it: E2E that scales a stateful group out and in under load (10k bots) with no lost state, no dropped
       session and bounded latency spikes.
 
