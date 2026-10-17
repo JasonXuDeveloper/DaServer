@@ -221,18 +221,20 @@ public sealed partial class ClusterClient : IMessageSender, IChannelHandler, IAs
     /// On the current connection once its hello is answered; before that (connecting, reconnecting) a call fails with
     /// <see cref="RpcStatus.Disconnected"/> and a one-way message is dropped, as on a lost connection.
     /// </summary>
-    private void Transmit(FrameWriter w, FrameKind kind, uint target, uint messageId, long key, IPendingCall? call, RpcStatus budget)
-    {
-        var connection = _connection;
-        Transmit(connection == Volatile.Read(ref _introduced) ? connection : null, w, kind, target, messageId, key, call, budget);
-    }
+    private void Transmit(FrameWriter w, FrameKind kind, uint target, uint messageId, long key, IPendingCall? call, RpcStatus budget) =>
+        Transmit(Volatile.Read(ref _introduced), w, kind, target, messageId, key, call, budget);
 
+    /// <summary>
+    /// Register <paramref name="call"/> and send the frame on <paramref name="connection"/>; a frame it refuses (closed,
+    /// or sealed by a move) goes on the current connection. <paramref name="last"/>: the connection's last frame
+    /// (<see cref="IFrameChannel.SendLast"/>), never sent elsewhere.
+    /// </summary>
     private void Transmit(IFrameChannel? connection, FrameWriter w, FrameKind kind, uint target, uint messageId, long key, IPendingCall? call,
-        RpcStatus budget)
+        RpcStatus budget, bool last = false)
     {
         try
         {
-            if (connection == null || connection.IsClosed)
+            if (connection == null)
             {
                 call?.Fail(RpcStatus.Disconnected);
                 return;
@@ -256,7 +258,8 @@ public sealed partial class ClusterClient : IMessageSender, IChannelHandler, IAs
                 return;
             }
 
-            if (!connection.Send(w.Frame) && !Resent(connection, w) && call != null)
+            bool sent = last ? connection.SendLast(w.Frame) : connection.Send(w.Frame) || Resent(connection, w);
+            if (!sent && call != null)
                 _pending.Take(callId)?.Fail(RpcStatus.Disconnected);
         }
         finally
@@ -266,8 +269,8 @@ public sealed partial class ClusterClient : IMessageSender, IChannelHandler, IAs
     }
 
     /// <summary>
-    /// A frame <paramref name="refused"/> did not take, because the session moved off it as it was sent: it goes on the
-    /// current connection (the actors know the new session already).
+    /// A frame <paramref name="refused"/> did not take, because the session moved off it as it was sent (the move sealed
+    /// it): it goes on the current connection (the actors know the new session already).
     /// </summary>
     private bool Resent(IFrameChannel refused, FrameWriter w) =>
         Volatile.Read(ref _introduced) is { } current && current != refused && current.Send(w.Frame);

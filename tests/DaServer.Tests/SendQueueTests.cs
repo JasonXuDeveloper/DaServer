@@ -19,6 +19,20 @@ public class SendQueueTests
     }
 
     [Test]
+    public void ASealedQueueWritesWhatItHoldsAndRefusesTheRest()
+    {
+        // The fence of a move (a goodbye as the last frame): frames before it are written before it, none after it.
+        var queue = new SendQueue(maxPendingBytes: 1024, bufferSize: 256, releaseIdle: true, keepSpare: false);
+        Assert.That(queue.Append(new byte[16]), Is.EqualTo(SendQueue.Result.Wake));
+        Assert.That(queue.Seal(new byte[8]), Is.EqualTo(SendQueue.Result.Queued), "the last frame queues behind the first");
+        Assert.That(queue.Append(new byte[16]), Is.EqualTo(SendQueue.Result.Closed), "refused after the last frame");
+        Assert.That(queue.Seal(new byte[8]), Is.EqualTo(SendQueue.Result.Closed), "one last frame");
+        Assert.That(queue.TryTake(out var batch, out int length), Is.True);
+        Assert.That(length, Is.EqualTo(24), "both frames are written, in order");
+        queue.Release(batch);
+    }
+
+    [Test]
     public void ASendBatchWakesEachWriterOnceAtItsEnd()
     {
         var queue = new SendQueue(maxPendingBytes: 1024, bufferSize: 256, releaseIdle: true, keepSpare: false);

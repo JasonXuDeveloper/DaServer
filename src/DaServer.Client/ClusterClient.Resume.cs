@@ -88,26 +88,28 @@ public sealed partial class ClusterClient
     }
 
     /// <summary>
-    /// Leave a connection the session moved away from: once the calls made on it are answered (or timed out), say
-    /// goodbye on it, so its node reports the old session closed at once instead of after the resume grace.
+    /// Leave a connection the session moved away from, as HTTP/2's GOAWAY drains one: the goodbye is its last frame
+    /// (<see cref="IFrameChannel.SendLast"/>), so every frame sent on it before reaches the node first and every later
+    /// send goes on the new connection; its node reports the old session closed at once instead of after the resume
+    /// grace. The connection closes once the calls made on it are answered (replies come back the way calls went), or
+    /// timed out. No step waits on a guess: the seal is the fence.
     /// </summary>
     private async Task LeaveAsync(IFrameChannel old)
     {
         long deadline = Platform.Milliseconds + (long)CallTimeout.TotalMilliseconds;
-        await Task.Delay(50).ConfigureAwait(false); // sends that took the old connection as the move ended register their calls
+        await GoodbyeAsync(old).ConfigureAwait(false);
         while (!old.IsClosed && _pending.AnyOwnedBy(old) && Platform.Milliseconds < deadline)
             await Task.Delay(50).ConfigureAwait(false);
-        await GoodbyeAsync(old).ConfigureAwait(false);
         old.Close();
     }
 
-    /// <summary>Say goodbye on <paramref name="channel"/> and wait for the node's answer (a second at most).</summary>
+    /// <summary>Say goodbye as the last frame on <paramref name="channel"/> and wait for the node's answer (a second at most).</summary>
     private async Task GoodbyeAsync(IFrameChannel channel)
     {
         if (channel.IsClosed) return;
         var call = PendingCall<NoReply>.Rent(null);
         var goodbye = call.Done;
-        Transmit(channel, FrameWriter.Rent(FrameHeader.Size), FrameKind.Control, 0, ControlOp.Goodbye, 0, call, RpcStatus.Ok);
+        Transmit(channel, FrameWriter.Rent(FrameHeader.Size), FrameKind.Control, 0, ControlOp.Goodbye, 0, call, RpcStatus.Ok, last: true);
         try
         {
             await Task.WhenAny(goodbye.AsTask(), Task.Delay(TimeSpan.FromSeconds(1))).ConfigureAwait(false);

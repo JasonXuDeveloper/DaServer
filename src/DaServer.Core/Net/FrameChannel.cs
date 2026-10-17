@@ -34,10 +34,17 @@ public abstract class FrameChannel : IFrameChannel
     /// Queue a complete frame (header included). Thread-safe, never blocks on IO.
     /// Returns false when the channel is closed or was closed because the peer is too slow.
     /// </summary>
-    public bool Send(ReadOnlySpan<byte> frame)
+    public bool Send(ReadOnlySpan<byte> frame) => !IsClosed && Accepted(Queue.Append(frame));
+
+    /// <summary>
+    /// Queue the last frame: frames queued before it reach the peer first, later <see cref="Send"/>s are refused. The
+    /// channel keeps receiving and stays open until closed.
+    /// </summary>
+    public bool SendLast(ReadOnlySpan<byte> frame) => !IsClosed && Accepted(Queue.Seal(frame));
+
+    private bool Accepted(SendQueue.Result result)
     {
-        if (IsClosed) return false;
-        switch (Queue.Append(frame))
+        switch (result)
         {
             case SendQueue.Result.Wake:
                 Wake();

@@ -6,6 +6,12 @@ public interface IFrameChannel
     /// <summary>Queue a complete frame (thread-safe, never blocks); false when closed or too far behind.</summary>
     bool Send(ReadOnlySpan<byte> frame);
 
+    /// <summary>
+    /// Queue the last frame (a fence): frames queued before it reach the peer first, every later <see cref="Send"/> is
+    /// refused; the channel keeps receiving until closed. False when closed, too far behind, or sealed already.
+    /// </summary>
+    bool SendLast(ReadOnlySpan<byte> frame);
+
     void Close(Exception? error = null);
 
     bool IsClosed { get; }
