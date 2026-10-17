@@ -1,0 +1,23 @@
+<Project Sdk="Aspire.AppHost.Sdk/13.6.1">
+
+    <PropertyGroup>
+        <OutputType>Exe</OutputType>
+        <TargetFramework>net11.0</TargetFramework>
+        <IsPackable>false</IsPackable>
+        <UserSecretsId>daserver-flashsale-apphost</UserSecretsId>
+        <NoWarn>$(NoWarn);ASPIRE010</NoWarn>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Aspire.Hosting.AppHost" Version="13.6.1" />
+        <PackageReference Include="Aspire.Hosting.Docker" Version="13.6.1" />
+        <PackageReference Include="Aspire.Hosting.PostgreSQL" Version="13.6.1" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\..\..\src\DaServer.Aspire\DaServer.Aspire.csproj" IsAspireProjectResource="false" />
+        <ProjectReference Include="..\FlashSale.Server\FlashSale.Server.csproj" />
+        <ProjectReference Include="..\FlashSale.Load\FlashSale.Load.csproj" />
+    </ItemGroup>
+
+</Project>
