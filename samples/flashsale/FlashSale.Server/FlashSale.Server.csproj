@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <!-- The sale's node: it hosts what this project compiles (stock shards, orders, waiting rooms) and the sale's HTTP API. -->
+    <PropertyGroup>
+        <OutputType>Exe</OutputType>
+        <TargetFramework>net11.0</TargetFramework>
+        <IsPackable>false</IsPackable>
+        <ServerGarbageCollection>true</ServerGarbageCollection>
+        <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+        <TieredPGO>true</TieredPGO>
+        <InvariantGlobalization>true</InvariantGlobalization>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\FlashSale.Components\FlashSale.Components.csproj" />
+        <ProjectReference Include="..\..\..\src\DaServer.Hosting\DaServer.Hosting.csproj" />
+        <ProjectReference Include="..\..\..\src\DaServer.Persistence.PostgreSql\DaServer.Persistence.PostgreSql.csproj" />
+        <ProjectReference Include="..\..\..\src\DaServer.Generator\DaServer.Generator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+    </ItemGroup>
+
+</Project>

@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net11.0</TargetFramework>
+        <IsPackable>false</IsPackable>
+        <!-- The data the sale's actors and systems work on: contracts and EasyEcs only (DAS013). -->
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\FlashSale.Contracts\FlashSale.Contracts.csproj" />
+        <PackageReference Include="EasyEcs" Version="$(EasyEcsVersion)" />
+        <ProjectReference Include="..\..\..\src\DaServer.Generator\DaServer.Generator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+    </ItemGroup>
+
+</Project>

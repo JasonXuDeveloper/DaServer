@@ -25,6 +25,14 @@
     <Project Path="samples/mmo/Sample.AppHost/Sample.AppHost.csproj" />
     <Project Path="samples/mmo/Sample.Tests/Sample.Tests.csproj" />
   </Folder>
+  <Folder Name="/samples/flashsale/">
+    <Project Path="samples/flashsale/FlashSale.Contracts/FlashSale.Contracts.csproj" />
+    <Project Path="samples/flashsale/FlashSale.Components/FlashSale.Components.csproj" />
+    <Project Path="samples/flashsale/FlashSale.Server/FlashSale.Server.csproj" />
+    <Project Path="samples/flashsale/FlashSale.Tests/FlashSale.Tests.csproj" />
+    <Project Path="samples/flashsale/FlashSale.Load/FlashSale.Load.csproj" />
+    <Project Path="samples/flashsale/FlashSale.AppHost/FlashSale.AppHost.csproj" />
+  </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/DaServer.Tests.Components/DaServer.Tests.Components.csproj" />
     <Project Path="tests/DaServer.Tests/DaServer.Tests.csproj" />
