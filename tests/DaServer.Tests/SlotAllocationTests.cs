@@ -70,4 +70,27 @@ public class SlotAllocationTests : ClusterTest
         Assert.That(c.View.Table.Version, Is.EqualTo(b.View.Table.Version), "one table");
         foreach (long key in keys) Assert.That(c.OwnerOf<PinId>(key), Is.EqualTo(b.Id), "the pins survived the coordinator");
     }
+
+    [Test]
+    public async Task TablesOfOneVersionFromTwoCoordinatorsConverge()
+    {
+        // A partition or a paused coordinator: another node wrote a table of the same version. Whatever order the two
+        // reach a member in, the view's coordinator's table is the one it keeps, and the coordinator publishes above
+        // every version it saw.
+        var a = await Start("a", configure: FastRounds);
+        var b = await Start("b", configure: FastRounds);
+        await Converged();
+        Assert.That(b.View.Coordinator!.NodeId, Is.EqualTo(a.Id), "a is the oldest");
+        uint type = ActorIds<PinId>.HandlerTypeId;
+        var other = new SlotTable { Version = 50, Coordinator = 12345, Overrides = [new SlotOverride(type, 7, b.Id)] };
+        var coordinators = new SlotTable { Version = 50, Coordinator = a.Id, Overrides = [new SlotOverride(type, 7, a.Id)] };
+
+        Assert.That(b.Membership.Apply(other), Is.True);
+        Assert.That(b.Membership.Apply(coordinators), Is.True, "the coordinator's table replaces another's of its version");
+        Assert.That(b.Membership.Apply(other), Is.False, "and is not replaced by it");
+
+        Assert.That(a.Membership.Apply(other), Is.True, "a, the coordinator, took another's newer table");
+        await Eventually(() => a.View.Table.Coordinator == a.Id && a.View.Table.Version > 50, "a publishes its own above it");
+        await Eventually(() => b.View.Table.Version == a.View.Table.Version, "b has it");
+    }
 }

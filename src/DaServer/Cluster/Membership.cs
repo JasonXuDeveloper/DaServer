@@ -293,6 +293,16 @@ internal sealed partial class Membership
     }
 
     private SlotTable _table = SlotTable.Empty;
+    private long _highestTable; // the highest table version seen, applied or not
+
+    /// <summary>The highest slot table version seen (a coordinator's next table goes above it).</summary>
+    internal long HighestTableVersion
+    {
+        get
+        {
+            lock (_gate) return Math.Max(_highestTable, _table.Version);
+        }
+    }
 
     /// <summary>
     /// Take the coordinator's slot table (ADR-079) when it is newer than the one applied: the view is rebuilt with it and
@@ -302,7 +312,12 @@ internal sealed partial class Membership
     {
         lock (_gate)
         {
-            if (table.Version <= _table.Version) return false;
+            _highestTable = Math.Max(_highestTable, table.Version);
+            // Two coordinators (a partition, a paused one) can write one version: the view's coordinator's table wins,
+            // so the members agree whatever order the tables reach them in.
+            bool newer = table.Version > _table.Version || table.Version == _table.Version && table.Coordinator != _table.Coordinator &&
+                table.Coordinator == _view.Coordinator?.NodeId;
+            if (!newer) return false;
             _table = table;
             PublishView();
             return true;
