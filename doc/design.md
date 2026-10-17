@@ -318,8 +318,7 @@ refused with `Overloaded` before it is sent. Client connections send every clien
 Admission is the edge's: features add `IIngressFilter`s per node (`node.AddIngressFilter`), whose `Admit` runs for
 every message from outside before it is routed; the first refusal wins, with a status (`RateLimited`, `Overloaded`, `Forbidden`) and
 when to retry (a client gets it as `RpcException.RetryAfter`, carried in the refusal reply's key; HTTP maps it to
-`Retry-After`). Building blocks: `TokenBucket` (one owner, allocation-free), `ConcurrencyLimit` (shared,
-interlocked), `SignedToken` (content plus issued/expiry times, HMAC-SHA256 with the signing secret: resume tickets today,
+`Retry-After`). Building blocks: `TokenBucket` (one owner, allocation-free), `SignedToken` (content plus issued/expiry times, HMAC-SHA256 with the signing secret: resume tickets today,
 a building block for admission tokens). Timers are data too: `TimerWheel<T>` (a hashed wheel owned by one thread:
 O(1) schedule, cancel and fire, allocation-free) is advanced by its owner's loop.
 

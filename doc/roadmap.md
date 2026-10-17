@@ -173,7 +173,7 @@ What G delivered (each step kept every test green):
    `DaServer:{name}` and enabled by configuration (`AddDaServerFeature`), `INodeContext.AddGauge`, pulse slots and
    card entries, `HandleAddress<TAddr>` with scopes in the card and group fan-out by scope, `IIngress` (raw and
    typed, origin, capped deadline, `IngressLoadLimit` early refusal), admission (`IIngressFilter`, `RateLimited` with
-   a retry hint, `TokenBucket`, `ConcurrencyLimit`, `SignedToken`), `TimerWheel<T>` (hashed wheel, one owner, O(1),
+   a retry hint, `TokenBucket`, `SignedToken`), `TimerWheel<T>` (hashed wheel, one owner, O(1),
    allocation-free), dispatch-stage message filters (`MessageFilters.Register<T>` / `Register(IMessageFilter)`, run
    by generated dispatchers; N11 generates into them), the HTTP plane minimum (nodes on
    `WebApplication`, Kestrel on `DaServer:HttpPort`, `MapAsk`/`MapSend` through the ingress, statuses to
@@ -241,7 +241,7 @@ OOM kills, crashes and power loss give no signal at all, so no shutdown code can
 Nothing is persisted yet (N5): D5-D6 come with it.
 
 - [x] D1 One shutdown budget (ADR-063): `NodeOptions.ShutdownTimeout` (25 s) bounds `StopAsync`, which honors the
-      host's token; the host waits 5 s longer, Compose `stop_grace_period` is the budget + 5 s
+      host's token; the host waits 5 s longer, Compose `stop_grace_period` is the budget + 10 s
       (`DaServerNodeGroup.WithShutdownTimeout`). Past the deadline the node logs, per shard, the actors whose
       `OnUnload` did not finish, and exits instead of hanging.
 - [x] D2 Ordered stop: readiness off (`/health` fails once Leaving) -> Leaving (callers reroute) -> drain features
@@ -273,7 +273,7 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
       webhooks, payment callbacks, HTTP login); an endpoint reaches actors only through `ICluster` (Ask/Send post to
       the shard), never shard state.
 - [x] A2 Drain budget published (D1): `WithShutdownTimeout` sets Compose `stop_grace_period` and Kubernetes
-      `terminationGracePeriodSeconds` (budget + 5 s) for whichever environment the model publishes to. Open: preStop
+      `terminationGracePeriodSeconds` (budget + 10 s: the host's 5 s margin and 5 s more) for whichever environment the model publishes to. Open: preStop
       sleep. Original scope: `WithDrain(grace)` sets the pod `terminationGracePeriodSeconds`, Compose
       `stop_grace_period` and `DaServer__ShutdownTimeout` below it, plus an optional preStop sleep so endpoint removal
       propagates before Leave; stateful groups default longer than stateless ones.
