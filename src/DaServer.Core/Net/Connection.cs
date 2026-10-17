@@ -93,19 +93,15 @@ public sealed class Connection : IFrameSender, IFrameChannel
     private static readonly InvalidOperationException SlowConsumer =
         new("Send backlog exceeded MaxPendingSendBytes (slow consumer)");
 
-    private int _overflowed;
+    private int _failed; // flushed connections: a flush's write failed and the close is queued
 
     private readonly Socket _socket;
     private readonly IChannelHandler _handler;
     private readonly ConnectionOptions _options;
-    private readonly AsyncSignal _sendSignal = new AsyncSignal();
-    private readonly Lock _sendLock = new Lock();
-    private byte[] _pending;
-    private int _pendingLength;
+    private readonly SendQueue _queue;
     private int _closed;
     private readonly ISendTap? _tap;
     private readonly SendFlusher? _flusher;
-    private byte[] _spare = Array.Empty<byte>(); // flushed connections: the other buffer, swapped under the send lock
     private int _writer; // flushed connections: 1 while the flusher or the carry loop writes to the socket
     private byte[] _carry = Array.Empty<byte>(); // flushed connections: what a flush could not write
     private int _carryOffset, _carryLength;
@@ -117,9 +113,10 @@ public sealed class Connection : IFrameSender, IFrameChannel
         _socket = socket;
         _handler = handler;
         _options = options ?? new ConnectionOptions();
-        _pending = Array.Empty<byte>();
         _tap = _options.Tap;
         _flusher = _options.Flusher;
+        // A connection written on a beat keeps both buffers between beats; one written at once gives the written one back when idle.
+        _queue = new SendQueue(_options.MaxPendingSendBytes, _options.SendBufferSize, _options.ReleaseIdleBuffers, keepSpare: _flusher != null);
         socket.NoDelay = true;
         if (_flusher != null) socket.Blocking = false; // a flush's send returns WouldBlock instead of waiting
     }
@@ -193,71 +190,28 @@ public sealed class Connection : IFrameSender, IFrameChannel
         if (Volatile.Read(ref _closed) != 0)
             return false;
 
-        bool overflow = false;
-        bool wake;
-        lock (_sendLock)
+        switch (_queue.Append(frame))
         {
-            if (Volatile.Read(ref _closed) != 0)
-                return false;
-
-            int required = _pendingLength + frame.Length;
-            if (required > _options.MaxPendingSendBytes)
-            {
-                overflow = true;
-                wake = false;
-            }
-            else
-            {
-                if (required > _pending.Length)
-                    BufferPool.Grow(ref _pending, _pendingLength, Math.Max(_options.SendBufferSize, Math.Max(_pending.Length * 2, required)));
-
-                frame.CopyTo(new Span<byte>(_pending, _pendingLength, frame.Length));
-                wake = _pendingLength == 0;
-                _pendingLength = required;
-            }
-        }
-
-        if (overflow)
-        {
-            // Closed off the caller's thread: a fan-out holding a group's lock must not run the close callback inline.
-            if (Interlocked.Exchange(ref _overflowed, 1) == 0)
+            case SendQueue.Result.Wake:
+                if (_flusher != null) _flusher.Add(this); // written on the next beat
+                else _queue.Wake(); // at once, or once when the thread's send batch ends
+                return true;
+            case SendQueue.Result.Queued:
+                return true;
+            case SendQueue.Result.Overflow:
+                // Closed off the caller's thread: a fan-out holding a group's lock must not run the close callback inline.
                 Platform.Queue(static c => c.Close(SlowConsumer), this);
-            return false;
+                return false;
+            default:
+                return false;
         }
-
-        if (wake)
-        {
-            if (_flusher != null) _flusher.Add(this); // written on the next beat
-            else if (t_batchDepth > 0) (t_batched ??= new()).Add(this); // woken once when the batch ends
-            else _sendSignal.Set();
-        }
-
-        return true;
     }
-
-    [ThreadStatic] private static int t_batchDepth;
-    [ThreadStatic] private static List<Connection>? t_batched;
 
     /// <summary>
-    /// Until the returned scope is disposed, sends from this thread only queue bytes; each connection's send loop is
-    /// woken once at the end. A batch of work that sends many messages (the frames of one receive, one shard wake) then
-    /// costs one write per connection instead of one per message (a session in 9 groups gets 9 frames per update).
+    /// Until the returned scope is disposed, sends from this thread only queue bytes; each channel's writer is woken
+    /// once at the end (<see cref="SendQueue.BeginBatch"/>).
     /// </summary>
-    internal static SendBatch BeginSendBatch()
-    {
-        t_batchDepth++;
-        return default;
-    }
-
-    internal readonly struct SendBatch : IDisposable
-    {
-        public void Dispose()
-        {
-            if (--t_batchDepth > 0 || t_batched is not { Count: > 0 } batched) return;
-            foreach (var connection in batched) connection._sendSignal.Set();
-            batched.Clear();
-        }
-    }
+    internal static SendQueue.Batch BeginSendBatch() => SendQueue.BeginBatch();
 
     public void Close(Exception? error = null)
     {
@@ -274,7 +228,7 @@ public sealed class Connection : IFrameSender, IFrameChannel
         }
 
         _socket.Dispose();
-        _sendSignal.Set();
+        _queue.Signal.Set();
 
         try
         {
@@ -288,65 +242,36 @@ public sealed class Connection : IFrameSender, IFrameChannel
 
     private async Task SendLoop()
     {
-        byte[] sending = Array.Empty<byte>();
         try
         {
             while (true)
             {
-                await _sendSignal.WaitAsync().ConfigureAwait(false);
-
-                while (true)
+                await _queue.Signal.WaitAsync().ConfigureAwait(false);
+                while (Volatile.Read(ref _closed) == 0 && _queue.TryTake(out var batch, out int length))
                 {
-                    if (Volatile.Read(ref _closed) != 0)
-                        return;
-
-                    int length;
-                    lock (_sendLock)
+                    try
                     {
-                        length = _pendingLength;
-                        if (length == 0)
-                            break;
+                        _tap?.OnSending(new ReadOnlySpan<byte>(batch, 0, length));
+                        int offset = 0;
+                        while (offset < length)
+                        {
+                            int sent = await _socket.SendAsync(new ReadOnlyMemory<byte>(batch, offset, length - offset),
+                                SocketFlags.None).ConfigureAwait(false);
+                            if (sent <= 0)
+                                throw new SocketException((int)SocketError.ConnectionReset);
+                            offset += sent;
+                        }
 
-                        // Swap batch buffers: producers continue filling the other one while we send.
-                        var batch = _pending;
-                        _pending = sending.Length >= _options.SendBufferSize ? sending : Array.Empty<byte>();
-                        if (_pending.Length == 0 && sending.Length > 0)
-                            BufferPool.Return(sending);
-                        _pendingLength = 0;
-                        sending = batch;
+                        Volatile.Write(ref _lastSentMs, Platform.Milliseconds);
                     }
-
-                    _tap?.OnSending(new ReadOnlySpan<byte>(sending, 0, length));
-
-                    int offset = 0;
-                    while (offset < length)
+                    finally
                     {
-                        int sent = await _socket.SendAsync(new ReadOnlyMemory<byte>(sending, offset, length - offset),
-                            SocketFlags.None).ConfigureAwait(false);
-                        if (sent <= 0)
-                            throw new SocketException((int)SocketError.ConnectionReset);
-                        offset += sent;
+                        _queue.Release(batch); // the spare while more is queued; idle: back to the pool
                     }
-
-                    Volatile.Write(ref _lastSentMs, Platform.Milliseconds);
                 }
 
-                // Idle: give the in-flight buffer back so idle connections hold no send memory, and with
-                // ReleaseIdleBuffers the empty batch buffer too (the next send rents one).
-                if (sending.Length > 0)
-                {
-                    BufferPool.Return(sending);
-                    sending = Array.Empty<byte>();
-                }
-
-                if (_options.ReleaseIdleBuffers)
-                {
-                    byte[] spare = Array.Empty<byte>();
-                    lock (_sendLock)
-                        if (_pendingLength == 0)
-                            (spare, _pending) = (_pending, Array.Empty<byte>());
-                    BufferPool.Return(spare);
-                }
+                if (Volatile.Read(ref _closed) != 0)
+                    return;
             }
         }
         catch (Exception e)
@@ -356,19 +281,7 @@ public sealed class Connection : IFrameSender, IFrameChannel
         finally
         {
             Volatile.Write(ref _closed, 1);
-            BufferPool.Return(sending);
-            byte[] unsent;
-            int unsentLength;
-            lock (_sendLock)
-            {
-                (unsent, unsentLength) = (_pending, _pendingLength);
-                _pending = Array.Empty<byte>();
-                _pendingLength = 0;
-            }
-
-            // Queued but never written: the tap still sees it (outside the lock: the tap may send on another connection).
-            if (unsentLength > 0) _tap?.OnSending(new ReadOnlySpan<byte>(unsent, 0, unsentLength));
-            BufferPool.Return(unsent);
+            _queue.Close(_tap); // queued but never written: the tap still sees it
         }
     }
 
@@ -379,7 +292,7 @@ public sealed class Connection : IFrameSender, IFrameChannel
     internal void FlushNow()
     {
         if (Volatile.Read(ref _closed) != 0 || Interlocked.CompareExchange(ref _writer, 1, 0) != 0) return;
-        while (TakeQueued(out var batch, out int length))
+        while (_queue.TryTake(out var batch, out int length))
         {
             int offset = 0;
             while (offset < length)
@@ -392,7 +305,7 @@ public sealed class Connection : IFrameSender, IFrameChannel
                 }
                 catch (ObjectDisposedException) // closed meanwhile
                 {
-                    Release(batch);
+                    _queue.Release(batch);
                     return;
                 }
 
@@ -405,58 +318,21 @@ public sealed class Connection : IFrameSender, IFrameChannel
                 if (error is SocketError.WouldBlock or SocketError.Success) // full: the carry loop finishes it
                 {
                     (_carry, _carryOffset, _carryLength) = (batch, offset, length);
-                    _sendSignal.Set();
+                    _queue.Signal.Set();
                     return;
                 }
 
-                Release(batch);
-                if (Interlocked.Exchange(ref _overflowed, 1) == 0) // never inline: the flusher holds no connection's locks
+                _queue.Release(batch);
+                if (Interlocked.Exchange(ref _failed, 1) == 0) // never inline: the flusher holds no connection's locks
                     Platform.Queue(static c => c.Close(new SocketException((int)SocketError.ConnectionReset)), this);
                 return;
             }
 
             Volatile.Write(ref _lastSentMs, Platform.Milliseconds);
-            Release(batch);
+            _queue.Release(batch);
         }
 
         Volatile.Write(ref _writer, 0);
-    }
-
-    /// <summary>Take the queued bytes, swapping in the spare buffer (producers keep queueing meanwhile).</summary>
-    private bool TakeQueued(out byte[] batch, out int length)
-    {
-        lock (_sendLock)
-        {
-            batch = _pending;
-            length = _pendingLength;
-            if (length == 0 || Volatile.Read(ref _closed) != 0) return false;
-            _pending = _spare;
-            _spare = Array.Empty<byte>();
-            _pendingLength = 0;
-            return true;
-        }
-    }
-
-    /// <summary>A written buffer becomes the spare, or goes back to the pool when idle buffers are released.</summary>
-    private void Release(byte[] batch)
-    {
-        lock (_sendLock)
-        {
-            bool idle = _pendingLength == 0 && _options.ReleaseIdleBuffers;
-            if (!idle && _spare.Length == 0 && batch.Length >= _options.SendBufferSize && Volatile.Read(ref _closed) == 0)
-            {
-                _spare = batch;
-                return;
-            }
-
-            if (idle && _pending.Length > 0) // nothing queued: hold no send memory
-            {
-                BufferPool.Return(_pending);
-                _pending = Array.Empty<byte>();
-            }
-        }
-
-        BufferPool.Return(batch);
     }
 
     /// <summary>
@@ -469,7 +345,7 @@ public sealed class Connection : IFrameSender, IFrameChannel
         {
             while (true)
             {
-                await _sendSignal.WaitAsync().ConfigureAwait(false);
+                await _queue.Signal.WaitAsync().ConfigureAwait(false);
                 if (Volatile.Read(ref _closed) != 0) return;
                 if (_carryLength == 0) continue;
 
@@ -486,13 +362,13 @@ public sealed class Connection : IFrameSender, IFrameChannel
                     }
 
                     Volatile.Write(ref _lastSentMs, Platform.Milliseconds);
-                    Release(batch);
-                    if (!TakeQueued(out batch, out length)) break;
+                    _queue.Release(batch);
+                    if (!_queue.TryTake(out batch, out length)) break;
                     offset = 0;
                 }
 
                 Volatile.Write(ref _writer, 0);
-                if (Volatile.Read(ref _pendingLength) > 0) _flusher!.Add(this); // queued after the last take: next beat
+                if (_queue.HasQueued) _flusher!.Add(this); // queued after the last take: next beat
             }
         }
         catch (Exception e)
@@ -502,13 +378,7 @@ public sealed class Connection : IFrameSender, IFrameChannel
         finally
         {
             Volatile.Write(ref _closed, 1);
-            lock (_sendLock)
-            {
-                BufferPool.Return(_pending);
-                BufferPool.Return(_spare);
-                (_pending, _spare, _pendingLength) = (Array.Empty<byte>(), Array.Empty<byte>(), 0);
-            }
-
+            _queue.Close();
             BufferPool.Return(_carry);
         }
     }

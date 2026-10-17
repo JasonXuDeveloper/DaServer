@@ -4,24 +4,22 @@ namespace DaServer.Net;
 
 /// <summary>
 /// Frames over a WebSocket (browsers, WebGL builds, clients behind HTTP-only proxies): each binary message carries one
-/// or more whole frames. Like <see cref="Connection"/>: sends queue into a bounded pooled batch drained by one send
-/// loop (a peer too far behind is closed), receives are parsed in place; nothing is allocated per frame.
+/// or more whole frames. Like <see cref="Connection"/> (the same <see cref="SendQueue"/>): sends queue into a bounded
+/// pooled batch drained by one send loop, woken once per send batch (a peer too far behind is closed), receives are
+/// parsed in place; nothing is allocated per frame.
 /// </summary>
 public sealed class WebSocketChannel(WebSocket socket, IChannelHandler handler, int maxFrameSize, int maxPendingSendBytes)
     : IFrameChannel
 {
     private static readonly InvalidOperationException SlowConsumer = new("Send backlog exceeded (slow consumer)");
 
-    private readonly AsyncSignal _sendSignal = new();
-    private readonly Lock _sendLock = new();
+    private readonly SendQueue _queue = new(maxPendingSendBytes, 16 * 1024, releaseIdle: true, keepSpare: false); // idle: no send memory
     private long _lastReceivedMs = Platform.Milliseconds;
     private long _lastSentMs = Platform.Milliseconds;
 
     public long LastReceivedMs => Volatile.Read(ref _lastReceivedMs);
 
     public long LastSentMs => Volatile.Read(ref _lastSentMs);
-    private byte[] _pending = [];
-    private int _pendingLength;
     private int _closed;
 
     public object? Tag { get; set; }
@@ -49,77 +47,49 @@ public sealed class WebSocketChannel(WebSocket socket, IChannelHandler handler, 
     public bool Send(ReadOnlySpan<byte> frame)
     {
         if (IsClosed) return false;
-        bool wake, overflow = false;
-        lock (_sendLock)
+        switch (_queue.Append(frame))
         {
-            if (IsClosed) return false;
-            int required = _pendingLength + frame.Length;
-            if (required > maxPendingSendBytes)
-            {
-                overflow = true;
-                wake = false;
-            }
-            else
-            {
-                if (required > _pending.Length)
-                    BufferPool.Grow(ref _pending, _pendingLength, Math.Max(required, 16 * 1024));
-
-                frame.CopyTo(_pending.AsSpan(_pendingLength));
-                wake = _pendingLength == 0;
-                _pendingLength = required;
-            }
+            case SendQueue.Result.Wake:
+                _queue.Wake();
+                return true;
+            case SendQueue.Result.Queued:
+                return true;
+            case SendQueue.Result.Overflow:
+                Platform.Queue(static c => c.Close(SlowConsumer), this); // off the caller's thread, as on TCP
+                return false;
+            default:
+                return false;
         }
-
-        if (overflow)
-        {
-            Platform.Queue(static c => c.Close(SlowConsumer), this);
-            return false;
-        }
-
-        if (wake) _sendSignal.Set();
-        return true;
     }
 
     public void Close(Exception? error = null)
     {
         if (Interlocked.Exchange(ref _closed, 1) != 0) return;
         socket.Abort(); // ends both loops at once; the peer sees the connection drop, as with TCP
-        _sendSignal.Set();
+        _queue.Signal.Set();
         handler.OnClosed(this, error);
     }
 
     private async Task SendLoop()
     {
-        byte[] sending = [];
         try
         {
             while (!IsClosed)
             {
-                await _sendSignal.WaitAsync().ConfigureAwait(false);
-                while (true)
+                await _queue.Signal.WaitAsync().ConfigureAwait(false);
+                while (!IsClosed && _queue.TryTake(out var batch, out int length))
                 {
-                    int length;
-                    lock (_sendLock)
+                    try
                     {
-                        length = _pendingLength;
-                        if (length == 0) break;
-                        (sending, _pending) = (_pending, sending); // producers fill the other buffer meanwhile
-                        _pendingLength = 0;
+                        await socket.SendAsync(new ReadOnlyMemory<byte>(batch, 0, length), WebSocketMessageType.Binary,
+                            endOfMessage: true, CancellationToken.None).ConfigureAwait(false);
+                        Volatile.Write(ref _lastSentMs, Platform.Milliseconds);
                     }
-
-                    await socket.SendAsync(new ReadOnlyMemory<byte>(sending, 0, length), WebSocketMessageType.Binary,
-                        endOfMessage: true, CancellationToken.None).ConfigureAwait(false);
-                    Volatile.Write(ref _lastSentMs, Platform.Milliseconds);
+                    finally
+                    {
+                        _queue.Release(batch);
+                    }
                 }
-
-                // Idle: hold no send memory (the next send rents a buffer).
-                byte[] spare = [];
-                lock (_sendLock)
-                    if (_pendingLength == 0)
-                        (spare, _pending) = (_pending, []);
-                BufferPool.Return(spare);
-                BufferPool.Return(sending);
-                sending = [];
             }
         }
         catch (Exception e)
@@ -128,13 +98,7 @@ public sealed class WebSocketChannel(WebSocket socket, IChannelHandler handler, 
         }
         finally
         {
-            BufferPool.Return(sending);
-            lock (_sendLock)
-            {
-                BufferPool.Return(_pending);
-                _pending = [];
-                _pendingLength = 0;
-            }
+            _queue.Close();
         }
     }
 
