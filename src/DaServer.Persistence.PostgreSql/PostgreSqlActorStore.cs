@@ -51,7 +51,6 @@ public sealed partial class PostgreSqlActorStore : IActorStore, IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        while (_columns.TryDequeue(out var columns)) await columns.Disconnect();
         if (_ownsDataSource) await _dataSource.DisposeAsync();
     }
 
@@ -68,16 +67,11 @@ public sealed partial class PostgreSqlActorStore : IActorStore, IAsyncDisposable
                 columns.Keys.Add(key.Key);
             }
 
-            await Connected(columns, cancellationToken);
+            await using var connection = await Prepared(columns.Load, cancellationToken);
             records.Span.Clear(); // a key without a row has no record
             await using var reader = await columns.Load.ExecuteReaderAsync(cancellationToken);
             while (await reader.ReadAsync(cancellationToken))
                 records.Span[(int)reader.GetInt64(0) - 1] = new StoredRecord(reader.GetInt64(1), reader.GetFieldValue<byte[]>(2));
-        }
-        catch
-        {
-            await columns.Disconnect(); // the next call opens a fresh connection
-            throw;
         }
         finally
         {
@@ -100,15 +94,10 @@ public sealed partial class PostgreSqlActorStore : IActorStore, IAsyncDisposable
                 columns.Data.Add(write.Data); // the shard's pooled buffer, valid until this call completes: not copied
             }
 
-            await Connected(columns, cancellationToken);
+            await using var connection = await Prepared(columns.Save, cancellationToken);
             accepted.Span.Clear();
             await using var reader = await columns.Save.ExecuteReaderAsync(cancellationToken);
             while (await reader.ReadAsync(cancellationToken)) accepted.Span[(int)reader.GetInt64(0) - 1] = true;
-        }
-        catch
-        {
-            await columns.Disconnect(); // the next call opens a fresh connection
-            throw;
         }
         finally
         {
@@ -117,23 +106,30 @@ public sealed partial class PostgreSqlActorStore : IActorStore, IAsyncDisposable
     }
 
     /// <summary>
-    /// The columns' own connection, opened once with both statements prepared (parsed and planned once by the server);
-    /// reopened after a failure.
+    /// A connection from the data source's pool for <paramref name="command"/>, prepared: a pooled physical connection
+    /// keeps its prepared statements, so the server parses and plans each statement once per physical connection and a
+    /// later prepare finds it ready. The pool owns the connections (sizes, idle pruning, broken ones replaced).
     /// </summary>
-    private async ValueTask Connected(Columns columns, CancellationToken cancellationToken)
+    private async ValueTask<NpgsqlConnection> Prepared(NpgsqlCommand command, CancellationToken cancellationToken)
     {
-        if (columns.Connection is { State: System.Data.ConnectionState.Open }) return;
-        await columns.Disconnect();
         var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
-        columns.Connection = columns.Load.Connection = columns.Save.Connection = connection;
-        await columns.Load.PrepareAsync(cancellationToken);
-        await columns.Save.PrepareAsync(cancellationToken);
+        try
+        {
+            command.Connection = connection;
+            await command.PrepareAsync(cancellationToken);
+            return connection;
+        }
+        catch
+        {
+            await connection.DisposeAsync();
+            throw;
+        }
     }
 
     /// <summary>
-    /// A call's parameters as columns (what <c>unnest</c> takes), its prepared commands and their connection, reused
-    /// across calls: lists keep their capacity and are exactly as long as the batch, which rented arrays are not. One
-    /// set per call in flight (at most one load and one save per shard), so the connections are bounded the same way.
+    /// A call's parameters as columns (what <c>unnest</c> takes) and its commands, reused across calls: lists keep their
+    /// capacity and are exactly as long as the batch, which rented arrays are not. One set per call in flight (at most
+    /// one load and one save per shard).
     /// </summary>
     private sealed class Columns
     {
@@ -142,7 +138,6 @@ public sealed partial class PostgreSqlActorStore : IActorStore, IAsyncDisposable
         public readonly List<long> Expected = new();
         public readonly List<ReadOnlyMemory<byte>> Data = new();
         public readonly NpgsqlCommand Load, Save;
-        public NpgsqlConnection? Connection;
 
         public Columns(PostgreSqlActorStore store)
         {
@@ -162,14 +157,7 @@ public sealed partial class PostgreSqlActorStore : IActorStore, IAsyncDisposable
             Keys.Clear();
             Expected.Clear();
             Data.Clear(); // drops the references to the shard's buffers
-        }
-
-        public async ValueTask Disconnect()
-        {
-            if (Connection == null) return;
-            Load.Connection = Save.Connection = null;
-            await Connection.DisposeAsync();
-            Connection = null;
+            Load.Connection = Save.Connection = null; // back in the pool
         }
     }
 

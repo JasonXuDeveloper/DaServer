@@ -47,10 +47,11 @@ public class PersistenceBenchmark
         for (int i = 0; i < Actors; i++)
         {
             var coins = NinoSerializer.Serialize(new Coins(i));
-            var record = new byte[8 + coins.Length];
-            BitConverter.TryWriteBytes(record, TypeId<Coins>.Value);
-            BitConverter.TryWriteBytes(record.AsSpan(4), coins.Length);
-            coins.CopyTo(record, 8);
+            var record = new byte[Records.Header + Records.SectionHeader + coins.Length];
+            Records.WriteHeader(record);
+            BitConverter.TryWriteBytes(record.AsSpan(Records.Header), TypeId<Coins>.Value);
+            BitConverter.TryWriteBytes(record.AsSpan(Records.Header + sizeof(uint)), coins.Length);
+            coins.CopyTo(record, Records.Header + Records.SectionHeader);
             writes[i] = new StoredWrite(new StoredKey(ActorIds<VaultId>.HandlerTypeId, _first + i), 0, record);
         }
 

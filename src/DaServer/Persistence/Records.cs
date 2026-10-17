@@ -66,22 +66,30 @@ internal static class Records
     /// <summary>Append the format header and the sections of <paramref name="entity"/>'s <paramref name="types"/> to <paramref name="record"/>.</summary>
     public static void WriteSections(Entity entity, PersistentType[] types, FrameWriter record)
     {
-        var head = record.GetSpan(sizeof(uint));
-        BinaryPrimitives.WriteUInt16LittleEndian(head, Magic);
-        BinaryPrimitives.WriteUInt16LittleEndian(head[sizeof(ushort)..], Version);
-        record.Advance(sizeof(uint));
+        WriteHeader(record.GetSpan(Header));
+        record.Advance(Header);
         foreach (var type in types) type.Write(entity, record);
+    }
+
+    /// <summary>The format header's size: a record starts with it.</summary>
+    public const int Header = sizeof(uint);
+
+    /// <summary>Write the format header (<see cref="Header"/> bytes) at the start of <paramref name="record"/>.</summary>
+    public static void WriteHeader(Span<byte> record)
+    {
+        BinaryPrimitives.WriteUInt16LittleEndian(record, Magic);
+        BinaryPrimitives.WriteUInt16LittleEndian(record[sizeof(ushort)..], Version);
     }
 
     /// <summary>Restore the sections of <paramref name="data"/> onto <paramref name="entity"/>.</summary>
     public static void Read(Entity entity, ReadOnlySpan<byte> data, FrozenDictionary<uint, PersistentType> types)
     {
         if (data.IsEmpty) return; // no record yet
-        if (data.Length < sizeof(uint) || BinaryPrimitives.ReadUInt16LittleEndian(data) != Magic)
+        if (data.Length < Header || BinaryPrimitives.ReadUInt16LittleEndian(data) != Magic)
             throw new InvalidDataException("Not an actor record of this format (no DaServer record header)");
         ushort version = BinaryPrimitives.ReadUInt16LittleEndian(data[sizeof(ushort)..]);
         if (version != Version) throw new InvalidDataException($"Actor record format {version}, this node reads {Version}");
-        data = data[sizeof(uint)..];
+        data = data[Header..];
         while (data.Length >= SectionHeader)
         {
             uint id = BinaryPrimitives.ReadUInt32LittleEndian(data);

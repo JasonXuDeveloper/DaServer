@@ -27,11 +27,13 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
 
     public Node(NodeOptions options)
     {
+        options.Validate();
         Options = options;
         Id = BitConverter.ToUInt64(RandomNumberGenerator.GetBytes(8)) | 1;
         Logger = (options.LoggerFactory ?? NullLoggerFactory.Instance).CreateLogger("DaServer.Node." + options.Name);
         Pending = new PendingCallTable(options.PendingCallBits);
         Membership = new Membership(this);
+        _sessionNodes = new SessionNodes(this);
         _localSink = new LocalReplySink(this);
         _linkAuth = new LinkAuth(options.ClusterName, options.SigningSecret);
     }
@@ -424,7 +426,7 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
         return total;
     }
 
-    private ulong[] _clientNodes = [];
+    private readonly SessionNodes _sessionNodes;
     private string _builds = "";
 
     /// <summary>Log when the builds the cluster runs change (a rolling upgrade starts or completes, V2).</summary>
@@ -464,33 +466,21 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
         foreach (var feature in Options.Features) feature.OnViewChanged(view);
         ReportBuilds(view);
 
-        var clientNodes = new List<ulong>();
-        foreach (var member in View.Members)
-            if (member.HasScope(AddressScopes.Session) && member.Status != MemberStatus.Dead) clientNodes.Add(member.NodeId);
-        foreach (ulong previous in _clientNodes)
-        {
-            if (clientNodes.Contains(previous)) continue;
-            Log.ClientNodeGone(Logger, previous);
-            _ = CloseSessionsOf(previous);
-        }
-
-        _clientNodes = clientNodes.ToArray();
+        _sessionNodes.OnViewChanged(view);
     }
 
-    /// <summary>How long a lost client may take to resume elsewhere before its actors learn it is gone (tickets need the secret).</summary>
-    private TimeSpan ResumeGrace => Options.EffectiveResumeGrace;
+    /// <summary>Whether the node still runs (late work, such as a grace that ended, checks it).</summary>
+    internal bool Running => Volatile.Read(ref _started) == 1;
 
-    /// <summary>Close a lost client-facing node's sessions on every shard, once their clients had the grace to resume elsewhere.</summary>
-    private async Task CloseSessionsOf(ulong clientNode)
+    /// <summary>Post <paramref name="work"/> to every shard (rare work: a gone node's sessions).</summary>
+    internal void PostToEveryShard<TState>(Action<World, TState> work, TState state)
     {
-        if (ResumeGrace > TimeSpan.Zero) await Task.Delay(ResumeGrace, Options.TimeProvider).ConfigureAwait(false);
-        if (Volatile.Read(ref _started) != 1) return;
         foreach (var shard in _shards)
             shard.Post(static s =>
             {
-                var (target, clientNode) = ((Shard, ulong))s!;
-                ActorSessions.CloseSessionsOf(target.World, clientNode);
-            }, (shard, clientNode));
+                var (target, work, state) = ((Shard, Action<World, TState>, TState))s!;
+                work(target.World, state);
+            }, (shard, work, state));
     }
 
     private SilenceClock _maintainClock;

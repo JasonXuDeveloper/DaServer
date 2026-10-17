@@ -358,6 +358,14 @@ public class InfrastructureTests
         Assert.That(new ClusterMember { Incarnation = 1, Heartbeat = 4, Status = MemberStatus.Up }.Supersedes(a), Is.False);
     }
 
+    [Test]
+    public void OptionsANodeCannotRunWithAreRefusedAtOnce()
+    {
+        var error = Assert.Throws<ArgumentException>(() => new Node(new NodeOptions
+            { TickRate = 0, SuspectAfter = TimeSpan.FromSeconds(5), DeadAfter = TimeSpan.FromSeconds(2) }));
+        Assert.That(error!.Message, Does.Contain("TickRate 0").And.Contain("below DeadAfter"), "every problem in one message");
+    }
+
     [TestCase("game-0:7000", "game-0", 7000)]
     [TestCase("10.0.0.5:7000", "10.0.0.5", 7000)]
     [TestCase("[fd00::5]:7000", "fd00::5", 7000)]

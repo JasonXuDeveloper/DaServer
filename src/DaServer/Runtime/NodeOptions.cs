@@ -143,4 +143,33 @@ public sealed class NodeOptions
     internal Func<uint, bool>? Unannounced { get; set; }
 
     internal IPEndPoint ClusterBindEndPoint => new(IPAddress.Parse(ListenAddress), ClusterPort);
+
+    /// <summary>
+    /// Refuse options a node cannot run with, all problems in one message (a misbound environment variable shows at
+    /// start, not as a hang or a busy loop later).
+    /// </summary>
+    internal void Validate()
+    {
+        var problems = new List<string>();
+        void Check(bool ok, string problem)
+        {
+            if (!ok) problems.Add(problem);
+        }
+
+        Check(!string.IsNullOrWhiteSpace(Name), "Name is empty");
+        Check(!string.IsNullOrWhiteSpace(ClusterName), "ClusterName is empty");
+        Check(ClusterPort is >= 0 and <= 65535, $"ClusterPort {ClusterPort} is not a port");
+        Check(TickRate > 0, $"TickRate {TickRate} must be positive");
+        Check(DispatchQueueCapacity > 0, $"DispatchQueueCapacity {DispatchQueueCapacity} must be positive");
+        Check(ActorMailboxCapacity > 0, $"ActorMailboxCapacity {ActorMailboxCapacity} must be positive");
+        Check(CallTimeout > TimeSpan.Zero, $"CallTimeout {CallTimeout} must be positive");
+        Check(ShutdownTimeout > TimeSpan.Zero, $"ShutdownTimeout {ShutdownTimeout} must be positive");
+        Check(StallAfter > TimeSpan.Zero, $"StallAfter {StallAfter} must be positive");
+        Check(GossipInterval > TimeSpan.Zero, $"GossipInterval {GossipInterval} must be positive");
+        Check(SuspectAfter > TimeSpan.Zero && DeadAfter > SuspectAfter,
+            $"SuspectAfter {SuspectAfter} must be positive and below DeadAfter {DeadAfter}");
+        Check(ResumeGrace >= TimeSpan.Zero, $"ResumeGrace {ResumeGrace} is negative");
+        Check(PendingCallBits is >= 4 and <= 24, $"PendingCallBits {PendingCallBits} must be 4 to 24");
+        if (problems.Count > 0) throw new ArgumentException("Invalid node options: " + string.Join("; ", problems));
+    }
 }
