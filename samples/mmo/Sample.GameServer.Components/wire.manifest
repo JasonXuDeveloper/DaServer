@@ -1,5 +1,5 @@
 # DaServer wire manifest (ADR-076): the layout of this assembly's [NinoType] types on the wire and in stored records.
-# 'grows' types may append fields, 'frozen' ones may not change. Update: dotnet build -p:UpdateWireManifest=true
-Sample.GameServer.PlayerProfile grows
+# 'grows' types (value fields only, whole messages, replies, records) may append fields, 'frozen' ones may not change. Update: dotnet build -p:UpdateWireManifest=true
+Sample.GameServer.PlayerProfile frozen
 - Name: string
 - Logins: int
