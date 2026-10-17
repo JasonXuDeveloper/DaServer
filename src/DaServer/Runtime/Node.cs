@@ -359,8 +359,7 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
     /// <summary>Stop gossip, maintenance and every node link.</summary>
     private void CloseLinks()
     {
-        _maintenance?.Dispose();
-        Membership.Dispose();
+        _maintenance?.Dispose(); // gossip rounds too
         _clusterListener?.Dispose();
         foreach (var link in _links.Values) link.Dispose();
     }
@@ -495,6 +494,13 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
     }
 
     private SilenceClock _maintainClock;
+
+    /// <summary>Tests: what a pause of this process of <paramref name="pause"/> looks like to its next maintenance tick.</summary>
+    internal void SimulatePause(TimeSpan pause)
+    {
+        _maintainClock.Rewind((long)pause.TotalMilliseconds);
+        Membership.Age((long)pause.TotalMilliseconds);
+    }
     private long[]? _stallReported; // per shard: the pass already reported (the maintenance timer's thread only)
     private int _stalledShards;
 
@@ -527,7 +533,9 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
         {
             Pending.SweepExpired();
             long now = Platform.Milliseconds;
-            bool late = _maintainClock.Tick(now);
+            long paused = _maintainClock.Tick(now);
+            bool late = paused > 0;
+            Membership.Tick(now, paused);
             long interval = (long)Options.GossipInterval.TotalMilliseconds;
             long timeout = late ? long.MaxValue : Math.Max((long)Options.SuspectAfter.TotalMilliseconds, 3 * interval); // late: ping, no verdicts
             foreach (var link in Volatile.Read(ref _linkList))

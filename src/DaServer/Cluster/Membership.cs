@@ -7,7 +7,7 @@ namespace DaServer.Cluster;
 /// them, so a steady-state round allocates nothing. A member whose heartbeat has not advanced for SuspectAfter becomes Suspect, after
 /// DeadAfter Dead; a node that learns it is suspected refutes by bumping its incarnation.
 /// </summary>
-internal sealed class Membership : IDisposable
+internal sealed class Membership
 {
     private const int Fanout = 3;
 
@@ -16,12 +16,11 @@ internal sealed class Membership : IDisposable
     private readonly Dictionary<ulong, Entry> _members = new();
     private ClusterView _view;
     private ClusterMember _self = new();
-    private Timer? _timer;
     private bool _changed;
     private List<(string Host, int Port)>? _seeds;
     private readonly ClusterMember[] _targets = new ClusterMember[Fanout];
     private int _inRound;
-    private long _lastRoundAt;
+    private long _nextRoundMs; // the node's maintenance tick runs a round once this passed
 
     /// <summary>Tests: a partition. Gossip to these cluster ports is dropped (both sides set it for the other).</summary>
     internal HashSet<int>? BlockedPorts;
@@ -66,9 +65,6 @@ internal sealed class Membership : IDisposable
             _members[_node.Id] = new Entry(_self, Platform.Milliseconds);
             PublishView();
         }
-
-        int interval = (int)_node.Options.GossipInterval.TotalMilliseconds;
-        _timer = new Timer(static s => ((Membership)s!).Round(), this, 0, interval);
     }
 
     /// <summary>Announce Leaving and push it to every known member immediately.</summary>
@@ -85,9 +81,27 @@ internal sealed class Membership : IDisposable
                 SendPulses(_node.GetLink(member));
     }
 
-    public void Dispose() => _timer?.Dispose();
+    /// <summary>
+    /// The node's maintenance tick (its timer thread): a gossip round once per <see cref="NodeOptions.GossipInterval"/>.
+    /// A tick that ran <paramref name="pausedMs"/> late means this process was paused (GC, a starved CPU, a stopped
+    /// container): the silence of the others since is ours, not theirs. Their progress clocks move forward by the pause,
+    /// so no member is suspected or declared dead for it; real failures still surface a few rounds later.
+    /// </summary>
+    internal void Tick(long nowMs, long pausedMs)
+    {
+        if (pausedMs > 0)
+        {
+            lock (_gate)
+                foreach (var entry in _members.Values) entry.LastProgress += pausedMs;
+            Log.RoundLate(_node.Logger, pausedMs);
+        }
 
-    /// <summary>One gossip round (timer thread).</summary>
+        if (nowMs < _nextRoundMs) return;
+        _nextRoundMs = nowMs + Ms(_node.Options.GossipInterval);
+        Round();
+    }
+
+    /// <summary>One gossip round.</summary>
     private void Round()
     {
         if (Interlocked.Exchange(ref _inRound, 1) != 0) return; // the previous round is still sending
@@ -99,7 +113,6 @@ internal sealed class Membership : IDisposable
                 _self.Heartbeat++;
                 _self.Load = _node.TotalQueueLength();
                 _node.ReadPulses(_self.PulseValues);
-                CompensatePause();
                 DetectFailures();
                 if (_changed) PublishView();
                 targets = PickTargets();
@@ -126,31 +139,11 @@ internal sealed class Membership : IDisposable
         }
     }
 
-    /// <summary>
-    /// A round that runs late means this process was paused (GC, a starved CPU, a stopped container): the silence of
-    /// the others since is ours, not theirs. Their progress clocks move forward by the pause, so no member is suspected
-    /// or declared dead for it; real failures still surface a few rounds later. Under the gate.
-    /// </summary>
-    private void CompensatePause()
+    /// <summary>Tests: age every member's progress as a pause of this process of <paramref name="ms"/> would.</summary>
+    internal void Age(long ms)
     {
-        long now = Platform.Milliseconds, last = _lastRoundAt;
-        _lastRoundAt = now;
-        long interval = Ms(_node.Options.GossipInterval);
-        if (last == 0 || now - last <= 3 * interval) return;
-        long pause = now - last - interval;
-        foreach (var entry in _members.Values) entry.LastProgress += pause;
-        Log.RoundLate(_node.Logger, pause);
-    }
-
-    /// <summary>Tests: age every member's progress as a pause of this process of <paramref name="pause"/> would.</summary>
-    internal void SimulatePause(TimeSpan pause)
-    {
-        long ms = Ms(pause);
         lock (_gate)
-        {
-            _lastRoundAt -= ms;
             foreach (var entry in _members.Values) entry.LastProgress -= ms;
-        }
     }
 
     /// <summary><paramref name="time"/> in milliseconds (the progress clocks' unit).</summary>

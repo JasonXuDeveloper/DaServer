@@ -30,7 +30,7 @@ public sealed class ClusterClient : IMessageSender, IChannelHandler, IAsyncDispo
     private static readonly ConcurrentDictionary<ClusterClient, bool> Live = new();
     private static readonly Timer Sweeper = new(static _ =>
     {
-        bool late = _sweepClock.Tick(Platform.Milliseconds);
+        bool late = _sweepClock.Tick(Platform.Milliseconds) > 0;
         foreach (var (client, _) in Live)
         {
             try
