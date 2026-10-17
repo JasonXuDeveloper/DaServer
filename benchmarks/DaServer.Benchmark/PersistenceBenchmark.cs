@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using DaServer.Persistence;
 using Nino.Core;
 
@@ -74,8 +75,8 @@ public class PersistenceBenchmark
         Load().GetAwaiter().GetResult();
     }
 
-    [Benchmark]
-    public async Task SaveNow()
+    [Benchmark, AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+    public async ValueTask SaveNow()
     {
         var written = _store.Expect(Actors);
         for (int i = 0; i < Actors; i++) _calls[i] = _node.Ask(new VaultId(_first + i), new Put(1));
@@ -89,7 +90,7 @@ public class PersistenceBenchmark
         public readonly IActorStore Inner = inner;
         private readonly Countdown _written = new();
 
-        public Task Expect(int writes) => _written.Reset(writes);
+        public ValueTask Expect(int writes) => _written.Reset(writes);
 
         public ValueTask LoadAsync(ReadOnlyMemory<StoredKey> keys, Memory<StoredRecord> records, CancellationToken ct = default) =>
             Inner.LoadAsync(keys, records, ct);

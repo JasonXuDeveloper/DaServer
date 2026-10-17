@@ -35,7 +35,7 @@ public class ScenarioBenchmark
     public void Cleanup() => Clusters.Stop(_nodes, _clients);
 
     [Benchmark]
-    public Task BroadcastToEveryone()
+    public ValueTask BroadcastToEveryone()
     {
         var delivered = _countdown.Reset(Clients);
         _nodes[3].Send(ClientGroup.All, new Tick(++_sequence)); // from the game node, like the realm system

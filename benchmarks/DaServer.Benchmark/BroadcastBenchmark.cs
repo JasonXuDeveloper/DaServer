@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using DaServer.Client;
 
 namespace DaServer.Benchmark;
@@ -41,8 +42,8 @@ public class BroadcastBenchmark
     [GlobalCleanup]
     public void Cleanup() => Clusters.Stop(_nodes, _clients);
 
-    [Benchmark]
-    public async Task Broadcast()
+    [Benchmark, AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+    public async ValueTask Broadcast()
     {
         var delivered = _countdown.Reset(Clients * Groups);
         await _nodes[1].Ask(_room, new Broadcast(Groups, ++_sequence));
