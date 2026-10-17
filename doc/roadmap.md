@@ -550,10 +550,11 @@ in separate commits.
         depend on the node's, Nino included); the stop budget's defaults are documented on both sides instead.
   - [ ] Client entry addresses from configuration (`DaServer:ClientEndpoints`) for server-side callers; game clients
         (Unity) take them from the application.
-  - [ ] Split files over ~400 lines: `ClientConnections` (sessions, groups, resume), `ClusterClient`, `Membership`,
-        `PendingCalls`, `Connection`, `Node`.
-  - [ ] `PerThread` and `ObjectPool` documented as the two pools (thread-owned vs shared), the shard's hand-made
-        stacks on `PerThread`.
+  - [x] Files over ~400 lines split by concern: `ClientConnections` (+ Sessions, Groups, Resume), `ClusterClient` (+
+        Connection, Resume), `Membership` (+ Gossip), `PendingCallTable` / `PendingCall`, `Connection` (+ Flushed),
+        `Node` (+ Stop, Maintenance).
+  - [x] The pools documented by who returns: `PerThread` (the renting thread), `ObjectPool` (another thread), a shard's
+        `ActorPools` singleton (per-shard state, as ECS wants: not moved to `PerThread`).
   - [x] Docs: the stale statements (client redirect remnants, analyzer range DAS001-018, ADR-015/036, design §11
         publishing, READMEs on `Publish=k8s`, flashsale in samples/README, R11's bot options, CLAUDE.md layout,
         roadmap states).
