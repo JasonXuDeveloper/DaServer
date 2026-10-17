@@ -13,13 +13,14 @@ namespace DaServer.Generator;
 public sealed partial class DaServerAnalyzer : DiagnosticAnalyzer
 {
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics { get; } = ImmutableArray.Create(
-        Rules.BadHandler, Rules.BadMessage, Rules.NotWireType, Rules.IdCollision, Rules.NoDefaultConstructor, Rules.WrongFlow, Rules.StatefulHandlerType, Rules.WrongAddress, Rules.SharedReferencesServer, Rules.MisplacedReplyWhen, Rules.BlockingCall, Rules.AskInSystem, Rules.ComponentInLogic, Rules.BadPersisted, Rules.OffShard, Rules.BadPlacement);
+        Rules.BadHandler, Rules.BadMessage, Rules.NotWireType, Rules.IdCollision, Rules.NoDefaultConstructor, Rules.WrongFlow, Rules.StatefulHandlerType, Rules.WrongAddress, Rules.SharedReferencesServer, Rules.MisplacedReplyWhen, Rules.BlockingCall, Rules.AskInSystem, Rules.ComponentInLogic, Rules.BadPersisted, Rules.OffShard, Rules.BadPlacement, Rules.WireBreak, Rules.WireUnrecorded);
 
     public override void Initialize(AnalysisContext context)
     {
         context.ConfigureGeneratedCodeAnalysis(GeneratedCodeAnalysisFlags.None);
         context.EnableConcurrentExecution();
         context.RegisterCompilationAction(CheckShared);
+        context.RegisterCompilationStartAction(CheckWireManifest);
         context.RegisterCompilationStartAction(start =>
         {
             // Wire ids of every message type declared in this compilation, for the collision check at the end.
@@ -279,6 +280,13 @@ internal static class Rules
 
     public static readonly DiagnosticDescriptor OffShard = new("DAS015", "Work started off the shard thread",
         "'{0}' {1}", Category, DiagnosticSeverity.Error, true);
+
+    public static readonly DiagnosticDescriptor WireBreak = new("DAS017", "Wire layout breaks the manifest",
+        "'{0}' {1} (wire.manifest, ADR-076)", Category, DiagnosticSeverity.Error, true, customTags: WellKnownDiagnosticTags.CompilationEnd);
+
+    public static readonly DiagnosticDescriptor WireUnrecorded = new("DAS018", "Wire manifest out of date",
+        "'{0}' {1}: record it with dotnet build -p:UpdateWireManifest=true and commit wire.manifest", Category,
+        DiagnosticSeverity.Warning, true, customTags: WellKnownDiagnosticTags.CompilationEnd);
 
     public static readonly DiagnosticDescriptor WrongAddress = new("DAS008", "Wrong kind of address",
         "'{0}' {1}", Category, DiagnosticSeverity.Error, true);

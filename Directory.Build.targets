@@ -1,0 +1,4 @@
+<Project>
+    <!-- What the Abstractions package gives its users (buildTransitive), for this repository's own projects. -->
+    <Import Project="$(MSBuildThisFileDirectory)src/DaServer.Abstractions/buildTransitive/DaServer.Abstractions.targets" />
+</Project>
