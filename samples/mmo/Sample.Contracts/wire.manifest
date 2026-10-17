@@ -1,13 +1,13 @@
 # DaServer wire manifest (ADR-076): the layout of this assembly's [NinoType] types on the wire and in stored records.
-# 'grows' types may append fields, 'frozen' ones may not change. Update: dotnet build -p:UpdateWireManifest=true
+# 'grows' types (value fields only, whole messages, replies, records) may append fields, 'frozen' ones may not change. Update: dotnet build -p:UpdateWireManifest=true
 Sample.Contracts.Attach grows
-- Session: DaServer.ClientSession
-Sample.Contracts.Chat grows
+- Session: DaServer.ClientSession{Node: ulong, Id: long}
+Sample.Contracts.Chat frozen
 - Player: Sample.Contracts.PlayerId
 - Text: string
 Sample.Contracts.Enter grows
 - Player: Sample.Contracts.PlayerId
-- Session: DaServer.ClientSession
+- Session: DaServer.ClientSession{Node: ulong, Id: long}
 Sample.Contracts.EnterMap grows
 - Map: Sample.Contracts.MapId
 Sample.Contracts.GetInfo grows
@@ -15,13 +15,13 @@ Sample.Contracts.Gone grows
 - Map: Sample.Contracts.MapId
 - Player: Sample.Contracts.PlayerId
 Sample.Contracts.Leave grows
-- Session: DaServer.ClientSession
-Sample.Contracts.Login grows
+- Session: DaServer.ClientSession{Node: ulong, Id: long}
+Sample.Contracts.Login frozen
 - Name: string
 Sample.Contracts.LoginResult grows
 - Ok: bool
 - Player: Sample.Contracts.PlayerId
-Sample.Contracts.Motion grows
+Sample.Contracts.Motion frozen
 - Map: Sample.Contracts.MapId
 - Avatars: Sample.Contracts.Moves
 Sample.Contracts.Move grows
@@ -35,7 +35,7 @@ Sample.Contracts.Moved frozen
 - VelocityY: float
 Sample.Contracts.Moves frozen
 - Items: System.Collections.Generic.List<Sample.Contracts.Moved>
-Sample.Contracts.PlayerInfo grows
+Sample.Contracts.PlayerInfo frozen
 - Id: Sample.Contracts.PlayerId
 - Name: string
 - Map: Sample.Contracts.MapId
@@ -48,5 +48,5 @@ Sample.Contracts.RealmStatus grows
 - Tick: long
 - Online: int
 - ServerTimeTicks: long
-Sample.Contracts.Say grows
+Sample.Contracts.Say frozen
 - Text: string
