@@ -182,8 +182,8 @@ public class WireManifestTests
         string fromMetadata = ManifestOf(GeneratorTests.Compile(GeneratorTests.Parse(UsesShared)).AddReferences(MetadataReference.CreateFromImage(image.ToArray())));
         Assert.That(fromSource, Is.EqualTo(fromMetadata));
         Assert.That(fromSource, Does.Contain("- Where: Shared.Pos memory {X: int, _y: int}").And.Contain("- Card: Shared.Card\n"));
-        // Another assembly's [NinoType] struct with auto-properties is written member by member (as Nino does from metadata).
-        Assert.That(fromSource, Does.Contain("Game.Seen (struct, positional)\n- At: Shared.Spot struct, positional {Floor: byte, Cell: long}"));
+        // Another assembly's [NinoType] struct with auto-properties is its memory, from source and from metadata alike.
+        Assert.That(fromSource, Does.Contain("Game.Seen (memory)\n- At: Shared.Spot memory {Floor: byte, Cell: long}"));
 
         // A new subtype of another assembly's [NinoType] base: older builds of this one cannot read its type id.
         var subtype = GeneratorTests.Compile(GeneratorTests.Parse(UsesShared + "public partial class Quest : Shared.Event { }"))

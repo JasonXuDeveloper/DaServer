@@ -151,10 +151,8 @@ internal static class WireLayout
     /// <summary>
     /// Whether a [NinoType] struct is written as its raw memory: unmanaged, positional (not tolerant through
     /// <c>WEAK_VERSION_TOLERANCE</c> either, which applies to <paramref name="home"/>'s types), sequential, and every
-    /// instance field serialized, without a custom formatter and raw itself. Another assembly's struct with
-    /// auto-properties is not: Nino matches a backing field to its property through <c>AssociatedSymbol</c>, which
-    /// metadata symbols lack, so the command line (metadata references) writes it member by member; the IDE (project
-    /// references as source) would say raw, and the manifest follows the command line (Nino issue #200).
+    /// instance field serialized, without a custom formatter and raw itself. A backing field is its property, matched
+    /// by name where metadata does not link them (another assembly's type).
     /// </summary>
     public static bool IsRawStruct(INamedTypeSymbol type, bool weak, IAssemblySymbol home)
     {
@@ -167,8 +165,8 @@ internal static class WireLayout
         foreach (var member in type.GetMembers())
         {
             if (member is not IFieldSymbol { IsStatic: false, IsConst: false } field) continue;
-            if (!own && (field.AssociatedSymbol != null || field.Name.StartsWith("<", StringComparison.Ordinal))) return false;
-            var serialized = field.AssociatedSymbol ?? field;
+            var serialized = field.AssociatedSymbol ??
+                             (field.Name.StartsWith("<", StringComparison.Ordinal) ? type.GetMembers(PropertyOf(field.Name)).FirstOrDefault() : null) ?? field;
             if (!members.Contains(serialized.OriginalDefinition) || Support.HasAttribute(serialized, NinoCustomFormatter) ||
                 !IsRawUnmanaged(field.Type, weak, home)) return false;
         }

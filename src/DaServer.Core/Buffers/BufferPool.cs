@@ -33,6 +33,16 @@ public static class BufferPool
         return buckets;
     }
 
+    /// <summary>The pool as an <see cref="System.Buffers.ArrayPool{T}"/>, for writers that rent through one (Nino's <c>NinoArrayBufferWriter</c>).</summary>
+    public static System.Buffers.ArrayPool<byte> ArrayPool { get; } = new Pinned();
+
+    private sealed class Pinned : System.Buffers.ArrayPool<byte>
+    {
+        public override byte[] Rent(int minimumLength) => BufferPool.Rent(minimumLength);
+
+        public override void Return(byte[] array, bool clearArray = false) => BufferPool.Return(array);
+    }
+
     /// <summary>Rent a buffer of at least <paramref name="minimumLength"/> bytes (contents are undefined).</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte[] Rent(int minimumLength)
