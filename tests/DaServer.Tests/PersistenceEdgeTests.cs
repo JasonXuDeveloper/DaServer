@@ -102,4 +102,67 @@ public class PersistenceEdgeTests(string kind) : ClusterTest
         await Stop(node);
         Assert.That(await after.Ask(new BankId(2001), new Balance()), Is.EqualTo(7), "and accepted");
     }
+
+    /// <summary>Fails its first <see cref="FailWrites"/> writes (an outage), then writes.</summary>
+    private sealed class FlakyStore(IActorStore inner) : IActorStore
+    {
+        public int FailWrites;
+
+        public ValueTask LoadAsync(ReadOnlyMemory<StoredKey> keys, Memory<StoredRecord> records, CancellationToken ct = default) =>
+            inner.LoadAsync(keys, records, ct);
+
+        public ValueTask SaveAsync(ReadOnlyMemory<StoredWrite> writes, Memory<bool> accepted, CancellationToken ct = default) =>
+            Interlocked.Decrement(ref FailWrites) >= 0 ? ValueTask.FromException(new IOException("store unavailable")) : inner.SaveAsync(writes, accepted, ct);
+    }
+
+    [Test]
+    public async Task AFailedCriticalSaveIsRetriedSoon()
+    {
+        // SaveNow asked for a write now; the store failed it once. The retry comes after the retry delay (a second), not
+        // at the next checkpoint (none for SaveEvery zero: only at the unload).
+        var inner = _stores.Create();
+        var store = new FlakyStore(inner) { FailWrites = 1 };
+        var node = await StartWith(store);
+        Assert.That(await node.Ask(new BankId(150), new Deposit(9, Critical: true)), Is.EqualTo(9));
+        await Eventually(async () => (await ActorStoreTests.Load(inner, new StoredKey(ActorIds<BankId>.HandlerTypeId, 150)))[0].Version == 1,
+            "written after the retry delay", 3000);
+    }
+
+    /// <summary>Holds its first load until released; records the largest batch it was given.</summary>
+    private sealed class HeldLoads(IActorStore inner) : IActorStore
+    {
+        public readonly TaskCompletionSource Release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public int Largest, Loads;
+
+        public async ValueTask LoadAsync(ReadOnlyMemory<StoredKey> keys, Memory<StoredRecord> records, CancellationToken ct = default)
+        {
+            if (Interlocked.Increment(ref Loads) == 1) await Release.Task;
+            InterlockedMax(ref Largest, keys.Length);
+            await inner.LoadAsync(keys, records, ct);
+        }
+
+        public ValueTask SaveAsync(ReadOnlyMemory<StoredWrite> writes, Memory<bool> accepted, CancellationToken ct = default) =>
+            inner.SaveAsync(writes, accepted, ct);
+
+        private static void InterlockedMax(ref int target, int value)
+        {
+            for (int seen = Volatile.Read(ref target); value > seen; seen = Volatile.Read(ref target))
+                if (Interlocked.CompareExchange(ref target, value, seen) == seen) return;
+        }
+    }
+
+    [Test]
+    public async Task LoadsWaitingForASlowStoreGoInBoundedBatches()
+    {
+        // The store holds the first load while 3,000 actors are asked for: they reach it in batches of at most 512.
+        var store = new HeldLoads(_stores.Create());
+        var node = await StartWith(store);
+        var first = node.Ask(new BankId(9000), new Balance()).AsTask();
+        for (long key = 9001; key < 12_001; key++) node.Send(new BankId(key), new Deposit(1, false));
+        await Task.Delay(300);
+        store.Release.TrySetResult();
+        await first;
+        await Eventually(async () => await node.Ask(new BankId(12_000), new Balance()) == 1, "every deposit was made");
+        Assert.That(store.Largest, Is.LessThanOrEqualTo(512));
+    }
 }

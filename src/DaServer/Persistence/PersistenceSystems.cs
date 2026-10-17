@@ -12,7 +12,7 @@ internal sealed partial class LoadSystem : EcsSystem
     [ForEach, With<AwaitingRecord>]
     private static void Collect(Entity actor, in ActorRef self, in ShardStore store)
     {
-        if (store.Loads.InFlight) return; // the next batch takes it
+        if (store.Loads.InFlight || store.Loads.Full) return; // the next batch takes it
         var target = self.Actor;
         actor.Remove<AwaitingRecord>();
         actor.Add<RecordRequested>();
@@ -129,6 +129,9 @@ internal sealed partial class PersistSystem : EcsSystem
             if (error != null)
             {
                 stored.RetryAtMs = now + 1000;
+                // The failed write is asked for again (SaveNow): it is retried after the delay, not at the next
+                // checkpoint (none with SaveEvery zero). A final save stays pending anyway.
+                if (!batch.Finals[i] && !actor.Has<SaveNow>()) actor.Add<SaveNow>();
                 continue;
             }
 
