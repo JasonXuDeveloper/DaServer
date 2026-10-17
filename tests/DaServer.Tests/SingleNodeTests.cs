@@ -43,6 +43,9 @@ public class SingleNodeTests : ClusterTest
     {
         const long key = 502;
         Assert.That(await _node.Ask(new KeeperId(key), new Visit()), Is.EqualTo(1));
+        // The count is published at the end of the shard's pass, which may follow the reply: wait until it shows the
+        // actor, or "back to 0" below could be the count from before it loaded.
+        await Eventually(() => _node.ActorCount == 1, "the loaded actor is not counted");
 
         // The cluster gave the key to another node: a save from OnUnload could overwrite the new owner's state.
         foreach (var shard in _node.Shards) shard.RequestUnloadAll();
