@@ -101,6 +101,26 @@ public class InfrastructureTests
     }
 
     [Test]
+    public void ALargeFrameGivesItsArrayBackAndStillAllocatesNothing()
+    {
+        // A pooled writer keeps at most 4 KB: a 32 KB frame's array goes back to ArrayPool on dispose (the pool's memory
+        // stays bounded whatever the bursts were) and the next large frame rents one from there, without garbage.
+        byte[] large = new byte[32 * 1024];
+        void Frame()
+        {
+            using var w = FrameWriter.Rent();
+            w.Write(large);
+            w.SetHeader(FrameKind.Message, 0, 7, 9);
+        }
+
+        for (int i = 0; i < 100; i++) Frame(); // ArrayPool fills its buckets for this thread
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        for (int i = 0; i < 1000; i++) Frame();
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        Assert.That(allocated / 1000.0, Is.LessThan(1), $"{allocated} B for 1,000 frames of 32 KB");
+    }
+
+    [Test]
     public void TrailersCarryTheOriginAndAPerHopCallId()
     {
         using var w = FrameWriter.Rent();

@@ -15,6 +15,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
     private (object Target, MessageHandlers Handlers)[] _handlers = [];
     private readonly MpmcQueue<FrameWriter>? _inbox;
     private IFrameChannel? _connection;
+    private IFrameChannel? _introduced; // the connection whose hello was answered: the only one other frames go on
     private Uri? _webSocket; // connected over a WebSocket (reconnects go there again)
     private DnsEndPoint[] _endpoints = []; // the well-known addresses (reconnects start there again)
     #if NET
@@ -171,7 +172,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
         _webSocket = webSocket;
         Attach(channel);
         _ = channel.RunAsync();
-        await IntroduceAsync().ConfigureAwait(false);
+        await IntroduceAsync(channel).ConfigureAwait(false);
     }
 
     /// <summary>Connect through the first reachable of <paramref name="endpoints"/> (tried in turn, starting at a random one).</summary>
@@ -195,25 +196,37 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
             return; // the named node is gone or unreachable from here: the first node serves as well
         }
 
+        try
+        {
+            await IntroduceAsync(moved).ConfigureAwait(false);
+        }
+        catch (RpcException)
+        {
+            return; // the named node refused (another protocol version mid-upgrade) or went: the first node serves as well
+        }
+
         var first = Interlocked.Exchange(ref _connection, (IFrameChannel)moved);
         first?.Close(); // closed on purpose: not a disconnect (no longer the current connection)
-        await IntroduceAsync().ConfigureAwait(false);
+        Volatile.Write(ref _introduced, moved);
     }
 
-    /// <summary>The first call on every connection: the node checks the client protocol version before anything else.</summary>
-    private async ValueTask IntroduceAsync()
+    /// <summary>
+    /// The first call on every connection: the node checks the client protocol version before anything else. Until it
+    /// is answered nothing else is sent on the connection (<see cref="_introduced"/>), only keep-alive frames.
+    /// </summary>
+    private async ValueTask IntroduceAsync(IFrameChannel channel)
     {
-        var connection = _connection;
         var call = PendingCall<NoReply>.Rent(null);
         var done = call.Done;
-        Transmit(FrameWriter.Rent(FrameHeader.Size), FrameKind.Control, 0, ControlOp.ClientHello, ControlOp.ClientVersion, call, RpcStatus.Ok);
+        Transmit(channel, FrameWriter.Rent(FrameHeader.Size), FrameKind.Control, 0, ControlOp.ClientHello, ControlOp.ClientVersion, call, RpcStatus.Ok);
         try
         {
             await done.ConfigureAwait(false);
+            if (channel == _connection) Volatile.Write(ref _introduced, channel);
         }
         catch
         {
-            connection?.Close(); // refused (another protocol version) or lost: no use for this connection
+            channel.Close(); // refused (another protocol version) or lost: no use for this connection
             throw;
         }
     }
@@ -237,9 +250,9 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
                 await ConnectToAsync(endpoint.Host, endpoint.Port, cancellationToken).ConfigureAwait(false);
                 return;
             }
-            catch (Exception e) when (e is System.Net.Sockets.SocketException or IOException)
+            catch (Exception e) when (e is System.Net.Sockets.SocketException or IOException or RpcException)
             {
-                last = e;
+                last = e; // unreachable, or refused (another protocol version mid-upgrade): try the next one
             }
         }
 
@@ -248,8 +261,9 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
 
     private async ValueTask ConnectToAsync(string host, int port, CancellationToken cancellationToken)
     {
-        Attach(await Connection.ConnectAsync(host, port, this, NewConnectionOptions(), cancellationToken).ConfigureAwait(false));
-        await IntroduceAsync().ConfigureAwait(false);
+        var connection = await Connection.ConnectAsync(host, port, this, NewConnectionOptions(), cancellationToken).ConfigureAwait(false);
+        Attach(connection);
+        await IntroduceAsync(connection).ConfigureAwait(false);
     }
 
     /// <summary>Make <paramref name="channel"/> the current connection; the sweeper watches this client's calls from now on.</summary>
@@ -341,9 +355,19 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
     /// <summary>A control frame to the node, answered when <paramref name="call"/> is set. Takes ownership of <paramref name="w"/>.</summary>
     private void SendControl(FrameWriter w, uint op, IPendingCall? call) => Transmit(w, FrameKind.Control, 0, op, 0, call, RpcStatus.Ok);
 
+    /// <summary>
+    /// On the current connection once its hello is answered; before that (connecting, reconnecting) a call fails with
+    /// <see cref="RpcStatus.Disconnected"/> and a one-way message is dropped, as on a lost connection.
+    /// </summary>
     private void Transmit(FrameWriter w, FrameKind kind, uint target, uint messageId, long key, IPendingCall? call, RpcStatus budget)
     {
         var connection = _connection;
+        Transmit(connection == Volatile.Read(ref _introduced) ? connection : null, w, kind, target, messageId, key, call, budget);
+    }
+
+    private void Transmit(IFrameChannel? connection, FrameWriter w, FrameKind kind, uint target, uint messageId, long key, IPendingCall? call,
+        RpcStatus budget)
+    {
         try
         {
             if (connection == null || connection.IsClosed)
@@ -359,8 +383,17 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
                 return;
             }
 
-            if (call != null) w.SetCallId(callId);
-            w.SetHeader(kind, target, messageId, key, budget);
+            try
+            {
+                if (call != null) w.SetCallId(callId);
+                w.SetHeader(kind, target, messageId, key, budget);
+            }
+            catch (InvalidOperationException) when (call != null)
+            {
+                _pending.Take(callId)?.Fail(RpcStatus.Error, "The request exceeds the maximum frame size");
+                return;
+            }
+
             if (!connection.Send(w.Frame) && call != null)
                 _pending.Take(callId)?.Fail(RpcStatus.Disconnected);
         }

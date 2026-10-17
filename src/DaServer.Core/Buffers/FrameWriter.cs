@@ -14,8 +14,12 @@ public sealed class FrameWriter : IDisposable
     /// <summary>Frames in flight per process (queued in shards, mailboxes and links): bursts below it allocate once.</summary>
     private static readonly ObjectPool<FrameWriter> Pool = new ObjectPool<FrameWriter>(() => new FrameWriter(), 1 << 16);
 
-    /// <summary>A frame that grew past this gives its array back on dispose instead of keeping it pooled.</summary>
-    private const int RetainedCapacity = 64 * 1024;
+    /// <summary>
+    /// A pooled writer keeps at most this much of an array: a frame that grew past it gives its array back to
+    /// <c>ArrayPool</c> on dispose (the next rent takes one from there again), so the pool holds at most
+    /// <c>65,536 x 4 KB</c> whatever the bursts of large frames were.
+    /// </summary>
+    private const int RetainedCapacity = 4 * 1024;
 
     private readonly NinoArrayBufferWriter _out = new(256);
     private bool _rented;
@@ -205,12 +209,7 @@ public sealed class FrameWriter : IDisposable
 
         _rented = false;
         _out.ResetWrittenCount();
-        if (_out.Capacity > RetainedCapacity)
-        {
-            _out.Dispose(); // a rare huge frame gives its array back and is not kept pooled
-            return;
-        }
-
+        if (_out.Capacity > RetainedCapacity) _out.Dispose(); // the array goes back to ArrayPool; the writer stays usable
         Pool.Return(this);
     }
 

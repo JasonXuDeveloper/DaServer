@@ -111,8 +111,8 @@ internal static class Shapes
     }
 
     /// <summary>
-    /// The runtime's type id of a type, Nino's (<c>NinoTypeId.Of</c>): FNV-1a of its <c>[NinoFormerName]</c> or of its
-    /// full name (nested types joined by '+').
+    /// The runtime's type id of a non-generic type (messages, ids, services and components are), Nino's
+    /// (<c>NinoTypeId.Of</c>): FNV-1a of its <c>[NinoFormerName]</c> or of its full name (nested types joined by '+').
     /// </summary>
     public static uint TypeIdOf(ITypeSymbol type)
     {

@@ -498,8 +498,7 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
             Limit = new TokenBucket(options.MessagesPerSecond, Math.Max(1, options.Burst)),
         };
         channel.Tag = session;
-        _sessions[session.Id] = session;
-        lock (_groupGate) Join(session, ClientGroup.All.Id); // group 0 is a group like any other
+        _sessions[session.Id] = session; // it joins ClientGroup.All once its hello is answered
     }
 
     /// <summary>Largest frame a client may send (<see cref="ClientConnectionOptions.MaxFrameSize"/>).</summary>
@@ -522,9 +521,11 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
         public void OnFrame(IFrameChannel channel, in FrameHeader header, ReadOnlySpan<byte> frame)
         {
             var session = (SessionState)channel.Tag!;
-            if (!session.Introduced)
+            // Keep-alive frames are the transport's, of every version: before the hello too (a client pings an idle
+            // connection whose hello is still waiting).
+            if (!session.Introduced && !(header.Kind == FrameKind.Control && header.MessageId is ControlOp.Ping or ControlOp.Pong))
             {
-                Introduce(session, in header, frame);
+                node.Introduce(session, in header, frame);
                 return;
             }
 
@@ -551,27 +552,30 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
 
     /// <summary>
     /// The first frame of a client connection must be its <see cref="ControlOp.ClientHello"/>: a client of another
-    /// protocol version is told both versions (it disconnects; anything else it sends closes the connection), instead
-    /// of misreading what follows.
+    /// protocol version is told both versions and disconnects (anything it sends after closes the connection), instead
+    /// of misreading what follows. Only an introduced session is a member of <see cref="ClientGroup.All"/>: broadcasts
+    /// never reach a client that would misread them.
     /// </summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static void Introduce(SessionState session, in FrameHeader header, ReadOnlySpan<byte> frame)
+    private void Introduce(SessionState session, in FrameHeader header, ReadOnlySpan<byte> frame)
     {
         uint callId = FrameHeader.CallIdOf(in header, frame);
-        if (header.Kind != FrameKind.Control || header.MessageId != ControlOp.ClientHello || callId == 0)
+        if (session.Refused || header.Kind != FrameKind.Control || header.MessageId != ControlOp.ClientHello || callId == 0)
         {
-            session.Channel.Close(new InvalidOperationException("A client connection starts with its hello"));
+            session.Channel.Close(new InvalidOperationException("A client connection starts with its hello, of this node's protocol"));
             return;
         }
 
         if (header.Key != ControlOp.ClientVersion)
         {
+            session.Refused = true;
             session.Sink.SendError(callId, RpcStatus.Error,
                 $"Client protocol {header.Key}, this node speaks {ControlOp.ClientVersion}: update the client");
             return; // closing now could drop the answer before it is written
         }
 
         session.Introduced = true;
+        lock (_groupGate) Join(session, ClientGroup.All.Id); // group 0 is a group like any other
         session.Sink.SendOk(callId);
     }
 
@@ -674,8 +678,8 @@ internal sealed class SessionState(long id, IFrameChannel channel)
     public IFrameChannel Channel { get; } = channel;
     public IReplySink Sink { get; } = new ChannelSink(channel);
 
-    /// <summary>Whether the client's hello was accepted (its receive loop owns it).</summary>
-    public bool Introduced;
+    /// <summary>Whether the client's hello was accepted, or refused (another protocol version); its receive loop owns both.</summary>
+    public bool Introduced, Refused;
 
     /// <summary>The client's message rate limit (<see cref="ClientConnectionOptions.MessagesPerSecond"/>; its receive loop owns it).</summary>
     public TokenBucket Limit;
