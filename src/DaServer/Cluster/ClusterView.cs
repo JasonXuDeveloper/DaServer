@@ -134,12 +134,13 @@ public sealed class ClusterView
 
     private static ClusterMember? Rendezvous(ClusterMember[] nodes, uint handlerTypeId, long key, ulong excluded)
     {
+        uint group = Placements.Of(handlerTypeId, ref key); // a placed id type hashes its placement (ADR-073)
         ClusterMember? best = null;
         ulong bestWeight = 0;
         for (int i = 0; i < nodes.Length; i++)
         {
             if (nodes[i].NodeId == excluded && excluded != 0) continue;
-            ulong weight = Weight(nodes[i].NodeId, handlerTypeId, key);
+            ulong weight = Weight(nodes[i].NodeId, group, key);
             if (best == null || weight > bestWeight)
             {
                 best = nodes[i];

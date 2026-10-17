@@ -11,6 +11,7 @@ internal static class Support
     public const string HandoffAttribute = "DaServer.HandoffAttribute";
     public const string ClusterClientType = "DaServer.Client.ClusterClient";
     public const string ActorId = "DaServer.IActorId";
+    public const string Placed = "DaServer.IPlaced";
 
     /// <summary>Address types of client connections: messages sent to them reach clients (<c>[ToClient]</c>).</summary>
     public static readonly string[] ClientAddresses = ["DaServer.ClientSession", "DaServer.Origin", "DaServer.ClientGroup"];
