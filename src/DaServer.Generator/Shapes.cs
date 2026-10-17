@@ -141,7 +141,7 @@ internal static class Shapes
 
         if (type.SpecialType == SpecialType.System_Object || type.TypeKind == TypeKind.Delegate) return false;
         if (type.SpecialType != SpecialType.None || type.TypeKind == TypeKind.Enum) return true;
-        if (WireLayout.IsNinoType(type) || type is { IsUnmanagedType: true, TypeKind: TypeKind.Struct }) return true;
+        if (NinoOptions.IsNinoType(type) || type is { IsUnmanagedType: true, TypeKind: TypeKind.Struct }) return true;
         if (type is INamedTypeSymbol named && InSystemNamespace(named))
             return named.TypeArguments.All(IsWireType);
         return false;

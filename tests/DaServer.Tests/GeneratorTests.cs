@@ -39,7 +39,7 @@ public class GeneratorTests
 
     private static GeneratorDriver Driver() => CSharpGeneratorDriver.Create(
         [new AskGenerator().AsSourceGenerator(), new RegistrationGenerator().AsSourceGenerator(),
-            new PolyfillGenerator().AsSourceGenerator(), new WireManifestGenerator().AsSourceGenerator()], parseOptions: ParseOptions,
+            new PolyfillGenerator().AsSourceGenerator()], parseOptions: ParseOptions,
         driverOptions: new GeneratorDriverOptions(IncrementalGeneratorOutputKind.None, trackIncrementalGeneratorSteps: true));
 
     /// <summary>Generated sources and every error or DASxxx diagnostic (generator, compiler and analyzer).</summary>

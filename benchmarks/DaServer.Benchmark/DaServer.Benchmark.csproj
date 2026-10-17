@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
+        <DaServerWireManifestSkip>true</DaServerWireManifestSkip>
         <OutputType>Exe</OutputType>
         <TargetFramework>net11.0</TargetFramework>
         <IsPackable>false</IsPackable>

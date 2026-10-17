@@ -1,6 +1,6 @@
 <Project>
     <!-- Wire versioning (ADR-076): the committed wire.manifest is checked by the analyzer (DAS017/DAS018);
-         dotnet build -p:UpdateWireManifest=true rewrites it from the code (force: also when the change breaks peers). -->
+         dotnet build -p:UpdateWireManifest=true rewrites it from the built assembly (force: also when the change breaks peers). -->
     <PropertyGroup>
         <!-- What Nino skips silently would leave a value off the wire or out of a record: a read-only member it cannot
              restore (NINO006), a type it cannot write (NINO007), a hidden member it cannot reach (NINO022), a former name
@@ -9,8 +9,7 @@
         <_DaServerUpdatingManifest Condition="'$(UpdateWireManifest)' == 'true' or '$(UpdateWireManifest)' == 'force'">true</_DaServerUpdatingManifest>
         <_DaServerManifestFramework Condition="'$(TargetFrameworks)' != ''">$(TargetFrameworks.Split(';')[0].Trim())</_DaServerManifestFramework>
         <DaServerWireManifest Condition="'$(DaServerWireManifest)' == ''">$(MSBuildProjectDirectory)/wire.manifest</DaServerWireManifest>
-        <EmitCompilerGeneratedFiles Condition="'$(_DaServerUpdatingManifest)' == 'true'">true</EmitCompilerGeneratedFiles>
-        <CompilerGeneratedFilesOutputPath Condition="'$(_DaServerUpdatingManifest)' == 'true' and '$(CompilerGeneratedFilesOutputPath)' == ''">$(IntermediateOutputPath)generated</CompilerGeneratedFilesOutputPath>
+        <DaServerWireTool Condition="'$(DaServerWireTool)' == ''">$(MSBuildThisFileDirectory)../tools/DaServer.WireTool.dll</DaServerWireTool>
     </PropertyGroup>
 
     <ItemGroup>
@@ -19,30 +18,16 @@
         <CompilerVisibleProperty Include="UpdateWireManifest" />
     </ItemGroup>
 
-    <!-- Compile again even when up to date: the generated manifest is written by the compiler (and a stale one of a
-         project that no longer has wire types must not be copied back). -->
-    <Target Name="DaServerRecompileForWireManifest" BeforeTargets="CoreCompile" Condition="'$(_DaServerUpdatingManifest)' == 'true'">
-        <ItemGroup>
-            <_DaServerStaleManifest Include="$(CompilerGeneratedFilesOutputPath)/**/DaServer.WireManifest.g.cs" />
-        </ItemGroup>
-        <Delete Files="@(IntermediateAssembly);@(_DaServerStaleManifest)" />
-    </Target>
-
-    <!-- One target framework writes the file (the first one listed): inner builds run in parallel. -->
-    <Target Name="DaServerUpdateWireManifest" AfterTargets="CoreCompile"
-            Condition="'$(_DaServerUpdatingManifest)' == 'true' and ('$(TargetFrameworks)' == '' or '$(_DaServerManifestFramework)' == '$(TargetFramework)')">
-        <ItemGroup>
-            <_DaServerGeneratedManifest Include="$(CompilerGeneratedFilesOutputPath)/**/DaServer.WireManifest.g.cs" />
-        </ItemGroup>
+    <!-- After a successful compile (a breaking change fails it first, unless forced), one target framework (the first)
+         writes the manifest from the built assembly: the analyzer's own reading of Nino's layouts, from metadata. -->
+    <!-- Test projects put nothing on a deployed wire: they keep no manifest (DaServerWireManifestSkip opts others out). -->
+    <Target Name="DaServerUpdateWireManifest" AfterTargets="CoreCompile" DependsOnTargets="$(DaServerWireToolDependsOn)"
+            Condition="'$(_DaServerUpdatingManifest)' == 'true' and '$(IsTestProject)' != 'true' and '$(DaServerWireManifestSkip)' != 'true' and
+                       ('$(TargetFrameworks)' == '' or '$(_DaServerManifestFramework)' == '$(TargetFramework)')">
         <PropertyGroup>
-            <_DaServerGeneratedPath>@(_DaServerGeneratedManifest)</_DaServerGeneratedPath>
+            <_DaServerReferences>$(IntermediateOutputPath)DaServer.WireReferences.txt</_DaServerReferences>
         </PropertyGroup>
-        <PropertyGroup Condition="'$(_DaServerGeneratedPath)' != ''">
-            <_DaServerManifest>$([System.IO.File]::ReadAllText('$(_DaServerGeneratedPath)'))</_DaServerManifest>
-            <_DaServerManifest>$(_DaServerManifest.Substring($([MSBuild]::Add($(_DaServerManifest.IndexOf('/*')), 3))))</_DaServerManifest>
-            <_DaServerManifest>$(_DaServerManifest.Substring(0, $(_DaServerManifest.LastIndexOf('*/'))).TrimEnd())</_DaServerManifest>
-        </PropertyGroup>
-        <WriteLinesToFile File="$(DaServerWireManifest)" Lines="$(_DaServerManifest)" Overwrite="true" WriteOnlyWhenDifferent="true"
-                          Condition="'$(_DaServerManifest)' != ''" />
+        <WriteLinesToFile File="$(_DaServerReferences)" Lines="@(ReferencePath->'%(FullPath)')" Overwrite="true" WriteOnlyWhenDifferent="true" />
+        <Exec Command="dotnet exec &quot;$(DaServerWireTool)&quot; &quot;@(IntermediateAssembly->'%(FullPath)')&quot; &quot;$(_DaServerReferences)&quot; &quot;$(DaServerWireManifest)&quot;" />
     </Target>
 </Project>

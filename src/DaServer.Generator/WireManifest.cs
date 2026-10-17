@@ -1,28 +1,55 @@
-using System.Collections.Immutable;
 using System.Text;
 
 namespace DaServer.Generator;
 
-/// <summary>A field as its bytes hold it: in order, by name and wire type.</summary>
+/// <summary>A field as its bytes hold it: in order, by name and how it is written.</summary>
 internal readonly record struct WireField(string Name, string Type)
 {
     public override string ToString() => Name + ": " + Type;
 }
 
 /// <summary>
-/// A [NinoType] type of this assembly as the wire manifest records it: how Nino encodes it (<paramref name="Encoding"/>:
-/// its raw memory, or its header and body format), its fields in the order its bytes hold them, for a request its reply
-/// type, its [NinoType] ancestors and whether one of them is another assembly's (a new subtype of a recorded or foreign
-/// type is a type id older builds lack).
+/// A [NinoType] of an assembly as the wire manifest records it: how Nino writes it (<paramref name="Encoding"/>: its
+/// header, format, whether it is raw memory, its type id), its members in the order its bytes hold them, for a request
+/// its reply type, its [NinoType] ancestors and whether one of them is another assembly's (a new subtype of a recorded
+/// or foreign type is a type id older builds lack).
 /// </summary>
-internal sealed record WireType(string Name, string Encoding, EquatableArray<WireField> Fields, string? Reply,
-    EquatableArray<string> Ancestors, bool ForeignAncestor);
+internal sealed record WireType(string Name, string Encoding, WireField[] Fields, string? Reply, string[] Ancestors, bool ForeignAncestor);
+
+/// <summary>
+/// Nino's own description of how it writes a [NinoType] (<c>[assembly: NinoTypeLayout]</c>, emitted by its generator for
+/// every type it writes, read from source and from metadata alike).
+/// </summary>
+internal sealed record NinoLayout(INamedTypeSymbol Type, int Format, int Header, bool Track, bool Raw, int Id, string Members)
+{
+    public const string Attribute = "Nino.Core.NinoTypeLayoutAttribute";
+
+    /// <summary>The layouts an assembly declares, by type (generic types by their definition).</summary>
+    public static Dictionary<INamedTypeSymbol, NinoLayout> Of(IAssemblySymbol assembly)
+    {
+        var layouts = new Dictionary<INamedTypeSymbol, NinoLayout>(SymbolEqualityComparer.Default);
+        foreach (var attribute in assembly.GetAttributes())
+        {
+            if (!Support.Is(attribute.AttributeClass, Attribute)) continue;
+            var a = attribute.ConstructorArguments;
+            if (a.Length < 7 || a[0].Value is not INamedTypeSymbol type) continue;
+            layouts[type.OriginalDefinition] = new NinoLayout(type.OriginalDefinition, (int)a[1].Value!, (int)a[2].Value!, (bool)a[3].Value!,
+                (bool)a[4].Value!, (int)a[5].Value!, a[6].Value as string ?? "");
+        }
+
+        return layouts;
+    }
+
+    /// <summary>The whole layout on one line (how a foreign [NinoType] member is recorded inline).</summary>
+    public override string ToString() => WireManifest.EncodingOf(this) + " {" + WireManifest.Stable(Members) + "}";
+}
 
 /// <summary>
 /// The wire manifest (ADR-076): the committed layout of every type an assembly puts on the wire or in records, so a
 /// change a deployed peer or a stored record would misread fails the build. A positional layout is frozen (a new
 /// field goes into a new message or component), a version-tolerant type takes new fields at its end, a keyed type
-/// any key that keeps its type. How Nino writes a type is mirrored in <see cref="WireLayout"/>.
+/// any key that keeps its type. What Nino writes comes from Nino itself (<see cref="NinoLayout"/>); the manifest adds
+/// what Nino does not know: replies, ancestors, and the fields of plain structs Nino copies as their memory.
 /// </summary>
 internal static class WireManifest
 {
@@ -32,126 +59,133 @@ internal static class WireManifest
     private static readonly SymbolDisplayFormat TypeFormat = SymbolDisplayFormat.FullyQualifiedFormat
         .WithGlobalNamespaceStyle(SymbolDisplayGlobalNamespaceStyle.Omitted);
 
-    /// <summary>The manifest entry of <paramref name="type"/>, or null when it has none (<see cref="HasEntry"/>).</summary>
-    /// <param name="weak">The assembly defines <c>WEAK_VERSION_TOLERANCE</c>: its positional types are version tolerant.</param>
-    public static WireType? Read(INamedTypeSymbol type, bool weak)
-    {
-        if (!HasEntry(type)) return null;
-        var home = type.ContainingAssembly;
-        var (encoding, members) = Layout(type, weak, home);
-        var fields = members.Select(m => new WireField(m.Name, Render(m.Type, weak, home, Open(type)) + m.Note)).ToArray();
-        string? reply = Shapes.ReplyOf(type) is { } r ? Render(r, weak, home, Open(type)) : null;
-        var ancestors = new List<INamedTypeSymbol>();
-        void Up(INamedTypeSymbol t)
-        {
-            foreach (var parent in WireLayout.Parents(t))
-                if (!ancestors.Contains(parent, SymbolEqualityComparer.Default))
-                {
-                    ancestors.Add(parent);
-                    Up(parent);
-                }
-        }
-
-        Up(type);
-        return new WireType(Name(type), encoding, new(fields), reply, new(ancestors.Select(Name).ToArray()),
-            ancestors.Any(a => !SymbolEqualityComparer.Default.Equals(a.ContainingAssembly, home)));
-    }
-
     /// <summary>
-    /// Every manifest entry of <paramref name="compilation"/>'s assembly, with its symbol: the one walk the generator
-    /// and the analyzer share, so both count the same types (the analyzer's symbol actions skip generated files).
+    /// Every manifest entry of <paramref name="home"/> (the compilation's assembly for the analyzer, the built
+    /// assembly read from metadata for the manifest's writer), with its symbol: one implementation for both, so they
+    /// record the same types the same way.
     /// </summary>
-    public static List<(WireType Type, INamedTypeSymbol Symbol)> All(Compilation compilation, CancellationToken ct)
+    public static List<(WireType Type, INamedTypeSymbol Symbol)> All(IAssemblySymbol home, CancellationToken ct)
     {
-        bool weak = compilation.SyntaxTrees.FirstOrDefault()?.Options.PreprocessorSymbolNames.Contains("WEAK_VERSION_TOLERANCE") == true;
+        var layouts = new Layouts(home);
         var types = new List<(WireType, INamedTypeSymbol)>();
-        void Visit(INamespaceOrTypeSymbol container)
+        foreach (var layout in layouts.Home.Values)
         {
-            foreach (var member in container.GetMembers())
-            {
-                ct.ThrowIfCancellationRequested();
-                if (member is INamespaceSymbol ns) Visit(ns);
-                else if (member is INamedTypeSymbol type)
-                {
-                    if (Read(type, weak) is { } wire) types.Add((wire, type));
-                    Visit(type);
-                }
-            }
+            ct.ThrowIfCancellationRequested();
+            types.Add((Read(layout, layouts), layout.Type));
         }
 
-        Visit(compilation.Assembly.GlobalNamespace);
         return types;
     }
 
-    private static string Name(ITypeSymbol type) => type.ToDisplayString(TypeFormat);
-
-    private static HashSet<ITypeSymbol> Open(ITypeSymbol type) => new(SymbolEqualityComparer.Default) { type };
-
-    /// <summary>
-    /// Whether <paramref name="type"/> has its own manifest entry: a [NinoType] of source Nino generates a formatter
-    /// for (a class, struct or interface, public or internal down its containing types, not static or ref-like).
-    /// </summary>
-    public static bool HasEntry(INamedTypeSymbol type)
+    /// <summary>The layouts of the home assembly and, on demand, of the assemblies its types refer to.</summary>
+    private sealed class Layouts(IAssemblySymbol home)
     {
-        if (type.IsStatic || type.IsRefLikeType || type.TypeKind is not (TypeKind.Class or TypeKind.Struct or TypeKind.Interface) ||
-            !type.Locations.Any(l => l.IsInSource)) return false;
-        for (var t = type; t != null; t = t.ContainingType)
-            if (t.DeclaredAccessibility is not (Accessibility.Public or Accessibility.Internal or Accessibility.ProtectedOrInternal)) return false;
-        return WireLayout.IsNinoType(type);
-    }
+        private readonly Dictionary<IAssemblySymbol, Dictionary<INamedTypeSymbol, NinoLayout>> _byAssembly = new(SymbolEqualityComparer.Default);
 
-    /// <summary>
-    /// How Nino writes <paramref name="type"/> and the fields its bytes hold. A raw value (a plain unmanaged struct, a
-    /// [NinoType] struct that qualifies) is its memory: every field in declaration order, private ones too, with its
-    /// <c>[StructLayout]</c> (not for another assembly's type, whose metadata does not show it, so the IDE and the
-    /// command line agree). Otherwise its header (a struct none, a sealed class a null flag, a class a type id, an
-    /// abstract type its subtype's) and body format, and the members Nino serializes; a member hidden by a derived one
-    /// (<c>new</c>) is named with its declaring type, as Nino keys it.
-    /// </summary>
-    private static (string Encoding, List<(string Name, ITypeSymbol Type, string Note)> Members) Layout(INamedTypeSymbol type, bool weak, IAssemblySymbol home)
-    {
-        bool own = SymbolEqualityComparer.Default.Equals(type.ContainingAssembly, home);
-        var options = NinoOptions.Of(type);
-        if (options == null || WireLayout.IsRawStruct(type, weak, home))
-            return ("memory" + (own ? WireLayout.LayoutOf(type) : ""), WireLayout.MemoryFields(type).Select(f => (f.Name, f.Type, "")).ToList());
+        public IAssemblySymbol HomeAssembly { get; } = home;
 
-        string kind = type.TypeKind == TypeKind.Interface || type.IsAbstract ? "abstract" : type.IsValueType ? "struct" : type.IsSealed ? "sealed class" : "class";
-        int format = options.Format == NinoOptions.Positional && weak && own ? NinoOptions.VersionTolerant : options.Format;
-        string encoding = kind + ", " + (format switch { NinoOptions.VersionTolerant => Tolerant, NinoOptions.Keyed => KeyedFormat, _ => "positional" }) +
-                          (options.Track ? ", tracked" : "");
-        var members = WireLayout.Members(type, options);
-        var result = new List<(string, ITypeSymbol, string)>();
-        for (int i = 0; i < members.Count; i++)
+        public Dictionary<INamedTypeSymbol, NinoLayout> Home => Of(HomeAssembly);
+
+        public Dictionary<INamedTypeSymbol, NinoLayout> Of(IAssemblySymbol assembly)
         {
-            var member = members[i];
-            bool hidden = members.Skip(i + 1).Any(m => m.Name == member.Name);
-            result.Add(((hidden ? member.ContainingType.Name + "." : "") + member.Name, WireLayout.TypeOf(member), WireLayout.EncodingOf(member)));
+            if (!_byAssembly.TryGetValue(assembly, out var layouts)) _byAssembly[assembly] = layouts = NinoLayout.Of(assembly);
+            return layouts;
         }
 
-        return (encoding, result);
+        public NinoLayout? Get(ITypeSymbol type) =>
+            type is INamedTypeSymbol named && named.ContainingAssembly is { } assembly && Of(assembly).TryGetValue(named.OriginalDefinition, out var layout)
+                ? layout
+                : null;
+    }
+
+    private static WireType Read(NinoLayout layout, Layouts layouts)
+    {
+        var type = layout.Type;
+        var fields = new List<WireField>();
+        foreach (string entry in layout.Members.Split(';'))
+        {
+            if (entry.Length == 0) continue;
+            // name:type:encoding[:former=...]; a [NinoType] collection's elements: [elements]::formatter
+            var parts = entry.Split(new[] { ':' }, 3);
+            string name = parts[0], written = parts.Length > 1 ? parts[1] : "", how = parts.Length > 2 ? parts[2] : "";
+            // A nested [NinoType]'s generated formatter is named by Nino's generator (its own entry records the type).
+            how = Stable(how);
+            string detail = Inline(MemberType(type, name), layouts);
+            fields.Add(new WireField(name, (written.Length > 0 ? written + " " : "") + how + detail));
+        }
+
+        string? reply = Shapes.ReplyOf(type) is { } r ? Name(r) + Inline(r, layouts) : null;
+        var ancestors = new List<INamedTypeSymbol>();
+        for (var b = type.BaseType; b != null; b = b.BaseType)
+            if (layouts.Get(b) != null) ancestors.Add(b.OriginalDefinition);
+        foreach (var i in type.AllInterfaces)
+            if (layouts.Get(i) != null) ancestors.Add(i.OriginalDefinition);
+        return new WireType(Name(type), EncodingOf(layout), fields.ToArray(), reply, ancestors.Select(Name).ToArray(),
+            ancestors.Any(a => !SymbolEqualityComparer.Default.Equals(a.ContainingAssembly, layouts.HomeAssembly)));
+    }
+
+    /// <summary>A layout's text without the names Nino's generator gives the formatters it generates (they may change between Nino versions).</summary>
+    public static string Stable(string layout) => System.Text.RegularExpressions.Regex.Replace(layout, @"NinoGen\.[A-Za-z0-9_]+", "nested");
+
+    /// <summary>How Nino writes a type: its header, its format, raw memory or not, its type id (renames show).</summary>
+    public static string EncodingOf(NinoLayout layout) =>
+        (layout.Header switch { 1 => "null flag", 2 => "type id", _ => "no header" }) + ", " +
+        (layout.Format switch { 1 => Tolerant, 2 => KeyedFormat, _ => "positional" }) +
+        (layout.Raw ? ", raw" : "") + (layout.Track ? ", tracked" : "") + ", id " + layout.Id.ToString("X8");
+
+    private static string Name(ITypeSymbol type) => type.ToDisplayString(TypeFormat);
+
+    /// <summary>The type of <paramref name="type"/>'s member <paramref name="name"/> (a hidden base member: <c>Base.X</c>), or null.</summary>
+    private static ITypeSymbol? MemberType(INamedTypeSymbol type, string name)
+    {
+        int dot = name.LastIndexOf('.');
+        string member = dot < 0 ? name : name.Substring(dot + 1);
+        for (var t = type; t != null; t = t.BaseType)
+            if (dot < 0 || t.Name == name.Substring(0, dot))
+                foreach (var symbol in t.GetMembers(member))
+                    if (symbol is IFieldSymbol f) return f.Type;
+                    else if (symbol is IPropertySymbol p) return p.Type;
+        return null;
     }
 
     /// <summary>
-    /// A field's type as its bytes depend on it: an enum with its underlying type; arrays and generic arguments
-    /// element by element; an unmanaged struct without its own entry (a plain struct, an id, another assembly's) with
-    /// its layout inline, so a change there shows here; other types by name (their entry, here or in their own
-    /// assembly's manifest, records them).
+    /// What Nino's layout leaves out of a member's bytes: a plain unmanaged struct's fields (Nino copies its memory and
+    /// names only the type: an id's change would not show), another assembly's [NinoType] as its layout (a package
+    /// update that changes it shows here); arrays and generic arguments element by element.
     /// </summary>
-    private static string Render(ITypeSymbol type, bool weak, IAssemblySymbol home, HashSet<ITypeSymbol> open)
+    private static string Inline(ITypeSymbol? type, Layouts layouts, HashSet<ITypeSymbol>? open = null)
     {
-        if (type is IArrayTypeSymbol array) return Render(array.ElementType, weak, home, open) + "[" + new string(',', array.Rank - 1) + "]";
-        if (type is not INamedTypeSymbol named) return Name(type);
-        if (named is { TypeKind: TypeKind.Enum, EnumUnderlyingType: { } underlying }) return Name(named) + "(" + Name(underlying) + ")";
-        if (named.IsGenericType && named.TypeArguments.Length > 0 && (named.SpecialType != SpecialType.None || Support.InSystemNamespace(named)))
-            return Name(named.ConstructedFrom).Split('<')[0] + "<" + string.Join(", ", named.TypeArguments.Select(t => Render(t, weak, home, open))) + ">";
-        if (named.SpecialType != SpecialType.None || Support.InSystemNamespace(named) || named.TypeKind != TypeKind.Struct || !named.IsUnmanagedType)
-            return Name(named);
-        bool foreign = !SymbolEqualityComparer.Default.Equals(named.ContainingAssembly, home);
-        if (!foreign && HasEntry(named) || !open.Add(named)) return Name(named);
-        var (encoding, members) = Layout(named, weak, home);
-        string inline = Name(named) + " " + encoding + " {" + string.Join(", ", members.Select(m => m.Name + ": " + Render(m.Type, weak, home, open) + m.Note)) + "}";
-        open.Remove(named);
-        return inline;
+        switch (type)
+        {
+            case IArrayTypeSymbol array:
+                return Inline(array.ElementType, layouts, open);
+            case INamedTypeSymbol { IsGenericType: true } generic when Support.InSystemNamespace(generic):
+                return string.Concat(generic.TypeArguments.Select(t => Inline(t, layouts, open)));
+            case INamedTypeSymbol named when named.SpecialType == SpecialType.None && !Support.InSystemNamespace(named):
+                if (layouts.Get(named) is { } layout)
+                    return SymbolEqualityComparer.Default.Equals(named.ContainingAssembly, layouts.HomeAssembly) ? "" : " " + layout;
+                if (named.TypeKind != TypeKind.Struct || !named.IsUnmanagedType || !(open ??= new(SymbolEqualityComparer.Default)).Add(named)) return "";
+                var fields = new List<string>();
+                foreach (var member in named.GetMembers())
+                    if (member is IFieldSymbol { IsStatic: false, IsConst: false } field)
+                        fields.Add(PropertyOf(field) + ": " + Name(field.Type) + Underlying(field.Type) + Inline(field.Type, layouts, open));
+                open.Remove(named);
+                return " {" + string.Join(", ", fields) + "}";
+            default:
+                return "";
+        }
+    }
+
+    private static string Underlying(ITypeSymbol type) =>
+        type is INamedTypeSymbol { TypeKind: TypeKind.Enum, EnumUnderlyingType: { } u } ? "(" + Name(u) + ")" : "";
+
+    /// <summary>A field by the name its source gives it: an auto-property's backing field (<c>&lt;Name&gt;k__BackingField</c>) is the property.</summary>
+    private static string PropertyOf(IFieldSymbol field)
+    {
+        if (field.AssociatedSymbol is { } property) return property.Name;
+        string name = field.Name;
+        string plain = name.StartsWith("<", StringComparison.Ordinal) && name.IndexOf('>') is > 1 and var end ? name.Substring(1, end - 1) : name;
+        return field.IsFixedSizeBuffer ? plain + "[" + field.FixedSize + "]" : plain;
     }
 
     /// <summary>The manifest text of <paramref name="types"/>, sorted by name.</summary>
