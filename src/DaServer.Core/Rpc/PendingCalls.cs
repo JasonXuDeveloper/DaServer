@@ -293,12 +293,6 @@ internal sealed class PendingCall<T> : IPendingCall, IValueTaskSource<T>, IValue
     /// <summary>Calls made outside shards (clients, tools, tests): their in-flight count is bounded by their table.</summary>
     private static readonly ObjectPool<PendingCall<T>> Pool = new(() => new PendingCall<T>(), 1024);
 
-    /// <summary>
-    /// Calls made by this shard thread. A shard rents and returns on its own thread (its continuations run there), so
-    /// the stack needs no synchronization and holds exactly the shard's peak number of calls in flight: a burst of any
-    /// width allocates only the first time.
-    /// </summary>
-    [ThreadStatic] private static Stack<PendingCall<T>>? _shardPool;
     private static readonly Action<object?> CompletedSentinel = static _ => { };
     private static readonly Action<object?> ResumeQueued = static call => ((PendingCall<T>)call!).Resume(((PendingCall<T>)call!)._queued!);
 
@@ -317,7 +311,8 @@ internal sealed class PendingCall<T> : IPendingCall, IValueTaskSource<T>, IValue
 
     public static PendingCall<T> Rent(CompletionThread? caller)
     {
-        var call = caller != null && _shardPool is { Count: > 0 } local ? local.Pop() : Pool.Rent();
+        // A shard's calls come from its own per-thread pool (rented and returned on its thread: as many as its peak in flight).
+        var call = caller != null && PerThread<PendingCall<T>>.TryRent(out var local) ? local : Pool.Rent();
         call.Caller = caller;
         call._chain = caller != null ? CallChain.Current : 0;
         return call;
@@ -478,7 +473,7 @@ internal sealed class PendingCall<T> : IPendingCall, IValueTaskSource<T>, IValue
         Caller = null;
         _version++;
         if (caller != null && ReferenceEquals(CompletionThread.Current, caller))
-            (_shardPool ??= new Stack<PendingCall<T>>()).Push(this);
+            PerThread<PendingCall<T>>.Return(this);
         else
             Pool.Return(this);
         if (error != null)

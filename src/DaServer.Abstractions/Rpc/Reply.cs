@@ -191,15 +191,11 @@ internal abstract class ReplyBox<T> : IValueTaskSource<T>, IValueTaskSource
 
 internal sealed class ReplyBox<T, TStateMachine> : ReplyBox<T> where TStateMachine : IAsyncStateMachine
 {
-    /// <summary>Idle boxes kept per thread and method (the peak of that method's suspended calls on a shard).</summary>
-    private const int Bound = 4096;
-
-    [ThreadStatic] private static Stack<ReplyBox<T, TStateMachine>>? t_pool;
-
     public TStateMachine StateMachine = default!;
 
+    /// <summary>A box of this thread's (idle boxes are kept per thread and method: the peak of its suspended calls on a shard).</summary>
     public static ReplyBox<T, TStateMachine> Rent() =>
-        t_pool is { Count: > 0 } pool ? pool.Pop() : new ReplyBox<T, TStateMachine>();
+        PerThread<ReplyBox<T, TStateMachine>>.TryRent(out var box) ? box : new ReplyBox<T, TStateMachine>();
 
     protected override void MoveNext() => StateMachine.MoveNext();
 
@@ -207,7 +203,6 @@ internal sealed class ReplyBox<T, TStateMachine> : ReplyBox<T> where TStateMachi
     {
         StateMachine = default!;
         Core.Reset();
-        var pool = t_pool ??= new Stack<ReplyBox<T, TStateMachine>>();
-        if (pool.Count < Bound) pool.Push(this);
+        PerThread<ReplyBox<T, TStateMachine>>.Return(this);
     }
 }
