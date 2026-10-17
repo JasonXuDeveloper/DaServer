@@ -113,8 +113,7 @@ turn has that chain fails at once with `CallCycle` (ADR-059). A service handler 
   (flag `HasOrigin`, 16 bytes before the call id; handlers read it as `Caller`) and route it. They never deserialize
   payloads.
 - Versions side by side (ADR-076, ADR-077): layouts are frozen by each project's committed `wire.manifest` (DAS017);
-  new fields go into new messages or components, except that a whole message, reply or persisted component of value
-  fields that no other type nests may append fields (`WirePayload` reads an older payload with zeros for them).
+  new fields go into new messages or components.
   Cards name each node's build and the messages it handles: services get only messages their build has, and a
   message an actor owner's build lacks is refused (`NotHosted`) until the owner is upgraded.
 
