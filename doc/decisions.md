@@ -251,8 +251,12 @@ records that no longer hold). Each: context → decision → consequences.
   client-facing node, so no client needs a particular one. `ClientConnectionOptions.MaxConnectionAge` (off by default,
   jittered by a tenth, on the node's clock) retires connections older than it, and a leaving node retires its
   connections in waves (D3): the node sends `ControlOp.Retire` (client protocol 3), the client resumes its session
-  (ADR-036) on a new connection through the entry addresses while the old one keeps working, switches, waits for the
-  calls made on the old one and says goodbye on it. Make before break, as HTTP/2's GOAWAY: no push or call is lost, and
+  (ADR-036) on a new connection through the entry addresses while the old one keeps working, switches, and seals the
+  old one with its goodbye as the last frame (`IFrameChannel.SendLast`): what was sent on it before reaches the node
+  first, a send that still picked it is refused there and goes on the new connection, and the old connection closes
+  once the calls made on it are answered. The seal is the fence, as HTTP/2's GOAWAY and gRPC's draining connection
+  (no new stream on a draining connection, open streams finish): no step waits on a delay, so a slow or preempted
+  device is as safe as a fast one. Make before break: no push or call is lost, and
   after a scale-out the old connections spread over the new nodes too. The node decides: a client that does not move
   within `RetireGrace` (10 s) is closed and reconnects as after a lost connection; a client without a session to
   resume is closed at once. The new connection is admitted by its signed, single-use ticket alone.
