@@ -1329,20 +1329,26 @@ records that no longer hold). Each: context → decision → consequences.
   rebalance a few at a time; Orleans' rebalancer moves activations by load. Both record the decision.
 - Decision:
   - **Coordinator:** the oldest Up member (its card's `UpSince`, then the node id): every node computes it from its
-    view, nothing is elected. A new coordinator continues from the table it received.
+    view, nothing is elected. A new coordinator continues from the table it received, drops the reports it kept from
+    an earlier term, and plans only once every Up member hosting actors reported to it (or after three rounds): a
+    plan from partial reports would unpin loaded slots for a round, and the shards act on every table at once.
   - **Slot table:** the coordinator's overrides of rendezvous owners, (actor type, slot) to node, with a version; it
-    sends the whole table to every member on a change, to members it has not sent it to yet, and again every ten
-    seconds (`ControlOp.SlotTable`, ignored by older builds). A view applies an override whose node hosts the type and
+    sends the whole table to every member on a change, to members it has not sent it to yet, and again every minute
+    (`ControlOp.SlotTable`, ignored by older builds); every node also sends its table on each new link, so a joining
+    node routes by it from its first link. A view applies an override whose node hosts the type and
     is Up or Suspect; any other slot keeps its rendezvous owner, so an empty table is ADR-074's behaviour.
-  - **Reports:** every node tells the coordinator, every five seconds, which slots of each actor type hold loaded
-    actors here and how many (`ControlOp.SlotReport`), and which of its types are sticky.
+  - **Reports:** every node counts, every five seconds, which slots of each actor type hold loaded actors and how many,
+    and tells the coordinator when that changed, the coordinator changed, or a minute passed (`ControlOp.SlotReport`),
+    with which of its types are sticky. The coordinator plans after a new report or a membership change only: an
+    unchanged round allocates nothing.
   - **Sticky types** (`[Sticky]` on the actor class, e.g. maps): the coordinator pins every reported loaded slot
     of a sticky type to the node that holds it, so a join moves only empty slots: new keys reach the new node, loaded
     actors stay. A slot loaded since the last report may still move at a join (a handoff, as before).
   - **Load-aware moves** (the default policy): per actor type, when the most loaded node holds more than 1.25 times
     the average and at least two slots more than the least loaded, the coordinator moves up to two of its loaded slots
     to the least loaded node per round; the move is a handoff (ADR-072). Sticky types are never rebalanced.
-  - Overrides naming a node that left are dropped; a moved slot whose override now matches rendezvous is dropped (the
+  - Overrides naming a node that left are dropped; an override whose node has not reported, or whose type no report
+    names, is kept; a moved slot whose override now matches rendezvous is dropped (the
     table stays small). A sticky type's pins stay while their slots hold actors, matching rendezvous or not: a join
     changes rendezvous, and the pin must already be there.
 - Alternatives: an Orleans-style per-actor directory (a registration per activation); a coordinator elected by
