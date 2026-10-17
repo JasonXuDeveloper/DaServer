@@ -1237,13 +1237,19 @@ records that no longer hold). Each: context → decision → consequences.
   inline) and a request's reply. The analyzer fails the build on any change to a recorded type (DAS017) and asks to
   record new types (DAS018) with `dotnet build -p:UpdateWireManifest=true` (which still stops on DAS017;
   `=force` records a deliberate break). A project without a manifest is not checked. `WirePayload.Read` reads every
-  message, reply and record section: a value-only payload shorter than its type (truncated, hostile) is read within
-  its bytes instead of past them.
+  message, reply and record section: a value-only payload shorter than its type (truncated, hostile) is refused
+  before Nino would read past its end.
 - Alternatives: appending with zero-padding (unsound inside padding, needs the full memory layout computed);
   `WEAK_VERSION_TOLERANCE` (a format change); a length prefix per message (bytes and a copy on every message); field
   tags (protobuf: bytes and CPU on every field). Nino's next major version is to be reviewed for tolerant reads
   (roadmap).
-- Consequences: renames are reported though Nino writes no names (deliberately conservative). A new component
+- Consequences: renames are reported though Nino writes no names (deliberately conservative). The manifest mirrors
+  Nino 4's rules rather than reading Nino's own description of a type, so some changes still escape it until Nino
+  exposes one (roadmap): `[FieldOffset]` under explicit layout, `[NinoFormerName]`, `[NinoPrivateProxy]` members
+  (and Nino's generated proxies on netstandard2.1), private fields and `[StructLayout]` of other assemblies' types
+  read from metadata, generic structs written as memory once constructed. The framework's own frames (cards, the
+  Hello, session operations) are guarded by the link protocol version instead. The generator runs only when the
+  manifest is updated. A new component
   written by a newer node is dropped when an older node saves the record again (a rollback, or the key moving back
   during the rollout): records keep only the sections the saving build knows. BenchmarkDotNet: see ADR-077.
 

@@ -342,13 +342,16 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
       fields go into new messages or components. The samples commit theirs.
 - Waiting on Nino's next major version (the user will say when it lands; revisit V1 and N8 then), measured on
   4.0.0-beta.47:
-  - Value-only types are read as memory without a length check (`WirePayload` keeps reads within the payload); an
+  - Value-only types are read as memory without a length check (`WirePayload` refuses shorter payloads first); an
     appended field can land in the old trailing padding, so zero-padding cannot make appending safe.
   - `WEAK_VERSION_TOLERANCE` tolerates only a buffer that has ended, not one cut inside a value block, and it changes
     the wire format (unmanaged runs written field by field): unusable as a version switch.
   - `Reader` does not expose the bytes left, so tolerant reads have to wrap it at every call site.
   - Wanted: appending fields to any type with defaults for missing ones, independent of the wire format; then the
     manifest can allow appends.
+  - Wanted: a per-type layout description Nino computes (encoding, members in order, their encodings) that a
+    generator can read, so the manifest records Nino's own view instead of mirroring its rules (the escapes ADR-076
+    lists close with it).
 - [x] V2 Build on the card (ADR-077): `ClusterMember.Build` (framework and application versions); a node logs while
       its view holds several builds.
 - [x] V3 Messages only where the build has them (ADR-077): services (sent or forwarded) among nodes whose build
