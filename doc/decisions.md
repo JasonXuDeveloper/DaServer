@@ -1052,8 +1052,9 @@ records that no longer hold). Each: context → decision → consequences.
     `unnest(type ids, keys, expected versions, data)` that inserts first writes (`ON CONFLICT DO NOTHING`), updates
     rows still at their expected version and returns the accepted ordinals. The record bytes are the shard's pooled
     buffers, passed without copying; the columns are pooled lists. 1,024 critical saves cost about 11 ms and 11 KB.
-    `AddPostgreSqlActorStore()` in Program.cs wires it and adds the database to readiness; the AppHost passes the
-    connection string (`WithActorStore`).
+    `AddPostgreSqlActorStore()` in Program.cs wires it on Aspire's Npgsql integration (a data source keyed by the
+    connection name, its health check in readiness, its tracing and metrics); the AppHost passes the connection
+    string (`WithActorStore`).
 - Alternatives:
   - A write per turn: no loss, but write volume and latency grow with traffic.
   - Explicit saves in handlers: forgotten saves, and saves while the state is half-changed.

@@ -282,8 +282,7 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
       `AddDaServer` that calls `/health` on the node's own port and exits.
 - [ ] A4 Publish mode = one workload per node group (with S4): `IsPublishMode` emits one Deployment with `replicas`,
       a headless Service (`clusterIP: None`, `publishNotReadyAddresses` so joining pods gossip), pod-IP advertising
-      through the downward API; run mode keeps one resource per replica (ADR-030). HPA v2 / KEDA / PDB via
-      `PublishAsKubernetesService` + `AdditionalResources` (PDB and KEDA as small custom resource types).
+      through the downward API; run mode keeps one resource per replica (ADR-030).
 - [ ] A5 Dashboard: a cluster parent resource (`WithParentRelationship`) showing "n/n joined"; custom states Joining /
       Joined / Draining / Suspected; commands Drain, Membership (JSON), Stats, Unload actor type (admin endpoints on the HTTP
       plane, authorized with the signing secret). Usable from `aspire resource <node> <command>`,
@@ -403,17 +402,15 @@ stateful, maps being heavy actors.
       (handoff, N6, a few at a time, Akka's least-shard allocation); per actor type a move policy, so heavy actors
       (maps) stay where they are loaded and only new keys go to a new node (sticky slots), and a scale-out never
       moves a map with players in it.
-- [ ] S4 Generated manifests (needs A4: one workload per group in publish mode): `WithClientConnections` publishes a
-      LoadBalancer Service per client-facing group (TCP port and `/clients/ws`; cloud annotations through a user hook)
-      and a preStop wait so the balancer lets go before the listener closes (ADR-026); a group is stateful with
-      `.Stateful()`, on by default with `WithActorStore` (agreed). The MMO sample publishes to Kubernetes as is.
-      `DaServer.Aspire` emits, per node group, HPA (or KEDA `ScaledObject`) with min/max and the
-      S1 metric, a PodDisruptionBudget (stateful groups: one node at a time), termination grace period and probes,
-      scale-down stabilization for stateful groups; through Aspire's Kubernetes publisher (generated resources can be
-      customized and extra resources such as `HorizontalPodAutoscaler` added). Plain Deployments: identity comes from
-      gossip incarnations and state from the store, so no StatefulSet is needed.
-- [ ] S5 Vertical scaling: shards follow the CPU limit (cgroup-aware core count). VPA in recommendation mode for
-      stateful groups (applying it restarts pods, i.e. a drain and a rejoin); automatic VPA only for stateless groups.
+- [ ] S4 Generated manifests (needs A4: one workload per group in publish mode). `DaServer.Aspire` adds only what
+      follows from DaServer (agreed): probes, grace period, a preStop wait so the balancer lets go before the listener
+      closes (ADR-026), the client ports as external endpoints. Scaling policy is each application's, added in its
+      AppHost through Aspire's publisher hooks; the samples show it: the MMO sample's gateways behind a LoadBalancer
+      and a PodDisruptionBudget for its stateful groups, the flash sale's gateways under an HPA on the S1 metric and a
+      VPA in recommendation mode. Publish snapshot tests check both. Plain Deployments: identity comes from gossip
+      incarnations and state from the store, so no StatefulSet is needed.
+- [ ] S5 Vertical scaling: shards follow the CPU limit (cgroup-aware core count), documented and tested; a VPA is
+      the application's (applying it restarts pods, i.e. a drain and a rejoin: recommendation mode for stateful groups).
 - [ ] S6 Prove it: E2E that scales a stateful group out and in under load (10k bots) with no lost state, no dropped
       session and bounded latency spikes.
 

@@ -98,10 +98,12 @@ doc/                       requirements.md, design.md, decisions.md, roadmap.md
 - Actors are turn-based: one message at a time including its awaits (no interleaving). Calls in a cycle (A awaits B
   awaits A) fail at once with `CallCycle` (ADR-059): model such flows with one-way messages (`Send`/`Publish`).
 - Orchestration is the Aspire model (`samples/mmo/Sample.AppHost`); do not add hand-written compose/k8s files.
-  What Aspire does not publish (probes, grace periods, Compose health checks, HPA/PDB) is added by `DaServer.Aspire`
-  through the publisher hooks (`PublishAsKubernetesService`, `PublishAsDockerComposeService`), never by hand.
-  Scaling decisions belong to the platform (HPA/KEDA); the framework makes joining and leaving safe, it is not an
-  autoscaler. `DaServer.Hosting.AddDaServer` is the framework's service defaults. Nodes run ASP.NET Core for their HTTP plane
+  `DaServer.Aspire` adds only what follows from DaServer itself and Aspire cannot know (probes, grace periods from the
+  stop budget, preStop, one workload per node group with seeds, client ports as external endpoints) through the
+  publisher hooks (`PublishAsKubernetesService`, `PublishAsDockerComposeService`), never by hand. Scaling policy
+  (HPA, VPA, KEDA, PDB, the load balancer's kind and annotations) is the platform's and the application's: a sample
+  adds what it needs in its AppHost through the same hooks; the framework exports the signals (metrics) and makes
+  joining and leaving safe, it is not an autoscaler. `DaServer.Hosting.AddDaServer` is the framework's service defaults. Nodes run ASP.NET Core for their HTTP plane
   (health, admin, internal REST endpoints, ADR-046); the data plane stays DaServer's own TCP links. HTTP code reaches
   actors only through `ICluster`.
 - The HTTP plane is for low-frequency traffic (probes, admin, webhooks, back-office). Client traffic at volume (a
