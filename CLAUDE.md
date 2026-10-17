@@ -42,7 +42,8 @@ src/DaServer/              server runtime (net11.0): Runtime/ Cluster/ Rpc/ Net/
   Runtime/Systems/         runtime systems: Dispatch, Turn, ServiceCall, Removal, Unload, Mailbox (ShardMessages group),
                            Rebalance (ShardRebalance), Idle (ShardIdleScan); each reacts to one lifecycle tag (ADR-037)
 src/DaServer.Generator/    incremental generators (AskGenerator, RegistrationGenerator, PolyfillGenerator, WireManifestGenerator)
-                           + DaServerAnalyzer (DAS001-018); WireManifest.cs: the wire.manifest model (ADR-076);
+                           + DaServerAnalyzer (DAS001-018); WireManifest.cs: the wire.manifest model (ADR-076); WireLayout.cs: Nino's
+                           generator rules mirrored (members, order, raw structs, formats);
                            Shapes.cs reads symbols once for both, so "skipped by the generator" == "reported"
 src/DaServer.Hosting/      Generic Host integration, configuration, OpenTelemetry (OTLP when configured), shutdown
 src/DaServer.Persistence.PostgreSql/  actor records in PostgreSQL (ADR-068): PostgreSqlActorStore, AddPostgreSqlActorStore
@@ -68,7 +69,7 @@ doc/                       requirements.md, design.md, decisions.md, roadmap.md
 ## Engineering principles (apply to every change)
 
 1. **Performance is the first constraint; GC is part of performance.** Hot paths (send/receive, dispatch, replies,
-   mailbox, message sends, ECS ticks) allocate nothing in steady state: pooled `FrameWriter`/`BufferPool` (POH), struct
+   mailbox, message sends, ECS ticks) allocate nothing in steady state: pooled `FrameWriter`s (over Nino's `NinoArrayBufferWriter`), the POH `BufferPool` for sockets, struct
    mailbox items, pooled `IValueTaskSource`s, `in` struct messages. No LINQ, closures, boxing, string formatting there.
 2. **CPU**: inline fast paths, `NoInlining` cold paths, no redundant bounds checks (only behind documented
    invariants), batch syscalls.

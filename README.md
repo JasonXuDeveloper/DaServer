@@ -243,7 +243,7 @@ worlds on their own threads, behavior as HTN planning over ECS data, swarms that
 
 ## Persistence
 
-Components marked `[Persist]` (version-tolerant Nino structs in a components project, DAS014) are an actor's stored
+Components marked `[Persist]` (version-tolerant or keyed Nino structs in a components project, DAS014) are an actor's stored
 state (ADR-068). The
 runtime restores them before `OnLoad` when the actor loads, on any node, writes them when it unloads and every
 `SaveEvery` (30 s) while they changed, and at once for an entity tagged `SaveNow`. Writes are versioned: a node that
@@ -280,7 +280,7 @@ Actors, services and systems read time from `Time` (`world.Time()` in systems), 
 ## Rolling upgrades
 
 Old and new nodes run side by side while a deployment rolls. Message layouts are frozen: a new field goes into a new
-message. Persisted components are version tolerant, so they take new fields at their end. Each project commits a
+message. Persisted components are version tolerant (new fields at their end) or keyed (DAS014). Each project commits a
 `wire.manifest`; the build fails (DAS017) when a change would break the other build and asks to record the rest
 (DAS018) with `dotnet build -p:UpdateWireManifest=true`. While builds differ, a message goes only to nodes whose build handles it
 (ADR-076, ADR-077).

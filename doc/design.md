@@ -35,7 +35,7 @@ Everything a developer declares is one of these (ADR-035). The message type alon
 | `[NinoType, Message] partial record struct M` | a message between servers only |
 | `[Message, FromClient]` | game clients may send it; to an actor it goes to the actor bound to the session (`BindSession`), or to the actor the client names when that actor granted the session (`GrantSession`) |
 | `[Message, ToClient]` | servers push it to sessions and groups; only clients handle it |
-| `[NinoType]` alone | data inside messages (unmanaged structs go as their memory); anything else crossing the wire is a build error (DAS003) |
+| `[NinoType]` alone | data inside messages; an unmanaged struct (an id) crosses as its memory without `[NinoType]`; anything else crossing the wire is a build error (DAS003) |
 | `M : IRequest<TReply>` | a request, answered with one `TReply` |
 | `[Handle]` method of an `Actor`/`Service` | handles one message type; returns `void`/`Reply`, or a request's reply/`Reply<TReply>` (`Ask` returns `Reply<TReply>` too) |
 | `[Handle]` method of any other class | client-side handler of pushes (`client.Register(obj)`) |
