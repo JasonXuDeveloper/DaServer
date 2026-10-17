@@ -126,4 +126,40 @@ public class ClusterTests : ClusterTest
         Assert.That(restarted.ClusterEndPoint.Port, Is.EqualTo(port));
         Assert.That(second.Id, Is.Not.EqualTo(restarted.Id));
     }
+
+    [Test]
+    public async Task ANodeRestartedAtTheSameAddressLosesNoCallWhenItsOldIdIsDeclaredDead()
+    {
+        // b crashes and comes back at its address with a new id: links are per address, so b's old id must not take the
+        // new process's stream with it, neither when the link reconnects nor when the old id is declared dead.
+        var a = await Start("a");
+        var b = await Start("b");
+        await Converged();
+        int port = b.ClusterEndPoint.Port;
+        await b.KillAsync();
+        var restarted = await Start("b2", configure: o => o.ClusterPort = port);
+        await Eventually(() => a.View.TryGetMember(restarted.Id, out var m) && m.Status == MemberStatus.Up, "a sees the new process");
+        var keys = new List<long>();
+        for (long key = 1; keys.Count < 10; key++)
+            if (a.OwnerOf<CounterId>(key) == restarted.Id) keys.Add(key);
+
+        var failures = new List<string>();
+        var start = DateTime.UtcNow;
+        var until = DateTime.UtcNow.AddSeconds(3); // across b's Dead verdict (DeadAfter 1.5 s)
+        while (DateTime.UtcNow < until)
+            foreach (long key in keys)
+            {
+                try
+                {
+                    await a.Ask(new CounterId(key), new Add(1));
+                }
+                catch (RpcException e)
+                {
+                    failures.Add($"{e.Status} (key {key} at {(DateTime.UtcNow - start).TotalMilliseconds:0} ms)");
+                }
+            }
+
+        Assert.That(a.View.TryGetMember(b.Id, out var old) ? old.Status : MemberStatus.Dead, Is.EqualTo(MemberStatus.Dead), "b's old id was declared dead meanwhile");
+        Assert.That(failures, Is.Empty);
+    }
 }
