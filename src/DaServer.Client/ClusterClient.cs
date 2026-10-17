@@ -497,9 +497,8 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
         for (int i = 0; i < registered.Length; i++)
         {
             if (registered[i].Handlers.Of(header.MessageId) is not { } handler) continue;
-            var reader = new Reader(FrameHeader.PayloadOf(in header, frame));
             var context = default(CallContext);
-            var task = handler.Dispatcher(registered[i].Target, ref reader, in context);
+            var task = handler.Dispatcher(registered[i].Target, FrameHeader.PayloadOf(in header, frame), in context);
             if (task.IsCompleted) task.GetAwaiter().GetResult();
         }
     }

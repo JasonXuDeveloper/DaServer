@@ -590,7 +590,8 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
 
         if (!ClientMessages.TryGet(header.MessageId, out var message))
         {
-            if (replyId != 0) session.Sink.SendError(replyId, RpcStatus.Forbidden);
+            // Unknown to this node's build: a newer client during a rolling upgrade retries elsewhere or later (V3).
+            if (replyId != 0) session.Sink.SendError(replyId, RpcStatus.NotHosted);
             return;
         }
 

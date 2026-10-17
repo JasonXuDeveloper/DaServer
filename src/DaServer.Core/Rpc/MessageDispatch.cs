@@ -4,10 +4,10 @@ using System.Reflection;
 namespace DaServer.Rpc;
 
 /// <summary>
-/// Generated dispatcher: deserialize the message from <paramref name="reader"/>, invoke <paramref name="target"/>'s
-/// handler and reply through <paramref name="context"/> (requests).
+/// Generated dispatcher: read the message from <paramref name="payload"/> (<see cref="WirePayload"/>), invoke
+/// <paramref name="target"/>'s handler and reply through <paramref name="context"/> (requests).
 /// </summary>
-public delegate ValueTask MessageDispatcher(object target, ref Reader reader, in CallContext context);
+public delegate ValueTask MessageDispatcher(object target, ReadOnlySpan<byte> payload, in CallContext context);
 
 /// <summary>One message type handled by a type (generated registration).</summary>
 public sealed class MessageHandler(uint messageId, MessageDispatcher dispatcher, Type messageType)

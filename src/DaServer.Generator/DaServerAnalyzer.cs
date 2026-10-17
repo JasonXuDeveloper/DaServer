@@ -282,7 +282,7 @@ internal static class Rules
         "'{0}' {1}", Category, DiagnosticSeverity.Error, true);
 
     public static readonly DiagnosticDescriptor WireBreak = new("DAS017", "Wire layout breaks the manifest",
-        "'{0}' {1} (wire.manifest, ADR-076)", Category, DiagnosticSeverity.Error, true, customTags: WellKnownDiagnosticTags.CompilationEnd);
+        "'{0}' {1} (wire.manifest, ADR-076; a deliberate break: dotnet build -p:UpdateWireManifest=force)", Category, DiagnosticSeverity.Error, true, customTags: WellKnownDiagnosticTags.CompilationEnd);
 
     public static readonly DiagnosticDescriptor WireUnrecorded = new("DAS018", "Wire manifest out of date",
         "'{0}' {1}: record it with dotnet build -p:UpdateWireManifest=true and commit wire.manifest", Category,
