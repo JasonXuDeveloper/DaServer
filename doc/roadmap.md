@@ -421,8 +421,10 @@ in separate commits.
          overlaps them when they are started first.
 - [ ] N4 Route completeness check: one handler type per request / one-way message kind across all node projects,
       a handler for every `FromClient` message; run in tests and at AppHost start. (Orleans compile-time interfaces)
-- [ ] N7 Placement affinity: an actor type may declare a placement key (`PlacementKey(key)`), hashed instead of the
-      key: same placement key = same node (and shard); zones without topology strings, no directory. (ET addresses)
+- [x] N7 Placement affinity (ADR-073): an actor id type implementing `IPlaced` is hashed by its `Placement` (a pure
+      function of its value) instead of its value, in group 0: actors of any type with the same placement share a
+      node and a shard. The wire is unchanged; the registration of the assembly declaring the id type registers it;
+      DAS016 reports `IPlaced` on anything but an actor id type.
 - [x] N5 Persistence as ECS (ADR-068): `[Persist]` components of an actor form one record (a section per component
       type id); `LoadSystem` batches the loads of a wake and restores components before `OnLoad`; `CheckpointSystem`
       writes changed records every `Actor.SaveEvery` (30 s, unchanged skipped by hash), `PersistSystem` writes
