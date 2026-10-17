@@ -238,7 +238,7 @@ internal static class Rules
         "'{0}' (used by {1}) {2}: a message is a non-generic [NinoType, Message] struct", Category, DiagnosticSeverity.Error, true);
 
     public static readonly DiagnosticDescriptor NotWireType = new("DAS003", "Type cannot cross the wire",
-        "'{0}' (used by {1}) must be a primitive, string, enum, array, BCL collection or a [NinoType] type", Category,
+        "'{0}' (used by {1}) must be a primitive, string, enum, unmanaged struct, array, BCL collection or a [NinoType] type (not object or a delegate)", Category,
         DiagnosticSeverity.Error, true);
 
     public static readonly DiagnosticDescriptor IdCollision = new("DAS004", "Message id collision",
