@@ -71,7 +71,7 @@ public sealed class Order : Actor<OrderId, Purchase>
 /// <summary>
 /// A sale's waiting room: buyers take a position, <see cref="AdmissionSystem"/> admits positions at the sale's pace,
 /// and a buyer may buy once its position is admitted. Once every stock shard is empty it turns everyone away, so the
-/// crowd that comes too late costs one answer each (and none at all from the edges that heard it, Endpoints.cs).
+/// crowd that comes too late costs one answer each.
 /// </summary>
 public sealed class WaitingRoom : Actor<WaitingRoomId, Room>
 {
@@ -85,9 +85,11 @@ public sealed class WaitingRoom : Actor<WaitingRoomId, Room>
 
     [Handle] public long On(Join _) => State.SoldOut ? 0 : ++State.Issued;
 
+    // A position once admitted stays admitted, sold out or not: its buyer may still ask its order (a retry gets the
+    // order's answer); only those still waiting are turned away.
     [Handle]
     public Admission On(Admitted m) =>
-        State.SoldOut ? Admission.SoldOut : m.Position <= State.Released ? Admission.Admitted : Admission.Waiting;
+        m.Position <= State.Released ? Admission.Admitted : State.SoldOut ? Admission.SoldOut : Admission.Waiting;
 
     [Handle]
     public void On(ShardEmpty m)

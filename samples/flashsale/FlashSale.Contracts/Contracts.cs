@@ -75,3 +75,27 @@ public enum Admission : byte
 
 /// <summary>A stock shard ran out (to the sale's waiting room): when all have, the room turns buyers away.</summary>
 [NinoType, Message] public partial record struct ShardEmpty(int Shard);
+
+// What clients send (TCP, or WebSocket for browsers), handled by the sale's Gate service. The session is the buyer's
+// channel: no tokens to carry between steps, the room itself says whether a position was admitted.
+
+/// <summary>
+/// Open a sale: its stock split over the shards, its room admitting <see cref="PerSecond"/> buyers a second. The
+/// sample's crowd opens its own sale; a real shop does it from its back office (an admin endpoint, ADR-046).
+/// </summary>
+[NinoType, Message, FromClient] public partial record struct OpenSale(long Sale, int Units, int PerSecond) : IRequest<bool>;
+
+/// <summary>Take a place in the sale's queue: the position, or 0 when it is sold out.</summary>
+[NinoType, Message, FromClient] public partial record struct QueueUp(long Sale) : IRequest<long>;
+
+/// <summary>Whether the buyer at <see cref="Position"/> may buy now.</summary>
+[NinoType, Message, FromClient] public partial record struct CheckIn(long Sale, long Position) : IRequest<Admission>;
+
+/// <summary>Buy as <see cref="User"/>, admitted at <see cref="Position"/>: the order's outcome, the same on every retry.</summary>
+[NinoType, Message, FromClient] public partial record struct PlaceOrder(long Sale, long User, long Position) : IRequest<OrderStatus>;
+
+/// <summary>Units left in the sale (the shards summed).</summary>
+[NinoType, Message, FromClient] public partial record struct SaleStock(long Sale) : IRequest<int>;
+
+/// <summary>What <see cref="User"/>'s order in the sale came to.</summary>
+[NinoType, Message, FromClient] public partial record struct OrderOf(long Sale, long User) : IRequest<OrderStatus>;

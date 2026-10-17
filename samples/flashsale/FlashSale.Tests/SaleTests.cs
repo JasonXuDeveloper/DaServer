@@ -1,6 +1,5 @@
 using DaServer.Testing;
 using FlashSale.Contracts;
-using FlashSale.Server;
 using NUnit.Framework;
 
 namespace FlashSale.Tests;
@@ -49,18 +48,8 @@ public class SaleTests
         for (int shard = 0; shard < Sale.Shards; shard++) await cluster.Cluster.Ask(StockShardId.Of(2, shard), new Restock(0));
         await cluster.WaitUntilAsync(() => cluster.Cluster.Ask(room, new Join()).AsTask().Result == 0, TimeSpan.FromSeconds(5),
             "every shard empty: the room turns newcomers away");
-        Assert.That(await cluster.Cluster.Ask(room, new Admitted(1000)), Is.EqualTo(Admission.SoldOut));
-    }
-
-    [Test]
-    public void PassesAreBoundToTheirSaleUserAndKind()
-    {
-        var passes = new Passes("secret");
-        string ticket = passes.Issue(Passes.Ticket, sale: 3, user: 42, position: 7);
-        Assert.That(passes.TryRead(ticket, Passes.Ticket, 3, 42, out long position) && position == 7, Is.True);
-        Assert.That(passes.TryRead(ticket, Passes.Pass, 3, 42, out _), Is.False, "a ticket is not a pass");
-        Assert.That(passes.TryRead(ticket, Passes.Ticket, 3, 43, out _), Is.False, "nor another user's");
-        Assert.That(new Passes("other").TryRead(ticket, Passes.Ticket, 3, 42, out _), Is.False, "nor signed with another secret");
-        Assert.That(passes.TryRead("not-a-token", Passes.Ticket, 3, 42, out _), Is.False);
+        Assert.That(await cluster.Cluster.Ask(room, new Admitted(1000)), Is.EqualTo(Admission.Admitted), "admitted stays admitted");
+        long late = await cluster.Cluster.Ask(room, new Join()); // 0: turned away
+        Assert.That(late, Is.Zero);
     }
 }
