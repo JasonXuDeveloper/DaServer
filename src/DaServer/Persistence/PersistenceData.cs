@@ -51,6 +51,9 @@ internal readonly record struct ShardStore(IActorStore? Store, PersistentType[] 
 /// </summary>
 internal sealed class LoadBatch(Shard shard)
 {
+    /// <summary>Loads per batch: an actor beyond it waits for the next one (a store that was slow sees bounded statements).</summary>
+    public const int Max = 512;
+
     private static readonly Action<object?> Apply = static b => ((LoadBatch)b!).Applied();
 
     public readonly List<Entity> Entities = new();
@@ -62,6 +65,8 @@ internal sealed class LoadBatch(Shard shard)
     public bool InFlight { get; private set; }
 
     public int Count => Entities.Count;
+
+    public bool Full => Count == Max;
 
     public void Add(Entity entity, StoredKey key)
     {
