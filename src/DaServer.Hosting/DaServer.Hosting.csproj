@@ -9,6 +9,7 @@
         <!-- The HTTP plane (ADR-046): every node runs Kestrel next to its TCP data plane. -->
         <FrameworkReference Include="Microsoft.AspNetCore.App" />
         <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.19.1" />
+        <PackageReference Include="OpenTelemetry.Exporter.Prometheus.AspNetCore" Version="1.19.1-beta.1" />
         <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.19.1" />
         <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" Version="1.19.0" />
     </ItemGroup>

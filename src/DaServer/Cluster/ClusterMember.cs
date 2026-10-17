@@ -77,6 +77,12 @@ public sealed partial class ClusterMember
     /// <summary>What the node's features publish about it (an endpoint, a mode): set once at start.</summary>
     public CardEntry[] Entries = [];
 
+    /// <summary>
+    /// When the node became Up (Unix milliseconds of its own clock): the oldest Up member coordinates slot allocation
+    /// (ADR-079). Clocks need not agree closely: any order every node computes alike will do.
+    /// </summary>
+    public long UpSince;
+
     /// <summary>The value the member gossips under <paramref name="key"/> (<see cref="INodeContext.AddPulse"/>), 0 when none.</summary>
     public int Pulse(uint key)
     {

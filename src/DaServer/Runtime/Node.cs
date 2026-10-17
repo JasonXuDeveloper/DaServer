@@ -34,6 +34,7 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
         Pending = new PendingCallTable(options.PendingCallBits);
         Membership = new Membership(this);
         _sessionNodes = new SessionNodes(this);
+        _slots = new SlotAllocation(this);
         _localSink = new LocalReplySink(this);
         _linkAuth = new LinkAuth(options.ClusterName, options.SigningSecret);
     }
@@ -295,6 +296,15 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
     /// <summary>Calls and events refused by full shard dispatch queues or actor mailboxes since start (backpressure).</summary>
     public long Rejected => Sum(static s => s.Rejected);
 
+    /// <summary>Time the shards spent asleep waiting for work since start, in <see cref="Stopwatch"/> ticks, all shards.</summary>
+    internal long IdleTicks => Sum(static s => s.IdleTicks);
+
+    /// <summary>The shards' ticks that started a whole interval late since start.</summary>
+    public long TickOverruns => Sum(static s => s.TickOverruns);
+
+    /// <summary>Shards on this node.</summary>
+    public int ShardCount => _shards.Length;
+
     /// <summary>Requests dropped unrun since start because their caller had already timed out.</summary>
     public long Expired => Sum(static s => s.Expired);
 
@@ -309,6 +319,7 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
     }
 
     private readonly SessionNodes _sessionNodes;
+    private readonly SlotAllocation _slots;
     private string _builds = "";
 
     /// <summary>Log when the builds the cluster runs change (a rolling upgrade starts or completes, V2).</summary>

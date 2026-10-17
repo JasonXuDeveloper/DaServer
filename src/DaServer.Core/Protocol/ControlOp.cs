@@ -37,6 +37,12 @@ internal static class ControlOp
     /// <summary>Full member descriptions: payload = ClusterMember[] (sent when a node meets another, not every round).</summary>
     public const uint Cards = 8;
 
+    /// <summary>Coordinator to member: payload = the slot table (ADR-079); applied when newer. Ignored by older builds.</summary>
+    public const uint SlotTable = 9;
+
+    /// <summary>Member to coordinator: payload = the member's loaded slots per actor type (ADR-079). Ignored by older builds.</summary>
+    public const uint SlotReport = 10;
+
     // Client sessions (client and client-facing node): resume tickets (ADR-036).
 
     /// <summary>

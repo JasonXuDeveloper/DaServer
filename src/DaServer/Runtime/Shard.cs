@@ -72,6 +72,12 @@ internal sealed class Shard : CompletionThread
     /// <summary>Messages whose handler failed (threw) on this shard since start: poison messages show up here.</summary>
     public long Failed => Volatile.Read(ref _counters.Failed);
 
+    /// <summary>Time asleep waiting for work since start, in <see cref="Stopwatch"/> ticks (any thread).</summary>
+    public long IdleTicks => Volatile.Read(ref _counters.IdleTicks);
+
+    /// <summary>Ticks that started a whole interval late since start: the shard cannot keep its tick rate (any thread).</summary>
+    public long TickOverruns => Volatile.Read(ref _counters.TickOverruns);
+
     /// <summary>Active loaded actors (approximate, any thread).</summary>
     public int ActorCount => Volatile.Read(ref _counters.ActorCount);
 
@@ -224,6 +230,7 @@ internal sealed class Shard : CompletionThread
                         Volatile.Write(ref _counters.TickCount, _counters.TickCount + 1);
                         World.Update();
                         nextTick += _tickInterval;
+                        if (now >= nextTick) Volatile.Write(ref _counters.TickOverruns, _counters.TickOverruns + 1); // a tick behind
                         if (now - nextTick > _tickInterval * 5)
                             nextTick = now + _tickInterval; // fell far behind: skip instead of a catch-up storm
                     }
@@ -330,7 +337,11 @@ internal sealed class Shard : CompletionThread
         {
             long remaining = nextTick - _time.GetTimestamp();
             if (remaining > 0) // a manual clock (tests) wakes the shard itself when it moves on (Wake)
+            {
+                long asleep = Stopwatch.GetTimestamp();
                 _wake.Wait(TimeSpan.FromSeconds(Math.Min(1, (double)remaining / _time.TimestampFrequency)));
+                Volatile.Write(ref _counters.IdleTicks, _counters.IdleTicks + Stopwatch.GetTimestamp() - asleep);
+            }
         }
 
         Volatile.Write(ref _sleeping.Value, 0);
@@ -350,4 +361,6 @@ internal struct ShardCounters
     [FieldOffset(80)] public long Expired;
     [FieldOffset(88)] public long Failed;
     [FieldOffset(96)] public int ActorCount;
+    [FieldOffset(104)] public long IdleTicks; // Stopwatch ticks spent asleep, waiting for work (busy ratio = the rest)
+    [FieldOffset(112)] public long TickOverruns; // ticks that started a whole interval late (the shard cannot keep its rate)
 }

@@ -21,4 +21,22 @@ public class SampleClusterTests
         Assert.That(stops, Has.Some.EqualTo("Node game-0 stopped with exit code 0"), "the game node saved every player before the database stopped");
         Assert.That(stops.Count(static l => l.EndsWith("exit code 0", StringComparison.Ordinal)), Is.EqualTo(6), string.Join("; ", stops));
     }
+
+    /// <summary>
+    /// Scaling a stateful group under load (S6): two game nodes; while the bots play, one leaves (its players hand over
+    /// to the other: saved state, sessions kept) and joins again (it takes its share back). The bots fail on any gap,
+    /// disconnect or p99 over the limit, so their exit code says the scale-in and scale-out cost the players nothing.
+    /// </summary>
+    [Test, CancelAfter(600_000)]
+    public async Task AStatefulGroupScalesInAndOutUnderLoad(CancellationToken cancellationToken)
+    {
+        var stops = await AppHostRun.RunAsync<Projects.Sample_AppHost>(
+            ["Bots=1000", "Seconds=30", "Maps=2", "TravelEvery=5", "Lean=false", "Games=2"], "bots", cancellationToken,
+            static async (app, ct) =>
+            {
+                await Task.Delay(TimeSpan.FromSeconds(8), ct); // the bots are in the game
+                await AppHostRun.Restart(app, "game-1", TimeSpan.FromSeconds(5), ct);
+            });
+        Assert.That(stops.Count(static l => l.EndsWith("exit code 0", StringComparison.Ordinal)), Is.EqualTo(7), string.Join("; ", stops));
+    }
 }

@@ -122,6 +122,9 @@ public sealed class NodeOptions
     public bool KeepMajority { get; set; } = true;
 
     public TimeSpan GossipInterval { get; set; } = TimeSpan.FromSeconds(1);
+
+    /// <summary>How often nodes report their loaded slots and the coordinator allocates slots (ADR-079).</summary>
+    public TimeSpan SlotRound { get; set; } = TimeSpan.FromSeconds(5);
     public TimeSpan SuspectAfter { get; set; } = TimeSpan.FromSeconds(3);
     public TimeSpan DeadAfter { get; set; } = TimeSpan.FromSeconds(10);
 
@@ -170,6 +173,7 @@ public sealed class NodeOptions
         Check(ShutdownTimeout > TimeSpan.Zero, $"ShutdownTimeout {ShutdownTimeout} must be positive");
         Check(StallAfter > TimeSpan.Zero, $"StallAfter {StallAfter} must be positive");
         Check(GossipInterval > TimeSpan.Zero, $"GossipInterval {GossipInterval} must be positive");
+        Check(SlotRound > TimeSpan.Zero, $"SlotRound {SlotRound} must be positive");
         Check(SuspectAfter > TimeSpan.Zero && DeadAfter > SuspectAfter,
             $"SuspectAfter {SuspectAfter} must be positive and below DeadAfter {DeadAfter}");
         Check(ResumeGrace >= TimeSpan.Zero, $"ResumeGrace {ResumeGrace} is negative");

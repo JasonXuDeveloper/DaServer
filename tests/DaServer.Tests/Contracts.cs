@@ -642,3 +642,24 @@ public sealed class Chair : Actor<ChairId>
 {
     [Handle] public string On(WhereIsIt _) => Thread.CurrentThread.Name ?? "";
 }
+
+// ---------------------------------------------------------------- slot allocation (ADR-079)
+
+public readonly record struct PinId(long Value) : IActorId;
+public readonly record struct LoadId(long Value) : IActorId;
+
+/// <summary>Counts its visits (its state moves with it).</summary>
+[NinoType, Message] public partial record struct Visit : IRequest<int>;
+
+/// <summary>Stays where it is loaded.</summary>
+[Sticky]
+public sealed class Pinned : Actor<PinId, Ledger>
+{
+    [Handle] public int On(Visit _) => ++State.Gold;
+}
+
+/// <summary>Evened out by load.</summary>
+public sealed class Spread : Actor<LoadId, Ledger>
+{
+    [Handle] public int On(Visit _) => ++State.Gold;
+}

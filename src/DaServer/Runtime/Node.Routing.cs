@@ -212,6 +212,12 @@ sealed partial class Node : IChannelHandler
             case ControlOp.Cards:
                 Membership.OnGossip(connection, header.MessageId, payload);
                 break;
+            case ControlOp.SlotTable:
+                _slots.OnTable(NinoDeserializer.Deserialize<SlotTable>(payload));
+                break;
+            case ControlOp.SlotReport:
+                _slots.OnReport(NinoDeserializer.Deserialize<SlotReport>(payload));
+                break;
 
         }
     }

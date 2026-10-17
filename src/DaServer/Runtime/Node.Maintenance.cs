@@ -46,6 +46,7 @@ internal sealed partial class Node
             long paused = _maintainClock.Tick(now);
             bool late = paused > 0;
             Membership.Tick(now, paused);
+            _slots.Tick(now);
             long interval = (long)Options.GossipInterval.TotalMilliseconds;
             long timeout = late ? long.MaxValue : Math.Max((long)Options.SuspectAfter.TotalMilliseconds, 3 * interval); // late: ping, no verdicts
             foreach (var link in Volatile.Read(ref _linkList))
