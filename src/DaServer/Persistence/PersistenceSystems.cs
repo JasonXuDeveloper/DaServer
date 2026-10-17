@@ -75,7 +75,8 @@ internal sealed partial class PersistSystem : EcsSystem
 
     // Records are taken between turns only (Without<Turn>): a turn suspended at an await may have changed half of what
     // its message changes, and the record is always the state after whole messages.
-    [ForEach, With<SaveNow>, Without<Saving>, Without<Turn>]
+    // A fenced or removed actor writes nothing: its state is half-changed (a failed turn) or its key has a new owner.
+    [ForEach, With<SaveNow>, Without<Saving>, Without<Turn>, Without<Fenced>, Without<Removing>]
     private static void Now(Entity actor, ref Stored stored, in ActorRef self, in ShardStore store, in ShardActivity activity)
     {
         if (Queue(actor, ref stored, self.Actor, in store, activity.NowMs) != Outcome.Busy) actor.Remove<SaveNow>();
@@ -105,7 +106,7 @@ internal sealed partial class PersistSystem : EcsSystem
             return Outcome.Unchanged;
         }
 
-        store.Saves.Add(actor, new StoredKey(target.HandlerType.Id, target.Key), stored.Version, record, hash);
+        store.Saves.Add(actor, new StoredKey(target.HandlerType.Id, target.Key), stored.Version, record, hash, actor.Has<FinalSave>());
         actor.Add<Saving>();
         return Outcome.Queued;
     }
@@ -130,23 +131,30 @@ internal sealed partial class PersistSystem : EcsSystem
                 continue;
             }
 
-            bool final = actor.Has<FinalSave>();
             if (accepted[i])
             {
                 stored.Version = writes[i].ExpectedVersion + 1;
                 stored.Hash = batch.Hashes[i];
+                // A checkpoint taken before an unload that began meanwhile: the final save writes what changed since
+                // (Final, next wake; nothing when nothing did).
+                if (!batch.Finals[i]) continue;
             }
             else
             {
                 Log.RecordTaken(world.Logger(), actor.Get<ActorRef>().Actor, writes[i].ExpectedVersion);
-                if (!final && !actor.Has<UnloadRequested>())
+                if (!actor.Has<FinalSave>())
                 {
-                    actor.Add<UnloadRequested>();
-                    actor.Add<Fenced>();
+                    if (!actor.Has<UnloadRequested>())
+                    {
+                        actor.Add<UnloadRequested>();
+                        actor.Add<Fenced>();
+                    }
+
+                    continue;
                 }
+                // unloading: the key has a newer owner, nothing of this copy is written
             }
 
-            if (!final) continue;
             actor.Remove<FinalSave>();
             actor.Add<Removing>() = new Removing(RpcStatus.Ok, null);
         }
@@ -162,7 +170,7 @@ internal sealed partial class PersistSystem : EcsSystem
 [UpdateInGroup<ShardIdleScan>]
 internal sealed partial class CheckpointSystem : EcsSystem
 {
-    [ForEach, Without<Saving>, Without<FinalSave>, Without<Unloading>, Without<Removing>, Without<Turn>]
+    [ForEach, Without<Saving>, Without<FinalSave>, Without<Unloading>, Without<Removing>, Without<Turn>, Without<Fenced>]
     private static void Due(Entity actor, ref Stored stored, in ActorRef self, in ShardStore store, in ShardActivity activity)
     {
         if (stored.EveryMs > 0 && activity.NowMs >= stored.DueMs)

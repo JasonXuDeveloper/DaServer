@@ -332,16 +332,29 @@ public readonly record struct BankId(long Value) : IActorId;
 [NinoType, Message] public partial record struct DepositTwice(int Gold, BankId Other) : IRequest<int>;
 [NinoType, Message] public partial record struct Earn : IRequest<bool>;
 [NinoType, Message] public partial record struct Hit : IRequest<int>;
+[NinoType, Message] public partial record struct Overdraw(int Gold, bool Async) : IRequest<int>;
 
 /// <summary>
-/// Keys below 100 checkpoint every 100 ms, keys from 100 only on unload (or with SaveNow); keys from 1,000 also unload
-/// after 50 ms without mail.
+/// Keys below 100 checkpoint every 100 ms, keys from 100 only on unload (or with SaveNow); keys from 1,000 to 1,999 also
+/// unload after 50 ms without mail; keys from 2,000 reload after a failed turn.
 /// </summary>
 public sealed class Bank : Actor<BankId, Ledger>
 {
     public override TimeSpan SaveEvery => Key < 100 ? TimeSpan.FromMilliseconds(100) : TimeSpan.Zero;
 
-    public override TimeSpan UnloadAfterIdle => Key >= 1000 ? TimeSpan.FromMilliseconds(50) : TimeSpan.Zero;
+    public override TimeSpan UnloadAfterIdle => Key is >= 1000 and < 2000 ? TimeSpan.FromMilliseconds(50) : TimeSpan.Zero;
+
+    public override ErrorAction OnError(Exception error) => Key >= 2000 ? ErrorAction.Reload : ErrorAction.Resume;
+
+    /// <summary>A critical change that fails half-way (synchronously or after an await): nothing of it may be written.</summary>
+    [Handle]
+    public async Reply<int> On(Overdraw m)
+    {
+        State.Gold -= m.Gold;
+        Entity.Add<SaveNow>();
+        if (m.Async) await Cluster.Ask(new BankId(1), new Balance());
+        throw new InvalidOperationException("overdrawn");
+    }
 
     [Handle]
     public int On(Hit _)

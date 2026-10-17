@@ -19,7 +19,8 @@ internal sealed partial class UnloadSystem : EcsSystem
         TurnWatcher.Begin(world, actor, ShardDispatch.Start(static a => a.OnUnload().AsValueTask(), target));
     }
 
-    [ForEach, With<UnloadRequested>, With<Fenced>, Without<Turn>, Without<Removing>]
+    // After its write in flight (Without<Saving>): a reload reads the store only once that write settled.
+    [ForEach, With<UnloadRequested>, With<Fenced>, Without<Turn>, Without<Removing>, Without<Saving>]
     private static void Drop(Entity actor)
     {
         actor.Remove<UnloadRequested, Fenced>();
