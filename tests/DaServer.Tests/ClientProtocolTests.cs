@@ -10,8 +10,11 @@ public class ClientProtocolTests : ClusterTest
         public readonly TaskCompletionSource<(RpcStatus Status, string? Text)> Reply = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public readonly TaskCompletionSource Closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+        public int Frames;
+
         public void OnFrame(Connection connection, in FrameHeader header, ReadOnlySpan<byte> frame)
         {
+            Interlocked.Increment(ref Frames);
             var payload = FrameHeader.PayloadOf(in header, frame);
             Reply.TrySetResult((header.Status, payload.IsEmpty ? null : Nino.Core.NinoDeserializer.Deserialize<string>(payload)));
         }
@@ -41,8 +44,20 @@ public class ClientProtocolTests : ClusterTest
         Assert.That(status, Is.EqualTo(RpcStatus.Error));
         Assert.That(text, Does.Contain($"Client protocol {ControlOp.ClientVersion + 1}").And.Contain($"speaks {ControlOp.ClientVersion}"));
 
-        // Whatever it sends next closes the connection.
-        recorder.Connection!.SendControl(ControlOp.Ping);
+        // It is not a member of ClientGroup.All meanwhile: a broadcast it would misread does not reach it.
+        int frames = recorder.Frames;
+        gateway.Send(ClientGroup.All, new Chat(default, "all"));
+        await Task.Delay(200);
+        Assert.That(recorder.Frames, Is.EqualTo(frames));
+
+        // Whatever it sends next, another hello included, closes the connection.
+        using (var again = FrameWriter.Rent())
+        {
+            again.SetCallId(2);
+            again.SetHeader(FrameKind.Control, 0, ControlOp.ClientHello, ControlOp.ClientVersion + 1);
+            recorder.Connection!.Send(again.Frame);
+        }
+
         await recorder.Closed.Task.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
