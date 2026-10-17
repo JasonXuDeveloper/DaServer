@@ -85,7 +85,7 @@ internal static class Handoff
         BinaryPrimitives.WriteInt64LittleEndian(head[sizeof(ulong)..], stored.Version);
         BinaryPrimitives.WriteUInt64LittleEndian(head[(sizeof(ulong) + sizeof(long))..], stored.Hash);
         record.Advance(RecordHeader);
-        foreach (var type in world.GetSingleton<ShardStore>().Moved) type.Write(entity, record);
+        Records.WriteSections(entity, world.GetSingleton<ShardStore>().Moved, record);
         record.SetHeader(FrameKind.Message, actor.HandlerType.Id, Record, actor.Key);
         return node.SendToNode(to, record);
     }

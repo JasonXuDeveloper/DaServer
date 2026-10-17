@@ -21,4 +21,4 @@ public struct Idle : IComponent;
 public record struct Restless(bool Changing) : IComponent;
 
 /// <summary>A vault's coins: kept in the actor store.</summary>
-[NinoType, Persist] public partial record struct Coins(long Amount) : IComponent;
+[NinoType(format: NinoFormat.VersionTolerant), Persist] public partial record struct Coins(long Amount) : IComponent;

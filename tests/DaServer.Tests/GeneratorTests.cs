@@ -171,6 +171,20 @@ public class GeneratorTests
     }
 
     [Test]
+    public async Task PersistedComponentsMustToleratePastVersions()
+    {
+        // In a components project (no server runtime referenced): a positional [Persist] component is DAS014.
+        var references = References.Where(r => r.Display is not { } path || System.IO.Path.GetFileNameWithoutExtension(path) != "DaServer");
+        async Task<string[]> Ids(string source) => (await CSharpCompilation.Create("Components", [Parse(source)], references,
+                new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary))
+            .WithAnalyzers([new DaServerAnalyzer()]).GetAnalyzerDiagnosticsAsync()).Select(d => d.Id).Distinct().ToArray();
+
+        Assert.That(await Ids("[NinoType, Persist] public partial record struct Gold(int N) : EasyEcs.IComponent;"), Is.EqualTo(new[] { "DAS014" }));
+        Assert.That(await Ids("[NinoType(format: NinoFormat.VersionTolerant), Persist] public partial record struct Gold(int N) : EasyEcs.IComponent;"), Is.Empty);
+        Assert.That(await Ids("[NinoType(format: NinoFormat.Keyed), Handoff] public partial record struct Gold(int N) : EasyEcs.IComponent;"), Is.Empty);
+    }
+
+    [Test]
     public void NodesRunTheSystemsOfSharedLogicTheyReference()
     {
         var shared = CSharpCompilation.Create("Rules", [Parse("""
