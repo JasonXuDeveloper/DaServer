@@ -114,6 +114,6 @@ internal sealed partial class Node
     {
         _maintenance?.Dispose(); // gossip rounds too
         _clusterListener?.Dispose();
-        foreach (var link in _links.Values) link.Dispose();
+        foreach (var link in Volatile.Read(ref _linkList)) link.Dispose(); // once each: a link may serve two addresses
     }
 }
