@@ -38,9 +38,13 @@ public sealed partial class PostgreSqlActorStore : IActorStore, IAsyncDisposable
                 "WHERE w.expected <> 0 AND t.type_id = w.type_id AND t.key = w.key AND t.version = w.expected " +
                 "RETURNING t.type_id, t.key) " +
                 "SELECT w.i FROM w JOIN (SELECT * FROM ins UNION ALL SELECT * FROM upd) a ON a.type_id = w.type_id AND a.key = w.key";
-        _create = $"CREATE TABLE IF NOT EXISTS {table} (type_id integer NOT NULL, key bigint NOT NULL, " +
-                        "version bigint NOT NULL, data bytea NOT NULL, updated_at timestamptz NOT NULL DEFAULT now(), " +
-                        "PRIMARY KEY (type_id, key))";
+        // CREATE TABLE IF NOT EXISTS is not safe against a concurrent create (both see no table, the second fails on
+        // the catalog's unique index): nodes starting together take a transaction-scoped advisory lock on the table's
+        // name first, so one creates and the others find it.
+        _create = $"SELECT pg_advisory_xact_lock(hashtext('daserver:{table}')); " +
+                  $"CREATE TABLE IF NOT EXISTS {table} (type_id integer NOT NULL, key bigint NOT NULL, " +
+                  "version bigint NOT NULL, data bytea NOT NULL, updated_at timestamptz NOT NULL DEFAULT now(), " +
+                  "PRIMARY KEY (type_id, key))";
     }
 
     /// <param name="connectionString">The database's connection string.</param>
@@ -173,7 +177,7 @@ public sealed partial class PostgreSqlActorStore : IActorStore, IAsyncDisposable
 
     /// <summary>
     /// The table exists: created by the first call, again by a call after a failed attempt (the shard retries the batch).
-    /// Concurrent first calls may both create it, which <c>IF NOT EXISTS</c> makes harmless.
+    /// Nodes creating it at once are serialized by an advisory lock (<see cref="_create"/>).
     /// </summary>
     private Task Created()
     {
@@ -184,8 +188,11 @@ public sealed partial class PostgreSqlActorStore : IActorStore, IAsyncDisposable
 
     private async Task Create()
     {
-        await using var command = _dataSource.CreateCommand(_create);
+        await using var connection = await _dataSource.OpenConnectionAsync();
+        await using var transaction = await connection.BeginTransactionAsync(); // the advisory lock lasts until it ends
+        await using var command = new NpgsqlCommand(_create, connection, transaction);
         await command.ExecuteNonQueryAsync();
+        await transaction.CommitAsync();
     }
 
     [GeneratedRegex(@"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$")]

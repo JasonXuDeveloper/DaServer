@@ -34,6 +34,21 @@ public sealed class Stores(string kind) : IAsyncDisposable
         return new PostgreSqlActorStore(ConnectionString!, table);
     }
 
+    /// <summary><paramref name="count"/> stores on one new table (nodes of one cluster starting together).</summary>
+    public IActorStore[] CreateShared(int count)
+    {
+        if (kind == Memory)
+        {
+            var store = new InMemoryActorStore();
+            return [.. Enumerable.Repeat<IActorStore>(store, count)];
+        }
+
+        if (string.IsNullOrEmpty(ConnectionString)) Assert.Ignore("DASERVER_TEST_POSTGRES is not set");
+        string table = "actors_" + Guid.NewGuid().ToString("N");
+        _tables.Add(table);
+        return [.. Enumerable.Range(0, count).Select(_ => (IActorStore)new PostgreSqlActorStore(ConnectionString!, table))];
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (_tables.Count == 0) return;
@@ -69,6 +84,19 @@ public class ActorStoreTests(string kind)
         var accepted = new bool[writes.Length];
         await store.SaveAsync(writes, accepted);
         return accepted;
+    }
+
+    [Test]
+    public async Task NodesStartingTogetherCreateTheTableOnce()
+    {
+        // Each node's store creates the table on its first call; CREATE TABLE IF NOT EXISTS alone is not safe against a
+        // concurrent create (a unique violation in the catalog), and the failed call would fail the actors it loads.
+        for (int round = 0; round < 5; round++)
+        {
+            var stores = _stores.CreateShared(8);
+            await Task.WhenAll(stores.Select(static s => Load(s, A)));
+            foreach (var store in stores.Distinct()) if (store is IAsyncDisposable d) await d.DisposeAsync();
+        }
     }
 
     [Test]
