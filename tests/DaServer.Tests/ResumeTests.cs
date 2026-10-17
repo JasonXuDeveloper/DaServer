@@ -79,6 +79,13 @@ public class ResumeTests : ClusterTest
         Assert.That(Observed.Events, Does.Not.Contain("closed:501"));
     }
 
+    private static Task Moved(ClusterClient client)
+    {
+        var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        client.Moved += () => done.TrySetResult();
+        return done.Task.WaitAsync(TimeSpan.FromSeconds(10));
+    }
+
     [Test]
     public async Task ClientsOfALeavingGatewayMoveAndResumeOnAnother()
     {
@@ -87,9 +94,9 @@ public class ResumeTests : ClusterTest
         await Eventually(() => gateways.Sum(g => g.SessionCount()) == 1, "the entry connection was not closed");
         var leaving = gateways.Single(g => g.SessionCount() == 1);
 
-        var reconnected = Reconnected(client);
-        await Stop(leaving); // graceful: listener closed, connections closed in waves
-        await reconnected;
+        var moved = Moved(client);
+        await Stop(leaving); // graceful: listener closed, clients retired in waves, the stop waits until they left
+        await moved;
 
         Assert.That(await client.Ask(new AddGold(1)), Is.EqualTo(1), "the session resumed on the other node");
         Assert.That(gateways.Single(g => g != leaving).SessionCount(), Is.EqualTo(1));
@@ -130,6 +137,60 @@ public class ResumeTests : ClusterTest
         foreach (var client in clients)
             Assert.That(await Retried(() => client.Ask(new AddGold(1)).AsValueTask()), Is.GreaterThan(0), "every session resumed where it reconnected");
         Assert.That(Observed.Events.Where(e => e.StartsWith("closed:6", StringComparison.Ordinal)), Is.Empty, "no player saw a close");
+    }
+
+    [Test]
+    public async Task AConnectionRetiredForItsAgeLosesNoPush()
+    {
+        // Make before break: the client resumes on a new connection while the old one keeps working, so every call
+        // succeeds and every push it causes arrives, across several moves.
+        static void Aged(ClientConnectionOptions o) => o.MaxConnectionAge = TimeSpan.FromSeconds(2);
+        var gateways = new[]
+        {
+            await Start("gw-0", gateway: true, hosts: static _ => false, configure: Secret(TimeSpan.FromSeconds(5)), clients: Aged),
+            await Start("gw-1", gateway: true, hosts: static _ => false, configure: Secret(TimeSpan.FromSeconds(5)), clients: Aged),
+        };
+        await Start("game", configure: Secret(TimeSpan.FromSeconds(5)));
+        await Converged();
+        var client = await LogIn(gateways, 520);
+        var pushes = new PushCount();
+        client.Register(pushes);
+        int moves = 0;
+        client.Moved += () => Interlocked.Increment(ref moves);
+
+        int replies = 0;
+        var failures = new List<string>();
+        var until = DateTime.UtcNow.AddSeconds(7);
+        while (DateTime.UtcNow < until)
+        {
+            var calls = new Task<int>[20];
+            for (int i = 0; i < calls.Length; i++) calls[i] = client.Ask(new AddGold(1)).AsTask();
+            foreach (var call in calls)
+            {
+                try
+                {
+                    await call;
+                    replies++;
+                }
+                catch (RpcException e)
+                {
+                    failures.Add(e.Status.ToString());
+                }
+            }
+        }
+
+        Assert.That(failures, Is.Empty, "no call fails across the moves");
+        Assert.That(moves, Is.GreaterThanOrEqualTo(2), "the connection was retired for its age");
+        await Eventually(() => pushes.Count == replies, $"pushes lost: {replies - pushes.Count} of {replies}");
+        await Eventually(() => gateways.Sum(g => g.SessionCount()) == 1, "the old connections were left");
+        Assert.That(Observed.Events, Does.Not.Contain("closed:520"));
+    }
+
+    internal sealed class PushCount
+    {
+        private int _count;
+        public int Count => Volatile.Read(ref _count);
+        [Handle] public void On(GoldChanged _) => Interlocked.Increment(ref _count);
     }
 
     [Test]

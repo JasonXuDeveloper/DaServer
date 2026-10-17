@@ -61,10 +61,11 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
     }
 
     /// <summary>
-    /// The node is leaving: accept no more clients (readiness already turned the load balancer away), then close the
-    /// connections in waves over <see cref="ClientConnectionOptions.DrainSpread"/>. Each client reconnects through its
-    /// endpoints and resumes its session on another node (ADR-036), so its actors see no close; spreading the waves keeps
-    /// the other nodes from receiving every client at once. The stop budget cuts the waves short.
+    /// The node is leaving: accept no more clients (readiness already turned the load balancer away), then retire the
+    /// sessions in waves over <see cref="ClientConnectionOptions.DrainSpread"/>. Each client resumes its session on
+    /// another node through its endpoints before it leaves this one (ADR-026), so nothing is lost and its actors see no
+    /// close; spreading the waves keeps the other nodes from receiving every client at once. Clients that have not moved
+    /// within <see cref="ClientConnectionOptions.RetireGrace"/> are closed; the stop budget cuts it all short.
     /// </summary>
     protected internal override async ValueTask DrainAsync(CancellationToken cancellationToken)
     {
@@ -74,12 +75,35 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
         var pause = options.DrainSpread / waves;
         for (int wave = 0; wave < waves && !cancellationToken.IsCancellationRequested; wave++)
         {
-            for (int i = wave; i < sessions.Length; i += waves) sessions[i].Channel.Close();
+            long now = Platform.Milliseconds;
+            for (int i = wave; i < sessions.Length; i += waves) Retire(sessions[i], now);
             if (wave < waves - 1)
                 await Task.Delay(pause, cancellationToken).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing); // cut short: no throw
         }
 
+        long until = Platform.Milliseconds + (long)options.RetireGrace.TotalMilliseconds;
+        while (!_sessions.IsEmpty && Platform.Milliseconds < until && !cancellationToken.IsCancellationRequested)
+            await Task.Delay(100, cancellationToken).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
         Close();
+    }
+
+    /// <summary>
+    /// Ask <paramref name="session"/>'s client to move (<see cref="ControlOp.Retire"/>) and close its connection if it
+    /// has not left within <see cref="ClientConnectionOptions.RetireGrace"/>; a session without grants has nothing to
+    /// resume, so it is closed at once (its client connects again).
+    /// </summary>
+    private void Retire(SessionState session, long now)
+    {
+        session.RetireAtMs = 0;
+        if (_ticketSecret == null || session.Grants.Length == 0)
+        {
+            session.Channel.Close();
+            return;
+        }
+
+        if (session.CloseAtMs != 0) return; // asked already
+        session.CloseAtMs = now + (long)options.RetireGrace.TotalMilliseconds;
+        session.Channel.SendControl(ControlOp.Retire);
     }
 
     protected internal override void Stop(bool crashed)
@@ -278,9 +302,9 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
 
     /// <summary>
     /// Once a second: close the connections of clients that sent nothing for <see cref="ClientConnectionOptions.IdleTimeout"/>
-    /// (two comparisons per session; idle clients ping, so only lost ones go quiet), and those older than their
-    /// <see cref="ClientConnectionOptions.MaxConnectionAge"/>: those clients reconnect through the load balancer and
-    /// resume their sessions, so after a scale-out connections spread over the new nodes too.
+    /// (two comparisons per session; idle clients ping, so only lost ones go quiet), retire those older than their
+    /// <see cref="ClientConnectionOptions.MaxConnectionAge"/> (their clients move through the load balancer, so after a
+    /// scale-out connections spread over the new nodes too), and close retired ones whose clients did not move.
     /// </summary>
     private void CloseSilentSessions(long now, bool late)
     {
@@ -289,7 +313,8 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
         long timeout = (long)options.IdleTimeout.TotalMilliseconds;
         foreach (var (_, session) in _sessions)
         {
-            if (session.RetireAtMs != 0 && now >= session.RetireAtMs) session.Channel.Close();
+            if (session.CloseAtMs != 0 && now >= session.CloseAtMs) session.Channel.Close();
+            else if (session.RetireAtMs != 0 && now >= session.RetireAtMs) Retire(session, now);
             else KeepAlive.Check(session.Channel, now, 0, timeout);
         }
     }
@@ -435,7 +460,7 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
         };
         channel.Tag = session;
         if (options.MaxConnectionAge > TimeSpan.Zero) // jittered by up to a tenth, so connections opened together do not close together
-            session.RetireAtMs = Environment.TickCount64 + (long)(options.MaxConnectionAge.TotalMilliseconds * (0.9 + Random.Shared.NextDouble() * 0.2));
+            session.RetireAtMs = Platform.Milliseconds + (long)(options.MaxConnectionAge.TotalMilliseconds * (0.9 + Platform.NextDouble() * 0.2));
         _sessions[session.Id] = session; // it joins ClientGroup.All once its hello is answered
     }
 
@@ -611,8 +636,11 @@ internal sealed class SessionState(long id, IFrameChannel channel)
     /// <summary>Whether the client's hello was accepted, or refused (another protocol version); its receive loop owns both.</summary>
     public bool Introduced, Refused;
 
-    /// <summary>When the connection is closed for its age (<see cref="ClientConnectionOptions.MaxConnectionAge"/>; 0: never).</summary>
+    /// <summary>When the client is asked to move for its connection's age (<see cref="ClientConnectionOptions.MaxConnectionAge"/>; 0: never).</summary>
     public long RetireAtMs;
+
+    /// <summary>When the connection of a client asked to move is closed if it has not left (0: not asked).</summary>
+    public long CloseAtMs;
 
     /// <summary>The client's message rate limit (<see cref="ClientConnectionOptions.MessagesPerSecond"/>; its receive loop owns it).</summary>
     public TokenBucket Limit;

@@ -19,14 +19,11 @@ public sealed class ClusterClient : IMessageSender, IChannelHandler, IAsyncDispo
     private Uri? _webSocket; // connected over a WebSocket (reconnects go there again)
     private DnsEndPoint[] _endpoints = []; // the well-known addresses (reconnects start there again)
     // A random first endpoint spreads clients over the endpoints.
-#if NET
-    private int _nextEndpoint = Random.Shared.Next();
-#else
-    private int _nextEndpoint = new Random().Next();
-#endif
+    private int _nextEndpoint = (int)(Platform.NextDouble() * int.MaxValue);
     private byte[]? _ticket;          // latest resume ticket from the node (null: nothing to resume)
     private long _refreshTicketAtMs;  // local clock
     private int _reconnecting;
+    private int _moving; // 1 while the session moves to a new connection on the node's request (Retire)
     private volatile bool _disposed;
 
     // One timer expires the calls of every client in the process (a bot process runs thousands of clients).
@@ -147,6 +144,12 @@ public sealed class ClusterClient : IMessageSender, IChannelHandler, IAsyncDispo
     /// </summary>
     public event Action? Reconnected;
 
+    /// <summary>
+    /// The session moved to a new connection on its node's request (the connection's age, a leaving node): nothing was
+    /// lost, the actors resend their state as on a resume.
+    /// </summary>
+    public event Action? Moved;
+
     /// <summary>Reconnecting gave up (timeout, or the ticket was refused): log in again.</summary>
     public event Action<Exception?>? ReconnectFailed;
 
@@ -164,54 +167,48 @@ public sealed class ClusterClient : IMessageSender, IChannelHandler, IAsyncDispo
     /// </summary>
     public async ValueTask ConnectAsync(Uri webSocket, CancellationToken cancellationToken = default)
     {
-        var socket = new System.Net.WebSockets.ClientWebSocket();
-        await socket.ConnectAsync(webSocket, cancellationToken).ConfigureAwait(false);
-        var channel = new WebSocketChannel(socket, this, FrameHeader.MaxFrameSize, ConnectionOptions.ForClients().MaxPendingSendBytes);
         _webSocket = webSocket;
-        Attach(channel);
-        _ = channel.RunAsync();
-        await IntroduceAsync(channel).ConfigureAwait(false);
+        Use(await OpenAsync(watched: true, cancellationToken).ConfigureAwait(false));
     }
 
     /// <summary>Connect through the first reachable of <paramref name="endpoints"/> (tried in turn, starting at a random one).</summary>
-    public ValueTask ConnectAsync(IReadOnlyList<DnsEndPoint> endpoints, CancellationToken cancellationToken = default)
+    public async ValueTask ConnectAsync(IReadOnlyList<DnsEndPoint> endpoints, CancellationToken cancellationToken = default)
     {
         if (endpoints.Count == 0) throw new ArgumentException("No endpoint", nameof(endpoints));
         (_endpoints, _webSocket) = ([.. endpoints], null);
-        return ConnectToEndpointAsync(cancellationToken);
+        Use(await OpenAsync(watched: true, cancellationToken).ConfigureAwait(false));
     }
 
     /// <summary>
-    /// The first call on every connection: the node checks the client protocol version before anything else. Until it
-    /// is answered nothing else is sent on the connection (<see cref="_introduced"/>), only keep-alive frames.
+    /// A new connection through the entry addresses (or the WebSocket), introduced: the node accepted the client's
+    /// protocol version. Nothing but the hello, the resume and keep-alive frames goes on it until it is used
+    /// (<see cref="Use"/>). <paramref name="watched"/>: it is the current connection from the start, so a node that
+    /// never answers is noticed by the keep-alive (connecting, reconnecting); a move keeps the old one current meanwhile.
     /// </summary>
-    private async ValueTask IntroduceAsync(IFrameChannel channel)
+    private async ValueTask<IFrameChannel> OpenAsync(bool watched, CancellationToken cancellationToken = default)
     {
-        var call = PendingCall<NoReply>.Rent(null);
-        var done = call.Done;
-        Transmit(channel, FrameWriter.Rent(FrameHeader.Size), FrameKind.Control, 0, ControlOp.ClientHello, ControlOp.ClientVersion, call, RpcStatus.Ok);
-        try
+        if (_webSocket != null)
         {
-            await done.ConfigureAwait(false);
-            if (channel == _connection) Volatile.Write(ref _introduced, channel);
+            var socket = new System.Net.WebSockets.ClientWebSocket();
+            await socket.ConnectAsync(_webSocket, cancellationToken).ConfigureAwait(false);
+            var channel = new WebSocketChannel(socket, this, FrameHeader.MaxFrameSize, ConnectionOptions.ForClients().MaxPendingSendBytes);
+            if (watched) Watch(channel);
+            _ = channel.RunAsync();
+            await IntroduceAsync(channel).ConfigureAwait(false);
+            return channel;
         }
-        catch
-        {
-            channel.Close(); // refused (another protocol version) or lost: no use for this connection
-            throw;
-        }
-    }
 
-    private async ValueTask ConnectToEndpointAsync(CancellationToken cancellationToken)
-    {
         Exception? last = null;
         for (int i = 0; i < _endpoints.Length; i++)
         {
             var endpoint = _endpoints[(int)((uint)Interlocked.Increment(ref _nextEndpoint) % (uint)_endpoints.Length)];
             try
             {
-                await ConnectToAsync(endpoint.Host, endpoint.Port, cancellationToken).ConfigureAwait(false);
-                return;
+                var connection = await Connection.ConnectAsync(endpoint.Host, endpoint.Port, this, NewConnectionOptions(), cancellationToken)
+                    .ConfigureAwait(false);
+                if (watched) Watch(connection);
+                await IntroduceAsync(connection).ConfigureAwait(false);
+                return connection;
             }
             catch (Exception e) when (e is System.Net.Sockets.SocketException or IOException or RpcException)
             {
@@ -222,15 +219,36 @@ public sealed class ClusterClient : IMessageSender, IChannelHandler, IAsyncDispo
         throw last!;
     }
 
-    private async ValueTask ConnectToAsync(string host, int port, CancellationToken cancellationToken)
+    /// <summary>
+    /// The first call on every connection: the node checks the client protocol version before anything else. Until the
+    /// connection is the current one (<see cref="Use"/>) nothing else is sent on it but the session's resume and
+    /// keep-alive frames.
+    /// </summary>
+    private async ValueTask IntroduceAsync(IFrameChannel channel)
     {
-        var connection = await Connection.ConnectAsync(host, port, this, NewConnectionOptions(), cancellationToken).ConfigureAwait(false);
-        Attach(connection);
-        await IntroduceAsync(connection).ConfigureAwait(false);
+        var call = PendingCall<NoReply>.Rent(null);
+        var done = call.Done;
+        Transmit(channel, FrameWriter.Rent(FrameHeader.Size), FrameKind.Control, 0, ControlOp.ClientHello, ControlOp.ClientVersion, call, RpcStatus.Ok);
+        try
+        {
+            await done.ConfigureAwait(false);
+        }
+        catch
+        {
+            channel.Close(); // refused (another protocol version) or lost: no use for this connection
+            throw;
+        }
     }
 
-    /// <summary>Make <paramref name="channel"/> the current connection; the sweeper watches this client's calls from now on.</summary>
-    private void Attach(IFrameChannel channel)
+    /// <summary>Make the introduced <paramref name="channel"/> the current connection; the sweeper watches this client from now on.</summary>
+    private void Use(IFrameChannel channel)
+    {
+        Watch(channel);
+        Volatile.Write(ref _introduced, channel);
+    }
+
+    /// <summary>Make <paramref name="channel"/> the current connection: the sweeper watches it (keep-alive, calls) from now on.</summary>
+    private void Watch(IFrameChannel channel)
     {
         _connection = channel;
         GC.KeepAlive(Sweeper);
@@ -343,7 +361,7 @@ public sealed class ClusterClient : IMessageSender, IChannelHandler, IAsyncDispo
             }
 
             uint callId = 0;
-            if (call != null && !_pending.TryRegister(call, PendingCallTable.DeadlineAfter(CallTimeout), out callId))
+            if (call != null && !_pending.TryRegister(call, PendingCallTable.DeadlineAfter(CallTimeout), out callId, connection))
             {
                 call.Fail(RpcStatus.Overloaded);
                 return;
@@ -360,7 +378,7 @@ public sealed class ClusterClient : IMessageSender, IChannelHandler, IAsyncDispo
                 return;
             }
 
-            if (!connection.Send(w.Frame) && call != null)
+            if (!connection.Send(w.Frame) && !Resent(connection, w) && call != null)
                 _pending.Take(callId)?.Fail(RpcStatus.Disconnected);
         }
         finally
@@ -368,6 +386,13 @@ public sealed class ClusterClient : IMessageSender, IChannelHandler, IAsyncDispo
             w.Dispose();
         }
     }
+
+    /// <summary>
+    /// A frame <paramref name="refused"/> did not take, because the session moved off it as it was sent: it goes on the
+    /// current connection (the actors know the new session already).
+    /// </summary>
+    private bool Resent(IFrameChannel refused, FrameWriter w) =>
+        Volatile.Read(ref _introduced) is { } current && current != refused && current.Send(w.Frame);
 
     // ------------------------------------------------------------------ IChannelHandler
 
@@ -396,6 +421,11 @@ public sealed class ClusterClient : IMessageSender, IChannelHandler, IAsyncDispo
             case FrameKind.Control when header.MessageId == ControlOp.Pong:
                 Volatile.Write(ref _probeDeadlineMs, 0); // a probe (or a keep-alive ping) answered
                 break;
+            case FrameKind.Control when header.MessageId == ControlOp.Retire:
+                if (connection == _connection && !_disposed && AutoReconnect && Volatile.Read(ref _ticket) != null &&
+                    Volatile.Read(ref _reconnecting) == 0 && Interlocked.CompareExchange(ref _moving, 1, 0) == 0)
+                    _ = MoveAsync();
+                break;
             case FrameKind.Control when header.MessageId == ControlOp.Ticket:
                 var ticket = FrameHeader.PayloadOf(in header, frame);
                 if (ticket.Length == 0) // no grants (before login, after logout): nothing to resume
@@ -413,8 +443,15 @@ public sealed class ClusterClient : IMessageSender, IChannelHandler, IAsyncDispo
 
     private void OnClosed(IFrameChannel connection, Exception? error)
     {
-        if (connection != _connection) return; // the first connection, left on purpose
+        if (connection != _connection) return; // an earlier connection, left on purpose
         Volatile.Write(ref _probeDeadlineMs, 0); // a probe of this connection must not close the next one
+        if (Volatile.Read(ref _moving) != 0) return; // the move takes over: it reconnects if it fails
+        Lost(error);
+    }
+
+    /// <summary>The current connection is gone: calls in flight fail, and the session reconnects if it can.</summary>
+    private void Lost(Exception? error)
+    {
         _pending.FailAll(RpcStatus.Disconnected);
         if (Volatile.Read(ref _reconnecting) != 0) return; // an attempt of the running reconnect failed: it retries
         Disconnected?.Invoke(error);
@@ -433,12 +470,9 @@ public sealed class ClusterClient : IMessageSender, IChannelHandler, IAsyncDispo
             var delay = backoff.Next();
             if (Platform.Milliseconds + (long)delay.TotalMilliseconds > deadline) break;
             await Task.Delay(delay).ConfigureAwait(false); // a blip or a restarting node: give it a moment
-            _connection?.Close(); // the previous attempt's, if it connected
             try
             {
-                if (_webSocket != null) await ConnectAsync(_webSocket).ConfigureAwait(false);
-                else await ConnectAsync(_endpoints).ConfigureAwait(false);
-                await ResumeAsync().ConfigureAwait(false);
+                Use(await ResumedAsync(watched: true).ConfigureAwait(false));
                 Volatile.Write(ref _reconnecting, 0);
                 Reconnected?.Invoke();
                 return;
@@ -454,19 +488,98 @@ public sealed class ClusterClient : IMessageSender, IChannelHandler, IAsyncDispo
             }
         }
 
-        _connection?.Close(); // a connection without a session: the application logs in again
         Volatile.Write(ref _reconnecting, 0);
         if (!_disposed) ReconnectFailed?.Invoke(error);
     }
 
-    private ValueTask ResumeAsync()
+    /// <summary>
+    /// The node asked the client to move (<see cref="ControlOp.Retire"/>: its connection is old, or the node is
+    /// leaving): the session resumes on a new connection through the entry addresses while the old one keeps working,
+    /// so no push is lost and nothing waits. The old connection stays open until its node closes it (replies to calls
+    /// made on it still arrive). If the move fails, the old connection's close later reconnects as usual.
+    /// </summary>
+    private async Task MoveAsync()
+    {
+        try
+        {
+            var channel = await ResumedAsync(watched: false).ConfigureAwait(false);
+            var old = _connection;
+            if (_disposed)
+            {
+                channel.Close();
+                return;
+            }
+
+            Use(channel);
+            if (old != null) _ = LeaveAsync(old);
+            Moved?.Invoke();
+        }
+        catch (Exception)
+        {
+            // stay on the old connection until it closes
+        }
+        finally
+        {
+            Volatile.Write(ref _moving, 0);
+            if (_connection is { IsClosed: true } && !_disposed) Lost(null); // it closed while the move ran and failed
+        }
+    }
+
+    /// <summary>
+    /// Leave a connection the session moved away from: once the calls made on it are answered (or timed out), say
+    /// goodbye on it, so its node reports the old session closed at once instead of after the resume grace.
+    /// </summary>
+    private async Task LeaveAsync(IFrameChannel old)
+    {
+        long deadline = Platform.Milliseconds + (long)CallTimeout.TotalMilliseconds;
+        await Task.Delay(50).ConfigureAwait(false); // sends that took the old connection as the move ended register their calls
+        while (!old.IsClosed && _pending.AnyOwnedBy(old) && Platform.Milliseconds < deadline)
+            await Task.Delay(50).ConfigureAwait(false);
+        await GoodbyeAsync(old).ConfigureAwait(false);
+        old.Close();
+    }
+
+    /// <summary>Say goodbye on <paramref name="channel"/> and wait for the node's answer (a second at most).</summary>
+    private async Task GoodbyeAsync(IFrameChannel channel)
+    {
+        if (channel.IsClosed) return;
+        var call = PendingCall<NoReply>.Rent(null);
+        var goodbye = call.Done;
+        Transmit(channel, FrameWriter.Rent(FrameHeader.Size), FrameKind.Control, 0, ControlOp.Goodbye, 0, call, RpcStatus.Ok);
+        try
+        {
+            await Task.WhenAny(goodbye.AsTask(), Task.Delay(TimeSpan.FromSeconds(1))).ConfigureAwait(false);
+        }
+        catch
+        {
+            // gone already, or slow: closing is all that is left
+        }
+    }
+
+    /// <summary>A new introduced connection with the session resumed on it (closed again if the resume fails).</summary>
+    private async ValueTask<IFrameChannel> ResumedAsync(bool watched)
+    {
+        var channel = await OpenAsync(watched).ConfigureAwait(false);
+        try
+        {
+            await ResumeOn(channel).ConfigureAwait(false);
+            return channel;
+        }
+        catch
+        {
+            channel.Close();
+            throw;
+        }
+    }
+
+    private ValueTask ResumeOn(IFrameChannel channel)
     {
         var ticket = Volatile.Read(ref _ticket)!;
         var call = PendingCall<NoReply>.Rent(null);
         var task = call.Done;
         var w = FrameWriter.Rent(FrameHeader.Size + ticket.Length);
         w.WriteRaw(ticket);
-        SendControl(w, ControlOp.ResumeSession, call);
+        Transmit(channel, w, FrameKind.Control, 0, ControlOp.ResumeSession, 0, call, RpcStatus.Ok);
         return task;
     }
 
@@ -486,7 +599,7 @@ public sealed class ClusterClient : IMessageSender, IChannelHandler, IAsyncDispo
     internal ValueTask ResumeWith(byte[] ticket)
     {
         Volatile.Write(ref _ticket, ticket);
-        return ResumeAsync();
+        return ResumeOn(_connection!);
     }
 
     /// <summary>Tests: lose the connection as a network failure would (no goodbye).</summary>
@@ -521,20 +634,7 @@ public sealed class ClusterClient : IMessageSender, IChannelHandler, IAsyncDispo
     public async ValueTask DisposeAsync()
     {
         _disposed = true;
-        if (IsConnected)
-        {
-            var call = PendingCall<NoReply>.Rent(null);
-            var goodbye = call.Done;
-            SendControl(FrameWriter.Rent(FrameHeader.Size), ControlOp.Goodbye, call);
-            try
-            {
-                await Task.WhenAny(goodbye.AsTask(), Task.Delay(TimeSpan.FromSeconds(1))).ConfigureAwait(false);
-            }
-            catch
-            {
-                // gone already, or slow: closing is all that is left
-            }
-        }
+        if (IsConnected && _connection == Volatile.Read(ref _introduced)) await GoodbyeAsync(_connection!).ConfigureAwait(false);
 
         Live.TryRemove(this, out _);
         _connection?.Close();
