@@ -16,12 +16,12 @@ public sealed class FrameWriter : IDisposable
 
     /// <summary>
     /// A pooled writer keeps at most this much of an array: a frame that grew past it gives its array back to
-    /// <c>ArrayPool</c> on dispose (the next rent takes one from there again), so the pool holds at most
-    /// <c>65,536 x 4 KB</c> whatever the bursts of large frames were.
+    /// <see cref="BufferPool"/> on dispose (the next rent takes one from there again, within its byte budget), so the
+    /// writers hold at most <c>65,536 x 4 KB</c> whatever the bursts of large frames were.
     /// </summary>
     private const int RetainedCapacity = 4 * 1024;
 
-    private readonly NinoArrayBufferWriter _out = new(256);
+    private readonly NinoArrayBufferWriter _out = new(256, BufferPool.ArrayPool); // pinned (POH): sockets send it as is
     private bool _rented;
     private byte _trailers; // FrameFlags of the trailers written so far (written into the header by SetHeader)
 
@@ -209,7 +209,7 @@ public sealed class FrameWriter : IDisposable
 
         _rented = false;
         _out.ResetWrittenCount();
-        if (_out.Capacity > RetainedCapacity) _out.Dispose(); // the array goes back to ArrayPool; the writer stays usable
+        if (_out.Capacity > RetainedCapacity) _out.Dispose(); // the array goes back to the pool; the writer stays usable
         Pool.Return(this);
     }
 
