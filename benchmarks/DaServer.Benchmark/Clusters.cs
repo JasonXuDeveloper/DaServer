@@ -1,3 +1,5 @@
+using System.Runtime.CompilerServices;
+using System.Threading.Tasks.Sources;
 using DaServer.Client;
 
 namespace DaServer.Benchmark;
@@ -54,21 +56,30 @@ internal static class Clusters
     }
 }
 
-/// <summary>Counts deliveries and releases a waiter when the expected number arrived (allocation-free per delivery).</summary>
-internal sealed class Countdown
+/// <summary>
+/// Counts deliveries and releases a waiter when the expected number arrived. Reused for every operation (one waiter at a
+/// time), so the measurement shows what the path under test allocates, not the harness.
+/// </summary>
+internal sealed class Countdown : IValueTaskSource
 {
     private int _remaining;
-    private TaskCompletionSource _done = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private ManualResetValueTaskSourceCore<bool> _done = new() { RunContinuationsAsynchronously = true };
 
-    public Task Reset(int count)
+    public ValueTask Reset(int count)
     {
-        _done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _done.Reset();
         Volatile.Write(ref _remaining, count);
-        return _done.Task;
+        return new ValueTask(this, _done.Version);
     }
 
     public void Signal()
     {
-        if (Interlocked.Decrement(ref _remaining) == 0) _done.TrySetResult();
+        if (Interlocked.Decrement(ref _remaining) == 0) _done.SetResult(true);
     }
+
+    void IValueTaskSource.GetResult(short token) => _done.GetResult(token);
+    ValueTaskSourceStatus IValueTaskSource.GetStatus(short token) => _done.GetStatus(token);
+
+    void IValueTaskSource.OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags) =>
+        _done.OnCompleted(continuation, state, token, flags);
 }
