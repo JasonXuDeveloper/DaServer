@@ -1198,3 +1198,19 @@ records that no longer hold). Each: context → decision → consequences.
 - Consequences: a view change rebuilds one table per actor type (4,096 slots times its nodes, milliseconds, cold).
   Keys of one slot move together. BenchmarkDotNet numbers: the roadmap's K2 entry.
 
+## ADR-075 A busy shard spins before it sleeps; one waker per sleep
+- Context: under load a shard drains its queue in a few microseconds and goes to sleep just before the next message
+  arrives. Every message then paid a wake (the event's lock and a futex call) and the shard a sleep; with many
+  connections delivering at once, every producer set the event and they queued on its lock (15% of a flash-sale
+  node's CPU in `Lock.TryEnterSlow`).
+- Decision: a shard whose last pass had work spins a little (20 rounds of `Thread.SpinWait(50)`, tens of
+  microseconds) while its queues stay empty before it sleeps; an idle shard sleeps at once. A producer wakes a
+  sleeping shard only if it is the one that clears the sleeping flag (`Interlocked.Exchange`); the others see it
+  cleared and leave the event alone.
+- Alternatives: no spin (every message under load pays a sleep and a wake); a longer or unconditional spin (burns a
+  core per idle shard, and steals from the threads that would produce the work on an oversubscribed machine).
+- Consequences: BenchmarkDotNet, before -> after: one local call 12.3 -> 5.6 µs, 1,024 concurrent local calls
+  1,383 -> 952 µs, one remote call 84 -> 75 µs, remote calls at 64 / 1,024 in flight +7% / +6% (within the error),
+  one-way messages 438 -> 412 ns local, 789 -> 797 ns remote, allocations unchanged. The 10k-bot scenario with the
+  bots on the same 4 cores (oversubscribed): broadcast p99 141-182 -> 108-141 ms.
+
