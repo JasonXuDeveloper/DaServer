@@ -292,7 +292,7 @@ internal sealed class Membership : IDisposable
                 break;
             case ControlOp.Cards:
                 var reader = new Reader(payload);
-                NinoDeserializer.Deserialize(out ClusterMember[] cards, ref reader);
+                ClusterMember[] cards = NinoDeserializer.Deserialize<ClusterMember[]>(ref reader);
                 MergeCards(cards);
                 break;
         }
@@ -372,8 +372,7 @@ internal sealed class Membership : IDisposable
                     cards.Add(entry.Info);
 
         var w = FrameWriter.Rent(1024);
-        var nino = w.Nino;
-        NinoSerializer.Serialize(cards.ToArray(), ref nino);
+        w.Write(cards.ToArray());
         w.SendControl(connection, ControlOp.Cards);
     }
 

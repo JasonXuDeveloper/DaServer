@@ -29,14 +29,13 @@ internal sealed class PersistentType<T>(uint typeId, bool stored) : PersistentTy
         var head = record.GetSpan(Records.SectionHeader);
         BinaryPrimitives.WriteUInt32LittleEndian(head, TypeId);
         record.Advance(Records.SectionHeader);
-        var nino = record.Nino;
-        NinoSerializer.Serialize(entity.Get<T>(), ref nino);
+        record.Write(entity.Get<T>());
         BinaryPrimitives.WriteInt32LittleEndian(record.Written(at + sizeof(uint), sizeof(int)), record.Length - at - Records.SectionHeader);
     }
 
     public override void Read(Entity entity, ReadOnlySpan<byte> section)
     {
-        WirePayload.Read(section, out T value);
+        var value = NinoDeserializer.Deserialize<T>(section);
         if (entity.Has<T>()) entity.Get<T>() = value;
         else entity.Add<T>() = value;
     }

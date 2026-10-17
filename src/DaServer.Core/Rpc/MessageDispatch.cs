@@ -4,7 +4,7 @@ using System.Reflection;
 namespace DaServer.Rpc;
 
 /// <summary>
-/// Generated dispatcher: read the message from <paramref name="payload"/> (<see cref="WirePayload"/>), invoke
+/// Generated dispatcher: read the message from <paramref name="payload"/>, invoke
 /// <paramref name="target"/>'s handler and reply through <paramref name="context"/> (requests).
 /// </summary>
 public delegate ValueTask MessageDispatcher(object target, ReadOnlySpan<byte> payload, in CallContext context);
@@ -88,8 +88,7 @@ internal static class MessageWriter
         var w = FrameWriter.Rent();
         try
         {
-            var nino = w.Nino;
-            NinoSerializer.Serialize(message, ref nino);
+            w.Write(message);
             return w;
         }
         catch

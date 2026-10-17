@@ -1,6 +1,7 @@
 using System.Collections.Immutable;
 using DaServer.Generator;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Diagnostics;
 using Microsoft.CodeAnalysis.Text;
 using Nino.Core;
@@ -120,6 +121,45 @@ public class WireManifestTests
     public async Task ChangesAreJudged(string before, string after, string id) =>
         Assert.That(await Check(Types.Replace(before, after), Recorded), Is.EqualTo(id.Length == 0 ? [] : new[] { id }));
 
+    private const string Shared = """
+        namespace Shared;
+        [NinoType] public abstract partial class Event { public long At; }
+        public struct Pos { public int X; private int _y; }
+        [NinoType] public partial record Card(string Name, int Level) { public string Guild { get; private set; } = ""; }
+        """;
+
+    private const string UsesShared = """
+        namespace Game;
+        [NinoType, Message] public partial struct Found { public Shared.Pos Where; public Shared.Card Card; }
+        """;
+
+    [Test]
+    public async Task AnotherAssemblysTypesReadTheSameFromSourceAndMetadata()
+    {
+        // The IDE references a project as source, the command line as metadata: the manifest must not differ.
+        var shared = CSharpCompilation.Create("Shared", [GeneratorTests.Parse(Shared)], GeneratorTests.References,
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        using var image = new MemoryStream();
+        Assert.That(shared.Emit(image).Success);
+        string fromSource = ManifestOf(GeneratorTests.Compile(GeneratorTests.Parse(UsesShared)).AddReferences(shared.ToMetadataReference()));
+        string fromMetadata = ManifestOf(GeneratorTests.Compile(GeneratorTests.Parse(UsesShared)).AddReferences(MetadataReference.CreateFromImage(image.ToArray())));
+        Assert.That(fromSource, Is.EqualTo(fromMetadata));
+        Assert.That(fromSource, Does.Contain("- Where: Shared.Pos memory {X: int, _y: int}").And.Contain("- Card: Shared.Card\n"));
+
+        // A new subtype of another assembly's [NinoType] base: older builds of this one cannot read its type id.
+        var subtype = GeneratorTests.Compile(GeneratorTests.Parse(UsesShared + "public partial class Quest : Shared.Event { }"))
+            .AddReferences(shared.ToMetadataReference());
+        var reported = await subtype.WithAnalyzers([new DaServerAnalyzer()], new AnalyzerOptions([new Manifest(fromSource)])).GetAnalyzerDiagnosticsAsync();
+        Assert.That(reported.Select(d => d.Id).Distinct(), Is.EqualTo(new[] { "DAS017" }));
+    }
+
+    private static string ManifestOf(Compilation compilation)
+    {
+        var driver = CSharpGeneratorDriver.Create([new WireManifestGenerator().AsSourceGenerator()], optionsProvider: new Updating())
+            .RunGenerators(compilation);
+        return driver.GetRunResult().GeneratedTrees.Single().ToString().Replace("\r", "");
+    }
+
     private static async Task<string[]> Check(string source, string? manifest)
     {
         var compilation = GeneratorTests.Compile(GeneratorTests.Parse(source));
@@ -152,30 +192,21 @@ public class WireManifestTests
     }
 
     [Test]
-    public void ATruncatedValueOnlyPayloadIsRefusedBeforeItIsRead()
+    public void ATruncatedPayloadIsRefusedNotReadPastItsEnd()
     {
-        // Nino reads a value-only type as memory without a length check; WirePayload refuses a shorter payload
-        // (truncated or hostile) instead of reading past it, and reads a full one as Nino does.
+        // Nino 4 checks every read against the span: a truncated or hostile payload throws instead.
         var full = NinoSerializer.Serialize(new OrderV2 { Item = 7, Count = 2, Gift = true });
-        Assert.Throws<InvalidOperationException>(() => WirePayload.Read(full.AsSpan(0, 8), out OrderV2 _));
-        WirePayload.Read(full, out OrderV2 whole);
-        Assert.That(whole, Is.EqualTo(new OrderV2 { Item = 7, Count = 2, Gift = true }));
-        var typed = NinoSerializer.Serialize(new Marked { Value = 3 });
-        Assert.That(typed, Has.Length.EqualTo(sizeof(int) + sizeof(long)), "a type id, then the memory");
-        Assert.Throws<InvalidOperationException>(() => WirePayload.Read(typed.AsSpan(0, sizeof(long)), out Marked _));
-        WirePayload.Read(typed, out Marked marked);
-        Assert.That(marked.Value, Is.EqualTo(3));
-        WirePayload.Read(NinoSerializer.Serialize<int?>(5), out int? optional);
-        Assert.That(optional, Is.EqualTo(5), "a nullable reply is written as its memory too");
+        Assert.Throws<InvalidOperationException>(() => NinoDeserializer.Deserialize<OrderV2>(full.AsSpan(0, 8)));
+        Assert.That(NinoDeserializer.Deserialize<OrderV2>(full), Is.EqualTo(new OrderV2 { Item = 7, Count = 2, Gift = true }));
     }
 
     [Test]
     public void ReadingAPayloadAllocatesNothing()
     {
         var payload = NinoSerializer.Serialize(new OrderV2 { Item = 7, Count = 2 });
-        WirePayload.Read(payload, out OrderV2 _);
+        NinoDeserializer.Deserialize<OrderV2>(payload);
         long before = GC.GetAllocatedBytesForCurrentThread();
-        for (int i = 0; i < 1000; i++) WirePayload.Read(payload, out OrderV2 _);
+        for (int i = 0; i < 1000; i++) NinoDeserializer.Deserialize<OrderV2>(payload);
         Assert.That(GC.GetAllocatedBytesForCurrentThread() - before, Is.Zero);
     }
 
@@ -190,7 +221,3 @@ public class WireManifestTests
 [NinoType] public partial record struct OrderV2 { public int Item; public long Count; public bool Gift; }
 
 [NinoType] public partial record struct LayoutProbe(int Head) { public int Body; }
-
-[NinoType] public interface IMarked;
-
-[NinoType] public partial struct Marked : IMarked { public long Value; }

@@ -12,9 +12,11 @@ internal readonly record struct WireField(string Name, string Type)
 /// <summary>
 /// A [NinoType] type of this assembly as the wire manifest records it: how Nino encodes it (<paramref name="Encoding"/>:
 /// its memory, its members, or its members behind a type id), its fields in the order its bytes hold them, for a
-/// request its reply type, and its [NinoType] parents (a new subtype of a recorded type is a type id older builds lack).
+/// request its reply type, its [NinoType] ancestors and whether one of them is another assembly's (a new subtype of a
+/// recorded or foreign type is a type id older builds lack).
 /// </summary>
-internal sealed record WireType(string Name, string Encoding, EquatableArray<WireField> Fields, string? Reply, EquatableArray<string> Parents);
+internal sealed record WireType(string Name, string Encoding, EquatableArray<WireField> Fields, string? Reply,
+    EquatableArray<string> Ancestors, bool ForeignAncestor);
 
 /// <summary>
 /// The wire manifest (ADR-076): the committed layout of every type an assembly puts on the wire or in records, so a
@@ -36,7 +38,20 @@ internal static class WireManifest
         var fields = new List<WireField>();
         foreach (var (name, fieldType) in members) fields.Add(new WireField(name, Render(fieldType, type.ContainingAssembly, Open(type))));
         string? reply = Shapes.ReplyOf(type) is { } r ? Render(r, type.ContainingAssembly, Open(type)) : null;
-        return new WireType(Name(type), encoding, new(fields.ToArray()), reply, new(Parents(type).Select(Name).ToArray()));
+        var ancestors = new List<INamedTypeSymbol>();
+        void Up(INamedTypeSymbol t)
+        {
+            foreach (var parent in Parents(t))
+                if (!ancestors.Contains(parent, SymbolEqualityComparer.Default))
+                {
+                    ancestors.Add(parent);
+                    Up(parent);
+                }
+        }
+
+        Up(type);
+        return new WireType(Name(type), encoding, new(fields.ToArray()), reply, new(ancestors.Select(Name).ToArray()),
+            ancestors.Any(a => !SymbolEqualityComparer.Default.Equals(a.ContainingAssembly, type.ContainingAssembly)));
     }
 
     /// <summary>
@@ -76,8 +91,8 @@ internal static class WireManifest
     /// How Nino writes <paramref name="type"/>: a value-only struct as its memory (every field, private ones too, in
     /// declaration order, with its <c>[StructLayout]</c>), behind a type id when it has [NinoType] parents; a class or
     /// another struct with [NinoType] parents as its members behind a type id; otherwise its members (Nino's rules).
-    /// A <paramref name="foreign"/> type (another assembly's) is described by what its metadata shows, so the IDE (which
-    /// sees a referenced project's source) and the command line agree: no <c>[StructLayout]</c>, public members.
+    /// A <paramref name="foreign"/> struct (another assembly's) goes without its <c>[StructLayout]</c>, which metadata does
+    /// not show: the IDE (a referenced project's source) and the command line must agree.
     /// </summary>
     private static (string Encoding, List<(string Name, ITypeSymbol Type)> Members) Layout(INamedTypeSymbol type, bool foreign)
     {
@@ -90,13 +105,15 @@ internal static class WireManifest
             return ((parents ? "typed memory" : "memory") + layout, MemoryFields(type));
         }
 
-        return (type.TypeKind == TypeKind.Struct && !parents ? "members" : "typed members", NinoMembers(type, foreign));
+        return (type.TypeKind == TypeKind.Struct && !parents ? "members" : "typed members", NinoMembers(type));
     }
 
     /// <summary>
     /// A field's type as its bytes depend on it: an enum with its underlying type; arrays and generic arguments
-    /// element by element; a type without its own manifest entry here (another assembly's, a plain struct, an id)
-    /// with its fields inline, so a change there shows here.
+    /// element by element; a type of this assembly without its own entry (a plain struct, an id) with its fields
+    /// inline, so a change there shows here; another assembly's value-only struct with its fields (metadata imports
+    /// every field of a struct, so the IDE and the command line agree), its other types by name (their own
+    /// assembly's manifest records them).
     /// </summary>
     private static string Render(ITypeSymbol type, IAssemblySymbol home, HashSet<ITypeSymbol> open)
     {
@@ -107,9 +124,10 @@ internal static class WireManifest
             return Name(named.ConstructedFrom).Split('<')[0] + "<" + string.Join(", ", named.TypeArguments.Select(t => Render(t, home, open))) + ">";
         if (named.SpecialType != SpecialType.None || Support.InSystemNamespace(named) || named.TypeKind is not (TypeKind.Struct or TypeKind.Class))
             return Name(named);
-        // Its own entry here records it; a type already being rendered (it refers to itself) is named only.
-        if (SymbolEqualityComparer.Default.Equals(named.ContainingAssembly, home) && HasEntry(named) || !open.Add(named)) return Name(named);
-        var (encoding, members) = Layout(named, foreign: !SymbolEqualityComparer.Default.Equals(named.ContainingAssembly, home));
+        bool foreign = !SymbolEqualityComparer.Default.Equals(named.ContainingAssembly, home);
+        // Its own entry records it; a type already being rendered (it refers to itself) is named only.
+        if ((foreign ? !(named.IsUnmanagedType && named.TypeKind == TypeKind.Struct) : HasEntry(named)) || !open.Add(named)) return Name(named);
+        var (encoding, members) = Layout(named, foreign);
         string inline = Name(named) + " " + encoding + " {" + string.Join(", ", members.Select(m => m.Name + ": " + Render(m.Type, home, open))) + "}";
         open.Remove(named);
         return inline;
@@ -158,12 +176,12 @@ internal static class WireManifest
     }
 
     /// <summary>The members Nino writes for <paramref name="type"/>, in its order: parents first (depth first), names once.</summary>
-    private static List<(string Name, ITypeSymbol Type)> NinoMembers(INamedTypeSymbol type, bool foreign)
+    private static List<(string Name, ITypeSymbol Type)> NinoMembers(INamedTypeSymbol type)
     {
         var attribute = Support.GetAttribute(type, Support.NinoTypeAttribute);
         for (var b = type.BaseType; attribute == null && b != null; b = b.BaseType) attribute = Support.GetAttribute(b, Support.NinoTypeAttribute);
         var args = attribute?.ConstructorArguments ?? ImmutableArray<TypedConstant>.Empty;
-        bool auto = args.Length < 1 || args[0].Value is not false, nonPublic = !foreign && args.Length > 1 && args[1].Value is true;
+        bool auto = args.Length < 1 || args[0].Value is not false, nonPublic = args.Length > 1 && args[1].Value is true;
         var order = new Dictionary<string, int>(StringComparer.Ordinal);
         if (Support.GetAttribute(type, "Nino.Core.NinoExplicitOrderAttribute") is { ConstructorArguments: { Length: > 0 } explicitOrder })
             for (int i = 0; i < explicitOrder[0].Values.Length; i++)
@@ -292,7 +310,8 @@ internal static class WireManifest
     /// </summary>
     public static IEnumerable<(string Type, string What, bool Breaking)> Compare(Dictionary<string, Entry> baseline, IReadOnlyList<WireType> current)
     {
-        var byName = current.ToDictionary(t => t.Name, StringComparer.Ordinal);
+        var byName = new Dictionary<string, WireType>(StringComparer.Ordinal);
+        foreach (var type in current) byName[type.Name] = type; // last wins while duplicates do not compile anyway
         foreach (var entry in baseline.Values.OrderBy(e => e.Line))
         {
             if (!byName.TryGetValue(entry.Name, out var type))
@@ -315,7 +334,7 @@ internal static class WireManifest
         foreach (var type in current)
         {
             if (baseline.ContainsKey(type.Name)) continue;
-            string? recorded = type.Parents.FirstOrDefault(baseline.ContainsKey);
+            string? recorded = type.Ancestors.FirstOrDefault(baseline.ContainsKey) ?? (type.ForeignAncestor ? type.Ancestors[type.Ancestors.Length - 1] : null);
             yield return recorded != null
                 ? (type.Name, $"is a new subtype of '{recorded}': builds that lack it cannot read its type id where a '{recorded}' is expected", true)
                 : (type.Name, "is new", false);

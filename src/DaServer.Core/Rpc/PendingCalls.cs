@@ -342,7 +342,7 @@ internal sealed class PendingCall<T> : IPendingCall, IValueTaskSource<T>, IValue
         {
             try
             {
-                WirePayload.Read(payload, out _result);
+                _result = NinoDeserializer.Deserialize<T>(payload);
             }
             catch (Exception e)
             {
