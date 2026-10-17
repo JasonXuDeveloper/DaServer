@@ -1,8 +1,3 @@
-using Aspire.Hosting;
-using Aspire.Hosting.ApplicationModel;
-using Aspire.Hosting.Testing;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
 using NUnit.Framework;
 
 namespace DaServer.E2E;
@@ -19,20 +14,8 @@ public class FlashSaleTests
     {
         // CI: 100,000 buyers for 100 units; E2E_SALE_BUYERS=1000000 runs the README's million.
         string buyers = Environment.GetEnvironmentVariable("E2E_SALE_BUYERS") ?? "100000";
-        var builder = await DistributedApplicationTestingBuilder.CreateAsync<Projects.FlashSale_AppHost>([$"Buyers={buyers}"], cancellationToken);
-        AppHostRun.Prepare(builder);
-        var stops = new NodeStops();
-        builder.Services.AddLogging(logging => logging.AddProvider(stops));
-
-        await using var app = await builder.BuildAsync(cancellationToken);
-        await app.StartAsync(cancellationToken);
-        await AppHostRun.EveryResourceHealthy(app, builder.Resources.Where(r => r is ProjectResource { Name: not "crowd" } or IResourceWithConnectionString),
-            TimeSpan.FromMinutes(3), cancellationToken);
-        var finished = await AppHostRun.RunToEnd(app, "crowd", cancellationToken);
-        Assert.That(finished.Snapshot.ExitCode, Is.EqualTo(0), $"the crowd ended {finished.Snapshot.State?.Text}");
-
-        await app.StopAsync(cancellationToken);
-        Assert.That(stops.Lines.Count(static l => l.EndsWith("exit code 0", StringComparison.Ordinal)), Is.EqualTo(2),
-            "both sale nodes wrote every record before stopping: " + string.Join("; ", stops.Lines));
+        var stops = await AppHostRun.RunAsync<Projects.FlashSale_AppHost>([$"Buyers={buyers}"], "crowd", cancellationToken);
+        Assert.That(stops.Count(static l => l.EndsWith("exit code 0", StringComparison.Ordinal)), Is.EqualTo(2),
+            "both sale nodes wrote every record before stopping: " + string.Join("; ", stops));
     }
 }

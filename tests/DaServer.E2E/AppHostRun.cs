@@ -11,7 +11,40 @@ namespace DaServer.E2E;
 /// <summary>What every end-to-end test does with an AppHost: start it quietly on fresh containers, wait, read the verdict.</summary>
 internal static class AppHostRun
 {
-    public static void Prepare(IDistributedApplicationTestingBuilder builder)
+    /// <summary>
+    /// Start <typeparamref name="TAppHost"/> with <paramref name="args"/>, wait until every resource but the load
+    /// <paramref name="load"/> is healthy, assert the load exits with 0, stop the AppHost (nodes first) and return what it
+    /// said about stopping the nodes (<c>Node x stopped with exit code n</c>). Phases are timed in the test log.
+    /// </summary>
+    public static async Task<string[]> RunAsync<TAppHost>(string[] args, string load, CancellationToken cancellationToken) where TAppHost : class
+    {
+        var builder = await DistributedApplicationTestingBuilder.CreateAsync<TAppHost>(args, cancellationToken);
+        Prepare(builder);
+        var stops = new NodeStops();
+        builder.Services.AddLogging(logging => logging.AddProvider(stops));
+
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        void Phase(string what) => TestContext.Progress.WriteLine($"[e2e] {what} at {clock.Elapsed.TotalSeconds:F1} s");
+
+        await using var app = await builder.BuildAsync(cancellationToken);
+        await app.StartAsync(cancellationToken);
+        Phase("resources started");
+        await EveryResourceHealthy(app, builder.Resources.Where(r => (r is ProjectResource && r.Name != load) || r is IResourceWithConnectionString),
+            TimeSpan.FromMinutes(3), cancellationToken);
+        Phase("cluster healthy");
+
+        var finished = await RunToEnd(app, load, cancellationToken);
+        Phase(load + " finished");
+        Assert.That(finished.Snapshot.ExitCode, Is.EqualTo(0), $"{load} ended {finished.Snapshot.State?.Text}");
+
+        // Stopping the AppHost stops the nodes first (DaServer.Aspire), so their last saves reach the database: a node
+        // exits with 0 only when every actor was unloaded and saved (1 when state was lost, 137 when killed).
+        await app.StopAsync(cancellationToken);
+        Phase("cluster stopped");
+        return stops.Lines;
+    }
+
+    private static void Prepare(IDistributedApplicationTestingBuilder builder)
     {
         // The testing builder runs no dashboard but still gives every resource the OTLP variables. The nodes would export
         // to nothing all run long, and the .NET 11 CLI behind `dotnet run` turns its own OTLP telemetry on whenever any
@@ -36,7 +69,7 @@ internal static class AppHostRun
     /// Fail fast and say why when the cluster does not come up (a database refusing its password, a node that never
     /// joins): the load would otherwise wait for it until the test's own timeout.
     /// </summary>
-    public static async Task EveryResourceHealthy(DistributedApplication app, IEnumerable<IResource> resources, TimeSpan limit,
+    private static async Task EveryResourceHealthy(DistributedApplication app, IEnumerable<IResource> resources, TimeSpan limit,
         CancellationToken cancellationToken)
     {
         var notifications = app.Services.GetRequiredService<ResourceNotificationService>();
@@ -59,7 +92,7 @@ internal static class AppHostRun
     }
 
     /// <summary>Wait for the load resource <paramref name="name"/> to end, its output in the test log (a failure says why).</summary>
-    public static async Task<ResourceEvent> RunToEnd(DistributedApplication app, string name, CancellationToken cancellationToken)
+    private static async Task<ResourceEvent> RunToEnd(DistributedApplication app, string name, CancellationToken cancellationToken)
     {
         var logs = app.Services.GetRequiredService<ResourceLoggerService>();
         _ = Task.Run(async () =>
