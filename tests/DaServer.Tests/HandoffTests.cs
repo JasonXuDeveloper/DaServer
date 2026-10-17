@@ -155,6 +155,58 @@ public class HandoffTests(string kind) : ClusterTest
     }
 
     [Test]
+    public async Task ANodeThatStillOwnsAKeyDoesNotAnswerNone()
+    {
+        // K moves from a to b; b hears first, gets mail for K and asks a for the record. a holds no copy, but owns K in
+        // its own view: answering "none" would let b load K from the store while mail routed by a loads it there too.
+        // a answers once it hears of the move: its copy (loaded by its own mail meanwhile) goes to b.
+        var store = new WatchedStore(_stores.Create());
+        var a = await StartWith(store, "a");
+        var b = await StartWith(store, "b");
+        await Converged();
+        long key = 300;
+        while (a.OwnerOf<BankId>(key) != a.Id) key++;
+        long atA = key + 1, atB = key + 1;
+        while (a.OwnerOf<BankId>(atA) != a.Id) atA++;
+        while (a.OwnerOf<BankId>(atB) != b.Id) atB++;
+        await a.Ask(new BankId(atB), new Balance()); // links both ways are up (a new link carries the table at once)
+        await b.Ask(new BankId(atA), new Balance());
+        int slot = ClusterView.Slot(ActorIds<BankId>.HandlerTypeId, key);
+        var table = new SlotTable { Version = 1000, Coordinator = a.Id, Overrides = [new SlotOverride(ActorIds<BankId>.HandlerTypeId, (ushort)slot, b.Id)] };
+        b.Membership.Apply(table);
+        b.Send(new BankId(key), new Deposit(2, false)); // b creates K and asks a for its record
+        await Task.Delay(200);
+        Assert.That(await a.Ask(new BankId(key), new Deposit(5, false)), Is.EqualTo(5), "a's view: a owns K");
+
+        a.Membership.Apply(table);
+        await Eventually(() => b.Ask(new BankId(key), new Balance()).AsTask().Result == 7, "one copy: a's 5 then b's 2");
+        Assert.That(store.Loads, Is.EqualTo(3), "only a's load of K read the store");
+    }
+
+    [Test]
+    public async Task ANodeLoadingRightAfterAnotherJoinedDoesNotWaitForIt()
+    {
+        // b just joined: a's previous view lacked it, so a's own key K had no other owner. a loads K at once instead of
+        // asking b (which never held it) and waiting for its answer.
+        var store = new WatchedStore(_stores.Create());
+        var a = await StartWith(store, "a");
+        var b = await StartWith(store, "b");
+        await Converged();
+        long key = 300;
+        while (a.OwnerOf<BankId>(key) != a.Id || a.View.HandlerTypeOwnerWithout(ActorIds<BankId>.HandlerTypeId, key, a.Id)?.NodeId != b.Id) key++;
+        using var gate = new ManualResetEventSlim();
+        b.PostToEveryShard(static (_, g) => g.Wait(TimeSpan.FromSeconds(10)), gate); // b answers nothing meanwhile
+        try
+        {
+            Assert.That(await a.Ask(new BankId(key), new Deposit(5, false)).AsTask().WaitAsync(TimeSpan.FromSeconds(1)), Is.EqualTo(5));
+        }
+        finally
+        {
+            gate.Set();
+        }
+    }
+
+    [Test]
     public async Task ALateAnswerFromALiveNewOwnerIsWaitedFor()
     {
         // b takes some of a's keys but its shards answer only after several handoff timeouts: a must keep waiting for the

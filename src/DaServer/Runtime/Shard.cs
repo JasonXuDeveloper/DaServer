@@ -299,6 +299,7 @@ internal sealed class Shard : CompletionThread
         World.AddSingleton<CallChains>() = new CallChains { Last = Random.Shared.NextInt64() };
         World.AddSingleton<ShardTimers>() = new ShardTimers(new TimerWheel<DelayedSend>(ShardTimers.Resolution, time: _time));
         World.AddSingleton<ActorDirectory>() = new ActorDirectory(new Dictionary<ActorAddress, Entity>());
+        World.AddSingleton<Persistence.HandoffAsks>() = new Persistence.HandoffAsks(new List<Persistence.HandoffAsk>());
         World.AddSingleton<TurnWatchers>() = new TurnWatchers(new Stack<TurnWatcher>());
         World.AddSingleton<ActorPools>() = new ActorPools(new Dictionary<uint, Stack<Actor>>(), new Stack<Queue<Envelope>>(),
             new Stack<ClientSessions>());
@@ -334,6 +335,7 @@ internal sealed class Shard : CompletionThread
         World.AddSystem<StoreSystem>();
         World.AddSystem<HandoffSystem>();
         World.AddSystem<HandoffTimeoutSystem>();
+        World.AddSystem<HandoffAsksSystem>();
         foreach (var info in Node.HostedSystems) World.AddSystem(info.Factory());
         foreach (var feature in Node.Options.Features) feature.ConfigureShard(World);
     }

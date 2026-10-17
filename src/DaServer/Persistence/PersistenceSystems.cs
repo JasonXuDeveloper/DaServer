@@ -94,7 +94,7 @@ internal sealed partial class PersistSystem : EcsSystem
         if (Queue(actor, ref stored, self.Actor, in store, activity.NowMs) != Outcome.Busy) actor.Remove<SaveNow>();
     }
 
-    [ForEach, With<FinalSave>, Without<Saving>]
+    [ForEach, With<FinalSave>, Without<Saving>, Without<Fenced>]
     private static void Final(Entity actor, ref Stored stored, in ActorRef self, in ShardStore store, in ShardActivity activity)
     {
         if (Queue(actor, ref stored, self.Actor, in store, activity.NowMs) != Outcome.Unchanged) return;
