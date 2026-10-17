@@ -102,7 +102,7 @@ public sealed partial class ClusterMember
     public bool HasScope(uint scope) => Array.IndexOf(Scopes, scope) >= 0;
 
     /// <summary>A key of pulse slots and card entries: FNV-1a of a name the feature chooses (<c>"clients.sessions"</c>).</summary>
-    public static uint KeyOf(string name) => TypeIds.Fnv1a(name);
+    public static uint KeyOf(string name) => (uint)NinoTypeId.Compute(name);
 
     /// <summary>This node's link to the member (resolved once; copies share it: the endpoint never changes).</summary>
     [NinoIgnore]

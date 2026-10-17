@@ -23,7 +23,7 @@ public static class ClientMessages
             {
                 if (existing.Type == info.Type) return;
                 throw new InvalidOperationException(
-                    $"Message id collision 0x{info.Id:x8}: {info.Type} and {existing.Type}. Use [TypeId] on one of them.");
+                    $"Message id collision 0x{info.Id:x8}: {info.Type} and {existing.Type}. Give one of them another id with [NinoFormerName].");
             }
 
             var next = new Dictionary<uint, ClientMessageInfo>(_messages) { [info.Id] = info };

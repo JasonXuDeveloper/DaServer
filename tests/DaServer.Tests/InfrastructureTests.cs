@@ -340,15 +340,15 @@ public class InfrastructureTests
     }
 
     [Test]
-    public void TypeIdsAreTheHashOfTheTypeNameUnlessSet()
+    public void TypeIdsAreNinosTypeIds()
     {
-        // The analyzer checks collisions with the same hash at compile time; the runtime must agree.
-        Assert.That(TypeId<Add>.Value, Is.EqualTo(TypeIds.Fnv1a("DaServer.Tests.Add")));
-        Assert.That(TypeId<SessionClosed>.Value, Is.EqualTo(TypeIds.Fnv1a("DaServer.SessionClosed")));
-        // A renamed type keeps its identity (and its stored records) with [TypeId].
-        Assert.That(TypeId<Renamed>.Value, Is.EqualTo(0x5EED_0001u));
+        // The analyzer checks collisions with the same hash at compile time; the runtime and Nino must agree.
+        Assert.That(TypeId<Add>.Value, Is.EqualTo((uint)Nino.Core.NinoTypeId.Compute("DaServer.Tests.Add")));
+        Assert.That(TypeId<SessionClosed>.Value, Is.EqualTo((uint)Nino.Core.NinoTypeId.Of(typeof(SessionClosed))));
+        // A renamed type keeps its identity (and its stored records) with [NinoFormerName].
+        Assert.That(TypeId<Renamed>.Value, Is.EqualTo((uint)Nino.Core.NinoTypeId.Compute("Game.Before.Rename")));
     }
 
-    [TypeId(0x5EED_0001)]
+    [Nino.Core.NinoFormerName("Game.Before.Rename")]
     private struct Renamed;
 }

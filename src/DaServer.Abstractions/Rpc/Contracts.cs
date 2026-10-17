@@ -44,7 +44,7 @@ public sealed class MessageAttribute : Attribute;
 /// The component is part of its actor's stored record (ADR-068): saved when the actor unloads and every
 /// <c>Actor.SaveEvery</c> while it changed, restored before <c>OnLoad</c> when the actor loads again. A
 /// <c>[NinoType]</c> struct component in a components project; its section in the record is keyed by its type id
-/// (FNV-1a of its full name, <see cref="TypeIdAttribute"/> to keep one across a rename), so adding or removing a
+/// (<see cref="TypeId{T}"/>; <c>[NinoFormerName]</c> keeps it across a rename), so adding or removing a
 /// persisted component never breaks a stored record.
 /// </summary>
 [AttributeUsage(AttributeTargets.Struct)]
@@ -57,17 +57,6 @@ public sealed class PersistAttribute : Attribute;
 /// </summary>
 [AttributeUsage(AttributeTargets.Struct)]
 public sealed class HandoffAttribute : Attribute;
-
-/// <summary>
-/// Sets the type id of a type (FNV-1a of its full name by default): the identity that messages carry on the wire, that
-/// routes to an actor id type or service, and that keys a persisted component's section in actor records. Only to
-/// resolve a reported collision or to keep a type's identity (and its stored data) after renaming it.
-/// </summary>
-[AttributeUsage(AttributeTargets.Struct | AttributeTargets.Class)]
-public sealed class TypeIdAttribute(uint id) : Attribute
-{
-    public uint Id { get; } = id;
-}
 
 /// <summary>
 /// Emitted by the generator into every assembly it writes registrations for (client messages, handler dispatchers,

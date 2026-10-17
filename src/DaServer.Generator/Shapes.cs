@@ -111,12 +111,12 @@ internal static class Shapes
     }
 
     /// <summary>
-    /// The runtime's type id of a message type: [TypeId] or FNV-1a of <c>Type.FullName</c> (nested types joined by '+').
+    /// The runtime's type id of a type, Nino's (<c>NinoTypeId.Of</c>): FNV-1a of its <c>[NinoFormerName]</c> or of its
+    /// full name (nested types joined by '+').
     /// </summary>
     public static uint TypeIdOf(ITypeSymbol type)
     {
-        var typeId = GetAttribute(type, TypeIdAttribute);
-        if (typeId?.ConstructorArguments.FirstOrDefault().Value is uint id) return id;
+        if (GetAttribute(type, NinoFormerNameAttribute)?.ConstructorArguments.FirstOrDefault().Value is string former) return Fnv1a(former);
         string name = type.MetadataName;
         for (var outer = type.ContainingType; outer != null; outer = outer.ContainingType) name = outer.MetadataName + "+" + name;
         if (!type.ContainingNamespace.IsGlobalNamespace) name = type.ContainingNamespace.ToDisplayString() + "." + name;
