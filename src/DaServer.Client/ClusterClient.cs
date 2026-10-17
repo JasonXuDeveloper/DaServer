@@ -316,7 +316,7 @@ public sealed partial class ClusterClient : IMessageSender, IChannelHandler, IAs
                 KeepAlive.Pong(connection);
                 break;
             case FrameKind.Control when header.MessageId == ControlOp.Pong:
-                Volatile.Write(ref _probeDeadlineMs, 0); // a probe (or a keep-alive ping) answered
+                if (connection == Volatile.Read(ref _probed)) Volatile.Write(ref _probeDeadlineMs, 0); // the probe answered
                 break;
             case FrameKind.Control when header.MessageId == ControlOp.Retire:
                 if (connection == _connection && !_disposed && AutoReconnect && Volatile.Read(ref _ticket) != null &&
@@ -367,7 +367,9 @@ public sealed partial class ClusterClient : IMessageSender, IChannelHandler, IAs
     public async ValueTask DisposeAsync()
     {
         _disposed = true;
-        if (IsConnected && _connection == Volatile.Read(ref _introduced)) await GoodbyeAsync(_connection!).ConfigureAwait(false);
+        // On the current connection, also one still resuming (a reconnect): the node then reports the session closed
+        // at once whether the resume completes or not.
+        if (_connection is { IsClosed: false } connection) await GoodbyeAsync(connection).ConfigureAwait(false);
 
         Live.TryRemove(this, out _);
         _connection?.Close();

@@ -27,11 +27,13 @@ public sealed partial class ClusterClient
     public void CheckConnection(TimeSpan? timeout = null)
     {
         if (_connection is not { IsClosed: false } connection) return;
+        Volatile.Write(ref _probed, connection);
         Volatile.Write(ref _probeDeadlineMs, Platform.Milliseconds + (long)(timeout ?? TimeSpan.FromSeconds(5)).TotalMilliseconds);
         connection.SendControl(ControlOp.Ping);
     }
 
     private long _probeDeadlineMs; // 0: no probe waiting for its pong
+    private IFrameChannel? _probed; // the connection the probe pinged: only its pong answers it, only it is closed
 
     /// <summary>Sweeper tick: ping when idle, close a silent connection (and an unanswered probe) unless the tick ran <paramref name="late"/>.</summary>
     private void CheckAlive(bool late)
@@ -42,7 +44,7 @@ public sealed partial class ClusterClient
         if (probeDeadline != 0 && now >= probeDeadline && !late)
         {
             Volatile.Write(ref _probeDeadlineMs, 0);
-            connection.Close(KeepAlive.Silent);
+            if (Volatile.Read(ref _probed) == connection) connection.Close(KeepAlive.Silent); // else a move replaced it
             return;
         }
 
@@ -124,6 +126,7 @@ public sealed partial class ClusterClient
     /// <summary>Make the introduced <paramref name="channel"/> the current connection; the sweeper watches this client from now on.</summary>
     private void Use(IFrameChannel channel)
     {
+        Volatile.Write(ref _probeDeadlineMs, 0); // a probe of the previous connection says nothing about this one
         Watch(channel);
         Volatile.Write(ref _introduced, channel);
     }
@@ -133,6 +136,6 @@ public sealed partial class ClusterClient
     {
         _connection = channel;
         GC.KeepAlive(Sweeper);
-        Live.TryAdd(this, true);
+        if (!_disposed) Live.TryAdd(this, true);
     }
 }

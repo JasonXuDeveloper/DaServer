@@ -17,6 +17,44 @@ internal sealed class ScriptedNode
     /// <summary>Refuse resumes (a ticket the node does not take): a move fails.</summary>
     public volatile bool RefuseResume;
 
+    /// <summary>Connections opened from now on answer nothing (a node that hangs, a blackholed address).</summary>
+    public volatile bool Unresponsive;
+
+    private readonly List<Action> _heldResumes = new();
+    private bool _holdResumes;
+
+    /// <summary>Resumes are answered only at <see cref="ReleaseResumes"/> (actors slow to accept).</summary>
+    public void HoldResumes()
+    {
+        lock (_heldResumes) _holdResumes = true;
+    }
+
+    public void ReleaseResumes()
+    {
+        Action[] held;
+        lock (_heldResumes)
+        {
+            _holdResumes = false;
+            held = [.. _heldResumes];
+            _heldResumes.Clear();
+        }
+
+        foreach (var answer in held) answer();
+    }
+
+    /// <summary>Answer a resume now, or when released.</summary>
+    internal void Resume(Action answer)
+    {
+        lock (_heldResumes)
+            if (_holdResumes)
+            {
+                _heldResumes.Add(answer);
+                return;
+            }
+
+        answer();
+    }
+
     public ScriptedChannel this[int index]
     {
         get { lock (_channels) return _channels[index]; }
@@ -45,12 +83,13 @@ internal sealed class ScriptedChannel : IFrameChannel
     private readonly List<uint> _held = new();
     private readonly Channel<byte[]> _inbound = Channel.CreateUnbounded<byte[]>(new UnboundedChannelOptions { SingleReader = true });
     private bool _sealed, _holding;
+    private readonly bool _unresponsive;
     private int _closed;
     private Action? _beforeNextSend;
 
     public ScriptedChannel(ScriptedNode node, IChannelHandler client)
     {
-        (_node, _client) = (node, client);
+        (_node, _client, _unresponsive) = (node, client, node.Unresponsive);
         _ = Task.Run(Receive);
     }
 
@@ -81,6 +120,9 @@ internal sealed class ScriptedChannel : IFrameChannel
     }
 
     public int Requests => Sent.Count(static f => f.Kind == FrameKind.Message);
+
+    /// <summary>Whether pings are answered (off: a probe of this connection goes unanswered).</summary>
+    public volatile bool Pongs = true;
 
     /// <summary>Run <paramref name="action"/> inside the next send, before the frame is taken: whatever it does happens
     /// after the sender picked this connection and before its frame reaches it.</summary>
@@ -128,9 +170,12 @@ internal sealed class ScriptedChannel : IFrameChannel
             if (hold) _held.Add(callId);
         }
 
+        if (_unresponsive) return true;
+        if (header.Kind == FrameKind.Control && header.MessageId == ControlOp.Ping && Pongs) PushControl(ControlOp.Pong);
         if (callId == 0 || hold) return true;
         if (header.Kind == FrameKind.Message) Reply(callId, RpcStatus.Ok, 1);
-        else if (header.MessageId == ControlOp.ResumeSession) Reply(callId, _node.RefuseResume ? RpcStatus.Forbidden : RpcStatus.Ok);
+        else if (header.MessageId == ControlOp.ResumeSession)
+            _node.Resume(() => Reply(callId, _node.RefuseResume ? RpcStatus.Forbidden : RpcStatus.Ok));
         else Reply(callId, RpcStatus.Ok); // hello, goodbye
         return true;
     }

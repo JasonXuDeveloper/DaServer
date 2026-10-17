@@ -13,7 +13,12 @@ public sealed partial class ClusterClient
         }
 
         Volatile.Write(ref _probeDeadlineMs, 0); // a probe of this connection must not close the next one
-        if (Volatile.Read(ref _moving) != 0) return; // the move takes over: it reconnects if it fails
+        if (Volatile.Read(ref _moving) != 0)
+        {
+            // The move takes over (it reconnects if it fails); the calls made on this connection get no reply now.
+            _pending.FailOwnedBy(connection, RpcStatus.Disconnected);
+            return;
+        }
         Lost(error);
     }
 
@@ -40,7 +45,21 @@ public sealed partial class ClusterClient
             await Task.Delay(delay).ConfigureAwait(false); // a blip or a restarting node: give it a moment
             try
             {
-                Use(await ResumedAsync(watched: true).ConfigureAwait(false));
+                IFrameChannel channel;
+                // The attempt ends with the reconnect's deadline: a connect that hangs (a blackholed address) or a node
+                // that never answers closes the attempt's connection, which fails its hello or resume.
+                using (var attempt = new CancellationTokenSource(TimeSpan.FromMilliseconds(Math.Max(1, deadline - Platform.Milliseconds))))
+                using (attempt.Token.Register(static c => ((ClusterClient)c!)._connection?.Close(AttemptTimedOut), this))
+                    channel = await ResumedAsync(watched: true, attempt.Token).ConfigureAwait(false);
+                if (channel.IsClosed) throw AttemptTimedOut;
+                if (_disposed)
+                {
+                    await GoodbyeAsync(channel).ConfigureAwait(false); // disposed meanwhile: the session ends at once
+                    channel.Close();
+                    break;
+                }
+
+                Use(channel);
                 Volatile.Write(ref _reconnecting, 0);
                 Reconnected?.Invoke();
                 return;
@@ -60,6 +79,8 @@ public sealed partial class ClusterClient
         if (!_disposed) ReconnectFailed?.Invoke(error);
     }
 
+    private static readonly TimeoutException AttemptTimedOut = new("The reconnect attempt outlasted ReconnectTimeout");
+
     /// <summary>
     /// The node asked the client to move (<see cref="ControlOp.Retire"/>: its connection is old, or the node is
     /// leaving): the session resumes on a new connection through the entry addresses while the old one keeps working,
@@ -74,6 +95,7 @@ public sealed partial class ClusterClient
             var old = _connection;
             if (_disposed)
             {
+                await GoodbyeAsync(channel).ConfigureAwait(false); // disposed meanwhile: the session ends at once
                 channel.Close();
                 return;
             }
@@ -127,9 +149,9 @@ public sealed partial class ClusterClient
     }
 
     /// <summary>A new introduced connection with the session resumed on it (closed again if the resume fails).</summary>
-    private async ValueTask<IFrameChannel> ResumedAsync(bool watched)
+    private async ValueTask<IFrameChannel> ResumedAsync(bool watched, CancellationToken cancellationToken = default)
     {
-        var channel = await OpenAsync(watched).ConfigureAwait(false);
+        var channel = await OpenAsync(watched, cancellationToken).ConfigureAwait(false);
         try
         {
             await ResumeOn(channel).ConfigureAwait(false);
