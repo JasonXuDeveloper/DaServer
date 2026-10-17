@@ -5,7 +5,13 @@ public sealed partial class ClusterClient
 {
     private void OnClosed(IFrameChannel connection, Exception? error)
     {
-        if (connection != _connection) return; // an earlier connection, left on purpose
+        if (connection != _connection)
+        {
+            // A connection the session moved away from (or a move's new one that failed): its calls get no reply now.
+            _pending.FailOwnedBy(connection, RpcStatus.Disconnected);
+            return;
+        }
+
         Volatile.Write(ref _probeDeadlineMs, 0); // a probe of this connection must not close the next one
         if (Volatile.Read(ref _moving) != 0) return; // the move takes over: it reconnects if it fails
         Lost(error);
