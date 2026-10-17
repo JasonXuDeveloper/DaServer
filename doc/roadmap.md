@@ -442,8 +442,12 @@ in separate commits.
       builders such as `Reply<T>` opt out) on the call and handler paths; Zstandard (`System.IO.Compression`) for large
       actor records. Already in effect without changes: JIT bounds-check and devirtualization work, continuations that
       skip `ExecutionContext` restore when nothing flows.
-- [ ] N6 State handoff on moves: the old owner sends the same bytes to the new owner on the ordered link ahead of the
-      forwarded mail; the store is the fallback. (ET transfer, Orleans migration)
+- [x] N6 State handoff on moves (ADR-072): an actor that changes node (scaling out or in, a node stopping) sends its
+      [Persist] and [Handoff] components, version and last-written hash to the new owner on the link its forwarded
+      mail takes next; the new owner restores them without reading the store, the old one is removed once accepted
+      without writing. A new owner that gets mail first asks the previous owner and waits; refusals, silence and gone
+      nodes fall back to the store. Scaling a 40-actor node out and in: 0 store reads, 0 writes. Also fixed: an actor
+      unloaded and waiting for its final write no longer runs mail (it waits and moves with the actor).
 - [ ] N8 Collections in messages without allocation: use Nino's own ref deserialization (`DeserializeRef` into a
       reused instance) for messages with arrays/lists instead of a new mechanism. Waiting for Nino 4.0.0-rc.1: in
       4.0.0-beta.47 `DeserializeRef` reuses the lists of a struct with fields (0 B per message) but fills nothing in a

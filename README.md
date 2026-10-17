@@ -250,6 +250,10 @@ lost ownership cannot overwrite the new owner's state. Components without `[Pers
 [NinoType, Persist] public partial record struct PlayerProfile(string Name, int Logins) : IComponent;
 ```
 
+When an actor changes node (scaling out or in, a node stopping), its record goes straight to the new owner on the
+link its mail follows, so moves neither read nor write the store; components marked `[Handoff]` move too without
+being stored (a fight in progress, cooldowns). Without a store, `[Persist]` and `[Handoff]` state still moves.
+
 A node keeps records in PostgreSQL with one line in its Program.cs, `builder.AddPostgreSqlActorStore()`, and the
 AppHost passes the database: `cluster.AddNodes<Projects.Sample_GameServer>("game").WithActorStore(actors)`.
 Relational, queried data (accounts, payments, rankings) belongs in services with your own data access.
