@@ -1220,32 +1220,32 @@ records that no longer hold). Each: context → decision → consequences.
   bots on the same 4 cores (oversubscribed): broadcast p99 141-182 -> 108-141 ms.
 
 
-## ADR-076 The wire manifest: layouts are frozen, value-only messages may grow
+## ADR-076 The wire manifest: layouts are frozen
 - Context: a rolling upgrade runs two builds side by side, and stored records outlive the code that wrote them. Nino
-  writes fields in order without names or lengths, so a reordered, retyped or removed field is misread by the other
-  build. Measured on Nino 4.0.0-beta.47: a type made only of value fields is written as its memory (private fields
-  and padding included) and read without a length check, so a newer build of it throws on an older, shorter payload;
-  for other types Nino's `WEAK_VERSION_TOLERANCE` symbol tolerates only a buffer that has ended, and it changes the
-  wire format itself (unmanaged runs are written field by field instead of as one block), so it is not used.
-- Decision: evolution is by new types: a new field goes into a new message or a new persisted component (a record
-  is a section per component, so an old record simply lacks the new one). One exception costs nothing to support: a
-  value-only type that is a whole message, reply or persisted component and that no other type nests may append
-  fields. `WirePayload.Read` (every message, reply and record section) copies an older, shorter payload of such a type
-  into a zeroed value, the new fields' defaults, without allocating; Nino ignores bytes past a type's end, so older
-  builds read newer payloads. Each project commits `wire.manifest`: every public [NinoType] type with the bytes its
-  layout depends on (for a value-only struct its memory fields in order, private ones included; otherwise Nino's
+  (4.0.0-beta.47) writes fields in order without names, lengths or versions: a type made only of value fields as its
+  memory (private fields and padding included, read without a length check), others member by member, classes behind
+  a type id. Any change to a layout is misread by the other build. Appending fields cannot be made safe here: a field
+  appended into a struct's trailing padding keeps its size, so the other build reads stale padding bytes, and Nino's
+  `WEAK_VERSION_TOLERANCE` changes the wire format itself and tolerates only a buffer that has ended.
+- Decision: layouts are frozen. A new field goes into a new message or a new persisted component (a record is a
+  section per component, so an old record simply lacks it). Each project commits `wire.manifest`: every public type
+  Nino serializes, how it is encoded (memory with its `[StructLayout]`, members, members behind a type id), the bytes
+  its layout depends on (a value-only struct's memory fields in order, private ones included; otherwise Nino's
   members: parents and [NinoType] interfaces first, a base's non-public non-protected members skipped, the leaf's
-  `[NinoExplicitOrder]`; enums with their underlying type; types of other assemblies with their own fields inline).
-  The analyzer reports what breaks the other build (DAS017: a type gone, a field moved, renamed, retyped or removed,
-  a frozen type grown) and what is compatible but not recorded (DAS018). `dotnet build -p:UpdateWireManifest=true`
-  rewrites the manifest and still stops on breaks; `=force` records a deliberate break. A project without a manifest
-  is not checked.
-- Alternatives: `WEAK_VERSION_TOLERANCE` (a format change, and still no help for value-only types); a length prefix
-  per message (bytes and a copy on every message); field tags (protobuf: bytes and CPU on every field); asking Nino
-  for length-checked tolerant reads (the requirement is with Nino's author; until then types are frozen).
-- Consequences: a rename is reported though Nino writes no names (deliberately conservative: the manifest is read by
-  people). A grown component written by a newer node loses its new fields when an older node saves it again (a
-  rollback, or the key moving back to an older node during the rollout). BenchmarkDotNet: see ADR-077.
+  `[NinoExplicitOrder]`), each field's type as its bytes depend on it (enums with their underlying type, arrays and
+  generic arguments element by element, types without their own entry, such as ids and other assemblies' types,
+  inline) and a request's reply. The analyzer fails the build on any change to a recorded type (DAS017) and asks to
+  record new types (DAS018) with `dotnet build -p:UpdateWireManifest=true` (which still stops on DAS017;
+  `=force` records a deliberate break). A project without a manifest is not checked. `WirePayload.Read` reads every
+  message, reply and record section: a value-only payload shorter than its type (truncated, hostile) is read within
+  its bytes instead of past them.
+- Alternatives: appending with zero-padding (unsound inside padding, needs the full memory layout computed);
+  `WEAK_VERSION_TOLERANCE` (a format change); a length prefix per message (bytes and a copy on every message); field
+  tags (protobuf: bytes and CPU on every field). Nino's next major version is to be reviewed for tolerant reads
+  (roadmap).
+- Consequences: renames are reported though Nino writes no names (deliberately conservative). A new component
+  written by a newer node is dropped when an older node saves the record again (a rollback, or the key moving back
+  during the rollout): records keep only the sections the saving build knows. BenchmarkDotNet: see ADR-077.
 
 ## ADR-077 Rolling upgrades: builds on the card, messages only where the build has them
 - Context: during a rolling upgrade old and new nodes host the same actor and service types, but a new build may handle
@@ -1257,8 +1257,8 @@ records that no longer hold). Each: context → decision → consequences.
   actor keeps the owner its type gives the key, so a key never has two activations; a message the owner's build
   lacks for that actor type is not sent: a request fails with `NotHosted` (retry), a one-way message is dropped,
   until the owner is upgraded or leaves. A client message unknown to its client-facing node's build is refused with
-  `NotHosted` too (retryable, unlike `Forbidden`). The Hello's link protocol version (unchanged by this work: the
-  wire format is) still refuses incompatible links.
+  `NotHosted` too (retryable, unlike `Forbidden`). The Hello's link protocol version still refuses incompatible
+  links.
 - Alternatives: route the new message to a node of the new build (a second activation of the key, what the slot table
   prevents); per-interface version numbers (Orleans: the card already says what each build handles, and the manifest
   keeps layouts compatible); stop-the-world deploys.

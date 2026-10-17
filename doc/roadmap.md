@@ -336,19 +336,19 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
       `daserver.handler.failed`).
 
 ## Next: versioning and rolling upgrades (V, before S)
-- [x] V1 Wire manifest (ADR-076): each project commits `wire.manifest` (its [NinoType] types and the bytes their
-      layouts depend on); DAS017 fails the build on breaking changes, DAS018 asks to record compatible ones
-      (`dotnet build -p:UpdateWireManifest=true`, `=force` for a deliberate break). Layouts are frozen; value-only whole
-      messages, replies and components may append fields (`WirePayload` reads older payloads zero-padded, 0 B). The
-      samples commit theirs.
+- [x] V1 Wire manifest (ADR-076): each project commits `wire.manifest` (its types, their encodings, the bytes their
+      layouts depend on, replies); DAS017 fails the build on any change to a recorded layout, DAS018 asks to record
+      new types (`dotnet build -p:UpdateWireManifest=true`, `=force` for a deliberate break). Layouts are frozen: new
+      fields go into new messages or components. The samples commit theirs.
 - Waiting on Nino's next major version (the user will say when it lands; revisit V1 and N8 then), measured on
   4.0.0-beta.47:
-  - Value-only types are read as memory without a length check: a shorter payload throws (`WirePayload` pads it).
+  - Value-only types are read as memory without a length check (`WirePayload` keeps reads within the payload); an
+    appended field can land in the old trailing padding, so zero-padding cannot make appending safe.
   - `WEAK_VERSION_TOLERANCE` tolerates only a buffer that has ended, not one cut inside a value block, and it changes
     the wire format (unmanaged runs written field by field): unusable as a version switch.
   - `Reader` does not expose the bytes left, so tolerant reads have to wrap it at every call site.
-  - Wanted: appending fields to any whole type (managed ones too) with defaults for missing ones, independent of
-    the wire format; then the manifest's "grows" rule widens and `WirePayload` may become Nino's own read.
+  - Wanted: appending fields to any type with defaults for missing ones, independent of the wire format; then the
+    manifest can allow appends.
 - [x] V2 Build on the card (ADR-077): `ClusterMember.Build` (framework and application versions); a node logs while
       its view holds several builds.
 - [x] V3 Messages only where the build has them (ADR-077): services (sent or forwarded) among nodes whose build
