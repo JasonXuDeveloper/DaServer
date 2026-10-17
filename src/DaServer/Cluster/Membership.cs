@@ -21,6 +21,7 @@ internal sealed partial class Membership
     private readonly ClusterMember[] _targets = new ClusterMember[Fanout];
     private int _inRound;
     private long _nextRoundMs; // the node's maintenance tick runs a round once this passed
+    private long _nextExcuseMs; // a late tick before this is not excused (Tick)
 
     /// <summary>Tests: a partition. Gossip to these cluster ports is dropped (both sides set it for the other).</summary>
     internal HashSet<int>? BlockedPorts;
@@ -86,15 +87,23 @@ internal sealed partial class Membership
     /// The node's maintenance tick (its timer thread): a gossip round once per <see cref="NodeOptions.GossipInterval"/>.
     /// A tick that ran <paramref name="pausedMs"/> late means this process was paused (GC, a starved CPU, a stopped
     /// container): the silence of the others since is ours, not theirs. Their progress clocks move forward by the pause,
-    /// so no member is suspected or declared dead for it; real failures still surface a few rounds later.
+    /// so no member is suspected or declared dead for it; real failures still surface a few rounds later. One pause is
+    /// excused per <see cref="NodeOptions.DeadAfter"/>: a process late on every tick (starved for good) would otherwise
+    /// never age anyone, and a dead member would keep its keys. True when this tick's lateness was excused.
     /// </summary>
-    internal void Tick(long nowMs, long pausedMs)
+    internal bool Tick(long nowMs, long pausedMs)
     {
+        bool excused = pausedMs > 0 && nowMs >= _nextExcuseMs;
         if (pausedMs > 0)
         {
             lock (_gate)
             {
-                foreach (var entry in _members.Values) entry.LastProgress += pausedMs;
+                if (excused)
+                {
+                    foreach (var entry in _members.Values) entry.LastProgress += pausedMs;
+                    _nextExcuseMs = nowMs + Ms(_node.Options.DeadAfter);
+                }
+
                 // Silent this long, this node is dead in every other view (or forgotten, and no Dead pulse will ever
                 // come back to it): its keys have new owners, so its loaded actors go without a write, and it comes
                 // back at a new incarnation.
@@ -104,10 +113,15 @@ internal sealed partial class Membership
             Log.RoundLate(_node.Logger, pausedMs);
         }
 
-        if (nowMs < _nextRoundMs) return;
-        _nextRoundMs = nowMs + Ms(_node.Options.GossipInterval);
-        Round();
+        if (nowMs >= _nextRoundMs)
+        {
+            _nextRoundMs = nowMs + Ms(_node.Options.GossipInterval);
+            Round();
+        }
+
+        return excused;
     }
+
 
     /// <summary>One gossip round.</summary>
     private void Round()

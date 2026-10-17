@@ -27,7 +27,7 @@ internal sealed partial class Membership
     }
 
     /// <summary>Apply pulses in place; true when some name a node we have no card for.</summary>
-    private bool MergePulses(ReadOnlySpan<byte> pulses)
+    internal bool MergePulses(ReadOnlySpan<byte> pulses)
     {
         bool unknown = false;
         lock (_gate)
@@ -50,7 +50,10 @@ internal sealed partial class Membership
 
                 var info = entry.Info;
                 if (!pulse.Supersedes(info)) continue;
-                if (pulse.Heartbeat != info.Heartbeat || pulse.Incarnation != info.Incarnation) entry.LastProgress = now;
+                // A worse status can come with an older heartbeat: only a newer one (or incarnation) is progress, and the
+                // newest heartbeat is kept, or every later stale pulse would look like progress.
+                bool newer = pulse.Incarnation != info.Incarnation;
+                if (newer || pulse.Heartbeat > info.Heartbeat) entry.LastProgress = now;
                 if (pulse.Incarnation != info.Incarnation || pulse.Status != info.Status)
                 {
                     // Routing-relevant: publish a copy (the view is rebuilt).
@@ -61,7 +64,7 @@ internal sealed partial class Membership
                     _changed = true;
                 }
 
-                info.Heartbeat = pulse.Heartbeat;
+                if (newer || pulse.Heartbeat > info.Heartbeat) info.Heartbeat = pulse.Heartbeat;
                 info.Load = pulse.Load;
                 pulse.CopySlots(info.PulseValues);
             }
@@ -128,8 +131,9 @@ internal sealed partial class Membership
                 else
                 {
                     if (!member.Supersedes(entry.Info)) continue;
+                    if (member.Incarnation != entry.Info.Incarnation || member.Heartbeat > entry.Info.Heartbeat) entry.LastProgress = now;
+                    else member.Heartbeat = entry.Info.Heartbeat; // a worse status at an older heartbeat (as for pulses)
                     entry.Info = member;
-                    entry.LastProgress = now;
                     _changed = true;
                 }
 

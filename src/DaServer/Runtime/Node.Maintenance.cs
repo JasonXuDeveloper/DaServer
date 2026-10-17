@@ -5,11 +5,14 @@ internal sealed partial class Node
 {
     private SilenceClock _maintainClock;
 
-    /// <summary>Tests: what a pause of this process of <paramref name="pause"/> looks like to its next maintenance tick.</summary>
-    internal void SimulatePause(TimeSpan pause)
+    /// <summary>
+    /// Tests: what a pause of this process of <paramref name="pause"/> looks like to its next maintenance tick
+    /// (<paramref name="aged"/>: the members' progress clocks age by it too, as real time would have aged them).
+    /// </summary>
+    internal void SimulatePause(TimeSpan pause, bool aged = true)
     {
         _maintainClock.Rewind((long)pause.TotalMilliseconds);
-        Membership.Age((long)pause.TotalMilliseconds);
+        if (aged) Membership.Age((long)pause.TotalMilliseconds);
     }
     private long[]? _stallReported; // per shard: the pass already reported (the maintenance timer's thread only)
     private int _stalledShards;
@@ -43,9 +46,7 @@ internal sealed partial class Node
         {
             Pending.SweepExpired();
             long now = Platform.Milliseconds;
-            long paused = _maintainClock.Tick(now);
-            bool late = paused > 0;
-            Membership.Tick(now, paused);
+            bool late = Membership.Tick(now, _maintainClock.Tick(now)); // an excused pause: ping, no verdicts
             _slots.Tick(now);
             long interval = (long)Options.GossipInterval.TotalMilliseconds;
             long timeout = late ? long.MaxValue : Math.Max((long)Options.SuspectAfter.TotalMilliseconds, 3 * interval); // late: ping, no verdicts
