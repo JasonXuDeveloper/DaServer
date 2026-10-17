@@ -42,7 +42,7 @@ src/DaServer/              server runtime (net11.0): Runtime/ Cluster/ Rpc/ Net/
   Runtime/Systems/         runtime systems: Dispatch, Turn, ServiceCall, Removal, Unload, Mailbox (ShardMessages group),
                            Rebalance (ShardRebalance), Idle (ShardIdleScan); each reacts to one lifecycle tag (ADR-037)
 src/DaServer.Generator/    incremental generators (AskGenerator, RegistrationGenerator, PolyfillGenerator) + DaServerAnalyzer
-                           (DAS001-015);
+                           (DAS001-016);
                            Shapes.cs reads symbols once for both, so "skipped by the generator" == "reported"
 src/DaServer.Hosting/      Generic Host integration, configuration, OpenTelemetry (OTLP when configured), shutdown
 src/DaServer.Persistence.PostgreSql/  actor records in PostgreSQL (ADR-068): PostgreSqlActorStore, AddPostgreSqlActorStore

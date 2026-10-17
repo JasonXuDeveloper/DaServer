@@ -1152,3 +1152,20 @@ records that no longer hold). Each: context → decision → consequences.
   since the old owner's last write, as any crash loses up to `SaveEvery`. Actors leaving while unloaded and waiting
   for a write take no mail (it moves with them).
 
+## ADR-073 Placement affinity on the id type
+- Context: actors that talk all the time (a room and its seats, a guild and its members' guild state) pay a network
+  hop per message when rendezvous hashing scatters them. ET addresses carry the process and the scene, so units are
+  placed by hand; Orleans offers placement strategies per grain class and a directory; neither lets two actor types
+  meet without a lookup.
+- Decision: an actor id type may implement `IPlaced`: its `Placement`, a pure function of the id's value, is hashed in
+  place of the value, with handler type group 0, onto nodes (rendezvous) and onto shards. Actors of any type with the
+  same placement land on the same node and shard wherever both types are hosted. Senders compute it from the id
+  alone, so the wire is unchanged and there is no directory. The generated registration of the assembly declaring
+  the id type registers it; a node that does not reference the id type forwards once. DAS016 reports `IPlaced` on
+  anything but an actor id type.
+- Alternatives: a `[PlacedWith<RoomId>]` attribute on the actor class (fixes how ids encode their group in the
+  framework); a placement key field in the frame (a wire change for every message); a directory (a lookup per
+  first message, a component to run).
+- Consequences: co-located actors exchange messages through their shard's mailbox. A placement shared by many actors
+  is a hot spot by design: placement groups should stay small (a room, a party).
+
