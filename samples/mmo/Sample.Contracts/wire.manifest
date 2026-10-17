@@ -6,7 +6,7 @@ Sample.Contracts.Attach (struct, positional)
 = bool
 Sample.Contracts.Chat (struct, positional)
 - Player: Sample.Contracts.PlayerId memory {Value: long}
-- Text: string
+- Text: string utf8
 Sample.Contracts.Enter (struct, positional)
 - Player: Sample.Contracts.PlayerId memory {Value: long}
 - Session: DaServer.ClientSession struct, positional {Node: ulong, Id: long}
@@ -23,7 +23,7 @@ Sample.Contracts.Leave (struct, positional)
 - Session: DaServer.ClientSession struct, positional {Node: ulong, Id: long}
 = bool
 Sample.Contracts.Login (struct, positional)
-- Name: string
+- Name: string utf8
 = Sample.Contracts.LoginResult
 Sample.Contracts.LoginResult (memory)
 - Ok: bool
@@ -44,7 +44,7 @@ Sample.Contracts.Moves (sealed class, positional)
 - Items: System.Collections.Generic.List<Sample.Contracts.Moved>
 Sample.Contracts.PlayerInfo (struct, positional)
 - Id: Sample.Contracts.PlayerId memory {Value: long}
-- Name: string
+- Name: string utf8
 - Map: Sample.Contracts.MapId memory {Value: long}
 - Logins: int
 Sample.Contracts.PlayerOffline (memory)
@@ -56,4 +56,4 @@ Sample.Contracts.RealmStatus (memory)
 - Online: int
 - ServerTimeTicks: long
 Sample.Contracts.Say (struct, positional)
-- Text: string
+- Text: string utf8
