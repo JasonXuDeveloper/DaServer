@@ -1,0 +1,32 @@
+# DaServer wire manifest (ADR-076): the layout of this assembly's [NinoType] types on the wire and in stored records.
+# Positional layouts are frozen, version-tolerant types take new fields at their end, keyed types any key that keeps
+# its type. Record changes: dotnet build -p:UpdateWireManifest=true
+DaServer.Cluster.CardEntry (no header, positional, id 9757C187)
+- Key: uint raw(4)
+- Value: string Nino.Core.StringFormatter
+DaServer.Cluster.ClusterMember (null flag, version tolerant, id 22E5D45D)
+- NodeId: ulong raw(8)
+- Name: string Nino.Core.StringFormatter
+- Host: string Nino.Core.StringFormatter
+- Port: int raw(4)
+- Handlers: DaServer.Cluster.HostedMessage[] Nino.Core.UnmanagedArrayFormatter<DaServer.Cluster.HostedMessage>
+- Scopes: uint[] Nino.Core.UnmanagedArrayFormatter<uint>
+- Incarnation: int raw(4)
+- Heartbeat: long raw(8)
+- Status: DaServer.Cluster.MemberStatus raw(1)
+- Load: int raw(4)
+- PulseKeys: uint[] Nino.Core.UnmanagedArrayFormatter<uint>
+- PulseValues: int[] Nino.Core.UnmanagedArrayFormatter<int>
+- Entries: DaServer.Cluster.CardEntry[] Nino.Core.ArrayFormatter<DaServer.Cluster.CardEntry, nested>
+DaServer.Cluster.HostedMessage (no header, positional, raw, id 4FBDF5E5)
+- MessageId: uint raw(4)
+- HandlerTypeId: uint raw(4)
+- Actor: bool raw(1)
+DaServer.Cluster.LinkHello (null flag, version tolerant, id 17E14E65)
+- Version: int raw(4)
+- Cluster: string Nino.Core.StringFormatter
+- Host: string Nino.Core.StringFormatter
+- Port: int raw(4)
+- StreamId: long raw(8)
+- At: long raw(8)
+- Proof: byte[] Nino.Core.UnmanagedArrayFormatter<byte>
