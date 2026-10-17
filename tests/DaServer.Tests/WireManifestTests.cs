@@ -20,6 +20,7 @@ public class WireManifestTests
         public readonly record struct HeroId(long Value) : IActorId;
         [NinoType, Message] public partial record struct Move(HeroId Hero, float X, float Y);
         [NinoType, Message] public partial struct Spin { public int Speed; private int _hidden; }
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential, Pack = 4)]
         [NinoType] public partial struct Cell { public int Row; public int Column; }
         [NinoType, Message] public partial struct Paint { public Cell At; [NinoIgnore] public int Cached; public Kind Kind; public string Color; public Cell[] Trail; }
         [NinoType, Message] public partial record struct Look : IRequest<View>;
@@ -27,14 +28,26 @@ public class WireManifestTests
         [NinoType(false)] public partial class Sparse { [NinoMember(2)] public int B; [NinoMember(1)] public int A; public int Skipped; }
         [NinoType] public interface IShape { int Sides { get; set; } }
         [NinoType] public partial class Square : IShape { public int Size; public int Sides { get; set; } }
+        [NinoType] public partial struct Tile : IShape { public int Sides { get; set; } private byte _shade; }
+        [NinoType] public partial class Link { public Link Next; public System.Collections.Generic.List<Link> Children; [NinoUtf8] public string Label; }
+        public partial class Hop : Link { public int Distance; }
         """;
 
     private const string Recorded = """
-        Game.Cell (memory)
+        Game.Cell (memory(0, Pack=4))
         - Row: int
         - Column: int
+        Game.Hop (typed members)
+        - Next: Game.Link
+        - Children: System.Collections.Generic.List<Game.Link>
+        - Label utf8: string
+        - Distance: int
         Game.IShape (typed members)
         - Sides: int
+        Game.Link (typed members)
+        - Next: Game.Link
+        - Children: System.Collections.Generic.List<Game.Link>
+        - Label utf8: string
         Game.Look (memory)
         = Game.View
         Game.Move (memory)
@@ -55,6 +68,9 @@ public class WireManifestTests
         Game.Square (typed members)
         - Sides: int
         - Size: int
+        Game.Tile (typed memory)
+        - Sides: int
+        - _shade: byte
         Game.View (memory)
         - Range: int
         - Zoom: int
@@ -63,7 +79,8 @@ public class WireManifestTests
     [Test]
     public void TheManifestRecordsFieldsInNinoOrder()
     {
-        var driver = Microsoft.CodeAnalysis.CSharp.CSharpGeneratorDriver.Create(new WireManifestGenerator())
+        var driver = Microsoft.CodeAnalysis.CSharp.CSharpGeneratorDriver.Create([new WireManifestGenerator().AsSourceGenerator()],
+                optionsProvider: new Updating())
             .RunGenerators(GeneratorTests.Compile(GeneratorTests.Parse(Types)));
         string text = driver.GetRunResult().GeneratedTrees.Single(t => t.FilePath.EndsWith("DaServer.WireManifest.g.cs")).ToString();
 
@@ -90,12 +107,15 @@ public class WireManifestTests
     [TestCase("HeroId(long Value)", "HeroId(int Value)", "DAS017", TestName = "A nested id without an entry is part of the layout")]
     [TestCase("[NinoType, Message] public partial record struct Move(HeroId Hero, float X, float Y);", "", "DAS017", TestName = "A removed type breaks")]
     [TestCase("IRequest<View>", "IRequest<int>", "DAS017", TestName = "A changed reply breaks")]
-    [TestCase("public partial struct Cell", "[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential, Pack = 1)] public partial struct Cell", "DAS017", TestName = "A struct layout change breaks")]
+    [TestCase("Pack = 4", "Pack = 1", "DAS017", TestName = "A struct layout change breaks")]
     [TestCase("public partial struct Spin", "public partial class Spin", "DAS017", TestName = "A struct that becomes a class breaks")]
     [TestCase("enum Kind : byte", "enum Kind : int", "DAS017", TestName = "An enum's underlying type is part of the layout")]
     [TestCase(" private int _hidden;", "", "DAS017", TestName = "A value-only message's private fields are its bytes")]
     [TestCase("public int Size; public int Sides", "public int Sides { get; set; } public int Size", "", TestName = "An interface's members come first whatever the class's order")]
     [TestCase("namespace Game;", "namespace Game; [NinoType, Message] public partial record struct Jump(int H);", "DAS018", TestName = "A new type must be recorded")]
+    [TestCase("[NinoUtf8] public string Label;", "public string Label;", "DAS017", TestName = "A string's encoding is part of the layout")]
+    [TestCase("private byte _shade;", "private short _shade;", "DAS017", TestName = "A typed value-only struct's private fields are its bytes")]
+    [TestCase("public int Distance;", "public int Distance; public int Hops;", "DAS017", TestName = "A type that inherits NinoType is recorded")]
     public async Task ChangesAreJudged(string before, string after, string id) =>
         Assert.That(await Check(Types.Replace(before, after), Recorded), Is.EqualTo(id.Length == 0 ? [] : new[] { id }));
 
@@ -107,6 +127,23 @@ public class WireManifestTests
         return reported.Select(d => d.Id).Where(id => id is "DAS017" or "DAS018").Distinct().ToArray();
     }
 
+    /// <summary>Build options of <c>-p:UpdateWireManifest=true</c>.</summary>
+    private sealed class Updating : AnalyzerConfigOptionsProvider
+    {
+        private sealed class Options(bool global) : AnalyzerConfigOptions
+        {
+            public override bool TryGetValue(string key, out string value)
+            {
+                value = "true";
+                return global && key == "build_property.UpdateWireManifest";
+            }
+        }
+
+        public override AnalyzerConfigOptions GlobalOptions { get; } = new Options(true);
+        public override AnalyzerConfigOptions GetOptions(SyntaxTree tree) => new Options(false);
+        public override AnalyzerConfigOptions GetOptions(AdditionalText textFile) => new Options(false);
+    }
+
     private sealed class Manifest(string text) : AdditionalText
     {
         public override string Path => "/project/wire.manifest";
@@ -114,24 +151,25 @@ public class WireManifestTests
     }
 
     [Test]
-    public void ATruncatedValueOnlyPayloadIsReadWithinItsBytes()
+    public void ATruncatedValueOnlyPayloadIsRefusedBeforeItIsRead()
     {
-        // Nino reads a value-only type as memory without a length check; WirePayload never reads past the payload
-        // (a truncated or hostile frame reads as zeros) and reads a full one as Nino does.
+        // Nino reads a value-only type as memory without a length check; WirePayload refuses a shorter payload
+        // (truncated or hostile) instead of reading past it, and reads a full one as Nino does.
         var full = NinoSerializer.Serialize(new OrderV2 { Item = 7, Count = 2, Gift = true });
-        WirePayload.Read(full.AsSpan(0, 8), out OrderV2 truncated); // Item and its padding
+        Assert.Throws<InvalidOperationException>(() => WirePayload.Read(full.AsSpan(0, 8), out OrderV2 _));
         WirePayload.Read(full, out OrderV2 whole);
-        Assert.That(truncated, Is.EqualTo(new OrderV2 { Item = 7 }));
         Assert.That(whole, Is.EqualTo(new OrderV2 { Item = 7, Count = 2, Gift = true }));
+        WirePayload.Read(NinoSerializer.Serialize<int?>(5), out int? optional);
+        Assert.That(optional, Is.EqualTo(5), "a nullable reply is written as its memory too");
     }
 
     [Test]
-    public void ReadingATruncatedPayloadAllocatesNothing()
+    public void ReadingAPayloadAllocatesNothing()
     {
-        var truncated = NinoSerializer.Serialize(new OrderV2 { Item = 7, Count = 2 }).AsSpan(0, 8).ToArray();
-        WirePayload.Read(truncated, out OrderV2 _);
+        var payload = NinoSerializer.Serialize(new OrderV2 { Item = 7, Count = 2 });
+        WirePayload.Read(payload, out OrderV2 _);
         long before = GC.GetAllocatedBytesForCurrentThread();
-        for (int i = 0; i < 1000; i++) WirePayload.Read(truncated, out OrderV2 _);
+        for (int i = 0; i < 1000; i++) WirePayload.Read(payload, out OrderV2 _);
         Assert.That(GC.GetAllocatedBytesForCurrentThread() - before, Is.Zero);
     }
 
