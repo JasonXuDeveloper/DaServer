@@ -341,11 +341,11 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
       (positional: any; version tolerant: anything but members appended at the end; keyed: a key's type), DAS018 asks
       to record the rest (`dotnet build -p:UpdateWireManifest=true`, `=force` for a deliberate break). Messages are
       positional, persisted components version tolerant or keyed (DAS014). The samples commit theirs.
-- Nino 4.0.0-rc.2 resolved what DaServer asked for (#197 layout metadata, now what the manifest reads; #198 a pool for
-  `NinoArrayBufferWriter`, frames rent from the pinned `BufferPool`; #199 `NinoRegistry.Remove` for collectible
-  contexts, for N9; #200 another assembly's auto-property struct raw in every build; #201 NINO026). Waiting on
-  #202: the layout records neither `[StructLayout(Pack/Size)]` nor the fields of a plain raw struct (the manifest adds
-  those of plain structs itself; `Pack` changes escape it meanwhile).
+- Nino 4.0.0-rc.3 resolved everything DaServer asked for (#197 layout metadata, now what the manifest reads; #198 a
+  pool for `NinoArrayBufferWriter`, frames rent from the pinned `BufferPool`; #199 `NinoRegistry.Remove` for collectible
+  contexts, for N9; #200 another assembly's auto-property struct raw in every build; #201 NINO026; #202 raw memory
+  recorded field by field with offsets, `Pack`/`Size`/`[FieldOffset]` included, so the manifest adds no fields of its
+  own).
 - [x] V2 Build on the card (ADR-077): `ClusterMember.Build` (framework and application versions); a node logs while
       its view holds several builds.
 - [x] V3 Messages only where the build has them (ADR-077): services (sent or forwarded) among nodes whose build
@@ -510,7 +510,10 @@ in separate commits.
   - [x] Pools and the call table: per-thread magazines in `ObjectPool` (the depot's cursors touched once per 32
         objects); call table entries 32 B (int tag, the deadline as the low 32 bits of `Platform.Milliseconds`, passed
         in absolute: one clock read less per call). `PoolBenchmark` (1/4/16 concurrent threads) before: frames 33 /
-        189 / 198 ns, calls 41 / 230 / 232 ns; after: [ ] record.
+        189 / 198 ns, calls 41 / 230 / 232 ns; after: frames 24 / 12 / 11 ns, calls 43 / 173 / 162 ns, nothing
+        allocated.
+  - [ ] The call table's free stack: its head is the one CAS every call and reply contend on; per-thread free slots
+        (taken and given back in batches) would remove it. Measure with `PoolBenchmark.Calls`.
   - [x] Group fan-out: a channel array next to the members; `FrameChannel`, the shell (send, close, tag, stamps)
         shared by TCP and WebSocket.
   - [x] Routing: one route per handler type (nodes, kind, slot owners) found by one lookup.

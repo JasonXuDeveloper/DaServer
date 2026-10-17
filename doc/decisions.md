@@ -1266,9 +1266,9 @@ records that no longer hold). Each: context → decision → consequences.
   message gives for free); mirroring Nino's rules in DaServer's generator (what the manifest did before Nino published
   its layouts: every Nino change needed a matching one here); appending to positional structs with zero padding
   (unsound: an appended field can land in trailing padding); field tags (protobuf: bytes and CPU on every field).
-- Consequences: renames are reported though positional types write no names (deliberately conservative). What Nino's
-  layout does not show escapes the manifest until Nino records it (issue #202): `[StructLayout(Pack/Size)]` of raw
-  structs, and the layout of a plain struct another assembly declares beyond its fields. The framework's own frames
+- Consequences: renames are reported though positional types write no names (deliberately conservative). Raw memory
+  is recorded field by field with offsets (`raw(16){Node:ulong@0:raw(8),Id:long@8:raw(8)}`), nested structs and
+  `[StructLayout(Pack/Size)]`/`[FieldOffset]` included, whichever assembly declares the struct. The framework's own frames
   (cards, the hello, session operations) are guarded by the protocol versions instead (ADR-077).
 
 ## ADR-077 Rolling upgrades: builds on the card, messages only where the build has them
