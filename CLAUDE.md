@@ -41,10 +41,10 @@ src/DaServer/              server runtime (net11.0): Runtime/ Cluster/ Rpc/ Net/
   Runtime/ShardDispatch.cs routing/delivery/invoke operations shared by the runtime systems
   Runtime/Systems/         runtime systems: Dispatch, Turn, ServiceCall, Removal, Unload, Mailbox (ShardMessages group),
                            Rebalance (ShardRebalance), Idle (ShardIdleScan); each reacts to one lifecycle tag (ADR-037)
-src/DaServer.Generator/    incremental generators (AskGenerator, RegistrationGenerator, PolyfillGenerator, WireManifestGenerator)
-                           + DaServerAnalyzer (DAS001-018); WireManifest.cs: the wire.manifest model (ADR-076); WireLayout.cs: Nino's
-                           generator rules mirrored (members, order, raw structs, formats);
+src/DaServer.Generator/    incremental generators (AskGenerator, RegistrationGenerator, PolyfillGenerator) + DaServerAnalyzer
+                           (DAS001-018); WireManifest.cs: the wire.manifest model over Nino's NinoTypeLayout (ADR-076);
                            Shapes.cs reads symbols once for both, so "skipped by the generator" == "reported"
+src/DaServer.WireTool/     writes a project's wire.manifest from its built assembly (the analyzer's own WireManifest)
 src/DaServer.Hosting/      Generic Host integration, configuration, OpenTelemetry (OTLP when configured), shutdown
 src/DaServer.Persistence.PostgreSql/  actor records in PostgreSQL (ADR-068): PostgreSqlActorStore, AddPostgreSqlActorStore
 src/DaServer.Testing/      in-process clusters for users' tests (ADR-071): TestCluster, a manual clock, stepped ticks;
