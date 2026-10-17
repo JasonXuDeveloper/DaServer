@@ -12,7 +12,7 @@ Keep this file current: tick items when done, add items when scope changes.
 3. T2 ECS bots and business isolation (done): shared rules, a real client, simulated users that run it.
 4. N2 `SendAfter` (the delayed send primitive, per-shard timer wheel), N3 call cycles fail fast (`Chain` header
    extension), N3b no sync-over-async (incl. the await-only `Reply<T>`, which also fixes H1).
-5. N8 collections in messages without garbage (H4), on Nino 4.0.0-rc.1 (ADR-078).
+5. N8 collections in messages without garbage (H4), on Nino 4 (ADR-078).
 6. D1-D4 graceful shutdown without a store, A-items (Aspire and hosting; A6 uses the `Trace` header extension).
 7. C1-C4 cluster hardening (before persistence: fencing assumes correct downing).
 8. N1 Contracts / Model / Logic split.
@@ -341,14 +341,11 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
       (positional: any; version tolerant: anything but members appended at the end; keyed: a key's type), DAS018 asks
       to record the rest (`dotnet build -p:UpdateWireManifest=true`, `=force` for a deliberate break). Messages are
       positional, persisted components version tolerant or keyed (DAS014). The samples commit theirs.
-- Waiting on Nino (issues filed):
-  - #197 a per-type layout description Nino computes, so the manifest reads Nino's own view instead of mirroring its
-    rules (`WireLayout`; `[FieldOffset]` layouts and assembly-level formatters are not recorded meanwhile).
-  - #198 a pool parameter for `NinoArrayBufferWriter`, so frame writers can live on the pinned object heap.
-  - #199 registries that do not root collectible load contexts (N9 hot reload).
-  - #200 another assembly's auto-property struct is raw from source but not from metadata (IDE and command-line
-    builds can write different bytes; `ClientSession` in a message is written member by member meanwhile).
-  - #201 two `[NinoFormerName]` on one type: the generator takes the first, the runtime throws (no diagnostic yet).
+- Nino 4.0.0-rc.2 resolved what DaServer asked for (#197 layout metadata, now what the manifest reads; #198 a pool for
+  `NinoArrayBufferWriter`, frames rent from the pinned `BufferPool`; #199 `NinoRegistry.Remove` for collectible
+  contexts, for N9; #200 another assembly's auto-property struct raw in every build; #201 NINO026). Waiting on
+  #202: the layout records neither `[StructLayout(Pack/Size)]` nor the fields of a plain raw struct (the manifest adds
+  those of plain structs itself; `Pack` changes escape it meanwhile).
 - [x] V2 Build on the card (ADR-077): `ClusterMember.Build` (framework and application versions); a node logs while
       its view holds several builds.
 - [x] V3 Messages only where the build has them (ADR-077): services (sent or forwarded) among nodes whose build

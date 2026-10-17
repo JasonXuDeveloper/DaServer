@@ -1236,31 +1236,31 @@ records that no longer hold). Each: context → decision → consequences.
   tolerate, and nothing at run time says so.
 - Decision: messages stay positional (the cheapest bytes and code; a new field goes into a new message), persisted
   and handed-off components must be version tolerant or keyed (DAS014, ADR-068). Each project commits
-  `wire.manifest`: every [NinoType] it declares (public or internal), its encoding (raw memory with its
-  `[StructLayout]`, or its header and format, and `tracked` with `trackReferences`), the members Nino serializes in
-  wire order with each one's type as its bytes depend on it (enums with their underlying type, arrays and generic
-  arguments element by element, unmanaged structs without their own entry inline, `utf8` and custom formatters noted)
-  and a request's reply. The analyzer (DAS017) fails the build on a type gone, its encoding or reply changed, a new
-  subtype of a recorded or another assembly's type (older builds lack its type id), and a member change the format
-  does not tolerate: any, positional; anything but members appended at the end, version tolerant (one appended to a
-  base shifts its subtypes' members, which their own entries show); another type under a key, keyed. It asks to record
-  the rest (DAS018: new types, appended members, keys added or removed) with
-  `dotnet build -p:UpdateWireManifest=true` (which still stops on DAS017; `=force` records a deliberate break).
-  `WireLayout` mirrors Nino's generator rules (which members, in what order, which structs are raw) and runtime
-  probes pin them against Nino's bytes. Nino 4 checks every read against its span, so a truncated or hostile payload
-  throws instead of being read past its end. Nino's diagnostics for what it would skip silently (NINO006, NINO007,
-  NINO022, NINO024) are errors in every project that references DaServer.Abstractions.
+  `wire.manifest`, built from Nino's own description of every type it writes (`[assembly: NinoTypeLayout]`, emitted by
+  Nino's generator): its header (none, null flag, type id), format, whether it is raw memory, `tracked`, its type id,
+  and its members in written order with their types and how each is written (`raw(4)`, a formatter, `utf8`). The
+  manifest adds what Nino does not record: a request's reply, a plain unmanaged struct's fields (Nino copies an id's
+  memory and names only its type), another assembly's [NinoType] as its layout inline (a package update that changes
+  it shows), and the [NinoType] ancestors. The analyzer (DAS017) fails the build on a type gone, its encoding (a new
+  type id included) or reply changed, a new subtype of a recorded or another assembly's type (older builds lack its
+  type id), and a member change the format does not tolerate: any, positional; anything but members appended at the
+  end, version tolerant (one appended to a base shifts its subtypes' members, which their own entries show); another
+  type under a key, keyed. It asks to record the rest (DAS018: new types, appended members, keys added or removed)
+  with `dotnet build -p:UpdateWireManifest=true` (which still stops on DAS017; `=force` records a deliberate break).
+  The analyzer reads the layouts in the compilation; the manifest is written after the compile by
+  `DaServer.WireTool` (in the Abstractions package), which runs the same code over the built assembly's metadata:
+  analyzers cannot write files and generators cannot see another generator's output. Nino 4 checks every read
+  against its span, so a truncated or hostile payload throws instead of being read past its end. Nino's diagnostics
+  for what it would skip silently (NINO006, NINO007, NINO022, NINO024) are errors in every project that references
+  DaServer.Abstractions.
 - Alternatives: version-tolerant messages (4 bytes and a back-patched length per message for a tolerance a new
-  message gives for free); appending to positional structs with zero padding (unsound: an appended field can land in
-  trailing padding); Nino's `WEAK_VERSION_TOLERANCE` (all of a project's types at once, a format change); field tags
-  (protobuf: bytes and CPU on every field).
-- Consequences: renames are reported though positional types write no names (deliberately conservative). The
-  manifest mirrors Nino's rules rather than reading Nino's own description of a type (Nino issue #197 asks for one),
-  so it is as true as the mirror: `[FieldOffset]` layouts and assembly-level `[NinoFormatter]` registrations are not
-  recorded. Another assembly's [NinoType] struct with auto-properties is written member by member, as Nino does from
-  metadata (Nino issue #200: from a project reference's source it would be raw, so an IDE build could write other
-  bytes for a padded outer struct). The framework's own frames (cards, the hello, session operations) are guarded by
-  the protocol versions instead (ADR-077). The generator runs only when the manifest is updated.
+  message gives for free); mirroring Nino's rules in DaServer's generator (what the manifest did before Nino published
+  its layouts: every Nino change needed a matching one here); appending to positional structs with zero padding
+  (unsound: an appended field can land in trailing padding); field tags (protobuf: bytes and CPU on every field).
+- Consequences: renames are reported though positional types write no names (deliberately conservative). What Nino's
+  layout does not show escapes the manifest until Nino records it (issue #202): `[StructLayout(Pack/Size)]` of raw
+  structs, and the layout of a plain struct another assembly declares beyond its fields. The framework's own frames
+  (cards, the hello, session operations) are guarded by the protocol versions instead (ADR-077).
 
 ## ADR-077 Rolling upgrades: builds on the card, messages only where the build has them
 - Context: during a rolling upgrade old and new nodes host the same actor and service types, but a new build may handle
@@ -1285,7 +1285,7 @@ records that no longer hold). Each: context → decision → consequences.
   meanwhile. While every node runs one build the routing cost is one empty-set check per actor message.
 
 ## ADR-078 Nino 4: written in place, read from the span, pooled where messages hold collections
-- Context: Nino 4.0.0-rc.1 writes in place (`NinoSerializer.Serialize(value, NinoArrayBufferWriter)`), reads from a
+- Context: Nino 4 writes in place (`NinoSerializer.Serialize(value, NinoArrayBufferWriter)`), reads from a
   span checked against it (`NinoDeserializer.Deserialize<T>(span)`), computes type ids (`NinoTypeId`) and deserializes
   `[NinoPooled]` sealed classes into instances from a pool: what a framework on top would otherwise build itself.
 - Decision: `FrameWriter` wraps a `NinoArrayBufferWriter` (frames over `ArrayPool`, the header reserved first; a pooled
@@ -1299,7 +1299,7 @@ records that no longer hold). Each: context → decision → consequences.
 - Alternatives: keep the beta (no checked reads, no pools, our own ids to keep in step with Nino's); Nino's
   polymorphic dispatch for messages (boxes struct messages and writes a type id the frame header already carries);
   Nino's interceptors (messages live in other assemblies and calls are generic, which they do not see).
-- Consequences: a frame writer cannot live on the pinned object heap (Nino issue #198 asks for a pool parameter);
-  Nino's registries root their types (issue #199, for reloading logic, N9). BenchmarkDotNet: see the roadmap's
-  Nino 4 row.
+- Consequences: frames rent from the pinned `BufferPool` through Nino's pool parameter, so sockets send them as
+  they are. Nino's registries are released with a collectible load context (`NinoRegistry.Remove`, N9 hot reload).
+  BenchmarkDotNet: see the roadmap's Nino 4 row.
 
