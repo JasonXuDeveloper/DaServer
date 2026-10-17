@@ -155,6 +155,39 @@ public class HandoffTests(string kind) : ClusterTest
     }
 
     [Test]
+    public async Task ALateAnswerFromALiveNewOwnerIsWaitedFor()
+    {
+        // b takes some of a's keys but its shards answer only after several handoff timeouts: a must keep waiting for the
+        // answer (b is alive), not write its copy to the store and reload it, while b runs the copy it accepted.
+        var store = new WatchedStore(_stores.Create());
+        var a = await Start("a", configure: o => { o.ActorStore = store; o.CallTimeout = TimeSpan.FromMilliseconds(500); });
+        var keys = Enumerable.Range(8000, 40).Select(static k => (long)k).ToArray();
+        foreach (long key in keys) Assert.That(await a.Ask(new BankId(key), new Deposit(1, false)), Is.EqualTo(1)); // unwritten
+
+        using var gate = new ManualResetEventSlim();
+        var b = await Start("b", configure: o => { o.ActorStore = store; o.CallTimeout = TimeSpan.FromMilliseconds(500); });
+        b.PostToEveryShard(static (_, g) => g.Wait(TimeSpan.FromSeconds(20)), gate);
+        await Converged();
+        var moved = keys.Where(k => a.OwnerOf<BankId>(k) == b.Id).ToArray();
+        Assert.That(moved, Is.Not.Empty);
+        await Task.Delay(1500); // three handoff timeouts: a's records wait in b's queues
+        gate.Set();
+
+        foreach (long key in moved) // reads, retried while b works through what waited (its calls time out after 500 ms)
+            for (int attempt = 0; ; attempt++)
+                try
+                {
+                    Assert.That(await b.Ask(new BankId(key), new Balance()), Is.EqualTo(1), "the ledger moved, once");
+                    break;
+                }
+                catch (RpcException) when (attempt < 20)
+                {
+                }
+
+        Assert.That(store.Writes, Is.Zero, "a wrote nothing: it waited for b's answer");
+    }
+
+    [Test]
     public async Task WithoutAStoreStateStillMoves()
     {
         var a = await StartWith(null, "a");
