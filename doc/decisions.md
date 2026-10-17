@@ -1174,13 +1174,19 @@ records that no longer hold). Each: context → decision → consequences.
     record arrives first and no lock is needed. The new owner restores the record and runs `OnLoad`; its checkpoint
     writes what changed since the old owner's last write, with the version continuing (fencing as in ADR-068). The
     old owner is removed once the new one accepts, without writing.
-  - **Mail first:** while keys move after a view change (within the call timeout), a node that loads a key asks the
-    key's previous owner (in the previous view, or the node owning it without this one when it just joined) and the
-    actor's mail waits. The answer is the record or "not here"; an actor that leaves without handing over to the
-    asking node tells it so.
-  - **Fallback:** a refused handoff (the new owner already runs the actor, is stopping or does not own the key),
-    no answer within the call timeout, or a gone node: the old owner writes to the store and the new one reads,
-    as before. A cluster stopping as a whole writes everything.
+  - **Mail first:** while keys move after view changes (within the call timeout), a node that loads a key asks the
+    key's latest other owner in the views it replaced in that time (or, when it just joined, the node owning the key
+    without it, if that node is up longer) and the actor's mail waits. The answer is the record or "not here"; an
+    actor that leaves without handing over to the asking node tells it so. "Not here" is never early: a node owning
+    the key in its own view, or one that took the key from a live node within the timeout, keeps the request (and asks
+    that node in turn) until ownership changes or the record comes. A record whose key moved on meanwhile goes on once
+    (the frame's hop count): to the node that asked for it, else to the key's owner in the receiver's view.
+  - **Waiting:** both sides wait while the other is alive: a new owner asks again instead of loading beside a
+    previous owner still in a turn; an old owner keeps its record for a late answer instead of writing over a new
+    owner that took it.
+  - **Fallback:** a refused handoff (the new owner already runs the actor or is stopping) or a dead node: the old
+    owner writes to the store and the new one reads. A node declared dead hands nothing over and writes nothing (its
+    copies are fenced). A cluster stopping as a whole writes everything.
 - Alternatives: writing to the store on every move as well (survives a crash of the new owner right after the move,
   at the cost of a write per moved actor and version handshakes); moving every component (all would have to be
   serializable, and transient data such as grids and caches is cheaper to rebuild); a lock in a directory as ET does
