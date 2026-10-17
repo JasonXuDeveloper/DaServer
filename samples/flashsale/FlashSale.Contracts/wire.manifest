@@ -1,40 +1,55 @@
 # DaServer wire manifest (ADR-076): the layout of this assembly's [NinoType] types on the wire and in stored records.
-# 'grows' types (value fields only, whole messages, replies, records) may append fields, 'frozen' ones may not change. Update: dotnet build -p:UpdateWireManifest=true
-FlashSale.Contracts.Admitted grows
+# Frozen: a new field goes into a new message or component. Record new types: dotnet build -p:UpdateWireManifest=true
+FlashSale.Contracts.Admitted (memory)
 - Position: long
-FlashSale.Contracts.Buy grows
-FlashSale.Contracts.CheckIn grows
+= FlashSale.Contracts.Admission(byte)
+FlashSale.Contracts.Buy (memory)
+= FlashSale.Contracts.OrderStatus(byte)
+FlashSale.Contracts.CheckIn (memory)
 - Sale: long
 - Position: long
-FlashSale.Contracts.Describe grows
-FlashSale.Contracts.GetOrder grows
-FlashSale.Contracts.Join grows
-FlashSale.Contracts.Open grows
+= FlashSale.Contracts.Admission(byte)
+FlashSale.Contracts.Describe (memory)
+= FlashSale.Contracts.SaleInfo
+FlashSale.Contracts.GetOrder (memory)
+= FlashSale.Contracts.OrderStatus(byte)
+FlashSale.Contracts.Join (memory)
+= long
+FlashSale.Contracts.Open (memory)
 - PerSecond: int
-FlashSale.Contracts.OpenSale grows
+= bool
+FlashSale.Contracts.OpenSale (memory)
 - Sale: long
 - Units: int
 - PerSecond: int
-FlashSale.Contracts.OrderOf grows
+= bool
+FlashSale.Contracts.OrderOf (memory)
 - Sale: long
 - User: long
-FlashSale.Contracts.PlaceOrder grows
+= FlashSale.Contracts.OrderStatus(byte)
+FlashSale.Contracts.PlaceOrder (memory)
 - Sale: long
 - User: long
 - Position: long
-FlashSale.Contracts.QueueUp grows
+= FlashSale.Contracts.OrderStatus(byte)
+FlashSale.Contracts.QueueUp (memory)
 - Sale: long
-FlashSale.Contracts.Restock grows
+= long
+FlashSale.Contracts.Restock (memory)
 - Units: int
-FlashSale.Contracts.SaleInfo frozen
+= bool
+FlashSale.Contracts.SaleInfo (members)
 - Queued: bool
 - SoldOut: bool
 - Buyers: long[]
-FlashSale.Contracts.SaleStock grows
+FlashSale.Contracts.SaleStock (memory)
 - Sale: long
-FlashSale.Contracts.ShardEmpty frozen
+= int
+FlashSale.Contracts.ShardEmpty (members)
 - Shard: int
 - Buyers: long[]
-FlashSale.Contracts.TakeOne grows
+FlashSale.Contracts.TakeOne (memory)
 - User: long
-FlashSale.Contracts.UnitsLeft grows
+= bool
+FlashSale.Contracts.UnitsLeft (memory)
+= int

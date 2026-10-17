@@ -1,52 +1,58 @@
 # DaServer wire manifest (ADR-076): the layout of this assembly's [NinoType] types on the wire and in stored records.
-# 'grows' types (value fields only, whole messages, replies, records) may append fields, 'frozen' ones may not change. Update: dotnet build -p:UpdateWireManifest=true
-Sample.Contracts.Attach grows
-- Session: DaServer.ClientSession{Node: ulong, Id: long}
-Sample.Contracts.Chat frozen
-- Player: Sample.Contracts.PlayerId
+# Frozen: a new field goes into a new message or component. Record new types: dotnet build -p:UpdateWireManifest=true
+Sample.Contracts.Attach (memory)
+- Session: DaServer.ClientSession memory {Node: ulong, Id: long}
+= bool
+Sample.Contracts.Chat (members)
+- Player: Sample.Contracts.PlayerId memory {Value: long}
 - Text: string
-Sample.Contracts.Enter grows
-- Player: Sample.Contracts.PlayerId
-- Session: DaServer.ClientSession{Node: ulong, Id: long}
-Sample.Contracts.EnterMap grows
-- Map: Sample.Contracts.MapId
-Sample.Contracts.GetInfo grows
-Sample.Contracts.Gone grows
-- Map: Sample.Contracts.MapId
-- Player: Sample.Contracts.PlayerId
-Sample.Contracts.Leave grows
-- Session: DaServer.ClientSession{Node: ulong, Id: long}
-Sample.Contracts.Login frozen
+Sample.Contracts.Enter (memory)
+- Player: Sample.Contracts.PlayerId memory {Value: long}
+- Session: DaServer.ClientSession memory {Node: ulong, Id: long}
+= bool
+Sample.Contracts.EnterMap (memory)
+- Map: Sample.Contracts.MapId memory {Value: long}
+= bool
+Sample.Contracts.GetInfo (memory)
+= Sample.Contracts.PlayerInfo
+Sample.Contracts.Gone (memory)
+- Map: Sample.Contracts.MapId memory {Value: long}
+- Player: Sample.Contracts.PlayerId memory {Value: long}
+Sample.Contracts.Leave (memory)
+- Session: DaServer.ClientSession memory {Node: ulong, Id: long}
+= bool
+Sample.Contracts.Login (members)
 - Name: string
-Sample.Contracts.LoginResult grows
+= Sample.Contracts.LoginResult
+Sample.Contracts.LoginResult (memory)
 - Ok: bool
-- Player: Sample.Contracts.PlayerId
-Sample.Contracts.Motion frozen
-- Map: Sample.Contracts.MapId
+- Player: Sample.Contracts.PlayerId memory {Value: long}
+Sample.Contracts.Motion (members)
+- Map: Sample.Contracts.MapId memory {Value: long}
 - Avatars: Sample.Contracts.Moves
-Sample.Contracts.Move grows
+Sample.Contracts.Move (memory)
 - VelocityX: float
 - VelocityY: float
-Sample.Contracts.Moved frozen
-- Player: Sample.Contracts.PlayerId
+Sample.Contracts.Moved (memory)
+- Player: Sample.Contracts.PlayerId memory {Value: long}
 - X: float
 - Y: float
 - VelocityX: float
 - VelocityY: float
-Sample.Contracts.Moves frozen
+Sample.Contracts.Moves (typed members)
 - Items: System.Collections.Generic.List<Sample.Contracts.Moved>
-Sample.Contracts.PlayerInfo frozen
-- Id: Sample.Contracts.PlayerId
+Sample.Contracts.PlayerInfo (members)
+- Id: Sample.Contracts.PlayerId memory {Value: long}
 - Name: string
-- Map: Sample.Contracts.MapId
+- Map: Sample.Contracts.MapId memory {Value: long}
 - Logins: int
-Sample.Contracts.PlayerOffline grows
-- Player: Sample.Contracts.PlayerId
-Sample.Contracts.PlayerOnline grows
-- Player: Sample.Contracts.PlayerId
-Sample.Contracts.RealmStatus grows
+Sample.Contracts.PlayerOffline (memory)
+- Player: Sample.Contracts.PlayerId memory {Value: long}
+Sample.Contracts.PlayerOnline (memory)
+- Player: Sample.Contracts.PlayerId memory {Value: long}
+Sample.Contracts.RealmStatus (memory)
 - Tick: long
 - Online: int
 - ServerTimeTicks: long
-Sample.Contracts.Say frozen
+Sample.Contracts.Say (members)
 - Text: string
