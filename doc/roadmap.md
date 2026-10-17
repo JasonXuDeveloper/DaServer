@@ -139,16 +139,18 @@ balancing, TLS, CDN/WAF, Gateway API routes and autoscaling stay with the platfo
       upgrade across it (pre-1.0). A/B of the G work against the baseline: G step 9 below and the README.
 - [x] G1 Feature points and ingress, step 5, proven by two consumers (client connections and the HTTP plane).
 - [x] G2 Client connections as a built-in feature, grants, packages, keep-alive, .NET 11, tests, docs: steps 6-10.
-- [x] G5 `samples/flashsale`: a waiting room actor admitting at the sale's pace (`AdmissionSystem`, signed tickets and
-      passes checked at the edge), 16 `StockShard` actors per sale (the turn is the atomic decrement), `Order` actors
-      keyed (user, sale) so retries get the same answer, a sold-out short cut (shards tell the room, nodes remember
-      it); `FlashSale.Tests` (`DaServer.Testing`), `FlashSale.Load` over HTTP, AppHost, E2E (100,000 buyers in CI).
-      1,000,000 buyers for 100 units on one 4-core VM: 23.6 s, 42,500 requests/s, exactly 100 sold.
-- [ ] G6 HTTP edge per core: profile the sale node under the crowd (about 19,500 requests/s per core now), cut what
-      the edge spends per request, and a load generator light enough to leave the cores to the nodes.
+- [x] G5 `samples/flashsale`: buyers over the client protocol (TCP or WebSocket) to a stateless `Gate` service; a
+      waiting room actor admitting at the sale's pace (`AdmissionSystem`), 16 `StockShard` actors per sale (the turn
+      is the atomic decrement), `Order` actors keyed (user, sale) so retries get the same answer, a sold-out short cut
+      (shards tell the room); `FlashSale.Crowd` is a `DaServer.Simulation` swarm (`MeasureUntilAsync`), AppHost, E2E
+      (100,000 buyers in CI). 1,000,000 buyers for 100 units, two nodes and the crowd on one 4-core VM: 6.9 s,
+      1,035,429 requests (150,000/s, 262,000/s at peak), about 79,000 per node core, exactly 100 sold; over WebSocket
+      8.4 s. The same crowd over HTTP (removed, ADR-046): 22,600 per node core.
+- [ ] G6 The waiting room is one actor: every buyer's queue request goes through one shard thread (the peak above).
+      Shard the queue (rooms per sale shard, admitted in turn) if a sale needs more than that.
 - Not in the framework: waiting rooms (virtual queues for human surges). They are policy for one kind of traffic,
   belong at the very edge (CDN/SaaS) to protect origins, and compose from ingress primitives (admission filters,
-  token bucket, `SignedToken`, load-aware refusal) plus a queue actor; `samples/flashsale` shows the pattern.
+  token bucket, load-aware refusal) plus a queue actor; `samples/flashsale` shows the pattern.
 
 What G delivered (each step kept every test green):
 

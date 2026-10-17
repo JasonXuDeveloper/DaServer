@@ -1,19 +1,24 @@
 # Flash sale sample
 
-A million buyers for 100 units, on DaServer: a waiting room admits buyers at the pace the sale can take, the stock is
-split into 16 shards (each an actor, a turn is the atomic decrement: no lock, no Redis), each buyer's order is an
-actor (a retry waits for the running purchase and gets the same answer), and once every shard is empty the room turns
-newcomers away and each node remembers it, so the late crowd costs one HTTP answer and no cluster traffic.
+A million buyers for 100 units. Buyers talk to the sale over the client protocol (TCP, or WebSocket at `/clients/ws`
+for browsers), never over the HTTP plane, which is for low-frequency traffic (ADR-046). A stateless `Gate` service
+turns their messages into asks of the sale's actors:
+
+- a waiting room per sale admits buyers at the pace the sale can take (`AdmissionSystem`, every tick) and, once every
+  stock shard is empty, turns newcomers away with one answer each;
+- the stock is split into 16 `StockShard` actors: a turn is the atomic decrement, no lock, no Redis;
+- each buyer's order is an `Order` actor keyed (user, sale): a retry waits for the running purchase and gets the
+  same answer.
 
 | Project | What |
 |---|---|
-| `FlashSale.Contracts` | ids (`StockShardId`, `OrderId`, `WaitingRoomId`) and messages |
+| `FlashSale.Contracts` | ids (`StockShardId`, `OrderId`, `WaitingRoomId`) and messages; `[FromClient]` ones for the gate |
 | `FlashSale.Components` | `[Persist]` stock, purchase and waiting-room state |
-| `FlashSale.Server` | the node: `StockShard`, `Order`, `WaitingRoom` actors, `AdmissionSystem`, the HTTP API with signed tickets and passes (`Endpoints.cs`) |
-| `FlashSale.Load` | the crowd over HTTP; checks exactly the stock sold, nothing left, retries answered alike, orders readable |
-| `FlashSale.AppHost` | two sale nodes, PostgreSQL and the crowd (`dotnet run --project samples/flashsale/FlashSale.AppHost`) |
+| `FlashSale.Server` | the node: `StockShard`, `Order`, `WaitingRoom` actors, `AdmissionSystem`, the `Gate` service |
+| `FlashSale.Crowd` | the buyers as a `DaServer.Simulation` swarm; checks exactly the stock sold, nothing left, retries answered alike, orders readable (`--web-socket` for the browser path) |
+| `FlashSale.AppHost` | two sale nodes taking clients, PostgreSQL and the crowd (`dotnet run --project samples/flashsale/FlashSale.AppHost`) |
 | `FlashSale.Tests` | the guarantees in an in-process cluster (`DaServer.Testing`), the waiting room on a manual clock |
 
-One 4-core VM, two sale nodes and the crowd on it: 1,000,000 buyers, 100 units: done in 23.6 s, 1,003,102 requests
-(42,500 a second, p50 under 66 ms, p99 under 262 ms with 2,000 connections), 100 confirmed, 0 left, no retry
-answered differently. The nodes used 2.2 cores (about 19,500 requests a second per core), the crowd the rest.
+One 4-core VM, two sale nodes and the crowd on it, 1,000,000 buyers for 100 units: 6.9 s, 1,035,429 requests (150,000
+a second, 262,000 at peak), about 79,000 per node core; exactly 100 sold, no retry answered differently. Over
+WebSocket: 8.4 s.

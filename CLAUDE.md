@@ -54,8 +54,9 @@ samples/mmo/               MMO scenario: Sample.Contracts / Sample.Shared (rules
                            (one project per server, a five-line Program.cs, no appsettings; a server's components in
                            Sample.XServer.Components, DAS013) / Sample.Bot (the client as a swarm
                            with an HTN behavior: 10k-bot load test and e2e) / Sample.Tests / Sample.AppHost (Aspire)
-samples/flashsale/         flash sale over HTTP: FlashSale.Contracts / .Components / .Server (stock shards, orders, waiting
-                           room, HTTP API) / .Load (the crowd) / .Tests / .AppHost
+samples/flashsale/         a million buyers for 100 units over the client protocol: FlashSale.Contracts / .Components /
+                           .Server (stock shards, orders, waiting room, the Gate service) / .Crowd (the buyers as a
+                           swarm, DaServer.Simulation) / .Tests / .AppHost
 tests/DaServer.Tests/      NUnit: ClusterTest fixture, per-feature tests, generator/analyzer, allocation, architecture
 tests/DaServer.E2E/        the AppHosts through Aspire.Hosting.Testing: 1,000 bots, 100,000 buyers
 benchmarks/DaServer.Benchmark/   BenchmarkDotNet over real loopback sockets (requests, one-way messages, broadcast fan-out,
@@ -99,8 +100,12 @@ doc/                       requirements.md, design.md, decisions.md, roadmap.md
   through the publisher hooks (`PublishAsKubernetesService`, `PublishAsDockerComposeService`), never by hand.
   Scaling decisions belong to the platform (HPA/KEDA); the framework makes joining and leaving safe, it is not an
   autoscaler. `DaServer.Hosting.AddDaServer` is the framework's service defaults. Nodes run ASP.NET Core for their HTTP plane
-  (health, admin, user REST endpoints, ADR-046); the data plane stays DaServer's own TCP links. HTTP code reaches
+  (health, admin, internal REST endpoints, ADR-046); the data plane stays DaServer's own TCP links. HTTP code reaches
   actors only through `ICluster`.
+- The HTTP plane is for low-frequency traffic (probes, admin, webhooks, back-office). Client traffic at volume (a
+  game's players, a sale's crowd, anything per player or per tick) uses the client protocol: TCP, or WebSocket at
+  `/clients/ws` for browsers (wss behind the platform's TLS). An HTTP request crosses two protocols and costs a
+  syscall pair of its own; the client protocol batches (ADR-046: 3.5 times the requests per core).
 - Type ids (messages on the wire, actor id types, services, persisted components) are generated (FNV-1a); set one by
   hand only with `[TypeId]`, to resolve a reported collision or to keep a renamed type's identity and stored records.
 - No topology strings (roles, node names) in code: a node hosts what its project compiles (ADR-017).
