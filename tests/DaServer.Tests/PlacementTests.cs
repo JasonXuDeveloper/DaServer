@@ -32,4 +32,29 @@ public class PlacementTests
         members[2].Status = MemberStatus.Dead;
         Assert.That(new ClusterView(members).HandlerTypeOwner(Actor, key)!.NodeId, Is.Not.EqualTo(3), "moves once dead");
     }
+
+    [Test]
+    public void ANodeJoiningTakesOnlyTheSlotsItWinsAndTheyAreEven()
+    {
+        var three = new[] { Member(1, MemberStatus.Up), Member(2, MemberStatus.Up), Member(3, MemberStatus.Up) };
+        var before = new ClusterView(three);
+        var after = new ClusterView([.. three, Member(4, MemberStatus.Up)]);
+        int moved = 0;
+        var perNode = new Dictionary<ulong, int>();
+        for (long key = 0; key < 40_000; key++)
+        {
+            ulong was = before.HandlerTypeOwner(Actor, key)!.NodeId, now = after.HandlerTypeOwner(Actor, key)!.NodeId;
+            if (was != now)
+            {
+                moved++;
+                Assert.That(now, Is.EqualTo(4UL), "a key only moves to the node that joined");
+                Assert.That(after.HandlerTypeOwnerWithout(Actor, key, 4)!.NodeId, Is.EqualTo(was), "and came from its owner without it");
+            }
+
+            perNode[now] = perNode.GetValueOrDefault(now) + 1;
+        }
+
+        Assert.That(moved, Is.InRange(8_000, 12_000), "about a quarter of the keys moved");
+        foreach (var (_, count) in perNode) Assert.That(count, Is.InRange(8_000, 12_000), "each node owns about a quarter");
+    }
 }
