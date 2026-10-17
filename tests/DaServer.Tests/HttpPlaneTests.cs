@@ -117,9 +117,6 @@ public class HttpPlaneTests
         Assert.That(await client.Ask(new AddGold(4)), Is.EqualTo(4), "the session's player");
         for (int i = 0; i < 200 && inbox.Gold != 4; i++) await Task.Delay(10);
         Assert.That(inbox.Gold, Is.EqualTo(4), "the push came back over the WebSocket");
-
-        var endpoint = await _http.GetFromJsonAsync<ClientEndpoint>("/clients/endpoint");
-        Assert.That(endpoint.Port, Is.GreaterThan(0), "a client-facing node answers where to connect");
     }
 
     /// <summary>An ingress filter: <see cref="WhoAsks"/> is rate limited for three seconds.</summary>

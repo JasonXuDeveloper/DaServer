@@ -146,7 +146,7 @@ public class SimulationTests : ClusterTest
         var logins = swarm.Meter.Counter("logins");
         await swarm.StartAsync(40, static () => new ClusterClient(), async user =>
         {
-            await user.Client.ConnectAsync("127.0.0.1", gateway.ClientPort(), followRedirect: false);
+            await user.Client.ConnectAsync("127.0.0.1", gateway.ClientPort());
             if (await user.Client.Ask(new Login(new PlayerId(7000 + user.Index)))) logins.Add();
             user.World.CreateEntity(new Facts(1));
         });

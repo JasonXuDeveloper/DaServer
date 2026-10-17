@@ -99,7 +99,7 @@ public sealed class TestCluster : IAsyncDisposable
         var client = new ClusterClient();
         _clients.Add(client);
         if (handler != null) client.Register(handler);
-        await client.ConnectAsync("127.0.0.1", connections.Port, followRedirect: false).ConfigureAwait(false);
+        await client.ConnectAsync("127.0.0.1", connections.Port).ConfigureAwait(false);
         return client;
     }
 

@@ -6,9 +6,6 @@ public sealed class ClientConnectionOptions
     /// <summary>Port clients connect to (0: any free port, for tests).</summary>
     public int Port { get; set; }
 
-    /// <summary>Host clients use to reach this node (public DNS name or address); defaults to the node's advertised host.</summary>
-    public string? AdvertisedHost { get; set; }
-
     /// <summary>Largest frame a client may send (what an untrusted client may make this node buffer).</summary>
     public int MaxFrameSize { get; set; } = 64 * 1024;
 
@@ -32,11 +29,12 @@ public sealed class ClientConnectionOptions
     public TimeSpan TicketLifetime { get; set; } = TimeSpan.FromMinutes(10);
 
     /// <summary>
-    /// Clients that connect are directed to the less loaded of two client-facing nodes (their gossiped sessions) and
-    /// move there: clients know one well-known address (the platform's load balancer or DNS name), the cluster spreads
-    /// them. False when the nodes sit behind a load balancer without addresses of their own: clients stay.
+    /// A connection older than this (jittered by up to a tenth) is closed; its client reconnects through the load
+    /// balancer and resumes its session (ADR-036), so its actors see nothing. A load balancer spreads connections only
+    /// when they open: after a scale-out the new nodes get only new clients, and this moves the old ones over time
+    /// (gRPC's <c>MaxConnectionAge</c>). Zero (the default): never.
     /// </summary>
-    public bool Redirect { get; set; } = true;
+    public TimeSpan MaxConnectionAge { get; set; }
 
     /// <summary>
     /// When the node leaves, its clients' connections are closed in waves over this time, so they reconnect to the

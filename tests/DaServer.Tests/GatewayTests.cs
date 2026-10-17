@@ -248,69 +248,6 @@ public class GatewayTests : ClusterTest
     }
 
     [Test]
-    public async Task TheDirectorySpreadsClientsOverTheClientFacingNodes()
-    {
-        var gateways = new[]
-        {
-            await Start("gw-0", gateway: true, hosts: static _ => false),
-            await Start("gw-1", gateway: true, hosts: static _ => false),
-            await Start("gw-2", gateway: true, hosts: static _ => false),
-        };
-        await Start("game");
-        await Converged();
-
-        var clients = new ClusterClient[60];
-        for (int i = 0; i < clients.Length; i++) clients[i] = await ConnectThrough(gateways[0], 1000 + i); // one well-known address
-
-        await Eventually(() => gateways.Sum(g => g.SessionCount()) == clients.Length, "entry connections were not closed");
-        Assert.That(gateways.Min(g => g.SessionCount()), Is.GreaterThanOrEqualTo(10), "power of two choices spreads the load");
-    }
-
-    [Test]
-    public async Task ANodeStartedLaterIsDiscoveredAndReceivesTheNewClients()
-    {
-        var first = await Start("gw-0", gateway: true, hosts: static _ => false);
-        await Start("game");
-        await Converged();
-
-        const int wave = 30;
-        var clients = new ClusterClient[2 * wave];
-        for (int i = 0; i < wave; i++) clients[i] = await ConnectThrough(first, 2000 + i);
-        Assert.That(first.SessionCount(), Is.EqualTo(wave));
-
-        // Scale out: nobody configures the entry; gossip tells it about the new node and its session count.
-        var late = await Start("gw-1", gateway: true, hosts: static _ => false);
-        await Converged();
-        for (int i = wave; i < clients.Length; i++) clients[i] = await ConnectThrough(first, 2000 + i);
-
-        await Eventually(() => first.SessionCount() + late.SessionCount() == clients.Length, "entry connections were not closed");
-        Assert.That(late.SessionCount(), Is.GreaterThanOrEqualTo(wave - 2), "new clients go to the less loaded node");
-    }
-
-    [Test]
-    public async Task BehindALoadBalancerClientsStayWhereTheyConnected()
-    {
-        var gateways = new[]
-        {
-            await Start("gw-0", hosts: static _ => false, clients: static o => o.Redirect = false),
-            await Start("gw-1", hosts: static _ => false, clients: static o => o.Redirect = false),
-        };
-        await Start("game");
-        await Converged();
-        for (int i = 0; i < 10; i++) await ConnectThrough(gateways[0], 3000 + i);
-        Assert.That(gateways[0].SessionCount(), Is.EqualTo(10));
-        Assert.That(gateways[1].SessionCount(), Is.Zero);
-    }
-
-    private async Task<ClusterClient> ConnectThrough(DaServer.Runtime.Node entry, long player)
-    {
-        var client = Track(new ClusterClient());
-        await client.ConnectAsync("127.0.0.1", entry.ClientPort());
-        Assert.That(await client.Ask(new Login(new PlayerId(player))), Is.True);
-        return client;
-    }
-
-    [Test]
     public async Task ClosingASessionNotifiesTheBoundActors()
     {
         var gateway = await Start("gw", gateway: true);

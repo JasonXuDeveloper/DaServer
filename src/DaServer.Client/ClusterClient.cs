@@ -23,7 +23,6 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
 #else
     private int _nextEndpoint = new Random().Next();
 #endif // spreads clients over the endpoints
-    private bool _followRedirect;
     private byte[]? _ticket;          // latest resume ticket from the node (null: nothing to resume)
     private long _refreshTicketAtMs;  // local clock
     private int _reconnecting;
@@ -153,12 +152,12 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
     public event Action<Exception?>? ReconnectFailed;
 
     /// <summary>
-    /// Connect to the cluster through its well-known address (a load balancer, a DNS name: every resolved address is
-    /// tried): the node answering names the client-facing node to use and the client moves there when it is another
-    /// one (<paramref name="followRedirect"/> false stays). A node it cannot reach is not fatal: it stays where it is.
+    /// Connect to the cluster through its well-known address (the platform's load balancer, a DNS name: every resolved
+    /// address is tried). The client stays on the node it reaches; on a lost connection it reconnects through the same
+    /// address and resumes its session.
     /// </summary>
-    public ValueTask ConnectAsync(string host, int port, bool followRedirect = true, CancellationToken cancellationToken = default) =>
-        ConnectAsync([new DnsEndPoint(host, port)], followRedirect, cancellationToken);
+    public ValueTask ConnectAsync(string host, int port, CancellationToken cancellationToken = default) =>
+        ConnectAsync([new DnsEndPoint(host, port)], cancellationToken);
 
     /// <summary>
     /// Connect over a WebSocket (<c>ws://node:8080/clients/ws</c>, <c>wss://</c> behind TLS termination): for browsers,
@@ -176,38 +175,11 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
     }
 
     /// <summary>Connect through the first reachable of <paramref name="endpoints"/> (tried in turn, starting at a random one).</summary>
-    public async ValueTask ConnectAsync(IReadOnlyList<DnsEndPoint> endpoints, bool followRedirect = true, CancellationToken cancellationToken = default)
+    public ValueTask ConnectAsync(IReadOnlyList<DnsEndPoint> endpoints, CancellationToken cancellationToken = default)
     {
         if (endpoints.Count == 0) throw new ArgumentException("No endpoint", nameof(endpoints));
-        (_endpoints, _followRedirect, _webSocket) = ([.. endpoints], followRedirect, null);
-        await ConnectToEndpointAsync(cancellationToken).ConfigureAwait(false);
-        if (!followRedirect) return;
-
-        var pick = await PickNodeAsync().ConfigureAwait(false);
-        if (pick.Host.Length == 0) return; // stay
-        Connection moved;
-        try
-        {
-            moved = await Connection.ConnectAsync(pick.Host, pick.Port, this, NewConnectionOptions(), cancellationToken)
-                .ConfigureAwait(false);
-        }
-        catch (Exception e) when (e is System.Net.Sockets.SocketException or IOException)
-        {
-            return; // the named node is gone or unreachable from here: the first node serves as well
-        }
-
-        try
-        {
-            await IntroduceAsync(moved).ConfigureAwait(false);
-        }
-        catch (RpcException)
-        {
-            return; // the named node refused (another protocol version mid-upgrade) or went: the first node serves as well
-        }
-
-        var first = Interlocked.Exchange(ref _connection, (IFrameChannel)moved);
-        first?.Close(); // closed on purpose: not a disconnect (no longer the current connection)
-        Volatile.Write(ref _introduced, moved);
+        (_endpoints, _webSocket) = ([.. endpoints], null);
+        return ConnectToEndpointAsync(cancellationToken);
     }
 
     /// <summary>
@@ -229,14 +201,6 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
             channel.Close(); // refused (another protocol version) or lost: no use for this connection
             throw;
         }
-    }
-
-    private ValueTask<ClientEndpoint> PickNodeAsync()
-    {
-        var call = PendingCall<ClientEndpoint>.Rent(null);
-        var answer = call.Task;
-        SendControl(FrameWriter.Rent(FrameHeader.Size), ControlOp.PickNode, call);
-        return answer;
     }
 
     private async ValueTask ConnectToEndpointAsync(CancellationToken cancellationToken)
@@ -474,7 +438,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
             try
             {
                 if (_webSocket != null) await ConnectAsync(_webSocket).ConfigureAwait(false);
-                else await ConnectAsync(_endpoints, _followRedirect).ConfigureAwait(false);
+                else await ConnectAsync(_endpoints).ConfigureAwait(false);
                 await ResumeAsync().ConfigureAwait(false);
                 Volatile.Write(ref _reconnecting, 0);
                 Reconnected?.Invoke();

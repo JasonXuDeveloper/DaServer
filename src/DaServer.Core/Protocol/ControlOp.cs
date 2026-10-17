@@ -6,8 +6,8 @@ internal static class ControlOp
     /// <summary>Version of the link protocol, in every Hello: nodes speaking another one are refused (2: Nino 4 rc.1's format).</summary>
     public const int LinkVersion = 2;
 
-    /// <summary>Version of the client protocol, in every <see cref="ClientHello"/>: clients speaking another one are refused.</summary>
-    public const int ClientVersion = 1;
+    /// <summary>Version of the client protocol, in every <see cref="ClientHello"/>: clients speaking another one are refused (2: no node picking).</summary>
+    public const int ClientVersion = 2;
 
     /// <summary>Push gossip: payload = the sender's table as <c>MemberPulse</c>s; answered with <c>GossipReply</c>.</summary>
     public const uint Gossip = 1;
@@ -36,9 +36,6 @@ internal static class ControlOp
 
     /// <summary>Full member descriptions: payload = ClusterMember[] (sent when a node meets another, not every round).</summary>
     public const uint Cards = 8;
-
-    /// <summary>Client to its node (a call): which node should I use? Answer: a <see cref="ClientEndpoint"/> (or stay).</summary>
-    public const uint PickNode = 4;
 
     // Client sessions (client and client-facing node): resume tickets (ADR-036).
 
