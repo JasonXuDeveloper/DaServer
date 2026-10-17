@@ -83,7 +83,7 @@ public sealed class WebSocketChannel(WebSocket socket, IChannelHandler handler, 
                     {
                         await socket.SendAsync(new ReadOnlyMemory<byte>(batch, 0, length), WebSocketMessageType.Binary,
                             endOfMessage: true, CancellationToken.None).ConfigureAwait(false);
-                        Volatile.Write(ref _lastSentMs, Platform.Milliseconds);
+                        KeepAlive.Touch(ref _lastSentMs);
                     }
                     finally
                     {
@@ -123,7 +123,7 @@ public sealed class WebSocketChannel(WebSocket socket, IChannelHandler handler, 
 
                     result = await socket.ReceiveAsync(buffer.AsMemory(filled), CancellationToken.None).ConfigureAwait(false);
                     if (result.MessageType == WebSocketMessageType.Close) return;
-                    Volatile.Write(ref _lastReceivedMs, Platform.Milliseconds);
+                    KeepAlive.Touch(ref _lastReceivedMs);
                     filled += result.Count;
                 } while (!result.EndOfMessage);
 

@@ -33,6 +33,18 @@ public static class KeepAlive
         return true;
     }
 
+    /// <summary>
+    /// Record activity in <paramref name="stampMs"/> (a channel's last-received or last-sent time), at most every
+    /// 100 ms: a busy socket would otherwise write it on every read and batch, on the line its senders read.
+    /// Liveness is judged in hundreds of milliseconds at least, so the stale part never matters.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static void Touch(ref long stampMs)
+    {
+        long now = Platform.Milliseconds;
+        if (now - Volatile.Read(ref stampMs) >= 100) Volatile.Write(ref stampMs, now);
+    }
+
     /// <summary>Answer a ping (any side; on the connection it arrived on).</summary>
     public static void Pong(IFrameChannel channel) => channel.SendControl(ControlOp.Pong);
 }
