@@ -258,7 +258,10 @@ internal sealed partial class HandoffSystem : EcsSystem
     }
 }
 
-/// <summary>Ends handoffs that got no answer: the store takes over (<see cref="ShardIdleScan"/>, a few times a second).</summary>
+/// <summary>
+/// Ends handoffs whose other side died before answering: the store takes over (<see cref="ShardIdleScan"/>, a few times
+/// a second). While the other side is alive the wait goes on: its answer (or record) comes.
+/// </summary>
 [UpdateInGroup<ShardIdleScan>]
 internal sealed partial class HandoffTimeoutSystem : EcsSystem
 {
@@ -284,6 +287,16 @@ internal sealed partial class HandoffTimeoutSystem : EcsSystem
     private static void Unanswered(Entity actor, in HandingOff handingOff, in ShardActivity activity, World world)
     {
         if (activity.NowMs < handingOff.UntilMs) return;
+        var node = world.Shard().Node;
+        // The new owner may have taken the record and be running the actor while its answer is late (a busy node, a
+        // link resuming): writing this copy now would fence that one. Its answer comes while it is alive (the link's
+        // stream resumes); only a dead one's never will.
+        if (node.View.TryGetMember(handingOff.To, out var member) && member.Status != MemberStatus.Dead)
+        {
+            actor.Get<HandingOff>() = handingOff with { UntilMs = activity.NowMs + Handoff.TimeoutMs(node) };
+            return;
+        }
+
         var record = handingOff.Record;
         actor.Remove<HandingOff>(); // `handingOff` is invalid from here on
         Handoff.Reclaim(world, actor, record);
