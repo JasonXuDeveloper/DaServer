@@ -183,21 +183,6 @@ public sealed partial class PostgreSqlActorStore : IActorStore, IAsyncDisposable
         _columns.Enqueue(columns);
     }
 
-    /// <summary>Whether the database answers (readiness).</summary>
-    public async Task<bool> PingAsync(CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            await using var command = _dataSource.CreateCommand("SELECT 1");
-            await command.ExecuteScalarAsync(cancellationToken);
-            return true;
-        }
-        catch (NpgsqlException)
-        {
-            return false;
-        }
-    }
-
     /// <summary>
     /// The table exists: created by the first call, again by a call after a failed attempt (the shard retries the batch).
     /// Concurrent first calls may both create it, which <c>IF NOT EXISTS</c> makes harmless.
