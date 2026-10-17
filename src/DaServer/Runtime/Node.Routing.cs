@@ -280,7 +280,7 @@ sealed partial class Node : IChannelHandler
         }
 
         var link = GetLink(host, port);
-        _introduced[nodeId] = link;
+        if (!View.TryGetMember(nodeId, out _)) _introduced[nodeId] = link; // listed: the view serves it
         link.OnInboundHello(connection, streamId);
         _slots.OnLinked(link);
     }
@@ -290,6 +290,9 @@ sealed partial class Node : IChannelHandler
     /// its Hello. A client's call can reach a node before that node's view lists the client-facing node; the access
     /// changes and pushes it causes must still reach that node (ahead of the reply, on the same link).
     /// </summary>
+    /// <summary>Tests: whether this node keeps the link node <paramref name="nodeId"/> introduced itself on.</summary>
+    internal bool Introduced(ulong nodeId) => _introduced.ContainsKey(nodeId);
+
     internal PeerLink? LinkTo(ulong nodeId) =>
         View.TryGetMember(nodeId, out var member) ? GetLink(member) : _introduced.TryGetValue(nodeId, out var link) ? link : null;
 

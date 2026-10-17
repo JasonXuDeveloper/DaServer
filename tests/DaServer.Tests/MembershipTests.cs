@@ -18,6 +18,61 @@ public class MembershipTests : ClusterTest
     }
 
     [Test]
+    public async Task ANodeLateOnEveryTickStillDeclaresTheDeadDead()
+    {
+        // a and b are starved for good: each maintenance tick runs over a second late. c goes silent. One pause is
+        // excused, but a process late on every tick must still age the others, or c would keep its keys forever.
+        var nodes = await StartCluster(3);
+        int Port(Node n) => n.ClusterEndPoint.Port;
+        nodes[2].Membership.BlockedPorts = [Port(nodes[0]), Port(nodes[1])];
+        nodes[0].Membership.BlockedPorts = nodes[1].Membership.BlockedPorts = [Port(nodes[2])];
+        var late = Task.Run(async () =>
+        {
+            while (nodes[0].View.UpMembers.Length == 3)
+            {
+                nodes[0].SimulatePause(TimeSpan.FromSeconds(1.2), aged: false); // the tick sees a pause the clocks did not
+                nodes[1].SimulatePause(TimeSpan.FromSeconds(1.2), aged: false);
+                await Task.Delay(100);
+            }
+        });
+        await Eventually(() => nodes[0].View.TryGetMember(nodes[2].Id, out var c) && c.Status == MemberStatus.Dead, "c declared dead", 15_000);
+        await late;
+        foreach (var node in nodes) node.Membership.BlockedPorts = null;
+    }
+
+    [Test]
+    public async Task AStalePulseDoesNotLowerAHeartbeat()
+    {
+        // A pulse saying "suspect" at an older heartbeat supersedes "up" (a worse status), but the heartbeat stays the
+        // newest seen: a lower one would make every later stale pulse look like progress of a member that may be dead.
+        var (a, b) = (await StartCluster(2)) is var n ? (n[0], n[1]) : default;
+        int Port(Node node) => node.ClusterEndPoint.Port;
+        a.Membership.BlockedPorts = [Port(b)];
+        b.Membership.BlockedPorts = [Port(a)];
+        Assert.That(a.View.TryGetMember(b.Id, out var seen), Is.True);
+        long heartbeat = seen.Heartbeat;
+        Span<byte> pulse = stackalloc byte[MemberPulse.Size];
+        new MemberPulse(b.Id, seen.Incarnation, heartbeat - 5, MemberStatus.Suspect, 0, 0, 0, 0).Write(pulse);
+        a.Membership.MergePulses(pulse);
+        Assert.That(a.View.TryGetMember(b.Id, out var suspect) && suspect.Status == MemberStatus.Suspect, Is.True);
+        Assert.That(suspect.Heartbeat, Is.GreaterThanOrEqualTo(heartbeat), "the newest heartbeat is kept");
+        foreach (var node in new[] { a, b }) node.Membership.BlockedPorts = null;
+    }
+
+    [Test]
+    public async Task ANodeThatLeftIsForgottenEverywhere()
+    {
+        // b leaves gracefully: it is never declared dead, only forgotten. a must not keep the link b introduced itself
+        // on (one entry per node that ever joined, for good).
+        var a = await Start("a");
+        var b = await Start("b");
+        await Converged();
+        await Stop(b);
+        await Eventually(() => !a.View.TryGetMember(b.Id, out _), "a forgot b", 20_000);
+        Assert.That(a.Introduced(b.Id), Is.False);
+    }
+
+    [Test]
     public async Task TheMinoritySideOfASplitDownsItselfAndTheMajorityKeepsRunning()
     {
         var nodes = await StartCluster(3);

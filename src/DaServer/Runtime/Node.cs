@@ -357,11 +357,14 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
         if (Interlocked.Exchange(ref _lastView, view) is { } replaced) Volatile.Write(ref _recentViews, RecentView.Push(_recentViews, replaced, Options));
         foreach (var shard in _shards) shard.RequestRebalance();
 
-        // Calls waiting on a dead member's link fail now instead of at their timeout (its stream cannot resume).
         foreach (var member in view.Members)
+        {
+            // The view serves every member it lists: the link a node introduced itself on is only for before that (and a
+            // member that left is forgotten without ever being dead).
+            _introduced.TryRemove(member.NodeId, out _);
             if (member.Status == MemberStatus.Dead)
             {
-                _introduced.TryRemove(member.NodeId, out _);
+                // Calls waiting on a dead member's link fail now instead of at their timeout (its stream cannot resume).
                 // Links are per address: another process may answer there now (a restart with a new id) and its stream
                 // is not the dead one's.
                 if (_links.TryGetValue((member.Host, member.Port), out var link) && link.PeerId is var peer &&
@@ -370,6 +373,7 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
                 if (_deadReported.Add(member.NodeId))
                     foreach (var feature in Options.Features) feature.OnMemberDead(member);
             }
+        }
 
         foreach (var feature in Options.Features) feature.OnViewChanged(view);
         ReportBuilds(view);
