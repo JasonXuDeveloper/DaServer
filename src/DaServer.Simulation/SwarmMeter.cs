@@ -136,7 +136,7 @@ public sealed class LatencyHistogram
     }
 
     public override string ToString() =>
-        $"p50={Percentile(0.50),6:F1}ms p99={Percentile(0.99),6:F1}ms max={Max,6:F1}ms";
+        $"p50={Percentile(0.50),6:F1}ms p99={Percentile(0.99),6:F1}ms p99.9={Percentile(0.999),6:F1}ms max={Max,6:F1}ms";
 
     private void Summarize()
     {

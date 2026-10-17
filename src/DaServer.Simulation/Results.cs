@@ -21,8 +21,7 @@ public sealed class SwarmResult(LatencyHistogram latency, ProcessCost cost)
     /// <summary>Print the summary and the verdict (<c>E2E OK</c> or the failures); the process exit code.</summary>
     public int Report()
     {
-        Console.WriteLine($"latency p50={Latency.Percentile(0.5):F1}ms p99={Latency.Percentile(0.99):F1}ms " +
-                          $"p99.9={Latency.Percentile(0.999):F1}ms max={Latency.Max:F1}ms over {Latency.Count} samples");
+        Console.WriteLine($"latency {Latency} over {Latency.Count} samples");
         Console.WriteLine($"simulation cost: {Cost}");
         Console.WriteLine(_failures.Count == 0 ? "E2E OK" : "E2E FAILED: " + string.Join("; ", _failures));
         return _failures.Count == 0 ? 0 : 1;
