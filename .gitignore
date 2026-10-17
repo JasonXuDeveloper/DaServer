@@ -4,6 +4,7 @@ obj/
 riderModule.iml
 /_ReSharper.Caches/
 BenchmarkDotNet.Artifacts/
+.bdn/
 artifacts/
 *.user
 
