@@ -23,9 +23,9 @@ public class ContractTests
         static int Receive(byte[] payload)
         {
             var reader = new Reader(payload);
-            NinoDeserializer.Deserialize(out Motion m, ref reader);
+            Motion m = NinoDeserializer.Deserialize<Motion>(ref reader);
             int count = m.Avatars.Items.Count;
-            m.Avatars.Return();
+            m.Avatars.ReturnToPool();
             return count;
         }
     }

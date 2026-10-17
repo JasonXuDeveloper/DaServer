@@ -49,6 +49,6 @@ internal sealed class PositionTelemetry(SwarmCounter positions)
     public void On(Motion m)
     {
         positions.Add(m.Avatars.Items.Count * Every);
-        m.Avatars.Return();
+        m.Avatars.ReturnToPool();
     }
 }

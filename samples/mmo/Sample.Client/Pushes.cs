@@ -15,7 +15,7 @@ internal sealed class Pushes(Entity player)
     public void On(Motion m)
     {
         Apply(m);
-        m.Avatars.Return();
+        m.Avatars.ReturnToPool();
     }
 
     private void Apply(in Motion m)
