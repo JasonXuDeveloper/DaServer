@@ -174,10 +174,12 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
             return true;
         }
 
-        bool sent = View.TryGetMember(nodeId, out var member) && member.Status != MemberStatus.Dead;
-        if (sent) GetLink(member).Send(frame.Frame);
+        // From the view, or, before gossip lists it (a node that just joined), from the Hello it introduced itself with.
+        var link = View.TryGetMember(nodeId, out var member) ? member.Status != MemberStatus.Dead ? GetLink(member) : null
+            : _introduced.TryGetValue(nodeId, out var introduced) ? introduced : null;
+        link?.Send(frame.Frame);
         frame.Dispose();
-        return sent;
+        return link != null;
     }
 
     /// <summary>Start shards, listeners and membership. The node is Up when this returns.</summary>

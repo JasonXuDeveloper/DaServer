@@ -120,6 +120,23 @@ internal static class Handoff
 
     public static long TimeoutMs(Node node) => (long)node.Options.CallTimeout.TotalMilliseconds;
 
+    /// <summary>
+    /// A handoff frame reached a shard that stopped (its node leaves): it holds no actor any more, so a request for a
+    /// record is answered "none" and a record is refused (its sender falls back at once instead of waiting for the
+    /// timeout); answers are dropped. False when <paramref name="frame"/> is not a handoff frame. Any thread.
+    /// </summary>
+    public static bool Bounce(Node node, FrameWriter frame)
+    {
+        var header = FrameHeader.Read(frame.Frame);
+        uint op = header.MessageId;
+        if (header.Kind != FrameKind.Message || op != Record && op != Request && op != None && op != Answer) return false;
+        ulong from = BinaryPrimitives.ReadUInt64LittleEndian(FrameHeader.PayloadOf(in header, frame.Frame));
+        if (op == Request) Notify(node, from, None, header.Target, header.Key, 0);
+        else if (op == Record) Notify(node, from, Answer, header.Target, header.Key, 0);
+        frame.Dispose();
+        return true;
+    }
+
     /// <summary>Handle a handoff frame (shard thread); false when <paramref name="header"/> is not one. Disposes <paramref name="frame"/> when it is.</summary>
     public static bool TryReceive(World world, HandlerTypeInfo handlerType, FrameWriter frame, in FrameHeader header)
     {

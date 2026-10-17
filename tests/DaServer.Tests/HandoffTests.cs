@@ -105,6 +105,27 @@ public class HandoffTests(string kind) : ClusterTest
     }
 
     [Test]
+    public async Task MailForAStoppedShardGoesOnToTheKeysOwner()
+    {
+        // a leaves and its shards stopped already. c may still route key K to a (its table says so): a forwards the call to
+        // K's owner in its own view (b) instead of holding it until its links close. b, taking K, asks a for its record:
+        // a's stopped shard answers "none" at once instead of leaving b to wait for the handoff timeout.
+        var a = await StartWith(null, "a");
+        var b = await StartWith(null, "b");
+        var c = await StartWith(null, "c");
+        await Converged();
+        a.Membership.Leave();
+        long key = 1;
+        while (a.OwnerOf<CounterId>(key) != b.Id) key++;
+        int slot = ClusterView.Slot(ActorIds<CounterId>.HandlerTypeId, key);
+        c.Membership.Apply(new SlotTable { Version = 1000, Overrides = [new SlotOverride(ActorIds<CounterId>.HandlerTypeId, (ushort)slot, a.Id)] });
+        foreach (var shard in a.Shards) shard.RequestStop();
+        await Task.WhenAll(a.Shards.Select(static s => s.Stopped));
+
+        Assert.That(await c.Ask(new CounterId(key), new Add(1)).AsTask().WaitAsync(TimeSpan.FromSeconds(5)), Is.EqualTo(1));
+    }
+
+    [Test]
     public async Task WithoutAStoreStateStillMoves()
     {
         var a = await StartWith(null, "a");
