@@ -8,17 +8,18 @@ using NUnit.Framework;
 namespace DaServer.E2E;
 
 /// <summary>
-/// The flash sale as deployed: two sale nodes and PostgreSQL through Aspire, then the crowd over HTTP. The crowd's
-/// exit code is the verdict: exactly the stock sold, nothing left, every retry answered alike, every order readable.
+/// The flash sale as deployed: two sale nodes and PostgreSQL through Aspire, then the crowd over the client protocol.
+/// The crowd's exit code is the verdict: exactly the stock sold, nothing left, every retry answered alike, every order
+/// readable.
 /// </summary>
 public class FlashSaleTests
 {
     [Test, CancelAfter(900_000)]
     public async Task TheCrowdBuysExactlyTheStock(CancellationToken cancellationToken)
     {
-        // CI: 100,000 buyers for 100 units; E2E_SALE_USERS=1000000 runs the README's million.
-        string users = Environment.GetEnvironmentVariable("E2E_SALE_USERS") ?? "100000";
-        var builder = await DistributedApplicationTestingBuilder.CreateAsync<Projects.FlashSale_AppHost>([$"Users={users}"], cancellationToken);
+        // CI: 100,000 buyers for 100 units; E2E_SALE_BUYERS=1000000 runs the README's million.
+        string buyers = Environment.GetEnvironmentVariable("E2E_SALE_BUYERS") ?? "100000";
+        var builder = await DistributedApplicationTestingBuilder.CreateAsync<Projects.FlashSale_AppHost>([$"Buyers={buyers}"], cancellationToken);
         AppHostRun.Prepare(builder);
         var stops = new NodeStops();
         builder.Services.AddLogging(logging => logging.AddProvider(stops));
