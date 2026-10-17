@@ -63,6 +63,6 @@ internal sealed class Overheard
     public void On(Motion m)
     {
         foreach (var moved in m.Avatars.Items) _velocityX[moved.Player] = moved.VelocityX;
-        m.Avatars.Return();
+        m.Avatars.ReturnToPool();
     }
 }

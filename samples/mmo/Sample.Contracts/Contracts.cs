@@ -84,26 +84,21 @@ public partial record struct Moved(PlayerId Player, float X, float Y, float Velo
 public partial record struct Motion(MapId Map, Moves Avatars);
 
 /// <summary>
-/// The avatars of a <see cref="Motion"/>. A receiver gets one from a per-thread pool (Nino creates it through
-/// <see cref="Rent"/>) and gives it back with <see cref="Return"/> when its handler is done, so the bulk of the push
-/// traffic allocates nothing; a sender owns its own (a map's grid keeps one per cell).
+/// The avatars of a <see cref="Motion"/>. A receiver gets one from Nino's pool and gives it back with
+/// <c>ReturnToPool()</c> when its handler is done, so the bulk of the push traffic allocates nothing (its list stays
+/// attached and is refilled); a sender owns its own (a map's grid keeps one per cell).
 /// </summary>
-[NinoType]
-public sealed class Moves
+[NinoType, NinoPooled]
+public sealed partial class Moves
 {
-    private const int Pooled = 64;
-    [ThreadStatic] private static Stack<Moves>? _pool;
-
     public List<Moved> Items = new();
 
-    [NinoRefDeserialization]
-    public static Moves Rent() => _pool is { Count: > 0 } pool ? pool.Pop() : new Moves();
-
-    public void Return()
+    private static partial IEnumerable<Moves> OnNinoPoolWarmup()
     {
-        Items.Clear();
-        if ((_pool ??= new Stack<Moves>()).Count < Pooled) _pool.Push(this);
+        for (int i = 0; i < 64; i++) yield return new Moves();
     }
+
+    private partial void OnNinoPoolReturn() { }
 }
 
 /// <summary>An avatar in view left the map.</summary>
