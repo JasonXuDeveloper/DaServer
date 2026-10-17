@@ -1,3 +1,5 @@
+using DaServer.Client;
+
 namespace DaServer.Benchmark;
 
 /// <summary>Real nodes on loopback TCP, production defaults except membership timings (fast convergence).</summary>
@@ -32,9 +34,25 @@ internal static class Clusters
     public static TId IdOwnedBy<TId>(Node node, Node owner, long start = 1) where TId : struct, IActorId =>
         ActorIds<TId>.Of(node.KeyOwnedBy<TId>(owner, start));
 
-    public static async Task Stop(IEnumerable<Node> nodes)
+    /// <summary>Connect <paramref name="count"/> clients, client i to the gateway <paramref name="gateways"/>[i % length], each handled by <paramref name="handler"/>.</summary>
+    public static async Task<ClusterClient[]> Connect(int count, Node[] gateways, object handler)
     {
-        foreach (var node in nodes) await node.StopAsync();
+        var clients = new ClusterClient[count];
+        for (int i = 0; i < count; i++)
+        {
+            var client = clients[i] = new ClusterClient();
+            await client.ConnectAsync("127.0.0.1", gateways[i % gateways.Length].ClientPort(), followRedirect: false);
+            client.Register(handler);
+        }
+
+        return clients;
+    }
+
+    /// <summary>Dispose the clients, then stop the nodes.</summary>
+    public static void Stop(Node[] nodes, ClusterClient[]? clients = null)
+    {
+        foreach (var client in clients ?? []) client.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        foreach (var node in nodes) node.StopAsync().GetAwaiter().GetResult();
     }
 }
 

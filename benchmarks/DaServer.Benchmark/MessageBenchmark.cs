@@ -35,7 +35,7 @@ public class MessageBenchmark
     }
 
     [GlobalCleanup]
-    public void Cleanup() => Clusters.Stop(_nodes).GetAwaiter().GetResult();
+    public void Cleanup() => Clusters.Stop(_nodes);
 
     [Benchmark(OperationsPerInvoke = Burst)]
     public async Task Messages()

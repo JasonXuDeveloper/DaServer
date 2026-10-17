@@ -27,7 +27,7 @@ public class TimerBenchmark
     }
 
     [GlobalCleanup]
-    public void Cleanup() => Clusters.Stop(_nodes).GetAwaiter().GetResult();
+    public void Cleanup() => Clusters.Stop(_nodes);
 
     [Benchmark(OperationsPerInvoke = Count)]
     public async Task Sends()

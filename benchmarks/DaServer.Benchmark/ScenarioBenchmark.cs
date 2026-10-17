@@ -28,22 +28,11 @@ public class ScenarioBenchmark
     private async Task SetupAsync()
     {
         _nodes = await Clusters.Start(4, shards: 4, gateways: 3, clientFlush: TimeSpan.FromMilliseconds(FlushMs));
-        var receiver = new Receiver(_countdown);
-        _clients = new ClusterClient[Clients];
-        for (int i = 0; i < Clients; i++)
-        {
-            var client = _clients[i] = new ClusterClient();
-            await client.ConnectAsync("127.0.0.1", _nodes[i % 3].ClientPort(), followRedirect: false);
-            client.Register(receiver);
-        }
+        _clients = await Clusters.Connect(Clients, _nodes[..3], new Receiver(_countdown));
     }
 
     [GlobalCleanup]
-    public void Cleanup()
-    {
-        foreach (var client in _clients) client.DisposeAsync().AsTask().GetAwaiter().GetResult();
-        Clusters.Stop(_nodes).GetAwaiter().GetResult();
-    }
+    public void Cleanup() => Clusters.Stop(_nodes, _clients);
 
     [Benchmark]
     public Task BroadcastToEveryone()

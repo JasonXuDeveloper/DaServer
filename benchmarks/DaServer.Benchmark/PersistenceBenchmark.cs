@@ -35,7 +35,7 @@ public class PersistenceBenchmark
     }
 
     [GlobalCleanup]
-    public void Cleanup() => Clusters.Stop([_node]).GetAwaiter().GetResult();
+    public void Cleanup() => Clusters.Stop([_node]);
 
     /// <summary>1,024 actors nobody has loaded yet, with a record each.</summary>
     [IterationSetup(Target = nameof(Load))]
