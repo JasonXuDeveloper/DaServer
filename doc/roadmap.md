@@ -506,6 +506,62 @@ in separate commits.
   transactions; ET location server, coroutine locks, class entity trees, global singletons; RandomGame stop-the-world
   reload with forced GC, manual dirty marking. GM commands (N10) are out of scope for now.
 
+## Edge cases (audit of October 2026: each found case gets a deterministic test before its fix)
+
+Four read-only audits (moves and placement, membership and links, client sessions, persistence and turns) listed the
+interleavings a real network leaves to chance. Each is forced in a test (a gated store, a scripted node, crafted views
+and cards, a manual clock), fails before its fix, and passes after it.
+
+- [x] Client moves (`ClientMoveTests`, `ScriptedNode`): a move between a sender's pick and its send; calls of a left
+      connection fail when its node dies; a refused resume; a second Retire; the old connection kept until its calls
+      are answered; eight senders across twenty moves.
+- [x] Slot planner (`SlotPlannerTests`): takeover without reports, a left node, sticky pins, a slot reported twice,
+      moves until rendezvous agrees, the threshold and the move limit, determinism.
+- [x] P1 A checkpoint in flight as the actor unloads was taken for its final save (later changes lost).
+- [x] P2 A failed turn's SaveNow (and checkpoints of fenced actors) wrote half-changed state; a fenced unload handed
+      off or wrote its stale copy.
+- [x] P3 A fenced actor dropped while its write was in flight (the reload could read before it): `PersistenceEdgeTests`.
+- [ ] P4 Versioned writes fence the newer owner: loads should claim the record (bump the version), so the stale owner
+      loses (ADR-068 revision, store contract).
+- [ ] P5 A failed SaveNow waits for the next checkpoint (retry it at once); P6 a failed load fails the whole batch
+      without a retry; P7 the load batch has no size cap; P8 call cycles through OnLoad/OnUnload end by timeout only;
+      P9 store calls and turns have no bound but the stop budget.
+- [ ] H1 The new owner stops waiting for the record after the call timeout while the old owner still runs the actor
+      (duplicate activation): the old owner answers "held", the new one waits until the record, "none" or a Dead
+      verdict.
+- [ ] H2 "None" from a node that still owns the key in its view, which then loads it (duplicate activation while
+      views converge): a disowned key is forwarded for the handoff timeout.
+- [ ] H3 `PreviousView` holds one change: a leave then a table change asks the wrong node (a ring of recent views).
+- [ ] H4 The old owner times out and writes, then the new owner's late accept arrives (fall back only on Dead or a
+      restarted stream).
+- [ ] H5 A pending SaveNow is written after the record was sent (`Without<SaveNow>` on the handoff).
+- [ ] H6 User `[ForEach]` systems run on actors that are not live (waiting for a record, handed off): a `Live` tag
+      the generator adds to state systems (public behavior: ask first).
+- [ ] H7 Without a store a refused handoff loses the state (forward the record to the owner in the receiver's view);
+      H8 the record and the forwarded mail can go to different nodes; H9 timer handles are not tied to a node; H11 mail
+      admitted to a drained stopping shard waits until it times out.
+- [ ] M1 A node restarting on the same address with a new id: the old card is adopted, shared links get the old id's
+      Dead treatment (a new id at a known endpoint marks the old one Dead).
+- [ ] M2 Forgotten members come back through later nodes' gossip forever (and count as lost for keep-majority):
+      tombstones.
+- [ ] M3 A pause longer than DeadAfter: the paused node keeps running its actors; past three DeadAfter it rejoins Up at
+      its old incarnation (fence itself after a long pause).
+- [ ] M4/H10 Two coordinators publish the same table version with different contents (order tables by version and
+      coordinator; a takeover publishes above the highest version seen).
+- [ ] M5 A client-facing node falsely declared Dead then refuting has its sessions closed after the grace anyway.
+- [ ] M6 Leave racing a Dead verdict skips the fence; M7 persistently late ticks freeze failure detection; M8 a
+      Hello's endpoint and receiver are not signed; M9 two spellings of one seed fight over one inbound slot; M10 stale
+      pulses lower heartbeats; M11 `_introduced` keeps forgotten nodes.
+- [ ] S1 An actor that moved forgets its client sessions (resume refused, the player logs in again): sessions travel
+      in the handoff record.
+- [ ] S2 A resume cut off after the actors accepted it leaves the session unrecoverable (revert to the previous
+      session; a drain skips sessions mid-resume).
+- [ ] S3 Calls on the old connection are not failed when it dies while the move is still resuming.
+- [ ] S4 Dispose during a reconnect or move: the client rejoins the process-wide sweep and fires Reconnected.
+- [ ] S5 A probe of the old connection closes the new one; S6 pushes during a move are duplicated and dispatched from
+      two loops; S7 a kick can be evaded by a concurrent resume; S8 a reconnect attempt is not bounded by
+      ReconnectTimeout; S9 one ticket used on two gateways at once can split the session.
+
 ## Open cleanup (review rounds)
 - Audit round 2 (agreed; each change with tests and BenchmarkDotNet where a hot path changes):
   - [x] Cache lines: a shard's per-pass counters and its sleeping flag on lines of their own, its own counters
