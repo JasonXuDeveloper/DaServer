@@ -25,6 +25,19 @@ internal readonly record struct AwaitingHandoff(ulong From, long UntilMs) : ICom
 /// <summary>Node <see cref="By"/> waits for this actor's record: told when the actor goes without handing it to it.</summary>
 internal readonly record struct HandoffWanted(ulong By) : IComponent;
 
+/// <summary>
+/// Requests for records this shard holds no copy of while it owns their keys in its own view (it has not seen the
+/// change the askers saw yet): "none" now would let mail routed by this node load a second copy beside the asker's.
+/// They are answered once ownership changes (<see cref="HandoffAsksSystem"/>). Bounded: past <see cref="Max"/> a request
+/// goes unanswered, and its asker asks again after the handoff timeout.
+/// </summary>
+internal readonly record struct HandoffAsks(List<HandoffAsk> Waiting) : ISingletonComponent
+{
+    public const int Max = 1024;
+}
+
+internal readonly record struct HandoffAsk(uint HandlerTypeId, long Key, ulong By);
+
 /// <summary>The handoff frames: messages to an actor's handler type that no handler handles, read by the runtime.</summary>
 internal static class Handoff
 {
@@ -51,7 +64,8 @@ internal static class Handoff
     /// <summary>
     /// Who may still hold a key this node loads, while keys move after a view change (within the handoff timeout): its
     /// owner in the previous view, or, when that was this node (it just joined, its previous view lacked the others), the
-    /// node owning it without this one. Null otherwise: nothing is on its way, so a load waits for no one.
+    /// node owning it without this one if that node is up longer (one that joined after this node never held it). Null
+    /// otherwise: nothing is on its way, so a load waits for no one.
     /// </summary>
     public static ulong? PreviousOwner(World world, uint handlerTypeId, long key)
     {
@@ -60,7 +74,12 @@ internal static class Handoff
         if (node.SinceViewChangeMs > TimeoutMs(node)) return null;
         var view = node.View;
         var previous = node.PreviousView?.HandlerTypeOwner(handlerTypeId, key);
-        if (previous == null || previous.NodeId == node.Id) previous = view.HandlerTypeOwnerWithout(handlerTypeId, key, node.Id);
+        if (previous == null || previous.NodeId == node.Id)
+        {
+            previous = view.HandlerTypeOwnerWithout(handlerTypeId, key, node.Id);
+            if (previous != null && view.TryGetMember(node.Id, out var self) && previous.UpSince >= self.UpSince) return null;
+        }
+
         if (previous == null || previous.NodeId == node.Id) return null;
         return view.TryGetMember(previous.NodeId, out var member) && member.Status != MemberStatus.Dead ? member.NodeId : null;
     }
@@ -118,8 +137,10 @@ internal static class Handoff
     }
 
     /// <summary>Tell the node that asked for the record of a removed actor that it was not handed to it.</summary>
-    public static void Gone(World world, Actor actor, ulong by) =>
-        Notify(world.Shard().Node, by, None, actor.HandlerType.Id, actor.Key, 0);
+    public static void Gone(World world, Actor actor, ulong by) => Gone(world.Shard().Node, actor.HandlerType.Id, actor.Key, by);
+
+    /// <summary>Tell <paramref name="by"/> that this node holds no record of the key.</summary>
+    public static void Gone(Node node, uint handlerTypeId, long key, ulong by) => Notify(node, by, None, handlerTypeId, key, 0);
 
     public static long TimeoutMs(Node node) => (long)node.Options.CallTimeout.TotalMilliseconds;
 
@@ -155,7 +176,12 @@ internal static class Handoff
                 Notify(node, from, Answer, handlerType.Id, header.Key, Restore(world, handlerType, header.Key, payload, loaded, entity, from) ? (byte)1 : (byte)0);
             else if (op == Request)
             {
-                if (!loaded) Notify(node, from, None, handlerType.Id, header.Key, 0);
+                if (!loaded)
+                {
+                    if (!ShardDispatch.Owns(world, handlerType.Id, header.Key)) Notify(node, from, None, handlerType.Id, header.Key, 0);
+                    else if (world.GetSingleton<HandoffAsks>().Waiting is { Count: < HandoffAsks.Max } waiting)
+                        waiting.Add(new HandoffAsk(handlerType.Id, header.Key, from));
+                }
                 else if (!entity.Has<HandoffWanted>()) entity.Add<HandoffWanted>() = new HandoffWanted(from); // told when it goes
             }
             else if (op == None)
@@ -247,7 +273,7 @@ internal sealed partial class HandoffSystem : EcsSystem
     public override int Priority => 6;
 
     // After its write in flight and a critical save asked for (the record carries the version they produce).
-    [ForEach, Without<Saving>, Without<SaveNow>]
+    [ForEach, Without<Saving>, Without<SaveNow>, Without<Fenced>]
     private static void Send(Entity actor, in HandOff handOff, in ActorRef self, in ShardActivity activity, World world)
     {
         var (to, target, now) = (handOff.To, self.Actor, activity.NowMs);
@@ -255,6 +281,36 @@ internal sealed partial class HandoffSystem : EcsSystem
         if (Handoff.Send(world, actor, target, to) is { } record)
             actor.Add<HandingOff>() = new HandingOff(to, now + Handoff.TimeoutMs(world.Shard().Node), record);
         else Handoff.Fallback(actor);
+    }
+}
+
+/// <summary>
+/// Answers the requests for records deferred while this node owned their keys (<see cref="HandoffAsks"/>), once
+/// ownership may have changed: "none" for a key it no longer owns, the record (when the actor leaves) for one it loaded
+/// meanwhile; a key it still owns waits on.
+/// </summary>
+[UpdateInGroup<ShardRebalance>]
+internal sealed class HandoffAsksSystem : EcsSystem
+{
+    protected override void OnUpdate()
+    {
+        var waiting = World.GetSingleton<HandoffAsks>().Waiting;
+        if (waiting.Count == 0) return;
+        var actors = World.GetSingleton<ActorDirectory>().Actors;
+        var node = World.Shard().Node;
+        for (int i = waiting.Count - 1; i >= 0; i--)
+        {
+            var ask = waiting[i];
+            if (actors.TryGetValue(new ActorAddress(ask.HandlerTypeId, ask.Key), out var actor))
+            {
+                if (!actor.Has<HandoffWanted>()) actor.Add<HandoffWanted>() = new HandoffWanted(ask.By);
+            }
+            else if (ShardDispatch.Owns(World, ask.HandlerTypeId, ask.Key)) continue;
+            else Handoff.Gone(node, ask.HandlerTypeId, ask.Key, ask.By);
+
+            waiting[i] = waiting[^1];
+            waiting.RemoveAt(waiting.Count - 1);
+        }
     }
 }
 

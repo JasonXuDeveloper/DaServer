@@ -19,11 +19,14 @@ internal sealed partial class UnloadSystem : EcsSystem
         TurnWatcher.Begin(world, actor, ShardDispatch.Start(static a => a.OnUnload().AsValueTask(), target));
     }
 
-    // After its write in flight (Without<Saving>): a reload reads the store only once that write settled.
-    [ForEach, With<UnloadRequested>, With<Fenced>, Without<Turn>, Without<Removing>, Without<Saving>]
+    // After its write in flight (Without<Saving>): a reload reads the store only once that write settled. A record sent
+    // to a new owner (HandingOff) waits for its answer: taken, the copy goes; refused, it is dropped here.
+    [ForEach, With<UnloadRequested>, With<Fenced>, Without<Turn>, Without<Removing>, Without<Saving>, Without<HandingOff>]
     private static void Drop(Entity actor)
     {
         actor.Remove<UnloadRequested, Fenced>();
+        if (actor.Has<FinalSave>()) actor.Remove<FinalSave>();
+        if (actor.Has<HandOff>()) actor.Remove<HandOff>();
         actor.Add<Removing>() = new Removing(RpcStatus.Ok, null); // mail goes on to the new owner
     }
 }

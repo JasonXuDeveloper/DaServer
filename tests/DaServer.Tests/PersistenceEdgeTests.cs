@@ -103,6 +103,28 @@ public class PersistenceEdgeTests(string kind) : ClusterTest
         Assert.That(await after.Ask(new BankId(2001), new Balance()), Is.EqualTo(7), "and accepted");
     }
 
+    [Test]
+    public async Task AnActorAskedToLeaveIsFencedWhenItsNodeIsDeclaredDead()
+    {
+        // The node stops while the actor is in a long turn: it is asked to leave once the turn ends. Before that, the
+        // cluster declares the node dead (its keys have new owners): the copy must go without OnUnload or a write, not
+        // unload as planned and write over what the new owner holds.
+        var store = new GatedStore(_stores.Create());
+        var node = await StartWith(store);
+        Assert.That(await node.Ask(new BankId(170), new Deposit(5, false)), Is.EqualTo(5)); // written on unload only
+        TurnGate.Current = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var held = node.Ask(new BankId(170), new HoldTurn()).AsTask();
+        await Task.Delay(100);
+        foreach (var shard in node.Shards) shard.RequestStop();
+        await Task.Delay(100); // asked to leave, its turn still running
+        foreach (var shard in node.Shards) shard.RequestUnloadAll();
+        await Task.Delay(100);
+        TurnGate.Current.TrySetResult();
+        await held;
+        await Task.WhenAll(node.Shards.Select(static s => s.Stopped)).WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.That(store.Writes, Is.Zero, "the fenced copy wrote nothing");
+    }
+
     /// <summary>Fails its first <see cref="FailWrites"/> writes and <see cref="FailLoads"/> loads (an outage), then works.</summary>
     private sealed class FlakyStore(IActorStore inner) : IActorStore
     {
