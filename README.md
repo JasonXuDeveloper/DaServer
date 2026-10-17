@@ -33,8 +33,7 @@ locally and publishes it.
 
 ```mermaid
 flowchart TB
-    C1[clients] -. "connect to any (directory)" .-> G1
-    C1 --> G1
+    C1[clients] -- "through the load balancer" --> G1
     C2[clients] --> G2
     subgraph cluster [cluster: gossip membership, rendezvous placement]
         G1[gateway-0<br/>sessions, bindings, groups]
@@ -309,10 +308,10 @@ builder.Build().Run();
 ```
 
 `AddDaServerCluster` gives every node a name, a cluster endpoint and seeds; `WithClientConnections` adds a client endpoint (the
-`DaServer:Clients` section). A client connects to any client-facing node (in production: the platform's load balancer or DNS name);
-that node picks the less loaded of two client-facing nodes from the gossiped session counts (power of two choices)
-and, if it is another one, answers with its address, and the client connects there directly (`Redirect`, ADR-026):
-the balancer only spreads first connections, no traffic is forwarded through it or between nodes. There
+`DaServer:Clients` section). A client connects through the entry addresses it is given (in production: the platform's
+load balancer or DNS name) and stays on the node it reached; any client-facing node reaches every actor.
+`MaxConnectionAge` closes old connections so that, after a scale-out, their clients reconnect to the new nodes too
+and resume their sessions (ADR-026). There
 are no roles and no configuration files: what a node hosts is what its project compiles. Nodes export logs and
 metrics over OpenTelemetry, which feeds the Aspire dashboard. The same model runs with
 `dotnet run --project samples/mmo/Sample.AppHost` and publishes with `aspire publish` (`AddKubernetesEnvironment` for
@@ -325,7 +324,7 @@ Measured on one 4-core VM (servers, bots and the kernel share it), Release build
 **10k-player scenario** ([Sample.AppHost](samples/mmo/Sample.AppHost), [Sample.Bot](samples/mmo/Sample.Bot)): a login
 node, a game node, a map node and 3 gateways writing to clients on a 2 ms beat (ADR-070; the AppHost's topology, the
 one-map column through Aspire with `tests/DaServer.E2E`, the chatting column as plain processes). 10,000 bots
-connect through a gateway's address and are directed to the less loaded gateway, log in and enter a map; the realm broadcasts its status to every session
+connect through the gateways' addresses (one picked at random each), log in and enter a map; the realm broadcasts its status to every session
 every 5 ticks (20 ticks/s). Two loads, 60 s measured window each:
 
 - **One map** (the AppHost default): all 10,000 players in one map on one map node, each changing direction once a
@@ -350,9 +349,9 @@ reckoning, every turn to everyone is 100 million entries (~2.4 GB/s) a second. O
 clients (the per-session send bound then disconnects them or, below it, memory grows to the bound) while the game
 node stays under 10% CPU.
 
-**Scale-out**: start 3,000 bots on 2 gateways (1,508 / 1,492 sessions), start a third gateway process with only a seed
-address, then 3,000 more bots: the directory learns of it through gossip and sends it 1,961 of them (2,017 / 2,022 /
-1,961). Both waves pass (no gap, no disconnect). Cluster test: `ANodeStartedLaterIsDiscoveredAndReceivesTheNewClients`.
+**Scale-out**: connections older than `MaxConnectionAge` close and their clients resume on the node the entry
+addresses lead them to, so a gateway started later takes old clients too (cluster test:
+`OldConnectionsMoveToANodeStartedLater`).
 
 **BenchmarkDotNet** ([benchmarks/](benchmarks/DaServer.Benchmark), default job, one 4-core VM, .NET 11 RC2; Allocated
 is per operation and includes the benchmark's clients):
