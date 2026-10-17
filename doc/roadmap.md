@@ -507,25 +507,28 @@ in separate commits.
   - [x] Cache lines: a shard's per-pass counters and its sleeping flag on lines of their own, its own counters
         without `Interlocked`, the actor count written when it changes; channels touch their activity stamps at most
         every 100 ms; `DeferredReply.Used` written once.
-  - [ ] Pools and the call table: a thread-local magazine in `ObjectPool` (one CAS per batch, not per item); call
-        table entries 40 B -> 32 B (int tag, absolute ms deadline: one clock read less per call). New contention
-        benchmark (1/4/16 concurrent callers).
-  - [ ] Group fan-out: a channel array next to the members (half the pointer hops per member); the channel shell
-        (send switch, closed flag, tag, stamps) shared by TCP and WebSocket, the send queue inline.
-  - [ ] Routing: one table per view (nodes, owners, actor kind, placement) found by one lookup per request.
-  - [ ] Small: the flusher's registrations in the thread's send batch (one lock per batch); the swarm's latency
-        histogram per loop, log-linear buckets.
-  - [ ] One clock for the control plane: resume graces, call timeouts, membership timings on
-        `NodeOptions.TimeProvider` (steppable in `TestCluster`), hot paths on `Platform.Milliseconds`.
-  - [ ] One backoff with full jitter (client reconnect, node links, swarm retries).
-  - [ ] Generated registration uses `TypeId<T>` (no literal ids); a test pins `Shapes.TypeIdOf` == `NinoTypeId.Of`
-        (nested, namespaced, `[NinoFormerName]`).
-  - [ ] One endpoint parser (`IPEndPoint.TryParse`, then host:port); `[LoggerMessage]` on per-message and failure
-        logs, a dropped-backlog warning once per interval with a count.
-- Deployment (agreed): one AppHost publishes to Docker Compose or Kubernetes (`Publish=compose|k8s`); in publish
+  - [x] Pools and the call table: per-thread magazines in `ObjectPool` (the depot's cursors touched once per 32
+        objects); call table entries 32 B (int tag, the deadline as the low 32 bits of `Platform.Milliseconds`, passed
+        in absolute: one clock read less per call). `PoolBenchmark` (1/4/16 concurrent threads) before: frames 33 /
+        189 / 198 ns, calls 41 / 230 / 232 ns; after: [ ] record.
+  - [x] Group fan-out: a channel array next to the members; `FrameChannel`, the shell (send, close, tag, stamps)
+        shared by TCP and WebSocket.
+  - [x] Routing: one route per handler type (nodes, kind, slot owners) found by one lookup.
+  - [x] Small: the flusher's registrations in the thread's send batch (one lock per flusher and batch); the swarm's
+        latency histogram striped by thread with log-linear buckets (1,024, at most 3% wide); the link's received
+        counter on a line of its own.
+  - [x] Clocks: resume graces on `NodeOptions.TimeProvider` (steppable in `TestCluster`); call deadlines, membership,
+        keep-alives and rate limits on `Platform.Milliseconds` (real time, one clock).
+  - [x] One backoff with full jitter (client reconnect, node links, swarm retries).
+  - [x] Generated registration uses `TypeId<T>` (no literal ids); a test pins the analyzer's ids to Nino's (nested,
+        namespaced, `[NinoFormerName]`).
+  - [x] One host:port parser (`HostPort`, IPv6 in brackets); `[LoggerMessage]` on message and actor failures, the
+        dropped-backlog warning at most every 10 s with a count.
+- [x] Deployment: one AppHost publishes to Docker Compose or Kubernetes (`Publish=compose|k8s`); in publish
   mode a node group is one workload with replicas (A4): no container names, no fixed host ports per replica, seeds
   through the group's DNS name (Compose service DNS, Kubernetes headless Service), each replica advertising its own
-  address; both samples. No StatefulSet (identity from gossip incarnations, state in the store), no etcd or
+  address (ADR-030); both samples, each adding its own platform objects (mmo: a load balancer for the gateways, a
+  disruption budget for game nodes; flashsale: an HPA, a VPA recommending requests). No StatefulSet (identity from gossip incarnations, state in the store), no etcd or
   Kubernetes API access (DNS seeds only); secrets are Aspire secret parameters (a Kubernetes Secret, a Compose
   `.env`); a migration Job is the application's.
 - [ ] Evaluate Kestrel's raw TCP (`ListenOptions.UseConnectionHandler`, pipelines, TLS) for client and link
@@ -534,7 +537,7 @@ in separate commits.
 - [ ] B4 one serialize-into-pooled-frame helper; B5 `DeliverTo(nodeId, frame)` (local or link); B8 one pending-table
       scan; B9 registries; B10 shared hash helpers; B11 sample nits
 - [ ] Split `Node` into links and router; membership talks to the node
-      through an interface; one endpoint parser for seeds and `DaServer__ClientEndpoints`
+      through an interface
 - [ ] ECS misuse: the turn's caller (`Actor.TurnCaller`) as a component
 - [ ] `HandoffTests.ScalingOutAndInMovesRecordsWithoutTheStore` failed once of 7 full runs, while the E2E ran in
       parallel (passes alone and in 5 further full runs; the message was not captured). Suspect: a handoff that times
