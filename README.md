@@ -278,11 +278,12 @@ Actors, services and systems read time from `Time` (`world.Time()` in systems), 
 
 ## Rolling upgrades
 
-Old and new nodes run side by side while a deployment rolls. Each project with messages or persisted components
-commits a `wire.manifest`: the build fails (DAS017) when a change would break the other version (a field removed,
-moved or retyped) and asks to record compatible ones (DAS018): `dotnet build -p:UpdateWireManifest=true`. New fields
-go at the end of a message, reply or persisted component; older nodes skip them, newer ones read defaults when they
-are missing. While builds differ, a message is only sent to nodes whose build handles it (ADR-076, ADR-077).
+Old and new nodes run side by side while a deployment rolls. A new field goes into a new message or a new persisted
+component; the one exception is a message, reply or persisted component made only of value fields, which may append
+fields (an older payload reads with zeros for them). Each project commits a `wire.manifest`: the build fails (DAS017)
+when a change would break the other build and asks to record compatible ones (DAS018) with
+`dotnet build -p:UpdateWireManifest=true`. While builds differ, a message goes only to nodes whose build handles it
+(ADR-076, ADR-077).
 
 ## Samples
 

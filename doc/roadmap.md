@@ -336,15 +336,16 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
       `daserver.handler.failed`).
 
 ## Next: versioning and rolling upgrades (V, before S)
-- [x] V1 Wire manifest (ADR-076): each project commits `wire.manifest` (its [NinoType] types, fields in Nino's order,
-      which may grow); DAS017 fails the build on breaking layout changes, DAS018 asks to record compatible ones
-      (`dotnet build -p:UpdateWireManifest=true`); Nino reads shorter buffers with defaults (`WEAK_VERSION_TOLERANCE`,
-      set by the Abstractions package). The samples commit theirs.
-- [x] V2 Build on the card (ADR-077): `ClusterMember.Build` (framework and application versions); a node logs when
-      its view's builds change; the Hello's link protocol version refuses incompatible links.
-- [x] V3 Messages only where the build has them (ADR-077): services are chosen among nodes whose build handles the
-      message; an actor's owner stays its type's, and a message its build lacks is refused (`NotHosted`) instead of
-      sent.
+- [x] V1 Wire manifest (ADR-076): each project commits `wire.manifest` (its [NinoType] types and the bytes their
+      layouts depend on); DAS017 fails the build on breaking changes, DAS018 asks to record compatible ones
+      (`dotnet build -p:UpdateWireManifest=true`, `=force` for a deliberate break). Layouts are frozen; value-only whole
+      messages, replies and components may append fields (`WirePayload` reads older payloads zero-padded, 0 B). The
+      samples commit theirs. Open with Nino's author: length-checked tolerant reads would let every whole type grow.
+- [x] V2 Build on the card (ADR-077): `ClusterMember.Build` (framework and application versions); a node logs while
+      its view holds several builds.
+- [x] V3 Messages only where the build has them (ADR-077): services (sent or forwarded) among nodes whose build
+      handles the message; an actor's owner stays its type's, and a message its build lacks for that type is refused
+      (`NotHosted`) instead of sent; a client message unknown to its node's build is `NotHosted` too.
 
 ## Next: packages and other core gaps (P, K)
 - [x] P1 `DaServer.Testing` (ADR-071): `TestCluster` starts real nodes in the test process; `NodeOptions.TimeProvider`

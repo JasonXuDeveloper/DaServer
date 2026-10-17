@@ -107,9 +107,10 @@ doc/                       requirements.md, design.md, decisions.md, roadmap.md
   game's players, a sale's crowd, anything per player or per tick) uses the client protocol: TCP, or WebSocket at
   `/clients/ws` for browsers (wss behind the platform's TLS). An HTTP request crosses two protocols and costs a
   syscall pair of its own; the client protocol batches (ADR-046: 3.5 times the requests per core).
-- Wire layout (ADR-076): a project with `[NinoType]` types commits its `wire.manifest`. Fields are only appended, and
-  only to messages, replies and persisted components that no other type nests; everything else is frozen (DAS017).
-  After a compatible change run `dotnet build -p:UpdateWireManifest=true` and commit the manifest (DAS018).
+- Wire layout (ADR-076): a project with `[NinoType]` types commits its `wire.manifest`. Layouts are frozen (DAS017): a
+  new field goes into a new message or component; only a whole message, reply or persisted component of value fields
+  that no other type nests may append fields. After a compatible change run `dotnet build -p:UpdateWireManifest=true`
+  and commit the manifest (DAS018). The runtime reads messages, replies and records with `WirePayload.Read`.
 - Type ids (messages on the wire, actor id types, services, persisted components) are generated (FNV-1a); set one by
   hand only with `[TypeId]`, to resolve a reported collision or to keep a renamed type's identity and stored records.
 - No topology strings (roles, node names) in code: a node hosts what its project compiles (ADR-017).
