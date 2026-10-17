@@ -127,10 +127,14 @@ internal sealed class Shard : CompletionThread
         Interlocked.Increment(ref _overflowCount);
     }
 
+    /// <summary>
+    /// Wake the shard if it sleeps. One waker per sleep: the first to clear the flag sets the event, the others see it
+    /// cleared. Every producer setting it would serialize them on the event's lock (a hot spot under many connections).
+    /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void Wake()
     {
-        if (Volatile.Read(ref _sleeping) != 0)
+        if (Volatile.Read(ref _sleeping) != 0 && Interlocked.Exchange(ref _sleeping, 0) != 0)
             _wake.Set();
     }
 
@@ -184,6 +188,7 @@ internal sealed class Shard : CompletionThread
             CreateWorld();
             long nextTick = _time.GetTimestamp() + _tickInterval;
             long nextIdleScan = 0;
+            bool busy = false; // the last pass had work: under load the next message is microseconds away
             ref var activity = ref World.GetSingleton<ShardActivity>(); // singletons never move
             while (true)
             {
@@ -227,9 +232,11 @@ internal sealed class Shard : CompletionThread
 
                 Volatile.Write(ref _actorCount, World.GetSingleton<ActorDirectory>().Actors.Count);
                 if (activity.Stopping && IsDrained()) break;
-                if (activity.Processed == 0 && !World.Any<Mailbox>(MailboxSystem.Runnable))
+                bool idle = activity.Processed == 0 && !World.Any<Mailbox>(MailboxSystem.Runnable);
+                if (idle)
                     Sleep(World.GetSingleton<ShardTimers>().Wheel.Count == 0 ? nextTick
-                        : Math.Min(nextTick, _time.GetTimestamp() + _timerWake)); // a delayed send waits for no tick
+                        : Math.Min(nextTick, _time.GetTimestamp() + _timerWake), spin: busy); // a delayed send waits for no tick
+                busy = !idle;
             }
         }
         catch (Exception e)
@@ -303,8 +310,20 @@ internal sealed class Shard : CompletionThread
         !World.Any<ServiceCall>() &&
         QueueLength == 0;
 
-    private void Sleep(long nextTick)
+    /// <summary>Spins of a busy shard before it sleeps (<see cref="Thread.SpinWait"/> rounds; tens of microseconds).</summary>
+    private const int BusySpins = 20, SpinRound = 50;
+
+    private void Sleep(long nextTick, bool spin)
     {
+        // A shard that just had work waits for more by spinning a little first: under load the next message arrives
+        // within microseconds, and a sleep and a wake (futex calls, the event's lock) cost more than that.
+        if (spin)
+            for (int i = 0; i < BusySpins; i++)
+            {
+                if (QueueLength != 0 || _stopRequested) return;
+                Thread.SpinWait(SpinRound);
+            }
+
         Interlocked.Exchange(ref _sleeping, 1);
         Volatile.Write(ref _passStartedMs, 0);
         if (QueueLength == 0 && !_stopRequested)
@@ -315,6 +334,6 @@ internal sealed class Shard : CompletionThread
         }
 
         Volatile.Write(ref _sleeping, 0);
-        _wake.Reset();
+        _wake.Reset(); // a waker that cleared the flag may still set it: the next sleep then returns at once, harmlessly
     }
 }
