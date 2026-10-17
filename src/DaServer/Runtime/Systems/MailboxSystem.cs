@@ -13,13 +13,13 @@ internal sealed partial class MailboxSystem : EcsSystem
 
     /// <summary>Actors <see cref="Run"/> visits (the shard does not sleep while one is left).</summary>
     internal static readonly QueryFilter Runnable = QueryFilter.Create().With<Ready>().Without<Turn>()
-        .Without<UnloadRequested>().Without<Removing>().Without<Loading>();
+        .Without<UnloadRequested>().Without<Unloading>().Without<Removing>().Without<Loading>();
 
     public override int Priority => 5;
 
     protected override void OnUpdate() => World.GetSingleton<ShardActivity>().MailBudget = Budget;
 
-    [ForEach, With<Ready>, Without<Turn>, Without<UnloadRequested>, Without<Removing>, Without<Loading>]
+    [ForEach, With<Ready>, Without<Turn>, Without<UnloadRequested>, Without<Unloading>, Without<Removing>, Without<Loading>]
     private static void Run(Entity actor, ref Mailbox mailbox, in ActorRef self, ref ShardActivity activity, World world)
     {
         if (activity.MailBudget <= 0) return; // continue next wake (the actor stays Ready)
