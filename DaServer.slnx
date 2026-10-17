@@ -30,7 +30,7 @@
     <Project Path="samples/flashsale/FlashSale.Components/FlashSale.Components.csproj" />
     <Project Path="samples/flashsale/FlashSale.Server/FlashSale.Server.csproj" />
     <Project Path="samples/flashsale/FlashSale.Tests/FlashSale.Tests.csproj" />
-    <Project Path="samples/flashsale/FlashSale.Load/FlashSale.Load.csproj" />
+    <Project Path="samples/flashsale/FlashSale.Crowd/FlashSale.Crowd.csproj" />
     <Project Path="samples/flashsale/FlashSale.AppHost/FlashSale.AppHost.csproj" />
   </Folder>
   <Folder Name="/tests/">
