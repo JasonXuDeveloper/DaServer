@@ -1223,8 +1223,8 @@ records that no longer hold). Each: context → decision → consequences.
 ## ADR-076 The wire manifest: layouts are frozen
 - Context: a rolling upgrade runs two builds side by side, and stored records outlive the code that wrote them. Nino
   (4.0.0-beta.47) writes fields in order without names, lengths or versions: a type made only of value fields as its
-  memory (private fields and padding included, read without a length check), others member by member, classes behind
-  a type id. Any change to a layout is misread by the other build. Appending fields cannot be made safe here: a field
+  memory (private fields and padding included, read without a length check), others member by member, classes behind a
+  type id. Any change to a layout is misread by the other build. Appending fields cannot be made safe here: a field
   appended into a struct's trailing padding keeps its size, so the other build reads stale padding bytes, and Nino's
   `WEAK_VERSION_TOLERANCE` changes the wire format itself and tolerates only a buffer that has ended.
 - Decision: layouts are frozen. A new field goes into a new message or a new persisted component (a record is a
@@ -1233,28 +1233,29 @@ records that no longer hold). Each: context → decision → consequences.
   its layout depends on (a value-only struct's memory fields in order, private ones included; otherwise Nino's
   members: parents and [NinoType] interfaces first, a base's non-public non-protected members skipped, the leaf's
   `[NinoExplicitOrder]`), each field's type as its bytes depend on it (enums with their underlying type, arrays and
-  generic arguments element by element, types without their own entry, such as ids and other assemblies' types,
-  inline) and a request's reply. The analyzer fails the build on any change to a recorded type and on a new
-  subtype of one, whose type id older builds cannot read where the base is expected (DAS017), and asks to record
-  other new types (DAS018) with `dotnet build -p:UpdateWireManifest=true` (which still stops on DAS017;
-  `=force` records a deliberate break). A project without a manifest is not checked. `WirePayload.Read` reads every
-  message, reply and record section: a value-only payload shorter than its type and type id (truncated, hostile)
-  is refused before Nino would read past its end. The generator and the analyzer walk the same types (generated
-  files included, Nino's own private-member proxies excluded); other assemblies' types are described by what their
-  metadata shows, so the IDE and the command line agree.
+  generic arguments element by element, types of this assembly without their own entry, such as ids, inline) and a
+  request's reply. The analyzer fails the build on any change to a recorded type and on a new subtype of one, whose
+  type id older builds cannot read where the base is expected (DAS017), and asks to record other new types (DAS018)
+  with `dotnet build -p:UpdateWireManifest=true` (which still stops on DAS017; `=force` records a deliberate break). A
+  project without a manifest is not checked. `WirePayload.Read` reads every message, reply and record section: a
+  value-only payload shorter than its type and type id (truncated, hostile) is refused before Nino would read past its
+  end. The generator and the analyzer walk the same types (generated files included, Nino's own private-member proxies
+  excluded); another assembly's value-only struct is recorded with its fields (metadata imports them all, so the IDE
+  and the command line agree), its other types by name (that assembly's manifest records them); a new subtype of a
+  recorded type or of another assembly's breaks.
 - Alternatives: appending with zero-padding (unsound inside padding, needs the full memory layout computed);
   `WEAK_VERSION_TOLERANCE` (a format change); a length prefix per message (bytes and a copy on every message); field
   tags (protobuf: bytes and CPU on every field). Nino's next major version is to be reviewed for tolerant reads
   (roadmap).
 - Consequences: renames are reported though Nino writes no names (deliberately conservative). The manifest mirrors
   Nino 4's rules rather than reading Nino's own description of a type, so some changes still escape it until Nino
-  exposes one (roadmap): `[FieldOffset]` under explicit layout, `[NinoFormerName]`, `[NinoPrivateProxy]` members
-  (and Nino's generated proxies on netstandard2.1), private fields and `[StructLayout]` of other assemblies' types
-  read from metadata, generic structs written as memory once constructed. The framework's own frames (cards, the
-  Hello, session operations) are guarded by the link protocol version instead. The generator runs only when the
-  manifest is updated. A new component
-  written by a newer node is dropped when an older node saves the record again (a rollback, or the key moving back
-  during the rollout): records keep only the sections the saving build knows. BenchmarkDotNet: see ADR-077.
+  exposes one (roadmap): `[FieldOffset]` under explicit layout, `[NinoFormerName]`, `[NinoPrivateProxy]` members (and
+  Nino's generated proxies on netstandard2.1), private fields and `[StructLayout]` of other assemblies' types read
+  from metadata, generic structs written as memory once constructed. The framework's own frames (cards, the Hello,
+  session operations) are guarded by the link protocol version instead. The generator runs only when the manifest is
+  updated. A new component written by a newer node is dropped when an older node saves the record again (a rollback,
+  or the key moving back during the rollout): records keep only the sections the saving build knows. BenchmarkDotNet:
+  see ADR-077.
 
 ## ADR-077 Rolling upgrades: builds on the card, messages only where the build has them
 - Context: during a rolling upgrade old and new nodes host the same actor and service types, but a new build may handle
