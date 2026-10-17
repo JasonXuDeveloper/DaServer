@@ -523,9 +523,10 @@ and cards, a manual clock), fails before its fix, and passes after it.
 - [x] P3 A fenced actor dropped while its write was in flight (the reload could read before it): `PersistenceEdgeTests`.
 - [ ] P4 Versioned writes fence the newer owner: loads should claim the record (bump the version), so the stale owner
       loses (ADR-068 revision, store contract).
-- [ ] P5 A failed SaveNow waits for the next checkpoint (retry it at once); P6 a failed load fails the whole batch
-      without a retry; P7 the load batch has no size cap; P8 call cycles through OnLoad/OnUnload end by timeout only;
-      P9 store calls and turns have no bound but the stop budget.
+- [x] P5 A failed write waited for the next checkpoint: it is retried after the delay (`AFailedCriticalSaveIsRetriedSoon`);
+      P7 loads go in batches of at most 512 (`LoadsWaitingForASlowStoreGoInBoundedBatches`).
+- [ ] P6 a failed load fails the whole batch without a retry; P8 call cycles through OnLoad/OnUnload end by timeout
+      only; P9 store calls and turns have no bound but the stop budget.
 - [x] H1 The new owner stopped waiting for the record after the call timeout while the old owner still ran the actor
       (duplicate activation): it asks again while the previous owner is alive and loads only once it is dead
       (`ANewOwnerWaitsForTheRecordWhileThePreviousOneHoldsTheActor`).
