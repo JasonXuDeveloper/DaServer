@@ -2,6 +2,10 @@
     <!-- Wire versioning (ADR-076): the committed wire.manifest is checked by the analyzer (DAS017/DAS018);
          dotnet build -p:UpdateWireManifest=true rewrites it from the code (force: also when the change breaks peers). -->
     <PropertyGroup>
+        <!-- What Nino skips silently would leave a value off the wire or out of a record: a read-only member it cannot
+             restore (NINO006), a type it cannot write (NINO007), a hidden member it cannot reach (NINO022), a former name
+             it ignores (NINO024). The wire manifest assumes none of them. -->
+        <WarningsAsErrors>$(WarningsAsErrors);NINO006;NINO007;NINO022;NINO024</WarningsAsErrors>
         <_DaServerUpdatingManifest Condition="'$(UpdateWireManifest)' == 'true' or '$(UpdateWireManifest)' == 'force'">true</_DaServerUpdatingManifest>
         <_DaServerManifestFramework Condition="'$(TargetFrameworks)' != ''">$(TargetFrameworks.Split(';')[0].Trim())</_DaServerManifestFramework>
         <DaServerWireManifest Condition="'$(DaServerWireManifest)' == ''">$(MSBuildProjectDirectory)/wire.manifest</DaServerWireManifest>

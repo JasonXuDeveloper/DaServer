@@ -124,9 +124,10 @@ internal static class Shapes
     }
 
     /// <summary>
-    /// Types that cross the wire: primitives, strings, enums, arrays and BCL generics of wire types, [NinoType] types
-    /// and actor ids (unmanaged, copied as is). Anything else would fail at run time in the serializer, so it is a
-    /// build error.
+    /// Types that cross the wire as Nino writes them: primitives and strings, enums, unmanaged structs (copied as their
+    /// memory), [NinoType] types (their own attribute or an inherited one), arrays and BCL generics of wire types and
+    /// other BCL value types and classes but <c>object</c> and delegates. Anything else has no Nino formatter, so it is
+    /// a build error.
     /// </summary>
     public static bool IsWireType(ITypeSymbol type)
     {
@@ -138,9 +139,9 @@ internal static class Shapes
                 return false;
         }
 
+        if (type.SpecialType == SpecialType.System_Object || type.TypeKind == TypeKind.Delegate) return false;
         if (type.SpecialType != SpecialType.None || type.TypeKind == TypeKind.Enum) return true;
-        if (HasAttribute(type, NinoTypeAttribute)) return true;
-        if (type.IsUnmanagedType && Implements(type, ActorId)) return true;
+        if (WireLayout.IsNinoType(type) || type is { IsUnmanagedType: true, TypeKind: TypeKind.Struct }) return true;
         if (type is INamedTypeSymbol named && InSystemNamespace(named))
             return named.TypeArguments.All(IsWireType);
         return false;
