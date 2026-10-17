@@ -534,14 +534,19 @@ and cards, a manual clock), fails before its fix, and passes after it.
 - [ ] H3 `PreviousView` holds one change: a leave then a table change asks the wrong node (a ring of recent views).
 - [ ] H4 The old owner times out and writes, then the new owner's late accept arrives (fall back only on Dead or a
       restarted stream).
-- [ ] H5 A pending SaveNow is written after the record was sent (`Without<SaveNow>` on the handoff).
-- [ ] H6 User `[ForEach]` systems run on actors that are not live (waiting for a record, handed off): a `Live` tag
-      the generator adds to state systems (public behavior: ask first).
+- [x] H5 A pending SaveNow is written after the record was sent (`Without<SaveNow>` on the handoff).
+- [x] H6 User `[ForEach]` systems ran on actors that are not live (the mmo realm broadcast one status twice from
+      both copies): an actor's state exists only while it is live; a copy that sent its record gives it up (restored
+      if the handoff falls back), a new copy gets it when its record is restored (`NoSystemSeesACopyThatHandedItsStateOff`).
+- [x] Handoff answers were dropped by a node that just joined (its view did not list the sender yet): sends use the
+      link a node introduced itself on (the flake of `ScalingOutAndInMovesRecordsWithoutTheStore`, traced).
+- [x] H11 Mail admitted to a stopped shard waited until it timed out: it goes on to the key's owner, and handoff frames
+      are answered (none, refused) so the other side falls back at once (`MailForAStoppedShardGoesOnToTheKeysOwner`).
 - [ ] H7 Without a store a refused handoff loses the state (forward the record to the owner in the receiver's view);
-      H8 the record and the forwarded mail can go to different nodes; H9 timer handles are not tied to a node; H11 mail
-      admitted to a drained stopping shard waits until it times out.
-- [ ] M1 A node restarting on the same address with a new id: the old card is adopted, shared links get the old id's
-      Dead treatment (a new id at a known endpoint marks the old one Dead).
+      H8 the record and the forwarded mail can go to different nodes; H9 timer handles are not tied to a node.
+- [x] M1 A node restarting on the same address with a new id: the older of two live members at one address is dead at
+      once, a node's own address holds only itself, a dead id resets a link only when the link's stream is its own
+      (`ANodeRestartedAtTheSameAddressLosesNoCallWhenItsOldIdIsDeclaredDead`: a call timed out on every run before).
 - [ ] M2 Forgotten members come back through later nodes' gossip forever (and count as lost for keep-majority):
       tombstones.
 - [ ] M3 A pause longer than DeadAfter: the paused node keeps running its actors; past three DeadAfter it rejoins Up at
@@ -552,15 +557,17 @@ and cards, a manual clock), fails before its fix, and passes after it.
 - [ ] M6 Leave racing a Dead verdict skips the fence; M7 persistently late ticks freeze failure detection; M8 a
       Hello's endpoint and receiver are not signed; M9 two spellings of one seed fight over one inbound slot; M10 stale
       pulses lower heartbeats; M11 `_introduced` keeps forgotten nodes.
-- [ ] S1 An actor that moved forgets its client sessions (resume refused, the player logs in again): sessions travel
-      in the handoff record.
+- [x] S1 An actor that moved forgot its client sessions (resume refused, the mmo's map changes Forbidden): sessions
+      travel in the handoff record, never stored (`AClientResumesWithAnActorThatMovedToAnotherNode`).
 - [ ] S2 A resume cut off after the actors accepted it leaves the session unrecoverable (revert to the previous
       session; a drain skips sessions mid-resume).
-- [ ] S3 Calls on the old connection are not failed when it dies while the move is still resuming.
-- [ ] S4 Dispose during a reconnect or move: the client rejoins the process-wide sweep and fires Reconnected.
-- [ ] S5 A probe of the old connection closes the new one; S6 pushes during a move are duplicated and dispatched from
-      two loops; S7 a kick can be evaded by a concurrent resume; S8 a reconnect attempt is not bounded by
-      ReconnectTimeout; S9 one ticket used on two gateways at once can split the session.
+- [x] S3 Calls on the old connection are failed when it dies while the move is still resuming; S4 a dispose during a
+      reconnect or move says goodbye and keeps the client out of the sweep; S5 a probe only closes the connection it
+      pinged; S8 a reconnect attempt ends with ReconnectTimeout (`ClientMoveTests`, all failing before).
+- [ ] S6 pushes during a move are duplicated and dispatched from two loops; S7 a kick can be evaded by a concurrent
+      resume; S9 one ticket used on two gateways at once can split the session.
+- [x] P10 Nodes starting together raced on `CREATE TABLE IF NOT EXISTS` (23505, the first loads failed): an advisory
+      lock serializes the create (`NodesStartingTogetherCreateTheTableOnce`).
 
 ## Open cleanup (review rounds)
 - Audit round 2 (agreed; each change with tests and BenchmarkDotNet where a hot path changes):
