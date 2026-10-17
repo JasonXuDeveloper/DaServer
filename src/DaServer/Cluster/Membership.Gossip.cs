@@ -119,19 +119,51 @@ internal sealed partial class Membership
 
                 if (!_members.TryGetValue(member.NodeId, out var entry))
                 {
-                    _members[member.NodeId] = new Entry(member, now);
+                    _members[member.NodeId] = entry = new Entry(member, now);
                     _changed = true;
                     Log.MemberJoined(_node.Logger, member.Name, member.Status);
-                    continue;
+                }
+                else
+                {
+                    if (!member.Supersedes(entry.Info)) continue;
+                    entry.Info = member;
+                    entry.LastProgress = now;
+                    _changed = true;
                 }
 
-                if (!member.Supersedes(entry.Info)) continue;
-                entry.Info = member;
-                entry.LastProgress = now;
-                _changed = true;
+                Replaced(entry);
             }
 
             if (_changed) PublishView();
+        }
+    }
+
+    /// <summary>
+    /// One address holds one process: of two live members at one address the one that started earlier is gone (it
+    /// crashed and restarted there with a new id), so it is dead at once instead of keeping its keys while suspected,
+    /// and a card at this node's own address is dead. Links are per address: the older id must not route keys to the
+    /// new process nor take its stream with it. Under the gate.
+    /// </summary>
+    private void Replaced(Entry entry)
+    {
+        var card = entry.Info;
+        if (card.Status == MemberStatus.Dead) return;
+        if (card.Host == _self.Host && card.Port == _self.Port)
+        {
+            SetStatus(entry, MemberStatus.Dead);
+            return;
+        }
+
+        foreach (var other in _members.Values)
+        {
+            var info = other.Info;
+            if (info.NodeId == card.NodeId || info.NodeId == _node.Id || info.Status == MemberStatus.Dead ||
+                info.Host != card.Host || info.Port != card.Port)
+                continue;
+            var older = info.UpSince < card.UpSince ? other : entry;
+            SetStatus(older, MemberStatus.Dead);
+            Log.MemberDead(_node.Logger, older.Info.Name);
+            if (older == entry) return;
         }
     }
 

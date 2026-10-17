@@ -263,7 +263,20 @@ internal sealed class PeerLink : IFrameSink, IDisposable
         _backlog = null;
         _backlogBytes = 0;
         _window.Reset();
-        if (newId) _streamId = NewStreamId();
+        if (newId)
+        {
+            _streamId = NewStreamId();
+            _peerId = 0; // the new stream reached no process yet: whoever answers at this address next takes it
+        }
+    }
+
+    /// <summary>The process this link's stream goes to (0 until one answered it).</summary>
+    internal ulong PeerId
+    {
+        get
+        {
+            lock (_gate) return _peerId;
+        }
     }
 
     // ------------------------------------------------------------------ the peer's stream to us

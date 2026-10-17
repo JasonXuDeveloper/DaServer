@@ -341,6 +341,15 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
     /// Called by membership when the view changes: shards drop actors they no longer own, and actors that knew sessions
     /// of a client-facing node that died (it could not close them) receive <see cref="SessionClosed"/> for them.
     /// </summary>
+    /// <summary>Whether a member other than <paramref name="dead"/> lives at its address (it restarted there).</summary>
+    private static bool LiveAt(ClusterView view, ClusterMember dead)
+    {
+        foreach (var member in view.Members)
+            if (member.NodeId != dead.NodeId && member.Status != MemberStatus.Dead && member.Host == dead.Host && member.Port == dead.Port)
+                return true;
+        return false;
+    }
+
     internal void OnViewChanged()
     {
         var view = View;
@@ -353,7 +362,11 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
             if (member.Status == MemberStatus.Dead)
             {
                 _introduced.TryRemove(member.NodeId, out _);
-                if (_links.TryGetValue((member.Host, member.Port), out var link)) link.OnPeerDead();
+                // Links are per address: another process may answer there now (a restart with a new id) and its stream
+                // is not the dead one's.
+                if (_links.TryGetValue((member.Host, member.Port), out var link) && link.PeerId is var peer &&
+                    (peer == member.NodeId || peer == 0 && !LiveAt(view, member)))
+                    link.OnPeerDead();
                 if (_deadReported.Add(member.NodeId))
                     foreach (var feature in Options.Features) feature.OnMemberDead(member);
             }
