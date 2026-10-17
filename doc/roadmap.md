@@ -337,9 +337,11 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
       is the shards' clock (ticks, `SendAfter`, idle unloads, checkpoints, `Time` in actors, services and systems);
       with `ManualTime` the test steps ticks (`TickAsync`, `AdvanceAsync`), each run once on every shard. The
       framework's `ClusterTest` builds on its node options; `Sample.Tests` tests the sample's servers with it.
-- [ ] K1 Pluggable placement strategy per actor type: rendezvous hash (default), prefer caller node, load aware,
-      sticky (S3).
-- [ ] K2 Owner table per handler type rebuilt on view change (jump/Maglev hash) instead of O(nodes) rendezvous per send.
+- [x] K2 Slot table (ADR-074): actor keys (placements for `IPlaced` ids) hash into 4,096 slots; each view gives every
+      slot of an actor type an owner among the type's nodes by rendezvous hashing, so finding a key's node is one
+      table read; a node joining or leaving moves only the slots it wins or held.
+- K1 placement strategies (agreed: Akka sharding style, ADR-074): no per-actor directory and no "prefer the caller's
+  node" (`IPlaced` co-locates what talks); load-aware and sticky placement move whole slots and are S3.
 - [ ] K3 Load-aware service choice (power of two over the pulse load).
 - [ ] K4 Per-call options (`CallOptions` struct overload: timeout), the turn's deadline readable in handlers without
       a `CancellationTokenSource`.
@@ -365,10 +367,11 @@ stateful, maps being heavy actors.
 - [ ] S2 Scale-in is a drain: SIGTERM -> graceful Leave -> actors hand off (N6) or unload and save (N5) -> exit within
       the termination grace period; readiness turns false first. Gateways drain by directing their clients to other
       gateways over time (resume tickets) instead of dropping them.
-- [ ] S3 Scale-out moves little: a joining node takes only the keys rendezvous hashing gives it (~1/N); per actor type
-      a move policy: light actors move at once (handoff), heavy actors (maps) stay where they are loaded and only new
-      keys go to the new node (lease/sticky placement for declared heavy types), so a scale-out never moves a map
-      with players in it.
+- [ ] S3 Slot allocation (ADR-074): a coordinator (the oldest Up node) may override the rendezvous owners of slots and
+      gossips the overrides as a versioned table: load-aware rebalancing moves whole slots from hot to cold nodes
+      (handoff, N6, a few at a time, Akka's least-shard allocation); per actor type a move policy, so heavy actors
+      (maps) stay where they are loaded and only new keys go to a new node (sticky slots), and a scale-out never
+      moves a map with players in it.
 - [ ] S4 Generated manifests: `DaServer.Aspire` emits, per node group, HPA (or KEDA `ScaledObject`) with min/max and the
       S1 metric, a PodDisruptionBudget (stateful groups: one node at a time), termination grace period and probes,
       scale-down stabilization for stateful groups; through Aspire's Kubernetes publisher (generated resources can be
