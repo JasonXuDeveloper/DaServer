@@ -1,5 +1,6 @@
 using System.Net;
 using DaServer.Client;
+using DaServer.Diagnostics;
 using DaServer.Protocol;
 using DaServer.Rpc;
 using EasyEcs;
@@ -29,15 +30,17 @@ public sealed class SwarmOptions
 public readonly record struct SimulatedUser(int Index, ClusterClient Client, World World)
 {
     /// <summary>Connect through <paramref name="endpoints"/>, retrying while the cluster is not reachable yet.</summary>
-    public Task ConnectAsync(IReadOnlyList<DnsEndPoint> endpoints)
-    {
-        var client = Client;
-        return Swarm.Retry(async () =>
+    public Task ConnectAsync(IReadOnlyList<DnsEndPoint> endpoints) => Connect(Client, endpoints, static (c, e) => c.ConnectAsync(e));
+
+    /// <summary>Connect over WebSocket (as browsers do), retrying while the cluster is not reachable yet.</summary>
+    public Task ConnectAsync(Uri webSocket) => Connect(Client, webSocket, static (c, uri) => c.ConnectAsync(uri));
+
+    private static Task Connect<T>(ClusterClient client, T target, Func<ClusterClient, T, ValueTask> connect) =>
+        Swarm.Retry(async () =>
         {
-            await client.ConnectAsync(endpoints);
+            await connect(client, target);
             return true;
         }, static e => e is not RpcException);
-    }
 }
 
 /// <summary>
