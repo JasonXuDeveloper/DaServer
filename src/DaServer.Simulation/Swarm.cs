@@ -135,7 +135,17 @@ public sealed class Swarm : IAsyncDisposable
     /// of the interval, rates per second, totals and failures), until <paramref name="duration"/>. The result holds the
     /// window's latencies, what the simulation cost the process, and the failures judged so far.
     /// </summary>
-    public async Task<SwarmResult> MeasureAsync(TimeSpan duration, TimeSpan every, double maxP99Ms = double.PositiveInfinity)
+    public Task<SwarmResult> MeasureAsync(TimeSpan duration, TimeSpan every, double maxP99Ms = double.PositiveInfinity) =>
+        MeasureAsync(duration, null, every, maxP99Ms);
+
+    /// <summary>
+    /// <see cref="MeasureAsync(TimeSpan, TimeSpan, double)"/> until <paramref name="done"/> completes (a scenario that
+    /// ends by itself: a crowd that has bought), with a line every <paramref name="every"/> meanwhile.
+    /// </summary>
+    public Task<SwarmResult> MeasureUntilAsync(Task done, TimeSpan every, double maxP99Ms = double.PositiveInfinity) =>
+        MeasureAsync(Timeout.InfiniteTimeSpan, done, every, maxP99Ms);
+
+    private async Task<SwarmResult> MeasureAsync(TimeSpan duration, Task? done, TimeSpan every, double maxP99Ms)
     {
         var before = ProcessCost.Now();
         Meter.Start();
@@ -143,10 +153,11 @@ public sealed class Swarm : IAsyncDisposable
         var window = Meter.Latency.Snapshot();
         var counts = Meter.Counters.Select(static c => c.Value).ToArray();
         var last = TimeSpan.Zero;
-        while (clock.Elapsed < duration)
+        while (done == null ? clock.Elapsed < duration : !done.IsCompleted)
         {
-            var wait = duration - clock.Elapsed;
-            await Task.Delay(wait < every ? wait : every);
+            var wait = done == null ? duration - clock.Elapsed : every;
+            var interval = Task.Delay(wait < every ? wait : every);
+            await (done == null ? interval : Task.WhenAny(interval, done));
             var now = Meter.Latency.Snapshot();
             double seconds = (clock.Elapsed - last).TotalSeconds;
             var counters = Meter.Counters;
