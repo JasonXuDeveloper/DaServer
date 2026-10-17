@@ -1219,3 +1219,46 @@ records that no longer hold). Each: context → decision → consequences.
   one-way messages 438 -> 412 ns local, 789 -> 797 ns remote, allocations unchanged. The 10k-bot scenario with the
   bots on the same 4 cores (oversubscribed): broadcast p99 141-182 -> 108-141 ms.
 
+
+## ADR-076 The wire manifest: fields only append, checked at build time
+- Context: a rolling upgrade runs two versions side by side, and stored records outlive the code that wrote them.
+  Nino writes fields in order without names or lengths: a reordered, retyped or removed field is read as garbage by
+  the other version. Nino 4 reads a buffer that ends early with the missing trailing fields at their defaults when
+  the generated code is compiled with `WEAK_VERSION_TOLERANCE`, and always ignores trailing bytes it does not know
+  (measured both ways); without the symbol a newer node throws on an older node's message.
+- Decision: the Abstractions package's build (`buildTransitive/DaServer.Abstractions.targets`) defines
+  `WEAK_VERSION_TOLERANCE` and passes a project's committed `wire.manifest` to the analyzer. The manifest records
+  every `[NinoType]` type of the assembly with its fields in Nino's order (base types first, then the members as
+  Nino collects them, `[NinoIgnore]`, `[NinoMember]` and `[NinoExplicitOrder]` honoured) and whether it may grow: a
+  message, a reply or a persisted component is a whole buffer or record section, so appending fields to it is safe,
+  unless another type nests it; every other type is frozen. DAS017 (error) reports what breaks the other version: a
+  type gone, a field moved, renamed, retyped or removed, a frozen type grown. DAS018 (warning) reports what is
+  compatible but not recorded yet (a new type, an appended field), so the manifest is always the layout the next
+  change is checked against. `dotnet build -p:UpdateWireManifest=true` rewrites it from the code (the generator
+  emits it and the build copies it); a project without a manifest is not checked. Nested types do not grow because
+  their end is not the buffer's end; a new field there means a new type.
+- Alternatives: a test-time snapshot (catches breaks only where tests run); field tags on the wire (protobuf style,
+  bytes and CPU on every message); trusting reviews (the failure shows up only while two versions run together).
+- Consequences: renaming a type or a field is a break the developer acknowledges by editing the manifest; types
+  keep their `[TypeId]` when renamed. The check covers layout, not meaning: a field whose meaning changes needs a new
+  field. BenchmarkDotNet (both run orders averaged, this VM moves ±10% by order alone): calls local 5.0 / 169 / 980 µs
+  -> 5.5 / 176 / 979 µs (1 / 64 / 1,024 in flight), remote 89 / 306 / 1,413 µs -> 82 / 327 / 1,422 µs, one-way
+  messages 428 / 823 ns -> 450 / 816 ns (local / remote), allocations unchanged; the generator 45 -> 42 ms (whole
+  run), the analyzer 702 -> 747 ms.
+
+## ADR-077 Rolling upgrades: builds on the card, messages only where the build has them
+- Context: during a rolling upgrade old and new nodes host the same actor and service types, but a new build may handle
+  messages the old one does not. Routing by handler type alone sends such a message to an old node, which has no
+  handler for it. Wire layouts are compatible by ADR-076; what differs is which messages a build handles.
+- Decision: every node's card already lists the (message, handler type) pairs it handles. Its card also carries its
+  build (`daserver.build`: the framework's and the application's informational versions, `ClusterMember.Build`), and
+  a node logs when the set of builds in its view changes. A service message is sent only to nodes whose build
+  handles it. An actor keeps the owner its type gives the key, so a key never has two activations; a message the
+  owner's build lacks is not sent: a request fails with `NotHosted` (retry), a one-way message is dropped, until the
+  owner is upgraded or leaves. The link protocol version in the Hello refuses links between incompatible protocols.
+- Alternatives: route the new message to a node of the new build (a second activation of the key, the split brain
+  the slot table prevents); per-message version numbers (Orleans' interface versions: the card already says what
+  each build handles, and the manifest keeps layouts compatible); stop-the-world deploys.
+- Consequences: a rolling upgrade adds new messages to actors gradually, as owners are replaced; callers of a new
+  actor message retry `NotHosted` during the upgrade. While every node runs the same build the routing cost is one
+  empty-set check per actor message.

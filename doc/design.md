@@ -112,6 +112,11 @@ turn has that chain fails at once with `CallCycle` (ADR-059). A service handler 
   lock-free scan) and refuses anything else with `Forbidden`, before any actor is reached. Client-facing nodes copy the client's payload as is, add the session as the origin trailer
   (flag `HasOrigin`, 16 bytes before the call id; handlers read it as `Caller`) and route it. They never deserialize
   payloads.
+- Versions side by side (ADR-076, ADR-077): fields are only appended, and only to messages, replies and persisted
+  components no other type nests; each project's committed `wire.manifest` makes anything else a build error
+  (DAS017). Nino reads an older, shorter payload with defaults for the new fields and skips fields it does not know.
+  Cards name each node's build and the messages it handles: services get only messages their build has, and a
+  message an actor owner's build lacks is refused (`NotHosted`) until the owner is upgraded.
 
 ## 3. Performance model (zero GC)
 
