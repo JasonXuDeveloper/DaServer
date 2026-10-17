@@ -649,7 +649,6 @@ public readonly record struct PinId(long Value) : IActorId;
 public readonly record struct LoadId(long Value) : IActorId;
 
 /// <summary>Counts its visits (its state moves with it).</summary>
-[NinoType, Message] public partial record struct Visit : IRequest<int>;
 
 /// <summary>Stays where it is loaded.</summary>
 [Sticky]

@@ -18,7 +18,7 @@ public sealed class ClusterView
     private readonly FrozenSet<(ulong NodeId, uint HandlerTypeId, uint MessageId)> _lacking;
 
     /// <param name="slots">The coordinator's slot table (ADR-079): its overrides win over rendezvous where their node hosts the type.</param>
-    public ClusterView(IEnumerable<ClusterMember> members, SlotTable? slots = null)
+    internal ClusterView(IEnumerable<ClusterMember> members, SlotTable? slots = null)
     {
         Table = slots ?? SlotTable.Empty;
         var all = new Dictionary<ulong, ClusterMember>();
