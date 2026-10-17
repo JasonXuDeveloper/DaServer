@@ -26,22 +26,7 @@ public sealed class WireManifestGenerator : IIncrementalGenerator
 
     private static string Manifest(Compilation compilation, CancellationToken ct)
     {
-        var types = new List<WireType>();
-        void Visit(INamespaceOrTypeSymbol container)
-        {
-            foreach (var member in container.GetMembers())
-            {
-                ct.ThrowIfCancellationRequested();
-                if (member is INamespaceSymbol ns) Visit(ns);
-                else if (member is INamedTypeSymbol type)
-                {
-                    if (WireManifest.Read(type) is { } wire) types.Add(wire);
-                    Visit(type);
-                }
-            }
-        }
-
-        Visit(compilation.Assembly.GlobalNamespace);
-        return types.Count == 0 ? "" : WireManifest.Format(types);
+        var types = WireManifest.All(compilation, ct);
+        return types.Count == 0 ? "" : WireManifest.Format(types.Select(t => t.Type).ToList());
     }
 }

@@ -116,6 +116,7 @@ public class WireManifestTests
     [TestCase("[NinoUtf8] public string Label;", "public string Label;", "DAS017", TestName = "A string's encoding is part of the layout")]
     [TestCase("private byte _shade;", "private short _shade;", "DAS017", TestName = "A typed value-only struct's private fields are its bytes")]
     [TestCase("public int Distance;", "public int Distance; public int Hops;", "DAS017", TestName = "A type that inherits NinoType is recorded")]
+    [TestCase("namespace Game;", "namespace Game; public partial class Jump : Link { }", "DAS017", TestName = "A new subtype of a recorded type breaks: older builds lack its type id")]
     public async Task ChangesAreJudged(string before, string after, string id) =>
         Assert.That(await Check(Types.Replace(before, after), Recorded), Is.EqualTo(id.Length == 0 ? [] : new[] { id }));
 
@@ -159,6 +160,11 @@ public class WireManifestTests
         Assert.Throws<InvalidOperationException>(() => WirePayload.Read(full.AsSpan(0, 8), out OrderV2 _));
         WirePayload.Read(full, out OrderV2 whole);
         Assert.That(whole, Is.EqualTo(new OrderV2 { Item = 7, Count = 2, Gift = true }));
+        var typed = NinoSerializer.Serialize(new Marked { Value = 3 });
+        Assert.That(typed, Has.Length.EqualTo(sizeof(int) + sizeof(long)), "a type id, then the memory");
+        Assert.Throws<InvalidOperationException>(() => WirePayload.Read(typed.AsSpan(0, sizeof(long)), out Marked _));
+        WirePayload.Read(typed, out Marked marked);
+        Assert.That(marked.Value, Is.EqualTo(3));
         WirePayload.Read(NinoSerializer.Serialize<int?>(5), out int? optional);
         Assert.That(optional, Is.EqualTo(5), "a nullable reply is written as its memory too");
     }
@@ -184,3 +190,7 @@ public class WireManifestTests
 [NinoType] public partial record struct OrderV2 { public int Item; public long Count; public bool Gift; }
 
 [NinoType] public partial record struct LayoutProbe(int Head) { public int Body; }
+
+[NinoType] public interface IMarked;
+
+[NinoType] public partial struct Marked : IMarked { public long Value; }
