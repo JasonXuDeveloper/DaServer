@@ -14,10 +14,10 @@ public sealed class ClusterView
     private readonly FrozenDictionary<uint, ClusterMember[]> _scopeNodes;
 
     /// <summary>
-    /// (node, message) pairs where the node hosts a handler type that another node of the type handles the message
-    /// with but it does not: a rolling upgrade added the message (V3). Empty while every node runs the same build.
+    /// (node, handler type, message) where the node hosts the handler type and another node's build handles the message
+    /// with it but this node's does not: a rolling upgrade added the message (V3). Empty while every node runs one build.
     /// </summary>
-    private readonly FrozenSet<(ulong NodeId, uint MessageId)> _lacking;
+    private readonly FrozenSet<(ulong NodeId, uint HandlerTypeId, uint MessageId)> _lacking;
 
     public ClusterView(IEnumerable<ClusterMember> members)
     {
@@ -75,7 +75,7 @@ public sealed class ClusterView
         // An actor's owner is its type's (one activation per key, whatever the message); a service is chosen among
         // the nodes that handle the message.
         var routes = new Dictionary<uint, MessageRoute[]>();
-        var lacking = new HashSet<(ulong, uint)>();
+        var lacking = new HashSet<(ulong, uint, uint)>();
         foreach (var (messageId, byHandlerType) in handlers)
         {
             var list = new List<MessageRoute>();
@@ -85,7 +85,7 @@ public sealed class ClusterView
                 var nodes = handling[(messageId, handlerType)];
                 if (nodes.Count != hosts.Length)
                     foreach (var host in hosts)
-                        if (!nodes.Contains(host)) lacking.Add((host.NodeId, messageId));
+                        if (!nodes.Contains(host)) lacking.Add((host.NodeId, handlerType, messageId));
                 list.Add(actor
                     ? new MessageRoute(handlerType, true, hosts) { Owners = slotOwners[handlerType] }
                     : new MessageRoute(handlerType, false, nodes.ToArray()));
@@ -226,7 +226,7 @@ public sealed class ClusterView
         {
             if (route.Nodes.Length == 0) return null;
             var owner = route.Nodes[route.Owners![Slot(route.HandlerTypeId, key)]];
-            return _lacking.Count != 0 && _lacking.Contains((owner.NodeId, messageId)) ? null : owner;
+            return _lacking.Count != 0 && _lacking.Contains((owner.NodeId, route.HandlerTypeId, messageId)) ? null : owner;
         }
 
         foreach (var node in route.Nodes)

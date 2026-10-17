@@ -1,27 +1,28 @@
+using System.Collections.Immutable;
 using System.Text;
 
 namespace DaServer.Generator;
 
-/// <summary>A field as Nino writes it: in order, by name and wire type.</summary>
+/// <summary>A field as its bytes hold it: in order, by name and wire type.</summary>
 internal readonly record struct WireField(string Name, string Type)
 {
     public override string ToString() => Name + ": " + Type;
 }
 
 /// <summary>
-/// A [NinoType] type of this assembly as the wire manifest records it: its fields in Nino's order, whether its bytes
-/// may grow at the end (a message or a persisted component is always a whole buffer or record section), which
-/// [NinoType] types of this assembly its fields use and, for a request, its reply type of this assembly (a whole
-/// buffer too).
+/// A [NinoType] type of this assembly as the wire manifest records it: its fields in the order its bytes hold them,
+/// whether Nino writes it as its memory (<paramref name="Raw"/>: value fields only), whether it is a whole buffer or
+/// record section (<paramref name="Whole"/>: a message or a persisted component; a reply is found through
+/// <see cref="Reply"/>), which types of this assembly its fields nest and, for a request, its reply type.
 /// </summary>
-internal sealed record WireType(string Name, bool Grows, EquatableArray<WireField> Fields, EquatableArray<string> Uses, string? Reply);
+internal sealed record WireType(string Name, bool Raw, bool Whole, EquatableArray<WireField> Fields, EquatableArray<string> Uses, string? Reply);
 
 /// <summary>
-/// The wire manifest (ADR-076): the committed layout of every [NinoType] type an assembly declares. Nino reads a
-/// buffer that ends early with defaults for the missing trailing fields (WEAK_VERSION_TOLERANCE) and ignores trailing
-/// bytes it does not know, so old and new nodes understand each other as long as fields are only appended, and only
-/// to a type whose bytes end where the buffer ends: a message or a persisted component that no other type nests.
-/// Everything else (nested types, reordered, retyped or removed fields) breaks deployed peers and stored records.
+/// The wire manifest (ADR-076): the committed layout of every [NinoType] type an assembly declares, so a change that
+/// a deployed peer or a stored record would misread fails the build. Nino writes a type made only of value fields as
+/// its memory; <see cref="DaServer.Rpc.WirePayload"/> reads an older, shorter payload of such a type with zeros for
+/// the fields it lacks, and Nino ignores bytes past the end of a type. So appending fields is safe only for such a
+/// type that is a whole message, reply or record section and that no other type nests; every other type is frozen.
 /// </summary>
 internal static class WireManifest
 {
@@ -31,79 +32,150 @@ internal static class WireManifest
     private static readonly SymbolDisplayFormat TypeFormat = SymbolDisplayFormat.FullyQualifiedFormat
         .WithGlobalNamespaceStyle(SymbolDisplayGlobalNamespaceStyle.Omitted);
 
-    /// <summary>The manifest entry of <paramref name="type"/>, or null when it is not a [NinoType] declared in source.</summary>
+    /// <summary>The manifest entry of <paramref name="type"/>, or null when Nino does not serialize it (not a public [NinoType] of source).</summary>
     public static WireType? Read(INamedTypeSymbol type)
     {
-        if (!Support.HasAttribute(type, Support.NinoTypeAttribute) || !type.Locations.Any(l => l.IsInSource)) return null;
-        var fields = new List<WireField>();
+        if (!Support.HasAttribute(type, Support.NinoTypeAttribute) || type.DeclaredAccessibility != Accessibility.Public ||
+            !type.Locations.Any(l => l.IsInSource)) return null;
         var uses = new SortedSet<string>(StringComparer.Ordinal);
-        var settings = Settings(type);
-        var levels = new Stack<INamedTypeSymbol>();
-        for (var t = type; t != null && Support.HasAttribute(t, Support.NinoTypeAttribute); t = t.BaseType) levels.Push(t);
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var level in levels) // base types first, as Nino writes them
-            foreach (var member in Members(level, settings))
-            {
-                if (!seen.Add(member.Name)) continue;
-                var memberType = member switch { IFieldSymbol f => f.Type, IPropertySymbol p => p.Type, _ => ((IParameterSymbol)member).Type };
-                fields.Add(new WireField(member.Name, memberType.ToDisplayString(TypeFormat)));
-                Collect(memberType, uses);
-            }
+        bool raw = type.IsUnmanagedType && type.TypeKind == TypeKind.Struct && !Parents(type).Any();
+        var fields = new List<WireField>();
+        foreach (var (name, fieldType) in raw ? MemoryFields(type) : NinoMembers(type))
+        {
+            fields.Add(new WireField(name, Render(fieldType, type.ContainingAssembly, 0)));
+            Collect(fieldType, uses);
+        }
 
-        bool grows = Support.HasAttribute(type, Support.MessageAttribute) || Support.HasAttribute(type, Support.PersistAttribute) ||
+        bool whole = Support.HasAttribute(type, Support.MessageAttribute) || Support.HasAttribute(type, Support.PersistAttribute) ||
                      Support.HasAttribute(type, Support.HandoffAttribute);
         uses.Remove(Name(type));
         var replies = new SortedSet<string>(StringComparer.Ordinal);
         if (Shapes.ReplyOf(type) is { } reply) Collect(reply, replies);
-        return new WireType(Name(type), grows, new(fields.ToArray()), new(uses.ToArray()), replies.Count == 1 ? replies.Min : null);
+        return new WireType(Name(type), raw, whole, new(fields.ToArray()), new(uses.ToArray()), replies.Count == 1 ? replies.Min : null);
     }
 
     private static string Name(ITypeSymbol type) => type.ToDisplayString(TypeFormat);
 
-    /// <summary>(autoCollect, containNonPublicMembers) of the nearest [NinoType], as Nino reads it.</summary>
-    private static (bool Auto, bool NonPublic) Settings(INamedTypeSymbol type)
+    /// <summary>
+    /// A field's type as its bytes depend on it: an enum with its underlying type, a value type or [NinoType] of
+    /// another assembly with its own fields (its manifest, if any, is that assembly's: a change there must show here).
+    /// </summary>
+    private static string Render(ITypeSymbol type, IAssemblySymbol home, int depth)
     {
-        var args = Support.GetAttribute(type, Support.NinoTypeAttribute)!.ConstructorArguments;
-        return (args.Length < 1 || args[0].Value is not false, args.Length > 1 && args[1].Value is true);
+        if (type is INamedTypeSymbol { TypeKind: TypeKind.Enum, EnumUnderlyingType: { } underlying })
+            return Name(type) + "(" + Name(underlying) + ")";
+        if (type is not INamedTypeSymbol named || depth > 4 || named.SpecialType != SpecialType.None ||
+            SymbolEqualityComparer.Default.Equals(named.ContainingAssembly, home) || Support.InSystemNamespace(named))
+            return Name(type);
+        var members = named.IsUnmanagedType && named.TypeKind == TypeKind.Struct && !Parents(named).Any() ? MemoryFields(named)
+            : Support.HasAttribute(named, Support.NinoTypeAttribute) ? NinoMembers(named)
+            : null;
+        return members == null ? Name(type)
+            : Name(type) + "{" + string.Join(", ", members.Select(m => m.Name + ": " + Render(m.Type, home, depth + 1))) + "}";
     }
 
-    /// <summary>The members Nino serializes for one level of the hierarchy, in Nino's order.</summary>
-    private static IEnumerable<ISymbol> Members(INamedTypeSymbol type, (bool Auto, bool NonPublic) settings)
+    /// <summary>The instance fields of a value-only struct in memory order (Nino copies its memory, private fields included).</summary>
+    private static List<(string Name, ITypeSymbol Type)> MemoryFields(INamedTypeSymbol type)
+    {
+        var fields = new List<(string, ITypeSymbol)>();
+        foreach (var member in type.GetMembers())
+            if (member is IFieldSymbol { IsStatic: false, IsConst: false } field)
+                fields.Add((field.AssociatedSymbol?.Name ?? PropertyOf(field.Name), field.Type));
+        return fields;
+    }
+
+    /// <summary>The property an auto-property's backing field (<c>&lt;Name&gt;k__BackingField</c>) belongs to (metadata types name only the field).</summary>
+    private static string PropertyOf(string field) =>
+        field.StartsWith("<", StringComparison.Ordinal) && field.IndexOf('>') is > 1 and var end ? field.Substring(1, end - 1) : field;
+
+    /// <summary>Whether Nino treats <paramref name="type"/> as a [NinoType]: its own attribute, an inherited one or an interface's.</summary>
+    private static bool IsNinoType(ITypeSymbol type)
+    {
+        if (Support.HasAttribute(type, Support.NinoTypeAttribute)) return true;
+        for (var b = type.BaseType; b != null; b = b.BaseType)
+            if (Support.GetAttribute(b, Support.NinoTypeAttribute) is { } attribute)
+                return attribute.ConstructorArguments.Length < 3 || attribute.ConstructorArguments[2].Value is not false;
+        return type.AllInterfaces.Any(i => Support.HasAttribute(i, Support.NinoTypeAttribute));
+    }
+
+    /// <summary>The types whose members Nino writes before <paramref name="type"/>'s: its [NinoType] base, then its [NinoType] interfaces.</summary>
+    private static IEnumerable<INamedTypeSymbol> Parents(INamedTypeSymbol type)
+    {
+        if (type.BaseType is { } baseType && IsNinoType(baseType)) yield return baseType;
+        foreach (var i in type.AllInterfaces)
+            if (IsNinoType(i)) yield return i;
+    }
+
+    /// <summary>The members Nino writes for <paramref name="type"/>, in its order: parents first (depth first), names once.</summary>
+    private static List<(string Name, ITypeSymbol Type)> NinoMembers(INamedTypeSymbol type)
+    {
+        var attribute = Support.GetAttribute(type, Support.NinoTypeAttribute);
+        for (var b = type.BaseType; attribute == null && b != null; b = b.BaseType) attribute = Support.GetAttribute(b, Support.NinoTypeAttribute);
+        var args = attribute?.ConstructorArguments ?? ImmutableArray<TypedConstant>.Empty;
+        bool auto = args.Length < 1 || args[0].Value is not false, nonPublic = args.Length > 1 && args[1].Value is true;
+        var order = new Dictionary<string, int>(StringComparer.Ordinal);
+        if (Support.GetAttribute(type, "Nino.Core.NinoExplicitOrderAttribute") is { ConstructorArguments: { Length: > 0 } explicitOrder })
+            for (int i = 0; i < explicitOrder[0].Values.Length; i++)
+                if (explicitOrder[0].Values[i].Value is string name) order[name] = i;
+
+        var members = new List<(string, ITypeSymbol)>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var visited = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
+        void AddLevel(INamedTypeSymbol level)
+        {
+            if (!visited.Add(level)) return;
+            foreach (var parent in Parents(level)) AddLevel(parent);
+            var collected = Collected(level, type, auto, nonPublic);
+            if (order.Count > 0) collected = collected.OrderBy(m => order.TryGetValue(m.Name, out int i) ? i : int.MaxValue).ToList();
+            foreach (var member in collected)
+                if (seen.Add(member.Name)) members.Add(member);
+        }
+
+        AddLevel(type);
+        return members;
+    }
+
+    /// <summary>One level's members as Nino collects them (Nino's parser: fields, settable properties, a record's primary constructor).</summary>
+    private static List<(string Name, ITypeSymbol Type)> Collected(INamedTypeSymbol level, INamedTypeSymbol leaf, bool auto, bool nonPublic)
     {
         var members = new List<ISymbol>();
-        foreach (var member in type.GetMembers())
+        foreach (var member in level.GetMembers())
         {
-            if (member.IsImplicitlyDeclared || member.IsStatic || (!settings.NonPublic && member.DeclaredAccessibility != Accessibility.Public)) continue;
+            if (member.IsImplicitlyDeclared || member.IsStatic || (!nonPublic && member.DeclaredAccessibility != Accessibility.Public)) continue;
             if (member is IFieldSymbol || member is IPropertySymbol { GetMethod: not null, SetMethod: not null }) members.Add(member);
         }
 
-        if (type.IsRecord)
-            foreach (var constructor in type.InstanceConstructors)
+        var primary = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
+        if (level.IsRecord)
+            foreach (var constructor in level.InstanceConstructors)
                 if (constructor.DeclaredAccessibility == Accessibility.Public && !constructor.IsImplicitlyDeclared)
                 {
-                    members.AddRange(constructor.Parameters); // the primary constructor's properties, after the body's members
+                    members.AddRange(constructor.Parameters);
+                    primary.UnionWith(constructor.Parameters);
                     break;
                 }
 
-        var order = new Dictionary<string, int>(StringComparer.Ordinal);
-        var kept = new List<ISymbol>();
+        var index = new Dictionary<string, int>(StringComparer.Ordinal);
+        var kept = new List<(ISymbol Symbol, string Name, ITypeSymbol Type)>();
         foreach (var member in members)
         {
-            if (settings.Auto)
+            if (index.ContainsKey(member.Name)) continue;
+            // A base's private or internal member is not the leaf's to write (protected ones are).
+            if (member.DeclaredAccessibility != Accessibility.Public && !primary.Contains(member) &&
+                !SymbolEqualityComparer.Default.Equals(member.ContainingType, leaf) && member.DeclaredAccessibility != Accessibility.Protected) continue;
+            if (auto)
             {
-                if (Support.HasAttribute(member, "Nino.Core.NinoIgnoreAttribute") || order.ContainsKey(member.Name)) continue;
-                order[member.Name] = order.Count;
+                if (Support.HasAttribute(member, "Nino.Core.NinoIgnoreAttribute")) continue;
+                index[member.Name] = index.Count;
             }
-            else if (Support.GetAttribute(member, "Nino.Core.NinoMemberAttribute") is { ConstructorArguments: { Length: > 0 } args } && args[0].Value is { } index)
-                order[member.Name] = Convert.ToInt32(index);
+            else if (Support.GetAttribute(member, "Nino.Core.NinoMemberAttribute") is { ConstructorArguments: { Length: > 0 } a } && a[0].Value is { } i)
+                index[member.Name] = Convert.ToInt32(i);
             else continue;
-            kept.Add(member);
+            var memberType = member switch { IFieldSymbol f => f.Type, IPropertySymbol p => p.Type, _ => ((IParameterSymbol)member).Type };
+            kept.Add((member, member.Name, memberType));
         }
 
-        if (Support.GetAttribute(type, "Nino.Core.NinoExplicitOrderAttribute") is { ConstructorArguments: { Length: > 0 } order0 })
-            for (int i = 0; i < order0[0].Values.Length; i++)
-                if (order0[0].Values[i].Value is string name && order.ContainsKey(name)) order[name] = i;
-        return kept.OrderBy(m => order[m.Name]);
+        return kept.OrderBy(m => index[m.Name]).Select(m => (m.Name, m.Type)).ToList();
     }
 
     /// <summary>The [NinoType] types of source that <paramref name="type"/> nests (through arrays and generic arguments).</summary>
@@ -122,12 +194,13 @@ internal static class WireManifest
     }
 
     /// <summary>
-    /// Whether <paramref name="type"/> may append fields: it is a message, a persisted component or a reply (a whole
-    /// buffer or record section) and no type of <paramref name="all"/> nests it.
+    /// Whether <paramref name="type"/> may append fields: Nino writes it as its memory, it is a whole message, reply or
+    /// persisted component, and no type of <paramref name="all"/> nests it.
     /// </summary>
     public static bool MayGrow(WireType type, IReadOnlyList<WireType> all)
     {
-        bool whole = type.Grows;
+        if (!type.Raw) return false;
+        bool whole = type.Whole;
         foreach (var other in all)
         {
             if (other.Uses.Contains(type.Name)) return false;
@@ -142,7 +215,7 @@ internal static class WireManifest
     {
         var sb = new StringBuilder()
             .Append("# DaServer wire manifest (ADR-076): the layout of this assembly's [NinoType] types on the wire and in stored records.\n")
-            .Append("# 'grows' types may append fields, 'frozen' ones may not change. Update: dotnet build -p:UpdateWireManifest=true\n");
+            .Append("# 'grows' types (value fields only, whole messages, replies, records) may append fields, 'frozen' ones may not change. Update: dotnet build -p:UpdateWireManifest=true\n");
         foreach (var type in types.OrderBy(t => t.Name, StringComparer.Ordinal))
         {
             sb.Append(type.Name).Append(' ').Append(MayGrow(type, types) ? Grows : Frozen).Append('\n');
@@ -199,11 +272,11 @@ internal static class WireManifest
             for (int i = 0; i < common && changed < 0; i++)
                 if (entry.Fields[i] != type.Fields[i].ToString()) changed = i;
             if (changed >= 0)
-                yield return (type.Name, $"field {changed + 1} was '{entry.Fields[changed]}' and is '{type.Fields[changed]}': fields keep their place, name and type; only append new ones", true);
+                yield return (type.Name, $"field {changed + 1} was '{entry.Fields[changed]}' and is '{type.Fields[changed]}': fields keep their place, name and type (a rename counts: the manifest keeps names to be read); only append new ones", true);
             else if (type.Fields.Length < entry.Fields.Count)
                 yield return (type.Name, $"lost field '{entry.Fields[common]}': fields are never removed (ignore an unused one instead)", true);
             else if (type.Fields.Length > entry.Fields.Count && (!entry.Grows || !MayGrow(type, current)))
-                yield return (type.Name, $"appends '{type.Fields[common]}' but is frozen: only a message, reply or persisted component that no other type nests may grow (add a new type instead)", true);
+                yield return (type.Name, $"appends '{type.Fields[common]}' but is frozen: only a message, reply or persisted component of value fields that no other type nests may grow (add a new message or component instead)", true);
             else if (type.Fields.Length > entry.Fields.Count || entry.Grows != MayGrow(type, current))
                 yield return (type.Name, "changed compatibly", false);
         }

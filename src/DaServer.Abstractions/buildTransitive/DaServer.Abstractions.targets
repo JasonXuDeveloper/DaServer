@@ -1,27 +1,28 @@
 <Project>
-    <!-- Wire versioning (ADR-076). Nino reads a buffer that ends early with defaults for the missing trailing fields, so
-         a node built with an appended field still reads what an older node sends (and old nodes skip what they do not
-         know). The committed wire.manifest is checked by the analyzer (DAS017/DAS018);
-         dotnet build -p:UpdateWireManifest=true rewrites it from the code. -->
+    <!-- Wire versioning (ADR-076): the committed wire.manifest is checked by the analyzer (DAS017/DAS018);
+         dotnet build -p:UpdateWireManifest=true rewrites it from the code (force: also when the change breaks peers). -->
     <PropertyGroup>
-        <DefineConstants>$(DefineConstants);WEAK_VERSION_TOLERANCE</DefineConstants>
+        <_DaServerUpdatingManifest Condition="'$(UpdateWireManifest)' == 'true' or '$(UpdateWireManifest)' == 'force'">true</_DaServerUpdatingManifest>
+        <_DaServerManifestFramework Condition="'$(TargetFrameworks)' != ''">$(TargetFrameworks.Split(';')[0].Trim())</_DaServerManifestFramework>
         <DaServerWireManifest Condition="'$(DaServerWireManifest)' == ''">$(MSBuildProjectDirectory)/wire.manifest</DaServerWireManifest>
-        <EmitCompilerGeneratedFiles Condition="'$(UpdateWireManifest)' == 'true'">true</EmitCompilerGeneratedFiles>
-        <CompilerGeneratedFilesOutputPath Condition="'$(UpdateWireManifest)' == 'true' and '$(CompilerGeneratedFilesOutputPath)' == ''">$(IntermediateOutputPath)generated</CompilerGeneratedFilesOutputPath>
+        <EmitCompilerGeneratedFiles Condition="'$(_DaServerUpdatingManifest)' == 'true'">true</EmitCompilerGeneratedFiles>
+        <CompilerGeneratedFilesOutputPath Condition="'$(_DaServerUpdatingManifest)' == 'true' and '$(CompilerGeneratedFilesOutputPath)' == ''">$(IntermediateOutputPath)generated</CompilerGeneratedFilesOutputPath>
     </PropertyGroup>
 
     <ItemGroup>
         <AdditionalFiles Include="$(DaServerWireManifest)" Condition="Exists('$(DaServerWireManifest)')" />
-        <!-- While the manifest is rewritten the analyzer does not compare against the old one. -->
+        <!-- While the manifest is rewritten the analyzer reports only breaking changes (none with force). -->
         <CompilerVisibleProperty Include="UpdateWireManifest" />
     </ItemGroup>
 
     <!-- Compile again even when up to date: the generated manifest is written by the compiler. -->
-    <Target Name="DaServerRecompileForWireManifest" BeforeTargets="CoreCompile" Condition="'$(UpdateWireManifest)' == 'true'">
+    <Target Name="DaServerRecompileForWireManifest" BeforeTargets="CoreCompile" Condition="'$(_DaServerUpdatingManifest)' == 'true'">
         <Delete Files="@(IntermediateAssembly)" />
     </Target>
 
-    <Target Name="DaServerUpdateWireManifest" AfterTargets="CoreCompile" Condition="'$(UpdateWireManifest)' == 'true'">
+    <!-- One target framework writes the file (the first one listed): inner builds run in parallel. -->
+    <Target Name="DaServerUpdateWireManifest" AfterTargets="CoreCompile"
+            Condition="'$(_DaServerUpdatingManifest)' == 'true' and ('$(TargetFrameworks)' == '' or '$(_DaServerManifestFramework)' == '$(TargetFramework)')">
         <ItemGroup>
             <_DaServerGeneratedManifest Include="$(CompilerGeneratedFilesOutputPath)/**/DaServer.WireManifest.g.cs" />
         </ItemGroup>

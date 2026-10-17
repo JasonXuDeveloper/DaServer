@@ -187,8 +187,7 @@ internal static class ShardDispatch
             CallChain.Current = chain; // the requests this handler makes carry it (its awaits restore it, PendingCall)
             try
             {
-                var reader = new Reader(frame.Payload);
-                var task = dispatcher(target, ref reader, in context);
+                var task = dispatcher(target, frame.Payload, in context);
                 if (!task.IsCompleted) return task;
                 task.GetAwaiter().GetResult();
                 return default;

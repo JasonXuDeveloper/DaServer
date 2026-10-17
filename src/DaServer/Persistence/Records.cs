@@ -36,8 +36,7 @@ internal sealed class PersistentType<T>(uint typeId, bool stored) : PersistentTy
 
     public override void Read(Entity entity, ReadOnlySpan<byte> section)
     {
-        var reader = new Reader(section);
-        NinoDeserializer.Deserialize(out T value, ref reader);
+        WirePayload.Read(section, out T value);
         if (entity.Has<T>()) entity.Get<T>() = value;
         else entity.Add<T>() = value;
     }

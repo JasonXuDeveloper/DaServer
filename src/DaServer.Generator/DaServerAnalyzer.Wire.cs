@@ -13,8 +13,11 @@ public sealed partial class DaServerAnalyzer
 {
     private static void CheckWireManifest(CompilationStartAnalysisContext start)
     {
-        if (start.Options.AnalyzerConfigOptionsProvider.GlobalOptions.TryGetValue("build_property.UpdateWireManifest", out var updating) &&
-            updating == "true") return;
+        // While the manifest is rewritten (-p:UpdateWireManifest=true) only breaking changes stop the build; "force"
+        // records them too (the developer accepts that deployed peers and stored records can no longer be read).
+        start.Options.AnalyzerConfigOptionsProvider.GlobalOptions.TryGetValue("build_property.UpdateWireManifest", out var update);
+        bool updating = string.Equals(update, "true", StringComparison.OrdinalIgnoreCase);
+        if (string.Equals(update, "force", StringComparison.OrdinalIgnoreCase)) return;
         AdditionalText? manifest = null;
         foreach (var file in start.Options.AdditionalFiles)
             if (Path.GetFileName(file.Path) == WireManifest.FileName) manifest = file;
@@ -36,6 +39,7 @@ public sealed partial class DaServerAnalyzer
             var locations = types.ToDictionary(t => t.Type.Name, t => t.Location, StringComparer.Ordinal);
             foreach (var (name, what, breaking) in WireManifest.Compare(baseline, current))
             {
+                if (!breaking && updating) continue;
                 if (!locations.TryGetValue(name, out var location))
                 {
                     var line = text.Lines[baseline[name].Line];

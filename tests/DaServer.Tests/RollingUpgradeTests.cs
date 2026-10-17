@@ -48,3 +48,31 @@ public class RollingUpgradeTests : ClusterTest
         Assert.That(member!.Build, Does.StartWith("daserver ").And.Contain("; app "));
     }
 }
+
+/// <summary>The view's routing while builds differ, on hand-made cards.</summary>
+public class MixedBuildViewTests
+{
+    private const uint Message = 7, Other = 8, Actor = 100, Service = 200;
+
+    private static ClusterMember Member(ulong id, params HostedMessage[] handlers) =>
+        new() { NodeId = id, Name = "n" + id, Host = "127.0.0.1", Port = (int)id, Status = MemberStatus.Up, Handlers = handlers };
+
+    private static HostedMessage Handles(uint handlerType, bool actor, uint message = Message) =>
+        new() { MessageId = message, HandlerTypeId = handlerType, Actor = actor };
+
+    [Test]
+    public void AnOwnerLackingTheMessageForAnotherHandlerTypeStillGetsItForItsOwn()
+    {
+        // Both builds handle the message on the actor type and host the service; only the newer service handles it.
+        var older = Member(1, Handles(Actor, true), Handles(Service, false, Other));
+        var newer = Member(2, Handles(Actor, true), Handles(Service, false));
+        var view = new ClusterView([older, newer]);
+
+        Assert.That(view.TryGetHandlerTypeRoute(Actor, out var actorRoute));
+        for (long key = 0; key < 64; key++)
+            Assert.That(view.Target(in actorRoute, Message, key, 0), Is.SameAs(view.HandlerTypeOwner(Actor, key)), "the actor's owner, old or new");
+
+        Assert.That(view.TryGetRoute(Message, actor: false, out var serviceRoute, out _));
+        Assert.That(serviceRoute.Nodes, Is.EqualTo(new[] { newer }), "the service only where the build has it");
+    }
+}

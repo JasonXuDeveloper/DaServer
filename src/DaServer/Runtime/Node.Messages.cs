@@ -216,8 +216,19 @@ sealed partial class Node
     private bool TryRoute(uint messageId, uint handlerTypeId, out MessageRoute route, out bool ambiguous)
     {
         ambiguous = false;
-        if (handlerTypeId != 0) return View.TryGetHandlerTypeRoute(handlerTypeId, out route);
-        return View.TryGetRoute(messageId, actor: false, out route, out ambiguous);
+        if (handlerTypeId == 0) return View.TryGetRoute(messageId, actor: false, out route, out ambiguous);
+        if (!View.TryGetHandlerTypeRoute(handlerTypeId, out route)) return false;
+        if (route.Actor) return true;
+        // A named service (a forwarded frame): among the nodes whose build handles the message (V3).
+        var routes = View.Routes(messageId);
+        for (int i = 0; i < routes.Length; i++)
+            if (routes[i].HandlerTypeId == handlerTypeId)
+            {
+                route = routes[i];
+                return true;
+            }
+
+        return false;
     }
 
     /// <summary>
