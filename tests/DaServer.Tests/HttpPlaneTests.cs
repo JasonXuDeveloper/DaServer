@@ -106,6 +106,30 @@ public class HttpPlaneTests
     }
 
     [Test]
+    public void TheNodesInstrumentsAreSampledWithItsName()
+    {
+        var node = _app.Services.GetRequiredService<Node>();
+        var seen = new System.Collections.Concurrent.ConcurrentDictionary<string, long>();
+        using var listener = new System.Diagnostics.Metrics.MeterListener();
+        listener.InstrumentPublished = static (instrument, l) =>
+        {
+            if (instrument.Meter.Name == DaServer.Hosting.NodeMetrics.MeterName) l.EnableMeasurementEvents(instrument);
+        };
+        void Record(System.Diagnostics.Metrics.Instrument instrument, long value, ReadOnlySpan<KeyValuePair<string, object?>> tags)
+        {
+            foreach (var tag in tags)
+                if (tag.Key == "node" && (string?)tag.Value == node.Options.Name) seen[instrument.Name] = value;
+        }
+
+        listener.SetMeasurementEventCallback<long>((i, v, t, _) => Record(i, v, t));
+        listener.SetMeasurementEventCallback<int>((i, v, t, _) => Record(i, v, t));
+        listener.Start();
+        listener.RecordObservableInstruments();
+        Assert.That(seen.Keys, Is.SupersetOf(new[] { "daserver.actors", "daserver.cluster.members", "daserver.clients.sessions", "test.probe.level" }));
+        Assert.That(seen["test.probe.level"], Is.EqualTo(7), "a feature's gauge");
+    }
+
+    [Test]
     public async Task APostSendsAOneWayMessageToItsService()
     {
         long before = Interlocked.Read(ref Observed.Tallies);

@@ -20,10 +20,8 @@ internal static class Clusters
                 Seeds = i == 0 ? [] : [$"127.0.0.1:{started[0].ClusterEndPoint.Port}"],
                 GossipInterval = TimeSpan.FromMilliseconds(100),
             };
-            if (i < gateways) options.Features.Add(new ClientConnections(new ClientConnectionOptions { FlushInterval = clientFlush }));
             configure?.Invoke(options);
-            started[i] = new Node(options);
-            await started[i].StartAsync();
+            started[i] = await TestNodes.StartAsync(options, i < gateways ? new ClientConnectionOptions { FlushInterval = clientFlush } : null);
         }
 
         await TestNodes.WaitUntilAsync(() => TestNodes.Converged(started), TimeSpan.FromSeconds(30), "cluster did not converge");

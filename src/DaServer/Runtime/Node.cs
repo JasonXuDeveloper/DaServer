@@ -476,7 +476,7 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
             }, (shard, clientNode));
     }
 
-    private long _lastMaintainMs; // the maintenance timer's thread only
+    private SilenceClock _maintainClock;
     private long[]? _stallReported; // per shard: the pass already reported (the maintenance timer's thread only)
     private int _stalledShards;
 
@@ -509,11 +509,10 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
         try
         {
             Pending.SweepExpired();
-            long now = Environment.TickCount64, last = _lastMaintainMs;
-            _lastMaintainMs = now;
+            long now = Environment.TickCount64;
+            bool late = _maintainClock.Tick(now);
             long interval = (long)Options.GossipInterval.TotalMilliseconds;
-            // A pass that runs late (a GC pause, a starved machine) says nothing about the links: ping, no verdicts.
-            long timeout = last != 0 && now - last > 1000 ? long.MaxValue : Math.Max((long)Options.SuspectAfter.TotalMilliseconds, 3 * interval);
+            long timeout = late ? long.MaxValue : Math.Max((long)Options.SuspectAfter.TotalMilliseconds, 3 * interval); // late: ping, no verdicts
             foreach (var link in Volatile.Read(ref _linkList))
             {
                 link.AcknowledgeReceived();
@@ -521,6 +520,7 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
             }
 
             CheckStalls(now);
+            foreach (var feature in Options.Features) feature.Maintain(now, late);
         }
         catch (Exception e)
         {

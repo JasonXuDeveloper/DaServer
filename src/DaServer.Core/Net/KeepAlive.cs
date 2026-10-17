@@ -36,3 +36,19 @@ public static class KeepAlive
     /// <summary>Answer a ping (any side; on the connection it arrived on).</summary>
     public static void Pong(IFrameChannel channel) => channel.SendControl(ControlOp.Pong);
 }
+
+/// <summary>
+/// The clock of a periodic liveness check: a pass that runs more than a second after the previous one ran late (a GC
+/// pause, a starved machine), which says nothing about the peers, so it passes no silence verdicts.
+/// </summary>
+internal struct SilenceClock
+{
+    private long _lastMs;
+
+    /// <summary>Record a pass at <paramref name="nowMs"/>; true when it ran late.</summary>
+    public bool Tick(long nowMs)
+    {
+        long last = Interlocked.Exchange(ref _lastMs, nowMs);
+        return last != 0 && nowMs - last > 1000;
+    }
+}

@@ -20,10 +20,13 @@ public interface IFrameChannel
     long LastSentMs { get; }
 }
 
-/// <summary>Receives the frames of an <see cref="IFrameChannel"/> that is not a TCP connection.</summary>
+/// <summary>Receives the frames and the close of an <see cref="IFrameChannel"/> (a TCP connection, a WebSocket).</summary>
 public interface IChannelHandler
 {
-    /// <summary>A complete frame, on the channel's receive loop; valid during the call only. Must not block.</summary>
+    /// <summary>
+    /// A complete frame (header included), on the channel's receive loop; valid during the call only (copy it to keep
+    /// it). Must not block.
+    /// </summary>
     void OnFrame(IFrameChannel channel, in FrameHeader header, ReadOnlySpan<byte> frame);
 
     /// <summary>Called exactly once when the channel closes.</summary>

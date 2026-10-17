@@ -6,7 +6,7 @@ namespace DaServer.Client;
 /// push to the [Handle] methods of registered handler objects (<see cref="Register"/>). When the connection is lost it
 /// reconnects on its own and resumes its session with its resume ticket (<see cref="Reconnected"/>).
 /// </summary>
-public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannelHandler, IAsyncDisposable
+public sealed class ClusterClient : IMessageSender, IChannelHandler, IAsyncDisposable
 {
     private readonly PendingCallTable _pending;
     private readonly Lock _handlersGate = new();
@@ -33,9 +33,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
     private static readonly ConcurrentDictionary<ClusterClient, bool> Live = new();
     private static readonly Timer Sweeper = new(static _ =>
     {
-        // A sweep that runs late (a GC pause, a starved machine) says nothing about the network: no silence verdicts then.
-        long now = Platform.Milliseconds, last = Interlocked.Exchange(ref _lastSweepMs, now);
-        bool late = last != 0 && now - last > 1000;
+        bool late = _sweepClock.Tick(Platform.Milliseconds);
         foreach (var (client, _) in Live)
         {
             try
@@ -51,7 +49,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
         }
     }, null, 100, 100);
 
-    private static long _lastSweepMs;
+    private static SilenceClock _sweepClock;
 
     /// <param name="callbackQueueCapacity">
     /// 0: callbacks run on the IO thread as frames arrive (tools, tests). Otherwise frames wait, up to this many, for
@@ -371,12 +369,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
         }
     }
 
-    // ------------------------------------------------------------------ IConnectionHandler
-
-    void IConnectionHandler.OnFrame(Connection connection, in FrameHeader header, ReadOnlySpan<byte> frame) =>
-        OnFrame(connection, in header, frame);
-
-    void IConnectionHandler.OnClosed(Connection connection, Exception? error) => OnClosed(connection, error);
+    // ------------------------------------------------------------------ IChannelHandler
 
     void IChannelHandler.OnFrame(IFrameChannel channel, in FrameHeader header, ReadOnlySpan<byte> frame) =>
         OnFrame(channel, in header, frame);

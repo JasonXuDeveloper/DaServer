@@ -21,6 +21,15 @@ internal static class TestNodes
         CallTimeout = TimeSpan.FromSeconds(5),
     };
 
+    /// <summary>Start a node with <paramref name="options"/>, accepting clients when <paramref name="clients"/> is given.</summary>
+    public static async Task<Node> StartAsync(NodeOptions options, ClientConnectionOptions? clients = null)
+    {
+        if (clients != null) options.Features.Add(new ClientConnections(clients));
+        var node = new Node(options);
+        await node.StartAsync().ConfigureAwait(false);
+        return node;
+    }
+
     /// <summary>Whether every node sees every one of <paramref name="nodes"/> as Up.</summary>
     public static bool Converged(IReadOnlyList<Node> nodes)
     {

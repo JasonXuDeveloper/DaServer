@@ -37,6 +37,15 @@ public abstract class NodeFeature
     /// <summary>The node is leaving: hand work over (move clients elsewhere, stop accepting) before the shards stop.</summary>
     protected internal virtual ValueTask DrainAsync(CancellationToken cancellationToken) => default;
 
+    /// <summary>
+    /// Every 100 ms on the node's maintenance timer while it runs (<paramref name="nowMs"/>: <c>Environment.TickCount64</c>;
+    /// <paramref name="late"/>: the pass ran late, so pass no verdicts on silence). Timers, sweeps and expiries go here,
+    /// not on a timer of the feature's own. Keep it short and never block.
+    /// </summary>
+    protected internal virtual void Maintain(long nowMs, bool late)
+    {
+    }
+
     /// <summary>The node stopped (<paramref name="crashed"/>: without leaving or draining). Close what is left.</summary>
     protected internal virtual void Stop(bool crashed)
     {
