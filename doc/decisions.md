@@ -238,19 +238,25 @@ records that no longer hold). Each: context → decision → consequences.
 - Consequences: join/leave O(1); a broadcast allocates nothing (allocation tests); a 3k-session fan-out holds one
   group lock for about a millisecond, which only delays membership changes of that group.
 
-## ADR-026 Client-facing nodes direct clients to each other
-- Context: clients that are given every client-facing node address and spread themselves round robin must be reconfigured when
-  a client-facing node is added, and load follows connection order, not load; a dedicated directing role is one more thing to
-  deploy, and the platform already offers the well-known address (a load balancer, a DNS name).
-- Decision: client-facing nodes publish their client endpoint (a card entry) and gossip their session count (a pulse
-  slot). Any of them answers `PickNode` (and `GET /clients/endpoint`) with the less loaded of two random client-facing
-  nodes (power of two choices: even spread from stale counts, no herd), adding the clients it directed since the
-  node's last count, or "stay" when that is itself. `ClusterClient.ConnectAsync` connects through one or several
-  entry addresses (tried in turn; reconnects use them again) and moves to the named node; a node it cannot reach is
-  not fatal (it stays). With `ClientConnectionOptions.Redirect` off (nodes behind a load balancer without addresses of their
-  own) the answer is always "stay".
-- Consequences: clients know one address; client-facing nodes scale by replica count; there is no balancer role. A
-  load balancer in front spreads the first connection, the directory the session.
+## ADR-026 Clients connect through the platform's load balancer
+- Context: clients need one well-known address, and a node group scales by replica count. Kubernetes and the clouds
+  give it as a load balancer in front of the client-facing pods, whose own addresses are internal; Orleans keeps end
+  users off its silos, Nakama puts every socket behind the balancer. Answering "connect to that node" instead (Photon,
+  Colyseus) needs a public address per node (a host port, a balancer per pod) and re-implements the balancer's job
+  in the cluster. A balancer spreads connections only when they open: after a scale-out long-lived connections stay
+  where they are, which is why gRPC servers and Envoy close connections past a maximum age.
+- Decision: a client connects through one or several entry addresses (the balancer, a DNS name: every resolved
+  address is tried; reconnects use them again) and stays on the node it reached; actors are reachable from any
+  client-facing node, so no client needs a particular one. `ClientConnectionOptions.MaxConnectionAge` (off by default,
+  jittered by a tenth) closes connections older than it; their clients reconnect through the entry addresses and
+  resume their sessions (ADR-036), so after a scale-out the old connections spread over the new nodes too and actors
+  see nothing. A leaving node drains in waves the same way (D3).
+- Alternatives: the cluster names the node to connect to (removed: a second balancer, with an address per node the
+  platform does not give); shedding only above the group's average (more precise, but cluster logic a maximum age
+  does without); an edge tier in front of the client-facing nodes (ET's router: another hop; for UDP transports).
+- Consequences: one public address and one TLS/DDoS surface per node group; clients without a resume ticket (not
+  logged in) are disconnected at their age and connect again themselves. The balancer, its health checks and its
+  draining are the platform's (S4 publishes them).
 
 ## ADR-027 Bounded queues refuse instead of growing
 - Context: unbounded dispatch queues and mailboxes let a flood (or a slow actor) grow memory until the process dies,
@@ -290,8 +296,7 @@ records that no longer hold). Each: context → decision → consequences.
 
 ## ADR-030 One Aspire resource per replica
 - Context: Aspire's `WithReplicas` runs replicas as one resource behind a proxy with shared endpoints. Cluster
-  members are addressed individually: each gossips its own cluster and client endpoint, links go to a specific node
-  and clients are directed to a specific client-facing node.
+  members are addressed individually: each gossips its own cluster endpoint and links go to a specific node.
 - Decision: `AddNodes` creates one resource per replica (`gateway-0`, `gateway-1`, ...) with its own
   endpoints, and every node gets every other node as a seed; clients get the client-facing nodes' addresses as entries. Deployments that do have per-replica DNS (Kubernetes headless services) use DNS seeds instead: a seed that
   resolves to several addresses yields one seed per address.
@@ -306,8 +311,7 @@ records that no longer hold). Each: context → decision → consequences.
   entries: fixed while it runs) plus its pulse (incarnation, heartbeat, status, load and three feature slots such as
   sessions: 37 bytes). Gossip and its reply carry pulses, written into a pooled frame and read in place; a pulse naming
   an unknown node is answered with `CardRequest`/`Cards`. Pulses update members in place; incarnation and status
-  changes publish a copy and rebuild the view. Because counts lag a round, the directory adds the clients it directed
-  to a node since its last pulse.
+  changes publish a copy and rebuild the view.
 - Consequences: a steady-state round allocates nothing (allocation test at 300 rounds/s); idle nodes in the 10k
   topology allocate 0 KB/s; gossip size is 37 bytes per member. Load hints are fresh within a round.
 
@@ -316,8 +320,8 @@ records that no longer hold). Each: context → decision → consequences.
   role read wrong to people who know other distributed servers.
 - Decision: name things by their role in a cluster, in pairs where they are pairs: `OnLoad` / `OnUnload` (the actor is
   loaded on / leaves this node), `[FromClient]` / `[ToClient]` (the two directions across the client-facing node),
-  `Caller` (who sent the message from outside; invalid for server calls), `Disconnect` (not a game's "kick"), directory
-  ("dispatch" means message dispatch only), `ClusterMember` (no clash with
+  `Caller` (who sent the message from outside; invalid for server calls), `Disconnect` (not a game's "kick"), dispatch (message
+  dispatch only), `ClusterMember` (no clash with
   `System.Reflection.MemberInfo`), `ListenAddress` / `DispatchQueueCapacity` (what they configure). Actor state starts
   as `new TState()` (field initializers of a state struct run, so `OnLoad` is only for loading), and systems read an
   actor's id and group from its public `ActorRef` component instead of copying them into state.
@@ -518,7 +522,7 @@ records that no longer hold). Each: context → decision → consequences.
   depends on a capability namespace (`DaServer.Clients`); an architecture test checks it.
 
 ## ADR-046 Two planes per node: DaServer TCP for data, ASP.NET Core for HTTP
-- Status: minimum implemented (Kestrel on `DaServer:HttpPort`, `MapAsk`/`MapSend`, `/clients/endpoint`, `/clients/ws`);
+- Status: minimum implemented (Kestrel on `DaServer:HttpPort`, `MapAsk`/`MapSend`, `/clients/ws`);
   health, admin endpoints and Aspire probes in roadmap A1.
 - Context: Kubernetes probes and Aspire health are HTTP; operators want admin commands; applications want REST
   endpoints (webhooks, payment callbacks, HTTP login, back-office). A hand-written HTTP responder would re-implement
@@ -578,17 +582,15 @@ records that no longer hold). Each: context → decision → consequences.
 - Decision: one framework. `DaServer.Ingress` (origin, capped deadline, reply sink, raw pass-through, one hop to the
   owner from the gossip view, load-aware early refusal, filters that reject with status + retry hint, token bucket,
   signed tokens) and `DaServer.Clients` (client connections as a node feature: transports, sessions, `ClientSession` and
-  `ClientGroup` addresses, push and fan-out, resume tickets, a directory answering "which node to connect to") are
+  `ClientGroup` addresses, push and fan-out, resume tickets, a maximum connection age) are
   namespaces of the `DaServer` assembly, built on the public feature points. A node accepts clients when a client
   port is configured; "gateway" is only a deployment word for such a node group (co-hosted in small clusters,
-  dedicated in production). There is no balancer role: any client-facing node answers the directory, and the
-  well-known address is the platform's LB or DNS (redirect mode or behind-LB mode). The HTTP plane (ADR-046) is the
+  dedicated in production). There is no balancer role: the well-known address is the platform's load balancer or DNS
+  (ADR-026). The HTTP plane (ADR-046) is the
   second ingress consumer; WebSocket clients connect through it. Packages: ADR-052. Waiting rooms are not part of the framework: they are policy for human traffic
   surges, and compose from the ingress primitives plus a queue actor (`samples/flashsale`).
 - Consequences: dedicated client-facing nodes may carry high request volume (the actor interior stays zero-GC;
-  ADR-046). Abstractions and the client SDK use newer runtime features only behind netstandard2.1 fallbacks (ADR-001). Redirect mode needs
-  a public address per client-facing node; behind-LB mode leaves long connections unbalanced after a scale-out until
-  clients reconnect.
+  ADR-046). Abstractions and the client SDK use newer runtime features only behind netstandard2.1 fallbacks (ADR-001).
 
 ## ADR-049 Refusals are status-only
 - Context: the runtime refuses calls exactly when load is highest (full queues, a stale view, expired deadlines,
@@ -607,7 +609,7 @@ records that no longer hold). Each: context → decision → consequences.
 
 ## ADR-050 Client connections are a feature; the actor side of sessions stays in the runtime
 - Context: client connections (ADR-048) have an edge part, on the nodes clients connect to (listener, sessions,
-  groups, tickets, the directory, session operations, client messages entering the cluster), and an actor part, on
+  groups, tickets, session operations, client messages entering the cluster), and an actor part, on
   every node hosting actors (the sessions each actor knows, `SessionClosed` when they end, even when the node holding
   them crashed, `SessionResumed` swapping a resumed one). A feature runs only where it is configured, and the runtime
   may not depend on `DaServer.Clients`.
@@ -1273,8 +1275,7 @@ records that no longer hold). Each: context → decision → consequences.
   refused), and a client connection's first call is `ClientHello` carrying `ControlOp.ClientVersion`: another version
   gets an error naming both and is left out of `ClientGroup.All`; the client closes the connection, and anything it
   sends but keep-alive frames, before an accepted hello or after a refused one, closes it. The client sends nothing
-  but the hello and keep-alives until the hello is answered (calls meanwhile fail `Disconnected`), and a redirect
-  keeps the first connection unless the named node accepts the hello.
+  but the hello and keep-alives until the hello is answered (calls meanwhile fail `Disconnected`).
 - Alternatives: route the new message to a node of the new build (a second activation of the key, what the slot table
   prevents); per-interface version numbers (Orleans: the card already says what each build handles, and the manifest
   keeps layouts compatible); stop-the-world deploys.

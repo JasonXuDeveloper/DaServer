@@ -45,12 +45,12 @@ EasyEcs in parallel when DaServer waits on benchmarks: the Friflo gap, compariso
       limit (ADR-025)
 - [x] Runtime-owned sessions: Bind joins the actor's group, `Caller` holds for the turn, a crashed gateway's
       sessions close (ADR-024)
-- [x] Client-facing nodes direct clients to each other (power of two choices over gossiped session counts; entry
-      addresses; redirect or behind-a-load-balancer mode) (ADR-026)
+- [x] Clients connect through the platform's load balancer and stay; `MaxConnectionAge` moves old connections to new
+      nodes, the clients resuming their sessions (ADR-026)
 - [x] One ordered link per node direction: replies travel with binds, pushes and events (ADR-022)
 - [x] Placement: keys stay with suspect members, a dead node's keys move, unloading actors keep their mail (ADR-023)
 - [x] Client: `ClusterClient` (the same messages as servers, session-bound actor messages without an id, DNS
-      endpoints over every resolved address, entry addresses and moving to the node the directory names, callbacks
+      endpoints over every resolved address, entry addresses, callbacks
       inline or queued)
 - [x] Topology without roles (ADR-017), `ICluster` for business code (ADR-020), actor `Group`
 - [x] One-way and published messages: `Send`, `Publish` to every handling service, gossiped handlers, mailbox
@@ -180,8 +180,8 @@ What G delivered (each step kept every test green):
    429/503/504/403 with `Retry-After`, `DaServer-Budget` header; one origin id space per node for sessions and HTTP
    requests).
 6. Client connections as a feature (`DaServer.Clients`, enabled by `DaServer:Clients`): generic card entries and
-   pulse slots (`ClusterMember` keeps no client fields), the actor side in `ActorSessions` (ADR-050), the directory
-   (`PickNode`, `GET /clients/endpoint`, `Redirect`, client entry addresses; ADR-026), M2 (group objects pooled, empty
+   pulse slots (`ClusterMember` keeps no client fields), the actor side in `ActorSessions` (ADR-050), client entry
+   addresses (ADR-026), M2 (group objects pooled, empty
    groups removed lazily: group churn allocates nothing), M3 (resume graces on a `TimerWheel`), a per-session rate
    limit (`ClientConnectionOptions.MessagesPerSecond`/`Burst`), WebSocket transport (`WebSocketChannel` behind `IFrameChannel`,
    `/clients/ws`, `ClusterClient.ConnectAsync(Uri)`). L2 kept: a grant change copies the session's small grants
@@ -249,7 +249,7 @@ Nothing is persisted yet (N5): D5-D6 come with it.
       as `daserver.stop.phase.duration` (phase tag). Store flush joins with N5 (D6).
 - [x] D3 Client-facing nodes drain: the listener closes, connections close in waves over
       `ClientConnectionOptions.DrainSpread` (3 s); clients reconnect through their endpoints and resume their sessions
-      on other nodes (the directory only lists Up nodes). `ClientsOfALeavingGatewayMoveAndResumeOnAnother`.
+      on other nodes (readiness turned the balancer away first). `ClientsOfALeavingGatewayMoveAndResumeOnAnother`.
 - [ ] D4 Tests: done: a stop that exceeds its budget reports the unsaved actors and returns
       (`AStopThatExceedsItsBudgetReportsAndReturns`); a leaving gateway's clients keep their sessions. Open with N5: a
       stop under load loses no acknowledged write; Kill loses at most what the persistence policy allows.
@@ -391,16 +391,23 @@ clients resume on another gateway with their ticket); the game server (players, 
 stateful, maps being heavy actors.
 
 - [ ] S1 Scale signals: per-node OpenTelemetry metrics fit for HPA/KEDA (dispatch queue depth, mailbox backlog, tick
-      overrun, loaded actors per type, connections, CPU), documented as scaling metrics.
+      overrun, loaded actors per type, connections, CPU), documented as scaling metrics. Agreed: a Prometheus
+      `/metrics` endpoint on the HTTP plane by default (OTLP as now); the default scaling metric is the shards' busy
+      ratio.
 - [ ] S2 Scale-in is a drain: SIGTERM -> graceful Leave -> actors hand off (N6) or unload and save (N5) -> exit within
       the termination grace period; readiness turns false first. Gateways drain by directing their clients to other
       gateways over time (resume tickets) instead of dropping them.
-- [ ] S3 Slot allocation (ADR-074): a coordinator (the oldest Up node) may override the rendezvous owners of slots and
+- [ ] S3 Slot allocation (ADR-074): a coordinator (the oldest Up node, agreed: an `UpSince` field appended to the
+      version-tolerant card) may override the rendezvous owners of slots and
       gossips the overrides as a versioned table: load-aware rebalancing moves whole slots from hot to cold nodes
       (handoff, N6, a few at a time, Akka's least-shard allocation); per actor type a move policy, so heavy actors
       (maps) stay where they are loaded and only new keys go to a new node (sticky slots), and a scale-out never
       moves a map with players in it.
-- [ ] S4 Generated manifests: `DaServer.Aspire` emits, per node group, HPA (or KEDA `ScaledObject`) with min/max and the
+- [ ] S4 Generated manifests (needs A4: one workload per group in publish mode): `WithClientConnections` publishes a
+      LoadBalancer Service per client-facing group (TCP port and `/clients/ws`; cloud annotations through a user hook)
+      and a preStop wait so the balancer lets go before the listener closes (ADR-026); a group is stateful with
+      `.Stateful()`, on by default with `WithActorStore` (agreed). The MMO sample publishes to Kubernetes as is.
+      `DaServer.Aspire` emits, per node group, HPA (or KEDA `ScaledObject`) with min/max and the
       S1 metric, a PodDisruptionBudget (stateful groups: one node at a time), termination grace period and probes,
       scale-down stabilization for stateful groups; through Aspire's Kubernetes publisher (generated resources can be
       customized and extra resources such as `HorizontalPodAutoscaler` added). Plain Deployments: identity comes from
@@ -502,6 +509,9 @@ in separate commits.
   reload with forced GC, manual dirty marking. GM commands (N10) are out of scope for now.
 
 ## Open cleanup (review rounds)
+- [ ] Evaluate Kestrel's raw TCP (`ListenOptions.UseConnectionHandler`, pipelines, TLS) for client and link
+      connections against the own `Connection`/`Listener` (batched sends, zero-byte reads, POH buffers): BDN on
+      Message/Rpc/Broadcast/Scenario and allocation tests; switch only if neither time nor allocation regresses.
 - [ ] B4 one serialize-into-pooled-frame helper; B5 `DeliverTo(nodeId, frame)` (local or link); B8 one pending-table
       scan; B9 registries; B10 shared hash helpers; B11 sample nits
 - [ ] Split `Node` into links and router; membership talks to the node
