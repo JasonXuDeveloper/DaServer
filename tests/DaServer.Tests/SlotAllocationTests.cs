@@ -77,10 +77,12 @@ public class SlotAllocationTests : ClusterTest
         // A partition or a paused coordinator: another node wrote a table of the same version. Whatever order the two
         // reach a member in, the view's coordinator's table is the one it keeps, and the coordinator publishes above
         // every version it saw.
-        var a = await Start("a", configure: FastRounds);
-        var b = await Start("b", configure: FastRounds);
+        // a is the view's coordinator, b the other member (the oldest is chosen; a tie in UpSince goes to the lower id).
+        var first = await Start("a", configure: FastRounds);
+        var second = await Start("b", configure: FastRounds);
         await Converged();
-        Assert.That(b.View.Coordinator!.NodeId, Is.EqualTo(a.Id), "a is the oldest");
+        var (a, b) = second.View.Coordinator!.NodeId == first.Id ? (first, second) : (second, first);
+        Assert.That(a.View.Coordinator!.NodeId, Is.EqualTo(a.Id), "both see one coordinator");
         uint type = ActorIds<PinId>.HandlerTypeId;
         var other = new SlotTable { Version = 50, Coordinator = 12345, Overrides = [new SlotOverride(type, 7, b.Id)] };
         var coordinators = new SlotTable { Version = 50, Coordinator = a.Id, Overrides = [new SlotOverride(type, 7, a.Id)] };

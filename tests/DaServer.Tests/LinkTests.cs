@@ -61,12 +61,18 @@ public class LinkTests : ClusterTest
         var link = LinkTo(a, b);
 
         // b forgets a's stream (as a restarted process would) once it acknowledged some of it: a's window cannot
-        // replay from 0, so the stream starts over and the call in flight fails (Disconnected) instead of waiting.
+        // replay from 0, so the stream starts over and the call in flight fails (Disconnected) instead of waiting. b's
+        // shards are held so the call is surely in flight (sent, not answered) when the stream starts over.
         await Task.Delay(300);
+        using var gate = new ManualResetEventSlim();
+        b.PostToEveryShard(static (_, g) => g.Wait(TimeSpan.FromSeconds(10)), gate);
+        var lost = a.Ask(new CounterId(key), new Add(1)).AsTask();
+        await Task.Delay(100); // it reached b
         LinkTo(b, a).ForgetInboundStream();
         link.Connection?.Close();
-        var lost = a.Ask(new CounterId(key), new Add(1));
-        Assert.That(async () => await lost, Throws.InstanceOf<DaServer.Rpc.RpcException>());
+        var failure = Assert.ThrowsAsync<DaServer.Rpc.RpcException>(async () => await lost);
+        Assert.That(failure!.Status, Is.EqualTo(DaServer.Protocol.RpcStatus.Disconnected));
+        gate.Set();
         await Eventually(async () =>
         {
             try
