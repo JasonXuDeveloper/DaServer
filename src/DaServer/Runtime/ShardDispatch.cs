@@ -96,7 +96,8 @@ internal static class ShardDispatch
     /// <summary>The actor's record comes from the store (when it has one), then <see cref="Actor.OnLoad"/> runs.</summary>
     internal static void BeginLoad(World world, Entity entity, Actor actor)
     {
-        if (world.GetSingleton<ShardStore>().Enabled) entity.Add<AwaitingRecord>(); // LoadSystem restores it, then OnLoad
+        if (world.GetSingleton<ShardStore>().Enabled) // LoadSystem restores it, then OnLoad
+            entity.Add<AwaitingRecord>() = new AwaitingRecord(world.GetSingleton<ShardActivity>().NowMs, 0);
         else BeginLive(world, entity, actor);
     }
 

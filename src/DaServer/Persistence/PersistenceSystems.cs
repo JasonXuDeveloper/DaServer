@@ -9,15 +9,18 @@ internal sealed partial class LoadSystem : EcsSystem
 {
     public override int Priority => 2;
 
-    [ForEach, With<AwaitingRecord>]
-    private static void Collect(Entity actor, in ActorRef self, in ShardStore store)
+    [ForEach]
+    private static void Collect(Entity actor, in AwaitingRecord awaiting, in ActorRef self, in ShardStore store, in ShardActivity activity)
     {
-        if (store.Loads.InFlight || store.Loads.Full) return; // the next batch takes it
-        var target = self.Actor;
-        actor.Remove<AwaitingRecord>();
-        actor.Add<RecordRequested>();
+        if (store.Loads.InFlight || store.Loads.Full || activity.NowMs < awaiting.NotBeforeMs) return; // a later batch takes it
+        var (target, since) = (self.Actor, awaiting.SinceMs);
+        actor.Remove<AwaitingRecord>(); // `awaiting` is invalid from here on
+        actor.Add<RecordRequested>() = new RecordRequested(since);
         store.Loads.Add(actor, new StoredKey(target.HandlerType.Id, target.Key));
     }
+
+    /// <summary>A failed load is tried again this long after (a store restarting, a failover).</summary>
+    private const long RetryLoadMs = 200;
 
     /// <summary>The store answered <paramref name="batch"/> (shard thread).</summary>
     internal static void Apply(World world, LoadBatch batch)
@@ -30,9 +33,17 @@ internal sealed partial class LoadSystem : EcsSystem
         for (int i = 0; i < entities.Count; i++)
         {
             var entity = entities[i];
-            if (!entity.IsAlive || !entity.Has<RecordRequested>()) continue; // removed meanwhile (fenced)
+            if (!entity.IsAlive || !entity.TryGet<RecordRequested>(out var requested)) continue; // removed meanwhile (fenced)
             entity.Remove<RecordRequested>();
             var actor = entity.Get<ActorRef>().Actor;
+            long now = world.GetSingleton<ShardActivity>().NowMs;
+            if (error != null && now - requested.SinceMs < (long)world.Shard().Node.Options.CallTimeout.TotalMilliseconds)
+            {
+                // A store outage delays the actor (its mail waits) instead of failing it: tried again shortly.
+                entity.Add<AwaitingRecord>() = new AwaitingRecord(requested.SinceMs, now + RetryLoadMs);
+                continue;
+            }
+
             try
             {
                 if (error != null) throw error;
