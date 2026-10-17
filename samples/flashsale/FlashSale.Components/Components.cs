@@ -6,17 +6,17 @@ using Nino.Core;
 namespace FlashSale.Components;
 
 /// <summary>Units left in a stock shard and who took the others: stored, so a restart sells no unit twice.</summary>
-[NinoType, Persist] public partial record struct Stock(int Left, List<long> Buyers) : IComponent;
+[NinoType(format: NinoFormat.VersionTolerant), Persist] public partial record struct Stock(int Left, List<long> Buyers) : IComponent;
 
 /// <summary>What a buyer's order came to: stored, so a retry after a restart gets the same answer.</summary>
-[NinoType, Persist] public partial record struct Purchase(OrderStatus Status) : IComponent;
+[NinoType(format: NinoFormat.VersionTolerant), Persist] public partial record struct Purchase(OrderStatus Status) : IComponent;
 
 /// <summary>
 /// A sale: its queue if it has one (positions handed out and admitted, the pace per second, the time admissions are
 /// counted from), the stock shards known empty (a bit each) and who bought. Stored, so a restart neither forgets the
 /// queue nor admits it again.
 /// </summary>
-[NinoType, Persist]
+[NinoType(format: NinoFormat.VersionTolerant), Persist]
 public partial record struct SaleState(int PerSecond, long Issued, long Released, long AtMs, int EmptyShards, List<long> Buyers) : IComponent
 {
     public readonly bool Queued => PerSecond > 0;
