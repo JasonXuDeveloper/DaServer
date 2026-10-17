@@ -1245,7 +1245,7 @@ records that no longer hold). Each: context → decision → consequences.
   `WireLayout` mirrors Nino's generator rules (which members, in what order, which structs are raw) and runtime
   probes pin them against Nino's bytes. Nino 4 checks every read against its span, so a truncated or hostile payload
   throws instead of being read past its end. Nino's diagnostics for what it would skip silently (NINO006, NINO007,
-  NINO022, NINO024) are errors in projects that reference DaServer.
+  NINO022, NINO024) are errors in every project that references DaServer.Abstractions.
 - Alternatives: version-tolerant messages (4 bytes and a back-patched length per message for a tolerance a new
   message gives for free); appending to positional structs with zero padding (unsound: an appended field can land in
   trailing padding); Nino's `WEAK_VERSION_TOLERANCE` (all of a project's types at once, a format change); field tags
@@ -1288,8 +1288,8 @@ records that no longer hold). Each: context → decision → consequences.
   are read straight from their span; type ids are `NinoTypeId.Of` (`TypeId<T>` caches it) and `[NinoFormerName]`
   keeps one across a rename or resolves a collision (DAS004); a message that holds a collection holds it in a
   `[NinoPooled]` class its handlers return (`Moves` in the MMO sample: every handler deserializes its own copy and
-  returns it, so fan-out to several handlers allocates nothing). Messages are positional, persisted components
-  version tolerant (ADR-076).
+  returns it, so fan-out to several handlers allocates nothing). Messages are positional, persisted and handed-off components
+  version tolerant or keyed (DAS014, ADR-076).
 - Alternatives: keep the beta (no checked reads, no pools, our own ids to keep in step with Nino's); Nino's
   polymorphic dispatch for messages (boxes struct messages and writes a type id the frame header already carries);
   Nino's interceptors (messages live in other assemblies and calls are generic, which they do not see).
