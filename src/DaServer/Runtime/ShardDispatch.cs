@@ -97,7 +97,17 @@ internal static class ShardDispatch
     internal static void BeginLoad(World world, Entity entity, Actor actor)
     {
         if (world.GetSingleton<ShardStore>().Enabled) entity.Add<AwaitingRecord>(); // LoadSystem restores it, then OnLoad
-        else TurnWatcher.Begin(world, entity, Start(static a => a.OnLoad().AsValueTask(), actor));
+        else BeginLive(world, entity, actor);
+    }
+
+    /// <summary>
+    /// The actor's record is restored (or it has none): its state exists from now on (systems see it) and
+    /// <see cref="Actor.OnLoad"/> runs.
+    /// </summary>
+    internal static void BeginLive(World world, Entity entity, Actor actor)
+    {
+        actor.InitializeEntity(entity);
+        TurnWatcher.Begin(world, entity, Start(static a => a.OnLoad().AsValueTask(), actor));
     }
 
     /// <summary>
@@ -146,8 +156,7 @@ internal static class ShardDispatch
         actor.Entity = entity;
         var idle = actor.UnloadAfterIdle;
         if (idle > TimeSpan.Zero) entity.Add<UnloadWhenIdle>() = new UnloadWhenIdle((long)idle.TotalMilliseconds);
-        actor.InitializeEntity(entity);
-        return entity;
+        return entity; // no state yet: it is restored or created when the actor becomes live (BeginLive)
     }
 
     /// <summary>Start a lifecycle hook, turning a synchronous throw into a faulted task.</summary>

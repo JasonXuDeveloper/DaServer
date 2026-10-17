@@ -47,3 +47,7 @@ DaServer.Cluster.SlotTable (null flag, version tolerant, id 3509FA9D)
 - Version: long raw(8)
 - Coordinator: ulong raw(8)
 - Overrides: DaServer.Cluster.SlotOverride[] Nino.Core.UnmanagedArrayFormatter<DaServer.Cluster.SlotOverride>
+DaServer.Persistence.SessionsRecord (null flag, version tolerant, id EB076B62)
+- Sessions: DaServer.ClientSession[] Nino.Core.UnmanagedArrayFormatter<DaServer.ClientSession> no header, positional, raw, id 55AFFF04 {raw(16){Node:ulong@0:raw(8),Id:long@8:raw(8)}}
+- Granted: DaServer.ClientSession[] Nino.Core.UnmanagedArrayFormatter<DaServer.ClientSession> no header, positional, raw, id 55AFFF04 {raw(16){Node:ulong@0:raw(8),Id:long@8:raw(8)}}
+- Superseded: DaServer.ClientSession[] Nino.Core.UnmanagedArrayFormatter<DaServer.ClientSession> no header, positional, raw, id 55AFFF04 {raw(16){Node:ulong@0:raw(8),Id:long@8:raw(8)}}

@@ -246,6 +246,21 @@ public sealed partial class InterestSystem : EcsSystem
     private static void Earn(ref Ledger ledger) => ledger.Gold++;
 }
 
+/// <summary>
+/// Counts the ticks each live copy of a ledger with a streak (keys from 7,000) gets, per node: a copy that handed its
+/// state to another node, or one still waiting for it, must get none.
+/// </summary>
+public sealed partial class TallySystem : EcsSystem
+{
+    public static readonly System.Collections.Concurrent.ConcurrentDictionary<(ulong Node, long Key), int> Ticks = new();
+
+    [ForEach, With<Streak>]
+    private static void Tally(in Ledger _, in ActorRef self, World world)
+    {
+        if (self.Actor.Key >= 7000) Ticks.AddOrUpdate((world.Shard().Node.Id, self.Actor.Key), 1, static (_, n) => n + 1);
+    }
+}
+
 /// <summary>A request no type handles.</summary>
 [NinoType, Message] public partial record struct Unhandled : IRequest<int>;
 

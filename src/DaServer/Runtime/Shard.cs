@@ -17,6 +17,9 @@ internal sealed class Shard : CompletionThread
     /// </summary>
     private const int CompletionQueueCapacity = 16 * 1024;
 
+    /// <summary>The handoff record's sessions section (stateless: one for every shard).</summary>
+    private static readonly Persistence.SessionsSection Sessions = new();
+
     private readonly MpmcQueue<WorkItem> _dispatchQueue; // new calls and messages: full = refused (Overloaded)
     private readonly MpmcQueue<WorkItem> _completionQueue; // work that finishes admitted work: never refused
     private readonly ConcurrentQueue<WorkItem> _overflow = new(); // only when the completion ring is full
@@ -287,7 +290,8 @@ internal sealed class Shard : CompletionThread
         }
 
         World.AddSingleton<ServiceDirectory>() = new ServiceDirectory(services);
-        var moved = ServerRegistry.PersistentTypes;
+        // Every actor moving to another node takes its client sessions along, whatever components it persists.
+        Persistence.PersistentType[] moved = [.. ServerRegistry.PersistentTypes, Sessions];
         var stored = Array.FindAll(moved, static t => t.Stored);
         World.AddSingleton<ShardStore>() = new ShardStore(stored.Length > 0 ? Node.Options.ActorStore : null, stored, moved,
             moved.ToFrozenDictionary(static t => t.TypeId), new LoadBatch(this), new SaveBatch(this));

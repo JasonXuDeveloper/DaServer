@@ -104,8 +104,13 @@ public abstract class Actor : ShardObject
     /// </summary>
     public virtual ErrorAction OnError(Exception error) => ErrorAction.Resume;
 
-    /// <summary>Components every loaded actor starts with (the entity already has <see cref="ActorRef"/>).</summary>
+    /// <summary>The actor's own state when its record did not restore it (the actor becomes live: it loaded or arrived).</summary>
     internal virtual void InitializeEntity(Entity entity)
+    {
+    }
+
+    /// <summary>The actor's own state goes (its record was handed to another node).</summary>
+    internal virtual void ReleaseState(Entity entity)
     {
     }
 }
@@ -119,15 +124,25 @@ public abstract class Actor<TId> : Actor where TId : struct, IActorId
 
 /// <summary>
 /// An actor whose state is one component, added to its entity on load: <c>State.Gold += 10</c>. Systems query it like
-/// any component (<c>[ForEach] void Regen(ref PlayerState s)</c> runs over every player of the shard). The state starts
-/// as <c>new TState()</c>, so field initializers run: <c>public HashSet&lt;long&gt; Online = new();</c>.
+/// any component (<c>[ForEach] void Regen(ref PlayerState s)</c> runs over every live player of the shard). The state
+/// starts as <c>new TState()</c>, so field initializers run: <c>public HashSet&lt;long&gt; Online = new();</c>. The state
+/// and the actor's persisted components exist only while the actor is live (from its load to its handoff): a copy
+/// waiting for its record, or one that handed its record to another node, is seen by no system.
 /// </summary>
 public abstract class Actor<TId, TState> : Actor<TId> where TId : struct, IActorId where TState : struct, IComponent
 {
     /// <summary>The actor's state (a ref into ECS storage: re-read it after an <c>await</c>).</summary>
     protected ref TState State => ref Entity.Get<TState>();
 
-    internal override void InitializeEntity(Entity entity) => entity.Add<TState>() = new TState();
+    internal override void InitializeEntity(Entity entity)
+    {
+        if (!entity.Has<TState>()) entity.Add<TState>() = new TState();
+    }
+
+    internal override void ReleaseState(Entity entity)
+    {
+        if (entity.Has<TState>()) entity.Remove<TState>();
+    }
 }
 
 /// <summary>

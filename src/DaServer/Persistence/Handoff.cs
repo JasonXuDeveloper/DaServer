@@ -12,8 +12,9 @@ internal readonly record struct HandOff(ulong To) : IComponent;
 /// <summary>
 /// The record went to <see cref="To"/>: the actor is removed (its mail forwarded) once it accepted, or saved to the
 /// store when it refused or did not answer by <see cref="UntilMs"/>.
+/// The copy holds no state meanwhile (no system sees it): <see cref="Record"/> restores it for that save.
 /// </summary>
-internal readonly record struct HandingOff(ulong To, long UntilMs) : IComponent;
+internal readonly record struct HandingOff(ulong To, long UntilMs, byte[] Record) : IComponent;
 
 /// <summary>
 /// The actor moved here from <see cref="From"/>, which may still hold it: its mail waits for the record, or for word that
@@ -74,8 +75,11 @@ internal static class Handoff
         else ShardDispatch.BeginLoad(world, entity, actor);
     }
 
-    /// <summary>Send the leaving actor's record to <paramref name="to"/>; false when that node is gone.</summary>
-    public static bool Send(World world, Entity entity, Actor actor, ulong to)
+    /// <summary>
+    /// Send the leaving actor's record to <paramref name="to"/> and take the state off this copy (the record's sections
+    /// returned, to restore them if the handoff falls back); null when that node is gone.
+    /// </summary>
+    public static byte[]? Send(World world, Entity entity, Actor actor, ulong to)
     {
         var node = world.Shard().Node;
         var stored = entity.Has<Stored>() ? entity.Get<Stored>() : default;
@@ -85,9 +89,22 @@ internal static class Handoff
         BinaryPrimitives.WriteInt64LittleEndian(head[sizeof(ulong)..], stored.Version);
         BinaryPrimitives.WriteUInt64LittleEndian(head[(sizeof(ulong) + sizeof(long))..], stored.Hash);
         record.Advance(RecordHeader);
-        Records.WriteSections(entity, world.GetSingleton<ShardStore>().Moved, record);
+        var moved = world.GetSingleton<ShardStore>().Moved;
+        Records.WriteSections(entity, moved, record);
         record.SetHeader(FrameKind.Message, actor.HandlerType.Id, Record, actor.Key);
-        return node.SendToNode(to, record);
+        var sections = FrameHeader.PayloadOf(FrameHeader.Read(record.Frame), record.Frame)[RecordHeader..].ToArray(); // cold: one per move
+        if (!node.SendToNode(to, record)) return null;
+        foreach (var type in moved) type.Remove(entity);
+        actor.ReleaseState(entity);
+        return sections;
+    }
+
+    /// <summary>The handoff was refused or not answered: the copy takes its state back, then the store keeps it.</summary>
+    public static void Reclaim(World world, Entity entity, byte[] record)
+    {
+        Records.Read(entity, record, world.GetSingleton<ShardStore>().ById);
+        entity.Get<ActorRef>().Actor.InitializeEntity(entity);
+        Fallback(entity);
     }
 
     /// <summary>The handoff went nowhere: the store keeps the record (or, without one, the actor just goes).</summary>
@@ -129,11 +146,11 @@ internal static class Handoff
                     ShardDispatch.BeginLoad(world, entity, entity.Get<ActorRef>().Actor);
                 }
             }
-            else if (loaded && entity.Has<HandingOff>())
+            else if (loaded && entity.TryGet<HandingOff>(out var handingOff))
             {
                 entity.Remove<HandingOff>();
                 if (payload[sizeof(ulong)] == 1) entity.Add<Removing>() = new Removing(RpcStatus.Ok, null); // its mail follows the record
-                else Fallback(entity);
+                else Reclaim(world, entity, handingOff.Record);
             }
         }
         finally
@@ -162,6 +179,7 @@ internal static class Handoff
         try
         {
             Records.Read(entity, payload[RecordHeader..], store.ById);
+            actor.InitializeEntity(entity);
         }
         catch (Exception e)
         {
@@ -183,7 +201,7 @@ internal static class Handoff
             };
         }
 
-        TurnWatcher.Begin(world, entity, ShardDispatch.Start(static a => a.OnLoad().AsValueTask(), actor));
+        ShardDispatch.BeginLive(world, entity, actor);
         return true;
     }
 
@@ -208,12 +226,14 @@ internal sealed partial class HandoffSystem : EcsSystem
 {
     public override int Priority => 6;
 
-    [ForEach, Without<Saving>]
+    // After its write in flight and a critical save asked for (the record carries the version they produce).
+    [ForEach, Without<Saving>, Without<SaveNow>]
     private static void Send(Entity actor, in HandOff handOff, in ActorRef self, in ShardActivity activity, World world)
     {
         var (to, target, now) = (handOff.To, self.Actor, activity.NowMs);
         actor.Remove<HandOff>(); // the refs above are invalid from here on
-        if (Handoff.Send(world, actor, target, to)) actor.Add<HandingOff>() = new HandingOff(to, now + Handoff.TimeoutMs(world.Shard().Node));
+        if (Handoff.Send(world, actor, target, to) is { } record)
+            actor.Add<HandingOff>() = new HandingOff(to, now + Handoff.TimeoutMs(world.Shard().Node), record);
         else Handoff.Fallback(actor);
     }
 }
@@ -232,10 +252,11 @@ internal sealed partial class HandoffTimeoutSystem : EcsSystem
     }
 
     [ForEach]
-    private static void Unanswered(Entity actor, in HandingOff handingOff, in ShardActivity activity)
+    private static void Unanswered(Entity actor, in HandingOff handingOff, in ShardActivity activity, World world)
     {
         if (activity.NowMs < handingOff.UntilMs) return;
-        actor.Remove<HandingOff>();
-        Handoff.Fallback(actor);
+        var record = handingOff.Record;
+        actor.Remove<HandingOff>(); // `handingOff` is invalid from here on
+        Handoff.Reclaim(world, actor, record);
     }
 }
