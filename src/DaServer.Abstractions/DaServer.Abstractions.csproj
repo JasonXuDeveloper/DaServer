@@ -20,7 +20,7 @@
              with the solution's own global properties (no TargetFramework of ours): one instance, not two writing the same
              output in parallel. -->
         <ProjectReference Include="..\DaServer.WireTool\DaServer.WireTool.csproj" ReferenceOutputAssembly="false" PrivateAssets="all"
-                          SkipGetTargetFrameworkProperties="true" />
+                          SkipGetTargetFrameworkProperties="true" UndefineProperties="%3BTargetFramework" />
         <None Include="..\DaServer.WireTool\bin\$(Configuration)\net10.0\**\*.dll;..\DaServer.WireTool\bin\$(Configuration)\net10.0\*.json"
               Pack="true" PackagePath="tools" Visible="false" />
         <None Include="buildTransitive\DaServer.Abstractions.props" Pack="true" PackagePath="buildTransitive" />
