@@ -56,7 +56,19 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
 
     private uint[] _pulseKeys = [];
     private Func<int>[] _pulseSources = [];
-    private CardEntry[] _cardEntries = [];
+    private CardEntry[] _cardEntries = [new(ClusterMember.BuildKey, Build)];
+
+    /// <summary>
+    /// What this node runs (V2): the framework's and the application's informational versions, on the card so a
+    /// rolling upgrade is visible in every view (<see cref="ClusterMember.Build"/>).
+    /// </summary>
+    internal static readonly string Build = "daserver " + VersionOf(typeof(Node).Assembly) + "; app " +
+        VersionOf(System.Reflection.Assembly.GetEntryAssembly() ?? typeof(Node).Assembly);
+
+    private static string VersionOf(System.Reflection.Assembly assembly) =>
+        assembly.GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false) is [System.Reflection.AssemblyInformationalVersionAttribute v, ..]
+            ? v.InformationalVersion
+            : assembly.GetName().Version?.ToString() ?? "unknown";
 
     void INodeContext.AddPulse(uint key, Func<int> read)
     {
@@ -368,7 +380,8 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
         var handlers = new List<HostedMessage>();
         foreach (var handlerType in HostedHandlerTypes)
         foreach (var handler in handlerType.Handlers.All)
-            handlers.Add(new HostedMessage { MessageId = handler.MessageId, HandlerTypeId = handlerType.Id, Actor = handlerType.IsActor });
+            if (Options.Unannounced?.Invoke(handler.MessageId) != true)
+                handlers.Add(new HostedMessage { MessageId = handler.MessageId, HandlerTypeId = handlerType.Id, Actor = handlerType.IsActor });
         return handlers.ToArray();
     }
 
@@ -395,6 +408,20 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
     }
 
     private ulong[] _clientNodes = [];
+    private string _builds = "";
+
+    /// <summary>Log when the builds the cluster runs change (a rolling upgrade starts or completes, V2).</summary>
+    private void ReportBuilds(ClusterView view)
+    {
+        var builds = new SortedDictionary<string, int>(StringComparer.Ordinal);
+        foreach (var member in view.Members)
+            if (member.Status != MemberStatus.Dead) builds[member.Build] = builds.GetValueOrDefault(member.Build) + 1;
+        string summary = string.Join(" | ", builds.Select(static b => $"{b.Key} x{b.Value}"));
+        if (summary == _builds) return;
+        bool mixed = builds.Count > 1 || _builds.Contains(" | ", StringComparison.Ordinal);
+        _builds = summary;
+        if (mixed) Logger.LogInformation("The cluster runs {Count} build(s): {Builds}", builds.Count, summary);
+    }
 
     /// <summary>
     /// Called by membership when the view changes: shards drop actors they no longer own, and actors that knew sessions
@@ -418,6 +445,7 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
             }
 
         foreach (var feature in Options.Features) feature.OnViewChanged(view);
+        ReportBuilds(view);
 
         var clientNodes = new List<ulong>();
         foreach (var member in View.Members)
