@@ -1169,3 +1169,25 @@ records that no longer hold). Each: context → decision → consequences.
 - Consequences: co-located actors exchange messages through their shard's mailbox. A placement shared by many actors
   is a hot spot by design: placement groups should stay small (a room, a party).
 
+## ADR-074 Slots own keys; strategies move slots
+- Context: every send to an actor computed its owner by rendezvous hashing, one weight per node hosting the type:
+  cheap at three nodes, a measurable cost per message at hundreds. Placement strategies beyond hashing (by load, by
+  the caller's node, sticky) were asked for. Orleans decides a grain's silo at activation (random, prefer local,
+  activation count, resource-optimized by default since 9.2) and records it in the grain directory, moving grains
+  later (rebalancer, repartitioner); ET places by hand (the id names the process) with a location server for units
+  that move; Kubernetes schedules a pod once (filter, score) and records the binding in etcd. Every strategy that a
+  key alone cannot compute needs a record of the decision; they differ in its grain. Akka cluster sharding hashes
+  entities into a fixed number of shards and lets a coordinator allocate whole shards to nodes (least shards first,
+  rebalancing a few at a time), so the record is one small table that every node caches.
+- Decision: actor keys (the placement for `IPlaced` ids) hash into 4,096 slots. A view gives each slot of an actor
+  type an owner among the type's nodes by rendezvous hashing over (type, slot), or (0, slot) for placed types so
+  they meet: lookups read a table, and a node joining or leaving moves only the slots it wins or held. Strategies act
+  on slots, not actors (S3): a coordinator may override slot owners in a versioned, gossiped table (load-aware
+  rebalancing, sticky slots for heavy actors), moving actors with handoff (ADR-072). No per-actor directory, no
+  "prefer the caller's node": what talks a lot is co-located by `IPlaced`.
+- Alternatives: an Orleans-style directory (a lookup and a registration per activation, and a consistent directory
+  through failures and splits); jump or Maglev hashing (no better than rendezvous per slot once tables are built,
+  and rendezvous gives the "owner without this node" a handoff needs); keeping per-key rendezvous (O(nodes) per send).
+- Consequences: a view change rebuilds one table per actor type (4,096 slots times its nodes, milliseconds, cold).
+  Keys of one slot move together. BenchmarkDotNet numbers: the roadmap's K2 entry.
+
