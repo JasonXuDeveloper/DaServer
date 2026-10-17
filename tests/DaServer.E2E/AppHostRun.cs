@@ -104,12 +104,12 @@ internal static class AppHostRun
         var commands = app.Services.GetRequiredService<ResourceCommandService>();
         var notifications = app.Services.GetRequiredService<ResourceNotificationService>();
         var stop = await commands.ExecuteCommandAsync(node, KnownResourceCommands.StopCommand, cancellationToken);
-        Assert.That(stop.Success, Is.True, $"stopping {node}: {stop.ErrorMessage}");
+        Assert.That(stop.Success, Is.True, $"stopping {node}: {stop.Message}");
         await notifications.WaitForResourceAsync(node, e => e.Snapshot.State?.Text is "Exited" or "Finished", cancellationToken);
         TestContext.Progress.WriteLine($"[e2e] {node} left the cluster");
         await Task.Delay(downFor, cancellationToken);
         var start = await commands.ExecuteCommandAsync(node, KnownResourceCommands.StartCommand, cancellationToken);
-        Assert.That(start.Success, Is.True, $"starting {node}: {start.ErrorMessage}");
+        Assert.That(start.Success, Is.True, $"starting {node}: {start.Message}");
         await notifications.WaitForResourceHealthyAsync(node, cancellationToken);
         TestContext.Progress.WriteLine($"[e2e] {node} joined again");
     }

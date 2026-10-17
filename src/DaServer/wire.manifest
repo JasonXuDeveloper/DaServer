@@ -18,6 +18,7 @@ DaServer.Cluster.ClusterMember (null flag, version tolerant, id 22E5D45D)
 - PulseKeys: uint[] Nino.Core.UnmanagedArrayFormatter<uint>
 - PulseValues: int[] Nino.Core.UnmanagedArrayFormatter<int>
 - Entries: DaServer.Cluster.CardEntry[] Nino.Core.ArrayFormatter<DaServer.Cluster.CardEntry, nested>
+- UpSince: long raw(8)
 DaServer.Cluster.HostedMessage (no header, positional, raw, id 4FBDF5E5)
 - MessageId: uint@0 raw(4)
 - HandlerTypeId: uint@4 raw(4)
@@ -30,3 +31,19 @@ DaServer.Cluster.LinkHello (null flag, version tolerant, id 17E14E65)
 - StreamId: long raw(8)
 - At: long raw(8)
 - Proof: byte[] Nino.Core.UnmanagedArrayFormatter<byte>
+DaServer.Cluster.SlotLoad (null flag, version tolerant, id 1085BD1D)
+- HandlerTypeId: uint raw(4)
+- Sticky: bool raw(1)
+- Slots: ushort[] Nino.Core.UnmanagedArrayFormatter<ushort>
+- Counts: int[] Nino.Core.UnmanagedArrayFormatter<int>
+DaServer.Cluster.SlotOverride (no header, positional, raw, id 35BFFD27)
+- HandlerTypeId: uint@0 raw(4)
+- Slot: ushort@4 raw(2)
+- Node: ulong@8 raw(8)
+DaServer.Cluster.SlotReport (null flag, version tolerant, id E0A04D2D)
+- Node: ulong raw(8)
+- Types: DaServer.Cluster.SlotLoad[] Nino.Core.ArrayFormatter<DaServer.Cluster.SlotLoad, nested>
+DaServer.Cluster.SlotTable (null flag, version tolerant, id 3509FA9D)
+- Version: long raw(8)
+- Coordinator: ulong raw(8)
+- Overrides: DaServer.Cluster.SlotOverride[] Nino.Core.UnmanagedArrayFormatter<DaServer.Cluster.SlotOverride>
