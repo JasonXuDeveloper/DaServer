@@ -57,10 +57,13 @@ internal struct SilenceClock
 {
     private long _lastMs;
 
-    /// <summary>Record a pass at <paramref name="nowMs"/>; true when it ran late.</summary>
-    public bool Tick(long nowMs)
+    /// <summary>Record a pass at <paramref name="nowMs"/>; how long since the previous one when it ran late, else 0.</summary>
+    public long Tick(long nowMs)
     {
         long last = Interlocked.Exchange(ref _lastMs, nowMs);
-        return last != 0 && nowMs - last > 1000;
+        return last != 0 && nowMs - last > 1000 ? nowMs - last : 0;
     }
+
+    /// <summary>Tests: move the previous pass back by <paramref name="ms"/> (a pause of the process).</summary>
+    internal void Rewind(long ms) => Interlocked.Add(ref _lastMs, -ms);
 }

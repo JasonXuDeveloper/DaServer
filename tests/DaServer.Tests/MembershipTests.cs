@@ -11,7 +11,7 @@ public class MembershipTests : ClusterTest
         int Port(Node n) => n.ClusterEndPoint.Port;
         nodes[0].Membership.BlockedPorts = [Port(nodes[1]), Port(nodes[2])];
         nodes[1].Membership.BlockedPorts = nodes[2].Membership.BlockedPorts = [Port(nodes[0])];
-        nodes[0].Membership.SimulatePause(TimeSpan.FromSeconds(5)); // longer than DeadAfter (1.5 s)
+        nodes[0].SimulatePause(TimeSpan.FromSeconds(5)); // longer than DeadAfter (1.5 s)
         await Task.Delay(300); // a few rounds
         Assert.That(nodes[0].View.UpMembers, Has.Length.EqualTo(3), "the silence was this node's pause, not the others'");
         foreach (var node in nodes) node.Membership.BlockedPorts = null;
