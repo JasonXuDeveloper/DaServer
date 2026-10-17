@@ -16,25 +16,27 @@ public sealed class StockShard : Actor<StockShardId, Stock>
     [Handle]
     public bool On(Restock m)
     {
-        State.Left = m.Units;
+        State = new Stock(m.Units, new List<long>());
         Entity.GetOrAdd<SaveNow>();
         if (m.Units == 0) Empty();
         return true;
     }
 
     [Handle]
-    public bool On(TakeOne _)
+    public bool On(TakeOne m)
     {
         if (State.Left == 0) return false;
-        if (--State.Left == 0) Empty();
+        State.Left--;
+        State.Buyers.Add(m.User);
+        if (State.Left == 0) Empty();
         Entity.GetOrAdd<SaveNow>(); // a sold unit is written before the next restart could sell it again
         return true;
     }
 
-    /// <summary>Tell the waiting room: once every shard is empty it turns buyers away instead of queueing them.</summary>
-    private void Empty() => Cluster.Send(new WaitingRoomId(Id.Sale), new ShardEmpty(Id.Shard));
-
     [Handle] public int On(UnitsLeft _) => State.Left;
+
+    /// <summary>Tell the sale: once every shard is empty, it knows all the buyers and the gates turn everyone else away.</summary>
+    private void Empty() => Cluster.Send(new SaleId(Id.Sale), new ShardEmpty(Id.Shard, State.Buyers.ToArray()));
 }
 
 /// <summary>
@@ -50,10 +52,10 @@ public sealed class Order : Actor<OrderId, Purchase>
     {
         if (State.Status != OrderStatus.None) return State.Status;
         var status = OrderStatus.SoldOut;
-        for (int i = 0; i < Sale.Shards; i++) // the buyer's own shard first, then the next ones as they run out
+        for (int i = 0; i < StockShardId.Shards; i++) // the buyer's own shard first, then the next ones as they run out
         {
-            var shard = StockShardId.Of(Id.Sale, (int)((Id.User + i) % Sale.Shards));
-            if (await Cluster.Ask(shard, new TakeOne()))
+            var shard = StockShardId.Of(Id.Sale, (int)((Id.User + i) % StockShardId.Shards));
+            if (await Cluster.Ask(shard, new TakeOne(Id.User)))
             {
                 status = OrderStatus.Confirmed;
                 break;
@@ -69,19 +71,20 @@ public sealed class Order : Actor<OrderId, Purchase>
 }
 
 /// <summary>
-/// A sale's waiting room: buyers take a position, <see cref="AdmissionSystem"/> admits positions at the sale's pace,
-/// and a buyer may buy once its position is admitted. Once every stock shard is empty it turns everyone away, so the
-/// crowd that comes too late costs one answer each.
+/// A sale: knows when every stock shard is empty and who bought, which the gates ask once and then answer for. A
+/// queued sale also hands out positions and admits them at its pace (<see cref="AdmissionSystem"/>).
 /// </summary>
-public sealed class WaitingRoom : Actor<WaitingRoomId, Room>
+public sealed class Sale : Actor<SaleId, SaleState>
 {
     [Handle]
-    public bool On(OpenRoom m)
+    public bool On(Open m)
     {
-        State = new Room(0, 0, m.PerSecond, Time.GetUtcNow().ToUnixTimeMilliseconds(), 0); // before the shards are stocked
+        State = new SaleState(m.PerSecond, 0, 0, Time.GetUtcNow().ToUnixTimeMilliseconds(), 0, new List<long>()); // before the shards are stocked
         Entity.GetOrAdd<SaveNow>();
         return true;
     }
+
+    [Handle] public SaleInfo On(Describe _) => new(State.Queued, State.SoldOut, State.SoldOut ? State.Buyers.ToArray() : []);
 
     [Handle] public long On(Join _) => State.SoldOut ? 0 : ++State.Issued;
 
@@ -94,30 +97,33 @@ public sealed class WaitingRoom : Actor<WaitingRoomId, Room>
     [Handle]
     public void On(ShardEmpty m)
     {
+        if ((State.EmptyShards & 1 << m.Shard) != 0) return;
         State.EmptyShards |= 1 << m.Shard;
+        State.Buyers.AddRange(m.Buyers);
         if (State.SoldOut) Entity.GetOrAdd<SaveNow>();
     }
 }
 
 /// <summary>
-/// Admits waiting buyers at each room's pace, every tick. Capacity nobody waited for is not saved up: a burst of
+/// Admits a queued sale's buyers at its pace, every tick. Capacity nobody waited for is not saved up: a burst of
 /// arrivals after a quiet minute is admitted at the pace too.
 /// </summary>
 public sealed partial class AdmissionSystem : EcsSystem
 {
     [ForEach]
-    private static void Admit(ref Room room, World world)
+    private static void Admit(ref SaleState sale, World world)
     {
+        if (!sale.Queued) return;
         long now = world.Time().GetUtcNow().ToUnixTimeMilliseconds();
-        if (room.PerSecond <= 0 || room.Released >= room.Issued)
+        if (sale.Released >= sale.Issued)
         {
-            room.AtMs = now;
+            sale.AtMs = now;
             return;
         }
 
-        long due = (now - room.AtMs) * room.PerSecond / 1000;
+        long due = (now - sale.AtMs) * sale.PerSecond / 1000;
         if (due <= 0) return;
-        room.AtMs += due * 1000 / room.PerSecond;
-        room.Released = Math.Min(room.Issued, room.Released + due);
+        sale.AtMs += due * 1000 / sale.PerSecond;
+        sale.Released = Math.Min(sale.Issued, sale.Released + due);
     }
 }

@@ -12,26 +12,27 @@ await ConsoleApp.RunAsync(args, Crowd.RunAsync);
 internal static class Crowd
 {
     /// <summary>
-    /// Buyers arrive at once for the units on sale: each queues, waits until admitted or told the sale is sold out, buys
-    /// when admitted and buys again (a retry: the answer must not change). Exit code 0 only if exactly the units were
-    /// sold, none is left, no retry changed its answer and every confirmed order reads back confirmed.
+    /// Buyers arrive at once for the units on sale: each buys and buys again (a retry: the answer must not change); in a
+    /// queued sale (<paramref name="perSecond"/> above 0) each first queues and waits until admitted or told the sale is
+    /// sold out. Exit code 0 only if exactly the units were sold, none is left, no retry changed its answer and every
+    /// confirmed order reads back confirmed.
     /// </summary>
     /// <param name="buyers">Buyers in the crowd.</param>
     /// <param name="units">Units on sale.</param>
-    /// <param name="perSecond">Buyers the waiting room admits a second.</param>
+    /// <param name="perSecond">A queued sale admitting this many buyers a second (0: no queue, everybody buys at once).</param>
     /// <param name="connections">Client connections the buyers share (a buyer is a flow, not a socket).</param>
     /// <param name="inFlight">Buyers in progress per connection.</param>
     /// <param name="pollMs">How often a waiting buyer asks whether it is admitted.</param>
     /// <param name="webSocket">Connect over WebSocket (ws://host:port/clients/ws), as browsers do, instead of TCP.</param>
     /// <param name="sale">The sale's number.</param>
-    public static async Task<int> RunAsync(int buyers = 1_000_000, int units = 100, int perSecond = 2_000, int connections = 64,
+    public static async Task<int> RunAsync(int buyers = 1_000_000, int units = 100, int perSecond = 0, int connections = 64,
         int inFlight = 256, int pollMs = 500, string webSocket = "", long sale = 1)
     {
         var endpoints = Endpoints.FromEnvironment();
         await using var swarm = new Swarm(new SwarmOptions { Loops = Math.Min(Environment.ProcessorCount, connections) });
         var meter = swarm.Meter;
-        var (turnedAway, soldOutWaiting, soldOutAdmitted, requests) = (meter.Counter("turned away"), meter.Counter("sold out while waiting"),
-            meter.Counter("sold out when buying"), meter.Counter("requests", SwarmCounterKind.Rate));
+        var (soldOut, turnedAway, soldOutWaiting, requests) = (meter.Counter("sold out"), meter.Counter("turned away from the queue"),
+            meter.Counter("sold out while queued"), meter.Counter("requests", SwarmCounterKind.Rate));
         var changed = meter.Counter("retries answered differently", SwarmCounterKind.Failure);
         var confirmed = new ConcurrentDictionary<long, bool>();
         var clients = new ClusterClient[connections];
@@ -42,7 +43,8 @@ internal static class Crowd
             else await user.ConnectAsync(endpoints);
         });
         await Call(() => clients[0].Ask(new OpenSale(sale, units, perSecond)));
-        Console.WriteLine($"sale {sale}: {units} units, {buyers:N0} buyers admitted {perSecond}/s, {connections} connections x {inFlight} in flight");
+        Console.WriteLine($"sale {sale}: {units} units, {buyers:N0} buyers{(perSecond > 0 ? $" queued, admitted {perSecond}/s" : "")}, " +
+                          $"{connections} connections x {inFlight} in flight");
 
         long next = 0;
         var lanes = new List<Task>();
@@ -59,9 +61,9 @@ internal static class Crowd
         int unconfirmed = 0;
         foreach (long user in confirmed.Keys)
             if (await Call(() => clients[user % connections].Ask(new OrderOf(sale, user))) != OrderStatus.Confirmed) unconfirmed++;
-        Console.WriteLine($"{buyers:N0} buyers: {confirmed.Count} confirmed, {turnedAway.Value:N0} turned away, {soldOutWaiting.Value:N0} sold out " +
-                          $"while waiting, {soldOutAdmitted.Value:N0} when buying; {requests.Value:N0} requests in {result.Cost.Elapsed.TotalSeconds:F1}s " +
-                          $"({requests.Value / result.Cost.Elapsed.TotalSeconds:N0}/s)");
+        Console.WriteLine($"{buyers:N0} buyers: {confirmed.Count} confirmed, {soldOut.Value:N0} sold out, {turnedAway.Value:N0} turned away from " +
+                          $"the queue, {soldOutWaiting.Value:N0} sold out while queued; {requests.Value:N0} requests in " +
+                          $"{result.Cost.Elapsed.TotalSeconds:F1}s ({requests.Value / result.Cost.Elapsed.TotalSeconds:N0}/s)");
         return result
             .Expect(confirmed.Count == Math.Min(units, buyers), $"{confirmed.Count} orders confirmed, not {Math.Min(units, buyers)}")
             .Expect(left == Math.Max(0, units - buyers), $"{left} units left")
@@ -70,25 +72,29 @@ internal static class Crowd
 
         async Task Buyer(ClusterClient client, long user)
         {
-            long position = await Call(() => client.Ask(new QueueUp(sale)));
-            if (position == 0)
+            long position = 0;
+            if (perSecond > 0)
             {
-                turnedAway.Add();
-                return;
-            }
+                position = await Call(() => client.Ask(new QueueUp(sale)));
+                if (position == 0)
+                {
+                    turnedAway.Add();
+                    return;
+                }
 
-            Admission admission;
-            while ((admission = await Call(() => client.Ask(new CheckIn(sale, position)))) == Admission.Waiting) await Task.Delay(pollMs);
-            if (admission == Admission.SoldOut)
-            {
-                soldOutWaiting.Add();
-                return;
+                Admission admission;
+                while ((admission = await Call(() => client.Ask(new CheckIn(sale, position)))) == Admission.Waiting) await Task.Delay(pollMs);
+                if (admission == Admission.SoldOut)
+                {
+                    soldOutWaiting.Add();
+                    return;
+                }
             }
 
             var status = await Call(() => client.Ask(new PlaceOrder(sale, user, position)));
             if (await Call(() => client.Ask(new PlaceOrder(sale, user, position))) != status) changed.Add();
             if (status == OrderStatus.Confirmed) confirmed[user] = true;
-            else soldOutAdmitted.Add();
+            else soldOut.Add();
         }
 
         // One request: its latency recorded, retried while the cluster asks to come back later.

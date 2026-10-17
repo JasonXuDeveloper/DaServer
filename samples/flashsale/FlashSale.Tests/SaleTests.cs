@@ -4,52 +4,54 @@ using NUnit.Framework;
 
 namespace FlashSale.Tests;
 
-/// <summary>The sale's guarantees, in an in-process cluster: no unit sold twice, retries answered alike, admission paced.</summary>
+/// <summary>The sale's guarantees in an in-process cluster: no unit sold twice, retries answered alike, queues paced.</summary>
 public class SaleTests
 {
     [Test]
     public async Task EveryUnitIsSoldOnceAndRetriesGetTheSameAnswer()
     {
-        await using var cluster = await TestCluster.StartAsync(o => o.Nodes = 2);
+        await using var cluster = await TestCluster.StartAsync(o =>
+        {
+            o.Nodes = 2;
+            o.ClientConnections = true;
+        });
+        var client = await cluster.ConnectAsync();
         const long sale = 1;
         const int units = 100, buyers = 400;
-        for (int shard = 0; shard < Sale.Shards; shard++)
-            await cluster.Cluster.Ask(StockShardId.Of(sale, shard), new Restock(units / Sale.Shards + (shard < units % Sale.Shards ? 1 : 0)));
+        Assert.That(await client.Ask(new OpenSale(sale, units, PerSecond: 0)), Is.True);
 
         var orders = new Task<OrderStatus>[buyers];
-        for (int user = 0; user < buyers; user++) // all at once, through both nodes
-            orders[user] = cluster.Node(user % 2).Ask(OrderId.Of(sale, user), new Buy()).AsTask();
+        for (int user = 0; user < buyers; user++) orders[user] = client.Ask(new PlaceOrder(sale, user, 0)).AsTask(); // all at once
         var outcomes = await Task.WhenAll(orders);
         Assert.That(outcomes.Count(static s => s == OrderStatus.Confirmed), Is.EqualTo(units), "every unit sold, none twice");
         Assert.That(outcomes.Count(static s => s == OrderStatus.SoldOut), Is.EqualTo(buyers - units));
 
-        for (int user = 0; user < buyers; user += 7)
-            Assert.That(await cluster.Node(1 - user % 2).Ask(OrderId.Of(sale, user), new Buy()), Is.EqualTo(outcomes[user]), "a retry");
-        int left = 0;
-        for (int shard = 0; shard < Sale.Shards; shard++) left += await cluster.Cluster.Ask(StockShardId.Of(sale, shard), new UnitsLeft());
-        Assert.That(left, Is.Zero);
+        for (int user = 0; user < buyers; user++) // retries, once the gates know the sale is sold out
+            Assert.That(await client.Ask(new PlaceOrder(sale, user, 0)), Is.EqualTo(outcomes[user]), $"a retry of {user}");
+        Assert.That(await client.Ask(new PlaceOrder(sale, buyers, 0)), Is.EqualTo(OrderStatus.SoldOut), "a late buyer");
+        Assert.That(await client.Ask(new SaleStock(sale)), Is.Zero);
     }
 
     [Test]
-    public async Task TheWaitingRoomAdmitsBuyersAtItsPace()
+    public async Task AQueuedSaleAdmitsBuyersAtItsPace()
     {
-        await using var cluster = await TestCluster.StartAsync(o => o.ManualTime = true);
-        var room = new WaitingRoomId(2);
-        await cluster.Cluster.Ask(room, new OpenRoom(PerSecond: 100));
-        for (int i = 0; i < 1000; i++) await cluster.Cluster.Ask(room, new Join());
+        await using var cluster = await TestCluster.StartAsync(o =>
+        {
+            o.ManualTime = true;
+            o.ClientConnections = true;
+        });
+        var client = await cluster.ConnectAsync();
+        const long sale = 2;
+        await client.Ask(new OpenSale(sale, Units: 1000, PerSecond: 100));
+        for (int i = 0; i < 1000; i++) await client.Ask(new QueueUp(sale));
 
-        Assert.That(await cluster.Cluster.Ask(room, new Admitted(1)), Is.EqualTo(Admission.Waiting), "nobody before the clock moves");
+        Assert.That(await client.Ask(new CheckIn(sale, 1)), Is.EqualTo(Admission.Waiting), "nobody before the clock moves");
+        Assert.That(await client.Ask(new PlaceOrder(sale, 1, 1)), Is.EqualTo(OrderStatus.None), "no skipping the queue");
         await cluster.AdvanceAsync(TimeSpan.FromSeconds(1));
-        Assert.That(await cluster.Cluster.Ask(room, new Admitted(100)), Is.EqualTo(Admission.Admitted), "one second: 100 admitted");
-        Assert.That(await cluster.Cluster.Ask(room, new Admitted(101)), Is.EqualTo(Admission.Waiting));
+        Assert.That(await client.Ask(new CheckIn(sale, 100)), Is.EqualTo(Admission.Admitted), "one second: 100 admitted");
+        Assert.That(await client.Ask(new CheckIn(sale, 101)), Is.EqualTo(Admission.Waiting));
+        Assert.That(await client.Ask(new PlaceOrder(sale, 1, 1)), Is.EqualTo(OrderStatus.Confirmed));
         await cluster.AdvanceAsync(TimeSpan.FromSeconds(9));
-        Assert.That(await cluster.Cluster.Ask(room, new Admitted(1000)), Is.EqualTo(Admission.Admitted), "ten seconds: everybody");
-
-        for (int shard = 0; shard < Sale.Shards; shard++) await cluster.Cluster.Ask(StockShardId.Of(2, shard), new Restock(0));
-        await cluster.WaitUntilAsync(() => cluster.Cluster.Ask(room, new Join()).AsTask().Result == 0, TimeSpan.FromSeconds(5),
-            "every shard empty: the room turns newcomers away");
-        Assert.That(await cluster.Cluster.Ask(room, new Admitted(1000)), Is.EqualTo(Admission.Admitted), "admitted stays admitted");
-        long late = await cluster.Cluster.Ask(room, new Join()); // 0: turned away
-        Assert.That(late, Is.Zero);
+        Assert.That(await client.Ask(new CheckIn(sale, 1000)), Is.EqualTo(Admission.Admitted), "ten seconds: everybody");
     }
 }
