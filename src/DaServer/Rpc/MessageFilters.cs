@@ -14,8 +14,10 @@ public interface IMessageFilter
 }
 
 /// <summary>
-/// Process-wide dispatch-stage filters, registered at startup (before nodes start) and run by every generated
-/// dispatcher of servers: first the filters of every message, then those of the message's type, in registration order.
+/// Dispatch-stage filters, registered at startup and run by every generated dispatcher of servers: first the filters
+/// of every message, then those of the message's type, in registration order. Process-wide: they are the application's
+/// policy, the same code on every node of a process (several nodes share a process only in tests), and the generated
+/// dispatcher reads them from a static per message type, two length checks when there are none.
 /// </summary>
 public static class MessageFilters
 {
@@ -23,19 +25,28 @@ public static class MessageFilters
     internal static IMessageFilter[] All = [];
 
     /// <summary>
-    /// Run <paramref name="filter"/> for every message, process-wide (every node of the process), on the shard right
-    /// before the handler, whatever the message's origin. Per-node admission of messages from outside, before they are
-    /// routed, is <c>INodeContext.AddIngressFilter</c>.
+    /// Run <paramref name="filter"/> for every message, on the shard right before the handler, whatever the message's
+    /// origin, until the returned registration is disposed. Per-node admission of messages from outside, before they
+    /// are routed, is <c>INodeContext.AddIngressFilter</c>.
     /// </summary>
-    public static void Register(IMessageFilter filter)
+    public static IDisposable Register(IMessageFilter filter)
     {
         lock (Gate) All = [.. All, filter];
+        return new Registration(() => { lock (Gate) All = Array.FindAll(All, f => f != filter); });
     }
 
-    /// <summary>Run <paramref name="filter"/> for messages of type <typeparamref name="T"/> (process-wide, like <see cref="Register(IMessageFilter)"/>).</summary>
-    public static void Register<T>(MessageFilter<T> filter) where T : struct
+    /// <summary>Run <paramref name="filter"/> for messages of type <typeparamref name="T"/>, until the returned registration is disposed.</summary>
+    public static IDisposable Register<T>(MessageFilter<T> filter) where T : struct
     {
         lock (Gate) MessageFilters<T>.Typed = [.. MessageFilters<T>.Typed, filter];
+        return new Registration(() => { lock (Gate) MessageFilters<T>.Typed = Array.FindAll(MessageFilters<T>.Typed, f => f != filter); });
+    }
+
+    private sealed class Registration(Action remove) : IDisposable
+    {
+        private Action? _remove = remove;
+
+        public void Dispose() => Interlocked.Exchange(ref _remove, null)?.Invoke();
     }
 }
 
