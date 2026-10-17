@@ -382,18 +382,21 @@ stateless. In the MMO sample the login server is stateless; gateways hold connec
 clients resume on another gateway with their ticket); the game server (players, realm) and the map servers are
 stateful, maps being heavy actors.
 
-- [ ] S1 Scale signals: per-node OpenTelemetry metrics fit for HPA/KEDA (dispatch queue depth, mailbox backlog, tick
-      overrun, loaded actors per type, connections, CPU), documented as scaling metrics. Agreed: a Prometheus
-      `/metrics` endpoint on the HTTP plane by default (OTLP as now); the default scaling metric is the shards' busy
-      ratio.
+- [x] S1 Scale signals: per-node OpenTelemetry metrics fit for HPA/KEDA (dispatch queue depth, mailbox backlog, loaded
+      actors, connections, `daserver.shard.busy_ratio` from the shards' idle ticks, `daserver.shard.tick_overruns`),
+      scraped from a Prometheus `/metrics` endpoint on the HTTP plane by default (OTLP when configured); the default
+      scaling metric is the busy ratio (design.md, metrics). `HttpPlaneTests.MetricsAreScrapedFromTheHttpPlane`.
 - [x] S2 Scale-in is a drain: SIGTERM -> readiness off -> graceful Leave -> actors hand off (N6) or unload and save
       (N5) -> exit within the termination grace period (D1-D3, the preStop pause first); gateways retire their clients
       in waves (make before break, ADR-026). `HandoffTests`, `ClientsOfALeavingGatewayMoveAndResumeOnAnother`.
-- [ ] S3 Slot allocation (ADR-079, agreed in full): the coordinator (oldest Up member by the card's `UpSince`) keeps
-      a versioned slot table it sends to every member; nodes report their loaded slots per actor type; `[Sticky]` types
-      keep loaded slots where they are (a join moves only empty slots: new keys go to the new node, a map with players
-      stays); other types are evened out by load, up to two slots per round from the most to the least loaded node
-      (handoff). Tests: sticky across a join, an imbalance evened out, a coordinator replaced with its table.
+- [x] S3 Slot allocation (ADR-079): the coordinator (oldest Up member by the card's `UpSince`) keeps a versioned slot
+      table it sends to every member and on every new link; nodes report their loaded slots per actor type when they
+      change; `[Sticky]` types keep loaded slots where they are (a join moves only empty slots: new keys go to the new
+      node, a map with players stays); other types are evened out by load, up to two slots per round from the most to
+      the least loaded node (handoff). A new coordinator drops its earlier term's reports and plans once every member
+      reported (a stale report of its own once unpinned loaded slots for a round). Steady rounds allocate nothing
+      (`AllocationTests` caught 16 KB of counts per type per round). `SlotAllocationTests`: sticky across a join, an
+      imbalance evened out, a coordinator replaced with its pins.
 - [ ] S4 Generated manifests. Done: `DaServer.Aspire` adds only what follows from DaServer (probes, grace period, the
       preStop wait, one workload per group with its peers Service, client ports as external endpoints); scaling policy
       is each application's, in its AppHost (`Platform.cs`): the MMO sample's gateways behind a LoadBalancer, PDBs and
