@@ -1271,7 +1271,10 @@ records that no longer hold). Each: context → decision → consequences.
   `NotHosted` too (retryable, unlike `Forbidden`). What the framework itself writes is versioned by protocol:
   a node link opens with a hello carrying `ControlOp.LinkVersion` (a version-tolerant `LinkHello`; another version is
   refused), and a client connection's first call is `ClientHello` carrying `ControlOp.ClientVersion`: another version
-  gets an error naming both and the client closes the connection, anything sent before the hello closes it.
+  gets an error naming both and is left out of `ClientGroup.All`; the client closes the connection, and anything it
+  sends but keep-alive frames, before an accepted hello or after a refused one, closes it. The client sends nothing
+  but the hello and keep-alives until the hello is answered (calls meanwhile fail `Disconnected`), and a redirect
+  keeps the first connection unless the named node accepts the hello.
 - Alternatives: route the new message to a node of the new build (a second activation of the key, what the slot table
   prevents); per-interface version numbers (Orleans: the card already says what each build handles, and the manifest
   keeps layouts compatible); stop-the-world deploys.
@@ -1279,12 +1282,12 @@ records that no longer hold). Each: context → decision → consequences.
   meanwhile. While every node runs one build the routing cost is one empty-set check per actor message.
 
 ## ADR-078 Nino 4: written in place, read from the span, pooled where messages hold collections
-- Context: Nino 4.0.0-rc.1 replaced the beta's API: `NinoSerializer.Serialize(value, NinoArrayBufferWriter)` writes in
-  place, reads are `NinoDeserializer.Deserialize<T>(span)` checked against the span, `NinoTypeId` is the type id, and
-  `[NinoPooled]` sealed classes are deserialized into instances from a pool. DaServer had its own buffer writer
-  interface, a `WirePayload` reader that checked lengths, its own `[TypeId]` and its own FNV-1a.
-- Decision: `FrameWriter` wraps a `NinoArrayBufferWriter` (frames over `ArrayPool`, the header reserved first, a
-  writer larger than 64 KB is not pooled again) and serializes with one call; messages, replies and record sections
+- Context: Nino 4.0.0-rc.1 writes in place (`NinoSerializer.Serialize(value, NinoArrayBufferWriter)`), reads from a
+  span checked against it (`NinoDeserializer.Deserialize<T>(span)`), computes type ids (`NinoTypeId`) and deserializes
+  `[NinoPooled]` sealed classes into instances from a pool: what a framework on top would otherwise build itself.
+- Decision: `FrameWriter` wraps a `NinoArrayBufferWriter` (frames over `ArrayPool`, the header reserved first; a pooled
+  writer keeps at most 4 KB of array, a larger one goes back to `ArrayPool` on dispose, so 65,536 pooled writers hold
+  at most 256 MB) and serializes with one call; messages, replies and record sections
   are read straight from their span; type ids are `NinoTypeId.Of` (`TypeId<T>` caches it) and `[NinoFormerName]`
   keeps one across a rename or resolves a collision (DAS004); a message that holds a collection holds it in a
   `[NinoPooled]` class its handlers return (`Moves` in the MMO sample: every handler deserializes its own copy and
