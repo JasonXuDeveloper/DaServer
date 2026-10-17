@@ -8,6 +8,8 @@
         <EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
         <IsPackable>false</IsPackable>
         <NoWarn>$(NoWarn);RS2008</NoWarn>
+        <!-- No wire types; the manifest writer is built on it (writing its manifest would build the writer in a cycle). -->
+        <DaServerWireManifestSkip>true</DaServerWireManifestSkip>
     </PropertyGroup>
 
     <ItemGroup>
