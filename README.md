@@ -276,6 +276,14 @@ await cluster.TickAsync(15);                              // exactly 15 ticks on
 
 Actors, services and systems read time from `Time` (`world.Time()` in systems), the clock tests move.
 
+## Rolling upgrades
+
+Old and new nodes run side by side while a deployment rolls. Each project with messages or persisted components
+commits a `wire.manifest`: the build fails (DAS017) when a change would break the other version (a field removed,
+moved or retyped) and asks to record compatible ones (DAS018): `dotnet build -p:UpdateWireManifest=true`. New fields
+go at the end of a message, reply or persisted component; older nodes skip them, newer ones read defaults when they
+are missing. While builds differ, a message is only sent to nodes whose build handles it (ADR-076, ADR-077).
+
 ## Samples
 
 - [`samples/mmo`](samples/mmo): an MMO (login, game, maps, gateways) with 10,000 bots that run the real client.

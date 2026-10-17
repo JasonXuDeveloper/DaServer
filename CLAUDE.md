@@ -41,8 +41,8 @@ src/DaServer/              server runtime (net11.0): Runtime/ Cluster/ Rpc/ Net/
   Runtime/ShardDispatch.cs routing/delivery/invoke operations shared by the runtime systems
   Runtime/Systems/         runtime systems: Dispatch, Turn, ServiceCall, Removal, Unload, Mailbox (ShardMessages group),
                            Rebalance (ShardRebalance), Idle (ShardIdleScan); each reacts to one lifecycle tag (ADR-037)
-src/DaServer.Generator/    incremental generators (AskGenerator, RegistrationGenerator, PolyfillGenerator) + DaServerAnalyzer
-                           (DAS001-016);
+src/DaServer.Generator/    incremental generators (AskGenerator, RegistrationGenerator, PolyfillGenerator, WireManifestGenerator)
+                           + DaServerAnalyzer (DAS001-018); WireManifest.cs: the wire.manifest model (ADR-076);
                            Shapes.cs reads symbols once for both, so "skipped by the generator" == "reported"
 src/DaServer.Hosting/      Generic Host integration, configuration, OpenTelemetry (OTLP when configured), shutdown
 src/DaServer.Persistence.PostgreSql/  actor records in PostgreSQL (ADR-068): PostgreSqlActorStore, AddPostgreSqlActorStore
@@ -107,6 +107,9 @@ doc/                       requirements.md, design.md, decisions.md, roadmap.md
   game's players, a sale's crowd, anything per player or per tick) uses the client protocol: TCP, or WebSocket at
   `/clients/ws` for browsers (wss behind the platform's TLS). An HTTP request crosses two protocols and costs a
   syscall pair of its own; the client protocol batches (ADR-046: 3.5 times the requests per core).
+- Wire layout (ADR-076): a project with `[NinoType]` types commits its `wire.manifest`. Fields are only appended, and
+  only to messages, replies and persisted components that no other type nests; everything else is frozen (DAS017).
+  After a compatible change run `dotnet build -p:UpdateWireManifest=true` and commit the manifest (DAS018).
 - Type ids (messages on the wire, actor id types, services, persisted components) are generated (FNV-1a); set one by
   hand only with `[TypeId]`, to resolve a reported collision or to keep a renamed type's identity and stored records.
 - No topology strings (roles, node names) in code: a node hosts what its project compiles (ADR-017).

@@ -336,10 +336,15 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
       `daserver.handler.failed`).
 
 ## Next: versioning and rolling upgrades (V, before S)
-- [ ] V1 Generated wire manifest (message ids, field layout) committed with a baseline test: fields are append-only,
-      removals and reorders fail the build; check Nino's handling of missing trailing fields.
-- [ ] V2 Protocol and build version in Hello and in the card.
-- [ ] V3 During a rolling upgrade route only to nodes that understand the message (manifest per version in the view).
+- [x] V1 Wire manifest (ADR-076): each project commits `wire.manifest` (its [NinoType] types, fields in Nino's order,
+      which may grow); DAS017 fails the build on breaking layout changes, DAS018 asks to record compatible ones
+      (`dotnet build -p:UpdateWireManifest=true`); Nino reads shorter buffers with defaults (`WEAK_VERSION_TOLERANCE`,
+      set by the Abstractions package). The samples commit theirs.
+- [x] V2 Build on the card (ADR-077): `ClusterMember.Build` (framework and application versions); a node logs when
+      its view's builds change; the Hello's link protocol version refuses incompatible links.
+- [x] V3 Messages only where the build has them (ADR-077): services are chosen among nodes whose build handles the
+      message; an actor's owner stays its type's, and a message its build lacks is refused (`NotHosted`) instead of
+      sent.
 
 ## Next: packages and other core gaps (P, K)
 - [x] P1 `DaServer.Testing` (ADR-071): `TestCluster` starts real nodes in the test process; `NodeOptions.TimeProvider`
