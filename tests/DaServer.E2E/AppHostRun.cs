@@ -29,7 +29,21 @@ internal static class AppHostRun
         void Phase(string what) => TestContext.Progress.WriteLine($"[e2e] {what} at {clock.Elapsed.TotalSeconds:F1} s");
 
         await using var app = await builder.BuildAsync(cancellationToken);
-        await app.StartAsync(cancellationToken);
+        using (var starting = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+        {
+            // A container image that cannot be pulled (a registry or DNS outage on the runner) would hold the start until
+            // the test's own limit: fail early, saying so.
+            starting.CancelAfter(TimeSpan.FromMinutes(5));
+            try
+            {
+                await app.StartAsync(starting.Token);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                Assert.Fail("The AppHost's resources did not start within 5 minutes (a container image not pulled?)");
+            }
+        }
+
         Phase("resources started");
         await EveryResourceHealthy(app, builder.Resources.Where(r => (r is ProjectResource && r.Name != load) || r is IResourceWithConnectionString),
             TimeSpan.FromMinutes(3), cancellationToken);
