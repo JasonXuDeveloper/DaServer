@@ -39,7 +39,12 @@ internal sealed partial class TurnSystem : EcsSystem
         var target = self.Actor;
         if (error != null) Log.ActorFailed(world.Logger(), error, "Unload", target);
         actor.Remove<Turn, TurnEnded>();
-        if (Handoff.TargetOf(world, target) is { } to) actor.Add<HandOff>() = new HandOff(to); // its new owner takes the record
+        if (actor.Has<Fenced>()) // its write was refused meanwhile: the key has a newer owner, this copy goes as it is
+        {
+            actor.Remove<UnloadRequested, Fenced>();
+            actor.Add<Removing>() = new Removing(RpcStatus.Ok, null);
+        }
+        else if (Handoff.TargetOf(world, target) is { } to) actor.Add<HandOff>() = new HandOff(to); // its new owner takes the record
         else if (actor.Has<Stored>()) actor.Add<FinalSave>(); // removed once its record is written (PersistSystem)
         else actor.Add<Removing>() = new Removing(RpcStatus.Ok, null);
     }

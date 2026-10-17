@@ -131,6 +131,9 @@ internal sealed class SaveBatch(Shard shard)
     public readonly List<Entity> Entities = new();
     public readonly List<ulong> Hashes = new();
     public readonly List<FrameWriter> Frames = new();
+
+    /// <summary>Whether each write is its actor's final save (queued after its unload), not a checkpoint taken before.</summary>
+    public readonly List<bool> Finals = new();
     private readonly StoredWrite[] _writes = new StoredWrite[Max];
     private readonly bool[] _accepted = new bool[Max];
     private ValueTask _task;
@@ -142,12 +145,13 @@ internal sealed class SaveBatch(Shard shard)
 
     public bool Full => Count == Max;
 
-    public void Add(Entity entity, StoredKey key, long expectedVersion, FrameWriter record, ulong hash)
+    public void Add(Entity entity, StoredKey key, long expectedVersion, FrameWriter record, ulong hash, bool final)
     {
         _writes[Count] = new StoredWrite(key, expectedVersion, record.WrittenMemory[FrameHeader.Size..]);
         Entities.Add(entity);
         Hashes.Add(hash);
         Frames.Add(record);
+        Finals.Add(final);
     }
 
     public void Start(IActorStore store)
@@ -193,6 +197,7 @@ internal sealed class SaveBatch(Shard shard)
         Frames.Clear();
         Entities.Clear();
         Hashes.Clear();
+        Finals.Clear();
         Array.Clear(_writes);
         InFlight = false;
     }
