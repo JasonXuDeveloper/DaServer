@@ -212,19 +212,11 @@ public sealed partial class DaServerAnalyzer
         if (attribute == null) return;
         if (type.TypeKind != TypeKind.Struct || !Support.Implements(type, "EasyEcs.IComponent") || type.IsGenericType)
             report(Rules.BadPersisted, type.Locations.FirstOrDefault(), attribute, type.Name, "must be a non-generic struct component (EasyEcs.IComponent)");
-        else if (Support.GetAttribute(type, Support.NinoTypeAttribute) is not { } ninoType)
+        else if (NinoOptions.Of(type) is not { } options)
             report(Rules.BadPersisted, type.Locations.FirstOrDefault(), attribute, type.Name, "must be a [NinoType]: its record section is its Nino bytes");
-        else if (FormatOf(ninoType) == 0)
+        else if (options.Format == NinoOptions.Positional)
             report(Rules.BadPersisted, type.Locations.FirstOrDefault(), attribute, type.Name,
                 "must be [NinoType(format: NinoFormat.VersionTolerant)] (or Keyed): its bytes outlive the build that wrote them, and a positional layout cannot change");
-    }
-
-    /// <summary>The <c>NinoFormat</c> of a [NinoType] (0: positional), named or the fourth constructor argument.</summary>
-    private static int FormatOf(AttributeData ninoType)
-    {
-        foreach (var named in ninoType.NamedArguments)
-            if (named.Key == "format" && named.Value.Value is int format) return format;
-        return ninoType.ConstructorArguments.Length > 3 && ninoType.ConstructorArguments[3].Value is int value ? value : 0;
     }
 
     private static void CheckNoComponents(INamedTypeSymbol type, Report report)
