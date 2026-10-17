@@ -331,11 +331,24 @@ public readonly record struct BankId(long Value) : IActorId;
 [NinoType, Message] public partial record struct DepositCount : IRequest<int>;
 [NinoType, Message] public partial record struct DepositTwice(int Gold, BankId Other) : IRequest<int>;
 [NinoType, Message] public partial record struct Earn : IRequest<bool>;
+[NinoType, Message] public partial record struct Hit : IRequest<int>;
 
-/// <summary>Keys below 100 checkpoint every 100 ms, keys from 100 only on unload (or with SaveNow).</summary>
+/// <summary>
+/// Keys below 100 checkpoint every 100 ms, keys from 100 only on unload (or with SaveNow); keys from 1,000 also unload
+/// after 50 ms without mail.
+/// </summary>
 public sealed class Bank : Actor<BankId, Ledger>
 {
     public override TimeSpan SaveEvery => Key < 100 ? TimeSpan.FromMilliseconds(100) : TimeSpan.Zero;
+
+    public override TimeSpan UnloadAfterIdle => Key >= 1000 ? TimeSpan.FromMilliseconds(50) : TimeSpan.Zero;
+
+    [Handle]
+    public int On(Hit _)
+    {
+        if (!Entity.Has<Streak>()) Entity.Add<Streak>();
+        return ++Entity.Get<Streak>().Count;
+    }
 
     [Handle]
     public int On(Deposit m)

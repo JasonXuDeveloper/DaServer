@@ -32,3 +32,6 @@ public struct Earning : IComponent;
 
 /// <summary>Deposits so far: persisted beside the ledger (a record has a section per component).</summary>
 [NinoType, Persist] public partial record struct Deposits(int Count) : IComponent;
+
+/// <summary>Hits in a row: moves with its bank to a new node, but is not stored (ADR-072).</summary>
+[NinoType, Handoff] public partial record struct Streak(int Count) : IComponent;

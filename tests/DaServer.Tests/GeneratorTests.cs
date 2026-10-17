@@ -144,6 +144,7 @@ public class GeneratorTests
     [TestCase("public partial class Bad : EasyEcs.EcsSystem { private int _ticks; protected override void OnUpdate() => _ticks++; }", "DAS007")]
     [TestCase("public record struct Hp(int Value) : EasyEcs.IComponent;", "DAS013")]
     [TestCase("[Persist] public partial class Bad { }", "DAS014")]
+    [TestCase("[Handoff] public partial class Bad { }", "DAS014")]
     public async Task MisuseIsReportedByTheAnalyzer(string source, string id)
     {
         var (_, diagnostics) = await Run(source);
