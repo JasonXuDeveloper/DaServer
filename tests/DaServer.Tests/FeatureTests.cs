@@ -68,6 +68,6 @@ public class FeatureTests : ClusterTest
             Received.Enqueue($"{kind} {header.Key}: {probe.N}");
         }
 
-        private static uint TypeIdOf<T>() => TypeIds.Fnv1a(typeof(T).FullName!);
+        private static uint TypeIdOf<T>() => TypeId<T>.Value;
     }
 }

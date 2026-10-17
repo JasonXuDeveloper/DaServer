@@ -36,7 +36,7 @@ public sealed class MessageHandlers
         {
             if (byId.TryGetValue(handler.MessageId, out var other))
                 throw new InvalidOperationException(
-                    $"Message id collision 0x{handler.MessageId:x8}: {handler} and {other}. Use [TypeId] on one of them.");
+                    $"Message id collision 0x{handler.MessageId:x8}: {handler} and {other}. Give one of them another id with [NinoFormerName].");
             byId[handler.MessageId] = handler;
         }
 

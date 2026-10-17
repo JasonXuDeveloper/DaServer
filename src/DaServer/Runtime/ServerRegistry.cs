@@ -22,7 +22,7 @@ public sealed class HandlerTypeInfo(Type type, bool isActor, Func<object> factor
     /// </summary>
     public uint Id { get; } = Identity(isActor ? IdTypeOf(type) : type);
 
-    private static uint Identity(Type type) => TypeIds.Of(type); // == TypeId<T>.Value
+    private static uint Identity(Type type) => (uint)NinoTypeId.Of(type); // == TypeId<T>.Value
 
     private static Type IdTypeOf(Type actor)
     {
@@ -93,7 +93,7 @@ public static class ServerRegistry
             {
                 if (existing.Type == typeof(T)) return;
                 if (existing.TypeId == typeId)
-                    throw new InvalidOperationException($"Persisted components {existing.Type} and {typeof(T)} hash to the same type id: add [TypeId] to one");
+                    throw new InvalidOperationException($"Persisted components {existing.Type} and {typeof(T)} hash to the same type id: give one another id with [NinoFormerName]");
             }
 
             PersistentList.Add(new Persistence.PersistentType<T>(typeId, stored));

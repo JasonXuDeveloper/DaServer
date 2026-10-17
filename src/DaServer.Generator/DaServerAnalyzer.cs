@@ -239,7 +239,7 @@ internal static class Rules
         DiagnosticSeverity.Error, true);
 
     public static readonly DiagnosticDescriptor IdCollision = new("DAS004", "Message id collision",
-        "Messages '{0}' and '{1}' hash to the same type id; add [TypeId] to one of them", Category,
+        "Messages '{0}' and '{1}' hash to the same type id; give one of them another id with [NinoFormerName(\"...\")]", Category,
         DiagnosticSeverity.Error, true, customTags: WellKnownDiagnosticTags.CompilationEnd);
 
     public static readonly DiagnosticDescriptor NoDefaultConstructor = new("DAS005", "Missing parameterless constructor",
