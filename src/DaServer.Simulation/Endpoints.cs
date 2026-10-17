@@ -1,4 +1,5 @@
 using System.Net;
+using DaServer.Net;
 
 namespace DaServer.Simulation;
 
@@ -13,9 +14,7 @@ public static class Endpoints
         return endpoints;
     }
 
-    private static DnsEndPoint Parse(string address)
-    {
-        int colon = address.LastIndexOf(':');
-        return new DnsEndPoint(address[..colon], int.Parse(address[(colon + 1)..]));
-    }
+    private static DnsEndPoint Parse(string address) => HostPort.TryParse(address, out var host, out int port)
+        ? new DnsEndPoint(host, port)
+        : throw new FormatException($"Not a host:port address: {address}");
 }

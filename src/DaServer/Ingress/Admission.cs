@@ -24,21 +24,22 @@ public interface IIngressFilter
 }
 
 /// <summary>
-/// Allows <c>rate</c> operations a second on average and bursts of up to <c>burst</c>, without allocating. Not thread-safe:
-/// one owner (a connection's receive loop, a lock the caller holds).
+/// Allows <c>rate</c> operations a second on average and bursts of up to <c>burst</c>, without allocating (a
+/// <c>System.Threading.RateLimiting</c> limiter allocates a lease per call). Not thread-safe: one owner (a connection's
+/// receive loop, a lock the caller holds).
 /// </summary>
 public struct TokenBucket(double rate, double burst)
 {
     private readonly double _rate = rate, _burst = burst;
     private double _tokens = burst;
-    private long _last = Stopwatch.GetTimestamp();
+    private long _lastMs = Platform.Milliseconds;
 
     /// <summary>Take one token if there is one; otherwise <paramref name="retryAfter"/> is how long until there is.</summary>
     public bool TryTake(out TimeSpan retryAfter)
     {
-        long now = Stopwatch.GetTimestamp();
-        _tokens = Math.Min(_burst, _tokens + (now - _last) * _rate / Stopwatch.Frequency);
-        _last = now;
+        long now = Platform.Milliseconds;
+        _tokens = Math.Min(_burst, _tokens + (now - _lastMs) * _rate / 1000);
+        _lastMs = now;
         if (_tokens >= 1)
         {
             _tokens--;

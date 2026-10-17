@@ -12,7 +12,7 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
 {
     private Node _node = null!;
     private volatile bool _stopped, _crashed;
-    private readonly TimerWheel<PendingClose> _graces = new(TimeSpan.FromMilliseconds(100)); // lost connections, under its lock
+    private TimerWheel<PendingClose> _graces = null!; // lost connections, under its lock; on the node's clock
     private SendFlusher? _flusher; // with FlushInterval: writes the sessions on its beat
 
     /// <summary>A lost connection whose actors learn it at the end of the resume grace (unless the client resumed).</summary>
@@ -40,6 +40,7 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
     {
         _node = (Node)context; // a capability of this assembly: it may use the node's internals, never the other way round
         _sessionHandler = new SessionHandler(this);
+        _graces = new TimerWheel<PendingClose>(TimeSpan.FromMilliseconds(100), time: _node.Options.TimeProvider);
         var addresses = new ClientAddresses(this);
         context.HandleAddress<ClientSession>(addresses);
         context.HandleAddress<Origin>(addresses); // the origin of a client's message is its session
@@ -710,6 +711,7 @@ internal sealed class GroupMembers
 {
     private readonly Lock _gate = new();
     private SessionState[] _members = new SessionState[4];
+    private FrameChannel[] _channels = new FrameChannel[4]; // the members' channels, slot for slot: a fan-out reads only these
     private int _count;
     private long _id;
 
@@ -738,8 +740,14 @@ internal sealed class GroupMembers
     {
         lock (_gate)
         {
-            if (_count == _members.Length) Array.Resize(ref _members, _count * 2);
+            if (_count == _members.Length)
+            {
+                Array.Resize(ref _members, _count * 2);
+                Array.Resize(ref _channels, _count * 2);
+            }
+
             _members[_count] = session;
+            _channels[_count] = (FrameChannel)session.Channel;
             session.Groups[_id] = _count++;
         }
     }
@@ -752,9 +760,11 @@ internal sealed class GroupMembers
             session.Groups.Remove(_id, out int slot);
             var last = _members[--_count];
             _members[_count] = null!;
+            _channels[_count] = null!;
             if (slot != _count)
             {
                 _members[slot] = last;
+                _channels[slot] = (FrameChannel)last.Channel;
                 last.Groups[_id] = slot;
             }
 
@@ -771,8 +781,8 @@ internal sealed class GroupMembers
         lock (_gate)
         {
             if (_id != groupId) return;
-            var members = _members;
-            for (int i = 0; i < _count; i++) members[i].Channel.Send(frame);
+            var channels = _channels;
+            for (int i = 0; i < _count; i++) channels[i].Send(frame);
         }
     }
 

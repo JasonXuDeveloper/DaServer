@@ -85,8 +85,9 @@ public static class ServerRegistry
     /// A component type of a components project the node references that is part of actor records: stored and moved
     /// (<see cref="PersistAttribute"/>, <paramref name="stored"/>) or only moved (<see cref="HandoffAttribute"/>).
     /// </summary>
-    public static void RegisterPersistent<T>(uint typeId, bool stored) where T : struct, IComponent
+    public static void RegisterPersistent<T>(bool stored) where T : struct, IComponent
     {
+        uint typeId = TypeId<T>.Value;
         lock (Gate)
         {
             foreach (var existing in PersistentList)

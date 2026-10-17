@@ -61,6 +61,21 @@ public class SimulationTests : ClusterTest
     }
 
     [Test]
+    public void LatencyPercentilesAreWithinTheirBucket()
+    {
+        var histogram = new LatencyHistogram();
+        Parallel.For(1, 10_001, ms => histogram.Add(ms / 10.0)); // 0.1 ms .. 1 s, from many threads
+        var snapshot = histogram.Snapshot();
+        Assert.That(snapshot.Count, Is.EqualTo(10_000));
+        Assert.That(snapshot.Percentile(0.50), Is.InRange(500.0, 500 * 1.04));
+        Assert.That(snapshot.Percentile(0.99), Is.InRange(990.0, 990 * 1.04));
+        Assert.That(snapshot.Max, Is.InRange(1000.0, 1000 * 1.04));
+        Assert.That(histogram.Snapshot().Until(snapshot).Count, Is.Zero);
+        for (long us = 0; us < 1L << 30; us = us * 5 / 4 + 1) // every bucket's bound holds its values
+            Assert.That(LatencyHistogram.UpperMs(LatencyHistogram.BucketOf(us)) * 1000, Is.GreaterThan(us).And.LessThanOrEqualTo(us * 1.04 + 1));
+    }
+
+    [Test]
     public void PlansFollowMethodOrderEffectsAndBacktracking()
     {
         var (domain, fetch, eat, nap, idle) = Domain();

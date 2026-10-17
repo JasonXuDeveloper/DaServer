@@ -1,5 +1,6 @@
 using System.Net;
 using DaServer.Client;
+using DaServer.Concurrency;
 using DaServer.Diagnostics;
 using DaServer.Protocol;
 using DaServer.Rpc;
@@ -180,10 +181,12 @@ public sealed class Swarm : IAsyncDisposable
     /// <summary>
     /// Retry an idempotent <paramref name="call"/> while it fails with what <paramref name="transient"/> accepts
     /// (default: the cluster is starting or momentarily full: NotHosted, Timeout, Overloaded), after the wait the refusal
-    /// names (<see cref="RpcException.RetryAfter"/>) and at least half a second.
+    /// names (<see cref="RpcException.RetryAfter"/>) and a jittered backoff (up to half a second, doubling to 5 s), so a
+    /// crowd refused together does not come back together.
     /// </summary>
     public static async Task<T> Retry<T>(Func<Task<T>> call, Func<Exception, bool>? transient = null, int attempts = 60)
     {
+        var backoff = new Backoff(TimeSpan.FromMilliseconds(500), TimeSpan.FromSeconds(5));
         for (int attempt = 1; ; attempt++)
         {
             try
@@ -193,7 +196,7 @@ public sealed class Swarm : IAsyncDisposable
             catch (Exception e) when (attempt < attempts && (transient ?? Starting)(e))
             {
                 var hint = e is RpcException rpc ? rpc.RetryAfter : TimeSpan.Zero;
-                await Task.Delay(hint > TimeSpan.FromMilliseconds(500) ? hint : TimeSpan.FromMilliseconds(500));
+                await Task.Delay(hint + backoff.Next());
             }
         }
     }

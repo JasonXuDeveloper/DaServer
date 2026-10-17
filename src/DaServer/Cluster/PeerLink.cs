@@ -25,6 +25,8 @@ internal sealed class PeerLink : IFrameSink, IDisposable
     private Connection? _handshake;    // connected, waiting for the peer's Resume
     private List<FrameWriter>? _backlog;
     private int _backlogBytes;
+    private int _dropped; // frames dropped since the last report (under the gate)
+    private long _droppedReportedMs = long.MinValue / 2;
     private bool _connecting;
     private bool _disposed;
     private long _streamId = NewStreamId();
@@ -33,7 +35,7 @@ internal sealed class PeerLink : IFrameSink, IDisposable
     // The peer's stream to us. _received is written by the inbound connection's receive loop only.
     private Connection? _inbound;
     private long _inboundStream;
-    private long _received;
+    private PaddedLong _received; // on a line of its own: every frame received writes it, every send reads the link's fields
     private long _acknowledged;
     private Task _inboundTurn = Task.CompletedTask;
 
@@ -73,7 +75,12 @@ internal sealed class PeerLink : IFrameSink, IDisposable
 
             if (_backlogBytes + frame.Length > MaxBacklogBytes)
             {
-                _node.Logger.LogWarning("Link {Host}:{Port} backlog full, dropping frame", Host, Port);
+                // Reported at most every 10 s with the count: a link down under load drops thousands a second.
+                _dropped++;
+                long now = Platform.Milliseconds;
+                if (now - _droppedReportedMs < 10_000) return;
+                Log.BacklogFull(_node.Logger, Host, Port, _dropped);
+                (_dropped, _droppedReportedMs) = (0, now);
                 return;
             }
 
@@ -98,6 +105,7 @@ internal sealed class PeerLink : IFrameSink, IDisposable
         // Everything the previous connection was given must be in the window before it is replayed.
         if (previous != null) await previous.SendCompletion.ConfigureAwait(false);
 
+        var backoff = new Backoff(TimeSpan.FromMilliseconds(100), TimeSpan.FromSeconds(2));
         for (int attempt = 1; ; attempt++)
         {
             try
@@ -134,7 +142,7 @@ internal sealed class PeerLink : IFrameSink, IDisposable
                     return;
                 }
 
-                await Task.Delay(Math.Min(2000, 50 << Math.Min(attempt, 6))).ConfigureAwait(false);
+                await Task.Delay(backoff.Next()).ConfigureAwait(false);
             }
         }
     }
@@ -287,10 +295,10 @@ internal sealed class PeerLink : IFrameSink, IDisposable
             if (_inboundStream != streamId)
             {
                 _inboundStream = streamId;
-                Volatile.Write(ref _received, 0);
+                Volatile.Write(ref _received.Value, 0);
             }
 
-            received = _received;
+            received = _received.Value;
             _acknowledged = received;
             Volatile.Write(ref _inbound, connection);
         }
@@ -305,8 +313,8 @@ internal sealed class PeerLink : IFrameSink, IDisposable
     internal void OnReceived(Connection connection, int length)
     {
         if (connection != _inbound) return; // our own outgoing connection, or before the Resume
-        long received = _received + length;
-        Volatile.Write(ref _received, received);
+        long received = _received.Value + length;
+        Volatile.Write(ref _received.Value, received);
         if (received - _acknowledged >= ResendWindow.ChunkSize) Acknowledge(connection, received);
     }
 
@@ -326,7 +334,7 @@ internal sealed class PeerLink : IFrameSink, IDisposable
     internal void AcknowledgeReceived()
     {
         var connection = Volatile.Read(ref _inbound);
-        long received = Volatile.Read(ref _received);
+        long received = Volatile.Read(ref _received.Value);
         if (connection != null && received != _acknowledged && !connection.IsClosed) Acknowledge(connection, received);
     }
 

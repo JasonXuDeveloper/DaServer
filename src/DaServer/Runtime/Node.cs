@@ -212,9 +212,31 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
         return Task.CompletedTask;
     }
 
-    /// <summary>The host other nodes reach this node at.</summary>
+    /// <summary>
+    /// The host other nodes reach this node at: the configured one, else the bind address, else (listening on every
+    /// address) the container's own address in a container (each replica of a published workload advertises itself:
+    /// a pod's IP, a Compose replica's) and loopback outside one (a local run).
+    /// </summary>
     internal string AdvertisedHost =>
-        Options.AdvertisedHost ?? (Options.ListenAddress == "0.0.0.0" ? IPAddress.Loopback.ToString() : Options.ListenAddress);
+        Options.AdvertisedHost ?? (Options.ListenAddress != "0.0.0.0" ? Options.ListenAddress
+            : InContainer && OwnAddress() is { } own ? own.ToString() : IPAddress.Loopback.ToString());
+
+    /// <summary>Set by the .NET container images (and Aspire's published projects).</summary>
+    private static bool InContainer => Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER") == "true";
+
+    /// <summary>The first IPv4 address of an interface that is up and not loopback (a container has one).</summary>
+    private static IPAddress? OwnAddress()
+    {
+        foreach (var nic in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
+        {
+            if (nic.OperationalStatus != System.Net.NetworkInformation.OperationalStatus.Up ||
+                nic.NetworkInterfaceType == System.Net.NetworkInformation.NetworkInterfaceType.Loopback) continue;
+            foreach (var address in nic.GetIPProperties().UnicastAddresses)
+                if (address.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork) return address.Address;
+        }
+
+        return null;
+    }
 
     /// <summary>What this node hosts, for the startup log (a node hosts what its project compiles, ADR-017).</summary>
     private static string Names(IEnumerable<string> names) => string.Join(", ", names) is { Length: > 0 } s ? s : "none";
@@ -466,7 +488,7 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
     /// <summary>Close a lost client-facing node's sessions on every shard, once their clients had the grace to resume elsewhere.</summary>
     private async Task CloseSessionsOf(ulong clientNode)
     {
-        if (ResumeGrace > TimeSpan.Zero) await Task.Delay(ResumeGrace).ConfigureAwait(false);
+        if (ResumeGrace > TimeSpan.Zero) await Task.Delay(ResumeGrace, Options.TimeProvider).ConfigureAwait(false);
         if (Volatile.Read(ref _started) != 1) return;
         foreach (var shard in _shards)
             shard.Post(static s =>

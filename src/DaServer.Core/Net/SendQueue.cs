@@ -126,6 +126,9 @@ internal sealed class SendQueue(int maxPendingBytes, int bufferSize, bool releas
     /// at the end. A batch of work that sends many messages (the frames of one receive, one shard wake) then costs one
     /// write per channel instead of one per message (a session in 9 groups gets 9 frames per update).
     /// </summary>
+    /// <summary>Whether this thread has a send batch open.</summary>
+    public static bool InBatch => t_batchDepth > 0;
+
     public static Batch BeginBatch()
     {
         t_batchDepth++;
@@ -136,7 +139,9 @@ internal sealed class SendQueue(int maxPendingBytes, int bufferSize, bool releas
     {
         public void Dispose()
         {
-            if (--t_batchDepth > 0 || t_batched is not { Count: > 0 } batched) return;
+            if (--t_batchDepth > 0) return;
+            SendFlusher.EndBatch();
+            if (t_batched is not { Count: > 0 } batched) return;
             foreach (var queue in batched) queue.Signal.Set();
             batched.Clear();
         }

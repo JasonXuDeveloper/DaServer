@@ -88,47 +88,31 @@ public sealed class ConnectionOptions
 /// <para>Receive: frames are parsed in place and handed to <see cref="IChannelHandler.OnFrame"/>.</para>
 /// Steady state allocates nothing: buffers come from <see cref="BufferPool"/>, the two loops are allocated once.
 /// </summary>
-public sealed class Connection : IFrameSender, IFrameChannel
+public sealed class Connection : FrameChannel, IFrameSender
 {
-    private static readonly InvalidOperationException SlowConsumer =
-        new("Send backlog exceeded MaxPendingSendBytes (slow consumer)");
-
     private int _failed; // flushed connections: a flush's write failed and the close is queued
 
     private readonly Socket _socket;
-    private readonly IChannelHandler _handler;
     private readonly ConnectionOptions _options;
-    private readonly SendQueue _queue;
-    private int _closed;
     private readonly ISendTap? _tap;
     private readonly SendFlusher? _flusher;
     private int _writer; // flushed connections: 1 while the flusher or the carry loop writes to the socket
     private byte[] _carry = Array.Empty<byte>(); // flushed connections: what a flush could not write
     private int _carryOffset, _carryLength;
-    private long _lastReceivedMs = Platform.Milliseconds;
-    private long _lastSentMs = Platform.Milliseconds;
+
+    /// <summary>The beat this connection is written on, if any (<see cref="ConnectionOptions.Flusher"/>).</summary>
+    internal SendFlusher? Flusher => _flusher;
 
     public Connection(Socket socket, IChannelHandler handler, ConnectionOptions? options = null)
+        : base(handler, QueueFor(options ??= new ConnectionOptions()))
     {
         _socket = socket;
-        _handler = handler;
-        _options = options ?? new ConnectionOptions();
-        _tap = _options.Tap;
-        _flusher = _options.Flusher;
-        // A connection written on a beat keeps both buffers between beats; one written at once gives the written one back when idle.
-        _queue = new SendQueue(_options.MaxPendingSendBytes, _options.SendBufferSize, _options.ReleaseIdleBuffers, keepSpare: _flusher != null);
+        _options = options;
+        _tap = options.Tap;
+        _flusher = options.Flusher;
         socket.NoDelay = true;
         if (_flusher != null) socket.Blocking = false; // a flush's send returns WouldBlock instead of waiting
     }
-
-    /// <summary>Free slot for the owner (e.g. session or peer node state).</summary>
-    public object? Tag { get; set; }
-
-    public bool IsClosed => Volatile.Read(ref _closed) != 0;
-
-    public long LastReceivedMs => Volatile.Read(ref _lastReceivedMs);
-
-    public long LastSentMs => Volatile.Read(ref _lastSentMs);
 
     /// <summary>
     /// Connect to a host name or address. A name is connected through every address it resolves to ("localhost" is ::1
@@ -179,45 +163,20 @@ public sealed class Connection : IFrameSender, IFrameChannel
         SendCompletion = _flusher != null ? CarryLoop() : SendLoop();
     }
 
+    // A connection written on a beat keeps both buffers between beats; one written at once gives the written one back when idle.
+    private static SendQueue QueueFor(ConnectionOptions options) =>
+        new(options.MaxPendingSendBytes, options.SendBufferSize, options.ReleaseIdleBuffers, keepSpare: options.Flusher != null);
+
     void IFrameSender.Send(ReadOnlySpan<byte> frame) => Send(frame);
 
-    /// <summary>
-    /// Queue a complete frame (header included). Thread-safe, never blocks on IO.
-    /// Returns false when the connection is closed or was closed because the peer is too slow.
-    /// </summary>
-    public bool Send(ReadOnlySpan<byte> frame)
+    private protected override void Wake()
     {
-        if (Volatile.Read(ref _closed) != 0)
-            return false;
-
-        switch (_queue.Append(frame))
-        {
-            case SendQueue.Result.Wake:
-                if (_flusher != null) _flusher.Add(this); // written on the next beat
-                else _queue.Wake(); // at once, or once when the thread's send batch ends
-                return true;
-            case SendQueue.Result.Queued:
-                return true;
-            case SendQueue.Result.Overflow:
-                // Closed off the caller's thread: a fan-out holding a group's lock must not run the close callback inline.
-                Platform.Queue(static c => c.Close(SlowConsumer), this);
-                return false;
-            default:
-                return false;
-        }
+        if (_flusher != null) _flusher.Add(this); // written on the next beat
+        else Queue.Wake();
     }
 
-    /// <summary>
-    /// Until the returned scope is disposed, sends from this thread only queue bytes; each channel's writer is woken
-    /// once at the end (<see cref="SendQueue.BeginBatch"/>).
-    /// </summary>
-    internal static SendQueue.Batch BeginSendBatch() => SendQueue.BeginBatch();
-
-    public void Close(Exception? error = null)
+    private protected override void Abort()
     {
-        if (Interlocked.Exchange(ref _closed, 1) != 0)
-            return;
-
         try
         {
             _socket.Shutdown(SocketShutdown.Both);
@@ -228,16 +187,6 @@ public sealed class Connection : IFrameSender, IFrameChannel
         }
 
         _socket.Dispose();
-        _queue.Signal.Set();
-
-        try
-        {
-            _handler.OnClosed(this, error);
-        }
-        catch
-        {
-            // handler errors must not escape the IO loops
-        }
     }
 
     private async Task SendLoop()
@@ -246,8 +195,8 @@ public sealed class Connection : IFrameSender, IFrameChannel
         {
             while (true)
             {
-                await _queue.Signal.WaitAsync().ConfigureAwait(false);
-                while (Volatile.Read(ref _closed) == 0 && _queue.TryTake(out var batch, out int length))
+                await Queue.Signal.WaitAsync().ConfigureAwait(false);
+                while (!IsClosed && Queue.TryTake(out var batch, out int length))
                 {
                     try
                     {
@@ -266,11 +215,11 @@ public sealed class Connection : IFrameSender, IFrameChannel
                     }
                     finally
                     {
-                        _queue.Release(batch); // the spare while more is queued; idle: back to the pool
+                        Queue.Release(batch); // the spare while more is queued; idle: back to the pool
                     }
                 }
 
-                if (Volatile.Read(ref _closed) != 0)
+                if (IsClosed)
                     return;
             }
         }
@@ -280,8 +229,8 @@ public sealed class Connection : IFrameSender, IFrameChannel
         }
         finally
         {
-            Volatile.Write(ref _closed, 1);
-            _queue.Close(_tap); // queued but never written: the tap still sees it
+            MarkClosed();
+            Queue.Close(_tap); // queued but never written: the tap still sees it
         }
     }
 
@@ -291,8 +240,8 @@ public sealed class Connection : IFrameSender, IFrameChannel
     /// </summary>
     internal void FlushNow()
     {
-        if (Volatile.Read(ref _closed) != 0 || Interlocked.CompareExchange(ref _writer, 1, 0) != 0) return;
-        while (_queue.TryTake(out var batch, out int length))
+        if (IsClosed || Interlocked.CompareExchange(ref _writer, 1, 0) != 0) return;
+        while (Queue.TryTake(out var batch, out int length))
         {
             int offset = 0;
             while (offset < length)
@@ -305,7 +254,7 @@ public sealed class Connection : IFrameSender, IFrameChannel
                 }
                 catch (ObjectDisposedException) // closed meanwhile
                 {
-                    _queue.Release(batch);
+                    Queue.Release(batch);
                     return;
                 }
 
@@ -318,18 +267,18 @@ public sealed class Connection : IFrameSender, IFrameChannel
                 if (error is SocketError.WouldBlock or SocketError.Success) // full: the carry loop finishes it
                 {
                     (_carry, _carryOffset, _carryLength) = (batch, offset, length);
-                    _queue.Signal.Set();
+                    Queue.Signal.Set();
                     return;
                 }
 
-                _queue.Release(batch);
+                Queue.Release(batch);
                 if (Interlocked.Exchange(ref _failed, 1) == 0) // never inline: the flusher holds no connection's locks
                     Platform.Queue(static c => c.Close(new SocketException((int)SocketError.ConnectionReset)), this);
                 return;
             }
 
             KeepAlive.Touch(ref _lastSentMs);
-            _queue.Release(batch);
+            Queue.Release(batch);
         }
 
         Volatile.Write(ref _writer, 0);
@@ -345,8 +294,8 @@ public sealed class Connection : IFrameSender, IFrameChannel
         {
             while (true)
             {
-                await _queue.Signal.WaitAsync().ConfigureAwait(false);
-                if (Volatile.Read(ref _closed) != 0) return;
+                await Queue.Signal.WaitAsync().ConfigureAwait(false);
+                if (IsClosed) return;
                 if (_carryLength == 0) continue;
 
                 var (batch, offset, length) = (_carry, _carryOffset, _carryLength);
@@ -362,13 +311,13 @@ public sealed class Connection : IFrameSender, IFrameChannel
                     }
 
                     KeepAlive.Touch(ref _lastSentMs);
-                    _queue.Release(batch);
-                    if (!_queue.TryTake(out batch, out length)) break;
+                    Queue.Release(batch);
+                    if (!Queue.TryTake(out batch, out length)) break;
                     offset = 0;
                 }
 
                 Volatile.Write(ref _writer, 0);
-                if (_queue.HasQueued) _flusher!.Add(this); // queued after the last take: next beat
+                if (Queue.HasQueued) _flusher!.Add(this); // queued after the last take: next beat
             }
         }
         catch (Exception e)
@@ -377,8 +326,8 @@ public sealed class Connection : IFrameSender, IFrameChannel
         }
         finally
         {
-            Volatile.Write(ref _closed, 1);
-            _queue.Close();
+            MarkClosed();
+            Queue.Close();
             BufferPool.Return(_carry);
         }
     }
@@ -457,7 +406,7 @@ public sealed class Connection : IFrameSender, IFrameChannel
         FrameHeader header;
         while (FrameHeader.TryReadFrame(new ReadOnlySpan<byte>(buffer, offset, filled - offset), _options.MaxFrameSize, out header))
         {
-            _handler.OnFrame(this, in header, new ReadOnlySpan<byte>(buffer, offset, header.Length));
+            Handler.OnFrame(this, in header, new ReadOnlySpan<byte>(buffer, offset, header.Length));
             offset += header.Length;
         }
 

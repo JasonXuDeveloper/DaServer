@@ -9,23 +9,8 @@ namespace DaServer.Net;
 /// parsed in place; nothing is allocated per frame.
 /// </summary>
 public sealed class WebSocketChannel(WebSocket socket, IChannelHandler handler, int maxFrameSize, int maxPendingSendBytes)
-    : IFrameChannel
+    : FrameChannel(handler, new SendQueue(maxPendingSendBytes, 16 * 1024, releaseIdle: true, keepSpare: false)) // idle: no send memory
 {
-    private static readonly InvalidOperationException SlowConsumer = new("Send backlog exceeded (slow consumer)");
-
-    private readonly SendQueue _queue = new(maxPendingSendBytes, 16 * 1024, releaseIdle: true, keepSpare: false); // idle: no send memory
-    private long _lastReceivedMs = Platform.Milliseconds;
-    private long _lastSentMs = Platform.Milliseconds;
-
-    public long LastReceivedMs => Volatile.Read(ref _lastReceivedMs);
-
-    public long LastSentMs => Volatile.Read(ref _lastSentMs);
-    private int _closed;
-
-    public object? Tag { get; set; }
-
-    public bool IsClosed => Volatile.Read(ref _closed) != 0;
-
     /// <summary>Run the channel until it closes (the HTTP request or the client's connection lives as long).</summary>
     public async Task RunAsync()
     {
@@ -44,31 +29,7 @@ public sealed class WebSocketChannel(WebSocket socket, IChannelHandler handler, 
         await sending.ConfigureAwait(false);
     }
 
-    public bool Send(ReadOnlySpan<byte> frame)
-    {
-        if (IsClosed) return false;
-        switch (_queue.Append(frame))
-        {
-            case SendQueue.Result.Wake:
-                _queue.Wake();
-                return true;
-            case SendQueue.Result.Queued:
-                return true;
-            case SendQueue.Result.Overflow:
-                Platform.Queue(static c => c.Close(SlowConsumer), this); // off the caller's thread, as on TCP
-                return false;
-            default:
-                return false;
-        }
-    }
-
-    public void Close(Exception? error = null)
-    {
-        if (Interlocked.Exchange(ref _closed, 1) != 0) return;
-        socket.Abort(); // ends both loops at once; the peer sees the connection drop, as with TCP
-        _queue.Signal.Set();
-        handler.OnClosed(this, error);
-    }
+    private protected override void Abort() => socket.Abort(); // ends both loops at once; the peer sees the connection drop, as with TCP
 
     private async Task SendLoop()
     {
@@ -76,8 +37,8 @@ public sealed class WebSocketChannel(WebSocket socket, IChannelHandler handler, 
         {
             while (!IsClosed)
             {
-                await _queue.Signal.WaitAsync().ConfigureAwait(false);
-                while (!IsClosed && _queue.TryTake(out var batch, out int length))
+                await Queue.Signal.WaitAsync().ConfigureAwait(false);
+                while (!IsClosed && Queue.TryTake(out var batch, out int length))
                 {
                     try
                     {
@@ -87,7 +48,7 @@ public sealed class WebSocketChannel(WebSocket socket, IChannelHandler handler, 
                     }
                     finally
                     {
-                        _queue.Release(batch);
+                        Queue.Release(batch);
                     }
                 }
             }
@@ -98,7 +59,7 @@ public sealed class WebSocketChannel(WebSocket socket, IChannelHandler handler, 
         }
         finally
         {
-            _queue.Close();
+            Queue.Close();
         }
     }
 
@@ -138,12 +99,12 @@ public sealed class WebSocketChannel(WebSocket socket, IChannelHandler handler, 
 
     private void Dispatch(ReadOnlySpan<byte> message)
     {
-        using (Connection.BeginSendBatch()) // as on TCP: what these frames cause leaves in one write per connection
+        using (BeginSendBatch()) // as on TCP: what these frames cause leaves in one write per connection
             while (!message.IsEmpty)
             {
                 if (!FrameHeader.TryReadFrame(message, maxFrameSize, out var header))
                     throw new InvalidOperationException("Partial frame in a WebSocket message");
-                handler.OnFrame(this, in header, message[..header.Length]);
+                Handler.OnFrame(this, in header, message[..header.Length]);
                 message = message[header.Length..];
             }
     }

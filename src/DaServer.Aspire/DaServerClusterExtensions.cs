@@ -60,8 +60,11 @@ public sealed class DaServerCluster
     private readonly List<EndpointReference> _clusterEndpoints = [];
     private readonly List<IResourceBuilder<ProjectResource>> _nodes = [];
     private readonly List<DaServerNodeGroup> _groups = [];
+    private readonly List<string> _peers = []; // published: the groups, each one DNS name for all its replicas
+    private readonly int _clusterPortBase, _clientPortBase;
     private int _nextClusterPort;
     private int _nextClientPort;
+    private bool _kubernetes; // published to Kubernetes: seeds are the groups' headless Services
 
     internal DaServerCluster(IDistributedApplicationBuilder builder, string name, int clusterPortBase, int clientPortBase)
     {
@@ -71,8 +74,8 @@ public sealed class DaServerCluster
         // published), the same for every node.
         _secret = builder.AddParameter($"{name}-secret", new GenerateParameterDefault { MinLength = 32, Special = false },
             secret: true, persist: true);
-        _nextClusterPort = clusterPortBase;
-        _nextClientPort = clientPortBase;
+        _nextClusterPort = _clusterPortBase = clusterPortBase;
+        _nextClientPort = _clientPortBase = clientPortBase;
         if (builder.ExecutionContext.IsRunMode)
         {
             builder.Services.AddHostedService(sp => new NodesStopFirst(this, sp.GetRequiredService<ResourceNotificationService>(), sp.GetRequiredService<ResourceCommandService>(),
@@ -98,74 +101,134 @@ public sealed class DaServerCluster
     public IReadOnlyList<IResourceBuilder<ProjectResource>> Nodes => _nodes;
 
     /// <summary>
-    /// Add <paramref name="replicas"/> nodes running <typeparamref name="TProject"/>. Each replica is its own resource
-    /// (<c>{name}-0</c>, <c>{name}-1</c>, ...) because cluster members are addressed individually, not through a load
-    /// balancer.
+    /// Add <paramref name="replicas"/> nodes running <typeparamref name="TProject"/>. Run locally, each replica is its own
+    /// resource (<c>{name}-0</c>, <c>{name}-1</c>, ...) on ports of its own, seeded with every other node. Published, the
+    /// group is one workload with <paramref name="replicas"/> replicas (a Compose service, a Kubernetes Deployment) that
+    /// the platform scales: every replica listens on the same ports, advertises its own address (a pod's IP), is named
+    /// after its host, and finds the others through the groups' DNS names (Compose service names, a headless Kubernetes
+    /// Service per group, <c>{name}-peers</c>), so a replica added by the platform joins on its own.
     /// </summary>
     public DaServerNodeGroup AddNodes<TProject>(string name, int replicas = 1) where TProject : IProjectMetadata, new()
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(replicas, 1);
-        var nodes = new List<IResourceBuilder<ProjectResource>>(replicas);
-
-        for (int i = 0; i < replicas; i++)
+        bool publish = _builder.ExecutionContext.IsPublishMode;
+        var nodes = new List<IResourceBuilder<ProjectResource>>(publish ? 1 : replicas);
+        if (publish)
         {
-            string nodeName = $"{name}-{i}";
-            var node = _builder.AddProject<TProject>(nodeName)
-                .WithEnvironment("DaServer__Name", nodeName)
-                .WithEnvironment("DaServer__ClusterName", Name)
-                .WithEnvironment("DaServer__SigningSecret", _secret)
-                .WithEndpoint(port: _nextClusterPort, targetPort: _nextClusterPort++, scheme: "tcp", name: "cluster",
-                    env: "DaServer__ClusterPort", isProxied: false)
-                // The HTTP plane (ADR-046): health for WaitFor and the dashboard, probes for Kubernetes. Ready = joined
-                // and not leaving (traffic and dependants wait for it); alive = no stalled shard (restart otherwise).
-                .WithHttpEndpoint(name: "http", env: "DaServer__HttpPort")
-                .WithHttpProbe(ProbeType.Readiness, "/health", endpointName: "http")
-                .WithHttpProbe(ProbeType.Liveness, "/alive", initialDelaySeconds: 10, endpointName: "http");
-            var self = node.GetEndpoint("cluster");
-            _clusterEndpoints.Add(self);
-
-            // Evaluated when the node starts, so it sees nodes declared after it: seeds are every other member.
-            node.WithEnvironment(context =>
+            var node = Node<TProject>(name).WithReplicas(replicas)
+                .WithEndpoint(targetPort: _clusterPortBase, scheme: "tcp", name: "cluster", env: "DaServer__ClusterPort", isProxied: false);
+            _peers.Add(name);
+            node.WithEnvironment(context => // seeds: every group's DNS name, this one's included (a node skips itself)
             {
-                context.EnvironmentVariables["DaServer__AdvertisedHost"] = self.Property(EndpointProperty.Host);
-                int seed = 0;
-                foreach (var other in _clusterEndpoints)
-                    if (!ReferenceEquals(other, self))
-                        context.EnvironmentVariables[$"DaServer__Seeds__{seed++}"] = other.Property(EndpointProperty.HostAndPort);
+                for (int seed = 0; seed < _peers.Count; seed++)
+                    context.EnvironmentVariables[$"DaServer__Seeds__{seed}"] = $"{PeersHost(_peers[seed])}:{_clusterPortBase}";
             });
             nodes.Add(node);
-            _nodes.Add(node);
         }
+        else
+            for (int i = 0; i < replicas; i++)
+            {
+                string nodeName = $"{name}-{i}";
+                var node = Node<TProject>(nodeName)
+                    .WithEnvironment("DaServer__Name", nodeName)
+                    .WithEndpoint(port: _nextClusterPort, targetPort: _nextClusterPort++, scheme: "tcp", name: "cluster",
+                        env: "DaServer__ClusterPort", isProxied: false);
+                var self = node.GetEndpoint("cluster");
+                _clusterEndpoints.Add(self);
 
+                // Evaluated when the node starts, so it sees nodes declared after it: seeds are every other member.
+                node.WithEnvironment(context =>
+                {
+                    context.EnvironmentVariables["DaServer__AdvertisedHost"] = self.Property(EndpointProperty.Host);
+                    int seed = 0;
+                    foreach (var other in _clusterEndpoints)
+                        if (!ReferenceEquals(other, self))
+                            context.EnvironmentVariables[$"DaServer__Seeds__{seed++}"] = other.Property(EndpointProperty.HostAndPort);
+                });
+                nodes.Add(node);
+            }
+
+        _nodes.AddRange(nodes);
         var group = new DaServerNodeGroup(this, name, nodes);
         _groups.Add(group);
-        // The platform's grace period follows the stop budget, for the environments the model publishes to (each hook
-        // requires its environment, which may be added after the nodes).
+        // What the platform needs to know of a node, for the environments the model publishes to (each hook requires its
+        // environment, which may be added after the nodes).
         _builder.Eventing.Subscribe<BeforeStartEvent>((e, _) =>
         {
             int grace = (int)Math.Ceiling(group.StopGrace.TotalSeconds);
             bool compose = e.Model.Resources.OfType<Docker.DockerComposeEnvironmentResource>().Any();
             bool kubernetes = e.Model.Resources.OfType<Kubernetes.KubernetesEnvironmentResource>().Any();
+            _kubernetes |= kubernetes && !compose;
             foreach (var node in nodes)
             {
                 // Compose stops a container after 10 s by default, Kubernetes kills a pod after 30 s.
                 if (compose)
-                    node.PublishAsDockerComposeService((_, service) =>
-                    {
-                        service.StopGracePeriod = $"{grace}s";
-                        service.Restart = "unless-stopped";
-                    });
+                    node.PublishAsDockerComposeService((_, service) => Compose(service, publish ? replicas : 1, grace));
                 if (kubernetes)
-                    node.PublishAsKubernetesService(resource =>
-                    {
-                        if (resource.Workload?.PodTemplate.Spec is { } pod) pod.TerminationGracePeriodSeconds = grace;
-                    });
+                    node.PublishAsKubernetesService(resource => Kubernetes(resource, name, replicas, grace));
             }
 
             return Task.CompletedTask;
         });
         return group;
     }
+
+    /// <summary>A node resource: the cluster's name and secret, the HTTP plane with its probes.</summary>
+    private IResourceBuilder<ProjectResource> Node<TProject>(string name) where TProject : IProjectMetadata, new() =>
+        _builder.AddProject<TProject>(name)
+            .WithEnvironment("DaServer__ClusterName", Name)
+            .WithEnvironment("DaServer__SigningSecret", _secret)
+            // The HTTP plane (ADR-046): health for WaitFor and the dashboard, probes for Kubernetes. Ready = joined and not
+            // leaving (traffic and dependants wait for it); alive = no stalled shard (restart otherwise).
+            .WithHttpEndpoint(name: "http", env: "DaServer__HttpPort")
+            .WithHttpProbe(ProbeType.Readiness, "/health", endpointName: "http")
+            .WithHttpProbe(ProbeType.Liveness, "/alive", initialDelaySeconds: 10, endpointName: "http");
+
+    /// <summary>
+    /// A group's Compose service: the grace period, a restart policy, and its replicas, which share the container ports
+    /// (several replicas cannot share a host port: the host maps theirs, or a proxy in front of them does).
+    /// </summary>
+    private static void Compose(Docker.Resources.ComposeNodes.Service service, int replicas, int grace)
+    {
+        service.StopGracePeriod = $"{grace}s";
+        service.Restart = "unless-stopped";
+        if (replicas == 1) return;
+        (service.Deploy ??= new()).Replicas = replicas;
+        for (int i = 0; i < service.Ports.Count; i++)
+            if (service.Ports[i].LastIndexOf(':') is var colon and > 0) service.Ports[i] = service.Ports[i][(colon + 1)..];
+    }
+
+    /// <summary>The DNS name resolving to every replica of group <paramref name="group"/>.</summary>
+    private string PeersHost(string group) => _kubernetes ? $"{group}-peers" : group;
+
+    /// <summary>
+    /// A group's Kubernetes objects: the grace period; a preStop pause, so the Services stop routing to a stopping pod
+    /// before it leaves; and a headless Service listing every pod, ready or not (a node joins before it is ready), whose
+    /// name the seeds resolve.
+    /// </summary>
+    private void Kubernetes(Kubernetes.KubernetesResource resource, string group, int replicas, int grace)
+    {
+        if (resource.Workload is Kubernetes.Resources.Deployment deployment) deployment.Spec.Replicas = replicas;
+        if (resource.Workload?.PodTemplate.Spec is not { } pod) return;
+        pod.TerminationGracePeriodSeconds = grace + PreStopSeconds; // the pause counts against the grace period
+        foreach (var container in pod.Containers) // one action: the other handler kinds stay unset
+            (container.Lifecycle ??= new()).PreStop = new()
+                { Sleep = new() { Seconds = PreStopSeconds }, Exec = null!, HttpGet = null!, TcpSocket = null! };
+        var peers = new Kubernetes.Resources.Service();
+        peers.Metadata.Name = $"{group}-peers";
+        peers.Spec.ClusterIp = "None";
+        peers.Spec.PublishNotReadyAddresses = true;
+        if (resource.Service is { } service)
+            foreach (var (key, value) in service.Spec.Selector) peers.Spec.Selector[key] = value;
+        peers.Spec.Ports.Add(new() { Name = "cluster", Port = _clusterPortBase, TargetPort = _clusterPortBase });
+        resource.AdditionalResources.Add(peers);
+    }
+
+    /// <summary>
+    /// How long a stopping pod keeps serving before it is told to stop: the time Services and load balancers take to stop
+    /// routing to it (they learn of the stop at the same time as the pod).
+    /// </summary>
+    internal const int PreStopSeconds = 5;
 
     /// <summary>
     /// What the platform waits beyond a node's stop budget before killing it: the host's own margin
@@ -249,9 +312,10 @@ public sealed class DaServerNodeGroup
         if (_clientEndpoints.Count != 0) return this;
         foreach (var node in Nodes)
         {
+            // Published, the replicas of a group share the port (each has its own address; the platform maps it).
             int port = _cluster.NextClientPort();
-            node.WithEndpoint(port: port, targetPort: port, scheme: "tcp", name: "client",
-                env: "DaServer__Clients__Port", isProxied: false, isExternal: true);
+            node.WithEndpoint(port: node.ApplicationBuilder.ExecutionContext.IsPublishMode ? null : port, targetPort: port,
+                scheme: "tcp", name: "client", env: "DaServer__Clients__Port", isProxied: false, isExternal: true);
             _clientEndpoints.Add(node.GetEndpoint("client"));
         }
 

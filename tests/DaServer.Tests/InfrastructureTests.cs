@@ -155,7 +155,7 @@ public class InfrastructureTests
         var table = new PendingCallTable(4);
         var call = PendingCall<int>.Rent(null);
         var task = call.Task;
-        Assert.That(table.TryRegister(call, timeoutMs: 0, out uint id), Is.True);
+        Assert.That(table.TryRegister(call, deadlineMs: 0, out uint id), Is.True);
 
         var w = FrameWriter.Rent();
         w.Write(41);
@@ -166,10 +166,9 @@ public class InfrastructureTests
 
         // Slot reuse: a late response for the old id must not complete the new call.
         var second = PendingCall<int>.Rent(null);
-        Assert.That(table.TryRegister(second, timeoutMs: 1, out uint id2), Is.True);
+        Assert.That(table.TryRegister(second, deadlineMs: Environment.TickCount64 - 1, out uint id2), Is.True);
         Assert.That(id2, Is.Not.EqualTo(id));
         Assert.That(table.Take(id), Is.Null);
-        Thread.Sleep(5);
         Assert.That(table.SweepExpired(), Is.EqualTo(1));
         var timedOut = Assert.ThrowsAsync<RpcException>(async () => await second.Task);
         Assert.That(timedOut!.Status, Is.EqualTo(RpcStatus.Timeout));
@@ -177,8 +176,8 @@ public class InfrastructureTests
 
         // A full table refuses instead of throwing (the caller fails the call as Overloaded).
         var held = PendingCall<int>.Rent(null);
-        for (int i = 0; i < 16; i++) Assert.That(table.TryRegister(held, timeoutMs: 0, out _), Is.True);
-        Assert.That(table.TryRegister(held, timeoutMs: 0, out _), Is.False);
+        for (int i = 0; i < 16; i++) Assert.That(table.TryRegister(held, deadlineMs: 0, out _), Is.True);
+        Assert.That(table.TryRegister(held, deadlineMs: 0, out _), Is.False);
     }
 
     [Test]
@@ -190,7 +189,7 @@ public class InfrastructureTests
         var ids = new List<uint>();
         for (int i = 0; i < 3; i++)
         {
-            Assert.That(table.TryRegister(held, timeoutMs: 0, out uint id), Is.True);
+            Assert.That(table.TryRegister(held, deadlineMs: 0, out uint id), Is.True);
             ids.Add(id);
         }
 
@@ -198,19 +197,19 @@ public class InfrastructureTests
         foreach (var id in ids) table.Take(id);
         for (int round = 0; round < 1000; round++) // reuse: a steady call rate stays in the first chunk
         {
-            Assert.That(table.TryRegister(held, timeoutMs: 0, out uint id), Is.True);
+            Assert.That(table.TryRegister(held, deadlineMs: 0, out uint id), Is.True);
             table.Take(id);
         }
 
         Assert.That(table.Capacity, Is.EqualTo(PendingCallTable.FirstChunk));
 
-        for (int i = 0; i < 100; i++) Assert.That(table.TryRegister(held, timeoutMs: 0, out _), Is.True);
+        for (int i = 0; i < 100; i++) Assert.That(table.TryRegister(held, deadlineMs: 0, out _), Is.True);
         Assert.That(table.Capacity, Is.EqualTo(120), "chunks of 8, 16, 32, 64 slots");
 
         var full = new PendingCallTable(4); // 16 slots: chunks of 8 and 8, not 8 and 16
-        for (int i = 0; i < 16; i++) Assert.That(full.TryRegister(held, timeoutMs: 0, out _), Is.True);
+        for (int i = 0; i < 16; i++) Assert.That(full.TryRegister(held, deadlineMs: 0, out _), Is.True);
         Assert.That(full.Capacity, Is.EqualTo(16), "the last chunk ends at the table's size");
-        Assert.That(full.TryRegister(held, timeoutMs: 0, out _), Is.False);
+        Assert.That(full.TryRegister(held, deadlineMs: 0, out _), Is.False);
     }
 
     [Test]
@@ -226,7 +225,7 @@ public class InfrastructureTests
             for (int round = 0; round < rounds; round++)
             {
                 for (int i = 0; i < inFlight; i++)
-                    if (!table.TryRegister(held, timeoutMs: 0, out mine[i])) Interlocked.Increment(ref failures);
+                    if (!table.TryRegister(held, deadlineMs: 0, out mine[i])) Interlocked.Increment(ref failures);
                 for (int i = 0; i < inFlight; i++)
                     if (table.Take(mine[i]) == null) Interlocked.Increment(ref duplicates); // someone else held the slot
             }
@@ -358,6 +357,21 @@ public class InfrastructureTests
         Assert.That(new ClusterMember { Incarnation = 1, Heartbeat = 6, Status = MemberStatus.Up }.Supersedes(a), Is.True);
         Assert.That(new ClusterMember { Incarnation = 1, Heartbeat = 4, Status = MemberStatus.Up }.Supersedes(a), Is.False);
     }
+
+    [TestCase("game-0:7000", "game-0", 7000)]
+    [TestCase("10.0.0.5:7000", "10.0.0.5", 7000)]
+    [TestCase("[fd00::5]:7000", "fd00::5", 7000)]
+    public void HostPortParses(string text, string host, int port)
+    {
+        Assert.That(DaServer.Net.HostPort.TryParse(text, out var h, out int p), Is.True);
+        Assert.That((h, p), Is.EqualTo((host, port)));
+    }
+
+    [TestCase("game-0")]
+    [TestCase("game-0:")]
+    [TestCase(":7000")]
+    [TestCase("game-0:70000")]
+    public void HostPortRefuses(string text) => Assert.That(DaServer.Net.HostPort.TryParse(text, out _, out _), Is.False);
 
     [Test]
     public void TypeIdsAreNinosTypeIds()

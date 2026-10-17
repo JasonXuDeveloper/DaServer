@@ -41,9 +41,31 @@ public sealed class SendFlusher : IDisposable
     /// <summary>Write what is queued now, without waiting for the beat (a node writes its sessions' last frames before closing them).</summary>
     public void Flush() => Beat();
 
+    [ThreadStatic] private static List<Connection>? t_batched;
+
+    /// <summary>List <paramref name="connection"/> for the next beat: at the end of the thread's send batch if one is open.</summary>
     internal void Add(Connection connection)
     {
-        lock (_gate) _queued.Add(connection);
+        if (SendQueue.InBatch) (t_batched ??= new()).Add(connection);
+        else lock (_gate) _queued.Add(connection);
+    }
+
+    /// <summary>
+    /// The thread's send batch ended: list the connections it woke, taking each flusher's lock once per run of its
+    /// connections (a broadcast to a thousand sessions takes it once, not a thousand times).
+    /// </summary>
+    internal static void EndBatch()
+    {
+        if (t_batched is not { Count: > 0 } batched) return;
+        for (int i = 0; i < batched.Count;)
+        {
+            var flusher = batched[i].Flusher!;
+            lock (flusher._gate)
+                for (; i < batched.Count && batched[i].Flusher == flusher; i++)
+                    flusher._queued.Add(batched[i]);
+        }
+
+        batched.Clear();
     }
 
     private void Run()

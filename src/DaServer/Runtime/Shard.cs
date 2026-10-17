@@ -201,7 +201,7 @@ internal sealed class Shard : CompletionThread
                     activity.DeclaredDead |= _stopFenced; // a downed node saves nothing: the majority owns the keys now
                 }
 
-                using (Connection.BeginSendBatch()) // everything this wake sends leaves in one write per connection
+                using (FrameChannel.BeginSendBatch()) // everything this wake sends leaves in one write per connection
                 {
                     // Cadence is the loop's job; each group's systems only do their one thing.
                     if (activity.Rebalance)
