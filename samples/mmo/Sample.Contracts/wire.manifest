@@ -1,14 +1,15 @@
 # DaServer wire manifest (ADR-076): the layout of this assembly's [NinoType] types on the wire and in stored records.
-# Frozen: a new field goes into a new message or component. Record new types: dotnet build -p:UpdateWireManifest=true
-Sample.Contracts.Attach (memory)
-- Session: DaServer.ClientSession memory {Node: ulong, Id: long}
+# Positional layouts are frozen, version-tolerant types take new fields at their end, keyed types any key that keeps
+# its type. Record changes: dotnet build -p:UpdateWireManifest=true
+Sample.Contracts.Attach (struct, positional)
+- Session: DaServer.ClientSession struct, positional {Node: ulong, Id: long}
 = bool
-Sample.Contracts.Chat (members)
+Sample.Contracts.Chat (struct, positional)
 - Player: Sample.Contracts.PlayerId memory {Value: long}
 - Text: string
-Sample.Contracts.Enter (memory)
+Sample.Contracts.Enter (struct, positional)
 - Player: Sample.Contracts.PlayerId memory {Value: long}
-- Session: DaServer.ClientSession memory {Node: ulong, Id: long}
+- Session: DaServer.ClientSession struct, positional {Node: ulong, Id: long}
 = bool
 Sample.Contracts.EnterMap (memory)
 - Map: Sample.Contracts.MapId memory {Value: long}
@@ -18,16 +19,16 @@ Sample.Contracts.GetInfo (memory)
 Sample.Contracts.Gone (memory)
 - Map: Sample.Contracts.MapId memory {Value: long}
 - Player: Sample.Contracts.PlayerId memory {Value: long}
-Sample.Contracts.Leave (memory)
-- Session: DaServer.ClientSession memory {Node: ulong, Id: long}
+Sample.Contracts.Leave (struct, positional)
+- Session: DaServer.ClientSession struct, positional {Node: ulong, Id: long}
 = bool
-Sample.Contracts.Login (members)
+Sample.Contracts.Login (struct, positional)
 - Name: string
 = Sample.Contracts.LoginResult
 Sample.Contracts.LoginResult (memory)
 - Ok: bool
 - Player: Sample.Contracts.PlayerId memory {Value: long}
-Sample.Contracts.Motion (members)
+Sample.Contracts.Motion (struct, positional)
 - Map: Sample.Contracts.MapId memory {Value: long}
 - Avatars: Sample.Contracts.Moves
 Sample.Contracts.Move (memory)
@@ -39,9 +40,9 @@ Sample.Contracts.Moved (memory)
 - Y: float
 - VelocityX: float
 - VelocityY: float
-Sample.Contracts.Moves (typed members)
+Sample.Contracts.Moves (sealed class, positional)
 - Items: System.Collections.Generic.List<Sample.Contracts.Moved>
-Sample.Contracts.PlayerInfo (members)
+Sample.Contracts.PlayerInfo (struct, positional)
 - Id: Sample.Contracts.PlayerId memory {Value: long}
 - Name: string
 - Map: Sample.Contracts.MapId memory {Value: long}
@@ -54,5 +55,5 @@ Sample.Contracts.RealmStatus (memory)
 - Tick: long
 - Online: int
 - ServerTimeTicks: long
-Sample.Contracts.Say (members)
+Sample.Contracts.Say (struct, positional)
 - Text: string

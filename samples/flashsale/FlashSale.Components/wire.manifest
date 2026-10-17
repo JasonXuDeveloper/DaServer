@@ -1,14 +1,15 @@
 # DaServer wire manifest (ADR-076): the layout of this assembly's [NinoType] types on the wire and in stored records.
-# Frozen: a new field goes into a new message or component. Record new types: dotnet build -p:UpdateWireManifest=true
-FlashSale.Components.Purchase (memory)
+# Positional layouts are frozen, version-tolerant types take new fields at their end, keyed types any key that keeps
+# its type. Record changes: dotnet build -p:UpdateWireManifest=true
+FlashSale.Components.Purchase (struct, version tolerant)
 - Status: FlashSale.Contracts.OrderStatus(byte)
-FlashSale.Components.SaleState (members)
+FlashSale.Components.SaleState (struct, version tolerant)
 - PerSecond: int
 - Issued: long
 - Released: long
 - AtMs: long
 - EmptyShards: int
 - Buyers: System.Collections.Generic.List<long>
-FlashSale.Components.Stock (members)
+FlashSale.Components.Stock (struct, version tolerant)
 - Left: int
 - Buyers: System.Collections.Generic.List<long>
