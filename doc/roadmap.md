@@ -527,6 +527,39 @@ in separate commits.
         namespaced, `[NinoFormerName]`).
   - [x] One host:port parser (`HostPort`, IPv6 in brackets); `[LoggerMessage]` on message and actor failures, the
         dropped-backlog warning at most every 10 s with a count.
+- Audit round 3 (agreed):
+  - [ ] Planned reconnects make before they break (ClientVersion 3, `ControlOp.Retire`): at `MaxConnectionAge` or a
+        drain the node asks the client to move; it connects and resumes on a new connection while the old one keeps
+        receiving, and the old one closes once the actors switched, so no push is lost. A lost connection still resumes
+        with the ticket and the actors' full state (ADR-036). Test: no push lost across an age rotation under load.
+  - [ ] mmo: a VPA in `InPlaceOrRecreate` for game and map nodes (memory grows in place; an eviction is a graceful
+        leave with handoff, one at a time under the PDB); flashsale keeps recommendations only (nothing restarts during
+        a sale). Document that .NET reads CPU and memory limits at start (shard count, GC heap limit).
+  - [ ] Clients out of the runtime (ADR-045): session tracking of client-facing nodes, the grace close and
+        `ResumeGrace` move into `Clients/` behind a membership-change hook on `NodeFeature`; the session components
+        and `BindSession`/`GrantSession` stay as the actor side.
+  - [ ] One clock name: `Platform.Milliseconds` in the runtime (no raw `Environment.TickCount64`), `nowMs` passed
+        down from `Maintain` (group expiry, connection age); one wall-clock helper for tickets and link auth.
+  - [ ] `NodeStatsLogger` reads the node's gauges (no `ClientConnections` reference), one `[LoggerMessage]`; all
+        runtime, persistence, link and membership logs in `Log`.
+  - [ ] One deadline helper (call timeout, ingress budget, client calls).
+  - [ ] Membership rounds on the node's maintenance tick with `SilenceClock` (one timer per node, one pause rule).
+  - [ ] PostgreSQL store: connections from the data source per operation (Npgsql pools and prepares them), only the
+        parameter lists reused.
+  - [ ] Samples' AppHosts share one `Publishing.cs` (the Compose/Kubernetes switch, `Manifest`); the HPA typed.
+  - [ ] Shared constants for node defaults (listen address, shutdown budget and margin, the client endpoints
+        variable) in Abstractions; options bound and validated at start (`ValidateOnStart`); the HTTP port from
+        Aspire's `http` endpoint.
+  - [ ] Client entry addresses from configuration in `DaServer.Client` (`DaServer:ClientEndpoints`), the swarm reads
+        them from there; `ClusterClient` uses `Platform` for randomness.
+  - [ ] One polling helper for tests and the swarm.
+  - [ ] Split files over ~400 lines: `ClientConnections` (sessions, groups, resume), `ClusterClient`, `Membership`,
+        `PendingCalls`, `Connection`, `Node`.
+  - [ ] `PerThread` and `ObjectPool` documented as the two pools (thread-owned vs shared), the shard's hand-made
+        stacks on `PerThread`.
+  - [ ] Docs: the ~30 stale statements (client redirect remnants, analyzer range DAS001-018, ADR-015/036, design
+        §11 publishing, READMEs and sample READMEs on `Publish=k8s`, flashsale in samples/README, R11's bot options,
+        CLAUDE.md layout, roadmap A1/A2/A4/A7/D4/D6/S2/S4/Z3 states).
 - [x] Deployment: one AppHost publishes to Docker Compose or Kubernetes (`Publish=compose|k8s`); in publish
   mode a node group is one workload with replicas (A4): no container names, no fixed host ports per replica, seeds
   through the group's DNS name (Compose service DNS, Kubernetes headless Service), each replica advertising its own
