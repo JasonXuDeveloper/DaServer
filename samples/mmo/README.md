@@ -10,7 +10,7 @@ Messages are routed by type: a sender never names a server, so moving `Map` into
 | [Sample.LoginServer](Sample.LoginServer) | `login` | `Account` service (stateless) | `Login` (client) | `Attach` to the player |
 | [Sample.GameServer](Sample.GameServer) | `game` | `Player` actor (id: `PlayerId`), `Realm` actor (one: `RealmId.The`), `RealmBroadcastSystem` | `Attach`; `GetInfo`, `EnterMap` (client); `PlayerOnline`, `PlayerOffline` | `Enter` / `Leave` to maps, `PlayerOnline` / `PlayerOffline` to the realm, `RealmStatus` to every client |
 | [Sample.MapServer](Sample.MapServer) | `map` | `Map` actor (id: `MapId`), area-of-interest systems, `MovementSystem` (Sample.Shared) | `Enter`, `Leave`; `Move`, `Say` (client) | `Motion`, `Gone`, `Chat` to the clients that see the avatar |
-| [Sample.GatewayServer](Sample.GatewayServer) | `gateway` x3 | nothing: client sockets, session bindings, client groups, directing clients | | |
+| [Sample.GatewayServer](Sample.GatewayServer) | `gateway` x3 | nothing: client sockets, session bindings, client groups | | |
 | [Sample.GameServer.Components](Sample.GameServer.Components), [Sample.MapServer.Components](Sample.MapServer.Components) | (libraries) | the servers' data: `PlayerState`, `RealmState`; `MapState`, `MapGrid`, `Avatar` and the interest tags. Kept apart from the logic that a reload replaces (DAS013, ADR-067) | | |
 | [Sample.Contracts](Sample.Contracts/Contracts.cs) | (library) | every message, with `[FromClient]` / `[ToClient]` where clients send or receive it; the game's clock (`Timing`) | | |
 | [Sample.Shared](Sample.Shared) | (library, `<DaServerShared>`) | rules both sides run: `MovementSystem`, `MapGeometry` (the interest grid); the map server simulates with them, clients predict with them | | |
@@ -97,6 +97,8 @@ dotnet run --project samples/mmo/Sample.AppHost                 # dashboard, 3 g
 dotnet run --project samples/mmo/Sample.AppHost -- Bots=1000    # fewer bots
 dotnet run --project samples/mmo/Sample.AppHost -- Maps=2 TravelEvery=5   # bots change maps every 5 s (the e2e test)
 aspire publish --project samples/mmo/Sample.AppHost             # Docker Compose files for the same topology
+aspire publish --project samples/mmo/Sample.AppHost -- Publish=k8s   # a Helm chart: plus a load balancer for the gateways,
+                                                                 # disruption budgets and in-place VPAs for game and map (Platform.cs)
 ```
 
 Replicas are one argument in [AppHost.cs](Sample.AppHost/AppHost.cs): `AddNodes<Projects.Sample_MapServer>("map",

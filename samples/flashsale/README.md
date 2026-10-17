@@ -37,7 +37,7 @@ asks of the sale's actors.
 | `FlashSale.Components` | `[Persist]` stock, purchase and sale state; the gate's `KnownSales` singleton |
 | `FlashSale.Server` | the node: `StockShard`, `Order`, `Sale` actors, `AdmissionSystem`, the `Gate` service |
 | `FlashSale.Crowd` | the buyers as a `DaServer.Simulation` swarm; checks exactly the stock sold, nothing left, retries answered alike, orders readable (`--per-second` for a queued sale, `--web-socket` for the browser path) |
-| `FlashSale.AppHost` | two sale nodes taking clients, PostgreSQL and the crowd (`dotnet run --project samples/flashsale/FlashSale.AppHost`) |
+| `FlashSale.AppHost` | two sale nodes taking clients, PostgreSQL and the crowd (`dotnet run --project samples/flashsale/FlashSale.AppHost`); `aspire publish` writes Docker Compose files, `-- Publish=k8s` a Helm chart with an HPA on the sale nodes' CPU and a VPA in recommendation mode (`Platform.cs`: nothing restarts during a sale) |
 | `FlashSale.Tests` | the guarantees in an in-process cluster (`DaServer.Testing`), the queue on a manual clock |
 
 ## Numbers

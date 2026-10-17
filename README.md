@@ -24,10 +24,10 @@ locally and publishes it.
 - **Reliable links, bounded work.** One ordered stream per node pair resumes after a dropped connection (no loss, no
   duplicate). Requests carry their caller's deadline, and work nobody waits for is dropped. Full dispatch queues and mailboxes answer
   `Overloaded` instead of growing; a client that cannot keep up is disconnected and resynchronizes when it resumes.
-- **Misuse is a build error.** Analyzers DAS001–DAS016 cover handlers, messages, wire types, id collisions, message
+- **Misuse is a build error.** Analyzers DAS001–DAS018 cover handlers, messages, wire types, id collisions, message
   flow, stateless actors and services, shared logic, replies sent later, waits and threads on shards, components apart
-  from logic, persisted and handed-off components and placement, and EECS001–EECS008 cover ECS, including the ECS
-  principles.
+  from logic, persisted and handed-off components, placement and wire layouts (the committed `wire.manifest`), and
+  EECS001–EECS008 cover ECS, including the ECS principles.
 
 ## Architecture
 
@@ -208,9 +208,8 @@ public sealed partial class RealmBroadcastSystem : EcsSystem        // every 5 t
 // Client (bot, game): the same messages, one well-known address.
 var client = new ClusterClient();
 client.Register(new ChatLog());                             // what servers push to this client
-await client.ConnectAsync("play.example.com", 7100);        // the platform's load balancer or DNS name: the node reached
-                                                            // there may answer "connect to node X instead" (the less
-                                                            // loaded of two), and the client reconnects to X directly
+await client.ConnectAsync("play.example.com", 7100);        // the platform's load balancer or DNS name: the client stays
+                                                            // on the node it reaches (moved without loss when asked)
 await client.Ask(new Login("alice"));
 await client.Ask(new EnterMap(new MapId(1)));               // to the bound player (session binding)
 client.Send(new Move(1, 0));
@@ -294,7 +293,8 @@ message. Persisted components are version tolerant (new fields at their end) or 
 
 ```csharp
 var builder = DistributedApplication.CreateBuilder(args);
-builder.AddDockerComposeEnvironment("compose");            // `aspire publish` writes docker-compose files
+if (builder.Configuration["Publish"] == "k8s") builder.AddKubernetesEnvironment("k8s"); // `aspire publish -- Publish=k8s`: a Helm chart
+else builder.AddDockerComposeEnvironment("compose");                                     // `aspire publish`: Docker Compose files
 
 var cluster = builder.AddDaServerCluster("sample");
 cluster.AddNodes<Projects.Sample_LoginServer>("login");                     // Account service
@@ -310,12 +310,13 @@ builder.Build().Run();
 `AddDaServerCluster` gives every node a name, a cluster endpoint and seeds; `WithClientConnections` adds a client endpoint (the
 `DaServer:Clients` section). A client connects through the entry addresses it is given (in production: the platform's
 load balancer or DNS name) and stays on the node it reached; any client-facing node reaches every actor.
-`MaxConnectionAge` closes old connections so that, after a scale-out, their clients reconnect to the new nodes too
-and resume their sessions (ADR-026). There
+`MaxConnectionAge` retires old connections so that, after a scale-out, their clients move to the new nodes too (make
+before break: nothing is lost, ADR-026). There
 are no roles and no configuration files: what a node hosts is what its project compiles. Nodes export logs and
 metrics over OpenTelemetry, which feeds the Aspire dashboard. The same model runs with
-`dotnet run --project samples/mmo/Sample.AppHost` and publishes with `aspire publish` (`AddKubernetesEnvironment` for
-Kubernetes).
+`dotnet run --project samples/mmo/Sample.AppHost` and publishes with `aspire publish`: run locally a node per replica,
+published a workload per group whose replicas the platform scales (ADR-030); scaling policy (HPA, VPA, PDB, the load
+balancer) is the application's, added in its AppHost (the samples' `Platform.cs`).
 
 ## Performance
 
