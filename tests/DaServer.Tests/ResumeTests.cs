@@ -85,6 +85,30 @@ public class ResumeTests : ClusterTest
     }
 
     [Test]
+    public async Task AClientFacingNodeFalselyDeclaredDeadKeepsItsSessions()
+    {
+        // The game node heard gw-0 declared dead (a pause, a blip), then gw-0 refuted at a higher incarnation. Its clients
+        // never disconnected, so they never resume: their sessions must not be closed when the grace runs out.
+        var gateways = await StartCluster(TimeSpan.FromSeconds(1));
+        var client = Track(new ClusterClient());
+        await client.ConnectAsync("127.0.0.1", gateways[0].ClientPort());
+        Assert.That(await client.Ask(new Login(new PlayerId(560))), Is.True);
+        var game = Nodes.Single(n => n.Options.Name == "game");
+
+        static byte[] Card(ClusterMember card) => Nino.Core.NinoSerializer.Serialize(new[] { card });
+        var dead = gateways[0].Membership.Self.Clone();
+        dead.Status = MemberStatus.Dead;
+        game.Membership.OnGossip(null!, ControlOp.Cards, Card(dead));
+        var back = gateways[0].Membership.Self.Clone();
+        back.Incarnation = dead.Incarnation + 1;
+        game.Membership.OnGossip(null!, ControlOp.Cards, Card(back));
+
+        await Task.Delay(1500); // past the grace
+        Assert.That(Observed.Events, Does.Not.Contain("closed:560"));
+        Assert.That(await client.Ask(new AddGold(1)), Is.GreaterThan(0), "the session still reaches its player");
+    }
+
+    [Test]
     public async Task ALostConnectionResumesTheSession()
     {
         var gateways = await StartCluster(TimeSpan.FromSeconds(1));

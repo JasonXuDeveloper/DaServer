@@ -131,6 +131,9 @@ internal sealed class SessionNodes(Node node)
     {
         var grace = node.Options.EffectiveResumeGrace; // tickets need the secret: without one nothing resumes
         if (grace > TimeSpan.Zero) await Task.Delay(grace, node.Options.TimeProvider).ConfigureAwait(false);
+        // Declared dead falsely (a pause, a blip), it refuted and is back: its clients never disconnected and never
+        // resume, so their sessions are open, not lost.
+        if (node.View.TryGetMember(clientNode, out var member) && member.Status is MemberStatus.Up or MemberStatus.Suspect) return;
         if (node.Running) node.PostToEveryShard(static (world, gone) => ActorSessions.CloseSessionsOf(world, gone), clientNode);
     }
 }
