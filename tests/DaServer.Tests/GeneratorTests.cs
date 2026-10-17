@@ -240,4 +240,25 @@ public class GeneratorTests
                 Is.All.AnyOf(IncrementalStepRunReason.Cached, IncrementalStepRunReason.Unchanged), name);
         }
     }
+
+    [Test]
+    public void AnalyzerTypeIdsAreNinos()
+    {
+        // The analyzer reports collisions with its own reading of the symbols; the runtime registers with Nino's ids.
+        var compilation = Compile().AddReferences(MetadataReference.CreateFromFile(typeof(GeneratorTests).Assembly.Location));
+        uint Of(System.Type type) => DaServer.Generator.Shapes.TypeIdOf(compilation.GetTypeByMetadataName(type.FullName!)!);
+
+        Assert.That(Of(typeof(Add)), Is.EqualTo(TypeId<Add>.Value), "namespaced");
+        Assert.That(Of(typeof(Nested)), Is.EqualTo(TypeId<Nested>.Value), "nested");
+        Assert.That(Of(typeof(Nested.Inner)), Is.EqualTo(TypeId<Nested.Inner>.Value), "nested twice");
+        Assert.That(Of(typeof(Former)), Is.EqualTo(TypeId<Former>.Value), "[NinoFormerName]");
+    }
+
+    public struct Nested
+    {
+        public struct Inner;
+    }
+
+    [Nino.Core.NinoFormerName("Game.Before.Former")]
+    public struct Former;
 }

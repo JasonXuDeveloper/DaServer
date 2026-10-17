@@ -68,7 +68,7 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
                 Identifier(c.AssemblyName ?? "Assembly"),
                 new EquatableArray<string>(ContractAssemblyAnchors(c)),
                 new EquatableArray<string>(SharedSystems(c)),
-                new EquatableArray<string>(PersistedComponents(c))))
+                new EquatableArray<PersistedModel>(PersistedComponents(c))))
             .WithTrackingName("RegistrationAssembly");
 
         context.RegisterSourceOutput(hosted.Combine(clientMessages).Combine(placed).Combine(assembly), static (spc, input) =>
@@ -138,16 +138,15 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
 
     /// <summary>
     /// The <c>[Persist]</c> and <c>[Handoff]</c> components of this compilation and the assemblies it references
-    /// (components projects): the node registers them so actor records can hold them (ADR-068, ADR-072). Entries are
-    /// "type|type id|stored" (stored: 1 for [Persist], 0 for [Handoff] only).
+    /// (components projects): the node registers them so actor records can hold them (ADR-068, ADR-072).
     /// </summary>
-    private static string[] PersistedComponents(Compilation compilation)
+    private static PersistedModel[] PersistedComponents(Compilation compilation)
     {
-        var found = new List<string>();
+        var found = new List<PersistedModel>();
         CollectPersisted(compilation.Assembly.GlobalNamespace, found);
         foreach (var assembly in compilation.SourceModule.ReferencedAssemblySymbols)
             if (DeclaresComponents(assembly)) CollectPersisted(assembly.GlobalNamespace, found);
-        found.Sort(System.StringComparer.Ordinal);
+        found.Sort(static (a, b) => System.StringComparer.Ordinal.Compare(a.FullName, b.FullName));
         return found.ToArray();
     }
 
@@ -164,14 +163,14 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
         return false;
     }
 
-    private static void CollectPersisted(INamespaceSymbol ns, List<string> found)
+    private static void CollectPersisted(INamespaceSymbol ns, List<PersistedModel> found)
     {
         foreach (var type in ns.GetTypeMembers())
             if (type is { TypeKind: TypeKind.Struct, DeclaredAccessibility: Accessibility.Public, IsGenericType: false })
             {
                 bool stored = HasAttribute(type, PersistAttribute);
                 if (stored || HasAttribute(type, HandoffAttribute))
-                    found.Add(type.ToDisplayString(Fqn) + "|" + Shapes.TypeIdOf(type) + (stored ? "|1" : "|0"));
+                    found.Add(new PersistedModel(type.ToDisplayString(Fqn), stored));
             }
         foreach (var inner in ns.GetNamespaceMembers()) CollectPersisted(inner, found);
     }
@@ -207,11 +206,8 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
         foreach (var system in sharedSystems)
             sb.Append($"        ServerRegistry.RegisterSystem(new SystemInfo(typeof({system}), static () => new {system}()));\n");
         if (info.ReferencesRuntime)
-            foreach (var entry in info.Persisted) // "type|type id|stored": the [Persist] and [Handoff] components
-            {
-                var parts = entry.Split('|');
-                sb.Append($"        ServerRegistry.RegisterPersistent<{parts[0]}>({parts[1]}u, stored: {(parts[2] == "1" ? "true" : "false")});\n");
-            }
+            foreach (var component in info.Persisted) // the [Persist] and [Handoff] components
+                sb.Append($"        ServerRegistry.RegisterPersistent<{component.FullName}>(stored: {(component.Stored ? "true" : "false")});\n");
 
         foreach (var t in types)
         {
@@ -278,5 +274,8 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
         c.GetTypeByMetadataName("System.Runtime.CompilerServices.ModuleInitializerAttribute") != null;
 
     private sealed record AssemblyModel(bool ReferencesCore, bool ReferencesRuntime, bool ModuleInitializer, string AssemblyHint,
-        EquatableArray<string> ContractAnchors, EquatableArray<string> SharedSystems, EquatableArray<string> Persisted);
+        EquatableArray<string> ContractAnchors, EquatableArray<string> SharedSystems, EquatableArray<PersistedModel> Persisted);
+
+    /// <summary>A component of actor records: stored and moved (<c>[Persist]</c>) or only moved (<c>[Handoff]</c>).</summary>
+    private sealed record PersistedModel(string FullName, bool Stored);
 }

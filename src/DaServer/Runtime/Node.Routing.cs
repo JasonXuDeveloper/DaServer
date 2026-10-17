@@ -42,7 +42,7 @@ sealed partial class Node : IChannelHandler
         // arrived with); the remaining time travels with it.
         long now = Environment.TickCount64;
         if (frame.Deadline == 0) frame.Deadline = now + (long)Options.CallTimeout.TotalMilliseconds;
-        if (!Pending.TryRegister(call, (int)Math.Max(1, frame.Deadline - now), out uint callId, link))
+        if (!Pending.TryRegister(call, frame.Deadline, out uint callId, link))
         {
             Refuse(frame, call, null, 0, RpcStatus.Overloaded);
             return;
@@ -78,7 +78,7 @@ sealed partial class Node : IChannelHandler
         }
 
         long timeout = (long)Options.CallTimeout.TotalMilliseconds;
-        if (!Pending.TryRegister(call, (int)timeout, out uint callId, link))
+        if (!Pending.TryRegister(call, Environment.TickCount64 + timeout, out uint callId, link))
         {
             Refuse(frame, call, null, 0, RpcStatus.Overloaded);
             return;

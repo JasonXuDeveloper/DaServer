@@ -24,16 +24,17 @@ internal interface IPendingCall
 /// use, not the bound: slots live in chunks of doubling size (<see cref="FirstChunk"/>, then twice as many each),
 /// allocated as the number of calls in flight first reaches them, so a client with a couple of calls out holds
 /// <see cref="FirstChunk"/> slots and a busy table about twice its peak; free slots form a stack threaded through
-/// the slots themselves.
+/// the slots themselves. An entry is 32 bytes (two per cache line): the call id fits an int, and the deadline is the low
+/// 32 bits of <see cref="Platform.Milliseconds"/>, compared with wrap-around (deadlines are seconds away, not weeks).
 /// </summary>
 internal sealed class PendingCallTable
 {
     private struct Entry
     {
-        public long Tag; // call id while active, 0 when free
         public IPendingCall? Call;
         public object? Owner;
-        public long Deadline;
+        public int Tag; // call id while active, 0 when free
+        public int Deadline; // low 32 bits of the deadline in Platform.Milliseconds, 0 = none
         public uint Generation;
         public int NextFree; // free stack link: index + 1 of the next free slot, 0 = none
     }
@@ -85,9 +86,14 @@ internal sealed class PendingCallTable
         return ref _chunks[chunk]![index - StartOf(chunk)];
     }
 
+    /// <summary>The deadline of a call made now with <paramref name="timeout"/> (none when it is not positive).</summary>
+    public static long DeadlineAfter(TimeSpan timeout) =>
+        timeout > TimeSpan.Zero ? Platform.Milliseconds + (long)timeout.TotalMilliseconds : 0;
+
     /// <summary>Register <paramref name="call"/>; false when the table is full (the caller refuses it as <see cref="RpcStatus.Overloaded"/>).</summary>
+    /// <param name="deadlineMs">When the call times out, in <see cref="Platform.Milliseconds"/>; 0: never.</param>
     /// <param name="owner">Optional owner (e.g. the connection) for <see cref="FailOwnedBy"/>.</param>
-    public bool TryRegister(IPendingCall call, int timeoutMs, out uint callId, object? owner = null)
+    public bool TryRegister(IPendingCall call, long deadlineMs, out uint callId, object? owner = null)
     {
         if (!TryPopFree(out int index) && !TryAllocate(out index))
         {
@@ -107,8 +113,8 @@ internal sealed class PendingCallTable
         e.Generation = generation;
         e.Call = call;
         e.Owner = owner;
-        e.Deadline = timeoutMs > 0 ? Stopwatch.GetTimestamp() + timeoutMs * (Stopwatch.Frequency / 1000) : long.MaxValue;
-        Volatile.Write(ref e.Tag, id); // publish last
+        e.Deadline = deadlineMs == 0 ? 0 : (int)deadlineMs | ((int)deadlineMs == 0 ? 1 : 0); // a deadline never reads as none
+        Volatile.Write(ref e.Tag, (int)id); // publish last
         callId = id;
         return true;
     }
@@ -185,7 +191,7 @@ internal sealed class PendingCallTable
             return null; // never issued (a forged or corrupt id)
 
         ref var e = ref At(index);
-        if (Interlocked.CompareExchange(ref e.Tag, 0, callId) != callId)
+        if (Interlocked.CompareExchange(ref e.Tag, 0, (int)callId) != (int)callId)
             return null;
 
         var call = e.Call;
@@ -208,14 +214,14 @@ internal sealed class PendingCallTable
     /// <summary>Fail calls whose deadline passed. Call periodically (e.g. every 100 ms).</summary>
     public int SweepExpired()
     {
-        long now = Stopwatch.GetTimestamp();
+        int now = (int)Platform.Milliseconds;
         int failed = 0;
         int allocated = Volatile.Read(ref _allocated);
         for (int i = 0; i < allocated; i++)
         {
             ref var e = ref At(i);
-            long tag = Volatile.Read(ref e.Tag);
-            if (tag != 0 && e.Deadline < now)
+            int tag = Volatile.Read(ref e.Tag);
+            if (tag != 0 && e.Deadline != 0 && now - e.Deadline > 0)
             {
                 var call = Take((uint)tag);
                 if (call != null)
@@ -235,7 +241,7 @@ internal sealed class PendingCallTable
         int allocated = Volatile.Read(ref _allocated);
         for (int i = 0; i < allocated; i++)
         {
-            long tag = Volatile.Read(ref At(i).Tag);
+            int tag = Volatile.Read(ref At(i).Tag);
             if (tag != 0)
                 Take((uint)tag)?.Fail(status);
         }
@@ -248,7 +254,7 @@ internal sealed class PendingCallTable
         for (int i = 0; i < allocated; i++)
         {
             ref var e = ref At(i);
-            long tag = Volatile.Read(ref e.Tag);
+            int tag = Volatile.Read(ref e.Tag);
             if (tag != 0 && ReferenceEquals(e.Owner, owner))
                 Take((uint)tag)?.Fail(status);
         }

@@ -235,7 +235,7 @@ internal static class ShardDispatch
         }
         catch (Exception e)
         {
-            actor.Shard.Node.Logger.LogError(e, "OnError of {Actor} failed", actor);
+            Log.ActorFailed(actor.Shard.Node.Logger, e, "OnError", actor);
             action = ErrorAction.Resume;
         }
 
@@ -250,7 +250,7 @@ internal static class ShardDispatch
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static void LogUnobserved(ILogger logger, Exception e, object target, in FrameHeader header) =>
-        logger.LogError(e, "{Kind} {Id:x8} failed in {Target}", header.Kind, header.MessageId, target);
+        Log.MessageFailed(logger, e, header.Kind, header.MessageId, target);
 
     /// <summary>
     /// Invoke the next message of an actor: its origin is the turn's caller and, being a client session, one the actor

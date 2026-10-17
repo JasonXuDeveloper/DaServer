@@ -34,6 +34,20 @@ internal static class Platform
 #endif
     }
 
+#if !NET
+    [ThreadStatic] private static Random? t_random;
+#endif
+
+    /// <summary>A uniform random number in [0, 1), thread-safe: <see cref="Random.Shared"/> on .NET.</summary>
+    public static double NextDouble()
+    {
+#if NET
+        return Random.Shared.NextDouble();
+#else
+        return (t_random ??= new Random(Environment.CurrentManagedThreadId ^ Environment.TickCount)).NextDouble();
+#endif
+    }
+
     /// <summary>Run <paramref name="action"/> on the thread pool (cold paths: closing a connection off the caller's thread).</summary>
     public static void Queue<TState>(Action<TState> action, TState state) where TState : class
     {

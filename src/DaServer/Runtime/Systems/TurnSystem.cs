@@ -17,7 +17,7 @@ internal sealed partial class TurnSystem : EcsSystem
         target.TurnChain = 0;
         actor.Remove<Turn, TurnEnded>(); // `turn` is invalid from here on
         if (error == null) return;
-        world.Logger().LogError(error, "Call of {Actor} failed", target);
+        Log.ActorFailed(world.Logger(), error, "Call", target);
         ShardDispatch.Failed(target, error);
     }
 
@@ -28,7 +28,7 @@ internal sealed partial class TurnSystem : EcsSystem
         var target = self.Actor;
         actor.Remove<Turn, TurnEnded, Loading>();
         if (error == null) return;
-        world.Logger().LogError(error, "Load of {Actor} failed", target);
+        Log.ActorFailed(world.Logger(), error, "Load", target);
         actor.Add<Removing>() = new Removing(RpcStatus.Error, "Load failed: " + error.Message);
     }
 
@@ -37,7 +37,7 @@ internal sealed partial class TurnSystem : EcsSystem
     {
         var error = TurnWatcher.Result(in turn);
         var target = self.Actor;
-        if (error != null) world.Logger().LogError(error, "Unload of {Actor} failed", target);
+        if (error != null) Log.ActorFailed(world.Logger(), error, "Unload", target);
         actor.Remove<Turn, TurnEnded>();
         if (Handoff.TargetOf(world, target) is { } to) actor.Add<HandOff>() = new HandOff(to); // its new owner takes the record
         else if (actor.Has<Stored>()) actor.Add<FinalSave>(); // removed once its record is written (PersistSystem)

@@ -7,9 +7,7 @@ namespace DaServer.Cluster;
 public sealed class ClusterView
 {
     private readonly FrozenDictionary<ulong, ClusterMember> _members;
-    private readonly FrozenDictionary<uint, ClusterMember[]> _handlerTypeNodes;
-    private readonly FrozenDictionary<uint, ushort[]> _slotOwners; // actor handler types: slot -> index into their nodes
-    private readonly FrozenSet<uint> _actorTypes;
+    private readonly FrozenDictionary<uint, MessageRoute> _handlerTypes; // its nodes, kind and slot owners: one lookup
     private readonly FrozenDictionary<uint, MessageRoute[]> _routes;
     private readonly FrozenDictionary<uint, ClusterMember[]> _scopeNodes;
 
@@ -65,13 +63,15 @@ public sealed class ClusterView
 
         _members = all.ToFrozenDictionary();
         UpMembers = upMembers.ToArray();
-        var handlerTypeArrays = new Dictionary<uint, ClusterMember[]>();
-        foreach (var (k, v) in handlerTypes) handlerTypeArrays[k] = v.ToArray();
-        _handlerTypeNodes = handlerTypeArrays.ToFrozenDictionary();
-        _actorTypes = actorTypes.ToFrozenSet();
-        var slotOwners = new Dictionary<uint, ushort[]>();
-        foreach (uint actorType in actorTypes) slotOwners[actorType] = SlotOwners(handlerTypeArrays[actorType], actorType);
-        _slotOwners = slotOwners.ToFrozenDictionary();
+        var handlerTypeRoutes = new Dictionary<uint, MessageRoute>();
+        foreach (var (handlerType, hosts) in handlerTypes)
+        {
+            var nodes = hosts.ToArray();
+            bool actor = actorTypes.Contains(handlerType);
+            handlerTypeRoutes[handlerType] = new MessageRoute(handlerType, actor, nodes) { Owners = actor ? SlotOwners(nodes, handlerType) : null };
+        }
+
+        _handlerTypes = handlerTypeRoutes.ToFrozenDictionary();
         // An actor's owner is its type's (one activation per key, whatever the message); a service is chosen among
         // the nodes that handle the message.
         var routes = new Dictionary<uint, MessageRoute[]>();
@@ -81,14 +81,12 @@ public sealed class ClusterView
             var list = new List<MessageRoute>();
             foreach (var (handlerType, actor) in byHandlerType)
             {
-                var hosts = handlerTypeArrays[handlerType];
+                var typeRoute = handlerTypeRoutes[handlerType];
                 var nodes = handling[(messageId, handlerType)];
-                if (nodes.Count != hosts.Length)
-                    foreach (var host in hosts)
+                if (nodes.Count != typeRoute.Nodes.Length)
+                    foreach (var host in typeRoute.Nodes)
                         if (!nodes.Contains(host)) lacking.Add((host.NodeId, handlerType, messageId));
-                list.Add(actor
-                    ? new MessageRoute(handlerType, true, hosts) { Owners = slotOwners[handlerType] }
-                    : new MessageRoute(handlerType, false, nodes.ToArray()));
+                list.Add(actor ? typeRoute : new MessageRoute(handlerType, false, nodes.ToArray()));
             }
 
             routes[messageId] = list.ToArray();
@@ -138,21 +136,16 @@ public sealed class ClusterView
     /// <summary>
     /// The nodes hosting handler type <paramref name="handlerTypeId"/> (an actor type is named by its id type), if any.
     /// </summary>
-    public bool TryGetHandlerTypeRoute(uint handlerTypeId, out MessageRoute route)
-    {
-        bool found = _handlerTypeNodes.TryGetValue(handlerTypeId, out var nodes);
-        bool actor = _actorTypes.Contains(handlerTypeId);
-        route = new MessageRoute(handlerTypeId, actor, nodes ?? []) { Owners = actor ? _slotOwners[handlerTypeId] : null };
-        return found;
-    }
+    public bool TryGetHandlerTypeRoute(uint handlerTypeId, out MessageRoute route) =>
+        _handlerTypes.TryGetValue(handlerTypeId, out route);
 
     /// <summary>
     /// Owner of actor (<paramref name="handlerTypeId"/>, <paramref name="key"/>): the owner of its slot among the Up and
     /// Suspect nodes hosting its handler type (ADR-074). Every node with the same view picks the same owner.
     /// </summary>
     public ClusterMember? HandlerTypeOwner(uint handlerTypeId, long key) =>
-        _handlerTypeNodes.TryGetValue(handlerTypeId, out var nodes) && _slotOwners.TryGetValue(handlerTypeId, out var owners)
-            ? nodes[owners[Slot(handlerTypeId, key)]]
+        _handlerTypes.TryGetValue(handlerTypeId, out var route) && route.Owners is { } owners
+            ? route.Nodes[owners[Slot(handlerTypeId, key)]]
             : null;
 
     /// <summary>
@@ -161,7 +154,8 @@ public sealed class ClusterView
     /// </summary>
     public ClusterMember? HandlerTypeOwnerWithout(uint handlerTypeId, long key, ulong excluded)
     {
-        if (!_handlerTypeNodes.TryGetValue(handlerTypeId, out var nodes)) return null;
+        if (!_handlerTypes.TryGetValue(handlerTypeId, out var route)) return null;
+        var nodes = route.Nodes;
         int best = Rendezvous(nodes, GroupOf(handlerTypeId), Slot(handlerTypeId, key), excluded);
         return best < 0 ? null : nodes[best];
     }

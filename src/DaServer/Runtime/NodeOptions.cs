@@ -19,7 +19,10 @@ public sealed class NodeOptions
     /// <summary>Cluster port; 0 = pick a free port (tests).</summary>
     public int ClusterPort { get; set; }
 
-    /// <summary>Host other nodes use to reach this node (pod IP / DNS name). Defaults to the bind address or loopback.</summary>
+    /// <summary>
+    /// Host other nodes use to reach this node. Defaults to the bind address; listening on every address, to the
+    /// container's own address in a container (a pod's IP) and to loopback outside one.
+    /// </summary>
     public string? AdvertisedHost { get; set; }
 
     /// <summary>Seed endpoints "host:port" (DNS names resolve to every address, e.g. a Kubernetes headless service).</summary>
@@ -44,9 +47,10 @@ public sealed class NodeOptions
     public TimeSpan CallTimeout { get; set; } = TimeSpan.FromSeconds(10);
 
     /// <summary>
-    /// The shards' clock: ticks, delayed sends (<c>SendAfter</c>), idle unloading, checkpoints, and <c>Time</c> in actors,
-    /// services and systems. Transport keeps real time (call deadlines, keep-alives, membership). Tests pass a manual
-    /// clock (<c>DaServer.Testing</c>) and move it on step by step.
+    /// The cluster's clock: ticks, delayed sends (<c>SendAfter</c>), idle unloading, checkpoints, resume graces of lost
+    /// clients, and <c>Time</c> in actors, services and systems. Transport keeps real time (<c>Platform.Milliseconds</c>:
+    /// call deadlines, keep-alives, membership, rate limits). Tests pass a manual clock (<c>DaServer.Testing</c>) and move
+    /// it on step by step.
     /// </summary>
     public TimeProvider TimeProvider { get; set; } = TimeProvider.System;
 

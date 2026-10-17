@@ -132,7 +132,7 @@ public sealed class ClusterClient : IMessageSender, IChannelHandler, IAsyncDispo
     public bool AutoReconnect { get; set; } = true;
 
     /// <summary>
-    /// How long to keep trying (exponential backoff up to 5 s between attempts). Servers wait
+    /// How long to keep trying (exponential backoff with full jitter, up to 5 s between attempts). Servers wait
     /// <c>NodeOptions.ResumeGrace</c> (30 s by default) before they report the session closed.
     /// </summary>
     public TimeSpan ReconnectTimeout { get; set; } = TimeSpan.FromSeconds(30);
@@ -343,7 +343,7 @@ public sealed class ClusterClient : IMessageSender, IChannelHandler, IAsyncDispo
             }
 
             uint callId = 0;
-            if (call != null && !_pending.TryRegister(call, (int)CallTimeout.TotalMilliseconds, out callId))
+            if (call != null && !_pending.TryRegister(call, PendingCallTable.DeadlineAfter(CallTimeout), out callId))
             {
                 call.Fail(RpcStatus.Overloaded);
                 return;
@@ -427,9 +427,11 @@ public sealed class ClusterClient : IMessageSender, IChannelHandler, IAsyncDispo
     {
         Exception? error = null;
         long deadline = Platform.Milliseconds + (long)ReconnectTimeout.TotalMilliseconds;
-        var delay = TimeSpan.FromMilliseconds(100);
+        var backoff = new Backoff(TimeSpan.FromMilliseconds(100), TimeSpan.FromSeconds(5));
         while (!_disposed)
         {
+            var delay = backoff.Next();
+            if (Platform.Milliseconds + (long)delay.TotalMilliseconds > deadline) break;
             await Task.Delay(delay).ConfigureAwait(false); // a blip or a restarting node: give it a moment
             _connection?.Close(); // the previous attempt's, if it connected
             try
@@ -450,9 +452,6 @@ public sealed class ClusterClient : IMessageSender, IChannelHandler, IAsyncDispo
             {
                 error = e;
             }
-
-            if (Platform.Milliseconds + (long)delay.TotalMilliseconds > deadline) break;
-            delay = TimeSpan.FromMilliseconds(Math.Min(delay.TotalMilliseconds * 2, 5000));
         }
 
         _connection?.Close(); // a connection without a session: the application logs in again

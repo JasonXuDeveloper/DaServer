@@ -32,7 +32,7 @@ internal sealed class Membership : IDisposable
     private sealed class Entry(ClusterMember info, long lastProgress)
     {
         public ClusterMember Info = info;
-        public long LastProgress = lastProgress; // Stopwatch timestamp of the last heartbeat/status change we saw
+        public long LastProgress = lastProgress; // Platform.Milliseconds of the last heartbeat/status change we saw
     }
 
     public Membership(Node node)
@@ -63,7 +63,7 @@ internal sealed class Membership : IDisposable
                 Handlers = handlers,
                 Status = MemberStatus.Up,
             };
-            _members[_node.Id] = new Entry(_self, Stopwatch.GetTimestamp());
+            _members[_node.Id] = new Entry(_self, Platform.Milliseconds);
             PublishView();
         }
 
@@ -133,34 +133,34 @@ internal sealed class Membership : IDisposable
     /// </summary>
     private void CompensatePause()
     {
-        long now = Stopwatch.GetTimestamp(), last = _lastRoundAt;
+        long now = Platform.Milliseconds, last = _lastRoundAt;
         _lastRoundAt = now;
-        long interval = Ticks(_node.Options.GossipInterval);
+        long interval = Ms(_node.Options.GossipInterval);
         if (last == 0 || now - last <= 3 * interval) return;
         long pause = now - last - interval;
         foreach (var entry in _members.Values) entry.LastProgress += pause;
         _node.Logger.LogWarning("Membership round ran {Ms} ms late (a pause of this process): failure verdicts deferred",
-            pause * 1000 / Stopwatch.Frequency);
+            pause);
     }
 
     /// <summary>Tests: age every member's progress as a pause of this process of <paramref name="pause"/> would.</summary>
     internal void SimulatePause(TimeSpan pause)
     {
-        long ticks = Ticks(pause);
+        long ms = Ms(pause);
         lock (_gate)
         {
-            _lastRoundAt -= ticks;
-            foreach (var entry in _members.Values) entry.LastProgress -= ticks;
+            _lastRoundAt -= ms;
+            foreach (var entry in _members.Values) entry.LastProgress -= ms;
         }
     }
 
-    /// <summary><paramref name="time"/> in <see cref="Stopwatch"/> ticks (the progress clocks' unit).</summary>
-    private static long Ticks(TimeSpan time) => (long)(time.TotalSeconds * Stopwatch.Frequency);
+    /// <summary><paramref name="time"/> in milliseconds (the progress clocks' unit).</summary>
+    private static long Ms(TimeSpan time) => (long)time.TotalMilliseconds;
 
     private void DetectFailures()
     {
-        long now = Stopwatch.GetTimestamp();
-        long suspect = Ticks(_node.Options.SuspectAfter), dead = Ticks(_node.Options.DeadAfter);
+        long now = Platform.Milliseconds;
+        long suspect = Ms(_node.Options.SuspectAfter), dead = Ms(_node.Options.DeadAfter);
         List<ulong>? remove = null;
         bool died = false;
 
@@ -302,7 +302,7 @@ internal sealed class Membership : IDisposable
         bool unknown = false;
         lock (_gate)
         {
-            long now = Stopwatch.GetTimestamp();
+            long now = Platform.Milliseconds;
             for (; pulses.Length >= MemberPulse.Size; pulses = pulses.Slice(MemberPulse.Size))
             {
                 var pulse = MemberPulse.Read(pulses);
@@ -378,7 +378,7 @@ internal sealed class Membership : IDisposable
     {
         lock (_gate)
         {
-            long now = Stopwatch.GetTimestamp();
+            long now = Platform.Milliseconds;
             foreach (var member in incoming)
             {
                 if (member.NodeId == _node.Id)
@@ -433,7 +433,7 @@ internal sealed class Membership : IDisposable
         self.Status = status;
         self.Incarnation = incarnation;
         Volatile.Write(ref _self, self);
-        _members[_node.Id] = new Entry(self, Stopwatch.GetTimestamp());
+        _members[_node.Id] = new Entry(self, Platform.Milliseconds);
         _changed = true; // the view must hold the new object (pulse fields are updated in place on it)
     }
 
@@ -474,13 +474,13 @@ internal sealed class Membership : IDisposable
     /// </summary>
     private List<(string Host, int Port)> SeedEndPoints()
     {
-        long now = Stopwatch.GetTimestamp();
-        if (_seeds != null && Stopwatch.GetElapsedTime(_seedsResolvedAt, now) < SeedRefresh) return _seeds;
+        long now = Platform.Milliseconds;
+        if (_seeds != null && now - _seedsResolvedAt < (long)SeedRefresh.TotalMilliseconds) return _seeds;
 
         var seeds = new List<(string, int)>();
         foreach (var seed in _node.Options.Seeds)
         {
-            if (!TryParseEndPoint(seed, out var host, out var port)) continue;
+            if (!HostPort.TryParse(seed, out var host, out var port)) continue;
             if (IPAddress.TryParse(host, out _) || host == "localhost")
             {
                 if (!IsSelf(host, port)) seeds.Add((host, port));
@@ -507,11 +507,4 @@ internal sealed class Membership : IDisposable
 
     private bool IsSelf(string host, int port) =>
         port == _self.Port && (host == _self.Host || host == "localhost" && _self.Host == "127.0.0.1");
-
-    internal static bool TryParseEndPoint(string text, out string host, out int port)
-    {
-        int colon = text.LastIndexOf(':');
-        host = colon > 0 ? text[..colon] : text;
-        return int.TryParse(colon > 0 ? text[(colon + 1)..] : "", out port);
-    }
 }
