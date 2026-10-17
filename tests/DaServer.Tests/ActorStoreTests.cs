@@ -16,8 +16,6 @@ public sealed class Stores(string kind) : IAsyncDisposable
 
     public static IEnumerable<string> Kinds() => [Memory, PostgreSql];
 
-    public bool IsPostgreSql => kind == PostgreSql;
-
     /// <summary>Close every other connection to the test database on the server's side (a restart, a failover).</summary>
     public static async Task DropConnections()
     {
@@ -59,14 +57,14 @@ public class ActorStoreTests(string kind)
 
     private static readonly StoredKey A = new(7, 1), B = new(7, 2), C = new(unchecked((uint)-5), long.MaxValue);
 
-    private static async Task<StoredRecord[]> Load(IActorStore store, params StoredKey[] keys)
+    internal static async Task<StoredRecord[]> Load(IActorStore store, params StoredKey[] keys)
     {
         var records = new StoredRecord[keys.Length];
         await store.LoadAsync(keys, records);
         return records;
     }
 
-    private static async Task<bool[]> Save(IActorStore store, params StoredWrite[] writes)
+    internal static async Task<bool[]> Save(IActorStore store, params StoredWrite[] writes)
     {
         var accepted = new bool[writes.Length];
         await store.SaveAsync(writes, accepted);
@@ -107,20 +105,29 @@ public class ActorStoreTests(string kind)
         for (int i = 0; i < keys.Length; i++)
             Assert.That(BitConverter.ToInt32(records[i].Data.Span), Is.EqualTo(keys.Length - 1 - i), "records come back in the keys' order");
     }
+}
+
+/// <summary>What only a database store faces: connections lost to a restart or a failover.</summary>
+public class PostgreSqlStoreTests
+{
+    private readonly Stores _stores = new(Stores.PostgreSql);
+    private static readonly StoredKey A = new(7, 1);
+
+    [OneTimeTearDown]
+    public Task DropStores() => _stores.DisposeAsync().AsTask();
 
     [Test]
     public async Task AStoreRecoversFromLostConnections()
     {
         var store = _stores.Create();
-        if (!_stores.IsPostgreSql) Assert.Ignore("only a database has connections to lose");
-        Assert.That(await Save(store, new StoredWrite(A, 0, new byte[] { 1 })), Is.EqualTo(new[] { true }));
+        Assert.That(await ActorStoreTests.Save(store, new StoredWrite(A, 0, new byte[] { 1 })), Is.EqualTo(new[] { true }));
         await Stores.DropConnections();
 
         // The call that finds its connection gone may fail (the shard retries it); the next one reconnects.
-        try { await Save(store, new StoredWrite(A, 1, new byte[] { 2 })); }
+        try { await ActorStoreTests.Save(store, new StoredWrite(A, 1, new byte[] { 2 })); }
         catch (Npgsql.NpgsqlException) { }
-        var record = (await Load(store, A))[0];
-        if (record.Version == 1) Assert.That(await Save(store, new StoredWrite(A, 1, new byte[] { 2 })), Is.EqualTo(new[] { true }));
-        Assert.That((await Load(store, A))[0].Data.ToArray(), Is.EqualTo(new byte[] { 2 }));
+        var record = (await ActorStoreTests.Load(store, A))[0];
+        if (record.Version == 1) Assert.That(await ActorStoreTests.Save(store, new StoredWrite(A, 1, new byte[] { 2 })), Is.EqualTo(new[] { true }));
+        Assert.That((await ActorStoreTests.Load(store, A))[0].Data.ToArray(), Is.EqualTo(new byte[] { 2 }));
     }
 }
