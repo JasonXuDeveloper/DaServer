@@ -28,7 +28,7 @@ public class GeneratorTests
         References, new CSharpCompilationOptions(kind, nullableContextOptions: NullableContextOptions.Enable));
 
     /// <summary>The framework plus every assembly next to the tests (DaServer, Hosting, Nino, EasyEcs...).</summary>
-    private static readonly MetadataReference[] References =
+    internal static readonly MetadataReference[] References =
         ((string)System.AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!).Split(System.IO.Path.PathSeparator)
         .Concat(System.IO.Directory.GetFiles(System.AppContext.BaseDirectory, "*.dll"))
         .GroupBy(System.IO.Path.GetFileName).Select(g => g.First())

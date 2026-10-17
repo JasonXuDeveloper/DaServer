@@ -357,8 +357,7 @@ public class AllocationTests : ClusterTest
         for (int i = 0; i < 16; i++) // the dispatch queue is full (these run, and succeed, once the gate opens)
         {
             var add = FrameWriter.Rent();
-            var nino = add.Nino;
-            Nino.Core.NinoSerializer.Serialize(new Add(1), ref nino);
+            add.Write(new Add(1));
             node.Request(add, TypeId<Add>.Value, ActorIds<CounterId>.HandlerTypeId, 1, null, sink, 1);
         }
 
@@ -423,8 +422,7 @@ public class AllocationTests : ClusterTest
             for (int i = 0; i < count; i++)
             {
                 var frame = FrameWriter.Rent();
-                var nino = frame.Nino;
-                Nino.Core.NinoSerializer.Serialize(new Add(1), ref nino);
+                frame.Write(new Add(1));
                 frame.Deadline = Environment.TickCount64 + 1;
                 node.Request(frame, TypeId<Add>.Value, ActorIds<CounterId>.HandlerTypeId, 1, null, sink, (uint)i + 1);
             }

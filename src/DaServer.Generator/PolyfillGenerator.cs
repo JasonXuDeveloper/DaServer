@@ -14,14 +14,17 @@ public sealed class PolyfillGenerator : IIncrementalGenerator
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
         var needsIsExternalInit = context.CompilationProvider
-            .Select(static (c, _) => c.GetTypeByMetadataName("DaServer.IMessageSender") != null &&
-                                     c.GetTypeByMetadataName("System.Runtime.CompilerServices.IsExternalInit") == null)
+            .Select(static (c, _) => c.GetTypeByMetadataName("DaServer.IMessageSender") != null && !HasIsExternalInit(c))
             .WithTrackingName("IsExternalInit");
         context.RegisterSourceOutput(needsIsExternalInit, static (spc, needed) =>
         {
             if (needed) spc.AddSource("DaServer.IsExternalInit.g.cs", SourceText.From(IsExternalInit, Encoding.UTF8));
         });
     }
+
+    /// <summary>Whether the compilation can use an IsExternalInit (a referenced library may declare an internal one: Nino.Core does).</summary>
+    private static bool HasIsExternalInit(Compilation c) =>
+        c.GetTypeByMetadataName("System.Runtime.CompilerServices.IsExternalInit") is { } own && c.IsSymbolAccessibleWithin(own, c.Assembly);
 
     private const string IsExternalInit = Header + """
         namespace System.Runtime.CompilerServices

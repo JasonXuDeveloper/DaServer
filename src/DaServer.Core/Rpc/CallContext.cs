@@ -50,8 +50,7 @@ internal static class ReplySinks
         }
 
         var w = FrameWriter.Rent();
-        var nino = w.Nino;
-        NinoSerializer.Serialize(message, ref nino);
+        w.Write(message);
         sink.SendReply(callId, status, w);
     }
 }
@@ -117,8 +116,7 @@ public readonly struct CallContext
         var w = FrameWriter.Rent();
         try
         {
-            var nino = w.Nino;
-            NinoSerializer.Serialize(value, ref nino);
+            w.Write(value);
         }
         catch (Exception e)
         {

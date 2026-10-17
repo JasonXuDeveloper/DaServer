@@ -296,8 +296,7 @@ internal sealed class PeerLink : IFrameSink, IDisposable
         }
 
         var w = FrameWriter.Rent();
-        var nino = w.Nino;
-        NinoSerializer.Serialize(_node.Id, ref nino);
+        w.Write(_node.Id);
         w.SendControl(connection, ControlOp.Resume, received);
     }
 

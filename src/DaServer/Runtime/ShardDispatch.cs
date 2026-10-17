@@ -281,7 +281,7 @@ internal static class ShardDispatch
     {
         var frame = envelope.Frame;
         var reader = new Reader(frame.Payload);
-        NinoDeserializer.Deserialize(out SessionResumed resumed, ref reader);
+        SessionResumed resumed = NinoDeserializer.Deserialize<SessionResumed>(ref reader);
         bool accepted = ActorSessions.Resume(actor, in resumed);
         if (frame.CallId != 0 && envelope.Sink is { } sink)
         {

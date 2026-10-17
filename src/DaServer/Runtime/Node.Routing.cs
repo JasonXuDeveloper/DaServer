@@ -236,14 +236,13 @@ sealed partial class Node : IConnectionHandler
         var self = Membership.Self;
         long at = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var w = FrameWriter.Rent();
-        var nino = w.Nino;
-        NinoSerializer.Serialize(self.Host, ref nino);
-        NinoSerializer.Serialize(self.Port, ref nino);
-        NinoSerializer.Serialize(streamId, ref nino);
-        NinoSerializer.Serialize(ControlOp.LinkVersion, ref nino);
-        NinoSerializer.Serialize(Options.ClusterName, ref nino);
-        NinoSerializer.Serialize(at, ref nino);
-        NinoSerializer.Serialize(_linkAuth.Prove(Id, streamId, at), ref nino);
+        w.Write(self.Host);
+        w.Write(self.Port);
+        w.Write(streamId);
+        w.Write(ControlOp.LinkVersion);
+        w.Write(Options.ClusterName);
+        w.Write(at);
+        w.Write(_linkAuth.Prove(Id, streamId, at));
         w.SetHeader(FrameKind.Control, 0, ControlOp.Hello, (long)Id);
         var frame = w.Frame.ToArray(); // once per connection
         w.Dispose();
@@ -260,13 +259,13 @@ sealed partial class Node : IConnectionHandler
         try
         {
             var reader = new Reader(payload);
-            NinoDeserializer.Deserialize(out host, ref reader);
-            NinoDeserializer.Deserialize(out port, ref reader);
-            NinoDeserializer.Deserialize(out streamId, ref reader);
-            NinoDeserializer.Deserialize(out version, ref reader);
-            NinoDeserializer.Deserialize(out cluster, ref reader);
-            NinoDeserializer.Deserialize(out at, ref reader);
-            NinoDeserializer.Deserialize(out proof, ref reader);
+            host = NinoDeserializer.Deserialize<string>(ref reader);
+            port = NinoDeserializer.Deserialize<int>(ref reader);
+            streamId = NinoDeserializer.Deserialize<long>(ref reader);
+            version = NinoDeserializer.Deserialize<int>(ref reader);
+            cluster = NinoDeserializer.Deserialize<string>(ref reader);
+            at = NinoDeserializer.Deserialize<long>(ref reader);
+            proof = NinoDeserializer.Deserialize<byte[]>(ref reader);
         }
         catch (Exception)
         {
@@ -302,7 +301,7 @@ sealed partial class Node : IConnectionHandler
     {
         if (connection.Tag is not PeerLink link) return;
         var reader = new Reader(payload);
-        NinoDeserializer.Deserialize(out ulong peerId, ref reader);
+        ulong peerId = NinoDeserializer.Deserialize<ulong>(ref reader);
         link.OnResume(connection, received, peerId);
     }
 

@@ -1,18 +1,24 @@
+using System.Runtime.InteropServices;
+
 namespace DaServer.Buffers;
 
 /// <summary>
 /// Pooled frame builder. The first <see cref="FrameHeader.Size"/> bytes are reserved for the header so a frame is
 /// serialized exactly once, contiguously, and can be handed to a local mailbox (zero copy) or copied into a socket
-/// batch. Implements <see cref="INinoBufferWriter"/> so generated code serializes arguments straight into it.
+/// batch. Its bytes live in a <see cref="NinoArrayBufferWriter"/>, which Nino writes into in place (<see cref="Write{T}"/>);
+/// the writer stays with the pooled frame, so a steady state allocates nothing.
 /// </summary>
 /// <remarks>Ownership: whoever holds the instance must call <see cref="Dispose"/> exactly once.</remarks>
-public sealed class FrameWriter : INinoBufferWriter, IDisposable
+public sealed class FrameWriter : IDisposable
 {
     /// <summary>Frames in flight per process (queued in shards, mailboxes and links): bursts below it allocate once.</summary>
     private static readonly ObjectPool<FrameWriter> Pool = new ObjectPool<FrameWriter>(() => new FrameWriter(), 1 << 16);
 
-    private byte[] _buffer = Array.Empty<byte>();
-    private int _pos;
+    /// <summary>A frame that grew past this gives its array back on dispose instead of keeping it pooled.</summary>
+    private const int RetainedCapacity = 64 * 1024;
+
+    private readonly NinoArrayBufferWriter _out = new(256);
+    private bool _rented;
     private byte _trailers; // FrameFlags of the trailers written so far (written into the header by SetHeader)
 
     /// <summary>
@@ -28,42 +34,53 @@ public sealed class FrameWriter : INinoBufferWriter, IDisposable
     /// <summary>Rent a writer positioned right after the reserved header.</summary>
     public static FrameWriter Rent(int sizeHint = 256)
     {
-        var w = Pool.Rent();
-        w._buffer = BufferPool.Rent(Math.Max(sizeHint, FrameHeader.Size + 16));
-        w._pos = FrameHeader.Size;
-        w._trailers = 0;
-        w.Deadline = 0;
+        var w = Rented();
+        w._out.EnsureCapacity(Math.Max(sizeHint, FrameHeader.Size + 16));
+        w._out.Advance(FrameHeader.Size);
         return w;
     }
 
     /// <summary>Rent a writer holding a copy of a complete received frame (header and trailers included).</summary>
     public static FrameWriter CopyOf(ReadOnlySpan<byte> frame)
     {
-        var w = Pool.Rent();
-        w._buffer = BufferPool.Rent(Math.Max(frame.Length, FrameHeader.Size));
-        frame.CopyTo(w._buffer);
-        w._pos = frame.Length;
+        var w = Rented();
+        w.WriteRaw(frame);
         w._trailers = (byte)(frame[7] & FrameFlags.Trailers);
+        return w;
+    }
+
+    private static FrameWriter Rented()
+    {
+        var w = Pool.Rent();
+        w._out.ResetWrittenCount();
+        w._rented = true;
+        w._trailers = 0;
         w.Deadline = 0;
         return w;
     }
 
-    /// <summary>Nino writer appending to this frame. Cheap to create; create one per serialization pass.</summary>
-    public Writer Nino
+    /// <summary>Serialize <paramref name="value"/> into the payload (before any trailer), in place.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void Write<T>(T value) => NinoSerializer.Serialize(value, _out);
+
+    /// <summary>The written bytes, writable (the header and the trailers are patched in place).</summary>
+    private Span<byte> Bytes
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        get => new Writer(this);
+        get => MemoryMarshal.AsMemory(_out.WrittenMemory).Span;
     }
 
     /// <summary>Whole frame including header and trailers.</summary>
-    public ReadOnlySpan<byte> Frame => new ReadOnlySpan<byte>(_buffer, 0, _pos);
+    public ReadOnlySpan<byte> Frame => _out.WrittenSpan;
+
+    /// <summary>The whole frame as memory (valid until this writer is disposed): for writes that complete later.</summary>
+    public ReadOnlyMemory<byte> WrittenMemory => _out.WrittenMemory;
 
     /// <summary>Payload: after the header, before the trailers.</summary>
-    public ReadOnlySpan<byte> Payload =>
-        new ReadOnlySpan<byte>(_buffer, FrameHeader.Size, _pos - FrameHeader.Size - FrameFlags.TrailerSize(_trailers));
+    public ReadOnlySpan<byte> Payload => _out.WrittenSpan[FrameHeader.Size..(Length - FrameFlags.TrailerSize(_trailers))];
 
     /// <summary>The call id trailer (<see cref="FrameFlags.HasCall"/>), 0 when the frame has none.</summary>
-    public uint CallId => (_trailers & FrameFlags.HasCall) != 0 ? BinaryPrimitives.ReadUInt32LittleEndian(_buffer.AsSpan(_pos - sizeof(uint))) : 0;
+    public uint CallId => (_trailers & FrameFlags.HasCall) != 0 ? BinaryPrimitives.ReadUInt32LittleEndian(Frame[(Length - sizeof(uint))..]) : 0;
 
     /// <summary>The origin trailer (<see cref="FrameFlags.HasOrigin"/>), default when the frame has none.</summary>
     public Origin Origin
@@ -71,16 +88,16 @@ public sealed class FrameWriter : INinoBufferWriter, IDisposable
         get
         {
             if ((_trailers & FrameFlags.HasOrigin) == 0) return default;
-            var at = _buffer.AsSpan(_pos - FrameFlags.TrailerSize((byte)(_trailers & ~FrameFlags.HasChain)));
+            var at = Frame[(Length - FrameFlags.TrailerSize((byte)(_trailers & ~FrameFlags.HasChain)))..];
             return new Origin(BinaryPrimitives.ReadUInt64LittleEndian(at), BinaryPrimitives.ReadInt64LittleEndian(at[sizeof(ulong)..]));
         }
     }
 
     /// <summary>The call chain trailer (<see cref="FrameFlags.HasChain"/>), 0 when the frame has none.</summary>
     public long Chain =>
-        (_trailers & FrameFlags.HasChain) != 0 ? BinaryPrimitives.ReadInt64LittleEndian(_buffer.AsSpan(_pos - FrameFlags.TrailerSize(_trailers))) : 0;
+        (_trailers & FrameFlags.HasChain) != 0 ? BinaryPrimitives.ReadInt64LittleEndian(Frame[(Length - FrameFlags.TrailerSize(_trailers))..]) : 0;
 
-    public int Length => _pos;
+    public int Length => _out.WrittenCount;
 
     /// <summary>Finish a control frame (a call when <paramref name="callId"/> is set), send it and return this writer to the pool.</summary>
     internal void SendControl(IFrameSender target, uint op, long key = 0, uint callId = 0)
@@ -107,9 +124,10 @@ public sealed class FrameWriter : INinoBufferWriter, IDisposable
     public void SetHeader(FrameKind kind, uint target, uint messageId, long key, RpcStatus status = RpcStatus.Ok,
         byte flags = 0, byte hops = 0)
     {
+        if (Length > FrameHeader.MaxFrameSize) ThrowTooLarge();
         var h = new FrameHeader
         {
-            Length = _pos,
+            Length = Length,
             Kind = kind,
             Status = status,
             Hops = hops,
@@ -118,7 +136,7 @@ public sealed class FrameWriter : INinoBufferWriter, IDisposable
             MessageId = messageId,
             Key = key,
         };
-        h.Write(_buffer);
+        h.Write(Bytes);
     }
 
     /// <summary>
@@ -151,77 +169,51 @@ public sealed class FrameWriter : INinoBufferWriter, IDisposable
         int after = FrameFlags.TrailerSize((byte)(_trailers & following));
         if ((_trailers & flag) == 0)
         {
-            GetSpan(size);
-            _buffer.AsSpan(_pos - after, after).CopyTo(_buffer.AsSpan(_pos - after + size));
-            _pos += size;
+            _out.GetSpan(size);
+            _out.Advance(size);
+            var bytes = Bytes;
+            bytes.Slice(Length - size - after, after).CopyTo(bytes[(Length - after)..]);
             _trailers |= flag;
         }
 
-        return _buffer.AsSpan(_pos - after - size, size);
+        return Bytes.Slice(Length - after - size, size);
     }
 
     /// <summary>Bytes already written at <paramref name="offset"/> (to patch a length written ahead of its data).</summary>
-    internal Span<byte> Written(int offset, int length) => _buffer.AsSpan(offset, length);
+    internal Span<byte> Written(int offset, int length) => Bytes.Slice(offset, length);
 
     /// <summary>Append raw bytes to the payload (before any trailer).</summary>
     public void WriteRaw(ReadOnlySpan<byte> bytes)
     {
-        bytes.CopyTo(GetSpan(bytes.Length));
-        _pos += bytes.Length;
+        bytes.CopyTo(_out.GetSpan(bytes.Length));
+        _out.Advance(bytes.Length);
     }
+
+    /// <summary>Room for at least <paramref name="sizeHint"/> raw bytes at the end of the payload; <see cref="Advance"/> commits them.</summary>
+    public Span<byte> GetSpan(int sizeHint = 0)
+    {
+        if (Length + Math.Max(sizeHint, 1) > FrameHeader.MaxFrameSize) ThrowTooLarge();
+        return _out.GetSpan(sizeHint);
+    }
+
+    public void Advance(int count) => _out.Advance(count);
 
     public void Dispose()
     {
-        var buffer = _buffer;
-        if (buffer.Length == 0)
+        if (!_rented)
             return; // double dispose guard
 
-        _buffer = Array.Empty<byte>();
-        _pos = 0;
-        BufferPool.Return(buffer);
+        _rented = false;
+        _out.ResetWrittenCount();
+        if (_out.Capacity > RetainedCapacity)
+        {
+            _out.Dispose(); // a rare huge frame gives its array back and is not kept pooled
+            return;
+        }
+
         Pool.Return(this);
     }
 
-    // ---- INinoBufferWriter / IBufferWriter<byte> ----
-
-    public int WrittenCount => _pos;
-
-    public ReadOnlySpan<byte> WrittenSpan => new ReadOnlySpan<byte>(_buffer, 0, _pos);
-
-    public ReadOnlyMemory<byte> WrittenMemory => new ReadOnlyMemory<byte>(_buffer, 0, _pos);
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public void Advance(int count) => _pos += count;
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public Memory<byte> GetMemory(int sizeHint = 0)
-    {
-        Ensure(sizeHint);
-        return new Memory<byte>(_buffer, _pos, _buffer.Length - _pos);
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public Span<byte> GetSpan(int sizeHint = 0)
-    {
-        Ensure(sizeHint);
-        return new Span<byte>(_buffer, _pos, _buffer.Length - _pos);
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void Ensure(int sizeHint)
-    {
-        if (sizeHint < 1) sizeHint = 1;
-        if (_buffer.Length - _pos < sizeHint)
-            Grow(sizeHint);
-    }
-
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private void Grow(int sizeHint)
-    {
-        int newSize = Math.Max(_buffer.Length * 2, _pos + sizeHint);
-        if (newSize > FrameHeader.MaxFrameSize)
-            throw new InvalidOperationException("Frame exceeds FrameHeader.MaxFrameSize");
-
-        BufferPool.Grow(ref _buffer, _pos, newSize);
-    }
+    private static void ThrowTooLarge() => throw new InvalidOperationException("Frame exceeds FrameHeader.MaxFrameSize");
 }

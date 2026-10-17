@@ -91,13 +91,12 @@ public class InfrastructureTests
     public void FrameWriterSerializesAndGrows()
     {
         using var w = FrameWriter.Rent(32);
-        var nino = w.Nino;
-        Nino.Core.NinoSerializer.Serialize(new string('x', 5000), ref nino);
+        w.Write(new string('x', 5000));
         w.SetHeader(FrameKind.Message, 0, 7, 9);
         var header = FrameHeader.Read(w.Frame);
         Assert.That(header.Length, Is.EqualTo(w.Length));
         var reader = new Nino.Core.Reader(w.Payload);
-        Nino.Core.NinoDeserializer.Deserialize(out string text, ref reader);
+        string text = Nino.Core.NinoDeserializer.Deserialize<string>(ref reader);
         Assert.That(text, Has.Length.EqualTo(5000));
     }
 
@@ -105,8 +104,7 @@ public class InfrastructureTests
     public void TrailersCarryTheOriginAndAPerHopCallId()
     {
         using var w = FrameWriter.Rent();
-        var nino = w.Nino;
-        Nino.Core.NinoSerializer.Serialize(new Add(5), ref nino);
+        w.Write(new Add(5));
         int payload = w.Payload.Length;
         w.SetCallId(41);
         w.SetOrigin(new Origin(7, 8)); // after the call id: the call id moves behind it
@@ -127,7 +125,7 @@ public class InfrastructureTests
         Assert.That(relayed.Origin, Is.EqualTo(new Origin(7, 8)), "the origin travels on");
         Assert.That(relayed.Payload.SequenceEqual(w.Payload), Is.True);
         var reader = new Nino.Core.Reader(relayed.Payload);
-        Nino.Core.NinoDeserializer.Deserialize(out Add add, ref reader);
+        Add add = Nino.Core.NinoDeserializer.Deserialize<Add>(ref reader);
         Assert.That(add.Delta, Is.EqualTo(5));
     }
 
@@ -140,8 +138,7 @@ public class InfrastructureTests
         Assert.That(table.TryRegister(call, timeoutMs: 0, out uint id), Is.True);
 
         var w = FrameWriter.Rent();
-        var nino = w.Nino;
-        Nino.Core.NinoSerializer.Serialize(41, ref nino);
+        w.Write(41);
         Assert.That(table.TryComplete(id, RpcStatus.Ok, w.Payload), Is.True);
         Assert.That(table.TryComplete(id, RpcStatus.Ok, w.Payload), Is.False, "completed once only");
         w.Dispose();

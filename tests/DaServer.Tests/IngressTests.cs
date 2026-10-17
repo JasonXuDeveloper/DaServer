@@ -31,7 +31,7 @@ public class IngressTests : ClusterTest
         var (callId, status, reply) = await sink.Reply.Task;
         Assert.That((callId, status), Is.EqualTo((77u, RpcStatus.Ok)));
         var reader = new Nino.Core.Reader(reply);
-        Nino.Core.NinoDeserializer.Deserialize(out int value, ref reader);
+        int value = Nino.Core.NinoDeserializer.Deserialize<int>(ref reader);
         Assert.That(value, Is.EqualTo(5));
     }
 

@@ -166,12 +166,12 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
         uint id = header.MessageId;
         if (id == SessionOperations.Join)
         {
-            NinoDeserializer.Deserialize(out JoinGroup join, ref reader);
+            JoinGroup join = NinoDeserializer.Deserialize<JoinGroup>(ref reader);
             lock (_groupGate) Join(session, join.Group.Id);
         }
         else if (id == SessionOperations.Leave)
         {
-            NinoDeserializer.Deserialize(out LeaveGroup leave, ref reader);
+            LeaveGroup leave = NinoDeserializer.Deserialize<LeaveGroup>(ref reader);
             lock (_groupGate) Leave(session, leave.Group.Id);
         }
         else if (id == SessionOperations.Disconnect)
@@ -181,7 +181,7 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
         }
         else
         {
-            NinoDeserializer.Deserialize(out SessionAccess access, ref reader);
+            SessionAccess access = NinoDeserializer.Deserialize<SessionAccess>(ref reader);
             var status = ChangeAccess(session, in access);
             if (status != RpcStatus.Ok) return status;
             IssueTicket(session);
@@ -474,8 +474,7 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
     private void PickNode(SessionState session, uint callId)
     {
         var w = FrameWriter.Rent(64);
-        var nino = w.Nino;
-        NinoSerializer.Serialize(Direct(), ref nino);
+        w.Write(Direct());
         session.Sink.SendReply(callId, RpcStatus.Ok, w);
     }
 

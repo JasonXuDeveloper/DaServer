@@ -63,7 +63,7 @@ public class FeatureTests : ClusterTest
         public void OnMessage(in FrameHeader header, ReadOnlySpan<byte> frame, IReplySink? replyTo)
         {
             var reader = new Nino.Core.Reader(FrameHeader.PayloadOf(in header, frame));
-            Nino.Core.NinoDeserializer.Deserialize(out Probe probe, ref reader);
+            Probe probe = Nino.Core.NinoDeserializer.Deserialize<Probe>(ref reader);
             string kind = header.Target == TypeIdOf<ProbeGroup>() ? "group" : "node";
             Received.Enqueue($"{kind} {header.Key}: {probe.N}");
         }
