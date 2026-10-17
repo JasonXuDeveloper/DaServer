@@ -127,6 +127,28 @@ public struct FrameHeader
     public static ReadOnlySpan<byte> PayloadOf(in FrameHeader header, ReadOnlySpan<byte> frame) =>
         frame[Size..(header.Length - FrameFlags.TrailerSize(header.Flags))];
 
+    /// <summary>
+    /// Read the frame at the start of <paramref name="data"/>: true when it is there whole. False when it is not yet,
+    /// with <paramref name="header"/>.Length the bytes it needs (0 while even its header is incomplete). Throws on a length
+    /// outside [<see cref="Size"/>, <paramref name="maxFrameSize"/>]: a peer that sends it is broken or hostile.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static bool TryReadFrame(ReadOnlySpan<byte> data, int maxFrameSize, out FrameHeader header)
+    {
+        if (data.Length < Size)
+        {
+            header = default;
+            return false;
+        }
+
+        header = Read(data);
+        if (header.Length < Size || header.Length > maxFrameSize) ThrowInvalidLength(header.Length);
+        return header.Length <= data.Length;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void ThrowInvalidLength(int length) => throw new InvalidOperationException("Invalid frame length " + length);
+
     public static FrameHeader Read(ReadOnlySpan<byte> s)
     {
         FrameHeader h;

@@ -334,10 +334,7 @@ internal sealed class PeerLink : IFrameSink, IDisposable
     private void Acknowledge(Connection connection, long received)
     {
         _acknowledged = received;
-        Span<byte> frame = stackalloc byte[FrameHeader.Size];
-        new FrameHeader { Length = FrameHeader.Size, Kind = FrameKind.Control, MessageId = ControlOp.Acknowledge, Key = received }
-            .Write(frame);
-        connection.Send(frame);
+        connection.SendControl(ControlOp.Acknowledge, received);
     }
 
     /// <summary>Tests: forget the peer's stream, as a restarted process would.</summary>

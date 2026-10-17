@@ -91,6 +91,15 @@ public sealed class FrameWriter : INinoBufferWriter, IDisposable
         Dispose();
     }
 
+    /// <summary>Finish the reply to <paramref name="callId"/> (its key: <paramref name="key"/>), send it and return this writer to the pool.</summary>
+    internal void SendReply(IFrameSender target, uint callId, RpcStatus status, long key = 0)
+    {
+        SetCallId(callId);
+        SetHeader(FrameKind.Reply, 0, 0, key, status);
+        target.Send(Frame);
+        Dispose();
+    }
+
     /// <summary>
     /// Write the header (length is filled in automatically; the trailer flags written so far are added to
     /// <paramref name="flags"/>). Call after the payload and the trailers.
@@ -213,9 +222,6 @@ public sealed class FrameWriter : INinoBufferWriter, IDisposable
         if (newSize > FrameHeader.MaxFrameSize)
             throw new InvalidOperationException("Frame exceeds FrameHeader.MaxFrameSize");
 
-        var next = BufferPool.Rent(newSize);
-        System.Buffer.BlockCopy(_buffer, 0, next, 0, _pos);
-        BufferPool.Return(_buffer);
-        _buffer = next;
+        BufferPool.Grow(ref _buffer, _pos, newSize);
     }
 }
