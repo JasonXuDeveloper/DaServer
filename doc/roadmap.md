@@ -339,7 +339,11 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
       framework's `ClusterTest` builds on its node options; `Sample.Tests` tests the sample's servers with it.
 - [x] K2 Slot table (ADR-074): actor keys (placements for `IPlaced` ids) hash into 4,096 slots; each view gives every
       slot of an actor type an owner among the type's nodes by rendezvous hashing, so finding a key's node is one
-      table read; a node joining or leaving moves only the slots it wins or held.
+      table read; a node joining or leaving moves only the slots it wins or held. BDN `PlacementBenchmark` (one owner
+      lookup): 3 nodes 7.98 -> 6.44 ns, 30 nodes 60.9 -> 6.45 ns, 300 nodes 558 -> 6.36 ns, 0 B. With N7, against
+      N6 (three trees back to back): local calls 13.3 / 174 / 1,317 µs -> 11.1 / 171 / 1,316 µs (1 / 64 / 1,024 in
+      flight), one-way messages 428 / 748 ns -> 426 / 769 ns (local / remote), allocations unchanged. Two earlier
+      runs that ran the new tree second showed local calls 10-15% slower; run order on this VM, not the change.
 - K1 placement strategies (agreed: Akka sharding style, ADR-074): no per-actor directory and no "prefer the caller's
   node" (`IPlaced` co-locates what talks); load-aware and sticky placement move whole slots and are S3.
 - [ ] K3 Load-aware service choice (power of two over the pulse load).
