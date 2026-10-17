@@ -216,9 +216,11 @@ internal sealed class SlotAllocation(Node node)
                     _reports.Remove(reporter);
             var current = view.Table;
             var overrides = SlotPlanner.Plan(view, _reports);
-            if (!Same(overrides, current.Overrides))
+            // A table another coordinator wrote is replaced by this one's even when the plan is the same: its version
+            // goes above every version seen, so no member keeps another coordinator's table at an equal version.
+            if (!Same(overrides, current.Overrides) || current.Coordinator != node.Id && current.Version > 0)
             {
-                table = new SlotTable { Version = current.Version + 1, Coordinator = node.Id, Overrides = overrides };
+                table = new SlotTable { Version = node.Membership.HighestTableVersion + 1, Coordinator = node.Id, Overrides = overrides };
                 _sentTo.Clear();
             }
             else table = current;
