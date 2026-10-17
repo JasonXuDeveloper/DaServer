@@ -32,26 +32,14 @@ public class BroadcastBenchmark
 
         // A room owned by the non-gateway node: the broadcast crosses the node link, then fans out at the gateway.
         var room = Clusters.IdOwnedBy<RoomId>(_nodes[0], _nodes[1]);
-        var receiver = new Receiver(_countdown);
-
-        _clients = new ClusterClient[Clients];
-        for (int i = 0; i < Clients; i++)
-        {
-            var client = _clients[i] = new ClusterClient();
-            await client.ConnectAsync("127.0.0.1", _nodes[0].ClientPort());
-            client.Register(receiver);
-            await client.Ask(new Join(room, Groups));
-        }
+        _clients = await Clusters.Connect(Clients, _nodes[..1], new Receiver(_countdown));
+        foreach (var client in _clients) await client.Ask(new Join(room, Groups));
 
         _room = room;
     }
 
     [GlobalCleanup]
-    public void Cleanup()
-    {
-        foreach (var client in _clients) client.DisposeAsync().AsTask().GetAwaiter().GetResult();
-        Clusters.Stop(_nodes).GetAwaiter().GetResult();
-    }
+    public void Cleanup() => Clusters.Stop(_nodes, _clients);
 
     [Benchmark]
     public async Task Broadcast()

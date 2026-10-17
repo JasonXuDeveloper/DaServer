@@ -43,7 +43,7 @@ public class RpcBenchmark
     }
 
     [GlobalCleanup]
-    public void Cleanup() => Clusters.Stop(_nodes).GetAwaiter().GetResult();
+    public void Cleanup() => Clusters.Stop(_nodes);
 
     [Benchmark]
     public async Task Calls()

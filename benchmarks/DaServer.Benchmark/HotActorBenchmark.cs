@@ -42,7 +42,7 @@ public class HotActorBenchmark
     }
 
     [GlobalCleanup]
-    public void Cleanup() => Clusters.Stop(_nodes).GetAwaiter().GetResult();
+    public void Cleanup() => Clusters.Stop(_nodes);
 
     [Benchmark]
     public async Task Enter()
