@@ -16,7 +16,7 @@ public class ClusterTests : ClusterTest
             Assert.That(await nodes[0].Ask(new CounterId(key), new Get()), Is.EqualTo(3), $"key {key} has more than one loaded actor");
         }
 
-        var owners = Enumerable.Range(1, 30).Select(k => OwnerOf<CounterId>(nodes[0], k));
+        var owners = Enumerable.Range(1, 30).Select(k => nodes[0].OwnerOf<CounterId>(k));
         Assert.That(owners.Distinct().Count(), Is.EqualTo(3), "keys spread over the cluster");
     }
 
@@ -56,7 +56,7 @@ public class ClusterTests : ClusterTest
 
         // Reactivated on a; in-memory state is gone (persist it in OnUnload / load in OnLoad).
         Assert.That(await a.Ask(new CounterId(key), new Add(1)), Is.EqualTo(1));
-        Assert.That(OwnerOf<CounterId>(a, key), Is.EqualTo(a.Id));
+        Assert.That(a.OwnerOf<CounterId>(key), Is.EqualTo(a.Id));
     }
 
     [Test]
@@ -67,7 +67,7 @@ public class ClusterTests : ClusterTest
         Assert.That(await a.Ask(new CounterId(key), new Add(3)), Is.EqualTo(3));
 
         await b.KillAsync(); // suspect first (keys stay), then dead (keys move)
-        await Eventually(() => OwnerOf<CounterId>(a, key) == a.Id, "the key never moved");
+        await Eventually(() => a.OwnerOf<CounterId>(key) == a.Id, "the key never moved");
         Assert.That(await a.Ask(new CounterId(key), new Add(1)), Is.EqualTo(1), "reactivated on the survivor");
     }
 

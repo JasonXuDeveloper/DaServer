@@ -10,3 +10,4 @@ global using DaServer.Rpc;
 global using DaServer.Runtime;
 global using NUnit.Framework;
 global using System.Collections.Concurrent;
+global using DaServer.Testing;

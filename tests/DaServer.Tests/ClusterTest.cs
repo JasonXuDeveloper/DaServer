@@ -1,4 +1,3 @@
-using System.Diagnostics;
 
 namespace DaServer.Tests;
 
@@ -28,7 +27,7 @@ public abstract class ClusterTest
     private protected async Task<Node> Start(string name, int shards = 2, bool gateway = false, Func<Type, bool>? hosts = null,
         Action<NodeOptions>? configure = null, Action<ClientConnectionOptions>? clients = null)
     {
-        var options = DaServer.Testing.TestCluster.NodeOptionsFor(name, shards, tickRate: 50, _nodes.Count == 0 ? null : _nodes[0]);
+        var options = TestNodes.NodeOptionsFor(name, shards, tickRate: 50, _nodes.Count == 0 ? null : _nodes[0]);
         options.Hosts = hosts;
         if (gateway || clients != null)
         {
@@ -56,7 +55,7 @@ public abstract class ClusterTest
 
     /// <summary>Wait until every running node sees every other one as Up.</summary>
     protected Task Converged() =>
-        Eventually(() => _nodes.All(n => n.View.UpMembers.Length == _nodes.Count), "cluster did not converge");
+        Eventually(() => TestNodes.Converged(_nodes), "cluster did not converge");
 
     private protected async Task Stop(Node node)
     {
@@ -79,45 +78,15 @@ public abstract class ClusterTest
         return client;
     }
 
-    /// <summary>First key from <paramref name="start"/> whose actor of <paramref name="contractId"/> lives on <paramref name="owner"/>.</summary>
-    private protected static long KeyOwnedBy<TId>(Node owner, long start = 1) where TId : struct, IActorId
-    {
-        long key = start;
-        while (OwnerOf<TId>(owner, key) != owner.Id) key++;
-        return key;
-    }
-
-    /// <summary>Node owning the <typeparamref name="TActor"/> of <paramref name="key"/> in <paramref name="node"/>'s view.</summary>
-    private protected static ulong OwnerOf<TId>(Node node, long key) where TId : struct, IActorId =>
-        node.View.HandlerTypeOwner(ActorIds<TId>.HandlerTypeId, key)!.NodeId;
+    /// <summary>First key from <paramref name="start"/> whose actor lives on <paramref name="owner"/>.</summary>
+    private protected static long KeyOwnedBy<TId>(Node owner, long start = 1) where TId : struct, IActorId =>
+        owner.KeyOwnedBy<TId>(owner, start);
 
     /// <summary>Polls a condition that depends on asynchronous delivery (membership, pushes to other sockets).</summary>
-    protected static async Task Eventually(Func<bool> condition, string message, int timeoutMs = 10_000)
-    {
-        var watch = Stopwatch.StartNew();
-        while (!condition())
-        {
-            if (watch.ElapsedMilliseconds > timeoutMs) Assert.Fail(message);
-            await Task.Delay(10);
-        }
-    }
+    protected static Task Eventually(Func<bool> condition, string message, int timeoutMs = 10_000) =>
+        TestNodes.WaitUntilAsync(condition, TimeSpan.FromMilliseconds(timeoutMs), message);
 
     /// <summary>Polls an asynchronous condition (a call into the cluster) until it holds.</summary>
-    protected static async Task Eventually(Func<ValueTask<bool>> condition, string message, int timeoutMs = 10_000)
-    {
-        var watch = Stopwatch.StartNew();
-        while (!await condition())
-        {
-            if (watch.ElapsedMilliseconds > timeoutMs) Assert.Fail(message);
-            await Task.Delay(10);
-        }
-    }
-}
-
-/// <summary>Test access to a node's client connections.</summary>
-internal static class ClientNodes
-{
-    public static int ClientPort(this Node node) => node.Feature<ClientConnections>()!.Port;
-
-    public static int SessionCount(this Node node) => node.Feature<ClientConnections>()?.SessionCount ?? 0;
+    protected static Task Eventually(Func<ValueTask<bool>> condition, string message, int timeoutMs = 10_000) =>
+        TestNodes.WaitUntilAsync(condition, TimeSpan.FromMilliseconds(timeoutMs), message);
 }

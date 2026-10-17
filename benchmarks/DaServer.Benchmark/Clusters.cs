@@ -24,25 +24,13 @@ internal static class Clusters
             await started[i].StartAsync();
         }
 
-        var deadline = DateTime.UtcNow.AddSeconds(30);
-        while (Array.Exists(started, n => n.View.UpMembers.Length != nodes))
-        {
-            if (DateTime.UtcNow > deadline) throw new TimeoutException("cluster did not converge");
-            await Task.Delay(50);
-        }
-
+        await TestNodes.WaitUntilAsync(() => TestNodes.Converged(started), TimeSpan.FromSeconds(30), "cluster did not converge");
         return started;
     }
 
     /// <summary>First id from <paramref name="start"/> whose actor lives on <paramref name="owner"/> in <paramref name="node"/>'s view.</summary>
-    public static TId IdOwnedBy<TId>(Node node, Node owner, long start = 1) where TId : struct, IActorId
-    {
-        long key = start;
-        while (node.View.HandlerTypeOwner(ActorIds<TId>.HandlerTypeId, key)!.NodeId != owner.Id) key++;
-        return ActorIds<TId>.Of(key);
-    }
-
-    public static int ClientPort(this Node node) => node.Feature<ClientConnections>()!.Port;
+    public static TId IdOwnedBy<TId>(Node node, Node owner, long start = 1) where TId : struct, IActorId =>
+        ActorIds<TId>.Of(node.KeyOwnedBy<TId>(owner, start));
 
     public static async Task Stop(IEnumerable<Node> nodes)
     {
