@@ -46,6 +46,19 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
             .Select(static (all, _) => new EquatableArray<ClientMessageModel>(all.Distinct().OrderBy(m => m!.FullName).ToArray()!))
             .WithTrackingName("ClientMessages");
 
+        // Actor id types placed by IPlaced (ADR-073): every node referencing them hashes their placement.
+        var placed = context.SyntaxProvider
+            .CreateSyntaxProvider(static (node, _) => node is StructDeclarationSyntax { BaseList: not null }
+                    or RecordDeclarationSyntax { BaseList: not null, ClassOrStructKeyword.Text: "struct" },
+                static (ctx, ct) => ctx.SemanticModel.GetDeclaredSymbol(ctx.Node, ct) is INamedTypeSymbol type &&
+                                    type.IsValueType && Implements(type, ActorId) && Implements(type, Placed)
+                    ? type.ToDisplayString(Fqn)
+                    : null)
+            .Where(static t => t is not null)
+            .Collect()
+            .Select(static (all, _) => new EquatableArray<string>(all.Distinct().OrderBy(t => t, System.StringComparer.Ordinal).ToArray()!))
+            .WithTrackingName("PlacedIds");
+
         // Equatable projection of the compilation: recomputed on edits, but downstream stages stay cached.
         var assembly = context.CompilationProvider
             .Select(static (c, _) => new AssemblyModel(
@@ -58,17 +71,17 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
                 new EquatableArray<string>(PersistedComponents(c))))
             .WithTrackingName("RegistrationAssembly");
 
-        context.RegisterSourceOutput(hosted.Combine(clientMessages).Combine(assembly), static (spc, input) =>
+        context.RegisterSourceOutput(hosted.Combine(clientMessages).Combine(placed).Combine(assembly), static (spc, input) =>
         {
-            var ((types, messages), info) = input;
+            var (((types, messages), placedIds), info) = input;
             // Handler registration lives in DaServer.Core; actors, services and systems need the server runtime.
             if (!info.ReferencesCore) types = default;
             else if (!info.ReferencesRuntime)
                 types = new EquatableArray<HostedModel>(types.Where(static t => t.Kind == HostedKind.ClientHandler).ToArray());
             var sharedSystems = info.ReferencesRuntime ? info.SharedSystems : default;
             int persisted = info.ReferencesRuntime ? info.Persisted.Length : 0;
-            if (types.Length + messages.Length + info.ContractAnchors.Length + sharedSystems.Length + persisted == 0) return;
-            spc.AddSource("DaServer.Registration.g.cs", SourceText.From(Emit(types, messages, sharedSystems, info), Encoding.UTF8));
+            if (types.Length + messages.Length + placedIds.Length + info.ContractAnchors.Length + sharedSystems.Length + persisted == 0) return;
+            spc.AddSource("DaServer.Registration.g.cs", SourceText.From(Emit(types, messages, placedIds, sharedSystems, info), Encoding.UTF8));
         });
 
         // An assembly built with <DaServerShared>true</DaServerShared> says so, for the nodes that reference it.
@@ -173,7 +186,7 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
     }
 
     private static string Emit(EquatableArray<HostedModel> types, EquatableArray<ClientMessageModel> messages,
-        EquatableArray<string> sharedSystems, AssemblyModel info)
+        EquatableArray<string> placedIds, EquatableArray<string> sharedSystems, AssemblyModel info)
     {
         var sb = new StringBuilder(Header);
         sb.Append("using System.Runtime.CompilerServices;\nusing DaServer;\n");
@@ -189,6 +202,8 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
             sb.Append($"        RuntimeHelpers.RunClassConstructor(typeof({anchor}).TypeHandle);\n");
         foreach (var m in messages)
             sb.Append($"        global::DaServer.ClientMessages.Register<{m.FullName}>();\n");
+        foreach (var id in placedIds)
+            sb.Append($"        global::DaServer.Placements.Register<{id}>();\n");
         foreach (var system in sharedSystems)
             sb.Append($"        ServerRegistry.RegisterSystem(new SystemInfo(typeof({system}), static () => new {system}()));\n");
         if (info.ReferencesRuntime)

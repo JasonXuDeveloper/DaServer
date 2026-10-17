@@ -32,3 +32,47 @@ internal static class ActorIds<TId> where TId : struct, IActorId
         return TypeId<TId>.Value;
     }
 }
+
+/// <summary>
+/// An actor id type placed by <see cref="Placement"/> instead of its value (ADR-073): actors whose ids have the same
+/// placement, of any type, live on the same node and shard, so their messages to each other stay local. E.g. the
+/// seats of a room next to the room: <c>public readonly record struct SeatId(long Value) : IActorId, IPlaced { public
+/// long Placement => Value >> 16; }</c> with <c>RoomId</c> placed by its value. A pure function of <c>Value</c>:
+/// every node computes it from the id alone.
+/// </summary>
+public interface IPlaced
+{
+    /// <summary>The key this actor is placed by (hashed onto nodes and shards in place of its value).</summary>
+    long Placement { get; }
+}
+
+/// <summary>The placement of the <see cref="IPlaced"/> id types the process references (registered by generated code).</summary>
+[System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
+public static class Placements
+{
+    private static readonly object Gate = new();
+    private static Dictionary<uint, Func<long, long>> _byType = new(); // copied on write: read without locks
+
+    public static void Register<TId>() where TId : struct, IActorId, IPlaced
+    {
+        lock (Gate)
+        {
+            var next = new Dictionary<uint, Func<long, long>>(_byType) { [ActorIds<TId>.HandlerTypeId] = static key => ActorIds<TId>.Of(key).Placement };
+            Volatile.Write(ref _byType, next);
+        }
+    }
+
+    /// <summary>
+    /// What actor (<paramref name="handlerTypeId"/>, <paramref name="key"/>) is hashed by: its type and key, or, for a
+    /// placed id type, group 0 and its placement (so actors of different types meet).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static uint Of(uint handlerTypeId, ref long key)
+    {
+        var byType = Volatile.Read(ref _byType);
+        if (byType.Count == 0 || !byType.TryGetValue(handlerTypeId, out var place)) return handlerTypeId;
+        key = place(key);
+        return 0;
+    }
+}
+

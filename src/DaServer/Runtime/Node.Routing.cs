@@ -139,7 +139,10 @@ sealed partial class Node : IConnectionHandler
     {
         var shards = _shards;
         if (actor)
-            return shards[(int)(ClusterView.Weight((ulong)shards.Length, handlerTypeId, key) % (ulong)shards.Length)];
+        {
+            uint group = Placements.Of(handlerTypeId, ref key); // actors placed together share a shard too
+            return shards[(int)(ClusterView.Weight((ulong)shards.Length, group, key) % (ulong)shards.Length)];
+        }
 
         var current = Shard.Current;
         if (current != null && current.Node == this) return current;

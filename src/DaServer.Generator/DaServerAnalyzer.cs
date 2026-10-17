@@ -13,7 +13,7 @@ namespace DaServer.Generator;
 public sealed partial class DaServerAnalyzer : DiagnosticAnalyzer
 {
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics { get; } = ImmutableArray.Create(
-        Rules.BadHandler, Rules.BadMessage, Rules.NotWireType, Rules.IdCollision, Rules.NoDefaultConstructor, Rules.WrongFlow, Rules.StatefulHandlerType, Rules.WrongAddress, Rules.SharedReferencesServer, Rules.MisplacedReplyWhen, Rules.BlockingCall, Rules.AskInSystem, Rules.ComponentInLogic, Rules.BadPersisted, Rules.OffShard);
+        Rules.BadHandler, Rules.BadMessage, Rules.NotWireType, Rules.IdCollision, Rules.NoDefaultConstructor, Rules.WrongFlow, Rules.StatefulHandlerType, Rules.WrongAddress, Rules.SharedReferencesServer, Rules.MisplacedReplyWhen, Rules.BlockingCall, Rules.AskInSystem, Rules.ComponentInLogic, Rules.BadPersisted, Rules.OffShard, Rules.BadPlacement);
 
     public override void Initialize(AnalysisContext context)
     {
@@ -39,6 +39,8 @@ public sealed partial class DaServerAnalyzer : DiagnosticAnalyzer
                 CheckStateless(type, logic, Report);
                 if (logic) CheckNoComponents(type, Report);
                 CheckPersisted(type, Report);
+                if (type.TypeKind != TypeKind.Interface && Support.Implements(type, Support.Placed) && !(type.IsValueType && Support.Implements(type, Support.ActorId)))
+                    Report(Rules.BadPlacement, null, type.Name);
 
                 if (type.TypeKind != TypeKind.Struct || !Support.HasAttribute(type, Support.MessageAttribute)) return;
                 if (!Shapes.IsMessage(type, type.Locations.FirstOrDefault(), "[Message]", Report)) return;
@@ -271,6 +273,9 @@ internal static class Rules
 
     public static readonly DiagnosticDescriptor BadPersisted = new("DAS014", "Invalid persisted component",
         "[{0}] '{1}' {2}", Category, DiagnosticSeverity.Error, true);
+
+    public static readonly DiagnosticDescriptor BadPlacement = new("DAS016", "IPlaced on a type that is not an actor id",
+        "'{0}' implements IPlaced: only actor id types (structs implementing IActorId) are placed", Category, DiagnosticSeverity.Error, true);
 
     public static readonly DiagnosticDescriptor OffShard = new("DAS015", "Work started off the shard thread",
         "'{0}' {1}", Category, DiagnosticSeverity.Error, true);
