@@ -65,7 +65,9 @@ public class SlotAllocationTests : ClusterTest
         await Stop(a); // b becomes the coordinator, with the table it received
         var c = await Start("c", configure: FastRounds);
         await Converged();
-        await Task.Delay(1000); // a few rounds of the new coordinator
+        await Eventually(() => c.View.Table.Version >= b.View.Table.Version && c.View.Table.Version > 0, "c has the table from its first link");
+        await Task.Delay(1000); // a few rounds of the new coordinator, which plans before and after b's report reaches it
+        Assert.That(c.View.Table.Version, Is.EqualTo(b.View.Table.Version), "one table");
         foreach (long key in keys) Assert.That(c.OwnerOf<PinId>(key), Is.EqualTo(b.Id), "the pins survived the coordinator");
     }
 }

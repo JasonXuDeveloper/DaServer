@@ -282,6 +282,7 @@ sealed partial class Node : IChannelHandler
         var link = GetLink(host, port);
         _introduced[nodeId] = link;
         link.OnInboundHello(connection, streamId);
+        _slots.OnLinked(link);
     }
 
     /// <summary>
