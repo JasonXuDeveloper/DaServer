@@ -40,7 +40,7 @@ internal static class Crowd
         await swarm.StartAsync(connections, () => new ClusterClient(maxPendingCalls: inFlight * 2) { FlushInterval = TimeSpan.FromMilliseconds(flushMs) }, async user =>
         {
             clients[user.Index] = user.Client;
-            if (webSocket.Length > 0) await Swarm.Retry(async () => { await user.Client.ConnectAsync(new Uri(webSocket)); return true; });
+            if (webSocket.Length > 0) await user.ConnectAsync(new Uri(webSocket));
             else await user.ConnectAsync(endpoints);
         });
         await Call(() => clients[0].Ask(new OpenSale(sale, units, perSecond)));
