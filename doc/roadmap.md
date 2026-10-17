@@ -349,6 +349,7 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
   - #199 registries that do not root collectible load contexts (N9 hot reload).
   - #200 another assembly's auto-property struct is raw from source but not from metadata (IDE and command-line
     builds can write different bytes; `ClientSession` in a message is written member by member meanwhile).
+  - #201 two `[NinoFormerName]` on one type: the generator takes the first, the runtime throws (no diagnostic yet).
 - [x] V2 Build on the card (ADR-077): `ClusterMember.Build` (framework and application versions); a node logs while
       its view holds several builds.
 - [x] V3 Messages only where the build has them (ADR-077): services (sent or forwarded) among nodes whose build
