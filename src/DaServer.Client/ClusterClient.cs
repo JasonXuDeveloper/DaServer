@@ -171,6 +171,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
         _webSocket = webSocket;
         Attach(channel);
         _ = channel.RunAsync();
+        await IntroduceAsync().ConfigureAwait(false);
     }
 
     /// <summary>Connect through the first reachable of <paramref name="endpoints"/> (tried in turn, starting at a random one).</summary>
@@ -196,6 +197,25 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
 
         var first = Interlocked.Exchange(ref _connection, (IFrameChannel)moved);
         first?.Close(); // closed on purpose: not a disconnect (no longer the current connection)
+        await IntroduceAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>The first call on every connection: the node checks the client protocol version before anything else.</summary>
+    private async ValueTask IntroduceAsync()
+    {
+        var connection = _connection;
+        var call = PendingCall<NoReply>.Rent(null);
+        var done = call.Done;
+        Transmit(FrameWriter.Rent(FrameHeader.Size), FrameKind.Control, 0, ControlOp.ClientHello, ControlOp.ClientVersion, call, RpcStatus.Ok);
+        try
+        {
+            await done.ConfigureAwait(false);
+        }
+        catch
+        {
+            connection?.Close(); // refused (another protocol version) or lost: no use for this connection
+            throw;
+        }
     }
 
     private ValueTask<ClientEndpoint> PickNodeAsync()
@@ -229,6 +249,7 @@ public sealed class ClusterClient : IMessageSender, IConnectionHandler, IChannel
     private async ValueTask ConnectToAsync(string host, int port, CancellationToken cancellationToken)
     {
         Attach(await Connection.ConnectAsync(host, port, this, NewConnectionOptions(), cancellationToken).ConfigureAwait(false));
+        await IntroduceAsync().ConfigureAwait(false);
     }
 
     /// <summary>Make <paramref name="channel"/> the current connection; the sweeper watches this client's calls from now on.</summary>

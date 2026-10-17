@@ -32,8 +32,7 @@ public sealed class RpcException : Exception
         {
             try
             {
-                var reader = new Reader(payload);
-                message = NinoDeserializer.Deserialize<string>(ref reader);
+                message = NinoDeserializer.Deserialize<string>(payload);
             }
             catch
             {

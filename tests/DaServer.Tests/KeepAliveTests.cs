@@ -90,11 +90,15 @@ public class KeepAliveTests : ClusterTest
         client.AutoReconnect = false;
         var lost = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         client.Disconnected += e => lost.TrySetResult();
-        await client.ConnectAsync("127.0.0.1", port, followRedirect: false);
+        // The silent node never answers the client's hello either: the connection is up, the hello still waits.
         var watch = System.Diagnostics.Stopwatch.StartNew();
+        var connecting = client.ConnectAsync("127.0.0.1", port, followRedirect: false).AsTask();
+        await Eventually(() => client.IsConnected, "the connection was not made");
         if (probe is { } timeout) client.CheckConnection(timeout);
         await lost.Task.WaitAsync(TimeSpan.FromSeconds(10));
-        return watch.Elapsed;
+        var elapsed = watch.Elapsed;
+        Assert.ThrowsAsync<RpcException>(() => connecting, "the unanswered hello fails with the connection");
+        return elapsed;
     }
 
     [Test]

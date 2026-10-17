@@ -280,8 +280,7 @@ internal static class ShardDispatch
     private static System.Threading.Tasks.ValueTask Resume(Actor actor, in Envelope envelope)
     {
         var frame = envelope.Frame;
-        var reader = new Reader(frame.Payload);
-        SessionResumed resumed = NinoDeserializer.Deserialize<SessionResumed>(ref reader);
+        var resumed = NinoDeserializer.Deserialize<SessionResumed>(frame.Payload);
         bool accepted = ActorSessions.Resume(actor, in resumed);
         if (frame.CallId != 0 && envelope.Sink is { } sink)
         {
