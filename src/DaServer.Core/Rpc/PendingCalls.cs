@@ -247,6 +247,19 @@ internal sealed class PendingCallTable
         }
     }
 
+    /// <summary>Whether a call registered with <paramref name="owner"/> is still in flight (a scan: cold paths).</summary>
+    public bool AnyOwnedBy(object owner)
+    {
+        int allocated = Volatile.Read(ref _allocated);
+        for (int i = 0; i < allocated; i++)
+        {
+            ref var e = ref At(i);
+            if (Volatile.Read(ref e.Tag) != 0 && ReferenceEquals(e.Owner, owner)) return true;
+        }
+
+        return false;
+    }
+
     /// <summary>Fail every call registered with <paramref name="owner"/> (e.g. when its connection drops).</summary>
     public void FailOwnedBy(object owner, RpcStatus status)
     {

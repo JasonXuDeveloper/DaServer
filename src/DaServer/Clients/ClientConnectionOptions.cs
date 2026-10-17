@@ -29,18 +29,25 @@ public sealed class ClientConnectionOptions
     public TimeSpan TicketLifetime { get; set; } = TimeSpan.FromMinutes(10);
 
     /// <summary>
-    /// A connection older than this (jittered by up to a tenth) is closed; its client reconnects through the load
-    /// balancer and resumes its session (ADR-036), so its actors see nothing. A load balancer spreads connections only
-    /// when they open: after a scale-out the new nodes get only new clients, and this moves the old ones over time
-    /// (gRPC's <c>MaxConnectionAge</c>). Zero (the default): never.
+    /// A connection older than this (jittered by up to a tenth) is retired: its client is asked to move, resumes its
+    /// session on a new connection through the load balancer while the old one keeps working, and leaves the old one
+    /// (ADR-026), so nothing is lost and its actors see nothing; a client without a session to resume is disconnected. A
+    /// load balancer spreads connections only when they open: after a scale-out the new nodes get only new clients, and
+    /// this moves the old ones over time (gRPC's <c>MaxConnectionAge</c>). Zero (the default): never.
     /// </summary>
     public TimeSpan MaxConnectionAge { get; set; }
 
     /// <summary>
-    /// When the node leaves, its clients' connections are closed in waves over this time, so they reconnect to the
-    /// other nodes (resuming their sessions) gradually rather than all at once. Part of the node's stop budget.
+    /// When the node leaves, its clients are retired in waves over this time, so they move to the other nodes
+    /// gradually rather than all at once. Part of the node's stop budget.
     /// </summary>
     public TimeSpan DrainSpread { get; set; } = TimeSpan.FromSeconds(3);
+
+    /// <summary>
+    /// A retired client (<see cref="MaxConnectionAge"/>, a drain) has this long to move before its old connection is
+    /// closed; it then reconnects as after a lost connection. Part of a leaving node's stop budget too.
+    /// </summary>
+    public TimeSpan RetireGrace { get; set; } = TimeSpan.FromSeconds(10);
 
     /// <summary>
     /// Write to clients on this beat instead of at once (zero, the default: at once). What a session receives within one

@@ -5,9 +5,9 @@ using Microsoft.Extensions.DependencyInjection;
 namespace Aspire.Hosting;
 
 /// <summary>
-/// Declares a DaServer cluster in an Aspire AppHost. Every node gets a cluster endpoint and the seed list (every other
-/// node), client-facing node groups a client endpoint each (<see cref="DaServerNodeGroup.WithClientConnections"/>); nodes
-/// discover each other through gossip. A node hosts every actor,
+/// Declares a DaServer cluster in an Aspire AppHost. Every node gets a cluster endpoint and seeds (run: every other node;
+/// published: each group's DNS name), client-facing node groups a client endpoint (<see cref="DaServerNodeGroup.WithClientConnections"/>);
+/// nodes discover each other through gossip. A node hosts every actor,
 /// service and system compiled into its project, so the topology is the list of projects and replica counts. The same model runs
 /// locally (<c>dotnet run</c> on the AppHost, with the dashboard) and publishes to Docker Compose or Kubernetes
 /// (<c>aspire publish</c>) without hand-written deployment files.
@@ -269,7 +269,8 @@ public sealed class DaServerNodeGroup
 
     /// <summary>
     /// Give the nodes <paramref name="budget"/> to stop gracefully (leave, drain clients, unload and save every actor):
-    /// sets <c>DaServer__ShutdownTimeout</c>, and the published grace period (Compose <c>stop_grace_period</c>) above it,
+    /// sets <c>DaServer__ShutdownTimeout</c>, and the published grace period (Compose <c>stop_grace_period</c>, Kubernetes
+    /// <c>terminationGracePeriodSeconds</c> with the preStop pause) above it,
     /// so the platform never kills a node that is still saving. Stateful groups need more than stateless ones.
     /// </summary>
     public DaServerNodeGroup WithShutdownTimeout(TimeSpan budget)

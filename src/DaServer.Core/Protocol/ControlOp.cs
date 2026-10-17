@@ -6,8 +6,8 @@ internal static class ControlOp
     /// <summary>Version of the link protocol, in every Hello: nodes speaking another one are refused (2: Nino 4's format).</summary>
     public const int LinkVersion = 2;
 
-    /// <summary>Version of the client protocol, in every <see cref="ClientHello"/>: clients speaking another one are refused (2: no node picking).</summary>
-    public const int ClientVersion = 2;
+    /// <summary>Version of the client protocol, in every <see cref="ClientHello"/>: clients speaking another one are refused (3: Retire).</summary>
+    public const int ClientVersion = 3;
 
     /// <summary>Push gossip: payload = the sender's table as <c>MemberPulse</c>s; answered with <c>GossipReply</c>.</summary>
     public const uint Gossip = 1;
@@ -62,4 +62,11 @@ internal static class ControlOp
     /// with an empty success, or an error naming both versions after which the node closes the connection.
     /// </summary>
     public const uint ClientHello = 20;
+
+    /// <summary>
+    /// Node to client: move (the connection is old, or the node is leaving). The client resumes its session on a new
+    /// connection through its entry addresses while this one keeps working, then says <see cref="Goodbye"/> on it; the
+    /// node closes it after <c>ClientConnectionOptions.RetireGrace</c> otherwise.
+    /// </summary>
+    public const uint Retire = 21;
 }
