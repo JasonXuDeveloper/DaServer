@@ -1,59 +1,59 @@
 # DaServer wire manifest (ADR-076): the layout of this assembly's [NinoType] types on the wire and in stored records.
 # Positional layouts are frozen, version-tolerant types take new fields at their end, keyed types any key that keeps
 # its type. Record changes: dotnet build -p:UpdateWireManifest=true
-Sample.Contracts.Attach (memory)
-- Session: DaServer.ClientSession memory {Node: ulong, Id: long}
+Sample.Contracts.Attach (no header, positional, raw, id 36E166C9)
+- Session: DaServer.ClientSession raw no header, positional, raw, id 55AFFF04 {Node:ulong:raw(8);Id:long:raw(8)}
 = bool
-Sample.Contracts.Chat (struct, positional)
-- Player: Sample.Contracts.PlayerId memory {Value: long}
-- Text: string utf8
-Sample.Contracts.Enter (memory)
-- Player: Sample.Contracts.PlayerId memory {Value: long}
-- Session: DaServer.ClientSession memory {Node: ulong, Id: long}
+Sample.Contracts.Chat (no header, positional, id FFE1E154)
+- Player: Sample.Contracts.PlayerId raw {Value: long}
+- Text: string Nino.Core.Utf8StringFormatter
+Sample.Contracts.Enter (no header, positional, raw, id 00DD67CA)
+- Player: Sample.Contracts.PlayerId raw {Value: long}
+- Session: DaServer.ClientSession raw no header, positional, raw, id 55AFFF04 {Node:ulong:raw(8);Id:long:raw(8)}
 = bool
-Sample.Contracts.EnterMap (memory)
-- Map: Sample.Contracts.MapId memory {Value: long}
+Sample.Contracts.EnterMap (no header, positional, raw, id 8395914E)
+- Map: Sample.Contracts.MapId raw {Value: long}
 = bool
-Sample.Contracts.GetInfo (memory)
+Sample.Contracts.GetInfo (no header, positional, raw, id 182AC502)
 = Sample.Contracts.PlayerInfo
-Sample.Contracts.Gone (memory)
-- Map: Sample.Contracts.MapId memory {Value: long}
-- Player: Sample.Contracts.PlayerId memory {Value: long}
-Sample.Contracts.Leave (memory)
-- Session: DaServer.ClientSession memory {Node: ulong, Id: long}
+Sample.Contracts.Gone (no header, positional, raw, id DA504EA9)
+- Map: Sample.Contracts.MapId raw {Value: long}
+- Player: Sample.Contracts.PlayerId raw {Value: long}
+Sample.Contracts.Leave (no header, positional, raw, id 29260051)
+- Session: DaServer.ClientSession raw no header, positional, raw, id 55AFFF04 {Node:ulong:raw(8);Id:long:raw(8)}
 = bool
-Sample.Contracts.Login (struct, positional)
-- Name: string utf8
+Sample.Contracts.Login (no header, positional, id 94E76701)
+- Name: string Nino.Core.Utf8StringFormatter
 = Sample.Contracts.LoginResult
-Sample.Contracts.LoginResult (memory)
-- Ok: bool
-- Player: Sample.Contracts.PlayerId memory {Value: long}
-Sample.Contracts.Motion (struct, positional)
-- Map: Sample.Contracts.MapId memory {Value: long}
-- Avatars: Sample.Contracts.Moves
-Sample.Contracts.Move (memory)
-- VelocityX: float
-- VelocityY: float
-Sample.Contracts.Moved (memory)
-- Player: Sample.Contracts.PlayerId memory {Value: long}
-- X: float
-- Y: float
-- VelocityX: float
-- VelocityY: float
-Sample.Contracts.Moves (sealed class, positional)
-- Items: System.Collections.Generic.List<Sample.Contracts.Moved>
-Sample.Contracts.PlayerInfo (struct, positional)
-- Id: Sample.Contracts.PlayerId memory {Value: long}
-- Name: string utf8
-- Map: Sample.Contracts.MapId memory {Value: long}
-- Logins: int
-Sample.Contracts.PlayerOffline (memory)
-- Player: Sample.Contracts.PlayerId memory {Value: long}
-Sample.Contracts.PlayerOnline (memory)
-- Player: Sample.Contracts.PlayerId memory {Value: long}
-Sample.Contracts.RealmStatus (memory)
-- Tick: long
-- Online: int
-- ServerTimeTicks: long
-Sample.Contracts.Say (struct, positional)
-- Text: string utf8
+Sample.Contracts.LoginResult (no header, positional, raw, id 52B67FB8)
+- Ok: bool raw(1)
+- Player: Sample.Contracts.PlayerId raw {Value: long}
+Sample.Contracts.Motion (no header, positional, id FAF67EE4)
+- Map: Sample.Contracts.MapId raw {Value: long}
+- Avatars: Sample.Contracts.Moves nested
+Sample.Contracts.Move (no header, positional, raw, id 3E4E16AB)
+- VelocityX: float raw(4)
+- VelocityY: float raw(4)
+Sample.Contracts.Moved (no header, positional, raw, id AC8400E7)
+- Player: Sample.Contracts.PlayerId raw {Value: long}
+- X: float raw(4)
+- Y: float raw(4)
+- VelocityX: float raw(4)
+- VelocityY: float raw(4)
+Sample.Contracts.Moves (null flag, positional, id 029A4E98)
+- Items: System.Collections.Generic.List<Sample.Contracts.Moved> Nino.Core.UnmanagedListFormatter<System.Collections.Generic.List<Sample.Contracts.Moved>, Sample.Contracts.Moved>
+Sample.Contracts.PlayerInfo (no header, positional, id 737D22A7)
+- Id: Sample.Contracts.PlayerId raw {Value: long}
+- Name: string Nino.Core.Utf8StringFormatter
+- Map: Sample.Contracts.MapId raw {Value: long}
+- Logins: int raw(4)
+Sample.Contracts.PlayerOffline (no header, positional, raw, id 2EB58730)
+- Player: Sample.Contracts.PlayerId raw {Value: long}
+Sample.Contracts.PlayerOnline (no header, positional, raw, id 76526B4E)
+- Player: Sample.Contracts.PlayerId raw {Value: long}
+Sample.Contracts.RealmStatus (no header, positional, raw, id E5951FE1)
+- Tick: long raw(8)
+- Online: int raw(4)
+- ServerTimeTicks: long raw(8)
+Sample.Contracts.Say (no header, positional, id 8573BC61)
+- Text: string Nino.Core.Utf8StringFormatter
