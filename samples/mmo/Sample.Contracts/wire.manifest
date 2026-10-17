@@ -1,0 +1,52 @@
+# DaServer wire manifest (ADR-076): the layout of this assembly's [NinoType] types on the wire and in stored records.
+# 'grows' types may append fields, 'frozen' ones may not change. Update: dotnet build -p:UpdateWireManifest=true
+Sample.Contracts.Attach grows
+- Session: DaServer.ClientSession
+Sample.Contracts.Chat grows
+- Player: Sample.Contracts.PlayerId
+- Text: string
+Sample.Contracts.Enter grows
+- Player: Sample.Contracts.PlayerId
+- Session: DaServer.ClientSession
+Sample.Contracts.EnterMap grows
+- Map: Sample.Contracts.MapId
+Sample.Contracts.GetInfo grows
+Sample.Contracts.Gone grows
+- Map: Sample.Contracts.MapId
+- Player: Sample.Contracts.PlayerId
+Sample.Contracts.Leave grows
+- Session: DaServer.ClientSession
+Sample.Contracts.Login grows
+- Name: string
+Sample.Contracts.LoginResult grows
+- Ok: bool
+- Player: Sample.Contracts.PlayerId
+Sample.Contracts.Motion grows
+- Map: Sample.Contracts.MapId
+- Avatars: Sample.Contracts.Moves
+Sample.Contracts.Move grows
+- VelocityX: float
+- VelocityY: float
+Sample.Contracts.Moved frozen
+- Player: Sample.Contracts.PlayerId
+- X: float
+- Y: float
+- VelocityX: float
+- VelocityY: float
+Sample.Contracts.Moves frozen
+- Items: System.Collections.Generic.List<Sample.Contracts.Moved>
+Sample.Contracts.PlayerInfo grows
+- Id: Sample.Contracts.PlayerId
+- Name: string
+- Map: Sample.Contracts.MapId
+- Logins: int
+Sample.Contracts.PlayerOffline grows
+- Player: Sample.Contracts.PlayerId
+Sample.Contracts.PlayerOnline grows
+- Player: Sample.Contracts.PlayerId
+Sample.Contracts.RealmStatus grows
+- Tick: long
+- Online: int
+- ServerTimeTicks: long
+Sample.Contracts.Say grows
+- Text: string

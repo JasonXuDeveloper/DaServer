@@ -1,0 +1,14 @@
+# DaServer wire manifest (ADR-076): the layout of this assembly's [NinoType] types on the wire and in stored records.
+# 'grows' types may append fields, 'frozen' ones may not change. Update: dotnet build -p:UpdateWireManifest=true
+FlashSale.Components.Purchase grows
+- Status: FlashSale.Contracts.OrderStatus
+FlashSale.Components.SaleState grows
+- PerSecond: int
+- Issued: long
+- Released: long
+- AtMs: long
+- EmptyShards: int
+- Buyers: System.Collections.Generic.List<long>
+FlashSale.Components.Stock grows
+- Left: int
+- Buyers: System.Collections.Generic.List<long>
