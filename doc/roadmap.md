@@ -532,8 +532,8 @@ and cards, a manual clock), fails before its fix, and passes after it.
 - [ ] H2 "None" from a node that still owns the key in its view, which then loads it (duplicate activation while
       views converge): a disowned key is forwarded for the handoff timeout.
 - [ ] H3 `PreviousView` holds one change: a leave then a table change asks the wrong node (a ring of recent views).
-- [ ] H4 The old owner times out and writes, then the new owner's late accept arrives (fall back only on Dead or a
-      restarted stream).
+- [x] H4 The old owner timed out and wrote, then the new owner's late accept arrived: it waits while the new owner
+      is alive (`ALateAnswerFromALiveNewOwnerIsWaitedFor`).
 - [x] H5 A pending SaveNow is written after the record was sent (`Without<SaveNow>` on the handoff).
 - [x] H6 User `[ForEach]` systems ran on actors that are not live (the mmo realm broadcast one status twice from
       both copies): an actor's state exists only while it is live; a copy that sent its record gives it up (restored
