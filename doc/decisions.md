@@ -1120,3 +1120,35 @@ records that no longer hold). Each: context → decision → consequences.
   one-way messages -3% / +1% (local / remote), calls -1% to +8% (within the error), allocations unchanged. The framework's own
   integration tests and users' tests start nodes with the same options.
 
+## ADR-072 Actors take their record along when they change node
+- Context: when ownership moves (a node joins, leaves or stops), the old owner wrote the actor's record and the new
+  one read it back: a store round trip per moved actor, state lost without a store, and a new owner that got mail
+  before the write read a stale record. ET transfers a unit explicitly: its `ITransfer` components are serialized to
+  the new map while the location server holds the unit's messages (lock, then unlock with the new address). Orleans
+  migration carries the persisted state with its ETag (no reread, no write) and lets grains add more in
+  `OnDehydrate`/`OnRehydrate`.
+- Decision:
+  - **What moves:** the `[Persist]` components (stored and moved) and `[Handoff]` components (moved only: in-memory
+    state worth keeping across a move, like ET's `ITransfer`), in the record format of ADR-068, with the version last
+    written and that write's hash.
+  - **How:** the old owner, after `OnUnload` and any write in flight, sends the record to the key's owner in its
+    view as a runtime message to the actor's handler type. Its forwarded mail takes the same link afterwards, so the
+    record arrives first and no lock is needed. The new owner restores the record and runs `OnLoad`; its checkpoint
+    writes what changed since the old owner's last write, with the version continuing (fencing as in ADR-068). The
+    old owner is removed once the new one accepts, without writing.
+  - **Mail first:** while keys move after a view change (within the call timeout), a node that loads a key asks the
+    key's previous owner (in the previous view, or the node owning it without this one when it just joined) and the
+    actor's mail waits. The answer is the record or "not here"; an actor that leaves without handing over to the
+    asking node tells it so.
+  - **Fallback:** a refused handoff (the new owner already runs the actor, is stopping or does not own the key),
+    no answer within the call timeout, or a gone node: the old owner writes to the store and the new one reads,
+    as before. A cluster stopping as a whole writes everything.
+- Alternatives: writing to the store on every move as well (survives a crash of the new owner right after the move,
+  at the cost of a write per moved actor and version handshakes); moving every component (all would have to be
+  serializable, and transient data such as grids and caches is cheaper to rebuild); a lock in a directory as ET does
+  (ordered links already order the record before the mail).
+- Consequences: scaling out and in moves actors without store traffic (tests: 40 actors out and back in, 0 reads, 0
+  writes) and keeps state without a store. A new owner that crashes before its first checkpoint loses the changes
+  since the old owner's last write, as any crash loses up to `SaveEvery`. Actors leaving while unloaded and waiting
+  for a write take no mail (it moves with them).
+
