@@ -10,7 +10,7 @@
         <RepositoryUrl>https://github.com/JasonXuDeveloper/DaServer</RepositoryUrl>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
         <EasyEcsVersion>4.0.1</EasyEcsVersion>
-        <NinoVersion>4.0.0-rc.3</NinoVersion>
+        <NinoVersion>4.0.0-rc.4</NinoVersion>
         <!-- Pre-1.0: the API may still change between minor versions. -->
         <Version>0.1.0</Version>
         <!-- NU5104: a release depending on a prerelease package (Nino 4 is a release candidate). -->

@@ -65,7 +65,7 @@ public sealed class FrameWriter : IDisposable
 
     /// <summary>Serialize <paramref name="value"/> into the payload (before any trailer), in place.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public void Write<T>(T value) => NinoSerializer.Serialize(value, _out);
+    public void Write<T>(in T value) => NinoSerializer.Serialize(in value, _out);
 
     /// <summary>The written bytes, writable (the header and the trailers are patched in place).</summary>
     private Span<byte> Bytes
