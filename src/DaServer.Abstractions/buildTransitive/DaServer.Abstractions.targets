@@ -1,0 +1,39 @@
+<Project>
+    <!-- Wire versioning (ADR-076). Nino reads a buffer that ends early with defaults for the missing trailing fields, so
+         a node built with an appended field still reads what an older node sends (and old nodes skip what they do not
+         know). The committed wire.manifest is checked by the analyzer (DAS017/DAS018);
+         dotnet build -p:UpdateWireManifest=true rewrites it from the code. -->
+    <PropertyGroup>
+        <DefineConstants>$(DefineConstants);WEAK_VERSION_TOLERANCE</DefineConstants>
+        <DaServerWireManifest Condition="'$(DaServerWireManifest)' == ''">$(MSBuildProjectDirectory)/wire.manifest</DaServerWireManifest>
+        <EmitCompilerGeneratedFiles Condition="'$(UpdateWireManifest)' == 'true'">true</EmitCompilerGeneratedFiles>
+        <CompilerGeneratedFilesOutputPath Condition="'$(UpdateWireManifest)' == 'true' and '$(CompilerGeneratedFilesOutputPath)' == ''">$(IntermediateOutputPath)generated</CompilerGeneratedFilesOutputPath>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <AdditionalFiles Include="$(DaServerWireManifest)" Condition="Exists('$(DaServerWireManifest)')" />
+        <!-- While the manifest is rewritten the analyzer does not compare against the old one. -->
+        <CompilerVisibleProperty Include="UpdateWireManifest" />
+    </ItemGroup>
+
+    <!-- Compile again even when up to date: the generated manifest is written by the compiler. -->
+    <Target Name="DaServerRecompileForWireManifest" BeforeTargets="CoreCompile" Condition="'$(UpdateWireManifest)' == 'true'">
+        <Delete Files="@(IntermediateAssembly)" />
+    </Target>
+
+    <Target Name="DaServerUpdateWireManifest" AfterTargets="CoreCompile" Condition="'$(UpdateWireManifest)' == 'true'">
+        <ItemGroup>
+            <_DaServerGeneratedManifest Include="$(CompilerGeneratedFilesOutputPath)/**/DaServer.WireManifest.g.cs" />
+        </ItemGroup>
+        <PropertyGroup>
+            <_DaServerGeneratedPath>@(_DaServerGeneratedManifest)</_DaServerGeneratedPath>
+        </PropertyGroup>
+        <PropertyGroup Condition="'$(_DaServerGeneratedPath)' != ''">
+            <_DaServerManifest>$([System.IO.File]::ReadAllText('$(_DaServerGeneratedPath)'))</_DaServerManifest>
+            <_DaServerManifest>$(_DaServerManifest.Substring($([MSBuild]::Add($(_DaServerManifest.IndexOf('/*')), 3))))</_DaServerManifest>
+            <_DaServerManifest>$(_DaServerManifest.Substring(0, $(_DaServerManifest.LastIndexOf('*/'))).TrimEnd())</_DaServerManifest>
+        </PropertyGroup>
+        <WriteLinesToFile File="$(DaServerWireManifest)" Lines="$(_DaServerManifest)" Overwrite="true" WriteOnlyWhenDifferent="true"
+                          Condition="'$(_DaServerManifest)' != ''" />
+    </Target>
+</Project>

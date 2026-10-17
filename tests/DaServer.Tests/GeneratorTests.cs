@@ -22,7 +22,7 @@ public class GeneratorTests
 
     private static readonly CSharpParseOptions ParseOptions = new(LanguageVersion.Latest);
 
-    private static CSharpCompilation Compile(params SyntaxTree[] trees) => Compile(OutputKind.DynamicallyLinkedLibrary, trees);
+    internal static CSharpCompilation Compile(params SyntaxTree[] trees) => Compile(OutputKind.DynamicallyLinkedLibrary, trees);
 
     private static CSharpCompilation Compile(OutputKind kind, params SyntaxTree[] trees) => CSharpCompilation.Create("GeneratorTest", trees,
         References, new CSharpCompilationOptions(kind, nullableContextOptions: NullableContextOptions.Enable));
@@ -35,11 +35,11 @@ public class GeneratorTests
         .Where(path => !System.IO.Path.GetFileName(path).StartsWith("DaServer.Tests"))
         .Select(path => (MetadataReference)MetadataReference.CreateFromFile(path)).ToArray();
 
-    private static SyntaxTree Parse(string source) => CSharpSyntaxTree.ParseText(Usings + source, ParseOptions);
+    internal static SyntaxTree Parse(string source) => CSharpSyntaxTree.ParseText(Usings + source, ParseOptions);
 
     private static GeneratorDriver Driver() => CSharpGeneratorDriver.Create(
         [new AskGenerator().AsSourceGenerator(), new RegistrationGenerator().AsSourceGenerator(),
-            new PolyfillGenerator().AsSourceGenerator()], parseOptions: ParseOptions,
+            new PolyfillGenerator().AsSourceGenerator(), new WireManifestGenerator().AsSourceGenerator()], parseOptions: ParseOptions,
         driverOptions: new GeneratorDriverOptions(IncrementalGeneratorOutputKind.None, trackIncrementalGeneratorSteps: true));
 
     /// <summary>Generated sources and every error or DASxxx diagnostic (generator, compiler and analyzer).</summary>
@@ -217,7 +217,7 @@ public class GeneratorTests
         foreach (var result in driver.GetRunResult().Results)
         foreach (var (name, steps) in result.TrackedSteps)
         {
-            if (name is not ("Requests" or "ClientMessages" or "HostedTypes" or "UserEntryPoint")) continue;
+            if (name is not ("Requests" or "ClientMessages" or "HostedTypes" or "UserEntryPoint" or "WireTypes")) continue;
             Assert.That(steps.SelectMany(s => s.Outputs).Select(o => o.Reason),
                 Is.All.AnyOf(IncrementalStepRunReason.Cached, IncrementalStepRunReason.Unchanged), name);
         }
