@@ -35,7 +35,7 @@ Everything a developer declares is one of these (ADR-035). The message type alon
 | `[NinoType, Message] partial record struct M` | a message between servers only |
 | `[Message, FromClient]` | game clients may send it; to an actor it goes to the actor bound to the session (`BindSession`), or to the actor the client names when that actor granted the session (`GrantSession`) |
 | `[Message, ToClient]` | servers push it to sessions and groups; only clients handle it |
-| `[NinoType]` alone | data inside messages; anything else crossing the wire is a build error (DAS003) |
+| `[NinoType]` alone | data inside messages (unmanaged structs go as their memory); anything else crossing the wire is a build error (DAS003) |
 | `M : IRequest<TReply>` | a request, answered with one `TReply` |
 | `[Handle]` method of an `Actor`/`Service` | handles one message type; returns `void`/`Reply`, or a request's reply/`Reply<TReply>` (`Ask` returns `Reply<TReply>` too) |
 | `[Handle]` method of any other class | client-side handler of pushes (`client.Register(obj)`) |
@@ -96,7 +96,7 @@ turn has that chain fails at once with `CallCycle` (ADR-059). A service handler 
 
 - Frames carry a fixed 24-byte header: `length`, `kind`, `status`, `hops`, `flags`, `target`, `messageId`, `key`,
   then the Nino-serialized message, then the trailers its flags name (ADR-005).
-- `messageId` is FNV-1a of the message type's full name (or its `[TypeId]`), computed once per type at run time (the analyzer computes the same value at build time). Collisions are
+- `messageId` is FNV-1a of the message type's full name (or its `[NinoFormerName]`: Nino's `NinoTypeId`), computed once per type at run time (the analyzer computes the same value at build time). Collisions are
   build errors (DAS004) and registration errors at runtime. Handler type ids are FNV-1a of the actor's id type or of the
   service type's full name (ADR-043).
 - Frame kinds:
@@ -112,8 +112,10 @@ turn has that chain fails at once with `CallCycle` (ADR-059). A service handler 
   lock-free scan) and refuses anything else with `Forbidden`, before any actor is reached. Client-facing nodes copy the client's payload as is, add the session as the origin trailer
   (flag `HasOrigin`, 16 bytes before the call id; handlers read it as `Caller`) and route it. They never deserialize
   payloads.
-- Versions side by side (ADR-076, ADR-077): layouts are frozen by each project's committed `wire.manifest` (DAS017);
-  new fields go into new messages or components.
+- Versions side by side (ADR-076, ADR-077): each project's committed `wire.manifest` keeps layouts compatible
+  (DAS017): messages are positional and frozen (a new field goes into a new message), persisted components version
+  tolerant or keyed. A node link opens with a hello carrying the link protocol version, a client connection with a
+  `ClientHello` carrying the client protocol version; another version is refused.
   Cards name each node's build and the messages it handles: services get only messages their build has, and a
   message an actor owner's build lacks is refused (`NotHosted`) until the owner is upgraded.
 
@@ -121,7 +123,7 @@ turn has that chain fails at once with `CallCycle` (ADR-059). A service handler 
 
 | Concern | Design |
 |---|---|
-| Message objects | None. Messages are structs serialized straight into pooled `FrameWriter` buffers; dispatchers deserialize straight from the received bytes. |
+| Message objects | None. Messages are structs serialized in place into pooled `FrameWriter`s (over Nino's `NinoArrayBufferWriter`, ADR-078); dispatchers deserialize straight from the received bytes, every read checked against them. A collection in a message lives in a `[NinoPooled]` class its handler returns. |
 | Buffers | `BufferPool`: power-of-two buckets on the **Pinned Object Heap**, each bucket bounded by a byte budget (64 MB). Sockets use the buffers without pinning, and they never fragment gen0/1/2. |
 | Queues | Bounded Vyukov MPMC rings with struct slots. Producer and consumer cursors are padded onto separate 64-byte cache lines. |
 | Awaiting | `PendingCall<T>` is a pooled `IValueTaskSource<T>`. An `async Reply<T>` handler keeps its suspended state in a box pooled per thread and state machine (`ReplyMethodBuilder`, ADR-062); its reply is awaited by a pooled `ReplyWatcher<T>`; a synchronously completed handler replies without any state machine. |

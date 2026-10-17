@@ -12,7 +12,7 @@ Keep this file current: tick items when done, add items when scope changes.
 3. T2 ECS bots and business isolation (done): shared rules, a real client, simulated users that run it.
 4. N2 `SendAfter` (the delayed send primitive, per-shard timer wheel), N3 call cycles fail fast (`Chain` header
    extension), N3b no sync-over-async (incl. the await-only `Reply<T>`, which also fixes H1).
-5. N8 Nino ref deserialization (H4).
+5. N8 collections in messages without garbage (H4), on Nino 4.0.0-rc.1 (ADR-078).
 6. D1-D4 graceful shutdown without a store, A-items (Aspire and hosting; A6 uses the `Trace` header extension).
 7. C1-C4 cluster hardening (before persistence: fencing assumes correct downing).
 8. N1 Contracts / Model / Logic split.
@@ -27,7 +27,7 @@ EasyEcs in parallel when DaServer waits on benchmarks: the Friflo gap, compariso
 
 ## Runtime (`src/DaServer`)
 - [x] Protocol: 24-byte frame header, frame kinds, RPC status codes
-- [x] Buffers: POH `BufferPool`, pooled `FrameWriter` (INinoBufferWriter)
+- [x] Buffers: POH `BufferPool`, pooled `FrameWriter` (over Nino's `NinoArrayBufferWriter`, ADR-078)
 - [x] Concurrency: padded MPMC queue, object pool, allocation-free `AsyncSignal`
 - [x] Net: `Connection` (batched send, zero-byte reads, backlog bound), `Listener`
 - [x] RPC core: messages (`IRequest<TReply>`, `HandlerRegistry`), `CallContext` replies, pending-call table, pooled awaitables
@@ -80,8 +80,9 @@ Steady state allocates nothing: per message, call, reply, tick, broadcast, conne
         context continuation per await). Fix: pooled `ReplyWatcher<T>` like `TurnWatcher`.
       - H3 pool caps below in-flight bounds (PendingCall<T> 1024, RelayCall 1024, FrameWriter 4096): bursts allocate
         and drop. Fix: per-shard-thread stacks for PendingCall, caps 64k (configurable) for frames and relays.
-      - H4 Nino collections/strings per message (`Motion` list per client, strings in Say/Chat/replies). Fix: N8
-        `DeserializeRef` into a per-thread instance for messages with collections; handlers must not keep refs.
+      - H4 Nino collections/strings per message (`Motion` list per client, strings in Say/Chat/replies). Fixed by N8
+        for collections (`[NinoPooled]` holders the handler returns); a string is a new string per message (low
+        volume: chat and logins, `[NinoUtf8]` halves its bytes).
       - M1 error paths allocate exactly under overload (interpolated NotHosted/Overloaded strings, `RpcException` per
         timeout). Fix: status-only frames, lazy exception message, non-throwing status results (N3b).
       - M2 `GroupMembers` created/removed per bind and AOI join/leave. Fix: pool + lazy removal from the maintain timer.
@@ -336,23 +337,18 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
       `daserver.handler.failed`).
 
 ## Next: versioning and rolling upgrades (V, before S)
-- [x] V1 Wire manifest (ADR-076): each project commits `wire.manifest` (its types, their encodings, the bytes their
-      layouts depend on, replies); DAS017 fails the build on any change to a recorded layout, DAS018 asks to record
-      new types (`dotnet build -p:UpdateWireManifest=true`, `=force` for a deliberate break). Layouts are frozen: new
-      fields go into new messages or components. The samples commit theirs.
-- Waiting on Nino's next major version (the user will say when it lands; revisit V1 and N8 then), measured on
-  4.0.0-beta.47:
-  - Value-only types are read as memory without a length check (`WirePayload` refuses shorter payloads first); an
-    appended field can land in the old trailing padding, so zero-padding cannot make appending safe. Member-by-member
-    reads also look up to 8 bytes past a truncated payload before they throw (`Reader` reads, then slices).
-  - `WEAK_VERSION_TOLERANCE` tolerates only a buffer that has ended, not one cut inside a value block, and it changes
-    the wire format (unmanaged runs written field by field): unusable as a version switch.
-  - `Reader` does not expose the bytes left, so tolerant reads have to wrap it at every call site.
-  - Wanted: appending fields to any type with defaults for missing ones, independent of the wire format; then the
-    manifest can allow appends.
-  - Wanted: a per-type layout description Nino computes (encoding, members in order, their encodings) that a
-    generator can read, so the manifest records Nino's own view instead of mirroring its rules (the escapes ADR-076
-    lists close with it).
+- [x] V1 Wire manifest (ADR-076): each project commits `wire.manifest` (its types, their encodings and formats, the
+      members their bytes hold, replies); DAS017 fails the build on a change the type's format does not tolerate
+      (positional: any; version tolerant: anything but members appended at the end; keyed: a key's type), DAS018 asks
+      to record the rest (`dotnet build -p:UpdateWireManifest=true`, `=force` for a deliberate break). Messages are
+      positional, persisted components version tolerant or keyed (DAS014). The samples commit theirs.
+- Waiting on Nino (issues filed):
+  - #197 a per-type layout description Nino computes, so the manifest reads Nino's own view instead of mirroring its
+    rules (`WireLayout`; `[FieldOffset]` layouts and assembly-level formatters are not recorded meanwhile).
+  - #198 a pool parameter for `NinoArrayBufferWriter`, so frame writers can live on the pinned object heap.
+  - #199 registries that do not root collectible load contexts (N9 hot reload).
+  - #200 another assembly's auto-property struct is raw from source but not from metadata (IDE and command-line
+    builds can write different bytes; `ClientSession` in a message is written member by member meanwhile).
 - [x] V2 Build on the card (ADR-077): `ClusterMember.Build` (framework and application versions); a node logs while
       its view holds several builds.
 - [x] V3 Messages only where the build has them (ADR-077): services (sent or forwarded) among nodes whose build
@@ -484,12 +480,11 @@ in separate commits.
       without writing. A new owner that gets mail first asks the previous owner and waits; refusals, silence and gone
       nodes fall back to the store. Scaling a 40-actor node out and in: 0 store reads, 0 writes. Also fixed: an actor
       unloaded and waiting for its final write no longer runs mail (it waits and moves with the actor).
-- [ ] N8 Collections in messages without allocation: use Nino's own ref deserialization (`DeserializeRef` into a
-      reused instance) for messages with arrays/lists instead of a new mechanism. Waiting for Nino 4.0.0-rc.1: in
-      4.0.0-beta.47 `DeserializeRef` reuses the lists of a struct with fields (0 B per message) but fills nothing in a
-      positional record struct (our messages). Now the bottleneck of the 10k one-map scenario: every `Motion` push
-      allocates its `List<Moved>` once per subscribed handler (bots: ~130 MB/s with two). (ET pooled messages, as
-      RandomGame does with Nino)
+- [x] N8 Collections in messages without garbage (ADR-078): a message that holds a collection holds it in a
+      `[NinoPooled]` class its handlers return (`Moves` in `Motion`); each handler deserializes its own copy, so
+      fan-out to several handlers and bursts held at once (200 per thread) allocate 0 B per push (Sample.Tests
+      `ContractTests`). Nino's default pool (64 per thread, 256 shared) needs no sizing for a bot loop. Text the
+      clients send and receive (`Login`, `Say`, `Chat`, `PlayerInfo`) is `[NinoUtf8]`.
 - [ ] N9 Hot reload: code (Logic assembly in a collectible load context; each shard swaps handler registry and
       systems at a wake boundary, recreates actor objects over unchanged components; old turns finish on old code;
       the old context unloads when unused, weak-reference leak check, no forced GC; a changed Model/Contracts refuses
@@ -511,6 +506,10 @@ in separate commits.
 - [ ] Split `Node` into links and router; membership talks to the node
       through an interface; one endpoint parser for seeds and `DaServer__ClientEndpoints`
 - [ ] ECS misuse: the turn's caller (`Actor.TurnCaller`) as a component
+- [ ] `HandoffTests.ScalingOutAndInMovesRecordsWithoutTheStore` failed once of 7 full runs, while the E2E ran in
+      parallel (passes alone and in 5 further full runs; the message was not captured). Suspect: a handoff that times
+      out under load falls back to the store, which the test's "0 writes" forbids. Check the handoff timeout against
+      a loaded machine, or make the test tell a fallback from a lost record.
 - Kept on purpose: B6 (local replies hand the frame over without a copy), B12 (the shard checks runnable actors after
   tick systems sent local mail)
 
