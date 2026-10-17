@@ -550,7 +550,8 @@ and cards, a manual clock), fails before its fix, and passes after it.
       link a node introduced itself on (the flake of `ScalingOutAndInMovesRecordsWithoutTheStore`, traced).
 - [x] H11 Mail admitted to a stopped shard waited until it timed out: it goes on to the key's owner, and handoff frames
       are answered (none, refused) so the other side falls back at once (`MailForAStoppedShardGoesOnToTheKeysOwner`).
-- [ ] H9 timer handles are not tied to a node.
+- [x] H9 A delayed-send handle kept across a move cancelled another timer on the new node (every wheel started at
+      generation zero): handles carry a random salt per wheel (`AHandleCancelsOnlyOnTheWheelThatMadeIt`).
 - [x] M1 A node restarting on the same address with a new id: the older of two live members at one address is dead at
       once, a node's own address holds only itself, a dead id resets a link only when the link's stream is its own
       (`ANodeRestartedAtTheSameAddressLosesNoCallWhenItsOldIdIsDeclaredDead`: a call timed out on every run before).
