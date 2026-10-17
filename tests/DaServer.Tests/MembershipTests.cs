@@ -55,6 +55,59 @@ public class MembershipTests : ClusterTest
         Assert.That(downed, Is.False);
         Assert.That(await nodes[0].Ask(new CounterId(2), new Add(1)), Is.EqualTo(1));
     }
+
+    [Test]
+    public async Task AForgottenMemberDoesNotComeBack()
+    {
+        // x died and was forgotten here; a node that forgets it later still gossips about it: neither its Dead nor an
+        // older Up card may bring it back (it would stay for good and count as lost for keep-majority).
+        var a = await Start("a");
+        static byte[] Cards(MemberStatus status) => Nino.Core.NinoSerializer.Serialize(new[]
+        {
+            new ClusterMember { NodeId = 4242, Name = "x", Host = "127.0.0.1", Port = 1, Status = status, Incarnation = 1, UpSince = 1 },
+        });
+        a.Membership.OnGossip(null!, ControlOp.Cards, Cards(MemberStatus.Up));
+        Assert.That(a.View.TryGetMember(4242, out _), Is.True);
+
+        long dead = (long)a.Options.DeadAfter.TotalMilliseconds;
+        a.Membership.Age(2 * dead);
+        a.Membership.RoundNow(); // dead
+        a.Membership.Age(4 * dead);
+        a.Membership.RoundNow(); // forgotten
+        Assert.That(a.View.TryGetMember(4242, out _), Is.False, "forgotten");
+
+        a.Membership.OnGossip(null!, ControlOp.Cards, Cards(MemberStatus.Dead));
+        a.Membership.OnGossip(null!, ControlOp.Cards, Cards(MemberStatus.Up));
+        Assert.That(a.View.TryGetMember(4242, out _), Is.False, "not brought back by later gossip");
+    }
+
+    /// <summary>Two nodes on one store; a key a owns, deposited 5 on a (written only when a unloads it gracefully).</summary>
+    private async Task<(Node A, Node B, BankId Key)> Deposited()
+    {
+        var store = new DaServer.Persistence.InMemoryActorStore();
+        var a = await Start("a", configure: o => o.ActorStore = store);
+        var b = await Start("b", configure: o => o.ActorStore = store);
+        await Converged();
+        long key = 100;
+        while (a.OwnerOf<BankId>(key) != a.Id) key++;
+        Assert.That(await a.Ask(new BankId(key), new Deposit(5, false)), Is.EqualTo(5));
+        return (a, b, new BankId(key));
+    }
+
+    [Test]
+    public async Task APauseLongerThanDeadAfterFencesThisNode()
+    {
+        // The others declared a dead during its pause and own its keys now: a's actors go without a write, and a comes
+        // back at a new incarnation (no Dead pulse may ever reach it: it may be forgotten already).
+        var (a, _, key) = await Deposited();
+        int incarnation = a.Membership.Self.Incarnation;
+        a.Membership.Tick(DaServer.Concurrency.Platform.Milliseconds, pausedMs: 3 * (long)a.Options.DeadAfter.TotalMilliseconds);
+        await Eventually(() => a.ActorCount == 0, "a's actors went");
+        Assert.That(a.Membership.Self.Incarnation, Is.GreaterThan(incarnation));
+        var c = await Start("c", configure: o => o.ActorStore = a.Options.ActorStore);
+        Assert.That(await c.Ask(key, new Balance()), Is.Zero, "nothing written: the new owner's state is not overwritten");
+    }
+
 }
 
 /// <summary>Node authentication (C3, ADR-065): only nodes of the same cluster holding its secret join.</summary>

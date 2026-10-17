@@ -93,7 +93,14 @@ internal sealed partial class Membership
         if (pausedMs > 0)
         {
             lock (_gate)
+            {
                 foreach (var entry in _members.Values) entry.LastProgress += pausedMs;
+                // Silent this long, this node is dead in every other view (or forgotten, and no Dead pulse will ever
+                // come back to it): its keys have new owners, so its loaded actors go without a write, and it comes
+                // back at a new incarnation.
+                if (pausedMs + Ms(_node.Options.GossipInterval) >= Ms(_node.Options.DeadAfter)) Fence();
+            }
+
             Log.RoundLate(_node.Logger, pausedMs);
         }
 
@@ -140,6 +147,9 @@ internal sealed partial class Membership
         }
     }
 
+    /// <summary>Tests: one gossip round now (failure detection included).</summary>
+    internal void RoundNow() => Round();
+
     /// <summary>Tests: age every member's progress as a pause of this process of <paramref name="ms"/> would.</summary>
     internal void Age(long ms)
     {
@@ -154,7 +164,7 @@ internal sealed partial class Membership
     {
         long now = Platform.Milliseconds;
         long suspect = Ms(_node.Options.SuspectAfter), dead = Ms(_node.Options.DeadAfter);
-        List<ulong>? remove = null;
+        List<ulong>? remove = null, expired = null;
         bool died = false;
 
         foreach (var (id, entry) in _members)
@@ -181,10 +191,29 @@ internal sealed partial class Membership
         }
 
         if (died && _node.Options.KeepMajority) CheckMajority();
+        foreach (var (id, until) in _forgotten)
+            if (now > until) (expired ??= new()).Add(id);
+        if (expired != null) foreach (var id in expired) _forgotten.Remove(id);
         if (remove == null) return;
-        foreach (var id in remove) _members.Remove(id);
+        foreach (var id in remove)
+        {
+            _members.Remove(id);
+            _forgotten[id] = now + dead * 10; // a later node's gossip about it must not bring it back
+        }
+
         _changed = true;
     }
+
+    /// <summary>
+    /// Members forgotten after they died or left, until the news is surely gone from every view: a pulse or card about
+    /// one is ignored (gossip from a node that forgets later would bring it back for good, and keep-majority would
+    /// count it lost). A process restarted with the same address has a new id. Under the gate.
+    /// </summary>
+    private readonly Dictionary<ulong, long> _forgotten = new();
+
+    /// <summary>Whether a pulse or card about a member this node does not know is worth asking for and adding.</summary>
+    private bool Learnable(ulong nodeId, MemberStatus status) =>
+        !_forgotten.ContainsKey(nodeId) && status is not (MemberStatus.Dead or MemberStatus.Leaving);
 
     /// <summary>
     /// Keep-majority downing (ADR-064), when members just died: this side keeps running only if it reaches more of the

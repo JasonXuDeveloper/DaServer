@@ -44,7 +44,7 @@ internal sealed partial class Membership
 
                 if (!_members.TryGetValue(pulse.NodeId, out var entry))
                 {
-                    unknown = true;
+                    unknown |= Learnable(pulse.NodeId, pulse.Status);
                     continue;
                 }
 
@@ -81,8 +81,9 @@ internal sealed partial class Membership
         {
             for (; pulses.Length >= MemberPulse.Size; pulses = pulses.Slice(MemberPulse.Size))
             {
-                ulong nodeId = MemberPulse.Read(pulses).NodeId;
-                if (nodeId == _node.Id || _members.ContainsKey(nodeId)) continue;
+                var pulse = MemberPulse.Read(pulses);
+                ulong nodeId = pulse.NodeId;
+                if (nodeId == _node.Id || _members.ContainsKey(nodeId) || !Learnable(nodeId, pulse.Status)) continue;
                 BinaryPrimitives.WriteUInt64LittleEndian(id, nodeId);
                 w.WriteRaw(id);
             }
@@ -119,6 +120,7 @@ internal sealed partial class Membership
 
                 if (!_members.TryGetValue(member.NodeId, out var entry))
                 {
+                    if (!Learnable(member.NodeId, member.Status)) continue;
                     _members[member.NodeId] = entry = new Entry(member, now);
                     _changed = true;
                     Log.MemberJoined(_node.Logger, member.Name, member.Status);
@@ -173,16 +175,19 @@ internal sealed partial class Membership
     /// </summary>
     private void Refute(MemberStatus status, int incarnation)
     {
-        if (status is not (MemberStatus.Suspect or MemberStatus.Dead) || incarnation < _self.Incarnation ||
-            _self.Status != MemberStatus.Up)
-            return;
+        if (status is not (MemberStatus.Suspect or MemberStatus.Dead) || incarnation < _self.Incarnation) return;
+        if (status == MemberStatus.Dead) Fence(); // also while leaving: its graceful unload would overwrite the new owners' state
+        else if (_self.Status == MemberStatus.Up) UpdateSelf(_self.Status, incarnation + 1);
+    }
 
-        if (status == MemberStatus.Dead)
-        {
-            Log.DeclaredDead(_node.Logger);
-            foreach (var shard in _node.Shards) shard.RequestUnloadAll();
-        }
-
-        UpdateSelf(_self.Status, incarnation + 1);
+    /// <summary>
+    /// The cluster declared this node dead (or surely will: a pause past DeadAfter): its loaded actors go without a write
+    /// (their keys have new owners), and an Up node refutes at a higher incarnation. Under the gate.
+    /// </summary>
+    private void Fence()
+    {
+        Log.DeclaredDead(_node.Logger);
+        foreach (var shard in _node.Shards) shard.RequestUnloadAll();
+        if (_self.Status == MemberStatus.Up) UpdateSelf(_self.Status, _self.Incarnation + 1);
     }
 }
