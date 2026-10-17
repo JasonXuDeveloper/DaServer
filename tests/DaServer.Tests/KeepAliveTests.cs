@@ -92,7 +92,7 @@ public class KeepAliveTests : ClusterTest
         client.Disconnected += e => lost.TrySetResult();
         // The silent node never answers the client's hello either: the connection is up, the hello still waits.
         var watch = System.Diagnostics.Stopwatch.StartNew();
-        var connecting = client.ConnectAsync("127.0.0.1", port, followRedirect: false).AsTask();
+        var connecting = client.ConnectAsync("127.0.0.1", port).AsTask();
         await Eventually(() => client.IsConnected, "the connection was not made");
         if (probe is { } timeout) client.CheckConnection(timeout);
         await lost.Task.WaitAsync(TimeSpan.FromSeconds(10));

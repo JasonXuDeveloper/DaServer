@@ -82,6 +82,39 @@ public class ResumeTests : ClusterTest
     }
 
     [Test]
+    public async Task OldConnectionsMoveToANodeStartedLater()
+    {
+        // The clients' entry addresses stand for a load balancer: the second one has no node behind it yet.
+        int later;
+        using (var probe = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0))
+        {
+            probe.Start();
+            later = ((IPEndPoint)probe.LocalEndpoint).Port;
+        }
+
+        static void Aged(ClientConnectionOptions o) => o.MaxConnectionAge = TimeSpan.FromSeconds(1);
+        var first = await Start("gw-0", gateway: true, hosts: static _ => false, configure: Secret(TimeSpan.FromSeconds(5)), clients: Aged);
+        await Start("game", configure: Secret(TimeSpan.FromSeconds(5)));
+        await Converged();
+        var clients = new ClusterClient[20];
+        for (int i = 0; i < clients.Length; i++)
+        {
+            clients[i] = Track(new ClusterClient());
+            await clients[i].ConnectAsync([new DnsEndPoint("127.0.0.1", first.ClientPort()), new DnsEndPoint("127.0.0.1", later)]);
+            Assert.That(await clients[i].Ask(new Login(new PlayerId(600 + i))), Is.True);
+        }
+
+        // Scale out: connections older than their age close, and their clients reconnect through the entry addresses.
+        var second = await Start("gw-1", gateway: true, hosts: static _ => false, configure: Secret(TimeSpan.FromSeconds(5)),
+            clients: o => { o.Port = later; Aged(o); });
+        await Converged();
+        await Eventually(() => second.SessionCount() >= 5, "no connection moved to the new node", 15_000);
+        foreach (var client in clients)
+            Assert.That(await client.Ask(new AddGold(1)), Is.GreaterThan(0), "every session resumed where it reconnected");
+        Assert.That(Observed.Events.Where(e => e.StartsWith("closed:6", StringComparison.Ordinal)), Is.Empty, "no player saw a close");
+    }
+
+    [Test]
     public async Task ClientsOfACrashedGatewayResumeOnAnother()
     {
         var gateways = await StartCluster(TimeSpan.FromSeconds(2));
@@ -146,7 +179,7 @@ public class ResumeTests : ClusterTest
     private async Task<(RpcStatus Status, ClusterClient Client)> ResumeWith(Node[] gateways, byte[] ticket)
     {
         var client = Track(new ClusterClient { AutoReconnect = false });
-        await client.ConnectAsync("127.0.0.1", gateways[1].ClientPort(), followRedirect: false);
+        await client.ConnectAsync("127.0.0.1", gateways[1].ClientPort());
         try
         {
             await client.ResumeWith(ticket);

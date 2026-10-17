@@ -37,9 +37,6 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
     /// <summary>The ids of the sessions now (tools and tests).</summary>
     internal long[] SessionIds() => [.. _sessions.Keys];
 
-    /// <summary>Where clients reach this node (after the node started).</summary>
-    public ClientEndpoint Endpoint { get; private set; } = ClientEndpoint.Stay;
-
     protected internal override void Start(INodeContext context)
     {
         _node = (Node)context; // a capability of this assembly: it may use the node's internals, never the other way round
@@ -61,26 +58,11 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
         _listener.Start();
         _maintenance = new Timer(static s => ((ClientConnections)s!).Maintain(), this, 100, 100);
         Port = _listener.LocalEndPoint.Port;
-        Endpoint = new ClientEndpoint(options.AdvertisedHost ?? _node.AdvertisedHost, Port);
-        context.SetCardEntry(ClientKeys.Endpoint, $"{Endpoint.Host}:{Port}");
-        context.AddPulse(ClientKeys.Sessions, () => _sessions.Count);
         context.AddGauge("daserver.clients.sessions", "Connected client sessions", () => _sessions.Count);
     }
 
-    /// <summary>Keys of what client-facing nodes publish: where clients connect, how many sessions they hold.</summary>
-    private static class ClientKeys
-    {
-        public static readonly uint Endpoint = ClusterMember.KeyOf("clients.endpoint"), Sessions = ClusterMember.KeyOf("clients.sessions");
-    }
-
     /// <summary>
-    /// Clients this node directed to each client-facing node since that node's last gossiped session count: added to
-    /// it, so a burst of connections within one gossip round does not all pick the node that reported the fewest.
-    /// </summary>
-    private readonly Dictionary<ulong, (int Reported, int Directed)> _directed = new();
-
-    /// <summary>
-    /// The node is leaving: accept no more clients (the directory already skips a leaving node), then close the
+    /// The node is leaving: accept no more clients (readiness already turned the load balancer away), then close the
     /// connections in waves over <see cref="ClientConnectionOptions.DrainSpread"/>. Each client reconnects through its
     /// endpoints and resumes its session on another node (ADR-036), so its actors see no close; spreading the waves keeps
     /// the other nodes from receiving every client at once. The stop budget cuts the waves short.
@@ -298,7 +280,9 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
 
     /// <summary>
     /// Once a second: close the connections of clients that sent nothing for <see cref="ClientConnectionOptions.IdleTimeout"/>
-    /// (two comparisons per session; idle clients ping, so only lost ones go quiet).
+    /// (two comparisons per session; idle clients ping, so only lost ones go quiet), and those older than their
+    /// <see cref="ClientConnectionOptions.MaxConnectionAge"/>: those clients reconnect through the load balancer and
+    /// resume their sessions, so after a scale-out connections spread over the new nodes too.
     /// </summary>
     private void CloseSilentSessions(long now)
     {
@@ -306,7 +290,11 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
         _nextSilenceSweep = now + 1000;
         if (late) return;
         long timeout = (long)options.IdleTimeout.TotalMilliseconds;
-        foreach (var (_, session) in _sessions) KeepAlive.Check(session.Channel, now, 0, timeout);
+        foreach (var (_, session) in _sessions)
+        {
+            if (session.RetireAtMs != 0 && now >= session.RetireAtMs) session.Channel.Close();
+            else KeepAlive.Check(session.Channel, now, 0, timeout);
+        }
     }
 
     private long _nextSilenceSweep;
@@ -437,54 +425,6 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
         }
     }
 
-    /// <summary>
-    /// Where a client should connect (the directory): the less loaded of two random client-facing nodes (power of two
-    /// choices: even spread from gossiped counts, no herd on the single least loaded one while counts are stale), or
-    /// <see cref="ClientEndpoint.Stay"/> when that is this node or <see cref="ClientConnectionOptions.Redirect"/> is off.
-    /// </summary>
-    public ClientEndpoint Direct()
-    {
-        if (!options.Redirect) return ClientEndpoint.Stay;
-        ClusterMember? first = null, second = null;
-        int candidates = 0;
-        foreach (var member in _node.View.NodesWithScope(AddressScopes.Group))
-        {
-            if (member.CardEntry(ClientKeys.Endpoint) == null) continue;
-            candidates++;
-            // Reservoir sampling of two distinct candidates in one pass.
-            if (Random.Shared.Next(candidates) == 0) (first, second) = (member, first);
-            else if (second == null || Random.Shared.Next(candidates - 1) == 0) second = member;
-        }
-
-        if (first == null) return ClientEndpoint.Stay;
-        ClusterMember target;
-        lock (_directed)
-        {
-            target = second != null && ExpectedSessions(second) < ExpectedSessions(first) ? second : first;
-            int reported = target.Pulse(ClientKeys.Sessions);
-            _directed[target.NodeId] = (reported, ExpectedSessions(target) - reported + 1);
-        }
-
-        if (target.NodeId == _node.Id) return ClientEndpoint.Stay;
-        string endpoint = target.CardEntry(ClientKeys.Endpoint)!;
-        int colon = endpoint.LastIndexOf(':');
-        return new ClientEndpoint(endpoint[..colon], int.Parse(endpoint.AsSpan(colon + 1)));
-    }
-
-    private void PickNode(SessionState session, uint callId)
-    {
-        var w = FrameWriter.Rent(64);
-        w.Write(Direct());
-        session.Sink.SendReply(callId, RpcStatus.Ok, w);
-    }
-
-    /// <summary>Sessions a client-facing node has, as far as this node knows (its gossiped count plus clients sent since). Under the lock.</summary>
-    private int ExpectedSessions(ClusterMember member)
-    {
-        int reported = member.Pulse(ClientKeys.Sessions);
-        return _directed.TryGetValue(member.NodeId, out var d) && d.Reported == reported ? reported + d.Directed : reported;
-    }
-
     // ------------------------------------------------------------------ client connections
 
     /// <summary>
@@ -498,6 +438,8 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
             Limit = new TokenBucket(options.MessagesPerSecond, Math.Max(1, options.Burst)),
         };
         channel.Tag = session;
+        if (options.MaxConnectionAge > TimeSpan.Zero) // jittered by up to a tenth, so connections opened together do not close together
+            session.RetireAtMs = Environment.TickCount64 + (long)(options.MaxConnectionAge.TotalMilliseconds * (0.9 + Random.Shared.NextDouble() * 0.2));
         _sessions[session.Id] = session; // it joins ClientGroup.All once its hello is answered
     }
 
@@ -584,9 +526,6 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
         uint callId = FrameHeader.CallIdOf(in header, frame);
         switch (header.MessageId)
         {
-            case ControlOp.PickNode when callId != 0:
-                PickNode(session, callId);
-                break;
             case ControlOp.Ticket:
                 IssueTicket(session);
                 break;
@@ -680,6 +619,9 @@ internal sealed class SessionState(long id, IFrameChannel channel)
 
     /// <summary>Whether the client's hello was accepted, or refused (another protocol version); its receive loop owns both.</summary>
     public bool Introduced, Refused;
+
+    /// <summary>When the connection is closed for its age (<see cref="ClientConnectionOptions.MaxConnectionAge"/>; 0: never).</summary>
+    public long RetireAtMs;
 
     /// <summary>The client's message rate limit (<see cref="ClientConnectionOptions.MessagesPerSecond"/>; its receive loop owns it).</summary>
     public TokenBucket Limit;

@@ -41,15 +41,13 @@ public static class DaServerHttpExtensions
     /// <summary>
     /// Map the node's own endpoints (Program.cs calls it after <c>Build</c>):
     /// <c>/health</c> (ready: joined, not leaving) and <c>/alive</c> (no stalled shard).
-    /// On client-facing nodes: <c>GET /clients/endpoint</c>, where a client should connect (clients that bootstrap over
-    /// HTTP), and <c>/clients/ws</c>, client connections over WebSocket (browsers, WebGL builds).
+    /// On client-facing nodes: <c>/clients/ws</c>, client connections over WebSocket (browsers, WebGL builds).
     /// </summary>
     public static WebApplication MapDaServer(this WebApplication app)
     {
         app.MapHealthChecks("/health"); // readiness: every check
         app.MapHealthChecks("/alive", new HealthCheckOptions { Predicate = static r => r.Tags.Contains(DaServerHostingExtensions.LiveTag) });
         if (app.Services.GetRequiredService<Node>().Feature<DaServer.Clients.ClientConnections>() is not { } clients) return app;
-        app.MapGet("/clients/endpoint", () => Results.Json(clients.Direct() is { Host.Length: > 0 } other ? other : clients.Endpoint));
         app.UseWebSockets();
         app.Map("/clients/ws", async (HttpContext http) =>
         {
