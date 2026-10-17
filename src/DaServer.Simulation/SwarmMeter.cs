@@ -83,12 +83,23 @@ public sealed class SwarmCounter(string name, SwarmCounterKind kind)
 
     public void Add(long n = 1) => Interlocked.Add(ref _stripes[Environment.CurrentManagedThreadId & (Stripes - 1)].Value, n);
 
+    private string? _firstReason;
+
+    /// <summary>Count a failure and keep the first one's reason (a verdict that names why, not only how many).</summary>
+    public void Add(Exception reason)
+    {
+        Add();
+        if (Volatile.Read(ref _firstReason) == null)
+            Interlocked.CompareExchange(ref _firstReason, reason.GetType().Name + ": " + reason.Message, null);
+    }
+
     internal void Reset()
     {
         for (int i = 0; i < Stripes; i++) Interlocked.Exchange(ref _stripes[i].Value, 0);
+        Volatile.Write(ref _firstReason, null);
     }
 
-    public override string ToString() => $"{Name}={Value}";
+    public override string ToString() => _firstReason == null ? $"{Name}={Value}" : $"{Name}={Value} (first: {_firstReason})";
 }
 
 /// <summary>The swarm's meter, as a singleton of every loop's world.</summary>
