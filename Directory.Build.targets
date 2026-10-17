@@ -8,7 +8,7 @@
 
     <Target Name="DaServerBuildWireTool">
         <MSBuild Projects="$(MSBuildThisFileDirectory)src/DaServer.WireTool/DaServer.WireTool.csproj" Targets="Build"
-                 Properties="Configuration=$(Configuration);UpdateWireManifest=" RemoveProperties="TargetFramework;TargetFrameworks" />
+                 RemoveProperties="TargetFramework;TargetFrameworks" />
     </Target>
 
     <Import Project="$(MSBuildThisFileDirectory)src/DaServer.Abstractions/buildTransitive/DaServer.Abstractions.targets" />
