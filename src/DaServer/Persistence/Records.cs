@@ -18,6 +18,9 @@ internal abstract class PersistentType(Type type, uint typeId, bool stored)
 
     /// <summary>Set the component on <paramref name="entity"/> from its section.</summary>
     public abstract void Read(Entity entity, ReadOnlySpan<byte> section);
+
+    /// <summary>Remove the component from <paramref name="entity"/> (its record went to another node).</summary>
+    public abstract void Remove(Entity entity);
 }
 
 internal sealed class PersistentType<T>(uint typeId, bool stored) : PersistentType(typeof(T), typeId, stored) where T : struct, IComponent
@@ -38,6 +41,11 @@ internal sealed class PersistentType<T>(uint typeId, bool stored) : PersistentTy
         var value = NinoDeserializer.Deserialize<T>(section);
         if (entity.Has<T>()) entity.Get<T>() = value;
         else entity.Add<T>() = value;
+    }
+
+    public override void Remove(Entity entity)
+    {
+        if (entity.Has<T>()) entity.Remove<T>();
     }
 }
 

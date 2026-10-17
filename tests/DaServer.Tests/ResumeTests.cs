@@ -58,6 +58,33 @@ public class ResumeTests : ClusterTest
     }
 
     [Test]
+    public async Task AClientResumesWithAnActorThatMovedToAnotherNode()
+    {
+        // The actor took its sessions along (the handoff record's sessions section): the client resumes, no login.
+        var gateways = await StartCluster(TimeSpan.FromSeconds(1));
+        var clients = new Dictionary<long, ClusterClient>();
+        for (long player = 530; player < 550; player++) clients[player] = await LogIn(gateways, player);
+        var second = await Start("game-2", configure: Secret(TimeSpan.FromSeconds(1)));
+        await Converged();
+        var moved = clients.Keys.Where(p => second.OwnerOf<PlayerId>(p) == second.Id).ToArray();
+        Assert.That(moved, Is.Not.Empty);
+
+        foreach (long player in moved)
+        {
+            var client = clients[player];
+            int gold = await client.Ask(new AddGold(1)); // reaches the player on its new node
+            var reconnected = Reconnected(client);
+            client.DropConnection();
+            await reconnected;
+            Assert.That(await client.Ask(new AddGold(1)), Is.EqualTo(gold + 1), "the moved player took the resumed session");
+            Assert.That(Observed.Events, Does.Contain("resumed:" + player));
+        }
+
+        await Task.Delay(1500); // past the grace: no lost session's close reaches a moved player
+        foreach (long player in moved) Assert.That(Observed.Events, Does.Not.Contain("closed:" + player));
+    }
+
+    [Test]
     public async Task ALostConnectionResumesTheSession()
     {
         var gateways = await StartCluster(TimeSpan.FromSeconds(1));

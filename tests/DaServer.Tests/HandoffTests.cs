@@ -80,6 +80,31 @@ public class HandoffTests(string kind) : ClusterTest
     }
 
     [Test]
+    public async Task NoSystemSeesACopyThatHandedItsStateOff()
+    {
+        var a = await StartWith(_stores.Create(), "a");
+        var keys = Enumerable.Range(7000, 40).Select(static k => (long)k).ToArray();
+        foreach (long key in keys) Assert.That(await a.Ask(new BankId(key), new Hit()), Is.EqualTo(1));
+
+        // b takes some keys but answers no record: a's copies wait, handed off, until b's shards run again.
+        using var gate = new ManualResetEventSlim();
+        var b = await StartWith(_stores.Create(), "b");
+        b.PostToEveryShard(static (_, g) => g.Wait(TimeSpan.FromSeconds(20)), gate);
+        await Converged();
+        var moved = keys.Where(k => a.OwnerOf<BankId>(k) == b.Id).ToArray();
+        Assert.That(moved, Is.Not.Empty);
+        await Task.Delay(500); // a unloaded them and sent their records
+        int Ticks() => moved.Sum(k => TallySystem.Ticks.GetValueOrDefault((a.Id, k)));
+        int before = Ticks();
+        await Task.Delay(300); // 15 ticks at 50 ticks/s
+        Assert.That(Ticks(), Is.EqualTo(before), "a's handed-off copies are seen by no system");
+
+        gate.Set();
+        foreach (long key in moved) Assert.That(await a.Ask(new BankId(key), new Hit()), Is.EqualTo(2), "the streak moved");
+        await Eventually(() => moved.All(k => TallySystem.Ticks.GetValueOrDefault((b.Id, k)) > 0), "b's live copies tick");
+    }
+
+    [Test]
     public async Task WithoutAStoreStateStillMoves()
     {
         var a = await StartWith(null, "a");

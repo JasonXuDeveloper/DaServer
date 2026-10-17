@@ -37,6 +37,7 @@ internal sealed partial class LoadSystem : EcsSystem
             {
                 if (error != null) throw error;
                 Records.Read(entity, records[i].Data.Span, store.ById);
+                actor.InitializeEntity(entity); // a state the record does not hold starts new (hashed as it will be written)
                 // The hash of what a save would write now: an actor whose record does not change is not written again.
                 var fresh = Records.Write(entity, store.Types);
                 ulong hash = Records.Hash(fresh.Payload);
@@ -54,7 +55,7 @@ internal sealed partial class LoadSystem : EcsSystem
                 continue;
             }
 
-            TurnWatcher.Begin(world, entity, ShardDispatch.Start(static a => a.OnLoad().AsValueTask(), actor));
+            ShardDispatch.BeginLive(world, entity, actor);
         }
 
         batch.Clear();
