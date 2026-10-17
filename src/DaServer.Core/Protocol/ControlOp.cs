@@ -71,8 +71,9 @@ internal static class ControlOp
 
     /// <summary>
     /// Node to client: move (the connection is old, or the node is leaving). The client resumes its session on a new
-    /// connection through its entry addresses while this one keeps working, then says <see cref="Goodbye"/> on it; the
-    /// node closes it after <c>ClientConnectionOptions.RetireGrace</c> otherwise.
+    /// connection through its entry addresses while this one keeps working, then sends <see cref="Goodbye"/> as this
+    /// connection's last frame and closes it once its calls are answered; the node closes it after
+    /// <c>ClientConnectionOptions.RetireGrace</c> otherwise.
     /// </summary>
     public const uint Retire = 21;
 }

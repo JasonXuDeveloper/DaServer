@@ -10,7 +10,7 @@ internal sealed class SendQueue(int maxPendingBytes, int bufferSize, bool releas
 {
     private readonly Lock _lock = new();
     private byte[] _pending = [], _spare = [];
-    private int _length, _closed, _overflowed;
+    private int _length, _closed, _overflowed, _sealed;
 
     /// <summary>The writer's wake-up (its send loop waits on it).</summary>
     public readonly AsyncSignal Signal = new();
@@ -26,7 +26,7 @@ internal sealed class SendQueue(int maxPendingBytes, int bufferSize, bool releas
         /// <summary>Refused: the bound is exceeded for the first time; close the channel (off the caller's thread).</summary>
         Overflow,
 
-        /// <summary>Refused: closed, or already overflowed.</summary>
+        /// <summary>Refused: closed, sealed, or already overflowed.</summary>
         Closed,
     }
 
@@ -35,19 +35,35 @@ internal sealed class SendQueue(int maxPendingBytes, int bufferSize, bool releas
     /// <summary>Copy <paramref name="frame"/> into the queue (thread-safe, never blocks on IO).</summary>
     public Result Append(ReadOnlySpan<byte> frame)
     {
+        lock (_lock) return _sealed != 0 ? Result.Closed : AppendLocked(frame);
+    }
+
+    /// <summary>
+    /// Append <paramref name="frame"/> as the last frame: every frame appended before it is written before it, every
+    /// later <see cref="Append"/> is refused (the queue still writes what it holds).
+    /// </summary>
+    public Result Seal(ReadOnlySpan<byte> frame)
+    {
         lock (_lock)
         {
-            if (_closed != 0) return Result.Closed;
-            int required = _length + frame.Length;
-            if (required > maxPendingBytes)
-                return Interlocked.Exchange(ref _overflowed, 1) == 0 ? Result.Overflow : Result.Closed;
-            if (required > _pending.Length)
-                BufferPool.Grow(ref _pending, _length, Math.Max(bufferSize, Math.Max(_pending.Length * 2, required)));
-            frame.CopyTo(new Span<byte>(_pending, _length, frame.Length));
-            bool wake = _length == 0;
-            Volatile.Write(ref _length, required);
-            return wake ? Result.Wake : Result.Queued;
+            if (_sealed != 0) return Result.Closed;
+            _sealed = 1;
+            return AppendLocked(frame);
         }
+    }
+
+    private Result AppendLocked(ReadOnlySpan<byte> frame)
+    {
+        if (_closed != 0) return Result.Closed;
+        int required = _length + frame.Length;
+        if (required > maxPendingBytes)
+            return Interlocked.Exchange(ref _overflowed, 1) == 0 ? Result.Overflow : Result.Closed;
+        if (required > _pending.Length)
+            BufferPool.Grow(ref _pending, _length, Math.Max(bufferSize, Math.Max(_pending.Length * 2, required)));
+        frame.CopyTo(new Span<byte>(_pending, _length, frame.Length));
+        bool wake = _length == 0;
+        Volatile.Write(ref _length, required);
+        return wake ? Result.Wake : Result.Queued;
     }
 
     /// <summary>Take the queued bytes as a batch, the spare buffer taking their place; false when nothing is queued.</summary>
