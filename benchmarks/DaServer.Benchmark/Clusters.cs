@@ -41,7 +41,7 @@ internal static class Clusters
         for (int i = 0; i < count; i++)
         {
             var client = clients[i] = new ClusterClient();
-            await client.ConnectAsync("127.0.0.1", gateways[i % gateways.Length].ClientPort(), followRedirect: false);
+            await client.ConnectAsync("127.0.0.1", gateways[i % gateways.Length].ClientPort());
             client.Register(handler);
         }
 
