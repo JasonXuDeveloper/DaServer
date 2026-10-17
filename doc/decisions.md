@@ -528,13 +528,17 @@ records that no longer hold). Each: context → decision → consequences.
   one reloadable endpoint source for N9). Node-to-node and client traffic stays on DaServer's TCP links (zero GC,
   ordered, batched). HTTP handlers run on the thread pool and reach actors only through `ICluster`.
 - Consequences: nodes reference the ASP.NET Core shared framework (aspnet runtime image, a few MB of memory, tens of
-  ms of start-up); HTTP requests allocate like any ASP.NET request: on nodes hosting actors the HTTP plane carries
-  low-frequency work, never per-tick or per-player traffic; dedicated HTTP edge nodes (ADR-048) may carry high
-  request volume, since the actor interior stays zero-GC. Health endpoints (always on) and admin endpoints (authorized with the signing secret) come with A1.
-  The node's defaults keep a request cheap: hosting diagnostics off (any level enabled there starts an Activity per
-  request whether or not anything traces) and no `Server` header. Flash sale crowd, one 4-core VM: 18,100 -> 22,600
-  requests per node core, p99 262 -> 131 ms. What remains is a `recv` and a `send` per request (HTTP/1.1 without
-  pipelining): high request rates from many small clients belong on the client protocol, which batches.
+  ms of start-up). The HTTP plane is for low-frequency traffic only: probes, admin, internal REST (webhooks, payment
+  callbacks, back-office, an HTTP login). A request there crosses two protocols (HTTP parsing, middleware and JSON,
+  then a cluster message) and costs a `recv` and a `send` of its own (HTTP/1.1 does not batch), and it allocates like
+  any ASP.NET request. Client traffic at volume, per-player or per-tick traffic and anything a crowd sends goes over
+  the client protocol (`DaServer.Clients`: TCP, or WebSocket at `/clients/ws` for browsers, behind the platform's
+  TLS as wss), which batches a connection's frames into one write. Measured with the flash sale (one 4-core VM, a
+  million buyers, the crowd on the same machine): HTTP 22,600 requests per node core with the defaults below, the
+  client protocol 79,000 (TCP) per node core, 3.5 times more. The node's defaults keep what HTTP costs low: hosting
+  diagnostics off (any level enabled there starts an Activity per request whether or not anything traces, 18,100 ->
+  22,600 requests per core) and no `Server` header. Health endpoints (always on) and admin endpoints (authorized with
+  the signing secret) come with A1.
 
 ## ADR-047 One message model: message, address, optional reply
 - Context: messages and RPC are one thing; an API with a verb per target (push to a session, broadcast to a group,
@@ -580,8 +584,7 @@ records that no longer hold). Each: context → decision → consequences.
   dedicated in production). There is no balancer role: any client-facing node answers the directory, and the
   well-known address is the platform's LB or DNS (redirect mode or behind-LB mode). The HTTP plane (ADR-046) is the
   second ingress consumer; WebSocket clients connect through it. Packages: ADR-052. Waiting rooms are not part of the framework: they are policy for human traffic
-  surges, belong at the CDN/SaaS edge to protect origins, and compose from the ingress primitives plus a queue actor
-  (to be shown in `samples/flashsale`, G5).
+  surges, and compose from the ingress primitives plus a queue actor (`samples/flashsale`).
 - Consequences: dedicated client-facing nodes may carry high request volume (the actor interior stays zero-GC;
   ADR-046). Abstractions and the client SDK use newer runtime features only behind netstandard2.1 fallbacks (ADR-001). Redirect mode needs
   a public address per client-facing node; behind-LB mode leaves long connections unbalanced after a scale-out until

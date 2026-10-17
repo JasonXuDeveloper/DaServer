@@ -331,6 +331,11 @@ next to the TCP data plane. Endpoints reach actors only through messages: `app.M
 budget of its `DaServer-Budget` header (ms, capped); refusals map to HTTP: `RateLimited` 429, `Overloaded`/`NotHosted`/
 `Disconnected` 503 (`Retry-After` when overloaded or hinted), `Timeout` 504, `Forbidden` 403, handler errors 500.
 
+The HTTP plane carries low-frequency traffic only (probes, admin, webhooks, back-office). Clients at volume use the
+client protocol (TCP, or WebSocket at `/clients/ws`): a request over HTTP crosses two protocols and costs a `recv`
+and a `send` of its own, while the client protocol writes a connection's frames together (ADR-046: 3.5 times the
+requests per core in the flash sale).
+
 ## 9. ECS in DaServer
 
 Business code and the runtime follow the same ECS rules (EasyEcs `doc/ecs-principles.md`). EasyEcs is data plus
