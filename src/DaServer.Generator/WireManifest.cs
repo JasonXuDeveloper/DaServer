@@ -11,10 +11,10 @@ internal readonly record struct WireField(string Name, string Type)
 
 /// <summary>
 /// A [NinoType] type of this assembly as the wire manifest records it: how Nino encodes it (<paramref name="Encoding"/>:
-/// its memory, its members, or its members behind a type id), its fields in the order its bytes hold them and, for a
-/// request, its reply type.
+/// its memory, its members, or its members behind a type id), its fields in the order its bytes hold them, for a
+/// request its reply type, and its [NinoType] parents (a new subtype of a recorded type is a type id older builds lack).
 /// </summary>
-internal sealed record WireType(string Name, string Encoding, EquatableArray<WireField> Fields, string? Reply);
+internal sealed record WireType(string Name, string Encoding, EquatableArray<WireField> Fields, string? Reply, EquatableArray<string> Parents);
 
 /// <summary>
 /// The wire manifest (ADR-076): the committed layout of every type an assembly puts on the wire or in records, so a
@@ -32,11 +32,36 @@ internal static class WireManifest
     public static WireType? Read(INamedTypeSymbol type)
     {
         if (!HasEntry(type)) return null;
-        var (encoding, members) = Layout(type);
+        var (encoding, members) = Layout(type, foreign: false);
         var fields = new List<WireField>();
         foreach (var (name, fieldType) in members) fields.Add(new WireField(name, Render(fieldType, type.ContainingAssembly, Open(type))));
         string? reply = Shapes.ReplyOf(type) is { } r ? Render(r, type.ContainingAssembly, Open(type)) : null;
-        return new WireType(Name(type), encoding, new(fields.ToArray()), reply);
+        return new WireType(Name(type), encoding, new(fields.ToArray()), reply, new(Parents(type).Select(Name).ToArray()));
+    }
+
+    /// <summary>
+    /// Every manifest entry of <paramref name="compilation"/>'s assembly, with its symbol: the one walk the generator
+    /// and the analyzer share, so both count the same types (the analyzer's symbol actions skip generated files).
+    /// </summary>
+    public static List<(WireType Type, INamedTypeSymbol Symbol)> All(Compilation compilation, CancellationToken ct)
+    {
+        var types = new List<(WireType, INamedTypeSymbol)>();
+        void Visit(INamespaceOrTypeSymbol container)
+        {
+            foreach (var member in container.GetMembers())
+            {
+                ct.ThrowIfCancellationRequested();
+                if (member is INamespaceSymbol ns) Visit(ns);
+                else if (member is INamedTypeSymbol type)
+                {
+                    if (Read(type) is { } wire) types.Add((wire, type));
+                    Visit(type);
+                }
+            }
+        }
+
+        Visit(compilation.Assembly.GlobalNamespace);
+        return types;
     }
 
     private static string Name(ITypeSymbol type) => type.ToDisplayString(TypeFormat);
@@ -51,19 +76,21 @@ internal static class WireManifest
     /// How Nino writes <paramref name="type"/>: a value-only struct as its memory (every field, private ones too, in
     /// declaration order, with its <c>[StructLayout]</c>), behind a type id when it has [NinoType] parents; a class or
     /// another struct with [NinoType] parents as its members behind a type id; otherwise its members (Nino's rules).
+    /// A <paramref name="foreign"/> type (another assembly's) is described by what its metadata shows, so the IDE (which
+    /// sees a referenced project's source) and the command line agree: no <c>[StructLayout]</c>, public members.
     /// </summary>
-    private static (string Encoding, List<(string Name, ITypeSymbol Type)> Members) Layout(INamedTypeSymbol type)
+    private static (string Encoding, List<(string Name, ITypeSymbol Type)> Members) Layout(INamedTypeSymbol type, bool foreign)
     {
         bool parents = Parents(type).Any();
         if (type.IsUnmanagedType && type.TypeKind == TypeKind.Struct)
         {
-            string layout = Support.GetAttribute(type, "System.Runtime.InteropServices.StructLayoutAttribute") is { } a
+            string layout = foreign ? "" : Support.GetAttribute(type, "System.Runtime.InteropServices.StructLayoutAttribute") is { } a
                 ? "(" + string.Join(", ", a.ConstructorArguments.Select(c => c.Value?.ToString()).Concat(a.NamedArguments.Select(n => n.Key + "=" + n.Value.Value))) + ")"
                 : "";
             return ((parents ? "typed memory" : "memory") + layout, MemoryFields(type));
         }
 
-        return (type.TypeKind == TypeKind.Struct && !parents ? "members" : "typed members", NinoMembers(type));
+        return (type.TypeKind == TypeKind.Struct && !parents ? "members" : "typed members", NinoMembers(type, foreign));
     }
 
     /// <summary>
@@ -82,7 +109,7 @@ internal static class WireManifest
             return Name(named);
         // Its own entry here records it; a type already being rendered (it refers to itself) is named only.
         if (SymbolEqualityComparer.Default.Equals(named.ContainingAssembly, home) && HasEntry(named) || !open.Add(named)) return Name(named);
-        var (encoding, members) = Layout(named);
+        var (encoding, members) = Layout(named, foreign: !SymbolEqualityComparer.Default.Equals(named.ContainingAssembly, home));
         string inline = Name(named) + " " + encoding + " {" + string.Join(", ", members.Select(m => m.Name + ": " + Render(m.Type, home, open))) + "}";
         open.Remove(named);
         return inline;
@@ -131,12 +158,12 @@ internal static class WireManifest
     }
 
     /// <summary>The members Nino writes for <paramref name="type"/>, in its order: parents first (depth first), names once.</summary>
-    private static List<(string Name, ITypeSymbol Type)> NinoMembers(INamedTypeSymbol type)
+    private static List<(string Name, ITypeSymbol Type)> NinoMembers(INamedTypeSymbol type, bool foreign)
     {
         var attribute = Support.GetAttribute(type, Support.NinoTypeAttribute);
         for (var b = type.BaseType; attribute == null && b != null; b = b.BaseType) attribute = Support.GetAttribute(b, Support.NinoTypeAttribute);
         var args = attribute?.ConstructorArguments ?? ImmutableArray<TypedConstant>.Empty;
-        bool auto = args.Length < 1 || args[0].Value is not false, nonPublic = args.Length > 1 && args[1].Value is true;
+        bool auto = args.Length < 1 || args[0].Value is not false, nonPublic = !foreign && args.Length > 1 && args[1].Value is true;
         var order = new Dictionary<string, int>(StringComparer.Ordinal);
         if (Support.GetAttribute(type, "Nino.Core.NinoExplicitOrderAttribute") is { ConstructorArguments: { Length: > 0 } explicitOrder })
             for (int i = 0; i < explicitOrder[0].Values.Length; i++)
@@ -167,6 +194,8 @@ internal static class WireManifest
         foreach (var member in level.GetMembers())
         {
             if (member.IsImplicitlyDeclared || member.IsStatic || (!nonPublic && member.DeclaredAccessibility != Accessibility.Public)) continue;
+            // Nino's own generated stand-ins for private members (netstandard2.1) are not members of the type it writes.
+            if (Support.HasAttribute(member, "Nino.Core.NinoPrivateProxyAttribute")) continue;
             if (member is IFieldSymbol || member is IPropertySymbol { GetMethod: not null, SetMethod: not null }) members.Add(member);
         }
 
@@ -284,7 +313,12 @@ internal static class WireManifest
         }
 
         foreach (var type in current)
-            if (!baseline.ContainsKey(type.Name))
-                yield return (type.Name, "is new", false);
+        {
+            if (baseline.ContainsKey(type.Name)) continue;
+            string? recorded = type.Parents.FirstOrDefault(baseline.ContainsKey);
+            yield return recorded != null
+                ? (type.Name, $"is a new subtype of '{recorded}': builds that lack it cannot read its type id where a '{recorded}' is expected", true)
+                : (type.Name, "is new", false);
+        }
     }
 }

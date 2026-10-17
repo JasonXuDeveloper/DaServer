@@ -20,7 +20,7 @@ public sealed partial class DaServerAnalyzer : DiagnosticAnalyzer
         context.ConfigureGeneratedCodeAnalysis(GeneratedCodeAnalysisFlags.None);
         context.EnableConcurrentExecution();
         context.RegisterCompilationAction(CheckShared);
-        context.RegisterCompilationStartAction(CheckWireManifest);
+        context.RegisterCompilationAction(CheckWireManifest);
         context.RegisterCompilationStartAction(start =>
         {
             // Wire ids of every message type declared in this compilation, for the collision check at the end.

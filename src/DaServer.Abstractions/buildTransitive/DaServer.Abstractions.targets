@@ -15,9 +15,13 @@
         <CompilerVisibleProperty Include="UpdateWireManifest" />
     </ItemGroup>
 
-    <!-- Compile again even when up to date: the generated manifest is written by the compiler. -->
+    <!-- Compile again even when up to date: the generated manifest is written by the compiler (and a stale one of a
+         project that no longer has wire types must not be copied back). -->
     <Target Name="DaServerRecompileForWireManifest" BeforeTargets="CoreCompile" Condition="'$(_DaServerUpdatingManifest)' == 'true'">
-        <Delete Files="@(IntermediateAssembly)" />
+        <ItemGroup>
+            <_DaServerStaleManifest Include="$(CompilerGeneratedFilesOutputPath)/**/DaServer.WireManifest.g.cs" />
+        </ItemGroup>
+        <Delete Files="@(IntermediateAssembly);@(_DaServerStaleManifest)" />
     </Target>
 
     <!-- One target framework writes the file (the first one listed): inner builds run in parallel. -->
