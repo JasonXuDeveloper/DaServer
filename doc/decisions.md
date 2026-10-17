@@ -253,8 +253,10 @@ records that no longer hold). Each: context → decision → consequences.
   connections in waves (D3): the node sends `ControlOp.Retire` (client protocol 3), the client resumes its session
   (ADR-036) on a new connection through the entry addresses while the old one keeps working, switches, and seals the
   old one with its goodbye as the last frame (`IFrameChannel.SendLast`): what was sent on it before reaches the node
-  first, a send that still picked it is refused there and goes on the new connection, and the old connection closes
-  once the calls made on it are answered. The seal is the fence, as HTTP/2's GOAWAY and gRPC's draining connection
+  first, a send that still picked it is refused there and goes on the new connection (its call registered again
+  there: a call belongs to the connection its frame went on, so the old connection's close fails only its own calls),
+  and the old connection closes once the calls made on it are answered. `ClientMoveTests` force each interleaving
+  against a scripted node. The seal is the fence, as HTTP/2's GOAWAY and gRPC's draining connection
   (no new stream on a draining connection, open streams finish): no step waits on a delay, so a slow or preempted
   device is as safe as a fast one. Make before break: no push or call is lost, and
   after a scale-out the old connections spread over the new nodes too. The node decides: a client that does not move
