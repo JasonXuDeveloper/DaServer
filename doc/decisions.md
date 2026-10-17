@@ -1116,6 +1116,7 @@ records that no longer hold). Each: context → decision → consequences.
   timers, and stepping must wait for the shards anyway); faking time for membership too (gossip and failure
   detection on a frozen clock over real sockets would declare nothing or everything dead).
 - Consequences: a test counts what systems send per tick exactly (`Sample.Tests`: one realm status every 5 ticks).
-  The shard loop reads the clock through a virtual call once per wake. The framework's own
+  The shard loop reads the clock through a virtual call once per wake: BDN against the commit before, back to back,
+  one-way messages -3% / +1% (local / remote), calls -1% to +8% (within the error), allocations unchanged. The framework's own
   integration tests and users' tests start nodes with the same options.
 
