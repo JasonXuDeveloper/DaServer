@@ -18,9 +18,9 @@ public static class TaskFlow
             {
                 if (!await flow()) failures?.Add();
             }
-            catch (Exception)
+            catch (Exception e)
             {
-                failures?.Add();
+                failures?.Add(e);
             }
             finally
             {
