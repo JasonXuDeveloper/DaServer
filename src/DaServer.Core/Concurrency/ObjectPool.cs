@@ -6,7 +6,8 @@ namespace DaServer.Concurrency;
 /// synchronization); only a whole magazine moves through the shared depot, so the depot's cursors are touched once per
 /// 32 objects instead of once per object, and threads that rent (shards) and threads that return (IO threads) pass
 /// full magazines to each other. Rent and return never allocate once warm; when the depot is empty a new instance is
-/// created, when it is full the returned instance is dropped.
+/// created, when it is full the returned instance is dropped. For objects rented on one thread and returned on another;
+/// a thread that keeps its objects uses <c>PerThread</c>, a shard its ECS singleton.
 /// </summary>
 internal sealed class ObjectPool<T> where T : class
 {
