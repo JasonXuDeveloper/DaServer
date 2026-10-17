@@ -389,12 +389,11 @@ stateful, maps being heavy actors.
 - [x] S2 Scale-in is a drain: SIGTERM -> readiness off -> graceful Leave -> actors hand off (N6) or unload and save
       (N5) -> exit within the termination grace period (D1-D3, the preStop pause first); gateways retire their clients
       in waves (make before break, ADR-026). `HandoffTests`, `ClientsOfALeavingGatewayMoveAndResumeOnAnother`.
-- [ ] S3 Slot allocation (ADR-074): a coordinator (the oldest Up node, agreed: an `UpSince` field appended to the
-      version-tolerant card) may override the rendezvous owners of slots and
-      gossips the overrides as a versioned table: load-aware rebalancing moves whole slots from hot to cold nodes
-      (handoff, N6, a few at a time, Akka's least-shard allocation); per actor type a move policy, so heavy actors
-      (maps) stay where they are loaded and only new keys go to a new node (sticky slots), and a scale-out never
-      moves a map with players in it.
+- [ ] S3 Slot allocation (ADR-079, agreed in full): the coordinator (oldest Up member by the card's `UpSince`) keeps
+      a versioned slot table it sends to every member; nodes report their loaded slots per actor type; `[Sticky]` types
+      keep loaded slots where they are (a join moves only empty slots: new keys go to the new node, a map with players
+      stays); other types are evened out by load, up to two slots per round from the most to the least loaded node
+      (handoff). Tests: sticky across a join, an imbalance evened out, a coordinator replaced with its table.
 - [ ] S4 Generated manifests. Done: `DaServer.Aspire` adds only what follows from DaServer (probes, grace period, the
       preStop wait, one workload per group with its peers Service, client ports as external endpoints); scaling policy
       is each application's, in its AppHost (`Platform.cs`): the MMO sample's gateways behind a LoadBalancer, PDBs and

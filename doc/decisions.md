@@ -1305,15 +1305,46 @@ records that no longer hold). Each: context → decision → consequences.
 - Decision: `FrameWriter` wraps a `NinoArrayBufferWriter` (frames over `ArrayPool`, the header reserved first; a pooled
   writer keeps at most 4 KB of array, a larger one goes back to `ArrayPool` on dispose, so 65,536 pooled writers hold
   at most 256 MB) and serializes with one call; messages, replies and record sections
-  are read straight from their span; type ids are `NinoTypeId.Of` (`TypeId<T>` caches it) and `[NinoFormerName]`
+  are read straight from their span; values are passed by reference down to Nino (`in T`, no copy of a large
+  struct per write); type ids are `NinoTypeId.Of` (`TypeId<T>` caches it) and `[NinoFormerName]`
   keeps one across a rename or resolves a collision (DAS004); a message that holds a collection holds it in a
   `[NinoPooled]` class its handlers return (`Moves` in the MMO sample: every handler deserializes its own copy and
   returns it, so fan-out to several handlers allocates nothing). Messages are positional, persisted and handed-off components
   version tolerant or keyed (DAS014, ADR-076).
-- Alternatives: keep the beta (no checked reads, no pools, our own ids to keep in step with Nino's); Nino's
+- Alternatives: stay on Nino 3 (no checked reads, no pools, our own ids to keep in step with Nino's); Nino's
   polymorphic dispatch for messages (boxes struct messages and writes a type id the frame header already carries);
   Nino's interceptors (messages live in other assemblies and calls are generic, which they do not see).
 - Consequences: frames rent from the pinned `BufferPool` through Nino's pool parameter, so sockets send them as
   they are. Nino's registries are released with a collectible load context (`NinoRegistry.Remove`, N9 hot reload).
   BenchmarkDotNet: see the roadmap's Nino 4 row.
+
+## ADR-079 A coordinator allocates slots: sticky types and load-aware moves
+- Context: rendezvous hashing (ADR-074) decides every slot's owner from the view alone, so a node joining takes its
+  share of slots at once: an MMO map with players moves the moment a node is added, and actors stay where hashing put
+  them whatever the load. Akka's cluster sharding lets one coordinator allocate whole shards (least shards first) and
+  rebalance a few at a time; Orleans' rebalancer moves activations by load. Both record the decision.
+- Decision:
+  - **Coordinator:** the oldest Up member (its card's `UpSince`, then the node id): every node computes it from its
+    view, nothing is elected. A new coordinator continues from the table it received.
+  - **Slot table:** the coordinator's overrides of rendezvous owners, (actor type, slot) to node, with a version; it
+    sends the whole table to every member on a change, to members it has not sent it to yet, and again every ten
+    seconds (`ControlOp.SlotTable`, ignored by older builds). A view applies an override whose node hosts the type and
+    is Up or Suspect; any other slot keeps its rendezvous owner, so an empty table is ADR-074's behaviour.
+  - **Reports:** every node tells the coordinator, every five seconds, which slots of each actor type hold loaded
+    actors here and how many (`ControlOp.SlotReport`), and which of its types are sticky.
+  - **Sticky types** (`[Sticky]` on the actor class, e.g. maps): the coordinator pins every reported loaded slot
+    of a sticky type to the node that holds it, so a join moves only empty slots: new keys reach the new node, loaded
+    actors stay. A slot loaded since the last report may still move at a join (a handoff, as before).
+  - **Load-aware moves** (the default policy): per actor type, when the most loaded node holds more than 1.25 times
+    the average and at least two slots more than the least loaded, the coordinator moves up to two of its loaded slots
+    to the least loaded node per round; the move is a handoff (ADR-072). Sticky types are never rebalanced.
+  - Overrides naming a node that left are dropped; a moved slot whose override now matches rendezvous is dropped (the
+    table stays small). A sticky type's pins stay while their slots hold actors, matching rendezvous or not: a join
+    changes rendezvous, and the pin must already be there.
+- Alternatives: an Orleans-style per-actor directory (a registration per activation); a coordinator elected by
+  consensus (gossip already agrees on the oldest member, and a split's minority downs itself, ADR-064); moving by CPU
+  (shared by everything on the node: actor counts per type are the signal the coordinator can act on).
+- Consequences: a view change still moves only what rendezvous moves, minus what the table keeps; a move costs one
+  handoff per actor. The coordinator's work is a few thousand table entries per round, cold. Tests: sticky slots stay
+  across a join, an imbalance is evened out in rounds, a coordinator that leaves is replaced with its table.
 
