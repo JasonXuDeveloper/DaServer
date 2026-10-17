@@ -15,7 +15,7 @@ internal struct Stored : IComponent
     public long DueMs;
     public long EveryMs;
 
-    /// <summary>After a failed write: no other attempt before this (<see cref="Environment.TickCount64"/>).</summary>
+    /// <summary>After a failed write: no other attempt before this (<see cref="ShardActivity.NowMs"/>).</summary>
     public long RetryAtMs;
 }
 
@@ -31,12 +31,18 @@ internal struct Saving : IComponent;
 /// <summary>Tag: <see cref="Actor.OnUnload"/> ran; the actor is removed once its record is written.</summary>
 internal struct FinalSave : IComponent;
 
-/// <summary>The shard's store, the persisted component types and the batches it exchanges with the store.</summary>
-internal readonly record struct ShardStore(IActorStore? Store, PersistentType[] Types, FrozenDictionary<uint, PersistentType> ById,
-    LoadBatch Loads, SaveBatch Saves) : ISingletonComponent
+/// <summary>
+/// The shard's store, the component types of records (<see cref="Types"/> stored, <see cref="Moved"/> handed to a new
+/// owner: stored and [Handoff] ones) and the batches it exchanges with the store.
+/// </summary>
+internal readonly record struct ShardStore(IActorStore? Store, PersistentType[] Types, PersistentType[] Moved,
+    FrozenDictionary<uint, PersistentType> ById, LoadBatch Loads, SaveBatch Saves) : ISingletonComponent
 {
     /// <summary>Whether actors of this shard load and save records at all.</summary>
     public bool Enabled => Store != null;
+
+    /// <summary>Whether actors changing node take a record along (ADR-072).</summary>
+    public bool HandsOff => Moved.Length > 0;
 }
 
 /// <summary>

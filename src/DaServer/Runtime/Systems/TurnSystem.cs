@@ -36,9 +36,11 @@ internal sealed partial class TurnSystem : EcsSystem
     private static void EndUnload(Entity actor, in Turn turn, in ActorRef self, World world)
     {
         var error = TurnWatcher.Result(in turn);
-        if (error != null) world.Logger().LogError(error, "Unload of {Actor} failed", self.Actor);
+        var target = self.Actor;
+        if (error != null) world.Logger().LogError(error, "Unload of {Actor} failed", target);
         actor.Remove<Turn, TurnEnded>();
-        if (actor.Has<Stored>()) actor.Add<FinalSave>(); // removed once its record is written (PersistSystem)
+        if (Handoff.TargetOf(world, target) is { } to) actor.Add<HandOff>() = new HandOff(to); // its new owner takes the record
+        else if (actor.Has<Stored>()) actor.Add<FinalSave>(); // removed once its record is written (PersistSystem)
         else actor.Add<Removing>() = new Removing(RpcStatus.Ok, null);
     }
 }

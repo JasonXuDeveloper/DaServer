@@ -124,8 +124,9 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
     }
 
     /// <summary>
-    /// The <c>[Persist]</c> components of this compilation and the assemblies it references (components projects): the
-    /// node registers them so actor records can hold them (ADR-068). Entries are "type|type id".
+    /// The <c>[Persist]</c> and <c>[Handoff]</c> components of this compilation and the assemblies it references
+    /// (components projects): the node registers them so actor records can hold them (ADR-068, ADR-072). Entries are
+    /// "type|type id|stored" (stored: 1 for [Persist], 0 for [Handoff] only).
     /// </summary>
     private static string[] PersistedComponents(Compilation compilation)
     {
@@ -153,9 +154,12 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
     private static void CollectPersisted(INamespaceSymbol ns, List<string> found)
     {
         foreach (var type in ns.GetTypeMembers())
-            if (type is { TypeKind: TypeKind.Struct, DeclaredAccessibility: Accessibility.Public, IsGenericType: false } &&
-                HasAttribute(type, PersistAttribute))
-                found.Add(type.ToDisplayString(Fqn) + "|" + Shapes.TypeIdOf(type));
+            if (type is { TypeKind: TypeKind.Struct, DeclaredAccessibility: Accessibility.Public, IsGenericType: false })
+            {
+                bool stored = HasAttribute(type, PersistAttribute);
+                if (stored || HasAttribute(type, HandoffAttribute))
+                    found.Add(type.ToDisplayString(Fqn) + "|" + Shapes.TypeIdOf(type) + (stored ? "|1" : "|0"));
+            }
         foreach (var inner in ns.GetNamespaceMembers()) CollectPersisted(inner, found);
     }
 
@@ -188,10 +192,10 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
         foreach (var system in sharedSystems)
             sb.Append($"        ServerRegistry.RegisterSystem(new SystemInfo(typeof({system}), static () => new {system}()));\n");
         if (info.ReferencesRuntime)
-            foreach (var entry in info.Persisted) // "type|type id": the [Persist] components of the components projects
+            foreach (var entry in info.Persisted) // "type|type id|stored": the [Persist] and [Handoff] components
             {
-                int bar = entry.LastIndexOf('|');
-                sb.Append($"        ServerRegistry.RegisterPersistent<{entry.Substring(0, bar)}>({entry.Substring(bar + 1)}u);\n");
+                var parts = entry.Split('|');
+                sb.Append($"        ServerRegistry.RegisterPersistent<{parts[0]}>({parts[1]}u, stored: {(parts[2] == "1" ? "true" : "false")});\n");
             }
 
         foreach (var t in types)

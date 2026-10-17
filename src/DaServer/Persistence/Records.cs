@@ -4,11 +4,14 @@ namespace DaServer.Persistence;
 /// A persisted component type (<see cref="PersistAttribute"/>): writes and restores its section of a record. Registered
 /// by the generated registration of the node (<see cref="ServerRegistry.RegisterPersistent{T}"/>), one per type.
 /// </summary>
-internal abstract class PersistentType(Type type, uint typeId)
+internal abstract class PersistentType(Type type, uint typeId, bool stored)
 {
     public Type Type { get; } = type;
 
     public uint TypeId { get; } = typeId;
+
+    /// <summary>Written to the store (<see cref="PersistAttribute"/>); otherwise only handed to a new owner (<see cref="HandoffAttribute"/>).</summary>
+    public bool Stored { get; } = stored;
 
     /// <summary>Append this component's section to <paramref name="record"/> when <paramref name="entity"/> has it.</summary>
     public abstract void Write(Entity entity, FrameWriter record);
@@ -17,7 +20,7 @@ internal abstract class PersistentType(Type type, uint typeId)
     public abstract void Read(Entity entity, ReadOnlySpan<byte> section);
 }
 
-internal sealed class PersistentType<T>(uint typeId) : PersistentType(typeof(T), typeId) where T : struct, IComponent
+internal sealed class PersistentType<T>(uint typeId, bool stored) : PersistentType(typeof(T), typeId, stored) where T : struct, IComponent
 {
     public override void Write(Entity entity, FrameWriter record)
     {

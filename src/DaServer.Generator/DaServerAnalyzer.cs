@@ -201,14 +201,16 @@ public sealed partial class DaServerAnalyzer
         return false;
     }
 
-    /// <summary>A [Persist] type is a [NinoType] struct component: its bytes are a section of its actor's record.</summary>
+    /// <summary>A [Persist] or [Handoff] type is a [NinoType] struct component: its bytes are a section of its actor's record.</summary>
     private static void CheckPersisted(INamedTypeSymbol type, Report report)
     {
-        if (!Support.HasAttribute(type, Support.PersistAttribute)) return;
+        string? attribute = Support.HasAttribute(type, Support.PersistAttribute) ? "Persist"
+            : Support.HasAttribute(type, Support.HandoffAttribute) ? "Handoff" : null;
+        if (attribute == null) return;
         if (type.TypeKind != TypeKind.Struct || !Support.Implements(type, "EasyEcs.IComponent") || type.IsGenericType)
-            report(Rules.BadPersisted, type.Locations.FirstOrDefault(), type.Name, "must be a non-generic struct component (EasyEcs.IComponent)");
+            report(Rules.BadPersisted, type.Locations.FirstOrDefault(), attribute, type.Name, "must be a non-generic struct component (EasyEcs.IComponent)");
         else if (!Support.HasAttribute(type, Support.NinoTypeAttribute))
-            report(Rules.BadPersisted, type.Locations.FirstOrDefault(), type.Name, "must be a [NinoType]: its record section is its Nino bytes");
+            report(Rules.BadPersisted, type.Locations.FirstOrDefault(), attribute, type.Name, "must be a [NinoType]: its record section is its Nino bytes");
     }
 
     private static void CheckNoComponents(INamedTypeSymbol type, Report report)
@@ -268,7 +270,7 @@ internal static class Rules
         Category, DiagnosticSeverity.Error, true);
 
     public static readonly DiagnosticDescriptor BadPersisted = new("DAS014", "Invalid persisted component",
-        "[Persist] '{0}' {1}", Category, DiagnosticSeverity.Error, true);
+        "[{0}] '{1}' {2}", Category, DiagnosticSeverity.Error, true);
 
     public static readonly DiagnosticDescriptor OffShard = new("DAS015", "Work started off the shard thread",
         "'{0}' {1}", Category, DiagnosticSeverity.Error, true);

@@ -18,6 +18,7 @@ internal sealed partial class RemovalSystem : EcsSystem
         var pending = mailbox.Pending;
         var target = self.Actor;
         bool hasSessions = actor.TryGet<ClientSessions>(out var sessions);
+        if (actor.TryGet<HandoffWanted>(out var wanted)) Handoff.Gone(world, target, wanted.By); // after any record it got
         directory.Actors.Remove(self.Address);
         actor.Destroy(); // the refs above are invalid from here on
 

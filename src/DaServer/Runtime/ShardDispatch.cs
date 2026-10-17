@@ -25,6 +25,7 @@ internal static class ShardDispatch
         var handler = handlerType?.Handlers.Of(header.MessageId);
         if (handler == null)
         {
+            if (handlerType is { IsActor: true } && Handoff.TryReceive(world, handlerType, frame, in header)) return;
             // A handler type that does not handle the message (a wrong id type) fails; one not hosted here (stale view
             // at the sender) is found on its node.
             if (handlerType != null) Fail(frame, sink, RpcStatus.NotHosted);
@@ -70,8 +71,33 @@ internal static class ShardDispatch
         var id = new ActorAddress(handlerType.Id, key);
         var actors = world.GetSingleton<ActorDirectory>().Actors;
         if (!actors.TryGetValue(id, out var entity))
-            actors[id] = entity = Load(world, handlerType, id);
+        {
+            actors[id] = entity = Create(world, handlerType, id);
+            var actor = entity.Get<ActorRef>().Actor;
+            if (Handoff.PreviousOwner(world, handlerType.Id, key) is { } from) Handoff.Await(world, entity, from);
+            else BeginLoad(world, entity, actor);
+        }
+
         return entity;
+    }
+
+    /// <summary>Whether this shard takes actor (<paramref name="handlerTypeId"/>, <paramref name="key"/>) now (it owns it and is not stopping).</summary>
+    internal static bool Owns(World world, uint handlerTypeId, long key) => OwnsHere(world, world.Shard().Node, handlerTypeId, key);
+
+    /// <summary>An actor's entity, not started: <see cref="Handoff"/> restores what its previous owner sent before <see cref="Actor.OnLoad"/>.</summary>
+    internal static Entity Adopt(World world, HandlerTypeInfo handlerType, long key)
+    {
+        var id = new ActorAddress(handlerType.Id, key);
+        var entity = Create(world, handlerType, id);
+        world.GetSingleton<ActorDirectory>().Actors[id] = entity;
+        return entity;
+    }
+
+    /// <summary>The actor's record comes from the store (when it has one), then <see cref="Actor.OnLoad"/> runs.</summary>
+    internal static void BeginLoad(World world, Entity entity, Actor actor)
+    {
+        if (world.GetSingleton<ShardStore>().Enabled) entity.Add<AwaitingRecord>(); // LoadSystem restores it, then OnLoad
+        else TurnWatcher.Begin(world, entity, Start(static a => a.OnLoad().AsValueTask(), actor));
     }
 
     /// <summary>
@@ -105,10 +131,10 @@ internal static class ShardDispatch
     }
 
     /// <summary>
-    /// Create the actor's entity (link, identity, mailbox, the actor's own components) and start
-    /// <see cref="Actor.OnLoad"/> as its first turn (<see cref="Loading"/>): mail waits until it completes.
+    /// Create the actor's entity (link, identity, mailbox, the actor's own components), <see cref="Loading"/>: mail
+    /// waits until its record is restored and <see cref="Actor.OnLoad"/> completed.
     /// </summary>
-    private static Entity Load(World world, HandlerTypeInfo handlerType, ActorAddress id)
+    private static Entity Create(World world, HandlerTypeInfo handlerType, ActorAddress id)
     {
         ref var pools = ref world.GetSingleton<ActorPools>();
         var actor = pools.RentActor(handlerType);
@@ -121,8 +147,6 @@ internal static class ShardDispatch
         var idle = actor.UnloadAfterIdle;
         if (idle > TimeSpan.Zero) entity.Add<UnloadWhenIdle>() = new UnloadWhenIdle((long)idle.TotalMilliseconds);
         actor.InitializeEntity(entity);
-        if (world.GetSingleton<ShardStore>().Enabled) entity.Add<AwaitingRecord>(); // LoadSystem restores it, then OnLoad
-        else TurnWatcher.Begin(world, entity, Start(static a => a.OnLoad().AsValueTask(), actor));
         return entity;
     }
 

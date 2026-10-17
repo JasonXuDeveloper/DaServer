@@ -136,6 +136,35 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
     /// <summary>This node owns the actor <paramref name="key"/> of <paramref name="handlerTypeId"/> in the current view.</summary>
     internal bool IsLocalOwner(uint handlerTypeId, long key) => View.HandlerTypeOwner(handlerTypeId, key)?.NodeId == Id;
 
+    private ClusterView? _lastView;
+    private long _viewChangedMs;
+
+    /// <summary>The view before the current one: who owned a key before it moved here (<see cref="Handoff"/>).</summary>
+    internal ClusterView? PreviousView { get; private set; }
+
+    /// <summary>Milliseconds (real time) since the view last changed: how long keys may still be on their way.</summary>
+    internal long SinceViewChangeMs => Environment.TickCount64 - Volatile.Read(ref _viewChangedMs);
+
+    /// <summary>
+    /// Send a frame (header written) to node <paramref name="nodeId"/>, to the shard of its actor: through the link to it
+    /// (in order with everything else this node sends there), or to a local shard. False when the node is not in the view.
+    /// Takes ownership of <paramref name="frame"/>.
+    /// </summary>
+    internal bool SendToNode(ulong nodeId, FrameWriter frame)
+    {
+        if (nodeId == Id)
+        {
+            var header = FrameHeader.Read(frame.Frame);
+            Admit(SelectShard(header.Target, actor: true, header.Key), frame, null);
+            return true;
+        }
+
+        bool sent = View.TryGetMember(nodeId, out var member) && member.Status != MemberStatus.Dead;
+        if (sent) GetLink(member).Send(frame.Frame);
+        frame.Dispose();
+        return sent;
+    }
+
     /// <summary>Start shards, listeners and membership. The node is Up when this returns.</summary>
     public Task StartAsync(CancellationToken cancellationToken = default)
     {
@@ -373,10 +402,12 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
     /// </summary>
     internal void OnViewChanged()
     {
+        var view = View;
+        PreviousView = Interlocked.Exchange(ref _lastView, view); // before the shards rebalance: new owners ask the previous ones
+        Volatile.Write(ref _viewChangedMs, Environment.TickCount64);
         foreach (var shard in _shards) shard.RequestRebalance();
 
         // Calls waiting on a dead member's link fail now instead of at their timeout (its stream cannot resume).
-        var view = View;
         foreach (var member in view.Members)
             if (member.Status == MemberStatus.Dead)
             {
