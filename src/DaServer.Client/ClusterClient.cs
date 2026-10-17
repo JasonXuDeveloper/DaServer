@@ -225,9 +225,10 @@ public sealed partial class ClusterClient : IMessageSender, IChannelHandler, IAs
         Transmit(Volatile.Read(ref _introduced), w, kind, target, messageId, key, call, budget);
 
     /// <summary>
-    /// Register <paramref name="call"/> and send the frame on <paramref name="connection"/>; a frame it refuses (closed,
-    /// or sealed by a move) goes on the current connection. <paramref name="last"/>: the connection's last frame
-    /// (<see cref="IFrameChannel.SendLast"/>), never sent elsewhere.
+    /// Register <paramref name="call"/> and send the frame on <paramref name="connection"/>. A frame the connection refuses
+    /// (closed, or sealed by a move as this send picked it) goes on the current connection, its call registered there
+    /// again: a call belongs to the connection its frame went on, so that connection's close is the call's fate.
+    /// <paramref name="last"/>: the connection's last frame (<see cref="IFrameChannel.SendLast"/>), never sent elsewhere.
     /// </summary>
     private void Transmit(IFrameChannel? connection, FrameWriter w, FrameKind kind, uint target, uint messageId, long key, IPendingCall? call,
         RpcStatus budget, bool last = false)
@@ -240,8 +241,9 @@ public sealed partial class ClusterClient : IMessageSender, IChannelHandler, IAs
                 return;
             }
 
+            long deadline = PendingCallTable.DeadlineAfter(CallTimeout);
             uint callId = 0;
-            if (call != null && !_pending.TryRegister(call, PendingCallTable.DeadlineAfter(CallTimeout), out callId, connection))
+            if (call != null && !_pending.TryRegister(call, deadline, out callId, connection))
             {
                 call.Fail(RpcStatus.Overloaded);
                 return;
@@ -258,22 +260,36 @@ public sealed partial class ClusterClient : IMessageSender, IChannelHandler, IAs
                 return;
             }
 
-            bool sent = last ? connection.SendLast(w.Frame) : connection.Send(w.Frame) || Resent(connection, w);
-            if (!sent && call != null)
-                _pending.Take(callId)?.Fail(RpcStatus.Disconnected);
+            while (!(last ? connection.SendLast(w.Frame) : connection.Send(w.Frame)))
+            {
+                var current = last ? null : Volatile.Read(ref _introduced);
+                var refused = call != null ? _pending.Take(callId) : null;
+                if (current == null || current == connection)
+                {
+                    refused?.Fail(RpcStatus.Disconnected);
+                    return;
+                }
+
+                if (call != null)
+                {
+                    if (refused == null) return; // expired meanwhile
+                    if (!_pending.TryRegister(refused, deadline, out callId, current))
+                    {
+                        refused.Fail(RpcStatus.Overloaded);
+                        return;
+                    }
+
+                    w.SetCallId(callId); // the trailer is there: rewritten in place
+                }
+
+                connection = current;
+            }
         }
         finally
         {
             w.Dispose();
         }
     }
-
-    /// <summary>
-    /// A frame <paramref name="refused"/> did not take, because the session moved off it as it was sent (the move sealed
-    /// it): it goes on the current connection (the actors know the new session already).
-    /// </summary>
-    private bool Resent(IFrameChannel refused, FrameWriter w) =>
-        Volatile.Read(ref _introduced) is { } current && current != refused && current.Send(w.Frame);
 
     // ------------------------------------------------------------------ IChannelHandler
 

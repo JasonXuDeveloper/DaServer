@@ -57,6 +57,14 @@ public sealed partial class ClusterClient
     /// </summary>
     private async ValueTask<IFrameChannel> OpenAsync(bool watched, CancellationToken cancellationToken = default)
     {
+        if (Connector != null)
+        {
+            var scripted = Connector(this);
+            if (watched) Watch(scripted);
+            await IntroduceAsync(scripted).ConfigureAwait(false);
+            return scripted;
+        }
+
         if (_webSocket != null)
         {
             var socket = new System.Net.WebSockets.ClientWebSocket();
@@ -88,6 +96,9 @@ public sealed partial class ClusterClient
 
         throw last!;
     }
+
+    /// <summary>Tests: opens the connections instead of TCP (a scripted node answers on them).</summary>
+    internal Func<IChannelHandler, IFrameChannel>? Connector;
 
     /// <summary>
     /// The first call on every connection: the node checks the client protocol version before anything else. Until the
