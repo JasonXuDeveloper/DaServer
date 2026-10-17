@@ -10,12 +10,19 @@ namespace Sample.GameServer;
 /// <summary>The player's profile: kept in the actor store (saved on unload and every 30 s while it changed).</summary>
 [NinoType(format: NinoFormat.VersionTolerant), Persist] public partial record struct PlayerProfile(string Name, int Logins) : IComponent;
 
-/// <summary>Where the player is now: rebuilt by the next login, never stored.</summary>
-public record struct PlayerState(MapId Map, ClientSession Session) : IComponent;
+/// <summary>
+/// Where the player is now and the session it plays from: moves with the player when its node leaves or the cluster
+/// grows (a handoff), never stored (the next login rebuilds it).
+/// </summary>
+[NinoType(format: NinoFormat.VersionTolerant), Handoff] public partial record struct PlayerState(MapId Map, ClientSession Session) : IComponent;
 
-/// <summary>Who is online.</summary>
-public struct RealmState() : IComponent
+/// <summary>Who is online, and how many status updates the realm sent: both move with the realm (a handoff).</summary>
+[NinoType(format: NinoFormat.VersionTolerant), Handoff]
+public partial struct RealmState() : IComponent
 {
-    public readonly HashSet<PlayerId> Online = new();
+    public HashSet<PlayerId> Online = new();
+
+    /// <summary>The realm's own status count (<see cref="RealmStatus.Tick"/>): one sequence whichever node runs it.</summary>
+    public long Ticks;
 }
 
