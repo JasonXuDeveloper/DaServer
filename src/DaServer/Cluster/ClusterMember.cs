@@ -75,6 +75,12 @@ public partial class ClusterMember
         return null;
     }
 
+    /// <summary>The card entry of the member's build (framework and application versions, V2).</summary>
+    public static readonly uint BuildKey = KeyOf("daserver.build");
+
+    /// <summary>What the member runs: <c>daserver {version}; app {version}</c>.</summary>
+    public string Build => CardEntry(BuildKey) ?? "unknown";
+
     /// <summary>Whether a feature of the member handles address scope <paramref name="scope"/>.</summary>
     public bool HasScope(uint scope) => Array.IndexOf(Scopes, scope) >= 0;
 

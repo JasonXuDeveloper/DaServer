@@ -227,7 +227,7 @@ sealed partial class Node
     /// </summary>
     private bool SendTo(in MessageRoute route, uint messageId, long key, FrameWriter w, byte hops, byte flags, bool handOver)
     {
-        var target = View.Target(in route, key, Id);
+        var target = View.Target(in route, messageId, key, Id);
         if (target == null) return false;
         w.SetHeader(FrameKind.Message, route.HandlerTypeId, messageId, key, flags: flags, hops: hops);
         if (target.NodeId != Id)

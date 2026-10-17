@@ -21,7 +21,7 @@ sealed partial class Node : IConnectionHandler
     {
         ClusterMember? target;
         if (!TryRoute(messageId, handlerTypeId, out var route, out bool ambiguous) ||
-            (target = View.Target(in route, key, Id)) == null)
+            (target = View.Target(in route, messageId, key, Id)) == null)
         {
             if (ambiguous) Refuse(frame, call, relaySink, relayCallId, RpcStatus.Error, AmbiguousMessage(messageId));
             else Refuse(frame, call, relaySink, relayCallId, RpcStatus.NotHosted);

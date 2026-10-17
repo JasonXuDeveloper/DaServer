@@ -132,5 +132,8 @@ public sealed class NodeOptions
     [System.Text.Json.Serialization.JsonIgnore]
     public List<NodeFeature> Features { get; } = new();
 
+    /// <summary>Tests: messages this node does not announce, as a node of an older build would not (V3).</summary>
+    internal Func<uint, bool>? Unannounced { get; set; }
+
     internal IPEndPoint ClusterBindEndPoint => new(IPAddress.Parse(ListenAddress), ClusterPort);
 }
