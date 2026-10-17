@@ -323,9 +323,10 @@ a building block for admission tokens). Timers are data too: `TimerWheel<T>` (a 
 O(1) schedule, cancel and fire, allocation-free) is advanced by its owner's loop.
 
 On the shard, generated dispatchers run the dispatch-stage filters after deserializing and before the handler
-(registered process-wide: `MessageFilters.Register<T>(filter)` per message type, `MessageFilters.Register(IMessageFilter)`
-for all, whose `Admit` runs for every message): a status
-other than `Ok` refuses the message (a request gets it as its reply). Without filters the check is two array lengths.
+(registered process-wide, the application's policy on every node of the process: `MessageFilters.Register<T>(filter)`
+per message type, `MessageFilters.Register(IMessageFilter)` for all, whose `Admit` runs for every message; disposing the
+registration removes it): a status other than `Ok` refuses the message (a request gets it as its reply). Without
+filters the check is two array lengths.
 
 ### HTTP plane
 
