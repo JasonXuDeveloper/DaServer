@@ -22,6 +22,9 @@ public sealed class HandlerTypeInfo(Type type, bool isActor, Func<object> factor
     /// </summary>
     public uint Id { get; } = Identity(isActor ? IdTypeOf(type) : type);
 
+    /// <summary>Actors of this type stay where they are loaded (<see cref="StickyAttribute"/>, ADR-079).</summary>
+    public bool Sticky { get; } = isActor && type.IsDefined(typeof(StickyAttribute), inherit: false);
+
     private static uint Identity(Type type) => (uint)NinoTypeId.Of(type); // == TypeId<T>.Value
 
     private static Type IdTypeOf(Type actor)

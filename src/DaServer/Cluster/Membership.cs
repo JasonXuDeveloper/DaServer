@@ -61,6 +61,7 @@ internal sealed partial class Membership
                 Entries = entries,
                 Handlers = handlers,
                 Status = MemberStatus.Up,
+                UpSince = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             };
             _members[_node.Id] = new Entry(_self, Platform.Milliseconds);
             PublishView();
@@ -283,12 +284,29 @@ internal sealed partial class Membership
         var members = new List<ClusterMember>(_members.Count);
         foreach (var entry in _members.Values) members.Add(entry.Info);
         var old = _view;
-        var view = new ClusterView(members);
+        var view = new ClusterView(members, _table);
         Volatile.Write(ref _view, view);
         _changed = false;
 
-        if (!SameRouting(old, view))
+        if (!SameRouting(old, view) || old.Table != view.Table)
             _node.OnViewChanged();
+    }
+
+    private SlotTable _table = SlotTable.Empty;
+
+    /// <summary>
+    /// Take the coordinator's slot table (ADR-079) when it is newer than the one applied: the view is rebuilt with it and
+    /// the shards move what it moves. Any thread.
+    /// </summary>
+    internal bool Apply(SlotTable table)
+    {
+        lock (_gate)
+        {
+            if (table.Version <= _table.Version) return false;
+            _table = table;
+            PublishView();
+            return true;
+        }
     }
 
     /// <summary>

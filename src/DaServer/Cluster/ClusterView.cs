@@ -17,8 +17,10 @@ public sealed class ClusterView
     /// </summary>
     private readonly FrozenSet<(ulong NodeId, uint HandlerTypeId, uint MessageId)> _lacking;
 
-    public ClusterView(IEnumerable<ClusterMember> members)
+    /// <param name="slots">The coordinator's slot table (ADR-079): its overrides win over rendezvous where their node hosts the type.</param>
+    public ClusterView(IEnumerable<ClusterMember> members, SlotTable? slots = null)
     {
+        Table = slots ?? SlotTable.Empty;
         var all = new Dictionary<ulong, ClusterMember>();
         var handlerTypes = new Dictionary<uint, List<ClusterMember>>();
         var handlers = new Dictionary<uint, Dictionary<uint, bool>>();
@@ -38,6 +40,8 @@ public sealed class ClusterView
             if (up)
             {
                 upMembers.Add(m);
+                if (Coordinator == null || m.UpSince < Coordinator.UpSince || m.UpSince == Coordinator.UpSince && m.NodeId < Coordinator.NodeId)
+                    Coordinator = m;
                 foreach (uint scope in m.Scopes)
                 {
                     if (!scopes.TryGetValue(scope, out var nodes)) scopes[scope] = nodes = new();
@@ -71,6 +75,16 @@ public sealed class ClusterView
             handlerTypeRoutes[handlerType] = new MessageRoute(handlerType, actor, nodes) { Owners = actor ? SlotOwners(nodes, handlerType) : null };
         }
 
+        // The coordinator's overrides, where their node hosts the type (one left: rendezvous takes the slot back).
+        foreach (var o in Table.Overrides)
+            if (handlerTypeRoutes.TryGetValue(o.HandlerTypeId, out var route) && route.Owners is { } owners && o.Slot < Slots)
+                for (int i = 0; i < route.Nodes.Length; i++)
+                    if (route.Nodes[i].NodeId == o.Node)
+                    {
+                        owners[o.Slot] = (ushort)i;
+                        break;
+                    }
+
         _handlerTypes = handlerTypeRoutes.ToFrozenDictionary();
         // An actor's owner is its type's (one activation per key, whatever the message); a service is chosen among
         // the nodes that handle the message.
@@ -98,6 +112,27 @@ public sealed class ClusterView
         foreach (var (k, v) in scopes) scopeArrays[k] = v.ToArray();
         _scopeNodes = scopeArrays.ToFrozenDictionary();
     }
+
+    /// <summary>The slot table this view applies.</summary>
+    internal SlotTable Table { get; }
+
+    /// <summary>The oldest Up member: it allocates slots (ADR-079). Null without Up members.</summary>
+    public ClusterMember? Coordinator { get; }
+
+    /// <summary>The nodes hosting actor type <paramref name="handlerTypeId"/> (Up and Suspect), or none.</summary>
+    internal ClusterMember[] NodesOf(uint handlerTypeId) => _handlerTypes.TryGetValue(handlerTypeId, out var route) ? route.Nodes : [];
+
+    /// <summary>The owner of <paramref name="slot"/> of actor type <paramref name="handlerTypeId"/> by rendezvous alone (no override), or null.</summary>
+    internal ClusterMember? RendezvousOwner(uint handlerTypeId, int slot)
+    {
+        var nodes = NodesOf(handlerTypeId);
+        int best = Rendezvous(nodes, GroupOf(handlerTypeId), slot, 0);
+        return best < 0 ? null : nodes[best];
+    }
+
+    /// <summary>The owner of <paramref name="slot"/> of actor type <paramref name="handlerTypeId"/> in this view (overrides applied), or null.</summary>
+    internal ClusterMember? SlotOwner(uint handlerTypeId, int slot) =>
+        _handlerTypes.TryGetValue(handlerTypeId, out var route) && route.Owners is { } owners ? route.Nodes[owners[slot]] : null;
 
     /// <summary>The Up members handling address scope <paramref name="scope"/> (where its group messages go).</summary>
     public ClusterMember[] NodesWithScope(uint scope) => _scopeNodes.TryGetValue(scope, out var nodes) ? nodes : [];

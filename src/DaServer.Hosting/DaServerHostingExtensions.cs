@@ -81,20 +81,22 @@ public static class DaServerHostingExtensions
     }
 
     /// <summary>
-    /// Export logs and metrics (DaServer meter, .NET runtime) over OTLP when <c>OTEL_EXPORTER_OTLP_ENDPOINT</c> is set,
-    /// which Aspire does for every resource (the dashboard shows them). No exporter otherwise: nothing runs.
+    /// Metrics (DaServer meter, .NET runtime) for a Prometheus scrape of <c>/metrics</c> on the HTTP plane, always (what
+    /// an HPA through the Prometheus adapter or KEDA reads); and logs and metrics over OTLP when
+    /// <c>OTEL_EXPORTER_OTLP_ENDPOINT</c> is set, which Aspire does for every resource (the dashboard shows them).
+    /// Observable instruments are read only when collected: an unscraped node pays nothing.
     /// </summary>
     private static void AddDaServerTelemetry(this IHostApplicationBuilder builder)
     {
+        var telemetry = builder.Services.AddOpenTelemetry()
+            .WithMetrics(static metrics => metrics.AddMeter(NodeMetrics.MeterName).AddRuntimeInstrumentation().AddPrometheusExporter());
         if (string.IsNullOrWhiteSpace(builder.Configuration["OTEL_EXPORTER_OTLP_ENDPOINT"])) return;
         builder.Logging.AddOpenTelemetry(static logging =>
         {
             logging.IncludeFormattedMessage = true;
             logging.IncludeScopes = true;
         });
-        builder.Services.AddOpenTelemetry()
-            .WithMetrics(static metrics => metrics.AddMeter(NodeMetrics.MeterName).AddRuntimeInstrumentation())
-            .UseOtlpExporter();
+        telemetry.UseOtlpExporter();
     }
 }
 

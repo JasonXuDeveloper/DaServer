@@ -40,13 +40,14 @@ public static class DaServerHttpExtensions
 
     /// <summary>
     /// Map the node's own endpoints (Program.cs calls it after <c>Build</c>):
-    /// <c>/health</c> (ready: joined, not leaving) and <c>/alive</c> (no stalled shard).
+    /// <c>/health</c> (ready: joined, not leaving), <c>/alive</c> (no stalled shard) and <c>/metrics</c> (Prometheus).
     /// On client-facing nodes: <c>/clients/ws</c>, client connections over WebSocket (browsers, WebGL builds).
     /// </summary>
     public static WebApplication MapDaServer(this WebApplication app)
     {
         app.MapHealthChecks("/health"); // readiness: every check
         app.MapHealthChecks("/alive", new HealthCheckOptions { Predicate = static r => r.Tags.Contains(DaServerHostingExtensions.LiveTag) });
+        app.MapPrometheusScrapingEndpoint("/metrics");
         if (app.Services.GetRequiredService<Node>().Feature<DaServer.Clients.ClientConnections>() is not { } clients) return app;
         app.UseWebSockets();
         app.Map("/clients/ws", async (HttpContext http) =>

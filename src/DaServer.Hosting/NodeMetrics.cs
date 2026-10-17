@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Diagnostics.Metrics;
 
 namespace DaServer.Hosting;
@@ -33,6 +34,10 @@ public sealed class NodeMetrics : IDisposable
             description: "Messages whose handler threw (poison messages show up here)");
         _meter.CreateObservableCounter("daserver.shard.expired", () => new Measurement<long>(node.Expired, tag),
             description: "Requests dropped unrun because their caller had already timed out");
+        _meter.CreateObservableGauge("daserver.shard.busy_ratio", () => new Measurement<double>(BusyRatio(), tag),
+            description: "Share of the shards' time spent working since the last collection (0-1): the default scaling metric");
+        _meter.CreateObservableCounter("daserver.shard.tick_overruns", () => new Measurement<long>(node.TickOverruns, tag),
+            description: "Ticks that started a whole interval late: shards that cannot keep their tick rate");
         _meter.CreateObservableGauge("daserver.shard.stalled", () => new Measurement<int>(node.StalledShards, tag),
             description: "Shards whose current pass runs longer than StallAfter (a blocked shard thread)");
         foreach (var (name, description, read) in node.Gauges)
@@ -40,6 +45,26 @@ public sealed class NodeMetrics : IDisposable
         _stopPhases = _meter.CreateHistogram<double>("daserver.stop.phase.duration", "ms",
             "Duration of each phase of a graceful stop (leave, drain, unload, close)");
         node.StopPhase += RecordStopPhase;
+    }
+
+    private readonly Lock _sampling = new();
+    private long _sampledAt = Stopwatch.GetTimestamp(), _sampledIdle;
+
+    /// <summary>
+    /// The share of the shards' time spent working since the previous collection: one minus the time they slept waiting
+    /// for work. CPU says the same for a node alone on its machine; this says it per node whatever shares the machine,
+    /// and without the CPU time spent outside the shards (IO threads, GC).
+    /// </summary>
+    private double BusyRatio()
+    {
+        lock (_sampling)
+        {
+            long now = Stopwatch.GetTimestamp(), idle = _node.IdleTicks;
+            long wall = (now - _sampledAt) * Math.Max(1, _node.ShardCount);
+            double ratio = wall <= 0 ? 0 : 1 - (double)(idle - _sampledIdle) / wall;
+            (_sampledAt, _sampledIdle) = (now, idle);
+            return Math.Clamp(ratio, 0, 1);
+        }
     }
 
     private void RecordStopPhase(string phase, TimeSpan elapsed) =>

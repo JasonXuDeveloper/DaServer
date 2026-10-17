@@ -87,6 +87,15 @@ public class HttpPlaneTests
     private sealed class UnconfiguredFeature : NodeFeature;
 
     [Test]
+    public async Task MetricsAreScrapedFromTheHttpPlane()
+    {
+        // What an HPA reads through the Prometheus adapter or KEDA: the shards' busy ratio, without OTLP configured.
+        string first = await _http.GetStringAsync("/metrics");
+        Assert.That(first, Does.Contain("daserver_shard_busy_ratio").And.Contain("daserver_shard_tick_overruns"));
+        Assert.That(first, Does.Contain("node=\""), "every measurement names its node");
+    }
+
+    [Test]
     public async Task EndpointsAskServicesAndActors()
     {
         var echo = await _http.PostAsJsonAsync("/echo", new { text = "hi" });

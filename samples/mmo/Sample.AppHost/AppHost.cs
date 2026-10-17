@@ -20,7 +20,7 @@ var cluster = builder.AddDaServerCluster("sample");
 // their actors on the way out; the next run reuses the running container.
 var actors = builder.AddPostgres("postgres").WithLifetime(ContainerLifetime.Persistent).WithDataVolume().AddDatabase("actors");
 cluster.AddNodes<Projects.Sample_LoginServer>("login");                    // Account service
-var game = cluster.AddNodes<Projects.Sample_GameServer>("game").WithActorStore(actors); // Player and Realm actors
+var game = cluster.AddNodes<Projects.Sample_GameServer>("game", builder.Configuration.GetValue("Games", 1)).WithActorStore(actors); // Player and Realm actors
 var map = cluster.AddNodes<Projects.Sample_MapServer>("map");                        // Map actors + movement/interest systems
 var gateways = cluster.AddNodes<Projects.Sample_GatewayServer>("gateway", replicas: 3).WithClientConnections(); // clients, no business code
 // Pushes to a client leave on a 2 ms beat: a session's positions and broadcasts within it share one write (ADR-070).

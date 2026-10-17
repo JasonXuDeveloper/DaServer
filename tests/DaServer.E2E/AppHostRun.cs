@@ -16,7 +16,9 @@ internal static class AppHostRun
     /// <paramref name="load"/> is healthy, assert the load exits with 0, stop the AppHost (nodes first) and return what it
     /// said about stopping the nodes (<c>Node x stopped with exit code n</c>). Phases are timed in the test log.
     /// </summary>
-    public static async Task<string[]> RunAsync<TAppHost>(string[] args, string load, CancellationToken cancellationToken) where TAppHost : class
+    /// <param name="during">What happens to the cluster while the load runs (nodes stopped and started: scaling under load).</param>
+    public static async Task<string[]> RunAsync<TAppHost>(string[] args, string load, CancellationToken cancellationToken,
+        Func<DistributedApplication, CancellationToken, Task>? during = null) where TAppHost : class
     {
         var builder = await DistributedApplicationTestingBuilder.CreateAsync<TAppHost>(args, cancellationToken);
         Prepare(builder);
@@ -33,8 +35,10 @@ internal static class AppHostRun
             TimeSpan.FromMinutes(3), cancellationToken);
         Phase("cluster healthy");
 
+        var running = during?.Invoke(app, cancellationToken) ?? Task.CompletedTask;
         var finished = await RunToEnd(app, load, cancellationToken);
         Phase(load + " finished");
+        await running;
         Assert.That(finished.Snapshot.ExitCode, Is.EqualTo(0), $"{load} ended {finished.Snapshot.State?.Text}");
 
         // Stopping the AppHost stops the nodes first (DaServer.Aspire), so their last saves reach the database: a node
@@ -89,6 +93,25 @@ internal static class AppHostRun
                 Assert.Fail($"'{resource.Name}' was not healthy within {limit}: {why}");
             }
         }
+    }
+
+    /// <summary>
+    /// Stop <paramref name="node"/> gracefully (what a scale-in does: leave, hand its actors over, exit) and wait until it
+    /// stopped; then start it again (a scale-out: it joins and takes its share) and wait until it is healthy.
+    /// </summary>
+    public static async Task Restart(DistributedApplication app, string node, TimeSpan downFor, CancellationToken cancellationToken)
+    {
+        var commands = app.Services.GetRequiredService<ResourceCommandService>();
+        var notifications = app.Services.GetRequiredService<ResourceNotificationService>();
+        var stop = await commands.ExecuteCommandAsync(node, KnownResourceCommands.StopCommand, cancellationToken);
+        Assert.That(stop.Success, Is.True, $"stopping {node}: {stop.ErrorMessage}");
+        await notifications.WaitForResourceAsync(node, e => e.Snapshot.State?.Text is "Exited" or "Finished", cancellationToken);
+        TestContext.Progress.WriteLine($"[e2e] {node} left the cluster");
+        await Task.Delay(downFor, cancellationToken);
+        var start = await commands.ExecuteCommandAsync(node, KnownResourceCommands.StartCommand, cancellationToken);
+        Assert.That(start.Success, Is.True, $"starting {node}: {start.ErrorMessage}");
+        await notifications.WaitForResourceHealthyAsync(node, cancellationToken);
+        TestContext.Progress.WriteLine($"[e2e] {node} joined again");
     }
 
     /// <summary>Wait for the load resource <paramref name="name"/> to end, its output in the test log (a failure says why).</summary>
