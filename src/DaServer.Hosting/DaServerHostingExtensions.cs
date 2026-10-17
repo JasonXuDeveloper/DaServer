@@ -30,10 +30,16 @@ public static class DaServerHostingExtensions
     public static IHostApplicationBuilder AddDaServer(this IHostApplicationBuilder builder, string section = "DaServer")
     {
         // Defaults below every other source (appsettings, environment, command line override them): ASP.NET Core's
-        // per-request information logs would drown a node's own logs under health probes.
+        // per-request information logs would drown a node's own logs under health probes. Hosting diagnostics off: any
+        // level enabled there makes ASP.NET Core start an Activity per request (and fill its tags) whether or not
+        // anything traces, a large share of a small request's cost.
         builder.Configuration.Sources.Insert(0, new Microsoft.Extensions.Configuration.Memory.MemoryConfigurationSource
         {
-            InitialData = [new("Logging:LogLevel:Microsoft.AspNetCore", "Warning")],
+            InitialData =
+            [
+                new("Logging:LogLevel:Microsoft.AspNetCore", "Warning"),
+                new("Logging:LogLevel:Microsoft.AspNetCore.Hosting.Diagnostics", "None"),
+            ],
         });
         builder.Services.Configure<NodeOptions>(builder.Configuration.GetSection(section));
         builder.AddDaServerFeature<DaServer.Clients.ClientConnectionOptions>("Clients", static o => new DaServer.Clients.ClientConnections(o), section);

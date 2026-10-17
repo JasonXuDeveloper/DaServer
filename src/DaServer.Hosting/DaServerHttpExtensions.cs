@@ -29,6 +29,7 @@ public static class DaServerHttpExtensions
     public static WebApplicationBuilder AddDaServer(this WebApplicationBuilder builder, string section = "DaServer")
     {
         ((IHostApplicationBuilder)builder).AddDaServer(section);
+        builder.WebHost.ConfigureKestrel(static kestrel => kestrel.AddServerHeader = false);
         var listen = builder.Configuration[$"{section}:ListenAddress"] ?? "0.0.0.0";
         if (builder.Configuration[$"{section}:HttpPort"] is { Length: > 0 } port)
             builder.WebHost.UseUrls($"http://{listen}:{port}");
