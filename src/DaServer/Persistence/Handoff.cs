@@ -75,6 +75,9 @@ internal static class Handoff
         else ShardDispatch.BeginLoad(world, entity, actor);
     }
 
+    /// <summary>Ask <paramref name="from"/> again for the record of <paramref name="actor"/>; false when that node is gone.</summary>
+    public static bool AskAgain(Node node, ulong from, Actor actor) => Notify(node, from, Request, actor.HandlerType.Id, actor.Key, 0);
+
     /// <summary>
     /// Send the leaving actor's record to <paramref name="to"/> and take the state off this copy (the record's sections
     /// returned, to restore them if the handoff falls back); null when that node is gone.
@@ -263,7 +266,16 @@ internal sealed partial class HandoffTimeoutSystem : EcsSystem
     private static void Waited(Entity actor, in AwaitingHandoff awaiting, in ActorRef self, in ShardActivity activity, World world)
     {
         if (activity.NowMs < awaiting.UntilMs) return;
-        var target = self.Actor;
+        var (from, target, now) = (awaiting.From, self.Actor, activity.NowMs);
+        var node = world.Shard().Node;
+        // The previous owner may still run the actor (a long turn, a save, a slow unload): while it is alive the record
+        // will come (or "none"), so ask again instead of loading a second copy from the store beside it.
+        if (node.View.TryGetMember(from, out var member) && member.Status != MemberStatus.Dead && Handoff.AskAgain(node, from, target))
+        {
+            actor.Get<AwaitingHandoff>() = new AwaitingHandoff(from, now + Handoff.TimeoutMs(node));
+            return;
+        }
+
         actor.Remove<AwaitingHandoff>();
         ShardDispatch.BeginLoad(world, actor, target);
     }

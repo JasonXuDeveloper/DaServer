@@ -261,6 +261,12 @@ public sealed partial class TallySystem : EcsSystem
     }
 }
 
+/// <summary>Released by tests holding a turn (<see cref="HoldTurn"/>).</summary>
+public static class TurnGate
+{
+    public static TaskCompletionSource Current = new(TaskCreationOptions.RunContinuationsAsynchronously);
+}
+
 /// <summary>A request no type handles.</summary>
 [NinoType, Message] public partial record struct Unhandled : IRequest<int>;
 
@@ -348,6 +354,8 @@ public readonly record struct BankId(long Value) : IActorId;
 [NinoType, Message] public partial record struct Earn : IRequest<bool>;
 [NinoType, Message] public partial record struct Hit : IRequest<int>;
 [NinoType, Message] public partial record struct Overdraw(int Gold, bool Async) : IRequest<int>;
+/// <summary>A turn that waits for <see cref="TurnGate"/>: the actor cannot unload meanwhile.</summary>
+[NinoType, Message] public partial record struct HoldTurn : IRequest<int>;
 
 /// <summary>
 /// Keys below 100 checkpoint every 100 ms, keys from 100 only on unload (or with SaveNow); keys from 1,000 to 1,999 also
@@ -399,6 +407,13 @@ public sealed class Bank : Actor<BankId, Ledger>
     }
 
     [Handle] public int On(Balance _) => State.Gold;
+
+    [Handle]
+    public async Reply<int> On(HoldTurn _)
+    {
+        await TurnGate.Current.Task;
+        return State.Gold;
+    }
 
     [Handle]
     public bool On(Earn _)
