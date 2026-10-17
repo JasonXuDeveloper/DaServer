@@ -9,9 +9,7 @@ using Microsoft.Extensions.Configuration;
 
 var builder = DistributedApplication.CreateBuilder(args);
 // Where `aspire publish` writes the cluster: Docker Compose (default) or Kubernetes (`-- Publish=k8s`, a Helm chart).
-bool kubernetes = builder.Configuration["Publish"] == "k8s";
-if (kubernetes) builder.AddKubernetesEnvironment("k8s");
-else builder.AddDockerComposeEnvironment("compose");
+bool kubernetes = builder.AddPublishEnvironment();
 
 // One project per server: a node hosts exactly the actors, services and systems its project compiles (its startup log
 // lists them). The topology is projects and replica counts; ports, names and seeds are assigned here, discovery
@@ -23,18 +21,23 @@ var cluster = builder.AddDaServerCluster("sample");
 var actors = builder.AddPostgres("postgres").WithLifetime(ContainerLifetime.Persistent).WithDataVolume().AddDatabase("actors");
 cluster.AddNodes<Projects.Sample_LoginServer>("login");                    // Account service
 var game = cluster.AddNodes<Projects.Sample_GameServer>("game").WithActorStore(actors); // Player and Realm actors
-cluster.AddNodes<Projects.Sample_MapServer>("map");                        // Map actors + movement/interest systems
+var map = cluster.AddNodes<Projects.Sample_MapServer>("map");                        // Map actors + movement/interest systems
 var gateways = cluster.AddNodes<Projects.Sample_GatewayServer>("gateway", replicas: 3).WithClientConnections(); // clients, no business code
 // Pushes to a client leave on a 2 ms beat: a session's positions and broadcasts within it share one write (ADR-070).
 foreach (var gateway in gateways.Nodes) gateway.WithEnvironment("DaServer__Clients__FlushInterval", "00:00:00.002");
 
 // On Kubernetes, what this game asks of the platform (the framework adds none of it): players reach the gateways
-// through a load balancer, and a drain of the machines takes one game node at a time (its players' actors move to the
-// others, saved and loaded, ADR-072).
+// through a load balancer; game and map nodes get the resources they use (a vertical autoscaler, in place when it can),
+// and a drain of the machines or an eviction takes one of them at a time (their actors move to the others, ADR-072).
 if (kubernetes)
 {
     gateways.Nodes[0].PublishAsKubernetesService(gateway => gateway.AdditionalResources.Add(Platform.LoadBalancer(gateway, "client")));
-    game.Nodes[0].PublishAsKubernetesService(node => node.AdditionalResources.Add(Platform.OneAtATime(node)));
+    foreach (var stateful in new[] { game, map })
+        stateful.Nodes[0].PublishAsKubernetesService(node =>
+        {
+            node.AdditionalResources.Add(Platform.OneAtATime(node));
+            node.AdditionalResources.Add(Platform.ResizeInPlace(node));
+        });
 }
 
 // 10k players moving in one map on one map node while the realm broadcasts to everyone every 5 ticks. Each player sees

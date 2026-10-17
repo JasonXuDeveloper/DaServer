@@ -16,6 +16,10 @@
     </ItemGroup>
 
     <ItemGroup>
+        <Compile Include="..\..\Shared\Publishing.cs" Link="Publishing.cs" />
+    </ItemGroup>
+
+    <ItemGroup>
         <ProjectReference Include="..\..\..\src\DaServer.Aspire\DaServer.Aspire.csproj" IsAspireProjectResource="false" />
         <ProjectReference Include="..\FlashSale.Server\FlashSale.Server.csproj" />
         <ProjectReference Include="..\FlashSale.Crowd\FlashSale.Crowd.csproj" />

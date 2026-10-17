@@ -24,13 +24,21 @@ static class Platform
         budget.Spec["selector"] = new Dictionary<string, object> { ["matchLabels"] = workload.Service!.Spec.Selector };
         return budget;
     }
-}
 
-/// <summary>A Kubernetes object Aspire has no type for (its spec as plain YAML data).</summary>
-sealed class Manifest : BaseKubernetesResource
-{
-    public Manifest(string apiVersion, string kind, string name) : base(apiVersion, kind) => Metadata.Name = name;
+    /// <summary>
+    /// A vertical autoscaler that resizes the workload's pods in place when it can (Kubernetes 1.33+) and evicts them
+    /// otherwise; an eviction is a graceful leave whose actors move (one pod at a time with <see cref="OneAtATime"/>). .NET
+    /// reads its limits at start (shard count, GC heap limit): more CPU in place still lifts throttling, a memory change
+    /// restarts the container so the heap limit follows.
+    /// </summary>
+    public static Manifest ResizeInPlace(KubernetesResource workload)
+    {
+        foreach (var container in workload.Workload!.PodTemplate.Spec.Containers)
+        {
+            container.ResizePolicy.Add(new() { ResourceName = "cpu", RestartPolicy = "NotRequired" });
+            container.ResizePolicy.Add(new() { ResourceName = "memory", RestartPolicy = "RestartContainer" });
+        }
 
-    [YamlDotNet.Serialization.YamlMember(Alias = "spec")]
-    public Dictionary<string, object> Spec { get; } = new();
+        return Publishing.VerticalAutoscaler(workload, "InPlaceOrRecreate");
+    }
 }

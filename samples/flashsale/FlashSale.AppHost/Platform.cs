@@ -26,23 +26,4 @@ static class Platform
         };
         return autoscaler;
     }
-
-    /// <summary>A vertical autoscaler in recommendation mode: it suggests the workload's requests and never evicts a pod.</summary>
-    public static Manifest RecommendResources(KubernetesResource workload)
-    {
-        string name = workload.Workload!.Metadata.Name;
-        var autoscaler = new Manifest("autoscaling.k8s.io/v1", "VerticalPodAutoscaler", $"{workload.Name}-resources");
-        autoscaler.Spec["targetRef"] = new Dictionary<string, object> { ["apiVersion"] = "apps/v1", ["kind"] = "Deployment", ["name"] = name };
-        autoscaler.Spec["updatePolicy"] = new Dictionary<string, object> { ["updateMode"] = "Off" };
-        return autoscaler;
-    }
-}
-
-/// <summary>A Kubernetes object Aspire has no type for (its spec as plain YAML data).</summary>
-sealed class Manifest : BaseKubernetesResource
-{
-    public Manifest(string apiVersion, string kind, string name) : base(apiVersion, kind) => Metadata.Name = name;
-
-    [YamlDotNet.Serialization.YamlMember(Alias = "spec")]
-    public Dictionary<string, object> Spec { get; } = new();
 }

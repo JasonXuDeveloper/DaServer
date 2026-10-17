@@ -8,9 +8,7 @@ using Aspire.Hosting;
 using Microsoft.Extensions.Configuration;
 
 var builder = DistributedApplication.CreateBuilder(args);
-bool kubernetes = builder.Configuration["Publish"] == "k8s";
-if (kubernetes) builder.AddKubernetesEnvironment("k8s");
-else builder.AddDockerComposeEnvironment("compose");
+bool kubernetes = builder.AddPublishEnvironment();
 
 var cluster = builder.AddDaServerCluster("flashsale");
 var actors = builder.AddPostgres("postgres").WithDataVolume().AddDatabase("actors");
@@ -23,7 +21,7 @@ if (kubernetes)
     sale.Nodes[0].PublishAsKubernetesService(node =>
     {
         node.AdditionalResources.Add(Platform.ScaleOnCpu(node, min: 2, max: 10, percent: 70));
-        node.AdditionalResources.Add(Platform.RecommendResources(node));
+        node.AdditionalResources.Add(Publishing.VerticalAutoscaler(node, "Off")); // recommendations only
     });
 
 // Crowd options: `dotnet run --project samples/flashsale/FlashSale.Crowd -- --help`.
