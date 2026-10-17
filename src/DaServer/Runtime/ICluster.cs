@@ -31,7 +31,7 @@ public interface ICluster : IMessageSender
 
     /// <summary>
     /// Cancel a delayed send not sent yet, on the shard that scheduled it; false when it was sent, cancelled, or
-    /// scheduled by another shard.
+    /// scheduled by another shard or node (a handle kept by an actor that moved).
     /// </summary>
     bool CancelSend(long timer);
 }

@@ -267,6 +267,19 @@ public class InfrastructureTests
     }
 
     [Test]
+    public void AHandleCancelsOnlyOnTheWheelThatMadeIt()
+    {
+        // An actor that moved may keep a handle from its previous node: on its new node's wheel it must not cancel the
+        // timer of the same entry there.
+        var first = new TimerWheel<int>(TimeSpan.FromMilliseconds(5));
+        var second = new TimerWheel<int>(TimeSpan.FromMilliseconds(5));
+        long stale = first.Schedule(TimeSpan.FromSeconds(1), 1);
+        long own = second.Schedule(TimeSpan.FromSeconds(1), 2);
+        Assert.That(second.Cancel(stale), Is.False, "another wheel's handle");
+        Assert.That(second.Cancel(own), Is.True);
+    }
+
+    [Test]
     public void TimerWheelsFireDueTimersOnceAndCancelOthers()
     {
         var wheel = new TimerWheel<int>(TimeSpan.FromMilliseconds(5), slots: 8); // 40 ms a round: 100 ms is a later round

@@ -58,10 +58,10 @@ public sealed class TimerWheel<T>
         e.Due = Math.Max(TickOf(_time.GetTimestamp()), _current) + ticks + 1;
         Link(index);
         Count++;
-        return (long)(e.Generation & GenerationMask) << 32 | (uint)index;
+        return (long)((e.Generation + _salt) & GenerationMask) << 32 | (uint)index;
     }
 
-    /// <summary>Cancel a scheduled timer; false when it already fired or was cancelled.</summary>
+    /// <summary>Cancel a scheduled timer; false when it already fired, was cancelled or is another wheel's.</summary>
     public bool Cancel(long handle) => Cancel(handle, out _);
 
     /// <summary>Cancel a scheduled timer and get its item back (to release what it holds).</summary>
@@ -71,7 +71,7 @@ public sealed class TimerWheel<T>
         int index = (int)(uint)handle;
         if ((uint)index >= (uint)_used) return false;
         ref var e = ref _entries[index];
-        if (e.Slot < 0 || (e.Generation & GenerationMask) != (int)(handle >> 32 & GenerationMask)) return false;
+        if (e.Slot < 0 || ((e.Generation + _salt) & GenerationMask) != (int)(handle >> 32 & GenerationMask)) return false;
         item = e.Item;
         Unlink(index);
         Release(index);
@@ -122,6 +122,10 @@ public sealed class TimerWheel<T>
     }
 
     private const int GenerationMask = 0xFF_FFFF;
+
+    // Handles of this wheel start at a random generation: a handle kept from another wheel (an actor that moved to
+    // another node) matches an entry here with odds of 2^-24, instead of the same index's first generation.
+    private readonly int _salt = Random.Shared.Next(GenerationMask + 1);
 
     private long TickOf(long timestamp) => (timestamp - _origin) / _tickTimestamps;
 
