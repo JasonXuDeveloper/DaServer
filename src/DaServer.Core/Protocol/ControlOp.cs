@@ -3,8 +3,11 @@ namespace DaServer.Protocol;
 /// <summary>Control operations carried in <see cref="FrameKind.Control"/> frames (MessageId field).</summary>
 internal static class ControlOp
 {
-    /// <summary>Version of the link protocol, in every Hello: nodes speaking another one are refused (V-items relax this).</summary>
-    public const int LinkVersion = 1;
+    /// <summary>Version of the link protocol, in every Hello: nodes speaking another one are refused (2: Nino 4 rc.1's format).</summary>
+    public const int LinkVersion = 2;
+
+    /// <summary>Version of the client protocol, in every <see cref="ClientHello"/>: clients speaking another one are refused.</summary>
+    public const int ClientVersion = 1;
 
     /// <summary>Push gossip: payload = the sender's table as <c>MemberPulse</c>s; answered with <c>GossipReply</c>.</summary>
     public const uint Gossip = 1;
@@ -56,4 +59,10 @@ internal static class ControlOp
 
     /// <summary>Answer to a <see cref="Ping"/> on the same connection: proof the peer still reads it.</summary>
     public const uint Pong = 19;
+
+    /// <summary>
+    /// Client to node, the first frame of every client connection (a call): Key = <see cref="ClientVersion"/>. Answered
+    /// with an empty success, or an error naming both versions after which the node closes the connection.
+    /// </summary>
+    public const uint ClientHello = 20;
 }

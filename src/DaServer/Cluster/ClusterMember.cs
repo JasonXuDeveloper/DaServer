@@ -9,6 +9,23 @@ public enum MemberStatus : byte
     Dead = 4,
 }
 
+/// <summary>
+/// The first frame of a node link connection: the protocol and cluster it speaks (refused when either differs), who
+/// sends it and which of its streams continues on the connection, with the cluster key's proof. Version-tolerant:
+/// fields can be appended without a new link protocol version.
+/// </summary>
+[NinoType(format: NinoFormat.VersionTolerant)]
+internal sealed class LinkHello
+{
+    public int Version;
+    public string Cluster = "";
+    public string Host = "";
+    public int Port;
+    public long StreamId;
+    public long At;
+    public byte[] Proof = [];
+}
+
 /// <summary>A message type handled by a handler type hosted on a node (message routing and actor placement).</summary>
 [NinoType]
 public partial struct HostedMessage
@@ -26,8 +43,8 @@ public partial struct HostedMessage
 /// changes publish a copy; heartbeat, load and session counts are updated in place, so the view always shows the
 /// latest load hints without being rebuilt (readers may see a hint one round old).
 /// </summary>
-[NinoType]
-public partial class ClusterMember
+[NinoType(format: NinoFormat.VersionTolerant)]
+public sealed partial class ClusterMember
 {
     public ulong NodeId;
     public string Name = "";

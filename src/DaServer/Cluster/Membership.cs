@@ -291,9 +291,7 @@ internal sealed class Membership : IDisposable
                 SendCards(connection, payload);
                 break;
             case ControlOp.Cards:
-                var reader = new Reader(payload);
-                ClusterMember[] cards = NinoDeserializer.Deserialize<ClusterMember[]>(ref reader);
-                MergeCards(cards);
+                MergeCards(NinoDeserializer.Deserialize<ClusterMember[]>(payload));
                 break;
         }
     }

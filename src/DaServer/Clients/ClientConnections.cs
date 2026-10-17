@@ -162,16 +162,16 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
 
     private RpcStatus Apply(SessionState session, in FrameHeader header, ReadOnlySpan<byte> frame)
     {
-        var reader = new Reader(FrameHeader.PayloadOf(in header, frame));
+        var payload = FrameHeader.PayloadOf(in header, frame);
         uint id = header.MessageId;
         if (id == SessionOperations.Join)
         {
-            JoinGroup join = NinoDeserializer.Deserialize<JoinGroup>(ref reader);
+            JoinGroup join = NinoDeserializer.Deserialize<JoinGroup>(payload);
             lock (_groupGate) Join(session, join.Group.Id);
         }
         else if (id == SessionOperations.Leave)
         {
-            LeaveGroup leave = NinoDeserializer.Deserialize<LeaveGroup>(ref reader);
+            LeaveGroup leave = NinoDeserializer.Deserialize<LeaveGroup>(payload);
             lock (_groupGate) Leave(session, leave.Group.Id);
         }
         else if (id == SessionOperations.Disconnect)
@@ -181,7 +181,7 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
         }
         else
         {
-            SessionAccess access = NinoDeserializer.Deserialize<SessionAccess>(ref reader);
+            SessionAccess access = NinoDeserializer.Deserialize<SessionAccess>(payload);
             var status = ChangeAccess(session, in access);
             if (status != RpcStatus.Ok) return status;
             IssueTicket(session);
@@ -522,6 +522,12 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
         public void OnFrame(IFrameChannel channel, in FrameHeader header, ReadOnlySpan<byte> frame)
         {
             var session = (SessionState)channel.Tag!;
+            if (!session.Introduced)
+            {
+                Introduce(session, in header, frame);
+                return;
+            }
+
             switch (header.Kind)
             {
                 case FrameKind.Message:
@@ -541,6 +547,32 @@ public sealed class ClientConnections(ClientConnectionOptions options) : NodeFea
             if (channel.Tag is SessionState session)
                 node.OnSessionClosed(session);
         }
+    }
+
+    /// <summary>
+    /// The first frame of a client connection must be its <see cref="ControlOp.ClientHello"/>: a client of another
+    /// protocol version is told both versions (it disconnects; anything else it sends closes the connection), instead
+    /// of misreading what follows.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void Introduce(SessionState session, in FrameHeader header, ReadOnlySpan<byte> frame)
+    {
+        uint callId = FrameHeader.CallIdOf(in header, frame);
+        if (header.Kind != FrameKind.Control || header.MessageId != ControlOp.ClientHello || callId == 0)
+        {
+            session.Channel.Close(new InvalidOperationException("A client connection starts with its hello"));
+            return;
+        }
+
+        if (header.Key != ControlOp.ClientVersion)
+        {
+            session.Sink.SendError(callId, RpcStatus.Error,
+                $"Client protocol {header.Key}, this node speaks {ControlOp.ClientVersion}: update the client");
+            return; // closing now could drop the answer before it is written
+        }
+
+        session.Introduced = true;
+        session.Sink.SendOk(callId);
     }
 
     private void OnClientControl(SessionState session, in FrameHeader header, ReadOnlySpan<byte> frame)
@@ -641,6 +673,9 @@ internal sealed class SessionState(long id, IFrameChannel channel)
     public long Id { get; } = id;
     public IFrameChannel Channel { get; } = channel;
     public IReplySink Sink { get; } = new ChannelSink(channel);
+
+    /// <summary>Whether the client's hello was accepted (its receive loop owns it).</summary>
+    public bool Introduced;
 
     /// <summary>The client's message rate limit (<see cref="ClientConnectionOptions.MessagesPerSecond"/>; its receive loop owns it).</summary>
     public TokenBucket Limit;

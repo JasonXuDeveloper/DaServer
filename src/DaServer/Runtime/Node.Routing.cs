@@ -236,13 +236,11 @@ sealed partial class Node : IConnectionHandler
         var self = Membership.Self;
         long at = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var w = FrameWriter.Rent();
-        w.Write(self.Host);
-        w.Write(self.Port);
-        w.Write(streamId);
-        w.Write(ControlOp.LinkVersion);
-        w.Write(Options.ClusterName);
-        w.Write(at);
-        w.Write(_linkAuth.Prove(Id, streamId, at));
+        w.Write(new LinkHello
+        {
+            Version = ControlOp.LinkVersion, Cluster = Options.ClusterName, Host = self.Host, Port = self.Port, StreamId = streamId,
+            At = at, Proof = _linkAuth.Prove(Id, streamId, at),
+        });
         w.SetHeader(FrameKind.Control, 0, ControlOp.Hello, (long)Id);
         var frame = w.Frame.ToArray(); // once per connection
         w.Dispose();
@@ -252,20 +250,10 @@ sealed partial class Node : IConnectionHandler
     /// <summary>A node named itself on an accepted connection: our replies to it go through our link to it.</summary>
     private void OnHello(Connection connection, ulong nodeId, ReadOnlySpan<byte> payload)
     {
-        string host, cluster;
-        int port, version;
-        long streamId, at;
-        byte[] proof;
+        LinkHello hello;
         try
         {
-            var reader = new Reader(payload);
-            host = NinoDeserializer.Deserialize<string>(ref reader);
-            port = NinoDeserializer.Deserialize<int>(ref reader);
-            streamId = NinoDeserializer.Deserialize<long>(ref reader);
-            version = NinoDeserializer.Deserialize<int>(ref reader);
-            cluster = NinoDeserializer.Deserialize<string>(ref reader);
-            at = NinoDeserializer.Deserialize<long>(ref reader);
-            proof = NinoDeserializer.Deserialize<byte[]>(ref reader);
+            hello = NinoDeserializer.Deserialize<LinkHello>(payload);
         }
         catch (Exception)
         {
@@ -273,6 +261,7 @@ sealed partial class Node : IConnectionHandler
             return;
         }
 
+        var (version, cluster, host, port, streamId, at, proof) = (hello.Version, hello.Cluster, hello.Host, hello.Port, hello.StreamId, hello.At, hello.Proof);
         string? refusal = version != ControlOp.LinkVersion ? $"link protocol {version}, this node speaks {ControlOp.LinkVersion}"
             : cluster != Options.ClusterName ? $"cluster '{cluster}', this node is in '{Options.ClusterName}'"
             : _linkAuth.Verify(nodeId, streamId, at, proof);
@@ -300,9 +289,7 @@ sealed partial class Node : IConnectionHandler
     private static void OnResume(Connection connection, long received, ReadOnlySpan<byte> payload)
     {
         if (connection.Tag is not PeerLink link) return;
-        var reader = new Reader(payload);
-        ulong peerId = NinoDeserializer.Deserialize<ulong>(ref reader);
-        link.OnResume(connection, received, peerId);
+        link.OnResume(connection, received, NinoDeserializer.Deserialize<ulong>(payload));
     }
 
     /// <summary>The link to <paramref name="member"/> (cached on the member: no lookup on the send path).</summary>

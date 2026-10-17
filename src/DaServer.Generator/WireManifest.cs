@@ -182,10 +182,6 @@ internal static class WireManifest
         for (var b = type.BaseType; attribute == null && b != null; b = b.BaseType) attribute = Support.GetAttribute(b, Support.NinoTypeAttribute);
         var args = attribute?.ConstructorArguments ?? ImmutableArray<TypedConstant>.Empty;
         bool auto = args.Length < 1 || args[0].Value is not false, nonPublic = args.Length > 1 && args[1].Value is true;
-        var order = new Dictionary<string, int>(StringComparer.Ordinal);
-        if (Support.GetAttribute(type, "Nino.Core.NinoExplicitOrderAttribute") is { ConstructorArguments: { Length: > 0 } explicitOrder })
-            for (int i = 0; i < explicitOrder[0].Values.Length; i++)
-                if (explicitOrder[0].Values[i].Value is string name) order[name] = i;
 
         var members = new List<(string, ITypeSymbol)>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -195,9 +191,7 @@ internal static class WireManifest
         {
             if (!visited.Add(level)) return;
             foreach (var parent in Parents(level)) AddLevel(parent);
-            var collected = Collected(level, type, auto, nonPublic);
-            if (order.Count > 0) collected = collected.OrderBy(m => order.TryGetValue(m.Name, out int i) ? i : int.MaxValue).ToList();
-            foreach (var member in collected)
+            foreach (var member in Collected(level, type, auto, nonPublic))
                 if (seen.Add(member.Name)) members.Add((member.Name + member.Encoding, member.Type));
         }
 
@@ -212,8 +206,6 @@ internal static class WireManifest
         foreach (var member in level.GetMembers())
         {
             if (member.IsImplicitlyDeclared || member.IsStatic || (!nonPublic && member.DeclaredAccessibility != Accessibility.Public)) continue;
-            // Nino's own generated stand-ins for private members (netstandard2.1) are not members of the type it writes.
-            if (Support.HasAttribute(member, "Nino.Core.NinoPrivateProxyAttribute")) continue;
             if (member is IFieldSymbol || member is IPropertySymbol { GetMethod: not null, SetMethod: not null }) members.Add(member);
         }
 
