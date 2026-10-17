@@ -547,14 +547,16 @@ and cards, a manual clock), fails before its fix, and passes after it.
 - [x] M1 A node restarting on the same address with a new id: the older of two live members at one address is dead at
       once, a node's own address holds only itself, a dead id resets a link only when the link's stream is its own
       (`ANodeRestartedAtTheSameAddressLosesNoCallWhenItsOldIdIsDeclaredDead`: a call timed out on every run before).
-- [ ] M2 Forgotten members come back through later nodes' gossip forever (and count as lost for keep-majority):
-      tombstones.
-- [ ] M3 A pause longer than DeadAfter: the paused node keeps running its actors; past three DeadAfter it rejoins Up at
-      its old incarnation (fence itself after a long pause).
-- [ ] M4/H10 Two coordinators publish the same table version with different contents (order tables by version and
-      coordinator; a takeover publishes above the highest version seen).
+- [x] M2 Forgotten members came back through later nodes' gossip for good: forgotten ids are kept for ten DeadAfter,
+      unknown Dead or Leaving members are not learned (`AForgottenMemberDoesNotComeBack`).
+- [x] M3 A pause past DeadAfter fences the node (its actors go without a write, a new incarnation)
+      (`APauseLongerThanDeadAfterFencesThisNode`).
+- [x] M4/H10 Two coordinators wrote one table version: the view's coordinator's wins, a coordinator publishes above
+      every version it saw (`TablesOfOneVersionFromTwoCoordinatorsConverge`).
 - [ ] M5 A client-facing node falsely declared Dead then refuting has its sessions closed after the grace anyway.
-- [ ] M6 Leave racing a Dead verdict skips the fence; M7 persistently late ticks freeze failure detection; M8 a
+- [ ] M6 Leave racing a Dead verdict: `Refute` now fences a leaving node, but actors already asked to unload are not
+      fenced by a later DeclaredDead (`RebalanceSystem.Leave` skips them), and no test forces a leave whose record
+      cannot reach its new owner yet; M7 persistently late ticks freeze failure detection; M8 a
       Hello's endpoint and receiver are not signed; M9 two spellings of one seed fight over one inbound slot; M10 stale
       pulses lower heartbeats; M11 `_introduced` keeps forgotten nodes.
 - [x] S1 An actor that moved forgot its client sessions (resume refused, the mmo's map changes Forbidden): sessions
