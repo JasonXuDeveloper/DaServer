@@ -24,9 +24,10 @@ locally and publishes it.
 - **Reliable links, bounded work.** One ordered stream per node pair resumes after a dropped connection (no loss, no
   duplicate). Requests carry their caller's deadline, and work nobody waits for is dropped. Full dispatch queues and mailboxes answer
   `Overloaded` instead of growing; a client that cannot keep up is disconnected and resynchronizes when it resumes.
-- **Misuse is a build error.** Analyzers DAS001–DAS015 cover handlers, messages, wire types, id collisions, message
+- **Misuse is a build error.** Analyzers DAS001–DAS016 cover handlers, messages, wire types, id collisions, message
   flow, stateless actors and services, shared logic, replies sent later, waits and threads on shards, components apart
-  from logic and persisted components, and EECS001–EECS008 cover ECS, including the ECS principles.
+  from logic, persisted and handed-off components and placement, and EECS001–EECS008 cover ECS, including the ECS
+  principles.
 
 ## Architecture
 
