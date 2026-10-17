@@ -29,7 +29,7 @@ internal sealed class PersistentType<T>(uint typeId, bool stored) : PersistentTy
         var head = record.GetSpan(Records.SectionHeader);
         BinaryPrimitives.WriteUInt32LittleEndian(head, TypeId);
         record.Advance(Records.SectionHeader);
-        record.Write(entity.Get<T>());
+        record.Write(in entity.Get<T>()); // the component in place: no copy of a large one
         BinaryPrimitives.WriteInt32LittleEndian(record.Written(at + sizeof(uint), sizeof(int)), record.Length - at - Records.SectionHeader);
     }
 

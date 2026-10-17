@@ -110,13 +110,13 @@ public readonly struct CallContext
         return AwaitReply(task, this);
     }
 
-    public void ReplyValue<T>(T value)
+    public void ReplyValue<T>(in T value)
     {
         if (!ExpectsReply) return;
         var w = FrameWriter.Rent();
         try
         {
-            w.Write(value);
+            w.Write(in value);
         }
         catch (Exception e)
         {

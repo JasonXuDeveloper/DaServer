@@ -88,7 +88,7 @@ internal static class MessageWriter
         var w = FrameWriter.Rent();
         try
         {
-            w.Write(message);
+            w.Write(in message);
             return w;
         }
         catch
