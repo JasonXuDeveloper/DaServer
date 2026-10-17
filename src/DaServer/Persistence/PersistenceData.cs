@@ -19,11 +19,14 @@ internal struct Stored : IComponent
     public long RetryAtMs;
 }
 
-/// <summary>Tag: the actor waits for its record before <see cref="Actor.OnLoad"/> (the shard's next load batch takes it).</summary>
-internal struct AwaitingRecord : IComponent;
+/// <summary>
+/// The actor waits for its record before <see cref="Actor.OnLoad"/> (the shard's next load batch takes it, not before
+/// <see cref="NotBeforeMs"/>: a failed load is retried after a delay, until the call timeout since <see cref="SinceMs"/>).
+/// </summary>
+internal readonly record struct AwaitingRecord(long SinceMs, long NotBeforeMs) : IComponent;
 
-/// <summary>Tag: the actor's record is being loaded.</summary>
-internal struct RecordRequested : IComponent;
+/// <summary>The actor's record is being loaded (asked for first at <see cref="SinceMs"/>).</summary>
+internal readonly record struct RecordRequested(long SinceMs) : IComponent;
 
 /// <summary>Tag: a write of the actor's record is in flight (no other is started meanwhile).</summary>
 internal struct Saving : IComponent;

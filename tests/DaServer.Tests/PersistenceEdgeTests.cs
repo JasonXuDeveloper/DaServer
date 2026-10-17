@@ -103,13 +103,13 @@ public class PersistenceEdgeTests(string kind) : ClusterTest
         Assert.That(await after.Ask(new BankId(2001), new Balance()), Is.EqualTo(7), "and accepted");
     }
 
-    /// <summary>Fails its first <see cref="FailWrites"/> writes (an outage), then writes.</summary>
+    /// <summary>Fails its first <see cref="FailWrites"/> writes and <see cref="FailLoads"/> loads (an outage), then works.</summary>
     private sealed class FlakyStore(IActorStore inner) : IActorStore
     {
-        public int FailWrites;
+        public int FailWrites, FailLoads;
 
         public ValueTask LoadAsync(ReadOnlyMemory<StoredKey> keys, Memory<StoredRecord> records, CancellationToken ct = default) =>
-            inner.LoadAsync(keys, records, ct);
+            Interlocked.Decrement(ref FailLoads) >= 0 ? ValueTask.FromException(new IOException("store unavailable")) : inner.LoadAsync(keys, records, ct);
 
         public ValueTask SaveAsync(ReadOnlyMemory<StoredWrite> writes, Memory<bool> accepted, CancellationToken ct = default) =>
             Interlocked.Decrement(ref FailWrites) >= 0 ? ValueTask.FromException(new IOException("store unavailable")) : inner.SaveAsync(writes, accepted, ct);
@@ -164,5 +164,15 @@ public class PersistenceEdgeTests(string kind) : ClusterTest
         await first;
         await Eventually(async () => await node.Ask(new BankId(12_000), new Balance()) == 1, "every deposit was made");
         Assert.That(store.Largest, Is.LessThanOrEqualTo(512));
+    }
+
+    [Test]
+    public async Task ALoadThatFailsIsRetriedWithinTheCallTimeout()
+    {
+        // The store fails two loads (a restart, a failover): the actor's mail waits and the load is tried again, instead
+        // of every caller in the batch getting Error at once.
+        var store = new FlakyStore(_stores.Create()) { FailLoads = 2 };
+        var node = await StartWith(store);
+        Assert.That(await node.Ask(new BankId(160), new Deposit(4, false)), Is.EqualTo(4));
     }
 }
