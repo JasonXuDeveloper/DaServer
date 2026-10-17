@@ -530,7 +530,9 @@ and cards, a manual clock), fails before its fix, and passes after it.
       (duplicate activation): it asks again while the previous owner is alive and loads only once it is dead
       (`ANewOwnerWaitsForTheRecordWhileThePreviousOneHoldsTheActor`).
 - [ ] H2 "None" from a node that still owns the key in its view, which then loads it (duplicate activation while
-      views converge): a disowned key is forwarded for the handoff timeout.
+      views converge). The window is short now that a table travels on every new link (a test that held one node's
+      table found the other's first send carried it over); a deterministic test needs a hook that holds a table back.
+      Fix to try: a node owning the key in its own view does not answer "none" (the asker asks again, H1).
 - [ ] H3 `PreviousView` holds one change: a leave then a table change asks the wrong node (a ring of recent views).
 - [x] H4 The old owner timed out and wrote, then the new owner's late accept arrived: it waits while the new owner
       is alive (`ALateAnswerFromALiveNewOwnerIsWaitedFor`).
