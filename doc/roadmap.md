@@ -569,7 +569,10 @@ and cards, a manual clock), fails before its fix, and passes after it.
       is excused per DeadAfter (`ANodeLateOnEveryTickStillDeclaresTheDeadDead`). M10 a worse status at an older heartbeat
       lowered the heartbeat, so stale pulses counted as progress: the newest is kept (`AStalePulseDoesNotLowerAHeartbeat`).
       M11 introductions were kept for nodes that left: dropped once the view lists them (`ANodeThatLeftIsForgottenEverywhere`).
-- [ ] M8 a Hello's endpoint and receiver are not signed; M9 two spellings of one seed fight over one inbound slot.
+- [x] M9 A seed spelled otherwise than the member's card opened a second link to the node, and the two took its inbound
+      slot from each other: the link reaching a member serves its card's address too (`ASeedSpelledOtherwiseIsOneLink`).
+- [ ] M8 a Hello's proof covers the node id, stream and time, not the endpoint it names or the node it is meant for (a
+      link protocol change: asked).
 - [x] S1 An actor that moved forgot its client sessions (resume refused, the mmo's map changes Forbidden): sessions
       travel in the handoff record, never stored (`AClientResumesWithAnActorThatMovedToAnotherNode`).
 - [ ] S2 A resume cut off after the actors accepted it leaves the session unrecoverable (revert to the previous
