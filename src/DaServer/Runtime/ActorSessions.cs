@@ -101,3 +101,36 @@ internal static class ActorSessions
         }
     }
 }
+
+/// <summary>
+/// The client-facing nodes of the cluster as this node sees them: when one is gone (dead or left), the sessions it held
+/// are closed on every shard once their clients had <see cref="NodeOptions.ResumeGrace"/> to resume elsewhere. Runs on
+/// every node hosting actors, not only client-facing ones: it is the actors' side of sessions, not a client feature.
+/// </summary>
+internal sealed class SessionNodes(Node node)
+{
+    private ulong[] _known = [];
+
+    /// <summary>A new view (the node's view-change thread).</summary>
+    public void OnViewChanged(ClusterView view)
+    {
+        var current = new List<ulong>();
+        foreach (var member in view.Members)
+            if (member.HasScope(AddressScopes.Session) && member.Status != MemberStatus.Dead) current.Add(member.NodeId);
+        foreach (ulong previous in _known)
+        {
+            if (current.Contains(previous)) continue;
+            Log.ClientNodeGone(node.Logger, previous);
+            _ = CloseAfterGrace(previous);
+        }
+
+        _known = current.ToArray();
+    }
+
+    private async Task CloseAfterGrace(ulong clientNode)
+    {
+        var grace = node.Options.EffectiveResumeGrace; // tickets need the secret: without one nothing resumes
+        if (grace > TimeSpan.Zero) await Task.Delay(grace, node.Options.TimeProvider).ConfigureAwait(false);
+        if (node.Running) node.PostToEveryShard(static (world, gone) => ActorSessions.CloseSessionsOf(world, gone), clientNode);
+    }
+}
