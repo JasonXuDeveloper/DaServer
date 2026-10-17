@@ -173,7 +173,7 @@ internal static class ShardDispatch
     {
         try
         {
-            if (frame.Deadline != 0 && Environment.TickCount64 > frame.Deadline)
+            if (frame.Deadline != 0 && Platform.Milliseconds > frame.Deadline)
             {
                 Expired(); // the caller gave up while the request waited: running it would be wasted (and late) work
                 return default;

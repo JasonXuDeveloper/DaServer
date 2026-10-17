@@ -113,17 +113,8 @@ public sealed class Swarm : IAsyncDisposable
     }
 
     /// <summary>Wait until <paramref name="pending"/> is 0, or <paramref name="timeout"/>; false on timeout.</summary>
-    public async Task<bool> WaitAsync(Func<Task<long>> pending, TimeSpan timeout)
-    {
-        var watch = System.Diagnostics.Stopwatch.StartNew();
-        while (await pending() > 0)
-        {
-            if (watch.Elapsed >= timeout) return false;
-            await Task.Delay(100);
-        }
-
-        return true;
-    }
+    public async Task<bool> WaitAsync(Func<Task<long>> pending, TimeSpan timeout) =>
+        await Poll.UntilAsync(async () => await pending() == 0, timeout, TimeSpan.FromMilliseconds(100));
 
     /// <summary>
     /// The measured window: counters and latencies start from zero, a line every <paramref name="every"/> (latency

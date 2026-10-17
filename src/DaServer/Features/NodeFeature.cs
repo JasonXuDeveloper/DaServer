@@ -38,7 +38,7 @@ public abstract class NodeFeature
     protected internal virtual ValueTask DrainAsync(CancellationToken cancellationToken) => default;
 
     /// <summary>
-    /// Every 100 ms on the node's maintenance timer while it runs (<paramref name="nowMs"/>: <c>Environment.TickCount64</c>;
+    /// Every 100 ms on the node's maintenance timer while it runs (<paramref name="nowMs"/>: <c>Platform.Milliseconds</c>;
     /// <paramref name="late"/>: the pass ran late, so pass no verdicts on silence). Timers, sweeps and expiries go here,
     /// not on a timer of the feature's own. Keep it short and never block.
     /// </summary>

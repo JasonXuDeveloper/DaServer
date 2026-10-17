@@ -118,7 +118,7 @@ internal sealed class Membership : IDisposable
         }
         catch (Exception e)
         {
-            _node.Logger.LogError(e, "Gossip round failed");
+            Log.GossipFailed(_node.Logger, e);
         }
         finally
         {
@@ -139,8 +139,7 @@ internal sealed class Membership : IDisposable
         if (last == 0 || now - last <= 3 * interval) return;
         long pause = now - last - interval;
         foreach (var entry in _members.Values) entry.LastProgress += pause;
-        _node.Logger.LogWarning("Membership round ran {Ms} ms late (a pause of this process): failure verdicts deferred",
-            pause);
+        Log.RoundLate(_node.Logger, pause);
     }
 
     /// <summary>Tests: age every member's progress as a pause of this process of <paramref name="pause"/> would.</summary>
@@ -177,13 +176,13 @@ internal sealed class Membership : IDisposable
             else if (silent > dead)
             {
                 SetStatus(entry, MemberStatus.Dead);
-                _node.Logger.LogWarning("Member {Member} is dead", entry.Info.Name);
+                Log.MemberDead(_node.Logger, entry.Info.Name);
                 died = true;
             }
             else if (silent > suspect && status != MemberStatus.Suspect)
             {
                 SetStatus(entry, MemberStatus.Suspect);
-                _node.Logger.LogInformation("Member {Member} is suspect", entry.Info.Name);
+                Log.MemberSuspect(_node.Logger, entry.Info.Name);
             }
         }
 
@@ -391,7 +390,7 @@ internal sealed class Membership : IDisposable
                 {
                     _members[member.NodeId] = new Entry(member, now);
                     _changed = true;
-                    _node.Logger.LogInformation("Member {Member} joined ({Status})", member.Name, member.Status);
+                    Log.MemberJoined(_node.Logger, member.Name, member.Status);
                     continue;
                 }
 
@@ -417,7 +416,7 @@ internal sealed class Membership : IDisposable
 
         if (status == MemberStatus.Dead)
         {
-            _node.Logger.LogWarning("Declared dead by the cluster: removed local actors before rejoining");
+            Log.DeclaredDead(_node.Logger);
             foreach (var shard in _node.Shards) shard.RequestUnloadAll();
         }
 
@@ -497,7 +496,7 @@ internal sealed class Membership : IDisposable
             }
             catch (SocketException e)
             {
-                _node.Logger.LogDebug("Seed {Seed} does not resolve yet: {Error}", seed, e.SocketErrorCode);
+                Log.SeedUnresolved(_node.Logger, seed, e.SocketErrorCode);
             }
         }
 

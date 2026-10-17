@@ -23,7 +23,7 @@ internal sealed partial class LoadSystem : EcsSystem
     internal static void Apply(World world, LoadBatch batch)
     {
         var error = batch.TakeResult();
-        if (error != null) world.Logger().LogError(error, "Loading {Count} records failed: their callers get Error", batch.Count);
+        if (error != null) Log.LoadFailed(world.Logger(), error, batch.Count);
         var store = world.GetSingleton<ShardStore>();
         var records = batch.Records;
         var entities = batch.Entities;
@@ -49,7 +49,7 @@ internal sealed partial class LoadSystem : EcsSystem
             }
             catch (Exception e)
             {
-                if (e != error) world.Logger().LogError(e, "Restoring the record of {Actor} failed", actor); // the batch's error is logged once
+                if (e != error) Log.RestoreFailed(world.Logger(), e, actor); // the batch's error is logged once
                 entity.Add<Removing>() = new Removing(RpcStatus.Error, "Loading the actor's record failed: " + e.Message);
                 continue;
             }
@@ -114,7 +114,7 @@ internal sealed partial class PersistSystem : EcsSystem
     internal static void Apply(World world, SaveBatch batch)
     {
         var error = batch.TakeResult();
-        if (error != null) world.Logger().LogError(error, "Saving {Count} records failed: retried in a second", batch.Count);
+        if (error != null) Log.SaveFailed(world.Logger(), error, batch.Count);
         var accepted = batch.Accepted;
         var writes = batch.Writes;
         long now = world.GetSingleton<ShardActivity>().NowMs;
@@ -138,8 +138,7 @@ internal sealed partial class PersistSystem : EcsSystem
             }
             else
             {
-                world.Logger().LogError("The record of {Actor} was written by another node (expected version {Version}): " +
-                                        "this node no longer owns it, its copy is dropped", actor.Get<ActorRef>().Actor, writes[i].ExpectedVersion);
+                Log.RecordTaken(world.Logger(), actor.Get<ActorRef>().Actor, writes[i].ExpectedVersion);
                 if (!final && !actor.Has<UnloadRequested>())
                 {
                     actor.Add<UnloadRequested>();

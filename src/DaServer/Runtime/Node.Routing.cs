@@ -40,7 +40,7 @@ sealed partial class Node : IChannelHandler
 
         // The request is worth running until its first caller gives up (a relayed request keeps the deadline it
         // arrived with); the remaining time travels with it.
-        long now = Environment.TickCount64;
+        long now = Platform.Milliseconds; // one clock read for the deadline and the budget
         if (frame.Deadline == 0) frame.Deadline = now + (long)Options.CallTimeout.TotalMilliseconds;
         if (!Pending.TryRegister(call, frame.Deadline, out uint callId, link))
         {
@@ -78,7 +78,7 @@ sealed partial class Node : IChannelHandler
         }
 
         long timeout = (long)Options.CallTimeout.TotalMilliseconds;
-        if (!Pending.TryRegister(call, Environment.TickCount64 + timeout, out uint callId, link))
+        if (!Pending.TryRegister(call, PendingCallTable.DeadlineAfter(Options.CallTimeout), out uint callId, link))
         {
             Refuse(frame, call, null, 0, RpcStatus.Overloaded);
             return;
@@ -268,7 +268,7 @@ sealed partial class Node : IChannelHandler
             : _linkAuth.Verify(nodeId, streamId, at, proof);
         if (refusal != null)
         {
-            Logger.LogWarning("Refused a link from {Host}:{Port} ({Node:x}): {Reason}", host, port, nodeId, refusal);
+            Log.LinkRefused(Logger, host, port, nodeId, refusal);
             connection.Close(NotIntroduced);
             return;
         }

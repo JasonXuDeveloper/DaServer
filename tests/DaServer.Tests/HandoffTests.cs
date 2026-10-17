@@ -66,7 +66,8 @@ public class HandoffTests(string kind) : ClusterTest
 
         await Stop(b); // scaling in: b's actors go back to a
         for (int key = 100; key < 140; key++)
-            Assert.That(await a.Ask(new BankId(key), new Hit()), Is.EqualTo(3), "the streak came back with them");
+            Assert.That(await a.Ask(new BankId(key), new Hit()), Is.EqualTo(3),
+                $"the streak came back with them (store writes {store.Writes}, loads {store.Loads - loads}: a fallback when not 0)");
         Assert.That(store.Loads, Is.EqualTo(loads), "still nothing read");
         Assert.That(store.Writes, Is.Zero, "and nothing written: b handed everything over");
         Assert.That(b.StoppedClean, Is.True);

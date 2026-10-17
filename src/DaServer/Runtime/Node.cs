@@ -155,7 +155,7 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
     internal ClusterView? PreviousView { get; private set; }
 
     /// <summary>Milliseconds (real time) since the view last changed: how long keys may still be on their way.</summary>
-    internal long SinceViewChangeMs => Environment.TickCount64 - Volatile.Read(ref _viewChangedMs);
+    internal long SinceViewChangeMs => Platform.Milliseconds - Volatile.Read(ref _viewChangedMs);
 
     /// <summary>
     /// Send a frame (header written) to node <paramref name="nodeId"/>, to the shard of its actor: through the link to it
@@ -204,8 +204,7 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
 
         Membership.Start(host, _clusterListener.LocalEndPoint.Port);
         _maintenance = new Timer(static s => ((Node)s!).Maintain(), this, 100, 100);
-        Logger.LogInformation("Node {Name} ({Id:x}) up on {Endpoint}, {Shards} shards; actors: {Actors}; services: {Services}; systems: {Systems}",
-            Options.Name, Id, ClusterEndPoint, shardCount,
+        Log.NodeUp(Logger, Options.Name, Id, ClusterEndPoint, shardCount,
             Names(HostedHandlerTypes.Where(static i => i.IsActor).Select(static i => i.Type.Name)),
             Names(HostedHandlerTypes.Where(static i => !i.IsActor).Select(static i => i.Type.Name)),
             Names(HostedSystems.Select(static s => s.Type.Name)));
@@ -290,14 +289,14 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
         foreach (var feature in Options.Features) feature.Stop(crashed: false);
         CloseLinks();
         Phase("close", phase);
-        Logger.LogInformation("Node {Name} ({Id:x}) stopped", Options.Name, Id);
+        Log.NodeStopped(Logger, Options.Name, Id);
     }
 
     private void Phase(string name, System.Diagnostics.Stopwatch watch)
     {
         var elapsed = watch.Elapsed;
         watch.Restart();
-        Logger.LogInformation("Stop {Phase} of {Node}: {Ms} ms", name, Options.Name, (long)elapsed.TotalMilliseconds);
+        Log.StopPhase(Logger, name, Options.Name, (long)elapsed.TotalMilliseconds);
         StopPhase?.Invoke(name, elapsed);
     }
 
@@ -313,9 +312,7 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
         StoppedClean = false;
         foreach (var shard in _shards)
             if (shard.ActorCount > 0)
-                Logger.LogError("Shutdown budget ({Budget}) exceeded: shard {Shard} of {Node} still holds {Actors} actors whose " +
-                                "OnUnload did not finish (their state since the last save is lost)", Options.ShutdownTimeout,
-                    shard.Index, Options.Name, shard.ActorCount);
+                Log.BudgetExceeded(Logger, Options.ShutdownTimeout, shard.Index, Options.Name, shard.ActorCount);
     }
 
     public async ValueTask DisposeAsync() => await StopAsync().ConfigureAwait(false);
@@ -345,8 +342,7 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
     internal async Task DownAsync(int reachable, int lost)
     {
         if (Interlocked.Exchange(ref _started, 2) != 1) return;
-        Logger.LogCritical("Node {Name} reaches {Reachable} of the cluster's members and lost {Lost}: on the minority side " +
-                           "of a split, it stops without saving and exits", Options.Name, reachable, lost);
+        Log.MinoritySide(Logger, Options.Name, reachable, lost);
         _killed = true;
         CloseLinks();
         foreach (var feature in Options.Features) feature.Stop(crashed: true);
@@ -442,7 +438,7 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
         if (summary == _builds) return;
         bool mixed = builds.Count > 1 || _builds.Contains(" | ", StringComparison.Ordinal);
         _builds = summary;
-        if (mixed) Logger.LogInformation("The cluster runs {Count} build(s): {Builds}", builds.Count, summary);
+        if (mixed) Log.Builds(Logger, builds.Count, summary);
     }
 
     /// <summary>
@@ -453,7 +449,7 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
     {
         var view = View;
         PreviousView = Interlocked.Exchange(ref _lastView, view); // before the shards rebalance: new owners ask the previous ones
-        Volatile.Write(ref _viewChangedMs, Environment.TickCount64);
+        Volatile.Write(ref _viewChangedMs, Platform.Milliseconds);
         foreach (var shard in _shards) shard.RequestRebalance();
 
         // Calls waiting on a dead member's link fail now instead of at their timeout (its stream cannot resume).
@@ -475,7 +471,7 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
         foreach (ulong previous in _clientNodes)
         {
             if (clientNodes.Contains(previous)) continue;
-            Logger.LogWarning("Client-facing node {Node:x} is gone: closing its sessions", previous);
+            Log.ClientNodeGone(Logger, previous);
             _ = CloseSessionsOf(previous);
         }
 
@@ -519,8 +515,7 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
             long passStart = now - ms;
             if (reported[i] == passStart) continue;
             reported[i] = passStart;
-            Logger.LogWarning("Shard {Shard} of {Node} has been in one pass for {Ms} ms: a handler or system blocks its thread " +
-                              "(a synchronous wait, DAS009, or a long loop) and its actors wait", i, Options.Name, ms);
+            Log.ShardStalled(Logger, i, Options.Name, ms);
         }
 
         Volatile.Write(ref _stalledShards, stalled);
@@ -531,7 +526,7 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
         try
         {
             Pending.SweepExpired();
-            long now = Environment.TickCount64;
+            long now = Platform.Milliseconds;
             bool late = _maintainClock.Tick(now);
             long interval = (long)Options.GossipInterval.TotalMilliseconds;
             long timeout = late ? long.MaxValue : Math.Max((long)Options.SuspectAfter.TotalMilliseconds, 3 * interval); // late: ping, no verdicts
@@ -546,7 +541,7 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
         }
         catch (Exception e)
         {
-            Logger.LogError(e, "Maintenance failed");
+            Log.MaintenanceFailed(Logger, e);
         }
     }
 }
