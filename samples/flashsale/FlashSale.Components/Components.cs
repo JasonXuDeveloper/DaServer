@@ -20,3 +20,9 @@ namespace FlashSale.Components;
 {
     public readonly bool SoldOut => EmptyShards == (1 << Sale.Shards) - 1;
 }
+
+/// <summary>
+/// The sales a shard has heard are sold out (from the room's answers): its gate turns their buyers away without asking
+/// the room, so the crowd that comes too late spreads over every shard instead of queueing at one actor.
+/// </summary>
+public readonly record struct SoldOutSales(HashSet<long> Sales) : ISingletonComponent;

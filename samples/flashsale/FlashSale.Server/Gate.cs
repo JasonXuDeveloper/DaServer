@@ -1,6 +1,7 @@
 using DaServer;
 using DaServer.Rpc;
 using DaServer.Runtime;
+using FlashSale.Components;
 using FlashSale.Contracts;
 
 namespace FlashSale.Server;
@@ -20,9 +21,22 @@ public sealed class Gate : Service
         return true;
     }
 
-    [Handle] public Reply<long> On(QueueUp m) => Cluster.Ask(new WaitingRoomId(m.Sale), new Join());
+    [Handle]
+    public async Reply<long> On(QueueUp m)
+    {
+        if (SoldOut.Contains(m.Sale)) return 0;
+        long position = await Cluster.Ask(new WaitingRoomId(m.Sale), new Join());
+        if (position == 0) SoldOut.Add(m.Sale);
+        return position;
+    }
 
-    [Handle] public Reply<Admission> On(CheckIn m) => Cluster.Ask(new WaitingRoomId(m.Sale), new Admitted(m.Position));
+    [Handle]
+    public async Reply<Admission> On(CheckIn m)
+    {
+        var admission = await Cluster.Ask(new WaitingRoomId(m.Sale), new Admitted(m.Position));
+        if (admission == Admission.SoldOut) SoldOut.Add(m.Sale);
+        return admission;
+    }
 
     [Handle]
     public async Reply<OrderStatus> On(PlaceOrder m)
@@ -41,4 +55,9 @@ public sealed class Gate : Service
     }
 
     [Handle] public Reply<OrderStatus> On(OrderOf m) => Cluster.Ask(OrderId.Of(m.Sale, m.User), new GetOrder());
+
+    /// <summary>The sales this shard knows are sold out (its world's <see cref="SoldOutSales"/>).</summary>
+    private HashSet<long> SoldOut => World.HasSingleton<SoldOutSales>()
+        ? World.GetSingleton<SoldOutSales>().Sales
+        : (World.AddSingleton<SoldOutSales>() = new SoldOutSales(new HashSet<long>())).Sales;
 }
