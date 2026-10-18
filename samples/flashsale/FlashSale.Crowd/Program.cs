@@ -37,6 +37,7 @@ internal static class Crowd
         var changed = meter.Counter("retries answered differently", SwarmCounterKind.Failure);
         var confirmed = new ConcurrentDictionary<long, bool>();
         var clients = new ClusterClient[connections];
+        // Room for twice the buyers in progress: a retry may go out while its earlier attempt still waits for its answer.
         await swarm.StartAsync(connections, () => new ClusterClient(maxPendingCalls: inFlight * 2) { FlushInterval = TimeSpan.FromMilliseconds(flushMs) }, async user =>
         {
             clients[user.Index] = user.Client;

@@ -12,7 +12,7 @@ namespace FlashSale.Contracts;
 /// <summary>A sale (its number under 65,536).</summary>
 public readonly record struct SaleId(long Value) : IActorId;
 
-/// <summary>A shard of a sale's stock: sale number in the high bits.</summary>
+/// <summary>A shard of a sale's stock: sale number in the high bits, the shard in the low 8 (room for 256 shards).</summary>
 public readonly record struct StockShardId(long Value) : IActorId
 {
     /// <summary>Stock shards per sale: buyers start at their own shard and move on when it is empty.</summary>
@@ -25,7 +25,7 @@ public readonly record struct StockShardId(long Value) : IActorId
     public int Shard => (int)(Value & 0xFF);
 }
 
-/// <summary>A buyer's order in a sale: the user in the high bits, the sale in the low ones.</summary>
+/// <summary>A buyer's order in a sale: the user in the high bits, the sale in the low 16 (65,536 sales).</summary>
 public readonly record struct OrderId(long Value) : IActorId
 {
     public static OrderId Of(long sale, long user) => new(user << 16 | sale);
@@ -51,7 +51,8 @@ public enum Admission : byte
 
 /// <summary>
 /// What a gate needs to know about a sale: whether it queues its buyers, whether it is sold out and, then, who bought
-/// (so a buyer retrying after the sale ended still hears "confirmed").
+/// (so a buyer retrying after the sale ended still hears "confirmed"; sorted). An array, not a pooled collection: it
+/// travels once per gate shard and sale, and the gate keeps it.
 /// </summary>
 [NinoType] public partial record struct SaleInfo(bool Queued, bool SoldOut, long[] Buyers);
 
@@ -70,7 +71,7 @@ public enum Admission : byte
 
 [NinoType, Message] public partial record struct UnitsLeft : IRequest<int>;
 
-/// <summary>A stock shard ran out (to the sale): who bought its units.</summary>
+/// <summary>A stock shard ran out (to the sale): who bought its units (once per shard and sale: a plain array).</summary>
 [NinoType, Message] public partial record struct ShardEmpty(int Shard, long[] Buyers);
 
 /// <summary>Buy one unit (to the buyer's <see cref="OrderId"/>): the outcome, the same on every retry.</summary>

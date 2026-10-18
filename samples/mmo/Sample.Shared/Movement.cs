@@ -9,7 +9,7 @@ public record struct Position(float X, float Y) : IComponent;
 
 public record struct Velocity(float X, float Y) : IComponent;
 
-/// <summary>The map's extent and its grid of interest cells (100 x 100 units, 20 x 20 cells).</summary>
+/// <summary>The map's extent and its grid of interest cells (2,000 x 2,000 units, 20 x 20 cells of 100).</summary>
 public static class MapGeometry
 {
     public const float Size = 2000f;

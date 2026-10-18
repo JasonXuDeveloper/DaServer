@@ -52,7 +52,8 @@ if (kubernetes != null)
 // the 3x3 cells around it (area of interest) and hears about avatars only when they turn (dead reckoning): about
 // 2.5 million position updates a second reach the bots, no strings involved. Bots, Seconds, Maps, TravelEvery (s
 // between a bot's map changes, 0 = never) and Lean (bots keep no view of others; the default, since 10k clients share
-// the machine with the servers) can be overridden (`dotnet run -- Bots=1000 Lean=false`; the e2e test changes maps).
+// the machine with the servers) can be overridden, and so can Games (game nodes, 1)
+// (`dotnet run -- Bots=1000 Lean=false`; the e2e tests change maps and run two game nodes).
 // Bot options: `dotnet run --project samples/mmo/Sample.Bot -- --help`.
 int bots = builder.Configuration.GetValue("Bots", 10_000);
 int seconds = builder.Configuration.GetValue("Seconds", 60);

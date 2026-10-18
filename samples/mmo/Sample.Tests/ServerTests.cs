@@ -3,7 +3,6 @@ using DaServer;
 using DaServer.Testing;
 using NUnit.Framework;
 using Sample.Contracts;
-using Sample.Shared;
 
 namespace Sample.Tests;
 

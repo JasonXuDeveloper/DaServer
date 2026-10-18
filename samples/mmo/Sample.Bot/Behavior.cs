@@ -43,8 +43,8 @@ public record struct Wandering(long Until) : IComponent;
 /// <summary>Task: say something.</summary>
 public struct Chatting : IComponent;
 
-/// <summary>Task: move to another map (the client's own flow, <see cref="TaskFlow"/>).</summary>
-public struct Travelling : IComponent;
+/// <summary>Task: move to another map (the client's own flow, <see cref="TaskFlow"/>; a default map id: not started).</summary>
+public record struct Travelling(MapId To) : IComponent;
 
 /// <summary>The scenario's failure counter, as a singleton of every loop's world.</summary>
 public readonly record struct Trips(SwarmCounter Failed) : ISingletonComponent;
@@ -135,13 +135,14 @@ public sealed partial class TravelSystem : EcsSystem
 {
     public override int Priority => -20;
 
-    [ForEach, With<Travelling>]
-    private static void Travel(Entity bot, ref Bot b, in Me me, in Trips trips)
+    [ForEach]
+    private static void Travel(Entity bot, ref Travelling travelling, ref Bot b, in Me me, in Trips trips)
     {
-        if (b.NextTravel > Environment.TickCount64) return; // on the way
+        if (travelling.To.Value != 0) return; // on the way: the flow removes the task when it ends, however long it takes
         b.NextTravel = Environment.TickCount64 + b.TravelEveryMs;
         long from = me.Map.Value - 1; // map ids are 1..Maps
         var to = new MapId(1 + (from + 1 + (long)(b.Next() * (b.Maps - 1))) % b.Maps); // any other map
+        travelling = new Travelling(to);
         TaskFlow.Start<Travelling>(bot, () => Player.EnterMapAsync(bot, to), trips.Failed);
     }
 }

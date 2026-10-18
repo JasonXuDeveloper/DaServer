@@ -1,5 +1,4 @@
 using DaServer;
-using DaServer.Rpc;
 using DaServer.Runtime;
 using EasyEcs;
 using Sample.Contracts;
@@ -12,6 +11,8 @@ namespace Sample.MapServer;
 // Interest.cs decides who hears about what (area of interest). Movement itself is a shared rule (Sample.Shared:
 // MovementSystem), the same clients predict with.
 
+// Sticky (ADR-079): a loaded map stays on its node when map servers join, so the players in it never wait for a move.
+[Sticky]
 public sealed class Map : Actor<MapId, MapState>
 {
     private const int MaxChatLength = 256;

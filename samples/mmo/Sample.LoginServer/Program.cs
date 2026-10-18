@@ -1,5 +1,5 @@
-// A node of the sample cluster: it hosts what this project compiles (the Account service). Options come from configuration
-// (DaServer__* environment variables, which the AppHost sets).
+// A node of the sample cluster: it hosts what this project compiles (the Account service). Options come from
+// configuration (DaServer__* environment variables, which the AppHost sets).
 using DaServer.Hosting;
 using Microsoft.AspNetCore.Builder;
 

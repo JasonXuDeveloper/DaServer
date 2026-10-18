@@ -50,6 +50,8 @@ public class SaleTests
 
         Assert.That(await client.Ask(new CheckIn(sale, 1)), Is.EqualTo(Admission.Waiting), "nobody before the clock moves");
         Assert.That(await client.Ask(new PlaceOrder(sale, 1, 1)), Is.EqualTo(OrderStatus.None), "no skipping the queue");
+        Assert.That(await client.Ask(new PlaceOrder(sale, 2, 0)), Is.EqualTo(OrderStatus.None), "position 0 was never issued");
+        Assert.That(await client.Ask(new CheckIn(sale, -1)), Is.EqualTo(Admission.Waiting), "nor a negative one");
         await cluster.AdvanceAsync(TimeSpan.FromSeconds(1));
         Assert.That(await client.Ask(new CheckIn(sale, 100)), Is.EqualTo(Admission.Admitted), "one second: 100 admitted");
         Assert.That(await client.Ask(new CheckIn(sale, 101)), Is.EqualTo(Admission.Waiting));

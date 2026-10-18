@@ -1,5 +1,4 @@
 using DaServer;
-using DaServer.Rpc;
 using DaServer.Runtime;
 using EasyEcs;
 using Sample.Contracts;
@@ -14,7 +13,7 @@ namespace Sample.MapServer;
 // (dead reckoning), so 10,000 players in one map cost each client the turns of the ~200 avatars around it, instead of
 // every position of everyone every tick (10,000 x 10,000 x 20/s).
 //
-// Data (Sample.MapServer.Components): MapGrid on the map entity, GridCell / SentMotion / Despawning / Resynced on
+// Data (Sample.MapServer.Components): MapGrid on the map entity, GridCell / SentMotion / Despawning / Resynced / SessionGone on
 // avatars. Behavior: one system per step, in tick order: DespawnSystem, (movement), PlacementSystem, MotionSyncSystem,
 // SnapshotSystem.
 

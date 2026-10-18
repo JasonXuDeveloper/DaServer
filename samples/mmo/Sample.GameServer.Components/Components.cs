@@ -16,13 +16,16 @@ namespace Sample.GameServer;
 /// </summary>
 [NinoType(format: NinoFormat.VersionTolerant), Handoff] public partial record struct PlayerState(MapId Map, ClientSession Session) : IComponent;
 
-/// <summary>Who is online, and how many status updates the realm sent: both move with the realm (a handoff).</summary>
+/// <summary>Who is online, and the realm's tick count: both move with the realm (a handoff).</summary>
 [NinoType(format: NinoFormat.VersionTolerant), Handoff]
 public partial struct RealmState() : IComponent
 {
     public HashSet<PlayerId> Online = new();
 
-    /// <summary>The realm's own status count (<see cref="RealmStatus.Tick"/>): one sequence whichever node runs it.</summary>
+    /// <summary>
+    /// The realm's tick count when it last sent its status (<see cref="RealmStatus.Tick"/>): one sequence whichever node
+    /// runs it.
+    /// </summary>
     public long Ticks;
 }
 

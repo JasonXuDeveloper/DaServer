@@ -8,8 +8,7 @@ static class Platform
     public static Manifest ScaleOnCpu(KubernetesResource workload, int min, int max, int percent)
     {
         var autoscaler = new Manifest("autoscaling/v2", "HorizontalPodAutoscaler", $"{workload.Name}-autoscaler");
-        autoscaler.Spec["scaleTargetRef"] = new Dictionary<string, object>
-            { ["apiVersion"] = "apps/v1", ["kind"] = "Deployment", ["name"] = workload.Workload!.Metadata.Name };
+        autoscaler.Spec["scaleTargetRef"] = Publishing.DeploymentOf(workload);
         autoscaler.Spec["minReplicas"] = min;
         autoscaler.Spec["maxReplicas"] = max;
         autoscaler.Spec["metrics"] = new[]

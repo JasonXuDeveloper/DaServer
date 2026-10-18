@@ -1,5 +1,4 @@
 using DaServer;
-using DaServer.Rpc;
 using DaServer.Runtime;
 using FlashSale.Components;
 using FlashSale.Contracts;
@@ -26,7 +25,7 @@ public sealed class Gate : Service
     public async Reply<OrderStatus> On(PlaceOrder m)
     {
         var sale = await Info(m.Sale);
-        if (sale.SoldOut) return Array.IndexOf(sale.Buyers, m.User) >= 0 ? OrderStatus.Confirmed : OrderStatus.SoldOut;
+        if (sale.SoldOut) return Array.BinarySearch(sale.Buyers, m.User) >= 0 ? OrderStatus.Confirmed : OrderStatus.SoldOut;
         // A queued sale sells to admitted positions only: the sale says whether this one was.
         if (sale.Queued && await Cluster.Ask(new SaleId(m.Sale), new Admitted(m.Position)) != Admission.Admitted) return OrderStatus.None;
         var status = await Cluster.Ask(OrderId.Of(m.Sale, m.User), new Buy());

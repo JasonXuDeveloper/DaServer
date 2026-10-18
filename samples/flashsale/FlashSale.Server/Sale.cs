@@ -1,5 +1,4 @@
 using DaServer;
-using DaServer.Rpc;
 using DaServer.Runtime;
 using EasyEcs;
 using FlashSale.Components;
@@ -84,7 +83,14 @@ public sealed class Sale : Actor<SaleId, SaleState>
         return true;
     }
 
-    [Handle] public SaleInfo On(Describe _) => new(State.Queued, State.SoldOut, State.SoldOut ? State.Buyers.ToArray() : []);
+    /// <summary>Once per gate shard and sale: the buyers sorted, so a late buyer's answer is a binary search.</summary>
+    [Handle]
+    public SaleInfo On(Describe _)
+    {
+        long[] buyers = State.SoldOut ? State.Buyers.ToArray() : [];
+        Array.Sort(buyers);
+        return new SaleInfo(State.Queued, State.SoldOut, buyers);
+    }
 
     [Handle] public long On(Join _) => State.SoldOut ? 0 : ++State.Issued;
 
@@ -92,7 +98,7 @@ public sealed class Sale : Actor<SaleId, SaleState>
     // order's answer); only those still waiting are turned away.
     [Handle]
     public Admission On(Admitted m) =>
-        m.Position <= State.Released ? Admission.Admitted : State.SoldOut ? Admission.SoldOut : Admission.Waiting;
+        m.Position > 0 && m.Position <= State.Released ? Admission.Admitted : State.SoldOut ? Admission.SoldOut : Admission.Waiting;
 
     [Handle]
     public void On(ShardEmpty m)

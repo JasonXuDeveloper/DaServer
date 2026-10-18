@@ -1,6 +1,5 @@
 using Aspire.Hosting;
 using Aspire.Hosting.Kubernetes.Resources;
-using Microsoft.Extensions.Configuration;
 
 /// <summary>What the samples' AppHosts share for `aspire publish` (linked into each).</summary>
 static class Publishing
@@ -30,11 +29,14 @@ static class Publishing
     public static Manifest VerticalAutoscaler(Aspire.Hosting.Kubernetes.KubernetesResource workload, string updateMode)
     {
         var autoscaler = new Manifest("autoscaling.k8s.io/v1", "VerticalPodAutoscaler", $"{workload.Name}-resources");
-        autoscaler.Spec["targetRef"] = new Dictionary<string, object>
-            { ["apiVersion"] = "apps/v1", ["kind"] = "Deployment", ["name"] = workload.Workload!.Metadata.Name };
+        autoscaler.Spec["targetRef"] = DeploymentOf(workload);
         autoscaler.Spec["updatePolicy"] = new Dictionary<string, object> { ["updateMode"] = updateMode };
         return autoscaler;
     }
+
+    /// <summary>A reference to <paramref name="workload"/>'s Deployment, as autoscalers name their target.</summary>
+    public static Dictionary<string, object> DeploymentOf(Aspire.Hosting.Kubernetes.KubernetesResource workload) =>
+        new() { ["apiVersion"] = "apps/v1", ["kind"] = "Deployment", ["name"] = workload.Workload!.Metadata.Name };
 }
 
 /// <summary>A Kubernetes object Aspire has no type for (its spec as plain YAML data).</summary>

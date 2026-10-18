@@ -56,7 +56,8 @@ internal static class Scenario
             var player = Player.Create(user.World, user.Client, view: !lean);
             if (!await Swarm.Retry(() => Player.LogInAsync(player, "bot-" + i))) throw new InvalidOperationException("login refused: bot-" + i);
             await Swarm.Retry(() => Player.EnterMapAsync(player, new MapId(1 + i % maps)));
-            // Schedules start spread over a second, so input does not come in waves.
+            // Schedules start spread over a second, so input does not come in waves. The random seed spreads the bot's index
+            // (Knuth's multiplicative hash) and is odd: xorshift never starts from 0.
             player.Add<Bot>() = new Bot((uint)i * 2654435761u | 1, turnsPerSecond > 0 ? 1000 / turnsPerSecond : 0,
                 chatEvery * 1000, travelEvery * 1000, maps, Environment.TickCount64 + i % 1000);
             player.Add<Facts>();
