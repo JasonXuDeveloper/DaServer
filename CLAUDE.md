@@ -40,11 +40,12 @@ src/DaServer/              server runtime (net11.0): Runtime/ Cluster/ Rpc/ Net/
   Runtime/Shard.cs         thread + dispatch queue (the cross-thread handoff) + wake/tick loop (nothing else)
   Runtime/ShardData.cs     shard ECS data: actor components and lifecycle tags (Mailbox, Ready, Turn, ...), singletons
   Runtime/ShardDispatch.cs routing/delivery/invoke operations shared by the runtime systems
-  Runtime/Systems/         runtime systems: Dispatch, Turn, ServiceCall, Removal, Unload, Mailbox (ShardMessages group),
+  Runtime/Systems/         runtime systems: Timer, Dispatch, Turn, ServiceCall, Removal, Unload, Mailbox (ShardMessages group),
                            Rebalance (ShardRebalance), Idle and LongTurn (ShardIdleScan); each reacts to one lifecycle tag (ADR-037)
 src/DaServer.Generator/    incremental generators (AskGenerator, RegistrationGenerator, PolyfillGenerator) + DaServerAnalyzer
                            (DAS001-021); WireManifest.cs: the wire.manifest model over Nino's NinoTypeLayout (ADR-076);
                            Shapes.cs reads symbols once for both, so "skipped by the generator" == "reported"
+src/DaServer.Generator.Roslyn4.3/  the same sources built against Roslyn 4.3 (Unity's oldest), packed beside the 5.x build
 src/DaServer.WireTool/     writes a project's wire.manifest from its built assembly (the analyzer's own WireManifest)
 src/DaServer.Hosting/      Generic Host integration, configuration, OpenTelemetry (OTLP when configured), shutdown
 src/DaServer.Persistence.PostgreSql/  actor records in PostgreSQL (ADR-068): PostgreSqlActorStore, AddPostgreSqlActorStore
@@ -52,6 +53,8 @@ src/DaServer.Testing/      in-process clusters for users' tests (ADR-071): TestC
                            TestNodes (internal): node helpers shared with the framework's tests and benchmarks
 src/DaServer.Aspire/       Aspire hosting integration: AddDaServerCluster / AddNodes / WithClientConnections /
                            WithClientEndpoints
+samples/Shared/            Publishing.cs, linked into both AppHosts: the Compose/Kubernetes switch (AddPublishEnvironment),
+                           Manifest, the VPA
 samples/mmo/               MMO scenario: Sample.Contracts / Sample.Shared (rules both sides run) / Sample.Client (the game
                            client as ECS) / Sample.LoginServer / Sample.GameServer / Sample.MapServer / Sample.GatewayServer
                            (one project per server, a five-line Program.cs, no appsettings; a server's components in
@@ -61,10 +64,13 @@ samples/flashsale/         a million buyers for 100 units over the client protoc
                            .Server (stock shards, orders, waiting room, the Gate service) / .Crowd (the buyers as a
                            swarm, DaServer.Simulation) / .Tests / .AppHost
 tests/DaServer.Tests/      NUnit: ClusterTest fixture, per-feature tests, generator/analyzer, allocation, architecture
-tests/DaServer.E2E/        the AppHosts through Aspire.Hosting.Testing: 1,000 bots, 100,000 buyers
+tests/DaServer.E2E/        the AppHosts through Aspire.Hosting.Testing: 1,000 bots, 100,000 buyers, a stateful group scaling,
+                           what `aspire publish` writes (Compose, Helm chart: lint and template)
 benchmarks/DaServer.Benchmark/   BenchmarkDotNet over real loopback sockets (requests, one-way messages, broadcast fan-out,
                            scenarios) and generator cost
-doc/                       requirements.md, design.md, decisions.md, roadmap.md
+doc/                       requirements.md, design.md, decisions.md, roadmap.md, operations.md (run, watch, commands,
+                           secrets, publish)
+observability/             a Grafana dashboard and Prometheus alert rules over the nodes' metrics
 ```
 
 ## Engineering principles (apply to every change)
