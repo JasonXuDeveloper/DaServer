@@ -228,10 +228,11 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
             sb.Append('[');
             foreach (var h in t.Handlers)
             {
-                // Deserialize the message straight from the frame, call the [Handle] method, reply to a request.
+                // Read the message straight from the frame (a payload that is not one is refused before the handler runs),
+                // call the [Handle] method, reply to a request.
                 string call = $"Unsafe.As<{t.FullName}>(target).{h.Method}(m)";
                 sb.Append($"\n            MessageHandler.Of<{h.MessageType}>(static (object target, global::System.ReadOnlySpan<byte> payload, in CallContext context) =>\n");
-                sb.Append($"            {{\n                var m = global::Nino.Core.NinoDeserializer.Deserialize<{h.MessageType}>(payload);\n");
+                sb.Append($"            {{\n                if (!MessageReader.TryRead(payload, out {h.MessageType} m)) return MessageReader.Refuse(in context);\n");
                 if (t.Kind != HostedKind.ClientHandler)
                     sb.Append($"                if (!MessageFilters<{h.MessageType}>.Admit(target, in m, in context)) return default;\n");
                 sb.Append(h.Return switch

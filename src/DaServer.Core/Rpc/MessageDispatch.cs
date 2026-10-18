@@ -9,6 +9,36 @@ namespace DaServer.Rpc;
 /// </summary>
 public delegate ValueTask MessageDispatcher(object target, ReadOnlySpan<byte> payload, in CallContext context);
 
+/// <summary>
+/// Reads messages for generated dispatchers. A payload that is not the message it names (truncated, written by another
+/// build, hostile) is refused before any handler runs: the sender gets <see cref="RpcStatus.Malformed"/>, and the target
+/// is not charged with a failure (its actor's <c>OnError</c> does not run, its state was never touched).
+/// </summary>
+[EditorBrowsable(EditorBrowsableState.Never)]
+public static class MessageReader
+{
+    public static bool TryRead<T>(ReadOnlySpan<byte> payload, out T message)
+    {
+        try
+        {
+            message = NinoDeserializer.Deserialize<T>(payload);
+            return true;
+        }
+        catch (Exception)
+        {
+            message = default!;
+            return false;
+        }
+    }
+
+    /// <summary>Refuse a request whose payload <see cref="TryRead{T}"/> could not read (one-way messages are dropped).</summary>
+    public static ValueTask Refuse(in CallContext context)
+    {
+        context.ReplyError(RpcStatus.Malformed, null);
+        return default;
+    }
+}
+
 /// <summary>One message type handled by a type (generated registration).</summary>
 public sealed class MessageHandler(uint messageId, MessageDispatcher dispatcher, Type messageType)
 {

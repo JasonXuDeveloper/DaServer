@@ -25,4 +25,10 @@ public enum RpcStatus : byte
     /// timeout, so it fails at once. Nothing ran. Model such flows with one-way messages.
     /// </summary>
     CallCycle = 9,
+
+    /// <summary>
+    /// The request's payload is not the message it names (truncated, written by another build, hostile): nothing ran.
+    /// Retrying the same bytes cannot help.
+    /// </summary>
+    Malformed = 10,
 }
