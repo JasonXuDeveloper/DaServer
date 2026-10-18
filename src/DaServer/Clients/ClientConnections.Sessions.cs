@@ -9,7 +9,7 @@ public sealed partial class ClientConnections
     /// A client connected over another transport (a WebSocket of the HTTP plane): it gets a session like a TCP client.
     /// The channel's frames go to <see cref="Channels"/>.
     /// </summary>
-    public void Open(IFrameChannel channel)
+    internal void Open(IFrameChannel channel)
     {
         var session = new SessionState(((INodeContext)_node).NewOriginId(), channel) // a session is the origin of its messages
         {
@@ -22,13 +22,13 @@ public sealed partial class ClientConnections
     }
 
     /// <summary>Largest frame a client may send (<see cref="ClientConnectionOptions.MaxFrameSize"/>).</summary>
-    public int MaxFrameSize => options.MaxFrameSize;
+    internal int MaxFrameSize => options.MaxFrameSize;
 
     /// <summary>Bytes a client's channel may fall behind before it is closed (a slow consumer, like on TCP).</summary>
-    public int MaxPendingSendBytes { get; } = ConnectionOptions.ForSessions().MaxPendingSendBytes;
+    internal int MaxPendingSendBytes { get; } = ConnectionOptions.ForSessions().MaxPendingSendBytes;
 
     /// <summary>Receives the frames of channels opened with <see cref="Open"/>.</summary>
-    public IChannelHandler Channels => _sessionHandler!;
+    internal IChannelHandler Channels => _sessionHandler!;
 
     /// <summary>The frames of every client channel, TCP or not.</summary>
     private sealed class SessionHandler(ClientConnections node) : IChannelHandler
@@ -97,6 +97,14 @@ public sealed partial class ClientConnections
     private void OnClientControl(SessionState session, in FrameHeader header, ReadOnlySpan<byte> frame)
     {
         uint callId = FrameHeader.CallIdOf(in header, frame);
+        // Tickets and resumes cost a signature each: they draw on the session's rate like its messages (pings do not).
+        if (header.MessageId is ControlOp.Ticket or ControlOp.ResumeSession && options.MessagesPerSecond > 0 &&
+            !session.Limit.TryTake(out var retryAfter))
+        {
+            if (callId != 0) session.Sink.SendRefusal(callId, RpcStatus.RateLimited, retryAfter);
+            return;
+        }
+
         switch (header.MessageId)
         {
             case ControlOp.Ticket:

@@ -12,9 +12,12 @@ public class ClientProtocolTests : ClusterTest
 
         public int Frames;
 
+        public readonly System.Collections.Concurrent.ConcurrentQueue<RpcStatus> Statuses = new();
+
         public void OnFrame(IFrameChannel connection, in FrameHeader header, ReadOnlySpan<byte> frame)
         {
             Interlocked.Increment(ref Frames);
+            if (header.Kind == FrameKind.Reply) Statuses.Enqueue(header.Status);
             var payload = FrameHeader.PayloadOf(in header, frame);
             Reply.TrySetResult((header.Status, payload.IsEmpty ? null : Nino.Core.NinoDeserializer.Deserialize<string>(payload)));
         }
@@ -22,6 +25,26 @@ public class ClientProtocolTests : ClusterTest
         public void OnClosed(IFrameChannel connection, Exception? error) => Closed.TrySetResult();
 
         public Connection? Connection;
+    }
+
+    [Test]
+    public async Task ResumesAndTicketsDrawOnTheSessionsRate()
+    {
+        // Each costs the node a signature: a client looping them is limited like one looping messages.
+        var gateway = await Start("a", gateway: true, clients: static o => (o.MessagesPerSecond, o.Burst) = (1, 2));
+        var client = await Send(gateway, FrameKind.Control, ControlOp.ClientHello, ControlOp.ClientVersion);
+        await client.Reply.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        for (uint call = 2; call < 6; call++)
+        {
+            using var w = FrameWriter.Rent();
+            w.WriteRaw(new byte[16]); // not a ticket
+            w.SetCallId(call);
+            w.SetHeader(FrameKind.Control, 0, ControlOp.ResumeSession, 0);
+            client.Connection!.Send(w.Frame);
+        }
+
+        await Eventually(() => client.Statuses.Count >= 5, "every resume answered");
+        Assert.That(client.Statuses, Has.Some.EqualTo(RpcStatus.RateLimited), string.Join(", ", client.Statuses));
     }
 
     private async Task<Recorder> Send(Node gateway, FrameKind kind, uint op, long key)

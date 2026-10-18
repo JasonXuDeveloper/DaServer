@@ -15,12 +15,14 @@ internal static class Handoff
     private struct RequestOp;
     private struct NoneOp;
     private struct AnswerOp;
+    private struct ResentOp;
 
-    private static readonly uint Record = TypeId<RecordOp>.Value;   // [sender][version][hash][record sections]
+    private static readonly uint Record = TypeId<RecordOp>.Value;   // [sender][version][hash][handoff id][record sections]
+    private static readonly uint Resent = TypeId<ResentOp>.Value;   // a Record again (its answer was lost or it was)
     private static readonly uint Request = TypeId<RequestOp>.Value; // [sender][0]: send me the record if you hold it
     private static readonly uint None = TypeId<NoneOp>.Value;       // [sender][0]: I do not hold it
     private static readonly uint Answer = TypeId<AnswerOp>.Value;   // [sender][1 accepted, 0 refused]
-    private const int RecordHeader = sizeof(ulong) + sizeof(long) + sizeof(ulong);
+    private const int RecordHeader = sizeof(ulong) + sizeof(long) + sizeof(ulong) + sizeof(ulong);
 
     /// <summary>Where a leaving actor's record goes: the key's owner when that is another node and there is a record to move.</summary>
     public static ulong? TargetOf(World world, Actor actor)
@@ -110,6 +112,7 @@ internal static class Handoff
         BinaryPrimitives.WriteUInt64LittleEndian(head, node.Id);
         BinaryPrimitives.WriteInt64LittleEndian(head[sizeof(ulong)..], stored.Version);
         BinaryPrimitives.WriteUInt64LittleEndian(head[(sizeof(ulong) + sizeof(long))..], stored.Hash);
+        BinaryPrimitives.WriteUInt64LittleEndian(head[(2 * sizeof(ulong) + sizeof(long))..], (ulong)Random.Shared.NextInt64() | 1); // this handoff
         record.Advance(RecordHeader);
         var moved = world.GetSingleton<ShardStore>().Moved;
         Records.WriteSections(entity, moved, record);
@@ -122,12 +125,18 @@ internal static class Handoff
         return payload;
     }
 
-    /// <summary>Send a record (<see cref="Send"/>'s) again; false when that node is gone.</summary>
-    public static bool Resend(Node node, Actor actor, ulong to, byte[] record)
+    /// <summary>
+    /// Send a record (<see cref="Send"/>'s) again, as a resend: only a copy waiting for it takes it, and the node that
+    /// took (or passed on) the first send answers for it; false when that node is gone.
+    /// </summary>
+    public static bool Resend(Node node, Actor actor, ulong to, byte[] record) =>
+        SendRecord(node, to, Resent, actor.HandlerType.Id, actor.Key, record, hops: 0);
+
+    private static bool SendRecord(Node node, ulong to, uint op, uint handlerTypeId, long key, ReadOnlySpan<byte> record, byte hops)
     {
         var w = FrameWriter.Rent(FrameHeader.Size + record.Length);
         w.WriteRaw(record);
-        w.SetHeader(FrameKind.Message, actor.HandlerType.Id, Record, actor.Key);
+        w.SetHeader(FrameKind.Message, handlerTypeId, op, key, hops: hops);
         return node.SendToNode(to, w);
     }
 
@@ -163,10 +172,12 @@ internal static class Handoff
     {
         var header = FrameHeader.Read(frame.Frame);
         uint op = header.MessageId;
-        if (header.Kind != FrameKind.Message || op != Record && op != Request && op != None && op != Answer) return false;
+        if (header.Kind != FrameKind.Message || !IsHandoff(op)) return false;
         ulong from = BinaryPrimitives.ReadUInt64LittleEndian(FrameHeader.PayloadOf(in header, frame.Frame));
         if (op == Request) Notify(node, from, None, header.Target, header.Key, 0);
         else if (op == Record) Notify(node, from, Answer, header.Target, header.Key, 0);
+        // A resend goes unanswered: this node may have taken its first send (the stopped shard knew), so a refusal could
+        // make its sender write a record that moved on; the sender falls back once this node has left.
         frame.Dispose();
         return true;
     }
@@ -175,23 +186,49 @@ internal static class Handoff
     public static bool TryReceive(World world, HandlerTypeInfo handlerType, FrameWriter frame, in FrameHeader header)
     {
         uint op = header.MessageId;
-        if (op != Record && op != Request && op != None && op != Answer) return false;
+        if (!IsHandoff(op)) return false;
         try
         {
             var payload = FrameHeader.PayloadOf(in header, frame.Frame);
             ulong from = BinaryPrimitives.ReadUInt64LittleEndian(payload);
             var node = world.Shard.Node;
             bool loaded = world.GetSingleton<ActorDirectory>().Actors.TryGetValue(new ActorAddress(handlerType.Id, header.Key), out var entity);
-            if (op == Record)
+            if (op == Record || op == Resent)
             {
+                ulong id = IdOf(payload);
+                var seen = world.GetSingleton<HandoffsSeen>().ById;
+                if (seen.TryGetValue(id, out var before))
+                {
+                    // This handoff was here before: taken (answered "accepted" again, wherever the actor went since), or
+                    // passed on (the resend follows it there, and that node answers).
+                    if (before.PassedTo == 0) Notify(node, from, Answer, handlerType.Id, header.Key, 1);
+                    else SendRecord(node, before.PassedTo, Resent, handlerType.Id, header.Key, payload, hops: 1);
+                    return true;
+                }
+
+                if (op == Resent)
+                {
+                    // Never here before: only a copy waiting for the key's record takes it; refused, its sender keeps the
+                    // state and the store decides (it was taken nowhere, as far as this node knows).
+                    bool waiting = loaded && entity.Has<AwaitingHandoff>();
+                    bool taken = waiting && Restore(world, handlerType, header.Key, payload, loaded, entity, from);
+                    if (taken) Seen(world, id, 0);
+                    Notify(node, from, Answer, handlerType.Id, header.Key, taken ? (byte)1 : (byte)0);
+                    return true;
+                }
+
                 // A record this node cannot take (the key moved on meanwhile) goes on once: to a node that asked for it, or
                 // to the key's owner in this node's view. That node answers its sender.
                 if (header.Hops == 0 && !loaded && !ShardDispatch.Owns(world, handlerType.Id, header.Key) &&
-                    !SendersOwn(world, handlerType.Id, header.Key, from) && PassOn(world, handlerType.Id, header.Key, payload, from))
+                    !SendersOwn(world, handlerType.Id, header.Key, from) && PassOn(world, handlerType.Id, header.Key, payload, from) is var to and not 0)
+                {
+                    Seen(world, id, to);
                     return true;
-                bool again = loaded && entity.TryGet<HandedFrom>(out var handed) && handed == HandedBy(payload);
-                Notify(node, from, Answer, handlerType.Id, header.Key,
-                    again || Restore(world, handlerType, header.Key, payload, loaded, entity, from) ? (byte)1 : (byte)0);
+                }
+
+                bool restored = Restore(world, handlerType, header.Key, payload, loaded, entity, from);
+                if (restored) Seen(world, id, 0);
+                Notify(node, from, Answer, handlerType.Id, header.Key, restored ? (byte)1 : (byte)0);
             }
             else if (op == Request)
             {
@@ -262,7 +299,6 @@ internal static class Handoff
             return false;
         }
 
-        entity.Add<HandedFrom>() = HandedBy(payload);
         if (store.Enabled)
         {
             long every = (long)actor.SaveEvery.TotalMilliseconds;
@@ -279,9 +315,22 @@ internal static class Handoff
         return true;
     }
 
-    /// <summary>Who sent a record, at which version and hash.</summary>
-    private static HandedFrom HandedBy(ReadOnlySpan<byte> payload) => new(BinaryPrimitives.ReadUInt64LittleEndian(payload),
-        BinaryPrimitives.ReadInt64LittleEndian(payload[sizeof(ulong)..]), BinaryPrimitives.ReadUInt64LittleEndian(payload[(sizeof(ulong) + sizeof(long))..]));
+    private static bool IsHandoff(uint op) => op == Record || op == Resent || op == Request || op == None || op == Answer;
+
+    /// <summary>The handoff a record belongs to (its first send's id, kept by resends).</summary>
+    private static ulong IdOf(ReadOnlySpan<byte> payload) => BinaryPrimitives.ReadUInt64LittleEndian(payload[(2 * sizeof(ulong) + sizeof(long))..]);
+
+    /// <summary>Remember a handoff taken here (<paramref name="passedTo"/> 0) or passed on, for the resends' window.</summary>
+    private static void Seen(World world, ulong id, ulong passedTo)
+    {
+        var seen = world.GetSingleton<HandoffsSeen>().ById;
+        long now = world.GetSingleton<ShardActivity>().NowMs;
+        if (seen.Count >= HandoffsSeen.Max)
+            foreach (var (old, entry) in seen)
+                if (entry.UntilMs < now) seen.Remove(old); // removing while enumerating is allowed for a Dictionary
+        // Past the bound it is not remembered: a resend of it is refused, and its sender lets the store decide.
+        if (seen.Count < HandoffsSeen.Max) seen[id] = new SeenHandoff(passedTo, now + 2 * TimeoutMs(world.Shard.Node));
+    }
 
     private static void Defer(World world, uint handlerTypeId, long key, ulong by)
     {
@@ -302,9 +351,9 @@ internal static class Handoff
     /// <summary>
     /// The record of a key this node cannot take goes to the first node that asked for it here, else to the key's owner
     /// in this node's view (not back to <paramref name="from"/>); without a record (the previous holder answered "none")
-    /// every asker is told "none". False when the record went nowhere.
+    /// every asker is told "none". The node the record went to, 0 when it went nowhere.
     /// </summary>
-    private static bool PassOn(World world, uint handlerTypeId, long key, ReadOnlySpan<byte> record, ulong from = 0)
+    private static ulong PassOn(World world, uint handlerTypeId, long key, ReadOnlySpan<byte> record, ulong from = 0)
     {
         var node = world.Shard.Node;
         var waiting = world.GetSingleton<HandoffAsks>().Waiting;
@@ -319,13 +368,9 @@ internal static class Handoff
             else to = ask.By; // one record, one asker: the others ask again and find it there
         }
 
-        if (record.IsEmpty) return false;
+        if (record.IsEmpty) return 0;
         if (to == 0 && node.View.HandlerTypeOwner(handlerTypeId, key) is { } owner && owner.NodeId != node.Id && owner.NodeId != from) to = owner.NodeId;
-        if (to == 0) return false;
-        var w = FrameWriter.Rent(FrameHeader.Size + record.Length);
-        w.WriteRaw(record);
-        w.SetHeader(FrameKind.Message, handlerTypeId, Record, key, hops: 1);
-        return node.SendToNode(to, w);
+        return to != 0 && SendRecord(node, to, Record, handlerTypeId, key, record, hops: 1) ? to : 0;
     }
 
     private static bool SendersOwn(World world, uint handlerTypeId, long key, ulong from) =>

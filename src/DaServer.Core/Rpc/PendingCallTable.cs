@@ -207,6 +207,7 @@ internal sealed class PendingCallTable
     /// <summary>Remove and return the call registered under <paramref name="callId"/>, or null.</summary>
     public IPendingCall? Take(uint callId)
     {
+        if (callId == 0 || (int)callId is Failing or Cooling) return null; // not a call id (a reply frame without one)
         int index = (int)(callId & _indexMask);
         if (index >= Volatile.Read(ref _allocated))
             return null; // never issued (a forged or corrupt id)

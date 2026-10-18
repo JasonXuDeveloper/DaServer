@@ -16,10 +16,17 @@ internal readonly record struct HandOff(ulong To) : IComponent;
 internal readonly record struct HandingOff(ulong To, long UntilMs, byte[] Record) : IComponent;
 
 /// <summary>
-/// The actor's record came from <see cref="From"/> at <see cref="Version"/> and <see cref="Hash"/>: the same record again
-/// (its sender sent it again, the answer was lost) is answered "accepted" without being restored twice.
+/// The handoffs this shard took or passed on lately, by the id each record carries (a resend carries its first send's):
+/// a resend whose first send was taken here is answered "accepted" again, wherever the actor is now; one passed on goes
+/// to the same node again. Kept for two handoff timeouts (the resends' window); bounded by <see cref="Max"/>.
 /// </summary>
-internal readonly record struct HandedFrom(ulong From, long Version, ulong Hash) : IComponent;
+internal readonly record struct HandoffsSeen(Dictionary<ulong, SeenHandoff> ById) : ISingletonComponent
+{
+    public const int Max = 4096;
+}
+
+/// <summary>A handoff taken here (<see cref="PassedTo"/> 0) or passed on to <see cref="PassedTo"/>, remembered until <see cref="UntilMs"/>.</summary>
+internal readonly record struct SeenHandoff(ulong PassedTo, long UntilMs);
 
 /// <summary>
 /// The actor moved here from <see cref="From"/>, which may still hold it: its mail waits for the record, or for word that
