@@ -542,8 +542,11 @@ and cards, a manual clock), fails before its fix, and passes after it.
       P7 loads go in batches of at most 512 (`LoadsWaitingForASlowStoreGoInBoundedBatches`).
 - [x] P6 A failed load failed the batch's callers at once: retried after 200 ms until the call timeout
       (`ALoadThatFailsIsRetriedWithinTheCallTimeout`).
-- [ ] P8 call cycles through OnLoad/OnUnload end by timeout only; P9 store calls and turns have no bound but the stop
-      budget.
+- [x] P8 Call cycles through OnLoad/OnUnload ended at the call timeout only: OnLoad runs in the call chain of the message
+      that loads the actor (queued first), OnUnload in a chain of its own, and their requests carry it, so a request
+      back into the actor fails with CallCycle at once (`AnOnLoadAskingTheActorWhoseRequestLoadsItFailsAtOnce`,
+      `AnActorAskedBackWhileItUnloadsFailsAtOnce`; 5 s -> at once).
+- [ ] P9 store calls and turns have no bound but the stop budget.
 - [x] H1 The new owner stopped waiting for the record after the call timeout while the old owner still ran the actor
       (duplicate activation): it asks again while the previous owner is alive and loads only once it is dead
       (`ANewOwnerWaitsForTheRecordWhileThePreviousOneHoldsTheActor`).

@@ -861,12 +861,15 @@ records that no longer hold). Each: context → decision → consequences.
     at no cost.
   - An actor records its turn's chain. A request that reaches it carrying that chain while the turn's task is still
     pending is refused with `RpcStatus.CallCycle` without running. One-way messages carry no chain: they never wait.
+  - Lifecycle hooks are turns too: `OnLoad` runs in the chain of the message that loads the actor (that message is
+    queued before the load starts), `OnUnload` in a new chain.
 - Alternatives:
   - A call stack of actor addresses in every request (exact path in the error, but grows with every hop).
   - Reentrancy, as Orleans allows per grain type: it gives up turn-based state, which ECS actors rely on.
   - Detection by timeout only: today's behaviour.
 - Consequences:
-  - Cycles fail at once (`CallCycleTests`, on one node, across nodes, through a service, an actor asking itself).
+  - Cycles fail at once (`CallCycleTests`, on one node, across nodes, through a service, an actor asking itself, an
+    `OnLoad` asking the actor that loads it, an actor asked back while it unloads).
   - A request in the chain of a turn that is still running fails even when that turn does not wait for it (it asked
     without awaiting and awaits something else): such flows are one-way messages.
   - Awaits of foreign tasks (`Task.Delay`) resume without the chain, so requests after them start a new chain. Those
