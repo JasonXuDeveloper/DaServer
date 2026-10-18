@@ -323,6 +323,24 @@ public sealed class DaServerNodeGroup
     }
 
     /// <summary>
+    /// Set <paramref name="name"/> on every node of the group (a node option such as <c>DaServer__Shards</c>, or the
+    /// application's own). A parameter (<c>builder.AddParameter</c>) is asked for at run, and published as a Compose
+    /// variable or a Helm value, so each environment sets it at deploy time.
+    /// </summary>
+    public DaServerNodeGroup WithEnvironment(string name, IResourceBuilder<ParameterResource> value)
+    {
+        foreach (var node in Nodes) node.WithEnvironment(name, value);
+        return this;
+    }
+
+    /// <summary>Set <paramref name="name"/> to <paramref name="value"/> on every node of the group.</summary>
+    public DaServerNodeGroup WithEnvironment(string name, string value)
+    {
+        foreach (var node in Nodes) node.WithEnvironment(name, value);
+        return this;
+    }
+
+    /// <summary>
     /// The nodes keep their actor records (ADR-068) in <paramref name="store"/>, a database resource
     /// (<c>builder.AddPostgres("pg").AddDatabase("actors")</c>): its connection string as
     /// <c>ConnectionStrings__{connectionName}</c>, which <c>AddPostgreSqlActorStore(connectionName)</c> in the node's
