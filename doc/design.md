@@ -58,7 +58,8 @@ grants, group membership, resumed sessions), never through business messages, so
 hosted on a client-facing node exchanges ordinary `[Message]`s with the rest of the cluster.
 
 Business code reaches the cluster only through `ICluster` (`Cluster` in actors and services, `world.Cluster` in
-systems): messages, session binding, client groups. `Node` (lifecycle, membership, links) is not visible to it.
+systems): messages to actors, services, sessions and client groups. Binding and granting sessions are an actor's own
+(`BindSession`, `GrantSession`). `Node` (lifecycle, membership, links) is not visible to it.
 
 ### Data flow of a call
 
@@ -162,7 +163,7 @@ Planned (roadmap): a client-connection shard that keeps session state as ECS com
 | Single loaded actor | Keys hash into 4,096 slots, each owned by rendezvous hashing over the `Up` and `Suspect` nodes hosting the handler type (ADR-023, ADR-074; by the id's `Placement` for `IPlaced` id types, ADR-073), unless the coordinator's slot table says otherwise (ADR-079: the oldest Up member pins the loaded slots of `[Sticky]` types where they are and moves slots of other types from the most to the least loaded node, a few per round): every node computes the same owner from the same view and table. A node loads an actor only if it is the owner in its own view; otherwise it forwards (hop limit 3) or answers `NotHosted`. When ownership changes, the old owner unloads (`OnUnload`), hands its record to the new owner (ADR-072; the store when that fails) and forwards its remaining mail behind it. |
 | Actor state | `[Persist]` components form one record per actor in the actor store (ADR-068): restored before `OnLoad`, written on unload, every `SaveEvery` while changed and at once with `SaveNow`; versioned, so a stale owner's write is refused and its copy dropped. A graceful stop loses nothing; a crash loses at most `SaveEvery` of changes. |
 | Sessions | A client-facing node owns its sockets. Grants, bindings and groups live there; when a session closes, every actor it was bound or granted to that handles `SessionClosed` receives it, so no actor keeps a dead session. |
-| Graceful shutdown | `SIGTERM` → `Leaving` (pushed to every member) → stop loading actors → drain mailboxes → unload actors → exit. |
+| Graceful shutdown | `SIGTERM` → readiness off (`/health` fails) → `Leaving` (pushed to every member; callers reroute) → drain features (client connections move their clients) → unload every actor (handing records over, or saving them) → close links → exit, within one stop budget (D1-D2). |
 | Backpressure | Shard dispatch queues and actor mailboxes are bounded and refuse with `Overloaded` (ADR-027). Links are not paused (their replies would stall too, ADR-027). A slow client hits the per-connection send backlog bound (256 KB) and is disconnected; it reconnects and resynchronizes (ADR-035). |
 | Dead connections | Silence closes a connection (ADR-053): idle directions carry a 24-byte `Ping`/`Pong`, any frame counts as life. Clients ping after 15 s idle and give up after 30 s without a frame (then resume); client-facing nodes close sessions silent for 45 s (then the resume grace); node links ping each gossip interval and reconnect after max(`SuspectAfter`, three gossip intervals) of silence (then replay the resend window). |
 | Link resumption | A node link's stream survives disconnects (ADR-008): the sender keeps unacknowledged bytes, the new connection's Hello names the stream, the receiver answers how much it processed and the sender replays the rest before anything new. A network blip is a delay: nothing is lost or run twice, calls in flight keep waiting. Calls fail with `Disconnected` only when the stream cannot resume (peer restarted, unreachable, declared dead, or the window no longer holds what it needs). A client that loses its connection resumes its session on any client-facing node with a signed ticket; actors receive `SessionResumed` instead of `SessionClosed` (ADR-036). |
@@ -296,7 +297,7 @@ flowchart LR
 A capability a node runs besides its actors and services (client connections, an HTTP edge) is a `NodeFeature` in
 `NodeOptions.Features`, off unless configured (ADR-048). Hooks: `Start(INodeContext)` (IO side, before the shards
 run), `ConfigureShard(World)` (each shard thread), `OnViewChanged`, `OnMemberDead` (once per member), `DrainAsync`
-(the node is leaving, shards still run), `Stop(crashed)`, `IsReady`. A feature owns address types:
+(the node is leaving, shards still run), `Stop(crashed)`. A feature owns address types:
 `node.HandleAddress<TAddr>(handler)` receives every message to a `TAddr` of this node on the receiving thread with the
 raw frame (never blocking). Node addresses go to the node they name; the scope of each registered type is advertised
 in the node's card, and a message to a group address goes once to every Up node advertising its scope. The runtime

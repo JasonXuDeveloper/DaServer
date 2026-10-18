@@ -10,17 +10,17 @@ Keep this file current: tick items when done, add items when scope changes.
 2. G0-G2 (done, below): one message model (ADR-047), feature points and ingress, client connections as a
    built-in feature, Abstractions and Client packages (ADR-048).
 3. T2 ECS bots and business isolation (done): shared rules, a real client, simulated users that run it.
-4. N2 `SendAfter` (the delayed send primitive, per-shard timer wheel), N3 call cycles fail fast (`Chain` header
+4. N2 `SendAfter` (done) (the delayed send primitive, per-shard timer wheel), N3 call cycles fail fast (`Chain` header
    extension), N3b no sync-over-async (incl. the await-only `Reply<T>`, which also fixes H1).
-5. N8 collections in messages without garbage (H4), on Nino 4 (ADR-078).
-6. D1-D4 graceful shutdown without a store, A-items (Aspire and hosting; A6 uses the `Trace` header extension).
-7. C1-C4 cluster hardening (before persistence: fencing assumes correct downing).
-8. N1 Contracts / Model / Logic split.
-9. N5 persistence (PostgreSQL + in-memory store) with D5-D6 and P1 `DaServer.Testing`, N6 state handoff, N7
+5. N8 (done) collections in messages without garbage (H4), on Nino 4 (ADR-078).
+6. D1-D4 (done) graceful shutdown without a store, A-items (Aspire and hosting; A6 uses the `Trace` header extension).
+7. C1-C4 (done) cluster hardening (before persistence: fencing assumes correct downing).
+8. N1 (done) Contracts / Model / Logic split.
+9. N5 (done) persistence (PostgreSQL + in-memory store) with D5-D6 and P1 `DaServer.Testing`, N6 state handoff, N7
    placement affinity with K1-K2 placement strategies and the owner table.
-10. V1-V3 versioning and rolling upgrades (before scaling: rolling deploys depend on them).
-11. S1-S6 elastic scaling.
-12. N9 hot reload.
+10. V1-V3 (done) versioning and rolling upgrades (before scaling: rolling deploys depend on them).
+11. S1-S6 (done) elastic scaling.
+12. N9 hot reload (waits for the EasyEcs release it needs).
 13. N4 route completeness, N11 generated filters (on the G filter point), K3-K5, open cleanup, quality items. Later
     optional modules: `DaServer.Reminders`, `DaServer.Topics`, leases for strict singletons.
 EasyEcs in parallel when DaServer waits on benchmarks: the Friflo gap, comparison tables in the docs.
@@ -131,7 +131,7 @@ Steady state allocates nothing: per message, call, reply, tick, broadcast, conne
 - [ ] Z4 Keep it: CLAUDE.md rule plus analyzer coverage where a misuse is detectable in user code (e.g.
       `TaskCompletionSource`/`Task.Delay` in handlers and systems: use pooled framework awaitables and `SendAfter`).
 
-## One message model, built-in ingress and client connections (G0-G2 done, G5 open)
+## One message model, built-in ingress and client connections (G0-G2 and G5 done, G7 open)
 
 One framework (ADR-045, ADR-048): ingress (`DaServer.Ingress`) and client connections (`DaServer.Clients`) are
 built-in capabilities on public feature points, off unless configured; business domains live in samples. Load
@@ -531,10 +531,10 @@ in separate commits.
       broadcasts measured +1% to +32% and the broadcast scenario +7% / +13%, but repeated runs of one build vary by
       +-25% on this VM (35-46 ms for the same 5,000 x 9 case); a bisection on single runs pointed at a commit that two
       interleaved runs then cleared. Broadcast work goes to Z5.
-- [ ] Z6 .NET 11 / C# 15 (audit of October 2026, probes on RC2, Roslyn 5.12): runtime async on for net11.0 builds,
-      net10.0 builds dropped, `Reply<T>` kept for handlers (as fast as runtime async, 0 B suspended; ADR-054); C# 14
-      extension properties for the server-only `World` API (`world.Tick`, `world.Cluster`); Zstandard span codecs
-      (`ZstandardEncoder`) for large actor records, measured with BDN. Not worth it now: interceptors (the generated
+- [ ] Z6 .NET 11 / C# 15 (audit of October 2026, probes on RC2, Roslyn 5.12): done: runtime async on for net11.0
+      builds, net10.0 builds dropped, `Reply<T>` kept for handlers (as fast as runtime async, 0 B suspended; ADR-054),
+      C# 14 extension members for the server-only `World` API (`world.Tick`, `world.Cluster`). Open: Zstandard span
+      codecs (`ZstandardEncoder`) for large actor records, measured with BDN. Not worth it now: interceptors (the generated
       `Ask` overloads already avoid the generic hop), unions (they box struct cases), closed hierarchies (net11-only
       attributes), a generated `AddSystems` (the order of systems is the user's to choose). Already in effect without
       changes: JIT bounds-check and devirtualization work, continuations that skip `ExecutionContext` restore when
@@ -821,6 +821,29 @@ and cards, a manual clock), fails before its fix, and passes after it.
     grow); shard queues' CAS dequeue (the drain after close is a second consumer); the timeout sweep scanning the table
     every 100 ms (sequential, bounded by the peak); a group's lock held across its fan-out (orders broadcasts and
     joins); `ClusterClient.cs` at 454 lines (already split in three by concern).
+- [x] Self-review round 2 (independent reviews of round 1's changes, the client edge, the public API and the docs):
+  - Round 1's duplicate check (sender, version, hash) could match a newer record (an actor moved back and forth
+    without a checkpoint carries the same header), and a resend arriving after the actor moved on could be adopted or
+    refused into a stale write. Each handoff now carries a random id that resends keep; resends are their own frame,
+    taken only by a copy waiting for the key's record, never adopted or passed on fresh; each shard remembers the
+    handoffs it took or passed on for two handoff timeouts (`HandoffsSeen`, bounded), so a resend is answered
+    "accepted" wherever the actor went, or follows the first send to the node it was passed to. A resend reaching a
+    stopping shard goes unanswered (it may have been taken there); its sender falls back once that node left.
+  - Tickets and resumes draw on the session's message rate (each costs a signature;
+    `ResumesAndTicketsDrawOnTheSessionsRate`). `Take` refuses ids that are no call id (0 and the cooling tags).
+  - `NodeFeature.IsReady` removed (nothing read it). Generated-code entry points hidden from IntelliSense
+    (`ServerRegistry`, `HandlerTypeInfo`, `SystemInfo`, `MessageHandler(s)`, `MessageFilters<T>`); the transport types
+    users never touch are internal (`Connection`, `ConnectionOptions`, `FrameChannel`, `KeepAlive`, `SendFlusher`,
+    `WebSocketChannel`, `MpmcQueue`, `BufferPool`, `FrameExtensions`, `ClientConnections.Open`/`Channels`, the hosting
+    margins and status mapping); `ClusterMember`'s fields stay public (the card is a Nino wire type), its `Clone` and
+    `Supersedes` are internal.
+  - Docs: the README's benchmark table and one-map latencies from the release checklist's run, its realm example as
+    the sample writes it, design's shutdown order and `ICluster` scope, the roadmap's development order and Z6 state.
+  - Kept, with the reason: `ClientConnections` configured under `DaServer:Clients` (the section names what is
+    configured, the clients; the feature type names what runs); `ResumeGrace` on `NodeOptions` (both sides of a
+    resume read it, the actor nodes without client connections included).
+  - E2E: the first sample run after round 1 failed once with game-0 not exiting 0 (its log was not kept); three
+    reruns of the three sample tests passed. Watched in the next rounds.
 
 ## Generator / analyzer (`src/DaServer.Generator`)
 - [x] Messages instead of contracts (ADR-035): typed `Ask` overloads per request, one dispatcher per `[Handle]`
@@ -843,18 +866,13 @@ and cards, a manual clock), fails before its fix, and passes after it.
 - [x] Aspire: run, one resource per replica (members are addressed individually); published, one workload per group
       seeded through its DNS name (ADR-030)
 
-## Release review (before G; re-recorded after T2, see "Open after G")
-- [x] Checklist 1-3: 0 warnings, 0 errors; 80 unit/integration tests and the end-to-end test pass (CI green); topology
-      names only in the AppHost
-- [x] Checklist 4: RPC unchanged within noise by resumable links (BenchmarkDotNet medium job)
-- [x] Checklist 5: 10,000 bots, 60 s: E2E OK, 2.4M realm broadcasts, p50 35.1 ms, p99 57.2 ms, no gap or
-      disconnect; servers without telemetry: 0 KB/s except business payloads (chat strings) and < 0.5 B per pushed
-      message on gateways, no GC (README "Performance")
-- [x] Checklist 6: R1-R11 and E1-E10 hold; open items are the unchecked roadmap entries
+## Release review
+- [x] The release checklist: its current record is in "Open after G" (7c5b50b); R1-R11 and E1-E10 hold, open items
+      are the unchecked roadmap entries
 - [x] Naming review (ADR-032, ADR-040): `OnLoad`/`OnUnload`, `Caller`, the directory, one noun per concept;
       actor state from field initializers, `ActorRef` for systems
-- [x] Moving scenario: 10,000 bots in one map (AOI and dead reckoning, ~2.5M positions/s, p99 106 ms); servers
-      0–5 KB/s, no GC; scale-out: a gateway started mid-run
+- [x] Moving scenario: 10,000 bots in one map (AOI and dead reckoning, ~2.5M positions/s); servers 0–5 KB/s, no GC;
+      scale-out: a gateway started mid-run
       receives the new clients (test + process run)
 - [x] One write per connection per batch (ADR-034)
 - [x] Message-first model (ADR-035); client send backlog bound 256 KB (a slow client is disconnected and

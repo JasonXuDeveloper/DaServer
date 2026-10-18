@@ -39,8 +39,8 @@ reachable) and alive (no stalled shard, `/alive`). Probes and the metrics scrape
 | `aspire resource map-0 start` / `stop` / `restart` | Aspire's own; stop is graceful too (SIGTERM) |
 
 The commands call the node's admin endpoints on its HTTP port. Outside Aspire, call them yourself with the bearer token
-the cluster's signing secret derives (HMAC-SHA256 of `daserver-admin`, hex); a node without a signing secret has no
-admin endpoints.
+the cluster's signing secret derives (HMAC-SHA256 of `daserver-admin`, hex); a node without a signing secret refuses
+every admin request.
 
 ```bash
 TOKEN=$(printf daserver-admin | openssl dgst -sha256 -hmac "$DaServer__SigningSecret" | awk '{print toupper($2)}')

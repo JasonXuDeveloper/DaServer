@@ -203,8 +203,11 @@ public sealed partial class RealmBroadcastSystem : EcsSystem        // every 5 t
     public override int UpdateInterval => 5;
 
     [ForEach]
-    static void Broadcast(in RealmState realm, World world) =>
-        world.Cluster.Send(ClientGroup.All, new RealmStatus(world.Tick, realm.Online.Count, DateTime.UtcNow.Ticks));
+    static void Broadcast(ref RealmState realm, World world)
+    {
+        realm.Ticks += 5; // the realm's own sequence: it moves with the realm, whichever node runs it
+        world.Cluster.Send(ClientGroup.All, new RealmStatus(realm.Ticks, realm.Online.Count, world.Time.GetUtcNow().UtcTicks));
+    }
 }
 
 // Client (bot, game): the same messages, one well-known address.
@@ -340,12 +343,13 @@ every 5 ticks (20 ticks/s). Two loads, 60 s measured window each:
 |---|---|---|
 | Realm broadcasts delivered (every bot every one, in order) | 2,400,000 | 2,400,000 |
 | Map traffic delivered to clients | ~2,500,000 positions/s | ~100,000 lines/s |
-| Broadcast latency (game system to bot callback) | p50 75 ms, p99 199 ms, p99.9 250 ms | p50 35 ms, p99 57 ms |
+| Broadcast latency (game system to bot callback) | p50 76 ms, p99 209 ms, p99.9 279 ms | p50 35 ms, p99 57 ms |
 | Game node | 3% CPU, 0–5 KB/s allocated | 2% CPU, ~32 KB/s (chat strings) |
 | Each gateway (~3,300 sessions) | 11–12% CPU, 0 KB/s | 5–6% CPU, 0–7 KB/s |
 | GCs on servers, disconnects, gaps | 0 | 0 |
 
-(CPU is the share of all 4 cores; the login node stays at 1% and 0 KB/s; with Aspire's OTLP telemetry on, the
+(Latencies of the one-map load: the release checklist's run, roadmap; CPU and allocation: ADR-070's runs. CPU is
+the share of all 4 cores; the login node stays at 1% and 0 KB/s; with Aspire's OTLP telemetry on, the
 exporter adds ~55 KB/s per node.) The bot process and the kernel's loopback use most of the machine, so latency is
 mostly theirs. Without area of interest, 10,000 players in one map is a bandwidth problem, not a CPU one: every
 position to everyone each tick is 10,000 x 10,000 x 20 = 2 billion entries a second (~40 GB/s); even with dead
@@ -357,23 +361,23 @@ node stays under 10% CPU.
 addresses lead them to, so a gateway started later takes old clients too (cluster test:
 `OldConnectionsMoveToANodeStartedLater`).
 
-**BenchmarkDotNet** ([benchmarks/](benchmarks/DaServer.Benchmark), default job, one 4-core VM, .NET 11 RC2; Allocated
-is per operation and includes the benchmark's clients):
+**BenchmarkDotNet** ([benchmarks/](benchmarks/DaServer.Benchmark), default job, one 4-core VM, .NET 11 RC2, the
+release checklist's run in the roadmap; Allocated is per operation and includes the benchmark's clients):
 
 | Benchmark | Case | Mean | Allocated |
 |---|---|---:|---:|
-| Broadcast to every session, game node through 3 client-facing nodes | 3,000 clients | 13.2 ms | 96 B |
-| | 9,000 clients | 47.2 ms | 129 B |
-| Group broadcast through 1 client-facing node (1 / 9 groups) | 1,000 clients | 5.4 / 5.9 ms | 220 B |
-| | 5,000 clients | 26.2 / 28.9 ms | 232 B |
-| One-way messages to 64 actors, bursts of 1,024 (per message) | same node / other node | 620 ns / 981 ns | 0 |
-| 64 / 1,024 concurrent actor calls, all completed | same node | 218 µs / 1.88 ms | 112 B |
-| | other node | 335 µs / 1.67 ms | 112 B |
-| 1 actor call, round trip | same node / other node | 20 µs / 101 µs | 112 B |
+| Broadcast to every session, game node through 3 client-facing nodes | 3,000 clients | 15.5 ms | 16 B |
+| | 9,000 clients | 52.0 ms | 50 B |
+| Group broadcast through 1 client-facing node (1 / 9 groups) | 1,000 clients | 5.2 / 5.8 ms | 7 B |
+| | 5,000 clients | 26.5 / 32.5 ms | 46-50 B |
+| One-way messages to 64 actors, bursts of 1,024 (per message) | same node / other node | 454 ns / 730 ns | 0 |
+| 64 / 1,024 concurrent actor calls, all completed | same node | 169 µs / 776 µs | 0-1 B |
+| | other node | 315 µs / 1.05 ms | 0-1 B |
+| 1 actor call, round trip | same node / other node | 5.2 µs / 86 µs | 0-1 B |
 
-Against the agreed baseline (d676d2a on .NET 10, same machine, run back to back): calls 11-55% faster, one-way
-messages 45-88% faster, broadcasts 0 to +5% and the 3k / 9k scenario -12% / +7% (within noise), allocations no higher. How much
-comes from .NET 11 alone: ADR-054.
+Against the agreed baseline (d676d2a on .NET 10, same machine, run back to back): calls 12-83% faster, one-way
+messages 54-90% faster, broadcasts -9% to +8% and the 3k / 9k scenario +2% / +8% (each within one standard deviation),
+allocations lower everywhere. How much comes from .NET 11 alone: ADR-054.
 
 ## Build, test, benchmark
 
