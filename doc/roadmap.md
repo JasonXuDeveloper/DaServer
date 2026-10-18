@@ -728,15 +728,18 @@ and cards, a manual clock), fails before its fix, and passes after it.
 - [ ] Split `Node` into links and router; membership talks to the node
       through an interface
 - [ ] ECS misuse: the turn's caller (`Actor.TurnCaller`) as a component
-- [ ] `HandoffTests.ScalingOutAndInMovesRecordsWithoutTheStore` failed once of 7 full runs, while the E2E ran in
-      parallel (passes alone and in 5 further full runs; the message was not captured). Suspect: a handoff that times
-      out under load falls back to the store, which the test's "0 writes" forbids. Check the handoff timeout against
-      a loaded machine, or make the test tell a fallback from a lost record.
-- [ ] `PersistenceEdgeTests.AReloadWaitsForTheWriteInFlight` failed once on CI (run 39099216040, 2 cores): the deposit
-      sent while the actor reloads got NotHosted 28 ms into the test, on one node. 50 runs alone and 15 under a full
-      CPU load pass. Suspects: a node started on a port a node of an earlier test just released, reached by that
-      cluster's view or slot table; or a reload path that forwards when the node does not own the key in its view.
-      Capture the view and the table when it happens again.
+- [x] A handoff answer was dropped when the sender joined moments before: the shard read a view not listing it yet,
+      gossip then published one that did and dropped its introduction, and the second read found neither. The old
+      owner kept waiting on its copy; when the key came back it refused the record, and both sides fell back to the
+      store (`ScalingOutAndInMovesRecordsWithoutTheStore`), or a stopping node waited out its budget for the answer
+      (`WithoutAStoreStateStillMoves`). `LinkTo` reads the view again after a missed introduction (one lookup for
+      handoffs and session operations). Under four parallel test runs on four cores: 2-6 failures per 48 runs before,
+      0 in 192 after.
+- [x] Test clusters had one name (`daserver`): a node taking a port an earlier test's node just released could be
+      gossiped with by that test's stopping nodes and route keys to them (the suspect of a NotHosted in
+      `AReloadWaitsForTheWriteInFlight`, CI run 39099216040). `TestNodes` gives each cluster a name of its own.
+- [x] `ResendWindowsRecycleTheirOwnChunks` read the process-wide pool counter, which parallel tests and the pool's
+      trimming move: it counts the window's own rents from the shared pool.
 - Kept on purpose: B6 (local replies hand the frame over without a copy), B12 (the shard checks runnable actors after
   tick systems sent local mail)
 
