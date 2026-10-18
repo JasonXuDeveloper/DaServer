@@ -15,7 +15,20 @@ public class BackpressureTests : ClusterTest
         // All 50 may arrive before the first turn starts (loaded actor): then exactly the capacity is admitted.
         Assert.That(ok, Is.InRange(4, 49), "the mailbox capacity was used");
         Assert.That(await node.Ask(new CounterId(1), new Get()), Is.EqualTo(ok), "refused calls did not run");
-        Assert.That(node.Rejected, Is.EqualTo(overloaded));
+        Assert.That(node.Dropped(DropReason.MailboxFull), Is.EqualTo(overloaded));
+        Assert.That(node.Dropped(DropReason.QueueFull), Is.Zero);
+    }
+
+    [Test]
+    public async Task AnActorTypeSetsItsOwnMailboxCapacity()
+    {
+        // The node allows 4096 waiting messages per actor; Narrow allows 2.
+        var node = await Start("single", shards: 1);
+        var statuses = await Task.WhenAll(Enumerable.Range(0, 30).Select(_ => StatusOf(node.Ask(new NarrowId(1), new SlowStep()))));
+        int ok = statuses.Count(s => s == RpcStatus.Ok), overloaded = statuses.Count(s => s == RpcStatus.Overloaded);
+        Assert.That(ok + overloaded, Is.EqualTo(30));
+        Assert.That(ok, Is.InRange(2, 8), "the actor type's capacity, not the node's");
+        Assert.That(node.Dropped(DropReason.MailboxFull), Is.EqualTo(overloaded));
     }
 
     [Test]
@@ -36,7 +49,7 @@ public class BackpressureTests : ClusterTest
         var statuses = await Task.WhenAll(calls);
         Assert.That(statuses.Count(s => s == RpcStatus.Ok), Is.EqualTo(16));
         Assert.That(await node.Ask(new CounterId(1), new Get()), Is.EqualTo(16), "admitted calls ran once the shard caught up");
-        Assert.That(node.Rejected, Is.EqualTo(84));
+        Assert.That(node.Dropped(DropReason.QueueFull), Is.EqualTo(84));
     }
 
     [Test]
@@ -143,7 +156,7 @@ public class BackpressureTests : ClusterTest
 
         gate.Set();
         Assert.That(await node.Ask(new CounterId(1), new Get()), Is.Zero, "requests whose caller timed out were not run");
-        Assert.That(node.Expired, Is.EqualTo(10));
+        Assert.That(node.Dropped(DropReason.Expired), Is.EqualTo(10));
     }
 
     [Test]
@@ -185,7 +198,7 @@ public class BackpressureTests : ClusterTest
 
         gate.Set();
         Assert.That(await caller.Ask(new CounterId(1), new Get()), Is.Zero, "the remote node did not run requests past their deadline");
-        Assert.That(target.Expired, Is.EqualTo(10));
+        Assert.That(target.Dropped(DropReason.Expired), Is.EqualTo(10));
     }
 
     private static async Task<RpcStatus> StatusOf<T>(Reply<T> call)

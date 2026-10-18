@@ -24,7 +24,7 @@ internal sealed class Shard : CompletionThread
     private readonly MpmcQueue<WorkItem> _completionQueue; // work that finishes admitted work: never refused
     private readonly ConcurrentQueue<WorkItem> _overflow = new(); // only when the completion ring is full
     private int _overflowCount;
-    private PaddedLong _rejected; // producers count refusals exactly under overload: a line of its own
+    private PaddedLong _queueFull; // producers count refusals exactly under overload: a line of its own
     private ShardCounters _counters; // written by the shard thread every pass: away from what producers read
     private readonly ManualResetEventSlim _wake = new(false, spinCount: 0);
     private PaddedLong _sleeping; // read by every producer on every post: never next to what the shard writes
@@ -66,11 +66,14 @@ internal sealed class Shard : CompletionThread
     /// <summary>Work items waiting in the dispatch queue (approximate, any thread).</summary>
     public int QueueLength => _dispatchQueue.Count + _completionQueue.Count + Volatile.Read(ref _overflowCount);
 
-    /// <summary>Calls and events refused because the shard or an actor mailbox was full (any thread).</summary>
-    public long Rejected => Interlocked.Read(ref _rejected.Value);
+    /// <summary>Messages dropped unrun for <paramref name="reason"/> since start (any thread).</summary>
+    public long Dropped(DropReason reason) => reason switch
+    {
+        DropReason.QueueFull => Interlocked.Read(ref _queueFull.Value),
+        DropReason.MailboxFull => Volatile.Read(ref _counters.MailboxFull),
+        _ => Volatile.Read(ref _counters.Expired),
+    };
 
-    /// <summary>Requests dropped unrun because their caller had already timed out (the call carried a deadline).</summary>
-    public long Expired => Volatile.Read(ref _counters.Expired);
 
     /// <summary>Messages whose handler failed (threw) on this shard since start: poison messages show up here.</summary>
     public long Failed => Volatile.Read(ref _counters.Failed);
@@ -111,7 +114,7 @@ internal sealed class Shard : CompletionThread
 
         if (!_dispatchQueue.TryEnqueue(new WorkItem(WorkKind.Dispatch, frame, sink)))
         {
-            CountRejected();
+            Interlocked.Increment(ref _queueFull.Value);
             return false;
         }
 
@@ -134,7 +137,8 @@ internal sealed class Shard : CompletionThread
         if (!Persistence.Handoff.Bounce(Node, frame)) Node.Forward(frame, sink);
     }
 
-    internal void CountRejected() => Interlocked.Increment(ref _rejected.Value);
+    /// <summary>On the shard's own thread only: an actor's mailbox was full.</summary>
+    internal void CountMailboxFull() => Volatile.Write(ref _counters.MailboxFull, _counters.MailboxFull + 1);
 
     /// <summary>On the shard's own thread only (no interlocked add: nobody else writes it).</summary>
     internal void CountExpired() => Volatile.Write(ref _counters.Expired, _counters.Expired + 1);
@@ -383,7 +387,7 @@ internal sealed class Shard : CompletionThread
 /// What a shard's thread writes every pass, read by the node's metrics and watchdog: on lines of their own, padded on
 /// both sides (see <see cref="PaddedLong"/>), so producers reading the shard's other fields do not miss on every pass.
 /// </summary>
-[StructLayout(LayoutKind.Explicit, Size = 128)]
+[StructLayout(LayoutKind.Explicit, Size = 192)]
 internal struct ShardCounters
 {
     [FieldOffset(64)] public long PassStartedMs; // Platform.Milliseconds when the running pass started, 0 while asleep
@@ -393,4 +397,5 @@ internal struct ShardCounters
     [FieldOffset(96)] public int ActorCount;
     [FieldOffset(104)] public long IdleTicks; // Stopwatch ticks spent asleep, waiting for work (busy ratio = the rest)
     [FieldOffset(112)] public long TickOverruns; // ticks that started a whole interval late (the shard cannot keep its rate)
+    [FieldOffset(120)] public long MailboxFull;
 }

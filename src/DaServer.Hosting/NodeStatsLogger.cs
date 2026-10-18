@@ -27,7 +27,8 @@ internal sealed partial class NodeStatsLogger(Node node, ILogger<NodeStatsLogger
                     features.Append(' ').Append(name, name.LastIndexOf('.') + 1, name.Length - name.LastIndexOf('.') - 1).Append('=').Append(read());
                 Stats(logger, window.CpuShare * 100, window.AllocatedKBPerSecond, window.Gen0, window.Gen1, window.Gen2,
                     window.PausedShare * 100, GC.GetGCMemoryInfo().HeapSizeBytes / (1024 * 1024), node.ActorCount,
-                    node.TotalQueueLength(), node.Rejected, node.Expired, features.ToString());
+                    node.TotalQueueLength(), node.Dropped(DropReason.QueueFull) + node.Dropped(DropReason.MailboxFull), node.Dropped(DropReason.Expired),
+                    features.ToString());
                 last = now;
             }
         }

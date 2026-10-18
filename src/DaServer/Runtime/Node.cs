@@ -296,8 +296,13 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
     /// <summary>Messages waiting in all shard mailboxes (approximate, for metrics and load reporting).</summary>
     public int TotalQueueLength() => (int)Sum(static s => s.QueueLength);
 
-    /// <summary>Calls and events refused by full shard dispatch queues or actor mailboxes since start (backpressure).</summary>
-    public long Rejected => Sum(static s => s.Rejected);
+    /// <summary>Messages dropped unrun for <paramref name="reason"/> since start, all shards (backpressure, late requests).</summary>
+    public long Dropped(DropReason reason)
+    {
+        long sum = 0;
+        foreach (var shard in _shards) sum += shard.Dropped(reason);
+        return sum;
+    }
 
     /// <summary>Time the shards spent asleep waiting for work since start, in <see cref="Stopwatch"/> ticks, all shards.</summary>
     internal long IdleTicks => Sum(static s => s.IdleTicks);
@@ -308,8 +313,6 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
     /// <summary>Shards on this node.</summary>
     public int ShardCount => _shards.Length;
 
-    /// <summary>Requests dropped unrun since start because their caller had already timed out.</summary>
-    public long Expired => Sum(static s => s.Expired);
 
     /// <summary>Messages whose handler failed since start (all shards).</summary>
     public long Failed => Sum(static s => s.Failed);

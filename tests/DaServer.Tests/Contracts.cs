@@ -461,6 +461,26 @@ public sealed class Fragile : Actor<FragileId, FragileState>
     public override ErrorAction OnError(Exception error) => Key >= 100 ? ErrorAction.Reload : ErrorAction.Resume;
 }
 
+// ---------------------------------------------------------------- an actor type with a small mailbox
+
+public readonly record struct NarrowId(long Value) : IActorId;
+
+[NinoType, Message] public partial record struct SlowStep : IRequest<bool>;
+
+public sealed class Narrow : Actor<NarrowId>
+{
+    public override int MailboxCapacity => 2;
+
+    [Handle]
+    public async Reply<bool> On(SlowStep _)
+    {
+#pragma warning disable DAS009 // on purpose: requests pile up behind a slow turn
+        await Task.Delay(10);
+#pragma warning restore DAS009
+        return true;
+    }
+}
+
 // ---------------------------------------------------------------- call chains (actors asking each other)
 
 public readonly record struct LoopId(long Value) : IActorId;

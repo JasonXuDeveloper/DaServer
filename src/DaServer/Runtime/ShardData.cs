@@ -34,6 +34,9 @@ internal struct Mailbox(Queue<Envelope> pending) : IComponent
 
     /// <summary><see cref="ShardActivity.NowMs"/> when the actor last took mail (idle unloading).</summary>
     public long LastActive;
+
+    /// <summary>Messages it may hold before new ones are refused (<see cref="Actor.MailboxCapacity"/>, read when it loads).</summary>
+    public int Capacity;
 }
 
 /// <summary>Tag: the mailbox has mail (<see cref="MailboxSystem"/> runs it once the actor has no <see cref="Turn"/>).</summary>

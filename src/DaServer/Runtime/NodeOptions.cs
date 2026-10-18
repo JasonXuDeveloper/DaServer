@@ -45,7 +45,7 @@ public sealed class NodeOptions
     /// </summary>
     public int DispatchQueueCapacity { get; set; } = 64 * 1024;
 
-    /// <summary>Messages waiting for one actor before new ones are refused the same way.</summary>
+    /// <summary>Messages waiting for one actor before new ones are refused the same way (an actor type's own: <see cref="Actor.MailboxCapacity"/>).</summary>
     public int ActorMailboxCapacity { get; set; } = 4096;
 
     public TimeSpan CallTimeout { get; set; } = TimeSpan.FromSeconds(10);

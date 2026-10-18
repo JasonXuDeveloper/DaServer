@@ -131,10 +131,9 @@ internal static class ShardDispatch
         }
 
         ref var mailbox = ref actor.Get<Mailbox>();
-        var shard = world.Shard;
-        if (mailbox.Pending.Count >= shard.Node.Options.ActorMailboxCapacity)
+        if (mailbox.Pending.Count >= mailbox.Capacity)
         {
-            shard.CountRejected();
+            world.Shard.CountMailboxFull();
             Overloaded(envelope.Frame, envelope.Sink);
             return;
         }
@@ -154,8 +153,12 @@ internal static class ShardDispatch
         actor.HandlerType = handlerType;
         actor.Key = id.Key;
         actor.Shard = world.Shard;
-        var entity = world.CreateEntity(new ActorRef(actor), new Mailbox(pools.RentMailbox()) { LastActive = world.GetSingleton<ShardActivity>().NowMs },
-            new Loading());
+        int capacity = actor.MailboxCapacity;
+        var entity = world.CreateEntity(new ActorRef(actor), new Mailbox(pools.RentMailbox())
+        {
+            LastActive = world.GetSingleton<ShardActivity>().NowMs,
+            Capacity = capacity > 0 ? capacity : world.Shard.Node.Options.ActorMailboxCapacity,
+        }, new Loading());
         actor.Entity = entity;
         var idle = actor.UnloadAfterIdle;
         if (idle > TimeSpan.Zero) entity.Add<UnloadWhenIdle>() = new UnloadWhenIdle((long)idle.TotalMilliseconds);

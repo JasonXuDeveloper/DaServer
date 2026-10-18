@@ -452,7 +452,7 @@ public class AllocationTests : ClusterTest
         }
 
         Assert.That(sink.Timeout, Is.EqualTo(6 * calls));
-        Assert.That(node.Expired, Is.EqualTo(6 * calls), "the shard dropped the expired requests unrun");
+        Assert.That(node.Dropped(DropReason.Expired), Is.EqualTo(6 * calls), "the shard dropped the expired requests unrun");
         Assert.That(sink.PayloadBytes, Is.Zero, "status-only frames");
         Assert.That(allocated / (double)calls, Is.LessThan(8), $"{allocated} B for {calls} timeouts");
 
@@ -461,7 +461,7 @@ public class AllocationTests : ClusterTest
         {
             var gate = new ManualResetEventSlim(); // not disposed: a shard thread may still be inside Wait() when the test ends
             shard.Post(static g => ((ManualResetEventSlim)g!).Wait(), gate); // the shard is busy until the gate opens
-            long timedOut = Interlocked.Read(ref sink.Timeout) + count, expired = node.Expired + count;
+            long timedOut = Interlocked.Read(ref sink.Timeout) + count, expired = node.Dropped(DropReason.Expired) + count;
             for (int i = 0; i < count; i++)
             {
                 var frame = FrameWriter.Rent();
@@ -473,7 +473,7 @@ public class AllocationTests : ClusterTest
             WaitFor(ref sink.Timeout, timedOut);
             gate.Set();
             var spin = new SpinWait();
-            while (node.Expired < expired) spin.SpinOnce(); // frames back in their pool
+            while (node.Dropped(DropReason.Expired) < expired) spin.SpinOnce(); // frames back in their pool
         }
     }
 

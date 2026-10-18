@@ -100,6 +100,14 @@ public abstract class Actor : ShardObject
     public virtual TimeSpan UnloadAfterIdle => TimeSpan.Zero;
 
     /// <summary>
+    /// Messages waiting for this actor before new ones are refused (<see cref="Protocol.RpcStatus.Overloaded"/>, counted as
+    /// <see cref="DropReason.MailboxFull"/>): one slow actor cannot hold its shard's memory. Zero, the default:
+    /// <see cref="NodeOptions.ActorMailboxCapacity"/>. A hot actor that many callers queue for (a map, a sale) takes more;
+    /// one that should shed load early, less. Read once when the actor loads.
+    /// </summary>
+    public virtual int MailboxCapacity => 0;
+
+    /// <summary>
     /// With a store (<see cref="NodeOptions.ActorStore"/>): the actor's <see cref="PersistAttribute">[Persist]</see>
     /// components are written at most this long after they changed (a crash loses at most this much), besides on
     /// unload. Zero: only on unload. A critical change (a trade, a purchase) writes at once: add <see cref="SaveNow"/>.

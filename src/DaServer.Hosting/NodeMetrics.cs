@@ -28,12 +28,13 @@ public sealed class NodeMetrics : IDisposable
             description: "Messages waiting in shard mailboxes");
         _meter.CreateObservableGauge("daserver.actors", () => new Measurement<long>(node.ActorCount, tag),
             description: "Active loaded actors");
-        _meter.CreateObservableCounter("daserver.shard.rejected", () => new Measurement<long>(node.Rejected, tag),
-            description: "Calls and events refused because a shard or actor mailbox was full");
+        _meter.CreateObservableCounter("daserver.messages.dropped", () => (Measurement<long>[])
+            [
+                Dropped(node, DropReason.QueueFull, "queue_full", tag), Dropped(node, DropReason.MailboxFull, "mailbox_full", tag),
+                Dropped(node, DropReason.Expired, "expired", tag),
+            ], description: "Messages dropped unrun: a full shard queue or actor mailbox, or a caller that had timed out");
         _meter.CreateObservableCounter("daserver.handler.failed", () => new Measurement<long>(node.Failed, tag),
             description: "Messages whose handler threw (poison messages show up here)");
-        _meter.CreateObservableCounter("daserver.shard.expired", () => new Measurement<long>(node.Expired, tag),
-            description: "Requests dropped unrun because their caller had already timed out");
         _meter.CreateObservableGauge("daserver.shard.busy_ratio", () => new Measurement<double>(BusyRatio(), tag),
             description: "Share of the shards' time spent working since the last collection (0-1): the default scaling metric");
         _meter.CreateObservableCounter("daserver.shard.tick_overruns", () => new Measurement<long>(node.TickOverruns, tag),
@@ -77,4 +78,7 @@ public sealed class NodeMetrics : IDisposable
         _node.StopPhase -= RecordStopPhase;
         _meter.Dispose();
     }
+
+    private static Measurement<long> Dropped(Node node, DropReason reason, string name, KeyValuePair<string, object?> tag) =>
+        new(node.Dropped(reason), tag, new KeyValuePair<string, object?>("reason", name));
 }
