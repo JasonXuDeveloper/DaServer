@@ -305,13 +305,18 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
 - [x] A7 Store wiring: `group.WithActorStore(postgres.AddDatabase("actors"))` (`WithReference` on the group's nodes,
       `WaitFor` when published, ADR-069), `builder.AddPostgreSqlActorStore()` in the node's Program.cs; the sample keeps player profiles in
       PostgreSQL on a data volume. Clients wait for every node of the cluster (`WithClientEndpoints`).
-- [ ] A8 Parameters and environments: shards per node, drain budget, replicas and HPA bounds as AppHost parameters
-      (become Helm values per `--environment`); `AddConnectionString` for an existing production database.
+- [x] A8 Parameters and environments: `DaServerNodeGroup.WithEnvironment(name, parameter)` sets a node option on every
+      node of a group from an AppHost parameter, published as a Helm value (`{{ .Values.config.map.map_shards }}`, its
+      default with `publishValueAsDefault`) or a Compose variable (`.env`, filled by `aspire deploy` like every other);
+      the MMO sample sets its map nodes' shards so, and points at an existing database with `AddConnectionString`
+      (`-- ExistingDatabase=true`). Replica counts stay ints of the model (Aspire publishes no parameter there); the
+      platform's autoscaler owns them in production.
 - [x] A9 Tests through Aspire: the E2E runs wait for the cluster resource to count every node joined and read a node's
       Membership command; the scale-in under load drains the node through its command and starts it again.
-- [ ] A10 Kubernetes packaging: `WithHelm` (namespace, release and chart names, version) on the cluster's
-      environment; `AddHelmChart` installs what HPA on custom metrics needs (KEDA or Prometheus Adapter) next to the
-      app; `WithNodePool` pins stateful groups to their node pool.
+- [x] A10 Kubernetes packaging through Aspire's own API, nothing in the framework: the samples' Kubernetes environment
+      names its chart, release and namespace (`WithHelm`), and the MMO sample's stateful groups run on a node pool of
+      their own (`AddNodePool`, `WithNodePool`: `nodeSelector: agentpool: stateful`). Installing KEDA or the Prometheus
+      adapter is `AddHelmChart`'s, for an application that autoscales on custom metrics.
 - [x] A11 Pipeline step: `aspire publish`/`deploy` first run the cluster's route check (`{cluster}-routes`, required by
       the publish and deploy prerequisites): each node project starts in check mode (`DaServer__ListRoutes`: it writes
       the messages its contracts declare and its actors and services handle, then exits before anything starts), and
