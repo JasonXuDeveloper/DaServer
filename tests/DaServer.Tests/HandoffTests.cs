@@ -17,6 +17,8 @@ public class HandoffTests(string kind) : ClusterTest
     /// <summary>Counts what reaches a store; a write can be held to look at the actor meanwhile.</summary>
     private sealed class WatchedStore(IActorStore inner) : IActorStore
     {
+        public ValueTask InitializeAsync(CancellationToken ct = default) => inner.InitializeAsync(ct);
+
         public int Loads, Writes;
         public TaskCompletionSource? HoldWrites;
         public readonly TaskCompletionSource WriteStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -89,7 +91,7 @@ public class HandoffTests(string kind) : ClusterTest
         // b takes some keys but answers no record: a's copies wait, handed off, until b's shards run again.
         using var gate = new ManualResetEventSlim();
         var b = await StartWith(_stores.Create(), "b");
-        b.PostToEveryShard(static (_, g) => g.Wait(TimeSpan.FromSeconds(20)), gate);
+        HoldShards(b, gate, 20);
         await Converged();
         var moved = keys.Where(k => a.OwnerOf<BankId>(k) == b.Id).ToArray();
         Assert.That(moved, Is.Not.Empty);
@@ -195,7 +197,7 @@ public class HandoffTests(string kind) : ClusterTest
         long key = 300;
         while (a.OwnerOf<BankId>(key) != a.Id || a.View.HandlerTypeOwnerWithout(ActorIds<BankId>.HandlerTypeId, key, a.Id)?.NodeId != b.Id) key++;
         using var gate = new ManualResetEventSlim();
-        b.PostToEveryShard(static (_, g) => g.Wait(TimeSpan.FromSeconds(10)), gate); // b answers nothing meanwhile
+        HoldShards(b, gate, 10); // b answers nothing meanwhile
         try
         {
             Assert.That(await a.Ask(new BankId(key), new Deposit(5, false)).AsTask().WaitAsync(TimeSpan.FromSeconds(1)), Is.EqualTo(5));
@@ -218,7 +220,7 @@ public class HandoffTests(string kind) : ClusterTest
 
         using var gate = new ManualResetEventSlim();
         var b = await Start("b", configure: o => { o.ActorStore = store; o.CallTimeout = TimeSpan.FromMilliseconds(500); });
-        b.PostToEveryShard(static (_, g) => g.Wait(TimeSpan.FromSeconds(20)), gate);
+        HoldShards(b, gate, 20);
         await Converged();
         var moved = keys.Where(k => a.OwnerOf<BankId>(k) == b.Id).ToArray();
         Assert.That(moved, Is.Not.Empty);
@@ -260,7 +262,7 @@ public class HandoffTests(string kind) : ClusterTest
         }
 
         using var gate = new ManualResetEventSlim();
-        b.PostToEveryShard(static (_, g) => g.Wait(TimeSpan.FromSeconds(10)), gate);
+        HoldShards(b, gate, 10);
         ApplyEverywhere(new SlotTable { Version = 1000, Coordinator = a.Id, Overrides = [new SlotOverride(type, slot, b.Id)] });
         await Task.Delay(200); // a sent K's record to b, where it waits
         ApplyEverywhere(new SlotTable { Version = 1001, Coordinator = a.Id, Overrides = [new SlotOverride(type, slot, c.Id)] });

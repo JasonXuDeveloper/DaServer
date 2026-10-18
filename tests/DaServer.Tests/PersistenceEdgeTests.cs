@@ -17,6 +17,8 @@ public class PersistenceEdgeTests(string kind) : ClusterTest
     /// <summary>Counts writes; <see cref="Hold"/> keeps them from the store until <see cref="Release"/>.</summary>
     private sealed class GatedStore(IActorStore inner) : IActorStore
     {
+        public ValueTask InitializeAsync(CancellationToken ct = default) => inner.InitializeAsync(ct);
+
         public int Writes;
         private TaskCompletionSource? _gate;
         private TaskCompletionSource _started = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -150,6 +152,8 @@ public class PersistenceEdgeTests(string kind) : ClusterTest
     /// <summary>Fails its first <see cref="FailWrites"/> writes and <see cref="FailLoads"/> loads (an outage), then works.</summary>
     private sealed class FlakyStore(IActorStore inner) : IActorStore
     {
+        public ValueTask InitializeAsync(CancellationToken ct = default) => inner.InitializeAsync(ct);
+
         public int FailWrites, FailLoads;
 
         public ValueTask ClaimAsync(ReadOnlyMemory<StoredKey> keys, Memory<StoredRecord> records, CancellationToken ct = default) =>
@@ -174,6 +178,8 @@ public class PersistenceEdgeTests(string kind) : ClusterTest
     /// <summary>Holds its first load until released; records the largest batch it was given.</summary>
     private sealed class HeldLoads(IActorStore inner) : IActorStore
     {
+        public ValueTask InitializeAsync(CancellationToken ct = default) => inner.InitializeAsync(ct);
+
         public readonly TaskCompletionSource Release = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public int Largest, Loads;
 

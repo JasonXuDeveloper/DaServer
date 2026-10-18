@@ -29,6 +29,10 @@ internal sealed class PeerLink : IFrameSink, IDisposable
     private int _dropped; // frames dropped since the last report (under the gate)
     private long _droppedReportedMs = long.MinValue / 2;
     private bool _connecting;
+    // Handshakes the peer closed in a row (a refused Hello: another secret, cluster or protocol; a peer that hangs up):
+    // each next connect waits longer, instead of reconnecting at once and being refused thousands of times a second.
+    private Backoff _refused = new(TimeSpan.FromMilliseconds(100), TimeSpan.FromSeconds(5));
+    private bool _handshakeClosed;
     private bool _disposed;
     private long _streamId = NewStreamId();
     private ulong _peerId;
@@ -105,6 +109,9 @@ internal sealed class PeerLink : IFrameSink, IDisposable
     {
         // Everything the previous connection was given must be in the window before it is replayed.
         if (previous != null) await previous.SendCompletion.ConfigureAwait(false);
+        TimeSpan wait;
+        lock (_gate) wait = _handshakeClosed ? _refused.Next() : TimeSpan.Zero;
+        if (wait > TimeSpan.Zero) await Task.Delay(wait).ConfigureAwait(false);
 
         var backoff = new Backoff(TimeSpan.FromMilliseconds(100), TimeSpan.FromSeconds(2));
         for (int attempt = 1; ; attempt++)
@@ -174,6 +181,8 @@ internal sealed class PeerLink : IFrameSink, IDisposable
         {
             if (connection != _handshake) return;
             _handshake = null;
+            _handshakeClosed = false;
+            _refused = new Backoff(TimeSpan.FromMilliseconds(100), TimeSpan.FromSeconds(5));
 
             if (_peerId != 0 && peerId != _peerId)
             {
@@ -233,6 +242,7 @@ internal sealed class PeerLink : IFrameSink, IDisposable
             {
                 _handshake = null;
                 _connecting = false;
+                _handshakeClosed = true;
             }
             else if (connection != _connection)
             {

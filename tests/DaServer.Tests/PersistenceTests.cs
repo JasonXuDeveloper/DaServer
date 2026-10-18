@@ -18,6 +18,8 @@ public class PersistenceTests(string kind) : ClusterTest
     private sealed class CountingStore(IActorStore inner) : IActorStore
     {
         public readonly IActorStore Inner = inner;
+
+        public ValueTask InitializeAsync(CancellationToken ct = default) => Inner.InitializeAsync(ct);
         public int Writes;
 
         public ValueTask ClaimAsync(ReadOnlyMemory<StoredKey> keys, Memory<StoredRecord> records, CancellationToken ct = default) =>

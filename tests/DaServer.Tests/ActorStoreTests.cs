@@ -15,6 +15,10 @@ public sealed class Stores(string kind) : IAsyncDisposable
     private readonly List<string> _tables = [];
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<IActorStore, string> Tables = new();
 
+    public static string Connection => ConnectionString!;
+
+    public static string TableOf(IActorStore store) => Tables.TryGetValue(store, out var table) ? table : throw new ArgumentException("not a store of this fixture");
+
     /// <summary>A key's record as stored, without claiming it (a claim would fence the node running the actor).</summary>
     public static async Task<StoredRecord> Peek(IActorStore store, StoredKey key)
     {
@@ -39,6 +43,14 @@ public sealed class Stores(string kind) : IAsyncDisposable
     {
         var store = new PostgreSqlActorStore(ConnectionString!, table);
         Tables.Add(store, table);
+        return store;
+    }
+
+    /// <summary>A store ready to use, as a node starts it (<see cref="IActorStore.InitializeAsync"/>).</summary>
+    public async Task<IActorStore> Ready()
+    {
+        var store = Create();
+        await store.InitializeAsync();
         return store;
     }
 
@@ -117,20 +129,36 @@ public class ActorStoreTests(string kind)
     [Test]
     public async Task NodesStartingTogetherCreateTheTableOnce()
     {
-        // Each node's store creates the table on its first call; CREATE TABLE IF NOT EXISTS alone is not safe against a
-        // concurrent create (a unique violation in the catalog), and the failed call would fail the actors it loads.
+        // Each node's store creates the table as the node starts; CREATE TABLE IF NOT EXISTS alone is not safe against a
+        // concurrent create (a unique violation in the catalog), and the node whose create failed would not start.
         for (int round = 0; round < 5; round++)
         {
             var stores = _stores.CreateShared(8);
-            await Task.WhenAll(stores.Select(static s => Claim(s, A)));
+            await Task.WhenAll(stores.Select(static s => s.InitializeAsync().AsTask()));
+            await Claim(stores[0], A);
             foreach (var store in stores.Distinct()) if (store is IAsyncDisposable d) await d.DisposeAsync();
         }
     }
 
     [Test]
+    public async Task AStoreThatDoesNotCreateItsTableRefusesToStartWithoutIt()
+    {
+        // A migration job or a DBA owns the schema (createTable: false): a missing table stops the node at start, naming
+        // the statement to run, instead of failing its first loads.
+        if (kind != Stores.PostgreSql) Assert.Ignore("only a database has a schema");
+        var created = (PostgreSqlActorStore)_stores.Create();
+        var table = Stores.TableOf(created);
+        await using var store = new PostgreSqlActorStore(Stores.Connection, table, createTable: false);
+        var refused = Assert.ThrowsAsync<InvalidOperationException>(async () => await store.InitializeAsync());
+        Assert.That(refused!.Message, Does.Contain(table).And.Contain("CREATE TABLE"));
+        await created.InitializeAsync(); // what the migration job does
+        await store.InitializeAsync();
+    }
+
+    [Test]
     public async Task WritesAreVersionedAndFenceStaleOwners()
     {
-        var store = _stores.Create();
+        var store = await _stores.Ready();
         Assert.That((await Stores.Peek(store, A)).Version, Is.Zero, "nothing stored yet");
 
         Assert.That(await Save(store, new StoredWrite(A, 0, new byte[] { 1 }), new StoredWrite(C, 0, new byte[] { 3, 3 })),
@@ -151,7 +179,7 @@ public class ActorStoreTests(string kind)
     public async Task AClaimFencesWhoeverLoadedTheRecordBefore()
     {
         // A split or a stale owner: whoever claimed last owns the record; the earlier one's writes are refused.
-        var store = _stores.Create();
+        var store = await _stores.Ready();
         Assert.That(await Save(store, new StoredWrite(A, 0, new byte[] { 1 })), Is.EqualTo(new[] { true }));
         var stale = (await Claim(store, A))[0];
         var owner = (await Claim(store, A))[0];
@@ -169,7 +197,7 @@ public class ActorStoreTests(string kind)
     [Test]
     public async Task ABatchLoadsAndSavesManyRecords()
     {
-        var store = _stores.Create();
+        var store = await _stores.Ready();
         var writes = new StoredWrite[512];
         for (int i = 0; i < writes.Length; i++) writes[i] = new StoredWrite(new StoredKey(3, i), 0, BitConverter.GetBytes(i));
         Assert.That(await Save(store, writes), Is.All.True);
@@ -194,7 +222,7 @@ public class PostgreSqlStoreTests
     [Test]
     public async Task AStoreRecoversFromLostConnections()
     {
-        var store = _stores.Create();
+        var store = await _stores.Ready();
         Assert.That(await ActorStoreTests.Save(store, new StoredWrite(A, 0, new byte[] { 1 })), Is.EqualTo(new[] { true }));
         await Stores.DropConnections();
 

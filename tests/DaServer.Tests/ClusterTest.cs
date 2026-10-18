@@ -12,6 +12,9 @@ public abstract class ClusterTest
 
     private protected IReadOnlyList<Node> Nodes => _nodes;
 
+    /// <summary>The cluster's log, watched for faults: <see cref="Eventually(Func{bool}, string, int)"/> stops at the first.</summary>
+    private protected FaultLog Faults { get; private set; } = new();
+
     [TearDown]
     public async Task TearDownCluster()
     {
@@ -19,6 +22,16 @@ public abstract class ClusterTest
         foreach (var node in _nodes) await node.StopAsync();
         _clients.Clear();
         _nodes.Clear();
+        var faults = Faults;
+        Faults = new FaultLog();
+        try
+        {
+            if (TestContext.CurrentContext.Result.Outcome.Status == NUnit.Framework.Interfaces.TestStatus.Passed) faults.ThrowIfAny();
+        }
+        finally
+        {
+            faults.Dispose();
+        }
     }
 
     /// <summary>Start a node; every node after the first joins through the first one.</summary>
@@ -29,6 +42,7 @@ public abstract class ClusterTest
     {
         var options = TestNodes.NodeOptionsFor(name, shards, tickRate: 50, _nodes.Count == 0 ? null : _nodes[0]);
         options.Hosts = hosts;
+        options.LoggerFactory = Faults.Factory;
         configure?.Invoke(options);
         var clientOptions = gateway || clients != null ? new ClientConnectionOptions() : null;
         if (clientOptions != null) clients?.Invoke(clientOptions);
@@ -72,15 +86,42 @@ public abstract class ClusterTest
         return client;
     }
 
+    /// <summary>
+    /// Block every shard of <paramref name="node"/> until <paramref name="gate"/> is set (at most
+    /// <paramref name="seconds"/>): its mail and handoff frames wait meanwhile. The stall it causes is expected.
+    /// </summary>
+    private protected void HoldShards(Node node, ManualResetEventSlim gate, int seconds = 20)
+    {
+        Faults.Allow("ShardStalled");
+        node.PostToEveryShard((_, g) => g.Wait(TimeSpan.FromSeconds(seconds)), gate);
+    }
+
     /// <summary>First key from <paramref name="start"/> whose actor lives on <paramref name="owner"/>.</summary>
     private protected static long KeyOwnedBy<TId>(Node owner, long start = 1) where TId : struct, IActorId =>
         owner.KeyOwnedBy<TId>(owner, start);
 
-    /// <summary>Polls a condition that depends on asynchronous delivery (membership, pushes to other sockets).</summary>
-    protected static Task Eventually(Func<bool> condition, string message, int timeoutMs = 10_000) =>
-        TestNodes.WaitUntilAsync(condition, TimeSpan.FromMilliseconds(timeoutMs), message);
+    /// <summary>
+    /// Polls a condition that depends on asynchronous delivery (membership, pushes to other sockets); a fault the cluster
+    /// logs meanwhile ends the wait at once, naming it.
+    /// </summary>
+    protected Task Eventually(Func<bool> condition, string message, int timeoutMs = 10_000)
+    {
+        var faults = Faults;
+        return TestNodes.WaitUntilAsync(() =>
+        {
+            faults.ThrowIfAny();
+            return condition();
+        }, TimeSpan.FromMilliseconds(timeoutMs), message);
+    }
 
-    /// <summary>Polls an asynchronous condition (a call into the cluster) until it holds.</summary>
-    protected static Task Eventually(Func<ValueTask<bool>> condition, string message, int timeoutMs = 10_000) =>
-        TestNodes.WaitUntilAsync(condition, TimeSpan.FromMilliseconds(timeoutMs), message);
+    /// <summary>Polls an asynchronous condition (a call into the cluster) until it holds; a fault ends the wait at once.</summary>
+    protected Task Eventually(Func<ValueTask<bool>> condition, string message, int timeoutMs = 10_000)
+    {
+        var faults = Faults;
+        return TestNodes.WaitUntilAsync(() =>
+        {
+            faults.ThrowIfAny();
+            return condition();
+        }, TimeSpan.FromMilliseconds(timeoutMs), message);
+    }
 }

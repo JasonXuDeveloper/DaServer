@@ -42,6 +42,7 @@ public class BackpressureTests : ClusterTest
     [Test]
     public async Task AShardThreadBlockedLongerThanStallAfterIsReported()
     {
+        Faults.Allow("ShardStalled"); // what the test provokes
         var node = await Start("single", shards: 1, configure: static o => o.StallAfter = TimeSpan.FromMilliseconds(200));
         using var gate = new ManualResetEventSlim();
         node.Shards[0].Post(static g => ((ManualResetEventSlim)g!).Wait(), gate); // what DAS009 reports in user code
@@ -53,6 +54,7 @@ public class BackpressureTests : ClusterTest
     [Test]
     public async Task AStopThatExceedsItsBudgetReportsAndReturns()
     {
+        Faults.Allow("BudgetExceeded"); // what the test provokes
         var node = await Start("single", shards: 1, configure: static o => o.ShutdownTimeout = TimeSpan.FromMilliseconds(500));
         Assert.That(await node.Ask(new LoopId(Looper.HangsOnUnload), new Hop([Looper.HangsOnUnload], 0, false)), Is.Zero);
         Assert.That(node.IsReady, Is.True);
@@ -80,6 +82,25 @@ public class BackpressureTests : ClusterTest
         Assert.ThrowsAsync<RpcException>(async () => await node.Ask(new FragileId(100), new Spoil(1, true, async)));
         Assert.That(await node.Ask(new FragileId(100), new Spoil(0, false, async)), Is.Zero, "Reload dropped it unsaved: loaded again");
         Assert.That(node.Failed, Is.EqualTo(2), "each failure is counted");
+    }
+
+    [Test]
+    public async Task AMessageThatCannotBeReadIsRefusedWithoutFailingTheActor()
+    {
+        // A payload that is not the message it names (truncated here; a hostile client, another build): the caller gets
+        // Malformed and nothing ran. The actor is not charged with a failure: its OnError (Reload for this key) would
+        // drop what it holds unsaved, its state never touched.
+        var node = await Start("single", shards: 1);
+        Assert.That(await node.Ask(new FragileId(101), new Spoil(5, false, false)), Is.EqualTo(5));
+        var frame = FrameWriter.Rent();
+        frame.WriteRaw(new byte[] { 1 });
+        var call = PendingCall<NoReply>.Rent(null);
+        var refused = call.Done;
+        node.Request(frame, TypeId<Spoil>.Value, ActorIds<FragileId>.HandlerTypeId, 101, call, null, 0);
+        var error = Assert.ThrowsAsync<RpcException>(async () => await refused);
+        Assert.That(error!.Status, Is.EqualTo(RpcStatus.Malformed));
+        Assert.That(await node.Ask(new FragileId(101), new Spoil(0, false, false)), Is.EqualTo(5), "the actor kept its state");
+        Assert.That(node.Failed, Is.Zero, "no handler failed");
     }
 
     [Test]

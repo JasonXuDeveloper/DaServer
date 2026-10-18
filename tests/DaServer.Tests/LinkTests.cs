@@ -65,7 +65,7 @@ public class LinkTests : ClusterTest
         // shards are held so the call is surely in flight (sent, not answered) when the stream starts over.
         await Task.Delay(300);
         using var gate = new ManualResetEventSlim();
-        b.PostToEveryShard(static (_, g) => g.Wait(TimeSpan.FromSeconds(10)), gate);
+        HoldShards(b, gate, 10);
         var lost = a.Ask(new CounterId(key), new Add(1)).AsTask();
         await Task.Delay(100); // it reached b
         LinkTo(b, a).ForgetInboundStream();

@@ -20,6 +20,7 @@ public class MembershipTests : ClusterTest
     [Test]
     public async Task ANodeLateOnEveryTickStillDeclaresTheDeadDead()
     {
+        Faults.Allow("MinoritySide"); // c, cut off, downs itself
         // a and b are starved for good: each maintenance tick runs over a second late. c goes silent. One pause is
         // excused, but a process late on every tick must still age the others, or c would keep its keys forever.
         var nodes = await StartCluster(3);
@@ -87,6 +88,7 @@ public class MembershipTests : ClusterTest
     [Test]
     public async Task TheMinoritySideOfASplitDownsItselfAndTheMajorityKeepsRunning()
     {
+        Faults.Allow("MinoritySide"); // what the test provokes
         var nodes = await StartCluster(3);
         var downed = nodes.Select(_ => new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)).ToArray();
         for (int i = 0; i < nodes.Length; i++)
@@ -189,6 +191,7 @@ public class LinkAuthTests : ClusterTest
     [Test]
     public async Task NodesWithTheSecretJoinOthersAreRefused()
     {
+        Faults.Allow("LinkRefused"); // what the test provokes
         var a = await Start("a", configure: With("s3cret"));
         var b = await Start("b", configure: With("s3cret"));
         await Converged();
@@ -200,6 +203,7 @@ public class LinkAuthTests : ClusterTest
             "a wrong secret and another cluster's name cannot join");
         Assert.That(intruder.View.UpMembers, Has.Length.EqualTo(1));
         Assert.That(stranger.View.UpMembers, Has.Length.EqualTo(1));
+        Assert.That(Faults.Count("LinkRefused"), Is.LessThan(100), "a refused node backs off instead of reconnecting in a loop");
     }
 
     [Test]
