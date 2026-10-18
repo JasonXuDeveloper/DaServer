@@ -95,7 +95,8 @@ turn has that chain fails at once with `CallCycle` (ADR-059). A service handler 
 ## 2. Wire protocol
 
 - Frames carry a fixed 24-byte header: `length`, `kind`, `status`, `hops`, `flags`, `target`, `messageId`, `key`,
-  then the Nino-serialized message, then the trailers its flags name (ADR-005).
+  then the Nino-serialized message, then the trailers its flags name (ADR-005): the extension block (optional
+  metadata readers skip, such as the trace context; ADR-080), the call chain, the origin, the call id.
 - `messageId` is FNV-1a of the message type's full name (or its `[NinoFormerName]`: Nino's `NinoTypeId`), computed once per type at run time (the analyzer computes the same value at build time). Collisions are
   build errors (DAS004) and registration errors at runtime. Handler type ids are FNV-1a of the actor's id type or of the
   service type's full name (ADR-043).

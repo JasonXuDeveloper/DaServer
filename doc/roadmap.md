@@ -294,11 +294,12 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
       Joined / Draining / Suspected; commands Drain, Membership (JSON), Stats, Unload actor type (admin endpoints on the HTTP
       plane, authorized with the signing secret). Usable from `aspire resource <node> <command>`,
       MCP and tests.
-- [ ] A6 Tracing: an allocation-free `ActivitySource` for cross-node calls (spans only when a listener is attached),
-      added to `AddDaServer`'s OpenTelemetry setup with the ASP.NET Core and HttpClient instrumentation, so a REST call
-      and the actor calls it causes are one trace. `AddDaServer` is the framework's service defaults (the template's
-      content: OTel, health, `ConfigureHttpClientDefaults` with service discovery and resilience for user HttpClients),
-      no separate ServiceDefaults project.
+- [x] A6 Tracing (ADR-080): a turn whose message carries a trace context runs in a span of the `DaServer` activity
+      source, child of the sender's on any node; asks, sends and publishes carry the running turn's context (or an
+      ASP.NET Core request's), in the frame's extension block, the first entry of a block readers skip unknown entries
+      of (new metadata needs no new link protocol). `AddDaServer` exports the traces with the ASP.NET Core and
+      HttpClient instrumentation when OTLP is configured, so a REST call and the actor calls it causes are one trace.
+      Traces start where the application starts them, never per message (`TracingTests`).
 - [x] A7 Store wiring: `group.WithActorStore(postgres.AddDatabase("actors"))` (`WithReference` on the group's nodes,
       `WaitFor` when published, ADR-069), `builder.AddPostgreSqlActorStore()` in the node's Program.cs; the sample keeps player profiles in
       PostgreSQL on a data volume. Clients wait for every node of the cluster (`WithClientEndpoints`).

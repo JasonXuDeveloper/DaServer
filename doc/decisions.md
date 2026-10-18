@@ -1414,3 +1414,30 @@ records that no longer hold). Each: context → decision → consequences.
   handoff per actor. The coordinator's work is a few thousand table entries per round, cold. Tests: sticky slots stay
   across a join, an imbalance is evened out in rounds, a coordinator that leaves is replaced with its table.
 
+
+## ADR-080 Frame extensions: optional metadata that readers skip; traces travel in them
+- Context: a frame's trailers (call id, origin, call chain) are fixed-size and named by header flags, so a reader that
+  does not know a flag misreads the frame: every new piece of metadata would need a new link protocol and a cluster
+  restart. Distributed tracing (A6) needs one now, and priorities, tenants or baggage may follow. Peers: Kubernetes'
+  CRI keeps its major version and allows only changes old and new both read, new features degrading gracefully;
+  protobuf (gRPC, CRI) skips unknown fields; Orleans breaks its wire between majors (3 to 7); ET deploys server and
+  client together.
+- Decision:
+  - **Three layers of change.** `ControlOp.LinkVersion` (and `ClientVersion`) is the major version: raised only for a
+    change old nodes cannot read, which means a full restart. Optional metadata goes into the **extension block**
+    (`FrameFlags.HasExtensions`): entries of [id][length][data] between the payload and the fixed trailers, closed by
+    the block's uint16 size; readers look entries up by id and skip the rest, hops relay the block untouched, so a
+    new entry needs no version and mixes with nodes that ignore it. A feature both sides must support is announced
+    on the member card (as handled messages are, ADR-077) and used only towards nodes that have it.
+  - **Tracing** is the first entry (`FrameExtensions.Trace`: W3C trace id, parent span id, flags; 25 bytes). Asks,
+    sends and publishes carry the context of the running turn's span (`CallChain.Trace`, restored around a call's
+    continuation like the chain), else the thread's current activity (an ASP.NET Core request). A turn whose message
+    carries one runs in a span of the `DaServer` activity source, child of the sender's, while something listens;
+    the span ends with the turn (`Turn.Span`, ended where the turn's result is read). Traces start only where the
+    application starts them: an untraced message starts no span. Messages to clients carry none.
+- Alternatives: a new fixed trailer per piece of metadata (a protocol version each); W3C `traceparent` as text (55
+  bytes, parsed); `Activity.Current` alone (shard threads run many turns, and a turn's continuations do not flow it);
+  a span per message whether traced or not (Orleans' default: a sampler then drops most, after they cost).
+- Consequences: an untraced frame is unchanged (no block, the golden bytes hold); a send reads the turn's span and the
+  current activity, a turn one flag. A traced message pays 29 bytes and a span. Nodes built before the block existed
+  read a frame with one wrong, the one break this decision costs; from here on, metadata is added without one.
