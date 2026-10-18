@@ -328,6 +328,12 @@ records that no longer hold). Each: context → decision → consequences.
   the platform's tools (`kubectl scale`, an HPA, `docker compose up --scale`), and nothing is configured by hand. No
   StatefulSet: a node's identity is its gossip incarnation and its actors' state lives in the store, so pods need no
   stable names or volumes. No Kubernetes API access (no RBAC): DNS is the only discovery.
+- Seeds resolve through `NodeOptions.SeedResolver` (`ISeedResolver`), in the background while a node is alone: gossip
+  rounds never wait for DNS or a registry. The default reads "host:port" and expands DNS names to every address;
+  `DaServer.Hosting` resolves seeds written as service names (`tcp://peers`) through .NET service discovery
+  (`Microsoft.Extensions.ServiceDiscovery`): configuration such as an Aspire reference writes, DNS SRV records with its
+  DNS provider (a headless Service's pods), or any registry that has a provider. The AppHost keeps passing plain DNS
+  names (ADR-030 above); service names are for clusters wired another way.
 
 ## ADR-031 Gossip carries pulses, cards travel once
 - Context: serializing the whole member table every round costs about 10 KB/s per idle node at one round a second,

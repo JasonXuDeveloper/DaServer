@@ -54,6 +54,14 @@ The endpoints require the authorization policy `DaServerAdmin.Policy`; its defau
 application that authorizes operators its own way (JWT, mTLS, an API gateway's header) redefines the policy after
 `AddDaServer`: `builder.Services.AddAuthorization(o => o.AddPolicy(DaServerAdmin.Policy, p => ...))`.
 
+## Seeds
+
+A node joins through its seeds (`DaServer__Seeds__0`, ...): "host:port", a DNS name resolving to every replica (what
+`AddDaServerCluster` passes: a Compose service, a headless Kubernetes Service), or a service name such as
+`tcp://peers`, resolved by .NET service discovery from configuration (`services__peers__tcp__0=tcp://10.0.0.5:7000`)
+or, once the node adds `AddDnsSrvServiceEndpointProvider()`, from DNS SRV records. Seeds are resolved in the
+background every 5 s while a node is alone.
+
 ## Rotating the signing secret
 
 The signing secret proves nodes to each other, signs clients' resume tickets and derives the admin token. Rotate it
