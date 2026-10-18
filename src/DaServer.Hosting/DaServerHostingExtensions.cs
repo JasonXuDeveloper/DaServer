@@ -51,6 +51,7 @@ public static class DaServerHostingExtensions
         {
             var options = sp.GetRequiredService<IOptions<NodeOptions>>().Value;
             options.LoggerFactory ??= sp.GetRequiredService<ILoggerFactory>();
+            options.SeedResolver ??= new ServiceDiscoverySeedResolver(sp.GetRequiredService<Microsoft.Extensions.ServiceDiscovery.ServiceEndpointResolver>());
             return new Node(options);
         });
         builder.Services.AddSingleton<ICluster>(static sp => sp.GetRequiredService<Node>());
