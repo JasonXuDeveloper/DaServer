@@ -72,7 +72,7 @@ public class PersistenceBenchmark
     public void Loaded()
     {
         Seed();
-        Load().GetAwaiter().GetResult();
+        Load().AsTask().GetAwaiter().GetResult(); // a pooled ValueTask cannot be waited on synchronously
     }
 
     [Benchmark, AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
