@@ -742,8 +742,13 @@ and cards, a manual clock), fails before its fix, and passes after it.
       equal (5.86 / 5.84 ms); to 5,000 clients 26.2 ms and 55 KB against 43.7 ms and 14.8 MB with Gen2 collections
       (each connection's pipe grows blocks, each batch awaits a flush); 64 concurrent client requests 29-30 against
       34 us. Both time and allocation regress, so the own `Connection`/`Listener` stay; TLS stays the platform's.
-- [ ] B4 one serialize-into-pooled-frame helper; B5 `DeliverTo(nodeId, frame)` (local or link); B8 one pending-table
-      scan; B9 registries; B10 shared hash helpers; B11 sample nits
+- [x] B4 one serialize-into-pooled-frame helper (`MessageWriter.Write`, replies included); B8 one pending-table scan
+      (timeouts, a link's calls, all calls); B9 one add-unless-registered for handler types, systems and persisted
+      components; B10 one mix (`ClusterView.Weight`) for slots, rendezvous and shards. BDN `RpcBenchmark` (short job,
+      three interleaved runs each): one local call 4.25-4.62 us before, 4.67-5.19 us after, a run without B4 5.30 us
+      (the machine's drift); 0 B both. Kept: B5, the local branches deliver to different places (an actor's shard, an
+      address's feature) and the group fan-out holds the member already, so one helper saves no line.
+- [ ] B11 sample nits (the next review round's sample pass)
 - [ ] Split `Node` into links and router; membership talks to the node
       through an interface
 - [ ] ECS misuse: the turn's caller (`Actor.TurnCaller`) as a component
