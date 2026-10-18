@@ -88,6 +88,8 @@ public class PersistenceBenchmark
     private sealed class CountingStore(IActorStore inner) : IActorStore
     {
         public readonly IActorStore Inner = inner;
+
+        public ValueTask InitializeAsync(CancellationToken ct = default) => Inner.InitializeAsync(ct);
         private readonly Countdown _written = new();
 
         public ValueTask Expect(int writes) => _written.Reset(writes);

@@ -22,6 +22,12 @@ public readonly record struct StoredWrite(StoredKey Key, long ExpectedVersion, R
 public interface IActorStore
 {
     /// <summary>
+    /// Get ready before the node takes any actor (connect, create or check the schema): called once as the node starts,
+    /// and the node does not start when it fails, so a missing database or table shows at start.
+    /// </summary>
+    ValueTask InitializeAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Load the records of <paramref name="keys"/> and claim them for the caller, atomically per record: the stored
     /// version goes up by one and <paramref name="records"/>[i] holds the record of <paramref name="keys"/>[i] at that
     /// new version, the one the caller's writes expect. A node that loaded the record before (a stale owner: a split, a
@@ -63,6 +69,9 @@ public sealed class InMemoryActorStore : IActorStore
             lock (_gate) return _records.Count;
         }
     }
+
+    /// <summary>Nothing to prepare: memory is there.</summary>
+    public ValueTask InitializeAsync(CancellationToken cancellationToken = default) => default;
 
     /// <summary>
     /// The loaded data is a copy (the stored buffer is overwritten by later writes): loads happen once per activation,

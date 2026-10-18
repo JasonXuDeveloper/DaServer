@@ -183,10 +183,13 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
     }
 
     /// <summary>Start shards, listeners and membership. The node is Up when this returns.</summary>
-    public Task StartAsync(CancellationToken cancellationToken = default)
+    public async Task StartAsync(CancellationToken cancellationToken = default)
     {
         if (Interlocked.Exchange(ref _started, 1) != 0)
             throw new InvalidOperationException("Node already started");
+        // The store first: a database that is down or a table that is missing stops the node here, saying so, before it
+        // joins and takes keys (not at its first load, with callers waiting).
+        if (Options.ActorStore is { } store) await store.InitializeAsync(cancellationToken).ConfigureAwait(false);
         ActorSessions.Register();
 
         ResolveHosting();
@@ -212,7 +215,6 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
             Names(HostedHandlerTypes.Where(static i => i.IsActor).Select(static i => i.Type.Name)),
             Names(HostedHandlerTypes.Where(static i => !i.IsActor).Select(static i => i.Type.Name)),
             Names(HostedSystems.Select(static s => s.Type.Name)));
-        return Task.CompletedTask;
     }
 
     /// <summary>

@@ -12,21 +12,29 @@ namespace DaServer.Persistence;
 /// over the batch's keys that raises their versions and returns their rows, saves one statement over the batch's arrays
 /// that writes a record only if its row still holds the expected version (the record bytes are passed as they are,
 /// not copied).
-/// The table is created on first use.
+/// The table is created when the node starts (<see cref="InitializeAsync"/>), as Dapr's state stores and Akka's journals
+/// do by default; where a migration job or a DBA owns the schema, pass <c>createTable: false</c> and run
+/// <see cref="Schema"/> there: the node then only checks the table and refuses to start without it.
 /// </summary>
 public sealed partial class PostgreSqlActorStore : IActorStore, IAsyncDisposable
 {
     private readonly NpgsqlDataSource _dataSource;
     private readonly bool _ownsDataSource;
-    private readonly string _claim, _save, _create;
-    private Task? _created;
+    private readonly string _claim, _save, _create, _table;
+    private readonly bool _createTable;
 
     /// <param name="dataSource">The database (one per cluster, or one table per cluster in a shared database).</param>
     /// <param name="table">The records' table, optionally schema-qualified (<c>game.actors</c>).</param>
-    public PostgreSqlActorStore(NpgsqlDataSource dataSource, string table = "daserver_actors")
+    /// <param name="createTable">Create the table when the node starts (false: it must exist, see <see cref="Schema"/>).</param>
+    public PostgreSqlActorStore(NpgsqlDataSource dataSource, string table = "daserver_actors", bool createTable = true)
     {
         if (!TableName().IsMatch(table)) throw new ArgumentException($"Not a table name: '{table}'", nameof(table));
         _dataSource = dataSource;
+        _table = table;
+        _createTable = createTable;
+        Schema = $"CREATE TABLE IF NOT EXISTS {table} (type_id integer NOT NULL, key bigint NOT NULL, " +
+                 "version bigint NOT NULL, data bytea NOT NULL, updated_at timestamptz NOT NULL DEFAULT now(), " +
+                 "PRIMARY KEY (type_id, key))";
         // Claiming is one statement too: every key's row goes up a version (a key without one gets an empty row at
         // version 1), and the rows come back with the batch's ordinals. A batch holds a key once (one actor per key per
         // shard), which ON CONFLICT DO UPDATE requires.
@@ -48,17 +56,42 @@ public sealed partial class PostgreSqlActorStore : IActorStore, IAsyncDisposable
         // CREATE TABLE IF NOT EXISTS is not safe against a concurrent create (both see no table, the second fails on
         // the catalog's unique index): nodes starting together take a transaction-scoped advisory lock on the table's
         // name first, so one creates and the others find it.
-        _create = $"SELECT pg_advisory_xact_lock(hashtext('daserver:{table}')); " +
-                  $"CREATE TABLE IF NOT EXISTS {table} (type_id integer NOT NULL, key bigint NOT NULL, " +
-                  "version bigint NOT NULL, data bytea NOT NULL, updated_at timestamptz NOT NULL DEFAULT now(), " +
-                  "PRIMARY KEY (type_id, key))";
+        _create = $"SELECT pg_advisory_xact_lock(hashtext('daserver:{table}')); " + Schema;
     }
 
     /// <param name="connectionString">The database's connection string.</param>
     /// <param name="table">The records' table, optionally schema-qualified.</param>
-    public PostgreSqlActorStore(string connectionString, string table = "daserver_actors")
-        : this(NpgsqlDataSource.Create(connectionString), table) =>
+    /// <param name="createTable">Create the table when the node starts (false: it must exist, see <see cref="Schema"/>).</param>
+    public PostgreSqlActorStore(string connectionString, string table = "daserver_actors", bool createTable = true)
+        : this(NpgsqlDataSource.Create(connectionString), table, createTable) =>
         _ownsDataSource = true;
+
+    /// <summary>The statement that creates the table (for a migration job or a DBA when <c>createTable</c> is false).</summary>
+    public string Schema { get; }
+
+    /// <summary>
+    /// Create the table (or check that it exists): when the node starts, before it takes any actor. CREATE TABLE IF NOT
+    /// EXISTS alone is not safe against a concurrent create (both see no table, the second fails on the catalog's
+    /// unique index): nodes starting together take a transaction-scoped advisory lock on the table's name first, so
+    /// one creates and the others find it.
+    /// </summary>
+    public async ValueTask InitializeAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        if (_createTable)
+        {
+            await using var transaction = await connection.BeginTransactionAsync(cancellationToken); // the lock lasts until it ends
+            await using var create = new NpgsqlCommand(_create, connection, transaction);
+            await create.ExecuteNonQueryAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return;
+        }
+
+        await using var check = new NpgsqlCommand("SELECT to_regclass($1) IS NOT NULL", connection);
+        check.Parameters.Add(new NpgsqlParameter<string> { TypedValue = _table });
+        if (await check.ExecuteScalarAsync(cancellationToken) is not true)
+            throw new InvalidOperationException($"The actor records' table '{_table}' does not exist (createTable is false): create it with {Schema}");
+    }
 
     public async ValueTask DisposeAsync()
     {
@@ -68,7 +101,6 @@ public sealed partial class PostgreSqlActorStore : IActorStore, IAsyncDisposable
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))] // no state machine allocated per call
     public async ValueTask ClaimAsync(ReadOnlyMemory<StoredKey> keys, Memory<StoredRecord> records, CancellationToken cancellationToken = default)
     {
-        await Created();
         var columns = Rent();
         try
         {
@@ -92,7 +124,6 @@ public sealed partial class PostgreSqlActorStore : IActorStore, IAsyncDisposable
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     public async ValueTask SaveAsync(ReadOnlyMemory<StoredWrite> writes, Memory<bool> accepted, CancellationToken cancellationToken = default)
     {
-        await Created();
         var columns = Rent();
         try
         {
@@ -179,26 +210,6 @@ public sealed partial class PostgreSqlActorStore : IActorStore, IAsyncDisposable
     {
         columns.Clear();
         _columns.Enqueue(columns);
-    }
-
-    /// <summary>
-    /// The table exists: created by the first call, again by a call after a failed attempt (the shard retries the batch).
-    /// Nodes creating it at once are serialized by an advisory lock (<see cref="_create"/>).
-    /// </summary>
-    private Task Created()
-    {
-        var task = _created;
-        if (task is null || task.IsFaulted || task.IsCanceled) _created = task = Create();
-        return task;
-    }
-
-    private async Task Create()
-    {
-        await using var connection = await _dataSource.OpenConnectionAsync();
-        await using var transaction = await connection.BeginTransactionAsync(); // the advisory lock lasts until it ends
-        await using var command = new NpgsqlCommand(_create, connection, transaction);
-        await command.ExecuteNonQueryAsync();
-        await transaction.CommitAsync();
     }
 
     [GeneratedRegex(@"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$")]
