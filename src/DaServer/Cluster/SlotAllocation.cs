@@ -173,7 +173,7 @@ internal sealed class SlotAllocation(Node node)
         }
         finally
         {
-            Volatile.Write(ref _reporting, 0);
+            if (round == Volatile.Read(ref _round)) Volatile.Write(ref _reporting, 0); // a newer round may be counting
         }
     }
 

@@ -78,7 +78,7 @@ public sealed partial class ClusterClient : IMessageSender, IChannelHandler, IAs
 
     /// <summary>
     /// Write requests on a beat instead of at once (zero by default): what the client sends within one interval leaves
-    /// in one write, from a flush thread the process's clients share (<see cref="SendFlusher"/>, ADR-070). For clients
+    /// in one write, from a flush thread the process's clients share (ADR-070). For clients
     /// that send many requests at once (load generators, bots, server-side callers); a player's client keeps the
     /// default. Set before connecting; TCP connections only.
     /// </summary>
@@ -100,7 +100,8 @@ public sealed partial class ClusterClient : IMessageSender, IChannelHandler, IAs
 
     /// <summary>
     /// A registered handler threw on a pushed message (or its returned task failed): the other handlers still receive it
-    /// and the connection stays, as a failed handler on a node fails only its own turn.
+    /// and the connection stays, as a failed handler on a node fails only its own turn. Unobserved without a subscriber,
+    /// also with <see cref="ProcessCallbacks"/>: subscribe to see them.
     /// </summary>
     public event Action<Exception>? HandlerFailed;
 

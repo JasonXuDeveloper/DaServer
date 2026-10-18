@@ -285,9 +285,10 @@ internal static class ShardDispatch
         }
 
         var entity = actor.Entity;
-        if (action != ErrorAction.Reload || entity.Has<UnloadRequested>() || entity.Has<Unloading>() || entity.Has<Removing>()) return;
-        entity.Add<UnloadRequested>();
-        entity.Add<Fenced>(); // nothing is saved: the state may be half-changed
+        // Also when an unload was asked for meanwhile: nothing is saved or handed on, the state may be half-changed.
+        if (action != ErrorAction.Reload || entity.Has<Fenced>() || entity.Has<Unloading>() || entity.Has<Removing>()) return;
+        if (!entity.Has<UnloadRequested>()) entity.Add<UnloadRequested>();
+        entity.Add<Fenced>();
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

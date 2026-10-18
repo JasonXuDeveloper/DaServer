@@ -369,6 +369,8 @@ public readonly record struct BankId(long Value) : IActorId;
 [NinoType, Message] public partial record struct Overdraw(int Gold, bool Async) : IRequest<int>;
 /// <summary>A turn that waits for <see cref="TurnGate"/>: the actor cannot unload meanwhile.</summary>
 [NinoType, Message] public partial record struct HoldTurn : IRequest<int>;
+/// <summary>Takes gold, waits for <see cref="TurnGate"/>, then fails: the half-changed state must not be kept.</summary>
+[NinoType, Message] public partial record struct FailAfterGate(int Gold) : IRequest<int>;
 
 /// <summary>
 /// Keys below 100 checkpoint every 100 ms, keys from 100 only on unload (or with SaveNow); keys from 1,000 to 1,999 also
@@ -426,6 +428,14 @@ public sealed class Bank : Actor<BankId, Ledger>
     {
         await TurnGate.Current.Task;
         return State.Gold;
+    }
+
+    [Handle]
+    public async Reply<int> On(FailAfterGate m)
+    {
+        State.Gold -= m.Gold;
+        await TurnGate.Current.Task;
+        throw new InvalidOperationException("failed half-way");
     }
 
     [Handle]

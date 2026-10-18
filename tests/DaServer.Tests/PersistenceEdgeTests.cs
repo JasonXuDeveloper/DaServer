@@ -128,6 +128,25 @@ public class PersistenceEdgeTests(string kind) : ClusterTest
     }
 
     [Test]
+    public async Task ATurnThatFailsAfterAnUnloadWasAskedForIsNotSaved()
+    {
+        // Keys from 2,000 reload after a failed turn: their half-changed state is dropped unsaved, also when an unload
+        // (here an operator's) was asked for while the turn awaited.
+        var store = new GatedStore(_stores.Create());
+        var node = await StartWith(store);
+        Assert.That(await node.Ask(new BankId(2100), new Deposit(5, false)), Is.EqualTo(5)); // written on unload only
+        TurnGate.Current = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var failing = node.Ask(new BankId(2100), new FailAfterGate(3)).AsTask();
+        await Task.Delay(100);
+        Assert.That(node.UnloadActors("Bank"), Is.True);
+        await Task.Delay(100);
+        TurnGate.Current.TrySetResult();
+        Assert.ThrowsAsync<RpcException>(async () => await failing);
+        await Eventually(() => node.ActorCount == 0, "the failed copy went");
+        Assert.That(store.Writes, Is.Zero, "nothing of it was written");
+    }
+
+    [Test]
     public async Task ANewOwnerClaimsTheRecordSoTheStaleOneCannotWriteOverIt()
     {
         // A split: a and b each think they own K (two clusters on one store). b loads K after a; a then writes. b's load

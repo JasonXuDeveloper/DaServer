@@ -142,7 +142,9 @@ internal sealed partial class PersistSystem : EcsSystem
                 stored.RetryAtMs = now + 1000;
                 // The failed write is asked for again (SaveNow): it is retried after the delay, not at the next
                 // checkpoint (none with SaveEvery zero). A final save stays pending anyway.
-                if (!batch.Finals[i] && !actor.Has<SaveNow>()) actor.Add<SaveNow>();
+                // A copy leaving by handoff does not wait for the store: its record carries the last written hash, so
+                // the new owner's checkpoint writes the change.
+                if (!batch.Finals[i] && !actor.Has<SaveNow>() && !actor.Has<HandOff>()) actor.Add<SaveNow>();
                 continue;
             }
 
@@ -159,12 +161,9 @@ internal sealed partial class PersistSystem : EcsSystem
                 Log.RecordTaken(world.Logger, actor.Get<ActorRef>().Actor, writes[i].ExpectedVersion);
                 if (!actor.Has<FinalSave>())
                 {
-                    if (!actor.Has<UnloadRequested>())
-                    {
-                        actor.Add<UnloadRequested>();
-                        actor.Add<Fenced>();
-                    }
-
+                    // Also a copy already asked to leave: the key has a newer claimer, so this copy hands nothing on.
+                    if (!actor.Has<UnloadRequested>()) actor.Add<UnloadRequested>();
+                    if (!actor.Has<Fenced>()) actor.Add<Fenced>();
                     continue;
                 }
                 // unloading: the key has a newer owner, nothing of this copy is written

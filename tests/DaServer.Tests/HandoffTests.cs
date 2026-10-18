@@ -87,6 +87,28 @@ public class HandoffTests(string kind) : ClusterTest
     }
 
     [Test]
+    public async Task ACopyStillWaitingForItsRecordGoesWhenItsNodeStops()
+    {
+        // b takes keys from a while a's actors are busy (their turns held): b's copies wait for records that cannot come
+        // yet. b stops meanwhile: a waiting copy holds no state, so it goes at once (its mail to the owner, "none" to a),
+        // and b stops clean instead of waiting on a record until its budget runs out.
+        var store = new WatchedStore(_stores.Create());
+        var a = await StartWith(store, "a");
+        TurnGate.Current = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var held = Enumerable.Range(100, 40).Select(key => a.Ask(new BankId(key), new HoldTurn()).AsTask()).ToArray();
+        await Task.Delay(100);
+        var b = await Start("b", configure: o => (o.ActorStore, o.ShutdownTimeout) = (store, TimeSpan.FromSeconds(3)));
+        await Converged();
+        long key = Enumerable.Range(100, 40).First(k => b.OwnerOf<BankId>(k) == b.Id);
+        _ = b.Ask(new BankId(key), new Balance()).AsTask(); // b's copy asks a for the record and waits
+        await Eventually(() => b.ActorCount == 1, "b holds a copy waiting for its record");
+        await Stop(b);
+        Assert.That(b.StoppedClean, Is.True, "the waiting copy went at once");
+        TurnGate.Current.TrySetResult();
+        await Task.WhenAll(held);
+    }
+
+    [Test]
     public async Task ScalingOutAndInMovesRecordsWithoutTheStore()
     {
         var store = new WatchedStore(_stores.Create());

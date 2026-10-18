@@ -10,7 +10,7 @@ namespace DaServer.Rpc;
 /// allocated as the number of calls in flight first reaches them, so a client with a couple of calls out holds
 /// <see cref="FirstChunk"/> slots and a busy table about twice its peak; free slots form a stack threaded through
 /// the slots themselves, in stripes: each thread pushes the slots it frees onto its own stripe and pops from it first,
-/// so threads do not all swap one head on every call and reply. An entry is 32 bytes (two per cache line): the call id fits an int, and the deadline is the low
+/// so threads do not all swap one head on every call and reply (cooling slots, below, add to the peak until reused). An entry is 32 bytes (two per cache line): the call id fits an int, and the deadline is the low
 /// 32 bits of <see cref="Platform.Milliseconds"/>, compared with wrap-around (deadlines are seconds away, not weeks).
 /// </summary>
 internal sealed class PendingCallTable
@@ -190,11 +190,22 @@ internal sealed class PendingCallTable
     private bool TryWarm(out int index)
     {
         int allocated = Volatile.Read(ref _allocated);
-        for (index = 0; index < allocated; index++)
-            if (Interlocked.CompareExchange(ref At(index).Tag, 0, Cooling) == Cooling) return true;
+        int start = (int)((uint)Interlocked.Increment(ref _warmFrom) % (uint)allocated); // not the same prefix every time
+        for (int i = 0; i < allocated; i++)
+        {
+            index = (start + i) % allocated;
+            if (Interlocked.CompareExchange(ref At(index).Tag, 0, Cooling) == Cooling)
+            {
+                _warmFrom = index;
+                return true;
+            }
+        }
+
         index = -1;
         return false;
     }
+
+    private int _warmFrom; // where the last early take found a cooling slot
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private void AllocateChunk(int chunk)

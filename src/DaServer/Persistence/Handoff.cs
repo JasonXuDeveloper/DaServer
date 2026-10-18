@@ -259,7 +259,7 @@ internal static class Handoff
             }
             else if (op == None)
             {
-                if (loaded && entity.Has<AwaitingHandoff>())
+                if (loaded && entity.TryGet<AwaitingHandoff>(out var asked) && asked.From == from) // the node it asked, not a late one
                 {
                     entity.Remove<AwaitingHandoff>();
                     ShardDispatch.BeginLoad(world, entity, entity.Get<ActorRef>().Actor);
@@ -285,12 +285,14 @@ internal static class Handoff
     /// Take a record: for an actor waiting for it, or a new one this shard owns, or one its sender owns in this node's
     /// view (the sender gives its own key away: its view is ahead of this one, it is leaving and this node has not
     /// heard yet). Refused for an actor already running here (it loaded from the store meanwhile; the sender writes its
-    /// record, versions settle who wins) and while this shard stops.
+    /// record, versions settle who wins), for a fenced copy (it goes without a write), and for a new one while this shard
+    /// stops (a copy already waiting takes it and hands it on as it leaves).
     /// </summary>
     private static bool Restore(World world, HandlerTypeInfo handlerType, long key, ReadOnlySpan<byte> payload, bool loaded, Entity entity,
         ulong from)
     {
-        if (loaded ? !entity.Has<AwaitingHandoff>() : !ShardDispatch.Owns(world, handlerType.Id, key) && !SendersOwn(world, handlerType.Id, key, from))
+        if (loaded ? !entity.Has<AwaitingHandoff>() || entity.Has<Fenced>() // fenced: it goes without a write, the record with it
+                : !ShardDispatch.Owns(world, handlerType.Id, key) && !SendersOwn(world, handlerType.Id, key, from))
             return false;
         if (loaded) entity.Remove<AwaitingHandoff>();
         else entity = ShardDispatch.Adopt(world, handlerType, key);

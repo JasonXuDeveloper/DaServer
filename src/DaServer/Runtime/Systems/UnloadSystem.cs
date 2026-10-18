@@ -19,6 +19,15 @@ internal sealed partial class UnloadSystem : EcsSystem
         TurnWatcher.Begin(world, actor, ShardDispatch.Hook(world, static a => a.OnUnload().AsValueTask(), target));
     }
 
+    // A copy still waiting for its record when it is asked to leave holds no state: it goes at once (its mail to the
+    // owner; a node waiting for it hears "none"), instead of two copies each waiting for the other's record.
+    [ForEach, With<UnloadRequested>, With<AwaitingHandoff>, Without<Fenced>, Without<Removing>]
+    private static void Abandon(Entity actor)
+    {
+        actor.Remove<UnloadRequested, AwaitingHandoff>();
+        actor.Add<Removing>() = new Removing(RpcStatus.Ok, null);
+    }
+
     // After its write in flight (Without<Saving>): a reload reads the store only once that write settled; after its
     // OnUnload turn (Without<Turn>). A copy whose record went to a new owner (HandingOff) goes too: this node was
     // declared dead, so the copy writes nothing whatever the answer, and its mail follows the record on the same link.
