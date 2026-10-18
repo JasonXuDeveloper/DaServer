@@ -1,7 +1,7 @@
 namespace DaServer.Runtime;
 
 /// <summary>
-/// What business code sees of the cluster (<c>Cluster</c> in actors and services, <c>world.Cluster()</c> in systems):
+/// What business code sees of the cluster (<c>Cluster</c> in actors and services, <c>world.Cluster</c> in systems):
 /// messages to actors, services, client sessions and client groups (<c>Cluster.Send(mapId, new Move(..))</c>,
 /// <c>await Cluster.Ask(playerId, new GetInfo())</c>, <c>Cluster.Send(session, new GoldChanged(..))</c>) and published
 /// messages. Node lifecycle and internals are not part of it.

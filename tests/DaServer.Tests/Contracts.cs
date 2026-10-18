@@ -257,7 +257,7 @@ public sealed partial class TallySystem : EcsSystem
     [ForEach, With<Streak>]
     private static void Tally(in Ledger _, in ActorRef self, World world)
     {
-        if (self.Actor.Key >= 7000) Ticks.AddOrUpdate((world.Shard().Node.Id, self.Actor.Key), 1, static (_, n) => n + 1);
+        if (self.Actor.Key >= 7000) Ticks.AddOrUpdate((world.Shard.Node.Id, self.Actor.Key), 1, static (_, n) => n + 1);
     }
 }
 

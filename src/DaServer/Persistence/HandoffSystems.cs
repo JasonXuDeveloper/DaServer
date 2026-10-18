@@ -15,7 +15,7 @@ internal sealed partial class HandoffSystem : EcsSystem
         var (to, target, now) = (handOff.To, self.Actor, activity.NowMs);
         actor.Remove<HandOff>(); // the refs above are invalid from here on
         if (Handoff.Send(world, actor, target, to) is { } record)
-            actor.Add<HandingOff>() = new HandingOff(to, now + Handoff.TimeoutMs(world.Shard().Node), record);
+            actor.Add<HandingOff>() = new HandingOff(to, now + Handoff.TimeoutMs(world.Shard.Node), record);
         else Handoff.Fallback(actor);
     }
 }
@@ -33,7 +33,7 @@ internal sealed class HandoffAsksSystem : EcsSystem
         var waiting = World.GetSingleton<HandoffAsks>().Waiting;
         if (waiting.Count == 0) return;
         var actors = World.GetSingleton<ActorDirectory>().Actors;
-        var node = World.Shard().Node;
+        var node = World.Shard.Node;
         long now = World.GetSingleton<ShardActivity>().NowMs;
         for (int i = waiting.Count - 1; i >= 0; i--)
         {
@@ -64,7 +64,7 @@ internal sealed partial class HandoffTimeoutSystem : EcsSystem
     {
         if (activity.NowMs < awaiting.UntilMs) return;
         var (from, target, now) = (awaiting.From, self.Actor, activity.NowMs);
-        var node = world.Shard().Node;
+        var node = world.Shard.Node;
         // The previous owner may still run the actor (a long turn, a save, a slow unload): while it is alive the record
         // will come (or "none"), so ask again instead of loading a second copy from the store beside it.
         if (node.View.TryGetMember(from, out var member) && member.Status != MemberStatus.Dead && Handoff.AskAgain(node, from, target))
@@ -81,7 +81,7 @@ internal sealed partial class HandoffTimeoutSystem : EcsSystem
     private static void Unanswered(Entity actor, in HandingOff handingOff, in ShardActivity activity, World world)
     {
         if (activity.NowMs < handingOff.UntilMs) return;
-        var node = world.Shard().Node;
+        var node = world.Shard.Node;
         // The new owner may have taken the record and be running the actor while its answer is late (a busy node, a
         // link resuming): writing this copy now would fence that one. Its answer comes while it is alive (the link's
         // stream resumes); only a dead one's never will.

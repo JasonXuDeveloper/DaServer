@@ -26,7 +26,7 @@ internal sealed partial class LoadSystem : EcsSystem
     internal static void Apply(World world, LoadBatch batch)
     {
         var error = batch.TakeResult();
-        if (error != null) Log.LoadFailed(world.Logger(), error, batch.Count);
+        if (error != null) Log.LoadFailed(world.Logger, error, batch.Count);
         var store = world.GetSingleton<ShardStore>();
         var records = batch.Records;
         var entities = batch.Entities;
@@ -37,7 +37,7 @@ internal sealed partial class LoadSystem : EcsSystem
             entity.Remove<RecordRequested>();
             var actor = entity.Get<ActorRef>().Actor;
             long now = world.GetSingleton<ShardActivity>().NowMs;
-            if (error != null && now - requested.SinceMs < (long)world.Shard().Node.Options.CallTimeout.TotalMilliseconds)
+            if (error != null && now - requested.SinceMs < (long)world.Shard.Node.Options.CallTimeout.TotalMilliseconds)
             {
                 // A store outage delays the actor (its mail waits) instead of failing it: tried again shortly.
                 entity.Add<AwaitingRecord>() = new AwaitingRecord(requested.SinceMs, now + RetryLoadMs);
@@ -61,7 +61,7 @@ internal sealed partial class LoadSystem : EcsSystem
             }
             catch (Exception e)
             {
-                if (e != error) Log.RestoreFailed(world.Logger(), e, actor); // the batch's error is logged once
+                if (e != error) Log.RestoreFailed(world.Logger, e, actor); // the batch's error is logged once
                 entity.Add<Removing>() = new Removing(RpcStatus.Error, "Loading the actor's record failed: " + e.Message);
                 continue;
             }
@@ -127,7 +127,7 @@ internal sealed partial class PersistSystem : EcsSystem
     internal static void Apply(World world, SaveBatch batch)
     {
         var error = batch.TakeResult();
-        if (error != null) Log.SaveFailed(world.Logger(), error, batch.Count);
+        if (error != null) Log.SaveFailed(world.Logger, error, batch.Count);
         var accepted = batch.Accepted;
         var writes = batch.Writes;
         long now = world.GetSingleton<ShardActivity>().NowMs;
@@ -156,7 +156,7 @@ internal sealed partial class PersistSystem : EcsSystem
             }
             else
             {
-                Log.RecordTaken(world.Logger(), actor.Get<ActorRef>().Actor, writes[i].ExpectedVersion);
+                Log.RecordTaken(world.Logger, actor.Get<ActorRef>().Actor, writes[i].ExpectedVersion);
                 if (!actor.Has<FinalSave>())
                 {
                     if (!actor.Has<UnloadRequested>())

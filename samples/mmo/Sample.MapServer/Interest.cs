@@ -75,7 +75,7 @@ public sealed partial class DespawnSystem : EcsSystem
                 for (int i = changes.Count - 1; i >= 0; i--)
                     if (changes[i].Player == player) changes.RemoveAt(i);
 
-            var cluster = world.Cluster();
+            var cluster = world.Cluster;
             cluster.Send(grid.Viewers(cell), new Gone(grid.Map, player));
             if (!entity.Has<SessionGone>())
                 foreach (int c in Around(cell, stackalloc int[9]))
@@ -103,7 +103,7 @@ public sealed partial class PlacementSystem : EcsSystem
         entity.Add<GridCell>() = new GridCell(to); // `p` and `avatar` are invalid from here on
         ref var grid = ref map.Get<MapGrid>();
         (grid.Avatars[to] ??= new()).Add(entity);
-        Interest.View(ref grid, world.Cluster(), entity, session, from: null, to);
+        Interest.View(ref grid, world.Cluster, entity, session, from: null, to);
     }
 
     [ForEach]
@@ -117,7 +117,7 @@ public sealed partial class PlacementSystem : EcsSystem
         Interest.SwapRemove(grid.Avatars[from]!, entity);
         (grid.Avatars[to] ??= new()).Add(entity);
 
-        var cluster = world.Cluster();
+        var cluster = world.Cluster;
         foreach (int c in Around(from, stackalloc int[9]))
             if (!Near(c, to)) cluster.Send(avatar.Session, new LeaveGroup(grid.Viewers(c)));
 
@@ -129,7 +129,7 @@ public sealed partial class PlacementSystem : EcsSystem
     {
         var (map, session, at) = (avatar.Map, avatar.Session, cell.Index);
         entity.Remove<Resynced>();
-        Interest.View(ref map.Get<MapGrid>(), world.Cluster(), entity, session, from: null, at);
+        Interest.View(ref map.Get<MapGrid>(), world.Cluster, entity, session, from: null, at);
     }
 }
 
@@ -175,7 +175,7 @@ public sealed partial class SnapshotSystem : EcsSystem
     [ForEach]
     private static void Send(ref MapGrid grid, World world)
     {
-        var cluster = world.Cluster();
+        var cluster = world.Cluster;
         foreach (int cell in grid.ChangedCells)
         {
             var changes = grid.Changes[cell]!;

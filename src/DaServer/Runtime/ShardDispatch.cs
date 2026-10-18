@@ -13,7 +13,7 @@ internal static class ShardDispatch
     /// </summary>
     public static void Route(World world, FrameWriter frame, IReplySink? sink)
     {
-        var node = world.Shard().Node;
+        var node = world.Shard.Node;
         var header = FrameHeader.Read(frame.Frame);
         var handlerType = node.HandlerTypeById(header.Target);
         if (header.MessageId == TypeId<SessionResumed>.Value && handlerType is { IsActor: true })
@@ -34,7 +34,7 @@ internal static class ShardDispatch
         }
 
         if (!handlerType!.IsActor)
-            Track(world, Invoke(handler.Dispatcher, ServiceOf(world, handlerType), frame, sink, world.Logger(), ChainOf(world, frame)));
+            Track(world, Invoke(handler.Dispatcher, ServiceOf(world, handlerType), frame, sink, world.Logger, ChainOf(world, frame)));
         else if (TryGetLoaded(world, handlerType.Id, header.Key, out var existing))
             Deliver(world, existing, new Envelope(frame, sink)); // even while unloading: its mail moves in order
         else if (!OwnsHere(world, node, handlerType.Id, header.Key))
@@ -49,7 +49,7 @@ internal static class ShardDispatch
     /// </summary>
     private static void RouteResume(World world, HandlerTypeInfo handlerType, FrameWriter frame, IReplySink? sink, in FrameHeader header)
     {
-        var node = world.Shard().Node;
+        var node = world.Shard.Node;
         if (TryGetLoaded(world, handlerType.Id, header.Key, out var existing)) Deliver(world, existing, new Envelope(frame, sink));
         else if (!OwnsHere(world, node, handlerType.Id, header.Key)) node.Forward(frame, sink);
         else Fail(frame, sink, RpcStatus.Forbidden);
@@ -82,7 +82,7 @@ internal static class ShardDispatch
     }
 
     /// <summary>Whether this shard takes actor (<paramref name="handlerTypeId"/>, <paramref name="key"/>) now (it owns it and is not stopping).</summary>
-    internal static bool Owns(World world, uint handlerTypeId, long key) => OwnsHere(world, world.Shard().Node, handlerTypeId, key);
+    internal static bool Owns(World world, uint handlerTypeId, long key) => OwnsHere(world, world.Shard.Node, handlerTypeId, key);
 
     /// <summary>An actor's entity, not started: <see cref="Handoff"/> restores what its previous owner sent before <see cref="Actor.OnLoad"/>.</summary>
     internal static Entity Adopt(World world, HandlerTypeInfo handlerType, long key)
@@ -129,7 +129,7 @@ internal static class ShardDispatch
         }
 
         ref var mailbox = ref actor.Get<Mailbox>();
-        var shard = world.Shard();
+        var shard = world.Shard;
         if (mailbox.Pending.Count >= shard.Node.Options.ActorMailboxCapacity)
         {
             shard.CountRejected();
@@ -151,7 +151,7 @@ internal static class ShardDispatch
         var actor = pools.RentActor(handlerType);
         actor.HandlerType = handlerType;
         actor.Key = id.Key;
-        actor.Shard = world.Shard();
+        actor.Shard = world.Shard;
         var entity = world.CreateEntity(new ActorRef(actor), new Mailbox(pools.RentMailbox()) { LastActive = world.GetSingleton<ShardActivity>().NowMs },
             new Loading());
         actor.Entity = entity;
@@ -331,6 +331,4 @@ internal static class ShardDispatch
         if (sink != null && request)
             sink.SendError(callId, status, message);
     }
-
-    public static ILogger Logger(this World world) => world.Shard().Node.Logger;
 }

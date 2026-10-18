@@ -11,7 +11,7 @@ internal sealed partial class RebalanceSystem : EcsSystem
     [ForEach, Without<UnloadRequested>, Without<Unloading>, Without<Removing>]
     private static void Leave(Entity actor, in ActorRef self, in ShardActivity activity, World world)
     {
-        if (!activity.DeclaredDead && (activity.Stopping || !world.Shard().Node.IsLocalOwner(self.Actor.HandlerType.Id, self.Actor.Key)))
+        if (!activity.DeclaredDead && (activity.Stopping || !world.Shard.Node.IsLocalOwner(self.Actor.HandlerType.Id, self.Actor.Key)))
             actor.Add<UnloadRequested>();
     }
 

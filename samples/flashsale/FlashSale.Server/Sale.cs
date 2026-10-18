@@ -114,7 +114,7 @@ public sealed partial class AdmissionSystem : EcsSystem
     private static void Admit(ref SaleState sale, World world)
     {
         if (!sale.Queued) return;
-        long now = world.Time().GetUtcNow().ToUnixTimeMilliseconds();
+        long now = world.Time.GetUtcNow().ToUnixTimeMilliseconds();
         if (sale.Released >= sale.Issued)
         {
             sale.AtMs = now;

@@ -16,7 +16,7 @@ internal sealed class DispatchSystem : EcsSystem
     protected override void OnUpdate()
     {
         var world = World;
-        var shard = world.Shard();
+        var shard = world.Shard;
         int processed = 0;
         while (processed < Budget && shard.TryTake(out var item))
         {
@@ -42,7 +42,7 @@ internal sealed class DispatchSystem : EcsSystem
             }
             catch (System.Exception e)
             {
-                Log.ShardFailed(world.Logger(), e, shard.Index);
+                Log.ShardFailed(world.Logger, e, shard.Index);
             }
         }
 

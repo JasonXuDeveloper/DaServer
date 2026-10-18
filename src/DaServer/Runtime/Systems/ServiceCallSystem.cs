@@ -11,6 +11,6 @@ internal sealed partial class ServiceCallSystem : EcsSystem
     {
         var error = TurnWatcher.Result(in turn);
         call.Destroy();
-        if (error != null) Log.ServiceCallFailed(world.Logger(), error);
+        if (error != null) Log.ServiceCallFailed(world.Logger, error);
     }
 }

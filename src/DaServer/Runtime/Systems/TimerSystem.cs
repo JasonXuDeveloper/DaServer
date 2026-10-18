@@ -45,7 +45,7 @@ internal sealed class TimerSystem : EcsSystem
     {
         ref var timers = ref World.GetSingleton<ShardTimers>();
         if (timers.Wheel.Count == 0) return;
-        var due = new Due(World.Shard().Node);
+        var due = new Due(World.Shard.Node);
         timers.Wheel.Advance(ref due);
     }
 

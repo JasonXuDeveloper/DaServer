@@ -35,7 +35,7 @@ internal sealed class TurnWatcher
         }
 
         var pool = world.GetSingleton<TurnWatchers>().Pool;
-        var watcher = pool.Count > 0 ? pool.Pop() : new TurnWatcher(world.Shard());
+        var watcher = pool.Count > 0 ? pool.Pop() : new TurnWatcher(world.Shard);
         watcher.Entity = entity;
         // No captured context: the continuation runs where the task completes and only posts (thread-safe).
         task.ConfigureAwait(false).GetAwaiter().UnsafeOnCompleted(watcher._completed);

@@ -26,7 +26,7 @@ internal static class Handoff
     public static ulong? TargetOf(World world, Actor actor)
     {
         if (!world.GetSingleton<ShardStore>().HandsOff) return null;
-        var node = world.Shard().Node;
+        var node = world.Shard.Node;
         var owner = node.View.HandlerTypeOwner(actor.HandlerType.Id, actor.Key);
         return owner != null && owner.NodeId != node.Id ? owner.NodeId : null;
     }
@@ -40,7 +40,7 @@ internal static class Handoff
     public static ulong? PreviousOwner(World world, uint handlerTypeId, long key)
     {
         if (!world.GetSingleton<ShardStore>().HandsOff) return null;
-        var node = world.Shard().Node;
+        var node = world.Shard.Node;
         if (HeldBefore(node, handlerTypeId, key, ownsNow: true) is { } held) return held;
         var recent = node.RecentViews;
         if (recent.Length == 0 || Platform.Milliseconds - recent[0].ReplacedMs > TimeoutMs(node)) return null;
@@ -79,7 +79,7 @@ internal static class Handoff
     /// </summary>
     internal static ulong? MustWait(World world, uint handlerTypeId, long key, ulong by)
     {
-        var node = world.Shard().Node;
+        var node = world.Shard.Node;
         if (ShardDispatch.Owns(world, handlerTypeId, key)) return node.Id;
         return world.GetSingleton<ShardStore>().HandsOff && HeldBefore(node, handlerTypeId, key, ownsNow: false) is { } held && held != by ? held : null;
     }
@@ -87,7 +87,7 @@ internal static class Handoff
     /// <summary>Ask <paramref name="from"/> for the record of a new actor; it loads from the store at once when that node is gone.</summary>
     public static void Await(World world, Entity entity, ulong from)
     {
-        var node = world.Shard().Node;
+        var node = world.Shard.Node;
         var actor = entity.Get<ActorRef>().Actor;
         if (Notify(node, from, Request, actor.HandlerType.Id, actor.Key, 0))
             entity.Add<AwaitingHandoff>() = new AwaitingHandoff(from, world.GetSingleton<ShardActivity>().NowMs + TimeoutMs(node));
@@ -103,7 +103,7 @@ internal static class Handoff
     /// </summary>
     public static byte[]? Send(World world, Entity entity, Actor actor, ulong to)
     {
-        var node = world.Shard().Node;
+        var node = world.Shard.Node;
         var stored = entity.Has<Stored>() ? entity.Get<Stored>() : default;
         var record = FrameWriter.Rent(1024);
         var head = record.GetSpan(RecordHeader);
@@ -137,7 +137,7 @@ internal static class Handoff
     }
 
     /// <summary>Tell the node that asked for the record of a removed actor that it was not handed to it.</summary>
-    public static void Gone(World world, Actor actor, ulong by) => Gone(world.Shard().Node, actor.HandlerType.Id, actor.Key, by);
+    public static void Gone(World world, Actor actor, ulong by) => Gone(world.Shard.Node, actor.HandlerType.Id, actor.Key, by);
 
     /// <summary>Tell <paramref name="by"/> that this node holds no record of the key.</summary>
     public static void Gone(Node node, uint handlerTypeId, long key, ulong by) => Notify(node, by, None, handlerTypeId, key, 0);
@@ -170,7 +170,7 @@ internal static class Handoff
         {
             var payload = FrameHeader.PayloadOf(in header, frame.Frame);
             ulong from = BinaryPrimitives.ReadUInt64LittleEndian(payload);
-            var node = world.Shard().Node;
+            var node = world.Shard.Node;
             bool loaded = world.GetSingleton<ActorDirectory>().Actors.TryGetValue(new ActorAddress(handlerType.Id, header.Key), out var entity);
             if (op == Record)
             {
@@ -242,7 +242,7 @@ internal static class Handoff
         }
         catch (Exception e)
         {
-            Log.HandoffUnreadable(world.Logger(), e, actor);
+            Log.HandoffUnreadable(world.Logger, e, actor);
             if (loaded) ShardDispatch.BeginLoad(world, entity, actor);
             else entity.Add<Removing>() = new Removing(RpcStatus.Ok, null); // nothing queued yet
             return false;
@@ -277,7 +277,7 @@ internal static class Handoff
                 }
 
         // Past the bound it goes unanswered: its asker asks again.
-        if (waiting.Count < HandoffAsks.Max) waiting.Add(new HandoffAsk(handlerTypeId, key, by, now + TimeoutMs(world.Shard().Node)));
+        if (waiting.Count < HandoffAsks.Max) waiting.Add(new HandoffAsk(handlerTypeId, key, by, now + TimeoutMs(world.Shard.Node)));
     }
 
     /// <summary>
@@ -287,7 +287,7 @@ internal static class Handoff
     /// </summary>
     private static bool PassOn(World world, uint handlerTypeId, long key, ReadOnlySpan<byte> record, ulong from = 0)
     {
-        var node = world.Shard().Node;
+        var node = world.Shard.Node;
         var waiting = world.GetSingleton<HandoffAsks>().Waiting;
         ulong to = 0;
         for (int i = waiting.Count - 1; i >= 0 && (record.IsEmpty || to == 0); i--)
@@ -310,7 +310,7 @@ internal static class Handoff
     }
 
     private static bool SendersOwn(World world, uint handlerTypeId, long key, ulong from) =>
-        !world.GetSingleton<ShardActivity>().Stopping && world.Shard().Node.View.HandlerTypeOwner(handlerTypeId, key)?.NodeId == from;
+        !world.GetSingleton<ShardActivity>().Stopping && world.Shard.Node.View.HandlerTypeOwner(handlerTypeId, key)?.NodeId == from;
 
     private static bool Notify(Node node, ulong to, uint op, uint handlerTypeId, long key, byte value)
     {
