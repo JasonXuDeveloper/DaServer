@@ -25,7 +25,7 @@ internal sealed class TurnWatcher
     /// </summary>
     public static void Begin(World world, Entity entity, ValueTask task)
     {
-        entity.Add<Turn>() = new Turn(task, world.GetSingleton<ShardActivity>().NowMs);
+        entity.Add<Turn>() = new Turn(task, world.GetSingleton<ShardActivity>().NowMs, Tracing.TakePending());
         if (task.IsCompleted)
         {
             // A hook that finished synchronously (the usual OnLoad/OnUnload): registering a continuation on a completed
@@ -52,19 +52,22 @@ internal sealed class TurnWatcher
 
     /// <summary>
     /// The turn's result, read once after <see cref="TurnEnded"/> (what <c>await</c> does after its continuation ran):
-    /// observes the exception and returns pooled state machines to their pools.
+    /// observes the exception and returns pooled state machines to their pools; a traced turn's span ends.
     /// </summary>
     public static Exception? Result(in Turn turn)
     {
+        Exception? error = null;
         try
         {
             turn.Task.GetAwaiter().GetResult();
-            return null;
         }
         catch (Exception e)
         {
-            return e;
+            error = e;
         }
+
+        if (turn.Span != null) Tracing.Ended(turn.Span, error);
+        return error;
     }
 
     private void Completed() => _shard.Post(new WorkItem(WorkKind.TurnEnded, this, null));

@@ -94,6 +94,7 @@ sealed partial class Node
         if (timeout > TimeSpan.Zero) frame.Deadline = Platform.Milliseconds + (long)timeout.TotalMilliseconds; // else Request's default
         long chain = CallChain.Current;
         if (chain != 0) frame.SetChain(chain); // the asking turn's chain (ADR-059)
+        Tracing.Attach(frame);
         Request(frame, TypeId<TRequest>.Value, handlerTypeId, key, call, null, 0);
         return new Reply<TReply>(task);
     }
@@ -118,6 +119,7 @@ sealed partial class Node
         while (last >= 0 && routes[last].Actor) last--;
         if (last < 0) return;
         var w = MessageWriter.Write(in message);
+        Tracing.Attach(w);
         bool handedOver = false;
         try
         {
@@ -138,6 +140,7 @@ sealed partial class Node
     /// </summary>
     internal void SendMessage(FrameWriter w, uint messageId, uint handlerTypeId, long key, byte flags = 0)
     {
+        Tracing.Attach(w);
         bool handedOver = false;
         try
         {

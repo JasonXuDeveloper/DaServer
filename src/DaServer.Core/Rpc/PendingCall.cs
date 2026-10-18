@@ -53,6 +53,7 @@ internal sealed class PendingCall<T> : IPendingCall, IValueTaskSource<T>, IValue
     private T _result = default!;
     private short _version;
     private long _chain; // the caller's call chain, restored around its continuation
+    private object? _trace; // and its trace span
 
     private PendingCall()
     {
@@ -64,6 +65,7 @@ internal sealed class PendingCall<T> : IPendingCall, IValueTaskSource<T>, IValue
         var call = caller != null && PerThread<PendingCall<T>>.TryRent(out var local) ? local : Pool.Rent();
         call.Caller = caller;
         call._chain = caller != null ? CallChain.Current : 0;
+        call._trace = caller != null ? CallChain.Trace : null;
         return call;
     }
 
@@ -141,8 +143,10 @@ internal sealed class PendingCall<T> : IPendingCall, IValueTaskSource<T>, IValue
     private void Resume(Action<object?> continuation)
     {
         _queued = null;
-        var previous = CallChain.Current;
+        var (previous, previousTrace) = (CallChain.Current, CallChain.Trace);
         CallChain.Current = _chain;
+        CallChain.Trace = _trace;
+        _trace = null; // a pooled call holds no span
         try
         {
             continuation(_continuationState); // resets this object: read everything before
@@ -150,6 +154,7 @@ internal sealed class PendingCall<T> : IPendingCall, IValueTaskSource<T>, IValue
         finally
         {
             CallChain.Current = previous;
+            CallChain.Trace = previousTrace;
         }
     }
 

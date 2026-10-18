@@ -10,6 +10,7 @@ namespace DaServer.Rpc;
 internal static class CallChain
 {
     [ThreadStatic] private static long t_current;
+    [ThreadStatic] private static object? t_trace;
 
     public static long Current
     {
@@ -17,5 +18,17 @@ internal static class CallChain
         get => t_current;
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         set => t_current = value;
+    }
+
+    /// <summary>
+    /// The trace span of the running turn (the runtime's <c>Activity</c>, kept opaque here: clients do not trace), set and
+    /// restored with <see cref="Current"/>; requests and messages the turn sends carry its context. Null outside traces.
+    /// </summary>
+    public static object? Trace
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => t_trace;
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        set => t_trace = value;
     }
 }
