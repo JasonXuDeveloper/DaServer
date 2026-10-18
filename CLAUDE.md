@@ -43,7 +43,7 @@ src/DaServer/              server runtime (net11.0): Runtime/ Cluster/ Rpc/ Net/
   Runtime/Systems/         runtime systems: Dispatch, Turn, ServiceCall, Removal, Unload, Mailbox (ShardMessages group),
                            Rebalance (ShardRebalance), Idle and LongTurn (ShardIdleScan); each reacts to one lifecycle tag (ADR-037)
 src/DaServer.Generator/    incremental generators (AskGenerator, RegistrationGenerator, PolyfillGenerator) + DaServerAnalyzer
-                           (DAS001-019); WireManifest.cs: the wire.manifest model over Nino's NinoTypeLayout (ADR-076);
+                           (DAS001-020); WireManifest.cs: the wire.manifest model over Nino's NinoTypeLayout (ADR-076);
                            Shapes.cs reads symbols once for both, so "skipped by the generator" == "reported"
 src/DaServer.WireTool/     writes a project's wire.manifest from its built assembly (the analyzer's own WireManifest)
 src/DaServer.Hosting/      Generic Host integration, configuration, OpenTelemetry (OTLP when configured), shutdown

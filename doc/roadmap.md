@@ -607,7 +607,12 @@ and cards, a manual clock), fails before its fix, and passes after it.
       goodbye: pushes are one connection at a time and the new one's wait until the old drained
       (`PushesOfTheConnectionLeftComeBeforeThoseOfTheNewOne`); an actor taking a resumed session makes the previous one
       leave its group, ahead of its later broadcasts (`AResumedSessionTakesTheActorsGroupFromThePreviousOne`).
-- [ ] S7 a kick can be evaded by a concurrent resume; S9 one ticket used on two gateways at once can split the session.
+- [x] S7 A kick was evaded by a resume waiting behind the kicking turn (accepted, and the close then filtered as
+      superseded): actors kick with `DisconnectSession`, which withdraws the grant at once, so the resume is refused
+      (DAS020 for `Send(session, new Disconnect())` in actors; `AKickIsNotEvadedByAResumeWaitingBehindIt`). S9 One ticket
+      presented on two gateways at once could resume the player on one and the room on the other: the first actor that
+      takes the session decides, asked alone, and the other resume stops at its `Superseded`
+      (`ATicketPresentedOnTwoGatewaysAtOnceResumesOnOne`).
 - [x] Fail fast: a test waiting on a condition stops at the first fault the cluster logs (a crashed or stalled shard, a
       failed maintenance tick or gossip round, a refused link, a stop past its budget, anything critical), naming it,
       instead of at its time limit (`FaultLog`); the E2E runs stop at the first resource that fails to start, exits or
