@@ -47,7 +47,7 @@ One 4-core VM with the crowd on it (it takes about half the machine; the machine
 | Run | Requests | Time | Steady rate | Node CPU |
 |---|---:|---:|---:|---:|
 | 1,000,000 buyers, 2 nodes, direct (buy + one retry each) | 2,000,101 | 8.6 s | | 1.8 cores |
-| 3,000,000 buyers, 1 node, direct | 6,000,101 | 19.4 s | 335,000-386,000/s | 1.7 cores |
+| 3,000,000 buyers, 1 node, direct (requests on a 1 ms beat, the crowd's default; ADR-070) | 6,000,101 | 13.2 s | 548,000/s | 1.5 cores |
 | 1,000,000 buyers, 1 node, queued (2,000 admitted a second) | 1,036,163 | 5.5 s | | 1.6 cores |
 
 Exactly 100 sold every time, no retry answered differently, every confirmed order read back.

@@ -89,7 +89,7 @@ Everything a developer declares is one of these. The message type alone decides 
 | `Cluster.Ask(new M())` / `Send(...)` | The one service handling `M` (local first, else the less loaded of two nodes hosting it). |
 | `Cluster.Ask(id, new M(), new CallOptions(timeout))` | Any `Ask` with a timeout of its own (default: the sender's `CallTimeout`); handlers read what their caller still waits as `TimeLeft`. |
 | `Cluster.Publish(e)` | Every service type handling `e`, once each. |
-| `Cluster.Send(session, m)` / `Send(group, m)` | A client session / a client group (`[ToClient]` messages; clients handle them with `[Handle]` too). `JoinGroup`, `LeaveGroup` and `Disconnect` sent there are applied by the node holding the session. |
+| `Cluster.Send(session, m)` / `Send(group, m)` | A client session / a client group (`[ToClient]` messages; clients handle them with `[Handle]` too). `JoinGroup`, `LeaveGroup` and `Disconnect` sent there are applied by the node holding the session (from an actor, kick a session with `DisconnectSession`, DAS020). |
 
 | Element | Responsibility | Never |
 |---|---|---|

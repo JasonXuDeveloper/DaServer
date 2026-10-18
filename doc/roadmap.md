@@ -237,8 +237,28 @@ Open after G:
       trim that its renters' cursor has not reached since (no bookkeeping on rent: a first try that tracked a low-water
       mark on every rent cost 26% on four threads); buffers in use, even in rare bursts, never go
       (`APeaksBuffersGoBackHalfPerTrimWhileUsedOnesStay`; `PoolBenchmark.Buffers` unchanged).
-- [ ] Profile group broadcasts on .NET 11 (0 to +5% against d676d2a on .NET 10).
-- [ ] Re-record the release checklist (test count, 10k E2E, BenchmarkDotNet) on the head after T2.
+- [x] Group broadcasts on .NET 11 against d676d2a on .NET 10: -9% to +8% (the release checklist's run), inside
+      the runs' spread; nothing to profile further.
+- [x] Release checklist recorded on 7c5b50b (October 2026, one 4-core VM): build 0 warnings; 395 tests pass (32
+      skipped: PostgreSQL ones without `DASERVER_TEST_POSTGRES`, which CI sets); topology strings only in AppHosts and
+      doc comments; the 10,000-bot E2E (one map, 60 s, lean bots): E2E OK, 2.4M broadcast samples, p50 75.8 ms, p99
+      208.9 ms, p99.9 278.5 ms, no gap or disconnect, six nodes exit 0. BenchmarkDotNet default job, d676d2a on
+      .NET 10 then the head, back to back:
+
+      | Case | d676d2a | head | |
+      |---|---:|---:|---:|
+      | 1 call local / remote | 30.3 / 132 us | 5.17 / 85.9 us | -83% / -35% |
+      | 64 calls local / remote | 403 / 357 us | 169 / 315 us | -58% / -12% |
+      | 1,024 calls local / remote | 3.98 / 1.91 ms | 0.78 / 1.05 ms | -81% / -45% |
+      | messages local / remote | 4.62 / 1.58 us | 454 / 730 ns | -90% / -54% |
+      | broadcast 1k x 1 / 1k x 9 | 5.35 / 6.33 ms | 5.21 / 5.78 ms | -3% / -9% |
+      | broadcast 5k x 1 / 5k x 9 | 29.0 / 30.1 ms | 26.5 / 32.5 ms | -9% / +8% |
+      | scenario 3k / 9k | 15.3 / 48.4 ms | 15.5 / 52.0 ms | +2% / +8% |
+
+      Allocated per operation: calls 120-175 B -> 0-1 B, broadcasts 277-280 B -> 7-50 B, scenario 142-152 B ->
+      16-50 B. Every case is within the 10% bound; the two +8% cases are inside one standard deviation of either side
+      (2.6 and 4.2-5.3 ms). The 2 ms flush beat (head only, off by default) trades latency for CPU on idle cores, as
+      ADR-070 records.
 
 ## Next: graceful shutdown and no data loss
 
@@ -775,6 +795,32 @@ and cards, a manual clock), fails before its fix, and passes after it.
       trimming move: it counts the window's own rents from the shared pool.
 - Kept on purpose: B6 (local replies hand the frame over without a copy), B12 (the shard checks runnable actors after
   tick systems sent local mail)
+- [x] Self-review round 1 after the release checklist (three independent read-only reviews: distributed correctness,
+      hot paths, code and docs; each finding checked against the code before acting):
+  - A handoff could stall until a node died when its record or answer was lost on a live link (a link that restarted
+    its stream, a backlog past its bound): the previous owner sends the record again when the new owner asks or the
+    answer is late while it lives, and the new owner answers "accepted" again for a record it already took
+    (`HandedFrom`). `ALostRecordGoesAgainAndTheStoreStaysOut` (fails without the resend: the asks time out).
+  - Call ids keep 32 - `PendingCallBits` bits of generation (14 on a node) and the free stacks reuse the last freed
+    slot, so a late reply could, rarely, match a later call: a failed call's slot cools for 30 s (longer than any
+    budget) before reuse, unless the table is full (`AFailedCallsSlotCoolsSoItsLateReplyFindsNoOtherCall`).
+  - A seed resolver that never answers stopped the refreshes for good: each resolution is bounded by the refresh
+    period (`AResolverThatNeverAnswersDoesNotStopTheRefreshes`). A Hello racing a new view could leave an
+    introduction behind; a shard answering a given-up slot round counted into the next one (rounds are numbered).
+  - A relayed reply's frame is sized for its call id; a handler's frame header is read only to log. Measured and not
+    kept: node links keeping their written buffer as a spare (instead of renting 256 KB from the pool per burst after
+    idle): `RpcBenchmark` default job, interleaved off/on/off/on, 1 remote call 95.2 / 96.2 / 89.4 / 82.2 us, 1,024
+    remote calls 1,057 / 1,041 / 1,039 / 1,052 us, 0 B either way: no gain beyond the noise, for 256 KB more per link.
+  - `LoadBatch` and `SaveBatch` share one `StoreCall`; `AsyncSignal`, `Listener` and `NodeMetrics` are internal;
+    `SwarmResult.Failures` removed (unused).
+  - Docs: hot reload described as planned (ADR-067, ADR-078, the mmo README), analyzer ranges, R11 as measured, the
+    flash sale's numbers as ADR-070 measured them, history wording.
+  - Kept, with the reason: the trace check reads `Activity.Current` on sends without a turn span (an `AsyncLocal`
+    read, a few ns; skipping it would drop spans users start in handlers); the header decoded per stage and the
+    placement computed per stage (cheap while no placed types are registered; a carried handler needs `Envelope` to
+    grow); shard queues' CAS dequeue (the drain after close is a second consumer); the timeout sweep scanning the table
+    every 100 ms (sequential, bounded by the peak); a group's lock held across its fan-out (orders broadcasts and
+    joins); `ClusterClient.cs` at 454 lines (already split in three by concern).
 
 ## Generator / analyzer (`src/DaServer.Generator`)
 - [x] Messages instead of contracts (ADR-035): typed `Ask` overloads per request, one dispatcher per `[Handle]`
@@ -782,7 +828,7 @@ and cards, a manual clock), fails before its fix, and passes after it.
 - [x] Hosting: actor/service factories with their handlers, client handler classes, EasyEcs system registration
 - [x] A node's `Program.cs` is five lines: `AddDaServer`, `MapDaServer` (ADR-021)
 - [x] Incremental rules: syntax predicates, equatable models, tracking names, cache test (ADR-016)
-- [x] `DaServerAnalyzer`: DAS001-DAS018 (handlers, messages, wire types, id collisions, constructors, message flow
+- [x] `DaServerAnalyzer`: the DAS rules (handlers, messages, wire types, id collisions, constructors, message flow
       (ADR-038), stateless actors and services (ADR-044), address kinds (ADR-047), shared logic (ADR-055), ReplyWhen
       placement (ADR-057))
 

@@ -111,7 +111,7 @@ records that no longer hold). Each: context → decision → consequences.
   triggers those of the assemblies it references). On .NET the class also triggers itself from a module initializer
   when its assembly loads, so a server needs no call; targets without module initializers (netstandard2.1) get none.
 - Consequences: no reflection, no configuration strings, no hand-maintained lists; misuse is a build error
-  (DAS001-DAS018, ADR-016).
+  (the DAS rules, ADR-016).
 
 ## ADR-013 The shard runtime is ECS
 - Context: an imperative shard loop (drain a queue, sweep in-flight work, run timers, tick) with ad-hoc per-actor
@@ -149,7 +149,7 @@ records that no longer hold). Each: context → decision → consequences.
 ## ADR-016 Analyzer separate from generators
 - Context: generators that report diagnostics carry symbols and locations in their models, which defeats caching.
 - Decision: generators use syntax-only predicates and equatable, symbol-free models with tracking names, and report
-  nothing. `DaServerAnalyzer` reports DAS001–DAS018 (collisions in a compilation-end action), and reads symbols
+  nothing. `DaServerAnalyzer` reports the DAS rules (collisions in a compilation-end action), and reads symbols
   through the same `Shapes` code as the generators.
 - Consequences: edits that do not touch messages or handlers hit the cache (tested); "skipped by the generator" and
   "reported by the analyzer" cannot disagree.
@@ -994,8 +994,8 @@ records that no longer hold). Each: context → decision → consequences.
   their saves (N5).
 
 ## ADR-064 Failure detection tolerates pauses; the minority side of a split downs itself
-- Context: a node that stalls (a GC pause, a starved CPU, a frozen container) used to wake up to silent peers and
-  declare them all dead. A network split left both sides running, so each side loaded the keys it believed it owned:
+- Context: a node that stalls (a GC pause, a starved CPU, a frozen container) wakes up to peers that look silent and,
+  judged by its clock alone, would declare them all dead. A network split left both sides running, so each side loaded the keys it believed it owned:
   the same actor twice.
 - Decision:
   - Pauses: membership measures each member's silence on this node's clock. A round that runs more than three
@@ -1082,12 +1082,12 @@ records that no longer hold). Each: context → decision → consequences.
     it, so it is never reloaded and may hold both); the node host (its `Program.cs` can load the node project's own
     assembly collectibly, so the node project is the reloadable logic, N9).
   - Projects are recognised by what they reference: no property to set, no extra host project.
-- How a reload works (N9): there is no cluster-wide stop. Each shard swaps its handler table and system list between
-  two passes, on its own thread (the only one touching its world), in the time of one pass. Turns in flight finish on
-  the old code. Components and singletons stay where they are, because their types did not change. a studied game server stops
-  the world and forces a GC instead.
+- The reload itself is planned (roadmap N9, after the EasyEcs release it needs): no cluster-wide stop, each shard
+  swapping its handler table and system list between two passes on its own thread, turns in flight finishing on the
+  old code, components and singletons staying where they are because their types do not change (a studied game server stops the
+  world and forces a GC instead). The split above holds now, so the reload adds no rule to existing code.
 - Consequences: one components project per server that has data. Changing a component's layout is a rolling deploy;
-  changing behaviour is a reload. Data and behaviour are split exactly as ECS splits them.
+  with N9, changing behaviour becomes a reload. Data and behaviour are split exactly as ECS splits them.
 
 ## ADR-068 Actor records: [Persist] components, saved by systems, versioned
 - Context: actors are loaded on demand and moved between nodes, so their state needs a store. Orleans writes a grain's
@@ -1356,8 +1356,8 @@ records that no longer hold). Each: context → decision → consequences.
   for what it would skip silently (NINO006, NINO007, NINO022, NINO024) are errors in every project that references
   DaServer.Abstractions.
 - Alternatives: version-tolerant messages (4 bytes and a back-patched length per message for a tolerance a new
-  message gives for free); mirroring Nino's rules in DaServer's generator (what the manifest did before Nino published
-  its layouts: every Nino change needed a matching one here); appending to positional structs with zero padding
+  message gives for free); mirroring Nino's rules in DaServer's generator (every Nino change would need a matching one
+  here); appending to positional structs with zero padding
   (unsound: an appended field can land in trailing padding); field tags (protobuf: bytes and CPU on every field).
 - Consequences: renames are reported though positional types write no names (deliberately conservative). Raw memory
   is recorded field by field with offsets (`raw(16){Node:ulong@0:raw(8),Id:long@8:raw(8)}`), nested structs and
@@ -1403,7 +1403,7 @@ records that no longer hold). Each: context → decision → consequences.
   polymorphic dispatch for messages (boxes struct messages and writes a type id the frame header already carries);
   Nino's interceptors (messages live in other assemblies and calls are generic, which they do not see).
 - Consequences: frames rent from the pinned `BufferPool` through Nino's pool parameter, so sockets send them as
-  they are. Nino's registries are released with a collectible load context (`NinoRegistry.Remove`, N9 hot reload).
+  they are. Nino's registries can be released with a collectible load context (`NinoRegistry.Remove`), which N9 hot reload will use.
   BenchmarkDotNet: see the roadmap's Nino 4 row.
 
 ## ADR-079 A coordinator allocates slots: sticky types and load-aware moves
@@ -1469,5 +1469,5 @@ records that no longer hold). Each: context → decision → consequences.
   bytes, parsed); `Activity.Current` alone (shard threads run many turns, and a turn's continuations do not flow it);
   a span per message whether traced or not (Orleans' default: a sampler then drops most, after they cost).
 - Consequences: an untraced frame is unchanged (no block, the golden bytes hold); a send reads the turn's span and the
-  current activity, a turn one flag. A traced message pays 29 bytes and a span. Nodes built before the block existed
-  read a frame with one wrong, the one break this decision costs; from here on, metadata is added without one.
+  current activity, a turn one flag. A traced message pays 29 bytes and a span. The block's flag is the
+  one change builds without it misread, and none of those was released; later metadata is added without a break.

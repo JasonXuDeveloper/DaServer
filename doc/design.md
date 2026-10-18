@@ -3,7 +3,7 @@
 DaServer is a .NET 11 framework for building **clusters**: game servers (many client-facing nodes, many map/logic nodes) and
 other low-latency, high-concurrency backends (matchmaking, chat, trading, IoT fan-in). Developers write messages
 (`[NinoType, Message]` structs), actors and services with `[Handle]` methods, and ECS systems. Source generators write the
-rest: dispatchers, typed `Ask` overloads, registration, entry points and query jobs.
+rest: dispatchers, typed `Ask` overloads and registration (EasyEcs generates the systems' query jobs).
 
 Priorities, in order:
 
@@ -149,8 +149,7 @@ What a request costs, and what keeps it low:
 | Client pass-through | Client-facing nodes patch headers; they never deserialize payloads. One broadcast frame per client-facing node, `memcpy` per session. |
 | Input as data | High-rate client input (movement) is written into components by the actor and integrated by `[ForEach]` systems on the next tick: one cache-friendly pass instead of a turn per message. |
 
-Planned (roadmap): placement hints to co-locate actors that talk a lot (a player next to its map), and a client-connection
-shard that keeps session state as ECS components.
+Planned (roadmap): a client-connection shard that keeps session state as ECS components.
 
 ## 5. Reliability
 
