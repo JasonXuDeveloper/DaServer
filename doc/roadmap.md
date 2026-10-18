@@ -290,10 +290,12 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
 - [x] A4 Publish mode = one workload per node group (ADR-030): a Compose service with `deploy.replicas` or a
       Deployment with `replicas`; a headless `{group}-peers` Service (`clusterIP: None`, `publishNotReadyAddresses` so
       joining pods gossip); a node in a container advertises its own address; run mode keeps one resource per replica.
-- [ ] A5 Dashboard: a cluster parent resource (`WithParentRelationship`) showing "n/n joined"; custom states Joining /
-      Joined / Draining / Suspected; commands Drain, Membership (JSON), Stats, Unload actor type (admin endpoints on the HTTP
-      plane, authorized with the signing secret). Usable from `aspire resource <node> <command>`,
-      MCP and tests.
+- [x] A5 Dashboard and admin: nodes map `/admin/membership`, `/admin/stats`, `/admin/drain` and `/admin/unload/{type}` on
+      their HTTP plane, authorized by a bearer token the signing secret derives (HMAC, so the token gives no ticket
+      away); `DaServer.Aspire` gives every node the commands Membership, Stats, Drain and Unload actors (dashboard,
+      `aspire resource`, MCP) and, run locally, a cluster resource parenting its nodes whose state counts the joined ones
+      ("6/6 joined"). A node's own state is Aspire's health (ready = joined and not leaving), so no custom node states
+      (`AdminEndpointTests`, the E2E runs).
 - [x] A6 Tracing (ADR-080): a turn whose message carries a trace context runs in a span of the `DaServer` activity
       source, child of the sender's on any node; asks, sends and publishes carry the running turn's context (or an
       ASP.NET Core request's), in the frame's extension block, the first entry of a block readers skip unknown entries
@@ -305,8 +307,8 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
       PostgreSQL on a data volume. Clients wait for every node of the cluster (`WithClientEndpoints`).
 - [ ] A8 Parameters and environments: shards per node, drain budget, replicas and HPA bounds as AppHost parameters
       (become Helm values per `--environment`); `AddConnectionString` for an existing production database.
-- [ ] A9 Tests through Aspire: wait for the cluster resource to be healthy before bots; S6 scale/failover E2E through
-      the stop/start/Drain commands and `WithExplicitStart`.
+- [x] A9 Tests through Aspire: the E2E runs wait for the cluster resource to count every node joined and read a node's
+      Membership command; the scale-in under load drains the node through its command and starts it again.
 - [ ] A10 Kubernetes packaging: `WithHelm` (namespace, release and chart names, version) on the cluster's
       environment; `AddHelmChart` installs what HPA on custom metrics needs (KEDA or Prometheus Adapter) next to the
       app; `WithNodePool` pins stateful groups to their node pool.
@@ -315,8 +317,9 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
       the messages its contracts declare and its actors and services handle, then exits before anything starts), and
       the step fails with the N4 problems of their union (`RouteRules`, the file `RouteCheck` uses). The listing is the
       node's own build, so it checks what the containers run; the analyzers already run in that build.
-- [ ] A12 Operator docs: `aspire describe/ps/logs/otel`, `aspire resource <node> drain`, and the Aspire MCP server
-      (`list_resources`, logs, traces, `execute_resource_command`) to operate and debug a cluster.
+- [x] A12 Operator docs (`doc/operations.md`): run, watch (`aspire describe/logs/otel/wait`), the node commands, the
+      admin endpoints with the derived token, the MCP server for agents, publish and deploy; every command checked
+      against a running sample.
 - Not for node membership: `WithReference` service discovery (`services__{group}__{endpoint}__N`: one load-balanced
   address per group; a Kubernetes Service lists ready pods only, and a joining node is not ready until it joined), and
   persistent project lifetimes (no replicas, fixed ports); fine for databases and user HTTP services. Seeds are the

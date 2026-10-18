@@ -1,0 +1,70 @@
+# Operating a cluster
+
+How to run, watch and change a DaServer cluster declared in an Aspire AppHost (`AddDaServerCluster`). The commands
+below are the Aspire CLI's (`dotnet tool install -g Aspire.Cli`); everything they do is also in the dashboard, and
+through the Aspire MCP server to an AI agent.
+
+## Run
+
+```bash
+aspire run   --apphost samples/mmo/Sample.AppHost             # in the foreground, with the dashboard
+aspire start --apphost samples/mmo/Sample.AppHost -- Bots=10   # in the background; arguments after -- go to the AppHost
+aspire ps                                                      # running AppHosts and their dashboard URLs
+aspire stop                                                    # nodes stop first (leave, hand over, save), then the rest
+```
+
+## Watch
+
+```bash
+aspire describe                 # every resource: state, health, URLs. The cluster resource says "6/6 joined"
+aspire wait map-0 --status healthy --timeout 120
+aspire logs game-0 -f           # a node's console
+aspire otel traces              # traces: an HTTP request and the actor turns it causes, on any node, are one trace
+aspire otel spans game-0
+aspire otel logs map-0
+```
+
+The cluster resource (named as the cluster) is the parent of its nodes in the dashboard; its state counts the nodes whose
+readiness passes (`/health`: joined and not leaving). A node's health is its own: ready (joined, not leaving, its store
+reachable) and alive (no stalled shard, `/alive`). Probes and the metrics scrape start no trace.
+
+## Commands on a node
+
+| Command | What it does |
+|---|---|
+| `aspire resource map-0 membership` | The cluster as that node sees it: members, status, incarnation, load, build, the slot coordinator (JSON) |
+| `aspire resource map-0 stats` | Loaded actors, shards, queued and dropped messages (by reason), failed handlers, tick overruns, stalled shards (JSON) |
+| `aspire resource game-1 drain` | The node leaves and stops gracefully, as on SIGTERM: clients move, actors hand over or are saved; asks for confirmation in the dashboard |
+| `aspire resource map-0 unload --type Map` | Every loaded actor of that type on the node unloads once idle (saved as on any unload); its next message loads it again |
+| `aspire resource map-0 start` / `stop` / `restart` | Aspire's own; stop is graceful too (SIGTERM) |
+
+The commands call the node's admin endpoints on its HTTP port. Outside Aspire, call them yourself with the bearer token
+the cluster's signing secret derives (HMAC-SHA256 of `daserver-admin`, hex); a node without a signing secret has no
+admin endpoints.
+
+```bash
+TOKEN=$(printf daserver-admin | openssl dgst -sha256 -hmac "$DaServer__SigningSecret" | awk '{print toupper($2)}')
+curl -H "Authorization: Bearer $TOKEN" http://map-0:8080/admin/stats
+curl -X POST -H "Authorization: Bearer $TOKEN" http://game-1:8080/admin/drain
+```
+
+`/metrics` (Prometheus) and `/health`, `/alive` need no token.
+
+## AI agents
+
+`aspire agent init` configures the agents it detects to use `aspire agent mcp`, the Aspire MCP server: it lists resources, reads their logs and traces, and executes resource commands, the node commands above
+included. `aspire mcp tools` and `aspire mcp call <resource> <tool>` reach MCP tools that resources themselves expose.
+
+## Publish and deploy
+
+```bash
+aspire publish -o out          # Docker Compose files (or a Helm chart with -- Publish=k8s in the samples)
+aspire deploy                  # to the environments the AppHost declares
+aspire do sample-routes        # only the cluster's route check
+```
+
+Publishing and deploying first run the cluster's route check (`{cluster}-routes`): each node project lists what its
+contracts declare and its actors and services handle, and a message no node handles, or a request two service types
+answer, stops the pipeline before anything is written. The Compose services get a health check (the node in probe mode),
+a stop grace period from the stop budget and a restart policy; Kubernetes workloads get readiness and liveness probes,
+a preStop pause and a headless `{group}-peers` Service for seeds.

@@ -465,7 +465,9 @@ node project is its business classes only.
     service; a headless `{group}-peers` Service on Kubernetes), a preStop pause and a grace period from the stop
     budget, a Compose health check (the node in probe mode, `--DaServer:Probe=/health`) that its dependants wait for.
     Publishing and deploying first check the cluster's routes: each node project lists what it declares and handles
-    (`DaServer__ListRoutes`) and a message without a handler stops the pipeline (A11). Scaling policy (HPA, VPA, PDB, the load balancer) is the application's, added in its AppHost through the
+    (`DaServer__ListRoutes`) and a message without a handler stops the pipeline (A11). Run locally, the cluster is a
+    dashboard resource parenting its nodes, and each node has admin commands (membership, stats, drain, unload) over
+    its `/admin` endpoints (A5, `doc/operations.md`). Scaling policy (HPA, VPA, PDB, the load balancer) is the application's, added in its AppHost through the
     same publisher hooks. There are no hand-maintained deployment files.
 - In-process tests run several nodes in one process with `NodeOptions.Hosts` (a type filter).
 

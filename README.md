@@ -318,7 +318,8 @@ are no roles and no configuration files: what a node hosts is what its project c
 metrics over OpenTelemetry, which feeds the Aspire dashboard. The same model runs with
 `dotnet run --project samples/mmo/Sample.AppHost` and publishes with `aspire publish`: run locally a node per replica,
 published a workload per group whose replicas the platform scales (ADR-030); scaling policy (HPA, VPA, PDB, the load
-balancer) is the application's, added in its AppHost (the samples' `Platform.cs`).
+balancer) is the application's, added in its AppHost (the samples' `Platform.cs`). In the dashboard the cluster is a resource of its own ("6/6
+joined"), and every node has the commands Membership, Stats, Drain and Unload actors ([doc/operations.md](doc/operations.md)).
 
 ## Performance
 
@@ -391,6 +392,8 @@ EasyEcs comes from NuGet (`EasyEcsVersion` in `Directory.Build.props`).
   reference architectures, ECS usage, generated code.
 - [doc/decisions.md](doc/decisions.md): architecture decision records.
 - [doc/roadmap.md](doc/roadmap.md): status and next steps.
+- [doc/operations.md](doc/operations.md): running, watching and changing a cluster (Aspire CLI, dashboard commands,
+  admin endpoints, MCP).
 
 ## License
 
