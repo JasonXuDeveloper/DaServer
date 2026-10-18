@@ -307,16 +307,12 @@ public class InfrastructureTests
         var batch = new byte[ResendWindow.ChunkSize / 4];
         long sent = 0;
         Stream(); // warm: the window's first chunks come from the shared pool
-
-        var held = new List<byte[]>();
-        long before = BufferPool.AllocatedBytes;
-        while (BufferPool.AllocatedBytes == before) held.Add(BufferPool.Rent(ResendWindow.ChunkSize)); // the bucket is empty
-        long pool = BufferPool.AllocatedBytes, garbage = GC.GetAllocatedBytesForCurrentThread();
+        int rents = window.SharedRents;
+        long garbage = GC.GetAllocatedBytesForCurrentThread();
         Stream();
-        long allocated = GC.GetAllocatedBytesForCurrentThread() - garbage, rented = BufferPool.AllocatedBytes - pool;
-        Assert.That(rented, Is.Zero, "no chunk rented from the shared pool");
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - garbage;
+        Assert.That(window.SharedRents, Is.EqualTo(rents), "no chunk rented from the shared pool");
         Assert.That(allocated, Is.Zero, "nothing allocated");
-        foreach (var buffer in held) BufferPool.Return(buffer);
 
         void Stream()
         {

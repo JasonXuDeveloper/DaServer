@@ -133,8 +133,17 @@ internal sealed class ResendWindow(int maxBytes) : ISendTap
             _head = 0;
         }
 
-        _chunks[(_head + _count) % _chunks.Length] = _spareCount > 0 ? _spare[--_spareCount] : BufferPool.Rent(ChunkSize);
+        _chunks[(_head + _count) % _chunks.Length] = _spareCount > 0 ? _spare[--_spareCount] : RentShared();
         _count++;
+    }
+
+    /// <summary>Tests: chunks taken from the shared pool (a window that recycles its own takes none once warm).</summary>
+    internal int SharedRents { get; private set; }
+
+    private byte[] RentShared()
+    {
+        SharedRents++;
+        return BufferPool.Rent(ChunkSize);
     }
 
     private void ReleaseHead()
