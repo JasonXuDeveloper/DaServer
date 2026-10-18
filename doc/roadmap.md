@@ -324,7 +324,7 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
       members never down. Open: an optional authoritative lease store (Kubernetes Lease, PostgreSQL) as a module for
       strict ownership, with N5.
 - [x] C3 Node authentication (ADR-065): Hello carries the link protocol version, the cluster name and an HMAC of
-      the signing secret (once within a minute: no replay); an accepted connection is read only after it
+      the signing secret over the acceptor's challenge and its endpoint; an accepted connection is read only after it
       (`LinkAuthTests`). Links are authenticated, not encrypted: TLS stays the platform's (service mesh, private
       network).
 - [x] C4 Supervision (ADR-066): `Actor.OnError(exception)` returns `ErrorAction.Resume` (default) or `Reload` (removed
@@ -521,8 +521,9 @@ and cards, a manual clock), fails before its fix, and passes after it.
 - [x] P2 A failed turn's SaveNow (and checkpoints of fenced actors) wrote half-changed state; a fenced unload handed
       off or wrote its stale copy.
 - [x] P3 A fenced actor dropped while its write was in flight (the reload could read before it): `PersistenceEdgeTests`.
-- [ ] P4 Versioned writes fence the newer owner: loads should claim the record (bump the version), so the stale owner
-      loses (ADR-068 revision, store contract).
+- [x] P4 A stale owner writing after the new owner loaded fenced the new owner: loading claims the record (its version
+      goes up), so the stale copy is refused (`ANewOwnerClaimsTheRecordSoTheStaleOneCannotWriteOverIt`,
+      `AClaimFencesWhoeverLoadedTheRecordBefore`).
 - [x] P5 A failed write waited for the next checkpoint: it is retried after the delay (`AFailedCriticalSaveIsRetriedSoon`);
       P7 loads go in batches of at most 512 (`LoadsWaitingForASlowStoreGoInBoundedBatches`).
 - [x] P6 A failed load failed the batch's callers at once: retried after 200 ms until the call timeout
@@ -571,8 +572,8 @@ and cards, a manual clock), fails before its fix, and passes after it.
       M11 introductions were kept for nodes that left: dropped once the view lists them (`ANodeThatLeftIsForgottenEverywhere`).
 - [x] M9 A seed spelled otherwise than the member's card opened a second link to the node, and the two took its inbound
       slot from each other: the link reaching a member serves its card's address too (`ASeedSpelledOtherwiseIsOneLink`).
-- [ ] M8 a Hello's proof covers the node id, stream and time, not the endpoint it names or the node it is meant for (a
-      link protocol change: asked).
+- [x] M8 A recorded Hello could be replayed to another node within its minute, and its endpoint was not signed: the
+      acceptor challenges, the Hello proves the challenge and its endpoint (`AHelloProvesItsChallengeEndpointStreamAndCluster`).
 - [x] S1 An actor that moved forgot its client sessions (resume refused, the mmo's map changes Forbidden): sessions
       travel in the handoff record, never stored (`AClientResumesWithAnActorThatMovedToAnotherNode`).
 - [ ] S2 A resume cut off after the actors accepted it leaves the session unrecoverable (revert to the previous

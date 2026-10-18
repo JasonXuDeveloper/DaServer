@@ -181,8 +181,9 @@ shard that keeps session state as ECS components.
 - Split brain: when members die, a node that reaches fewer members than it lost (a tie keeps the side with the lowest
   node id; clusters under three never down) stops without saving and exits, so the platform restarts it into the
   majority (`NodeOptions.KeepMajority`, on by default, ADR-064).
-- Links are authenticated: every Hello carries the protocol version, the cluster name and an HMAC of the signing
-  secret, accepted once within a minute; nothing else is read on a connection before it (ADR-065).
+- Links are authenticated: an accepted connection starts with a fresh challenge, and the dialer's Hello carries the
+  protocol version, the cluster name and an HMAC of the signing secret over the challenge and its endpoint; nothing
+  else is read on a connection before it (ADR-065).
 - Routing reads an immutable snapshot (`ClusterView`: message routes per message id, actor placement per handler type) that is swapped
   atomically on change. Lookups are lock-free.
 

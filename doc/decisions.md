@@ -979,19 +979,23 @@ records that no longer hold). Each: context → decision → consequences.
 - Context: any process that reached a node's cluster port could send a Hello, then gossip and messages, and join the
   cluster. A node of another environment pointed at the wrong seeds joined just as easily.
 - Decision:
-  - The Hello that opens every link carries the link protocol version (`ControlOp.LinkVersion`), the cluster name
-    (`NodeOptions.ClusterName`, which Aspire sets to the cluster resource's name) and a proof. The proof is an
-    HMAC-SHA256 with the signing secret over the cluster name, node id, stream id and sending time.
-  - The receiver accepts a proof only once, and only within a minute of its time (no replay). An accepted connection
-    is closed unless its first frame is such a Hello; nothing else is read before it.
+  - An accepted link connection starts with a fresh random challenge (`ControlOp.Challenge`). The dialing node
+    answers with its Hello: the link protocol version (`ControlOp.LinkVersion`), the cluster name
+    (`NodeOptions.ClusterName`, which Aspire sets to the cluster resource's name), who it is, the endpoint replies go
+    to, its stream id and a proof: an HMAC-SHA256 with the signing secret over the cluster name, node id, stream id,
+    host, port and the challenge. A Hello is good on one connection only: a recorded one proves nothing elsewhere, and
+    the endpoint it names is its sender's.
+  - An accepted connection is closed unless its first frame is such a Hello; nothing else is read before it. A
+    handshake that hears nothing within the keep-alive timeout is closed.
   - Without a secret (development), version and cluster name are still checked.
 - Alternatives:
-  - A challenge from the acceptor: one more round trip on every connect, against a replay window of one minute that
-    the seen-proof set already closes.
+  - A timestamped proof accepted once per node: no round trip, but a recorded Hello replays to another node within
+    its window, and nodes need synchronized clocks.
   - Mutual TLS: certificates to issue and rotate, and encryption the platform's network already provides where it
     is needed.
-- Consequences: nodes need clocks within a minute of each other, which NTP gives. Links are authenticated but not
-  encrypted. A node of another protocol version is refused until rolling upgrades (V) define compatibility.
+- Consequences: one more round trip when a link connects (a cold path), no clock requirement. Links are
+  authenticated but not encrypted. A node of another protocol version is refused until rolling upgrades (V) define
+  compatibility.
 
 ## ADR-066 Supervision is a decision per actor type
 - Context: a handler that throws leaves its actor's state as far as it got. Some actor types tolerate that (counters,
@@ -1060,15 +1064,18 @@ records that no longer hold). Each: context → decision → consequences.
     - `CheckpointSystem` and `PersistSystem` serialize records into pooled frames.
     - `StoreSystem` keeps one load batch and one save batch (at most 512 records) in flight per shard. IO never runs
       on the shard thread, and the backlog is bounded.
-  - **Versions:** every write names the version it replaces. A store that holds another version means another node
-    owns the actor (a split, a late write after being declared dead). The write is refused and the local copy is
-    fenced, removed without another save.
-  - **Backends:** `IActorStore` (`LoadAsync` and `SaveAsync` over batches) is all a backend implements.
+  - **Versions:** loading a record claims it: the stored version goes up by one and the loader's writes expect that
+    version (a key without a record is claimed as an empty one). Every write names the version it replaces. A store
+    that holds another version means another node owns the actor (a split, a late write after being declared dead):
+    the write is refused and the local copy is fenced, removed without another save. Because the newest loader holds
+    the newest version, the stale copy is the one refused, not the new owner, whichever writes first.
+  - **Backends:** `IActorStore` (`ClaimAsync` and `SaveAsync` over batches) is all a backend implements.
     `InMemoryActorStore` serves tests and development, and behaves like a database: versioned, and writing in place
     (a buffer per key), so tests measure the same allocation-free saves. `PostgreSqlActorStore` is the default for deployments: one
     table `(type_id, key, version, data bytea, updated_at)`, created on first use, written with Npgsql and no ORM (the
     record is opaque bytes, so the schema never follows the components). A batch is one prepared statement on a
-    connection kept per call in flight: loads one query over `unnest(type ids, keys)`, saves one statement over
+    connection kept per call in flight: claims one upsert over `unnest(type ids, keys)` that raises the versions and
+    returns the rows, saves one statement over
     `unnest(type ids, keys, expected versions, data)` that inserts first writes (`ON CONFLICT DO NOTHING`), updates
     rows still at their expected version and returns the accepted ordinals. The record bytes are the shard's pooled
     buffers, passed without copying; the columns are pooled lists. 1,024 critical saves cost about 11 ms and 11 KB.
