@@ -20,8 +20,8 @@ public class PersistenceTests(string kind) : ClusterTest
         public readonly IActorStore Inner = inner;
         public int Writes;
 
-        public ValueTask LoadAsync(ReadOnlyMemory<StoredKey> keys, Memory<StoredRecord> records, CancellationToken ct = default) =>
-            Inner.LoadAsync(keys, records, ct);
+        public ValueTask ClaimAsync(ReadOnlyMemory<StoredKey> keys, Memory<StoredRecord> records, CancellationToken ct = default) =>
+            Inner.ClaimAsync(keys, records, ct);
 
         public ValueTask SaveAsync(ReadOnlyMemory<StoredWrite> writes, Memory<bool> accepted, CancellationToken ct = default)
         {

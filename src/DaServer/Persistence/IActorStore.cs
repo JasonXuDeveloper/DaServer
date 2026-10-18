@@ -5,7 +5,7 @@ namespace DaServer.Persistence;
 /// <summary>An actor's record in a store: its handler type and key.</summary>
 public readonly record struct StoredKey(uint HandlerTypeId, long Key);
 
-/// <summary>A stored record: its version (0: none stored) and its bytes (sections of persisted components).</summary>
+/// <summary>A stored record: its version and its bytes (sections of persisted components; empty when none was written).</summary>
 public readonly record struct StoredRecord(long Version, ReadOnlyMemory<byte> Data);
 
 /// <summary>
@@ -21,8 +21,14 @@ public readonly record struct StoredWrite(StoredKey Key, long ExpectedVersion, R
 /// </summary>
 public interface IActorStore
 {
-    /// <summary>Fill <paramref name="records"/>[i] with the record of <paramref name="keys"/>[i] (version 0 when none).</summary>
-    ValueTask LoadAsync(ReadOnlyMemory<StoredKey> keys, Memory<StoredRecord> records, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// Load the records of <paramref name="keys"/> and claim them for the caller, atomically per record: the stored
+    /// version goes up by one and <paramref name="records"/>[i] holds the record of <paramref name="keys"/>[i] at that
+    /// new version, the one the caller's writes expect. A node that loaded the record before (a stale owner: a split, a
+    /// pause past its death) expects an older version, so its writes are refused and it cannot overwrite the new
+    /// owner's changes. A key without a record is claimed too: an empty record at version 1.
+    /// </summary>
+    ValueTask ClaimAsync(ReadOnlyMemory<StoredKey> keys, Memory<StoredRecord> records, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Write every record whose key still holds its expected version, atomically per record;
@@ -62,16 +68,27 @@ public sealed class InMemoryActorStore : IActorStore
     /// The loaded data is a copy (the stored buffer is overwritten by later writes): loads happen once per activation,
     /// writes every checkpoint.
     /// </summary>
-    public ValueTask LoadAsync(ReadOnlyMemory<StoredKey> keys, Memory<StoredRecord> records, CancellationToken cancellationToken = default)
+    public ValueTask ClaimAsync(ReadOnlyMemory<StoredKey> keys, Memory<StoredRecord> records, CancellationToken cancellationToken = default)
     {
         var from = keys.Span;
         var to = records.Span;
         lock (_gate)
             for (int i = 0; i < from.Length; i++)
-                to[i] = _records.TryGetValue(from[i], out var entry)
-                    ? new StoredRecord(entry.Version, entry.Buffer.AsSpan(0, entry.Length).ToArray())
-                    : default;
+            {
+                ref var entry = ref CollectionsMarshal.GetValueRefOrAddDefault(_records, from[i], out _);
+                entry ??= new Entry();
+                entry.Version++;
+                to[i] = new StoredRecord(entry.Version, entry.Length == 0 ? default : entry.Buffer.AsSpan(0, entry.Length).ToArray());
+            }
+
         return default;
+    }
+
+    /// <summary>Tests: a key's record as stored, without claiming it.</summary>
+    internal StoredRecord Peek(StoredKey key)
+    {
+        lock (_gate)
+            return _records.TryGetValue(key, out var entry) ? new StoredRecord(entry.Version, entry.Buffer.AsSpan(0, entry.Length).ToArray()) : default;
     }
 
     public ValueTask SaveAsync(ReadOnlyMemory<StoredWrite> writes, Memory<bool> accepted, CancellationToken cancellationToken = default)

@@ -92,8 +92,8 @@ public class PersistenceBenchmark
 
         public ValueTask Expect(int writes) => _written.Reset(writes);
 
-        public ValueTask LoadAsync(ReadOnlyMemory<StoredKey> keys, Memory<StoredRecord> records, CancellationToken ct = default) =>
-            Inner.LoadAsync(keys, records, ct);
+        public ValueTask ClaimAsync(ReadOnlyMemory<StoredKey> keys, Memory<StoredRecord> records, CancellationToken ct = default) =>
+            Inner.ClaimAsync(keys, records, ct);
 
         public async ValueTask SaveAsync(ReadOnlyMemory<StoredWrite> writes, Memory<bool> accepted, CancellationToken ct = default)
         {

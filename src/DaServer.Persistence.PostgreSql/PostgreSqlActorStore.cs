@@ -8,16 +8,17 @@ namespace DaServer.Persistence;
 
 /// <summary>
 /// Actor records in PostgreSQL (ADR-068): a row per actor, <c>(type_id, key)</c> its primary key, the record's bytes
-/// in <c>data</c> and the version that fences writes. A shard's batch is one statement either way: loads one query over
-/// the batch's keys, saves one statement over the batch's arrays that writes a record only if its row still holds the
-/// expected version (the record bytes are passed as they are, not copied).
+/// in <c>data</c> and the version that fences writes. A shard's batch is one statement either way: claims one upsert
+/// over the batch's keys that raises their versions and returns their rows, saves one statement over the batch's arrays
+/// that writes a record only if its row still holds the expected version (the record bytes are passed as they are,
+/// not copied).
 /// The table is created on first use.
 /// </summary>
 public sealed partial class PostgreSqlActorStore : IActorStore, IAsyncDisposable
 {
     private readonly NpgsqlDataSource _dataSource;
     private readonly bool _ownsDataSource;
-    private readonly string _load, _save, _create;
+    private readonly string _claim, _save, _create;
     private Task? _created;
 
     /// <param name="dataSource">The database (one per cluster, or one table per cluster in a shared database).</param>
@@ -26,8 +27,14 @@ public sealed partial class PostgreSqlActorStore : IActorStore, IAsyncDisposable
     {
         if (!TableName().IsMatch(table)) throw new ArgumentException($"Not a table name: '{table}'", nameof(table));
         _dataSource = dataSource;
-        _load = $"SELECT k.i, t.version, t.data FROM unnest($1, $2) WITH ORDINALITY AS k(type_id, key, i) " +
-                $"JOIN {table} t ON t.type_id = k.type_id AND t.key = k.key";
+        // Claiming is one statement too: every key's row goes up a version (a key without one gets an empty row at
+        // version 1), and the rows come back with the batch's ordinals. A batch holds a key once (one actor per key per
+        // shard), which ON CONFLICT DO UPDATE requires.
+        _claim = $"WITH k AS (SELECT * FROM unnest($1::integer[], $2::bigint[]) WITH ORDINALITY AS k(type_id, key, i)), " +
+                 $"c AS (INSERT INTO {table} AS t (type_id, key, version, data) SELECT type_id, key, 1, ''::bytea FROM k " +
+                 "ON CONFLICT (type_id, key) DO UPDATE SET version = t.version + 1, updated_at = now() " +
+                 "RETURNING t.type_id, t.key, t.version, t.data) " +
+                 "SELECT k.i, c.version, c.data FROM k JOIN c ON c.type_id = k.type_id AND c.key = k.key";
         // One statement per batch: a first write inserts (refused if a row exists: another owner wrote first), a later one
         // replaces the version it read; the ordinals of the accepted writes come back.
         _save = $"WITH w AS (SELECT * FROM unnest($1::integer[], $2::bigint[], $3::bigint[], $4::bytea[]) " +
@@ -59,7 +66,7 @@ public sealed partial class PostgreSqlActorStore : IActorStore, IAsyncDisposable
     }
 
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))] // no state machine allocated per call
-    public async ValueTask LoadAsync(ReadOnlyMemory<StoredKey> keys, Memory<StoredRecord> records, CancellationToken cancellationToken = default)
+    public async ValueTask ClaimAsync(ReadOnlyMemory<StoredKey> keys, Memory<StoredRecord> records, CancellationToken cancellationToken = default)
     {
         await Created();
         var columns = Rent();
@@ -71,9 +78,8 @@ public sealed partial class PostgreSqlActorStore : IActorStore, IAsyncDisposable
                 columns.Keys.Add(key.Key);
             }
 
-            await using var connection = await Prepared(columns.Load, cancellationToken);
-            records.Span.Clear(); // a key without a row has no record
-            await using var reader = await columns.Load.ExecuteReaderAsync(cancellationToken);
+            await using var connection = await Prepared(columns.Claim, cancellationToken);
+            await using var reader = await columns.Claim.ExecuteReaderAsync(cancellationToken);
             while (await reader.ReadAsync(cancellationToken))
                 records.Span[(int)reader.GetInt64(0) - 1] = new StoredRecord(reader.GetInt64(1), reader.GetFieldValue<byte[]>(2));
         }
@@ -141,13 +147,13 @@ public sealed partial class PostgreSqlActorStore : IActorStore, IAsyncDisposable
         public readonly List<long> Keys = new();
         public readonly List<long> Expected = new();
         public readonly List<ReadOnlyMemory<byte>> Data = new();
-        public readonly NpgsqlCommand Load, Save;
+        public readonly NpgsqlCommand Claim, Save;
 
         public Columns(PostgreSqlActorStore store)
         {
-            Load = new NpgsqlCommand(store._load);
-            Load.Parameters.Add(new NpgsqlParameter<List<int>> { TypedValue = Types });
-            Load.Parameters.Add(new NpgsqlParameter<List<long>> { TypedValue = Keys });
+            Claim = new NpgsqlCommand(store._claim);
+            Claim.Parameters.Add(new NpgsqlParameter<List<int>> { TypedValue = Types });
+            Claim.Parameters.Add(new NpgsqlParameter<List<long>> { TypedValue = Keys });
             Save = new NpgsqlCommand(store._save);
             Save.Parameters.Add(new NpgsqlParameter<List<int>> { TypedValue = Types });
             Save.Parameters.Add(new NpgsqlParameter<List<long>> { TypedValue = Keys });
@@ -161,7 +167,7 @@ public sealed partial class PostgreSqlActorStore : IActorStore, IAsyncDisposable
             Keys.Clear();
             Expected.Clear();
             Data.Clear(); // drops the references to the shard's buffers
-            Load.Connection = Save.Connection = null; // back in the pool
+            Claim.Connection = Save.Connection = null; // back in the pool
         }
     }
 

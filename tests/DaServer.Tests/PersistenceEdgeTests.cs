@@ -32,8 +32,8 @@ public class PersistenceEdgeTests(string kind) : ClusterTest
         /// <summary>A write reached the store while held.</summary>
         public Task Started => _started.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
-        public ValueTask LoadAsync(ReadOnlyMemory<StoredKey> keys, Memory<StoredRecord> records, CancellationToken ct = default) =>
-            inner.LoadAsync(keys, records, ct);
+        public ValueTask ClaimAsync(ReadOnlyMemory<StoredKey> keys, Memory<StoredRecord> records, CancellationToken ct = default) =>
+            inner.ClaimAsync(keys, records, ct);
 
         public async ValueTask SaveAsync(ReadOnlyMemory<StoredWrite> writes, Memory<bool> accepted, CancellationToken ct = default)
         {
@@ -125,13 +125,35 @@ public class PersistenceEdgeTests(string kind) : ClusterTest
         Assert.That(store.Writes, Is.Zero, "the fenced copy wrote nothing");
     }
 
+    [Test]
+    public async Task ANewOwnerClaimsTheRecordSoTheStaleOneCannotWriteOverIt()
+    {
+        // A split: a and b each think they own K (two clusters on one store). b loads K after a; a then writes. b's load
+        // claimed the record, so a's write is refused (a is fenced), and b's later writes are taken: the store ends with
+        // b's state, not with b fenced and its changes lost.
+        var store = _stores.Create();
+        var a = await Start("a", configure: o => o.ActorStore = store);
+        var b = await Start("b", configure: o => { o.ActorStore = store; o.ClusterName = "other"; o.Seeds = []; });
+        Assert.That(await a.Ask(new BankId(180), new Deposit(5, Critical: true)), Is.EqualTo(5));
+        await Eventually(async () => (await Stores.Peek(store, Key(180))).Data.Length > 0, "a's 5 written");
+        Assert.That(await b.Ask(new BankId(180), new Balance()), Is.EqualTo(5), "b loads K");
+        Assert.That(await a.Ask(new BankId(180), new Deposit(1, Critical: true)), Is.EqualTo(6)); // its write is refused
+        Assert.That(await b.Ask(new BankId(180), new Deposit(2, Critical: true)), Is.EqualTo(7));
+        await Eventually(() => a.ActorCount == 0, "a's stale copy was fenced");
+        await Task.Delay(300);
+        var after = await Start("after", configure: o => { o.ActorStore = store; o.ClusterName = "third"; o.Seeds = []; });
+        Assert.That(await after.Ask(new BankId(180), new Balance()), Is.EqualTo(7), "b's state is the stored one");
+    }
+
+    private static StoredKey Key(long bank) => new(ActorIds<BankId>.HandlerTypeId, bank);
+
     /// <summary>Fails its first <see cref="FailWrites"/> writes and <see cref="FailLoads"/> loads (an outage), then works.</summary>
     private sealed class FlakyStore(IActorStore inner) : IActorStore
     {
         public int FailWrites, FailLoads;
 
-        public ValueTask LoadAsync(ReadOnlyMemory<StoredKey> keys, Memory<StoredRecord> records, CancellationToken ct = default) =>
-            Interlocked.Decrement(ref FailLoads) >= 0 ? ValueTask.FromException(new IOException("store unavailable")) : inner.LoadAsync(keys, records, ct);
+        public ValueTask ClaimAsync(ReadOnlyMemory<StoredKey> keys, Memory<StoredRecord> records, CancellationToken ct = default) =>
+            Interlocked.Decrement(ref FailLoads) >= 0 ? ValueTask.FromException(new IOException("store unavailable")) : inner.ClaimAsync(keys, records, ct);
 
         public ValueTask SaveAsync(ReadOnlyMemory<StoredWrite> writes, Memory<bool> accepted, CancellationToken ct = default) =>
             Interlocked.Decrement(ref FailWrites) >= 0 ? ValueTask.FromException(new IOException("store unavailable")) : inner.SaveAsync(writes, accepted, ct);
@@ -146,8 +168,7 @@ public class PersistenceEdgeTests(string kind) : ClusterTest
         var store = new FlakyStore(inner) { FailWrites = 1 };
         var node = await StartWith(store);
         Assert.That(await node.Ask(new BankId(150), new Deposit(9, Critical: true)), Is.EqualTo(9));
-        await Eventually(async () => (await ActorStoreTests.Load(inner, new StoredKey(ActorIds<BankId>.HandlerTypeId, 150)))[0].Version == 1,
-            "written after the retry delay", 3000);
+        await Eventually(async () => (await Stores.Peek(inner, Key(150))).Data.Length > 0, "written after the retry delay", 3000);
     }
 
     /// <summary>Holds its first load until released; records the largest batch it was given.</summary>
@@ -156,11 +177,11 @@ public class PersistenceEdgeTests(string kind) : ClusterTest
         public readonly TaskCompletionSource Release = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public int Largest, Loads;
 
-        public async ValueTask LoadAsync(ReadOnlyMemory<StoredKey> keys, Memory<StoredRecord> records, CancellationToken ct = default)
+        public async ValueTask ClaimAsync(ReadOnlyMemory<StoredKey> keys, Memory<StoredRecord> records, CancellationToken ct = default)
         {
             if (Interlocked.Increment(ref Loads) == 1) await Release.Task;
             InterlockedMax(ref Largest, keys.Length);
-            await inner.LoadAsync(keys, records, ct);
+            await inner.ClaimAsync(keys, records, ct);
         }
 
         public ValueTask SaveAsync(ReadOnlyMemory<StoredWrite> writes, Memory<bool> accepted, CancellationToken ct = default) =>

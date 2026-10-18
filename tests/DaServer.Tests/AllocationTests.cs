@@ -139,15 +139,12 @@ public class AllocationTests : ClusterTest
         Assert.That(quietest, Is.LessThan(8 * 1024), $"{quietest} B/s while writing {written / 4} changed records a second");
     }
 
-    /// <summary>The sum of the banks' record versions: one per write.</summary>
+    /// <summary>The sum of the banks' record versions: one per write (and one per claim).</summary>
     private static async Task<long> Versions(DaServer.Persistence.IActorStore store)
     {
-        var keys = new DaServer.Persistence.StoredKey[99];
-        for (int i = 0; i < keys.Length; i++) keys[i] = new DaServer.Persistence.StoredKey(ActorIds<BankId>.HandlerTypeId, i + 1);
-        var records = new DaServer.Persistence.StoredRecord[keys.Length];
-        await store.LoadAsync(keys, records);
         long sum = 0;
-        foreach (var record in records) sum += record.Version;
+        for (int i = 0; i < 99; i++)
+            sum += (await Stores.Peek(store, new DaServer.Persistence.StoredKey(ActorIds<BankId>.HandlerTypeId, i + 1))).Version;
         return sum;
     }
 

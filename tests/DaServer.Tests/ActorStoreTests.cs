@@ -13,6 +13,27 @@ public sealed class Stores(string kind) : IAsyncDisposable
 
     private static readonly string? ConnectionString = Environment.GetEnvironmentVariable("DASERVER_TEST_POSTGRES");
     private readonly List<string> _tables = [];
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<IActorStore, string> Tables = new();
+
+    /// <summary>A key's record as stored, without claiming it (a claim would fence the node running the actor).</summary>
+    public static async Task<StoredRecord> Peek(IActorStore store, StoredKey key)
+    {
+        if (store is InMemoryActorStore memory) return memory.Peek(key);
+        Assert.That(Tables.TryGetValue(store, out var table), Is.True, "a store of this fixture");
+        await using var dataSource = NpgsqlDataSource.Create(ConnectionString!);
+        await using var read = dataSource.CreateCommand($"SELECT version, data FROM {table} WHERE type_id = $1 AND key = $2");
+        read.Parameters.Add(new NpgsqlParameter<int> { TypedValue = unchecked((int)key.HandlerTypeId) });
+        read.Parameters.Add(new NpgsqlParameter<long> { TypedValue = key.Key });
+        await using var reader = await read.ExecuteReaderAsync();
+        return await reader.ReadAsync() ? new StoredRecord(reader.GetInt64(0), reader.GetFieldValue<byte[]>(1)) : default;
+    }
+
+    private PostgreSqlActorStore Postgres(string table)
+    {
+        var store = new PostgreSqlActorStore(ConnectionString!, table);
+        Tables.Add(store, table);
+        return store;
+    }
 
     public static IEnumerable<string> Kinds() => [Memory, PostgreSql];
 
@@ -31,7 +52,7 @@ public sealed class Stores(string kind) : IAsyncDisposable
         if (string.IsNullOrEmpty(ConnectionString)) Assert.Ignore("DASERVER_TEST_POSTGRES is not set");
         string table = "actors_" + Guid.NewGuid().ToString("N");
         _tables.Add(table);
-        return new PostgreSqlActorStore(ConnectionString!, table);
+        return Postgres(table);
     }
 
     /// <summary><paramref name="count"/> stores on one new table (nodes of one cluster starting together).</summary>
@@ -46,7 +67,7 @@ public sealed class Stores(string kind) : IAsyncDisposable
         if (string.IsNullOrEmpty(ConnectionString)) Assert.Ignore("DASERVER_TEST_POSTGRES is not set");
         string table = "actors_" + Guid.NewGuid().ToString("N");
         _tables.Add(table);
-        return [.. Enumerable.Range(0, count).Select(_ => (IActorStore)new PostgreSqlActorStore(ConnectionString!, table))];
+        return [.. Enumerable.Range(0, count).Select(_ => (IActorStore)Postgres(table))];
     }
 
     public async ValueTask DisposeAsync()
@@ -61,7 +82,7 @@ public sealed class Stores(string kind) : IAsyncDisposable
     }
 }
 
-/// <summary>What every <see cref="IActorStore"/> guarantees: batched loads, versioned writes that fence stale owners.</summary>
+/// <summary>What every <see cref="IActorStore"/> guarantees: batched claims, versioned writes that fence stale owners.</summary>
 [TestFixtureSource(typeof(Stores), nameof(Stores.Kinds))]
 public class ActorStoreTests(string kind)
 {
@@ -72,10 +93,10 @@ public class ActorStoreTests(string kind)
 
     private static readonly StoredKey A = new(7, 1), B = new(7, 2), C = new(unchecked((uint)-5), long.MaxValue);
 
-    internal static async Task<StoredRecord[]> Load(IActorStore store, params StoredKey[] keys)
+    internal static async Task<StoredRecord[]> Claim(IActorStore store, params StoredKey[] keys)
     {
         var records = new StoredRecord[keys.Length];
-        await store.LoadAsync(keys, records);
+        await store.ClaimAsync(keys, records);
         return records;
     }
 
@@ -94,7 +115,7 @@ public class ActorStoreTests(string kind)
         for (int round = 0; round < 5; round++)
         {
             var stores = _stores.CreateShared(8);
-            await Task.WhenAll(stores.Select(static s => Load(s, A)));
+            await Task.WhenAll(stores.Select(static s => Claim(s, A)));
             foreach (var store in stores.Distinct()) if (store is IAsyncDisposable d) await d.DisposeAsync();
         }
     }
@@ -103,7 +124,7 @@ public class ActorStoreTests(string kind)
     public async Task WritesAreVersionedAndFenceStaleOwners()
     {
         var store = _stores.Create();
-        Assert.That((await Load(store, A))[0].Version, Is.Zero, "nothing stored yet");
+        Assert.That((await Stores.Peek(store, A)).Version, Is.Zero, "nothing stored yet");
 
         Assert.That(await Save(store, new StoredWrite(A, 0, new byte[] { 1 }), new StoredWrite(C, 0, new byte[] { 3, 3 })),
             Is.EqualTo(new[] { true, true }), "first writes insert");
@@ -113,10 +134,29 @@ public class ActorStoreTests(string kind)
             Is.EqualTo(new[] { true, false }), "a write replaces only the version it read");
         Assert.That(await Save(store, new StoredWrite(A, 1, new byte[] { 9 })), Is.EqualTo(new[] { false }), "version 1 is gone");
 
-        var records = await Load(store, B, A, C);
-        Assert.That(records[0].Version, Is.Zero, "a key without a record");
-        Assert.That((records[1].Version, records[1].Data.ToArray()), Is.EqualTo((2L, new byte[] { 2 })));
-        Assert.That((records[2].Version, records[2].Data.ToArray()), Is.EqualTo((1L, new byte[] { 3, 3 })), "any type id and key round-trip");
+        var records = await Claim(store, B, A, C);
+        Assert.That((records[0].Version, records[0].Data.Length), Is.EqualTo((1L, 0)), "a key without a record is claimed empty");
+        Assert.That((records[1].Version, records[1].Data.ToArray()), Is.EqualTo((3L, new byte[] { 2 })), "one above the last write");
+        Assert.That((records[2].Version, records[2].Data.ToArray()), Is.EqualTo((2L, new byte[] { 3, 3 })), "any type id and key round-trip");
+    }
+
+    [Test]
+    public async Task AClaimFencesWhoeverLoadedTheRecordBefore()
+    {
+        // A split or a stale owner: whoever claimed last owns the record; the earlier one's writes are refused.
+        var store = _stores.Create();
+        Assert.That(await Save(store, new StoredWrite(A, 0, new byte[] { 1 })), Is.EqualTo(new[] { true }));
+        var stale = (await Claim(store, A))[0];
+        var owner = (await Claim(store, A))[0];
+        Assert.That(owner.Version, Is.EqualTo(stale.Version + 1));
+        Assert.That(await Save(store, new StoredWrite(A, stale.Version, new byte[] { 8 })), Is.EqualTo(new[] { false }), "the earlier claim is fenced");
+        Assert.That(await Save(store, new StoredWrite(A, owner.Version, new byte[] { 9 })), Is.EqualTo(new[] { true }));
+        Assert.That((await Stores.Peek(store, A)).Data.ToArray(), Is.EqualTo(new byte[] { 9 }));
+
+        var fresh = new StoredKey(7, 42); // never written: claimed too, so a first write expecting none is refused
+        var claimed = (await Claim(store, fresh))[0];
+        Assert.That(await Save(store, new StoredWrite(fresh, 0, new byte[] { 1 })), Is.EqualTo(new[] { false }));
+        Assert.That(await Save(store, new StoredWrite(fresh, claimed.Version, new byte[] { 1 })), Is.EqualTo(new[] { true }));
     }
 
     [Test]
@@ -129,7 +169,7 @@ public class ActorStoreTests(string kind)
 
         var keys = new StoredKey[writes.Length];
         for (int i = 0; i < keys.Length; i++) keys[i] = new StoredKey(3, keys.Length - 1 - i);
-        var records = await Load(store, keys);
+        var records = await Claim(store, keys);
         for (int i = 0; i < keys.Length; i++)
             Assert.That(BitConverter.ToInt32(records[i].Data.Span), Is.EqualTo(keys.Length - 1 - i), "records come back in the keys' order");
     }
@@ -154,8 +194,8 @@ public class PostgreSqlStoreTests
         // The call that finds its connection gone may fail (the shard retries it); the next one reconnects.
         try { await ActorStoreTests.Save(store, new StoredWrite(A, 1, new byte[] { 2 })); }
         catch (Npgsql.NpgsqlException) { }
-        var record = (await ActorStoreTests.Load(store, A))[0];
+        var record = await Stores.Peek(store, A);
         if (record.Version == 1) Assert.That(await ActorStoreTests.Save(store, new StoredWrite(A, 1, new byte[] { 2 })), Is.EqualTo(new[] { true }));
-        Assert.That((await ActorStoreTests.Load(store, A))[0].Data.ToArray(), Is.EqualTo(new byte[] { 2 }));
+        Assert.That((await Stores.Peek(store, A)).Data.ToArray(), Is.EqualTo(new byte[] { 2 }));
     }
 }

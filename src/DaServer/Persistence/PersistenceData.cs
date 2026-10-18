@@ -89,7 +89,7 @@ internal sealed class LoadBatch(Shard shard)
         InFlight = true;
         try
         {
-            _task = store.LoadAsync(_keys.AsMemory(0, Count), _records.AsMemory(0, Count));
+            _task = store.ClaimAsync(_keys.AsMemory(0, Count), _records.AsMemory(0, Count));
         }
         catch (Exception e)
         {

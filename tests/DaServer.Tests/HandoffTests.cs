@@ -21,10 +21,10 @@ public class HandoffTests(string kind) : ClusterTest
         public TaskCompletionSource? HoldWrites;
         public readonly TaskCompletionSource WriteStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public ValueTask LoadAsync(ReadOnlyMemory<StoredKey> keys, Memory<StoredRecord> records, CancellationToken ct = default)
+        public ValueTask ClaimAsync(ReadOnlyMemory<StoredKey> keys, Memory<StoredRecord> records, CancellationToken ct = default)
         {
             Interlocked.Add(ref Loads, keys.Length);
-            return inner.LoadAsync(keys, records, ct);
+            return inner.ClaimAsync(keys, records, ct);
         }
 
         public async ValueTask SaveAsync(ReadOnlyMemory<StoredWrite> writes, Memory<bool> accepted, CancellationToken ct = default)
