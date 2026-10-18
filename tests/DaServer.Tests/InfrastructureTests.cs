@@ -113,10 +113,12 @@ public class InfrastructureTests
             w.SetHeader(FrameKind.Message, 0, 7, 9);
         }
 
-        for (int i = 0; i < 100; i++) Frame(); // ArrayPool fills its buckets for this thread
-        long before = GC.GetAllocatedBytesForCurrentThread();
+        for (int i = 0; i < 100; i++) Frame(); // the pool's buckets fill
+        // The pool is the process's: a buffer another thread holds meanwhile makes this one grow it (kept for reuse, not
+        // garbage), so its growth is told apart.
+        long before = GC.GetAllocatedBytesForCurrentThread(), grown = BufferPool.AllocatedBytes;
         for (int i = 0; i < 1000; i++) Frame();
-        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - before - (BufferPool.AllocatedBytes - grown);
         Assert.That(allocated / 1000.0, Is.LessThan(1), $"{allocated} B for 1,000 frames of 32 KB");
     }
 
