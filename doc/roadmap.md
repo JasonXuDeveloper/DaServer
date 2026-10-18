@@ -228,7 +228,7 @@ Open after G:
 
 - [ ] Trim `BufferPool` buckets back after a peak (41 MB of a 10k-bot process's 80 MB managed heap are 4 KB buffers
       kept from the all-sessions broadcast peak).
-- [ ] Profile group broadcasts on .NET 11 (0 to +5% against d676d2a on .NET 10) and measure `runtime-async=on`.
+- [ ] Profile group broadcasts on .NET 11 (0 to +5% against d676d2a on .NET 10).
 - [ ] Re-record the release checklist (test count, 10k E2E, BenchmarkDotNet) on the head after T2.
 
 ## Next: graceful shutdown and no data loss
@@ -476,10 +476,21 @@ in separate commits.
       broadcasts measured +1% to +32% and the broadcast scenario +7% / +13%, but repeated runs of one build vary by
       +-25% on this VM (35-46 ms for the same 5,000 x 9 case); a bisection on single runs pointed at a commit that two
       interleaved runs then cleared. Broadcast work goes to Z5.
-- [ ] Z6 .NET 11 features to measure with BDN: runtime async (`<Features>runtime-async=on</Features>`, preview; pooled
-      builders such as `Reply<T>` opt out) on the call and handler paths; Zstandard (`System.IO.Compression`) for large
-      actor records. Already in effect without changes: JIT bounds-check and devirtualization work, continuations that
-      skip `ExecutionContext` restore when nothing flows.
+- [ ] Z6 .NET 11 / C# 15 (audit of October 2026, probes on RC2, Roslyn 5.12): runtime async stays off (ADR-054:
+      it allocates more per suspension and ignores method-level pooling builders); C# 14 extension properties for the
+      server-only `World` API (`world.Tick`, `world.Cluster`: less ceremony in every user system; the netstandard2.1
+      packages keep extension methods for Unity's compiler); Zstandard span codecs (`ZstandardEncoder`) for large actor
+      records, measured with BDN. Not worth it now: interceptors (the generated `Ask` overloads already avoid the
+      generic hop; they would raise the generator's Roslyn floor from 4.8 to 4.14), unions (they box struct cases),
+      closed hierarchies (net11-only attributes). Already in effect without changes: JIT bounds-check and
+      devirtualization work, continuations that skip `ExecutionContext` restore when nothing flows.
+- [ ] N12 Nino (audit of October 2026; Nino's reads check every length, bound depth and counts, and raise no AOT warning):
+      enum values are not in
+      `wire.manifest` (a renumbered member changes stored records and messages silently); golden-byte fixtures for
+      messages, strings, collections and pooled classes on the client and server builds (a Nino update that keeps a
+      formatter's name but changes its bytes passes DAS017); a warning for collections held directly in
+      `[FromClient]`/`[ToClient]` messages; `Registrations.Run`'s `RunClassConstructor` raises IL2059 under AOT analysis;
+      release on Nino 4.0.0, not an RC (drop the NU5104 suppression then).
 - [x] N6 State handoff on moves (ADR-072): an actor that changes node (scaling out or in, a node stopping) sends its
       [Persist] and [Handoff] components, version and last-written hash to the new owner on the link its forwarded
       mail takes next; the new owner restores them without reading the store, the old one is removed once accepted
@@ -581,8 +592,22 @@ and cards, a manual clock), fails before its fix, and passes after it.
 - [x] S3 Calls on the old connection are failed when it dies while the move is still resuming; S4 a dispose during a
       reconnect or move says goodbye and keeps the client out of the sweep; S5 a probe only closes the connection it
       pinged; S8 a reconnect attempt ends with ReconnectTimeout (`ClientMoveTests`, all failing before).
-- [ ] S6 pushes during a move are duplicated and dispatched from two loops; S7 a kick can be evaded by a concurrent
-      resume; S9 one ticket used on two gateways at once can split the session.
+- [x] S6 A move's two connections dispatched pushes from two loops (callbacks overlapped, a new session's push could
+      come before an older one of the session left), and the actor's group broadcasts reached both sessions until the
+      goodbye: pushes are one connection at a time and the new one's wait until the old drained
+      (`PushesOfTheConnectionLeftComeBeforeThoseOfTheNewOne`); an actor taking a resumed session makes the previous one
+      leave its group, ahead of its later broadcasts (`AResumedSessionTakesTheActorsGroupFromThePreviousOne`).
+- [ ] S7 a kick can be evaded by a concurrent resume; S9 one ticket used on two gateways at once can split the session.
+- [x] Fail fast: a test waiting on a condition stops at the first fault the cluster logs (a crashed or stalled shard, a
+      failed maintenance tick or gossip round, a refused link, a stop past its budget, anything critical), naming it,
+      instead of at its time limit (`FaultLog`); the E2E runs stop at the first resource that fails to start, exits or
+      turns unhealthy, with its last lines (`Watchdog`). It found a refused node reconnecting thousands of times a second:
+      a closed handshake now backs off (100 ms to 5 s).
+- [x] P11 The PostgreSQL table was created by a store's first call (its readiness said nothing of it, and a failed create
+      failed the first loads): the node initializes its store before it starts, and `createTable: false` leaves the
+      schema to a migration job, checked at start (`AStoreThatDoesNotCreateItsTableRefusesToStartWithoutIt`).
+- [x] N12a A payload that is not its message is refused (`Malformed`) before the handler runs: no failure counted, no
+      `OnError` (`AMessageThatCannotBeReadIsRefusedWithoutFailingTheActor`).
 - [x] P10 Nodes starting together raced on `CREATE TABLE IF NOT EXISTS` (23505, the first loads failed): an advisory
       lock serializes the create (`NodesStartingTogetherCreateTheTableOnce`).
 

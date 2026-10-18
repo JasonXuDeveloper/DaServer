@@ -735,8 +735,11 @@ records that no longer hold). Each: context → decision → consequences.
   1k/5k clients 3-8% slower (5.09 -> 5.25 ms ... 27.8 -> 30.1 ms); allocations equal.
 - Decision: `DaServer`, `DaServer.Hosting`, `DaServer.Aspire`, the samples' nodes, tests and benchmarks target
   `net11.0`; the shared packages add `net11.0` beside netstandard2.1 and net10.0 (ADR-001). `global.json` pins the 11.0
-  SDK (RC2 until GA, then the GA band); CI installs it from there. Runtime async (`runtime-async=on`) stays off until
-  measured on its own: the framework's hot paths have no async methods (pooled `IValueTaskSource`s).
+  SDK (RC2 until GA, then the GA band); CI installs it from there. Runtime async (`<Features>runtime-async=on</Features>`,
+  preview in RC2) stays off: measured on RC2, an `async ValueTask` that suspends costs 192 B with it against 112 B
+  without, and a method's `[AsyncMethodBuilder(PoolingAsyncValueTaskMethodBuilder)]` is ignored under it (0 B becomes
+  192 B) unless the method also carries `RuntimeAsyncMethodGeneration(false)`; custom task-likes (`Reply<T>`) keep their
+  builders either way. The framework's hot paths have no async methods (pooled `IValueTaskSource`s).
 - Alternatives: stay on .NET 10 LTS (gives up 2.3-2.7x on concurrent local calls, 1.1-1.3x remote); multi-target the server (doubles build and test
   time for users who all deploy one runtime).
 - Consequences: servers need the .NET 11 runtime (x86-64-v2 or newer); BenchmarkDotNet 0.16 (preview) hosts .NET 11.
@@ -1069,10 +1072,17 @@ records that no longer hold). Each: context → decision → consequences.
     that holds another version means another node owns the actor (a split, a late write after being declared dead):
     the write is refused and the local copy is fenced, removed without another save. Because the newest loader holds
     the newest version, the stale copy is the one refused, not the new owner, whichever writes first.
-  - **Backends:** `IActorStore` (`ClaimAsync` and `SaveAsync` over batches) is all a backend implements.
+  - **Schema at start:** a node initializes its store before it binds a port or joins (`IActorStore.InitializeAsync`):
+    a database that is down or a table that is missing stops the node at start, saying so, instead of failing its
+    first loads with callers waiting. `PostgreSqlActorStore` creates its table there by default (as Dapr's state
+    stores and Akka's journals do; nodes starting together serialize the create with a transaction-scoped advisory
+    lock); where a migration job or a DBA owns the schema (Orleans ships scripts to run beforehand, Aspire runs EF
+    migrations in a worker the services wait for), `createTable: false` makes the node only check the table, and
+    `Schema` is the statement to run.
+  - **Backends:** `IActorStore` (`InitializeAsync`, `ClaimAsync` and `SaveAsync` over batches) is all a backend implements.
     `InMemoryActorStore` serves tests and development, and behaves like a database: versioned, and writing in place
     (a buffer per key), so tests measure the same allocation-free saves. `PostgreSqlActorStore` is the default for deployments: one
-    table `(type_id, key, version, data bytea, updated_at)`, created on first use, written with Npgsql and no ORM (the
+    table `(type_id, key, version, data bytea, updated_at)`, written with Npgsql and no ORM (the
     record is opaque bytes, so the schema never follows the components). A batch is one prepared statement on a
     connection kept per call in flight: claims one upsert over `unnest(type ids, keys)` that raises the versions and
     returns the rows, saves one statement over
@@ -1107,8 +1117,8 @@ records that no longer hold). Each: context → decision → consequences.
     node's exit code is logged. A node exits with 1 when its stop lost state (`Node.StoppedClean`). Windows falls back
     to Aspire's stop command.
   - The sample's PostgreSQL also has a persistent lifetime: the next run reuses the running container.
-  - `WithActorStore` adds `WaitFor` only when publishing (Compose orders start and stop by it); run locally, nodes
-    start beside the database and their readiness includes it.
+  - `WithActorStore` makes the nodes wait for the database, run and published alike: a node prepares its store before
+    it starts (ADR-068), and Compose orders start and stop by it.
   - The e2e measures 10 s (two map changes) with 1,000 bots; long and large runs (10k bots) are the same test with
     `E2E_*` variables, run on demand, not on every commit. Behavior is covered by the in-process cluster tests.
 - Consequences: about 32 s: 6 s of the testing host, about 7 s of seven processes starting cold through `dotnet run` on
