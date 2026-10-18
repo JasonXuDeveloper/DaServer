@@ -273,8 +273,10 @@ records that no longer hold). Each: context → decision → consequences.
 - Context: unbounded dispatch queues and mailboxes let a flood (or a slow actor) grow memory until the process dies,
   and callers learn nothing.
 - Decision: `NodeOptions.DispatchQueueCapacity` bounds the new calls and messages in a shard's dispatch queue and
-  `ActorMailboxCapacity` an actor's mailbox; a call or message beyond either is refused with `RpcStatus.Overloaded`
-  (requests get the status, one-way messages are dropped and counted in `daserver.shard.rejected`). Node links are
+  `ActorMailboxCapacity` an actor's mailbox (an actor type sets its own with `Actor.MailboxCapacity`: a hot map or
+  sale takes more, an actor that should shed load early less); a call or message beyond either is refused with
+  `RpcStatus.Overloaded` (requests get the status, one-way messages are dropped), counted by reason in
+  `daserver.messages.dropped{reason=queue_full|mailbox_full}` (`Node.Dropped`). Node links are
   never paused while a target shard is full: the link from B to A also carries replies to A's own calls, so pausing it
   stalls those turns until their timeouts, which can block the very shard that is full. Replies, continuations and
   turn ends finish work already admitted, so they have a queue of their own (16k slots per shard, drained first):
@@ -289,7 +291,7 @@ records that no longer hold). Each: context → decision → consequences.
 - Decision: a request's header status byte (unused on requests) carries the caller's remaining time in 100 ms units
   (up to 25.5 s). Every hop turns it into a local deadline on arrival (`Environment.TickCount64`, no clock sync) and
   forwards what is left; clients send their call timeout. A shard drops a request whose deadline passed before it
-  runs: no reply (the caller has already failed it), counted in `daserver.shard.expired`.
+  runs: no reply (the caller has already failed it), counted in `daserver.messages.dropped{reason=expired}`.
 - Alternatives: absolute timestamps (need synchronized clocks); a separate header field (24-byte header, one byte
   was free on requests).
 - Consequences: work whose caller gave up is not run, on any node; one-way messages never expire. A request in

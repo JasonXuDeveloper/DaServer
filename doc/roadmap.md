@@ -370,8 +370,10 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
 - [ ] K3 Load-aware service choice (power of two over the pulse load).
 - [ ] K4 Per-call options (`CallOptions` struct overload: timeout), the turn's deadline readable in handlers without
       a `CancellationTokenSource`.
-- [ ] K5 Per actor type mailbox capacity and a `messages.dropped{reason}` metric (replies and completions have their
-      own queue, ADR-027).
+- [x] K5 `Actor.MailboxCapacity` (an actor type's own bound; zero: the node's, read once at load into the mailbox
+      component, so delivery reads a field) and `daserver.messages.dropped{reason}` (`queue_full`, `mailbox_full`,
+      `expired`; `Node.Dropped(DropReason)`), replacing `daserver.shard.rejected` and `daserver.shard.expired`
+      (`AnActorTypeSetsItsOwnMailboxCapacity`; replies and completions have their own queue, ADR-027).
 - Out of scope in core: durable streams (use Kafka/NATS from a service), transactions (a turn is atomic; sagas are
   messages plus persistence), distributed locks (an actor is the lock), multi-tenancy, event sourcing (documented
   pattern only).
