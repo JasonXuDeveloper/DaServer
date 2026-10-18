@@ -307,16 +307,19 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
 - [ ] A10 Kubernetes packaging: `WithHelm` (namespace, release and chart names, version) on the cluster's
       environment; `AddHelmChart` installs what HPA on custom metrics needs (KEDA or Prometheus Adapter) next to the
       app; `WithNodePool` pins stateful groups to their node pool.
-- [ ] A11 Pipeline step (`aspire do`): run the N4 route-completeness check and the analyzers before `publish`/`deploy`,
-      so a cluster with an unreachable message or service never ships.
+- [x] A11 Pipeline step: `aspire publish`/`deploy` first run the cluster's route check (`{cluster}-routes`, required by
+      the publish and deploy prerequisites): each node project starts in check mode (`DaServer__ListRoutes`: it writes
+      the messages its contracts declare and its actors and services handle, then exits before anything starts), and
+      the step fails with the N4 problems of their union (`RouteRules`, the file `RouteCheck` uses). The listing is the
+      node's own build, so it checks what the containers run; the analyzers already run in that build.
 - [ ] A12 Operator docs: `aspire describe/ps/logs/otel`, `aspire resource <node> drain`, and the Aspire MCP server
       (`list_resources`, logs, traces, `execute_resource_command`) to operate and debug a cluster.
-- [ ] A13 Seeds through Aspire's service discovery format: nodes also read `services__<group>__tcp__N` (what
-      `WithReference(group)` writes), so the AppHost wiring is standard Aspire and our env callbacks shrink. Gossip
-      stays the membership layer (who is alive, suspected, leaving, which types each node hosts, load); service
-      discovery only bootstraps it.
-- Not for node membership: `WithReference` service discovery alone (one load-balanced address, not membership), persistent project
-  lifetimes (no replicas, fixed ports); fine for databases and user HTTP services.
+- Not for node membership: `WithReference` service discovery (`services__{group}__{endpoint}__N`: one load-balanced
+  address per group; a Kubernetes Service lists ready pods only, and a joining node is not ready until it joined), and
+  persistent project lifetimes (no replicas, fixed ports); fine for databases and user HTTP services. Seeds are the
+  platform's DNS for each group instead (Compose service names, a headless `{group}-peers` Service listing every pod),
+  as in Akka.NET's DNS discovery; Orleans keeps membership in a store instead (`WithClustering`), which DaServer's
+  gossip does not need.
 - [ ] A14 Production views: the published dashboard (on by default in Kubernetes/Compose environments) is kept for
       diagnosis behind its login; durable views ship with the framework: DaServer metrics (members, shards, mailbox
       backlog, call latency, drain phases) with a Grafana dashboard JSON and alert rules, the cluster view from the
@@ -654,8 +657,10 @@ and cards, a manual clock), fails before its fix, and passes after it.
         in absolute: one clock read less per call). `PoolBenchmark` (1/4/16 concurrent threads) before: frames 33 /
         189 / 198 ns, calls 41 / 230 / 232 ns; after: frames 24 / 12 / 11 ns, calls 43 / 173 / 162 ns, nothing
         allocated.
-  - [ ] The call table's free stack: its head is the one CAS every call and reply contend on; per-thread free slots
-        (taken and given back in batches) would remove it. Measure with `PoolBenchmark.Calls`.
+  - [x] The call table's free stack, the one CAS every call and reply contended on, in stripes (a node: one per core
+        up to 16; a client: one): a thread frees onto its own stripe and takes from it first, then from the others, so
+        the table grows no more than with one stack. `PoolBenchmark.Calls` (1/4/16 threads): 41 / 260 / 241 ns before,
+        42 / 36 / 33 ns after; end to end (`RpcBenchmark`) within run-to-run noise, nothing allocated.
   - [x] Group fan-out: a channel array next to the members; `FrameChannel`, the shell (send, close, tag, stamps)
         shared by TCP and WebSocket.
   - [x] Routing: one route per handler type (nodes, kind, slot owners) found by one lookup.
