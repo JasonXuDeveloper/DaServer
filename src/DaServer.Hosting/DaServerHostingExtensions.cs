@@ -66,6 +66,7 @@ public static class DaServerHostingExtensions
         if (statsInterval > TimeSpan.Zero)
             builder.Services.AddHostedService(sp => new NodeStatsLogger(sp.GetRequiredService<Node>(),
                 sp.GetRequiredService<ILogger<NodeStatsLogger>>(), statsInterval));
+        DaServerAdmin.AddServices(builder.Services);
         builder.AddDaServerTelemetry();
         // The service defaults Aspire's template would put in a project of its own: HttpClients the node's code makes
         // resolve Aspire references (https+http://name) and retry transient failures with timeouts and a circuit breaker.

@@ -1,28 +1,45 @@
 using System.Security.Cryptography;
 using System.Text;
 using DaServer.Cluster;
+using System.Security.Claims;
+using System.Text.Encodings.Web;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace DaServer.Hosting;
 
 /// <summary>
 /// The node's admin endpoints (A5) under <c>/admin</c>, for operators, the Aspire dashboard's commands and tests: the
 /// membership as this node sees it, its statistics, a drain (the node leaves and stops gracefully: what SIGTERM does),
-/// and unloading an actor type's actors. Each request carries <c>Authorization: Bearer {token}</c>, the token derived from
-/// the cluster's signing secret (<see cref="AdminToken"/>); a node without a secret maps none of them.
+/// and unloading an actor type's actors. They require the authorization policy <see cref="Policy"/>: by default a bearer
+/// token derived from the cluster's signing secret (<see cref="AdminToken"/>, the accepted secret's too while it
+/// rotates), so without a secret every request is refused. Redefine the policy after <c>AddDaServer</c>
+/// (<c>AddAuthorization(o =&gt; o.AddPolicy(DaServerAdmin.Policy, ...))</c>) to use JWT, mTLS or any scheme of the host.
 /// </summary>
-internal static class DaServerAdmin
+public static class DaServerAdmin
 {
-    public static void Map(IEndpointRouteBuilder endpoints, Node node)
+    /// <summary>The authorization policy the admin endpoints require.</summary>
+    public const string Policy = "DaServer.Admin";
+
+    /// <summary>The default policy's authentication scheme: the token the signing secret derives.</summary>
+    public const string Scheme = "DaServer.AdminToken";
+
+    internal static void AddServices(IServiceCollection services)
     {
-        if (node.Options.SigningSecret is not { Length: > 0 } secret) return;
-        var token = Encoding.UTF8.GetBytes("Bearer " + AdminToken.For(secret));
-        var admin = endpoints.MapGroup("/admin").AddEndpointFilter(async (context, next) =>
-            Authorized(context.HttpContext, token) ? await next(context) : Results.Unauthorized());
+        services.AddAuthentication().AddScheme<AuthenticationSchemeOptions, AdminTokenHandler>(Scheme, null);
+        services.AddAuthorization(static o =>
+            o.AddPolicy(Policy, static p => p.AddAuthenticationSchemes(Scheme).RequireAuthenticatedUser()));
+    }
+
+    internal static void Map(IEndpointRouteBuilder endpoints)
+    {
+        var admin = endpoints.MapGroup("/admin").RequireAuthorization(Policy);
         admin.MapGet("/membership", static (Node node) => Results.Json(Membership(node)));
         admin.MapGet("/stats", static (Node node) => Results.Json(Stats(node)));
         admin.MapPost("/drain", static (IHostApplicationLifetime lifetime) =>
@@ -33,10 +50,6 @@ internal static class DaServerAdmin
         admin.MapPost("/unload/{type}", static (string type, Node node) =>
             node.UnloadActors(type) ? Results.Accepted() : Results.NotFound($"This node hosts no actor type '{type}'"));
     }
-
-    private static bool Authorized(HttpContext http, byte[] token) =>
-        http.Request.Headers.Authorization.ToString() is { Length: > 0 } given &&
-        CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(given), token);
 
     private static object Membership(Node node)
     {
@@ -61,4 +74,27 @@ internal static class DaServerAdmin
             Expired = node.Dropped(DropReason.Expired),
         },
     };
+}
+
+/// <summary>
+/// The default admin scheme: <c>Authorization: Bearer {token}</c> with the token of the signing secret or of the secret a
+/// rotation still accepts, compared in constant time. No secret: nobody is authenticated.
+/// </summary>
+internal sealed class AdminTokenHandler(IOptionsMonitor<AuthenticationSchemeOptions> options, ILoggerFactory logger, UrlEncoder encoder,
+    IOptions<NodeOptions> node) : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
+{
+    private readonly byte[]? _token = Token(node.Value.SigningSecret), _accepted = Token(node.Value.AcceptedSigningSecret);
+
+    private static byte[]? Token(string? secret) => secret is { Length: > 0 } ? Encoding.UTF8.GetBytes("Bearer " + AdminToken.For(secret)) : null;
+
+    protected override Task<AuthenticateResult> HandleAuthenticateAsync()
+    {
+        if (_token == null || Request.Headers.Authorization.ToString() is not { Length: > 0 } header) return Task.FromResult(AuthenticateResult.NoResult());
+        var given = Encoding.UTF8.GetBytes(header);
+        if (!CryptographicOperations.FixedTimeEquals(given, _token) &&
+            (_accepted == null || !CryptographicOperations.FixedTimeEquals(given, _accepted)))
+            return Task.FromResult(AuthenticateResult.Fail("Not the cluster's admin token"));
+        var identity = new ClaimsIdentity([new Claim(ClaimTypes.Name, "daserver-admin")], Scheme.Name);
+        return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(identity), Scheme.Name)));
+    }
 }

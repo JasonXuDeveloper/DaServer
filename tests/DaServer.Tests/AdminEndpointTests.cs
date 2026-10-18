@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Text.Json;
 using DaServer.Hosting;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -27,11 +28,32 @@ public class AdminEndpointTests
     }
 
     [Test]
-    public async Task WithoutASecretThereAreNoAdminEndpoints()
+    public async Task WithoutASecretTheDefaultPolicyRefusesEveryone()
     {
         await using var app = await StartNode(secret: null);
         using var http = Client(app, AdminToken.For(Secret));
-        Assert.That((await http.GetAsync("/admin/stats")).StatusCode, Is.EqualTo(HttpStatusCode.NotFound));
+        Assert.That((await http.GetAsync("/admin/stats")).StatusCode, Is.EqualTo(HttpStatusCode.Unauthorized));
+    }
+
+    [Test]
+    public async Task TheAcceptedSecretsTokenIsAnsweredWhileItRotates()
+    {
+        await using var app = await StartNode(Secret, accepted: "the next secret, 32 characters long");
+        using var http = Client(app, AdminToken.For("the next secret, 32 characters long"));
+        Assert.That((await http.GetAsync("/admin/stats")).StatusCode, Is.EqualTo(HttpStatusCode.OK));
+    }
+
+    [Test]
+    public async Task TheAdminPolicyCanBeReplacedWithTheHostsOwn()
+    {
+        // An application that authorizes operators its own way (JWT, mTLS, ...) redefines the policy.
+        await using var app = await StartNode(secret: null, configure: static builder =>
+            builder.Services.AddAuthorization(static o => o.AddPolicy(DaServerAdmin.Policy, static p => p.RequireAssertion(
+                static context => context.Resource is HttpContext http && http.Request.Headers["X-Operator"] == "alice"))));
+        using var http = Client(app, token: null);
+        Assert.That((await http.GetAsync("/admin/stats")).StatusCode, Is.Not.EqualTo(HttpStatusCode.OK), "without the operator header");
+        http.DefaultRequestHeaders.Add("X-Operator", "alice");
+        Assert.That((await http.GetAsync("/admin/stats")).StatusCode, Is.EqualTo(HttpStatusCode.OK));
     }
 
     [Test]
@@ -75,7 +97,7 @@ public class AdminEndpointTests
         await stopping.Task.WaitAsync(TimeSpan.FromSeconds(10));
     }
 
-    private static async Task<WebApplication> StartNode(string? secret)
+    private static async Task<WebApplication> StartNode(string? secret, string? accepted = null, Action<WebApplicationBuilder>? configure = null)
     {
         var builder = WebApplication.CreateBuilder();
         builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
@@ -88,8 +110,10 @@ public class AdminEndpointTests
             ["DaServer:Shards"] = "2",
             ["DaServer:StatsInterval"] = "0",
             ["DaServer:SigningSecret"] = secret,
+            ["DaServer:AcceptedSigningSecret"] = accepted,
         });
         builder.AddDaServer();
+        configure?.Invoke(builder);
         var app = builder.Build();
         app.MapDaServer();
         await app.StartAsync();
