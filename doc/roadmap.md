@@ -597,8 +597,10 @@ and cards, a manual clock), fails before its fix, and passes after it.
       acceptor challenges, the Hello proves the challenge and its endpoint (`AHelloProvesItsChallengeEndpointStreamAndCluster`).
 - [x] S1 An actor that moved forgot its client sessions (resume refused, the mmo's map changes Forbidden): sessions
       travel in the handoff record, never stored (`AClientResumesWithAnActorThatMovedToAnotherNode`).
-- [ ] S2 A resume cut off after the actors accepted it leaves the session unrecoverable (revert to the previous
-      session; a drain skips sessions mid-resume).
+- [x] S2 A resume cut off after the actors accepted it (the client gave up waiting behind a long turn, a drain closed the
+      new connection) left the session unrecoverable: the client-facing node reverts it (a resume back to the previous
+      session, which the actors restore without telling their handler), a client retries on `Superseded`, and drains and
+      connection ages skip sessions mid-resume (`AResumeCutOffAfterTheActorsAcceptedItIsRetried`).
 - [x] S3 Calls on the old connection are failed when it dies while the move is still resuming; S4 a dispose during a
       reconnect or move says goodbye and keeps the client out of the sweep; S5 a probe only closes the connection it
       pinged; S8 a reconnect attempt ends with ReconnectTimeout (`ClientMoveTests`, all failing before).
@@ -709,6 +711,11 @@ and cards, a manual clock), fails before its fix, and passes after it.
       parallel (passes alone and in 5 further full runs; the message was not captured). Suspect: a handoff that times
       out under load falls back to the store, which the test's "0 writes" forbids. Check the handoff timeout against
       a loaded machine, or make the test tell a fallback from a lost record.
+- [ ] `PersistenceEdgeTests.AReloadWaitsForTheWriteInFlight` failed once on CI (run 39099216040, 2 cores): the deposit
+      sent while the actor reloads got NotHosted 28 ms into the test, on one node. 50 runs alone and 15 under a full
+      CPU load pass. Suspects: a node started on a port a node of an earlier test just released, reached by that
+      cluster's view or slot table; or a reload path that forwards when the node does not own the key in its view.
+      Capture the view and the table when it happens again.
 - Kept on purpose: B6 (local replies hand the frame over without a copy), B12 (the shard checks runnable actors after
   tick systems sent local mail)
 

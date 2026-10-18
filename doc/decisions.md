@@ -409,7 +409,10 @@ records that no longer hold). Each: context → decision → consequences.
   runtime before the actor's handler runs), and an actor accepts only while it holds `Previous` bound or granted
   (actors keep that set with their sessions). The actors are asked in the ticket's order until one accepts, then the
   rest at once: an actor that already took `Previous` for another session answers `Superseded`, so a ticket presented
-  on two connections at once resumes on one and the other stops. So a ticket resumes at most once, a revoked grant or a closed session
+  on two connections at once resumes on one and the other stops. A resume whose new connection closed before it
+  completed (the client gave up waiting) is reverted: the node sends the actors that took it a resume back to the
+  previous session, which they restore without running their handler, and the client, retrying on `Superseded`,
+  resumes with the same ticket. So a ticket resumes at most once, a revoked grant or a closed session
   (past the grace) does not come back, and an unloaded actor (which forgot its sessions) refuses without loading. The
   new session takes over what was accepted and the actors' groups, then the client gets its reply, so its next
   message reaches actors that know the new session; a ticket nothing accepts is refused. Actors swap the session and send
