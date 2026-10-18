@@ -427,13 +427,15 @@ stateful, maps being heavy actors.
       reported (a stale report of its own once unpinned loaded slots for a round). Steady rounds allocate nothing
       (`AllocationTests` caught 16 KB of counts per type per round). `SlotAllocationTests`: sticky across a join, an
       imbalance evened out, a coordinator replaced with its pins.
-- [ ] S4 Generated manifests. Done: `DaServer.Aspire` adds only what follows from DaServer (probes, grace period, the
+- [x] S4 Generated manifests. Done: `DaServer.Aspire` adds only what follows from DaServer (probes, grace period, the
       preStop wait, one workload per group with its peers Service, client ports as external endpoints); scaling policy
       is each application's, in its AppHost (`Platform.cs`): the MMO sample's gateways behind a LoadBalancer, PDBs and
       in-place VPAs for game and map; the flash sale's sale nodes under an HPA on CPU and a VPA in recommendation
       mode. Plain Deployments: identity comes from gossip incarnations and state from the store, no StatefulSet.
-      Open: publish snapshot tests (both samples, both environments; `helm lint` on the chart) and an HPA on the S1
-      metrics once they are exported.
+      Publish tests (`PublishTests`, E2E): both samples in both environments, the Compose services' health checks,
+      grace periods and healthy dependencies, the chart's probes, preStop and peers Services, `helm lint` and
+      `helm template` on the chart. An HPA on the shards' busy ratio (exported, S1) needs KEDA or the Prometheus
+      adapter in the cluster, so it is the application's (`doc/operations.md`); the flash sale scales on CPU.
 - [x] S5 Vertical scaling: shards follow the CPU limit (`Environment.ProcessorCount` honors the cgroup quota and
       `DOTNET_PROCESSOR_COUNT`; documented on `NodeOptions.Shards`). A VPA is the
       application's: in place where it can (the mmo sample: CPU resized in place, a memory change restarts the

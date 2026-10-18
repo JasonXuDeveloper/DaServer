@@ -87,6 +87,11 @@ serves Prometheus metrics at `/metrics` on its HTTP port, and exports metrics, l
   disagree, dropped messages, failing handlers, saturated shards, late ticks, GC pauses. Load it with `rule_files:`,
   or wrap the group in a `PrometheusRule` for the Prometheus Operator.
 
+Autoscaling is the platform's. The default signal is `daserver_shard_busy_ratio` (the share of time the shards work):
+with KEDA in the cluster (`AddHelmChart` in the AppHost installs it), a `ScaledObject` with a Prometheus trigger on
+`avg(daserver_shard_busy_ratio{node=~"game-.*"})` scales a group's Deployment; the Prometheus adapter does the same for
+a plain HPA. Without either, an HPA on CPU (the flash sale sample's) is the closest built-in signal.
+
 The cluster as one node sees it is `aspire resource <node> membership` (or `/admin/membership`); orchestration state is
 the platform's own (kubectl, k9s, Helm, the cloud console). Graceful stop phases go out over OTLP (the histogram
 `daserver.stop.phase.duration`): a scrape rarely catches a node that is stopping.
