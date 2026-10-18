@@ -151,7 +151,7 @@ balancing, TLS, CDN/WAF, Gateway API routes and autoscaling stay with the platfo
       the late crowd itself; an optional queue (`PerSecond`, `AdmissionSystem`). `FlashSale.Crowd` is a
       `DaServer.Simulation` swarm (`MeasureUntilAsync`); AppHost, E2E (100,000 buyers in CI); the README compares it
       with the usual designs. One 4-core VM with the crowd on it: 3,000,000 buyers on one node, 6,000,101 requests in
-      19.4 s (335,000-386,000/s steady, 1.7 node cores); the machine is the limit.
+      13.2 s with requests on a 1 ms beat (548,000/s steady, 1.51 node cores; ADR-070); the machine is the limit.
 - [ ] G7 Browser clients: `DaServer.Client.Browser`, the client (contracts, Nino's generated code, `ClusterClient`)
       compiled to `browser-wasm` over the browser's WebSocket, with a thin `[JSExport]` API for JS (connect, send, ask,
       push callbacks); no TS code generation. Prove: the flash sale from a browser page. Unity WebGL (IL2CPP) needs a
@@ -245,15 +245,15 @@ Open after G:
       208.9 ms, p99.9 278.5 ms, no gap or disconnect, six nodes exit 0. BenchmarkDotNet default job, d676d2a on
       .NET 10 then the head, back to back:
 
-      | Case | d676d2a | head | |
-      |---|---:|---:|---:|
-      | 1 call local / remote | 30.3 / 132 us | 5.17 / 85.9 us | -83% / -35% |
-      | 64 calls local / remote | 403 / 357 us | 169 / 315 us | -58% / -12% |
-      | 1,024 calls local / remote | 3.98 / 1.91 ms | 0.78 / 1.05 ms | -81% / -45% |
-      | messages local / remote | 4.62 / 1.58 us | 454 / 730 ns | -90% / -54% |
-      | broadcast 1k x 1 / 1k x 9 | 5.35 / 6.33 ms | 5.21 / 5.78 ms | -3% / -9% |
-      | broadcast 5k x 1 / 5k x 9 | 29.0 / 30.1 ms | 26.5 / 32.5 ms | -9% / +8% |
-      | scenario 3k / 9k | 15.3 / 48.4 ms | 15.5 / 52.0 ms | +2% / +8% |
+      | Case | d676d2a | head | | Allocated d676d2a -> head |
+      |---|---:|---:|---:|---:|
+      | 1 call local / remote | 30.3 / 132 us | 5.17 / 85.9 us | -83% / -35% | 120 / 175 B -> 1 / 0 B |
+      | 64 calls local / remote | 403 / 357 us | 169 / 315 us | -58% / -12% | 174 / 159 B -> 0 / 0 B |
+      | 1,024 calls local / remote | 3.98 / 1.91 ms | 0.78 / 1.05 ms | -81% / -45% | 124 / 174 B -> 0 / 1 B |
+      | messages local / remote | 4.62 / 1.58 us | 454 / 730 ns | -90% / -54% | 0 / 0 B -> 0 / 0 B |
+      | broadcast 1k x 1 / 1k x 9 | 5.35 / 6.33 ms | 5.21 / 5.78 ms | -3% / -9% | 277 / 277 B -> 7 / 7 B |
+      | broadcast 5k x 1 / 5k x 9 | 29.0 / 30.1 ms | 26.5 / 32.5 ms | -9% / +8% | 280 / 280 B -> 50 / 46 B |
+      | scenario 3k / 9k | 15.3 / 48.4 ms | 15.5 / 52.0 ms | +2% / +8% | 142 / 152 B -> 16 / 50 B |
 
       Allocated per operation: calls 120-175 B -> 0-1 B, broadcasts 277-280 B -> 7-50 B, scenario 142-152 B ->
       16-50 B. Every case is within the 10% bound; the two +8% cases are inside one standard deviation of either side
@@ -867,6 +867,24 @@ and cards, a manual clock), fails before its fix, and passes after it.
     cancellation.
   - Kept: a private nested `EcsSystem` fails the build in generated code (CS0122) rather than with a DAS rule: an
     error either way, and DAS001 names handlers, not systems.
+- [x] Self-review round 4 (every lifecycle tag combination against every system's filter; every change since the
+  release checklist):
+  - Two copies each waiting for the other's record (ownership flapping X -> N -> X with the key loaded nowhere) waited
+    for as long as both nodes lived: a copy still waiting for its record when it is asked to leave goes at once
+    (`UnloadSystem.Abandon`; `ACopyStillWaitingForItsRecordGoesWhenItsNodeStops`, a stop that ran out its budget
+    without it).
+  - `ErrorAction.Reload` after an unload was asked for (a rebalance, a stop, an operator) saved or handed on the
+    half-changed state: the copy is fenced whatever was asked before (`ATurnThatFailsAfterAnUnloadWasAskedForIsNotSaved`,
+    which wrote the record without it); a refused checkpoint fences a copy already leaving too.
+  - A late "none" from a node other than the one asked no longer starts a store load; a fenced copy refuses a record
+    reaching it in the same wake (its sender keeps it and writes); a failed non-final write no longer holds a copy
+    leaving by handoff (its record carries the last written hash).
+  - A given-up slot round no longer clears the flag of the round counting after it; a full call table takes cooling
+    slots back from a rotating start; the README's per-case allocations are in the release record's table; the flash
+    sale's G5 numbers are ADR-070's; `HandlerFailed` says failures go unobserved without a subscriber.
+  - Kept: answers carry no handoff id (a stale "accepted" needs the key to move M -> N -> M within one answer's
+    flight); `Observe` allocates a state machine per push whose handler completes asynchronously (synchronous handlers
+    pay nothing, and the task is now observed instead of dropped).
 
 ## Generator / analyzer (`src/DaServer.Generator`)
 - [x] Messages instead of contracts (ADR-035): typed `Ask` overloads per request, one dispatcher per `[Handle]`
