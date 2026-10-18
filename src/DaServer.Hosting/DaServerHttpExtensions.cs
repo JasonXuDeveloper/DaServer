@@ -28,6 +28,7 @@ public static class DaServerHttpExtensions
     /// </summary>
     public static WebApplicationBuilder AddDaServer(this WebApplicationBuilder builder, string section = "DaServer")
     {
+        if (builder.Configuration[$"{section}:Probe"] is { Length: > 0 } probe) ProbeAndExit(builder.Configuration, section, probe);
         ((IHostApplicationBuilder)builder).AddDaServer(section);
         builder.WebHost.ConfigureKestrel(static kestrel => kestrel.AddServerHeader = false);
         var listen = builder.Configuration[$"{section}:ListenAddress"] ?? "0.0.0.0";
@@ -36,6 +37,28 @@ public static class DaServerHttpExtensions
         else if (string.IsNullOrEmpty(builder.Configuration[WebHostDefaults.ServerUrlsKey]))
             builder.WebHost.UseUrls($"http://{listen}:0");
         return builder;
+    }
+
+    /// <summary>
+    /// Probe mode (<c>{section}:Probe</c> = a path such as <c>/health</c>; a container's health check runs the node's
+    /// executable with <c>--DaServer:Probe=/health</c>, A3): ask the running node at <c>{section}:HttpPort</c> on this
+    /// machine and exit 0 when it answers 200, 1 otherwise, before anything starts.
+    /// </summary>
+    private static void ProbeAndExit(IConfiguration configuration, string section, string path)
+    {
+        int code = 1;
+        try
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(4) };
+            using var response = http.GetAsync($"http://127.0.0.1:{configuration[$"{section}:HttpPort"]}{path}").GetAwaiter().GetResult();
+            if (response.IsSuccessStatusCode) code = 0;
+        }
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException or UriFormatException)
+        {
+            Console.Error.WriteLine(e.Message);
+        }
+
+        Environment.Exit(code);
     }
 
     /// <summary>

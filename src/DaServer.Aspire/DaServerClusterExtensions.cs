@@ -76,7 +76,16 @@ public sealed class DaServerCluster
             secret: true, persist: true);
         _nextClusterPort = _clusterPortBase = clusterPortBase;
         _nextClientPort = _clientPortBase = clientPortBase;
-        if (builder.ExecutionContext.IsPublishMode) RouteCheckStep.Add(builder, this);
+        if (builder.ExecutionContext.IsPublishMode)
+        {
+            RouteCheckStep.Add(builder, this);
+            builder.Eventing.Subscribe<BeforeStartEvent>((e, _) =>
+            {
+                foreach (var compose in e.Model.Resources.OfType<Docker.DockerComposeEnvironmentResource>())
+                    builder.CreateResourceBuilder(compose).ConfigureComposeFile(WaitForHealthyNodes);
+                return Task.CompletedTask;
+            });
+        }
         if (builder.ExecutionContext.IsRunMode)
         {
             builder.Services.AddHostedService(sp => new NodesStopFirst(this, sp.GetRequiredService<ResourceNotificationService>(), sp.GetRequiredService<ResourceCommandService>(),
@@ -164,7 +173,7 @@ public sealed class DaServerCluster
             {
                 // Compose stops a container after 10 s by default, Kubernetes kills a pod after 30 s.
                 if (compose)
-                    node.PublishAsDockerComposeService((_, service) => Compose(service, publish ? replicas : 1, grace));
+                    node.PublishAsDockerComposeService((_, service) => Compose(service, node.Resource, publish ? replicas : 1, grace));
                 if (kubernetes)
                     node.PublishAsKubernetesService(resource => Kubernetes(resource, name, replicas, grace));
             }
@@ -186,17 +195,38 @@ public sealed class DaServerCluster
             .WithHttpProbe(ProbeType.Liveness, "/alive", initialDelaySeconds: 10, endpointName: "http");
 
     /// <summary>
-    /// A group's Compose service: the grace period, a restart policy, and its replicas, which share the container ports
-    /// (several replicas cannot share a host port: the host maps theirs, or a proxy in front of them does).
+    /// A group's Compose service: the grace period, a restart policy, a health check, and its replicas, which share the
+    /// container ports (several replicas cannot share a host port: the host maps theirs, or a proxy in front of them does).
+    /// The health check is the node's readiness (<c>/health</c>: joined, not leaving), asked by the node's own executable
+    /// in probe mode (the .NET images ship no curl or wget; a .NET project's image runs <c>dotnet /app/{assembly}.dll</c>), so
+    /// services waiting for the node (<c>WaitFor</c>) start once it joined.
     /// </summary>
-    private static void Compose(Docker.Resources.ComposeNodes.Service service, int replicas, int grace)
+    private static void Compose(Docker.Resources.ComposeNodes.Service service, ProjectResource node, int replicas, int grace)
     {
         service.StopGracePeriod = $"{grace}s";
         service.Restart = "unless-stopped";
+        string assembly = Path.GetFileNameWithoutExtension(node.GetProjectMetadata().ProjectPath);
+        service.Healthcheck = new()
+        {
+            Test = ["CMD", "dotnet", $"/app/{assembly}.dll", "--DaServer:Probe=/health"],
+            Interval = "10s", Timeout = "5s", Retries = 3, StartPeriod = "60s",
+        };
         if (replicas == 1) return;
         (service.Deploy ??= new()).Replicas = replicas;
         for (int i = 0; i < service.Ports.Count; i++)
             if (service.Ports[i].LastIndexOf(':') is var colon and > 0) service.Ports[i] = service.Ports[i][(colon + 1)..];
+    }
+
+    /// <summary>
+    /// Services waiting for a node group (<c>WaitFor</c>: clients, other nodes' dependants) start once its health check
+    /// passes, that is once a node joined, not as soon as its container started (Compose's default condition).
+    /// </summary>
+    private void WaitForHealthyNodes(Docker.Resources.ComposeFile file)
+    {
+        foreach (var service in file.Services.Values)
+            if (service.DependsOn != null)
+                foreach (var (name, dependency) in service.DependsOn)
+                    if (_peers.Contains(name)) dependency.Condition = "service_healthy";
     }
 
     /// <summary>The DNS name resolving to every replica of group <paramref name="group"/>.</summary>
