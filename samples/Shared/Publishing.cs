@@ -7,14 +7,20 @@ static class Publishing
 {
     /// <summary>
     /// Where `aspire publish` writes the cluster: Docker Compose files (default) or a Helm chart for Kubernetes
-    /// (`-- Publish=k8s`). Aspire publishes a resource to one environment, so the AppHost picks one; true for Kubernetes.
+    /// (`-- Publish=k8s`), named <paramref name="chart"/> and installed as that release into that namespace. Aspire
+    /// publishes a resource to one environment, so the AppHost picks one; the Kubernetes environment, or null.
     /// </summary>
-    public static bool AddPublishEnvironment(this IDistributedApplicationBuilder builder)
+    public static IResourceBuilder<Aspire.Hosting.Kubernetes.KubernetesEnvironmentResource>? AddPublishEnvironment(
+        this IDistributedApplicationBuilder builder, string chart)
     {
-        bool kubernetes = builder.Configuration["Publish"] == "k8s";
-        if (kubernetes) builder.AddKubernetesEnvironment("k8s");
-        else builder.AddDockerComposeEnvironment("compose");
-        return kubernetes;
+        if (builder.Configuration["Publish"] != "k8s")
+        {
+            builder.AddDockerComposeEnvironment("compose");
+            return null;
+        }
+
+        return builder.AddKubernetesEnvironment("k8s")
+            .WithHelm(helm => helm.WithChartName(chart).WithReleaseName(chart).WithNamespace(chart));
     }
 
     /// <summary>

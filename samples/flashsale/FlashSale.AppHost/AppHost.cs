@@ -8,7 +8,7 @@ using Aspire.Hosting;
 using Microsoft.Extensions.Configuration;
 
 var builder = DistributedApplication.CreateBuilder(args);
-bool kubernetes = builder.AddPublishEnvironment();
+var kubernetes = builder.AddPublishEnvironment("flashsale");
 
 var cluster = builder.AddDaServerCluster("flashsale");
 var actors = builder.AddPostgres("postgres").WithDataVolume().AddDatabase("actors");
@@ -17,7 +17,7 @@ var sale = cluster.AddNodes<Projects.FlashSale_Server>("sale", replicas: 2).With
 // On Kubernetes, a sale's crowd comes in waves: the platform adds sale nodes as their CPU climbs (new nodes join and take
 // their share of the stock shards and sessions) and removes them after (they leave gracefully); a vertical autoscaler
 // only recommends the nodes' requests, it never restarts them during a sale.
-if (kubernetes)
+if (kubernetes != null)
     sale.Nodes[0].PublishAsKubernetesService(node =>
     {
         node.AdditionalResources.Add(Platform.ScaleOnCpu(node, min: 2, max: 10, percent: 70));
