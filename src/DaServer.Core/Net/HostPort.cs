@@ -7,7 +7,9 @@ internal static class HostPort
     {
         int colon = text.LastIndexOf(':');
         host = colon > 0 ? text.Substring(0, colon) : text;
-        if (host.Length > 1 && host[0] == '[' && host[host.Length - 1] == ']') host = host.Substring(1, host.Length - 2);
+        bool bracketed = host.Length > 1 && host[0] == '[' && host[host.Length - 1] == ']';
+        if (bracketed) host = host.Substring(1, host.Length - 2);
+        else if (host.IndexOf(':') >= 0) host = ""; // an IPv6 address without brackets: its last group is not a port
         return int.TryParse(colon > 0 ? text.Substring(colon + 1) : "", out port) && port is > 0 and <= 65535 && host.Length > 0;
     }
 }

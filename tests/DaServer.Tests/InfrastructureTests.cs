@@ -450,6 +450,8 @@ public class InfrastructureTests
     [TestCase("game-0:")]
     [TestCase(":7000")]
     [TestCase("game-0:70000")]
+    [TestCase("fe80::1")]
+    [TestCase("fd00::5:7000")]
     public void HostPortRefuses(string text) => Assert.That(DaServer.Net.HostPort.TryParse(text, out _, out _), Is.False);
 
     [Test]
