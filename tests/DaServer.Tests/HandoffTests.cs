@@ -70,6 +70,23 @@ public class HandoffTests(string kind) : ClusterTest
     }
 
     [Test]
+    public async Task ACopyDeclaredDeadWhileItsFinalSaveWaitsIsStillDropped()
+    {
+        // A copy past its OnUnload whose final save waits for the shard's write in flight, when the node is declared dead:
+        // it is dropped like any fenced copy (it writes nothing), so the shard drains.
+        var store = new WatchedStore(_stores.Create()) { HoldWrites = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously) };
+        var a = await Start("a", shards: 1, configure: o => o.ActorStore = store);
+        Assert.That(await a.Ask(new BankId(100), new Deposit(1, Critical: true)), Is.EqualTo(1));
+        await store.WriteStarted.Task.WaitAsync(TimeSpan.FromSeconds(5)); // the critical save is in flight, held
+        Assert.That(await a.Ask(new BankId(101), new Deposit(2, false)), Is.EqualTo(2));
+        Assert.That(a.UnloadActors("Bank"), Is.True); // 101 unloads and queues its final save behind the held one
+        await Task.Delay(200);
+        foreach (var shard in a.Shards) shard.RequestUnloadAll(); // declared dead
+        store.HoldWrites.SetResult();
+        await Eventually(() => a.ActorCount == 0, "every copy dropped");
+    }
+
+    [Test]
     public async Task ScalingOutAndInMovesRecordsWithoutTheStore()
     {
         var store = new WatchedStore(_stores.Create());

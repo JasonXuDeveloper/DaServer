@@ -318,7 +318,7 @@ internal sealed class Shard : CompletionThread
         World.AddSingleton<ShardTimers>() = new ShardTimers(new TimerWheel<DelayedSend>(ShardTimers.Resolution, time: _time));
         World.AddSingleton<ActorDirectory>() = new ActorDirectory(new Dictionary<ActorAddress, Entity>());
         World.AddSingleton<Persistence.HandoffAsks>() = new Persistence.HandoffAsks(new List<Persistence.HandoffAsk>());
-        World.AddSingleton<Persistence.HandoffsSeen>() = new Persistence.HandoffsSeen(new Dictionary<ulong, Persistence.SeenHandoff>());
+        World.AddSingleton<Persistence.HandoffsSeen>() = new Persistence.HandoffsSeen();
         World.AddSingleton<TurnWatchers>() = new TurnWatchers(new Stack<TurnWatcher>());
         World.AddSingleton<ActorPools>() = new ActorPools(new Dictionary<uint, Stack<Actor>>(), new Stack<Queue<Envelope>>(),
             new Stack<ClientSessions>());

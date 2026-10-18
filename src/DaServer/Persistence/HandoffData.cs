@@ -15,14 +15,22 @@ internal readonly record struct HandOff(ulong To) : IComponent;
 /// </summary>
 internal readonly record struct HandingOff(ulong To, long UntilMs, byte[] Record) : IComponent;
 
+/// <summary>The handoff (its record's id) a copy was restored from: the same record again is answered "accepted".</summary>
+internal readonly record struct TakenHandoff(ulong Id) : IComponent;
+
 /// <summary>
 /// The handoffs this shard took or passed on lately, by the id each record carries (a resend carries its first send's):
 /// a resend whose first send was taken here is answered "accepted" again, wherever the actor is now; one passed on goes
-/// to the same node again. Kept for two handoff timeouts (the resends' window); bounded by <see cref="Max"/>.
+/// to the same node again. Kept for two handoff timeouts (the resends' window), oldest first out past <see cref="Max"/>;
+/// until the evicted ones would have expired (<see cref="ForgotUntilMs"/>), "not seen" no longer means "never here".
 /// </summary>
-internal readonly record struct HandoffsSeen(Dictionary<ulong, SeenHandoff> ById) : ISingletonComponent
+internal struct HandoffsSeen() : ISingletonComponent
 {
-    public const int Max = 4096;
+    public const int Max = 65_536; // about 3 MB at most per shard: a join that moves more within 20 s forgets the oldest
+
+    public readonly Dictionary<ulong, SeenHandoff> ById = new();
+    public readonly Queue<(ulong Id, long UntilMs)> Order = new();
+    public long ForgotUntilMs;
 }
 
 /// <summary>A handoff taken here (<see cref="PassedTo"/> 0) or passed on to <see cref="PassedTo"/>, remembered until <see cref="UntilMs"/>.</summary>

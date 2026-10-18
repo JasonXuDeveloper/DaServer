@@ -22,6 +22,7 @@ internal sealed partial class RebalanceSystem : EcsSystem
     {
         if (!activity.DeclaredDead) return;
         actor.Add<Fenced>();
-        if (!actor.Has<UnloadRequested>() && !actor.Has<Unloading>()) actor.Add<UnloadRequested>();
+        // Also a copy past its OnUnload (its record waiting to be written or sent): UnloadSystem.Drop removes it.
+        if (!actor.Has<UnloadRequested>()) actor.Add<UnloadRequested>();
     }
 }

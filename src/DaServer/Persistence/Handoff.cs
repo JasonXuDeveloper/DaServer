@@ -196,24 +196,34 @@ internal static class Handoff
             if (op == Record || op == Resent)
             {
                 ulong id = IdOf(payload);
-                var seen = world.GetSingleton<HandoffsSeen>().ById;
-                if (seen.TryGetValue(id, out var before))
+                ref var seen = ref world.GetSingleton<HandoffsSeen>();
+                if (loaded && entity.TryGet<TakenHandoff>(out var taken) && taken.Id == id)
+                {
+                    Notify(node, from, Answer, handlerType.Id, header.Key, 1); // the copy running here came from it
+                    return true;
+                }
+
+                if (seen.ById.TryGetValue(id, out var before))
                 {
                     // This handoff was here before: taken (answered "accepted" again, wherever the actor went since), or
-                    // passed on (the resend follows it there, and that node answers).
+                    // passed on (the resend follows it there, and that node answers; gone, nobody runs it: refused).
                     if (before.PassedTo == 0) Notify(node, from, Answer, handlerType.Id, header.Key, 1);
-                    else SendRecord(node, before.PassedTo, Resent, handlerType.Id, header.Key, payload, hops: 1);
+                    else if (!SendRecord(node, before.PassedTo, Resent, handlerType.Id, header.Key, payload, hops: 1))
+                        Notify(node, from, Answer, handlerType.Id, header.Key, 0);
                     return true;
                 }
 
                 if (op == Resent)
                 {
-                    // Never here before: only a copy waiting for the key's record takes it; refused, its sender keeps the
-                    // state and the store decides (it was taken nowhere, as far as this node knows).
-                    bool waiting = loaded && entity.Has<AwaitingHandoff>();
-                    bool taken = waiting && Restore(world, handlerType, header.Key, payload, loaded, entity, from);
-                    if (taken) Seen(world, id, 0);
-                    Notify(node, from, Answer, handlerType.Id, header.Key, taken ? (byte)1 : (byte)0);
+                    // Never here before (as far as this shard remembers): a copy waiting for the key's record from its
+                    // sender takes it, and so does this shard for a key it owns and holds no copy of, as for a first send.
+                    // Refused, its sender keeps the state and the store decides; it is never passed on.
+                    bool takes = loaded
+                        ? entity.TryGet<AwaitingHandoff>(out var awaiting) && awaiting.From == from
+                        : header.Hops == 0 && world.GetSingleton<ShardActivity>().NowMs > seen.ForgotUntilMs && ShardDispatch.Owns(world, handlerType.Id, header.Key);
+                    bool again = takes && Restore(world, handlerType, header.Key, payload, loaded, entity, from);
+                    if (again) Seen(world, id, 0);
+                    Notify(node, from, Answer, handlerType.Id, header.Key, again ? (byte)1 : (byte)0);
                     return true;
                 }
 
@@ -299,6 +309,7 @@ internal static class Handoff
             return false;
         }
 
+        entity.Add<TakenHandoff>() = new TakenHandoff(IdOf(payload)); // read: the same record again is answered "accepted"
         if (store.Enabled)
         {
             long every = (long)actor.SaveEvery.TotalMilliseconds;
@@ -323,13 +334,17 @@ internal static class Handoff
     /// <summary>Remember a handoff taken here (<paramref name="passedTo"/> 0) or passed on, for the resends' window.</summary>
     private static void Seen(World world, ulong id, ulong passedTo)
     {
-        var seen = world.GetSingleton<HandoffsSeen>().ById;
+        ref var seen = ref world.GetSingleton<HandoffsSeen>();
         long now = world.GetSingleton<ShardActivity>().NowMs;
-        if (seen.Count >= HandoffsSeen.Max)
-            foreach (var (old, entry) in seen)
-                if (entry.UntilMs < now) seen.Remove(old); // removing while enumerating is allowed for a Dictionary
-        // Past the bound it is not remembered: a resend of it is refused, and its sender lets the store decide.
-        if (seen.Count < HandoffsSeen.Max) seen[id] = new SeenHandoff(passedTo, now + 2 * TimeoutMs(world.Shard.Node));
+        while (seen.Order.TryPeek(out var oldest) && (oldest.UntilMs < now || seen.Order.Count >= HandoffsSeen.Max))
+        {
+            seen.Order.Dequeue();
+            seen.ById.Remove(oldest.Id);
+            if (oldest.UntilMs >= now) seen.ForgotUntilMs = oldest.UntilMs; // forgotten early: "not seen" proves less until then
+        }
+
+        long until = now + 2 * TimeoutMs(world.Shard.Node);
+        if (seen.ById.TryAdd(id, new SeenHandoff(passedTo, until))) seen.Order.Enqueue((id, until));
     }
 
     private static void Defer(World world, uint handlerTypeId, long key, ulong by)
