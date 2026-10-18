@@ -17,6 +17,8 @@
     <ItemGroup>
         <!-- The route rules (A11) over the routes node projects list: the same file the runtime's RouteCheck uses. -->
         <Compile Include="..\DaServer\Runtime\RouteRules.cs" Link="RouteRules.cs" />
+        <!-- The admin token (A5) its dashboard commands send: the derivation the nodes check. -->
+        <Compile Include="..\DaServer.Hosting\AdminToken.cs" Link="AdminToken.cs" />
     </ItemGroup>
 
 </Project>

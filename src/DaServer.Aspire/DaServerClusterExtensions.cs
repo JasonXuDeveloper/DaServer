@@ -65,6 +65,7 @@ public sealed class DaServerCluster
     private int _nextClusterPort;
     private int _nextClientPort;
     private bool _kubernetes; // published to Kubernetes: seeds are the groups' headless Services
+    private readonly IResourceBuilder<DaServerClusterResource>? _resource; // run mode: the dashboard's parent of the nodes
 
     internal DaServerCluster(IDistributedApplicationBuilder builder, string name, int clusterPortBase, int clientPortBase)
     {
@@ -88,6 +89,10 @@ public sealed class DaServerCluster
         }
         if (builder.ExecutionContext.IsRunMode)
         {
+            // The dashboard shows the cluster as a resource of its own, its nodes under it (A5).
+            _resource = builder.AddResource(new DaServerClusterResource(name)).ExcludeFromManifest()
+                .WithInitialState(new CustomResourceSnapshot { ResourceType = "DaServer cluster", State = "Starting", Properties = [] });
+            builder.Services.AddHostedService(sp => new ClusterStatus(this, _resource.Resource, sp.GetRequiredService<ResourceNotificationService>()));
             builder.Services.AddHostedService(sp => new NodesStopFirst(this, sp.GetRequiredService<ResourceNotificationService>(), sp.GetRequiredService<ResourceCommandService>(),
                 sp.GetRequiredService<Microsoft.Extensions.Hosting.IHostApplicationLifetime>(),
                 sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<NodesStopFirst>>()));
@@ -184,8 +189,9 @@ public sealed class DaServerCluster
     }
 
     /// <summary>A node resource: the cluster's name and secret, the HTTP plane with its probes.</summary>
-    private IResourceBuilder<ProjectResource> Node<TProject>(string name) where TProject : IProjectMetadata, new() =>
-        _builder.AddProject<TProject>(name)
+    private IResourceBuilder<ProjectResource> Node<TProject>(string name) where TProject : IProjectMetadata, new()
+    {
+        var node = _builder.AddProject<TProject>(name)
             .WithEnvironment("DaServer__ClusterName", Name)
             .WithEnvironment("DaServer__SigningSecret", _secret)
             // The HTTP plane (ADR-046): health for WaitFor and the dashboard, probes for Kubernetes. Ready = joined and not
@@ -193,6 +199,10 @@ public sealed class DaServerCluster
             .WithHttpEndpoint(name: "http", env: "DaServer__HttpPort")
             .WithHttpProbe(ProbeType.Readiness, "/health", endpointName: "http")
             .WithHttpProbe(ProbeType.Liveness, "/alive", initialDelaySeconds: 10, endpointName: "http");
+        NodeCommands.Add(node, _secret);
+        if (_resource != null) node.WithParentRelationship(_resource);
+        return node;
+    }
 
     /// <summary>
     /// A group's Compose service: the grace period, a restart policy, a health check, and its replicas, which share the
