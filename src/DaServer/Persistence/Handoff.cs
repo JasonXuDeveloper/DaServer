@@ -24,7 +24,8 @@ internal static class Handoff
     private static readonly uint Request = TypeId<RequestOp>.Value; // [sender][0]: send me the record if you hold it
     private static readonly uint None = TypeId<NoneOp>.Value;       // [sender][0]: I do not hold it
     private static readonly uint Answer = TypeId<AnswerOp>.Value;   // [sender][1 accepted, 0 refused]
-    private const int RecordHeader = sizeof(ulong) + sizeof(long) + sizeof(ulong) + sizeof(ulong);
+    private const int RecordHeader = sizeof(ulong) + sizeof(long) + sizeof(ulong) + sizeof(ulong) + 1;
+    private const int CriticalAt = 2 * sizeof(ulong) + sizeof(long) + sizeof(ulong); // 1: a critical save was pending
 
     /// <summary>Where a leaving actor's record goes: the key's owner when that is another node and there is a record to move.</summary>
     public static ulong? TargetOf(World world, Actor actor)
@@ -115,6 +116,7 @@ internal static class Handoff
         BinaryPrimitives.WriteInt64LittleEndian(head[sizeof(ulong)..], stored.Version);
         BinaryPrimitives.WriteUInt64LittleEndian(head[(sizeof(ulong) + sizeof(long))..], stored.Hash);
         BinaryPrimitives.WriteUInt64LittleEndian(head[(2 * sizeof(ulong) + sizeof(long))..], (ulong)Random.Shared.NextInt64() | 1); // this handoff
+        head[CriticalAt] = entity.Has<CriticalPending>() ? (byte)1 : (byte)0; // its write failed: the new owner writes it at once
         record.Advance(RecordHeader);
         var moved = world.GetSingleton<ShardStore>().Moved;
         Records.WriteSections(entity, moved, record);
@@ -353,6 +355,7 @@ internal static class Handoff
         }
 
         entity.Add<TakenHandoff>() = new TakenHandoff(IdOf(payload)); // read: the same record again is answered "accepted"
+        if (store.Enabled && payload[CriticalAt] == 1) entity.Add<SaveNow>();
         if (store.Enabled)
         {
             long every = (long)actor.SaveEvery.TotalMilliseconds;

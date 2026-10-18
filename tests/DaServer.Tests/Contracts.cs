@@ -384,6 +384,12 @@ public sealed class Bank : Actor<BankId, Ledger>
 
     public override ErrorAction OnError(Exception error) => Key >= 2000 ? ErrorAction.Reload : ErrorAction.Resume;
 
+    /// <summary>Keys whose next OnLoad throws (once each).</summary>
+    public static readonly System.Collections.Concurrent.ConcurrentDictionary<long, bool> FailNextLoad = new();
+
+    public override Reply OnLoad() =>
+        FailNextLoad.TryRemove(Key, out _) ? throw new InvalidOperationException("OnLoad failed") : default;
+
     /// <summary>A critical change that fails half-way (synchronously or after an await): nothing of it may be written.</summary>
     [Handle]
     public async Reply<int> On(Overdraw m)

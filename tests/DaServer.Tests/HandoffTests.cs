@@ -29,8 +29,11 @@ public class HandoffTests(string kind) : ClusterTest
             return inner.ClaimAsync(keys, records, ct);
         }
 
+        public volatile bool Failing;
+
         public async ValueTask SaveAsync(ReadOnlyMemory<StoredWrite> writes, Memory<bool> accepted, CancellationToken ct = default)
         {
+            if (Failing) throw new InvalidOperationException("the store is down");
             WriteStarted.TrySetResult();
             if (HoldWrites != null) await HoldWrites.Task;
             Interlocked.Add(ref Writes, writes.Length);
@@ -106,6 +109,57 @@ public class HandoffTests(string kind) : ClusterTest
         Assert.That(b.StoppedClean, Is.True, "the waiting copy went at once");
         TurnGate.Current.TrySetResult();
         await Task.WhenAll(held);
+    }
+
+    [Test]
+    public async Task AMovedRecordWhoseOnLoadFailsIsWrittenNotLost()
+    {
+        // The new owner takes the record (its sender lets its copy go), then OnLoad throws: the record is the only copy
+        // of the moved state, so it is written, and the next mail loads it back from the store.
+        var store = new WatchedStore(_stores.Create());
+        var a = await StartWith(store, "a");
+        for (int key = 100; key < 140; key++) Assert.That(await a.Ask(new BankId(key), new Deposit(key, false)), Is.EqualTo(key));
+        for (int key = 100; key < 140; key++) Bank.FailNextLoad[key] = true; // only restores load from here on
+        var b = await StartWith(store, "b");
+        await Converged();
+        var keys = Enumerable.Range(100, 40).Where(k => b.OwnerOf<BankId>(k) == b.Id).ToArray();
+        Assert.That(keys, Is.Not.Empty);
+        foreach (int key in keys)
+        {
+            await Eventually(() => !Bank.FailNextLoad.ContainsKey(key), $"key {key} restored and its OnLoad ran");
+            int balance = 0;
+            await Eventually(() =>
+            {
+                try { balance = b.Ask(new BankId(key), new Balance()).AsTask().GetAwaiter().GetResult(); return true; }
+                catch (RpcException) { return false; } // the failed load's mail, or a retry while the write is in flight
+            }, $"key {key} serves again");
+            Assert.That(balance, Is.EqualTo(key), $"key {key}: the moved ledger survived the failed OnLoad");
+        }
+
+        foreach (int key in Enumerable.Range(100, 40)) Bank.FailNextLoad.TryRemove(key, out _);
+    }
+
+    [Test]
+    public async Task ACriticalChangeWhoseWriteFailedIsWrittenAtOnceByItsNewOwner()
+    {
+        // The store is down when a's actors make a critical change (SaveNow); their keys move to b meanwhile. The records
+        // go without waiting for the store and say the write was critical: b writes them as soon as the store is back,
+        // so a crash of b right after loses none of them.
+        var store = new WatchedStore(_stores.Create()) { Failing = true };
+        Faults.Allow("SaveFailed");
+        var a = await StartWith(store, "a");
+        for (int key = 150; key < 190; key++) Assert.That(await a.Ask(new BankId(key), new Deposit(key, Critical: true)), Is.EqualTo(key));
+        var b = await StartWith(store, "b");
+        await Converged();
+        var moved = Enumerable.Range(150, 40).Where(k => b.OwnerOf<BankId>(k) == b.Id).ToArray();
+        Assert.That(moved, Is.Not.Empty);
+        foreach (int key in moved) Assert.That(await b.Ask(new BankId(key), new Balance()), Is.EqualTo(key), "the record moved");
+        store.Failing = false;
+        await Eventually(() => store.Writes >= moved.Length, "b wrote the critical changes it took");
+        await b.KillAsync();
+        await Stop(a);
+        var c = await StartWith(store, "c");
+        foreach (int key in moved) Assert.That(await c.Ask(new BankId(key), new Balance()), Is.EqualTo(key), $"key {key} survived b's crash");
     }
 
     [Test]

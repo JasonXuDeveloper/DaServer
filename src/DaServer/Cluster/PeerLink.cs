@@ -273,12 +273,17 @@ internal sealed class PeerLink : IFrameSink, IDisposable
     /// </summary>
     private void Restart(bool? connecting)
     {
+        Connection? stale;
         lock (_gate)
         {
             DropStream(newId: true);
             if (connecting.HasValue) _connecting = connecting.Value;
+            // A handshake in progress said Hello with the old stream id: its Resume would continue that stream.
+            stale = _handshake;
+            if (stale != null) (_handshake, _connecting) = (null, false);
         }
 
+        stale?.Close();
         _node.Pending.FailOwnedBy(this, RpcStatus.Disconnected);
     }
 

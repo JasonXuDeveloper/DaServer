@@ -30,6 +30,15 @@ internal sealed partial class TurnSystem : EcsSystem
         actor.Remove<Turn, TurnEnded, Loading>();
         if (error == null) return;
         Log.ActorFailed(world.Logger, error, "Load", target);
+        if (actor.Has<TakenHandoff>() && actor.Has<Stored>())
+        {
+            // Restored from a handoff its sender let go: the record is the only copy of the moved state, so it is written
+            // before the copy goes, and the mail loads the actor again from the store.
+            actor.Add<Unloading>();
+            actor.Add<FinalSave>();
+            return;
+        }
+
         actor.Add<Removing>() = new Removing(RpcStatus.Error, "Load failed: " + error.Message);
     }
 
