@@ -393,7 +393,7 @@ EasyEcs comes from NuGet (`EasyEcsVersion` in `Directory.Build.props`).
 - [doc/decisions.md](doc/decisions.md): architecture decision records.
 - [doc/roadmap.md](doc/roadmap.md): status and next steps.
 - [doc/operations.md](doc/operations.md): running, watching and changing a cluster (Aspire CLI, dashboard commands,
-  admin endpoints, MCP).
+  admin endpoints, MCP), the Grafana dashboard and alert rules in [observability/](observability).
 
 ## License
 

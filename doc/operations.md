@@ -74,6 +74,23 @@ without a restart of the cluster and without losing a ticket, in three rolling d
 Each step accepts what the previous one signs, so old and new nodes link and resume each other's clients throughout;
 finish a step on every node before starting the next.
 
+## Production views
+
+The Aspire dashboard of a deployment is for diagnosis; the durable views are the platform's monitoring. Every node
+serves Prometheus metrics at `/metrics` on its HTTP port, and exports metrics, logs and traces over OTLP when
+`OTEL_EXPORTER_OTLP_ENDPOINT` is set. The repository ships two starting points, checked against a running node:
+
+- `observability/grafana-dashboard.json`: a Grafana dashboard (import it, pick the Prometheus data source): members
+  each node sees, shard busy ratio, loaded actors, client sessions, queued, dropped (by reason) and failed messages,
+  late ticks and stalled shards, GC pauses and allocation, CPU and working set.
+- `observability/prometheus-rules.yaml`: alert rules (`promtool check rules` passes): a stalled shard, views that
+  disagree, dropped messages, failing handlers, saturated shards, late ticks, GC pauses. Load it with `rule_files:`,
+  or wrap the group in a `PrometheusRule` for the Prometheus Operator.
+
+The cluster as one node sees it is `aspire resource <node> membership` (or `/admin/membership`); orchestration state is
+the platform's own (kubectl, k9s, Helm, the cloud console). Graceful stop phases go out over OTLP (the histogram
+`daserver.stop.phase.duration`): a scrape rarely catches a node that is stopping.
+
 ## AI agents
 
 `aspire agent init` configures the agents it detects to use `aspire agent mcp`, the Aspire MCP server: it lists resources, reads their logs and traces, and executes resource commands, the node commands above

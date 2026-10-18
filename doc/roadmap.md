@@ -331,10 +331,11 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
   platform's DNS for each group instead (Compose service names, a headless `{group}-peers` Service listing every pod),
   as in Akka.NET's DNS discovery; Orleans keeps membership in a store instead (`WithClustering`), which DaServer's
   gossip does not need.
-- [ ] A14 Production views: the published dashboard (on by default in Kubernetes/Compose environments) is kept for
-      diagnosis behind its login; durable views ship with the framework: DaServer metrics (members, shards, mailbox
-      backlog, call latency, drain phases) with a Grafana dashboard JSON and alert rules, the cluster view from the
-      admin `Membership` endpoint, orchestration state from Kubernetes itself (kubectl/k9s/Helm/cloud console).
+- [x] A14 Production views (`doc/operations.md`): a Grafana dashboard (`observability/grafana-dashboard.json`,
+      imported into Grafana 12 and every query answered by Prometheus 3.5 scraping a node) and alert rules
+      (`observability/prometheus-rules.yaml`, `promtool check rules`: 7 rules, all evaluating) over the metrics the
+      nodes export; the cluster view from the admin `membership` command; orchestration state from the platform. Call
+      latency has no metric: a histogram per call costs every call, and traces (A6) carry it where it is needed.
 - Notes: the Aspire dashboard in deployments is diagnostic only (production observability is OTLP); Azure Container
   Apps exposes ingress, not per-replica addresses, so it is a later target than Kubernetes.
 
