@@ -88,6 +88,9 @@ public static class DaServerHostingExtensions
         Environment.Exit(0);
     }
 
+    private static bool IsProbe(Microsoft.AspNetCore.Http.PathString path) =>
+        path.StartsWithSegments("/health") || path.StartsWithSegments("/alive") || path.StartsWithSegments("/metrics");
+
     /// <summary>
     /// Run a feature (<see cref="NodeFeature"/>) when its section <c>{section}:{name}</c> is configured: its options bind
     /// from it (<c>DaServer__Clients__Port=7100</c> enables client connections). Built-in features are added by
@@ -120,7 +123,9 @@ public static class DaServerHostingExtensions
             logging.IncludeFormattedMessage = true;
             logging.IncludeScopes = true;
         });
-        telemetry.WithTracing(static tracing => tracing.AddSource(Tracing.SourceName).AddAspNetCoreInstrumentation().AddHttpClientInstrumentation());
+        telemetry.WithTracing(static tracing => tracing.AddSource(Tracing.SourceName)
+            .AddAspNetCoreInstrumentation(static http => http.Filter = static context => !IsProbe(context.Request.Path)) // probes every few seconds
+            .AddHttpClientInstrumentation());
         telemetry.UseOtlpExporter();
     }
 }
