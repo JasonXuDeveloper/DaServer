@@ -24,9 +24,10 @@ public interface IIngressFilter
 }
 
 /// <summary>
-/// Allows <c>rate</c> operations a second on average and bursts of up to <c>burst</c>, without allocating (a
-/// <c>System.Threading.RateLimiting</c> limiter allocates a lease per call). Not thread-safe: one owner (a connection's
-/// receive loop, a lock the caller holds).
+/// Allows <c>rate</c> operations a second on average and bursts of up to <c>burst</c>, in a struct one session owns.
+/// <c>System.Threading.RateLimiting.TokenBucketRateLimiter</c> is an object per session with its own replenishment timer,
+/// takes a lock on every acquire and allocates a lease for every refusal (its RetryAfter); a flood of refused messages is
+/// what this limits. Not thread-safe: one owner (a connection's receive loop, a lock the caller holds).
 /// </summary>
 public struct TokenBucket(double rate, double burst)
 {

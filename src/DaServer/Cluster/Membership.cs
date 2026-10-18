@@ -1,11 +1,13 @@
 namespace DaServer.Cluster;
 
 /// <summary>
-/// Gossip-based membership with heartbeat-staleness failure detection (no clock synchronisation needed):
+/// Gossip-style membership with heartbeat failure detection (van Renesse et al. 1998; ADR-031, ADR-064), no clock
+/// synchronisation needed:
 /// every <see cref="NodeOptions.GossipInterval"/> a node bumps its heartbeat and exchanges its member table with up to
 /// three random peers (push-pull) as fixed-size <see cref="MemberPulse"/>s; full cards travel only to nodes that ask for
 /// them, so a steady-state round allocates nothing. A member whose heartbeat has not advanced for SuspectAfter becomes Suspect, after
-/// DeadAfter Dead; a node that learns it is suspected refutes by bumping its incarnation.
+/// DeadAfter Dead; a node that learns it is suspected refutes by bumping its incarnation (as in SWIM, without its
+/// ping/ping-req probing).
 /// </summary>
 internal sealed partial class Membership
 {

@@ -8,9 +8,10 @@ public interface ITimerHandler<T>
 
 /// <summary>
 /// Timers as data: items due after a delay, fired by whoever owns the wheel when it advances (a shard's loop, a node's
-/// maintenance tick). A hashed wheel: <c>slots</c> lists of <c>tick</c> each, an item in the slot of its due tick (later
-/// rounds stay there until their turn), so scheduling, cancelling and firing are O(1) and allocate nothing once the
-/// entry table reached its peak. Not thread-safe: one owner thread (or the owner's lock).
+/// maintenance tick). A hashed timing wheel (Varghese &amp; Lauck 1987, ADR-058): <c>slots</c> lists of <c>tick</c>
+/// each, an item in the slot of its due tick (later rounds stay there until their turn), so scheduling, cancelling and
+/// firing are O(1) and allocate nothing once the entry table reached its peak. Not thread-safe: one owner thread (or
+/// the owner's lock).
 /// </summary>
 public sealed class TimerWheel<T>
 {
