@@ -322,6 +322,29 @@ public class ResumeTests : ClusterTest
     }
 
     [Test]
+    public async Task AResumedSessionTakesTheActorsGroupFromThePreviousOne()
+    {
+        // The client moves while its old session is still open (a move, before its goodbye): once the room accepted the
+        // new session, the room's broadcasts reach the new session only, not both (duplicates during every move).
+        var gateways = await StartCluster(TimeSpan.FromSeconds(5));
+        var client = await LogIn(gateways, 590);
+        Assert.That(await client.Ask(new Enter(new RoomId(73))), Is.True);
+        await Eventually(() => client.Ticket is { Length: > 0 } t && t.Length > ResumeTicket.SizeOf(1), "no ticket with the room");
+        var old = new GatewayTests.Inbox();
+        client.Register(old);
+
+        var (status, resumed) = await ResumeWith(gateways, client.Ticket!);
+        Assert.That(status, Is.EqualTo(RpcStatus.Ok));
+        var current = new GatewayTests.Inbox();
+        resumed.Register(current);
+        resumed.Send(new RoomId(73), new Say("once"));
+        await Eventually(() => current.Chat.Count == 1, "the new session got the broadcast");
+        await Task.Delay(300);
+        Assert.That(old.Chat, Is.Empty, "the previous session left the room's group when the room took the new one");
+        Assert.That(current.Chat, Has.Count.EqualTo(1));
+    }
+
+    [Test]
     public async Task ATicketResumesOnce()
     {
         var gateways = await StartCluster(TimeSpan.FromSeconds(5));

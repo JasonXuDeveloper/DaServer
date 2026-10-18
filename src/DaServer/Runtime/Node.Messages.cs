@@ -156,6 +156,16 @@ sealed partial class Node
     /// asked of the session, so it completes once the session's node applied it and the client's next message already
     /// reaches the actor.
     /// </summary>
+    /// <summary>
+    /// An actor took a resumed session in place of <paramref name="previous"/>: the previous session leaves the actor's
+    /// group on its node. Sent from the actor's node, it reaches that node before anything the actor sends there
+    /// afterwards (links are ordered), so the actor's broadcasts reach the client once. Its grant stays until the client
+    /// leaves that session: calls the client made on it before moving still get their replies (ADR-026).
+    /// </summary>
+    internal void Supersede(ClientSession previous, uint handlerTypeId, long key) =>
+        SendToNode(MessageWriter.Write(new LeaveGroup(ClientGroup.Of(handlerTypeId, key))), AddressScopes.Session,
+            TypeId<LeaveGroup>.Value, previous.Node, previous.Id);
+
     internal ValueTask ChangeAccess(ClientSession session, SessionAccess access)
     {
         var call = PendingCall<NoReply>.Rent(Shard.Current);

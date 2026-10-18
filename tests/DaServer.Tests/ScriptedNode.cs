@@ -204,6 +204,16 @@ internal sealed class ScriptedChannel : IFrameChannel
         w.Dispose();
     }
 
+    /// <summary>The node pushes <paramref name="message"/> to the client on this connection.</summary>
+    public void Push<T>(in T message) where T : struct
+    {
+        var w = FrameWriter.Rent();
+        w.Write(in message);
+        w.SetHeader(FrameKind.Message, 0, TypeId<T>.Value, 0);
+        Push(w.Frame.ToArray());
+        w.Dispose();
+    }
+
     /// <summary>The node gives the session a resume ticket (without one a client cannot move).</summary>
     public void GiveTicket()
     {

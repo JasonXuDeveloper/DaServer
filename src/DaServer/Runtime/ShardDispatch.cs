@@ -292,6 +292,7 @@ internal static class ShardDispatch
         var frame = envelope.Frame;
         var resumed = NinoDeserializer.Deserialize<SessionResumed>(frame.Payload);
         bool accepted = ActorSessions.Resume(actor, in resumed);
+        if (accepted) actor.Shard.Node.Supersede(resumed.Previous, actor.HandlerType.Id, actor.Key);
         if (frame.CallId != 0 && envelope.Sink is { } sink)
         {
             if (accepted) sink.SendOk(frame.CallId);
