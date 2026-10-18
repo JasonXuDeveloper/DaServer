@@ -52,6 +52,7 @@ internal static class AppHostRun
         Phase("resources started");
         await EveryResourceHealthy(app, builder.Resources.Where(r => (r is ProjectResource && r.Name != load) || r is IResourceWithConnectionString),
             TimeSpan.FromMinutes(3), watchdog);
+        await ClusterJoined(app, builder.Resources, watchdog);
         Phase("cluster healthy");
 
         try
@@ -124,16 +125,36 @@ internal static class AppHostRun
     }
 
     /// <summary>
-    /// Stop <paramref name="node"/> gracefully (what a scale-in does: leave, hand its actors over, exit) and wait until it
-    /// stopped; then start it again (a scale-out: it joins and takes its share) and wait until it is healthy.
+    /// The dashboard's view of the cluster (A5, A9): the cluster resource says every node joined, and a node's Membership
+    /// command lists them all.
+    /// </summary>
+    private static async Task ClusterJoined(DistributedApplication app, IEnumerable<IResource> resources, Watchdog watchdog)
+    {
+        var notifications = app.Services.GetRequiredService<ResourceNotificationService>();
+        var nodes = resources.OfType<ProjectResource>().Where(static r => r.Annotations.OfType<ResourceCommandAnnotation>().Any(static c => c.Name == "membership")).ToList();
+        var clusters = resources.Where(static r => r.GetType().Name == "DaServerClusterResource").ToList();
+        Assert.That(clusters, Is.Not.Empty, "the AppHost declares its cluster with AddDaServerCluster");
+        foreach (var cluster in clusters)
+            await notifications.WaitForResourceAsync(cluster.Name, e => e.Snapshot.State?.Text == $"{nodes.Count}/{nodes.Count} joined", watchdog.Token)
+                .WaitAsync(TimeSpan.FromMinutes(1), watchdog.Token);
+        var membership = await app.Services.GetRequiredService<ResourceCommandService>().ExecuteCommandAsync(nodes[0].Name, "membership", watchdog.Token);
+        Assert.That(membership.Success, Is.True, membership.Message);
+        foreach (var node in nodes)
+            Assert.That(membership.Data?.Value, Does.Contain($"\"name\":\"{node.Name}\""), "every node is a member");
+    }
+
+    /// <summary>
+    /// Drain <paramref name="node"/> (its dashboard command: what a scale-in does, it leaves, hands its actors over and
+    /// exits) and wait until it stopped; then start it again (a scale-out: it joins and takes its share) and wait until
+    /// it is healthy.
     /// </summary>
     public static async Task Restart(DistributedApplication app, string node, TimeSpan downFor, CancellationToken cancellationToken)
     {
         var commands = app.Services.GetRequiredService<ResourceCommandService>();
         var notifications = app.Services.GetRequiredService<ResourceNotificationService>();
         using var expected = Watchdog.Of(app)?.Expect(node); // its exit is the point, not a failure
-        var stop = await commands.ExecuteCommandAsync(node, KnownResourceCommands.StopCommand, cancellationToken);
-        Assert.That(stop.Success, Is.True, $"stopping {node}: {stop.Message}");
+        var drain = await commands.ExecuteCommandAsync(node, "drain", cancellationToken);
+        Assert.That(drain.Success, Is.True, $"draining {node}: {drain.Message}");
         await notifications.WaitForResourceAsync(node, e => e.Snapshot.State?.Text is "Exited" or "Finished", cancellationToken);
         TestContext.Progress.WriteLine($"[e2e] {node} left the cluster");
         await Task.Delay(downFor, cancellationToken);
