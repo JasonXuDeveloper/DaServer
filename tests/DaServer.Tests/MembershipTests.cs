@@ -208,6 +208,34 @@ public class LinkAuthTests : ClusterTest
     }
 
     [Test]
+    public void ASecretRotatesInThreeStepsEachAcceptingTheNext()
+    {
+        // SigningSecret, AcceptedSigningSecret per step: old; old+new; new+old; new. Nodes one step apart link both ways.
+        LinkAuth old = new("c", "one"), first = new("c", "one", "two"), second = new("c", "two", "one"), done = new("c", "two");
+        static bool Links(LinkAuth a, LinkAuth b)
+        {
+            var challenge = LinkAuth.NewChallenge();
+            return b.Verify(7, 1, "h", 1, challenge, a.Prove(7, 1, "h", 1, challenge)) == null &&
+                   a.Verify(8, 1, "h", 1, challenge, b.Prove(8, 1, "h", 1, challenge)) == null;
+        }
+
+        Assert.That((Links(old, first), Links(first, second), Links(second, done)), Is.EqualTo((true, true, true)), "a step apart");
+        Assert.That(Links(old, second), Is.False, "two steps apart: every node takes the first step before any takes the second");
+        Assert.That(Links(old, done), Is.False);
+    }
+
+    [Test]
+    public async Task NodesOneRotationStepApartFormOneCluster()
+    {
+        // A rotation's first step on a and c, its second on b: every pair links, in both directions.
+        static Action<NodeOptions> Step(string sign, string accept) => o => (o.SigningSecret, o.AcceptedSigningSecret) = (sign, accept);
+        await Start("a", configure: Step("one", "two"));
+        await Start("b", configure: Step("two", "one"));
+        await Start("c", configure: Step("one", "two"));
+        await Converged();
+    }
+
+    [Test]
     public void AHelloProvesItsChallengeEndpointStreamAndCluster()
     {
         // The proof answers one connection's challenge: a recorded Hello is good on no other connection, at no other

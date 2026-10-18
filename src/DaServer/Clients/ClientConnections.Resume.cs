@@ -69,7 +69,7 @@ public sealed partial class ClientConnections
     private void ResumeSession(SessionState session, uint callId, ReadOnlySpan<byte> ticket)
     {
         if (_ticketSecret == null || session.Grants.Length != 0 ||
-            !ResumeTicket.TryRead(ticket, _ticketSecret, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), out var previous, out var granted) ||
+            !ResumeTicket.TryRead(ticket, _ticketSecret, _acceptedTicketSecret, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), out var previous, out var granted) ||
             Interlocked.Exchange(ref session.Resuming, 1) != 0)
         {
             session.Sink.SendError(callId, RpcStatus.Forbidden);

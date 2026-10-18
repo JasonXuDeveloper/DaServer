@@ -104,6 +104,14 @@ public sealed class NodeOptions
     public string? SigningSecret { get; set; }
 
     /// <summary>
+    /// Another secret whose signatures are accepted too (configuration <c>DaServer__AcceptedSigningSecret</c>): what
+    /// rotates <see cref="SigningSecret"/> without a restart of the cluster or a lost ticket. Roll every node to
+    /// <c>SigningSecret = old, AcceptedSigningSecret = new</c>, then to <c>new, old</c>, then drop the old one: at every
+    /// step each node accepts what every other node signs (links, resume tickets, admin tokens). Null: none.
+    /// </summary>
+    public string? AcceptedSigningSecret { get; set; }
+
+    /// <summary>
     /// The cluster's name: nodes of another cluster that reach this one's port are refused (two environments sharing
     /// a network, a test cluster pointed at production seeds). Aspire sets the cluster resource's name.
     /// </summary>
@@ -172,6 +180,7 @@ public sealed class NodeOptions
 
         Check(!string.IsNullOrWhiteSpace(Name), "Name is empty");
         Check(!string.IsNullOrWhiteSpace(ClusterName), "ClusterName is empty");
+        Check(AcceptedSigningSecret is not { Length: > 0 } || SigningSecret is { Length: > 0 }, "AcceptedSigningSecret is set without a SigningSecret");
         Check(ClusterPort is >= 0 and <= 65535, $"ClusterPort {ClusterPort} is not a port");
         Check(TickRate > 0, $"TickRate {TickRate} must be positive");
         Check(DispatchQueueCapacity > 0, $"DispatchQueueCapacity {DispatchQueueCapacity} must be positive");

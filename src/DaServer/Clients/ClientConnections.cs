@@ -26,6 +26,7 @@ public sealed partial class ClientConnections(ClientConnectionOptions options) :
     private Listener? _listener;
     private SessionHandler? _sessionHandler;
     private byte[]? _ticketSecret; // resume tickets: null when the cluster has no secret
+    private byte[]? _acceptedTicketSecret; // tickets signed with it are good too (a rotation in progress)
 
     /// <summary>The port clients connect to (after the node started).</summary>
     public int Port { get; private set; }
@@ -46,6 +47,7 @@ public sealed partial class ClientConnections(ClientConnectionOptions options) :
         context.HandleAddress<Origin>(addresses); // the origin of a client's message is its session
         context.HandleAddress<ClientGroup>(addresses);
         if (_node.Options.SigningSecret is { Length: > 0 } secret) _ticketSecret = System.Text.Encoding.UTF8.GetBytes(secret);
+        if (_node.Options.AcceptedSigningSecret is { Length: > 0 } accepted) _acceptedTicketSecret = System.Text.Encoding.UTF8.GetBytes(accepted);
         var sessionOptions = ConnectionOptions.ForSessions().FlushedEvery(options.FlushInterval);
         sessionOptions.MaxFrameSize = options.MaxFrameSize; // what an untrusted client may make us buffer
         _flusher = sessionOptions.Flusher;

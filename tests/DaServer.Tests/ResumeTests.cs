@@ -464,16 +464,18 @@ public class ResumeTests : ClusterTest
         var ticket = new byte[ResumeTicket.SizeOf(grants.Length)];
         ResumeTicket.Write(ticket, secret, session, grants, nowMs: 1000, lifetimeMs: 500);
 
-        Assert.That(ResumeTicket.TryRead(ticket, secret, 1200, out var read, out var readGrants), Is.True);
+        Assert.That(ResumeTicket.TryRead(ticket, secret, null, 1200, out var read, out var readGrants), Is.True);
         Assert.That(read, Is.EqualTo(session));
         Assert.That(ResumeTicket.GrantCount(readGrants), Is.EqualTo(2));
         Assert.That(ResumeTicket.GrantAt(readGrants, 0), Is.EqualTo(grants[0]));
         Assert.That(ResumeTicket.GrantAt(readGrants, 1), Is.EqualTo(grants[1]));
 
-        Assert.That(ResumeTicket.TryRead(ticket, secret, 1500, out _, out _), Is.False, "expired");
-        Assert.That(ResumeTicket.TryRead(ticket, Encoding.UTF8.GetBytes("other"), 1200, out _, out _), Is.False, "another cluster");
+        Assert.That(ResumeTicket.TryRead(ticket, secret, null, 1500, out _, out _), Is.False, "expired");
+        Assert.That(ResumeTicket.TryRead(ticket, Encoding.UTF8.GetBytes("other"), null, 1200, out _, out _), Is.False, "another cluster");
+        Assert.That(ResumeTicket.TryRead(ticket, Encoding.UTF8.GetBytes("next"), secret, 1200, out _, out _), Is.True,
+            "signed with the secret a rotation still accepts");
         ticket[30] ^= 1; // another session
-        Assert.That(ResumeTicket.TryRead(ticket, secret, 1200, out _, out _), Is.False, "tampered");
-        Assert.That(ResumeTicket.TryRead(ticket.AsSpan(0, 20), secret, 1200, out _, out _), Is.False, "truncated");
+        Assert.That(ResumeTicket.TryRead(ticket, secret, null, 1200, out _, out _), Is.False, "tampered");
+        Assert.That(ResumeTicket.TryRead(ticket.AsSpan(0, 20), secret, null, 1200, out _, out _), Is.False, "truncated");
     }
 }

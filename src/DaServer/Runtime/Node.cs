@@ -36,7 +36,7 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
         _sessionNodes = new SessionNodes(this);
         _slots = new SlotAllocation(this);
         _localSink = new LocalReplySink(this);
-        _linkAuth = new LinkAuth(options.ClusterName, options.SigningSecret);
+        _linkAuth = new LinkAuth(options.ClusterName, options.SigningSecret, options.AcceptedSigningSecret);
     }
 
     public NodeOptions Options { get; }
