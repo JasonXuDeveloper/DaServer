@@ -257,9 +257,10 @@ OOM kills, crashes and power loss give no signal at all, so no shutdown code can
 - [x] D3 Client-facing nodes drain: the listener closes, clients are retired in waves over
       `ClientConnectionOptions.DrainSpread` (3 s) and move to other nodes, make before break (ADR-026; readiness turned
       the balancer away first); the stop waits up to `RetireGrace` for them. `ClientsOfALeavingGatewayMoveAndResumeOnAnother`.
-- [ ] D4 Tests: done: a stop that exceeds its budget reports the unsaved actors and returns
-      (`AStopThatExceedsItsBudgetReportsAndReturns`); a leaving gateway's clients keep their sessions. Open: a
-      stop under load loses no acknowledged write; Kill loses at most what the persistence policy allows.
+- [x] D4 Tests: a stop that exceeds its budget reports the unsaved actors and returns
+      (`AStopThatExceedsItsBudgetReportsAndReturns`); a leaving gateway's clients keep their sessions; a stop under load
+      loses no acknowledged deposit (`AStopUnderLoadLosesNoAcknowledgedDeposit`, 32 callers through the node that stays);
+      a kill loses at most the last checkpoint interval (`AKillLosesAtMostTheLastCheckpointInterval`); both stores.
 - [x] D5 Persistence that survives a crash (ADR-068): on unload always, a checkpoint every `Actor.SaveEvery` when the
       record changed, `SaveNow` for critical changes; versioned saves reject a stale owner's late write.
 - [x] D6 Store flush and backpressure: one save batch (at most 512 records) in flight per shard; the stop's unload phase
