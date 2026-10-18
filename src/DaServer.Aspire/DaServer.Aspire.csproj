@@ -14,4 +14,9 @@
         <PackageReference Include="MessagePack" Version="2.5.307" />
     </ItemGroup>
 
+    <ItemGroup>
+        <!-- The route rules (A11) over the routes node projects list: the same file the runtime's RouteCheck uses. -->
+        <Compile Include="..\DaServer\Runtime\RouteRules.cs" Link="RouteRules.cs" />
+    </ItemGroup>
+
 </Project>

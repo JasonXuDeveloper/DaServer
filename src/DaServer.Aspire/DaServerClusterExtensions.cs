@@ -76,6 +76,7 @@ public sealed class DaServerCluster
             secret: true, persist: true);
         _nextClusterPort = _clusterPortBase = clusterPortBase;
         _nextClientPort = _clientPortBase = clientPortBase;
+        if (builder.ExecutionContext.IsPublishMode) RouteCheckStep.Add(builder, this);
         if (builder.ExecutionContext.IsRunMode)
         {
             builder.Services.AddHostedService(sp => new NodesStopFirst(this, sp.GetRequiredService<ResourceNotificationService>(), sp.GetRequiredService<ResourceCommandService>(),

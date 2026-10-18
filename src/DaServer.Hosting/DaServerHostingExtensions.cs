@@ -29,6 +29,7 @@ public static class DaServerHostingExtensions
     /// </summary>
     public static IHostApplicationBuilder AddDaServer(this IHostApplicationBuilder builder, string section = "DaServer")
     {
+        if (builder.Configuration[$"{section}:ListRoutes"] is { Length: > 0 } routes) ListRoutesAndExit(routes);
         // Defaults below every other source (appsettings, environment, command line override them): ASP.NET Core's
         // per-request information logs would drown a node's own logs under health probes. Hosting diagnostics off: any
         // level enabled there makes ASP.NET Core start an Activity per request (and fill its tags) whether or not
@@ -64,6 +65,16 @@ public static class DaServerHostingExtensions
                 sp.GetRequiredService<ILogger<NodeStatsLogger>>(), statsInterval));
         builder.AddDaServerTelemetry();
         return builder;
+    }
+
+    /// <summary>
+    /// Check mode (<c>{section}:ListRoutes</c> = a file, set by the AppHost's route check before it publishes, A11): write
+    /// the routes of this node project (the entry assembly: what its nodes host) to the file and exit, before anything starts.
+    /// </summary>
+    private static void ListRoutesAndExit(string file)
+    {
+        File.WriteAllLines(file, Routes.Of(System.Reflection.Assembly.GetEntryAssembly()!));
+        Environment.Exit(0);
     }
 
     /// <summary>
