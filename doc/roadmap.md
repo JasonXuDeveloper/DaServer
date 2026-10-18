@@ -367,7 +367,9 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
       runs that ran the new tree second showed local calls 10-15% slower; run order on this VM, not the change.
 - K1 placement strategies (agreed: Akka sharding style, ADR-074): no per-actor directory and no "prefer the caller's
   node" (`IPlaced` co-locates what talks); load-aware and sticky placement move whole slots and are S3.
-- [ ] K3 Load-aware service choice (power of two over the pulse load).
+- [x] K3 Load-aware service choice: a caller not hosting the service sends to the less loaded of two hosting nodes
+      (power of two choices over the queue length each member gossips), the first of the two in turn, so equal loads
+      stay evenly spread and a node with a backlog gets nothing while another is idler (`ServiceCallsGoToTheLessLoadedOfTwoNodes`).
 - [x] K4 `CallOptions` (agreed: a struct overload): every generated `Ask` has an overload taking `in CallOptions`, whose
       `Timeout` bounds that call (zero: the sender's `CallTimeout`), on nodes and clients; the deadline travels as before
       (ADR-028). Handlers read what their caller still waits as `TimeLeft`, an actor for its whole turn, a service until

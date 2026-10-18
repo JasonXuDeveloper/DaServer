@@ -44,7 +44,7 @@ Everything a developer declares is one of these (ADR-035). The message type alon
 | Call (`ICluster`, `ClusterClient`) | Target |
 |---|---|
 | `Ask(id, m)` / `Send(id, m)` | the actor `id` (`MapId`, `PlayerId`, ...: the id type names the actor type; rendezvous placement) |
-| `Ask(m)` / `Send(m)` | the one service handling `M` (load-balanced, local first); from a client: also the actor bound to the session |
+| `Ask(m)` / `Send(m)` | the one service handling `M` (local first, else the less loaded of two hosting nodes); from a client: also the actor bound to the session |
 | `Publish(e)` | every service type handling `E`, once each |
 | `Send(session, m)` / `Send(group, m)` | one client session / a client group (`[ToClient]` messages; servers only) |
 
