@@ -13,6 +13,33 @@ public class GatewayTests : ClusterTest
         [Handle] public void On(GoldChanged m) => Gold = m.Gold;
     }
 
+    internal sealed class Throwing
+    {
+        [Handle] public void On(GoldChanged m) => throw new InvalidOperationException("the game's bug");
+    }
+
+    [Test]
+    public async Task AHandlerThatThrowsOnAPushIsReportedAndTheConnectionStays()
+    {
+        var gateway = await Start("gw", gateway: true);
+        await Start("game");
+        await Converged();
+        var client = await Connect(gateway);
+        client.Register(new Throwing());
+        var inbox = new Inbox();
+        client.Register(inbox);
+        var failures = new ConcurrentQueue<Exception>();
+        client.HandlerFailed += failures.Enqueue;
+        bool disconnected = false;
+        client.Disconnected += _ => disconnected = true;
+
+        Assert.That(await client.Ask(new Login(new PlayerId(43))), Is.True);
+        Assert.That(await client.Ask(new AddGold(7)), Is.EqualTo(7));
+        await Eventually(() => inbox.Gold == 7 && failures.Count == 1, "the next handler got the push and the failure was reported");
+        Assert.That(await client.Ask(new AddGold(1)), Is.EqualTo(8), "the connection stays");
+        Assert.That(disconnected, Is.False);
+    }
+
     [Test]
     public async Task SessionActorCallsReachTheKeyBoundToTheSession()
     {

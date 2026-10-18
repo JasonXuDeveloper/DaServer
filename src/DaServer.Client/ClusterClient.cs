@@ -99,6 +99,12 @@ public sealed partial class ClusterClient : IMessageSender, IChannelHandler, IAs
     public event Action<Exception?>? Disconnected;
 
     /// <summary>
+    /// A registered handler threw on a pushed message (or its returned task failed): the other handlers still receive it
+    /// and the connection stays, as a failed handler on a node fails only its own turn.
+    /// </summary>
+    public event Action<Exception>? HandlerFailed;
+
+    /// <summary>
     /// The session resumed on a new connection: messages reach the same actors again, and they resend the full state
     /// (pushes sent while disconnected were lost). Grants and bindings are restored (with the groups of those actors);
     /// other groups are rejoined by the actors on <c>SessionResumed</c>.
@@ -129,7 +135,7 @@ public sealed partial class ClusterClient : IMessageSender, IChannelHandler, IAs
     public async ValueTask ConnectAsync(Uri webSocket, CancellationToken cancellationToken = default)
     {
         _webSocket = webSocket;
-        Use(await OpenAsync(watched: true, cancellationToken).ConfigureAwait(false));
+        await ConnectFirstAsync(cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>Connect through the first reachable of <paramref name="endpoints"/> (tried in turn, starting at a random one).</summary>
@@ -137,7 +143,20 @@ public sealed partial class ClusterClient : IMessageSender, IChannelHandler, IAs
     {
         if (endpoints.Count == 0) throw new ArgumentException("No endpoint", nameof(endpoints));
         (_endpoints, _webSocket) = ([.. endpoints], null);
-        Use(await OpenAsync(watched: true, cancellationToken).ConfigureAwait(false));
+        await ConnectFirstAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask ConnectFirstAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            Use(await OpenAsync(watched: true, cancellationToken).ConfigureAwait(false));
+        }
+        catch
+        {
+            if (Volatile.Read(ref _introduced) == null) Live.TryRemove(this, out _); // never connected: the sweeper lets go of it
+            throw;
+        }
     }
 
     /// <summary>
@@ -433,8 +452,40 @@ public sealed partial class ClusterClient : IMessageSender, IChannelHandler, IAs
         {
             if (registered[i].Handlers.Of(header.MessageId) is not { } handler) continue;
             var context = default(CallContext);
-            var task = handler.Dispatcher(registered[i].Target, FrameHeader.PayloadOf(in header, frame), in context);
-            if (task.IsCompleted) task.GetAwaiter().GetResult();
+            try
+            {
+                var task = handler.Dispatcher(registered[i].Target, FrameHeader.PayloadOf(in header, frame), in context);
+                if (task.IsCompleted) task.GetAwaiter().GetResult();
+                else _ = Observe(task, this);
+            }
+            catch (Exception e)
+            {
+                Failed(e); // the next handler and the connection go on
+            }
+        }
+    }
+
+    private static async Task Observe(ValueTask task, ClusterClient client)
+    {
+        try
+        {
+            await task.ConfigureAwait(false);
+        }
+        catch (Exception e)
+        {
+            client.Failed(e);
+        }
+    }
+
+    private void Failed(Exception error)
+    {
+        try
+        {
+            HandlerFailed?.Invoke(error);
+        }
+        catch (Exception)
+        {
+            // A failing subscriber must not take the connection down either.
         }
     }
 
