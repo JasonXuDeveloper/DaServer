@@ -109,7 +109,12 @@ Steady state allocates nothing: per message, call, reply, tick, broadcast, conne
       listener), L6 foreign awaits (a closure per await in a foreign UI-style context). H1 comes with N3b, H4 with N8,
       M2/M3/L2 with G step 6, M5/L3 with G step 8.
 - [ ] Z3 Prove it: an allocation test per hot path the audit finds uncovered (0 B per operation after warm-up); the
-      BenchmarkDotNet A/B against the baseline is done (G step 12). Scenario benchmarks to add: a hot
+      BenchmarkDotNet A/B against the baseline is done (G step 12). Done: calls from outside the cluster (thread-pool
+      callers rent a call on one thread and return it on another; the shared pool held 1,024, so bursts above it
+      allocated: 29 -> under 1 B per call, `BurstsOfCallsFromOutsideTheClusterDoNotAllocate`); the benchmarks' own
+      harness allocates nothing (pooled `ValueTask` workloads) and their actors are `[Sticky]` (load balancing moved
+      "remote" actors onto the caller mid-run). Every call, hot-actor and timer benchmark now reads 0-3 B per
+      operation; what remains in the longest ones is the process background (about 1 KB/s). Scenario benchmarks to add: a hot
       actor (many concurrent callers on one key: the flash-sale shape), a burst beyond the mailbox and dispatch
       bounds (refusal cost and time to drain), a dense area-of-interest cell (broadcast to one crowded cell). Surges
       over time (p99, refusals, recovery) are load tests: `Sample.Bot` for crowded maps, `FlashSale.Crowd` (client
