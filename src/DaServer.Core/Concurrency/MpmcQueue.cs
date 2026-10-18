@@ -6,7 +6,7 @@ namespace DaServer.Concurrency;
 /// Bounded lock-free multi-producer multi-consumer queue (Vyukov). Slots are structs in one preallocated array,
 /// so enqueue/dequeue never allocate. Safe for any number of producers and consumers.
 /// </summary>
-public sealed class MpmcQueue<T>
+internal sealed class MpmcQueue<T>
 {
     [StructLayout(LayoutKind.Sequential)]
     private struct Slot

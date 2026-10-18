@@ -9,7 +9,7 @@ namespace DaServer.Net;
 /// seconds, not after TCP's retransmission timeout. Closing is never a verdict on the peer: the owner reconnects and
 /// resumes (client tickets, node link resend windows).
 /// </summary>
-public static class KeepAlive
+internal static class KeepAlive
 {
     /// <summary>Why a connection closed for silence (shared: closing allocates nothing).</summary>
     public static readonly TimeoutException Silent = new("Nothing received within the keep-alive timeout");

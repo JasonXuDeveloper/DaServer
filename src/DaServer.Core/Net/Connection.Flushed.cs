@@ -2,7 +2,7 @@ namespace DaServer.Net;
 
 // Connections written on a beat (ConnectionOptions.Flusher): the flusher writes without blocking, a carry loop finishes
 // what the socket would not take.
-public sealed partial class Connection
+internal sealed partial class Connection
 {
     /// <summary>
     /// A beat of the flusher (its thread): write what is queued without blocking, unless the carry loop is writing (it

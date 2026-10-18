@@ -40,6 +40,7 @@ public static class MessageReader
 }
 
 /// <summary>One message type handled by a type (generated registration).</summary>
+[EditorBrowsable(EditorBrowsableState.Never)] // generated code calls it
 public sealed class MessageHandler(uint messageId, MessageDispatcher dispatcher, Type messageType)
 {
     public uint MessageId { get; } = messageId;
@@ -54,6 +55,7 @@ public sealed class MessageHandler(uint messageId, MessageDispatcher dispatcher,
 }
 
 /// <summary>The message handlers of one type, by message id (lock-free lookups).</summary>
+[EditorBrowsable(EditorBrowsableState.Never)] // generated code calls it
 public sealed class MessageHandlers
 {
     private readonly FrozenDictionary<uint, MessageHandler> _byId;

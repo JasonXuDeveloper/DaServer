@@ -139,7 +139,7 @@ public static class DaServerHttpExtensions
     }
 
     /// <summary>The HTTP status of a failed call.</summary>
-    public static int StatusCodeOf(RpcStatus status) => status switch
+    internal static int StatusCodeOf(RpcStatus status) => status switch
     {
         RpcStatus.RateLimited => StatusCodes.Status429TooManyRequests,
         RpcStatus.Overloaded or RpcStatus.NotHosted or RpcStatus.Disconnected => StatusCodes.Status503ServiceUnavailable,

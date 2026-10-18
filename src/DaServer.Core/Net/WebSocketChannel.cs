@@ -13,7 +13,7 @@ namespace DaServer.Net;
 /// zero-byte read, which .NET's WebSocket completes once data arrives without consuming any, rent the buffer for the
 /// message, return it after. Off by default: other WebSocket implementations (a client's platform) may complete it at once.
 /// </param>
-public sealed class WebSocketChannel(WebSocket socket, IChannelHandler handler, int maxFrameSize, int maxPendingSendBytes,
+internal sealed class WebSocketChannel(WebSocket socket, IChannelHandler handler, int maxFrameSize, int maxPendingSendBytes,
     bool releaseIdle = false)
     : FrameChannel(handler, new SendQueue(maxPendingSendBytes, 16 * 1024, releaseIdle: true, keepSpare: false)) // idle: no send memory
 {

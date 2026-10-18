@@ -50,9 +50,6 @@ public abstract class NodeFeature
     protected internal virtual void Stop(bool crashed)
     {
     }
-
-    /// <summary>Whether this feature lets the node take traffic now (readiness, together with the node's own state).</summary>
-    public virtual bool IsReady => true;
 }
 
 /// <summary>What a <see cref="NodeFeature"/> sees of its node.</summary>
@@ -91,7 +88,7 @@ public interface INodeContext
     /// </summary>
     void AddPulse(uint key, Func<int> read);
 
-    /// <summary>Publish a value on this node's card (an endpoint): read with <see cref="ClusterMember.Entry"/>. Only from <see cref="NodeFeature.Start"/>.</summary>
+    /// <summary>Publish a value on this node's card (an endpoint): read with <see cref="ClusterMember.CardEntry"/>. Only from <see cref="NodeFeature.Start"/>.</summary>
     void SetCardEntry(uint key, string value);
 
     /// <summary>

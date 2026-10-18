@@ -5,7 +5,7 @@ namespace DaServer.Net;
 /// behind <see cref="Send"/>, the close (once, the handler told), the owner's tag and the activity stamps. A transport
 /// adds its loops: how the writer is woken (<see cref="Wake"/>) and how the transport is torn down (<see cref="Abort"/>).
 /// </summary>
-public abstract class FrameChannel : IFrameChannel
+internal abstract class FrameChannel : IFrameChannel
 {
     private static readonly InvalidOperationException SlowConsumer =
         new("Send backlog exceeded the channel's bound (slow consumer)");

@@ -8,7 +8,7 @@ namespace DaServer.Net;
 /// purpose: on saturated cores, splitting a beat across the thread pool queues its parts behind the receive loops
 /// (ADR-070).
 /// </summary>
-public sealed class SendFlusher : IDisposable
+internal sealed class SendFlusher : IDisposable
 {
     private static readonly Dictionary<TimeSpan, SendFlusher> SharedByInterval = new();
     private readonly Lock _gate = new(), _beat = new();

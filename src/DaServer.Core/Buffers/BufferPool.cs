@@ -12,7 +12,7 @@ namespace DaServer.Buffers;
 /// trim that the renters' cursor has not reached since; buffers in use, even in rare bursts, are never trimmed, and
 /// renting pays nothing for it.
 /// </summary>
-public static class BufferPool
+internal static class BufferPool
 {
     public const int MinSize = 256;          // 2^8
     public const int MaxPooledSize = 1 << 22; // 4 MB

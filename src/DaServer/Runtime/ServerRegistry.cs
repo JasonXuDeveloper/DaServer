@@ -1,6 +1,7 @@
 namespace DaServer.Runtime;
 
 /// <summary>A hosted actor or service handler type and the messages it handles (generated registration).</summary>
+[System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)] // generated code calls it
 public sealed class HandlerTypeInfo(Type type, bool isActor, Func<object> factory, MessageHandler[] handlers)
 {
     public Type Type { get; } = type;
@@ -39,6 +40,7 @@ public sealed class HandlerTypeInfo(Type type, bool isActor, Func<object> factor
 }
 
 /// <summary>An ECS system added to every shard of the nodes hosting it (generated registration).</summary>
+[System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)] // generated code calls it
 public sealed class SystemInfo(Type type, Func<EcsSystem> factory)
 {
     public Type Type { get; } = type;
@@ -49,6 +51,7 @@ public sealed class SystemInfo(Type type, Func<EcsSystem> factory)
 /// Process-wide registry of server-side handler types and systems, filled by the generated registrations (ADR-012).
 /// Read once at node start; not on any hot path.
 /// </summary>
+[System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)] // generated code calls it
 public static class ServerRegistry
 {
     private static readonly object Gate = new();
@@ -75,9 +78,9 @@ public static class ServerRegistry
 
     internal static Persistence.PersistentType[] PersistentTypes => Snapshot(PersistentList);
 
-    public static HandlerTypeInfo[] HandlerTypes => Snapshot(HandlerTypeList);
+    internal static HandlerTypeInfo[] HandlerTypes => Snapshot(HandlerTypeList);
 
-    public static SystemInfo[] Systems => Snapshot(SystemList);
+    internal static SystemInfo[] Systems => Snapshot(SystemList);
 
     /// <summary>
     /// Add <paramref name="item"/> unless its type is registered (registrations may run more than once); a registered

@@ -114,10 +114,10 @@ public sealed partial class ClusterMember
     [NinoIgnore]
     internal PeerLink? Link;
 
-    public ClusterMember Clone() => (ClusterMember)MemberwiseClone();
+    internal ClusterMember Clone() => (ClusterMember)MemberwiseClone();
 
     /// <summary>Gossip merge order: higher incarnation, then worse status, then higher heartbeat wins.</summary>
-    public bool Supersedes(ClusterMember other) => MemberPulse.Of(this).Supersedes(other);
+    internal bool Supersedes(ClusterMember other) => MemberPulse.Of(this).Supersedes(other);
 
     public override string ToString() => $"{Name}({NodeId:x}) {Host}:{Port} {Status} inc={Incarnation} hb={Heartbeat}";
 }

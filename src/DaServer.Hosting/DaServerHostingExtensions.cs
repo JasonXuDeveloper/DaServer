@@ -16,10 +16,10 @@ namespace DaServer.Hosting;
 public static class DaServerHostingExtensions
 {
     /// <summary>What the host and the platform add to <see cref="NodeOptions.ShutdownTimeout"/> before cutting a node off.</summary>
-    public static readonly TimeSpan ShutdownMargin = TimeSpan.FromSeconds(5);
+    internal static readonly TimeSpan ShutdownMargin = TimeSpan.FromSeconds(5);
 
     /// <summary>Tag of the liveness check (<c>/alive</c>): a node that fails it is restarted, not just taken out of rotation.</summary>
-    public const string LiveTag = "live";
+    internal const string LiveTag = "live";
 
     /// <summary>
     /// Run a DaServer <see cref="Node"/> in this host. Options bind from the <paramref name="section"/> configuration

@@ -1,3 +1,5 @@
+using System.ComponentModel;
+
 namespace DaServer.Rpc;
 
 /// <summary>
@@ -51,6 +53,7 @@ public static class MessageFilters
 }
 
 /// <summary>The filters of message type <typeparamref name="T"/> (used by generated dispatchers).</summary>
+[EditorBrowsable(EditorBrowsableState.Never)] // generated code calls it
 public static class MessageFilters<T> where T : struct
 {
     internal static MessageFilter<T>[] Typed = [];

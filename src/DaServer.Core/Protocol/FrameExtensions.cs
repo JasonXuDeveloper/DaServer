@@ -6,7 +6,7 @@ namespace DaServer.Protocol;
 /// A reader looks entries up by id and skips the others, so metadata added later reaches nodes that ignore it instead of
 /// needing a new link protocol (what protobuf's unknown fields do). Hops relay the block untouched.
 /// </summary>
-public static class FrameExtensions
+internal static class FrameExtensions
 {
     /// <summary>W3C trace context: trace id (16 bytes), parent span id (8), trace flags (1).</summary>
     public const byte Trace = 1;

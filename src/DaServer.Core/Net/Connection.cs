@@ -16,7 +16,7 @@ internal interface ISendTap
     void OnSending(ReadOnlySpan<byte> bytes);
 }
 
-public sealed class ConnectionOptions
+internal sealed class ConnectionOptions
 {
     /// <summary>Receive buffer size used while data is flowing.</summary>
     public int ReceiveBufferSize { get; set; } = 16 * 1024;
@@ -91,7 +91,7 @@ public sealed class ConnectionOptions
 /// <para>Receive: frames are parsed in place and handed to <see cref="IChannelHandler.OnFrame"/>.</para>
 /// Steady state allocates nothing: buffers come from <see cref="BufferPool"/>, the two loops are allocated once.
 /// </summary>
-public sealed partial class Connection : FrameChannel, IFrameSender
+internal sealed partial class Connection : FrameChannel, IFrameSender
 {
     private int _failed; // flushed connections: a flush's write failed and the close is queued
 
