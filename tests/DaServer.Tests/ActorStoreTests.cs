@@ -24,8 +24,15 @@ public sealed class Stores(string kind) : IAsyncDisposable
         await using var read = dataSource.CreateCommand($"SELECT version, data FROM {table} WHERE type_id = $1 AND key = $2");
         read.Parameters.Add(new NpgsqlParameter<int> { TypedValue = unchecked((int)key.HandlerTypeId) });
         read.Parameters.Add(new NpgsqlParameter<long> { TypedValue = key.Key });
-        await using var reader = await read.ExecuteReaderAsync();
-        return await reader.ReadAsync() ? new StoredRecord(reader.GetInt64(0), reader.GetFieldValue<byte[]>(1)) : default;
+        try
+        {
+            await using var reader = await read.ExecuteReaderAsync();
+            return await reader.ReadAsync() ? new StoredRecord(reader.GetInt64(0), reader.GetFieldValue<byte[]>(1)) : default;
+        }
+        catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.UndefinedTable)
+        {
+            return default; // the store creates its table on its first call
+        }
     }
 
     private PostgreSqlActorStore Postgres(string table)
