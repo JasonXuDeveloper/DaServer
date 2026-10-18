@@ -7,10 +7,16 @@ namespace DaServer.Testing;
 /// <summary>Node helpers shared by <see cref="TestCluster"/>, the framework's own tests and its benchmarks.</summary>
 internal static class TestNodes
 {
-    /// <summary>A test node's options: loopback, any free port, fast membership timings, joining through <paramref name="seed"/>.</summary>
+    /// <summary>
+    /// A test node's options: loopback, any free port, fast membership timings, joining through <paramref name="seed"/>.
+    /// Each cluster has a name of its own (a new one for a first node, the seed's otherwise): a port an earlier test's node
+    /// just released may be taken by this one, and that test's nodes, still stopping, would otherwise gossip with it as
+    /// one of theirs and route its keys.
+    /// </summary>
     public static NodeOptions NodeOptionsFor(string name, int shards, int tickRate, Node? seed) => new()
     {
         Name = name,
+        ClusterName = seed?.Options.ClusterName ?? "test-" + Guid.NewGuid().ToString("N"),
         ListenAddress = "127.0.0.1",
         Shards = shards,
         TickRate = tickRate,
