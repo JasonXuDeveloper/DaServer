@@ -1,7 +1,7 @@
 namespace DaServer.Net;
 
 /// <summary>Accepts TCP connections and wraps them in <see cref="Connection"/>s.</summary>
-public sealed class Listener : IDisposable
+internal sealed class Listener : IDisposable
 {
     private readonly Socket _socket;
     private readonly Func<Socket, Connection> _accept;

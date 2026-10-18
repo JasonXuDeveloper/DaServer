@@ -9,7 +9,6 @@ public sealed class SwarmResult(LatencyHistogram latency, ProcessCost cost)
 
     public LatencyHistogram Latency { get; } = latency;
     public ProcessCost Cost { get; } = cost;
-    public IReadOnlyList<string> Failures => _failures;
 
     /// <summary>Fail the run with <paramref name="failure"/> unless <paramref name="holds"/>.</summary>
     public SwarmResult Expect(bool holds, string failure)

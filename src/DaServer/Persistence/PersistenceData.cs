@@ -49,48 +49,34 @@ internal readonly record struct ShardStore(IActorStore? Store, PersistentType[] 
 }
 
 /// <summary>
-/// The loads of one shard wake, handed to the store as one call; one batch is in flight at a time, so a shard holds a
-/// bounded number of pending loads. Reused: a steady stream of loads allocates nothing in the shard.
+/// One store call a shard has in flight (a load or a save batch): started on the shard, its result posted back to it,
+/// bounded by <see cref="NodeOptions.StoreTimeout"/>. Reused: a steady stream of calls allocates nothing in the shard.
 /// </summary>
-internal sealed class LoadBatch(Shard shard)
+internal abstract class StoreCall(Shard shard)
 {
-    /// <summary>Loads per batch: an actor beyond it waits for the next one (a store that was slow sees bounded statements).</summary>
-    public const int Max = 512;
+    private static readonly Action<object?> Apply = static b => ((StoreCall)b!).Applied();
 
-    private static readonly Action<object?> Apply = static b => ((LoadBatch)b!).Applied();
-
-    public readonly List<Entity> Entities = new();
-    private StoredKey[] _keys = new StoredKey[64];
-    private StoredRecord[] _records = new StoredRecord[64];
     private ValueTask _task;
     private Action? _completed;
     private readonly StoreDeadline _deadline = new();
 
+    protected Shard Shard => shard;
+
     public bool InFlight { get; private set; }
 
-    public int Count => Entities.Count;
+    /// <summary>The store call itself.</summary>
+    protected abstract ValueTask Call(IActorStore store, CancellationToken cancellationToken);
 
-    public bool Full => Count == Max;
+    /// <summary>Back on the shard thread: apply the results.</summary>
+    protected abstract void Applied();
 
-    public void Add(Entity entity, StoredKey key)
-    {
-        if (Entities.Count == _keys.Length)
-        {
-            Array.Resize(ref _keys, _keys.Length * 2);
-            Array.Resize(ref _records, _records.Length * 2);
-        }
-
-        _keys[Entities.Count] = key;
-        Entities.Add(entity);
-    }
-
-    /// <summary>Hand the batch to the store; its results come back to the shard thread (<see cref="LoadSystem.Apply"/>).</summary>
+    /// <summary>Hand the batch to the store; its results come back to the shard thread (<see cref="Applied"/>).</summary>
     public void Start(IActorStore store)
     {
         InFlight = true;
         try
         {
-            _task = store.ClaimAsync(_keys.AsMemory(0, Count), _records.AsMemory(0, Count), _deadline.Start(shard));
+            _task = Call(store, _deadline.Start(shard));
         }
         catch (Exception e)
         {
@@ -100,8 +86,6 @@ internal sealed class LoadBatch(Shard shard)
         if (_task.IsCompleted) shard.Post(Apply, this);
         else _task.ConfigureAwait(false).GetAwaiter().UnsafeOnCompleted(_completed ??= () => shard.Post(Apply, this));
     }
-
-    private void Applied() => LoadSystem.Apply(shard.World, this);
 
     /// <summary>The result of the call (null) or why it failed; resets the task.</summary>
     public Exception? TakeResult()
@@ -120,23 +104,59 @@ internal sealed class LoadBatch(Shard shard)
         }
     }
 
+    /// <summary>The batch is empty and the next call may start.</summary>
+    protected void Done() => InFlight = false;
+}
+
+/// <summary>
+/// The loads of one shard wake, handed to the store as one call; one batch is in flight at a time, so a shard holds a
+/// bounded number of pending loads.
+/// </summary>
+internal sealed class LoadBatch(Shard shard) : StoreCall(shard)
+{
+    /// <summary>Loads per batch: an actor beyond it waits for the next one (a store that was slow sees bounded statements).</summary>
+    public const int Max = 512;
+
+    public readonly List<Entity> Entities = new();
+    private StoredKey[] _keys = new StoredKey[64];
+    private StoredRecord[] _records = new StoredRecord[64];
+
+    public int Count => Entities.Count;
+
+    public bool Full => Count == Max;
+
+    public void Add(Entity entity, StoredKey key)
+    {
+        if (Entities.Count == _keys.Length)
+        {
+            Array.Resize(ref _keys, _keys.Length * 2);
+            Array.Resize(ref _records, _records.Length * 2);
+        }
+
+        _keys[Entities.Count] = key;
+        Entities.Add(entity);
+    }
+
+    protected override ValueTask Call(IActorStore store, CancellationToken cancellationToken) =>
+        store.ClaimAsync(_keys.AsMemory(0, Count), _records.AsMemory(0, Count), cancellationToken);
+
+    protected override void Applied() => LoadSystem.Apply(Shard.World, this);
+
     public ReadOnlySpan<StoredRecord> Records => _records.AsSpan(0, Count);
 
     public void Clear()
     {
+        Array.Clear(_records, 0, Count);
         Entities.Clear();
-        Array.Clear(_records, 0, Math.Min(_records.Length, _keys.Length));
-        InFlight = false;
+        Done();
     }
 }
 
 /// <summary>The writes of one shard wake (at most <see cref="Max"/>), handed to the store as one call; one in flight at a time.</summary>
-internal sealed class SaveBatch(Shard shard)
+internal sealed class SaveBatch(Shard shard) : StoreCall(shard)
 {
     /// <summary>Writes per batch: an actor beyond it waits for the next one (its checkpoint stays due).</summary>
     public const int Max = 512;
-
-    private static readonly Action<object?> Apply = static b => ((SaveBatch)b!).Applied();
 
     public readonly List<Entity> Entities = new();
     public readonly List<ulong> Hashes = new();
@@ -146,11 +166,6 @@ internal sealed class SaveBatch(Shard shard)
     public readonly List<bool> Finals = new();
     private readonly StoredWrite[] _writes = new StoredWrite[Max];
     private readonly bool[] _accepted = new bool[Max];
-    private ValueTask _task;
-    private Action? _completed;
-    private readonly StoreDeadline _deadline = new();
-
-    public bool InFlight { get; private set; }
 
     public int Count => Entities.Count;
 
@@ -165,39 +180,10 @@ internal sealed class SaveBatch(Shard shard)
         Finals.Add(final);
     }
 
-    public void Start(IActorStore store)
-    {
-        InFlight = true;
-        try
-        {
-            _task = store.SaveAsync(_writes.AsMemory(0, Count), _accepted.AsMemory(0, Count), _deadline.Start(shard));
-        }
-        catch (Exception e)
-        {
-            _task = ValueTask.FromException(e);
-        }
+    protected override ValueTask Call(IActorStore store, CancellationToken cancellationToken) =>
+        store.SaveAsync(_writes.AsMemory(0, Count), _accepted.AsMemory(0, Count), cancellationToken);
 
-        if (_task.IsCompleted) shard.Post(Apply, this);
-        else _task.ConfigureAwait(false).GetAwaiter().UnsafeOnCompleted(_completed ??= () => shard.Post(Apply, this));
-    }
-
-    private void Applied() => PersistSystem.Apply(shard.World, this);
-
-    public Exception? TakeResult()
-    {
-        var task = _task;
-        _task = default;
-        _deadline.Stop();
-        try
-        {
-            task.GetAwaiter().GetResult();
-            return null;
-        }
-        catch (Exception e)
-        {
-            return e;
-        }
-    }
+    protected override void Applied() => PersistSystem.Apply(Shard.World, this);
 
     public ReadOnlySpan<bool> Accepted => _accepted.AsSpan(0, Count);
 
@@ -211,7 +197,7 @@ internal sealed class SaveBatch(Shard shard)
         Hashes.Clear();
         Finals.Clear();
         Array.Clear(_writes);
-        InFlight = false;
+        Done();
     }
 }
 

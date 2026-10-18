@@ -8,7 +8,7 @@ namespace DaServer.Hosting;
 /// the host's <see cref="IMeterFactory"/> while the node runs. Observable instruments are sampled by the collector, so
 /// the hot path pays nothing; every measurement carries the node's name.
 /// </summary>
-public sealed class NodeMetrics : IDisposable
+internal sealed class NodeMetrics : IDisposable
 {
     public const string MeterName = "DaServer";
 

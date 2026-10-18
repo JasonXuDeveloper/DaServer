@@ -214,7 +214,6 @@ internal static class ShardDispatch
                 return default;
             }
 
-            var header = FrameHeader.Read(frame.Frame);
             uint callId = frame.CallId;
             var context = new CallContext(sink, callId, frame.Origin, frame.Deadline);
             var previous = CallContext.Enter(in context);
@@ -240,7 +239,7 @@ internal static class ShardDispatch
             {
                 error = e;
                 if (context.ExpectsReply) context.ReplyException(e);
-                else LogUnobserved(logger, e, target, in header);
+                else LogUnobserved(logger, e, target, FrameHeader.Read(frame.Frame)); // cold: decoded only to log
                 Failed(target, e);
                 return default;
             }

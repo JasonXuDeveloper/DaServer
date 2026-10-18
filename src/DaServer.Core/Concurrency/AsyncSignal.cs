@@ -6,7 +6,7 @@ namespace DaServer.Concurrency;
 /// Allocation-free auto-reset signal with a single awaiter (one consumer loop, many setters).
 /// Multiple <see cref="Set"/> calls before the consumer wakes coalesce into one wake-up.
 /// </summary>
-public sealed class AsyncSignal : IValueTaskSource
+internal sealed class AsyncSignal : IValueTaskSource
 {
     private const int Idle = 0, Signaled = 1, Waiting = 2;
 

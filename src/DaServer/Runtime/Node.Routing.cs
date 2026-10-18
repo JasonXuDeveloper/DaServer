@@ -284,7 +284,7 @@ sealed partial class Node : IChannelHandler
 
         public void Complete(RpcStatus status, ReadOnlySpan<byte> payload)
         {
-            var w = FrameWriter.Rent(FrameHeader.Size + payload.Length);
+            var w = FrameWriter.Rent(FrameHeader.Size + payload.Length + sizeof(uint)); // the call id is a trailer
             w.WriteRaw(payload);
             var (sink, id) = (_sink, _callId);
             Release();
