@@ -5,7 +5,9 @@ using Nino.Core;
 namespace DaServer.Benchmark;
 
 // Benchmark business code, written like user code: an actor with state in a component that also takes one-way messages, a
-// room actor whose groups clients join through a lobby service, and a message pushed to clients.
+// room actor whose groups clients join through a lobby service, and a message pushed to clients. Every actor type is
+// [Sticky]: a benchmark places its actors on purpose (Remote means another node), so load balancing must not move them
+// mid-run.
 
 public readonly record struct CounterId(long Value) : IActorId;
 public readonly record struct RoomId(long Value) : IActorId;
@@ -28,6 +30,7 @@ public readonly record struct RoomId(long Value) : IActorId;
 [NinoType, Message, ToClient] public partial record struct Tick(int Sequence);
 
 
+[Sticky]
 public sealed class Counter : Actor<CounterId, CounterState>
 {
     [Handle] public int On(Add m) => State.Value += m.Delta;
@@ -40,6 +43,7 @@ public sealed class Lobby : Service
     [Handle] public Reply<bool> On(Join m) => Cluster.Ask(m.Room, new Admit(Caller, m.Groups));
 }
 
+[Sticky]
 public sealed class Room : Actor<RoomId>
 {
     [Handle]
@@ -80,6 +84,7 @@ public readonly record struct GateId(long Value) : IActorId;
 [NinoType, Message] public partial record struct EnterDeferred(CounterId Ledger) : IRequest<bool>;
 
 
+[Sticky]
 public sealed class Gate : Actor<GateId, GateState>
 {
     [Handle]
@@ -105,6 +110,7 @@ public sealed class Gate : Actor<GateId, GateState>
 
 public readonly record struct SchedulerId(long Value) : IActorId;
 
+[Sticky]
 public sealed class Scheduler : Actor<SchedulerId>
 {
     [Handle]
@@ -127,6 +133,7 @@ public readonly record struct VaultId(long Value) : IActorId;
 [NinoType, Message] public partial record struct Put(long Amount) : IRequest<long>;
 
 /// <summary>Holds coins ([Persist]); a put is a critical change, written at once (SaveNow).</summary>
+[Sticky]
 public sealed class Vault : Actor<VaultId, Coins>
 {
     public override TimeSpan SaveEvery => TimeSpan.Zero;

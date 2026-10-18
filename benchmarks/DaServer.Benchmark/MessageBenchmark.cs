@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 namespace DaServer.Benchmark;
 
 /// <summary>
@@ -37,8 +38,8 @@ public class MessageBenchmark
     [GlobalCleanup]
     public void Cleanup() => Clusters.Stop(_nodes);
 
-    [Benchmark(OperationsPerInvoke = Burst)]
-    public async Task Messages()
+    [Benchmark(OperationsPerInvoke = Burst), AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+    public async ValueTask Messages()
     {
         var cluster = _nodes[0];
         for (int i = 0; i < Burst; i++) cluster.Send(_keys[i % Actors], new Bumped(1));

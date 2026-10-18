@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 namespace DaServer.Benchmark;
 
 /// <summary>
@@ -45,8 +46,8 @@ public class RpcBenchmark
     [GlobalCleanup]
     public void Cleanup() => Clusters.Stop(_nodes);
 
-    [Benchmark]
-    public async Task Calls()
+    [Benchmark, AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+    public async ValueTask Calls()
     {
         var caller = _nodes[0];
         for (int i = 0; i < _calls.Length; i++) _calls[i] = caller.Ask(_keys[i], new Add(1));

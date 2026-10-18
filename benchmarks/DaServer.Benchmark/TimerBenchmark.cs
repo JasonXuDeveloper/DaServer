@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 namespace DaServer.Benchmark;
 
 /// <summary>
@@ -29,8 +30,8 @@ public class TimerBenchmark
     [GlobalCleanup]
     public void Cleanup() => Clusters.Stop(_nodes);
 
-    [Benchmark(OperationsPerInvoke = Count)]
-    public async Task Sends()
+    [Benchmark(OperationsPerInvoke = Count), AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+    public async ValueTask Sends()
     {
         var node = _nodes[0];
         await node.Ask(_scheduler, new Bumps(_target, Count, Delayed));

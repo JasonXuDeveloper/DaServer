@@ -59,8 +59,8 @@ public class PersistenceBenchmark
         _store.Inner.SaveAsync(writes, new bool[Actors]).AsTask().GetAwaiter().GetResult();
     }
 
-    [Benchmark]
-    public async Task Load()
+    [Benchmark, AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+    public async ValueTask Load()
     {
         for (int i = 0; i < Actors; i++) _calls[i] = _node.Ask(new VaultId(_first + i), new Put(0));
         for (int i = 0; i < Actors; i++)
