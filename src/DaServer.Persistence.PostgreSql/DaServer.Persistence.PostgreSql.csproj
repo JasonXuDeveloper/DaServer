@@ -1,6 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
+        <!-- Its batch calls use pooled builders (one per batch, allocation-free), which runtime async ignores: IO-bound,
+             it gains nothing from it. -->
+        <UseRuntimeAsync>false</UseRuntimeAsync>
         <TargetFramework>net11.0</TargetFramework>
         <RootNamespace>DaServer.Persistence</RootNamespace>
         <Description>PostgreSQL store of DaServer actor records: one row per actor, batched loads, batched versioned writes.</Description>

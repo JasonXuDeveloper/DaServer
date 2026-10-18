@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
-        <TargetFrameworks>netstandard2.1;net10.0;net11.0</TargetFrameworks>
+        <TargetFrameworks>netstandard2.1;net11.0</TargetFrameworks>
         <RootNamespace>DaServer.Client</RootNamespace>
         <Description>DaServer client SDK (games, bots, tools; Unity through netstandard2.1): connects to client-facing nodes, sends [FromClient] messages, handles [ToClient] ones, reconnects and resumes its session.</Description>
     </PropertyGroup>

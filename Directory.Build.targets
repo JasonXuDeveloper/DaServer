@@ -1,8 +1,15 @@
 <Project>
+    <!-- Runtime async (.NET 11, ADR-054) for net11.0 builds only: netstandard2.1 keeps compiler state machines.
+         Here, not in the props: TargetFramework is set by now, and so is a project's own UseRuntimeAsync=false (a project
+         whose async methods rely on pooled builders, which runtime async ignores). -->
+    <PropertyGroup Condition="'$(TargetFramework)' != '' And $([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net11.0')) And '$(UseRuntimeAsync)' != 'false'">
+        <Features>$(Features);runtime-async=on</Features>
+    </PropertyGroup>
+
     <!-- What the Abstractions package gives its users (buildTransitive), for this repository's own projects; the wire
          manifest's writer is built from source here (the package ships it in tools/). -->
     <PropertyGroup>
-        <DaServerWireTool>$(MSBuildThisFileDirectory)src/DaServer.WireTool/bin/$(Configuration)/net10.0/DaServer.WireTool.dll</DaServerWireTool>
+        <DaServerWireTool>$(MSBuildThisFileDirectory)src/DaServer.WireTool/bin/$(Configuration)/net11.0/DaServer.WireTool.dll</DaServerWireTool>
         <DaServerWireToolDependsOn>DaServerBuildWireTool</DaServerWireToolDependsOn>
     </PropertyGroup>
 

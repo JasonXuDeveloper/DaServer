@@ -1,0 +1,9 @@
+<Project>
+    <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
+    <!-- The benchmarks measure the framework built as it ships (runtime async on net11.0); their own harness keeps compiler
+         state machines: it relies on pooled builders (Countdown, the workload loops), which runtime async ignores, and
+         would add its own allocations to every measurement. BenchmarkDotNet's generated projects live under here too. -->
+    <PropertyGroup>
+        <UseRuntimeAsync>false</UseRuntimeAsync>
+    </PropertyGroup>
+</Project>

@@ -98,14 +98,16 @@ internal static class Crowd
             else soldOut.Add();
         }
 
-        // One request: its latency recorded, retried while the cluster asks to come back later.
-        async Task<T> Call<T>(Func<Reply<T>> ask) => await Swarm.Retry(async () =>
+        // One request: retried while the cluster asks to come back later, each attempt's latency recorded.
+        Task<T> Call<T>(Func<Reply<T>> ask) => Swarm.Retry(() => Timed(ask));
+
+        async Reply<T> Timed<T>(Func<Reply<T>> ask)
         {
             long start = System.Diagnostics.Stopwatch.GetTimestamp();
             var reply = await ask();
             meter.Latency.Add(System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds);
             requests.Add();
             return reply;
-        });
+        }
     }
 }

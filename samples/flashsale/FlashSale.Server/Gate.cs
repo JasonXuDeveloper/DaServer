@@ -62,7 +62,7 @@ public sealed class Gate : Service
     [Handle] public Reply<OrderStatus> On(OrderOf m) => Cluster.Ask(OrderId.Of(m.Sale, m.User), new GetOrder());
 
     /// <summary>What this shard knows of the sale, asked of the sale once (and again after <see cref="Forget"/>).</summary>
-    private async ValueTask<SaleInfo> Info(long sale)
+    private async Reply<SaleInfo> Info(long sale) // a helper a handler awaits returns Reply: pooled, nothing allocated
     {
         if (Known.TryGetValue(sale, out var info)) return info;
         info = await Cluster.Ask(new SaleId(sale), new Describe());

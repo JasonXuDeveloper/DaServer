@@ -37,7 +37,7 @@ public readonly record struct SimulatedUser(int Index, ClusterClient Client, Wor
     public Task ConnectAsync(Uri webSocket) => Connect(Client, webSocket, static (c, uri) => c.ConnectAsync(uri));
 
     private static Task Connect<T>(ClusterClient client, T target, Func<ClusterClient, T, ValueTask> connect) =>
-        Swarm.Retry(async () =>
+        Swarm.Retry(async Task<bool> () =>
         {
             await connect(client, target);
             return true;
@@ -175,7 +175,16 @@ public sealed class Swarm : IAsyncDisposable
     /// names (<see cref="RpcException.RetryAfter"/>) and a jittered backoff (up to half a second, doubling to 5 s), so a
     /// crowd refused together does not come back together.
     /// </summary>
-    public static async Task<T> Retry<T>(Func<Task<T>> call, Func<Exception, bool>? transient = null, int attempts = 60)
+    public static Task<T> Retry<T>(Func<Task<T>> call, Func<Exception, bool>? transient = null, int attempts = 60) =>
+        Retry(() => Awaited(call), transient, attempts);
+
+    private static async Reply<T> Awaited<T>(Func<Task<T>> call) => await call();
+
+    /// <summary>
+    /// <see cref="Retry{T}(Func{Task{T}}, Func{Exception, bool}?, int)"/> for a call returning <see cref="Reply{T}"/>
+    /// (<c>() => client.Ask(..)</c>): awaited as it is, no Task built around each attempt.
+    /// </summary>
+    public static async Task<T> Retry<T>(Func<Reply<T>> call, Func<Exception, bool>? transient = null, int attempts = 60)
     {
         var backoff = new Backoff(TimeSpan.FromMilliseconds(500), TimeSpan.FromSeconds(5));
         for (int attempt = 1; ; attempt++)
@@ -186,8 +195,7 @@ public sealed class Swarm : IAsyncDisposable
             }
             catch (Exception e) when (attempt < attempts && (transient ?? Starting)(e))
             {
-                var hint = e is RpcException rpc ? rpc.RetryAfter : TimeSpan.Zero;
-                await Task.Delay(hint + backoff.Next());
+                await Task.Delay((e is RpcException rpc ? rpc.RetryAfter : TimeSpan.Zero) + backoff.Next());
             }
         }
     }
