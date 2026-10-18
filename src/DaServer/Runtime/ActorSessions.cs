@@ -60,15 +60,17 @@ internal static class ActorSessions
     /// previous session granted (not withdrawn, not closed, not resumed already: a ticket is good for one resume of what
     /// is still granted). The new session replaces it and is the caller of the turn (<c>Caller</c>).
     /// </summary>
-    public static bool Resume(Actor actor, in SessionResumed resumed)
+    public static RpcStatus Resume(Actor actor, in SessionResumed resumed)
     {
-        if (!actor.Entity.TryGet<ClientSessions>(out var sessions) || !sessions.Granted.Remove(resumed.Previous)) return false;
+        if (!actor.Entity.TryGet<ClientSessions>(out var sessions)) return RpcStatus.Forbidden;
+        if (!sessions.Granted.Remove(resumed.Previous))
+            return sessions.Superseded.Contains(resumed.Previous) ? RpcStatus.Superseded : RpcStatus.Forbidden;
         sessions.Sessions.Remove(resumed.Previous);
         sessions.Superseded.Add(resumed.Previous); // removed when its late SessionClosed arrives or its node dies
         sessions.Sessions.Add(resumed.Session);
         sessions.Granted.Add(resumed.Session);
         actor.TurnCaller = new Origin(resumed.Session.Node, resumed.Session.Id);
-        return true;
+        return RpcStatus.Ok;
     }
 
     /// <summary>

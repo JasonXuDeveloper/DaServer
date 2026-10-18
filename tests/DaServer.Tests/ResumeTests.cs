@@ -306,10 +306,10 @@ public class ResumeTests : ClusterTest
     /// <summary>A second client presents <paramref name="ticket"/>: the status it gets (Ok: resumed).</summary>
     private async Task<RpcStatus> ResumeAs(Node[] gateways, byte[] ticket) => (await ResumeWith(gateways, ticket)).Status;
 
-    private async Task<(RpcStatus Status, ClusterClient Client)> ResumeWith(Node[] gateways, byte[] ticket)
+    private async Task<(RpcStatus Status, ClusterClient Client)> ResumeWith(Node[] gateways, byte[] ticket, int gateway = 1)
     {
         var client = Track(new ClusterClient { AutoReconnect = false });
-        await client.ConnectAsync("127.0.0.1", gateways[1].ClientPort());
+        await client.ConnectAsync("127.0.0.1", gateways[gateway].ClientPort());
         try
         {
             await client.ResumeWith(ticket);
@@ -318,6 +318,48 @@ public class ResumeTests : ClusterTest
         catch (RpcException e)
         {
             return (e.Status, client);
+        }
+    }
+
+    [Test]
+    public async Task AKickIsNotEvadedByAResumeWaitingBehindIt()
+    {
+        // The player kicks a session in a turn while a resume of that session waits in its mailbox (a move): the resume
+        // is refused and the player learns the session closed, instead of the kicked client carrying on.
+        var gateways = await StartCluster(TimeSpan.FromSeconds(5));
+        var client = await LogIn(gateways, 595);
+        var ticket = client.Ticket!;
+        TurnGate.Current = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var kick = client.Ask(new KickAfterGate()).AsTask();
+        await Task.Delay(200);
+        var resume = ResumeWith(gateways, ticket);
+        await Task.Delay(300); // the resume waits behind the held turn
+        TurnGate.Current.TrySetResult();
+
+        Assert.That((await resume).Status, Is.EqualTo(RpcStatus.Forbidden), "the kicked session resumed");
+        await Eventually(() => Observed.Events.Contains("closed:595"), "the player learns the kicked session closed");
+        Assert.That(Observed.Events, Does.Not.Contain("resumed:595"));
+        try { await kick; } catch (RpcException) { } // its connection was closed by the kick
+    }
+
+    [Test]
+    public async Task ATicketPresentedOnTwoGatewaysAtOnceResumesOnOne()
+    {
+        // A replayed or stolen ticket used on both gateways at once: the player and the room must not end up split
+        // between two sessions. The first actor decides; the other resume stops at its Superseded.
+        var gateways = await StartCluster(TimeSpan.FromSeconds(5));
+        for (long player = 710; player < 730; player++)
+        {
+            var client = await LogIn(gateways, player);
+            var room = new RoomId(player);
+            Assert.That(await client.Ask(new Enter(room)), Is.True);
+            await Eventually(() => client.Ticket is { Length: > 0 } t && t.Length > ResumeTicket.SizeOf(1), "no ticket with the room");
+            var ticket = client.Ticket!;
+            var results = await Task.WhenAll(ResumeWith(gateways, ticket, 0), ResumeWith(gateways, ticket, 1));
+            Assert.That(results.Count(static r => r.Status == RpcStatus.Ok), Is.EqualTo(1), $"player {player}: one resume wins");
+            var winner = results.Single(static r => r.Status == RpcStatus.Ok).Client;
+            Assert.That(await winner.Ask(new AddGold(1)), Is.EqualTo(1), "the winner holds the player");
+            Assert.That(await winner.Ask(room, new Exit()), Is.True, "and the room");
         }
     }
 

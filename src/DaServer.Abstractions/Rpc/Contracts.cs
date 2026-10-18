@@ -156,7 +156,10 @@ public readonly partial record struct JoinGroup(ClientGroup Group);
 [NinoType, Message, ToClient]
 public readonly partial record struct LeaveGroup(ClientGroup Group);
 
-/// <summary>Close the session (or every session of the group): its actors get <see cref="SessionClosed"/> at once, no resume grace.</summary>
+/// <summary>
+/// Close the session (or every session of the group): its actors get <see cref="SessionClosed"/> at once, no resume
+/// grace. Actors kick with <c>DisconnectSession(session)</c>, which also withdraws the session's grant at once (DAS020).
+/// </summary>
 [NinoType, Message, ToClient]
 public readonly partial record struct Disconnect;
 

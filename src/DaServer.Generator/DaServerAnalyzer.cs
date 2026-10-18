@@ -13,7 +13,7 @@ namespace DaServer.Generator;
 public sealed partial class DaServerAnalyzer : DiagnosticAnalyzer
 {
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics { get; } = ImmutableArray.Create(
-        Rules.BadHandler, Rules.BadMessage, Rules.NotWireType, Rules.IdCollision, Rules.NoDefaultConstructor, Rules.WrongFlow, Rules.StatefulHandlerType, Rules.WrongAddress, Rules.SharedReferencesServer, Rules.MisplacedReplyWhen, Rules.BlockingCall, Rules.AskInSystem, Rules.ComponentInLogic, Rules.BadPersisted, Rules.OffShard, Rules.BadPlacement, Rules.WireBreak, Rules.WireUnrecorded, Rules.ClientCollection);
+        Rules.BadHandler, Rules.BadMessage, Rules.NotWireType, Rules.IdCollision, Rules.NoDefaultConstructor, Rules.WrongFlow, Rules.StatefulHandlerType, Rules.WrongAddress, Rules.SharedReferencesServer, Rules.MisplacedReplyWhen, Rules.BlockingCall, Rules.AskInSystem, Rules.ComponentInLogic, Rules.BadPersisted, Rules.OffShard, Rules.BadPlacement, Rules.WireBreak, Rules.WireUnrecorded, Rules.ClientCollection, Rules.KickWithDisconnectSession);
 
     public override void Initialize(AnalysisContext context)
     {
@@ -165,7 +165,12 @@ public sealed partial class DaServerAnalyzer
         else if (client && notActor)
             Report(Rules.WrongAddress, location, address!.ToDisplayString(), "is not an actor id: clients send to actors and services only");
         else if (Shapes.IsMessage(message, location, usedBy, Report))
+        {
             Shapes.CheckFlow(message, toClient, fromClient: client, location, usedBy, Report);
+            if (Support.Is(message, "DaServer.Disconnect") && (Support.Is(address, "DaServer.ClientSession") || Support.Is(address, "DaServer.Origin")) &&
+                context.ContainingSymbol?.ContainingType is { } container && Support.DerivesFrom(container, Support.ActorBase))
+                Report(Rules.KickWithDisconnectSession, location);
+        }
     }
 
     private static bool IsClientAddress(ITypeSymbol type)
@@ -307,6 +312,10 @@ internal static class Rules
 
     public static readonly DiagnosticDescriptor WireBreak = new("DAS017", "Wire layout breaks the manifest",
         "'{0}' {1} (wire.manifest, ADR-076; a deliberate break: dotnet build -p:UpdateWireManifest=force)", Category, DiagnosticSeverity.Error, true, customTags: WellKnownDiagnosticTags.CompilationEnd);
+
+    public static readonly DiagnosticDescriptor KickWithDisconnectSession = new("DAS020", "An actor disconnects a session with Send",
+        "An actor disconnects a session with DisconnectSession(session): it withdraws the session's grant at once, so a resume racing the kick is refused",
+        Category, DiagnosticSeverity.Warning, true);
 
     public static readonly DiagnosticDescriptor ClientCollection = new("DAS019", "Collection held directly by a client message",
         "'{0}.{1}' ({2}) allocates on every message read: client messages travel at client volume; hold it in a [NinoPooled] class the handler returns",

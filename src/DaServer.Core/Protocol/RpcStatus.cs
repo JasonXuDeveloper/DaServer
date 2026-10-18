@@ -31,4 +31,10 @@ public enum RpcStatus : byte
     /// Retrying the same bytes cannot help.
     /// </summary>
     Malformed = 10,
+
+    /// <summary>
+    /// A resume named a session that another connection resumed already (a ticket presented twice at once): the actor
+    /// keeps the session that resumed first.
+    /// </summary>
+    Superseded = 11,
 }

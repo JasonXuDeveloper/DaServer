@@ -49,6 +49,17 @@ public abstract class Actor : ShardObject
     /// <summary>Withdraw the session's grant of this actor (a binding to it goes too; it also leaves <see cref="Group"/>).</summary>
     protected Reply RevokeSession(ClientSession session) => ChangeAccess(session, AccessChange.Revoke);
 
+    /// <summary>
+    /// Close the session (a kick): its grant of this actor is withdrawn at once, so a resume of it that is already in
+    /// this actor's mailbox is refused, then its node closes it and its actors get <see cref="SessionClosed"/> without a
+    /// resume grace. Sending <see cref="Disconnect"/> from an actor is DAS020.
+    /// </summary>
+    protected void DisconnectSession(ClientSession session)
+    {
+        ActorSessions.Change(this, session, AccessChange.Revoke);
+        Shard.Node.Send(session, new Disconnect());
+    }
+
     private Reply ChangeAccess(ClientSession session, AccessChange change)
     {
         ActorSessions.Change(this, session, change);

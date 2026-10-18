@@ -182,6 +182,7 @@ public class GeneratorTests
     [TestCase("[Persist] public partial class Bad { }", "DAS014")]
     [TestCase("[Handoff] public partial class Bad { }", "DAS014")]
     [TestCase("public partial struct Bad : IPlaced { public long Placement => 0; }", "DAS016")]
+    [TestCase("public readonly record struct BadId(long Value) : IActorId; [NinoType, Message, FromClient] public partial record struct Q; public sealed class Bad : Actor<BadId> { [Handle] public void On(Q m) => Cluster.Send(Caller, new Disconnect()); }", "DAS020")]
     [TestCase("[NinoType, Message, ToClient] public partial record struct Bad(int[] Cells);", "DAS019")]
     [TestCase("[NinoType, Message, FromClient] public partial struct Bad { public System.Collections.Generic.List<int> Picks; }", "DAS019")]
     public async Task MisuseIsReportedByTheAnalyzer(string source, string id)

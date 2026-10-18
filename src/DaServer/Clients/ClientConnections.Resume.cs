@@ -84,9 +84,31 @@ public sealed partial class ClientConnections
     private async Task ResumeAsync(SessionState session, uint callId, ClientSession previous, SessionGrant[] grants)
     {
         var current = new ClientSession(_node.Id, session.Id);
-        var answers = new Task<bool>[grants.Length];
-        for (int i = 0; i < grants.Length; i++) answers[i] = Accepts(grants[i], new SessionResumed(current, previous));
-        var accepted = await Task.WhenAll(answers).ConfigureAwait(false);
+        var resumed = new SessionResumed(current, previous);
+        var accepted = new bool[grants.Length];
+
+        // The first actor that takes the session decides, asked alone: a ticket presented on two connections at once
+        // resumes on the one it accepted, and the other stops at its Superseded instead of taking the other actors.
+        int first = 0;
+        for (; first < grants.Length; first++)
+        {
+            var status = await Accepts(grants[first], resumed).ConfigureAwait(false);
+            if (status == RpcStatus.Superseded)
+            {
+                session.Sink.SendError(callId, RpcStatus.Forbidden);
+                return;
+            }
+
+            if (accepted[first] = status == RpcStatus.Ok) break;
+        }
+
+        if (first < grants.Length - 1)
+        {
+            var answers = new Task<RpcStatus>[grants.Length - first - 1];
+            for (int i = 0; i < answers.Length; i++) answers[i] = Accepts(grants[first + 1 + i], resumed);
+            var rest = await Task.WhenAll(answers).ConfigureAwait(false);
+            for (int i = 0; i < rest.Length; i++) accepted[first + 1 + i] = rest[i] == RpcStatus.Ok;
+        }
 
         int taken = 0;
         bool closed;
@@ -120,16 +142,16 @@ public sealed partial class ClientConnections
         session.Sink.SendOk(callId);
     }
 
-    private async Task<bool> Accepts(SessionGrant grant, SessionResumed resumed)
+    private async Task<RpcStatus> Accepts(SessionGrant grant, SessionResumed resumed)
     {
         try
         {
             await _node.Resume(grant.HandlerTypeId, grant.Key, in resumed).ConfigureAwait(false);
-            return true;
+            return RpcStatus.Ok;
         }
-        catch (RpcException)
+        catch (RpcException e)
         {
-            return false; // refused, or the actor's node is gone: the client asks it again (logs in, enters again)
+            return e.Status; // refused, or the actor's node is gone: the client asks it again (logs in, enters again)
         }
     }
 }
