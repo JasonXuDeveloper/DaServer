@@ -69,4 +69,36 @@ public class ClientProtocolTests : ClusterTest
         await recorder.Closed.Task.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.That(recorder.Reply.Task.IsCompleted, Is.False, "nothing it sent ran");
     }
+
+    /// <summary>
+    /// Frames a hostile client crafts past the size check: flags naming trailers the frame does not hold, an extension
+    /// block longer than the frame, an extension entry running past its block, a payload that is not the message. A frame
+    /// whose layout does not hold closes that client's connection; a message that does not read is refused as malformed
+    /// (the node reads no extension entry of a client's frame). The node goes on serving everyone else.
+    /// </summary>
+    [TestCase(FrameFlags.HasCall | FrameFlags.HasOrigin | FrameFlags.HasChain, 0, true, TestName = "Trailers longer than the frame")]
+    [TestCase(FrameFlags.HasExtensions, 60_000, true, TestName = "An extension block longer than the frame")]
+    [TestCase(FrameFlags.HasExtensions, 6, false, TestName = "An extension entry running past its block")]
+    [TestCase((byte)0, -1, false, TestName = "A payload that is not the message")]
+    public async Task HostileFramesHurtOnlyTheirConnection(byte flags, int blockSize, bool closes)
+    {
+        var gateway = await Start("a", gateway: true);
+        var hostile = await Send(gateway, FrameKind.Control, ControlOp.ClientHello, ControlOp.ClientVersion);
+        Assert.That((await hostile.Reply.Task.WaitAsync(TimeSpan.FromSeconds(5))).Status, Is.EqualTo(RpcStatus.Ok), "introduced");
+
+        // A [FromClient] message (Login: an 8-byte player id), crafted byte by byte; 3 bytes cannot be one.
+        var frame = new byte[FrameHeader.Size + (blockSize < 0 ? 3 : 8)];
+        new FrameHeader { Length = frame.Length, Kind = FrameKind.Message, Flags = flags, MessageId = TypeId<Login>.Value }.Write(frame);
+        if (blockSize > 0) System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(frame.AsSpan(frame.Length - 2), (ushort)blockSize);
+        if (blockSize == 6) (frame[^6], frame[^5]) = ((byte)1, (byte)200); // one entry claiming 200 bytes in a 6-byte block
+        hostile.Connection!.Send(frame);
+        await Task.Delay(300);
+        Assert.That(hostile.Closed.Task.IsCompleted, Is.EqualTo(closes), closes ? "a layout that does not hold closes the connection" : "a message that does not read is refused, the connection stays");
+
+        // Whatever happened to that connection, the node serves a well-behaved client as before.
+        await using var client = new ClusterClient();
+        await client.ConnectAsync("127.0.0.1", gateway.ClientPort());
+        Assert.That(await client.Ask(new Login(new PlayerId(901))), Is.True);
+        Assert.That(gateway.IsReady, Is.True);
+    }
 }

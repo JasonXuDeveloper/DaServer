@@ -69,6 +69,38 @@ public class MembershipTests : ClusterTest
     }
 
     [Test]
+    public async Task AFlappingLinkMakesAMemberSuspectNeverDead()
+    {
+        // c's links to a and b drop for 0.9 s at a time (SuspectAfter 0.6 s, DeadAfter 1.5 s), five times: c may be
+        // suspected, refutes each time the network comes back, is never declared dead, and keeps its keys.
+        var nodes = await StartCluster(3);
+        var (a, c) = (nodes[0], nodes[2]);
+        long key = a.KeyOwnedBy<CounterId>(c, 9400);
+        Assert.That(await a.Ask(new CounterId(key), new Add(1)), Is.EqualTo(1));
+        int Port(Node n) => n.ClusterEndPoint.Port;
+        bool suspected = false, dead = false;
+        for (int round = 0; round < 5; round++)
+        {
+            c.Membership.BlockedPorts = [Port(nodes[0]), Port(nodes[1])];
+            nodes[0].Membership.BlockedPorts = nodes[1].Membership.BlockedPorts = [Port(c)];
+            for (int i = 0; i < 9; i++)
+            {
+                await Task.Delay(100);
+                if (a.View.TryGetMember(c.Id, out var seen)) (suspected, dead) = (suspected || seen.Status == MemberStatus.Suspect, dead || seen.Status == MemberStatus.Dead);
+            }
+
+            foreach (var node in nodes) node.Membership.BlockedPorts = null;
+            await Task.Delay(700);
+        }
+
+        Assert.That(dead, Is.False, "never declared dead");
+        Assert.That(suspected, Is.True, "the silences were long enough to suspect it");
+        await Converged();
+        Assert.That(a.OwnerOf<CounterId>(key), Is.EqualTo(c.Id), "it kept its keys");
+        Assert.That(await a.Ask(new CounterId(key), new Add(1)), Is.EqualTo(2), "and its actor, state and all");
+    }
+
+    [Test]
     public async Task AStalePulseDoesNotLowerAHeartbeat()
     {
         // A pulse saying "suspect" at an older heartbeat supersedes "up" (a worse status), but the heartbeat stays the
