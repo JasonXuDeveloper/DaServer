@@ -205,6 +205,7 @@ public class GeneratorTests
     [TestCase("public partial class Bad : EasyEcs.EcsSystem { private int _ticks; protected override void OnUpdate() => _ticks++; }", "DAS007")]
     [TestCase("public record struct Hp(int Value) : EasyEcs.IComponent;", "DAS013")]
     [TestCase("[Persist] public partial class Bad { }", "DAS014")]
+    [TestCase("public readonly record struct BadId(long Value) : IActorId; [NinoType, Message] public partial record struct Q; public abstract class Bad : Actor<BadId> { [Handle] public void On(Q m) { } }", "DAS001")]
     [TestCase("[Handoff] public partial class Bad { }", "DAS014")]
     [TestCase("public partial struct Bad : IPlaced { public long Placement => 0; }", "DAS016")]
     [TestCase("public readonly record struct BadId(long Value) : IActorId; [NinoType, Message, FromClient] public partial record struct Q; public sealed class Bad : Actor<BadId> { [Handle] public void On(Q m) => Cluster.Send(Caller, new Disconnect()); }", "DAS020")]
@@ -249,6 +250,8 @@ public class GeneratorTests
         Assert.That(await Ids("[NinoType, Persist] public partial record struct Gold(int N) : EasyEcs.IComponent;"), Is.EqualTo(new[] { "DAS014" }));
         Assert.That(await Ids("[NinoType(format: NinoFormat.VersionTolerant), Persist] public partial record struct Gold(int N) : EasyEcs.IComponent;"), Is.Empty);
         Assert.That(await Ids("[NinoType(format: NinoFormat.Keyed), Handoff] public partial record struct Gold(int N) : EasyEcs.IComponent;"), Is.Empty);
+        Assert.That(await Ids("public static class Wallet { [NinoType(format: NinoFormat.VersionTolerant), Persist] public partial record struct Gold(int N) : EasyEcs.IComponent; }"),
+            Is.EqualTo(new[] { "DAS014" }), "nested: the registration would skip it, so it would never be saved");
     }
 
     [Test]

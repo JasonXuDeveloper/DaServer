@@ -225,6 +225,9 @@ public sealed partial class DaServerAnalyzer
         if (attribute == null) return;
         if (type.TypeKind != TypeKind.Struct || !Support.Implements(type, "EasyEcs.IComponent") || type.IsGenericType)
             report(Rules.BadPersisted, type.Locations.FirstOrDefault(), attribute, type.Name, "must be a non-generic struct component (EasyEcs.IComponent)");
+        else if (type.ContainingType != null || type.DeclaredAccessibility != Accessibility.Public)
+            report(Rules.BadPersisted, type.Locations.FirstOrDefault(), attribute, type.Name,
+                "must be a public top-level type: the generated registration names it (a nested or internal one would never be saved)");
         else if (NinoOptions.Of(type) is not { } options)
             report(Rules.BadPersisted, type.Locations.FirstOrDefault(), attribute, type.Name, "must be a [NinoType]: its record section is its Nino bytes");
         else if (options.Format == NinoOptions.Positional)

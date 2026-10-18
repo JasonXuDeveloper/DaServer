@@ -261,7 +261,16 @@ internal static class Shapes
 
     public static HostedModel? ReadHosted(INamedTypeSymbol type, Report? report = null)
     {
-        if (type.TypeKind != TypeKind.Class || type.IsAbstract || type.IsStatic || type.IsGenericType) return null;
+        if (type.TypeKind != TypeKind.Class || type.IsAbstract || type.IsStatic || type.IsGenericType)
+        {
+            // Nothing is generated for them, and derived types do not inherit their handlers: say so instead of routing nothing.
+            if (report != null && type.TypeKind == TypeKind.Class)
+                foreach (var method in type.GetMembers().OfType<IMethodSymbol>())
+                    if (HasAttribute(method, HandleAttribute))
+                        report(Rules.BadHandler, method.Locations.FirstOrDefault(), type.Name + "." + method.Name,
+                            "be declared on a concrete, non-generic class (handlers of a base class are not inherited)");
+            return null;
+        }
 
         HostedKind kind = DerivesFrom(type, EcsSystem) ? HostedKind.System
             : DerivesFrom(type, ActorBase) ? HostedKind.Actor
@@ -286,7 +295,7 @@ internal static class Shapes
         }
 
         return new HostedModel(type.ToDisplayString(Fqn), kind,
-            new EquatableArray<HandlerModel>(handlers.Select(h => h.Model).OrderBy(h => h.MessageType).ToArray()));
+            new EquatableArray<HandlerModel>(handlers.Select(h => h.Model).OrderBy(h => h.MessageType, StringComparer.Ordinal).ToArray()));
     }
 
     /// <summary>Accessible from generated code in the same assembly (no private or protected type on the way).</summary>

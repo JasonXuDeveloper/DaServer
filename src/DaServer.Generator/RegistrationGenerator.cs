@@ -35,7 +35,7 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
             .Collect();
         var hosted = handlerTypes.Combine(systems)
             .Select(static (pair, _) => new EquatableArray<HostedModel>(
-                pair.Left.Concat(pair.Right).Distinct().OrderBy(t => t!.FullName).ToArray()!))
+                pair.Left.Concat(pair.Right).Distinct().OrderBy(t => t!.FullName, StringComparer.Ordinal).ToArray()!))
             .WithTrackingName("HostedTypes");
 
         var clientMessages = context.SyntaxProvider
@@ -43,7 +43,7 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
                 static (ctx, _) => Shapes.ReadClientMessage((INamedTypeSymbol)ctx.TargetSymbol))
             .Where(static m => m is not null)
             .Collect()
-            .Select(static (all, _) => new EquatableArray<ClientMessageModel>(all.Distinct().OrderBy(m => m!.FullName).ToArray()!))
+            .Select(static (all, _) => new EquatableArray<ClientMessageModel>(all.Distinct().OrderBy(m => m!.FullName, StringComparer.Ordinal).ToArray()!))
             .WithTrackingName("ClientMessages");
 
         // [Filter] methods and classes: registered with the assembly's other registrations (servers only).
