@@ -51,6 +51,16 @@ public class HttpPlaneTests
     }
 
     [Test]
+    public async Task HttpClientsOfTheNodeResolveAspireReferences()
+    {
+        // AddDaServer is the service defaults: an Aspire reference (services__{name}__{endpoint}__0) names a service the
+        // node's HttpClients reach by name.
+        _app.Configuration["services:self:http:0"] = _app.Urls.First();
+        var http = _app.Services.GetRequiredService<IHttpClientFactory>().CreateClient();
+        Assert.That((await http.GetAsync("http://self/alive")).StatusCode, Is.EqualTo(HttpStatusCode.OK));
+    }
+
+    [Test]
     public async Task HealthSaysReadyOnceJoinedAndAliveWhileNoShardStalls()
     {
         var node = _app.Services.GetRequiredService<Node>();

@@ -9,6 +9,7 @@ using Microsoft.Extensions.Options;
 using OpenTelemetry;
 using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
+using OpenTelemetry.Trace;
 
 namespace DaServer.Hosting;
 
@@ -25,7 +26,9 @@ public static class DaServerHostingExtensions
     /// section (appsettings, environment variables such as <c>DaServer__Clients__Port=7100</c>, command line). Features
     /// run when their section is configured: client connections with <c>{section}:Clients</c>.
     /// The node starts with the host and leaves the cluster gracefully on SIGTERM / Ctrl+C. A stats line is logged every
-    /// <c>{section}:StatsInterval</c> (default 30 s, 0 turns it off).
+    /// <c>{section}:StatsInterval</c> (default 30 s, 0 turns it off). It is the node's service defaults too: health checks,
+    /// OpenTelemetry (metrics, logs and traces over OTLP when configured), service discovery and resilience for
+    /// HttpClients; no separate ServiceDefaults project.
     /// </summary>
     public static IHostApplicationBuilder AddDaServer(this IHostApplicationBuilder builder, string section = "DaServer")
     {
@@ -64,6 +67,14 @@ public static class DaServerHostingExtensions
             builder.Services.AddHostedService(sp => new NodeStatsLogger(sp.GetRequiredService<Node>(),
                 sp.GetRequiredService<ILogger<NodeStatsLogger>>(), statsInterval));
         builder.AddDaServerTelemetry();
+        // The service defaults Aspire's template would put in a project of its own: HttpClients the node's code makes
+        // resolve Aspire references (https+http://name) and retry transient failures with timeouts and a circuit breaker.
+        builder.Services.AddServiceDiscovery();
+        builder.Services.ConfigureHttpClientDefaults(static http =>
+        {
+            http.AddStandardResilienceHandler();
+            http.AddServiceDiscovery();
+        });
         return builder;
     }
 
@@ -93,9 +104,11 @@ public static class DaServerHostingExtensions
 
     /// <summary>
     /// Metrics (DaServer meter, .NET runtime) for a Prometheus scrape of <c>/metrics</c> on the HTTP plane, always (what
-    /// an HPA through the Prometheus adapter or KEDA reads); and logs and metrics over OTLP when
-    /// <c>OTEL_EXPORTER_OTLP_ENDPOINT</c> is set, which Aspire does for every resource (the dashboard shows them).
-    /// Observable instruments are read only when collected: an unscraped node pays nothing.
+    /// an HPA through the Prometheus adapter or KEDA reads); and logs, metrics and traces over OTLP when
+    /// <c>OTEL_EXPORTER_OTLP_ENDPOINT</c> is set, which Aspire does for every resource (the dashboard shows them). Traces
+    /// join the HTTP plane's requests, the HttpClient calls nodes make and the actor turns they cause on any node
+    /// (the <c>DaServer</c> activity source, A6). Observable instruments are read only when collected: an unscraped node
+    /// pays nothing, and an untraced one starts no span.
     /// </summary>
     private static void AddDaServerTelemetry(this IHostApplicationBuilder builder)
     {
@@ -107,6 +120,7 @@ public static class DaServerHostingExtensions
             logging.IncludeFormattedMessage = true;
             logging.IncludeScopes = true;
         });
+        telemetry.WithTracing(static tracing => tracing.AddSource(Tracing.SourceName).AddAspNetCoreInstrumentation().AddHttpClientInstrumentation());
         telemetry.UseOtlpExporter();
     }
 }
