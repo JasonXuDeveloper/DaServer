@@ -85,12 +85,15 @@ internal sealed class AdminTokenHandler(IOptionsMonitor<AuthenticationSchemeOpti
 {
     private readonly byte[]? _token = Token(node.Value.SigningSecret), _accepted = Token(node.Value.AcceptedSigningSecret);
 
-    private static byte[]? Token(string? secret) => secret is { Length: > 0 } ? Encoding.UTF8.GetBytes("Bearer " + AdminToken.For(secret)) : null;
+    private static byte[]? Token(string? secret) => secret is { Length: > 0 } ? Encoding.UTF8.GetBytes(AdminToken.For(secret)) : null;
 
     protected override Task<AuthenticateResult> HandleAuthenticateAsync()
     {
-        if (_token == null || Request.Headers.Authorization.ToString() is not { Length: > 0 } header) return Task.FromResult(AuthenticateResult.NoResult());
-        var given = Encoding.UTF8.GetBytes(header);
+        // The scheme is case-insensitive (RFC 9110); the token is compared in constant time.
+        if (_token == null || Request.Headers.Authorization.ToString() is not { Length: > 7 } header ||
+            !header.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+            return Task.FromResult(AuthenticateResult.NoResult());
+        var given = Encoding.UTF8.GetBytes(header.AsSpan(7).Trim().ToString());
         if (!CryptographicOperations.FixedTimeEquals(given, _token) &&
             (_accepted == null || !CryptographicOperations.FixedTimeEquals(given, _accepted)))
             return Task.FromResult(AuthenticateResult.Fail("Not the cluster's admin token"));

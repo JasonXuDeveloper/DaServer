@@ -36,8 +36,11 @@ internal static class RouteCheckStep
         foreach (var node in cluster.Nodes) projects.Add(node.Resource.GetProjectMetadata().ProjectPath);
 
         var task = await context.ReportingStep.CreateTaskAsync($"Checking the routes of {projects.Count} node projects", context.CancellationToken);
-        var listings = await Task.WhenAll(projects.Select(project => List(project, context.CancellationToken)));
-        var problems = RouteRules.Problems(listings.SelectMany(static lines => lines));
+        // One after another: the node projects share their references (contracts, DaServer), and builds running at once
+        // write the same outputs.
+        var routes = new List<string>();
+        foreach (string project in projects) routes.AddRange(await List(project, context.CancellationToken));
+        var problems = RouteRules.Problems(routes);
         if (problems.Count == 0)
         {
             await task.CompleteAsync("Every message has its handler", CompletionState.Completed, context.CancellationToken);
@@ -61,6 +64,7 @@ internal static class RouteCheckStep
                 Environment = { ["DaServer__ListRoutes"] = file },
             };
             using var process = Process.Start(start)!;
+            using var stop = cancellation.Register(static p => ((Process)p!).Kill(entireProcessTree: true), process); // no build left running
             var output = process.StandardOutput.ReadToEndAsync(cancellation);
             var errors = process.StandardError.ReadToEndAsync(cancellation);
             await process.WaitForExitAsync(cancellation);

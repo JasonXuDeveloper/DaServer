@@ -47,10 +47,17 @@ public static class DaServerHttpExtensions
     private static void ProbeAndExit(IConfiguration configuration, string section, string path)
     {
         int code = 1;
+        string? port = configuration[$"{section}:HttpPort"];
+        if (string.IsNullOrEmpty(port))
+        {
+            Console.Error.WriteLine($"Probe mode needs {section}:HttpPort: the node's HTTP port to ask");
+            Environment.Exit(code);
+        }
+
         try
         {
             using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(4) };
-            using var response = http.GetAsync($"http://127.0.0.1:{configuration[$"{section}:HttpPort"]}{path}").GetAwaiter().GetResult();
+            using var response = http.GetAsync($"http://127.0.0.1:{port}{path}").GetAwaiter().GetResult();
             if (response.IsSuccessStatusCode) code = 0;
         }
         catch (Exception e) when (e is HttpRequestException or TaskCanceledException or UriFormatException)
@@ -122,7 +129,9 @@ public static class DaServerHttpExtensions
     private static Origin OriginOf(Node node) => new(node.Id, ((Features.INodeContext)node).NewOriginId());
 
     private static TimeSpan BudgetOf(HttpContext http) =>
-        long.TryParse(http.Request.Headers[BudgetHeader], out long ms) && ms > 0 ? TimeSpan.FromMilliseconds(ms) : TimeSpan.Zero;
+        long.TryParse(http.Request.Headers[BudgetHeader], out long ms) && ms > 0
+            ? TimeSpan.FromMilliseconds(Math.Min(ms, int.MaxValue)) // the ingress caps it at the call timeout anyway
+            : TimeSpan.Zero;
 
     private static async ValueTask<IResult> Reply<TReply>(HttpContext http, ValueTask<TReply> call)
     {
