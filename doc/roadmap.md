@@ -749,8 +749,9 @@ and cards, a manual clock), fails before its fix, and passes after it.
       (the machine's drift); 0 B both. Kept: B5, the local branches deliver to different places (an actor's shard, an
       address's feature) and the group fan-out holds the member already, so one helper saves no line.
 - [ ] B11 sample nits (the next review round's sample pass)
-- [ ] Split `Node` into links and router; membership talks to the node
-      through an interface
+- [x] Split `Node` into links and router; membership talks to the node through an interface: links (handshake, one
+      link per node) in `Node.Links.cs`, routing in `Node.Routing.cs`; `Membership` sees only `IMembershipHost`
+      (identity, options, links, what to advertise and pulse, view changed, fenced, downed).
 - [ ] ECS misuse: the turn's caller (`Actor.TurnCaller`) as a component
 - [x] A handoff answer was dropped when the sender joined moments before: the shard read a view not listing it yet,
       gossip then published one that did and dropped its introduction, and the second read found neither. The old
