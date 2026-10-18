@@ -81,7 +81,11 @@ public sealed class FrameWriter : IDisposable
     public ReadOnlyMemory<byte> WrittenMemory => _out.WrittenMemory;
 
     /// <summary>Payload: after the header, before the trailers.</summary>
-    public ReadOnlySpan<byte> Payload => _out.WrittenSpan[FrameHeader.Size..(Length - FrameFlags.TrailerSize(_trailers))];
+    public ReadOnlySpan<byte> Payload =>
+        _out.WrittenSpan[FrameHeader.Size..(Length - FrameFlags.TrailerSize(_trailers) - FrameExtensions.SizeOf(_trailers, Frame, Length))];
+
+    /// <summary>The data of extension entry <paramref name="id"/> (<see cref="FrameExtensions"/>); false when the frame has none.</summary>
+    public bool TryGetExtension(byte id, out ReadOnlySpan<byte> data) => FrameExtensions.TryGet(Frame, _trailers, Length, id, out data);
 
     /// <summary>The call id trailer (<see cref="FrameFlags.HasCall"/>), 0 when the frame has none.</summary>
     public uint CallId => (_trailers & FrameFlags.HasCall) != 0 ? BinaryPrimitives.ReadUInt32LittleEndian(Frame[(Length - sizeof(uint))..]) : 0;
@@ -165,22 +169,42 @@ public sealed class FrameWriter : IDisposable
         BinaryPrimitives.WriteInt64LittleEndian(Trailer(FrameFlags.HasChain, sizeof(long), FrameFlags.HasCall | FrameFlags.HasOrigin), chain);
 
     /// <summary>
+    /// Add extension entry <paramref name="id"/> of <paramref name="size"/> bytes (at most 255; once per id), returned to
+    /// be filled: at the end of the extension block, which is created on first use in front of the fixed trailers.
+    /// </summary>
+    public Span<byte> AddExtension(byte id, int size)
+    {
+        int after = FrameFlags.TrailerSize(_trailers);
+        bool first = (_trailers & FrameFlags.HasExtensions) == 0;
+        int block = first ? sizeof(ushort) : FrameExtensions.SizeAt(Frame, Length - after);
+        var entry = Insert(after + (first ? 0 : sizeof(ushort)), 2 + size + (first ? sizeof(ushort) : 0));
+        _trailers |= FrameFlags.HasExtensions;
+        entry[0] = id;
+        entry[1] = (byte)size;
+        BinaryPrimitives.WriteUInt16LittleEndian(Bytes[(Length - after - sizeof(ushort))..], (ushort)(block + 2 + size));
+        return entry.Slice(2, size);
+    }
+
+    /// <summary>
     /// The bytes of trailer <paramref name="flag"/>, inserted on first use in front of the trailers named by
     /// <paramref name="following"/> (which move back by <paramref name="size"/>).
     /// </summary>
     private Span<byte> Trailer(byte flag, int size, byte following)
     {
         int after = FrameFlags.TrailerSize((byte)(_trailers & following));
-        if ((_trailers & flag) == 0)
-        {
-            _out.GetSpan(size);
-            _out.Advance(size);
-            var bytes = Bytes;
-            bytes.Slice(Length - size - after, after).CopyTo(bytes[(Length - after)..]);
-            _trailers |= flag;
-        }
+        if ((_trailers & flag) != 0) return Bytes.Slice(Length - after - size, size);
+        _trailers |= flag;
+        return Insert(after, size);
+    }
 
-        return Bytes.Slice(Length - after - size, size);
+    /// <summary><paramref name="size"/> bytes inserted in front of the last <paramref name="after"/> (which move back).</summary>
+    private Span<byte> Insert(int after, int size)
+    {
+        _out.GetSpan(size);
+        _out.Advance(size);
+        var bytes = Bytes;
+        bytes.Slice(Length - size - after, after).CopyTo(bytes[(Length - after)..]);
+        return bytes.Slice(Length - after - size, size);
     }
 
     /// <summary>Bytes already written at <paramref name="offset"/> (to patch a length written ahead of its data).</summary>

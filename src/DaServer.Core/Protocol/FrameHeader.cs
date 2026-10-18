@@ -41,10 +41,17 @@ public static class FrameFlags
     /// </summary>
     public const byte HasChain = 4;
 
-    /// <summary>The flags that name trailers.</summary>
-    public const byte Trailers = HasCall | HasOrigin | HasChain;
+    /// <summary>
+    /// After the payload, before the other trailers: optional metadata a reader may not know (<see cref="FrameExtensions"/>),
+    /// entries of [id byte][length byte][data] closed by the block's uint16 size. A reader skips the entries it does not
+    /// know, so new metadata needs no new link protocol.
+    /// </summary>
+    public const byte HasExtensions = 8;
 
-    /// <summary>Bytes of the trailers a frame with <paramref name="flags"/> ends with.</summary>
+    /// <summary>The flags that name trailers.</summary>
+    public const byte Trailers = HasCall | HasOrigin | HasChain | HasExtensions;
+
+    /// <summary>Bytes of the fixed-size trailers (all but the extensions) a frame with <paramref name="flags"/> ends with.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int TrailerSize(byte flags) =>
         ((flags & HasCall) != 0 ? sizeof(uint) : 0) + ((flags & HasOrigin) != 0 ? Origin.Size : 0) +
@@ -125,7 +132,7 @@ public struct FrameHeader
     /// <summary>The payload of a frame: between the header and the trailers.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static ReadOnlySpan<byte> PayloadOf(in FrameHeader header, ReadOnlySpan<byte> frame) =>
-        frame[Size..(header.Length - FrameFlags.TrailerSize(header.Flags))];
+        frame[Size..(header.Length - FrameFlags.TrailerSize(header.Flags) - FrameExtensions.SizeOf(header.Flags, frame, header.Length))];
 
     /// <summary>
     /// Read the frame at the start of <paramref name="data"/>: true when it is there whole. False when it is not yet,
