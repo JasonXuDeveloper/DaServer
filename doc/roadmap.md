@@ -516,8 +516,12 @@ in separate commits.
       registered by the generator), in-flight requests finish on the old delegates; the unload test proves no routing
       or System.Text.Json cache keeps the old context alive (JSON through source-generated contexts in Logic). Benchmark
       the hot path before and after. (a studied game server, ET)
-- [ ] N11 Generated filters: `[Filter<T>]` with static `Before`/`After` inlined into the dispatchers (rate limits on
-      `FromClient`, auth, metrics), nothing for handlers without filters. (Orleans call filters)
+- [x] N11 Declared filters: `[Filter]` on a static `RpcStatus M(object target, in TMessage message, in CallContext
+      context)` (that message type) or on an `IMessageFilter` class (every message) is registered by the assembly's
+      generated registration: rate limits, authorization and auditing without startup code; DAS021 for a wrong shape
+      (`FiltersAreRegisteredWithTheAssembly`, `AFilterAttributeRegistersItself`). Registered rather than inlined into
+      the dispatchers: a filter in another assembly (shared rules) applies too, and a message without filters still
+      costs two length checks. (Orleans call filters)
 - Not adopted: Orleans interface proxies, per-activation Task scheduling, grain directory / repartitioning,
   transactions; ET location server, coroutine locks, class entity trees, global singletons; a studied game server stop-the-world
   reload with forced GC, manual dirty marking. GM commands (N10) are out of scope for now.

@@ -43,7 +43,7 @@ src/DaServer/              server runtime (net11.0): Runtime/ Cluster/ Rpc/ Net/
   Runtime/Systems/         runtime systems: Dispatch, Turn, ServiceCall, Removal, Unload, Mailbox (ShardMessages group),
                            Rebalance (ShardRebalance), Idle and LongTurn (ShardIdleScan); each reacts to one lifecycle tag (ADR-037)
 src/DaServer.Generator/    incremental generators (AskGenerator, RegistrationGenerator, PolyfillGenerator) + DaServerAnalyzer
-                           (DAS001-020); WireManifest.cs: the wire.manifest model over Nino's NinoTypeLayout (ADR-076);
+                           (DAS001-021); WireManifest.cs: the wire.manifest model over Nino's NinoTypeLayout (ADR-076);
                            Shapes.cs reads symbols once for both, so "skipped by the generator" == "reported"
 src/DaServer.WireTool/     writes a project's wire.manifest from its built assembly (the analyzer's own WireManifest)
 src/DaServer.Hosting/      Generic Host integration, configuration, OpenTelemetry (OTLP when configured), shutdown
@@ -82,7 +82,7 @@ doc/                       requirements.md, design.md, decisions.md, roadmap.md
    thin typed wrappers; no copy-pasted variants.
 6. **Developers only write business code**: messages (`[NinoType, Message]` structs, `IRequest<TReply>`,
    `[FromClient]`/`[ToClient]` when clients send or receive them), actors/services with `[Handle]` methods (ADR-035), EasyEcs systems with `[ForEach]`
-   methods. Registration, routing, serialization, placement, orchestration are the framework's job (a node's
+   methods, `[Filter]` methods for policy. Registration, routing, serialization, placement, orchestration are the framework's job (a node's
    Program.cs is five lines, ADR-021); if users would write the same lines twice, generate them.
 7. **ECS all the way down**: the runtime follows the same ECS rules as user code (EasyEcs `doc/ecs-principles.md`):
    actors are entities, per-actor runtime state is components, per-shard state is singletons, each runtime system does

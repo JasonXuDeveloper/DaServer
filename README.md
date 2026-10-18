@@ -24,7 +24,7 @@ locally and publishes it.
 - **Reliable links, bounded work.** One ordered stream per node pair resumes after a dropped connection (no loss, no
   duplicate). Requests carry their caller's deadline, and work nobody waits for is dropped. Full dispatch queues and mailboxes answer
   `Overloaded` instead of growing; a client that cannot keep up is disconnected and resynchronizes when it resumes.
-- **Misuse is a build error.** Analyzers DAS001–DAS020 cover handlers, messages, wire types, id collisions, message
+- **Misuse is a build error.** Analyzers DAS001–DAS021 cover handlers, messages, wire types, id collisions, message
   flow, stateless actors and services, shared logic, replies sent later, waits and threads on shards, components apart
   from logic, persisted and handed-off components, placement and wire layouts (the committed `wire.manifest`), and
   EECS001–EECS008 cover ECS, including the ECS principles.
@@ -79,6 +79,7 @@ Everything a developer declares is one of these. The message type alone decides 
 | `[NinoType] partial record struct D` | Data inside messages (fields, replies), never sent on its own. Anything crossing the wire is `[NinoType]` or an unmanaged struct (an id). A list in a message goes in a `[NinoPooled]` class the handler returns (`ReturnToPool()`). |
 | `... : IRequest<TReply>` | A request: answered with one `TReply`. |
 | `[Handle] R On(M m)` | A handler in an actor or service: `void`/`Reply`, or the reply/`Reply<TReply>` of a request (`async Reply<T>` handlers allocate nothing when they await). |
+| `[Filter] static RpcStatus F(object target, in M m, in CallContext c)` | Policy before handlers (rate limits, authorization): `Ok` lets `M` through, another status refuses it. On an `IMessageFilter` class: every message. Registered by the generated code. |
 | `partial class S : EcsSystem` with `[ForEach]` | Per-tick logic over every matching entity of the shard. |
 
 | Call | Target |

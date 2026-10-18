@@ -330,9 +330,11 @@ a building block for admission tokens). Timers are data too: `TimerWheel<T>` (a 
 O(1) schedule, cancel and fire, allocation-free) is advanced by its owner's loop.
 
 On the shard, generated dispatchers run the dispatch-stage filters after deserializing and before the handler
-(registered process-wide, the application's policy on every node of the process: `MessageFilters.Register<T>(filter)`
-per message type, `MessageFilters.Register(IMessageFilter)` for all, whose `Admit` runs for every message; disposing the
-registration removes it): a status other than `Ok` refuses the message (a request gets it as its reply). Without
+(process-wide, the application's policy on every node of the process). Users declare them: `[Filter]` on a static
+`RpcStatus M(object target, in TMessage message, in CallContext context)` filters that message type, on an
+`IMessageFilter` class every message; the assembly's generated registration registers them, so there is no startup
+code (DAS021 reports a wrong shape). Features and tests register at run time (`MessageFilters.Register<T>(filter)`,
+`MessageFilters.Register(IMessageFilter)`; disposing the registration removes it): a status other than `Ok` refuses the message (a request gets it as its reply). Without
 filters the check is two array lengths.
 
 ### HTTP plane
@@ -440,7 +442,7 @@ What the generators write:
 | `RegistrationGenerator` | `Registration_{Assembly}`: registrations of referenced assemblies first, then `[FromClient]` messages, client handler classes, actors and services (one dispatcher per `[Handle]` method), every `EcsSystem`; run once by its static constructor (ADR-012) |
 | `PolyfillGenerator` | `IsExternalInit` for contract assemblies built for netstandard2.1 |
 | EasyEcs `SystemGenerator` | `[ForEach]` struct jobs (components, singletons, entity, world parameters) and `GeneratedUpdate` |
-| Analyzers | DAS001–DAS020 (handlers, messages, wire types, id collisions, constructors, message flow, stateless actors, services and systems, address kinds, synchronous waits on shard threads, shared logic, ReplyWhen placement, systems that ask, components apart from logic, persisted and handed-off components, work started off the shard thread, placement on non-id types, wire layouts against the committed manifest, collections held directly by client messages, a session disconnected by an actor without `DisconnectSession`), EECS001–EECS008 (ECS rules) |
+| Analyzers | DAS001–DAS021 (handlers, messages, wire types, id collisions, constructors, message flow, stateless actors, services and systems, address kinds, synchronous waits on shard threads, shared logic, ReplyWhen placement, systems that ask, components apart from logic, persisted and handed-off components, work started off the shard thread, placement on non-id types, wire layouts against the committed manifest, collections held directly by client messages, a session disconnected by an actor without `DisconnectSession`, misshapen filters), EECS001–EECS008 (ECS rules) |
 
 The generators follow the incremental-generator rules: syntax-only predicates, equatable models, tracking names, and
 no diagnostics. There is no reflection scanning, no configuration string and no hand-written registration list. A
