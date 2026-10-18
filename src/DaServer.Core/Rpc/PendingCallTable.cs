@@ -6,7 +6,8 @@ namespace DaServer.Rpc;
 /// use, not the bound: slots live in chunks of doubling size (<see cref="FirstChunk"/>, then twice as many each),
 /// allocated as the number of calls in flight first reaches them, so a client with a couple of calls out holds
 /// <see cref="FirstChunk"/> slots and a busy table about twice its peak; free slots form a stack threaded through
-/// the slots themselves. An entry is 32 bytes (two per cache line): the call id fits an int, and the deadline is the low
+/// the slots themselves, in stripes: each thread pushes the slots it frees onto its own stripe and pops from it first,
+/// so threads do not all swap one head on every call and reply. An entry is 32 bytes (two per cache line): the call id fits an int, and the deadline is the low
 /// 32 bits of <see cref="Platform.Milliseconds"/>, compared with wrap-around (deadlines are seconds away, not weeks).
 /// </summary>
 internal sealed class PendingCallTable
@@ -30,13 +31,19 @@ internal sealed class PendingCallTable
     private readonly uint _indexMask;
     private readonly int _size;
     private int _allocated; // slots handed out at least once (the prefix sweeps scan), at most _size
-    // (version << 32) | (index + 1) of the top free slot; the version defeats ABA. Every call and reply swaps it: alone on
-    // its cache line, off the fields every call reads.
-    private PaddedLong _freeHead;
+    // Per stripe, (version << 32) | (index + 1) of the top free slot; the version defeats ABA. Calls and replies swap
+    // them: each alone on its cache line, off the fields every call reads.
+    private readonly PaddedLong[] _freeHeads;
+    private readonly int _stripeMask;
 
     /// <param name="indexBits">log2 of the max number of concurrent calls (default 2^16 = 65536).</param>
-    public PendingCallTable(int indexBits = 16)
+    /// <param name="stripes">Free stacks (a power of two): one per thread that calls at once is ideal; a client's table, used by
+    /// one or two threads and numerous in a swarm, takes one.</param>
+    public PendingCallTable(int indexBits = 16, int stripes = 1)
     {
+        if (stripes < 1 || (stripes & (stripes - 1)) != 0) throw new ArgumentOutOfRangeException(nameof(stripes));
+        _freeHeads = new PaddedLong[stripes];
+        _stripeMask = stripes - 1;
         if (indexBits < 4 || indexBits > 24) throw new ArgumentOutOfRangeException(nameof(indexBits));
         _indexBits = indexBits;
         _size = 1 << indexBits;
@@ -101,11 +108,21 @@ internal sealed class PendingCallTable
         return true;
     }
 
+    /// <summary>A free slot: from this thread's stripe first, then from the others in turn.</summary>
     private bool TryPopFree(out int index)
+    {
+        int stripe = Environment.CurrentManagedThreadId;
+        for (int i = 0; i <= _stripeMask; i++)
+            if (TryPop(ref _freeHeads[(stripe + i) & _stripeMask].Value, out index)) return true;
+        index = -1;
+        return false;
+    }
+
+    private bool TryPop(ref long freeHead, out int index)
     {
         while (true)
         {
-            long head = Volatile.Read(ref _freeHead.Value);
+            long head = Volatile.Read(ref freeHead);
             int top = (int)head - 1;
             if (top < 0)
             {
@@ -115,7 +132,7 @@ internal sealed class PendingCallTable
 
             // A stale read of the link is harmless: the slot was popped meanwhile, which changed the version.
             int next = Volatile.Read(ref At(top).NextFree);
-            if (Interlocked.CompareExchange(ref _freeHead.Value, (head >> 32) + 1 << 32 | (uint)next, head) == head)
+            if (Interlocked.CompareExchange(ref freeHead, (head >> 32) + 1 << 32 | (uint)next, head) == head)
             {
                 index = top;
                 return true;
@@ -123,14 +140,16 @@ internal sealed class PendingCallTable
         }
     }
 
+    /// <summary>Free a slot onto this thread's stripe.</summary>
     private void PushFree(int index)
     {
         ref var e = ref At(index);
+        ref long freeHead = ref _freeHeads[Environment.CurrentManagedThreadId & _stripeMask].Value;
         while (true)
         {
-            long head = Volatile.Read(ref _freeHead.Value);
+            long head = Volatile.Read(ref freeHead);
             Volatile.Write(ref e.NextFree, (int)head);
-            if (Interlocked.CompareExchange(ref _freeHead.Value, (head >> 32) + 1 << 32 | (uint)(index + 1), head) == head)
+            if (Interlocked.CompareExchange(ref freeHead, (head >> 32) + 1 << 32 | (uint)(index + 1), head) == head)
                 return;
         }
     }

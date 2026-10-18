@@ -244,11 +244,12 @@ public class InfrastructureTests
         Assert.That(full.TryRegister(held, deadlineMs: 0, out _), Is.False);
     }
 
-    [Test]
-    public void PendingCallTableHandsEachFreeSlotToOneCallerUnderContention()
+    [TestCase(1)]
+    [TestCase(8)]
+    public void PendingCallTableHandsEachFreeSlotToOneCallerUnderContention(int stripes)
     {
         const int threads = 8, rounds = 50_000, inFlight = 20;
-        var table = new PendingCallTable(10);
+        var table = new PendingCallTable(10, stripes);
         var held = PendingCall<int>.Rent(null);
         int duplicates = 0, failures = 0;
         Parallel.For(0, threads, _ =>
@@ -266,6 +267,35 @@ public class InfrastructureTests
         Assert.That(failures, Is.Zero, "8 x 20 calls fit in 1024 slots");
         Assert.That(duplicates, Is.Zero, "a slot was handed to two calls");
         Assert.That(table.Capacity, Is.LessThanOrEqualTo(2 * threads * inFlight + PendingCallTable.FirstChunk));
+    }
+
+    [Test]
+    public void SlotsFreedOnOtherThreadsAreReusedNotGrown()
+    {
+        // Callers register on their threads, replies free the slots on others (IO threads): each stripe fills on the
+        // freeing threads' side and the callers take from there, so the table does not grow past its calls in flight.
+        const int callers = 4, rounds = 2_000, inFlight = 16;
+        var table = new PendingCallTable(12, stripes: 8);
+        var held = PendingCall<int>.Rent(null);
+        var replies = new System.Collections.Concurrent.BlockingCollection<uint>(callers * inFlight);
+        var replier = Task.Run(() =>
+        {
+            foreach (uint id in replies.GetConsumingEnumerable()) table.Take(id);
+        });
+        Parallel.For(0, callers, _ =>
+        {
+            for (int round = 0; round < rounds; round++)
+                for (int i = 0; i < inFlight; i++)
+                {
+                    uint id;
+                    while (!table.TryRegister(held, deadlineMs: 0, out id)) Thread.Yield();
+                    replies.Add(id);
+                }
+        });
+        replies.CompleteAdding();
+        replier.Wait();
+        Assert.That(table.Capacity, Is.LessThanOrEqualTo(2 * (callers * inFlight + callers) + PendingCallTable.FirstChunk),
+            "slots freed on the replier's stripe were taken again");
     }
 
     [Test]

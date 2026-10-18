@@ -31,7 +31,7 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
         Options = options;
         Id = BitConverter.ToUInt64(RandomNumberGenerator.GetBytes(8)) | 1;
         Logger = (options.LoggerFactory ?? NullLoggerFactory.Instance).CreateLogger("DaServer.Node." + options.Name);
-        Pending = new PendingCallTable(options.PendingCallBits);
+        Pending = new PendingCallTable(options.PendingCallBits, Stripes()); // shards, IO threads and outside callers at once
         Membership = new Membership(this);
         _sessionNodes = new SessionNodes(this);
         _slots = new SlotAllocation(this);
@@ -251,6 +251,9 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
     /// clients and traffic only to ready nodes).
     /// </summary>
     public bool IsReady => Volatile.Read(ref _started) == 1 && View.TryGetMember(Id, out var self) && self.Status == MemberStatus.Up;
+
+    /// <summary>Free stacks of the call table: the processor count rounded up to a power of two, at most 16.</summary>
+    private static int Stripes() => (int)Math.Min(16, System.Numerics.BitOperations.RoundUpToPowerOf2((uint)Environment.ProcessorCount));
 
     /// <summary>Hosted handler type with placement/routing id <paramref name="handlerTypeId"/>, or null.</summary>
     internal HandlerTypeInfo? HandlerTypeById(uint handlerTypeId) =>
