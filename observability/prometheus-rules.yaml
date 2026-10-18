@@ -1,0 +1,68 @@
+# Alert rules for a DaServer cluster scraped by Prometheus (every node serves /metrics on its HTTP port).
+# Load them with `rule_files:` in prometheus.yml, or wrap the group in a PrometheusRule for the Prometheus Operator.
+# Thresholds are starting points: tune them to the application's load.
+groups:
+  - name: daserver
+    rules:
+      - alert: DaServerShardStalled
+        expr: max by (node) (daserver_shard_stalled) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "A shard of {{ $labels.node }} is stuck in one pass"
+          description: "A shard thread has run one pass longer than StallAfter (blocking IO or an endless loop in a handler or system). Liveness (/alive) fails too, so the platform restarts the node."
+
+      - alert: DaServerMembersDisagree
+        expr: max(daserver_cluster_members) != min(daserver_cluster_members)
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Nodes see different numbers of members"
+          description: "Views have not converged for 2 minutes: a network split, a node that cannot reach the others, or nodes joining and leaving in a loop. Compare /admin/membership of the nodes."
+
+      - alert: DaServerMessagesDropped
+        expr: sum by (node, reason) (rate(daserver_messages_dropped_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.node }} drops messages ({{ $labels.reason }})"
+          description: "queue_full: a shard's dispatch queue is full (the node is overloaded); mailbox_full: an actor's mailbox is full (a hot actor); expired: requests waited past their caller's timeout."
+
+      - alert: DaServerHandlerFailures
+        expr: sum by (node) (rate(daserver_handler_failed_total[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Handlers on {{ $labels.node }} keep failing"
+          description: "More than one handler a second throws: a poison message or a broken dependency. The node's logs name the actor and message."
+
+      - alert: DaServerShardsSaturated
+        expr: avg by (node) (daserver_shard_busy_ratio) > 0.85
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.node }}'s shards are busy {{ $value | humanizePercentage }} of the time"
+          description: "The node has little headroom: add nodes to its group (the default scaling metric), or shards if its cores are idle."
+
+      - alert: DaServerTicksLate
+        expr: sum by (node) (rate(daserver_shard_tick_overruns_total[5m])) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.node }} cannot keep its tick rate"
+          description: "Ticks start a whole interval late: systems take longer than the tick, or the node lacks CPU."
+
+      - alert: DaServerGcPauses
+        expr: sum by (instance) (rate(dotnet_gc_pause_time_seconds_total[5m])) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instance }} spends over 5% of its time in GC pauses"
+          description: "Something allocates on a hot path, or the heap is near its limit. Compare dotnet_gc_heap_total_allocated_bytes_total over time."
