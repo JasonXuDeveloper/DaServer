@@ -193,7 +193,8 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
         if (info.ReferencesRuntime) sb.Append("using DaServer.Runtime;\n");
         string className = $"Registration_{info.AssemblyHint}";
         sb.Append($"\n[assembly: global::DaServer.GeneratedRegistration(typeof(global::DaServer.Generated.{className}))]\n");
-        sb.Append("\nnamespace DaServer.Generated;\n\n");
+        sb.Append('\n');
+        string close = OpenNamespace(sb, "DaServer.Generated", info.ReferencesRuntime); // C# 9 where Unity may build it
         sb.Append("/// <summary>Registers this assembly's DaServer client messages, handler types and systems (generated).</summary>\n");
         BeginRegistration(sb, className, info.ModuleInitializer);
 
@@ -225,7 +226,7 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
                     break;
             }
 
-            sb.Append('[');
+            sb.Append(info.ReferencesRuntime ? "[" : "new MessageHandler[] {");
             foreach (var h in t.Handlers)
             {
                 // Read the message straight from the frame (a payload that is not one is refused before the handler runs),
@@ -245,11 +246,12 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
                 sb.Append("            }),");
             }
 
-            sb.Append(t.Handlers.Length > 0 ? "\n        ]" : "]");
+            sb.Append(t.Handlers.Length > 0 ? "\n        " : "").Append(info.ReferencesRuntime ? "]" : "}");
             sb.Append(t.Kind == HostedKind.ClientHandler ? ");\n" : "));\n");
         }
 
         EndRegistration(sb);
+        sb.Append(close);
         return sb.ToString();
     }
 

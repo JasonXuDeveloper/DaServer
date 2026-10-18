@@ -25,14 +25,15 @@ public sealed class AskGenerator : IIncrementalGenerator
             .Collect()
             .SelectMany(static (all, _) => all.Distinct())
             .WithTrackingName("Requests");
-        context.RegisterSourceOutput(requests, static (spc, request) =>
-            spc.AddSource($"DaServer.Ask.{HintName(request!.FullName)}.g.cs", SourceText.From(EmitAsk(request), Encoding.UTF8)));
+        var server = context.CompilationProvider.Select(static (c, _) => IsServer(c));
+        context.RegisterSourceOutput(requests.Combine(server), static (spc, pair) =>
+            spc.AddSource($"DaServer.Ask.{HintName(pair.Left!.FullName)}.g.cs", SourceText.From(EmitAsk(pair.Left!, pair.Right), Encoding.UTF8)));
     }
 
-    private static string EmitAsk(RequestModel r)
+    private static string EmitAsk(RequestModel r, bool server)
     {
         var sb = new StringBuilder(Header);
-        if (r.Namespace.Length > 0) sb.Append($"namespace {r.Namespace};\n\n");
+        string close = OpenNamespace(sb, r.Namespace, server);
         string access = r.Public ? "public" : "internal";
         string reply = $"global::DaServer.Reply<{r.ReplyType}>";
         sb.Append($"/// <summary>Typed <c>Ask</c> of <see cref=\"{r.FullName.Replace("global::", "")}\"/> (generated).</summary>\n");
@@ -45,6 +46,7 @@ public sealed class AskGenerator : IIncrementalGenerator
         sb.Append("    /// <summary>Ask the service handling the request (from a client: the actor bound to its session, else the service).</summary>\n");
         sb.Append($"    public static {reply} Ask(this global::DaServer.IMessageSender sender, in {r.FullName} request) =>\n");
         sb.Append($"        sender.Ask<{r.FullName}, {r.ReplyType}>(in request);\n}}\n");
+        sb.Append(close);
         return sb.ToString();
     }
 }

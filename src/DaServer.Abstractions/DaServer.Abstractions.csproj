@@ -13,9 +13,14 @@
 
     <!-- The generators and analyzers ship in this package, so every assembly using DaServer runs them. -->
     <ItemGroup>
+        <!-- Two builds of the same sources, like Nino's: Roslyn 5.9 for current SDKs, Roslyn 4.3 for Unity and older
+             compilers; NuGet gives each compiler the newest one it can run. -->
         <ProjectReference Include="..\DaServer.Generator\DaServer.Generator.csproj" ReferenceOutputAssembly="false" PrivateAssets="all" />
+        <ProjectReference Include="..\DaServer.Generator.Roslyn4.3\DaServer.Generator.Roslyn4.3.csproj" ReferenceOutputAssembly="false" PrivateAssets="all" />
         <None Include="..\DaServer.Generator\bin\$(Configuration)\netstandard2.0\DaServer.Generator.dll" Pack="true"
-              PackagePath="analyzers/dotnet/cs" Visible="false" />
+              PackagePath="analyzers/dotnet/roslyn5.9/cs" Visible="false" />
+        <None Include="..\DaServer.Generator.Roslyn4.3\bin\$(Configuration)\netstandard2.0\DaServer.Generator.dll" Pack="true"
+              PackagePath="analyzers/dotnet/roslyn4.3/cs" Visible="false" />
         <!-- The wire manifest's writer (dotnet build -p:UpdateWireManifest=true), run by the buildTransitive targets. Built
              with the solution's own global properties (no TargetFramework of ours): one instance, not two writing the same
              output in parallel. -->

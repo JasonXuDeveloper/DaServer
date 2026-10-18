@@ -54,6 +54,38 @@ public class GeneratorTests
     }
 
     [Test]
+    public void SharedAndClientCodeIsGeneratedAsCSharp9()
+    {
+        // Contracts and client code also build in Unity (C# 9, the Roslyn 4.3 build of the generators): what the
+        // generators emit for an assembly without the server runtime must compile as C# 9.
+        string[] server = ["DaServer.dll", "DaServer.Hosting.dll", "DaServer.Testing.dll", "DaServer.Simulation.dll",
+            "DaServer.Persistence.PostgreSql.dll", "DaServer.Aspire.dll", "EasyEcs.dll"];
+        var references = References.Where(r => !server.Contains(System.IO.Path.GetFileName(r.Display))).ToArray();
+        var csharp9 = new CSharpParseOptions(LanguageVersion.CSharp9);
+        var source = CSharpSyntaxTree.ParseText("""
+            using DaServer;
+            using Nino.Core;
+
+            namespace Game
+            {
+                [NinoType, Message] public partial struct Price : IRequest<int> { public int Count; }
+                [NinoType, Message, FromClient] public partial struct Move { public float X; }
+                [NinoType, Message, ToClient] public partial struct Shown { public int N; }
+                public sealed class Pushes { [Handle] public void On(Shown m) { } }
+            }
+            """, csharp9);
+        var compilation = CSharpCompilation.Create("SharedTest", [source], references,
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, nullableContextOptions: NullableContextOptions.Enable));
+        CSharpGeneratorDriver.Create([new AskGenerator().AsSourceGenerator(), new RegistrationGenerator().AsSourceGenerator(),
+                new PolyfillGenerator().AsSourceGenerator()], parseOptions: csharp9)
+            .RunGeneratorsAndUpdateCompilation(compilation, out var output, out _);
+        var generated = output.SyntaxTrees.Skip(1).ToArray();
+        Assert.That(generated.Select(t => t.ToString()), Has.Some.Contains("PriceAsk").And.Some.Contains("RegisterHandlers"));
+        var errors = output.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error).Select(d => d.ToString()).ToArray();
+        Assert.That(errors, Is.Empty);
+    }
+
+    [Test]
     public async Task ValidMessagesAndHandlersCompile()
     {
         var (sources, diagnostics) = await Run("""

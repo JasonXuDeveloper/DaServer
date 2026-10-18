@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <!-- The generators and analyzer built against Roslyn 4.3, the oldest Unity supports: the same sources as
+         DaServer.Generator (ROSLYN4_3 marks what newer Roslyn APIs it goes without). Packed by DaServer.Abstractions into
+         analyzers/dotnet/roslyn4.3/cs; compilers that can run the Roslyn 5.9 build load that one instead. -->
+    <PropertyGroup>
+        <TargetFramework>netstandard2.0</TargetFramework>
+        <Nullable>enable</Nullable>
+        <IsRoslynComponent>true</IsRoslynComponent>
+        <EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
+        <IsPackable>false</IsPackable>
+        <AssemblyName>DaServer.Generator</AssemblyName>
+        <RootNamespace>DaServer.Generator</RootNamespace>
+        <DefineConstants>$(DefineConstants);ROSLYN4_3</DefineConstants>
+        <NoWarn>$(NoWarn);RS2008</NoWarn>
+        <DaServerWireManifestSkip>true</DaServerWireManifestSkip>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <Compile Include="..\DaServer.Generator\**\*.cs" Exclude="..\DaServer.Generator\bin\**;..\DaServer.Generator\obj\**"
+                 Link="%(RecursiveDir)%(Filename)%(Extension)" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.3.1" PrivateAssets="all"/>
+        <PackageReference Include="Microsoft.CodeAnalysis.Analyzers" Version="5.9.0" PrivateAssets="all"/>
+    </ItemGroup>
+
+</Project>

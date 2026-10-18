@@ -16,7 +16,7 @@
         <PackageReference Include="NUnit3TestAdapter" Version="5.2.0" />
         <PackageReference Include="NUnit.Analyzers" Version="4.15.0" />
         <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="10.0.13" />
-        <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0" />
+        <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.9.0" />
         <!-- Nino's generator, run on in-memory compilations so the wire manifest tests read its layouts. -->
         <PackageReference Include="Nino.Generator" Version="$(NinoVersion)" GeneratePathProperty="true" />
         <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
