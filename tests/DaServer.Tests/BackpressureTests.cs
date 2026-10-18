@@ -79,6 +79,20 @@ public class BackpressureTests : ClusterTest
     }
 
     [Test]
+    public async Task AStopWaitingForATurnNeitherSpinsNorReportsAStall()
+    {
+        // One shard drains at once, the other waits 2 s for a turn to end: the drained shard is not reported stalled
+        // (the fault log fails the test), and the waiting one sleeps until the turn's completion wakes it.
+        var node = await Start("single", shards: 2);
+        _ = node.Ask(new LoopId(1), new Hold(2_000)).AsTask();
+        await Task.Delay(100);
+        var cpu = System.Diagnostics.Process.GetCurrentProcess().TotalProcessorTime;
+        await Stop(node);
+        var used = System.Diagnostics.Process.GetCurrentProcess().TotalProcessorTime - cpu;
+        Assert.That(used, Is.LessThan(TimeSpan.FromSeconds(1)), "the stopping shard spun instead of sleeping");
+    }
+
+    [Test]
     public async Task AStopThatExceedsItsBudgetReportsAndReturns()
     {
         Faults.Allow("BudgetExceeded"); // what the test provokes
