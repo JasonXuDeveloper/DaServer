@@ -31,6 +31,29 @@ public class CallCycleTests : ClusterTest
     }
 
     [Test]
+    public async Task AnOnLoadAskingTheActorWhoseRequestLoadsItFailsAtOnce()
+    {
+        // 1,000 asks 2,000, whose OnLoad asks 1,000 back: 1,000's turn waits for that load.
+        var node = await Start("single");
+        var watch = Stopwatch.StartNew();
+        var error = Assert.ThrowsAsync<RpcException>(async () => await node.Ask(new LoopId(1_000), new Hop([1_000, 2_000], 0, ViaService: false)))!;
+        Assert.That(watch.Elapsed, Is.LessThan(Timeout / 5), "failed at once, not at the call timeout");
+        Assert.That(error.Message, Does.Contain(nameof(RpcStatus.CallCycle)), "the load failed on the cycle");
+        Assert.That(await node.Ask(new LoopId(1_000), new Hold(0)), Is.Zero, "1,000 is free again");
+    }
+
+    [Test]
+    public async Task AnActorAskedBackWhileItUnloadsFailsAtOnce()
+    {
+        // 3,000 unloads when idle; its OnUnload asks 4,000, which asks 3,000 back: queued, it would wait for the unload.
+        var node = await Start("single");
+        Assert.That(await node.Ask(new LoopId(3_000), new Hold(0)), Is.Zero);
+        var watch = Stopwatch.StartNew();
+        await Eventually(() => Observed.Events.Contains("looper-unloaded:3000"), "the unload finished");
+        Assert.That(watch.Elapsed, Is.LessThan(Timeout / 2), "the cycle failed at once, not at the call timeout");
+    }
+
+    [Test]
     public async Task ChainsWithoutACycleAndOtherCallersStillWait()
     {
         var node = await Start("single");

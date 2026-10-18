@@ -40,7 +40,7 @@ internal static class ShardDispatch
         else if (!OwnsHere(world, node, handlerType.Id, header.Key))
             node.Forward(frame, sink);
         else
-            Deliver(world, ActorOf(world, handlerType, header.Key), new Envelope(frame, sink));
+            Load(world, handlerType, header.Key, frame, sink);
     }
 
     /// <summary>
@@ -65,20 +65,22 @@ internal static class ShardDispatch
     private static bool TryGetLoaded(World world, uint handlerTypeId, long key, out Entity actor) =>
         world.GetSingleton<ActorDirectory>().Actors.TryGetValue(new ActorAddress(handlerTypeId, key), out actor);
 
-    /// <summary>The loaded actor of (<paramref name="handlerType"/>, <paramref name="key"/>) on this shard, loaded on first use.</summary>
-    private static Entity ActorOf(World world, HandlerTypeInfo handlerType, long key)
+    /// <summary>
+    /// Load actor (<paramref name="handlerType"/>, <paramref name="key"/>) for its first message. The message is queued
+    /// first, and the load runs in its call chain: <see cref="Actor.OnLoad"/> calling an actor that waits for this
+    /// message fails with <see cref="RpcStatus.CallCycle"/> at once instead of at the call timeout (ADR-059).
+    /// </summary>
+    private static void Load(World world, HandlerTypeInfo handlerType, long key, FrameWriter frame, IReplySink? sink)
     {
         var id = new ActorAddress(handlerType.Id, key);
-        var actors = world.GetSingleton<ActorDirectory>().Actors;
-        if (!actors.TryGetValue(id, out var entity))
-        {
-            actors[id] = entity = Create(world, handlerType, id);
-            var actor = entity.Get<ActorRef>().Actor;
-            if (Handoff.PreviousOwner(world, handlerType.Id, key) is { } from) Handoff.Await(world, entity, from);
-            else BeginLoad(world, entity, actor);
-        }
-
-        return entity;
+        var entity = Create(world, handlerType, id);
+        world.GetSingleton<ActorDirectory>().Actors[id] = entity;
+        var actor = entity.Get<ActorRef>().Actor;
+        long chain = ChainOf(world, frame);
+        Deliver(world, entity, new Envelope(frame, sink));
+        actor.TurnChain = chain; // no turn yet: kept for OnLoad (BeginLive)
+        if (Handoff.PreviousOwner(world, handlerType.Id, key) is { } from) Handoff.Await(world, entity, from);
+        else BeginLoad(world, entity, actor);
     }
 
     /// <summary>Whether this shard takes actor (<paramref name="handlerTypeId"/>, <paramref name="key"/>) now (it owns it and is not stopping).</summary>
@@ -108,7 +110,7 @@ internal static class ShardDispatch
     internal static void BeginLive(World world, Entity entity, Actor actor)
     {
         actor.InitializeEntity(entity);
-        TurnWatcher.Begin(world, entity, Start(static a => a.OnLoad().AsValueTask(), actor));
+        TurnWatcher.Begin(world, entity, Hook(world, static a => a.OnLoad().AsValueTask(), actor));
     }
 
     /// <summary>
@@ -161,7 +163,7 @@ internal static class ShardDispatch
     }
 
     /// <summary>Start a lifecycle hook, turning a synchronous throw into a faulted task.</summary>
-    public static System.Threading.Tasks.ValueTask Start(Func<Actor, System.Threading.Tasks.ValueTask> hook, Actor actor)
+    private static System.Threading.Tasks.ValueTask Start(Func<Actor, System.Threading.Tasks.ValueTask> hook, Actor actor)
     {
         try
         {
@@ -170,6 +172,26 @@ internal static class ShardDispatch
         catch (Exception e)
         {
             return System.Threading.Tasks.ValueTask.FromException(e);
+        }
+    }
+
+    /// <summary>
+    /// Start a lifecycle hook as the actor's turn in a call chain: the one of the message that loads the actor (set by
+    /// <see cref="Load"/>), else a new one. Requests back into the actor from that chain fail with
+    /// <see cref="RpcStatus.CallCycle"/> while the hook runs, as they would during a handler.
+    /// </summary>
+    internal static System.Threading.Tasks.ValueTask Hook(World world, Func<Actor, System.Threading.Tasks.ValueTask> hook, Actor actor)
+    {
+        if (actor.TurnChain == 0) actor.TurnChain = world.GetSingleton<CallChains>().Next();
+        long previous = CallChain.Current;
+        CallChain.Current = actor.TurnChain; // the hook's requests carry it (its awaits restore it, PendingCall)
+        try
+        {
+            return Start(hook, actor);
+        }
+        finally
+        {
+            CallChain.Current = previous;
         }
     }
 

@@ -16,7 +16,7 @@ internal sealed partial class UnloadSystem : EcsSystem
         var target = self.Actor;
         actor.Remove<UnloadRequested>();
         actor.Add<Unloading>();
-        TurnWatcher.Begin(world, actor, ShardDispatch.Start(static a => a.OnUnload().AsValueTask(), target));
+        TurnWatcher.Begin(world, actor, ShardDispatch.Hook(world, static a => a.OnUnload().AsValueTask(), target));
     }
 
     // After its write in flight (Without<Saving>): a reload reads the store only once that write settled. A record sent

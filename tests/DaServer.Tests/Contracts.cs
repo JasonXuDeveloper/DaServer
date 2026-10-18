@@ -466,11 +466,33 @@ public sealed class Looper : Actor<LoopId>
     /// <summary>Keys whose unload never finishes (a save that hangs): the stop budget test.</summary>
     public const long HangsOnUnload = 999;
 
+    /// <summary>Keys whose OnLoad asks the actor 1,000 below them (the one whose request loads them: a cycle).</summary>
+    public static bool AsksBackOnLoad(long key) => key is >= 2_000 and < 3_000;
+
+    /// <summary>Keys that unload when idle, asking the actor 1,000 above them to ask them back (a cycle).</summary>
+    public static bool AskedBackOnUnload(long key) => key is >= 3_000 and < 4_000;
+
+    public override TimeSpan UnloadAfterIdle => AskedBackOnUnload(Key) ? TimeSpan.FromMilliseconds(100) : base.UnloadAfterIdle;
+
+    public override async Reply OnLoad()
+    {
+        if (AsksBackOnLoad(Key)) await Cluster.Ask(new LoopId(Key - 1_000), new Hold(0));
+    }
+
     public override async Reply OnUnload()
     {
 #pragma warning disable DAS009 // on purpose: a save that does not finish within the stop budget
         if (Key == HangsOnUnload) await Task.Delay(Timeout.Infinite);
 #pragma warning restore DAS009
+        if (!AskedBackOnUnload(Key)) return;
+        try
+        {
+            await Cluster.Ask(new LoopId(Key + 1_000), new Hop([Key + 1_000, Key], 0, ViaService: false));
+        }
+        finally
+        {
+            Observed.Events.Enqueue($"looper-unloaded:{Key}");
+        }
     }
 
     [Handle]

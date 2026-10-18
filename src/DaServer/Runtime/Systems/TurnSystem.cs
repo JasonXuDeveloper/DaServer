@@ -26,6 +26,7 @@ internal sealed partial class TurnSystem : EcsSystem
     {
         var error = TurnWatcher.Result(in turn);
         var target = self.Actor;
+        target.TurnChain = 0;
         actor.Remove<Turn, TurnEnded, Loading>();
         if (error == null) return;
         Log.ActorFailed(world.Logger, error, "Load", target);
@@ -37,6 +38,7 @@ internal sealed partial class TurnSystem : EcsSystem
     {
         var error = TurnWatcher.Result(in turn);
         var target = self.Actor;
+        target.TurnChain = 0;
         if (error != null) Log.ActorFailed(world.Logger, error, "Unload", target);
         actor.Remove<Turn, TurnEnded>();
         if (actor.Has<Fenced>()) // its write was refused meanwhile: the key has a newer owner, this copy goes as it is
