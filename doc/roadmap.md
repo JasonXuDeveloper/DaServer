@@ -818,4 +818,8 @@ and cards, a manual clock), fails before its fix, and passes after it.
 - [x] Requirements and release checklist ([requirements.md](requirements.md))
 - [x] Record benchmark numbers of this release in the README
 - [x] Test: calls in flight to a crashed node fail when it is declared dead
-- [ ] Tests: suspect flapping, hostile client frames beyond the size check
+- [x] Tests: hostile client frames beyond the size check (trailers or an extension block longer than the frame close
+      the connection; an extension entry running past its block or a payload that does not read is refused as
+      malformed; the node serves everyone else: `HostileFramesHurtOnlyTheirConnection`), suspect flapping (a member
+      whose links drop for 0.9 s five times is suspected, never declared dead, and keeps its keys and actors:
+      `AFlappingLinkMakesAMemberSuspectNeverDead`).
