@@ -98,9 +98,112 @@ public class PersistenceTests(string kind) : ClusterTest
     }
 
     [Test]
+    public async Task AStopUnderLoadLosesNoAcknowledgedDeposit()
+    {
+        // Callers deposit through b while a stops (its actors hand over to b), then b stops last and writes everything:
+        // every acknowledged deposit is in the record, and nothing that was not attempted is. A failed call may or may
+        // not have been applied (its reply was lost), so it bounds the balance from above only.
+        var store = new CountingStore(_stores.Create());
+        var a = await StartWith(store, "a");
+        var b = await StartWith(store, "b");
+        await Converged();
+        var load = Load(b, first: 100, keys: 32, critical: false);
+        await Task.Delay(200);
+        await Stop(a);
+        await Task.Delay(200);
+        var (acknowledged, failed) = await load.Stop();
+        Assert.That(a.StoppedClean, Is.True, "a handed over or saved every actor within its budget");
+
+        var balances = new int[acknowledged.Length];
+        for (int i = 0; i < balances.Length; i++)
+        {
+            balances[i] = await b.Ask(new BankId(100 + i), new Balance());
+            Assert.That(balances[i], Is.InRange(acknowledged[i], acknowledged[i] + failed[i]), $"key {100 + i} on b");
+        }
+
+        await Stop(b);
+        Assert.That(b.StoppedClean, Is.True);
+        var c = await StartWith(store, "c");
+        for (int i = 0; i < balances.Length; i++)
+            Assert.That(await c.Ask(new BankId(100 + i), new Balance()), Is.EqualTo(balances[i]), $"key {100 + i} stored");
+        Assert.That(acknowledged.Sum(), Is.GreaterThan(100), "the stop happened under load");
+    }
+
+    [Test]
+    public async Task AKillLosesAtMostTheLastCheckpointInterval()
+    {
+        // Keys below 100 checkpoint every 100 ms. What was acknowledged half a second (several checkpoints) before the
+        // kill survives it; nothing survives that was not attempted, and no record holds half a turn.
+        var store = new CountingStore(_stores.Create());
+        var first = await StartWith(store);
+        var load = Load(first, first: 1, keys: 16, critical: false);
+        await Task.Delay(300);
+        int[] earlier = load.Snapshot();
+        await Task.Delay(500);
+        await first.KillAsync();
+        var (acknowledged, failed) = await load.Stop();
+
+        var second = await StartWith(store, "after");
+        for (int i = 0; i < earlier.Length; i++)
+            Assert.That(await second.Ask(new BankId(1 + i), new Balance()), Is.InRange(earlier[i], acknowledged[i] + failed[i]),
+                $"key {1 + i}: at least what was acknowledged one checkpoint interval and more before the kill");
+        Assert.That(earlier.Sum(), Is.GreaterThan(100), "the kill happened under load");
+    }
+
+    /// <summary>One caller per key depositing 1 gold at a time until stopped; counts acknowledged and failed calls.</summary>
+    private static DepositLoad Load(Node node, int first, int keys, bool critical)
+    {
+        var load = new DepositLoad(keys);
+        for (int i = 0; i < keys; i++)
+        {
+            int index = i;
+            load.Callers[i] = Task.Run(async () =>
+            {
+                while (!load.Stopping)
+                {
+                    try
+                    {
+                        await node.Ask(new BankId(first + index), new Deposit(1, critical)).AsTask().WaitAsync(TimeSpan.FromSeconds(2));
+                        Interlocked.Increment(ref load.Acknowledged[index]);
+                    }
+                    catch (Exception)
+                    {
+                        Interlocked.Increment(ref load.Failed[index]);
+                        await Task.Delay(10);
+                    }
+                }
+            });
+        }
+
+        return load;
+    }
+
+    private sealed class DepositLoad(int keys)
+    {
+        public readonly Task[] Callers = new Task[keys];
+        public readonly int[] Acknowledged = new int[keys], Failed = new int[keys];
+        public volatile bool Stopping;
+
+        public int[] Snapshot()
+        {
+            var counts = new int[Acknowledged.Length];
+            for (int i = 0; i < counts.Length; i++) counts[i] = Volatile.Read(ref Acknowledged[i]);
+            return counts;
+        }
+
+        public async Task<(int[] Acknowledged, int[] Failed)> Stop()
+        {
+            Stopping = true;
+            await Task.WhenAll(Callers);
+            return (Acknowledged, Failed);
+        }
+    }
+
+    [Test]
     public async Task AStaleOwnerIsFencedByTheRecordsVersion()
     {
         // Two nodes that cannot see each other (as in a split) both load the actor from one store.
+        Faults.Allow("LinkRefused"); // b's seed is a, which refuses another cluster's link
         var store = new CountingStore(_stores.Create());
         var a = await StartWith(store, "a", cluster: "left");
         var b = await StartWith(store, "b", cluster: "right");
