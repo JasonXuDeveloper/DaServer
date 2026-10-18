@@ -8,8 +8,8 @@
 
     <ItemGroup>
         <!-- The package ships its generator and analyzer, which flow to every project referencing DaServer. -->
-        <PackageReference Include="EasyEcs" Version="$(EasyEcsVersion)" />
-        <PackageReference Include="System.IO.Hashing" Version="11.0.0-rc.2.26504.105" />
+        <PackageReference Include="EasyEcs" />
+        <PackageReference Include="System.IO.Hashing" />
     </ItemGroup>
 
     <ItemGroup>

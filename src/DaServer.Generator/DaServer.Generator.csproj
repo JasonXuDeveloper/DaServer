@@ -22,8 +22,8 @@
          analyzers/dotnet/roslyn5.9/cs. The same sources built against Roslyn 4.3 (DaServer.Generator.Roslyn4.3) serve
          Unity and older compilers: NuGet loads the newest build a compiler can run. -->
     <ItemGroup>
-        <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.9.0" PrivateAssets="all"/>
-        <PackageReference Include="Microsoft.CodeAnalysis.Analyzers" Version="5.9.0" PrivateAssets="all"/>
+        <PackageReference Include="Microsoft.CodeAnalysis.CSharp" PrivateAssets="all"/>
+        <PackageReference Include="Microsoft.CodeAnalysis.Analyzers" PrivateAssets="all"/>
     </ItemGroup>
 
 </Project>

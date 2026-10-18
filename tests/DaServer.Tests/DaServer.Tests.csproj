@@ -11,14 +11,14 @@
     </PropertyGroup>
 
     <ItemGroup>
-        <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.11.0" />
-        <PackageReference Include="NUnit" Version="4.6.1" />
-        <PackageReference Include="NUnit3TestAdapter" Version="5.2.0" />
-        <PackageReference Include="NUnit.Analyzers" Version="4.15.0" />
-        <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="10.0.13" />
-        <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.9.0" />
+        <PackageReference Include="Microsoft.NET.Test.Sdk" />
+        <PackageReference Include="NUnit" />
+        <PackageReference Include="NUnit3TestAdapter" />
+        <PackageReference Include="NUnit.Analyzers" />
+        <PackageReference Include="Microsoft.Extensions.Logging.Console" />
+        <PackageReference Include="Microsoft.CodeAnalysis.CSharp" />
         <!-- Nino's generator, run on in-memory compilations so the wire manifest tests read its layouts. -->
-        <PackageReference Include="Nino.Generator" Version="$(NinoVersion)" GeneratePathProperty="true" />
+        <PackageReference Include="Nino.Generator" GeneratePathProperty="true" />
         <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
             <_Parameter1>NinoGenerator</_Parameter1>
             <_Parameter2>$(PkgNino_Generator)/analyzers/dotnet/roslyn4.12/cs/Nino.Generator.dll</_Parameter2>

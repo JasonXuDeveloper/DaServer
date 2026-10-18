@@ -1,0 +1,61 @@
+<Project>
+    <!-- Central package versions: one version per package for src, samples, tests and benchmarks. -->
+    <PropertyGroup>
+        <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    </PropertyGroup>
+
+    <!-- Aspire -->
+    <ItemGroup>
+        <PackageVersion Include="Aspire.Hosting" Version="13.6.1" />
+        <PackageVersion Include="Aspire.Hosting.AppHost" Version="13.6.1" />
+        <PackageVersion Include="Aspire.Hosting.Docker" Version="13.6.1" />
+        <PackageVersion Include="Aspire.Hosting.Kubernetes" Version="13.6.1-preview.1.26506.6" />
+        <PackageVersion Include="Aspire.Hosting.PostgreSQL" Version="13.6.1" />
+        <PackageVersion Include="Aspire.Hosting.Testing" Version="13.6.1" />
+        <PackageVersion Include="Aspire.Npgsql" Version="13.6.1" />
+    </ItemGroup>
+
+    <!-- OpenTelemetry -->
+    <ItemGroup>
+        <PackageVersion Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.19.1" />
+        <PackageVersion Include="OpenTelemetry.Exporter.Prometheus.AspNetCore" Version="1.19.1-beta.1" />
+        <PackageVersion Include="OpenTelemetry.Extensions.Hosting" Version="1.19.1" />
+        <PackageVersion Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.19.0" />
+        <PackageVersion Include="OpenTelemetry.Instrumentation.Http" Version="1.19.0" />
+        <PackageVersion Include="OpenTelemetry.Instrumentation.Runtime" Version="1.19.0" />
+    </ItemGroup>
+
+    <!-- Roslyn -->
+    <ItemGroup>
+        <PackageVersion Include="Microsoft.CodeAnalysis.Analyzers" Version="5.9.0" />
+        <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="5.9.0" />
+    </ItemGroup>
+
+    <!-- Tests -->
+    <ItemGroup>
+        <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.11.0" />
+        <PackageVersion Include="NUnit" Version="4.6.1" />
+        <PackageVersion Include="NUnit.Analyzers" Version="4.15.0" />
+        <PackageVersion Include="NUnit3TestAdapter" Version="5.2.0" />
+    </ItemGroup>
+
+    <!-- Serialization and ECS -->
+    <ItemGroup>
+        <PackageVersion Include="EasyEcs" Version="$(EasyEcsVersion)" />
+        <PackageVersion Include="Nino" Version="$(NinoVersion)" />
+        <PackageVersion Include="Nino.Generator" Version="$(NinoVersion)" />
+    </ItemGroup>
+
+    <!-- Other -->
+    <ItemGroup>
+        <PackageVersion Include="BenchmarkDotNet" Version="0.16.0-preview.2" />
+        <PackageVersion Include="ConsoleAppFramework" Version="5.7.13" />
+        <!-- Aspire.Hosting 13.6.1 brings MessagePack 2.5.302 (GHSA-qhrr-8q5h-9q3h) through StreamJsonRpc: the patched 2.5 release. -->
+        <PackageVersion Include="MessagePack" Version="2.5.307" />
+        <PackageVersion Include="Microsoft.Extensions.Http.Resilience" Version="10.10.0" />
+        <PackageVersion Include="Microsoft.Extensions.Logging.Console" Version="10.0.13" />
+        <PackageVersion Include="Microsoft.Extensions.ServiceDiscovery" Version="10.10.0" />
+        <PackageVersion Include="System.IO.Hashing" Version="11.0.0-rc.2.26504.105" />
+        <PackageVersion Include="System.Runtime.CompilerServices.Unsafe" Version="6.1.2" />
+    </ItemGroup>
+</Project>

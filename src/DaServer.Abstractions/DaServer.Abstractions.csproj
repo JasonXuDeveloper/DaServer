@@ -8,7 +8,7 @@
     </PropertyGroup>
 
     <ItemGroup>
-        <PackageReference Include="Nino" Version="$(NinoVersion)" />
+        <PackageReference Include="Nino" />
     </ItemGroup>
 
     <!-- The generators and analyzers ship in this package, so every assembly using DaServer runs them. -->
@@ -35,7 +35,7 @@
     <!-- Newer BCL types this code uses, for netstandard2.1 only (internal; Core and Client see them as friends). -->
     <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.1'">
         <Compile Include="..\Polyfills\**\*.cs" LinkBase="Polyfills" />
-        <PackageReference Include="System.Runtime.CompilerServices.Unsafe" Version="6.1.2" />
+        <PackageReference Include="System.Runtime.CompilerServices.Unsafe" />
     </ItemGroup>
 
     <ItemGroup>

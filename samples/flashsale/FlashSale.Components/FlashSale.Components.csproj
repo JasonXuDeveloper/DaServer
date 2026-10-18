@@ -8,7 +8,7 @@
 
     <ItemGroup>
         <ProjectReference Include="..\FlashSale.Contracts\FlashSale.Contracts.csproj" />
-        <PackageReference Include="EasyEcs" Version="$(EasyEcsVersion)" />
+        <PackageReference Include="EasyEcs" />
         <ProjectReference Include="..\..\..\src\DaServer.Generator\DaServer.Generator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
     </ItemGroup>
 

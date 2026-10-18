@@ -7,8 +7,8 @@
     </PropertyGroup>
 
     <ItemGroup>
-        <PackageReference Include="EasyEcs" Version="$(EasyEcsVersion)" />
-        <PackageReference Include="Nino" Version="$(NinoVersion)" />
+        <PackageReference Include="EasyEcs" />
+        <PackageReference Include="Nino" />
         <ProjectReference Include="..\..\src\DaServer.Abstractions\DaServer.Abstractions.csproj" />
     </ItemGroup>
 

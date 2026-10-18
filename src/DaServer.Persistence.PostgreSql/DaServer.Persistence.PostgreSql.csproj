@@ -10,7 +10,7 @@
     </PropertyGroup>
 
     <ItemGroup>
-        <PackageReference Include="Aspire.Npgsql" Version="13.6.1" />
+        <PackageReference Include="Aspire.Npgsql" />
     </ItemGroup>
 
     <ItemGroup>
