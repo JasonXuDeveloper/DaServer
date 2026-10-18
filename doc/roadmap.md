@@ -714,8 +714,10 @@ and cards, a manual clock), fails before its fix, and passes after it.
   - [x] Node options validated at construction (every problem in one message); one polling helper (`Poll`).
   - Declined: constants shared between `DaServer.Aspire` and the node (it would make the AppHost package
         depend on the node's, Nino included); the stop budget's defaults are documented on both sides instead.
-  - [ ] Client entry addresses from configuration (`DaServer:ClientEndpoints`) for server-side callers; game clients
-        (Unity) take them from the application.
+  - Declined: client entry addresses through `IConfiguration`. Aspire passes them as `DaServer__ClientEndpoints__{i}`,
+        which is the configuration key `DaServer:ClientEndpoints` already: a hosted caller binds it with its own
+        configuration, the swarms read it with `Endpoints.FromEnvironment` (no configuration dependency in the
+        simulation), and game clients (Unity) take addresses from the application.
   - [x] Files over ~400 lines split by concern: `ClientConnections` (+ Sessions, Groups, Resume), `ClusterClient` (+
         Connection, Resume), `Membership` (+ Gossip), `PendingCallTable` / `PendingCall`, `Connection` (+ Flushed),
         `Node` (+ Stop, Maintenance).
