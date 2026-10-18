@@ -174,9 +174,7 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
             return true;
         }
 
-        // From the view, or, before gossip lists it (a node that just joined), from the Hello it introduced itself with.
-        var link = View.TryGetMember(nodeId, out var member) ? member.Status != MemberStatus.Dead ? GetLink(member) : null
-            : _introduced.TryGetValue(nodeId, out var introduced) ? introduced : null;
+        var link = LinkTo(nodeId);
         link?.Send(frame.Frame);
         frame.Dispose();
         return link != null;

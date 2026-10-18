@@ -300,11 +300,6 @@ sealed partial class Node : IChannelHandler
         _slots.OnLinked(link);
     }
 
-    /// <summary>
-    /// The link to node <paramref name="nodeId"/>: from the view, or, while gossip has not told us about it yet, from
-    /// its Hello. A client's call can reach a node before that node's view lists the client-facing node; the access
-    /// changes and pushes it causes must still reach that node (ahead of the reply, on the same link).
-    /// </summary>
     /// <summary>Tests: how many links reach node <paramref name="nodeId"/> (one per node).</summary>
     internal int LinksTo(ulong nodeId)
     {
@@ -317,8 +312,19 @@ sealed partial class Node : IChannelHandler
     /// <summary>Tests: whether this node keeps the link node <paramref name="nodeId"/> introduced itself on.</summary>
     internal bool Introduced(ulong nodeId) => _introduced.ContainsKey(nodeId);
 
-    internal PeerLink? LinkTo(ulong nodeId) =>
-        View.TryGetMember(nodeId, out var member) ? GetLink(member) : _introduced.TryGetValue(nodeId, out var link) ? link : null;
+    /// <summary>
+    /// The link to node <paramref name="nodeId"/>: from the view, or, before gossip lists it, from the Hello it introduced
+    /// itself with (a client's call or a handoff record can reach a node before its view lists the sender; the answers,
+    /// access changes and pushes they cause must still reach the sender); null for a dead or unknown node. The view is
+    /// read again after a missed introduction: a view listing the node replaces the introduction, and may have done so
+    /// between the two reads (an answer dropped there left the sender waiting on its copy).
+    /// </summary>
+    internal PeerLink? LinkTo(ulong nodeId)
+    {
+        if (View.TryGetMember(nodeId, out var member)) return member.Status != MemberStatus.Dead ? GetLink(member) : null;
+        if (_introduced.TryGetValue(nodeId, out var link)) return link;
+        return View.TryGetMember(nodeId, out member) && member.Status != MemberStatus.Dead ? GetLink(member) : null;
+    }
 
     /// <summary>Our Hello was answered on <paramref name="connection"/>: the link resumes its stream.</summary>
     private static void OnResume(Connection connection, long received, ReadOnlySpan<byte> payload)
