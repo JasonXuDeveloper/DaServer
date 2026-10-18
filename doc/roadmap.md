@@ -750,7 +750,13 @@ and cards, a manual clock), fails before its fix, and passes after it.
       three interleaved runs each): one local call 4.25-4.62 us before, 4.67-5.19 us after, a run without B4 5.30 us
       (the machine's drift); 0 B both. Kept: B5, the local branches deliver to different places (an actor's shard, an
       address's feature) and the group fan-out holds the member already, so one helper saves no line.
-- [ ] B11 sample nits (the next review round's sample pass)
+- [x] B11 sample review: a queued flash sale admitted position 0 (never issued) and so let any buyer skip the queue
+      (`AQueuedSaleAdmitsBuyersAtItsPace` now asks for it); a bot whose map change outlasted `TravelEvery` started a second one
+      (the task carries its destination: started is data); maps are `[Sticky]` as ADR-079 describes; a late buyer's
+      answer is a binary search over the sorted buyers; stale comments (the realm's tick count, the map's size, the
+      tests that run a cluster), unused usings, one Deployment reference for both samples' autoscalers. Kept: the mmo
+      sample's `Sample.*` names (renaming touches every project, the E2E tests and the published charts, for no
+      behavior).
 - [x] Split `Node` into links and router; membership talks to the node through an interface: links (handshake, one
       link per node) in `Node.Links.cs`, routing in `Node.Routing.cs`; `Membership` sees only `IMembershipHost`
       (identity, options, links, what to advertise and pulse, view changed, fenced, downed).
