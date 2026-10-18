@@ -26,7 +26,8 @@ internal sealed class SlotAllocation(Node node)
 
     // The node's counts, reused every round: loaded actors per (actor type, slot) that holds any (sparse: a node hosting
     // many actor types keeps no table per type), and its hosted actor types.
-    private readonly Dictionary<ulong, int> _counts = new();
+    private readonly Dictionary<ulong, int> _counts = new(); // under its own lock, with _round and _pending
+    private int _round; // the report the shards count for: a shard that answers a given-up round counts nothing
     private HashSet<uint>? _hosted;
     private readonly HashSet<uint> _sticky = new();
     private readonly StrongBox<int> _pending = new();
@@ -89,17 +90,30 @@ internal sealed class SlotAllocation(Node node)
             return;
         }
 
-        _counts.Clear(); // keeps its capacity
-        _pending.Value = node.ShardCount;
-        node.PostToEveryShard(static (world, allocation) =>
+        int round;
+        lock (_counts)
         {
+            _counts.Clear(); // keeps its capacity
+            _pending.Value = node.ShardCount;
+            round = ++_round;
+        }
+
+        node.PostToEveryShard(static (world, state) =>
+        {
+            var (allocation, round) = state;
             var counts = allocation._counts;
+            bool last;
             lock (counts) // shards count one after the other (cold: once per round)
+            {
+                if (round != allocation._round) return; // a round given up (this shard was stalled): the next counts anew
                 foreach (var address in world.GetSingleton<ActorDirectory>().Actors.Keys)
                     if (allocation._hosted!.Contains(address.HandlerTypeId))
                         CollectionsMarshal.GetValueRefOrAddDefault(counts, CountKey(address.HandlerTypeId, ClusterView.Slot(address.HandlerTypeId, address.Key)), out _)++;
-            if (Interlocked.Decrement(ref allocation._pending.Value) == 0) allocation.Send();
-        }, this);
+                last = --allocation._pending.Value == 0;
+            }
+
+            if (last) allocation.Send(round);
+        }, (this, round));
     }
 
     private static ulong CountKey(uint type, int slot) => (ulong)type << 16 | (uint)slot;
@@ -118,30 +132,35 @@ internal sealed class SlotAllocation(Node node)
     }
 
     /// <summary>Send the counts to the coordinator when they changed, the coordinator did, or a while passed.</summary>
-    private void Send()
+    private void Send(int round)
     {
         try
         {
             var counts = _counts;
             var sticky = _sticky;
             if (node.View.Coordinator is not { } coordinator) return;
-            long fingerprint = Fingerprint(counts);
-            if (fingerprint == _sentFingerprint && coordinator.NodeId == _sentCoordinator && ++_unsentRounds < ResendRounds) return;
-            (_sentFingerprint, _sentCoordinator, _unsentRounds) = (fingerprint, coordinator.NodeId, 0);
-
-            var report = new SlotReport { Node = node.Id, Types = new SlotLoad[_hosted!.Count] };
-            int t = 0;
-            foreach (uint type in _hosted) // every hosted type, loaded or not: the coordinator learns what is sticky
+            SlotReport report;
+            lock (counts) // a round that was given up meanwhile clears them
             {
-                var loaded = new List<(ushort Slot, int Count)>();
-                foreach (var (key, count) in counts)
-                    if ((uint)(key >> 16) == type) loaded.Add(((ushort)key, count));
-                loaded.Sort();
-                report.Types[t++] = new SlotLoad
+                if (round != _round) return;
+                long fingerprint = Fingerprint(counts);
+                if (fingerprint == _sentFingerprint && coordinator.NodeId == _sentCoordinator && ++_unsentRounds < ResendRounds) return;
+                (_sentFingerprint, _sentCoordinator, _unsentRounds) = (fingerprint, coordinator.NodeId, 0);
+
+                report = new SlotReport { Node = node.Id, Types = new SlotLoad[_hosted!.Count] };
+                int t = 0;
+                foreach (uint type in _hosted) // every hosted type, loaded or not: the coordinator learns what is sticky
                 {
-                    HandlerTypeId = type, Sticky = sticky.Contains(type),
-                    Slots = [.. loaded.Select(static l => l.Slot)], Counts = [.. loaded.Select(static l => l.Count)],
-                };
+                    var loaded = new List<(ushort Slot, int Count)>();
+                    foreach (var (key, count) in counts)
+                        if ((uint)(key >> 16) == type) loaded.Add(((ushort)key, count));
+                    loaded.Sort();
+                    report.Types[t++] = new SlotLoad
+                    {
+                        HandlerTypeId = type, Sticky = sticky.Contains(type),
+                        Slots = [.. loaded.Select(static l => l.Slot)], Counts = [.. loaded.Select(static l => l.Count)],
+                    };
+                }
             }
 
             if (coordinator.NodeId == node.Id) OnReport(report);

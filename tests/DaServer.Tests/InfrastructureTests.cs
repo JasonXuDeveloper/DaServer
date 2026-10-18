@@ -213,6 +213,28 @@ public class InfrastructureTests
     }
 
     [Test]
+    public void AFailedCallsSlotCoolsSoItsLateReplyFindsNoOtherCall()
+    {
+        // 4 index bits leave 28 bits of generation, but the guarantee must not rest on them: a timed-out call's slot is
+        // not reused while its reply may still come, so its id stays unanswerable however many calls go by.
+        var table = new PendingCallTable(4);
+        var held = PendingCall<int>.Rent(null);
+        Assert.That(table.TryRegister(PendingCall<int>.Rent(null), deadlineMs: Environment.TickCount64 - 1, out uint late), Is.True);
+        Assert.That(table.SweepExpired(), Is.EqualTo(1));
+        for (int i = 0; i < 1000; i++)
+        {
+            Assert.That(table.TryRegister(held, deadlineMs: 0, out uint id), Is.True);
+            Assert.That(id & 15, Is.Not.EqualTo(late & 15), "the cooling slot is not handed out");
+            table.Take(id);
+        }
+
+        Assert.That(table.Take(late), Is.Null, "the late reply finds nothing");
+        Assert.That(table.SweepExpired(), Is.Zero, "a cooling slot is not a call");
+        for (int i = 0; i < 16; i++) Assert.That(table.TryRegister(held, deadlineMs: 0, out _), Is.True, "a full table takes it back early");
+        Assert.That(table.TryRegister(held, deadlineMs: 0, out _), Is.False);
+    }
+
+    [Test]
     public void PendingCallTableMemoryFollowsCallsInFlight()
     {
         var table = new PendingCallTable(16);

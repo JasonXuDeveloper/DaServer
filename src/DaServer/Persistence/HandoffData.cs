@@ -9,9 +9,17 @@ internal readonly record struct HandOff(ulong To) : IComponent;
 /// <summary>
 /// The record went to <see cref="To"/>: the actor is removed (its mail forwarded) once it accepted, or saved to the
 /// store when it refused or did not answer by <see cref="UntilMs"/>.
-/// The copy holds no state meanwhile (no system sees it): <see cref="Record"/> restores it for that save.
+/// The copy holds no state meanwhile (no system sees it): <see cref="Record"/> (the record frame's payload) restores it for
+/// that save, and goes again when <see cref="To"/> asks for it or does not answer while alive (a link that restarted its
+/// stream lost it).
 /// </summary>
 internal readonly record struct HandingOff(ulong To, long UntilMs, byte[] Record) : IComponent;
+
+/// <summary>
+/// The actor's record came from <see cref="From"/> at <see cref="Version"/> and <see cref="Hash"/>: the same record again
+/// (its sender sent it again, the answer was lost) is answered "accepted" without being restored twice.
+/// </summary>
+internal readonly record struct HandedFrom(ulong From, long Version, ulong Hash) : IComponent;
 
 /// <summary>
 /// The actor moved here from <see cref="From"/>, which may still hold it: its mail waits for the record, or for word that

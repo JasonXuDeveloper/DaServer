@@ -83,9 +83,11 @@ internal sealed partial class HandoffTimeoutSystem : EcsSystem
         if (activity.NowMs < handingOff.UntilMs) return;
         var node = world.Shard.Node;
         // The new owner may have taken the record and be running the actor while its answer is late (a busy node, a
-        // link resuming): writing this copy now would fence that one. Its answer comes while it is alive (the link's
-        // stream resumes); only a dead one's never will.
-        if (node.View.TryGetMember(handingOff.To, out var member) && member.Status != MemberStatus.Dead)
+        // link resuming): writing this copy now would fence that one. While it is alive the record goes again (a link
+        // that restarted its stream lost the record or the answer): it takes it, or answers "accepted" again for the one
+        // it took; only a dead one never answers.
+        if (node.View.TryGetMember(handingOff.To, out var member) && member.Status != MemberStatus.Dead &&
+            Handoff.Resend(node, actor.Get<ActorRef>().Actor, handingOff.To, handingOff.Record))
         {
             actor.Get<HandingOff>() = handingOff with { UntilMs = activity.NowMs + Handoff.TimeoutMs(node) };
             return;

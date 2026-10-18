@@ -415,7 +415,9 @@ internal sealed partial class Membership
             foreach (var seed in _node.Options.Seeds)
                 try
                 {
-                    var endpoints = await resolver.ResolveAsync(seed, CancellationToken.None).ConfigureAwait(false);
+                    // Bounded: a resolver that never answers (a registry down) must not stop the refreshes for good.
+                    using var timeout = new CancellationTokenSource(SeedRefresh);
+                    var endpoints = await resolver.ResolveAsync(seed, timeout.Token).AsTask().WaitAsync(timeout.Token).ConfigureAwait(false);
                     if (endpoints.Count == 0) Log.SeedUnresolved(_node.Logger, seed);
                     foreach (var endpoint in endpoints)
                         if (!IsSelf(endpoint.Host, endpoint.Port)) seeds.Add((endpoint.Host, endpoint.Port));

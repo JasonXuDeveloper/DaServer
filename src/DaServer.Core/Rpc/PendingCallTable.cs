@@ -2,7 +2,10 @@ namespace DaServer.Rpc;
 
 /// <summary>
 /// Table of in-flight calls indexed by call id. Lock-free, allocation-free once warm. Call id = (slot generation
-/// &lt;&lt; IndexBits) | slot index, so a late reply for a recycled slot never completes the wrong call. Memory follows
+/// &lt;&lt; IndexBits) | slot index, so a late reply for a recycled slot never completes the wrong call. The generation
+/// has only 32 - IndexBits bits and the free stacks reuse the slot freed last, so a failed call's slot (timed out,
+/// its connection gone: its reply may still come) cools for <see cref="CoolMs"/> before it is reused, unless the table
+/// is full: a late reply then finds no call instead of a wrapped generation's. Memory follows
 /// use, not the bound: slots live in chunks of doubling size (<see cref="FirstChunk"/>, then twice as many each),
 /// allocated as the number of calls in flight first reaches them, so a client with a couple of calls out holds
 /// <see cref="FirstChunk"/> slots and a busy table about twice its peak; free slots form a stack threaded through
@@ -16,11 +19,17 @@ internal sealed class PendingCallTable
     {
         public IPendingCall? Call;
         public object? Owner;
-        public int Tag; // call id while active, 0 when free
+        public int Tag; // call id while active, 0 when free, Cooling or Failing for a failed call's slot
         public int Deadline; // low 32 bits of the deadline in Platform.Milliseconds, 0 = none
         public uint Generation;
-        public int NextFree; // free stack link: index + 1 of the next free slot, 0 = none
+        public int NextFree; // free stack link: index + 1 of the next free slot, 0 = none; cooling: until when (low 32 bits)
     }
+
+    // Tags no call id takes (TryRegister skips them): a failed call's slot while its time is written, then while it cools.
+    private const int Failing = -2, Cooling = -1;
+
+    /// <summary>How long a failed call's slot is not reused: longer than any request's budget (25.5 s, the header's).</summary>
+    internal const int CoolMs = 30_000;
 
     private const int FirstChunkBits = 3;
     internal const int FirstChunk = 1 << FirstChunkBits;
@@ -84,7 +93,7 @@ internal sealed class PendingCallTable
     /// <param name="owner">Optional owner (e.g. the connection) for <see cref="FailOwnedBy"/>.</param>
     public bool TryRegister(IPendingCall call, long deadlineMs, out uint callId, object? owner = null)
     {
-        if (!TryPopFree(out int index) && !TryAllocate(out index))
+        if (!TryPopFree(out int index) && !TryAllocate(out index) && !TryWarm(out index))
         {
             callId = 0;
             return false;
@@ -93,7 +102,7 @@ internal sealed class PendingCallTable
         ref var e = ref At(index);
         uint generation = e.Generation + 1;
         uint id = (generation << _indexBits) | (uint)index;
-        if (id == 0)
+        while (id == 0 || (int)id is Failing or Cooling) // tags that are not call ids
         {
             generation++;
             id = (generation << _indexBits) | (uint)index;
@@ -176,6 +185,17 @@ internal sealed class PendingCallTable
         }
     }
 
+    /// <summary>A full table takes a cooling slot back early (cold: a scan).</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private bool TryWarm(out int index)
+    {
+        int allocated = Volatile.Read(ref _allocated);
+        for (index = 0; index < allocated; index++)
+            if (Interlocked.CompareExchange(ref At(index).Tag, 0, Cooling) == Cooling) return true;
+        index = -1;
+        return false;
+    }
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     private void AllocateChunk(int chunk)
     {
@@ -244,13 +264,23 @@ internal sealed class PendingCallTable
         {
             ref var e = ref At(i);
             int tag = Volatile.Read(ref e.Tag);
-            if (tag == 0 || (owner != null && !ReferenceEquals(e.Owner, owner)) || (expired && (e.Deadline == 0 || now - e.Deadline <= 0)))
-                continue;
-            if (Take((uint)tag) is { } call)
+            if (tag == Cooling)
             {
-                call.Fail(status);
-                failed++;
+                if (expired && now - Volatile.Read(ref e.NextFree) > 0 && Interlocked.CompareExchange(ref e.Tag, 0, Cooling) == Cooling)
+                    PushFree(i); // cooled down: the sweep frees it
+                continue;
             }
+
+            if (tag is 0 or Failing || (owner != null && !ReferenceEquals(e.Owner, owner)) || (expired && (e.Deadline == 0 || now - e.Deadline <= 0)))
+                continue;
+            if (Interlocked.CompareExchange(ref e.Tag, Failing, tag) != tag) continue; // answered meanwhile
+            var call = e.Call!;
+            e.Call = null;
+            e.Owner = null;
+            Volatile.Write(ref e.NextFree, now + CoolMs);
+            Volatile.Write(ref e.Tag, Cooling);
+            call.Fail(status);
+            failed++;
         }
 
         return failed;

@@ -56,6 +56,29 @@ public class MembershipTests : ClusterTest
         Assert.That(b.View.UpMembers, Has.Length.EqualTo(2));
     }
 
+    [Test]
+    public async Task AResolverThatNeverAnswersDoesNotStopTheRefreshes()
+    {
+        // The first resolution hangs and ignores its token (a registry that is down): it is given up after the refresh
+        // period, the next one answers, and the node joins.
+        var a = await Start("a");
+        var resolver = new HangingOnceResolver(a.ClusterEndPoint.Port);
+        var b = await Start("b", configure: o => (o.Seeds, o.SeedResolver) = (["peers-of-a"], resolver));
+        await Eventually(() => b.View.UpMembers.Length == 2, "b joined through the second resolution", 20_000);
+        Assert.That(resolver.Asked, Is.GreaterThanOrEqualTo(2));
+    }
+
+    private sealed class HangingOnceResolver(int port) : ISeedResolver
+    {
+        public int Asked;
+
+        public async ValueTask<IReadOnlyList<System.Net.DnsEndPoint>> ResolveAsync(string seed, CancellationToken cancellationToken)
+        {
+            if (Interlocked.Increment(ref Asked) == 1) await new TaskCompletionSource().Task; // never, whatever the token
+            return [new System.Net.DnsEndPoint("127.0.0.1", port)];
+        }
+    }
+
     private sealed class SlowResolver(int port) : ISeedResolver
     {
         public int Asked;

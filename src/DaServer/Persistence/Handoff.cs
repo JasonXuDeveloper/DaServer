@@ -98,8 +98,8 @@ internal static class Handoff
     public static bool AskAgain(Node node, ulong from, Actor actor) => Notify(node, from, Request, actor.HandlerType.Id, actor.Key, 0);
 
     /// <summary>
-    /// Send the leaving actor's record to <paramref name="to"/> and take the state off this copy (the record's sections
-    /// returned, to restore them if the handoff falls back); null when that node is gone.
+    /// Send the leaving actor's record to <paramref name="to"/> and take the state off this copy (the record returned, to
+    /// send again or to restore if the handoff falls back); null when that node is gone.
     /// </summary>
     public static byte[]? Send(World world, Entity entity, Actor actor, ulong to)
     {
@@ -114,17 +114,27 @@ internal static class Handoff
         var moved = world.GetSingleton<ShardStore>().Moved;
         Records.WriteSections(entity, moved, record);
         record.SetHeader(FrameKind.Message, actor.HandlerType.Id, Record, actor.Key);
-        var sections = FrameHeader.PayloadOf(FrameHeader.Read(record.Frame), record.Frame)[RecordHeader..].ToArray(); // cold: one per move
-        if (!node.SendToNode(to, record)) return null;
+        var payload = FrameHeader.PayloadOf(FrameHeader.Read(record.Frame), record.Frame).ToArray(); // cold: one per move
+        if (node.LoseRecords > 0 && Interlocked.Decrement(ref node.LoseRecords) >= 0) record.Dispose(); // tests: lost on the way
+        else if (!node.SendToNode(to, record)) return null;
         foreach (var type in moved) type.Remove(entity);
         actor.ReleaseState(entity);
-        return sections;
+        return payload;
+    }
+
+    /// <summary>Send a record (<see cref="Send"/>'s) again; false when that node is gone.</summary>
+    public static bool Resend(Node node, Actor actor, ulong to, byte[] record)
+    {
+        var w = FrameWriter.Rent(FrameHeader.Size + record.Length);
+        w.WriteRaw(record);
+        w.SetHeader(FrameKind.Message, actor.HandlerType.Id, Record, actor.Key);
+        return node.SendToNode(to, w);
     }
 
     /// <summary>The handoff was refused or not answered: the copy takes its state back, then the store keeps it.</summary>
     public static void Reclaim(World world, Entity entity, byte[] record)
     {
-        Records.Read(entity, record, world.GetSingleton<ShardStore>().ById);
+        Records.Read(entity, record.AsSpan(RecordHeader), world.GetSingleton<ShardStore>().ById);
         entity.Get<ActorRef>().Actor.InitializeEntity(entity);
         Fallback(entity);
     }
@@ -179,7 +189,9 @@ internal static class Handoff
                 if (header.Hops == 0 && !loaded && !ShardDispatch.Owns(world, handlerType.Id, header.Key) &&
                     !SendersOwn(world, handlerType.Id, header.Key, from) && PassOn(world, handlerType.Id, header.Key, payload, from))
                     return true;
-                Notify(node, from, Answer, handlerType.Id, header.Key, Restore(world, handlerType, header.Key, payload, loaded, entity, from) ? (byte)1 : (byte)0);
+                bool again = loaded && entity.TryGet<HandedFrom>(out var handed) && handed == HandedBy(payload);
+                Notify(node, from, Answer, handlerType.Id, header.Key,
+                    again || Restore(world, handlerType, header.Key, payload, loaded, entity, from) ? (byte)1 : (byte)0);
             }
             else if (op == Request)
             {
@@ -194,6 +206,8 @@ internal static class Handoff
                         if (wait != node.Id) Notify(node, wait.Value, Request, handlerType.Id, header.Key, 0);
                     }
                 }
+                else if (entity.TryGet<HandingOff>(out var handingOff) && handingOff.To == from)
+                    Resend(node, entity.Get<ActorRef>().Actor, from, handingOff.Record); // the asker never got it
                 else if (!entity.Has<HandoffWanted>()) entity.Add<HandoffWanted>() = new HandoffWanted(from); // told when it goes
             }
             else if (op == None)
@@ -248,6 +262,7 @@ internal static class Handoff
             return false;
         }
 
+        entity.Add<HandedFrom>() = HandedBy(payload);
         if (store.Enabled)
         {
             long every = (long)actor.SaveEvery.TotalMilliseconds;
@@ -263,6 +278,10 @@ internal static class Handoff
         ShardDispatch.BeginLive(world, entity, actor);
         return true;
     }
+
+    /// <summary>Who sent a record, at which version and hash.</summary>
+    private static HandedFrom HandedBy(ReadOnlySpan<byte> payload) => new(BinaryPrimitives.ReadUInt64LittleEndian(payload),
+        BinaryPrimitives.ReadInt64LittleEndian(payload[sizeof(ulong)..]), BinaryPrimitives.ReadUInt64LittleEndian(payload[(sizeof(ulong) + sizeof(long))..]));
 
     private static void Defer(World world, uint handlerTypeId, long key, ulong by)
     {

@@ -70,10 +70,19 @@ sealed partial class Node
         }
 
         var link = GetLink(host, port);
-        if (!View.TryGetMember(nodeId, out _)) _introduced[nodeId] = link; // listed: the view serves it
+        if (!View.TryGetMember(nodeId, out _))
+        {
+            _introduced[nodeId] = link; // listed: the view serves it
+            // A view listing it may have been published between the check and the write (OnViewChanged then found
+            // nothing to remove): the entry would outlive the member and route to whoever takes its address next.
+            if (View.TryGetMember(nodeId, out _)) _introduced.TryRemove(nodeId, out _);
+        }
         link.OnInboundHello(connection, streamId);
         _slots.OnLinked(link);
     }
+
+    /// <summary>Tests: the next this many handoff records are lost on the way (as a link restarting its stream loses them).</summary>
+    internal int LoseRecords;
 
     /// <summary>Tests: how many links reach node <paramref name="nodeId"/> (one per node).</summary>
     internal int LinksTo(ulong nodeId)

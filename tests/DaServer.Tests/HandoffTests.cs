@@ -41,6 +41,35 @@ public class HandoffTests(string kind) : ClusterTest
     private Task<Node> StartWith(IActorStore? store, string name) => Start(name, configure: o => o.ActorStore = store);
 
     [Test]
+    public async Task ALostRecordGoesAgainAndTheStoreStaysOut()
+    {
+        // The records a's actors send to b are lost on the way (a link that restarted its stream): b's mail asks a, a sends
+        // the record again (at once, or after one handoff timeout when b asked before a sent it), and the actors move
+        // with their state; nothing waits until a node dies, nothing reads the store.
+        var store = new WatchedStore(_stores.Create());
+        var a = await Start("a", configure: o => (o.ActorStore, o.CallTimeout) = (store, TimeSpan.FromSeconds(3)));
+        for (int key = 100; key < 140; key++) Assert.That(await a.Ask(new BankId(key), new Deposit(key, false)), Is.EqualTo(key));
+        int loads = store.Loads;
+        a.LoseRecords = int.MaxValue;
+        var b = await Start("b", configure: o => (o.ActorStore, o.CallTimeout) = (store, TimeSpan.FromSeconds(3)));
+        await Converged();
+        // All at once, within the handoff window (3 s here, the call timeout): mail that reaches b later loads from the
+        // store, the fallback for a record that never comes. Each ask may wait one handoff timeout for the record again.
+        var patient = new CallOptions(TimeSpan.FromSeconds(15));
+        var keys = Enumerable.Range(100, 40).ToArray();
+        var balances = await Task.WhenAll(keys.Select(key => a.Ask(new BankId(key), new Balance(), patient).AsTask()));
+        Assert.That(balances, Is.EqualTo(keys), "every ledger moved");
+        int moved = keys.Count(key => a.OwnerOf<BankId>(key) == b.Id);
+
+        Assert.That(moved, Is.GreaterThan(0), "the new node took some of the keys");
+        Assert.That(store.Loads, Is.EqualTo(loads), "nothing read from the store");
+        Assert.That(store.Writes, Is.Zero, "nothing written: every record arrived the second time");
+        a.LoseRecords = 0;
+        await Stop(b);
+        Assert.That(b.StoppedClean, Is.True);
+    }
+
+    [Test]
     public async Task ScalingOutAndInMovesRecordsWithoutTheStore()
     {
         var store = new WatchedStore(_stores.Create());
