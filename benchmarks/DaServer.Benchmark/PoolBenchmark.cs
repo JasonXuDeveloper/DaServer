@@ -33,6 +33,18 @@ public class PoolBenchmark
         }
     });
 
+    /// <summary>Send batches as sockets use them: 4 KB buffers rented and returned by many threads at once.</summary>
+    [Benchmark(OperationsPerInvoke = Rounds * Batch * 16)]
+    public void Buffers() => Parallel.For(0, 16, _options, static _ =>
+    {
+        Span<byte[]?> held = new byte[]?[Batch];
+        for (int r = 0; r < Rounds; r++)
+        {
+            for (int i = 0; i < Batch; i++) held[i] = BufferPool.Rent(4096);
+            for (int i = 0; i < Batch; i++) BufferPool.Return(held[i]);
+        }
+    });
+
     [Benchmark(OperationsPerInvoke = Rounds * Batch * 16)]
     public void Calls() => Parallel.For(0, 16, _options, _ =>
     {
