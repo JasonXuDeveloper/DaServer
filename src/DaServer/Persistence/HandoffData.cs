@@ -15,6 +15,9 @@ internal readonly record struct HandOff(ulong To) : IComponent;
 /// </summary>
 internal readonly record struct HandingOff(ulong To, long UntilMs, byte[] Record) : IComponent;
 
+/// <summary>The copy's record was taken by node <see cref="To"/>: a node that asked this one for it is sent there.</summary>
+internal readonly record struct HandedTo(ulong To) : IComponent;
+
 /// <summary>The handoff (its record's id) a copy was restored from: the same record again is answered "accepted".</summary>
 internal readonly record struct TakenHandoff(ulong Id) : IComponent;
 
@@ -63,12 +66,12 @@ internal readonly record struct HandoffAsk(uint HandlerTypeId, long Key, ulong B
 /// <summary>A view this node replaced at <see cref="ReplacedMs"/> (real time, <see cref="Node.RecentViews"/>).</summary>
 internal readonly record struct RecentView(ClusterView View, long ReplacedMs)
 {
-    public const int Kept = 8;
+    public const int Kept = 16;
 
-    /// <summary>The views to keep once <paramref name="replaced"/> was replaced now: those replaced within the handoff timeout.</summary>
+    /// <summary>The views to keep once <paramref name="replaced"/> was replaced now: those replaced within the move window.</summary>
     public static RecentView[] Push(RecentView[] views, ClusterView replaced, NodeOptions options)
     {
-        long now = Platform.Milliseconds, window = (long)options.CallTimeout.TotalMilliseconds;
+        long now = Platform.Milliseconds, window = Handoff.MoveWindowMs(options);
         int kept = 0;
         while (kept < views.Length && kept < Kept - 1 && now - views[kept].ReplacedMs <= window) kept++;
         var next = new RecentView[kept + 1]; // cold: one per view change

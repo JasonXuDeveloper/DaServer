@@ -57,6 +57,7 @@ internal sealed partial class Membership
                 if (pulse.Incarnation != info.Incarnation || pulse.Status != info.Status)
                 {
                     // Routing-relevant: publish a copy (the view is rebuilt).
+                    if (pulse.Status == MemberStatus.Dead && info.Status != MemberStatus.Dead) _deathsToCount = true;
                     info = info.Clone();
                     info.Incarnation = pulse.Incarnation;
                     info.Status = pulse.Status;
@@ -133,6 +134,7 @@ internal sealed partial class Membership
                     if (!member.Supersedes(entry.Info)) continue;
                     if (member.Incarnation != entry.Info.Incarnation || member.Heartbeat > entry.Info.Heartbeat) entry.LastProgress = now;
                     else member.Heartbeat = entry.Info.Heartbeat; // a worse status at an older heartbeat (as for pulses)
+                    if (member.Status == MemberStatus.Dead && entry.Info.Status != MemberStatus.Dead) _deathsToCount = true;
                     entry.Info = member;
                     _changed = true;
                 }

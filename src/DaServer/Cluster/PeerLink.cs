@@ -208,14 +208,17 @@ internal sealed class PeerLink : IFrameSink, IDisposable
             {
                 if (_backlog != null)
                 {
-                    foreach (var frame in _backlog)
+                    // In order, until the connection takes no more (it closed meanwhile): the rest waits for the next
+                    // one, which resumes this stream (a frame the connection refused is in no window).
+                    int sent = 0;
+                    for (; sent < _backlog.Count && connection.Send(_backlog[sent].Frame); sent++)
                     {
-                        connection.Send(frame.Frame);
-                        frame.Dispose();
+                        _backlogBytes -= _backlog[sent].Frame.Length;
+                        _backlog[sent].Dispose();
                     }
 
-                    _backlog = null;
-                    _backlogBytes = 0;
+                    if (sent == _backlog.Count) (_backlog, _backlogBytes) = (null, 0);
+                    else _backlog.RemoveRange(0, sent);
                 }
 
                 Volatile.Write(ref _connection, connection);

@@ -194,6 +194,32 @@ public class MembershipTests : ClusterTest
     }
 
     [Test]
+    public async Task BothNodesOfATwoNodeMinorityDownPromptly()
+    {
+        // {a, b} | {c, d, e} at once. Whichever of a and b declares c, d, e dead first gossips it to the other, which
+        // must count the sides on that news too (its own detector then skips members already dead): both down within
+        // about DeadAfter of the cut, not one of them only after the other went silent.
+        Faults.Allow("MinoritySide");
+        var nodes = await StartCluster(5, shards: 1);
+        var downedAt = nodes.Select(_ => new TaskCompletionSource<long>(TaskCreationOptions.RunContinuationsAsynchronously)).ToArray();
+        for (int i = 0; i < nodes.Length; i++)
+        {
+            int index = i;
+            nodes[i].Downed += () => downedAt[index].TrySetResult(Environment.TickCount64);
+        }
+
+        int Port(Node n) => n.ClusterEndPoint.Port;
+        long cut = Environment.TickCount64;
+        nodes[0].Membership.BlockedPorts = nodes[1].Membership.BlockedPorts = [Port(nodes[2]), Port(nodes[3]), Port(nodes[4])];
+        foreach (var n in nodes[2..]) n.Membership.BlockedPorts = [Port(nodes[0]), Port(nodes[1])];
+
+        double deadAfter = nodes[0].Options.DeadAfter.TotalMilliseconds;
+        foreach (int i in new[] { 0, 1 })
+            Assert.That(await downedAt[i].Task.WaitAsync(TimeSpan.FromSeconds(10)) - cut, Is.LessThan(deadAfter * 1.6),
+                $"{nodes[i].Options.Name} downed on its own count or on the other's news");
+    }
+
+    [Test]
     public async Task ASurvivorOfATwoNodeClusterKeepsRunning()
     {
         var nodes = await StartCluster(2);

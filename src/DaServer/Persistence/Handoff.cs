@@ -16,9 +16,11 @@ internal static class Handoff
     private struct NoneOp;
     private struct AnswerOp;
     private struct ResentOp;
+    private struct MovedOnOp;
 
     private static readonly uint Record = TypeId<RecordOp>.Value;   // [sender][version][hash][handoff id][record sections]
     private static readonly uint Resent = TypeId<ResentOp>.Value;   // a Record again (its answer was lost or it was)
+    private static readonly uint MovedOn = TypeId<MovedOnOp>.Value; // [sender][node]: the record went to that node, ask it
     private static readonly uint Request = TypeId<RequestOp>.Value; // [sender][0]: send me the record if you hold it
     private static readonly uint None = TypeId<NoneOp>.Value;       // [sender][0]: I do not hold it
     private static readonly uint Answer = TypeId<AnswerOp>.Value;   // [sender][1 accepted, 0 refused]
@@ -45,7 +47,7 @@ internal static class Handoff
         var node = world.Shard.Node;
         if (HeldBefore(node, handlerTypeId, key, ownsNow: true) is { } held) return held;
         var recent = node.RecentViews;
-        if (recent.Length == 0 || Platform.Milliseconds - recent[0].ReplacedMs > TimeoutMs(node)) return null;
+        if (recent.Length == 0 || Platform.Milliseconds - recent[0].ReplacedMs > MoveWindowMs(node.Options)) return null;
         var view = node.View;
         var other = view.HandlerTypeOwnerWithout(handlerTypeId, key, node.Id);
         return other != null && view.TryGetMember(node.Id, out var self) && other.UpSince < self.UpSince &&
@@ -59,7 +61,7 @@ internal static class Handoff
     /// </summary>
     private static ulong? HeldBefore(Node node, uint handlerTypeId, long key, bool ownsNow)
     {
-        long now = Platform.Milliseconds, window = TimeoutMs(node);
+        long now = Platform.Milliseconds, window = MoveWindowMs(node.Options);
         bool mine = ownsNow;
         foreach (var recent in node.RecentViews)
         {
@@ -158,10 +160,31 @@ internal static class Handoff
     /// <summary>Tell the node that asked for the record of a removed actor that it was not handed to it.</summary>
     public static void Gone(World world, Actor actor, ulong by) => Gone(world.Shard.Node, actor.HandlerType.Id, actor.Key, by);
 
+    /// <summary>Tell <paramref name="by"/>, which asked for the record of a removed actor, that node <paramref name="to"/> took it.</summary>
+    public static void Moved(World world, Actor actor, ulong by, ulong to)
+    {
+        var w = FrameWriter.Rent(FrameHeader.Size + 2 * sizeof(ulong));
+        var span = w.GetSpan(2 * sizeof(ulong));
+        BinaryPrimitives.WriteUInt64LittleEndian(span, world.Shard.Node.Id);
+        BinaryPrimitives.WriteUInt64LittleEndian(span[sizeof(ulong)..], to);
+        w.Advance(2 * sizeof(ulong));
+        w.SetHeader(FrameKind.Message, actor.HandlerType.Id, MovedOn, actor.Key);
+        world.Shard.Node.SendToNode(by, w);
+    }
+
     /// <summary>Tell <paramref name="by"/> that this node holds no record of the key.</summary>
     public static void Gone(Node node, uint handlerTypeId, long key, ulong by) => Notify(node, by, None, handlerTypeId, key, 0);
 
     public static long TimeoutMs(Node node) => (long)node.Options.CallTimeout.TotalMilliseconds;
+
+    /// <summary>
+    /// How long after a view change a node assumes the key's previous owner may still hold its actor: a turn in flight
+    /// (a call timeout), its write in flight (a store timeout), and as much again for the record and the answers. A copy
+    /// held longer than that (a turn running for minutes) meets a new owner that loaded from the store: versions decide,
+    /// and the copy's changes since its last write are lost (ADR-072).
+    /// </summary>
+    public static long MoveWindowMs(NodeOptions options) =>
+        2 * (long)(options.CallTimeout.TotalMilliseconds + options.StoreTimeout.TotalMilliseconds);
 
     /// <summary>
     /// A handoff frame reached a shard that stopped (its node leaves): it holds no actor any more, so a request for a
@@ -266,10 +289,28 @@ internal static class Handoff
                 }
                 else if (!loaded && !ShardDispatch.Owns(world, handlerType.Id, header.Key)) PassOn(world, handlerType.Id, header.Key, default);
             }
+            else if (op == MovedOn)
+            {
+                // The node asked gave the record to another: wait for that one instead (it answers when its copy goes).
+                if (loaded && entity.TryGet<AwaitingHandoff>(out var asked) && asked.From == from)
+                {
+                    ulong to = BinaryPrimitives.ReadUInt64LittleEndian(payload[sizeof(ulong)..]);
+                    if (to == node.Id || !Notify(node, to, Request, handlerType.Id, header.Key, 0))
+                    {
+                        entity.Remove<AwaitingHandoff>(); // it came here after all, or that node is gone: the store
+                        ShardDispatch.BeginLoad(world, entity, entity.Get<ActorRef>().Actor);
+                    }
+                    else entity.Get<AwaitingHandoff>() = new AwaitingHandoff(to, world.GetSingleton<ShardActivity>().NowMs + TimeoutMs(node));
+                }
+            }
             else if (loaded && entity.TryGet<HandingOff>(out var handingOff))
             {
                 entity.Remove<HandingOff>();
-                if (payload[sizeof(ulong)] == 1) entity.Add<Removing>() = new Removing(RpcStatus.Ok, null); // its mail follows the record
+                if (payload[sizeof(ulong)] == 1)
+                {
+                    entity.Add<HandedTo>() = new HandedTo(handingOff.To);
+                    entity.Add<Removing>() = new Removing(RpcStatus.Ok, null); // its mail follows the record
+                }
                 else Reclaim(world, entity, handingOff.Record);
             }
         }
@@ -328,7 +369,7 @@ internal static class Handoff
         return true;
     }
 
-    private static bool IsHandoff(uint op) => op == Record || op == Resent || op == Request || op == None || op == Answer;
+    private static bool IsHandoff(uint op) => op == Record || op == Resent || op == Request || op == None || op == Answer || op == MovedOn;
 
     /// <summary>The handoff a record belongs to (its first send's id, kept by resends).</summary>
     private static ulong IdOf(ReadOnlySpan<byte> payload) => BinaryPrimitives.ReadUInt64LittleEndian(payload[(2 * sizeof(ulong) + sizeof(long))..]);

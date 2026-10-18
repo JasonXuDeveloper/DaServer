@@ -184,7 +184,6 @@ internal sealed partial class Membership
         long now = Platform.Milliseconds;
         long suspect = Ms(_node.Options.SuspectAfter), dead = Ms(_node.Options.DeadAfter);
         List<ulong>? remove = null, expired = null;
-        bool died = false;
 
         foreach (var (id, entry) in _members)
         {
@@ -200,7 +199,6 @@ internal sealed partial class Membership
             {
                 SetStatus(entry, MemberStatus.Dead);
                 Log.MemberDead(_node.Logger, entry.Info.Name);
-                died = true;
             }
             else if (silent > suspect && status != MemberStatus.Suspect)
             {
@@ -209,7 +207,13 @@ internal sealed partial class Membership
             }
         }
 
-        if (died && _node.Options.KeepMajority) CheckMajority();
+        // Deaths this node saw or heard of (gossip from a node of the same side may tell first): count the sides once.
+        if (_deathsToCount)
+        {
+            _deathsToCount = false;
+            if (_node.Options.KeepMajority) CheckMajority();
+        }
+
         foreach (var (id, until) in _forgotten)
             if (now > until) (expired ??= new()).Add(id);
         if (expired != null) foreach (var id in expired) _forgotten.Remove(id);
@@ -264,8 +268,12 @@ internal sealed partial class Membership
         _ = Task.Run(() => _node.DownAsync(reachable, lost)); // not under the gate: stopping closes membership
     }
 
+    /// <summary>A member turned Dead since the last count of the sides (keep-majority). Under the gate.</summary>
+    private bool _deathsToCount;
+
     private void SetStatus(Entry entry, MemberStatus status)
     {
+        if (status == MemberStatus.Dead && entry.Info.Status != MemberStatus.Dead) _deathsToCount = true;
         var info = entry.Info.Clone();
         info.Status = status;
         entry.Info = info;
