@@ -13,7 +13,7 @@ public class PoolBenchmark
 {
     private const int Rounds = 2_000, Batch = 16;
 
-    private readonly PendingCallTable _table = new();
+    private readonly PendingCallTable _table = new(16, stripes: 16); // as a node has it
     private readonly IPendingCall _call = PendingCall<int>.Rent(null);
     private ParallelOptions _options = null!;
 
