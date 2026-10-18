@@ -1081,7 +1081,9 @@ records that no longer hold). Each: context → decision → consequences.
       are restored before `OnLoad` runs.
     - `CheckpointSystem` and `PersistSystem` serialize records into pooled frames.
     - `StoreSystem` keeps one load batch and one save batch (at most 512 records) in flight per shard. IO never runs
-      on the shard thread, and the backlog is bounded.
+      on the shard thread, and the backlog is bounded. A store call is cancelled after `NodeOptions.StoreTimeout`
+      (30 s; stores observe the token) and fails like any other: a hung connection holds a shard's persistence that
+      long, not forever.
   - **Versions:** loading a record claims it: the stored version goes up by one and the loader's writes expect that
     version (a key without a record is claimed as an empty one). Every write names the version it replaces. A store
     that holds another version means another node owns the actor (a split, a late write after being declared dead):

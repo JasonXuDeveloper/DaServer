@@ -546,7 +546,11 @@ and cards, a manual clock), fails before its fix, and passes after it.
       that loads the actor (queued first), OnUnload in a chain of its own, and their requests carry it, so a request
       back into the actor fails with CallCycle at once (`AnOnLoadAskingTheActorWhoseRequestLoadsItFailsAtOnce`,
       `AnActorAskedBackWhileItUnloadsFailsAtOnce`; 5 s -> at once).
-- [ ] P9 store calls and turns have no bound but the stop budget.
+- [x] P9 A store call that never finished held its shard's loads or writes for good (one batch in flight each): store calls
+      are cancelled after `NodeOptions.StoreTimeout` (30 s) and retried like any failure, with one reusable token source
+      per batch (`AHungLoadIsCancelledAfterTheStoreTimeoutAndRetried`, `AHungWriteIsCancelledAfterTheStoreTimeoutAndRetried`:
+      held for good before). A turn cannot be cut short (its code still holds the actor): one that outlives the call
+      timeout is logged once (`TurnTooLong`, a fault for the tests' fail-fast log; `ATurnOutlivingTheCallTimeoutIsReportedOnce`).
 - [x] H1 The new owner stopped waiting for the record after the call timeout while the old owner still ran the actor
       (duplicate activation): it asks again while the previous owner is alive and loads only once it is dead
       (`ANewOwnerWaitsForTheRecordWhileThePreviousOneHoldsTheActor`).
