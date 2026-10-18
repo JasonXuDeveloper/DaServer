@@ -19,7 +19,8 @@ internal sealed partial class Membership
     private ClusterView _view;
     private ClusterMember _self = new();
     private bool _changed;
-    private List<(string Host, int Port)>? _seeds;
+    private volatile List<(string Host, int Port)> _seeds = []; // the last resolution's, replaced whole
+    private int _resolving; // a resolution runs (1)
     private readonly ClusterMember[] _targets = new ClusterMember[Fanout];
     private int _inRound;
     private long _nextRoundMs; // the node's maintenance tick runs a round once this passed
@@ -27,7 +28,7 @@ internal sealed partial class Membership
 
     /// <summary>Tests: a partition. Gossip to these cluster ports is dropped (both sides set it for the other).</summary>
     internal HashSet<int>? BlockedPorts;
-    private long _seedsResolvedAt;
+    private long _seedsResolvedAt = long.MinValue / 2; // the first round resolves
 
     private static readonly TimeSpan SeedRefresh = TimeSpan.FromSeconds(5);
 
@@ -389,41 +390,47 @@ internal sealed partial class Membership
     }
 
     /// <summary>
-    /// Seed endpoints with DNS names expanded to every address (a Kubernetes headless service resolves to all pods),
-    /// minus this node. Cached for <see cref="SeedRefresh"/> so a node waiting alone does not hammer DNS; only used
-    /// while the node is alone, never on a hot path.
+    /// The seeds' endpoints, minus this node, as last resolved (<see cref="NodeOptions.SeedResolver"/>). While the node
+    /// is alone they are resolved again every <see cref="SeedRefresh"/>, in the background: the round never waits for
+    /// DNS or a registry, and uses what the previous resolution found meanwhile.
     /// </summary>
     private List<(string Host, int Port)> SeedEndPoints()
     {
         long now = Platform.Milliseconds;
-        if (_seeds != null && now - _seedsResolvedAt < (long)SeedRefresh.TotalMilliseconds) return _seeds;
-
-        var seeds = new List<(string, int)>();
-        foreach (var seed in _node.Options.Seeds)
+        if (now - _seedsResolvedAt >= (long)SeedRefresh.TotalMilliseconds && Interlocked.Exchange(ref _resolving, 1) == 0)
         {
-            if (!HostPort.TryParse(seed, out var host, out var port)) continue;
-            if (IPAddress.TryParse(host, out _) || host == "localhost")
-            {
-                if (!IsSelf(host, port)) seeds.Add((host, port));
-                continue;
-            }
-
-            try
-            {
-                foreach (var address in Dns.GetHostAddresses(host))
-                {
-                    var ip = (address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address).ToString();
-                    if (!IsSelf(ip, port)) seeds.Add((ip, port));
-                }
-            }
-            catch (SocketException e)
-            {
-                Log.SeedUnresolved(_node.Logger, seed, e.SocketErrorCode);
-            }
+            _seedsResolvedAt = now;
+            _ = ResolveSeedsAsync();
         }
 
-        _seedsResolvedAt = now;
-        return _seeds = seeds;
+        return _seeds;
+    }
+
+    private async Task ResolveSeedsAsync()
+    {
+        try
+        {
+            var resolver = _node.Options.SeedResolver ?? DnsSeedResolver.Instance;
+            var seeds = new List<(string, int)>();
+            foreach (var seed in _node.Options.Seeds)
+                try
+                {
+                    var endpoints = await resolver.ResolveAsync(seed, CancellationToken.None).ConfigureAwait(false);
+                    if (endpoints.Count == 0) Log.SeedUnresolved(_node.Logger, seed);
+                    foreach (var endpoint in endpoints)
+                        if (!IsSelf(endpoint.Host, endpoint.Port)) seeds.Add((endpoint.Host, endpoint.Port));
+                }
+                catch (Exception e)
+                {
+                    Log.SeedFailed(_node.Logger, e, seed);
+                }
+
+            _seeds = seeds;
+        }
+        finally
+        {
+            Volatile.Write(ref _resolving, 0);
+        }
     }
 
     private bool IsSelf(string host, int port) =>

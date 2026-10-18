@@ -25,8 +25,15 @@ public sealed class NodeOptions
     /// </summary>
     public string? AdvertisedHost { get; set; }
 
-    /// <summary>Seed endpoints "host:port" (DNS names resolve to every address, e.g. a Kubernetes headless service).</summary>
+    /// <summary>
+    /// Seeds: "host:port" (DNS names resolve to every address, e.g. a Kubernetes headless service), or whatever
+    /// <see cref="SeedResolver"/> understands (with <c>DaServer.Hosting</c>: service names such as <c>tcp://peers</c>,
+    /// through .NET service discovery: configuration, DNS SRV, ...).
+    /// </summary>
     public List<string> Seeds { get; set; } = new();
+
+    /// <summary>Resolves <see cref="Seeds"/> to endpoints (<see cref="DnsSeedResolver"/> unless set).</summary>
+    public ISeedResolver? SeedResolver { get; set; }
 
     /// <summary>
     /// Number of shards (single-threaded shards); default one per core the process may use:

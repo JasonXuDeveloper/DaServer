@@ -43,6 +43,32 @@ public class MembershipTests : ClusterTest
     }
 
     [Test]
+    public async Task SeedsResolveThroughTheResolverOffTheGossipRound()
+    {
+        // A resolver that takes 2 s (a slow DNS server, a registry): the node joins once it answers, and its rounds run
+        // on time meanwhile instead of waiting for it.
+        var a = await Start("a");
+        var resolver = new SlowResolver(a.ClusterEndPoint.Port);
+        var b = await Start("b", configure: o => (o.Seeds, o.SeedResolver) = (["peers-of-a"], resolver));
+        await Converged();
+        Assert.That(resolver.Asked, Is.GreaterThanOrEqualTo(1));
+        Assert.That(Faults.Count("RoundLate"), Is.Zero, "no round waited for the resolver");
+        Assert.That(b.View.UpMembers, Has.Length.EqualTo(2));
+    }
+
+    private sealed class SlowResolver(int port) : ISeedResolver
+    {
+        public int Asked;
+
+        public async ValueTask<IReadOnlyList<System.Net.DnsEndPoint>> ResolveAsync(string seed, CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref Asked);
+            await Task.Delay(2000, cancellationToken);
+            return seed == "peers-of-a" ? [new System.Net.DnsEndPoint("127.0.0.1", port)] : [];
+        }
+    }
+
+    [Test]
     public async Task AStalePulseDoesNotLowerAHeartbeat()
     {
         // A pulse saying "suspect" at an older heartbeat supersedes "up" (a worse status), but the heartbeat stays the

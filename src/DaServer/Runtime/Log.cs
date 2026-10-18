@@ -87,8 +87,11 @@ internal static partial class Log
     [LoggerMessage(Level = LogLevel.Warning, Message = "Declared dead by the cluster: removed local actors before rejoining")]
     public static partial void DeclaredDead(ILogger logger);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "Seed {Seed} does not resolve yet: {Error}")]
-    public static partial void SeedUnresolved(ILogger logger, string seed, System.Net.Sockets.SocketError error);
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Seed {Seed} names no node yet")]
+    public static partial void SeedUnresolved(ILogger logger, string seed);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Seed {Seed} cannot be resolved")]
+    public static partial void SeedFailed(ILogger logger, Exception error, string seed);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Loading {Count} records failed: their callers get Error")]
     public static partial void LoadFailed(ILogger logger, Exception error, int count);
