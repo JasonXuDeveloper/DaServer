@@ -123,6 +123,36 @@ public class InfrastructureTests
     }
 
     [Test]
+    public void APeaksBuffersGoBackHalfPerTrimWhileUsedOnesStay()
+    {
+        // 2 MB buffers: a bucket nothing else in the process uses. A peak of 30 (the bucket holds 32), then 10 in use every period.
+        const int size = 2 << 20;
+        var peak = new byte[30][];
+        for (int i = 0; i < peak.Length; i++) peak[i] = BufferPool.Rent(size);
+        foreach (var buffer in peak) BufferPool.Return(buffer);
+        int held = BufferPool.Retained(size);
+        Assert.That(held, Is.GreaterThanOrEqualTo(30));
+        BufferPool.Trim(); // the peak emptied the bucket: everything was used, nothing goes
+
+        Assert.That(BufferPool.Retained(size), Is.EqualTo(held), "a period whose low-water mark is zero releases nothing");
+        void Period()
+        {
+            var used = new byte[10][];
+            for (int i = 0; i < used.Length; i++) used[i] = BufferPool.Rent(size);
+            foreach (var buffer in used) BufferPool.Return(buffer);
+            BufferPool.Trim();
+        }
+
+        Period(); // 10 of `held` used: half of the other held - 10 go
+        int after = BufferPool.Retained(size);
+        Assert.That(after, Is.EqualTo(held - (held - 10) / 2));
+        for (int i = 0; i < 10; i++) Period();
+        Assert.That(BufferPool.Retained(size), Is.InRange(10, 11), "down to what each period uses, never below it");
+        Period();
+        Assert.That(BufferPool.AllocatedBytes, Is.Not.Zero);
+    }
+
+    [Test]
     public void TrailersCarryTheOriginAndAPerHopCallId()
     {
         using var w = FrameWriter.Rent();

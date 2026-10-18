@@ -36,6 +36,12 @@ public sealed class MpmcQueue<T>
 
     public int Capacity => _slots.Length;
 
+    /// <summary>How many items were ever enqueued (the next enqueue's position).</summary>
+    internal long Enqueued => Volatile.Read(ref _enqueuePos.Value);
+
+    /// <summary>How many items were ever dequeued (the next dequeue's position): items leave in the order they came.</summary>
+    internal long Dequeued => Volatile.Read(ref _dequeuePos.Value);
+
     /// <summary>Approximate number of queued items.</summary>
     public int Count
     {
