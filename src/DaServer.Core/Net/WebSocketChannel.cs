@@ -8,7 +8,13 @@ namespace DaServer.Net;
 /// pooled batch drained by one send loop, woken once per send batch (a peer too far behind is closed), receives are
 /// parsed in place; nothing is allocated per frame.
 /// </summary>
-public sealed class WebSocketChannel(WebSocket socket, IChannelHandler handler, int maxFrameSize, int maxPendingSendBytes)
+/// <param name="releaseIdle">
+/// Hold no receive buffer while the peer is silent (a server's crowd of idle browsers: 16 KB each otherwise): wait with a
+/// zero-byte read, which .NET's WebSocket completes once data arrives without consuming any, rent the buffer for the
+/// message, return it after. Off by default: other WebSocket implementations (a client's platform) may complete it at once.
+/// </param>
+public sealed class WebSocketChannel(WebSocket socket, IChannelHandler handler, int maxFrameSize, int maxPendingSendBytes,
+    bool releaseIdle = false)
     : FrameChannel(handler, new SendQueue(maxPendingSendBytes, 16 * 1024, releaseIdle: true, keepSpare: false)) // idle: no send memory
 {
     /// <summary>Run the channel until it closes (the HTTP request or the client's connection lives as long).</summary>
@@ -65,17 +71,24 @@ public sealed class WebSocketChannel(WebSocket socket, IChannelHandler handler, 
 
     private async Task ReceiveLoop()
     {
-        var buffer = BufferPool.Rent(16 * 1024);
+        byte[]? buffer = releaseIdle ? null : BufferPool.Rent(16 * 1024);
         try
         {
             while (true)
             {
+                if (releaseIdle)
+                {
+                    var ready = await socket.ReceiveAsync(Memory<byte>.Empty, CancellationToken.None).ConfigureAwait(false);
+                    if (ready.MessageType == WebSocketMessageType.Close) return;
+                    buffer = BufferPool.Rent(16 * 1024);
+                }
+
                 // One message: read it whole (frames never span messages), bounded by what a peer may send at once.
                 int filled = 0;
                 ValueWebSocketReceiveResult result;
                 do
                 {
-                    if (filled == buffer.Length)
+                    if (filled == buffer!.Length)
                     {
                         if (buffer.Length >= Math.Max(maxFrameSize, maxPendingSendBytes))
                             throw new InvalidOperationException("WebSocket message too large");
@@ -89,11 +102,16 @@ public sealed class WebSocketChannel(WebSocket socket, IChannelHandler handler, 
                 } while (!result.EndOfMessage);
 
                 Dispatch(buffer.AsSpan(0, filled));
+                if (releaseIdle)
+                {
+                    BufferPool.Return(buffer);
+                    buffer = null;
+                }
             }
         }
         finally
         {
-            BufferPool.Return(buffer);
+            if (buffer != null) BufferPool.Return(buffer);
         }
     }
 

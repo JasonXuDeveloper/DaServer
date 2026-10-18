@@ -59,7 +59,8 @@ public static class DaServerHttpExtensions
             }
 
             var socket = await http.WebSockets.AcceptWebSocketAsync();
-            var channel = new DaServer.Net.WebSocketChannel(socket, clients.Channels, clients.MaxFrameSize, clients.MaxPendingSendBytes);
+            var channel = new DaServer.Net.WebSocketChannel(socket, clients.Channels, clients.MaxFrameSize, clients.MaxPendingSendBytes,
+                releaseIdle: true); // a crowd of idle browsers holds no receive buffers
             clients.Open(channel);
             await channel.RunAsync(); // the request lives as long as the client's connection
         });
