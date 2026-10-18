@@ -12,8 +12,10 @@ namespace DaServer.Generator;
 [DiagnosticAnalyzer(LanguageNames.CSharp)]
 public sealed partial class DaServerAnalyzer : DiagnosticAnalyzer
 {
+    private const string FilterAttribute = "DaServer.Rpc.FilterAttribute";
+
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics { get; } = ImmutableArray.Create(
-        Rules.BadHandler, Rules.BadMessage, Rules.NotWireType, Rules.IdCollision, Rules.NoDefaultConstructor, Rules.WrongFlow, Rules.StatefulHandlerType, Rules.WrongAddress, Rules.SharedReferencesServer, Rules.MisplacedReplyWhen, Rules.BlockingCall, Rules.AskInSystem, Rules.ComponentInLogic, Rules.BadPersisted, Rules.OffShard, Rules.BadPlacement, Rules.WireBreak, Rules.WireUnrecorded, Rules.ClientCollection, Rules.KickWithDisconnectSession);
+        Rules.BadHandler, Rules.BadMessage, Rules.NotWireType, Rules.IdCollision, Rules.NoDefaultConstructor, Rules.WrongFlow, Rules.StatefulHandlerType, Rules.WrongAddress, Rules.SharedReferencesServer, Rules.MisplacedReplyWhen, Rules.BlockingCall, Rules.AskInSystem, Rules.ComponentInLogic, Rules.BadPersisted, Rules.OffShard, Rules.BadPlacement, Rules.WireBreak, Rules.WireUnrecorded, Rules.ClientCollection, Rules.KickWithDisconnectSession, Rules.BadFilter);
 
     public override void Initialize(AnalysisContext context)
     {
@@ -37,6 +39,9 @@ public sealed partial class DaServerAnalyzer : DiagnosticAnalyzer
                 Shapes.ReadHosted(type, Report);
                 Shapes.ReadRequest(type, Report);
                 Shapes.ReadClientMessage(type, Report);
+                if (Support.HasAttribute(type, FilterAttribute)) Shapes.ReadFilter(type, Report);
+                foreach (var member in type.GetMembers())
+                    if (member is IMethodSymbol && Support.HasAttribute(member, FilterAttribute)) Shapes.ReadFilter(member, Report);
                 CheckStateless(type, logic, Report);
                 if (logic) CheckNoComponents(type, Report);
                 CheckPersisted(type, Report);
@@ -312,6 +317,9 @@ internal static class Rules
 
     public static readonly DiagnosticDescriptor WireBreak = new("DAS017", "Wire layout breaks the manifest",
         "'{0}' {1} (wire.manifest, ADR-076; a deliberate break: dotnet build -p:UpdateWireManifest=force)", Category, DiagnosticSeverity.Error, true, customTags: WellKnownDiagnosticTags.CompilationEnd);
+
+    public static readonly DiagnosticDescriptor BadFilter = new("DAS021", "Invalid filter",
+        "[Filter] '{0}' {1}", Category, DiagnosticSeverity.Error, true);
 
     public static readonly DiagnosticDescriptor KickWithDisconnectSession = new("DAS020", "An actor disconnects a session with Send",
         "An actor disconnects a session with DisconnectSession(session): it withdraws the session's grant at once, so a resume racing the kick is refused",

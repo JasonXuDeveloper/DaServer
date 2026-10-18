@@ -33,6 +33,9 @@ internal sealed record RequestModel(string Namespace, string ClassName, string F
 /// <summary>A <c>[FromClient]</c> message type: registered for client-facing nodes in its assembly.</summary>
 internal sealed record ClientMessageModel(string FullName);
 
+/// <summary>A <c>[Filter]</c>: a static method for <see cref="MessageType"/>, or (no message type) an <c>IMessageFilter</c> class.</summary>
+internal sealed record FilterModel(string Target, string? MessageType);
+
 /// <summary>
 /// Reads messages and hosted types from symbols. The single source of truth for validity: the generators call it
 /// without a reporter and skip invalid input; <see cref="DaServerAnalyzer"/> calls it with one and reports.
@@ -79,6 +82,45 @@ internal static class Shapes
         string name = ns.Length > 0 ? type.ToDisplayString().Substring(ns.Length + 1) : type.ToDisplayString();
         return new RequestModel(ns, Identifier(name) + "Ask", type.ToDisplayString(Fqn), reply.ToDisplayString(Fqn),
             IsPublic(type));
+    }
+
+    /// <summary>
+    /// A <c>[Filter]</c> (DAS021 when misshapen): a static method <c>RpcStatus M(object target, in T message, in CallContext
+    /// context)</c> of a message type, or a non-abstract class implementing <c>IMessageFilter</c> with a public
+    /// parameterless constructor; either reachable from generated code (not private).
+    /// </summary>
+    public static FilterModel? ReadFilter(ISymbol symbol, Report? report = null)
+    {
+        var location = symbol.Locations.FirstOrDefault();
+        string? problem;
+        FilterModel? model = null;
+        if (symbol is IMethodSymbol method)
+        {
+            var p = method.Parameters;
+            problem = !method.IsStatic ? "must be static"
+                : method.DeclaredAccessibility == Accessibility.Private || method.ContainingType.DeclaredAccessibility == Accessibility.Private
+                    ? "must be reachable from generated code (not private)"
+                : !Is(method.ReturnType, "DaServer.Protocol.RpcStatus") || p.Length != 3 || p[0].Type.SpecialType != SpecialType.System_Object ||
+                  p[1].RefKind != RefKind.In || p[2].RefKind != RefKind.In || !Is(p[2].Type, "DaServer.Rpc.CallContext")
+                    ? "must be RpcStatus M(object target, in TMessage message, in CallContext context)"
+                : !IsMessage(p[1].Type, location, "[Filter] " + method.Name, report) ? "" // reported
+                : null;
+            if (problem == null)
+                model = new FilterModel(method.ContainingType.ToDisplayString(Fqn) + "." + method.Name, p[1].Type.ToDisplayString(Fqn));
+        }
+        else if (symbol is INamedTypeSymbol type)
+        {
+            problem = type.IsAbstract || type.TypeKind != TypeKind.Class || !Implements(type, "DaServer.Rpc.IMessageFilter")
+                    ? "must be a non-abstract class implementing IMessageFilter"
+                : type.DeclaredAccessibility == Accessibility.Private || !type.InstanceConstructors.Any(static c => c.Parameters.Length == 0 && c.DeclaredAccessibility == Accessibility.Public)
+                    ? "must have a public parameterless constructor and not be private"
+                : null;
+            if (problem == null) model = new FilterModel(type.ToDisplayString(Fqn), null);
+        }
+        else problem = "must be a method or a class";
+
+        if (!string.IsNullOrEmpty(problem)) report?.Invoke(Rules.BadFilter, location, symbol.Name, problem!);
+        return model;
     }
 
     /// <summary>Who besides servers a message travels between: <c>[FromClient]</c> and <c>[ToClient]</c> bits (0: servers only).</summary>

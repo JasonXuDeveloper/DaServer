@@ -541,6 +541,14 @@ public sealed class LoopService : Service
 [NinoType, Message] public partial record struct WhichNode : IRequest<ulong>;
 [NinoType, Message] public partial record struct WhoAsks : IRequest<long>;                 // the caller's origin id
 [NinoType, Message] public partial record struct Guarded(int N) : IRequest<int>;           // a dispatch filter refuses N < 0
+[NinoType, Message] public partial record struct Screened(int N) : IRequest<int>;          // ScreenRules refuses N < 0
+
+/// <summary>A [Filter]: registered by the generated registration, no startup code.</summary>
+public static class ScreenRules
+{
+    [Filter] public static RpcStatus Screen(object target, in Screened message, in CallContext context) =>
+        message.N < 0 ? RpcStatus.Forbidden : RpcStatus.Ok;
+}
 
 /// <summary>Event: delivered once to each service type handling it.</summary>
 [NinoType, Message] public partial record struct Ping(int Id);
@@ -554,6 +562,8 @@ public sealed class EchoService : Service
     [Handle] public long On(WhoAsks _) => Caller.Id;
 
     [Handle] public int On(Guarded m) => m.N;
+
+    [Handle] public int On(Screened m) => m.N;
 
     [Handle] public void On(Ping e) => Observed.Events.Enqueue($"echo:{e.Id}:{Cluster.NodeId:x}");
 }

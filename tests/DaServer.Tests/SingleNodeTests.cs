@@ -122,6 +122,14 @@ public class SingleNodeTests : ClusterTest
     }
 
     [Test]
+    public async Task AFilterAttributeRegistersItself()
+    {
+        Assert.That(await _node.Ask(new Screened(3)), Is.EqualTo(3));
+        var error = Assert.ThrowsAsync<RpcException>(async () => await _node.Ask(new Screened(-1)));
+        Assert.That(error!.Status, Is.EqualTo(RpcStatus.Forbidden), "ScreenRules ran before the handler");
+    }
+
+    [Test]
     public async Task ARepliedLaterRequestEndsItsTurnAtOnce()
     {
         var node = _node;

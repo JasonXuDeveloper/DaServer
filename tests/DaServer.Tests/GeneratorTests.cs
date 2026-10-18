@@ -136,6 +136,31 @@ public class GeneratorTests
         Assert.That(sources, Has.Some.Contains("ClientMessages.Register<global::Game.Move>()")
             .And.Some.Contains("ClientMessages.Register<global::Game.Topic>()"));
     }
+    [Test]
+    public async Task FiltersAreRegisteredWithTheAssembly()
+    {
+        var (sources, diagnostics) = await Run("""
+            namespace Game;
+            [NinoType, Message] public partial record struct Say(string Text) : IRequest<bool>;
+            public static class ChatRules
+            {
+                [DaServer.Rpc.Filter]
+                public static DaServer.Protocol.RpcStatus Short(object target, in Say message, in DaServer.Rpc.CallContext context) =>
+                    message.Text.Length <= 200 ? DaServer.Protocol.RpcStatus.Ok : DaServer.Protocol.RpcStatus.Forbidden;
+            }
+            [DaServer.Rpc.Filter]
+            public sealed class Audit : DaServer.Rpc.IMessageFilter
+            {
+                public DaServer.Protocol.RpcStatus Admit<T>(object target, in T message, in DaServer.Rpc.CallContext context) where T : struct =>
+                    DaServer.Protocol.RpcStatus.Ok;
+            }
+            """);
+        Assert.That(diagnostics, Is.Empty);
+        string registration = sources.Single(static s => s.Contains("MessageFilters"));
+        Assert.That(registration, Does.Contain("global::DaServer.Rpc.MessageFilters.Register<global::Game.Say>(global::Game.ChatRules.Short);"));
+        Assert.That(registration, Does.Contain("global::DaServer.Rpc.MessageFilters.Register(new global::Game.Audit());"));
+    }
+
 
     [TestCase("[NinoType, Message] public partial record struct Tick(int N); public sealed class Bad : Service { [Handle] void On(Tick e) { } }", "DAS001")]
     [TestCase("[NinoType, Message] public partial record struct Tick(int N); public sealed class Bad : Service { [Handle] public void On(ref Tick e) { } }", "DAS001")]
@@ -183,6 +208,9 @@ public class GeneratorTests
     [TestCase("[Handoff] public partial class Bad { }", "DAS014")]
     [TestCase("public partial struct Bad : IPlaced { public long Placement => 0; }", "DAS016")]
     [TestCase("public readonly record struct BadId(long Value) : IActorId; [NinoType, Message, FromClient] public partial record struct Q; public sealed class Bad : Actor<BadId> { [Handle] public void On(Q m) => Cluster.Send(Caller, new Disconnect()); }", "DAS020")]
+    [TestCase("[NinoType, Message] public partial record struct Q; public static class Bad { [DaServer.Rpc.Filter] public static DaServer.Protocol.RpcStatus On(object t, Q m, in DaServer.Rpc.CallContext c) => DaServer.Protocol.RpcStatus.Ok; }", "DAS021")]
+    [TestCase("[NinoType, Message] public partial record struct Q; public class Bad { [DaServer.Rpc.Filter] public DaServer.Protocol.RpcStatus On(object t, in Q m, in DaServer.Rpc.CallContext c) => DaServer.Protocol.RpcStatus.Ok; }", "DAS021")]
+    [TestCase("[DaServer.Rpc.Filter] public sealed class Bad { }", "DAS021")]
     [TestCase("[NinoType, Message, ToClient] public partial record struct Bad(int[] Cells);", "DAS019")]
     [TestCase("[NinoType, Message, FromClient] public partial struct Bad { public System.Collections.Generic.List<int> Picks; }", "DAS019")]
     public async Task MisuseIsReportedByTheAnalyzer(string source, string id)

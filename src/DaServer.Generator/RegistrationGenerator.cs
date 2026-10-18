@@ -46,6 +46,15 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
             .Select(static (all, _) => new EquatableArray<ClientMessageModel>(all.Distinct().OrderBy(m => m!.FullName).ToArray()!))
             .WithTrackingName("ClientMessages");
 
+        // [Filter] methods and classes: registered with the assembly's other registrations (servers only).
+        var filters = context.SyntaxProvider
+            .ForAttributeWithMetadataName("DaServer.Rpc.FilterAttribute", static (node, _) => node is MethodDeclarationSyntax or ClassDeclarationSyntax,
+                static (ctx, _) => Shapes.ReadFilter(ctx.TargetSymbol))
+            .Where(static f => f is not null)
+            .Collect()
+            .Select(static (all, _) => new EquatableArray<FilterModel>(all.Distinct().OrderBy(f => f!.Target, System.StringComparer.Ordinal).ToArray()!))
+            .WithTrackingName("Filters");
+
         // Actor id types placed by IPlaced (ADR-073): every node referencing them hashes their placement.
         var placed = context.SyntaxProvider
             .CreateSyntaxProvider(static (node, _) => node is StructDeclarationSyntax { BaseList: not null }
@@ -71,17 +80,18 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
                 new EquatableArray<PersistedModel>(PersistedComponents(c))))
             .WithTrackingName("RegistrationAssembly");
 
-        context.RegisterSourceOutput(hosted.Combine(clientMessages).Combine(placed).Combine(assembly), static (spc, input) =>
+        context.RegisterSourceOutput(hosted.Combine(clientMessages).Combine(placed).Combine(filters).Combine(assembly), static (spc, input) =>
         {
-            var (((types, messages), placedIds), info) = input;
+            var ((((types, messages), placedIds), filterModels), info) = input;
             // Handler registration lives in DaServer.Core; actors, services and systems need the server runtime.
             if (!info.ReferencesCore) types = default;
             else if (!info.ReferencesRuntime)
                 types = new EquatableArray<HostedModel>(types.Where(static t => t.Kind == HostedKind.ClientHandler).ToArray());
             var sharedSystems = info.ReferencesRuntime ? info.SharedSystems : default;
             int persisted = info.ReferencesRuntime ? info.Persisted.Length : 0;
-            if (types.Length + messages.Length + placedIds.Length + info.ContractAnchors.Length + sharedSystems.Length + persisted == 0) return;
-            spc.AddSource("DaServer.Registration.g.cs", SourceText.From(Emit(types, messages, placedIds, sharedSystems, info), Encoding.UTF8));
+            if (!info.ReferencesRuntime) filterModels = default;
+            if (types.Length + messages.Length + placedIds.Length + info.ContractAnchors.Length + sharedSystems.Length + persisted + filterModels.Length == 0) return;
+            spc.AddSource("DaServer.Registration.g.cs", SourceText.From(Emit(types, messages, placedIds, sharedSystems, filterModels, info), Encoding.UTF8));
         });
 
         // An assembly built with <DaServerShared>true</DaServerShared> says so, for the nodes that reference it.
@@ -185,7 +195,7 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
     }
 
     private static string Emit(EquatableArray<HostedModel> types, EquatableArray<ClientMessageModel> messages,
-        EquatableArray<string> placedIds, EquatableArray<string> sharedSystems, AssemblyModel info)
+        EquatableArray<string> placedIds, EquatableArray<string> sharedSystems, EquatableArray<FilterModel> filters, AssemblyModel info)
     {
         var sb = new StringBuilder(Header);
         sb.Append("using System.Runtime.CompilerServices;\nusing DaServer;\n");
@@ -204,6 +214,10 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
             sb.Append($"        global::DaServer.ClientMessages.Register<{m.FullName}>();\n");
         foreach (var id in placedIds)
             sb.Append($"        global::DaServer.Placements.Register<{id}>();\n");
+        foreach (var filter in filters)
+            sb.Append(filter.MessageType != null
+                ? $"        global::DaServer.Rpc.MessageFilters.Register<{filter.MessageType}>({filter.Target});\n"
+                : $"        global::DaServer.Rpc.MessageFilters.Register(new {filter.Target}());\n");
         foreach (var system in sharedSystems)
             sb.Append($"        ServerRegistry.RegisterSystem(new SystemInfo(typeof({system}), static () => new {system}()));\n");
         if (info.ReferencesRuntime)
