@@ -885,6 +885,26 @@ and cards, a manual clock), fails before its fix, and passes after it.
   - Kept: answers carry no handoff id (a stale "accepted" needs the key to move M -> N -> M within one answer's
     flight); `Observe` allocates a state machine per push whose handler completes asynchronously (synchronous handlers
     pay nothing, and the task is now observed instead of dropped).
+- [x] Self-review round 5 (ownership across nodes; membership, links and sessions):
+  - A link that closed while its backlog was being flushed after a resume dropped the rest of the backlog (frames the
+    connection refused reach no resend window): the flush stops at the first refusal and keeps the rest for the next
+    connection. Not covered by a deterministic test (it needs the socket to fail between the replay and the flush).
+  - A minority node that heard of the deaths from its own side's gossip before its detector declared them never
+    counted the sides (its detector skips members already dead), so it ran on until the other minority node went
+    silent: every member turning Dead, detected or merged, triggers the count (`BothNodesOfATwoNodeMinorityDownPromptly`;
+    the race itself needs both sides cut within one gossip round, so the test pins the behaviour, not the race).
+  - A copy that handed its record to a node other than the one that asked told the asker "none", which loaded a second
+    copy from the store: it tells the asker where the record went (`MovedOn`), and the asker waits for that node.
+  - A node remembered previous owners for one call timeout, but a leaving copy can hold its key through a turn and a
+    write in flight: the move window is 2 x (call timeout + store timeout), over up to 16 recent views. A copy held
+    longer meets a new owner that loaded from the store; versions decide and its changes since its last write are lost
+    (ADR-072).
+  - Open from this round (should-fix, in order): a group broadcast during a planned client move can reach both
+    sessions and an in-flight push can arrive after the parked ones (needs a move marker or group sequence numbers);
+    a resume reverted after the old session's close was consumed leaves the session open; a resume whose reply is lost
+    cannot be retried with the old ticket; a stale handshake can carry the old stream id after `OnPeerDead`; an
+    `OnLoad` failing on a restored copy drops the moved state; a stopped shard's handoff memory is gone for late
+    resends; a failed critical save downgraded by a move. Sessions of a drained node close one view removal late (nit).
 
 ## Generator / analyzer (`src/DaServer.Generator`)
 - [x] Messages instead of contracts (ADR-035): typed `Ask` overloads per request, one dispatcher per `[Handle]`

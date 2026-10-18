@@ -1263,6 +1263,9 @@ records that no longer hold). Each: context → decision → consequences.
     actor went since, or follows to the node it was passed to (gone: refused). A resend never seen is taken only by a
     copy waiting for that sender's record, or by the key's owner holding no copy while nothing was forgotten early;
     otherwise it is refused and the store decides.
+  - **How long a previous owner counts:** a node that loads a key waits for the owners it replaced within the move
+    window (2 x (call timeout + store timeout), up to 16 views): a turn and a write in flight fit in it. A copy that
+    gave its record to a node other than the asker tells the asker where it went, and the asker waits for that node.
   - **Fallback:** a refused handoff (the new owner already runs the actor or is stopping) or a dead node: the old
     owner writes to the store and the new one reads. A node declared dead hands nothing over and writes nothing (its
     copies are fenced). A cluster stopping as a whole writes everything.
