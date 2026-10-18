@@ -11,6 +11,8 @@
     </PropertyGroup>
 
     <ItemGroup>
+        <!-- Kestrel, for TransportBenchmark's comparison of client transports. -->
+        <FrameworkReference Include="Microsoft.AspNetCore.App" />
         <PackageReference Include="BenchmarkDotNet" />
         <PackageReference Include="Microsoft.CodeAnalysis.CSharp" />
     </ItemGroup>
