@@ -231,8 +231,12 @@ What G delivered (each step kept every test green):
 
 Open after G:
 
-- [ ] Trim `BufferPool` buckets back after a peak (41 MB of a 10k-bot process's 80 MB managed heap are 4 KB buffers
-      kept from the all-sessions broadcast peak).
+- [x] Trim `BufferPool` buckets back after a peak (41 MB of a 10k-bot process's 80 MB managed heap were 4 KB buffers
+      kept from the all-sessions broadcast peak): every 60 s each bucket releases half of the buffers it held through the
+      whole period without lending them. A bucket is a FIFO queue, so those are exactly the ones queued before the last
+      trim that its renters' cursor has not reached since (no bookkeeping on rent: a first try that tracked a low-water
+      mark on every rent cost 26% on four threads); buffers in use, even in rare bursts, never go
+      (`APeaksBuffersGoBackHalfPerTrimWhileUsedOnesStay`; `PoolBenchmark.Buffers` unchanged).
 - [ ] Profile group broadcasts on .NET 11 (0 to +5% against d676d2a on .NET 10).
 - [ ] Re-record the release checklist (test count, 10k E2E, BenchmarkDotNet) on the head after T2.
 
