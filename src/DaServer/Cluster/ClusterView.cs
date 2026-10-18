@@ -247,7 +247,9 @@ public sealed class ClusterView
     /// <summary>
     /// Node that receives message <paramref name="messageId"/> for <paramref name="route"/>: the owner of the key for
     /// actor handlers (none while the owner runs a build without the message: it is upgraded or leaves, V3), otherwise
-    /// the local node when it hosts the handler, else one in turn (<see cref="Spread"/>: balances services).
+    /// the local node when it hosts the handler, else the less loaded of two others (power of two choices over the
+    /// queue lengths members gossip, <see cref="ClusterMember.Load"/>): a busy node gets less, and with equal loads the
+    /// first of the two goes in turn (<see cref="Spread"/>), so services stay balanced.
     /// </summary>
     public ClusterMember? Target(in MessageRoute route, uint messageId, long key, ulong localNodeId)
     {
@@ -258,9 +260,14 @@ public sealed class ClusterView
             return _lacking.Count != 0 && _lacking.Contains((owner.NodeId, route.HandlerTypeId, messageId)) ? null : owner;
         }
 
-        foreach (var node in route.Nodes)
+        var nodes = route.Nodes;
+        foreach (var node in nodes)
             if (node.NodeId == localNodeId) return node;
-        return route.Nodes.Length == 0 ? null : route.Nodes[(int)(Spread.Next() % (uint)route.Nodes.Length)];
+        if (nodes.Length <= 1) return nodes.Length == 0 ? null : nodes[0];
+        uint n = (uint)nodes.Length, next = Spread.Next(), first = next % n;
+        var a = nodes[first];
+        var b = nodes[(first + 1 + (next * 0x9E3779B9u >> 16) % (n - 1)) % n]; // another one, spread by a mix of the turn
+        return Volatile.Read(ref b.Load) < Volatile.Read(ref a.Load) ? b : a;
     }
 
     /// <summary>SplitMix64-style mix of (node, handler type, key).</summary>

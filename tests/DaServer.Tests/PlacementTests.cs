@@ -57,4 +57,32 @@ public class PlacementTests
         Assert.That(moved, Is.InRange(8_000, 12_000), "about a quarter of the keys moved");
         foreach (var (_, count) in perNode) Assert.That(count, Is.InRange(8_000, 12_000), "each node owns about a quarter");
     }
+
+    [Test]
+    public void ServiceCallsGoToTheLessLoadedOfTwoNodes()
+    {
+        var members = new[] { Member(1, MemberStatus.Up), Member(2, MemberStatus.Up), Member(3, MemberStatus.Up) };
+        var view = new ClusterView(members);
+        Assert.That(view.TryGetRoute(Message, actor: false, out var route, out _));
+        var counts = new Dictionary<ulong, int>();
+        void Calls(int n)
+        {
+            counts.Clear();
+            for (int i = 0; i < n; i++)
+            {
+                ulong node = view.Target(in route, Message, 0, localNodeId: 99)!.NodeId; // a caller not hosting the service
+                counts[node] = counts.GetValueOrDefault(node) + 1;
+            }
+        }
+
+        Calls(3_000);
+        foreach (var (_, count) in counts) Assert.That(count, Is.InRange(800, 1_200), "equal loads: an even spread");
+
+        members[1].Load = 500; // node 2's shards have a backlog (gossiped)
+        Calls(3_000);
+        Assert.That(counts.GetValueOrDefault(2UL), Is.Zero, "the busy node is never the less loaded of two");
+        Assert.That(counts[1] + counts[3], Is.EqualTo(3_000));
+
+        Assert.That(view.Target(in route, Message, 0, localNodeId: 2)!.NodeId, Is.EqualTo(2UL), "a node hosting the service still serves itself");
+    }
 }
