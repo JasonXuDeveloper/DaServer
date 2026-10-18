@@ -34,6 +34,20 @@ internal static class Platform
 #endif
     }
 
+    /// <summary>
+    /// The processor this thread runs on (<see cref="Thread.GetCurrentProcessorId"/> on .NET, cached by the runtime),
+    /// else its thread id: what spreads threads over the stripes of a shared structure. Any value is correct.
+    /// </summary>
+    public static int ProcessorId
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+#if NET
+        get => Thread.GetCurrentProcessorId();
+#else
+        get => Environment.CurrentManagedThreadId;
+#endif
+    }
+
 #if !NET
     [ThreadStatic] private static Random? t_random;
 #endif

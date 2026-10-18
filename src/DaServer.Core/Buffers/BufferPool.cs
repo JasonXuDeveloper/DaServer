@@ -1,9 +1,10 @@
-using System.Numerics;
-
 namespace DaServer.Buffers;
 
 /// <summary>
-/// Power-of-two bucketed byte[] pool shared by the whole process.
+/// Power-of-two bucketed byte[] pool shared by the whole process. A bucket of small buffers is split in stripes, one per
+/// processor (at most 16), as <c>ArrayPool.Shared</c> partitions per core: a thread rents from and returns to its
+/// processor's stripe and reaches the others only when that one is empty or full, so threads renting and returning at
+/// once do not all swap the same queue's cursors (nor find it momentarily empty and allocate).
 /// On .NET 5+ arrays are allocated on the Pinned Object Heap: sockets can use them without per-operation
 /// pinning and they never fragment the compacting heaps. Steady-state rent/return is allocation free. What a peak left
 /// behind goes back slowly: every <see cref="TrimEvery"/>, half of the buffers a bucket held through the whole period
@@ -19,30 +20,45 @@ public static class BufferPool
     private const int BucketCount = 22 - MinShift + 1;
     private const int BucketBudget = 64 << 20; // bytes retained per bucket at most
 
-    private static readonly MpmcQueue<byte[]>[] Buckets = CreateBuckets();
+    private static readonly int StripeLimit = Math.Min(16, PowerOfTwo(Environment.ProcessorCount, up: true));
+
+    private static readonly MpmcQueue<byte[]>[][] Buckets = CreateBuckets(); // bucket, stripe
 
     /// <summary>How often buckets give back half of what they did not use since the last trim.</summary>
     internal static readonly TimeSpan TrimEvery = TimeSpan.FromSeconds(60);
 
-    // Per bucket: how many buffers had ever been returned to it at the last trim. Those the renters have not reached
-    // since (it is first in, first out) stayed unused the whole period. Only the trimmer reads and writes it.
-    private static readonly long[] EnqueuedAtTrim = new long[BucketCount];
+    // Per bucket and stripe: how many buffers had ever been returned to it at the last trim. Those the renters have not
+    // reached since (it is first in, first out) stayed unused the whole period. Only the trimmer reads and writes it.
+    private static readonly long[][] EnqueuedAtTrim = Array.ConvertAll(Buckets, static stripes => new long[stripes.Length]);
     private static Timer? _trimmer;
 
-    private static MpmcQueue<byte[]>[] CreateBuckets()
+    private static MpmcQueue<byte[]>[][] CreateBuckets()
     {
         // Each bucket retains up to BucketBudget bytes (16..65536 buffers). The pool must hold the peak number of
         // buffers in flight, or every burst above it allocates again: a broadcast to N sessions has N send batches
         // (4-16 KB) in flight at once, so small buckets need tens of thousands of slots (4 KB: 16384). Memory is only
-        // retained up to what the process actually rented at its peak; the slot arrays cost about 4 MB in total.
-        var buckets = new MpmcQueue<byte[]>[BucketCount];
+        // retained up to what the process actually rented at its peak; the slot arrays cost about 4 MB in total. Stripes
+        // share the bucket's capacity, each holding 256 buffers at least: large buffers (64 KB and up), rented rarely
+        // and few at once, keep one queue.
+        var buckets = new MpmcQueue<byte[]>[BucketCount][];
         for (int i = 0; i < BucketCount; i++)
         {
             int capacity = Math.Clamp(BucketBudget >> (MinShift + i), 16, 65536);
-            buckets[i] = new MpmcQueue<byte[]>(capacity);
+            int stripes = Math.Clamp(capacity / 256, 1, StripeLimit);
+            stripes = PowerOfTwo(stripes, up: false);
+            buckets[i] = new MpmcQueue<byte[]>[stripes];
+            for (int s = 0; s < stripes; s++) buckets[i][s] = new MpmcQueue<byte[]>(capacity / stripes);
         }
 
         return buckets;
+    }
+
+    /// <summary>The power of two nearest <paramref name="value"/> (at least 1), above it or below it (start-up only).</summary>
+    private static int PowerOfTwo(int value, bool up)
+    {
+        int power = 1;
+        while (power < value) power <<= 1;
+        return up || power == value ? power : power >> 1;
     }
 
     /// <summary>The pool as an <see cref="System.Buffers.ArrayPool{T}"/>, for writers that rent through one (Nino's <c>NinoArrayBufferWriter</c>).</summary>
@@ -63,9 +79,11 @@ public static class BufferPool
             return Allocate(minimumLength);
 
         int bucket = BucketIndex(minimumLength);
-        var queue = Buckets[bucket];
-        if (queue.TryDequeue(out var buffer))
-            return buffer;
+        var stripes = Buckets[bucket];
+        int own = Platform.ProcessorId;
+        for (int i = 0; i < stripes.Length; i++)
+            if (stripes[(own + i) & (stripes.Length - 1)].TryDequeue(out var buffer))
+                return buffer;
 
         return Allocate(MinSize << bucket);
     }
@@ -79,15 +97,16 @@ public static class BufferPool
     {
         lock (Buckets)
             for (int bucket = 0; bucket < BucketCount; bucket++)
-            {
-                var queue = Buckets[bucket];
-                long unused = EnqueuedAtTrim[bucket] - queue.Dequeued;
-                for (long release = unused / 2; release > 0 && queue.TryDequeue(out _); release--)
+                for (int stripe = 0; stripe < Buckets[bucket].Length; stripe++)
                 {
-                }
+                    var queue = Buckets[bucket][stripe];
+                    long unused = EnqueuedAtTrim[bucket][stripe] - queue.Dequeued;
+                    for (long release = unused / 2; release > 0 && queue.TryDequeue(out _); release--)
+                    {
+                    }
 
-                EnqueuedAtTrim[bucket] = queue.Enqueued;
-            }
+                    EnqueuedAtTrim[bucket][stripe] = queue.Enqueued;
+                }
     }
 
     /// <summary>The trimmer starts with the pool's first growth: a process that never grows it runs no timer.</summary>
@@ -99,7 +118,12 @@ public static class BufferPool
     }
 
     /// <summary>Buffers the bucket for <paramref name="size"/> holds now (tests).</summary>
-    internal static int Retained(int size) => Buckets[BucketIndex(size)].Count;
+    internal static int Retained(int size)
+    {
+        int count = 0;
+        foreach (var stripe in Buckets[BucketIndex(size)]) count += stripe.Count;
+        return count;
+    }
 
     /// <summary>Return a buffer obtained from <see cref="Rent"/>. Buffers of foreign sizes are ignored.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -112,7 +136,11 @@ public static class BufferPool
         if ((MinSize << bucket) != buffer.Length)
             return; // not one of ours
 
-        Buckets[bucket].TryEnqueue(buffer);
+        var stripes = Buckets[bucket];
+        int own = Platform.ProcessorId;
+        for (int i = 0; i < stripes.Length; i++)
+            if (stripes[(own + i) & (stripes.Length - 1)].TryEnqueue(buffer))
+                return; // else the whole bucket is full: the buffer goes
     }
 
     /// <summary>Replace <paramref name="buffer"/> with a rented one of at least <paramref name="size"/> bytes holding its first <paramref name="used"/> bytes; the old one goes back.</summary>
