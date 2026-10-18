@@ -23,4 +23,8 @@
         <ProjectReference Include="..\DaServer\DaServer.csproj" />
     </ItemGroup>
 
+    <ItemGroup>
+        <InternalsVisibleTo Include="DaServer.Tests" />
+    </ItemGroup>
+
 </Project>

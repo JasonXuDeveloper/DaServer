@@ -253,6 +253,23 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
     /// <summary>Free stacks of the call table: the processor count rounded up to a power of two, at most 16.</summary>
     private static int Stripes() => (int)Math.Min(16, System.Numerics.BitOperations.RoundUpToPowerOf2((uint)Environment.ProcessorCount));
 
+    /// <summary>
+    /// Unload every loaded actor of the hosted actor type named <paramref name="typeName"/> (its class name or full name;
+    /// the admin endpoint): each leaves once idle, saved as on any unload, and its next mail loads it again. False when
+    /// this node hosts no such actor type.
+    /// </summary>
+    internal bool UnloadActors(string typeName)
+    {
+        foreach (var handlerType in HostedHandlerTypes)
+            if (handlerType.IsActor && (handlerType.Type.Name == typeName || handlerType.Type.FullName == typeName))
+            {
+                foreach (var shard in _shards) shard.RequestUnload(handlerType.Id);
+                return true;
+            }
+
+        return false;
+    }
+
     /// <summary>Hosted handler type with placement/routing id <paramref name="handlerTypeId"/>, or null.</summary>
     internal HandlerTypeInfo? HandlerTypeById(uint handlerTypeId) =>
         _handlerTypeById.TryGetValue(handlerTypeId, out var handlerType) ? handlerType : null;

@@ -186,6 +186,19 @@ internal sealed class Shard : CompletionThread
             activity.DeclaredDead = activity.Rebalance = true;
         }, this);
 
+    /// <summary>
+    /// Thread-safe (the admin endpoint): every loaded actor of <paramref name="handlerTypeId"/> leaves once idle, saved as
+    /// on any unload; its next mail loads it again.
+    /// </summary>
+    internal void RequestUnload(uint handlerTypeId) =>
+        Post(static s =>
+        {
+            var (shard, id) = ((Shard, uint))s!;
+            foreach (var (address, actor) in shard.World.GetSingleton<ActorDirectory>().Actors)
+                if (address.HandlerTypeId == id && !actor.Has<UnloadRequested>() && !actor.Has<Unloading>() && !actor.Has<Removing>())
+                    actor.Add<UnloadRequested>();
+        }, (this, handlerTypeId));
+
     /// <summary>Stop the shard: unload every actor (<paramref name="fenced"/>: remove them without <see cref="Actor.OnUnload"/>).</summary>
     internal void RequestStop(bool fenced = false)
     {
