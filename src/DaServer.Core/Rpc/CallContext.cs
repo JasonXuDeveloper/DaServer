@@ -59,24 +59,17 @@ internal static class ReplySinks
 /// Per-message context passed to generated dispatchers. A small struct: no allocation per call.
 /// Inside a handler, <see cref="Current"/> exposes it until the handler's first <c>await</c>.
 /// </summary>
-public readonly struct CallContext
+public readonly struct CallContext(IReplySink? replyTo, uint callId, Origin origin)
 {
     [ThreadStatic] private static CallContext _current;
 
     /// <summary>Where the reply goes (null for one-way messages).</summary>
-    public readonly IReplySink? ReplyTo;
+    public readonly IReplySink? ReplyTo = replyTo;
 
-    public readonly uint CallId;
+    public readonly uint CallId = callId;
 
     /// <summary>Who sent the message from outside the cluster (a client session), or default for messages sent inside it.</summary>
-    public readonly Origin Origin;
-
-    public CallContext(IReplySink? replyTo, uint callId, Origin origin)
-    {
-        ReplyTo = replyTo;
-        CallId = callId;
-        Origin = origin;
-    }
+    public readonly Origin Origin = origin;
 
     /// <summary>Context of the call being dispatched on this thread (valid until the handler's first await).</summary>
     public static CallContext Current => _current;

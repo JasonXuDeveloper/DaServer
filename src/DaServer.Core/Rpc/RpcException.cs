@@ -5,22 +5,15 @@ namespace DaServer.Rpc;
 /// <see cref="RpcStatus.Timeout"/>, ...) travel as status-only frames: their <see cref="Message"/> is a constant
 /// description of the status. Only a failing handler sends a message of its own (<see cref="Detail"/>).
 /// </summary>
-public sealed class RpcException : Exception
+public sealed class RpcException(RpcStatus status, string? message = null, TimeSpan retryAfter = default) : Exception
 {
-    public RpcException(RpcStatus status, string? message = null, TimeSpan retryAfter = default)
-    {
-        Status = status;
-        Detail = message;
-        RetryAfter = retryAfter;
-    }
-
     /// <summary>When the edge that refused the call says it may be retried (zero: no hint).</summary>
-    public TimeSpan RetryAfter { get; }
+    public TimeSpan RetryAfter { get; } = retryAfter;
 
-    public RpcStatus Status { get; }
+    public RpcStatus Status { get; } = status;
 
     /// <summary>The message sent with the failure (a handler's error), or null for a status-only failure.</summary>
-    public string? Detail { get; }
+    public string? Detail { get; } = message;
 
     public override string Message => Detail ?? Describe(Status);
 
