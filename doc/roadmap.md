@@ -460,8 +460,10 @@ in separate commits.
          machine in a box pooled per thread and method, so awaiting allocates nothing (H1). `Task.WhenAll` over
          `AsTask()` serves combinators outside shards; inside a turn, awaiting calls one after the other already
          overlaps them when they are started first.
-- [ ] N4 Route completeness check: one handler type per request / one-way message kind across all node projects,
-      a handler for every `FromClient` message; run in tests and at AppHost start. (Orleans compile-time interfaces)
+- [x] N4 Route completeness (`DaServer.Testing.RouteCheck`): given a cluster's node projects, every message their
+      contracts declare has an actor or service handling it (`[ToClient]`-only messages excepted) and no request is
+      answered by two service types; both samples check theirs in a test (`EveryMessageHasItsHandler`,
+      `RouteCheckTests`). Running it before an AppHost publishes is A11. (Orleans finds these at compile time.)
 - [x] N7 Placement affinity (ADR-073): an actor id type implementing `IPlaced` is hashed by its `Placement` (a pure
       function of its value) instead of its value, in group 0: actors of any type with the same placement share a
       node and a shard. The wire is unchanged; the registration of the assembly declaring the id type registers it;
