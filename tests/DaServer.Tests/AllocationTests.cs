@@ -78,6 +78,52 @@ public class AllocationTests : ClusterTest
     }
 
     [Test, Retry(3)]
+    public async Task BurstsOfCallsFromOutsideTheClusterDoNotAllocate()
+    {
+        // Four callers on thread-pool threads at once (HTTP handlers, a benchmark): 4,096 calls in flight, each rented on
+        // whichever thread runs its caller then and returned on whichever thread resumes it.
+        var node = await Start("caller", configure: static o => o.GossipInterval = TimeSpan.FromHours(1));
+        var callee = await Start("callee", configure: static o => o.GossipInterval = TimeSpan.FromHours(1));
+        await Converged();
+        var keys = new CounterId[1_024]; // on the other node: replies come back on its link's IO threads
+        long key = 0;
+        for (int i = 0; i < keys.Length; i++) keys[i] = new CounterId(key = KeyOwnedBy<CounterId>(callee, key + 1));
+        var calls = new Reply<int>[4][];
+        for (int c = 0; c < calls.Length; c++) calls[c] = new Reply<int>[keys.Length];
+        var callers = new Task[calls.Length];
+        const int rounds = 50;
+
+        // On the thread pool, as servers call: NUnit's synchronization context would post every continuation.
+        async Task Run(int rounds)
+        {
+            for (int c = 0; c < calls.Length; c++)
+            {
+                var mine = calls[c];
+                callers[c] = Task.Run(() => Bursts(node, keys, mine, rounds).AsTask());
+            }
+
+            await Task.WhenAll(callers);
+        }
+
+        await Run(20);
+        long before = GC.GetTotalAllocatedBytes(precise: true);
+        await Run(rounds);
+        long allocated = GC.GetTotalAllocatedBytes(precise: true) - before;
+        int total = calls.Length * keys.Length * rounds;
+        Assert.That(allocated / (double)total, Is.LessThan(1), $"{allocated} B for {total} calls");
+    }
+
+    /// <summary>Rounds of calls to every key at once (a Reply method: its pooled builder keeps the loop itself free).</summary>
+    private static async Reply Bursts(Node node, CounterId[] keys, Reply<int>[] calls, int rounds)
+    {
+        for (int r = 0; r < rounds; r++)
+        {
+            for (int i = 0; i < keys.Length; i++) calls[i] = node.Ask(keys[i], new Add(1));
+            for (int i = 0; i < keys.Length; i++) await calls[i];
+        }
+    }
+
+    [Test, Retry(3)]
     public async Task BurstsOfSuspendedHandlersDoNotAllocate()
     {
         // 2,000 actors suspended in async Reply<T> handlers at once: their state machines live in pooled boxes.
@@ -491,3 +537,4 @@ public class AllocationTests : ClusterTest
         [Handle] public void On(GoldChanged _) => Interlocked.Increment(ref Received);
     }
 }
+

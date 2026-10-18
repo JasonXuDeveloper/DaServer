@@ -37,8 +37,10 @@ internal sealed class PendingCall<T> : IPendingCall, IValueTaskSource<T>, IValue
     , IThreadPoolWorkItem
 #endif
 {
-    /// <summary>Calls made outside shards (clients, tools, tests): their in-flight count is bounded by their table.</summary>
-    private static readonly ObjectPool<PendingCall<T>> Pool = new(() => new PendingCall<T>(), 1024);
+    // Calls made outside shards (clients, tools, tests, HTTP handlers): rented on one thread and returned on whichever
+    // resumes them, so up to a whole burst sits in the depot or other threads' caches between bursts: sized like the
+    // frame and relay pools. (Their in-flight count is bounded by their table.)
+    private static readonly ObjectPool<PendingCall<T>> Pool = new(() => new PendingCall<T>(), 1 << 16);
 
     private static readonly Action<object?> CompletedSentinel = static _ => { };
     private static readonly Action<object?> ResumeQueued = static call => ((PendingCall<T>)call!).Resume(((PendingCall<T>)call!)._queued!);
