@@ -64,7 +64,7 @@ public class LinkTests : ClusterTest
         // replay from 0, so the stream starts over and the call in flight fails (Disconnected) instead of waiting. b's
         // shards are held so the call is surely in flight (sent, not answered) when the stream starts over.
         await Task.Delay(300);
-        using var gate = new ManualResetEventSlim();
+        var gate = new ManualResetEventSlim(); // not disposed: a shard thread may still be inside Wait() when the test ends
         HoldShards(b, gate, 10);
         var lost = a.Ask(new CounterId(key), new Add(1)).AsTask();
         await Task.Delay(100); // it reached b

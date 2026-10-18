@@ -347,7 +347,7 @@ public class AllocationTests : ClusterTest
             o.DispatchQueueCapacity = 16;
         });
         var shard = node.Shards[0];
-        using var gate = new ManualResetEventSlim();
+        var gate = new ManualResetEventSlim(); // not disposed: a shard thread may still be inside Wait() when the test ends
         shard.Post(static g => ((ManualResetEventSlim)g!).Wait(), gate); // the shard is busy until the gate opens
         await Eventually(() => shard.QueueLength == 0, "the shard took the blocking callback");
         var sink = new StatusSink();
@@ -413,7 +413,7 @@ public class AllocationTests : ClusterTest
         // Synchronous waits: an await here would allocate in the test harness, not in the path under test.
         void Relay(int count)
         {
-            using var gate = new ManualResetEventSlim();
+            var gate = new ManualResetEventSlim(); // not disposed: a shard thread may still be inside Wait() when the test ends
             shard.Post(static g => ((ManualResetEventSlim)g!).Wait(), gate); // the shard is busy until the gate opens
             long timedOut = Interlocked.Read(ref sink.Timeout) + count, expired = node.Expired + count;
             for (int i = 0; i < count; i++)

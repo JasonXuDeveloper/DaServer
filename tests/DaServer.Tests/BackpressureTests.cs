@@ -23,7 +23,7 @@ public class BackpressureTests : ClusterTest
     {
         var node = await Start("single", shards: 1, configure: static o => o.DispatchQueueCapacity = 16);
         var shard = node.Shards[0];
-        using var gate = new ManualResetEventSlim();
+        var gate = new ManualResetEventSlim(); // not disposed: a shard thread may still be inside Wait() when the test ends
         shard.Post(static g => ((ManualResetEventSlim)g!).Wait(), gate); // the shard is busy until the gate opens
         await Eventually(() => shard.QueueLength == 0, "the shard took the blocking callback");
 
@@ -44,7 +44,7 @@ public class BackpressureTests : ClusterTest
     {
         Faults.Allow("ShardStalled"); // what the test provokes
         var node = await Start("single", shards: 1, configure: static o => o.StallAfter = TimeSpan.FromMilliseconds(200));
-        using var gate = new ManualResetEventSlim();
+        var gate = new ManualResetEventSlim(); // not disposed: a shard thread may still be inside Wait() when the test ends
         node.Shards[0].Post(static g => ((ManualResetEventSlim)g!).Wait(), gate); // what DAS009 reports in user code
         await Eventually(() => node.StalledShards == 1, "the watchdog reports the blocked shard");
         gate.Set();
@@ -107,7 +107,7 @@ public class BackpressureTests : ClusterTest
     public async Task ReadingACallsResultBeforeItCompletedThrows()
     {
         var node = await Start("single", shards: 1);
-        using var gate = new ManualResetEventSlim();
+        var gate = new ManualResetEventSlim(); // not disposed: a shard thread may still be inside Wait() when the test ends
         node.Shards[0].Post(static g => ((ManualResetEventSlim)g!).Wait(), gate);
         var call = node.Ask(new CounterId(1), new Add(1));
         Assert.That(() => call.AsValueTask().Result, Throws.InvalidOperationException, "a pooled call cannot block: it throws instead");
@@ -119,7 +119,7 @@ public class BackpressureTests : ClusterTest
     {
         var node = await Start("single", shards: 1, configure: static o => o.CallTimeout = TimeSpan.FromMilliseconds(200));
         var shard = node.Shards[0];
-        using var gate = new ManualResetEventSlim();
+        var gate = new ManualResetEventSlim(); // not disposed: a shard thread may still be inside Wait() when the test ends
         shard.Post(static g => ((ManualResetEventSlim)g!).Wait(), gate); // the shard is busy until the gate opens
         await Eventually(() => shard.QueueLength == 0, "the shard took the blocking callback");
 
@@ -142,7 +142,7 @@ public class BackpressureTests : ClusterTest
         var callee = new CounterId(2);
         while (await node.Ask(callee, new WhereAmI()) == callerShard) callee = new CounterId(callee.Value + 1);
         var blocked = node.Shards.Single(s => s.Index != node.Shards.Single(x => callerShard.EndsWith("-" + x.Index)).Index);
-        using var gate = new ManualResetEventSlim();
+        var gate = new ManualResetEventSlim(); // not disposed: a shard thread may still be inside Wait() when the test ends
         blocked.Post(static g => ((ManualResetEventSlim)g!).Wait(), gate);
 
         Reports.ResumedOnShard = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -160,7 +160,7 @@ public class BackpressureTests : ClusterTest
         var target = await Start("target", shards: 1);
         await Converged();
         var shard = target.Shards[0];
-        using var gate = new ManualResetEventSlim();
+        var gate = new ManualResetEventSlim(); // not disposed: a shard thread may still be inside Wait() when the test ends
         shard.Post(static g => ((ManualResetEventSlim)g!).Wait(), gate);
         await Eventually(() => shard.QueueLength == 0, "the shard took the blocking callback");
 

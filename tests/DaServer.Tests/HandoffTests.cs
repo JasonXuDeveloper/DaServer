@@ -89,7 +89,7 @@ public class HandoffTests(string kind) : ClusterTest
         foreach (long key in keys) Assert.That(await a.Ask(new BankId(key), new Hit()), Is.EqualTo(1));
 
         // b takes some keys but answers no record: a's copies wait, handed off, until b's shards run again.
-        using var gate = new ManualResetEventSlim();
+        var gate = new ManualResetEventSlim(); // not disposed: a shard thread may still be inside Wait() when the test ends
         var b = await StartWith(_stores.Create(), "b");
         HoldShards(b, gate, 20);
         await Converged();
@@ -196,7 +196,7 @@ public class HandoffTests(string kind) : ClusterTest
         await Converged();
         long key = 300;
         while (a.OwnerOf<BankId>(key) != a.Id || a.View.HandlerTypeOwnerWithout(ActorIds<BankId>.HandlerTypeId, key, a.Id)?.NodeId != b.Id) key++;
-        using var gate = new ManualResetEventSlim();
+        var gate = new ManualResetEventSlim(); // not disposed: a shard thread may still be inside Wait() when the test ends
         HoldShards(b, gate, 10); // b answers nothing meanwhile
         try
         {
@@ -218,7 +218,7 @@ public class HandoffTests(string kind) : ClusterTest
         var keys = Enumerable.Range(8000, 40).Select(static k => (long)k).ToArray();
         foreach (long key in keys) Assert.That(await a.Ask(new BankId(key), new Deposit(1, false)), Is.EqualTo(1)); // unwritten
 
-        using var gate = new ManualResetEventSlim();
+        var gate = new ManualResetEventSlim(); // not disposed: a shard thread may still be inside Wait() when the test ends
         var b = await Start("b", configure: o => { o.ActorStore = store; o.CallTimeout = TimeSpan.FromMilliseconds(500); });
         HoldShards(b, gate, 20);
         await Converged();
@@ -261,7 +261,7 @@ public class HandoffTests(string kind) : ClusterTest
             foreach (var node in new[] { a, b, c }) node.Membership.Apply(table);
         }
 
-        using var gate = new ManualResetEventSlim();
+        var gate = new ManualResetEventSlim(); // not disposed: a shard thread may still be inside Wait() when the test ends
         HoldShards(b, gate, 10);
         ApplyEverywhere(new SlotTable { Version = 1000, Coordinator = a.Id, Overrides = [new SlotOverride(type, slot, b.Id)] });
         await Task.Delay(200); // a sent K's record to b, where it waits

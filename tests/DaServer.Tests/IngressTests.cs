@@ -41,7 +41,7 @@ public class IngressTests : ClusterTest
         var edge = await Start("edge", hosts: static _ => false, configure: static o => o.IngressLoadLimit = 8);
         var owner = await Start("owner", shards: 1);
         await Converged();
-        using var gate = new ManualResetEventSlim();
+        var gate = new ManualResetEventSlim(); // not disposed: a shard thread may still be inside Wait() when the test ends
         owner.Shards[0].Post(static g => ((ManualResetEventSlim)g!).Wait(), gate);
         for (int i = 0; i < 16; i++) owner.Send(new CounterId(1), new Bump()); // queued behind the blocked shard
         await Eventually(() => edge.View.TryGetMember(owner.Id, out var m) && m.Load >= 8, "the owner's load was not gossiped");
