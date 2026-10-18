@@ -27,12 +27,12 @@ EasyEcs comes from NuGet (`EasyEcsVersion` in `Directory.Build.props`). Use it a
 ## Layout
 
 ```
-src/DaServer.Abstractions/ contracts (netstandard2.1, net10.0, net11.0): attributes, IRequest, addresses, type ids (ADR-052)
-src/DaServer.Core/         wire and transport shared by servers and clients (netstandard2.1, net10.0, net11.0): Protocol/
+src/DaServer.Abstractions/ contracts (netstandard2.1, net11.0): attributes, IRequest, addresses, type ids (ADR-052)
+src/DaServer.Core/         wire and transport shared by servers and clients (netstandard2.1, net11.0): Protocol/
                            Buffers/ Net/ (FrameChannel: Connection, WebSocketChannel; SendQueue, SendFlusher, HostPort)
                            Rpc/ (calls, dispatch) Concurrency/ (ObjectPool, Backoff, Platform) Diagnostics/ (ProcessCost)
-src/DaServer.Client/       client SDK (netstandard2.1, net10.0, net11.0): ClusterClient
-src/DaServer.Simulation/   simulated users (client side, net10.0/net11.0): ClientLoop, Planning/ (HTN as ECS data),
+src/DaServer.Client/       client SDK (netstandard2.1, net11.0): ClusterClient
+src/DaServer.Simulation/   simulated users (client side, net11.0): ClientLoop, Planning/ (HTN as ECS data),
                            Swarm + SwarmMeter (ADR-056)
 src/Polyfills/             Lock, IsExternalInit, FrozenDictionary for netstandard2.1 (compiled into Abstractions)
 src/DaServer/              server runtime (net11.0): Runtime/ Cluster/ Rpc/ Net/ Concurrency/ Persistence/ and the built-in
@@ -43,7 +43,7 @@ src/DaServer/              server runtime (net11.0): Runtime/ Cluster/ Rpc/ Net/
   Runtime/Systems/         runtime systems: Dispatch, Turn, ServiceCall, Removal, Unload, Mailbox (ShardMessages group),
                            Rebalance (ShardRebalance), Idle (ShardIdleScan); each reacts to one lifecycle tag (ADR-037)
 src/DaServer.Generator/    incremental generators (AskGenerator, RegistrationGenerator, PolyfillGenerator) + DaServerAnalyzer
-                           (DAS001-018); WireManifest.cs: the wire.manifest model over Nino's NinoTypeLayout (ADR-076);
+                           (DAS001-019); WireManifest.cs: the wire.manifest model over Nino's NinoTypeLayout (ADR-076);
                            Shapes.cs reads symbols once for both, so "skipped by the generator" == "reported"
 src/DaServer.WireTool/     writes a project's wire.manifest from its built assembly (the analyzer's own WireManifest)
 src/DaServer.Hosting/      Generic Host integration, configuration, OpenTelemetry (OTLP when configured), shutdown
@@ -116,6 +116,9 @@ doc/                       requirements.md, design.md, decisions.md, roadmap.md
   end) or keyed (DAS014). After a change run `dotnet build -p:UpdateWireManifest=true` and commit the manifest
   (DAS018). Nino 4 (ADR-078): `FrameWriter.Write` serializes in place, reads are `NinoDeserializer.Deserialize<T>(span)`,
   a collection in a message lives in a `[NinoPooled]` class its handler returns.
+- Code that also builds for netstandard2.1 (Abstractions, Core, Client, users' contracts) declares no
+  `params ReadOnlySpan<T>`: without inline arrays the compiler allocates an array at every call there. Where a span
+  overload pays on .NET, declare it under `#if NET` and keep `params T[]` in the `#else`.
 - Type ids (messages on the wire, actor id types, services, persisted components) are Nino's (`NinoTypeId`, FNV-1a of
   the full name); `[NinoFormerName]` only resolves a reported collision or keeps a renamed type's identity and stored
   records.

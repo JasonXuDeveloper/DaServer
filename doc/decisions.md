@@ -93,7 +93,7 @@ records that no longer hold). Each: context → decision → consequences.
 - Context: EasyEcs uses standard ECS vocabulary (`World`, `Query`, `EcsSystem.OnUpdate`).
 - Decision: DaServer's single-threaded executor is a `Shard`; each shard owns one EasyEcs `World`. Actors and services
   expose `World` and `Cluster` (`ICluster`); ECS code reaches the cluster through the `ShardContext` singleton
-  (`world.Cluster()`).
+  (`world.Cluster`).
 - Consequences: no name clash; "world" always means the ECS world.
 
 ## ADR-012 Source generation instead of registration code
@@ -677,21 +677,25 @@ records that no longer hold). Each: context → decision → consequences.
 - Decision: as Orleans (Core.Abstractions / Core / Client / Server), gRPC (Core.Api / Net.Common / Net.Client /
   AspNetCore.Server) and MagicOnion (Abstractions / Shared / Client / Server) do, four layers, each depending only on
   the one below:
-  - `DaServer.Abstractions` (netstandard2.1, net10.0, net11.0; namespace `DaServer`: one using in a contract file): what
+  - `DaServer.Abstractions` (netstandard2.1, net11.0; namespace `DaServer`: one using in a contract file): what
     contract assemblies reference: `[Message]`, `[Handle]`,
     `[FromClient]`/`[ToClient]`, `IRequest`, addresses (`IActorId`, `ClientSession`, `ClientGroup`,
     `Origin`), `IMessageSender`, session messages, type ids, the client message registry and generated-registration
     support.
-  - `DaServer.Core` (netstandard2.1, net10.0, net11.0): the wire and transport both sides run: `FrameHeader`/`RpcStatus`/
+  - `DaServer.Core` (netstandard2.1, net11.0): the wire and transport both sides run: `FrameHeader`/`RpcStatus`/
     `ControlOp`, `FrameWriter`/`BufferPool`, `Connection`/`WebSocketChannel`, pending calls (`CompletionThread`: a thread
     that completes its own calls, a shard on servers), `CallContext`, `RpcException`, handler dispatch,
     `SignedToken`.
-  - `DaServer.Client` (netstandard2.1, net10.0, net11.0): `ClusterClient`.
+  - `DaServer.Client` (netstandard2.1, net11.0): `ClusterClient`.
   - `DaServer` (net11.0, ADR-054): the server runtime (shards, actors, services, cluster, ingress, client connections), plus
     `DaServer.Hosting` and `DaServer.Aspire`.
-  - `DaServer.Simulation` (net10.0, net11.0; on Client and EasyEcs, not the server): simulated users for end-to-end,
+  - `DaServer.Simulation` (net11.0; on Client and EasyEcs, not the server): simulated users for end-to-end,
     load and behavior tests (ADR-056).
-  The generator and analyzers ship with Abstractions, so every assembly using DaServer gets them. Newer BCL APIs are
+  The generator and analyzers ship with Abstractions, so every assembly using DaServer gets them, in two builds of the
+  same sources as Nino ships its own: against Roslyn 5.9 (`analyzers/dotnet/roslyn5.9`, the .NET 10.0.4xx and 11 SDKs)
+  and against Roslyn 4.3 (`analyzers/dotnet/roslyn4.3`, the oldest Unity supports); NuGet gives each compiler the newest
+  build it can run. What they emit for an assembly without the server runtime (contracts, client handlers) is C# 9,
+  which Unity compiles; server assemblies get current C#. Newer BCL APIs are
   used on .NET and replaced on netstandard2.1 (`Platform`, internal polyfills of `Lock` and `FrozenDictionary`), so
   servers pay nothing for the shared code. An architecture test enforces the references.
 - Alternatives: transport inside the client package (the server would depend on "Client"); inside Abstractions
@@ -733,15 +737,23 @@ records that no longer hold). Each: context → decision → consequences.
   4.50 -> 1.65 ms; remote 103 -> 101 us, 379 -> 335 us, 2.22 -> 1.66 ms; one-way messages local 1.93 us -> 641 ns,
   remote 1.57 us -> 975 ns; the 3k/9k client scenario 14.0 -> 13.4 ms and 48.3 -> 45.6 ms; group broadcasts to
   1k/5k clients 3-8% slower (5.09 -> 5.25 ms ... 27.8 -> 30.1 ms); allocations equal.
-- Decision: `DaServer`, `DaServer.Hosting`, `DaServer.Aspire`, the samples' nodes, tests and benchmarks target
-  `net11.0`; the shared packages add `net11.0` beside netstandard2.1 and net10.0 (ADR-001). `global.json` pins the 11.0
-  SDK (RC2 until GA, then the GA band); CI installs it from there. Runtime async (`<Features>runtime-async=on</Features>`,
-  preview in RC2) stays off: measured on RC2, an `async ValueTask` that suspends costs 192 B with it against 112 B
-  without, and a method's `[AsyncMethodBuilder(PoolingAsyncValueTaskMethodBuilder)]` is ignored under it (0 B becomes
-  192 B) unless the method also carries `RuntimeAsyncMethodGeneration(false)`; custom task-likes (`Reply<T>`) keep their
-  builders either way. The framework's hot paths have no async methods (pooled `IValueTaskSource`s).
-- Alternatives: stay on .NET 10 LTS (gives up 2.3-2.7x on concurrent local calls, 1.1-1.3x remote); multi-target the server (doubles build and test
-  time for users who all deploy one runtime).
+- Decision: everything targets `net11.0`; the shared packages (Abstractions, Core, Client) add netstandard2.1 for Unity
+  and other clients (ADR-001) and nothing between: no net10.0 build. `global.json` pins the 11.0 SDK (RC2 until GA,
+  then the GA band); CI installs it from there. Runtime async (`<Features>runtime-async=on</Features>`, preview) is on
+  for every net11.0 build (`Directory.Build.targets`; a project opts out with `UseRuntimeAsync=false`: the
+  benchmarks, whose `[AsyncMethodBuilder(PoolingAsyncValueTaskMethodBuilder)]` methods it would ignore, and the
+  PostgreSQL store, whose pooled builders keep a batch write at 0 B). Handlers keep returning `Reply<T>`, a custom
+  task-like whose pooled builder runtime async leaves alone. Measured on RC2 (a handler two calls deep started by the
+  dispatcher): completing synchronously, `Reply<T>` 20.3 ns, runtime-async `ValueTask<T>` 21.2 ns, a compiler state
+  machine 26.6 ns, none allocating; suspended on a reply, 240 ns / 0 B, 236 ns / 320 B and 341 ns / 336 B. So
+  `Reply<T>` is as fast as runtime async and allocates nothing. Across the suite (calls, messages, broadcasts, the
+  client scenario) turning runtime async on moves nothing beyond noise: the hot paths are pooled `IValueTaskSource`s,
+  not async methods. Code built for netstandard2.1 declares no `params ReadOnlySpan<T>` (the compiler allocates an
+  array per call there; a span overload goes under `#if NET`).
+- Alternatives: stay on .NET 10 LTS (gives up 2.3-2.7x on concurrent local calls, 1.1-1.3x remote); multi-target the
+  server or keep a net10.0 build of the shared packages (doubles build and test time for users who all deploy one
+  runtime; clients that cannot run .NET 11 take netstandard2.1); handlers returning `ValueTask<T>` under runtime async
+  (no faster than `Reply<T>`, 320 B per suspension).
 - Consequences: servers need the .NET 11 runtime (x86-64-v2 or newer); BenchmarkDotNet 0.16 (preview) hosts .NET 11.
   Broadcast fan-out is the one path that did not gain: profile it on .NET 11 (roadmap, "Open after G").
 
@@ -1161,7 +1173,7 @@ records that no longer hold). Each: context → decision → consequences.
   flaky; a test harness of our own (`ClusterTest`) was internal.
 - Decision: `NodeOptions.TimeProvider` is the shards' clock. The shard loop schedules ticks and timers on it, a wake's
   start time is `ShardActivity.NowMs` (what idle unloading and checkpoints compare with), and user code reads it as
-  `Time` / `world.Time()`. Transport keeps real time: call deadlines, keep-alives, membership and links run over real
+  `Time` / `world.Time`. Transport keeps real time: call deadlines, keep-alives, membership and links run over real
   sockets. `DaServer.Testing` ships `TestCluster`: real nodes in the test process with fast membership timings and,
   with `ManualTime`, a clock that starts at 2000-01-01 and moves only in `TickAsync`/`AdvanceAsync`, one tick
   interval at a time, waiting for every shard to run that tick. Messages still flow as they arrive. The manual
@@ -1284,11 +1296,14 @@ records that no longer hold). Each: context → decision → consequences.
   and its members in written order with their types and how each is written (`raw(4)`, a formatter, `utf8`). The
   manifest adds what Nino does not record: a request's reply, a plain unmanaged struct's fields (Nino copies an id's
   memory and names only its type), another assembly's [NinoType] as its layout inline (a package update that changes
-  it shows), and the [NinoType] ancestors. The analyzer (DAS017) fails the build on a type gone, its encoding (a new
+  it shows), the [NinoType] ancestors, and every enum those types hold with its underlying type and each member's
+  value (the bytes are the number; what it means is kept nowhere else). The analyzer (DAS017) fails the build on a
+  type gone, its encoding (a new
   type id included) or reply changed, a new subtype of a recorded or another assembly's type (older builds lack its
   type id), and a member change the format does not tolerate: any, positional; anything but members appended at the
   end, version tolerant (one appended to a base shifts its subtypes' members, which their own entries show); another
-  type under a key, keyed. It asks to record the rest (DAS018: new types, appended members, keys added or removed)
+  type under a key, keyed; an enum member removed, renamed or renumbered. It asks to record the rest (DAS018: new
+  types, appended members, keys added or removed, new enum members)
   with `dotnet build -p:UpdateWireManifest=true` (which still stops on DAS017; `=force` records a deliberate break).
   The analyzer reads the layouts in the compilation; the manifest is written after the compile by
   `DaServer.WireTool` (in the Abstractions package), which runs the same code over the built assembly's metadata:

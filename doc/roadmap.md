@@ -190,7 +190,7 @@ What G delivered (each step kept every test green):
 7. `[FromClient]` / `[ToClient]` on `[Message]`; grants (ADR-051): `GrantSession`/`RevokeSession` admit a session to an
    actor, the edge refuses any other named actor; resuming asks the granted actors (ADR-036).
 8. Packages (ADR-052): `DaServer.Abstractions` (contracts) <- `DaServer.Core` (shared wire and transport) <-
-   `DaServer.Client` / `DaServer` (server runtime); the first three build for netstandard2.1, net10.0 and net11.0, and
+   `DaServer.Client` / `DaServer` (server runtime); the first three build for netstandard2.1 and net11.0, and
    `samples/mmo/Sample.Contracts` builds for both. Generators split by output (ADR-012): `AskGenerator`,
    `RegistrationGenerator` (static-constructor registration, IL2CPP-safe), `PolyfillGenerator`. M5: call tables allocate slots in doubling chunks as calls in flight reach them
    (`ClusterClient(maxPendingCalls: 4096)` is only a bound), connections with `ReleaseIdleBuffers` hold no send
@@ -476,21 +476,19 @@ in separate commits.
       broadcasts measured +1% to +32% and the broadcast scenario +7% / +13%, but repeated runs of one build vary by
       +-25% on this VM (35-46 ms for the same 5,000 x 9 case); a bisection on single runs pointed at a commit that two
       interleaved runs then cleared. Broadcast work goes to Z5.
-- [ ] Z6 .NET 11 / C# 15 (audit of October 2026, probes on RC2, Roslyn 5.12): runtime async stays off (ADR-054:
-      it allocates more per suspension and ignores method-level pooling builders); C# 14 extension properties for the
-      server-only `World` API (`world.Tick`, `world.Cluster`: less ceremony in every user system; the netstandard2.1
-      packages keep extension methods for Unity's compiler); Zstandard span codecs (`ZstandardEncoder`) for large actor
-      records, measured with BDN. Not worth it now: interceptors (the generated `Ask` overloads already avoid the
-      generic hop; they would raise the generator's Roslyn floor from 4.8 to 4.14), unions (they box struct cases),
-      closed hierarchies (net11-only attributes). Already in effect without changes: JIT bounds-check and
-      devirtualization work, continuations that skip `ExecutionContext` restore when nothing flows.
-- [ ] N12 Nino (audit of October 2026; Nino's reads check every length, bound depth and counts, and raise no AOT warning):
-      enum values are not in
-      `wire.manifest` (a renumbered member changes stored records and messages silently); golden-byte fixtures for
-      messages, strings, collections and pooled classes on the client and server builds (a Nino update that keeps a
-      formatter's name but changes its bytes passes DAS017); a warning for collections held directly in
-      `[FromClient]`/`[ToClient]` messages; `Registrations.Run`'s `RunClassConstructor` raises IL2059 under AOT analysis;
-      release on Nino 4.0.0, not an RC (drop the NU5104 suppression then).
+- [ ] Z6 .NET 11 / C# 15 (audit of October 2026, probes on RC2, Roslyn 5.12): runtime async on for net11.0 builds,
+      net10.0 builds dropped, `Reply<T>` kept for handlers (as fast as runtime async, 0 B suspended; ADR-054); C# 14
+      extension properties for the server-only `World` API (`world.Tick`, `world.Cluster`); Zstandard span codecs
+      (`ZstandardEncoder`) for large actor records, measured with BDN. Not worth it now: interceptors (the generated
+      `Ask` overloads already avoid the generic hop), unions (they box struct cases), closed hierarchies (net11-only
+      attributes), a generated `AddSystems` (the order of systems is the user's to choose). Already in effect without
+      changes: JIT bounds-check and devirtualization work, continuations that skip `ExecutionContext` restore when
+      nothing flows.
+- [ ] N12 Nino (audit of October 2026; Nino's reads check every length, bound depth and counts): done: enum members in
+      `wire.manifest` (a member removed, renamed or renumbered is DAS017), pinned bytes for raw structs, strings,
+      arrays and the framework's version-tolerant frames (`WireBytesTests`), DAS019 for collections held directly in
+      `[FromClient]`/`[ToClient]` messages, `Registrations.Run` clean under AOT analysis. Open: release on Nino 4.0.0,
+      not an RC (drop the NU5104 suppression then).
 - [x] N6 State handoff on moves (ADR-072): an actor that changes node (scaling out or in, a node stopping) sends its
       [Persist] and [Handoff] components, version and last-written hash to the new owner on the link its forwarded
       mail takes next; the new owner restores them without reading the store, the old one is removed once accepted

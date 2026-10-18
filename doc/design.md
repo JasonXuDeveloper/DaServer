@@ -57,7 +57,7 @@ Client-facing nodes and other nodes talk through framework frames (relayed clien
 grants, group membership, resumed sessions), never through business messages, so there is no fourth flow: a service
 hosted on a client-facing node exchanges ordinary `[Message]`s with the rest of the cluster.
 
-Business code reaches the cluster only through `ICluster` (`Cluster` in actors and services, `world.Cluster()` in
+Business code reaches the cluster only through `ICluster` (`Cluster` in actors and services, `world.Cluster` in
 systems): messages, session binding, client groups. `Node` (lifecycle, membership, links) is not visible to it.
 
 ### Data flow of a call
@@ -440,7 +440,7 @@ What the generators write:
 | `RegistrationGenerator` | `Registration_{Assembly}`: registrations of referenced assemblies first, then `[FromClient]` messages, client handler classes, actors and services (one dispatcher per `[Handle]` method), every `EcsSystem`; run once by its static constructor (ADR-012) |
 | `PolyfillGenerator` | `IsExternalInit` for contract assemblies built for netstandard2.1 |
 | EasyEcs `SystemGenerator` | `[ForEach]` struct jobs (components, singletons, entity, world parameters) and `GeneratedUpdate` |
-| Analyzers | DAS001–DAS018 (handlers, messages, wire types, id collisions, constructors, message flow, stateless actors, services and systems, address kinds, synchronous waits on shard threads, shared logic, ReplyWhen placement, systems that ask, components apart from logic, persisted and handed-off components, work started off the shard thread, placement on non-id types, wire layouts against the committed manifest), EECS001–EECS008 (ECS rules) |
+| Analyzers | DAS001–DAS019 (handlers, messages, wire types, id collisions, constructors, message flow, stateless actors, services and systems, address kinds, synchronous waits on shard threads, shared logic, ReplyWhen placement, systems that ask, components apart from logic, persisted and handed-off components, work started off the shard thread, placement on non-id types, wire layouts against the committed manifest, collections held directly by client messages), EECS001–EECS008 (ECS rules) |
 
 The generators follow the incremental-generator rules: syntax-only predicates, equatable models, tracking names, and
 no diagnostics. There is no reflection scanning, no configuration string and no hand-written registration list. A

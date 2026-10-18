@@ -24,7 +24,7 @@ locally and publishes it.
 - **Reliable links, bounded work.** One ordered stream per node pair resumes after a dropped connection (no loss, no
   duplicate). Requests carry their caller's deadline, and work nobody waits for is dropped. Full dispatch queues and mailboxes answer
   `Overloaded` instead of growing; a client that cannot keep up is disconnected and resynchronizes when it resumes.
-- **Misuse is a build error.** Analyzers DAS001–DAS018 cover handlers, messages, wire types, id collisions, message
+- **Misuse is a build error.** Analyzers DAS001–DAS019 cover handlers, messages, wire types, id collisions, message
   flow, stateless actors and services, shared logic, replies sent later, waits and threads on shards, components apart
   from logic, persisted and handed-off components, placement and wire layouts (the committed `wire.manifest`), and
   EECS001–EECS008 cover ECS, including the ECS principles.
@@ -96,7 +96,7 @@ Everything a developer declares is one of these. The message type alone decides 
 | **Component / singleton** | Data of one entity (actor state is `Actor<TId, TState>`) / of one shard world. | Logic. |
 | **System** | One per-tick responsibility over all matching entities of a shard. Stateless. | Reference other systems, perform IO. |
 
-Business code reaches the cluster through `ICluster`: `Cluster` in actors and services, `world.Cluster()` in systems.
+Business code reaches the cluster through `ICluster`: `Cluster` in actors and services, `world.Cluster` in systems.
 `Caller` is who sent the running turn's message from outside the cluster, a client session (in actors valid across the
 turn's awaits, in services until the first await;
 `Cluster.Send(Caller, m)` answers it, `BindSession(Caller)` binds it, `GrantSession(Caller)` admits it). A handler that
@@ -202,7 +202,7 @@ public sealed partial class RealmBroadcastSystem : EcsSystem        // every 5 t
 
     [ForEach]
     static void Broadcast(in RealmState realm, World world) =>
-        world.Cluster().Send(ClientGroup.All, new RealmStatus(world.Tick(), realm.Online.Count, DateTime.UtcNow.Ticks));
+        world.Cluster.Send(ClientGroup.All, new RealmStatus(world.Tick, realm.Online.Count, DateTime.UtcNow.Ticks));
 }
 
 // Client (bot, game): the same messages, one well-known address.
@@ -273,7 +273,7 @@ await client.Ask(new Login("ann"));
 await cluster.TickAsync(15);                              // exactly 15 ticks on every shard
 ```
 
-Actors, services and systems read time from `Time` (`world.Time()` in systems), the clock tests move.
+Actors, services and systems read time from `Time` (`world.Time` in systems), the clock tests move.
 
 ## Rolling upgrades
 
