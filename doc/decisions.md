@@ -1207,6 +1207,10 @@ records that no longer hold). Each: context → decision → consequences.
   many requests at once (load generators, bots, server-side callers). The flash sale's crowd, 3,000,000 buyers on
   one node: 1 ms beat against none, 19.7 -> 13.2 s, 350,000 -> 548,000 requests a second steady, node CPU 1.64 ->
   1.51 cores (the crowd spent half its CPU in `send` and on the connection's lock).
+- Kestrel as the client transport was measured too (`TransportBenchmark`: Kestrel's connection pipes feeding the same
+  client connections): broadcasts to 5,000 clients 43.7 ms and 14.8 MB against 26.2 ms and 55 KB, client requests
+  13-17% slower, equal at 1,000 clients. The own sockets stay.
+
 ## ADR-071 Tests drive the shards' clock
 - Context: users test actors, services and systems whose behavior depends on time: per-tick systems, `SendAfter`,
   idle unloading, checkpoints. On real time such tests sleep and assert ranges ("about 20 ticks"), which is slow and

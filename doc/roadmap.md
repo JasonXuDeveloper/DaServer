@@ -728,9 +728,11 @@ and cards, a manual clock), fails before its fix, and passes after it.
       within noise, two interleaved runs each (Load memory 2.01/2.71 -> 1.91/2.14 ms, SaveNow PostgreSQL
       9.9/12.3 -> 10.5/10.7 ms). Load allocates about 260 B per actor it activates (the actor object, its record,
       directory growth): activation is the cold path, not counted against the 0-GC thresholds.
-- [ ] Evaluate Kestrel's raw TCP (`ListenOptions.UseConnectionHandler`, pipelines, TLS) for client and link
-      connections against the own `Connection`/`Listener` (batched sends, zero-byte reads, POH buffers): BDN on
-      Message/Rpc/Broadcast/Scenario and allocation tests; switch only if neither time nor allocation regresses.
+- [x] Kestrel's raw TCP evaluated, not adopted: a `PipeChannel` over a Kestrel connection (`ListenOptions.Run`)
+      feeding the same client connections (`TransportBenchmark`, kept to measure again). Broadcast to 1,000 clients
+      equal (5.86 / 5.84 ms); to 5,000 clients 26.2 ms and 55 KB against 43.7 ms and 14.8 MB with Gen2 collections
+      (each connection's pipe grows blocks, each batch awaits a flush); 64 concurrent client requests 29-30 against
+      34 us. Both time and allocation regress, so the own `Connection`/`Listener` stay; TLS stays the platform's.
 - [ ] B4 one serialize-into-pooled-frame helper; B5 `DeliverTo(nodeId, frame)` (local or link); B8 one pending-table
       scan; B9 registries; B10 shared hash helpers; B11 sample nits
 - [ ] Split `Node` into links and router; membership talks to the node
