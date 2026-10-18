@@ -77,6 +77,28 @@ public sealed partial class PostgreSqlActorStore : IActorStore, IAsyncDisposable
     /// </summary>
     public async ValueTask InitializeAsync(CancellationToken cancellationToken = default)
     {
+        // A database still starting (a container restarting after its init scripts, a failover) refuses or drops the
+        // first connections: transient errors are retried for a minute; anything else, or a minute of them, stops the node.
+        var deadline = DateTime.UtcNow + InitializeTimeout;
+        for (var wait = TimeSpan.FromMilliseconds(100); ; wait = TimeSpan.FromTicks(Math.Min(wait.Ticks * 2, TimeSpan.FromSeconds(2).Ticks)))
+        {
+            try
+            {
+                await Prepare(cancellationToken);
+                return;
+            }
+            catch (NpgsqlException e) when (e.IsTransient && DateTime.UtcNow + wait < deadline)
+            {
+                await Task.Delay(wait, cancellationToken);
+            }
+        }
+    }
+
+    /// <summary>How long <see cref="InitializeAsync"/> retries a database that is not reachable yet.</summary>
+    public static readonly TimeSpan InitializeTimeout = TimeSpan.FromMinutes(1);
+
+    private async Task Prepare(CancellationToken cancellationToken)
+    {
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         if (_createTable)
         {

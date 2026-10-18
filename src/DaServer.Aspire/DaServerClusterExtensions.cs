@@ -285,17 +285,12 @@ public sealed class DaServerNodeGroup
     /// The nodes keep their actor records (ADR-068) in <paramref name="store"/>, a database resource
     /// (<c>builder.AddPostgres("pg").AddDatabase("actors")</c>): its connection string as
     /// <c>ConnectionStrings__{connectionName}</c>, which <c>AddPostgreSqlActorStore(connectionName)</c> in the node's
-    /// Program.cs reads. Run locally, the nodes start beside the database (their readiness includes it, so nothing is
-    /// routed to them before it answers); published, they wait for it, so a deployment starts the database first and
-    /// stops it last, after the nodes' final saves.
+    /// Program.cs reads. The nodes wait for it: a node prepares its store before it starts (ADR-068) and refuses to start
+    /// without it, and a deployment starts the database first and stops it last, after the nodes' final saves.
     /// </summary>
     public DaServerNodeGroup WithActorStore(IResourceBuilder<IResourceWithConnectionString> store, string connectionName = "actors")
     {
-        foreach (var node in Nodes)
-        {
-            node.WithReference(store, connectionName);
-            if (node.ApplicationBuilder.ExecutionContext.IsPublishMode) node.WaitFor(store);
-        }
+        foreach (var node in Nodes) node.WithReference(store, connectionName).WaitFor(store);
 
         return this;
     }
