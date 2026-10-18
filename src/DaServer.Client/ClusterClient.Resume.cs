@@ -89,10 +89,12 @@ public sealed partial class ClusterClient
     /// </summary>
     private async Task MoveAsync()
     {
+        var old = _connection;
+        if (old != null) Drain(old);
+        bool leaving = false;
         try
         {
             var channel = await ResumedAsync(watched: false).ConfigureAwait(false);
-            var old = _connection;
             if (_disposed)
             {
                 await GoodbyeAsync(channel).ConfigureAwait(false); // disposed meanwhile: the session ends at once
@@ -101,7 +103,12 @@ public sealed partial class ClusterClient
             }
 
             Use(channel);
-            if (old != null) _ = LeaveAsync(old);
+            if (old != null)
+            {
+                leaving = true;
+                _ = LeaveAsync(old);
+            }
+
             Moved?.Invoke();
         }
         catch (Exception)
@@ -110,6 +117,7 @@ public sealed partial class ClusterClient
         }
         finally
         {
+            if (!leaving && old != null) Drained(old, keep: false); // no session took over: what its connection pushed is dropped
             Volatile.Write(ref _moving, 0);
             if (_connection is { IsClosed: true } && !_disposed) Lost(null); // it closed while the move ran and failed
         }
@@ -125,7 +133,15 @@ public sealed partial class ClusterClient
     private async Task LeaveAsync(IFrameChannel old)
     {
         long deadline = Platform.Milliseconds + (long)CallTimeout.TotalMilliseconds;
-        await GoodbyeAsync(old).ConfigureAwait(false);
+        try
+        {
+            await GoodbyeAsync(old).ConfigureAwait(false); // its answer is the last frame its session is sent
+        }
+        finally
+        {
+            Drained(old, keep: true);
+        }
+
         while (!old.IsClosed && _pending.AnyOwnedBy(old) && Platform.Milliseconds < deadline)
             await Task.Delay(50).ConfigureAwait(false);
         old.Close();

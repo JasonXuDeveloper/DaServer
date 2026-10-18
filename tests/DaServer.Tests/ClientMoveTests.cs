@@ -197,6 +197,28 @@ public class ClientMoveTests
     }
 
     [Test]
+    public async Task PushesOfTheConnectionLeftComeBeforeThoseOfTheNewOne()
+    {
+        // While a move resumes, the new session's first push arrives before a push the old session was sent earlier
+        // (an actor pushes to the old session, then takes the new one): the old connection drains first, so a client
+        // sees each actor's pushes in the order they were sent.
+        var (client, node) = await Connected();
+        var seen = new GoldSeen();
+        client.Register(seen);
+        node.HoldResumes();
+        var moved = Moved(client);
+        node[0].Retire();
+        await Until(() => node.Count == 2);
+        node[1].Push(new GoldChanged(2));
+        await Task.Delay(100);
+        node[0].Push(new GoldChanged(1));
+        node.ReleaseResumes();
+        await moved;
+        await Until(() => { lock (seen.Values) return seen.Values.Count == 2; });
+        Assert.That(seen.Values, Is.EqualTo(new[] { 1, 2 }));
+    }
+
+    [Test]
     public async Task ADisposeDuringAReconnectEndsTheSessionAtOnce()
     {
         var (client, node) = await Connected();
@@ -251,5 +273,17 @@ public class ClientMoveTests
         node.Unresponsive = true;
         client.DropConnection();
         await failed.Task.WaitAsync(TimeSpan.FromSeconds(4)); // not the 30 s call timeout of a hello nobody answers
+    }
+}
+
+/// <summary>Records pushed gold values in the order the callbacks ran (<see cref="ClientMoveTests"/>).</summary>
+internal sealed class GoldSeen
+{
+    public readonly List<int> Values = new();
+
+    [Handle]
+    public void On(GoldChanged m)
+    {
+        lock (Values) Values.Add(m.Gold);
     }
 }

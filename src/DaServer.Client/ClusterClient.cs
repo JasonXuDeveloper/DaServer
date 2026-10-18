@@ -14,6 +14,13 @@ public sealed partial class ClusterClient : IMessageSender, IChannelHandler, IAs
     // beats a per-client dictionary: thousands of bot clients share one table per handler type).
     private (object Target, MessageHandlers Handlers)[] _handlers = [];
     private readonly MpmcQueue<FrameWriter>? _inbox;
+
+    // Pushes: one connection's at a time (callbacks never overlap), and during a move the connection left drains first.
+    // Only a move takes the gate: outside one, a single receive loop delivers.
+    private readonly Lock _pushGate = new();
+    private IFrameChannel? _draining;                 // the connection being moved away from, while it drains
+    private readonly Queue<FrameWriter> _parked = new(); // the other connections' pushes meanwhile, in order
+    private const int MaxParked = 4096;
     private IFrameChannel? _connection;
     private IFrameChannel? _introduced; // the connection whose hello was answered: the only one other frames go on
     private Uri? _webSocket; // connected over a WebSocket (reconnects go there again)
@@ -309,8 +316,7 @@ public sealed partial class ClusterClient : IMessageSender, IChannelHandler, IAs
                 _pending.TryComplete(FrameHeader.CallIdOf(in header, frame), header.Status, FrameHeader.PayloadOf(in header, frame));
                 break;
             case FrameKind.Message: // to this session or one of its groups
-                if (_inbox == null) DispatchCallback(frame);
-                else Enqueue(connection, frame);
+                Deliver(connection, frame);
                 break;
             case FrameKind.Control when header.MessageId == ControlOp.Ping:
                 KeepAlive.Pong(connection);
@@ -319,7 +325,10 @@ public sealed partial class ClusterClient : IMessageSender, IChannelHandler, IAs
                 if (connection == Volatile.Read(ref _probed)) Volatile.Write(ref _probeDeadlineMs, 0); // the probe answered
                 break;
             case FrameKind.Control when header.MessageId == ControlOp.Retire:
+                // Not while the last move still drains its old connection (a second within its goodbye): the node
+                // closes this one after its RetireGrace, and the client resumes then.
                 if (connection == _connection && !_disposed && AutoReconnect && Volatile.Read(ref _ticket) != null &&
+                    Volatile.Read(ref _draining) == null &&
                     Volatile.Read(ref _reconnecting) == 0 && Interlocked.CompareExchange(ref _moving, 1, 0) == 0)
                     _ = MoveAsync();
                 break;
@@ -335,6 +344,71 @@ public sealed partial class ClusterClient : IMessageSender, IChannelHandler, IAs
                 Volatile.Write(ref _ticket, ticket.ToArray());
                 Volatile.Write(ref _refreshTicketAtMs, Platform.Milliseconds + lifetime / 2);
                 break;
+        }
+    }
+
+    /// <summary>
+    /// A pushed frame: to the callbacks (inline, or queued for <see cref="ProcessCallbacks"/>), one connection at a time.
+    /// While a move drains the connection left, pushes of the new one wait: an actor pushes to the old session, then
+    /// takes the new one, so what the old connection carries was sent first.
+    /// </summary>
+    private void Deliver(IFrameChannel connection, ReadOnlySpan<byte> frame)
+    {
+        // Outside a move one connection delivers (one receive loop): no lock. A move sets _draining before its new
+        // connection exists and clears it only after the parked pushes went on, both under the gate.
+        if (Volatile.Read(ref _draining) == null)
+        {
+            Hand(connection, frame);
+            return;
+        }
+
+        lock (_pushGate)
+        {
+            if (_draining != null && connection != _draining)
+            {
+                if (_parked.Count < MaxParked) _parked.Enqueue(FrameWriter.CopyOf(frame));
+                else connection.Close(CallbacksBehind);
+                return;
+            }
+
+            Hand(connection, frame);
+        }
+    }
+
+    private void Hand(IFrameChannel connection, ReadOnlySpan<byte> frame)
+    {
+        if (_inbox == null) DispatchCallback(frame);
+        else Enqueue(connection, frame);
+    }
+
+    /// <summary>A move starts: pushes of other connections wait until <paramref name="old"/> drained.</summary>
+    private void Drain(IFrameChannel old)
+    {
+        lock (_pushGate) Volatile.Write(ref _draining, old);
+    }
+
+    /// <summary>
+    /// The connection <paramref name="old"/> left drained (its goodbye was answered, or it closed), or the move failed (<paramref name="keep"/>
+    /// false: the pushes of a session that did not take over are dropped): the waiting pushes go on, in order.
+    /// </summary>
+    private void Drained(IFrameChannel old, bool keep)
+    {
+        lock (_pushGate)
+        {
+            if (_draining != old) return; // a later move drains its own connection now
+            while (_parked.TryDequeue(out var frame))
+            {
+                try
+                {
+                    if (keep && _connection is { } current) Hand(current, frame.Frame);
+                }
+                finally
+                {
+                    frame.Dispose();
+                }
+            }
+
+            Volatile.Write(ref _draining, null); // after the parked ones: a push arriving meanwhile waited on the gate
         }
     }
 
