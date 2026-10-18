@@ -270,6 +270,19 @@ public static class TurnGate
 /// <summary>A request no type handles.</summary>
 [NinoType, Message] public partial record struct Unhandled : IRequest<int>;
 
+/// <summary>A request two service types answer (never sent: only <c>RouteCheck</c> looks at it).</summary>
+[NinoType, Message] public partial record struct AnsweredTwice : IRequest<int>;
+
+public sealed class FirstAnswer : Service
+{
+    [Handle] public int On(AnsweredTwice _) => 1;
+}
+
+public sealed class SecondAnswer : Service
+{
+    [Handle] public int On(AnsweredTwice _) => 2;
+}
+
 // ---------------------------------------------------------------- visitor (actor unloaded when idle)
 
 [NinoType, Message] public partial record struct Visit : IRequest<int>;

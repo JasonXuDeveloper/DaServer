@@ -8,6 +8,9 @@ namespace FlashSale.Tests;
 public class SaleTests
 {
     [Test]
+    public void EveryMessageHasItsHandler() => RouteCheck.Check(typeof(FlashSale.Server.Gate).Assembly);
+
+    [Test]
     public async Task EveryUnitIsSoldOnceAndRetriesGetTheSameAnswer()
     {
         await using var cluster = await TestCluster.StartAsync(o =>

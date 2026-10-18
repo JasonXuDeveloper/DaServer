@@ -14,6 +14,10 @@ namespace Sample.Tests;
 public class ServerTests
 {
     [Test]
+    public void EveryMessageHasItsHandler() =>
+        RouteCheck.Check(typeof(Sample.LoginServer.Account).Assembly, typeof(Sample.GameServer.Player).Assembly, typeof(Sample.MapServer.Map).Assembly);
+
+    [Test]
     public async Task TheRealmReportsOnItsTicksAndTheMapMovesAvatarsOnly()
     {
         await using var cluster = await TestCluster.StartAsync(o =>
