@@ -213,40 +213,10 @@ internal sealed class PendingCallTable
     }
 
     /// <summary>Fail calls whose deadline passed. Call periodically (e.g. every 100 ms).</summary>
-    public int SweepExpired()
-    {
-        int now = (int)Platform.Milliseconds;
-        int failed = 0;
-        int allocated = Volatile.Read(ref _allocated);
-        for (int i = 0; i < allocated; i++)
-        {
-            ref var e = ref At(i);
-            int tag = Volatile.Read(ref e.Tag);
-            if (tag != 0 && e.Deadline != 0 && now - e.Deadline > 0)
-            {
-                var call = Take((uint)tag);
-                if (call != null)
-                {
-                    call.Fail(RpcStatus.Timeout);
-                    failed++;
-                }
-            }
-        }
-
-        return failed;
-    }
+    public int SweepExpired() => Fail(RpcStatus.Timeout, owner: null, expired: true);
 
     /// <summary>Fail every in-flight call.</summary>
-    public void FailAll(RpcStatus status)
-    {
-        int allocated = Volatile.Read(ref _allocated);
-        for (int i = 0; i < allocated; i++)
-        {
-            int tag = Volatile.Read(ref At(i).Tag);
-            if (tag != 0)
-                Take((uint)tag)?.Fail(status);
-        }
-    }
+    public void FailAll(RpcStatus status) => Fail(status, owner: null, expired: false);
 
     /// <summary>Whether a call registered with <paramref name="owner"/> is still in flight (a scan: cold paths).</summary>
     public bool AnyOwnedBy(object owner)
@@ -262,15 +232,27 @@ internal sealed class PendingCallTable
     }
 
     /// <summary>Fail every call registered with <paramref name="owner"/> (e.g. when its connection drops).</summary>
-    public void FailOwnedBy(object owner, RpcStatus status)
+    public void FailOwnedBy(object owner, RpcStatus status) => Fail(status, owner, expired: false);
+
+    /// <summary>The one scan that fails calls: those of <paramref name="owner"/> (null: any), whose deadline passed if <paramref name="expired"/>.</summary>
+    private int Fail(RpcStatus status, object? owner, bool expired)
     {
+        int now = (int)Platform.Milliseconds;
+        int failed = 0;
         int allocated = Volatile.Read(ref _allocated);
         for (int i = 0; i < allocated; i++)
         {
             ref var e = ref At(i);
             int tag = Volatile.Read(ref e.Tag);
-            if (tag != 0 && ReferenceEquals(e.Owner, owner))
-                Take((uint)tag)?.Fail(status);
+            if (tag == 0 || (owner != null && !ReferenceEquals(e.Owner, owner)) || (expired && (e.Deadline == 0 || now - e.Deadline <= 0)))
+                continue;
+            if (Take((uint)tag) is { } call)
+            {
+                call.Fail(status);
+                failed++;
+            }
         }
+
+        return failed;
     }
 }

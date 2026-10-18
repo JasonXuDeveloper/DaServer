@@ -110,10 +110,10 @@ public static class HandlerRegistry
     }
 }
 
-/// <summary>Serialization of a message into a pooled frame (shared by the server and the client senders).</summary>
+/// <summary>Serialization of a message or a reply into a pooled frame (shared by the server and the client senders).</summary>
 internal static class MessageWriter
 {
-    public static FrameWriter Write<T>(in T message) where T : struct
+    public static FrameWriter Write<T>(in T message)
     {
         var w = FrameWriter.Rent();
         try

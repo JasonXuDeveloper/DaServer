@@ -55,67 +55,50 @@ public static class ServerRegistry
     private static readonly List<HandlerTypeInfo> HandlerTypeList = new();
     private static readonly List<SystemInfo> SystemList = new();
 
-    public static void RegisterHandlerType(HandlerTypeInfo info)
-    {
-        lock (Gate)
-        {
-            foreach (var existing in HandlerTypeList)
-            {
-                if (existing.Type == info.Type) return;
-                if (existing.Id == info.Id)
-                    throw new InvalidOperationException(existing.IdType == info.IdType && info.IdType != null
-                        ? $"{existing} and {info} share the id type {info.IdType}: each actor type needs its own"
-                        : $"{existing} and {info} hash to the same id");
-            }
-
-            HandlerTypeList.Add(info);
-        }
-    }
-
-    public static void RegisterSystem(SystemInfo info)
-    {
-        lock (Gate)
-        {
-            foreach (var existing in SystemList)
-                if (existing.Type == info.Type) return;
-            SystemList.Add(info);
-        }
-    }
-
     private static readonly List<Persistence.PersistentType> PersistentList = new();
+
+    public static void RegisterHandlerType(HandlerTypeInfo info) => Add(HandlerTypeList, info, static i => i.Type, existing =>
+        existing.Id != info.Id ? null
+        : existing.IdType == info.IdType && info.IdType != null ? $"{existing} and {info} share the id type {info.IdType}: each actor type needs its own"
+        : $"{existing} and {info} hash to the same id");
+
+    public static void RegisterSystem(SystemInfo info) => Add(SystemList, info, static i => i.Type, static _ => null);
 
     /// <summary>
     /// A component type of a components project the node references that is part of actor records: stored and moved
     /// (<see cref="PersistAttribute"/>, <paramref name="stored"/>) or only moved (<see cref="HandoffAttribute"/>).
     /// </summary>
-    public static void RegisterPersistent<T>(bool stored) where T : struct, IComponent
+    public static void RegisterPersistent<T>(bool stored) where T : struct, IComponent =>
+        Add(PersistentList, new Persistence.PersistentType<T>(TypeId<T>.Value, stored), static p => p.Type, static existing =>
+            existing.TypeId != TypeId<T>.Value ? null
+            : $"Persisted components {existing.Type} and {typeof(T)} hash to the same type id: give one another id with [NinoFormerName]");
+
+    internal static Persistence.PersistentType[] PersistentTypes => Snapshot(PersistentList);
+
+    public static HandlerTypeInfo[] HandlerTypes => Snapshot(HandlerTypeList);
+
+    public static SystemInfo[] Systems => Snapshot(SystemList);
+
+    /// <summary>
+    /// Add <paramref name="item"/> unless its type is registered (registrations may run more than once); a registered
+    /// item that <paramref name="clash"/> names a message for (the same id) fails the registration.
+    /// </summary>
+    private static void Add<T>(List<T> list, T item, Func<T, Type> typeOf, Func<T, string?> clash)
     {
-        uint typeId = TypeId<T>.Value;
         lock (Gate)
         {
-            foreach (var existing in PersistentList)
+            foreach (var existing in list)
             {
-                if (existing.Type == typeof(T)) return;
-                if (existing.TypeId == typeId)
-                    throw new InvalidOperationException($"Persisted components {existing.Type} and {typeof(T)} hash to the same type id: give one another id with [NinoFormerName]");
+                if (typeOf(existing) == typeOf(item)) return;
+                if (clash(existing) is { } message) throw new InvalidOperationException(message);
             }
 
-            PersistentList.Add(new Persistence.PersistentType<T>(typeId, stored));
+            list.Add(item);
         }
     }
 
-    internal static Persistence.PersistentType[] PersistentTypes
+    private static T[] Snapshot<T>(List<T> list)
     {
-        get { lock (Gate) return PersistentList.ToArray(); }
-    }
-
-    public static HandlerTypeInfo[] HandlerTypes
-    {
-        get { lock (Gate) return HandlerTypeList.ToArray(); }
-    }
-
-    public static SystemInfo[] Systems
-    {
-        get { lock (Gate) return SystemList.ToArray(); }
+        lock (Gate) return list.ToArray();
     }
 }

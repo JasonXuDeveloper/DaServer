@@ -109,14 +109,13 @@ public readonly struct CallContext(IReplySink? replyTo, uint callId, Origin orig
     public void ReplyValue<T>(in T value)
     {
         if (!ExpectsReply) return;
-        var w = FrameWriter.Rent();
+        FrameWriter w;
         try
         {
-            w.Write(in value);
+            w = MessageWriter.Write(in value);
         }
         catch (Exception e)
         {
-            w.Dispose();
             ReplyError(RpcStatus.Error, "Reply serialization failed: " + e.Message);
             return;
         }
