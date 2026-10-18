@@ -218,7 +218,7 @@ internal sealed class SessionState(long id, IFrameChannel channel)
     /// <summary>Set under the group gate when the session closed: it joins no group afterwards.</summary>
     public bool Closed { get; set; }
 
-    /// <summary>1 once the client presented a ticket: a session resumes at most once.</summary>
+    /// <summary>1 while the actors of a presented ticket are asked, 2 once that ended: a session resumes at most once.</summary>
     public int Resuming;
 
     /// <summary>Closed on purpose (client goodbye, <c>Disconnect</c>): its actors learn it at once, no resume grace.</summary>

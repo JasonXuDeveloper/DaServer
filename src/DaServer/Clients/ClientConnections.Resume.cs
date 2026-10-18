@@ -95,7 +95,10 @@ public sealed partial class ClientConnections
             var status = await Accepts(grants[first], resumed).ConfigureAwait(false);
             if (status == RpcStatus.Superseded)
             {
-                session.Sink.SendError(callId, RpcStatus.Forbidden);
+                // Another connection took the session; the client retries: if that was its own attempt cut off, the
+                // attempt is reverted and the next one resumes.
+                Volatile.Write(ref session.Resuming, 2);
+                session.Sink.SendError(callId, RpcStatus.Superseded);
                 return;
             }
 
@@ -124,11 +127,13 @@ public sealed partial class ClientConnections
             }
         }
 
+        Volatile.Write(ref session.Resuming, 2);
         if (closed)
         {
-            // Closed while the actors were asked: those that took the new session learn it ended.
+            // Closed while the actors were asked (the client gave up waiting, a drain): those that took the new session
+            // go back to the previous one, so the client can resume it again with the same ticket.
             for (int i = 0; i < grants.Length; i++)
-                if (accepted[i]) _node.SendTo(grants[i].HandlerTypeId, grants[i].Key, new SessionClosed(current));
+                if (accepted[i]) _node.SendTo(grants[i].HandlerTypeId, grants[i].Key, new SessionResumed(previous, current));
             return;
         }
 

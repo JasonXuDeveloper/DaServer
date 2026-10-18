@@ -588,6 +588,9 @@ public sealed class TallyAuditService : Service
 [NinoType, Message, FromClient] public partial record struct AddGold(int Amount) : IRequest<int>;
 [NinoType, Message, FromClient] public partial record struct Tip(int Amount);            // one-way
 
+/// <summary>The player holds its turn until <see cref="TurnGate"/> opens.</summary>
+[NinoType, Message, FromClient] public partial record struct HoldPlayer : IRequest<bool>;
+
 /// <summary>The player waits for <see cref="TurnGate"/>, then kicks the calling session.</summary>
 [NinoType, Message, FromClient] public partial record struct KickAfterGate : IRequest<bool>;
 
@@ -654,6 +657,13 @@ public sealed class Player : Actor<PlayerId, Wallet>
     }
 
     [Handle] public void On(Tip m) => State.Gold += m.Amount;
+
+    [Handle]
+    public async Reply<bool> On(HoldPlayer _)
+    {
+        await TurnGate.Current.Task;
+        return true;
+    }
 
     [Handle]
     public async Reply<bool> On(KickAfterGate _)

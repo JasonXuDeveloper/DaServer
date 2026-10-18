@@ -33,8 +33,9 @@ public enum RpcStatus : byte
     Malformed = 10,
 
     /// <summary>
-    /// A resume named a session that another connection resumed already (a ticket presented twice at once): the actor
-    /// keeps the session that resumed first.
+    /// A resume named a session that another connection resumed already (a ticket presented twice at once, or an
+    /// earlier attempt of the same client that was cut off): the actor keeps the session that resumed first. Clients
+    /// retry: a cut-off attempt is reverted, and the next one resumes.
     /// </summary>
     Superseded = 11,
 }

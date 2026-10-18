@@ -322,6 +322,29 @@ public class ResumeTests : ClusterTest
     }
 
     [Test]
+    public async Task AResumeCutOffAfterTheActorsAcceptedItIsRetried()
+    {
+        // The player holds a turn while its client reconnects: each resume waits past the client's call timeout and the
+        // client drops it, so the player accepts an attempt whose connection is gone. That attempt is reverted, and the
+        // client's next one resumes the session instead of being refused for good.
+        var gateways = await StartCluster(TimeSpan.FromSeconds(5));
+        var client = await LogIn(gateways, 596);
+        client.CallTimeout = TimeSpan.FromMilliseconds(300);
+        TurnGate.Current = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var held = client.Ask(new HoldPlayer()).AsTask();
+        await Task.Delay(100);
+        var reconnected = Reconnected(client);
+        client.DropConnection();
+        await Task.Delay(1_000); // attempts time out behind the held turn
+        TurnGate.Current.TrySetResult();
+
+        await reconnected;
+        Assert.That(await client.Ask(new AddGold(1)), Is.EqualTo(1), "the session resumed with the player");
+        Assert.That(Observed.Events, Does.Not.Contain("closed:596"));
+        try { await held; } catch (RpcException) { } // its connection was dropped
+    }
+
+    [Test]
     public async Task AKickIsNotEvadedByAResumeWaitingBehindIt()
     {
         // The player kicks a session in a turn while a resume of that session waits in its mailbox (a move): the resume
@@ -396,7 +419,7 @@ public class ResumeTests : ClusterTest
         client.DropConnection();
         await reconnected;
 
-        Assert.That(await ResumeAs(gateways, ticket), Is.EqualTo(RpcStatus.Forbidden), "a replayed ticket resumed again");
+        Assert.That(await ResumeAs(gateways, ticket), Is.EqualTo(RpcStatus.Superseded), "a replayed ticket resumed again");
         Assert.That(await client.Ask(new AddGold(1)), Is.EqualTo(1), "the resumed client kept its session");
     }
 

@@ -95,6 +95,12 @@ public sealed partial class ClientConnections(ClientConnectionOptions options) :
     private void Retire(SessionState session, long now)
     {
         session.RetireAtMs = 0;
+        if (Volatile.Read(ref session.Resuming) == 1)
+        {
+            session.RetireAtMs = now; // mid-resume, no grants yet: closing it now would cut the resume off; next sweep
+            return;
+        }
+
         if (_ticketSecret == null || session.Grants.Length == 0)
         {
             session.Channel.Close();

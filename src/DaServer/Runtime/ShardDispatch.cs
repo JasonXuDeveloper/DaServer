@@ -313,12 +313,12 @@ internal static class ShardDispatch
     {
         var frame = envelope.Frame;
         var resumed = NinoDeserializer.Deserialize<SessionResumed>(frame.Payload);
-        var status = ActorSessions.Resume(actor, in resumed);
-        bool accepted = status == RpcStatus.Ok;
+        var status = ActorSessions.Resume(actor, in resumed, out bool reverted);
+        bool accepted = status == RpcStatus.Ok && !reverted; // a revert restores the session the actor had: nothing to tell
         if (accepted) actor.Shard.Node.Supersede(resumed.Previous, actor.HandlerType.Id, actor.Key);
         if (frame.CallId != 0 && envelope.Sink is { } sink)
         {
-            if (accepted) sink.SendOk(frame.CallId);
+            if (status == RpcStatus.Ok) sink.SendOk(frame.CallId);
             else sink.SendError(frame.CallId, status);
         }
 
