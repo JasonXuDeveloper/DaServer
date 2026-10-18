@@ -282,9 +282,11 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
 - [x] A2 Drain budget published (D1): `WithShutdownTimeout` sets Compose `stop_grace_period` and Kubernetes
       `terminationGracePeriodSeconds` (budget + 10 s: the host's 5 s margin and 5 s more) for whichever environment the model publishes to, and on Kubernetes a 5 s
       preStop sleep (counted in the grace period) so endpoint removal propagates before the node leaves.
-- [ ] A3 Compose gaps: done: `stop_grace_period` and `restart: unless-stopped` per node. Open: a `healthcheck` needs a
-      probe command inside the image (the .NET runtime images ship no curl/wget): a `--health` mode of
-      `AddDaServer` that calls `/health` on the node's own port and exits.
+- [x] A3 Compose: `stop_grace_period`, `restart: unless-stopped` and a `healthcheck` per node. The .NET images ship
+      no curl or wget, so the check runs the node itself in probe mode (`dotnet /app/{assembly}.dll
+      --DaServer:Probe=/health`: it asks `/health` on its own HTTP port and exits 0 or 1 before anything starts, about
+      0.2 s); services waiting for a node group (`WaitFor`) depend on it `service_healthy`, so they start once a node
+      joined. Checked in a container built by `PublishContainer`: healthy once joined, 1 against a closed port.
 - [x] A4 Publish mode = one workload per node group (ADR-030): a Compose service with `deploy.replicas` or a
       Deployment with `replicas`; a headless `{group}-peers` Service (`clusterIP: None`, `publishNotReadyAddresses` so
       joining pods gossip); a node in a container advertises its own address; run mode keeps one resource per replica.
@@ -606,8 +608,10 @@ and cards, a manual clock), fails before its fix, and passes after it.
       it is back (`AClientFacingNodeFalselyDeclaredDeadKeepsItsSessions`).
 - [x] M6 Actors already asked to leave, unloading or holding a final save were not fenced by a later Dead verdict (they
       unloaded as planned and wrote): every copy not yet removed is fenced (`AnActorAskedToLeaveIsFencedWhenItsNodeIsDeclaredDead`).
-- [x] M7 A process late on every tick credited every gap to the others' clocks (a dead member kept its keys): one pause
-      is excused per DeadAfter (`ANodeLateOnEveryTickStillDeclaresTheDeadDead`). M10 a worse status at an older heartbeat
+- [x] M7 A process late on every tick credited every gap to the others' clocks (a dead member kept its keys): the next
+      pause is excused no sooner than DeadAfter and twice this one later, so the others age at half speed or more
+      however late the ticks are (with DeadAfter alone, ticks late by nearly DeadAfter under a loaded machine excused
+      nearly everything and the test failed in a full run; it now pauses 1.35 s of 1.5) (`ANodeLateOnEveryTickStillDeclaresTheDeadDead`). M10 a worse status at an older heartbeat
       lowered the heartbeat, so stale pulses counted as progress: the newest is kept (`AStalePulseDoesNotLowerAHeartbeat`).
       M11 introductions were kept for nodes that left: dropped once the view lists them (`ANodeThatLeftIsForgottenEverywhere`).
 - [x] M9 A seed spelled otherwise than the member's card opened a second link to the node, and the two took its inbound

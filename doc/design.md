@@ -462,7 +462,9 @@ node project is its business classes only.
     `AddKubernetesEnvironment`, both samples switch with `Publish=k8s`): a workload per group with its replicas, the
     same ports on every replica, each advertising its own address, seeds through each group's DNS name (the Compose
     service; a headless `{group}-peers` Service on Kubernetes), a preStop pause and a grace period from the stop
-    budget. Scaling policy (HPA, VPA, PDB, the load balancer) is the application's, added in its AppHost through the
+    budget, a Compose health check (the node in probe mode, `--DaServer:Probe=/health`) that its dependants wait for.
+    Publishing and deploying first check the cluster's routes: each node project lists what it declares and handles
+    (`DaServer__ListRoutes`) and a message without a handler stops the pipeline (A11). Scaling policy (HPA, VPA, PDB, the load balancer) is the application's, added in its AppHost through the
     same publisher hooks. There are no hand-maintained deployment files.
 - In-process tests run several nodes in one process with `NodeOptions.Hosts` (a type filter).
 
