@@ -118,12 +118,19 @@ public interface IMessageSender
     void Send<T>(in T message) where T : struct;
 
     [EditorBrowsable(EditorBrowsableState.Never)]
-    Reply<TReply> Ask<TAddr, TRequest, TReply>(TAddr address, in TRequest request)
+    Reply<TReply> Ask<TAddr, TRequest, TReply>(TAddr address, in TRequest request, in CallOptions options)
         where TAddr : struct, IAddress where TRequest : struct, IRequest<TReply>;
 
     [EditorBrowsable(EditorBrowsableState.Never)]
-    Reply<TReply> Ask<TRequest, TReply>(in TRequest request) where TRequest : struct, IRequest<TReply>;
+    Reply<TReply> Ask<TRequest, TReply>(in TRequest request, in CallOptions options) where TRequest : struct, IRequest<TReply>;
 }
+
+/// <summary>
+/// Options of one call (<c>Cluster.Ask(id, request, new CallOptions(TimeSpan.FromSeconds(2)))</c>): <see cref="Timeout"/>
+/// bounds this call instead of the sender's call timeout (zero: the sender's). The rest of a timeout travels with the
+/// request, and a handler reads what is left as <c>TimeLeft</c>.
+/// </summary>
+public readonly record struct CallOptions(TimeSpan Timeout);
 
 /// <summary>
 /// A client's session closed (disconnect, kick, crash of its node). Delivered to every actor the session

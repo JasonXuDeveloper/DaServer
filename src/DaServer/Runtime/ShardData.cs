@@ -130,6 +130,7 @@ internal readonly record struct ActorPools(
         actor.Key = 0;
         actor.Entity = default;
         actor.TurnCaller = default;
+        actor.TurnDeadline = 0;
         actor.TurnChain = 0;
         if (!Actors.TryGetValue(actor.HandlerType.Id, out var actors))
             Actors[actor.HandlerType.Id] = actors = new Stack<Actor>();

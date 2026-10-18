@@ -216,7 +216,7 @@ internal static class ShardDispatch
 
             var header = FrameHeader.Read(frame.Frame);
             uint callId = frame.CallId;
-            var context = new CallContext(sink, callId, frame.Origin);
+            var context = new CallContext(sink, callId, frame.Origin, frame.Deadline);
             var previous = CallContext.Enter(in context);
             long previousChain = CallChain.Current;
             CallChain.Current = chain; // the requests this handler makes carry it (its awaits restore it, PendingCall)
@@ -295,6 +295,7 @@ internal static class ShardDispatch
     {
         var header = FrameHeader.Read(envelope.Frame.Frame);
         actor.TurnCaller = default;
+        actor.TurnDeadline = envelope.Frame.Deadline;
         if ((header.Flags & FrameFlags.HasOrigin) != 0)
         {
             actor.TurnCaller = envelope.Frame.Origin;

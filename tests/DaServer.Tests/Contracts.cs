@@ -494,6 +494,9 @@ public readonly record struct LoopId(long Value) : IActorId;
 /// <summary>Hold the turn for <see cref="Ms"/> (another caller's request queues behind it).</summary>
 [NinoType, Message] public partial record struct Hold(int Ms) : IRequest<int>;
 
+/// <summary>The actor's TimeLeft after an await of its own (it holds for the whole turn), in ms.</summary>
+[NinoType, Message] public partial record struct HowLongAfterAwait : IRequest<long>;
+
 public sealed class Looper : Actor<LoopId>
 {
     /// <summary>Keys whose unload never finishes (a save that hangs): the stop budget test.</summary>
@@ -537,6 +540,13 @@ public sealed class Looper : Actor<LoopId>
     }
 
     [Handle]
+    public async Reply<long> On(HowLongAfterAwait _)
+    {
+        await Cluster.Ask(new LoopId(Key + 1), new Hold(50));
+        return (long)TimeLeft.TotalMilliseconds;
+    }
+
+    [Handle]
     public async Reply<int> On(Hold m)
     {
 #pragma warning disable DAS009 // on purpose: a turn that holds its actor
@@ -562,6 +572,7 @@ public sealed class LoopService : Service
 [NinoType, Message] public partial record struct WhoAsks : IRequest<long>;                 // the caller's origin id
 [NinoType, Message] public partial record struct Guarded(int N) : IRequest<int>;           // a dispatch filter refuses N < 0
 [NinoType, Message] public partial record struct Screened(int N) : IRequest<int>;          // ScreenRules refuses N < 0
+[NinoType, Message] public partial record struct HowLong : IRequest<long>;                  // the caller's TimeLeft, in ms
 
 /// <summary>A [Filter]: registered by the generated registration, no startup code.</summary>
 public static class ScreenRules
@@ -584,6 +595,8 @@ public sealed class EchoService : Service
     [Handle] public int On(Guarded m) => m.N;
 
     [Handle] public int On(Screened m) => m.N;
+
+    [Handle] public long On(HowLong _) => (long)TimeLeft.TotalMilliseconds;
 
     [Handle] public void On(Ping e) => Observed.Events.Enqueue($"echo:{e.Id}:{Cluster.NodeId:x}");
 }

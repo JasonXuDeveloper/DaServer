@@ -152,9 +152,11 @@ public sealed partial class DaServerAnalyzer
         var receiver = method.IsExtensionMethod ? Unwrap(invocation.Arguments.FirstOrDefault()?.Value) : Unwrap(invocation.Instance);
         bool client = Support.Is(receiver, Support.ClusterClientType);
 
-        var message = method.Parameters[method.Parameters.Length - 1].Type;
+        int messageIndex = method.Parameters.Length - 1;
+        if (messageIndex > 0 && Support.Is(method.Parameters[messageIndex].Type, "DaServer.CallOptions")) messageIndex--; // Ask(.., options)
+        var message = method.Parameters[messageIndex].Type;
         if (message is ITypeParameterSymbol) return; // generic plumbing: checked where the type is known
-        int addressIndex = method.Parameters.Length - 2;
+        int addressIndex = messageIndex - 1;
         var address = addressIndex >= (method.IsExtensionMethod ? 1 : 0) ? method.Parameters[addressIndex].Type : null;
         if (Support.Is(address, "System.TimeSpan")) address = null; // SendAfter's delay, not an address
         if (address is ITypeParameterSymbol) return;

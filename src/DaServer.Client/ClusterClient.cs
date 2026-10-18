@@ -186,9 +186,9 @@ public sealed partial class ClusterClient : IMessageSender, IChannelHandler, IAs
     /// <summary>A <see cref="FromClientAttribute">[FromClient]</see> message to the actor bound to this client's session, or to its service.</summary>
     public void Send<T>(in T message) where T : struct => Send(MessageWriter.Write(in message), TypeId<T>.Value, 0, 0, null);
 
-    public Reply<TReply> Ask<TAddr, TRequest, TReply>(TAddr address, in TRequest request)
+    public Reply<TReply> Ask<TAddr, TRequest, TReply>(TAddr address, in TRequest request, in CallOptions options)
         where TAddr : struct, IAddress where TRequest : struct, IRequest<TReply> =>
-        Ask<TRequest, TReply>(in request, ActorScope<TAddr>(), Addresses<TAddr>.Value(in address));
+        Ask<TRequest, TReply>(in request, ActorScope<TAddr>(), Addresses<TAddr>.Value(in address), options.Timeout);
 
     private static uint ActorScope<TAddr>() where TAddr : struct, IAddress =>
         Addresses<TAddr>.Kind == AddressKind.Actor ? Addresses<TAddr>.Scope : throw NotAnActor(typeof(TAddr));
@@ -196,14 +196,14 @@ public sealed partial class ClusterClient : IMessageSender, IChannelHandler, IAs
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static InvalidOperationException NotAnActor(Type type) => new($"A client sends to actors and services only, not to {type}");
 
-    public Reply<TReply> Ask<TRequest, TReply>(in TRequest request) where TRequest : struct, IRequest<TReply> =>
-        Ask<TRequest, TReply>(in request, 0, 0);
+    public Reply<TReply> Ask<TRequest, TReply>(in TRequest request, in CallOptions options) where TRequest : struct, IRequest<TReply> =>
+        Ask<TRequest, TReply>(in request, 0, 0, options.Timeout);
 
-    private Reply<TReply> Ask<TRequest, TReply>(in TRequest request, uint handlerTypeId, long key) where TRequest : struct
+    private Reply<TReply> Ask<TRequest, TReply>(in TRequest request, uint handlerTypeId, long key, TimeSpan timeout) where TRequest : struct
     {
         var call = PendingCall<TReply>.Rent(null);
         var task = call.Task;
-        Send(MessageWriter.Write(in request), TypeId<TRequest>.Value, handlerTypeId, key, call);
+        Send(MessageWriter.Write(in request), TypeId<TRequest>.Value, handlerTypeId, key, call, timeout);
         return new Reply<TReply>(task);
     }
 
@@ -212,13 +212,14 @@ public sealed partial class ClusterClient : IMessageSender, IChannelHandler, IAs
     /// type 0 to the session's actor or service handling it; a request when <paramref name="call"/> is set. Takes
     /// ownership of <paramref name="w"/>.
     /// </summary>
-    private void Send(FrameWriter w, uint messageId, uint handlerTypeId, long key, IPendingCall? call)
+    private void Send(FrameWriter w, uint messageId, uint handlerTypeId, long key, IPendingCall? call, TimeSpan timeout = default)
     {
-        var budget = call != null ? FrameHeader.EncodeBudget((long)CallTimeout.TotalMilliseconds) : RpcStatus.Ok;
+        if (timeout <= TimeSpan.Zero) timeout = CallTimeout; // CallOptions without a timeout of their own
+        var budget = call != null ? FrameHeader.EncodeBudget((long)timeout.TotalMilliseconds) : RpcStatus.Ok;
         // While reconnecting the new connection's session is not the resumed one yet: a message on it would reach no
         // bound actor, so it fails (or is dropped) as on a lost connection until the session is resumed.
-        if (Volatile.Read(ref _reconnecting) != 0) Transmit(null, w, FrameKind.Message, handlerTypeId, messageId, key, call, budget);
-        else Transmit(w, FrameKind.Message, handlerTypeId, messageId, key, call, budget);
+        var connection = Volatile.Read(ref _reconnecting) != 0 ? null : Volatile.Read(ref _introduced);
+        Transmit(connection, w, FrameKind.Message, handlerTypeId, messageId, key, call, budget, timeout: timeout);
     }
 
     /// <summary>A control frame to the node, answered when <paramref name="call"/> is set. Takes ownership of <paramref name="w"/>.</summary>
@@ -238,7 +239,7 @@ public sealed partial class ClusterClient : IMessageSender, IChannelHandler, IAs
     /// <paramref name="last"/>: the connection's last frame (<see cref="IFrameChannel.SendLast"/>), never sent elsewhere.
     /// </summary>
     private void Transmit(IFrameChannel? connection, FrameWriter w, FrameKind kind, uint target, uint messageId, long key, IPendingCall? call,
-        RpcStatus budget, bool last = false)
+        RpcStatus budget, bool last = false, TimeSpan timeout = default)
     {
         try
         {
@@ -248,7 +249,7 @@ public sealed partial class ClusterClient : IMessageSender, IChannelHandler, IAs
                 return;
             }
 
-            long deadline = PendingCallTable.DeadlineAfter(CallTimeout);
+            long deadline = PendingCallTable.DeadlineAfter(timeout > TimeSpan.Zero ? timeout : CallTimeout);
             uint callId = 0;
             if (call != null && !_pending.TryRegister(call, deadline, out callId, connection))
             {

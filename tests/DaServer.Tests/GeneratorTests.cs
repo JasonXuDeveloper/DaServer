@@ -132,7 +132,7 @@ public class GeneratorTests
         Assert.That(registration, Does.Contain("return context.Reply(Unsafe.As<global::Game.Hero>(target).On(m).AsValueTask())"), "a reply returned later");
         Assert.That(registration, Does.Contain("HandlerRegistry.RegisterHandlers(typeof(global::Game.Screen)"), "client handlerType");
         Assert.That(sources, Has.Some.Contains("Ask<TAddr>(this global::DaServer.IMessageSender sender, TAddr address, in global::Game.Heal request)"));
-        Assert.That(sources, Has.Some.Contains("sender.Ask<global::Game.Topic, string?>(in request)"));
+        Assert.That(sources, Has.Some.Contains("sender.Ask<global::Game.Topic, string?>(in request, default)"));
         Assert.That(sources, Has.Some.Contains("ClientMessages.Register<global::Game.Move>()")
             .And.Some.Contains("ClientMessages.Register<global::Game.Topic>()"));
     }

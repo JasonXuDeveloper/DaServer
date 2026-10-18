@@ -42,10 +42,17 @@ public sealed class AskGenerator : IIncrementalGenerator
         sb.Append("    /// <summary>Ask the actor at <paramref name=\"address\"/>; completes with its reply.</summary>\n");
         sb.Append($"    public static {reply} Ask<TAddr>(this global::DaServer.IMessageSender sender, TAddr address, in {r.FullName} request)\n");
         sb.Append("        where TAddr : struct, global::DaServer.IAddress =>\n");
-        sb.Append($"        sender.Ask<TAddr, {r.FullName}, {r.ReplyType}>(address, in request);\n\n");
+        sb.Append($"        sender.Ask<TAddr, {r.FullName}, {r.ReplyType}>(address, in request, default);\n\n");
+        sb.Append("    /// <summary>Ask the actor at <paramref name=\"address\"/> with call options (a timeout of its own).</summary>\n");
+        sb.Append($"    public static {reply} Ask<TAddr>(this global::DaServer.IMessageSender sender, TAddr address, in {r.FullName} request, in global::DaServer.CallOptions options)\n");
+        sb.Append("        where TAddr : struct, global::DaServer.IAddress =>\n");
+        sb.Append($"        sender.Ask<TAddr, {r.FullName}, {r.ReplyType}>(address, in request, in options);\n\n");
         sb.Append("    /// <summary>Ask the service handling the request (from a client: the actor bound to its session, else the service).</summary>\n");
         sb.Append($"    public static {reply} Ask(this global::DaServer.IMessageSender sender, in {r.FullName} request) =>\n");
-        sb.Append($"        sender.Ask<{r.FullName}, {r.ReplyType}>(in request);\n}}\n");
+        sb.Append($"        sender.Ask<{r.FullName}, {r.ReplyType}>(in request, default);\n\n");
+        sb.Append("    /// <summary>Ask the service handling the request with call options (a timeout of its own).</summary>\n");
+        sb.Append($"    public static {reply} Ask(this global::DaServer.IMessageSender sender, in {r.FullName} request, in global::DaServer.CallOptions options) =>\n");
+        sb.Append($"        sender.Ask<{r.FullName}, {r.ReplyType}>(in request, in options);\n}}\n");
         sb.Append(close);
         return sb.ToString();
     }

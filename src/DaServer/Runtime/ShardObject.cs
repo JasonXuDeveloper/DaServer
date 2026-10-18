@@ -34,6 +34,21 @@ public abstract class ShardObject
     protected Origin Caller => this is Actor actor ? actor.TurnCaller : CallContext.Current.Origin;
 
     /// <summary>
+    /// How long the caller of the current request still waits (its call timeout or <c>CallOptions</c>, minus the time the
+    /// request travelled and queued): pass it on to the calls this handler makes (<c>new CallOptions(TimeLeft)</c>), or
+    /// skip work nobody will wait for. Infinite for one-way messages. Held like <see cref="Caller"/>: in an actor for the
+    /// whole turn, in a service until the first <c>await</c>.
+    /// </summary>
+    protected TimeSpan TimeLeft
+    {
+        get
+        {
+            long deadline = this is Actor actor ? actor.TurnDeadline : CallContext.Current.Deadline;
+            return deadline == 0 ? Timeout.InfiniteTimeSpan : TimeSpan.FromMilliseconds(Math.Max(0, deadline - Platform.Milliseconds));
+        }
+    }
+
+    /// <summary>
     /// Reply <paramref name="reply"/> once <paramref name="done"/> completes (its failure is replied instead), and end
     /// the turn now: an actor takes its next message while an access change (<c>BindSession</c>) or a save it waits for
     /// is pending, so a busy actor's throughput does not hang on round trips. Only as the returned expression of a

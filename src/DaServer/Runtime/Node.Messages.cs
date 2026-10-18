@@ -72,10 +72,10 @@ sealed partial class Node
     public void Send<T>(in T message) where T : struct =>
         SendMessage(MessageWriter.Write(in message), TypeId<T>.Value, handlerTypeId: 0, key: 0);
 
-    public Reply<TReply> Ask<TAddr, TRequest, TReply>(TAddr address, in TRequest request)
+    public Reply<TReply> Ask<TAddr, TRequest, TReply>(TAddr address, in TRequest request, in CallOptions options)
         where TAddr : struct, IAddress where TRequest : struct, IRequest<TReply> =>
         Addresses<TAddr>.Kind == AddressKind.Actor
-            ? Ask<TRequest, TReply>(in request, Addresses<TAddr>.Scope, Addresses<TAddr>.Value(in address))
+            ? Ask<TRequest, TReply>(in request, Addresses<TAddr>.Scope, Addresses<TAddr>.Value(in address), options.Timeout)
             : NotAskable<TAddr, TReply>();
 
     /// <summary>Sessions and groups are sent to, not asked (DAS008 reports it at build time).</summary>
@@ -83,14 +83,15 @@ sealed partial class Node
     private static Reply<TReply> NotAskable<TAddr, TReply>() =>
         new(ValueTask.FromException<TReply>(new RpcException(RpcStatus.Error, $"{typeof(TAddr)} cannot be asked: send to it")));
 
-    public Reply<TReply> Ask<TRequest, TReply>(in TRequest request) where TRequest : struct, IRequest<TReply> =>
-        Ask<TRequest, TReply>(in request, handlerTypeId: 0, key: 0);
+    public Reply<TReply> Ask<TRequest, TReply>(in TRequest request, in CallOptions options) where TRequest : struct, IRequest<TReply> =>
+        Ask<TRequest, TReply>(in request, handlerTypeId: 0, key: 0, options.Timeout);
 
-    private Reply<TReply> Ask<TRequest, TReply>(in TRequest request, uint handlerTypeId, long key) where TRequest : struct
+    private Reply<TReply> Ask<TRequest, TReply>(in TRequest request, uint handlerTypeId, long key, TimeSpan timeout) where TRequest : struct
     {
         var call = PendingCall<TReply>.Rent(Shard.Current);
         var task = call.Task;
         var frame = MessageWriter.Write(in request);
+        if (timeout > TimeSpan.Zero) frame.Deadline = Platform.Milliseconds + (long)timeout.TotalMilliseconds; // else Request's default
         long chain = CallChain.Current;
         if (chain != 0) frame.SetChain(chain); // the asking turn's chain (ADR-059)
         Request(frame, TypeId<TRequest>.Value, handlerTypeId, key, call, null, 0);
