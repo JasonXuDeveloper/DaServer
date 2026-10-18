@@ -368,8 +368,10 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
 - K1 placement strategies (agreed: Akka sharding style, ADR-074): no per-actor directory and no "prefer the caller's
   node" (`IPlaced` co-locates what talks); load-aware and sticky placement move whole slots and are S3.
 - [ ] K3 Load-aware service choice (power of two over the pulse load).
-- [ ] K4 Per-call options (`CallOptions` struct overload: timeout), the turn's deadline readable in handlers without
-      a `CancellationTokenSource`.
+- [x] K4 `CallOptions` (agreed: a struct overload): every generated `Ask` has an overload taking `in CallOptions`, whose
+      `Timeout` bounds that call (zero: the sender's `CallTimeout`), on nodes and clients; the deadline travels as before
+      (ADR-028). Handlers read what their caller still waits as `TimeLeft`, an actor for its whole turn, a service until
+      its first await, without a `CancellationTokenSource` (`CallOptionsTests`).
 - [x] K5 `Actor.MailboxCapacity` (an actor type's own bound; zero: the node's, read once at load into the mailbox
       component, so delivery reads a field) and `daserver.messages.dropped{reason}` (`queue_full`, `mailbox_full`,
       `expired`; `Node.Dropped(DropReason)`), replacing `daserver.shard.rejected` and `daserver.shard.expired`

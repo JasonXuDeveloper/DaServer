@@ -292,6 +292,8 @@ records that no longer hold). Each: context → decision → consequences.
   (up to 25.5 s). Every hop turns it into a local deadline on arrival (`Environment.TickCount64`, no clock sync) and
   forwards what is left; clients send their call timeout. A shard drops a request whose deadline passed before it
   runs: no reply (the caller has already failed it), counted in `daserver.messages.dropped{reason=expired}`.
+  A call's own timeout (`CallOptions`) sets its first deadline instead of the call timeout; a handler reads what is
+  left as `TimeLeft` (the turn's deadline, kept on the actor for the turn, in `CallContext` for services).
 - Alternatives: absolute timestamps (need synchronized clocks); a separate header field (24-byte header, one byte
   was free on requests).
 - Consequences: work whose caller gave up is not run, on any node; one-way messages never expire. A request in
