@@ -270,7 +270,7 @@ internal sealed class Shard : CompletionThread
                 bool idle = activity.Processed == 0 && !World.Any<Mailbox>(MailboxSystem.Runnable);
                 if (idle)
                     Sleep(World.GetSingleton<ShardTimers>().Wheel.Count == 0 ? nextTick
-                        : Math.Min(nextTick, _time.GetTimestamp() + _timerWake), spin: busy); // a delayed send waits for no tick
+                        : Math.Min(nextTick, _time.GetTimestamp() + _timerWake), spin: busy, activity.Stopping); // a delayed send waits for no tick
                 busy = !idle;
             }
         }
@@ -280,6 +280,7 @@ internal sealed class Shard : CompletionThread
         }
         finally
         {
+            Volatile.Write(ref _counters.PassStartedMs, 0); // a shard that stopped is not stalled
             Volatile.Write(ref _closed, 1);
             ForwardQueued();
             try
@@ -354,20 +355,22 @@ internal sealed class Shard : CompletionThread
     /// <summary>Spins of a busy shard before it sleeps (<see cref="Thread.SpinWait"/> rounds; tens of microseconds).</summary>
     private const int BusySpins = 20, SpinRound = 50;
 
-    private void Sleep(long nextTick, bool spin)
+    /// <param name="stopping">The stop request was taken: it no longer cuts sleeps short (a shard waiting for its last
+    /// turns to end sleeps until their completions wake it, instead of spinning).</param>
+    private void Sleep(long nextTick, bool spin, bool stopping)
     {
         // A shard that just had work waits for more by spinning a little first: under load the next message arrives
         // within microseconds, and a sleep and a wake (futex calls, the event's lock) cost more than that.
         if (spin)
             for (int i = 0; i < BusySpins; i++)
             {
-                if (QueueLength != 0 || _stopRequested) return;
+                if (QueueLength != 0 || _stopRequested && !stopping) return;
                 Thread.SpinWait(SpinRound);
             }
 
         Interlocked.Exchange(ref _sleeping.Value, 1);
         Volatile.Write(ref _counters.PassStartedMs, 0);
-        if (QueueLength == 0 && !_stopRequested)
+        if (QueueLength == 0 && !(_stopRequested && !stopping)) // a stop request not taken yet ends the sleep
         {
             long remaining = nextTick - _time.GetTimestamp();
             if (remaining > 0) // a manual clock (tests) wakes the shard itself when it moves on (Wake)
