@@ -899,12 +899,17 @@ and cards, a manual clock), fails before its fix, and passes after it.
     write in flight: the move window is 2 x (call timeout + store timeout), over up to 16 recent views. A copy held
     longer meets a new owner that loaded from the store; versions decide and its changes since its last write are lost
     (ADR-072).
+  - Fixed after the round: an `OnLoad` failing on a copy restored from a handoff writes the moved record before the copy
+    goes (`AMovedRecordWhoseOnLoadFailsIsWrittenNotLost`, a zero balance without it); a critical write that failed on a
+    copy leaving by handoff travels in the record, and the new owner writes it at once
+    (`ACriticalChangeWhoseWriteFailedIsWrittenAtOnceByItsNewOwner`, lost on the new owner's crash without it); a
+    restart of the link's stream closes a handshake that said Hello with the old stream id (no deterministic test:
+    it needs the peer to restart while the handshake is in flight).
   - Open from this round (should-fix, in order): a group broadcast during a planned client move can reach both
     sessions and an in-flight push can arrive after the parked ones (needs a move marker or group sequence numbers);
     a resume reverted after the old session's close was consumed leaves the session open; a resume whose reply is lost
-    cannot be retried with the old ticket; a stale handshake can carry the old stream id after `OnPeerDead`; an
-    `OnLoad` failing on a restored copy drops the moved state; a stopped shard's handoff memory is gone for late
-    resends; a failed critical save downgraded by a move. Sessions of a drained node close one view removal late (nit).
+    cannot be retried with the old ticket; a stopped shard's handoff memory is gone for late resends. Sessions of a
+    drained node close one view removal late (nit).
 
 ## Generator / analyzer (`src/DaServer.Generator`)
 - [x] Messages instead of contracts (ADR-035): typed `Ask` overloads per request, one dispatcher per `[Handle]`
