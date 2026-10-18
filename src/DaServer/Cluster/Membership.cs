@@ -13,7 +13,7 @@ internal sealed partial class Membership
 {
     private const int Fanout = 3;
 
-    private readonly Node _node;
+    private readonly IMembershipHost _node;
     private readonly Lock _gate = new();
     private readonly Dictionary<ulong, Entry> _members = new();
     private ClusterView _view;
@@ -38,7 +38,7 @@ internal sealed partial class Membership
         public long LastProgress = lastProgress; // Platform.Milliseconds of the last heartbeat/status change we saw
     }
 
-    public Membership(Node node)
+    public Membership(IMembershipHost node)
     {
         _node = node;
         _view = new ClusterView([]);

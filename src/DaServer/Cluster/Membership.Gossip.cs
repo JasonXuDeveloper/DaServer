@@ -191,7 +191,7 @@ internal sealed partial class Membership
     private void Fence()
     {
         Log.DeclaredDead(_node.Logger);
-        foreach (var shard in _node.Shards) shard.RequestUnloadAll();
+        _node.UnloadAllUnsaved();
         if (_self.Status == MemberStatus.Up) UpdateSelf(_self.Status, _self.Incarnation + 1);
     }
 }

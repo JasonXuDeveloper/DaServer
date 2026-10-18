@@ -9,13 +9,6 @@ namespace DaServer.Runtime;
 /// </summary>
 internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
 {
-    private readonly ConcurrentDictionary<(string Host, int Port), PeerLink> _links = new();
-    private PeerLink[] _linkList = [];
-    private readonly ConcurrentDictionary<ulong, PeerLink> _introduced = new(); // node id -> link, from Hellos
-    private readonly LinkAuth _linkAuth;
-
-    /// <summary>An accepted connection that did not start with an authentic Hello of this cluster.</summary>
-    private static readonly InvalidOperationException NotIntroduced = new("Not introduced by an authentic Hello");
     private Shard[] _shards = [];
     private FrozenDictionary<uint, HandlerTypeInfo> _handlerTypeById = FrozenDictionary<uint, HandlerTypeInfo>.Empty;
     private Dictionary<uint, IAddressHandler>? _registering = new(); // address handlers while features start
