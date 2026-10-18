@@ -46,7 +46,16 @@ internal readonly record struct UnloadWhenIdle(long Milliseconds) : IComponent;
 /// An asynchronous turn is running: the actor receives no other message meanwhile. Also on the entity of a running
 /// service call (<see cref="ServiceCall"/>). Its end arrives as data: <see cref="TurnEnded"/>.
 /// </summary>
-internal readonly record struct Turn(ValueTask Task) : IComponent;
+internal struct Turn(ValueTask task, long startedMs) : IComponent
+{
+    public readonly ValueTask Task = task;
+
+    /// <summary><see cref="ShardActivity.NowMs"/> when the turn started.</summary>
+    public readonly long StartedMs = startedMs;
+
+    /// <summary>The turn outlived the call timeout and was logged (<see cref="LongTurnSystem"/>).</summary>
+    public bool Reported;
+}
 
 /// <summary>Tag: the <see cref="Turn"/>'s task completed (posted by its <see cref="TurnWatcher"/>); ended by a system.</summary>
 internal struct TurnEnded : IComponent;

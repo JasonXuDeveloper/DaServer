@@ -52,6 +52,20 @@ public class BackpressureTests : ClusterTest
     }
 
     [Test]
+    public async Task ATurnOutlivingTheCallTimeoutIsReportedOnce()
+    {
+        // A turn cannot be cut short; one still running when its caller gave up holds the actor, so it is logged once.
+        Faults.Allow("TurnTooLong"); // what the test provokes
+        var node = await Start("single", configure: static o => o.CallTimeout = TimeSpan.FromMilliseconds(300));
+        var error = Assert.ThrowsAsync<RpcException>(async () => await node.Ask(new LoopId(7), new Hold(1_200)))!;
+        Assert.That(error.Status, Is.EqualTo(RpcStatus.Timeout));
+        await Eventually(() => Faults.Count("TurnTooLong") == 1, "the long turn is reported");
+        await Task.Delay(1_200); // the held turn ends
+        Assert.That(await node.Ask(new LoopId(7), new Hold(0)), Is.Zero, "the actor takes mail once the turn ended");
+        Assert.That(Faults.Count("TurnTooLong"), Is.EqualTo(1), "once per turn");
+    }
+
+    [Test]
     public async Task AStopThatExceedsItsBudgetReportsAndReturns()
     {
         Faults.Allow("BudgetExceeded"); // what the test provokes
@@ -136,6 +150,7 @@ public class BackpressureTests : ClusterTest
     public async Task AnActorWhoseCallTimedOutResumesOnItsShard()
     {
         // The timeout is found by the maintenance timer, not on the caller's shard: the caller's code must not run there.
+        Faults.Allow("TurnTooLong"); // the callee's turn outlives the call on purpose
         var node = await Start("single", shards: 2, configure: static o => o.CallTimeout = TimeSpan.FromMilliseconds(200));
         var caller = new CounterId(1);
         string callerShard = await node.Ask(caller, new WhereAmI());

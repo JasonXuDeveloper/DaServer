@@ -12,7 +12,7 @@ internal sealed class FaultLog : ILoggerProvider, ILogger
 {
     private static readonly HashSet<string> Watched =
     [
-        "ShardCrashed", "ShardFailed", "ShardStalled", "MaintenanceFailed", "GossipFailed", "LinkRefused", "BudgetExceeded",
+        "ShardCrashed", "ShardFailed", "ShardStalled", "TurnTooLong", "MaintenanceFailed", "GossipFailed", "LinkRefused", "BudgetExceeded",
     ];
 
     private readonly HashSet<string> _allowed = [];

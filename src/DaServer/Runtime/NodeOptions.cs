@@ -65,6 +65,13 @@ public sealed class NodeOptions
     public Persistence.IActorStore? ActorStore { get; set; }
 
     /// <summary>
+    /// A store call (a batch of loads or writes) not done within this is cancelled and fails: loads and writes are
+    /// retried as after any failure, so a hung store connection holds a shard's persistence for this long, not forever.
+    /// Stores observe the cancellation token they are given.
+    /// </summary>
+    public TimeSpan StoreTimeout { get; set; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
     /// The whole graceful stop (leave, drain, unload every actor, close) must fit in this budget: past it the node
     /// reports the actors that were not unloaded and exits instead of hanging. The host's shutdown timeout and the
     /// platform's grace period are set above it (DaServer.Hosting, DaServer.Aspire), so the platform never kills a node
@@ -170,6 +177,7 @@ public sealed class NodeOptions
         Check(DispatchQueueCapacity > 0, $"DispatchQueueCapacity {DispatchQueueCapacity} must be positive");
         Check(ActorMailboxCapacity > 0, $"ActorMailboxCapacity {ActorMailboxCapacity} must be positive");
         Check(CallTimeout > TimeSpan.Zero, $"CallTimeout {CallTimeout} must be positive");
+        Check(StoreTimeout > TimeSpan.Zero, $"StoreTimeout {StoreTimeout} must be positive");
         Check(ShutdownTimeout > TimeSpan.Zero, $"ShutdownTimeout {ShutdownTimeout} must be positive");
         Check(StallAfter > TimeSpan.Zero, $"StallAfter {StallAfter} must be positive");
         Check(GossipInterval > TimeSpan.Zero, $"GossipInterval {GossipInterval} must be positive");

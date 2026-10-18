@@ -64,6 +64,7 @@ internal sealed class LoadBatch(Shard shard)
     private StoredRecord[] _records = new StoredRecord[64];
     private ValueTask _task;
     private Action? _completed;
+    private readonly StoreDeadline _deadline = new();
 
     public bool InFlight { get; private set; }
 
@@ -89,7 +90,7 @@ internal sealed class LoadBatch(Shard shard)
         InFlight = true;
         try
         {
-            _task = store.ClaimAsync(_keys.AsMemory(0, Count), _records.AsMemory(0, Count));
+            _task = store.ClaimAsync(_keys.AsMemory(0, Count), _records.AsMemory(0, Count), _deadline.Start(shard));
         }
         catch (Exception e)
         {
@@ -107,6 +108,7 @@ internal sealed class LoadBatch(Shard shard)
     {
         var task = _task;
         _task = default;
+        _deadline.Stop();
         try
         {
             task.GetAwaiter().GetResult();
@@ -146,6 +148,7 @@ internal sealed class SaveBatch(Shard shard)
     private readonly bool[] _accepted = new bool[Max];
     private ValueTask _task;
     private Action? _completed;
+    private readonly StoreDeadline _deadline = new();
 
     public bool InFlight { get; private set; }
 
@@ -167,7 +170,7 @@ internal sealed class SaveBatch(Shard shard)
         InFlight = true;
         try
         {
-            _task = store.SaveAsync(_writes.AsMemory(0, Count), _accepted.AsMemory(0, Count));
+            _task = store.SaveAsync(_writes.AsMemory(0, Count), _accepted.AsMemory(0, Count), _deadline.Start(shard));
         }
         catch (Exception e)
         {
@@ -184,6 +187,7 @@ internal sealed class SaveBatch(Shard shard)
     {
         var task = _task;
         _task = default;
+        _deadline.Stop();
         try
         {
             task.GetAwaiter().GetResult();
@@ -208,5 +212,27 @@ internal sealed class SaveBatch(Shard shard)
         Finals.Clear();
         Array.Clear(_writes);
         InFlight = false;
+    }
+}
+
+/// <summary>
+/// The cancellation of a store call after <see cref="NodeOptions.StoreTimeout"/>: one source per batch, reset after each
+/// call, so timing calls allocates nothing (a new source only after one fired).
+/// </summary>
+internal sealed class StoreDeadline
+{
+    private CancellationTokenSource _source = new();
+
+    public CancellationToken Start(Shard shard)
+    {
+        _source.CancelAfter(shard.Node.Options.StoreTimeout);
+        return _source.Token;
+    }
+
+    public void Stop()
+    {
+        if (_source.TryReset()) return;
+        _source.Dispose();
+        _source = new CancellationTokenSource();
     }
 }

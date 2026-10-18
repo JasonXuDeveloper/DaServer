@@ -133,6 +133,7 @@ public class HandoffTests(string kind) : ClusterTest
         // K moves from a to b while a's copy is in a long turn (it cannot unload yet). b gets mail for K first and asks a
         // for the record; a still holds K past the handoff timeout. b must keep waiting for the record (a is alive), not
         // load K from the store and run it beside a's copy.
+        Faults.Allow("TurnTooLong"); // a's long turn is the point
         var store = new WatchedStore(_stores.Create());
         var a = await Start("a", configure: o => { o.ActorStore = store; o.CallTimeout = TimeSpan.FromMilliseconds(500); });
         var b = await Start("b", configure: o => { o.ActorStore = store; o.CallTimeout = TimeSpan.FromMilliseconds(500); });

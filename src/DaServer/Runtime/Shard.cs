@@ -328,6 +328,7 @@ internal sealed class Shard : CompletionThread
         World.AddSystem<RemovalSystem>();
         World.AddSystem<RebalanceSystem>();
         World.AddSystem<IdleSystem>();
+        World.AddSystem<LongTurnSystem>();
         World.AddSystem<UnloadSystem>();
         World.AddSystem<LoadSystem>();
         World.AddSystem<PersistSystem>();

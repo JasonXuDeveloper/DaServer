@@ -215,6 +215,48 @@ public class PersistenceEdgeTests(string kind) : ClusterTest
         Assert.That(store.Largest, Is.LessThanOrEqualTo(512));
     }
 
+    /// <summary>Its first <see cref="HangLoads"/> loads and <see cref="HangWrites"/> writes never finish until cancelled (a dead connection).</summary>
+    private sealed class HangingStore(IActorStore inner) : IActorStore
+    {
+        public ValueTask InitializeAsync(CancellationToken ct = default) => inner.InitializeAsync(ct);
+
+        public int HangLoads, HangWrites;
+
+        public async ValueTask ClaimAsync(ReadOnlyMemory<StoredKey> keys, Memory<StoredRecord> records, CancellationToken ct = default)
+        {
+            if (Interlocked.Decrement(ref HangLoads) >= 0) await Task.Delay(Timeout.Infinite, ct);
+            await inner.ClaimAsync(keys, records, ct);
+        }
+
+        public async ValueTask SaveAsync(ReadOnlyMemory<StoredWrite> writes, Memory<bool> accepted, CancellationToken ct = default)
+        {
+            if (Interlocked.Decrement(ref HangWrites) >= 0) await Task.Delay(Timeout.Infinite, ct);
+            await inner.SaveAsync(writes, accepted, ct);
+        }
+    }
+
+    [Test]
+    public async Task AHungLoadIsCancelledAfterTheStoreTimeoutAndRetried()
+    {
+        // The store never answers the first load: cancelled after the store timeout, the load is tried again, instead of
+        // the shard's loads waiting for good (and every caller until its call timeout).
+        var store = new HangingStore(_stores.Create()) { HangLoads = 1 };
+        var node = await Start("single", configure: o => (o.ActorStore, o.StoreTimeout) = (store, TimeSpan.FromMilliseconds(300)));
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        Assert.That(await node.Ask(new BankId(170), new Deposit(4, false)), Is.EqualTo(4));
+        Assert.That(watch.Elapsed, Is.LessThan(TimeSpan.FromSeconds(2.5)), "not waited for until the call timeout");
+    }
+
+    [Test]
+    public async Task AHungWriteIsCancelledAfterTheStoreTimeoutAndRetried()
+    {
+        var inner = _stores.Create();
+        var store = new HangingStore(inner) { HangWrites = 1 };
+        var node = await Start("single", configure: o => (o.ActorStore, o.StoreTimeout) = (store, TimeSpan.FromMilliseconds(300)));
+        Assert.That(await node.Ask(new BankId(171), new Deposit(6, Critical: true)), Is.EqualTo(6));
+        await Eventually(async () => (await Stores.Peek(inner, Key(171))).Data.Length > 0, "written after the hung write was cancelled", 3000);
+    }
+
     [Test]
     public async Task ALoadThatFailsIsRetriedWithinTheCallTimeout()
     {

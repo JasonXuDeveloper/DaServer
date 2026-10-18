@@ -12,6 +12,9 @@ internal static partial class Log
     [LoggerMessage(Level = LogLevel.Error, Message = "{Step} of {Actor} failed")]
     public static partial void ActorFailed(ILogger logger, Exception error, string step, object actor);
 
+    [LoggerMessage(Level = LogLevel.Warning, Message = "A turn of {Actor} has run for {Ms} ms, past the call timeout: the actor takes no mail until it ends (an await that never completes?)")]
+    public static partial void TurnTooLong(ILogger logger, object actor, long ms);
+
     [LoggerMessage(Level = LogLevel.Warning, Message = "Link {Host}:{Port} backlog full: {Count} frames dropped")]
     public static partial void BacklogFull(ILogger logger, string host, int port, int count);
 
