@@ -21,8 +21,9 @@ public class MembershipTests : ClusterTest
     public async Task ANodeLateOnEveryTickStillDeclaresTheDeadDead()
     {
         Faults.Allow("MinoritySide"); // c, cut off, downs itself
-        // a and b are starved for good: each maintenance tick runs over a second late. c goes silent. One pause is
-        // excused, but a process late on every tick must still age the others, or c would keep its keys forever.
+        // a and b are starved for good: each maintenance tick runs 1.35 s late (DeadAfter is 1.5 s; a later one fences the
+        // node itself). c goes silent. A pause is excused, but a process late on every tick must still age the others, or
+        // c would keep its keys forever.
         var nodes = await StartCluster(3);
         int Port(Node n) => n.ClusterEndPoint.Port;
         nodes[2].Membership.BlockedPorts = [Port(nodes[0]), Port(nodes[1])];
@@ -31,8 +32,8 @@ public class MembershipTests : ClusterTest
         {
             while (nodes[0].View.UpMembers.Length == 3)
             {
-                nodes[0].SimulatePause(TimeSpan.FromSeconds(1.2), aged: false); // the tick sees a pause the clocks did not
-                nodes[1].SimulatePause(TimeSpan.FromSeconds(1.2), aged: false);
+                nodes[0].SimulatePause(TimeSpan.FromSeconds(1.35), aged: false); // the tick sees a pause the clocks did not
+                nodes[1].SimulatePause(TimeSpan.FromSeconds(1.35), aged: false);
                 await Task.Delay(100);
             }
         });

@@ -87,9 +87,11 @@ internal sealed partial class Membership
     /// The node's maintenance tick (its timer thread): a gossip round once per <see cref="NodeOptions.GossipInterval"/>.
     /// A tick that ran <paramref name="pausedMs"/> late means this process was paused (GC, a starved CPU, a stopped
     /// container): the silence of the others since is ours, not theirs. Their progress clocks move forward by the pause,
-    /// so no member is suspected or declared dead for it; real failures still surface a few rounds later. One pause is
-    /// excused per <see cref="NodeOptions.DeadAfter"/>: a process late on every tick (starved for good) would otherwise
-    /// never age anyone, and a dead member would keep its keys. True when this tick's lateness was excused.
+    /// so no member is suspected or declared dead for it; real failures still surface a few rounds later. The next pause
+    /// is excused no sooner than <see cref="NodeOptions.DeadAfter"/> and twice this one later: a process late on every
+    /// tick (starved for good) still ages the others at half speed or more, or a dead member would keep its keys (with
+    /// a window of DeadAfter alone, ticks late by nearly DeadAfter excused nearly all of it). True when this tick's
+    /// lateness was excused.
     /// </summary>
     internal bool Tick(long nowMs, long pausedMs)
     {
@@ -101,7 +103,7 @@ internal sealed partial class Membership
                 if (excused)
                 {
                     foreach (var entry in _members.Values) entry.LastProgress += pausedMs;
-                    _nextExcuseMs = nowMs + Ms(_node.Options.DeadAfter);
+                    _nextExcuseMs = nowMs + Math.Max(Ms(_node.Options.DeadAfter), 2 * pausedMs);
                 }
 
                 // Silent this long, this node is dead in every other view (or forgotten, and no Dead pulse will ever
