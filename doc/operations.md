@@ -50,6 +50,22 @@ curl -X POST -H "Authorization: Bearer $TOKEN" http://game-1:8080/admin/drain
 
 `/metrics` (Prometheus) and `/health`, `/alive` need no token.
 
+The endpoints require the authorization policy `DaServerAdmin.Policy`; its default accepts the token above. An
+application that authorizes operators its own way (JWT, mTLS, an API gateway's header) redefines the policy after
+`AddDaServer`: `builder.Services.AddAuthorization(o => o.AddPolicy(DaServerAdmin.Policy, p => ...))`.
+
+## Rotating the signing secret
+
+The signing secret proves nodes to each other, signs clients' resume tickets and derives the admin token. Rotate it
+without a restart of the cluster and without losing a ticket, in three rolling deployments:
+
+1. Every node: `DaServer__SigningSecret=<old>`, `DaServer__AcceptedSigningSecret=<new>`.
+2. Every node: `DaServer__SigningSecret=<new>`, `DaServer__AcceptedSigningSecret=<old>`.
+3. Every node: `DaServer__SigningSecret=<new>`, no accepted secret.
+
+Each step accepts what the previous one signs, so old and new nodes link and resume each other's clients throughout;
+finish a step on every node before starting the next.
+
 ## AI agents
 
 `aspire agent init` configures the agents it detects to use `aspire agent mcp`, the Aspire MCP server: it lists resources, reads their logs and traces, and executes resource commands, the node commands above

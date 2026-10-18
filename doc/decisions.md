@@ -55,6 +55,8 @@ records that no longer hold). Each: context → decision → consequences.
   `NotHosted`. On view changes shards unload actors they no longer own.
 - Consequences: no central directory, O(nodes) placement computation; brief disagreement during membership changes is
   handled by forwarding/retry rather than a lease protocol (documented limitation).
+- References: highest-random-weight (rendezvous) hashing, Thaler & Ravishankar, "Using name-based mappings to increase
+  hit rates" (1998).
 
 ## ADR-008 Reliability via byte-offset resumable links
 - Context: without resumption, a dropped node connection fails every call in flight and silently loses one-way
@@ -337,6 +339,9 @@ records that no longer hold). Each: context → decision → consequences.
   changes publish a copy and rebuild the view.
 - Consequences: a steady-state round allocates nothing (allocation test at 300 rounds/s); idle nodes in the 10k
   topology allocate 0 KB/s; gossip size is 37 bytes per member. Load hints are fresh within a round.
+- References: gossip-style failure detection by heartbeat counters, van Renesse, Minsky & Hayden, "A Gossip-Style
+  Failure Detection Service" (1998); incarnation numbers to refute a suspicion, as in SWIM (Das, Gupta & Motivala,
+  2002, section 4.2). There is no SWIM ping / ping-req probing: SWIM's probe parameters do not apply.
 
 ## ADR-032 Names from the distributed-server vocabulary
 - Context: names borrowed from one framework (Orleans' `OnActivateAsync`) or describing a mechanism instead of its
@@ -858,6 +863,8 @@ records that no longer hold). Each: context → decision → consequences.
   turn); durable reminders (a store; they come with persistence, N5, and are a different guarantee).
 - Consequences: `DelayedSendsDoNotAllocate` holds < 8 B per send; `TimerBenchmark` shows 0 B, a mean dominated by one
   wheel slot shared by the batch. Delayed sends do not survive a restart.
+- References: hashed timing wheels, Varghese & Lauck, "Hashed and Hierarchical Timing Wheels" (1987), as Netty's
+  `HashedWheelTimer` and Kafka's purgatory use them.
 
 ## ADR-059 Call cycles fail at once through call chains
 - Context: actors are turn-based, so a request that comes back to an actor whose turn waits for it (A asks B, B asks
@@ -1003,6 +1010,10 @@ records that no longer hold). Each: context → decision → consequences.
   - An external lease (Kubernetes Lease, PostgreSQL) for strict ownership: later, as a module with persistence.
 - Consequences: losing half the nodes at once stops the other half too. Deployments need at least three members per
   cluster for split safety, and rolling deploys take nodes down one at a time.
+- References: excusing this node's own pause plays the part of Lifeguard's local health awareness (Dadgar et al.,
+  2018), which scales timeouts by a local health score instead; `SuspectAfter`/`DeadAfter` correspond to Akka's
+  `acceptable-heartbeat-pause` and down-removal margin; keep-majority is Akka's Split Brain Resolver `keep-majority`
+  (its tie also goes to the side with the lowest address).
 
 ## ADR-065 Node links are authenticated by the cluster's secret
 - Context: any process that reached a node's cluster port could send a Hello, then gossip and messages, and join the
@@ -1025,6 +1036,11 @@ records that no longer hold). Each: context → decision → consequences.
 - Consequences: one more round trip when a link connects (a cold path), no clock requirement. Links are
   authenticated but not encrypted. A node of another protocol version is refused until rolling upgrades (V) define
   compatibility.
+- Rotation: `NodeOptions.AcceptedSigningSecret` is a second secret whose proofs, tickets and admin tokens are accepted
+  too; signing always uses `SigningSecret`. A rotation is three rolling steps (old signing and new accepted, new
+  signing and old accepted, new alone), each accepting what the previous signs. Trying the second secret only when the
+  first fails costs one more HMAC on a refused or rotating proof, so tokens need no key id (JWT's `kid`) and the
+  formats stay as they are.
 
 ## ADR-066 Supervision is a decision per actor type
 - Context: a handler that throws leaves its actor's state as far as it got. Some actor types tolerate that (counters,
@@ -1128,6 +1144,8 @@ records that no longer hold). Each: context → decision → consequences.
 - Consequences: an actor's load waits one store round trip, batched per wake. A store outage delays unloads and stops,
   bounded by the stop budget, which reports what was not saved. Records are opaque bytes for performance; inspecting
   them needs the components' types.
+- References: a record's version refusing an older writer is a fencing token (Kleppmann, "How to do distributed
+  locking", 2016; Designing Data-Intensive Applications, ch. 8).
 
 ## ADR-069 The e2e is a smoke test of the deployed model, timed by phase
 - Context: the e2e starts the sample's AppHost (PostgreSQL, six nodes, bots) through Aspire.Hosting.Testing. It took
@@ -1413,7 +1431,9 @@ records that no longer hold). Each: context → decision → consequences.
 - Consequences: a view change still moves only what rendezvous moves, minus what the table keeps; a move costs one
   handoff per actor. The coordinator's work is a few thousand table entries per round, cold. Tests: sticky slots stay
   across a join, an imbalance is evened out in rounds, a coordinator that leaves is replaced with its table.
-
+- References: slots and the coordinator are Akka cluster sharding's shards and `ShardCoordinator`, the coordinator on
+  the oldest member as Akka's cluster singleton; the imbalance threshold and the two moves per round play the part of
+  `least-shard-allocation-strategy`'s `rebalance-relative-limit` and `max-simultaneous-rebalance`.
 
 ## ADR-080 Frame extensions: optional metadata that readers skip; traces travel in them
 - Context: a frame's trailers (call id, origin, call chain) are fixed-size and named by header flags, so a reader that
