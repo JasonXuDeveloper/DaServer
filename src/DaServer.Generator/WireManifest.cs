@@ -54,7 +54,7 @@ internal sealed record NinoLayout(INamedTypeSymbol Type, int Format, int Header,
 internal static class WireManifest
 {
     public const string FileName = "wire.manifest";
-    private const string Tolerant = "version tolerant", KeyedFormat = "keyed";
+    private const string Tolerant = "version tolerant", KeyedFormat = "keyed", EnumFormat = "enum";
 
     private static readonly SymbolDisplayFormat TypeFormat = SymbolDisplayFormat.FullyQualifiedFormat
         .WithGlobalNamespaceStyle(SymbolDisplayGlobalNamespaceStyle.Omitted);
@@ -74,7 +74,47 @@ internal static class WireManifest
             types.Add((Read(layout, layouts), layout.Type));
         }
 
+        // The enums those types hold: their bytes are numbers, what the numbers mean is the manifest's to keep.
+        var enums = new HashSet<INamedTypeSymbol>(SymbolEqualityComparer.Default);
+        var seen = new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default);
+        foreach (var layout in layouts.Home.Values)
+            foreach (var member in layout.Type.GetMembers())
+                if (member is IFieldSymbol { IsStatic: false } f) EnumsIn(f.Type, enums, seen);
+                else if (member is IPropertySymbol { IsStatic: false } p) EnumsIn(p.Type, enums, seen);
+        foreach (var e in enums) types.Add((EnumOf(e), e));
         return types;
+    }
+
+    /// <summary>The enums <paramref name="type"/> holds: itself, its elements and type arguments, a plain struct's fields.</summary>
+    private static void EnumsIn(ITypeSymbol type, HashSet<INamedTypeSymbol> enums, HashSet<ITypeSymbol> seen)
+    {
+        if (!seen.Add(type)) return;
+        switch (type)
+        {
+            case IArrayTypeSymbol array:
+                EnumsIn(array.ElementType, enums, seen);
+                break;
+            case INamedTypeSymbol { TypeKind: TypeKind.Enum } e when !Support.InSystemNamespace(e):
+                enums.Add(e.OriginalDefinition);
+                break;
+            case INamedTypeSymbol named:
+                foreach (var argument in named.TypeArguments) EnumsIn(argument, enums, seen);
+                // A struct Nino writes as raw memory without a layout of its own: its fields are this type's bytes.
+                if (named is { TypeKind: TypeKind.Struct, SpecialType: SpecialType.None } && !Support.InSystemNamespace(named))
+                    foreach (var member in named.GetMembers())
+                        if (member is IFieldSymbol { IsStatic: false } f) EnumsIn(f.Type, enums, seen);
+                break;
+        }
+    }
+
+    /// <summary>An enum as the manifest records it: its underlying type and every member's value.</summary>
+    private static WireType EnumOf(INamedTypeSymbol e)
+    {
+        var members = new List<WireField>();
+        foreach (var member in e.GetMembers())
+            if (member is IFieldSymbol { HasConstantValue: true } f)
+                members.Add(new WireField(f.Name, Convert.ToString(f.ConstantValue, System.Globalization.CultureInfo.InvariantCulture) ?? ""));
+        return new WireType(Name(e), EnumFormat + " of " + e.EnumUnderlyingType!.ToDisplayString(), members.ToArray(), null, [], false);
     }
 
     /// <summary>The layouts of the home assembly and, on demand, of the assemblies its types refer to.</summary>
@@ -279,6 +319,16 @@ internal static class WireManifest
     private static (string What, bool Breaking)? Fields(Entry entry, WireType type)
     {
         var now = type.Fields.Select(f => f.ToString()).ToList();
+        if (entry.Encoding.StartsWith(EnumFormat + " ", StringComparison.Ordinal))
+        {
+            // Stored records and deployed peers keep the numbers: a member gone or renumbered changes what they mean.
+            var members = new HashSet<string>(now, StringComparer.Ordinal);
+            foreach (string member in entry.Fields)
+                if (!members.Contains(member))
+                    return ($"member '{member}' is gone or renumbered: stored records and deployed peers still mean it by its number (a new member takes a new number)", true);
+            return now.Count == entry.Fields.Count ? null : ($"has new members ({string.Join(", ", now.Where(m => !entry.Fields.Contains(m)))})", false);
+        }
+
         if (entry.Encoding.Contains(KeyedFormat))
         {
             // A key's value is read by its type: another type under the same key is misread, any other change is skipped or defaulted.

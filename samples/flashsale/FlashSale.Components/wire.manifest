@@ -13,3 +13,7 @@ FlashSale.Components.SaleState (no header, version tolerant, id 0E506A8E)
 FlashSale.Components.Stock (no header, version tolerant, id CD4C4F2A)
 - Left: int raw(4)
 - Buyers: System.Collections.Generic.List<long> Nino.Core.UnmanagedListFormatter<System.Collections.Generic.List<long>, long>
+FlashSale.Contracts.OrderStatus (enum of byte)
+- None: 0
+- Confirmed: 1
+- SoldOut: 2

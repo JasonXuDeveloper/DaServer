@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 
 namespace DaServer;
@@ -66,8 +67,11 @@ public sealed class HandoffAttribute : Attribute;
 /// </summary>
 [AttributeUsage(AttributeTargets.Assembly)]
 [EditorBrowsable(EditorBrowsableState.Never)]
-public sealed class GeneratedRegistrationAttribute(Type registration) : Attribute
+public sealed class GeneratedRegistrationAttribute(
+    [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.NonPublicConstructors)] Type registration) : Attribute
 {
+    /// <summary>The generated class; its static constructor (kept by trimming) runs the registrations.</summary>
+    [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.NonPublicConstructors)]
     public Type Registration { get; } = registration;
 }
 
@@ -85,6 +89,8 @@ public sealed class DaServerSharedAttribute : Attribute;
 public static class Registrations
 {
     /// <summary>Run every registration of <paramref name="assembly"/> (once each; later calls return at once).</summary>
+    [UnconditionalSuppressMessage("Trimming", "IL2059",
+        Justification = "GeneratedRegistrationAttribute.Registration keeps the generated class's static constructor (NonPublicConstructors); the analyzer does not follow the annotation through Type.TypeHandle.")]
     public static void Run(Assembly assembly)
     {
         foreach (var registration in assembly.GetCustomAttributes<GeneratedRegistrationAttribute>())

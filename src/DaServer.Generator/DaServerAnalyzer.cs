@@ -13,7 +13,7 @@ namespace DaServer.Generator;
 public sealed partial class DaServerAnalyzer : DiagnosticAnalyzer
 {
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics { get; } = ImmutableArray.Create(
-        Rules.BadHandler, Rules.BadMessage, Rules.NotWireType, Rules.IdCollision, Rules.NoDefaultConstructor, Rules.WrongFlow, Rules.StatefulHandlerType, Rules.WrongAddress, Rules.SharedReferencesServer, Rules.MisplacedReplyWhen, Rules.BlockingCall, Rules.AskInSystem, Rules.ComponentInLogic, Rules.BadPersisted, Rules.OffShard, Rules.BadPlacement, Rules.WireBreak, Rules.WireUnrecorded);
+        Rules.BadHandler, Rules.BadMessage, Rules.NotWireType, Rules.IdCollision, Rules.NoDefaultConstructor, Rules.WrongFlow, Rules.StatefulHandlerType, Rules.WrongAddress, Rules.SharedReferencesServer, Rules.MisplacedReplyWhen, Rules.BlockingCall, Rules.AskInSystem, Rules.ComponentInLogic, Rules.BadPersisted, Rules.OffShard, Rules.BadPlacement, Rules.WireBreak, Rules.WireUnrecorded, Rules.ClientCollection);
 
     public override void Initialize(AnalysisContext context)
     {
@@ -45,6 +45,7 @@ public sealed partial class DaServerAnalyzer : DiagnosticAnalyzer
 
                 if (type.TypeKind != TypeKind.Struct || !Support.HasAttribute(type, Support.MessageAttribute)) return;
                 if (!Shapes.IsMessage(type, type.Locations.FirstOrDefault(), "[Message]", Report)) return;
+                CheckClientCollections(type, Report);
                 string name = type.ToDisplayString();
                 var location = type.Locations.FirstOrDefault();
                 var existing = ids.GetOrAdd(Shapes.TypeIdOf(type), (name, location));
@@ -219,6 +220,26 @@ public sealed partial class DaServerAnalyzer
                 "must be [NinoType(format: NinoFormat.VersionTolerant)] (or Keyed): its bytes outlive the build that wrote them, and a positional layout cannot change");
     }
 
+    /// <summary>
+    /// DAS019: a <c>[FromClient]</c>/<c>[ToClient]</c> message travels at client volume, and a collection it holds
+    /// directly is a new array or collection on every message read. A <c>[NinoPooled]</c> class holding it is reused.
+    /// </summary>
+    private static void CheckClientCollections(INamedTypeSymbol type, Report report)
+    {
+        if (Shapes.FlowOf(type) == 0) return;
+        foreach (var member in type.GetMembers())
+        {
+            var held = member switch
+            {
+                IFieldSymbol { IsStatic: false, IsImplicitlyDeclared: false } f => f.Type,
+                IPropertySymbol { IsStatic: false } p when !p.IsIndexer => p.Type,
+                _ => null,
+            };
+            if (held is IArrayTypeSymbol || held is INamedTypeSymbol { IsGenericType: true } g && Support.InSystemNamespace(g) && g.TypeKind == TypeKind.Class)
+                report(Rules.ClientCollection, member.Locations.FirstOrDefault(), type.Name, member.Name, held.ToDisplayString());
+        }
+    }
+
     private static void CheckNoComponents(INamedTypeSymbol type, Report report)
     {
         if (type.TypeKind != TypeKind.Struct || type.IsImplicitlyDeclared) return;
@@ -286,6 +307,10 @@ internal static class Rules
 
     public static readonly DiagnosticDescriptor WireBreak = new("DAS017", "Wire layout breaks the manifest",
         "'{0}' {1} (wire.manifest, ADR-076; a deliberate break: dotnet build -p:UpdateWireManifest=force)", Category, DiagnosticSeverity.Error, true, customTags: WellKnownDiagnosticTags.CompilationEnd);
+
+    public static readonly DiagnosticDescriptor ClientCollection = new("DAS019", "Collection held directly by a client message",
+        "'{0}.{1}' ({2}) allocates on every message read: client messages travel at client volume; hold it in a [NinoPooled] class the handler returns",
+        Category, DiagnosticSeverity.Warning, true);
 
     public static readonly DiagnosticDescriptor WireUnrecorded = new("DAS018", "Wire manifest out of date",
         "'{0}' {1}: record it with dotnet build -p:UpdateWireManifest=true and commit wire.manifest", Category,

@@ -60,6 +60,9 @@ public class WireManifestTests
         - Label: string Nino.Core.Utf8StringFormatter
         - Distance: int raw(4)
         Game.IShape (type id, positional, id BDFF01A3)
+        Game.Kind (enum of byte)
+        - Dot: 0
+        - Line: 1
         Game.Link (type id, positional, id 309CABDD)
         - Next: Game.Link nested
         - Children: System.Collections.Generic.List<Game.Link> Nino.Core.ListFormatter<System.Collections.Generic.List<Game.Link>, Game.Link, nested>
@@ -128,6 +131,9 @@ public class WireManifestTests
     [TestCase("IRequest<View>", "IRequest<int>", "DAS017", TestName = "A changed reply breaks")]
     [TestCase("public partial struct Spin", "public partial class Spin", "DAS017", TestName = "A struct that becomes a class breaks")]
     [TestCase("enum Kind : byte", "enum Kind : int", "DAS017", TestName = "An enum's underlying type is part of the layout")]
+    [TestCase("{ Dot, Line }", "{ Line, Dot }", "DAS017", TestName = "A renumbered enum member breaks")]
+    [TestCase("{ Dot, Line }", "{ Dot }", "DAS017", TestName = "A removed enum member breaks")]
+    [TestCase("{ Dot, Line }", "{ Dot, Line, Arc }", "DAS018", TestName = "A new enum member must be recorded")]
     [TestCase(" private int _hidden;", "", "DAS017", TestName = "A struct that turns raw changes its bytes")]
     [TestCase("Pack = 4)", "Pack = 4, Size = 16)", "DAS017", TestName = "A raw struct's size is part of its layout")]
     [TestCase("private byte _shade;", "private short _shade;", "", TestName = "A field Nino does not serialize is not part of the layout")]
