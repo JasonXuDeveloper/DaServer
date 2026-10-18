@@ -844,6 +844,29 @@ and cards, a manual clock), fails before its fix, and passes after it.
     resume read it, the actor nodes without client connections included).
   - E2E: the first sample run after round 1 failed once with game-0 not exiting 0 (its log was not kept); three
     reruns of the three sample tests passed. Watched in the next rounds.
+- [x] Self-review round 3 (the handoff protocol attacked on its own; the generator, Aspire, hosting, the PostgreSQL store,
+  the testing package and the client SDK with fresh eyes):
+  - A copy declared dead while past its `OnUnload` (its final save waiting for the write in flight, its record about
+    to go or gone) was never removed, so its shard never drained and a downed node never exited: fencing asks every
+    copy to leave and the drop takes `HandingOff` copies too
+    (`ACopyDeclaredDeadWhileItsFinalSaveWaitsIsStillDropped`, fails without the fix).
+  - Handoffs: the restored copy keeps its handoff id (`TakenHandoff`, no bound), the shard's memory evicts oldest first
+    and knows when it forgot early (65,536 entries); a resend is taken only from the sender the copy waits for, or by the
+    owner holding no copy while nothing was forgotten (as a first send would be); one following a pass-on to a node
+    that is gone is refused instead of unanswered.
+  - Generator and analyzer: a nested or non-public `[Persist]`/`[Handoff]` component is DAS014 (it was never
+    registered, so never saved); `[Handle]` on an abstract or generic class is DAS001 (nothing was generated and derived
+    types do not inherit it); generated registrations sort ordinally on every machine.
+  - Client: a push handler that throws no longer closes the connection (a reconnect loop when the resent state throws
+    again): `ClusterClient.HandlerFailed` reports it, the other handlers still run
+    (`AHandlerThatThrowsOnAPushIsReportedAndTheConnectionStays`); a client whose first connect fails leaves the
+    sweeper's list.
+  - Hosting and Aspire: the admin bearer scheme is case-insensitive (the token still compared in constant time); a
+    budget header past `int.MaxValue` ms is clamped instead of a 500; probe mode without `HttpPort` says so; the
+    route check lists node projects one after another (their builds share outputs) and kills a listing on
+    cancellation.
+  - Kept: a private nested `EcsSystem` fails the build in generated code (CS0122) rather than with a DAS rule: an
+    error either way, and DAS001 names handlers, not systems.
 
 ## Generator / analyzer (`src/DaServer.Generator`)
 - [x] Messages instead of contracts (ADR-035): typed `Ask` overloads per request, one dispatcher per `[Handle]`

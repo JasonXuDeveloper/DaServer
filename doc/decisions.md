@@ -1254,9 +1254,15 @@ records that no longer hold). Each: context → decision → consequences.
     the key in its own view, or one that took the key from a live node within the timeout, keeps the request (and asks
     that node in turn) until ownership changes or the record comes. A record whose key moved on meanwhile goes on once
     (the frame's hop count): to the node that asked for it, else to the key's owner in the receiver's view.
-  - **Waiting:** both sides wait while the other is alive: a new owner asks again instead of loading beside a
-    previous owner still in a turn; an old owner keeps its record for a late answer instead of writing over a new
-    owner that took it.
+  - **Waiting and losses:** both sides wait while the other is alive: a new owner asks again instead of loading beside a
+    previous owner still in a turn; an old owner keeps its record instead of writing over a new owner that may have
+    taken it. A link that restarts its stream can lose the record or the answer, so each handoff carries a random id
+    and the old owner sends the record again (a resend, its own frame, same id) when the new owner asks or the answer
+    is late. A copy restored from a handoff keeps its id, and each shard remembers for two handoff timeouts the
+    handoffs it took or passed on (bounded, oldest out first): the same id again is answered "accepted" wherever the
+    actor went since, or follows to the node it was passed to (gone: refused). A resend never seen is taken only by a
+    copy waiting for that sender's record, or by the key's owner holding no copy while nothing was forgotten early;
+    otherwise it is refused and the store decides.
   - **Fallback:** a refused handoff (the new owner already runs the actor or is stopping) or a dead node: the old
     owner writes to the store and the new one reads. A node declared dead hands nothing over and writes nothing (its
     copies are fenced). A cluster stopping as a whole writes everything.
