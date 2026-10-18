@@ -203,17 +203,20 @@ public class LinkAuthTests : ClusterTest
     }
 
     [Test]
-    public void AHelloIsAcceptedOnceAndOnlyWithinItsMinute()
+    public void AHelloProvesItsChallengeEndpointStreamAndCluster()
     {
+        // The proof answers one connection's challenge: a recorded Hello is good on no other connection, at no other
+        // node, and cannot name another endpoint for the replies.
         var auth = new LinkAuth("c", "s3cret");
-        long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        var proof = auth.Prove(7, 1, now);
-        Assert.That(auth.Verify(7, 1, now, proof), Is.Null);
-        Assert.That(auth.Verify(7, 1, now, proof), Does.Contain("replayed"));
-        Assert.That(auth.Verify(7, 2, now, proof), Does.Contain("secret"), "the proof covers the stream id");
-        long old = now - 120_000;
-        Assert.That(auth.Verify(7, 1, old, auth.Prove(7, 1, old)), Does.Contain("minute"));
-        Assert.That(new LinkAuth("other", "s3cret").Verify(7, 1, now, auth.Prove(7, 1, now)), Does.Contain("secret"),
-            "the proof covers the cluster name");
+        var challenge = LinkAuth.NewChallenge();
+        var proof = auth.Prove(7, 1, "10.0.0.1", 5000, challenge);
+        Assert.That(auth.Verify(7, 1, "10.0.0.1", 5000, challenge, proof), Is.Null);
+        Assert.That(auth.Verify(7, 1, "10.0.0.1", 5000, LinkAuth.NewChallenge(), proof), Is.Not.Null, "another connection's challenge");
+        Assert.That(auth.Verify(7, 1, "10.0.0.66", 5000, challenge, proof), Is.Not.Null, "another host for the replies");
+        Assert.That(auth.Verify(7, 1, "10.0.0.1", 5001, challenge, proof), Is.Not.Null, "another port");
+        Assert.That(auth.Verify(7, 2, "10.0.0.1", 5000, challenge, proof), Is.Not.Null, "another stream");
+        Assert.That(auth.Verify(8, 1, "10.0.0.1", 5000, challenge, proof), Is.Not.Null, "another node id");
+        Assert.That(auth.Verify(7, 1, "10.0.0.1", 5000, default, proof), Does.Contain("challenge"), "a Hello before any challenge");
+        Assert.That(new LinkAuth("other", "s3cret").Verify(7, 1, "10.0.0.1", 5000, challenge, proof), Is.Not.Null, "another cluster");
     }
 }

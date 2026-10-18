@@ -29,7 +29,6 @@ DaServer.Cluster.LinkHello (null flag, version tolerant, id 17E14E65)
 - Host: string Nino.Core.StringFormatter
 - Port: int raw(4)
 - StreamId: long raw(8)
-- At: long raw(8)
 - Proof: byte[] Nino.Core.UnmanagedArrayFormatter<byte>
 DaServer.Cluster.SlotLoad (null flag, version tolerant, id 1085BD1D)
 - HandlerTypeId: uint raw(4)

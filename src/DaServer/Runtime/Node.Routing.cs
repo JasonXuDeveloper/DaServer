@@ -195,6 +195,9 @@ sealed partial class Node : IChannelHandler
             case ControlOp.Hello:
                 OnHello(connection, (ulong)header.Key, payload);
                 break;
+            case ControlOp.Challenge:
+                (connection.Tag as PeerLink)?.OnChallenge(connection, payload);
+                break;
             case ControlOp.Resume:
                 OnResume(connection, header.Key, payload);
                 break;
@@ -235,23 +238,35 @@ sealed partial class Node : IChannelHandler
     }
 
     /// <summary>
-    /// The first frame of each node link connection: who we are, so the peer answers through its own link to us, and
-    /// which stream continues on it.
+    /// The dialing node's first frame on a node link connection, answering the accepting node's
+    /// <paramref name="challenge"/>: who we are, so the peer answers through its own link to us, and which stream
+    /// continues on it.
     /// </summary>
-    internal byte[] HelloFrame(long streamId)
+    internal byte[] HelloFrame(long streamId, ReadOnlySpan<byte> challenge)
     {
         var self = Membership.Self;
-        long at = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var w = FrameWriter.Rent();
         w.Write(new LinkHello
         {
             Version = ControlOp.LinkVersion, Cluster = Options.ClusterName, Host = self.Host, Port = self.Port, StreamId = streamId,
-            At = at, Proof = _linkAuth.Prove(Id, streamId, at),
+            Proof = _linkAuth.Prove(Id, streamId, self.Host, self.Port, challenge),
         });
         w.SetHeader(FrameKind.Control, 0, ControlOp.Hello, (long)Id);
         var frame = w.Frame.ToArray(); // once per connection
         w.Dispose();
         return frame;
+    }
+
+    /// <summary>A connection was accepted: its first frame is a fresh challenge, which the dialer's Hello must prove.</summary>
+    private Connection Accept(System.Net.Sockets.Socket socket)
+    {
+        var connection = new Connection(socket, ClusterHandler, ConnectionOptions.ForNodeLinks());
+        var challenge = LinkAuth.NewChallenge();
+        connection.Tag = challenge; // until the Hello: then the link it belongs to
+        var w = FrameWriter.Rent();
+        w.WriteRaw(challenge);
+        w.SendControl(connection, ControlOp.Challenge);
+        return connection;
     }
 
     /// <summary>A node named itself on an accepted connection: our replies to it go through our link to it.</summary>
@@ -268,10 +283,10 @@ sealed partial class Node : IChannelHandler
             return;
         }
 
-        var (version, cluster, host, port, streamId, at, proof) = (hello.Version, hello.Cluster, hello.Host, hello.Port, hello.StreamId, hello.At, hello.Proof);
+        var (version, cluster, host, port, streamId) = (hello.Version, hello.Cluster, hello.Host, hello.Port, hello.StreamId);
         string? refusal = version != ControlOp.LinkVersion ? $"link protocol {version}, this node speaks {ControlOp.LinkVersion}"
             : cluster != Options.ClusterName ? $"cluster '{cluster}', this node is in '{Options.ClusterName}'"
-            : _linkAuth.Verify(nodeId, streamId, at, proof);
+            : _linkAuth.Verify(nodeId, streamId, host, port, connection.Tag as byte[], hello.Proof);
         if (refusal != null)
         {
             Log.LinkRefused(Logger, host, port, nodeId, refusal);

@@ -10,9 +10,10 @@ public enum MemberStatus : byte
 }
 
 /// <summary>
-/// The first frame of a node link connection: the protocol and cluster it speaks (refused when either differs), who
-/// sends it and which of its streams continues on the connection, with the cluster key's proof. Version-tolerant:
-/// fields can be appended without a new link protocol version.
+/// The dialing node's first frame on a node link connection, answering the accepting node's challenge: the protocol and
+/// cluster it speaks (refused when either differs), who sends it and which of its streams continues on the connection,
+/// with the cluster key's proof over the challenge. Version-tolerant: fields can be appended without a new link
+/// protocol version.
 /// </summary>
 [NinoType(format: NinoFormat.VersionTolerant)]
 internal sealed class LinkHello
@@ -22,7 +23,6 @@ internal sealed class LinkHello
     public string Host = "";
     public int Port;
     public long StreamId;
-    public long At;
     public byte[] Proof = [];
 }
 

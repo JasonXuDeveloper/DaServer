@@ -22,7 +22,8 @@ internal sealed class PeerLink : IFrameSink, IDisposable
     private readonly Lock _gate = new();
     private readonly ResendWindow _window;
     private Connection? _connection;   // open stream: new frames go here
-    private Connection? _handshake;    // connected, waiting for the peer's Resume
+    private (Connection? Connection, byte[] Challenge) _earlyChallenge; // a challenge that beat ConnectAsync's return
+    private Connection? _handshake;    // connected, waiting for the peer's challenge, then its Resume
     private List<FrameWriter>? _backlog;
     private int _backlogBytes;
     private int _dropped; // frames dropped since the last report (under the gate)
@@ -112,9 +113,9 @@ internal sealed class PeerLink : IFrameSink, IDisposable
             {
                 var options = ConnectionOptions.ForNodeLinks();
                 options.Tap = _window;
+                options.Tag = this; // its first frame (the challenge) may come before ConnectAsync returns
                 var connection = await Connection.ConnectAsync(Host, Port, _node.ClusterHandler, options)
                     .ConfigureAwait(false);
-                connection.Tag = this;
                 lock (_gate)
                 {
                     if (_disposed)
@@ -123,13 +124,12 @@ internal sealed class PeerLink : IFrameSink, IDisposable
                         return;
                     }
 
-                    var hello = _node.HelloFrame(_streamId);
-                    _window.BeginConnection(hello.Length);
                     _handshake = connection;
-                    connection.Send(hello);
+                    if (_earlyChallenge.Connection == connection) Introduce(connection, _earlyChallenge.Challenge);
+                    _earlyChallenge = default;
                 }
 
-                return; // continues in OnResume, on the connection's receive loop
+                return; // continues in OnChallenge, then OnResume, on the connection's receive loop
             }
             catch (Exception e)
             {
@@ -145,6 +145,24 @@ internal sealed class PeerLink : IFrameSink, IDisposable
                 await Task.Delay(backoff.Next()).ConfigureAwait(false);
             }
         }
+    }
+
+    /// <summary>The peer accepted our connection and challenges us: our Hello proves it.</summary>
+    internal void OnChallenge(Connection connection, ReadOnlySpan<byte> challenge)
+    {
+        lock (_gate)
+        {
+            if (connection == _handshake) Introduce(connection, challenge);
+            else if (_connecting && !_disposed) _earlyChallenge = (connection, challenge.ToArray()); // before ConnectAsync returned
+        }
+    }
+
+    // Under the gate.
+    private void Introduce(Connection connection, ReadOnlySpan<byte> challenge)
+    {
+        var hello = _node.HelloFrame(_streamId, challenge);
+        _window.BeginConnection(hello.Length);
+        connection.Send(hello);
     }
 
     /// <summary>The peer answered our Hello: it processed <paramref name="received"/> bytes of the stream.</summary>
@@ -339,6 +357,7 @@ internal sealed class PeerLink : IFrameSink, IDisposable
     internal void CheckAlive(long nowMs, long intervalMs, long timeoutMs)
     {
         if (Volatile.Read(ref _connection) is { } outgoing) KeepAlive.Check(outgoing, nowMs, intervalMs, timeoutMs);
+        if (Volatile.Read(ref _handshake) is { } handshake) KeepAlive.Check(handshake, nowMs, 0, timeoutMs); // no challenge or Resume
         if (Volatile.Read(ref _inbound) is { } inbound) KeepAlive.Check(inbound, nowMs, 0, timeoutMs);
     }
 

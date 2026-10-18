@@ -194,8 +194,7 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
         _addressHandlers = _registering!.ToFrozenDictionary();
         _registering = null;
 
-        _clusterListener = new Listener(Options.ClusterBindEndPoint,
-            socket => new Connection(socket, ClusterHandler, ConnectionOptions.ForNodeLinks()));
+        _clusterListener = new Listener(Options.ClusterBindEndPoint, Accept);
         _clusterListener.Start();
         var host = AdvertisedHost;
         ClusterEndPoint = new IPEndPoint(IPAddress.TryParse(host, out var ip) ? ip : IPAddress.Loopback,

@@ -43,6 +43,9 @@ public sealed class ConnectionOptions
     /// <summary>Receives a copy of the outgoing stream (node links, see <see cref="ISendTap"/>).</summary>
     internal ISendTap? Tap { get; set; }
 
+    /// <summary>The connection's <c>Tag</c> from the start: set before its first frame is delivered (node links).</summary>
+    internal object? Tag { get; set; }
+
     /// <summary>
     /// Writes this connection's queued bytes on its beat instead of at once (<see cref="SendFlusher"/>): frames queued
     /// within one interval leave in one write. Null: written as soon as they are queued (one write per batch).
@@ -109,6 +112,7 @@ public sealed partial class Connection : FrameChannel, IFrameSender
         _socket = socket;
         _options = options;
         _tap = options.Tap;
+        Tag = options.Tag;
         _flusher = options.Flusher;
         socket.NoDelay = true;
         if (_flusher != null) socket.Blocking = false; // a flush's send returns WouldBlock instead of waiting

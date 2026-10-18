@@ -16,8 +16,8 @@ internal static class ControlOp
     public const uint GossipReply = 2;
 
     /// <summary>
-    /// First frame of every node link connection: Key = sender node id, payload = its advertised host and port and the
-    /// id of its stream to us. The receiver
+    /// The dialing node's first frame, once the accepting node's <c>Challenge</c> came: Key = sender node id, payload = its
+    /// advertised host and port, the id of its stream to us and the proof. The receiver
     /// answers everything that arrives on the connection through its own link to that node (see <c>PeerLink.SendReply</c>).
     /// </summary>
     public const uint Hello = 3;
@@ -76,4 +76,10 @@ internal static class ControlOp
     /// <c>ClientConnectionOptions.RetireGrace</c> otherwise.
     /// </summary>
     public const uint Retire = 21;
+
+    /// <summary>
+    /// First frame of an accepted node link connection: payload = a fresh random challenge. The dialing node answers with
+    /// its <c>Hello</c>, whose proof covers it (ADR-065), so a Hello is good on one connection only.
+    /// </summary>
+    public const uint Challenge = 22;
 }
