@@ -14,7 +14,7 @@ public enum MemberStatus : byte
 /// The dialing node's first frame on a node link connection, answering the accepting node's challenge: the protocol and
 /// cluster it speaks (refused when either differs), who sends it and which of its streams continues on the connection,
 /// with the cluster key's proof over the challenge. Version-tolerant: fields can be appended without a new link
-/// protocol version.
+/// protocol level.
 /// </summary>
 [NinoType(format: NinoFormat.VersionTolerant)]
 internal sealed class LinkHello

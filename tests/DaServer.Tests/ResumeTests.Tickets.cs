@@ -165,6 +165,20 @@ public partial class ResumeTests
     }
 
     [Test]
+    public async Task AnActorThatHandlesNoCloseStillForgetsAClosedSession()
+    {
+        // The lounge grants the session but has no SessionClosed handler: the runtime forgets the session all the same,
+        // instead of holding it (and a ticket's way back in) for the actor's life.
+        var gateways = await StartCluster(TimeSpan.FromMilliseconds(300));
+        var client = await LogIn(gateways, 581);
+        Assert.That(await client.Ask(new SitDown(new LoungeId(1))), Is.True);
+        Assert.That(await gateways[0].Ask(new LoungeId(1), new Seated()), Is.Positive, "the lounge holds the session");
+        client.AutoReconnect = false;
+        client.DropConnection();
+        await Eventually(async () => await gateways[0].Ask(new LoungeId(1), new Seated()) == 0, "the closed session was forgotten");
+    }
+
+    [Test]
     public void TicketsAreUnforgeableAndExpire()
     {
         byte[] secret = Encoding.UTF8.GetBytes("secret");

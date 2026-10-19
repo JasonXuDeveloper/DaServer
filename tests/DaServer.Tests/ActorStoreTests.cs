@@ -156,6 +156,8 @@ public class ActorStoreTests(string kind)
         Assert.That(await Versions(store, Write(A, 2, [4], attempt: Records.Hash([3]))), Is.EqualTo(new[] { 0L }),
             "a claim since fences it");
         Assert.That(claimed.Version, Is.EqualTo(4L));
+        Assert.That(await Versions(store, Write(A, 3, [5], attempt: Records.Hash([3]))), Is.EqualTo(new[] { 0L }),
+            "a claim's version holds no write: not taken for a lost one");
     }
 
     [Test]

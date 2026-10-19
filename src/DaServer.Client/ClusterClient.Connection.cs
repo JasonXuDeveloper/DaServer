@@ -53,7 +53,7 @@ public sealed partial class ClusterClient
 
     /// <summary>
     /// A new connection through the entry addresses (or the WebSocket), introduced: the node accepted the client's
-    /// protocol version. Nothing but the hello, the resume and keep-alive frames goes on it until it is used
+    /// protocol levels. Nothing but the hello, the resume and keep-alive frames goes on it until it is used
     /// (<see cref="Use"/>). <paramref name="watched"/>: it is the current connection from the start, so a node that
     /// never answers is noticed by the keep-alive (connecting, reconnecting); a move keeps the old one current meanwhile.
     /// </summary>
@@ -92,7 +92,7 @@ public sealed partial class ClusterClient
             }
             catch (Exception e) when (e is System.Net.Sockets.SocketException or IOException or RpcException)
             {
-                last = e; // unreachable, or refused (another protocol version mid-upgrade): try the next one
+                last = e; // unreachable, or refused (protocol levels that do not overlap mid-upgrade): try the next one
             }
         }
 
@@ -103,7 +103,7 @@ public sealed partial class ClusterClient
     internal Func<IChannelHandler, IFrameChannel>? Connector;
 
     /// <summary>
-    /// The first call on every connection: the node checks the client protocol version before anything else. Until the
+    /// The first call on every connection: the node checks the client protocol levels before anything else. Until the
     /// connection is the current one (<see cref="Use"/>) nothing else is sent on it but the session's resume and
     /// keep-alive frames.
     /// </summary>
@@ -118,7 +118,7 @@ public sealed partial class ClusterClient
         }
         catch
         {
-            channel.Close(); // refused (another protocol version) or lost: no use for this connection
+            channel.Close(); // refused (protocol levels that do not overlap) or lost: no use for this connection
             throw;
         }
     }

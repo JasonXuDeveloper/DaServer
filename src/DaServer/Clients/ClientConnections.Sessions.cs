@@ -73,8 +73,8 @@ public sealed partial class ClientConnections
     }
 
     /// <summary>
-    /// The first frame of a client connection must be its <see cref="ControlOp.ClientHello"/>: a client of another
-    /// protocol version is told both versions and disconnects (anything it sends after closes the connection), instead
+    /// The first frame of a client connection must be its <see cref="ControlOp.ClientHello"/>: a client whose
+    /// protocol levels do not overlap is told both ranges and disconnects (anything it sends after closes the connection), instead
     /// of misreading what follows. Only an introduced session is a member of <see cref="ClientGroup.All"/>: broadcasts
     /// never reach a client that would misread them.
     /// </summary>
@@ -207,7 +207,7 @@ internal sealed class SessionState(long id, IFrameChannel channel)
     public IFrameChannel Channel { get; } = channel;
     public IReplySink Sink { get; } = new ChannelSink(channel);
 
-    /// <summary>Whether the client's hello was accepted, or refused (another protocol version); its receive loop owns both.</summary>
+    /// <summary>Whether the client's hello was accepted, or refused (protocol levels that do not overlap); its receive loop owns both.</summary>
     public bool Introduced, Refused;
 
     /// <summary>When the client is asked to move for its connection's age (<see cref="ClientConnectionOptions.MaxConnectionAge"/>; 0: never).</summary>

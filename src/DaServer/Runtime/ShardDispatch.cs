@@ -26,6 +26,14 @@ internal static class ShardDispatch
         if (handler == null)
         {
             if (handlerType is { IsActor: true } && Handoff.TryReceive(world, handlerType, frame, in header)) return;
+            // A close reaches every granted actor, handled or not: the runtime forgets the session (one not loaded holds none).
+            if (header.MessageId == TypeId<SessionClosed>.Value && handlerType is { IsActor: true }
+                && TryGetLoaded(world, handlerType.Id, header.Key, out var granted))
+            {
+                Deliver(world, granted, new Envelope(frame, sink));
+                return;
+            }
+
             // A handler type that does not handle the message (a wrong id type) fails; one not hosted here (stale view
             // at the sender) is found on its node.
             if (handlerType != null) Fail(frame, sink, RpcStatus.NotHosted);
@@ -342,7 +350,14 @@ internal static class ShardDispatch
             return default;
         }
 
-        var handler = actor.HandlerType.Handlers.Of(header.MessageId)!; // validated by Route
+        var handler = actor.HandlerType.Handlers.Of(header.MessageId); // validated by Route, but for closes
+        if (handler == null)
+        {
+            if (envelope.Frame.CallId != 0 && envelope.Sink is { } closed) closed.SendOk(envelope.Frame.CallId);
+            envelope.Frame.Dispose(); // a close the actor does not handle: forgotten above
+            return default;
+        }
+
         actor.TurnChain = ChainOf(actor.Shard.World, envelope.Frame); // cleared when the turn ends
         return Invoke(handler, actor, envelope.Frame, envelope.Sink, actor.Shard.Node.Logger, actor.TurnChain);
     }
@@ -364,7 +379,17 @@ internal static class ShardDispatch
             return default;
         }
 
-        var resumed = NinoDeserializer.Deserialize<SessionResumed>(frame.Payload);
+        SessionResumed resumed;
+        try
+        {
+            resumed = NinoDeserializer.Deserialize<SessionResumed>(frame.Payload);
+        }
+        catch (Exception)
+        {
+            Fail(frame, envelope.Sink, RpcStatus.Forbidden); // not a resume (only a faulty peer could send it)
+            return default;
+        }
+
         var status = ActorSessions.Resume(actor, in resumed, out bool reverted);
         bool accepted = status == RpcStatus.Ok && !reverted; // a revert restores the session the actor had: nothing to tell
         if (accepted) actor.Shard.Node.Supersede(resumed.Previous, resumed.Session, actor.HandlerType.Id, actor.Key);

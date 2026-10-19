@@ -31,6 +31,11 @@ namespace DaServer.Tests;
 [NinoType, Message, FromClient] public partial record struct Say(string Text);
 [NinoType, Message, FromClient] public partial record struct Exit : IRequest<bool>;
 
+/// <summary>A lounge grants sessions but handles no <see cref="SessionClosed"/>: the runtime still forgets them.</summary>
+[NinoType, Message, FromClient] public partial record struct SitDown(LoungeId Lounge) : IRequest<bool>;
+[NinoType, Message] public partial record struct Seat(ClientSession Session) : IRequest<bool>;
+[NinoType, Message] public partial record struct Seated : IRequest<int>;
+
 // Pushes (server to client).
 [NinoType, Message, ToClient] public partial record struct Chat(RoomId From, string Text);
 [NinoType, Message, ToClient] public partial record struct GoldChanged(int Gold);
@@ -39,6 +44,8 @@ public sealed class LobbyService : Service
 {
     [Handle]
     public async Reply<bool> On(Enter m) => m.Room.Value > 0 && await Cluster.Ask(m.Room, new Admit(Caller));
+
+    [Handle] public async Reply<bool> On(SitDown m) => await Cluster.Ask(m.Lounge, new Seat(Caller));
 }
 
 public sealed class AuthService : Service
@@ -124,4 +131,19 @@ public sealed class Room : Actor<RoomId>
     [Handle] public void On(SessionClosed _) => Observed.Events.Enqueue($"room-closed:{Id.Value}");
 
     [Handle] public void On(SessionResumed _) => Observed.Events.Enqueue($"room-resumed:{Id.Value}");
+}
+
+public readonly record struct LoungeId(long Value) : IActorId;
+
+public sealed class Lounge : Actor<LoungeId>
+{
+    [Handle]
+    public async Reply<bool> On(Seat m)
+    {
+        await GrantSession(m.Session);
+        return true;
+    }
+
+    /// <summary>The sessions the runtime holds for this actor.</summary>
+    [Handle] public int On(Seated _) => Entity.TryGet<ClientSessions>(out var held) ? held.Sessions.Count + held.Granted.Count : 0;
 }
