@@ -192,7 +192,8 @@ public partial class ResumeTests
         await Converged();
         // The player lives on the node that is not held: a resume asks the ticket's actors in turn, so a held player
         // asked first would keep the resume from the lounge until the grace closed the session.
-        player = next.KeyOwnedBy<PlayerId>(next, player);
+        // Searched in a range of its own: other tests use small player keys and share the observed events.
+        player = next.KeyOwnedBy<PlayerId>(next, 100_000 + player * 100);
         long key = game.KeyOwnedBy<LoungeId>(game);
         var client = await LogIn(gateways, player);
         Assert.That(await client.Ask(new SitDown(new LoungeId(key))), Is.True);
