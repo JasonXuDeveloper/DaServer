@@ -1153,8 +1153,10 @@ records that no longer hold). Each: context → decision → consequences.
   - One table or collection per component type: a load becomes many queries, and renames break storage.
   - Event sourcing: out of core; it can be built as a pattern on actors.
 - Consequences: an actor's load waits one store round trip, batched per wake. A store outage delays unloads and stops,
-  bounded by the stop budget, which reports what was not saved. Records are opaque bytes for performance; inspecting
-  them needs the components' types.
+  bounded by the stop budget, which reports what was not saved. A state that does not serialize (a cycle, an
+  unregistered subtype) gives its write up and is logged (`RecordUnwritable`): the store keeps the last record, and the
+  shard's other writes and handoffs go on. Records are opaque bytes for performance; inspecting them needs the
+  components' types.
 - References: a record's version refusing an older writer is a fencing token (Kleppmann, "How to do distributed
   locking", 2016; Designing Data-Intensive Applications, ch. 8).
 

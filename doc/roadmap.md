@@ -616,7 +616,7 @@ and cards, a manual clock), fails before its fix, and passes after it.
       loading right after another joined asked the newcomer, which never held the key, and waited on it
       (`ANodeLoadingRightAfterAnotherJoinedDoesNotWaitForIt`).
 - [x] H3/H7/H8 A node kept one previous view, and a record refused for a key that moved on was lost without a store:
-      nodes keep the views they replaced within the handoff timeout; a node that took a key moments ago defers "none"
+      nodes keep the views they replaced within the move window; a node that took a key moments ago defers "none"
       and asks the node it took it from; a record whose key moved on goes on once, to the asker or the owner
       (`ARecordThatArrivesAfterItsKeyMovedOnFollowsIt`, `ANodeThatHeldAKeyBrieflyWaitsForItsPreviousOwner`).
 - [x] H4 The old owner timed out and wrote, then the new owner's late accept arrived: it waits while the new owner
@@ -972,6 +972,23 @@ and cards, a manual clock), fails before its fix, and passes after it.
   - Kept: delayed sends are not handed over on a graceful stop (sending them early would break "never earlier", and
     a deadline that must survive is state); `Handoff.cs` and `Membership.cs` are at the size limit (the next change
     to either splits it); the two eviction loops of `HandoffsSeen` stay apart (one also records how far it forgot).
+- [x] Self-review round 9 (the distributed runtime; the round-8 changes against CLAUDE.md):
+  - Must-fix: round 8 guarded each group's pass, not each system: a user system throwing on every pass in
+    `ShardMessages` skipped the runtime's mail, load, save and unload systems after it. `World.SystemError` is
+    subscribed, so EasyEcs catches per system (`SystemFailed`, at most once a second per shard).
+  - Must-fix: one actor whose state does not serialize threw on every pass of the persistence system, starving the
+    shard's other writes, its handoffs and its stop; its write is now given up (the store keeps the last record, a
+    leaving copy goes) and so is a handoff of it (it falls back).
+  - Must-fix: without a store, a state initializer that threw left the key loading for good; it now fails the load as
+    `OnLoad` would. An actor constructor that throws answers the message with `Error` instead of a timeout.
+  - Must-fix: a shard that crashed while building its world (a service constructor, a system's `OnCreate`) read as
+    healthy; it reads as stalled from before its world is built, so `/alive` fails.
+  - Also (should-fix): a test for the idle timer wheel's skip; the move's timeout delay is cancelled; stale
+    "handoff timeout" comments; the throwing-system test waits by condition and resets its flag.
+  - Kept: a delayed send whose delivery throws part-way through a wheel slot leaves that slot's later entries for the
+    next round of the wheel (never early; delivery only enqueues); two moves overlapping (the new connection retired
+    while the previous move still drains) wait the call timeout before the first goodbye, as before; a node whose shard
+    fails to start still joins and is restarted by `/alive` rather than refusing to start.
 - Review criterion from round 7 on (agreed): a finding is must-fix when a single fault (one view change, one link
   restart, one node crash, one slow store call) leads to lost acknowledged state, a second live copy or a wait that
   never ends; one that needs two or more rare events together is should-fix and is listed here. Convergence is two
