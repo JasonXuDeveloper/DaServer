@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.ComponentModel;
 using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
@@ -183,7 +184,7 @@ public readonly partial record struct Disconnect;
 /// <see cref="Runtime.Actor.GrantSession"/>, asked so the actor resumes once it holds) for actor
 /// (<see cref="HandlerType"/>, <see cref="Key"/>).
 /// </summary>
-[NinoType, Message]
+[NinoType, Message, StructLayout(LayoutKind.Sequential, Pack = 1)] // no padding on the wire (13 bytes, not 24)
 internal readonly partial record struct SessionAccess(uint HandlerType, long Key, AccessChange Change);
 
 /// <summary>What a <see cref="SessionAccess"/> changes.</summary>

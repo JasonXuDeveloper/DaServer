@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 namespace DaServer.Tests;
 
 /// <summary>Failure detection under pauses (C1) and keep-majority downing on a split (C2, ADR-064).</summary>
@@ -312,6 +313,36 @@ public class LinkAuthTests : ClusterTest
         Assert.That(intruder.View.UpMembers, Has.Length.EqualTo(1));
         Assert.That(stranger.View.UpMembers, Has.Length.EqualTo(1));
         Assert.That(Faults.Count("LinkRefused"), Is.LessThan(100), "a refused node backs off instead of reconnecting in a loop");
+    }
+
+    [Test]
+    public void ProtocolLevelsMeetWhenTheirRangesOverlap()
+    {
+        var levels = new ProtocolLevels(3, 4);
+        Assert.That(ProtocolLevels.Of(levels.Packed), Is.EqualTo(levels), "one header key carries both ends");
+        Assert.That(levels.Overlaps(new ProtocolLevels(4, 5)), Is.True, "a bridge release meets the next one");
+        Assert.That(levels.Overlaps(new ProtocolLevels(2, 2)), Is.False);
+        Assert.That(levels.Overlaps(new ProtocolLevels(5, 6)), Is.False);
+        Assert.That((levels.ToString(), new ProtocolLevels(3, 3).ToString()), Is.EqualTo(("3-4", "3")));
+    }
+
+    [Test]
+    public async Task ANodeOfAnotherLinkProtocolIsRefusedBeforeItsHelloIsRead()
+    {
+        // Its levels come as raw bytes ahead of the Nino body: a build that writes another encoding is named, not misread.
+        Faults.Allow("LinkRefused"); // what the test provokes
+        var a = await Start("a");
+        using var socket = new System.Net.Sockets.TcpClient();
+        await socket.ConnectAsync("127.0.0.1", a.Membership.Self.Port);
+        var w = FrameWriter.Rent();
+        var older = new ProtocolLevels(ControlOp.Link.Min - 1, ControlOp.Link.Min - 1);
+        BinaryPrimitives.WriteInt64LittleEndian(w.GetSpan(sizeof(long)), older.Packed);
+        w.Advance(sizeof(long));
+        w.WriteRaw([0xFF, 0xFF, 0xFF, 0x7F]); // a body this build cannot read
+        w.SetHeader(FrameKind.Control, 0, ControlOp.Hello, 99);
+        await socket.GetStream().WriteAsync(w.Frame.ToArray());
+        w.Dispose();
+        await Eventually(() => Faults.Count("LinkRefused") == 1, "refused for its protocol");
     }
 
     [Test]

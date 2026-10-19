@@ -1,35 +1,35 @@
 # DaServer wire manifest (ADR-076): the layout of this assembly's [NinoType] types on the wire and in stored records.
 # Positional layouts are frozen, version-tolerant types take new fields at their end, keyed types any key that keeps
 # its type. Record changes: dotnet build -p:UpdateWireManifest=true
+# Layout text: Nino byte descriptions (4.0.0-rc.6)
 DaServer.Cluster.CardEntry (no header, positional, id 9757C187)
 - Key: uint raw(4)
-- Value: string Nino.Core.StringFormatter
+- Value: string string
 DaServer.Cluster.ClusterMember (null flag, version tolerant, id 22E5D45D)
 - NodeId: ulong raw(8)
-- Name: string Nino.Core.StringFormatter
-- Host: string Nino.Core.StringFormatter
+- Name: string string
+- Host: string string
 - Port: int raw(4)
-- Handlers: DaServer.Cluster.HostedMessage[] Nino.Core.UnmanagedArrayFormatter<DaServer.Cluster.HostedMessage>
-- Scopes: uint[] Nino.Core.UnmanagedArrayFormatter<uint>
+- Handlers: DaServer.Cluster.HostedMessage[] seq(raw(9){MessageId:uint@0:raw(4),HandlerTypeId:uint@4:raw(4),Actor:bool@8:raw(1)})
+- Scopes: uint[] seq(raw(4))
 - Incarnation: int raw(4)
 - Heartbeat: long raw(8)
 - Status: DaServer.Cluster.MemberStatus raw(1)
 - Load: int raw(4)
-- PulseKeys: uint[] Nino.Core.UnmanagedArrayFormatter<uint>
-- PulseValues: int[] Nino.Core.UnmanagedArrayFormatter<int>
-- Entries: DaServer.Cluster.CardEntry[] Nino.Core.ArrayFormatter<DaServer.Cluster.CardEntry, nested>
+- PulseKeys: uint[] seq(raw(4))
+- PulseValues: int[] seq(raw(4))
+- Entries: DaServer.Cluster.CardEntry[] seq(type(DaServer.Cluster.CardEntry))
 - UpSince: long raw(8)
 DaServer.Cluster.HostedMessage (no header, positional, raw, id 4FBDF5E5)
 - MessageId: uint@0 raw(4)
 - HandlerTypeId: uint@4 raw(4)
 - Actor: bool@8 raw(1)
 DaServer.Cluster.LinkHello (null flag, version tolerant, id 17E14E65)
-- Version: int raw(4)
-- Cluster: string Nino.Core.StringFormatter
-- Host: string Nino.Core.StringFormatter
+- Cluster: string string
+- Host: string string
 - Port: int raw(4)
 - StreamId: long raw(8)
-- Proof: byte[] Nino.Core.UnmanagedArrayFormatter<byte>
+- Proof: byte[] seq(raw(1))
 DaServer.Cluster.MemberStatus (enum of byte)
 - Joining: 0
 - Up: 1
@@ -39,20 +39,20 @@ DaServer.Cluster.MemberStatus (enum of byte)
 DaServer.Cluster.SlotLoad (null flag, version tolerant, id 1085BD1D)
 - HandlerTypeId: uint raw(4)
 - Sticky: bool raw(1)
-- Slots: ushort[] Nino.Core.UnmanagedArrayFormatter<ushort>
-- Counts: int[] Nino.Core.UnmanagedArrayFormatter<int>
+- Slots: ushort[] seq(raw(2))
+- Counts: int[] seq(raw(4))
 DaServer.Cluster.SlotOverride (no header, positional, raw, id 35BFFD27)
 - HandlerTypeId: uint@0 raw(4)
 - Slot: ushort@4 raw(2)
-- Node: ulong@8 raw(8)
+- Node: ulong@6 raw(8)
 DaServer.Cluster.SlotReport (null flag, version tolerant, id E0A04D2D)
 - Node: ulong raw(8)
-- Types: DaServer.Cluster.SlotLoad[] Nino.Core.ArrayFormatter<DaServer.Cluster.SlotLoad, nested>
+- Types: DaServer.Cluster.SlotLoad[] seq(type(DaServer.Cluster.SlotLoad))
 DaServer.Cluster.SlotTable (null flag, version tolerant, id 3509FA9D)
 - Version: long raw(8)
 - Coordinator: ulong raw(8)
-- Overrides: DaServer.Cluster.SlotOverride[] Nino.Core.UnmanagedArrayFormatter<DaServer.Cluster.SlotOverride>
+- Overrides: DaServer.Cluster.SlotOverride[] seq(raw(14){HandlerTypeId:uint@0:raw(4),Slot:ushort@4:raw(2),Node:ulong@6:raw(8)})
 DaServer.Persistence.SessionsRecord (null flag, version tolerant, id EB076B62)
-- Sessions: DaServer.ClientSession[] Nino.Core.UnmanagedArrayFormatter<DaServer.ClientSession> no header, positional, raw, id 55AFFF04 {raw(16){Node:ulong@0:raw(8),Id:long@8:raw(8)}}
-- Granted: DaServer.ClientSession[] Nino.Core.UnmanagedArrayFormatter<DaServer.ClientSession> no header, positional, raw, id 55AFFF04 {raw(16){Node:ulong@0:raw(8),Id:long@8:raw(8)}}
-- Superseded: DaServer.ClientSession[] Nino.Core.UnmanagedArrayFormatter<DaServer.ClientSession> no header, positional, raw, id 55AFFF04 {raw(16){Node:ulong@0:raw(8),Id:long@8:raw(8)}}
+- Sessions: DaServer.ClientSession[] seq(raw(16){Node:ulong@0:raw(8),Id:long@8:raw(8)}) (no header, positional, raw, id 55AFFF04)
+- Granted: DaServer.ClientSession[] seq(raw(16){Node:ulong@0:raw(8),Id:long@8:raw(8)}) (no header, positional, raw, id 55AFFF04)
+- Superseded: DaServer.ClientSession[] seq(raw(16){Node:ulong@0:raw(8),Id:long@8:raw(8)}) (no header, positional, raw, id 55AFFF04)

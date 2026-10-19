@@ -1,6 +1,7 @@
 # DaServer wire manifest (ADR-076): the layout of this assembly's [NinoType] types on the wire and in stored records.
 # Positional layouts are frozen, version-tolerant types take new fields at their end, keyed types any key that keeps
 # its type. Record changes: dotnet build -p:UpdateWireManifest=true
+# Layout text: Nino byte descriptions (4.0.0-rc.6)
 DaServer.AccessChange (enum of byte)
 - Bind: 0
 - Unbind: 1
@@ -21,8 +22,8 @@ DaServer.Origin (no header, positional, raw, id C7F4636F)
 - Id: long@8 raw(8)
 DaServer.SessionAccess (no header, positional, raw, id D457C861)
 - HandlerType: uint@0 raw(4)
-- Key: long@8 raw(8)
-- Change: DaServer.AccessChange@16 raw(1)
+- Key: long@4 raw(8)
+- Change: DaServer.AccessChange@12 raw(1)
 DaServer.SessionClosed (no header, positional, raw, id 60279907)
 - Session: DaServer.ClientSession@0 raw(16){Node:ulong@0:raw(8),Id:long@8:raw(8)}
 DaServer.SessionMoved (no header, positional, raw, id 4AE653D8)

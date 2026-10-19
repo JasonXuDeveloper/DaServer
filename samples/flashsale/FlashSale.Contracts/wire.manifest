@@ -1,6 +1,7 @@
 # DaServer wire manifest (ADR-076): the layout of this assembly's [NinoType] types on the wire and in stored records.
 # Positional layouts are frozen, version-tolerant types take new fields at their end, keyed types any key that keeps
 # its type. Record changes: dotnet build -p:UpdateWireManifest=true
+# Layout text: Nino byte descriptions (4.0.0-rc.6)
 FlashSale.Contracts.Admitted (no header, positional, raw, id B8DA0D57)
 - Position: long@0 raw(8)
 = FlashSale.Contracts.Admission
@@ -42,13 +43,13 @@ FlashSale.Contracts.Restock (no header, positional, raw, id 25457718)
 FlashSale.Contracts.SaleInfo (no header, positional, id 2098BD32)
 - Queued: bool raw(1)
 - SoldOut: bool raw(1)
-- Buyers: long[] Nino.Core.UnmanagedArrayFormatter<long>
+- Buyers: long[] seq(raw(8))
 FlashSale.Contracts.SaleStock (no header, positional, raw, id 5F7ACF8C)
 - Sale: long@0 raw(8)
 = int
 FlashSale.Contracts.ShardEmpty (no header, positional, id 2288AD46)
 - Shard: int raw(4)
-- Buyers: long[] Nino.Core.UnmanagedArrayFormatter<long>
+- Buyers: long[] seq(raw(8))
 FlashSale.Contracts.TakeOne (no header, positional, raw, id 353A02A0)
 - User: long@0 raw(8)
 = bool

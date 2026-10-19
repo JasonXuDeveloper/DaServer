@@ -111,7 +111,7 @@ public sealed partial class ClusterClient
     {
         var call = PendingCall<NoReply>.Rent(null);
         var done = call.Done;
-        Transmit(channel, FrameWriter.Rent(FrameHeader.Size), FrameKind.Control, 0, ControlOp.ClientHello, ControlOp.ClientVersion, call, RpcStatus.Ok);
+        Transmit(channel, FrameWriter.Rent(FrameHeader.Size), FrameKind.Control, 0, ControlOp.ClientHello, ControlOp.Client.Packed, call, RpcStatus.Ok);
         try
         {
             await done.ConfigureAwait(false);

@@ -155,8 +155,16 @@ internal sealed class PeerLink : IFrameSink, IDisposable
     }
 
     /// <summary>The peer accepted our connection and challenges us: our Hello proves it.</summary>
-    internal void OnChallenge(Connection connection, ReadOnlySpan<byte> challenge)
+    internal void OnChallenge(Connection connection, ProtocolLevels levels, ReadOnlySpan<byte> challenge)
     {
+        if (!levels.Overlaps(ControlOp.Link))
+        {
+            // The peer speaks a protocol this build cannot: say so here too (it refuses our Hello anyway), and retry later.
+            Log.LinkRefused(_node.Logger, Host, Port, 0, $"link protocol {levels}, this node speaks {ControlOp.Link}");
+            connection.Close();
+            return;
+        }
+
         lock (_gate)
         {
             if (connection == _handshake) Introduce(connection, challenge);

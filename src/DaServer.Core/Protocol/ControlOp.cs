@@ -3,11 +3,11 @@ namespace DaServer.Protocol;
 /// <summary>Control operations carried in <see cref="FrameKind.Control"/> frames (MessageId field).</summary>
 internal static class ControlOp
 {
-    /// <summary>Version of the link protocol, in every Hello: nodes speaking another one are refused (2: Nino 4's format).</summary>
-    public const int LinkVersion = 2;
+    /// <summary>The node link levels this build speaks (<see cref="ProtocolLevels"/>; 3: Nino 4.0.0-rc.6's strings).</summary>
+    public static readonly ProtocolLevels Link = new(3, 3);
 
-    /// <summary>Version of the client protocol, in every <see cref="ClientHello"/>: clients speaking another one are refused (4: a resume's reply counts the actors that took the session).</summary>
-    public const int ClientVersion = 4;
+    /// <summary>The client protocol levels this build speaks (5: Nino 4.0.0-rc.6's strings).</summary>
+    public static readonly ProtocolLevels Client = new(5, 5);
 
     /// <summary>Push gossip: payload = the sender's table as <c>MemberPulse</c>s; answered with <c>GossipReply</c>.</summary>
     public const uint Gossip = 1;
@@ -17,7 +17,8 @@ internal static class ControlOp
 
     /// <summary>
     /// The dialing node's first frame, once the accepting node's <c>Challenge</c> came: Key = sender node id, payload = its
-    /// advertised host and port, the id of its stream to us and the proof. The receiver
+    /// <see cref="Link"/> levels (8 raw bytes, readable by any build), then its advertised host and port, the id of its
+    /// stream to us and the proof. The receiver
     /// answers everything that arrives on the connection through its own link to that node (see <c>PeerLink.SendReply</c>).
     /// </summary>
     public const uint Hello = 3;
@@ -64,8 +65,9 @@ internal static class ControlOp
     public const uint Pong = 19;
 
     /// <summary>
-    /// Client to node, the first frame of every client connection (a call): Key = <see cref="ClientVersion"/>. Answered
-    /// with an empty success, or an error naming both versions after which the node closes the connection.
+    /// Client to node, the first frame of every client connection (a call): Key = the client's <see cref="Client"/> levels
+    /// (<see cref="ProtocolLevels.Packed"/>). Answered with an empty success, or, when the ranges do not overlap, an error
+    /// naming both after which the node closes the connection.
     /// </summary>
     public const uint ClientHello = 20;
 
@@ -78,8 +80,9 @@ internal static class ControlOp
     public const uint Retire = 21;
 
     /// <summary>
-    /// First frame of an accepted node link connection: payload = a fresh random challenge. The dialing node answers with
-    /// its <c>Hello</c>, whose proof covers it (ADR-065), so a Hello is good on one connection only.
+    /// First frame of an accepted node link connection: Key = the accepting node's <see cref="Link"/> levels, payload = a
+    /// fresh random challenge. The dialing node answers with its <c>Hello</c>, whose proof covers it (ADR-065), so a Hello
+    /// is good on one connection only.
     /// </summary>
     public const uint Challenge = 22;
 }

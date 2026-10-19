@@ -32,7 +32,7 @@ public class ClientProtocolTests : ClusterTest
     {
         // Each costs the node a signature: a client looping them is limited like one looping messages.
         var gateway = await Start("a", gateway: true, clients: static o => (o.MessagesPerSecond, o.Burst) = (1, 2));
-        var client = await Send(gateway, FrameKind.Control, ControlOp.ClientHello, ControlOp.ClientVersion);
+        var client = await Send(gateway, FrameKind.Control, ControlOp.ClientHello, ControlOp.Client.Packed);
         await client.Reply.Task.WaitAsync(TimeSpan.FromSeconds(5));
         for (uint call = 2; call < 6; call++)
         {
@@ -62,10 +62,10 @@ public class ClientProtocolTests : ClusterTest
     public async Task AClientOfAnotherVersionIsToldBothVersionsAndCannotGoOn()
     {
         var gateway = await Start("a", gateway: true);
-        var recorder = await Send(gateway, FrameKind.Control, ControlOp.ClientHello, ControlOp.ClientVersion + 1);
+        var recorder = await Send(gateway, FrameKind.Control, ControlOp.ClientHello, new ProtocolLevels(ControlOp.Client.Max + 1, ControlOp.Client.Max + 1).Packed);
         var (status, text) = await recorder.Reply.Task.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.That(status, Is.EqualTo(RpcStatus.Error));
-        Assert.That(text, Does.Contain($"Client protocol {ControlOp.ClientVersion + 1}").And.Contain($"speaks {ControlOp.ClientVersion}"));
+        Assert.That(text, Does.Contain($"Client protocol {ControlOp.Client.Max + 1}").And.Contain($"speaks {ControlOp.Client}"));
 
         // It is not a member of ClientGroup.All meanwhile: a broadcast it would misread does not reach it.
         int frames = recorder.Frames;
@@ -77,7 +77,7 @@ public class ClientProtocolTests : ClusterTest
         using (var again = FrameWriter.Rent())
         {
             again.SetCallId(2);
-            again.SetHeader(FrameKind.Control, 0, ControlOp.ClientHello, ControlOp.ClientVersion + 1);
+            again.SetHeader(FrameKind.Control, 0, ControlOp.ClientHello, new ProtocolLevels(ControlOp.Client.Max + 1, ControlOp.Client.Max + 1).Packed);
             recorder.Connection!.Send(again.Frame);
         }
 
@@ -106,7 +106,7 @@ public class ClientProtocolTests : ClusterTest
     public async Task HostileFramesHurtOnlyTheirConnection(byte flags, int blockSize, bool closes)
     {
         var gateway = await Start("a", gateway: true);
-        var hostile = await Send(gateway, FrameKind.Control, ControlOp.ClientHello, ControlOp.ClientVersion);
+        var hostile = await Send(gateway, FrameKind.Control, ControlOp.ClientHello, ControlOp.Client.Packed);
         Assert.That((await hostile.Reply.Task.WaitAsync(TimeSpan.FromSeconds(5))).Status, Is.EqualTo(RpcStatus.Ok), "introduced");
 
         // A [FromClient] message (Login: an 8-byte player id), crafted byte by byte; 3 bytes cannot be one.

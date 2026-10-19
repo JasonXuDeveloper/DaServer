@@ -286,9 +286,18 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
 
     private static void EndRegistration(System.Text.StringBuilder sb) => sb.Append("    }\n}\n");
 
-    /// <summary>Whether the compilation can declare module initializers (not on netstandard2.1).</summary>
-    private static bool HasModuleInitializers(Compilation c) =>
-        c.GetTypeByMetadataName("System.Runtime.CompilerServices.ModuleInitializerAttribute") != null;
+    /// <summary>
+    /// Whether the compilation can declare module initializers (not on netstandard2.1): exactly one attribute definition it
+    /// can use. A referenced library's internal polyfill of it (ZLinq's netstandard build) is not one: using it fails
+    /// with CS0122, as Nino's generator found in Unity.
+    /// </summary>
+    internal static bool HasModuleInitializers(Compilation c)
+    {
+        int usable = 0;
+        foreach (var type in c.GetTypesByMetadataName("System.Runtime.CompilerServices.ModuleInitializerAttribute"))
+            if (c.IsSymbolAccessibleWithin(type, c.Assembly)) usable++;
+        return usable == 1;
+    }
 
     private sealed record AssemblyModel(bool ReferencesCore, bool ReferencesRuntime, bool ModuleInitializer, string AssemblyHint,
         EquatableArray<string> ContractAnchors, EquatableArray<string> SharedSystems, EquatableArray<PersistedModel> Persisted);

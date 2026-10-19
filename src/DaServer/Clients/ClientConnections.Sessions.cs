@@ -81,11 +81,11 @@ public sealed partial class ClientConnections
             return;
         }
 
-        if (header.Key != ControlOp.ClientVersion)
+        if (ProtocolLevels.Of(header.Key) is var levels && !levels.Overlaps(ControlOp.Client))
         {
             session.Refused = true;
             session.Sink.SendError(callId, RpcStatus.Error,
-                $"Client protocol {header.Key}, this node speaks {ControlOp.ClientVersion}: update the client");
+                $"Client protocol {levels}, this node speaks {ControlOp.Client}: update the client");
             return; // closing now could drop the answer before it is written
         }
 

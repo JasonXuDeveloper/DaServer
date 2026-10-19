@@ -41,7 +41,7 @@ public class WireManifestTests
         [NinoType(trackReferences: true)] public sealed partial class Circle : Shape { public new int X; public int this[int i] => i; }
         """;
 
-    private const string Recorded = """
+    private static readonly string Recorded = WireManifest.Grammar + "\n" + """
         Game.Badge (null flag, positional, id 0D604888)
         - Id: int raw(4)
         Game.Cell (no header, positional, raw, id 10406113)
@@ -51,22 +51,22 @@ public class WireManifestTests
         - X: int raw(4)
         - X: int raw(4)
         Game.Hero (null flag, version tolerant, id FC84D6ED)
-        - Name: string Nino.Core.StringFormatter
+        - Name: string string
         - Level: int raw(4)
         - Gold: int raw(4)
         Game.Hop (type id, positional, id C4B40332)
-        - Next: Game.Link nested
-        - Children: System.Collections.Generic.List<Game.Link> Nino.Core.ListFormatter<System.Collections.Generic.List<Game.Link>, Game.Link, nested>
-        - Label: string Nino.Core.Utf8StringFormatter
+        - Next: Game.Link type(Game.Link)
+        - Children: System.Collections.Generic.List<Game.Link> seq(type(Game.Link))
+        - Label: string utf8
         - Distance: int raw(4)
         Game.IShape (type id, positional, id BDFF01A3)
         Game.Kind (enum of byte)
         - Dot: 0
         - Line: 1
         Game.Link (type id, positional, id 309CABDD)
-        - Next: Game.Link nested
-        - Children: System.Collections.Generic.List<Game.Link> Nino.Core.ListFormatter<System.Collections.Generic.List<Game.Link>, Game.Link, nested>
-        - Label: string Nino.Core.Utf8StringFormatter
+        - Next: Game.Link type(Game.Link)
+        - Children: System.Collections.Generic.List<Game.Link> seq(type(Game.Link))
+        - Label: string utf8
         Game.Look (no header, positional, raw, id 5EB8F11A)
         = Game.View
         Game.Move (no header, positional, raw, id EBFC19FC)
@@ -76,14 +76,14 @@ public class WireManifestTests
         Game.Paint (no header, positional, id D6BE6A7F)
         - At: Game.Cell raw(8){Row:int@0:raw(4),Column:int@4:raw(4)}
         - Kind: Game.Kind raw(1)
-        - Color: string Nino.Core.StringFormatter
-        - Trail: Game.Cell[] Nino.Core.UnmanagedArrayFormatter<Game.Cell>
+        - Color: string string
+        - Trail: Game.Cell[] seq(raw(8){Row:int@0:raw(4),Column:int@4:raw(4)})
         Game.Profile (type id, version tolerant, id EB1B87E6)
-        - Name: string Nino.Core.StringFormatter
+        - Name: string string
         - Level: int raw(4)
         Game.Settings (null flag, keyed, id 8BE6A948)
-        - Volume: int raw(4)
-        - Theme: string Nino.Core.StringFormatter
+        - Volume: int raw(4):key=0xCDF49275
+        - Theme: string string:key=0x588A617C
         Game.Shape (type id, positional, id 0BB65D22)
         - X: int raw(4)
         Game.Sparse (type id, positional, id 69A64D13)
@@ -110,7 +110,7 @@ public class WireManifestTests
         // takes them, a hidden base member named with its type) and how each is written; plus what the manifest adds:
         // replies. Raw memory is Nino's to spell out: every field with its offset, nested structs included.
         string text = ManifestOf(GeneratorTests.Compile(GeneratorTests.Parse(Types)));
-        Assert.That(text[text.IndexOf("Game.", StringComparison.Ordinal)..], Is.EqualTo(Recorded.Replace("\r", "") + "\n"));
+        Assert.That(text[text.IndexOf(WireManifest.Grammar, StringComparison.Ordinal)..], Is.EqualTo(Recorded.Replace("\r", "") + "\n"));
     }
 
     [Test]
@@ -153,6 +153,8 @@ public class WireManifestTests
     [TestCase("public int Volume; public string Theme;", "public int Volume;", "DAS018", TestName = "A keyed type drops a key")]
     [TestCase("public int Volume; public string Theme;", "public long Volume; public string Theme;", "DAS017", TestName = "A key keeps its type")]
     [TestCase("format: NinoFormat.Keyed", "format: NinoFormat.VersionTolerant", "DAS017", TestName = "A type's format is part of its encoding")]
+    [TestCase("public int Volume;", "[NinoFormerName(\"Volume\")] public int Loudness;", "", TestName = "A keyed member renamed with its former name keeps its key")]
+    [TestCase("public int Volume;", "public int Loudness;", "DAS018", TestName = "A keyed member renamed without its former name is another key")]
     public async Task ChangesAreJudged(string before, string after, string id) =>
         Assert.That(await Check(Types.Replace(before, after), Recorded), Is.EqualTo(id.Length == 0 ? [] : id.Split(',')));
 

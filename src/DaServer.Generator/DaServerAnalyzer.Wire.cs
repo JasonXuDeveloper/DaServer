@@ -24,6 +24,15 @@ public sealed partial class DaServerAnalyzer
 
         var text = manifest.GetText(context.CancellationToken);
         if (text == null) return;
+        if (!text.ToString().Contains(WireManifest.Grammar))
+        {
+            // Recorded in an earlier layout text (another Nino): every member would read as changed. One report instead.
+            var first = text.Lines[0];
+            context.ReportDiagnostic(Diagnostic.Create(Rules.WireBreak, Location.Create(manifest.Path, first.Span, text.Lines.GetLinePositionSpan(first.Span)),
+                WireManifest.FileName, "was recorded in an earlier layout text: check the Nino update's notes for changed bytes, then record it again"));
+            return;
+        }
+
         var baseline = WireManifest.Parse(text.ToString());
         var types = WireManifest.All(context.Compilation.Assembly, context.CancellationToken);
         var current = types.Select(t => t.Type).ToList();

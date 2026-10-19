@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 namespace DaServer.Cluster;
 
 /// <summary>
@@ -18,7 +19,7 @@ internal sealed class SlotTable
 }
 
 /// <summary>Slot <see cref="Slot"/> of actor type <see cref="HandlerTypeId"/> is owned by <see cref="Node"/>.</summary>
-[NinoType]
+[NinoType, StructLayout(LayoutKind.Sequential, Pack = 1)] // no padding on the wire
 internal readonly record struct SlotOverride(uint HandlerTypeId, ushort Slot, ulong Node);
 
 /// <summary>What a node holds: per actor type, the slots with loaded actors here and how many each (ADR-079).</summary>

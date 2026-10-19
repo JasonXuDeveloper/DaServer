@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using DaServer;
 using Nino.Core;
 
@@ -24,9 +25,9 @@ public readonly record struct RealmId(long Value) : IActorId
 
 /// <summary>Log in (handled by the login service; nothing is bound to the session before).</summary>
 [NinoType, Message, FromClient]
-public partial record struct Login([property: NinoUtf8] string Name) : IRequest<LoginResult>;
+public partial record struct Login(string Name) : IRequest<LoginResult>;
 
-[NinoType]
+[NinoType, StructLayout(LayoutKind.Sequential, Pack = 1)] // no padding on the wire
 public partial record struct LoginResult(bool Ok, PlayerId Player);
 
 /// <summary>The client's own player (bound to the session at login).</summary>
@@ -34,7 +35,7 @@ public partial record struct LoginResult(bool Ok, PlayerId Player);
 public partial record struct GetInfo : IRequest<PlayerInfo>;
 
 [NinoType]
-public partial record struct PlayerInfo(PlayerId Id, [property: NinoUtf8] string Name, MapId Map, int Logins);
+public partial record struct PlayerInfo(PlayerId Id, string Name, MapId Map, int Logins);
 
 /// <summary>Move the client's player to a map instance (the map binds the session for input).</summary>
 [NinoType, Message, FromClient]
@@ -44,6 +45,10 @@ public partial record struct EnterMap(MapId Map) : IRequest<bool>;
 [NinoType, Message, FromClient]
 public partial record struct Move(float VelocityX, float VelocityY);
 
+/// <summary>
+/// A chat line. UTF-8: chat is mostly ASCII with an emoji or a name in another script now and then, which the default
+/// encoding would write entirely as UTF-16 (names and other ASCII text take the default, one byte a char).
+/// </summary>
 [NinoType, Message, FromClient]
 public partial record struct Say([property: NinoUtf8] string Text);
 
@@ -109,7 +114,7 @@ public partial record struct Gone(MapId Map, PlayerId Player);
 public partial record struct Chat(PlayerId Player, [property: NinoUtf8] string Text);
 
 /// <summary>Realm state every client sees (broadcast to every session of the cluster every <see cref="Timing.RealmStatusEveryTicks"/> ticks).</summary>
-[NinoType, Message, ToClient]
+[NinoType, Message, ToClient, StructLayout(LayoutKind.Sequential, Pack = 4)] // sent to every session: no tail padding
 public partial record struct RealmStatus(long Tick, int Online, long ServerTimeTicks);
 
 /// <summary>The game's clock, the same on servers and clients.</summary>

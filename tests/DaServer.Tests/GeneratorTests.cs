@@ -54,6 +54,31 @@ public class GeneratorTests
     }
 
     [Test]
+    public void AReferencedLibrarysInternalModuleInitializerPolyfillIsNotUsed()
+    {
+        // A library built for netstandard (ZLinq's) carries an internal polyfill of ModuleInitializerAttribute: on
+        // netstandard2.1 (Unity) it is the only definition, and using it fails with CS0122; on .NET the framework's is used.
+        string packages = Environment.GetEnvironmentVariable("NUGET_PACKAGES")
+                          ?? System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".nuget", "packages");
+        var standard = new[] { MetadataReference.CreateFromFile(System.IO.Path.Combine(packages, "netstandard.library.ref", "2.1.0", "ref", "netstandard2.1", "netstandard.dll")) };
+        MetadataReference Polyfilled(IEnumerable<MetadataReference> references)
+        {
+            var library = CSharpCompilation.Create("Polyfilled",
+                [CSharpSyntaxTree.ParseText("namespace System.Runtime.CompilerServices { internal sealed class ModuleInitializerAttribute : System.Attribute { } }")],
+                references, new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+            using var image = new System.IO.MemoryStream();
+            Assert.That(library.Emit(image).Success);
+            return MetadataReference.CreateFromImage(image.ToArray());
+        }
+
+        static Compilation With(IEnumerable<MetadataReference> references) => CSharpCompilation.Create("App", [], references);
+        Assert.That(RegistrationGenerator.HasModuleInitializers(With(standard)), Is.False, "netstandard2.1 has none");
+        Assert.That(RegistrationGenerator.HasModuleInitializers(With([.. standard, Polyfilled(standard)])), Is.False, "nor through another's internal one");
+        Assert.That(RegistrationGenerator.HasModuleInitializers(With(References)), Is.True, ".NET has one");
+        Assert.That(RegistrationGenerator.HasModuleInitializers(With([.. References, Polyfilled(References)])), Is.True, "and keeps it");
+    }
+
+    [Test]
     public void SharedAndClientCodeIsGeneratedAsCSharp9()
     {
         // Contracts and client code also build in Unity (C# 9, the Roslyn 4.3 build of the generators): what the
@@ -176,6 +201,7 @@ public class GeneratorTests
     [TestCase("public class Data { } [NinoType, Message] public partial record struct Bad : IRequest<Data>;", "DAS003")]
     [TestCase("[NinoType, Message] public partial record struct Bad : IRequest<System.Action>;", "DAS003")]
     [TestCase("[NinoType, Message] public partial record struct Bad : IRequest<object>;", "DAS003")]
+    [TestCase("[NinoType, Message] public partial record struct Bad : IRequest<System.Type>;", "DAS003")]
     [TestCase("[NinoType, Message, NinoFormerName(\"X\")] public partial record struct A; [NinoType, Message, NinoFormerName(\"X\")] public partial record struct B;", "DAS004")]
     [TestCase("[NinoType, Message] public partial record struct Tick; public sealed class Bad : Service { public Bad(int x) { } [Handle] public void On(Tick e) { } }", "DAS005")]
     [TestCase("[NinoType, Message, ToClient] public partial record struct Tick; public sealed class Bad : Service { [Handle] public void On(Tick e) { } }", "DAS006")]

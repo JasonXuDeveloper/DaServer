@@ -1,12 +1,13 @@
 # DaServer wire manifest (ADR-076): the layout of this assembly's [NinoType] types on the wire and in stored records.
 # Positional layouts are frozen, version-tolerant types take new fields at their end, keyed types any key that keeps
 # its type. Record changes: dotnet build -p:UpdateWireManifest=true
+# Layout text: Nino byte descriptions (4.0.0-rc.6)
 Sample.Contracts.Attach (no header, positional, raw, id 36E166C9)
 - Session: DaServer.ClientSession@0 raw(16){Node:ulong@0:raw(8),Id:long@8:raw(8)} (no header, positional, raw, id 55AFFF04)
 = bool
 Sample.Contracts.Chat (no header, positional, id FFE1E154)
 - Player: Sample.Contracts.PlayerId raw(8){Value:long@0:raw(8)}
-- Text: string Nino.Core.Utf8StringFormatter
+- Text: string utf8
 Sample.Contracts.Enter (no header, positional, raw, id 00DD67CA)
 - Player: Sample.Contracts.PlayerId@0 raw(8){Value:long@0:raw(8)}
 - Session: DaServer.ClientSession@8 raw(16){Node:ulong@0:raw(8),Id:long@8:raw(8)} (no header, positional, raw, id 55AFFF04)
@@ -23,14 +24,14 @@ Sample.Contracts.Leave (no header, positional, raw, id 29260051)
 - Session: DaServer.ClientSession@0 raw(16){Node:ulong@0:raw(8),Id:long@8:raw(8)} (no header, positional, raw, id 55AFFF04)
 = bool
 Sample.Contracts.Login (no header, positional, id 94E76701)
-- Name: string Nino.Core.Utf8StringFormatter
+- Name: string string
 = Sample.Contracts.LoginResult
 Sample.Contracts.LoginResult (no header, positional, raw, id 52B67FB8)
 - Ok: bool@0 raw(1)
-- Player: Sample.Contracts.PlayerId@8 raw(8){Value:long@0:raw(8)}
+- Player: Sample.Contracts.PlayerId@1 raw(8){Value:long@0:raw(8)}
 Sample.Contracts.Motion (no header, positional, id FAF67EE4)
 - Map: Sample.Contracts.MapId raw(8){Value:long@0:raw(8)}
-- Avatars: Sample.Contracts.Moves nested
+- Avatars: Sample.Contracts.Moves type(Sample.Contracts.Moves)
 Sample.Contracts.Move (no header, positional, raw, id 3E4E16AB)
 - VelocityX: float@0 raw(4)
 - VelocityY: float@4 raw(4)
@@ -41,10 +42,10 @@ Sample.Contracts.Moved (no header, positional, raw, id AC8400E7)
 - VelocityX: float@16 raw(4)
 - VelocityY: float@20 raw(4)
 Sample.Contracts.Moves (null flag, positional, id 029A4E98)
-- Items: System.Collections.Generic.List<Sample.Contracts.Moved> Nino.Core.UnmanagedListFormatter<System.Collections.Generic.List<Sample.Contracts.Moved>, Sample.Contracts.Moved>
+- Items: System.Collections.Generic.List<Sample.Contracts.Moved> seq(raw(24){Player:Sample.Contracts.PlayerId@0:raw(8){Value:long@0:raw(8)},X:float@8:raw(4),Y:float@12:raw(4),VelocityX:float@16:raw(4),VelocityY:float@20:raw(4)})
 Sample.Contracts.PlayerInfo (no header, positional, id 737D22A7)
 - Id: Sample.Contracts.PlayerId raw(8){Value:long@0:raw(8)}
-- Name: string Nino.Core.Utf8StringFormatter
+- Name: string string
 - Map: Sample.Contracts.MapId raw(8){Value:long@0:raw(8)}
 - Logins: int raw(4)
 Sample.Contracts.PlayerOffline (no header, positional, raw, id 2EB58730)
@@ -54,6 +55,6 @@ Sample.Contracts.PlayerOnline (no header, positional, raw, id 76526B4E)
 Sample.Contracts.RealmStatus (no header, positional, raw, id E5951FE1)
 - Tick: long@0 raw(8)
 - Online: int@8 raw(4)
-- ServerTimeTicks: long@16 raw(8)
+- ServerTimeTicks: long@12 raw(8)
 Sample.Contracts.Say (no header, positional, id 8573BC61)
-- Text: string Nino.Core.Utf8StringFormatter
+- Text: string utf8

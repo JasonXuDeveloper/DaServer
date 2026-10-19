@@ -1,12 +1,13 @@
 # DaServer wire manifest (ADR-076): the layout of this assembly's [NinoType] types on the wire and in stored records.
 # Positional layouts are frozen, version-tolerant types take new fields at their end, keyed types any key that keeps
 # its type. Record changes: dotnet build -p:UpdateWireManifest=true
+# Layout text: Nino byte descriptions (4.0.0-rc.6)
 Sample.GameServer.PlayerProfile (no header, version tolerant, id 03C36C48)
-- Name: string Nino.Core.StringFormatter
+- Name: string string
 - Logins: int raw(4)
 Sample.GameServer.PlayerState (no header, version tolerant, id 14905A14)
 - Map: Sample.Contracts.MapId raw(8){Value:long@0:raw(8)}
 - Session: DaServer.ClientSession raw(16){Node:ulong@0:raw(8),Id:long@8:raw(8)} (no header, positional, raw, id 55AFFF04)
 Sample.GameServer.RealmState (no header, version tolerant, id EF14F718)
-- Online: System.Collections.Generic.HashSet<Sample.Contracts.PlayerId> Nino.Core.HashSetFormatter<System.Collections.Generic.HashSet<Sample.Contracts.PlayerId>, Sample.Contracts.PlayerId, Nino.Core.UnmanagedFormatter<Sample.Contracts.PlayerId>>
+- Online: System.Collections.Generic.HashSet<Sample.Contracts.PlayerId> seq(raw(8){Value:long@0:raw(8)})
 - Ticks: long raw(8)

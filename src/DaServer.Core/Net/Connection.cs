@@ -106,6 +106,9 @@ internal sealed partial class Connection : FrameChannel, IFrameSender
     /// <summary>The beat this connection is written on, if any (<see cref="ConnectionOptions.Flusher"/>).</summary>
     internal SendFlusher? Flusher => _flusher;
 
+    /// <summary>The peer's address (cold: logs of refused connections).</summary>
+    public IPEndPoint? Remote => _socket.RemoteEndPoint as IPEndPoint;
+
     public Connection(Socket socket, IChannelHandler handler, ConnectionOptions? options = null)
         : base(handler, QueueFor(options ??= new ConnectionOptions()))
     {

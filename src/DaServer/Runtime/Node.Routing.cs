@@ -196,7 +196,7 @@ sealed partial class Node : IChannelHandler
                 OnHello(connection, (ulong)header.Key, payload);
                 break;
             case ControlOp.Challenge:
-                (connection.Tag as PeerLink)?.OnChallenge(connection, payload);
+                (connection.Tag as PeerLink)?.OnChallenge(connection, ProtocolLevels.Of(header.Key), payload);
                 break;
             case ControlOp.Resume:
                 OnResume(connection, header.Key, payload);

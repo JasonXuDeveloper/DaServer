@@ -41,7 +41,7 @@ internal sealed record NinoLayout(INamedTypeSymbol Type, int Format, int Header,
     }
 
     /// <summary>The whole layout on one line (how a foreign [NinoType] member is recorded inline).</summary>
-    public override string ToString() => WireManifest.EncodingOf(this) + " {" + WireManifest.Stable(Members) + "}";
+    public override string ToString() => WireManifest.EncodingOf(this) + " {" + Members + "}";
 }
 
 /// <summary>
@@ -54,6 +54,12 @@ internal sealed record NinoLayout(INamedTypeSymbol Type, int Format, int Header,
 internal static class WireManifest
 {
     public const string FileName = "wire.manifest";
+
+    /// <summary>
+    /// The layout text this manifest is written in (Nino's byte descriptions since 4.0.0-rc.6): a manifest recorded in
+    /// another is reported once, not as a change in every member.
+    /// </summary>
+    public const string Grammar = "# Layout text: Nino byte descriptions (4.0.0-rc.6)";
     private const string Tolerant = "version tolerant", KeyedFormat = "keyed", EnumFormat = "enum";
 
     private static readonly SymbolDisplayFormat TypeFormat = SymbolDisplayFormat.FullyQualifiedFormat
@@ -151,11 +157,10 @@ internal static class WireManifest
         foreach (string entry in entries)
         {
             if (entry.Length == 0) continue;
-            // name:type:encoding[:former=...]; a [NinoType] collection's elements: [elements]::formatter
+            // name:type:encoding[:key=0x..][:former=0x..,..], the encoding as the bytes read (seq(string), type(T), ...);
+            // a [NinoType] collection's elements: [elements]::encoding
             var parts = entry.Split(new[] { ':' }, 3);
             string name = parts[0], written = parts.Length > 1 ? parts[1] : "", how = parts.Length > 2 ? parts[2] : "";
-            // A nested [NinoType]'s generated formatter is named by Nino's generator (its own entry records the type).
-            how = Stable(how);
             string detail = Inline(MemberType(type, name), layouts, spelled: how.IndexOf('{') >= 0);
             fields.Add(new WireField(name, (written.Length > 0 ? written + " " : "") + how + detail));
         }
@@ -189,9 +194,6 @@ internal static class WireManifest
         if (start < text.Length) parts.Add(text.Substring(start));
         return parts;
     }
-
-    /// <summary>A layout's text without the names Nino's generator gives the formatters it generates (they may change between Nino versions).</summary>
-    public static string Stable(string layout) => System.Text.RegularExpressions.Regex.Replace(layout, @"NinoGen\.[A-Za-z0-9_]+", "nested");
 
     /// <summary>How Nino writes a type: its header, its format, raw memory or not, its type id (renames show).</summary>
     public static string EncodingOf(NinoLayout layout) =>
@@ -243,7 +245,8 @@ internal static class WireManifest
         var sb = new StringBuilder()
             .Append("# DaServer wire manifest (ADR-076): the layout of this assembly's [NinoType] types on the wire and in stored records.\n")
             .Append("# Positional layouts are frozen, version-tolerant types take new fields at their end, keyed types any key that keeps\n")
-            .Append("# its type. Record changes: dotnet build -p:UpdateWireManifest=true\n");
+            .Append("# its type. Record changes: dotnet build -p:UpdateWireManifest=true\n")
+            .Append(Grammar).Append('\n');
         foreach (var type in types.OrderBy(t => t.Name, StringComparer.Ordinal))
         {
             sb.Append(type.Name).Append(" (").Append(type.Encoding).Append(")\n");
@@ -331,26 +334,18 @@ internal static class WireManifest
 
         if (entry.Encoding.Contains(KeyedFormat))
         {
-            // A key's value is read by its type: another type under the same key is misread, any other change is skipped or defaulted.
-            static Dictionary<string, string> Keys(IEnumerable<string> fields)
-            {
-                var keys = new Dictionary<string, string>(StringComparer.Ordinal);
-                foreach (string field in fields)
-                {
-                    int colon = field.IndexOf(": ", StringComparison.Ordinal);
-                    keys[colon < 0 ? field : field.Substring(0, colon)] = colon < 0 ? "" : field.Substring(colon + 2);
-                }
-
-                return keys;
-            }
-
-            var before = Keys(entry.Fields);
-            var after = Keys(now);
+            // A key's value is read by its type: another type under the same key is misread, any other change is skipped or
+            // defaulted. Members are matched by key (Nino's :key=0x..), a renamed one by its former keys too.
+            var before = Keys(entry.Fields, formers: false);
+            var after = Keys(now, formers: true);
             foreach (var key in before)
-                if (after.TryGetValue(key.Key, out var value) && value != key.Value)
-                    return ($"key '{key.Key}' was '{key.Value}' and is '{value}': the other build misreads it (a new type takes a new key)", true);
-            if (before.Count == after.Count && before.Keys.All(after.ContainsKey)) return null;
-            return ($"has keys added ({string.Join(", ", after.Keys.Where(k => !before.ContainsKey(k)))}) or removed ({string.Join(", ", before.Keys.Where(k => !after.ContainsKey(k)))})", false);
+                if (after.TryGetValue(key.Key, out var member) && member.Type != key.Value.Type)
+                    return ($"'{key.Value.Name}' ({key.Key}) was '{key.Value.Type}' and '{member.Name}' is '{member.Type}': the other build misreads it (a new type takes a new key)", true);
+            var kept = new HashSet<string>(before.Keys.Where(after.ContainsKey).Select(k => after[k].Name), StringComparer.Ordinal);
+            var added = now.Select(f => Keyed(f).Name).Where(n => !kept.Contains(n)).ToList();
+            var removed = before.Where(k => !after.ContainsKey(k.Key)).Select(k => k.Value.Name).ToList();
+            return added.Count == 0 && removed.Count == 0 ? null
+                : ($"has keys added ({string.Join(", ", added)}) or removed ({string.Join(", ", removed)})", false);
         }
 
         int changed = -1;
@@ -363,5 +358,40 @@ internal static class WireManifest
                 (tolerant
                     ? "a version-tolerant type only takes new fields at its end (of its own: one appended to a base shifts its subtypes')"
                     : "a positional layout is frozen, a new field goes into a new message or component"), true);
+    }
+
+    /// <summary>A keyed member's field text: its name, key, former keys, and type (name and keys left out).</summary>
+    private static (string Name, string Key, string[] Formers, string Type) Keyed(string field)
+    {
+        int colon = field.IndexOf(": ", StringComparison.Ordinal);
+        string name = colon < 0 ? field : field.Substring(0, colon), rest = colon < 0 ? "" : field.Substring(colon + 2);
+        string key = name;
+        var formers = Array.Empty<string>();
+        int at = rest.IndexOf(":key=", StringComparison.Ordinal);
+        if (at >= 0)
+        {
+            var tags = rest.Substring(at + 1).Split(':');
+            rest = rest.Substring(0, at);
+            foreach (string tag in tags)
+                if (tag.StartsWith("key=", StringComparison.Ordinal)) key = tag.Substring(4);
+                else if (tag.StartsWith("former=", StringComparison.Ordinal)) formers = tag.Substring(7).Split(',');
+        }
+
+        return (name, key, formers, rest);
+    }
+
+    /// <summary>Members by key (and, with <paramref name="formers"/>, by each former key too).</summary>
+    private static Dictionary<string, (string Name, string Type)> Keys(IEnumerable<string> fields, bool formers)
+    {
+        var keys = new Dictionary<string, (string Name, string Type)>(StringComparer.Ordinal);
+        foreach (string field in fields)
+        {
+            var member = Keyed(field);
+            keys[member.Key] = (member.Name, member.Type);
+            if (formers)
+                foreach (string former in member.Formers) keys[former] = (member.Name, member.Type);
+        }
+
+        return keys;
     }
 }

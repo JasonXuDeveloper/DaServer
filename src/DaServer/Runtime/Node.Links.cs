@@ -21,9 +21,11 @@ sealed partial class Node
     {
         var self = Membership.Self;
         var w = FrameWriter.Rent();
+        BinaryPrimitives.WriteInt64LittleEndian(w.GetSpan(sizeof(long)), ControlOp.Link.Packed); // readable by any build
+        w.Advance(sizeof(long));
         w.Write(new LinkHello
         {
-            Version = ControlOp.LinkVersion, Cluster = Options.ClusterName, Host = self.Host, Port = self.Port, StreamId = streamId,
+            Cluster = Options.ClusterName, Host = self.Host, Port = self.Port, StreamId = streamId,
             Proof = _linkAuth.Prove(Id, streamId, self.Host, self.Port, challenge),
         });
         w.SetHeader(FrameKind.Control, 0, ControlOp.Hello, (long)Id);
@@ -40,17 +42,27 @@ sealed partial class Node
         connection.Tag = challenge; // until the Hello: then the link it belongs to
         var w = FrameWriter.Rent();
         w.WriteRaw(challenge);
-        w.SendControl(connection, ControlOp.Challenge);
+        w.SendControl(connection, ControlOp.Challenge, ControlOp.Link.Packed);
         return connection;
     }
 
     /// <summary>A node named itself on an accepted connection: our replies to it go through our link to it.</summary>
     private void OnHello(Connection connection, ulong nodeId, ReadOnlySpan<byte> payload)
     {
+        // The levels come first, as raw bytes: a build that cannot read this one's encoding is still named.
+        var levels = payload.Length < sizeof(long) ? default : ProtocolLevels.Of(BinaryPrimitives.ReadInt64LittleEndian(payload));
+        if (!levels.Overlaps(ControlOp.Link))
+        {
+            Log.LinkRefused(Logger, connection.Remote?.Address.ToString() ?? "?", connection.Remote?.Port ?? 0, nodeId,
+                $"link protocol {levels}, this node speaks {ControlOp.Link}");
+            connection.Close(NotIntroduced);
+            return;
+        }
+
         LinkHello hello;
         try
         {
-            hello = NinoDeserializer.Deserialize<LinkHello>(payload);
+            hello = NinoDeserializer.Deserialize<LinkHello>(payload[sizeof(long)..]);
         }
         catch (Exception)
         {
@@ -58,9 +70,8 @@ sealed partial class Node
             return;
         }
 
-        var (version, cluster, host, port, streamId) = (hello.Version, hello.Cluster, hello.Host, hello.Port, hello.StreamId);
-        string? refusal = version != ControlOp.LinkVersion ? $"link protocol {version}, this node speaks {ControlOp.LinkVersion}"
-            : cluster != Options.ClusterName ? $"cluster '{cluster}', this node is in '{Options.ClusterName}'"
+        var (cluster, host, port, streamId) = (hello.Cluster, hello.Host, hello.Port, hello.StreamId);
+        string? refusal = cluster != Options.ClusterName ? $"cluster '{cluster}', this node is in '{Options.ClusterName}'"
             : _linkAuth.Verify(nodeId, streamId, host, port, connection.Tag as byte[], hello.Proof);
         if (refusal != null)
         {

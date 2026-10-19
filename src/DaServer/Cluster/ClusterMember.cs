@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 namespace DaServer.Cluster;
 
 public enum MemberStatus : byte
@@ -18,7 +19,6 @@ public enum MemberStatus : byte
 [NinoType(format: NinoFormat.VersionTolerant)]
 internal sealed class LinkHello
 {
-    public int Version;
     public string Cluster = "";
     public string Host = "";
     public int Port;
@@ -27,7 +27,7 @@ internal sealed class LinkHello
 }
 
 /// <summary>A message type handled by a handler type hosted on a node (message routing and actor placement).</summary>
-[NinoType]
+[NinoType, StructLayout(LayoutKind.Sequential, Pack = 1)] // no padding on the wire
 public partial struct HostedMessage
 {
     public uint MessageId;
