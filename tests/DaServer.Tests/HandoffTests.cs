@@ -170,6 +170,52 @@ public class HandoffTests(string kind) : ClusterTest
     }
 
     [Test]
+    public async Task ARecordItsNewOwnerCannotTakeGoesBackToItsSenderAndTheStore()
+    {
+        // b's copy of the actor throws while taking the record (a setting is user code): b refuses it, so a takes its
+        // state back and writes it, instead of b holding a copy that never runs and a dropping its own.
+        Faults.Allow("HandoffUnreadable"); // what the test provokes
+        var store = new WatchedStore(_stores.Create());
+        var a = await StartWith(store, "a");
+        for (int key = 8000; key < 8040; key++) Assert.That(await a.Ask(new BankId(key), new Deposit(key, false)), Is.EqualTo(key));
+        Assert.That(store.Written, Is.Empty, "nothing written yet: these keys write on unload only");
+        Bank.SettingsThrow.Value = 1;
+        int[] moved;
+        try
+        {
+            var b = await StartWith(store, "b");
+            await Converged();
+            moved = Enumerable.Range(8000, 40).Where(k => b.OwnerOf<BankId>(k) == b.Id).ToArray();
+            Assert.That(moved, Is.Not.Empty);
+            await Eventually(() => moved.All(k => store.Written.ContainsKey(k)), "a wrote the records b refused");
+        }
+        finally
+        {
+            Bank.SettingsThrow.Value = 0;
+        }
+
+        foreach (int key in moved) Assert.That(await a.Ask(new BankId(key), new Balance()), Is.EqualTo(key), $"key {key} kept its deposit");
+    }
+
+    [Test]
+    public async Task AStateThatDoesNotSerializeDoesNotMoveAndTheNewOwnerLoadsTheLastRecord()
+    {
+        // Tangles whose state no longer serializes leave a when b joins: their records cannot be sent nor written, so
+        // their copies go (the store keeps their last record, none here) and b loads them anew; the stop goes on.
+        Faults.Allow("RecordUnwritable"); // what the test provokes
+        var store = new WatchedStore(_stores.Create());
+        var a = await StartWith(store, "a");
+        for (int key = 1; key <= 20; key++) Assert.That(await a.Ask(new TangleId(key), new Tie()), Is.True);
+        var b = await StartWith(store, "b");
+        await Converged();
+        var moved = Enumerable.Range(1, 20).Where(k => b.OwnerOf<TangleId>(k) == b.Id).ToArray();
+        Assert.That(moved, Is.Not.Empty);
+        foreach (int key in moved) Assert.That(await b.Ask(new TangleId(key), new Tie()), Is.True, $"tangle {key} serves on its new owner");
+        Assert.That(Faults.Count("RecordUnwritable"), Is.GreaterThan(0), "the records did not serialize");
+        await Stop(a);
+    }
+
+    [Test]
     public async Task ScalingOutAndInMovesRecordsWithoutTheStore()
     {
         var store = new WatchedStore(_stores.Create());

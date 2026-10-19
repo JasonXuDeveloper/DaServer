@@ -28,7 +28,7 @@ public sealed partial class ClusterClient
     {
         _pending.FailAll(RpcStatus.Disconnected);
         if (Volatile.Read(ref _reconnecting) != 0) return; // an attempt of the running reconnect failed: it retries
-        Disconnected?.Invoke(error);
+        Raise(Disconnected, error); // a subscriber that throws must not keep the client from reconnecting
         if (!_disposed && AutoReconnect && Volatile.Read(ref _ticket) != null && Interlocked.CompareExchange(ref _reconnecting, 1, 0) == 0)
             _ = ReconnectAsync();
     }
@@ -62,7 +62,7 @@ public sealed partial class ClusterClient
 
                 Use(channel);
                 Volatile.Write(ref _reconnecting, 0);
-                Reconnected?.Invoke();
+                Raise(Reconnected);
                 return;
             }
             catch (RpcException e) when (e.Status == RpcStatus.Forbidden)
@@ -77,7 +77,7 @@ public sealed partial class ClusterClient
         }
 
         Volatile.Write(ref _reconnecting, 0);
-        if (!_disposed) ReconnectFailed?.Invoke(error);
+        if (!_disposed) Raise(ReconnectFailed, error);
     }
 
     private static readonly TimeoutException AttemptTimedOut = new("The reconnect attempt outlasted ReconnectTimeout");
@@ -110,7 +110,7 @@ public sealed partial class ClusterClient
                 _ = LeaveAsync(old, actors);
             }
 
-            Moved?.Invoke();
+            Raise(Moved);
         }
         catch (Exception)
         {

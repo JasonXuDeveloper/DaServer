@@ -24,8 +24,11 @@ internal static partial class Log
     [LoggerMessage(Level = LogLevel.Error, Message = "Unhandled exception in shard {Shard}")]
     public static partial void ShardFailed(ILogger logger, Exception error, int shard);
 
-    [LoggerMessage(Level = LogLevel.Error, Message = "System {System} failed in shard {Shard} ({Unlogged} failures since the last one logged)")]
+    [LoggerMessage(Level = LogLevel.Error, Message = "System {System} failed in shard {Shard} ({Unlogged} errors since the last one logged)")]
     public static partial void SystemFailed(ILogger logger, Exception error, string system, int shard, int unlogged);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Feature {Feature} failed in {Hook}: the node's own steps go on")]
+    public static partial void FeatureFailed(ILogger logger, Exception error, string feature, string hook);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Service call failed")]
     public static partial void ServiceCallFailed(ILogger logger, Exception error);
@@ -102,8 +105,8 @@ internal static partial class Log
     [LoggerMessage(Level = LogLevel.Error, Message = "Restoring the record of {Actor} failed")]
     public static partial void RestoreFailed(ILogger logger, Exception error, object actor);
 
-    [LoggerMessage(Level = LogLevel.Error, Message = "The record of {Actor} does not serialize: the store keeps the last one written")]
-    public static partial void RecordUnwritable(ILogger logger, Exception error, object actor);
+    [LoggerMessage(Level = LogLevel.Error, Message = "The record of {Actor} does not serialize: the store keeps the last one written ({Unlogged} errors since the last one logged)")]
+    public static partial void RecordUnwritable(ILogger logger, Exception error, object actor, int unlogged);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Saving {Count} records failed: retried in a second")]
     public static partial void SaveFailed(ILogger logger, Exception error, int count);

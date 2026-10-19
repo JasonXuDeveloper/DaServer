@@ -75,7 +75,7 @@ internal sealed class Shard : CompletionThread
     };
 
 
-    /// <summary>Messages whose handler failed (threw) on this shard since start: poison messages show up here.</summary>
+    /// <summary>Messages whose handler failed (threw), and system passes that threw, on this shard since start: poison messages and broken systems show up here.</summary>
     public long Failed => Volatile.Read(ref _counters.Failed);
 
     /// <summary>Time asleep waiting for work since start, in <see cref="Stopwatch"/> ticks (any thread).</summary>
@@ -313,25 +313,36 @@ internal sealed class Shard : CompletionThread
     }
 
     /// <summary>
-    /// A system threw (EasyEcs catches per system while this is subscribed, and runs the group's next system): logged,
-    /// at most once a second per shard with the count left out, and the shard goes on, as a handler that throws does
-    /// (<see cref="DispatchSystem"/>). One bug must not stop the shard's other systems or actors.
+    /// A system threw (EasyEcs catches per system while this is subscribed, and runs the group's next system): counted
+    /// with the failed handlers, logged at most once a second per shard, and the shard goes on, as a handler that throws
+    /// does (<see cref="DispatchSystem"/>). One bug must not stop the shard's other systems or actors.
     /// </summary>
     private void OnSystemError(EcsSystem system, Exception error)
     {
-        long now = Platform.Milliseconds;
-        if (now - _systemErrorLoggedMs < 1000)
-        {
-            _systemErrorsUnlogged++;
-            return;
-        }
-
-        Log.SystemFailed(Node.Logger, error, system.GetType().Name, Index, _systemErrorsUnlogged);
-        (_systemErrorLoggedMs, _systemErrorsUnlogged) = (now, 0);
+        CountFailed();
+        if (ErrorLogDue(out int unlogged)) Log.SystemFailed(Node.Logger, error, system.GetType().Name, Index, unlogged);
     }
 
-    private long _systemErrorLoggedMs = long.MinValue / 2; // shard thread only
-    private int _systemErrorsUnlogged;
+    /// <summary>
+    /// Whether an error that can repeat on every pass (a failing system, a record that does not serialize) is logged now:
+    /// at most once a second per shard; <paramref name="unlogged"/> is how many were left out since the last. Shard thread.
+    /// </summary>
+    internal bool ErrorLogDue(out int unlogged)
+    {
+        long now = Platform.Milliseconds;
+        unlogged = _errorsUnlogged;
+        if (now - _errorLoggedMs < 1000)
+        {
+            _errorsUnlogged++;
+            return false;
+        }
+
+        (_errorLoggedMs, _errorsUnlogged) = (now, 0);
+        return true;
+    }
+
+    private long _errorLoggedMs = long.MinValue / 2; // shard thread only
+    private int _errorsUnlogged;
 
     /// <summary>Singletons, runtime systems, the node's user systems and service instances.</summary>
     private void CreateWorld()

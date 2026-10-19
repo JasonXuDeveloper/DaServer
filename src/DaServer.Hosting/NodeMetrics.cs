@@ -34,7 +34,7 @@ internal sealed class NodeMetrics : IDisposable
                 Dropped(node, DropReason.Expired, "expired", tag),
             ], description: "Messages dropped unrun: a full shard queue or actor mailbox, or a caller that had timed out");
         _meter.CreateObservableCounter("daserver.handler.failed", () => new Measurement<long>(node.Failed, tag),
-            description: "Messages whose handler threw (poison messages show up here)");
+            description: "Messages whose handler threw, and system passes that threw (poison messages and broken systems show up here)");
         _meter.CreateObservableGauge("daserver.shard.busy_ratio", () => new Measurement<double>(BusyRatio(), tag),
             description: "Share of the shards' time spent working since the last collection (0-1): the default scaling metric");
         _meter.CreateObservableCounter("daserver.shard.tick_overruns", () => new Measurement<long>(node.TickOverruns, tag),

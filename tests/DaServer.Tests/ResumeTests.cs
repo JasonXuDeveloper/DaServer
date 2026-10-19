@@ -130,6 +130,21 @@ public class ResumeTests : ClusterTest
         Assert.That(Observed.Events, Does.Not.Contain("closed:501"));
     }
 
+    [Test]
+    public async Task ASubscriberThatThrowsOnDisconnectedDoesNotStopTheReconnect()
+    {
+        var gateways = await StartCluster(TimeSpan.FromSeconds(5));
+        var client = await LogIn(gateways, 531);
+        client.Disconnected += static _ => throw new InvalidOperationException("a subscriber's bug");
+        int reported = 0;
+        client.HandlerFailed += _ => Interlocked.Increment(ref reported);
+        var reconnected = Reconnected(client);
+        client.DropConnection();
+        await reconnected;
+        Assert.That(Volatile.Read(ref reported), Is.EqualTo(1), "the subscriber's failure was reported");
+        Assert.That(await client.Ask(new AddGold(1)), Is.EqualTo(1), "the session resumed");
+    }
+
     private static Task Moved(ClusterClient client)
     {
         var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

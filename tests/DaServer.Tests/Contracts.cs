@@ -240,7 +240,7 @@ public sealed partial class GrowthSystem : EcsSystem
 }
 
 /// <summary>
-/// A user system's bug, in the group the runtime's mail systems run in (it runs before them): it throws on every pass
+/// A user system's bug, in the group the runtime's mail systems run in (before the turn, mailbox and persistence systems): it throws on every pass
 /// over a growing counter while <see cref="Throwing"/> holds 1, and its creation throws while <see cref="CreateThrows"/>
 /// does. The shard's other systems and actors must go on; a shard that cannot be built must read as stalled.
 /// </summary>
@@ -436,7 +436,11 @@ public sealed class Brittle : Actor<BrittleId, Brittleness>
 /// </summary>
 public sealed class Bank : Actor<BankId, Ledger>
 {
-    public override TimeSpan SaveEvery => Key < 100 ? TimeSpan.FromMilliseconds(100) : TimeSpan.Zero;
+    public override TimeSpan SaveEvery => SettingsThrow.Value == 1 && Key >= 8000 ? throw new InvalidOperationException("a setting threw")
+        : Key < 100 ? TimeSpan.FromMilliseconds(100) : TimeSpan.Zero;
+
+    /// <summary>While 1, <see cref="SaveEvery"/> throws for keys from 8,000 (user code in an actor's settings).</summary>
+    public static readonly StrongBox<int> SettingsThrow = new();
 
     public override TimeSpan UnloadAfterIdle => Key is >= 1000 and < 2000 ? TimeSpan.FromMilliseconds(50) : TimeSpan.Zero;
 

@@ -369,16 +369,18 @@ public class InfrastructureTests
         clock.Advance(TimeSpan.FromMilliseconds(10).Ticks);
         wheel.Advance(ref fired); // warm, and empty again
 
-        clock.Advance(TimeSpan.FromDays(30).Ticks); // a quiet month: about 518 million ticks of 5 ms
+        clock.Advance(TimeSpan.FromDays(365).Ticks); // a quiet year: about 6.3 billion ticks of 5 ms, minutes to walk
         var watch = System.Diagnostics.Stopwatch.StartNew();
         wheel.Schedule(TimeSpan.FromMilliseconds(10), 2);
         clock.Advance(TimeSpan.FromMilliseconds(5).Ticks);
         wheel.Advance(ref fired);
-        Assert.That(fired.Items, Is.EqualTo(new[] { 1 }), "nothing fires early");
+        int early = fired.Items.Count;
         clock.Advance(TimeSpan.FromMilliseconds(10).Ticks);
         wheel.Advance(ref fired);
+        watch.Stop();
+        Assert.That(early, Is.EqualTo(1), "nothing fires early");
         Assert.That(fired.Items, Is.EqualTo(new[] { 1, 2 }), "it fires on time");
-        Assert.That(watch.ElapsedMilliseconds, Is.LessThan(100), "the idle month was skipped, not walked tick by tick");
+        Assert.That(watch.ElapsedMilliseconds, Is.LessThan(2000), "the idle year was skipped, not walked tick by tick");
     }
 
     [Test]

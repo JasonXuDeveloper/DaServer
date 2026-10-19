@@ -64,7 +64,7 @@ public class PersistenceEdgeTests(string kind) : ClusterTest
 
         var again = await StartWith(store, "again");
         for (int key = 300; key < 310; key++) Assert.That(await again.Ask(new BankId(key), new Balance()), Is.EqualTo(key), $"key {key} was written");
-        Assert.That(await again.Ask(new TangleId(1), new Tie()), Is.True, "the tangle loads again from its last record");
+        Assert.That(await again.Ask(new TangleId(1), new Tie()), Is.True, "the tangle loads again (no record of it was ever written)");
     }
 
     [Test]

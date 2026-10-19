@@ -39,6 +39,33 @@ public class PersistenceTests(string kind) : ClusterTest
             o.ClusterName = cluster;
         });
 
+    /// <summary>A feature whose drain and stop throw (a feature is user code too).</summary>
+    private sealed class FailingFeature : NodeFeature
+    {
+        protected internal override ValueTask DrainAsync(CancellationToken cancellationToken) => throw new InvalidOperationException("drain failed");
+
+        protected internal override void Stop(bool crashed) => throw new InvalidOperationException("stop failed");
+    }
+
+    [Test]
+    public async Task AFeatureThatFailsToDrainDoesNotKeepTheActorsFromSaving()
+    {
+        Faults.Allow("FeatureFailed"); // what the test provokes
+        var store = new CountingStore(_stores.Create());
+        var first = await Start("single", configure: o =>
+        {
+            o.ActorStore = store;
+            o.Features.Add(new FailingFeature());
+        });
+        Assert.That(await first.Ask(new BankId(110), new Deposit(5, false)), Is.EqualTo(5));
+        await Stop(first);
+        Assert.That(Faults.Count("FeatureFailed"), Is.EqualTo(2), "its drain and its stop failed");
+        Assert.That(store.Writes, Is.EqualTo(1), "the actor still unloaded and wrote its record");
+
+        var second = await StartWith(store);
+        Assert.That(await second.Ask(new BankId(110), new Balance()), Is.EqualTo(5));
+    }
+
     [Test]
     public async Task StateSurvivesAGracefulStop()
     {

@@ -152,6 +152,32 @@ public sealed partial class ClusterClient
         }
     }
 
+    /// <summary>Raise one of the client's events: a subscriber that throws is reported (<see cref="HandlerFailed"/>) and the client goes on.</summary>
+    private void Raise(Action? handler)
+    {
+        try
+        {
+            handler?.Invoke();
+        }
+        catch (Exception e)
+        {
+            Failed(e);
+        }
+    }
+
+    /// <inheritdoc cref="Raise(Action?)"/>
+    private void Raise(Action<Exception?>? handler, Exception? error)
+    {
+        try
+        {
+            handler?.Invoke(error);
+        }
+        catch (Exception e)
+        {
+            Failed(e);
+        }
+    }
+
     private void Failed(Exception error)
     {
         try

@@ -136,18 +136,16 @@ public class SingleNodeTests : ClusterTest
     {
         Faults.Allow("ShardCrashed"); // what the test provokes, and what the watchdog then reports
         Faults.Allow("ShardStalled");
-        FaultySystem.CreateThrows.Value = 1;
-        Node broken;
+        FaultySystem.CreateThrows.Value = 1; // until the shard thread built its world: the start does not wait for it
         try
         {
-            broken = await Start("broken", shards: 1);
+            var broken = await Start("broken", shards: 1);
+            await Eventually(() => broken.StalledShards == 1, "the crashed shard reads as stalled, so /alive fails");
         }
         finally
         {
             FaultySystem.CreateThrows.Value = 0;
         }
-
-        await Eventually(() => broken.StalledShards == 1, "the crashed shard reads as stalled, so /alive fails");
     }
 
     [Test]

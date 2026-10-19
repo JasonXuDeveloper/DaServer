@@ -325,7 +325,7 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
     public int ShardCount => _shards.Length;
 
 
-    /// <summary>Messages whose handler failed since start (all shards).</summary>
+    /// <summary>Messages whose handler failed, and system passes that threw, since start (all shards).</summary>
     public long Failed => Sum(static s => s.Failed);
 
     private long Sum(Func<Shard, long> value)
@@ -385,15 +385,38 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
                 if (_links.TryGetValue((member.Host, member.Port), out var link) && link.PeerId is var peer &&
                     (peer == member.NodeId || peer == 0 && !LiveAt(view, member)))
                     link.OnPeerDead();
-                if (_deadReported.Add(member.NodeId))
-                    foreach (var feature in Options.Features) feature.OnMemberDead(member);
             }
         }
 
-        foreach (var feature in Options.Features) feature.OnViewChanged(view);
         ReportBuilds(view);
-
         _sessionNodes.OnViewChanged(view);
+
+        // The features last, each guarded: a feature is user code too, and the node's own steps above must not depend on it.
+        foreach (var member in view.Members)
+            if (member.Status == MemberStatus.Dead && _deadReported.Add(member.NodeId))
+                foreach (var feature in Options.Features)
+                {
+                    try
+                    {
+                        feature.OnMemberDead(member);
+                    }
+                    catch (Exception e)
+                    {
+                        Log.FeatureFailed(Logger, e, feature.GetType().Name, nameof(NodeFeature.OnMemberDead));
+                    }
+                }
+
+        foreach (var feature in Options.Features)
+        {
+            try
+            {
+                feature.OnViewChanged(view);
+            }
+            catch (Exception e)
+            {
+                Log.FeatureFailed(Logger, e, feature.GetType().Name, nameof(NodeFeature.OnViewChanged));
+            }
+        }
     }
 
     /// <summary>Whether the node still runs (late work, such as a grace that ended, checks it).</summary>

@@ -31,7 +31,18 @@ internal sealed partial class Node
                 .ContinueWith(static _ => { }, TaskScheduler.Default).ConfigureAwait(false);
         Phase("leave", phase);
 
-        foreach (var feature in Options.Features) await feature.DrainAsync(budget.Token).ConfigureAwait(false);
+        foreach (var feature in Options.Features)
+        {
+            try
+            {
+                await feature.DrainAsync(budget.Token).ConfigureAwait(false);
+            }
+            catch (Exception e) // the budget ran out, or the feature failed: the actors still unload and save
+            {
+                if (!budget.IsCancellationRequested) Log.FeatureFailed(Logger, e, feature.GetType().Name, nameof(NodeFeature.DrainAsync));
+            }
+        }
+
         Phase("drain", phase);
 
         var stopped = StopShards();
@@ -39,7 +50,7 @@ internal sealed partial class Node
         if (!stopped.IsCompleted) ReportUnloaded();
         Phase("unload", phase);
 
-        foreach (var feature in Options.Features) feature.Stop(crashed: false);
+        StopFeatures(crashed: false);
         CloseLinks();
         Phase("close", phase);
         Log.NodeStopped(Logger, Options.Name, Id);
@@ -53,13 +64,13 @@ internal sealed partial class Node
         StopPhase?.Invoke(name, elapsed);
     }
 
-    /// <summary>The budget ran out while actors were unloading: say how many were not saved (their shards keep trying).</summary>
     /// <summary>
     /// After <see cref="StopAsync"/>: whether every actor was unloaded (and its record written) within the stop budget.
     /// The host exits with an error otherwise, so the platform sees a stop that lost state.
     /// </summary>
     public bool StoppedClean { get; private set; } = true;
 
+    /// <summary>The budget ran out while actors were unloading: say how many were not saved (their shards keep trying).</summary>
     private void ReportUnloaded()
     {
         StoppedClean = false;
@@ -81,7 +92,7 @@ internal sealed partial class Node
         if (Interlocked.Exchange(ref _started, 2) != 1) return;
         _killed = true;
         CloseLinks();
-        foreach (var feature in Options.Features) feature.Stop(crashed: true);
+        StopFeatures(crashed: true);
         await StopShards().ConfigureAwait(false);
     }
 
@@ -98,12 +109,28 @@ internal sealed partial class Node
         Log.MinoritySide(Logger, Options.Name, reachable, lost);
         _killed = true;
         CloseLinks();
-        foreach (var feature in Options.Features) feature.Stop(crashed: true);
+        StopFeatures(crashed: true);
         await StopShards(fenced: true).ConfigureAwait(false);
         Downed?.Invoke();
     }
 
-    private Task StopShards(bool fenced = false)
+    /// <summary>Stop every feature, each guarded: one that throws does not keep the links or shards from stopping.</summary>
+    private void StopFeatures(bool crashed)
+    {
+        foreach (var feature in Options.Features)
+        {
+            try
+            {
+                feature.Stop(crashed);
+            }
+            catch (Exception e)
+            {
+                Log.FeatureFailed(Logger, e, feature.GetType().Name, nameof(NodeFeature.Stop));
+            }
+        }
+    }
+
+        private Task StopShards(bool fenced = false)
     {
         foreach (var shard in _shards) shard.RequestStop(fenced);
         return Task.WhenAll(Array.ConvertAll(_shards, static s => s.Stopped));

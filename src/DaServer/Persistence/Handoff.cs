@@ -127,7 +127,7 @@ internal static partial class Handoff
         catch (Exception e)
         {
             record.Dispose();
-            Log.RecordUnwritable(node.Logger, e, actor);
+            Log.RecordUnwritable(node.Logger, e, actor, 0); // once per move
             return null;
         }
 
@@ -158,8 +158,17 @@ internal static partial class Handoff
     /// <summary>The handoff was refused or not answered: the copy takes its state back, then the store keeps it.</summary>
     public static void Reclaim(World world, Entity entity, byte[] record)
     {
-        Records.Read(entity, record.AsSpan(RecordHeader), world.GetSingleton<ShardStore>().ById);
-        entity.Get<ActorRef>().Actor.InitializeEntity(entity);
+        try
+        {
+            Records.Read(entity, record.AsSpan(RecordHeader), world.GetSingleton<ShardStore>().ById);
+            entity.Get<ActorRef>().Actor.InitializeEntity(entity); // the states not moved start new: user initializers
+        }
+        catch (Exception e)
+        {
+            // The components read so far are the record's: the final write stores them; the copy goes either way.
+            Log.HandoffUnreadable(world.Logger, e, entity.Get<ActorRef>().Actor);
+        }
+
         Fallback(entity);
     }
 
@@ -366,19 +375,24 @@ internal static partial class Handoff
                 : !ShardDispatch.Owns(world, handlerType.Id, key) && !SendersOwn(world, handlerType.Id, key, from))
             return false;
         if (loaded) entity.Remove<AwaitingHandoff>();
-        else entity = ShardDispatch.Adopt(world, handlerType, key);
-        var actor = entity.Get<ActorRef>().Actor;
         var store = world.GetSingleton<ShardStore>();
+        Actor? actor = null;
+        long every;
         try
         {
+            // User code from here (the actor's constructor and settings, the state's initializers): a throw refuses the
+            // record, so its sender takes the state back and writes it, instead of this node holding a copy that never runs.
+            if (!loaded) entity = ShardDispatch.Adopt(world, handlerType, key);
+            actor = entity.Get<ActorRef>().Actor;
+            every = store.Enabled ? (long)actor.SaveEvery.TotalMilliseconds : 0;
             Records.Read(entity, payload[RecordHeader..], store.ById);
             actor.InitializeEntity(entity);
         }
         catch (Exception e)
         {
-            Log.HandoffUnreadable(world.Logger, e, actor);
-            if (loaded) ShardDispatch.BeginLoad(world, entity, actor);
-            else entity.Add<Removing>() = new Removing(RpcStatus.Ok, null); // nothing queued yet
+            Log.HandoffUnreadable(world.Logger, e, (object?)actor ?? handlerType);
+            if (loaded) ShardDispatch.BeginLoad(world, entity, actor!);
+            else if (actor != null) entity.Add<Removing>() = new Removing(RpcStatus.Ok, null); // nothing queued yet
             return false;
         }
 
@@ -388,7 +402,6 @@ internal static partial class Handoff
         if (store.Enabled)
         {
             entity.Add<RestoredRecord>() = new RestoredRecord(payload.ToArray()); // until OnLoad ends (cold: one per move)
-            long every = (long)actor.SaveEvery.TotalMilliseconds;
             entity.Add<Stored>() = new Stored
             {
                 Version = BinaryPrimitives.ReadInt64LittleEndian(payload[sizeof(ulong)..]),

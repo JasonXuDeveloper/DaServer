@@ -119,7 +119,7 @@ internal sealed partial class PersistSystem : EcsSystem
         {
             // The state does not serialize: the store keeps the last record written. One actor's bad state must not
             // hold the shard's other writes and handoffs, so this write is given up; a copy that was leaving goes.
-            Log.RecordUnwritable(target.Shard.Node.Logger, e, target);
+            if (target.Shard.ErrorLogDue(out int unlogged)) Log.RecordUnwritable(target.Shard.Node.Logger, e, target, unlogged);
             if (actor.Has<FinalSave>())
             {
                 actor.Remove<FinalSave>();
