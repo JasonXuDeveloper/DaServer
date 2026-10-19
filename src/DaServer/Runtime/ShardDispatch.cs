@@ -327,10 +327,19 @@ internal static class ShardDispatch
     private static System.Threading.Tasks.ValueTask Resume(Actor actor, in Envelope envelope)
     {
         var frame = envelope.Frame;
+        if (frame.Deadline != 0 && Platform.Milliseconds > frame.Deadline)
+        {
+            // The client-facing node answered its client without this actor (timed out): taking the session now would
+            // leave the actor on a session that does not know it.
+            Expired();
+            frame.Dispose();
+            return default;
+        }
+
         var resumed = NinoDeserializer.Deserialize<SessionResumed>(frame.Payload);
         var status = ActorSessions.Resume(actor, in resumed, out bool reverted);
         bool accepted = status == RpcStatus.Ok && !reverted; // a revert restores the session the actor had: nothing to tell
-        if (accepted) actor.Shard.Node.Supersede(resumed.Previous, actor.HandlerType.Id, actor.Key);
+        if (accepted) actor.Shard.Node.Supersede(resumed.Previous, resumed.Session, actor.HandlerType.Id, actor.Key);
         if (frame.CallId != 0 && envelope.Sink is { } sink)
         {
             if (status == RpcStatus.Ok) sink.SendOk(frame.CallId);

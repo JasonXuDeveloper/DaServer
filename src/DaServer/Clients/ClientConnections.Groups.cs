@@ -26,13 +26,13 @@ public sealed partial class ClientConnections
     /// <summary>Add a session to a group (once). Caller holds the gate.</summary>
     private void Join(SessionState session, long groupId)
     {
-        if (session.Closed || session.Groups.ContainsKey(groupId)) return;
+        // Not after its goodbye (Explicit): the client went on with the session it moved to.
+        if (session.Closed || session.Explicit || session.Groups.ContainsKey(groupId)) return;
         if (!_groups.TryGetValue(groupId, out var group))
             _groups[groupId] = group = (_idleGroups.TryPop(out var idle) ? idle : new GroupMembers()).For(groupId);
         group.Add(session);
     }
 
-    /// <summary>Remove a session from a group; empty groups are dropped (bounded memory). Caller holds the gate.</summary>
     /// <summary>Remove the session from every group it is in. Under the group gate.</summary>
     private void LeaveGroups(SessionState session)
     {
@@ -44,6 +44,7 @@ public sealed partial class ClientConnections
         }
     }
 
+    /// <summary>Remove a session from a group; empty groups are dropped (bounded memory). Caller holds the gate.</summary>
     private void Leave(SessionState session, long groupId)
     {
         if (!session.Groups.ContainsKey(groupId) || !_groups.TryGetValue(groupId, out var group)) return;

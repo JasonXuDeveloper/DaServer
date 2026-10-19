@@ -221,8 +221,15 @@ internal sealed class PeerLink : IFrameSink, IDisposable
                     else _backlog.RemoveRange(0, sent);
                 }
 
-                Volatile.Write(ref _connection, connection);
                 _connecting = false;
+                if (_backlog == null) Volatile.Write(ref _connection, connection);
+                else
+                {
+                    // The connection closed under the flush: not published (a later send would overtake the rest), the
+                    // next connection resumes the stream and flushes what is left.
+                    stale = connection;
+                    StartConnecting();
+                }
             }
         }
 
@@ -276,6 +283,8 @@ internal sealed class PeerLink : IFrameSink, IDisposable
         Connection? stale;
         lock (_gate)
         {
+            // Resumed meanwhile (the caller looked before taking the gate): the stream lives, nothing to drop.
+            if (connecting == null && _connection is { IsClosed: false }) return;
             DropStream(newId: true);
             if (connecting.HasValue) _connecting = connecting.Value;
             // A handshake in progress said Hello with the old stream id: its Resume would continue that stream.

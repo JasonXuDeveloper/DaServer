@@ -6,8 +6,8 @@ internal static class ControlOp
     /// <summary>Version of the link protocol, in every Hello: nodes speaking another one are refused (2: Nino 4's format).</summary>
     public const int LinkVersion = 2;
 
-    /// <summary>Version of the client protocol, in every <see cref="ClientHello"/>: clients speaking another one are refused (3: Retire).</summary>
-    public const int ClientVersion = 3;
+    /// <summary>Version of the client protocol, in every <see cref="ClientHello"/>: clients speaking another one are refused (4: a resume's reply counts the actors that took the session).</summary>
+    public const int ClientVersion = 4;
 
     /// <summary>Push gossip: payload = the sender's table as <c>MemberPulse</c>s; answered with <c>GossipReply</c>.</summary>
     public const uint Gossip = 1;

@@ -81,13 +81,14 @@ public sealed partial class ClientConnections
         var current = new ClientSession(_node.Id, session.Id);
         var resumed = new SessionResumed(current, previous);
         var accepted = new bool[grants.Length];
+        var answered = new RpcStatus[grants.Length];
 
         // The first actor that takes the session decides, asked alone: a ticket presented on two connections at once
         // resumes on the one it accepted, and the other stops at its Superseded instead of taking the other actors.
         int first = 0;
         for (; first < grants.Length; first++)
         {
-            var status = await Accepts(grants[first], resumed).ConfigureAwait(false);
+            var status = answered[first] = await Accepts(grants[first], resumed).ConfigureAwait(false);
             if (status == RpcStatus.Superseded)
             {
                 // Another connection took the session; the client retries: if that was its own attempt cut off, the
@@ -105,7 +106,7 @@ public sealed partial class ClientConnections
             var answers = new Task<RpcStatus>[grants.Length - first - 1];
             for (int i = 0; i < answers.Length; i++) answers[i] = Accepts(grants[first + 1 + i], resumed);
             var rest = await Task.WhenAll(answers).ConfigureAwait(false);
-            for (int i = 0; i < rest.Length; i++) accepted[first + 1 + i] = rest[i] == RpcStatus.Ok;
+            for (int i = 0; i < rest.Length; i++) accepted[first + 1 + i] = (answered[first + 1 + i] = rest[i]) == RpcStatus.Ok;
         }
 
         int taken = 0;
@@ -131,6 +132,12 @@ public sealed partial class ClientConnections
                 if (accepted[i]) _node.SendTo(grants[i].HandlerTypeId, grants[i].Key, new SessionResumed(previous, current));
             return;
         }
+
+        // An actor that did not answer in time may still take the session late (its request was queued): the revert
+        // follows on the same link and undoes it, or finds nothing to undo.
+        for (int i = 0; i < grants.Length; i++)
+            if (!accepted[i] && answered[i] is RpcStatus.Timeout or RpcStatus.Disconnected)
+                _node.SendTo(grants[i].HandlerTypeId, grants[i].Key, new SessionResumed(previous, current));
 
         if (taken == 0)
         {
