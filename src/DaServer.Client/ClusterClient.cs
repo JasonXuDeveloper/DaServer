@@ -392,6 +392,12 @@ public sealed partial class ClusterClient : IMessageSender, IChannelHandler, IAs
                 return;
             }
 
+            if (connection == _draining && FrameHeader.Read(frame).MessageId == TypeId<SessionMoved>.Value)
+            {
+                Interlocked.Increment(ref _movedMarkers); // the runtime's marker, not a push for the handlers
+                return;
+            }
+
             Hand(connection, frame);
         }
     }
@@ -405,8 +411,14 @@ public sealed partial class ClusterClient : IMessageSender, IChannelHandler, IAs
     /// <summary>A move starts: pushes of other connections wait until <paramref name="old"/> drained.</summary>
     private void Drain(IFrameChannel old)
     {
-        lock (_pushGate) Volatile.Write(ref _draining, old);
+        lock (_pushGate)
+        {
+            Volatile.Write(ref _draining, old);
+            Volatile.Write(ref _movedMarkers, 0);
+        }
     }
+
+    private int _movedMarkers; // SessionMoved received on the connection a move drains
 
     /// <summary>
     /// The connection <paramref name="old"/> left drained (its goodbye was answered, or it closed), or the move failed (<paramref name="keep"/>

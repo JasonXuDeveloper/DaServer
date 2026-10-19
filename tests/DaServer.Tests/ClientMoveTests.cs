@@ -219,6 +219,28 @@ public class ClientMoveTests
     }
 
     [Test]
+    public async Task APushStillOnItsWayToTheOldSessionComesBeforeTheNewOnes()
+    {
+        // The resume completes before a push the actor sent the old session has arrived there (a slow link): the new
+        // connection's pushes wait for the actor's SessionMoved on the old one, which follows that push.
+        var (client, node) = await Connected();
+        var seen = new GoldSeen();
+        client.Register(seen);
+        node.ResumedActors = 1;
+        var moved = Moved(client);
+        node[0].Retire();
+        await moved;
+        node[1].Push(new GoldChanged(2));
+        await Task.Delay(200);
+        lock (seen.Values) Assert.That(seen.Values, Is.Empty, "the new session's push waits for the old session's end");
+        Assert.That(node[0].IsClosed, Is.False, "the old connection stays until the actor's marker");
+        node[0].Push(new GoldChanged(1));
+        node[0].Push(new SessionMoved());
+        await Until(() => { lock (seen.Values) return seen.Values.Count == 2; });
+        Assert.That(seen.Values, Is.EqualTo(new[] { 1, 2 }));
+    }
+
+    [Test]
     public async Task ADisposeDuringAReconnectEndsTheSessionAtOnce()
     {
         var (client, node) = await Connected();

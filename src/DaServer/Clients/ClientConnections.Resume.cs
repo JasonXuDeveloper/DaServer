@@ -13,12 +13,7 @@ public sealed partial class ClientConnections
         {
             session.Closed = true;
             grants = session.Grants; // final: grants change under the gate, never on a closed session
-            while (session.Groups.Count > 0)
-            {
-                using var groups = session.Groups.Keys.GetEnumerator();
-                groups.MoveNext();
-                Leave(session, groups.Current);
-            }
+            LeaveGroups(session);
         }
 
         var sessionRef = new ClientSession(_node.Id, session.Id);
@@ -144,7 +139,9 @@ public sealed partial class ClientConnections
         }
 
         IssueTicket(session);
-        session.Sink.SendOk(callId);
+        var reply = FrameWriter.Rent(FrameHeader.Size + sizeof(int));
+        reply.Write(taken); // how many actors took the session: a moving client waits for that many SessionMoved
+        session.Sink.SendReply(callId, RpcStatus.Ok, reply);
     }
 
     private async Task<RpcStatus> Accepts(SessionGrant grant, SessionResumed resumed)

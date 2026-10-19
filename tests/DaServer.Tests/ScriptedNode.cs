@@ -17,6 +17,9 @@ internal sealed class ScriptedNode
     /// <summary>Refuse resumes (a ticket the node does not take): a move fails.</summary>
     public volatile bool RefuseResume;
 
+    /// <summary>How many actors a resume reports taking the session (each marks the move on the old session).</summary>
+    public volatile int ResumedActors;
+
     /// <summary>Connections opened from now on answer nothing (a node that hangs, a blackholed address).</summary>
     public volatile bool Unresponsive;
 
@@ -175,7 +178,7 @@ internal sealed class ScriptedChannel : IFrameChannel
         if (callId == 0 || hold) return true;
         if (header.Kind == FrameKind.Message) Reply(callId, RpcStatus.Ok, 1);
         else if (header.MessageId == ControlOp.ResumeSession)
-            _node.Resume(() => Reply(callId, _node.RefuseResume ? RpcStatus.Forbidden : RpcStatus.Ok));
+            _node.Resume(() => Reply(callId, _node.RefuseResume ? RpcStatus.Forbidden : RpcStatus.Ok, _node.RefuseResume ? null : _node.ResumedActors));
         else Reply(callId, RpcStatus.Ok); // hello, goodbye
         return true;
     }

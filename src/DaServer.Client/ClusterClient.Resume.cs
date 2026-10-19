@@ -50,7 +50,7 @@ public sealed partial class ClusterClient
                 // that never answers closes the attempt's connection, which fails its hello or resume.
                 using (var attempt = new CancellationTokenSource(TimeSpan.FromMilliseconds(Math.Max(1, deadline - Platform.Milliseconds))))
                 using (attempt.Token.Register(static c => ((ClusterClient)c!)._connection?.Close(AttemptTimedOut), this))
-                    channel = await ResumedAsync(watched: true, attempt.Token).ConfigureAwait(false);
+                    (channel, _) = await ResumedAsync(watched: true, attempt.Token).ConfigureAwait(false);
                 if (channel.IsClosed) throw AttemptTimedOut;
                 if (_disposed)
                 {
@@ -94,7 +94,7 @@ public sealed partial class ClusterClient
         bool leaving = false;
         try
         {
-            var channel = await ResumedAsync(watched: false).ConfigureAwait(false);
+            var (channel, actors) = await ResumedAsync(watched: false).ConfigureAwait(false);
             if (_disposed)
             {
                 await GoodbyeAsync(channel).ConfigureAwait(false); // disposed meanwhile: the session ends at once
@@ -106,7 +106,7 @@ public sealed partial class ClusterClient
             if (old != null)
             {
                 leaving = true;
-                _ = LeaveAsync(old);
+                _ = LeaveAsync(old, actors);
             }
 
             Moved?.Invoke();
@@ -130,9 +130,13 @@ public sealed partial class ClusterClient
     /// grace. The connection closes once the calls made on it are answered (replies come back the way calls went), or
     /// timed out. No step waits on a guess: the seal is the fence.
     /// </summary>
-    private async Task LeaveAsync(IFrameChannel old)
+    private async Task LeaveAsync(IFrameChannel old, int actors)
     {
         long deadline = Platform.Milliseconds + (long)CallTimeout.TotalMilliseconds;
+        // Every actor that took the new session marks the end of what it pushed to the old one (SessionMoved): pushes
+        // still on their way there arrive before the new connection's go on. A closed connection brings no more.
+        while (!old.IsClosed && Volatile.Read(ref _movedMarkers) < actors && Platform.Milliseconds < deadline)
+            await Task.Delay(10).ConfigureAwait(false);
         try
         {
             await GoodbyeAsync(old).ConfigureAwait(false); // its answer is the last frame its session is sent
@@ -164,14 +168,16 @@ public sealed partial class ClusterClient
         }
     }
 
-    /// <summary>A new introduced connection with the session resumed on it (closed again if the resume fails).</summary>
-    private async ValueTask<IFrameChannel> ResumedAsync(bool watched, CancellationToken cancellationToken = default)
+    /// <summary>
+    /// A new introduced connection with the session resumed on it (closed again if the resume fails), and how many actors
+    /// took the session.
+    /// </summary>
+    private async ValueTask<(IFrameChannel Channel, int Actors)> ResumedAsync(bool watched, CancellationToken cancellationToken = default)
     {
         var channel = await OpenAsync(watched, cancellationToken).ConfigureAwait(false);
         try
         {
-            await ResumeOn(channel).ConfigureAwait(false);
-            return channel;
+            return (channel, await ResumeOn(channel).ConfigureAwait(false));
         }
         catch
         {
@@ -180,11 +186,11 @@ public sealed partial class ClusterClient
         }
     }
 
-    private ValueTask ResumeOn(IFrameChannel channel)
+    private ValueTask<int> ResumeOn(IFrameChannel channel)
     {
         var ticket = Volatile.Read(ref _ticket)!;
-        var call = PendingCall<NoReply>.Rent(null);
-        var task = call.Done;
+        var call = PendingCall<int>.Rent(null);
+        var task = call.Task;
         var w = FrameWriter.Rent(FrameHeader.Size + ticket.Length);
         w.WriteRaw(ticket);
         Transmit(channel, w, FrameKind.Control, 0, ControlOp.ResumeSession, 0, call, RpcStatus.Ok);
@@ -204,7 +210,7 @@ public sealed partial class ClusterClient
     /// <summary>Tests: the latest resume ticket, and resuming with any ticket (a replay).</summary>
     internal byte[]? Ticket => Volatile.Read(ref _ticket);
 
-    internal ValueTask ResumeWith(byte[] ticket)
+    internal ValueTask<int> ResumeWith(byte[] ticket)
     {
         Volatile.Write(ref _ticket, ticket);
         return ResumeOn(_connection!);

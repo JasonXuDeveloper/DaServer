@@ -120,6 +120,9 @@ public sealed partial class ClientConnections
                 break;
             case ControlOp.Goodbye:
                 session.Explicit = true;
+                // Out of every group before the answer: no broadcast reaches both this session and the one it moved to
+                // once the client goes on with the new connection's pushes.
+                lock (_groupGate) LeaveGroups(session);
                 if (callId != 0) session.Sink.SendOk(callId);
                 break;
             default:

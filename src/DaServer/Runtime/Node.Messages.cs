@@ -166,9 +166,14 @@ sealed partial class Node
     /// afterwards (links are ordered), so the actor's broadcasts reach the client once. Its grant stays until the client
     /// leaves that session: calls the client made on it before moving still get their replies (ADR-026).
     /// </summary>
-    internal void Supersede(ClientSession previous, uint handlerTypeId, long key) =>
+    internal void Supersede(ClientSession previous, uint handlerTypeId, long key)
+    {
         SendToNode(MessageWriter.Write(new LeaveGroup(ClientGroup.Of(handlerTypeId, key))), AddressScopes.Session,
             TypeId<LeaveGroup>.Value, previous.Node, previous.Id);
+        // Behind every push this actor sent the previous session, on the same link: the client moving its session
+        // delivers the new connection's pushes once each actor's marker came (ADR-036).
+        SendToNode(MessageWriter.Write(new SessionMoved()), AddressScopes.Session, TypeId<SessionMoved>.Value, previous.Node, previous.Id);
+    }
 
     internal ValueTask ChangeAccess(ClientSession session, SessionAccess access)
     {

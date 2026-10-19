@@ -25,6 +25,7 @@ DaServer.SessionAccess (no header, positional, raw, id D457C861)
 - Change: DaServer.AccessChange@16 raw(1)
 DaServer.SessionClosed (no header, positional, raw, id 60279907)
 - Session: DaServer.ClientSession@0 raw(16){Node:ulong@0:raw(8),Id:long@8:raw(8)}
+DaServer.SessionMoved (no header, positional, raw, id 4AE653D8)
 DaServer.SessionResumed (no header, positional, raw, id EDA9CFA8)
 - Session: DaServer.ClientSession@0 raw(16){Node:ulong@0:raw(8),Id:long@8:raw(8)}
 - Previous: DaServer.ClientSession@16 raw(16){Node:ulong@0:raw(8),Id:long@8:raw(8)}

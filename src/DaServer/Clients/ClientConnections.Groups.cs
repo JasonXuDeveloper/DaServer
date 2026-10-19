@@ -33,6 +33,17 @@ public sealed partial class ClientConnections
     }
 
     /// <summary>Remove a session from a group; empty groups are dropped (bounded memory). Caller holds the gate.</summary>
+    /// <summary>Remove the session from every group it is in. Under the group gate.</summary>
+    private void LeaveGroups(SessionState session)
+    {
+        while (session.Groups.Count > 0)
+        {
+            using var groups = session.Groups.Keys.GetEnumerator();
+            groups.MoveNext();
+            Leave(session, groups.Current);
+        }
+    }
+
     private void Leave(SessionState session, long groupId)
     {
         if (!session.Groups.ContainsKey(groupId) || !_groups.TryGetValue(groupId, out var group)) return;

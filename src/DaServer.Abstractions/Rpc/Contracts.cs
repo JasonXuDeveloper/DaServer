@@ -151,6 +151,14 @@ public readonly partial record struct SessionClosed(ClientSession Session);
 [NinoType, Message]
 public readonly partial record struct SessionResumed(ClientSession Session, ClientSession Previous);
 
+/// <summary>
+/// To the previous session of a resume, from each actor that took the new one, after the last push it sent there: the
+/// client SDK moving its session (make-before-break) delivers the new connection's pushes once every actor said so, in
+/// order after the old connection's. Not delivered to handlers.
+/// </summary>
+[NinoType, Message, ToClient]
+public readonly partial record struct SessionMoved;
+
 // Session operations: messages to a client address that the node holding the session applies instead of delivering
 // them to the client. To a session (or the Caller): that session; to a client group: every member, on every node.
 // They travel on the same ordered link as the messages to the session, so what follows them sees their effect.
