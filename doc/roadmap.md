@@ -712,7 +712,7 @@ and cards, a manual clock), fails before its fix, and passes after it.
   - [x] One host:port parser (`HostPort`, IPv6 in brackets); `[LoggerMessage]` on message and actor failures, the
         dropped-backlog warning at most every 10 s with a count.
 - Audit round 3 (agreed):
-  - [x] Planned reconnects make before they break (ClientVersion 3, `ControlOp.Retire`, ADR-026): at
+  - [x] Planned reconnects make before they break (`ControlOp.Retire`, ADR-026): at
         `MaxConnectionAge` or a drain the node asks the client to move; it resumes on a new connection while the old one
         keeps working, then leaves the old one once its calls are answered; the node closes it after `RetireGrace`
         whatever the client does. `ResumeTests.AConnectionRetiredForItsAgeLosesNoPush`: every call answered and every
@@ -924,6 +924,21 @@ and cards, a manual clock), fails before its fix, and passes after it.
       one handoff timeout.
     - Sessions of a drained node reach `SessionClosed` one view removal after the grace (the drained node counts as
       present while Leaving).
+- [x] Self-review round 6 (ownership and handoff; links, sessions and the client):
+  - A copy abandoned while waiting for its record told its asker "none" while the real holder still had the state
+    (two quick joins): it sends the asker to the node it waited for. A shard remembers for the move window where it
+    handed each key's record, so a later ask for a key gone from it is sent there instead of hearing "none". A copy
+    adopted from a sender ahead of this node's view, for a key its asker owns here, leaves when asked. Recent views
+    are bounded by the move window (up to 256), not cut at 16. A failed `OnLoad` writes the record as it came.
+  - A resume answered after its asker timed out took the session too late (the actor then belonged to neither
+    session): a late resume is dropped, and the client-facing node reverts the grants that timed out or disconnected.
+    The new session joins the actor's group before the old one leaves it, so a group push in between reaches one of
+    them. A link resumed while the view thread found it down is no longer reset under it; a flush cut short by a
+    closing connection does not publish it (a later send would overtake the rest). A session joins no group after its
+    goodbye. The resume reply's format changed, so the client protocol is 4.
+  - No deterministic tests for these interleavings (each needs messages to cross at one point); the existing handoff,
+    resume and move tests pass, and the sample E2E runs.
+
 
 ## Generator / analyzer (`src/DaServer.Generator`)
 - [x] Messages instead of contracts (ADR-035): typed `Ask` overloads per request, one dispatcher per `[Handle]`

@@ -252,7 +252,7 @@ records that no longer hold). Each: context → decision → consequences.
   address is tried; reconnects use them again) and stays on the node it reached; actors are reachable from any
   client-facing node, so no client needs a particular one. `ClientConnectionOptions.MaxConnectionAge` (off by default,
   jittered by a tenth, on the node's clock) retires connections older than it, and a leaving node retires its
-  connections in waves (D3): the node sends `ControlOp.Retire` (client protocol 3), the client resumes its session
+  connections in waves (D3): the node sends `ControlOp.Retire` (client protocol 4), the client resumes its session
   (ADR-036) on a new connection through the entry addresses while the old one keeps working, switches, and seals the
   old one with its goodbye as the last frame (`IFrameChannel.SendLast`): what was sent on it before reaches the node
   first, a send that still picked it is refused there and goes on the new connection (its call registered again
