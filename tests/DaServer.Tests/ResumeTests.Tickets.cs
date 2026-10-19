@@ -178,18 +178,19 @@ public partial class ResumeTests
         await Eventually(async () => await gateways[0].Ask(new LoungeId(1), new Seated()) == 0, "the closed session was forgotten");
     }
 
-    [Test]
-    public async Task ACloseThatReachesTheNewOwnerBeforeTheRecordIsNotLost()
+    /// <summary>
+    /// A lounge (on "game", holding <paramref name="player"/>'s session) moved to a new node while "game" holds it in a
+    /// turn: its record waits until <see cref="TurnGate"/> opens. The slot table reaches every node but those
+    /// <paramref name="stale"/> keeps out.
+    /// </summary>
+    private async Task<(Node Next, long Key, ClusterClient Client, Task Held)> MoveHeldLounge(Node[] gateways, long player, Func<Node, bool> stale)
     {
-        // The lounge moves while its previous node holds it in a turn; the closed session's close reaches the new owner
-        // before the handoff record (which carries the grant): it waits behind the record instead of being dropped.
         Faults.Allow("TurnTooLong"); // the held turn is the point
-        var gateways = await StartCluster(TimeSpan.FromMilliseconds(300));
         var game = Nodes.Single(n => n.Options.Name == "game");
-        var next = await Start("game-2", configure: Secret(TimeSpan.FromMilliseconds(300)));
+        var next = await Start("game-2", configure: Secret(gateways[0].Options.ResumeGrace));
         await Converged();
         long key = game.KeyOwnedBy<LoungeId>(game);
-        var client = await LogIn(gateways, 582);
+        var client = await LogIn(gateways, player);
         Assert.That(await client.Ask(new SitDown(new LoungeId(key))), Is.True);
         Assert.That(await game.Ask(new LoungeId(key), new Seated()), Is.Positive, "the lounge holds the session");
 
@@ -197,12 +198,74 @@ public partial class ResumeTests
         var held = game.Ask(new LoungeId(key), new HoldLounge()).AsTask();
         int slot = ClusterView.Slot(ActorIds<LoungeId>.HandlerTypeId, key);
         var table = new SlotTable { Version = 1000, Coordinator = game.Id, Overrides = [new SlotOverride(ActorIds<LoungeId>.HandlerTypeId, (ushort)slot, next.Id)] };
-        foreach (var node in Nodes) node.Membership.Apply(table);
-        client.AutoReconnect = false;
-        client.DropConnection();
-        await Task.Delay(1000); // past the grace: the close went to the new owner, whose record is still held
+        foreach (var node in Nodes)
+            if (!stale(node)) node.Membership.Apply(table);
+        return (next, key, client, held);
+    }
+
+    private static async Task Release(Task held)
+    {
         TurnGate.Current.TrySetResult();
         try { await held; } catch (RpcException) { } // its caller may have timed out meanwhile
+    }
+
+    /// <summary>Whether <paramref name="node"/> holds the actor and waits for its record (read from the test's thread: a
+    /// read that meets the shard writing is retried by the caller's polling).</summary>
+    private static bool AwaitsRecord<TId>(Node node, long key) where TId : struct, IActorId
+    {
+        try
+        {
+            return node.Shards.Any(shard => shard.World.GetSingleton<ActorDirectory>().Actors
+                .TryGetValue(new ActorAddress(ActorIds<TId>.HandlerTypeId, key), out var entity) && entity.Has<DaServer.Persistence.AwaitingHandoff>());
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    [Test]
+    public async Task ACloseThatReachesTheNewOwnerBeforeTheRecordIsNotLost()
+    {
+        // The closed session's close reaches the new owner before the handoff record (which carries the grant): it
+        // waits behind the record instead of being dropped.
+        var gateways = await StartCluster(TimeSpan.FromMilliseconds(300));
+        var (next, key, client, held) = await MoveHeldLounge(gateways, 582, static _ => false);
+        client.AutoReconnect = false;
+        client.DropConnection();
+        await Eventually(() => AwaitsRecord<LoungeId>(next, key), "the close reached the new owner, which waits for the record");
+        await Release(held);
+
+        await Eventually(async () => await next.Ask(new LoungeId(key), new Seated()) == 0, "the moved lounge forgot the closed session");
+    }
+
+    [Test]
+    public async Task AResumeThatReachesTheNewOwnerBeforeTheRecordKeepsTheGrant()
+    {
+        // The client resumes while its lounge moves: the resume waits behind the record (which holds the grant) instead
+        // of being refused, so the resumed session can still name the lounge.
+        var gateways = await StartCluster(TimeSpan.FromSeconds(5));
+        var (next, key, client, held) = await MoveHeldLounge(gateways, 584, static _ => false);
+        var reconnected = Reconnected(client);
+        client.DropConnection();
+        await Eventually(() => AwaitsRecord<LoungeId>(next, key), "the resume reached the new owner, which waits for the record");
+        await Release(held);
+        await reconnected;
+
+        Assert.That(await client.Ask(new LoungeId(key), new Stand()), Is.True, "the resumed session kept the lounge's grant");
+    }
+
+    [Test]
+    public async Task ACloseSentOnAStaleViewIsForwardedToTheOwner()
+    {
+        // The client-facing nodes still route the lounge to its previous node, which handed it off: the close goes on to
+        // the new owner instead of being refused there.
+        var gateways = await StartCluster(TimeSpan.FromMilliseconds(300));
+        var (next, key, client, held) = await MoveHeldLounge(gateways, 585, node => gateways.Contains(node));
+        await Release(held);
+        await Eventually(async () => await next.Ask(new LoungeId(key), new Seated()) > 0, "the lounge moved with its session");
+        client.AutoReconnect = false;
+        client.DropConnection();
 
         await Eventually(async () => await next.Ask(new LoungeId(key), new Seated()) == 0, "the moved lounge forgot the closed session");
     }

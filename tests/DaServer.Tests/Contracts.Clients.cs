@@ -37,6 +37,8 @@ namespace DaServer.Tests;
 [NinoType, Message] public partial record struct Seated : IRequest<int>;
 /// <summary>The lounge holds its turn until <see cref="TurnGate"/> opens (it cannot move meanwhile).</summary>
 [NinoType, Message] public partial record struct HoldLounge : IRequest<bool>;
+/// <summary>A seated client asks the lounge itself (allowed only while its session holds the grant).</summary>
+[NinoType, Message, FromClient] public partial record struct Stand : IRequest<bool>;
 
 // Pushes (server to client).
 [NinoType, Message, ToClient] public partial record struct Chat(RoomId From, string Text);
@@ -152,6 +154,8 @@ public sealed class Lounge : Actor<LoungeId>
         await TurnGate.Current.Task;
         return true;
     }
+
+    [Handle] public bool On(Stand _) => true;
 
     /// <summary>The sessions the runtime holds for this actor.</summary>
     [Handle] public int On(Seated _) => Entity.TryGet<ClientSessions>(out var held) ? held.Sessions.Count + held.Granted.Count : 0;
