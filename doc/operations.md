@@ -26,8 +26,10 @@ aspire otel logs map-0
 
 The cluster resource (named as the cluster) is the parent of its nodes in the dashboard; its state counts the nodes whose
 readiness passes (`/health`: joined and not leaving). A node's health is its own: ready (joined, not leaving, its store
-reachable) and alive (no stalled shard, `/alive`; a shard that crashed, or failed to build its world, counts as stalled,
-while a system or handler that throws is logged, `SystemFailed` at most once a second per shard, and the shard goes on). Probes and the metrics scrape start no trace.
+reachable) and alive (no stalled shard, `/alive`; a shard that crashed, or failed to build its world, counts as
+stalled). A handler that throws (`ActorFailed`) or a system that throws (`SystemFailed`, at most once a second per
+shard) is logged and counted in `daserver.handler.failed`, and its shard goes on; so does a node whose feature throws
+(`FeatureFailed`). Probes and the metrics scrape start no trace.
 
 ## Commands on a node
 

@@ -1155,7 +1155,8 @@ records that no longer hold). Each: context → decision → consequences.
 - Consequences: an actor's load waits one store round trip, batched per wake. A store outage delays unloads and stops,
   bounded by the stop budget, which reports what was not saved. A state that does not serialize (a cycle, an
   unregistered subtype) gives its write up and is logged (`RecordUnwritable`): the store keeps the last record, and the
-  shard's other writes and handoffs go on. Records are opaque bytes for performance; inspecting them needs the
+  shard's other writes and handoffs go on; a copy leaving with such a state goes with `Error` (its mail fails, its
+  changes since the last record are lost), and its handoff falls back the same way (ADR-072). Records are opaque bytes for performance; inspecting them needs the
   components' types.
 - References: a record's version refusing an older writer is a fencing token (Kleppmann, "How to do distributed
   locking", 2016; Designing Data-Intensive Applications, ch. 8).

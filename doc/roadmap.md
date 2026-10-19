@@ -960,9 +960,9 @@ and cards, a manual clock), fails before its fix, and passes after it.
     pushes then keep their order but may overtake a real taker's last push in that one case).
 - [x] Self-review round 8 (the distributed runtime as a whole; rounds 5 to 7 against CLAUDE.md):
   - Must-fix: an exception from any ECS system (a user `[ForEach]` system's bug) ended its shard's loop for good: the
-    shard's actors were dropped unsaved, their keys forwarded in a circle, and `/alive` stayed healthy. Each group's
-    pass is now guarded and logged (`ShardFailed`), as handlers are; a shard whose loop still crashes keeps its pass
-    start, so the watchdog reports it stalled and `/alive` fails.
+    shard's actors were dropped unsaved, their keys forwarded in a circle, and `/alive` stayed healthy. A system that
+    throws is caught per system now (round 9: `SystemFailed`); a shard whose loop still crashes keeps its pass start, so
+    the watchdog reports it stalled and `/alive` fails.
   - Must-fix (test): the critical-write handoff test counted every store write, so a's own retries could satisfy it
     before b wrote; it now waits for each moved key's landed write.
   - Also from round 8 (should-fix): a timer wheel scheduled after a long idle period no longer walks every idle tick;
@@ -989,6 +989,22 @@ and cards, a manual clock), fails before its fix, and passes after it.
     next round of the wheel (never early; delivery only enqueues); two moves overlapping (the new connection retired
     while the previous move still drains) wait the call timeout before the first goodbye, as before; a node whose shard
     fails to start still joins and is restarted by `/alive` rather than refusing to start.
+- [x] Self-review round 10 (every place the runtime calls user code or reads user data; the round-9 changes):
+  - Must-fix: a record whose receiving actor threw while being created or set up (its constructor or a setting) was
+    never answered: the sender resent it while the receiver lived, or (a setting throwing after the record was taken)
+    the receiver kept a copy that never ran while the sender dropped its own. Now refused, so the sender writes it.
+  - Must-fix: a reclaimed copy (a refused or unanswered handoff) whose state initializers threw kept `Unloading` for
+    good; it falls back to its final write either way.
+  - Must-fix: a feature's `DrainAsync` that threw (or ran out of budget) skipped the actors' unload; every feature hook
+    (drain, stop, member dead, view changed) is guarded (`FeatureFailed`) and the node's own steps run.
+  - Must-fix (tests): the stalled-shard test could reset its flag before the shard built its world; the idle timer
+    test's 100 ms bound included NUnit's work. A stale round-8 line here.
+  - Also (should-fix): system failures count in `daserver.handler.failed` (and its alert); repeating errors share a
+    once-a-second log limit per shard; a client event subscriber that throws is reported through `HandlerFailed`
+    instead of stopping the reconnect; a test that an unserializable state does not move.
+  - Kept: an unreadable record refused by a copy that has mail loads from the store at once, possibly before its
+    sender's fallback write lands (versions then fence it; needs a record one build cannot read); a load or save
+    batch's `Apply` has no `finally` around its loop (nothing reachable throws there outside the per-actor guards).
 - Review criterion from round 7 on (agreed): a finding is must-fix when a single fault (one view change, one link
   restart, one node crash, one slow store call) leads to lost acknowledged state, a second live copy or a wait that
   never ends; one that needs two or more rare events together is should-fix and is listed here. Convergence is two
