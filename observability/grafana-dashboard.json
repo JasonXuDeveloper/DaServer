@@ -300,7 +300,7 @@
     {
       "id": 7,
       "type": "timeseries",
-      "title": "Failed handlers",
+      "title": "Failed handlers and systems",
       "description": "",
       "datasource": {
         "type": "prometheus",
