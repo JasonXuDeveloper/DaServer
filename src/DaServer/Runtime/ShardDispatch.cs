@@ -336,6 +336,12 @@ internal static class ShardDispatch
         }
 
         if (header.MessageId == TypeId<SessionResumed>.Value) return Resume(actor, in envelope);
+        if (header.MessageId == TypeId<SessionClosed>.Value && !ActorSessions.Closed(actor, envelope.Frame.Payload))
+        {
+            Fail(envelope.Frame, envelope.Sink, RpcStatus.NotHosted); // a close of a session resumed since: stale
+            return default;
+        }
+
         var handler = actor.HandlerType.Handlers.Of(header.MessageId)!; // validated by Route
         actor.TurnChain = ChainOf(actor.Shard.World, envelope.Frame); // cleared when the turn ends
         return Invoke(handler, actor, envelope.Frame, envelope.Sink, actor.Shard.Node.Logger, actor.TurnChain);

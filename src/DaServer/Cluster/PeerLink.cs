@@ -26,8 +26,7 @@ internal sealed class PeerLink : IFrameSink, IDisposable
     private Connection? _handshake;    // connected, waiting for the peer's challenge, then its Resume
     private List<FrameWriter>? _backlog;
     private int _backlogBytes;
-    private int _dropped; // frames dropped since the last report (under the gate)
-    private long _droppedReportedMs = long.MinValue / 2;
+    private LogThrottle _backlogFull = new(10_000); // frames dropped while the backlog is full (under the gate)
     private bool _connecting;
     // Handshakes the peer closed in a row (a refused Hello: another secret, cluster or protocol; a peer that hangs up):
     // each next connect waits longer, instead of reconnecting at once and being refused thousands of times a second.
@@ -81,11 +80,7 @@ internal sealed class PeerLink : IFrameSink, IDisposable
             if (_backlogBytes + frame.Length > MaxBacklogBytes)
             {
                 // Reported at most every 10 s with the count: a link down under load drops thousands a second.
-                _dropped++;
-                long now = Platform.Milliseconds;
-                if (now - _droppedReportedMs < 10_000) return;
-                Log.BacklogFull(_node.Logger, Host, Port, _dropped);
-                (_dropped, _droppedReportedMs) = (0, now);
+                if (_backlogFull.Due(out int unlogged)) Log.BacklogFull(_node.Logger, Host, Port, unlogged + 1);
                 return;
             }
 

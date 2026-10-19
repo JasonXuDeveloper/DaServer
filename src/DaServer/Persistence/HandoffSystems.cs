@@ -46,8 +46,7 @@ internal sealed class HandoffAsksSystem : EcsSystem
             else if (Handoff.MustWait(World, ask.HandlerTypeId, ask.Key, ask.By) != null) continue;
             else Handoff.Gone(node, ask.HandlerTypeId, ask.Key, ask.By);
 
-            waiting[i] = waiting[^1];
-            waiting.RemoveAt(waiting.Count - 1);
+            waiting.SwapRemoveAt(i);
         }
     }
 }

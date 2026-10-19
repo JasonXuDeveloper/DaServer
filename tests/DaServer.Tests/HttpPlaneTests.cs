@@ -105,6 +105,33 @@ public class HttpPlaneTests
         Assert.That(await add.Content.ReadFromJsonAsync<int>(), Is.EqualTo(5), "the same actor both times");
     }
 
+    /// <summary>A POST of <paramref name="message"/>'s Nino bytes, asking for a Nino reply.</summary>
+    private Task<HttpResponseMessage> PostNino<T>(string path, T message)
+    {
+        var content = new ByteArrayContent(Nino.Core.NinoSerializer.Serialize(message));
+        content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(Nino.AspNetCore.NinoMediaTypes.Application);
+        var request = new HttpRequestMessage(HttpMethod.Post, path) { Content = content };
+        request.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue(Nino.AspNetCore.NinoMediaTypes.Application));
+        return _http.SendAsync(request);
+    }
+
+    [Test]
+    public async Task EndpointsTakeAndAnswerNinoToo()
+    {
+        // The message's own bytes both ways (application/x-nino): a .NET or TypeScript caller skips JSON.
+        var add = await PostNino("/counters/9/add", new Add(4));
+        Assert.That(add.Content.Headers.ContentType?.MediaType, Is.EqualTo(Nino.AspNetCore.NinoMediaTypes.Application));
+        Assert.That(Nino.Core.NinoDeserializer.Deserialize<int>(await add.Content.ReadAsByteArrayAsync()), Is.EqualTo(4));
+
+        long before = Interlocked.Read(ref Observed.Tallies);
+        Assert.That((await PostNino("/tally", new Tally(2))).StatusCode, Is.EqualTo(HttpStatusCode.Accepted), "a one-way Nino body goes on as it came");
+        await TestNodes.WaitUntilAsync(() => Interlocked.Read(ref Observed.Tallies) - before >= 2, TimeSpan.FromSeconds(5), "the tallies arrived");
+
+        var bad = new HttpRequestMessage(HttpMethod.Post, "/counters/9/add") { Content = new ByteArrayContent([1, 2]) };
+        bad.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(Nino.AspNetCore.NinoMediaTypes.Application);
+        Assert.That((await _http.SendAsync(bad)).StatusCode, Is.EqualTo(HttpStatusCode.BadRequest), "a body that is not the message");
+    }
+
     [Test]
     public async Task RefusalsMapToHttpStatusesWithRetryAfter()
     {

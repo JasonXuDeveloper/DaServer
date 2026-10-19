@@ -9,12 +9,15 @@ using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Nino.AspNetCore;
 
 namespace DaServer.Hosting;
 
 /// <summary>
 /// The node's HTTP plane (ADR-046): ASP.NET Core minimal APIs whose requests enter the cluster through the node's
 /// ingress, each with an origin of its own and its caller's budget. Endpoints reach actors only through messages.
+/// Bodies are JSON, or Nino (<c>application/x-nino</c>, Nino.AspNetCore) for a caller that sends or accepts it: the
+/// message's own bytes, typed for .NET and TypeScript callers, half the size and no parsing.
 /// </summary>
 public static class DaServerHttpExtensions
 {
@@ -90,43 +93,65 @@ public static class DaServerHttpExtensions
                 return;
             }
 
-            var socket = await http.WebSockets.AcceptWebSocketAsync();
-            var channel = new DaServer.Net.WebSocketChannel(socket, clients.Channels, clients.MaxFrameSize, clients.MaxPendingSendBytes,
-                releaseIdle: true); // a crowd of idle browsers holds no receive buffers
-            clients.Open(channel);
-            await channel.RunAsync(); // the request lives as long as the client's connection
+            await clients.AcceptAsync(await http.WebSockets.AcceptWebSocketAsync()); // as long as the client's connection
         });
         return app;
     }
 
-    /// <summary>POST <paramref name="pattern"/>: the JSON body asked of the service handling it; the reply as JSON.</summary>
+    /// <summary>POST <paramref name="pattern"/>: the body (JSON or Nino) asked of the service handling it; the reply as the caller accepts.</summary>
     public static RouteHandlerBuilder MapAsk<TRequest, TReply>(this IEndpointRouteBuilder endpoints, string pattern)
         where TRequest : struct, IRequest<TReply> =>
-        endpoints.MapPost(pattern, static async (HttpContext http, TRequest request, Node node) =>
+        endpoints.MapPost(pattern, static async (HttpContext http, Features.INodeContext node) =>
         {
-            IIngress ingress = ((Features.INodeContext)node).Ingress;
-            return await Reply(http, ingress.Ask<TRequest, TReply>(in request, OriginOf(node), BudgetOf(http)));
-        });
+            if (await Body<TRequest>(http) is not { } request) return Results.BadRequest();
+            return await Reply(http, node.Ingress.Ask<TRequest, TReply>(in request, OriginOf(node), BudgetOf(http)));
+        }).Accepts<TRequest>("application/json", NinoMediaTypes.Application).Produces<TReply>(200, "application/json", NinoMediaTypes.Application);
 
-    /// <summary>POST <paramref name="pattern"/> with an <c>{id}</c>: the JSON body asked of the actor <typeparamref name="TId"/>(id).</summary>
+    /// <summary>POST <paramref name="pattern"/> with an <c>{id}</c>: the body asked of the actor <typeparamref name="TId"/>(id).</summary>
     public static RouteHandlerBuilder MapAsk<TId, TRequest, TReply>(this IEndpointRouteBuilder endpoints, string pattern)
         where TId : struct, IActorId where TRequest : struct, IRequest<TReply> =>
-        endpoints.MapPost(pattern, static async (HttpContext http, long id, TRequest request, Node node) =>
+        endpoints.MapPost(pattern, static async (HttpContext http, long id, Features.INodeContext node) =>
         {
-            IIngress ingress = ((Features.INodeContext)node).Ingress;
-            return await Reply(http, ingress.Ask<TId, TRequest, TReply>(ActorIds<TId>.Of(id), in request, OriginOf(node), BudgetOf(http)));
-        });
+            if (await Body<TRequest>(http) is not { } request) return Results.BadRequest();
+            return await Reply(http, node.Ingress.Ask<TId, TRequest, TReply>(ActorIds<TId>.Of(id), in request, OriginOf(node), BudgetOf(http)));
+        }).Accepts<TRequest>("application/json", NinoMediaTypes.Application).Produces<TReply>(200, "application/json", NinoMediaTypes.Application);
 
-    /// <summary>POST <paramref name="pattern"/>: the JSON body sent one-way to the service handling it (202 Accepted).</summary>
+    /// <summary>
+    /// POST <paramref name="pattern"/>: the body sent one-way to the service handling it (202 Accepted). A Nino body is
+    /// the message's bytes and goes on as it came (its handler's node reads it, and drops one it cannot read).
+    /// </summary>
     public static RouteHandlerBuilder MapSend<T>(this IEndpointRouteBuilder endpoints, string pattern) where T : struct =>
-        endpoints.MapPost(pattern, static (T message, Node node) =>
+        endpoints.MapPost(pattern, static async (HttpContext http, Features.INodeContext node) =>
         {
-            IIngress ingress = ((Features.INodeContext)node).Ingress;
-            ingress.Send(TypeId<T>.Value, 0, 0, Nino.Core.NinoSerializer.Serialize(message), OriginOf(node));
-            return Results.Accepted();
-        });
+            if (http.Request.HasNinoContentType())
+            {
+                using var body = new MemoryStream(); // low-frequency plane (ADR-046): one buffer per request
+                await http.Request.Body.CopyToAsync(body, http.RequestAborted);
+                node.Ingress.Send(TypeId<T>.Value, 0, 0, body.GetBuffer().AsSpan(0, (int)body.Length), OriginOf(node));
+                return Results.Accepted();
+            }
 
-    private static Origin OriginOf(Node node) => new(node.Id, ((Features.INodeContext)node).NewOriginId());
+            if (await Body<T>(http) is not { } message) return Results.BadRequest();
+            node.Ingress.Send(TypeId<T>.Value, 0, 0, Nino.Core.NinoSerializer.Serialize(message), OriginOf(node));
+            return Results.Accepted();
+        }).Accepts<T>("application/json", NinoMediaTypes.Application);
+
+    /// <summary>The request body as <typeparamref name="T"/>: Nino when the caller sent it, else JSON; null when it is not one.</summary>
+    private static async ValueTask<T?> Body<T>(HttpContext http) where T : struct
+    {
+        try
+        {
+            return http.Request.HasNinoContentType()
+                ? await http.Request.ReadFromNinoAsync<T>(http.RequestAborted)
+                : await http.Request.ReadFromJsonAsync<T>(http.RequestAborted);
+        }
+        catch (Exception e) when (e is BadHttpRequestException or System.Text.Json.JsonException or InvalidOperationException)
+        {
+            return null;
+        }
+    }
+
+    private static Origin OriginOf(Features.INodeContext node) => new(node.NodeId, node.NewOriginId());
 
     private static TimeSpan BudgetOf(HttpContext http) =>
         long.TryParse(http.Request.Headers[BudgetHeader], out long ms) && ms > 0
@@ -137,7 +162,8 @@ public static class DaServerHttpExtensions
     {
         try
         {
-            return Results.Json(await call);
+            var reply = await call;
+            return AcceptsNino(http) ? NinoResults.Ok(reply) : Results.Json(reply);
         }
         catch (RpcException e)
         {
@@ -146,6 +172,11 @@ public static class DaServerHttpExtensions
             return Results.Problem(e.Message, statusCode: StatusCodeOf(e.Status));
         }
     }
+
+    /// <summary>Whether the caller asked for Nino (<c>Accept: application/x-nino</c>, or <c>?format=nino</c>).</summary>
+    private static bool AcceptsNino(HttpContext http) =>
+        http.Request.Query["format"] == "nino" ||
+        http.Request.Headers.Accept.ToString().Contains(NinoMediaTypes.Application, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>The HTTP status of a failed call.</summary>
     internal static int StatusCodeOf(RpcStatus status) => status switch

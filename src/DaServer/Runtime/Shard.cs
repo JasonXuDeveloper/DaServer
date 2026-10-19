@@ -327,22 +327,9 @@ internal sealed class Shard : CompletionThread
     /// Whether an error that can repeat on every pass (a failing system, a record that does not serialize) is logged now:
     /// at most once a second per shard; <paramref name="unlogged"/> is how many were left out since the last. Shard thread.
     /// </summary>
-    internal bool ErrorLogDue(out int unlogged)
-    {
-        long now = Platform.Milliseconds;
-        unlogged = _errorsUnlogged;
-        if (now - _errorLoggedMs < 1000)
-        {
-            _errorsUnlogged++;
-            return false;
-        }
+    internal bool ErrorLogDue(out int unlogged) => _errors.Due(out unlogged);
 
-        (_errorLoggedMs, _errorsUnlogged) = (now, 0);
-        return true;
-    }
-
-    private long _errorLoggedMs = long.MinValue / 2; // shard thread only
-    private int _errorsUnlogged;
+    private LogThrottle _errors = new(1000); // shard thread only
 
     /// <summary>Singletons, runtime systems, the node's user systems and service instances.</summary>
     private void CreateWorld()

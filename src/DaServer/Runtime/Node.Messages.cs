@@ -91,7 +91,7 @@ sealed partial class Node
         var call = PendingCall<TReply>.Rent(Shard.Current);
         var task = call.Task;
         var frame = MessageWriter.Write(in request);
-        if (timeout > TimeSpan.Zero) frame.Deadline = Platform.Milliseconds + (long)timeout.TotalMilliseconds; // else Request's default
+        if (timeout > TimeSpan.Zero) frame.Deadline = PendingCallTable.DeadlineAfter(timeout); // else Request's default
         long chain = CallChain.Current;
         if (chain != 0) frame.SetChain(chain); // the asking turn's chain (ADR-059)
         Tracing.Attach(frame);

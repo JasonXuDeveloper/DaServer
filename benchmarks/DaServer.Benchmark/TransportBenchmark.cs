@@ -60,10 +60,8 @@ public class TransportBenchmark
         builder.Logging.ClearProviders();
         builder.WebHost.ConfigureKestrel(kestrel => kestrel.Listen(IPAddress.Loopback, 0, listen => listen.Run(async connection =>
         {
-            var channel = new PipeChannel(connection.Transport, connection.Abort, connections.Channels, connections.MaxFrameSize,
-                connections.MaxPendingSendBytes);
-            connections.Open(channel);
-            await channel.RunAsync();
+            await connections.Open((handler, maxFrame, maxPending) =>
+                new PipeChannel(connection.Transport, connection.Abort, handler, maxFrame, maxPending)).RunAsync();
         })));
         _kestrel = builder.Build();
         await _kestrel.StartAsync();

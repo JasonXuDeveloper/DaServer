@@ -9,6 +9,9 @@ sealed partial class Node
     private readonly ConcurrentDictionary<ulong, PeerLink> _introduced = new(); // node id -> link, from Hellos
     private readonly LinkAuth _linkAuth;
 
+    /// <summary>The cluster's signing keys: links, resume tickets.</summary>
+    internal SigningKeys SigningKeys { get; }
+
     /// <summary>An accepted connection that did not start with an authentic Hello of this cluster.</summary>
     private static readonly InvalidOperationException NotIntroduced = new("Not introduced by an authentic Hello");
 

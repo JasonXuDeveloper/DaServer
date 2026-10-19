@@ -349,7 +349,9 @@ public class LinkAuthTests : ClusterTest
     public void ASecretRotatesInThreeStepsEachAcceptingTheNext()
     {
         // SigningSecret, AcceptedSigningSecret per step: old; old+new; new+old; new. Nodes one step apart link both ways.
-        LinkAuth old = new("c", "one"), first = new("c", "one", "two"), second = new("c", "two", "one"), done = new("c", "two");
+        static LinkAuth Auth(string secret, string? accepted = null) =>
+            new("c", SigningKeys.Of(new NodeOptions { SigningSecret = secret, AcceptedSigningSecret = accepted }));
+        LinkAuth old = Auth("one"), first = Auth("one", "two"), second = Auth("two", "one"), done = Auth("two");
         static bool Links(LinkAuth a, LinkAuth b)
         {
             var challenge = LinkAuth.NewChallenge();
@@ -378,7 +380,7 @@ public class LinkAuthTests : ClusterTest
     {
         // The proof answers one connection's challenge: a recorded Hello is good on no other connection, at no other
         // node, and cannot name another endpoint for the replies.
-        var auth = new LinkAuth("c", "s3cret");
+        var auth = new LinkAuth("c", SigningKeys.Of(new NodeOptions { SigningSecret = "s3cret" }));
         var challenge = LinkAuth.NewChallenge();
         var proof = auth.Prove(7, 1, "10.0.0.1", 5000, challenge);
         Assert.That(auth.Verify(7, 1, "10.0.0.1", 5000, challenge, proof), Is.Null);
@@ -388,7 +390,7 @@ public class LinkAuthTests : ClusterTest
         Assert.That(auth.Verify(7, 2, "10.0.0.1", 5000, challenge, proof), Is.Not.Null, "another stream");
         Assert.That(auth.Verify(8, 1, "10.0.0.1", 5000, challenge, proof), Is.Not.Null, "another node id");
         Assert.That(auth.Verify(7, 1, "10.0.0.1", 5000, default, proof), Does.Contain("challenge"), "a Hello before any challenge");
-        Assert.That(new LinkAuth("other", "s3cret").Verify(7, 1, "10.0.0.1", 5000, challenge, proof), Is.Not.Null, "another cluster");
+        Assert.That(new LinkAuth("other", SigningKeys.Of(new NodeOptions { SigningSecret = "s3cret" })).Verify(7, 1, "10.0.0.1", 5000, challenge, proof), Is.Not.Null, "another cluster");
     }
 
     /// <summary>A feature whose pulse source throws (user code read on every gossip round).</summary>

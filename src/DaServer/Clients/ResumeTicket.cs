@@ -33,18 +33,20 @@ internal static class ResumeTicket
     }
 
     /// <summary>
-    /// Check signature (by <paramref name="secret"/>, or by <paramref name="accepted"/> while a rotation runs), shape and
+    /// Check signature (by any of <paramref name="keys"/>: the current key, and the accepted one while a rotation runs), shape and
     /// expiry. On success <paramref name="session"/> is the session it was issued for and <paramref name="grants"/> its
     /// grants (a slice of the ticket: read them with <see cref="GrantAt"/>).
     /// </summary>
-    public static bool TryRead(ReadOnlySpan<byte> ticket, byte[] secret, byte[]? accepted, long nowMs, out ClientSession session,
+    public static bool TryRead(ReadOnlySpan<byte> ticket, byte[][] keys, long nowMs, out ClientSession session,
         out ReadOnlySpan<byte> grants)
     {
         session = default;
         grants = default;
-        if (!SignedToken.TryRead(ticket, secret, nowMs, out var content) &&
-            (accepted == null || !SignedToken.TryRead(ticket, accepted, nowMs, out content)) || content.Length < HeaderSize)
-            return false;
+        ReadOnlySpan<byte> content = default;
+        bool signed = false;
+        foreach (var key in keys)
+            if (signed = SignedToken.TryRead(ticket, key, nowMs, out content)) break;
+        if (!signed || content.Length < HeaderSize) return false;
         int count = BinaryPrimitives.ReadInt32LittleEndian(content[16..]);
         if (count < 0 || count > SessionState.MaxGrants || content.Length != HeaderSize + count * GrantSize) return false;
 

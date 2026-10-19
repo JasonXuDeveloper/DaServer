@@ -83,19 +83,16 @@ public static class DaServerAdmin
 internal sealed class AdminTokenHandler(IOptionsMonitor<AuthenticationSchemeOptions> options, ILoggerFactory logger, UrlEncoder encoder,
     IOptions<NodeOptions> node) : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
 {
-    private readonly byte[]? _token = Token(node.Value.SigningSecret), _accepted = Token(node.Value.AcceptedSigningSecret);
-
-    private static byte[]? Token(string? secret) => secret is { Length: > 0 } ? Encoding.UTF8.GetBytes(AdminToken.For(secret)) : null;
+    private readonly SigningKeys _tokens = SigningKeys.Of(node.Value, AdminToken.For);
 
     protected override Task<AuthenticateResult> HandleAuthenticateAsync()
     {
         // The scheme is case-insensitive (RFC 9110); the token is compared in constant time.
-        if (_token == null || Request.Headers.Authorization.ToString() is not { Length: > 7 } header ||
+        if (_tokens.Current == null || Request.Headers.Authorization.ToString() is not { Length: > 7 } header ||
             !header.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
             return Task.FromResult(AuthenticateResult.NoResult());
         var given = Encoding.UTF8.GetBytes(header.AsSpan(7).Trim().ToString());
-        if (!CryptographicOperations.FixedTimeEquals(given, _token) &&
-            (_accepted == null || !CryptographicOperations.FixedTimeEquals(given, _accepted)))
+        if (!Array.Exists(_tokens.Verifying, token => CryptographicOperations.FixedTimeEquals(given, token)))
             return Task.FromResult(AuthenticateResult.Fail("Not the cluster's admin token"));
         var identity = new ClaimsIdentity([new Claim(ClaimTypes.Name, "daserver-admin")], Scheme.Name);
         return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(identity), Scheme.Name)));

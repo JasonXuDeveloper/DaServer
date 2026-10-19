@@ -86,7 +86,7 @@ internal sealed class PendingCallTable
 
     /// <summary>The deadline of a call made now with <paramref name="timeout"/> (none when it is not positive).</summary>
     public static long DeadlineAfter(TimeSpan timeout) =>
-        timeout > TimeSpan.Zero ? Platform.Milliseconds + (long)timeout.TotalMilliseconds : 0;
+        timeout > TimeSpan.Zero ? Platform.After(timeout) : 0;
 
     /// <summary>Register <paramref name="call"/>; false when the table is full (the caller refuses it as <see cref="RpcStatus.Overloaded"/>).</summary>
     /// <param name="deadlineMs">When the call times out, in <see cref="Platform.Milliseconds"/>; 0: never.</param>

@@ -28,7 +28,7 @@ public sealed partial class ClusterClient
     {
         if (_connection is not { IsClosed: false } connection) return;
         Volatile.Write(ref _probed, connection);
-        Volatile.Write(ref _probeDeadlineMs, Platform.Milliseconds + (long)(timeout ?? TimeSpan.FromSeconds(5)).TotalMilliseconds);
+        Volatile.Write(ref _probeDeadlineMs, Platform.After(timeout ?? TimeSpan.FromSeconds(5)));
         connection.SendControl(ControlOp.Ping);
     }
 

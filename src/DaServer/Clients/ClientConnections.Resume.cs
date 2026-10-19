@@ -43,11 +43,11 @@ public sealed partial class ClientConnections
     private void IssueTicket(SessionState session)
     {
         var grants = session.Grants;
-        if (_ticketSecret == null) return;
+        if (_keys.Current is not { } key) return;
         int size = grants.Length == 0 ? 0 : ResumeTicket.SizeOf(grants.Length); // empty: nothing to resume
         Span<byte> ticket = stackalloc byte[size];
         if (size > 0)
-            ResumeTicket.Write(ticket, _ticketSecret, new ClientSession(_node.Id, session.Id), grants,
+            ResumeTicket.Write(ticket, key, new ClientSession(_node.Id, session.Id), grants,
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), (long)options.TicketLifetime.TotalMilliseconds);
         var w = FrameWriter.Rent(FrameHeader.Size + size);
         w.WriteRaw(ticket);
@@ -63,8 +63,8 @@ public sealed partial class ClientConnections
     /// </summary>
     private void ResumeSession(SessionState session, uint callId, ReadOnlySpan<byte> ticket)
     {
-        if (_ticketSecret == null || session.Grants.Length != 0 ||
-            !ResumeTicket.TryRead(ticket, _ticketSecret, _acceptedTicketSecret, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), out var previous, out var granted) ||
+        if (_keys.Current == null || session.Grants.Length != 0 ||
+            !ResumeTicket.TryRead(ticket, _keys.Verifying, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), out var previous, out var granted) ||
             Interlocked.Exchange(ref session.Resuming, 1) != 0)
         {
             session.Sink.SendError(callId, RpcStatus.Forbidden);

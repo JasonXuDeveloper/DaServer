@@ -6,10 +6,18 @@ public sealed partial class ClientConnections
     // ------------------------------------------------------------------ client connections
 
     /// <summary>
-    /// A client connected over another transport (a WebSocket of the HTTP plane): it gets a session like a TCP client.
-    /// The channel's frames go to <see cref="Channels"/>.
+    /// A client connected over another transport (a WebSocket of the HTTP plane, a pipe): it gets a session like a TCP
+    /// client. <paramref name="create"/> makes the channel from the session handler, the largest frame a client may
+    /// send and the bytes it may fall behind (a slow consumer is closed, like on TCP).
     /// </summary>
-    internal void Open(IFrameChannel channel)
+    internal TChannel Open<TChannel>(Func<IChannelHandler, int, int, TChannel> create) where TChannel : IFrameChannel
+    {
+        var channel = create(_sessionHandler!, options.MaxFrameSize, ConnectionOptions.ForSessions().MaxPendingSendBytes);
+        Open(channel);
+        return channel;
+    }
+
+    private void Open(IFrameChannel channel)
     {
         var session = new SessionState(((INodeContext)_node).NewOriginId(), channel) // a session is the origin of its messages
         {
@@ -21,14 +29,13 @@ public sealed partial class ClientConnections
         _sessions[session.Id] = session; // it joins ClientGroup.All once its hello is answered
     }
 
-    /// <summary>Largest frame a client may send (<see cref="ClientConnectionOptions.MaxFrameSize"/>).</summary>
-    internal int MaxFrameSize => options.MaxFrameSize;
-
-    /// <summary>Bytes a client's channel may fall behind before it is closed (a slow consumer, like on TCP).</summary>
-    internal int MaxPendingSendBytes { get; } = ConnectionOptions.ForSessions().MaxPendingSendBytes;
-
-    /// <summary>Receives the frames of channels opened with <see cref="Open"/>.</summary>
-    internal IChannelHandler Channels => _sessionHandler!;
+    /// <summary>
+    /// A client connected over WebSocket (the HTTP plane's <c>/clients/ws</c>): a session like a TCP one, bounded the same
+    /// way (largest frame, bytes a slow consumer may fall behind); completes when the connection ends.
+    /// </summary>
+    internal Task AcceptAsync(System.Net.WebSockets.WebSocket socket) =>
+        Open((handler, maxFrame, maxPending) => new WebSocketChannel(socket, handler, maxFrame, maxPending,
+            releaseIdle: true)).RunAsync(); // a crowd of idle browsers holds no receive buffers
 
     /// <summary>The frames of every client channel, TCP or not.</summary>
     private sealed class SessionHandler(ClientConnections node) : IChannelHandler

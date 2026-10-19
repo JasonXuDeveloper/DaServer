@@ -44,6 +44,7 @@
         <PackageVersion Include="EasyEcs" Version="$(EasyEcsVersion)" />
         <PackageVersion Include="Nino" Version="$(NinoVersion)" />
         <PackageVersion Include="Nino.Generator" Version="$(NinoVersion)" />
+        <PackageVersion Include="Nino.AspNetCore" Version="$(NinoVersion)" />
     </ItemGroup>
 
     <!-- Other -->

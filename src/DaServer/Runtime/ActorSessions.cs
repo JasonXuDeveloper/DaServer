@@ -4,20 +4,11 @@ namespace DaServer.Runtime;
 /// The actor side of client sessions, on every node hosting actors (ADR-050): each loaded actor keeps the sessions it
 /// knows (<see cref="ClientSessions"/>: its callers and the sessions it bound), so a session that ends reaches it as
 /// <see cref="SessionClosed"/> even when the node holding the session crashed, and the sessions it holds granted, the
-/// only ones a client may resume from (<see cref="Resume"/>). Closes are handled by a dispatch filter, resumes by the
-/// runtime before the actor's handler runs; other messages pay nothing.
+/// only ones a client may resume from (<see cref="Resume"/>). Closes and resumes are handled by the runtime before the
+/// actor's handler runs (not by a filter: a user's filter could refuse them); other messages pay one id comparison.
 /// </summary>
 internal static class ActorSessions
 {
-    private static int _registered;
-
-    /// <summary>Install the filter (once per process; nodes call it when they start).</summary>
-    public static void Register()
-    {
-        if (Interlocked.Exchange(ref _registered, 1) != 0) return;
-        MessageFilters.Register<SessionClosed>(static (object target, in SessionClosed closed, in CallContext _) =>
-            target is Actor actor && !Forget(actor, closed.Session) ? RpcStatus.NotHosted : RpcStatus.Ok);
-    }
 
     /// <summary>Remember a client session of a loaded actor (a hash lookup; allocates once per new session).</summary>
     public static void Record(Actor actor, ClientSession session) => SessionsOf(actor).Sessions.Add(session);
@@ -44,6 +35,10 @@ internal static class ActorSessions
             entity.Add<ClientSessions>() = sessions = actor.World.GetSingleton<ActorPools>().RentSessions();
         return sessions;
     }
+
+    /// <summary>A <see cref="SessionClosed"/> for the actor: forget the session; false when the close is stale (not delivered).</summary>
+    public static bool Closed(Actor actor, ReadOnlySpan<byte> payload) =>
+        Forget(actor, NinoDeserializer.Deserialize<SessionClosed>(payload).Session);
 
     /// <summary>Forget a closed session; false when it had been resumed (its close is stale and not delivered).</summary>
     private static bool Forget(Actor actor, ClientSession session)

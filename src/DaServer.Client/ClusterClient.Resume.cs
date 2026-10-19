@@ -37,12 +37,12 @@ public sealed partial class ClusterClient
     private async Task ReconnectAsync()
     {
         Exception? error = null;
-        long deadline = Platform.Milliseconds + (long)ReconnectTimeout.TotalMilliseconds;
+        long deadline = Platform.After(ReconnectTimeout);
         var backoff = new Backoff(TimeSpan.FromMilliseconds(100), TimeSpan.FromSeconds(5));
         while (!_disposed)
         {
             var delay = backoff.Next();
-            if (Platform.Milliseconds + (long)delay.TotalMilliseconds > deadline) break;
+            if (Platform.After(delay) > deadline) break;
             await Task.Delay(delay).ConfigureAwait(false); // a blip or a restarting node: give it a moment
             try
             {
@@ -136,7 +136,7 @@ public sealed partial class ClusterClient
     /// </summary>
     private async Task LeaveAsync(IFrameChannel old, int actors)
     {
-        long deadline = Platform.Milliseconds + (long)CallTimeout.TotalMilliseconds;
+        long deadline = Platform.After(CallTimeout);
         // Every actor that took the new session marks the end of what it pushed to the old one (SessionMoved): pushes
         // still on their way there arrive before the new connection's go on. A closed connection brings no more.
         var moved = MarkersOf(old, actors);

@@ -21,6 +21,10 @@ internal static class Platform
 #endif
     }
 
+    /// <summary><paramref name="span"/> from now, in <see cref="Milliseconds"/>: a deadline.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static long After(TimeSpan span) => Milliseconds + (long)span.TotalMilliseconds;
+
     /// <summary>The number of leading zero bits of <paramref name="value"/> (32 for 0): one instruction on .NET.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int LeadingZeroCount(uint value)

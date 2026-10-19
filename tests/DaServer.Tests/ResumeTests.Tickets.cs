@@ -134,6 +134,36 @@ public partial class ResumeTests
         Assert.That(await ResumeAs(gateways, ticket), Is.EqualTo(RpcStatus.Forbidden), "a closed session resumed");
     }
 
+    /// <summary>A user's filter that refuses every <see cref="SessionClosed"/> (counting them).</summary>
+    private sealed class RefuseCloses : IMessageFilter
+    {
+        public int Seen;
+
+        public RpcStatus Admit<T>(object target, in T message, in CallContext context) where T : struct
+        {
+            if (typeof(T) != typeof(SessionClosed)) return RpcStatus.Ok;
+            Interlocked.Increment(ref Seen);
+            return RpcStatus.Forbidden;
+        }
+    }
+
+    [Test]
+    public async Task AFilterThatRefusesClosesDoesNotKeepAClosedSessionResumable()
+    {
+        // The runtime forgets a closed session before any filter runs: a filter only decides whether the handler sees it.
+        var refuse = new RefuseCloses();
+        using var registration = MessageFilters.Register(refuse);
+        var gateways = await StartCluster(TimeSpan.FromMilliseconds(300));
+        var client = await LogIn(gateways, 577);
+        var ticket = client.Ticket!;
+        client.AutoReconnect = false;
+        client.DropConnection();
+        await Eventually(() => Volatile.Read(ref refuse.Seen) > 0, "the close reached the player");
+
+        Assert.That(await ResumeAs(gateways, ticket), Is.EqualTo(RpcStatus.Forbidden), "a closed session resumed");
+        Assert.That(Observed.Events, Does.Not.Contain("closed:577"), "the filter kept the close from the handler");
+    }
+
     [Test]
     public void TicketsAreUnforgeableAndExpire()
     {
@@ -143,18 +173,18 @@ public partial class ResumeTests
         var ticket = new byte[ResumeTicket.SizeOf(grants.Length)];
         ResumeTicket.Write(ticket, secret, session, grants, nowMs: 1000, lifetimeMs: 500);
 
-        Assert.That(ResumeTicket.TryRead(ticket, secret, null, 1200, out var read, out var readGrants), Is.True);
+        Assert.That(ResumeTicket.TryRead(ticket, [secret], 1200, out var read, out var readGrants), Is.True);
         Assert.That(read, Is.EqualTo(session));
         Assert.That(ResumeTicket.GrantCount(readGrants), Is.EqualTo(2));
         Assert.That(ResumeTicket.GrantAt(readGrants, 0), Is.EqualTo(grants[0]));
         Assert.That(ResumeTicket.GrantAt(readGrants, 1), Is.EqualTo(grants[1]));
 
-        Assert.That(ResumeTicket.TryRead(ticket, secret, null, 1500, out _, out _), Is.False, "expired");
-        Assert.That(ResumeTicket.TryRead(ticket, Encoding.UTF8.GetBytes("other"), null, 1200, out _, out _), Is.False, "another cluster");
-        Assert.That(ResumeTicket.TryRead(ticket, Encoding.UTF8.GetBytes("next"), secret, 1200, out _, out _), Is.True,
+        Assert.That(ResumeTicket.TryRead(ticket, [secret], 1500, out _, out _), Is.False, "expired");
+        Assert.That(ResumeTicket.TryRead(ticket, [Encoding.UTF8.GetBytes("other")], 1200, out _, out _), Is.False, "another cluster");
+        Assert.That(ResumeTicket.TryRead(ticket, [Encoding.UTF8.GetBytes("next"), secret], 1200, out _, out _), Is.True,
             "signed with the secret a rotation still accepts");
         ticket[30] ^= 1; // another session
-        Assert.That(ResumeTicket.TryRead(ticket, secret, null, 1200, out _, out _), Is.False, "tampered");
-        Assert.That(ResumeTicket.TryRead(ticket.AsSpan(0, 20), secret, null, 1200, out _, out _), Is.False, "truncated");
+        Assert.That(ResumeTicket.TryRead(ticket, [secret], 1200, out _, out _), Is.False, "tampered");
+        Assert.That(ResumeTicket.TryRead(ticket.AsSpan(0, 20), [secret], 1200, out _, out _), Is.False, "truncated");
     }
 }

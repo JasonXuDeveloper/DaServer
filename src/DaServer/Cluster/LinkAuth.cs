@@ -10,19 +10,17 @@ namespace DaServer.Cluster;
 /// is accepted (development clusters). A proof made with the accepted secret is good too
 /// (<see cref="NodeOptions.AcceptedSigningSecret"/>: a rotation in progress).
 /// </summary>
-internal sealed class LinkAuth(string clusterName, string? secret, string? accepted = null)
+internal sealed class LinkAuth(string clusterName, SigningKeys keys)
 {
     public const int ChallengeSize = 16;
 
-    private readonly byte[]? _key = secret is { Length: > 0 } ? System.Text.Encoding.UTF8.GetBytes(secret) : null;
-    private readonly byte[]? _accepted = accepted is { Length: > 0 } ? System.Text.Encoding.UTF8.GetBytes(accepted) : null;
     private readonly byte[] _cluster = System.Text.Encoding.UTF8.GetBytes(clusterName);
 
     /// <summary>A fresh challenge for an accepted connection.</summary>
     public static byte[] NewChallenge() => RandomNumberGenerator.GetBytes(ChallengeSize);
 
     public byte[] Prove(ulong nodeId, long streamId, string host, int port, ReadOnlySpan<byte> challenge) =>
-        _key == null ? [] : Prove(_key, nodeId, streamId, host, port, challenge);
+        keys.Current == null ? [] : Prove(keys.Current, nodeId, streamId, host, port, challenge);
 
     private byte[] Prove(byte[] key, ulong nodeId, long streamId, string host, int port, ReadOnlySpan<byte> challenge)
     {
@@ -42,12 +40,12 @@ internal sealed class LinkAuth(string clusterName, string? secret, string? accep
     /// <summary>Null when the Hello is authentic, else why it is refused.</summary>
     public string? Verify(ulong nodeId, long streamId, string host, int port, ReadOnlySpan<byte> challenge, byte[] proof)
     {
-        if (_key == null) return null;
+        if (keys.Current == null) return null;
         if (challenge.Length != ChallengeSize) return "it came before this node's challenge";
-        return proof.Length == HMACSHA256.HashSizeInBytes &&
-               (CryptographicOperations.FixedTimeEquals(proof, Prove(_key, nodeId, streamId, host, port, challenge)) ||
-                _accepted != null && CryptographicOperations.FixedTimeEquals(proof, Prove(_accepted, nodeId, streamId, host, port, challenge)))
-            ? null
-            : "it does not hold the cluster's signing secret, or answers another challenge";
+        if (proof.Length == HMACSHA256.HashSizeInBytes)
+            foreach (var key in keys.Verifying)
+                if (CryptographicOperations.FixedTimeEquals(proof, Prove(key, nodeId, streamId, host, port, challenge)))
+                    return null;
+        return "it does not hold the cluster's signing secret, or answers another challenge";
     }
 }
