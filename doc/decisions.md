@@ -689,7 +689,8 @@ records that no longer hold). Each: context → decision → consequences.
   (an `Ask` of `SessionAccess` to the session, like `BindSession`, which is a grant that is also the session's actor
   of its type). The client-facing node keeps the session's grants (at most 64, an immutable array scanned lock-free)
   and refuses a message naming any other actor with `Forbidden` before it enters the cluster. A grant puts the
-  session in the actor's `Group`, the actor receives `SessionClosed` / `SessionResumed` for it, and the resume
+  session in the actor's `Group`, the runtime forgets or moves it on the actor's close and resume (an actor that handles
+  `SessionClosed` / `SessionResumed` receives them too), and the resume
   ticket carries grants with their bound flag. Unbind and revoke remove the entry of that actor only.
 - Alternatives: bindings only (one actor per type, no two rooms at once); opaque per-session handles instead of ids
   (hides ids clients usually display anyway, one more mapping); handler-side checks (repeated in every handler, and

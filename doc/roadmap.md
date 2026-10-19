@@ -678,7 +678,11 @@ and cards, a manual clock), fails before its fix, and passes after it.
       (DAS020 for `Send(session, new Disconnect())` in actors; `AKickIsNotEvadedByAResumeWaitingBehindIt`). S9 One ticket
       presented on two gateways at once could resume the player on one and the room on the other: the first actor that
       takes the session decides, asked alone, and the other resume stops at its `Superseded`
-      (`ATicketPresentedOnTwoGatewaysAtOnceResumesOnOne`).
+      (`ATicketPresentedOnTwoGatewaysAtOnceResumesOnOne`). S10 A close or resume for a moving actor was refused: one
+      sent on a stale view is forwarded, one reaching the new owner before the handoff record waits behind it, and an
+      actor without a `SessionClosed` handler still forgets the session (`ACloseSentOnAStaleViewIsForwardedToTheOwner`,
+      `ACloseThatReachesTheNewOwnerBeforeTheRecordIsNotLost`, `AResumeThatReachesTheNewOwnerBeforeTheRecordKeepsTheGrant`,
+      `AnActorThatHandlesNoCloseStillForgetsAClosedSession`).
 - [x] Fail fast: a test waiting on a condition stops at the first fault the cluster logs (a crashed or stalled shard, a
       failed maintenance tick or gossip round, a refused link, a stop past its budget, anything critical), naming it,
       instead of at its time limit (`FaultLog`); the E2E runs stop at the first resource that fails to start, exits or
@@ -1042,6 +1046,19 @@ and cards, a manual clock), fails before its fix, and passes after it.
     stay separate until a transport benchmark proves one shared loop costs nothing; `ClientConnections` still uses
     the node's internals (a capability of the runtime's own assembly, ADR-048) beyond `INodeContext`; configuration
     keys spelled in the Aspire integration (`DaServer__...`) are not shared constants yet.
+- [x] Self-review rounds 12-15 (the distributed runtime and the rules, tests and docs, each round two reviewers):
+  - Must-fix: a state that changed back after a lost write answer was never written again (a write in doubt is now
+    written whatever its hash, and a claim clears the stored hash); a link whose handshake closed before its connect
+    returned stayed down until the peer was declared dead; closes and resumes for a moving actor were refused (S10);
+    stale docs after the protocol levels (ADR-065, ADR-076, design, C3); claims of the round-13 fixes without tests.
+  - Also (should-fix): the manifest compares a keyed member of another assembly's type again and asks to record a
+    keyed rename; `MapSend` refuses a Nino body that is not the message; the HTTP plane resolves the node internally;
+    unreadable closes and resumes are refused, not thrown out of the mailbox; allocation tests check pool growth;
+    `ShardDispatch.Sessions.cs`.
+  - Kept: a close or resume reaching a key moved within the move window loads its actor from the store when its
+    previous owner held nothing (it forgets nothing, and stays loaded like any actor: until it idles out when `UnloadAfterIdle` is set); a close that bounces between
+    two nodes with lasting different views reaches `MaxHops` and is dropped, so that actor keeps the closed session
+    until its client-facing node leaves; the link test cannot force the early-close window every run.
 - Review criterion from round 7 on (agreed): a finding is must-fix when a single fault (one view change, one link
   restart, one node crash, one slow store call) leads to lost acknowledged state, a second live copy or a wait that
   never ends; one that needs two or more rare events together is should-fix and is listed here. Convergence is two
