@@ -23,6 +23,12 @@
             <_Parameter1>NinoGenerator</_Parameter1>
             <_Parameter2>$(PkgNino_Generator)/analyzers/dotnet/roslyn4.12/cs/Nino.Generator.dll</_Parameter2>
         </AssemblyAttribute>
+        <!-- netstandard2.1's reference assembly, for compilations as Unity builds them (restored, never referenced). -->
+        <PackageDownload Include="NETStandard.Library.Ref" Version="[2.1.0]" />
+        <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+            <_Parameter1>NetStandardReference</_Parameter1>
+            <_Parameter2>$(NuGetPackageRoot)netstandard.library.ref/2.1.0/ref/netstandard2.1/netstandard.dll</_Parameter2>
+        </AssemblyAttribute>
     </ItemGroup>
 
     <ItemGroup>

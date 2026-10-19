@@ -58,9 +58,9 @@ public class GeneratorTests
     {
         // A library built for netstandard (ZLinq's) carries an internal polyfill of ModuleInitializerAttribute: on
         // netstandard2.1 (Unity) it is the only definition, and using it fails with CS0122; on .NET the framework's is used.
-        string packages = Environment.GetEnvironmentVariable("NUGET_PACKAGES")
-                          ?? System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".nuget", "packages");
-        var standard = new[] { MetadataReference.CreateFromFile(System.IO.Path.Combine(packages, "netstandard.library.ref", "2.1.0", "ref", "netstandard2.1", "netstandard.dll")) };
+        string path = typeof(GeneratorTests).Assembly.GetCustomAttributes(typeof(System.Reflection.AssemblyMetadataAttribute), false)
+            .Cast<System.Reflection.AssemblyMetadataAttribute>().Single(static a => a.Key == "NetStandardReference").Value!;
+        var standard = new[] { MetadataReference.CreateFromFile(path) };
         MetadataReference Polyfilled(IEnumerable<MetadataReference> references)
         {
             var library = CSharpCompilation.Create("Polyfilled",
