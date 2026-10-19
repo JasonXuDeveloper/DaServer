@@ -12,9 +12,9 @@ internal sealed class HandoffSystem : EcsSystem
     private static void Send(Entity actor, in HandOff handOff, in ActorKey key, in ShardActivity activity, World world)
     {
         var (to, target, now) = (handOff.To, key.Address, activity.NowMs);
-        actor.Remove<HandOff>(); // the refs above are invalid from here on
+        actor.RemoveHandOff(); // the refs above are invalid from here on
         if (Handoff.Send(world, actor, target, to) is { } record)
-            actor.Set(new HandingOff(to, now + Handoff.TimeoutMs(world.Shard.Node), record));
+            actor.SetHandingOff(to, now + Handoff.TimeoutMs(world.Shard.Node), record);
         else Handoff.Fallback(actor);
     }
 }
@@ -29,17 +29,17 @@ internal sealed class HandoffAsksSystem : EcsSystem
 {
     protected override void OnUpdate()
     {
-        var waiting = World.GetSingleton<HandoffAsks>().Waiting;
+        var waiting = World.HandoffAsks.Waiting;
         if (waiting.Count == 0) return;
         var node = World.Shard.Node;
-        long now = World.GetSingleton<ShardActivity>().NowMs;
+        long now = World.ShardActivity.NowMs;
         for (int i = waiting.Count - 1; i >= 0; i--)
         {
             var ask = waiting[i];
             if (now > ask.UntilMs) { } // its asker asked again meanwhile, or will
             else if (ShardDispatch.TryGetLoaded(World, new ActorAddress(ask.HandlerTypeId, ask.Key), out var actor))
             {
-                if (!actor.Has<HandoffWanted>()) actor.Set(new HandoffWanted(ask.By));
+                if (!actor.HasHandoffWanted) actor.SetHandoffWanted(ask.By);
             }
             else if (Handoff.MustWait(World, ask.HandlerTypeId, ask.Key, ask.By) != null) continue;
             else Handoff.Gone(node, ask.HandlerTypeId, ask.Key, ask.By);
@@ -66,11 +66,11 @@ internal sealed class HandoffTimeoutSystem : EcsSystem
         // will come (or "none"), so ask again instead of loading a second copy from the store beside it.
         if (node.View.TryGetMember(from, out var member) && member.Status != MemberStatus.Dead && Handoff.AskAgain(node, from, target))
         {
-            actor.Get<AwaitingHandoff>() = new AwaitingHandoff(from, now + Handoff.TimeoutMs(node));
+            actor.AwaitingHandoff = new AwaitingHandoff(from, now + Handoff.TimeoutMs(node));
             return;
         }
 
-        actor.Remove<AwaitingHandoff>();
+        actor.RemoveAwaitingHandoff();
         ShardDispatch.BeginLoad(world, actor, target);
     }
 
@@ -86,12 +86,12 @@ internal sealed class HandoffTimeoutSystem : EcsSystem
         if (node.View.TryGetMember(handingOff.To, out var member) && member.Status != MemberStatus.Dead &&
             Handoff.Resend(node, key.Address, handingOff.To, handingOff.Record))
         {
-            actor.Get<HandingOff>() = handingOff with { UntilMs = activity.NowMs + Handoff.TimeoutMs(node) };
+            actor.HandingOff = handingOff with { UntilMs = activity.NowMs + Handoff.TimeoutMs(node) };
             return;
         }
 
         var record = handingOff.Record;
-        actor.Remove<HandingOff>(); // `handingOff` is invalid from here on
+        actor.RemoveHandingOff(); // `handingOff` is invalid from here on
         Handoff.Reclaim(world, actor, record);
     }
 }

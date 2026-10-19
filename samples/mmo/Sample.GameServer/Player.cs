@@ -49,9 +49,9 @@ public static class Player
     {
         var previous = state.Map; // read before the structural change below (it may move the row)
         if (previous == m.Map) return true;
-        if (self.Has<Entering>()) return false; // one change at a time (a client awaits its EnterMap)
+        if (self.HasEntering) return false; // one change at a time (a client awaits its EnterMap)
         ClientSession session = ctx.Caller;
-        self.Set(new Entering(m.Map, session));
+        self.SetEntering(m.Map, session);
         if (previous != default) ctx.Ask(previous, new Leave(session), ctx.ReplyLater());
         else ctx.Ask(m.Map, new Enter(ctx.Id<PlayerId>(), session), ctx.ReplyLater());
         return Answer<bool>.Later;
@@ -60,10 +60,10 @@ public static class Player
     [Handle]
     internal static void On(in Answered<Leave, bool> a, ref PlayerState state, Entity self, in Context ctx)
     {
-        if (!self.TryGet<Entering>(out var entering)) return;
+        if (!self.TryGetEntering(out var entering)) return;
         if (!a.Ok)
         {
-            self.Remove<Entering>();
+            self.RemoveEntering();
             ctx.Fail(a.ReplyTo, a.Status); // still in the previous map
             return;
         }
@@ -75,9 +75,9 @@ public static class Player
     [Handle]
     internal static void On(in Answered<Enter, bool> a, ref PlayerState state, Entity self, in Context ctx)
     {
-        if (!self.TryGet<Entering>(out var entering)) return;
+        if (!self.TryGetEntering(out var entering)) return;
         if (a.Ok) state.Map = entering.Map;
-        self.Remove<Entering>(); // `state` is invalid from here on
+        self.RemoveEntering(); // `state` is invalid from here on
         if (a.Ok) ctx.Reply(a.ReplyTo, a.Value);
         else ctx.Fail(a.ReplyTo, a.Status);
     }

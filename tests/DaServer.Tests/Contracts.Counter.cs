@@ -32,6 +32,9 @@ namespace DaServer.Tests;
 [Actor<CounterId>]
 public static class Counter
 {
+    /// <summary>A new counter starts at zero: its state exists from the start, so systems see it before any read.</summary>
+    [Handle] internal static void On(in Created _, ref CounterState s) => s = default;
+
     [Handle] internal static void On(in CounterBumped e, ref CounterState s) => s.Value += e.By;
 
     [Handle] internal static int On(in Add m, ref CounterState s) => s.Value += m.Delta;
@@ -119,7 +122,7 @@ public sealed partial class GrowthSystem : EcsSystem
 }
 
 /// <summary>
-/// A user system's bug, in the group the runtime's mail systems run in (before the turn, mailbox and persistence systems): it throws on every pass
+/// A user system's bug, in the group the runtime's mail systems run in (before the mail and persistence systems): it throws on every pass
 /// over a growing counter while <see cref="Throwing"/> holds 1, and its creation throws while <see cref="CreateThrows"/>
 /// does. The shard's other systems and actors must go on; a shard that cannot be built must read as stalled.
 /// </summary>
@@ -133,8 +136,8 @@ public sealed partial class FaultySystem : EcsSystem
         if (CreateThrows.Value == 1) throw new InvalidOperationException("a system that cannot be created");
     }
 
-    [ForEach, With<Growing>]
-    private static void Trip(in CounterState _)
+    [ForEach, With<Growing>, With<CounterState>]
+    private static void Trip()
     {
         if (Throwing.Value == 1) throw new InvalidOperationException("a bug in a user system");
     }
@@ -155,8 +158,8 @@ public sealed partial class TallySystem : EcsSystem
 {
     public static readonly System.Collections.Concurrent.ConcurrentDictionary<(ulong Node, long Key), int> Ticks = new();
 
-    [ForEach, With<Streak>]
-    private static void Tally(in Ledger _, in ActorKey self, World world)
+    [ForEach, With<Streak>, With<Ledger>]
+    private static void Tally(in ActorKey self, World world)
     {
         if (self.Key >= 7000) Ticks.AddOrUpdate((world.Shard.Node.Id, self.Key), 1, static (_, n) => n + 1);
     }

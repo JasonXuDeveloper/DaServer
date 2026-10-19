@@ -57,14 +57,14 @@ internal static partial class ShardDispatch
     }
 
     private static bool OwnsHere(World world, Node node, uint handlerTypeId, long key) =>
-        node.IsLocalOwner(handlerTypeId, key) && !world.GetSingleton<ShardActivity>().Stopping;
+        node.IsLocalOwner(handlerTypeId, key) && !world.ShardActivity.Stopping;
 
     /// <summary>Whether this shard takes actor (<paramref name="handlerTypeId"/>, <paramref name="key"/>) now (it owns it and is not stopping).</summary>
     internal static bool Owns(World world, uint handlerTypeId, long key) => OwnsHere(world, world.Shard.Node, handlerTypeId, key);
 
     /// <summary>A loaded actor of this shard, including one leaving (new mail queues behind its mail).</summary>
     internal static bool TryGetLoaded(World world, ActorAddress address, out Entity actor) =>
-        world.Index<ActorKey, ActorKey>().TryFind(ActorKey.Of(address), out actor);
+        world.ActorKeyIndex.TryFind(ActorKey.Of(address), out actor);
 
     /// <summary>
     /// Load actor <paramref name="address"/> for its first message: its entity holds its identity and waits for its
@@ -74,6 +74,21 @@ internal static partial class ShardDispatch
     internal static void Load(World world, HandlerTypeInfo handlerType, ActorAddress address, in Envelope envelope, ulong? previousOwner)
     {
         var entity = Create(world, handlerType, address);
+        if (previousOwner == null && !world.ShardStore.Enabled)
+        {
+            // Nothing to wait for: live now, and the message runs at once (it never enters the mailbox).
+            Handoff.ForgetHanded(world, address.HandlerTypeId, address.Key);
+            if (BeginLive(world, entity, restored: false))
+            {
+                Deliver(world, entity, address, in envelope);
+                return;
+            }
+
+            Queue(world, entity, address, handlerType, in envelope);
+            entity.SetRemoving(RpcStatus.Error); // its mail fails
+            return;
+        }
+
         Queue(world, entity, address, handlerType, in envelope);
         if (previousOwner is { } from) Handoff.Await(world, entity, from);
         else BeginLoad(world, entity, address);
@@ -85,9 +100,9 @@ internal static partial class ShardDispatch
 
     private static Entity Create(World world, HandlerTypeInfo handlerType, ActorAddress address)
     {
-        var entity = world.CreateEntity(ActorKey.Of(address), new LastMail(world.GetSingleton<ShardActivity>().NowMs), new Loading());
+        var entity = world.CreateEntity(ActorKey.Of(address), new LastMail(world.ShardActivity.NowMs), new Loading());
         int idle = handlerType.Settings.UnloadAfterIdleSeconds;
-        if (idle > 0) entity.Set(new UnloadWhenIdle(idle * 1000L));
+        if (idle > 0) entity.SetUnloadWhenIdle(idle * 1000L);
         return entity;
     }
 
@@ -95,9 +110,9 @@ internal static partial class ShardDispatch
     internal static void BeginLoad(World world, Entity entity, ActorAddress address)
     {
         Handoff.ForgetHanded(world, address.HandlerTypeId, address.Key); // the key is here again
-        if (world.GetSingleton<ShardStore>().Enabled) // LoadSystem restores it, then BeginLive
-            entity.Set(new AwaitingRecord(world.GetSingleton<ShardActivity>().NowMs, 0));
-        else if (!BeginLive(world, entity, restored: false)) entity.Set(new Removing(RpcStatus.Error));
+        if (world.ShardStore.Enabled) // LoadSystem restores it, then BeginLive
+            entity.SetAwaitingRecord(world.ShardActivity.NowMs, 0);
+        else if (!BeginLive(world, entity, restored: false)) entity.SetRemoving(RpcStatus.Error);
     }
 
     /// <summary>
@@ -107,8 +122,8 @@ internal static partial class ShardDispatch
     /// </summary>
     internal static bool BeginLive(World world, Entity entity, bool restored)
     {
-        entity.Remove<Loading>();
-        var key = entity.Read<ActorKey>();
+        entity.RemoveLoading();
+        var key = entity.ActorKey;
         var handlerType = world.Shard.Node.HandlerTypeById(key.HandlerTypeId)!;
         var lifecycle = handlerType.Handlers.Of(restored ? TypeId<Loaded>.Value : TypeId<Created>.Value);
         if (lifecycle == null) return true;
@@ -150,7 +165,7 @@ internal static partial class ShardDispatch
     /// </summary>
     public static void Deliver(World world, Entity actor, ActorAddress address, in Envelope envelope)
     {
-        if (IsLive(actor) && !actor.Has<Ready>())
+        if (IsLive(actor) && !actor.IsReady)
         {
             Invoke(world, actor, address, in envelope);
             return;
@@ -162,11 +177,11 @@ internal static partial class ShardDispatch
     /// <summary>Whether the actor takes mail now (not loading, leaving or going).</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static bool IsLive(Entity actor) =>
-        !actor.Has<Loading>() && !actor.Has<UnloadRequested>() && !actor.Has<Leaving>() && !actor.Has<Removing>();
+        !actor.IsLoading && !actor.IsUnloadRequested && !actor.IsLeaving && !actor.HasRemoving;
 
     private static void Queue(World world, Entity actor, ActorAddress address, HandlerTypeInfo handlerType, in Envelope envelope)
     {
-        ref var mailbox = ref actor.GetOrAdd<DynamicBuffer<Envelope>>();
+        ref var mailbox = ref actor.GetOrAddEnvelope();
         int capacity = handlerType.Settings.MailboxCapacity;
         if (mailbox.Count >= (capacity > 0 ? capacity : world.Shard.Node.Options.ActorMailboxCapacity))
         {
@@ -176,7 +191,7 @@ internal static partial class ShardDispatch
         }
 
         mailbox.Add(in envelope);
-        actor.Set(new Ready()); // `mailbox` is invalid from here on
+        actor.SetReady(); // `mailbox` is invalid from here on
     }
 
     /// <summary>
@@ -189,7 +204,7 @@ internal static partial class ShardDispatch
         var header = FrameHeader.Read(frame.Frame);
         var origin = (header.Flags & FrameFlags.HasOrigin) != 0 ? frame.Origin : default;
         if (origin.IsValid) ActorSessions.Record(world, actor, origin);
-        actor.Get<LastMail>().Ms = world.GetSingleton<ShardActivity>().NowMs;
+        actor.LastMail.Ms = world.ShardActivity.NowMs;
 
         if (header.MessageId == TypeId<SessionResumed>.Value)
         {
@@ -250,6 +265,9 @@ internal static partial class ShardDispatch
                 error = e;
                 if (context.ExpectsReply) context.Call.ReplyException(e);
                 else Log.MessageFailed(world.Logger, e, FrameHeader.Read(frame.Frame).Kind, handler.MessageId, handlerType);
+                // An answer's handler that failed cannot reply to the request it was answering: its caller learns now,
+                // not at its timeout (a no-op when the handler replied before it threw).
+                if (handler.IsAnswer) Replies.Fail(world, Answers.ForwardOf(frame.Payload), RpcStatus.Error);
                 Failed(world, actor, handlerType, e);
             }
             finally
@@ -273,7 +291,7 @@ internal static partial class ShardDispatch
         world.Shard.CountFailed();
         if (handlerType.Settings.OnError != ErrorAction.Reload || !actor.IsAlive) return;
         // Also when an unload was asked for meanwhile: nothing is saved or handed on, the state may be half-changed.
-        if (actor.Has<Fenced>() || actor.Has<Leaving>() || actor.Has<Removing>()) return;
+        if (actor.IsFenced || actor.IsLeaving || actor.HasRemoving) return;
         actor.Set(new UnloadRequested(), new Fenced());
     }
 

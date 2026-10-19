@@ -25,10 +25,10 @@ public sealed partial class NeedsSystem : EcsSystem
 [UpdateAfter<PlannerSystem>]
 public sealed partial class ChoresSystem : EcsSystem
 {
-    [ForEach, With<Fetch>] private static void Fetched(Entity agent) => agent.Remove<Fetch>();
-    [ForEach, With<Eat>] private static void Ate(Entity agent) => agent.Remove<Eat>();
-    [ForEach, With<Nap>] private static void Napped(Entity agent) => agent.Remove<Nap>();
-    [ForEach, With<Idle>] private static void Idled(Entity agent) => agent.Remove<Idle>();
+    [ForEach, With<Fetch>] private static void Fetched(Entity agent) => agent.RemoveFetch();
+    [ForEach, With<Eat>] private static void Ate(Entity agent) => agent.RemoveEat();
+    [ForEach, With<Nap>] private static void Napped(Entity agent) => agent.RemoveNap();
+    [ForEach, With<Idle>] private static void Idled(Entity agent) => agent.RemoveIdle();
 }
 
 /// <summary>Simulated users (DaServer.Simulation): HTN planning as ECS data, client loops, swarms against a cluster.</summary>
@@ -95,27 +95,27 @@ public class SimulationTests : ClusterTest
         var agent = world.CreateEntity(new Facts((ulong)Need.Hungry), new Plan());
 
         world.Update();
-        Assert.That(agent.Has<Fetch>(), Is.True, "the first task starts as its component");
+        Assert.That(agent.IsFetch, Is.True, "the first task starts as its component");
         world.Update();
-        Assert.That(agent.Has<Eat>(), Is.False, "a task runs until its component is gone");
+        Assert.That(agent.IsEat, Is.False, "a task runs until its component is gone");
 
-        agent.Remove<Fetch>(); // the fetching system is done
-        agent.Get<Facts>() = new Facts((ulong)(Need.Hungry | Need.HasFood)); // what the sensors see now
+        agent.RemoveFetch(); // the fetching system is done
+        agent.Facts = new Facts((ulong)(Need.Hungry | Need.HasFood)); // what the sensors see now
         world.Update();
-        Assert.That(agent.Has<Eat>(), Is.True);
+        Assert.That(agent.IsEat, Is.True);
 
-        agent.Remove<Eat>();
-        agent.Get<Facts>() = new Facts((ulong)Need.Tired);
+        agent.RemoveEat();
+        agent.Facts = new Facts((ulong)Need.Tired);
         world.Update();
-        Assert.That(agent.Has<Nap>() || agent.Has<Idle>(), Is.True, "the plan is done: it plans again");
-        Assert.That(agent.Has<Idle>(), Is.True, "napping is part of feeding, not a reason on its own");
+        Assert.That(agent.IsNap || agent.IsIdle, Is.True, "the plan is done: it plans again");
+        Assert.That(agent.IsIdle, Is.True, "napping is part of feeding, not a reason on its own");
 
-        agent.Remove<Idle>();
-        agent.Get<Facts>() = new Facts((ulong)Need.Hungry);
-        agent.Get<Plan>().Count = 2; // a stale plan whose next step (eat) no longer applies
-        agent.Get<Plan>().Next = 1;
+        agent.RemoveIdle();
+        agent.Facts = new Facts((ulong)Need.Hungry);
+        agent.Plan.Count = 2; // a stale plan whose next step (eat) no longer applies
+        agent.Plan.Next = 1;
         world.Update();
-        Assert.That(agent.Has<Fetch>(), Is.True, "a next step that no longer applies makes it plan again");
+        Assert.That(agent.IsFetch, Is.True, "a next step that no longer applies makes it plan again");
     }
 
     [Test]
@@ -171,11 +171,6 @@ public class SimulationTests : ClusterTest
         Assert.That(swarm.Meter.Counters.Count(c => c.Name == "logins"), Is.EqualTo(1), "a counter name is one counter");
         Assert.That(swarm.Meter.Disconnects.Value, Is.Zero);
 
-        static long Users(World world)
-        {
-            long n = 0;
-            foreach (var _ in world.Query<Facts>()) n++;
-            return n;
-        }
+        static long Users(World world) => world.Count<Facts>();
     }
 }

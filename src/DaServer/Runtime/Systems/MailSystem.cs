@@ -16,7 +16,7 @@ internal sealed class MailSystem : EcsSystem
     internal static readonly QueryFilter Runnable = QueryFilter.Create().With<Ready>()
         .Without<Loading>().Without<UnloadRequested>().Without<Leaving>().Without<Removing>();
 
-    protected override void OnUpdate() => World.GetSingleton<ShardActivity>().MailBudget = Budget;
+    protected override void OnUpdate() => World.ShardActivity.MailBudget = Budget;
 
     [ForEach, With<Ready>, Without<Loading>, Without<UnloadRequested>, Without<Leaving>, Without<Removing>]
     private static void Run(Entity actor, in ActorKey key, ref ShardActivity activity, World world)
@@ -25,9 +25,9 @@ internal sealed class MailSystem : EcsSystem
         var address = key.Address;
         int processed = 0;
         // Re-read the mailbox after every message: a handler's structural changes move the actor's row.
-        while (processed < activity.MailBudget && processed < actor.Read<DynamicBuffer<Envelope>>().Count)
+        while (processed < activity.MailBudget && processed < actor.Envelope.Count)
         {
-            var envelope = actor.Read<DynamicBuffer<Envelope>>()[processed];
+            var envelope = actor.Envelope[processed];
             processed++;
             ShardDispatch.Invoke(world, actor, address, in envelope);
             if (!actor.IsAlive || !ShardDispatch.IsLive(actor)) break; // reloading after a failure: the rest waits for the new one
@@ -36,10 +36,10 @@ internal sealed class MailSystem : EcsSystem
         activity.MailBudget -= processed; // singletons never move: the ref survives the handlers' structural changes
         activity.Processed += processed;
         if (!actor.IsAlive) return;
-        ref var mailbox = ref actor.Get<DynamicBuffer<Envelope>>();
+        ref var mailbox = ref actor.WriteEnvelope();
         var items = mailbox.AsSpan();
         items[processed..].CopyTo(items); // what is left moves to the front, in order
         for (int i = 0; i < processed; i++) mailbox.RemoveAt(mailbox.Count - 1);
-        if (mailbox.Count == 0) actor.Remove<Ready>(); // the buffer keeps its room for the actor's next wait
+        if (mailbox.Count == 0) actor.RemoveReady(); // the buffer keeps its room for the actor's next wait
     }
 }

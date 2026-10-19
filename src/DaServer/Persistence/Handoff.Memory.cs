@@ -10,8 +10,8 @@ internal static partial class Handoff
     /// <summary>Remember for the move window that the record of a key went to <paramref name="to"/>.</summary>
     private static void RememberHanded(World world, uint handlerTypeId, long key, ulong to)
     {
-        ref var seen = ref world.GetSingleton<HandoffsSeen>();
-        long now = world.GetSingleton<ShardActivity>().NowMs;
+        ref var seen = ref world.HandoffsSeen;
+        long now = world.ShardActivity.NowMs;
         while (seen.HandedOrder.TryPeek(out var oldest) && (oldest.UntilMs < now || seen.HandedOrder.Count >= HandoffsSeen.Max))
         {
             seen.HandedOrder.Dequeue();
@@ -26,18 +26,18 @@ internal static partial class Handoff
 
     /// <summary>The key is here again (restored, or loaded from the store): forget where it was handed.</summary>
     public static void ForgetHanded(World world, uint handlerTypeId, long key) =>
-        world.GetSingleton<HandoffsSeen>().Handed.Remove(new ActorAddress(handlerTypeId, key));
+        world.HandoffsSeen.Handed.Remove(new ActorAddress(handlerTypeId, key));
 
     /// <summary>Where this shard handed the key's record within the move window, or null.</summary>
     private static ulong? HandedRecordTo(World world, uint handlerTypeId, long key) =>
-        world.GetSingleton<HandoffsSeen>().Handed.TryGetValue(new ActorAddress(handlerTypeId, key), out var entry) &&
-        entry.UntilMs >= world.GetSingleton<ShardActivity>().NowMs ? entry.PassedTo : null;
+        world.HandoffsSeen.Handed.TryGetValue(new ActorAddress(handlerTypeId, key), out var entry) &&
+        entry.UntilMs >= world.ShardActivity.NowMs ? entry.PassedTo : null;
 
     /// <summary>Remember a handoff taken here (<paramref name="passedTo"/> 0) or passed on, for the resends' window.</summary>
     private static void Seen(World world, ulong id, ulong passedTo)
     {
-        ref var seen = ref world.GetSingleton<HandoffsSeen>();
-        long now = world.GetSingleton<ShardActivity>().NowMs;
+        ref var seen = ref world.HandoffsSeen;
+        long now = world.ShardActivity.NowMs;
         while (seen.Order.TryPeek(out var oldest) && (oldest.UntilMs < now || seen.Order.Count >= HandoffsSeen.Max))
         {
             seen.Order.Dequeue();

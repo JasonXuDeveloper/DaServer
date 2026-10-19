@@ -21,7 +21,7 @@ public static class Gate
     [Handle]
     internal static Answer<bool> On(in OpenSale m, in Context ctx)
     {
-        Begin(in ctx, out var to).Set(new Opening(m));
+        Begin(in ctx, out var to).SetOpening(m);
         ctx.Ask(new SaleId(m.Sale), new Open(m.PerSecond), to); // first: the shards report to an open sale
         return Answer<bool>.Later;
     }
@@ -30,7 +30,7 @@ public static class Gate
     internal static void On(in Answered<Open, bool> a, in Context ctx)
     {
         if (!Resume(a.ReplyTo, a.Status, in ctx, out var request)) return;
-        var sale = request.Read<Opening>().Request;
+        var sale = request.Opening.Request;
         request.Set(new ShardAnswers());
         for (int shard = 0; shard < StockShardId.Shards; shard++)
             ctx.Ask(StockShardId.Of(sale.Sale, shard),
@@ -41,7 +41,7 @@ public static class Gate
     internal static void On(in Answered<Restock, bool> a, in Context ctx)
     {
         if (!Resume(a.ReplyTo, a.Status, in ctx, out var request)) return;
-        if (++request.Get<ShardAnswers>().Count == StockShardId.Shards) Done(request, a.ReplyTo, true, in ctx);
+        if (++request.ShardAnswers.Count == StockShardId.Shards) Done(request, a.ReplyTo, true, in ctx);
     }
 
     // ---------------------------------------------------------------- buying
@@ -51,7 +51,7 @@ public static class Gate
     {
         bool known = TryKnow(ctx.World, m.Sale, out var sale);
         if (known && sale.SoldOut) return Outcome(in sale, m.User); // the late crowd: answered here, no actor touched
-        var request = Begin(in ctx, out var to).Set(new Placing(m));
+        var request = Begin(in ctx, out var to).SetPlacing(m);
         if (known) Place(in m, in sale, request, to, in ctx);
         else ctx.Ask(new SaleId(m.Sale), new Describe(), to);
         return Answer<OrderStatus>.Later;
@@ -62,12 +62,12 @@ public static class Gate
     internal static void On(in Answered<Describe, SaleInfo> a, in Context ctx)
     {
         if (!Resume(a.ReplyTo, a.Status, in ctx, out var request)) return;
-        if (request.TryGet<Placing>(out var placing))
+        if (request.TryGetPlacing(out var placing))
         {
             Learn(ctx.World, placing.Order.Sale, a.Value);
             Place(placing.Order, a.Value, request, a.ReplyTo, in ctx);
         }
-        else if (request.TryGet<QueueingUp>(out var queueing))
+        else if (request.TryGetQueueingUp(out var queueing))
         {
             Learn(ctx.World, queueing.Request.Sale, a.Value);
             Join(queueing.Request, a.Value, request, a.ReplyTo, in ctx);
@@ -79,13 +79,13 @@ public static class Gate
     internal static void On(in Answered<Admitted, Admission> a, in Context ctx)
     {
         if (!Resume(a.ReplyTo, a.Status, in ctx, out var request)) return;
-        if (request.TryGet<Placing>(out var placing))
+        if (request.TryGetPlacing(out var placing))
         {
             // A queued sale sells to admitted positions only.
             if (a.Value == Admission.Admitted) ctx.Ask(OrderId.Of(placing.Order.Sale, placing.Order.User), new Buy(), a.ReplyTo);
             else Done(request, a.ReplyTo, OrderStatus.None, in ctx);
         }
-        else if (request.TryGet<CheckingIn>(out var checkingIn))
+        else if (request.TryGetCheckingIn(out var checkingIn))
         {
             if (a.Value == Admission.SoldOut) Forget(ctx.World, checkingIn.Request.Sale);
             Done(request, a.ReplyTo, a.Value, in ctx);
@@ -96,7 +96,7 @@ public static class Gate
     internal static void On(in Answered<Buy, OrderStatus> a, in Context ctx)
     {
         if (!Resume(a.ReplyTo, a.Status, in ctx, out var request)) return;
-        if (a.Value == OrderStatus.SoldOut) Forget(ctx.World, request.Read<Placing>().Order.Sale); // every shard was empty: ask the sale again, it knows the buyers soon
+        if (a.Value == OrderStatus.SoldOut) Forget(ctx.World, request.Placing.Order.Sale); // every shard was empty: ask the sale again, it knows the buyers soon
         Done(request, a.ReplyTo, a.Value, in ctx);
     }
 
@@ -107,7 +107,7 @@ public static class Gate
     {
         bool known = TryKnow(ctx.World, m.Sale, out var sale);
         if (known && (sale.SoldOut || !sale.Queued)) return 0;
-        var request = Begin(in ctx, out var to).Set(new QueueingUp(m));
+        var request = Begin(in ctx, out var to).SetQueueingUp(m);
         if (known) Join(in m, in sale, request, to, in ctx);
         else ctx.Ask(new SaleId(m.Sale), new Describe(), to);
         return Answer<long>.Later;
@@ -117,14 +117,14 @@ public static class Gate
     internal static void On(in Answered<Join, long> a, in Context ctx)
     {
         if (!Resume(a.ReplyTo, a.Status, in ctx, out var request)) return;
-        if (a.Value == 0) Forget(ctx.World, request.Read<QueueingUp>().Request.Sale);
+        if (a.Value == 0) Forget(ctx.World, request.QueueingUp.Request.Sale);
         Done(request, a.ReplyTo, a.Value, in ctx);
     }
 
     [Handle]
     internal static Answer<Admission> On(in CheckIn m, in Context ctx)
     {
-        Begin(in ctx, out var to).Set(new CheckingIn(m));
+        Begin(in ctx, out var to).SetCheckingIn(m);
         ctx.Ask(new SaleId(m.Sale), new Admitted(m.Position), to);
         return Answer<Admission>.Later;
     }
@@ -143,7 +143,7 @@ public static class Gate
     internal static void On(in Answered<UnitsLeft, int> a, in Context ctx)
     {
         if (!Resume(a.ReplyTo, a.Status, in ctx, out var request)) return;
-        ref var answers = ref request.Get<ShardAnswers>();
+        ref var answers = ref request.ShardAnswers;
         answers.Sum += a.Value;
         if (++answers.Count == StockShardId.Shards) Done(request, a.ReplyTo, answers.Sum, in ctx);
     }
@@ -186,9 +186,9 @@ public static class Gate
 
     private static bool TryKnow(World world, long sale, out SaleInfo info)
     {
-        if (world.Index<KnownSale, long>().TryFind(sale, out var known))
+        if (world.KnownSaleIndex.TryFind(sale, out var known))
         {
-            info = known.Read<KnownSale>().Info;
+            info = known.KnownSale.Info;
             return true;
         }
 
@@ -198,14 +198,14 @@ public static class Gate
 
     private static void Learn(World world, long sale, in SaleInfo info)
     {
-        if (world.Index<KnownSale, long>().TryFind(sale, out var known)) known.Set(new KnownSale(sale, info));
+        if (world.KnownSaleIndex.TryFind(sale, out var known)) known.SetKnownSale(sale, info);
         else world.CreateEntity(new KnownSale(sale, info));
     }
 
     /// <summary>Ask the sale again next time (it sold out since, or the answer would change).</summary>
     private static void Forget(World world, long sale)
     {
-        if (world.Index<KnownSale, long>().TryFind(sale, out var known)) known.Destroy();
+        if (world.KnownSaleIndex.TryFind(sale, out var known)) known.Destroy();
     }
 
     // ---------------------------------------------------------------- requests served in steps

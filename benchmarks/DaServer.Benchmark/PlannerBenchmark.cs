@@ -29,10 +29,10 @@ public sealed partial class NeedsSystem : EcsSystem
 [UpdateAfter<PlannerSystem>]
 public sealed partial class ChoresSystem : EcsSystem
 {
-    [ForEach, With<Fetch>] private static void Fetched(Entity agent, in Restless r) { if (r.Changing) agent.Remove<Fetch>(); }
-    [ForEach, With<Eat>] private static void Ate(Entity agent, in Restless r) { if (r.Changing) agent.Remove<Eat>(); }
-    [ForEach, With<Nap>] private static void Napped(Entity agent, in Restless r) { if (r.Changing) agent.Remove<Nap>(); }
-    [ForEach, With<Idle>] private static void Idled(Entity agent, in Restless r) { if (r.Changing) agent.Remove<Idle>(); }
+    [ForEach, With<Fetch>] private static void Fetched(Entity agent, in Restless r) { if (r.Changing) agent.RemoveFetch(); }
+    [ForEach, With<Eat>] private static void Ate(Entity agent, in Restless r) { if (r.Changing) agent.RemoveEat(); }
+    [ForEach, With<Nap>] private static void Napped(Entity agent, in Restless r) { if (r.Changing) agent.RemoveNap(); }
+    [ForEach, With<Idle>] private static void Idled(Entity agent, in Restless r) { if (r.Changing) agent.RemoveIdle(); }
 }
 
 /// <summary>
@@ -67,6 +67,7 @@ public class PlannerBenchmark
         _world.AddSystem<NeedsSystem>();
         _world.AddSystem<PlannerSystem>();
         _world.AddSystem<ChoresSystem>();
+        _world.EnsureCapacity<Facts, Plan, Restless>(Agents);
         for (int i = 0; i < Agents; i++) _world.CreateEntity(new Facts((ulong)(i % 8)), new Plan(), new Restless(Replanning));
         for (int i = 0; i < 100; i++) _world.Update();
     }

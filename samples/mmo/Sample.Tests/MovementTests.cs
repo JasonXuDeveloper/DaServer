@@ -14,8 +14,8 @@ public class MovementTests
         world.AddSystem<MovementSystem>();
         var avatar = world.CreateEntity(new Position(MapGeometry.Size - 2, 10), new Velocity(5, 1));
         world.Update();
-        Assert.That(avatar.Get<Position>(), Is.EqualTo(new Position(MapGeometry.Size, 11)));
-        Assert.That(avatar.Get<Velocity>(), Is.EqualTo(new Velocity(0, 1)), "viewers extrapolate: the stop is part of the state");
+        Assert.That(avatar.Position, Is.EqualTo(new Position(MapGeometry.Size, 11)));
+        Assert.That(avatar.Velocity, Is.EqualTo(new Velocity(0, 1)), "viewers extrapolate: the stop is part of the state");
     }
 
     [Test]

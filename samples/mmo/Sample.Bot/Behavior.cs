@@ -112,7 +112,7 @@ public sealed partial class WanderSystem : EcsSystem
             steering = new Steering(b.Next() * 2 - 1, b.Next() * 2 - 1);
         }
 
-        if (now >= wandering.Until) bot.Remove<Wandering>(); // last: the refs are invalid after it
+        if (now >= wandering.Until) bot.RemoveWandering(); // last: the refs are invalid after it
     }
 }
 
@@ -125,8 +125,8 @@ public sealed partial class ChatSystem : EcsSystem
     private static void Chat(Entity bot, ref Bot b)
     {
         b.NextChat = Environment.TickCount64 + b.ChatEveryMs;
-        bot.Remove<Chatting>();
-        bot.Set<Speaking>(new Speaking("hello"));
+        bot.RemoveChatting();
+        bot.SetSpeaking("hello");
     }
 }
 
@@ -143,6 +143,6 @@ public sealed partial class TravelSystem : EcsSystem
         long from = me.Map.Value - 1; // map ids are 1..Maps
         var to = new MapId(1 + (from + 1 + (long)(b.Next() * (b.Maps - 1))) % b.Maps); // any other map
         travelling = new Travelling(to);
-        TaskFlow.Start<Travelling>(bot, () => Player.EnterMapAsync(bot, to), trips.Failed);
+        TaskFlow.Start<Travelling, MapId>(bot, to, static (bot, to) => Player.EnterMapAsync(bot, to), trips.Failed);
     }
 }

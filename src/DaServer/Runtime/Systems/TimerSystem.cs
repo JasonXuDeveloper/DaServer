@@ -42,7 +42,7 @@ internal sealed class TimerSystem : EcsSystem
 
     protected override void OnUpdate()
     {
-        ref var timers = ref World.GetSingleton<ShardTimers>();
+        ref var timers = ref World.ShardTimers;
         if (timers.Wheel.Count == 0) return;
         var due = new Due(World.Shard.Node);
         timers.Wheel.Advance(ref due);

@@ -38,7 +38,7 @@ public static class Tangle
         var knot = new Knot();
         knot.Next = knot;
         knotted.Knot = knot;
-        self.Set(new SaveNow()); // `knotted` is invalid from here on
+        self.SetSaveNow(); // `knotted` is invalid from here on
         return true;
     }
 }
@@ -93,13 +93,14 @@ public static class Bank
 
     [Handle] internal static int On(in SetGold m, ref Ledger ledger, Entity self) => Banking.SetGold(in m, ref ledger, self);
 
-    [Handle] internal static int On(in DepositCount _, Entity self) => self.TryGet<Deposits>(out var deposits) ? deposits.Count : 0;
+    [Handle] internal static int On(in DepositCount _, Entity self) => self.TryGetDeposits(out var deposits) ? deposits.Count : 0;
 
     [Handle] internal static int On(in Hit _, ref Streak streak) => ++streak.Count;
 
     [Handle]
     internal static bool On(in Earn _, Entity self)
     {
+        self.GetOrAddLedger(); // InterestSystem earns into the ledger: a new bank has none yet
         self.GetOrAdd<Earning>();
         return true;
     }
@@ -117,7 +118,7 @@ public static class Bank
         ledger.Gold += m.Gold;
         pending.Gold = m.Gold; // the second half's amount: data for the answer's handler
         ctx.Ask(m.Other, new Balance(), ctx.ReplyLater());
-        self.Set(new SaveNow()); // `ledger` and `pending` are invalid from here on
+        self.SetSaveNow(); // `ledger` and `pending` are invalid from here on
         return Answer<int>.Later;
     }
 
@@ -132,7 +133,7 @@ public static class Bank
 
         int gold = ledger.Gold += pending.Gold;
         pending.Gold = 0;
-        self.Set(new SaveNow());
+        self.SetSaveNow();
         ctx.Reply(a.ReplyTo, gold);
     }
 }
@@ -148,6 +149,7 @@ public static class CheckpointedBank
     [Handle]
     internal static bool On(in Earn _, Entity self)
     {
+        self.GetOrAddLedger(); // InterestSystem earns into the ledger: a new bank has none yet
         self.GetOrAdd<Earning>();
         return true;
     }
@@ -199,14 +201,14 @@ internal static class Banking
     {
         int gold = ledger.Gold += m.Gold;
         deposits.Count++;
-        if (m.Critical) self.Set(new SaveNow()); // the refs are invalid from here on
+        if (m.Critical) self.SetSaveNow(); // the refs are invalid from here on
         return gold;
     }
 
     public static int SetGold(in SetGold m, ref Ledger ledger, Entity self)
     {
         ledger.Gold = m.Gold;
-        self.Set(new SaveNow());
+        self.SetSaveNow();
         return m.Gold;
     }
 
@@ -214,7 +216,7 @@ internal static class Banking
     public static void Overdraw(int gold, ref Ledger ledger, Entity self)
     {
         ledger.Gold -= gold;
-        self.Set(new SaveNow());
+        self.SetSaveNow();
         throw new InvalidOperationException("overdrawn");
     }
 }

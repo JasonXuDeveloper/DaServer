@@ -20,9 +20,9 @@ internal sealed class Pushes(Entity player)
 
     private void Apply(in Motion m)
     {
-        var me = player.Get<Me>();
+        var me = player.Me;
         if (m.Map != me.Map) return;
-        var avatars = player.TryGet<View>(out var view) ? view.Avatars : null; // a client without a view sees only itself
+        var avatars = player.TryGetView(out var view) ? view.Avatars : null; // a client without a view sees only itself
         long now = Environment.TickCount64;
         foreach (var moved in m.Avatars.Items)
         {
@@ -30,8 +30,8 @@ internal sealed class Pushes(Entity player)
             var velocity = new Velocity(moved.VelocityX, moved.VelocityY);
             if (moved.Player == me.Player)
             {
-                player.Get<Position>() = at; // the map's word corrects the prediction
-                player.Get<Velocity>() = velocity;
+                player.Position = at; // the map's word corrects the prediction
+                player.Velocity = velocity;
             }
             else if (avatars != null)
                 avatars[moved.Player] = new Track(at, velocity, now);
@@ -41,10 +41,10 @@ internal sealed class Pushes(Entity player)
     [Handle]
     public void On(Gone g)
     {
-        if (g.Map == player.Get<Me>().Map && player.TryGet<View>(out var view)) view.Avatars.Remove(g.Player);
+        if (g.Map == player.Me.Map && player.TryGetView(out var view)) view.Avatars.Remove(g.Player);
     }
 
-    [Handle] public void On(RealmStatus status) => player.Get<Realm>() = new Realm(status.Tick, status.Online);
+    [Handle] public void On(RealmStatus status) => player.Realm = new Realm(status.Tick, status.Online);
 
-    [Handle] public void On(Chat chat) => player.Get<Heard>() = new Heard(chat.Player, chat.Text);
+    [Handle] public void On(Chat chat) => player.Heard = new Heard(chat.Player, chat.Text);
 }

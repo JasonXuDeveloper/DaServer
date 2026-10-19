@@ -25,13 +25,24 @@ internal static class Tracing
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static void Write(FrameWriter frame, Activity span)
+    private static void Write(FrameWriter frame, Activity span) => Write(frame, span.Context);
+
+    /// <summary>The span running now (an ask's handler), kept for the answer: default when untraced.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static ActivityContext Current() => (CallChain.Trace as Activity ?? Activity.Current)?.Context ?? default;
+
+    /// <summary>
+    /// Put a kept trace context on <paramref name="frame"/>: an ask's answer continues the trace of the handler that
+    /// asked, not of whatever runs when the reply arrives.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static void Write(FrameWriter frame, in ActivityContext span)
     {
-        if (frame.TryGetExtension(FrameExtensions.Trace, out _)) return; // relayed: it keeps its sender's
+        if (span == default || frame.TryGetExtension(FrameExtensions.Trace, out _)) return; // relayed: it keeps its sender's
         var data = frame.AddExtension(FrameExtensions.Trace, FrameExtensions.TraceSize);
         span.TraceId.CopyTo(data[..16]);
         span.SpanId.CopyTo(data.Slice(16, 8));
-        data[24] = (byte)span.ActivityTraceFlags;
+        data[24] = (byte)span.TraceFlags;
     }
 
     /// <summary>

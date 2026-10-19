@@ -44,6 +44,9 @@ public sealed class ActorHandler(uint messageId, HandlerDispatch dispatch, Type 
     public HandlerDispatch Dispatch { get; } = dispatch;
     public Type MessageType { get; } = messageType;
 
+    /// <summary>The message is an <see cref="Answered{TRequest,TReply}"/>: it carries the request its asker forwarded.</summary>
+    internal bool IsAnswer { get; } = messageType.IsGenericType && messageType.GetGenericTypeDefinition() == typeof(Answered<,>);
+
     public static ActorHandler Of<T>(HandlerDispatch dispatch) where T : struct => new(TypeId<T>.Value, dispatch, typeof(T));
 
     public override string ToString() => MessageType.FullName ?? MessageType.Name;

@@ -282,6 +282,25 @@ public class GeneratorTests
     }
 
     [Test]
+    public async Task AComponentUsedAfterAStructuralChangeIsReported()
+    {
+        // Adding a tag moves the actor's entity: a write through the ref after it lands in the old row and is lost.
+        const string actor = """
+            public readonly record struct BadId(long Value) : IActorId;
+            [NinoType, Message] public partial record struct Q;
+            [Actor<BadId>] public static class Bad
+            {
+                [Handle] internal static void On(in Q m, ref Game.Hp hp, EasyEcs.Entity self) { BODY }
+            }
+            """;
+        string[] Ids((string[] Sources, string[] Diagnostics) run) => [.. run.Diagnostics.Where(static d => d.StartsWith("DAS"))];
+        Assert.That(Ids(await Run(actor.Replace("BODY", "self.Set(new SaveNow()); hp.Value++;"), GameComponents())), Is.EqualTo(new[] { "DAS022" }));
+        Assert.That(Ids(await Run(actor.Replace("BODY", "hp.Value++; self.Set(new SaveNow());"), GameComponents())), Is.Empty, "written first");
+        Assert.That(Ids(await Run(actor.Replace("BODY", "if (hp.Value < 0) { self.Remove<SaveNow>(); return; } hp.Value++;"), GameComponents())),
+            Is.Empty, "the change is on a path that returned");
+    }
+
+    [Test]
     public async Task SharedLogicReferencesNoServerOrTransport()
     {
         // A <DaServerShared> assembly runs on servers and clients: referencing the runtime or the transport is DAS010.

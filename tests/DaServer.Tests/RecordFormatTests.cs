@@ -31,7 +31,7 @@ public class RecordFormatTests
 
         var loaded = world.CreateEntity();
         Records.Read(loaded, bytes, ById);
-        Assert.That(loaded.Get<Ledger>().Gold, Is.EqualTo(7));
+        Assert.That(loaded.Ledger.Gold, Is.EqualTo(7));
     }
 
     [Test]

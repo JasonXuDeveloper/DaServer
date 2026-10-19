@@ -22,9 +22,9 @@ internal static class Interest
 {
     public static Moved StateOf(Entity avatar)
     {
-        var p = avatar.Read<Position>();
-        var v = avatar.Read<Velocity>();
-        return new Moved(avatar.Read<Avatar>().Player, p.X, p.Y, v.X, v.Y);
+        var p = avatar.Position;
+        var v = avatar.Velocity;
+        return new Moved(avatar.Avatar.Player, p.X, p.Y, v.X, v.Y);
     }
 
     /// <summary>
@@ -33,8 +33,8 @@ internal static class Interest
     /// </summary>
     public static void View(World world, EntityId map, Entity avatar, ClientSession session, int? from, int to)
     {
-        var grid = world.GetEntity(map).Read<MapGrid>();
-        var cells = world.Index<GridCell, GridCell>();
+        var grid = world.GetEntity(map).MapGrid;
+        var cells = world.GridCellIndex;
         var cluster = world.Cluster;
         var inView = grid.Scratch.Items;
         inView.Clear();
@@ -57,12 +57,12 @@ public sealed partial class DespawnSystem : EcsSystem
     [ForEach, With<Despawning>]
     private static void Despawn(Entity entity, in Avatar avatar, in ChildOf map, World world)
     {
-        if (entity.TryGet<GridCell>(out var placed)) // placed: its viewers know it
+        if (entity.TryGetGridCell(out var placed)) // placed: its viewers know it
         {
-            var grid = world.GetEntity(map.Parent).Read<MapGrid>(); // alive: destroying a map destroys its avatars
+            var grid = world.GetEntity(map.Parent).MapGrid; // alive: destroying a map destroys its avatars
             var cluster = world.Cluster;
             cluster.Send(grid.Viewers(placed.Index), new Gone(grid.Map, avatar.Player));
-            if (!entity.Has<SessionGone>())
+            if (!entity.IsSessionGone)
                 foreach (int c in Around(placed.Index, stackalloc int[9]))
                     cluster.Send(avatar.Session, new LeaveGroup(grid.Viewers(c)));
         }
@@ -92,9 +92,9 @@ public sealed partial class PlacementSystem : EcsSystem
         int from = cell.Index, to = CellOf(p);
         if (to == from) return;
         var (session, map) = (avatar.Session, cell.Map);
-        entity.Set(new GridCell(map, to)); // indexed: Set keeps the index current (the refs above are not read again)
+        entity.SetGridCell(map, to); // indexed: Set keeps the index current (the refs above are not read again)
 
-        var grid = world.GetEntity(map).Read<MapGrid>();
+        var grid = world.GetEntity(map).MapGrid;
         var cluster = world.Cluster;
         foreach (int c in Around(from, stackalloc int[9]))
             if (!Near(c, to)) cluster.Send(session, new LeaveGroup(grid.Viewers(c)));
@@ -106,7 +106,7 @@ public sealed partial class PlacementSystem : EcsSystem
     private static void Rejoin(Entity entity, in GridCell cell, in Avatar avatar, World world)
     {
         var (map, session, at) = (cell.Map, avatar.Session, cell.Index);
-        entity.Remove<Resynced>();
+        entity.RemoveResynced();
         Interest.View(world, map, entity, session, from: null, at);
     }
 }
@@ -145,18 +145,18 @@ public sealed partial class SnapshotSystem : EcsSystem
     public override int UpdateInterval => MapGrid.SyncEveryTicks;
 
     [ForEach, With<Queued>]
-    private static void Send(Entity avatar, in GridCell cell, World world)
+    private static void Send(in GridCell cell, Maybe<Queued> queued, World world)
     {
-        if (!avatar.Has<Queued>()) return; // sent with its cell earlier in this pass
+        if (!queued.HasValue) return; // sent with its cell earlier in this pass
         var at = cell;
-        var grid = world.GetEntity(at.Map).Read<MapGrid>();
+        var grid = world.GetEntity(at.Map).MapGrid;
         var changes = grid.Scratch.Items;
         changes.Clear();
-        foreach (var other in world.Index<GridCell, GridCell>().Find(at))
+        foreach (var other in world.GridCellIndex.Find(at))
         {
-            if (!other.Has<Queued>()) continue;
+            if (!other.IsQueued) continue;
             changes.Add(Interest.StateOf(other));
-            other.Remove<Queued>();
+            other.RemoveQueued();
         }
 
         world.Cluster.Send(grid.Viewers(at.Index), new Motion(grid.Map, grid.Scratch));

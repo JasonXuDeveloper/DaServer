@@ -14,8 +14,8 @@ internal sealed class LoadSystem : EcsSystem
     {
         if (store.Loads.InFlight || store.Loads.Full || activity.NowMs < awaiting.NotBeforeMs) return; // a later batch takes it
         var (stored, since) = (new StoredKey(key.HandlerTypeId, key.Key), awaiting.SinceMs);
-        actor.Remove<AwaitingRecord>(); // `awaiting` is invalid from here on
-        actor.Set(new RecordRequested(since));
+        actor.RemoveAwaitingRecord(); // `awaiting` is invalid from here on
+        actor.SetRecordRequested(since);
         store.Loads.Add(actor, stored);
     }
 
@@ -27,21 +27,21 @@ internal sealed class LoadSystem : EcsSystem
     {
         var error = batch.TakeResult();
         if (error != null) Log.LoadFailed(world.Logger, error, batch.Count);
-        var store = world.GetSingleton<ShardStore>();
+        var store = world.ShardStore;
         var records = batch.Records;
         var entities = batch.Entities;
         for (int i = 0; i < entities.Count; i++)
         {
             var entity = entities[i];
-            if (!entity.IsAlive || !entity.TryGet<RecordRequested>(out var requested)) continue; // removed meanwhile (fenced)
-            entity.Remove<RecordRequested>();
-            var key = entity.Read<ActorKey>();
+            if (!entity.IsAlive || !entity.TryGetRecordRequested(out var requested)) continue; // removed meanwhile (fenced)
+            entity.RemoveRecordRequested();
+            var key = entity.ActorKey;
             var handlerType = world.Shard.Node.HandlerTypeById(key.HandlerTypeId)!;
-            long now = world.GetSingleton<ShardActivity>().NowMs;
+            long now = world.ShardActivity.NowMs;
             if (error != null && now - requested.SinceMs < (long)world.Shard.Node.Options.CallTimeout.TotalMilliseconds)
             {
                 // A store outage delays the actor (its mail waits) instead of failing it: tried again shortly.
-                entity.Set<AwaitingRecord>(new AwaitingRecord(requested.SinceMs, now + RetryLoadMs));
+                entity.SetAwaitingRecord(requested.SinceMs, now + RetryLoadMs);
                 continue;
             }
 
@@ -57,17 +57,17 @@ internal sealed class LoadSystem : EcsSystem
                 long every = handlerType.Settings.SaveEverySeconds * 1000L;
                 entity.Set(new Stored
                 {
-                    Version = records[i].Version, Hash = hash, EveryMs = every, DueMs = world.GetSingleton<ShardActivity>().NowMs + every,
+                    Version = records[i].Version, Hash = hash, EveryMs = every, DueMs = world.ShardActivity.NowMs + every,
                 });
             }
             catch (Exception e)
             {
                 if (e != error) Log.RestoreFailed(world.Logger, e, handlerType, key.Key); // the batch's error is logged once
-                entity.Set(new Removing(RpcStatus.Error));
+                entity.SetRemoving(RpcStatus.Error);
                 continue;
             }
 
-            if (!ShardDispatch.BeginLive(world, entity, restored)) entity.Set(new Removing(RpcStatus.Error)); // its mail fails
+            if (!ShardDispatch.BeginLive(world, entity, restored)) entity.SetRemoving(RpcStatus.Error); // its mail fails
         }
 
         batch.Clear();
@@ -90,19 +90,19 @@ internal sealed class PersistSystem : EcsSystem
     [ForEach, With<SaveNow>, Without<Saving>, Without<Fenced>, Without<Removing>]
     private static void Now(Entity actor, ref Stored stored, in ActorKey key, in ShardStore store, in ShardActivity activity, World world)
     {
-        if (Queue(world, actor, ref stored, key, in store, activity.NowMs) != Outcome.Busy) actor.Remove<SaveNow>();
+        if (Queue(world, actor, ref stored, key, in store, activity.NowMs) != Outcome.Busy) actor.RemoveSaveNow();
     }
 
     /// <summary>Without a store (no <see cref="Stored"/>) there is nothing to write: the request is dropped, so it holds no handoff.</summary>
     [ForEach, With<SaveNow>, Without<Stored>]
-    private static void Nowhere(Entity actor) => actor.Remove<SaveNow>();
+    private static void Nowhere(Entity actor) => actor.RemoveSaveNow();
 
     [ForEach, With<FinalSave>, Without<Saving>, Without<Fenced>]
     private static void Final(Entity actor, ref Stored stored, in ActorKey key, in ShardStore store, in ShardActivity activity, World world)
     {
         if (Queue(world, actor, ref stored, key, in store, activity.NowMs) != Outcome.Unchanged) return;
-        actor.Remove<FinalSave>();
-        actor.Set(new Removing(RpcStatus.Ok)); // nothing changed since the last write
+        actor.RemoveFinalSave();
+        actor.SetRemoving(RpcStatus.Ok); // nothing changed since the last write
     }
 
     /// <summary>
@@ -125,10 +125,10 @@ internal sealed class PersistSystem : EcsSystem
             var shard = world.Shard;
             if (shard.ErrorLogDue(out int unlogged))
                 Log.RecordUnwritable(shard.Node.Logger, e, shard.Node.HandlerTypeById(key.HandlerTypeId)!, key.Key, unlogged);
-            if (actor.Has<FinalSave>())
+            if (actor.IsFinalSave)
             {
-                actor.Remove<FinalSave>();
-                actor.Set(new Removing(RpcStatus.Error));
+                actor.RemoveFinalSave();
+                actor.SetRemoving(RpcStatus.Error);
             }
 
             Serialized(actor);
@@ -144,8 +144,8 @@ internal sealed class PersistSystem : EcsSystem
             return Outcome.Unchanged;
         }
 
-        store.Saves.Add(actor, new StoredKey(key.HandlerTypeId, key.Key), stored.Version, record, hash, stored.Attempt, actor.Has<FinalSave>());
-        actor.Set(new Saving());
+        store.Saves.Add(actor, new StoredKey(key.HandlerTypeId, key.Key), stored.Version, record, hash, stored.Attempt, actor.IsFinalSave);
+        actor.SetSaving();
         Serialized(actor);
         return Outcome.Queued;
     }
@@ -153,7 +153,7 @@ internal sealed class PersistSystem : EcsSystem
     /// <summary>The record was taken as it is now: a later write tags the actor again (structural: after the last use of the refs).</summary>
     private static void Serialized(Entity actor)
     {
-        if (actor.Has<Unsaved>()) actor.Remove<Unsaved>();
+        if (actor.IsUnsaved) actor.RemoveUnsaved();
     }
 
     /// <summary>The store answered <paramref name="batch"/> (shard thread).</summary>
@@ -163,13 +163,13 @@ internal sealed class PersistSystem : EcsSystem
         if (error != null) Log.SaveFailed(world.Logger, error, batch.Count);
         var versions = batch.Versions;
         var writes = batch.Writes;
-        long now = world.GetSingleton<ShardActivity>().NowMs;
+        long now = world.ShardActivity.NowMs;
         for (int i = 0; i < batch.Count; i++)
         {
             var actor = batch.Entities[i];
-            if (!actor.IsAlive || !actor.Has<Saving>()) continue;
-            actor.Remove<Saving>();
-            ref var stored = ref actor.Get<Stored>();
+            if (!actor.IsAlive || !actor.IsSaving) continue;
+            actor.RemoveSaving();
+            ref var stored = ref actor.Stored;
             if (error != null)
             {
                 stored.RetryAtMs = now + 1000;
@@ -178,8 +178,8 @@ internal sealed class PersistSystem : EcsSystem
                 // checkpoint (none with SaveEvery zero). A final save stays pending anyway.
                 // A copy leaving by handoff does not wait for the store: its record carries the last written hash and
                 // says the write was critical, so the new owner writes it at once.
-                if (!batch.Finals[i] && actor.Has<HandOff>()) { actor.Set(new CriticalPending()); }
-                else if (!batch.Finals[i] && !actor.Has<SaveNow>()) actor.Set(new SaveNow());
+                if (!batch.Finals[i] && actor.HasHandOff) { actor.SetCriticalPending(); }
+                else if (!batch.Finals[i] && !actor.IsSaveNow) actor.SetSaveNow();
                 continue;
             }
 
@@ -194,20 +194,20 @@ internal sealed class PersistSystem : EcsSystem
             }
             else
             {
-                var key = actor.Read<ActorKey>();
+                var key = actor.ActorKey;
                 Log.RecordTaken(world.Logger, world.Shard.Node.HandlerTypeById(key.HandlerTypeId)!, key.Key, writes[i].ExpectedVersion);
-                if (!actor.Has<FinalSave>())
+                if (!actor.IsFinalSave)
                 {
                     // Also a copy already asked to leave: the key has a newer claimer, so this copy hands nothing on.
-                    actor.Set(new UnloadRequested());
-                    actor.Set(new Fenced());
+                    actor.SetUnloadRequested();
+                    actor.SetFenced();
                     continue;
                 }
                 // unloading: the key has a newer owner, nothing of this copy is written
             }
 
-            actor.Remove<FinalSave>();
-            actor.Set(new Removing(RpcStatus.Ok));
+            actor.RemoveFinalSave();
+            actor.SetRemoving(RpcStatus.Ok);
         }
 
         batch.Clear();
@@ -223,7 +223,7 @@ internal sealed class ChangeSystem : EcsSystem
 {
     protected override void OnUpdate()
     {
-        var store = World.GetSingleton<ShardStore>();
+        var store = World.ShardStore;
         if (!store.Enabled) return;
         foreach (var type in store.Types) type.MarkWritten?.Invoke(World, LastRunTick);
     }
@@ -254,7 +254,7 @@ internal sealed class StoreSystem : EcsSystem
 
     protected override void OnUpdate()
     {
-        var store = World.GetSingleton<ShardStore>();
+        var store = World.ShardStore;
         if (!store.Enabled) return;
         if (!store.Loads.InFlight && store.Loads.Count > 0) store.Loads.Start(store.Store!);
         if (!store.Saves.InFlight && store.Saves.Count > 0) store.Saves.Start(store.Store!);

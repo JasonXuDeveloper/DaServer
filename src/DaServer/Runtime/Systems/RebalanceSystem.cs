@@ -12,17 +12,17 @@ internal sealed class RebalanceSystem : EcsSystem
     private static void Leave(Entity actor, in ActorKey key, in ShardActivity activity, World world)
     {
         if (!activity.DeclaredDead && (activity.Stopping || !world.Shard.Node.IsLocalOwner(key.HandlerTypeId, key.Key)))
-            actor.Set(new UnloadRequested());
+            actor.SetUnloadRequested();
     }
 
     // Wherever a copy is in leaving (asked to, unloading, its record about to be sent or written), its key has a new
     // owner now: it goes without its Unloading mail, a write or a handoff. One whose record was sent waits for the answer.
-    [ForEach, Without<Fenced>, Without<Removing>]
-    private static void Fence(Entity actor, in ActorKey key, in ShardActivity activity)
+    [ForEach, With<ActorKey>, Without<Fenced>, Without<Removing>]
+    private static void Fence(Entity actor, in ShardActivity activity)
     {
         if (!activity.DeclaredDead) return;
-        actor.Set(new Fenced());
+        actor.SetFenced();
         // Also a copy past its Unloading mail (its record waiting to be written or sent): UnloadSystem.Drop removes it.
-        actor.Set(new UnloadRequested());
+        actor.SetUnloadRequested();
     }
 }

@@ -154,9 +154,9 @@ public static class Lounge
         int held = 0;
         foreach (var child in world.Children(self.Id))
         {
-            if (!child.Has<KnownSession>()) continue;
-            if (child.Has<Known>()) held++;
-            if (child.Has<Granted>()) held++;
+            if (!child.HasKnownSession) continue;
+            if (child.IsKnown) held++;
+            if (child.IsGranted) held++;
         }
 
         return held;

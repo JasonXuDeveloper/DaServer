@@ -9,7 +9,7 @@
         <Authors>JasonXuDeveloper</Authors>
         <RepositoryUrl>https://github.com/JasonXuDeveloper/DaServer</RepositoryUrl>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
-        <EasyEcsVersion>4.2.0</EasyEcsVersion>
+        <EasyEcsVersion>4.3.0</EasyEcsVersion>
         <NinoVersion>4.0.0-rc.6</NinoVersion>
         <!-- Pre-1.0: the API may still change between minor versions. -->
         <Version>0.1.0</Version>

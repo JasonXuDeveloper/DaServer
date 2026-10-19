@@ -47,6 +47,11 @@ internal static class Answers
         call.ReplyWhenDone(to, MessageWriter.Write(in value));
     }
 
+    /// <summary>The request an <see cref="Answered{TRequest,TReply}"/> payload carries along (default when none or unreadable).</summary>
+    public static ReplyTo ForwardOf(ReadOnlySpan<byte> payload) => payload.Length < HeaderSize ? default
+        : new ReplyTo(new EntityId(BinaryPrimitives.ReadInt32LittleEndian(payload[5..]), BinaryPrimitives.ReadInt32LittleEndian(payload[9..])),
+            BinaryPrimitives.ReadUInt32LittleEndian(payload[13..]));
+
     /// <summary>Read an <see cref="Answered{TRequest,TReply}"/> payload.</summary>
     public static bool TryRead<TRequest, TReply>(ReadOnlySpan<byte> payload, out Answered<TRequest, TReply> answered)
         where TRequest : struct, IRequest<TReply>
@@ -55,8 +60,7 @@ internal static class Answers
         if (payload.Length < HeaderSize) return false;
         uint call = BinaryPrimitives.ReadUInt32LittleEndian(payload);
         var status = (RpcStatus)payload[sizeof(uint)];
-        var forward = new ReplyTo(new EntityId(BinaryPrimitives.ReadInt32LittleEndian(payload[5..]), BinaryPrimitives.ReadInt32LittleEndian(payload[9..])),
-            BinaryPrimitives.ReadUInt32LittleEndian(payload[13..]));
+        var forward = ForwardOf(payload);
         TReply value = default!;
         if (status == RpcStatus.Ok && typeof(TReply) != typeof(Done) && !MessageReader.TryRead(payload[HeaderSize..], out value)) return false;
         answered = new Answered<TRequest, TReply>(call, status, value, forward);
@@ -90,6 +94,7 @@ internal sealed class AnswerCall : IPendingCall
     private uint _answerId; // the message id of Answered<TRequest, TReply>
     private ReplyTo _replyTo; // ReplyAfter: the request it answers instead
     private ReplyTo _forward; // the request the asker was handling, carried by the answer
+    private System.Diagnostics.ActivityContext _trace; // the asking handler's span: the answer's handler continues it
     private FrameWriter? _reply; // and the reply it gives
     private RpcStatus _failed;
     private bool _fail;
@@ -101,19 +106,20 @@ internal sealed class AnswerCall : IPendingCall
 
     public static AnswerCall Rent(Shard shard, ActorAddress asker, uint answerId, ReplyTo forward)
     {
-        ref var calls = ref shard.World.GetSingleton<AnswerCalls>();
+        ref var calls = ref shard.World.AnswerCalls;
         var call = calls.Pool.Count > 0 ? calls.Pool.Pop() : new AnswerCall();
         call._shard = shard;
         call._asker = asker;
         call._answerId = answerId;
         call._forward = forward;
+        call._trace = Tracing.Current();
         call.Id = ++calls.Last == 0 ? ++calls.Last : calls.Last;
         calls.InFlight[call.Id] = call;
         return call;
     }
 
     public static bool TryGet(Shard shard, uint id, out AnswerCall call) =>
-        shard.World.GetSingleton<AnswerCalls>().InFlight.TryGetValue(id, out call!);
+        shard.World.AnswerCalls.InFlight.TryGetValue(id, out call!);
 
     public void ReplyWhenDone(ReplyTo to, FrameWriter reply)
     {
@@ -148,7 +154,7 @@ internal sealed class AnswerCall : IPendingCall
     private void Deliver(RpcStatus status, ReadOnlySpan<byte> payload)
     {
         var shard = _shard;
-        ref var calls = ref shard.World.GetSingleton<AnswerCalls>();
+        ref var calls = ref shard.World.AnswerCalls;
         if (!calls.InFlight.Remove(Id)) return; // delivered already
         try
         {
@@ -161,13 +167,14 @@ internal sealed class AnswerCall : IPendingCall
             }
 
             var w = Answers.Write(Id, status, _forward, status == RpcStatus.Ok ? payload : default);
+            Tracing.Write(w, in _trace);
             if (_asker.HandlerTypeId == 0) shard.Node.SendMessage(w, _answerId, 0, 0); // a service asked
             else shard.Node.SendMessage(w, _answerId, _asker.HandlerTypeId, _asker.Key);
         }
         finally
         {
             _reply?.Dispose();
-            (_reply, _replyTo, _forward, _fail, _asker) = (null, default, default, false, default);
+            (_reply, _replyTo, _forward, _fail, _asker, _trace) = (null, default, default, false, default, default);
             if (calls.Pool.Count < AnswerCalls.MaxPooled) calls.Pool.Push(this);
         }
     }
@@ -237,7 +244,7 @@ internal static class Replies
     private static bool TryTake(World world, ReplyTo to, out IReplySink sink)
     {
         sink = null!;
-        if (!to.Expected || !world.TryGetEntity(to.Pending, out var entity) || !entity.TryGet<PendingReply>(out var pending) ||
+        if (!to.Expected || !world.TryGetEntity(to.Pending, out var entity) || !entity.TryGetPendingReply(out var pending) ||
             pending.CallId != to.CallId) return false;
         sink = pending.Sink;
         entity.Destroy();

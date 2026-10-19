@@ -15,7 +15,7 @@ public sealed partial class DaServerAnalyzer : DiagnosticAnalyzer
     private const string FilterAttribute = "DaServer.Rpc.FilterAttribute";
 
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics { get; } = ImmutableArray.Create(
-        Rules.BadHandler, Rules.BadMessage, Rules.NotWireType, Rules.IdCollision, Rules.WrongFlow, Rules.StatefulHandlerType, Rules.WrongAddress, Rules.SharedReferencesServer, Rules.BlockingCall, Rules.AskInSystem, Rules.ComponentInLogic, Rules.BadPersisted, Rules.OffShard, Rules.BadPlacement, Rules.WireBreak, Rules.WireUnrecorded, Rules.ClientCollection, Rules.KickWithDisconnectSession, Rules.BadFilter);
+        Rules.BadHandler, Rules.BadMessage, Rules.NotWireType, Rules.IdCollision, Rules.WrongFlow, Rules.StatefulHandlerType, Rules.WrongAddress, Rules.SharedReferencesServer, Rules.BlockingCall, Rules.AskInSystem, Rules.ComponentInLogic, Rules.BadPersisted, Rules.OffShard, Rules.BadPlacement, Rules.WireBreak, Rules.WireUnrecorded, Rules.ClientCollection, Rules.KickWithDisconnectSession, Rules.BadFilter, Rules.StaleComponentRef);
 
     public override void Initialize(AnalysisContext context)
     {
@@ -62,6 +62,7 @@ public sealed partial class DaServerAnalyzer : DiagnosticAnalyzer
             start.RegisterOperationAction(CheckSend, OperationKind.Invocation);
             start.RegisterOperationAction(CheckBlocking, OperationKind.Invocation, OperationKind.PropertyReference, OperationKind.Lock);
             start.RegisterOperationAction(CheckOffShard, OperationKind.Invocation, OperationKind.ObjectCreation);
+            start.RegisterOperationAction(CheckStaleRefs, OperationKind.MethodBody);
 
             start.RegisterCompilationEndAction(end =>
             {
@@ -293,6 +294,10 @@ internal static class Rules
 
     public static readonly DiagnosticDescriptor WireBreak = new("DAS017", "Wire layout breaks the manifest",
         "'{0}' {1} (wire.manifest, ADR-076; a deliberate break: dotnet build -p:UpdateWireManifest=force)", Category, DiagnosticSeverity.Error, true, customTags: WellKnownDiagnosticTags.CompilationEnd);
+
+    public static readonly DiagnosticDescriptor StaleComponentRef = new("DAS022", "A component parameter used after a structural change",
+        "'{0}' is used after '{1}' moved the actor's entity to another table: it points to the old row, so a write is lost; finish with the components before adding or removing one, or read it again (self.Get<T>())",
+        Category, DiagnosticSeverity.Error, true);
 
     public static readonly DiagnosticDescriptor BadFilter = new("DAS021", "Invalid filter",
         "[Filter] '{0}' {1}", Category, DiagnosticSeverity.Error, true);

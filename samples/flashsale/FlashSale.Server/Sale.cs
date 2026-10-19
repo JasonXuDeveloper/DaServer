@@ -60,8 +60,8 @@ public static class Order
         if (purchase.Status != OrderStatus.None) return purchase.Status;
         var caller = ctx.ReplyLater();
         if (caller.Expected) self.GetOrAdd<DynamicBuffer<ReplyTo>>().Add(in caller); // answered with the purchase
-        if (self.Has<Buying>()) return Answer<OrderStatus>.Later; // a retry: the purchase is running
-        self.Set(new Buying(0));
+        if (self.HasBuying) return Answer<OrderStatus>.Later; // a retry: the purchase is running
+        self.SetBuying(0);
         TakeFrom(0, in ctx);
         return Answer<OrderStatus>.Later;
     }
@@ -107,11 +107,11 @@ public static class Order
     {
         if (failed == RpcStatus.Ok)
         {
-            self.Set(new Purchase(status));
+            self.SetPurchase(status);
             self.GetOrAdd<SaveNow>();
         }
 
-        self.Remove<Buying>();
+        self.RemoveBuying();
         if (!self.Has<DynamicBuffer<ReplyTo>>()) return;
         ref var callers = ref self.Get<DynamicBuffer<ReplyTo>>();
         foreach (var caller in callers.AsReadOnlySpan())
@@ -138,8 +138,8 @@ public static class Sale
     internal static bool On(in Open m, ref Sold sold, Entity self, in Context ctx)
     {
         sold = new Sold(0, new List<long>()); // before the shards are stocked: they report to an open sale
-        if (m.PerSecond > 0) self.Set(new WaitingRoom(m.PerSecond, 0, 0, ctx.World.Time.GetUtcNow().ToUnixTimeMilliseconds()));
-        else self.Remove<WaitingRoom>();
+        if (m.PerSecond > 0) self.SetWaitingRoom(m.PerSecond, 0, 0, ctx.World.Time.GetUtcNow().ToUnixTimeMilliseconds());
+        else self.RemoveWaitingRoom();
         self.GetOrAdd<SaveNow>();
         return true;
     }
@@ -150,7 +150,7 @@ public static class Sale
     {
         long[] buyers = sold.SoldOut ? sold.Buyers.ToArray() : [];
         Array.Sort(buyers);
-        return new SaleInfo(self.Has<WaitingRoom>(), sold.SoldOut, buyers);
+        return new SaleInfo(self.HasWaitingRoom, sold.SoldOut, buyers);
     }
 
     /// <summary>A place in the line: none when sold out, nor in a sale without a line (its buyers buy directly).</summary>
@@ -165,7 +165,7 @@ public static class Sale
     // order's answer); only those still waiting are turned away.
     [Handle]
     internal static Admission On(in Admitted m, in Sold sold, Entity self) =>
-        m.Position > 0 && self.TryGet<WaitingRoom>(out var room) && m.Position <= room.Released ? Admission.Admitted
+        m.Position > 0 && self.TryGetWaitingRoom(out var room) && m.Position <= room.Released ? Admission.Admitted
         : sold.SoldOut ? Admission.SoldOut : Admission.Waiting;
 
     [Handle]

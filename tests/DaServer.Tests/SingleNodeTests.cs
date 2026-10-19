@@ -114,6 +114,14 @@ public class SingleNodeTests : ClusterTest
     }
 
     [Test]
+    public async Task SystemsSeeAComponentAHandlerAddedWithoutFurtherMail()
+    {
+        await _node.Ask(new CounterId(9), new Grow()); // adds Growing: GrowthSystem takes the counter from the next tick
+        await Task.Delay(500); // 25 ticks, no mail to the counter meanwhile
+        Assert.That(await _node.Ask(new CounterId(9), new Get()), Is.GreaterThan(10), "the counter grew while it got no mail");
+    }
+
+    [Test]
     public async Task ASystemThatThrowsOnEveryPassLeavesTheShardServing()
     {
         // It throws before the runtime's mail systems of the same group on every wake: they run anyway.

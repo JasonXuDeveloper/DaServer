@@ -42,7 +42,7 @@ internal sealed class DispatchSystem : EcsSystem
             }
         }
 
-        world.GetSingleton<ShardActivity>().Processed += processed;
+        world.ShardActivity.Processed += processed;
     }
 
     private static void Complete(IPendingCall call, FrameWriter frame)

@@ -37,8 +37,8 @@ internal static partial class Handoff
             if (op == Record || op == Resent)
             {
                 ulong id = IdOf(payload);
-                ref var seen = ref world.GetSingleton<HandoffsSeen>();
-                if (loaded && entity.TryGet<TakenHandoff>(out var taken) && taken.Id == id)
+                ref var seen = ref world.HandoffsSeen;
+                if (loaded && entity.TryGetTakenHandoff(out var taken) && taken.Id == id)
                 {
                     Notify(node, from, Answer, handlerType.Id, header.Key, 1); // the copy running here came from it
                     return true;
@@ -60,8 +60,8 @@ internal static partial class Handoff
                     // sender takes it, and so does this shard for a key it owns and holds no copy of, as for a first send.
                     // Refused, its sender keeps the state and the store decides; it is never passed on.
                     bool takes = loaded
-                        ? entity.TryGet<AwaitingHandoff>(out var awaiting) && awaiting.From == from
-                        : header.Hops == 0 && world.GetSingleton<ShardActivity>().NowMs > seen.ForgotUntilMs && ShardDispatch.Owns(world, handlerType.Id, header.Key);
+                        ? entity.TryGetAwaitingHandoff(out var awaiting) && awaiting.From == from
+                        : header.Hops == 0 && world.ShardActivity.NowMs > seen.ForgotUntilMs && ShardDispatch.Owns(world, handlerType.Id, header.Key);
                     bool askAgain = false, again = takes && Restore(world, handlerType, header.Key, payload, loaded, entity, from, out askAgain);
                     if (again) Seen(world, id, 0);
                     Notify(node, from, Answer, handlerType.Id, header.Key, again ? (byte)1 : (byte)0);
@@ -98,23 +98,23 @@ internal static partial class Handoff
                         if (wait != node.Id) Notify(node, wait.Value, Request, handlerType.Id, header.Key, 0);
                     }
                 }
-                else if (entity.TryGet<HandingOff>(out var handingOff) && handingOff.To == from)
+                else if (entity.TryGetHandingOff(out var handingOff) && handingOff.To == from)
                     Resend(node, new ActorAddress(handlerType.Id, header.Key), from, handingOff.Record); // the asker never got it
                 else
                 {
-                    if (!entity.Has<HandoffWanted>()) entity.Set(new HandoffWanted(from)); // told when it goes
+                    if (!entity.HasHandoffWanted) entity.SetHandoffWanted(from); // told when it goes
                     // A copy this node runs for a key the asker owns in this node's view (adopted from a sender ahead of
                     // this view, which then moved back): it leaves, or it would stay until this node's next view change.
                     if (!ShardDispatch.Owns(world, handlerType.Id, header.Key) && node.View.HandlerTypeOwner(handlerType.Id, header.Key)?.NodeId == from &&
-                        !entity.Has<UnloadRequested>() && !entity.Has<Leaving>() && !entity.Has<Removing>())
-                        entity.Set(new UnloadRequested());
+                        !entity.IsUnloadRequested && !entity.IsLeaving && !entity.HasRemoving)
+                        entity.SetUnloadRequested();
                 }
             }
             else if (op == None)
             {
-                if (loaded && entity.TryGet<AwaitingHandoff>(out var asked) && asked.From == from) // the node it asked, not a late one
+                if (loaded && entity.TryGetAwaitingHandoff(out var asked) && asked.From == from) // the node it asked, not a late one
                 {
-                    entity.Remove<AwaitingHandoff>();
+                    entity.RemoveAwaitingHandoff();
                     ShardDispatch.BeginLoad(world, entity, new ActorAddress(handlerType.Id, header.Key));
                 }
                 else if (!loaded && !ShardDispatch.Owns(world, handlerType.Id, header.Key)) PassOn(world, handlerType.Id, header.Key, default);
@@ -122,25 +122,25 @@ internal static partial class Handoff
             else if (op == MovedOn)
             {
                 // The node asked gave the record to another: wait for that one instead (it answers when its copy goes).
-                if (loaded && entity.TryGet<AwaitingHandoff>(out var asked) && asked.From == from)
+                if (loaded && entity.TryGetAwaitingHandoff(out var asked) && asked.From == from)
                 {
                     ulong to = BinaryPrimitives.ReadUInt64LittleEndian(payload[sizeof(ulong)..]);
                     if (to == node.Id || !Notify(node, to, Request, handlerType.Id, header.Key, 0))
                     {
-                        entity.Remove<AwaitingHandoff>(); // it came here after all, or that node is gone: the store
+                        entity.RemoveAwaitingHandoff(); // it came here after all, or that node is gone: the store
                         ShardDispatch.BeginLoad(world, entity, new ActorAddress(handlerType.Id, header.Key));
                     }
-                    else entity.Get<AwaitingHandoff>() = new AwaitingHandoff(to, world.GetSingleton<ShardActivity>().NowMs + TimeoutMs(node));
+                    else entity.AwaitingHandoff = new AwaitingHandoff(to, world.ShardActivity.NowMs + TimeoutMs(node));
                 }
             }
-            else if (loaded && entity.TryGet<HandingOff>(out var handingOff))
+            else if (loaded && entity.TryGetHandingOff(out var handingOff))
             {
-                entity.Remove<HandingOff>();
+                entity.RemoveHandingOff();
                 if (payload[sizeof(ulong)] == 1)
                 {
-                    entity.Set(new HandedTo(handingOff.To));
+                    entity.SetHandedTo(handingOff.To);
                     RememberHanded(world, handlerType.Id, header.Key, handingOff.To);
-                    entity.Set(new Removing(RpcStatus.Ok)); // its mail follows the record
+                    entity.SetRemoving(RpcStatus.Ok); // its mail follows the record
                 }
                 else Reclaim(world, entity, handingOff.Record);
             }
@@ -167,11 +167,11 @@ internal static partial class Handoff
         ulong from, out bool reask)
     {
         reask = false;
-        if (loaded ? !entity.Has<AwaitingHandoff>() || entity.Has<Fenced>() // fenced: it goes without a write, the record with it
+        if (loaded ? !entity.HasAwaitingHandoff || entity.IsFenced // fenced: it goes without a write, the record with it
                 : !ShardDispatch.Owns(world, handlerType.Id, key) && !SendersOwn(world, handlerType.Id, key, from))
             return false;
-        if (loaded) entity.Remove<AwaitingHandoff>();
-        var store = world.GetSingleton<ShardStore>();
+        if (loaded) entity.RemoveAwaitingHandoff();
+        var store = world.ShardStore;
         long every = store.Enabled ? handlerType.Settings.SaveEverySeconds * 1000L : 0;
         if (!loaded) entity = ShardDispatch.Adopt(world, handlerType, key);
         try
@@ -183,13 +183,13 @@ internal static partial class Handoff
             // Refused: its sender takes the state back and writes it, instead of this node holding a copy that never runs.
             Log.HandoffUnreadable(world.Logger, e, handlerType);
             if (loaded) reask = true;
-            else entity.Set(new Removing(RpcStatus.Ok)); // nothing queued yet
+            else entity.SetRemoving(RpcStatus.Ok); // nothing queued yet
             return false;
         }
 
-        entity.Set(new TakenHandoff(IdOf(payload))); // read: the same record again is answered "accepted"
+        entity.SetTakenHandoff(IdOf(payload)); // read: the same record again is answered "accepted"
         ForgetHanded(world, handlerType.Id, key); // the key is here again: an asker is no longer sent away
-        if (store.Enabled && payload[CriticalAt] == 1) entity.Set(new SaveNow());
+        if (store.Enabled && payload[CriticalAt] == 1) entity.SetSaveNow();
         if (store.Enabled)
         {
             entity.Set(new Stored
@@ -198,20 +198,20 @@ internal static partial class Handoff
                 Hash = BinaryPrimitives.ReadUInt64LittleEndian(payload[(sizeof(ulong) + sizeof(long))..]), // changes since are written
                 Attempt = BinaryPrimitives.ReadUInt64LittleEndian(payload[AttemptAt..]),
                 EveryMs = every,
-                DueMs = world.GetSingleton<ShardActivity>().NowMs + every,
+                DueMs = world.ShardActivity.NowMs + every,
             });
         }
 
         if (!ShardDispatch.BeginLive(world, entity, restored: true))
         {
-            if (entity.Has<Stored>())
+            if (entity.HasStored)
             {
                 // Restored from a handoff its sender let go: the record is the only copy of the moved state, so it is
                 // written as it came (not as the failed handler left it) before the copy goes; its mail loads it again.
                 RestoreAsReceived(world, entity, payload);
                 entity.Set(new Leaving(), new FinalSave());
             }
-            else entity.Set(new Removing(RpcStatus.Error));
+            else entity.SetRemoving(RpcStatus.Error);
         }
 
         return true;
@@ -221,8 +221,8 @@ internal static partial class Handoff
 
     private static void Defer(World world, uint handlerTypeId, long key, ulong by)
     {
-        var waiting = world.GetSingleton<HandoffAsks>().Waiting;
-        long now = world.GetSingleton<ShardActivity>().NowMs;
+        var waiting = world.HandoffAsks.Waiting;
+        long now = world.ShardActivity.NowMs;
         if (waiting.Count >= HandoffAsks.Max)
             for (int i = waiting.Count - 1; i >= 0; i--)
                 if (waiting[i].UntilMs < now)
@@ -242,7 +242,7 @@ internal static partial class Handoff
     private static ulong PassOn(World world, uint handlerTypeId, long key, ReadOnlySpan<byte> record, ulong from = 0)
     {
         var node = world.Shard.Node;
-        var waiting = world.GetSingleton<HandoffAsks>().Waiting;
+        var waiting = world.HandoffAsks.Waiting;
         ulong to = 0;
         for (int i = waiting.Count - 1; i >= 0 && (record.IsEmpty || to == 0); i--)
         {
@@ -259,7 +259,7 @@ internal static partial class Handoff
     }
 
     private static bool SendersOwn(World world, uint handlerTypeId, long key, ulong from) =>
-        !world.GetSingleton<ShardActivity>().Stopping && world.Shard.Node.View.HandlerTypeOwner(handlerTypeId, key)?.NodeId == from;
+        !world.ShardActivity.Stopping && world.Shard.Node.View.HandlerTypeOwner(handlerTypeId, key)?.NodeId == from;
 
     private static bool Notify(Node node, ulong to, uint op, uint handlerTypeId, long key, byte value) =>
         Notify(node, to, op, handlerTypeId, key, value, 1);

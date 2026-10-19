@@ -6,7 +6,7 @@ public static class ShardWorldExtensions
     extension(World world)
     {
         /// <summary>The shard owning the world.</summary>
-        internal Shard Shard => world.GetSingleton<ShardContext>().Shard;
+        internal Shard Shard => world.ShardContext.Shard;
 
         /// <summary>
         /// Ticks the shard has run (at <c>NodeOptions.TickRate</c> per second): the clock of time-based logic, e.g. a

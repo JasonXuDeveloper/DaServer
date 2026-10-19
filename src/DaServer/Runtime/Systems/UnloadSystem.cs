@@ -13,31 +13,31 @@ internal sealed class UnloadSystem : EcsSystem
     private static void Begin(Entity actor, in ActorKey key, World world)
     {
         var address = key.Address;
-        actor.Remove<UnloadRequested>(); // `key` is invalid from here on
-        actor.Set(new Leaving());
+        actor.RemoveUnloadRequested(); // `key` is invalid from here on
+        actor.SetLeaving();
         ShardDispatch.Unload(world, actor, address);
         if (!actor.IsAlive) return;
-        if (actor.Has<Fenced>()) // its handler failed and fenced it, or its write was refused: the key has a newer owner
+        if (actor.IsFenced) // its handler failed and fenced it, or its write was refused: the key has a newer owner
         {
             actor.Remove<UnloadRequested, Fenced>();
-            actor.Set(new Removing(RpcStatus.Ok));
+            actor.SetRemoving(RpcStatus.Ok);
         }
-        else if (Handoff.TargetOf(world, address) is { } to) actor.Set(new HandOff(to)); // its new owner takes the record
-        else if (actor.Has<Stored>()) actor.Set(new FinalSave()); // removed once its record is written (PersistSystem)
-        else actor.Set(new Removing(RpcStatus.Ok));
+        else if (Handoff.TargetOf(world, address) is { } to) actor.SetHandOff(to); // its new owner takes the record
+        else if (actor.HasStored) actor.SetFinalSave(); // removed once its record is written (PersistSystem)
+        else actor.SetRemoving(RpcStatus.Ok);
     }
 
     // A copy still waiting for its record when it is asked to leave holds no state: it goes at once (its mail to the
     // owner; a node waiting for it hears "none"), instead of two copies each waiting for the other's record.
     [ForEach, With<UnloadRequested>, Without<Fenced>, Without<Removing>]
-    private static void Abandon(Entity actor, in AwaitingHandoff awaiting)
+    private static void Abandon(Entity actor, in AwaitingHandoff awaiting, Maybe<HandoffWanted> wanted)
     {
         // A node that asked this copy is sent to the one this copy waited for (the record comes from there), unless the
         // asker is that node: then it hears "none" (two copies each waiting for the other).
-        if (actor.TryGet<HandoffWanted>(out var wanted) && wanted.By != awaiting.From)
-            actor.Set(new HandedTo(awaiting.From));
+        if (wanted.HasValue && wanted.Value.By != awaiting.From)
+            actor.SetHandedTo(awaiting.From);
         actor.Remove<UnloadRequested, AwaitingHandoff>();
-        actor.Set(new Removing(RpcStatus.Ok));
+        actor.SetRemoving(RpcStatus.Ok);
     }
 
     // After its write in flight (Without<Saving>): a reload reads the store only once that write settled. A copy whose
@@ -48,6 +48,6 @@ internal sealed class UnloadSystem : EcsSystem
     {
         actor.Remove<UnloadRequested, Fenced>();
         actor.Remove<FinalSave, HandOff, HandingOff>();
-        actor.Set(new Removing(RpcStatus.Ok)); // mail goes on to the new owner
+        actor.SetRemoving(RpcStatus.Ok); // mail goes on to the new owner
     }
 }

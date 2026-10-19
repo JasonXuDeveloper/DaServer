@@ -58,8 +58,8 @@ public static class Map
     {
         // The client resumed: same avatar, new session. It lost the pushes meanwhile, so it gets its view again.
         if (!TryFind(ctx.World, ctx.Entity.Id, e.Previous, out var avatar)) return;
-        avatar.Set(avatar.Read<Avatar>() with { Session = e.Session }); // Set: the session index follows
-        if (avatar.Has<GridCell>()) avatar.SetResynced(); // not placed yet: placing it shows it the map anyway
+        avatar.Set(avatar.Avatar with { Session = e.Session }); // Set: the session index follows
+        if (avatar.HasGridCell) avatar.SetResynced(); // not placed yet: placing it shows it the map anyway
     }
 
     [Handle]
@@ -67,14 +67,14 @@ public static class Map
     {
         // Input is data: MovementSystem integrates it, MotionSyncSystem tells the avatar's viewers.
         if (TryFind(ctx.World, ctx.Entity.Id, ctx.Caller, out var avatar))
-            avatar.Get<Velocity>() = MapGeometry.Clamp(m.VelocityX, m.VelocityY);
+            avatar.Velocity = MapGeometry.Clamp(m.VelocityX, m.VelocityY);
     }
 
     [Handle]
     internal static void On(in Say m, in Context ctx)
     {
         if (m.Text.Length <= MaxChatLength && TryFind(ctx.World, ctx.Entity.Id, ctx.Caller, out var avatar))
-            ctx.Send(ctx.Group, new Chat(avatar.Read<Avatar>().Player, m.Text));
+            ctx.Send(ctx.Group, new Chat(avatar.Avatar.Player, m.Text));
     }
 
     /// <summary>
@@ -84,9 +84,9 @@ public static class Map
     /// </summary>
     private static bool TryFind(World world, EntityId map, ClientSession session, out Entity avatar)
     {
-        foreach (var e in world.Index<Avatar, ClientSession>().Find(session))
+        foreach (var e in world.AvatarIndex.Find(session))
         {
-            if (e.Read<ChildOf>().Parent != map || e.Has<Despawning>()) continue;
+            if (e.Read<ChildOf>().Parent != map || e.IsDespawning) continue;
             avatar = e;
             return true;
         }

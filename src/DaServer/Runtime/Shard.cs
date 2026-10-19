@@ -176,13 +176,13 @@ internal sealed class Shard : CompletionThread
 
     /// <summary>Thread-safe: ownership may have changed; actors this node no longer owns are unloaded.</summary>
     internal void RequestRebalance() =>
-        Post(static s => ((Shard)s!).World.GetSingleton<ShardActivity>().Rebalance = true, this);
+        Post(static s => ((Shard)s!).World.ShardActivity.Rebalance = true, this);
 
     /// <summary>Thread-safe: unload every current loaded actor (this node was declared Dead; its keys moved).</summary>
     internal void RequestUnloadAll() =>
         Post(static s =>
         {
-            ref var activity = ref ((Shard)s!).World.GetSingleton<ShardActivity>();
+            ref var activity = ref ((Shard)s!).World.ShardActivity;
             activity.DeclaredDead = activity.Rebalance = true;
         }, this);
 
@@ -196,8 +196,8 @@ internal sealed class Shard : CompletionThread
             var (shard, id) = ((Shard, uint))s!;
             List<Entity>? leaving = null;
             foreach (var item in shard.World.Query<ActorKey>(Live))
-                if (item.Component1.HandlerTypeId == id) (leaving ??= []).Add(item.Entity);
-            foreach (var actor in leaving ?? []) actor.Set(new UnloadRequested()); // after the query: a structural change
+                if (item.ActorKey.HandlerTypeId == id) (leaving ??= []).Add(item.Entity);
+            foreach (var actor in leaving ?? []) actor.SetUnloadRequested(); // after the query: a structural change
         }, (this, handlerTypeId));
 
     /// <summary>Stop the shard: unload every actor (<paramref name="fenced"/>: remove them without <see cref="Actor.OnUnload"/>).</summary>
@@ -239,7 +239,7 @@ internal sealed class Shard : CompletionThread
             long nextTick = _time.GetTimestamp() + _tickInterval;
             long nextIdleScan = 0;
             bool busy = false; // the last pass had work: under load the next message is microseconds away
-            ref var activity = ref World.GetSingleton<ShardActivity>(); // singletons never move
+            ref var activity = ref World.ShardActivity; // singletons never move
             while (true)
             {
                 Volatile.Write(ref _counters.PassStartedMs, Platform.Milliseconds);
@@ -288,7 +288,7 @@ internal sealed class Shard : CompletionThread
                 if (activity.Stopping && IsDrained()) break;
                 bool idle = activity.Processed == 0 && !World.Any<ActorKey>(MailSystem.Runnable);
                 if (idle)
-                    Sleep(World.GetSingleton<ShardTimers>().Wheel.Count == 0 ? nextTick
+                    Sleep(World.ShardTimers.Wheel.Count == 0 ? nextTick
                         : Math.Min(nextTick, _time.GetTimestamp() + _timerWake), spin: busy, activity.Stopping); // a delayed send waits for no tick
                 busy = !idle;
             }
@@ -304,7 +304,7 @@ internal sealed class Shard : CompletionThread
             ForwardQueued();
             try
             {
-                if (World.HasSingleton<ShardTimers>()) World.GetSingleton<ShardTimers>().Drop();
+                if (World.HasShardTimers) World.ShardTimers.Drop();
                 World.Dispose();
             }
             finally
@@ -370,6 +370,7 @@ internal sealed class Shard : CompletionThread
         World.AddSystem<UnloadSystem>();
         World.AddSystem<LoadSystem>();
         World.AddSystem<PersistSystem>();
+        World.AddSystem<ChangeSystem>();
         World.AddSystem<CheckpointSystem>();
         World.AddSystem<StoreSystem>();
         World.AddSystem<HandoffSystem>();
@@ -381,7 +382,7 @@ internal sealed class Shard : CompletionThread
 
     /// <summary>Stopping: every actor removed, no ask of a handler in flight, nothing left in the dispatch queue.</summary>
     private bool IsDrained() =>
-        !World.Any<ActorKey>() && World.GetSingleton<AnswerCalls>().InFlight.Count == 0 && QueueLength == 0;
+        !World.Any<ActorKey>() && World.AnswerCalls.InFlight.Count == 0 && QueueLength == 0;
 
     /// <summary>Actors that are neither leaving nor going.</summary>
     private static readonly QueryFilter Live = QueryFilter.Create().Without<UnloadRequested>().Without<Leaving>().Without<Removing>();

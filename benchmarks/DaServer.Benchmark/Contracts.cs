@@ -163,7 +163,8 @@ public static class Vault
     internal static long On(in Put m, ref Coins coins, Entity self)
     {
         if (m.Amount == 0) return coins.Amount;
-        self.Set(new SaveNow());
-        return coins.Amount += m.Amount;
+        long amount = coins.Amount += m.Amount;
+        self.SetSaveNow(); // a structural change: `coins` is invalid from here on, so it is written first
+        return amount;
     }
 }

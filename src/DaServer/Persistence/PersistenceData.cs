@@ -1,7 +1,7 @@
 namespace DaServer.Persistence;
 
 // Persistence as ECS data (ADR-068): an actor's stored record is a component, the steps of loading and saving are
-// tags, the shard's store and its batches are a singleton. LoadSystem, PersistSystem, CheckpointSystem and StoreSystem
+// tags, the shard's store and its batches are a singleton. LoadSystem, PersistSystem, ChangeSystem, CheckpointSystem and StoreSystem
 // each do one step.
 
 /// <summary>

@@ -67,8 +67,10 @@ public class TracingTests : ClusterTest
         Assert.That(asked[0], Is.EqualTo(drive.SpanId), "the first ask is the drive's");
         var answers = Spans().Where(s => s != drive && !adds.Contains(s)).ToList();
         Assert.That(answers, Has.Count.EqualTo(3), "each answer runs in a span of the trace");
-        Assert.That(answers.Select(static s => s.ParentSpanId), Is.SubsetOf(adds.Select(static s => s.SpanId).Append(drive.SpanId)),
-            "an answer is the child of the ask it answers");
+        // Each answer is the child of the handler that asked (the drive, then the previous answer), and each later ask
+        // the child of the answer that made it: one chain, drive -> answer -> answer -> answer.
+        Assert.That(answers.Select(static s => s.ParentSpanId), Is.EquivalentTo(asked),
+            "an answer is the child of the handler that asked");
         Assert.That(asked.Skip(1), Is.SubsetOf(answers.Select(static s => s.SpanId)), "the later asks are their answers'");
     }
 

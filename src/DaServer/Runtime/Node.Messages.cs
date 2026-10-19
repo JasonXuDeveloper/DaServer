@@ -31,7 +31,7 @@ sealed partial class Node
         Schedule(delay, new DelayedSend(MessageWriter.Write(in message), AddressKind.Actor, 0, TypeId<T>.Value, 0, 0));
 
     public bool CancelSend(long timer) => Shard.Current is { } shard && shard.Node == this &&
-                                          shard.World.GetSingleton<ShardTimers>().Cancel(shard.Index, timer);
+                                          shard.World.ShardTimers.Cancel(shard.Index, timer);
 
     private long Schedule(TimeSpan delay, in DelayedSend send)
     {
@@ -41,7 +41,7 @@ sealed partial class Node
             throw NotOnShard();
         }
 
-        return shard.World.GetSingleton<ShardTimers>().Schedule(shard.Index, delay, in send);
+        return shard.World.ShardTimers.Schedule(shard.Index, delay, in send);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

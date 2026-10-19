@@ -190,6 +190,9 @@ public partial class ResumeTests
         var game = Nodes.Single(n => n.Options.Name == "game");
         var next = await Start("game-2", configure: Secret(gateways[0].Options.ResumeGrace));
         await Converged();
+        // The player lives on the node that is not held: a resume asks the ticket's actors in turn, so a held player
+        // asked first would keep the resume from the lounge until the grace closed the session.
+        player = next.KeyOwnedBy<PlayerId>(next, player);
         long key = game.KeyOwnedBy<LoungeId>(game);
         var client = await LogIn(gateways, player);
         Assert.That(await client.Ask(new SitDown(new LoungeId(key))), Is.True);

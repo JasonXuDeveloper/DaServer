@@ -54,7 +54,7 @@ public class ClusterTests : ClusterTest
         await Stop(b); // graceful: Leaving is gossiped, b unloads its actors
         await Eventually(() => a.View.UpMembers.Length == 1, "a still sees b as Up");
 
-        // Reactivated on a; in-memory state is gone (persist it in OnUnload / load in OnLoad).
+        // Reactivated on a; in-memory state is gone (a [Persist] component with a store keeps it).
         Assert.That(await a.Ask(new CounterId(key), new Add(1)), Is.EqualTo(1));
         Assert.That(a.OwnerOf<CounterId>(key), Is.EqualTo(a.Id));
     }

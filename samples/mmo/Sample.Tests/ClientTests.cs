@@ -22,8 +22,8 @@ public class ClientTests
         ClientSystems.AddTo(_world);
         _client = new ClusterClient(); // not connected: these tests never send
         _player = Player.Create(_world, _client);
-        _player.Get<Me>() = new Me(new PlayerId(1), new MapId(1));
-        _player.Get<Position>() = new Position(150, 150); // cell (1, 1)
+        _player.Me = new Me(new PlayerId(1), new MapId(1));
+        _player.Position = new Position(150, 150); // cell (1, 1)
         _pushes = new Pushes(_player);
     }
 
@@ -36,7 +36,7 @@ public class ClientTests
 
     private static Motion Motion(params Moved[] moved) => new(new MapId(1), new Moves { Items = [.. moved] });
 
-    private Dictionary<PlayerId, Track> Avatars => _player.Get<View>().Avatars;
+    private Dictionary<PlayerId, Track> Avatars => _player.View.Avatars;
 
     [Test]
     public void AvatarsInViewAreTrackedUntilTheyAreGone()
@@ -54,8 +54,8 @@ public class ClientTests
     public void TheMapCorrectsThePredictionAndLatePushesOfAnotherMapAreDropped()
     {
         _pushes.On(Motion(new Moved(new PlayerId(1), 300, 200, 0, 2)));
-        Assert.That(_player.Get<Position>(), Is.EqualTo(new Position(300, 200)));
-        Assert.That(_player.Get<Velocity>(), Is.EqualTo(new Velocity(0, 2)));
+        Assert.That(_player.Position, Is.EqualTo(new Position(300, 200)));
+        Assert.That(_player.Velocity, Is.EqualTo(new Velocity(0, 2)));
         Assert.That(Avatars, Is.Empty, "the own avatar is the player, not a tracked one");
 
         _pushes.On(new Motion(new MapId(9), new Moves { Items = [new Moved(new PlayerId(5), 150, 150, 0, 0)] }));
@@ -73,10 +73,10 @@ public class ClientTests
     [Test]
     public void SteeringMovesTheOwnAvatarAtOnce()
     {
-        _player.Get<Steering>() = new Steering(9, 0);
+        _player.Steering = new Steering(9, 0);
         _world.Update();
-        Assert.That(_player.Get<Velocity>(), Is.EqualTo(new Velocity(MapGeometry.MaxSpeed, 0)), "clamped like the map does");
-        Assert.That(_player.Get<Position>(), Is.EqualTo(new Position(150 + MapGeometry.MaxSpeed, 150)), "predicted on the same tick");
+        Assert.That(_player.Velocity, Is.EqualTo(new Velocity(MapGeometry.MaxSpeed, 0)), "clamped like the map does");
+        Assert.That(_player.Position, Is.EqualTo(new Position(150 + MapGeometry.MaxSpeed, 150)), "predicted on the same tick");
     }
 
     [Test]
@@ -85,7 +85,7 @@ public class ClientTests
         _pushes.On(new RealmStatus(10, 5, 0));
         _pushes.On(new RealmStatus(15, 6, 0));
         _pushes.On(new Chat(new PlayerId(7), "hi"));
-        Assert.That(_player.Get<Realm>(), Is.EqualTo(new Realm(15, 6)));
-        Assert.That(_player.Get<Heard>(), Is.EqualTo(new Heard(new PlayerId(7), "hi")));
+        Assert.That(_player.Realm, Is.EqualTo(new Realm(15, 6)));
+        Assert.That(_player.Heard, Is.EqualTo(new Heard(new PlayerId(7), "hi")));
     }
 }

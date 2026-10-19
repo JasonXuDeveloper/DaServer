@@ -52,7 +52,7 @@ public sealed partial class SpeakingSystem : EcsSystem
     private static void Say(Entity player, in Link link, in Speaking speaking)
     {
         link.Client.Send(new Say(speaking.Text));
-        player.Remove<Speaking>();
+        player.RemoveSpeaking();
     }
 }
 

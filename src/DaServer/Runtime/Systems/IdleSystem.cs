@@ -11,7 +11,7 @@ internal sealed class IdleSystem : EcsSystem
     [ForEach, Without<Ready>, Without<Loading>, Without<UnloadRequested>, Without<Leaving>, Without<Removing>]
     private static void Leave(Entity actor, in LastMail last, in UnloadWhenIdle idle, in ShardActivity activity)
     {
-        if (activity.NowMs - last.Ms >= idle.Milliseconds) actor.Set(new UnloadRequested());
+        if (activity.NowMs - last.Ms >= idle.Milliseconds) actor.SetUnloadRequested();
     }
 }
 

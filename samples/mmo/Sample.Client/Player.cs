@@ -27,8 +27,8 @@ public static class Player
 
     public static async Task<bool> LogInAsync(Entity player, string name)
     {
-        var result = await player.Get<Link>().Client.Ask(new Login(name));
-        if (result.Ok) player.Get<Me>().Player = result.Player;
+        var result = await player.Link.Client.Ask(new Login(name));
+        if (result.Ok) player.Me.Player = result.Player;
         return result.Ok;
     }
 
@@ -38,18 +38,18 @@ public static class Player
     /// </summary>
     public static async Task<bool> EnterMapAsync(Entity player, MapId map)
     {
-        var previous = player.Get<Me>().Map;
+        var previous = player.Me.Map;
         if (previous == map) return true;
-        if (player.TryGet<View>(out var view)) view.Avatars.Clear();
-        player.Get<Me>().Map = map;
+        if (player.TryGetView(out var view)) view.Avatars.Clear();
+        player.Me.Map = map;
         bool entered = false;
         try
         {
-            return entered = await player.Get<Link>().Client.Ask(new EnterMap(map));
+            return entered = await player.Link.Client.Ask(new EnterMap(map));
         }
         finally
         {
-            if (!entered && player.IsAlive) player.Get<Me>().Map = previous; // still there
+            if (!entered && player.IsAlive) player.Me.Map = previous; // still there
         }
     }
 }

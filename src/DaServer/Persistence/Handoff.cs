@@ -31,7 +31,7 @@ internal static partial class Handoff
     /// <summary>Where a leaving actor's record goes: the key's owner when that is another node and there is a record to move.</summary>
     public static ulong? TargetOf(World world, ActorAddress actor)
     {
-        if (!world.GetSingleton<ShardStore>().HandsOff) return null;
+        if (!world.ShardStore.HandsOff) return null;
         var node = world.Shard.Node;
         var owner = node.View.HandlerTypeOwner(actor.HandlerTypeId, actor.Key);
         return owner != null && owner.NodeId != node.Id ? owner.NodeId : null;
@@ -45,7 +45,7 @@ internal static partial class Handoff
     /// </summary>
     public static ulong? PreviousOwner(World world, uint handlerTypeId, long key)
     {
-        if (!world.GetSingleton<ShardStore>().HandsOff) return null;
+        if (!world.ShardStore.HandsOff) return null;
         var node = world.Shard.Node;
         if (HeldBefore(node, handlerTypeId, key, ownsNow: true) is { } held) return held;
         var recent = node.RecentViews;
@@ -87,16 +87,16 @@ internal static partial class Handoff
     {
         var node = world.Shard.Node;
         if (ShardDispatch.Owns(world, handlerTypeId, key)) return node.Id;
-        return world.GetSingleton<ShardStore>().HandsOff && HeldBefore(node, handlerTypeId, key, ownsNow: false) is { } held && held != by ? held : null;
+        return world.ShardStore.HandsOff && HeldBefore(node, handlerTypeId, key, ownsNow: false) is { } held && held != by ? held : null;
     }
 
     /// <summary>Ask <paramref name="from"/> for the record of a new actor; it loads from the store at once when that node is gone.</summary>
     public static void Await(World world, Entity entity, ulong from)
     {
         var node = world.Shard.Node;
-        var actor = entity.Read<ActorKey>().Address;
+        var actor = entity.ActorKey.Address;
         if (Notify(node, from, Request, actor.HandlerTypeId, actor.Key, 0))
-            entity.Set(new AwaitingHandoff(from, world.GetSingleton<ShardActivity>().NowMs + TimeoutMs(node)));
+            entity.SetAwaitingHandoff(from, world.ShardActivity.NowMs + TimeoutMs(node));
         else ShardDispatch.BeginLoad(world, entity, actor);
     }
 
@@ -111,17 +111,17 @@ internal static partial class Handoff
     public static byte[]? Send(World world, Entity entity, ActorAddress actor, ulong to)
     {
         var node = world.Shard.Node;
-        var stored = entity.Has<Stored>() ? entity.Get<Stored>() : default;
+        var stored = entity.HasStored ? entity.Stored : default;
         var record = FrameWriter.Rent(1024);
         var head = record.GetSpan(RecordHeader);
         BinaryPrimitives.WriteUInt64LittleEndian(head, node.Id);
         BinaryPrimitives.WriteInt64LittleEndian(head[sizeof(ulong)..], stored.Version);
         BinaryPrimitives.WriteUInt64LittleEndian(head[(sizeof(ulong) + sizeof(long))..], stored.Hash);
         BinaryPrimitives.WriteUInt64LittleEndian(head[(2 * sizeof(ulong) + sizeof(long))..], (ulong)Random.Shared.NextInt64() | 1); // this handoff
-        head[CriticalAt] = entity.Has<CriticalPending>() ? (byte)1 : (byte)0; // its write failed: the new owner writes it at once
+        head[CriticalAt] = entity.IsCriticalPending ? (byte)1 : (byte)0; // its write failed: the new owner writes it at once
         BinaryPrimitives.WriteUInt64LittleEndian(head[AttemptAt..], stored.Attempt); // and that write may have landed
         record.Advance(RecordHeader);
-        var moved = world.GetSingleton<ShardStore>().Moved;
+        var moved = world.ShardStore.Moved;
         try
         {
             Records.WriteSections(entity, moved, record);
@@ -161,14 +161,14 @@ internal static partial class Handoff
     {
         try
         {
-            Records.Read(entity, record.AsSpan(RecordHeader), world.GetSingleton<ShardStore>().ById);
+            Records.Read(entity, record.AsSpan(RecordHeader), world.ShardStore.ById);
         }
         catch (Exception e)
         {
             // Its own record, part read: writing that would replace the store's full record with a part of it.
-            var key = entity.Read<ActorKey>();
+            var key = entity.ActorKey;
             Log.RestoreFailed(world.Logger, e, world.Shard.Node.HandlerTypeById(key.HandlerTypeId)!, key.Key);
-            entity.Set(new Removing(RpcStatus.Error));
+            entity.SetRemoving(RpcStatus.Error);
             return;
         }
 
@@ -178,8 +178,8 @@ internal static partial class Handoff
     /// <summary>The handoff went nowhere: the store keeps the record (or, without one, the actor just goes).</summary>
     public static void Fallback(Entity entity)
     {
-        if (entity.Has<Stored>()) entity.Set(new FinalSave());
-        else entity.Set(new Removing(RpcStatus.Ok));
+        if (entity.HasStored) entity.SetFinalSave();
+        else entity.SetRemoving(RpcStatus.Ok);
     }
 
     /// <summary>Tell the node that asked for the record of a removed actor that it was not handed to it.</summary>
@@ -193,7 +193,7 @@ internal static partial class Handoff
 
     /// <summary>A copy whose <see cref="Loaded"/> handler failed after a restore: its state back to the record as it came (written next).</summary>
     public static void RestoreAsReceived(World world, Entity entity, ReadOnlySpan<byte> payload) =>
-        Records.Read(entity, payload[RecordHeader..], world.GetSingleton<ShardStore>().ById);
+        Records.Read(entity, payload[RecordHeader..], world.ShardStore.ById);
 
     /// <summary>Tell <paramref name="by"/> that this node holds no record of the key.</summary>
     public static void Gone(Node node, uint handlerTypeId, long key, ulong by) => Notify(node, by, None, handlerTypeId, key, 0);
