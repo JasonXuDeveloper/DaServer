@@ -372,19 +372,33 @@ public class GeneratorTests
     [Test]
     public void UnrelatedEditsHitTheCache()
     {
-        var messages = Parse("[NinoType, Message, FromClient] public partial record struct Price(int N) : IRequest<int>; [Service] public static class Shop { [Handle] internal static int On(in Price m) => m.N; }");
+        // Every tracked stage of every generator: an edit to an unrelated type reruns none of them. A stage the run
+        // does not report fails the test, so it cannot pass by checking nothing.
+        string[] stages = ["Requests", "ContextAsks", "ClientMessages", "HostedTypes", "ServerTypes", "Filters", "PlacedIds",
+            "TrackedComponents", "RegistrationAssembly", "DaServerShared", "IsExternalInit"];
+        var messages = Parse("""
+            [NinoType, Message, FromClient] public partial record struct Price(int N) : IRequest<int>;
+            [Service] public static class Shop { [Handle] internal static int On(in Price m) => m.N; }
+            public static class Policy { [DaServer.Rpc.Filter] static DaServer.Protocol.RpcStatus Admit(in Context c, in Price m) => default; }
+            public readonly record struct ShopId(long Value) : IActorId, IPlaced { public long Placement => Value; }
+            [NinoType(format: NinoFormat.VersionTolerant), Persist] public partial record struct Till(int Coins) : EasyEcs.IComponent;
+            """);
         var other = Parse("public class Unrelated { }");
         var compilation = Compile(messages, other);
         var driver = Driver().RunGenerators(compilation);
         driver = driver.RunGenerators(compilation.ReplaceSyntaxTree(other, Parse("public class Unrelated { int x; }")));
 
+        var seen = new HashSet<string>();
         foreach (var result in driver.GetRunResult().Results)
         foreach (var (name, steps) in result.TrackedSteps)
         {
-            if (name is not ("Requests" or "ClientMessages" or "HostedTypes" or "ServerTypes" or "UserEntryPoint" or "WireManifest")) continue;
+            if (System.Array.IndexOf(stages, name) < 0) continue;
+            seen.Add(name);
             Assert.That(steps.SelectMany(s => s.Outputs).Select(o => o.Reason),
                 Is.All.AnyOf(IncrementalStepRunReason.Cached, IncrementalStepRunReason.Unchanged), name);
         }
+
+        Assert.That(seen, Is.EquivalentTo(stages), "every stage ran and was checked");
     }
 
     [Test]
