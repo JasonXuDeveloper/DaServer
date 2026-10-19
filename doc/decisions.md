@@ -438,8 +438,8 @@ records that no longer hold). Each: context → decision → consequences.
   the full state; after a lost connection, pushes sent meanwhile are lost by design (state, not a log); a planned move
   (ADR-026) keeps the old connection until the actors switched, so it loses nothing. A lost connection is reported as
   `SessionClosed` only after `ResumeGrace` (30 s), also for a crashed client-facing node; the runtime drops the late
-  `SessionClosed` of a resumed session, and forgets a closed session in every loaded actor it reaches, whether or not
-  the actor handles `SessionClosed`. An explicit close (client dispose, `Disconnect`) is reported at once; an
+  `SessionClosed` of a resumed session, and forgets a closed session in every actor holding it (loaded, or arriving with a
+  handoff record: the close and a resume wait behind it), whether or not the actor handles `SessionClosed`. An explicit close (client dispose, `Disconnect`) is reported at once; an
   actor kicks with `DisconnectSession`, which withdraws the session's grant before the close is sent, so a resume
   waiting in its mailbox is refused (DAS020 for a `Disconnect` sent by an actor). Tickets
   live `ClientConnectionOptions.TicketLifetime` (10 min); clients refresh theirs at half of it.
@@ -1521,7 +1521,7 @@ records that no longer hold). Each: context → decision → consequences.
     carries one runs in a span of the `DaServer` activity source, child of the sender's, while something listens;
     the span ends with the turn (`Turn.Span`, ended where the turn's result is read). Traces start only where the
     application starts them: an untraced message starts no span. Messages to clients carry none.
-- Alternatives: a new fixed trailer per piece of metadata (a protocol version each); W3C `traceparent` as text (55
+- Alternatives: a new fixed trailer per piece of metadata (a protocol level each); W3C `traceparent` as text (55
   bytes, parsed); `Activity.Current` alone (shard threads run many turns, and a turn's continuations do not flow it);
   a span per message whether traced or not (Orleans' default: a sampler then drops most, after they cost).
 - Consequences: an untraced frame is unchanged (no block, the golden bytes hold); a send reads the turn's span and the

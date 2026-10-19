@@ -109,7 +109,7 @@ The runtime owns client sessions: an actor's `await BindSession(session)` routes
 type to its id and puts the session in the actor's `Group`; `await GrantSession(session)` lets the client name the
 actor (`client.Send(roomId, new Say(..))`: a room admitting a player) and puts it in the `Group` too. A client can
 name no other actor: anything else is refused at the edge. When the session closes (or its node crashes), every
-actor it was bound or granted to receives `SessionClosed`. A client that loses its connection reconnects on its own and
+actor it was bound or granted to forgets it, and one that handles `SessionClosed` receives it. A client that loses its connection reconnects on its own and
 resumes the session with a signed ticket: its actors receive `SessionResumed` (send the full state again) instead, and
 `SessionClosed` only if it does not come back within 30 s.
 
