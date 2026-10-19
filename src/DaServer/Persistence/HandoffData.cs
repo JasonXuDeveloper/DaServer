@@ -46,8 +46,6 @@ internal struct HandoffsSeen() : ISingletonComponent
     public readonly Queue<(ActorAddress Address, long UntilMs)> HandedOrder = new();
 }
 
-/// <summary>The record a copy was restored from, until its OnLoad ended: written as it came if OnLoad fails.</summary>
-internal readonly record struct RestoredRecord(byte[] Payload) : IComponent;
 
 /// <summary>A handoff taken here (<see cref="PassedTo"/> 0) or passed on to <see cref="PassedTo"/>, remembered until <see cref="UntilMs"/>.</summary>
 internal readonly record struct SeenHandoff(ulong PassedTo, long UntilMs);

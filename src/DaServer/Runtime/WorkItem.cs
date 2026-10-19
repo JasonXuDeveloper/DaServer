@@ -8,11 +8,8 @@ internal enum WorkKind : byte
     /// <summary>A = IPendingCall, B = FrameWriter (reply frame). Completes a call made from this shard.</summary>
     Complete = 2,
 
-    /// <summary>A = Action&lt;object?&gt;, B = state. Continuations and runtime callbacks.</summary>
+    /// <summary>A = Action&lt;object?&gt;, B = state. Runtime callbacks posted from other threads.</summary>
     Callback = 3,
-
-    /// <summary>A = <see cref="TurnWatcher"/>: a turn's task completed.</summary>
-    TurnEnded = 4,
 }
 
 /// <summary>Mailbox entry: a 24-byte struct (two references + kind), no allocation per message.</summary>

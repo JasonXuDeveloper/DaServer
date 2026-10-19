@@ -12,9 +12,6 @@ internal static partial class Log
     [LoggerMessage(Level = LogLevel.Error, Message = "{Step} of {Actor} failed")]
     public static partial void ActorFailed(ILogger logger, Exception error, string step, object actor);
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "A turn of {Actor} has run for {Ms} ms, past the call timeout: the actor takes no mail until it ends (an await that never completes?)")]
-    public static partial void TurnTooLong(ILogger logger, object actor, long ms);
-
     [LoggerMessage(Level = LogLevel.Warning, Message = "Link {Host}:{Port} backlog full: {Count} frames dropped")]
     public static partial void BacklogFull(ILogger logger, string host, int port, int count);
 
@@ -29,9 +26,6 @@ internal static partial class Log
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Feature {Feature} failed in {Hook}: the node's own steps go on")]
     public static partial void FeatureFailed(ILogger logger, Exception error, string feature, string hook);
-
-    [LoggerMessage(Level = LogLevel.Error, Message = "Service call failed")]
-    public static partial void ServiceCallFailed(ILogger logger, Exception error);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Refused a link from {Host}:{Port} ({Node:x}): {Reason}")]
     public static partial void LinkRefused(ILogger logger, string host, int port, ulong node, string reason);
@@ -102,17 +96,17 @@ internal static partial class Log
     [LoggerMessage(Level = LogLevel.Error, Message = "Loading {Count} records failed: their callers get Error")]
     public static partial void LoadFailed(ILogger logger, Exception error, int count);
 
-    [LoggerMessage(Level = LogLevel.Error, Message = "Restoring the record of {Actor} failed")]
-    public static partial void RestoreFailed(ILogger logger, Exception error, object actor);
+    [LoggerMessage(Level = LogLevel.Error, Message = "Restoring the record of {Actor} {Key} failed")]
+    public static partial void RestoreFailed(ILogger logger, Exception error, object actor, long key);
 
-    [LoggerMessage(Level = LogLevel.Error, Message = "The record of {Actor} does not serialize: the store keeps the last one written ({Unlogged} errors since the last one logged)")]
-    public static partial void RecordUnwritable(ILogger logger, Exception error, object actor, int unlogged);
+    [LoggerMessage(Level = LogLevel.Error, Message = "The record of {Actor} {Key} does not serialize: the store keeps the last one written ({Unlogged} errors since the last one logged)")]
+    public static partial void RecordUnwritable(ILogger logger, Exception error, object actor, long key, int unlogged);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Saving {Count} records failed: retried in a second")]
     public static partial void SaveFailed(ILogger logger, Exception error, int count);
 
-    [LoggerMessage(Level = LogLevel.Error, Message = "The record of {Actor} was written by another node (expected version {Version}): this node no longer owns it, its copy is dropped")]
-    public static partial void RecordTaken(ILogger logger, object actor, long version);
+    [LoggerMessage(Level = LogLevel.Error, Message = "The record of {Actor} {Key} was written by another node (expected version {Version}): this node no longer owns it, its copy is dropped")]
+    public static partial void RecordTaken(ILogger logger, object actor, long key, long version);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Taking the record handed over for {Actor} failed (unreadable, or the actor threw while created): refused, its sender keeps it")]
     public static partial void HandoffUnreadable(ILogger logger, Exception error, object actor);

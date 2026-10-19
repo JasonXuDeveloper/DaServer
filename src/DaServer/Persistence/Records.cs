@@ -98,10 +98,10 @@ internal static class Records
         BinaryPrimitives.WriteUInt16LittleEndian(record[sizeof(ushort)..], Version);
     }
 
-    /// <summary>Restore the sections of <paramref name="data"/> onto <paramref name="entity"/>.</summary>
-    public static void Read(Entity entity, ReadOnlySpan<byte> data, FrozenDictionary<uint, PersistentType> types)
+    /// <summary>Restore the sections of <paramref name="data"/> onto <paramref name="entity"/>; false when it has no record yet.</summary>
+    public static bool Read(Entity entity, ReadOnlySpan<byte> data, FrozenDictionary<uint, PersistentType> types)
     {
-        if (data.IsEmpty) return; // no record yet
+        if (data.IsEmpty) return false; // no record yet
         if (data.Length < Header || BinaryPrimitives.ReadUInt16LittleEndian(data) != Magic)
             throw new InvalidDataException("Not an actor record of this format (no DaServer record header)");
         ushort version = BinaryPrimitives.ReadUInt16LittleEndian(data[sizeof(ushort)..]);
@@ -115,6 +115,8 @@ internal static class Records
             if (types.TryGetValue(id, out var type)) type.Read(entity, section);
             data = data[(SectionHeader + length)..];
         }
+
+        return true;
     }
 
     public static ulong Hash(ReadOnlySpan<byte> record) => System.IO.Hashing.XxHash3.HashToUInt64(record);

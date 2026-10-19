@@ -2,8 +2,8 @@ namespace DaServer.Runtime;
 
 /// <summary>
 /// Drains the shard's dispatch queue, which other threads post to: routes received frames (to service instances or actor
-/// mailboxes), completes this shard's outgoing calls, runs posted callbacks (await continuations) and tags ended turns
-/// (<see cref="TurnEnded"/>). <see cref="MailboxSystem"/> then runs the mail, one turn per actor.
+/// mailboxes), completes this shard's outgoing calls (asks of handlers become answers) and runs posted callbacks.
+/// <see cref="MailSystem"/> then runs the mail that waited.
 /// </summary>
 [UpdateInGroup<ShardMessages>]
 [UpdateAfter<TimerSystem>]
@@ -33,9 +33,6 @@ internal sealed class DispatchSystem : EcsSystem
                     case WorkKind.Callback:
                         if (item.A is System.Threading.SendOrPostCallback post) post(item.B);
                         else ((System.Action<object?>)item.A!)(item.B);
-                        break;
-                    case WorkKind.TurnEnded:
-                        ((TurnWatcher)item.A!).Ended(world);
                         break;
                 }
             }

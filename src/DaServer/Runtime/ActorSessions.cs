@@ -9,14 +9,14 @@ namespace DaServer.Runtime;
 /// </summary>
 internal static class ActorSessions
 {
-
     /// <summary>Remember a client session of a loaded actor (a hash lookup; allocates once per new session).</summary>
-    public static void Record(Actor actor, ClientSession session) => SessionsOf(actor).Sessions.Add(session);
+    public static void Record(World world, Entity actor, Origin origin) =>
+        SessionsOf(world, actor).Sessions.Add(new ClientSession(origin.Node, origin.Id));
 
     /// <summary>The actor binds or grants the session (<paramref name="change"/>), or withdraws it.</summary>
-    public static void Change(Actor actor, ClientSession session, AccessChange change)
+    public static void Change(World world, Entity actor, ClientSession session, AccessChange change)
     {
-        var sessions = SessionsOf(actor);
+        var sessions = SessionsOf(world, actor);
         if (change is AccessChange.Bind or AccessChange.Grant)
         {
             sessions.Sessions.Add(session);
@@ -28,16 +28,26 @@ internal static class ActorSessions
         }
     }
 
-    private static ClientSessions SessionsOf(Actor actor)
+    /// <summary>
+    /// Close the session (a kick): its grant of this actor is withdrawn at once, so a resume of it already in this
+    /// actor's mail is refused, then its node closes it and its actors get <see cref="SessionClosed"/> without a resume
+    /// grace. Sending <see cref="Disconnect"/> from an actor is DAS020.
+    /// </summary>
+    public static void Disconnect(in Context context, ClientSession session)
     {
-        var entity = actor.Entity;
-        if (!entity.TryGet<ClientSessions>(out var sessions))
-            entity.Set<ClientSessions>(sessions = actor.World.GetSingleton<ActorPools>().RentSessions());
+        if (context.Entity != default) Change(context.World, context.Entity, session, AccessChange.Revoke);
+        context.Shard.Node.Send(session, new Disconnect());
+    }
+
+    private static ClientSessions SessionsOf(World world, Entity actor)
+    {
+        if (!actor.TryGet<ClientSessions>(out var sessions))
+            actor.Set(sessions = world.GetSingleton<SessionPool>().Rent());
         return sessions;
     }
 
     /// <summary>A <see cref="SessionClosed"/> for the actor: forget the session; false when the close is stale or unreadable (not delivered).</summary>
-    public static bool Closed(Actor actor, ReadOnlySpan<byte> payload)
+    public static bool Closed(World world, Entity actor, ReadOnlySpan<byte> payload)
     {
         SessionClosed closed;
         try
@@ -53,9 +63,9 @@ internal static class ActorSessions
     }
 
     /// <summary>Forget a closed session; false when it had been resumed (its close is stale and not delivered).</summary>
-    private static bool Forget(Actor actor, ClientSession session)
+    private static bool Forget(Entity actor, ClientSession session)
     {
-        if (!actor.Entity.TryGet<ClientSessions>(out var sessions)) return true;
+        if (!actor.TryGet<ClientSessions>(out var sessions)) return true;
         if (sessions.Superseded.Remove(session)) return false;
         sessions.Sessions.Remove(session);
         sessions.Granted.Remove(session);
@@ -65,21 +75,20 @@ internal static class ActorSessions
     /// <summary>
     /// A client resumes <see cref="SessionResumed.Previous"/> on a new session: accepted only while the actor holds the
     /// previous session granted (not withdrawn, not closed, not resumed already: a ticket is good for one resume of what
-    /// is still granted; resumed already answers <see cref="RpcStatus.Superseded"/>). The new session replaces it and is
-    /// the caller of the turn (<c>Caller</c>). A resume back to a session this actor superseded is the client-facing
-    /// node undoing a resume whose new connection died before it completed (<paramref name="reverted"/>): the previous
-    /// session is granted again, so the client can resume it once more.
+    /// is still granted; resumed already answers <see cref="RpcStatus.Superseded"/>). The new session replaces it. A
+    /// resume back to a session this actor superseded is the client-facing node undoing a resume whose new connection
+    /// died before it completed (<paramref name="reverted"/>): the previous session is granted again, so the client can
+    /// resume it once more.
     /// </summary>
-    public static RpcStatus Resume(Actor actor, in SessionResumed resumed, out bool reverted)
+    public static RpcStatus Resume(World world, Entity actor, in SessionResumed resumed, out bool reverted)
     {
         reverted = false;
-        if (!actor.Entity.TryGet<ClientSessions>(out var sessions)) return RpcStatus.Forbidden;
+        if (!actor.TryGet<ClientSessions>(out var sessions)) return RpcStatus.Forbidden;
         if (!sessions.Granted.Remove(resumed.Previous))
             return sessions.Superseded.Contains(resumed.Previous) ? RpcStatus.Superseded : RpcStatus.Forbidden;
         sessions.Sessions.Remove(resumed.Previous);
         sessions.Sessions.Add(resumed.Session);
         sessions.Granted.Add(resumed.Session);
-        actor.TurnCaller = new Origin(resumed.Session.Node, resumed.Session.Id);
         reverted = sessions.Superseded.Remove(resumed.Session);
         if (!reverted) sessions.Superseded.Add(resumed.Previous); // removed when its late SessionClosed arrives or its node dies
         return RpcStatus.Ok;
@@ -92,25 +101,34 @@ internal static class ActorSessions
     public static void CloseSessionsOf(World world, ulong nodeId)
     {
         List<ClientSession>? lost = null;
-        foreach (var item in world.Query<ClientSessions, ActorRef>())
+        List<(Entity, ActorKey)>? targets = null;
+        foreach (var item in world.Query<ClientSessions, ActorKey>())
         {
             var sessions = item.Component1.Sessions;
             item.Component1.Superseded.RemoveWhere(s => s.Node == nodeId); // their close will not come
             item.Component1.Granted.RemoveWhere(s => s.Node == nodeId);
-            lost?.Clear();
-            foreach (var session in sessions)
-                if (session.Node == nodeId) (lost ??= new()).Add(session);
-            if (lost == null || lost.Count == 0) continue;
+            bool any = false;
+            foreach (var session in sessions) any |= session.Node == nodeId;
+            if (any) (targets ??= new()).Add((item.Entity, item.Component2));
+        }
 
-            var actor = item.Component2.Actor;
-            bool handles = actor.HandlerType.Handlers.Of(TypeId<SessionClosed>.Value) != null;
+        // Delivered after the query: a handler may change the world's structure.
+        foreach (var (entity, key) in targets ?? [])
+        {
+            if (!entity.IsAlive || !entity.TryGet<ClientSessions>(out var sessions)) continue;
+            lost?.Clear();
+            foreach (var session in sessions.Sessions)
+                if (session.Node == nodeId) (lost ??= new()).Add(session);
+            if (lost == null) continue;
+            var handlerType = world.Shard.Node.HandlerTypeById(key.HandlerTypeId)!;
+            bool handles = handlerType.Handlers.Of(TypeId<SessionClosed>.Value) != null;
             foreach (var session in lost)
             {
-                sessions.Remove(session);
+                sessions.Sessions.Remove(session);
                 if (!handles) continue;
                 var w = MessageWriter.Write(new SessionClosed(session));
-                w.SetHeader(FrameKind.Message, actor.HandlerType.Id, TypeId<SessionClosed>.Value, actor.Key);
-                ShardDispatch.Deliver(world, item.Entity, new Envelope(w, null));
+                w.SetHeader(FrameKind.Message, key.HandlerTypeId, TypeId<SessionClosed>.Value, key.Key);
+                ShardDispatch.Deliver(world, entity, key.Address, new Envelope(w, null));
             }
         }
     }

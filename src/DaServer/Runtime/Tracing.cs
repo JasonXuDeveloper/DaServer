@@ -16,7 +16,6 @@ internal static class Tracing
 
     public static readonly ActivitySource Source = new(SourceName);
 
-    [ThreadStatic] private static Activity? t_pending;
 
     /// <summary>Put the running turn's trace context (else the thread's current activity: an HTTP request) on an outgoing frame.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -41,14 +40,14 @@ internal static class Tracing
     /// to restore after the dispatch (the span becomes current while the handler runs synchronously).
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Activity? Start(FrameWriter frame, MessageHandler handler, object target, out Activity? outer)
+    public static Activity? Start(FrameWriter frame, HandlerTypeInfo handlerType, ActorHandler handler, long key, out Activity? outer)
     {
         outer = null;
-        return Source.HasListeners() && frame.TryGetExtension(FrameExtensions.Trace, out var data) ? StartSpan(data, handler, target, out outer) : null;
+        return Source.HasListeners() && frame.TryGetExtension(FrameExtensions.Trace, out var data) ? StartSpan(data, handlerType, handler, key, out outer) : null;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static Activity? StartSpan(ReadOnlySpan<byte> data, MessageHandler handler, object target, out Activity? outer)
+    private static Activity? StartSpan(ReadOnlySpan<byte> data, HandlerTypeInfo handlerType, ActorHandler handler, long key, out Activity? outer)
     {
         outer = Activity.Current;
         var parent = new ActivityContext(ActivityTraceId.CreateFromBytes(data[..16]), ActivitySpanId.CreateFromBytes(data.Slice(16, 8)),
@@ -56,36 +55,19 @@ internal static class Tracing
         var span = Source.StartActivity(handler.MessageType.Name, ActivityKind.Server, parent);
         if (span is { IsAllDataRequested: true })
         {
-            span.SetTag("daserver.handler", target.GetType().Name);
-            if (target is Actor actor) span.SetTag("daserver.key", actor.Key);
+            span.SetTag("daserver.handler", handlerType.Type.Name);
+            if (handlerType.IsActor) span.SetTag("daserver.key", key);
         }
 
         return span;
     }
 
-    /// <summary>The dispatch of <paramref name="span"/>'s turn returned: it ends with the turn (<see cref="Pending"/>) or now.</summary>
+    /// <summary>The handler of <paramref name="span"/> returned (<paramref name="error"/>: how it failed): the span ends.</summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    public static void Dispatched(Activity span, Activity? outer, bool pending, Exception? error)
-    {
-        if (error != null) span.SetStatus(ActivityStatusCode.Error, error.Message);
-        if (pending) t_pending = span;
-        else span.Stop();
-        Activity.Current = outer;
-    }
-
-    /// <summary>The span of the turn whose dispatch just returned unfinished (taken by <see cref="TurnWatcher.Begin"/>).</summary>
-    public static Activity? TakePending()
-    {
-        var span = t_pending;
-        t_pending = null;
-        return span;
-    }
-
-    /// <summary>A traced turn ended (<paramref name="error"/>: how it failed).</summary>
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    public static void Ended(Activity span, Exception? error)
+    public static void Dispatched(Activity span, Activity? outer, Exception? error)
     {
         if (error != null) span.SetStatus(ActivityStatusCode.Error, error.Message);
         span.Stop();
+        Activity.Current = outer;
     }
 }

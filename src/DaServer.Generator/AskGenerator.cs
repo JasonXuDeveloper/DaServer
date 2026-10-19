@@ -28,6 +28,57 @@ public sealed class AskGenerator : IIncrementalGenerator
         var server = context.CompilationProvider.Select(static (c, _) => IsServer(c));
         context.RegisterSourceOutput(requests.Combine(server), static (spc, pair) =>
             spc.AddSource($"DaServer.Ask.{HintName(pair.Left!.FullName)}.g.cs", SourceText.From(EmitAsk(pair.Left!, pair.Right), Encoding.UTF8)));
+
+        // Handlers ask through their Context (ADR-080): the answer comes back as mail. One internal class per server
+        // compilation covers its own requests and those of the contracts it references (they are built without the
+        // runtime), so the typed overloads exist wherever handlers are, without clashing between assemblies.
+        var contextAsks = context.CompilationProvider
+            .Select(static (c, _) => IsServer(c) ? new EquatableArray<RequestModel>(VisibleRequests(c)) : default)
+            .WithTrackingName("ContextAsks");
+        context.RegisterSourceOutput(contextAsks, static (spc, all) =>
+        {
+            if (all.Length > 0) spc.AddSource("DaServer.ContextAsks.g.cs", SourceText.From(EmitContextAsks(all), Encoding.UTF8));
+        });
+    }
+
+    /// <summary>The public request types of this compilation and of the application assemblies it references.</summary>
+    private static RequestModel[] VisibleRequests(Compilation compilation)
+    {
+        var found = new List<RequestModel>();
+        void Walk(INamespaceSymbol ns, bool own)
+        {
+            foreach (var type in ns.GetTypeMembers())
+                if (type is { TypeKind: TypeKind.Struct, IsGenericType: false } && (own || type.DeclaredAccessibility == Accessibility.Public) &&
+                    HasAttribute(type, MessageAttribute) && Shapes.ReadRequest(type) is { } request)
+                    found.Add(request);
+            foreach (var inner in ns.GetNamespaceMembers()) Walk(inner, own);
+        }
+
+        Walk(compilation.Assembly.GlobalNamespace, own: true);
+        foreach (var assembly in compilation.SourceModule.ReferencedAssemblySymbols)
+            if (assembly.Name != "DaServer" && assembly.Name != "DaServer.Core" && assembly.Name != "DaServer.Abstractions" &&
+                assembly.Modules.Any(m => m.ReferencedAssemblies.Any(r => r.Name == "DaServer.Abstractions")))
+                Walk(assembly.GlobalNamespace, own: false);
+        return found.Distinct().OrderBy(r => r.FullName, StringComparer.Ordinal).ToArray();
+    }
+
+    private static string EmitContextAsks(EquatableArray<RequestModel> requests)
+    {
+        var sb = new StringBuilder(Header);
+        sb.Append("namespace DaServer.Runtime;\n\n"); // where Context is: in scope wherever handlers are
+        sb.Append("/// <summary>Typed asks of handlers: the answer comes back as <c>Answered&lt;TRequest, TReply&gt;</c> mail (generated).</summary>\n");
+        sb.Append("internal static class ContextAsks\n{\n");
+        foreach (var r in requests)
+        {
+            sb.Append($"    public static uint Ask<TAddr>(this in global::DaServer.Runtime.Context context, TAddr address, in {r.FullName} request, global::DaServer.Runtime.ReplyTo forward = default)\n");
+            sb.Append("        where TAddr : struct, global::DaServer.IAddress =>\n");
+            sb.Append($"        context.Ask<TAddr, {r.FullName}, {r.ReplyType}>(address, in request, forward);\n\n");
+            sb.Append($"    public static uint Ask(this in global::DaServer.Runtime.Context context, in {r.FullName} request, global::DaServer.Runtime.ReplyTo forward = default) =>\n");
+            sb.Append($"        context.Ask<{r.FullName}, {r.ReplyType}>(in request, forward);\n\n");
+        }
+
+        sb.Append("}\n");
+        return sb.ToString();
     }
 
     private static string EmitAsk(RequestModel r, bool server)
@@ -52,7 +103,8 @@ public sealed class AskGenerator : IIncrementalGenerator
         sb.Append($"        sender.Ask<{r.FullName}, {r.ReplyType}>(in request, default);\n\n");
         sb.Append("    /// <summary>Ask the service handling the request with call options (a timeout of its own).</summary>\n");
         sb.Append($"    public static {reply} Ask(this global::DaServer.IMessageSender sender, in {r.FullName} request, in global::DaServer.CallOptions options) =>\n");
-        sb.Append($"        sender.Ask<{r.FullName}, {r.ReplyType}>(in request, in options);\n}}\n");
+        sb.Append($"        sender.Ask<{r.FullName}, {r.ReplyType}>(in request, in options);\n");
+        sb.Append("}\n");
         sb.Append(close);
         return sb.ToString();
     }

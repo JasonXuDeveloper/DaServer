@@ -106,8 +106,8 @@ internal sealed class SlotAllocation(Node node)
             lock (counts) // shards count one after the other (cold: once per round)
             {
                 if (round != allocation._round) return; // a round given up (this shard was stalled): the next counts anew
-                foreach (var address in world.GetSingleton<ActorDirectory>().Actors.Keys)
-                    if (allocation._hosted!.Contains(address.HandlerTypeId))
+                foreach (var item in world.Query<ActorKey>())
+                    if (item.Component1 is var address && allocation._hosted!.Contains(address.HandlerTypeId))
                         CollectionsMarshal.GetValueRefOrAddDefault(counts, CountKey(address.HandlerTypeId, ClusterView.Slot(address.HandlerTypeId, address.Key)), out _)++;
                 last = --allocation._pending.Value == 0;
             }

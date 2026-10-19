@@ -5,14 +5,15 @@ namespace DaServer.Rpc;
 /// <summary>
 /// Checks a message on the shard right before its handler runs (dispatch stage; the edge's stage is
 /// <c>IIngressFilter</c>): <see cref="RpcStatus.Ok"/> lets it through, any other status refuses it (a request gets the
-/// status as its reply, a one-way message is dropped). <paramref name="target"/> is the actor or service instance it is for.
+/// status as its reply, a one-way message is dropped). <paramref name="context"/> says who handles it (its entity and
+/// key) and who sent it (its caller).
 /// </summary>
-public delegate RpcStatus MessageFilter<T>(object target, in T message, in CallContext context) where T : struct;
+public delegate RpcStatus MessageFilter<T>(in Context context, in T message) where T : struct;
 
 /// <summary>A filter for every message type (authorization, metrics): generic, so it reads messages without boxing.</summary>
 public interface IMessageFilter
 {
-    RpcStatus Admit<T>(object target, in T message, in CallContext context) where T : struct;
+    RpcStatus Admit<T>(in Context context, in T message) where T : struct;
 }
 
 /// <summary>
@@ -63,33 +64,33 @@ public static class MessageFilters<T> where T : struct
     /// filters this is two array length checks.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool Admit(object target, in T message, in CallContext context)
+    public static bool Admit(in Context context, in T message)
     {
         if (MessageFilters.All.Length == 0 && Typed.Length == 0) return true;
-        return RunFilters(target, in message, in context);
+        return RunFilters(in context, in message);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static bool RunFilters(object target, in T message, in CallContext context)
+    private static bool RunFilters(in Context context, in T message)
     {
         foreach (var filter in MessageFilters.All)
         {
-            var status = filter.Admit(target, in message, in context);
+            var status = filter.Admit(in context, in message);
             if (status != RpcStatus.Ok) return Refuse(status, in context);
         }
 
         foreach (var filter in Typed)
         {
-            var status = filter(target, in message, in context);
+            var status = filter(in context, in message);
             if (status != RpcStatus.Ok) return Refuse(status, in context);
         }
 
         return true;
     }
 
-    private static bool Refuse(RpcStatus status, in CallContext context)
+    private static bool Refuse(RpcStatus status, in Context context)
     {
-        context.ReplyError(status, null);
+        context.Call.ReplyError(status, null);
         return false;
     }
 }

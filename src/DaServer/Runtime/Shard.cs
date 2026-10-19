@@ -194,10 +194,10 @@ internal sealed class Shard : CompletionThread
         Post(static s =>
         {
             var (shard, id) = ((Shard, uint))s!;
-            var world = shard.World;
-            foreach (var (address, entity) in world.GetSingleton<ActorDirectory>().Actors)
-                if (address.HandlerTypeId == id && world.GetEntity(entity) is var actor && !actor.Has<UnloadRequested>() && !actor.Has<Unloading>() && !actor.Has<Removing>())
-                    actor.Set(new UnloadRequested());
+            List<Entity>? leaving = null;
+            foreach (var item in shard.World.Query<ActorKey>(Live))
+                if (item.Component1.HandlerTypeId == id) (leaving ??= []).Add(item.Entity);
+            foreach (var actor in leaving ?? []) actor.Set(new UnloadRequested()); // after the query: a structural change
         }, (this, handlerTypeId));
 
     /// <summary>Stop the shard: unload every actor (<paramref name="fenced"/>: remove them without <see cref="Actor.OnUnload"/>).</summary>
@@ -283,10 +283,10 @@ internal sealed class Shard : CompletionThread
 
                 ReviveFailedSystems();
 
-                int actors = World.GetSingleton<ActorDirectory>().Actors.Count;
+                int actors = World.Count<ActorKey>();
                 if (actors != _counters.ActorCount) Volatile.Write(ref _counters.ActorCount, actors); // written only when it changes
                 if (activity.Stopping && IsDrained()) break;
-                bool idle = activity.Processed == 0 && !World.Any<Mailbox>(MailboxSystem.Runnable);
+                bool idle = activity.Processed == 0 && !World.Any<ActorKey>(MailSystem.Runnable);
                 if (idle)
                     Sleep(World.GetSingleton<ShardTimers>().Wheel.Count == 0 ? nextTick
                         : Math.Min(nextTick, _time.GetTimestamp() + _timerWake), spin: busy, activity.Stopping); // a delayed send waits for no tick
@@ -349,25 +349,12 @@ internal sealed class Shard : CompletionThread
     {
         World.AddSingleton<ShardContext>() = new ShardContext(this);
         World.AddSingleton<ShardActivity>();
-        World.AddSingleton<CallChains>() = new CallChains { Last = Random.Shared.NextInt64() };
         World.AddSingleton<ShardTimers>() = new ShardTimers(new TimerWheel<DelayedSend>(ShardTimers.Resolution, time: _time));
-        World.AddSingleton<ActorDirectory>() = new ActorDirectory(new Dictionary<ActorAddress, EntityId>());
+        World.AddSingleton<MailScratch>() = new MailScratch(new List<Envelope>());
+        World.AddSingleton<SessionPool>() = new SessionPool(new Stack<ClientSessions>());
+        World.AddSingleton<AnswerCalls>() = new AnswerCalls();
         World.AddSingleton<Persistence.HandoffAsks>() = new Persistence.HandoffAsks(new List<Persistence.HandoffAsk>());
         World.AddSingleton<Persistence.HandoffsSeen>() = new Persistence.HandoffsSeen();
-        World.AddSingleton<TurnWatchers>() = new TurnWatchers(new Stack<TurnWatcher>());
-        World.AddSingleton<ActorPools>() = new ActorPools(new Dictionary<uint, Stack<Actor>>(), new Stack<Queue<Envelope>>(),
-            new Stack<ClientSessions>());
-
-        var services = new Dictionary<uint, object>();
-        foreach (var handlerType in Node.HostedHandlerTypes)
-        {
-            if (handlerType.IsActor) continue;
-            var instance = handlerType.Factory();
-            if (instance is ShardObject shardObject) shardObject.Shard = this;
-            services[handlerType.Id] = instance;
-        }
-
-        World.AddSingleton<ServiceDirectory>() = new ServiceDirectory(services);
         // Every actor moving to another node takes its client sessions along, whatever components it persists.
         Persistence.PersistentType[] moved = [.. ServerRegistry.PersistentTypes, Sessions];
         var stored = Array.FindAll(moved, static t => t.Stored);
@@ -376,13 +363,11 @@ internal sealed class Shard : CompletionThread
 
         World.AddSystem<TimerSystem>();
         World.AddSystem<DispatchSystem>();
-        World.AddSystem<TurnSystem>();
-        World.AddSystem<MailboxSystem>();
-        World.AddSystem<ServiceCallSystem>();
+        World.AddSystem<MailSystem>();
         World.AddSystem<RemovalSystem>();
         World.AddSystem<RebalanceSystem>();
         World.AddSystem<IdleSystem>();
-        World.AddSystem<LongTurnSystem>();
+        World.AddSystem<ReplySlotSystem>();
         World.AddSystem<UnloadSystem>();
         World.AddSystem<LoadSystem>();
         World.AddSystem<PersistSystem>();
@@ -395,11 +380,12 @@ internal sealed class Shard : CompletionThread
         foreach (var feature in Node.Options.Features) feature.ConfigureShard(World);
     }
 
-    /// <summary>Stopping: every actor removed, no service call running, nothing left in the dispatch queue.</summary>
+    /// <summary>Stopping: every actor removed, no ask of a handler in flight, nothing left in the dispatch queue.</summary>
     private bool IsDrained() =>
-        World.GetSingleton<ActorDirectory>().Actors.Count == 0 &&
-        !World.Any<ServiceCall>() &&
-        QueueLength == 0;
+        !World.Any<ActorKey>() && World.GetSingleton<AnswerCalls>().InFlight.Count == 0 && QueueLength == 0;
+
+    /// <summary>Actors that are neither leaving nor going.</summary>
+    private static readonly QueryFilter Live = QueryFilter.Create().Without<UnloadRequested>().Without<Leaving>().Without<Removing>();
 
     /// <summary>Spins of a busy shard before it sleeps (<see cref="Thread.SpinWait"/> rounds; tens of microseconds).</summary>
     private const int BusySpins = 20, SpinRound = 50;

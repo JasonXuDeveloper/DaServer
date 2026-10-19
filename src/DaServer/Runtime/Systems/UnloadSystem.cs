@@ -1,22 +1,30 @@
 namespace DaServer.Runtime;
 
 /// <summary>
-/// Starts unloading actors asked to leave (<see cref="UnloadRequested"/>) as soon as they are idle:
-/// <see cref="Actor.OnUnload"/> runs as their last turn (<see cref="Unloading"/>), then they are removed (<see cref="Removing"/>).
-/// <see cref="Fenced"/> actors are removed at once: their key already has a new owner.
+/// Unloads actors asked to leave (<see cref="UnloadRequested"/>): their <see cref="Unloading"/> mail runs, then their
+/// record is handed to the key's new owner, written, or they are removed (<see cref="Removing"/>). <see cref="Fenced"/>
+/// actors are removed at once: their key already has a new owner.
 /// </summary>
 [UpdateInGroup<ShardMessages>]
 [UpdateAfter<RemovalSystem>]
-internal sealed partial class UnloadSystem : EcsSystem
+internal sealed class UnloadSystem : EcsSystem
 {
-
-    [ForEach, With<UnloadRequested>, Without<Turn>, Without<Removing>, Without<Fenced>, Without<Loading>, Without<FinalSave>]
-    private static void Begin(Entity actor, in ActorRef self, World world)
+    [ForEach, With<UnloadRequested>, Without<Removing>, Without<Fenced>, Without<Loading>, Without<FinalSave>, Without<Leaving>]
+    private static void Begin(Entity actor, in ActorKey key, World world)
     {
-        var target = self.Actor;
-        actor.Remove<UnloadRequested>();
-        actor.Set(new Unloading());
-        TurnWatcher.Begin(world, actor, ShardDispatch.Hook(world, static a => a.OnUnload().AsValueTask(), target));
+        var address = key.Address;
+        actor.Remove<UnloadRequested>(); // `key` is invalid from here on
+        actor.Set(new Leaving());
+        ShardDispatch.Unload(world, actor, address);
+        if (!actor.IsAlive) return;
+        if (actor.Has<Fenced>()) // its handler failed and fenced it, or its write was refused: the key has a newer owner
+        {
+            actor.Remove<UnloadRequested, Fenced>();
+            actor.Set(new Removing(RpcStatus.Ok));
+        }
+        else if (Handoff.TargetOf(world, address) is { } to) actor.Set(new HandOff(to)); // its new owner takes the record
+        else if (actor.Has<Stored>()) actor.Set(new FinalSave()); // removed once its record is written (PersistSystem)
+        else actor.Set(new Removing(RpcStatus.Ok));
     }
 
     // A copy still waiting for its record when it is asked to leave holds no state: it goes at once (its mail to the
@@ -27,21 +35,19 @@ internal sealed partial class UnloadSystem : EcsSystem
         // A node that asked this copy is sent to the one this copy waited for (the record comes from there), unless the
         // asker is that node: then it hears "none" (two copies each waiting for the other).
         if (actor.TryGet<HandoffWanted>(out var wanted) && wanted.By != awaiting.From)
-            actor.Set<HandedTo>(new HandedTo(awaiting.From));
+            actor.Set(new HandedTo(awaiting.From));
         actor.Remove<UnloadRequested, AwaitingHandoff>();
-        actor.Set<Removing>(new Removing(RpcStatus.Ok, null));
+        actor.Set(new Removing(RpcStatus.Ok));
     }
 
-    // After its write in flight (Without<Saving>): a reload reads the store only once that write settled; after its
-    // OnUnload turn (Without<Turn>). A copy whose record went to a new owner (HandingOff) goes too: this node was
-    // declared dead, so the copy writes nothing whatever the answer, and its mail follows the record on the same link.
-    [ForEach, With<UnloadRequested>, With<Fenced>, Without<Turn>, Without<Removing>, Without<Saving>]
+    // After its write in flight (Without<Saving>): a reload reads the store only once that write settled. A copy whose
+    // record went to a new owner (HandingOff) goes too: this node was declared dead, so the copy writes nothing whatever
+    // the answer, and its mail follows the record on the same link.
+    [ForEach, With<UnloadRequested>, With<Fenced>, Without<Removing>, Without<Saving>]
     private static void Drop(Entity actor)
     {
         actor.Remove<UnloadRequested, Fenced>();
-        if (actor.Has<FinalSave>()) actor.Remove<FinalSave>();
-        if (actor.Has<HandOff>()) actor.Remove<HandOff>();
-        if (actor.Has<HandingOff>()) actor.Remove<HandingOff>();
-        actor.Set<Removing>(new Removing(RpcStatus.Ok, null)); // mail goes on to the new owner
+        actor.Remove<FinalSave, HandOff, HandingOff>();
+        actor.Set(new Removing(RpcStatus.Ok)); // mail goes on to the new owner
     }
 }

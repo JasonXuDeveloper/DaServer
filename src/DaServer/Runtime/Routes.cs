@@ -26,10 +26,12 @@ internal static class Routes
 
         foreach (var type in Types(nodeProject))
         {
-            bool service = typeof(Service).IsAssignableFrom(type);
-            if (type.IsAbstract || !(service || typeof(Actor).IsAssignableFrom(type))) continue;
-            foreach (var method in type.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly))
-                if (method.GetCustomAttribute<HandleAttribute>() != null && method.GetParameters() is [var parameter])
+            bool service = type.IsDefined(typeof(ServiceAttribute), inherit: false);
+            bool actor = Array.Exists(type.GetCustomAttributes(inherit: false),
+                static a => a.GetType().IsGenericType && a.GetType().GetGenericTypeDefinition() == typeof(ActorAttribute<>));
+            if (!service && !actor) continue;
+            foreach (var method in type.GetMethods(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly))
+                if (method.GetCustomAttribute<HandleAttribute>() != null && method.GetParameters() is [var parameter, ..])
                     lines.Add($"H\t{parameter.ParameterType.FullName}\t{type.FullName}\t{(service ? "S" : "A")}");
         }
 

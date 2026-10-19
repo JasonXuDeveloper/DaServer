@@ -38,6 +38,22 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
                 pair.Left.Concat(pair.Right).Distinct().OrderBy(t => t!.FullName, StringComparer.Ordinal).ToArray()!))
             .WithTrackingName("HostedTypes");
 
+        // Actors and services (ADR-080): static classes marked [Actor<TId>] or [Service], read once per class.
+        var actors = context.SyntaxProvider
+            .ForAttributeWithMetadataName(ServerHandlers.ActorAttribute, static (node, _) => node is ClassDeclarationSyntax,
+                static (ctx, _) => ServerHandlers.Read((INamedTypeSymbol)ctx.TargetSymbol))
+            .Where(static t => t is not null)
+            .Collect();
+        var services = context.SyntaxProvider
+            .ForAttributeWithMetadataName(ServerHandlers.ServiceAttribute, static (node, _) => node is ClassDeclarationSyntax,
+                static (ctx, _) => ServerHandlers.Read((INamedTypeSymbol)ctx.TargetSymbol))
+            .Where(static t => t is not null)
+            .Collect();
+        var serverTypes = actors.Combine(services)
+            .Select(static (pair, _) => new EquatableArray<ServerTypeModel>(
+                pair.Left.Concat(pair.Right).Distinct().OrderBy(t => t!.FullName, StringComparer.Ordinal).ToArray()!))
+            .WithTrackingName("ServerTypes");
+
         var clientMessages = context.SyntaxProvider
             .ForAttributeWithMetadataName(FromClientAttribute, static (node, _) => node is TypeDeclarationSyntax,
                 static (ctx, _) => Shapes.ReadClientMessage((INamedTypeSymbol)ctx.TargetSymbol))
@@ -80,18 +96,18 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
                 new EquatableArray<PersistedModel>(PersistedComponents(c))))
             .WithTrackingName("RegistrationAssembly");
 
-        context.RegisterSourceOutput(hosted.Combine(clientMessages).Combine(placed).Combine(filters).Combine(assembly), static (spc, input) =>
+        context.RegisterSourceOutput(hosted.Combine(serverTypes).Combine(clientMessages).Combine(placed).Combine(filters).Combine(assembly), static (spc, input) =>
         {
-            var ((((types, messages), placedIds), filterModels), info) = input;
+            var (((((types, servers), messages), placedIds), filterModels), info) = input;
             // Handler registration lives in DaServer.Core; actors, services and systems need the server runtime.
             if (!info.ReferencesCore) types = default;
             else if (!info.ReferencesRuntime)
                 types = new EquatableArray<HostedModel>(types.Where(static t => t.Kind == HostedKind.ClientHandler).ToArray());
             var sharedSystems = info.ReferencesRuntime ? info.SharedSystems : default;
             int persisted = info.ReferencesRuntime ? info.Persisted.Length : 0;
-            if (!info.ReferencesRuntime) filterModels = default;
-            if (types.Length + messages.Length + placedIds.Length + info.ContractAnchors.Length + sharedSystems.Length + persisted + filterModels.Length == 0) return;
-            spc.AddSource("DaServer.Registration.g.cs", SourceText.From(Emit(types, messages, placedIds, sharedSystems, filterModels, info), Encoding.UTF8));
+            if (!info.ReferencesRuntime) (filterModels, servers) = (default, default);
+            if (types.Length + servers.Length + messages.Length + placedIds.Length + info.ContractAnchors.Length + sharedSystems.Length + persisted + filterModels.Length == 0) return;
+            spc.AddSource("DaServer.Registration.g.cs", SourceText.From(Emit(types, servers, messages, placedIds, sharedSystems, filterModels, info), Encoding.UTF8));
         });
 
         // An assembly built with <DaServerShared>true</DaServerShared> says so, for the nodes that reference it.
@@ -194,7 +210,7 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
         foreach (var inner in ns.GetNamespaceMembers()) CollectSystems(inner, systems);
     }
 
-    private static string Emit(EquatableArray<HostedModel> types, EquatableArray<ClientMessageModel> messages,
+    private static string Emit(EquatableArray<HostedModel> types, EquatableArray<ServerTypeModel> servers, EquatableArray<ClientMessageModel> messages,
         EquatableArray<string> placedIds, EquatableArray<string> sharedSystems, EquatableArray<FilterModel> filters, AssemblyModel info)
     {
         var sb = new StringBuilder(Header);
@@ -224,22 +240,16 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
             foreach (var component in info.Persisted) // the [Persist] and [Handoff] components
                 sb.Append($"        ServerRegistry.RegisterPersistent<{component.FullName}>(stored: {(component.Stored ? "true" : "false")});\n");
 
+        foreach (var t in servers) ServerHandlers.Emit(sb, t);
         foreach (var t in types)
         {
-            switch (t.Kind)
+            if (t.Kind == HostedKind.System)
             {
-                case HostedKind.System:
-                    sb.Append($"        ServerRegistry.RegisterSystem(new SystemInfo(typeof({t.FullName}), static () => new {t.FullName}()));\n");
-                    continue;
-                case HostedKind.ClientHandler:
-                    sb.Append($"        HandlerRegistry.RegisterHandlers(typeof({t.FullName}), ");
-                    break;
-                default:
-                    sb.Append($"        ServerRegistry.RegisterHandlerType(new HandlerTypeInfo(typeof({t.FullName}), ");
-                    sb.Append($"{(t.Kind == HostedKind.Actor ? "true" : "false")},\n            static () => new {t.FullName}(), ");
-                    break;
+                sb.Append($"        ServerRegistry.RegisterSystem(new SystemInfo(typeof({t.FullName}), static () => new {t.FullName}()));\n");
+                continue;
             }
 
+            sb.Append($"        HandlerRegistry.RegisterHandlers(typeof({t.FullName}), "); // a client handler type
             sb.Append(info.ReferencesRuntime ? "[" : "new MessageHandler[] {");
             foreach (var h in t.Handlers)
             {
@@ -248,8 +258,6 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
                 string call = $"Unsafe.As<{t.FullName}>(target).{h.Method}(m)";
                 sb.Append($"\n            MessageHandler.Of<{h.MessageType}>(static (object target, global::System.ReadOnlySpan<byte> payload, in CallContext context) =>\n");
                 sb.Append($"            {{\n                if (!MessageReader.TryRead(payload, out {h.MessageType} m)) return MessageReader.Refuse(in context);\n");
-                if (t.Kind != HostedKind.ClientHandler)
-                    sb.Append($"                if (!MessageFilters<{h.MessageType}>.Admit(target, in m, in context)) return default;\n");
                 sb.Append(h.Return switch
                 {
                     HandlerReturn.Void => $"                {call};\n                return default;\n",
@@ -260,8 +268,7 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
                 sb.Append("            }),");
             }
 
-            sb.Append(t.Handlers.Length > 0 ? "\n        " : "").Append(info.ReferencesRuntime ? "]" : "}");
-            sb.Append(t.Kind == HostedKind.ClientHandler ? ");\n" : "));\n");
+            sb.Append(t.Handlers.Length > 0 ? "\n        " : "").Append(info.ReferencesRuntime ? "]" : "}").Append(");\n");
         }
 
         EndRegistration(sb);

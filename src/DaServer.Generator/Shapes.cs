@@ -17,8 +17,6 @@ internal sealed record HandlerModel(string MessageType, string Method, HandlerRe
 internal enum HostedKind
 {
     System,
-    Actor,
-    Service,
 
     /// <summary>Any other class with [Handle] methods: a client-side handler object (<c>client.Register(obj)</c>).</summary>
     ClientHandler,
@@ -85,8 +83,8 @@ internal static class Shapes
     }
 
     /// <summary>
-    /// A <c>[Filter]</c> (DAS021 when misshapen): a static method <c>RpcStatus M(object target, in T message, in CallContext
-    /// context)</c> of a message type, or a non-abstract class implementing <c>IMessageFilter</c> with a public
+    /// A <c>[Filter]</c> (DAS021 when misshapen): a static method <c>RpcStatus M(in Context context, in T message)</c> of a
+    /// message type, or a non-abstract class implementing <c>IMessageFilter</c> with a public
     /// parameterless constructor; either reachable from generated code (not private).
     /// </summary>
     public static FilterModel? ReadFilter(ISymbol symbol, Report? report = null)
@@ -100,9 +98,9 @@ internal static class Shapes
             problem = !method.IsStatic ? "must be static"
                 : method.DeclaredAccessibility == Accessibility.Private || method.ContainingType.DeclaredAccessibility == Accessibility.Private
                     ? "must be reachable from generated code (not private)"
-                : !Is(method.ReturnType, "DaServer.Protocol.RpcStatus") || p.Length != 3 || p[0].Type.SpecialType != SpecialType.System_Object ||
-                  p[1].RefKind != RefKind.In || p[2].RefKind != RefKind.In || !Is(p[2].Type, "DaServer.Rpc.CallContext")
-                    ? "must be RpcStatus M(object target, in TMessage message, in CallContext context)"
+                : !Is(method.ReturnType, "DaServer.Protocol.RpcStatus") || p.Length != 2 || !Is(p[0].Type, "DaServer.Runtime.Context") ||
+                  p[0].RefKind != RefKind.In || p[1].RefKind != RefKind.In
+                    ? "must be RpcStatus M(in Context context, in TMessage message)"
                 : !IsMessage(p[1].Type, location, "[Filter] " + method.Name, report) ? "" // reported
                 : null;
             if (problem == null)
@@ -261,6 +259,8 @@ internal static class Shapes
 
     public static HostedModel? ReadHosted(INamedTypeSymbol type, Report? report = null)
     {
+        if (type.IsStatic && (HasAttribute(type, ServerHandlers.ActorAttribute) || HasAttribute(type, ServerHandlers.ServiceAttribute)))
+            return null; // an actor or a service: ServerHandlers reads it
         if (type.TypeKind != TypeKind.Class || type.IsAbstract || type.IsStatic || type.IsGenericType)
         {
             // Nothing is generated for them, and derived types do not inherit their handlers: say so instead of routing nothing.
@@ -272,10 +272,7 @@ internal static class Shapes
             return null;
         }
 
-        HostedKind kind = DerivesFrom(type, EcsSystem) ? HostedKind.System
-            : DerivesFrom(type, ActorBase) ? HostedKind.Actor
-            : DerivesFrom(type, ServiceBase) ? HostedKind.Service
-            : HostedKind.ClientHandler;
+        HostedKind kind = DerivesFrom(type, EcsSystem) ? HostedKind.System : HostedKind.ClientHandler;
         if (kind == HostedKind.System) return new HostedModel(type.ToDisplayString(Fqn), kind, default);
 
         var handlers = ReadHandlers(type, client: kind == HostedKind.ClientHandler, report);
@@ -284,13 +281,6 @@ internal static class Shapes
         {
             report?.Invoke(Rules.BadHandler, type.Locations.FirstOrDefault(), type.Name,
                 "be declared in a public or internal type (generated registration calls it)");
-            return null;
-        }
-
-        if (kind != HostedKind.ClientHandler &&
-            !type.InstanceConstructors.Any(c => c.Parameters.Length == 0 && c.DeclaredAccessibility == Accessibility.Public))
-        {
-            report?.Invoke(Rules.NoDefaultConstructor, type.Locations.FirstOrDefault(), type.Name);
             return null;
         }
 

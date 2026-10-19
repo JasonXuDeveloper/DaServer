@@ -99,6 +99,17 @@ sealed partial class Node
         return new Reply<TReply>(task);
     }
 
+    /// <summary>A handler's ask (<see cref="Answers"/>): <paramref name="call"/> turns the reply into the asker's mail.</summary>
+    internal void AskAs(IPendingCall call, FrameWriter frame, uint messageId, uint handlerTypeId, long key)
+    {
+        Tracing.Attach(frame);
+        Request(frame, messageId, handlerTypeId, key, call, null, 0);
+    }
+
+    /// <summary>A handler's session operation (<see cref="Context.BindSession"/>, ...), applied on the session's node.</summary>
+    internal void ChangeAccess(ClientSession session, SessionAccess access, IPendingCall call) =>
+        AskNode(MessageWriter.Write(in access), AddressScopes.Session, TypeId<SessionAccess>.Value, session.Node, session.Id, call);
+
     /// <summary>
     /// Ask a granted actor to accept a resumed session (<see cref="ActorSessions.Resume"/>): fails with
     /// <see cref="RpcStatus.Forbidden"/> when the actor does not hold the previous session granted.

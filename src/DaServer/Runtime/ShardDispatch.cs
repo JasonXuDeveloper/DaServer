@@ -2,14 +2,15 @@ namespace DaServer.Runtime;
 
 /// <summary>
 /// Operations shared by the runtime systems (routing a frame, delivering and invoking a message). Static and
-/// stateless: everything they touch lives in the world.
+/// stateless: everything they touch lives in the world. A handler runs to completion (ADR-080): one message, then the
+/// next; nothing is suspended, so there are no turns.
 /// </summary>
 internal static partial class ShardDispatch
 {
     /// <summary>
-    /// Route a received message (one-way or request): services run immediately; actor messages go to the owner's
-    /// mailbox (loading it on first use) or are forwarded when another node owns the key. Takes ownership of
-    /// <paramref name="frame"/>.
+    /// Route a received message (one-way or request): services run immediately; actor messages run on the live actor,
+    /// wait in the shard's mail while it is not live (loading it on first use), or are forwarded when another node owns
+    /// the key. Takes ownership of <paramref name="frame"/>.
     /// </summary>
     public static void Route(World world, FrameWriter frame, IReplySink? sink)
     {
@@ -41,232 +42,219 @@ internal static partial class ShardDispatch
         }
 
         if (!handlerType!.IsActor)
-            Track(world, Invoke(handler, ServiceOf(world, handlerType), frame, sink, world.Logger, ChainOf(world, frame)));
-        else if (TryGetLoaded(world, handlerType.Id, header.Key, out var existing))
-            Deliver(world, existing, new Envelope(frame, sink)); // even while unloading: its mail moves in order
+        {
+            InvokeService(world, handlerType, handler, frame, sink);
+            return;
+        }
+
+        var address = new ActorAddress(handlerType.Id, header.Key);
+        if (TryGetLoaded(world, address, out var existing))
+            Deliver(world, existing, address, new Envelope(frame, sink)); // even while leaving: its mail moves in order
         else if (!OwnsHere(world, node, handlerType.Id, header.Key))
             node.Forward(frame, sink);
         else
-            Load(world, handlerType, header.Key, frame, sink, Handoff.PreviousOwner(world, handlerType.Id, header.Key));
+            Load(world, handlerType, address, new Envelope(frame, sink), Handoff.PreviousOwner(world, handlerType.Id, header.Key));
     }
 
     private static bool OwnsHere(World world, Node node, uint handlerTypeId, long key) =>
         node.IsLocalOwner(handlerTypeId, key) && !world.GetSingleton<ShardActivity>().Stopping;
 
-    private static object ServiceOf(World world, HandlerTypeInfo handlerType) =>
-        world.GetSingleton<ServiceDirectory>().Services[handlerType.Id];
-
-    /// <summary>A loaded actor of this shard, including one being unloaded (new mail queues behind its mail).</summary>
-    private static bool TryGetLoaded(World world, uint handlerTypeId, long key, out Entity actor) =>
-        world.GetSingleton<ActorDirectory>().TryGet(world, new ActorAddress(handlerTypeId, key), out actor);
-
-    /// <summary>
-    /// Load actor (<paramref name="handlerType"/>, <paramref name="key"/>) for its first message. The message is queued
-    /// first, and the load runs in its call chain: <see cref="Actor.OnLoad"/> calling an actor that waits for this
-    /// message fails with <see cref="RpcStatus.CallCycle"/> at once instead of at the call timeout (ADR-059).
-    /// <paramref name="previousOwner"/>: the node that may still hold it (<see cref="Handoff.PreviousOwner"/>), whose
-    /// record the load waits for.
-    /// </summary>
-    private static void Load(World world, HandlerTypeInfo handlerType, long key, FrameWriter frame, IReplySink? sink, ulong? previousOwner)
-    {
-        var id = new ActorAddress(handlerType.Id, key);
-        Entity entity;
-        try
-        {
-            entity = Create(world, handlerType, id);
-        }
-        catch (Exception e)
-        {
-            // The actor's constructor or settings threw (user code): the message is answered, not left to time out.
-            Log.ActorFailed(world.Logger, e, "Create", handlerType);
-            Fail(frame, sink, RpcStatus.Error);
-            return;
-        }
-
-        world.GetSingleton<ActorDirectory>().Actors[id] = entity.Id;
-        var actor = entity.Get<ActorRef>().Actor;
-        long chain = ChainOf(world, frame);
-        Deliver(world, entity, new Envelope(frame, sink));
-        actor.TurnChain = chain; // no turn yet: kept for OnLoad (BeginLive)
-        if (previousOwner is { } from) Handoff.Await(world, entity, from);
-        else BeginLoad(world, entity, actor);
-    }
-
     /// <summary>Whether this shard takes actor (<paramref name="handlerTypeId"/>, <paramref name="key"/>) now (it owns it and is not stopping).</summary>
     internal static bool Owns(World world, uint handlerTypeId, long key) => OwnsHere(world, world.Shard.Node, handlerTypeId, key);
 
-    /// <summary>An actor's entity, not started: <see cref="Handoff"/> restores what its previous owner sent before <see cref="Actor.OnLoad"/>.</summary>
-    internal static Entity Adopt(World world, HandlerTypeInfo handlerType, long key)
+    /// <summary>A loaded actor of this shard, including one leaving (new mail queues behind its mail).</summary>
+    internal static bool TryGetLoaded(World world, ActorAddress address, out Entity actor) =>
+        world.Index<ActorKey, ActorKey>().TryFind(ActorKey.Of(address), out actor);
+
+    /// <summary>
+    /// Load actor <paramref name="address"/> for its first message: its entity holds its identity and waits for its
+    /// record (<see cref="Loading"/>) while the shard holds the message. <paramref name="previousOwner"/>: the node that
+    /// may still hold it (<see cref="Handoff.PreviousOwner"/>), whose record the load waits for.
+    /// </summary>
+    internal static void Load(World world, HandlerTypeInfo handlerType, ActorAddress address, in Envelope envelope, ulong? previousOwner)
     {
-        var id = new ActorAddress(handlerType.Id, key);
-        var entity = Create(world, handlerType, id);
-        world.GetSingleton<ActorDirectory>().Actors[id] = entity.Id;
+        var entity = Create(world, handlerType, address);
+        Queue(world, entity, address, handlerType, in envelope);
+        if (previousOwner is { } from) Handoff.Await(world, entity, from);
+        else BeginLoad(world, entity, address);
+    }
+
+    /// <summary>An actor's entity, not live: <see cref="Handoff"/> restores what its previous owner sent first.</summary>
+    internal static Entity Adopt(World world, HandlerTypeInfo handlerType, long key) =>
+        Create(world, handlerType, new ActorAddress(handlerType.Id, key));
+
+    private static Entity Create(World world, HandlerTypeInfo handlerType, ActorAddress address)
+    {
+        var entity = world.CreateEntity(ActorKey.Of(address), new LastMail(world.GetSingleton<ShardActivity>().NowMs), new Loading());
+        int idle = handlerType.Settings.UnloadAfterIdleSeconds;
+        if (idle > 0) entity.Set(new UnloadWhenIdle(idle * 1000L));
         return entity;
     }
 
-    /// <summary>The actor's record comes from the store (when it has one), then <see cref="Actor.OnLoad"/> runs.</summary>
-    internal static void BeginLoad(World world, Entity entity, Actor actor)
+    /// <summary>The actor's record comes from the store (when it has one), then it becomes live.</summary>
+    internal static void BeginLoad(World world, Entity entity, ActorAddress address)
     {
-        Persistence.Handoff.ForgetHanded(world, actor.HandlerType.Id, actor.Key); // the key is here again
-        if (world.GetSingleton<ShardStore>().Enabled) // LoadSystem restores it, then OnLoad
-            entity.Set<AwaitingRecord>(new AwaitingRecord(world.GetSingleton<ShardActivity>().NowMs, 0));
-        else BeginLive(world, entity, actor);
+        Handoff.ForgetHanded(world, address.HandlerTypeId, address.Key); // the key is here again
+        if (world.GetSingleton<ShardStore>().Enabled) // LoadSystem restores it, then BeginLive
+            entity.Set(new AwaitingRecord(world.GetSingleton<ShardActivity>().NowMs, 0));
+        else if (!BeginLive(world, entity, restored: false)) entity.Set(new Removing(RpcStatus.Error));
     }
 
     /// <summary>
-    /// The actor's record is restored (or it has none): its state exists from now on (systems see it) and
-    /// <see cref="Actor.OnLoad"/> runs.
+    /// The actor's record is restored (or it has none): it is live from now on (systems see it), its first mail is
+    /// <see cref="Loaded"/> (<paramref name="restored"/>) or <see cref="Created"/>, then its waiting mail runs. False when
+    /// that handler threw: the caller decides where the actor goes (its waiting mail fails, or a moved record is written).
     /// </summary>
-    internal static void BeginLive(World world, Entity entity, Actor actor)
+    internal static bool BeginLive(World world, Entity entity, bool restored)
     {
+        entity.Remove<Loading>();
+        var key = entity.Read<ActorKey>();
+        var handlerType = world.Shard.Node.HandlerTypeById(key.HandlerTypeId)!;
+        var lifecycle = handlerType.Handlers.Of(restored ? TypeId<Loaded>.Value : TypeId<Created>.Value);
+        if (lifecycle == null) return true;
+        var context = new Context(world.Shard, key.Address, entity, default, null, 0, 0);
         try
         {
-            actor.InitializeEntity(entity); // the state's initializers are user code
+            lifecycle.Dispatch(in context, restored ? LifecycleMail<Loaded>.Payload : LifecycleMail<Created>.Payload);
+            return true;
         }
         catch (Exception e)
         {
-            TurnWatcher.Begin(world, entity, System.Threading.Tasks.ValueTask.FromException(e)); // the load fails as OnLoad would
-            return;
+            Log.ActorFailed(world.Logger, e, restored ? "Loaded" : "Created", handlerType);
+            world.Shard.CountFailed();
+            return false;
         }
+    }
 
-        TurnWatcher.Begin(world, entity, Hook(world, static a => a.OnLoad().AsValueTask(), actor));
+    /// <summary>The leaving actor's last mail, <see cref="Unloading"/> (when it handles it), before its record is written or handed on.</summary>
+    internal static void Unload(World world, Entity actor, ActorAddress address)
+    {
+        var handlerType = world.Shard.Node.HandlerTypeById(address.HandlerTypeId)!;
+        if (handlerType.Handlers.Of(TypeId<Unloading>.Value) is not { } handler) return;
+        var context = new Context(world.Shard, address, actor, default, null, 0, 0);
+        try
+        {
+            handler.Dispatch(in context, LifecycleMail<Unloading>.Payload);
+        }
+        catch (Exception e)
+        {
+            Log.ActorFailed(world.Logger, e, "Unloading", handlerType);
+            world.Shard.CountFailed();
+        }
     }
 
     /// <summary>
-    /// Queue a message for an actor and tag it <see cref="Ready"/> (it runs once it has no turn). A full
-    /// mailbox (<see cref="NodeOptions.ActorMailboxCapacity"/>) refuses the message: one slow actor cannot hold the
-    /// shard's memory.
+    /// A message for a loaded actor: it runs now when the actor is live and has no mail waiting, else it waits in the
+    /// shard's mail (in order). A full queue (<see cref="ActorSettings.MailboxCapacity"/>) refuses the message: one actor
+    /// that cannot take mail cannot hold the shard's memory.
     /// </summary>
-    public static void Deliver(World world, Entity actor, in Envelope envelope)
+    public static void Deliver(World world, Entity actor, ActorAddress address, in Envelope envelope)
     {
-        long chain = envelope.Frame.Chain;
-        if (chain != 0 && actor.Get<ActorRef>().Actor.TurnChain == chain && actor.TryGet<Turn>(out var turn) && !turn.Task.IsCompleted)
+        if (IsLive(actor) && !actor.Has<Ready>())
         {
-            // The running turn waits for this request (directly or through others): queued, it would wait for the turn.
-            // A turn that completed (it replied, its end is not processed yet) waits for nothing: the caller's next
-            // request in the same chain queues.
-            Fail(envelope.Frame, envelope.Sink, RpcStatus.CallCycle);
+            Invoke(world, actor, address, in envelope);
             return;
         }
 
-        ref var mailbox = ref actor.Get<Mailbox>();
-        if (mailbox.Pending.Count >= mailbox.Capacity)
+        Queue(world, actor, address, world.Shard.Node.HandlerTypeById(address.HandlerTypeId)!, in envelope);
+    }
+
+    /// <summary>Whether the actor takes mail now (not loading, leaving or going).</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static bool IsLive(Entity actor) =>
+        !actor.Has<Loading>() && !actor.Has<UnloadRequested>() && !actor.Has<Leaving>() && !actor.Has<Removing>();
+
+    private static void Queue(World world, Entity actor, ActorAddress address, HandlerTypeInfo handlerType, in Envelope envelope)
+    {
+        ref var mailbox = ref actor.GetOrAdd<DynamicBuffer<Envelope>>();
+        int capacity = handlerType.Settings.MailboxCapacity;
+        if (mailbox.Count >= (capacity > 0 ? capacity : world.Shard.Node.Options.ActorMailboxCapacity))
         {
             world.Shard.CountMailboxFull();
             Overloaded(envelope.Frame, envelope.Sink);
             return;
         }
 
-        mailbox.Pending.Enqueue(envelope);
-        actor.Set(new Ready());
+        mailbox.Add(in envelope);
+        actor.Set(new Ready()); // `mailbox` is invalid from here on
     }
 
     /// <summary>
-    /// Create the actor's entity (link, identity, mailbox, the actor's own components), <see cref="Loading"/>: mail
-    /// waits until its record is restored and <see cref="Actor.OnLoad"/> completed.
+    /// Run a message on a live actor: its origin, being a client session, is one the actor knows
+    /// (<see cref="ActorSessions"/>); runtime messages about sessions are applied first. Disposes the frame.
     /// </summary>
-    private static Entity Create(World world, HandlerTypeInfo handlerType, ActorAddress id)
+    public static void Invoke(World world, Entity actor, ActorAddress address, in Envelope envelope)
     {
-        ref var pools = ref world.GetSingleton<ActorPools>();
-        var actor = pools.RentActor(handlerType);
-        actor.HandlerType = handlerType;
-        actor.Key = id.Key;
-        actor.Shard = world.Shard;
-        int capacity = actor.MailboxCapacity; // user settings: read before anything exists that a throw would orphan
-        var idle = actor.UnloadAfterIdle;
-        var entity = world.CreateEntity(new ActorRef(actor), new Mailbox(pools.RentMailbox())
+        var frame = envelope.Frame;
+        var header = FrameHeader.Read(frame.Frame);
+        var origin = (header.Flags & FrameFlags.HasOrigin) != 0 ? frame.Origin : default;
+        if (origin.IsValid) ActorSessions.Record(world, actor, origin);
+        actor.Get<LastMail>().Ms = world.GetSingleton<ShardActivity>().NowMs;
+
+        if (header.MessageId == TypeId<SessionResumed>.Value)
         {
-            LastActive = world.GetSingleton<ShardActivity>().NowMs,
-            Capacity = capacity > 0 ? capacity : world.Shard.Node.Options.ActorMailboxCapacity,
-        }, new Loading());
-        actor.Entity = entity;
-        if (idle > TimeSpan.Zero) entity.Set<UnloadWhenIdle>(new UnloadWhenIdle((long)idle.TotalMilliseconds));
-        return entity; // no state yet: it is restored or created when the actor becomes live (BeginLive)
+            Resume(world, actor, address, in envelope);
+            return;
+        }
+
+        if (header.MessageId == TypeId<SessionClosed>.Value && !ActorSessions.Closed(world, actor, frame.Payload))
+        {
+            Fail(frame, envelope.Sink, RpcStatus.NotHosted); // a close of a session resumed since: stale
+            return;
+        }
+
+        var handlerType = world.Shard.Node.HandlerTypeById(address.HandlerTypeId)!;
+        var handler = handlerType.Handlers.Of(header.MessageId);
+        if (handler == null)
+        {
+            if (frame.CallId != 0 && envelope.Sink is { } closed) closed.SendOk(frame.CallId);
+            frame.Dispose(); // a close the actor does not handle: forgotten above
+            return;
+        }
+
+        Run(world, handlerType, handler, actor, address, origin, frame, envelope.Sink);
     }
 
-    /// <summary>Start a lifecycle hook, turning a synchronous throw into a faulted task.</summary>
-    private static System.Threading.Tasks.ValueTask Start(Func<Actor, System.Threading.Tasks.ValueTask> hook, Actor actor)
+    /// <summary>A service's message runs at once: a service has no entity and no mail of its own.</summary>
+    private static void InvokeService(World world, HandlerTypeInfo handlerType, ActorHandler handler, FrameWriter frame, IReplySink? sink)
     {
-        try
-        {
-            return hook(actor);
-        }
-        catch (Exception e)
-        {
-            return System.Threading.Tasks.ValueTask.FromException(e);
-        }
-    }
-
-    /// <summary>
-    /// Start a lifecycle hook as the actor's turn in a call chain: the one of the message that loads the actor (set by
-    /// <see cref="Load"/>), else a new one. Requests back into the actor from that chain fail with
-    /// <see cref="RpcStatus.CallCycle"/> while the hook runs, as they would during a handler.
-    /// </summary>
-    internal static System.Threading.Tasks.ValueTask Hook(World world, Func<Actor, System.Threading.Tasks.ValueTask> hook, Actor actor)
-    {
-        if (actor.TurnChain == 0) actor.TurnChain = world.GetSingleton<CallChains>().Next();
-        long previous = CallChain.Current;
-        CallChain.Current = actor.TurnChain; // the hook's requests carry it (its awaits restore it, PendingCall)
-        try
-        {
-            return Start(hook, actor);
-        }
-        finally
-        {
-            CallChain.Current = previous;
-        }
+        var header = FrameHeader.Read(frame.Frame);
+        var origin = (header.Flags & FrameFlags.HasOrigin) != 0 ? frame.Origin : default;
+        Run(world, handlerType, handler, default, new ActorAddress(handlerType.Id, 0), origin, frame, sink);
     }
 
     /// <summary>
-    /// Deserialize and invoke a message on <paramref name="target"/> through a generated dispatcher. Returns the
-    /// handler's task (default when it completed synchronously). A synchronous failure is replied to the caller, or
-    /// logged when nobody waits for a reply (one-way call, event). Disposes <paramref name="frame"/>.
+    /// Call a handler through its generated dispatch. A failure is replied to the caller, or logged when nobody waits for
+    /// a reply, and applies the actor type's <see cref="ActorSettings.OnError"/>. Disposes <paramref name="frame"/>.
     /// </summary>
-    public static System.Threading.Tasks.ValueTask Invoke(MessageHandler handler, object target, FrameWriter frame,
-        IReplySink? sink, ILogger logger, long chain)
+    private static void Run(World world, HandlerTypeInfo handlerType, ActorHandler handler, Entity actor, ActorAddress address,
+        Origin origin, FrameWriter frame, IReplySink? sink)
     {
         try
         {
             if (frame.Deadline != 0 && Platform.Milliseconds > frame.Deadline)
             {
                 Expired(); // the caller gave up while the request waited: running it would be wasted (and late) work
-                return default;
+                return;
             }
 
-            uint callId = frame.CallId;
-            var context = new CallContext(sink, callId, frame.Origin, frame.Deadline);
-            var previous = CallContext.Enter(in context);
-            var (previousChain, previousTrace) = (CallChain.Current, CallChain.Trace);
-            var span = Tracing.Start(frame, handler, target, out var outer);
-            CallChain.Current = chain; // the requests this handler makes carry it (its awaits restore it, PendingCall)
-            CallChain.Trace = span; // and its trace
-            bool pending = false;
+            var context = new Context(world.Shard, address, actor, origin, sink, frame.CallId, frame.Deadline);
+            var span = Tracing.Start(frame, handlerType, handler, address.Key, out var outer);
             Exception? error = null;
             try
             {
-                var task = handler.Dispatcher(target, frame.Payload, in context);
-                if (!task.IsCompleted)
-                {
-                    pending = true; // its span ends with the turn (TurnWatcher)
-                    return task;
-                }
-
-                task.GetAwaiter().GetResult();
-                return default;
+                handler.Dispatch(in context, frame.Payload);
             }
             catch (Exception e)
             {
                 error = e;
-                if (context.ExpectsReply) context.ReplyException(e);
-                else LogUnobserved(logger, e, target, FrameHeader.Read(frame.Frame)); // cold: decoded only to log
-                Failed(target, e);
-                return default;
+                if (context.ExpectsReply) context.Call.ReplyException(e);
+                else Log.MessageFailed(world.Logger, e, FrameHeader.Read(frame.Frame).Kind, handler.MessageId, handlerType);
+                Failed(world, actor, handlerType, e);
             }
             finally
             {
-                CallContext.Exit(in previous);
-                (CallChain.Current, CallChain.Trace) = (previousChain, previousTrace);
-                if (span != null) Tracing.Dispatched(span, outer, pending, error);
+                if (span != null) Tracing.Dispatched(span, outer, error);
             }
         }
         finally
@@ -275,91 +263,28 @@ internal static partial class ShardDispatch
         }
     }
 
-    /// <summary>The call chain a message runs in: the one its request carries, else a new one (ADR-059).</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static long ChainOf(World world, FrameWriter frame)
-    {
-        long chain = frame.Chain;
-        return chain != 0 ? chain : world.GetSingleton<CallChains>().Next();
-    }
-
     /// <summary>
-    /// A handler of <paramref name="target"/> failed (synchronously, or its turn faulted): count it, and apply the actor's
-    /// <see cref="Actor.OnError"/> (C4). Reload removes the actor without saving once it is idle; its mail loads it again.
+    /// A handler of <paramref name="actor"/> failed: count it, and apply its type's <see cref="ActorSettings.OnError"/>
+    /// (C4). Reload removes the actor without saving; its mail loads it again.
     /// </summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    internal static void Failed(object target, Exception error)
+    internal static void Failed(World world, Entity actor, HandlerTypeInfo handlerType, Exception error)
     {
-        Shard.Current?.CountFailed();
-        if (target is not Actor actor || actor.Entity == default || !actor.Entity.IsAlive) return;
-        ErrorAction action;
-        try
-        {
-            action = actor.OnError(error);
-        }
-        catch (Exception e)
-        {
-            Log.ActorFailed(actor.Shard.Node.Logger, e, "OnError", actor);
-            action = ErrorAction.Resume;
-        }
-
-        var entity = actor.Entity;
+        world.Shard.CountFailed();
+        if (handlerType.Settings.OnError != ErrorAction.Reload || !actor.IsAlive) return;
         // Also when an unload was asked for meanwhile: nothing is saved or handed on, the state may be half-changed.
-        if (action != ErrorAction.Reload || entity.Has<Fenced>() || entity.Has<Unloading>() || entity.Has<Removing>()) return;
-        entity.Set(new UnloadRequested());
-        entity.Set(new Fenced());
+        if (actor.Has<Fenced>() || actor.Has<Leaving>() || actor.Has<Removing>()) return;
+        actor.Set(new UnloadRequested(), new Fenced());
+    }
+
+    /// <summary>The bytes of a lifecycle message (<see cref="Created"/>, <see cref="Loaded"/>, <see cref="Unloading"/>), written once.</summary>
+    internal static class LifecycleMail<T> where T : struct
+    {
+        public static readonly byte[] Payload = NinoSerializer.Serialize(default(T));
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static void Expired() => Shard.Current?.CountExpired();
-
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private static void LogUnobserved(ILogger logger, Exception e, object target, in FrameHeader header) =>
-        Log.MessageFailed(logger, e, header.Kind, header.MessageId, target);
-
-    /// <summary>
-    /// Invoke the next message of an actor: its origin is the turn's caller and, being a client session, one the actor
-    /// knows (<see cref="ActorSessions"/>).
-    /// </summary>
-    public static System.Threading.Tasks.ValueTask Invoke(Actor actor, in Envelope envelope)
-    {
-        var header = FrameHeader.Read(envelope.Frame.Frame);
-        actor.TurnCaller = default;
-        actor.TurnDeadline = envelope.Frame.Deadline;
-        if ((header.Flags & FrameFlags.HasOrigin) != 0)
-        {
-            actor.TurnCaller = envelope.Frame.Origin;
-            ActorSessions.Record(actor, actor.TurnCaller);
-        }
-
-        if (header.MessageId == TypeId<SessionResumed>.Value) return Resume(actor, in envelope);
-        if (header.MessageId == TypeId<SessionClosed>.Value && !ActorSessions.Closed(actor, envelope.Frame.Payload))
-        {
-            Fail(envelope.Frame, envelope.Sink, RpcStatus.NotHosted); // a close of a session resumed since: stale
-            return default;
-        }
-
-        var handler = actor.HandlerType.Handlers.Of(header.MessageId); // validated by Route, but for closes
-        if (handler == null)
-        {
-            if (envelope.Frame.CallId != 0 && envelope.Sink is { } closed) closed.SendOk(envelope.Frame.CallId);
-            envelope.Frame.Dispose(); // a close the actor does not handle: forgotten above
-            return default;
-        }
-
-        actor.TurnChain = ChainOf(actor.Shard.World, envelope.Frame); // cleared when the turn ends
-        return Invoke(handler, actor, envelope.Frame, envelope.Sink, actor.Shard.Node.Logger, actor.TurnChain);
-    }
-
-    /// <summary>
-    /// Keep an unfinished service call until it completes: it becomes a <see cref="ServiceCall"/> entity whose
-    /// <see cref="Turn"/> ends like an actor's (its state machine returns to its pool then).
-    /// </summary>
-    private static void Track(World world, System.Threading.Tasks.ValueTask task)
-    {
-        if (!task.IsCompleted) TurnWatcher.Begin(world, world.CreateEntity(new ServiceCall()), task);
-        else task.GetAwaiter().GetResult(); // completed while being dispatched: release a pooled source (errors were replied)
-    }
 
     /// <summary>Refuse a call or event that found its shard or mailbox full (calls get <see cref="RpcStatus.Overloaded"/>).</summary>
     [MethodImpl(MethodImplOptions.NoInlining)]

@@ -1,7 +1,8 @@
 namespace DaServer.Runtime;
 
-// The shard runtime is ECS like the business code: every actor is an entity, its mailbox and running turn
-// are components, the shard's directories and queues are singletons, and runtime systems (Systems/) each do one job.
+// The shard runtime is ECS like the business code (ADR-080): every actor is an entity whose components are data (its
+// identity, its lifecycle as tags, its user components); the shard's mail, asks and replies in flight are singletons;
+// runtime systems (Systems/) each do one job.
 
 /// <summary>
 /// System group updated every time the shard wakes up (messages, completions, timers), independently of the tick:
@@ -13,7 +14,7 @@ public struct ShardMessages : ISystemGroup;
 /// <summary>Runtime systems run only after ownership may have changed (membership change, node Dead, shutdown).</summary>
 internal struct ShardRebalance : ISystemGroup;
 
-/// <summary>Runtime systems run a few times a second to find idle actors.</summary>
+/// <summary>Runtime systems run a few times a second to find idle actors and expired replies.</summary>
 internal struct ShardIdleScan : ISystemGroup;
 
 /// <summary>A message for an actor or service: the frame and where its reply goes.</summary>
@@ -23,72 +24,38 @@ internal readonly record struct ActorAddress(uint HandlerTypeId, long Key);
 
 // ---------------------------------------------------------------- actor components
 
-
 /// <summary>
-/// Messages waiting for the actor. An actor runs one message (turn) at a time: the next starts when the previous
-/// completed, including its awaits, so actor state never interleaves between calls.
+/// Tag: the actor's mailbox (its <c>DynamicBuffer&lt;Envelope&gt;</c>) holds mail; <see cref="MailSystem"/> runs it once
+/// the actor is live. A live actor without waiting mail runs a message at once on arrival.
 /// </summary>
-internal struct Mailbox(Queue<Envelope> pending) : IComponent
-{
-    public readonly Queue<Envelope> Pending = pending;
-
-    /// <summary><see cref="ShardActivity.NowMs"/> when the actor last took mail (idle unloading).</summary>
-    public long LastActive;
-
-    /// <summary>Messages it may hold before new ones are refused (<see cref="Actor.MailboxCapacity"/>, read when it loads).</summary>
-    public int Capacity;
-}
-
-/// <summary>Tag: the mailbox has mail (<see cref="MailboxSystem"/> runs it once the actor has no <see cref="Turn"/>).</summary>
 internal struct Ready : IComponent;
 
-/// <summary>The actor unloads after <see cref="Milliseconds"/> without mail (<see cref="Actor.UnloadAfterIdle"/>).</summary>
+/// <summary><see cref="ShardActivity.NowMs"/> when the actor last took mail (idle unloading).</summary>
+internal record struct LastMail(long Ms) : IComponent;
+
+/// <summary>The actor unloads after <see cref="Milliseconds"/> without mail (its <see cref="ActorSettings.UnloadAfterIdleSeconds"/>).</summary>
 internal readonly record struct UnloadWhenIdle(long Milliseconds) : IComponent;
 
-/// <summary>
-/// An asynchronous turn is running: the actor receives no other message meanwhile. Also on the entity of a running
-/// service call (<see cref="ServiceCall"/>). Its end arrives as data: <see cref="TurnEnded"/>.
-/// </summary>
-internal struct Turn(ValueTask task, long startedMs, System.Diagnostics.Activity? span = null) : IComponent
-{
-    public readonly ValueTask Task = task;
-
-    /// <summary>The turn's trace span (<see cref="Tracing"/>), ended with it; null when untraced.</summary>
-    public readonly System.Diagnostics.Activity? Span = span;
-
-    /// <summary><see cref="ShardActivity.NowMs"/> when the turn started.</summary>
-    public readonly long StartedMs = startedMs;
-
-    /// <summary>The turn outlived the call timeout and was logged (<see cref="LongTurnSystem"/>).</summary>
-    public bool Reported;
-}
-
-/// <summary>Tag: the <see cref="Turn"/>'s task completed (posted by its <see cref="TurnWatcher"/>); ended by a system.</summary>
-internal struct TurnEnded : IComponent;
-
-/// <summary>Tag: the turn is <see cref="Actor.OnLoad"/>; mail waits for it.</summary>
+/// <summary>Tag: the actor's record is being restored (from the store or its previous owner); its mail waits.</summary>
 internal struct Loading : IComponent;
 
-/// <summary>Tag: the actor must leave this shard (not owned here, idle, stopping); it starts unloading once idle.</summary>
+/// <summary>Tag: the actor must leave this shard (not owned here, idle, stopping, reloading after a failure).</summary>
 internal struct UnloadRequested : IComponent;
 
 /// <summary>
 /// Tag: the cluster declared this node dead and gave the actor's key to another node, so the actor is removed without
-/// <see cref="Actor.OnUnload"/>: a save now could overwrite what the new owner already wrote.
+/// its <see cref="Unloading"/> mail: a save now could overwrite what the new owner already wrote.
 /// </summary>
 internal struct Fenced : IComponent;
 
-/// <summary>Tag: the turn is <see cref="Actor.OnUnload"/>; mail arriving meanwhile is forwarded afterwards.</summary>
-internal struct Unloading : IComponent;
+/// <summary>Tag: the actor got its <see cref="Unloading"/> mail and leaves (its record is written or handed on first).</summary>
+internal struct Leaving : IComponent;
 
 /// <summary>
 /// The loaded actor ends: its entity is destroyed and its remaining mail routed again (<see cref="RpcStatus.Ok"/>, to the
 /// new owner) or failed with <see cref="Status"/>.
 /// </summary>
-internal readonly record struct Removing(RpcStatus Status, string? Message) : IComponent;
-
-/// <summary>Tag: the entity is an asynchronous service call (services are stateless, so their calls may overlap).</summary>
-internal struct ServiceCall : IComponent;
+internal readonly record struct Removing(RpcStatus Status) : IComponent;
 
 /// <summary>
 /// Client sessions known to a loaded actor: those that called it or that it bound or granted. When a
@@ -101,80 +68,30 @@ internal readonly record struct ClientSessions(
 
 // ---------------------------------------------------------------- shard singletons
 
-/// <summary>Loaded actors of this shard by id.</summary>
-internal readonly record struct ActorDirectory(Dictionary<ActorAddress, EntityId> Actors) : ISingletonComponent
+/// <summary>
+/// Room for the mail an actor is handed while it is removed (it goes on to the new owner, or fails): one list per
+/// shard, reused.
+/// </summary>
+internal readonly record struct MailScratch(List<Envelope> Items) : ISingletonComponent;
+
+/// <summary>Idle session sets, rented when an actor first knows a session and returned when it is removed (bounded).</summary>
+internal readonly record struct SessionPool(Stack<ClientSessions> Idle) : ISingletonComponent
 {
-    /// <summary>The loaded actor of <paramref name="address"/> in <paramref name="world"/> (this shard's).</summary>
-    public bool TryGet(World world, ActorAddress address, out Entity actor)
+    private const int Bound = 4096;
+    private const int MaxPooled = 64;
+
+    public ClientSessions Rent() =>
+        Idle.TryPop(out var sessions) ? sessions : new ClientSessions(new HashSet<ClientSession>(), new HashSet<ClientSession>(), new HashSet<ClientSession>());
+
+    public void Return(in ClientSessions sessions)
     {
-        actor = default;
-        return Actors.TryGetValue(address, out var id) && world.TryGetEntity(id, out actor);
+        if (Idle.Count >= Bound || sessions.Sessions.Count + sessions.Superseded.Count > MaxPooled) return;
+        sessions.Sessions.Clear();
+        sessions.Granted.Clear();
+        sessions.Superseded.Clear();
+        Idle.Push(sessions);
     }
 }
-
-/// <summary>
-/// What a loaded actor holds besides its components, kept for the next load on this shard: the actor object (actors and
-/// services hold no fields, DAS007), the mailbox queue and the session sets. Rented on load, returned on removal, both
-/// on the shard thread; each pool keeps at most <see cref="Bound"/> idle items, so churn (players logging in and out,
-/// idle unloads) allocates nothing while the peak of loaded actors stays bounded memory-wise.
-/// </summary>
-internal readonly record struct ActorPools(
-    Dictionary<uint, Stack<Actor>> Actors, Stack<Queue<Envelope>> Mailboxes, Stack<ClientSessions> Sessions) : ISingletonComponent
-{
-    /// <summary>Idle items each pool keeps (per actor type for actor objects).</summary>
-    public const int Bound = 4096;
-
-    /// <summary>A mailbox that grew beyond this (a backlog) is dropped rather than pooled with its large array.</summary>
-    private const int MaxPooledMailbox = 64;
-
-    public Actor RentActor(HandlerTypeInfo handlerType) =>
-        Actors.TryGetValue(handlerType.Id, out var pool) && pool.TryPop(out var actor) ? actor : (Actor)handlerType.Factory();
-
-    public Queue<Envelope> RentMailbox() => Mailboxes.TryPop(out var queue) ? queue : new Queue<Envelope>();
-
-    public ClientSessions RentSessions() =>
-        Sessions.TryPop(out var sessions) ? sessions : new ClientSessions(new HashSet<ClientSession>(), new HashSet<ClientSession>(), new HashSet<ClientSession>());
-
-    /// <summary>Return what a removed actor held (its entity is destroyed and its mailbox drained).</summary>
-    public void Return(Actor actor, Queue<Envelope> mailbox, in ClientSessions sessions, bool hasSessions)
-    {
-        actor.Key = 0;
-        actor.Entity = default;
-        actor.TurnCaller = default;
-        actor.TurnDeadline = 0;
-        actor.TurnChain = 0;
-        if (!Actors.TryGetValue(actor.HandlerType.Id, out var actors))
-            Actors[actor.HandlerType.Id] = actors = new Stack<Actor>();
-        if (actors.Count < Bound) actors.Push(actor);
-
-        if (Mailboxes.Count < Bound && mailbox.EnsureCapacity(0) <= MaxPooledMailbox) Mailboxes.Push(mailbox);
-
-        if (hasSessions && Sessions.Count < Bound && sessions.Sessions.Count + sessions.Superseded.Count <= MaxPooledMailbox)
-        {
-            sessions.Sessions.Clear();
-            sessions.Granted.Clear();
-            sessions.Superseded.Clear();
-            Sessions.Push(sessions);
-        }
-    }
-}
-
-/// <summary>
-/// Chains of the turns this shard starts for messages that carry none (ADR-059): consecutive values from a random start,
-/// so chains of different shards and nodes do not meet.
-/// </summary>
-internal struct CallChains : ISingletonComponent
-{
-    public long Last;
-
-    public long Next() => ++Last == 0 ? ++Last : Last;
-}
-
-/// <summary>Idle <see cref="TurnWatcher"/>s (bounded by the turns in flight).</summary>
-internal readonly record struct TurnWatchers(Stack<TurnWatcher> Pool) : ISingletonComponent;
-
-/// <summary>This shard's service instances by handler type id.</summary>
-internal readonly record struct ServiceDirectory(Dictionary<uint, object> Services) : ISingletonComponent;
 
 /// <summary>Per-wake bookkeeping shared by the runtime systems and the shard loop.</summary>
 internal struct ShardActivity : ISingletonComponent
@@ -182,7 +99,7 @@ internal struct ShardActivity : ISingletonComponent
     /// <summary>Work items and messages handled during the current wake (0 = the shard may sleep).</summary>
     public int Processed;
 
-    /// <summary>Messages <see cref="MailboxSystem"/> may still run during the current wake.</summary>
+    /// <summary>Messages <see cref="MailSystem"/> may still run during the current wake.</summary>
     public int MailBudget;
 
     /// <summary>
@@ -198,7 +115,7 @@ internal struct ShardActivity : ISingletonComponent
     public bool Stopping;
 
     /// <summary>
-    /// Remove every loaded actor once, without <see cref="Actor.OnUnload"/> (<see cref="Fenced"/>: the cluster declared this
+    /// Remove every loaded actor once, without its <see cref="Unloading"/> mail (<see cref="Fenced"/>: the cluster declared this
     /// node Dead and moved its keys). New loads are allowed: they are legitimate once the node is Up again.
     /// </summary>
     public bool DeclaredDead;
