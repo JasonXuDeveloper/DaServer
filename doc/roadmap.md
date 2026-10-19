@@ -1005,6 +1005,23 @@ and cards, a manual clock), fails before its fix, and passes after it.
   - Kept: an unreadable record refused by a copy that has mail loads from the store at once, possibly before its
     sender's fallback write lands (versions then fence it; needs a record one build cannot read); a load or save
     batch's `Apply` has no `finally` around its loop (nothing reachable throws there outside the per-actor guards).
+- [x] Self-review round 11 (the whole distributed runtime; the round-10 changes against CLAUDE.md):
+  - Must-fix: a write that landed but whose answer was lost (a reset after the commit, a failover) made the retry
+    expect the old version, so the store refused the owner as a stale one and the changes it acknowledged since were
+    lost. Writes carry their hash, the store keeps it, and a retry names its lost write: a store that took it writes
+    after it (ADR-068; `IActorStore` and the PostgreSQL table changed, decided with the owner).
+  - Must-fix: a feature's pulse source that threw ended every gossip round before failure detection: a crashed peer
+    was never declared dead. Each source is guarded.
+  - Must-fix: a reconnected connection that closed before the reconnect flag cleared was never reported or replaced.
+  - Must-fix (docs): ADR-072 and `Handoff.Restore` did not list the refusals added in rounds 9 and 10.
+  - Also (should-fix): `Maintain` is guarded per feature (one helper for every feature hook, logged at most once a
+    second per node); a drain that ignores its token ends with the stop budget; a copy with mail that refuses a record
+    asks its sender again after the refusal, so it reads the sender's write instead of racing it; a reclaim that
+    cannot read its own record writes nothing; every subscriber of a client event runs; docs of the failure metric.
+  - Kept: only the latest lost write is remembered (two lost answers in a row can fence the owner); a drain that
+    ignores its token takes the whole stop budget, leaving the unload none (the shards still stop and write while the
+    process lives); a reclaim whose initializer throws has no deterministic test (it needs a refused handoff and a
+    state not in the record).
 - Review criterion from round 7 on (agreed): a finding is must-fix when a single fault (one view change, one link
   restart, one node crash, one slow store call) leads to lost acknowledged state, a second live copy or a wait that
   never ends; one that needs two or more rare events together is should-fix and is listed here. Convergence is two

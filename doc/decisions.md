@@ -1128,6 +1128,11 @@ records that no longer hold). Each: context → decision → consequences.
     that holds another version means another node owns the actor (a split, a late write after being declared dead):
     the write is refused and the local copy is fenced, removed without another save. Because the newest loader holds
     the newest version, the stale copy is the one refused, not the new owner, whichever writes first.
+  - **Lost answers:** every write carries its record's hash, stored with it. A write whose call failed may still have
+    landed (the connection reset after the commit, a failover, the store timeout firing late): the owner keeps its
+    version and remembers that write's hash (`Stored.Attempt`, carried by a handoff too); its next write names it, and
+    a store holding the next version with that hash took it, so it writes after it instead of refusing its own owner.
+    Only the latest lost write is remembered: two lost answers in a row can still fence the owner.
   - **Schema at start:** a node initializes its store before it binds a port or joins (`IActorStore.InitializeAsync`):
     a database that is down or a table that is missing stops the node at start, saying so, instead of failing its
     first loads with callers waiting. `PostgreSqlActorStore` creates its table there by default (as Dapr's state
@@ -1138,12 +1143,13 @@ records that no longer hold). Each: context → decision → consequences.
   - **Backends:** `IActorStore` (`InitializeAsync`, `ClaimAsync` and `SaveAsync` over batches) is all a backend implements.
     `InMemoryActorStore` serves tests and development, and behaves like a database: versioned, and writing in place
     (a buffer per key), so tests measure the same allocation-free saves. `PostgreSqlActorStore` is the default for deployments: one
-    table `(type_id, key, version, data bytea, updated_at)`, written with Npgsql and no ORM (the
+    table `(type_id, key, version, data bytea, hash, updated_at)`, written with Npgsql and no ORM (the
     record is opaque bytes, so the schema never follows the components). A batch is one prepared statement on a
     connection kept per call in flight: claims one upsert over `unnest(type ids, keys)` that raises the versions and
     returns the rows, saves one statement over
-    `unnest(type ids, keys, expected versions, data)` that inserts first writes (`ON CONFLICT DO NOTHING`), updates
-    rows still at their expected version and returns the accepted ordinals. The record bytes are the shard's pooled
+    `unnest(type ids, keys, expected versions, data, hashes, attempts)` that inserts first writes (`ON CONFLICT DO
+    NOTHING`), updates rows still at their expected version (or at the version a named lost write made) and returns
+    the accepted ordinals with their new versions. The record bytes are the shard's pooled
     buffers, passed without copying; the columns are pooled lists. 1,024 critical saves cost about 11 ms and 11 KB.
     `AddPostgreSqlActorStore()` in Program.cs wires it on Aspire's Npgsql integration (a data source keyed by the
     connection name, its health check in readiness, its tracing and metrics); the AppHost passes the connection
