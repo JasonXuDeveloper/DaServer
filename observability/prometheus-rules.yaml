@@ -38,7 +38,7 @@ groups:
           severity: warning
         annotations:
           summary: "Handlers on {{ $labels.node }} keep failing"
-          description: "More than one handler a second throws: a poison message or a broken dependency. The node's logs name the actor and message."
+          description: "More than one handler or system pass a second throws: a poison message, a broken dependency or a broken system. The node's logs name the actor and message (ActorFailed) or the system (SystemFailed)."
 
       - alert: DaServerShardsSaturated
         expr: avg by (node) (daserver_shard_busy_ratio) > 0.85
