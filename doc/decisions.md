@@ -252,7 +252,7 @@ records that no longer hold). Each: context → decision → consequences.
   address is tried; reconnects use them again) and stays on the node it reached; actors are reachable from any
   client-facing node, so no client needs a particular one. `ClientConnectionOptions.MaxConnectionAge` (off by default,
   jittered by a tenth, on the node's clock) retires connections older than it, and a leaving node retires its
-  connections in waves (D3): the node sends `ControlOp.Retire` (client protocol 4), the client resumes its session
+  connections in waves (D3): the node sends `ControlOp.Retire`, the client resumes its session
   (ADR-036) on a new connection through the entry addresses while the old one keeps working, switches, and seals the
   old one with its goodbye as the last frame (`IFrameChannel.SendLast`): what was sent on it before reaches the node
   first, a send that still picked it is refused there and goes on the new connection (its call registered again
@@ -262,8 +262,9 @@ records that no longer hold). Each: context → decision → consequences.
   on the old one, behind its last push there; then the goodbye goes, and the old node takes the session out of its
   groups before answering. `ClientMoveTests` force each interleaving
   against a scripted node. The seal is the fence, as HTTP/2's GOAWAY and gRPC's draining connection
-  (no new stream on a draining connection, open streams finish): no step waits on a delay, so a slow or preempted
-  device is as safe as a fast one. Make before break: no push or call is lost, and
+  (no new stream on a draining connection, open streams finish): the client waits for the markers and the goodbye's
+  answer (bounded by its call timeout), never for a guessed delay, so a slow or preempted device is as safe as a fast
+  one. Make before break: no push or call is lost, and
   after a scale-out the old connections spread over the new nodes too. The node decides: a client that does not move
   within `RetireGrace` (10 s) is closed and reconnects as after a lost connection; a client without a session to
   resume is closed at once. The new connection is admitted by its signed, single-use ticket alone.
@@ -1267,8 +1268,10 @@ records that no longer hold). Each: context → decision → consequences.
     copy waiting for that sender's record, or by the key's owner holding no copy while nothing was forgotten early;
     otherwise it is refused and the store decides.
   - **How long a previous owner counts:** a node that loads a key waits for the owners it replaced within the move
-    window (2 x (call timeout + store timeout), up to 16 views): a turn and a write in flight fit in it. A copy that
-    gave its record to a node other than the asker tells the asker where it went, and the asker waits for that node.
+    window (2 x (call timeout + store timeout), up to 256 views): a turn and a write in flight fit in it. A copy that
+    gave its record to a node other than the asker tells the asker where it went, and the asker waits for that node;
+    each shard also remembers for the move window where it handed each key, so an ask that comes after the copy is
+    gone is sent there too (forgotten once the key is here again).
   - **Fallback:** a refused handoff (the new owner already runs the actor or is stopping) or a dead node: the old
     owner writes to the store and the new one reads. A node declared dead hands nothing over and writes nothing (its
     copies are fenced). A cluster stopping as a whole writes everything.

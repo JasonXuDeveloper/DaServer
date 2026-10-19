@@ -938,6 +938,23 @@ and cards, a manual clock), fails before its fix, and passes after it.
     goodbye. The resume reply's format changed, so the client protocol is 4.
   - No deterministic tests for these interleavings (each needs messages to cross at one point); the existing handoff,
     resume and move tests pass, and the sample E2E runs.
+- [x] Self-review round 7 (the whole distributed runtime under the round-7 criterion; every change since the release
+  checklist against CLAUDE.md):
+  - Must-fix: a resume whose session closed while the actors were asked did not revert the actors whose answer timed
+    out, so an actor that took it before its deadline never heard `SessionClosed`: every timed-out or disconnected
+    grant is reverted, closed or not.
+  - A revert puts the actor's group back on the previous session; a shard forgets where it handed a key once the key
+    is here again (an asker no longer bounces between two nodes); `Handoff.cs` and `ClusterClient.cs` split by concern
+    (`Handoff.Memory.cs`, `ClusterClient.Pushes.cs`); ADR-026 and ADR-072 updated; the failed-`OnLoad` test now
+    changes the state before throwing, so it fails without the as-received write.
+  - Also from round 7 (should-fix): a flush cut by a closing connection reconnects only after that connection's bytes
+    reached the resend window; a node owning a key in its own view defers an ask (`MustWait`) instead of sending the
+    asker where it handed the key earlier. Kept: a revert routed by a newer view can overtake the late resume it undoes
+    (two faults: a view change and a timeout on one resume).
+  - Kept: no deterministic tests for "no group join after a goodbye" and "a late resume is dropped" (the first is
+    indistinguishable from a closed session through the client API, the second needs a resume queued past its deadline
+    behind a turn); an actor reverted after a timeout may have sent a `SessionMoved` that a moving client counts (its
+    pushes then keep their order but may overtake a real taker's last push in that one case).
 - Review criterion from round 7 on (agreed): a finding is must-fix when a single fault (one view change, one link
   restart, one node crash, one slow store call) leads to lost acknowledged state, a second live copy or a wait that
   never ends; one that needs two or more rare events together is should-fix and is listed here. Convergence is two
