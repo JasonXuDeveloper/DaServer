@@ -7,24 +7,32 @@ asks of the sale's actors.
 
 ## How it works
 
-- **Stock**: 16 `StockShard` actors per sale. A turn is the atomic decrement (no lock, no Redis counter); shards let
+Actors and the gate are static classes of stateless `[Handle]` methods over components (ADR-080): a handler runs to
+completion, asks come back as `Answered<,>` messages, and what a later step needs is data on an entity.
+
+- **Stock**: 16 `StockShard` actors per sale. A handler is the atomic decrement (no lock, no Redis counter); shards let
   buyers decrement in parallel. A buyer starts at its own shard and moves on when it is empty.
-- **Orders**: one `Order` actor per (user, sale). Its turn spans the purchase, so a retry waits for it and gets the
-  same answer: idempotent without request ids.
+- **Orders**: one `Order` actor per (user, sale). A purchase in progress is its `Buying` component; a retry arriving
+  meanwhile keeps its reply token with the order's and hears the same answer, as does every retry after it
+  (`Purchase`): idempotent without request ids.
 - **Sold out**: each shard tells the `Sale` actor when it runs out and who bought its units. Once all are empty, each
-  shard's gate asks the sale once (`Describe`) and keeps the answer in its world (`KnownSales`): from then on it
-  answers the crowd itself, "confirmed" for the buyers, "sold out" for everyone else, without touching any actor. The
-  late crowd spreads over every shard of every node and creates no order actors.
-- **Queue (optional)**: a sale opened with `PerSecond` above 0 queues its buyers: the `Sale` actor hands out positions
-  and `AdmissionSystem` admits them at that pace every tick; a buyer buys once admitted (the gate checks with the sale).
+  shard's gate asks the sale once (`Describe`) and keeps the answer in its world (a `KnownSale` entity, found by an
+  EasyEcs index): from then on it answers the crowd itself, "confirmed" for the buyers, "sold out" for everyone else,
+  without touching any actor. The late crowd spreads over every shard of every node and creates no order actors.
+- **Queue (optional)**: a sale opened with `PerSecond` above 0 has a `WaitingRoom`: the `Sale` actor hands out
+  positions and `AdmissionSystem` admits them at that pace every tick; a buyer buys once admitted (the gate checks with
+  the sale).
+- **Gate**: a client request it serves in steps (describe the sale, check the queue, buy) is an entity while its caller
+  waits, the one its reply token names; the gate's components on it (`Placing`, `QueueingUp`, ...) carry what the
+  next step needs and go with it when it is answered.
 
 ## Compared with the usual designs
 
 | Usual design | Here |
 |---|---|
 | Load balancer + stateless edge servers | Clients connect to any node (the platform's LB); the `Gate` service is stateless, nodes are added to scale |
-| Stock pre-deducted in Redis (`DECR`, Lua) | `StockShard` actors: the turn is atomic, the state is the actor's, written with `SaveNow`; no extra hop, no single counter |
-| Deduplicated, idempotent order requests (request ids, unique keys) | An `Order` actor per (user, sale): retries wait for the running purchase and read its outcome |
+| Stock pre-deducted in Redis (`DECR`, Lua) | `StockShard` actors: a handler is atomic, the state is the actor's components, written with `SaveNow`; no extra hop, no single counter |
+| Deduplicated, idempotent order requests (request ids, unique keys) | An `Order` actor per (user, sale): retries join the running purchase and read its outcome |
 | Message queue between the edge and order creation (peak shaving) | Not needed: the actors' mailboxes are the queue, bounded and backpressured (`Overloaded` makes clients retry); a real shop sends confirmed orders on to payment and fulfilment as messages |
 | "Sold out" cached at the edge (CDN, gateway) | Each shard's gate knows the sale is over and answers locally |
 | Waiting room / virtual queue (ticketing, Queue-it, Cloudflare Waiting Room) | Optional `PerSecond` queue: worth it when stock is large and checkout (payment, a database) takes only so many orders a second, or when buyers must be served first come, first served. Few units and a crowd (this sample's default) sell out at once: buying directly is one request per buyer and has no single hot actor |
@@ -34,11 +42,11 @@ asks of the sale's actors.
 | Project | What |
 |---|---|
 | `FlashSale.Contracts` | ids (`SaleId`, `StockShardId`, `OrderId`) and messages; the `[FromClient]` ones for the gate |
-| `FlashSale.Components` | `[Persist]` stock, purchase and sale state; the gate's `KnownSales` singleton |
+| `FlashSale.Components` | `[Persist]` stock, purchase, sold units and waiting room; the purchase in progress (`[Handoff]`); the gate's known sales and requests in progress |
 | `FlashSale.Server` | the node: `StockShard`, `Order`, `Sale` actors, `AdmissionSystem`, the `Gate` service |
 | `FlashSale.Crowd` | the buyers as a `DaServer.Simulation` swarm; checks exactly the stock sold, nothing left, retries answered alike, orders readable (`--per-second` for a queued sale, `--web-socket` for the browser path) |
 | `FlashSale.AppHost` | two sale nodes taking clients, PostgreSQL and the crowd (`dotnet run --project samples/flashsale/FlashSale.AppHost`); `aspire publish` writes Docker Compose files, `-- Publish=k8s` a Helm chart with an HPA on the sale nodes' CPU and a VPA in recommendation mode (`Platform.cs`: nothing restarts during a sale) |
-| `FlashSale.Tests` | the guarantees in an in-process cluster (`DaServer.Testing`), the queue on a manual clock |
+| `FlashSale.Tests` | the guarantees in an in-process cluster (`DaServer.Testing`): every unit sold once, retries (also during a purchase) answered alike, the queue on a manual clock |
 
 ## Numbers
 

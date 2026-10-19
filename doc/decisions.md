@@ -1528,3 +1528,43 @@ records that no longer hold). Each: context → decision → consequences.
 - Consequences: an untraced frame is unchanged (no block, the golden bytes hold); a send reads the turn's span and the
   current activity, a turn one flag. A traced message pays 29 bytes and a span. The block's flag is the
   one change builds without it misread, and none of those was released; later metadata is added without a break.
+
+## ADR-081 Actors are entities: static handlers, answers as mail, everything else components
+- Context: actors were objects (`Actor<TId, TState>` subclasses with overrides, `async` handlers holding a turn across
+  awaits, call chains to detect cycles, turn watchers for long turns), and the runtime kept per-actor objects beside
+  the entity (mailbox queues, session sets, directories). That is two models in one process: EasyEcs data and systems
+  for the simulation, objects and continuations for messaging. Objects and suspended turns cost allocations and
+  cache misses, make interleaving rules subtle (a turn that awaits blocks its actor; cycles deadlock until ADR-059
+  failed them) and duplicate what EasyEcs 4.2 now does natively: value indexes, hierarchies, dynamic buffers, change
+  tracking, ordering, error policies. Peers: Unity DOTS and Bevy keep behaviour in stateless systems over data;
+  Orleans and Akka keep it in objects with turn-based or message-only semantics (Akka's `ask` returns a future the
+  actor pipes back to itself as a message).
+- Decision:
+  - **An actor is an entity** with an `ActorKey` component (`IIndexed<ActorKey>`: one value-index lookup routes a
+    message), its lifecycle as tags (`Loading`, `Ready`, `UnloadRequested`, `Leaving`, `Fenced`, `Removing`), its mail
+    in a `DynamicBuffer<Envelope>` while it is not live, and its user state as components. A service is a static class
+    with no entity; its state is singletons. Per-session state is child entities (`KnownSession` + `ChildOf`, indexed
+    by session; tags `Known`, `Granted`, `Superseded`), destroyed with the actor.
+  - **Behaviour is static `[Handle]` methods** in `[Actor<TId>]` / `[Service]` static classes. The generator reads each
+    method's parameters (the message `in`, components `ref`/`in`, singletons, `Entity`, `World`, `in Context`) and
+    emits one dispatcher per handler: no reflection, no virtual call, components added with their default when absent.
+    Settings are attribute constants (`UnloadAfterIdleSeconds`, `SaveEverySeconds`, `MailboxCapacity`, `OnError`).
+    Lifecycle is mail: `Created`, `Loaded`, `Unloading`.
+  - **Handlers never wait.** A handler returns its reply (`T`), or `Answer<T>.Later` after taking `ctx.ReplyLater()`;
+    `ctx.Ask` returns a call number and the answer arrives as `Answered<TRequest, TReply>` mail, carrying the
+    `ReplyTo` the asker forwarded, so a chain of asks needs no state of its own. `ctx.ReplyAfter(call, value)` replies
+    when a call completes. A waiting request is an entity (`PendingReply`; `ReplyTo` is its `EntityId` and call id, so
+    a stale token replies to nobody) expired by a system. There are no turns, so no call chains, no cycle detection
+    (A asks B asks A simply works) and no long-turn watcher.
+  - **The runtime follows the same rules:** one system per lifecycle tag, ordered with `[UpdateAfter]` along the data
+    flow, failed systems disabled and revived (EasyEcs `SystemErrorPolicy`), stored components change-tracked
+    (`ITrackChanges`, declared by the generator for `[Persist]` types) so a checkpoint visits only written actors.
+- Alternatives: keep actor objects and move only their state into components (two models stay; a suspended turn
+  still holds the actor); a shard-level mail queue instead of a per-actor buffer (faster to drain, but mail is the
+  actor's data and leaves with it); `await` inside handlers with continuations posted back (allocations per await,
+  interleaving rules, cycles).
+- Consequences: business code is data and pure functions; what the old model did with an `await` is now an
+  `Answered` handler and, when it must remember something, a component. A map change or a purchase that spans asks is
+  explicit state the actor can be inspected in. A second request may arrive while a first one waits for an answer: a
+  handler that must serialize such work says so in data (a component marking the work in progress). The client SDK
+  and code outside worlds (HTTP, tests) still `await cluster.Ask(..)`.

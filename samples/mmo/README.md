@@ -11,14 +11,17 @@ Messages are routed by type: a sender never names a server, so moving `Map` into
 | [Sample.GameServer](Sample.GameServer) | `game` | `Player` actor (id: `PlayerId`), `Realm` actor (one: `RealmId.The`), `RealmBroadcastSystem` | `Attach`; `GetInfo`, `EnterMap` (client); `PlayerOnline`, `PlayerOffline` | `Enter` / `Leave` to maps, `PlayerOnline` / `PlayerOffline` to the realm, `RealmStatus` to every client |
 | [Sample.MapServer](Sample.MapServer) | `map` | `Map` actor (id: `MapId`), area-of-interest systems, `MovementSystem` (Sample.Shared) | `Enter`, `Leave`; `Move`, `Say` (client) | `Motion`, `Gone`, `Chat` to the clients that see the avatar |
 | [Sample.GatewayServer](Sample.GatewayServer) | `gateway` x3 | nothing: client sockets, session bindings, client groups | | |
-| [Sample.GameServer.Components](Sample.GameServer.Components), [Sample.MapServer.Components](Sample.MapServer.Components) | (libraries) | the servers' data: `PlayerProfile` (stored), `PlayerState`, `RealmState`; `MapState`, `MapGrid`, `Avatar` and the interest tags. Kept apart from the logic, which hot reload (planned, N9) will replace (DAS013, ADR-067) | | |
+| [Sample.GameServer.Components](Sample.GameServer.Components), [Sample.MapServer.Components](Sample.MapServer.Components) | (libraries) | the servers' data: `PlayerProfile` (stored), `PlayerState`, `Entering`, `RealmState`; `MapGrid`, `Avatar` (indexed by session), `GridCell` (indexed: the avatars of a cell) and the interest tags. Kept apart from the logic, which hot reload (planned, N9) will replace (DAS013, ADR-067) | | |
 | [Sample.Contracts](Sample.Contracts/Contracts.cs) | (library) | every message, with `[FromClient]` / `[ToClient]` where clients send or receive it; the game's clock (`Timing`) | | |
 | [Sample.Shared](Sample.Shared) | (library, `<DaServerShared>`) | rules both sides run: `MovementSystem`, `MapGeometry` (the interest grid); the map server simulates with them, clients predict with them | | |
 | [Sample.Client](Sample.Client) | (library) | the game client's logic in an ECS world: a player entity, `Pushes` into components, prediction, input sent on change, the view kept to the 3x3; flows `Player.LogInAsync` / `EnterMapAsync` | `Motion`, `Gone`, `Chat`, `RealmStatus` | `Login`, `EnterMap`, `Move`, `Say` |
 | [Sample.Bot](Sample.Bot) | `bots` | the client run as a swarm of simulated players (`DaServer.Simulation`, 10,000 in the AppHost) with a planner at the controls (`Behavior`) | | |
 | [Sample.Tests](Sample.Tests) | (tests) | the shared rules, the client, pooled pushes, and the servers in an in-process cluster (DaServer.Testing) | | |
 
-`Player` and `Map` also handle `SessionClosed` / `SessionResumed` when a bound session ends or resumes.
+Actors and services are static classes of stateless `[Handle]` methods over components; a handler never
+waits: an ask's answer comes back as `Answered<TRequest, TReply>` mail (the player's map change: `Leave`, then `Enter`),
+or the reply follows an operation (`ReplyAfter`: the login once the player bound the session). `Player` and `Map` also
+handle `SessionClosed` / `SessionResumed` when a bound session ends or resumes.
 
 ```mermaid
 flowchart LR
