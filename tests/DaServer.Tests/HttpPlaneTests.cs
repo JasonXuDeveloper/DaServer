@@ -130,6 +130,9 @@ public class HttpPlaneTests
         var bad = new HttpRequestMessage(HttpMethod.Post, "/counters/9/add") { Content = new ByteArrayContent([1, 2]) };
         bad.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(Nino.AspNetCore.NinoMediaTypes.Application);
         Assert.That((await _http.SendAsync(bad)).StatusCode, Is.EqualTo(HttpStatusCode.BadRequest), "a body that is not the message");
+        var badSend = new HttpRequestMessage(HttpMethod.Post, "/tally") { Content = new ByteArrayContent([1]) };
+        badSend.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(Nino.AspNetCore.NinoMediaTypes.Application);
+        Assert.That((await _http.SendAsync(badSend)).StatusCode, Is.EqualTo(HttpStatusCode.BadRequest), "a one-way body that is not the message");
     }
 
     [Test]

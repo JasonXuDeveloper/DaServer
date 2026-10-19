@@ -162,6 +162,8 @@ internal static class WireManifest
             var parts = entry.Split(new[] { ':' }, 3);
             string name = parts[0], written = parts.Length > 1 ? parts[1] : "", how = parts.Length > 2 ? parts[2] : "";
             string detail = Inline(MemberType(type, name), layouts, spelled: how.IndexOf('{') >= 0);
+            int tags = how.IndexOf(":key=", StringComparison.Ordinal); // a keyed member's tags stay last, after its type
+            if (tags >= 0) (how, detail) = (how.Substring(0, tags) + detail, how.Substring(tags));
             fields.Add(new WireField(name, (written.Length > 0 ? written + " " : "") + how + detail));
         }
 
@@ -344,8 +346,10 @@ internal static class WireManifest
             var kept = new HashSet<string>(before.Keys.Where(after.ContainsKey).Select(k => after[k].Name), StringComparer.Ordinal);
             var added = now.Select(f => Keyed(f).Name).Where(n => !kept.Contains(n)).ToList();
             var removed = before.Where(k => !after.ContainsKey(k.Key)).Select(k => k.Value.Name).ToList();
-            return added.Count == 0 && removed.Count == 0 ? null
-                : ($"has keys added ({string.Join(", ", added)}) or removed ({string.Join(", ", removed)})", false);
+            var renamed = before.Where(k => after.TryGetValue(k.Key, out var m) && m.Name != k.Value.Name)
+                .Select(k => k.Value.Name + " to " + after[k.Key].Name).ToList();
+            return added.Count == 0 && removed.Count == 0 && renamed.Count == 0 ? null
+                : ($"has keys added ({string.Join(", ", added)}), removed ({string.Join(", ", removed)}) or renamed with their key kept ({string.Join(", ", renamed)})", false);
         }
 
         int changed = -1;

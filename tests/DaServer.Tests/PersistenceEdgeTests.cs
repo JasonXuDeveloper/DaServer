@@ -30,6 +30,26 @@ public class PersistenceEdgeTests(string kind) : StoreTest(kind)
     }
 
     [Test]
+    public async Task AStateThatChangesBackAfterALostAnswerIsWrittenAgain()
+    {
+        // 9 lands but its answer is lost; the state goes back to the acknowledged 5 before the retry: the store holds 9,
+        // so 5 is written although it is what the owner last saw acknowledged.
+        Faults.Allow("SaveFailed"); // what the test provokes
+        var store = NewStore();
+        var node = await StartWith(store);
+        Assert.That(await node.Ask(new BankId(501), new SetGold(5)), Is.EqualTo(5));
+        await Eventually(() => Volatile.Read(ref store.Answered) >= 1, "5 was written");
+        store.LoseAnswers = 1;
+        Assert.That(await node.Ask(new BankId(501), new SetGold(9)), Is.EqualTo(9));
+        await Eventually(() => Volatile.Read(ref store.Answered) >= 2, "9 landed and failed");
+        Assert.That(await node.Ask(new BankId(501), new SetGold(5)), Is.EqualTo(5));
+        await Stop(node);
+
+        var again = await StartWith(store, "again");
+        Assert.That(await again.Ask(new BankId(501), new Balance()), Is.EqualTo(5), "the acknowledged change back was written");
+    }
+
+    [Test]
     public async Task ARecordThatDoesNotSerializeHoldsNoOtherWrite()
     {
         // One actor's state stops serializing (a cycle) and it asks for a critical write, then the node stops: that

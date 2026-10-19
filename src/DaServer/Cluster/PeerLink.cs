@@ -126,9 +126,20 @@ internal sealed class PeerLink : IFrameSink, IDisposable
                         return;
                     }
 
-                    _handshake = connection;
-                    if (_earlyChallenge.Connection == connection) Introduce(connection, _earlyChallenge.Challenge);
+                    var early = _earlyChallenge;
                     _earlyChallenge = default;
+                    if (connection.IsClosed)
+                    {
+                        // Closed before ConnectAsync returned (a refused early challenge, a peer gone): its close found no
+                        // handshake to end, so end it here and try again later.
+                        _handshakeClosed = true;
+                        _connecting = false;
+                        StartConnecting();
+                        return;
+                    }
+
+                    _handshake = connection;
+                    if (early.Connection == connection) Introduce(connection, early.Challenge);
                 }
 
                 return; // continues in OnChallenge, then OnResume, on the connection's receive loop

@@ -36,9 +36,21 @@ internal static class ActorSessions
         return sessions;
     }
 
-    /// <summary>A <see cref="SessionClosed"/> for the actor: forget the session; false when the close is stale (not delivered).</summary>
-    public static bool Closed(Actor actor, ReadOnlySpan<byte> payload) =>
-        Forget(actor, NinoDeserializer.Deserialize<SessionClosed>(payload).Session);
+    /// <summary>A <see cref="SessionClosed"/> for the actor: forget the session; false when the close is stale or unreadable (not delivered).</summary>
+    public static bool Closed(Actor actor, ReadOnlySpan<byte> payload)
+    {
+        SessionClosed closed;
+        try
+        {
+            closed = NinoDeserializer.Deserialize<SessionClosed>(payload);
+        }
+        catch (Exception)
+        {
+            return false; // not a close: refused like a stale one (only a peer or an HTTP send could write it)
+        }
+
+        return Forget(actor, closed.Session);
+    }
 
     /// <summary>Forget a closed session; false when it had been resumed (its close is stale and not delivered).</summary>
     private static bool Forget(Actor actor, ClientSession session)

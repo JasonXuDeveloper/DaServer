@@ -153,7 +153,7 @@ public class WireManifestTests
     [TestCase("public int Volume; public string Theme;", "public int Volume;", "DAS018", TestName = "A keyed type drops a key")]
     [TestCase("public int Volume; public string Theme;", "public long Volume; public string Theme;", "DAS017", TestName = "A key keeps its type")]
     [TestCase("format: NinoFormat.Keyed", "format: NinoFormat.VersionTolerant", "DAS017", TestName = "A type's format is part of its encoding")]
-    [TestCase("public int Volume;", "[NinoFormerName(\"Volume\")] public int Loudness;", "", TestName = "A keyed member renamed with its former name keeps its key")]
+    [TestCase("public int Volume;", "[NinoFormerName(\"Volume\")] public int Loudness;", "DAS018", TestName = "A keyed member renamed with its former name keeps its key (the manifest records the name)")]
     [TestCase("public int Volume;", "public int Loudness;", "DAS018", TestName = "A keyed member renamed without its former name is another key")]
     public async Task ChangesAreJudged(string before, string after, string id) =>
         Assert.That(await Check(Types.Replace(before, after), Recorded), Is.EqualTo(id.Length == 0 ? [] : id.Split(',')));
@@ -192,6 +192,28 @@ public class WireManifestTests
             .AddReferences(shared.ToMetadataReference());
         var reported = await WithNino(subtype).WithAnalyzers([new DaServerAnalyzer()], new AnalyzerOptions([new Manifest(fromSource)])).GetAnalyzerDiagnosticsAsync();
         Assert.That(reported.Select(d => d.Id).Distinct(), Is.EqualTo(new[] { "DAS017" }));
+    }
+
+    [TestCase("int Level", "long Level", "DAS017", TestName = "A keyed member's type of another assembly keeps its layout")]
+    [TestCase("int Level", "int Level", "", TestName = "A keyed member's type of another assembly, unchanged, is quiet")]
+    public async Task KeyedMembersOfAnotherAssemblysTypes(string before, string after, string id)
+    {
+        // A package update that changes a type a keyed component stores is caught like a change in this assembly.
+        const string uses = "namespace Game; [NinoType(format: NinoFormat.Keyed)] public sealed partial class Saved { public Shared.Card Card; }";
+        string recorded = ManifestOf(GeneratorTests.Compile(GeneratorTests.Parse(uses)).AddReferences(SharedImage(Shared.Replace("int Level", before))));
+        var compilation = WithNino(GeneratorTests.Compile(GeneratorTests.Parse(uses)).AddReferences(SharedImage(Shared.Replace("int Level", after))));
+        var reported = await compilation.WithAnalyzers([new DaServerAnalyzer()], new AnalyzerOptions([new Manifest(recorded)])).GetAnalyzerDiagnosticsAsync();
+        Assert.That(reported.Select(d => d.Id).Where(i => i is "DAS017" or "DAS018").Distinct(), Is.EqualTo(id.Length == 0 ? [] : new[] { id }));
+    }
+
+    /// <summary><paramref name="source"/> built as the assembly "Shared", referenced as metadata (as a package is).</summary>
+    private static MetadataReference SharedImage(string source)
+    {
+        var shared = WithNino(CSharpCompilation.Create("Shared", [GeneratorTests.Parse(source)], GeneratorTests.References,
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary)));
+        using var image = new MemoryStream();
+        Assert.That(shared.Emit(image).Success);
+        return MetadataReference.CreateFromImage(image.ToArray());
     }
 
     /// <summary>Nino's generator (its NuGet package's), run first: its <c>[assembly: NinoTypeLayout]</c> is what the manifest reads.</summary>

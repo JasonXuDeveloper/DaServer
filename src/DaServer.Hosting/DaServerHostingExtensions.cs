@@ -55,7 +55,6 @@ public static class DaServerHostingExtensions
             return new Node(options);
         });
         builder.Services.AddSingleton<ICluster>(static sp => sp.GetRequiredService<Node>());
-        builder.Services.AddSingleton<Features.INodeContext>(static sp => sp.GetRequiredService<Node>()); // the HTTP plane's ingress
         builder.Services.AddSingleton<IMessageSender>(static sp => sp.GetRequiredService<Node>());
         builder.Services.AddHostedService<NodeHostedService>();
         // The host waits a little longer than the node's own stop budget, so the node reports instead of being cut off.

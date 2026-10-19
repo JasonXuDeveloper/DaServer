@@ -96,6 +96,7 @@ public sealed class InMemoryActorStore : IActorStore
                 ref var entry = ref CollectionsMarshal.GetValueRefOrAddDefault(_records, from[i], out _);
                 entry ??= new Entry();
                 entry.Version++;
+                entry.Hash = 0; // the claim's version holds no write: a lost write's retry must not take it for its own
                 to[i] = new StoredRecord(entry.Version, entry.Length == 0 ? default : entry.Buffer.AsSpan(0, entry.Length).ToArray());
             }
 

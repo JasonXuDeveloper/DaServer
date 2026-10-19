@@ -130,7 +130,7 @@ internal sealed partial class PersistSystem : EcsSystem
         }
 
         ulong hash = Records.Hash(record.Payload);
-        if (hash == stored.Hash)
+        if (hash == stored.Hash && stored.Attempt == 0) // a write in doubt may have stored another state: write this one
         {
             record.Dispose();
             return Outcome.Unchanged;

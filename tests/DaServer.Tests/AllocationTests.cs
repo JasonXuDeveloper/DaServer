@@ -55,6 +55,7 @@ public class AllocationTests : ClusterTest
         await Eventually(async () => await node.Ask(target, new Get()) == 4 * sends, "the delayed sends did not arrive");
         long allocated = meter.Garbage;
         AssertPerOp(allocated, sends, "delayed sends");
+        Assert.That(meter.PoolGrowth, Is.LessThan(1 << 20), "frames go back to the pool (a leak shows as pool growth)");
     }
 
     [Test, Retry(3)]
@@ -104,6 +105,7 @@ public class AllocationTests : ClusterTest
         long allocated = meter.Garbage;
         int total = calls.Length * keys.Length * rounds;
         AssertPerOp(allocated, total, "calls", limit: 1);
+        Assert.That(meter.PoolGrowth, Is.LessThan(1 << 20), "frames go back to the pool (a leak shows as pool growth)");
     }
 
     /// <summary>Rounds of calls to every key at once (a Reply method: its pooled builder keeps the loop itself free).</summary>

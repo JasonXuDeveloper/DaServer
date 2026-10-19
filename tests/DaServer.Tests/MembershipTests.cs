@@ -346,6 +346,43 @@ public class LinkAuthTests : ClusterTest
     }
 
     [Test]
+    public async Task ALinkRefusedByItsPeersLevelsTriesAgainLater()
+    {
+        // A peer of another protocol challenges at once, often before the dialer's connect returned: the link closes that
+        // connection and dials again after a backoff (the peer may be restarted with this build), for as long as needed.
+        Faults.Allow("LinkRefused"); // what the test provokes
+        var a = await Start("a");
+        using var peer = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        peer.Start();
+        int accepted = 0;
+        var newer = new ProtocolLevels(ControlOp.Link.Max + 1, ControlOp.Link.Max + 1);
+        _ = Task.Run(async () =>
+        {
+            var held = new List<System.Net.Sockets.TcpClient>();
+            try
+            {
+                while (true)
+                {
+                    var socket = await peer.AcceptTcpClientAsync();
+                    held.Add(socket);
+                    var w = FrameWriter.Rent();
+                    w.WriteRaw(new byte[16]);
+                    w.SetHeader(FrameKind.Control, 0, ControlOp.Challenge, newer.Packed);
+                    await socket.GetStream().WriteAsync(w.Frame.ToArray());
+                    w.Dispose();
+                    Interlocked.Increment(ref accepted);
+                }
+            }
+            catch (Exception) { } // the listener stopped
+            finally { foreach (var socket in held) socket.Dispose(); }
+        });
+
+        var link = a.GetLink("127.0.0.1", ((System.Net.IPEndPoint)peer.LocalEndpoint).Port);
+        link.Send(new byte[FrameHeader.Size]);
+        await Eventually(() => Volatile.Read(ref accepted) >= 4, "the link kept dialing the refusing peer");
+    }
+
+    [Test]
     public void ASecretRotatesInThreeStepsEachAcceptingTheNext()
     {
         // SigningSecret, AcceptedSigningSecret per step: old; old+new; new+old; new. Nodes one step apart link both ways.

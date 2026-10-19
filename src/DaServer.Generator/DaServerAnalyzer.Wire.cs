@@ -29,7 +29,7 @@ public sealed partial class DaServerAnalyzer
             // Recorded in an earlier layout text (another Nino): every member would read as changed. One report instead.
             var first = text.Lines[0];
             context.ReportDiagnostic(Diagnostic.Create(Rules.WireBreak, Location.Create(manifest.Path, first.Span, text.Lines.GetLinePositionSpan(first.Span)),
-                WireManifest.FileName, "was recorded in an earlier layout text: check the Nino update's notes for changed bytes, then record it again"));
+                WireManifest.FileName, "was recorded in an earlier layout text: check the Nino update's notes for changed bytes, then record it again (dotnet build -p:UpdateWireManifest=force)"));
             return;
         }
 

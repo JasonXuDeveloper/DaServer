@@ -41,7 +41,7 @@ public sealed partial class PostgreSqlActorStore : IActorStore, IAsyncDisposable
         // shard), which ON CONFLICT DO UPDATE requires.
         _claim = $"WITH k AS (SELECT * FROM unnest($1::integer[], $2::bigint[]) WITH ORDINALITY AS k(type_id, key, i)), " +
                  $"c AS (INSERT INTO {table} AS t (type_id, key, version, data) SELECT type_id, key, 1, ''::bytea FROM k " +
-                 "ON CONFLICT (type_id, key) DO UPDATE SET version = t.version + 1, updated_at = now() " +
+                 "ON CONFLICT (type_id, key) DO UPDATE SET version = t.version + 1, hash = 0, updated_at = now() " +
                  "RETURNING t.type_id, t.key, t.version, t.data) " +
                  "SELECT k.i, c.version, c.data FROM k JOIN c ON c.type_id = k.type_id AND c.key = k.key";
         // One statement per batch: a first write inserts (refused if a row exists: another owner wrote first), a later one

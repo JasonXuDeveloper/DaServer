@@ -10,6 +10,8 @@ public readonly record struct BankId(long Value) : IActorId;
 
 [NinoType, Message] public partial record struct Deposit(int Gold, bool Critical) : IRequest<int>;
 [NinoType, Message] public partial record struct Balance : IRequest<int>;
+/// <summary>Sets the gold and asks for a write now: a state can change back to what the store last acknowledged.</summary>
+[NinoType, Message] public partial record struct SetGold(int Gold) : IRequest<int>;
 [NinoType, Message] public partial record struct DepositCount : IRequest<int>;
 [NinoType, Message] public partial record struct DepositTwice(int Gold, BankId Other) : IRequest<int>;
 [NinoType, Message] public partial record struct Earn : IRequest<bool>;
@@ -128,6 +130,13 @@ public sealed class Bank : Actor<BankId, Ledger>
     }
 
     [Handle] public int On(Balance _) => State.Gold;
+
+    [Handle]
+    public int On(SetGold m)
+    {
+        Entity.Add<SaveNow>();
+        return State.Gold = m.Gold;
+    }
 
     [Handle]
     public async Reply<int> On(HoldTurn _)
