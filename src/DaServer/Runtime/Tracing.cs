@@ -3,12 +3,12 @@ using System.Diagnostics;
 namespace DaServer.Runtime;
 
 /// <summary>
-/// Distributed tracing (A6): a turn whose message carries a trace context (<see cref="FrameExtensions.Trace"/>) runs in a
+/// Distributed tracing (A6): a handler whose message carries a trace context (<see cref="FrameExtensions.Trace"/>) runs in a
 /// span of its own, child of the sender's, and the requests and messages it sends carry that span's context, so a REST
 /// call and the actor calls it causes, on any nodes, are one trace. Spans exist only while something listens to
 /// <see cref="SourceName"/> (OpenTelemetry when an exporter is configured); traces start where the application starts
 /// them (ASP.NET Core requests, its own activities), never per message. Untraced, a send reads two references and a
-/// turn one flag.
+/// handler one flag.
 /// </summary>
 internal static class Tracing
 {
@@ -17,7 +17,7 @@ internal static class Tracing
     public static readonly ActivitySource Source = new(SourceName);
 
 
-    /// <summary>Put the running turn's trace context (else the thread's current activity: an HTTP request) on an outgoing frame.</summary>
+    /// <summary>Put the running handler's trace context (else the thread's current activity: an HTTP request) on an outgoing frame.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void Attach(FrameWriter frame)
     {

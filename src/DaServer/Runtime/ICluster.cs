@@ -1,10 +1,10 @@
 namespace DaServer.Runtime;
 
 /// <summary>
-/// What business code sees of the cluster (<c>Cluster</c> in actors and services, <c>world.Cluster</c> in systems):
-/// messages to actors, services, client sessions and client groups (<c>Cluster.Send(mapId, new Move(..))</c>,
-/// <c>await Cluster.Ask(playerId, new GetInfo())</c>, <c>Cluster.Send(session, new GoldChanged(..))</c>) and published
-/// messages. Node lifecycle and internals are not part of it.
+/// What business code sees of the cluster (<c>ctx.Cluster</c> in handlers, <c>world.Cluster</c> in systems, injected
+/// in HTTP code): messages to actors, services, client sessions and client groups (<c>cluster.Send(mapId, new Move(..))</c>,
+/// <c>await cluster.Ask(playerId, new GetInfo())</c> outside the shards, <c>cluster.Send(session, new GoldChanged(..))</c>)
+/// and published messages. Node lifecycle and internals are not part of it.
 /// </summary>
 public interface ICluster : IMessageSender
 {
@@ -21,7 +21,7 @@ public interface ICluster : IMessageSender
     /// Send <paramref name="message"/> to <paramref name="address"/> once <paramref name="delay"/> has passed (timers as
     /// data: the message is serialized now and held by this shard, then sent as if sent then, so it follows a moved
     /// actor and reaches the actor's mailbox as ordinary mail). Allocates nothing. Call it on a shard thread (actors,
-    /// services, systems); a delay instead of <c>await Task.Delay</c>, which would hold the actor's turn. The send lives
+    /// services, systems), where nothing waits. The send lives
     /// in this node's memory: a node that stops (a scale-in too) or crashes drops it, as one-way delivery is at most once
     /// (ADR-058). A deadline that must outlive the node is state: a persisted component a system checks.
     /// </summary>

@@ -96,10 +96,7 @@ public readonly struct CallContext(IReplySink? replyTo, uint callId, Origin orig
     {
         if (task.IsCompletedSuccessfully)
         {
-            if (DeferredReply<T>.Used && DeferredReply<T>.TryTake(out var deferred)) // ReplyWhen: the turn ends now
-                deferred.Start(this);
-            else
-                ReplyValue(task.Result);
+            ReplyValue(task.Result);
             return default;
         }
 
@@ -140,12 +137,11 @@ public readonly struct CallContext(IReplySink? replyTo, uint callId, Origin orig
 }
 
 /// <summary>
-/// Replies once a handler's pending <see cref="ValueTask{TResult}"/> completes, and is itself the turn's task (what
-/// <c>TurnWatcher</c> watches). Pooled per shard thread: rented when a request handler suspends and returned when the
-/// turn's result is read (<see cref="IValueTaskSource.GetResult"/>), both on the shard thread. The continuation is a
-/// delegate created once per watcher and registered without capturing a context, so replying allocates nothing
-/// (an <c>async</c> method here would allocate a state machine per suspended call beyond the builder's small cache,
-/// and resuming on the shard's context would allocate a continuation per await).
+/// Replies once a client handler's pending <see cref="ValueTask{TResult}"/> completes (handlers of servers never wait,
+/// ADR-081), and is itself the task its dispatcher returns. Pooled per thread: rented when a request handler suspends
+/// and returned when that task's result is read (<see cref="IValueTaskSource.GetResult"/>). The continuation is a
+/// delegate created once per watcher and registered without capturing a context, so replying allocates nothing (an
+/// <c>async</c> method here would allocate a state machine per suspended call beyond the builder's small cache).
 /// </summary>
 internal sealed class ReplyWatcher<T> : IValueTaskSource
 {
@@ -157,7 +153,7 @@ internal sealed class ReplyWatcher<T> : IValueTaskSource
     private ReplyWatcher()
     {
         _completed = Completed;
-        _core.RunContinuationsAsynchronously = false; // TurnWatcher only posts to the shard: safe to run inline
+        _core.RunContinuationsAsynchronously = false; // its awaiter only reads the result: safe to run inline
     }
 
     public static ValueTask Watch(ValueTask<T> task, CallContext context)
@@ -165,12 +161,12 @@ internal sealed class ReplyWatcher<T> : IValueTaskSource
         var watcher = PerThread<ReplyWatcher<T>>.TryRent(out var pooled) ? pooled : new ReplyWatcher<T>();
         watcher._task = task;
         watcher._context = context;
-        var turn = new ValueTask(watcher, watcher._core.Version);
+        var pending = new ValueTask(watcher, watcher._core.Version);
         task.ConfigureAwait(false).GetAwaiter().UnsafeOnCompleted(watcher._completed);
-        return turn;
+        return pending;
     }
 
-    /// <summary>Wherever the handler completed (normally its shard thread): reply, then end the turn.</summary>
+    /// <summary>Wherever the handler completed: reply, then complete the dispatcher's task.</summary>
     private void Completed()
     {
         var (task, context) = (_task, _context);
@@ -182,7 +178,7 @@ internal sealed class ReplyWatcher<T> : IValueTaskSource
         catch (Exception e)
         {
             context.ReplyException(e);
-            _core.SetException(e); // the turn fails too: the runtime counts it and applies the actor's OnError
+            _core.SetException(e); // the dispatcher's task fails too: its caller logs it
             return;
         }
 
@@ -201,119 +197,4 @@ internal sealed class ReplyWatcher<T> : IValueTaskSource
         _context = default;
         PerThread<ReplyWatcher<T>>.Return(this);
     }
-}
-
-/// <summary>
-/// A reply sent once a task completes, after its handler's turn ended (<c>ShardObject.ReplyWhen</c>): the handler
-/// returned at once, so its actor takes its next message while the task (an access change, a call, a save) is
-/// pending. The handler leaves a prepared watcher in a thread-static slot that the generated dispatcher's
-/// <see cref="CallContext.Reply{T}"/> takes right away on the same thread. Watchers are pooled per thread; replying
-/// allocates nothing.
-/// </summary>
-internal abstract class DeferredReply<T>
-{
-    /// <summary>Whether any handler replied later with <typeparamref name="T"/>: until then replies skip the slot.</summary>
-    internal static volatile bool Used;
-
-    [ThreadStatic] private static DeferredReply<T>? _pending;
-
-    private protected T Value = default!;
-    private protected CallContext Context;
-
-    /// <summary>Leave <paramref name="watcher"/> for the dispatcher (the handler's own return value is ignored).</summary>
-    private protected static void Leave(DeferredReply<T> watcher, T reply)
-    {
-        if (_pending != null) throw new InvalidOperationException("ReplyWhen: one per handler, as what it returns (DAS011)");
-        watcher.Value = reply;
-        if (!Used) Used = true; // read on every reply of every shard: written once
-        _pending = watcher;
-    }
-
-    public static bool TryTake(out DeferredReply<T> watcher)
-    {
-        watcher = _pending!;
-        _pending = null;
-        return watcher != null;
-    }
-
-    /// <summary>Reply to <paramref name="context"/> once the task completes (now, if it has).</summary>
-    public abstract void Start(CallContext context);
-
-    private protected void Reply(Exception? error)
-    {
-        var (value, context) = (Value, Context);
-        (Value, Context) = (default!, default);
-        Return();
-        if (error == null) context.ReplyValue(value);
-        else context.ReplyException(error);
-    }
-
-    private protected abstract void Return();
-}
-
-/// <summary>What <see cref="DeferredAfter{TDone, T}"/> waits for: a <see cref="ValueTask"/> or a <see cref="ValueTask{TResult}"/>.</summary>
-internal interface IDone
-{
-    bool IsCompleted { get; }
-
-    void OnCompleted(Action continuation);
-
-    /// <summary>Throws what the task failed with.</summary>
-    void Check();
-}
-
-internal readonly struct Done(ValueTask task) : IDone
-{
-    public bool IsCompleted => task.IsCompleted;
-    public void OnCompleted(Action continuation) => task.ConfigureAwait(false).GetAwaiter().UnsafeOnCompleted(continuation);
-    public void Check() => task.GetAwaiter().GetResult();
-}
-
-internal readonly struct Done<TResult>(ValueTask<TResult> task) : IDone
-{
-    public bool IsCompleted => task.IsCompleted;
-    public void OnCompleted(Action continuation) => task.ConfigureAwait(false).GetAwaiter().UnsafeOnCompleted(continuation);
-    public void Check() => task.GetAwaiter().GetResult();
-}
-
-/// <summary><see cref="DeferredReply{T}"/> after a task (<typeparamref name="TDone"/>: <see cref="Done"/> or <see cref="Done{TResult}"/>).</summary>
-internal sealed class DeferredAfter<TDone, T> : DeferredReply<T> where TDone : struct, IDone
-{
-    private readonly Action _completed;
-    private TDone _task;
-
-    private DeferredAfter() => _completed = Completed;
-
-    public static void Set(TDone done, T reply)
-    {
-        var watcher = PerThread<DeferredAfter<TDone, T>>.TryRent(out var pooled) ? pooled : new DeferredAfter<TDone, T>();
-        watcher._task = done;
-        Leave(watcher, reply);
-    }
-
-    public override void Start(CallContext context)
-    {
-        Context = context;
-        if (_task.IsCompleted) Completed();
-        else _task.OnCompleted(_completed);
-    }
-
-    private void Completed()
-    {
-        var task = _task;
-        _task = default;
-        try
-        {
-            task.Check();
-        }
-        catch (Exception e)
-        {
-            Reply(e);
-            return;
-        }
-
-        Reply(null);
-    }
-
-    private protected override void Return() => PerThread<DeferredAfter<TDone, T>>.Return(this);
 }

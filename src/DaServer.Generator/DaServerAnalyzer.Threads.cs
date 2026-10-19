@@ -4,10 +4,10 @@ using Microsoft.CodeAnalysis.Operations;
 namespace DaServer.Generator;
 
 /// <summary>
-/// DAS015: code of actors, services and systems runs on its shard thread, turn by turn; it never starts work on other
-/// threads. An actor's state and a shard's world need no locks because one thread owns them, and the rule is simple
-/// enough to never think about: awaiting is fine (continuations, IO included, come back to the shard within the turn),
-/// handing code to another thread is not. Concurrency comes from many actors on many shards.
+/// DAS015: code of actors, services and systems runs on its shard thread, one message at a time; it never starts work on
+/// other threads. An actor's state and a shard's world need no locks because one thread owns them, and the rule is simple
+/// enough to never think about: asking another actor or service is fine (its answer comes back as mail), handing code to
+/// another thread is not. Concurrency comes from many actors on many shards.
 /// </summary>
 public sealed partial class DaServerAnalyzer
 {

@@ -39,7 +39,7 @@ internal static partial class Log
     [LoggerMessage(Level = LogLevel.Information, Message = "Stop {Phase} of {Node}: {Ms} ms")]
     public static partial void StopPhase(ILogger logger, string phase, string node, long ms);
 
-    [LoggerMessage(Level = LogLevel.Error, Message = "Shutdown budget ({Budget}) exceeded: shard {Shard} of {Node} still holds {Actors} actors whose OnUnload did not finish (their state since the last save is lost)")]
+    [LoggerMessage(Level = LogLevel.Error, Message = "Shutdown budget ({Budget}) exceeded: shard {Shard} of {Node} still holds {Actors} actors whose Unloading did not finish (their state since the last save is lost)")]
     public static partial void BudgetExceeded(ILogger logger, TimeSpan budget, int shard, string node, int actors);
 
     [LoggerMessage(Level = LogLevel.Critical, Message = "Node {Name} reaches {Reachable} of the cluster's members and lost {Lost}: on the minority side of a split, it stops without saving and exits")]

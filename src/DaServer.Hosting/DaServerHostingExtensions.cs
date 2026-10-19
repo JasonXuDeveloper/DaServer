@@ -111,7 +111,7 @@ public static class DaServerHostingExtensions
     /// Metrics (DaServer meter, .NET runtime) for a Prometheus scrape of <c>/metrics</c> on the HTTP plane, always (what
     /// an HPA through the Prometheus adapter or KEDA reads); and logs, metrics and traces over OTLP when
     /// <c>OTEL_EXPORTER_OTLP_ENDPOINT</c> is set, which Aspire does for every resource (the dashboard shows them). Traces
-    /// join the HTTP plane's requests, the HttpClient calls nodes make and the actor turns they cause on any node
+    /// join the HTTP plane's requests, the HttpClient calls nodes make and the actor handlers they cause on any node
     /// (the <c>DaServer</c> activity source, A6). Observable instruments are read only when collected: an unscraped node
     /// pays nothing, and an untraced one starts no span.
     /// </summary>

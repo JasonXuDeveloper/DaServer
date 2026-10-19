@@ -67,7 +67,7 @@ public sealed class NodeOptions
 
     /// <summary>
     /// Where actors' <see cref="PersistAttribute">[Persist]</see> components are stored (ADR-068). Null (default):
-    /// nothing is persisted, actors start from <see cref="Actor.OnLoad"/> every time.
+    /// nothing is persisted, actors start from their <see cref="Created"/> mail every time.
     /// </summary>
     public Persistence.IActorStore? ActorStore { get; set; }
 

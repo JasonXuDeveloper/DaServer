@@ -17,15 +17,18 @@ namespace DaServer;
 //   client.Send(roomId, msg)      to an actor that granted the client's session (GrantSession)
 
 /// <summary>
-/// A message answered with a <typeparamref name="TReply"/>: <c>Cluster.Ask(playerId, new GetInfo())</c>. Its handler
-/// returns <typeparamref name="TReply"/> or <c>ValueTask&lt;TReply&gt;</c>. A marker only (never boxed: the generated
+/// A message answered with a <typeparamref name="TReply"/>: <c>cluster.Ask(playerId, new GetInfo())</c>, or
+/// <c>ctx.Ask(..)</c> in a handler (its answer is <c>Answered&lt;TRequest, TReply&gt;</c> mail). Its handler returns
+/// <typeparamref name="TReply"/>, or <c>Answer&lt;TReply&gt;</c> to reply later. A marker only (never boxed: the generated
 /// <c>Ask</c> overloads take the struct itself).
 /// </summary>
 public interface IRequest<TReply>;
 
 /// <summary>
-/// Marks a cluster message handler on an actor, a service or a client handler object: one parameter (the message,
-/// a <c>[NinoType]</c> struct), returns <c>void</c> / <c>ValueTask</c>, or the reply of an <see cref="IRequest{TReply}"/>
+/// Marks a message handler. On servers: a static method of an <c>[Actor&lt;TId&gt;]</c> or <c>[Service]</c> class, the
+/// message first (<c>in</c>), then the components, singletons, <c>Entity</c>, <c>World</c> or <c>in Context</c> it
+/// needs; it returns <c>void</c>, the reply of an <see cref="IRequest{TReply}"/>, or <c>Answer&lt;TReply&gt;</c> (ADR-081).
+/// On clients: a method of a handler object taking the message, returning <c>void</c> / <c>ValueTask</c> or the reply
 /// (<c>TReply</c> / <c>ValueTask&lt;TReply&gt;</c>). Registration and dispatch are generated.
 /// </summary>
 [AttributeUsage(AttributeTargets.Method)]
@@ -44,7 +47,7 @@ public sealed class MessageAttribute : Attribute;
 
 /// <summary>
 /// The component is part of its actor's stored record (ADR-068): saved when the actor unloads and every
-/// <c>Actor.SaveEvery</c> while it changed, restored before <c>OnLoad</c> when the actor loads again. A
+/// <c>SaveEverySeconds</c> while it changed, restored before its <c>Loaded</c> mail when the actor loads again. A
 /// <c>[NinoType]</c> struct component in a components project; its section in the record is keyed by its type id
 /// (<see cref="TypeId{T}"/>; <c>[NinoFormerName]</c> keeps it across a rename), so adding or removing a
 /// persisted component never breaks a stored record.
@@ -129,7 +132,7 @@ public interface IMessageSender
 /// <summary>
 /// Options of one call (<c>Cluster.Ask(id, request, new CallOptions(TimeSpan.FromSeconds(2)))</c>): <see cref="Timeout"/>
 /// bounds this call instead of the sender's call timeout (zero: the sender's). The rest of a timeout travels with the
-/// request, and a handler reads what is left as <c>TimeLeft</c>.
+/// request, and a handler reads its deadline as <c>ctx.Deadline</c>.
 /// </summary>
 public readonly record struct CallOptions(TimeSpan Timeout);
 
@@ -145,7 +148,7 @@ public readonly partial record struct SessionClosed(ClientSession Session);
 /// A client that lost its connection resumed on a client-facing node: <see cref="Session"/> replaces <see cref="Previous"/> at
 /// every actor that still held <see cref="Previous"/> bound or granted (the runtime checks it; a revoked, closed or
 /// already resumed session resumes nothing), and is then bound or granted to it again (and in its group). Delivered to
-/// each such actor that handles it, as the session of the turn (<c>Caller</c>): update the stored session, rejoin
+/// each such actor that handles it, from the new session (<c>ctx.Caller</c>): update the stored session, rejoin
 /// other groups and send the client its full state (pushes sent meanwhile were lost). <see cref="SessionClosed"/> for
 /// <see cref="Previous"/> is not delivered afterwards.
 /// </summary>
@@ -180,8 +183,8 @@ public readonly partial record struct LeaveGroup(ClientGroup Group);
 public readonly partial record struct Disconnect;
 
 /// <summary>
-/// Change what the session's client may address (<see cref="Runtime.Actor.BindSession"/>,
-/// <see cref="Runtime.Actor.GrantSession"/>, asked so the actor resumes once it holds) for actor
+/// Change what the session's client may address (<c>ctx.BindSession</c>, <c>ctx.GrantSession</c>; asked, so the actor
+/// hears <c>Answered&lt;SessionChange, Done&gt;</c> once it holds) for actor
 /// (<see cref="HandlerType"/>, <see cref="Key"/>).
 /// </summary>
 [NinoType, Message, StructLayout(LayoutKind.Sequential, Pack = 1)] // no padding on the wire (13 bytes, not 24)

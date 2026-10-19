@@ -9,7 +9,7 @@ internal sealed partial class Node
     /// <summary>
     /// Leave the cluster gracefully within <see cref="NodeOptions.ShutdownTimeout"/> (or until
     /// <paramref name="cancellationToken"/>, the host's own limit, fires): announce Leaving so callers reroute, drain the
-    /// features (client connections close their sessions), unload every actor (<see cref="Actor.OnUnload"/>), close the
+    /// features (client connections close their sessions), unload every actor (its <see cref="Unloading"/> mail), close the
     /// links. Each phase is logged with its duration; actors still loaded at the deadline are reported, not waited for.
     /// </summary>
     public async Task StopAsync(CancellationToken cancellationToken = default)

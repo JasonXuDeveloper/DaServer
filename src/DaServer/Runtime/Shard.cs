@@ -3,8 +3,9 @@ namespace DaServer.Runtime;
 
 /// <summary>
 /// A single-threaded shard: one dedicated thread owning an EasyEcs <see cref="EasyEcs.World"/>, plus the lock-free
-/// dispatch queue other threads post to. Everything else is ECS: actors are entities (mailbox, turn and state components),
-/// per-shard state (actor directory, activity) is singletons, and runtime systems in <see cref="ShardMessages"/> route and run messages.
+/// dispatch queue other threads post to. Everything else is ECS: actors are entities (identity, lifecycle tags, user
+/// components), per-shard state (activity, asks in flight, the store) is singletons, and runtime systems in
+/// <see cref="ShardMessages"/> route and run messages.
 /// <para>Loop: on every wake the <see cref="ShardMessages"/> group runs (so messages never wait for a tick); at the
 /// tick rate the default group runs (simulation systems). User code never needs locks.</para>
 /// </summary>
@@ -200,7 +201,7 @@ internal sealed class Shard : CompletionThread
             foreach (var actor in leaving ?? []) actor.SetUnloadRequested(); // after the query: a structural change
         }, (this, handlerTypeId));
 
-    /// <summary>Stop the shard: unload every actor (<paramref name="fenced"/>: remove them without <see cref="Actor.OnUnload"/>).</summary>
+    /// <summary>Stop the shard: unload every actor (<paramref name="fenced"/>: remove them without their <see cref="Unloading"/> mail).</summary>
     internal void RequestStop(bool fenced = false)
     {
         _stopFenced = fenced;
@@ -210,7 +211,7 @@ internal sealed class Shard : CompletionThread
 
     /// <summary>
     /// Queue consumer (shard thread only, used by <see cref="DispatchSystem"/>): work that finishes admitted work first
-    /// (it frees calls, turns and their buffers), then new work.
+    /// (it frees calls and their buffers), then new work.
     /// </summary>
     internal bool TryTake(out WorkItem item)
     {
@@ -391,7 +392,7 @@ internal sealed class Shard : CompletionThread
     private const int BusySpins = 20, SpinRound = 50;
 
     /// <param name="stopping">The stop request was taken: it no longer cuts sleeps short (a shard waiting for its last
-    /// turns to end sleeps until their completions wake it, instead of spinning).</param>
+    /// writes and handoffs to end sleeps until their completions wake it, instead of spinning).</param>
     private void Sleep(long nextTick, bool spin, bool stopping)
     {
         // A shard that just had work waits for more by spinning a little first: under load the next message arrives

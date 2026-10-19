@@ -3,7 +3,7 @@ namespace DaServer.Runtime;
 /// <summary>
 /// Operations shared by the runtime systems (routing a frame, delivering and invoking a message). Static and
 /// stateless: everything they touch lives in the world. A handler runs to completion (ADR-081): one message, then the
-/// next; nothing is suspended, so there are no turns.
+/// next; nothing is suspended.
 /// </summary>
 internal static partial class ShardDispatch
 {

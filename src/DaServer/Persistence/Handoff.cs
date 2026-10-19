@@ -201,8 +201,8 @@ internal static partial class Handoff
     public static long TimeoutMs(Node node) => (long)node.Options.CallTimeout.TotalMilliseconds;
 
     /// <summary>
-    /// How long after a view change a node assumes the key's previous owner may still hold its actor: a turn in flight
-    /// (a call timeout), its write in flight (a store timeout), and as much again for the record and the answers. A copy
+    /// How long after a view change a node assumes the key's previous owner may still hold its actor: a handler's ask in
+    /// flight (a call timeout), its write in flight (a store timeout), and as much again for the record and the answers. A copy
     /// held longer than that (a store outage) meets a new owner that loaded from the store: versions decide,
     /// and the copy's changes since its last write are lost (ADR-072).
     /// </summary>

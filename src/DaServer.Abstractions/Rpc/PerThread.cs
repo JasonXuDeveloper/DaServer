@@ -6,7 +6,7 @@ namespace DaServer;
 /// another thread (a completion on a thread-pool thread) do not pile up there. The process has three kinds of pools:
 /// this one for objects a thread both rents and returns; <c>ObjectPool</c> (DaServer.Core) for objects rented on one
 /// thread and returned on another (frames, calls completed on IO threads), with per-thread magazines; and a shard's
-/// own pools as an ECS singleton (<c>ActorPools</c>: actors, mailboxes, session sets), which are per-shard state.
+/// own per-shard state as ECS singletons and entities (asks in flight, replies kept for later).
 /// </summary>
 internal static class PerThread<T> where T : class
 {

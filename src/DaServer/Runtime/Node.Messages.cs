@@ -188,7 +188,7 @@ sealed partial class Node
     }
 
     /// <summary>
-    /// Change what a session's client may address (<see cref="Actor.BindSession"/>, <see cref="Actor.GrantSession"/>):
+    /// Change what a session's client may address (<see cref="Context.BindSession"/>, <see cref="Context.GrantSession"/>):
     /// asked of the session, so it completes once the session's node applied it and the client's next message already
     /// reaches the actor.
     /// </summary>
