@@ -36,12 +36,10 @@ public struct Plan() : IComponent
 /// </summary>
 public sealed partial class PlannerSystem : EcsSystem
 {
-    public override int Priority => -30; // after the sensors, before the systems that carry out the tasks
-
     [ForEach]
     private static void Advance(Entity agent, ref Plan plan, in Facts facts, in HtnDomain domain)
     {
-        if (plan.Running >= 0 && domain.Running[plan.Running](agent)) return;
+        if (plan.Running >= 0 && domain.Running[plan.Running](agent.World, agent.Id)) return;
         plan.Running = -1;
         if (plan.Next >= plan.Count || !Applies(domain, plan.Steps[plan.Next], facts.Bits))
         {
@@ -52,7 +50,7 @@ public sealed partial class PlannerSystem : EcsSystem
 
         int task = plan.Steps[plan.Next++];
         plan.Running = task;
-        domain.Start[task](agent); // last: `plan` is invalid after it
+        domain.Start[task](agent.World, agent.Id); // last: `plan` is invalid after it
     }
 
     private static bool Applies(in HtnDomain domain, int task, ulong facts)

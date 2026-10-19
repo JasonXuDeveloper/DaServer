@@ -32,10 +32,9 @@ public sealed partial class PushSystem : EcsSystem
 }
 
 /// <summary>Input: the player's steering moves its avatar at once (prediction) and goes to the map when it changes.</summary>
+[UpdateBefore<MovementSystem>]
 public sealed partial class SteeringSystem : EcsSystem
 {
-    public override int Priority => -10; // before movement: the avatar moves on the tick its input changed
-
     [ForEach]
     private static void Steer(in Link link, in Me me, in Steering steering, ref SentSteering sent, ref Velocity velocity)
     {
@@ -66,7 +65,7 @@ public sealed partial class ViewSystem : EcsSystem
     public override int UpdateInterval => Timing.TickRate / 2;
 
     [ForEach]
-    private static void Forget(in Position position, in View view)
+    private static void Forget(in Position position, ref View view)
     {
         int cell = MapGeometry.CellOf(position);
         long now = Environment.TickCount64;

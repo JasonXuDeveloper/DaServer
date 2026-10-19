@@ -25,12 +25,12 @@ internal sealed class TurnWatcher
     /// </summary>
     public static void Begin(World world, Entity entity, ValueTask task)
     {
-        entity.Add<Turn>() = new Turn(task, world.GetSingleton<ShardActivity>().NowMs, Tracing.TakePending());
+        entity.Set<Turn>(new Turn(task, world.GetSingleton<ShardActivity>().NowMs, Tracing.TakePending()));
         if (task.IsCompleted)
         {
             // A hook that finished synchronously (the usual OnLoad/OnUnload): registering a continuation on a completed
             // task would allocate one and run it through the thread pool.
-            entity.Add<TurnEnded>();
+            entity.Set(new TurnEnded());
             return;
         }
 
@@ -47,7 +47,7 @@ internal sealed class TurnWatcher
         var entity = Entity;
         Entity = default;
         world.GetSingleton<TurnWatchers>().Pool.Push(this);
-        entity.Add<TurnEnded>();
+        entity.Set(new TurnEnded());
     }
 
     /// <summary>

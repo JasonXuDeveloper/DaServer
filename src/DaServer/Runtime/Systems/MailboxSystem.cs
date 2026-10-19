@@ -6,6 +6,7 @@ namespace DaServer.Runtime;
 /// are visited (<see cref="Ready"/>).
 /// </summary>
 [UpdateInGroup<ShardMessages>]
+[UpdateAfter<UnloadSystem>]
 internal sealed partial class MailboxSystem : EcsSystem
 {
     /// <summary>Upper bound per wake (fairness with timers and the tick under a flood).</summary>
@@ -14,8 +15,6 @@ internal sealed partial class MailboxSystem : EcsSystem
     /// <summary>Actors <see cref="Run"/> visits (the shard does not sleep while one is left).</summary>
     internal static readonly QueryFilter Runnable = QueryFilter.Create().With<Ready>().Without<Turn>()
         .Without<UnloadRequested>().Without<Unloading>().Without<Removing>().Without<Loading>();
-
-    public override int Priority => 5;
 
     protected override void OnUpdate() => World.GetSingleton<ShardActivity>().MailBudget = Budget;
 

@@ -6,12 +6,11 @@ namespace DaServer.Runtime;
 /// (<see cref="TurnEnded"/>). <see cref="MailboxSystem"/> then runs the mail, one turn per actor.
 /// </summary>
 [UpdateInGroup<ShardMessages>]
+[UpdateAfter<TimerSystem>]
 internal sealed class DispatchSystem : EcsSystem
 {
     /// <summary>Upper bound per wake, so timers and the tick stay on time under a flood.</summary>
     private const int Budget = 4096;
-
-    public override int Priority => 0;
 
     protected override void OnUpdate()
     {

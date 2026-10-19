@@ -24,7 +24,7 @@ internal sealed class SessionsSection() : PersistentType(typeof(ClientSessions),
     {
         var moved = NinoDeserializer.Deserialize<SessionsRecord>(section);
         if (!entity.TryGet<ClientSessions>(out var sessions))
-            entity.Add<ClientSessions>() = sessions = entity.Get<ActorRef>().Actor.World.GetSingleton<ActorPools>().RentSessions();
+            entity.Set<ClientSessions>(sessions = entity.Get<ActorRef>().Actor.World.GetSingleton<ActorPools>().RentSessions());
         sessions.Sessions.UnionWith(moved.Sessions);
         sessions.Granted.UnionWith(moved.Granted);
         sessions.Superseded.UnionWith(moved.Superseded);

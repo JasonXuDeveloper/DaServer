@@ -5,9 +5,9 @@ namespace DaServer.Runtime;
 /// load opens the mailbox (or removes the actor when it failed), an unload removes it. Only ended turns are visited.
 /// </summary>
 [UpdateInGroup<ShardMessages>]
+[UpdateAfter<DispatchSystem>]
 internal sealed partial class TurnSystem : EcsSystem
 {
-    public override int Priority => 1;
 
     [ForEach, With<TurnEnded>, Without<Loading>, Without<Unloading>]
     private static void EndCall(Entity actor, in Turn turn, in ActorRef self, World world)
@@ -37,12 +37,12 @@ internal sealed partial class TurnSystem : EcsSystem
             // Restored from a handoff its sender let go: the record is the only copy of the moved state, so it is written
             // as it came (not as the failed OnLoad left it) before the copy goes, and the mail loads it from the store.
             Persistence.Handoff.RestoreAsReceived(world, actor, record.Payload);
-            actor.Add<Unloading>();
-            actor.Add<FinalSave>();
+            actor.Set(new Unloading());
+            actor.Set(new FinalSave());
             return;
         }
 
-        actor.Add<Removing>() = new Removing(RpcStatus.Error, "Load failed: " + error.Message);
+        actor.Set<Removing>(new Removing(RpcStatus.Error, "Load failed: " + error.Message));
     }
 
     [ForEach, With<TurnEnded>, With<Unloading>]
@@ -56,10 +56,10 @@ internal sealed partial class TurnSystem : EcsSystem
         if (actor.Has<Fenced>()) // its write was refused meanwhile: the key has a newer owner, this copy goes as it is
         {
             actor.Remove<UnloadRequested, Fenced>();
-            actor.Add<Removing>() = new Removing(RpcStatus.Ok, null);
+            actor.Set<Removing>(new Removing(RpcStatus.Ok, null));
         }
-        else if (Handoff.TargetOf(world, target) is { } to) actor.Add<HandOff>() = new HandOff(to); // its new owner takes the record
-        else if (actor.Has<Stored>()) actor.Add<FinalSave>(); // removed once its record is written (PersistSystem)
-        else actor.Add<Removing>() = new Removing(RpcStatus.Ok, null);
+        else if (Handoff.TargetOf(world, target) is { } to) actor.Set<HandOff>(new HandOff(to)); // its new owner takes the record
+        else if (actor.Has<Stored>()) actor.Set(new FinalSave()); // removed once its record is written (PersistSystem)
+        else actor.Set<Removing>(new Removing(RpcStatus.Ok, null));
     }
 }

@@ -6,9 +6,10 @@ namespace DaServer.Runtime;
 /// held returns to the shard's <see cref="ActorPools"/>.
 /// </summary>
 [UpdateInGroup<ShardMessages>]
+[UpdateAfter<ServiceCallSystem>]
+[UpdateAfter<LoadSystem>]
 internal sealed partial class RemovalSystem : EcsSystem
 {
-    public override int Priority => 3;
 
     [ForEach]
     private static void Remove(Entity actor, in Removing removing, in Mailbox mailbox, in ActorRef self,

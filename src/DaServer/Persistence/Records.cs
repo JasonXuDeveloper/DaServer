@@ -40,7 +40,7 @@ internal sealed class PersistentType<T>(uint typeId, bool stored) : PersistentTy
     {
         var value = NinoDeserializer.Deserialize<T>(section);
         if (entity.Has<T>()) entity.Get<T>() = value;
-        else entity.Add<T>() = value;
+        else entity.Set<T>(value);
     }
 
     public override void Remove(Entity entity)

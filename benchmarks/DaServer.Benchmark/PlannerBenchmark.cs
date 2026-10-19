@@ -15,10 +15,9 @@ public enum Need : ulong
 
 
 
+[UpdateBefore<PlannerSystem>]
 public sealed partial class NeedsSystem : EcsSystem
 {
-    public override int Priority => -40;
-
     [ForEach]
     private static void Change(ref Facts facts, in Restless restless)
     {
@@ -27,6 +26,7 @@ public sealed partial class NeedsSystem : EcsSystem
 }
 
 /// <summary>Replanning: every task is done in one tick. Running: tasks never end (agents only check them).</summary>
+[UpdateAfter<PlannerSystem>]
 public sealed partial class ChoresSystem : EcsSystem
 {
     [ForEach, With<Fetch>] private static void Fetched(Entity agent, in Restless r) { if (r.Changing) agent.Remove<Fetch>(); }

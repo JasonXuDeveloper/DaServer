@@ -215,8 +215,8 @@ public partial class ResumeTests
     {
         try
         {
-            return node.Shards.Any(shard => shard.World.GetSingleton<ActorDirectory>().Actors
-                .TryGetValue(new ActorAddress(ActorIds<TId>.HandlerTypeId, key), out var entity) && entity.Has<DaServer.Persistence.AwaitingHandoff>());
+            return node.Shards.Any(shard => shard.World.GetSingleton<ActorDirectory>()
+                .TryGet(shard.World, new ActorAddress(ActorIds<TId>.HandlerTypeId, key), out var entity) && entity.Has<DaServer.Persistence.AwaitingHandoff>());
         }
         catch (Exception)
         {

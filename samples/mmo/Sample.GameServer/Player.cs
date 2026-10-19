@@ -13,7 +13,7 @@ public sealed class Player : Actor<PlayerId, PlayerState>
 {
     public override Reply OnLoad()
     {
-        if (!Entity.Has<PlayerProfile>()) Entity.Add<PlayerProfile>() = new PlayerProfile("player-" + Id.Value, 0); // a new player
+        if (!Entity.Has<PlayerProfile>()) Entity.Set<PlayerProfile>(new PlayerProfile("player-" + Id.Value, 0)); // a new player
         return default;
     }
 

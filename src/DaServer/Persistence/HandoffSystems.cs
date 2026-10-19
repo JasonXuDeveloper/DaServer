@@ -4,9 +4,9 @@ namespace DaServer.Persistence;
 
 /// <summary>Sends the records of actors leaving for another node (<see cref="HandOff"/>), once no write of theirs is in flight.</summary>
 [UpdateInGroup<ShardMessages>]
+[UpdateAfter<MailboxSystem>]
 internal sealed partial class HandoffSystem : EcsSystem
 {
-    public override int Priority => 6;
 
     // After its write in flight and a critical save asked for (the record carries the version they produce).
     [ForEach, Without<Saving>, Without<SaveNow>, Without<Fenced>]
@@ -15,7 +15,7 @@ internal sealed partial class HandoffSystem : EcsSystem
         var (to, target, now) = (handOff.To, self.Actor, activity.NowMs);
         actor.Remove<HandOff>(); // the refs above are invalid from here on
         if (Handoff.Send(world, actor, target, to) is { } record)
-            actor.Add<HandingOff>() = new HandingOff(to, now + Handoff.TimeoutMs(world.Shard.Node), record);
+            actor.Set<HandingOff>(new HandingOff(to, now + Handoff.TimeoutMs(world.Shard.Node), record));
         else Handoff.Fallback(actor);
     }
 }
@@ -32,16 +32,16 @@ internal sealed class HandoffAsksSystem : EcsSystem
     {
         var waiting = World.GetSingleton<HandoffAsks>().Waiting;
         if (waiting.Count == 0) return;
-        var actors = World.GetSingleton<ActorDirectory>().Actors;
+        var actors = World.GetSingleton<ActorDirectory>();
         var node = World.Shard.Node;
         long now = World.GetSingleton<ShardActivity>().NowMs;
         for (int i = waiting.Count - 1; i >= 0; i--)
         {
             var ask = waiting[i];
             if (now > ask.UntilMs) { } // its asker asked again meanwhile, or will
-            else if (actors.TryGetValue(new ActorAddress(ask.HandlerTypeId, ask.Key), out var actor))
+            else if (actors.TryGet(World, new ActorAddress(ask.HandlerTypeId, ask.Key), out var actor))
             {
-                if (!actor.Has<HandoffWanted>()) actor.Add<HandoffWanted>() = new HandoffWanted(ask.By);
+                if (!actor.Has<HandoffWanted>()) actor.Set<HandoffWanted>(new HandoffWanted(ask.By));
             }
             else if (Handoff.MustWait(World, ask.HandlerTypeId, ask.Key, ask.By) != null) continue;
             else Handoff.Gone(node, ask.HandlerTypeId, ask.Key, ask.By);

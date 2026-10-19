@@ -158,7 +158,7 @@ public abstract class Actor<TId, TState> : Actor<TId> where TId : struct, IActor
 
     internal override void InitializeEntity(Entity entity)
     {
-        if (!entity.Has<TState>()) entity.Add<TState>() = new TState();
+        if (!entity.Has<TState>()) entity.Set<TState>(new TState());
     }
 
     internal override void ReleaseState(Entity entity)

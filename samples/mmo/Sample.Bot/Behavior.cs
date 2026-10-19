@@ -79,10 +79,9 @@ public static class Behavior
 }
 
 /// <summary>Sensor: what is due, from the bot's schedule.</summary>
+[UpdateBefore<PlannerSystem>]
 public sealed partial class SenseSystem : EcsSystem
 {
-    public override int Priority => -40; // before planning
-
     [ForEach]
     private static void Sense(in Bot bot, ref Facts facts)
     {
@@ -95,11 +94,12 @@ public sealed partial class SenseSystem : EcsSystem
 }
 
 /// <summary>Carries out <see cref="Wandering"/>: a new random heading every so often, as a player at the stick would.</summary>
+[UpdateAfter<PlannerSystem>]
+[UpdateBefore<SteeringSystem>]
 public sealed partial class WanderSystem : EcsSystem
 {
     private const int WanderMs = 1000;
 
-    public override int Priority => -20; // before the client turns steering into messages
 
     [ForEach]
     private static void Wander(Entity bot, ref Wandering wandering, ref Bot b, ref Steering steering)
@@ -117,24 +117,24 @@ public sealed partial class WanderSystem : EcsSystem
 }
 
 /// <summary>Carries out <see cref="Chatting"/>: the client says it.</summary>
+[UpdateAfter<PlannerSystem>]
+[UpdateBefore<SteeringSystem>]
 public sealed partial class ChatSystem : EcsSystem
 {
-    public override int Priority => -20;
-
     [ForEach, With<Chatting>]
     private static void Chat(Entity bot, ref Bot b)
     {
         b.NextChat = Environment.TickCount64 + b.ChatEveryMs;
         bot.Remove<Chatting>();
-        bot.Add<Speaking>() = new Speaking("hello");
+        bot.Set<Speaking>(new Speaking("hello"));
     }
 }
 
 /// <summary>Carries out <see cref="Travelling"/>: the client's own flow to another map.</summary>
+[UpdateAfter<PlannerSystem>]
+[UpdateBefore<SteeringSystem>]
 public sealed partial class TravelSystem : EcsSystem
 {
-    public override int Priority => -20;
-
     [ForEach]
     private static void Travel(Entity bot, ref Travelling travelling, ref Bot b, in Me me, in Trips trips)
     {

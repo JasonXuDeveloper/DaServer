@@ -19,7 +19,7 @@ public sealed class Map : Actor<MapId, MapState>
 
     public override Reply OnLoad()
     {
-        Entity.Add<MapGrid>() = new MapGrid(Id);
+        Entity.Set<MapGrid>(new MapGrid(Id));
         return default;
     }
 
@@ -32,7 +32,7 @@ public sealed class Map : Actor<MapId, MapState>
             // Spread over the map by player id (a real game reads the saved position).
             ulong h = (ulong)player.Value * 0x9E3779B97F4A7C15UL >> 32;
             var spawn = new Position(h % 1000 / 1000f * MapGeometry.Size, h / 1000 % 1000 / 1000f * MapGeometry.Size);
-            State.Avatars[session] = World.CreateEntity(spawn, new Velocity(), new Avatar(player, Entity, session));
+            State.Avatars[session] = World.CreateEntity(spawn, new Velocity(), new Avatar(player, Entity.Id, session)).Id;
             // PlacementSystem puts it into the grid on the next tick; MotionSyncSystem tells its viewers.
         }
 
@@ -52,17 +52,18 @@ public sealed class Map : Actor<MapId, MapState>
     [Handle]
     public void On(SessionClosed e)
     {
-        if (Despawn(e.Session) is { } avatar) avatar.Add<SessionGone>();
+        if (Despawn(e.Session) is { } avatar) avatar.SetSessionGone();
     }
 
     [Handle]
     public void On(SessionResumed e)
     {
         // The client resumed: same avatar, new session. It lost the pushes meanwhile, so it gets its view again.
-        if (!State.Avatars.Remove(e.Previous, out var avatar)) return;
-        State.Avatars[e.Session] = avatar;
+        if (!State.Avatars.Remove(e.Previous, out var id)) return;
+        State.Avatars[e.Session] = id;
+        var avatar = World.GetEntity(id);
         avatar.Get<Avatar>().Session = e.Session;
-        if (avatar.Has<GridCell>()) avatar.Add<Resynced>(); // not placed yet: placing it shows it the map anyway
+        if (avatar.Has<GridCell>()) avatar.SetResynced(); // not placed yet: placing it shows it the map anyway
     }
 
     [Handle]
@@ -70,22 +71,21 @@ public sealed class Map : Actor<MapId, MapState>
     {
         // Input is data: MovementSystem integrates it, MotionSyncSystem tells the avatar's viewers.
         if (!State.Avatars.TryGetValue(Caller, out var avatar)) return;
-        avatar.Get<Velocity>() = MapGeometry.Clamp(m.VelocityX, m.VelocityY);
+        World.GetEntity(avatar).Get<Velocity>() = MapGeometry.Clamp(m.VelocityX, m.VelocityY);
     }
 
     [Handle]
     public void On(Say m)
     {
         if (m.Text.Length <= MaxChatLength && State.Avatars.TryGetValue(Caller, out var avatar))
-            Cluster.Send(Group, new Chat(avatar.Get<Avatar>().Player, m.Text));
+            Cluster.Send(Group, new Chat(World.GetEntity(avatar).Get<Avatar>().Player, m.Text));
     }
 
     public override Reply OnUnload()
     {
-        foreach (var avatar in State.Avatars.Values)
+        foreach (var id in State.Avatars.Values)
         {
-            avatar.Add<Despawning>();
-            avatar.Add<SessionGone>(); // viewer groups are per map: they stay with it wherever it loads next
+            World.GetEntity(id).Set(new Despawning(), new SessionGone()); // viewer groups are per map: they stay with it wherever it loads next
         }
 
         State.Avatars.Clear();
@@ -95,8 +95,9 @@ public sealed class Map : Actor<MapId, MapState>
     /// <summary>The avatar leaves the map: <see cref="DespawnSystem"/> removes it on the next tick.</summary>
     private Entity? Despawn(ClientSession session)
     {
-        if (!State.Avatars.Remove(session, out var avatar)) return null;
-        avatar.Add<Despawning>();
+        if (!State.Avatars.Remove(session, out var id)) return null;
+        var avatar = World.GetEntity(id);
+        avatar.SetDespawning();
         return avatar;
     }
 }

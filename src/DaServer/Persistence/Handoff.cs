@@ -96,7 +96,7 @@ internal static partial class Handoff
         var node = world.Shard.Node;
         var actor = entity.Get<ActorRef>().Actor;
         if (Notify(node, from, Request, actor.HandlerType.Id, actor.Key, 0))
-            entity.Add<AwaitingHandoff>() = new AwaitingHandoff(from, world.GetSingleton<ShardActivity>().NowMs + TimeoutMs(node));
+            entity.Set<AwaitingHandoff>(new AwaitingHandoff(from, world.GetSingleton<ShardActivity>().NowMs + TimeoutMs(node)));
         else ShardDispatch.BeginLoad(world, entity, actor);
     }
 
@@ -169,7 +169,7 @@ internal static partial class Handoff
         {
             // Its own record, part read: writing that would replace the store's full record with a part of it.
             Log.RestoreFailed(world.Logger, e, actor);
-            entity.Add<Removing>() = new Removing(RpcStatus.Error, "Taking the actor's record back failed: " + e.Message);
+            entity.Set<Removing>(new Removing(RpcStatus.Error, "Taking the actor's record back failed: " + e.Message));
             return;
         }
 
@@ -188,8 +188,8 @@ internal static partial class Handoff
     /// <summary>The handoff went nowhere: the store keeps the record (or, without one, the actor just goes).</summary>
     public static void Fallback(Entity entity)
     {
-        if (entity.Has<Stored>()) entity.Add<FinalSave>();
-        else entity.Add<Removing>() = new Removing(RpcStatus.Ok, null);
+        if (entity.Has<Stored>()) entity.Set(new FinalSave());
+        else entity.Set<Removing>(new Removing(RpcStatus.Ok, null));
     }
 
     /// <summary>Tell the node that asked for the record of a removed actor that it was not handed to it.</summary>

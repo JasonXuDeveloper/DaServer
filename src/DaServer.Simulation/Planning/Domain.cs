@@ -13,7 +13,7 @@ public readonly record struct MethodEntry(ulong Requires, ulong Forbids, int Fir
 /// primitive task how to start it (add its component) and whether it still runs (has it).
 /// </summary>
 public readonly record struct HtnDomain(int Root, TaskEntry[] Tasks, MethodEntry[] Methods, int[] Steps,
-    Action<Entity>[] Start, Func<Entity, bool>[] Running) : ISingletonComponent
+    Action<World, EntityId>[] Start, Func<World, EntityId, bool>[] Running) : ISingletonComponent
 {
     /// <summary>Decompose task <paramref name="task"/> into <paramref name="plan"/> on <paramref name="facts"/> (a copy).</summary>
     public bool Decompose(int task, ref ulong facts, ref Plan plan)
@@ -48,14 +48,14 @@ public readonly record struct HtnDomain(int Root, TaskEntry[] Tasks, MethodEntry
 /// <summary>Builds an <see cref="HtnDomain"/> over the facts of enum <typeparamref name="TFact"/> (flags, at most 64).</summary>
 public sealed class DomainBuilder<TFact> where TFact : struct, Enum
 {
-    private readonly List<(TaskEntry Entry, Action<Entity>? Start, Func<Entity, bool>? Running, List<(ulong, ulong, int[])>? Methods)> _tasks = [];
+    private readonly List<(TaskEntry Entry, Action<World, EntityId>? Start, Func<World, EntityId, bool>? Running, List<(ulong, ulong, int[])>? Methods)> _tasks = [];
 
     /// <summary>A primitive task carried out as component <typeparamref name="TTask"/>.</summary>
     public int Primitive<TTask>(TFact requires = default, TFact forbids = default, TFact sets = default, TFact clears = default)
         where TTask : struct, IComponent
     {
         _tasks.Add((new TaskEntry(Bits(requires), Bits(forbids), Bits(sets), Bits(clears), -1, 0),
-            static e => e.Add<TTask>(), static e => e.Has<TTask>(), null));
+            static (w, e) => w.GetEntity(e).Set(new TTask()), static (w, e) => w.GetEntity(e).Has<TTask>(), null));
         return _tasks.Count - 1;
     }
 
@@ -79,8 +79,8 @@ public sealed class DomainBuilder<TFact> where TFact : struct, Enum
         var tasks = new TaskEntry[_tasks.Count];
         var methods = new List<MethodEntry>();
         var steps = new List<int>();
-        var start = new Action<Entity>[_tasks.Count];
-        var running = new Func<Entity, bool>[_tasks.Count];
+        var start = new Action<World, EntityId>[_tasks.Count];
+        var running = new Func<World, EntityId, bool>[_tasks.Count];
         for (int i = 0; i < _tasks.Count; i++)
         {
             var (entry, s, r, ms) = _tasks[i];
@@ -101,8 +101,8 @@ public sealed class DomainBuilder<TFact> where TFact : struct, Enum
 
         return new HtnDomain(root, tasks, [.. methods], [.. steps], start, running);
 
-        static void Never(Entity _) => throw new InvalidOperationException("a compound task never runs");
-        static bool NotRunning(Entity _) => false;
+        static void Never(World _, EntityId __) => throw new InvalidOperationException("a compound task never runs");
+        static bool NotRunning(World _, EntityId __) => false;
     }
 
     private static ulong Bits(TFact fact) => Convert.ToUInt64(fact);

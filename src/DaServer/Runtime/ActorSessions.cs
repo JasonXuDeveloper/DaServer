@@ -32,7 +32,7 @@ internal static class ActorSessions
     {
         var entity = actor.Entity;
         if (!entity.TryGet<ClientSessions>(out var sessions))
-            entity.Add<ClientSessions>() = sessions = actor.World.GetSingleton<ActorPools>().RentSessions();
+            entity.Set<ClientSessions>(sessions = actor.World.GetSingleton<ActorPools>().RentSessions());
         return sessions;
     }
 

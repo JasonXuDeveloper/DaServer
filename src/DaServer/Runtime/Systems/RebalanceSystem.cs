@@ -12,7 +12,7 @@ internal sealed partial class RebalanceSystem : EcsSystem
     private static void Leave(Entity actor, in ActorRef self, in ShardActivity activity, World world)
     {
         if (!activity.DeclaredDead && (activity.Stopping || !world.Shard.Node.IsLocalOwner(self.Actor.HandlerType.Id, self.Actor.Key)))
-            actor.Add<UnloadRequested>();
+            actor.Set(new UnloadRequested());
     }
 
     // Wherever a copy is in leaving (asked to, unloading, its record about to be sent or written), its key has a new
@@ -21,8 +21,8 @@ internal sealed partial class RebalanceSystem : EcsSystem
     private static void Fence(Entity actor, in ActorRef self, in ShardActivity activity)
     {
         if (!activity.DeclaredDead) return;
-        actor.Add<Fenced>();
+        actor.Set(new Fenced());
         // Also a copy past its OnUnload (its record waiting to be written or sent): UnloadSystem.Drop removes it.
-        if (!actor.Has<UnloadRequested>()) actor.Add<UnloadRequested>();
+        actor.Set(new UnloadRequested());
     }
 }

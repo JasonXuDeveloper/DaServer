@@ -36,7 +36,7 @@ public sealed class Tangle : Actor<TangleId, Knotted>
         var knot = new Knot();
         knot.Next = knot;
         State.Knot = knot;
-        Entity.Add<SaveNow>();
+        Entity.Set(new SaveNow());
         return true;
     }
 }
@@ -97,7 +97,7 @@ public sealed class Bank : Actor<BankId, Ledger>
     public async Reply<int> On(Overdraw m)
     {
         State.Gold -= m.Gold;
-        Entity.Add<SaveNow>();
+        Entity.Set(new SaveNow());
         if (m.Async) await Cluster.Ask(new BankId(1), new Balance());
         throw new InvalidOperationException("overdrawn");
     }
@@ -105,7 +105,7 @@ public sealed class Bank : Actor<BankId, Ledger>
     [Handle]
     public int On(Hit _)
     {
-        if (!Entity.Has<Streak>()) Entity.Add<Streak>();
+        Entity.GetOrAdd<Streak>();
         return ++Entity.Get<Streak>().Count;
     }
 
@@ -113,9 +113,9 @@ public sealed class Bank : Actor<BankId, Ledger>
     public int On(Deposit m)
     {
         State.Gold += m.Gold;
-        if (!Entity.Has<Deposits>()) Entity.Add<Deposits>();
+        Entity.GetOrAdd<Deposits>();
         Entity.Get<Deposits>().Count++;
-        if (m.Critical) Entity.Add<SaveNow>();
+        if (m.Critical) Entity.Set(new SaveNow());
         return State.Gold;
     }
 
@@ -124,7 +124,7 @@ public sealed class Bank : Actor<BankId, Ledger>
     public async Reply<int> On(DepositTwice m)
     {
         State.Gold += m.Gold;
-        Entity.Add<SaveNow>();
+        Entity.Set(new SaveNow());
         await Cluster.Ask(m.Other, new Balance());
         return State.Gold += m.Gold;
     }
@@ -134,7 +134,7 @@ public sealed class Bank : Actor<BankId, Ledger>
     [Handle]
     public int On(SetGold m)
     {
-        Entity.Add<SaveNow>();
+        Entity.Set(new SaveNow());
         return State.Gold = m.Gold;
     }
 
@@ -156,7 +156,7 @@ public sealed class Bank : Actor<BankId, Ledger>
     [Handle]
     public bool On(Earn _)
     {
-        if (!Entity.Has<Earning>()) Entity.Add<Earning>();
+        Entity.GetOrAdd<Earning>();
         return true;
     }
 

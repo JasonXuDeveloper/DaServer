@@ -6,16 +6,16 @@ namespace DaServer.Runtime;
 /// <see cref="Fenced"/> actors are removed at once: their key already has a new owner.
 /// </summary>
 [UpdateInGroup<ShardMessages>]
+[UpdateAfter<RemovalSystem>]
 internal sealed partial class UnloadSystem : EcsSystem
 {
-    public override int Priority => 4;
 
     [ForEach, With<UnloadRequested>, Without<Turn>, Without<Removing>, Without<Fenced>, Without<Loading>, Without<FinalSave>]
     private static void Begin(Entity actor, in ActorRef self, World world)
     {
         var target = self.Actor;
         actor.Remove<UnloadRequested>();
-        actor.Add<Unloading>();
+        actor.Set(new Unloading());
         TurnWatcher.Begin(world, actor, ShardDispatch.Hook(world, static a => a.OnUnload().AsValueTask(), target));
     }
 
@@ -27,9 +27,9 @@ internal sealed partial class UnloadSystem : EcsSystem
         // A node that asked this copy is sent to the one this copy waited for (the record comes from there), unless the
         // asker is that node: then it hears "none" (two copies each waiting for the other).
         if (actor.TryGet<HandoffWanted>(out var wanted) && wanted.By != awaiting.From)
-            actor.Add<HandedTo>() = new HandedTo(awaiting.From);
+            actor.Set<HandedTo>(new HandedTo(awaiting.From));
         actor.Remove<UnloadRequested, AwaitingHandoff>();
-        actor.Add<Removing>() = new Removing(RpcStatus.Ok, null);
+        actor.Set<Removing>(new Removing(RpcStatus.Ok, null));
     }
 
     // After its write in flight (Without<Saving>): a reload reads the store only once that write settled; after its
@@ -42,6 +42,6 @@ internal sealed partial class UnloadSystem : EcsSystem
         if (actor.Has<FinalSave>()) actor.Remove<FinalSave>();
         if (actor.Has<HandOff>()) actor.Remove<HandOff>();
         if (actor.Has<HandingOff>()) actor.Remove<HandingOff>();
-        actor.Add<Removing>() = new Removing(RpcStatus.Ok, null); // mail goes on to the new owner
+        actor.Set<Removing>(new Removing(RpcStatus.Ok, null)); // mail goes on to the new owner
     }
 }

@@ -142,7 +142,7 @@ public sealed class Vault : Actor<VaultId, Coins>
     public long On(Put m)
     {
         if (m.Amount == 0) return State.Amount;
-        Entity.Add<SaveNow>();
+        Entity.Set(new SaveNow());
         return State.Amount += m.Amount;
     }
 }

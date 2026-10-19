@@ -33,7 +33,7 @@ internal static partial class Handoff
             var payload = FrameHeader.PayloadOf(in header, frame.Frame);
             ulong from = BinaryPrimitives.ReadUInt64LittleEndian(payload);
             var node = world.Shard.Node;
-            bool loaded = world.GetSingleton<ActorDirectory>().Actors.TryGetValue(new ActorAddress(handlerType.Id, header.Key), out var entity);
+            bool loaded = world.GetSingleton<ActorDirectory>().TryGet(world, new ActorAddress(handlerType.Id, header.Key), out var entity);
             if (op == Record || op == Resent)
             {
                 ulong id = IdOf(payload);
@@ -102,12 +102,12 @@ internal static partial class Handoff
                     Resend(node, entity.Get<ActorRef>().Actor, from, handingOff.Record); // the asker never got it
                 else
                 {
-                    if (!entity.Has<HandoffWanted>()) entity.Add<HandoffWanted>() = new HandoffWanted(from); // told when it goes
+                    if (!entity.Has<HandoffWanted>()) entity.Set<HandoffWanted>(new HandoffWanted(from)); // told when it goes
                     // A copy this node runs for a key the asker owns in this node's view (adopted from a sender ahead of
                     // this view, which then moved back): it leaves, or it would stay until this node's next view change.
                     if (!ShardDispatch.Owns(world, handlerType.Id, header.Key) && node.View.HandlerTypeOwner(handlerType.Id, header.Key)?.NodeId == from &&
                         !entity.Has<UnloadRequested>() && !entity.Has<Unloading>() && !entity.Has<Removing>())
-                        entity.Add<UnloadRequested>();
+                        entity.Set(new UnloadRequested());
                 }
             }
             else if (op == None)
@@ -138,9 +138,9 @@ internal static partial class Handoff
                 entity.Remove<HandingOff>();
                 if (payload[sizeof(ulong)] == 1)
                 {
-                    entity.Add<HandedTo>() = new HandedTo(handingOff.To);
+                    entity.Set<HandedTo>(new HandedTo(handingOff.To));
                     RememberHanded(world, handlerType.Id, header.Key, handingOff.To);
-                    entity.Add<Removing>() = new Removing(RpcStatus.Ok, null); // its mail follows the record
+                    entity.Set<Removing>(new Removing(RpcStatus.Ok, null)); // its mail follows the record
                 }
                 else Reclaim(world, entity, handingOff.Record);
             }
@@ -189,24 +189,24 @@ internal static partial class Handoff
         {
             Log.HandoffUnreadable(world.Logger, e, (object?)actor ?? new ActorAddress(handlerType.Id, key));
             if (loaded) reask = true;
-            else if (actor != null) entity.Add<Removing>() = new Removing(RpcStatus.Ok, null); // nothing queued yet
+            else if (actor != null) entity.Set<Removing>(new Removing(RpcStatus.Ok, null)); // nothing queued yet
             return false;
         }
 
-        entity.Add<TakenHandoff>() = new TakenHandoff(IdOf(payload)); // read: the same record again is answered "accepted"
+        entity.Set<TakenHandoff>(new TakenHandoff(IdOf(payload))); // read: the same record again is answered "accepted"
         ForgetHanded(world, handlerType.Id, key); // the key is here again: an asker is no longer sent away
-        if (store.Enabled && payload[CriticalAt] == 1) entity.Add<SaveNow>();
+        if (store.Enabled && payload[CriticalAt] == 1) entity.Set(new SaveNow());
         if (store.Enabled)
         {
-            entity.Add<RestoredRecord>() = new RestoredRecord(payload.ToArray()); // until OnLoad ends (cold: one per move)
-            entity.Add<Stored>() = new Stored
+            entity.Set<RestoredRecord>(new RestoredRecord(payload.ToArray())); // until OnLoad ends (cold: one per move)
+            entity.Set<Stored>(new Stored
             {
                 Version = BinaryPrimitives.ReadInt64LittleEndian(payload[sizeof(ulong)..]),
                 Hash = BinaryPrimitives.ReadUInt64LittleEndian(payload[(sizeof(ulong) + sizeof(long))..]), // changes since are written
                 Attempt = BinaryPrimitives.ReadUInt64LittleEndian(payload[AttemptAt..]),
                 EveryMs = every,
                 DueMs = world.GetSingleton<ShardActivity>().NowMs + every,
-            };
+            });
         }
 
         ShardDispatch.BeginLive(world, entity, actor);

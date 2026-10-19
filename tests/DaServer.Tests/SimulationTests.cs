@@ -15,14 +15,14 @@ public enum Need : ulong
 
 
 /// <summary>Test agents' world: needs change every tick and every task is done in one, so every agent plans every tick.</summary>
+[UpdateBefore<PlannerSystem>]
 public sealed partial class NeedsSystem : EcsSystem
 {
-    public override int Priority => -40;
-
     [ForEach]
     private static void Change(ref Facts facts) => facts = new Facts((facts.Bits + 1) % 8);
 }
 
+[UpdateAfter<PlannerSystem>]
 public sealed partial class ChoresSystem : EcsSystem
 {
     [ForEach, With<Fetch>] private static void Fetched(Entity agent) => agent.Remove<Fetch>();

@@ -20,7 +20,7 @@ public static class Player
     {
         var player = world.CreateEntity(new Link(client), new Me(), new Position(), new Velocity(), new Steering(),
             new SentSteering(), new Realm(), new Heard());
-        if (view) player.Add<View>() = new View();
+        if (view) player.Set<View>(new View());
         client.Register(new Pushes(player));
         return player;
     }

@@ -44,7 +44,7 @@ internal sealed class Shard : CompletionThread
         _time = node.Options.TimeProvider;
         _tickInterval = _time.TimestampFrequency / Math.Max(1, tickRate);
         _timerWake = (long)(ShardTimers.Resolution.TotalSeconds * _time.TimestampFrequency);
-        World = new World();
+        World = new World(new WorldOptions { SystemErrors = SystemErrorPolicy.Disable }); // see ReviveFailedSystems
         _thread = new Thread(Run) { IsBackground = true, Name = $"{node.Options.Name}-shard-{index}" };
     }
 
@@ -194,9 +194,10 @@ internal sealed class Shard : CompletionThread
         Post(static s =>
         {
             var (shard, id) = ((Shard, uint))s!;
-            foreach (var (address, actor) in shard.World.GetSingleton<ActorDirectory>().Actors)
-                if (address.HandlerTypeId == id && !actor.Has<UnloadRequested>() && !actor.Has<Unloading>() && !actor.Has<Removing>())
-                    actor.Add<UnloadRequested>();
+            var world = shard.World;
+            foreach (var (address, entity) in world.GetSingleton<ActorDirectory>().Actors)
+                if (address.HandlerTypeId == id && world.GetEntity(entity) is var actor && !actor.Has<UnloadRequested>() && !actor.Has<Unloading>() && !actor.Has<Removing>())
+                    actor.Set(new UnloadRequested());
         }, (this, handlerTypeId));
 
     /// <summary>Stop the shard: unload every actor (<paramref name="fenced"/>: remove them without <see cref="Actor.OnUnload"/>).</summary>
@@ -280,6 +281,8 @@ internal sealed class Shard : CompletionThread
                     }
                 }
 
+                ReviveFailedSystems();
+
                 int actors = World.GetSingleton<ActorDirectory>().Actors.Count;
                 if (actors != _counters.ActorCount) Volatile.Write(ref _counters.ActorCount, actors); // written only when it changes
                 if (activity.Stopping && IsDrained()) break;
@@ -317,10 +320,20 @@ internal sealed class Shard : CompletionThread
     /// with the failed handlers, logged at most once a second per shard, and the shard goes on, as a handler that throws
     /// does (<see cref="DispatchSystem"/>). One bug must not stop the shard's other systems or actors.
     /// </summary>
-    private void OnSystemError(EcsSystem system, Exception error)
+    /// <summary>
+    /// A system that threw (one actor's data, a bug in user code) is reported and runs again on its next pass: the
+    /// world disables it (<see cref="SystemErrorPolicy.Disable"/>), and one bad entity must not stop the system for
+    /// every other one.
+    /// </summary>
+    private void ReviveFailedSystems()
     {
-        CountFailed();
-        if (ErrorLogDue(out int unlogged)) Log.SystemFailed(Node.Logger, error, system.GetType().Name, Index, unlogged);
+        foreach (var system in World.Systems)
+        {
+            if (system.Error is not { } error) continue;
+            system.Enabled = true; // clears Error
+            CountFailed();
+            if (ErrorLogDue(out int unlogged)) Log.SystemFailed(Node.Logger, error, system.GetType().Name, Index, unlogged);
+        }
     }
 
     /// <summary>
@@ -334,12 +347,11 @@ internal sealed class Shard : CompletionThread
     /// <summary>Singletons, runtime systems, the node's user systems and service instances.</summary>
     private void CreateWorld()
     {
-        World.SystemError += OnSystemError;
         World.AddSingleton<ShardContext>() = new ShardContext(this);
         World.AddSingleton<ShardActivity>();
         World.AddSingleton<CallChains>() = new CallChains { Last = Random.Shared.NextInt64() };
         World.AddSingleton<ShardTimers>() = new ShardTimers(new TimerWheel<DelayedSend>(ShardTimers.Resolution, time: _time));
-        World.AddSingleton<ActorDirectory>() = new ActorDirectory(new Dictionary<ActorAddress, Entity>());
+        World.AddSingleton<ActorDirectory>() = new ActorDirectory(new Dictionary<ActorAddress, EntityId>());
         World.AddSingleton<Persistence.HandoffAsks>() = new Persistence.HandoffAsks(new List<Persistence.HandoffAsk>());
         World.AddSingleton<Persistence.HandoffsSeen>() = new Persistence.HandoffsSeen();
         World.AddSingleton<TurnWatchers>() = new TurnWatchers(new Stack<TurnWatcher>());

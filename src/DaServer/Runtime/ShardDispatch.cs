@@ -58,7 +58,7 @@ internal static partial class ShardDispatch
 
     /// <summary>A loaded actor of this shard, including one being unloaded (new mail queues behind its mail).</summary>
     private static bool TryGetLoaded(World world, uint handlerTypeId, long key, out Entity actor) =>
-        world.GetSingleton<ActorDirectory>().Actors.TryGetValue(new ActorAddress(handlerTypeId, key), out actor);
+        world.GetSingleton<ActorDirectory>().TryGet(world, new ActorAddress(handlerTypeId, key), out actor);
 
     /// <summary>
     /// Load actor (<paramref name="handlerType"/>, <paramref name="key"/>) for its first message. The message is queued
@@ -83,7 +83,7 @@ internal static partial class ShardDispatch
             return;
         }
 
-        world.GetSingleton<ActorDirectory>().Actors[id] = entity;
+        world.GetSingleton<ActorDirectory>().Actors[id] = entity.Id;
         var actor = entity.Get<ActorRef>().Actor;
         long chain = ChainOf(world, frame);
         Deliver(world, entity, new Envelope(frame, sink));
@@ -100,7 +100,7 @@ internal static partial class ShardDispatch
     {
         var id = new ActorAddress(handlerType.Id, key);
         var entity = Create(world, handlerType, id);
-        world.GetSingleton<ActorDirectory>().Actors[id] = entity;
+        world.GetSingleton<ActorDirectory>().Actors[id] = entity.Id;
         return entity;
     }
 
@@ -109,7 +109,7 @@ internal static partial class ShardDispatch
     {
         Persistence.Handoff.ForgetHanded(world, actor.HandlerType.Id, actor.Key); // the key is here again
         if (world.GetSingleton<ShardStore>().Enabled) // LoadSystem restores it, then OnLoad
-            entity.Add<AwaitingRecord>() = new AwaitingRecord(world.GetSingleton<ShardActivity>().NowMs, 0);
+            entity.Set<AwaitingRecord>(new AwaitingRecord(world.GetSingleton<ShardActivity>().NowMs, 0));
         else BeginLive(world, entity, actor);
     }
 
@@ -158,7 +158,7 @@ internal static partial class ShardDispatch
         }
 
         mailbox.Pending.Enqueue(envelope);
-        if (!actor.Has<Ready>()) actor.Add<Ready>();
+        actor.Set(new Ready());
     }
 
     /// <summary>
@@ -180,7 +180,7 @@ internal static partial class ShardDispatch
             Capacity = capacity > 0 ? capacity : world.Shard.Node.Options.ActorMailboxCapacity,
         }, new Loading());
         actor.Entity = entity;
-        if (idle > TimeSpan.Zero) entity.Add<UnloadWhenIdle>() = new UnloadWhenIdle((long)idle.TotalMilliseconds);
+        if (idle > TimeSpan.Zero) entity.Set<UnloadWhenIdle>(new UnloadWhenIdle((long)idle.TotalMilliseconds));
         return entity; // no state yet: it is restored or created when the actor becomes live (BeginLive)
     }
 
@@ -306,8 +306,8 @@ internal static partial class ShardDispatch
         var entity = actor.Entity;
         // Also when an unload was asked for meanwhile: nothing is saved or handed on, the state may be half-changed.
         if (action != ErrorAction.Reload || entity.Has<Fenced>() || entity.Has<Unloading>() || entity.Has<Removing>()) return;
-        if (!entity.Has<UnloadRequested>()) entity.Add<UnloadRequested>();
-        entity.Add<Fenced>();
+        entity.Set(new UnloadRequested());
+        entity.Set(new Fenced());
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

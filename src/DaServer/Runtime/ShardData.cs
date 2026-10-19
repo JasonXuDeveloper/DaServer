@@ -102,7 +102,15 @@ internal readonly record struct ClientSessions(
 // ---------------------------------------------------------------- shard singletons
 
 /// <summary>Loaded actors of this shard by id.</summary>
-internal readonly record struct ActorDirectory(Dictionary<ActorAddress, Entity> Actors) : ISingletonComponent;
+internal readonly record struct ActorDirectory(Dictionary<ActorAddress, EntityId> Actors) : ISingletonComponent
+{
+    /// <summary>The loaded actor of <paramref name="address"/> in <paramref name="world"/> (this shard's).</summary>
+    public bool TryGet(World world, ActorAddress address, out Entity actor)
+    {
+        actor = default;
+        return Actors.TryGetValue(address, out var id) && world.TryGetEntity(id, out actor);
+    }
+}
 
 /// <summary>
 /// What a loaded actor holds besides its components, kept for the next load on this shard: the actor object (actors and

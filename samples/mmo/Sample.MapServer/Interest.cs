@@ -41,13 +41,13 @@ internal static class Interest
             cluster.Send(session, new JoinGroup(grid.Viewers(cell)));
             if (grid.Avatars[cell] is not { } others) continue;
             foreach (var other in others)
-                if (other != avatar) inView.Add(StateOf(other));
+                if (other != avatar.Id) inView.Add(StateOf(avatar.World.GetEntity(other)));
         }
 
         if (inView.Count > 0) cluster.Send(session, new Motion(grid.Map, grid.Scratch));
     }
 
-    public static void SwapRemove(List<Entity> list, Entity item)
+    public static void SwapRemove(List<EntityId> list, EntityId item)
     {
         int i = list.IndexOf(item);
         if (i < 0) return;
@@ -57,19 +57,18 @@ internal static class Interest
 }
 
 /// <summary>Removes leaving avatars: their viewers forget them, their session stops viewing (unless closed).</summary>
+[UpdateBefore<MovementSystem>]
 public sealed partial class DespawnSystem : EcsSystem
 {
-    public override int Priority => -10; // before anything else looks at the avatar this tick
-
     [ForEach, With<Despawning>]
     private static void Despawn(Entity entity, in Avatar avatar, World world)
     {
         var (player, session) = (avatar.Player, avatar.Session);
-        if (entity.TryGet<GridCell>(out var placed) && avatar.Map.IsAlive)
+        if (entity.TryGet<GridCell>(out var placed) && world.TryGetEntity(avatar.Map, out var map))
         {
             int cell = placed.Index;
-            ref var grid = ref avatar.Map.Get<MapGrid>();
-            Interest.SwapRemove(grid.Avatars[cell]!, entity);
+            ref var grid = ref map.Get<MapGrid>();
+            Interest.SwapRemove(grid.Avatars[cell]!, entity.Id);
             if (grid.Changes[cell]?.Items is { } changes) // a queued change would bring it back after Gone
                 for (int i = changes.Count - 1; i >= 0; i--)
                     if (changes[i].Player == player) changes.RemoveAt(i);
@@ -89,19 +88,18 @@ public sealed partial class DespawnSystem : EcsSystem
 /// Keeps avatars in their grid cell: places new ones, moves those that crossed a border (and their sessions between
 /// viewer groups), and lets resumed sessions view their 3x3 again.
 /// </summary>
+[UpdateAfter<MovementSystem>]
 public sealed partial class PlacementSystem : EcsSystem
 {
-    public override int Priority => 10; // after movement
-
     [ForEach, Without<GridCell>]
     private static void Place(Entity entity, in Position p, in Avatar avatar, World world)
     {
         int to = CellOf(p);
         var session = avatar.Session;
-        var map = avatar.Map;
-        entity.Add<GridCell>() = new GridCell(to); // `p` and `avatar` are invalid from here on
+        var map = world.GetEntity(avatar.Map);
+        entity.SetGridCell(to); // `p` and `avatar` are invalid from here on
         ref var grid = ref map.Get<MapGrid>();
-        (grid.Avatars[to] ??= new()).Add(entity);
+        (grid.Avatars[to] ??= new()).Add(entity.Id);
         Interest.View(ref grid, world.Cluster, entity, session, from: null, to);
     }
 
@@ -112,9 +110,9 @@ public sealed partial class PlacementSystem : EcsSystem
         if (to == from) return;
         cell = new GridCell(to);
 
-        ref var grid = ref avatar.Map.Get<MapGrid>();
-        Interest.SwapRemove(grid.Avatars[from]!, entity);
-        (grid.Avatars[to] ??= new()).Add(entity);
+        ref var grid = ref world.GetEntity(avatar.Map).Get<MapGrid>();
+        Interest.SwapRemove(grid.Avatars[from]!, entity.Id);
+        (grid.Avatars[to] ??= new()).Add(entity.Id);
 
         var cluster = world.Cluster;
         foreach (int c in Around(from, stackalloc int[9]))
@@ -126,7 +124,7 @@ public sealed partial class PlacementSystem : EcsSystem
     [ForEach, With<Resynced>]
     private static void Rejoin(Entity entity, in GridCell cell, in Avatar avatar, World world)
     {
-        var (map, session, at) = (avatar.Map, avatar.Session, cell.Index);
+        var (map, session, at) = (world.GetEntity(avatar.Map), avatar.Session, cell.Index);
         entity.Remove<Resynced>();
         Interest.View(ref map.Get<MapGrid>(), world.Cluster, entity, session, from: null, at);
     }
@@ -136,15 +134,14 @@ public sealed partial class PlacementSystem : EcsSystem
 /// Queues the avatars whose motion or cell changed since their viewers last heard into their cell's next update (the
 /// viewers of a new cell learn about an avatar that crossed into it).
 /// </summary>
+[UpdateAfter<PlacementSystem>]
 public sealed partial class MotionSyncSystem : EcsSystem
 {
-    public override int Priority => 20;
-
     [ForEach, Without<SentMotion>]
     private static void First(Entity entity, in GridCell cell, in Velocity v, in Avatar avatar)
     {
-        var (map, at) = (avatar.Map, cell.Index);
-        entity.Add<SentMotion>() = new SentMotion(v, at);
+        var (map, at) = (entity.World.GetEntity(avatar.Map), cell.Index);
+        entity.SetSentMotion(v, at);
         Queue(ref map.Get<MapGrid>(), at, entity);
     }
 
@@ -154,7 +151,7 @@ public sealed partial class MotionSyncSystem : EcsSystem
         var now = new SentMotion(v, cell.Index);
         if (now == sent) return;
         sent = now;
-        Queue(ref avatar.Map.Get<MapGrid>(), now.Cell, entity);
+        Queue(ref entity.World.GetEntity(avatar.Map).Get<MapGrid>(), now.Cell, entity);
     }
 
     private static void Queue(ref MapGrid grid, int cell, Entity avatar)
@@ -166,9 +163,9 @@ public sealed partial class MotionSyncSystem : EcsSystem
 }
 
 /// <summary>Every <see cref="MapGrid.SyncEveryTicks"/> ticks, each map sends one message per changed cell.</summary>
+[UpdateAfter<MotionSyncSystem>]
 public sealed partial class SnapshotSystem : EcsSystem
 {
-    public override int Priority => 30;
     public override int UpdateInterval => MapGrid.SyncEveryTicks;
 
     [ForEach]

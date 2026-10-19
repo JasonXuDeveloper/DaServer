@@ -10,12 +10,12 @@ namespace Sample.MapServer;
 // is in Sample.MapServer (the Map actor and the interest systems), which a reload replaces; this project stays.
 
 /// <summary>Whose avatar it is, the map entity it lives in and the client session that controls it.</summary>
-public record struct Avatar(PlayerId Player, Entity Map, ClientSession Session) : IComponent;
+public record struct Avatar(PlayerId Player, EntityId Map, ClientSession Session) : IComponent;
 
 /// <summary>State of a map: its avatars by client session (its interest grid is <see cref="MapGrid"/>).</summary>
 public struct MapState() : IComponent
 {
-    public readonly Dictionary<ClientSession, Entity> Avatars = new();
+    public readonly Dictionary<ClientSession, EntityId> Avatars = new();
 }
 
 /// <summary>The grid cell of a placed avatar (an avatar without it enters the grid on the next tick).</summary>
@@ -42,7 +42,7 @@ public struct MapGrid(MapId map) : IComponent
     /// <summary>The map this grid belongs to (its viewer groups are per map).</summary>
     public readonly MapId Map = map;
 
-    public readonly List<Entity>?[] Avatars = new List<Entity>?[Side * Side];
+    public readonly List<EntityId>?[] Avatars = new List<EntityId>?[Side * Side];
     public readonly Moves?[] Changes = new Moves?[Side * Side];
     public readonly List<int> ChangedCells = new();
     public readonly Moves Scratch = new();

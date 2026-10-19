@@ -5,17 +5,17 @@ namespace DaServer.Persistence;
 /// the batch when the store answered: components restored, then <see cref="Actor.OnLoad"/> starts as the first turn.
 /// </summary>
 [UpdateInGroup<ShardMessages>]
+[UpdateAfter<TurnSystem>]
 internal sealed partial class LoadSystem : EcsSystem
 {
-    public override int Priority => 2;
 
     [ForEach]
-    private static void Collect(Entity actor, in AwaitingRecord awaiting, in ActorRef self, in ShardStore store, in ShardActivity activity)
+    private static void Collect(Entity actor, in AwaitingRecord awaiting, in ActorRef self, ref ShardStore store, in ShardActivity activity)
     {
         if (store.Loads.InFlight || store.Loads.Full || activity.NowMs < awaiting.NotBeforeMs) return; // a later batch takes it
         var (target, since) = (self.Actor, awaiting.SinceMs);
         actor.Remove<AwaitingRecord>(); // `awaiting` is invalid from here on
-        actor.Add<RecordRequested>() = new RecordRequested(since);
+        actor.Set<RecordRequested>(new RecordRequested(since));
         store.Loads.Add(actor, new StoredKey(target.HandlerType.Id, target.Key));
     }
 
@@ -40,7 +40,7 @@ internal sealed partial class LoadSystem : EcsSystem
             if (error != null && now - requested.SinceMs < (long)world.Shard.Node.Options.CallTimeout.TotalMilliseconds)
             {
                 // A store outage delays the actor (its mail waits) instead of failing it: tried again shortly.
-                entity.Add<AwaitingRecord>() = new AwaitingRecord(requested.SinceMs, now + RetryLoadMs);
+                entity.Set<AwaitingRecord>(new AwaitingRecord(requested.SinceMs, now + RetryLoadMs));
                 continue;
             }
 
@@ -54,15 +54,15 @@ internal sealed partial class LoadSystem : EcsSystem
                 ulong hash = Records.Hash(fresh.Payload);
                 fresh.Dispose();
                 long every = (long)actor.SaveEvery.TotalMilliseconds;
-                entity.Add<Stored>() = new Stored
+                entity.Set<Stored>(new Stored
                 {
                     Version = records[i].Version, Hash = hash, EveryMs = every, DueMs = world.GetSingleton<ShardActivity>().NowMs + every,
-                };
+                });
             }
             catch (Exception e)
             {
                 if (e != error) Log.RestoreFailed(world.Logger, e, actor); // the batch's error is logged once
-                entity.Add<Removing>() = new Removing(RpcStatus.Error, "Loading the actor's record failed: " + e.Message);
+                entity.Set<Removing>(new Removing(RpcStatus.Error, "Loading the actor's record failed: " + e.Message));
                 continue;
             }
 
@@ -79,9 +79,9 @@ internal sealed partial class LoadSystem : EcsSystem
 /// node owns the actor now, so it is removed here without saving again.
 /// </summary>
 [UpdateInGroup<ShardMessages>]
+[UpdateAfter<MailboxSystem>]
 internal sealed partial class PersistSystem : EcsSystem
 {
-    public override int Priority => 6;
 
     internal enum Outcome { Queued, Unchanged, Busy, Unwritable }
 
@@ -99,7 +99,7 @@ internal sealed partial class PersistSystem : EcsSystem
     {
         if (Queue(actor, ref stored, self.Actor, in store, activity.NowMs) != Outcome.Unchanged) return;
         actor.Remove<FinalSave>();
-        actor.Add<Removing>() = new Removing(RpcStatus.Ok, null); // nothing changed since the last write
+        actor.Set<Removing>(new Removing(RpcStatus.Ok, null)); // nothing changed since the last write
     }
 
     /// <summary>
@@ -123,7 +123,7 @@ internal sealed partial class PersistSystem : EcsSystem
             if (actor.Has<FinalSave>())
             {
                 actor.Remove<FinalSave>();
-                actor.Add<Removing>() = new Removing(RpcStatus.Error, "The actor's record does not serialize: " + e.Message);
+                actor.Set<Removing>(new Removing(RpcStatus.Error, "The actor's record does not serialize: " + e.Message));
             }
 
             return Outcome.Unwritable;
@@ -137,7 +137,7 @@ internal sealed partial class PersistSystem : EcsSystem
         }
 
         store.Saves.Add(actor, new StoredKey(target.HandlerType.Id, target.Key), stored.Version, record, hash, stored.Attempt, actor.Has<FinalSave>());
-        actor.Add<Saving>();
+        actor.Set(new Saving());
         return Outcome.Queued;
     }
 
@@ -163,8 +163,8 @@ internal sealed partial class PersistSystem : EcsSystem
                 // checkpoint (none with SaveEvery zero). A final save stays pending anyway.
                 // A copy leaving by handoff does not wait for the store: its record carries the last written hash and
                 // says the write was critical, so the new owner writes it at once.
-                if (!batch.Finals[i] && actor.Has<HandOff>()) { if (!actor.Has<CriticalPending>()) actor.Add<CriticalPending>(); }
-                else if (!batch.Finals[i] && !actor.Has<SaveNow>()) actor.Add<SaveNow>();
+                if (!batch.Finals[i] && actor.Has<HandOff>()) { actor.Set(new CriticalPending()); }
+                else if (!batch.Finals[i] && !actor.Has<SaveNow>()) actor.Set(new SaveNow());
                 continue;
             }
 
@@ -183,15 +183,15 @@ internal sealed partial class PersistSystem : EcsSystem
                 if (!actor.Has<FinalSave>())
                 {
                     // Also a copy already asked to leave: the key has a newer claimer, so this copy hands nothing on.
-                    if (!actor.Has<UnloadRequested>()) actor.Add<UnloadRequested>();
-                    if (!actor.Has<Fenced>()) actor.Add<Fenced>();
+                    actor.Set(new UnloadRequested());
+                    actor.Set(new Fenced());
                     continue;
                 }
                 // unloading: the key has a newer owner, nothing of this copy is written
             }
 
             actor.Remove<FinalSave>();
-            actor.Add<Removing>() = new Removing(RpcStatus.Ok, null);
+            actor.Set<Removing>(new Removing(RpcStatus.Ok, null));
         }
 
         batch.Clear();
@@ -215,9 +215,10 @@ internal sealed partial class CheckpointSystem : EcsSystem
 
 /// <summary>Hands the shard's collected load and save batches to the store, one of each in flight at a time.</summary>
 [UpdateInGroup<ShardMessages>]
+[UpdateAfter<PersistSystem>]
+[UpdateAfter<HandoffSystem>]
 internal sealed class StoreSystem : EcsSystem
 {
-    public override int Priority => 7;
 
     protected override void OnUpdate()
     {

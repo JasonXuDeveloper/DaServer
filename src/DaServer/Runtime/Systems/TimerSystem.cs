@@ -39,7 +39,6 @@ internal readonly record struct ShardTimers(TimerWheel<DelayedSend> Wheel) : ISi
 [UpdateInGroup<ShardMessages>]
 internal sealed class TimerSystem : EcsSystem
 {
-    public override int Priority => -1; // before the mail: what is due joins this wake's sends
 
     protected override void OnUpdate()
     {
