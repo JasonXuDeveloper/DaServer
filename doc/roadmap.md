@@ -938,6 +938,10 @@ and cards, a manual clock), fails before its fix, and passes after it.
     goodbye. The resume reply's format changed, so the client protocol is 4.
   - No deterministic tests for these interleavings (each needs messages to cross at one point); the existing handoff,
     resume and move tests pass, and the sample E2E runs.
+- Review criterion from round 7 on (agreed): a finding is must-fix when a single fault (one view change, one link
+  restart, one node crash, one slow store call) leads to lost acknowledged state, a second live copy or a wait that
+  never ends; one that needs two or more rare events together is should-fix and is listed here. Convergence is two
+  rounds in a row without a must-fix.
 
 
 ## Generator / analyzer (`src/DaServer.Generator`)
