@@ -26,7 +26,8 @@ aspire otel logs map-0
 
 The cluster resource (named as the cluster) is the parent of its nodes in the dashboard; its state counts the nodes whose
 readiness passes (`/health`: joined and not leaving). A node's health is its own: ready (joined, not leaving, its store
-reachable) and alive (no stalled shard, `/alive`). Probes and the metrics scrape start no trace.
+reachable) and alive (no stalled shard, `/alive`; a shard whose loop crashed counts as stalled, while a system or
+handler that throws is logged and its shard goes on). Probes and the metrics scrape start no trace.
 
 ## Commands on a node
 

@@ -955,6 +955,20 @@ and cards, a manual clock), fails before its fix, and passes after it.
     indistinguishable from a closed session through the client API, the second needs a resume queued past its deadline
     behind a turn); an actor reverted after a timeout may have sent a `SessionMoved` that a moving client counts (its
     pushes then keep their order but may overtake a real taker's last push in that one case).
+- [x] Self-review round 8 (the distributed runtime as a whole; rounds 5 to 7 against CLAUDE.md):
+  - Must-fix: an exception from any ECS system (a user `[ForEach]` system's bug) ended its shard's loop for good: the
+    shard's actors were dropped unsaved, their keys forwarded in a circle, and `/alive` stayed healthy. Each group's
+    pass is now guarded and logged (`ShardFailed`), as handlers are; a shard whose loop still crashes keeps its pass
+    start, so the watchdog reports it stalled and `/alive` fails.
+  - Must-fix (test): the critical-write handoff test counted every store write, so a's own retries could satisfy it
+    before b wrote; it now waits for each moved key's landed write.
+  - Also from round 8 (should-fix): a timer wheel scheduled after a long idle period no longer walks every idle tick;
+    a moving client waits for its `SessionMoved` markers by a completion instead of polling, and `SessionMoved` is
+    internal; a real-cluster test checks that the node's count of actors taking a session equals the markers it sends;
+    `SendAfter` and ADR-058 say that delayed sends do not outlive their node; stale move-window comments.
+  - Kept: delayed sends are not handed over on a graceful stop (sending them early would break "never earlier", and
+    a deadline that must survive is state); `Handoff.cs` and `Membership.cs` are at the size limit (the next change
+    to either splits it); the two eviction loops of `HandoffsSeen` stay apart (one also records how far it forgot).
 - Review criterion from round 7 on (agreed): a finding is must-fix when a single fault (one view change, one link
   restart, one node crash, one slow store call) leads to lost acknowledged state, a second live copy or a wait that
   never ends; one that needs two or more rare events together is should-fix and is listed here. Convergence is two

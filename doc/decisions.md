@@ -872,7 +872,8 @@ records that no longer hold). Each: context → decision → consequences.
 - Alternatives: one wheel per node (a lock or a hop per schedule); `Task.Delay` continuations (allocations, a held
   turn); durable reminders (a store; they come with persistence, N5, and are a different guarantee).
 - Consequences: `DelayedSendsDoNotAllocate` holds < 8 B per send; `TimerBenchmark` shows 0 B, a mean dominated by one
-  wheel slot shared by the batch. Delayed sends do not survive a restart.
+  wheel slot shared by the batch. Delayed sends do not outlive their node: a stop (a scale-in
+  too) or a crash drops them; a business deadline that must outlive the node is persisted state a system checks.
 - References: hashed timing wheels, Varghese & Lauck, "Hashed and Hierarchical Timing Wheels" (1987), as Netty's
   `HashedWheelTimer` and Kafka's purgatory use them.
 
@@ -1251,7 +1252,7 @@ records that no longer hold). Each: context → decision → consequences.
     record arrives first and no lock is needed. The new owner restores the record and runs `OnLoad`; its checkpoint
     writes what changed since the old owner's last write, with the version continuing (fencing as in ADR-068). The
     old owner is removed once the new one accepts, without writing.
-  - **Mail first:** while keys move after view changes (within the call timeout), a node that loads a key asks the
+  - **Mail first:** while keys move after view changes (within the move window, twice the call and store timeouts), a node that loads a key asks the
     key's latest other owner in the views it replaced in that time (or, when it just joined, the node owning the key
     without it, if that node is up longer) and the actor's mail waits. The answer is the record or "not here"; an
     actor that leaves without handing over to the asking node tells it so. "Not here" is never early: a node owning
