@@ -1041,15 +1041,14 @@ records that no longer hold). Each: context → decision → consequences.
     the endpoint it names is its sender's.
   - An accepted connection is closed unless its first frame is such a Hello; nothing else is read before it. A
     handshake that hears nothing within the keep-alive timeout is closed.
-  - Without a secret (development), version and cluster name are still checked.
+  - Without a secret (development), protocol levels and cluster name are still checked.
 - Alternatives:
   - A timestamped proof accepted once per node: no round trip, but a recorded Hello replays to another node within
     its window, and nodes need synchronized clocks.
   - Mutual TLS: certificates to issue and rotate, and encryption the platform's network already provides where it
     is needed.
 - Consequences: one more round trip when a link connects (a cold path), no clock requirement. Links are
-  authenticated but not encrypted. A node of another protocol version is refused until rolling upgrades (V) define
-  compatibility.
+  authenticated but not encrypted. A node whose protocol levels do not overlap this one's is refused (ADR-077).
 - Rotation: `NodeOptions.AcceptedSigningSecret` is a second secret whose proofs, tickets and admin tokens are accepted
   too; signing always uses `SigningSecret`. A rotation is three rolling steps (old signing and new accepted, new
   signing and old accepted, new alone), each accepting what the previous signs. Trying the second secret only when the
@@ -1135,7 +1134,9 @@ records that no longer hold). Each: context → decision → consequences.
     landed (the connection reset after the commit, a failover, the store timeout firing late): the owner keeps its
     version and remembers that write's hash (`Stored.Attempt`, carried by a handoff too); its next write names it, and
     a store holding the next version with that hash took it, so it writes after it instead of refusing its own owner.
-    Only the latest lost write is remembered: two lost answers in a row can still fence the owner.
+    While a write is in doubt the record is written even when its hash is the acknowledged one (a state changed back
+    must replace what may have landed), and a claim clears the stored hash so its version is never taken for a lost
+    write. Only the latest lost write is remembered: two lost answers in a row can still fence the owner.
   - **Schema at start:** a node initializes its store before it binds a port or joins (`IActorStore.InitializeAsync`):
     a database that is down or a table that is missing stops the node at start, saying so, instead of failing its
     first loads with callers waiting. `PostgreSqlActorStore` creates its table there by default (as Dapr's state
@@ -1382,7 +1383,7 @@ records that no longer hold). Each: context → decision → consequences.
   end, version tolerant (one appended to a base shifts its subtypes' members, which their own entries show); another
   type under a key, keyed (members matched by key, so one renamed with `[NinoFormerName]` keeps its key); an enum
   member removed, renamed or renumbered. It asks to record the rest (DAS018: new
-  types, appended members, keys added or removed, new enum members)
+  types, appended members, keys added, removed or renamed with their key kept, new enum members)
   with `dotnet build -p:UpdateWireManifest=true` (which still stops on DAS017; `=force` records a deliberate break).
   The analyzer reads the layouts in the compilation; the manifest is written after the compile by
   `DaServer.WireTool` (in the Abstractions package), which runs the same code over the built assembly's metadata:
@@ -1414,7 +1415,7 @@ records that no longer hold). Each: context → decision → consequences.
   (`ProtocolLevels`; `ControlOp.Link`, `ControlOp.Client`), the levels a build reads, exchanged outside the
   serializer's bytes so any build can read them: the accepting node's in its `Challenge` key, the dialer's as 8 raw
   bytes ahead of its Nino `LinkHello`, a client's in its `ClientHello` key. Two builds talk when their ranges overlap;
-  otherwise both sides log a refusal naming both ranges (a client gets an error naming both, is left out of
+  otherwise the side that sees the mismatch logs a refusal naming both ranges: the dialer on the challenge, the acceptor on a Hello (a client gets an error naming both, is left out of
   `ClientGroup.All` and closes the connection; anything it sends but keep-alives before an accepted hello or after a
   refused one closes it, and it sends nothing else until the hello is answered). A level changes only for what every
   peer must read alike: the framing, the shared encoding, or a behavior all must agree on. Added control ops (older

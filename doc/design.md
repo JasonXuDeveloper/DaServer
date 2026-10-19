@@ -117,8 +117,9 @@ turn has that chain fails at once with `CallCycle` (ADR-059). A service handler 
   payloads.
 - Versions side by side (ADR-076, ADR-077): each project's committed `wire.manifest` keeps layouts compatible
   (DAS017): messages are positional and frozen (a new field goes into a new message), persisted components version
-  tolerant or keyed. A node link opens with a hello carrying the link protocol version, a client connection with a
-  `ClientHello` carrying the client protocol version; another version is refused.
+  tolerant or keyed. Links and client connections exchange protocol level ranges outside the
+  serializer's bytes (the acceptor's in its `Challenge` key, the dialer's as 8 raw bytes ahead of its `LinkHello`, a
+  client's in its `ClientHello` key); builds whose ranges do not overlap are refused.
   Cards name each node's build and the messages it handles: services get only messages their build has, and a
   message an actor owner's build lacks is refused (`NotHosted`) until the owner is upgraded.
 
@@ -182,8 +183,8 @@ Planned (roadmap): a client-connection shard that keeps session state as ECS com
 - Split brain: when members die, a node that reaches fewer members than it lost (a tie keeps the side with the lowest
   node id; clusters under three never down) stops without saving and exits, so the platform restarts it into the
   majority (`NodeOptions.KeepMajority`, on by default, ADR-064).
-- Links are authenticated: an accepted connection starts with a fresh challenge, and the dialer's Hello carries the
-  protocol version, the cluster name and an HMAC of the signing secret over the challenge and its endpoint; nothing
+- Links are authenticated: an accepted connection starts with a fresh challenge, and the dialer's Hello carries its
+  link protocol levels (raw, ahead of the Nino body), the cluster name and an HMAC of the signing secret over the challenge and its endpoint; nothing
   else is read on a connection before it (ADR-065).
 - Routing reads an immutable snapshot (`ClusterView`: message routes per message id, actor placement per handler type) that is swapped
   atomically on change. Lookups are lock-free.
@@ -342,7 +343,8 @@ filters the check is two array lengths.
 
 Every node is an ASP.NET Core `WebApplication` (its `Program.cs`, ADR-021; ADR-046): Kestrel on `DaServer:HttpPort`
 next to the TCP data plane. Endpoints reach actors only through messages: `app.MapAsk<TRequest, TReply>(pattern)`
-(the JSON body asked of the service), `app.MapAsk<TId, TRequest, TReply>("/x/{id}")` (of an actor),
+(the body asked of the service: JSON, or Nino with `application/x-nino`, answered as the caller accepts; a body
+that is not the message is 400), `app.MapAsk<TId, TRequest, TReply>("/x/{id}")` (of an actor),
 `app.MapSend<T>(pattern)` (one-way, 202). Each request enters through the ingress with an origin of its own and the
 budget of its `DaServer-Budget` header (ms, capped); refusals map to HTTP: `RateLimited` 429, `Overloaded`/`NotHosted`/
 `Disconnected` 503 (`Retry-After` when overloaded or hinted), `Timeout` 504, `Forbidden` 403, handler errors 500.

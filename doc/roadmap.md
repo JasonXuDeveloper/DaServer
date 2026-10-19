@@ -549,7 +549,7 @@ in separate commits.
       one byte a char (link level 3, client level 5: a full restart), the manifest in Nino's byte descriptions with its
       layout text named in its header and keyed members matched by key, padded wire structs packed, `[NinoUtf8]` kept
       for chat only, the registration's module initializer only where one is usable (Nino's own Unity fix), `System.Type`
-      refused as a wire type. Next: Nino.AspNetCore on the HTTP plane, `GetFixedSize` for fixed-size frames (only if BDN
+      refused as a wire type, Nino.AspNetCore bodies on the HTTP plane (ADR-046). Next: `GetFixedSize` for fixed-size frames (only if BDN
       says so), `IsSupported` checked at start. Open: release on Nino 4.0.0, not an RC (drop the NU5104 suppression then).
 - [x] N6 State handoff on moves (ADR-072): an actor that changes node (scaling out or in, a node stopping) sends its
       [Persist] and [Handoff] components, version and last-written hash to the new owner on the link its forwarded
