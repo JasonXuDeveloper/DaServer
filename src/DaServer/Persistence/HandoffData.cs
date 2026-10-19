@@ -37,7 +37,17 @@ internal struct HandoffsSeen() : ISingletonComponent
     public readonly Dictionary<ulong, SeenHandoff> ById = new();
     public readonly Queue<(ulong Id, long UntilMs)> Order = new();
     public long ForgotUntilMs;
+
+    /// <summary>
+    /// Keys whose record this shard handed to another node that took it (<see cref="SeenHandoff.PassedTo"/>), for the
+    /// move window: a node asking for one afterwards is sent there instead of hearing "none". Oldest out past Max.
+    /// </summary>
+    public readonly Dictionary<ActorAddress, SeenHandoff> Handed = new();
+    public readonly Queue<(ActorAddress Address, long UntilMs)> HandedOrder = new();
 }
+
+/// <summary>The record a copy was restored from, until its OnLoad ended: written as it came if OnLoad fails.</summary>
+internal readonly record struct RestoredRecord(byte[] Payload) : IComponent;
 
 /// <summary>A handoff taken here (<see cref="PassedTo"/> 0) or passed on to <see cref="PassedTo"/>, remembered until <see cref="UntilMs"/>.</summary>
 internal readonly record struct SeenHandoff(ulong PassedTo, long UntilMs);
@@ -69,7 +79,7 @@ internal readonly record struct HandoffAsk(uint HandlerTypeId, long Key, ulong B
 /// <summary>A view this node replaced at <see cref="ReplacedMs"/> (real time, <see cref="Node.RecentViews"/>).</summary>
 internal readonly record struct RecentView(ClusterView View, long ReplacedMs)
 {
-    public const int Kept = 16;
+    public const int Kept = 256; // shared snapshots; the move window, not this bound, decides which views count
 
     /// <summary>The views to keep once <paramref name="replaced"/> was replaced now: those replaced within the move window.</summary>
     public static RecentView[] Push(RecentView[] views, ClusterView replaced, NodeOptions options)

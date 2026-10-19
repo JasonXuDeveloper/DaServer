@@ -163,16 +163,22 @@ internal static class Handoff
     public static void Gone(World world, Actor actor, ulong by) => Gone(world.Shard.Node, actor.HandlerType.Id, actor.Key, by);
 
     /// <summary>Tell <paramref name="by"/>, which asked for the record of a removed actor, that node <paramref name="to"/> took it.</summary>
-    public static void Moved(World world, Actor actor, ulong by, ulong to)
+    public static void Moved(World world, Actor actor, ulong by, ulong to) => Moved(world.Shard.Node, actor.HandlerType.Id, actor.Key, by, to);
+
+    private static void Moved(Node node, uint handlerTypeId, long key, ulong by, ulong to)
     {
         var w = FrameWriter.Rent(FrameHeader.Size + 2 * sizeof(ulong));
         var span = w.GetSpan(2 * sizeof(ulong));
-        BinaryPrimitives.WriteUInt64LittleEndian(span, world.Shard.Node.Id);
+        BinaryPrimitives.WriteUInt64LittleEndian(span, node.Id);
         BinaryPrimitives.WriteUInt64LittleEndian(span[sizeof(ulong)..], to);
         w.Advance(2 * sizeof(ulong));
-        w.SetHeader(FrameKind.Message, actor.HandlerType.Id, MovedOn, actor.Key);
-        world.Shard.Node.SendToNode(by, w);
+        w.SetHeader(FrameKind.Message, handlerTypeId, MovedOn, key);
+        node.SendToNode(by, w);
     }
+
+    /// <summary>A copy whose OnLoad failed after a restore: its state back to the record as it came (written next).</summary>
+    public static void RestoreAsReceived(World world, Entity entity, byte[] payload) =>
+        Records.Read(entity, payload.AsSpan(RecordHeader), world.GetSingleton<ShardStore>().ById);
 
     /// <summary>Tell <paramref name="by"/> that this node holds no record of the key.</summary>
     public static void Gone(Node node, uint handlerTypeId, long key, ulong by) => Notify(node, by, None, handlerTypeId, key, 0);
@@ -267,7 +273,9 @@ internal static class Handoff
             }
             else if (op == Request)
             {
-                if (!loaded)
+                if (!loaded && HandedTo(world, handlerType.Id, header.Key) is { } handed && handed != from)
+                    Moved(node, handlerType.Id, header.Key, from, handed); // its record went there: ask that node
+                else if (!loaded)
                 {
                     var wait = MustWait(world, handlerType.Id, header.Key, from);
                     if (wait == null) Notify(node, from, None, handlerType.Id, header.Key, 0);
@@ -280,7 +288,15 @@ internal static class Handoff
                 }
                 else if (entity.TryGet<HandingOff>(out var handingOff) && handingOff.To == from)
                     Resend(node, entity.Get<ActorRef>().Actor, from, handingOff.Record); // the asker never got it
-                else if (!entity.Has<HandoffWanted>()) entity.Add<HandoffWanted>() = new HandoffWanted(from); // told when it goes
+                else
+                {
+                    if (!entity.Has<HandoffWanted>()) entity.Add<HandoffWanted>() = new HandoffWanted(from); // told when it goes
+                    // A copy this node runs for a key the asker owns in this node's view (adopted from a sender ahead of
+                    // this view, which then moved back): it leaves, or it would stay until this node's next view change.
+                    if (!ShardDispatch.Owns(world, handlerType.Id, header.Key) && node.View.HandlerTypeOwner(handlerType.Id, header.Key)?.NodeId == from &&
+                        !entity.Has<UnloadRequested>() && !entity.Has<Unloading>() && !entity.Has<Removing>())
+                        entity.Add<UnloadRequested>();
+                }
             }
             else if (op == None)
             {
@@ -311,6 +327,7 @@ internal static class Handoff
                 if (payload[sizeof(ulong)] == 1)
                 {
                     entity.Add<HandedTo>() = new HandedTo(handingOff.To);
+                    RememberHanded(world, handlerType.Id, header.Key, handingOff.To);
                     entity.Add<Removing>() = new Removing(RpcStatus.Ok, null); // its mail follows the record
                 }
                 else Reclaim(world, entity, handingOff.Record);
@@ -355,6 +372,7 @@ internal static class Handoff
         }
 
         entity.Add<TakenHandoff>() = new TakenHandoff(IdOf(payload)); // read: the same record again is answered "accepted"
+        entity.Add<RestoredRecord>() = new RestoredRecord(payload.ToArray()); // until OnLoad ends (cold: one per move)
         if (store.Enabled && payload[CriticalAt] == 1) entity.Add<SaveNow>();
         if (store.Enabled)
         {
@@ -376,6 +394,28 @@ internal static class Handoff
 
     /// <summary>The handoff a record belongs to (its first send's id, kept by resends).</summary>
     private static ulong IdOf(ReadOnlySpan<byte> payload) => BinaryPrimitives.ReadUInt64LittleEndian(payload[(2 * sizeof(ulong) + sizeof(long))..]);
+
+    /// <summary>Remember for the move window that the record of a key went to <paramref name="to"/>.</summary>
+    private static void RememberHanded(World world, uint handlerTypeId, long key, ulong to)
+    {
+        ref var seen = ref world.GetSingleton<HandoffsSeen>();
+        long now = world.GetSingleton<ShardActivity>().NowMs;
+        while (seen.HandedOrder.TryPeek(out var oldest) && (oldest.UntilMs < now || seen.HandedOrder.Count >= HandoffsSeen.Max))
+        {
+            seen.HandedOrder.Dequeue();
+            if (seen.Handed.TryGetValue(oldest.Address, out var entry) && entry.UntilMs == oldest.UntilMs) seen.Handed.Remove(oldest.Address);
+        }
+
+        long until = now + MoveWindowMs(world.Shard.Node.Options);
+        var address = new ActorAddress(handlerTypeId, key);
+        seen.Handed[address] = new SeenHandoff(to, until);
+        seen.HandedOrder.Enqueue((address, until));
+    }
+
+    /// <summary>Where this shard handed the key's record within the move window, or null.</summary>
+    private static ulong? HandedTo(World world, uint handlerTypeId, long key) =>
+        world.GetSingleton<HandoffsSeen>().Handed.TryGetValue(new ActorAddress(handlerTypeId, key), out var entry) &&
+        entry.UntilMs >= world.GetSingleton<ShardActivity>().NowMs ? entry.PassedTo : null;
 
     /// <summary>Remember a handoff taken here (<paramref name="passedTo"/> 0) or passed on, for the resends' window.</summary>
     private static void Seen(World world, ulong id, ulong passedTo)

@@ -28,12 +28,15 @@ internal sealed partial class TurnSystem : EcsSystem
         var target = self.Actor;
         target.TurnChain = 0;
         actor.Remove<Turn, TurnEnded, Loading>();
+        bool restored = actor.TryGet<RestoredRecord>(out var record);
+        if (restored) actor.Remove<RestoredRecord>();
         if (error == null) return;
         Log.ActorFailed(world.Logger, error, "Load", target);
-        if (actor.Has<TakenHandoff>() && actor.Has<Stored>())
+        if (restored && actor.Has<Stored>())
         {
             // Restored from a handoff its sender let go: the record is the only copy of the moved state, so it is written
-            // before the copy goes, and the mail loads the actor again from the store.
+            // as it came (not as the failed OnLoad left it) before the copy goes, and the mail loads it from the store.
+            Persistence.Handoff.RestoreAsReceived(world, actor, record.Payload);
             actor.Add<Unloading>();
             actor.Add<FinalSave>();
             return;

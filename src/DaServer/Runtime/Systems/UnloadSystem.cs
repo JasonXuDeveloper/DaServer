@@ -21,9 +21,13 @@ internal sealed partial class UnloadSystem : EcsSystem
 
     // A copy still waiting for its record when it is asked to leave holds no state: it goes at once (its mail to the
     // owner; a node waiting for it hears "none"), instead of two copies each waiting for the other's record.
-    [ForEach, With<UnloadRequested>, With<AwaitingHandoff>, Without<Fenced>, Without<Removing>]
-    private static void Abandon(Entity actor)
+    [ForEach, With<UnloadRequested>, Without<Fenced>, Without<Removing>]
+    private static void Abandon(Entity actor, in AwaitingHandoff awaiting)
     {
+        // A node that asked this copy is sent to the one this copy waited for (the record comes from there), unless the
+        // asker is that node: then it hears "none" (two copies each waiting for the other).
+        if (actor.TryGet<HandoffWanted>(out var wanted) && wanted.By != awaiting.From)
+            actor.Add<HandedTo>() = new HandedTo(awaiting.From);
         actor.Remove<UnloadRequested, AwaitingHandoff>();
         actor.Add<Removing>() = new Removing(RpcStatus.Ok, null);
     }
