@@ -1,314 +1,483 @@
-# DaServer 新编程模型设计（草案 v8，未实现，迭代中）
+# DaServer 新编程模型设计（草案 v9，未实现，迭代中）
 
-v8 在 v7 的基础上解决一个问题：**谁（哪个实体，在哪个节点）把消息发给谁（哪个实体，在哪个节点），中间经过哪些服务器。**
-v7 的 `IMessage<Client, Map>` 只写了两端：
-- 没说客户端的消息要先经过网关；
-- 没说 `Player` 在哪类服务器上；
-- 没说一个键怎么找到节点。
+本稿是完整的一份，不依赖之前的版本。v8 的问题与本稿的处理见第 15 节；需要拍板的点在第 16 节。
 
-v8 把这三件事都写进类型，由生成器和分析器检查，并为每个工程生成一张路线表。
-
-系统、`[Receive]`、等待子实体、AOI 流水线、SIMD、热更，这些和 v7 相同，见第 8 节。
+目标：写起来最简洁、最直观、最 ECS；概念最少；每条消息从哪个实体、哪个节点，到哪个实体、哪个节点，都能从类型看出来；高性能，高并发。
 
 ---
 
-## 1. 同行怎么做
+## 0. 概念一览（共七个）
 
-| | ET | Orleans | v8 |
+| 概念 | 写在哪 | 写法 | 是什么 |
 |---|---|---|---|
-| 进程的角色 | Scene 类型（Realm、Gate、Map、Location…），由配表指定哪个进程跑哪些 Scene | 默认每个 silo 跑所有 grain 类型；不同 silo 也可以加载不同的 grain 类型，放置只在兼容的 silo 中选 | **服务器类型**：一个节点就是一个服务器，服务器类型列出它承载的种类 |
-| 实体的地址 | `ActorId = (进程, Fiber, InstanceId)`：钉在某个进程上，进程没了就失效 | `GrainId = (类型, 键)`：位置透明，由 grain 目录查到所在 silo | **两种地址**：定位地址 `(种类, 键)`，即 Orleans 的做法；钉住地址 `(节点, 本地 id)`，即 ET 的做法，只给会话用 |
-| 能迁移的实体 | Unit 跨 Map 传送时，Location 服务器记录"Unit id → 当前 ActorId"，消息经 Location 转发 | grain 被重新激活到别的 silo，目录随之更新 | 定位地址的实体由放置决定节点，节点变化时迁移，消息跟着过去（现有机制） |
-| 客户端到地图 | 客户端只连 Gate。发给地图的消息是"位置消息"：Gate 上的 Session 按 Unit id 转给 Unit 当前所在的 Map | 客户端连某个 silo 的网关端口，调用 grain 引用，网关 silo 转发 | 客户端只连网关，消息先到网关上的**会话实体**，会话按自己的**链接**转发（第 4 节） |
-| 地图到客户端 | Unit 上存着 Gate 会话的 ActorId，按它发；AOI 广播是对每个观察者各发一次 | grain observer 或 stream | 实体存会话的钉住地址；AOI 广播按客户端组发，每个网关节点一帧，由网关扇出 |
-| 消息方向 | 协议名带方向：`C2G_`、`C2M_`、`M2C_`、`G2M_` | 接口方法，不分方向 | `IMessage<发送方种类, 接收方种类>`，方向由编译期检查 |
+| 种类 | Contracts | `struct Map : IKind<MapId>` | 一类可寻址的实体。地址是 `(种类, 键)`，全局唯一 |
+| 消息 | Contracts | `[From<Player>] record struct EnterMap(…) : IRequest<Map, bool>` | 接口写接收方，`[From<…>]` 写发送方 |
+| 组件 | Server | `record struct Grid(…) : IComponent` | EasyEcs 原生 |
+| prefab | Server | `[Spawns<Map>] static readonly Prefab` | 种类的实体刚创建时的样子 |
+| 系统 | Server.Logic | EasyEcs `EcsSystem`，含 `[Receive]` 和 `[ForEach]` 方法 | 全部逻辑 |
+| 服务器 | Server | `[Hosts<Map>] struct MapServer : IServer` | 一个节点（进程）跑哪些种类 |
+| 链接 | 框架 | `world.Link(session, target)` | 客户端会话与目标实体的关系，客户端消息靠它转发 |
 
-v8 吸收 ET 的两点：每种服务器承载什么是明确的，消息方向是明确的。
-同时保留 Orleans 的两点：键就是地址，放置交给框架，不需要配表写死"哪个进程跑哪张地图"。
-
----
-
-## 2. 服务器（节点）、shard、实体
-
-```
-服务器类型          节点 = 服务器 = 一个进程            shard (线程 + world)        实体
-  GameServer  ──▶  game-0, game-1, …        ──▶   每个节点按核数配置   ──▶   Player 42
-  MapServer   ──▶  map-0, map-1, …                                            Map 7（地图）+ 子实体 Avatar
-  Gateway     ──▶  gateway-0, …                                               Session（每条客户端连接一个）
-```
-
-- **节点就是服务器，就是一个进程。** 一个节点只跑一种服务器类型。部署时，同一种服务器起几个节点，由平台和 AppHost 决定。用户代码里不出现节点名。下文的 `map-0`、`game-1` 只是"某个 MapServer 节点"的简称。
-- **服务器类型**列出它承载的种类，写在服务器工程里。这是类型，不是拓扑字符串：
-  ```csharp
-  [Hosts<Player>, Hosts<Guild>] public partial struct GameServer : IServer;
-  [Hosts<Map>]                  public partial struct MapServer  : IServer;
-  public partial struct Gateway : IServer, IAcceptsClients;        // hosts the framework's Session kind
-  ```
-  一个种类可以由多种服务器承载，例如小规模部署用的 `[Hosts<Player>, Hosts<Map>] AllInOne`。放置只在承载它的节点中选，与 Orleans 的"兼容 silo"相同。
-- **shard**：节点内的一个线程加一个 world。一个实体只在一个 shard 上，由键的哈希决定。
-- **种类**写在 Contracts 里，只有地址，不提服务器：
-  ```csharp
-  public readonly partial struct Player : IKind<PlayerId>;   // located: (Player, key) -> a node whose server hosts Player
-  public readonly partial struct Map    : IKind<MapId>;
-  ```
-  客户端和 Contracts 都不需要知道服务器怎么划分；划分是服务器工程和部署的事。
-
-**一个实体在哪里，由类型和键决定：**
-
-| 地址 | 例子 | 服务器 | 节点 | shard |
-|---|---|---|---|---|
-| 定位地址 `(种类, 键)` | `PlayerId(42)` | 承载 `Player` 的服务器（`GameServer`） | 放置：在这些服务器的节点中按键选（现有的成员视图和放置） | 节点内按键哈希 |
-| 钉住地址 | `SessionId(node, shard, local)` | `Gateway` | 键里带着节点，客户端连在哪就在哪 | 键里带着 shard |
-| 子实体 | 地图上的 `Avatar` | 跟父实体走 | 跟父实体走 | 跟父实体走，不能单独寻址 |
-
-所以"Player 在哪个服务器"有了明确答案：在承载它的 `GameServer` 上，具体哪个节点由键 42 经放置决定，生成的路线表（第 6 节）里写着。地图同理在 `MapServer` 上。
+另外有三个框架提供的东西，用户只用不写：`Session` 种类（每个客户端一个）、`ReplyTo`（晚些回复用的令牌）、`Due`（定时）。
 
 ---
 
-## 3. 消息：发送方种类、接收方种类
+## 1. 保证
+
+先写清楚框架保证什么、不保证什么，后面的设计都服从这里。
+
+1. **每个实体按到达顺序逐条处理自己的消息，实体之间并行。**
+   - 同一发送方发给同一实体的消息，按发送顺序到达。迁移期间也一样，靠第 11 节的栅栏保证。
+   - 不同目标之间没有全局顺序。例如客户端发给 Player 的消息和发给 Map 的消息，谁先处理没有保证。
+2. **消息处理只做判定，并把结果写成数据；每 tick 的重活由 `[ForEach]` 系统批量完成。**
+3. **单向消息最多投递一次；请求一定有结果**：回复、拒绝或超时。
+4. **失败的结果是确定的**，见第 12 节的表。
+
+---
+
+## 2. 节点、服务器、shard、实体
+
+```
+服务器类型     节点 = 一个进程，只跑一种服务器      shard = 线程 + world        实体
+GameServer ──▶ game-0, game-1, …          ──▶  按核数              ──▶  Player 42、Guild 3
+MapServer  ──▶ map-0, map-1, …                                         Map 7 + 子实体 Avatar
+Gateway    ──▶ gate-0, …                                               Session（每个客户端一个）
+```
+
+```csharp
+// Server project: which kinds a node of each server type hosts
+[Hosts<Player>, Hosts<Guild>] public struct GameServer : IServer;
+[Hosts<Map>]                  public struct MapServer  : IServer;
+[Hosts<Session>]              public struct Gateway    : IServer;   // hosting Session = accepting clients
+```
+
+- **节点就是服务器，就是一个进程。** 一个节点只跑一种服务器类型；同一种服务器部署几个节点，由 AppHost 决定。
+- 一个种类可以由多种服务器承载，例如小规模部署用的 `[Hosts<Player>, Hosts<Map>, Hosts<Session>] AllInOne`。放置只在承载它的节点中选，与 Orleans 的"兼容 silo"相同。
+- 一个工程可以定义多种服务器类型。AppHost 为每组节点选一种：
+  ```csharp
+  cluster.AddNodes<GameServer>("game", replicas: 3);
+  cluster.AddNodes<MapServer>("map", replicas: 4, shards: 8);
+  cluster.AddNodes<Gateway>("gate", replicas: 2).WithClientEndpoints();
+  ```
+  - 节点启动时校验配置里的服务器类型存在，写错就启动失败。
+  - AppHost 构建时检查：每个被消息引用的种类，至少有一组节点承载它。
+- **一个进程只跑一种服务器**，原因：
+  - 拆服务器就是为了独立扩缩、独立发布、故障隔离，合进一个进程三样都没了；
+  - ET 的单进程模式、Akka 的一节点多角色，都只用于开发和小集群；
+  - 本地开发 Aspire 本来就会起多个进程，测试有 `TestCluster`，小规模部署用 `AllInOne`。
+- **shard**：节点内的一个线程加一个 world。一个节点上同一服务器的所有种类共用 shard 的 world，所以同 shard 的不同实体可以在同一个系统里一起处理。实体落在哪个 shard 由键的哈希决定。
+
+---
+
+## 3. 地址：只有一种
+
+**地址就是 `(种类, 键)`。** 键是 Contracts 里的值类型：
+
+```csharp
+// Contracts (netstandard2.1, no EasyEcs)
+public readonly record struct MapId(long Value)    : IKey<Map>;
+public readonly record struct PlayerId(long Value) : IKey<Player>;
+public readonly partial struct Map    : IKind<MapId>;
+public readonly partial struct Player : IKind<PlayerId>;
+```
+
+种类用放置策略决定一个地址落在哪个节点：
+
+| 放置 | 用于 | 节点怎么定 |
+|---|---|---|
+| `Hashed`（默认） | Player、Map、Guild … | 在承载它的节点中按键选（现有的成员视图和放置）；节点变化时迁移 |
+| `Pinned` | `Session` | 实体所在的节点就是客户端连着的节点；客户端在别的网关恢复时，实体迁过去（复用现有迁移） |
+| `Any` | 无状态的工作者，例如令牌校验、计价 | 优先本节点，每个节点可以有自己的实例 |
+
+- `Session` 的键是稳定的 `ClientId`，来自签名令牌（ADR 已有）。客户端断线重连到另一个网关后，地址不变，别处保存的会话地址仍然有效。
+- 子实体（地图上的 Avatar、等待中的请求）不可寻址，跟父实体一起迁移。
+- 实体上表示地址的组件是框架的非泛型组件 `ActorKey`（种类 id + 键），有值索引。用户通过生成的 `me.Key` 拿到强类型的键。
+  - 不用 `Key<MapId>` 这类泛型组件，因为 EasyEcs 的生成器不处理泛型组件。这样 Contracts 也完全不碰 EasyEcs。
+
+**没有"无键种类"。** v8 的无键种类拆成三种已有的东西：
+- 每个节点或 shard 一份的状态（缓存、寻路网格）：单例；
+- 无状态的工作者：`Any` 放置的种类；
+- 全局服务（匹配、排行榜）：固定键的普通种类，例如 `Matchmaker(Region)`。
+
+---
+
+## 4. 消息：接收方写在接口上，发送方写在特性上
 
 ```csharp
 // Contracts
-public record struct Login(string Token)               : IRequest<Client, Session, LoginResult>;
-public record struct TravelTo(MapId Map)               : IRequest<Client, Player, bool>;
-public record struct MoveTo(Vector2 Target)            : IMessage<Client, Map>;
-public record struct Cast(SkillId Skill, PlayerId On)  : IMessage<Client, Map>;
-public record struct Attach(SessionId Session)         : IMessage<Session, Player>;
-public record struct EnterMap(PlayerId Player, SessionId Session) : IRequest<Player, Map, bool>;
-public record struct NearbyBatch(...)                  : IMessage<Map, Client>;
-public record struct Wallet(int Gold)                  : IMessage<Player, Client>;
+[From<Client>] public record struct Login(string Token)              : IRequest<Session, LoginResult>;
+[From<Client>] public record struct TravelTo(MapId Map)              : IRequest<Player, bool>;
+[From<Client>] public record struct MoveTo(Vector2 Target)           : IMessage<Map>;
+[From<Client>] public record struct Cast(SkillId Skill, PlayerId On) : IMessage<Map>;
+[From<Client>] public record struct Say(RoomId Room, string Text)    : IMessage<Room>;     // names its target: one of several links
+[From<Session>] public record struct Attach(ClientId Client)         : IRequest<Player, bool>;
+[From<Player>] public record struct EnterMap(PlayerId Player, ClientId Client) : IRequest<Map, bool>;
+[From<Map>]    public record struct Nearby(…)                        : IMessage<Client>;   // pushed to the client
+[From<Player>] public record struct Wallet(int Gold)                 : IMessage<Client>;
 ```
 
-- `Client` 不是种类，它代表"客户端，经由它的会话"。
-- 每条消息的路径由两端的服务器类型推出来，规则只有三条（第 4 节）。
-- 发送方检查：只有 `Player` 组的系统能发 `IMessage<Player, …>`。在别的组里发，编译报错。
-- 接收方检查：`IMessage<Client, Map>` 只能由 `Map` 组的 `[Receive]` 接收。
-
----
-
-## 4. 路径的三条规则
-
-**规则一：服务器之间直连。** 集群内任意两个节点之间有一条有序链路（现在的 PeerLink）。`Player@game-1 → Map@map-0` 是一跳，不经过别的服务器。
-
-**规则二：客户端只连网关，客户端的消息一律先到它的会话。**
-- 客户端连上某个网关节点时，框架在那个节点上创建一个 `Session` 实体，地址是钉住的 `SessionId(gateway-0, shard 2, 1734)`。
-- 目标是 `Session` 的消息（如 `Login`），由会话自己的 `[Receive]` 处理。
-- 目标是其他种类的消息（如 `MoveTo : IMessage<Client, Map>`），会话按自己身上的**链接** `Link<Map>` 转发。链接就是一个组件，里面存着目标的键：
+- **接收方**：`IMessage<TTo>` 是单向消息，`IRequest<TTo, TReply>` 是请求。`TTo = Client` 表示推给客户端。
+- **发送方**：`[From<K>]` 可以写多个，例如 `[From<Map>, From<Npc>]`。`Client` 表示由客户端发、经它的会话转发。
+- **检查不靠分析器猜，而是生成强类型的发送方法**。每条消息生成一个重载，发送方的键是第一个参数：
   ```csharp
-  public record struct Link<TKind>(TKind.Key Target) : IComponent;   // on the Session entity, one per target kind
+  // generated
+  public static void Send(this World world, PlayerId from, MapId to, in EnterMap message);   // only [From<Player>]
   ```
-- 会话没有对应的链接时，消息被拒绝（`NotLinked`），客户端收到错误，不会被静默丢弃。
-- 转发由生成器生成，用户不写。
-
-**规则三：发给客户端，就是发给会话。**
-- 实体在组件里存会话的钉住地址，例如 `Avatar.Session`、`Player` 的 `Attached`。
-- 消息先到会话所在的网关节点，再由网关写到 socket。
-- 发给客户端组（AOI）时，每个有成员的网关节点收到一帧，由网关扇出到各个 socket。
-
-由此每条消息的每一跳都是确定的：
-
-| 消息 | 路径 |
-|---|---|
-| `Login : IRequest<Client, Session, …>` | 客户端 → `Session@gateway-0`（会话处理并回复） |
-| `TravelTo : IRequest<Client, Player, …>` | 客户端 → `Session@gateway-0` →（`Link<Player>`）→ `Player 42@game-1`，回复原路返回 |
-| `MoveTo : IMessage<Client, Map>` | 客户端 → `Session@gateway-0` →（`Link<Map>`）→ `Map 7@map-0` |
-| `EnterMap : IRequest<Player, Map, …>` | `Player 42@game-1` → `Map 7@map-0`，回复返回 `Player 42` |
-| `NearbyBatch : IMessage<Map, Client>`（组） | `Map 7@map-0` → 每个有观察者的网关节点一帧 → 各 socket |
-| `Wallet : IMessage<Player, Client>` | `Player 42@game-1` → `Session@gateway-0` → socket |
-
-**顺序**：
-- 同一个客户端发出的消息，经同一个会话、同一条链路转发，到达目标时保持发送顺序。
-- 不同发送方之间，按到达目标实体的顺序处理（v7 原则一）。
-- 链接改变（换地图）之后发出的消息去新地图。改变之前已在路上的消息仍到旧地图，旧地图找不到这个会话的 Avatar 就丢弃。这和 ET 的 Location 换位时的语义一致。
+  - 用别的种类的键调用，没有对应的重载，编译不过。
+  - 发送方的键同时就是回复地址。
+- HTTP、后台和测试通过 `ICluster` 发送，不属于任何种类，可以发任何消息；回复回到调用方。
+- `[From<Client>]` 和 `IMessage<Client>` 就是现在的 `[FromClient]`/`[ToClient]`，两个旧特性删掉。
 
 ---
 
-## 5. 完整流程：登录、进地图、移动、看到别人
+## 5. 系统：全部逻辑
 
-```
-① 客户端 TCP/WS 连 gateway-0         框架：创建 Session@gateway-0/s2（钉住地址）
-② Login(token)  客户端 → Session      会话系统：校验签名令牌，得到 PlayerId 42
-                                       Link<Player>(42) 写到会话上；Send(Attach(session)) 给 Player 42
-③ Attach        Session → Player 42@game-1（放置决定 game-1）
-                                       Player：首条消息到达时按 prefab 创建或从存档恢复；把会话存进 Attached
-④ TravelTo(7)   客户端 → Session →(Link<Player>)→ Player 42
-                                       Player：创建等待子实体 Travelling，Ask(Map 7, EnterMap(42, session))
-⑤ EnterMap      Player 42@game-1 → Map 7@map-0
-                                       Map：创建 Avatar 子实体（存着会话），Link(session, map 7)，回复 true
-⑥ Link 生效     Map 7 → Session（框架消息）  会话写上 Link<Map>(7)
-⑦ Answer        Map 7 → Player 42 的等待子实体 → 回复客户端 TravelTo = true
-⑧ MoveTo(x,y)   客户端 → Session →(Link<Map>)→ Map 7    Map：写 Destination
-⑨ 每 tick       Map 7 的流水线：移动、格子、AOI；NearbyBatch → 观察者所在的网关 → socket
-```
+逻辑只有两种方法，都写在 EasyEcs 系统里：
 
-第 ⑥ 步必须"先链上，再回复"，否则客户端可能先收到 `TravelTo = true`，紧接着发出的 `MoveTo` 却因为会话还没有 `Link<Map>` 而被拒绝。
-- 两条消息走的链路不同：链接消息是 map-0 → gateway-0，回复是 map-0 → game-1 → gateway-0。跨链路没有顺序保证。
-- 所以 `world.Link(session, map)` 是一次 Ask：Map 的 `EnterMap` 处理先把"进图中"写成等待子实体，等会话确认链接后再回复 Player。
-- 框架提供的 `Link` 自带这一步：`[Receive]` 返回 `Linking<bool>`，框架在会话确认后才把值作为回复发出。确认失败（会话已关闭）时回复失败，并删掉刚建的 Avatar。
-
-**换地图**：Player 向新地图请求 `EnterMap`，成功后新地图链接会话（覆盖 `Link<Map>`），再通知旧地图 `LeaveMap` 删掉 Avatar。
-
-**会话断开**：网关销毁 Session 实体。`Session` 种类的清理组件给它链接的每个目标发 `SessionClosed`，Player 和 Map 各自清理。这是 `ICleanupComponent`，恰好执行一次。
-
----
-
-## 6. 生成的路线表
-
-每个服务器工程构建时生成 `routes.manifest`（按服务器类型分节），与 `wire.manifest` 一起提交。review 时一眼可以看到路径：
-
-```
-# server MapServer  (Game.Server)
-hosts   Map   key MapId   placement: hash over MapServer nodes
-receive MoveTo       Client  -> Map      via Session.Link<Map>
-receive Cast         Client  -> Map      via Session.Link<Map>
-receive EnterMap     Player  -> Map      direct (GameServer -> MapServer)   reply bool
-send    NearbyBatch  Map     -> Client   via Session (group, one frame per gateway node)
-send    Link<Map>    Map     -> Session  framework
-```
-
-构建期检查：
-- 每条 `IMessage<A, B>`：接收方 B 的组里必须有 `[Receive]`，并且编译在某个服务器工程里（否则这条消息没人收）；发送方必须是 A 组里的系统。
-- `IMessage<Client, X>` 且 X 不是 `Session`：某处必须调用 `Link(session, X)`，否则客户端永远发不到 X。
-- 一个系统只能用同一种服务器上的种类的组件（不同服务器的实体不在同一个 world 里）。
-- 客户端只能连 `IAcceptsClients` 的服务器。AppHost 把客户端端口只开在这些节点上（现有 `WithClientEndpoints`）。
-
----
-
-## 7. 无键种类（取代 `[Service]`）
-
-有些东西每个节点一个，例如网关上的令牌校验缓存，或地图服上的寻路网格缓存。
+| 方法 | 何时执行 | 可以做什么 |
+|---|---|---|
+| `[Receive]` | 每条消息一次，按到达顺序，在 shard 线程上 | 判定，写组件，创建或删除实体，发消息，回复 |
+| `[ForEach]` | 每 tick，批量（EasyEcs 生成 job，可 SIMD、可并行） | 读写组件；不发消息、不做结构变更（这些写进自己的缓冲，由后面的单线程系统处理） |
 
 ```csharp
-public readonly partial struct PathCache : IKind<MapServer>;   // no key: one per node of MapServer, on shard 0
+public sealed partial class MovementSystem : EcsSystem
+{
+    [Receive]                                             // the client's intent becomes data, in arrival order
+    static void Move(in MoveTo m, ref Destination destination) => destination.Target = m.Target;
+}
 ```
 
-- 同节点的实体用 `world.Send<PathCache>(…)` 发给它。
-- 要发给"任意一个 MapServer 节点上的它"，用 `world.SendAny<PathCache>(…)`，放置选一个节点。
-- 跨节点发给"某个特定节点上的它"不提供：节点名不进代码。
+- `[Receive]` 的参数：
+  - 消息本身；
+  - 接收的实体，或它的组件（`ref`/`in`）；
+  - `From`：发送方地址；
+  - `ReplyTo`：要晚些回复时才取；
+  - 单例。
+- 客户端消息到达时，接收的实体是该客户端在目标上的**链接实体**（第 7 节），例如地图上那个玩家的 Avatar，不需要自己查表。
+- **返回值就是回复**；返回 `void` 表示单向消息。
+- **系统不按种类分组。** 系统按组件查询，这是 ECS 的本义：`Position` 可以同时在 Avatar 和 NPC 上，一个移动系统同时处理两者。
+- **执行频率用 EasyEcs 的组**：`[UpdateInGroup<Simulation>]` 加 `UpdateInterval`。地图模拟每 50 ms 一次，玩家逻辑一般没有 tick。
+- **消息由框架的 `MailSystem` 执行**：它在 `Messages` 组里，按到达顺序逐条调用生成的分发器。所以 `[Receive]` 也走 EasyEcs 的调度，受 `Enabled`、`SystemErrorPolicy`、`MeasureSystems` 管理，而不是绕开调度直接调用。
 
 ---
 
-## 8. 与 v7 相同的部分（简述）
+## 6. 生命周期：tag 加系统，不用回调消息
 
-- **两条原则**：
-  - 每个实体按到达顺序逐条处理消息，实体之间并行；
-  - `[Receive]` 只做判定并把结果写成数据，每 tick 的重活交给 `[ForEach]`（可用 SIMD、并行）。
-- **种类就是系统组**：`[UpdateInGroup<Map>]` 的系统只看到 Map 种类的实体（`[With<MapId>]`）。子实体（Avatar）有自己的组（`[With<Avatar>]`）。
-- **等待别的实体的结果**：等待的事情是一个 `ChildOf` 子实体。回信 `Answer<TReq, TRep>` 投递给它，按发问方邮箱的顺序处理。子实体带 `ICleanupComponent`，发问方被销毁时，调用方立即收到失败回复。
-- **回复**：`[Receive]` 的返回值就是回复。要晚些再回复时，把 `From` 存进组件，之后调用 `world.Reply`。
-- **AOI**：
-  - 事件写进事件发生者所在格子的发件箱；
-  - 每个会话订阅自己周围 3×3 格子的客户端组；
-  - tick 末尾，每个有内容的格子发一帧。
-- **每 tick 流水线**：Receive → Steering → Movement（SIMD）→ Cells → Buffs → Aoi → Nearby → Flush。
-- **生命周期**：
-  - 首条消息到达时按 prefab 创建，有存档就恢复；
-  - `Lifetime` 组件决定空闲回收还是常驻；
-  - `Despawn` 标签立即回收；
-  - 迁移时连同子实体和邮箱一起走。
-- **热更**：
-  - Logic 工程放在可回收的 `AssemblyLoadContext` 里；
-  - shard 在两条消息之间执行 `RemoveTypes`，换上新系统和新的分发表；
-  - Logic 工程里不允许声明组件、消息、种类。
-- **生成的代码**：每个种类一个按消息 id 跳转的分发器；客户端消息的会话转发；路线表。`[ForEach]` 全部由 EasyEcs 生成。
-- **MapTickBenchmark 实测**（BDN，同一台机器）：
-  - 5% 的角色转向时，两种做法持平（0.97 倍）；
-  - 50% 的角色转向时，ECS 用时约为传统做法的 0.4 倍，帧数约为三分之一。
-
----
-
-## 9. 去掉的东西
-
-`[Actor]`、`[Handle]`、`[Service]`（改用无键种类）、`Context`、`Answered`、`ReplyTo`、`ReplyLater`、`Created`/`Loaded`/`Unloading`（改为 `[Receive]` 接收 `Spawned`/`Restored`）、`UnloadAfterIdleSeconds`（改为 `Lifetime` 组件），以及会话授权的 Known/Granted/Superseded（由 `Link<T>` 和 Session 实体取代）。
-
----
-
-## 10. 自查发现的问题与处理
-
-1. **Contracts 不能依赖 EasyEcs，但种类和键要写在 Contracts 里。**
-   - Contracts 同时给客户端用（netstandard2.1），规范要求 Abstractions、Client、Contracts 不依赖 EasyEcs。v7 里的 `MapId : IComponent, IIndexed<MapId>` 和种类上的 `Prefab`、`[With<MapId>]` 都违反了这一点。
-   - 处理：拆成两半。
-     - Contracts 只写地址：`struct Map : IKind<MapId>`，`record struct MapId(long Value) : IKey<Map>`，不引用 EasyEcs。
-     - 服务器的 Components 工程写实体的样子：`[Prefab<Map>] static class MapPrefab { … }`，以及系统组 `[With<Key<MapId>>] partial struct MapSystems : ISystemGroup`。
-     - 键在实体上的组件是框架的泛型组件 `Key<TKey> : IComponent, IIndexed<Key<TKey>>`，用户不用写。
-   - **需要 EasyEcs 确认**：EasyEcs 的生成器能否正确处理在框架程序集里定义、在用户程序集里以 `Key<MapId>`、`Link<Map>` 形式使用的泛型组件（成员生成、索引、job 访问集）。不能的话，就由用户在 Components 工程里写一行 `record struct MapKey(MapId Id) : IComponent, IIndexed<MapKey>`，并由我们的分析器检查。我会把这一条加进 EasyEcs 需求清单。
-2. **"先链上，再回复"跨链路没有顺序保证。** 已改为 Ask 加确认，见第 5 节。
-3. **`Session` 是框架的种类，但 `Gateway` 是用户自己的服务器类型。**
-   - 处理：`Session` 由框架声明，承载在所有 `IAcceptsClients` 的服务器上。
-   - 用户可以往 `Session` 组里加系统，例如登录，和其他种类一样。
-4. **玩家重新加载后不知道自己的会话**（分布式审查的 should-fix）。
-   - 处理：会话地址 `Attached` 是 `[Persist]` 组件，随记录保存。
-   - 会话已不在时，发给它会失败，Player 的清理系统收到 `SessionClosed` 后自行处理。
-
-## 11. 工程、进程、节点：一个节点就是一种服务器的一个进程
-
-### 一个进程要不要跑多种服务器？调研结论：不要
-
-| 同行 | 一个进程承载什么 | 一个进程跑多种角色，用在什么场合 |
+| 阶段 | 框架做什么 | 用户写什么 |
 |---|---|---|
-| ET | 一个进程可以跑多个 Scene（Realm、Gate、Map…），由配表决定 | 开发时"单进程启动"方便调试；上线按配表拆成多进程 |
-| Orleans | 一个 silo 是一个进程，默认承载所有 grain 类型；不同 silo 可以加载不同的 grain 类型 | 测试时一个进程里跑多个 silo（TestCluster）；生产一进程一 silo |
-| Akka.NET | 一个节点可以同时有 0 个或多个角色 | 多用于小集群和开发；大集群按角色分开部署，各自扩缩 |
-| Kubernetes 惯例 | 一个容器一个进程，一种工作负载一个 Deployment | 不同角色合在一个进程里会失去独立扩缩、独立发布和故障隔离 |
+| 激活 | 第一条消息到达时，按 prefab `Instantiate`；有记录就 `LoadEntitiesInto` 恢复；加 `Activated` tag（从记录恢复的还加 `Restored`） | `[ForEach, With<Activated>]` 系统，例如给新玩家发初始物品 |
+| 运行 | `MailSystem` 先跑完 `Activated` 的系统、去掉 tag，再投递邮件，所以初始化一定在第一条消息之前 | `[Receive]` 和 `[ForEach]` |
+| 空闲 | `IdleAfter(TimeSpan)` 组件：超时就加 `UnloadRequested` tag | 不写就是常驻 |
+| 卸载 | 先跑 `With<Unloading>` 的系统，再按 `ComponentSet` 保存记录，最后销毁 | `[ForEach, With<Unloading>]`，如需要 |
+| 主动卸载 | `world.Unload(entity)`，就是加 `UnloadRequested` tag | — |
 
-结论：
-- **一个进程跑多种服务器，在生产环境里没有需求。** 拆成不同服务器，就是为了独立扩缩、独立发布和故障隔离（地图服的重 tick 不拖累登录，地图服崩了不连带网关）。合进一个进程，这三点都没有了。
-- 它的价值只在开发调试和极小规模部署：
-  - 本地调试：Aspire 本来就在本机起多个进程，一键启动、一起调试，不需要合进一个进程。
-  - 测试：`TestCluster` 已经能在一个测试进程里跑多个节点。
-  - 极小部署：定义一个承载所有种类的服务器类型（`AllInOne`），部署一个节点即可。它仍然是一个节点只跑一种服务器，不需要新机制。
-- 所以 v8 采用**节点 = 服务器 = 进程**：一个节点只跑一种服务器类型。一个进程里不放多个节点，也不放多种服务器。
+- 去掉 `Created`/`Loaded`/`Unloading` 回调和 `Despawn`、`Lifetime`。
+- **谁能创建实体**：默认任何发给它的消息都会激活它（Orleans 的虚拟 actor）。客户端只能发到链接过的目标，所以客户端不能借此乱建实体。种类也可以写 `[ActivatedBy<EnterMap>]`，只让这些消息激活，其余消息遇到未激活的实体时返回 `NoActor`。
 
-### 工程
+---
 
-工程数跟服务器种类数无关，可以一个工程定义多种服务器类型，部署时由 AppHost 选择每组节点跑哪一种：
+## 7. 客户端：会话与链接
+
+**规则一：客户端只连承载 `Session` 的节点（网关）。** 连上并登录后，框架在该节点上为它激活 `Session(ClientId)` 实体。
+
+**规则二：客户端发的消息先到它的会话，会话按链接转发。**
+- 发给 `Session` 的消息（如 `Login`），由会话上的系统处理。
+- 发给其他种类的消息，会话查自己的路由表：一个 `DynamicBuffer<Route>`，每项是 `(种类, 键)`。
+  - 消息里有目标种类的键（如 `Say.Room`）：必须在路由表里，否则拒绝；
+  - 没有：用该种类最近链接的那一项（如 `MoveTo` 去当前地图）。
+  - 一个客户端可以同时链接多个同种目标（聊天室、队伍）。
+- 没有路由时，拒绝并回 `NotLinked` 给客户端，不静默丢弃。
+- 转发前先跑会话上的过滤系统，例如限流：令牌桶是会话上的组件，取代 `[Filter]`。
+
+**规则三：发给客户端，就是发给它的会话。** `world.Send(map, clientId, in nearby)` 先到会话所在的网关，再写到 socket。
+
+**链接的两边**：
+
+| 位置 | 数据 | 用途 |
+|---|---|---|
+| 会话上 | `DynamicBuffer<Route>` | 转发 |
+| 目标上 | 一个子实体，带 `Linked(ClientId)` 组件（有值索引） | 转发来的消息投递给它；推送时知道客户端是谁；会话关闭时一起删除 |
+
+**建立链接分两步，回复客户端的那个实体负责第二步：**
+1. 目标在处理请求时创建链接实体（地图上就是 Avatar）：`world.Spawn(prefab).With(new Linked(client), new ChildOf(map))`。
+2. 请求方拿到成功的回复后，调用 `world.Link(client, target)`，然后回复客户端。
+   - 会话收到 `Link` 后写路由。如果该种类有旧路由（换地图），会话给旧目标发 `Unlinked`。
+   - 会话再给新目标发 `Linked` 确认。
+
+为什么这样就有序，不需要额外的版本号或往返：
+- `Link` 和回复都从请求方发往同一个会话，走同一条链路，会话一定先有路由，客户端才看到回复。
+- 发给旧目标的 `Unlinked` 和此前转发给它的消息都从会话发出，也走同一条链路，所以旧目标先处理完换图前的消息，再收到 `Unlinked`。之后来的消息找不到链接实体，直接丢弃，不会有"双重存在"。
+- 目标创建了链接实体，但请求方在第 2 步之前崩溃：链接实体带着 `Due` 期限，期限内没收到会话的 `Linked` 确认就删除，不会留下孤儿 Avatar。
+
+**会话关闭**（断线、被顶号）：
+- 会话按路由表给每个目标发 `Unlinked`；
+- 目标框架按值索引找到链接实体并删除；
+- 用户在 `[Removed<Linked>]` 系统里清理，例如广播 `Disappear`。
+
+**顶号**：Player 处理新会话的 `Attach` 时，发现已有别的链接实体，就调用 `world.Unlink(oldClient, player)`，旧会话随之关闭。
+
+**恢复**：客户端带令牌连到另一个网关，`Session(ClientId)` 迁移过去，路由表随之过去，目标端不用改。
+
+---
+
+## 8. 等待别的实体的结果
+
+```csharp
+public sealed partial class TravelSystem : EcsSystem
+{
+    [Receive]                                          // the client asks the player; the player asks the map
+    static void Travel(in TravelTo m, Entity player, in From from, ReplyTo reply, World world) =>
+        world.Ask(player.Key, m.Map, new EnterMap(player.Key, from.Client), wait: new Travelling(m.Map), reply);
+
+    [Receive]                                          // the answer arrives as mail, in the player's arrival order
+    static void Entered(in Answer<EnterMap, bool> answer, in Travelling trip, World world)
+    {
+        if (answer.Ok && answer.Value) world.Link(answer.Asker.Client, trip.Map);   // link first, then reply
+        world.Reply(answer.ReplyTo, answer.Ok && answer.Value);
+    }
+}
+```
+
+- `world.Ask` 创建一个等待子实体（`ChildOf` 发问方），带：
+  - 用户给的数据（`Travelling`）；
+  - 调用 id（值索引）；
+  - `Due` 期限；
+  - 可选的 `ReplyTo`。
+- **回信按 `(种类, 键, 调用 id)` 寻址**，不按实体 id：
+  - 发问方迁移后，回信跟着去；
+  - 实体 id 只在本节点有效，迁移后会变。
+- 回信 `Answer<TReq, TRep>` 是发给发问方的邮件，和其他消息一样按到达顺序处理。处理完，框架删除等待子实体。
+- **超时**：到期时，框架投递一个失败的 `Answer`（`Ok = false`）。
+- **`ReplyTo` 是清理组件**（`ICleanupComponent`）：
+  - 等待实体在回复之前被删除（发问方被卸载），清理系统恰好执行一次，失败地回复调用方，调用方不用等到超时。
+  - 已经回复过的令牌会先被移除，所以正常完成时不会再触发清理。
+  - 迁移时，离开的那一份先移除清理组件再销毁，不会误发失败回复。
+- **晚些回复**：把 `ReplyTo` 存进任何组件，之后调用 `world.Reply(token, 值)`。这就是现在的 `ReplyTo`，名字不变。
+
+---
+
+## 9. 时间
+
+- `Due(long Tick)` 组件，有序值索引。框架的 `TimerSystem` 每 tick 用 `Range(上次, 现在)` 取到期的实体，投递它们的到期邮件。
+- `world.After(delay, self, in message)`：创建一个带 `Due` 和消息的子实体，到期时作为邮件投给父实体。等待请求的超时、链接确认的期限，都是同一个机制。
+- 周期性的逻辑不用定时器，用 `UpdateInterval` 的组。
+
+---
+
+## 10. 广播
+
+- **客户端组**（现有的 `ClientGroup`）：
+  - 一次序列化，每个有成员的网关节点收到一帧，由网关扇出到各个 socket。
+  - 成员关系记在链接实体上（例如 Avatar 的 `Watching`），链接实体删除时由框架退组，用户不必在 `SessionClosed` 里手动退。
+- **实体组**：`Group(name)` 是一个固定键的种类，成员表是它的组件，发给它的消息由它转发给成员。现在的 `Publish` 由此取代：发布 = 发给组。
+
+---
+
+## 11. 持久化、迁移、热更、升级（用 EasyEcs 4.4）
+
+**持久化**：
+- 框架在注册时，用 `ComponentSet.Create().With(typeof(T))` 把所有 `[Persist]` 组件建成一个集合。
+- 保存：`world.SaveEntities(output, ids, persistSet)`，只写这些组件，运行时组件不进记录。
+- 恢复：激活时先按 prefab 创建实体，再 `world.LoadEntitiesInto(record, [entity])` 把记录装上去，邮箱保留。
+- 记录里的类型按 Nino 类型 id 存。改名用 `[NinoFormerName]`；加字段用 `VersionTolerant` 或 `Keyed` 格式。
+- 只写改过的实体：`[Persist]` 组件实现 `ITrackChanges`，现有的 `ChangeSystem` 标 `Unsaved`。
+
+**迁移**：
+- 迁移的对象是实体加它的全部子实体（`world.Children`）：`SaveEntities(output, group, persistAndHandoffSet)`。
+- 新节点上用 `LoadEntitiesInto` 装到已建好的实体上。`ChildOf` 和 `EntityId` 字段会被改写成新的 id。
+- 跨 shard（跨线程）同样走字节，因为 `MoveEntities` 要求两个 world 在同一线程。
+- **迁移栅栏**（保证第 1 节的严格顺序）：
+  - 新主人先收下发给该实体的新消息，但暂不处理；
+  - 旧主人转发完它手里的消息，在每条发送方链路上发一个结束标记；
+  - 新主人收到标记后，才开始处理新消息。
+- 等待中的请求随实体迁移，因为回信按键寻址，会跟到新节点。
+
+**热更**：
+- Logic 工程放在可回收的 `AssemblyLoadContext` 里，里面有系统和生成的分发表，两者一起替换。
+- 每个 shard 在两次 `Update` 之间：
+  - `world.RemoveTypes(旧上下文)`；
+  - 加入新的系统；
+  - 换掉框架注册表里的分发表，否则旧上下文会被引用住、卸载不掉。
+- 所有 shard 都移除之后，旧上下文才卸载。
+- 组件、消息、种类都在 Server 和 Contracts 工程里，不热更。新增消息或组件需要滚动升级，不能热更。
+
+**滚动升级**（ADR-077）：
+- `wire.manifest` 加上路由的列：每条消息的接收方、发送方、回复类型。
+- 新消息到了旧版本的节点，返回 `NotHandled`。
+- `[Hosts]` 记在成员卡片里，放置按卡片计算，所以新旧版本混跑时放置结果一致。
+
+---
+
+## 12. 失败时的结果
+
+| 情况 | 结果 |
+|---|---|
+| 目标所在节点宕机 | 请求超时或收到 `NoOwner`；实体在新主人处从最近的记录激活（丢失最多一个检查点间隔的改动，ADR 已有） |
+| 网关宕机 | 客户端带令牌连到别的网关，`Session` 迁过去并从记录恢复路由。来不及恢复时，会话超时关闭，各目标收到 `Unlinked` |
+| 发问方在回信前被卸载 | `ReplyTo` 的清理系统立即失败地回复调用方；回信到达时找不到调用 id，丢弃 |
+| 单向消息在迁移中 | 有栅栏时不丢；目标节点宕机时最多丢失在途的（最多一次） |
+| 目标邮箱满 | 发送方收到 `Busy`；客户端的消息由网关回给客户端，不阻塞网关 |
+| 客户端读得太慢 | 断开（ADR-035） |
+| 链接实体建了但没确认 | 期限到就删除 |
+
+---
+
+## 13. 完整示例：地图服
+
+```csharp
+// Server project: data
+public record struct Grid(int Width, int CellSize) : IComponent;                         // on a map
+public record struct Position(Vector2 Value) : IComponent;
+public record struct Velocity(Vector2 Value) : IComponent, ITrackChanges;               // what viewers extrapolate
+public record struct Destination(Vector2 Target) : IComponent;
+public record struct Cell(int Index) : IComponent, IIndexed<int>, ITrackChanges { public int Key => Index; }
+public record struct OnMap(MapId Map) : IComponent, IGroup { public long Group => Map.Value; }  // a few hundred maps per world
+public record struct Health(int Value, int Max) : IComponent;
+public record struct Watching(int Cell) : IComponent;                                    // the 3x3 it subscribed to
+public record struct Shout(NearbyEvent Event);                                           // an avatar's own outbox element
+
+public static class Prefabs
+{
+    [Spawns<Map>] public static readonly Prefab Map = new Prefab().SetGrid(512, 16);
+    public static readonly Prefab Avatar = new Prefab()
+        .SetPosition(default).SetVelocity(default).SetDestination(default).SetHealth(100, 100).SetBuffer<Shout>();
+}
+```
+
+```csharp
+// Server.Logic project: behaviour
+public sealed partial class EntrySystem : EcsSystem
+{
+    [Receive]                                             // the player asks to enter; the avatar is the client's link entity
+    static bool Enter(in EnterMap m, Entity map, World world)
+    {
+        world.Instantiate(Prefabs.Avatar).Set(new Linked(m.Client), new ChildOf(map.Id), new OnMap(map.Key));
+        return true;
+    }
+}
+
+public sealed partial class CombatSystem : EcsSystem
+{
+    [Receive]                                             // judged against where everyone is at this moment
+    static void Cast(in Cast m, Entity me, World world)
+    {
+        if (world.TryFindAvatar(me.OnMap, m.On, out var target) && Skills.InRange(m.Skill, me.Position, target.Position))
+            world.Instantiate(Skills.BuffOf(m.Skill)).Set(new BuffOn(target.Id));   // a buff is an entity (RelationIndex, ends with its target)
+    }
+}
+
+[UpdateInGroup<Simulation>]                              // Simulation: UpdateInterval = 50 ms
+public sealed partial class IntegrateSystem : EcsSystem
+{
+    [ForEach]                                             // a batch: whole columns, SIMD
+    static void Integrate(Span<Position> positions, ReadOnlySpan<Velocity> velocities, in Clock clock) =>
+        Simd.AddScaled(MemoryMarshal.Cast<Position, float>(positions), MemoryMarshal.Cast<Velocity, float>(velocities), clock.DeltaTime);
+}
+
+[UpdateInGroup<Simulation>, UpdateAfter<IntegrateSystem>]
+public sealed partial class CellSystem : EcsSystem
+{
+    [ForEach]                                             // only a crossing writes Cell (tracked); no table move
+    static void Locate(in Position p, ref Cell cell, in Grid grid) { int c = grid.CellOf(p.Value); if (c != cell.Index) cell.Index = c; }
+}
+
+[UpdateInGroup<Simulation>, UpdateAfter<CellSystem>]
+public sealed partial class NearbySystem : EcsSystem
+{
+    [ForEach, Changed<Velocity>]                         // into the avatar's own outbox: no cross-entity write in a job
+    static void Moved(in Velocity v, in Position p, in Linked me, DynamicBuffer<Shout> outbox) =>
+        outbox.Add(new Shout(NearbyEvent.Moved(me.Client, p.Value, v.Value)));
+}
+
+[UpdateInGroup<Simulation>, UpdateAfter<NearbySystem>]
+public sealed partial class AoiSystem : EcsSystem         // single-threaded: joins, leaves and sends happen here
+{
+    public override void OnUpdate(World world) => Aoi.Flush(world);   // per map: rewatch crossers, one frame per busy cell group
+}
+```
+
+AOI 的规则：
+- **订阅**：每个会话订阅自己周围 3×3 格子的客户端组，只在跨格时变化；新看到的人先收到完整的 `Appear`。
+- **发布**：任何"附近该看到"的事件，先写进事件发生者自己的发件箱；`AoiSystem` 按格子合并，每个有内容的格子发一帧。
+- **格子**是有值索引的、被追踪的组件，不是 `IGroup`（格子成千上万，而且经常变化，用 `IGroup` 会把 world 切得很碎）。`IGroup` 用在地图上：一个 shard 上的所有地图共用一个 world，按地图分组遍历。
+- **buff 是实体**：通过 `RelationIndex` 指向目标，目标死亡时一起结束。这是 EasyEcs 规则 8"一项一个实体"的做法。
+
+**MapTickBenchmark 实测**（BDN，同一台机器）：
+
+| 角色数 | 转向比例 | 传统做法（每个对象一个 Update，移动后立即广播） | ECS 流水线 | 比值 |
+|---|---|---|---|---|
+| 1,000 | 5% | 153.4 µs | 148.2 µs | 0.97 |
+| 1,000 | 50% | 578.0 µs | 227.4 µs | 0.40 |
+| 10,000 | 5% | 4,881.8 µs | 4,693.6 µs | 0.97 |
+| 10,000 | 50% | 16,547.1 µs | 6,356.9 µs | 0.39 |
+
+转向频繁时，ECS 流水线用时约为传统做法的四成，发出的帧数约为三分之一；两者都不分配内存。
+
+---
+
+## 14. 工程与生成的代码
 
 | 工程 | 内容 | 依赖 |
 |---|---|---|
-| `Game.Contracts` | 消息、键、种类的地址 | 不依赖 EasyEcs；客户端也引用（netstandard2.1） |
-| `Game.Server` | 组件、prefab、系统组、各服务器类型（`[Hosts<…>] … : IServer`），五行的 Program.cs | Contracts、DaServer |
-| `Game.Server.Logic` | 所有 `[Receive]`、`[ForEach]` 系统 | Server（数据）；放在可回收的 `AssemblyLoadContext` 里，可以热更 |
+| `Game.Contracts` | 种类、键、消息 | 不依赖 EasyEcs；客户端也引用（netstandard2.1） |
+| `Game.Server` | 组件、prefab、服务器类型，五行的 Program.cs | Contracts、DaServer |
+| `Game.Server.Logic` | 所有系统 | Server；放在可回收的上下文里，可以热更 |
 
-- Logic 单独成一个工程，是为了热更：可回收的上下文只能整个程序集卸载。
-- 想按服务器拆成多个工程也可以，例如让网关的镜像不带 Npgsql。框架不禁止，只是不再要求。
-- 节点只实例化它这种服务器承载的种类的系统：同一个程序集里别的服务器的系统不注册、不 tick。
+- 想按服务器拆成更多工程（例如让网关镜像不带 Npgsql）也可以，框架不要求。
+- 节点只注册它这种服务器所承载种类用到的系统。
 
-### 部署
+**我们的生成器写：**
+- 每种消息的强类型 `Send`/`Ask`/`Reply` 重载（第 4 节）；
+- 每个服务器的分发表：消息 id → `[Receive]` 方法，放在 Logic 程序集里，随热更替换；
+- 会话的转发表；
+- wire id 和 `wire.manifest`（含路由列）。
 
-```csharp
-// AppHost: types, not strings
-cluster.AddNodes<GameServer>("game", replicas: 3, shards: 4);
-cluster.AddNodes<MapServer>("map",   replicas: 4, shards: 8);
-cluster.AddNodes<Gateway>("gate",    replicas: 2).WithClientEndpoints();
-```
+**我们的生成器不写：**
+- 任何 `[ForEach]` 的 job，全部由 EasyEcs 生成；
+- 任何 `IComponent`、`ITrackChanges` 之类的接口。需要时由用户写，我们的分析器检查并提供一键修复（EasyEcs 的生成器看不到别的生成器的输出）。
 
-- AppHost 把服务器类型写进节点的配置。节点启动时检查这个类型在程序集里存在；写错时立即启动失败，不会出现"静默什么都不承载"。这正是 ADR-017 原本要防的问题。
-- AppHost 构建时还会检查：每个被消息引用的种类，至少有一组节点承载它。运行时，种类没有节点承载时，发送方立刻收到 `NoOwner`。
+**编译期检查：**
+- 发送方向不对，没有对应的重载，编译失败；
+- `[Receive]` 的消息参数必须是该节点承载的某个种类的消息；
+- `[ForEach]` 里发消息或做结构变更报错；
+- 一个 `[From<Client>]` 消息的目标种类，必须有地方调用 `world.Link` 链接它；
+- 组件不能放在 Logic 工程（热更要求，取代现在的 DAS013）；
+- DAS022：结构变更之后不能继续用旧的 `ref`。
 
-### 线程
+---
 
-- 每个 shard 独占一个线程，不占线程池。一个节点只跑一种服务器，所以 shard 数直接按核数取默认值，可在 AppHost 里改。
-- 线程池只跑 IO 完成和 HTTP 平面，不需要随服务器调大。框架启动时把最小线程数设为核数，避免突发时线程池缓慢扩容。
+## 15. v8 的问题和本稿的处理
 
-### 对现有约定的影响
+| v8 的问题 | 本稿 |
+|---|---|
+| 两种地址；钉住的会话地址重连后失效，存下来的会话地址变成死地址 | 一种地址，放置策略区分；`Session` 键是稳定的 `ClientId`，恢复就是迁移 |
+| `Client`、`Session`、`IAcceptsClients` 三个名字说同一件事 | `Session` 一个种类；承载它就是接受客户端 |
+| `IMessage<TFrom, TTo>` 只能有一个发送方，HTTP 和测试无法发送，编译期检查也做不到 | 接收方在接口上，发送方是可写多个的 `[From<…>]`；生成强类型重载来检查；`ICluster` 可以发任何消息 |
+| 种类 = 系统组，"系统只看到这类实体"不成立，也不 ECS | 系统按组件查询；频率用 EasyEcs 的组 |
+| 无键种类集中在 shard 0，成了串行点 | 单例、`Any` 种类、固定键种类三选一 |
+| `Spawned`/`Restored` 是回调消息；`Despawn` 和现有 tag 重复 | `Activated`/`Restored`/`Unloading` tag 加系统；`world.Unload` |
+| 会话与实体的关系有五种写法 | 一个链接关系，两边各有数据，其余全部从它推出 |
+| `Linking<bool>` 只为修补自己造成的跨链路竞争 | 请求方先链接再回复，同一链路天然有序 |
+| 换图后旧地图仍执行旧消息（双重存在） | 会话发 `Unlinked`，与此前的转发消息同一链路，之后的消息找不到链接实体 |
+| 迁移时新旧主人交接，在途消息乱序 | 迁移栅栏 |
+| 回信寄给子实体 id，迁移后寄丢 | 按 `(种类, 键, 调用 id)` 寻址 |
+| 清理组件在正常完成和迁移时也会触发失败回复 | 回复时先移除令牌；迁移时离开的一份先移除 |
+| 格子用 `IGroup`，成千上万个小组，跨格就搬一次行 | 格子是索引字段；按地图 `IGroup` |
+| `[ForEach]` 里发消息、写别的实体（并行时有数据竞争） | 写自己的发件箱，单线程系统再发 |
+| `world.Sessions`、`AvatarIndex` 是组件之外的注册表 | 全部是带索引的组件 |
+| `-1` 这类哨兵值 | 用"没有这个组件"表示 |
+| `Key<MapId>` 泛型组件，EasyEcs 生成器不支持 | 非泛型 `ActorKey`，强类型访问由我们生成 |
+| `routes.manifest` 与 `wire.manifest` 重复 | 合并进 `wire.manifest` |
+| 缺定时器、广播、限流、多目标链接、恢复协议、反压、失败语义 | 第 7–12 节 |
+| 持久化、迁移的记录格式是自研的 | EasyEcs 4.4 的 `ComponentSet`、`SaveEntities`、`LoadEntitiesInto` |
 
-- ADR-017 改写为"节点跑部署指定的一种服务器类型；服务器类型列出承载的种类；配置由 AppHost 从类型生成，启动时校验"。
-- DAS013（组件必须放在 `X.Components` 工程）改为"组件不能放在 Logic 工程"，这是热更的要求。
-- mmo 示例的服务端从 6 个工程收敛为 Server、Server.Logic 两个（加上 Contracts）。部署仍是 Login、Game、Map、Gateway 四组节点。
-- `TestCluster` 不变：一个测试进程里跑多个节点，每个节点指定一种服务器类型。
+---
 
-## 12. 需要你拍板的点
+## 16. 需要拍板的点
 
-1. **服务器类型列出它承载的种类**（`[Hosts<Map>] struct MapServer : IServer`），写在服务器工程里；Contracts 里的种类只有地址。
-   - 推荐这样做：客户端不知道服务器怎么划分；"Player 在哪"从服务器类型和路线表就看得到。
-   - 代价：ADR-017 要改写。仍然没有拓扑字符串。
-2. **客户端消息靠会话上的 `Link<T>` 转发**（ET 的 Location 方式，但链接放在会话上，不需要单独的 Location 服务器）。
-   - 推荐这样做：网关只查一个组件，O(1)，链路有序。
-   - 另一种做法是客户端在每条消息里带目标键（Orleans 的引用方式），但这样客户端能随便指定发给哪张地图，需要额外的授权检查。
-3. **会话是钉住地址，网关节点挂了会话就没了**，客户端重连后重新登录或恢复（ADR 已有的签名令牌恢复）。
-   - 推荐这样做：会话本来就跟连接同生共死。
-4. **地图的放置**：按键哈希到 MapServer 的节点（现状）。
-   - 是否还需要"某张地图指定放在某个节点"？推荐不提供：这是拓扑，不进代码。真需要时，用 AppHost 起多个 MapServer 服务器类型（例如 `CityServer`、`DungeonServer`）来分。
-5. **节点 = 服务器 = 进程，一个节点只跑一种服务器类型**；一个工程可以定义多种服务器类型，由 AppHost 选择每组节点跑哪一种（第 11 节）。
-   - 推荐这样做：独立扩缩、独立发布、故障隔离，与 Orleans、Akka、Kubernetes 的惯例一致。开发用 Aspire 起多个进程，测试用 TestCluster，极小部署用一个承载所有种类的服务器类型。
-   - 代价：ADR-017 和 DAS013 要改写，mmo 示例的服务端收敛为两个工程。
+1. **一种地址加放置策略**（`Hashed`/`Pinned`/`Any`）；`Session` 用稳定的 `ClientId` 作键，恢复就是迁移。
+2. **消息只在接口上写接收方，发送方用 `[From<…>]`（可以写多个），由生成的强类型重载检查**；`ICluster` 可以发任何消息。
+3. **系统不按种类分组**，按组件查询；频率用 EasyEcs 的组。
+4. **客户端链接**：会话上存路由，目标上存链接实体；请求方先链接再回复；同一种类可以链接多个目标。
+5. **严格顺序跨迁移也成立**：迁移栅栏，代价是迁移时新主人多等一次旧主人的转发。
+6. **节点 = 服务器 = 进程**，一个工程可以定义多种服务器类型（v8 已提出，沿用）。
