@@ -438,7 +438,8 @@ records that no longer hold). Each: context → decision → consequences.
   the full state; after a lost connection, pushes sent meanwhile are lost by design (state, not a log); a planned move
   (ADR-026) keeps the old connection until the actors switched, so it loses nothing. A lost connection is reported as
   `SessionClosed` only after `ResumeGrace` (30 s), also for a crashed client-facing node; the runtime drops the late
-  `SessionClosed` of a resumed session. An explicit close (client dispose, `Disconnect`) is reported at once; an
+  `SessionClosed` of a resumed session, and forgets a closed session in every loaded actor it reaches, whether or not
+  the actor handles `SessionClosed`. An explicit close (client dispose, `Disconnect`) is reported at once; an
   actor kicks with `DisconnectSession`, which withdraws the session's grant before the close is sent, so a resume
   waiting in its mailbox is refused (DAS020 for a `Disconnect` sent by an actor). Tickets
   live `ClientConnectionOptions.TicketLifetime` (10 min); clients refresh theirs at half of it.
@@ -590,7 +591,7 @@ records that no longer hold). Each: context → decision → consequences.
   22,600 requests per core) and no `Server` header. Health endpoints (always on) and admin endpoints (authorized with
   the signing secret) come with A1. `MapAsk` and `MapSend` read JSON, or Nino for a caller that sends
   `application/x-nino`, and answer as the caller accepts (Nino.AspNetCore): the message's own bytes, typed for .NET
-  and TypeScript callers (Nino.TypeScript generates the same codecs), and a one-way Nino body goes on as it came.
+  and TypeScript callers (Nino.TypeScript generates the same codecs), and a one-way Nino body goes on as it came after it is checked (400 when it is not the message).
 
 ## ADR-047 One message model: message, address, optional reply
 - Context: messages and RPC are one thing; an API with a verb per target (push to a session, broadcast to a group,
@@ -1398,7 +1399,7 @@ records that no longer hold). Each: context → decision → consequences.
 - Consequences: renames are reported though positional types write no names (deliberately conservative). Raw memory
   is recorded field by field with offsets (`raw(16){Node:ulong@0:raw(8),Id:long@8:raw(8)}`), nested structs and
   `[StructLayout(Pack/Size)]`/`[FieldOffset]` included, whichever assembly declares the struct. The framework's own frames
-  (cards, the hello, session operations) are guarded by the protocol versions instead (ADR-077).
+  (cards, the hello, session operations) are guarded by the protocol levels instead (ADR-077).
 
 ## ADR-077 Rolling upgrades: builds on the card, messages only where the build has them
 - Context: during a rolling upgrade old and new nodes host the same actor and service types, but a new build may handle
