@@ -912,9 +912,18 @@ and cards, a manual clock), fails before its fix, and passes after it.
     (`APushStillOnItsWayToTheOldSessionComesBeforeTheNewOnes`, the push arrived after the new one without it). A group
     broadcast fanned out between the new session's join and the old one's goodbye still reaches both: duplicates in
     that window need per-group sequence numbers, not adopted.
-  - Open from this round (should-fix, in order): a resume reverted after the old session's close was consumed leaves the session open; a resume whose reply is lost
-    cannot be retried with the old ticket; a stopped shard's handoff memory is gone for late resends. Sessions of a
-    drained node close one view removal late (nit).
+  - Kept, with the reason (each needs rare events together, and its fix costs more than it saves):
+    - A resume reverted after the previous session's late close was already consumed leaves that session granted
+      until the actor unloads (the close of a superseded session is consumed on every resume; keeping it for a revert
+      would grow per resume). It needs the previous session's grace to end during the new connection's resume and
+      that connection to die before the resume completes.
+    - A resume whose reply is lost cannot be retried with the previous ticket (Superseded): the client reports
+      `ReconnectFailed` and logs in again; the new session closes after its grace.
+    - A stopped shard's handoff memory is gone, so a resend reaching it goes unanswered and its sender falls back to
+      the store once that node left (versions decide). It needs a lost answer and the receiving node scaling in within
+      one handoff timeout.
+    - Sessions of a drained node reach `SessionClosed` one view removal after the grace (the drained node counts as
+      present while Leaving).
 
 ## Generator / analyzer (`src/DaServer.Generator`)
 - [x] Messages instead of contracts (ADR-035): typed `Ask` overloads per request, one dispatcher per `[Handle]`
