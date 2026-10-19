@@ -1063,7 +1063,8 @@ records that no longer hold). Each: context → decision → consequences.
     again from storage.
   - The caller receives the error either way. A request handler that fails after suspending replies the error and
     faults its turn, so asynchronous failures reach `OnError` like synchronous ones.
-  - Every failed handler, actor or service, is counted (`Node.Failed`, metric `daserver.handler.failed`).
+  - Every failed handler, actor or service, and every system pass that throws is counted (`Node.Failed`, metric
+    `daserver.handler.failed`).
 - Alternatives:
   - Akka-style supervisor hierarchies with restart strategies: no actor hierarchy exists here (actors are entities
     addressed by id), and backoff or escalation would add concepts for a decision one method can make.
@@ -1276,8 +1277,10 @@ records that no longer hold). Each: context → decision → consequences.
     gave its record to a node other than the asker tells the asker where it went, and the asker waits for that node;
     each shard also remembers for the move window where it handed each key, so an ask that comes after the copy is
     gone is sent there too (forgotten once the key is here again).
-  - **Fallback:** a refused handoff (the new owner already runs the actor or is stopping) or a dead node: the old
-    owner writes to the store and the new one reads. A node declared dead hands nothing over and writes nothing (its
+  - **Fallback:** a refused handoff (the new owner already runs the actor or is stopping, cannot read the record, or
+    its actor throws while created: constructor, settings or state initializers), a dead node, or a record that does
+    not serialize: the old owner takes its state back and writes it to the store, and the new one reads (a state that
+    does not serialize is not written either: ADR-068). A node declared dead hands nothing over and writes nothing (its
     copies are fenced). A cluster stopping as a whole writes everything.
 - Alternatives: writing to the store on every move as well (survives a crash of the new owner right after the move,
   at the cost of a write per moved actor and version handshakes); moving every component (all would have to be

@@ -376,8 +376,8 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
       (`LinkAuthTests`). Links are authenticated, not encrypted: TLS stays the platform's (service mesh, private
       network).
 - [x] C4 Supervision (ADR-066): `Actor.OnError(exception)` returns `ErrorAction.Resume` (default) or `Reload` (removed
-      without saving, the next message loads it again); every failed handler is counted (`Node.Failed`,
-      `daserver.handler.failed`).
+      without saving, the next message loads it again); every failed handler, and every system pass that throws, is
+      counted (`Node.Failed`, `daserver.handler.failed`).
 
 ## Next: versioning and rolling upgrades (V, before S)
 - [x] V1 Wire manifest (ADR-076): each project commits `wire.manifest` (its types, their encodings and formats, the
