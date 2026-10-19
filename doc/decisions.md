@@ -940,10 +940,10 @@ records that no longer hold). Each: context → decision → consequences.
   is components there.
 - Decision:
   - In its own world a system does what every ECS system does. It queries with `[ForEach]` and reads and writes
-    components through `ref`, its own entity's or another's. Relations are `Entity` handles kept in components and
-    validated on access. For example, an avatar's `Avatar.Map` is the map's entity, and `PlacementSystem` writes the
-    map's `MapGrid` through it. There is no message, no await and no reply: within a world, data and ordering
-    (`Priority`) are the whole protocol (EasyEcs ecs-principles).
+    components through `ref`, its own entity's or another's. Relations are `EntityId`s kept in components and
+    resolved on access (`TryGetEntity`). For example, an avatar's `Avatar.Map` is the map's entity id, and
+    `PlacementSystem` writes the map's `MapGrid` through it. There is no message, no await and no reply: within a
+    world, data and ordering (`[UpdateBefore]`/`[UpdateAfter]`) are the whole protocol (EasyEcs ecs-principles).
   - Placement decides what shares a world. Keys that must be read together are put on one shard: the map's grid and
     the NPCs that walk it live in the map's world, and N7 placement affinity generalises this.
   - Data in another world (another shard or node) cannot be referenced. A system sends an intent there (`Send`). The

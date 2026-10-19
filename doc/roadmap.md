@@ -983,8 +983,9 @@ and cards, a manual clock), fails before its fix, and passes after it.
     to either splits it); the two eviction loops of `HandoffsSeen` stay apart (one also records how far it forgot).
 - [x] Self-review round 9 (the distributed runtime; the round-8 changes against CLAUDE.md):
   - Must-fix: round 8 guarded each group's pass, not each system: a user system throwing on every pass in
-    `ShardMessages` skipped the runtime's mail, load, save and unload systems after it. `World.SystemError` is
-    subscribed, so EasyEcs catches per system (`SystemFailed`, at most once a second per shard).
+    `ShardMessages` skipped the runtime's mail, load, save and unload systems after it. EasyEcs now catches per
+    system (`SystemErrorPolicy.Disable`); the shard reports the error (`SystemFailed`, at most once a second per shard)
+    and enables the system again for its next pass.
   - Must-fix: one actor whose state does not serialize threw on every pass of the persistence system, starving the
     shard's other writes, its handoffs and its stop; its write is now given up (the store keeps the last record, a
     leaving copy goes) and so is a handoff of it (it falls back).
@@ -1046,6 +1047,19 @@ and cards, a manual clock), fails before its fix, and passes after it.
     stay separate until a transport benchmark proves one shared loop costs nothing; `ClientConnections` still uses
     the node's internals (a capability of the runtime's own assembly, ADR-048) beyond `INodeContext`; configuration
     keys spelled in the Aspire integration (`DaServer__...`) are not shared constants yet.
+- [ ] ECS rewrite on EasyEcs 4.2 (agreed October 2026): everything is components, no inheritance, no polymorphism.
+  - [x] P0 EasyEcs 4.2.0: ordering by `[UpdateBefore]`/`[UpdateAfter]` along the data flow (no priorities), failed
+    systems reported and enabled again, `Set`/`GetOrAdd` for `Add`, `EntityId` in components and the actor directory.
+  - [ ] P1 the design as an ADR: an actor is an entity whose id is a component; handlers are stateless static
+    functions of message, components and a context value; an answer to an ask is a message (no await in handlers);
+    pending mail is a shard queue, not a component; capabilities are components and systems, not `NodeFeature`
+    subclasses.
+  - [ ] P2 the runtime on it (actor ids as indexed components, the shard mailbox, generated dispatch of static
+    handlers, answers as data; the turn machinery, `Actor` and `Service` base classes deleted).
+  - [ ] P3 persistence and handoff of components only (sessions in a `DynamicBuffer`, a `Created` tag for new
+    actors, change tracking generated for stored components); P4 capabilities as systems; P5 samples, tests and
+    analyzers; P6 records as EasyEcs saves (needs component sets, Nino encoding and stable type ids in EasyEcs);
+    P7 benchmarks against the P0 baseline, the 10k-bot run, reviews.
 - [x] Self-review rounds 12-15 (the distributed runtime and the rules, tests and docs, each round two reviewers):
   - Must-fix: a state that changed back after a lost write answer was never written again (a write in doubt is now
     written whatever its hash, and a claim clears the stored hash); a link whose handshake closed before its connect
