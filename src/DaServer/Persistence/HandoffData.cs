@@ -15,7 +15,7 @@ internal readonly record struct HandOff(ulong To) : IComponent;
 /// </summary>
 internal readonly record struct HandingOff(ulong To, long UntilMs, byte[] Record) : IComponent;
 
-/// <summary>A critical write (<see cref="SaveNow"/>) failed on a copy leaving by handoff: its new owner writes it at once.</summary>
+/// <summary>A write failed on a copy leaving by handoff: its new owner writes it at once.</summary>
 internal struct CriticalPending : IComponent;
 
 /// <summary>The copy's record was taken by node <see cref="To"/>: a node that asked this one for it is sent there.</summary>

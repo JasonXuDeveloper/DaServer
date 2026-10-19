@@ -273,7 +273,7 @@ internal static partial class Handoff
             }
             else if (op == Request)
             {
-                if (!loaded && !ShardDispatch.Owns(world, handlerType.Id, header.Key) && HandedTo(world, handlerType.Id, header.Key) is { } handed && handed != from)
+                if (!loaded && !ShardDispatch.Owns(world, handlerType.Id, header.Key) && HandedRecordTo(world, handlerType.Id, header.Key) is { } handed && handed != from)
                     Moved(node, handlerType.Id, header.Key, from, handed); // its record went there: ask that node
                 else if (!loaded)
                 {
@@ -373,10 +373,10 @@ internal static partial class Handoff
 
         entity.Add<TakenHandoff>() = new TakenHandoff(IdOf(payload)); // read: the same record again is answered "accepted"
         ForgetHanded(world, handlerType.Id, key); // the key is here again: an asker is no longer sent away
-        entity.Add<RestoredRecord>() = new RestoredRecord(payload.ToArray()); // until OnLoad ends (cold: one per move)
         if (store.Enabled && payload[CriticalAt] == 1) entity.Add<SaveNow>();
         if (store.Enabled)
         {
+            entity.Add<RestoredRecord>() = new RestoredRecord(payload.ToArray()); // until OnLoad ends (cold: one per move)
             long every = (long)actor.SaveEvery.TotalMilliseconds;
             entity.Add<Stored>() = new Stored
             {

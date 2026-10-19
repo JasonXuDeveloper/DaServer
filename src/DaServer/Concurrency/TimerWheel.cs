@@ -56,7 +56,9 @@ public sealed class TimerWheel<T>
         ref var e = ref _entries[index];
         e.Item = item;
         long ticks = (long)Math.Ceiling(Math.Max(0, delay.TotalSeconds) * _time.TimestampFrequency / _tickTimestamps);
-        e.Due = Math.Max(TickOf(_time.GetTimestamp()), _current) + ticks + 1;
+        long now = TickOf(_time.GetTimestamp());
+        if (Count == 0 && now > _current) _current = now; // nothing between: Advance does not walk an idle day tick by tick
+        e.Due = Math.Max(now, _current) + ticks + 1;
         Link(index);
         Count++;
         return (long)((e.Generation + _salt) & GenerationMask) << 32 | (uint)index;

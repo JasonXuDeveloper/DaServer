@@ -239,6 +239,18 @@ public sealed partial class GrowthSystem : EcsSystem
     private static void Grow(ref CounterState counter) => counter.Value++;
 }
 
+/// <summary>Throws once on a growing counter when asked to: a user system's bug (the shard must go on).</summary>
+public sealed partial class FaultySystem : EcsSystem
+{
+    public static readonly StrongBox<int> ThrowOnce = new();
+
+    [ForEach, With<Growing>]
+    private static void Trip(in CounterState _)
+    {
+        if (Interlocked.Exchange(ref ThrowOnce.Value, 0) == 1) throw new InvalidOperationException("a bug in a user system");
+    }
+}
+
 /// <summary>Earning ledgers grow every tick: their records change between any two checkpoints.</summary>
 public sealed partial class InterestSystem : EcsSystem
 {

@@ -254,22 +254,22 @@ internal sealed class Shard : CompletionThread
                     if (activity.Rebalance)
                     {
                         activity.Rebalance = false;
-                        World.Update<ShardRebalance>();
+                        Update<ShardRebalance>();
                         activity.DeclaredDead = false;
                     }
 
                     if (activity.NowMs >= nextIdleScan)
                     {
                         nextIdleScan = activity.NowMs + IdleScanMs;
-                        World.Update<ShardIdleScan>();
+                        Update<ShardIdleScan>();
                     }
 
-                    World.Update<ShardMessages>();
+                    Update<ShardMessages>();
 
                     if (now >= nextTick)
                     {
                         Volatile.Write(ref _counters.TickCount, _counters.TickCount + 1);
-                        World.Update();
+                        Update<Tick>();
                         nextTick += _tickInterval;
                         if (now >= nextTick) Volatile.Write(ref _counters.TickOverruns, _counters.TickOverruns + 1); // a tick behind
                         if (now - nextTick > _tickInterval * 5)
@@ -293,7 +293,7 @@ internal sealed class Shard : CompletionThread
         }
         finally
         {
-            Volatile.Write(ref _counters.PassStartedMs, 0); // a shard that stopped is not stalled
+            if (_stopRequested) Volatile.Write(ref _counters.PassStartedMs, 0); // a shard that stopped is not stalled; one that crashed is, for /alive
             Volatile.Write(ref _closed, 1);
             ForwardQueued();
             try
@@ -308,6 +308,26 @@ internal sealed class Shard : CompletionThread
             }
         }
     }
+
+    /// <summary>
+    /// One group's pass (<see cref="Tick"/>: the systems of no group, every tick). A system that throws is logged and the shard goes on
+    /// (as a handler that throws, <see cref="DispatchSystem"/>): one bug must not stop every actor of the shard.
+    /// </summary>
+    private void Update<TGroup>() where TGroup : struct, ISystemGroup
+    {
+        try
+        {
+            if (typeof(TGroup) == typeof(Tick)) World.Update();
+            else World.Update<TGroup>();
+        }
+        catch (Exception e)
+        {
+            Log.ShardFailed(Node.Logger, e, Index);
+        }
+    }
+
+    /// <summary>The tick: <see cref="World.Update()"/>, the systems in no group.</summary>
+    private struct Tick : ISystemGroup;
 
     /// <summary>Singletons, runtime systems, the node's user systems and service instances.</summary>
     private void CreateWorld()

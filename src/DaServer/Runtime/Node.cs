@@ -148,7 +148,7 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
     private RecentView[] _recentViews = [];
 
     /// <summary>
-    /// The views replaced within the handoff timeout, newest first (at most <see cref="RecentView.Kept"/>): who held a key
+    /// The views replaced within the move window (<see cref="Handoff.MoveWindowMs"/>), newest first (at most <see cref="RecentView.Kept"/>): who held a key
     /// before it moved here, and whether its record may still be on its way (<see cref="Handoff"/>). A snapshot.
     /// </summary>
     internal RecentView[] RecentViews => Volatile.Read(ref _recentViews);

@@ -21,7 +21,9 @@ public interface ICluster : IMessageSender
     /// Send <paramref name="message"/> to <paramref name="address"/> once <paramref name="delay"/> has passed (timers as
     /// data: the message is serialized now and held by this shard, then sent as if sent then, so it follows a moved
     /// actor and reaches the actor's mailbox as ordinary mail). Allocates nothing. Call it on a shard thread (actors,
-    /// services, systems); a delay instead of <c>await Task.Delay</c>, which would hold the actor's turn.
+    /// services, systems); a delay instead of <c>await Task.Delay</c>, which would hold the actor's turn. The send lives
+    /// in this node's memory: a node that stops (a scale-in too) or crashes drops it, as one-way delivery is at most once
+    /// (ADR-058). A deadline that must outlive the node is state: a persisted component a system checks.
     /// </summary>
     /// <returns>A handle for <see cref="CancelSend"/>.</returns>
     long SendAfter<TAddr, T>(TimeSpan delay, TAddr address, in T message) where TAddr : struct, IAddress where T : struct;

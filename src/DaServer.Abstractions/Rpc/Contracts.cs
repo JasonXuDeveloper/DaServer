@@ -154,10 +154,10 @@ public readonly partial record struct SessionResumed(ClientSession Session, Clie
 /// <summary>
 /// To the previous session of a resume, from each actor that took the new one, after the last push it sent there: the
 /// client SDK moving its session (make-before-break) delivers the new connection's pushes once every actor said so, in
-/// order after the old connection's. Not delivered to handlers.
+/// order after the old connection's. Internal: no handler can register for it, so one that arrives late is dropped.
 /// </summary>
 [NinoType, Message, ToClient]
-public readonly partial record struct SessionMoved;
+internal readonly partial record struct SessionMoved;
 
 // Session operations: messages to a client address that the node holding the session applies instead of delivering
 // them to the client. To a session (or the Caller): that session; to a client group: every member, on every node.

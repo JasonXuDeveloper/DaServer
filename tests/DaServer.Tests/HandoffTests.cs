@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using DaServer.Persistence;
 
 namespace DaServer.Tests;
@@ -38,7 +39,12 @@ public class HandoffTests(string kind) : ClusterTest
             if (HoldWrites != null) await HoldWrites.Task;
             Interlocked.Add(ref Writes, writes.Length);
             await inner.SaveAsync(writes, accepted, ct);
+            for (int i = 0; i < writes.Length; i++)
+                if (accepted.Span[i]) Written[writes.Span[i].Key.Key] = true;
         }
+
+        /// <summary>The keys whose writes the store accepted (recorded once the write has landed).</summary>
+        public readonly ConcurrentDictionary<long, bool> Written = new();
     }
 
     private Task<Node> StartWith(IActorStore? store, string name) => Start(name, configure: o => o.ActorStore = store);
@@ -56,7 +62,7 @@ public class HandoffTests(string kind) : ClusterTest
         a.LoseRecords = int.MaxValue;
         var b = await Start("b", configure: o => (o.ActorStore, o.CallTimeout) = (store, TimeSpan.FromSeconds(3)));
         await Converged();
-        // All at once, within the handoff window (3 s here, the call timeout): mail that reaches b later loads from the
+        // All at once, within the move window (twice the 3 s call timeout and the store timeout): mail that reaches b later loads from the
         // store, the fallback for a record that never comes. Each ask may wait one handoff timeout for the record again.
         var patient = new CallOptions(TimeSpan.FromSeconds(15));
         var keys = Enumerable.Range(100, 40).ToArray();
@@ -155,7 +161,8 @@ public class HandoffTests(string kind) : ClusterTest
         Assert.That(moved, Is.Not.Empty);
         foreach (int key in moved) Assert.That(await b.Ask(new BankId(key), new Balance()), Is.EqualTo(key), "the record moved");
         store.Failing = false;
-        await Eventually(() => store.Writes >= moved.Length, "b wrote the critical changes it took");
+        // a's own keys retry their failed writes too: wait for each moved key, not for a count of writes.
+        await Eventually(() => moved.All(k => store.Written.ContainsKey(k)), "b wrote the critical changes it took");
         await b.KillAsync();
         await Stop(a);
         var c = await StartWith(store, "c");

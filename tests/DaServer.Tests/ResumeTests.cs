@@ -237,6 +237,28 @@ public class ResumeTests : ClusterTest
         Assert.That(Observed.Events, Does.Not.Contain("closed:520"));
     }
 
+    [Test]
+    public async Task AMoveLeavesItsOldConnectionOnceEveryActorMarkedIt()
+    {
+        // The node answers a resume with how many actors took the session, and each sends SessionMoved on the old one:
+        // the counts agree, so the client says goodbye at once instead of after its (long) call timeout.
+        static void Aged(ClientConnectionOptions o) => o.MaxConnectionAge = TimeSpan.FromSeconds(2);
+        var gateways = new[]
+        {
+            await Start("gw-0", gateway: true, hosts: static _ => false, configure: Secret(TimeSpan.FromSeconds(5)), clients: Aged),
+            await Start("gw-1", gateway: true, hosts: static _ => false, configure: Secret(TimeSpan.FromSeconds(5)), clients: Aged),
+        };
+        await Start("game", configure: Secret(TimeSpan.FromSeconds(5)));
+        await Converged();
+        var client = await LogIn(gateways, 530);
+        Assert.That(await client.Ask(new Enter(new RoomId(79))), Is.True, "a second actor holds the session");
+        client.CallTimeout = TimeSpan.FromSeconds(30);
+        await Eventually(() => gateways.Sum(g => g.SessionCount()) == 1, "the entry connection was not closed");
+
+        await Moved(client);
+        await Eventually(() => gateways.Sum(g => g.SessionCount()) == 1, "the old connection waited for a marker that never came", timeoutMs: 5_000);
+    }
+
     internal sealed class PushCount
     {
         private int _count;

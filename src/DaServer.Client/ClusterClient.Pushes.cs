@@ -30,7 +30,7 @@ public sealed partial class ClusterClient
 
             if (connection == _draining && FrameHeader.Read(frame).MessageId == TypeId<SessionMoved>.Value)
             {
-                Interlocked.Increment(ref _movedMarkers); // the runtime's marker, not a push for the handlers
+                if (++_movedMarkers >= _markersAwaited) _allMoved?.TrySetResult(true); // the runtime's marker, not a push
                 return;
             }
 
@@ -50,11 +50,37 @@ public sealed partial class ClusterClient
         lock (_pushGate)
         {
             Volatile.Write(ref _draining, old);
-            Volatile.Write(ref _movedMarkers, 0);
+            _movedMarkers = 0;
+            _markersAwaited = int.MaxValue; // until the resume says how many actors took the session
+            _allMoved = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         }
     }
 
-    private int _movedMarkers; // SessionMoved received on the connection a move drains
+    // Under the gate: SessionMoved received on the connection a move drains, how many it waits for, and the signal.
+    private int _movedMarkers, _markersAwaited;
+    private TaskCompletionSource<bool>? _allMoved;
+
+    /// <summary>
+    /// Completes once each of the <paramref name="actors"/> that took the session sent its <see cref="SessionMoved"/> on
+    /// <paramref name="old"/>, or <paramref name="old"/> closed (it brings no more).
+    /// </summary>
+    private Task MarkersOf(IFrameChannel old, int actors)
+    {
+        lock (_pushGate)
+        {
+            if (_draining != old || _allMoved == null) return Task.CompletedTask;
+            _markersAwaited = actors;
+            if (_movedMarkers >= actors || old.IsClosed) _allMoved.TrySetResult(true);
+            return _allMoved.Task;
+        }
+    }
+
+    /// <summary>A connection other than the current one closed: if a move drains it, no marker comes any more.</summary>
+    private void DrainedConnectionClosed(IFrameChannel connection)
+    {
+        lock (_pushGate)
+            if (_draining == connection) _allMoved?.TrySetResult(true);
+    }
 
     /// <summary>
     /// The connection <paramref name="old"/> left drained (its goodbye was answered, or it closed), or the move failed (<paramref name="keep"/>

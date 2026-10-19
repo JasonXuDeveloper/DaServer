@@ -9,6 +9,7 @@ public sealed partial class ClusterClient
         {
             // A connection the session moved away from (or a move's new one that failed): its calls get no reply now.
             _pending.FailOwnedBy(connection, RpcStatus.Disconnected);
+            DrainedConnectionClosed(connection);
             return;
         }
 
@@ -136,8 +137,8 @@ public sealed partial class ClusterClient
         long deadline = Platform.Milliseconds + (long)CallTimeout.TotalMilliseconds;
         // Every actor that took the new session marks the end of what it pushed to the old one (SessionMoved): pushes
         // still on their way there arrive before the new connection's go on. A closed connection brings no more.
-        while (!old.IsClosed && Volatile.Read(ref _movedMarkers) < actors && Platform.Milliseconds < deadline)
-            await Task.Delay(10).ConfigureAwait(false);
+        var moved = MarkersOf(old, actors);
+        if (!moved.IsCompleted) await Task.WhenAny(moved, Task.Delay(CallTimeout)).ConfigureAwait(false); // cold: once per move
         try
         {
             await GoodbyeAsync(old).ConfigureAwait(false); // its answer is the last frame its session is sent

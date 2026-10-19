@@ -111,6 +111,19 @@ public class SingleNodeTests : ClusterTest
     }
 
     [Test]
+    public async Task ASystemThatThrowsLeavesTheShardServing()
+    {
+        Faults.Allow("ShardFailed"); // what the test provokes
+        await _node.Ask(new CounterId(8), new Grow());
+        Volatile.Write(ref FaultySystem.ThrowOnce.Value, 1);
+        await Eventually(() => Volatile.Read(ref FaultySystem.ThrowOnce.Value) == 0, "the system threw");
+        int after = await _node.Ask(new CounterId(8), new Get());
+        await Task.Delay(TimeSpan.FromMilliseconds(100));
+        Assert.That(await _node.Ask(new CounterId(8), new Get()), Is.GreaterThan(after), "the shard still ticks its systems");
+        Assert.That(await _node.Ask(new CounterId(8), new Add(1)), Is.GreaterThan(after), "and serves its actors");
+    }
+
+    [Test]
     public async Task DispatchFiltersRefuseBeforeTheHandlerRuns()
     {
         var filter = MessageFilters.Register<Guarded>(static (object _, in Guarded m, in CallContext _) => m.N < 0 ? RpcStatus.Forbidden : RpcStatus.Ok);

@@ -29,7 +29,7 @@ internal static partial class Handoff
         world.GetSingleton<HandoffsSeen>().Handed.Remove(new ActorAddress(handlerTypeId, key));
 
     /// <summary>Where this shard handed the key's record within the move window, or null.</summary>
-    private static ulong? HandedTo(World world, uint handlerTypeId, long key) =>
+    private static ulong? HandedRecordTo(World world, uint handlerTypeId, long key) =>
         world.GetSingleton<HandoffsSeen>().Handed.TryGetValue(new ActorAddress(handlerTypeId, key), out var entry) &&
         entry.UntilMs >= world.GetSingleton<ShardActivity>().NowMs ? entry.PassedTo : null;
 
