@@ -169,8 +169,9 @@ public class HandoffTests(string kind) : ClusterTest
         foreach (int key in moved) Assert.That(await c.Ask(new BankId(key), new Balance()), Is.EqualTo(key), $"key {key} survived b's crash");
     }
 
-    [Test]
-    public async Task ARecordItsNewOwnerCannotTakeGoesBackToItsSenderAndTheStore()
+    [TestCase(false)]
+    [TestCase(true)]
+    public async Task ARecordItsNewOwnerCannotTakeGoesBackToItsSenderAndTheStore(bool constructorThrows)
     {
         // b's copy of the actor throws while taking the record (a setting is user code): b refuses it, so a takes its
         // state back and writes it, instead of b holding a copy that never runs and a dropping its own.
@@ -179,7 +180,8 @@ public class HandoffTests(string kind) : ClusterTest
         var a = await StartWith(store, "a");
         for (int key = 8000; key < 8040; key++) Assert.That(await a.Ask(new BankId(key), new Deposit(key, false)), Is.EqualTo(key));
         Assert.That(store.Written, Is.Empty, "nothing written yet: these keys write on unload only");
-        Bank.SettingsThrow.Value = 1;
+        var flag = constructorThrows ? Bank.ConstructorThrows : Bank.SettingsThrow;
+        flag.Value = 1;
         int[] moved;
         try
         {
@@ -191,14 +193,14 @@ public class HandoffTests(string kind) : ClusterTest
         }
         finally
         {
-            Bank.SettingsThrow.Value = 0;
+            flag.Value = 0;
         }
 
         foreach (int key in moved) Assert.That(await a.Ask(new BankId(key), new Balance()), Is.EqualTo(key), $"key {key} kept its deposit");
     }
 
     [Test]
-    public async Task AStateThatDoesNotSerializeDoesNotMoveAndTheNewOwnerLoadsTheLastRecord()
+    public async Task AStateThatDoesNotSerializeDoesNotMoveAndTheNewOwnerLoadsItAnew()
     {
         // Tangles whose state no longer serializes leave a when b joins: their records cannot be sent nor written, so
         // their copies go (the store keeps their last record, none here) and b loads them anew; the stop goes on.

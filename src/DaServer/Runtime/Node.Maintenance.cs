@@ -57,7 +57,7 @@ internal sealed partial class Node
             }
 
             CheckStalls(now);
-            foreach (var feature in Options.Features) feature.Maintain(now, late);
+            ForEachFeature((now, late), static (f, t) => f.Maintain(t.now, t.late), nameof(NodeFeature.Maintain));
         }
         catch (Exception e)
         {

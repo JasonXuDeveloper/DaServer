@@ -158,15 +158,26 @@ internal static partial class Handoff
     /// <summary>The handoff was refused or not answered: the copy takes its state back, then the store keeps it.</summary>
     public static void Reclaim(World world, Entity entity, byte[] record)
     {
+        var actor = entity.Get<ActorRef>().Actor;
         try
         {
             Records.Read(entity, record.AsSpan(RecordHeader), world.GetSingleton<ShardStore>().ById);
-            entity.Get<ActorRef>().Actor.InitializeEntity(entity); // the states not moved start new: user initializers
         }
         catch (Exception e)
         {
-            // The components read so far are the record's: the final write stores them; the copy goes either way.
-            Log.HandoffUnreadable(world.Logger, e, entity.Get<ActorRef>().Actor);
+            // Its own record, part read: writing that would replace the store's full record with a part of it.
+            Log.RestoreFailed(world.Logger, e, actor);
+            entity.Add<Removing>() = new Removing(RpcStatus.Error, "Taking the actor's record back failed: " + e.Message);
+            return;
+        }
+
+        try
+        {
+            actor.InitializeEntity(entity); // the states not moved start new: user initializers
+        }
+        catch (Exception e)
+        {
+            Log.ActorFailed(world.Logger, e, "Reclaim", actor); // the record's states are all here: they are written
         }
 
         Fallback(entity);
@@ -366,7 +377,9 @@ internal static partial class Handoff
     /// view (the sender gives its own key away: its view is ahead of this one, it is leaving and this node has not
     /// heard yet). Refused for an actor already running here (it loaded from the store meanwhile; the sender writes its
     /// record, versions settle who wins), for a fenced copy (it goes without a write), and for a new one while this shard
-    /// stops (a copy already waiting takes it and hands it on as it leaves).
+    /// stops (a copy already waiting takes it and hands it on as it leaves). Refused too when it cannot be taken: the
+    /// record does not read, or the actor throws while created (its constructor, settings or state initializers); the
+    /// sender then takes its state back and writes it.
     /// </summary>
     private static bool Restore(World world, HandlerTypeInfo handlerType, long key, ReadOnlySpan<byte> payload, bool loaded, Entity entity,
         ulong from)
@@ -390,7 +403,7 @@ internal static partial class Handoff
         }
         catch (Exception e)
         {
-            Log.HandoffUnreadable(world.Logger, e, (object?)actor ?? handlerType);
+            Log.HandoffUnreadable(world.Logger, e, (object?)actor ?? new ActorAddress(handlerType.Id, key));
             if (loaded) ShardDispatch.BeginLoad(world, entity, actor!);
             else if (actor != null) entity.Add<Removing>() = new Removing(RpcStatus.Ok, null); // nothing queued yet
             return false;

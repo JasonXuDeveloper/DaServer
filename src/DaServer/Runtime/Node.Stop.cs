@@ -50,7 +50,7 @@ internal sealed partial class Node
         if (!stopped.IsCompleted) ReportUnloaded();
         Phase("unload", phase);
 
-        StopFeatures(crashed: false);
+        ForEachFeature(false, static (f, crashed) => f.Stop(crashed), nameof(NodeFeature.Stop));
         CloseLinks();
         Phase("close", phase);
         Log.NodeStopped(Logger, Options.Name, Id);
@@ -92,7 +92,7 @@ internal sealed partial class Node
         if (Interlocked.Exchange(ref _started, 2) != 1) return;
         _killed = true;
         CloseLinks();
-        StopFeatures(crashed: true);
+        ForEachFeature(true, static (f, crashed) => f.Stop(crashed), nameof(NodeFeature.Stop));
         await StopShards().ConfigureAwait(false);
     }
 
@@ -109,28 +109,12 @@ internal sealed partial class Node
         Log.MinoritySide(Logger, Options.Name, reachable, lost);
         _killed = true;
         CloseLinks();
-        StopFeatures(crashed: true);
+        ForEachFeature(true, static (f, crashed) => f.Stop(crashed), nameof(NodeFeature.Stop));
         await StopShards(fenced: true).ConfigureAwait(false);
         Downed?.Invoke();
     }
 
-    /// <summary>Stop every feature, each guarded: one that throws does not keep the links or shards from stopping.</summary>
-    private void StopFeatures(bool crashed)
-    {
-        foreach (var feature in Options.Features)
-        {
-            try
-            {
-                feature.Stop(crashed);
-            }
-            catch (Exception e)
-            {
-                Log.FeatureFailed(Logger, e, feature.GetType().Name, nameof(NodeFeature.Stop));
-            }
-        }
-    }
-
-        private Task StopShards(bool fenced = false)
+    private Task StopShards(bool fenced = false)
     {
         foreach (var shard in _shards) shard.RequestStop(fenced);
         return Task.WhenAll(Array.ConvertAll(_shards, static s => s.Stopped));

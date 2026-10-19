@@ -114,6 +114,6 @@ internal static partial class Log
     [LoggerMessage(Level = LogLevel.Error, Message = "The record of {Actor} was written by another node (expected version {Version}): this node no longer owns it, its copy is dropped")]
     public static partial void RecordTaken(ILogger logger, object actor, long version);
 
-    [LoggerMessage(Level = LogLevel.Error, Message = "The record handed over for {Actor} could not be read: it loads from the store")]
+    [LoggerMessage(Level = LogLevel.Error, Message = "Taking the record handed over for {Actor} failed (unreadable, or the actor threw while created): refused, its sender keeps it")]
     public static partial void HandoffUnreadable(ILogger logger, Exception error, object actor);
 }

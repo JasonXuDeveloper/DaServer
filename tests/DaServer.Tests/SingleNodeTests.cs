@@ -116,6 +116,7 @@ public class SingleNodeTests : ClusterTest
         // It throws before the runtime's mail systems of the same group on every wake: they run anyway.
         Faults.Allow("SystemFailed"); // what the test provokes
         await _node.Ask(new CounterId(8), new Grow());
+        long failed = _node.Failed;
         FaultySystem.Throwing.Value = 1;
         try
         {
@@ -124,6 +125,7 @@ public class SingleNodeTests : ClusterTest
             await Eventually(async () => await _node.Ask(new CounterId(8), new Get()) > after, "the shard still ticks its systems");
             Assert.That(await _node.Ask(new CounterId(8), new Add(1)), Is.GreaterThan(after), "and serves its actors");
             Assert.That(Faults.Count("SystemFailed"), Is.LessThanOrEqualTo(4), "logged at most once a second per shard");
+            Assert.That(_node.Failed, Is.GreaterThan(failed + Faults.Count("SystemFailed")), "every failing pass is counted, logged or not");
         }
         finally
         {

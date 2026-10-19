@@ -436,6 +436,14 @@ public sealed class Brittle : Actor<BrittleId, Brittleness>
 /// </summary>
 public sealed class Bank : Actor<BankId, Ledger>
 {
+    /// <summary>While 1, a new bank's constructor throws (user code in an actor's construction).</summary>
+    public static readonly StrongBox<int> ConstructorThrows = new();
+
+    public Bank()
+    {
+        if (ConstructorThrows.Value == 1) throw new InvalidOperationException("a constructor threw");
+    }
+
     public override TimeSpan SaveEvery => SettingsThrow.Value == 1 && Key >= 8000 ? throw new InvalidOperationException("a setting threw")
         : Key < 100 ? TimeSpan.FromMilliseconds(100) : TimeSpan.Zero;
 

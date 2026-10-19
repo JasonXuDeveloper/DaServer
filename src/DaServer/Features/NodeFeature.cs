@@ -10,7 +10,10 @@ namespace DaServer.Features;
 /// Order: <see cref="Start"/> (IO side: address handlers, listeners) before the shards start, <see cref="ConfigureShard"/>
 /// on each shard thread as its world is built, then the node joins the cluster. On a graceful stop
 /// <see cref="DrainAsync"/> runs while the node is leaving and the shards still run, <see cref="Stop"/> after the shards
-/// stopped. A crash simulation calls only <see cref="Stop"/>(crashed: true).
+/// stopped. A crash simulation calls only <see cref="Stop"/>(crashed: true). <see cref="OnMemberDead"/> and
+/// <see cref="OnViewChanged"/> run after the node's own steps for that view. A hook that throws is logged
+/// (<c>FeatureFailed</c>) and skipped: the other features and the node go on (<see cref="Start"/> and
+/// <see cref="ConfigureShard"/> excepted: a node or shard that cannot start does not run).
 /// </remarks>
 public abstract class NodeFeature
 {

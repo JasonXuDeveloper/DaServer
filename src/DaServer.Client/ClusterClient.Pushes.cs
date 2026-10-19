@@ -152,29 +152,40 @@ public sealed partial class ClusterClient
         }
     }
 
-    /// <summary>Raise one of the client's events: a subscriber that throws is reported (<see cref="HandlerFailed"/>) and the client goes on.</summary>
+    /// <summary>
+    /// Raise one of the client's events, subscriber by subscriber: one that throws is reported
+    /// (<see cref="HandlerFailed"/>) and the others and the client go on. Cold: connection changes only.
+    /// </summary>
     private void Raise(Action? handler)
     {
-        try
+        if (handler == null) return;
+        foreach (var subscriber in handler.GetInvocationList())
         {
-            handler?.Invoke();
-        }
-        catch (Exception e)
-        {
-            Failed(e);
+            try
+            {
+                ((Action)subscriber)();
+            }
+            catch (Exception e)
+            {
+                Failed(e);
+            }
         }
     }
 
     /// <inheritdoc cref="Raise(Action?)"/>
     private void Raise(Action<Exception?>? handler, Exception? error)
     {
-        try
+        if (handler == null) return;
+        foreach (var subscriber in handler.GetInvocationList())
         {
-            handler?.Invoke(error);
-        }
-        catch (Exception e)
-        {
-            Failed(e);
+            try
+            {
+                ((Action<Exception?>)subscriber)(error);
+            }
+            catch (Exception e)
+            {
+                Failed(e);
+            }
         }
     }
 

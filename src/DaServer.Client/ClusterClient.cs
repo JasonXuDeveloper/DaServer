@@ -100,8 +100,9 @@ public sealed partial class ClusterClient : IMessageSender, IChannelHandler, IAs
 
     /// <summary>
     /// A registered handler threw on a pushed message (or its returned task failed), or a subscriber of the client's other
-    /// events threw: the other handlers still receive it and the connection (and a reconnect) goes on, as a failed
-    /// handler on a node fails only its own turn. Unobserved without a subscriber,
+    /// events threw: the other handlers and subscribers still run and the connection (and a reconnect) goes on, as a
+    /// failed handler on a node fails only its own turn. Raised on the thread that ran the handler or subscriber: the
+    /// application's for pushes queued for <see cref="ProcessCallbacks"/>, the connection's otherwise. Unobserved without a subscriber,
     /// also with <see cref="ProcessCallbacks"/>: subscribe to see them.
     /// </summary>
     public event Action<Exception>? HandlerFailed;

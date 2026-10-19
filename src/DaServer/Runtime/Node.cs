@@ -352,10 +352,6 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
         if (mixed) Log.Builds(Logger, builds.Count, summary);
     }
 
-    /// <summary>
-    /// Called by membership when the view changes: shards drop actors they no longer own, and actors that knew sessions
-    /// of a client-facing node that died (it could not close them) receive <see cref="SessionClosed"/> for them.
-    /// </summary>
     /// <summary>Whether a member other than <paramref name="dead"/> lives at its address (it restarted there).</summary>
     private static bool LiveAt(ClusterView view, ClusterMember dead)
     {
@@ -365,6 +361,10 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
         return false;
     }
 
+    /// <summary>
+    /// Called by membership when the view changes: shards drop actors they no longer own, and actors that knew sessions
+    /// of a client-facing node that died (it could not close them) receive <see cref="SessionClosed"/> for them.
+    /// </summary>
     internal void OnViewChanged()
     {
         var view = View;
@@ -391,30 +391,28 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
         ReportBuilds(view);
         _sessionNodes.OnViewChanged(view);
 
-        // The features last, each guarded: a feature is user code too, and the node's own steps above must not depend on it.
+        // The features last: the node's own steps above must not depend on them.
         foreach (var member in view.Members)
             if (member.Status == MemberStatus.Dead && _deadReported.Add(member.NodeId))
-                foreach (var feature in Options.Features)
-                {
-                    try
-                    {
-                        feature.OnMemberDead(member);
-                    }
-                    catch (Exception e)
-                    {
-                        Log.FeatureFailed(Logger, e, feature.GetType().Name, nameof(NodeFeature.OnMemberDead));
-                    }
-                }
+                ForEachFeature(member, static (f, m) => f.OnMemberDead(m), nameof(NodeFeature.OnMemberDead));
+        ForEachFeature(view, static (f, v) => f.OnViewChanged(v), nameof(NodeFeature.OnViewChanged));
+    }
 
+    /// <summary>
+    /// Run a hook of every feature, each guarded: a feature is user code too, so one that throws is logged
+    /// (<c>FeatureFailed</c>) and the other features and the node's own work go on. Static hooks: nothing is allocated.
+    /// </summary>
+    private void ForEachFeature<TState>(TState state, Action<NodeFeature, TState> hook, string name)
+    {
         foreach (var feature in Options.Features)
         {
             try
             {
-                feature.OnViewChanged(view);
+                hook(feature, state);
             }
             catch (Exception e)
             {
-                Log.FeatureFailed(Logger, e, feature.GetType().Name, nameof(NodeFeature.OnViewChanged));
+                Log.FeatureFailed(Logger, e, feature.GetType().Name, name);
             }
         }
     }
