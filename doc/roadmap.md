@@ -23,6 +23,9 @@ Keep this file current: tick items when done, add items when scope changes.
 12. N9 hot reload (waits for the EasyEcs release it needs).
 13. N4 route completeness, N11 generated filters (on the G filter point), K3-K5, open cleanup, quality items. Later
     optional modules: `DaServer.Reminders`, `DaServer.Topics`, leases for strict singletons.
+14. After the self-review converged (agreed): Z3 and Z4; P2 `DaServer.Persistence.Redis` and G7 browser clients;
+    group broadcasts only to nodes with members (ADR-029), client sessions as ECS entities, the turn's caller as a
+    component; the server-side NPC sample.
 EasyEcs in parallel when DaServer waits on benchmarks: the Friflo gap, comparison tables in the docs.
 
 ## Runtime (`src/DaServer`)
