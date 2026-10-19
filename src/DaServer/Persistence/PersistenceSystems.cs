@@ -136,7 +136,7 @@ internal sealed partial class PersistSystem : EcsSystem
             return Outcome.Unchanged;
         }
 
-        store.Saves.Add(actor, new StoredKey(target.HandlerType.Id, target.Key), stored.Version, record, hash, actor.Has<FinalSave>());
+        store.Saves.Add(actor, new StoredKey(target.HandlerType.Id, target.Key), stored.Version, record, hash, stored.Attempt, actor.Has<FinalSave>());
         actor.Add<Saving>();
         return Outcome.Queued;
     }
@@ -146,7 +146,7 @@ internal sealed partial class PersistSystem : EcsSystem
     {
         var error = batch.TakeResult();
         if (error != null) Log.SaveFailed(world.Logger, error, batch.Count);
-        var accepted = batch.Accepted;
+        var versions = batch.Versions;
         var writes = batch.Writes;
         long now = world.GetSingleton<ShardActivity>().NowMs;
         for (int i = 0; i < batch.Count; i++)
@@ -158,6 +158,7 @@ internal sealed partial class PersistSystem : EcsSystem
             if (error != null)
             {
                 stored.RetryAtMs = now + 1000;
+                stored.Attempt = writes[i].Hash; // it may have landed: the retry says so (the latest attempt only)
                 // The failed write is asked for again (SaveNow): it is retried after the delay, not at the next
                 // checkpoint (none with SaveEvery zero). A final save stays pending anyway.
                 // A copy leaving by handoff does not wait for the store: its record carries the last written hash and
@@ -167,10 +168,11 @@ internal sealed partial class PersistSystem : EcsSystem
                 continue;
             }
 
-            if (accepted[i])
+            if (versions[i] != 0)
             {
-                stored.Version = writes[i].ExpectedVersion + 1;
-                stored.Hash = batch.Hashes[i];
+                stored.Version = versions[i];
+                stored.Hash = writes[i].Hash;
+                stored.Attempt = 0;
                 // A checkpoint taken before an unload that began meanwhile: the final save writes what changed since
                 // (Final, next wake; nothing when nothing did).
                 if (!batch.Finals[i]) continue;

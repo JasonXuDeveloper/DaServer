@@ -359,4 +359,21 @@ public class LinkAuthTests : ClusterTest
         Assert.That(auth.Verify(7, 1, "10.0.0.1", 5000, default, proof), Does.Contain("challenge"), "a Hello before any challenge");
         Assert.That(new LinkAuth("other", "s3cret").Verify(7, 1, "10.0.0.1", 5000, challenge, proof), Is.Not.Null, "another cluster");
     }
+
+    /// <summary>A feature whose pulse source throws (user code read on every gossip round).</summary>
+    private sealed class BadPulse : NodeFeature
+    {
+        protected internal override void Start(INodeContext node) => node.AddPulse(7, static () => throw new InvalidOperationException("a pulse source threw"));
+    }
+
+    [Test]
+    public async Task ANodeWhoseFeaturePulseThrowsStillDetectsACrash()
+    {
+        Faults.Allow("FeatureFailed"); // what the test provokes
+        var a = await Start("a", configure: static o => o.Features.Add(new BadPulse()));
+        var b = await Start("b");
+        await Eventually(() => a.View.UpMembers.Length == 2 && b.View.UpMembers.Length == 2, "both joined");
+        await b.KillAsync();
+        await Eventually(() => a.View.TryGetMember(b.Id, out var m) && m.Status == MemberStatus.Dead, "a's failure detection still runs", 15_000);
+    }
 }

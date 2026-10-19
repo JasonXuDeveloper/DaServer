@@ -63,6 +63,8 @@ public sealed partial class ClusterClient
                 Use(channel);
                 Volatile.Write(ref _reconnecting, 0);
                 Raise(Reconnected);
+                // It closed after the resume and before the flag cleared: its close found a reconnect still running.
+                if (channel.IsClosed && !_disposed) Lost(null);
                 return;
             }
             catch (RpcException e) when (e.Status == RpcStatus.Forbidden)

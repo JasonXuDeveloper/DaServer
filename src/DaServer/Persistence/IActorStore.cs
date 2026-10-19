@@ -9,10 +9,17 @@ public readonly record struct StoredKey(uint HandlerTypeId, long Key);
 public readonly record struct StoredRecord(long Version, ReadOnlyMemory<byte> Data);
 
 /// <summary>
-/// A record to write if the store still holds <see cref="ExpectedVersion"/> for its key (0: none yet); it becomes
-/// version <see cref="ExpectedVersion"/> + 1. A different stored version means another node owns the actor now.
+/// A record to write if the store still holds <see cref="ExpectedVersion"/> for its key (0: none yet); it then gets the
+/// next version. A different stored version means another node owns the actor now, with one exception: the owner's
+/// previous write whose answer was lost (<see cref="Attempt"/>, the hash of what it sent; 0 when none). A store that
+/// holds version <see cref="ExpectedVersion"/> + 1 with that hash took that write: it writes this one after it.
 /// </summary>
-public readonly record struct StoredWrite(StoredKey Key, long ExpectedVersion, ReadOnlyMemory<byte> Data);
+/// <param name="Key">The actor.</param>
+/// <param name="ExpectedVersion">The version the writer last read or wrote.</param>
+/// <param name="Data">The record.</param>
+/// <param name="Hash">The record's hash: stored with it, so a write retried after a lost answer can tell it landed.</param>
+/// <param name="Attempt">The hash of the writer's previous write whose answer was lost, or 0.</param>
+public readonly record struct StoredWrite(StoredKey Key, long ExpectedVersion, ReadOnlyMemory<byte> Data, ulong Hash, ulong Attempt);
 
 /// <summary>
 /// Where actors' records live (ADR-068): all a backend implements. Calls come in batches (the loads and saves of one
@@ -37,10 +44,11 @@ public interface IActorStore
     ValueTask ClaimAsync(ReadOnlyMemory<StoredKey> keys, Memory<StoredRecord> records, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Write every record whose key still holds its expected version, atomically per record;
-    /// <paramref name="accepted"/>[i] says whether <paramref name="writes"/>[i] was written.
+    /// Write every record whose key still holds its expected version (or, after a lost answer, the version its
+    /// <see cref="StoredWrite.Attempt"/> made), atomically per record, with its hash; <paramref name="versions"/>[i] is
+    /// the version <paramref name="writes"/>[i] was written at, 0 when it was refused.
     /// </summary>
-    ValueTask SaveAsync(ReadOnlyMemory<StoredWrite> writes, Memory<bool> accepted, CancellationToken cancellationToken = default);
+    ValueTask SaveAsync(ReadOnlyMemory<StoredWrite> writes, Memory<long> versions, CancellationToken cancellationToken = default);
 }
 
 /// <summary>
@@ -54,6 +62,7 @@ public sealed class InMemoryActorStore : IActorStore
     private sealed class Entry
     {
         public long Version;
+        public ulong Hash; // of the last record written
         public byte[] Buffer = [];
         public int Length;
     }
@@ -100,18 +109,20 @@ public sealed class InMemoryActorStore : IActorStore
             return _records.TryGetValue(key, out var entry) ? new StoredRecord(entry.Version, entry.Buffer.AsSpan(0, entry.Length).ToArray()) : default;
     }
 
-    public ValueTask SaveAsync(ReadOnlyMemory<StoredWrite> writes, Memory<bool> accepted, CancellationToken cancellationToken = default)
+    public ValueTask SaveAsync(ReadOnlyMemory<StoredWrite> writes, Memory<long> versions, CancellationToken cancellationToken = default)
     {
         var from = writes.Span;
-        var to = accepted.Span;
+        var to = versions.Span;
         lock (_gate)
             for (int i = 0; i < from.Length; i++)
             {
                 var write = from[i];
                 ref var entry = ref CollectionsMarshal.GetValueRefOrAddDefault(_records, write.Key, out bool exists);
-                to[i] = (exists ? entry!.Version : 0) == write.ExpectedVersion;
-                if (!to[i])
+                long version = exists ? entry!.Version : 0;
+                bool landed = write.Attempt != 0 && version == write.ExpectedVersion + 1 && entry!.Hash == write.Attempt;
+                if (version != write.ExpectedVersion && !landed)
                 {
+                    to[i] = 0;
                     if (!exists) _records.Remove(write.Key); // looking it up added it
                     continue;
                 }
@@ -120,7 +131,8 @@ public sealed class InMemoryActorStore : IActorStore
                 if (entry.Buffer.Length < write.Data.Length) entry.Buffer = new byte[Math.Max(write.Data.Length, entry.Buffer.Length * 2)];
                 write.Data.Span.CopyTo(entry.Buffer); // the caller reuses its buffer once this call returns
                 entry.Length = write.Data.Length;
-                entry.Version++;
+                entry.Hash = write.Hash;
+                to[i] = ++entry.Version;
             }
 
         return default;

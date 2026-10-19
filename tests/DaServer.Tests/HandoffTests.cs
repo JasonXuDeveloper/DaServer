@@ -32,15 +32,15 @@ public class HandoffTests(string kind) : ClusterTest
 
         public volatile bool Failing;
 
-        public async ValueTask SaveAsync(ReadOnlyMemory<StoredWrite> writes, Memory<bool> accepted, CancellationToken ct = default)
+        public async ValueTask SaveAsync(ReadOnlyMemory<StoredWrite> writes, Memory<long> versions, CancellationToken ct = default)
         {
             if (Failing) throw new InvalidOperationException("the store is down");
             WriteStarted.TrySetResult();
             if (HoldWrites != null) await HoldWrites.Task;
             Interlocked.Add(ref Writes, writes.Length);
-            await inner.SaveAsync(writes, accepted, ct);
+            await inner.SaveAsync(writes, versions, ct);
             for (int i = 0; i < writes.Length; i++)
-                if (accepted.Span[i]) Written[writes.Span[i].Key.Key] = true;
+                if (versions.Span[i] != 0) Written[writes.Span[i].Key.Key] = true;
         }
 
         /// <summary>The keys whose writes the store accepted (recorded once the write has landed).</summary>

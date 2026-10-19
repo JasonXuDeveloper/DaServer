@@ -37,17 +37,61 @@ public class PersistenceEdgeTests(string kind) : ClusterTest
         public ValueTask ClaimAsync(ReadOnlyMemory<StoredKey> keys, Memory<StoredRecord> records, CancellationToken ct = default) =>
             inner.ClaimAsync(keys, records, ct);
 
-        public async ValueTask SaveAsync(ReadOnlyMemory<StoredWrite> writes, Memory<bool> accepted, CancellationToken ct = default)
+        public async ValueTask SaveAsync(ReadOnlyMemory<StoredWrite> writes, Memory<long> versions, CancellationToken ct = default)
         {
             var gate = _gate;
             _started.TrySetResult();
             if (gate != null) await gate.Task;
             Interlocked.Add(ref Writes, writes.Length);
-            await inner.SaveAsync(writes, accepted, ct);
+            await inner.SaveAsync(writes, versions, ct);
         }
     }
 
     private Task<Node> StartWith(IActorStore store, string name = "single") => Start(name, configure: o => o.ActorStore = store);
+
+    /// <summary>Its first write lands, then the call fails: the answer was lost after the commit.</summary>
+    private sealed class LandsThenFails(IActorStore inner) : IActorStore
+    {
+        private int _fail = 1;
+        public int Done;
+
+        public ValueTask InitializeAsync(CancellationToken ct = default) => inner.InitializeAsync(ct);
+
+        public ValueTask ClaimAsync(ReadOnlyMemory<StoredKey> keys, Memory<StoredRecord> records, CancellationToken ct = default) =>
+            inner.ClaimAsync(keys, records, ct);
+
+        public async ValueTask SaveAsync(ReadOnlyMemory<StoredWrite> writes, Memory<long> versions, CancellationToken ct = default)
+        {
+            try
+            {
+                await inner.SaveAsync(writes, versions, ct);
+                if (Interlocked.Decrement(ref _fail) >= 0) throw new IOException("the connection reset after the commit");
+            }
+            finally
+            {
+                Interlocked.Increment(ref Done);
+            }
+        }
+    }
+
+    [Test]
+    public async Task AWriteWhoseAnswerWasLostDoesNotFenceItsOwner()
+    {
+        // The critical write of 5 lands but fails; 6 more is acknowledged meanwhile; the retry (from the same version)
+        // names the lost write, so the store writes 11 after it instead of refusing the owner as a stale one.
+        Faults.Allow("SaveFailed"); // what the test provokes
+        var store = new LandsThenFails(_stores.Create());
+        var node = await StartWith(store);
+        Assert.That(await node.Ask(new BankId(500), new Deposit(5, Critical: true)), Is.EqualTo(5));
+        await Eventually(() => Volatile.Read(ref store.Done) >= 1, "the first write landed and failed");
+        Assert.That(await node.Ask(new BankId(500), new Deposit(6, Critical: true)), Is.EqualTo(11));
+        await Eventually(() => Volatile.Read(ref store.Done) >= 2, "the retry was answered");
+        Assert.That(await node.Ask(new BankId(500), new Balance()), Is.EqualTo(11), "the owner was not fenced");
+        await node.KillAsync();
+
+        var again = await StartWith(store, "again");
+        Assert.That(await again.Ask(new BankId(500), new Balance()), Is.EqualTo(11), "the acknowledged deposit was written");
+    }
 
     [Test]
     public async Task ARecordThatDoesNotSerializeHoldsNoOtherWrite()
@@ -196,8 +240,8 @@ public class PersistenceEdgeTests(string kind) : ClusterTest
         public ValueTask ClaimAsync(ReadOnlyMemory<StoredKey> keys, Memory<StoredRecord> records, CancellationToken ct = default) =>
             Interlocked.Decrement(ref FailLoads) >= 0 ? ValueTask.FromException(new IOException("store unavailable")) : inner.ClaimAsync(keys, records, ct);
 
-        public ValueTask SaveAsync(ReadOnlyMemory<StoredWrite> writes, Memory<bool> accepted, CancellationToken ct = default) =>
-            Interlocked.Decrement(ref FailWrites) >= 0 ? ValueTask.FromException(new IOException("store unavailable")) : inner.SaveAsync(writes, accepted, ct);
+        public ValueTask SaveAsync(ReadOnlyMemory<StoredWrite> writes, Memory<long> versions, CancellationToken ct = default) =>
+            Interlocked.Decrement(ref FailWrites) >= 0 ? ValueTask.FromException(new IOException("store unavailable")) : inner.SaveAsync(writes, versions, ct);
     }
 
     [Test]
@@ -227,8 +271,8 @@ public class PersistenceEdgeTests(string kind) : ClusterTest
             await inner.ClaimAsync(keys, records, ct);
         }
 
-        public ValueTask SaveAsync(ReadOnlyMemory<StoredWrite> writes, Memory<bool> accepted, CancellationToken ct = default) =>
-            inner.SaveAsync(writes, accepted, ct);
+        public ValueTask SaveAsync(ReadOnlyMemory<StoredWrite> writes, Memory<long> versions, CancellationToken ct = default) =>
+            inner.SaveAsync(writes, versions, ct);
 
         private static void InterlockedMax(ref int target, int value)
         {
@@ -265,10 +309,10 @@ public class PersistenceEdgeTests(string kind) : ClusterTest
             await inner.ClaimAsync(keys, records, ct);
         }
 
-        public async ValueTask SaveAsync(ReadOnlyMemory<StoredWrite> writes, Memory<bool> accepted, CancellationToken ct = default)
+        public async ValueTask SaveAsync(ReadOnlyMemory<StoredWrite> writes, Memory<long> versions, CancellationToken ct = default)
         {
             if (Interlocked.Decrement(ref HangWrites) >= 0) await Task.Delay(Timeout.Infinite, ct);
-            await inner.SaveAsync(writes, accepted, ct);
+            await inner.SaveAsync(writes, versions, ct);
         }
     }
 

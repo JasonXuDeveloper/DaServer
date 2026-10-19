@@ -33,8 +33,9 @@ public sealed partial class PostgreSqlActorStore : IActorStore, IAsyncDisposable
         _table = table;
         _createTable = createTable;
         Schema = $"CREATE TABLE IF NOT EXISTS {table} (type_id integer NOT NULL, key bigint NOT NULL, " +
-                 "version bigint NOT NULL, data bytea NOT NULL, updated_at timestamptz NOT NULL DEFAULT now(), " +
-                 "PRIMARY KEY (type_id, key))";
+                 "version bigint NOT NULL, data bytea NOT NULL, hash bigint NOT NULL DEFAULT 0, " +
+                 "updated_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (type_id, key)); " +
+                 $"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS hash bigint NOT NULL DEFAULT 0"; // a table of an earlier build
         // Claiming is one statement too: every key's row goes up a version (a key without one gets an empty row at
         // version 1), and the rows come back with the batch's ordinals. A batch holds a key once (one actor per key per
         // shard), which ON CONFLICT DO UPDATE requires.
@@ -44,15 +45,17 @@ public sealed partial class PostgreSqlActorStore : IActorStore, IAsyncDisposable
                  "RETURNING t.type_id, t.key, t.version, t.data) " +
                  "SELECT k.i, c.version, c.data FROM k JOIN c ON c.type_id = k.type_id AND c.key = k.key";
         // One statement per batch: a first write inserts (refused if a row exists: another owner wrote first), a later one
-        // replaces the version it read; the ordinals of the accepted writes come back.
-        _save = $"WITH w AS (SELECT * FROM unnest($1::integer[], $2::bigint[], $3::bigint[], $4::bytea[]) " +
-                "WITH ORDINALITY AS w(type_id, key, expected, data, i)), " +
-                $"ins AS (INSERT INTO {table} (type_id, key, version, data) SELECT type_id, key, 1, data FROM w " +
-                "WHERE expected = 0 ON CONFLICT DO NOTHING RETURNING type_id, key), " +
-                $"upd AS (UPDATE {table} t SET version = t.version + 1, data = w.data, updated_at = now() FROM w " +
-                "WHERE w.expected <> 0 AND t.type_id = w.type_id AND t.key = w.key AND t.version = w.expected " +
-                "RETURNING t.type_id, t.key) " +
-                "SELECT w.i FROM w JOIN (SELECT * FROM ins UNION ALL SELECT * FROM upd) a ON a.type_id = w.type_id AND a.key = w.key";
+        // replaces the version it read, or the version its lost write made (that row holds the lost write's hash); the
+        // ordinals and new versions of the accepted writes come back.
+        _save = $"WITH w AS (SELECT * FROM unnest($1::integer[], $2::bigint[], $3::bigint[], $4::bytea[], $5::bigint[], $6::bigint[]) " +
+                "WITH ORDINALITY AS w(type_id, key, expected, data, hash, attempt, i)), " +
+                $"ins AS (INSERT INTO {table} (type_id, key, version, data, hash) SELECT type_id, key, 1, data, hash FROM w " +
+                "WHERE expected = 0 ON CONFLICT DO NOTHING RETURNING type_id, key, version), " +
+                $"upd AS (UPDATE {table} t SET version = t.version + 1, data = w.data, hash = w.hash, updated_at = now() FROM w " +
+                "WHERE t.type_id = w.type_id AND t.key = w.key AND (t.version = w.expected OR " +
+                "w.attempt <> 0 AND t.version = w.expected + 1 AND t.hash = w.attempt) " +
+                "RETURNING t.type_id, t.key, t.version) " +
+                "SELECT w.i, a.version FROM w JOIN (SELECT * FROM ins UNION ALL SELECT * FROM upd) a ON a.type_id = w.type_id AND a.key = w.key";
         // CREATE TABLE IF NOT EXISTS is not safe against a concurrent create (both see no table, the second fails on
         // the catalog's unique index): nodes starting together take a transaction-scoped advisory lock on the table's
         // name first, so one creates and the others find it.
@@ -144,7 +147,7 @@ public sealed partial class PostgreSqlActorStore : IActorStore, IAsyncDisposable
     }
 
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
-    public async ValueTask SaveAsync(ReadOnlyMemory<StoredWrite> writes, Memory<bool> accepted, CancellationToken cancellationToken = default)
+    public async ValueTask SaveAsync(ReadOnlyMemory<StoredWrite> writes, Memory<long> versions, CancellationToken cancellationToken = default)
     {
         var columns = Rent();
         try
@@ -155,12 +158,14 @@ public sealed partial class PostgreSqlActorStore : IActorStore, IAsyncDisposable
                 columns.Keys.Add(write.Key.Key);
                 columns.Expected.Add(write.ExpectedVersion);
                 columns.Data.Add(write.Data); // the shard's pooled buffer, valid until this call completes: not copied
+                columns.Hashes.Add(unchecked((long)write.Hash));
+                columns.Attempts.Add(unchecked((long)write.Attempt));
             }
 
             await using var connection = await Prepared(columns.Save, cancellationToken);
-            accepted.Span.Clear();
+            versions.Span.Clear();
             await using var reader = await columns.Save.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken)) accepted.Span[(int)reader.GetInt64(0) - 1] = true;
+            while (await reader.ReadAsync(cancellationToken)) versions.Span[(int)reader.GetInt64(0) - 1] = reader.GetInt64(1);
         }
         finally
         {
@@ -198,7 +203,7 @@ public sealed partial class PostgreSqlActorStore : IActorStore, IAsyncDisposable
     {
         public readonly List<int> Types = new();
         public readonly List<long> Keys = new();
-        public readonly List<long> Expected = new();
+        public readonly List<long> Expected = new(), Hashes = new(), Attempts = new();
         public readonly List<ReadOnlyMemory<byte>> Data = new();
         public readonly NpgsqlCommand Claim, Save;
 
@@ -212,6 +217,8 @@ public sealed partial class PostgreSqlActorStore : IActorStore, IAsyncDisposable
             Save.Parameters.Add(new NpgsqlParameter<List<long>> { TypedValue = Keys });
             Save.Parameters.Add(new NpgsqlParameter<List<long>> { TypedValue = Expected });
             Save.Parameters.Add(new NpgsqlParameter<List<ReadOnlyMemory<byte>>> { TypedValue = Data, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bytea });
+            Save.Parameters.Add(new NpgsqlParameter<List<long>> { TypedValue = Hashes });
+            Save.Parameters.Add(new NpgsqlParameter<List<long>> { TypedValue = Attempts });
         }
 
         public void Clear()
@@ -219,6 +226,8 @@ public sealed partial class PostgreSqlActorStore : IActorStore, IAsyncDisposable
             Types.Clear();
             Keys.Clear();
             Expected.Clear();
+            Hashes.Clear();
+            Attempts.Clear();
             Data.Clear(); // drops the references to the shard's buffers
             Claim.Connection = Save.Connection = null; // back in the pool
         }

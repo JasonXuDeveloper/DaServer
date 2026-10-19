@@ -35,9 +35,10 @@ internal sealed partial class Node
         {
             try
             {
-                await feature.DrainAsync(budget.Token).ConfigureAwait(false);
+                // A drain that ignores its token ends with the budget anyway: the actors must still unload and save.
+                await feature.DrainAsync(budget.Token).AsTask().WaitAsync(budget.Token).ConfigureAwait(false);
             }
-            catch (Exception e) // the budget ran out, or the feature failed: the actors still unload and save
+            catch (Exception e) // the budget ran out, or the feature failed
             {
                 if (!budget.IsCancellationRequested) Log.FeatureFailed(Logger, e, feature.GetType().Name, nameof(NodeFeature.DrainAsync));
             }

@@ -119,11 +119,43 @@ public class ActorStoreTests(string kind)
         return records;
     }
 
-    internal static async Task<bool[]> Save(IActorStore store, params StoredWrite[] writes)
+    /// <summary>Whether each write was accepted.</summary>
+    internal static async Task<bool[]> Save(IActorStore store, params StoredWrite[] writes) =>
+        Array.ConvertAll(await Versions(store, writes), static v => v != 0);
+
+    /// <summary>The version each write was written at, 0 when refused.</summary>
+    internal static async Task<long[]> Versions(IActorStore store, params StoredWrite[] writes)
     {
-        var accepted = new bool[writes.Length];
-        await store.SaveAsync(writes, accepted);
-        return accepted;
+        var versions = new long[writes.Length];
+        await store.SaveAsync(writes, versions);
+        return versions;
+    }
+
+    /// <summary>A write of <paramref name="data"/> with its hash, as the runtime makes one.</summary>
+    internal static StoredWrite Write(StoredKey key, long expected, byte[] data, ulong attempt = 0) =>
+        new(key, expected, data, Records.Hash(data), attempt);
+
+    [Test]
+    public async Task AWriteWhoseAnswerWasLostIsNotTakenForAnotherOwner()
+    {
+        // The write at version 1 landed but its answer was lost: the owner retries from version 1 and names that write
+        // (its hash). The store sees it landed and writes the retry after it, instead of fencing its own owner.
+        var store = await _stores.Ready();
+        Assert.That(await Versions(store, Write(A, 0, [1])), Is.EqualTo(new[] { 1L }));
+        Assert.That(await Versions(store, Write(A, 1, [2])), Is.EqualTo(new[] { 2L }), "landed; its answer is lost");
+        Assert.That(await Versions(store, Write(A, 1, [3], attempt: Records.Hash([9]))), Is.EqualTo(new[] { 0L }),
+            "another write landed there: refused");
+        Assert.That(await Versions(store, Write(A, 1, [3], attempt: Records.Hash([2]))), Is.EqualTo(new[] { 3L }),
+            "its own lost write landed: written after it");
+        Assert.That((await Stores.Peek(store, A)).Data.ToArray(), Is.EqualTo(new byte[] { 3 }));
+
+        Assert.That(await Versions(store, Write(B, 0, [5])), Is.EqualTo(new[] { 1L }), "a first write landed; its answer is lost");
+        Assert.That(await Versions(store, Write(B, 0, [6], attempt: Records.Hash([5]))), Is.EqualTo(new[] { 2L }), "so does a first one");
+
+        var claimed = (await Claim(store, A))[0]; // another node took the actor after the lost write
+        Assert.That(await Versions(store, Write(A, 2, [4], attempt: Records.Hash([3]))), Is.EqualTo(new[] { 0L }),
+            "a claim since fences it");
+        Assert.That(claimed.Version, Is.EqualTo(4L));
     }
 
     [Test]
@@ -161,13 +193,13 @@ public class ActorStoreTests(string kind)
         var store = await _stores.Ready();
         Assert.That((await Stores.Peek(store, A)).Version, Is.Zero, "nothing stored yet");
 
-        Assert.That(await Save(store, new StoredWrite(A, 0, new byte[] { 1 }), new StoredWrite(C, 0, new byte[] { 3, 3 })),
+        Assert.That(await Save(store, ActorStoreTests.Write(A, 0, new byte[] { 1 }), ActorStoreTests.Write(C, 0, new byte[] { 3, 3 })),
             Is.EqualTo(new[] { true, true }), "first writes insert");
-        Assert.That(await Save(store, new StoredWrite(A, 0, new byte[] { 9 })), Is.EqualTo(new[] { false }),
+        Assert.That(await Save(store, ActorStoreTests.Write(A, 0, new byte[] { 9 })), Is.EqualTo(new[] { false }),
             "a second first write means another owner wrote first");
-        Assert.That(await Save(store, new StoredWrite(A, 1, new byte[] { 2 }), new StoredWrite(C, 5, new byte[] { 9 })),
+        Assert.That(await Save(store, ActorStoreTests.Write(A, 1, new byte[] { 2 }), ActorStoreTests.Write(C, 5, new byte[] { 9 })),
             Is.EqualTo(new[] { true, false }), "a write replaces only the version it read");
-        Assert.That(await Save(store, new StoredWrite(A, 1, new byte[] { 9 })), Is.EqualTo(new[] { false }), "version 1 is gone");
+        Assert.That(await Save(store, ActorStoreTests.Write(A, 1, new byte[] { 9 })), Is.EqualTo(new[] { false }), "version 1 is gone");
 
         var records = await Claim(store, B, A, C);
         Assert.That((records[0].Version, records[0].Data.Length), Is.EqualTo((1L, 0)), "a key without a record is claimed empty");
@@ -180,18 +212,18 @@ public class ActorStoreTests(string kind)
     {
         // A split or a stale owner: whoever claimed last owns the record; the earlier one's writes are refused.
         var store = await _stores.Ready();
-        Assert.That(await Save(store, new StoredWrite(A, 0, new byte[] { 1 })), Is.EqualTo(new[] { true }));
+        Assert.That(await Save(store, ActorStoreTests.Write(A, 0, new byte[] { 1 })), Is.EqualTo(new[] { true }));
         var stale = (await Claim(store, A))[0];
         var owner = (await Claim(store, A))[0];
         Assert.That(owner.Version, Is.EqualTo(stale.Version + 1));
-        Assert.That(await Save(store, new StoredWrite(A, stale.Version, new byte[] { 8 })), Is.EqualTo(new[] { false }), "the earlier claim is fenced");
-        Assert.That(await Save(store, new StoredWrite(A, owner.Version, new byte[] { 9 })), Is.EqualTo(new[] { true }));
+        Assert.That(await Save(store, ActorStoreTests.Write(A, stale.Version, new byte[] { 8 })), Is.EqualTo(new[] { false }), "the earlier claim is fenced");
+        Assert.That(await Save(store, ActorStoreTests.Write(A, owner.Version, new byte[] { 9 })), Is.EqualTo(new[] { true }));
         Assert.That((await Stores.Peek(store, A)).Data.ToArray(), Is.EqualTo(new byte[] { 9 }));
 
         var fresh = new StoredKey(7, 42); // never written: claimed too, so a first write expecting none is refused
         var claimed = (await Claim(store, fresh))[0];
-        Assert.That(await Save(store, new StoredWrite(fresh, 0, new byte[] { 1 })), Is.EqualTo(new[] { false }));
-        Assert.That(await Save(store, new StoredWrite(fresh, claimed.Version, new byte[] { 1 })), Is.EqualTo(new[] { true }));
+        Assert.That(await Save(store, ActorStoreTests.Write(fresh, 0, new byte[] { 1 })), Is.EqualTo(new[] { false }));
+        Assert.That(await Save(store, ActorStoreTests.Write(fresh, claimed.Version, new byte[] { 1 })), Is.EqualTo(new[] { true }));
     }
 
     [Test]
@@ -199,7 +231,7 @@ public class ActorStoreTests(string kind)
     {
         var store = await _stores.Ready();
         var writes = new StoredWrite[512];
-        for (int i = 0; i < writes.Length; i++) writes[i] = new StoredWrite(new StoredKey(3, i), 0, BitConverter.GetBytes(i));
+        for (int i = 0; i < writes.Length; i++) writes[i] = ActorStoreTests.Write(new StoredKey(3, i), 0, BitConverter.GetBytes(i));
         Assert.That(await Save(store, writes), Is.All.True);
 
         var keys = new StoredKey[writes.Length];
@@ -223,14 +255,14 @@ public class PostgreSqlStoreTests
     public async Task AStoreRecoversFromLostConnections()
     {
         var store = await _stores.Ready();
-        Assert.That(await ActorStoreTests.Save(store, new StoredWrite(A, 0, new byte[] { 1 })), Is.EqualTo(new[] { true }));
+        Assert.That(await ActorStoreTests.Save(store, ActorStoreTests.Write(A, 0, new byte[] { 1 })), Is.EqualTo(new[] { true }));
         await Stores.DropConnections();
 
         // The call that finds its connection gone may fail (the shard retries it); the next one reconnects.
-        try { await ActorStoreTests.Save(store, new StoredWrite(A, 1, new byte[] { 2 })); }
+        try { await ActorStoreTests.Save(store, ActorStoreTests.Write(A, 1, new byte[] { 2 })); }
         catch (Npgsql.NpgsqlException) { }
         var record = await Stores.Peek(store, A);
-        if (record.Version == 1) Assert.That(await ActorStoreTests.Save(store, new StoredWrite(A, 1, new byte[] { 2 })), Is.EqualTo(new[] { true }));
+        if (record.Version == 1) Assert.That(await ActorStoreTests.Save(store, ActorStoreTests.Write(A, 1, new byte[] { 2 })), Is.EqualTo(new[] { true }));
         Assert.That((await Stores.Peek(store, A)).Data.ToArray(), Is.EqualTo(new byte[] { 2 }));
     }
 }

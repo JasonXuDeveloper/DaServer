@@ -106,7 +106,17 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
     internal void ReadPulses(int[] values)
     {
         var sources = _pulseSources;
-        for (int i = 0; i < sources.Length && i < values.Length; i++) Volatile.Write(ref values[i], sources[i]());
+        for (int i = 0; i < sources.Length && i < values.Length; i++)
+        {
+            try
+            {
+                Volatile.Write(ref values[i], sources[i]());
+            }
+            catch (Exception e) // a feature's source is user code: the round (failure detection, gossip) goes on
+            {
+                if (FeatureErrorLogDue()) Log.FeatureFailed(Logger, e, "pulse source", nameof(INodeContext.AddPulse)); // the last value stays
+            }
+        }
     }
 
     void INodeContext.AddIngressFilter(IIngressFilter filter)
@@ -412,10 +422,22 @@ internal sealed partial class Node : ICluster, INodeContext, IAsyncDisposable
             }
             catch (Exception e)
             {
-                Log.FeatureFailed(Logger, e, feature.GetType().Name, name);
+                if (FeatureErrorLogDue()) Log.FeatureFailed(Logger, e, feature.GetType().Name, name);
             }
         }
     }
+
+    /// <summary>
+    /// Whether a feature's failure is logged now: at most once a second per node, as a hook that throws on every
+    /// maintenance tick or gossip round would flood the log otherwise. Any thread.
+    /// </summary>
+    private bool FeatureErrorLogDue()
+    {
+        long now = Platform.Milliseconds, last = Volatile.Read(ref _featureErrorLoggedMs);
+        return now - last >= 1000 && Interlocked.CompareExchange(ref _featureErrorLoggedMs, now, last) == last;
+    }
+
+    private long _featureErrorLoggedMs = long.MinValue / 2;
 
     /// <summary>Whether the node still runs (late work, such as a grace that ended, checks it).</summary>
     internal bool Running => Volatile.Read(ref _started) == 1;

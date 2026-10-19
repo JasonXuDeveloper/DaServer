@@ -53,10 +53,10 @@ public class PersistenceBenchmark
             BitConverter.TryWriteBytes(record.AsSpan(Records.Header), TypeId<Coins>.Value);
             BitConverter.TryWriteBytes(record.AsSpan(Records.Header + sizeof(uint)), coins.Length);
             coins.CopyTo(record, Records.Header + Records.SectionHeader);
-            writes[i] = new StoredWrite(new StoredKey(ActorIds<VaultId>.HandlerTypeId, _first + i), 0, record);
+            writes[i] = new StoredWrite(new StoredKey(ActorIds<VaultId>.HandlerTypeId, _first + i), 0, record, Records.Hash(record), 0);
         }
 
-        _store.Inner.SaveAsync(writes, new bool[Actors]).AsTask().GetAwaiter().GetResult();
+        _store.Inner.SaveAsync(writes, new long[Actors]).AsTask().GetAwaiter().GetResult();
     }
 
     [Benchmark, AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
@@ -97,11 +97,11 @@ public class PersistenceBenchmark
         public ValueTask ClaimAsync(ReadOnlyMemory<StoredKey> keys, Memory<StoredRecord> records, CancellationToken ct = default) =>
             Inner.ClaimAsync(keys, records, ct);
 
-        public async ValueTask SaveAsync(ReadOnlyMemory<StoredWrite> writes, Memory<bool> accepted, CancellationToken ct = default)
+        public async ValueTask SaveAsync(ReadOnlyMemory<StoredWrite> writes, Memory<long> versions, CancellationToken ct = default)
         {
-            await Inner.SaveAsync(writes, accepted, ct);
-            for (int i = 0; i < accepted.Length; i++)
-                if (accepted.Span[i]) _written.Signal();
+            await Inner.SaveAsync(writes, versions, ct);
+            for (int i = 0; i < versions.Length; i++)
+                if (versions.Span[i] != 0) _written.Signal();
         }
     }
 }

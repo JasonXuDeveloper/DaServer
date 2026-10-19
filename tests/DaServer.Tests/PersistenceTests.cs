@@ -25,10 +25,10 @@ public class PersistenceTests(string kind) : ClusterTest
         public ValueTask ClaimAsync(ReadOnlyMemory<StoredKey> keys, Memory<StoredRecord> records, CancellationToken ct = default) =>
             Inner.ClaimAsync(keys, records, ct);
 
-        public ValueTask SaveAsync(ReadOnlyMemory<StoredWrite> writes, Memory<bool> accepted, CancellationToken ct = default)
+        public ValueTask SaveAsync(ReadOnlyMemory<StoredWrite> writes, Memory<long> versions, CancellationToken ct = default)
         {
             Interlocked.Add(ref Writes, writes.Length);
-            return Inner.SaveAsync(writes, accepted, ct);
+            return Inner.SaveAsync(writes, versions, ct);
         }
     }
 
@@ -64,6 +64,28 @@ public class PersistenceTests(string kind) : ClusterTest
 
         var second = await StartWith(store);
         Assert.That(await second.Ask(new BankId(110), new Balance()), Is.EqualTo(5));
+    }
+
+    /// <summary>A feature whose drain never ends and ignores its token.</summary>
+    private sealed class StuckFeature : NodeFeature
+    {
+        protected internal override ValueTask DrainAsync(CancellationToken cancellationToken) => new(new TaskCompletionSource().Task);
+    }
+
+    [Test]
+    public async Task AFeatureThatNeverDrainsDoesNotKeepTheActorsFromSaving()
+    {
+        var store = new CountingStore(_stores.Create());
+        var first = await Start("single", configure: o =>
+        {
+            o.ActorStore = store;
+            o.ShutdownTimeout = TimeSpan.FromSeconds(2);
+            o.Features.Add(new StuckFeature());
+        });
+        Assert.That(await first.Ask(new BankId(111), new Deposit(5, false)), Is.EqualTo(5));
+        Faults.Allow("BudgetExceeded"); // the drain takes the whole budget: the unload may report what it had no time for
+        await Stop(first);
+        Assert.That(store.Writes, Is.EqualTo(1), "the actor still unloaded and wrote its record");
     }
 
     [Test]

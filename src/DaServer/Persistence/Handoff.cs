@@ -18,14 +18,15 @@ internal static partial class Handoff
     private struct ResentOp;
     private struct MovedOnOp;
 
-    private static readonly uint Record = TypeId<RecordOp>.Value;   // [sender][version][hash][handoff id][record sections]
+    private static readonly uint Record = TypeId<RecordOp>.Value;   // [sender][version][hash][handoff id][critical][attempt][sections]
     private static readonly uint Resent = TypeId<ResentOp>.Value;   // a Record again (its answer was lost or it was)
     private static readonly uint MovedOn = TypeId<MovedOnOp>.Value; // [sender][node]: the record went to that node, ask it
     private static readonly uint Request = TypeId<RequestOp>.Value; // [sender][0]: send me the record if you hold it
     private static readonly uint None = TypeId<NoneOp>.Value;       // [sender][0]: I do not hold it
     private static readonly uint Answer = TypeId<AnswerOp>.Value;   // [sender][1 accepted, 0 refused]
-    private const int RecordHeader = sizeof(ulong) + sizeof(long) + sizeof(ulong) + sizeof(ulong) + 1;
     private const int CriticalAt = 2 * sizeof(ulong) + sizeof(long) + sizeof(ulong); // 1: a critical save was pending
+    private const int AttemptAt = CriticalAt + 1; // the hash of a write whose answer was lost (Stored.Attempt), or 0
+    private const int RecordHeader = AttemptAt + sizeof(ulong);
 
     /// <summary>Where a leaving actor's record goes: the key's owner when that is another node and there is a record to move.</summary>
     public static ulong? TargetOf(World world, Actor actor)
@@ -118,6 +119,7 @@ internal static partial class Handoff
         BinaryPrimitives.WriteUInt64LittleEndian(head[(sizeof(ulong) + sizeof(long))..], stored.Hash);
         BinaryPrimitives.WriteUInt64LittleEndian(head[(2 * sizeof(ulong) + sizeof(long))..], (ulong)Random.Shared.NextInt64() | 1); // this handoff
         head[CriticalAt] = entity.Has<CriticalPending>() ? (byte)1 : (byte)0; // its write failed: the new owner writes it at once
+        BinaryPrimitives.WriteUInt64LittleEndian(head[AttemptAt..], stored.Attempt); // and that write may have landed
         record.Advance(RecordHeader);
         var moved = world.GetSingleton<ShardStore>().Moved;
         try
@@ -283,9 +285,10 @@ internal static partial class Handoff
                     bool takes = loaded
                         ? entity.TryGet<AwaitingHandoff>(out var awaiting) && awaiting.From == from
                         : header.Hops == 0 && world.GetSingleton<ShardActivity>().NowMs > seen.ForgotUntilMs && ShardDispatch.Owns(world, handlerType.Id, header.Key);
-                    bool again = takes && Restore(world, handlerType, header.Key, payload, loaded, entity, from);
+                    bool askAgain = false, again = takes && Restore(world, handlerType, header.Key, payload, loaded, entity, from, out askAgain);
                     if (again) Seen(world, id, 0);
                     Notify(node, from, Answer, handlerType.Id, header.Key, again ? (byte)1 : (byte)0);
+                    if (askAgain) Await(world, entity, from); // after the refusal on the same link: see Restore
                     return true;
                 }
 
@@ -298,9 +301,10 @@ internal static partial class Handoff
                     return true;
                 }
 
-                bool restored = Restore(world, handlerType, header.Key, payload, loaded, entity, from);
+                bool restored = Restore(world, handlerType, header.Key, payload, loaded, entity, from, out bool reask);
                 if (restored) Seen(world, id, 0);
                 Notify(node, from, Answer, handlerType.Id, header.Key, restored ? (byte)1 : (byte)0);
+                if (reask) Await(world, entity, from); // after the refusal on the same link: see Restore
             }
             else if (op == Request)
             {
@@ -379,11 +383,14 @@ internal static partial class Handoff
     /// record, versions settle who wins), for a fenced copy (it goes without a write), and for a new one while this shard
     /// stops (a copy already waiting takes it and hands it on as it leaves). Refused too when it cannot be taken: the
     /// record does not read, or the actor throws while created (its constructor, settings or state initializers); the
-    /// sender then takes its state back and writes it.
+    /// sender then takes its state back and writes it. A copy with mail that refuses so (<paramref name="reask"/>) asks
+    /// the sender again after the refusal: on the same ordered link the sender's copy writes first and answers "none"
+    /// once it is gone, so the copy reads the written record instead of racing the write (versions would fence it).
     /// </summary>
     private static bool Restore(World world, HandlerTypeInfo handlerType, long key, ReadOnlySpan<byte> payload, bool loaded, Entity entity,
-        ulong from)
+        ulong from, out bool reask)
     {
+        reask = false;
         if (loaded ? !entity.Has<AwaitingHandoff>() || entity.Has<Fenced>() // fenced: it goes without a write, the record with it
                 : !ShardDispatch.Owns(world, handlerType.Id, key) && !SendersOwn(world, handlerType.Id, key, from))
             return false;
@@ -404,7 +411,7 @@ internal static partial class Handoff
         catch (Exception e)
         {
             Log.HandoffUnreadable(world.Logger, e, (object?)actor ?? new ActorAddress(handlerType.Id, key));
-            if (loaded) ShardDispatch.BeginLoad(world, entity, actor!);
+            if (loaded) reask = true;
             else if (actor != null) entity.Add<Removing>() = new Removing(RpcStatus.Ok, null); // nothing queued yet
             return false;
         }
@@ -419,6 +426,7 @@ internal static partial class Handoff
             {
                 Version = BinaryPrimitives.ReadInt64LittleEndian(payload[sizeof(ulong)..]),
                 Hash = BinaryPrimitives.ReadUInt64LittleEndian(payload[(sizeof(ulong) + sizeof(long))..]), // changes since are written
+                Attempt = BinaryPrimitives.ReadUInt64LittleEndian(payload[AttemptAt..]),
                 EveryMs = every,
                 DueMs = world.GetSingleton<ShardActivity>().NowMs + every,
             };

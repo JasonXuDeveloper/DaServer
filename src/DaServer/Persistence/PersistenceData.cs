@@ -12,6 +12,12 @@ internal struct Stored : IComponent
 {
     public long Version;
     public ulong Hash;
+
+    /// <summary>
+    /// The hash of a write whose answer was lost (a store error: it may have landed), 0 when none: the next write says
+    /// so, and a store that took it writes after it instead of refusing this owner as a stale one.
+    /// </summary>
+    public ulong Attempt;
     public long DueMs;
     public long EveryMs;
 
@@ -159,33 +165,32 @@ internal sealed class SaveBatch(Shard shard) : StoreCall(shard)
     public const int Max = 512;
 
     public readonly List<Entity> Entities = new();
-    public readonly List<ulong> Hashes = new();
     public readonly List<FrameWriter> Frames = new();
 
     /// <summary>Whether each write is its actor's final save (queued after its unload), not a checkpoint taken before.</summary>
     public readonly List<bool> Finals = new();
     private readonly StoredWrite[] _writes = new StoredWrite[Max];
-    private readonly bool[] _accepted = new bool[Max];
+    private readonly long[] _versions = new long[Max];
 
     public int Count => Entities.Count;
 
     public bool Full => Count == Max;
 
-    public void Add(Entity entity, StoredKey key, long expectedVersion, FrameWriter record, ulong hash, bool final)
+    public void Add(Entity entity, StoredKey key, long expectedVersion, FrameWriter record, ulong hash, ulong attempt, bool final)
     {
-        _writes[Count] = new StoredWrite(key, expectedVersion, record.WrittenMemory[FrameHeader.Size..]);
+        _writes[Count] = new StoredWrite(key, expectedVersion, record.WrittenMemory[FrameHeader.Size..], hash, attempt);
         Entities.Add(entity);
-        Hashes.Add(hash);
         Frames.Add(record);
         Finals.Add(final);
     }
 
     protected override ValueTask Call(IActorStore store, CancellationToken cancellationToken) =>
-        store.SaveAsync(_writes.AsMemory(0, Count), _accepted.AsMemory(0, Count), cancellationToken);
+        store.SaveAsync(_writes.AsMemory(0, Count), _versions.AsMemory(0, Count), cancellationToken);
 
     protected override void Applied() => PersistSystem.Apply(Shard.World, this);
 
-    public ReadOnlySpan<bool> Accepted => _accepted.AsSpan(0, Count);
+    /// <summary>The version each write was written at, 0 when refused.</summary>
+    public ReadOnlySpan<long> Versions => _versions.AsSpan(0, Count);
 
     public ReadOnlySpan<StoredWrite> Writes => _writes.AsSpan(0, Count);
 
@@ -194,7 +199,6 @@ internal sealed class SaveBatch(Shard shard) : StoreCall(shard)
         foreach (var frame in Frames) frame.Dispose();
         Frames.Clear();
         Entities.Clear();
-        Hashes.Clear();
         Finals.Clear();
         Array.Clear(_writes);
         Done();
