@@ -1031,7 +1031,7 @@ records that no longer hold). Each: context → decision → consequences.
   cluster. A node of another environment pointed at the wrong seeds joined just as easily.
 - Decision:
   - An accepted link connection starts with a fresh random challenge (`ControlOp.Challenge`). The dialing node
-    answers with its Hello: the link protocol version (`ControlOp.LinkVersion`), the cluster name
+    answers with its Hello: its link protocol levels (`ControlOp.Link`, ADR-077), the cluster name
     (`NodeOptions.ClusterName`, which Aspire sets to the cluster resource's name), who it is, the endpoint replies go
     to, its stream id and a proof: an HMAC-SHA256 with the signing secret over the cluster name, node id, stream id,
     host, port and the challenge. A Hello is good on one connection only: a recorded one proves nothing elsewhere, and
@@ -1365,7 +1365,10 @@ records that no longer hold). Each: context → decision → consequences.
   and handed-off components must be version tolerant or keyed (DAS014, ADR-068). Each project commits
   `wire.manifest`, built from Nino's own description of every type it writes (`[assembly: NinoTypeLayout]`, emitted by
   Nino's generator): its header (none, null flag, type id), format, whether it is raw memory, `tracked`, its type id,
-  and its members in written order with their types and how each is written (`raw(4)`, a formatter, `utf8`). The
+  and its members in written order with their types and how each is written, as Nino describes the bytes (`raw(4)`,
+  `string`, `utf8`, `seq(raw(8))`, `type(T)`; a keyed member with its key and former keys). The manifest names the
+  layout text it was recorded in (a line of its header): one recorded in another, after a Nino update that changed the
+  text, is reported once (DAS017), not as a change in every member. The
   manifest adds what Nino does not record: a request's reply, a plain unmanaged struct's fields (Nino copies an id's
   memory and names only its type), another assembly's [NinoType] as its layout inline (a package update that changes
   it shows), the [NinoType] ancestors, and every enum those types hold with its underlying type and each member's
@@ -1374,7 +1377,8 @@ records that no longer hold). Each: context → decision → consequences.
   type id included) or reply changed, a new subtype of a recorded or another assembly's type (older builds lack its
   type id), and a member change the format does not tolerate: any, positional; anything but members appended at the
   end, version tolerant (one appended to a base shifts its subtypes' members, which their own entries show); another
-  type under a key, keyed; an enum member removed, renamed or renumbered. It asks to record the rest (DAS018: new
+  type under a key, keyed (members matched by key, so one renamed with `[NinoFormerName]` keeps its key); an enum
+  member removed, renamed or renumbered. It asks to record the rest (DAS018: new
   types, appended members, keys added or removed, new enum members)
   with `dotnet build -p:UpdateWireManifest=true` (which still stops on DAS017; `=force` records a deliberate break).
   The analyzer reads the layouts in the compilation; the manifest is written after the compile by
@@ -1402,15 +1406,28 @@ records that no longer hold). Each: context → decision → consequences.
   actor keeps the owner its type gives the key, so a key never has two activations; a message the owner's build
   lacks for that actor type is not sent: a request fails with `NotHosted` (retry), a one-way message is dropped,
   until the owner is upgraded or leaves. A client message unknown to its client-facing node's build is refused with
-  `NotHosted` too (retryable, unlike `Forbidden`). What the framework itself writes is versioned by protocol:
-  a node link opens with a hello carrying `ControlOp.LinkVersion` (a version-tolerant `LinkHello`; another version is
-  refused), and a client connection's first call is `ClientHello` carrying `ControlOp.ClientVersion`: another version
-  gets an error naming both and is left out of `ClientGroup.All`; the client closes the connection, and anything it
-  sends but keep-alive frames, before an accepted hello or after a refused one, closes it. The client sends nothing
-  but the hello and keep-alives until the hello is answered (calls meanwhile fail `Disconnected`).
+  `NotHosted` too (retryable, unlike `Forbidden`).
+- Protocol levels: what the framework itself writes is versioned by a range of levels per protocol, [Min, Max]
+  (`ProtocolLevels`; `ControlOp.Link`, `ControlOp.Client`), the levels a build reads, exchanged outside the
+  serializer's bytes so any build can read them: the accepting node's in its `Challenge` key, the dialer's as 8 raw
+  bytes ahead of its Nino `LinkHello`, a client's in its `ClientHello` key. Two builds talk when their ranges overlap;
+  otherwise both sides log a refusal naming both ranges (a client gets an error naming both, is left out of
+  `ClientGroup.All` and closes the connection; anything it sends but keep-alives before an accepted hello or after a
+  refused one closes it, and it sends nothing else until the hello is answered). A level changes only for what every
+  peer must read alike: the framing, the shared encoding, or a behavior all must agree on. Added control ops (older
+  builds ignore them), fields at the end of version-tolerant framework types, card entries and new messages (routed by
+  the card above) change none. A change that new builds read but old ones do not is two releases, as Kafka, Akka and
+  Cassandra roll it: a bridge release reads both and writes the old form (Max + 1), the next writes the new one and
+  drops the old (Min + 1); upgrades pass through the bridge. A change no bridge can carry raises Min past every older
+  Max and is a full restart, said so in its release notes (Orleans 3 to 7). Nino 4.0.0-rc.6's strings (link 3, client
+  5) are such a restart: Nino writes no older form, and DaServer is not released yet.
 - Alternatives: route the new message to a node of the new build (a second activation of the key, what the slot table
   prevents); per-interface version numbers (Orleans: the card already says what each build handles, and the manifest
-  keeps layouts compatible); stop-the-world deploys.
+  keeps layouts compatible); stop-the-world deploys. For the framework's own protocol: one number raised on every wire
+  change and compared for equality (every change a restart, and inside the Nino hello, so a build that cannot read the
+  hello was refused without saying why); capability flags per feature (Envoy, Kafka's feature versions: a second
+  mechanism next to the card, for one codebase whose wire evolves in a line); a cluster-wide write level finalized once
+  every member supports it (CockroachDB, Kafka's KIP-584), added when a bridge release first needs it.
 - Consequences: new actor messages become available key by key as owners are replaced; callers retry `NotHosted`
   meanwhile. While every node runs one build the routing cost is one empty-set check per actor message.
 
@@ -1426,12 +1443,18 @@ records that no longer hold). Each: context → decision → consequences.
   keeps one across a rename or resolves a collision (DAS004); a message that holds a collection holds it in a
   `[NinoPooled]` class its handlers return (`Moves` in the MMO sample: every handler deserializes its own copy and
   returns it, so fan-out to several handlers allocates nothing). Messages are positional, persisted and handed-off components
-  version tolerant or keyed (DAS014, ADR-076).
+  version tolerant or keyed (DAS014, ADR-076). On 4.0.0-rc.6: a string whose chars all fit Latin-1 is written one byte
+  a char, any other as UTF-16, so names, hosts and keys take the default and `[NinoUtf8]` is for text that is mostly
+  ASCII with some wider chars (chat in the MMO sample); a `[NinoType]` class that is a reply or held by a message is
+  `sealed` (a 1-byte null flag instead of a type id, no dispatch, inlined into collections); a raw struct on the wire
+  has no padding (Nino writes padding as zero bytes: `StructLayout(Pack)` where fields leave holes).
 - Alternatives: stay on Nino 3 (no checked reads, no pools, our own ids to keep in step with Nino's); Nino's
   polymorphic dispatch for messages (boxes struct messages and writes a type id the frame header already carries);
   Nino's interceptors (messages live in other assemblies and calls are generic, which they do not see).
 - Consequences: frames rent from the pinned `BufferPool` through Nino's pool parameter, so sockets send them as
   they are. Nino's registries can be released with a collectible load context (`NinoRegistry.Remove`), which N9 hot reload will use.
+  Moving to rc.6 changed every string's bytes, which earlier releases cannot read: a full restart (ADR-077), and no
+  rollback once records hold rc.6 strings (rc.6 reads the earlier UTF-16 ones).
   BenchmarkDotNet: see the roadmap's Nino 4 row.
 
 ## ADR-079 A coordinator allocates slots: sticky types and load-aware moves
@@ -1481,8 +1504,8 @@ records that no longer hold). Each: context → decision → consequences.
   protobuf (gRPC, CRI) skips unknown fields; Orleans breaks its wire between majors (3 to 7); ET deploys server and
   client together.
 - Decision:
-  - **Three layers of change.** `ControlOp.LinkVersion` (and `ClientVersion`) is the major version: raised only for a
-    change old nodes cannot read, which means a full restart. Optional metadata goes into the **extension block**
+  - **Three layers of change.** The protocol levels (`ControlOp.Link`, `ControlOp.Client`, ranges, ADR-077) change
+    only for what every peer must read alike, bridged over two releases or, when no bridge can carry it, a full restart. Optional metadata goes into the **extension block**
     (`FrameFlags.HasExtensions`): entries of [id][length][data] between the payload and the fixed trailers, closed by
     the block's uint16 size; readers look entries up by id and skip the rest, hops relay the block untouched, so a
     new entry needs no version and mixes with nodes that ignore it. A feature both sides must support is announced

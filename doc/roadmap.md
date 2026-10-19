@@ -85,7 +85,7 @@ Steady state allocates nothing: per message, call, reply, tick, broadcast, conne
         and drop. Fix: per-shard-thread stacks for PendingCall, caps 64k (configurable) for frames and relays.
       - H4 Nino collections/strings per message (`Motion` list per client, strings in Say/Chat/replies). Fixed by N8
         for collections (`[NinoPooled]` holders the handler returns); a string is a new string per message (low
-        volume: chat and logins, `[NinoUtf8]` halves its bytes).
+        volume: chat and logins; Nino writes ASCII text one byte a char).
       - M1 error paths allocate exactly under overload (interpolated NotHosted/Overloaded strings, `RpcException` per
         timeout). Fix: status-only frames, lazy exception message, non-throwing status results (N3b).
       - M2 `GroupMembers` created/removed per bind and AOI join/leave. Fix: pool + lazy removal from the maintain timer.
@@ -545,8 +545,12 @@ in separate commits.
 - [ ] N12 Nino (audit of October 2026; Nino's reads check every length, bound depth and counts): done: enum members in
       `wire.manifest` (a member removed, renamed or renumbered is DAS017), pinned bytes for raw structs, strings,
       arrays and the framework's version-tolerant frames (`WireBytesTests`), DAS019 for collections held directly in
-      `[FromClient]`/`[ToClient]` messages, `Registrations.Run` clean under AOT analysis. Open: release on Nino 4.0.0,
-      not an RC (drop the NU5104 suppression then).
+      `[FromClient]`/`[ToClient]` messages, `Registrations.Run` clean under AOT analysis. On 4.0.0-rc.6: Latin-1 strings
+      one byte a char (link level 3, client level 5: a full restart), the manifest in Nino's byte descriptions with its
+      layout text named in its header and keyed members matched by key, padded wire structs packed, `[NinoUtf8]` kept
+      for chat only, the registration's module initializer only where one is usable (Nino's own Unity fix), `System.Type`
+      refused as a wire type. Next: Nino.AspNetCore on the HTTP plane, `GetFixedSize` for fixed-size frames (only if BDN
+      says so), `IsSupported` checked at start. Open: release on Nino 4.0.0, not an RC (drop the NU5104 suppression then).
 - [x] N6 State handoff on moves (ADR-072): an actor that changes node (scaling out or in, a node stopping) sends its
       [Persist] and [Handoff] components, version and last-written hash to the new owner on the link its forwarded
       mail takes next; the new owner restores them without reading the store, the old one is removed once accepted
@@ -557,7 +561,8 @@ in separate commits.
       `[NinoPooled]` class its handlers return (`Moves` in `Motion`); each handler deserializes its own copy, so
       fan-out to several handlers and bursts held at once (200 per thread) allocate 0 B per push (Sample.Tests
       `ContractTests`). Nino's default pool (64 per thread, 256 shared) needs no sizing for a bot loop. Text the
-      clients send and receive (`Login`, `Say`, `Chat`, `PlayerInfo`) is `[NinoUtf8]`.
+      clients send and receive takes Nino's default (one byte a char for ASCII names); chat (`Say`, `Chat`) is
+      `[NinoUtf8]`, as chat mixes ASCII with emoji and other scripts.
 - [ ] N9 Hot reload: code (Logic assembly in a collectible load context; each shard swaps handler registry and
       systems at a wake boundary, recreates actor objects over unchanged components; old turns finish on old code;
       the old context unloads when unused, weak-reference leak check, no forced GC; a changed Model/Contracts refuses

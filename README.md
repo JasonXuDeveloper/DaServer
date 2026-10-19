@@ -125,7 +125,7 @@ public readonly record struct PlayerId(long Value) : IActorId;
 public readonly record struct MapId(long Value) : IActorId;
 
 // Messages (shared with clients).
-[NinoType, Message, FromClient] public partial record struct Login([property: NinoUtf8] string Name) : IRequest<LoginResult>;
+[NinoType, Message, FromClient] public partial record struct Login(string Name) : IRequest<LoginResult>;
 [NinoType, Message, FromClient] public partial record struct EnterMap(MapId Map) : IRequest<bool>;
 [NinoType, Message, FromClient] public partial record struct Move(float VelocityX, float VelocityY); // input
 [NinoType, Message, FromClient] public partial record struct Say([property: NinoUtf8] string Text);
