@@ -1027,6 +1027,21 @@ and cards, a manual clock), fails before its fix, and passes after it.
     ignores its token takes the whole stop budget, leaving the unload none (the shards still stop and write while the
     process lives); a reclaim whose initializer throws has no deterministic test (it needs a refused handoff and a
     state not in the record).
+- [x] Nino 4.0.0-rc.6 and the reviews of duplication and coupling (October 2026):
+  - BenchmarkDotNet, rc.4 (3997eb8) against rc.6 (a794210), each class twice in both orders: calls 1 local/remote
+    4.45, 4.48 / 131, 129 us -> 4.16, 4.50 / 129, 134 us; 1024 remote 1.17, 1.17 -> 1.17, 1.18 ms; messages
+    local/remote 479, 475 / 843, 803 ns -> 506, 470 / 835, 816 ns; broadcast 1,000 x 9 7.86 -> 7.36, 7.77 ms, 5,000 x 9
+    42.9 -> 41.2 ms; scenario 3,000 / 9,000 22.2, 21.2 / 66.5, 67.0 ms -> 22.3, 22.6 / 65.8, 65.4 ms; allocations
+    unchanged (an outlier of 16-20 KB in one run each side: pool growth). Even: the benchmarks' messages are raw
+    ints, which both copy as memory; rc.6 pays in bytes (Latin-1 strings, packed structs) and in Unity's lists.
+  - Duplication removed: one test store (`TestStore`, `StoreTest`), shared test helpers, test files split by
+    section; one `LogThrottle`, one `SigningKeys`, `Platform.After`, one handoff `Notify`; `Handoff`, `Node` split.
+    Coupling: closes handled by the runtime, not a filter; Hosting takes `INodeContext` and lets `ClientConnections`
+    accept WebSockets.
+  - Kept: the frame channels' send and receive loops (`Connection`, `WebSocketChannel`, the benchmark's pipe channel)
+    stay separate until a transport benchmark proves one shared loop costs nothing; `ClientConnections` still uses
+    the node's internals (a capability of the runtime's own assembly, ADR-048) beyond `INodeContext`; configuration
+    keys spelled in the Aspire integration (`DaServer__...`) are not shared constants yet.
 - Review criterion from round 7 on (agreed): a finding is must-fix when a single fault (one view change, one link
   restart, one node crash, one slow store call) leads to lost acknowledged state, a second live copy or a wait that
   never ends; one that needs two or more rare events together is should-fix and is listed here. Convergence is two

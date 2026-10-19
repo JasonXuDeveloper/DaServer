@@ -588,7 +588,9 @@ records that no longer hold). Each: context → decision → consequences.
   client protocol 79,000 (TCP) per node core, 3.5 times more. The node's defaults keep what HTTP costs low: hosting
   diagnostics off (any level enabled there starts an Activity per request whether or not anything traces, 18,100 ->
   22,600 requests per core) and no `Server` header. Health endpoints (always on) and admin endpoints (authorized with
-  the signing secret) come with A1.
+  the signing secret) come with A1. `MapAsk` and `MapSend` read JSON, or Nino for a caller that sends
+  `application/x-nino`, and answer as the caller accepts (Nino.AspNetCore): the message's own bytes, typed for .NET
+  and TypeScript callers (Nino.TypeScript generates the same codecs), and a one-way Nino body goes on as it came.
 
 ## ADR-047 One message model: message, address, optional reply
 - Context: messages and RPC are one thing; an API with a verb per target (push to a session, broadcast to a group,
@@ -665,7 +667,8 @@ records that no longer hold). Each: context → decision → consequences.
   through the ingress. The actor part stays in the runtime (`ActorSessions`): it needs only contract types
   (`ClientSession`, `SessionClosed`, `SessionResumed`, `SessionAccess`), records an actor's callers and bound or granted
   sessions, handles
-  closes and resumes as dispatch filters of their message types and closes the sessions of a dead node holding the
+  closes and resumes before the actor's handler runs (not as dispatch filters: a user's filter could run first and
+  refuse a close, leaving the closed session resumable) and closes the sessions of a dead node holding the
   session scope. Card entries and pulse slots are generic (`SetCardEntry`, `AddPulse`: keys chosen by features, at
   most three slots), so `ClusterMember` keeps no client fields. `ResumeGrace` stays a node option: both parts wait
   it.
