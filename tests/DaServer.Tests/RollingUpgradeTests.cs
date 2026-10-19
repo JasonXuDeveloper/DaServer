@@ -54,18 +54,12 @@ public class MixedBuildViewTests
 {
     private const uint Message = 7, Other = 8, Actor = 100, Service = 200;
 
-    private static ClusterMember Member(ulong id, params HostedMessage[] handlers) =>
-        new() { NodeId = id, Name = "n" + id, Host = "127.0.0.1", Port = (int)id, Status = MemberStatus.Up, Handlers = handlers };
-
-    private static HostedMessage Handles(uint handlerType, bool actor, uint message = Message) =>
-        new() { MessageId = message, HandlerTypeId = handlerType, Actor = actor };
-
     [Test]
     public void AnOwnerLackingTheMessageForAnotherHandlerTypeStillGetsItForItsOwn()
     {
         // Both builds handle the message on the actor type and host the service; only the newer service handles it.
-        var older = Member(1, Handles(Actor, true), Handles(Service, false, Other));
-        var newer = Member(2, Handles(Actor, true), Handles(Service, false));
+        var older = Views.Member(1, Views.Handles(Actor, true, Message), Views.Handles(Service, false, Other));
+        var newer = Views.Member(2, Views.Handles(Actor, true, Message), Views.Handles(Service, false, Message));
         var view = new ClusterView([older, newer]);
 
         Assert.That(view.TryGetHandlerTypeRoute(Actor, out var actorRoute));

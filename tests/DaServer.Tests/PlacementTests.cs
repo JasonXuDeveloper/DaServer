@@ -5,15 +5,8 @@ public class PlacementTests
 {
     private const uint Message = 7, Actor = 9, Service = 10;
 
-    private static ClusterMember Member(ulong id, MemberStatus status) => new()
-    {
-        NodeId = id, Name = "n" + id, Status = status,
-        Handlers =
-        [
-            new HostedMessage { MessageId = Message, HandlerTypeId = Actor, Actor = true },
-            new HostedMessage { MessageId = Message, HandlerTypeId = Service, Actor = false },
-        ],
-    };
+    private static ClusterMember Member(ulong id, MemberStatus status) =>
+        Views.Member(id, status, Views.Handles(Actor, true, Message), Views.Handles(Service, false, Message));
 
     [Test]
     public void KeysStayWithASuspectMemberAndMoveWhenItIsDead()

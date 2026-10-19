@@ -5,10 +5,7 @@ public class SlotPlannerTests
 {
     private const uint Message = 7, Actor = 9;
 
-    private static ClusterMember Member(ulong id, MemberStatus status = MemberStatus.Up) => new()
-    {
-        NodeId = id, Name = "n" + id, Status = status, Handlers = [new HostedMessage { MessageId = Message, HandlerTypeId = Actor, Actor = true }],
-    };
+    private static ClusterMember Member(ulong id, MemberStatus status = MemberStatus.Up) => Views.Member(id, status, Views.Handles(Actor, true, Message));
 
     private static SlotTable Table(params SlotOverride[] overrides) => new() { Version = 1, Overrides = overrides };
 

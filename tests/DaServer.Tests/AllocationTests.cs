@@ -6,48 +6,42 @@ public class AllocationTests : ClusterTest
     [Test, Retry(3)] // process-wide counters also see other work under CPU contention: a real regression fails every try
     public async Task ShardToShardCallsDoNotAllocate()
     {
-        // No gossip during the measurement: background membership traffic is not part of the call path.
-        var node = await Start("alloc", configure: o => o.GossipInterval = TimeSpan.FromHours(1));
+        var node = await StartQuiet("alloc");
+        long other = await KeyOnAnotherShard(node); // every call crosses threads through the mailboxes
 
-        // Two keys on different shards: every call crosses threads through the mailboxes.
-        long other = 2;
-        while (await node.Ask(new CounterId(other), new WhereAmI()) == await node.Ask(new CounterId(1), new WhereAmI())) other++;
-
-        // Warm up past tiered-JIT promotion, then measure. The counter is process-wide, so background runtime work
-        // (timers, thread-pool bookkeeping: 0.15 B per call locally, up to ~2.5 B on a 2-core CI runner) is included;
-        // anything per call would be >= 24 B (the smallest object), so 8 B still catches it.
+        // Warm up past tiered-JIT promotion, then measure (AssertPerOp: what the process-wide counter also sees).
         const int calls = 20_000;
         await node.Ask(new CounterId(1), new AddMany(new CounterId(other), 3 * calls));
         long allocated = await node.Ask(new CounterId(1), new AddMany(new CounterId(other), calls));
-        Assert.That(allocated / (double)calls, Is.LessThan(8), $"{allocated} B for {calls} calls");
+        AssertPerOp(allocated, calls, "calls");
     }
 
     [Test, Retry(3)]
     public async Task RepliesOfSuspendedHandlersDoNotAllocate()
     {
-        var node = await Start("alloc", configure: o => o.GossipInterval = TimeSpan.FromHours(1));
+        var node = await StartQuiet("alloc");
         const int calls = 10_000;
         await node.Ask(new CounterId(1), new AddViaMany(new CounterId(2), new CounterId(3), 3 * calls));
         long allocated = await node.Ask(new CounterId(1), new AddViaMany(new CounterId(2), new CounterId(3), calls));
-        Assert.That(allocated / (double)calls, Is.LessThan(8), $"{allocated} B for {calls} calls");
+        AssertPerOp(allocated, calls, "calls");
     }
 
     [Test, Retry(3)]
     public async Task RepliesSentLaterDoNotAllocate()
     {
         // Every call is replied with ReplyWhen once a third actor answered: the deferred reply's watcher is pooled.
-        var node = await Start("alloc", configure: o => o.GossipInterval = TimeSpan.FromHours(1));
+        var node = await StartQuiet("alloc");
         const int calls = 10_000;
         await node.Ask(new CounterId(1), new ConfirmViaMany(new CounterId(2), new CounterId(3), 3 * calls));
         long allocated = await node.Ask(new CounterId(1), new ConfirmViaMany(new CounterId(2), new CounterId(3), calls));
-        Assert.That(allocated / (double)calls, Is.LessThan(8), $"{allocated} B for {calls} calls");
+        AssertPerOp(allocated, calls, "calls");
     }
 
     [Test, Retry(3)]
     public async Task DelayedSendsDoNotAllocate()
     {
         // Scheduled, held by the shard's timer wheel and sent when due: frames and wheel entries are reused.
-        var node = await Start("alloc", configure: o => o.GossipInterval = TimeSpan.FromHours(1));
+        var node = await StartQuiet("alloc");
         const int sends = 2_000; // below the target's mailbox bound
         var (scheduler, target) = (new CounterId(1), new CounterId(2));
         for (int round = 1; round <= 3; round++) // warm-up: wheel entries, frames
@@ -56,25 +50,24 @@ public class AllocationTests : ClusterTest
             await Eventually(async () => await node.Ask(target, new Get()) == round * sends, "the delayed sends did not arrive");
         }
 
-        long before = GC.GetTotalAllocatedBytes(precise: true);
+        var meter = new AllocationMeter();
         await node.Ask(scheduler, new BumpManyLater(target, sends));
         await Eventually(async () => await node.Ask(target, new Get()) == 4 * sends, "the delayed sends did not arrive");
-        long allocated = GC.GetTotalAllocatedBytes(precise: true) - before;
-        Assert.That(allocated / (double)sends, Is.LessThan(8), $"{allocated} B for {sends} delayed sends");
+        long allocated = meter.Garbage;
+        AssertPerOp(allocated, sends, "delayed sends");
     }
 
     [Test, Retry(3)]
     public async Task BurstsOfConcurrentCallsDoNotAllocate()
     {
         // 2,000 calls in flight at once: above the old fixed pool sizes (1,024), below the callee's mailbox bound.
-        var node = await Start("alloc", configure: o => o.GossipInterval = TimeSpan.FromHours(1));
-        long other = 2;
-        while (await node.Ask(new CounterId(other), new WhereAmI()) == await node.Ask(new CounterId(1), new WhereAmI())) other++;
+        var node = await StartQuiet("alloc");
+        long other = await KeyOnAnotherShard(node);
 
         const int width = 2_000, rounds = 10;
         await node.Ask(new CounterId(1), new AskInBursts(new CounterId(other), width, 3));
         long allocated = await node.Ask(new CounterId(1), new AskInBursts(new CounterId(other), width, rounds));
-        Assert.That(allocated / (double)(width * rounds), Is.LessThan(8), $"{allocated} B for {width * rounds} calls");
+        AssertPerOp(allocated, width * rounds, "calls");
     }
 
     [Test, Retry(3)]
@@ -82,8 +75,8 @@ public class AllocationTests : ClusterTest
     {
         // Four callers on thread-pool threads at once (HTTP handlers, a benchmark): 4,096 calls in flight, each rented on
         // whichever thread runs its caller then and returned on whichever thread resumes it.
-        var node = await Start("caller", configure: static o => o.GossipInterval = TimeSpan.FromHours(1));
-        var callee = await Start("callee", configure: static o => o.GossipInterval = TimeSpan.FromHours(1));
+        var node = await StartQuiet("caller");
+        var callee = await StartQuiet("callee");
         await Converged();
         var keys = new CounterId[1_024]; // on the other node: replies come back on its link's IO threads
         long key = 0;
@@ -106,11 +99,11 @@ public class AllocationTests : ClusterTest
         }
 
         await Run(20);
-        long before = GC.GetTotalAllocatedBytes(precise: true);
+        var meter = new AllocationMeter();
         await Run(rounds);
-        long allocated = GC.GetTotalAllocatedBytes(precise: true) - before;
+        long allocated = meter.Garbage;
         int total = calls.Length * keys.Length * rounds;
-        Assert.That(allocated / (double)total, Is.LessThan(1), $"{allocated} B for {total} calls");
+        AssertPerOp(allocated, total, "calls", limit: 1);
     }
 
     /// <summary>Rounds of calls to every key at once (a Reply method: its pooled builder keeps the loop itself free).</summary>
@@ -127,34 +120,23 @@ public class AllocationTests : ClusterTest
     public async Task BurstsOfSuspendedHandlersDoNotAllocate()
     {
         // 2,000 actors suspended in async Reply<T> handlers at once: their state machines live in pooled boxes.
-        var node = await Start("alloc", configure: o => o.GossipInterval = TimeSpan.FromHours(1));
+        var node = await StartQuiet("alloc");
         const int width = 2_000, rounds = 10;
         await node.Ask(new CounterId(1), new SuspendInBursts(1_000, new CounterId(2), width, 20));
         long allocated = await node.Ask(new CounterId(1), new SuspendInBursts(1_000, new CounterId(2), width, rounds));
-        Assert.That(allocated / (double)(width * rounds), Is.LessThan(8), $"{allocated} B for {width * rounds} suspended handlers");
+        AssertPerOp(allocated, width * rounds, "suspended handlers");
     }
 
     [Test, Retry(3)]
     public async Task CheckpointsOfUnchangedActorsDoNotAllocate()
     {
         // 99 actors checkpointing every 100 ms: each check serializes the record into a pooled frame and hashes it.
-        var node = await Start("alloc", configure: o =>
-        {
-            o.GossipInterval = TimeSpan.FromHours(1);
-            o.ActorStore = new DaServer.Persistence.InMemoryActorStore();
-        });
+        var node = await StartQuiet("alloc", configure: static o => o.ActorStore = new DaServer.Persistence.InMemoryActorStore());
         for (int i = 1; i < 100; i++) await node.Ask(new BankId(i), new Deposit(1, false));
         Thread.Sleep(1000); // first checkpoints written, pools warm
         // ~1,000 checkpoints a second: anything allocated per checkpoint would be >= 24 KB/s; the test process alone
         // makes about 1.7 KB/s (see IdleNodesDoNotAllocate), so the quietest of a few windows is compared.
-        long quietest = long.MaxValue;
-        for (int second = 0; second < 4; second++)
-        {
-            var meter = new AllocationMeter();
-            Thread.Sleep(1000);
-            quietest = Math.Min(quietest, meter.Garbage);
-        }
-
+        long quietest = Quietest(windows: 4, static () => Thread.Sleep(1000));
         Assert.That(quietest, Is.LessThan(8 * 1024), $"{quietest} B/s while checkpointing");
     }
 
@@ -164,22 +146,11 @@ public class AllocationTests : ClusterTest
         // 99 actors whose record changes every tick, checkpointed every 100 ms: about 1,000 writes a second, each
         // serialized into a pooled frame, batched, stored (in place, like a database row) and applied.
         var store = new DaServer.Persistence.InMemoryActorStore();
-        var node = await Start("alloc", configure: o =>
-        {
-            o.GossipInterval = TimeSpan.FromHours(1);
-            o.ActorStore = store;
-        });
+        var node = await StartQuiet("alloc", configure: o => o.ActorStore = store);
         for (int i = 1; i < 100; i++) await node.Ask(new BankId(i), new Earn());
         Thread.Sleep(1000);
         long before = await Versions(store);
-        long quietest = long.MaxValue;
-        for (int second = 0; second < 4; second++)
-        {
-            var meter = new AllocationMeter();
-            Thread.Sleep(1000);
-            quietest = Math.Min(quietest, meter.Garbage);
-        }
-
+        long quietest = Quietest(windows: 4, static () => Thread.Sleep(1000));
         long written = await Versions(store) - before;
         Assert.That(written, Is.GreaterThan(2_000), "the records changed and were written");
         Assert.That(quietest, Is.LessThan(8 * 1024), $"{quietest} B/s while writing {written / 4} changed records a second");
@@ -197,22 +168,20 @@ public class AllocationTests : ClusterTest
     [Test, Retry(3)]
     public async Task KeyedEventsDoNotAllocate()
     {
-        var node = await Start("alloc", configure: o => o.GossipInterval = TimeSpan.FromHours(1));
-        long other = 2;
-        while (await node.Ask(new CounterId(other), new WhereAmI()) == await node.Ask(new CounterId(1), new WhereAmI())) other++;
+        var node = await StartQuiet("alloc");
+        long other = await KeyOnAnotherShard(node);
 
         const int events = 20_000;
         await node.Ask(new CounterId(1), new SendMany(new CounterId(other), 3 * events));
         long allocated = await node.Ask(new CounterId(1), new SendMany(new CounterId(other), events));
-        Assert.That(allocated / (double)events, Is.LessThan(8), $"{allocated} B for {events} events"); // see above
+        AssertPerOp(allocated, events, "events");
     }
 
     [Test, Retry(3)]
     public async Task GatewayFanOutDoesNotAllocate([Values(0, 2)] int flushMs)
     {
         // Written at once, or on a 2 ms beat (ClientConnectionOptions.FlushInterval).
-        var gateway = await Start("gw", gateway: true, configure: o => o.GossipInterval = TimeSpan.FromHours(1),
-            clients: o => o.FlushInterval = TimeSpan.FromMilliseconds(flushMs));
+        var gateway = await StartQuiet("gw", clients: o => o.FlushInterval = TimeSpan.FromMilliseconds(flushMs));
         var receiver = new GoldCounter();
         const int members = 16;
         for (int i = 0; i < members; i++)
@@ -230,7 +199,7 @@ public class AllocationTests : ClusterTest
         var meter = new AllocationMeter();
         Broadcast(broadcasts);
         long allocated = meter.Garbage;
-        Assert.That(allocated / (double)(broadcasts * members), Is.LessThan(1), $"{allocated} B for {broadcasts} broadcasts to {members}");
+        AssertPerOp(allocated, broadcasts * members, $"deliveries ({broadcasts} broadcasts to {members})", limit: 1);
         Assert.That(meter.PoolGrowth, Is.LessThan(1 << 20), "pooled buffers reach their peak during warm-up");
 
         // Synchronous waits: an await here would allocate in the test harness, not in the path under test.
@@ -252,7 +221,7 @@ public class AllocationTests : ClusterTest
     public async Task GroupChurnDoesNotAllocate()
     {
         // Sessions joining and leaving groups that come and go (area of interest cells as players move).
-        var gateway = await Start("gw", gateway: true, configure: o => o.GossipInterval = TimeSpan.FromHours(1));
+        var gateway = await StartQuiet("gw", gateway: true);
         for (int i = 0; i < 16; i++) await Connect(gateway);
         await Eventually(() => gateway.SessionCount() == 16, "sessions");
         var sessions = gateway.Feature<ClientConnections>()!.SessionIds().Select(id => new ClientSession(gateway.Id, id)).ToArray();
@@ -262,7 +231,7 @@ public class AllocationTests : ClusterTest
         var meter = new AllocationMeter();
         Churn(rounds);
         long allocated = meter.Garbage;
-        Assert.That(allocated / (double)(rounds * sessions.Length * 2), Is.LessThan(1), $"{allocated} B for {rounds * sessions.Length * 2} joins and leaves");
+        AssertPerOp(allocated, rounds * sessions.Length * 2, "joins and leaves", limit: 1);
 
         void Churn(int count)
         {
@@ -280,8 +249,8 @@ public class AllocationTests : ClusterTest
     [Test, Retry(3)]
     public async Task ClientCallsThroughAGatewayToAnotherNodeDoNotAllocate()
     {
-        var gateway = await Start("gw", gateway: true, hosts: static _ => false, configure: o => o.GossipInterval = TimeSpan.FromHours(1));
-        var game = await Start("game", configure: o => o.GossipInterval = TimeSpan.FromHours(1));
+        var gateway = await StartQuiet("gw", gateway: true, hosts: static _ => false);
+        var game = await StartQuiet("game");
         await Converged();
         var client = await Connect(gateway);
         await client.Ask(new Login(new PlayerId(42))); // binds the session to player 42 (on the game node)
@@ -293,7 +262,7 @@ public class AllocationTests : ClusterTest
         await Calls(calls);
         long allocated = meter.Garbage;
         // Anything per call would be >= 24 B; below that is the harness (the test's awaits).
-        Assert.That(allocated / (double)calls, Is.LessThan(8), $"{allocated} B for {calls} client calls");
+        AssertPerOp(allocated, calls, "client calls");
         // A burst above the warm-up peak may rent a few more pooled buffers (send batches, resend window chunks).
         Assert.That(meter.PoolGrowth, Is.LessThan(1 << 20), "pooled buffers stay near their warm-up peak");
 
@@ -324,22 +293,22 @@ public class AllocationTests : ClusterTest
         long allocated = meter.Garbage;
         // Exchanging full tables cost an idle six-node topology about 10 KB/s per node at one round a second; pulses
         // are read in place. What remains is the process background (timers: about 2 KB/s with gossip off).
-        Assert.That(allocated / 600.0, Is.LessThan(32), $"{allocated} B for about 600 rounds");
+        AssertPerOp(allocated, 600, "gossip rounds (about)", limit: 32);
     }
 
     [Test, Retry(3)]
     public async Task CallsToAnotherNodeDoNotAllocate()
     {
         // The measuring call lasts as long as its 60,000 round trips.
-        var caller = await Start("caller", configure: static o => (o.GossipInterval, o.CallTimeout) = (TimeSpan.FromHours(1), TimeSpan.FromMinutes(1)));
-        var callee = await Start("callee", configure: static o => o.GossipInterval = TimeSpan.FromHours(1));
+        var caller = await StartQuiet("caller", configure: static o => o.CallTimeout = TimeSpan.FromMinutes(1));
+        var callee = await StartQuiet("callee");
         await Converged();
         long from = KeyOwnedBy<CounterId>(caller), to = KeyOwnedBy<CounterId>(callee);
 
         const int calls = 20_000;
         await caller.Ask(new CounterId(from), new AddMany(new CounterId(to), 3 * calls));
         long allocated = await caller.Ask(new CounterId(from), new AddMany(new CounterId(to), calls));
-        Assert.That(allocated / (double)calls, Is.LessThan(8), $"{allocated} B for {calls} calls"); // see above
+        AssertPerOp(allocated, calls, "calls");
     }
 
     [TestCase(false, TestName = "ServiceTrafficDoesNotAllocate(local)"), Retry(3)]
@@ -347,16 +316,16 @@ public class AllocationTests : ClusterTest
     public async Task ServiceTrafficDoesNotAllocate(bool remote)
     {
         // Remote: the services live only on the second node, so every message crosses the link.
-        var caller = await Start("caller", hosts: remote ? static t => t == typeof(Counter) : null,
-            configure: static o => (o.GossipInterval, o.CallTimeout) = (TimeSpan.FromHours(1), TimeSpan.FromMinutes(1)));
-        if (remote) await Start("services", hosts: static t => t != typeof(Counter), configure: static o => o.GossipInterval = TimeSpan.FromHours(1));
+        var caller = await StartQuiet("caller", hosts: remote ? static t => t == typeof(Counter) : null,
+            configure: static o => o.CallTimeout = TimeSpan.FromMinutes(1));
+        if (remote) await StartQuiet("services", hosts: static t => t != typeof(Counter));
         await Converged();
 
         const int rounds = 10_000;
         await caller.Ask(new CounterId(1), new ServiceTraffic(3 * rounds));
         long allocated = await caller.Ask(new CounterId(1), new ServiceTraffic(rounds));
         // Per round: one message, one event to two services, one request and its reply.
-        Assert.That(allocated / (double)rounds, Is.LessThan(8), $"{allocated} B for {rounds} rounds");
+        AssertPerOp(allocated, rounds, "rounds");
     }
 
     [Test, Retry(3)]
@@ -364,13 +333,13 @@ public class AllocationTests : ClusterTest
     {
         // Actors loaded by a message and unloaded when idle, again and again: the actor object, its mailbox and its
         // entity's storage are reused.
-        var node = await Start("churn", configure: static o => o.GossipInterval = TimeSpan.FromHours(1));
+        var node = await StartQuiet("churn");
         const int actors = 1_000;
         for (int round = 0; round < 3; round++) Churn();
         var meter = new AllocationMeter();
         Churn();
         long allocated = meter.Garbage;
-        Assert.That(allocated / (double)actors, Is.LessThan(8), $"{allocated} B for {actors} loads and unloads");
+        AssertPerOp(allocated, actors, "loads and unloads");
 
         // Synchronous waits: an await here would allocate in the test harness, not in the path under test.
         void Churn()
@@ -387,11 +356,7 @@ public class AllocationTests : ClusterTest
     public async Task RefusalsDoNotAllocate()
     {
         // Overload is when refusals happen most: refusing must not add GC work. Refusals are status-only frames.
-        var node = await Start("refuse", shards: 1, configure: static o =>
-        {
-            o.GossipInterval = TimeSpan.FromHours(1);
-            o.DispatchQueueCapacity = 16;
-        });
+        var node = await StartQuiet("refuse", shards: 1, configure: static o => o.DispatchQueueCapacity = 16);
         var shard = node.Shards[0];
         var gate = new ManualResetEventSlim(); // not disposed: a shard thread may still be inside Wait() when the test ends
         shard.Post(static g => ((ManualResetEventSlim)g!).Wait(), gate); // the shard is busy until the gate opens
@@ -414,7 +379,7 @@ public class AllocationTests : ClusterTest
         Assert.That(sink.Overloaded, Is.EqualTo(4 * refusals));
         Assert.That(sink.NotHosted, Is.EqualTo(4 * refusals));
         Assert.That(sink.PayloadBytes, Is.Zero, "status-only frames");
-        Assert.That(allocated / (double)(2 * refusals), Is.LessThan(8), $"{allocated} B for {2 * refusals} refusals");
+        AssertPerOp(allocated, 2 * refusals, "refusals");
 
         void Refuse(int count)
         {
@@ -434,7 +399,7 @@ public class AllocationTests : ClusterTest
     {
         // Relayed requests (as a gateway forwards client calls) whose deadline passes while the target shard is busy:
         // the sweep answers each with a status-only Timeout, and the shard later drops them unrun.
-        var node = await Start("timeout", shards: 1, configure: static o => o.GossipInterval = TimeSpan.FromHours(1));
+        var node = await StartQuiet("timeout", shards: 1);
         var shard = node.Shards[0];
         var sink = new StatusSink();
         const int calls = 2_000;
@@ -443,18 +408,12 @@ public class AllocationTests : ClusterTest
         // Each window waits for the 100 ms sweep, so it also counts whatever else the process allocates meanwhile (a
         // thread pool thread injected, an earlier test's nodes finishing their shutdown). A steady per-call cost shows
         // in every window: the quietest of three is the path's own.
-        long allocated = long.MaxValue;
-        for (int window = 0; window < 3; window++)
-        {
-            var meter = new AllocationMeter();
-            Relay(calls);
-            allocated = Math.Min(allocated, meter.Garbage);
-        }
+        long allocated = Quietest(windows: 3, () => Relay(calls));
 
         Assert.That(sink.Timeout, Is.EqualTo(6 * calls));
         Assert.That(node.Dropped(DropReason.Expired), Is.EqualTo(6 * calls), "the shard dropped the expired requests unrun");
         Assert.That(sink.PayloadBytes, Is.Zero, "status-only frames");
-        Assert.That(allocated / (double)calls, Is.LessThan(8), $"{allocated} B for {calls} timeouts");
+        AssertPerOp(allocated, calls, "timeouts");
 
         // Synchronous waits: an await here would allocate in the test harness, not in the path under test.
         void Relay(int count)
@@ -500,15 +459,50 @@ public class AllocationTests : ClusterTest
         // The quietest of several one-second windows: one-time work (tiered JIT, the test host warming up) lands in some
         // windows, anything per tick in all of them.
         await Start("idle", shards: 4, configure: static o => o.TickRate = 500);
+        long quietest = Quietest(windows: 8, static () => Thread.Sleep(1000));
+        Assert.That(quietest, Is.LessThan(8 * 1024), $"{quietest} B/s idle");
+    }
+
+    /// <summary>A node without gossip: background membership traffic is not part of the paths measured.</summary>
+    private Task<Node> StartQuiet(string name, int shards = 2, bool gateway = false, Func<Type, bool>? hosts = null,
+        Action<NodeOptions>? configure = null, Action<ClientConnectionOptions>? clients = null) =>
+        Start(name, shards, gateway, hosts, o =>
+        {
+            o.GossipInterval = TimeSpan.FromHours(1);
+            configure?.Invoke(o);
+        }, clients);
+
+    /// <summary>The first counter key from 2 whose actor runs on another shard than key 1's.</summary>
+    private static async Task<long> KeyOnAnotherShard(Node node)
+    {
+        long other = 2;
+        while (await node.Ask(new CounterId(other), new WhereAmI()) == await node.Ask(new CounterId(1), new WhereAmI())) other++;
+        return other;
+    }
+
+    /// <summary>
+    /// Fewer than <paramref name="limit"/> bytes per operation. The default, 8 B, is below the smallest object (24 B), so
+    /// anything allocated per operation fails it, while the process-wide background it also counts (timers, thread-pool
+    /// bookkeeping: 0.15 B per call locally, up to ~2.5 B on a 2-core CI runner) does not.
+    /// </summary>
+    private static void AssertPerOp(long allocated, int operations, string what, double limit = 8) =>
+        Assert.That(allocated / (double)operations, Is.LessThan(limit), $"{allocated} B for {operations} {what}");
+
+    /// <summary>
+    /// The least garbage of <paramref name="windows"/> runs of <paramref name="during"/>: one-time work (tiered JIT, a
+    /// thread injected, an earlier test's nodes stopping) lands in some windows, a steady per-operation cost in all.
+    /// </summary>
+    private static long Quietest(int windows, Action during)
+    {
         long quietest = long.MaxValue;
-        for (int second = 0; second < 8; second++)
+        for (int window = 0; window < windows; window++)
         {
             var meter = new AllocationMeter();
-            Thread.Sleep(1000);
+            during();
             quietest = Math.Min(quietest, meter.Garbage);
         }
 
-        Assert.That(quietest, Is.LessThan(8 * 1024), $"{quietest} B/s idle");
+        return quietest;
     }
 
     /// <summary>

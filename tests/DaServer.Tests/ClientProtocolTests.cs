@@ -5,28 +5,6 @@ namespace DaServer.Tests;
 /// <summary>A client connection starts with the client's hello: another protocol version is told why and disconnected.</summary>
 public class ClientProtocolTests : ClusterTest
 {
-    private sealed class Recorder : IChannelHandler
-    {
-        public readonly TaskCompletionSource<(RpcStatus Status, string? Text)> Reply = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public readonly TaskCompletionSource Closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        public int Frames;
-
-        public readonly System.Collections.Concurrent.ConcurrentQueue<RpcStatus> Statuses = new();
-
-        public void OnFrame(IFrameChannel connection, in FrameHeader header, ReadOnlySpan<byte> frame)
-        {
-            Interlocked.Increment(ref Frames);
-            if (header.Kind == FrameKind.Reply) Statuses.Enqueue(header.Status);
-            var payload = FrameHeader.PayloadOf(in header, frame);
-            Reply.TrySetResult((header.Status, payload.IsEmpty ? null : Nino.Core.NinoDeserializer.Deserialize<string>(payload)));
-        }
-
-        public void OnClosed(IFrameChannel connection, Exception? error) => Closed.TrySetResult();
-
-        public Connection? Connection;
-    }
-
     [Test]
     public async Task ResumesAndTicketsDrawOnTheSessionsRate()
     {
@@ -47,9 +25,9 @@ public class ClientProtocolTests : ClusterTest
         Assert.That(client.Statuses, Has.Some.EqualTo(RpcStatus.RateLimited), string.Join(", ", client.Statuses));
     }
 
-    private async Task<Recorder> Send(Node gateway, FrameKind kind, uint op, long key)
+    private async Task<FrameRecorder> Send(Node gateway, FrameKind kind, uint op, long key)
     {
-        var recorder = new Recorder();
+        var recorder = new FrameRecorder();
         var connection = recorder.Connection = await Connection.ConnectAsync("127.0.0.1", gateway.ClientPort(), recorder, ConnectionOptions.ForClients());
         using var w = FrameWriter.Rent();
         w.SetCallId(1);

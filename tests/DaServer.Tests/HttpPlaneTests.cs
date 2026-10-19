@@ -2,7 +2,6 @@ using System.Net;
 using System.Net.Http.Json;
 using DaServer.Hosting;
 using Microsoft.AspNetCore.Builder;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace DaServer.Tests;
@@ -16,29 +15,20 @@ public class HttpPlaneTests
     [SetUp]
     public async Task StartNode()
     {
-        var builder = WebApplication.CreateBuilder();
-        builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
-        {
-            ["DaServer:Name"] = "http",
-            ["DaServer:ListenAddress"] = "127.0.0.1",
-            ["DaServer:ClusterPort"] = "0",
-            ["DaServer:HttpPort"] = "0",
-            ["DaServer:Shards"] = "2",
-            ["DaServer:StatsInterval"] = "0",
-            ["DaServer:Clients:Port"] = "0",
-            ["DaServer:Probe:Level"] = "7",
-        });
-        builder.AddDaServer();
-        builder.AddDaServerFeature<ProbeOptions>("Probe", static o => new ProbeFeature(o));
-        builder.AddDaServerFeature<ProbeOptions>("Unconfigured", static o => new UnconfiguredFeature());
-        builder.Services.Configure<NodeOptions>(static o => o.Features.Add(new LimitWhoAsks()));
-        _app = builder.Build();
-        _app.MapAsk<EchoText, string>("/echo");
-        _app.MapAsk<CounterId, Add, int>("/counters/{id}/add");
-        _app.MapAsk<WhoAsks, long>("/who");
-        _app.MapSend<Tally>("/tally");
-        _app.MapDaServer();
-        await _app.StartAsync();
+        _app = await HostedNodes.StartAsync("http", settings: new() { ["DaServer:Clients:Port"] = "0", ["DaServer:Probe:Level"] = "7" },
+            configure: static builder =>
+            {
+                builder.AddDaServerFeature<ProbeOptions>("Probe", static o => new ProbeFeature(o));
+                builder.AddDaServerFeature<ProbeOptions>("Unconfigured", static o => new UnconfiguredFeature());
+                builder.Services.Configure<NodeOptions>(static o => o.Features.Add(new LimitWhoAsks()));
+            },
+            map: static app =>
+            {
+                app.MapAsk<EchoText, string>("/echo");
+                app.MapAsk<CounterId, Add, int>("/counters/{id}/add");
+                app.MapAsk<WhoAsks, long>("/who");
+                app.MapSend<Tally>("/tally");
+            });
         _http = new HttpClient { BaseAddress = new Uri(_app.Urls.First()) };
     }
 
@@ -63,8 +53,7 @@ public class HttpPlaneTests
     [Test]
     public async Task HealthSaysReadyOnceJoinedAndAliveWhileNoShardStalls()
     {
-        var node = _app.Services.GetRequiredService<Node>();
-        await Task.Run(async () => { while (!node.IsReady) await Task.Delay(10); });
+        var node = await _app.ReadyNode();
         Assert.That((await _http.GetAsync("/health")).StatusCode, Is.EqualTo(HttpStatusCode.OK), "ready: joined and not leaving");
         Assert.That((await _http.GetAsync("/alive")).StatusCode, Is.EqualTo(HttpStatusCode.OK), "alive: no stalled shard");
         var host = _app.Services.GetRequiredService<Microsoft.Extensions.Options.IOptions<Microsoft.Extensions.Hosting.HostOptions>>().Value;
@@ -75,7 +64,7 @@ public class HttpPlaneTests
     [Test]
     public void FeaturesRunWhenTheirSectionIsConfiguredAndReportGauges()
     {
-        var node = _app.Services.GetRequiredService<Node>();
+        var node = _app.Node();
         Assert.That(node.Feature<ProbeFeature>()?.Level, Is.EqualTo(7), "options bound from DaServer:Probe");
         Assert.That(node.Feature<UnconfiguredFeature>(), Is.Null, "no section, no feature");
         Assert.That(node.Gauges.Select(static g => g.Name), Is.SupersetOf(new[] { "daserver.clients.sessions", "test.probe.level" }));
@@ -127,7 +116,7 @@ public class HttpPlaneTests
     [Test]
     public void TheNodesInstrumentsAreSampledWithItsName()
     {
-        var node = _app.Services.GetRequiredService<Node>();
+        var node = _app.Node();
         var seen = new System.Collections.Concurrent.ConcurrentDictionary<string, long>();
         using var listener = new System.Diagnostics.Metrics.MeterListener();
         listener.InstrumentPublished = static (instrument, l) =>
@@ -154,10 +143,7 @@ public class HttpPlaneTests
         long before = Interlocked.Read(ref Observed.Tallies);
         var response = await _http.PostAsJsonAsync("/tally", new { By = 3 });
         Assert.That(response.StatusCode, Is.EqualTo(HttpStatusCode.Accepted));
-        await Task.Run(async () =>
-        {
-            for (int i = 0; i < 500 && Interlocked.Read(ref Observed.Tallies) - before < 3; i++) await Task.Delay(10);
-        });
+        await TestNodes.WaitUntilAsync(() => Interlocked.Read(ref Observed.Tallies) - before >= 3, TimeSpan.FromSeconds(5), "the tallies arrived");
         Assert.That(Interlocked.Read(ref Observed.Tallies) - before, Is.EqualTo(3));
     }
 
@@ -172,8 +158,7 @@ public class HttpPlaneTests
 
         Assert.That(await client.Ask(new Login(new PlayerId(7))), Is.True);
         Assert.That(await client.Ask(new AddGold(4)), Is.EqualTo(4), "the session's player");
-        for (int i = 0; i < 200 && inbox.Gold != 4; i++) await Task.Delay(10);
-        Assert.That(inbox.Gold, Is.EqualTo(4), "the push came back over the WebSocket");
+        await TestNodes.WaitUntilAsync(() => inbox.Gold == 4, TimeSpan.FromSeconds(2), "the push came back over the WebSocket");
     }
 
     /// <summary>An ingress filter: <see cref="WhoAsks"/> is rate limited for three seconds.</summary>

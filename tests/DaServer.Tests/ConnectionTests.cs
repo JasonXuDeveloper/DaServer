@@ -7,19 +7,13 @@ namespace DaServer.Tests;
 /// <summary>A connection's send side: queued frames reach the peer whole and in order, written at once or on a flusher's beat.</summary>
 public class ConnectionTests
 {
-    private sealed class NoFrames : IChannelHandler
-    {
-        public void OnFrame(IFrameChannel connection, in FrameHeader header, ReadOnlySpan<byte> frame) { }
-        public void OnClosed(IFrameChannel connection, Exception? error) { }
-    }
-
     /// <summary>A sender connected to a raw socket the test reads (or does not read yet).</summary>
     private static async Task<(Connection Sender, Socket Reader, TcpListener Listener)> Pair(ConnectionOptions options)
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
         var accept = listener.AcceptSocketAsync();
-        var sender = await Connection.ConnectAsync("127.0.0.1", ((IPEndPoint)listener.LocalEndpoint).Port, new NoFrames(), options);
+        var sender = await Connection.ConnectAsync("127.0.0.1", ((IPEndPoint)listener.LocalEndpoint).Port, new FrameRecorder(), options);
         return (sender, await accept, listener);
     }
 

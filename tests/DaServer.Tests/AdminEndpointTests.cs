@@ -4,7 +4,6 @@ using System.Text.Json;
 using DaServer.Hosting;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
@@ -61,8 +60,7 @@ public class AdminEndpointTests
     {
         await using var app = await StartNode(Secret);
         using var http = Client(app, AdminToken.For(Secret));
-        var node = app.Services.GetRequiredService<Node>();
-        await Task.Run(async () => { while (!node.IsReady) await Task.Delay(10); });
+        var node = await app.ReadyNode();
         await node.Ask(new CounterId(1), new Add(5));
 
         using var membership = JsonDocument.Parse(await http.GetStringAsync("/admin/membership"));
@@ -78,11 +76,11 @@ public class AdminEndpointTests
     {
         await using var app = await StartNode(Secret);
         using var http = Client(app, AdminToken.For(Secret));
-        var node = app.Services.GetRequiredService<Node>();
+        var node = app.Node();
         Assert.That(await node.Ask(new CounterId(1), new Add(5)), Is.EqualTo(5));
         Assert.That((await http.PostAsync("/admin/unload/NoSuchActor", null)).StatusCode, Is.EqualTo(HttpStatusCode.NotFound));
         Assert.That((await http.PostAsync("/admin/unload/Counter", null)).StatusCode, Is.EqualTo(HttpStatusCode.Accepted));
-        await Task.Run(async () => { while (node.ActorCount > 0) await Task.Delay(10); }).WaitAsync(TimeSpan.FromSeconds(10));
+        await TestNodes.WaitUntilAsync(() => node.ActorCount == 0, TimeSpan.FromSeconds(10), "the actors unloaded");
         Assert.That(await node.Ask(new CounterId(1), new Get()), Is.Zero, "loaded again, without a store: from scratch");
     }
 
@@ -97,28 +95,9 @@ public class AdminEndpointTests
         await stopping.Task.WaitAsync(TimeSpan.FromSeconds(10));
     }
 
-    private static async Task<WebApplication> StartNode(string? secret, string? accepted = null, Action<WebApplicationBuilder>? configure = null)
-    {
-        var builder = WebApplication.CreateBuilder();
-        builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
-        {
-            ["DaServer:Name"] = "admin",
-            ["DaServer:ClusterName"] = "admin-" + Guid.NewGuid().ToString("N"),
-            ["DaServer:ListenAddress"] = "127.0.0.1",
-            ["DaServer:ClusterPort"] = "0",
-            ["DaServer:HttpPort"] = "0",
-            ["DaServer:Shards"] = "2",
-            ["DaServer:StatsInterval"] = "0",
-            ["DaServer:SigningSecret"] = secret,
-            ["DaServer:AcceptedSigningSecret"] = accepted,
-        });
-        builder.AddDaServer();
-        configure?.Invoke(builder);
-        var app = builder.Build();
-        app.MapDaServer();
-        await app.StartAsync();
-        return app;
-    }
+    private static Task<WebApplication> StartNode(string? secret, string? accepted = null, Action<WebApplicationBuilder>? configure = null) =>
+        HostedNodes.StartAsync("admin", configure: configure,
+            settings: new() { ["DaServer:SigningSecret"] = secret, ["DaServer:AcceptedSigningSecret"] = accepted });
 
     private static HttpClient Client(WebApplication app, string? token)
     {
