@@ -179,6 +179,50 @@ public partial class ResumeTests
     }
 
     [Test]
+    public async Task ACloseThatReachesTheNewOwnerBeforeTheRecordIsNotLost()
+    {
+        // The lounge moves while its previous node holds it in a turn; the closed session's close reaches the new owner
+        // before the handoff record (which carries the grant): it waits behind the record instead of being dropped.
+        Faults.Allow("TurnTooLong"); // the held turn is the point
+        var gateways = await StartCluster(TimeSpan.FromMilliseconds(300));
+        var game = Nodes.Single(n => n.Options.Name == "game");
+        var next = await Start("game-2", configure: Secret(TimeSpan.FromMilliseconds(300)));
+        await Converged();
+        long key = game.KeyOwnedBy<LoungeId>(game);
+        var client = await LogIn(gateways, 582);
+        Assert.That(await client.Ask(new SitDown(new LoungeId(key))), Is.True);
+        Assert.That(await game.Ask(new LoungeId(key), new Seated()), Is.Positive, "the lounge holds the session");
+
+        TurnGate.Current = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var held = game.Ask(new LoungeId(key), new HoldLounge()).AsTask();
+        int slot = ClusterView.Slot(ActorIds<LoungeId>.HandlerTypeId, key);
+        var table = new SlotTable { Version = 1000, Coordinator = game.Id, Overrides = [new SlotOverride(ActorIds<LoungeId>.HandlerTypeId, (ushort)slot, next.Id)] };
+        foreach (var node in Nodes) node.Membership.Apply(table);
+        client.AutoReconnect = false;
+        client.DropConnection();
+        await Task.Delay(1000); // past the grace: the close went to the new owner, whose record is still held
+        TurnGate.Current.TrySetResult();
+        try { await held; } catch (RpcException) { } // its caller may have timed out meanwhile
+
+        await Eventually(async () => await next.Ask(new LoungeId(key), new Seated()) == 0, "the moved lounge forgot the closed session");
+    }
+
+    [Test]
+    public async Task UnreadableClosesAndResumesAreRefusedAndTheActorGoesOn()
+    {
+        // Only a faulty peer could send them: they are refused, not thrown out of the mailbox (no failed system).
+        var gateways = await StartCluster(TimeSpan.FromSeconds(5));
+        var client = await LogIn(gateways, 583);
+        var game = Nodes.Single(n => n.Options.Name == "game");
+        var ingress = ((DaServer.Features.INodeContext)game).Ingress;
+        var origin = new Origin(game.Id, 1);
+        ingress.Send(TypeId<SessionResumed>.Value, ActorIds<PlayerId>.HandlerTypeId, 583, [0xFF], origin);
+        ingress.Send(TypeId<SessionClosed>.Value, ActorIds<PlayerId>.HandlerTypeId, 583, [0xFF], origin);
+        Assert.That(await client.Ask(new AddGold(1)), Is.EqualTo(1), "the player goes on with its session");
+        Assert.That(Observed.Events, Does.Not.Contain("closed:583").And.Not.Contain("resumed:583"));
+    }
+
+    [Test]
     public void TicketsAreUnforgeableAndExpire()
     {
         byte[] secret = Encoding.UTF8.GetBytes("secret");

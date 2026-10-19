@@ -4,7 +4,7 @@ namespace DaServer.Runtime;
 /// Operations shared by the runtime systems (routing a frame, delivering and invoking a message). Static and
 /// stateless: everything they touch lives in the world.
 /// </summary>
-internal static class ShardDispatch
+internal static partial class ShardDispatch
 {
     /// <summary>
     /// Route a received message (one-way or request): services run immediately; actor messages go to the owner's
@@ -18,7 +18,7 @@ internal static class ShardDispatch
         var handlerType = node.HandlerTypeById(header.Target);
         if (header.MessageId == TypeId<SessionResumed>.Value && handlerType is { IsActor: true })
         {
-            RouteResume(world, handlerType, frame, sink, in header);
+            RouteSession(world, handlerType, frame, sink, in header, RpcStatus.Forbidden);
             return;
         }
 
@@ -26,11 +26,10 @@ internal static class ShardDispatch
         if (handler == null)
         {
             if (handlerType is { IsActor: true } && Handoff.TryReceive(world, handlerType, frame, in header)) return;
-            // A close reaches every granted actor, handled or not: the runtime forgets the session (one not loaded holds none).
-            if (header.MessageId == TypeId<SessionClosed>.Value && handlerType is { IsActor: true }
-                && TryGetLoaded(world, handlerType.Id, header.Key, out var granted))
+            // A close reaches every granted actor, handled or not: the runtime forgets the session.
+            if (header.MessageId == TypeId<SessionClosed>.Value && handlerType is { IsActor: true })
             {
-                Deliver(world, granted, new Envelope(frame, sink));
+                RouteSession(world, handlerType, frame, sink, in header, RpcStatus.NotHosted);
                 return;
             }
 
@@ -49,18 +48,6 @@ internal static class ShardDispatch
             node.Forward(frame, sink);
         else
             Load(world, handlerType, header.Key, frame, sink);
-    }
-
-    /// <summary>
-    /// A resume goes to every granted actor, whether it handles <see cref="SessionResumed"/> or not; one not loaded has no
-    /// granted session, so it is refused without loading it.
-    /// </summary>
-    private static void RouteResume(World world, HandlerTypeInfo handlerType, FrameWriter frame, IReplySink? sink, in FrameHeader header)
-    {
-        var node = world.Shard.Node;
-        if (TryGetLoaded(world, handlerType.Id, header.Key, out var existing)) Deliver(world, existing, new Envelope(frame, sink));
-        else if (!OwnsHere(world, node, handlerType.Id, header.Key)) node.Forward(frame, sink);
-        else Fail(frame, sink, RpcStatus.Forbidden);
     }
 
     private static bool OwnsHere(World world, Node node, uint handlerTypeId, long key) =>
@@ -360,50 +347,6 @@ internal static class ShardDispatch
 
         actor.TurnChain = ChainOf(actor.Shard.World, envelope.Frame); // cleared when the turn ends
         return Invoke(handler, actor, envelope.Frame, envelope.Sink, actor.Shard.Node.Logger, actor.TurnChain);
-    }
-
-    /// <summary>
-    /// A client resumes a session at this actor (asked by the client-facing node): answered by the runtime, then
-    /// delivered to the actor's handler, if any, as a one-way message from the new session.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private static System.Threading.Tasks.ValueTask Resume(Actor actor, in Envelope envelope)
-    {
-        var frame = envelope.Frame;
-        if (frame.Deadline != 0 && Platform.Milliseconds > frame.Deadline)
-        {
-            // The client-facing node answered its client without this actor (timed out): taking the session now would
-            // leave the actor on a session that does not know it.
-            Expired();
-            frame.Dispose();
-            return default;
-        }
-
-        SessionResumed resumed;
-        try
-        {
-            resumed = NinoDeserializer.Deserialize<SessionResumed>(frame.Payload);
-        }
-        catch (Exception)
-        {
-            Fail(frame, envelope.Sink, RpcStatus.Forbidden); // not a resume (only a faulty peer could send it)
-            return default;
-        }
-
-        var status = ActorSessions.Resume(actor, in resumed, out bool reverted);
-        bool accepted = status == RpcStatus.Ok && !reverted; // a revert restores the session the actor had: nothing to tell
-        if (accepted) actor.Shard.Node.Supersede(resumed.Previous, resumed.Session, actor.HandlerType.Id, actor.Key);
-        else if (reverted) actor.Shard.Node.SwapGroup(resumed.Session, resumed.Previous, actor.HandlerType.Id, actor.Key); // the group back
-        if (frame.CallId != 0 && envelope.Sink is { } sink)
-        {
-            if (status == RpcStatus.Ok) sink.SendOk(frame.CallId);
-            else sink.SendError(frame.CallId, status);
-        }
-
-        if (accepted && actor.HandlerType.Handlers.Of(TypeId<SessionResumed>.Value) is { } handler)
-            return Invoke(handler, actor, frame, null, actor.Shard.Node.Logger, actor.TurnChain = ChainOf(actor.Shard.World, frame));
-        frame.Dispose();
-        return default;
     }
 
     /// <summary>

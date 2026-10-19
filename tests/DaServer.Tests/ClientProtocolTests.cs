@@ -2,7 +2,7 @@ using DaServer.Net;
 
 namespace DaServer.Tests;
 
-/// <summary>A client connection starts with the client's hello: another protocol version is told why and disconnected.</summary>
+/// <summary>A client connection starts with the client's hello: a client whose protocol levels do not overlap is told both ranges and disconnected.</summary>
 public class ClientProtocolTests : ClusterTest
 {
     [Test]
