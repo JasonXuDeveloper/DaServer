@@ -47,7 +47,7 @@ internal static partial class ShardDispatch
         else if (!OwnsHere(world, node, handlerType.Id, header.Key))
             node.Forward(frame, sink);
         else
-            Load(world, handlerType, header.Key, frame, sink);
+            Load(world, handlerType, header.Key, frame, sink, Handoff.PreviousOwner(world, handlerType.Id, header.Key));
     }
 
     private static bool OwnsHere(World world, Node node, uint handlerTypeId, long key) =>
@@ -64,8 +64,10 @@ internal static partial class ShardDispatch
     /// Load actor (<paramref name="handlerType"/>, <paramref name="key"/>) for its first message. The message is queued
     /// first, and the load runs in its call chain: <see cref="Actor.OnLoad"/> calling an actor that waits for this
     /// message fails with <see cref="RpcStatus.CallCycle"/> at once instead of at the call timeout (ADR-059).
+    /// <paramref name="previousOwner"/>: the node that may still hold it (<see cref="Handoff.PreviousOwner"/>), whose
+    /// record the load waits for.
     /// </summary>
-    private static void Load(World world, HandlerTypeInfo handlerType, long key, FrameWriter frame, IReplySink? sink)
+    private static void Load(World world, HandlerTypeInfo handlerType, long key, FrameWriter frame, IReplySink? sink, ulong? previousOwner)
     {
         var id = new ActorAddress(handlerType.Id, key);
         Entity entity;
@@ -86,7 +88,7 @@ internal static partial class ShardDispatch
         long chain = ChainOf(world, frame);
         Deliver(world, entity, new Envelope(frame, sink));
         actor.TurnChain = chain; // no turn yet: kept for OnLoad (BeginLive)
-        if (Handoff.PreviousOwner(world, handlerType.Id, key) is { } from) Handoff.Await(world, entity, from);
+        if (previousOwner is { } from) Handoff.Await(world, entity, from);
         else BeginLoad(world, entity, actor);
     }
 

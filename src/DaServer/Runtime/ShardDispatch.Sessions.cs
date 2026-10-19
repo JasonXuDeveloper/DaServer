@@ -14,7 +14,7 @@ internal static partial class ShardDispatch
         var node = world.Shard.Node;
         if (TryGetLoaded(world, handlerType.Id, header.Key, out var existing)) Deliver(world, existing, new Envelope(frame, sink));
         else if (!OwnsHere(world, node, handlerType.Id, header.Key)) node.Forward(frame, sink);
-        else if (Handoff.PreviousOwner(world, handlerType.Id, header.Key) != null) Load(world, handlerType, header.Key, frame, sink);
+        else if (Handoff.PreviousOwner(world, handlerType.Id, header.Key) is { } from) Load(world, handlerType, header.Key, frame, sink, from);
         else Fail(frame, sink, refusal);
     }
 
