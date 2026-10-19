@@ -360,6 +360,28 @@ public class InfrastructureTests
     }
 
     [Test]
+    public void ATimerScheduledAfterALongIdleTimeFiresOnTimeWithoutWalkingTheIdleTicks()
+    {
+        var clock = new DaServer.Testing.ManualClock();
+        var wheel = new TimerWheel<int>(TimeSpan.FromMilliseconds(5), time: clock);
+        var fired = new Fired();
+        wheel.Schedule(TimeSpan.Zero, 1);
+        clock.Advance(TimeSpan.FromMilliseconds(10).Ticks);
+        wheel.Advance(ref fired); // warm, and empty again
+
+        clock.Advance(TimeSpan.FromDays(30).Ticks); // a quiet month: about 518 million ticks of 5 ms
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        wheel.Schedule(TimeSpan.FromMilliseconds(10), 2);
+        clock.Advance(TimeSpan.FromMilliseconds(5).Ticks);
+        wheel.Advance(ref fired);
+        Assert.That(fired.Items, Is.EqualTo(new[] { 1 }), "nothing fires early");
+        clock.Advance(TimeSpan.FromMilliseconds(10).Ticks);
+        wheel.Advance(ref fired);
+        Assert.That(fired.Items, Is.EqualTo(new[] { 1, 2 }), "it fires on time");
+        Assert.That(watch.ElapsedMilliseconds, Is.LessThan(100), "the idle month was skipped, not walked tick by tick");
+    }
+
+    [Test]
     public void TimerWheelsFireDueTimersOnceAndCancelOthers()
     {
         var wheel = new TimerWheel<int>(TimeSpan.FromMilliseconds(5), slots: 8); // 40 ms a round: 100 ms is a later round

@@ -239,15 +239,25 @@ public sealed partial class GrowthSystem : EcsSystem
     private static void Grow(ref CounterState counter) => counter.Value++;
 }
 
-/// <summary>Throws once on a growing counter when asked to: a user system's bug (the shard must go on).</summary>
+/// <summary>
+/// A user system's bug, in the group the runtime's mail systems run in (it runs before them): it throws on every pass
+/// over a growing counter while <see cref="Throwing"/> holds 1, and its creation throws while <see cref="CreateThrows"/>
+/// does. The shard's other systems and actors must go on; a shard that cannot be built must read as stalled.
+/// </summary>
+[UpdateInGroup<ShardMessages>]
 public sealed partial class FaultySystem : EcsSystem
 {
-    public static readonly StrongBox<int> ThrowOnce = new();
+    public static readonly StrongBox<int> Throwing = new(), CreateThrows = new();
+
+    protected override void OnCreate()
+    {
+        if (CreateThrows.Value == 1) throw new InvalidOperationException("a system that cannot be created");
+    }
 
     [ForEach, With<Growing>]
     private static void Trip(in CounterState _)
     {
-        if (Interlocked.Exchange(ref ThrowOnce.Value, 0) == 1) throw new InvalidOperationException("a bug in a user system");
+        if (Throwing.Value == 1) throw new InvalidOperationException("a bug in a user system");
     }
 }
 
@@ -383,6 +393,42 @@ public readonly record struct BankId(long Value) : IActorId;
 [NinoType, Message] public partial record struct HoldTurn : IRequest<int>;
 /// <summary>Takes gold, waits for <see cref="TurnGate"/>, then fails: the half-changed state must not be kept.</summary>
 [NinoType, Message] public partial record struct FailAfterGate(int Gold) : IRequest<int>;
+
+public readonly record struct TangleId(long Value) : IActorId;
+
+/// <summary>Tie the tangle's knot to itself and ask for a critical write: its record no longer serializes.</summary>
+[NinoType, Message] public partial record struct Tie : IRequest<bool>;
+
+/// <summary>An actor whose state can stop serializing (<see cref="Tie"/>).</summary>
+public sealed class Tangle : Actor<TangleId, Knotted>
+{
+    [Handle]
+    public bool On(Tie _)
+    {
+        var knot = new Knot();
+        knot.Next = knot;
+        State.Knot = knot;
+        Entity.Add<SaveNow>();
+        return true;
+    }
+}
+
+public readonly record struct BrittleId(long Value) : IActorId;
+
+[NinoType, Message] public partial record struct Poke : IRequest<int>;
+
+/// <summary>An actor without a record whose construction or state initializer can throw (user code at load).</summary>
+public sealed class Brittle : Actor<BrittleId, Brittleness>
+{
+    public static readonly StrongBox<int> ConstructorThrows = new();
+
+    public Brittle()
+    {
+        if (ConstructorThrows.Value == 1) throw new InvalidOperationException("a constructor threw");
+    }
+
+    [Handle] public int On(Poke _) => ++State.Value;
+}
 
 /// <summary>
 /// Keys below 100 checkpoint every 100 ms, keys from 100 only on unload (or with SaveNow); keys from 1,000 to 1,999 also

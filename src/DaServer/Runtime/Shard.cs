@@ -231,6 +231,9 @@ internal sealed class Shard : CompletionThread
         SynchronizationContext.SetSynchronizationContext(new ShardSynchronizationContext(this));
         try
         {
+            // A world that fails to build (a user service's constructor, a system's OnCreate) crashes the shard: it
+            // reads as stalled from here, so /alive fails and the platform restarts the node.
+            Volatile.Write(ref _counters.PassStartedMs, Platform.Milliseconds);
             CreateWorld();
             long nextTick = _time.GetTimestamp() + _tickInterval;
             long nextIdleScan = 0;
@@ -254,22 +257,22 @@ internal sealed class Shard : CompletionThread
                     if (activity.Rebalance)
                     {
                         activity.Rebalance = false;
-                        Update<ShardRebalance>();
+                        World.Update<ShardRebalance>();
                         activity.DeclaredDead = false;
                     }
 
                     if (activity.NowMs >= nextIdleScan)
                     {
                         nextIdleScan = activity.NowMs + IdleScanMs;
-                        Update<ShardIdleScan>();
+                        World.Update<ShardIdleScan>();
                     }
 
-                    Update<ShardMessages>();
+                    World.Update<ShardMessages>();
 
                     if (now >= nextTick)
                     {
                         Volatile.Write(ref _counters.TickCount, _counters.TickCount + 1);
-                        Update<Tick>();
+                        World.Update();
                         nextTick += _tickInterval;
                         if (now >= nextTick) Volatile.Write(ref _counters.TickOverruns, _counters.TickOverruns + 1); // a tick behind
                         if (now - nextTick > _tickInterval * 5)
@@ -310,28 +313,30 @@ internal sealed class Shard : CompletionThread
     }
 
     /// <summary>
-    /// One group's pass (<see cref="Tick"/>: the systems of no group, every tick). A system that throws is logged and the shard goes on
-    /// (as a handler that throws, <see cref="DispatchSystem"/>): one bug must not stop every actor of the shard.
+    /// A system threw (EasyEcs catches per system while this is subscribed, and runs the group's next system): logged,
+    /// at most once a second per shard with the count left out, and the shard goes on, as a handler that throws does
+    /// (<see cref="DispatchSystem"/>). One bug must not stop the shard's other systems or actors.
     /// </summary>
-    private void Update<TGroup>() where TGroup : struct, ISystemGroup
+    private void OnSystemError(EcsSystem system, Exception error)
     {
-        try
+        long now = Platform.Milliseconds;
+        if (now - _systemErrorLoggedMs < 1000)
         {
-            if (typeof(TGroup) == typeof(Tick)) World.Update();
-            else World.Update<TGroup>();
+            _systemErrorsUnlogged++;
+            return;
         }
-        catch (Exception e)
-        {
-            Log.ShardFailed(Node.Logger, e, Index);
-        }
+
+        Log.SystemFailed(Node.Logger, error, system.GetType().Name, Index, _systemErrorsUnlogged);
+        (_systemErrorLoggedMs, _systemErrorsUnlogged) = (now, 0);
     }
 
-    /// <summary>The tick: <see cref="World.Update()"/>, the systems in no group.</summary>
-    private struct Tick : ISystemGroup;
+    private long _systemErrorLoggedMs = long.MinValue / 2; // shard thread only
+    private int _systemErrorsUnlogged;
 
     /// <summary>Singletons, runtime systems, the node's user systems and service instances.</summary>
     private void CreateWorld()
     {
+        World.SystemError += OnSystemError;
         World.AddSingleton<ShardContext>() = new ShardContext(this);
         World.AddSingleton<ShardActivity>();
         World.AddSingleton<CallChains>() = new CallChains { Last = Random.Shared.NextInt64() };

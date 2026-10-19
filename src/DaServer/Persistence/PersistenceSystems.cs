@@ -83,7 +83,7 @@ internal sealed partial class PersistSystem : EcsSystem
 {
     public override int Priority => 6;
 
-    internal enum Outcome { Queued, Unchanged, Busy }
+    internal enum Outcome { Queued, Unchanged, Busy, Unwritable }
 
     // Records are taken between turns only (Without<Turn>): a turn suspended at an await may have changed half of what
     // its message changes, and the record is always the state after whole messages.
@@ -110,7 +110,25 @@ internal sealed partial class PersistSystem : EcsSystem
     {
         if (now < stored.RetryAtMs || store.Saves.InFlight || store.Saves.Full) return Outcome.Busy;
         if (stored.EveryMs > 0) stored.DueMs = now + stored.EveryMs;
-        var record = Records.Write(actor, store.Types);
+        FrameWriter record;
+        try
+        {
+            record = Records.Write(actor, store.Types);
+        }
+        catch (Exception e)
+        {
+            // The state does not serialize: the store keeps the last record written. One actor's bad state must not
+            // hold the shard's other writes and handoffs, so this write is given up; a copy that was leaving goes.
+            Log.RecordUnwritable(target.Shard.Node.Logger, e, target);
+            if (actor.Has<FinalSave>())
+            {
+                actor.Remove<FinalSave>();
+                actor.Add<Removing>() = new Removing(RpcStatus.Error, "The actor's record does not serialize: " + e.Message);
+            }
+
+            return Outcome.Unwritable;
+        }
+
         ulong hash = Records.Hash(record.Payload);
         if (hash == stored.Hash)
         {

@@ -138,7 +138,11 @@ public sealed partial class ClusterClient
         // Every actor that took the new session marks the end of what it pushed to the old one (SessionMoved): pushes
         // still on their way there arrive before the new connection's go on. A closed connection brings no more.
         var moved = MarkersOf(old, actors);
-        if (!moved.IsCompleted) await Task.WhenAny(moved, Task.Delay(CallTimeout)).ConfigureAwait(false); // cold: once per move
+        if (!moved.IsCompleted)
+        {
+            using var timeout = new CancellationTokenSource(); // cold: once per move
+            if (await Task.WhenAny(moved, Task.Delay(CallTimeout, timeout.Token)).ConfigureAwait(false) == moved) timeout.Cancel();
+        }
         try
         {
             await GoodbyeAsync(old).ConfigureAwait(false); // its answer is the last frame its session is sent

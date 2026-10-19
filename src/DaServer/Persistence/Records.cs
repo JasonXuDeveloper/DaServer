@@ -67,7 +67,16 @@ internal static class Records
     public static FrameWriter Write(Entity entity, PersistentType[] types)
     {
         var record = FrameWriter.Rent(1024);
-        WriteSections(entity, types, record);
+        try
+        {
+            WriteSections(entity, types, record);
+        }
+        catch
+        {
+            record.Dispose(); // the state does not serialize (a cycle, an unregistered subtype): the caller decides
+            throw;
+        }
+
         return record;
     }
 

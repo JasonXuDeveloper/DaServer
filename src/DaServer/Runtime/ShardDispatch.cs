@@ -73,7 +73,19 @@ internal static class ShardDispatch
     private static void Load(World world, HandlerTypeInfo handlerType, long key, FrameWriter frame, IReplySink? sink)
     {
         var id = new ActorAddress(handlerType.Id, key);
-        var entity = Create(world, handlerType, id);
+        Entity entity;
+        try
+        {
+            entity = Create(world, handlerType, id);
+        }
+        catch (Exception e)
+        {
+            // The actor's constructor or settings threw (user code): the message is answered, not left to time out.
+            Log.ActorFailed(world.Logger, e, "Create", handlerType);
+            Fail(frame, sink, RpcStatus.Error);
+            return;
+        }
+
         world.GetSingleton<ActorDirectory>().Actors[id] = entity;
         var actor = entity.Get<ActorRef>().Actor;
         long chain = ChainOf(world, frame);
@@ -110,7 +122,16 @@ internal static class ShardDispatch
     /// </summary>
     internal static void BeginLive(World world, Entity entity, Actor actor)
     {
-        actor.InitializeEntity(entity);
+        try
+        {
+            actor.InitializeEntity(entity); // the state's initializers are user code
+        }
+        catch (Exception e)
+        {
+            TurnWatcher.Begin(world, entity, System.Threading.Tasks.ValueTask.FromException(e)); // the load fails as OnLoad would
+            return;
+        }
+
         TurnWatcher.Begin(world, entity, Hook(world, static a => a.OnLoad().AsValueTask(), actor));
     }
 
@@ -154,14 +175,14 @@ internal static class ShardDispatch
         actor.HandlerType = handlerType;
         actor.Key = id.Key;
         actor.Shard = world.Shard;
-        int capacity = actor.MailboxCapacity;
+        int capacity = actor.MailboxCapacity; // user settings: read before anything exists that a throw would orphan
+        var idle = actor.UnloadAfterIdle;
         var entity = world.CreateEntity(new ActorRef(actor), new Mailbox(pools.RentMailbox())
         {
             LastActive = world.GetSingleton<ShardActivity>().NowMs,
             Capacity = capacity > 0 ? capacity : world.Shard.Node.Options.ActorMailboxCapacity,
         }, new Loading());
         actor.Entity = entity;
-        var idle = actor.UnloadAfterIdle;
         if (idle > TimeSpan.Zero) entity.Add<UnloadWhenIdle>() = new UnloadWhenIdle((long)idle.TotalMilliseconds);
         return entity; // no state yet: it is restored or created when the actor becomes live (BeginLive)
     }

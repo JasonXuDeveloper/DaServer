@@ -111,16 +111,73 @@ public class SingleNodeTests : ClusterTest
     }
 
     [Test]
-    public async Task ASystemThatThrowsLeavesTheShardServing()
+    public async Task ASystemThatThrowsOnEveryPassLeavesTheShardServing()
     {
-        Faults.Allow("ShardFailed"); // what the test provokes
+        // It throws before the runtime's mail systems of the same group on every wake: they run anyway.
+        Faults.Allow("SystemFailed"); // what the test provokes
         await _node.Ask(new CounterId(8), new Grow());
-        Volatile.Write(ref FaultySystem.ThrowOnce.Value, 1);
-        await Eventually(() => Volatile.Read(ref FaultySystem.ThrowOnce.Value) == 0, "the system threw");
-        int after = await _node.Ask(new CounterId(8), new Get());
-        await Task.Delay(TimeSpan.FromMilliseconds(100));
-        Assert.That(await _node.Ask(new CounterId(8), new Get()), Is.GreaterThan(after), "the shard still ticks its systems");
-        Assert.That(await _node.Ask(new CounterId(8), new Add(1)), Is.GreaterThan(after), "and serves its actors");
+        FaultySystem.Throwing.Value = 1;
+        try
+        {
+            await Eventually(() => Faults.Count("SystemFailed") > 0, "the system threw");
+            int after = await _node.Ask(new CounterId(8), new Get());
+            await Eventually(async () => await _node.Ask(new CounterId(8), new Get()) > after, "the shard still ticks its systems");
+            Assert.That(await _node.Ask(new CounterId(8), new Add(1)), Is.GreaterThan(after), "and serves its actors");
+            Assert.That(Faults.Count("SystemFailed"), Is.LessThanOrEqualTo(4), "logged at most once a second per shard");
+        }
+        finally
+        {
+            FaultySystem.Throwing.Value = 0;
+        }
+    }
+
+    [Test]
+    public async Task AShardWhoseWorldCannotBeBuiltReadsAsStalled()
+    {
+        Faults.Allow("ShardCrashed"); // what the test provokes, and what the watchdog then reports
+        Faults.Allow("ShardStalled");
+        FaultySystem.CreateThrows.Value = 1;
+        Node broken;
+        try
+        {
+            broken = await Start("broken", shards: 1);
+        }
+        finally
+        {
+            FaultySystem.CreateThrows.Value = 0;
+        }
+
+        await Eventually(() => broken.StalledShards == 1, "the crashed shard reads as stalled, so /alive fails");
+    }
+
+    [Test]
+    public async Task AnActorWhoseConstructionThrowsFailsItsMessageAndLoadsLater()
+    {
+        Faults.Allow("ActorFailed"); // what the test provokes
+        Brittle.ConstructorThrows.Value = 1;
+        try
+        {
+            var error = Assert.ThrowsAsync<RpcException>(async () => await _node.Ask(new BrittleId(1), new Poke()));
+            Assert.That(error!.Status, Is.EqualTo(RpcStatus.Error), "answered, not left to time out");
+        }
+        finally
+        {
+            Brittle.ConstructorThrows.Value = 0;
+        }
+
+        Brittleness.Breaks.Value = 1;
+        try
+        {
+            var error = Assert.ThrowsAsync<RpcException>(async () => await _node.Ask(new BrittleId(2), new Poke()));
+            Assert.That(error!.Status, Is.EqualTo(RpcStatus.Error), "a state initializer that throws fails the load");
+        }
+        finally
+        {
+            Brittleness.Breaks.Value = 0;
+        }
+
+        Assert.That(await _node.Ask(new BrittleId(1), new Poke()), Is.EqualTo(1), "the key is not stuck");
+        Assert.That(await _node.Ask(new BrittleId(2), new Poke()), Is.EqualTo(1), "nor is this one");
     }
 
     [Test]

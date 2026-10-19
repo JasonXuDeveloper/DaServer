@@ -50,6 +50,24 @@ public class PersistenceEdgeTests(string kind) : ClusterTest
     private Task<Node> StartWith(IActorStore store, string name = "single") => Start(name, configure: o => o.ActorStore = store);
 
     [Test]
+    public async Task ARecordThatDoesNotSerializeHoldsNoOtherWrite()
+    {
+        // One actor's state stops serializing (a cycle) and it asks for a critical write, then the node stops: that
+        // write is given up (the store keeps its last record), and every other actor's writes and the stop go on.
+        Faults.Allow("RecordUnwritable"); // what the test provokes
+        var store = new GatedStore(_stores.Create());
+        var node = await StartWith(store);
+        Assert.That(await node.Ask(new TangleId(1), new Tie()), Is.True);
+        for (int key = 300; key < 310; key++) Assert.That(await node.Ask(new BankId(key), new Deposit(key, Critical: true)), Is.EqualTo(key));
+        await Stop(node);
+        Assert.That(Faults.Count("RecordUnwritable"), Is.GreaterThan(0), "the tangle's record did not serialize");
+
+        var again = await StartWith(store, "again");
+        for (int key = 300; key < 310; key++) Assert.That(await again.Ask(new BankId(key), new Balance()), Is.EqualTo(key), $"key {key} was written");
+        Assert.That(await again.Ask(new TangleId(1), new Tie()), Is.True, "the tangle loads again from its last record");
+    }
+
+    [Test]
     public async Task ACheckpointInFlightAsTheActorUnloadsIsNotItsFinalSave()
     {
         // The checkpoint holds 3; the actor takes another deposit and unloads while that write is in flight: its final

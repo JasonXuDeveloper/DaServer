@@ -37,7 +37,7 @@ internal static partial class Handoff
     }
 
     /// <summary>
-    /// Who may still hold a key this node loads, while keys move after view changes (within the handoff timeout): its
+    /// Who may still hold a key this node loads, while keys move after view changes (within the move window, <see cref="MoveWindowMs"/>): its
     /// latest owner other than this node in the recent views, or, when there is none (it just joined, its previous views
     /// lacked the others), the node owning it without this one if that node is up longer (one that joined after this
     /// node never held it). Null otherwise: nothing is on its way, so a load waits for no one.
@@ -56,7 +56,7 @@ internal static partial class Handoff
     }
 
     /// <summary>
-    /// The latest live owner other than this node in the views replaced within the handoff timeout, before this node owned
+    /// The latest live owner other than this node in the views replaced within the move window, before this node owned
     /// the key (<paramref name="ownsNow"/>: it owns it now; otherwise, a view where it did): the node that may hold the
     /// key's actor or still send its record here. Null when there is none.
     /// </summary>
@@ -104,7 +104,8 @@ internal static partial class Handoff
 
     /// <summary>
     /// Send the leaving actor's record to <paramref name="to"/> and take the state off this copy (the record returned, to
-    /// send again or to restore if the handoff falls back); null when that node is gone.
+    /// send again or to restore if the handoff falls back); null when that node is gone or the state does not serialize
+    /// (the handoff falls back: the store, which cannot write it either, keeps the last record).
     /// </summary>
     public static byte[]? Send(World world, Entity entity, Actor actor, ulong to)
     {
@@ -119,7 +120,17 @@ internal static partial class Handoff
         head[CriticalAt] = entity.Has<CriticalPending>() ? (byte)1 : (byte)0; // its write failed: the new owner writes it at once
         record.Advance(RecordHeader);
         var moved = world.GetSingleton<ShardStore>().Moved;
-        Records.WriteSections(entity, moved, record);
+        try
+        {
+            Records.WriteSections(entity, moved, record);
+        }
+        catch (Exception e)
+        {
+            record.Dispose();
+            Log.RecordUnwritable(node.Logger, e, actor);
+            return null;
+        }
+
         record.SetHeader(FrameKind.Message, actor.HandlerType.Id, Record, actor.Key);
         var payload = FrameHeader.PayloadOf(FrameHeader.Read(record.Frame), record.Frame).ToArray(); // cold: one per move
         if (node.LoseRecords > 0 && Interlocked.Decrement(ref node.LoseRecords) >= 0) record.Dispose(); // tests: lost on the way
