@@ -905,9 +905,14 @@ and cards, a manual clock), fails before its fix, and passes after it.
     (`ACriticalChangeWhoseWriteFailedIsWrittenAtOnceByItsNewOwner`, lost on the new owner's crash without it); a
     restart of the link's stream closes a handshake that said Hello with the old stream id (no deterministic test:
     it needs the peer to restart while the handshake is in flight).
-  - Open from this round (should-fix, in order): a group broadcast during a planned client move can reach both
-    sessions and an in-flight push can arrive after the parked ones (needs a move marker or group sequence numbers);
-    a resume reverted after the old session's close was consumed leaves the session open; a resume whose reply is lost
+  - Planned client moves (agreed: a move marker): each actor that takes the new session sends `SessionMoved` to the
+    previous one behind its last push there, and the resume's reply says how many actors took it; the client goes on
+    with the new connection's pushes once that many markers came on the old one (or the call timeout), then says
+    goodbye; the old node takes the session out of every group before answering the goodbye
+    (`APushStillOnItsWayToTheOldSessionComesBeforeTheNewOnes`, the push arrived after the new one without it). A group
+    broadcast fanned out between the new session's join and the old one's goodbye still reaches both: duplicates in
+    that window need per-group sequence numbers, not adopted.
+  - Open from this round (should-fix, in order): a resume reverted after the old session's close was consumed leaves the session open; a resume whose reply is lost
     cannot be retried with the old ticket; a stopped shard's handoff memory is gone for late resends. Sessions of a
     drained node close one view removal late (nit).
 

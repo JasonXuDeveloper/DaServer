@@ -257,7 +257,10 @@ records that no longer hold). Each: context → decision → consequences.
   old one with its goodbye as the last frame (`IFrameChannel.SendLast`): what was sent on it before reaches the node
   first, a send that still picked it is refused there and goes on the new connection (its call registered again
   there: a call belongs to the connection its frame went on, so the old connection's close fails only its own calls),
-  and the old connection closes once the calls made on it are answered. `ClientMoveTests` force each interleaving
+  and the old connection closes once the calls made on it are answered. Pushes keep each actor's order: the new
+  connection's wait until every actor that took the new session (the resume's reply counts them) sent `SessionMoved`
+  on the old one, behind its last push there; then the goodbye goes, and the old node takes the session out of its
+  groups before answering. `ClientMoveTests` force each interleaving
   against a scripted node. The seal is the fence, as HTTP/2's GOAWAY and gRPC's draining connection
   (no new stream on a draining connection, open streams finish): no step waits on a delay, so a slow or preempted
   device is as safe as a fast one. Make before break: no push or call is lost, and
