@@ -29,7 +29,7 @@ groups:
           severity: warning
         annotations:
           summary: "{{ $labels.node }} drops messages ({{ $labels.reason }})"
-          description: "queue_full: a shard's dispatch queue is full (the node is overloaded); mailbox_full: an actor's mailbox is full (a hot actor); expired: requests waited past their caller's timeout."
+          description: "queue_full: a shard's dispatch queue is full (the node is overloaded); mailbox_full: an actor's mailbox is full (mail piled up while it loads or leaves, a slow store or handoff, or a hot actor behind on its backlog); expired: requests waited past their caller's timeout."
 
       - alert: DaServerHandlerFailures
         expr: sum by (node) (rate(daserver_handler_failed_total[5m])) > 1
@@ -38,7 +38,7 @@ groups:
           severity: warning
         annotations:
           summary: "Handlers on {{ $labels.node }} keep failing"
-          description: "More than one handler or system pass a second throws: a poison message, a broken dependency or a broken system. The node's logs name the actor and message (ActorFailed) or the system (SystemFailed)."
+          description: "More than one handler or system pass a second throws: a poison message, a broken dependency or a broken system. The node's logs name the handler and message (MessageFailed, ActorFailed for lifecycle handlers) or the system (SystemFailed)."
 
       - alert: DaServerShardsSaturated
         expr: avg by (node) (daserver_shard_busy_ratio) > 0.85

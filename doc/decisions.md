@@ -1,7 +1,8 @@
 # Architecture decision records
 
 Short records of non-obvious decisions, each stating the decision that holds now. Numbers are stable (gaps are
-records that no longer hold). Each: context → decision → consequences.
+records that no longer hold; a record replaced by a later one keeps its number as a one-line pointer, so references
+resolve). Each: context → decision → consequences.
 
 ## ADR-001 The server runs on the newest .NET; shared code also builds for netstandard2.1
 - Context: the hot paths need the newest runtime and its APIs, while contracts and the client SDK must run in Unity
@@ -17,18 +18,20 @@ records that no longer hold). Each: context → decision → consequences.
   producers into queues built for one, which needs locks or careful ownership in user code.
 - Decision: each node runs N shards (default one per core), each a dedicated thread owning an EasyEcs `World`, a
   bounded lock-free MPMC dispatch queue for new calls and messages (refused beyond its capacity, ADR-027), a second
-  one for completions, callbacks and turn ends (never refused, drained first) and a fixed tick. Actors and service instances live in exactly one shard.
+  one for completions of the shard's own asks and runtime callbacks (never refused, drained first) and a fixed tick.
+  An actor lives in exactly one shard; a service runs on the shard that received its message.
 - Consequences: no locks in user code; deterministic ordering per shard; messages are processed immediately (tick rate
-  only drives systems). ECS systems are synchronous (EasyEcs 4); a handler that awaits suspends only its actor
-  (a `Turn`), and the shard keeps running other actors and systems (ADR-037).
+  only drives systems). Systems and handlers are synchronous: a handler runs to completion and an ask's answer comes
+  back as mail (ADR-081), so the shard never holds suspended work.
 
 ## ADR-003 Completing RPCs on the caller's shard (no SynchronizationContext.Post)
 - Context: `ManualResetValueTaskSourceCore` with a captured SynchronizationContext allocates a Tuple per Post.
-- Decision: `PendingCall<T>` is a custom pooled `IValueTaskSource` that records the caller's shard; responses are
-  posted to that shard's dispatch queue and completed there, running the continuation inline. A
-  `ShardSynchronizationContext` is still installed so foreign awaits (DB drivers, Task.Delay) marshal back to the shard
-  thread.
-- Consequences: zero allocation per awaited RPC; ExecutionContext/AsyncLocal does not flow across RPC awaits.
+- Decision: a call made on a shard records that shard (`CompletionThread`): a handler's ask (`AnswerCall`, pooled per
+  shard) has its reply, refusal or timeout posted to the shard's dispatch queue and turned there into the asker's
+  `Answered` mail (ADR-081). A call from outside the worlds (HTTP, tests, hosted services) is a pooled
+  `PendingCall<T>` (`IValueTaskSource`) completed on the thread the reply arrives on. A `ShardSynchronizationContext`
+  is installed on shard threads, so a continuation that reaches one is marshalled back to it.
+- Consequences: zero allocation per call; ExecutionContext/AsyncLocal does not flow across calls.
 
 ## ADR-005 Wire format
 - Decision: fixed 24-byte little-endian header (length, kind, status, hops, flags, target, message id, key), the
@@ -93,9 +96,9 @@ records that no longer hold). Each: context → decision → consequences.
 
 ## ADR-011 Naming: Shard (DaServer executor) vs World (EasyEcs)
 - Context: EasyEcs uses standard ECS vocabulary (`World`, `Query`, `EcsSystem.OnUpdate`).
-- Decision: DaServer's single-threaded executor is a `Shard`; each shard owns one EasyEcs `World`. Actors and services
-  expose `World` and `Cluster` (`ICluster`); ECS code reaches the cluster through the `ShardContext` singleton
-  (`world.Cluster`).
+- Decision: DaServer's single-threaded executor is a `Shard`; each shard owns one EasyEcs `World`. Handlers reach the
+  world and the cluster through their `Context` (`ctx.World`, `ctx.Cluster`, `ICluster`); systems through the
+  `ShardContext` singleton (`world.Cluster`).
 - Consequences: no name clash; "world" always means the ECS world.
 
 ## ADR-012 Source generation instead of registration code
@@ -118,22 +121,18 @@ records that no longer hold). Each: context → decision → consequences.
   queues hides state in procedures. a studied game server's useful idea: actors are entities with their own mailbox, drained by
   systems; infrastructure is systems over singleton state.
 - Decision: `Shard` keeps only the thread, the cross-thread dispatch queue and the wake/tick loop. Loaded actors are
-  entities (`ActorRef`, `Mailbox`, `Turn` and lifecycle tags, ADR-037); directories and pooled watchers are
-  singletons. `DispatchSystem`, `TurnSystem`, `MailboxSystem`, `ServiceCallSystem`, `UnloadSystem` and
-  `RemovalSystem` run in the `ShardMessages` system group on every wake, `RebalanceSystem` in `ShardRebalance`,
-  `IdleSystem` in `ShardIdleScan` (ADR-039); user systems run in the default group at the tick rate.
-- Consequences: the runtime obeys the ECS rules it asks users to follow. Per message: one dictionary lookup, one
-  queue push, the handler. Every system visits only the entities in the state it handles, so no system scans all
-  actors per wake. Measured: zero allocation per cross-shard call.
+  entities (`ActorKey`, indexed; their mailbox as a `DynamicBuffer<Envelope>`; lifecycle tags, ADR-037; known
+  sessions as child entities), shard-wide state is singletons (`ShardActivity`, `ShardTimers`, `AnswerCalls`,
+  `ShardStore`). `TimerSystem`, `DispatchSystem`, `LoadSystem`, `RemovalSystem`, `UnloadSystem`, `MailSystem` and the
+  persistence and handoff systems run in the `ShardMessages` system group on every wake, ordered with `[UpdateAfter]`
+  along the data flow; `RebalanceSystem` in `ShardRebalance`; `IdleSystem`, `ReplySlotSystem`, `ChangeSystem` and
+  `CheckpointSystem` in `ShardIdleScan` (ADR-039); user systems run in the default group at the tick rate.
+- Consequences: the runtime obeys the ECS rules it asks users to follow (ADR-081). Per message: one index lookup and
+  the handler; a live actor without waiting mail never touches its mailbox. Every system visits only the entities in
+  the state it handles, so no system scans all actors per wake. Measured: zero allocation per cross-shard call.
 
 ## ADR-014 Turn-based actors
-- Context: handlers that interleave at awaits (reentrant) let actor state change between an await and the code after
-  it, unlike the actor model most developers expect.
-- Decision: one message at a time per actor, including its awaits (`Turn` component). Services stay concurrent
-  (stateless).
-- Consequences: no interleaving bugs in actor state. Call cycles (A awaits B awaits A) cannot complete: they fail at
-  once with `CallCycle` (ADR-059); use one-way messages for such flows. A `[Reentrant]` opt-in can be added if a
-  real need appears.
+Replaced by ADR-081.
 
 ## ADR-015 Orchestration with Aspire
 - Context: hand-written Dockerfile, compose and Kubernetes files duplicate the topology (ports, seeds, projects) and
@@ -168,9 +167,9 @@ records that no longer hold). Each: context → decision → consequences.
 - Context: an in-world event bus is not an ECS concern (state changes are data) and cannot cross shards or nodes;
   actors and services anywhere in the cluster need one-way messages and published messages.
 - Decision: handlers are part of the gossiped member card. One-way messages (`Send`) and published messages
-  (`Publish`) travel as `Message` frames: a message to an actor goes to the owner of its id and enters the actor's
-  mailbox (turn-based, loaded on demand); `Publish` serializes once and sends one frame per service type handling the
-  message, local node first. Delivery is at most once and ordered with the calls of the same sender.
+  (`Publish`) travel as `Message` frames: a message to an actor goes to the owner of its id and runs on the actor's
+  entity, one message at a time (waiting in its mailbox while it loads; loaded on demand); `Publish` serializes once
+  and sends one frame per service type handling the message, local node first. Delivery is at most once and ordered with the calls of the same sender.
   `SessionClosed` is a framework message sent to every actor a closing session was bound or granted to.
 - Alternatives: a broker (Kafka, NATS) on the call path adds a hop and an external dependency to every message;
   subscription state per actor would have to survive rebalancing. Durable events are an application concern (outbox).
@@ -219,11 +218,12 @@ records that no longer hold). Each: context → decision → consequences.
 ## ADR-024 The runtime owns client sessions
 - Context: business code should not pair binding with group joins, remember sessions to clean up, or copy the caller
   session before the first await; and a crashed client-facing node must not leave actors believing their sessions are alive.
-- Decision: `BindSession(session)` also puts the session in the actor's `Group`; `UnbindSession` and close leave it.
-  Every loaded actor records the sessions bound to it (a `ClientSessions` component); when a session closes the
-  client-facing node publishes `SessionClosed` to each, and when a client-facing node is declared dead every node closes that client-facing node's
-  sessions for its own actors. `Caller` (the origin, ADR-047) is the session of the running turn and holds across its
-  awaits.
+- Decision: `ctx.BindSession(session)` also puts the session in the actor's `Group`; `UnbindSession` and close leave
+  it. Every loaded actor records the sessions it knows (its callers and the sessions it bound or granted) as child
+  entities (`KnownSession` + `ChildOf`, indexed by session; tags `Known`, `Granted`, `Superseded`), which go with the
+  actor; when a session closes the client-facing node publishes `SessionClosed` to each actor holding it, and when a
+  client-facing node is declared dead every node closes that client-facing node's sessions for its own actors.
+  `ctx.Caller` (the origin, ADR-047) is the session that sent the current message.
 - Consequences: business code binds and handles `SessionClosed`; nothing else. Client-facing node crash tests cover it.
   Session control and pushes go to the client-facing node's link from the view, or, while gossip has not listed the client-facing node
   yet, from its Hello (a client call can reach a node first): a Bind is never dropped while the cluster forms.
@@ -279,15 +279,17 @@ records that no longer hold). Each: context → decision → consequences.
 - Context: unbounded dispatch queues and mailboxes let a flood (or a slow actor) grow memory until the process dies,
   and callers learn nothing.
 - Decision: `NodeOptions.DispatchQueueCapacity` bounds the new calls and messages in a shard's dispatch queue and
-  `ActorMailboxCapacity` an actor's mailbox (an actor type sets its own with `Actor.MailboxCapacity`: a hot map or
-  sale takes more, an actor that should shed load early less); a call or message beyond either is refused with
+  `ActorMailboxCapacity` an actor's mailbox (an actor type sets its own with `[Actor<TId>(MailboxCapacity = n)]`: a hot
+  map or sale takes more, an actor that should shed load early less; mail waits there only while the actor loads,
+  leaves or works off a backlog, ADR-081); a call or message beyond either is refused with
   `RpcStatus.Overloaded` (requests get the status, one-way messages are dropped), counted by reason in
   `daserver.messages.dropped{reason=queue_full|mailbox_full}` (`Node.Dropped`). Node links are
   never paused while a target shard is full: the link from B to A also carries replies to A's own calls, so pausing it
-  stalls those turns until their timeouts, which can block the very shard that is full. Replies, continuations and
-  turn ends finish work already admitted, so they have a queue of their own (16k slots per shard, drained first):
-  sharing the full queue with new work would push them into an unbounded overflow exactly under overload. They are
-  bounded by the calls and turns in flight; a burst beyond the slots spills into a segment queue once.
+  stalls the work waiting for those answers until their timeouts, which can block the very shard that is full.
+  Completions of a shard's own asks and runtime callbacks finish work already admitted, so they have a queue of their
+  own (16k slots per shard, drained first): sharing the full queue with new work would push them into an unbounded
+  overflow exactly under overload. They are bounded by the asks in flight; a burst beyond the slots spills into a
+  segment queue once.
 - Consequences: memory is bounded under any load; overload is visible to callers and in metrics, and refusing early
   is cheaper than TCP backpressure. Refusals are status-only (ADR-049).
 
@@ -298,8 +300,9 @@ records that no longer hold). Each: context → decision → consequences.
   (up to 25.5 s). Every hop turns it into a local deadline on arrival (`Environment.TickCount64`, no clock sync) and
   forwards what is left; clients send their call timeout. A shard drops a request whose deadline passed before it
   runs: no reply (the caller has already failed it), counted in `daserver.messages.dropped{reason=expired}`.
-  A call's own timeout (`CallOptions`) sets its first deadline instead of the call timeout; a handler reads what is
-  left as `TimeLeft` (the turn's deadline, kept on the actor for the turn, in `CallContext` for services).
+  A call's own timeout (`CallOptions`) sets its first deadline instead of the call timeout; a handler reads it as
+  `ctx.Deadline` (on `Platform.Milliseconds`), and a reply it keeps for later (`ctx.ReplyLater()`) keeps that deadline:
+  `ReplySlotSystem` forgets it once its caller stopped waiting.
 - Alternatives: absolute timestamps (need synchronized clocks); a separate header field (24-byte header, one byte
   was free on requests).
 - Consequences: work whose caller gave up is not run, on any node; one-way messages never expire. A request in
@@ -356,24 +359,26 @@ records that no longer hold). Each: context → decision → consequences.
 ## ADR-032 Names from the distributed-server vocabulary
 - Context: names borrowed from one framework (Orleans' `OnActivateAsync`) or describing a mechanism instead of its
   role read wrong to people who know other distributed servers.
-- Decision: name things by their role in a cluster, in pairs where they are pairs: `OnLoad` / `OnUnload` (the actor is
-  loaded on / leaves this node), `[FromClient]` / `[ToClient]` (the two directions across the client-facing node),
+- Decision: name things by their role in a cluster, in pairs where they are pairs: `Loaded` / `Unloading` (the actor
+  is loaded on / leaves this node; `Created` when it has no record yet), `[FromClient]` / `[ToClient]` (the two
+  directions across the client-facing node),
   `Caller` (who sent the message from outside; invalid for server calls), `Disconnect` (not a game's "kick"), dispatch (message
   dispatch only), `ClusterMember` (no clash with
-  `System.Reflection.MemberInfo`), `ListenAddress` / `DispatchQueueCapacity` (what they configure). Actor state starts
-  as `new TState()` (field initializers of a state struct run, so `OnLoad` is only for loading), and systems read an
-  actor's id and group from its public `ActorRef` component instead of copying them into state.
+  `System.Reflection.MemberInfo`), `ListenAddress` / `DispatchQueueCapacity` (what they configure). An actor's
+  components start as their defaults when a handler first takes them (a `Created` handler gives a new actor its first
+  data), and systems read an actor's id and group from its public `ActorKey` component instead of copying them into
+  state.
 - Consequences: type ids do not depend on these names (message and handler type names are hashed).
 
 ## ADR-033 Actors unload when idle, by their own declaration
 - Context: actors that stay loaded until their key moves make actors used now and then (offline players, finished
   matches) hold memory forever.
-- Decision: `Actor.UnloadAfterIdle` (default zero: never). Actors that set it get an `UnloadWhenIdle` component; an
-  `IdleSystem` scans only those, ten times a second, and unloads the ones without mail for that long through the same
-  path as rebalancing (`OnUnload` as the last turn; mail arriving meanwhile loads the actor again). The mailbox records
-  when the actor last took mail.
+- Decision: `[Actor<TId>(UnloadAfterIdleSeconds = n)]` (default zero: never). Actors that set it get an
+  `UnloadWhenIdle` component; an `IdleSystem` scans only those, ten times a second, and unloads the ones without mail
+  for that long through the same path as rebalancing (`Unloading` as the last mail; mail arriving later loads the
+  actor again). `LastMail` records when the actor last took mail.
 - Alternatives: a node-wide timeout (would unload maps and realms that are busy in systems but receive no mail).
-- Consequences: one store per ready actor on the mailbox path; RPC benchmark unchanged.
+- Consequences: one store per delivered message (`LastMail`); RPC benchmark unchanged.
 
 ## ADR-034 One write per connection per batch
 - Context: a send loop that wakes on the first queued message gives a session in the 9 interest cells around a
@@ -397,14 +402,16 @@ records that no longer hold). Each: context → decision → consequences.
   senders that depend on the receiver's interface; moving a method between actors breaks every caller.
 - Decision: one concept, the message: a `[NinoType, Message]` struct (ADR-038), answered when it implements
   `IRequest<TReply>`.
-  - Handlers are `[Handle]` methods of actors and services (and of any class on clients, for pushes). The message type
-    decides the handler: the cluster gossips `(message id, handler type id, actor)` per handler.
+  - Handlers are static `[Handle]` methods of actor and service classes (ADR-081; and instance methods of any class on
+    clients, for pushes). The message type decides the handler: the cluster gossips `(message id, handler type id,
+    actor)` per handler.
   - `Ask(id, m)` / `Send(id, m)` go to the actor `id` (its id type names the actor type, ADR-043); without an id, to
     the one service handling the message (several service handlers is an error: `RpcStatus.Error`, cold path). `Publish(e)` reaches
     every service type handling it once.
   - A `[FromClient]` message to an actor goes to the actor bound to the client's session for that actor type, or to
     the actor the client names when that actor granted the session (ADR-051); the actor binds or grants itself:
-    `await BindSession(session)`, `await GrantSession(session)` (acknowledged by the client-facing node before they return).
+    `ctx.BindSession(session)`, `ctx.GrantSession(session)`, answered once the client-facing node applied them (a reply
+    that must follow, `ctx.ReplyAfter(ctx.BindSession(session), value)`, finds the binding in place).
   - Messages to clients are sends to their address: `Send(session, m)` / `Send(group, m)`, handled on clients by
     `[Handle]` methods of a registered object.
   - Generated code: ADR-012.
@@ -425,8 +432,8 @@ records that no longer hold). Each: context → decision → consequences.
   generated by Aspire). Client-facing nodes keep no state for it, so any client-facing node accepts it. `ClusterClient` reconnects through
   its entry addresses with a jittered backoff and presents the ticket. The ticket only
   names what the session held: the node asks the actors in it (`SessionResumed(Session, Previous)`, answered by the
-  runtime before the actor's handler runs), and an actor accepts only while it holds `Previous` bound or granted
-  (actors keep that set with their sessions). The actors are asked in the ticket's order until one accepts, then the
+  runtime before the actor's handler runs), and an actor accepts only while it holds `Previous` bound or granted (the
+  `Granted` tag of its `KnownSession` entity). The actors are asked in the ticket's order until one accepts, then the
   rest at once: an actor that already took `Previous` for another session answers `Superseded`, so a ticket presented
   on two connections at once resumes on one and the other stops. A resume whose new connection closed before it
   completed (the client gave up waiting) is reverted: the node sends the actors that took it a resume back to the
@@ -451,31 +458,25 @@ records that no longer hold). Each: context → decision → consequences.
   session's grants and bindings (ADR-051) and their actors' groups; other groups are rejoined by the actors on
   `SessionResumed`.
 
-## ADR-037 Actor lifecycle is tags; turn ends are posted, not polled
-- Context: polling every busy actor's task on every wake, ready queues with `Scheduled` flags, lifecycle enums and
-  static procedures called from several systems use ECS storage without ECS style: the state lives in code paths
-  instead of data.
+## ADR-037 Actor lifecycle is tags; each system reacts to one
+- Context: ready queues with `Scheduled` flags, lifecycle enums and static procedures called from several systems use
+  ECS storage without ECS style: the state lives in code paths instead of data.
 - Decision: state changes are data, each system reacts to one state.
-  - A `TurnWatcher` (pooled, one cached delegate) registers on the turn's task; its continuation posts it to the
-    shard and `DispatchSystem` tags the entity `TurnEnded`. `TurnSystem` visits only ended turns, by filter
-    (`EndCall`, `EndLoad` with `Loading`, `EndUnload` with `Unloading`); `GetResult` is read once after the end, as
-    `await` does. Running service calls are `ServiceCall` entities ended the same way (`ServiceCallSystem`).
-  - Lifecycle tags: `Ready` (mail waiting), `Loading` (`OnLoad` running), `UnloadRequested` (asked to leave, by
-    `RebalanceSystem` or `IdleSystem`), `Unloading` (`OnUnload` running), `Fenced` (removed without `OnUnload`,
-    ADR-042) and the `Removing(status)` component. `UnloadSystem` starts `OnUnload` once the actor is idle,
-    `RemovalSystem` destroys it and routes its mail again, `MailboxSystem` runs `Ready` actors without a turn.
-  - Rebalancing marks busy actors too; they leave when their turn ends.
-  - Synchronous handlers allocate nothing; an async handler allocates only its own state machine (none with a pooling
-    builder). Tracking turns as entities also gives graceful drain: a stopping shard waits until no actor and no
-    service call is left.
+  - Lifecycle tags: `Ready` (mail waiting), `Loading` (its record is being restored; `AwaitingRecord` while the store
+    is asked), `UnloadRequested` (asked to leave, by `RebalanceSystem`, `IdleSystem` or a stop), `Leaving` (its
+    `Unloading` mail ran; its record is written or handed on), `Fenced` (removed without `Unloading`, ADR-042) and the
+    `Removing(status)` component. `LoadSystem` restores records and makes actors live (`Loaded` or `Created` mail
+    first), `UnloadSystem` runs `Unloading` and hands off or saves, `RemovalSystem` destroys the entity and routes its
+    mail again, `MailSystem` runs the mail of live `Ready` actors.
+  - Handlers run to completion (ADR-081), so no system waits for one: a stopping shard is drained once no actor is left.
   - The sample follows the same rule: an avatar without `GridCell` is not placed yet; `SentMotion` (last sent velocity
     and cell) is compared each tick instead of a flag; leaving is the `Despawning` tag handled by `DespawnSystem`; the
     grid is `MapGrid` data on the map entity, its steps are systems (`PlacementSystem`, `MotionSyncSystem`,
     `SnapshotSystem`).
 - Alternatives: a ready queue avoids the archetype move per idle-to-ready transition, but it is a second
   representation of the same state; benchmarks showed no measurable difference.
-- Consequences: no system scans busy actors and nothing polls tasks; every lifecycle step is a filter that tests and
-  users can read. Async turns cost a continuation post (no allocation).
+- Consequences: no system scans all actors and nothing polls; every lifecycle step is a filter that tests and users
+  can read.
 
 ## ADR-038 `[Message]` marks messages and their flow
 - Context: if any `[NinoType]` struct counted as a message, data types (a reply, a struct inside a list) would be
@@ -499,7 +500,7 @@ records that no longer hold). Each: context → decision → consequences.
   flags, runs manual queries in `OnUpdate` or counts ticks in components goes against EasyEcs's own guidance.
 - Decision: reference the `EasyEcs` package (`EasyEcsVersion` in `Directory.Build.props`; it ships its generator and
   analyzer). Cadence is a system group the shard loop updates when due (`ShardRebalance`, `ShardIdleScan`), so
-  `RebalanceSystem` and `IdleSystem` are plain `[ForEach]` methods; samples use `UpdateInterval`; `ActorRef` alone
+  `RebalanceSystem` and `IdleSystem` are plain `[ForEach]` methods; samples use `UpdateInterval`; `ActorKey` alone
   identifies a loaded actor (id, group); time-based logic is a component with a due tick and a system (no timer queue
   on the shard).
 - Consequences: no co-development checkout in builds or CI; EasyEcs changes reach DaServer through releases.
@@ -507,52 +508,49 @@ records that no longer hold). Each: context → decision → consequences.
 ## ADR-040 One noun per concept
 - Context: one word for two things ("link" for a node connection and for an entity's pointer to its actor;
   load/unload next to activate/deactivate/retire for one lifecycle) makes code and docs ambiguous.
-- Decision: `ActorRef` is the actor component (id, client group); "link" is only a node connection. `HandlerType`
+- Decision: `ActorKey` is the actor component (id, client group); "link" is only a node connection. `HandlerType`
   (`HandlerTypeInfo`, `HandlerTypeId`) is an actor or service type with `[Handle]` methods. The lifecycle is load/unload
-  only: `Loading` (`OnLoad` running), `UnloadRequested` (asked to leave), `Unloading` (`OnUnload` running), `Removing`
-  (entity destroyed, mail routed again); a running actor is a "loaded actor". The shard's cross-thread queue is the
-  dispatch queue (`DispatchSystem`, as the Akka/Orleans dispatcher); the per-actor queue is the mailbox
-  (`Mailbox`, `MailboxSystem`).
+  only: `Loading` (its record is restored), `Loaded` / `Created` (its first mail), `UnloadRequested` (asked to leave),
+  `Unloading` (its last mail), `Leaving` (it goes), `Removing` (entity destroyed, mail routed again); a running actor
+  is a "loaded actor". The shard's cross-thread queue is the dispatch queue (`DispatchSystem`, as the Akka/Orleans
+  dispatcher); the per-actor queue is the mailbox (`DynamicBuffer<Envelope>`, `MailSystem`).
 - Consequences: one term per concept in code, docs and tests.
 
-## ADR-042 A node declared dead drops its actors without OnUnload
+## ADR-042 A node declared dead drops its actors without unloading them
 - Context: a node that learns it was declared dead (a partition, a long pause) and unloads its actors normally runs
-  `OnUnload` after the cluster has already given their keys to other nodes: a stale save could overwrite the new
-  owner's.
-- Decision: on Dead every loaded actor is tagged `Fenced` and removed without `OnUnload`, as soon as its running turn
-  ends; its mail is routed again to the new owner. The node then rejoins with a higher incarnation (as Orleans fences a
+  their `Unloading` mail and saves after the cluster has already given their keys to other nodes: a stale save could
+  overwrite the new owner's.
+- Decision: on Dead every loaded actor is tagged `Fenced` and removed without its `Unloading` mail and without a save;
+  its mail is routed again to the new owner. The node then rejoins with a higher incarnation (as Orleans fences a
   silo that sees itself dead).
-- Consequences: work since the actor's last save is lost on that node, which is the price of a partition. A turn in
-  flight still finishes; stores that must reject late writes need versioned saves (roadmap N5/D5).
+- Consequences: work since the actor's last save is lost on that node, which is the price of a partition. A write
+  already in flight is refused by the store's versions (ADR-068).
 
 ## ADR-043 Typed actor ids name the actor type
 - Context: with a bare `long` key whose meaning depends on the actor type handling the message, a player id can be
   passed where a map id is meant, a message handled by two actor types is ambiguous, and a keyed publish reaches every
   actor type at the same number.
 - Decision: each actor type declares its own id type in contracts (`readonly record struct MapId(long Value) :
-  IActorId`) and derives from `Actor<MapId, MapState>` (`Id` is typed). `Send(id, m)` / `Ask(id, m)` route by the id
-  type: its type id (FNV of the full name) is the actor's handler type id, so placement and the wire use the id type
-  and messages need no owner. Two actor types may not share an id type. Every message carries the handler type id in
-  the header's target (ADR-005). `Publish` reaches services
-  only; actors are told one by one with `Send`. A client may name an actor only if that actor granted its session
-  (ADR-051); otherwise the session binding decides.
+  IActorId`) and names it on its static class, `[Actor<MapId>]` (`ctx.Id<MapId>()` is typed). `Send(id, m)` / `Ask(id,
+  m)` route by the id type: its type id (FNV of the full name) is the actor's handler type id, so placement and the
+  wire use the id type and messages need no owner. Two actor types may not share an id type. Every message carries the
+  handler type id in the header's target (ADR-005). `Publish` reaches services only; actors are told one by one with
+  `Send`. A client may name an actor only if that actor granted its session (ADR-051); otherwise the session binding
+  decides.
 - Alternatives: `long` keys with a generated per-actor proxy (`Cluster.Map(id).Enter(..)`), which ADR-035 rejects; the
   id inside the message (an `[ActorKey]` member), which couples messages to one receiver.
 - Consequences: the compiler checks targets, ids are plain data that travel inside messages (`Enter(PlayerId)`), and
   the same message can be handled by several actor types. Ids are one `long` (checked once per id type).
 
-## ADR-044 Actors and services hold no fields (DAS007)
-- Context: an actor or service object is recreated whenever its actor loads, moves to another node or (later) its
-  code is reloaded, and only components are persisted and handed over. A field on the object silently loses its value
-  on those paths; a mutable static field is shared by every shard thread.
-- Decision: DAS007 makes instance fields, auto-properties and non-readonly static fields of `Actor`/`Service` types a
-  build error. Constants and `static readonly` data stay allowed. Per-actor state goes into `Actor<TId, TState>` or
-  other components of the actor's entity, shared state into singletons.
-- Consequences: the object is behaviour only, so persistence (N5), state handoff (N6) and hot reload (N9) touch data
-  alone and can swap the code freely. It is also reusable: a removed actor's object, mailbox queue and session sets
-  return to per-shard pools (`ActorPools`, bounded) and serve the next load of that type, so actor churn (logins,
-  short matches, idle unloads) allocates nothing. Code must not keep a reference to an actor object beyond its turns
-  (an un-awaited task that touches it after unload would reach the actor that reused it).
+## ADR-044 Actors, services and systems hold no fields (DAS007)
+- Context: only components and singletons are persisted, handed over and kept across a reload; state anywhere else
+  silently loses its value on those paths, and a mutable static field is shared by every shard thread.
+- Decision: actors and services are static classes (ADR-081), and DAS007 makes a mutable static field of one, or a
+  field of a server system, a build error. Constants and `static readonly` data stay allowed. Per-actor state goes
+  into components of the actor's entity (handler parameters), shared state into singletons.
+- Consequences: behaviour is code only, so persistence (N5), state handoff (N6) and hot reload (N9) touch data alone
+  and can swap the code freely. There is no actor object to create, pool or leak: a load creates an entity, and actor
+  churn (logins, short matches, idle unloads) allocates nothing.
 
 ## ADR-045 DaServer is a general ECS distributed server framework
 - Context: a framework for high-concurrency backends must not read as one game server, yet it must cover what every
@@ -600,12 +598,12 @@ records that no longer hold). Each: context → decision → consequences.
 - Decision: four concepts: message, address, optional reply (a request is a message whose type declares a reply),
   origin (who caused it; set only by ingress). Addresses are structs: `IActorId` (keyed, rendezvous), the one service
   (balanced), `INodeAddress` (pinned to a node, handled by the feature owning its scope) and `IGroupAddress`
-  (fan-out to the nodes advertising its scope). Verbs: `Send` and `Ask` (kept apart: `Ask` holds the turn and a cycle
-  deadlocks, so the call site must show it, as Akka Tell/Ask), `Publish` (every service type handling the message; no
+  (fan-out to the nodes advertising its scope). Verbs: `Send` and `Ask` (kept apart, as Akka Tell/Ask: an ask
+  registers a call with a timeout whose answer comes back as mail, so the call site must show it), `Publish` (every service type handling the message; no
   address value), `SendAfter` (N2). Wire: `Message`, `Reply`, `Control` (link protocol only); `Target` always set;
   trailers by flag. One verb per target kind is not needed: the address type names the target at the call site (as
   the id type does since ADR-043), and DAS006 checks `[ToClient]` by address kind. The origin is an address itself
-  (`Origin(Node, Id)` implements `INodeAddress`): `Cluster.Send(Caller, m)` reaches whoever sent the message (the
+  (`Origin(Node, Id)` implements `INodeAddress`): `ctx.Send(ctx.Caller, m)` reaches whoever sent the message (the
   ingress that issued the origin delivers it; for client connections the origin is the session), and `ClientSession`
   converts implicitly from it where a session is stored or bound. The origin is a 16-byte trailer before the call
   id, set by the ingress (a client's own bytes never become it) and kept by every hop. Session operations are
@@ -685,7 +683,7 @@ records that no longer hold). Each: context → decision → consequences.
   can be enumerated. Orleans keeps untrusted clients behind a frontend that authorizes before calling grains;
   Nakama and Colyseus expose match and room ids but accept messages only from clients that joined (a server-side
   decision); ET routes client messages by the session's bound unit.
-- Decision: the actor decides who may address it, once: `await GrantSession(session)` / `RevokeSession(session)`
+- Decision: the actor decides who may address it, once: `ctx.GrantSession(session)` / `ctx.RevokeSession(session)`
   (an `Ask` of `SessionAccess` to the session, like `BindSession`, which is a grant that is also the session's actor
   of its type). The client-facing node keeps the session's grants (at most 64, an immutable array scanned lock-free)
   and refuses a message naming any other actor with `Forbidden` before it enters the cluster. A grant puts the
@@ -773,17 +771,17 @@ records that no longer hold). Each: context → decision → consequences.
   then the GA band); CI installs it from there. Runtime async (`<Features>runtime-async=on</Features>`, preview) is on
   for every net11.0 build (`Directory.Build.targets`; a project opts out with `UseRuntimeAsync=false`: the
   benchmarks, whose `[AsyncMethodBuilder(PoolingAsyncValueTaskMethodBuilder)]` methods it would ignore, and the
-  PostgreSQL store, whose pooled builders keep a batch write at 0 B). Handlers keep returning `Reply<T>`, a custom
-  task-like whose pooled builder runtime async leaves alone. Measured on RC2 (a handler two calls deep started by the
-  dispatcher): completing synchronously, `Reply<T>` 20.3 ns, runtime-async `ValueTask<T>` 21.2 ns, a compiler state
-  machine 26.6 ns, none allocating; suspended on a reply, 240 ns / 0 B, 236 ns / 320 B and 341 ns / 336 B. So
+  PostgreSQL store, whose pooled builders keep a batch write at 0 B). `Reply<T>`, what code outside the shards
+  awaits (ADR-062), is a custom task-like whose pooled builder runtime async leaves alone. Measured on RC2 (a method
+  two calls deep): completing synchronously, `Reply<T>` 20.3 ns, runtime-async `ValueTask<T>` 21.2 ns, a compiler
+  state machine 26.6 ns, none allocating; suspended on a reply, 240 ns / 0 B, 236 ns / 320 B and 341 ns / 336 B. So
   `Reply<T>` is as fast as runtime async and allocates nothing. Across the suite (calls, messages, broadcasts, the
   client scenario) turning runtime async on moves nothing beyond noise: the hot paths are pooled `IValueTaskSource`s,
-  not async methods. Code built for netstandard2.1 declares no `params ReadOnlySpan<T>` (the compiler allocates an
-  array per call there; a span overload goes under `#if NET`).
+  not async methods, and handlers never await (ADR-081). Code built for netstandard2.1 declares no
+  `params ReadOnlySpan<T>` (the compiler allocates an array per call there; a span overload goes under `#if NET`).
 - Alternatives: stay on .NET 10 LTS (gives up 2.3-2.7x on concurrent local calls, 1.1-1.3x remote); multi-target the
   server or keep a net10.0 build of the shared packages (doubles build and test time for users who all deploy one
-  runtime; clients that cannot run .NET 11 take netstandard2.1); handlers returning `ValueTask<T>` under runtime async
+  runtime; clients that cannot run .NET 11 take netstandard2.1); `ValueTask<T>` under runtime async as the awaitable
   (no faster than `Reply<T>`, 320 B per suspension).
 - Consequences: servers need the .NET 11 runtime (x86-64-v2 or newer); BenchmarkDotNet 0.16 (preview) hosts .NET 11.
   Broadcast fan-out is the one path that did not gain: profile it on .NET 11 (roadmap, "Open after G").
@@ -846,36 +844,23 @@ records that no longer hold). Each: context → decision → consequences.
   user code; the framework does not ship a server AI.
 
 ## ADR-057 ReplyWhen: a reply that waits without holding the turn
-- Context: actors are turn-based (ADR-002): an actor awaiting inside a handler takes no other message until the
-  handler returns. A handler that only waits for an acknowledgement before replying (a map binding the entering
-  player's session: `await BindSession(session); return true;`) therefore serves one caller per round trip; 10,000
-  players entering two maps queued behind those round trips and were refused (`Overloaded`). The await is needed for
-  ordering (the client's next message must find the binding), not for the actor's state.
-- Decision: `return ReplyWhen(task, reply);` (actors and services, `Reply` or `Reply<T>` tasks) ends the turn
-  at once and replies `reply` when the task completes, its failure instead. The handler leaves a pooled watcher in a
-  thread-static slot that the generated dispatcher's `CallContext.Reply` takes on the same thread (one volatile read
-  for reply types never used with it): no allocation per call. DAS011 keeps `ReplyWhen` to the returned expression of
-  a handler that is not `async`, so nothing of the handler runs after the turn ended.
-- Alternatives: reentrancy (Orleans `[AlwaysInterleave]`, interleaving turns) gives up the turn guarantee for the
-  whole handler; a one-way access change followed by a push on the same link changes the business protocol (wait for
-  a push instead of a reply); per-region actors only spread the queue.
-- Consequences: `HotActorBenchmark` (1,024 callers through one actor waiting for another node): 143.8 ms awaited,
-  3.1 ms with `ReplyWhen`, 236 B vs 114 B per batch; `RepliesSentLaterDoNotAllocate` holds < 8 B per call. The sample's
-  maps reply to `Enter` and `Leave` this way.
+Replaced by ADR-081.
 
 ## ADR-058 Delays are messages sent later, held by the shard
-- Context: `await Task.Delay` in a handler holds the actor's turn for the whole delay, allocates a timer and a task,
-  and resumes through the thread pool; every backend needs delays (retries, cooldowns, timeouts of business flows,
-  scheduled ticks of one actor).
-- Decision: `ICluster.SendAfter(delay, address, message)` (and to a service) serializes the message at once into a
-  pooled frame and schedules it in the calling shard's timer wheel (`ShardTimers` singleton, `TimerWheel<T>`: hashed,
-  O(1), 5 ms resolution); `TimerSystem` routes what is due exactly like a `Send` made then, so the message follows an
-  actor that moved and is ordinary mail (turn-based, bounded by the mailbox). `CancelSend(handle)` cancels on the
-  scheduling shard (its index is in the handle's top byte, another shard's handle is refused). The shard sleeps no
-  longer than the resolution while a send waits; sends still pending when the shard stops are dropped (one-way
-  delivery is at most once). Calling it off a shard thread throws: timers are a shard's data.
-- Alternatives: one wheel per node (a lock or a hop per schedule); `Task.Delay` continuations (allocations, a held
-  turn); durable reminders (a store; they come with persistence, N5, and are a different guarantee).
+- Context: every backend needs delays (retries, cooldowns, timeouts of business flows, scheduled ticks of one
+  actor), and handlers never wait (ADR-081); a timer per delay would allocate and fire on a pool thread, off the shard
+  that owns the state.
+- Decision: `ctx.SendAfter(delay, address, message)` (`ICluster.SendAfter` in systems; to a service too) serializes
+  the message at once into a pooled frame and schedules it in the calling shard's timer wheel (`ShardTimers`
+  singleton, `TimerWheel<T>`: hashed, O(1), 5 ms resolution); `TimerSystem` routes what is due exactly like a `Send`
+  made then, so the message follows an actor that moved and is ordinary mail (one message at a time, bounded by the
+  mailbox). A reply kept for later can ride on it: the actor sends itself its `ReplyTo` and replies when that message
+  arrives. `CancelSend(handle)` cancels on the scheduling shard (its index is in the handle's top byte, another
+  shard's handle is refused). The shard sleeps no longer than the resolution while a send waits; sends still pending
+  when the shard stops are dropped (one-way delivery is at most once). Calling it off a shard thread throws: timers
+  are a shard's data.
+- Alternatives: one wheel per node (a lock or a hop per schedule); `Task.Delay` continuations (allocations, and a
+  continuation off the shard); durable reminders (a store; they come with persistence, N5, and are a different guarantee).
 - Consequences: `DelayedSendsDoNotAllocate` holds < 8 B per send; `TimerBenchmark` shows 0 B, a mean dominated by one
   wheel slot shared by the batch. Delayed sends do not outlive their node: a stop (a scale-in
   too) or a crash drops them; a business deadline that must outlive the node is persisted state a system checks.
@@ -883,42 +868,17 @@ records that no longer hold). Each: context → decision → consequences.
   `HashedWheelTimer` and Kafka's purgatory use them.
 
 ## ADR-059 Call cycles fail at once through call chains
-- Context: actors are turn-based, so a request that comes back to an actor whose turn waits for it (A asks B, B asks
-  A; A asks itself; a chain through services) waits until the call timeout (10 s by default), holding both actors and
-  their callers. The cause is a design error that should be visible at once, as Orleans reports with call chains.
-- Decision:
-  - Every turn and service call runs in a call chain: the one its request carries (`FrameFlags.HasChain`, an 8-byte
-    trailer in front of the origin), else a new one from the shard's `CallChains` singleton (consecutive values from a
-    random start).
-  - `Ask` writes the running chain into the request. The chain is a thread-static set around the dispatch and restored
-    around each continuation of a call the turn awaited (`PendingCall` remembers it), so it survives the turn's awaits
-    at no cost.
-  - An actor records its turn's chain. A request that reaches it carrying that chain while the turn's task is still
-    pending is refused with `RpcStatus.CallCycle` without running. One-way messages carry no chain: they never wait.
-  - Lifecycle hooks are turns too: `OnLoad` runs in the chain of the message that loads the actor (that message is
-    queued before the load starts), `OnUnload` in a new chain.
-- Alternatives:
-  - A call stack of actor addresses in every request (exact path in the error, but grows with every hop).
-  - Reentrancy, as Orleans allows per grain type: it gives up turn-based state, which ECS actors rely on.
-  - Detection by timeout only: today's behaviour.
-- Consequences:
-  - Cycles fail at once (`CallCycleTests`, on one node, across nodes, through a service, an actor asking itself, an
-    `OnLoad` asking the actor that loads it, an actor asked back while it unloads).
-  - A request in the chain of a turn that is still running fails even when that turn does not wait for it (it asked
-    without awaiting and awaits something else): such flows are one-way messages.
-  - Awaits of foreign tasks (`Task.Delay`) resume without the chain, so requests after them start a new chain. Those
-    cycles are found by the timeout only, as before.
-  - Requests made by turns grow by 8 bytes; nothing is allocated.
+Replaced by ADR-081.
 
 ## ADR-060 No synchronous waits on shard threads
 - Context: one thread runs every actor of a shard. A synchronous wait in a handler or system (`.Result`, `.Wait()`,
-  `GetAwaiter().GetResult()`, `Thread.Sleep`, `Task.Delay` awaited inside a turn, locks) stops all of them, and a wait
-  for a reply that the same shard must deliver never ends. Pooled awaitables make it worse: they cannot block, so a
-  premature read returned garbage.
+  `GetAwaiter().GetResult()`, `Thread.Sleep`, `Task.Delay`, locks) stops all of them, and a wait for a reply that the
+  same shard must deliver never ends. Pooled awaitables make it worse: they cannot block, so a premature read returned
+  garbage.
 - Decision:
-  - DAS009 (error) reports such waits in actors, services and systems, naming the replacement: `await` (only the
-    turn waits), `Cluster.SendAfter` or a system's `UpdateInterval` for delays, nothing for locks (one thread owns
-    shard state).
+  - DAS009 (error) reports such waits in actors, services and systems, naming the replacement: `ctx.Ask`, whose answer
+    comes back as a message (ADR-081), `ctx.SendAfter` or a system's `UpdateInterval` for delays, nothing for locks
+    (one thread owns shard state). Handlers cannot `await` at all (DAS001).
   - Reading a pooled call's result before it completed throws instead of returning garbage.
   - A watchdog on the node's maintenance timer reports a shard pass longer than `NodeOptions.StallAfter` once per
     pass (log, `Node.StalledShards`, `daserver.shard.stalled`).
@@ -930,9 +890,8 @@ records that no longer hold). Each: context → decision → consequences.
   `Task.Run`, `TaskFactory.StartNew`, `ContinueWith`, `ThreadPool`, `Parallel`, `new Thread`, timers,
   `ConfigureAwait(false)`. Their state needs no locks because one thread owns it, and code that runs elsewhere would
   touch it unguarded. The rule is all or nothing on purpose (not "only delegates that touch state"): users never weigh
-  which off-thread code is safe. Awaiting stays allowed, asynchronous IO included: the shard's synchronization
-  context brings continuations back within the turn. Concurrency comes from many actors on many shards; heavy work is
-  split over actors or services.
+  which off-thread code is safe. IO a handler needs is asked of whoever owns it, as a message. Concurrency comes from
+  many actors on many shards; heavy work is split over actors or services.
 
 ## ADR-061 Systems read and write components; other worlds get messages
 - Context: a system sometimes needs another entity's data or decision (may this NPC step on that cell, may this
@@ -941,8 +900,8 @@ records that no longer hold). Each: context → decision → consequences.
 - Decision:
   - In its own world a system does what every ECS system does. It queries with `[ForEach]` and reads and writes
     components through `ref`, its own entity's or another's. Relations are `EntityId`s kept in components and
-    resolved on access (`TryGetEntity`). For example, an avatar's `Avatar.Map` is the map's entity id, and
-    `PlacementSystem` writes the map's `MapGrid` through it. There is no message, no await and no reply: within a
+    resolved on access (`TryGetEntity`). For example, an avatar is a `ChildOf` its map's entity, and
+    `PlacementSystem` reads the map's `MapGrid` through it and files the avatar under a `GridCell`. There is no message, no await and no reply: within a
     world, data and ordering (`[UpdateBefore]`/`[UpdateAfter]`) are the whole protocol (EasyEcs ecs-principles).
   - Placement decides what shares a world. Keys that must be read together are put on one shard: the map's grid and
     the NPCs that walk it live in the map's world, and N7 placement affinity generalises this.
@@ -955,31 +914,30 @@ records that no longer hold). Each: context → decision → consequences.
   Entitas sync also exchange one-way commands between worlds, applied at a tick boundary.
 - Alternatives:
   - The reply as a component on the asking entity: still check-then-act on a stale answer.
-  - Turns for systems (a system awaiting per entity): per-entity state machines, interleaving with the entity's mail,
-    and a tick that no longer finishes in one pass.
+  - Systems that wait per entity: per-entity state machines, interleaving with the entity's mail, and a tick that no
+    longer finishes in one pass.
 - Consequences: no new API. A system in the right world writes directly. Across worlds, only the owner decides, so
-  an intent never applies to stale data. Actors still `await` inside handlers: a turn holds only its actor.
+  an intent never applies to stale data. Handlers ask (ADR-081): an answer arrives as mail for the handler that
+  decides what it means for the actor's data now.
 
-## ADR-062 Reply<T>: the awaitable of calls and asynchronous handlers
-- Context: handlers written `async ValueTask<T>` box their state machine on every suspension (H1). The pooling
-  builder needs an attribute on every handler and caches too few boxes for a shard with thousands of suspended turns.
-  A `ValueTask<T>` also exposes `.Result`, which on a pooled call is a wait that cannot work (ADR-060).
+## ADR-062 Reply<T>: the awaitable of calls from outside the shards
+- Context: code outside the shards' worlds awaits replies: HTTP endpoints, tests, hosted services through `ICluster`,
+  and clients through `ClusterClient`. A `ValueTask<T>` boxes an `async` method's state machine on every suspension and
+  exposes `.Result`, which on a pooled call is a wait that cannot work (ADR-060). Handlers never await (ADR-081).
 - Decision:
-  - `Reply<T>` and `Reply` (Abstractions, namespace `DaServer`) wrap a `ValueTask`. `Ask` returns `Reply<T>`.
-    Handlers return `T`, `Reply<T>`, `void` or `Reply`; the access operations (`BindSession`, `GrantSession`, ...)
-    and lifecycle hooks (`OnLoad`, `OnUnload`) return `Reply`.
-  - Both types carry their builder (`ReplyMethodBuilder`). It keeps no box while a method completes synchronously.
-    On the first suspension it moves the state machine into a box pooled per thread and state machine type, bounded
-    at 4096 idle boxes. The box returns to the pool when its result is read.
-  - The types expose `GetAwaiter`, `AsValueTask` (the runtime, combinators) and `AsTask` (code outside shards). They
-    have no `.Result`; a `T` converts to `Reply<T>`.
+  - `Reply<T>` and `Reply` (Abstractions, namespace `DaServer`) wrap a `ValueTask`. `ICluster.Ask` and
+    `ClusterClient.Ask` return `Reply<T>`.
+  - Both types carry their builder (`ReplyMethodBuilder`), so an `async Reply<T>` method (a client flow, a test helper)
+    keeps no box while it completes synchronously; on the first suspension the state machine moves into a box pooled
+    per thread and state machine type, bounded at 4096 idle boxes, returned when its result is read.
+  - The types expose `GetAwaiter`, `AsValueTask` (combinators) and `AsTask`. They have no `.Result`; a `T` converts
+    to `Reply<T>`.
 - Alternatives:
-  - Keep `ValueTask` and require `[AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]` through an
-    analyzer: a line of plumbing on every handler, and a small cache.
+  - `ValueTask` with `[AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]` on every method: a line of
+    plumbing each time, and a small cache.
   - A custom awaitable without `ValueTask` inside: more code for the same result.
-- Consequences: an awaiting handler allocates nothing once warm (`RepliesOfSuspendedHandlersDoNotAllocate` without
-  any attribute); user code names one awaitable. ExecutionContext does not flow into a resumed handler, as before for
-  calls.
+- Consequences: an outside caller's await allocates nothing once warm (`BurstsOfCallsFromOutsideTheClusterDoNotAllocate`);
+  user code names one awaitable. ExecutionContext does not flow across a call.
 
 ## ADR-063 A graceful stop has a budget, phases and readiness
 - Context: platforms send SIGTERM and kill later (Kubernetes 30 s, Compose 10 s by default). A stop that saves actors
@@ -990,7 +948,7 @@ records that no longer hold). Each: context → decision → consequences.
     waits the budget + 5 s, and the published grace period (Compose `stop_grace_period`, Kubernetes
     `terminationGracePeriodSeconds`) is the budget + 10 s, so the platform's kill never lands while the host is still
     stopping. Past the budget the node
-    logs, per shard, the actors still loaded (their `OnUnload` did not finish) and exits.
+    logs, per shard, the actors still loaded (not unloaded and saved yet) and exits.
   - The stop runs in phases, each logged and recorded with its duration (`daserver.stop.phase.duration`): leave,
     drain, unload, close.
   - `/health` is readiness: joined, Up and not leaving. `/alive` is liveness: no stalled shard. Aspire declares both
@@ -1062,18 +1020,22 @@ records that no longer hold). Each: context → decision → consequences.
   rooms); others must not continue from a half-applied change (a trade, an inventory move). Repeated failures of one
   message type had no signal.
 - Decision:
-  - `Actor.OnError(Exception)` returns what to do. `ErrorAction.Resume` (the default) keeps the actor.
-    `ErrorAction.Reload` removes it without `OnUnload`, as a fenced actor is removed, and its next message loads it
-    again from storage.
-  - The caller receives the error either way. A request handler that fails after suspending replies the error and
-    faults its turn, so asynchronous failures reach `OnError` like synchronous ones.
+  - The actor type says what to do as a constant, `[Actor<TId>(OnError = ErrorAction.Reload)]`.
+    `ErrorAction.Resume` (the default) keeps the actor and its components. `ErrorAction.Reload` removes it without
+    its `Unloading` mail and without a save, as a fenced actor is removed, and its next message loads it again from
+    storage.
+  - The caller receives the error either way. An `Answered` handler that throws also fails the request whose reply
+    token it carried, so that caller learns at once rather than at its timeout.
   - Every failed handler, actor or service, and every system pass that throws is counted (`Node.Failed`, metric
     `daserver.handler.failed`).
 - Alternatives:
   - Akka-style supervisor hierarchies with restart strategies: no actor hierarchy exists here (actors are entities
     addressed by id), and backoff or escalation would add concepts for a decision one method can make.
   - Stopping the actor for good: the next message would load it anyway, since actors are virtual.
-- Consequences: Reload only helps once state is persisted (N5): until then it resets the actor to its `OnLoad` state.
+  - A per-type error callback (an overridable method): behaviour where a constant suffices, and no virtual members
+    in the ECS model (ADR-081).
+- Consequences: Reload only helps once state is persisted (N5): without a store it resets the actor to what its
+  `Created` handler gives.
 
 ## ADR-067 Components and logic live in separate projects; the node project is the reloadable logic
 - Context: hot reload (N9) replaces code while actors keep their state. EasyEcs stores components by type. A
@@ -1093,8 +1055,9 @@ records that no longer hold). Each: context → decision → consequences.
     assembly collectibly, so the node project is the reloadable logic, N9).
   - Projects are recognised by what they reference: no property to set, no extra host project.
 - The reload itself is planned (roadmap N9, after the EasyEcs release it needs): no cluster-wide stop, each shard
-  swapping its handler table and system list between two passes on its own thread, turns in flight finishing on the
-  old code, components and singletons staying where they are because their types do not change (a studied game server stops the
+  swapping its handler table and system list between two passes on its own thread (handlers run to completion, so
+  nothing of the old code is in flight), components and singletons staying where they are because their types do not
+  change (a studied game server stops the
   world and forces a GC instead). The split above holds now, so the reload adds no rule to existing code.
 - Consequences: one components project per server that has data. Changing a component's layout is a rolling deploy;
   with N9, changing behaviour becomes a reload. Data and behaviour are split exactly as ECS splits them.
@@ -1112,16 +1075,20 @@ records that no longer hold). Each: context → decision → consequences.
     Persisted components are version tolerant or keyed (DAS014, ADR-076), so a component takes new fields, and adding
     or removing a persisted component never breaks a stored record. Transient data (grids, caches, tags) is rebuilt on load. Relational and queried data (accounts,
     payments, mail, rankings) stays in services with the user's ORM.
-  - **When:** between turns only, never while a turn is suspended at an await (it may have changed half of what its
-    message changes), so a record always holds the state after whole messages:
-    - On unload, always: the actor is removed only once its record is written, so a graceful stop loses nothing.
-    - Every `Actor.SaveEvery` (30 s by default; zero means only on unload) if the record changed. A crash loses at
-      most that much.
+  - **When:** between messages only (handlers run to completion, ADR-081), so a record always holds the state after
+    whole messages:
+    - On unload, always, after the actor's `Unloading` mail: the actor is removed only once its record is written, so
+      a graceful stop loses nothing.
+    - Every `SaveEverySeconds` (an `[Actor<TId>]` constant, 30 by default; zero means only on unload) if the record
+      changed. A crash loses at most that much.
     - At once for an entity tagged `SaveNow` (critical changes).
-    - Unchanged records are skipped by comparing hashes, so there is no dirty marking by hand.
+    - No dirty marking by hand: the generator declares EasyEcs's `ITrackChanges` for `[Persist]` components, and
+      `ChangeSystem` tags the actors whose stored components were written since its last pass `Unsaved` (one bulk pass
+      per stored type over EasyEcs's change ticks), so `CheckpointSystem` visits only those; a record whose bytes did
+      not change after all is skipped by its hash.
   - **How:** loading and saving are ECS steps on the shard thread.
     - `LoadSystem` collects the actors waiting for their record. The batch is loaded in one call, and its components
-      are restored before `OnLoad` runs.
+      are restored before the actor's `Loaded` mail (`Created` when it has no record).
     - `CheckpointSystem` and `PersistSystem` serialize records into pooled frames.
     - `StoreSystem` keeps one load batch and one save batch (at most 512 records) in flight per shard. IO never runs
       on the shard thread, and the backlog is bounded. A store call is cancelled after `NodeOptions.StoreTimeout`
@@ -1161,7 +1128,9 @@ records that no longer hold). Each: context → decision → consequences.
     connection name, its health check in readiness, its tracing and metrics); the AppHost passes the connection
     string (`WithActorStore`).
 - Alternatives:
-  - A write per turn: no loss, but write volume and latency grow with traffic.
+  - A write per message: no loss, but write volume and latency grow with traffic.
+  - Comparing every actor's record hash on every checkpoint: no marking, but serializing every actor to find the few
+    that changed.
   - Explicit saves in handlers: forgotten saves, and saves while the state is half-changed.
   - One table or collection per component type: a load becomes many queries, and renames break storage.
   - Event sourcing: out of core; it can be built as a pattern on actors.
@@ -1238,7 +1207,7 @@ records that no longer hold). Each: context → decision → consequences.
   flaky; a test harness of our own (`ClusterTest`) was internal.
 - Decision: `NodeOptions.TimeProvider` is the shards' clock. The shard loop schedules ticks and timers on it, a wake's
   start time is `ShardActivity.NowMs` (what idle unloading and checkpoints compare with), and user code reads it as
-  `Time` / `world.Time`. Transport keeps real time: call deadlines, keep-alives, membership and links run over real
+  `world.Time` (`ctx.World.Time` in handlers). Transport keeps real time: call deadlines, keep-alives, membership and links run over real
   sockets. `DaServer.Testing` ships `TestCluster`: real nodes in the test process with fast membership timings and,
   with `ManualTime`, a clock that starts at 2000-01-01 and moves only in `TickAsync`/`AdvanceAsync`, one tick
   interval at a time, waiting for every shard to run that tick. Messages still flow as they arrive. The manual
@@ -1263,9 +1232,10 @@ records that no longer hold). Each: context → decision → consequences.
   - **What moves:** the `[Persist]` components (stored and moved) and `[Handoff]` components (moved only: in-memory
     state worth keeping across a move, like ET's `ITransfer`), in the record format of ADR-068, with the version last
     written and that write's hash.
-  - **How:** the old owner, after `OnUnload` and any write in flight, sends the record to the key's owner in its
-    view as a runtime message to the actor's handler type. Its forwarded mail takes the same link afterwards, so the
-    record arrives first and no lock is needed. The new owner restores the record and runs `OnLoad`; its checkpoint
+  - **How:** the old owner, after the actor's `Unloading` mail and any write in flight, sends the record to the key's
+    owner in its view as a runtime message to the actor's handler type. Its forwarded mail takes the same link
+    afterwards, so the record arrives first and no lock is needed. The new owner restores the record and runs the
+    actor's `Loaded` mail; its checkpoint
     writes what changed since the old owner's last write, with the version continuing (fencing as in ADR-068). The
     old owner is removed once the new one accepts, without writing.
   - **Mail first:** while keys move after view changes (within the move window, twice the call and store timeouts), a node that loads a key asks the
@@ -1276,7 +1246,7 @@ records that no longer hold). Each: context → decision → consequences.
     that node in turn) until ownership changes or the record comes. A record whose key moved on meanwhile goes on once
     (the frame's hop count): to the node that asked for it, else to the key's owner in the receiver's view.
   - **Waiting and losses:** both sides wait while the other is alive: a new owner asks again instead of loading beside a
-    previous owner still in a turn; an old owner keeps its record instead of writing over a new owner that may have
+    previous owner still holding the actor; an old owner keeps its record instead of writing over a new owner that may have
     taken it. A link that restarts its stream can lose the record or the answer, so each handoff carries a random id
     and the old owner sends the record again (a resend, its own frame, same id) when the new owner asks or the answer
     is late. A copy restored from a handoff keeps its id, and each shard remembers for two handoff timeouts the
@@ -1285,12 +1255,12 @@ records that no longer hold). Each: context → decision → consequences.
     copy waiting for that sender's record, or by the key's owner holding no copy while nothing was forgotten early;
     otherwise it is refused and the store decides.
   - **How long a previous owner counts:** a node that loads a key waits for the owners it replaced within the move
-    window (2 x (call timeout + store timeout), up to 256 views): a turn and a write in flight fit in it. A copy that
+    window (2 x (call timeout + store timeout), up to 256 views): a handoff and a write in flight fit in it. A copy that
     gave its record to a node other than the asker tells the asker where it went, and the asker waits for that node;
     each shard also remembers for the move window where it handed each key, so an ask that comes after the copy is
     gone is sent there too (forgotten once the key is here again).
   - **Fallback:** a refused handoff (the new owner already runs the actor or is stopping, cannot read the record, or
-    its actor throws while created: constructor, settings or state initializers), a dead node, or a record that does
+    its actor's `Loaded` handler throws), a dead node, or a record that does
     not serialize: the old owner takes its state back and writes it to the store, and the new one reads (a state that
     does not serialize is not written either: ADR-068). A node declared dead hands nothing over and writes nothing (its
     copies are fenced). A cluster stopping as a whole writes everything.
@@ -1300,7 +1270,7 @@ records that no longer hold). Each: context → decision → consequences.
   (ordered links already order the record before the mail).
 - Consequences: scaling out and in moves actors without store traffic (tests: 40 actors out and back in, 0 reads, 0
   writes) and keeps state without a store. A new owner that crashes before its first checkpoint loses the changes
-  since the old owner's last write, as any crash loses up to `SaveEvery`. Actors leaving while unloaded and waiting
+  since the old owner's last write, as any crash loses up to `SaveEverySeconds`. Actors leaving while unloaded and waiting
   for a write take no mail (it moves with them).
 
 ## ADR-073 Placement affinity on the id type
@@ -1503,7 +1473,7 @@ records that no longer hold). Each: context → decision → consequences.
   `least-shard-allocation-strategy`'s `rebalance-relative-limit` and `max-simultaneous-rebalance`.
 
 ## ADR-080 Frame extensions: optional metadata that readers skip; traces travel in them
-- Context: a frame's trailers (call id, origin, call chain) are fixed-size and named by header flags, so a reader that
+- Context: a frame's trailers (call id, origin) are fixed-size and named by header flags, so a reader that
   does not know a flag misreads the frame: every new piece of metadata would need a new link protocol and a cluster
   restart. Distributed tracing (A6) needs one now, and priorities, tenants or baggage may follow. Peers: Kubernetes'
   CRI keeps its major version and allows only changes old and new both read, new features degrading gracefully;
@@ -1516,17 +1486,20 @@ records that no longer hold). Each: context → decision → consequences.
     the block's uint16 size; readers look entries up by id and skip the rest, hops relay the block untouched, so a
     new entry needs no version and mixes with nodes that ignore it. A feature both sides must support is announced
     on the member card (as handled messages are, ADR-077) and used only towards nodes that have it.
-  - **Tracing** is the first entry (`FrameExtensions.Trace`: W3C trace id, parent span id, flags; 25 bytes). Asks,
-    sends and publishes carry the context of the running turn's span (`CallChain.Trace`, restored around a call's
-    continuation like the chain), else the thread's current activity (an ASP.NET Core request). A turn whose message
-    carries one runs in a span of the `DaServer` activity source, child of the sender's, while something listens;
-    the span ends with the turn (`Turn.Span`, ended where the turn's result is read). Traces start only where the
-    application starts them: an untraced message starts no span. Messages to clients carry none.
+  - **Tracing** is the first entry (`FrameExtensions.Trace`: W3C trace id, parent span id, flags; 25 bytes). A
+    handler whose message carries one runs in a span of the `DaServer` activity source, child of the sender's, while
+    something listens; the span is the thread's current activity while the handler runs and ends when it returns
+    (handlers run to completion, ADR-081). Asks, sends and publishes carry the current activity's context: the running
+    handler's span, or outside the shards an ASP.NET Core request's. An ask keeps the asking handler's context and
+    writes it on its `Answered` mail, so the handler of the answer continues the asker's trace, not that of whatever
+    ran when the reply arrived. Traces start only where the application starts them: an untraced message starts no
+    span. Messages to clients carry none.
 - Alternatives: a new fixed trailer per piece of metadata (a protocol level each); W3C `traceparent` as text (55
-  bytes, parsed); `Activity.Current` alone (shard threads run many turns, and a turn's continuations do not flow it);
-  a span per message whether traced or not (Orleans' default: a sampler then drops most, after they cost).
-- Consequences: an untraced frame is unchanged (no block, the golden bytes hold); a send reads the turn's span and the
-  current activity, a turn one flag. A traced message pays 29 bytes and a span. The block's flag is the
+  bytes, parsed); the answer in the trace of whatever handler runs when the reply arrives (an ask's answer would join
+  an unrelated trace); a span per message whether traced or not (Orleans' default: a sampler then drops most, after
+  they cost).
+- Consequences: an untraced frame is unchanged (no block, the golden bytes hold); a send reads the current activity,
+  a dispatch one flag. A traced message pays 29 bytes and a span. The block's flag is the
   one change builds without it misread, and none of those was released; later metadata is added without a break.
 
 ## ADR-081 Actors are entities: static handlers, answers as mail, everything else components
@@ -1535,7 +1508,7 @@ records that no longer hold). Each: context → decision → consequences.
   the entity (mailbox queues, session sets, directories). That is two models in one process: EasyEcs data and systems
   for the simulation, objects and continuations for messaging. Objects and suspended turns cost allocations and
   cache misses, make interleaving rules subtle (a turn that awaits blocks its actor; cycles deadlock until ADR-059
-  failed them) and duplicate what EasyEcs 4.2 now does natively: value indexes, hierarchies, dynamic buffers, change
+  failed them) and duplicate what EasyEcs (4.2 and later; DaServer is on 4.3) does natively: value indexes, hierarchies, dynamic buffers, change
   tracking, ordering, error policies. Peers: Unity DOTS and Bevy keep behaviour in stateless systems over data;
   Orleans and Akka keep it in objects with turn-based or message-only semantics (Akka's `ask` returns a future the
   actor pipes back to itself as a message).

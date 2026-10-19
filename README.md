@@ -5,18 +5,22 @@ backend made of stateful entities (actors) and stateless services, spread over m
 application scenario; an MMO cluster (login, gateways, game server, map servers) is one sample built on it
 ([samples/mmo](samples/mmo)).
 
-You write **messages** (`[NinoType, Message]` structs), **actors** and **services** with `[Handle]` methods, and **ECS
-systems**. Source generators write dispatchers, typed `Ask` overloads, and registration; type
-ids are FNV-1a hashes of the type names. The runtime handles shards, mailboxes, placement, discovery, client connections and serialization. Aspire runs the cluster
+You write **messages** (`[NinoType, Message]` structs), **actors** and **services** as static classes of `[Handle]`
+methods over components, and **ECS systems**. Source generators write dispatchers, typed `Ask` overloads, and
+registration; type ids are FNV-1a hashes of the type names. The runtime handles shards, mailboxes, placement, discovery, client connections and serialization. Aspire runs the cluster
 locally and publishes it.
 
 - **Zero GC on hot paths.** Messages serialize straight into pooled buffers. Dispatchers deserialize straight from
-  the received bytes. Awaitables are pooled, and broadcasts are serialized once.
-- **No locks in business code.** Every actor, service and system runs on its shard's single thread.
+  the received bytes. Handlers never await: an ask's answer comes back as a message, so nothing is suspended or
+  boxed, and broadcasts are serialized once.
+- **No locks in business code.** Every actor, service and system runs on its shard's single thread, one message at a
+  time, each to completion.
 - **Stateful and stateless.** Actors have typed ids (`PlayerId`, `MapId`) and are placed on one node by rendezvous hashing. Services are
   load-balanced and prefer the local node. Nodes discover each other through gossip.
-- **ECS inside.** Actor state is an [EasyEcs](https://github.com/JasonXuDeveloper/EasyEcs) component on the
-  actor's entity, so systems can process every actor of a shard in one cache-friendly pass.
+- **ECS all the way down.** An actor is an [EasyEcs](https://github.com/JasonXuDeveloper/EasyEcs) entity: its state
+  is components, its handlers are stateless functions that receive them as parameters, so systems process every actor
+  of a shard in one cache-friendly pass. The runtime keeps its own per-actor state (lifecycle, mailbox, known
+  sessions) as components and tags too.
 - **Messages, not interfaces.** A message is routed to whoever handles it: `Ask` for a reply, `Send` one-way,
   `Publish` to every service handling it. The sender never names the receiver's type; per-tick logic lives in EasyEcs
   systems.
@@ -24,10 +28,11 @@ locally and publishes it.
 - **Reliable links, bounded work.** One ordered stream per node pair resumes after a dropped connection (no loss, no
   duplicate). Requests carry their caller's deadline, and work nobody waits for is dropped. Full dispatch queues and mailboxes answer
   `Overloaded` instead of growing; a client that cannot keep up is disconnected and resynchronizes when it resumes.
-- **Misuse is a build error.** Analyzers DAS001–DAS021 cover handlers, messages, wire types, id collisions, message
-  flow, stateless actors and services, shared logic, replies sent later, waits and threads on shards, components apart
-  from logic, persisted and handed-off components, placement and wire layouts (the committed `wire.manifest`), and
-  EECS001–EECS008 cover ECS, including the ECS principles.
+- **Misuse is a build error.** Analyzers DAS001–DAS022 cover handler shapes (static, never `async`), messages, wire
+  types, id collisions, message flow, actors and services without fields, shared logic, waits and threads on shards,
+  systems that ask, components apart from logic, persisted and handed-off components, placement, wire layouts (the
+  committed `wire.manifest`), filters and a component parameter used after a structural change of its entity;
+  EasyEcs's own analyzer (the EECS rules) covers ECS, including the ECS principles.
 
 ## Architecture
 
@@ -64,8 +69,9 @@ flowchart LR
 
 A message is serialized once into a pooled frame. A message for the same node goes straight to the target shard's
 dispatch queue; a message for another node is batched onto its TCP link. The target shard's thread sorts it into the
-actor's mailbox (or hands it to a service) and runs the generated dispatcher; a reply returns the same way and resumes
-the caller on its own shard.
+actor (or a service) and runs the generated dispatcher; a live actor with no mail waiting runs it at once, otherwise
+it waits in the actor's mailbox. A reply returns the same way: to a handler's ask as an `Answered` message to the
+asking actor, to code outside the cluster (HTTP, tests, clients) as the completion of its awaited `Ask`.
 
 ## Vocabulary
 
@@ -78,36 +84,43 @@ Everything a developer declares is one of these. The message type alone decides 
 | `[Message, ToClient]` | Servers push it to client sessions and groups; clients handle it. |
 | `[NinoType] partial record struct D` | Data inside messages (fields, replies), never sent on its own. Anything crossing the wire is `[NinoType]` or an unmanaged struct (an id). A list in a message goes in a `[NinoPooled]` class the handler returns (`ReturnToPool()`). |
 | `... : IRequest<TReply>` | A request: answered with one `TReply`. |
-| `[Handle] R On(M m)` | A handler in an actor or service: `void`/`Reply`, or the reply/`Reply<TReply>` of a request (`async Reply<T>` handlers allocate nothing when they await). |
-| `[Filter] static RpcStatus F(object target, in M m, in CallContext c)` | Policy before handlers (rate limits, authorization): `Ok` lets `M` through, another status refuses it. On an `IMessageFilter` class: every message. Registered by the generated code. |
+| `[Actor<TId>] static class A` / `[Service] static class S` | An actor type (addressed by its id type `TId`) / a service. Settings are attribute constants: `UnloadAfterIdleSeconds`, `SaveEverySeconds`, `MailboxCapacity`, `OnError`. |
+| `[Handle] static R On(in M m, ref C c, ..., in Context ctx)` | A handler: the message first, then any of the actor's components (`ref` to write, `in` to read; a missing one is added with its default), singletons, `Entity`, `World`, `in Context`. Returns `void`, the request's reply `T`, or `Answer<T>` (`Answer<T>.Later` when the reply is given later). Never `async`. |
+| `[Handle] static void On(in Answered<TRequest, TReply> a, ...)` | The answer to `ctx.Ask`: the reply (`a.Value`) or why there is none (`a.Status`), and the reply token the asker passed along (`a.ReplyTo`). |
+| `[Handle] static void On(in Created _, ...)` / `Loaded` / `Unloading` | Lifecycle as mail: a new actor (no stored record) gets `Created`, a restored or moved one `Loaded`, a leaving one `Unloading` before its record is written. |
+| `[Filter] static RpcStatus F(in Context ctx, in M m)` | Policy before handlers (rate limits, authorization): `Ok` lets `M` through, another status refuses it. On an `IMessageFilter` class: every message. Registered by the generated code. |
 | `partial class S : EcsSystem` with `[ForEach]` | Per-tick logic over every matching entity of the shard. |
 
 | Call | Target |
 |---|---|
-| `Cluster.Ask(id, new M())` / `Send(id, ...)` | The actor `id` (`MapId`, `PlayerId`: the id type names the actor type; one per cluster, on demand, turn-based). |
-| `Cluster.Ask(seatId, ...)` with `SeatId : IActorId, IPlaced` | The actor, placed by its id's `Placement`: actors of any type with the same placement share a node and a shard (a room and its seats), so their messages stay local. |
-| `Cluster.Ask(new M())` / `Send(...)` | The one service handling `M` (local first, else the less loaded of two nodes hosting it). |
-| `Cluster.Ask(id, new M(), new CallOptions(timeout))` | Any `Ask` with a timeout of its own (default: the sender's `CallTimeout`); handlers read what their caller still waits as `TimeLeft`. |
-| `Cluster.Publish(e)` | Every service type handling `e`, once each. |
-| `Cluster.Send(session, m)` / `Send(group, m)` | A client session / a client group (`[ToClient]` messages; clients handle them with `[Handle]` too). `JoinGroup`, `LeaveGroup` and `Disconnect` sent there are applied by the node holding the session (from an actor, kick a session with `DisconnectSession`, DAS020). |
+| `ctx.Ask(id, new M())` / `ctx.Send(id, ...)` | The actor `id` (`MapId`, `PlayerId`: the id type names the actor type; one per cluster, on demand, one message at a time). `Ask` returns a call number; the answer arrives as `Answered<M, R>` mail. |
+| `ctx.Ask(seatId, ...)` with `SeatId : IActorId, IPlaced` | The actor, placed by its id's `Placement`: actors of any type with the same placement share a node and a shard (a room and its seats), so their messages stay local. |
+| `ctx.Ask(new M())` / `ctx.Send(...)` | The one service handling `M` (local first, else the less loaded of two nodes hosting it). |
+| `ctx.Publish(e)` | Every service type handling `e`, once each. |
+| `ctx.SendAfter(delay, address, m)` | A message sent later (timers as mail, ADR-058); `ctx.CancelSend(handle)` cancels it. |
+| `ctx.Send(session, m)` / `ctx.Send(group, m)` | A client session / a client group (`[ToClient]` messages; clients handle them with `[Handle]` too). `JoinGroup`, `LeaveGroup` and `Disconnect` sent there are applied by the node holding the session (from an actor, kick a session with `ctx.DisconnectSession`, DAS020). |
+| `await cluster.Ask(id, new M(), new CallOptions(timeout))` | Code outside the cluster's worlds (HTTP endpoints, tests, hosted services) awaits replies through `ICluster`; a timeout of its own replaces the sender's `CallTimeout`, and what is left of it travels with the request. |
 
 | Element | Responsibility | Never |
 |---|---|---|
-| **Actor** | The network boundary of one entity with an id: validate a message, then write input as components. Lifecycle and persistence (`OnLoad`, `OnUnload`). | Per-tick logic (that belongs to systems). |
-| **Service** | Stateless request and event handling (login, matchmaking, routing). | Keep state between messages. |
-| **Component / singleton** | Data of one entity (actor state is `Actor<TId, TState>`) / of one shard world. | Logic. |
+| **Actor** | The network boundary of one entity with an id: validate a message, then write input as components. Lifecycle as mail (`Created`, `Loaded`, `Unloading`); stored state is `[Persist]` components. | Per-tick logic (that belongs to systems); fields (DAS007). |
+| **Service** | Stateless request and event handling (login, matchmaking, routing); its state, if any, is singletons. | Keep state in fields. |
+| **Component / singleton** | Data of one entity (an actor's state is the components its handlers take) / of one shard world. | Logic. |
 | **System** | One per-tick responsibility over all matching entities of a shard. Stateless. | Reference other systems, perform IO. |
 
-Business code reaches the cluster through `ICluster`: `Cluster` in actors and services, `world.Cluster` in systems.
-`Caller` is who sent the running turn's message from outside the cluster, a client session (in actors valid across the
-turn's awaits, in services until the first await;
-`Cluster.Send(Caller, m)` answers it, `BindSession(Caller)` binds it, `GrantSession(Caller)` admits it). A handler that
-only waits for an acknowledgement returns `ReplyWhen(BindSession(m.Session), true)`: its actor takes the next message
-at once and the reply follows the binding (ADR-057).
+Handlers reach the cluster through their `Context` (`ctx.Send`, `ctx.Ask`, `ctx.Publish`; `ctx.Cluster` is the
+`ICluster`), systems through `world.Cluster`. `ctx.Caller` is who sent the current message from outside the cluster, a
+client session (`ctx.Send(ctx.Caller, m)` answers it, `ctx.BindSession(ctx.Caller)` binds it, `ctx.GrantSession(..)`
+admits it). Handlers never wait. A request whose reply depends on another call either passes its reply token along
+(`ctx.Ask(target, request, ctx.ReplyLater())`, then `ctx.Reply(a.ReplyTo, value)` in the `Answered` handler) or
+replies when an operation completes (`return ctx.ReplyAfter(ctx.BindSession(m.Session), true);`). Meanwhile the actor
+takes its next message; what a later step must remember is a component.
 
-The runtime owns client sessions: an actor's `await BindSession(session)` routes the client's messages for that actor
-type to its id and puts the session in the actor's `Group`; `await GrantSession(session)` lets the client name the
-actor (`client.Send(roomId, new Say(..))`: a room admitting a player) and puts it in the `Group` too. A client can
+The runtime owns client sessions: an actor's `ctx.BindSession(session)` routes the client's messages for that actor
+type to its id and puts the session in the actor's `Group`; `ctx.GrantSession(session)` lets the client name the
+actor (`client.Send(roomId, new Say(..))`: a room admitting a player) and puts it in the `Group` too. Both are applied
+on the session's node and answered (`Answered<SessionChange, Done>`, or through `ReplyAfter`), so a reply that
+follows them finds the binding in place. A client can
 name no other actor: anything else is refused at the edge. When the session closes (or its node crashes), every
 actor it was bound or granted to forgets it, and one that handles `SessionClosed` receives it. A client that loses its connection reconnects on its own and
 resumes the session with a signed ticket: its actors receive `SessionResumed` (send the full state again) instead, and
@@ -115,7 +128,7 @@ resumes the session with a signed ticket: its actors receive `SessionResumed` (s
 
 ## Example
 
-From the MMO sample [samples/mmo/](samples/mmo) (who runs where and who talks to whom: [samples/mmo/README.md](samples/mmo/README.md)): a login
+Abridged from the MMO sample [samples/mmo/](samples/mmo) (who runs where and who talks to whom: [samples/mmo/README.md](samples/mmo/README.md)): a login
 server, a game server (players, the realm), a map server (maps, movement, area of interest) and gateways that host no
 business code.
 
@@ -132,64 +145,109 @@ public readonly record struct MapId(long Value) : IActorId;
 [NinoType, Message] public partial record struct Attach(ClientSession Session) : IRequest<bool>;  // servers only
 [NinoType, Message] public partial record struct Enter(PlayerId Player, ClientSession Session) : IRequest<bool>;
 [NinoType, Message, ToClient] public partial record struct Chat(PlayerId Player, [property: NinoUtf8] string Text); // pushed
+[NinoType, Message, ToClient] public partial record struct RealmStatus(long Tick, int Online, long ServerTimeTicks);
+[NinoType] public partial record struct LoginResult(bool Ok, PlayerId Player);                     // data in a reply
 
-// Login project: a stateless service.
-public sealed class Account : Service
+// Components live in a components project (DAS013): data that outlives a reload of the logic.
+[NinoType(format: NinoFormat.VersionTolerant), Persist] public partial record struct PlayerProfile(string Name, int Logins) : IComponent;
+[NinoType(format: NinoFormat.VersionTolerant), Handoff] public partial record struct PlayerState(MapId Map) : IComponent;
+public record struct Entering(MapId Map) : IComponent;            // a map change waiting for its answer
+[NinoType(format: NinoFormat.VersionTolerant), Handoff]
+public partial struct RealmState() : IComponent { public HashSet<PlayerId> Online = new(); public long Ticks; }
+public record struct Position(float X, float Y) : IComponent;
+public record struct Velocity(float X, float Y) : IComponent;
+public readonly record struct Avatar(PlayerId Player, ClientSession Session) : IComponent, IIndexed<ClientSession>
+{
+    ClientSession IIndexed<ClientSession>.Key => Session;         // EasyEcs indexes avatars by session
+}
+
+// Login project: a stateless service. It asks the player to attach the session and replies once the player
+// answered; nothing waits in between.
+[Service]
+public static class Account
 {
     [Handle]
-    public async Reply<LoginResult> On(Login m)
+    internal static Answer<LoginResult> On(in Login m, in Context ctx)
     {
-        var player = new PlayerId(Hash(m.Name));                               // a real game looks the account up
-        bool attached = await Cluster.Ask(player, new Attach(Caller)); // the Player actor of that id
-        return new LoginResult(attached, player);
+        long id = 17;
+        foreach (char c in m.Name) id = (id * 31 + c) & 0x7FFF_FFFF;  // a real game looks the account up
+        var player = new PlayerId(id + 1);
+        return ctx.ReplyAfter(ctx.Ask(player, new Attach(ctx.Caller)), new LoginResult(true, player));
     }
 }
 
 // Game project: actors turn messages into data...
-public sealed class Player : Actor<PlayerId, PlayerState>
+[Actor<PlayerId>(UnloadAfterIdleSeconds = 600)]
+public static class Player
 {
+    [Handle] internal static void On(in Created _, ref PlayerProfile p, in Context ctx) => p = new PlayerProfile("player-" + ctx.Id<PlayerId>().Value, 0);
+
     [Handle]
-    public async Reply<bool> On(Attach m)
+    internal static Answer<bool> On(in Attach m, ref PlayerProfile p, in Context ctx)
     {
-        await BindSession(m.Session);               // the client's Player messages reach this player from now on
-        State.Logins++;                             // re-read after awaiting
-        return true;
+        p.Logins++;
+        return ctx.ReplyAfter(ctx.BindSession(m.Session), true); // replied once bound: the client's next message finds it
     }
 
     [Handle]
-    public async Reply<bool> On(EnterMap m)
+    internal static Answer<bool> On(in EnterMap m, Entity self, in Context ctx)
     {
-        await Cluster.Ask(m.Map, new Enter(Id, Caller)); // the call allocates nothing
-        State.Map = m.Map;
-        return true;
+        if (self.Has<Entering>()) return false;                   // one map change at a time
+        self.Set(new Entering(m.Map));
+        ctx.Ask(m.Map, new Enter(ctx.Id<PlayerId>(), ctx.Caller), ctx.ReplyLater()); // the caller's reply token travels along
+        return Answer<bool>.Later;
     }
 
-    [Handle] public void On(SessionClosed _) => State.Map = default;
+    [Handle]                                                      // ...and comes back with the answer, as mail
+    internal static void On(in Answered<Enter, bool> a, ref PlayerState state, Entity self, in Context ctx)
+    {
+        if (!self.TryGet<Entering>(out var entering)) return;
+        if (a.Ok) state.Map = entering.Map;
+        self.Remove<Entering>();                                  // `state` is invalid from here on (DAS022)
+        if (a.Ok) ctx.Reply(a.ReplyTo, a.Value);
+        else ctx.Fail(a.ReplyTo, a.Status);
+    }
+
+    [Handle] internal static void On(in SessionClosed _, ref PlayerState state) => state = default;
 }
 
-// Actor state is a component; field initializers run when the actor loads (no OnLoad boilerplate).
-public struct MapState() : IComponent
-{
-    public readonly Dictionary<ClientSession, Entity> Avatars = new();
-}
-
-public sealed class Map : Actor<MapId, MapState>
+[Sticky]                                                          // a loaded map stays where it is when nodes join
+[Actor<MapId>]
+public static class Map
 {
     [Handle]
-    public async Reply<bool> On(Enter m)
+    internal static Answer<bool> On(in Enter m, in Context ctx)
     {
-        State.Avatars[m.Session] = World.CreateEntity(new Position(), new Velocity(), new Avatar(m.Player, Entity, m.Session));
-        await BindSession(m.Session);               // its input reaches this map, it sees Group broadcasts
-        return true;
+        // The avatar is an entity of the map's shard, a child of the map: it goes when the map unloads.
+        ctx.World.CreateEntity(new Position(), new Velocity(), new Avatar(m.Player, m.Session), new ChildOf(ctx.Entity.Id));
+        return ctx.ReplyAfter(ctx.BindSession(m.Session), true);  // its input reaches this map, it hears the map's Group
     }
 
     [Handle]
-    public void On(Move m) =>                      // input is data: systems integrate it
-        State.Avatars[Caller].Get<Velocity>() = new(m.VelocityX, m.VelocityY);
+    internal static void On(in Move m, in Context ctx)            // input is data: systems integrate it
+    {
+        if (TryFind(in ctx, ctx.Caller, out var avatar)) avatar.Set(new Velocity(m.VelocityX, m.VelocityY));
+    }
 
     [Handle]
-    public void On(Say m) =>
-        Cluster.Send(Group, new Chat(State.Avatars[Caller].Get<Avatar>().Player, m.Text));
+    internal static void On(in Say m, in Context ctx)
+    {
+        if (TryFind(in ctx, ctx.Caller, out var avatar)) ctx.Send(ctx.Group, new Chat(avatar.Read<Avatar>().Player, m.Text));
+    }
+
+    [Handle]
+    internal static void On(in SessionClosed e, in Context ctx)
+    {
+        if (TryFind(in ctx, e.Session, out var avatar)) avatar.Destroy();
+    }
+
+    private static bool TryFind(in Context ctx, ClientSession session, out Entity avatar)
+    {
+        foreach (var e in ctx.World.AvatarIndex.Find(session))   // one index lookup, no dictionary in the actor
+            if (e.Read<ChildOf>().Parent == ctx.Entity.Id) { avatar = e; return true; }
+        avatar = default;
+        return false;
+    }
 }
 
 // ...and systems do the per-tick work, one responsibility each.
@@ -247,10 +305,12 @@ worlds on their own threads, behavior as HTN planning over ECS data, swarms that
 ## Persistence
 
 Components marked `[Persist]` (version-tolerant or keyed Nino structs in a components project, DAS014) are an actor's stored
-state (ADR-068). The
-runtime restores them before `OnLoad` when the actor loads, on any node, writes them when it unloads and every
-`SaveEvery` (30 s) while they changed, and at once for an entity tagged `SaveNow`. Writes are versioned: a node that
-lost ownership cannot overwrite the new owner's state. Components without `[Persist]` (sessions, caches) are rebuilt.
+state (ADR-068). The runtime restores them when the actor loads, on any node, before its `Loaded` mail (an actor
+with no record gets `Created` instead), writes them after its `Unloading` mail, and every `SaveEverySeconds` (30 s by
+default) when they changed, and at once for an entity tagged `SaveNow` (`self.SetSaveNow()`). They are change-tracked:
+the generator declares EasyEcs's `ITrackChanges` for them, so a checkpoint visits only the actors whose stored
+components were written since the last one. Writes are versioned: a node that lost ownership cannot overwrite the new
+owner's state. Components without `[Persist]` (caches, grids) are rebuilt.
 
 ```csharp
 [NinoType(format: NinoFormat.VersionTolerant), Persist] public partial record struct PlayerProfile(string Name, int Logins) : IComponent;
@@ -278,7 +338,7 @@ await client.Ask(new Login("ann"));
 await cluster.TickAsync(15);                              // exactly 15 ticks on every shard
 ```
 
-Actors, services and systems read time from `Time` (`world.Time` in systems), the clock tests move.
+Handlers and systems read time from `world.Time` (`ctx.World.Time` in a handler), the clock tests move.
 
 ## Rolling upgrades
 
@@ -353,7 +413,7 @@ the share of all 4 cores; the login node stays at 1% and 0 KB/s; with Aspire's O
 exporter adds ~55 KB/s per node.) The bot process and the kernel's loopback use most of the machine, so latency is
 mostly theirs. Without area of interest, 10,000 players in one map is a bandwidth problem, not a CPU one: every
 position to everyone each tick is 10,000 x 10,000 x 20 = 2 billion entries a second (~40 GB/s); even with dead
-reckoning, every turn to everyone is 100 million entries (~2.4 GB/s) a second. On this machine both overflow the
+reckoning, every change of direction to everyone is 100 million entries (~2.4 GB/s) a second. On this machine both overflow the
 clients (the per-session send bound then disconnects them or, below it, memory grows to the bound) while the game
 node stays under 10% CPU.
 

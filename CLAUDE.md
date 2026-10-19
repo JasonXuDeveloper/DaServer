@@ -38,13 +38,20 @@ src/Polyfills/             Lock, IsExternalInit, FrozenDictionary for netstandar
 src/DaServer/              server runtime (net11.0): Runtime/ Cluster/ Rpc/ Net/ Concurrency/ Persistence/ and the built-in
                            capabilities on the feature points: Features/ Ingress/ (signed tokens) Clients/
   Runtime/Shard.cs         thread + dispatch queue (the cross-thread handoff) + wake/tick loop (nothing else)
-  Runtime/ShardData.cs     shard ECS data: actor components and lifecycle tags (Mailbox, Ready, Turn, ...), singletons
+  Runtime/Handlers.cs      the programming model (ADR-081): [Actor<TId>] / [Service], Created / Loaded / Unloading,
+                           ReplyTo, Answered<TRequest,TReply>; Context.cs (ctx: sends, asks, ReplyLater, sessions),
+                           Answers.cs (asks whose answers are mail, replies given later), ActorKey.cs (an actor's identity)
+  Runtime/ShardData.cs     shard ECS data: actor lifecycle tags (Loading, Ready, UnloadRequested, Leaving, Fenced,
+                           Removing), the mailbox's Envelope, KnownSession children (Known, Granted, Superseded), singletons
   Runtime/ShardDispatch.cs routing/delivery/invoke operations shared by the runtime systems
-  Runtime/Systems/         runtime systems: Timer, Dispatch, Turn, ServiceCall, Removal, Unload, Mailbox (ShardMessages group),
-                           Rebalance (ShardRebalance), Idle and LongTurn (ShardIdleScan); each reacts to one lifecycle tag (ADR-037)
+  Runtime/Systems/         runtime systems: Timer, Dispatch, Removal, Unload, Mail (ShardMessages group),
+                           Rebalance (ShardRebalance), Idle and ReplySlot (ShardIdleScan); each reacts to one tag
+  Persistence/             Load, Persist, Store, Handoff systems (ShardMessages); Change and Checkpoint (ShardIdleScan:
+                           change-tracked [Persist] components tag written actors Unsaved, only those are written)
 src/DaServer.Generator/    incremental generators (AskGenerator, RegistrationGenerator, PolyfillGenerator) + DaServerAnalyzer
-                           (DAS001-021); WireManifest.cs: the wire.manifest model over Nino's NinoTypeLayout (ADR-076);
-                           Shapes.cs reads symbols once for both, so "skipped by the generator" == "reported"
+                           (DAS001-022); WireManifest.cs: the wire.manifest model over Nino's NinoTypeLayout (ADR-076);
+                           Shapes.cs and ServerHandlers.cs read symbols once for both, so "skipped by the generator" ==
+                           "reported"
 src/DaServer.Generator.Roslyn4.3/  the same sources built against Roslyn 4.3 (Unity's oldest), packed beside the 5.x build
 src/DaServer.WireTool/     writes a project's wire.manifest from its built assembly (the analyzer's own WireManifest)
 src/DaServer.Hosting/      Generic Host integration, configuration, OpenTelemetry (OTLP when configured), shutdown
@@ -101,9 +108,11 @@ observability/             a Grafana dashboard and Prometheus alert rules over t
 
 - Never block a shard thread on IO; never touch shard/actor state from another thread (post to the shard). Shard code
   (actors, services, systems) starts no work on other threads (DAS015): it awaits, and continuations come back.
-- Never keep a `ref` into ECS storage across an `await`; re-acquire after awaiting.
-- Actors are turn-based: one message at a time including its awaits (no interleaving). Calls in a cycle (A awaits B
-  awaits A) fail at once with `CallCycle` (ADR-059): model such flows with one-way messages (`Send`/`Publish`).
+- Never keep a `ref` into ECS storage across a structural change of its entity (adding or removing a component, a
+  tag included): finish with the components first, or read them again (DAS022).
+- Handlers never wait (ADR-081): an actor runs one message at a time to completion; an ask's answer is mail
+  (`Answered<TRequest, TReply>`), a reply given later is a `ReplyTo` token kept as data. What must be remembered
+  between a request and its answer is a component.
 - Orchestration is the Aspire model (`samples/mmo/Sample.AppHost`); do not add hand-written compose/k8s files.
   `DaServer.Aspire` adds only what follows from DaServer itself and Aspire cannot know (probes, grace periods from the
   stop budget, preStop, one workload per node group with seeds, client ports as external endpoints) through the

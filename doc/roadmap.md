@@ -10,8 +10,8 @@ Keep this file current: tick items when done, add items when scope changes.
 2. G0-G2 (done, below): one message model (ADR-047), feature points and ingress, client connections as a
    built-in feature, Abstractions and Client packages (ADR-048).
 3. T2 ECS bots and business isolation (done): shared rules, a real client, simulated users that run it.
-4. N2 `SendAfter` (done) (the delayed send primitive, per-shard timer wheel), N3 call cycles fail fast (`Chain` header
-   extension), N3b no sync-over-async (incl. the await-only `Reply<T>`, which also fixes H1).
+4. N2 `SendAfter` (done) (the delayed send primitive, per-shard timer wheel), N3b no sync-over-async (done; the
+   await-only `Reply<T>` for callers outside the shards).
 5. N8 (done) collections in messages without garbage (H4), on Nino 4 (ADR-078).
 6. D1-D4 (done) graceful shutdown without a store, A-items (Aspire and hosting; A6 uses the `Trace` header extension).
 7. C1-C4 (done) cluster hardening (before persistence: fencing assumes correct downing).
@@ -20,12 +20,14 @@ Keep this file current: tick items when done, add items when scope changes.
    placement affinity with K1-K2 placement strategies and the owner table.
 10. V1-V3 (done) versioning and rolling upgrades (before scaling: rolling deploys depend on them).
 11. S1-S6 (done) elastic scaling.
-12. N9 hot reload (waits for the EasyEcs release it needs).
-13. N4 route completeness, N11 generated filters (on the G filter point), K3-K5, open cleanup, quality items. Later
+12. The ECS rewrite (now; ADR-081, the "ECS rewrite" entry under "Open cleanup" below): P1-P3 and P5 done; P4
+    (the transport and the capabilities as ECS, client sessions as entities in net loops), P6 (records as EasyEcs
+    saves) and P7 (benchmarks, the 10k-bot run, reviews) open.
+13. N9 hot reload (waits for the EasyEcs release it needs).
+14. N4 route completeness, N11 generated filters (on the G filter point), K3-K5, open cleanup, quality items. Later
     optional modules: `DaServer.Reminders`, `DaServer.Topics`, leases for strict singletons.
-14. After the self-review converged (agreed): Z3 and Z4; P2 `DaServer.Persistence.Redis` and G7 browser clients;
-    group broadcasts only to nodes with members (ADR-029), client sessions as ECS entities, the turn's caller as a
-    component; the server-side NPC sample.
+15. After the self-review converged (agreed): Z3 and Z4; P2 `DaServer.Persistence.Redis` and G7 browser clients;
+    group broadcasts only to nodes with members (ADR-029); the server-side NPC sample.
 EasyEcs in parallel when DaServer waits on benchmarks: the Friflo gap, comparison tables in the docs.
 
 ## Runtime (`src/DaServer`)
@@ -34,20 +36,21 @@ EasyEcs in parallel when DaServer waits on benchmarks: the Friflo gap, compariso
 - [x] Concurrency: padded MPMC queue, object pool, allocation-free `AsyncSignal`
 - [x] Net: `Connection` (batched send, zero-byte reads, backlog bound), `Listener`
 - [x] RPC core: messages (`IRequest<TReply>`, `HandlerRegistry`), `CallContext` replies, pending-call table, pooled awaitables
-- [x] Shard runtime as ECS (ADR-013): actor entities with mailbox/turn components, runtime systems, system groups;
-      dispatch queue (`DispatchSystem`, `DispatchQueueCapacity`) and per-actor mailboxes (ADR-040)
-- [x] Turn-based actors (ADR-014), stateless services
-- [x] Typed actor ids (ADR-043): `Actor<TId, TState>`, `Send`/`Ask(id, m)` route by the id type, `Publish` to services
-      only
-- [x] Fence a node declared dead: its actors are removed without `OnUnload` (ADR-042, from Orleans)
+- [x] Shard runtime as ECS (ADR-013, ADR-081): actor entities (`ActorKey`, lifecycle tags, a `DynamicBuffer<Envelope>`
+      mailbox used while the actor is not live), runtime systems, system groups; dispatch queue (`DispatchSystem`,
+      `DispatchQueueCapacity`) (ADR-040)
+- [x] Actors as static `[Actor<TId>]` classes of `[Handle]` methods over components, one message at a time, handlers
+      that never wait (answers as `Answered` mail); stateless `[Service]` classes (ADR-081)
+- [x] Typed actor ids (ADR-043): `[Actor<TId>]`, `Send`/`Ask(id, m)` route by the id type, `Publish` to services only
+- [x] Fence a node declared dead: its actors are removed without their `Unloading` mail (ADR-042, from Orleans)
 - [x] Node: shards, local/remote routing, forwarding/relay, reply sinks
 - [x] Cluster: push-pull gossip of pulses (cards once, ADR-031), seeds (static + DNS), failure detection, `ClusterView`, rendezvous placement,
       graceful leave + rebalancing
 - [x] Gateway: sessions, per-handler-type bindings, per-message `[FromClient]` access, push, `ClientGroup` broadcast fan-out
       (O(1) membership, `All` is a group, no allocation per broadcast), `SessionClosed` to bound actors, client frame
       limit (ADR-025)
-- [x] Runtime-owned sessions: Bind joins the actor's group, `Caller` holds for the turn, a crashed gateway's
-      sessions close (ADR-024)
+- [x] Runtime-owned sessions: Bind joins the actor's group, an actor's known sessions are child entities, a crashed
+      gateway's sessions close (ADR-024)
 - [x] Clients connect through the platform's load balancer and stay; `MaxConnectionAge` moves old connections to new
       nodes, the clients resuming their sessions (ADR-026)
 - [x] One ordered link per node direction: replies travel with binds, pushes and events (ADR-022)
@@ -63,8 +66,8 @@ EasyEcs in parallel when DaServer waits on benchmarks: the Friflo gap, compariso
 - [x] Deadlines: the caller's remaining time travels with each request; expired work is dropped (ADR-028)
 - [ ] Send group broadcasts only to client-facing nodes that have members of the group (deferred: ADR-029)
 - [x] Resumable node links: a dropped connection replays what the peer did not process (ADR-008)
-- [ ] Client sessions as ECS entities (session components + flush system) on a client-facing node's shard
-- [x] Actors unload when idle (`UnloadAfterIdle`, ADR-033)
+- [ ] Client sessions as ECS entities in net loops (ECS rewrite P4)
+- [x] Actors unload when idle (`UnloadAfterIdleSeconds`, ADR-033)
 
 ## Now: zero GC (agreed; Z2 is step 1 of the development order)
 
@@ -76,11 +79,10 @@ Steady state allocates nothing: per message, call, reply, tick, broadcast, conne
       logging without guards, boxing (structs in object fields), per-operation arrays/lists/records, Nino collection
       and string deserialization per message (N8), gossip/membership rebuilds, resume tickets, metrics.
       Findings (audit of this branch, fix order below):
-      - H1 (fixed by N3b.4, ADR-062) user `async ValueTask` handlers used the default builder: one state-machine box per suspended call (the
-        samples teach it). Fix: shard-pooled builder through the await-only `Reply<T>` handler type (N3b.4) or an
-        analyzer + code fix adding the builder; update samples.
+      - H1 user `async ValueTask` handlers used the default builder: one state-machine box per suspended call. Fixed:
+        handlers never await (ADR-081); code outside the shards awaits the pooled `Reply<T>` (ADR-062).
       - H2 `CallContext.AwaitReply` (pooled builder hits its per-thread cache cap; `ConfigureAwait(true)` allocates a
-        context continuation per await). Fix: pooled `ReplyWatcher<T>` like `TurnWatcher`.
+        context continuation per await). Fix: pooled `ReplyWatcher<T>`.
       - H3 pool caps below in-flight bounds (PendingCall<T> 1024, RelayCall 1024, FrameWriter 4096): bursts allocate
         and drop. Fix: per-shard-thread stacks for PendingCall, caps 64k (configurable) for frames and relays.
       - H4 Nino collections/strings per message (`Motion` list per client, strings in Say/Chat/replies). Fixed by N8
@@ -98,14 +100,12 @@ Steady state allocates nothing: per message, call, reply, tick, broadcast, conne
       - M8 string concatenation on hostile client rejects. Fix: constant/precomputed messages.
       - L1-L7 rare (view rebuilds, binding arrays, client sweeper enumerator, metrics tags, reconnects, foreign awaits,
         local Send copy): fix where trivial.
-      Allocation tests still missing (they come with the items that change those paths): many suspended `async`
-      handlers (H1, N3b), grant churn, the client callback queue, collection messages (N8).
-- [x] Z2 Core fixes: H3 (per-shard call stacks, 64k frame/relay pools), H2 (pooled `ReplyWatcher<T>`, 264 -> 0 B per
-      reply of a suspended handler; tests build optimized so async state machines are structs as users ship them),
-      M1 (status-only refusals, ADR-049), M6 (completions, callbacks and turn ends in their own queue, ADR-027), M4
-      (actor objects, mailboxes and session sets pooled per shard, ADR-044; a lifecycle hook that completes
-      synchronously no longer registers a continuation: that cost an allocation and a thread-pool hop per load and
-      unload), M7 (a resend window recycles up to 16 released chunks), L7 (a local `Send` hands its frame over
+      Allocation tests still missing (they come with the items that change those paths): grant churn, the client
+      callback queue, collection messages (N8).
+- [x] Z2 Core fixes: H3 (per-shard call stacks, 64k frame/relay pools), H2 (pooled `ReplyWatcher<T>`; tests build
+      optimized so async state machines are structs as users ship them), M1 (status-only refusals, ADR-049), M6
+      (completions and callbacks in their own queue, ADR-027), M4 (actor churn allocates nothing: an actor is an
+      entity, ADR-044), M7 (a resend window recycles up to 16 released chunks), L7 (a local `Send` hands its frame over
       instead of copying it). New allocation tests: calls to another node, service Send/Ask/Publish (local and
       remote), refusals, relayed timeouts, actor churn, resend window reuse, idle nodes. Kept: L1 view rebuilds and
       L5 reconnects (per membership change), L4 metric sampling (a few hundred bytes per collection, only with a
@@ -144,12 +144,12 @@ balancing, TLS, CDN/WAF, Gateway API routes and autoscaling stay with the platfo
       `INodeAddress` pinned, `IGroupAddress` fan-out; scope = `TypeId<TAddr>`, kind a JIT constant per address type);
       `Push`/`Broadcast` are sends to session / group addresses, `JoinGroup`/`LeaveGroup`/`Disconnect` messages to
       them, `BindSession` an `Ask` of `SessionAccess` (removed verbs, no aliases). Wire: `Message`/`Reply`/`Control`, `Target`
-      always set, trailers by flag (`Origin` 16 B, call id; `Chain` with N3, `Trace` with A6). Wire break, no rolling
+      always set, trailers by flag (`Origin` 16 B, call id; `Trace` with A6). Wire break, no rolling
       upgrade across it (pre-1.0). A/B of the G work against the baseline: G step 9 below and the README.
 - [x] G1 Feature points and ingress, step 5, proven by two consumers (client connections and the HTTP plane).
 - [x] G2 Client connections as a built-in feature, grants, packages, keep-alive, .NET 11, tests, docs: steps 6-10.
 - [x] G5 `samples/flashsale`: buyers over the client protocol (TCP or WebSocket) to a stateless `Gate` service on
-      every node; 16 `StockShard` actors per sale (the turn is the atomic decrement), `Order` actors keyed (user,
+      every node; 16 `StockShard` actors per sale (a handler is the atomic decrement), `Order` actors keyed (user,
       sale) so retries get the same answer, the `Sale` actor collecting the shards' buyers so each shard's gate answers
       the late crowd itself; an optional queue (`PerSecond`, `AdmissionSystem`). `FlashSale.Crowd` is a
       `DaServer.Simulation` swarm (`MeasureUntilAsync`); AppHost, E2E (100,000 buyers in CI); the README compares it
@@ -173,8 +173,8 @@ What G delivered (each step kept every test green):
 2. Addresses: `IAddress`/`INodeAddress`/`IGroupAddress`, `Send(addr, m)`, address-generic generated `Ask` overloads;
    DAS006 checks `[ToClient]` by address kind; asking a session or group and a client addressing anything but actors
    are DAS008.
-3. `Origin(ulong Node, long Id)`: raw 16-byte trailer, `CallContext(ReplyTo, CallId, Origin)`, `ShardObject.Caller`;
-   the origin is an `INodeAddress` (`Send(Caller, m)`) and `ClientSession` converts implicitly from it.
+3. `Origin(ulong Node, long Id)`: raw 16-byte trailer, `CallContext(ReplyTo, CallId, Origin)`, `ctx.Caller`;
+   the origin is an `INodeAddress` (`ctx.Send(ctx.Caller, m)`) and `ClientSession` converts implicitly from it.
 4. Session operations are messages to `ClientSession` (`JoinGroup`/`LeaveGroup`/`Disconnect` to a session or a group;
    `BindSession` asks a `SessionAccess`, so ADR-022 ordering holds).
 5. Feature points and ingress (`DaServer.Features`, `DaServer.Ingress`): `NodeFeature` hooks, options bound from
@@ -272,8 +272,8 @@ after it the process exits whatever is still running. Platforms send SIGTERM and
 OOM kills, crashes and power loss give no signal at all, so no shutdown code can be the only protection.
 - [x] D1 One shutdown budget (ADR-063): `NodeOptions.ShutdownTimeout` (25 s) bounds `StopAsync`, which honors the
       host's token; the host waits 5 s longer, Compose `stop_grace_period` is the budget + 10 s
-      (`DaServerNodeGroup.WithShutdownTimeout`). Past the deadline the node logs, per shard, the actors whose
-      `OnUnload` did not finish, and exits instead of hanging.
+      (`DaServerNodeGroup.WithShutdownTimeout`). Past the deadline the node logs, per shard, the actors not unloaded and
+      saved yet, and exits instead of hanging.
 - [x] D2 Ordered stop: readiness off (`/health` fails once Leaving) -> Leaving (callers reroute) -> drain features
       (client connections) -> unload every actor -> close links. Each phase is logged with its duration and recorded
       as `daserver.stop.phase.duration` (phase tag). Store flush joins with N5 (D6).
@@ -284,7 +284,7 @@ OOM kills, crashes and power loss give no signal at all, so no shutdown code can
       (`AStopThatExceedsItsBudgetReportsAndReturns`); a leaving gateway's clients keep their sessions; a stop under load
       loses no acknowledged deposit (`AStopUnderLoadLosesNoAcknowledgedDeposit`, 32 callers through the node that stays);
       a kill loses at most the last checkpoint interval (`AKillLosesAtMostTheLastCheckpointInterval`); both stores.
-- [x] D5 Persistence that survives a crash (ADR-068): on unload always, a checkpoint every `Actor.SaveEvery` when the
+- [x] D5 Persistence that survives a crash (ADR-068): on unload always, a checkpoint every `SaveEverySeconds` when the
       record changed, `SaveNow` for critical changes; versioned saves reject a stale owner's late write.
 - [x] D6 Store flush and backpressure: one save batch (at most 512 records) in flight per shard; the stop's unload phase
       waits for every final write (actors are removed only once written); a failing store is retried every second; the
@@ -320,9 +320,9 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
       `aspire resource`, MCP) and, run locally, a cluster resource parenting its nodes whose state counts the joined ones
       ("6/6 joined"). A node's own state is Aspire's health (ready = joined and not leaving), so no custom node states
       (`AdminEndpointTests`, the E2E runs).
-- [x] A6 Tracing (ADR-080): a turn whose message carries a trace context runs in a span of the `DaServer` activity
-      source, child of the sender's on any node; asks, sends and publishes carry the running turn's context (or an
-      ASP.NET Core request's), in the frame's extension block, the first entry of a block readers skip unknown entries
+- [x] A6 Tracing (ADR-080): a handler whose message carries a trace context runs in a span of the `DaServer`
+      activity source, child of the sender's on any node; asks, sends and publishes carry the running handler's
+      context (or an ASP.NET Core request's), an ask's `Answered` mail continues the asking handler's trace, in the frame's extension block, the first entry of a block readers skip unknown entries
       of (new metadata needs no new link protocol). `AddDaServer` exports the traces with the ASP.NET Core and
       HttpClient instrumentation when OTLP is configured, so a REST call and the actor calls it causes are one trace.
       Traces start where the application starts them, never per message (`TracingTests`).
@@ -375,7 +375,7 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
       the signing secret over the acceptor's challenge and its endpoint; an accepted connection is read only after it
       (`LinkAuthTests`). Links are authenticated, not encrypted: TLS stays the platform's (service mesh, private
       network).
-- [x] C4 Supervision (ADR-066): `Actor.OnError(exception)` returns `ErrorAction.Resume` (default) or `Reload` (removed
+- [x] C4 Supervision (ADR-066): `[Actor<TId>(OnError = ...)]` is `ErrorAction.Resume` (default) or `Reload` (removed
       without saving, the next message loads it again); every failed handler, and every system pass that throws, is
       counted (`Node.Failed`, `daserver.handler.failed`).
 
@@ -398,7 +398,7 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
 
 ## Next: packages and other core gaps (P, K)
 - [x] P1 `DaServer.Testing` (ADR-071): `TestCluster` starts real nodes in the test process; `NodeOptions.TimeProvider`
-      is the shards' clock (ticks, `SendAfter`, idle unloads, checkpoints, `Time` in actors, services and systems);
+      is the shards' clock (ticks, `SendAfter`, idle unloads, checkpoints, `world.Time` in handlers and systems);
       with `ManualTime` the test steps ticks (`TickAsync`, `AdvanceAsync`), each run once on every shard. The
       framework's `ClusterTest` builds on its node options; `Sample.Tests` tests the sample's servers with it.
 - [x] K2 Slot table (ADR-074): actor keys (placements for `IPlaced` ids) hash into 4,096 slots; each view gives every
@@ -415,13 +415,13 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
       stay evenly spread and a node with a backlog gets nothing while another is idler (`ServiceCallsGoToTheLessLoadedOfTwoNodes`).
 - [x] K4 `CallOptions` (agreed: a struct overload): every generated `Ask` has an overload taking `in CallOptions`, whose
       `Timeout` bounds that call (zero: the sender's `CallTimeout`), on nodes and clients; the deadline travels as before
-      (ADR-028). Handlers read what their caller still waits as `TimeLeft`, an actor for its whole turn, a service until
-      its first await, without a `CancellationTokenSource` (`CallOptionsTests`).
-- [x] K5 `Actor.MailboxCapacity` (an actor type's own bound; zero: the node's, read once at load into the mailbox
-      component, so delivery reads a field) and `daserver.messages.dropped{reason}` (`queue_full`, `mailbox_full`,
+      (ADR-028). Handlers read when their caller stops waiting as `ctx.Deadline`, without a `CancellationTokenSource`
+      (`CallOptionsTests`).
+- [x] K5 `[Actor<TId>(MailboxCapacity = n)]` (an actor type's own bound; zero: the node's `ActorMailboxCapacity`,
+      read from the type's settings when mail is queued) and `daserver.messages.dropped{reason}` (`queue_full`, `mailbox_full`,
       `expired`; `Node.Dropped(DropReason)`), replacing `daserver.shard.rejected` and `daserver.shard.expired`
       (`AnActorTypeSetsItsOwnMailboxCapacity`; replies and completions have their own queue, ADR-027).
-- Out of scope in core: durable streams (use Kafka/NATS from a service), transactions (a turn is atomic; sagas are
+- Out of scope in core: durable streams (use Kafka/NATS from a service), transactions (a handler is atomic; sagas are
   messages plus persistence), distributed locks (an actor is the lock), multi-tenancy, event sourcing (documented
   pattern only).
 
@@ -491,14 +491,13 @@ in separate commits.
       frames (`ShardTimers`, `TimerSystem`), delivered as ordinary mail when due (follows moved keys), 5 ms resolution,
       zero allocation (`DelayedSendsDoNotAllocate`, `TimerBenchmark`); DAS009 of N3b points `await Task.Delay` to it.
       (ET timers as data, Orleans timers)
-- [x] N3 Call cycles fail fast (ADR-059): requests carry the asking turn's call chain (`HasChain` trailer, kept through
-      actors and services and across the turn's awaits); a request reaching an actor whose pending turn has its chain
-      is answered `CallCycle` at once (`CallCycleTests`). (Orleans call chains)
+- [x] N3 Call cycles: handlers never wait (ADR-081), so actors asking each other in a chain or a cycle (A asks B asks
+      A, an actor asking itself, through a service, across nodes) complete (`CallChainTests`).
 - [x] N3b No sync-over-async on shard threads (agreed: all four layers):
       1. Done: DAS009 (error) in actors, services and systems: `.Result`, `.Wait()`, `GetAwaiter().GetResult()`,
          `AsTask().Wait*`, `Thread.Sleep`, `Task.Delay`, `SemaphoreSlim.Wait`, `Monitor.Enter`/`lock` waits; the
          message names the replacement for the context.
-      2. Done (ADR-061): handlers `await` (a turn: only that actor waits); delays use `SendAfter` (N2); systems
+      2. Done (ADR-061, ADR-081): handlers never wait (an ask's answer is mail); delays use `SendAfter` (N2); systems
          never wait for replies (DAS012): in their own world they query and `ref` components directly, other entities'
          through `Entity` handles (N7 placement affinity puts what is read together in one world); data in another
          world gets an intent, validated by its owner, whose outcome comes back as a message.
@@ -506,11 +505,9 @@ in separate commits.
          than `NodeOptions.StallAfter` (1 s) once per pass, in the log and as `Node.StalledShards`
          (`daserver.shard.stalled`); the `daserver-live` health check (A-items) reads it. A managed thread cannot
          read another thread's stack, so the log names the shard, not the blocking frame.
-      4. Done (ADR-062): `Ask` returns `Reply<T>`, await-only (no `.Result`/`.Wait`; `AsTask()` for code outside
-         shards), and handlers return `T`, `Reply<T>`, `void` or `Reply`: an `async Reply<T>` handler keeps its state
-         machine in a box pooled per thread and method, so awaiting allocates nothing (H1). `Task.WhenAll` over
-         `AsTask()` serves combinators outside shards; inside a turn, awaiting calls one after the other already
-         overlaps them when they are started first.
+      4. Done (ADR-062): `Ask` from outside the shards returns `Reply<T>`, await-only (no `.Result`/`.Wait`;
+         `AsTask()` for combinators); an `async Reply<T>` method keeps its state machine in a box pooled per thread
+         and method, so awaiting allocates nothing.
 - [x] N4 Route completeness (`DaServer.Testing.RouteCheck`): given a cluster's node projects, every message their
       contracts declare has an actor or service handling it (`[ToClient]`-only messages excepted) and no request is
       answered by two service types; both samples check theirs in a test (`EveryMessageHasItsHandler`,
@@ -520,8 +517,9 @@ in separate commits.
       node and a shard. The wire is unchanged; the registration of the assembly declaring the id type registers it;
       DAS016 reports `IPlaced` on anything but an actor id type.
 - [x] N5 Persistence as ECS (ADR-068): `[Persist]` components of an actor form one record (a section per component
-      type id); `LoadSystem` batches the loads of a wake and restores components before `OnLoad`; `CheckpointSystem`
-      writes changed records every `Actor.SaveEvery` (30 s, unchanged skipped by hash), `PersistSystem` writes
+      type id); `LoadSystem` batches the loads of a wake and restores components before the actor's `Loaded` mail;
+      `CheckpointSystem` writes changed records every `SaveEverySeconds` (30 s; change-tracked, so only actors whose
+      stored components were written are visited), `PersistSystem` writes
       `SaveNow` and unloaded actors (removed once written); `StoreSystem` keeps one load and one save batch in flight
       per shard; a rejected versioned write fences the local copy; `IActorStore`, `InMemoryActorStore` and
       `PostgreSqlActorStore` (`DaServer.Persistence.PostgreSql`: a row per actor, one round trip per batch); DAS014;
@@ -535,7 +533,8 @@ in separate commits.
       +-25% on this VM (35-46 ms for the same 5,000 x 9 case); a bisection on single runs pointed at a commit that two
       interleaved runs then cleared. Broadcast work goes to Z5.
 - [ ] Z6 .NET 11 / C# 15 (audit of October 2026, probes on RC2, Roslyn 5.12): done: runtime async on for net11.0
-      builds, net10.0 builds dropped, `Reply<T>` kept for handlers (as fast as runtime async, 0 B suspended; ADR-054),
+      builds, net10.0 builds dropped, `Reply<T>` kept as the awaitable of callers outside the shards (as fast as
+      runtime async, 0 B suspended; ADR-054),
       C# 14 extension members for the server-only `World` API (`world.Tick`, `world.Cluster`). Open: Zstandard span
       codecs (`ZstandardEncoder`) for large actor records, measured with BDN. Not worth it now: interceptors (the generated
       `Ask` overloads already avoid the generic hop), unions (they box struct cases), closed hierarchies (net11-only
@@ -564,7 +563,8 @@ in separate commits.
       clients send and receive takes Nino's default (one byte a char for ASCII names); chat (`Say`, `Chat`) is
       `[NinoUtf8]`, as chat mixes ASCII with emoji and other scripts.
 - [ ] N9 Hot reload: code (Logic assembly in a collectible load context; each shard swaps handler registry and
-      systems at a wake boundary, recreates actor objects over unchanged components; old turns finish on old code;
+      systems at a wake boundary over unchanged components; handlers run to completion, so nothing runs old code after
+      the swap;
       the old context unloads when unused, weak-reference leak check, no forced GC; a changed Model/Contracts refuses
       and needs a rolling deploy) and config (validated snapshot, pinned per shard wake, cluster-wide trigger, version
       in gossip). HTTP endpoints (ADR-046) reload with the Logic assembly: the framework owns a reloadable
@@ -572,8 +572,8 @@ in separate commits.
       registered by the generator), in-flight requests finish on the old delegates; the unload test proves no routing
       or System.Text.Json cache keeps the old context alive (JSON through source-generated contexts in Logic). Benchmark
       the hot path before and after. (a studied game server, ET)
-- [x] N11 Declared filters: `[Filter]` on a static `RpcStatus M(object target, in TMessage message, in CallContext
-      context)` (that message type) or on an `IMessageFilter` class (every message) is registered by the assembly's
+- [x] N11 Declared filters: `[Filter]` on a static `RpcStatus M(in Context context, in TMessage message)` (that
+      message type) or on an `IMessageFilter` class (every message) is registered by the assembly's
       generated registration: rate limits, authorization and auditing without startup code; DAS021 for a wrong shape
       (`FiltersAreRegisteredWithTheAssembly`, `AFilterAttributeRegistersItself`). Registered rather than inlined into
       the dispatchers: a filter in another assembly (shared rules) applies too, and a message without filters still
@@ -584,7 +584,8 @@ in separate commits.
 
 ## Edge cases (audit of October 2026: each found case gets a deterministic test before its fix)
 
-Four read-only audits (moves and placement, membership and links, client sessions, persistence and turns) listed the
+Four read-only audits (moves and placement, membership and links, client sessions, persistence and the actor
+lifecycle) listed the
 interleavings a real network leaves to chance. Each is forced in a test (a gated store, a scripted node, crafted views
 and cards, a manual clock), fails before its fix, and passes after it.
 
@@ -594,7 +595,7 @@ and cards, a manual clock), fails before its fix, and passes after it.
 - [x] Slot planner (`SlotPlannerTests`): takeover without reports, a left node, sticky pins, a slot reported twice,
       moves until rendezvous agrees, the threshold and the move limit, determinism.
 - [x] P1 A checkpoint in flight as the actor unloads was taken for its final save (later changes lost).
-- [x] P2 A failed turn's SaveNow (and checkpoints of fenced actors) wrote half-changed state; a fenced unload handed
+- [x] P2 A failed handler's SaveNow (and checkpoints of fenced actors) wrote half-changed state; a fenced unload handed
       off or wrote its stale copy.
 - [x] P3 A fenced actor dropped while its write was in flight (the reload could read before it): `PersistenceEdgeTests`.
 - [x] P4 A stale owner writing after the new owner loaded fenced the new owner: loading claims the record (its version
@@ -604,15 +605,12 @@ and cards, a manual clock), fails before its fix, and passes after it.
       P7 loads go in batches of at most 512 (`LoadsWaitingForASlowStoreGoInBoundedBatches`).
 - [x] P6 A failed load failed the batch's callers at once: retried after 200 ms until the call timeout
       (`ALoadThatFailsIsRetriedWithinTheCallTimeout`).
-- [x] P8 Call cycles through OnLoad/OnUnload ended at the call timeout only: OnLoad runs in the call chain of the message
-      that loads the actor (queued first), OnUnload in a chain of its own, and their requests carry it, so a request
-      back into the actor fails with CallCycle at once (`AnOnLoadAskingTheActorWhoseRequestLoadsItFailsAtOnce`,
-      `AnActorAskedBackWhileItUnloadsFailsAtOnce`; 5 s -> at once).
+- [x] P8 An actor's lifecycle handler asking back the actor whose request loads it waited for the call timeout: with
+      answers as mail (ADR-081) it is answered (`ACreatedHandlerAskingTheActorWhoseRequestLoadsItIsAnswered`).
 - [x] P9 A store call that never finished held its shard's loads or writes for good (one batch in flight each): store calls
       are cancelled after `NodeOptions.StoreTimeout` (30 s) and retried like any failure, with one reusable token source
       per batch (`AHungLoadIsCancelledAfterTheStoreTimeoutAndRetried`, `AHungWriteIsCancelledAfterTheStoreTimeoutAndRetried`:
-      held for good before). A turn cannot be cut short (its code still holds the actor): one that outlives the call
-      timeout is logged once (`TurnTooLong`, a fault for the tests' fail-fast log; `ATurnOutlivingTheCallTimeoutIsReportedOnce`).
+      held for good before).
 - [x] H1 The new owner stopped waiting for the record after the call timeout while the old owner still ran the actor
       (duplicate activation): it asks again while the previous owner is alive and loads only once it is dead
       (`ANewOwnerWaitsForTheRecordWhileThePreviousOneHoldsTheActor`).
@@ -661,7 +659,7 @@ and cards, a manual clock), fails before its fix, and passes after it.
       acceptor challenges, the Hello proves the challenge and its endpoint (`AHelloProvesItsChallengeEndpointStreamAndCluster`).
 - [x] S1 An actor that moved forgot its client sessions (resume refused, the mmo's map changes Forbidden): sessions
       travel in the handoff record, never stored (`AClientResumesWithAnActorThatMovedToAnotherNode`).
-- [x] S2 A resume cut off after the actors accepted it (the client gave up waiting behind a long turn, a drain closed the
+- [x] S2 A resume cut off after the actors accepted it (the client gave up waiting behind a backlog, a drain closed the
       new connection) left the session unrecoverable: the client-facing node reverts it (a resume back to the previous
       session, which the actors restore without telling their handler), a client retries on `Superseded`, and drains and
       connection ages skip sessions mid-resume (`AResumeCutOffAfterTheActorsAcceptedItIsRetried`).
@@ -673,7 +671,7 @@ and cards, a manual clock), fails before its fix, and passes after it.
       goodbye: pushes are one connection at a time and the new one's wait until the old drained
       (`PushesOfTheConnectionLeftComeBeforeThoseOfTheNewOne`); an actor taking a resumed session makes the previous one
       leave its group, ahead of its later broadcasts (`AResumedSessionTakesTheActorsGroupFromThePreviousOne`).
-- [x] S7 A kick was evaded by a resume waiting behind the kicking turn (accepted, and the close then filtered as
+- [x] S7 A kick was evaded by a resume waiting behind the kicking handler (accepted, and the close then filtered as
       superseded): actors kick with `DisconnectSession`, which withdraws the grant at once, so the resume is refused
       (DAS020 for `Send(session, new Disconnect())` in actors; `AKickIsNotEvadedByAResumeWaitingBehindIt`). S9 One ticket
       presented on two gateways at once could resume the player on one and the room on the other: the first actor that
@@ -692,7 +690,7 @@ and cards, a manual clock), fails before its fix, and passes after it.
       failed the first loads): the node initializes its store before it starts, and `createTable: false` leaves the
       schema to a migration job, checked at start (`AStoreThatDoesNotCreateItsTableRefusesToStartWithoutIt`).
 - [x] N12a A payload that is not its message is refused (`Malformed`) before the handler runs: no failure counted, no
-      `OnError` (`AMessageThatCannotBeReadIsRefusedWithoutFailingTheActor`).
+      `OnError` action (`AMessageThatCannotBeReadIsRefusedWithoutFailingTheActor`).
 - [x] P10 Nodes starting together raced on `CREATE TABLE IF NOT EXISTS` (23505, the first loads failed): an advisory
       lock serializes the create (`NodesStartingTogetherCreateTheTableOnce`).
 
@@ -754,7 +752,7 @@ and cards, a manual clock), fails before its fix, and passes after it.
         Connection, Resume), `Membership` (+ Gossip), `PendingCallTable` / `PendingCall`, `Connection` (+ Flushed),
         `Node` (+ Stop, Maintenance).
   - [x] The pools documented by who returns: `PerThread` (the renting thread), `ObjectPool` (another thread), a shard's
-        `ActorPools` singleton (per-shard state, as ECS wants: not moved to `PerThread`).
+        `AnswerCalls` singleton (per-shard state, as ECS wants: not moved to `PerThread`).
   - [x] Docs: the stale statements (client redirect remnants, analyzer range DAS001-018, ADR-015/036, design §11
         publishing, READMEs on `Publish=k8s`, flashsale in samples/README, R11's bot options, CLAUDE.md layout,
         roadmap states).
@@ -769,8 +767,8 @@ and cards, a manual clock), fails before its fix, and passes after it.
       a large struct per write). BDN, rc.3 -> rc.4 on one machine: Message local 624 -> 601 ns, remote 960 -> 910 ns
       (0 B both); Broadcast within noise (1,000 clients 5.96 -> 6.00 ms, 5,000 clients 33.2 -> 34.0 ms); Persistence
       within noise, two interleaved runs each (Load memory 2.01/2.71 -> 1.91/2.14 ms, SaveNow PostgreSQL
-      9.9/12.3 -> 10.5/10.7 ms). Load allocates about 260 B per actor it activates (the actor object, its record,
-      directory growth): activation is the cold path, not counted against the 0-GC thresholds.
+      9.9/12.3 -> 10.5/10.7 ms). Load allocates per actor it activates (its record, index growth): activation is the
+      cold path, not counted against the 0-GC thresholds.
 - [x] Kestrel's raw TCP evaluated, not adopted: a `PipeChannel` over a Kestrel connection (`ListenOptions.Run`)
       feeding the same client connections (`TransportBenchmark`, kept to measure again). Broadcast to 1,000 clients
       equal (5.86 / 5.84 ms); to 5,000 clients 26.2 ms and 55 KB against 43.7 ms and 14.8 MB with Gen2 collections
@@ -792,7 +790,6 @@ and cards, a manual clock), fails before its fix, and passes after it.
 - [x] Split `Node` into links and router; membership talks to the node through an interface: links (handshake, one
       link per node) in `Node.Links.cs`, routing in `Node.Routing.cs`; `Membership` sees only `IMembershipHost`
       (identity, options, links, what to advertise and pulse, view changed, fenced, downed).
-- [ ] ECS misuse: the turn's caller (`Actor.TurnCaller`) as a component
 - [x] A handoff answer was dropped when the sender joined moments before: the shard read a view not listing it yet,
       gossip then published one that did and dropped its introduction, and the second read found neither. The old
       owner kept waiting on its copy; when the key came back it refused the record, and both sides fell back to the
@@ -827,8 +824,8 @@ and cards, a manual clock), fails before its fix, and passes after it.
     `SwarmResult.Failures` removed (unused).
   - Docs: hot reload described as planned (ADR-067, ADR-078, the mmo README), analyzer ranges, R11 as measured, the
     flash sale's numbers as ADR-070 measured them, history wording.
-  - Kept, with the reason: the trace check reads `Activity.Current` on sends without a turn span (an `AsyncLocal`
-    read, a few ns; skipping it would drop spans users start in handlers); the header decoded per stage and the
+  - Kept, with the reason: the trace check reads `Activity.Current` on every send (an `AsyncLocal` read, a few ns;
+    skipping it would drop spans users start themselves); the header decoded per stage and the
     placement computed per stage (cheap while no placed types are registered; a carried handler needs `Envelope` to
     grow); shard queues' CAS dequeue (the drain after close is a second consumer); the timeout sweep scanning the table
     every 100 ms (sequential, bounded by the peak); a group's lock held across its fan-out (orders broadcasts and
@@ -858,7 +855,7 @@ and cards, a manual clock), fails before its fix, and passes after it.
     reruns of the three sample tests passed. Watched in the next rounds.
 - [x] Self-review round 3 (the handoff protocol attacked on its own; the generator, Aspire, hosting, the PostgreSQL store,
   the testing package and the client SDK with fresh eyes):
-  - A copy declared dead while past its `OnUnload` (its final save waiting for the write in flight, its record about
+  - A copy declared dead while past its `Unloading` mail (its final save waiting for the write in flight, its record about
     to go or gone) was never removed, so its shard never drained and a downed node never exited: fencing asks every
     copy to leave and the drop takes `HandingOff` copies too
     (`ACopyDeclaredDeadWhileItsFinalSaveWaitsIsStillDropped`, fails without the fix).
@@ -886,8 +883,8 @@ and cards, a manual clock), fails before its fix, and passes after it.
     (`UnloadSystem.Abandon`; `ACopyStillWaitingForItsRecordGoesWhenItsNodeStops`, a stop that ran out its budget
     without it).
   - `ErrorAction.Reload` after an unload was asked for (a rebalance, a stop, an operator) saved or handed on the
-    half-changed state: the copy is fenced whatever was asked before (`ATurnThatFailsAfterAnUnloadWasAskedForIsNotSaved`,
-    which wrote the record without it); a refused checkpoint fences a copy already leaving too.
+    half-changed state: the copy is fenced whatever was asked before; a refused checkpoint fences a copy already
+    leaving too.
   - A late "none" from a node other than the one asked no longer starts a store load; a fenced copy refuses a record
     reaching it in the same wake (its sender keeps it and writes); a failed non-final write no longer holds a copy
     leaving by handoff (its record carries the last written hash).
@@ -907,12 +904,12 @@ and cards, a manual clock), fails before its fix, and passes after it.
     the race itself needs both sides cut within one gossip round, so the test pins the behaviour, not the race).
   - A copy that handed its record to a node other than the one that asked told the asker "none", which loaded a second
     copy from the store: it tells the asker where the record went (`MovedOn`), and the asker waits for that node.
-  - A node remembered previous owners for one call timeout, but a leaving copy can hold its key through a turn and a
-    write in flight: the move window is 2 x (call timeout + store timeout), over up to 16 recent views. A copy held
+  - A node remembered previous owners for one call timeout, but a leaving copy can hold its key through a handoff and
+    a write in flight: the move window is 2 x (call timeout + store timeout), over up to 16 recent views. A copy held
     longer meets a new owner that loaded from the store; versions decide and its changes since its last write are lost
     (ADR-072).
-  - Fixed after the round: an `OnLoad` failing on a copy restored from a handoff writes the moved record before the copy
-    goes (`AMovedRecordWhoseOnLoadFailsIsWrittenNotLost`, a zero balance without it); a critical write that failed on a
+  - Fixed after the round: a `Loaded` handler failing on a copy restored from a handoff writes the moved record before
+    the copy goes (`AMovedRecordWhoseLoadedHandlerFailsIsWrittenNotLost`, a zero balance without it); a critical write that failed on a
     copy leaving by handoff travels in the record, and the new owner writes it at once
     (`ACriticalChangeWhoseWriteFailedIsWrittenAtOnceByItsNewOwner`, lost on the new owner's crash without it); a
     restart of the link's stream closes a handshake that said Hello with the old stream id (no deterministic test:
@@ -941,7 +938,7 @@ and cards, a manual clock), fails before its fix, and passes after it.
     (two quick joins): it sends the asker to the node it waited for. A shard remembers for the move window where it
     handed each key's record, so a later ask for a key gone from it is sent there instead of hearing "none". A copy
     adopted from a sender ahead of this node's view, for a key its asker owns here, leaves when asked. Recent views
-    are bounded by the move window (up to 256), not cut at 16. A failed `OnLoad` writes the record as it came.
+    are bounded by the move window (up to 256), not cut at 16. A failed `Loaded` handler writes the record as it came.
   - A resume answered after its asker timed out took the session too late (the actor then belonged to neither
     session): a late resume is dropped, and the client-facing node reverts the grants that timed out or disconnected.
     The new session joins the actor's group before the old one leaves it, so a group push in between reaches one of
@@ -957,7 +954,7 @@ and cards, a manual clock), fails before its fix, and passes after it.
     grant is reverted, closed or not.
   - A revert puts the actor's group back on the previous session; a shard forgets where it handed a key once the key
     is here again (an asker no longer bounces between two nodes); `Handoff.cs` and `ClusterClient.cs` split by concern
-    (`Handoff.Memory.cs`, `ClusterClient.Pushes.cs`); ADR-026 and ADR-072 updated; the failed-`OnLoad` test now
+    (`Handoff.Memory.cs`, `ClusterClient.Pushes.cs`); ADR-026 and ADR-072 updated; the failed-`Loaded` test now
     changes the state before throwing, so it fails without the as-received write.
   - Also from round 7 (should-fix): a flush cut by a closing connection reconnects only after that connection's bytes
     reached the resend window; a node owning a key in its own view defers an ask (`MustWait`) instead of sending the
@@ -965,7 +962,7 @@ and cards, a manual clock), fails before its fix, and passes after it.
     (two faults: a view change and a timeout on one resume).
   - Kept: no deterministic tests for "no group join after a goodbye" and "a late resume is dropped" (the first is
     indistinguishable from a closed session through the client API, the second needs a resume queued past its deadline
-    behind a turn); an actor reverted after a timeout may have sent a `SessionMoved` that a moving client counts (its
+    behind other mail); an actor reverted after a timeout may have sent a `SessionMoved` that a moving client counts (its
     pushes then keep their order but may overtake a real taker's last push in that one case).
 - [x] Self-review round 8 (the distributed runtime as a whole; rounds 5 to 7 against CLAUDE.md):
   - Must-fix: an exception from any ECS system (a user `[ForEach]` system's bug) ended its shard's loop for good: the
@@ -989,9 +986,10 @@ and cards, a manual clock), fails before its fix, and passes after it.
   - Must-fix: one actor whose state does not serialize threw on every pass of the persistence system, starving the
     shard's other writes, its handoffs and its stop; its write is now given up (the store keeps the last record, a
     leaving copy goes) and so is a handoff of it (it falls back).
-  - Must-fix: without a store, a state initializer that threw left the key loading for good; it now fails the load as
-    `OnLoad` would. An actor constructor that throws answers the message with `Error` instead of a timeout.
-  - Must-fix: a shard that crashed while building its world (a service constructor, a system's `OnCreate`) read as
+  - Must-fix: without a store, an actor whose first handler threw left the key loading for good; a `Created` or
+    `Loaded` handler that throws now fails the load, and the message that loaded it is answered with `Error` instead of
+    a timeout.
+  - Must-fix: a shard that crashed while building its world (a system's `OnCreate`) read as
     healthy; it reads as stalled from before its world is built, so `/alive` fails.
   - Also (should-fix): a test for the idle timer wheel's skip; the move's timeout delay is cancelled; stale
     "handoff timeout" comments; the throwing-system test waits by condition and resets its flag.
@@ -1000,10 +998,10 @@ and cards, a manual clock), fails before its fix, and passes after it.
     while the previous move still drains) wait the call timeout before the first goodbye, as before; a node whose shard
     fails to start still joins and is restarted by `/alive` rather than refusing to start.
 - [x] Self-review round 10 (every place the runtime calls user code or reads user data; the round-9 changes):
-  - Must-fix: a record whose receiving actor threw while being created or set up (its constructor or a setting) was
-    never answered: the sender resent it while the receiver lived, or (a setting throwing after the record was taken)
+  - Must-fix: a record whose receiving actor threw while being set up (its `Loaded` handler) was never answered: the
+    sender resent it while the receiver lived, or (the handler throwing after the record was taken)
     the receiver kept a copy that never ran while the sender dropped its own. Now refused, so the sender writes it.
-  - Must-fix: a reclaimed copy (a refused or unanswered handoff) whose state initializers threw kept `Unloading` for
+  - Must-fix: a reclaimed copy (a refused or unanswered handoff) whose `Loaded` handler threw kept unloading for
     good; it falls back to its final write either way.
   - Must-fix: a feature's `DrainAsync` that threw (or ran out of budget) skipped the actors' unload; every feature hook
     (drain, stop, member dead, view changed) is guarded (`FeatureFailed`) and the node's own steps run.
@@ -1047,19 +1045,59 @@ and cards, a manual clock), fails before its fix, and passes after it.
     stay separate until a transport benchmark proves one shared loop costs nothing; `ClientConnections` still uses
     the node's internals (a capability of the runtime's own assembly, ADR-048) beyond `INodeContext`; configuration
     keys spelled in the Aspire integration (`DaServer__...`) are not shared constants yet.
-- [ ] ECS rewrite on EasyEcs 4.2 (agreed October 2026): everything is components, no inheritance, no polymorphism.
-  - [x] P0 EasyEcs 4.2.0: ordering by `[UpdateBefore]`/`[UpdateAfter]` along the data flow (no priorities), failed
-    systems reported and enabled again, `Set`/`GetOrAdd` for `Add`, `EntityId` in components and the actor directory.
-  - [ ] P1 the design as an ADR: an actor is an entity whose id is a component; handlers are stateless static
-    functions of message, components and a context value; an answer to an ask is a message (no await in handlers);
-    pending mail is a shard queue, not a component; capabilities are components and systems, not `NodeFeature`
-    subclasses.
-  - [ ] P2 the runtime on it (actor ids as indexed components, the shard mailbox, generated dispatch of static
-    handlers, answers as data; the turn machinery, `Actor` and `Service` base classes deleted).
-  - [ ] P3 persistence and handoff of components only (sessions in a `DynamicBuffer`, a `Created` tag for new
-    actors, change tracking generated for stored components); P4 capabilities as systems; P5 samples, tests and
-    analyzers; P6 records as EasyEcs saves (needs component sets, Nino encoding and stable type ids in EasyEcs);
-    P7 benchmarks against the P0 baseline, the 10k-bot run, reviews.
+- [ ] ECS rewrite (agreed October 2026, ADR-081): everything is components, no inheritance, no polymorphism, no
+  objects with state; only the DI shell (Generic Host, ASP.NET Core, Aspire) stays object-oriented.
+  - [x] P0 EasyEcs (4.2.0, now 4.3.0): ordering by `[UpdateBefore]`/`[UpdateAfter]` along the data flow (no priorities),
+    failed systems reported and enabled again, `Set`/`GetOrAdd` for `Add`, `EntityId` in components.
+  - [x] P1 The design as an ADR (ADR-081): an actor is an entity whose identity is a component (`ActorKey`); handlers
+    are stateless static functions of message, components and a context value; an answer to an ask is a message (no
+    await in handlers); settings are attribute constants, the lifecycle is mail.
+  - [x] P2 The runtime on it: `ActorKey` indexed, the mailbox a `DynamicBuffer<Envelope>` used only while the actor is
+    not live, generated dispatch of static handlers (components passed `ref`/`in`, added with their default), asks
+    answered as `Answered` mail, replies kept as `PendingReply` entities (`ReplyTo`, `ReplyAfter`); the turn machinery,
+    call chains and cycle detection, the long-turn watcher, `ReplyWhen`, the service-call entities, the actor directory
+    and pools, and the `Actor` and `Service` base classes deleted.
+  - [x] P3 Sessions and persistence as data: an actor's known sessions are `KnownSession` child entities (tags `Known`,
+    `Granted`, `Superseded`, indexed by session); `Created`/`Loaded`/`Unloading` mail; the generator declares
+    `ITrackChanges` for `[Persist]` components, `ChangeSystem` tags written actors `Unsaved` and `CheckpointSystem`
+    writes only those.
+  - [ ] P4 The transport and the capabilities as ECS (plan below).
+  - [x] P5 Samples, tests and benchmarks on static handlers; the analyzers updated (async handlers rejected by DAS001,
+    the rules of the removed model gone, DAS022: a component parameter used after a structural change of its entity).
+  - [ ] P6 Records as EasyEcs saves (needs component sets, Nino encoding and stable type ids in EasyEcs).
+  - [ ] P7 BenchmarkDotNet against the P0 baseline (the README's numbers are from before the rewrite), the 10k-bot
+    run and the flash sale, review rounds.
+- P4 plan: the network layer on ECS, under the same rule.
+  - Byte pumps stay plain code, every decision is a system: a pump (`SocketPump<TReceiver>`, `WebSocketPump`) owns a
+    socket and its buffers, splits frames, classifies each with a pure function of the header and the immutable
+    snapshots, and posts it to the world that owns what it is about; it writes the blocks it is handed. The client SDK
+    (netstandard2.1, Unity) keeps its object model but shares the pump, the frame code and the pending-call table.
+  - One loop machinery, two kinds of world: `Loop` = one thread, one bounded `Inbox` (the only cross-thread handoff,
+    one wake per receive buffer) and one EasyEcs world with today's wake, spin and sleep policy (ADR-075). Shard loops
+    own actors; net loops own connections, client sessions, groups and relayed calls; net loop 0 is also the node world
+    (links, listeners, membership, gossip, slots). `NetLoops` defaults to `ProcessorCount / 4` on client-facing nodes
+    (configurable) and 1 elsewhere.
+  - Identity is unmanaged data: endpoint, link and session ids, `ReplyRoute` (where a reply goes) instead of reply sink
+    objects, and call ids that name the loop that made them, so a reply goes to that loop's inbox without a node-wide
+    table. Call ids widen to 64 bits (a new client and link protocol level), so no loop is limited to 65,536 calls in
+    flight.
+  - One writer per producer and destination: a shard writes link-bound frames into its own block per link, flushed
+    once per pass; everything for a client session (pushes, replies, session operations) goes through the session's
+    net loop, which keeps per-producer order.
+  - Pending asks are entities (`PendingAsk` and a slot table per loop), expired by a system; rows in the slot table
+    replace them only if `ActorAskBenchmark` says the entity churn costs.
+  - Links as data in the node world: the resend window keeps the blocks the pump wrote (no second copy), released by
+    acknowledgements; dial, handshake, resume, replay and backlog are tags and systems. Sessions, groups, relays and
+    resumes are entities of net loops; membership, gossip and the maintenance timer become systems of net loop 0.
+  - The ingress hop (client frame -> net loop -> shard) is the main risk: if `ClientRequestBenchmark` regresses, the
+    fallback is taken: the pump reads an immutable grants and rate snapshot the session's loop publishes and posts
+    requests straight to the shard, and only replies hop.
+  - Mail of a moved actor is re-routed in order, as today.
+  - Order of steps, tests green and BenchmarkDotNet A/B after each: `Loop` and `Inbox`; `ReplyRoute` for reply sinks;
+    call ids that name their owner with asks as shard data; the mailbox on frame references in a store; pumps;
+    per-shard outboxes and link ports; net loop 0 (membership, maintenance); links as entities; client sessions in net
+    loops; the beat (ADR-070) in net loops; optionally bots as entities. New benchmarks: `ActorAskBenchmark`,
+    `ClientRequestBenchmark`, `FanOutBenchmark`, `MailboxBenchmark`, `InboxBenchmark`, `LinkStreamBenchmark`.
 - [x] Self-review rounds 12-15 (the distributed runtime and the rules, tests and docs, each round two reviewers):
   - Must-fix: a state that changed back after a lost write answer was never written again (a write in doubt is now
     written whatever its hash, and a claim clears the stored hash); a link whose handshake closed before its connect
@@ -1070,7 +1108,7 @@ and cards, a manual clock), fails before its fix, and passes after it.
     unreadable closes and resumes are refused, not thrown out of the mailbox; allocation tests check pool growth;
     `ShardDispatch.Sessions.cs`.
   - Kept: a close or resume reaching a key moved within the move window loads its actor from the store when its
-    previous owner held nothing (it forgets nothing, and stays loaded like any actor: until it idles out when `UnloadAfterIdle` is set); a close that bounces between
+    previous owner held nothing (it forgets nothing, and stays loaded like any actor: until it idles out when `UnloadAfterIdleSeconds` is set); a close that bounces between
     two nodes with lasting different views reaches `MaxHops` and is dropped, so that actor keeps the closed session
     until its client-facing node leaves; the link test cannot force the early-close window every run.
 - Review criterion from round 7 on (agreed): a finding is must-fix when a single fault (one view change, one link
@@ -1082,12 +1120,12 @@ and cards, a manual clock), fails before its fix, and passes after it.
 ## Generator / analyzer (`src/DaServer.Generator`)
 - [x] Messages instead of contracts (ADR-035): typed `Ask` overloads per request, one dispatcher per `[Handle]`
       method, client message registration, message ids
-- [x] Hosting: actor/service factories with their handlers, client handler classes, EasyEcs system registration
+- [x] Hosting: actor and service types with their generated dispatchers, client handler classes, EasyEcs system registration
 - [x] A node's `Program.cs` is five lines: `AddDaServer`, `MapDaServer` (ADR-021)
 - [x] Incremental rules: syntax predicates, equatable models, tracking names, cache test (ADR-016)
-- [x] `DaServerAnalyzer`: the DAS rules (handlers, messages, wire types, id collisions, constructors, message flow
-      (ADR-038), stateless actors and services (ADR-044), address kinds (ADR-047), shared logic (ADR-055), ReplyWhen
-      placement (ADR-057))
+- [x] `DaServerAnalyzer`: the DAS rules (handlers, messages, wire types, id collisions, message flow
+      (ADR-038), actors, services and systems without fields (ADR-044), address kinds (ADR-047), shared logic
+      (ADR-055), static non-`async` handlers (ADR-081), a component used after a structural change (DAS022))
 
 ## Hosting / orchestration
 - [x] `DaServer.Hosting`: Generic Host, configuration, OpenTelemetry (OTLP), periodic stats line, graceful shutdown
@@ -1103,8 +1141,8 @@ and cards, a manual clock), fails before its fix, and passes after it.
 ## Release review
 - [x] The release checklist: its current record is in "Open after G" (7c5b50b); R1-R11 and E1-E10 hold, open items
       are the unchecked roadmap entries
-- [x] Naming review (ADR-032, ADR-040): `OnLoad`/`OnUnload`, `Caller`, the directory, one noun per concept;
-      actor state from field initializers, `ActorRef` for systems
+- [x] Naming review (ADR-032, ADR-040): `Loaded`/`Unloading`, `Caller`, one noun per concept; components start
+      as their defaults, `ActorKey` for systems
 - [x] Moving scenario: 10,000 bots in one map (AOI and dead reckoning, ~2.5M positions/s); servers 0–5 KB/s, no GC;
       scale-out: a gateway started mid-run
       receives the new clients (test + process run)
@@ -1113,12 +1151,12 @@ and cards, a manual clock), fails before its fix, and passes after it.
       resynchronizes when it resumes)
 - [x] Auto-reconnect (ADR-036): signed resume tickets, `SessionClosed` after a grace period, `SessionResumed`,
       Aspire-generated signing secret
-- [x] Lifecycle as tags (ADR-037): turn ends posted by `TurnWatcher` (no polling), `Ready`/`Loading`/`UnloadRequested`/
-      `Unloading`/`Removing` with one system each; sample grid as data + systems (`DespawnSystem`, `PlacementSystem`)
+- [x] Lifecycle as tags (ADR-037): `Ready`/`Loading`/`UnloadRequested`/`Leaving`/`Removing` with one system each
+      (no polling); sample grid as data + systems (`DespawnSystem`, `PlacementSystem`)
 - [x] `[Message]` (ADR-038): `[NinoType, Message]` is a message, plain `[NinoType]` is data; `[FromClient]`/
       `[ToClient]` checked at build time (DAS006)
 - [x] EasyEcs from NuGet, used as its docs teach (ADR-039): cadence as system groups (`ShardRebalance`,
-      `ShardIdleScan`), `UpdateInterval` in samples, `ActorRef` as the only identity, timer queue removed
+      `ShardIdleScan`), `UpdateInterval` in samples, `ActorKey` as the only identity, timer queue removed
 
 ## Quality
 - [x] Unit tests (queue, pool, frames, pending table, membership, placement)

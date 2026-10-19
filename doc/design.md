@@ -2,8 +2,9 @@
 
 DaServer is a .NET 11 framework for building **clusters**: game servers (many client-facing nodes, many map/logic nodes) and
 other low-latency, high-concurrency backends (matchmaking, chat, trading, IoT fan-in). Developers write messages
-(`[NinoType, Message]` structs), actors and services with `[Handle]` methods, and ECS systems. Source generators write the
-rest: dispatchers, typed `Ask` overloads and registration (EasyEcs generates the systems' query jobs).
+(`[NinoType, Message]` structs), actors and services as static classes of `[Handle]` methods over components, and ECS
+systems. Source generators write the rest: dispatchers, typed `Ask` overloads and registration (EasyEcs generates the
+systems' query jobs).
 
 Priorities, in order:
 
@@ -20,9 +21,9 @@ Acceptance criteria and metrics are in [requirements.md](requirements.md); the r
 |---|---|---|
 | **Node** | One process: a random `NodeId`, a cluster endpoint, optionally a client endpoint (it accepts clients). It hosts every actor, service and system compiled into its project; there are no roles. | IO threads plus the shards it owns. |
 | **Shard** | A single-threaded executor: one thread, a lock-free dispatch queue and an EasyEcs `World` holding everything else ([§9](#9-ecs-in-daserver)). A node runs N shards (default: one per core). | One dedicated thread. Every handler and system of the shard runs on it, so user code needs no locks. |
-| **Actor** | Keyed and stateful (player, map instance, room, guild): one loaded actor per id in the cluster, loaded on demand, turn-based. The loaded actor is an entity; its state is components (`Actor<TId, TState>`). | Its shard's thread. |
-| **Service** | Stateless (login, matchmaking, chat routing). One instance per shard; calls are load-balanced (local node first) and may overlap. | The shard thread that received the call. |
-| **Message** | A `[NinoType, Message]` struct; `[FromClient]`/`[ToClient]` say whether clients send it or receive it. A request (`IRequest<TReply>`) is answered; anything else is one-way. Routed by its type to the handler: the sender never names the receiver's type. | Delivered to the handler's mailbox (actors) or shard (services). |
+| **Actor** | Keyed and stateful (player, map instance, room, guild): one loaded actor per id in the cluster, loaded on demand, one message at a time, each handler to completion. The loaded actor is an entity with an `ActorKey`; its state is components; its behaviour is the static `[Handle]` methods of its `[Actor<TId>]` class (ADR-081). | Its shard's thread. |
+| **Service** | Stateless (login, matchmaking, chat routing): a `[Service]` static class with no entity; its state, if any, is singletons of each shard's world. Calls are load-balanced (local node first). | The shard thread that received the call. |
+| **Message** | A `[NinoType, Message]` struct; `[FromClient]`/`[ToClient]` say whether clients send it or receive it. A request (`IRequest<TReply>`) is answered; anything else is one-way. Routed by its type to the handler: the sender never names the receiver's type. | Run on the actor's entity (waiting in its mailbox while it cannot take mail) or on a shard (services). |
 | **Push** | A message to one client session or a `ClientGroup`; clients handle it with `[Handle]` methods. | Fire-and-forget. |
 | **System** | EasyEcs `EcsSystem` with `[ForEach]` methods: one per-tick responsibility over every matching entity of a shard. | The shard thread, at the tick rate. |
 
@@ -37,13 +38,16 @@ Everything a developer declares is one of these (ADR-035). The message type alon
 | `[Message, ToClient]` | servers push it to sessions and groups; only clients handle it |
 | `[NinoType]` alone | data inside messages; an unmanaged struct (an id) crosses as its memory without `[NinoType]`; anything else crossing the wire is a build error (DAS003) |
 | `M : IRequest<TReply>` | a request, answered with one `TReply` |
-| `[Handle]` method of an `Actor`/`Service` | handles one message type; returns `void`/`Reply`, or a request's reply/`Reply<TReply>` (`Ask` returns `Reply<TReply>` too) |
+| `[Actor<TId>]` / `[Service]` static class | an actor type addressed by `TId` / a service; settings are attribute constants (`UnloadAfterIdleSeconds`, `SaveEverySeconds`, `MailboxCapacity`, `OnError`) |
+| static `[Handle]` method of an actor or service | handles one message type: the message (`in`) first, then the actor's components (`ref`/`in`, added with their default when absent), singletons, `Entity`, `World`, `in Context`; returns `void`, a request's reply `T`, or `Answer<T>` (`Answer<T>.Later`: replied later through a `ReplyTo`); never `async` (DAS001) |
+| `Answered<TRequest, TReply>` handler | the answer to the actor's or service's own `ctx.Ask`, delivered as mail |
+| `Created` / `Loaded` / `Unloading` handler | lifecycle as mail: a new actor, a restored or moved one, one about to leave |
 | `[Handle]` method of any other class | client-side handler of pushes (`client.Register(obj)`) |
 | `class S : EcsSystem` with `[ForEach]` | per-tick logic over every matching entity of the shard |
 
-| Call (`ICluster`, `ClusterClient`) | Target |
+| Call (`Context` in handlers, `ICluster` elsewhere, `ClusterClient`) | Target |
 |---|---|
-| `Ask(id, m)` / `Send(id, m)` | the actor `id` (`MapId`, `PlayerId`, ...: the id type names the actor type; rendezvous placement) |
+| `Ask(id, m)` / `Send(id, m)` | the actor `id` (`MapId`, `PlayerId`, ...: the id type names the actor type; rendezvous placement); a handler's `ctx.Ask` returns a call number and the answer comes back as `Answered` mail, code outside worlds awaits `cluster.Ask` |
 | `Ask(m)` / `Send(m)` | the one service handling `M` (local first, else the less loaded of two hosting nodes); from a client: also the actor bound to the session |
 | `Publish(e)` | every service type handling `E`, once each |
 | `Send(session, m)` / `Send(group, m)` | one client session / a client group (`[ToClient]` messages; servers only) |
@@ -57,9 +61,10 @@ Client-facing nodes and other nodes talk through framework frames (relayed clien
 grants, group membership, resumed sessions), never through business messages, so there is no fourth flow: a service
 hosted on a client-facing node exchanges ordinary `[Message]`s with the rest of the cluster.
 
-Business code reaches the cluster only through `ICluster` (`Cluster` in actors and services, `world.Cluster` in
-systems): messages to actors, services, sessions and client groups. Binding and granting sessions are an actor's own
-(`BindSession`, `GrantSession`). `Node` (lifecycle, membership, links) is not visible to it.
+Business code reaches the cluster only through its `Context` in handlers (`ctx.Send`, `ctx.Ask`, `ctx.Publish`,
+`ctx.Cluster`) and `ICluster` elsewhere (`world.Cluster` in systems, injected in HTTP code): messages to actors,
+services, sessions and client groups. Binding and granting sessions are an actor's own (`ctx.BindSession`,
+`ctx.GrantSession`). `Node` (lifecycle, membership, links) is not visible to it.
 
 ### Data flow of a call
 
@@ -75,29 +80,30 @@ sequenceDiagram
         C->>L: frame copied into the link's batch buffer
         L->>T: peer IO thread posts it to the target shard's dispatch queue
     end
-    T->>T: DispatchSystem routes it to the actor's mailbox (or a service)
-    T->>T: MailboxSystem runs the generated dispatcher, then the handler
-    T-->>C: reply on the same path; the caller resumes on its own shard
+    T->>T: DispatchSystem routes it: a live actor without waiting mail (or a service) runs it now, else its mailbox
+    T->>T: the generated dispatcher reads the message and the components, then calls the handler
+    T-->>C: reply on the same path: Answered mail to an asking handler, a completed await outside worlds
 ```
 
 Every message takes this path. The route comes from the handlers every node gossips: `(message id, handler type id,
 actor)`. To an actor, the id type names the handler type; without an id, exactly one service type may handle the
 message; `Publish` serializes once and sends one `Message` frame per service type handling it. A message to an actor
-is routed to the owner of its id and enters the actor's mailbox, so it is turn-based: an actor awaiting inside a
-handler takes no other message until it returns, while its shard runs other actors. A handler that only waits for an
-acknowledgement before replying (a binding, a call, a save) returns `ReplyWhen(task, reply)` instead (ADR-057): the
-turn ends at once and the reply follows the task, so a hot actor serves callers at CPU speed rather than one per round
-trip. A delay is a message sent later, not an await: `Cluster.SendAfter(delay, address, message)` serializes it now
-and the shard's timer wheel (a singleton) sends it when due, as ordinary mail (ADR-058). A turn waiting for a request
-that comes back to its own actor (A asks B, B asks A) would wait until the timeout: every request carries the call chain
-of the turn that made it, kept through the actors and services it passes, and one that reaches an actor whose running
-turn has that chain fails at once with `CallCycle` (ADR-059). A service handler runs on the local node when it hosts one.
+is routed to the owner of its id and runs on the actor's entity, one message at a time; a handler runs to completion
+and never waits (ADR-081). A request whose reply depends on another call asks it and either returns
+`Answer<T>.Later` with its reply token passed along (`ctx.Ask(target, request, ctx.ReplyLater())`, replied from the
+`Answered` handler) or replies when the call completes (`return ctx.ReplyAfter(call, value)`). The answer is mail to
+the asker's address: it follows an actor that moved and queues behind its other mail. Meanwhile the actor takes its
+next message, so a hot actor serves callers at CPU speed, and actors asking each other in a cycle (A asks B, B asks A)
+simply complete. What a later step must remember, or a request that must not overlap with one in flight, is a
+component (the sample's `Entering`). A delay is a message sent later: `ctx.SendAfter(delay, address, message)`
+serializes it now and the shard's timer wheel (a singleton) sends it when due, as ordinary mail (ADR-058). A service
+handler runs on the local node when it hosts one.
 
 ## 2. Wire protocol
 
 - Frames carry a fixed 24-byte header: `length`, `kind`, `status`, `hops`, `flags`, `target`, `messageId`, `key`,
   then the Nino-serialized message, then the trailers its flags name (ADR-005): the extension block (optional
-  metadata readers skip, such as the trace context; ADR-080), the call chain, the origin, the call id.
+  metadata readers skip, such as the trace context; ADR-080), the origin, the call id.
 - `messageId` is FNV-1a of the message type's full name (or its `[NinoFormerName]`: Nino's `NinoTypeId`), computed once per type at run time (the analyzer computes the same value at build time). Collisions are
   build errors (DAS004) and registration errors at runtime. Handler type ids are FNV-1a of the actor's id type or of the
   service type's full name (ADR-043).
@@ -130,11 +136,11 @@ turn has that chain fails at once with `CallCycle` (ADR-059). A service handler 
 | Message objects | None. Messages are structs serialized in place into pooled `FrameWriter`s (over Nino's `NinoArrayBufferWriter`, ADR-078); dispatchers deserialize straight from the received bytes, every read checked against them. A collection in a message lives in a `[NinoPooled]` class its handler returns. |
 | Buffers | `BufferPool`: power-of-two buckets on the **Pinned Object Heap**, each bucket bounded by a byte budget (64 MB). Sockets use the buffers without pinning, and they never fragment gen0/1/2. |
 | Queues | Bounded Vyukov MPMC rings with struct slots. Producer and consumer cursors are padded onto separate 64-byte cache lines. |
-| Awaiting | `PendingCall<T>` is a pooled `IValueTaskSource<T>`. An `async Reply<T>` handler keeps its suspended state in a box pooled per thread and state machine (`ReplyMethodBuilder`, ADR-062); its reply is awaited by a pooled `ReplyWatcher<T>`; a synchronously completed handler replies without any state machine. |
+| Asks and replies | Handlers never await, so nothing is suspended: a handler's ask is a pooled per-shard call whose answer is written as an `Answered` frame and delivered as mail; a reply given later is a `PendingReply` entity named by the `ReplyTo` token. Code outside worlds (HTTP, tests, clients) awaits `Reply<T>` over a pooled `IValueTaskSource<T>` (`PendingCall<T>`). |
 | Sending | Each connection copies frames into one batch buffer under a short lock. One send loop swaps and writes whole batches, so N frames cost one syscall. A broadcast serializes once and fans out by `memcpy`. |
 | Receiving | Frames are parsed in place. Zero-byte reads mean an idle client connection holds no receive buffer, which matters with tens of thousands of sockets. |
-| Sending API | Messages are `in` struct parameters of generic methods (`Ask<TRequest, TReply>`, generated typed overloads), so `Cluster.Ask(playerId, new AddGold(10))` allocates nothing and boxes nothing. |
-| ECS | EasyEcs v4: struct components, `[ForEach]` struct jobs, singleton parameters resolved once per pass, zero allocations per tick. The runtime keeps per-actor state in components and visits only ready or busy actors. |
+| Sending API | Messages are `in` struct parameters of generic methods (`Ask<TRequest, TReply>`, generated typed overloads), so `ctx.Ask(playerId, new AddGold(10))` allocates nothing and boxes nothing. |
+| ECS | EasyEcs 4.3: struct components, `[ForEach]` struct jobs, singleton parameters resolved once per pass, zero allocations per tick. Handlers receive components as `ref`/`in` parameters through generated dispatchers (no reflection, no virtual call). The runtime keeps per-actor state in components and tags and visits only actors in the state a system handles; stored components are change-tracked, so a checkpoint visits only written actors. |
 | GC mode | Server GC, concurrent. Allocation tests hold the budget in steady state: < 8 B per call or message across shards and through a client-facing node (any per-message object would be >= 24 B), < 1 B per delivery of a client fan-out. |
 
 ## 4. Latency
@@ -144,25 +150,26 @@ What a request costs, and what keeps it low:
 | Technique | Effect |
 |---|---|
 | Wake on message | A shard waits on its dispatch queue signal with a timeout set to the next tick, so message latency does not depend on the tick rate. Runtime systems run on every wake (`ShardMessages` group); simulation systems at the tick rate. |
-| At most two thread hops | Remote call: peer IO thread, then the target shard. Same-node calls skip the socket entirely; same-shard callers resume inline. |
+| At most two thread hops | Remote call: peer IO thread, then the target shard. Same-node calls skip the socket entirely. A live actor without waiting mail runs a message as it is routed, without touching its mailbox. |
 | No placement lookup | Rendezvous hashing over the gossiped view: every node computes the owner of a key locally. There is no directory service on the call path. |
 | Local first | Service handlers run on the calling node when it hosts them. |
 | Batching without delay | `TCP_NODELAY`. The send loop drains everything queued while the previous write was in flight, so batching costs no timer. |
 | Client pass-through | Client-facing nodes patch headers; they never deserialize payloads. One broadcast frame per client-facing node, `memcpy` per session. |
-| Input as data | High-rate client input (movement) is written into components by the actor and integrated by `[ForEach]` systems on the next tick: one cache-friendly pass instead of a turn per message. |
+| Input as data | High-rate client input (movement) is written into components by the actor and integrated by `[ForEach]` systems on the next tick: one cache-friendly pass instead of logic per message. |
 
-Planned (roadmap): a client-connection shard that keeps session state as ECS components.
+Planned (roadmap, ECS rewrite P4): the transport as worlds too, with client sessions, links and membership as
+entities in net loops.
 
 ## 5. Reliability
 
 | Layer | Guarantee |
 |---|---|
 | Ordering | FIFO per (sender → target actor): one link per node pair, one dispatch queue per shard, one mailbox per actor. Messages of one sender keep their order (tests rely on it). |
-| Calls | At most once, with timeouts (`RpcStatus.Timeout`, `Disconnected`, `NotHosted`); a call cycle fails at once (`CallCycle`, ADR-059). Retrying is the caller's choice, and only for idempotent operations. |
+| Calls | At most once, with timeouts (`RpcStatus.Timeout`, `Disconnected`, `NotHosted`); a handler's ask that fails or times out is answered with that status as `Answered` mail, never lost silently. Retrying is the caller's choice, and only for idempotent operations. |
 | Deadlines | A request carries its caller's remaining time; each hop turns it into a local deadline and a shard drops a request that expired before it ran (ADR-028). Work nobody waits for is not done. |
 | Messages | At most once. Events that must not be lost are written to storage by the publisher first (outbox) and re-published on recovery; DaServer does not hide a broker inside the call path. |
-| Single loaded actor | Keys hash into 4,096 slots, each owned by rendezvous hashing over the `Up` and `Suspect` nodes hosting the handler type (ADR-023, ADR-074; by the id's `Placement` for `IPlaced` id types, ADR-073), unless the coordinator's slot table says otherwise (ADR-079: the oldest Up member pins the loaded slots of `[Sticky]` types where they are and moves slots of other types from the most to the least loaded node, a few per round): every node computes the same owner from the same view and table. A node loads an actor only if it is the owner in its own view; otherwise it forwards (hop limit 3) or answers `NotHosted`. When ownership changes, the old owner unloads (`OnUnload`), hands its record to the new owner (ADR-072; the store when that fails) and forwards its remaining mail behind it. |
-| Actor state | `[Persist]` components form one record per actor in the actor store (ADR-068): restored before `OnLoad`, written on unload, every `SaveEvery` while changed and at once with `SaveNow`; versioned, so a stale owner's write is refused and its copy dropped. A graceful stop loses nothing; a crash loses at most `SaveEvery` of changes. |
+| Single loaded actor | Keys hash into 4,096 slots, each owned by rendezvous hashing over the `Up` and `Suspect` nodes hosting the handler type (ADR-023, ADR-074; by the id's `Placement` for `IPlaced` id types, ADR-073), unless the coordinator's slot table says otherwise (ADR-079: the oldest Up member pins the loaded slots of `[Sticky]` types where they are and moves slots of other types from the most to the least loaded node, a few per round): every node computes the same owner from the same view and table. A node loads an actor only if it is the owner in its own view; otherwise it forwards (hop limit 3) or answers `NotHosted`. When ownership changes, the old owner unloads (its `Unloading` mail), hands its record to the new owner (ADR-072; the store when that fails) and forwards its remaining mail behind it. |
+| Actor state | `[Persist]` components form one record per actor in the actor store (ADR-068): restored before the actor's `Loaded` mail, written after its `Unloading` mail, every `SaveEverySeconds` when changed (change-tracked: only written actors are visited) and at once with `SaveNow`; versioned, so a stale owner's write is refused and its copy dropped. A graceful stop loses nothing; a crash loses at most `SaveEverySeconds` of changes. |
 | Sessions | A client-facing node owns its sockets. Grants, bindings and groups live there; when a session closes, every actor it was bound or granted to forgets it, and one that handles `SessionClosed` receives it, so no actor keeps a dead session. |
 | Graceful shutdown | `SIGTERM` → readiness off (`/health` fails) → `Leaving` (pushed to every member; callers reroute) → drain features (client connections move their clients) → unload every actor (handing records over, or saving them) → close links → exit, within one stop budget (D1-D2). |
 | Backpressure | Shard dispatch queues and actor mailboxes are bounded and refuse with `Overloaded` (ADR-027). Links are not paused (their replies would stall too, ADR-027). A slow client hits the per-connection send backlog bound (256 KB) and is disconnected; it reconnects and resynchronizes (ADR-035). |
@@ -247,7 +254,7 @@ sequenceDiagram
 - **Player and map.** The player actor (keyed by player id) holds persistent state. The map (keyed by map instance id) owns
   the avatars as entities of its shard; `[ForEach]` systems do movement, AOI, combat and sync. Switching maps is
   `Leave` on map A and `Enter` on map B; the player actor stays where it is.
-- **Messages to clients.** `Cluster.Send(session, m)` reaches one session. `Cluster.Send(Group, m)` (every actor has
+- **Messages to clients.** `ctx.Send(session, m)` reaches one session. `ctx.Send(ctx.Group, m)` (every actor has
   its own group) serializes once and sends one frame per client-facing node, which fans out locally (ADR-025, ADR-029).
   `ClientGroup.All` reaches every session of the cluster (the sample's realm status every 5 ticks).
 - **Batch per tick.** Systems collect changes into the map's grid and one system sends them as one message per
@@ -333,7 +340,8 @@ O(1) schedule, cancel and fire, allocation-free) is advanced by its owner's loop
 
 On the shard, generated dispatchers run the dispatch-stage filters after deserializing and before the handler
 (process-wide, the application's policy on every node of the process). Users declare them: `[Filter]` on a static
-`RpcStatus M(object target, in TMessage message, in CallContext context)` filters that message type, on an
+`RpcStatus M(in Context context, in TMessage message)` filters that message type (the context says who handles it and
+who sent it), on an
 `IMessageFilter` class every message; the assembly's generated registration registers them, so there is no startup
 code (DAS021 reports a wrong shape). Features and tests register at run time (`MessageFilters.Register<T>(filter)`,
 `MessageFilters.Register(IMessageFilter)`; disposing the registration removes it): a status other than `Ok` refuses the message (a request gets it as its reply). Without
@@ -362,58 +370,61 @@ inside a world.
 
 | Element | Responsibility | Never |
 |---|---|---|
-| Actor | Network boundary of one keyed entity: validate a message, write input as components; lifecycle and persistence hooks. | Per-tick logic. |
-| Service | Stateless message handling. | State between messages. |
-| Component | Data of one entity (actor state via `Actor<TId, TState>`, avatars, buffs). | Logic. |
-| Singleton | Data of one shard world (statistics, configuration). | Per-entity data. |
-| System | One per-tick responsibility; stateless; reads and writes components and singletons. | References to other systems, IO. |
+| Actor | Network boundary of one keyed entity: validate a message, write input as components; lifecycle as mail (`Created`, `Loaded`, `Unloading`). Static handlers over its components. | Per-tick logic; fields (DAS007). |
+| Service | Stateless message handling; state, if any, in singletons. | Fields; components or `Entity` parameters (it has no entity). |
+| Component | Data of one entity (an actor's state, avatars, buffs, a request in progress). | Logic. |
+| Singleton | Data of one shard world (statistics, configuration, a service's state). | Per-entity data. |
+| System | One per-tick responsibility; stateless; reads and writes components and singletons. | References to other systems, IO, asks (DAS012). |
 
-The shard runtime itself is ECS. `Shard` owns only the thread, the dispatch queue and the wake/tick loop.
+The shard runtime itself is ECS (ADR-013, ADR-081). `Shard` owns only the thread, the dispatch queue and the wake/tick
+loop; everything else is entities, components, singletons and systems of the shard's world.
 
 Messages pass two queues, as in Akka and Orleans (dispatcher, then mailbox). The **dispatch queue** is per shard and
-the only cross-thread handoff: IO threads, other shards and completed awaits post to it, because only the shard
-thread may touch ECS data. It is two bounded rings: new calls and messages (refused when full, ADR-027), and
-completions, continuations and turn ends (16k slots, never refused, drained first; a burst beyond spills into an
-overflow queue). `DispatchSystem` drains it and sorts each frame into its actor's **mailbox** (a component).
-`MailboxSystem` runs mailboxes one turn at a time: while an actor awaits inside a handler, its own mail waits and the
-other actors of the shard keep running, so one queue could not serve both purposes.
+the only cross-thread handoff: IO threads and other shards post to it, because only the shard thread may touch ECS
+data. It is two bounded rings: new calls and messages (refused when full, ADR-027), and completions of the shard's own
+asks and runtime callbacks (16k slots, never refused, drained first; a burst beyond spills into an overflow queue).
+`DispatchSystem` drains it and routes each frame: a service, or a live actor with no mail waiting, runs it at once;
+otherwise it waits in the actor's **mailbox**, a `DynamicBuffer<Envelope>` on the actor's entity (bounded by
+`MailboxCapacity`), until the actor is live (loaded, not leaving) and `MailSystem` runs it in order. So the mailbox is
+used only while the actor cannot take mail, and it is the actor's data: it leaves with the actor, re-routed in order.
 
 | Data | Kind | Meaning |
 |---|---|---|
-| `ActorRef` | component | the loaded actor object (its id and client group for systems) |
-| `Mailbox` | component | messages waiting for the actor (a turn at a time) and when it last took mail |
-| `Ready` | tag | the mailbox has mail |
-| `Turn` | component | the asynchronous message, load or unload in progress (present = busy) |
-| `TurnEnded` | tag | the turn's task completed (posted by its `TurnWatcher`, or set at once when it completed synchronously; never polled) |
-| `Loading`, `UnloadRequested`, `Unloading` | tags | `OnLoad` running; asked to leave; `OnUnload` running |
-| `Fenced` | tag | the node was declared dead: removed without `OnUnload` (ADR-042) |
-| `Removing` | component | the loaded actor ends: mail is routed again (or failed with its status) |
-| `UnloadWhenIdle` | component | the actor unloads after this long without mail (`UnloadAfterIdle`) |
-| `ClientSessions` | component | client sessions the actor knows (closed for it when their node dies) |
-| `ServiceCall` | tag | an entity per running asynchronous service call (ended like a turn) |
-| `ActorDirectory`, `ServiceDirectory` | singletons | loaded actors by id, service instances by handler type |
-| `TurnWatchers`, `ActorPools`, `ShardActivity` | singletons | pooled watchers; actor objects, mailboxes and session sets of removed actors (ADR-044); per-wake bookkeeping |
+| `ActorKey` | component, indexed | the actor's identity (handler type id, key): one index lookup routes a message; systems read `Id<TId>()` and `Group` from it |
+| `DynamicBuffer<Envelope>`, `Ready` | buffer, tag | mail waiting (the frame and where its reply goes); `Ready` while it holds any |
+| `LastMail`, `UnloadWhenIdle` | components | when the actor last took mail; unload after this long without (`UnloadAfterIdleSeconds`) |
+| `Loading`, `AwaitingRecord` | tag, component | the actor's record is being restored (from the store or its previous owner); its mail waits |
+| `UnloadRequested`, `Leaving` | tags | asked to leave (rebalancing, idle, stopping); its `Unloading` mail ran and its record is written or handed on |
+| `Fenced` | tag | removed without `Unloading` and without a save: the node was declared dead (ADR-042), or a handler failed with `OnError = Reload` (ADR-066) |
+| `Removing` | component | the entity ends: its mail is routed again, or failed with the status |
+| `Stored`, `Unsaved`, `Saving`, `FinalSave` | component, tags | persistence (ADR-068): the record's version and due time; stored components written since the last checkpoint; a write in flight; removed once written |
+| `KnownSession` + `ChildOf`, `Known`, `Granted`, `Superseded` | child entities, tags | the client sessions an actor knows, indexed by session: callers and bound or granted sessions (closed for it when their node dies), the ones a client may resume from, and resumed ones whose late close is ignored |
+| `PendingReply` | entity | a request whose reply is given later; `ReplyTo` is its entity id and call id, so a stale token replies to nobody |
+| `ShardActivity`, `ShardTimers`, `AnswerCalls`, `ShardStore`, `ShardContext` | singletons | per-wake bookkeeping; delayed sends; the shard's asks in flight; persistence batches; the owning shard (`world.Cluster`) |
 
 ```mermaid
 flowchart LR
-    IN[dispatch queue<br/>other threads post] --> I[DispatchSystem<br/>route, complete requests,<br/>run continuations]
-    I -->|Ready| M[MailboxSystem<br/>Ready, no Turn]
-    I --> S[services]
-    M -->|handler awaits: Turn| W((TurnWatcher))
-    W -->|posts| I
-    I -->|TurnEnded| T[TurnSystem<br/>end calls, loads, unloads]
-    T -->|Removing| RT[RemovalSystem<br/>destroy, route mail again]
-    R[RebalanceSystem / IdleSystem] -->|UnloadRequested| U[UnloadSystem<br/>OnUnload when idle]
-    U -->|Unloading + Turn| W
+    IN[dispatch queue<br/>other threads post] --> D[DispatchSystem<br/>route, complete asks,<br/>run callbacks]
+    D -->|service, or live actor<br/>without waiting mail| H[handler]
+    D -->|else: mailbox + Ready| M[MailSystem<br/>runs live Ready actors]
+    D -->|new actor: Loading| L[LoadSystem<br/>record restored:<br/>Loaded or Created mail]
+    L --> M
+    R[RebalanceSystem / IdleSystem] -->|UnloadRequested| U[UnloadSystem<br/>Unloading mail, then<br/>hand off or FinalSave]
+    U -->|Removing| RT[RemovalSystem<br/>destroy, route mail again]
+    C[ChangeSystem<br/>written stored components] -->|Unsaved| CP[CheckpointSystem<br/>due: write the record]
 ```
 
-Cadence belongs to the shard loop, behavior to systems (EasyEcs system groups): `ShardMessages` runs on every wake,
-`ShardRebalance` only after ownership may have changed, `ShardIdleScan` a few times a second, the default group at
-the tick rate. So every runtime system is a plain `[ForEach]` over the entities in one state, with no gating flags or
-manual queries.
+Cadence belongs to the shard loop, behavior to systems (EasyEcs system groups): `ShardMessages` runs on every wake
+(`TimerSystem`, `DispatchSystem`, `LoadSystem`, `RemovalSystem`, `UnloadSystem`, `MailSystem`, then persistence and
+handoff, ordered with `[UpdateAfter]` along the data flow), `ShardRebalance` only after ownership may have changed,
+`ShardIdleScan` a few times a second (`IdleSystem`, `ReplySlotSystem`, `ChangeSystem`, `CheckpointSystem`), the default
+group at the tick rate. So every runtime system is a plain `[ForEach]` over the entities in one state, with no gating
+flags or manual queries. A system that throws is disabled for the pass and enabled again (EasyEcs's
+`SystemErrorPolicy`), counted in `daserver.handler.failed`.
 
-The only per-message work is a dictionary lookup, a queue push and the handler. Every system visits only the
-entities in the state it handles (a filter on tags), so nothing scans all actors and nothing polls running turns.
+The only per-message work is an index lookup and the handler; mail is written only while an actor cannot take it.
+Every system visits only the entities in the state it handles (a filter on tags, or EasyEcs's change ticks), so
+nothing scans all actors.
 
 ## 10. Developer experience (generated code)
 
@@ -421,13 +432,14 @@ entities in the state it handles (a filter on tags), so nothing scans all actors
 [NinoType, Message, FromClient] public partial record struct AddGold(int Amount) : IRequest<int>;
 [NinoType, Message] public partial record struct LoggedIn(ClientSession Session);
 
-public record struct Wallet(int Gold, int Logins) : IComponent;
+public record struct Wallet(int Gold, int Logins) : IComponent;     // in a components project (DAS013)
 
-public sealed class Player : Actor<PlayerId, Wallet>
+[Actor<PlayerId>]
+public static class Player
 {
-    [Handle] public int On(AddGold m) => State.Gold += m.Amount;
+    [Handle] internal static int On(in AddGold m, ref Wallet w) => w.Gold += m.Amount;
 
-    [Handle] public void On(LoggedIn e) => State.Logins++;
+    [Handle] internal static void On(in LoggedIn _, ref Wallet w) => w.Logins++;
 }
 
 public sealed partial class RegenSystem : EcsSystem
@@ -441,11 +453,11 @@ What the generators write:
 
 | Generator | Output |
 |---|---|
-| `AskGenerator` | a `{Request}Ask` class of typed `Ask` overloads per request (`Cluster.Ask(playerId, new AddGold(1))` infers the reply type) |
-| `RegistrationGenerator` | `Registration_{Assembly}`: registrations of referenced assemblies first, then `[FromClient]` messages, client handler classes, actors and services (one dispatcher per `[Handle]` method), every `EcsSystem`; run once by its static constructor (ADR-012) |
+| `AskGenerator` | a `{Request}Ask` class of typed `Ask` overloads per request (`ctx.Ask(playerId, new AddGold(1))` and `cluster.Ask(..)` infer the reply type) |
+| `RegistrationGenerator` | `Registration_{Assembly}`: registrations of referenced assemblies first, then `[FromClient]` messages, client handler classes, actors and services (one dispatcher per `[Handle]` method: it reads the message from the frame, fetches the components and singletons the handler takes, adding missing components with their default, and calls the static method), every `EcsSystem`; run once by its static constructor (ADR-012). It also declares `ITrackChanges` for `[Persist]` components, so checkpoints visit only written actors |
 | `PolyfillGenerator` | `IsExternalInit` for contract assemblies built for netstandard2.1 |
 | EasyEcs `SystemGenerator` | `[ForEach]` struct jobs (components, singletons, entity, world parameters) and `GeneratedUpdate` |
-| Analyzers | DAS001–DAS021 (handlers, messages, wire types, id collisions, constructors, message flow, stateless actors, services and systems, address kinds, synchronous waits on shard threads, shared logic, ReplyWhen placement, systems that ask, components apart from logic, persisted and handed-off components, work started off the shard thread, placement on non-id types, wire layouts against the committed manifest, collections held directly by client messages, a session disconnected by an actor without `DisconnectSession`, misshapen filters), EECS001–EECS008 (ECS rules) |
+| Analyzers | DAS001–DAS022 (handler shapes: static, never `async`, parameters and return against the request; messages, wire types, id collisions, message flow, actors, services and systems without fields, address kinds, synchronous waits on shard threads, shared logic, systems that ask, components apart from logic, persisted and handed-off components, work started off the shard thread, placement on non-id types, wire layouts against the committed manifest, collections held directly by client messages, a session disconnected by an actor without `DisconnectSession`, misshapen filters, a component parameter used after a structural change of its entity); EasyEcs's EECS rules (ECS) |
 
 The generators follow the incremental-generator rules: syntax-only predicates, equatable models, tracking names, and
 no diagnostics. There is no reflection scanning, no configuration string and no hand-written registration list. A
@@ -479,7 +491,7 @@ node project is its business classes only.
 |---|---|---|
 | Unit | Queues, buffer pool, frame parsing, pending-call table, membership merge, rendezvous placement | `tests/DaServer.Tests` |
 | Generator | Valid input compiles, every DAS rule fires from the analyzer, unrelated edits hit the incremental cache | `tests/DaServer.Tests` |
-| Integration | In-process clusters on loopback (`ClusterTest` on `DaServer.Testing`'s node options; `TestCluster` with a manual clock for exact tick counts, delayed sends and idle unloads; `RouteCheck`: every message of a set of node projects has its handler): request semantics and ordering, turn-based actors, ECS systems over actor state, single loaded actor, idle unloading, failover, fencing, one-way and published messages (to actors on any node, once per service type, ordering, routing), resumable links, deadlines, client access by `[FromClient]`, binding isolation, broadcast (exact under churn), connections moving after a scale-out, `SessionClosed` (close and client-facing node crash), session resumption, backpressure, placement under suspicion | `tests/DaServer.Tests` |
-| Allocation | Steady-state cross-shard calls, replies of suspended handlers, bursts of concurrent calls, one-way messages, client fan-out, client messages through a client-facing node and gossip rounds allocate nothing per operation | `tests/DaServer.Tests` |
+| Integration | In-process clusters on loopback (`ClusterTest` on `DaServer.Testing`'s node options; `TestCluster` with a manual clock for exact tick counts, delayed sends and idle unloads; `RouteCheck`: every message of a set of node projects has its handler): request semantics and ordering, actors one message at a time, asks answered as mail (chains and cycles of asks complete), replies given later, ECS systems over actor state, single loaded actor, idle unloading, failover, fencing, one-way and published messages (to actors on any node, once per service type, ordering, routing), resumable links, deadlines, client access by `[FromClient]`, binding isolation, broadcast (exact under churn), connections moving after a scale-out, `SessionClosed` (close and client-facing node crash), session resumption, backpressure, placement under suspicion | `tests/DaServer.Tests` |
+| Allocation | Steady-state cross-shard calls, replies kept for later and replies after an ask, bursts of concurrent calls, delayed sends, one-way messages, checkpoints, actor churn, client fan-out, client messages through a client-facing node and gossip rounds allocate nothing per operation | `tests/DaServer.Tests` |
 | End to end | AppHost topology (login, game, map, 3 client-facing gateway nodes) + `Sample.Bot`: 10k bots locally, 1,000 in CI (`tests/DaServer.E2E`); fails on any gap, disconnect or p99 over the limit | `samples/mmo/`, `tests/DaServer.E2E` |
 | Benchmarks | BenchmarkDotNet on real loopback sockets: RPC at 1/64/1,024 outstanding calls (local and remote), one-way messages to actors (local and remote), group broadcast to 1k/5k client sockets in 1 or 9 groups, broadcast to everyone through 3 client-facing nodes (3k/9k) | `benchmarks/DaServer.Benchmark` |

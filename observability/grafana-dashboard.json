@@ -217,7 +217,7 @@
       "id": 5,
       "type": "timeseries",
       "title": "Queued messages",
-      "description": "Messages waiting in the shards' queues and mailboxes: the backlog.",
+      "description": "Messages waiting in the shards' dispatch queues: the backlog not yet routed to actors and services.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"

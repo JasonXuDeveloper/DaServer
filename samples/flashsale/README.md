@@ -7,7 +7,7 @@ asks of the sale's actors.
 
 ## How it works
 
-Actors and the gate are static classes of stateless `[Handle]` methods over components (ADR-080): a handler runs to
+Actors and the gate are static classes of stateless `[Handle]` methods over components (ADR-081): a handler runs to
 completion, asks come back as `Answered<,>` messages, and what a later step needs is data on an entity.
 
 - **Stock**: 16 `StockShard` actors per sale. A handler is the atomic decrement (no lock, no Redis counter); shards let

@@ -19,7 +19,7 @@ aspire stop                                                    # nodes stop firs
 aspire describe                 # every resource: state, health, URLs. The cluster resource says "6/6 joined"
 aspire wait map-0 --status healthy --timeout 120
 aspire logs game-0 -f           # a node's console
-aspire otel traces              # traces: an HTTP request and the actor turns it causes, on any node, are one trace
+aspire otel traces              # traces: an HTTP request and the handlers it causes, on any node, are one trace
 aspire otel spans game-0
 aspire otel logs map-0
 ```
@@ -27,8 +27,9 @@ aspire otel logs map-0
 The cluster resource (named as the cluster) is the parent of its nodes in the dashboard; its state counts the nodes whose
 readiness passes (`/health`: joined and not leaving). A node's health is its own: ready (joined, not leaving, its store
 reachable) and alive (no stalled shard, `/alive`; a shard that crashed, or failed to build its world, counts as
-stalled). A handler that throws (`ActorFailed`) or a system that throws (`SystemFailed`, at most once a second per
-shard) is logged and counted in `daserver.handler.failed`, and its shard goes on; so does a node whose feature throws
+stalled). A handler that throws (`MessageFailed` when nobody waits for its reply, which gets the error otherwise;
+`ActorFailed` for a `Created`, `Loaded` or `Unloading` handler) or a system that throws (`SystemFailed`, at most once a
+second per shard) is logged and counted in `daserver.handler.failed`, and its shard goes on; so does a node whose feature throws
 (`FeatureFailed`). Probes and the metrics scrape start no trace.
 
 ## Commands on a node
@@ -38,7 +39,7 @@ shard) is logged and counted in `daserver.handler.failed`, and its shard goes on
 | `aspire resource map-0 membership` | The cluster as that node sees it: members, status, incarnation, load, build, the slot coordinator (JSON) |
 | `aspire resource map-0 stats` | Loaded actors, shards, queued and dropped messages (by reason), failed handlers, tick overruns, stalled shards (JSON) |
 | `aspire resource game-1 drain` | The node leaves and stops gracefully, as on SIGTERM: clients move, actors hand over or are saved; asks for confirmation in the dashboard |
-| `aspire resource map-0 unload --type Map` | Every loaded actor of that type on the node unloads once idle (saved as on any unload); its next message loads it again |
+| `aspire resource map-0 unload --type Map` | Every loaded actor of that type on the node unloads (its `Unloading` mail, then saved as on any unload); its next message loads it again |
 | `aspire resource map-0 start` / `stop` / `restart` | Aspire's own; stop is graceful too (SIGTERM) |
 
 The commands call the node's admin endpoints on its HTTP port. Outside Aspire, call them yourself with the bearer token
