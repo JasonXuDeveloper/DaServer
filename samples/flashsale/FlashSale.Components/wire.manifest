@@ -2,18 +2,21 @@
 # Positional layouts are frozen, version-tolerant types take new fields at their end, keyed types any key that keeps
 # its type. Record changes: dotnet build -p:UpdateWireManifest=true
 # Layout text: Nino byte descriptions (4.0.0-rc.6)
+FlashSale.Components.Buying (no header, version tolerant, id 3B5CCFD4)
+- Tried: int raw(4)
 FlashSale.Components.Purchase (no header, version tolerant, id 36D576B9)
 - Status: FlashSale.Contracts.OrderStatus raw(1)
-FlashSale.Components.SaleState (no header, version tolerant, id 0E506A8E)
-- PerSecond: int raw(4)
-- Issued: long raw(8)
-- Released: long raw(8)
-- AtMs: long raw(8)
+FlashSale.Components.Sold (no header, version tolerant, id 003297EE)
 - EmptyShards: int raw(4)
 - Buyers: System.Collections.Generic.List<long> seq(raw(8))
 FlashSale.Components.Stock (no header, version tolerant, id CD4C4F2A)
 - Left: int raw(4)
 - Buyers: System.Collections.Generic.List<long> seq(raw(8))
+FlashSale.Components.WaitingRoom (no header, version tolerant, id D01EFF36)
+- PerSecond: int raw(4)
+- Issued: long raw(8)
+- Released: long raw(8)
+- AtMs: long raw(8)
 FlashSale.Contracts.OrderStatus (enum of byte)
 - None: 0
 - Confirmed: 1

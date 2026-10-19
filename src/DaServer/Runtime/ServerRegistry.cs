@@ -1,6 +1,6 @@
 namespace DaServer.Runtime;
 
-/// <summary>An actor or service type and the messages it handles (generated registration, ADR-080).</summary>
+/// <summary>An actor or service type and the messages it handles (generated registration, ADR-081).</summary>
 [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)] // generated code calls it
 public sealed class HandlerTypeInfo(Type type, Type? idType, ActorSettings settings, ActorHandler[] handlers)
 {
@@ -130,8 +130,15 @@ public static class ServerRegistry
     /// A component type of a components project the node references that is part of actor records: stored and moved
     /// (<see cref="PersistAttribute"/>, <paramref name="stored"/>) or only moved (<see cref="HandoffAttribute"/>).
     /// </summary>
-    public static void RegisterPersistent<T>(bool stored) where T : struct, IComponent =>
-        Add(PersistentList, new Persistence.PersistentType<T>(TypeId<T>.Value, stored), static p => p.Type, static existing =>
+    /// <summary>A [Persist] component (change-tracked: the generator declares it so).</summary>
+    public static void RegisterStored<T>() where T : struct, IComponent, ITrackChanges => RegisterPersistent(new Persistence.PersistentType<T>(
+        TypeId<T>.Value, static (world, since) => world.SetAll(new Persistence.Unsaved(), Persistence.Written<T>.Filter.Since(since))));
+
+    /// <summary>A [Handoff] component.</summary>
+    public static void RegisterHandoff<T>() where T : struct, IComponent => RegisterPersistent(new Persistence.PersistentType<T>(TypeId<T>.Value, null));
+
+    private static void RegisterPersistent<T>(Persistence.PersistentType<T> type) where T : struct, IComponent =>
+        Add(PersistentList, type, static p => p.Type, static existing =>
             existing.TypeId != TypeId<T>.Value ? null
             : $"Persisted components {existing.Type} and {typeof(T)} hash to the same type id: give one another id with [NinoFormerName]");
 

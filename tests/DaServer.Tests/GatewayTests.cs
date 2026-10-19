@@ -250,7 +250,6 @@ public class GatewayTests : ClusterTest
     [Test]
     public async Task ClientsBoundTheirCallsInFlight()
     {
-        Observed.Release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var gateway = await Start("gw", gateway: true);
         var client = Track(new ClusterClient(maxPendingCalls: 16));
         await client.ConnectAsync("127.0.0.1", gateway.ClientPort());
@@ -259,9 +258,19 @@ public class GatewayTests : ClusterTest
         var refused = Assert.ThrowsAsync<RpcException>(async () => await client.Ask(new Stall()));
         Assert.That(refused!.Status, Is.EqualTo(RpcStatus.Overloaded), "one call more than the table holds");
 
-        Observed.Release.SetResult(true);
+        await Release(gateway, 16);
         Assert.That(await Task.WhenAll(waiting), Is.All.True);
-        Assert.That(await client.Ask(new Stall()), Is.True, "the table has room again");
+        var again = client.Ask(new Stall()).AsTask();
+        await Release(gateway, 1);
+        Assert.That(await again, Is.True, "the table has room again");
+    }
+
+    /// <summary>Release held stalls until <paramref name="count"/> were (they reach the staller in their own time).</summary>
+    private async Task Release(Node node, int count)
+    {
+        int released = 0;
+        await Eventually(async () => (released += await node.Ask(Staller.One, new ReleaseStalls())) >= count, "the stalls were held");
+        Assert.That(released, Is.EqualTo(count));
     }
 
     [Test]

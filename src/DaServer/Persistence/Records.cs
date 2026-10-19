@@ -4,14 +4,20 @@ namespace DaServer.Persistence;
 /// A persisted component type (<see cref="PersistAttribute"/>): writes and restores its section of a record. Registered
 /// by the generated registration of the node (<see cref="ServerRegistry.RegisterPersistent{T}"/>), one per type.
 /// </summary>
-internal abstract class PersistentType(Type type, uint typeId, bool stored)
+internal abstract class PersistentType(Type type, uint typeId, Action<World, ulong>? markWritten)
 {
     public Type Type { get; } = type;
 
     public uint TypeId { get; } = typeId;
 
     /// <summary>Written to the store (<see cref="PersistAttribute"/>); otherwise only handed to a new owner (<see cref="HandoffAttribute"/>).</summary>
-    public bool Stored { get; } = stored;
+    public bool Stored => MarkWritten != null;
+
+    /// <summary>
+    /// Tag every actor whose component of this type was written at or after a change tick <see cref="Unsaved"/>
+    /// (stored types only: they are change-tracked).
+    /// </summary>
+    public Action<World, ulong>? MarkWritten { get; } = markWritten;
 
     /// <summary>Append this component's section to <paramref name="record"/> when <paramref name="entity"/> has it.</summary>
     public abstract void Write(Entity entity, FrameWriter record);
@@ -23,8 +29,16 @@ internal abstract class PersistentType(Type type, uint typeId, bool stored)
     public abstract void Remove(Entity entity);
 }
 
-internal sealed class PersistentType<T>(uint typeId, bool stored) : PersistentType(typeof(T), typeId, stored) where T : struct, IComponent
+/// <summary>The loaded actors whose stored <typeparamref name="T"/> was written since a tick (moved with <c>Since</c>) and not tagged yet.</summary>
+internal static class Written<T> where T : struct, IComponent, ITrackChanges
 {
+    public static readonly QueryFilter Filter = QueryFilter.Create().With<Stored>().Without<Unsaved>().Changed<T>(0);
+}
+
+internal sealed class PersistentType<T>(uint typeId, Action<World, ulong>? markWritten) : PersistentType(typeof(T), typeId, markWritten)
+    where T : struct, IComponent
+{
+
     public override void Write(Entity entity, FrameWriter record)
     {
         if (!entity.Has<T>()) return;
@@ -32,7 +46,7 @@ internal sealed class PersistentType<T>(uint typeId, bool stored) : PersistentTy
         var head = record.GetSpan(Records.SectionHeader);
         BinaryPrimitives.WriteUInt32LittleEndian(head, TypeId);
         record.Advance(Records.SectionHeader);
-        record.Write(in entity.Get<T>()); // the component in place: no copy of a large one
+        record.Write(in entity.Read<T>()); // the component in place (a read: not a tracked write)
         BinaryPrimitives.WriteInt32LittleEndian(record.Written(at + sizeof(uint), sizeof(int)), record.Length - at - Records.SectionHeader);
     }
 

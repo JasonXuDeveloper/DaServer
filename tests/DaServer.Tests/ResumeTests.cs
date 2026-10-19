@@ -342,23 +342,21 @@ public partial class ResumeTests : ClusterTest
     [Test]
     public async Task AResumeCutOffAfterTheActorsAcceptedItIsRetried()
     {
-        // The player holds a turn while its client reconnects: each resume waits past the client's call timeout and the
-        // client drops it, so the player accepts an attempt whose connection is gone. That attempt is reverted, and the
-        // client's next one resumes the session instead of being refused for good.
+        // The player's node is busy (its shards held) while its client reconnects: each resume waits past the client's
+        // call timeout and the client drops it, so the player accepts an attempt whose connection is gone. That attempt
+        // is reverted, and the client's next one resumes the session instead of being refused for good.
         var gateways = await StartCluster(TimeSpan.FromSeconds(5));
         var client = await LogIn(gateways, 596);
         client.CallTimeout = TimeSpan.FromMilliseconds(300);
-        TurnGate.Current = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var held = client.Ask(new HoldPlayer()).AsTask();
-        await Task.Delay(100);
+        var gate = new ManualResetEventSlim(); // not disposed: a shard thread may still be inside Wait() when the test ends
+        HoldShards(Nodes.Single(static n => n.Options.Name == "game"), gate);
         var reconnected = Reconnected(client);
         client.DropConnection();
-        await Task.Delay(1_000); // attempts time out behind the held turn
-        TurnGate.Current.TrySetResult();
+        await Task.Delay(1_000); // attempts time out behind the held shards
+        gate.Set();
 
         await reconnected;
         Assert.That(await client.Ask(new AddGold(1)), Is.EqualTo(1), "the session resumed with the player");
         Assert.That(Observed.Events, Does.Not.Contain("closed:596"));
-        try { await held; } catch (RpcException) { } // its connection was dropped
     }
 }

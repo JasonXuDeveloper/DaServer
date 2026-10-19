@@ -23,10 +23,10 @@ public class SingleNodeTests : ClusterTest
         const long key = 501;
         Assert.That(await _node.Ask(new VisitorId(key), new Visit()), Is.EqualTo(1));
 
-        // Kept loaded while it receives mail more often than its UnloadAfterIdle (300 ms).
+        // Kept loaded while it receives mail more often than its UnloadAfterIdle (1 s).
         for (int i = 2; i <= 5; i++)
         {
-            await Task.Delay(100);
+            await Task.Delay(300);
             Assert.That(await _node.Ask(new VisitorId(key), new Visit()), Is.EqualTo(i));
         }
 
@@ -47,7 +47,7 @@ public class SingleNodeTests : ClusterTest
         // actor, or "back to 0" below could be the count from before it loaded.
         await Eventually(() => _node.ActorCount == 1, "the loaded actor is not counted");
 
-        // The cluster gave the key to another node: a save from OnUnload could overwrite the new owner's state.
+        // The cluster gave the key to another node: a save after its Unloading could overwrite the new owner's state.
         foreach (var shard in _node.Shards) shard.RequestUnloadAll();
         await Eventually(() => _node.ActorCount == 0, "the fenced actor is still in the directory");
         Assert.That(Observed.Events, Has.No.Member($"keeper-unload:{key}"));
@@ -77,11 +77,14 @@ public class SingleNodeTests : ClusterTest
     }
 
     [Test]
-    public async Task AwaitsResumeOnTheActorsShard()
+    public async Task AnAnswerRepliesToTheRequestThatAsked()
     {
+        // Counter 10 asks 11 and replies in the handler of the answer, through the reply token its ask carried.
         Assert.That(await _node.Ask(new CounterId(10), new AddVia(new CounterId(11), 3)), Is.EqualTo(3));
         Assert.That(await _node.Ask(new CounterId(11), new Get()), Is.EqualTo(3));
-        Assert.That(await _node.Ask(new CounterId(12), new SlowAdd(4)), Is.EqualTo(4));
+        Assert.That(await _node.Ask(new CounterId(10), new AddVia(new CounterId(11), 2)), Is.EqualTo(8), "the asker's value plus the answer");
+        Assert.That(await _node.Ask(new CounterId(12), new ConfirmVia(new CounterId(11))), Is.Zero, "replied once 11 answered");
+        Assert.That(await _node.Ask(new CounterId(11), new Get()), Is.EqualTo(6));
     }
 
     [Test]
@@ -151,10 +154,10 @@ public class SingleNodeTests : ClusterTest
     }
 
     [Test]
-    public async Task AnActorWhoseConstructionThrowsFailsItsMessageAndLoadsLater()
+    public async Task AnActorWhoseCreatedHandlerThrowsFailsItsMessageAndLoadsLater()
     {
         Faults.Allow("ActorFailed"); // what the test provokes
-        Brittle.ConstructorThrows.Value = 1;
+        Brittle.CreatedThrows.Value = 1;
         try
         {
             var error = Assert.ThrowsAsync<RpcException>(async () => await _node.Ask(new BrittleId(1), new Poke()));
@@ -162,7 +165,7 @@ public class SingleNodeTests : ClusterTest
         }
         finally
         {
-            Brittle.ConstructorThrows.Value = 0;
+            Brittle.CreatedThrows.Value = 0;
         }
 
         Brittleness.Breaks.Value = 1;
@@ -183,7 +186,7 @@ public class SingleNodeTests : ClusterTest
     [Test]
     public async Task DispatchFiltersRefuseBeforeTheHandlerRuns()
     {
-        var filter = MessageFilters.Register<Guarded>(static (object _, in Guarded m, in CallContext _) => m.N < 0 ? RpcStatus.Forbidden : RpcStatus.Ok);
+        var filter = MessageFilters.Register<Guarded>(static (in Context _, in Guarded m) => m.N < 0 ? RpcStatus.Forbidden : RpcStatus.Ok);
         Assert.That(await _node.Ask(new Guarded(7)), Is.EqualTo(7));
         var error = Assert.ThrowsAsync<RpcException>(async () => await _node.Ask(new Guarded(-1)));
         Assert.That(error!.Status, Is.EqualTo(RpcStatus.Forbidden));
@@ -200,7 +203,7 @@ public class SingleNodeTests : ClusterTest
     }
 
     [Test]
-    public async Task ARepliedLaterRequestEndsItsTurnAtOnce()
+    public async Task ARequestRepliedLaterLeavesTheActorServing()
     {
         var node = _node;
         var counter = new CounterId(31);
@@ -209,10 +212,10 @@ public class SingleNodeTests : ClusterTest
         var later = node.Ask(counter, new AnswerLater(500, Fail: false)).AsTask();
         Assert.That(await node.Ask(counter, new Add(1)), Is.EqualTo(6), "the actor took its next message while the reply waits");
         Assert.That(later.IsCompleted, Is.False);
-        Assert.That(await later, Is.EqualTo(5), "the value given when the turn ended");
+        Assert.That(await later, Is.EqualTo(5), "the value the handler kept for its reply");
 
         var failed = Assert.ThrowsAsync<RpcException>(async () => await node.Ask(counter, new AnswerLater(0, Fail: true)));
-        Assert.That(failed!.Status, Is.EqualTo(RpcStatus.Error), "a failed task is replied as the failure");
+        Assert.That(failed!.Status, Is.EqualTo(RpcStatus.Error), "a reply kept for later can be a failure");
     }
 
     [Test]

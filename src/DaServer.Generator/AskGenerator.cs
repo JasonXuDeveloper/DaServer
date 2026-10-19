@@ -29,7 +29,7 @@ public sealed class AskGenerator : IIncrementalGenerator
         context.RegisterSourceOutput(requests.Combine(server), static (spc, pair) =>
             spc.AddSource($"DaServer.Ask.{HintName(pair.Left!.FullName)}.g.cs", SourceText.From(EmitAsk(pair.Left!, pair.Right), Encoding.UTF8)));
 
-        // Handlers ask through their Context (ADR-080): the answer comes back as mail. One internal class per server
+        // Handlers ask through their Context (ADR-081): the answer comes back as mail. One internal class per server
         // compilation covers its own requests and those of the contracts it references (they are built without the
         // runtime), so the typed overloads exist wherever handlers are, without clashing between assemblies.
         var contextAsks = context.CompilationProvider

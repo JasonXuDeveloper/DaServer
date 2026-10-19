@@ -32,7 +32,7 @@ internal static class Routes
             if (!service && !actor) continue;
             foreach (var method in type.GetMethods(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly))
                 if (method.GetCustomAttribute<HandleAttribute>() != null && method.GetParameters() is [var parameter, ..])
-                    lines.Add($"H\t{parameter.ParameterType.FullName}\t{type.FullName}\t{(service ? "S" : "A")}");
+                    lines.Add($"H\t{(parameter.ParameterType.IsByRef ? parameter.ParameterType.GetElementType()! : parameter.ParameterType).FullName}\t{type.FullName}\t{(service ? "S" : "A")}");
         }
 
         return lines;

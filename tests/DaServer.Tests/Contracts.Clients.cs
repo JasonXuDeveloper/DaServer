@@ -1,3 +1,4 @@
+using EasyEcs;
 using Nino.Core;
 
 namespace DaServer.Tests;
@@ -13,11 +14,8 @@ namespace DaServer.Tests;
 [NinoType, Message, FromClient] public partial record struct AddGold(int Amount) : IRequest<int>;
 [NinoType, Message, FromClient] public partial record struct Tip(int Amount);            // one-way
 
-/// <summary>The player holds its turn until <see cref="TurnGate"/> opens.</summary>
-[NinoType, Message, FromClient] public partial record struct HoldPlayer : IRequest<bool>;
-
-/// <summary>The player waits for <see cref="TurnGate"/>, then kicks the calling session.</summary>
-[NinoType, Message, FromClient] public partial record struct KickAfterGate : IRequest<bool>;
+/// <summary>The player kicks the calling session.</summary>
+[NinoType, Message, FromClient] public partial record struct Kick : IRequest<bool>;
 
 /// <summary>Server-only: the login service attaches a client session to its player.</summary>
 [NinoType, Message] public partial record struct Attach(ClientSession Session) : IRequest<bool>;
@@ -35,8 +33,6 @@ namespace DaServer.Tests;
 [NinoType, Message, FromClient] public partial record struct SitDown(LoungeId Lounge) : IRequest<bool>;
 [NinoType, Message] public partial record struct Seat(ClientSession Session) : IRequest<bool>;
 [NinoType, Message] public partial record struct Seated : IRequest<int>;
-/// <summary>The lounge holds its turn until <see cref="TurnGate"/> opens (it cannot move meanwhile).</summary>
-[NinoType, Message] public partial record struct HoldLounge : IRequest<bool>;
 /// <summary>A seated client asks the lounge itself (allowed only while its session holds the grant).</summary>
 [NinoType, Message, FromClient] public partial record struct Stand : IRequest<bool>;
 
@@ -44,119 +40,125 @@ namespace DaServer.Tests;
 [NinoType, Message, ToClient] public partial record struct Chat(RoomId From, string Text);
 [NinoType, Message, ToClient] public partial record struct GoldChanged(int Gold);
 
-public sealed class LobbyService : Service
+[Service]
+public static class LobbyService
 {
     [Handle]
-    public async Reply<bool> On(Enter m) => m.Room.Value > 0 && await Cluster.Ask(m.Room, new Admit(Caller));
+    internal static Answer<bool> On(in Enter m, in Context ctx)
+    {
+        if (m.Room.Value <= 0) return false;
+        ctx.Ask(m.Room, new Admit(ctx.Caller), ctx.ReplyLater());
+        return Answer<bool>.Later;
+    }
 
-    [Handle] public async Reply<bool> On(SitDown m) => await Cluster.Ask(m.Lounge, new Seat(Caller));
+    [Handle] internal static void On(in Answered<Admit, bool> a, in Context ctx) => Pass(a.Status, a.Value, a.ReplyTo, in ctx);
+
+    [Handle]
+    internal static Answer<bool> On(in SitDown m, in Context ctx)
+    {
+        ctx.Ask(m.Lounge, new Seat(ctx.Caller), ctx.ReplyLater());
+        return Answer<bool>.Later;
+    }
+
+    [Handle] internal static void On(in Answered<Seat, bool> a, in Context ctx) => Pass(a.Status, a.Value, a.ReplyTo, in ctx);
+
+    /// <summary>The asked actor's answer is the client's reply; its failure too.</summary>
+    internal static void Pass(RpcStatus status, bool value, ReplyTo to, in Context ctx)
+    {
+        if (status == RpcStatus.Ok) ctx.Reply(to, value);
+        else ctx.Fail(to, status);
+    }
 }
 
-public sealed class AuthService : Service
+[Service]
+public static class AuthService
 {
-    [Handle]
-    public async Reply<bool> On(Login m) =>
-        Caller.IsValid && m.Player.Value > 0 && await Cluster.Ask(m.Player, new Attach(Caller));
+    [Handle] internal static Answer<bool> On(in Login m, in Context ctx) => LogIn(m.Player, in ctx);
 
     [Handle]
-    public Reply<bool> On(LoginAfterPushes m)
+    internal static Answer<bool> On(in LoginAfterPushes m, in Context ctx)
     {
         var text = new string('x', 2048); // 4 KB (UTF-16)
-        for (int i = 0; i < m.Pushes; i++) Cluster.Send(Caller, new Chat(default, text));
-        return On(new Login(m.Player));
+        for (int i = 0; i < m.Pushes; i++) ctx.Cluster.Send(ctx.Caller, new Chat(default, text));
+        return LogIn(m.Player, in ctx);
+    }
+
+    [Handle] internal static void On(in Answered<Attach, bool> a, in Context ctx) => LobbyService.Pass(a.Status, a.Value, a.ReplyTo, in ctx);
+
+    /// <summary>A client session attaches to its player: replied once the player bound it.</summary>
+    private static Answer<bool> LogIn(PlayerId player, in Context ctx)
+    {
+        if (!ctx.Caller.IsValid || player.Value <= 0) return false;
+        ctx.Ask(player, new Attach(ctx.Caller), ctx.ReplyLater());
+        return Answer<bool>.Later;
     }
 }
 
-
-public sealed class Player : Actor<PlayerId, Wallet>
+[Actor<PlayerId>]
+public static class Player
 {
-    [Handle]
-    public async Reply<bool> On(Attach m)
-    {
-        await BindSession(m.Session);
-        return true;
-    }
+    [Handle] internal static Answer<bool> On(in Attach m, in Context ctx) => ctx.ReplyAfter(ctx.BindSession(m.Session), true);
+
+    [Handle] internal static Answer<bool> On(in Logout _, in Context ctx) => ctx.ReplyAfter(ctx.UnbindSession(ctx.Caller), true);
 
     [Handle]
-    public async Reply<bool> On(Logout _)
+    internal static int On(in AddGold m, ref Wallet wallet, in Context ctx)
     {
-        await UnbindSession(Caller);
-        return true;
-    }
-
-    [Handle]
-    public int On(AddGold m)
-    {
-        int gold = State.Gold += m.Amount;
-        if (Caller.IsValid) Cluster.Send(Caller, new GoldChanged(gold)); // push to the calling client
+        int gold = wallet.Gold += m.Amount;
+        if (ctx.Caller.IsValid) ctx.Cluster.Send(ctx.Caller, new GoldChanged(gold)); // push to the calling client
         return gold;
     }
 
-    [Handle] public void On(Tip m) => State.Gold += m.Amount;
+    [Handle] internal static void On(in Tip m, ref Wallet wallet) => wallet.Gold += m.Amount;
 
     [Handle]
-    public async Reply<bool> On(HoldPlayer _)
+    internal static bool On(in Kick _, in Context ctx)
     {
-        await TurnGate.Current.Task;
+        ctx.DisconnectSession(ctx.Caller);
         return true;
     }
 
-    [Handle]
-    public async Reply<bool> On(KickAfterGate _)
-    {
-        await TurnGate.Current.Task;
-        DisconnectSession(Caller);
-        return true;
-    }
+    [Handle] internal static void On(in SessionClosed _, in Context ctx) => Observed.Events.Enqueue($"closed:{ctx.Key}");
 
-    [Handle] public void On(SessionClosed _) => Observed.Events.Enqueue($"closed:{Id.Value}");
-
-    [Handle] public void On(SessionResumed _) => Observed.Events.Enqueue($"resumed:{Id.Value}");
+    [Handle] internal static void On(in SessionResumed _, in Context ctx) => Observed.Events.Enqueue($"resumed:{ctx.Key}");
 }
 
-public sealed class Room : Actor<RoomId>
+[Actor<RoomId>]
+public static class Room
 {
-    [Handle]
-    public async Reply<bool> On(Admit m)
-    {
-        await GrantSession(m.Session); // the session joins Group with the grant
-        return true;
-    }
+    /// <summary>The session joins the room's group with the grant.</summary>
+    [Handle] internal static Answer<bool> On(in Admit m, in Context ctx) => ctx.ReplyAfter(ctx.GrantSession(m.Session), true);
 
-    [Handle] public void On(Say m) => Cluster.Send(Group, new Chat(Id, m.Text));
+    [Handle] internal static void On(in Say m, in Context ctx) => ctx.Cluster.Send(ctx.Group, new Chat(ctx.Id<RoomId>(), m.Text));
 
-    [Handle]
-    public async Reply<bool> On(Exit _)
-    {
-        await RevokeSession(Caller);
-        return true;
-    }
+    [Handle] internal static Answer<bool> On(in Exit _, in Context ctx) => ctx.ReplyAfter(ctx.RevokeSession(ctx.Caller), true);
 
-    [Handle] public void On(SessionClosed _) => Observed.Events.Enqueue($"room-closed:{Id.Value}");
+    [Handle] internal static void On(in SessionClosed _, in Context ctx) => Observed.Events.Enqueue($"room-closed:{ctx.Key}");
 
-    [Handle] public void On(SessionResumed _) => Observed.Events.Enqueue($"room-resumed:{Id.Value}");
+    [Handle] internal static void On(in SessionResumed _, in Context ctx) => Observed.Events.Enqueue($"room-resumed:{ctx.Key}");
 }
 
 public readonly record struct LoungeId(long Value) : IActorId;
 
-public sealed class Lounge : Actor<LoungeId>
+[Actor<LoungeId>]
+public static class Lounge
 {
-    [Handle]
-    public async Reply<bool> On(Seat m)
-    {
-        await GrantSession(m.Session);
-        return true;
-    }
+    [Handle] internal static Answer<bool> On(in Seat m, in Context ctx) => ctx.ReplyAfter(ctx.GrantSession(m.Session), true);
 
-    [Handle]
-    public async Reply<bool> On(HoldLounge _)
-    {
-        await TurnGate.Current.Task;
-        return true;
-    }
-
-    [Handle] public bool On(Stand _) => true;
+    [Handle] internal static bool On(in Stand _) => true;
 
     /// <summary>The sessions the runtime holds for this actor.</summary>
-    [Handle] public int On(Seated _) => Entity.TryGet<ClientSessions>(out var held) ? held.Sessions.Count + held.Granted.Count : 0;
+    [Handle]
+    internal static int On(in Seated _, Entity self, World world)
+    {
+        int held = 0;
+        foreach (var child in world.Children(self.Id))
+        {
+            if (!child.Has<KnownSession>()) continue;
+            if (child.Has<Known>()) held++;
+            if (child.Has<Granted>()) held++;
+        }
+
+        return held;
+    }
 }

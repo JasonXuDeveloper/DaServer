@@ -10,7 +10,7 @@ namespace DaServer.Tests;
 /// </summary>
 public class RecordFormatTests
 {
-    private static readonly PersistentType[] Types = [new PersistentType<Ledger>(TypeId<Ledger>.Value, stored: true)];
+    private static readonly PersistentType[] Types = [new PersistentType<Ledger>(TypeId<Ledger>.Value, static (_, _) => { })]; // stored (its change tracking is not used here)
     private static readonly FrozenDictionary<uint, PersistentType> ById = Types.ToFrozenDictionary(t => t.TypeId);
 
     /// <summary>"DR", format 1, then Ledger's section: its type id, its length, its version-tolerant Nino bytes.</summary>

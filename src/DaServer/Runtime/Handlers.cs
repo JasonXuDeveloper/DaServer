@@ -1,6 +1,6 @@
 namespace DaServer.Runtime;
 
-// The programming model (ADR-080): an actor is an entity, its data is components, its behavior is stateless static
+// The programming model (ADR-081): an actor is an entity, its data is components, its behavior is stateless static
 // handlers. Nothing here holds state: attributes are constants, Context is a value built per message, ReplyTo and
 // Answered are data.
 

@@ -40,7 +40,7 @@ public class HandoffTests(string kind) : StoreTest(kind)
     [Test]
     public async Task ACopyDeclaredDeadWhileItsFinalSaveWaitsIsStillDropped()
     {
-        // A copy past its OnUnload whose final save waits for the shard's write in flight, when the node is declared dead:
+        // A copy past its Unloading whose final save waits for the shard's write in flight, when the node is declared dead:
         // it is dropped like any fenced copy (it writes nothing), so the shard drains.
         var store = NewStore();
         store.WriteGate.Hold();
@@ -58,14 +58,14 @@ public class HandoffTests(string kind) : StoreTest(kind)
     [Test]
     public async Task ACopyStillWaitingForItsRecordGoesWhenItsNodeStops()
     {
-        // b takes keys from a while a's actors are busy (their turns held): b's copies wait for records that cannot come
-        // yet. b stops meanwhile: a waiting copy holds no state, so it goes at once (its mail to the owner, "none" to a),
-        // and b stops clean instead of waiting on a record until its budget runs out.
+        // b takes keys from a while a's shards are busy (held): b's copies wait for records that cannot come yet. b stops
+        // meanwhile: a waiting copy holds no state, so it goes at once (its mail to the owner, "none" to a), and b stops
+        // clean instead of waiting on a record until its budget runs out.
         var store = NewStore();
         var a = await StartWith(store, "a");
-        TurnGate.Current = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var held = Enumerable.Range(100, 40).Select(key => a.Ask(new BankId(key), new HoldTurn()).AsTask()).ToArray();
-        await Task.Delay(100);
+        for (int k = 100; k < 140; k++) Assert.That(await a.Ask(new BankId(k), new Deposit(k, false)), Is.EqualTo(k));
+        var gate = new ManualResetEventSlim(); // not disposed: a shard thread may still be inside Wait() when the test ends
+        HoldShards(a, gate);
         var b = await StartWith(store, "b", static o => o.ShutdownTimeout = TimeSpan.FromSeconds(3));
         await Converged();
         long key = Enumerable.Range(100, 40).First(k => b.OwnerOf<BankId>(k) == b.Id);
@@ -73,14 +73,14 @@ public class HandoffTests(string kind) : StoreTest(kind)
         await Eventually(() => b.ActorCount == 1, "b holds a copy waiting for its record");
         await Stop(b);
         Assert.That(b.StoppedClean, Is.True, "the waiting copy went at once");
-        TurnGate.Current.TrySetResult();
-        await Task.WhenAll(held);
+        gate.Set();
+        foreach (int k in Enumerable.Range(100, 40)) Assert.That(await a.Ask(new BankId(k), new Balance()), Is.EqualTo(k), $"key {k} kept its deposit");
     }
 
     [Test]
-    public async Task AMovedRecordWhoseOnLoadFailsIsWrittenNotLost()
+    public async Task AMovedRecordWhoseLoadedHandlerFailsIsWrittenNotLost()
     {
-        // The new owner takes the record (its sender lets its copy go), then OnLoad throws: the record is the only copy
+        // The new owner takes the record (its sender lets its copy go), then its Loaded throws: the record is the only copy
         // of the moved state, so it is written, and the next mail loads it back from the store.
         var store = NewStore();
         var a = await StartWith(store, "a");
@@ -92,14 +92,14 @@ public class HandoffTests(string kind) : StoreTest(kind)
         Assert.That(keys, Is.Not.Empty);
         foreach (int key in keys)
         {
-            await Eventually(() => !Bank.FailNextLoad.ContainsKey(key), $"key {key} restored and its OnLoad ran");
+            await Eventually(() => !Bank.FailNextLoad.ContainsKey(key), $"key {key} restored and its Loaded ran");
             int balance = 0;
             await Eventually(() =>
             {
                 try { balance = b.Ask(new BankId(key), new Balance()).AsTask().GetAwaiter().GetResult(); return true; }
                 catch (RpcException) { return false; } // the failed load's mail, or a retry while the write is in flight
             }, $"key {key} serves again");
-            Assert.That(balance, Is.EqualTo(key), $"key {key}: the moved ledger survived the failed OnLoad");
+            Assert.That(balance, Is.EqualTo(key), $"key {key}: the moved ledger survived the failed Loaded");
         }
 
         foreach (int key in Enumerable.Range(100, 40)) Bank.FailNextLoad.TryRemove(key, out _);
@@ -130,19 +130,22 @@ public class HandoffTests(string kind) : StoreTest(kind)
         foreach (int key in moved) Assert.That(await c.Ask(new BankId(key), new Balance()), Is.EqualTo(key), $"key {key} survived b's crash");
     }
 
-    [TestCase(false)]
-    [TestCase(true)]
-    public async Task ARecordItsNewOwnerCannotTakeGoesBackToItsSenderAndTheStore(bool constructorThrows)
+    [Test]
+    public async Task ARecordItsNewOwnerCannotTakeGoesBackToItsSenderAndTheStore()
     {
-        // b's copy of the actor throws while taking the record (a setting is user code): b refuses it, so a takes its
-        // state back and writes it, instead of b holding a copy that never runs and a dropping its own.
+        // b cannot read the record (a persisted component's setter is user code, and throws): b refuses it, so a takes
+        // its state back and writes it, instead of b holding a copy that never runs and a dropping its own.
         Faults.Allow("HandoffUnreadable"); // what the test provokes
         var store = NewStore();
         var a = await StartWith(store, "a");
-        for (int key = 8000; key < 8040; key++) Assert.That(await a.Ask(new BankId(key), new Deposit(key, false)), Is.EqualTo(key));
+        for (int key = 8000; key < 8040; key++)
+        {
+            Assert.That(await a.Ask(new BankId(key), new Deposit(key, false)), Is.EqualTo(key));
+            Assert.That(await a.Ask(new BankId(key), new Stamp()), Is.True);
+        }
+
         Assert.That(store.Written, Is.Empty, "nothing written yet: these keys write on unload only");
-        var flag = constructorThrows ? Bank.ConstructorThrows : Bank.SettingsThrow;
-        flag.Value = 1;
+        Seal.RefusedBy.Value = "b";
         int[] moved;
         try
         {
@@ -154,7 +157,7 @@ public class HandoffTests(string kind) : StoreTest(kind)
         }
         finally
         {
-            flag.Value = 0;
+            Seal.RefusedBy.Value = null;
         }
 
         foreach (int key in moved) Assert.That(await a.Ask(new BankId(key), new Balance()), Is.EqualTo(key), $"key {key} kept its deposit");
@@ -268,10 +271,9 @@ public class HandoffTests(string kind) : StoreTest(kind)
     [Test]
     public async Task ANewOwnerWaitsForTheRecordWhileThePreviousOneHoldsTheActor()
     {
-        // K moves from a to b while a's copy is in a long turn (it cannot unload yet). b gets mail for K first and asks a
-        // for the record; a still holds K past the handoff timeout. b must keep waiting for the record (a is alive), not
+        // K moves from a to b while a's shards are busy (held: its copy cannot unload yet). b gets mail for K first and asks
+        // a for the record; a still holds K past the handoff timeout. b must keep waiting for the record (a is alive), not
         // load K from the store and run it beside a's copy.
-        Faults.Allow("TurnTooLong"); // a's long turn is the point
         var store = NewStore();
         var a = await StartWith(store, "a", static o => o.CallTimeout = TimeSpan.FromMilliseconds(500));
         var b = await StartWith(store, "b", static o => o.CallTimeout = TimeSpan.FromMilliseconds(500));
@@ -279,8 +281,8 @@ public class HandoffTests(string kind) : StoreTest(kind)
         long key = 100;
         while (a.OwnerOf<BankId>(key) != a.Id) key++;
         Assert.That(await a.Ask(new BankId(key), new Deposit(5, false)), Is.EqualTo(5));
-        TurnGate.Current = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var held = a.Ask(new BankId(key), new HoldTurn()).AsTask();
+        var gate = new ManualResetEventSlim(); // not disposed: a shard thread may still be inside Wait() when the test ends
+        HoldShards(a, gate);
 
         int slot = ClusterView.Slot(ActorIds<BankId>.HandlerTypeId, key);
         var table = new SlotTable { Version = 1000, Coordinator = a.Id, Overrides = [new SlotOverride(ActorIds<BankId>.HandlerTypeId, (ushort)slot, b.Id)] };
@@ -288,8 +290,7 @@ public class HandoffTests(string kind) : StoreTest(kind)
         b.Membership.Apply(table);
         b.Send(new BankId(key), new Deposit(2, false)); // b creates K and asks a for its record
         await Task.Delay(1500); // three handoff timeouts
-        TurnGate.Current.TrySetResult();
-        try { await held; } catch (RpcException) { } // its caller may have timed out meanwhile
+        gate.Set();
 
         await Eventually(() => b.Ask(new BankId(key), new Balance()).AsTask().Result == 7, "one copy: a's 5 then b's 2");
         Assert.That(store.Loads, Is.EqualTo(1), "only a's first load read the store");
@@ -419,7 +420,7 @@ public class HandoffTests(string kind) : StoreTest(kind)
     [Test]
     public async Task ANodeThatHeldAKeyBrieflyWaitsForItsPreviousOwner()
     {
-        // K moves from a to b and on to c while a's copy is in a long turn. c asks b, its previous owner; b never got K
+        // K moves from a to b and on to c while a's shards are busy (held). c asks b, its previous owner; b never got K
         // but took it from a moments ago: it must not answer "none" (c would start K empty, without a store) but wait
         // for a, whose record then goes to c.
         var a = await StartWith(null, "a");
@@ -429,8 +430,8 @@ public class HandoffTests(string kind) : StoreTest(kind)
         long key = 400;
         while (a.OwnerOf<BankId>(key) != a.Id) key++;
         Assert.That(await a.Ask(new BankId(key), new Deposit(5, false)), Is.EqualTo(5));
-        TurnGate.Current = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var held = a.Ask(new BankId(key), new HoldTurn()).AsTask();
+        var gate = new ManualResetEventSlim(); // not disposed: a shard thread may still be inside Wait() when the test ends
+        HoldShards(a, gate);
         uint type = ActorIds<BankId>.HandlerTypeId;
         var slot = (ushort)ClusterView.Slot(type, key);
         foreach (var node in new[] { a, b, c })
@@ -439,8 +440,7 @@ public class HandoffTests(string kind) : StoreTest(kind)
             node.Membership.Apply(new SlotTable { Version = 1001, Coordinator = a.Id, Overrides = [new SlotOverride(type, slot, c.Id)] });
         c.Send(new BankId(key), new Deposit(2, false)); // c asks b
         await Task.Delay(300);
-        TurnGate.Current.TrySetResult();
-        await held;
+        gate.Set();
         await Eventually(() => c.Ask(new BankId(key), new Balance()).AsTask().Result == 7, "K's state reached c: a's 5 then c's 2");
     }
 
@@ -461,10 +461,10 @@ public class HandoffTests(string kind) : StoreTest(kind)
     {
         var store = NewStore();
         var a = await StartWith(store, "a");
-        Assert.That(await a.Ask(new BankId(1000), new Deposit(1, false)), Is.EqualTo(1));
+        Assert.That(await a.Ask(new IdleBankId(1000), new Deposit(1, false)), Is.EqualTo(1));
         store.WriteGate.Hold();
         await store.WriteGate.Started; // idle: unloaded, its record taken
-        var deposit = a.Ask(new BankId(1000), new Deposit(1, false)).AsTask();
+        var deposit = a.Ask(new IdleBankId(1000), new Deposit(1, false)).AsTask();
         await Task.Delay(100);
         Assert.That(deposit.IsCompleted, Is.False, "the unloaded copy does not take mail");
         store.WriteGate.Release();

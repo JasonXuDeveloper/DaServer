@@ -49,8 +49,6 @@ internal static class Support
     public const string NinoFormerNameAttribute = "Nino.Core.NinoFormerNameAttribute";
     public const string RequestInterface = "DaServer.IRequest`1";
     public const string NinoTypeAttribute = "Nino.Core.NinoTypeAttribute";
-    public const string ActorBase = "DaServer.Runtime.Actor";
-    public const string ServiceBase = "DaServer.Runtime.Service";
     public const string EcsSystem = "EasyEcs.EcsSystem";
 
     /// <summary>Fully qualified, with nullable annotations (for emitted code).</summary>

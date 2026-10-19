@@ -20,12 +20,14 @@ public readonly record struct ChairId(long Value) : IActorId, IPlaced
 
 [NinoType, Message] public partial record struct WhereIsIt : IRequest<string>;
 
-public sealed class Table : Actor<TableId>
+[Actor<TableId>]
+public static class Table
 {
-    [Handle] public string On(WhereIsIt _) => Thread.CurrentThread.Name ?? "";
+    [Handle] internal static string On(in WhereIsIt _) => Thread.CurrentThread.Name ?? "";
 }
 
-public sealed class Chair : Actor<ChairId>
+[Actor<ChairId>]
+public static class Chair
 {
-    [Handle] public string On(WhereIsIt _) => Thread.CurrentThread.Name ?? "";
+    [Handle] internal static string On(in WhereIsIt _) => Thread.CurrentThread.Name ?? "";
 }

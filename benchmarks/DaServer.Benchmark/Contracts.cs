@@ -4,10 +4,10 @@ using Nino.Core;
 
 namespace DaServer.Benchmark;
 
-// Benchmark business code, written like user code: an actor with state in a component that also takes one-way messages, a
-// room actor whose groups clients join through a lobby service, and a message pushed to clients. Every actor type is
-// [Sticky]: a benchmark places its actors on purpose (Remote means another node), so load balancing must not move them
-// mid-run.
+// Benchmark business code, written like user code (ADR-080: static classes of stateless handlers, data in components):
+// an actor with state in a component that also takes one-way messages, a room actor whose groups clients join through a
+// lobby service, and a message pushed to clients. Every actor type is [Sticky]: a benchmark places its actors on purpose
+// (Remote means another node), so load balancing must not move them mid-run.
 
 public readonly record struct CounterId(long Value) : IActorId;
 public readonly record struct RoomId(long Value) : IActorId;
@@ -30,38 +30,51 @@ public readonly record struct RoomId(long Value) : IActorId;
 [NinoType, Message, ToClient] public partial record struct Tick(int Sequence);
 
 
-[Sticky]
-public sealed class Counter : Actor<CounterId, CounterState>
+[Sticky, Actor<CounterId>]
+public static class Counter
 {
-    [Handle] public int On(Add m) => State.Value += m.Delta;
+    [Handle] internal static int On(in Add m, ref CounterState s) => s.Value += m.Delta;
 
-    [Handle] public void On(Bumped e) => State.Value += e.By;
+    [Handle] internal static void On(in Bumped e, ref CounterState s) => s.Value += e.By;
 }
 
-public sealed class Lobby : Service
+[Service]
+public static class Lobby
 {
-    [Handle] public Reply<bool> On(Join m) => Cluster.Ask(m.Room, new Admit(Caller, m.Groups));
+    /// <summary>The room answers the client: the reply waits as data while the lobby takes its next caller.</summary>
+    [Handle]
+    internal static Answer<bool> On(in Join m, in Context ctx)
+    {
+        ctx.Ask(m.Room, new Admit(ctx.Caller, m.Groups), ctx.ReplyLater());
+        return Answer<bool>.Later;
+    }
+
+    [Handle]
+    internal static void On(in Answered<Admit, bool> a, in Context ctx)
+    {
+        if (a.Ok) ctx.Reply(a.ReplyTo, a.Value);
+        else ctx.Fail(a.ReplyTo, a.Status);
+    }
 }
 
-[Sticky]
-public sealed class Room : Actor<RoomId>
+[Sticky, Actor<RoomId>]
+public static class Room
 {
     [Handle]
-    public bool On(Admit m)
+    internal static bool On(in Admit m, in Context ctx)
     {
-        for (int i = 0; i < m.Groups; i++) Cluster.Send(m.Session, new JoinGroup(GroupOf(i)));
+        for (int i = 0; i < m.Groups; i++) ctx.Send(m.Session, new JoinGroup(GroupOf(i, in ctx)));
         return true;
     }
 
     [Handle]
-    public bool On(Broadcast m)
+    internal static bool On(in Broadcast m, in Context ctx)
     {
-        for (int i = 0; i < m.Groups; i++) Cluster.Send(GroupOf(i), new Tick(m.Sequence));
+        for (int i = 0; i < m.Groups; i++) ctx.Send(GroupOf(i, in ctx), new Tick(m.Sequence));
         return true;
     }
 
-
-    private ClientGroup GroupOf(int index) => index == 0 ? Group : ClientGroup.Of<Cells>(Id.Value * 16 + index);
+    private static ClientGroup GroupOf(int index, in Context ctx) => index == 0 ? ctx.Group : ClientGroup.Of<Cells>(ctx.Key * 16 + index);
 }
 
 /// <summary>Client side: counts the ticks it receives.</summary>
@@ -77,29 +90,39 @@ public struct Cells;
 
 public readonly record struct GateId(long Value) : IActorId;
 
-/// <summary>Enter through the gate, which waits for the ledger's acknowledgement before answering (awaiting it).</summary>
-[NinoType, Message] public partial record struct EnterAwaited(CounterId Ledger) : IRequest<bool>;
+/// <summary>
+/// Enter through the gate, answered when the ledger's acknowledgement arrives (Answered): the gate passes the caller's
+/// reply token along with its ask and replies from the answer's handler.
+/// </summary>
+[NinoType, Message] public partial record struct EnterAnswered(CounterId Ledger) : IRequest<bool>;
 
-/// <summary>The same, replied when the acknowledgement arrives while the gate takes its next caller (ReplyWhen).</summary>
-[NinoType, Message] public partial record struct EnterDeferred(CounterId Ledger) : IRequest<bool>;
+/// <summary>The same, replied by the runtime when the acknowledgement arrives (ReplyAfter).</summary>
+[NinoType, Message] public partial record struct EnterReplyAfter(CounterId Ledger) : IRequest<bool>;
 
 
-[Sticky]
-public sealed class Gate : Actor<GateId, GateState>
+[Sticky, Actor<GateId>]
+public static class Gate
 {
     [Handle]
-    public async Reply<bool> On(EnterAwaited m)
+    internal static Answer<bool> On(in EnterAnswered m, ref GateState s, in Context ctx)
     {
-        State.Entered++;
-        await Cluster.Ask(m.Ledger, new Add(1));
-        return true;
+        s.Entered++;
+        ctx.Ask(m.Ledger, new Add(1), ctx.ReplyLater());
+        return Answer<bool>.Later;
     }
 
     [Handle]
-    public Reply<bool> On(EnterDeferred m)
+    internal static void On(in Answered<Add, int> a, in Context ctx)
     {
-        State.Entered++;
-        return ReplyWhen(Cluster.Ask(m.Ledger, new Add(1)), true);
+        if (a.Ok) ctx.Reply(a.ReplyTo, true);
+        else ctx.Fail(a.ReplyTo, a.Status);
+    }
+
+    [Handle]
+    internal static Answer<bool> On(in EnterReplyAfter m, ref GateState s, in Context ctx)
+    {
+        s.Entered++;
+        return ctx.ReplyAfter(ctx.Ask(m.Ledger, new Add(1)), true);
     }
 }
 
@@ -110,16 +133,16 @@ public sealed class Gate : Actor<GateId, GateState>
 
 public readonly record struct SchedulerId(long Value) : IActorId;
 
-[Sticky]
-public sealed class Scheduler : Actor<SchedulerId>
+[Sticky, Actor<SchedulerId>]
+public static class Scheduler
 {
     [Handle]
-    public bool On(Bumps m)
+    internal static bool On(in Bumps m, in Context ctx)
     {
         for (int i = 0; i < m.Count; i++)
         {
-            if (m.Delayed) Cluster.SendAfter(TimeSpan.Zero, m.Target, new Bumped(1));
-            else Cluster.Send(m.Target, new Bumped(1));
+            if (m.Delayed) ctx.SendAfter(TimeSpan.Zero, m.Target, new Bumped(1));
+            else ctx.Send(m.Target, new Bumped(1));
         }
 
         return true;
@@ -132,17 +155,15 @@ public readonly record struct VaultId(long Value) : IActorId;
 
 [NinoType, Message] public partial record struct Put(long Amount) : IRequest<long>;
 
-/// <summary>Holds coins ([Persist]); a put is a critical change, written at once (SaveNow).</summary>
-[Sticky]
-public sealed class Vault : Actor<VaultId, Coins>
+/// <summary>Holds coins ([Persist]); a put is a critical change, written at once (SaveNow), with no periodic checkpoint.</summary>
+[Sticky, Actor<VaultId>(SaveEverySeconds = 0)]
+public static class Vault
 {
-    public override TimeSpan SaveEvery => TimeSpan.Zero;
-
     [Handle]
-    public long On(Put m)
+    internal static long On(in Put m, ref Coins coins, Entity self)
     {
-        if (m.Amount == 0) return State.Amount;
-        Entity.Set(new SaveNow());
-        return State.Amount += m.Amount;
+        if (m.Amount == 0) return coins.Amount;
+        self.Set(new SaveNow());
+        return coins.Amount += m.Amount;
     }
 }

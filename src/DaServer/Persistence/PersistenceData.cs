@@ -34,6 +34,12 @@ internal readonly record struct AwaitingRecord(long SinceMs, long NotBeforeMs) :
 /// <summary>The actor's record is being loaded (asked for first at <see cref="SinceMs"/>).</summary>
 internal readonly record struct RecordRequested(long SinceMs) : IComponent;
 
+/// <summary>
+/// Tag: a stored component of the actor was written since its record was last serialized (<see cref="ChangeSystem"/>);
+/// only such actors are checkpointed.
+/// </summary>
+internal struct Unsaved : IComponent;
+
 /// <summary>Tag: a write of the actor's record is in flight (no other is started meanwhile).</summary>
 internal struct Saving : IComponent;
 

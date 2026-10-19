@@ -36,6 +36,21 @@ public class SaleTests
     }
 
     [Test]
+    public async Task RetriesDuringAPurchaseShareItsOutcome()
+    {
+        await using var cluster = await TestCluster.StartAsync(o => o.ClientConnections = true);
+        var client = await cluster.ConnectAsync();
+        const long sale = 3, user = 7;
+        await client.Ask(new OpenSale(sale, Units: 10, PerSecond: 0));
+
+        var attempts = new Task<OrderStatus>[8];
+        for (int i = 0; i < attempts.Length; i++) attempts[i] = client.Ask(new PlaceOrder(sale, user, 0)).AsTask(); // while the first runs
+        foreach (var outcome in await Task.WhenAll(attempts)) Assert.That(outcome, Is.EqualTo(OrderStatus.Confirmed));
+        Assert.That(await client.Ask(new SaleStock(sale)), Is.EqualTo(9), "one unit for the buyer, however often it asked");
+        Assert.That(await client.Ask(new OrderOf(sale, user)), Is.EqualTo(OrderStatus.Confirmed));
+    }
+
+    [Test]
     public async Task AQueuedSaleAdmitsBuyersAtItsPace()
     {
         await using var cluster = await TestCluster.StartAsync(o =>

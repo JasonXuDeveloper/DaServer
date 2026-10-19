@@ -1,4 +1,5 @@
 using System.Text;
+using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
 using static DaServer.Generator.Support;
@@ -38,7 +39,7 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
                 pair.Left.Concat(pair.Right).Distinct().OrderBy(t => t!.FullName, StringComparer.Ordinal).ToArray()!))
             .WithTrackingName("HostedTypes");
 
-        // Actors and services (ADR-080): static classes marked [Actor<TId>] or [Service], read once per class.
+        // Actors and services (ADR-081): static classes marked [Actor<TId>] or [Service], read once per class.
         var actors = context.SyntaxProvider
             .ForAttributeWithMetadataName(ServerHandlers.ActorAttribute, static (node, _) => node is ClassDeclarationSyntax,
                 static (ctx, _) => ServerHandlers.Read((INamedTypeSymbol)ctx.TargetSymbol))
@@ -110,6 +111,21 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
             spc.AddSource("DaServer.Registration.g.cs", SourceText.From(Emit(types, servers, messages, placedIds, sharedSystems, filterModels, info), Encoding.UTF8));
         });
 
+        // Stored components are change-tracked (ADR-068): a checkpoint writes only actors whose stored components were
+        // written since the last one. Declared here, so users only write [Persist].
+        var tracked = context.SyntaxProvider
+            .ForAttributeWithMetadataName(PersistAttribute, static (node, _) => node is StructDeclarationSyntax or RecordDeclarationSyntax,
+                static (ctx, _) => TrackedComponent((INamedTypeSymbol)ctx.TargetSymbol, (TypeDeclarationSyntax)ctx.TargetNode))
+            .Where(static t => t is not null)
+            .WithTrackingName("TrackedComponents");
+        context.RegisterSourceOutput(tracked, static (spc, t) =>
+        {
+            var sb = new StringBuilder(Header);
+            string close = OpenNamespace(sb, t!.Namespace, server: false);
+            sb.Append($"partial {t.Keyword} {t.Name} : global::EasyEcs.ITrackChanges {{ }}\n").Append(close);
+            spc.AddSource($"DaServer.Tracked.{t.Hint}.g.cs", SourceText.From(sb.ToString(), Encoding.UTF8));
+        });
+
         // An assembly built with <DaServerShared>true</DaServerShared> says so, for the nodes that reference it.
         var shared = context.AnalyzerConfigOptionsProvider
             .Select(static (o, _) => IsShared(o.GlobalOptions))
@@ -118,6 +134,20 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
         {
             if (isShared) spc.AddSource("DaServer.Shared.g.cs", SourceText.From(Header + "[assembly: global::DaServer.DaServerShared]\n", Encoding.UTF8));
         });
+    }
+
+    /// <summary>
+    /// A top-level partial [Persist] struct that is not change-tracked yet; other shapes are DAS014's to report (a
+    /// component that is not a partial [NinoType] struct cannot be stored anyway).
+    /// </summary>
+    private static TrackedModel? TrackedComponent(INamedTypeSymbol type, TypeDeclarationSyntax syntax)
+    {
+        if (type.ContainingType != null || type.IsGenericType || !syntax.Modifiers.Any(SyntaxKind.PartialKeyword)) return null;
+        foreach (var i in type.AllInterfaces)
+            if (i.ToDisplayString() == "EasyEcs.ITrackChanges") return null;
+        string ns = type.ContainingNamespace.IsGlobalNamespace ? "" : type.ContainingNamespace.ToDisplayString();
+        return new TrackedModel(ns, type.Name, syntax is RecordDeclarationSyntax ? "record struct" : "struct",
+            Identifier(type.ToDisplayString()));
     }
 
     private static bool IsFirstHandler(INamedTypeSymbol type, ISymbol method)
@@ -238,7 +268,7 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
             sb.Append($"        ServerRegistry.RegisterSystem(new SystemInfo(typeof({system}), static () => new {system}()));\n");
         if (info.ReferencesRuntime)
             foreach (var component in info.Persisted) // the [Persist] and [Handoff] components
-                sb.Append($"        ServerRegistry.RegisterPersistent<{component.FullName}>(stored: {(component.Stored ? "true" : "false")});\n");
+                sb.Append($"        ServerRegistry.Register{(component.Stored ? "Stored" : "Handoff")}<{component.FullName}>();\n");
 
         foreach (var t in servers) ServerHandlers.Emit(sb, t);
         foreach (var t in types)
@@ -308,6 +338,8 @@ public sealed class RegistrationGenerator : IIncrementalGenerator
 
     private sealed record AssemblyModel(bool ReferencesCore, bool ReferencesRuntime, bool ModuleInitializer, string AssemblyHint,
         EquatableArray<string> ContractAnchors, EquatableArray<string> SharedSystems, EquatableArray<PersistedModel> Persisted);
+
+    private sealed record TrackedModel(string Namespace, string Name, string Keyword, string Hint);
 
     /// <summary>A component of actor records: stored and moved (<c>[Persist]</c>) or only moved (<c>[Handoff]</c>).</summary>
     private sealed record PersistedModel(string FullName, bool Stored);

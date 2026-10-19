@@ -73,14 +73,14 @@ public class PersistenceTests(string kind) : StoreTest(kind)
     {
         var store = NewStore();
         var first = await StartWith(store);
-        Assert.That(await first.Ask(new BankId(1), new Deposit(3, false)), Is.EqualTo(3));
-        await Eventually(() => store.Writes == 1, "the change was checkpointed (SaveEvery 100 ms)");
-        await Task.Delay(500); // several more checkpoints of an unchanged record
+        Assert.That(await first.Ask(new CheckpointedBankId(1), new Deposit(3, false)), Is.EqualTo(3));
+        await Eventually(() => store.Writes == 1, "the change was checkpointed (SaveEvery 1 s)");
+        await Task.Delay(2500); // more checkpoints of an unchanged record
         Assert.That(store.Writes, Is.EqualTo(1), "an unchanged record is not written again");
 
         await first.KillAsync();
         var second = await StartWith(store, "after");
-        Assert.That(await second.Ask(new BankId(1), new Balance()), Is.EqualTo(3), "the checkpoint survived the crash");
+        Assert.That(await second.Ask(new CheckpointedBankId(1), new Balance()), Is.EqualTo(3), "the checkpoint survived the crash");
     }
 
     [Test]
@@ -97,16 +97,20 @@ public class PersistenceTests(string kind) : StoreTest(kind)
     }
 
     [Test]
-    public async Task RecordsHoldWholeTurnsOnly()
+    public async Task RecordsHoldTheStateAfterWholeMessages()
     {
+        // A change in two messages (the request, then the answer to its ask), each asking for a write: a record holds
+        // the state after a whole message, and the last one is written.
         var store = NewStore();
         var first = await StartWith(store);
         Assert.That(await first.Ask(new BankId(103), new DepositTwice(5, new BankId(104))), Is.EqualTo(10));
-        await Eventually(() => store.Writes == 1, "SaveNow wrote once the turn ended");
+        await Eventually(() => Volatile.Read(ref store.Writes) >= 1, "SaveNow wrote without waiting for an unload");
+        await Task.Delay(300); // a write still asked for would have reached the store
+        Assert.That(store.Writes, Is.InRange(1, 2), "one write per message at most");
         await first.KillAsync();
 
         var second = await StartWith(store, "after");
-        Assert.That(await second.Ask(new BankId(103), new Balance()), Is.EqualTo(10), "not the state halfway through the turn");
+        Assert.That(await second.Ask(new BankId(103), new Balance()), Is.EqualTo(10), "the state after the last message");
     }
 
     [Test]
@@ -119,7 +123,7 @@ public class PersistenceTests(string kind) : StoreTest(kind)
         var a = await StartWith(store, "a");
         var b = await StartWith(store, "b");
         await Converged();
-        var load = Load(b, first: 100, keys: 32, critical: false);
+        var load = Load(b, keys: 32, static (node, key) => node.Ask(new BankId(100 + key), new Deposit(1, false)));
         await Task.Delay(200);
         await Stop(a);
         await Task.Delay(200);
@@ -144,26 +148,26 @@ public class PersistenceTests(string kind) : StoreTest(kind)
     [Test]
     public async Task AKillLosesAtMostTheLastCheckpointInterval()
     {
-        // Keys below 100 checkpoint every 100 ms. What was acknowledged half a second (several checkpoints) before the
-        // kill survives it; nothing survives that was not attempted, and no record holds half a turn.
+        // Checkpointed banks write every second. What was acknowledged one and a half seconds (a checkpoint and more)
+        // before the kill survives it; nothing survives that was not attempted.
         var store = NewStore();
         var first = await StartWith(store);
-        var load = Load(first, first: 1, keys: 16, critical: false);
+        var load = Load(first, keys: 16, static (node, key) => node.Ask(new CheckpointedBankId(1 + key), new Deposit(1, false)));
         await Task.Delay(300);
         int[] earlier = load.Snapshot();
-        await Task.Delay(500);
+        await Task.Delay(1500);
         await first.KillAsync();
         var (acknowledged, failed) = await load.Stop();
 
         var second = await StartWith(store, "after");
         for (int i = 0; i < earlier.Length; i++)
-            Assert.That(await second.Ask(new BankId(1 + i), new Balance()), Is.InRange(earlier[i], acknowledged[i] + failed[i]),
+            Assert.That(await second.Ask(new CheckpointedBankId(1 + i), new Balance()), Is.InRange(earlier[i], acknowledged[i] + failed[i]),
                 $"key {1 + i}: at least what was acknowledged one checkpoint interval and more before the kill");
         Assert.That(earlier.Sum(), Is.GreaterThan(100), "the kill happened under load");
     }
 
     /// <summary>One caller per key depositing 1 gold at a time until stopped; counts acknowledged and failed calls.</summary>
-    private static DepositLoad Load(Node node, int first, int keys, bool critical)
+    private static DepositLoad Load(Node node, int keys, Func<Node, int, Reply<int>> deposit)
     {
         var load = new DepositLoad(keys);
         for (int i = 0; i < keys; i++)
@@ -175,7 +179,7 @@ public class PersistenceTests(string kind) : StoreTest(kind)
                 {
                     try
                     {
-                        await node.Ask(new BankId(first + index), new Deposit(1, critical)).AsTask().WaitAsync(TimeSpan.FromSeconds(2));
+                        await deposit(node, index).AsTask().WaitAsync(TimeSpan.FromSeconds(2));
                         Interlocked.Increment(ref load.Acknowledged[index]);
                     }
                     catch (Exception)

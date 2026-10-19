@@ -79,7 +79,7 @@ public enum Admission : byte
 
 [NinoType, Message] public partial record struct GetOrder : IRequest<OrderStatus>;
 
-/// <summary>Take a place in a queued sale: the position, or 0 when it is sold out.</summary>
+/// <summary>Take a place in a queued sale: the position, or 0 when it is sold out or has no line (its buyers buy directly).</summary>
 [NinoType, Message] public partial record struct Join : IRequest<long>;
 
 /// <summary>Whether the buyer at <see cref="Position"/> of a queued sale may buy now.</summary>
@@ -96,7 +96,7 @@ public enum Admission : byte
 /// <summary>Buy as <see cref="User"/> (<see cref="Position"/>: the admitted place in a queued sale, else 0): the outcome, the same on every retry.</summary>
 [NinoType, Message, FromClient] public partial record struct PlaceOrder(long Sale, long User, long Position) : IRequest<OrderStatus>;
 
-/// <summary>Take a place in a queued sale's line: the position, or 0 when it is sold out.</summary>
+/// <summary>Take a place in a queued sale's line: the position, or 0 when it is sold out or has no line (buy directly).</summary>
 [NinoType, Message, FromClient] public partial record struct QueueUp(long Sale) : IRequest<long>;
 
 /// <summary>Whether the buyer at <see cref="Position"/> may buy now.</summary>

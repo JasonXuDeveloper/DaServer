@@ -14,211 +14,100 @@ namespace DaServer.Tests;
 [NinoType, Message] public partial record struct EchoPoint(Point Point) : IRequest<Point>;
 [NinoType, Message] public partial record struct AddVia(CounterId Other, int Delta) : IRequest<int>; // actor -> actor request
 [NinoType, Message] public partial record struct Fail(string Message) : IRequest<bool>;
-[NinoType, Message] public partial record struct SlowAdd(int Delta) : IRequest<int>;       // awaits a foreign Task.Delay
 [NinoType, Message] public partial record struct Grow : IRequest<bool>;                    // input for GrowthSystem
-[NinoType, Message] public partial record struct AnswerLater(int Ms, bool Fail) : IRequest<int>;
 [NinoType, Message] public partial record struct BumpLater(CounterId Target, int Ms, int By) : IRequest<long>; // SendAfter: the timer
 [NinoType, Message] public partial record struct CancelBump(long Timer) : IRequest<bool>;
 [NinoType, Message] public partial record struct BumpManyLater(CounterId Target, int Count) : IRequest<bool>;
-[NinoType, Message] public partial record struct ConfirmVia(CounterId Target) : IRequest<int>; // replied when Target answered (ReplyWhen)
-[NinoType, Message] public partial record struct ConfirmViaMany(CounterId Via, CounterId Target, int Count) : IRequest<long>; // bytes allocated meanwhile // replied after Ms, the turn ends at once
-[NinoType, Message] public partial record struct AskAndFail(CounterId Other);            // completes Reports.ResumedOnShard
-[NinoType, Message] public partial record struct AddMany(CounterId Other, int Count) : IRequest<long>;     // bytes allocated meanwhile
-[NinoType, Message] public partial record struct SendMany(CounterId Other, int Count) : IRequest<long>;    // bytes allocated meanwhile
-[NinoType, Message] public partial record struct AddViaMany(CounterId Via, CounterId Target, int Count) : IRequest<long>; // bytes allocated meanwhile
-[NinoType, Message] public partial record struct AskInBursts(CounterId Other, int Width, int Rounds) : IRequest<long>; // bytes allocated meanwhile
-[NinoType, Message] public partial record struct SuspendInBursts(long FirstVia, CounterId Target, int Width, int Rounds) : IRequest<long>; // bytes allocated meanwhile
+[NinoType, Message] public partial record struct ConfirmVia(CounterId Target) : IRequest<int>; // replied when Target answered (ReplyAfter)
+
+/// <summary>Replied <see cref="Ms"/> later with the value the counter had now (or a failure): the counter takes other mail meanwhile.</summary>
+[NinoType, Message] public partial record struct AnswerLater(int Ms, bool Fail) : IRequest<int>;
+/// <summary>One-way: ask <see cref="Callee"/> and report where its failure is answered (<see cref="Observed.ResumedOnShard"/>).</summary>
+[NinoType, Message] public partial record struct AskAndFail(CounterId Callee);
 
 /// <summary>One-way: sent in bursts (allocation test, events test).</summary>
 [NinoType, Message] public partial record struct CounterBumped(int By);
 
 
-/// <summary>What handlers report to the test that drives them.</summary>
-public static class Reports
+[Actor<CounterId>]
+public static class Counter
 {
-    /// <summary>Whether the last <see cref="AskAndFail"/> resumed on its shard after its call failed.</summary>
-    public static TaskCompletionSource<bool> ResumedOnShard = new();
-}
+    [Handle] internal static void On(in CounterBumped e, ref CounterState s) => s.Value += e.By;
 
+    [Handle] internal static int On(in Add m, ref CounterState s) => s.Value += m.Delta;
 
-public sealed class Counter : Actor<CounterId, CounterState>
-{
-    [Handle] public void On(CounterBumped e) => State.Value += e.By;
+    [Handle] internal static int On(in Get _, in CounterState s) => s.Value;
 
-    [Handle] public int On(Add m) => State.Value += m.Delta;
-
-    [Handle] public int On(Get _) => State.Value;
-
-    [Handle] public void On(Bump _) => State.Value++;
+    [Handle] internal static void On(in Bump _, ref CounterState s) => s.Value++;
 
     [Handle]
-    public bool On(Reset _)
+    internal static bool On(in Reset _, ref CounterState s)
     {
-        State.Value = 0;
+        s.Value = 0;
         return true;
     }
 
-    [Handle] public string On(WhereAmI _) => Thread.CurrentThread.Name ?? "";
+    [Handle] internal static string On(in WhereAmI _) => Thread.CurrentThread.Name ?? "";
 
-    [Handle] public Point On(EchoPoint m) => m.Point with { X = m.Point.X + 1 };
+    [Handle] internal static Point On(in EchoPoint m) => m.Point with { X = m.Point.X + 1 };
 
+    /// <summary>Ask another counter, then answer with this one's value plus its answer: the reply waits as data.</summary>
     [Handle]
-    public async Reply<int> On(AddVia m)
+    internal static Answer<int> On(in AddVia m, in Context ctx)
     {
-        int other = await Cluster.Ask(m.Other, new Add(m.Delta));
-        return State.Value += other; // back on this shard's thread: no locks needed
-    }
-
-    [Handle] public bool On(Fail m) => throw new InvalidOperationException(m.Message);
-
-    [Handle]
-    public async Reply<int> On(SlowAdd m)
-    {
-        var shard = Shard.Current;
-#pragma warning disable DAS009 // on purpose: a foreign await must resume on the shard
-        await Task.Delay(10);
-#pragma warning restore DAS009
-        if (Shard.Current != shard) throw new InvalidOperationException("continuation left the shard thread");
-        return State.Value += m.Delta;
+        ctx.Ask(m.Other, new Add(m.Delta), ctx.ReplyLater());
+        return Answer<int>.Later;
     }
 
     [Handle]
-    public async Reply On(AskAndFail m)
+    internal static void On(in Answered<Add, int> a, ref CounterState s, in Context ctx)
     {
-        var shard = Shard.Current;
-        try
-        {
-            await Cluster.Ask(m.Other, new Add(1));
-        }
-        catch (RpcException)
-        {
-        }
-
-        Reports.ResumedOnShard.TrySetResult(Shard.Current == shard);
+        if (a.Ok) ctx.Reply(a.ReplyTo, s.Value += a.Value);
+        else ctx.Fail(a.ReplyTo, a.Status);
     }
 
-    [Handle] public long On(BumpLater m) => Cluster.SendAfter(TimeSpan.FromMilliseconds(m.Ms), m.Target, new CounterBumped(m.By));
+    [Handle] internal static bool On(in Fail m) => throw new InvalidOperationException(m.Message);
 
-    [Handle] public bool On(CancelBump m) => Cluster.CancelSend(m.Timer);
+    [Handle] internal static long On(in BumpLater m, in Context ctx) => ctx.SendAfter(TimeSpan.FromMilliseconds(m.Ms), m.Target, new CounterBumped(m.By));
+
+    [Handle] internal static bool On(in CancelBump m, in Context ctx) => ctx.CancelSend(m.Timer);
 
     [Handle]
-    public bool On(BumpManyLater m)
+    internal static bool On(in BumpManyLater m, in Context ctx)
     {
-        for (int i = 0; i < m.Count; i++) Cluster.SendAfter(TimeSpan.Zero, m.Target, new CounterBumped(1));
+        for (int i = 0; i < m.Count; i++) ctx.SendAfter(TimeSpan.Zero, m.Target, new CounterBumped(1));
         return true;
     }
 
-    [Handle] public Reply<int> On(ConfirmVia m) => ReplyWhen(Cluster.Ask(m.Target, new Add(1)), State.Value);
+    /// <summary>Answered with this counter's value once the target counter took one more.</summary>
+    [Handle] internal static Answer<int> On(in ConfirmVia m, in CounterState s, in Context ctx) => ctx.ReplyAfter(ctx.Ask(m.Target, new Add(1)), s.Value);
 
     [Handle]
-    public async Reply<long> On(ConfirmViaMany m)
+    internal static Answer<int> On(in AnswerLater m, in CounterState s, in Context ctx)
     {
-        for (int i = 0; i < 100; i++) await Cluster.Ask(m.Via, new ConfirmVia(m.Target)); // warm-up
-        long before = GC.GetTotalAllocatedBytes(precise: true);
-        for (int i = 0; i < m.Count; i++) await Cluster.Ask(m.Via, new ConfirmVia(m.Target));
-        return GC.GetTotalAllocatedBytes(precise: true) - before;
+        ctx.SendAfter(TimeSpan.FromMilliseconds(m.Ms), ctx.Id<CounterId>(), ReplyDue.Of(ctx.ReplyLater(), s.Value, m.Fail));
+        return Answer<int>.Later;
     }
 
     [Handle]
-    public Reply<int> On(AnswerLater m) =>
-#pragma warning disable DAS009 // on purpose: a foreign task completing later, off the shard
-        ReplyWhen(new Reply(m.Fail ? ValueTask.FromException(new InvalidOperationException("later")) : new ValueTask(Task.Delay(m.Ms))), State.Value);
-#pragma warning restore DAS009
+    internal static void On(in ReplyDue m, in Context ctx)
+    {
+        if (m.Fail) ctx.Fail(m.To(), RpcStatus.Error);
+        else ctx.Reply(m.To(), m.Value);
+    }
+
+    [Handle] internal static void On(in AskAndFail m, in Context ctx) => ctx.Ask(m.Callee, new Get());
+
+    /// <summary>The answer of <see cref="AskAndFail"/>: its timeout is mail of this counter, on its shard's thread.</summary>
+    [Handle]
+    internal static void On(in Answered<Get, int> a, in Context ctx) =>
+        Observed.ResumedOnShard.TrySetResult(a.Status == RpcStatus.Timeout && Shard.Current == ctx.World.Shard);
 
     [Handle]
-    public bool On(Grow _)
+    internal static bool On(in Grow _, Entity self)
     {
-        Entity.GetOrAdd<Growing>();
+        self.GetOrAdd<Growing>();
         return true;
-    }
-
-    [Handle]
-    public async Reply<long> On(AddMany m)
-    {
-        for (int i = 0; i < 100; i++) await Cluster.Ask(m.Other, new Add(1)); // warm-up: pools, JIT
-        long before = GC.GetTotalAllocatedBytes(precise: true);
-        for (int i = 0; i < m.Count; i++) await Cluster.Ask(m.Other, new Add(1));
-        return GC.GetTotalAllocatedBytes(precise: true) - before;
-    }
-
-    [Handle]
-    public async Reply<long> On(AddViaMany m)
-    {
-        // Every call suspends in the callee (it awaits a third actor), so each reply goes through the reply watcher.
-        for (int i = 0; i < 100; i++) await Cluster.Ask(m.Via, new AddVia(m.Target, 1)); // warm-up
-        long before = GC.GetTotalAllocatedBytes(precise: true);
-        for (int i = 0; i < m.Count; i++) await Cluster.Ask(m.Via, new AddVia(m.Target, 1));
-        return GC.GetTotalAllocatedBytes(precise: true) - before;
-    }
-
-    [Handle]
-    public async Reply<long> On(AskInBursts m)
-    {
-        // Width calls in flight at once, then all awaited: more than any fixed pool size must not allocate when warm.
-        var pending = new Reply<int>[m.Width];
-        await Burst(Cluster, m, pending); // warm-up
-        long before = GC.GetTotalAllocatedBytes(precise: true);
-        for (int round = 0; round < m.Rounds; round++) await Burst(Cluster, m, pending);
-        return GC.GetTotalAllocatedBytes(precise: true) - before;
-
-        static async Reply Burst(ICluster cluster, AskInBursts m, Reply<int>[] pending)
-        {
-            for (int i = 0; i < pending.Length; i++) pending[i] = cluster.Ask(m.Other, new Add(1));
-            for (int i = 0; i < pending.Length; i++) await pending[i];
-        }
-    }
-
-    [Handle]
-    public async Reply<long> On(SuspendInBursts m)
-    {
-        // Width actors at once each suspend in an async handler (AddVia awaits Target): Width boxes alive together.
-        var pending = new Reply<int>[m.Width];
-        await Burst(Cluster, m, pending); // warm-up
-        long before = GC.GetTotalAllocatedBytes(precise: true);
-        for (int round = 0; round < m.Rounds; round++) await Burst(Cluster, m, pending);
-        return GC.GetTotalAllocatedBytes(precise: true) - before;
-
-        static async Reply Burst(ICluster cluster, SuspendInBursts m, Reply<int>[] pending)
-        {
-            for (int i = 0; i < pending.Length; i++) pending[i] = cluster.Ask(new CounterId(m.FirstVia + i), new AddVia(m.Target, 1));
-            for (int i = 0; i < pending.Length; i++) await pending[i];
-        }
-    }
-
-    [Handle]
-    public async Reply<long> On(ServiceTraffic m)
-    {
-        // Each round: a one-way message, a published event (two services) and a request to services; the request
-        // returns after the others on the same path (one shard queue locally, one ordered link remotely).
-        for (int i = 0; i < 100; i++) await Round(Cluster); // warm-up
-        long before = GC.GetTotalAllocatedBytes(precise: true);
-        for (int i = 0; i < m.Count; i++) await Round(Cluster);
-        return GC.GetTotalAllocatedBytes(precise: true) - before;
-
-        static Reply<int> Round(ICluster cluster)
-        {
-            cluster.Send(new Tally(1));
-            cluster.Publish(new Tallied(1));
-            return cluster.Ask(new TallyAsk(1));
-        }
-    }
-
-    [Handle]
-    public async Reply<long> On(SendMany m)
-    {
-        // Bursts of 100 one-way messages, each followed by a request (messages of one sender reach an actor in order):
-        // steady state with bounded frames in flight, as in a running server.
-        const int burst = 100;
-        for (int i = 0; i < burst; i++) Cluster.Send(m.Other, new CounterBumped(1));
-        await Cluster.Ask(m.Other, new Get());
-        long before = GC.GetTotalAllocatedBytes(precise: true);
-        for (int sent = 0; sent < m.Count; sent += burst)
-        {
-            for (int i = 0; i < burst; i++) Cluster.Send(m.Other, new CounterBumped(1));
-            await Cluster.Ask(m.Other, new Get());
-        }
-
-        return GC.GetTotalAllocatedBytes(precise: true) - before;
     }
 }
 
@@ -267,16 +156,10 @@ public sealed partial class TallySystem : EcsSystem
     public static readonly System.Collections.Concurrent.ConcurrentDictionary<(ulong Node, long Key), int> Ticks = new();
 
     [ForEach, With<Streak>]
-    private static void Tally(in Ledger _, in ActorRef self, World world)
+    private static void Tally(in Ledger _, in ActorKey self, World world)
     {
-        if (self.Actor.Key >= 7000) Ticks.AddOrUpdate((world.Shard.Node.Id, self.Actor.Key), 1, static (_, n) => n + 1);
+        if (self.Key >= 7000) Ticks.AddOrUpdate((world.Shard.Node.Id, self.Key), 1, static (_, n) => n + 1);
     }
-}
-
-/// <summary>Released by tests holding a turn (<see cref="HoldTurn"/>).</summary>
-public static class TurnGate
-{
-    public static TaskCompletionSource Current = new(TaskCreationOptions.RunContinuationsAsynchronously);
 }
 
 /// <summary>A request no type handles.</summary>
@@ -285,12 +168,14 @@ public static class TurnGate
 /// <summary>A request two service types answer (never sent: only <c>RouteCheck</c> looks at it).</summary>
 [NinoType, Message] public partial record struct AnsweredTwice : IRequest<int>;
 
-public sealed class FirstAnswer : Service
+[Service]
+public static class FirstAnswer
 {
-    [Handle] public int On(AnsweredTwice _) => 1;
+    [Handle] internal static int On(in AnsweredTwice _) => 1;
 }
 
-public sealed class SecondAnswer : Service
+[Service]
+public static class SecondAnswer
 {
-    [Handle] public int On(AnsweredTwice _) => 2;
+    [Handle] internal static int On(in AnsweredTwice _) => 2;
 }

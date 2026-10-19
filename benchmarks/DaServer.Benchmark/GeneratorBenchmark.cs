@@ -8,7 +8,8 @@ namespace DaServer.Benchmark;
 
 /// <summary>
 /// What the generators and the analyzer cost the IDE and the build on a large business assembly: 1,000 messages (half
-/// of them requests), 200 actors and 50 services with 5 handlers each, 5,000 call sites, among 500 unrelated classes.
+/// of them requests), 200 actors and 50 services (static classes, ADR-080) with 5 static handlers each, 5,000 call sites
+/// (asks and sends from one service handler), among 500 unrelated classes.
 /// Generate: a full run (a build). Edit: one more run after an edit unrelated to DaServer (a keystroke in the IDE),
 /// which must hit the incremental cache. Analyze: the analyzer over the whole compilation.
 /// </summary>
@@ -88,31 +89,32 @@ public class GeneratorBenchmark
 
     private static string HandlerTypes()
     {
-        var sb = new System.Text.StringBuilder("using System.Threading.Tasks; using DaServer; using DaServer.Runtime; namespace Game;\n");
+        var sb = new System.Text.StringBuilder("using DaServer; using DaServer.Runtime; namespace Game;\n");
         int message = 0;
         for (int i = 0; i < Actors + Services; i++)
         {
-            sb.Append(i < Actors ? $"public sealed class A{i} : Actor<A{i}Id> {{\n" : $"public sealed class S{i} : Service {{\n");
+            sb.Append(i < Actors ? $"[Actor<A{i}Id>] public static class A{i} {{\n" : $"[Service] public static class S{i} {{\n");
             for (int h = 0; h < HandlersPerType; h++, message = (message + 1) % Messages)
                 sb.Append(message % 2 == 0
-                    ? $"  [Handle] public int On(M{message} m) => m.X;\n"
-                    : $"  [Handle] public void On(M{message} m) {{ }}\n");
+                    ? $"  [Handle] internal static int On(in M{message} m) => m.X;\n"
+                    : $"  [Handle] internal static void On(in M{message} m) {{ }}\n");
             sb.Append("}\n");
         }
 
         return sb.ToString();
     }
 
+    /// <summary>One handler making every call: asks (answered as Answered mail, unhandled here) and one-way sends.</summary>
     private static string Calls()
     {
-        var sb = new System.Text.StringBuilder("using System.Threading.Tasks; using DaServer; using DaServer.Runtime; namespace Game;\n");
-        sb.Append("public sealed class Traffic : Service {\n  [Handle] public async Reply On(M1 _) {\n");
+        var sb = new System.Text.StringBuilder("using DaServer; using DaServer.Runtime; namespace Game;\n");
+        sb.Append("[Service] public static class Traffic {\n  [Handle] internal static void On(in M1 _, in Context ctx) {\n");
         for (int i = 0; i < CallSites; i++)
         {
             int m = i % Messages;
             sb.Append(m % 2 == 0
-                ? $"    await Cluster.Ask(new A{i % Actors}Id(1), new M{m}(1));\n"
-                : $"    Cluster.Send(new A{i % Actors}Id(1), new M{m}(1));\n");
+                ? $"    ctx.Ask(new A{i % Actors}Id(1), new M{m}(1));\n"
+                : $"    ctx.Send(new A{i % Actors}Id(1), new M{m}(1));\n");
         }
 
         return sb.Append("  }\n}\n").ToString();

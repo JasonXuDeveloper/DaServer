@@ -1,6 +1,6 @@
 namespace DaServer.Runtime;
 
-// The shard runtime is ECS like the business code (ADR-080): every actor is an entity whose components are data (its
+// The shard runtime is ECS like the business code (ADR-081): every actor is an entity whose components are data (its
 // identity, its lifecycle as tags, its user components); the shard's mail, asks and replies in flight are singletons;
 // runtime systems (Systems/) each do one job.
 
@@ -58,13 +58,24 @@ internal struct Leaving : IComponent;
 internal readonly record struct Removing(RpcStatus Status) : IComponent;
 
 /// <summary>
-/// Client sessions known to a loaded actor: those that called it or that it bound or granted. When a
-/// client-facing node dies without closing its sessions, the runtime delivers <see cref="SessionClosed"/> for them. Granted:
-/// the sessions it holds bound or granted now, the only ones a client may resume from (<see cref="SessionResumed"/>).
-/// Superseded: sessions a client resumed from, whose late close is not delivered.
+/// A client session a loaded actor knows: an entity per (actor, session), a child of the actor's entity (it goes with
+/// the actor, and moves with it). Known: it called the actor or the actor bound or granted it; when a client-facing node
+/// dies without closing its sessions, the runtime delivers <see cref="SessionClosed"/> for them. Indexed by session, so
+/// the actor's record of its caller is one lookup per message.
 /// </summary>
-internal readonly record struct ClientSessions(
-    HashSet<ClientSession> Sessions, HashSet<ClientSession> Granted, HashSet<ClientSession> Superseded) : IComponent;
+internal readonly record struct KnownSession(ClientSession Session) : IComponent, IIndexed<ClientSession>
+{
+    ClientSession IIndexed<ClientSession>.Key => Session;
+}
+
+/// <summary>Tag of a <see cref="KnownSession"/>: the actor called by it, or bound or granted it, since its last close.</summary>
+internal struct Known : IComponent;
+
+/// <summary>Tag of a <see cref="KnownSession"/>: the actor holds it bound or granted now, the only sessions a client may resume from.</summary>
+internal struct Granted : IComponent;
+
+/// <summary>Tag of a <see cref="KnownSession"/>: a client resumed from it, so its late close is not delivered.</summary>
+internal struct Superseded : IComponent;
 
 // ---------------------------------------------------------------- shard singletons
 
@@ -73,25 +84,6 @@ internal readonly record struct ClientSessions(
 /// shard, reused.
 /// </summary>
 internal readonly record struct MailScratch(List<Envelope> Items) : ISingletonComponent;
-
-/// <summary>Idle session sets, rented when an actor first knows a session and returned when it is removed (bounded).</summary>
-internal readonly record struct SessionPool(Stack<ClientSessions> Idle) : ISingletonComponent
-{
-    private const int Bound = 4096;
-    private const int MaxPooled = 64;
-
-    public ClientSessions Rent() =>
-        Idle.TryPop(out var sessions) ? sessions : new ClientSessions(new HashSet<ClientSession>(), new HashSet<ClientSession>(), new HashSet<ClientSession>());
-
-    public void Return(in ClientSessions sessions)
-    {
-        if (Idle.Count >= Bound || sessions.Sessions.Count + sessions.Superseded.Count > MaxPooled) return;
-        sessions.Sessions.Clear();
-        sessions.Granted.Clear();
-        sessions.Superseded.Clear();
-        Idle.Push(sessions);
-    }
-}
 
 /// <summary>Per-wake bookkeeping shared by the runtime systems and the shard loop.</summary>
 internal struct ShardActivity : ISingletonComponent

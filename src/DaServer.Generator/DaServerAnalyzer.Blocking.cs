@@ -10,15 +10,15 @@ namespace DaServer.Generator;
 /// </summary>
 public sealed partial class DaServerAnalyzer
 {
-    private const string AwaitIt = "await it (only this actor's turn waits)";
-    private const string SendLater = "send a message later with Cluster.SendAfter (the actor stays free), or give a system an UpdateInterval";
+    private const string AwaitIt = "ask with ctx.Ask instead: the answer comes back as a message (handlers never wait)";
+    private const string SendLater = "send a message later with ctx.SendAfter, or give a system an UpdateInterval";
     private const string NoLocks = "shard state needs no lock: one thread runs it, and other threads reach it through messages";
 
     /// <summary>Whether code of <paramref name="type"/> runs on a shard thread (an actor, a service or a system).</summary>
     private static bool OnShard(INamedTypeSymbol? type, out bool system)
     {
         system = type != null && Support.DerivesFrom(type, Support.EcsSystem);
-        return type != null && (system || Support.DerivesFrom(type, Support.ActorBase) || Support.DerivesFrom(type, Support.ServiceBase));
+        return type != null && (system || ServerHandlers.IsHandlerType(type));
     }
 
     private static void CheckBlocking(OperationAnalysisContext context)

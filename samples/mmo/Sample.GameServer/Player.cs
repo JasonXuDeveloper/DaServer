@@ -6,54 +6,79 @@ using Sample.Contracts;
 namespace Sample.GameServer;
 
 /// <summary>
-/// The player: its profile (stored, restored before <see cref="OnLoad"/>), and which map it is in. The map simulates
-/// the avatar.
+/// The player: its profile (stored), which map it is in and the session it plays from. The map simulates the avatar;
+/// the player only turns messages into data and asks the maps.
 /// </summary>
-public sealed class Player : Actor<PlayerId, PlayerState>
+[Actor<PlayerId>]
+public static class Player
 {
-    public override Reply OnLoad()
+    /// <summary>A new player (no stored profile).</summary>
+    [Handle] internal static void On(in Created _, ref PlayerProfile profile, in Context ctx) => profile = new PlayerProfile("player-" + ctx.Id<PlayerId>().Value, 0);
+
+    /// <summary>The login attaches the client's session: the login is answered once the binding applied.</summary>
+    [Handle]
+    internal static Answer<bool> On(in Attach m, ref PlayerProfile profile, ref PlayerState state, in Context ctx)
     {
-        if (!Entity.Has<PlayerProfile>()) Entity.Set<PlayerProfile>(new PlayerProfile("player-" + Id.Value, 0)); // a new player
-        return default;
+        profile.Logins++;
+        state.Session = m.Session;
+        ctx.Send(RealmId.The, new PlayerOnline(ctx.Id<PlayerId>()));
+        return ctx.ReplyAfter(ctx.BindSession(m.Session), true); // GetInfo / EnterMap from the session reach this player from then on
     }
 
     [Handle]
-    public async Reply<bool> On(Attach m)
-    {
-        await BindSession(m.Session); // the client's GetInfo/EnterMap reach this player from now on
-        Entity.Get<PlayerProfile>().Logins++; // components are re-read after awaiting (never hold a ref across await)
-        State.Session = m.Session;
-        Cluster.Send(RealmId.The, new PlayerOnline(Id));
-        return true;
-    }
-
-    [Handle]
-    public void On(SessionClosed _)
+    internal static void On(in SessionClosed _, ref PlayerState state, in Context ctx)
     {
         // The map got its own SessionClosed (the session was bound to it too) and removed the avatar.
-        State.Session = default;
-        State.Map = default;
-        Cluster.Send(RealmId.The, new PlayerOffline(Id));
+        state = default;
+        ctx.Send(RealmId.The, new PlayerOffline(ctx.Id<PlayerId>()));
     }
 
-    [Handle]
-    public void On(SessionResumed e) => State.Session = e.Session; // resumed: not offline, nothing else to resend
+    [Handle] internal static void On(in SessionResumed e, ref PlayerState state) => state.Session = e.Session; // not offline: nothing to resend
 
     [Handle]
-    public PlayerInfo On(GetInfo _)
-    {
-        ref var profile = ref Entity.Get<PlayerProfile>();
-        return new PlayerInfo(Id, profile.Name, State.Map, profile.Logins);
-    }
+    internal static PlayerInfo On(in GetInfo _, in PlayerProfile profile, in PlayerState state, in Context ctx) =>
+        new(ctx.Id<PlayerId>(), profile.Name, state.Map, profile.Logins);
 
+    /// <summary>
+    /// Leave the previous map (if any), then enter <see cref="EnterMap.Map"/>: one after the other, so the gateway
+    /// unbinds the old map before it binds the new one. The steps are the answers below; the change in flight is
+    /// <see cref="Entering"/>, the caller's reply token travels with the asks.
+    /// </summary>
     [Handle]
-    public async Reply<bool> On(EnterMap m)
+    internal static Answer<bool> On(in EnterMap m, in PlayerState state, Entity self, in Context ctx)
     {
-        var previous = State.Map;
+        var previous = state.Map; // read before the structural change below (it may move the row)
         if (previous == m.Map) return true;
-        if (previous != default) await Cluster.Ask(previous, new Leave(Caller));
-        await Cluster.Ask(m.Map, new Enter(Id, Caller)); // Caller holds for the whole turn
-        State.Map = m.Map;
-        return true;
+        if (self.Has<Entering>()) return false; // one change at a time (a client awaits its EnterMap)
+        ClientSession session = ctx.Caller;
+        self.Set(new Entering(m.Map, session));
+        if (previous != default) ctx.Ask(previous, new Leave(session), ctx.ReplyLater());
+        else ctx.Ask(m.Map, new Enter(ctx.Id<PlayerId>(), session), ctx.ReplyLater());
+        return Answer<bool>.Later;
+    }
+
+    [Handle]
+    internal static void On(in Answered<Leave, bool> a, ref PlayerState state, Entity self, in Context ctx)
+    {
+        if (!self.TryGet<Entering>(out var entering)) return;
+        if (!a.Ok)
+        {
+            self.Remove<Entering>();
+            ctx.Fail(a.ReplyTo, a.Status); // still in the previous map
+            return;
+        }
+
+        state.Map = default; // out of the previous map, not in the next one yet
+        ctx.Ask(entering.Map, new Enter(ctx.Id<PlayerId>(), entering.Session), a.ReplyTo);
+    }
+
+    [Handle]
+    internal static void On(in Answered<Enter, bool> a, ref PlayerState state, Entity self, in Context ctx)
+    {
+        if (!self.TryGet<Entering>(out var entering)) return;
+        if (a.Ok) state.Map = entering.Map;
+        self.Remove<Entering>(); // `state` is invalid from here on
+        if (a.Ok) ctx.Reply(a.ReplyTo, a.Value);
+        else ctx.Fail(a.ReplyTo, a.Status);
     }
 }

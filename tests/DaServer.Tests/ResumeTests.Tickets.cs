@@ -26,17 +26,18 @@ public partial class ResumeTests
     [Test]
     public async Task AKickIsNotEvadedByAResumeWaitingBehindIt()
     {
-        // The player kicks a session in a turn while a resume of that session waits in its mailbox (a move): the resume
-        // is refused and the player learns the session closed, instead of the kicked client carrying on.
+        // The player kicks a session while a resume of that session waits behind the kick (its node busy): the resume is
+        // refused and the player learns the session closed, instead of the kicked client carrying on.
         var gateways = await StartCluster(TimeSpan.FromSeconds(5));
         var client = await LogIn(gateways, 595);
         var ticket = client.Ticket!;
-        TurnGate.Current = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var kick = client.Ask(new KickAfterGate()).AsTask();
+        var gate = new ManualResetEventSlim(); // not disposed: a shard thread may still be inside Wait() when the test ends
+        HoldShards(Nodes.Single(static n => n.Options.Name == "game"), gate);
+        var kick = client.Ask(new Kick()).AsTask();
         await Task.Delay(200);
         var resume = ResumeWith(gateways, ticket);
-        await Task.Delay(300); // the resume waits behind the held turn
-        TurnGate.Current.TrySetResult();
+        await Task.Delay(300); // the resume waits behind the kick
+        gate.Set();
 
         Assert.That((await resume).Status, Is.EqualTo(RpcStatus.Forbidden), "the kicked session resumed");
         await Eventually(() => Observed.Events.Contains("closed:595"), "the player learns the kicked session closed");
@@ -139,7 +140,7 @@ public partial class ResumeTests
     {
         public int Seen;
 
-        public RpcStatus Admit<T>(object target, in T message, in CallContext context) where T : struct
+        public RpcStatus Admit<T>(in Context context, in T message) where T : struct
         {
             if (typeof(T) != typeof(SessionClosed)) return RpcStatus.Ok;
             Interlocked.Increment(ref Seen);
@@ -179,13 +180,13 @@ public partial class ResumeTests
     }
 
     /// <summary>
-    /// A lounge (on "game", holding <paramref name="player"/>'s session) moved to a new node while "game" holds it in a
-    /// turn: its record waits until <see cref="TurnGate"/> opens. The slot table reaches every node but those
+    /// A lounge (on "game", holding <paramref name="player"/>'s session) moved to a new node while "game"'s shards are
+    /// held: its record waits until the returned gate opens. The slot table reaches every node but those
     /// <paramref name="stale"/> keeps out.
     /// </summary>
-    private async Task<(Node Next, long Key, ClusterClient Client, Task Held)> MoveHeldLounge(Node[] gateways, long player, Func<Node, bool> stale)
+    private async Task<(Node Next, long Key, ClusterClient Client, ManualResetEventSlim Held)> MoveHeldLounge(Node[] gateways, long player,
+        Func<Node, bool> stale)
     {
-        Faults.Allow("TurnTooLong"); // the held turn is the point
         var game = Nodes.Single(n => n.Options.Name == "game");
         var next = await Start("game-2", configure: Secret(gateways[0].Options.ResumeGrace));
         await Converged();
@@ -194,8 +195,8 @@ public partial class ResumeTests
         Assert.That(await client.Ask(new SitDown(new LoungeId(key))), Is.True);
         Assert.That(await game.Ask(new LoungeId(key), new Seated()), Is.Positive, "the lounge holds the session");
 
-        TurnGate.Current = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var held = game.Ask(new LoungeId(key), new HoldLounge()).AsTask();
+        var held = new ManualResetEventSlim(); // not disposed: a shard thread may still be inside Wait() when the test ends
+        HoldShards(game, held);
         int slot = ClusterView.Slot(ActorIds<LoungeId>.HandlerTypeId, key);
         var table = new SlotTable { Version = 1000, Coordinator = game.Id, Overrides = [new SlotOverride(ActorIds<LoungeId>.HandlerTypeId, (ushort)slot, next.Id)] };
         foreach (var node in Nodes)
@@ -203,10 +204,10 @@ public partial class ResumeTests
         return (next, key, client, held);
     }
 
-    private static async Task Release(Task held)
+    private static Task Release(ManualResetEventSlim held)
     {
-        TurnGate.Current.TrySetResult();
-        try { await held; } catch (RpcException) { } // its caller may have timed out meanwhile
+        held.Set();
+        return Task.CompletedTask;
     }
 
     /// <summary>Whether <paramref name="node"/> holds the actor and waits for its record (read from the test's thread: a
@@ -215,8 +216,8 @@ public partial class ResumeTests
     {
         try
         {
-            return node.Shards.Any(shard => shard.World.GetSingleton<ActorDirectory>()
-                .TryGet(shard.World, new ActorAddress(ActorIds<TId>.HandlerTypeId, key), out var entity) && entity.Has<DaServer.Persistence.AwaitingHandoff>());
+            return node.Shards.Any(shard => ShardDispatch.TryGetLoaded(shard.World, new ActorAddress(ActorIds<TId>.HandlerTypeId, key), out var entity)
+                && entity.Has<DaServer.Persistence.AwaitingHandoff>());
         }
         catch (Exception)
         {

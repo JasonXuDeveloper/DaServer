@@ -7,33 +7,36 @@ public class AllocationTests : ClusterTest
     public async Task ShardToShardCallsDoNotAllocate()
     {
         var node = await StartQuiet("alloc");
-        long other = await KeyOnAnotherShard(node); // every call crosses threads through the mailboxes
+        long other = await KeyOnAnotherShard(node); // every call crosses threads through the shards' queues
 
-        // Warm up past tiered-JIT promotion, then measure (AssertPerOp: what the process-wide counter also sees).
+        // Warm up past tiered-JIT promotion, then measure (AssertPerOp: what the process-wide counter also sees). One ask
+        // at a time: each answer is the driver's mail, whose handler asks again.
         const int calls = 20_000;
-        await node.Ask(new CounterId(1), new AddMany(new CounterId(other), 3 * calls));
-        long allocated = await node.Ask(new CounterId(1), new AddMany(new CounterId(other), calls));
+        await node.Ask(Driver, new Drive(DriveKind.Add, other, 0, 1, 3 * calls));
+        long allocated = await node.Ask(Driver, new Drive(DriveKind.Add, other, 0, 1, calls));
         AssertPerOp(allocated, calls, "calls");
     }
 
     [Test, Retry(3)]
-    public async Task RepliesOfSuspendedHandlersDoNotAllocate()
+    public async Task RepliesKeptForLaterDoNotAllocate()
     {
+        // Every call is replied by an Answered handler through the token its request kept (ReplyLater): pending replies
+        // are entities of the shard's world, reused.
         var node = await StartQuiet("alloc");
         const int calls = 10_000;
-        await node.Ask(new CounterId(1), new AddViaMany(new CounterId(2), new CounterId(3), 3 * calls));
-        long allocated = await node.Ask(new CounterId(1), new AddViaMany(new CounterId(2), new CounterId(3), calls));
+        await node.Ask(Driver, new Drive(DriveKind.AddVia, 2, 3, 1, 3 * calls));
+        long allocated = await node.Ask(Driver, new Drive(DriveKind.AddVia, 2, 3, 1, calls));
         AssertPerOp(allocated, calls, "calls");
     }
 
     [Test, Retry(3)]
-    public async Task RepliesSentLaterDoNotAllocate()
+    public async Task RepliesAfterAnAskDoNotAllocate()
     {
-        // Every call is replied with ReplyWhen once a third actor answered: the deferred reply's watcher is pooled.
+        // Every call is replied with ReplyAfter once a third actor answered: the ask's pending call carries the reply.
         var node = await StartQuiet("alloc");
         const int calls = 10_000;
-        await node.Ask(new CounterId(1), new ConfirmViaMany(new CounterId(2), new CounterId(3), 3 * calls));
-        long allocated = await node.Ask(new CounterId(1), new ConfirmViaMany(new CounterId(2), new CounterId(3), calls));
+        await node.Ask(Driver, new Drive(DriveKind.Confirm, 2, 3, 1, 3 * calls));
+        long allocated = await node.Ask(Driver, new Drive(DriveKind.Confirm, 2, 3, 1, calls));
         AssertPerOp(allocated, calls, "calls");
     }
 
@@ -66,8 +69,8 @@ public class AllocationTests : ClusterTest
         long other = await KeyOnAnotherShard(node);
 
         const int width = 2_000, rounds = 10;
-        await node.Ask(new CounterId(1), new AskInBursts(new CounterId(other), width, 3));
-        long allocated = await node.Ask(new CounterId(1), new AskInBursts(new CounterId(other), width, rounds));
+        await node.Ask(Driver, new Drive(DriveKind.Add, other, 0, width, 3));
+        long allocated = await node.Ask(Driver, new Drive(DriveKind.Add, other, 0, width, rounds));
         AssertPerOp(allocated, width * rounds, "calls");
     }
 
@@ -119,23 +122,23 @@ public class AllocationTests : ClusterTest
     }
 
     [Test, Retry(3)]
-    public async Task BurstsOfSuspendedHandlersDoNotAllocate()
+    public async Task BurstsOfRepliesKeptForLaterDoNotAllocate()
     {
-        // 2,000 actors suspended in async Reply<T> handlers at once: their state machines live in pooled boxes.
+        // 2,000 actors at once each keep a reply for later while their own ask is out (AddVia).
         var node = await StartQuiet("alloc");
         const int width = 2_000, rounds = 10;
-        await node.Ask(new CounterId(1), new SuspendInBursts(1_000, new CounterId(2), width, 20));
-        long allocated = await node.Ask(new CounterId(1), new SuspendInBursts(1_000, new CounterId(2), width, rounds));
-        AssertPerOp(allocated, width * rounds, "suspended handlers");
+        await node.Ask(Driver, new Drive(DriveKind.AddVia, 1_000, 2, width, 20));
+        long allocated = await node.Ask(Driver, new Drive(DriveKind.AddVia, 1_000, 2, width, rounds));
+        AssertPerOp(allocated, width * rounds, "replies kept for later");
     }
 
     [Test, Retry(3)]
     public async Task CheckpointsOfUnchangedActorsDoNotAllocate()
     {
-        // 99 actors checkpointing every 100 ms: each check serializes the record into a pooled frame and hashes it.
+        // 990 actors checkpointing every second: each check serializes the record into a pooled frame and hashes it.
         var node = await StartQuiet("alloc", configure: static o => o.ActorStore = new DaServer.Persistence.InMemoryActorStore());
-        for (int i = 1; i < 100; i++) await node.Ask(new BankId(i), new Deposit(1, false));
-        Thread.Sleep(1000); // first checkpoints written, pools warm
+        for (int i = 1; i <= Banks; i++) await node.Ask(new CheckpointedBankId(i), new Deposit(1, false));
+        Thread.Sleep(2000); // first checkpoints written, pools warm
         // ~1,000 checkpoints a second: anything allocated per checkpoint would be >= 24 KB/s; the test process alone
         // makes about 1.7 KB/s (see IdleNodesDoNotAllocate), so the quietest of a few windows is compared.
         long quietest = Quietest(windows: 4, static () => Thread.Sleep(1000));
@@ -145,12 +148,12 @@ public class AllocationTests : ClusterTest
     [Test, Retry(3)]
     public async Task SavingChangedRecordsDoesNotAllocate()
     {
-        // 99 actors whose record changes every tick, checkpointed every 100 ms: about 1,000 writes a second, each
+        // 990 actors whose record changes every tick, checkpointed every second: about 1,000 writes a second, each
         // serialized into a pooled frame, batched, stored (in place, like a database row) and applied.
         var store = new DaServer.Persistence.InMemoryActorStore();
         var node = await StartQuiet("alloc", configure: o => o.ActorStore = store);
-        for (int i = 1; i < 100; i++) await node.Ask(new BankId(i), new Earn());
-        Thread.Sleep(1000);
+        for (int i = 1; i <= Banks; i++) await node.Ask(new CheckpointedBankId(i), new Earn());
+        Thread.Sleep(2000);
         long before = await Versions(store);
         long quietest = Quietest(windows: 4, static () => Thread.Sleep(1000));
         long written = await Versions(store) - before;
@@ -158,12 +161,15 @@ public class AllocationTests : ClusterTest
         Assert.That(quietest, Is.LessThan(8 * 1024), $"{quietest} B/s while writing {written / 4} changed records a second");
     }
 
+    /// <summary>Checkpointing banks of the persistence cases: about 1,000 checkpoints a second.</summary>
+    private const int Banks = 990;
+
     /// <summary>The sum of the banks' record versions: one per write (and one per claim).</summary>
     private static async Task<long> Versions(DaServer.Persistence.IActorStore store)
     {
         long sum = 0;
-        for (int i = 0; i < 99; i++)
-            sum += (await Stores.Peek(store, new DaServer.Persistence.StoredKey(ActorIds<BankId>.HandlerTypeId, i + 1))).Version;
+        for (int i = 1; i <= Banks; i++)
+            sum += (await Stores.Peek(store, new DaServer.Persistence.StoredKey(ActorIds<CheckpointedBankId>.HandlerTypeId, i))).Version;
         return sum;
     }
 
@@ -174,8 +180,8 @@ public class AllocationTests : ClusterTest
         long other = await KeyOnAnotherShard(node);
 
         const int events = 20_000;
-        await node.Ask(new CounterId(1), new SendMany(new CounterId(other), 3 * events));
-        long allocated = await node.Ask(new CounterId(1), new SendMany(new CounterId(other), events));
+        for (int round = 0; round < 3; round++) await node.Ask(Driver, new Drive(DriveKind.Bump, other, 0, events, 1));
+        long allocated = await node.Ask(Driver, new Drive(DriveKind.Bump, other, 0, events, 1));
         AssertPerOp(allocated, events, "events");
     }
 
@@ -305,11 +311,11 @@ public class AllocationTests : ClusterTest
         var caller = await StartQuiet("caller", configure: static o => o.CallTimeout = TimeSpan.FromMinutes(1));
         var callee = await StartQuiet("callee");
         await Converged();
-        long from = KeyOwnedBy<CounterId>(caller), to = KeyOwnedBy<CounterId>(callee);
+        long from = KeyOwnedBy<DriverId>(caller), to = KeyOwnedBy<CounterId>(callee);
 
         const int calls = 20_000;
-        await caller.Ask(new CounterId(from), new AddMany(new CounterId(to), 3 * calls));
-        long allocated = await caller.Ask(new CounterId(from), new AddMany(new CounterId(to), calls));
+        await caller.Ask(new DriverId(from), new Drive(DriveKind.Add, to, 0, 1, 3 * calls));
+        long allocated = await caller.Ask(new DriverId(from), new Drive(DriveKind.Add, to, 0, 1, calls));
         AssertPerOp(allocated, calls, "calls");
     }
 
@@ -318,14 +324,14 @@ public class AllocationTests : ClusterTest
     public async Task ServiceTrafficDoesNotAllocate(bool remote)
     {
         // Remote: the services live only on the second node, so every message crosses the link.
-        var caller = await StartQuiet("caller", hosts: remote ? static t => t == typeof(Counter) : null,
+        var caller = await StartQuiet("caller", hosts: remote ? static t => t == typeof(Driver) : null,
             configure: static o => o.CallTimeout = TimeSpan.FromMinutes(1));
-        if (remote) await StartQuiet("services", hosts: static t => t != typeof(Counter));
+        if (remote) await StartQuiet("services", hosts: static t => t != typeof(Driver));
         await Converged();
 
         const int rounds = 10_000;
-        await caller.Ask(new CounterId(1), new ServiceTraffic(3 * rounds));
-        long allocated = await caller.Ask(new CounterId(1), new ServiceTraffic(rounds));
+        await caller.Ask(Driver, new ServiceTraffic(3 * rounds));
+        long allocated = await caller.Ask(Driver, new ServiceTraffic(rounds));
         // Per round: one message, one event to two services, one request and its reply.
         AssertPerOp(allocated, rounds, "rounds");
     }
@@ -333,8 +339,8 @@ public class AllocationTests : ClusterTest
     [Test, Retry(3)]
     public async Task ActorChurnDoesNotAllocate()
     {
-        // Actors loaded by a message and unloaded when idle, again and again: the actor object, its mailbox and its
-        // entity's storage are reused.
+        // Actors loaded by a message and unloaded when idle, again and again: their entities' storage and mailboxes are
+        // reused.
         var node = await StartQuiet("churn");
         const int actors = 1_000;
         for (int round = 0; round < 3; round++) Churn();
@@ -474,11 +480,14 @@ public class AllocationTests : ClusterTest
             configure?.Invoke(o);
         }, clients);
 
-    /// <summary>The first counter key from 2 whose actor runs on another shard than key 1's.</summary>
+    /// <summary>The driver of the traffic measured from inside the cluster (a chain of asks and their answers).</summary>
+    private static readonly DriverId Driver = new(1);
+
+    /// <summary>The first counter key from 2 whose actor runs on another shard than the driver's.</summary>
     private static async Task<long> KeyOnAnotherShard(Node node)
     {
         long other = 2;
-        while (await node.Ask(new CounterId(other), new WhereAmI()) == await node.Ask(new CounterId(1), new WhereAmI())) other++;
+        while (await node.Ask(new CounterId(other), new WhereAmI()) == await node.Ask(Driver, new WhereAmI())) other++;
         return other;
     }
 

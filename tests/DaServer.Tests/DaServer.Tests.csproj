@@ -42,4 +42,11 @@
         <ProjectReference Include="..\..\src\DaServer.Generator\DaServer.Generator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="true" />
     </ItemGroup>
 
+    <!-- TEMP-GENERATOR-OVERRIDE -->
+    <ItemGroup Condition="'$(GeneratorOverride)' != ''">
+        <ProjectReference Remove="..\..\src\DaServer.Generator\DaServer.Generator.csproj" />
+        <Analyzer Include="$(GeneratorOverride)" />
+        <Reference Include="$(GeneratorOverride)" />
+    </ItemGroup>
+
 </Project>

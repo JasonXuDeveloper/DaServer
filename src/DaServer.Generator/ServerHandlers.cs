@@ -24,7 +24,7 @@ internal enum StaticReturn
     Answer,
 }
 
-/// <summary>A static <c>[Handle]</c> method of an actor or service (ADR-080).</summary>
+/// <summary>A static <c>[Handle]</c> method of an actor or service (ADR-081).</summary>
 internal sealed record StaticHandlerModel(string MessageType, string Method, StaticReturn Return, EquatableArray<HandlerParam> Params,
     string? AnsweredRequest, string? AnsweredReply);
 
@@ -44,6 +44,12 @@ internal static class ServerHandlers
     private const string WorldType = "EasyEcs.World";
     private const string ComponentInterface = "EasyEcs.IComponent";
     private const string SingletonInterface = "EasyEcs.ISingletonComponent";
+
+    /// <summary>Whether <paramref name="type"/> is an actor's handler class (<c>[Actor&lt;TId&gt;]</c>).</summary>
+    public static bool IsActor(INamedTypeSymbol type) => HasAttribute(type, ActorAttribute);
+
+    /// <summary>Whether <paramref name="type"/> is an actor's or a service's handler class.</summary>
+    public static bool IsHandlerType(INamedTypeSymbol type) => HasAttribute(type, ActorAttribute) || HasAttribute(type, ServiceAttribute);
 
     /// <summary>An actor or service type, or null when it is not one or a handler is invalid (reported).</summary>
     public static ServerTypeModel? Read(INamedTypeSymbol type, Report? report = null)
@@ -86,7 +92,8 @@ internal static class ServerHandlers
         string? idType = actor?.AttributeClass!.TypeArguments[0].ToDisplayString(Fqn);
         int Named(string name, int fallback)
         {
-            foreach (var pair in actor?.NamedArguments ?? default)
+            if (actor == null) return fallback; // a service: no settings
+            foreach (var pair in actor.NamedArguments)
                 if (pair.Key == name && pair.Value.Value is int value) return value;
             return fallback;
         }
@@ -109,6 +116,12 @@ internal static class ServerHandlers
         if (!method.IsStatic || method.IsGenericMethod || method.DeclaredAccessibility is Accessibility.Private or Accessibility.Protected)
         {
             Bad("be an internal or public static method, not generic (the generated dispatch calls it)");
+            return null;
+        }
+
+        if (method.IsAsync)
+        {
+            Bad("not be async: a handler runs to completion, and an ask's answer comes back as a message (Answered<TRequest, TReply>)");
             return null;
         }
 

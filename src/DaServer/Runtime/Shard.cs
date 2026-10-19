@@ -351,7 +351,6 @@ internal sealed class Shard : CompletionThread
         World.AddSingleton<ShardActivity>();
         World.AddSingleton<ShardTimers>() = new ShardTimers(new TimerWheel<DelayedSend>(ShardTimers.Resolution, time: _time));
         World.AddSingleton<MailScratch>() = new MailScratch(new List<Envelope>());
-        World.AddSingleton<SessionPool>() = new SessionPool(new Stack<ClientSessions>());
         World.AddSingleton<AnswerCalls>() = new AnswerCalls();
         World.AddSingleton<Persistence.HandoffAsks>() = new Persistence.HandoffAsks(new List<Persistence.HandoffAsk>());
         World.AddSingleton<Persistence.HandoffsSeen>() = new Persistence.HandoffsSeen();

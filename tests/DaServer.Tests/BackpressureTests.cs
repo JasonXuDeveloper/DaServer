@@ -6,14 +6,23 @@ public class BackpressureTests : ClusterTest
     [Test]
     public async Task AFullActorMailboxRefusesNewCalls()
     {
-        var node = await Start("single", shards: 1, configure: static o => o.ActorMailboxCapacity = 4);
-        // Each request awaits 10 ms inside its turn, so the requests pile up behind the first one.
-        var statuses = await Task.WhenAll(Enumerable.Range(0, 50).Select(_ => StatusOf(node.Ask(new CounterId(1), new SlowAdd(1)))));
+        // The actor's record load is held, so its mail waits: beyond the capacity, new calls are refused.
+        var store = new TestStore(new DaServer.Persistence.InMemoryActorStore());
+        store.LoadGate.Hold();
+        var node = await Start("single", shards: 1, configure: o =>
+        {
+            o.ActorMailboxCapacity = 4;
+            o.ActorStore = store;
+        });
+        var calls = Enumerable.Range(0, 50).Select(_ => StatusOf(node.Ask(new CounterId(1), new Add(1)))).ToArray();
+        await store.LoadGate.Started;
+        await Eventually(() => node.Dropped(DropReason.MailboxFull) == 46, "the calls beyond the capacity were refused");
+        store.LoadGate.Release();
+        var statuses = await Task.WhenAll(calls);
 
         int ok = statuses.Count(s => s == RpcStatus.Ok), overloaded = statuses.Count(s => s == RpcStatus.Overloaded);
         Assert.That(ok + overloaded, Is.EqualTo(50), "every call either ran or was refused");
-        // All 50 may arrive before the first turn starts (loaded actor): then exactly the capacity is admitted.
-        Assert.That(ok, Is.InRange(4, 49), "the mailbox capacity was used");
+        Assert.That(ok, Is.EqualTo(4), "exactly the mailbox capacity was admitted");
         Assert.That(await node.Ask(new CounterId(1), new Get()), Is.EqualTo(ok), "refused calls did not run");
         Assert.That(node.Dropped(DropReason.MailboxFull), Is.EqualTo(overloaded));
         Assert.That(node.Dropped(DropReason.QueueFull), Is.Zero);
@@ -22,12 +31,18 @@ public class BackpressureTests : ClusterTest
     [Test]
     public async Task AnActorTypeSetsItsOwnMailboxCapacity()
     {
-        // The node allows 4096 waiting messages per actor; Narrow allows 2.
-        var node = await Start("single", shards: 1);
-        var statuses = await Task.WhenAll(Enumerable.Range(0, 30).Select(_ => StatusOf(node.Ask(new NarrowId(1), new SlowStep()))));
+        // The node allows 4096 waiting messages per actor; Narrow allows 2 (its record load is held meanwhile).
+        var store = new TestStore(new DaServer.Persistence.InMemoryActorStore());
+        store.LoadGate.Hold();
+        var node = await Start("single", shards: 1, configure: o => o.ActorStore = store);
+        var calls = Enumerable.Range(0, 30).Select(_ => StatusOf(node.Ask(new NarrowId(1), new Step()))).ToArray();
+        await store.LoadGate.Started;
+        await Eventually(() => node.Dropped(DropReason.MailboxFull) == 28, "the calls beyond the type's capacity were refused");
+        store.LoadGate.Release();
+        var statuses = await Task.WhenAll(calls);
         int ok = statuses.Count(s => s == RpcStatus.Ok), overloaded = statuses.Count(s => s == RpcStatus.Overloaded);
         Assert.That(ok + overloaded, Is.EqualTo(30));
-        Assert.That(ok, Is.InRange(2, 8), "the actor type's capacity, not the node's");
+        Assert.That(ok, Is.EqualTo(2), "the actor type's capacity, not the node's");
         Assert.That(node.Dropped(DropReason.MailboxFull), Is.EqualTo(overloaded));
     }
 
@@ -65,24 +80,23 @@ public class BackpressureTests : ClusterTest
     }
 
     [Test]
-    public async Task ATurnOutlivingTheCallTimeoutIsReportedOnce()
+    public async Task AReplyKeptPastTheCallTimeoutLeavesTheActorServing()
     {
-        // A turn cannot be cut short; one still running when its caller gave up holds the actor, so it is logged once.
-        Faults.Allow("TurnTooLong"); // what the test provokes
+        // A request whose reply is kept for later and given after its caller gave up: the caller gets Timeout, the actor
+        // takes its other mail meanwhile, and the late reply goes nowhere.
         var node = await Start("single", configure: static o => o.CallTimeout = TimeSpan.FromMilliseconds(300));
         var error = Assert.ThrowsAsync<RpcException>(async () => await node.Ask(new LoopId(7), new Hold(1_200)))!;
         Assert.That(error.Status, Is.EqualTo(RpcStatus.Timeout));
-        await Eventually(() => Faults.Count("TurnTooLong") == 1, "the long turn is reported");
-        await Task.Delay(1_200); // the held turn ends
-        Assert.That(await node.Ask(new LoopId(7), new Hold(0)), Is.Zero, "the actor takes mail once the turn ended");
-        Assert.That(Faults.Count("TurnTooLong"), Is.EqualTo(1), "once per turn");
+        Assert.That(await node.Ask(new LoopId(7), new Hold(0)), Is.Zero, "the actor takes mail while the reply is kept");
+        await Task.Delay(1_200); // the kept reply comes due, to nobody
+        Assert.That(await node.Ask(new LoopId(7), new Hold(0)), Is.Zero);
     }
 
     [Test]
-    public async Task AStopWaitingForATurnNeitherSpinsNorReportsAStall()
+    public async Task AStopWithAReplyKeptForLaterNeitherSpinsNorReportsAStall()
     {
-        // One shard drains at once, the other waits 2 s for a turn to end: the drained shard is not reported stalled
-        // (the fault log fails the test), and the waiting one sleeps until the turn's completion wakes it.
+        // One shard holds a reply due in 2 s (its delayed send): the stop does not wait for it, no shard is reported
+        // stalled (the fault log fails the test), and nothing spins.
         var node = await Start("single", shards: 2);
         _ = node.Ask(new LoopId(1), new Hold(2_000)).AsTask();
         await Task.Delay(100);
@@ -96,8 +110,14 @@ public class BackpressureTests : ClusterTest
     public async Task AStopThatExceedsItsBudgetReportsAndReturns()
     {
         Faults.Allow("BudgetExceeded"); // what the test provokes
-        var node = await Start("single", shards: 1, configure: static o => o.ShutdownTimeout = TimeSpan.FromMilliseconds(500));
-        Assert.That(await node.Ask(new LoopId(Looper.HangsOnUnload), new Hop([Looper.HangsOnUnload], 0, false)), Is.Zero);
+        var store = new TestStore(new DaServer.Persistence.InMemoryActorStore());
+        var node = await Start("single", shards: 1, configure: o =>
+        {
+            o.ShutdownTimeout = TimeSpan.FromMilliseconds(500);
+            o.ActorStore = store;
+        });
+        Assert.That(await node.Ask(new BankId(1), new Deposit(1, false)), Is.EqualTo(1));
+        store.WriteGate.Hold(); // its final save never finishes
         Assert.That(node.IsReady, Is.True);
         var phases = new List<string>();
         node.StopPhase += (phase, _) => phases.Add(phase);
@@ -108,20 +128,25 @@ public class BackpressureTests : ClusterTest
         Assert.That(phases, Is.EqualTo(new[] { "leave", "drain", "unload", "close" }));
         Assert.That(node.Shards[0].ActorCount, Is.EqualTo(1), "the actor whose save hangs was reported, not waited for");
         Assert.That(node.StoppedClean, Is.False, "the host exits with an error: state was lost");
+        store.WriteGate.Release();
     }
 
     [TestCase(false)]
     [TestCase(true)]
     public async Task AFailedHandlerIsCountedAndItsActorResumesOrReloads(bool async)
     {
+        // Async: the change is made, and fails, in the handler of the answer to an ask (the request it replies to waits
+        // meanwhile): the failure reaches the caller as an error there too.
         var node = await Start("single", shards: 1);
         Assert.That(await node.Ask(new FragileId(1), new Spoil(5, false, async)), Is.EqualTo(5));
-        Assert.ThrowsAsync<RpcException>(async () => await node.Ask(new FragileId(1), new Spoil(1, true, async)));
+        var resumed = Assert.ThrowsAsync<RpcException>(async () => await node.Ask(new FragileId(1), new Spoil(1, true, async)))!;
+        Assert.That(resumed.Status, Is.EqualTo(RpcStatus.Error), "the failure is the caller's reply");
         Assert.That(await node.Ask(new FragileId(1), new Spoil(0, false, async)), Is.EqualTo(6), "Resume keeps the half-changed state");
 
-        Assert.That(await node.Ask(new FragileId(100), new Spoil(5, false, async)), Is.EqualTo(5));
-        Assert.ThrowsAsync<RpcException>(async () => await node.Ask(new FragileId(100), new Spoil(1, true, async)));
-        Assert.That(await node.Ask(new FragileId(100), new Spoil(0, false, async)), Is.Zero, "Reload dropped it unsaved: loaded again");
+        Assert.That(await node.Ask(new ReloadingFragileId(1), new Spoil(5, false, async)), Is.EqualTo(5));
+        var reloaded = Assert.ThrowsAsync<RpcException>(async () => await node.Ask(new ReloadingFragileId(1), new Spoil(1, true, async)))!;
+        Assert.That(reloaded.Status, Is.EqualTo(RpcStatus.Error), "the failure is the caller's reply");
+        Assert.That(await node.Ask(new ReloadingFragileId(1), new Spoil(0, false, async)), Is.Zero, "Reload dropped it unsaved: loaded again");
         Assert.That(node.Failed, Is.EqualTo(2), "each failure is counted");
     }
 
@@ -129,18 +154,18 @@ public class BackpressureTests : ClusterTest
     public async Task AMessageThatCannotBeReadIsRefusedWithoutFailingTheActor()
     {
         // A payload that is not the message it names (truncated here; a hostile client, another build): the caller gets
-        // Malformed and nothing ran. The actor is not charged with a failure: its OnError (Reload for this key) would
+        // Malformed and nothing ran. The actor is not charged with a failure: its OnError (Reload for this type) would
         // drop what it holds unsaved, its state never touched.
         var node = await Start("single", shards: 1);
-        Assert.That(await node.Ask(new FragileId(101), new Spoil(5, false, false)), Is.EqualTo(5));
+        Assert.That(await node.Ask(new ReloadingFragileId(101), new Spoil(5, false, false)), Is.EqualTo(5));
         var frame = FrameWriter.Rent();
         frame.WriteRaw(new byte[] { 1 });
         var call = PendingCall<NoReply>.Rent(null);
         var refused = call.Done;
-        node.Request(frame, TypeId<Spoil>.Value, ActorIds<FragileId>.HandlerTypeId, 101, call, null, 0);
+        node.Request(frame, TypeId<Spoil>.Value, ActorIds<ReloadingFragileId>.HandlerTypeId, 101, call, null, 0);
         var error = Assert.ThrowsAsync<RpcException>(async () => await refused);
         Assert.That(error!.Status, Is.EqualTo(RpcStatus.Malformed));
-        Assert.That(await node.Ask(new FragileId(101), new Spoil(0, false, false)), Is.EqualTo(5), "the actor kept its state");
+        Assert.That(await node.Ask(new ReloadingFragileId(101), new Spoil(0, false, false)), Is.EqualTo(5), "the actor kept its state");
         Assert.That(node.Failed, Is.Zero, "no handler failed");
     }
 
@@ -174,10 +199,10 @@ public class BackpressureTests : ClusterTest
     }
 
     [Test]
-    public async Task AnActorWhoseCallTimedOutResumesOnItsShard()
+    public async Task AnAskThatTimedOutIsAnsweredOnTheAskersShard()
     {
-        // The timeout is found by the maintenance timer, not on the caller's shard: the caller's code must not run there.
-        Faults.Allow("TurnTooLong"); // the callee's turn outlives the call on purpose
+        // The timeout is found by the maintenance timer, not on the asker's shard: its answer (Timeout) is the asker's
+        // mail, handled on its own shard's thread.
         var node = await Start("single", shards: 2, configure: static o => o.CallTimeout = TimeSpan.FromMilliseconds(200));
         var caller = new CounterId(1);
         string callerShard = await node.Ask(caller, new WhereAmI());
@@ -187,9 +212,9 @@ public class BackpressureTests : ClusterTest
         var gate = new ManualResetEventSlim(); // not disposed: a shard thread may still be inside Wait() when the test ends
         blocked.Post(static g => ((ManualResetEventSlim)g!).Wait(), gate);
 
-        Reports.ResumedOnShard = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        Observed.ResumedOnShard = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         node.Send(caller, new AskAndFail(callee));
-        bool resumedOnShard = await Reports.ResumedOnShard.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        bool resumedOnShard = await Observed.ResumedOnShard.Task.WaitAsync(TimeSpan.FromSeconds(5));
         gate.Set();
         Assert.That(resumedOnShard, Is.True);
     }

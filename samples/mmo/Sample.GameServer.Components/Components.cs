@@ -16,6 +16,13 @@ namespace Sample.GameServer;
 /// </summary>
 [NinoType(format: NinoFormat.VersionTolerant), Handoff] public partial record struct PlayerState(MapId Map, ClientSession Session) : IComponent;
 
+/// <summary>
+/// A map change in flight (<c>EnterMap</c>: leave the previous map, then enter this one), between the answers that
+/// carry it on. Its absence means none: a second EnterMap meanwhile is refused instead of interleaving with it. Never
+/// stored or moved: the caller's reply token does not move either.
+/// </summary>
+public record struct Entering(MapId Map, ClientSession Session) : IComponent;
+
 /// <summary>Who is online, and the realm's tick count: both move with the realm (a handoff).</summary>
 [NinoType(format: NinoFormat.VersionTolerant), Handoff]
 public partial struct RealmState() : IComponent

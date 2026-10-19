@@ -10,6 +10,8 @@
         <PackageReference Include="EasyEcs" />
         <PackageReference Include="Nino" />
         <ProjectReference Include="..\..\src\DaServer.Abstractions\DaServer.Abstractions.csproj" />
+        <!-- [Persist] components are change-tracked through a generated partial (ADR-068). -->
+        <ProjectReference Include="..\..\src\DaServer.Generator\DaServer.Generator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
     </ItemGroup>
 
 </Project>

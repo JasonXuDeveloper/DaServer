@@ -93,6 +93,10 @@ internal sealed class PersistSystem : EcsSystem
         if (Queue(world, actor, ref stored, key, in store, activity.NowMs) != Outcome.Busy) actor.Remove<SaveNow>();
     }
 
+    /// <summary>Without a store (no <see cref="Stored"/>) there is nothing to write: the request is dropped, so it holds no handoff.</summary>
+    [ForEach, With<SaveNow>, Without<Stored>]
+    private static void Nowhere(Entity actor) => actor.Remove<SaveNow>();
+
     [ForEach, With<FinalSave>, Without<Saving>, Without<Fenced>]
     private static void Final(Entity actor, ref Stored stored, in ActorKey key, in ShardStore store, in ShardActivity activity, World world)
     {
@@ -127,19 +131,29 @@ internal sealed class PersistSystem : EcsSystem
                 actor.Set(new Removing(RpcStatus.Error));
             }
 
+            Serialized(actor);
             return Outcome.Unwritable;
         }
 
+        // A write may leave the record as it was (the same value again): compared, not written.
         ulong hash = Records.Hash(record.Payload);
         if (hash == stored.Hash && stored.Attempt == 0) // a write in doubt may have stored another state: write this one
         {
             record.Dispose();
+            Serialized(actor);
             return Outcome.Unchanged;
         }
 
         store.Saves.Add(actor, new StoredKey(key.HandlerTypeId, key.Key), stored.Version, record, hash, stored.Attempt, actor.Has<FinalSave>());
         actor.Set(new Saving());
+        Serialized(actor);
         return Outcome.Queued;
+    }
+
+    /// <summary>The record was taken as it is now: a later write tags the actor again (structural: after the last use of the refs).</summary>
+    private static void Serialized(Entity actor)
+    {
+        if (actor.Has<Unsaved>()) actor.Remove<Unsaved>();
     }
 
     /// <summary>The store answered <paramref name="batch"/> (shard thread).</summary>
@@ -201,13 +215,29 @@ internal sealed class PersistSystem : EcsSystem
 }
 
 /// <summary>
-/// Write-behind checkpoints, a few times a second (<see cref="ShardIdleScan"/>): an actor whose
-/// <see cref="ActorSettings.SaveEverySeconds"/> passed has its record written if it changed, so a crash loses at most that much.
+/// Tags the actors whose stored components were written since its last run <see cref="Unsaved"/>: one bulk pass per
+/// stored type over the change ticks EasyEcs keeps (ITrackChanges), so an unchanged actor costs nothing.
 /// </summary>
 [UpdateInGroup<ShardIdleScan>]
+internal sealed class ChangeSystem : EcsSystem
+{
+    protected override void OnUpdate()
+    {
+        var store = World.GetSingleton<ShardStore>();
+        if (!store.Enabled) return;
+        foreach (var type in store.Types) type.MarkWritten?.Invoke(World, LastRunTick);
+    }
+}
+
+/// <summary>
+/// Write-behind checkpoints, a few times a second (<see cref="ShardIdleScan"/>): a changed actor whose
+/// <see cref="ActorSettings.SaveEverySeconds"/> passed has its record written, so a crash loses at most that much.
+/// </summary>
+[UpdateInGroup<ShardIdleScan>]
+[UpdateAfter<ChangeSystem>]
 internal sealed class CheckpointSystem : EcsSystem
 {
-    [ForEach, Without<Saving>, Without<FinalSave>, Without<Leaving>, Without<Removing>, Without<Fenced>]
+    [ForEach, With<Unsaved>, Without<Saving>, Without<FinalSave>, Without<Leaving>, Without<Removing>, Without<Fenced>]
     private static void Due(Entity actor, ref Stored stored, in ActorKey key, in ShardStore store, in ShardActivity activity, World world)
     {
         if (stored.EveryMs > 0 && activity.NowMs >= stored.DueMs)

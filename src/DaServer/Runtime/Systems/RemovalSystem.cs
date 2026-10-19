@@ -21,11 +21,10 @@ internal sealed class RemovalSystem : EcsSystem
             else Handoff.Gone(world, address, wanted.By);
         }
 
-        if (actor.TryGet<ClientSessions>(out var sessions)) world.GetSingleton<SessionPool>().Return(in sessions);
         var mail = world.GetSingleton<MailScratch>().Items;
         if (actor.Has<DynamicBuffer<Envelope>>()) // copied out: the entity's buffer goes with it
             foreach (var envelope in actor.Read<DynamicBuffer<Envelope>>().AsReadOnlySpan()) mail.Add(envelope);
-        actor.Destroy(); // the refs above are invalid from here on
+        actor.Destroy(); // its session entities go with it (children); the refs above are invalid from here on
         foreach (var envelope in mail)
         {
             if (status == RpcStatus.Ok) ShardDispatch.Route(world, envelope.Frame, envelope.Sink); // may load the key again

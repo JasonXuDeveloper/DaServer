@@ -1,6 +1,6 @@
 namespace DaServer.Runtime;
 
-// Asks from handlers (ADR-080): nothing waits. The shard registers a pending call whose reply, refusal or timeout
+// Asks from handlers (ADR-081): nothing waits. The shard registers a pending call whose reply, refusal or timeout
 // becomes the message Answered<TRequest, TReply> to the asker's address: it follows an actor that moved and queues
 // behind its mail like any other message. An Answered payload is [call: u32][status: u8][reply to: entity index i32, version
 // i32, call u32][reply: Nino bytes].

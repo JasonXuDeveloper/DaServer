@@ -45,10 +45,10 @@ public class TestClusterTests
         var visitor = new VisitorId(7_201);
         Assert.That(await cluster.Cluster.Ask(visitor, new Visit()), Is.EqualTo(1));
 
-        await Task.Delay(600); // twice its UnloadAfterIdle in real time
+        await Task.Delay(1500); // more than its UnloadAfterIdle (1 s) in real time
         Assert.That(Observed.Events, Does.Not.Contain("unload:7201"));
 
-        await cluster.AdvanceAsync(TimeSpan.FromMilliseconds(500));
+        await cluster.AdvanceAsync(TimeSpan.FromMilliseconds(1500));
         await cluster.WaitUntilAsync(() => Observed.Events.Contains("unload:7201"), TimeSpan.FromSeconds(5));
     }
 

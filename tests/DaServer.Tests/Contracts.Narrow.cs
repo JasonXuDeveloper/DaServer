@@ -6,18 +6,11 @@ namespace DaServer.Tests;
 
 public readonly record struct NarrowId(long Value) : IActorId;
 
-[NinoType, Message] public partial record struct SlowStep : IRequest<bool>;
+[NinoType, Message] public partial record struct Step : IRequest<bool>;
 
-public sealed class Narrow : Actor<NarrowId>
+/// <summary>Holds at most two messages while it is not live (its record loading): more are refused.</summary>
+[Actor<NarrowId>(MailboxCapacity = 2)]
+public static class Narrow
 {
-    public override int MailboxCapacity => 2;
-
-    [Handle]
-    public async Reply<bool> On(SlowStep _)
-    {
-#pragma warning disable DAS009 // on purpose: requests pile up behind a slow turn
-        await Task.Delay(10);
-#pragma warning restore DAS009
-        return true;
-    }
+    [Handle] internal static bool On(in Step _) => true;
 }

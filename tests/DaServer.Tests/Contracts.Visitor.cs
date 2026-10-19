@@ -6,36 +6,26 @@ namespace DaServer.Tests;
 
 [NinoType, Message] public partial record struct Visit : IRequest<int>;
 
-
-public sealed class Visitor : Actor<VisitorId, Visits>
+/// <summary>Unloaded a second after its last mail; it reports its loads and unloads.</summary>
+[Actor<VisitorId>(UnloadAfterIdleSeconds = 1)]
+public static class Visitor
 {
-    public override TimeSpan UnloadAfterIdle => TimeSpan.FromMilliseconds(300);
+    [Handle] internal static void On(in Created _, in Context ctx) => Observed.Events.Enqueue($"load:{ctx.Key}");
 
-    public override Reply OnLoad()
-    {
-        Observed.Events.Enqueue($"load:{Id.Value}");
-        return default;
-    }
+    [Handle] internal static void On(in Loaded _, in Context ctx) => Observed.Events.Enqueue($"load:{ctx.Key}");
 
-    public override Reply OnUnload()
-    {
-        Observed.Events.Enqueue($"unload:{Id.Value}");
-        return default;
-    }
+    [Handle] internal static void On(in Unloading _, in Context ctx) => Observed.Events.Enqueue($"unload:{ctx.Key}");
 
-    [Handle] public int On(Visit _) => ++State.Count;
+    [Handle] internal static int On(in Visit _, ref Visits visits) => ++visits.Count;
 }
 
 /// <summary>A visitor that is never unloaded for idleness: only removal paths unload it.</summary>
 public readonly record struct KeeperId(long Value) : IActorId;
 
-public sealed class Keeper : Actor<KeeperId, Visits>
+[Actor<KeeperId>]
+public static class Keeper
 {
-    public override Reply OnUnload()
-    {
-        Observed.Events.Enqueue($"keeper-unload:{Id.Value}");
-        return default;
-    }
+    [Handle] internal static void On(in Unloading _, in Context ctx) => Observed.Events.Enqueue($"keeper-unload:{ctx.Key}");
 
-    [Handle] public int On(Visit _) => ++State.Count;
+    [Handle] internal static int On(in Visit _, ref Visits visits) => ++visits.Count;
 }

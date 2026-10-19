@@ -75,9 +75,9 @@ public class PersistenceEdgeTests(string kind) : StoreTest(kind)
         var store = NewStore();
         var node = await StartWith(store);
         store.WriteGate.Hold();
-        Assert.That(await node.Ask(new BankId(1), new Deposit(3, false)), Is.EqualTo(3));
-        await store.WriteGate.Started; // the checkpoint (SaveEvery 100 ms) is held
-        Assert.That(await node.Ask(new BankId(1), new Deposit(4, false)), Is.EqualTo(7));
+        Assert.That(await node.Ask(new CheckpointedBankId(1), new Deposit(3, false)), Is.EqualTo(3));
+        await store.WriteGate.Started; // the checkpoint (SaveEvery 1 s) is held
+        Assert.That(await node.Ask(new CheckpointedBankId(1), new Deposit(4, false)), Is.EqualTo(7));
 
         var stop = Stop(node);
         await Task.Delay(300);
@@ -86,82 +86,63 @@ public class PersistenceEdgeTests(string kind) : StoreTest(kind)
         await stop;
 
         var after = await StartWith(store, "after");
-        Assert.That(await after.Ask(new BankId(1), new Balance()), Is.EqualTo(7), "the unload wrote what changed after the checkpoint");
+        Assert.That(await after.Ask(new CheckpointedBankId(1), new Balance()), Is.EqualTo(7), "the unload wrote what changed after the checkpoint");
     }
 
     [Test]
-    public async Task ATurnThatAskedForASaveAndFailedWritesNothing([Values] bool async)
+    public async Task AHandlerThatAskedForASaveAndFailedWritesNothing([Values] bool async)
     {
         // ErrorAction.Reload drops the actor without saving (ADR-066): its half-changed state must not reach the store,
-        // although the failed turn added SaveNow.
+        // although the failed handler (async: the handler of an answer) added SaveNow.
         var store = NewStore();
         var node = await StartWith(store);
-        Assert.That(await node.Ask(new BankId(2000), new Balance()), Is.Zero);
-        Assert.ThrowsAsync<RpcException>(async () => await node.Ask(new BankId(2000), new Overdraw(5, async)));
-        Assert.That(await node.Ask(new BankId(2000), new Balance()), Is.Zero, "reloaded from the store");
+        Assert.That(await node.Ask(new ReloadingBankId(2000), new Balance()), Is.Zero);
+        var error = Assert.ThrowsAsync<RpcException>(async () => await node.Ask(new ReloadingBankId(2000), new Overdraw(5, async)))!;
+        Assert.That(error.Status, Is.EqualTo(RpcStatus.Error), "the failure is the caller's reply");
+        Assert.That(await node.Ask(new ReloadingBankId(2000), new Balance()), Is.Zero, "reloaded from the store");
         await Task.Delay(300); // a few wakes: a write would have reached the store
-        Assert.That(store.Writes, Is.Zero, "the failed turn's state was not written");
+        Assert.That(store.Writes, Is.Zero, "the failed handler's state was not written");
     }
 
     [Test]
     public async Task AReloadWaitsForTheWriteInFlight()
     {
-        // A critical write of 5 is in flight when a failed turn reloads the actor: the reload must read 5 after it, not
-        // the record before it (its next write would be refused as stale and the actor fenced).
+        // A critical write of 5 is in flight when a failed handler reloads the actor: the reload must read 5 after it,
+        // not the record before it (its next write would be refused as stale and the actor fenced).
         var store = NewStore();
         var node = await StartWith(store);
         store.WriteGate.Hold();
-        Assert.That(await node.Ask(new BankId(2001), new Deposit(5, Critical: true)), Is.EqualTo(5));
+        Assert.That(await node.Ask(new ReloadingBankId(2001), new Deposit(5, Critical: true)), Is.EqualTo(5));
         await store.WriteGate.Started;
-        Assert.ThrowsAsync<RpcException>(async () => await node.Ask(new BankId(2001), new Overdraw(1, false)));
-        var deposit = node.Ask(new BankId(2001), new Deposit(2, Critical: true)).AsTask();
+        Assert.ThrowsAsync<RpcException>(async () => await node.Ask(new ReloadingBankId(2001), new Overdraw(1, false)));
+        var deposit = node.Ask(new ReloadingBankId(2001), new Deposit(2, Critical: true)).AsTask();
         store.WriteGate.Release();
         Assert.That(await deposit, Is.EqualTo(7), "the reload read the write in flight");
         await Eventually(() => store.Writes == 2, "the second write was taken");
         var after = await StartWith(store, "after");
         await Stop(node);
-        Assert.That(await after.Ask(new BankId(2001), new Balance()), Is.EqualTo(7), "and accepted");
+        Assert.That(await after.Ask(new ReloadingBankId(2001), new Balance()), Is.EqualTo(7), "and accepted");
     }
 
     [Test]
     public async Task AnActorAskedToLeaveIsFencedWhenItsNodeIsDeclaredDead()
     {
-        // The node stops while the actor is in a long turn: it is asked to leave once the turn ends. Before that, the
-        // cluster declares the node dead (its keys have new owners): the copy must go without OnUnload or a write, not
-        // unload as planned and write over what the new owner holds.
+        // The node stops while its shards are busy (held): the actor is asked to leave once they run again. Before that,
+        // the cluster declares the node dead (its keys have new owners): the copy must go without its Unloading or a
+        // write, not unload as planned and write over what the new owner holds.
         var store = NewStore();
         var node = await StartWith(store);
         Assert.That(await node.Ask(new BankId(170), new Deposit(5, false)), Is.EqualTo(5)); // written on unload only
-        TurnGate.Current = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var held = node.Ask(new BankId(170), new HoldTurn()).AsTask();
+        var gate = new ManualResetEventSlim(); // not disposed: a shard thread may still be inside Wait() when the test ends
+        HoldShards(node, gate);
         await Task.Delay(100);
         foreach (var shard in node.Shards) shard.RequestStop();
-        await Task.Delay(100); // asked to leave, its turn still running
+        await Task.Delay(100); // asked to leave, its shard still busy
         foreach (var shard in node.Shards) shard.RequestUnloadAll();
         await Task.Delay(100);
-        TurnGate.Current.TrySetResult();
-        await held;
+        gate.Set();
         await Task.WhenAll(node.Shards.Select(static s => s.Stopped)).WaitAsync(TimeSpan.FromSeconds(10));
         Assert.That(store.Writes, Is.Zero, "the fenced copy wrote nothing");
-    }
-
-    [Test]
-    public async Task ATurnThatFailsAfterAnUnloadWasAskedForIsNotSaved()
-    {
-        // Keys from 2,000 reload after a failed turn: their half-changed state is dropped unsaved, also when an unload
-        // (here an operator's) was asked for while the turn awaited.
-        var store = NewStore();
-        var node = await StartWith(store);
-        Assert.That(await node.Ask(new BankId(2100), new Deposit(5, false)), Is.EqualTo(5)); // written on unload only
-        TurnGate.Current = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var failing = node.Ask(new BankId(2100), new FailAfterGate(3)).AsTask();
-        await Task.Delay(100);
-        Assert.That(node.UnloadActors("Bank"), Is.True);
-        await Task.Delay(100);
-        TurnGate.Current.TrySetResult();
-        Assert.ThrowsAsync<RpcException>(async () => await failing);
-        await Eventually(() => node.ActorCount == 0, "the failed copy went");
-        Assert.That(store.Writes, Is.Zero, "nothing of it was written");
     }
 
     [Test]

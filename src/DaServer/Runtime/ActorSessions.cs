@@ -2,30 +2,25 @@ namespace DaServer.Runtime;
 
 /// <summary>
 /// The actor side of client sessions, on every node hosting actors (ADR-050): each loaded actor keeps the sessions it
-/// knows (<see cref="ClientSessions"/>: its callers and the sessions it bound), so a session that ends reaches it as
+/// knows (a <see cref="KnownSession"/> child entity per session: its callers and the sessions it bound), so a session that ends reaches it as
 /// <see cref="SessionClosed"/> even when the node holding the session crashed, and the sessions it holds granted, the
 /// only ones a client may resume from (<see cref="Resume"/>). Closes and resumes are handled by the runtime before the
 /// actor's handler runs (not by a filter: a user's filter could refuse them); other messages pay one id comparison.
 /// </summary>
 internal static class ActorSessions
 {
-    /// <summary>Remember a client session of a loaded actor (a hash lookup; allocates once per new session).</summary>
-    public static void Record(World world, Entity actor, Origin origin) =>
-        SessionsOf(world, actor).Sessions.Add(new ClientSession(origin.Node, origin.Id));
+    /// <summary>Remember the client session a loaded actor's message came from (one index lookup; an entity the first time).</summary>
+    public static void Record(World world, Entity actor, Origin origin)
+    {
+        var session = Of(world, actor, new ClientSession(origin.Node, origin.Id));
+        if (!session.Has<Known>()) session.Set(new Known());
+    }
 
     /// <summary>The actor binds or grants the session (<paramref name="change"/>), or withdraws it.</summary>
     public static void Change(World world, Entity actor, ClientSession session, AccessChange change)
     {
-        var sessions = SessionsOf(world, actor);
-        if (change is AccessChange.Bind or AccessChange.Grant)
-        {
-            sessions.Sessions.Add(session);
-            sessions.Granted.Add(session);
-        }
-        else
-        {
-            sessions.Granted.Remove(session);
-        }
+        if (change is AccessChange.Bind or AccessChange.Grant) Of(world, actor, session).Set(new Known(), new Granted());
+        else if (Find(world, actor, session, out var known)) known.Remove<Granted>();
     }
 
     /// <summary>
@@ -39,11 +34,27 @@ internal static class ActorSessions
         context.Shard.Node.Send(session, new Disconnect());
     }
 
-    private static ClientSessions SessionsOf(World world, Entity actor)
+    /// <summary>The entity of <paramref name="session"/> under <paramref name="actor"/>, if the actor knows it.</summary>
+    private static bool Find(World world, Entity actor, ClientSession session, out Entity known)
     {
-        if (!actor.TryGet<ClientSessions>(out var sessions))
-            actor.Set(sessions = world.GetSingleton<SessionPool>().Rent());
-        return sessions;
+        foreach (var candidate in world.Index<KnownSession, ClientSession>().Find(session))
+            if (candidate.Read<ChildOf>().Parent == actor.Id)
+            {
+                known = candidate;
+                return true;
+            }
+
+        known = default;
+        return false;
+    }
+
+    private static Entity Of(World world, Entity actor, ClientSession session) =>
+        Find(world, actor, session, out var known) ? known : world.CreateEntity(new KnownSession(session), new ChildOf(actor.Id));
+
+    /// <summary>A session entity with no tag left is forgotten.</summary>
+    private static void Prune(Entity known)
+    {
+        if (!known.Has<Known>() && !known.Has<Granted>() && !known.Has<Superseded>()) known.Destroy();
     }
 
     /// <summary>A <see cref="SessionClosed"/> for the actor: forget the session; false when the close is stale or unreadable (not delivered).</summary>
@@ -59,16 +70,15 @@ internal static class ActorSessions
             return false; // not a close: refused like a stale one (only a peer or an HTTP send could write it)
         }
 
-        return Forget(actor, closed.Session);
-    }
+        if (!Find(world, actor, closed.Session, out var known)) return true;
+        if (known.Has<Superseded>()) // resumed since: its close is stale
+        {
+            known.Remove<Superseded>();
+            Prune(known);
+            return false;
+        }
 
-    /// <summary>Forget a closed session; false when it had been resumed (its close is stale and not delivered).</summary>
-    private static bool Forget(Entity actor, ClientSession session)
-    {
-        if (!actor.TryGet<ClientSessions>(out var sessions)) return true;
-        if (sessions.Superseded.Remove(session)) return false;
-        sessions.Sessions.Remove(session);
-        sessions.Granted.Remove(session);
+        known.Destroy();
         return true;
     }
 
@@ -83,14 +93,15 @@ internal static class ActorSessions
     public static RpcStatus Resume(World world, Entity actor, in SessionResumed resumed, out bool reverted)
     {
         reverted = false;
-        if (!actor.TryGet<ClientSessions>(out var sessions)) return RpcStatus.Forbidden;
-        if (!sessions.Granted.Remove(resumed.Previous))
-            return sessions.Superseded.Contains(resumed.Previous) ? RpcStatus.Superseded : RpcStatus.Forbidden;
-        sessions.Sessions.Remove(resumed.Previous);
-        sessions.Sessions.Add(resumed.Session);
-        sessions.Granted.Add(resumed.Session);
-        reverted = sessions.Superseded.Remove(resumed.Session);
-        if (!reverted) sessions.Superseded.Add(resumed.Previous); // removed when its late SessionClosed arrives or its node dies
+        if (!Find(world, actor, resumed.Previous, out var previous)) return RpcStatus.Forbidden;
+        if (!previous.Has<Granted>()) return previous.Has<Superseded>() ? RpcStatus.Superseded : RpcStatus.Forbidden;
+        previous.Remove<Known, Granted>();
+        var current = Of(world, actor, resumed.Session);
+        current.Set(new Known(), new Granted());
+        reverted = current.Has<Superseded>();
+        if (reverted) current.Remove<Superseded>();
+        else previous.Set(new Superseded()); // removed when its late SessionClosed arrives or its node dies
+        Prune(previous);
         return RpcStatus.Ok;
     }
 
@@ -100,37 +111,45 @@ internal static class ActorSessions
     /// </summary>
     public static void CloseSessionsOf(World world, ulong nodeId)
     {
-        List<ClientSession>? lost = null;
-        List<(Entity, ActorKey)>? targets = null;
-        foreach (var item in world.Query<ClientSessions, ActorKey>())
+        var lost = new List<(Entity Known, ClientSession Session, EntityId Actor)>(); // cold: once per lost client-facing node
+        foreach (var item in world.Query<KnownSession, ChildOf>())
+            if (item.Component1.Session.Node == nodeId) lost.Add((item.Entity, item.Component1.Session, item.Component2.Parent));
+
+        foreach (var (known, session, actorId) in lost)
         {
-            var sessions = item.Component1.Sessions;
-            item.Component1.Superseded.RemoveWhere(s => s.Node == nodeId); // their close will not come
-            item.Component1.Granted.RemoveWhere(s => s.Node == nodeId);
-            bool any = false;
-            foreach (var session in sessions) any |= session.Node == nodeId;
-            if (any) (targets ??= new()).Add((item.Entity, item.Component2));
+            bool wasKnown = known.Has<Known>();
+            known.Destroy(); // its close will not come, and a resume from it neither
+            if (!wasKnown || !world.TryGetEntity(actorId, out var actor)) continue;
+            var key = actor.Read<ActorKey>();
+            if (world.Shard.Node.HandlerTypeById(key.HandlerTypeId)!.Handlers.Of(TypeId<SessionClosed>.Value) == null) continue;
+            var w = MessageWriter.Write(new SessionClosed(session));
+            w.SetHeader(FrameKind.Message, key.HandlerTypeId, TypeId<SessionClosed>.Value, key.Key);
+            ShardDispatch.Deliver(world, actor, key.Address, new Envelope(w, null));
+        }
+    }
+
+    /// <summary>The sessions of <paramref name="actor"/> as its handoff record carries them.</summary>
+    public static SessionsRecord? Collect(World world, Entity actor)
+    {
+        List<ClientSession>? known = null, granted = null, superseded = null;
+        foreach (var child in world.Children(actor.Id))
+        {
+            if (!child.TryGet<KnownSession>(out var session)) continue;
+            if (child.Has<Known>()) (known ??= []).Add(session.Session);
+            if (child.Has<Granted>()) (granted ??= []).Add(session.Session);
+            if (child.Has<Superseded>()) (superseded ??= []).Add(session.Session);
         }
 
-        // Delivered after the query: a handler may change the world's structure.
-        foreach (var (entity, key) in targets ?? [])
-        {
-            if (!entity.IsAlive || !entity.TryGet<ClientSessions>(out var sessions)) continue;
-            lost?.Clear();
-            foreach (var session in sessions.Sessions)
-                if (session.Node == nodeId) (lost ??= new()).Add(session);
-            if (lost == null) continue;
-            var handlerType = world.Shard.Node.HandlerTypeById(key.HandlerTypeId)!;
-            bool handles = handlerType.Handlers.Of(TypeId<SessionClosed>.Value) != null;
-            foreach (var session in lost)
-            {
-                sessions.Sessions.Remove(session);
-                if (!handles) continue;
-                var w = MessageWriter.Write(new SessionClosed(session));
-                w.SetHeader(FrameKind.Message, key.HandlerTypeId, TypeId<SessionClosed>.Value, key.Key);
-                ShardDispatch.Deliver(world, entity, key.Address, new Envelope(w, null));
-            }
-        }
+        return known == null && granted == null && superseded == null ? null
+            : new SessionsRecord { Sessions = [.. known ?? []], Granted = [.. granted ?? []], Superseded = [.. superseded ?? []] };
+    }
+
+    /// <summary>Restore the sessions a handoff record carried onto <paramref name="actor"/>.</summary>
+    public static void Restore(World world, Entity actor, SessionsRecord moved)
+    {
+        foreach (var s in moved.Sessions) Of(world, actor, s).Set(new Known());
+        foreach (var s in moved.Granted) Of(world, actor, s).Set(new Granted());
+        foreach (var s in moved.Superseded) Of(world, actor, s).Set(new Superseded());
     }
 }
 

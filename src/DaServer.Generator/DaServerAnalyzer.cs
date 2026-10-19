@@ -15,7 +15,7 @@ public sealed partial class DaServerAnalyzer : DiagnosticAnalyzer
     private const string FilterAttribute = "DaServer.Rpc.FilterAttribute";
 
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics { get; } = ImmutableArray.Create(
-        Rules.BadHandler, Rules.BadMessage, Rules.NotWireType, Rules.IdCollision, Rules.NoDefaultConstructor, Rules.WrongFlow, Rules.StatefulHandlerType, Rules.WrongAddress, Rules.SharedReferencesServer, Rules.MisplacedReplyWhen, Rules.BlockingCall, Rules.AskInSystem, Rules.ComponentInLogic, Rules.BadPersisted, Rules.OffShard, Rules.BadPlacement, Rules.WireBreak, Rules.WireUnrecorded, Rules.ClientCollection, Rules.KickWithDisconnectSession, Rules.BadFilter);
+        Rules.BadHandler, Rules.BadMessage, Rules.NotWireType, Rules.IdCollision, Rules.WrongFlow, Rules.StatefulHandlerType, Rules.WrongAddress, Rules.SharedReferencesServer, Rules.BlockingCall, Rules.AskInSystem, Rules.ComponentInLogic, Rules.BadPersisted, Rules.OffShard, Rules.BadPlacement, Rules.WireBreak, Rules.WireUnrecorded, Rules.ClientCollection, Rules.KickWithDisconnectSession, Rules.BadFilter);
 
     public override void Initialize(AnalysisContext context)
     {
@@ -37,6 +37,7 @@ public sealed partial class DaServerAnalyzer : DiagnosticAnalyzer
                     symbolContext.ReportDiagnostic(Diagnostic.Create(d, l ?? type.Locations.FirstOrDefault(), a));
 
                 Shapes.ReadHosted(type, Report);
+                ServerHandlers.Read(type, Report);
                 Shapes.ReadRequest(type, Report);
                 Shapes.ReadClientMessage(type, Report);
                 if (Support.HasAttribute(type, FilterAttribute)) Shapes.ReadFilter(type, Report);
@@ -59,7 +60,6 @@ public sealed partial class DaServerAnalyzer : DiagnosticAnalyzer
             }, SymbolKind.NamedType);
 
             start.RegisterOperationAction(CheckSend, OperationKind.Invocation);
-            start.RegisterOperationAction(CheckReplyWhen, OperationKind.Invocation);
             start.RegisterOperationAction(CheckBlocking, OperationKind.Invocation, OperationKind.PropertyReference, OperationKind.Lock);
             start.RegisterOperationAction(CheckOffShard, OperationKind.Invocation, OperationKind.ObjectCreation);
 
@@ -68,26 +68,6 @@ public sealed partial class DaServerAnalyzer : DiagnosticAnalyzer
                 foreach (var d in collisions) end.ReportDiagnostic(d);
             });
         });
-    }
-}
-
-/// <summary>
-/// <c>ReplyWhen</c> ends the turn and replies later: it must be what a non-<c>async</c> method returns, so nothing of
-/// the handler runs after it (an <c>async</c> handler would keep the turn, and its own result would be replied too).
-/// </summary>
-public sealed partial class DaServerAnalyzer
-{
-    private static void CheckReplyWhen(OperationAnalysisContext context)
-    {
-        var invocation = (IInvocationOperation)context.Operation;
-        if (invocation.TargetMethod.Name != "ReplyWhen" || !Support.Is(invocation.TargetMethod.ContainingType, "DaServer.Runtime.ShardObject")) return;
-        IOperation? parent = invocation.Parent;
-        while (parent is IConversionOperation { IsImplicit: true }) parent = parent.Parent;
-        bool returned = parent is IReturnOperation;
-        for (var p = parent; returned && p != null; p = p.Parent)
-            if (p is IAnonymousFunctionOperation or ILocalFunctionOperation) returned = false;
-        if (!returned || context.ContainingSymbol is IMethodSymbol { IsAsync: true } or not IMethodSymbol)
-            context.ReportDiagnostic(Diagnostic.Create(Rules.MisplacedReplyWhen, invocation.Syntax.GetLocation()));
     }
 }
 
@@ -110,15 +90,13 @@ public sealed partial class DaServerAnalyzer
 public sealed partial class DaServerAnalyzer
 {
     /// <summary>
-    /// Mutable fields of an actor, service or server system type (instance fields, auto-properties, static non-readonly
-    /// fields): the runtime recreates these objects (load, move, code reload) and persists, moves and inspects
-    /// components only, so such state would be lost or shared across shard threads. A system's own state is a singleton.
+    /// Mutable fields of an actor or service class (static: they are static classes) or of a server system type: the
+    /// runtime persists, moves and inspects components only, and every shard thread runs the same handlers, so such state
+    /// would be lost or shared across shard threads. An actor's state is its components, a system's a singleton.
     /// </summary>
     private static void CheckStateless(INamedTypeSymbol type, bool logic, Report report)
     {
-        if (type.TypeKind != TypeKind.Class ||
-            !(Support.DerivesFrom(type, Support.ActorBase) || Support.DerivesFrom(type, Support.ServiceBase) ||
-              (logic && Support.DerivesFrom(type, Support.EcsSystem))))
+        if (type.TypeKind != TypeKind.Class || !(ServerHandlers.IsHandlerType(type) || (logic && Support.DerivesFrom(type, Support.EcsSystem))))
             return;
 
         foreach (var member in type.GetMembers())
@@ -133,7 +111,7 @@ public sealed partial class DaServerAnalyzer
 /// <summary>Call sites: what is sent must be a message, and travel its flow.</summary>
 public sealed partial class DaServerAnalyzer
 {
-    private static readonly string[] Senders = ["DaServer.IMessageSender", "DaServer.Runtime.ICluster", Support.ClusterClientType];
+    private static readonly string[] Senders = ["DaServer.IMessageSender", "DaServer.Runtime.ICluster", "DaServer.Runtime.Context", Support.ClusterClientType];
 
     /// <summary>
     /// <c>Send</c> / <c>Ask</c> / <c>Publish</c> of the cluster or a client: the last parameter is the message, the one
@@ -153,7 +131,8 @@ public sealed partial class DaServerAnalyzer
         bool client = Support.Is(receiver, Support.ClusterClientType);
 
         int messageIndex = method.Parameters.Length - 1;
-        if (messageIndex > 0 && Support.Is(method.Parameters[messageIndex].Type, "DaServer.CallOptions")) messageIndex--; // Ask(.., options)
+        if (messageIndex > 0 && (Support.Is(method.Parameters[messageIndex].Type, "DaServer.CallOptions") || // Ask(.., options)
+                                 Support.Is(method.Parameters[messageIndex].Type, "DaServer.Runtime.ReplyTo"))) messageIndex--; // ctx.Ask(.., forward)
         var message = method.Parameters[messageIndex].Type;
         if (message is ITypeParameterSymbol) return; // generic plumbing: checked where the type is known
         int addressIndex = messageIndex - 1;
@@ -175,7 +154,7 @@ public sealed partial class DaServerAnalyzer
         {
             Shapes.CheckFlow(message, toClient, fromClient: client, location, usedBy, Report);
             if (Support.Is(message, "DaServer.Disconnect") && (Support.Is(address, "DaServer.ClientSession") || Support.Is(address, "DaServer.Origin")) &&
-                context.ContainingSymbol?.ContainingType is { } container && Support.DerivesFrom(container, Support.ActorBase))
+                context.ContainingSymbol?.ContainingType is { } container && ServerHandlers.IsActor(container))
                 Report(Rules.KickWithDisconnectSession, location);
         }
     }
@@ -281,12 +260,8 @@ internal static class Rules
         "Messages '{0}' and '{1}' hash to the same type id; give one of them another id with [NinoFormerName(\"...\")]", Category,
         DiagnosticSeverity.Error, true, customTags: WellKnownDiagnosticTags.CompilationEnd);
 
-    public static readonly DiagnosticDescriptor NoDefaultConstructor = new("DAS005", "Missing parameterless constructor",
-        "'{0}' must have a public parameterless constructor (the runtime creates one instance per shard/loaded actor)",
-        Category, DiagnosticSeverity.Error, true);
-
     public static readonly DiagnosticDescriptor StatefulHandlerType = new("DAS007", "Actor, service or system with fields",
-        "'{0}.{1}' holds state outside ECS: keep actor state in components (Actor<TId, TState>, Entity), a system's and shared data in singletons",
+        "'{0}.{1}' holds state outside ECS: an actor's state is its components (handler parameters), a service's and a system's singletons",
         Category, DiagnosticSeverity.Error, true);
 
     public static readonly DiagnosticDescriptor WrongFlow = new("DAS006", "Message used against its flow",
@@ -295,10 +270,6 @@ internal static class Rules
     public static readonly DiagnosticDescriptor SharedReferencesServer = new("DAS010", "Shared logic references the server",
         "Shared assembly '{0}' references {1}: shared logic (<DaServerShared>true</DaServerShared>) runs on clients too and may reference contracts and EasyEcs only",
         Category, DiagnosticSeverity.Error, true, customTags: WellKnownDiagnosticTags.CompilationEnd);
-
-    public static readonly DiagnosticDescriptor MisplacedReplyWhen = new("DAS011", "ReplyWhen outside a return",
-        "ReplyWhen must be what a handler that is not async returns: 'return ReplyWhen(task, reply);'", Category,
-        DiagnosticSeverity.Error, true);
 
     public static readonly DiagnosticDescriptor BlockingCall = new("DAS009", "Synchronous wait on a shard thread",
         "'{0}' blocks the shard thread, and every actor of the shard with it: {1}", Category, DiagnosticSeverity.Error, true);
@@ -327,7 +298,7 @@ internal static class Rules
         "[Filter] '{0}' {1}", Category, DiagnosticSeverity.Error, true);
 
     public static readonly DiagnosticDescriptor KickWithDisconnectSession = new("DAS020", "An actor disconnects a session with Send",
-        "An actor disconnects a session with DisconnectSession(session): it withdraws the session's grant at once, so a resume racing the kick is refused",
+        "An actor disconnects a session with ctx.DisconnectSession(session): it withdraws the session's grant at once, so a resume racing the kick is refused",
         Category, DiagnosticSeverity.Warning, true);
 
     public static readonly DiagnosticDescriptor ClientCollection = new("DAS019", "Collection held directly by a client message",

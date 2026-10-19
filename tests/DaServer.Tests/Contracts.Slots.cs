@@ -5,17 +5,17 @@ namespace DaServer.Tests;
 public readonly record struct PinId(long Value) : IActorId;
 public readonly record struct LoadId(long Value) : IActorId;
 
-/// <summary>Counts its visits (its state moves with it).</summary>
-
-/// <summary>Stays where it is loaded.</summary>
+/// <summary>Stays where it is loaded; counts its visits (its state moves with it).</summary>
 [Sticky]
-public sealed class Pinned : Actor<PinId, Ledger>
+[Actor<PinId>]
+public static class Pinned
 {
-    [Handle] public int On(Visit _) => ++State.Gold;
+    [Handle] internal static int On(in Visit _, ref Ledger ledger) => ++ledger.Gold;
 }
 
-/// <summary>Evened out by load.</summary>
-public sealed class Spread : Actor<LoadId, Ledger>
+/// <summary>Evened out by load; counts its visits.</summary>
+[Actor<LoadId>]
+public static class Spread
 {
-    [Handle] public int On(Visit _) => ++State.Gold;
+    [Handle] internal static int On(in Visit _, ref Ledger ledger) => ++ledger.Gold;
 }

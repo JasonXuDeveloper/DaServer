@@ -6,11 +6,15 @@ using Sample.Contracts;
 namespace Sample.GameServer;
 
 /// <summary>The realm: players report in and out; <see cref="RealmBroadcastSystem"/> tells every client about it.</summary>
-public sealed class Realm : Actor<RealmId, RealmState>
+[Actor<RealmId>]
+public static class Realm
 {
-    [Handle] public void On(PlayerOnline m) => State.Online.Add(m.Player);
+    /// <summary>The realm's first load (a moved realm brings its state: <c>Loaded</c>).</summary>
+    [Handle] internal static void On(in Created _, ref RealmState realm) => realm = new RealmState();
 
-    [Handle] public void On(PlayerOffline m) => State.Online.Remove(m.Player);
+    [Handle] internal static void On(in PlayerOnline m, ref RealmState realm) => realm.Online.Add(m.Player);
+
+    [Handle] internal static void On(in PlayerOffline m, ref RealmState realm) => realm.Online.Remove(m.Player);
 }
 
 /// <summary>Every <see cref="Timing.RealmStatusEveryTicks"/> ticks, the realm status goes to every session of the cluster.</summary>

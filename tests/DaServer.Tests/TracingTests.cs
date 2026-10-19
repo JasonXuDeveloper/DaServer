@@ -4,7 +4,7 @@ using System.Diagnostics;
 namespace DaServer.Tests;
 
 /// <summary>
-/// Distributed tracing (A6): a turn runs in a span, child of whatever sent its message on any node, and only inside a trace
+/// Distributed tracing (A6): a handler runs in a span, child of whatever sent its message on any node, and only inside a trace
 /// someone started; the trace context travels in the frame's extension block, which readers that do not know an entry skip.
 /// </summary>
 public class TracingTests : ClusterTest
@@ -40,7 +40,7 @@ public class TracingTests : ClusterTest
     }
 
     [Test]
-    public async Task ATurnsSpanIsTheChildOfItsSendersOnAnyNode()
+    public async Task AHandlersSpanIsTheChildOfItsSendersOnAnyNode()
     {
         var stopped = new ConcurrentQueue<Activity>();
         using var listener = Listen(stopped);
@@ -52,17 +52,24 @@ public class TracingTests : ClusterTest
         using (var root = Test.StartActivity("request")!)
         {
             (trace, request) = (root.TraceId, root.SpanId);
-            await nodes[0].Ask(new CounterId(remote), new AddMany(new CounterId(local), 3));
+            await nodes[0].Ask(new DriverId(remote), new Drive(DriveKind.Add, local, 0, 1, 3)); // three asks, one per answer
         }
 
         List<Activity> Spans() => [.. stopped.Where(s => s.TraceId == trace && s.Source.Name == "DaServer")];
-        await Eventually(() => Spans().Count == 104, "every turn's span ended");
-        var turn = Spans().Single(static s => s.OperationName == nameof(AddMany));
-        Assert.That((turn.ParentSpanId, turn.Kind), Is.EqualTo((request, ActivityKind.Server)), "the remote turn continues the request's trace");
-        Assert.That(turn.GetTagItem("daserver.handler"), Is.EqualTo(nameof(Counter)));
+        // The drive, its three adds and the three answers: an answer continues the trace of the handler that asked.
+        await Eventually(() => Spans().Count == 7, "every handler's span ended");
+        var drive = Spans().Single(static s => s.OperationName == nameof(Drive));
+        Assert.That((drive.ParentSpanId, drive.Kind), Is.EqualTo((request, ActivityKind.Server)), "the remote handler continues the request's trace");
+        Assert.That(drive.GetTagItem("daserver.handler"), Is.EqualTo(nameof(Driver)));
         var adds = Spans().Where(static s => s.OperationName == nameof(Add)).ToList();
-        Assert.That(adds, Has.Count.EqualTo(103));
-        Assert.That(adds.Select(static s => s.ParentSpanId), Has.All.EqualTo(turn.SpanId), "every call the turn made, after each await too");
+        Assert.That(adds, Has.Count.EqualTo(3));
+        var asked = adds.Select(static s => s.ParentSpanId).ToList();
+        Assert.That(asked[0], Is.EqualTo(drive.SpanId), "the first ask is the drive's");
+        var answers = Spans().Where(s => s != drive && !adds.Contains(s)).ToList();
+        Assert.That(answers, Has.Count.EqualTo(3), "each answer runs in a span of the trace");
+        Assert.That(answers.Select(static s => s.ParentSpanId), Is.SubsetOf(adds.Select(static s => s.SpanId).Append(drive.SpanId)),
+            "an answer is the child of the ask it answers");
+        Assert.That(asked.Skip(1), Is.SubsetOf(answers.Select(static s => s.SpanId)), "the later asks are their answers'");
     }
 
     [Test]
