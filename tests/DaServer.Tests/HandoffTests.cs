@@ -1,5 +1,3 @@
-using System.Collections.Concurrent;
-using DaServer.Persistence;
 
 namespace DaServer.Tests;
 
@@ -8,59 +6,20 @@ namespace DaServer.Tests;
 /// [Handoff] components move without being stored, and without a store state still moves. Runs against every store.
 /// </summary>
 [TestFixtureSource(typeof(Stores), nameof(Stores.Kinds))]
-public class HandoffTests(string kind) : ClusterTest
+public class HandoffTests(string kind) : StoreTest(kind)
 {
-    private readonly Stores _stores = new(kind);
-
-    [OneTimeTearDown]
-    public Task DropStores() => _stores.DisposeAsync().AsTask();
-
-    /// <summary>Counts what reaches a store; a write can be held to look at the actor meanwhile.</summary>
-    private sealed class WatchedStore(IActorStore inner) : IActorStore
-    {
-        public ValueTask InitializeAsync(CancellationToken ct = default) => inner.InitializeAsync(ct);
-
-        public int Loads, Writes;
-        public TaskCompletionSource? HoldWrites;
-        public readonly TaskCompletionSource WriteStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        public ValueTask ClaimAsync(ReadOnlyMemory<StoredKey> keys, Memory<StoredRecord> records, CancellationToken ct = default)
-        {
-            Interlocked.Add(ref Loads, keys.Length);
-            return inner.ClaimAsync(keys, records, ct);
-        }
-
-        public volatile bool Failing;
-
-        public async ValueTask SaveAsync(ReadOnlyMemory<StoredWrite> writes, Memory<long> versions, CancellationToken ct = default)
-        {
-            if (Failing) throw new InvalidOperationException("the store is down");
-            WriteStarted.TrySetResult();
-            if (HoldWrites != null) await HoldWrites.Task;
-            Interlocked.Add(ref Writes, writes.Length);
-            await inner.SaveAsync(writes, versions, ct);
-            for (int i = 0; i < writes.Length; i++)
-                if (versions.Span[i] != 0) Written[writes.Span[i].Key.Key] = true;
-        }
-
-        /// <summary>The keys whose writes the store accepted (recorded once the write has landed).</summary>
-        public readonly ConcurrentDictionary<long, bool> Written = new();
-    }
-
-    private Task<Node> StartWith(IActorStore? store, string name) => Start(name, configure: o => o.ActorStore = store);
-
     [Test]
     public async Task ALostRecordGoesAgainAndTheStoreStaysOut()
     {
         // The records a's actors send to b are lost on the way (a link that restarted its stream): b's mail asks a, a sends
         // the record again (at once, or after one handoff timeout when b asked before a sent it), and the actors move
         // with their state; nothing waits until a node dies, nothing reads the store.
-        var store = new WatchedStore(_stores.Create());
-        var a = await Start("a", configure: o => (o.ActorStore, o.CallTimeout) = (store, TimeSpan.FromSeconds(3)));
+        var store = NewStore();
+        var a = await StartWith(store, "a", static o => o.CallTimeout = TimeSpan.FromSeconds(3));
         for (int key = 100; key < 140; key++) Assert.That(await a.Ask(new BankId(key), new Deposit(key, false)), Is.EqualTo(key));
         int loads = store.Loads;
         a.LoseRecords = int.MaxValue;
-        var b = await Start("b", configure: o => (o.ActorStore, o.CallTimeout) = (store, TimeSpan.FromSeconds(3)));
+        var b = await StartWith(store, "b", static o => o.CallTimeout = TimeSpan.FromSeconds(3));
         await Converged();
         // All at once, within the move window (twice the 3 s call timeout and the store timeout): mail that reaches b later loads from the
         // store, the fallback for a record that never comes. Each ask may wait one handoff timeout for the record again.
@@ -83,15 +42,16 @@ public class HandoffTests(string kind) : ClusterTest
     {
         // A copy past its OnUnload whose final save waits for the shard's write in flight, when the node is declared dead:
         // it is dropped like any fenced copy (it writes nothing), so the shard drains.
-        var store = new WatchedStore(_stores.Create()) { HoldWrites = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously) };
+        var store = NewStore();
+        store.WriteGate.Hold();
         var a = await Start("a", shards: 1, configure: o => o.ActorStore = store);
         Assert.That(await a.Ask(new BankId(100), new Deposit(1, Critical: true)), Is.EqualTo(1));
-        await store.WriteStarted.Task.WaitAsync(TimeSpan.FromSeconds(5)); // the critical save is in flight, held
+        await store.WriteGate.Started; // the critical save is in flight, held
         Assert.That(await a.Ask(new BankId(101), new Deposit(2, false)), Is.EqualTo(2));
         Assert.That(a.UnloadActors("Bank"), Is.True); // 101 unloads and queues its final save behind the held one
         await Task.Delay(200);
         foreach (var shard in a.Shards) shard.RequestUnloadAll(); // declared dead
-        store.HoldWrites.SetResult();
+        store.WriteGate.Release();
         await Eventually(() => a.ActorCount == 0, "every copy dropped");
     }
 
@@ -101,12 +61,12 @@ public class HandoffTests(string kind) : ClusterTest
         // b takes keys from a while a's actors are busy (their turns held): b's copies wait for records that cannot come
         // yet. b stops meanwhile: a waiting copy holds no state, so it goes at once (its mail to the owner, "none" to a),
         // and b stops clean instead of waiting on a record until its budget runs out.
-        var store = new WatchedStore(_stores.Create());
+        var store = NewStore();
         var a = await StartWith(store, "a");
         TurnGate.Current = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var held = Enumerable.Range(100, 40).Select(key => a.Ask(new BankId(key), new HoldTurn()).AsTask()).ToArray();
         await Task.Delay(100);
-        var b = await Start("b", configure: o => (o.ActorStore, o.ShutdownTimeout) = (store, TimeSpan.FromSeconds(3)));
+        var b = await StartWith(store, "b", static o => o.ShutdownTimeout = TimeSpan.FromSeconds(3));
         await Converged();
         long key = Enumerable.Range(100, 40).First(k => b.OwnerOf<BankId>(k) == b.Id);
         _ = b.Ask(new BankId(key), new Balance()).AsTask(); // b's copy asks a for the record and waits
@@ -122,7 +82,7 @@ public class HandoffTests(string kind) : ClusterTest
     {
         // The new owner takes the record (its sender lets its copy go), then OnLoad throws: the record is the only copy
         // of the moved state, so it is written, and the next mail loads it back from the store.
-        var store = new WatchedStore(_stores.Create());
+        var store = NewStore();
         var a = await StartWith(store, "a");
         for (int key = 100; key < 140; key++) Assert.That(await a.Ask(new BankId(key), new Deposit(key, false)), Is.EqualTo(key));
         for (int key = 100; key < 140; key++) Bank.FailNextLoad[key] = true; // only restores load from here on
@@ -151,7 +111,8 @@ public class HandoffTests(string kind) : ClusterTest
         // The store is down when a's actors make a critical change (SaveNow); their keys move to b meanwhile. The records
         // go without waiting for the store and say the write was critical: b writes them as soon as the store is back,
         // so a crash of b right after loses none of them.
-        var store = new WatchedStore(_stores.Create()) { Failing = true };
+        var store = NewStore();
+        store.WritesDown = true;
         Faults.Allow("SaveFailed");
         var a = await StartWith(store, "a");
         for (int key = 150; key < 190; key++) Assert.That(await a.Ask(new BankId(key), new Deposit(key, Critical: true)), Is.EqualTo(key));
@@ -160,7 +121,7 @@ public class HandoffTests(string kind) : ClusterTest
         var moved = Enumerable.Range(150, 40).Where(k => b.OwnerOf<BankId>(k) == b.Id).ToArray();
         Assert.That(moved, Is.Not.Empty);
         foreach (int key in moved) Assert.That(await b.Ask(new BankId(key), new Balance()), Is.EqualTo(key), "the record moved");
-        store.Failing = false;
+        store.WritesDown = false;
         // a's own keys retry their failed writes too: wait for each moved key, not for a count of writes.
         await Eventually(() => moved.All(k => store.Written.ContainsKey(k)), "b wrote the critical changes it took");
         await b.KillAsync();
@@ -176,7 +137,7 @@ public class HandoffTests(string kind) : ClusterTest
         // b's copy of the actor throws while taking the record (a setting is user code): b refuses it, so a takes its
         // state back and writes it, instead of b holding a copy that never runs and a dropping its own.
         Faults.Allow("HandoffUnreadable"); // what the test provokes
-        var store = new WatchedStore(_stores.Create());
+        var store = NewStore();
         var a = await StartWith(store, "a");
         for (int key = 8000; key < 8040; key++) Assert.That(await a.Ask(new BankId(key), new Deposit(key, false)), Is.EqualTo(key));
         Assert.That(store.Written, Is.Empty, "nothing written yet: these keys write on unload only");
@@ -205,7 +166,7 @@ public class HandoffTests(string kind) : ClusterTest
         // Tangles whose state no longer serializes leave a when b joins: their records cannot be sent nor written, so
         // their copies go (the store keeps their last record, none here) and b loads them anew; the stop goes on.
         Faults.Allow("RecordUnwritable"); // what the test provokes
-        var store = new WatchedStore(_stores.Create());
+        var store = NewStore();
         var a = await StartWith(store, "a");
         for (int key = 1; key <= 20; key++) Assert.That(await a.Ask(new TangleId(key), new Tie()), Is.True);
         var b = await StartWith(store, "b");
@@ -220,7 +181,7 @@ public class HandoffTests(string kind) : ClusterTest
     [Test]
     public async Task ScalingOutAndInMovesRecordsWithoutTheStore()
     {
-        var store = new WatchedStore(_stores.Create());
+        var store = NewStore();
         var a = await StartWith(store, "a");
         for (int key = 100; key < 140; key++)
         {
@@ -261,13 +222,13 @@ public class HandoffTests(string kind) : ClusterTest
     [Test]
     public async Task NoSystemSeesACopyThatHandedItsStateOff()
     {
-        var a = await StartWith(_stores.Create(), "a");
+        var a = await StartWith(Stores.Create(), "a");
         var keys = Enumerable.Range(7000, 40).Select(static k => (long)k).ToArray();
         foreach (long key in keys) Assert.That(await a.Ask(new BankId(key), new Hit()), Is.EqualTo(1));
 
         // b takes some keys but answers no record: a's copies wait, handed off, until b's shards run again.
         var gate = new ManualResetEventSlim(); // not disposed: a shard thread may still be inside Wait() when the test ends
-        var b = await StartWith(_stores.Create(), "b");
+        var b = await StartWith(Stores.Create(), "b");
         HoldShards(b, gate, 20);
         await Converged();
         var moved = keys.Where(k => a.OwnerOf<BankId>(k) == b.Id).ToArray();
@@ -311,9 +272,9 @@ public class HandoffTests(string kind) : ClusterTest
         // for the record; a still holds K past the handoff timeout. b must keep waiting for the record (a is alive), not
         // load K from the store and run it beside a's copy.
         Faults.Allow("TurnTooLong"); // a's long turn is the point
-        var store = new WatchedStore(_stores.Create());
-        var a = await Start("a", configure: o => { o.ActorStore = store; o.CallTimeout = TimeSpan.FromMilliseconds(500); });
-        var b = await Start("b", configure: o => { o.ActorStore = store; o.CallTimeout = TimeSpan.FromMilliseconds(500); });
+        var store = NewStore();
+        var a = await StartWith(store, "a", static o => o.CallTimeout = TimeSpan.FromMilliseconds(500));
+        var b = await StartWith(store, "b", static o => o.CallTimeout = TimeSpan.FromMilliseconds(500));
         await Converged();
         long key = 100;
         while (a.OwnerOf<BankId>(key) != a.Id) key++;
@@ -340,7 +301,7 @@ public class HandoffTests(string kind) : ClusterTest
         // K moves from a to b; b hears first, gets mail for K and asks a for the record. a holds no copy, but owns K in
         // its own view: answering "none" would let b load K from the store while mail routed by a loads it there too.
         // a answers once it hears of the move: its copy (loaded by its own mail meanwhile) goes to b.
-        var store = new WatchedStore(_stores.Create());
+        var store = NewStore();
         var a = await StartWith(store, "a");
         var b = await StartWith(store, "b");
         await Converged();
@@ -368,7 +329,7 @@ public class HandoffTests(string kind) : ClusterTest
     {
         // b just joined: a's previous view lacked it, so a's own key K had no other owner. a loads K at once instead of
         // asking b (which never held it) and waiting for its answer.
-        var store = new WatchedStore(_stores.Create());
+        var store = NewStore();
         var a = await StartWith(store, "a");
         var b = await StartWith(store, "b");
         await Converged();
@@ -391,13 +352,13 @@ public class HandoffTests(string kind) : ClusterTest
     {
         // b takes some of a's keys but its shards answer only after several handoff timeouts: a must keep waiting for the
         // answer (b is alive), not write its copy to the store and reload it, while b runs the copy it accepted.
-        var store = new WatchedStore(_stores.Create());
-        var a = await Start("a", configure: o => { o.ActorStore = store; o.CallTimeout = TimeSpan.FromMilliseconds(500); });
+        var store = NewStore();
+        var a = await StartWith(store, "a", static o => o.CallTimeout = TimeSpan.FromMilliseconds(500));
         var keys = Enumerable.Range(8000, 40).Select(static k => (long)k).ToArray();
         foreach (long key in keys) Assert.That(await a.Ask(new BankId(key), new Deposit(1, false)), Is.EqualTo(1)); // unwritten
 
         var gate = new ManualResetEventSlim(); // not disposed: a shard thread may still be inside Wait() when the test ends
-        var b = await Start("b", configure: o => { o.ActorStore = store; o.CallTimeout = TimeSpan.FromMilliseconds(500); });
+        var b = await StartWith(store, "b", static o => o.CallTimeout = TimeSpan.FromMilliseconds(500));
         HoldShards(b, gate, 20);
         await Converged();
         var moved = keys.Where(k => a.OwnerOf<BankId>(k) == b.Id).ToArray();
@@ -498,15 +459,15 @@ public class HandoffTests(string kind) : ClusterTest
     [Test]
     public async Task MailForAnActorBeingSavedWaitsForItsRemoval()
     {
-        var store = new WatchedStore(_stores.Create());
+        var store = NewStore();
         var a = await StartWith(store, "a");
         Assert.That(await a.Ask(new BankId(1000), new Deposit(1, false)), Is.EqualTo(1));
-        store.HoldWrites = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        await store.WriteStarted.Task.WaitAsync(TimeSpan.FromSeconds(5)); // idle: unloaded, its record taken
+        store.WriteGate.Hold();
+        await store.WriteGate.Started; // idle: unloaded, its record taken
         var deposit = a.Ask(new BankId(1000), new Deposit(1, false)).AsTask();
         await Task.Delay(100);
         Assert.That(deposit.IsCompleted, Is.False, "the unloaded copy does not take mail");
-        store.HoldWrites.SetResult();
+        store.WriteGate.Release();
         Assert.That(await deposit, Is.EqualTo(2), "the mail reloaded the actor with what was written");
     }
 }

@@ -1,5 +1,3 @@
-using DaServer.Persistence;
-
 namespace DaServer.Tests;
 
 /// <summary>
@@ -7,38 +5,8 @@ namespace DaServer.Tests;
 /// against every store (<see cref="Stores"/>).
 /// </summary>
 [TestFixtureSource(typeof(Stores), nameof(Stores.Kinds))]
-public class PersistenceTests(string kind) : ClusterTest
+public class PersistenceTests(string kind) : StoreTest(kind)
 {
-    private readonly Stores _stores = new(kind);
-
-    [OneTimeTearDown]
-    public Task DropStores() => _stores.DisposeAsync().AsTask();
-
-    /// <summary>Counts the writes that reach a store.</summary>
-    private sealed class CountingStore(IActorStore inner) : IActorStore
-    {
-        public readonly IActorStore Inner = inner;
-
-        public ValueTask InitializeAsync(CancellationToken ct = default) => Inner.InitializeAsync(ct);
-        public int Writes;
-
-        public ValueTask ClaimAsync(ReadOnlyMemory<StoredKey> keys, Memory<StoredRecord> records, CancellationToken ct = default) =>
-            Inner.ClaimAsync(keys, records, ct);
-
-        public ValueTask SaveAsync(ReadOnlyMemory<StoredWrite> writes, Memory<long> versions, CancellationToken ct = default)
-        {
-            Interlocked.Add(ref Writes, writes.Length);
-            return Inner.SaveAsync(writes, versions, ct);
-        }
-    }
-
-    private Task<Node> StartWith(IActorStore store, string name = "single", string cluster = "daserver") =>
-        Start(name, configure: o =>
-        {
-            o.ActorStore = store;
-            o.ClusterName = cluster;
-        });
-
     /// <summary>A feature whose drain and stop throw (a feature is user code too).</summary>
     private sealed class FailingFeature : NodeFeature
     {
@@ -51,12 +19,8 @@ public class PersistenceTests(string kind) : ClusterTest
     public async Task AFeatureThatFailsToDrainDoesNotKeepTheActorsFromSaving()
     {
         Faults.Allow("FeatureFailed"); // what the test provokes
-        var store = new CountingStore(_stores.Create());
-        var first = await Start("single", configure: o =>
-        {
-            o.ActorStore = store;
-            o.Features.Add(new FailingFeature());
-        });
+        var store = NewStore();
+        var first = await StartWith(store, configure: static o => o.Features.Add(new FailingFeature()));
         Assert.That(await first.Ask(new BankId(110), new Deposit(5, false)), Is.EqualTo(5));
         await Stop(first);
         Assert.That(Faults.Count("FeatureFailed"), Is.EqualTo(2), "its drain and its stop failed");
@@ -75,10 +39,9 @@ public class PersistenceTests(string kind) : ClusterTest
     [Test]
     public async Task AFeatureThatNeverDrainsDoesNotKeepTheActorsFromSaving()
     {
-        var store = new CountingStore(_stores.Create());
-        var first = await Start("single", configure: o =>
+        var store = NewStore();
+        var first = await StartWith(store, configure: static o =>
         {
-            o.ActorStore = store;
             o.ShutdownTimeout = TimeSpan.FromSeconds(2);
             o.Features.Add(new StuckFeature());
         });
@@ -91,7 +54,7 @@ public class PersistenceTests(string kind) : ClusterTest
     [Test]
     public async Task StateSurvivesAGracefulStop()
     {
-        var store = new CountingStore(_stores.Create());
+        var store = NewStore();
         var first = await StartWith(store);
         Assert.That(await first.Ask(new BankId(100), new Deposit(5, false)), Is.EqualTo(5));
         Assert.That(await first.Ask(new BankId(100), new Deposit(2, false)), Is.EqualTo(7));
@@ -108,7 +71,7 @@ public class PersistenceTests(string kind) : ClusterTest
     [Test]
     public async Task CheckpointsSurviveACrashAndUnchangedRecordsAreNotWritten()
     {
-        var store = new CountingStore(_stores.Create());
+        var store = NewStore();
         var first = await StartWith(store);
         Assert.That(await first.Ask(new BankId(1), new Deposit(3, false)), Is.EqualTo(3));
         await Eventually(() => store.Writes == 1, "the change was checkpointed (SaveEvery 100 ms)");
@@ -123,7 +86,7 @@ public class PersistenceTests(string kind) : ClusterTest
     [Test]
     public async Task SaveNowWritesACriticalChangeAtOnce()
     {
-        var store = new CountingStore(_stores.Create());
+        var store = NewStore();
         var first = await StartWith(store);
         Assert.That(await first.Ask(new BankId(101), new Deposit(9, Critical: true)), Is.EqualTo(9));
         await Eventually(() => store.Writes == 1, "SaveNow wrote without waiting for an unload");
@@ -136,7 +99,7 @@ public class PersistenceTests(string kind) : ClusterTest
     [Test]
     public async Task RecordsHoldWholeTurnsOnly()
     {
-        var store = new CountingStore(_stores.Create());
+        var store = NewStore();
         var first = await StartWith(store);
         Assert.That(await first.Ask(new BankId(103), new DepositTwice(5, new BankId(104))), Is.EqualTo(10));
         await Eventually(() => store.Writes == 1, "SaveNow wrote once the turn ended");
@@ -152,7 +115,7 @@ public class PersistenceTests(string kind) : ClusterTest
         // Callers deposit through b while a stops (its actors hand over to b), then b stops last and writes everything:
         // every acknowledged deposit is in the record, and nothing that was not attempted is. A failed call may or may
         // not have been applied (its reply was lost), so it bounds the balance from above only.
-        var store = new CountingStore(_stores.Create());
+        var store = NewStore();
         var a = await StartWith(store, "a");
         var b = await StartWith(store, "b");
         await Converged();
@@ -183,7 +146,7 @@ public class PersistenceTests(string kind) : ClusterTest
     {
         // Keys below 100 checkpoint every 100 ms. What was acknowledged half a second (several checkpoints) before the
         // kill survives it; nothing survives that was not attempted, and no record holds half a turn.
-        var store = new CountingStore(_stores.Create());
+        var store = NewStore();
         var first = await StartWith(store);
         var load = Load(first, first: 1, keys: 16, critical: false);
         await Task.Delay(300);
@@ -253,9 +216,9 @@ public class PersistenceTests(string kind) : ClusterTest
     {
         // Two nodes that cannot see each other (as in a split) both load the actor from one store.
         Faults.Allow("LinkRefused"); // b's seed is a, which refuses another cluster's link
-        var store = new CountingStore(_stores.Create());
-        var a = await StartWith(store, "a", cluster: "left");
-        var b = await StartWith(store, "b", cluster: "right");
+        var store = NewStore();
+        var a = await StartWith(store, "a", static o => o.ClusterName = "left");
+        var b = await StartWith(store, "b", static o => o.ClusterName = "right");
         Assert.That(await b.Ask(new BankId(102), new Balance()), Is.Zero, "b holds the actor at version 0");
         Assert.That(await a.Ask(new BankId(102), new Deposit(1, Critical: true)), Is.EqualTo(1));
         await Eventually(() => store.Writes == 1, "a wrote version 1");
