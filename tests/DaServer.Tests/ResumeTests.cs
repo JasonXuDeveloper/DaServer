@@ -1,10 +1,9 @@
 using System.Net;
-using System.Text;
 
 namespace DaServer.Tests;
 
 /// <summary>Resume tickets: a client that lost its connection resumes its session; actors see no close.</summary>
-public class ResumeTests : ClusterTest
+public partial class ResumeTests : ClusterTest
 {
     private static Action<NodeOptions> Secret(TimeSpan grace) => o =>
     {
@@ -340,24 +339,6 @@ public class ResumeTests : ClusterTest
         await Eventually(() => Observed.Events.Contains("room-closed:71"), "the granted room did not learn the close");
     }
 
-    /// <summary>A second client presents <paramref name="ticket"/>: the status it gets (Ok: resumed).</summary>
-    private async Task<RpcStatus> ResumeAs(Node[] gateways, byte[] ticket) => (await ResumeWith(gateways, ticket)).Status;
-
-    private async Task<(RpcStatus Status, ClusterClient Client)> ResumeWith(Node[] gateways, byte[] ticket, int gateway = 1)
-    {
-        var client = Track(new ClusterClient { AutoReconnect = false });
-        await client.ConnectAsync("127.0.0.1", gateways[gateway].ClientPort());
-        try
-        {
-            await client.ResumeWith(ticket);
-            return (RpcStatus.Ok, client);
-        }
-        catch (RpcException e)
-        {
-            return (e.Status, client);
-        }
-    }
-
     [Test]
     public async Task AResumeCutOffAfterTheActorsAcceptedItIsRetried()
     {
@@ -379,140 +360,5 @@ public class ResumeTests : ClusterTest
         Assert.That(await client.Ask(new AddGold(1)), Is.EqualTo(1), "the session resumed with the player");
         Assert.That(Observed.Events, Does.Not.Contain("closed:596"));
         try { await held; } catch (RpcException) { } // its connection was dropped
-    }
-
-    [Test]
-    public async Task AKickIsNotEvadedByAResumeWaitingBehindIt()
-    {
-        // The player kicks a session in a turn while a resume of that session waits in its mailbox (a move): the resume
-        // is refused and the player learns the session closed, instead of the kicked client carrying on.
-        var gateways = await StartCluster(TimeSpan.FromSeconds(5));
-        var client = await LogIn(gateways, 595);
-        var ticket = client.Ticket!;
-        TurnGate.Current = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var kick = client.Ask(new KickAfterGate()).AsTask();
-        await Task.Delay(200);
-        var resume = ResumeWith(gateways, ticket);
-        await Task.Delay(300); // the resume waits behind the held turn
-        TurnGate.Current.TrySetResult();
-
-        Assert.That((await resume).Status, Is.EqualTo(RpcStatus.Forbidden), "the kicked session resumed");
-        await Eventually(() => Observed.Events.Contains("closed:595"), "the player learns the kicked session closed");
-        Assert.That(Observed.Events, Does.Not.Contain("resumed:595"));
-        try { await kick; } catch (RpcException) { } // its connection was closed by the kick
-    }
-
-    [Test]
-    public async Task ATicketPresentedOnTwoGatewaysAtOnceResumesOnOne()
-    {
-        // A replayed or stolen ticket used on both gateways at once: the player and the room must not end up split
-        // between two sessions. The first actor decides; the other resume stops at its Superseded.
-        var gateways = await StartCluster(TimeSpan.FromSeconds(5));
-        for (long player = 710; player < 730; player++)
-        {
-            var client = await LogIn(gateways, player);
-            var room = new RoomId(player);
-            Assert.That(await client.Ask(new Enter(room)), Is.True);
-            await Eventually(() => client.Ticket is { Length: > 0 } t && t.Length > ResumeTicket.SizeOf(1), "no ticket with the room");
-            var ticket = client.Ticket!;
-            var results = await Task.WhenAll(ResumeWith(gateways, ticket, 0), ResumeWith(gateways, ticket, 1));
-            Assert.That(results.Count(static r => r.Status == RpcStatus.Ok), Is.EqualTo(1), $"player {player}: one resume wins");
-            var winner = results.Single(static r => r.Status == RpcStatus.Ok).Client;
-            Assert.That(await winner.Ask(new AddGold(1)), Is.EqualTo(1), "the winner holds the player");
-            Assert.That(await winner.Ask(room, new Exit()), Is.True, "and the room");
-        }
-    }
-
-    [Test]
-    public async Task AResumedSessionTakesTheActorsGroupFromThePreviousOne()
-    {
-        // The client moves while its old session is still open (a move, before its goodbye): once the room accepted the
-        // new session, the room's broadcasts reach the new session only, not both (duplicates during every move).
-        var gateways = await StartCluster(TimeSpan.FromSeconds(5));
-        var client = await LogIn(gateways, 590);
-        Assert.That(await client.Ask(new Enter(new RoomId(73))), Is.True);
-        await Eventually(() => client.Ticket is { Length: > 0 } t && t.Length > ResumeTicket.SizeOf(1), "no ticket with the room");
-        var old = new GatewayTests.Inbox();
-        client.Register(old);
-
-        var (status, resumed) = await ResumeWith(gateways, client.Ticket!);
-        Assert.That(status, Is.EqualTo(RpcStatus.Ok));
-        var current = new GatewayTests.Inbox();
-        resumed.Register(current);
-        resumed.Send(new RoomId(73), new Say("once"));
-        await Eventually(() => current.Chat.Count == 1, "the new session got the broadcast");
-        await Task.Delay(300);
-        Assert.That(old.Chat, Is.Empty, "the previous session left the room's group when the room took the new one");
-        Assert.That(current.Chat, Has.Count.EqualTo(1));
-    }
-
-    [Test]
-    public async Task ATicketResumesOnce()
-    {
-        var gateways = await StartCluster(TimeSpan.FromSeconds(5));
-        var client = await LogIn(gateways, 507);
-        var ticket = client.Ticket!;
-        var reconnected = Reconnected(client);
-        client.DropConnection();
-        await reconnected;
-
-        Assert.That(await ResumeAs(gateways, ticket), Is.EqualTo(RpcStatus.Superseded), "a replayed ticket resumed again");
-        Assert.That(await client.Ask(new AddGold(1)), Is.EqualTo(1), "the resumed client kept its session");
-    }
-
-    [Test]
-    public async Task AWithdrawnGrantDoesNotComeBackWithAnOlderTicket()
-    {
-        var gateways = await StartCluster(TimeSpan.FromSeconds(5));
-        var client = await LogIn(gateways, 508);
-        Assert.That(await client.Ask(new Enter(new RoomId(72))), Is.True);
-        await Eventually(() => client.Ticket is { Length: > 0 } t && t.Length > ResumeTicket.SizeOf(1), "no ticket with the room");
-        var older = client.Ticket!;
-        Assert.That(await client.Ask(new RoomId(72), new Exit()), Is.True); // the room revokes the grant
-        client.AutoReconnect = false;
-        client.DropConnection();
-
-        var (status, resumed) = await ResumeWith(gateways, older);
-        Assert.That(status, Is.EqualTo(RpcStatus.Ok), "the player binding is still held");
-        var exit = Assert.ThrowsAsync<RpcException>(async () => await resumed.Ask(new RoomId(72), new Exit()));
-        Assert.That(exit!.Status, Is.EqualTo(RpcStatus.Forbidden), "the revoked grant came back");
-        Assert.That(Observed.Events, Does.Not.Contain("room-resumed:72"), "the room took a session it had revoked");
-    }
-
-    [Test]
-    public async Task NothingResumesAfterTheGrace()
-    {
-        var gateways = await StartCluster(TimeSpan.FromMilliseconds(300));
-        var client = await LogIn(gateways, 509);
-        var ticket = client.Ticket!;
-        client.AutoReconnect = false;
-        client.DropConnection();
-        await Eventually(() => Observed.Events.Contains("closed:509"), "the close was not reported");
-
-        Assert.That(await ResumeAs(gateways, ticket), Is.EqualTo(RpcStatus.Forbidden), "a closed session resumed");
-    }
-
-    [Test]
-    public void TicketsAreUnforgeableAndExpire()
-    {
-        byte[] secret = Encoding.UTF8.GetBytes("secret");
-        var session = new ClientSession(7, 42);
-        SessionGrant[] grants = [new(1, 100, Bound: true), new(2, 200, Bound: false)];
-        var ticket = new byte[ResumeTicket.SizeOf(grants.Length)];
-        ResumeTicket.Write(ticket, secret, session, grants, nowMs: 1000, lifetimeMs: 500);
-
-        Assert.That(ResumeTicket.TryRead(ticket, secret, null, 1200, out var read, out var readGrants), Is.True);
-        Assert.That(read, Is.EqualTo(session));
-        Assert.That(ResumeTicket.GrantCount(readGrants), Is.EqualTo(2));
-        Assert.That(ResumeTicket.GrantAt(readGrants, 0), Is.EqualTo(grants[0]));
-        Assert.That(ResumeTicket.GrantAt(readGrants, 1), Is.EqualTo(grants[1]));
-
-        Assert.That(ResumeTicket.TryRead(ticket, secret, null, 1500, out _, out _), Is.False, "expired");
-        Assert.That(ResumeTicket.TryRead(ticket, Encoding.UTF8.GetBytes("other"), null, 1200, out _, out _), Is.False, "another cluster");
-        Assert.That(ResumeTicket.TryRead(ticket, Encoding.UTF8.GetBytes("next"), secret, 1200, out _, out _), Is.True,
-            "signed with the secret a rotation still accepts");
-        ticket[30] ^= 1; // another session
-        Assert.That(ResumeTicket.TryRead(ticket, secret, null, 1200, out _, out _), Is.False, "tampered");
-        Assert.That(ResumeTicket.TryRead(ticket.AsSpan(0, 20), secret, null, 1200, out _, out _), Is.False, "truncated");
     }
 }
