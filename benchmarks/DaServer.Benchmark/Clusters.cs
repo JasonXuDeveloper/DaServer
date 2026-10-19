@@ -11,17 +11,13 @@ internal static class Clusters
     public static async Task<Node[]> Start(int nodes, int shards, int gateways = 0, Action<NodeOptions>? configure = null,
         TimeSpan clientFlush = default)
     {
+        var production = new NodeOptions();
         var started = new Node[nodes];
         for (int i = 0; i < nodes; i++)
         {
-            var options = new NodeOptions
-            {
-                Name = $"bench-{i}",
-                ListenAddress = "127.0.0.1",
-                Shards = shards,
-                Seeds = i == 0 ? [] : [$"127.0.0.1:{started[0].ClusterEndPoint.Port}"],
-                GossipInterval = TimeSpan.FromMilliseconds(100),
-            };
+            // A cluster name of its own (TestNodes): a port an earlier run's node released must not join it to that cluster.
+            var options = TestNodes.NodeOptionsFor($"bench-{i}", shards, production.TickRate, i == 0 ? null : started[0]);
+            (options.SuspectAfter, options.DeadAfter, options.CallTimeout) = (production.SuspectAfter, production.DeadAfter, production.CallTimeout);
             configure?.Invoke(options);
             started[i] = await TestNodes.StartAsync(options, i < gateways ? new ClientConnectionOptions { FlushInterval = clientFlush } : null);
         }
