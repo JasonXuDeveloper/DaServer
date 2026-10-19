@@ -80,8 +80,7 @@ public sealed partial class ClientConnections
     {
         var current = new ClientSession(_node.Id, session.Id);
         var resumed = new SessionResumed(current, previous);
-        var accepted = new bool[grants.Length];
-        var answered = new RpcStatus[grants.Length];
+        var answered = new RpcStatus[grants.Length]; // Ok: it took the new session
 
         // The first actor that takes the session decides, asked alone: a ticket presented on two connections at once
         // resumes on the one it accepted, and the other stops at its Superseded instead of taking the other actors.
@@ -98,7 +97,7 @@ public sealed partial class ClientConnections
                 return;
             }
 
-            if (accepted[first] = status == RpcStatus.Ok) break;
+            if (status == RpcStatus.Ok) break;
         }
 
         if (first < grants.Length - 1)
@@ -106,7 +105,7 @@ public sealed partial class ClientConnections
             var answers = new Task<RpcStatus>[grants.Length - first - 1];
             for (int i = 0; i < answers.Length; i++) answers[i] = Accepts(grants[first + 1 + i], resumed);
             var rest = await Task.WhenAll(answers).ConfigureAwait(false);
-            for (int i = 0; i < rest.Length; i++) accepted[first + 1 + i] = (answered[first + 1 + i] = rest[i]) == RpcStatus.Ok;
+            rest.CopyTo(answered, first + 1);
         }
 
         int taken = 0;
@@ -116,7 +115,7 @@ public sealed partial class ClientConnections
             closed = session.Closed;
             for (int i = 0; i < grants.Length && !closed; i++)
             {
-                if (!accepted[i]) continue;
+                if (answered[i] != RpcStatus.Ok) continue;
                 session.Grant(grants[i].HandlerTypeId, grants[i].Key, grants[i].Bound);
                 Join(session, ClientGroup.Of(grants[i].HandlerTypeId, grants[i].Key).Id);
                 taken++;
@@ -124,20 +123,14 @@ public sealed partial class ClientConnections
         }
 
         Volatile.Write(ref session.Resuming, 2);
-        if (closed)
-        {
-            // Closed while the actors were asked (the client gave up waiting, a drain): those that took the new session
-            // go back to the previous one, so the client can resume it again with the same ticket.
-            for (int i = 0; i < grants.Length; i++)
-                if (accepted[i]) _node.SendTo(grants[i].HandlerTypeId, grants[i].Key, new SessionResumed(previous, current));
-            return;
-        }
-
-        // An actor that did not answer in time may still take the session late (its request was queued): the revert
-        // follows on the same link and undoes it, or finds nothing to undo.
+        // Back to the previous session: every actor whose answer was lost or late (it may have taken the session before
+        // its deadline), and, when the session closed while the actors were asked (the client gave up waiting, a drain),
+        // every actor that took it, so the client can resume once more with the same ticket. The revert follows on the
+        // same link and undoes the resume, or finds nothing to undo.
         for (int i = 0; i < grants.Length; i++)
-            if (!accepted[i] && answered[i] is RpcStatus.Timeout or RpcStatus.Disconnected)
+            if (closed && answered[i] == RpcStatus.Ok || answered[i] is RpcStatus.Timeout or RpcStatus.Disconnected)
                 _node.SendTo(grants[i].HandlerTypeId, grants[i].Key, new SessionResumed(previous, current));
+        if (closed) return;
 
         if (taken == 0)
         {

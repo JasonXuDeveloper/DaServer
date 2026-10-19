@@ -98,6 +98,7 @@ internal static class ShardDispatch
     /// <summary>The actor's record comes from the store (when it has one), then <see cref="Actor.OnLoad"/> runs.</summary>
     internal static void BeginLoad(World world, Entity entity, Actor actor)
     {
+        Persistence.Handoff.ForgetHanded(world, actor.HandlerType.Id, actor.Key); // the key is here again
         if (world.GetSingleton<ShardStore>().Enabled) // LoadSystem restores it, then OnLoad
             entity.Add<AwaitingRecord>() = new AwaitingRecord(world.GetSingleton<ShardActivity>().NowMs, 0);
         else BeginLive(world, entity, actor);
@@ -340,6 +341,7 @@ internal static class ShardDispatch
         var status = ActorSessions.Resume(actor, in resumed, out bool reverted);
         bool accepted = status == RpcStatus.Ok && !reverted; // a revert restores the session the actor had: nothing to tell
         if (accepted) actor.Shard.Node.Supersede(resumed.Previous, resumed.Session, actor.HandlerType.Id, actor.Key);
+        else if (reverted) actor.Shard.Node.SwapGroup(resumed.Session, resumed.Previous, actor.HandlerType.Id, actor.Key); // the group back
         if (frame.CallId != 0 && envelope.Sink is { } sink)
         {
             if (status == RpcStatus.Ok) sink.SendOk(frame.CallId);

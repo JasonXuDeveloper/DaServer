@@ -228,7 +228,11 @@ internal sealed class PeerLink : IFrameSink, IDisposable
                     // The connection closed under the flush: not published (a later send would overtake the rest), the
                     // next connection resumes the stream and flushes what is left.
                     stale = connection;
-                    StartConnecting();
+                    if (!_disposed)
+                    {
+                        _connecting = true;
+                        _ = ConnectLoop(connection); // after its bytes reached the window (as StartConnecting's previous)
+                    }
                 }
             }
         }

@@ -387,8 +387,12 @@ public sealed class Bank : Actor<BankId, Ledger>
     /// <summary>Keys whose next OnLoad throws (once each).</summary>
     public static readonly System.Collections.Concurrent.ConcurrentDictionary<long, bool> FailNextLoad = new();
 
-    public override Reply OnLoad() =>
-        FailNextLoad.TryRemove(Key, out _) ? throw new InvalidOperationException("OnLoad failed") : default;
+    public override Reply OnLoad()
+    {
+        if (!FailNextLoad.TryRemove(Key, out _)) return default;
+        State.Gold = -1; // half-way through, then it fails: this state must not be kept
+        throw new InvalidOperationException("OnLoad failed");
+    }
 
     /// <summary>A critical change that fails half-way (synchronously or after an await): nothing of it may be written.</summary>
     [Handle]

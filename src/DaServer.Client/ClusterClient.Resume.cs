@@ -128,7 +128,8 @@ public sealed partial class ClusterClient
     /// (<see cref="IFrameChannel.SendLast"/>), so every frame sent on it before reaches the node first and every later
     /// send goes on the new connection; its node reports the old session closed at once instead of after the resume
     /// grace. The connection closes once the calls made on it are answered (replies come back the way calls went), or
-    /// timed out. No step waits on a guess: the seal is the fence.
+    /// timed out. Before the goodbye it waits for each actor's <see cref="SessionMoved"/> (bounded by the call timeout),
+    /// never for a guessed delay: the seal is the fence.
     /// </summary>
     private async Task LeaveAsync(IFrameChannel old, int actors)
     {

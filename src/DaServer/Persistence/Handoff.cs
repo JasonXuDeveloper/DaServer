@@ -9,7 +9,7 @@ namespace DaServer.Persistence;
 // took it from a live node moments ago, defers a request for its record; a record whose key moved on goes on once.
 
 /// <summary>The handoff frames: messages to an actor's handler type that no handler handles, read by the runtime.</summary>
-internal static class Handoff
+internal static partial class Handoff
 {
     private struct RecordOp;
     private struct RequestOp;
@@ -273,7 +273,7 @@ internal static class Handoff
             }
             else if (op == Request)
             {
-                if (!loaded && HandedTo(world, handlerType.Id, header.Key) is { } handed && handed != from)
+                if (!loaded && !ShardDispatch.Owns(world, handlerType.Id, header.Key) && HandedTo(world, handlerType.Id, header.Key) is { } handed && handed != from)
                     Moved(node, handlerType.Id, header.Key, from, handed); // its record went there: ask that node
                 else if (!loaded)
                 {
@@ -372,6 +372,7 @@ internal static class Handoff
         }
 
         entity.Add<TakenHandoff>() = new TakenHandoff(IdOf(payload)); // read: the same record again is answered "accepted"
+        ForgetHanded(world, handlerType.Id, key); // the key is here again: an asker is no longer sent away
         entity.Add<RestoredRecord>() = new RestoredRecord(payload.ToArray()); // until OnLoad ends (cold: one per move)
         if (store.Enabled && payload[CriticalAt] == 1) entity.Add<SaveNow>();
         if (store.Enabled)
@@ -391,47 +392,6 @@ internal static class Handoff
     }
 
     private static bool IsHandoff(uint op) => op == Record || op == Resent || op == Request || op == None || op == Answer || op == MovedOn;
-
-    /// <summary>The handoff a record belongs to (its first send's id, kept by resends).</summary>
-    private static ulong IdOf(ReadOnlySpan<byte> payload) => BinaryPrimitives.ReadUInt64LittleEndian(payload[(2 * sizeof(ulong) + sizeof(long))..]);
-
-    /// <summary>Remember for the move window that the record of a key went to <paramref name="to"/>.</summary>
-    private static void RememberHanded(World world, uint handlerTypeId, long key, ulong to)
-    {
-        ref var seen = ref world.GetSingleton<HandoffsSeen>();
-        long now = world.GetSingleton<ShardActivity>().NowMs;
-        while (seen.HandedOrder.TryPeek(out var oldest) && (oldest.UntilMs < now || seen.HandedOrder.Count >= HandoffsSeen.Max))
-        {
-            seen.HandedOrder.Dequeue();
-            if (seen.Handed.TryGetValue(oldest.Address, out var entry) && entry.UntilMs == oldest.UntilMs) seen.Handed.Remove(oldest.Address);
-        }
-
-        long until = now + MoveWindowMs(world.Shard.Node.Options);
-        var address = new ActorAddress(handlerTypeId, key);
-        seen.Handed[address] = new SeenHandoff(to, until);
-        seen.HandedOrder.Enqueue((address, until));
-    }
-
-    /// <summary>Where this shard handed the key's record within the move window, or null.</summary>
-    private static ulong? HandedTo(World world, uint handlerTypeId, long key) =>
-        world.GetSingleton<HandoffsSeen>().Handed.TryGetValue(new ActorAddress(handlerTypeId, key), out var entry) &&
-        entry.UntilMs >= world.GetSingleton<ShardActivity>().NowMs ? entry.PassedTo : null;
-
-    /// <summary>Remember a handoff taken here (<paramref name="passedTo"/> 0) or passed on, for the resends' window.</summary>
-    private static void Seen(World world, ulong id, ulong passedTo)
-    {
-        ref var seen = ref world.GetSingleton<HandoffsSeen>();
-        long now = world.GetSingleton<ShardActivity>().NowMs;
-        while (seen.Order.TryPeek(out var oldest) && (oldest.UntilMs < now || seen.Order.Count >= HandoffsSeen.Max))
-        {
-            seen.Order.Dequeue();
-            seen.ById.Remove(oldest.Id);
-            if (oldest.UntilMs >= now) seen.ForgotUntilMs = oldest.UntilMs; // forgotten early: "not seen" proves less until then
-        }
-
-        long until = now + 2 * TimeoutMs(world.Shard.Node);
-        if (seen.ById.TryAdd(id, new SeenHandoff(passedTo, until))) seen.Order.Enqueue((id, until));
-    }
 
     private static void Defer(World world, uint handlerTypeId, long key, ulong by)
     {

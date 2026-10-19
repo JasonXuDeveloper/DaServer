@@ -156,30 +156,31 @@ sealed partial class Node
     }
 
     /// <summary>
+    /// An actor took a resumed session (<paramref name="current"/>) in place of <paramref name="previous"/>: the new
+    /// session joins the actor's group before the old one leaves it (a push to the group in between reaches one of them,
+    /// both within that window), and <see cref="SessionMoved"/> follows the actor's last push to the old session.
+    /// Sent from the actor's node on its ordered links. The previous grant stays until the client leaves that session:
+    /// calls it made there before moving still get their replies (ADR-026).
+    /// </summary>
+    internal void Supersede(ClientSession previous, ClientSession current, uint handlerTypeId, long key)
+    {
+        SwapGroup(current, previous, handlerTypeId, key);
+        SendToNode(MessageWriter.Write(new SessionMoved()), AddressScopes.Session, TypeId<SessionMoved>.Value, previous.Node, previous.Id);
+    }
+
+    /// <summary>The actor's group from <paramref name="leaving"/> to <paramref name="joining"/>, the join first.</summary>
+    internal void SwapGroup(ClientSession joining, ClientSession leaving, uint handlerTypeId, long key)
+    {
+        var group = ClientGroup.Of(handlerTypeId, key);
+        SendToNode(MessageWriter.Write(new JoinGroup(group)), AddressScopes.Session, TypeId<JoinGroup>.Value, joining.Node, joining.Id);
+        SendToNode(MessageWriter.Write(new LeaveGroup(group)), AddressScopes.Session, TypeId<LeaveGroup>.Value, leaving.Node, leaving.Id);
+    }
+
+    /// <summary>
     /// Change what a session's client may address (<see cref="Actor.BindSession"/>, <see cref="Actor.GrantSession"/>):
     /// asked of the session, so it completes once the session's node applied it and the client's next message already
     /// reaches the actor.
     /// </summary>
-    /// <summary>
-    /// An actor took a resumed session in place of <paramref name="previous"/>: the previous session leaves the actor's
-    /// group on its node. Sent from the actor's node, it reaches that node before anything the actor sends there
-    /// afterwards (links are ordered), so the actor's broadcasts reach the client once. Its grant stays until the client
-    /// leaves that session: calls the client made on it before moving still get their replies (ADR-026).
-    /// </summary>
-    internal void Supersede(ClientSession previous, ClientSession current, uint handlerTypeId, long key)
-    {
-        // The new session joins the actor's group before the old one leaves it: a push to the group in between reaches
-        // the old one (delivered first) or the new one, never neither. The client-facing node joins it again once
-        // every actor answered (a no-op), or not at all when the session closed meanwhile.
-        var group = ClientGroup.Of(handlerTypeId, key);
-        SendToNode(MessageWriter.Write(new JoinGroup(group)), AddressScopes.Session, TypeId<JoinGroup>.Value, current.Node, current.Id);
-        SendToNode(MessageWriter.Write(new LeaveGroup(group)), AddressScopes.Session,
-            TypeId<LeaveGroup>.Value, previous.Node, previous.Id);
-        // Behind every push this actor sent the previous session, on the same link: the client moving its session
-        // delivers the new connection's pushes once each actor's marker came (ADR-036).
-        SendToNode(MessageWriter.Write(new SessionMoved()), AddressScopes.Session, TypeId<SessionMoved>.Value, previous.Node, previous.Id);
-    }
-
     internal ValueTask ChangeAccess(ClientSession session, SessionAccess access)
     {
         var call = PendingCall<NoReply>.Rent(Shard.Current);
