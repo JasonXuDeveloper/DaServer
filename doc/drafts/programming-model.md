@@ -1,4 +1,4 @@
-# DaServer 新编程模型设计（草案 v34，未实现，迭代中）
+# DaServer 新编程模型设计（草案 v35，未实现，迭代中）
 
 原则：业务代码干净、解耦、简洁，不用 OOP。ECS 一路到底：能用 EasyEcs 的功能就用 EasyEcs，状态都是数据，其余交给我们的特性和生成器，不重复造轮子。
 
@@ -10,7 +10,7 @@
 
 本稿是完整的一份。每条规则只在它所在的那一节写一次，别处只给链接。第 12 节是完整的例子，分别列出用户写的代码、生成的代码和测试。第 13 节是编译期检查，第 14 节是已定的取舍和对 EasyEcs 的需求，第 15 节是可选的扩展能力（各自一个包，不引用就没有）。框架内部的数据、机制和协议细节在 [architecture.md](architecture.md)；本稿先用后讲的词（主体、有序阶段、`Due`、`Outbox`、epoch、占位等）在它第 2 节的 [Terms](architecture.md#terms) 里各有一句话的定义。
 
-文中引用的 EasyEcs 文档都在它仓库的 `docs/content/` 下。本稿基于 EasyEcs 4.6.0（已在 NuGet）：`entity.Run(ref job, filter)`、接口带的组过滤（`IGroupWith<T>`）、`world.Descendants(root)`、`LoadEntitiesInto(…, markWritten: false)`（以上自 4.5），`world.Load(bytes, markWritten: false)`、`AddSystem(…, changesFromNow: true)`、带追踪组件的程序 Native AOT 0 警告（4.6）。另外用到 EasyEcs 4.7（计划中，未发布）的：`Mut<T>` 参数和 `SetIfChanged`、带组件的 `world.Instantiate`、`[ChangedAny<…>]`/`[RemovedAny<…>]` 和带起点的 `QueryFilter.ChangedAny(since)`、`IUniqueIndexed<T>`、`world.TrimExcess()`、`[ForEach(Slices = N)]`、`SystemStats` 的分配字节和匹配的实体数、`world.DescribeSchedule()`、`world.Save(…, exclude)` 和 `world.Load(…, keep)`；用到它们的步骤在路线图里等 4.7 发布，发布之前各自的 4.6 替代做法和要核对的 EasyEcs 行为只列在[路线图的 W1](../roadmap.md)（第 14 节第 8 条）。
+文中引用的 EasyEcs 文档都在它仓库的 `docs/content/` 下。本稿基于 EasyEcs 4.6.0（已在 NuGet）：`entity.Run(ref job, filter)`、接口带的组过滤（`IGroupWith<T>`）、`world.Descendants(root)`、`LoadEntitiesInto(…, markWritten: false)`（以上自 4.5），`world.Load(bytes, markWritten: false)`、`AddSystem(…, changesFromNow: true)`、带追踪组件的程序 Native AOT 0 警告（4.6）。另外用到 EasyEcs 4.7（计划中，未发布）的：`Mut<T>` 参数和 `SetIfChanged`、带组件的 `world.Instantiate`、`[ChangedAny<…>]`/`[RemovedAny<…>]` 和带起点的 `QueryFilter.ChangedAny(since)`、`IUniqueIndexed<T>`、`world.TrimExcess()`、`[ForEach(Slices = N)]`、`SystemStats` 的分配字节和匹配的实体数、`world.DescribeSchedule()`、`world.Save(…, exclude)` 和 `world.Load(…, keep)`；4.7 发布之前，用到它们的步骤用[路线图的 W1](../roadmap.md) 列出的 4.6 替代做法，发布之后换成 4.7 的；替代做法和要核对的 EasyEcs 行为只列在 W1（第 14 节第 8 条）。
 
 ---
 
@@ -28,7 +28,7 @@
 | Actor 类型（地址、根、系统组） | `[TickRate(30)] readonly partial record struct Map(long Id) : IActor<Map>;`；根要带组件时在类型里写 `public static Prefab RootPrefab { get; } = …`，根要保存再加 `[Persist]`；改默认的设置写 `[ActorOptions(IdleTimeout = …, DetachGrace = …, MaxPending = …, OnError = …)]`（第 3 节） | Server |
 | 服务器之间的消息 | `[NinoType, From<Map>] record struct GrantItem(int Item) : IRequestTo<Player, bool>;`；必须落定一次、两端都要扛住宕机的请求加 `[Durable]`（第 8 节） | Server |
 | 本地事件 | `record struct Strike(int Skill, EntityId Target) : IEvent;` | Server |
-| 组件 | `record struct Health(int Value) : IComponent;`；不随迁移、不进记录的标 `[NotSaved]`（第 10 节） | Server |
+| 组件 | `record struct Health(int Value) : IComponent;`；不随迁移、不进记录、到达和加载时取 prefab 的默认值的，标 `[NotSaved]`（第 10 节） | Server |
 | 子实体的键 | `partial record struct NetId(Map Map, int Value) : IChildKey<NetId>;`，第一个字段是 Actor 类型（第 3 节） | Server |
 | prefab | `[Prefab<Map>] internal static readonly Prefab AvatarPrefab = new Prefab(BodyPrefab).SetSpeed(6);`；要保存的子实体写 `[Prefab<Map>(Persist = true)]`（第 10 节）；Actor 里的实体都用 `root.Spawn(prefab, …)` 建，按键找到或建出用 `root.GetOrSpawn(prefab, key, …)` | Server |
 | 配置表 | `readonly record struct SkillTable(SkillRow[] Rows) : IConfigTable<SkillTable>`：静态的 `Name` 和 `TryLoad`，处理方法和系统取 `in SkillTable skills`（第 10 节） | Server |
@@ -65,7 +65,7 @@
 | 名字 | 是什么 |
 |---|---|
 | `[Stateless]` | 不保存、不迁移的 Actor 类型，只做当场回复（第 3 节） |
-| `[NotSaved]` | 不随迁移、不进记录的组件（第 10 节） |
+| `[NotSaved]` | 不随迁移、不进记录的组件：迁移到达和加载时取 prefab 副本的默认值（第 10 节） |
 | `[ActivatedBy<T>]` | 只有 T 能激活这个 Actor 类型（第 6 节） |
 | `Incoming`、`Verdict` | `[Handles<Connection>]` 里每条客户端消息转发前的过滤（第 7 节） |
 | `Takeover` | `[JoinOnConnect]` 上谁胜出：`NewestWins`（默认）或 `Reject`（第 7 节） |
@@ -76,21 +76,21 @@
 
 ## 一段用户代码
 
-第 12 节的完整例子里的四段：一个 Actor 类型、一条客户端消息的处理、一次问和它的回信、一个系统；最后是它们用到的声明，和第 12 节一字不差。两个词先说清：**主体**是一条消息或一个事件作用的实体，处理方法的组件参数都绑定到它（第 5 节）；**有序阶段**是每个 tick 开头，把这个 tick 窗口里的邮件和到期项按 `(时间, 序号)` 逐项执行的那一段（第 1 节）。
+第 12 节的完整例子里的四段：一个 Actor 类型、一条客户端消息的处理、一次问和它的回信、一个系统；最后是它们用到的声明。每一行都和第 12 节一字不差，只省略了这里用不到的方法和声明（例如 `Pickups.Drop`、`Steering`）。两个词先说清：**主体**是一条消息或一个事件作用的实体，处理方法的组件参数都绑定到它（第 5 节）；**有序阶段**是每个 tick 开头，把这个 tick 窗口里的邮件和到期项按 `(时间, 序号)` 逐项执行的那一段（第 1 节）。
 
 ```csharp
-[TickRate(30)]                                                             // the Map group runs 30 times a second
-public readonly partial record struct Map(long Id) : IActor<Map>           // address, root component, system group
+[TickRate(30)]                                                                         // 30 ticks a second; its systems see only map entities
+public readonly partial record struct Map(long Id) : IActor<Map>
 {
-    [Persist]                                                              // the root and its components are the map's record
+    [Persist]                                                                          // the map's record: Grid, NetIds and the drops
     public static Prefab RootPrefab { get; } = new Prefab().SetGrid(512, 16).SetNetIds(default).SetBuffer<Shout>();
 }
 
 [Handles<Map>]
 public static partial class Moves
 {
-    [On<MoveTo>, Without<Dead>]                                            // subject: this client's avatar
-    static void Move(in MoveTo m, Entity me, Mut<Position> p, Mut<Velocity> v, in Speed speed)
+    [On<MoveTo>, Without<Dead>]                                            // subject: this client's avatar; a dead one is not called
+    static void Move(in MoveTo m, Entity me, Mut<Position> p, Mut<Velocity> v, in Speed speed)   // Mut: a refused step stamps nothing
     {
         if (!Steps.IsValid(p.Value.Value, m.At, speed.Value)) { me.Push(new SnapBack(p.Value.Value)); return; }
         p.SetIfChanged(new Position(m.At));                                // applied now: later items see it
@@ -101,57 +101,67 @@ public static partial class Moves
 [Handles<Map>]
 public static partial class Pickups
 {
-    [On<PickUp>]                                                           // the drop asks the player; the client is answered later
+    [On<PickUp>]                                                           // subject: the client's avatar; replies later
     static void Take(in PickUp m, in Account who, in Map map, in ReplyTo<bool> reply, Entity me, World world)
     {
         if (!world.NetIdIndex.TryFind(new NetId(map, m.Drop), out var drop) || !drop.TryGetLoot(out var loot)
-            || drop.IsPending<GrantItem>()) { me.Reply(in reply, false); return; }
-        drop.Ask(new Player(who.Id), new GrantItem(loot.Item), new Looting(reply), settleBy: TimeSpan.FromMinutes(5));
+            || drop.IsPending<GrantItem>())                                // already promised to someone
+        {
+            me.Reply(in reply, false);
+            return;
+        }
+        drop.Ask(new Player(who.Id), new GrantItem(loot.Item), new Looting(reply),   // the drop asks: it is saved, the answer outlives
+            settleBy: TimeSpan.FromMinutes(5));                            // the avatar; [Durable]: re-asked, settled by then
     }
 
-    [On<Replied<GrantItem, Looting>>]                                      // subject: the drop; only final outcomes arrive
-    static void Granted(in Replied<GrantItem, Looting> a, Entity drop)
+    [On<Replied<GrantItem, Looting>>]                                      // subject: the drop; only final outcomes arrive, and
+    static void Granted(in Replied<GrantItem, Looting> a, Entity drop)     // what this sends leaves once the map's record has it
     {
         var taken = a.TryGetValue(out var ok) && ok;
-        drop.Reply(in a.State.Reply, taken);
-        if (taken || a.Status == Status.Expired) drop.Destroy();
-    }
+        drop.Reply(in a.State.Reply, taken);                               // past the client's own deadline nothing is sent
+        if (taken || a.Status == Status.Expired) drop.Destroy();           // Expired: unreachable, it may have run; never grant twice;
+                                                                           // this answer's own waiting entity may go with the drop
+    }                                                                      // "no" or NotExecuted (TooLate, ...): the drop stays
 }
 
-[UpdateInGroup<Map>]
+[UpdateInGroup<Map>, UpdateAfter<Steering>]
 public class Movement : EcsSystem
 {
-    [ForEach, With<Steered>]                                               // every Map tick, after the ordered phase
-    static void Integrate(Mut<Position> p, in Velocity v, in Time time) =>
+    [ForEach, With<Steered>]                                               // per row: a batch Span<Position> would stamp every row
+    static void Integrate(Mut<Position> p, in Velocity v, in Time time) =>  // standing still: same value, no stamp
         p.SetIfChanged(new Position(p.Value.Value + v.Value * (float)time.DeltaTime.TotalSeconds));
 }
 
-// ── the declarations used above, as in section 12 ──
-[NinoType] public record struct MoveTo(Vector2 At, Vector2 Velocity) : IFromClient;   // Game.Protocol
-[NinoType] public record struct PickUp(int Drop) : IFromClient<bool>;
-[NinoType] public record struct SnapBack(Vector2 At) : IToClient;
-[NinoType] public record struct NearbyEvent(int Id, NearbyKind Kind, Vector2 At, Vector2 Velocity);
+// ── the declarations used above, line for line from section 12 ──
+[NinoType] public record struct MoveTo(Vector2 At, Vector2 Velocity) : IFromClient;   // a step the client took; to its current map
+[NinoType] public record struct PickUp(int Drop) : IFromClient<bool>;                 // Drop: a NetId number; to its current map
+[NinoType] public record struct SnapBack(Vector2 At) : IToClient;                     // the step was refused
+[NinoType] public record struct NearbyEvent(int Id, NearbyKind Kind, Vector2 At, Vector2 Velocity);   // Id: the entity's NetId number
 public enum NearbyKind : byte { Appear, Moved, Disappear }
-public readonly partial record struct Account(long Id) : IClaims;                      // Game.Server
-[JoinOnConnect<Account>]
+public readonly partial record struct Account(long Id) : IClaims;                      // decoded from the token
+[JoinOnConnect<Account>]                                                               // joined at connect: Account(42) -> Player(42)
 public readonly partial record struct Player(long Id) : IActor<Player>
 {
     [Persist] public static Prefab RootPrefab { get; } = new Prefab().SetInventory(0, 40, 0);
 }
-[NinoType, From<Map>, Durable] public record struct GrantItem(int Item) : IRequestTo<Player, bool>;
-[NinoType] public partial record struct Grid(int Size, int CellSize) : IComponent;
-[NinoType] public partial record struct Inventory(int Count, int Capacity, int Last) : IComponent;
-public partial record struct NetIds(int Next) : IComponent;
-public partial record struct NetId(Map Map, int Value) : IChildKey<NetId>;
-public partial record struct Cell(Map Map, int X, int Y) : IComponent, IIndexed<Cell>, ITrackChanges;
-public record struct Position(Vector2 Value) : IComponent, ITrackChanges;
-public record struct Velocity(Vector2 Value) : IComponent, ITrackChanges;
-public record struct Steered : IComponent;
+[NinoType, From<Map>, Durable] public record struct GrantItem(int Item) : IRequestTo<Player, bool>;   // lands once: section 8
+[NinoType] public partial record struct Grid(int Size, int CellSize) : IComponent;      // on a map's root
+[NinoType] public partial record struct Inventory(int Count, int Capacity, int Last) : IComponent;   // on a player's root
+public partial record struct NetIds(int Next) : IComponent;                             // on a map's root: the last number given out,
+                                                                                        // saved with it, so no restored drop's number is reused
+public partial record struct NetId(Map Map, int Value) : IChildKey<NetId>;              // what clients call an entity; Key => this is generated
+public partial record struct Cell(Map Map, int X, int Y) : IComponent, IIndexed<Cell>, ITrackChanges;   // AOI cell: many entities
+                                                                                        // per cell (a non-unique index); Map keeps maps apart
+public record struct Position(Vector2 Value) : IComponent, ITrackChanges;               // tracked: CellAssign reacts to writes
+public record struct Velocity(Vector2 Value) : IComponent, ITrackChanges;               // tracked: Diff reacts to writes
+public record struct Steered : IComponent;                                              // moved by time, not by messages
 public record struct Speed(float Value) : IComponent;
 public record struct Dead : IComponent;
-[NinoType] public partial record struct Loot(int Item) : IComponent;
-[NinoType] public record struct Looting(ReplyTo<bool> Reply) : IComponent;
-[NotSaved] public record struct Shout(Cell Cell, NearbyEvent Event);
+[NinoType] public partial record struct Loot(int Item) : IComponent;                    // what a drop on the map holds
+[NinoType] public record struct Looting(ReplyTo<bool> Reply) : IComponent;              // the durable ask's state: in the map's record,
+                                                                                        // written once at Ask, so not tracked, not partial
+[NotSaved] public record struct Shout(Cell Cell, NearbyEvent Event);                    // news for one cell, on the map; empty between ticks
+                                                                                        // (a buffer element: EasyEcs asks for no interface)
 ```
 
 ---
@@ -250,7 +260,7 @@ public record struct Dead : IComponent;
 
 ```csharp
 // Game.Server
-[Hosts<Player>, Hosts<Guild>] public readonly struct GameServer    : IServer;
+[Hosts<Player>, Hosts<Guild>] public readonly struct PlayerServer  : IServer;
 [Hosts<Map>]                  public readonly struct MapServer     : IServer;
 [Hosts<Connection>]           public readonly struct GatewayServer : IServer;   // hosting Connection = accepting clients
 ```
@@ -277,8 +287,11 @@ public record struct Dead : IComponent;
 - **成员租约**：节点只在收到协调者的确认、并且确认回显了它自己的心跳计数时续租，租期从发出那次心跳时算起。协调者被判 `Suspect` 后，次老的成员开始确认，所以协调者宕机不会让所有人的租约过期。每个 world 在有序阶段之前查租约到期戳（第 1 节），过期就冻结：不再执行、不再写。单向分区里听不到协调者的节点因此自己停下。其他节点在 max(`DeadAfter`, `SuspectAfter` + 租约) 之后才重新放置它的 Actor，所以重新放置时旧节点一定已经停下（第 10 节的激活 epoch 是第二道防线）。各个定时的默认值见第 11 节。
 - **world**：节点里有几个工作线程，每个线程跑一个 EasyEcs world；节点承载的所有 Actor 类型共用它，Actor 落在哪个 world 由键的哈希决定。world 的个数由节点按分到的 CPU 自己定（`DaServer:Worlds` 可以覆盖），用户代码和 AppHost 都不写它；框架内部把"一个线程加一个 world"叫 shard。
 - **帧率**写在 Actor 类型上（第 5 节），不在配置里。
-- **Program.cs**：大约五行，把生成的 `Registration.Create()`（第 12 节）交给节点，并显式声明三种服务管理器，各自不在对应的服务管理器下就什么也不做，所以同一个二进制到处能跑（[deployment.md 第 0 节](deployment.md#0-launch-flows)）：
+- **Program.cs**：大约五行，把生成的 `Registration.Create()`（第 12 节）交给节点，并显式声明三种服务管理器，各自不在对应的服务管理器下就什么也不做，所以同一个二进制到处能跑（[deployment.md 第 0 节](deployment.md#0-launch-flows)）。两个 `using` 都写出来，生成器不补 `global using`：`Registration.Create()` 在工程的根命名空间里（第 5 节的"其他"），其余的命名空间由 `Microsoft.NET.Sdk.Web` 的 ImplicitUsings 带上：
   ```csharp
+  using DaServer;                                                  // Registration, AddDaServer, MapDaServer, UseLaunchd
+  using Game.Server;                                               // the generated Registration.Create()
+
   var builder = WebApplication.CreateSlimBuilder(args);
   builder.Host.UseSystemd().UseWindowsService().UseLaunchd();   // the official two and DaServer's macOS counterpart
   builder.AddDaServer(Registration.Create());
@@ -298,7 +311,7 @@ public record struct Dead : IComponent;
   var builder = DistributedApplication.CreateBuilder(args);
   var actors = builder.AddPostgres("postgres").AddDatabase("actors");
   var cluster = builder.AddDaServerCluster("mmo");                         // also creates the Secret mmo-signing
-  cluster.AddNodes<GameServer>("game", replicas: 3).WithActorStore(actors);
+  cluster.AddNodes<PlayerServer>("game", replicas: 3).WithActorStore(actors);
   cluster.AddNodes<MapServer>("map", replicas: 4).WithActorStore(actors);
   cluster.AddNodes<GatewayServer>("gate", replicas: 2).WithClientConnections(port: 7100);
   builder.Build().Run();
@@ -328,7 +341,10 @@ public record struct Dead : IComponent;
 ```csharp
 // Game.Server
 [JoinOnConnect<Account>] public readonly partial record struct Player(long Id) : IActor<Player>;   // §7
-public readonly partial record struct Guild(long Id) : IActor<Guild>;
+public readonly partial record struct Guild(long Id) : IActor<Guild>
+{
+    [Persist] public static Prefab RootPrefab { get; } = new Prefab().SetQuests(default);   // saved: §15's reminders live under it
+}
 [TickRate(30)] public readonly partial record struct Map(long Id) : IActor<Map>   // 30 ticks a second
 {
     [Persist]                                                                      // saved: the map has a record
@@ -429,7 +445,7 @@ public interface IChildKey<TSelf> : IComponent, IUniqueIndexed<TSelf>, IEquatabl
 - **接收方写在接口上**：`IMessageTo<TTo>` 是单向消息，`IRequestTo<TTo, TReply>` 是请求（它继承标记接口 `IRequest`，给 `IsPending<T>` 这类泛型操作做约束）。
 - **发送方写在特性上**：`[From<K>]`，可以写多个。客户端只能发 `IFromClient`。
 - **`[Durable]`**：写在 `IRequestTo` 上，发问方和接收方都由框架扛住宕机（第 8 节）。
-- **消息里不写发送方的键**：接收方取 `Sender sender` 参数：`sender.Id` 是发送方的 `ActorId`，`sender.TryGet(out Map map)` 在发送方是 Map 时取出它的键（`TryGet<K>(out K key) where K : struct, IActor<K>`）。只有这一个 `Sender` 类型，所以一条消息有一个还是多个 `[From<…>]` 写法都一样。
+- **消息里不写发送方的键**：接收方取 `Sender sender` 参数：`sender.Id` 是发送方的 `ActorId`，`sender.TryGet(out Map map)` 在发送方是 Map 时取出它的键（`TryGet<K>(out K key) where K : struct, IActor<K>`）。只有这一个 `Sender` 类型，所以一条消息有一个还是多个 `[From<…>]` 写法都一样。从 `ICluster` 或客户端来的消息没有发送方 Actor：`sender.Id` 是 `default`，每个 `TryGet` 都返回 `false`。
 - **方向由生成的方法和分析器保证**：
   - 每条消息生成 `Entity` 上的 `Send`/`Ask` 方法，参数类型是接收方的 Actor 类型，所以接收方写错编译不过；
   - `Entity` 不带 Actor 类型，所以发送方由调用处决定：`[Handles<K>]` 类和 `[UpdateInGroup<K>]` 系统里，K 不在消息的 `[From<…>]` 里，分析器报错；在别处（帮助类）调用时，Debug 构建沿 `ChildOf` 走到根、断言它的 Actor 类型，Release 不做这一步。
@@ -486,7 +502,7 @@ public record struct Strike(int Skill, EntityId Target) : IEvent;
 - **过滤**：`[With<T>]`、`[Without<T>]` 写在方法上，和 `[ForEach]` 一样。生成器把它编成 job 上的 `static readonly QueryFilter Filter`，建一次；没有过滤的方法不带 filter 调用 `Run`，不在每次调用时 `QueryFilter.Create()`。主体缺少组件参数或不满足过滤时不调用：请求以 `Skipped` 失败，单向消息和事件跳过（计数）。
 - **没有组件参数的处理方法**（例如第 12 节的 `Enter`、`Cast`）编成不带组件的 job，同样经 `entity.Run(ref job[, filter])` 执行（W1 核对）。
 - **组件参数都是必有的**：`IForEachEntity` 只收必有的组件，所以没有 `Maybe<T>` 参数。可能没有的数据在方法体里用 `TryGet<T>` 或生成的 `TryGetX(out …)` 读。
-- **`INoStructuralChanges`**：`Entity` 和 `World` 参数只用来读、查索引，或者只交给不改结构的操作（`Send`、`Push`、`Reply`、`Broadcast`、`Root`）时，生成的 job 带上它，推断规则同 EasyEcs（`guide/structural-changes.mdx` 的 "Passes that freeze the structure"）：生成器看参数的用法，不看有没有这个参数。`Ask`、`Join`、`Leave`、`Spawn`、`GetOrSpawn`、`Deactivate`、带 `after` 的 `Schedule`，以及对任何实体的 `Set`/`Remove`/`Destroy`，算结构变更。带它的 job 运行时不做逐行记账，结构被冻结，违约就抛出。
+- **`INoStructuralChanges`**：`Entity` 和 `World` 参数只用来读、查索引，或者只交给不改结构的操作（`Send`、`Push`、`Reply`、`Broadcast`、`Root`、`Group`、`SetGroupRate`、`SetGroups`：后两个只改写已有的缓冲，第 9 节）时，生成的 job 带上它，推断规则同 EasyEcs（`guide/structural-changes.mdx` 的 "Passes that freeze the structure"）：生成器看参数的用法，不看有没有这个参数。`Ask`、`Join`、`Leave`、`Spawn`、`GetOrSpawn`、`Deactivate`、带 `after` 的 `Schedule`，以及对任何实体的 `Set`/`Remove`/`Destroy`，算结构变更。带它的 job 运行时不做逐行记账，结构被冻结，违约就抛出。
 - **检查**：EasyEcs 的分析器只检查 `[ForEach]` 方法，不认识 `[On<T>]`。DaServer 的分析器对 `[On<T>]` 方法套用同样的检查（参数、过滤、有索引的组件、结构变更），见第 13 节。
 - 消息、发送方、回复令牌、身份、Actor 类型、单例是 job 的字段，由分发表在调用前填好。
 - 不复制，不写回，也就没有别名问题：`target.Health` 和 `ref Health` 参数是同一个主体时，指向同一份存储，和 EasyEcs 的系统一样。
@@ -551,7 +567,7 @@ ref var hp = ref target.Health;
       static abstract TSelf Create();                                         // one per world, when the world is built
   }
   ```
-  - `IConfigTable<T>`：调参的表，由集群统一读入、换版本（第 10 节的"不重启就能改的"）；处理方法和系统只能取 `in`，例如第 12 节的 `in SkillTable skills`。
+  - `IConfigTable<T>`：调参的表，有记录存储时由集群统一读入、换版本（第 10 节的"不重启就能改的"）；处理方法和系统只能取 `in`，例如第 12 节的 `in SkillTable skills`。
   - `IWorldSingleton<T>`：world 自己的缓存或配置（例如寻路缓存），不是 Actor 的状态。生成的 `Registration` 列出处理方法和系统用到的每个这种类型，每个 world 建立时用 `T.Create()` 建一份。只有它能取 `ref`。
   - 两种都不迁移、不保存，也不进热重启的快照（新进程自己读入或建，第 10 节），所以类型不用能序列化。框架的单例（`Time`、`Current`、`Outbox`、节点单例）只能 `in`。
 - 每个 Actor 一份的状态放在它的根上（`K.RootPrefab` 的组件）。
@@ -584,7 +600,7 @@ ref var hp = ref target.Health;
 | `e.Leave()` | Presence `e` 离开：加上 `Leaving`（第 7 节） |
 | `root.Deactivate()` | `root` 是 Actor 的根：停用这个 Actor（第 6 节）。不是根时运行时断言；分析器看得出来时报错 |
 | `connection.Disconnect()` | `connection` 是 `Connection` 的根：断开这个客户端 |
-| `root.IssueClientToken(in claims, lifetime, into)` | `root` 是 Actor 的根：签发一个客户端令牌（第 7 节）：新的 `ClientId`，签发序号是根上框架保存的计数器加一；写进 `into`（`Span<byte>`，至少 `SignedToken.MaxLength` 字节），返回写入的字节数 |
+| `root.IssueClientToken(in claims, lifetime, into)` | `root` 是 Actor 的根：签发一个客户端令牌（第 7 节）：新的 `ClientId`，签发序号是根上框架保存的计数器加一；写进 `into`（`Span<byte>`，至少 `SignedToken.MaxLength` 字节），返回写入的字节数。只能在根要保存的 Actor 类型的 `[Durable]` 请求的处理方法里调用（分析器） |
 | `e.Root` | `e` 所在 Actor 的根：沿 `ChildOf` 往上走的循环（EasyEcs 文档的祖先遍历） |
 
 - **跨 Actor 的操作，发送方是 `e.Root` 那个 Actor。**
@@ -623,7 +639,7 @@ ref var hp = ref target.Health;
 
 - 框架的系统自己处理异常，不受 EasyEcs 的 `SystemErrorPolicy` 管理；节点上用户的系统用 `SystemErrorPolicy.Disable`（第 11 节），`TestActor<K>` 用 `Throw`，让测试直接失败（第 12 节）。
 - **`Registration`** 是生成的一个实例对象，不是静态表：Actor 类型、prefab 副本、身份、连上就加入、分发表、路由表、系统。节点、`TestCluster`、`TestActor<K>` 都接这个对象。表在构造时一次建好；方法组转换成的静态委托由 C# 缓存，不会分配。
-  - `Registration.Create()` 是生成在服务端工程根命名空间里的 C# 14 静态扩展成员，容器类按程序集命名（`Game.Server.GameServerRegistration`）：`using Game.Server;` 之后写 `Registration.Create()`。一个测试工程引用两个服务端工程、两个命名空间都 `using` 时，这个调用有歧义，改写成容器类上的调用 `GameServerRegistration.Create()`。
+  - `Registration.Create()` 是生成在服务端工程根命名空间里的 C# 14 静态扩展成员，容器类按程序集命名（`Game.Server.GameServerRegistration`），一个服务端工程一个，不按服务器类型分（`PlayerServer`、`MapServer`、`GatewayServer` 共用它）：`using Game.Server;` 之后写 `Registration.Create()`。一个测试工程引用两个服务端工程、两个命名空间都 `using` 时，这个调用有歧义，改写成容器类上的调用 `GameServerRegistration.Create()`。
 
 ### 处理方法抛出异常
 
@@ -635,13 +651,13 @@ ref var hp = ref target.Health;
 之后怎么办，看 Actor 类型上的 `[ActorOptions(OnError = …)]`：
 - `ErrorAction.Reload`：不写记录，不进 `Leaving`，不加 `Deactivating`。
   1. 销毁根的所有子孙；
-  2. 根回到注册时 `K.RootPrefab` 的副本：去掉副本以外的组件（tag `Unsaved` 也明确去掉），副本上有的组件改回副本的值；键和排队的邮件（`Mail`）留着，带上 `Loading`，就是占位；
+  2. 根回到注册时 `K.RootPrefab` 的副本：去掉副本以外的组件（tag `Unsaved` 也明确去掉），副本上有的组件改回副本的值；留着的只有键、排队的邮件（`Mail`）、抛出的 `[Durable]` 请求的调用 id 和为 `[Durable]` 留住的输出（`HeldOutput`，第 8 节），带上 `Loading`，就是占位；
   3. 这一批里这个根还没执行的邮件，按原来的 `(时间, 序号)` 移进 `Mail`；
   4. 等这个根正在进行的写记录有结果，再从最后一次写成的记录重新激活（第 6 节的表，同样经 `ActivationSlots` 和退避）。写记录的结果按发起它的激活的 epoch 认：旧激活的结果不去掉新激活的 `Unsaved`，也不放出新激活留住的输出。
 
-  上次写记录之后的改动丢失，排队的邮件不丢。为 `[Durable]` 留住的输出（第 8 节）跟着它等的那次写：那次写已经发出并且写成，就放出；还没发出的随内存丢弃，记录里本来就没有它们。Presence 是清理组件，销毁时框架释放它们的路由，客户端 SDK 收到 `PresenceLost` 后重新发加入消息（第 7 节）。抛出的是 `[Durable]` 请求时，它的调用 id 留在占位上；重新激活、记录装好之后并进 `ReplyLog`，记成 `Faulted`，根标 `Unsaved` 当场写记录，写成之后才回答 `Faulted`。之后重复的请求得到同样的回答，不再执行。同一个键连续 `Reload`（节点配置的次数）就进入下面激活失败的退避。
+  上次写记录之后的改动丢失，排队的邮件不丢。占位上的 `HeldOutput` 跟着它等的那次写：那次写已经发出并且写成，就放出；还没发出的写所等的输出丢弃，记录里本来就没有它们。Presence 是清理组件，销毁时框架释放它们的路由，客户端 SDK 收到 `PresenceLost` 后重新发加入消息（第 7 节）。抛出的是 `[Durable]` 请求时，它的调用 id 留在占位上；重新激活、记录装好之后并进 `ReplyLog`，记成 `Faulted`，根标 `Unsaved` 当场写记录，写成之后才回答 `Faulted`。之后重复的请求得到同样的回答，不再执行。同一个键连续 `Reload`（节点配置的次数）就进入下面激活失败的退避。
 - `ErrorAction.Continue`：实体就是现在的样子，接着处理下一项。
-- **默认按根要不要保存分**：根的 `RootPrefab` 带 `[Persist]` 的 Actor 类型默认 `Reload`，其余默认 `Continue`。原因是不回滚：改了一半的项留在内存里，下一个检查点就把它写进记录，宕机和迁移都去不掉它；`Reload` 丢掉内存，从上一份完整的记录接着来。没有记录的 Actor 只有内存这一份，丢掉它不比留着好。`[Durable]` 请求的接收方只能用 `Reload`（第 8 节）。
+- **默认按根要不要保存分**：根的 `RootPrefab` 带 `[Persist]` 的 Actor 类型默认 `Reload`，其余默认 `Continue`。原因是不回滚：改了一半的项留在内存里，下一个检查点就把它写进记录，宕机和迁移都去不掉它；`Reload` 丢掉内存，从上一份完整的记录接着来。没有记录的 Actor 只有内存这一份，丢掉它不比留着好。`[Durable]` 请求的接收方和发问方都只能用 `Reload`（第 8 节）。
 
 - 分析器给建议：**先校验，最后做结构变更**。方法里结构变更之后还有 `throw` 或可能抛出的调用时，给出提示。第 12 节的 `Resolve` 就是这样写的。
 - 一项的即时链超过 1,024 个，或者一个 Actor 待处理的项超过上限（第 9 节），也按 `OnError` 处理。
@@ -673,7 +689,7 @@ ref var hp = ref target.Health;
 | 加载中 | 占位，带 `Loading` | 第一条消息到达本节点，本节点按自己的视图是这个键的主人（不是主人就转发，不激活）；或者处理方法抛出、`OnError` 是 `Reload`（根要保存的 Actor 类型的默认，第 5 节） | 邮件留在占位上；拿到 `ActivationSlots` 的名额后，一条语句占 epoch 并读记录（第 10 节） |
 | 激活 | 同一个实体，成为根 | epoch 占到了，记录读到了或者没有记录 | 有记录时 `LoadEntitiesInto(record, [占位, n−1 个空实体], markWritten: false)`（第 10 节）；然后加上 `In<K>`，去掉 `Loading`。键和邮件本来就在它上面，不搬动；邮箱里第一条是 `Activated`，后面才是等着的邮件 |
 | 运行 | 完整的根实体 | — | 按 `(时间, 序号)` 执行消息和事件，再跑系统和收尾（第 1 节） |
-| 停用 | 完整的根实体 → 占位，带 `Saving` | 空闲超过 `IdleTimeout`（不写用节点配置 `DaServer:IdleTimeout`；空闲检查是 `[ForEach(Slices = N)]` 的框架系统，每次看每张表的 1/N 行）：没有待执行的延后事件和等待中的请求，也没有不带 `Detached` 的 Presence；或者调用 `root.Deactivate()` | 依次：<br>1. 对每个 Presence `Leave()`；<br>2. 根加上 `Deactivating`，之后的邮件不再执行，留给占位；<br>3. 这一轮的系统和收尾跑完（用户对 `Leaving` 和 `Deactivating` 的反应、`Depart`）后，`SaveEntities` 写进缓冲，销毁整棵子树（待执行的延后事件随之消失），换成带 `Saving` 的占位，邮件都留在占位上；<br>4. 异步写记录，按 epoch 比较并交换；<br>5. 写成功后：占位上有邮件，就变成 `Loading`，读到的是刚写好的记录；没有就销毁占位 |
+| 停用 | 完整的根实体 → 占位，带 `Saving` | 空闲超过 `IdleTimeout`（不写用节点配置 `DaServer:IdleTimeout`；空闲检查是 `[ForEach(Slices = N)]` 的框架系统，每次看每张表的 1/N 行）：没有待执行的延后事件和等待中的请求，没有为 `[Durable]` 留住的输出，也没有不带 `Detached` 的 Presence；或者调用 `root.Deactivate()` | 依次：<br>1. 对每个 Presence `Leave()`；<br>2. 根加上 `Deactivating`，之后的邮件不再执行，留给占位；<br>3. 这一轮的系统和收尾跑完（用户对 `Leaving` 和 `Deactivating` 的反应、`Depart`）后，`SaveEntities` 写进缓冲，销毁整棵子树（待执行的延后事件随之消失），换成带 `Saving` 的占位，邮件都留在占位上；<br>4. 异步写记录，按 epoch 比较并交换；<br>5. 写成功后：占位上有邮件，就变成 `Loading`，读到的是刚写好的记录；没有就销毁占位 |
 | 隔离 | 销毁 | 写记录时 epoch 比较失败；收到 `Fence(键, epoch)` 控制邮件（第 10 节）；或者本节点被移出成员视图 | 不写记录、不进 `Leaving`、不加 `Deactivating`，直接销毁整棵子树；Presence 的路由由清理组件释放（第 7 节）；排队的请求以 `NoOwner` 失败 |
 
 - 写记录失败就重试，绝不丢弃；epoch 比较失败不是失败，是隔离。
@@ -696,7 +712,8 @@ ref var hp = ref target.Health;
 - **对 `Destroyed` 反应的框架系统不带 `In<K>` 过滤**：退役的实体已经没有 `In<K>`，带着它就永远匹配不到。所以 `ReleaseRoutes`（`[With<Destroyed>, With<Presence>]`）和 `Persisted` 的清理系统在框架组 `Cleanup` 里，按 world 跑，不按 Actor 类型；它们需要的信息（连接戳、根的 `EntityId`）都在清理组件自己里面。
 - **激活的条件：**
   - 默认任何发给它的消息都能激活（Orleans 的虚拟 actor）；
-  - Actor 类型可以写 `[ActivatedBy<EnterMap>]` 收紧，其他消息遇到不存在的 Actor，返回 `NoActor`；
+  - Actor 类型可以写 `[ActivatedBy<EnterMap>]` 收紧第一次激活：存储里还没有这个键的记录时，其他消息返回 `NoActor`；有记录的键什么消息都能激活；
+  - `[Durable]` 的请求总能激活接收方，`[ActivatedBy]` 不拦它：重问的调用 id 可能已经执行过，答案在记录的 `ReplyLog` 里（第 8 节）；
   - 框架的控制消息（`Replied`、`JoinConfirmed`、路由的释放等）不会激活 Actor，找不到就丢弃；`DueScan` 发的 `Wake` 是例外，它就是来激活的（第 8 节）；
   - 只有按本节点的视图是这个键的主人时才激活；不是主人就转发给主人（跳数有上限），主人的激活再由存储里的放置版本把关（第 10 节）；
   - 本节点上还有这个键的墓碑（迁移走了，第 10 节）时不激活，邮件都转发到新节点；
@@ -712,7 +729,7 @@ ref var hp = ref target.Health;
 
 - **令牌**：客户端连接时出示一个令牌：DaServer 的 `SignedToken`（集群的签名密钥签名，带签发和过期时刻），内容是 `(ClientId, 签发序号, 身份)`。
   - **签发**：`cluster.IssueClientToken(in claims, ClientId.New(), issueSeq, lifetime, into)`：`into` 是调用方给的 `Span<byte>`（至少 `SignedToken.MaxLength` 字节），返回写入的字节数，不分配。Actor 里用 `root.IssueClientToken(in claims, lifetime, into)`（第 5 节的操作表），签发序号是根上框架保存的计数器，每次加一。
-  - **签发序号先落定，令牌才离开**：否则签发方在令牌发出之后、记录写成之前宕机，从旧记录恢复后同一个序号会再签给另一次登录。所以令牌由应用在一个 `[Durable]` 请求的处理方法里签发，令牌就是回复，回复在记录写成之后才放出（第 8 节）。mmo 样例的登录服务就这样问账号 Actor。
+  - **签发序号先落定，令牌才离开**：否则签发方在令牌发出之后、记录写成之前宕机，从旧记录恢复后同一个序号会再签给另一次登录。所以令牌由应用在一个 `[Durable]` 请求的处理方法里签发，令牌就是回复，回复在记录写成之后才放出（第 8 节）；在别处调用 `root.IssueClientToken`，或者在根不保存的 Actor 类型上调用，分析器报错。mmo 样例的登录服务就这样问账号 Actor。
   - **刷新**：`cluster.RefreshClientToken(token, lifetime, into)` 换新的过期时刻，保留 `ClientId` 和签发序号。
   - **`ClientId`**：`readonly record struct ClientId(ulong Value)`，每次登录随机取一个，重连和刷新都不变；它是 `Connection` 的键、客户端调用 id 的前缀（第 8 节），也是 `cluster.Disconnect(clientId)` 的参数。
 - **激活**：客户端连上一个承载 `Connection` 的节点后，框架用令牌里的 `ClientId` 激活 `Connection(ClientId)`。
@@ -772,7 +789,7 @@ public readonly partial record struct Account(long Id) : IClaims;               
 - 客户端的请求已经超时的，Presence 照样建好，只是回复被丢弃。
 - **换地图**：客户端发 `EnterMap(8)`。地图 8 加入后，网关删掉地图 7 的路由，地图 7 对那个 Presence `Leave()`。两张地图是两个 Actor，它们之间没有先后：短时间内客户端可能同时出现在两张图上。需要严格先后的业务，用请求串起来。
 
-**`Superseded` 的意思只有一个：有更新的连接或者更新的登录。** 它出现在三处：`Join()` 返回它（已有的连接更新）；客户端消息被拒绝时的原因（这个连接已被接管）；客户端 SDK 收到的终止事件（同一账号在别处登录了更新的令牌：SDK 报给应用，不自动重连）。同一次登录就是同一个 `ClientId`：它换了连接（重连、网关升级）不是 `Superseded`，旧连接安静地关闭。签发序号相等、`ClientId` 不同的（同一个序号签了两次），也按更新的登录处理，旧连接以 `Superseded` 关闭。
+**`Superseded` 的意思只有一个：有更新的连接或者更新的登录。** 它出现在三处：`Join()` 返回它（已有的连接更新）；客户端消息被拒绝时的原因（这个连接已被接管）；客户端 SDK 收到的终止事件（同一账号在别处登录了更新的令牌：SDK 报给应用，不自动重连）。同一次登录就是同一个 `ClientId`：它换了连接（重连、网关升级）不是 `Superseded`，旧连接安静地关闭；同一次登录的几个连接之间，按 SDK 每次连接加一的序号排先后，不看连到了哪个网关（[architecture.md 第 3 节](architecture.md#connection-stamps)）。只有 `ClientId` 和对方不同、签发序号更小的一方收到 `Superseded`；签发序号相等（同一个序号签了两次）时新的算更新的登录，旧连接以 `Superseded` 关闭。
 
 ### 推送
 
@@ -844,15 +861,23 @@ public readonly partial record struct Account(long Id) : IClaims;               
 
 写在 `IRequestTo` 上（第 4 节），给必须落定一次的请求：发物品、扣款、下单、签发令牌。普通请求照旧：当场回复，结果未知由发问方决定。
 
-- **落定之前，输出排队**（两端共用这一条）：一项要先落定时（发出 `[Durable]` 请求、处理 `[Durable]` 请求、处理 `[Durable]` 的 `Replied`），这一项追加进 `Outbox` 的全部输出（请求、回复、推送、单向消息，不只是请求或回复）都不交给链路，按顺序留在根上（内部的 `HeldOutput`）；这个 Actor 之后各项的输出也排在它们后面，先进先出。根标 `Unsaved`，`CheckpointSystem` 不等检查点间隔当场写记录，epoch 比较并交换成功后按顺序放出。所以对外的先后和执行的先后一致，没有一条输出走在它依赖的那次落定之前。
+- **落定之前，输出排队**（两端共用这一条）：一项要先落定时，这一项追加进 `Outbox` 的全部输出（请求、回复、推送、单向消息，不只是请求或回复）都不交给链路，按顺序留在根上（内部的 `HeldOutput`）；这个 Actor 之后各项的输出也排在它们后面，先进先出。要先落定的项有四种：
+  1. 发出 `[Durable]` 请求；
+  2. 处理 `[Durable]` 请求；
+  3. 处理 `[Durable]` 的 `Replied`；
+  4. 用存着的 `[Durable]` 请求的令牌 `Reply`（令牌带着"请求是 `[Durable]` 的"）：同一次写里，`ReplyLog` 里这个调用 id 的"令牌已取走"换成这个回复。
+
+  根标 `Unsaved`，`CheckpointSystem` 不等检查点间隔当场写记录，epoch 比较并交换成功后按顺序放出。所以对外的先后和执行的先后一致，没有一条输出走在它依赖的那次落定之前。放出的组推送照常进这个组按频率交出的帧，也照常守"成员变化前先交出"的规则（第 9 节）。
+- **留住的输出不跨过停用、迁移和热重启丢掉**：停用、迁出和热重启的冻结都先等（有上限）这个根在途的写，放出它覆盖的输出；还留着的（它等的写还没写成）随停用的 `Saving` 占位、迁移的字节或快照走，由那一边第一次写成之后放出（迁来的和加载的根带着 `HeldOutput`，所以当场写）。`HeldOutput` 不空的根不算空闲（第 6 节）。
 - **发问方**：
   - `Ask` 必写 `settleBy:`（生成的方法里它不是可选参数），它是整个承诺的期限；`deadline:` 照常是每一次问的超时，不写用 `DaServer:AskTimeout`，不超过剩下的期限。等待实体带着请求、状态、调用 id 和到期的 UTC 时刻（`Time.Utc` + `settleBy`），是要保存的实体，随 Actor 的记录保存（状态因此要能写进记录，第 10 节）。
   - **请求在等待实体写进记录之后才发出**（上面的规则）。否则发问方在请求发出、记录写成之前宕机，从旧记录恢复后不知道自己问过，同一件东西会再许给别人。
-  - 结果是 `Transient`（`TimedOut`、`ConnectionLost`、`Busy`、`NoOwner`）时，框架用同一个调用 id 再问：等 `RetryAfter`（没有就指数退避），加完全随机抖动，计入每个节点的重试预算（预算空了就等下一次退避，不算失败）。Actor 从记录重新激活之后（宕机、迁移退回记录）和热重启之后，框架对每个还在等的等待实体再问一次；接收方去重，无害。
+  - 结果是 `Transient`（`TimedOut`、`ConnectionLost`、`Busy`、`NoOwner`，以及重问收到的 `NotHandled`：滚动升级中旧版本的节点不认识它，不说明没执行过）时，框架用同一个调用 id 再问：等 `RetryAfter`（没有就指数退避），加完全随机抖动，计入每个节点的重试预算（预算空了就等下一次退避，不算失败）。Actor 从记录重新激活之后（宕机、迁移退回记录）和热重启之后，框架对每个还在等的等待实体再问一次；接收方去重，无害。
   - **收尾的一问**：离期限还剩一个 `AskTimeout` 时，框架不再普通地重问，改发一次收尾的问（同一个调用 id，带收尾标记）。接收方回答它：`ReplyLog` 里有结果就用那个结果；回复还留着没放出就等它放出；两样都没有，就把这个调用 id 作为"拒绝"记进 `ReplyLog`（和别的回复一样，记录写成后才回答），回 `TooLate`。所以之后迟到的同一个请求（例如在重发窗口里等过的）查到拒绝，永远不会执行。收尾的问也没有回答，回信才是 `Status.Expired`：它只表示"联系不上，结果未知"。
   - 所以 `Replied` 处理方法只看到最终的结果：回复的值、确定没执行的拒绝（`NotExecuted` 而不是 `Transient` 的，例如 `TooLate`、`NoActor`、`Skipped`），或者 `Expired`。
   - **处理回信也要先落定**（上面的规则）：否则发问方在回信之后、记录写成之前宕机，从记录恢复的等待实体再问一次，同一个结果被处理两次，对外说的话不一致。
-  - **等待实体不能被用户的销毁带走**：销毁一个下面还有等待中的 `[Durable]` 请求的实体（发问的实体或它的祖先）算作这一项抛出，按 `OnError` 处理（第 5 节；`Reload` 从记录恢复它）。等待实体带框架的清理组件，项结束时运行时据此发现它被连带销毁。正在执行的那个 `Replied` 的等待实体不算（第 12 节的 `Granted` 销毁掉落）。分析器看得出时给提示。
+  - **发问方的 Actor 类型必须要保存，并且用 `OnError = Reload`**（分析器报错），所以下面的"算作抛出"总是从记录恢复它。
+  - **等待实体不能被用户的销毁带走**：销毁一个下面还有等待中的 `[Durable]` 请求的实体（发问的实体或它的祖先）算作这一项抛出，按 `Reload` 处理（第 5 节）；在系统里销毁也一样：这个 Actor 按 `Reload` 处理，系统不停用。等待实体带框架的清理组件，项（或这一趟系统）结束时运行时据此发现它被连带销毁。正在执行的那个 `Replied` 的等待实体不算（第 12 节的 `Granted` 销毁掉落）。分析器看得出时给提示。框架自己的销毁（例如 `Depart` 销毁一个 Presence）不丢承诺：销毁之前先把它下面的 `[Durable]` 等待实体改挂到根上（`ChildOf` 换成根），回信的主体就成了根。
   - `[Durable]` 的请求不能取消（`Cancel` 它是编译错误，第 5 节的操作表）：要放弃就等期限，期限以收尾的一问结束。
   - 还在等的 `[Durable]` 请求让 Actor 保持激活（算在待处理的个数里，第 6 节）。等待实体带着持久化的 `WakeAt`，值是请求发出的时刻：发问方宕机后，它的键在 `DueScan` 的下一次扫描就到时，Actor 被唤醒、再问（第 10 节的"唤醒"）。
 - **接收方**：
@@ -863,7 +888,7 @@ public readonly partial record struct Account(long Id) : IClaims;               
     3. 调用处理方法：框架把 (调用 id, 回复, 发问方的期限) 记进根上的内部环 `ReplyLog`，它和处理方法的改动在同一次写记录里落定；回复（返回值或者 `Reply(token)`）和这一项的其他输出按上面的规则排队，写成之后才放出。
   - 处理方法抛出时，调用 id 记成 `Faulted`，写进记录之后才回答（第 5 节的 `Reload`）：终止的结果，重问得到同样的回答。
   - `[Durable]` 请求的 `ReplyTo<T>` 只能存进随记录保存的数据（要保存的实体上的组件、`[Durable]` 的 `Ask` 状态，分析器按看得出的地方检查）：令牌丢了，重复的请求又被丢弃，发问方的收尾一问只能等到 `Expired`。
-  - `ReplyLog` 的项留到发问方的期限再加 `DaServer:ClockSkew` 之后（过了期限的请求不执行，第 9 节）。回复和 `Faulted` 的项每个 Actor 最多 `DaServer:ReplyLogCapacity` 个（默认 1,024）；满了、又都没过期时，新的 `[Durable]` 请求回 `Busy`，`RetryAfter` 是最早一项过期的时刻（确定没执行）。收尾一问记下的"拒绝"不计入这个上限：它只有调用 id 和期限，到期就删，所以收尾的一问从不因为满了而得不到回答。
+  - `ReplyLog` 的项留到发问方的期限再加 `DaServer:ClockSkew` 之后（过了期限的请求不执行，第 9 节）。回复和 `Faulted` 的项每个 Actor 最多 `DaServer:ReplyLogCapacity` 个（默认 1,024）；满了、又都没过期时，新的 `[Durable]` 请求回 `Busy`，`RetryAfter` 是最早一项过期的时刻（确定没执行）。收尾一问记下的"拒绝"只有调用 id 和期限，有自己的上限 `DaServer:ReplyLogRefusedCapacity`（默认 1,024），同样在期限加 `DaServer:ClockSkew` 之后删掉；它满了时，这次收尾的一问不回答，发问方得到 `Expired`。没有一种项无界地增长。
   - 比较失败说明这个激活已经被隔离：排队的输出都不发，改动和 `ReplyLog` 都没写进存储，发问方重问时由真正的主人执行一次。
 - **结果**：一个调用 id 最多执行一次；调用方看到的结果（成功或确定没执行），任一端宕机都不会丢；`Expired` 只在收尾的一问也联系不上时出现。代价是两端各多一次写存储的延迟，期间这个 Actor 的输出排队。不标的请求宕机时最多丢一个检查点间隔的改动（第 10 节）。
 - `ICluster` 带 `CallId.From(外部键)` 发 `[Durable]` 的请求时，接收方一样去重；调用方在 Actor 外面，不持久化，重试由它自己（第 4 节）。
@@ -953,7 +978,7 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
   - `e.SetGroups(groups)` 就是改写这个缓冲，`groups` 是 `ReadOnlySpan<ClientGroup>`（可以 `stackalloc`）；
   - 收尾组的 `SyncSubscriptions`（`[Changed<DynamicBuffer<Subscribed>>]`，以及刚加上 `Joined`、刚被接管的 Presence）把这些 Presence 的完整订阅集合发给网关，网关整个替换（幂等，不用记上次发了什么）。只有带 `Joined` 的 Presence 是成员。迁来的 Presence 也由它订阅（迁移到达算作写入，第 10 节）；
   - `e.Push(in group, msg)` 一次序列化，每个有成员的网关节点收到一帧，由网关扇出；`root.Broadcast` 也一样。
-- **每个组的发送频率是数据**：`root.SetGroupRate(key, every: n)`，n 是 tick 数，写进根上框架的 `DynamicBuffer<GroupRate>`（`GroupRate(long Key, int Every)`；随迁移和热重启的快照走，不进记录）。一般在 `[On<Activated>]` 里给每个要低频的组设一次（每次激活都会跑）；最近一次设的生效（从下一个该发的 tick 起），`every: 1` 或者没设过就是每个 tick。推给这个组的消息照常一次序列化、追加进 `Outbox` 里这个组的池化帧，但这一帧到了组该发的那个 tick 才交给链路，期间的推送合在同一帧里，一条不少。计数器就在这个组的帧缓冲上，不分配。
+- **每个组的发送频率是数据**：`root.SetGroupRate(key, every: n)`，n 是 tick 数，写进根上框架的 `DynamicBuffer<GroupRate>`（`GroupRate(long Key, int Every)`；随迁移和热重启的快照走，不进记录）。有 `[TickRate]` 的 Actor 类型的根副本预先带着这个空缓冲，`Join()` 加上 `Presence` 时也带上空的 `DynamicBuffer<Subscribed>`，所以 `SetGroupRate` 和 `SetGroups` 只改写已有的缓冲，不是结构变更（第 5 节的 `INoStructuralChanges`）。一般在 `[On<Activated>]` 里给每个要低频的组设一次（每次激活都会跑，第 12 节的 `Maps.Rates`）；最近一次设的生效（从下一个该发的 tick 起），`every: 1` 或者没设过就是每个 tick。推给这个组的消息照常一次序列化、追加进 `Outbox` 里这个组的池化帧，但这一帧到了组该发的那个 tick 才交给链路，期间的推送合在同一帧里，一条不少。计数器就在这个组的帧缓冲上，不分配。
   - 频率不改变组的身份：订阅和推送都用 `root.Group(key)`，是同一个组。远处的格子、不重要的实体用低频，近处用高频，同 Unity Netcode 的 `MaxSendRate` 和按重要性排的快照（[optimizations](https://docs.unity3d.com/Packages/com.unity.netcode@1.5/manual/optimizations.html)）、SpatialOS 兴趣查询的 frequency。
   - 只对有 `[TickRate]` 的 Actor 类型有意义，别的 Actor 类型调用 `SetGroupRate` 分析器报错。推给同一个客户端的直接推送和低频组的推送之间不保持先后。
   - **成员变化前先交出**：一个组的成员变化（`SyncSubscriptions` 发给网关的订阅集合里加上或去掉这个组，Presence 离开）追加进 `Outbox` 之前，这个组没到点的帧先交给链路。所以网关总是先按旧的成员扇出旧的推送：刚离开的不会漏掉离开前的推送，刚加入的不会收到加入前的推送。
@@ -972,7 +997,7 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 **保存按实体的种类决定**：从要保存的 prefab 建出的实体是要保存的实体，它带的组件除了 `[NotSaved]` 的都进记录；别的实体不进记录。根要保存，就在 `K.RootPrefab` 上写 `[Persist]`；子实体的 prefab 写 `[Prefab<K>(Persist = true)]`（第 3 节）。
 
 - 同一个组件类型可以既在要保存的实体上，也在不保存的实体上：第 12 节的掉落带着 `NetId`、`Position`、`Loot` 保存，Avatar 带着同样的 `NetId` 和 `Position` 不保存。按组件类型决定的话，要么掉落恢复后缺了 `NetId`（客户端认不出它，它的等待实体也挂在一个缺数据的实体上），要么 `NetId` 把所有 Avatar 拖进记录。
-- 注册时，要保存的 prefab 的副本带上框架的清理组件 `Persisted(EntityId Root, int Prefab)`：`Prefab` 是这个 prefab 的 id（它全名的 FNV-1a，同 `TypeId`，写在 `wire.manifest` 的 `prefab` 行），`root.Spawn` 填上 `Root`。根的副本也带它（`Root` 是自己）。所以"这个实体要不要保存、从哪个 prefab 来"是数据：系统按 `[With<Persisted>]` 过滤，加载时按 `Prefab` 补上新版本加的组件（下面的恢复）。
+- 注册时，每个 prefab 的副本（根的、要保存的和不保存的）都带上框架组件 `FromPrefab(int Prefab, int Composition)`：`Prefab` 是这个 prefab 的 id（它全名的 FNV-1a，同 `TypeId`），`Composition` 是它的组件集合的哈希，两个都写在 `wire.manifest` 的 `prefab` 行。要保存的 prefab 的副本还带清理组件 `Persisted(EntityId Root)`，`root.Spawn` 填上 `Root`；根的副本也带它（`Root` 是自己）。所以"这个实体要不要保存、从哪个 prefab、哪个版本来"是数据：系统按 `[With<Persisted>]` 过滤，加载时按 `FromPrefab` 补组件（下面的恢复）。
 - **要保存的实体只能建在根或另一个要保存的实体下面**：记录是一棵完整的树。`Spawn` 时父实体不是，就抛出（分析器看得出时报错）；根不保存的 Actor 类型不能有要保存的 prefab（分析器报错）。
 - `[Durable]` 的等待实体（第 8 节）由框架标成要保存的实体，所以 `[Durable]` 的请求只能从根或要保存的实体发问。根上的 `ReplyLog`、`NextDue` 和签发令牌的计数器（第 7 节）是框架的持久化组件。
 
@@ -980,7 +1005,7 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 
 一份记录就是一次 `SaveEntities`：根放在第一个，然后是带 `Persisted` 的子孙。收集用 `world.Descendants(root)`（深度优先，池建好之后不分配），跳过不带 `Persisted` 的子树。
 
-**保存用的组件集合 `persist`** 在注册时建一次：要保存的 prefab（包括根的）上的组件类型，加上 `root.Spawn`、`root.GetOrSpawn` 给要保存的 prefab 传进去的组件类型（生成器在调用处看得到），去掉 `[NotSaved]` 的；再加上框架的 `ChildOf`、`In<K>`、`Persisted`、`ReplyLog`、`NextDue`、`WakeAt`、签发令牌的计数器和等待实体的组件。之后才加到要保存的实体上的组件，类型在这个集合里才保存：要存，就在 prefab 上带一个默认值（第 12 节掉落的 `Cell`）。框架只在内存里有意义的组件（`Due`、`Presence`、`Joined`、`Detached`、`Leaving`、`Subscribed`、`GroupRate` 等，[architecture.md 第 2 节](architecture.md#runtime-data)）不在里面。
+**保存用的组件集合 `persist`** 在注册时建一次：要保存的 prefab（包括根的）上的组件类型，加上 `root.Spawn`、`root.GetOrSpawn` 给要保存的 prefab 传进去的组件类型（生成器在调用处看得到），去掉 `[NotSaved]` 的；再加上框架的 `ChildOf`、`In<K>`、`FromPrefab`、`Persisted`、`ReplyLog`、`NextDue`、`WakeAt`、签发令牌的计数器和等待实体的组件。`[Durable]` 请求的 `Ask` 状态类型（第 12 节的 `Looting`）也在里面，但不打开追踪，也就不用 `ITrackChanges`、不用 `partial`：状态只在 `Ask` 时写一次，之后只经 `a.State` 读，而 `Ask` 当场给根标 `Unsaved`（第 8 节）。之后才加到要保存的实体上的组件，类型在这个集合里才保存：要存，就在 prefab 上带一个默认值（第 12 节掉落的 `Cell`）。框架只在内存里有意义的组件（`Due`、`Presence`、`Joined`、`Detached`、`Leaving`、`Subscribed`、`GroupRate` 等，[architecture.md 第 2 节](architecture.md#runtime-data)）不在里面。
 
 ### 激活 epoch：一个 Actor 只有一个激活能写
 
@@ -995,6 +1020,7 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 - **被挤掉的主人马上隔离**：占的语句返回了被挤掉的主人（`old.owner` 是另一个还活着的节点代数），本节点给它发控制邮件 `Fence(键, epoch)`；那边的框架系统隔离这个根（第 6 节的表），不用等它下一次写记录失败才发现。
 - 只有按自己的视图是主人的节点才去占（第 6 节）；不是主人的转发。
 - **每次写记录都按 epoch 比较并交换**：存储里的 epoch 不是自己的，写失败。
+- **每个根同时最多一次写记录在途**：在途期间的改动（根还带着或重新带上 `Unsaved`）进下一次写。每次写还带一个写序号：`WHERE key = :key AND epoch = :e AND seq = :s`，写成时 `seq` 加一（占 epoch 的语句连同记录一起返回它），所以旧的写永远不会落在新的写之后。同一个 epoch 下 `seq` 已经前进，说明这一次写超时之前其实已经写成（只有这个激活按这个 epoch 写），按写成处理。
 - **比较失败就隔离**（第 6 节的表）：不写、不进 `Leaving`，销毁整棵子树。Presence 的路由由清理组件释放，客户端 SDK 重新加入，到达真正的主人那里。
 - **节点被移出成员视图时**，它在重新加入之前先隔离自己所有的 Actor，再以新的节点代数加入（第 2 节）。成员租约让它在别人重新放置之前就停下（第 2 节）；分区或长停顿之后醒来的节点即使漏过了租约，epoch 比较也拦住它的写。
 - `[Stateless]` 和 `Connection` 不占 epoch：它们不写记录。
@@ -1008,16 +1034,20 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 - **恢复用 `markWritten: false`，迁移到达不用**，只在这里写一次：
   - 恢复：读进来的值不算变更，被它覆盖的 prefab 默认值也不算（EasyEcs 4.5），所以激活不会白写一次记录，`ChangeSystem` 不用重置任何基准；
   - 迁移到达用默认的 `LoadEntities`（有占位时 `LoadEntitiesInto`），`markWritten` 为 true：追踪变更的组件都算写入。所以 `[Changed<T>]` 的系统都把迁来的实体当作刚写过：`SyncSubscriptions` 按 `Subscribed` 重新订阅网关（第 9 节），`CellAssign` 重算格子，到达后的第一个检查点在新的 epoch 下写一次记录。
-- **记录比代码旧时，按 prefab 补上**：加载之后，运行时按每个实体的 `Persisted.Prefab` 找到注册的 prefab 副本，给实体补上副本里有、记录里没有的组件（新版本给 prefab 加的组件，值是副本的默认值），并给根加上 `Unsaved`：这些默认值是新数据，下一次检查点存下来。没有记录（新键）时也给根加上 `Unsaved`：占位上的默认值是建占位时写的，那时没有系统看得到它，`[Changed<T>]` 不会替它补上。
+- **加载时按 prefab 补上，一条规则管记录、迁移的字节和快照**：加载之后，运行时按每个实体的 `FromPrefab` 找到注册的 prefab 副本，补上两种它没有的组件，值是副本的默认值：
+  - 副本上的 `[NotSaved]` 组件：`[NotSaved]` 的意思就是"到达时取 prefab 的默认值"（记录和迁移的字节里本来没有它，快照里有，就不补）；
+  - 这个 prefab 在实体的 `Composition` 之后新加的组件（新版本给 prefab 加的）。运行时在 Actor 里删掉的组件不算，不补回来：`wire.manifest` 留着每个 prefab 以前的组成（哈希和组件列表），`Registration` 据此算出"新加的"是哪些。
+
+  然后把实体的 `Composition` 改成现在的。补了要保存的组件时给根加上 `Unsaved`：这些默认值是新数据，下一次检查点存下来。不认识的 prefab id 或者组成哈希不补，计数。没有记录（新键）时也给根加上 `Unsaved`：占位上的默认值是建占位时写的，那时没有系统看得到它，`[Changed<T>]` 不会替它补上。
 - 记录里有、这个版本不认识的 `TypeId`（例如回滚到旧版本之后）跳过并计数，加载照常完成；下一次写记录就不再有它。所以回滚会丢掉新版本的字段和类型，滚动升级的检查拦着这种发布（下面的滚动升级）。
 
 ### 只写改过的
 
-- **追踪的是 `persist` 里的用户类型**：EasyEcs 按组件类型追踪写入（每行一个 8 字节的变更戳列，写时一次存储），不按实体。`Registration` 在注册时给 `persist` 里的用户组件类型打开追踪：EasyEcs 的需求 #27（运行时按类型打开；已提出，还没转交给 EasyEcs，第 14 节第 8 条）。在它之前，生成器给这些类型补上 `ITrackChanges` 的声明（同 `Key`），所以它们要写成 `partial`，分析器给一键修复；不在 `persist` 里的类型不用。
+- **追踪的是 `persist` 里的用户类型**：EasyEcs 按组件类型追踪写入（每行一个 8 字节的变更戳列，写时一次存储），不按实体。`Registration` 在注册时给 `persist` 里的用户组件类型打开追踪（`Ask` 的状态类型除外，见上面的"记录"）：EasyEcs 的需求 #27（运行时按类型打开；已提出，还没转交给 EasyEcs，第 14 节第 8 条）。在它之前，生成器给这些类型补上 `ITrackChanges` 的声明（同 `Key`），所以它们要写成 `partial`，分析器给一键修复；不在 `persist` 里的类型不用。
   - 自己写了 `ITrackChanges` 的类型（第 12 节的 `Position`、`Cell`）不用 `partial`。
-  - `persist` 里的类型没有 `ITrackChanges`，在这个编译里又补不上（不是 `partial`，或者来自别的程序集）：分析器报错，修复是在声明它的地方写上 `ITrackChanges`。
-  - **读走 `in`**：EasyEcs 的生成器看不到框架打开的追踪，所以对这些类型，它生成的 `entity.X` 属性按可写的 `ref` 给出，经它读也算一次写入：多写一次记录，不会漏写。处理方法和系统里用 `in` 参数或 `entity.Read<T>()` 读（分析器给提示；第 12 节的 `CellAssign` 用 `map.Read<Grid>()`）。
-- **结构变更也是变更**：加上一个被追踪的组件算一次写入，去掉它记下一次移除（EasyEcs `reference/itrackchanges.mdx`、`guide/change-tracking.mdx`），所以下面的 `ChangedAny`/`RemovedAny` 看得到它们。tag 和按 #27 打开追踪的类型也这样，由 W1 核对；核对之前，`persist` 里的 tag 只能随 prefab 加上，对它 `Set`/`Remove` 是分析器错误（第 12 节掉落的 `Visible` 就是随 prefab 来的）。核对不过，就一直这样，框架自己的操作另外给根标 `Unsaved`。
+  - `persist` 里要追踪的类型没有 `ITrackChanges`，在这个编译里又补不上（不是 `partial`，或者来自别的程序集）：分析器报错，修复是在声明它的地方写上 `ITrackChanges`。
+  - **读走 `in`**：EasyEcs 的生成器看不到框架打开的追踪，所以对这些类型，它生成的 `entity.X` 属性按可写的 `ref` 给出，经它读也算一次写入：多写一次记录，不会漏写。处理方法和系统里用 `in` 参数或 `entity.Read<T>()` 读（分析器给提示；第 12 节的 `CellAssign` 用 `map.Read<Grid>()`）。生成的 `TryGetX(out copy)` 和 `TryGet<T>(out copy)` 按值复制，从不算写入（EasyEcs `api.mdx` 的 entity 表），所以可能没有的组件照常用它读（第 12 节的 `drop.TryGetLoot`、`e.TryGetCell`）。
+- **结构变更也是变更**：加上一个被追踪的组件算一次写入，去掉它记下一次移除（EasyEcs `reference/itrackchanges.mdx`、`guide/change-tracking.mdx`），所以下面的 `ChangedAny`/`RemovedAny` 看得到它们。tag 和按 #27 打开追踪的类型也这样，由 W1 核对；核对通过，tag 的增删由 `ChangeSystem` 照常看到，什么也不用另做。核对之前（核对不过就一直这样），限制按实体，不按类型：对 `persist` 里的 tag `Set`/`Remove`，只在分析器看得出这个实体要保存时报错（例如 `root.Spawn` 一个要保存的 prefab 返回的实体、带 `[With<Persisted>]` 的方法）；看不出的地方照常写，运行时在要保存的实体上发现 tag 变了就给根标 `Unsaved`（4.6 的做法在 W1）。同一个 tag 在不保存的实体上随便增删（第 12 节 Avatar 上的 `Visible`）。
 - **`root.Spawn`、`root.GetOrSpawn` 建出要保存的实体时，当场给根标 `Unsaved`**，不靠变更戳。
 - `ChangeSystem` 用注册时建好的 `QueryFilter.ChangedAny(persist).With<Persisted>()` 和对应的 `RemovedAny`（EasyEcs 4.7 计划）：要保存的实体上任何一个组件被写或者被删，这一行访问一次，按 `Persisted.Root` 给根标 `Unsaved`。一行改了几个组件也只访问一次；不保存的实体上同类型的写只多付变更戳，`ChangeSystem` 不访问它们。不分配。
 - **占位不写**：根带着 `Loading`、`Saving` 或 `ActivationFailed` 时，`ChangeSystem` 不给它标 `Unsaved`，`CheckpointSystem` 也不写它（`[Without<Loading>, Without<Saving>, Without<ActivationFailed>]`）。否则 `Reload` 把根改回 prefab 默认值的那些写，会被当成改动写进记录，盖掉最后一份好记录（第 5 节）。
@@ -1049,11 +1079,11 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 
 ### 迁移
 
-- 保存整棵子树，组件集合是注册时建好的 `migrate = ComponentSet.Create().With(typeof(每个不带 [NotSaved] 的组件))`：默认都带，标了 `[NotSaved]` 的除外。
+- 保存整棵子树，组件集合是注册时建好的 `migrate = ComponentSet.Create().With(typeof(每个不带 [NotSaved] 的组件))`：默认都带，标了 `[NotSaved]` 的除外；到达时按 prefab 补上它们（上面的恢复）。源节点先等这个根在途的写，留住的输出按第 8 节随字节走。
 - 等待中的请求、Presence 实体（连同 `Subscribed`）、待执行的延后事件随 Actor 一起迁移。
   - `Due` 在字节里是剩余时间，到达后按新 world 的单调时钟重新起算，再按它的 tick 边界归入 tick 窗口；已经过期的在第一个 tick 执行（第 9 节）。`Due.Seq` 到达时用新 world 的序号重新编号，保持它们之间原来的先后，然后重建到期堆。
 - **到达时占一个新的 epoch**：从字节里带来的 epoch `e` 比较并加一（同一条 `UPDATE … RETURNING`，不读记录），主人改成本节点；条件是 `epoch = e OR (epoch = e + 1 AND owner = (本节点名, 代数))`，所以这条语句重试时、或者到达后本节点热重启再来一次时，照样成功。占到之前，到达的子树像占位一样不运行，邮件排队；比较失败（别人已经占了）就隔离这份到达。所以迁移之后，源节点的任何迟到的写都会失败。
-- **迁移头里带着每个组件的布局哈希**（来自 `wire.manifest`）。目标节点的布局有一个对不上（滚动升级时新旧版本混跑），就不搬字节：源节点改为停用、写记录，目标节点从版本兼容的记录加载。这时只有记录里的留下；Presence 丢失，由 SDK 重新加入。
+- **迁移头里带着每个组件的布局哈希和每个 prefab 的组成哈希**（来自 `wire.manifest`）。组成哈希不同照样搬字节，到达时按 prefab 补上（上面的恢复）；目标节点的布局有一个对不上（滚动升级时新旧版本混跑），就不搬字节：源节点改为停用、写记录，目标节点从版本兼容的记录加载。这时只有记录里的留下；Presence 丢失，由 SDK 重新加入。
 - 源节点销毁子树前先移除 `Presence` 和 `Persisted`：路由不释放，根也不标 `Unsaved`（第 6 节的表）。
 - **墓碑**：源节点在迁移后保留一段时间的 `(键 → 新节点)`，这个键的所有邮件都转过去（控制消息、回信和普通消息都是）；墓碑还在时本节点不激活这个键。墓碑指向的节点已经离开视图时，按当前的放置转发。
 - 停用写记录时不保存待执行的延后事件：需要跨停用保留的状态，放在要保存的实体上（`DaServer.Reminders` 的提醒就是）。
@@ -1074,8 +1104,8 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 ### `wire.manifest`
 
 - 每个工程写出自己的一段。
-- Server 的一段：Actor 类型、承载它的服务器类型、帧率、身份、连上就加入的 Actor 类型、每条消息的接收方、发送方、回复类型、是否 `durable`、事件、状态类型、prefab（它的 id 和要不要保存）、进记录的组件类型（`persist` 的全部用户类型，写法 `nino`、`raw` 或 `tag`）、每个组件的布局哈希、推送；客户端消息的路由（带 `[To]` 的写明参数）、事件和 `Replied` 的处理、`Activated` 的处理、对 tag（`Leaving`、`Detached`、`Deactivating`、`Restarting`、`Resumed`）的消费。
-- 热重启按它比对新旧版本，选走哪条路（下面）。
+- Server 的一段：Actor 类型、承载它的服务器类型、帧率、身份、连上就加入的 Actor 类型、每条消息的接收方、发送方、回复类型、是否 `durable`、事件、状态类型、配置表（表名和表类型的格式哈希）、prefab（它的 id、组成哈希和要不要保存；组成变过的，以前的组成也留着：哈希和组件列表，加载时据此补组件）、进记录的组件类型（`persist` 的全部用户类型，写法 `nino`、`raw` 或 `tag`，`Ask` 的状态类型标 `untracked`）、每个组件的布局哈希、推送；客户端消息的路由（带 `[To]` 的写明参数）、事件和 `Replied` 的处理、`Activated` 的处理、对 tag（`Leaving`、`Detached`、`Deactivating`、`Restarting`、`Resumed`）的消费。
+- 热重启按它比对新旧版本，选走哪条路（下面）；prefab 的组成和表的格式也在比对里。
 - AppHost 只读 `actor` 和 `hosted-by`。
 
 ### 滚动升级
@@ -1097,7 +1127,7 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 
   | 比对结果 | 路径 | 停顿 |
   |---|---|---|
-  | 每个组件的布局哈希相同；旧版本有的事件、`Replied` 组合、`Activated` 的处理方法和对 tag 的消费，新版本都还有；客户端路由不变 | **原地**：快照 | 目标几百毫秒（ADR-084） |
+  | 每个组件的布局哈希相同；旧版本有的事件、`Replied` 组合、`Activated` 的处理方法和对 tag 的消费，新版本都还有；客户端路由不变。prefab 的组成变了照样原地：加载时按 prefab 补上（上面的恢复） | **原地**：快照 | 目标几百毫秒（ADR-084） |
   | 布局变了，但只变在新版本读得了记录的组件上（`VersionTolerant`、`Keyed` 的 `[NinoType]`，或者不进记录的组件），或者去掉了上一行的处理方法 | **经记录**：所有 Actor 停用、写记录，重启，按需从记录激活 | 更长；不持久化的状态按停用的规则丢掉，Presence 由 SDK 重新加入 |
   | 承载关系（`[Hosts]`）或客户端路由变了 | 拒绝；走**滚动升级**（上面），路由变了要连网关一起升级 | — |
 
@@ -1108,12 +1138,12 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 - **步骤**：
   1. **SIGTERM 才开始**：武装状态下收到 SIGTERM（Windows 服务是停止命令），节点向协调者宣布成员状态 `NodeRestarting`（带预计停顿和武装的随机数）。协调者确认之后，期限才开始算，节点才冻结。期限由协调者按自己的单调时钟计时，其他节点只照它的决定做。
   2. **冻结前的最后一个 tick**：框架给每个 Actor 的根加上 `Restarting(TimeSpan ExpectedPause)`，用户的系统按需要反应（下面）；同一个 tick 的 `Settling` 去掉它，所以快照里没有 `Restarting`。
-  3. 每个 world 在两个 tick 之间冻结：不再执行任何项，等在途的存储操作（写记录、占 epoch）有结果：写成的去掉了 `Unsaved`，没写成的还带着，随快照过去，新进程的下一个检查点接着写。这个等待有上限，过了就放弃（下面）。**冻结只停 world 的线程**：IO 线程照常收帧，放进调度队列，冻结期间发来的消息不被拒绝，也不用让客户端或别的节点停发。
+  3. 每个 world 在两个 tick 之间冻结：不再执行任何项，等在途的存储操作（写记录、占 epoch）有结果：写成的去掉了 `Unsaved`、放出它覆盖的留住的输出，没写成的还带着 `Unsaved` 和 `HeldOutput`，随快照过去，新进程的下一个检查点接着写（第 8 节）。这个等待有上限，过了就放弃（下面）。**冻结只停 world 的线程**：IO 线程照常收帧，放进调度队列，冻结期间发来的消息不被拒绝，也不用让客户端或别的节点停发。
   4. 进程停止读链路，这一刻就是切换点。快照先写进 `DaServer:SnapshotPath` 目录里的临时文件，`fsync`，再改成正式的文件名（普通的文件写入：几 MB 用不着内存映射），然后进程退出。快照里有：
      - 头：节点名、节点代数、武装的随机数、旧版本和武装时新版本 `wire.manifest` 的哈希、每个组件的布局哈希、world 的个数、冻结时的 `Environment.TickCount64` 和内核的 boot id、校验和；
-     - 每个 world：`world.Save(output, exclude)` 的字节（实体连同 id 和版本、组件、`DynamicBuffer`（包括占位上等着的 `Mail`）、单例；不含系统、索引、写入戳，EasyEcs `guide/saves.mdx`；`exclude` 是用户的单例，下面）、调度队列里还没进 world 的邮件、`Time.Elapsed`；即时链在两个 tick 之间是空的，`Outbox` 在冻结前的最后一个 tick 交出了所有的帧（包括没到点的组帧，第 9 节）；
-     - 节点的运行时状态：调用 id 的序号、墓碑、连接戳的计数；每条链路收到的字节数，发出的偏移和还没确认的尾巴；邮件和期限已经等了多久（第 9 节）。
-  5. 平台用新的二进制或镜像重启进程（下表）。新进程找属于自己节点名的快照，逐项检查：校验和对；boot id 相同（机器没重启过）；按 `TickCount64` 算出的停顿没超过期限；自己的 `wire.manifest` 哈希等于武装时的新版本哈希（换错了镜像就不加载）。不合格就删掉它，以新的代数加入，走经记录。合格就按头里的个数建 world（键按哈希落在哪个 world，个数不同就对不上；建不了那么多，同样删掉快照、走经记录），再流式加载（`world.Load(bytes, markWritten: false, keep)`，边读边装；新进程在加载之前已经建好用户的单例，`keep` 就是它们，下面），接上时钟、加上系统、重建到期堆和调用 id 索引，然后**在任何 world 运行之前**删掉这个文件：快照只用一次，加载之后再崩溃，下次启动只能经记录。
+     - 每个 world：`world.Save(output, exclude)` 的字节（实体连同 id 和版本、组件、`DynamicBuffer`（包括占位上等着的 `Mail`）、单例；不含系统、索引、写入戳，EasyEcs `guide/saves.mdx`；`exclude` 是用户的单例，下面）、调度队列里还没进 world 的邮件、`Time.Elapsed`；即时链在两个 tick 之间是空的，`Outbox` 在冻结前的最后一个 tick 交出了所有的帧（包括没到点的组帧，第 9 节）；为 `[Durable]` 还留着的输出不在 `Outbox` 里，它是根上的 `HeldOutput`，在 world 的字节里；
+     - 节点的运行时状态：调用 id 的序号、墓碑；每条链路收到的字节数，发出的偏移和还没确认的尾巴；邮件和期限已经等了多久（第 9 节）。
+  5. 平台用新的二进制或镜像重启进程（下表）。新进程找属于自己节点名的快照，逐项检查：校验和对；boot id 相同（机器没重启过）；按 `TickCount64` 算出的停顿没超过期限；自己的 `wire.manifest` 哈希等于武装时的新版本哈希（换错了镜像就不加载）。不合格就删掉它，以新的代数加入，走经记录。合格就按头里的个数建 world，不管这次分到多少 CPU（键按哈希落在哪个 world，个数不同就对不上）；只有建不了这个数（配置 `DaServer:Worlds` 钉了另一个数）才删掉快照、走经记录。再流式加载（`world.Load(bytes, markWritten: false, keep)`，边读边装；新进程在加载之前已经建好用户的单例，`keep` 就是它们，下面），按 prefab 补上组件（上面的恢复），接上时钟、加上系统、重建到期堆和调用 id 索引，然后**在任何 world 运行之前**删掉这个文件：快照只用一次，加载之后再崩溃，下次启动只能经记录。
   6. **`Rejoining`**：新进程以同一个身份（节点名，代数）重连，带着武装的随机数做恢复握手；它的 world 保持冻结，直到协调者回答（期限只在这里判定一次）：
      - `Readmit`：只给当前的随机数，给了就清掉。节点先核对一遍：根所在的槽现在的主人已经不是自己的（期间放置变了），隔离或者迁出这些根；然后各 world 开始跑。其他节点认出同一个身份，按快照里的字节数续上各条流，重放各自的重发窗口：就是今天链路断了重连时的续流，不重复也不丢。对端收到这个身份的 Hello 时清掉对它的重连退避，马上连回来。
      - `Gone`：期限已过、随机数不对，或者已经有更大的代数：丢掉加载的 world，不写，以新的代数加入，从记录激活。
@@ -1164,8 +1194,10 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 
 两种改动都只是换数据，在两个 tick 之间生效：
 - **配置表**（调参的表）：实现 `IConfigTable<T>` 的用户单例（第 5 节），`T.Name` 是表名，`T.TryLoad` 解码并校验；处理方法和系统取 `in`（第 12 节的 `SkillTable`）。
-  - **整个集群一个当前版本**：存储里每张表一行 `(名字, 版本, 哈希, 字节)`，协调者把 `(名字, 版本, 哈希)` 放进视图。每个启动的、热重启的节点都读这个版本（按哈希核对字节），所以新节点和老节点用的是同一份表。存储里还没有这张表时，第一个组成集群的节点用自己的 `DaServer:Tables:{名字}` 写入第一版。没有记录存储的集群（只有 `Connection` 和 `[Stateless]`）把字节放在协调者那里，集群整个冷启动后回到配置里的版本。
-  - **换版本**：管理端点 `POST /admin/tables/{名字}`（也是 Aspire 命令）把新字节交给协调者：先 `TryLoad` 校验，失败就不换，命令报告原因；通过就写进存储、版本加一，视图传开后每个节点读入一次，每个 world 在两个 tick 之间换上。
+  - **整个集群一个当前版本，要有记录存储**：存储里每张表一行 `(名字, 版本, 哈希, 字节)`，协调者把 `(名字, 版本, 哈希)` 放进视图。每个启动的、热重启的节点都读这个版本（按哈希核对字节），所以新节点和老节点用的是同一份表。存储里还没有这张表的版本时（新集群，或者一次发布加了一种表），第一个读它的节点用自己的 `DaServer:Tables:{名字}` 写入第一版（插入只成功一次）。
+  - **没有记录存储的节点**（只承载 `Connection` 和 `[Stateless]` 的集群）各自从 `DaServer:Tables:{名字}` 读表，`POST` 只换收到它的那个节点的表：文档里写明这种表是每个节点各自的。
+  - **读不了当前版本的节点不就绪**：节点的 `TryLoad` 拒绝存储里的当前版本（例如新版本改了表的格式）时，就绪检查失败并报告这个错误。`wire.manifest` 的 `table` 行带着表类型的格式哈希，`{cluster}-upgrade-check` 看到格式变了，就用新版本的 `TryLoad` 试读当前版本，读不了就事先拒绝这次发布。
+  - **换版本**：管理端点 `POST /admin/tables/{名字}`（也是 Aspire 命令）把新字节交给协调者（没有存储时见上面）：先 `TryLoad` 校验，失败就不换，命令报告原因；通过就写进存储、版本加一，视图传开后每个节点读入一次，每个 world 在两个 tick 之间换上。
   - **回滚**就是把旧版本的字节再 `POST` 一次：它成为新的一版。
 - **功能开关**：二进制里编译好的几种做法，由一个单例或 tag 选（处理方法和系统按它过滤）；开关就是改这份数据。
 
@@ -1184,7 +1216,7 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 | 整个集群冷启动、几个种子同时启动 | 代数取 max(见过的 + 1, Unix 毫秒)，不重复；只有序号最小的种子自己组成集群，成员数够了才激活（第 2 节） |
 | 网关滚动升级或缩容 | 不断线：先扩后缩，分批 `Retire`，SDK 先连上新网关、接管各个 Presence，`HandedOff` 栅栏保持每个 Actor 的推送顺序，再关旧连接（[architecture.md 第 3 节](architecture.md#retire-and-rebalancing)） |
 | 网关宕机、客户端断线 | 客户端带令牌重连，得到新的 `Connection` 和更大的连接戳；目标上的 Presence 带着 `Detached` 等着，SDK 重发各槽的加入消息，新连接接管它们，快照系统重推一份；宽限期过了没人接管才 `Leave()`（第 7 节） |
-| 半开连接时客户端已经连到别处 | 连接戳更大的胜出（`Takeover.NewestWins`），目标发 `TakeOver`，旧的 `Connection` 关闭；旧连接再来加入，戳更小，收到 `Superseded`；同一个连接重试，戳相等，幂等再回复 |
+| 半开连接时客户端已经连到别处 | 连接戳更大的胜出（`Takeover.NewestWins`），目标发 `TakeOver`，旧的 `Connection` 安静地关闭；旧连接迟到的加入戳更小，`Join()` 返回 `Superseded`（同一次登录，SDK 不当作终止）；同一个连接重试，戳相等，幂等再回复 |
 | 另一台设备登录了同一个账号 | 签发序号更大的接管；旧设备的连接以 `Superseded` 关闭，SDK 报给应用，不自动重连；只是刷新过令牌的旧设备排不到新登录前面（第 7 节） |
 | 连上就加入失败 | 框架按 `RetryAfter` 或带抖动的退避重试，超过次数以 `Unavailable(retryAfter)` 结束会话 |
 | `Join()` 时没有客户端上下文 | 返回 `NoClient`，处理方法决定怎么回复 |
@@ -1202,6 +1234,7 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 | `[Durable]` 的请求到达时剩下的时间不够写一次记录 | 不执行，回 `TooLate` |
 | `[Durable]` 的发问方处理回信后、记录写成前宕机 | 回信处理的输出留到记录写成才发出，所以什么也没发；从记录恢复后再问，接收方从 `ReplyLog` 回答同样的结果，处理方法再执行一次 |
 | `ReplyLog` 满了 | 新的 `[Durable]` 请求回 `Busy`（确定没执行），`RetryAfter` 是最早一项过期的时刻 |
+| `ReplyLog` 里"拒绝"的项满了 | 收尾的一问不回答，发问方得到 `Expired`（第 8 节） |
 | 拿着回复令牌的 Actor 在回复前停用 | 令牌在要保存的实体上，重新激活后期限内照样回复；否则调用方按期限超时 |
 | 过了期限才 `Reply` | 不发出，计数 |
 | 发问的实体在回信前被销毁 | 等待实体一起销毁，回信丢弃 |
@@ -1212,7 +1245,7 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 | 新版本去掉了还在用的处理方法 | 热重启不走原地，改走经记录（第 10 节）；分发时仍然找不到就是 `NotHandled` |
 | 武装之后没有等来 SIGTERM | 武装静默作废（第 10 节） |
 | 热重启冻结时存储挂住、快照写失败 | 放弃：撤回 `NodeRestarting`，根带 `Resumed(Aborted: true)`，节点优雅停止，新进程经记录（第 10 节） |
-| 热重启后快照不合格（校验和、节点名、boot id、过期、镜像不是武装的那个、建不了头里那么多 world） | 新进程删掉它，以新的代数加入，Actor 从记录激活 |
+| 热重启后快照不合格（校验和、节点名、boot id、过期、镜像不是武装的那个、配置钉了和头里不同的 world 数） | 新进程删掉它，以新的代数加入，Actor 从记录激活 |
 | 热重启加载之后又崩溃 | 快照在 world 运行前已经删掉，下次启动经记录 |
 | 热重启超过协调者的期限还没回来 | 协调者宣布它离开，算作 `Left`；迟到的新进程收到 `Gone`，丢掉加载的 world，以新的代数加入 |
 | 热重启期间放置变了 | 协调者本来不动它的槽；回来时的核对隔离或迁出主人已经不是自己的根（第 10 节） |
@@ -1261,7 +1294,7 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
   |---|---|---|
   | `Ok` | | |
   | `Busy`（带 `RetryAfter`）、`NoOwner` | 是 | 是 |
-  | `NotHandled`、`NoActor`、`Filtered`、`NotJoined`、`Skipped` | 是 | |
+  | `NotHandled`、`NoActor`、`Filtered`、`NotJoined`、`Skipped` | 是（`[Durable]` 的重问收到的 `NotHandled` 除外：结果未知，按 `Transient` 再问，第 8 节） | |
   | `TimedOut`、`ConnectionLost` | 结果未知 | 是：只能用同一个调用 id 重问 |
   | `TooLate` | 是：`[Durable]` 的请求来不及落定，或者收尾的一问时还没执行（第 8 节） | |
   | `Faulted` | 处理方法抛出了；终止的结果，用同一个调用 id 再问得到同样的回答（第 5 节） | |
@@ -1325,7 +1358,7 @@ public readonly partial record struct Map(long Id) : IActor<Map>
     public static Prefab RootPrefab { get; } = new Prefab().SetGrid(512, 16).SetNetIds(default).SetBuffer<Shout>();
 }
 
-[Hosts<Player>]     public readonly struct GameServer    : IServer;
+[Hosts<Player>]     public readonly struct PlayerServer  : IServer;
 [Hosts<Map>]        public readonly struct MapServer     : IServer;
 [Hosts<Connection>] public readonly struct GatewayServer : IServer;
 
@@ -1367,7 +1400,8 @@ public record struct Health(int Value) : IComponent;
 public record struct Dead : IComponent;
 public record struct Stunned : IComponent;
 [NinoType] public partial record struct Loot(int Item) : IComponent;                    // what a drop on the map holds
-[NinoType] public record struct Looting(ReplyTo<bool> Reply) : IComponent;              // the durable ask's state: in the map's record
+[NinoType] public record struct Looting(ReplyTo<bool> Reply) : IComponent;              // the durable ask's state: in the map's record,
+                                                                                        // written once at Ask, so not tracked, not partial
 [NotSaved] public record struct Shout(Cell Cell, NearbyEvent Event);                    // news for one cell, on the map; empty between ticks
                                                                                         // (a buffer element: EasyEcs asks for no interface)
 
@@ -1394,6 +1428,13 @@ public static partial class Maps
         var avatar = root.GetOrSpawn(Prefabs.AvatarPrefab, new Avatar(map, new Player(who.Id)),   // a re-sent join finds it
             static (Entity root, in Avatar key) => new NetId(key.Map, ++root.NetIds.Next));      // run only when it spawns
         return avatar.Join() == Status.Ok;                                 // a newer connection takes over; the previous map leaves it
+    }
+
+    [On<Activated>]                                                        // every activation: the rates are the root's live data
+    static void Rates(in Activated a, Entity root, in Grid grid)
+    {
+        Span<long> far = stackalloc long[Aoi.MaxFarKeys];
+        foreach (var key in Aoi.FarKeys(in grid, far)) root.SetGroupRate(key, every: 3);   // far cells: one frame every 3 ticks
     }
 }
 
@@ -1510,10 +1551,10 @@ public class CellAssign : EcsSystem
 [UpdateInGroup<Map>, UpdateAfter<CellAssign>]
 public class Regroup : EcsSystem
 {
-    [ForEach, Changed<Cell>, With<Presence>]                               // a presence's first cell or a crossing: its 3×3 ClientGroups
-    static void Crossed(Entity avatar, in Cell cell)
+    [ForEach, Changed<Cell>, With<Presence>]                               // a presence's first cell or a crossing: the near
+    static void Crossed(Entity avatar, in Cell cell)                       // groups of the 3×3 cells, the far ones of the ring
     {
-        Span<ClientGroup> around = stackalloc ClientGroup[9];
+        Span<ClientGroup> around = stackalloc ClientGroup[Aoi.MaxAround];
         avatar.SetGroups(Aoi.Around(avatar.Root, in cell, around));        // root.Group(key) per cell; the framework syncs the gateway
     }
 }
@@ -1558,7 +1599,8 @@ public class Flush : EcsSystem
     [ForEach, Changed<DynamicBuffer<Shout>>]                               // only maps whose shouts were written this tick
     static void Publish(Entity map, Mut<DynamicBuffer<Shout>> shouts)      // Mut: the clear is not news, so it does not
     {                                                                      // bring this map back next tick
-        Aoi.Publish(map, shouts.Value.AsReadOnlySpan());                   // one Nearby per cell with news: map.Push(map.Group(Aoi.Key(cell)), nearby)
+        Aoi.Publish(map, shouts.Value.AsReadOnlySpan());                   // one Nearby per cell with news, pushed to the cell's
+                                                                           // near group and to its far group (every 3 ticks)
         shouts.Value.Clear();
     }
 }
@@ -1568,15 +1610,15 @@ NPC 死亡时（例子里没写出），地图对根 `Schedule(new Fell(…))`�
 
 客户端连上时由 `[JoinOnConnect<Account>]` 加入 Player；进地图的 `EnterMap` 直接发给地图，不经过 Player。Player 只回答地图的 `GrantItem`。
 
-**保存的是什么**：地图的根（`Grid`、`NetIds`）和掉落（`NetId`、`Position`、`Loot`、`Cell`、`Visible`，以及它还在等的 `GrantItem`）在地图的记录里；Avatar 和 NPC 不在。地图宕机后，掉落带着原来的编号恢复，`NetIds` 接着往下发编号，不会和恢复的掉落撞号；客户端重新加入，Avatar 重新建出来。Player 的根（`Inventory`）在 Player 的记录里。`Shout` 在两个 tick 之间是空的，标了 `[NotSaved]`。所以 `persist` 里的用户类型是 `Grid`、`NetIds`、`Inventory`（根）和 `NetId`、`Loot`、`Position`、`Cell`、`Visible`（掉落）；`Position`、`Cell` 自己声明了 `ITrackChanges`，其余写成 `partial`，由生成器补上（第 10 节）。`Enter` 用只在新建时调用的 lambda 取编号，重发的加入找到已有的 Avatar，不白花编号。
+**保存的是什么**：地图的根（`Grid`、`NetIds`）和掉落（`NetId`、`Position`、`Loot`、`Cell`、`Visible`，以及它还在等的 `GrantItem`）在地图的记录里；Avatar 和 NPC 不在。地图宕机后，掉落带着原来的编号恢复，`NetIds` 接着往下发编号，不会和恢复的掉落撞号；客户端重新加入，Avatar 重新建出来。Player 的根（`Inventory`）在 Player 的记录里。`Shout` 在两个 tick 之间是空的，标了 `[NotSaved]`。所以 `persist` 里的用户类型是 `Grid`、`NetIds`、`Inventory`（根）、`NetId`、`Loot`、`Position`、`Cell`、`Visible`（掉落）和 Ask 的状态 `Looting`；`Position`、`Cell` 自己声明了 `ITrackChanges`，`Looting` 只在 Ask 时写一次、不追踪，其余写成 `partial`，由生成器补上（第 10 节）。`Enter` 用只在新建时调用的 lambda 取编号，重发的加入找到已有的 Avatar，不白花编号。
 
 AOI 的状态全在组件里：客户端看到的编号是 `NetId`，格子是 `Cell`（非唯一值索引，`world.CellIndex.Find(cell)` 列出格子里的实体），上次发出的速度是 `NetSync`，确认和有没有漏过推送是框架的 `Joined(MissedPushes)`，订阅是 `Subscribed`，消息是地图上的 `DynamicBuffer<Shout>`。`Aoi` 是用户写的无状态帮助类。每个系统只做一件事：
 1. `CellAssign`：位置被写过的实体，算出格子；跨格才写 `Cell`。
-2. `Regroup`：`Cell` 变了的 Presence，改写它订阅的 3×3 `ClientGroup`（`root.Group(格子的键)`，键带着这张地图）。框架的 `SyncSubscriptions` 按这份数据同步网关（第 9 节），所以用户只写一处。
+2. `Regroup`：`Cell` 变了的 Presence，改写它订阅的 `ClientGroup`：3×3 格子的近处组，外面一圈格子的远处组（`root.Group(格子的键)`，键带着这张地图）。框架的 `SyncSubscriptions` 按这份数据同步网关（第 9 节），所以用户只写一处。远处组的频率是 `Maps.Rates` 在每次激活时写的数据（`root.SetGroupRate(key, every: 3)`，第 9 节）：它们的推送攒 3 个 tick 交出一帧。
 3. `SendFullState`：这个 tick 确认的 Avatar（`Joined` 被写过：第一次加入、断线后重连、被别的连接接管），`MissedPushes` 为真才推一份完整的状态；因网关升级换连接的一个推送也没漏，不推。
 4. `Diff`：速度被写过、并且和 `NetSync` 不同的实体，写一条 `Moved` 进地图的 `Shout`。
 5. `Vanish`：带 `Leaving` 的 Avatar，写一条 `Disappear`。
-6. `Flush`：`Shout` 被写过的地图（`[Changed<DynamicBuffer<Shout>>]`，没消息的地图不访问），按格子合并，每个有内容的格子发一帧 `Nearby`，然后经 `Mut<T>` 清空，不打戳（W1 核对 EasyEcs 4.7 的 `Mut<DynamicBuffer<T>>` 这样做）。
+6. `Flush`：`Shout` 被写过的地图（`[Changed<DynamicBuffer<Shout>>]`，没消息的地图不访问），按格子合并，每个有内容的格子给它的近处组和远处组各推一份 `Nearby`，然后经 `Mut<T>` 清空，不打戳（W1 核对 EasyEcs 4.7 的 `Mut<DynamicBuffer<T>>` 这样做）。
 
 所有系统都只看带 `In<Map>` 的实体（`IActor<Map>` 带着的组过滤，第 5 节）。`Steering`、`Movement` 和 `Moves.Move` 用 `Mut<T>`（第 5 节的"只在值变了时写"）：站着的 NPC 和被拒绝的一步都不打戳，`CellAssign` 和 `Diff` 就不访问它们。除了 `Steering` 都是单线程：`Movement` 每行只是一次加法和一次比较，其余的发消息、写别的实体或做结构变更。`Steering` 也只在节点的 world 比核少时才多线程（第 5 节）。
 
@@ -1666,7 +1708,8 @@ partial class Moves
 }
 // Combat.Cast_Job has no component parameter either (SkillTable is a singleton: a job field). Cast schedules after a windup
 // (a child entity), Resolve adds Dead to another entity, Pickups.Drop spawns, Take asks (a waiting child), Granted destroys:
-// none gets INoStructuralChanges. Items.Grant_Job only writes Inventory and returns its reply: it gets it.
+// none gets INoStructuralChanges. Items.Grant_Job only writes Inventory and returns its reply, and Maps.Rates_Job only calls
+// SetGroupRate (the root copy already carries the GroupRate buffer, section 9): both get it.
 // GrantItem is [Durable]: before the job the dispatch looks the call id up in the root's ReplyLog (a repeat is answered from it,
 // a settling re-ask of an unknown call id is recorded as refused and answered TooLate) and refuses with TooLate when the
 // remaining budget is below the store's write latency; after it, the item's whole output (the reply among it) and every later
@@ -1676,7 +1719,7 @@ partial class Moves
 ```csharp
 // <auto-generated/> Game.Server: a C# 14 static extension member in the project's root namespace, so the call is
 // Registration.Create() (GameServerRegistration.Create() where two server projects' namespaces are imported, section 5);
-// no static registries, no module initializers
+// one container per assembly (named after Game.Server, not after a server type); no static registries, no module initializers
 namespace Game.Server;
 
 public static class GameServerRegistration
@@ -1691,13 +1734,15 @@ public static class GameServerRegistration
             .Prefab<Map>(Prefabs.NpcPrefab)                                // the static prefabs stay as written
             .Prefab<Map>(Prefabs.DropPrefab, persist: true)                // the copy also carries Persisted(Root, its prefab id)
             .Actor<Player>()                                               // root prefab: Player.RootPrefab, persistent
-            .Record(static set => set                                      // the persist set (section 10): the persistent prefabs' types
+            .Record(tracked: static set => set                             // the persist set (section 10): the persistent prefabs' types
                 .With<Grid>().With<NetIds>().With<Inventory>()             // and those spawned into them, no [NotSaved] (not Shout);
-                .With<NetId>().With<Loot>().With<Position>().With<Cell>().With<Visible>())   // change tracking on for them (#27)
+                .With<NetId>().With<Loot>().With<Position>().With<Cell>().With<Visible>(),   // change tracking on for them (#27)
+                untracked: static set => set.With<Looting>())              // a durable ask's state: written once at Ask
             .ConfigTable<SkillTable>()                                     // loaded from the cluster's current version, swapped live
             .Claims<Account>()
             .JoinOnConnect<Player, Account>(static (in Account c) => new Player(c.Id), Takeover.NewestWins)
             .Dispatch<Map>(static table => table
+                .Activated(Maps.On_Rates)
                 .Client<EnterMap>(Maps.On_Enter)                           // [To]: subject is the root; may Join
                 .Client<MoveTo>(Moves.On_Move)                             // subject: the presence
                 .Client<CastSkill>(Combat.On_Cast)
@@ -1731,7 +1776,7 @@ public static class GameServerRegistration
 // <auto-generated/> AppHost, from the actor / hosted-by lines of Game.Server's wire.manifest
 namespace Game.Server
 {
-    public readonly struct GameServer    : IServer;
+    public readonly struct PlayerServer  : IServer;
     public readonly struct MapServer     : IServer;
     public readonly struct GatewayServer : IServer, IAcceptsClients;
 }
@@ -1744,19 +1789,19 @@ namespace Game.Server
 # wire.manifest (excerpt, committed)
 # ── Game.Server ──
 actor   Game.Server.Map     id 5A1C93E1  key int64   hosted-by MapServer   tick 30Hz
-actor   Game.Server.Player  id 0B77D012  key int64   hosted-by GameServer  join-on-connect Account newest-wins
+actor   Game.Server.Player  id 0B77D012  key int64   hosted-by PlayerServer  join-on-connect Account newest-wins
 actor   DaServer.Connection id 3E0F7A21  key uint64  hosted-by GatewayServer
 claims  Game.Server.Account  int64
 request Game.Server.GrantItem  Map -> Player  reply bool  durable
 event   Game.Server.Strike   layout 7C21A0F3
 event   Game.Server.Fell     layout 4B90D2E6
 state   Game.Server.Looting  for GrantItem  durable
-table   Game.Server.SkillTable  skills
-prefab  Map     Game.Server.Map.RootPrefab          id 2F61A0C7  persist
-prefab  Map     Game.Server.Prefabs.DropPrefab      id 7D2E10A4  persist
-prefab  Map     Game.Server.Prefabs.AvatarPrefab    id 51B3E9F0
-prefab  Map     Game.Server.Prefabs.NpcPrefab       id C40A6B12
-prefab  Player  Game.Server.Player.RootPrefab       id 9E07D355  persist
+table   Game.Server.SkillTable  skills  format 6A3E0D71   # the table type's layout: the diff sees a format change
+prefab  Map     Game.Server.Map.RootPrefab          id 2F61A0C7  composition 0C5B7A12  persist
+prefab  Map     Game.Server.Prefabs.DropPrefab      id 7D2E10A4  composition 93E4D0B8  persist
+prefab  Map     Game.Server.Prefabs.AvatarPrefab    id 51B3E9F0  composition 2D70C6E5
+prefab  Map     Game.Server.Prefabs.NpcPrefab       id C40A6B12  composition F1A8392C
+prefab  Player  Game.Server.Player.RootPrefab       id 9E07D355  composition 6B19E4F3  persist
 record  Game.Server.Grid       nino  layout 19E4B2D8      # the persist set, one line per user type
 record  Game.Server.NetIds     raw   layout 3D5A0B19      # raw: a layout change fails the build (DAS018), wherever the type is used
 record  Game.Server.Inventory  nino  layout 82C7F015
@@ -1765,6 +1810,7 @@ record  Game.Server.Loot       nino  layout 6E12C4A7
 record  Game.Server.Position   raw   layout 5C19F2B0      # also on avatars, which are not saved: the layout is frozen there too
 record  Game.Server.Cell       raw   layout E83D4471
 record  Game.Server.Visible    tag
+record  Game.Server.Looting    nino  layout 4F0B6C2D  untracked   # an ask's state: written once at Ask
 push    Game.Protocol.Nearby    pooled
 push    Game.Protocol.SnapBack
 client  Game.Protocol.EnterMap   -> Map  to Map  reply bool
@@ -1775,6 +1821,7 @@ on      Game.Server.GrantItem    Player
 on      Game.Server.Strike       Map
 on      Game.Server.Fell         Map
 replied Game.Server.GrantItem Looting  Map
+activated Map
 leaving Map  Vanish
 ```
 
@@ -1857,7 +1904,7 @@ public void A_busy_tick_allocates_nothing_and_threads_change_nothing()
                       gate-0 把发给 map-0 的帧留在重发窗口；新进程加载快照、删掉文件，以同一个身份重连，协调者 Readmit 后续上流；
                       第一个 tick 带 Resumed；Avatar、Presence、路由都没变，客户端只看到一次停顿
 ⑭ c1 与 gate-0 的连接半开（gate-0 还没发现断线），c1 换到 gate-1 重连
-                      新的 Connection(c1) 带更大的戳 S2：连上就加入，接管 Player 上的 Presence；Ready 之后 SDK 重发 EnterMap(7)：
+                      新的 Connection(c1) 带更大的戳 S2（签发序号相同，SDK 的连接序号更大）：连上就加入，接管 Player 上的 Presence；Ready 之后 SDK 重发 EnterMap(7)：
                       GetOrSpawn 找到原来的 Avatar，Join() 按戳接管（新的 PresenceId，去掉 Joined 直到确认）；gate-0 上的旧路由按旧的 PresenceId 释放；
                       目标向 gate-0 发 TakeOver(S2)：签发序号相同，旧的 Connection(c1) 安静地关闭；确认后 Joined.MissedPushes 为真，SendFullState 重推
 ⑮ gate-1 宕机          Player 42 和 Map 7 上 c1 的 Presence 加上 Detached（宽限 30 秒），不推送；c1 经负载均衡器连到 gate-0，
@@ -1900,10 +1947,10 @@ public void A_busy_tick_allocates_nothing_and_threads_change_nothing()
 - 生成器要读的 prefab（`[Prefab<K>]` 字段、`RootPrefab`）不是至少 `internal`；`[Persist]` 写在 Actor 类型的 `RootPrefab` 以外，或者 `RootPrefab` 上写了 `[Prefab<K>]`（第 3 节）。
 - 根不保存的 Actor 类型有 `[Prefab<K>(Persist = true)]` 的 prefab；看得出要保存的 prefab 建在不保存的实体下面（第 10 节）。
 - 进记录的组件类型是托管的却没有 `[NinoType]`；按原始字节进记录的组件改了布局（DAS018，第 10 节的序列化规则）。
-- `persist` 里的类型没有 `ITrackChanges`，在这个编译里又补不上：不是 `partial`，或者来自别的程序集（第 10 节的"只写改过的"；不是 `partial` 的可一键修复）。
-- 对 `persist` 里的 tag 调用 `Set` 或 `Remove`（W1 核对 tag 的增删会打戳之前，第 10 节）。
+- `persist` 里要追踪的类型（`Ask` 的状态类型除外）没有 `ITrackChanges`，在这个编译里又补不上：不是 `partial`，或者来自别的程序集（第 10 节的"只写改过的"；不是 `partial` 的可一键修复）。
+- 对看得出要保存的实体 `Set` 或 `Remove` `persist` 里的 tag（W1 核对 tag 的增删会打戳之前；看不出的地方不报，第 10 节）。
 - `[Stateless]` 的 Actor 类型里 `Ask`、把 `ReplyTo<T>` 存进组件、`Join()`、带 `after` 的 `Schedule`。
-- `[Durable]` 写在不是 `IRequestTo` 的消息上，或者接收方是 `[Stateless]` 的 Actor 类型（它不写记录）；`[Durable]` 请求的 `Ask` 状态不能写进记录（第 10 节）；看得出 `[Durable]` 请求的 `ReplyTo<T>` 存进了不保存的实体，或者从不保存的实体发问（第 8 节）；`Cancel` 一个 `[Durable]` 的请求；`[Durable]` 请求的接收方 Actor 类型不保存，或者 `OnError` 不是 `Reload`（第 8 节）。`[Durable]` 的 `Ask` 没写 `settleBy:` 是编译错误：生成的方法里它不是可选参数。
+- `[Durable]` 写在不是 `IRequestTo` 的消息上，或者接收方是 `[Stateless]` 的 Actor 类型（它不写记录）；`[Durable]` 请求的 `Ask` 状态不能写进记录（第 10 节）；看得出 `[Durable]` 请求的 `ReplyTo<T>` 存进了不保存的实体，或者从不保存的实体发问（第 8 节）；`Cancel` 一个 `[Durable]` 的请求；`[Durable]` 请求的接收方或发问方的 Actor 类型不保存，或者 `OnError` 不是 `Reload`（第 8 节）；`root.IssueClientToken` 不在 `[Durable]` 请求的处理方法里调用，或者所在 Actor 类型的根不保存（第 7 节）。`[Durable]` 的 `Ask` 没写 `settleBy:` 是编译错误：生成的方法里它不是可选参数。
 - `[ActorOptions]` 的值是负数。
 - 要迁移的托管组件、托管的事件或 `Ask` 状态没有 Nino 格式化器（第 10 节的序列化规则）。
 - 用户的泛型 `[ForEach]` 系统只在别的程序集里封闭（EasyEcs 要在运行时 `MakeGenericType`，Native AOT 下不行，第 10 节）。
@@ -1967,12 +2014,12 @@ public void A_busy_tick_allocates_nothing_and_threads_change_nothing()
 
 ```csharp
 public record struct DailyReset;                                            // a marker type: which reminder
-root.Remind<DailyReset>(at: Quests.NextMidnightUtc(time.Utc), every: TimeSpan.FromDays(1));   // in a handler of a Guild
+root.Remind<DailyReset>(at: Quests.NextMidnightUtc(time.Utc), every: TimeSpan.FromDays(1));   // in a Guild handler ([Persist] root, §3)
 [On<Reminded<DailyReset>>] static void Reset(in Reminded<DailyReset> r, ref Quests q) => q = default;   // r.UtcAt: which firing
 ```
 
 - 提醒是 Actor 里的一个子实体，带持久化的 `Reminder<T>(DateTime UtcAt, TimeSpan Period)`；T 是用户的标记类型，每个 Actor 每个 T 一个（`root.Remind<T>` 用 `GetOrSpawn`），`root.Unremind<T>()` 销毁它。
-- 提醒的实体是要保存的实体（包里的 prefab 带 `Persist = true`），带运行时的 `WakeAt`，值就是 `UtcAt`。
+- 提醒的实体是要保存的实体（包里的 prefab 带 `Persist = true`），带运行时的 `WakeAt`，值就是 `UtcAt`；所以只有根要保存的 Actor 类型能 `Remind`（第 10 节：要保存的实体只能建在要保存的实体下面），例子里的 `Guild` 就是（第 3 节）。
 - **激活着的时候**：包里的系统给每个提醒挂一个 `Due`（离 `UtcAt` 还有多久，第 9 节），到期时按 `(时间, 序号)` 给根投递 `Reminded<T>(UtcAt)`；处理方法返回后，同一项里 `UtcAt` 前进到第一个还没到的时刻（`Period` 为 0 就销毁这个子实体），`WakeAt` 跟着改。从记录加载的提醒没有 `Due`（它不在记录里），由 `[With<Reminder<T>>, Without<Due>]` 的系统挂上；过了时刻的在第一个 tick 执行。
 - **停机之后只补一次**：Actor 停了好几个周期（宕机、停用、整个集群停机）之后，过了时刻的提醒只投递一次，`UtcAt` 直接前进到第一个将来的时刻，不按错过的周期一个个补。
 - **没激活的时候**：运行时按 `WakeAt` 算出根上的 `NextDue`，检查点把它写进记录的 `next_due` 列，`DueScan` 到时激活这个 Actor（第 10 节的唤醒）。所以提醒能叫醒一个停用了的 Actor，节点宕机也不丢。包不写 `NextDue`。

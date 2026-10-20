@@ -48,5 +48,5 @@ Run in order; record results in the roadmap.
 5. Sample end to end: the AppHost's 10k-bot scenario prints `E2E OK` (R11).
 6. Native AOT (E11; target, roadmap W8): `dotnet publish -p:PublishAot=true` for each sample node with 0 warnings, and the E2E tests
    passing against the AOT binaries.
-7. Review against R1–R11 and E1–E11 (this file); open items go to the roadmap.
+7. Review against R0–R11 and E1–E11 (this file); open items go to the roadmap.
 8. CI green on the pushed branch; commits Verified.

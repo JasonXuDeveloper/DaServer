@@ -22,10 +22,11 @@ Keep this file current: tick items when done, add items when scope changes.
 11. S1-S6 (done) elastic scaling.
 12. The ECS rewrite (ADR-081, the "ECS rewrite" entry under "Open cleanup" below): P1-P3 and P5 done; P4, P6 and P7
     superseded by W.
-13. W — refactor to the v34 programming model ([drafts/programming-model.md](drafts/programming-model.md),
+13. W — refactor to the v35 programming model ([drafts/programming-model.md](drafts/programming-model.md),
     [drafts/architecture.md](drafts/architecture.md)) on EasyEcs 4.6.0 and 4.7 (ADR-082 to ADR-092). Breaking; each step
     proven before the next (W, not R: the requirement ids R0-R11 are taken). Every use of an EasyEcs 4.7 feature (planned)
-    is marked "(4.7)" inline where a step names it; until 4.7 ships each such use takes the 4.6 fallback listed in W1.
+    is marked "(4.7)" inline where a step names it; until 4.7 ships each such use takes the 4.6 fallback listed in W1,
+    and switches to 4.7 once it ships.
     W10 runs last, after W12 and N9.
     - [ ] W1 EasyEcs 4.7 once released (4.6.0 until then; `EasyEcsVersion`). The one home of the EasyEcs compile and
       behaviour checks the drafts rely on, each with its test: the generated explicit `Key` (`Map IIndexed<Map>.Key =>
@@ -39,14 +40,15 @@ Keep this file current: tick items when done, add items when scope changes.
       (`MutBufferClearNotStamped`); a read through EasyEcs's generated accessor of a type tracked by DaServer counts as a
       write (`GeneratedAccessorOfSwitchedOnTypeStamps`: the drafts assume so and read through `in` or `Read<T>()`);
       adding a tracked component stamps a write and removing it records a removal (documented for `ITrackChanges`),
-      for tags and for types tracked through #27 too (`StructuralChangeOfTrackedTagDetected`; until it passes, `Set` and
-      `Remove` of a tag in the persist set are an analyzer error, and if it fails that stays and the framework's own
-      operations tag the root `Unsaved`). The 4.7 uses and their 4.6 fallbacks: `IUniqueIndexed<T>` (`IIndexed<T>` with
+      for tags and for types tracked through #27 too (`StructuralChangeOfTrackedTagDetected`; until it passes, and for
+      good if it fails, `Set` and `Remove` of a persist-set tag are an analyzer error only on an entity the analyzer
+      sees is persistent, and elsewhere the runtime finds the change by a sliced pass over persistent entities each
+      checkpoint interval, comparing their persist-set tags with a mask the fallback keeps per persistent entity at its last write). The 4.7 uses and their 4.6 fallbacks: `IUniqueIndexed<T>` (`IIndexed<T>` with
       a uniqueness check on write), `Instantiate` with components (instantiate, then one `Set`: one row move),
       `Mut<T>`/`SetIfChanged` (`ref`: always stamped), `ChangedAny`/`RemovedAny` with a start tick (one
       `Changed<T>`/`Removed<T>` pass per type, as ADR-068's change system), `Slices` (the whole table per interval),
       `Save(exclude)`/`Load(keep)` (the singletons removed before the save and set after the load, at the cost of change
-      stamps), `TrimExcess`, `DescribeSchedule` and the `SystemStats` additions (none). EasyEcs request #27 (tracking
+      stamps; when the snapshot write fails, set again before the `Resumed(Aborted)` tick), `TrimExcess`, `DescribeSchedule` and the `SystemStats` additions (none). EasyEcs request #27 (tracking
       switched on per type at run time; proposed, not yet forwarded): until it ships, the generator declares
       `ITrackChanges` on the persist set's types that lack it, which are then `partial`.
     - [ ] W2 Packages and attributes (ADR-086, ADR-087): Abstractions merged into Core, Hosting into `DaServer`,
@@ -65,12 +67,17 @@ Keep this file current: tick items when done, add items when scope changes.
       included; `INoStructuralChanges` inferred from how `Entity` and `World` are used; `Mut<T>` parameters (4.7)),
       `Registration.Create()` as a static extension member in the server project's root namespace reading `K.RootPrefab`
       and the persistent prefabs (the persist set, change tracking switched on for it, #27), configuration tables and
-      world singletons, `wire.manifest` (one section per project; `table`, `prefab` with its id, and `record` lines for
-      the whole persist set; user projects are Protocol and Server), the draft's §13 checks and warnings. Tests, one
+      world singletons, `wire.manifest` (one section per project; `table` with the table type's format hash, `prefab`
+      with its id and composition hash (earlier compositions kept), and `record` lines for the whole persist set, ask
+      states `untracked`; user projects are Protocol and Server), `INoStructuralChanges` for jobs that only call
+      `SetGroupRate`/`SetGroups`, the draft's §13 checks and warnings. Tests, one
       generator case per diagnostic, among them: `MessageWithoutNinoTypeReported`, `DurableCancelReported`,
-      `DurableReceiverWithoutReloadReported`, `ClaimsParameterInSystemReported`, `PrefabNotInternalReported`,
+      `DurableReceiverWithoutReloadReported`, `DurableAskerWithoutReloadReported`,
+      `IssueClientTokenOutsideDurableHandlerReported`, `IssueClientTokenOnUnsavedRootReported`,
+      `ClaimsParameterInSystemReported`, `PrefabNotInternalReported`,
       `PersistOutsideRootPrefabReported`, `PersistentPrefabOnUnsavedActorReported`, `PersistTypeWithoutTrackingReported`,
-      `TagInPersistSetSetOrRemovedReported`, `RawRecordLayoutChangeReported`, `TrackedRefNotAlwaysWrittenHinted`,
+      `AskStateRecordedWithoutTracking`, `TagSetOnVisiblyPersistentEntityReported`, `TagSetElsewhereNotReported`,
+      `PrefabCompositionHistoryKeptInManifest`, `GroupRateOnlyJobGetsNoStructuralChanges`, `RawRecordLayoutChangeReported`, `TrackedRefNotAlwaysWrittenHinted`,
       `ConfigTableTakenByRefReported`, `SingletonWithoutInterfaceReported`, `UnfilteredForEachWithoutTickRateReported`,
       `SetGroupRateWithoutTickRateReported`, `DestroyWithDurableWaitHinted`, `UtcNowInHandlerWarned`,
       `RegistrationCallableWithTwoServerProjects`; `UnrelatedEditsHitTheCache` over the new stages.
@@ -97,14 +104,17 @@ Keep this file current: tick items when done, add items when scope changes.
       `ClientId`), `[To]` routing, `[JoinOnConnect]`, `Join()` returning `Status`, SDK re-join, `Retire` with presences
       (the new connection's stamps take over, the `HandedOff` fence, `Joined(MissedPushes)`), `Detached` with
       `DetachGrace`, `cluster.Disconnect` and `connection.Disconnect` (no grace), `TakeOver` and the SDK's terminal
-      `Superseded` (a newer sequence, or an equal one under another `ClientId`), `AlreadyConnected`, client call ids
+      `Superseded` (a newer sequence, or an equal one under another `ClientId`), one login's connections ordered by the
+      SDK's attempt counter (from the Unix milliseconds at SDK start, one per attempt), `AlreadyConnected`, client call ids
       across reconnects from a random 63-bit start (`ConnectionLost`), `Busy` retry-after in the SDK and
       `[JoinOnConnect]` (`Unavailable`), the admission bucket, load-based connection rebalancing (ADR-089),
       `ClientGroup` subscriptions (full sets, keys scoped by `root.Group`), the send rate per group as data
-      (`root.SetGroupRate(key, every: n)` into the root's `GroupRate`, the latest wins; the group's frame handed over on
-      its due tick and before any membership change of the group, a counter in its buffer, 0 B),
+      (`root.SetGroupRate(key, every: n)` into the `GroupRate` buffer the ticking root's copy carries, the latest wins; the
+      group's frame handed over on its due tick and before any membership change of the group, a counter in its
+      buffer, 0 B; `Join()` adds an empty `Subscribed` buffer, so neither call is a structural change),
       `TestActor<K>.PresenceOf`. Tests: `GatewayCrashPresenceSurvivesGrace`, `NewestWinsClosesOldConnectionAcrossGateways`,
       `SupersededClientDoesNotReconnect`, `EqualSequenceOtherClientIdSuperseded`, `RefreshedTokenDoesNotOutrankNewerLogin`,
+      `ReconnectThroughOlderGatewayTakesOver`, `StaleAttemptClosesQuietly`, `RestartedAppOutranksHalfOpenConnection`,
       `DisconnectLeavesWithoutGrace`, `BalancedGroupRetiresNobody`, `ScaleOutShedsOnlyExcess`,
       `JoinOnConnectOutageDoesNotAmplify`, `ClientRetryAfterReconnectKeepsCallId`, `SdkCallIdsStartRandom`,
       `ForeignCallIdCannotCollide`, `RetireKeepsPushOrderPerActor`, `ReconnectAfterLossGetsFullSnapshot`,
@@ -112,27 +122,35 @@ Keep this file current: tick items when done, add items when scope changes.
       `RetireRacingConnectionLoss`, `UnknownClientMessageAtOldGateway`.
     - [ ] W6 Persistence, activation, migration and hot restart: the membership lease, generations from the
       coordinator, the epoch claim with owner generation and placement version in one `UPDATE … RETURNING`, fencing,
-      placeholder roots and their bounded mail, `[ActivatedBy<T>]`, `Pending` with `MaxPending`, the idle scan as
+      placeholder roots and their bounded mail, `[ActivatedBy<T>]` (a key's first activation only; `[Durable]` requests
+      always activate), `Pending` with `MaxPending`, the idle scan as
       `[ForEach(Slices = N)]` (4.7), deactivation with `Deactivating` as a tag, persistence per entity kind
-      (`Persisted(Root, Prefab)`, records of the root and its persistent descendants through `Descendants` and
-      `ComponentSet`, the persist set with change tracking switched on, the change system on `ChangedAny`/`RemovedAny`
-      (4.7), spawns of persistent prefabs tagging the root `Unsaved`, placeholders never checkpointed, records completed
-      from the prefab copy on load, unknown type ids skipped and counted), checkpoints as `Slices` (4.7),
-      `OnError = Reload` (root reset to its prefab copy's values and `Unsaved` removed, the batch remainder into the mail,
+      (`FromPrefab(Prefab, Composition)` on every entity from a prefab, `Persisted(Root)`, records of the root and its
+      persistent descendants through `Descendants` and `ComponentSet`, the persist set with change tracking switched on
+      but for ask states, the change system on `ChangedAny`/`RemovedAny` (4.7), spawns of persistent prefabs tagging the
+      root `Unsaved`, placeholders never checkpointed, every load (record, migration, snapshot) completing entities from
+      their prefab copy: `[NotSaved]` components and those gained since the composition, unknown type ids skipped and
+      counted), one record write in flight per root with a write sequence in the CAS, checkpoints as `Slices` (4.7),
+      `OnError = Reload` (root reset to its prefab copy's values and `Unsaved` removed, keeping only the key, the mail,
+      the faulting call id and `HeldOutput`, the batch remainder into the mail,
       the in-flight write awaited before the claim, write completions matched to their activation epoch, consecutive
       reloads backing off), migration bytes with layout hashes and a new epoch on arrival, tombstones forwarding all
       mail, group frames flushed before deactivation and migration and discarded on fencing. Hot restart's runtime side
-      as the draft's §10 has it (ADR-084, ADR-088): the snapshot with its world count, user singletons outside it
+      as the draft's §10 has it (ADR-084, ADR-088): the snapshot with its world count (rebuilt whatever the CPU share; through records only when configuration pins
+      another count), user singletons outside it
       (`Save(exclude)`/`Load(keep)` (4.7)), `Restarting`/`Resumed`, `RestartingNodes` with `TryGetPause`, the time notice
       re-pushed on `Resumed`, the admin endpoint's manifest diff (the path taken: in place, through records, or refused
       for a rolling upgrade) and `{cluster}-restart` for local Aspire (the dashboard's resource command), Compose
       (stateful groups as one service per node with a fixed hostname and a named snapshot volume each, restarted one
       node at a time) and the documented systemd unit, launchd plist and Windows service (the Kubernetes rollout is
       W11). With them: `[Durable]` at both ends (`HeldOutput`: a settling item's whole output and the actor's later
-      output in order until the CAS; the asker's waiting entity in the record before the request leaves, `settleBy`,
-      re-asks, the settling re-ask, a destroyed durable asker failing the item; the receiver's dedupe before the
-      `TooLate` check, `ReplyLog` with refused entries outside its capacity and `Faulted` entries kept across a
-      `Reload`), a persisted `ReplyTo<T>`'s deadline in UTC, `root.IssueClientToken` with `IssueSeq` on the root,
+      output in order until the CAS, the four kinds of settling item, held output carried across deactivation,
+      migration and the freeze after awaiting the in-flight write, no idle deactivation while it is held, released
+      group pushes through their group's frame; the asker's waiting entity in the record before the request leaves,
+      `settleBy`, re-asks (a `NotHandled` on a re-ask transient), the settling re-ask, a durable asker destroyed by a
+      handler or a system failing the item and reloading, `Depart` re-parenting a durable wait to the root; the
+      receiver's dedupe before the `TooLate` check, `ReplyLog` with refused entries under their own capacity
+      (`DaServer:ReplyLogRefusedCapacity`) and `Faulted` entries kept across a `Reload`), a persisted `ReplyTo<T>`'s deadline in UTC, `root.IssueClientToken` with `IssueSeq` on the root,
       `WakeAt`, `NextDue` from the runtime's `WakeSystem` (`ChangedAny`/`RemovedAny` (4.7)) with the `next_due` column,
       `IActorStore.DueKeys` and the `DueScan` wake, `StoreDegraded` and `ActivationSlots`, `ActivationFailed`, strict
       placement versions with `Fence`, idempotent claims, generations from Unix ms and single-seed formation, the lease
@@ -140,17 +158,25 @@ Keep this file current: tick items when done, add items when scope changes.
       Tests: `ShardChecksLeaseBeforeTick`, `DropRestoredWithItsNetId`, `AvatarNotInRecord`, `NetIdsCounterSurvivesCrash`,
       `PersistentSpawnUnderUnsavedParentThrows`, `SpawnOfPersistentPrefabTagsRootUnsaved`,
       `DestroyedPersistentChildTagsRootUnsaved`, `PlaceholderNeverCheckpointed`, `RecordMissingComponentsFilledFromPrefab`,
-      `UnknownRecordTypeSkippedAndCounted`, `ActivatedByRefusesOtherMessages`, `MaxPendingExceededHandledByOnError`,
+      `UnknownRecordTypeSkippedAndCounted`, `NotSavedComponentsReaddedOnArrivalAndLoad`,
+      `PrefabGainedComponentAddedOnSnapshotLoad`, `ComponentRemovedAtRunTimeNotReadded`,
+      `NonPersistentEntityCompletedAfterMigration`, `OneRecordWriteInFlightPerRoot`, `OlderWriteNeverLandsAfterNewer`,
+      `TimedOutWriteThatLandedCountsAsWritten`, `ActivatedByRefusesOtherMessages`,
+      `DurableRequestActivatesDespiteActivatedBy`, `NotHandledOnDurableReaskIsTransient`, `MaxPendingExceededHandledByOnError`,
       `PlaceholderMailFullAnswersBusy`, `ReloadKeepsQueuedMail`, `ReloadResetsRootToPrefab`, `ReloadClearsUnsaved`,
-      `ReloadMovesBatchRemainderIntoMail`, `ReloadWaitsForInFlightWrite`, `StaleWriteCompletionIgnoredAfterReload`,
+      `ReloadMovesBatchRemainderIntoMail`, `ReloadKeepsHeldOutputOnPlaceholder`, `ReloadWaitsForInFlightWrite`, `StaleWriteCompletionIgnoredAfterReload`,
       `HalfAppliedItemNeverReachesCheckpoint`, `RepeatedReloadBacksOff`, `DeterministicThrowOnDurableAnswersFaulted`,
       `FaultedAcrossReloadAnsweredAfterWrite`, `DurableReplyReleasedOnlyAfterCheckpoint`,
       `DurableOutputHeldInOrderUntilCas`, `GrantSurvivesCalleeCrashAfterReply`, `DurableRepliedOutputHeldUntilAskerRecord`,
-      `SettlingReaskRefusesUnrunCall`, `RefusedEntriesBypassReplyLogCapacity`, `LateDuplicateAfterSettleNeverRuns`,
+      `SettlingReaskRefusesUnrunCall`, `RefusedEntriesHaveOwnCapacity`, `FullRefusedLogLeavesSettleUnanswered`,
+      `RefusedEntriesExpireAfterDeadline`, `LateDuplicateAfterSettleNeverRuns`, `LaterReplyOnDurableTokenHeldUntilWrite`,
+      `HeldOutputCarriedThroughMigrationAndSnapshot`, `HeldOutputBlocksIdleDeactivation`,
+      `ReleasedGroupPushKeepsGroupRate`,
       `DurableRepeatAnsweredBeforeTooLateCheck`, `DurableRequestTooLateRefused`, `DestroyingDurableAskerFailsItem`,
+      `SystemDestroyOfDurableAskerReloads`, `DepartReparentsDurableWaitToRoot`,
       `PersistedReplyToDeadlineIsUtc`, `IssueSeqWrittenBeforeTokenLeaves`, `NextDueFollowsWakeAt`,
       `WakeActivationRewritesNextDue`, `SnapshotLoadedOnceThenCrashRejoinsFromRecords`,
-      `SnapshotWorldCountMismatchGoesThroughRecords`, `ConfigTablesAndWorldSingletonsNotInSnapshot`,
+      `SnapshotWorldCountKeptUnlessConfigPinsAnother`, `ConfigTablesAndWorldSingletonsNotInSnapshot`,
       `LateProcessWaitsForCoordinatorVerdict`, `NewGenerationSupersedesRestartingOne`, `SnapshotFromBeforeRebootRejected`,
       `JoinDuringRestartMovesNoSlotOfRestartingNode`, `ScaleInWaitsForRestart`, `ResumeIsolatesRootsPlacedElsewhere`,
       `AsymmetricPartitionFreezesUnheardNode`, `CoordinatorCrashDoesNotExpireLeases`, `SameVersionSecondClaimRefused`,
@@ -164,7 +190,7 @@ Keep this file current: tick items when done, add items when scope changes.
       `DurableAskResolvesAfterAskerCrash`, `DurableRepeatAnsweredFromReplyLog`, `DurableAskHeldUntilAskerRecordWritten`,
       `DurableAskExpiresOnlyWhenSettleUnanswered`, `ReplyLogFullRefusesWithBusy`,
       `IdleDeactivationWaitsForPendingDueAndAsks`, `StoreOutageBoundsMemoryAndRecoversWithoutHerd`,
-      `RollbackKeepsNewFieldsOrRefuses`, `PoisonActorBacksOffClaims`, `RebalancePausesDuringDrainAndRestart`,
+      `PoisonActorBacksOffClaims`, `RebalancePausesDuringDrainAndRestart`,
       `TimeNoticeRepushedOnResume`, `ManifestDiffPicksPath`, `ComposeRestartOneNodeAtATime`.
     - [ ] W6a `DaServer.Reminders` (ADR-090, draft §15): `Reminder<T>` persistent children with `WakeAt`,
       `root.Remind<T>`/`Unremind<T>`, `Reminded<T>` through a `Due` while active and the runtime's wake while unloaded.
@@ -266,14 +292,19 @@ Keep this file current: tick items when done, add items when scope changes.
       `checksum/config` annotation. Tests: `tests/DaServer.E2E/PublishTests.cs` (drafts/deployment.md section 9, item 5).
 14. N9 hot restart's remaining operator side, on W's model (draft §10; ADR-084, ADR-088), after W12 and before W10: the
     `{cluster}-upgrade-check` Job and `aspire deploy` step, including the rollback-safety check (a release whose new
-    fields or new record types a rollback would drop is refused unless forced); configuration tables with one
+    fields or new record types a rollback would drop is refused unless forced) and the table check (a table whose
+    format hash changed must load its current version with the new build's `TryLoad`); configuration tables with one
     cluster-wide current version (name, version, hash, bytes) in the store, loaded by every starting or hot-restarted
-    node, replaced by `POST /admin/tables/{name}` (a rollback posts the old version), and feature flags, data swaps
-    between two ticks. The manifest diff and `{cluster}-restart` are W6, the Kubernetes rollout W11. Gateways take
+    node, seeded from `DaServer:Tables:{name}` by the first reader when the store has no version (a new cluster or a
+    release adding a table type), replaced by `POST /admin/tables/{name}` (a rollback posts the old version), a node
+    whose `TryLoad` rejects the current version failing readiness with the error; without a store, tables per node
+    from configuration and a `POST` changing only that node (documented); and feature flags, data swaps between two
+    ticks. The manifest diff and `{cluster}-restart` are W6, the Kubernetes rollout W11. Gateways take
     rolling upgrades; handing their listening sockets to the new process (`SCM_RIGHTS`, Unix only) stays a possible
     later optimization. (in-house game servers, ET, Envoy hot restart) Tests:
     `UpgradeCheckRefusesUnkeepableFieldsUnlessForced`, `UpgradeCheckRefusesNewRecordTypeUnlessForced`,
-    `TableUpdateReachesEveryNode`, `StartingAndRestartedNodesLoadCurrentTable`, `InvalidTableVersionRejected`,
+    `RollbackKeepsNewFieldsOrRefuses`, `UpgradeCheckRefusesUnloadableTableFormat`, `TableUpdateReachesEveryNode`,
+    `NewTableTypeSeededFromConfiguration`, `RejectedStoredTableFailsReadiness`, `TablesPerNodeWithoutStore`, `StartingAndRestartedNodesLoadCurrentTable`, `InvalidTableVersionRejected`,
     `TableRollbackPostsOldVersion`, `FeatureFlagSwitchesBetweenTicks`.
 15. N4 route completeness, N11 generated filters (on the G filter point), K3-K5, open cleanup, quality items. Later
     optional module: leases for strict singletons.
