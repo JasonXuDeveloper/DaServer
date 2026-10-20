@@ -23,9 +23,9 @@ Keep this file current: tick items when done, add items when scope changes.
 12. The ECS rewrite (ADR-081, the "ECS rewrite" entry under "Open cleanup" below): P1-P3 and P5 done; P4, P6 and P7
     superseded by R.
 13. R — refactor to the v24 programming model ([drafts/programming-model.md](drafts/programming-model.md),
-    [drafts/architecture.md](drafts/architecture.md)) on EasyEcs 4.5.0 (now; ADR-082 to ADR-086). Breaking; each step
+    [drafts/architecture.md](drafts/architecture.md)) on EasyEcs 4.6.0 (ADR-082 to ADR-086). Breaking; each step
     proven before the next:
-    - [ ] R1 EasyEcs 4.5.0 (`EasyEcsVersion`) and the compile checks: the generated explicit `Key`
+    - [ ] R1 EasyEcs 4.6.0 (`EasyEcsVersion`, once on NuGet) and the compile checks: the generated explicit `Key`
       (`Map IIndexed<Map>.Key => this`) is accepted by value indexes; `IActor<TSelf>` with its constraints
       (`ISystemGroup`, `IGroupWith<In<TSelf>>`) compiles in the framework assembly.
     - [ ] R2 Packages and attributes (ADR-086): Abstractions merged into Core, Hosting into `DaServer`, Simulation into
@@ -49,12 +49,13 @@ Keep this file current: tick items when done, add items when scope changes.
       incarnation and keeping the epochs (ADR-084); links: identity (name, generation) on the wire, `LinkHello` with
       incarnation, `Standby` and a standby endpoint, a standby slot beside the live connection, the switch on the
       membership update, inbound counts and outbound tails in the handoff, the card fetched again on a higher
-      incarnation; in-cluster tests for both transports and for each failure before and after the commit point (gated
-      on EasyEcs request #22: `world.Load(input, markWritten: false)` and a first run from the current tick).
+      incarnation; the load with `world.Load(bytes, markWritten: false)` (EasyEcs 4.6: a restart is not a change, so no
+      record is rewritten); in-cluster tests for both transports and for each failure before and after the commit
+      point.
     - [ ] R7 Samples (mmo, flashsale) on the new model; each AppHost becomes an `apphost.cs` (file-based) in the
       sample's server project, with client ports declared by `WithClientConnections(port)`.
-    - [ ] R8 Native AOT publish of the samples' nodes with 0 warnings (gated on EasyEcs request #21: IL3054 for tracked
-      components); the AOT E2E run. Local runs start each node on its built binary (no `dotnet run` per replica), and
+    - [ ] R8 Native AOT publish of the samples' nodes with 0 warnings (EasyEcs 4.6 has none with tracked components;
+      what remains to verify is the third-party packages, drafts/architecture.md section 8); the AOT E2E run. Local runs start each node on its built binary (no `dotnet run` per replica), and
       `-- Aot=true` runs the AOT-published binary (ADR-087). Admin endpoints as Nino (or plain text for `Accept: text/plain`), `MapAsk`/`MapSend`
       Nino by default with per-endpoint opt-in JSON through the application's source-generated context (ADR-083).
     - [ ] R9 BenchmarkDotNet against the pre-R baseline, allocation tests, the 10k-bot E2E, review rounds; the hot

@@ -1,7 +1,7 @@
 # Target architecture (draft, not implemented)
 
 The architecture DaServer is refactored to (breaking, roadmap phase R): the v28 programming model of
-[programming-model.md](programming-model.md) on EasyEcs 4.5.0, with Native AOT support. The programming model draft is
+[programming-model.md](programming-model.md) on EasyEcs 4.6.0, with Native AOT support. The programming model draft is
 the source of truth for what users write and what each rule means; this file says how the pieces fit together and
 links to the draft's sections instead of repeating them. Today's architecture is [design.md](../design.md); the
 decisions are ADR-082 to ADR-086 in [decisions.md](../decisions.md). When R is done, this file and the draft are
@@ -260,14 +260,17 @@ Per actor type with `[TickRate(n)]`, at time t ([draft §1](programming-model.md
     (one world, 5 unmanaged components per entity: 100,000 entities save in 0.76 ms and load in 2.7 ms, about 3.5 ms,
     4.4 MB, 0 B allocated; BenchmarkDotNet ShortRun, EasyEcs 4.5.0, .NET 11 RC2). A platform restart adds process
     start and peer reconnects: hundreds of milliseconds. R measures both end to end (BenchmarkDotNet per shard, E2E).
-  - **Change ticks (prerequisite: EasyEcs request #22)**: `world.Load` stamps every loaded row as written (and rows
-    lacking a tracked component as removed), and a system's first run filters `Since(LastRunTick + 1)` from
-    `LastRunTick` 0, so it visits every row stamped since the world began. After a hot restart `ChangeSystem` would
-    tag every root `Unsaved` and every actor would rewrite its record. Needed: `world.Load(input, markWritten: false)`
-    (no tick, no removal stamp, as `LoadEntitiesInto`) and a first run from the current tick chosen at registration
-    (`AddSystem(system, seeExisting: false)` or a settable baseline), for the framework's persistence systems
-    (`ChangeSystem`, checkpoint); a user system re-firing once (one extra AOI pass) is acceptable. Pending writes are
-    not lost: `Unsaved` is a tag on the root and travels in the save.
+  - **Change ticks**: the successor loads with `world.Load(bytes, markWritten: false)` (EasyEcs 4.6, D39): loaded
+    rows have tick 0 and none counts as removed. Systems that ran before the load (warm-up) and systems added after
+    it (platform restart) both skip them, since a first run looks at ticks from 1, so `ChangeSystem` tags no root
+    `Unsaved` and no actor rewrites its record. Pending writes are not lost: `Unsaved` is a tag on the root and
+    travels in the save. User-visible: after a hot restart no `[Changed<T>]` / `[Removed<T>]` method, user ones
+    (AOI) included, sees the loaded rows as changed; components derived from tracked ones travel in the save, and a
+    system that must make a full pass anyway does it in a `[ForEach]` method without `[Changed<T>]`, run once under
+    data (a tag or singleton; not `OnCreate`, which runs at `AddSystem`, before the load in the warm-up order;
+    [draft §10](programming-model.md#热重启)). `AddSystem(system, changesFromNow: true)` is only for a system added to a
+    running world (switched on by a feature flag), so its first run does not take the existing state as changes.
+    `world.Restore(snapshot)` always stamps restored rows as written: tests only, never hot restart.
   - **Gateways** do not hot restart (`Connection` is pinned to its socket); they take rolling upgrades. A possible
     later optimization is handing the sockets to the new process (`SCM_RIGHTS`, Envoy-style), Unix only.
   - **`[Stateless]` actor types** deployed as their own node group are replaced by start-new-then-stop-old, without
@@ -301,7 +304,7 @@ The guarantees are [draft §1](programming-model.md#1-保证); the outcome of ea
 | A reconnect is a new connection; the larger stamp takes over | Ordered connection stamps; SDK re-joins per slot |
 | Handler exceptions do not roll back | `[OnError] Resume` (default) or `Restart` from the last record |
 
-## 7. EasyEcs 4.5 features used
+## 7. EasyEcs 4.6 features used
 
 | Part | EasyEcs features |
 |---|---|
@@ -312,8 +315,8 @@ The guarantees are [draft §1](programming-model.md#1-保证); the outcome of ea
 | An actor's entities | `ChildOf`, `world.Children`, `world.Descendants(root)`, prefabs (`new Prefab(base)` copies) |
 | Presences, cleanup | `ICleanupComponent`, `Destroyed`, `DynamicBuffer<T>`, `[Changed<DynamicBuffer<T>>]` |
 | Persistence | `ITrackChanges`, `[Changed<T>]`, `[Removed<T>]`, `ComponentSet`, `SaveEntities`, `LoadEntitiesInto(…, markWritten: false)`, Nino type ids |
-| Hot restart | `world.Save`, `world.Load` (singletons included, systems not), `AddSystem<T>()` |
-| Diagnostics, tests | `SystemErrorPolicy` (`Disable` on nodes, `Throw` in `TestActor<K>`), `MeasureSystems`, `system.Stats`, `world.Count<Destroyed>()`, `world.Describe()`, `Capture`/`Restore` |
+| Hot restart | `world.Save`, `world.Load(…, markWritten: false)` (singletons included, systems not; loaded rows are not changes), `AddSystem<T>()`; `AddSystem(…, changesFromNow: true)` for a system switched on later |
+| Diagnostics, tests | `SystemErrorPolicy` (`Disable` on nodes, `Throw` in `TestActor<K>`), `MeasureSystems`, `system.Stats`, `world.Count<Destroyed>()`, `world.Describe()`, `Capture`/`Restore` (tests only: `Restore` stamps every row written) |
 | Allocation-free reuse | Pooled `DynamicBuffer` storage, `MaxDegreeOfParallelism` per world |
 
 ## 8. Native AOT
@@ -344,7 +347,8 @@ or rolling upgrade (section 5).
   compile time; dispatch tables hold static method-group delegates.
 - **Serialization is Nino's generated formatters** (messages, persisted components, records, migration bytes); type
   ids are Nino's. EasyEcs records types by Nino type id (D30).
-- **EasyEcs**: `EasyEcs.Core` is marked `IsAotCompatible`; its generated code calls user methods directly.
+- **EasyEcs**: `EasyEcs.Core` is marked `IsAotCompatible`; its generated code calls user methods directly, and since
+  4.6 a program with tracked components publishes without warnings.
 - **The HTTP plane, no JSON in the framework**: `WebApplication.CreateSlimBuilder`; minimal APIs through ASP.NET
   Core's request delegate generator.
   - **Admin endpoints** (`/admin/membership`, `/admin/stats`, drain, unload) answer typed `[NinoType]` records as
@@ -376,13 +380,11 @@ or rolling upgrade (section 5).
 
 ### The zero-warning gate
 
-- The AOT compiler reports one **IL3054** (generic recursion through EasyEcs's change-tick column type) for any
-  program with tracked components, and every stateful DaServer node has them (`IPersisted : ITrackChanges`).
 - Builds and publishes have 0 warnings (release checklist step 1, E11). A suppression of a library's warning in the
   user's program is not accepted, scoped or documented.
-- So the AOT publish check is **gated on EasyEcs request #21** (remove IL3054 for programs with tracked components,
-  with an AOT sample in EasyEcs's CI). Until it ships, R8 prepares everything else and records the one remaining
-  warning; the release checklist's AOT step stays open.
+- EasyEcs 4.6 publishes without warnings with tracked components (every stateful DaServer node has them,
+  `IPersisted : ITrackChanges`) and disabled components (EasyEcs D38; its CI publishes and runs a native server with
+  warnings as errors). What R8 still verifies is the third-party packages in the table above.
 - **Proof**: `dotnet publish -p:PublishAot=true` for each sample node (mmo, flashsale) with 0 warnings, and the E2E
   tests passing against the AOT binaries.
 
@@ -429,5 +431,5 @@ CLAUDE.md's Layout and ADR-017 change with R (one Server project may define seve
 
 1. **Messages as entities** ([draft §14](programming-model.md#14-已定的取舍以及待办) item 4): measured with
    BenchmarkDotNet in R4; changed only if not worse by more than 10%.
-2. **EasyEcs 4.5.0 compile checks** (R1): the generated explicit `Key` is accepted by value indexes; `IActor<TSelf>`
+2. **EasyEcs 4.6.0 compile checks** (R1, once 4.6.0 is on NuGet): the generated explicit `Key` is accepted by value indexes; `IActor<TSelf>`
    compiles in the framework assembly.

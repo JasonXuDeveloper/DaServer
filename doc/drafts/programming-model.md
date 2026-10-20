@@ -10,7 +10,7 @@
 
 本稿是完整的一份。每条规则只在它所在的那一节写一次，别处只给链接。第 12 节是完整的例子，分别列出用户写的代码、生成的代码和测试。第 13 节是检查和版本记录，第 14 节是已定的取舍和转交 EasyEcs 的需求。
 
-文中引用的 EasyEcs 文档都在它仓库的 `docs/content/` 下。本稿基于 EasyEcs 4.5：`entity.Run(ref job, filter)`、接口带的组过滤（`IGroupWith<T>`）、`world.Descendants(root)`、`LoadEntitiesInto(…, markWritten: false)`。
+文中引用的 EasyEcs 文档都在它仓库的 `docs/content/` 下。本稿基于 EasyEcs 4.6：`entity.Run(ref job, filter)`、接口带的组过滤（`IGroupWith<T>`）、`world.Descendants(root)`、`LoadEntitiesInto(…, markWritten: false)`（以上自 4.5），`world.Load(bytes, markWritten: false)`、`AddSystem(…, changesFromNow: true)`、带追踪组件的程序 Native AOT 0 警告（4.6）。
 
 ---
 
@@ -120,7 +120,7 @@
 | 只写改过的 | `ITrackChanges`、`[Changed<T>]`、`[Removed<T>]`、`ICleanupComponent` | `IPersisted` | `ChangeSystem`、`CheckpointSystem` |
 | 记录、迁移 | `ComponentSet`、`Descendants`、`SaveEntities`、`LoadEntitiesInto`（恢复时 `markWritten: false`） | `IPersisted`、`[Transient]` | 读写存储，epoch CAS，布局哈希 |
 | 版本兼容 | Nino 类型 id、`[NinoFormerName]` | `wire.manifest` | 滚动升级 |
-| 热重启 | `world.Save`、`world.Load`（单例随 world 保存，系统不保存） | `wire.manifest` 比对选路径、交接格式 | 两个 tick 之间停下 world，交给新进程；不重新激活 |
+| 热重启 | `world.Save`、`world.Load(…, markWritten: false)`（单例随 world 保存，系统不保存；加载的行不算变更，4.6） | `wire.manifest` 比对选路径、交接格式 | 两个 tick 之间停下 world，交给新进程；不重新激活 |
 | 测试、诊断 | 单个 world、`SystemErrorPolicy.Throw`、`Capture`/`Restore`、`world.Count<Destroyed>()`、`world.Describe()` | `Registration`、`TestActor<K>` | 手动时钟、`Outbox` 是数据、分配断言 |
 | 对象复用 | `DynamicBuffer` 池化、Nino 的 `[NinoPooled]` | — | 帧、发送缓冲池化 |
 
@@ -915,7 +915,7 @@ public partial record struct Due(TimeSpan At, long Seq) : IComponent, IIndexed<D
 
 ---
 
-## 10. 持久化、迁移、热重启、升级（EasyEcs 4.5）
+## 10. 持久化、迁移、热重启、升级（EasyEcs 4.6）
 
 组件类型的集合都用 EasyEcs 的 `ComponentSet`（`reference/componentset.mdx`）：注册时建好一次，存在 `Registration` 里，框架按 `Type` 加入它在注册时才知道的类型（`ComponentSet.With(Type)`）。
 
@@ -994,7 +994,7 @@ public partial record struct Due(TimeSpan At, long Seq) : IComponent, IIndexed<D
 - **生成的注册是封闭类型，不用反射**：`Registrations.Create()` 在用户的程序集里写出每个封闭的类型（`.Actor<Map>()`、分发表、job、`world.AddSystem<…>()`），框架按 Actor 类型的系统也由生成的代码写出封闭的实例。没有反射、`MakeGenericType`、`Activator`、程序集扫描，也没有模块初始化器。
 - 框架的泛型系统不写 `[ForEach]` 方法，在 `OnUpdate` 里用 EasyEcs 的泛型入口跑 job，所以 EasyEcs 不需要在运行时用 `MakeGenericType` 封闭它们的代码（EasyEcs D20：只由别的程序集封闭的泛型系统才走这条路，AOT 下不行）。用户的泛型 `[ForEach]` 系统只在别的程序集里封闭时，DaServer 的分析器报错（第 13 节）：EasyEcs 对这条路不报警告，错了只会在运行时失败。
 - 序列化都是 Nino 生成的格式化器；HTTP 平面用 `CreateSlimBuilder` 和源生成的 JSON。
-- EasyEcs 编译带追踪组件（`IPersisted`）的程序时报一个 IL3054。发布要求 0 警告，不接受压掉它：AOT 发布的检查等 EasyEcs 去掉这个警告（转交 EasyEcs 的需求 #21）。
+- 发布要求 0 警告，不接受压掉任何警告。EasyEcs 4.6 带追踪组件（`IPersisted`）和禁用组件的程序发布时没有警告（EasyEcs 的 CI 以警告为错误发布并运行原生程序，`faq.mdx` 的 "Native AOT"）；R 里要验证的只剩第三方包（architecture.md 第 8 节）。
 
 ### `wire.manifest`
 
@@ -1035,7 +1035,7 @@ public partial record struct Due(TimeSpan At, long Seq) : IComponent, IIndexed<D
   1. 新进程先启动，做完 JIT 预热或 AOT 初始化，建好空的 world、按 `Registration` 加上系统，并提前和其他节点握手，建好备用链路（见下面的"备用链路"）；它不绑定客户端端口；
   2. 旧节点在成员视图里宣布 `Restarting`，带一个期限和交接令牌的哈希；
   3. 这时旧进程的每个 world 才在两个 tick 之间停下：不再从链路取帧，等在途的记录写入有结果，然后 `world.Save`，连同运行时状态流给新进程；
-  4. 新进程 `world.Load` 进已经建好的 world，接上时钟；
+  4. 新进程 `world.Load(bytes, markWritten: false)` 进已经建好的 world（见下面的"写入戳"），接上时钟；
   5. 新进程以一次成员更新接管：同一个节点名和代数、化身号加一（成员视图里已有的化身号）、带着交接令牌；它的成员信息比 `Restarting` 新，其他节点关掉旧进程的链路，改用备用链路，重放各自的重发窗口（处理到的字节数在交接里，所以不重复也不丢）；
   6. 旧进程退出。
   - 平台重启进程时做不到预热：旧进程先退出，新进程启动后才做第 1、4、5 步。
@@ -1058,12 +1058,12 @@ public partial record struct Due(TimeSpan At, long Seq) : IComponent, IIndexed<D
   - **节点自己起继任进程**（物理机、虚拟机、Windows 服务、macOS、开发机）：旧进程启动新二进制，两者经本机的命名管道（`System.IO.Pipes`：Windows 上是命名管道，Unix 上是 Unix 域套接字）连上；新进程预热好之后，旧进程停 world、把字节流过去；新进程加载、回报"已加载"；旧进程关掉监听端口退出，新进程绑定同样的端口。不需要 `exec`（Windows 没有）。服务管理器按 PID 盯进程时，要允许交接（例如 systemd 由新进程 `sd_notify` 报告 `MAINPID`），或者留一个很小的启动器进程作为被监管的父进程。
   - **平台重启进程**（Kubernetes 同一个 Pod 里的容器重启、systemd 重启）：旧进程把字节写进节点本地目录里的一个文件（Kubernetes 上是 `medium: Memory` 的 emptyDir，有 tmpfs 用 tmpfs，否则普通本地目录），经 `MemoryMappedFile.CreateFromFile` 写入（跨平台；Unix 上没有具名映射），然后退出。新进程启动时找属于自己节点名、校验和正确、没过期限的快照：有就加载，不重新激活；过期或者不合格就删掉，照常加入、从记录激活。Kubernetes 上，承载 Actor 的节点组是 `updateStrategy: OnDelete` 的 StatefulSet（Pod 名就是节点名，改模板不替换 Pod）；发布（`helm upgrade`）改 StatefulSet 模板里的镜像（`OnDelete` 下不替换 Pod），`{cluster}-restart` 再逐个改运行中 Pod 的容器镜像，从不改模板：kubelet 在同一个 Pod 里重启容器（同一个 UID、同一个 IP），emptyDir 保留，不重新调度（ADR-085）。网关和无状态的节点组仍是 Deployment。
 - **停顿**：先预热再交接时，停顿只有 `Save`、传输、`Load` 加上一次成员更新，目标是几十毫秒；平台重启时还要加上进程启动和重连，目标是几百毫秒。搬 world 只要几毫秒：一个 world、每个实体 5 个非托管组件，1 万个实体 `Save` 44 µs、`Load` 183 µs、440 KB，10 万个实体 `Save` 0.76 ms、`Load` 2.7 ms（合计约 3.5 ms）、4.4 MB，都不分配（BenchmarkDotNet ShortRun，EasyEcs 4.5.0，.NET 11 RC2）。R 里端到端测量：BenchmarkDotNet 测每个 world 的交接，E2E 测停顿时长、客户端不断线。
-- **写入戳（热重启的前提：EasyEcs 需求 #22）**：
-  - 现状：`world.Load` 把每一行都盖上 world 当前的写入戳（缺某个追踪组件的行算作移除过），没有 `markWritten` 参数；系统的 `[Changed<T>]` / `[Removed<T>]` 按 `Since(LastRunTick + 1)` 过滤，第一次运行前 `LastRunTick` 是 0（`internal set`，框架改不了），所以第一次运行访问 world 开始以来盖过戳的每一行。
-  - 不改的话，热重启之后 `ChangeSystem` 给每个根标 `Unsaved`，每个 Actor 同时把记录重写一遍。
-  - 要两样：`world.Load(input, markWritten: false)`，语义同 `LoadEntitiesInto`（不盖写入戳，也不盖移除戳）；以及注册系统时选择第一次运行从当前 tick 开始（`AddSystem(system, seeExisting: false)` 或可设的基准），不靠"tick 0 恰好小于 `Since(1)`"这个实现细节（文档的约定是第一次运行访问所有拥有它的实体）。
-  - 用户系统热重启后多跑一次全量（例如多一次 AOI）可以接受；持久化系统（`ChangeSystem`、检查点）不行。
+- **写入戳**：新进程用 `world.Load(bytes, markWritten: false)` 加载（EasyEcs 4.6，`guide/saves.mdx` 的 "Restart"，D39）：加载的行没有写入戳（tick 0），也不算移除过。
+  - 加载之前已经跑过的系统（预热）和加载之后才加上的系统（平台重启）都不访问这些行：第一次运行看的是 tick 1 起的写入，tick 0 的行不在内（`guide/change-tracking.mdx` 的 "Ticks"）。所以 `ChangeSystem` 不会给每个根标 `Unsaved`，Actor 不会把记录重写一遍；两种顺序都不需要别的参数。
   - 真正没写的记录由带过来的 `Unsaved` 负责。
+  - **用户看得到的后果**：热重启之后，所有 `[Changed<T>]` / `[Removed<T>]` 方法（包括用户的，例如 AOI、`SyncSubscriptions`、`CellAssign`）都不把加载的行当作变更，下一次运行只看之后的写入。由追踪组件算出来的组件本来就随 `world.Save` 一起过去，一般不用重算。确实要在热重启后全量走一遍的系统，写一个不带 `[Changed<T>]` 的 `[ForEach]` 方法（它访问每个匹配的行），用数据控制它只跑一次，例如一个 tag 或单例（EasyEcs 的系统不带状态，EECS007）。不要放在 `OnCreate` 里：它在 `AddSystem` 时运行，预热顺序下那时还没 `Load`，看不到加载的行。
+  - `AddSystem(system, changesFromNow: true)`（EasyEcs 4.6）只给运行中途才加入的系统，例如功能开关打开时才加上的：它的第一次运行只看加入之后的写入，不把 world 里已有的状态当作变更。框架注册时加的系统都用默认值。
+  - `world.Restore(snapshot)`（`Capture` / `Restore`）没有这个参数，总是把恢复的行算作写入：只用于测试，不用于热重启。
 - **网关不热重启**：`Connection` 钉在连接上，换进程连接就断。网关节点改代码走滚动升级，SDK 重连、重新加入。以后可以考虑把套接字交给新进程（`SCM_RIGHTS`，Envoy 的热重启），只在 Unix 上有。
 - **`[Stateless]` 的 Actor 类型**没有要交接的状态：可以单独部署成节点组，先起新节点、再停旧节点，零停顿。
 
@@ -1640,5 +1640,5 @@ public void A_busy_tick_allocates_nothing_and_threads_change_nothing()
 2. **客户端路由由 `[On<T>]` 所在的 `[Handles<K>]` 类推出**，不另写路由表。同一件事只写一处；改动路由的版本要连网关一起滚动升级，热重启由 `wire.manifest` 比对拦住（第 10 节）。
 3. **`[From<K>]` 保持必写**。"从类型就看得出谁发给谁"是目标之一；新的发送方要改消息声明，这正是想要的显式。
 4. **消息不做成实体**。邮箱和到期项在有序阶段归并两个来源。把每条消息做成带 `Due` 的实体能统一表示，但每条消息多一次建实体和销毁。重构时用 BenchmarkDotNet 测一次：快不差于 10% 才改。
-5. **EasyEcs 4.5 已提供本稿依赖的功能**：`entity.Run(ref job[, filter])`（抛出时 `ref` 写入也搬到新行；job 带 `INoStructuralChanges` 时冻结结构）、接口带的组过滤 `IGroupWith<T>` / `IGroupWithout<T>`、`world.Descendants(root)`、`LoadEntitiesInto(…, markWritten: false)`（被覆盖的 prefab 默认值也不算写入），分析器把 `entity.Run` 和 `LoadEntitiesInto` 当结构调用（EECS010/013/014）。EasyEcs 评估后放弃的：并行批量方法、`LastWriteTick`、公开读写集、多 world 共享并行预算。重构的第一步是把 `EasyEcsVersion` 升到 4.5.0，并编译验证两件事：DaServer 生成器补的 `Key` 显式实现被 EasyEcs 的值索引接受；`IActor<TSelf>` 在框架程序集里编译通过。
-6. **改代码只有热重启，不用 `AssemblyLoadContext`**：理由和代价见 ADR-084，做法见第 10 节；Kubernetes 上的形态见 ADR-085。前提是 EasyEcs 需求 #22（`world.Load(input, markWritten: false)`，以及第一次运行从当前 tick 开始的系统）。`Save` 写进 `NinoArrayBufferWriter` 再拷进管道或文件，多一次拷贝；10 万个实体 4.4 MB，可以忽略，不另提需求。
+5. **EasyEcs 4.6 已提供本稿依赖的功能**：`entity.Run(ref job[, filter])`（抛出时 `ref` 写入也搬到新行；job 带 `INoStructuralChanges` 时冻结结构）、接口带的组过滤 `IGroupWith<T>` / `IGroupWithout<T>`、`world.Descendants(root)`、`LoadEntitiesInto(…, markWritten: false)`（被覆盖的 prefab 默认值也不算写入），分析器把 `entity.Run` 和 `LoadEntitiesInto` 当结构调用（EECS010/013/014）；4.6 又加上 `world.Load(bytes, markWritten: false)`、`AddSystem(…, changesFromNow: true)`（需求 #22），带追踪组件的程序 Native AOT 发布 0 警告（需求 #21）。EasyEcs 评估后放弃的：并行批量方法、`LastWriteTick`、公开读写集、多 world 共享并行预算。重构的第一步是把 `EasyEcsVersion` 升到 4.6.0（等它上了 NuGet），并编译验证两件事：DaServer 生成器补的 `Key` 显式实现被 EasyEcs 的值索引接受；`IActor<TSelf>` 在框架程序集里编译通过。
+6. **改代码只有热重启，不用 `AssemblyLoadContext`**：理由和代价见 ADR-084，做法见第 10 节；Kubernetes 上的形态见 ADR-085。加载用 EasyEcs 4.6 的 `world.Load(bytes, markWritten: false)`，加载的行不算变更（第 10 节的"写入戳"）。`Save` 写进 `NinoArrayBufferWriter` 再拷进管道或文件，多一次拷贝；10 万个实体 4.4 MB，可以忽略，不另提需求。

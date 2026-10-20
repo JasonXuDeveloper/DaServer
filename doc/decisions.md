@@ -1543,7 +1543,7 @@ Replaced by ADR-081.
   handler that must serialize such work says so in data (a component marking the work in progress). The client SDK
   and code outside worlds (HTTP, tests) still `await cluster.Ask(..)`.
 
-## ADR-082 Programming model v24: actors as entities in EasyEcs 4.5 worlds, [On<T>] handlers as single-entity jobs, presences
+## ADR-082 Programming model v24: actors as entities in EasyEcs 4.6 worlds, [On<T>] handlers as single-entity jobs, presences
 - Context: ADR-081 made actors entities, but kept a second vocabulary beside EasyEcs: `[Handle]` dispatchers that copy
   components out and back, a `Context` value, an `ActorKey` beside the id type, a mailbox drained apart from the
   tick, session tags (`Known`, `Granted`, `Superseded`), tick rates in configuration and messages that do not say who
@@ -1598,17 +1598,15 @@ Replaced by ADR-081.
     (third-party webhooks). Routes are read from `wire.manifest`, not from assemblies.
   - **Code changes load no assemblies at run time**: JIT and AOT nodes take a new build the same way, by hot restart
     or rolling upgrade (ADR-084), so user projects are `Game.Protocol` and `Game.Server`.
-  - **0 warnings, no suppression**: EasyEcs's AOT compile reports IL3054 (generic recursion through its change-tick
-    column type) in programs with tracked components, which every stateful node has (`IPersisted`). The AOT publish
-    check is gated on EasyEcs removing it (EasyEcs request #21); a suppression of a library's warning in user
-    programs is not accepted.
-- Alternatives: AOT only for stateless nodes (no tracked components; splits the support matrix); suppress IL3054
-  (accepts a warning on the library's behalf); in-process hot reload on JIT only (rejected in ADR-084);
+  - **0 warnings, no suppression**: a suppression of a library's warning in user programs is not accepted. EasyEcs
+    4.6 publishes without warnings with tracked components, which every stateful node has (`IPersisted`).
+- Alternatives: AOT only for stateless nodes (no tracked components; splits the support matrix); suppressing a
+  library's AOT warning (accepts it on the library's behalf); in-process hot reload on JIT only (rejected in ADR-084);
   reflection-based registration with trimming descriptors (fragile, and generic closure at run time is impossible
   under AOT anyway).
 - Consequences: the release checklist publishes each sample node with `PublishAot=true` with 0 warnings and runs the
-  E2E tests against the AOT binaries (open until EasyEcs request #21 ships). OpenTelemetry, the Prometheus exporter,
-  Npgsql through Aspire and the other hosting dependencies are verified in R8 ([drafts/architecture.md](drafts/architecture.md)
+  E2E tests against the AOT binaries. What remains to verify is third-party: OpenTelemetry, the Prometheus exporter,
+  Npgsql through Aspire and the other hosting dependencies, in R8 ([drafts/architecture.md](drafts/architecture.md)
   section 8). How a new build reaches running nodes, and what it needs from EasyEcs, is ADR-084.
 
 ## ADR-084 Code changes ship by in-place hot restart (JIT and AOT); no in-process hot reload
@@ -1679,17 +1677,14 @@ Replaced by ADR-081.
   - What changes without a restart is data swapped between two ticks: tuning tables (a validated shard singleton,
     its version on the member card) and feature flags choosing between handlers compiled into the binary.
   - `[Stateless]` actor types deployed as their own group are replaced start-new-then-stop-old, without a pause.
-  - Prerequisite, EasyEcs request #22. `world.Load` stamps every loaded row (and every row lacking a tracked
-    component, as removed) at the world's current change tick, and a system's `[Changed<T>]` / `[Removed<T>]` methods
-    filter on `Since(LastRunTick + 1)` with `LastRunTick` 0 before the first run (`internal set`): a system's first
-    run visits every row stamped since the world began, so after a hot restart `ChangeSystem` would tag every root
-    `Unsaved` and every actor would rewrite its record at once. Needed: `world.Load(input, markWritten: false)` with
-    `LoadEntitiesInto`'s semantics (no change tick, no removal stamp), and a first run that starts from the current
-    tick, chosen at registration (`AddSystem(system, seeExisting: false)` or a settable baseline): with tick 0 alone a
-    first run skips the loaded rows only because 0 is below `Since(1)`, while the documented contract is that a first
-    run visits every entity having the component. A user system that re-fires once after a restart (one extra AOI pass) is
-    acceptable; the persistence systems must not. Pending writes are not lost: `Unsaved` is a tag on the root and
-    travels in the save.
+  - The successor loads with `world.Load(bytes, markWritten: false)` (EasyEcs 4.6, its D39): loaded rows have no
+    change tick and none counts as removed, and a system's first run looks at ticks from 1, so systems registered
+    before the load (warm-up) and after it (platform restart) both skip them. `ChangeSystem` tags no root `Unsaved`
+    and no actor rewrites its record; pending writes are not lost, since `Unsaved` is a tag on the root and travels
+    in the save. The same holds for user systems: after a hot restart no `[Changed<T>]` method (AOI included) sees
+    the loaded rows as changed; a system that needs a full pass runs a `[ForEach]` method without `[Changed<T>]` once
+    under data (draft §10). `AddSystem(system, changesFromNow: true)` is only for a system added to a running world
+    (a feature flag switched on). `world.Restore(snapshot)` always stamps rows as written and is for tests only.
 
 ## ADR-085 Actor-hosting groups publish as StatefulSets with `OnDelete`; hot restart patches pods in place
 - Context: ADR-030 publishes every node group as a Deployment: a node's identity was its random id and its actors'
