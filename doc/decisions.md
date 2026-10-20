@@ -1064,86 +1064,60 @@ Replaced by ADR-081.
 - Consequences: one components project per server that has data. Changing a component's layout is a rolling deploy;
   changing behaviour is a hot restart (ADR-084). Data and behaviour are split exactly as ECS splits them.
 
-## ADR-068 Actor records: [Persist] components, saved by systems, versioned
-- Context: actors are loaded on demand and moved between nodes, so their state needs a store. Orleans writes a grain's
-  state object when the grain asks (`WriteStateAsync`, one row per grain, an ETag). A typical game server writes document-store
-  documents per type, marked dirty by hand and written back in batches; a renamed class loses its collection. ET
-  saves serialized entities by hand. Akka.NET and Proto.Actor journal events.
+## ADR-068 Actor records: one row per actor, claimed by epoch, written at tick end
+- Context: actors are activated on demand and moved between nodes, so their state needs a store that also tells two
+  activations of one key apart. Orleans writes a grain's state object when the grain asks (`WriteStateAsync`, one row
+  per grain, an ETag). A typical game server writes documents per type, marked dirty by hand and written back in
+  batches; a renamed class loses its collection. Akka.NET and Proto.Actor journal events.
 - Decision:
-  - **What:** an actor's `[Persist]` components (Nino structs in a components project) form one record, keyed by
-    (handler type id, key). The record starts with a format header (`"DR"`, format version 1: a record of another
-    format is refused, never misread), then a section per component: type id (Nino's, FNV-1a of the full name,
-    `[NinoFormerName]` to keep it across a rename; the same id messages carry on the wire), length, Nino bytes.
-    Persisted components are version tolerant or keyed (DAS014, ADR-076), so a component takes new fields, and adding
-    or removing a persisted component never breaks a stored record. Transient data (grids, caches, tags) is rebuilt on load. Relational and queried data (accounts,
-    payments, mail, rankings) stays in services with the user's ORM.
-  - **When:** between messages only (handlers run to completion, ADR-081), so a record always holds the state after
-    whole messages:
-    - On unload, always, after the actor's `Unloading` mail: the actor is removed only once its record is written, so
-      a graceful stop loses nothing.
-    - Every `SaveEverySeconds` (an `[Actor<TId>]` constant, 30 by default; zero means only on unload) if the record
-      changed. A crash loses at most that much.
-    - At once for an entity tagged `SaveNow` (critical changes).
-    - No dirty marking by hand: the generator declares EasyEcs's `ITrackChanges` for `[Persist]` components, and
-      `ChangeSystem` tags the actors whose stored components were written since its last pass `Unsaved` (one bulk pass
-      per stored type over EasyEcs's change ticks), so `CheckpointSystem` visits only those; a record whose bytes did
-      not change after all is skipped by its hash.
-  - **How:** loading and saving are ECS steps on the shard thread.
-    - `LoadSystem` collects the actors waiting for their record. The batch is loaded in one call, and its components
-      are restored before the actor's `Loaded` mail (`Created` when it has no record).
-    - `CheckpointSystem` and `PersistSystem` serialize records into pooled frames.
-    - `StoreSystem` keeps one load batch and one save batch (at most 512 records) in flight per shard. IO never runs
-      on the shard thread, and the backlog is bounded. A store call is cancelled after `NodeOptions.StoreTimeout`
-      (30 s; stores observe the token) and fails like any other: a hung connection holds a shard's persistence that
-      long, not forever.
-  - **Versions:** loading a record claims it: the stored version goes up by one and the loader's writes expect that
-    version (a key without a record is claimed as an empty one). Every write names the version it replaces. A store
-    that holds another version means another node owns the actor (a split, a late write after being declared dead):
-    the write is refused and the local copy is fenced, removed without another save. Because the newest loader holds
-    the newest version, the stale copy is the one refused, not the new owner, whichever writes first.
-  - **Lost answers:** every write carries its record's hash, stored with it. A write whose call failed may still have
-    landed (the connection reset after the commit, a failover, the store timeout firing late): the owner keeps its
-    version and remembers that write's hash (`Stored.Attempt`, carried by a handoff too); its next write names it, and
-    a store holding the next version with that hash took it, so it writes after it instead of refusing its own owner.
-    While a write is in doubt the record is written even when its hash is the acknowledged one (a state changed back
-    must replace what may have landed), and a claim clears the stored hash so its version is never taken for a lost
-    write. Only the latest lost write is remembered: two lost answers in a row can still fence the owner.
-  - **Schema at start:** a node initializes its store before it binds a port or joins (`IActorStore.InitializeAsync`):
-    a database that is down or a table that is missing stops the node at start, saying so, instead of failing its
-    first loads with callers waiting. `PostgreSqlActorStore` creates its table there by default (as Dapr's state
-    stores and Akka's journals do; nodes starting together serialize the create with a transaction-scoped advisory
-    lock); where a migration job or a DBA owns the schema (Orleans ships scripts to run beforehand, Aspire runs EF
-    migrations in a worker the services wait for), `createTable: false` makes the node only check the table, and
-    `Schema` is the statement to run.
-  - **Backends:** `IActorStore` (`InitializeAsync`, `ClaimAsync` and `SaveAsync` over batches) is all a backend implements.
-    `InMemoryActorStore` serves tests and development, and behaves like a database: versioned, and writing in place
-    (a buffer per key), so tests measure the same allocation-free saves. `PostgreSqlActorStore` is the default for deployments: one
-    table `(type_id, key, version, data bytea, hash, updated_at)`, written with Npgsql and no ORM (the
-    record is opaque bytes, so the schema never follows the components). A batch is one prepared statement on a
-    connection kept per call in flight: claims one upsert over `unnest(type ids, keys)` that raises the versions and
-    returns the rows, saves one statement over
-    `unnest(type ids, keys, expected versions, data, hashes, attempts)` that inserts first writes (`ON CONFLICT DO
-    NOTHING`), updates rows still at their expected version (or at the version a named lost write made) and returns
-    the accepted ordinals with their new versions. The record bytes are the shard's pooled
-    buffers, passed without copying; the columns are pooled lists. 1,024 critical saves cost about 11 ms and 11 KB.
-    `AddPostgreSqlActorStore()` in Program.cs wires it on Aspire's Npgsql integration (a data source keyed by the
-    connection name, its health check in readiness, its tracing and metrics); the AppHost passes the connection
+  - **What:** an actor's record is `SaveEntities` of its root and its `Persisted` descendants with the persist
+    component set built in `Registration` (draft §10). Persisted components are version tolerant or keyed (DAS014,
+    ADR-076); a load completes every entity from its prefab copy (`[NotSaved]` components and those the prefab gained)
+    and skips unknown type ids, counted. Transient data is rebuilt on activation. Relational and queried data
+    (accounts, payments, mail, rankings) stays in services with the user's ORM.
+  - **The table:** one row per actor, primary key `(type_id, key)`, so equal keys of two actor types (`Map(7)`,
+    `Loot(7)`) are two rows. Columns: `type_id integer`, `key bytea`, `slot smallint`, `epoch bigint`,
+    `write_gen bigint`, `owner` (node name, node generation), `placement bigint`, `record bytea`,
+    `next_due timestamptz`; an index on `(slot, next_due)`. The key is `bytea`, not two `bigint`s: a key is any
+    unmanaged struct of at most 16 bytes, which one column holds whatever its shape, with no zero-padded second column
+    in the primary key; its fields are written in order, each big-endian at its own width, so a `long` key is
+    `int8send(key)`. The slot is the key's placement slot (ADR-074), computed by the node with the hash placement uses,
+    so SQL never hashes.
+  - **Claim:** an activation claims the epoch and reads the record in one upsert (`INSERT … ON CONFLICT (type_id, key)
+    DO UPDATE … WHERE … RETURNING new.epoch, new.record, old.owner`, PostgreSQL 18): it inserts a placeholder row for
+    a new key, raises the epoch, resets `write_gen` and takes the owner only with a strictly newer placement version
+    (or the same version and owner, a retry), and a displaced owner gets `Fence(key, epoch)` at once. A migration's
+    arrival claims with an `UPDATE` comparing the epoch it carries, writing `GREATEST(stored, seen)` placement.
+  - **Writes:** each world writes the roots due at a tick end in one statement over `unnest` arrays, every row a CAS
+    on `(type_id, key)`, the epoch and `write_gen < :write_gen`; the rows not updated come back as stored. A refused
+    row fences only its actor; a timed-out write is retried with the same bytes and generation, and a row found at its
+    own epoch and generation counts as written. `[Durable]` items ride the next write; other changes at most every
+    `DaServer:CheckpointInterval`. Change tracking on the persist set tags written roots `Unsaved`, so only those are
+    written.
+  - **Wake:** every write stores the root's `NextDue` in `next_due`; `IActorStore.DueKeys(slots, until)` reads, over
+    the `(slot, next_due)` index, the keys of the node's `(type, slot)` pairs whose `next_due` has passed, and
+    `DueScan` wakes them.
+  - **Schema:** the schema Job (the node image with `--DaServer:Migrate`, a DDL role, under an advisory lock) creates or
+    migrates the table; nodes use a DML-only role.
+  - **Backends:** `IActorStore` (claims, the batched write, `DueKeys`) is all a backend implements.
+    `InMemoryActorStore` serves tests and development and behaves like the database (epochs, generations, slots).
+    `PostgreSqlActorStore` is the default for deployments, written with Npgsql and no ORM (the record is opaque bytes,
+    so the schema never follows the components); the record bytes are the world's pooled buffers, passed without
+    copying. `AddPostgreSqlActorStore()` wires it on Aspire's Npgsql integration; the AppHost passes the connection
     string (`WithActorStore`).
 - Alternatives:
   - A write per message: no loss, but write volume and latency grow with traffic.
-  - Comparing every actor's record hash on every checkpoint: no marking, but serializing every actor to find the few
-    that changed.
   - Explicit saves in handlers: forgotten saves, and saves while the state is half-changed.
   - One table or collection per component type: a load becomes many queries, and renames break storage.
+  - The key as two `bigint` columns: fixed width, but every key pads to 16 bytes and the primary key has three
+    columns; `bytea` holds every shape in one.
   - Event sourcing: out of core; it can be built as a pattern on actors.
-- Consequences: an actor's load waits one store round trip, batched per wake. A store outage delays unloads and stops,
-  bounded by the stop budget, which reports what was not saved. A state that does not serialize (a cycle, an
-  unregistered subtype) gives its write up and is logged (`RecordUnwritable`): the store keeps the last record, and the
-  shard's other writes and handoffs go on; a copy leaving with such a state goes with `Error` (its mail fails, its
-  changes since the last record are lost), and its handoff falls back the same way (ADR-072). Records are opaque bytes for performance; inspecting them needs the
-  components' types.
-- References: a record's version refusing an older writer is a fencing token (Kleppmann, "How to do distributed
-  locking", 2016; Designing Data-Intensive Applications, ch. 8).
+- Consequences: one statement per world per tick end whatever the number of changed actors; a stale owner can never
+  overwrite the new one, nor a late statement a newer state; `DueScan` costs one index range per owned slot. A store
+  outage delays deactivations and stops, bounded by the stop budget. Records are opaque bytes for performance;
+  inspecting them needs the manifest (the inspector decodes them through `wire.manifest`).
+- References: the epoch refusing an older writer is a fencing token (Kleppmann, "How to do distributed locking", 2016;
+  Designing Data-Intensive Applications, ch. 8).
 
 ## ADR-069 The e2e is a smoke test of the deployed model, timed by phase
 - Context: the e2e starts the sample's AppHost (PostgreSQL, six nodes, bots) through Aspire.Hosting.Testing. It took
@@ -1552,7 +1526,7 @@ Replaced by ADR-081.
   changed" leaks; the order between mail, delayed sends and systems is implicit. EasyEcs provides what a
   model without these needs: single-entity jobs (`entity.Run(ref job[, filter])`), group filters carried by
   interfaces (`IGroupWith<T>`), `world.Descendants(root)` and `LoadEntitiesInto(…, markWritten: false)`.
-- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v50), structured as in
+- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v51), structured as in
   [drafts/architecture.md](drafts/architecture.md):
   - **The actor type is its address, its root component, its root prefab and its system group**:
     `[TickRate(30)] partial record struct Map(long Id) : IActor<Map>` (`IActor<T>` inherits `IEquatable<T>`, so
@@ -1656,8 +1630,11 @@ Replaced by ADR-081.
       one `ClientId`, so an equal sequence under another `ClientId` counts as newer too) closes the old device as
       terminal, so two devices never fight by reconnecting; one login's connections are ordered by an attempt counter
       the SDK carries, not by gateway generation, so a reconnect through an older gateway still takes over. A `Connection` is keyed by a
-      per-connection `ConnectionId`, with the `ClientId` a non-unique index: one login can hold two connections on one
-      node (a retire or a half-open reconnect landing on the same gateway), and an actor key is unique.
+      per-connection `ConnectionId` and placed by its hash like every actor, with the `ClientId` a non-unique index used
+      only to find a login's connections (`cluster.Disconnect` asks each world): one login can hold two connections on one
+      node (a retire or a half-open reconnect landing on the same gateway), an actor key is unique, and every frame to a
+      connection carries its `ConnectionId` (the presence records it), so one login's connections are settled by stamps
+      at the targets, on one node as across nodes.
     - `Joined(MissedPushes)` tells snapshot systems whether to resend (`[Changed<Joined>]`; users need not learn
       `Retire` or stamps), and `Retire` keeps ADR-026's fence (a `HandedOff` marker on the old route) so each actor's
       pushes stay in order; the client's handshake carries the retire flag, so `[JoinOnConnect]` presences get the fence

@@ -1,6 +1,6 @@
 # Target architecture (draft, not implemented)
 
-The architecture DaServer is refactored to (breaking, roadmap phase W): the v50 programming model of
+The architecture DaServer is refactored to (breaking, roadmap phase W): the v51 programming model of
 [programming-model.md](programming-model.md) on EasyEcs 4.7 (the draft's header lists the features it uses), with Native AOT support. The programming model draft is
 the source of truth for what users write and what each rule means; this file says how the pieces fit together, holds the runtime's internal data and the client protocol's
 internals, and links to the draft's sections instead of repeating them. Today's architecture is [design.md](../design.md); the
@@ -225,7 +225,7 @@ exported, OpenTelemetry). Names users never write but meet in diagnostics: the S
 | `RestartingNodes` | node singleton | The members in `NodeRestarting`, with their expected pauses; `TryGetPause(connection, out pause)` for gateway systems that tell clients | `daserver.members{state}` |
 | `StoreDegraded`, `ActivationSlots`, `PeerHealth` | node singletons | The store is slow or down (no idle deactivation, `Saving` placeholders capped); concurrent epoch claims (jittered back-off); in-flight requests and latency per destination node with an adaptive limit (fail fast with `Busy`) ([draft §6](programming-model.md#6-生命周期), [§11](programming-model.md#11-失败时的结果)) | `daserver.store.degraded`, `daserver.activations.claiming`, `daserver.peer.inflight`, `daserver.peer.limit` |
 | Placeholder | entity | A key not yet active or being saved: the copy of `K.RootPrefab` without `In<K>`, the key, `Loading`, `Saving` or `ActivationFailed(until)`, a bounded `DynamicBuffer<Mail>`; `OnError = Reload` turns a root back into one in place, keeping only the key, the `Mail` and the faulting `[Durable]` call id (values reset to the prefab copy's) | `daserver.activations.failed` |
-| Control mail | mail on the control channel | `Route`, `Lost`, `JoinConfirmed`, `TakeOver(ConnectionId, stamp)` (a takeover closing the old connection), the `HandedOff(slot)` marker on a retired route, `Fence(key, epoch)`, `Wake`; bounded by what the node holds, never `Busy` | `daserver.messages.dropped{reason}` |
+| Control mail | mail on the control channel | `Route`, `Lost`, `JoinConfirmed`, `TakeOver(ConnectionId, stamp)` (a takeover closing the old connection), the `HandedOff(slot)` marker on a retired route, `Fence(key, epoch)`, `Wake`; mail to a `Connection` is addressed by its `ConnectionId` (the presence records it), so the gateway routes it to the world by that key's hash like any actor's; bounded by what the node holds, never `Busy` | `daserver.messages.dropped{reason}` |
 | Membership states | per member in the view | `NodeJoining`, `NodeLeaving` (placement is changing), `NodeRestarting` (a hot restart, announced on SIGTERM, or at once under an `exit=true` arm; user systems see the `Restarting` tag and `RestartingNodes`), `Rejoining` (the new process waiting for the coordinator's `Readmit` or `Gone`) | `daserver.members{state}` |
 
 ### `Registration`
@@ -259,8 +259,8 @@ scope for now and would be another `IFrameChannel` (ADR-092).
 ### A client message, hop by hop
 
 1. **Client SDK → gateway IO thread**: the frame lands in a pooled receive buffer (`BufferPool`).
-2. **→ the gateway shard's dispatch queue** (bounded; full: `Busy` to the client), the world chosen at accept by the
-   connection's `ClientId` hash. The shard finds the `Connection` root by its key, the `ConnectionId` made at accept.
+2. **→ the gateway shard's dispatch queue** (bounded; full: `Busy` to the client), the world chosen by the hash of the
+   connection's key, the `ConnectionId` made at accept. The shard finds the `Connection` root by that key.
 3. **Filter and route**: `Incoming` is a view of the frame header (`TypeId`, length, claims); the payload is never
    decoded. With an `[On<Incoming>]` method it runs as a job per message; without one the forward is a pass over the
    batch. The route table maps the `TypeId` to the handling actor type; the target key comes from the `[To]`
@@ -315,15 +315,17 @@ scope for now and would be another `IFrameChannel` (ADR-092).
   `DynamicBuffer<Route>`, a slot number in the SDK. `e.Join()` is immediate, returns a `Status` and appends the route
   to `Outbox`; `Leave()` adds `Leaving`, systems react, `Depart` destroys. A lost connection or gateway leaves the
   presence `Detached` for its grace period instead. Stamps, takeovers and route registration: below.
-- **Gateway**: a server type with `[Hosts<Connection>]`. `Connection` is pinned to its socket's node, never placed or
+- **Gateway**: a server type with `[Hosts<Connection>]`. `Connection` is pinned to its socket's node, never placed among nodes or
   migrated, activated on connect (admitted by a token bucket), deactivated on disconnect. It filters, routes, keeps
   the routes and fans out groups.
 - **`Connection` is keyed per connection**: `Connection(ConnectionId)`, 16 random bytes made at accept, never the
   `ClientId`. One login can hold two connections on one node (a `Retire` that lands on the same gateway, a reconnect
   while a half-open connection lingers), and an actor key is a unique index, which throws on a duplicate key.
-  `ClientOf(ClientId)` on the root is a non-unique value index (`IIndexed<ClientId>`): `cluster.Disconnect` finds a
-  client's connections on the node by it, and a new connection finds the older one of its login (below). The world
-  is chosen by the `ClientId`'s hash, not the key's, so one login's connections on a node share a world and its index.
+  A `Connection` lands on a world by its key's hash like every actor, and every frame addressed to a connection
+  (`TakeOver`, `Lost`, `HandedOff`, pushes) routes by the `ConnectionId` alone, which the presence records.
+  `ClientOf(ClientId)` on the root is a non-unique value index (`IIndexed<ClientId>`), used only where a `ClientId`
+  must be found: `cluster.Disconnect(clientId)` goes to every gateway node, which asks each of its worlds (a rare
+  admin operation).
 - **`ClientGroup` fan-out**: subscriptions are data (`DynamicBuffer<Subscribed>` on presences); `SyncSubscriptions`
   sends the full set of each changed presence to the gateways, which replace it; a group push is serialized once, one
   frame per gateway with members, fanned out there.
@@ -348,26 +350,27 @@ The client protocol's internals behind [draft §7](programming-model.md#7-客户
   answered again idempotently. Between different `ClientId`s the larger issue sequence takes over and an equal one
   counts the newcomer as the newer login; only the side with the other `ClientId` and the smaller sequence (on a tie,
   the older connection) gets `Superseded`, which the SDK treats as terminal.
-- **Two connections of one login on one node** (a `Retire` that lands on the same gateway, a reconnect while the old
-  connection is half-open): at activation the new `Connection` looks up the others of its `ClientId` in the `ClientOf`
-  index and compares attempts by the rule above. A newcomer with a smaller attempt closes quietly. Otherwise, when its
-  handshake carries the retire flag (below), the older one stays until the takeovers have moved its routes and its open
-  calls are answered, as in a retire across gateways; without the flag (a reconnect) the older one closes quietly at
-  once, its presences go `Detached`, and the new connection's joins take them over with `Joined.MissedPushes` true.
-  Connections of another `ClientId` are not compared there: the stamps settle them at the targets, as across nodes.
+- **Two connections of one login** are never compared on a gateway, even on one node (a `Retire` that lands on the
+  same gateway, a reconnect while the old connection is half-open): the stamps settle them at the targets. Each target's `TakeOver` reaches the old connection by its `ConnectionId`, whichever world holds it. A
+  retiring old connection (it received `ControlOp.Retire`) stays until the takeovers have moved its routes and its
+  open calls are answered; a non-retiring one closes quietly at the first `TakeOver` of its own `ClientId`, its
+  remaining presences go `Detached`, and the new connection's joins take them over with `Joined.MissedPushes` true. A
+  stale newcomer (a smaller attempt) closes quietly once its joins come back `Superseded` under its own `ClientId`.
 - **A presence** remembers its connection: `Presence(PresenceId Id, ClientId, node, ConnectionId, stamp)` on the target, and
   `Route(ActorId target, PresenceId, Slot)` in the `Connection`'s `DynamicBuffer<Route>`.
 - **Takeover** (`Join()` with a larger stamp): the target drops `Joined`, `Leaving` and `Detached`, draws a new
   `PresenceId`, releases the old route by the old `(PresenceId, stamp)` (so a late release or leave from the old
   connection matches nothing), and appends `TakeOver(old ConnectionId, new stamp, new ClientId)` for the old connection's gateway (the node
-  and connection recorded on the old presence, across gateways too). The old `Connection` compares by the stamp rule above: another
+  and connection recorded on the old presence, across gateways too; the gateway routes it by the old `ConnectionId`). The old `Connection` compares by the stamp rule above: another
   `ClientId` with a larger or equal issue sequence closes it with `Superseded`; the same `ClientId` (the same login on
   a new connection, or a `Retire`) closes it quietly, a retiring one only once its routes have moved and its open calls
   are answered. If it drops half-way, its presences go `Detached` and the new connection takes them over with
   `Joined.MissedPushes` true.
 - **`[JoinOnConnect]`**: the activated `Connection` sends an internal join request carrying its stamp (and the
   handshake's retire flag, so a retired client's `[JoinOnConnect]` presences get the `HandedOff` fence too) to the actor
-  whose key has the claims' shape; that side creates or takes over the presence by stamp and `Takeover`; failures
+  whose key has the claims' shape; that side creates or takes over the presence by stamp and `Takeover` (`Reject`
+  refuses only another `ClientId` while the presence is `Joined`: the same `ClientId` always takes over by attempt, and a
+  `Detached` presence never rejects); failures
   retry by `RetryAfter` or jittered back-off (joins are idempotent by stamp) until `Unavailable(retryAfter)`.
 - **Registering a route** after `Join()` (asynchronous):
   1. The route precedes the request's reply in the same `Outbox` frame, so the `Connection` writes the route before it
@@ -434,13 +437,17 @@ in short:
   restarting node's deadline. The timer defaults are one table in
   [draft §11](programming-model.md#定时的默认值).
 - **Activation**: the placeholder (`Loading`) holds the mail; one statement claims the epoch and reads the record
-  (`INSERT … ON CONFLICT (key) DO UPDATE SET … WHERE … RETURNING …`, inserting the placeholder row for a new key and
+  (`INSERT … ON CONFLICT (type_id, key) DO UPDATE SET … WHERE … RETURNING …`, inserting the placeholder row for a new key and
   returning the displaced owner as PostgreSQL 18's `old.owner`; the store keeps epoch, write generation (reset to 0 by the claim), owner and placement version: taking a key from another owner needs a
   strictly newer version, a displaced owner gets `Fence(key, epoch)`), within `ActivationSlots`;
   `LoadEntitiesInto(record, into, markWritten: false)` with the placeholder as the root; `In<K>` added;
   `Activated` first, then the placeholder's mail, then later mail.
+- **The table**: one row per actor, keyed by `(type_id, key)` (`Map(7)` and `Loot(7)` are two rows), with the columns
+  `type_id, key, slot, epoch, write_gen, owner, placement, record, next_due` and an index on `(slot, next_due)`. The
+  key is `bytea`, the key's fields big-endian (any key shape up to 16 bytes in one column); the slot is the key's
+  placement slot, computed by the node ([draft §10](programming-model.md#激活-epoch一个-actor-只有一个激活能写), ADR-068).
 - **Epoch fencing**: every record write compares the epoch; a failed compare fences the activation. A migration's
-  arrival claims a new epoch too (writing the type's current placement version), so a late write from the source fails. A root's writes never overlap in one process (`Writing`,
+  arrival claims a new epoch too (writing `GREATEST` of the stored and the type's current placement version), so a late write from the source fails. A root's writes never overlap in one process (`Writing`,
   section 2), and the CAS also compares the write generation, so a late timed-out statement never overwrites newer state;
   a failed or timed-out write is retried with the same bytes and generation;
   `Unsaved` is cleared when the record is taken at the write's start and put back if the write fails, and changes
@@ -465,8 +472,8 @@ in short:
   `[Durable]` asks, `ReplyLog`, `IssueSeq` and `NextDue` are in the record, and a root that ran a `[Durable]` item is
   written at the next tick end. **Wake**: the
   runtime's `WakeSystem` keeps the root's `NextDue` at the minimum `WakeAt` of its descendants; each node's `DueScan`
-  asks the store for keys of its slots whose `next_due` has passed (`IActorStore.DueKeys(slots, until)`, an index on
-  the column) and activates them, so a `[Durable]` asker or a reminder survives a crash.
+  asks the store for keys of its slots whose `next_due` has passed (`IActorStore.DueKeys(slots, until)` over the node's `(type, slot)` pairs, the
+  `(slot, next_due)` index) and activates them, so a `[Durable]` asker or a reminder survives a crash.
 - **Deactivation**: idle past `IdleTimeout` (`[ActorOptions]`; `Pending` zero, no presence other than `Detached` ones;
   not while `StoreDegraded`) or `root.Deactivate()` (while `StoreDegraded`, beyond the cap on `Saving` placeholders it
   is postponed): presences leave, the root carries

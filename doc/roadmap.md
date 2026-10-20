@@ -22,7 +22,7 @@ Keep this file current: tick items when done, add items when scope changes.
 11. S1-S6 (done) elastic scaling.
 12. The ECS rewrite (ADR-081, the "ECS rewrite" entry under "Open cleanup" below): P1-P3 and P5 done; P4, P6 and P7
     superseded by W.
-13. W — refactor to the v50 programming model ([drafts/programming-model.md](drafts/programming-model.md),
+13. W — refactor to the v51 programming model ([drafts/programming-model.md](drafts/programming-model.md),
     [drafts/architecture.md](drafts/architecture.md)) on EasyEcs 4.7 (ADR-082 to ADR-092). Breaking; each step
     proven before the next (W, not R: the requirement ids R0-R11 are taken).
     W10 runs last, after W12 and N9.
@@ -91,31 +91,35 @@ Keep this file current: tick items when done, add items when scope changes.
       `Status.NotExecuted`/`Transient`, `[Stateless]` actor types (any node, the key picks the local actor, no claim, no
       record), world singletons created per world by `Create()` and configuration tables read from
       `DaServer:Tables:{name}` (the cluster-wide version is N9), `TestActor<K>` without presences (one world, the root,
-      DaServer's manual clock of ADR-071, `SetTable`). Tests: `NestedAskInheritsRemainingBudget`,
+      DaServer's manual clock of ADR-071, `SetTable`), `TestCluster` rebuilt on `Registration` (its nodes take the generated
+      object; no node-wide `TickRate` or `Shards` option: a node's worlds as in production, `Worlds` to override) with
+      `AdvanceAsync(time)` stepping the manual clock so each actor type ticks at its own `[TickRate]`. Tests: `NestedAskInheritsRemainingBudget`,
       `RetryBudgetCapsForwardRetries`, `HotActorDoesNotStarveShardNeighbors`, `SlowPeerFailsFastAfterLimit`,
       `ClusterAskHonoursCancellationBudget`, `WebhookRetryDeduplicatesByExternalKey`, `ThrowingHandlerAnswersFaulted`,
       `CatchUpCapSkipsAndCountsTicks`, `TrimExcessAfterPeakShrinksWorld`, `GetOrSpawnTwiceFindsSameEntity`,
       `GetOrSpawnFactoryRunsOnlyOnSpawn`, `StatelessTypeAnswersOnAnyNodeWithoutClaim`, `TestActorTicksWithManualClock`,
-      `TwoTickRatesInOneWorldSeeOwnTime`, `SystemsSeePassTimeNotLastItemTime`, `UntickedPassSeesZeroDeltaTime`, `ScheduleFromSystemBecomesDue` (`Schedule(ev)` from a system is a `Due` child at
+      `TwoTickRatesInOneWorldSeeOwnTime`, `TestClusterAdvanceTicksEachTypeAtItsRate`, `SystemsSeePassTimeNotLastItemTime`, `UntickedPassSeesZeroDeltaTime`, `ScheduleFromSystemBecomesDue` (`Schedule(ev)` from a system is a `Due` child at
       `Time.Elapsed`, run in the next ordered phase, kept by a snapshot taken in between).
       Evaluate Kestrel's `ConnectionHandler` for the cluster and client ports against the own listener with
       BenchmarkDotNet (`TransportBenchmark`); adopt only without a regression.
-    - [ ] W5 Presences, the gateway (`Connection` on `[Hosts<Connection>]`, keyed by a `ConnectionId` made at accept with
-      `ClientOf(ClientId)` a non-unique index and the world chosen by the `ClientId`, `Incoming` as a header view,
+    - [ ] W5 Presences, the gateway (`Connection` on `[Hosts<Connection>]`, keyed by a `ConnectionId` made at accept and
+      placed on a world by that key's hash like every actor, every frame to a connection routed by the `ConnectionId`,
+      `ClientOf(ClientId)` a non-unique index that `cluster.Disconnect` asks each world for, `Incoming` as a header view,
       forwarding as a batch pass), client tokens (`cluster.IssueClientToken`, `RefreshClientToken`, `ClientId`; one login is one
       `ClientId`), `[To]` routing, `[JoinOnConnect]`, `Join()` returning `Status`, SDK re-join, `Retire` with presences
       (the new connection's stamps take over, the `HandedOff` fence, `Joined(MissedPushes)`, the retire flag in the
-      handshake passed on by `[JoinOnConnect]` joins; two connections of one login on one node settled at activation), `Detached` with
+      handshake passed on by `[JoinOnConnect]` joins; one login's connections settled by stamps at the targets, on one node as across nodes), `Detached` with
       `DetachGrace`, `cluster.Disconnect` and `connection.Disconnect` (no grace), `TakeOver` and the SDK's terminal
       `Superseded` (a newer sequence, or an equal one under another `ClientId`), one login's connections ordered by the
-      SDK's attempt counter (from the Unix milliseconds at SDK start, one per attempt), `AlreadyConnected`, client call ids
+      SDK's attempt counter (from the Unix milliseconds at SDK start, one per attempt), `AlreadyConnected` (`Takeover.Reject`
+      refuses only another `ClientId` on a `Joined` presence), client call ids
       across reconnects from a random 63-bit start (`ConnectionLost`), `Busy` retry-after in the SDK and
       `[JoinOnConnect]` (`Unavailable`), the admission bucket, load-based connection rebalancing (ADR-089; the average over gateways Up and ready),
       `ClientGroup` subscriptions (full sets, keys scoped by `root.Group`), the send rate per group as data
       (`root.SetGroupRate(key, every: n)` into the `GroupRate` buffer the ticking root's copy carries, the latest wins; the
       group's frame handed over on its due tick and before any membership change of the group, a counter in its
       buffer, 0 B; `Join()` adds an empty `Subscribed` buffer, so neither call is a structural change),
-      `TestActor<K>.PresenceOf`. Tests: `GatewayCrashPresenceSurvivesGrace`, `NewestWinsClosesOldConnectionAcrossGateways`,
+      `TestActor<K>.Connect` and `PresenceOf` (`Connect`/`Deliver` confirm routes as a gateway would). Tests: `GatewayCrashPresenceSurvivesGrace`, `NewestWinsClosesOldConnectionAcrossGateways`,
       `SupersededClientDoesNotReconnect`, `EqualSequenceOtherClientIdSuperseded`, `RefreshedTokenDoesNotOutrankNewerLogin`,
       `ReconnectThroughOlderGatewayTakesOver`, `StaleAttemptClosesQuietly`, `RestartedAppOutranksHalfOpenConnection`,
       `DisconnectLeavesWithoutGrace`, `BalancedGroupRetiresNobody`, `ScaleOutShedsOnlyExcess`,
@@ -123,7 +127,10 @@ Keep this file current: tick items when done, add items when scope changes.
       `ForeignCallIdCannotCollide`, `RetireKeepsPushOrderPerActor`, `ReconnectAfterLossGetsFullSnapshot`,
       `LowRateGroupCoalescesUntilDue`, `GroupFrameFlushedBeforeMembershipChange`, `LatestGroupRateWins`,
       `RetireRacingConnectionLoss`, `UnknownClientMessageAtOldGateway`, `RetireToSameGatewayKeepsBothUntilRoutesMove`,
-      `HalfOpenReconnectToSameGateway`, `RetireKeepsJoinOnConnectFence`, `JoiningGatewayLeftOutOfAverage`.
+      `HalfOpenReconnectToSameGateway`, `RetireKeepsJoinOnConnectFence`, `JoiningGatewayLeftOutOfAverage`,
+      `TakeOverReachesOldConnectionInAnotherWorld`, `DisconnectFindsConnectionsInEveryWorld`,
+      `RejectRefusesOnlyOtherClientWhileJoined` (the same `ClientId` takes over by attempt, a `Detached` presence never
+      rejects).
     - [ ] W6 Persistence, activation, migration and hot restart: the membership lease, generations from the
       coordinator, the epoch claim with owner generation and placement version in one upsert (`INSERT … ON CONFLICT … RETURNING`, the displaced owner as PostgreSQL 18's `old.owner`), fencing,
       placeholder roots and their bounded mail, `[ActivatedBy<T>]` (a key's first activation only; `[Durable]` requests
@@ -173,7 +180,16 @@ Keep this file current: tick items when done, add items when scope changes.
       entries under their own capacity (`DaServer:ReplyLogRefusedCapacity`; full: neither recorded nor answered) and `Faulted` entries kept across a `Reload`), a persisted `ReplyTo<T>`'s deadline in UTC, `root.IssueClientToken` with `IssueSeq` on the root,
       `TestActor<K>` with `[Durable]` (the write at the end of `Tick`, `FailNextWrite()`, `Answer<TReq>(value | status)`),
       `WakeAt`, `NextDue` from the runtime's `WakeSystem` (`[Changed<WakeAt>]`/`[Removed<WakeAt>]`) with the `next_due` column,
-      `IActorStore.DueKeys` and the `DueScan` wake, `StoreDegraded` and `ActivationSlots`, `ActivationFailed`, strict
+      `IActorStore.DueKeys` and the `DueScan` wake, the table of ADR-068 (primary key `(type_id, key)` with `key bytea`,
+      the key's fields big-endian; columns `type_id, key, slot, epoch, write_gen, owner, placement, record, next_due`;
+      the index on `(slot, next_due)`; the claim upsert, the write CTE and `DueKeys` on that key, `DueKeys` over the
+      node's `(type, slot)` pairs) and its migration by the schema Job (`--DaServer:Migrate`, with the cluster stopped,
+      one transaction under the advisory lock): an existing table keyed `(type_id, key bigint)` gets `key` converted by
+      `int8send(key)`, `version` renamed `epoch` and `data` renamed `record`, `hash` and `updated_at` dropped,
+      `write_gen` 0, `placement` 0 and an empty `owner` (so the first claim takes the row), `next_due` NULL, `slot`
+      filled by the Job from each key (it runs the node image, so it hashes as placement does) and then made `NOT NULL`
+      with the index built; each per-component record rewritten as its root's `SaveEntities` record (the root prefab's
+      copy with the stored components set), `StoreDegraded` and `ActivationSlots`, `ActivationFailed`, strict
       placement versions with `Fence` (bumped on every placement change of a type, slot-table moves included; a
       migration's arrival claims with the type's current version), idempotent claims, generations from Unix ms and single-seed formation, the lease
       ack, the restart permit, arm nonce, `NodeRestarting` and `Rejoining`, pinned slots and the reconcile on `Readmit`.
@@ -211,6 +227,8 @@ Keep this file current: tick items when done, add items when scope changes.
       `AsymmetricPartitionFreezesUnheardNode`, `CoordinatorCrashDoesNotExpireLeases`, `SameVersionSecondClaimRefused`, `SlotMoveBumpsPlacementSoClaimSucceeds`, `ExitArmRestartsWithoutSignal`,
       `DisplacedOwnerFencedWithoutWrite`, `GroupFramesFlushedBeforeDeactivationAndMigration`,
       `FencedActorDiscardsGroupFrames`, `MigrationArrivalClaimSurvivesRestart`,
+      `MigrationArrivalNeverLowersPlacement`, `MapAndLootSameIdDoNotShareRow`, `DueKeysFiltersBySlot`,
+      `SchemaJobMigratesExistingTable`,
       `CoordinatorHotRestartDeadlineKeptBySuccessor`, `TwoExpiredRestartsDoNotDownMajority`,
       `ColdClusterRestartNeverReusesGeneration`, `ParallelSeedsFormOneCluster`, `ArmWithoutKillExpires`,
       `FreezeAbortsWhenStoreHangs`, `TornSnapshotRejected`, `ImageNotMatchingArmRejectsSnapshot`,

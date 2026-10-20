@@ -1,4 +1,4 @@
-# DaServer 新编程模型设计（草案 v50，未实现，迭代中）
+# DaServer 新编程模型设计（草案 v51，未实现，迭代中）
 
 原则：业务代码干净、解耦、简洁，不用 OOP。ECS 一路到底：能用 EasyEcs 的功能就用 EasyEcs，状态都是数据，其余交给我们的特性和生成器，不重复造轮子。
 
@@ -506,7 +506,7 @@ public interface IChildKey<TSelf> : IComponent, IUniqueIndexed<TSelf>, IEquatabl
   - 期限作为预算发出（第 9 节）；取消只停止等待，已经发出的请求照常执行，结果未知，同超时；
   - `CallId.From(externalKey)` 由外部的幂等键（例如 webhook 的投递 id）算出确定的调用 id，外部重试同一个投递时调用 id 相同：`[Durable]` 的请求由框架去重到 settle-by 时刻，其余由处理方法按 `reply.Call` 去重（第 8 节）；
   - 节点热重启期间，它的 HTTP 平面不可用（进程已经退出、还没起来），外部调用方按自己的重试处理；
-  - 踢人用 `cluster.Disconnect(clientId)`：发给所有承载 `Connection` 的节点，由连着它的那个处理。
+  - 踢人用 `cluster.Disconnect(clientId)`：发给所有承载 `Connection` 的节点，每个节点问它的每个 world，由连着它的那个处理。
 
 ### 本地事件（Server）
 
@@ -783,11 +783,11 @@ ref var hp = ref target.Health;
   - **刷新**：`cluster.RefreshClientToken(token, lifetime, into)` 换新的过期时刻，保留 `ClientId` 和签发序号。
   - **`ClientId`**：`readonly record struct ClientId(ulong Value)`，每次登录随机取一个，重连和刷新都不变；它是客户端调用 id 的前缀（第 8 节），也是 `cluster.Disconnect(clientId)` 的参数。
 - **`ConnectionId`**：`readonly record struct ConnectionId(ulong Hi, ulong Lo)`，16 个随机字节，网关接受连接时生成，每个连接一个；它是 `Connection` 的键。键不用 `ClientId`：同一次登录在一个节点上可能同时有两个连接（`Retire` 后又连到同一个网关、旧连接半开时重连），而 Actor 的键是唯一索引，第二个连接的键会抛出。
-- **激活**：客户端连上一个承载 `Connection` 的节点后，框架激活 `Connection(ConnectionId)`，加上 `ClientOf(ClientId)`（令牌里的 `ClientId`，非唯一的值索引，EasyEcs 的 `IIndexed<ClientId>`）：`cluster.Disconnect(clientId)` 用它找到这个客户端在本节点的连接，新连接用它找到同一次登录的旧连接（[architecture.md 第 3 节](architecture.md#connection-stamps)）。`Connection` 落在哪个 world 按 `ClientId` 的哈希，不按键，所以同一次登录在本节点的连接在同一个 world 里，索引查得到。
+- **激活**：客户端连上一个承载 `Connection` 的节点后，框架激活 `Connection(ConnectionId)`，和别的 Actor 一样按键的哈希落在一个 world 里；再加上 `ClientOf(ClientId)`（令牌里的 `ClientId`，非唯一的值索引，EasyEcs 的 `IIndexed<ClientId>`）。发给连接的一切（推送、`TakeOver`、`Lost`、`HandedOff`）都按 `ConnectionId` 寻址，Presence 记着它。只有必须按 `ClientId` 找连接的地方用 `ClientOf`：`cluster.Disconnect(clientId)` 发给每个承载 `Connection` 的节点，节点问它的每个 world（少见的管理操作）。同一次登录的几个连接之间不在网关上比较，在目标上按连接戳比较，同一个节点和不同节点一样（[architecture.md 第 3 节](architecture.md#connection-stamps)）。
 - **身份**：令牌里的声明解码成用户写的 `IClaims` 类型，例如 `Account`，作为组件加到 `Connection` 上，并随它转发的每条客户端消息带上（第 5 节的身份参数）。框架不认识任何业务字段。
 - **位置固定**：`Connection` 固定在连接所在的节点，不参与放置，也不迁移；连接断开，它就停用。
 - **扩展**：写 `[Handles<Connection>]` 类；要给它加组件（例如令牌桶），在它的 `[On<Activated>]` 里当场 `Set` 上（`Connection` 是框架的类型，没有用户写的 `RootPrefab`）。
-- **找不到它**：别的 Actor 不能用 `ClientId` 找到 `Connection`（`ClientOf` 的索引只在本节点的 world 里）。推送只经过 Presence，所以不需要位置目录。
+- **找不到它**：别的 Actor 不能用 `ClientId` 找到 `Connection`（`ClientOf` 的索引只在本节点的各个 world 里）。推送只经过 Presence（它记着节点和 `ConnectionId`），所以不需要位置目录。
 
 ### Presence
 
@@ -816,7 +816,7 @@ public readonly partial record struct Player(long Id) : IActor<Player>
 
 - **身份是用户自己的类型**，实现 `IClaims`（`public interface IClaims : IComponent`），不绑在 Player 上；非托管、不超过 16 字节，一个工程最多一个（分析器检查）。
 - **想在连上时就加入的 Actor 类型，自己声明** `[JoinOnConnect<Account>]`（`where T : struct, IClaims`）。这个 Actor 类型的键和身份形状相同（同样类型、同样顺序的字段），生成器按字段一一对应，`Account(42)` → `Player(42)`；形状不同，分析器报错。可以有多个 Actor 类型挂在同一个身份上。
-- **谁胜出是声明上的参数**：`[JoinOnConnect<Account>(Takeover = Takeover.NewestWins)]`，默认 `NewestWins`：更新的连接接管，旧连接被关闭；`Reject`：已有的连接留下，新的收到 `AlreadyConnected` 后断开（半开的旧连接要等它超时）。
+- **谁胜出是声明上的参数**：`[JoinOnConnect<Account>(Takeover = Takeover.NewestWins)]`，默认 `NewestWins`：更新的连接接管，旧连接被关闭；`Reject`：另一次登录（`ClientId` 不同）来加入、而已有的 Presence 带着 `Joined` 时，已有的连接留下，新的收到 `AlreadyConnected` 后断开（半开的旧连接要等它超时）。同一个 `ClientId` 总是按连接序号接管（重连、`Retire` 换网关都是同一次登录）；`Detached` 的 Presence（连接已经断了）从不拒绝。
 - 框架做完整件事，用户不写代码：建或接管 Presence，失败时按 `RetryAfter` 或带抖动的退避重试，超过次数以 `Unavailable(retryAfter)` 结束会话；Presence 丢失（Player 重启）时框架重新加入。
 - 加入好之前，客户端消息在 `Connection` 上排队，有上限（节点配置），超过的回 `Busy`；加入好后框架推一条 `Ready` 给客户端。
 - Player 上的 Presence 和别的 Presence 一样：不带 `[To]`、由 Player 处理的客户端消息，主体就是它。
@@ -1091,11 +1091,27 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 ### 激活 epoch：一个 Actor 只有一个激活能写
 
 - **放置版本**：一个 Actor 类型的放置每变一次，协调者就把这个类型的放置版本加一：成员变化，以及槽表的每次移动（按负载的迁移、粘性类型的钉住，ADR-079）都算；版本随视图和槽表传播。只在成员变化时加一的话，槽表移走的键在新主人那里永远占不到（同一个版本，主人不同）。节点之间的每个帧捎带发送方见过的最高版本；一个节点从不按比它见过的更旧的版本激活。
+- **一张表，一个 Actor 一行，主键是 `(type_id, key)`**：不同 Actor 类型的同号键（`Map(7)` 和 `Loot(7)`）是两行。
+  ```sql
+  CREATE TABLE actors (
+    type_id   integer        NOT NULL,   -- the actor type's id (Nino's type id)
+    key       bytea          NOT NULL,   -- the key's fields in order, each big-endian at its own width (at most 16 bytes)
+    slot      smallint       NOT NULL,   -- the key's placement slot (0..4095, ADR-074), computed by the node
+    epoch     bigint         NOT NULL,
+    write_gen bigint         NOT NULL,
+    owner     daserver_owner NOT NULL,   -- (node name, node generation) of the last claim
+    placement bigint         NOT NULL,   -- the placement version of the last claim
+    record    bytea,                     -- NULL: claimed, never written
+    next_due  timestamptz,               -- NextDue; NULL: nothing due
+    PRIMARY KEY (type_id, key));
+  CREATE INDEX actors_due ON actors (slot, next_due) WHERE next_due IS NOT NULL;
+  ```
+  键用 `bytea` 而不是两个 `bigint`：键是不超过 16 字节的任意非托管结构，一列就装得下每种形状，主键和比较都不用补零的第二列；每个字段按大端写，所以一个 `long` 键就是 `int8send(key)`，按 `bigint` 存键的旧表原地转换（[roadmap 的 W6](../roadmap.md)）。槽号由节点按键的哈希算好写进来（和放置同一个哈希），SQL 里不算哈希；`DueScan` 按 `(slot, next_due)` 的索引只扫自己的槽。
 - **激活先占 epoch，占和读是一条语句**（键还没有记录时插入一行占位；有行而条件不成立时语句不改也不返回任何行，就是没占到）：
   ```sql
-  INSERT INTO actors AS a (key, epoch, write_gen, owner, placement, record)
-  VALUES (:key, 1, 0, (:name, :gen), :v, NULL)                  -- a new key: the placeholder row
-  ON CONFLICT (key) DO UPDATE
+  INSERT INTO actors AS a (type_id, key, slot, epoch, write_gen, owner, placement, record, next_due)
+  VALUES (:type_id, :key, :slot, 1, 0, (:name, :gen), :v, NULL, NULL)   -- a new key: the placeholder row
+  ON CONFLICT (type_id, key) DO UPDATE
      SET epoch = a.epoch + 1, write_gen = 0, owner = excluded.owner, placement = excluded.placement
      WHERE a.placement < excluded.placement
         OR (a.placement = excluded.placement AND a.owner = excluded.owner)
@@ -1106,14 +1122,15 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 - 只有按自己的视图是主人的节点才去占（第 6 节）；不是主人的转发。
 - **每次写记录都按 epoch 和写代比较并交换**（写代是根上数着的、取走的记录数，第 8 节的留住的输出也按它）：
   ```sql
-  WITH r AS (SELECT * FROM unnest(:keys, :records, :next_dues, :epochs, :write_gens)
-                 AS r(key, record, next_due, epoch, write_gen)),
+  WITH r AS (SELECT * FROM unnest(:type_ids, :keys, :records, :next_dues, :epochs, :write_gens)
+                 AS r(type_id, key, record, next_due, epoch, write_gen)),
        w AS (UPDATE actors a SET record = r.record, next_due = r.next_due, write_gen = r.write_gen
-             FROM r WHERE a.key = r.key AND a.epoch = r.epoch AND a.write_gen < r.write_gen
-             RETURNING a.key)
-  SELECT a.key, a.epoch, a.write_gen                            -- the rows not updated, as stored
-  FROM r JOIN actors a ON a.key = r.key
-  WHERE NOT EXISTS (SELECT 1 FROM w WHERE w.key = r.key)
+             FROM r WHERE a.type_id = r.type_id AND a.key = r.key
+                      AND a.epoch = r.epoch AND a.write_gen < r.write_gen
+             RETURNING a.type_id, a.key)
+  SELECT a.type_id, a.key, a.epoch, a.write_gen                 -- the rows not updated, as stored
+  FROM r JOIN actors a ON a.type_id = r.type_id AND a.key = r.key
+  WHERE NOT EXISTS (SELECT 1 FROM w WHERE w.type_id = r.type_id AND w.key = r.key)
   ```
   存储里的 epoch 不是自己的，写失败。写代让一条超时之后才落地的旧语句永远盖不掉更新的状态：同一个 epoch 里写代只增不减，热重启原地时也一样（写代在根上，随快照过去，新进程接着数）。
 - **同一个根的写从不重叠**：写在途期间（根上内部的 tag `Writing`）`CheckpointSystem` 不取它的记录；在途期间的改动留着或重新标上 `Unsaved`（下面的"只写改过的"），进下一次写，它带着最新的状态，后写的盖掉先写的。写失败或超时就用同样的字节和写代重试；没更新的行由语句的 `SELECT` 返回存储里的 `(epoch, 写代)`（它读的是语句开始时的快照，这些行本来就没被这条语句改）：epoch 是自己的、写代正是这一次的，说明先前超时的那次已经写成，算成功（同一个 epoch 里一个写代只用于一份字节）；epoch 不是自己的，比较失败。
@@ -1161,7 +1178,14 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 - 要叫醒 Actor 的子孙带持久化的 `WakeAt(DateTime Utc)`：`[Durable]` 的等待实体是它下一次问或 settle-by 的时刻（第 8 节），提醒是它的 `UtcAt`。
 - 运行时的 `WakeSystem` 按 `[Changed<WakeAt>]`、`[Removed<WakeAt>]`（两个方法；`ChangedAny` 要 2 到 9 个类型，一个类型就是 `Changed`）和 `Persisted` 的清理找出受影响的根，只对这些根沿 `world.Descendants(root)` 重算最小的 `WakeAt`，写进根上持久化的 `NextDue`。只有运行时算它，扩展能力不写。
 - **先算 `NextDue`，再取记录**：`WakeSystem` 在框架组 `Cleanup` 里排在 `CheckpointSystem` 之前，所以写下的 `next_due` 总算上了这个 tick 新建的等待实体。
-- 检查点把 `NextDue` 写进记录的 `next_due` 列（没有就是空）。每个节点的 `DueScan` 每隔 `DaServer:DueScanInterval` 向存储查自己是主人的槽里 `next_due` 已到的键（`IActorStore.DueKeys(slots, until)`，按这一列的索引），给还没激活的发控制邮件 `Wake`，Actor 因此激活。注册里有 `[Durable]` 请求或者 `DaServer.Reminders` 时才查。查询不排除激活着的键（存储不知道哪些在内存里）：激活着的 Actor 的 `WakeAt` 在将来或刚过（它的时刻一到 Actor 自己就做那件事并前移它），只在刚过、前移它的那次写还没写成时被查到，`Wake` 到了 world 就丢弃。重问不加 `WriteNow`（第 8 节），前移的 `WakeAt` 随检查点写下，所以一次扫描多出的行不超过最近一个检查点间隔里到时的项。
+- 检查点把 `NextDue` 写进记录的 `next_due` 列（没有就是空）。每个节点的 `DueScan` 每隔 `DaServer:DueScanInterval` 向存储查自己是主人的槽里 `next_due` 已到的键（`IActorStore.DueKeys(slots, until)`，`slots` 是本节点拥有的 `(类型, 槽号)`，按 `(slot, next_due)` 的索引），给还没激活的发控制邮件 `Wake`，Actor 因此激活：
+  ```sql
+  SELECT a.type_id, a.key
+  FROM unnest(:type_ids, :slots) AS s(type_id, slot)
+  JOIN actors a ON a.slot = s.slot AND a.type_id = s.type_id
+  WHERE a.next_due <= :until
+  ```
+  注册里有 `[Durable]` 请求或者 `DaServer.Reminders` 时才查。查询不排除激活着的键（存储不知道哪些在内存里）：激活着的 Actor 的 `WakeAt` 在将来或刚过（它的时刻一到 Actor 自己就做那件事并前移它），只在刚过、前移它的那次写还没写成时被查到，`Wake` 到了 world 就丢弃。重问不加 `WriteNow`（第 8 节），前移的 `WakeAt` 随检查点写下，所以一次扫描多出的行不超过最近一个检查点间隔里到时的项。
 - **由 `Wake` 激活的 Actor 总是重写 `next_due`**：激活给根标 `Unsaved`，下一个检查点写下现在的 `NextDue`。否则一个过时的 `next_due` 会让 `DueScan` 每一轮都叫醒它。
 
 ### 序列化规则（Nino）
@@ -1179,7 +1203,7 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 - 保存整棵子树（`world.Descendants(root).AddTo(ids, includeRoot: true)`，同上面的记录），组件集合是注册时建好的 `migrate = ComponentSet.Create().With(typeof(每个不带 [NotSaved] 的组件))`：默认都带，标了 `[NotSaved]` 的除外；只有组件类型（`With(Type)` 也收单例，组保存遇到单例就抛出，所以生成器只传组件）；到达时按 prefab 补上它们（上面的恢复）。源节点先等这个根在途的写和留住的 `[Durable]` 输出放出（第 8 节）。
 - 等待中的请求、Presence 实体（连同 `Subscribed`）、待执行的延后事件随 Actor 一起迁移。
   - `Due` 在字节里是剩余时间，到达后按新 world 的单调时钟重新起算，再按它的 tick 边界归入 tick 窗口；已经过期的在第一个 tick 执行（第 9 节）。`Due.Seq` 到达时用新 world 的序号重新编号，保持它们之间原来的先后，然后重建到期堆。
-- **到达时占一个新的 epoch**：从字节里带来的 epoch `e` 比较并加一（同一条 `UPDATE … RETURNING`，不读记录），主人改成本节点，放置版本改成本节点见过的这个类型的版本，写代归零（根上的写代也从 0 数起）；条件是 `epoch = e OR (epoch = e + 1 AND owner = (本节点名, 代数))`，所以这条语句重试时、或者到达后本节点热重启再来一次时，照样成功。占到之前，到达的子树像占位一样不运行，邮件排队；比较失败（别人已经占了）就隔离这份到达。所以迁移之后，源节点的任何迟到的写都会失败。
+- **到达时占一个新的 epoch**：从字节里带来的 epoch `e` 比较并加一（同一条 `UPDATE … RETURNING`，不读记录），主人改成本节点，放置版本写成 `GREATEST(存储里的, 本节点见过的这个类型的版本)`（放置版本只增不减，一个落后的视图不会把它改小），写代归零（根上的写代也从 0 数起）；条件是 `epoch = e OR (epoch = e + 1 AND owner = (本节点名, 代数))`，所以这条语句重试时、或者到达后本节点热重启再来一次时，照样成功。占到之前，到达的子树像占位一样不运行，邮件排队；比较失败（别人已经占了）就隔离这份到达。所以迁移之后，源节点的任何迟到的写都会失败。
 - **迁移头里带着每个组件的布局哈希和每个 prefab 的组成哈希**（来自 `wire.manifest`）。组成哈希不同照样搬字节，到达时按 prefab 补上（上面的恢复）；目标节点的布局有一个对不上（滚动升级时新旧版本混跑），就不搬字节：源节点改为停用、写记录，目标节点从版本兼容的记录加载。这时只有记录里的留下；Presence 丢失，由 SDK 重新加入。
 - 源节点销毁子树前先移除 `Presence` 和 `Persisted`：路由不释放，根也不标 `Unsaved`（第 6 节的表）。
 - **墓碑**：源节点在迁移后保留一段时间的 `(键 → 新节点)`，这个键的所有邮件都转过去（控制消息、回信和普通消息都是）；墓碑还在时本节点不激活这个键。墓碑指向的节点已经离开视图时，按当前的放置转发。
@@ -2023,7 +2047,7 @@ namespace Game.Server
 actor   Game.Server.Map     id 5A1C93E1  key int64   hosted-by MapServer   tick 30Hz
 actor   Game.Server.Loot    id 1D84B6A9  key int64   hosted-by PlayerServer
 actor   Game.Server.Player  id 0B77D012  key int64   hosted-by PlayerServer  join-on-connect Account newest-wins
-actor   DaServer.Connection id 3E0F7A21  key uint64  hosted-by GatewayServer
+actor   DaServer.Connection id 3E0F7A21  key DaServer.ConnectionId raw(16){Hi:uint64@0:raw(8),Lo:uint64@8:raw(8)}  hosted-by GatewayServer
 claims  Game.Server.Account  int64
 request Game.Server.GrantItem  Loot -> Player  reply bool  durable
 request Game.Server.Claim      Map -> Loot  reply bool
@@ -2040,8 +2064,8 @@ prefab  Map     Game.Server.Map.RootPrefab          id 2F61A0C7  composition 0C5
 prefab  Map     Game.Server.Prefabs.DropPrefab      id 7D2E10A4  composition 3A6C81F2
 prefab  Map     Game.Server.Prefabs.AvatarPrefab    id 51B3E9F0  composition 2D70C6E5
 prefab  Map     Game.Server.Prefabs.NpcPrefab       id C40A6B12  composition 5E9D27B4
-prefab  Loot    Game.Server.Loot.RootPrefab         id 64C2F9A1  composition 811C9DC5  persist
-prefab  Loot    Game.Server.Prefabs.StashPrefab     id B5E0A37C  composition 811C9DC5  persist
+prefab  Loot    Game.Server.Loot.RootPrefab         id 64C2F9A1  composition 1F4D8B63  persist
+prefab  Loot    Game.Server.Prefabs.StashPrefab     id B5E0A37C  composition E27A5C09  persist
 prefab  Player  Game.Server.Player.RootPrefab       id 9E07D355  composition 6B19E4F3  persist
 record  Game.Server.Grid       nino  layout 19E4B2D8      # the persist set, one line per user type
 record  Game.Server.NetIds     raw   layout 3D5A0B19      # raw: a layout change fails the build (DAS017), wherever the type is used
@@ -2123,7 +2147,8 @@ public void An_expired_grant_takes_the_drop_off_the_map()
 }
 ```
 
-- **`TestActor<K>` 只给通用的东西**：`Root`、`SetTable`（换上一张配置表）、`Connect`、`Deliver`（服务器之间的消息带 `from:`）、`Tick`、`Advance`、`Outbox`、`PresenceOf(client)`（返回这个客户端在本 Actor 上的 Presence 实体，`Entity`）、`Answer<TReq>`、`FailNextWrite`、`AllocatedBytes`、`AssertParallelMatchesSerial`。游戏自己的帮助方法（例如 `SpawnNpcs`、"某个客户端的 NetId"）是测试工程里对 `TestActor<Map>` 的扩展方法，测试用的数据（`Skills.Table`、技能编号 `Skills.Slash`、`Catalog.Sword`）也在测试工程里。
+- **`TestActor<K>` 只给通用的东西**：`Root`、`SetTable`（换上一张配置表）、`Connect`（一个测试客户端：连接和身份）、`Deliver`（服务器之间的消息带 `from:`）、`Tick`、`Advance`、`Outbox`、`PresenceOf(client)`（返回这个客户端在本 Actor 上的 Presence 实体，`Entity`）、`Answer<TReq>`、`FailNextWrite`、`AllocatedBytes`、`AssertParallelMatchesSerial`。游戏自己的帮助方法（例如 `SpawnNpcs`、"某个客户端的 NetId"）是测试工程里对 `TestActor<Map>` 的扩展方法，测试用的数据（`Skills.Table`、技能编号 `Skills.Slash`、`Catalog.Sword`）也在测试工程里。
+- **路由在测试台里当场确认**：`Connect` 和 `Deliver` 像网关一样确认 `Join()` 追加的路由，所以加入的 Presence 当场带上 `Joined(MissedPushes: true)`，快照系统照常反应；`Outbox` 里照样看得到路由。
 - **`[Durable]` 在测试台里**：`Tick` 结束时做这个 tick 的写记录（测试台的记录在内存里，写当场成功），留住的输出随后进 `Outbox`；`FailNextWrite()` 让下一次写出错，重试和 `Reload` 照第 8、10 节走；`Answer<TReq>(value)` 或 `Answer<TReq>(status)` 给还在等的 `TReq` 投递一个 `Replied`：回复的值，或者 `Expired`、`TooLate`、`Faulted` 这样的结果，不用另起一个接收方。
 - **`Skipped` 在测试台里分两种**：主体缺少组件参数是代码错误，`Deliver` 抛出；过滤不满足（`[Without<Dead>]`）是有意的跳过，照常记成 `Skipped`。
 - **`map.AllocatedBytes(action)`**：执行一次 `action`（静态 lambda，不捕获），返回分配的字节数。Actor 里有 `Parallel = true` 的方法时用 `GC.GetTotalAllocatedBytes(precise: true)`，否则用 `GC.GetAllocatedBytesForCurrentThread()`（EasyEcs `guide/testing.mdx`）；所以测试按 fixture 串行跑。
@@ -2169,7 +2194,7 @@ public void An_expired_grant_takes_the_drop_off_the_map()
 ⑭ c1 与 gate-0 的连接半开（gate-0 还没发现断线），c1 换到 gate-1 重连
                       新的 Connection(n2)（同一个 ClientId c1）带更大的戳 S2（签发序号相同，SDK 的连接序号更大）：连上就加入，接管 Player 上的 Presence；Ready 之后 SDK 重发 EnterMap(7)：
                       GetOrSpawn 找到原来的 Avatar，Join() 按戳接管（新的 PresenceId，去掉 Joined 直到确认）；gate-0 上的旧路由按旧的 PresenceId 释放；
-                      目标向 gate-0 发 TakeOver(n1, S2)：签发序号相同，旧的 Connection(n1) 安静地关闭；确认后 Joined.MissedPushes 为真，SendFullState 重推
+                      目标向 gate-0 发 TakeOver(n1, S2)（Presence 记着 gate-0 和 n1，gate-0 按 n1 的哈希找到它的 world）：签发序号相同，旧的 Connection(n1) 安静地关闭；确认后 Joined.MissedPushes 为真，SendFullState 重推
 ⑮ gate-1 宕机          Player 42 和 Map 7 上 c1 的 Presence 加上 Detached（宽限 30 秒），不推送；c1 经负载均衡器连到 gate-0，
                       戳更大，接管两个 Presence，去掉 Detached；没回来的，宽限期过后 Leave()
 ```
