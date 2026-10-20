@@ -4,6 +4,8 @@
 
 ## 1. actor 运行时与分区系统：一致性域 + 单写者 + 成批执行
 
+“一致性域”是文献里的说法：一个单写者负责的那组状态。本设计里它就是一个 Actor（根实体加子孙）。
+
 | 系统 | 一致性域 | 单写者 | 成批 | 跨域 |
 |---|---|---|---|---|
 | Orleans | grain | 逐个 turn（默认不可重入） | `ActivationSchedulingQuantum`（按时间） | 可重入选项；Orleans Transactions（两阶段提交，提前释放锁） |
@@ -76,7 +78,7 @@
 
 - 现成可用：立即生效的结构变更、并行 `[ForEach]`、批量方法、`ParallelSystems`、变更追踪、值索引、`IGroup`、`DynamicBuffer`、`ICleanupComponent`、`MoveEntities`/`SaveEntities`、`MeasureSystems`。
 - 和"依赖图并行""乐观并行"冲突的决策：结构变更立即生效、不提供命令缓冲（D2、D3），世界只有一个所有者线程（D13）。
-- 需要提的功能：按分组值并行 `[ForEach]`；运行时读取读写集；对给定实体列表并行执行；多个 world 共享并行度上限；读取单个实体组件的写入 tick。
+- 需要提的功能：按分组值并行 `[ForEach]`；运行时读取读写集；对给定实体列表并行执行；多个 world 共享并行度上限；读取单个实体组件的写入 tick。后来哪些提供了、哪些放弃了，见编程模型草案[第 14 节](programming-model.md#14-已定的取舍以及待办)第 5 条。
 
 ## 5. 网易：倩女幽魂、天谕手游、梦幻西游
 
@@ -89,9 +91,9 @@
 - 都没有提到 ECS、job 系统或面向数据的布局。
 
 启示：
-- 业务逻辑单线程、一个场景一个串行权威，是网易各产品的共同基础，与本设计的"一致性域内串行"一致。
+- 业务逻辑单线程、一个场景一个串行权威，是网易各产品的共同基础，与本设计的"Actor 内串行"一致。
 - 把一个热点场景拆到多个进程（Avatar）能扩到约 500 人，但代价是异步结算和手工处理竞争；天谕认为不值得，改为把非业务的部分（序列化、广播、AOI、存盘）移出主线程。
-- 对本设计：域内的业务处理保持串行等价；把序列化、广播合并、AOI、写记录这些"输出"放到并行的 tick 系统和网络线程（框架已经这样做发送合并），是同一个方向。
+- 对本设计：Actor 内的业务处理保持串行等价；把序列化、广播合并、AOI、写记录这些"输出"放到并行的 tick 系统和网络线程（框架已经这样做发送合并），是同一个方向。
 
 ## 6. 让游戏逻辑像顺序代码、并行交给运行时
 
@@ -129,10 +131,10 @@
   - Minecraft 的 `/tick rate` 改的是整个游戏的帧率，按 tick 写的一切（作物、红石、冷却）都跟着变快变慢；默认 20，重启后复原。https://minecraft.wiki/w/Commands/tick
   - Photon Quantum 的 `FrameTimer.FromSeconds(frame, 秒)`：用户写秒，内部存帧；另有 `FromFrames`。https://doc.photonengine.com/quantum/v3/concepts-and-patterns/frame-timer
   - 结论：数据里写时间，发出时换算成到期帧一次（向上取整，从不提前）；改帧率不改手感。
-- **并行来自很多个域，不来自切开一个模拟步**：
+- **并行来自很多个 Actor，不来自切开一个模拟步**：
   - TrinityCore：`MapUpdater` 是一个线程池，每张地图的更新是一个任务，地图内部单线程；一张地图卡住，这一轮的其他更新都要等它。https://github.com/TrinityCore/TrinityCore/blob/master/src/server/game/Maps/MapUpdater.cpp
   - EVE：每个星系单线程，热点星系独占节点，过载时时间膨胀（第 2 节）。
   - LoL、Valorant：一局一个串行的服务器循环，一台机器跑很多局。https://technology.riotgames.com/news/determinism-league-legends-introduction ，https://www.riotgames.com/en/news/valorants-128-tick-servers
   - New World：无缝世界按格子分给进程，人移动时交接；每个格子内部仍是一个串行权威（第 2 节）。
   - 没有找到上市游戏在一个模拟步里按空间切分并行。空间前瞻需要位置、作用距离、最大速度这些游戏概念，和框架的通用性（ADR-045）冲突，还多一帧延迟。
-- **一个域内**：有序的部分串行；只写自己组件的部分按列并行（第 7 节的 CK3、Factorio，第 2 节的 ECS 引擎）。
+- **一个 Actor 内**：有序的部分串行；只写自己组件的部分按列并行（第 7 节的 CK3、Factorio，第 2 节的 ECS 引擎）。

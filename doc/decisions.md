@@ -1551,7 +1551,7 @@ Replaced by ADR-081.
   changed" leaks; the order between mail, delayed sends and systems is implicit. EasyEcs 4.5 now provides what a
   model without these needs: single-entity jobs (`entity.Run(ref job[, filter])`), group filters carried by
   interfaces (`IGroupWith<T>`), `world.Descendants(root)` and `LoadEntitiesInto(…, markWritten: false)`.
-- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (v24), structured as in
+- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v28), structured as in
   [drafts/architecture.md](drafts/architecture.md):
   - **The actor type is its address, its root component and its system group**:
     `[TickRate(30)] partial record struct Map(long Id) : IActor<Map>`; an actor is the root and its descendants, all
@@ -1633,7 +1633,14 @@ Replaced by ADR-081.
     node's own named volume; launchd via `launchctl kickstart -k`; a Windows service via `Restart-Service`), the old
     process writes the same bytes into a checksummed snapshot file in a node-local directory and exits; the new process
     loads a fresh snapshot for its node name, and ignores a stale or invalid one (activation from records as usual).
-    No DaServer launcher process: each platform's own supervisor and official hosting package.
+    Each platform's own supervisor restarts the node; the node host calls `UseSystemd()`, `AddWindowsService()` and
+    DaServer's `UseLaunchd()` (macOS has no official package; same contract: detect the supervisor, a no-op
+    elsewhere), and the transport follows from which one detected its supervisor (systemd: warm handoff; launchd and
+    Windows services: snapshot file; a configured `DaServer:SnapshotPath`, which DaServer.Aspire sets on Kubernetes, on
+    Compose and for local Aspire runs: snapshot file; nothing: warm handoff over the pipe). Local Aspire runs take the
+    snapshot path because Aspire's orchestrator (DCP) starts and watches each node process and would not see a
+    successor the node launched itself; `{cluster}-restart` there rebuilds, arms each node and restarts it with
+    Aspire's own resource restart command.
   - **Freezing stops the shards, not the network**: IO threads keep reading frames into the dispatch queue while the
     shards are frozen and saved, so nothing sent during the pause is refused and no client or peer is told to stop
     sending (that would cost a round trip and make clients buffer, for a pause of tens to hundreds of milliseconds).
@@ -1643,7 +1650,8 @@ Replaced by ADR-081.
   - **The bytes**: per shard `world.Save` (entities with ids and versions, components, buffers including placeholder
     mail, singletons), the mail still in the dispatch queue and the shard's `Time.Elapsed` (every `Due` keeps its remaining
     time); per node the call id sequence, tombstones, the connection stamp counter and, per peer link, the inbound
-    stream id with the bytes processed and the outbound stream id with its offset and unacknowledged tail.
+    stream id with the bytes received up to the cutover point and the outbound stream id with its offset and
+    unacknowledged tail.
   - **Identity and epochs are kept**: the successor takes over with one membership update, the same node name and
     generation, the incarnation plus one and the handoff token whose hash `Restarting` announced. Activation epochs
     live in the roots and in the store, so nothing re-activates and nothing is fenced.
@@ -1684,7 +1692,7 @@ Replaced by ADR-081.
   - Pause targets: tens of milliseconds after warm-up (save, transfer, load and the membership switch), hundreds
     without (a platform restart adds process start and reconnects). R measures both end to end (BenchmarkDotNet per
     shard, E2E with clients connected).
-  - What changes without a restart is data swapped between two ticks: tuning tables (a validated shard singleton,
+  - What changes without a restart is data swapped between two ticks: tuning tables (a validated world singleton,
     its version on the member card) and feature flags choosing between handlers compiled into the binary.
   - `[Stateless]` actor types deployed as their own group are replaced start-new-then-stop-old, without a pause.
   - The successor loads with `world.Load(bytes, markWritten: false)` (EasyEcs 4.6, its D39): loaded rows have no
@@ -1786,9 +1794,18 @@ Replaced by ADR-081.
     (`Aspire.Hosting.Dotnet`), which runs the built project's `RunCommand` (the apphost executable) with the same
     project defaults; it is prerelease, so it is pinned and R8 verifies it, with `AddProject` as the fallback. Aspire
     has no API to launch a published native binary, so AOT is checked locally by running the published AOT images
-    with Compose (the production images), not by a custom executable launcher. On macOS and Windows hosts AOT images
+    with Compose (the production images), not by a custom executable resource. On macOS and Windows hosts AOT images
     build in a container (`sdk:11.0-noble-aot` stage, `runtime-deps` chiseled final stage), since Native AOT does not
-    compile across operating systems.
+    compile across operating systems; on Linux the SDK container publish builds them. JIT images run on `aspnet`
+    chiseled; health checks run the node's own executable in probe mode (neither image has `dotnet`, curl or a shell).
+  - **One binary on every host.** The node host (`AddDaServer`) calls `UseSystemd()`, `AddWindowsService()` and
+    DaServer's `UseLaunchd()`, so Program.cs stays five lines. launchd has no official .NET package; `UseLaunchd()`
+    has the official two's contract: it detects launchd (`OperatingSystem.IsMacOS()` and `XPC_SERVICE_NAME` set to
+    the job label, not empty or `0`; not `getppid() == 1`, which orphans also see; not a security check), then uses
+    the lifetime without status messages, `AppContext.BaseDirectory` as content root (launchd starts in `/`) and
+    console logs without colours, with timestamps; elsewhere it does nothing. DaServer documents the plist (`Label`,
+    `ProgramArguments`, `KeepAlive`, `ExitTimeOut` at least the stop budget, `StandardOutPath`/`StandardErrorPath`).
+    The launch flows are [drafts/deployment.md](drafts/deployment.md) section 0.
   - **Deployment is explicit.** Group names, replica counts, the store and every public port are written in
     `apphost.cs`; nothing is inferred from code. All replicas of a group listen on the same ports. The cluster and
     HTTP ports are assigned by DaServer.Aspire and reachable only inside the cluster; only `WithClientConnections(port)`
@@ -1802,4 +1819,5 @@ Replaced by ADR-081.
   AppHosts yet); the AppHost inside the node's `Program.cs` (the node image would carry Aspire.Hosting and the DCP
   orchestrator, which are not AOT-compatible and have no place on a production node); inferring client ports from
   `[Hosts<Connection>]` (less visible; the owner prefers explicit deployment).
-- Consequences: roadmap R7 moves the samples to `apphost.cs`; R11 renames the node-side API and adds the build check.
+- Consequences: roadmap R2 adds `UseLaunchd()` to the node host (verified on a macOS runner); R7 moves the samples to
+  `apphost.cs`; R11 renames the node-side API and adds the build check.

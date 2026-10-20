@@ -266,7 +266,7 @@ public class Movement : EcsSystem
 - **节点代数**：节点每次加入集群，由集群分配一个单调递增的代数（不是进程里随机生成的数）。同名的节点重启后是新的代数，不会被当成原来那个。热重启不算重新加入：代数不变，化身号加一（第 10 节）。
 - **world**：节点里有几个工作线程，每个线程跑一个 EasyEcs world；节点承载的所有 Actor 类型共用它，Actor 落在哪个 world 由键的哈希决定。world 的个数由节点按分到的 CPU 自己定（`DaServer:Worlds` 可以覆盖），用户代码和 AppHost 都不写它；框架内部把"一个线程加一个 world"叫 shard。
 - **帧率**写在 Actor 类型上（第 5 节），不在配置里。
-- **Program.cs**：五行，把生成的 `Registrations.Create()` 交给节点（第 12 节）。没有静态的注册表。
+- **Program.cs**：五行，把生成的 `Registrations.Create()`（第 12 节）交给节点。没有静态的注册表。节点的宿主（`AddDaServer`）调用 `UseSystemd()`、`AddWindowsService()` 和 DaServer 自己的 `UseLaunchd()`，各自不在对应的服务管理器下就什么也不做，所以 Program.cs 还是五行，同一个二进制到处能跑（第 10 节的热重启，[deployment.md 第 0 节](deployment.md#0-launch-flows)）。
 - **AppHost**：部署写在 `Game.Server/apphost.cs`，一个 Aspire 的单文件 AppHost：
   ```csharp
   // Game.Server/apphost.cs
@@ -993,7 +993,7 @@ public partial record struct Due(TimeSpan At, long Seq) : IComponent, IIndexed<D
 
 - **生成的注册是封闭类型，不用反射**：`Registrations.Create()` 在用户的程序集里写出每个封闭的类型（`.Actor<Map>()`、分发表、job、`world.AddSystem<…>()`），框架按 Actor 类型的系统也由生成的代码写出封闭的实例。没有反射、`MakeGenericType`、`Activator`、程序集扫描，也没有模块初始化器。
 - 框架的泛型系统不写 `[ForEach]` 方法，在 `OnUpdate` 里用 EasyEcs 的泛型入口跑 job，所以 EasyEcs 不需要在运行时用 `MakeGenericType` 封闭它们的代码（EasyEcs D20：只由别的程序集封闭的泛型系统才走这条路，AOT 下不行）。用户的泛型 `[ForEach]` 系统只在别的程序集里封闭时，DaServer 的分析器报错（第 13 节）：EasyEcs 对这条路不报警告，错了只会在运行时失败。
-- 序列化都是 Nino 生成的格式化器；HTTP 平面用 `CreateSlimBuilder` 和源生成的 JSON。
+- 序列化都是 Nino 生成的格式化器；HTTP 平面用 `CreateSlimBuilder`，框架里没有 JSON：管理端点回 Nino 或纯文本，`MapAsk`/`MapSend` 默认收 Nino，要收 JSON 的端点由应用用自己的源生成 `JsonSerializerContext` 逐个打开（ADR-083，architecture.md 第 8 节）。
 - 发布要求 0 警告，不接受压掉任何警告。EasyEcs 4.6 带追踪组件（`IPersisted`）和禁用组件的程序发布时没有警告（EasyEcs 的 CI 以警告为错误发布并运行原生程序，`faq.mdx` 的 "Native AOT"）；R 里要验证的只剩第三方包（architecture.md 第 8 节）。
 
 ### `wire.manifest`
@@ -1028,7 +1028,7 @@ public partial record struct Due(TimeSpan At, long Seq) : IComponent, IIndexed<D
 - **交接的字节**（下面两种传输方式完全相同）：
   - 头：节点名、节点代数、化身号、交接令牌、旧版本 `wire.manifest` 的哈希、校验和；
   - 每个 world：`world.Save` 的字节（实体连同 id 和版本、组件、`DynamicBuffer`（包括占位上等着的 `Mail`）、单例；不含系统、索引、写入戳，EasyEcs `guide/saves.mdx`）；调度队列里还没进 world 的邮件；这个 world 的 `Time.Elapsed`；
-  - 节点的运行时状态：调用 id 的序号、墓碑、连接戳的计数；每条链路对方发来的流（流 id、处理到的字节数）和发出去的流（流 id、偏移、还没确认的尾巴）。
+  - 节点的运行时状态：调用 id 的序号、墓碑、连接戳的计数；每条链路对方发来的流（流 id、切换点时收到的字节数）和发出去的流（流 id、偏移、还没确认的尾巴）。
   - 记录写入在交接之前都有了结果：写成的去掉了 `Unsaved`，没写成的还带着。`Unsaved` 是根上的 tag，随 `world.Save` 一起过去，所以等着写的记录不会丢，新进程的下一个检查点接着写。`Outbox` 每项执行完就发出，两个 tick 之间是空的。
 - **时间**：新进程的 world 时钟从保存时的 `Time.Elapsed` 接着走，所以每个 `Due` 不用改写，剩下的时间不变，停顿不计入（同迁移的剩余时间）。
 - **步骤：先预热，再交接**（节点自己起继任进程时的标准顺序）：
@@ -1036,7 +1036,7 @@ public partial record struct Due(TimeSpan At, long Seq) : IComponent, IIndexed<D
   2. 旧节点在成员视图里宣布 `Restarting`，带一个期限和交接令牌的哈希；
   3. 这时旧进程的每个 world 才在两个 tick 之间冻结：不再执行任何项，等在途的记录写入有结果，然后 `world.Save`。**冻结的只是 world 的线程**：IO 线程照常收网络帧，放进调度队列，所以冻结期间发来的消息不被拒绝，也不用让客户端或别的节点停发。`Save` 完了，旧进程在一个切换点停止读链路，把调度队列里还没进 world 的邮件和每条链路收到的字节数一起序列化，连同运行时状态流给新进程。切换点之后对方再发的帧留在对方的重发窗口里，第 5 步切到备用链路后重放给新进程。客户端看到的只是这期间的消息晚到一次停顿的时间；
   4. 新进程 `world.Load(bytes, markWritten: false)` 进已经建好的 world（见下面的"写入戳"），接上时钟；
-  5. 新进程以一次成员更新接管：同一个节点名和代数、化身号加一（成员视图里已有的化身号）、带着交接令牌；它的成员信息比 `Restarting` 新，其他节点关掉旧进程的链路，改用备用链路，重放各自的重发窗口（处理到的字节数在交接里，所以不重复也不丢）；
+  5. 新进程以一次成员更新接管：同一个节点名和代数、化身号加一（成员视图里已有的化身号）、带着交接令牌；它的成员信息比 `Restarting` 新，其他节点关掉旧进程的链路，改用备用链路，重放各自的重发窗口（收到的字节数在交接里，所以不重复也不丢）；
   6. 旧进程退出。
   - 平台重启进程时做不到预热：旧进程先退出，新进程启动后才做第 1、4、5 步。
 - **所有权怎么交过去**：
@@ -1054,12 +1054,15 @@ public partial record struct Due(TimeSpan At, long Seq) : IComponent, IIndexed<D
   - 带着这个化身号和交接令牌的成员更新到了才切换：旧进程的连接关掉，继任进程用交接里恢复的字节数回 `Resume`，两边各自重放；
   - 化身号变大时重新取成员卡片（新版本的构建号在卡片上）；
   - 平台重启时没有备用链路：新进程绑好公布的端口后以同一个身份重连，流照样续上。
-- **两种传输方式**，同一套字节、同一套所有权规则：
-  - **节点自己起继任进程**（先预热再交接，停顿几十毫秒）：旧进程启动新二进制，两者经本机管道连上：.NET 自带的 `System.IO.Pipes`，Windows 上是命名管道，Linux 和 macOS 上是 `/tmp` 下的 Unix 域套接字；用 `PipeOptions.CurrentUserOnly`，连接时核对对方是同一个用户，.NET 11 起 Unix 上的套接字文件是 0600。新进程预热好之后，旧进程冻结、把字节流过去；新进程加载、回报"已加载"；旧进程关掉监听端口退出，新进程绑定同样的端口。不需要 `exec`（Windows 没有）。适用于：没有服务管理器的进程（开发机、自己管进程的部署），和 systemd：`Type=notify`、`NotifyAccess=all`，节点用官方的 `Microsoft.Extensions.Hosting.Systemd`（`UseSystemd()`，就绪和停止的通知、journald 日志），新进程接管后用同一个包的 `ISystemdNotifier` 发 `MAINPID=<自己的 pid>`，systemd 改盯新进程。
-  - **平台重启进程**（停顿几百毫秒）：旧进程把字节写进节点本地目录里的一个快照文件，经 `MemoryMappedFile.CreateFromFile` 写入（跨平台；Unix 上没有具名映射），然后退出；平台用新的二进制或镜像重启它。新进程启动时找属于自己节点名、校验和正确、没过期限的快照：有就加载，不重新激活；过期或者不合格就删掉，照常加入、从记录激活。适用于监管者只盯自己启动的那个进程、不能换 PID 的环境，都不用自己写启动器：
+- **两种传输方式**，同一套字节、同一套所有权规则。走哪一种，看节点的宿主发现了哪个监管者：`UseSystemd()` 发现 systemd，走预热交接（`MAINPID`）；`UseLaunchd()` 发现 launchd、`AddWindowsService()` 发现 Windows 服务，走快照文件；配置了快照目录 `DaServer:SnapshotPath`（DaServer.Aspire 在 Kubernetes、Compose 和本地 Aspire 运行时都会设置）也走快照文件；都没有（自己管的普通进程）时走管道上的预热交接。本地用 Aspire 跑时，节点由 Aspire 的进程编排（DCP）启动和盯着，它不认节点自己起的进程，所以本地也走快照文件：`{cluster}-restart` 先重新编译，再逐个节点通知、用 Aspire 自带的资源重启命令把它重启：
+  - **节点自己起继任进程**（先预热再交接，停顿几十毫秒）：旧进程启动新二进制，两者经本机管道连上：.NET 自带的 `System.IO.Pipes`，Windows 上是命名管道，Linux 和 macOS 上是 `/tmp` 下的 Unix 域套接字；用 `PipeOptions.CurrentUserOnly`，连接时核对对方是同一个用户，.NET 11 起 Unix 上的套接字文件是 0600。新进程预热好之后，旧进程冻结、把字节流过去；新进程加载、回报"已加载"；旧进程关掉监听端口退出，新进程绑定同样的端口。不需要 `exec`（Windows 没有）。适用于：没有服务管理器的进程（开发机、自己管进程的部署），和 systemd：`Type=notify`、`NotifyAccess=all`，节点的宿主调用官方的 `Microsoft.Extensions.Hosting.Systemd`（`UseSystemd()`，就绪和停止的通知、journald 日志），新进程接管后用同一个包的 `ISystemdNotifier` 发 `MAINPID=<自己的 pid>`，systemd 改盯新进程。
+  - **平台重启进程**（停顿几百毫秒）：旧进程把字节写进节点本地目录里的一个快照文件，经 `MemoryMappedFile.CreateFromFile` 写入（跨平台；Unix 上没有具名映射），然后退出；平台用新的二进制或镜像重启它。新进程启动时找属于自己节点名、校验和正确、没过期限的快照：有就加载，不重新激活；过期或者不合格就删掉，照常加入、从记录激活。适用于监管者只盯自己启动的那个进程、不能换 PID 的环境；重启都由平台自己的监管者做，DaServer 不另起管理进程：
     - **Kubernetes**：承载 Actor 的节点组是 `updateStrategy: OnDelete` 的 StatefulSet（Pod 名就是节点名，改模板不替换 Pod），快照在 `medium: Memory` 的 emptyDir；发布（`helm upgrade`）改模板里的镜像，`{cluster}-restart` 再逐个改运行中 Pod 的容器镜像，从不改模板：kubelet 在同一个 Pod 里重启容器（同一个 UID、同一个 IP），emptyDir 保留，不重新调度（ADR-085）。
     - **Docker Compose**：承载 Actor 的节点组每个节点一个服务（`map-0`、`map-1`，固定的 `hostname`，就是节点名），快照在这个节点自己的命名卷里（容器重建后还在）；`{cluster}-restart` 在部署的机器上逐个节点 `docker compose pull`、通知节点、`docker compose up -d --no-deps map-0`。
-    - **macOS 的 launchd**、**Windows 服务**：launchd 和服务控制管理器只认自己启动的进程，不能像 systemd 那样换 PID，所以走这一条：`launchctl kickstart -k system/<label>`（plist 里 `KeepAlive`）或 `Restart-Service`；Windows 上节点用官方的 `Microsoft.Extensions.Hosting.WindowsServices`（`AddWindowsService()`），launchd 没有官方包，节点作为普通进程运行，`SIGTERM` 照常触发停机。快照在服务账号的本地目录。
+    - **macOS 的 launchd**、**Windows 服务**：launchd 和服务控制管理器只认自己启动的进程，不能像 systemd 那样换 PID，所以走这一条：`launchctl kickstart -k system/<label>` 或 `Restart-Service`；快照在服务账号的本地目录。Windows 上是官方的 `Microsoft.Extensions.Hosting.WindowsServices`（`AddWindowsService()`）。launchd 没有官方包，DaServer 自己提供同样契约的 `UseLaunchd()`：
+      - 识别：`OperatingSystem.IsMacOS()`，并且 `XPC_SERVICE_NAME` 不是空也不是 `0`（OS X 10.10 起 launchd 把它设成任务的 label，终端里启动的进程是 `0`）。不用 `getppid() == 1`：孤儿进程也会被挂到 PID 1 下，launchd 的开发者也不建议这样判断（[launchd-dev](https://lists.macosforge.org/pipermail/launchd-dev/2015-April/001124.html)）。这不是安全检查。R 在 macOS 的 CI 机器上验证；
+      - 识别到时：宿主的生命周期不打印状态消息（同 systemd），内容根设为 `AppContext.BaseDirectory`（launchd 默认的工作目录是 `/`，同 Windows 服务的做法），控制台日志不带 ANSI 颜色、带时间戳（launchd 把 stdout 写进 `StandardOutPath`），热重启走快照文件；`SIGTERM` 由 Generic Host 默认处理；
+      - DaServer 给出 plist 的写法：`Label`、`ProgramArguments`、`KeepAlive`、`ExitTimeOut` 不小于节点的停机预算（launchd 先发 `SIGTERM`，过了它再 `SIGKILL`，默认 20 秒）、`StandardOutPath`/`StandardErrorPath`，`WorkingDirectory` 可选。
   - 网关和无状态的节点组不热重启，走滚动升级。
 - **停顿**：先预热再交接时，停顿只有 `Save`、传输、`Load` 加上一次成员更新，目标是几十毫秒；平台重启时还要加上进程启动和重连，目标是几百毫秒。搬 world 只要几毫秒：一个 world、每个实体 5 个非托管组件，1 万个实体 `Save` 44 µs、`Load` 183 µs、440 KB，10 万个实体 `Save` 0.76 ms、`Load` 2.7 ms（合计约 3.5 ms）、4.4 MB，都不分配（BenchmarkDotNet ShortRun，EasyEcs 4.5.0，.NET 11 RC2）。R 里端到端测量：BenchmarkDotNet 测每个 world 的交接，E2E 测停顿时长、客户端不断线。
 - **写入戳**：新进程用 `world.Load(bytes, markWritten: false)` 加载（EasyEcs 4.6，`guide/saves.mdx` 的 "Restart"，D39）：加载的行没有写入戳（tick 0），也不算移除过。
@@ -1632,7 +1635,7 @@ public void A_busy_tick_allocates_nothing_and_threads_change_nothing()
 | v25 | 基于 EasyEcs 4.5（`entity.Run`、`IGroupWith`、`Descendants`、`markWritten: false`）；占位就是根；`Key` 显式实现、`IActor<TSelf>` 带 `IEquatable<TSelf>`；按 EasyEcs 文档修正（到期索引、清理组件、`Maybe<T>`、并行度）；Native AOT（JIT 可热更，AOT 不热更；注册是封闭类型、无反射） |
 | v26 | 进程内热更换成原地热重启：两个 tick 之间 `world.Save` 交给新进程（本机管道或节点本地快照文件），同一个节点代数、化身号加一、epoch 不变，不重新激活；JIT 和 AOT 一样；去掉 Logic 工程，用户工程只有 Protocol 和 Server；`wire.manifest` 每个工程一段；不重启就能改的是数据（配置表、功能开关） |
 | v27 | 名词精简：去掉“域”，就是 Actor（根实体加子孙）；shard 只在框架内部，用户看到的是节点里的 world，个数按 CPU 自动定，`AddNodes` 不再有 `shards`；`TestDomain<K>` 改名 `TestActor<K>`；包合并成 Core / Client / DaServer / Persistence.PostgreSql / Testing / Aspire（ADR-086） |
-| v28 | 内置的 Actor 类型 `Client` 改名 `Connection`，“Client”只指远端的客户端；`a.Value`、`Time.Elapsed`；`e.IsPending`/`e.Cancel` 一对（按句柄或按类型）；`Deactivate()` 只在根上；子实体的键带 Actor 的键，不带根 `EntityId`；Actor 里不用 `CreateEntity`；AppHost 是 `Game.Server/apphost.cs`（单文件，`#:project`），集群名和组名分开，`DaServerNodeGroup<T>`，端口按组显式声明（`WithClientConnections(port)`、`WithExternalHttpEndpoints()`，集群和 HTTP 端口只在集群内），热重启命令 `{cluster}-restart`；“连上就加入”取代“挂接”；§0 补齐框架给的名字和术语；`PresenceLost` 不算 Actor 的生命周期 |
+| v28 | 内置的 Actor 类型 `Client` 改名 `Connection`，“Client”只指远端的客户端；`a.Value`、`Time.Elapsed`；`e.IsPending`/`e.Cancel` 一对（按句柄或按类型）；`Deactivate()` 只在根上；子实体的键带 Actor 的键，不带根 `EntityId`；Actor 里不用 `CreateEntity`；AppHost 是 `Game.Server/apphost.cs`（单文件，`#:project`），集群名和组名分开，`DaServerNodeGroup<T>`，端口按组显式声明（`WithClientConnections(port)`、`WithExternalHttpEndpoints()`，集群和 HTTP 端口只在集群内），热重启命令 `{cluster}-restart`；“连上就加入”取代“挂接”；§0 补齐框架给的名字和术语；`PresenceLost` 不算 Actor 的生命周期；本地节点是 `AddDotnetProject`，AOT 用镜像跑 Compose 验证；热重启的传输方式跟着宿主发现的监管者走（systemd、launchd 的 `UseLaunchd()`、Windows 服务），冻结只停 world 的线程 |
 
 ---
 
@@ -1644,5 +1647,5 @@ public void A_busy_tick_allocates_nothing_and_threads_change_nothing()
 2. **客户端路由由 `[On<T>]` 所在的 `[Handles<K>]` 类推出**，不另写路由表。同一件事只写一处；改动路由的版本要连网关一起滚动升级，热重启由 `wire.manifest` 比对拦住（第 10 节）。
 3. **`[From<K>]` 保持必写**。"从类型就看得出谁发给谁"是目标之一；新的发送方要改消息声明，这正是想要的显式。
 4. **消息不做成实体**。邮箱和到期项在有序阶段归并两个来源。把每条消息做成带 `Due` 的实体能统一表示，但每条消息多一次建实体和销毁。重构时用 BenchmarkDotNet 测一次：快不差于 10% 才改。
-5. **EasyEcs 4.6 已提供本稿依赖的功能**：`entity.Run(ref job[, filter])`（抛出时 `ref` 写入也搬到新行；job 带 `INoStructuralChanges` 时冻结结构）、接口带的组过滤 `IGroupWith<T>` / `IGroupWithout<T>`、`world.Descendants(root)`、`LoadEntitiesInto(…, markWritten: false)`（被覆盖的 prefab 默认值也不算写入），分析器把 `entity.Run` 和 `LoadEntitiesInto` 当结构调用（EECS010/013/014）；4.6 又加上 `world.Load(bytes, markWritten: false)`、`AddSystem(…, changesFromNow: true)`（需求 #22），带追踪组件的程序 Native AOT 发布 0 警告（需求 #21）。EasyEcs 评估后放弃的：并行批量方法、`LastWriteTick`、公开读写集、多 world 共享并行预算。重构的第一步是把 `EasyEcsVersion` 升到 4.6.0（等它上了 NuGet），并编译验证两件事：DaServer 生成器补的 `Key` 显式实现被 EasyEcs 的值索引接受；`IActor<TSelf>` 在框架程序集里编译通过。
+5. **EasyEcs 4.6 已提供本稿依赖的功能**：`entity.Run(ref job[, filter])`（抛出时 `ref` 写入也搬到新行；job 带 `INoStructuralChanges` 时冻结结构）、接口带的组过滤 `IGroupWith<T>` / `IGroupWithout<T>`、`world.Descendants(root)`、`LoadEntitiesInto(…, markWritten: false)`（被覆盖的 prefab 默认值也不算写入），分析器把 `entity.Run` 和 `LoadEntitiesInto` 当结构调用（EECS010/013/014）；4.6 又加上 `world.Load(bytes, markWritten: false)`（EasyEcs D39）、`AddSystem(…, changesFromNow: true)`，带追踪组件的程序 Native AOT 发布 0 警告（EasyEcs D38）。EasyEcs 评估后放弃的：并行批量方法、`LastWriteTick`、公开读写集、多 world 共享并行预算。重构的第一步是把 `EasyEcsVersion` 升到 4.6.0（等它上了 NuGet），并编译验证两件事：DaServer 生成器补的 `Key` 显式实现被 EasyEcs 的值索引接受；`IActor<TSelf>` 在框架程序集里编译通过。
 6. **改代码只有热重启，不用 `AssemblyLoadContext`**：理由和代价见 ADR-084，做法见第 10 节；Kubernetes 上的形态见 ADR-085。加载用 EasyEcs 4.6 的 `world.Load(bytes, markWritten: false)`，加载的行不算变更（第 10 节的"写入戳"）。`Save` 写进 `NinoArrayBufferWriter` 再拷进管道或文件，多一次拷贝；10 万个实体 4.4 MB，可以忽略，不另提需求。

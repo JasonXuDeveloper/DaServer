@@ -22,15 +22,18 @@ Keep this file current: tick items when done, add items when scope changes.
 11. S1-S6 (done) elastic scaling.
 12. The ECS rewrite (ADR-081, the "ECS rewrite" entry under "Open cleanup" below): P1-P3 and P5 done; P4, P6 and P7
     superseded by R.
-13. R — refactor to the v24 programming model ([drafts/programming-model.md](drafts/programming-model.md),
-    [drafts/architecture.md](drafts/architecture.md)) on EasyEcs 4.6.0 (ADR-082 to ADR-086). Breaking; each step
+13. R — refactor to the v28 programming model ([drafts/programming-model.md](drafts/programming-model.md),
+    [drafts/architecture.md](drafts/architecture.md)) on EasyEcs 4.6.0 (ADR-082 to ADR-087). Breaking; each step
     proven before the next:
     - [ ] R1 EasyEcs 4.6.0 (`EasyEcsVersion`, once on NuGet) and the compile checks: the generated explicit `Key`
       (`Map IIndexed<Map>.Key => this`) is accepted by value indexes; `IActor<TSelf>` with its constraints
       (`ISystemGroup`, `IGroupWith<In<TSelf>>`) compiles in the framework assembly.
     - [ ] R2 Packages and attributes (ADR-086): Abstractions merged into Core, Hosting into `DaServer`, Simulation into
       Testing, WireTool into the generator's MSBuild task; `DaServer:Shards` and the AppHost's shard parameter replaced
-      by sizing from the node's CPUs (`DaServer:Worlds` overrides); `TestActor<K>`. `IFromClient`/`IToClient`/`[To]`/
+      by sizing from the node's CPUs (`DaServer:Worlds` overrides); `TestActor<K>`. The node host (`AddDaServer`) calls
+      `UseSystemd()`, `AddWindowsService()` and the new `UseLaunchd()` (ADR-087: launchd detected by `XPC_SERVICE_NAME`;
+      lifetime without status messages, content root `AppContext.BaseDirectory`, plain timestamped console logs;
+      verified on a macOS runner), each a no-op off its supervisor; the plist documented. `IFromClient`/`IToClient`/`[To]`/
       `IServer` in Core; `IActor<T>`,
       `[Handles<K>]`, `[On<T>]`, `IMessageTo<K>`, `IRequestTo<K,R>`, `[From<K>]`, `IEvent`, `IPersisted`, `[Claims]`,
       `[JoinOnConnect<T>]`, `[TickRate]`, `[Stateless]`, `[Transient]` in the runtime.
@@ -42,8 +45,11 @@ Keep this file current: tick items when done, add items when scope changes.
       `ClientGroup` subscriptions.
     - [ ] R6 Persistence, activation and migration: epochs and fencing, placeholder roots, `IPersisted` records
       through `Descendants` and `ComponentSet`, migration bytes with layout hashes. Hot restart's runtime side (draft
-      §10, JIT and AOT): shards stopped between two ticks, the handoff bytes (`world.Save`, pending mail, shard
-      clocks, runtime state) over a local named pipe or a node-local snapshot file, `Restarting` with a deadline in
+      §10, JIT and AOT): shards frozen between two ticks while IO keeps receiving into the dispatch queue, a cutover
+      point, the handoff bytes (`world.Save`, the queued mail with each link's received byte count, shard clocks,
+      runtime state) over a local pipe (systemd with `MAINPID` from the successor, a plain process) or a node-local
+      snapshot file (Kubernetes, Compose, launchd, Windows services; the transport follows the supervisor the node host
+      detected), `Restarting` with a deadline in
       membership, warm up then hand over (the successor warmed, its systems registered and its standby peer links
       authenticated before the old shards stop), the successor joining with the same generation and the next
       incarnation and keeping the epochs (ADR-084); links: identity (name, generation) on the wire, `LinkHello` with
@@ -623,7 +629,7 @@ in separate commits.
       process in place, the world handed over (the runtime side is R6). Here: the admin command and the AppHost command
       (the new build's `wire.manifest` in, the path taken out: in place, through records, or refused for a rolling
       upgrade), node groups restarted one node at a time, the Kubernetes path on R11's StatefulSets (ADR-085), the
-      service-manager note (systemd `MAINPID` handover or a launcher). Changes without a restart as data
+      platform notes (systemd `MAINPID` handover; Compose, launchd and Windows services through the snapshot file). Changes without a restart as data
       swaps between two ticks: tuning tables (validated snapshot, cluster-wide trigger, version on the member card) and
       feature flags choosing between handlers compiled in. Gateways take rolling upgrades; socket handoff
       (`SCM_RIGHTS`, Unix only) stays a possible later optimization. (in-house game servers, ET, Envoy hot restart)

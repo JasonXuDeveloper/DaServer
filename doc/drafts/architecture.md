@@ -4,7 +4,7 @@ The architecture DaServer is refactored to (breaking, roadmap phase R): the v28 
 [programming-model.md](programming-model.md) on EasyEcs 4.6.0, with Native AOT support. The programming model draft is
 the source of truth for what users write and what each rule means; this file says how the pieces fit together and
 links to the draft's sections instead of repeating them. Today's architecture is [design.md](../design.md); the
-decisions are ADR-082 to ADR-086 in [decisions.md](../decisions.md). When R is done, this file and the draft are
+decisions are ADR-082 to ADR-087 in [decisions.md](../decisions.md). When R is done, this file and the draft are
 promoted into design.md and decisions.md and deleted (R10).
 
 ## 1. Layers and projects
@@ -18,11 +18,11 @@ node takes no AppHost code, production takes no test tools, and a capability is 
 |---|---|---|
 | `DaServer.Core` | netstandard2.1, net11.0 | What both sides see: the client-facing contracts (`IFromClient`, `IFromClient<R>`, `IToClient`, `[To]`, `IServer`, `TypeId<T>`, status codes) and the wire and transport (frames, buffers, channels, the pending-call table). Ships the generators, the analyzers and the `wire.manifest` task (below). |
 | `DaServer.Client` | netstandard2.1, net11.0 | The client SDK: connect, send `IFromClient`, receive `IToClient`, slots and re-joining ([draft §7](programming-model.md#7-客户端与-presence)). |
-| `DaServer` | net11.0 | The server: the model (`IActor<T>`, `[Handles<K>]`, `[On<T>]`, `IMessageTo<K>`, `IRequestTo<K,R>`, `[From<K>]`, `IEvent`, `IPersisted`, `Entity` operations, `Connection`), the framework systems, cluster, placement, persistence, migration, hot restart, and the node host: Generic Host and ASP.NET Core, configuration, OpenTelemetry, shutdown, the HTTP plane. |
+| `DaServer` | net11.0 | The server: the model (`IActor<T>`, `[Handles<K>]`, `[On<T>]`, `IMessageTo<K>`, `IRequestTo<K,R>`, `[From<K>]`, `IEvent`, `IPersisted`, `Entity` operations, `Connection`), the framework systems, cluster, placement, persistence, migration, hot restart, and the node host: Generic Host and ASP.NET Core, configuration, OpenTelemetry, shutdown, the HTTP plane, and the service-manager integration (`UseSystemd()`, `AddWindowsService()` and DaServer's own `UseLaunchd()`, each a no-op off its supervisor, [deployment.md section 0](deployment.md#0-launch-flows)). |
 | `DaServer.Persistence.PostgreSql` | net11.0 | The record store: epoch-fenced, compare-and-swap writes. |
 | `DaServer.Testing` | net11.0 | `TestActor<K>` (one actor, one world, a manual clock), `TestCluster` (in-process nodes) and simulated users (`Swarm`, HTN behaviors) over `DaServer.Client` for load tests and E2E. |
 | `DaServer.Aspire` | net11.0 | AppHost side: `AddDaServerCluster`, `AddNodes<TServer>` (a `DaServerNodeGroup<TServer>`), `WithActorStore`, `WithClientConnections(port)` on a node group, `WithClientEndpoints(gateways)` for a client app, the `{cluster}-restart` command, and a generator that writes the server types from the committed `wire.manifest` of the `#:project` (`actor` and `hosted-by` lines), each bound to that project. References no server assembly. |
-| `DaServer.Generator` | netstandard2.0 | Not a package of its own: built twice (Roslyn 5.x and 4.3, Unity's oldest) into `DaServer.Core`'s `analyzers/` folder, so every project using DaServer gets it. The generators (explicit `Key`, typed sends, `[On<T>]` jobs, `Registration`, `wire.manifest`), the analyzers ([draft §13](programming-model.md#13-编译期检查删掉的东西版本记录)) and the MSBuild task behind `-p:UpdateWireManifest=true` (one section per project, [draft §10](programming-model.md#10-持久化迁移热重启升级easyecs-45)). |
+| `DaServer.Generator` | netstandard2.0 | Not a package of its own: built twice (Roslyn 5.x and 4.3, Unity's oldest) into `DaServer.Core`'s `analyzers/` folder, so every project using DaServer gets it. The generators (explicit `Key`, typed sends, `[On<T>]` jobs, `Registration`, `wire.manifest`), the analyzers ([draft §13](programming-model.md#13-编译期检查删掉的东西版本记录)) and the MSBuild task behind `-p:UpdateWireManifest=true` (one section per project, [draft §10](programming-model.md#10-持久化迁移热重启升级easyecs-46)). |
 
 Merged away: `DaServer.Abstractions` into `DaServer.Core` (both are referenced by every client and every server; the
 analyzer, not a package boundary, keeps server types out of `Game.Protocol`), `DaServer.Hosting` into `DaServer` (a
@@ -177,7 +177,7 @@ Per actor type with `[TickRate(n)]`, at time t ([draft §1](programming-model.md
 - **Placement**: an actor type is bound to server types (`[Hosts<…>]`); its keys are placed among the nodes hosting
   it, moved when nodes join or leave (rate-limited per node). `[Stateless]` actors live on any node, never persisted.
   `Connection` is pinned.
-- **Activation** ([draft §6](programming-model.md#6-生命周期), [§10](programming-model.md#10-持久化迁移热重启升级easyecs-45)):
+- **Activation** ([draft §6](programming-model.md#6-生命周期), [§10](programming-model.md#10-持久化迁移热重启升级easyecs-46)):
   1. The first message creates the placeholder (`Loading`); mail waits on it.
   2. The activation takes an epoch: a conditional write `(key, epoch) → epoch + 1`, even without a record.
   3. The record is loaded into the placeholder and n−1 empty entities:
@@ -220,8 +220,8 @@ Per actor type with `[TickRate(n)]`, at time t ([draft §1](programming-model.md
     longer pause), or refused in favour of a rolling upgrade (hosting or client routes changed).
   - **Handoff bytes** (one format, two transports): per shard the `world.Save` output (entities with ids, components,
     buffers including placeholder mail, singletons; no systems, indexes or change ticks), mail still in the dispatch
-    queue and the shard's `Time.Elapsed`; per node the call id sequence, tombstones, the connection stamp counter and per
-    peer link the inbound stream id with the bytes processed and the outbound stream id, offset and unacknowledged tail; a header with node name, generation, incarnation, handoff token and checksum. The new
+    queue at the cutover point and the shard's `Time.Elapsed`; per node the call id sequence, tombstones, the connection stamp counter and per
+    peer link the inbound stream id with the bytes received and the outbound stream id, offset and unacknowledged tail; a header with node name, generation, incarnation, handoff token and checksum. The new
     process loads each world, adds the systems from its `Registration` and resumes each shard clock at the saved
     `Time.Elapsed`, so every `Due` keeps its remaining time.
   - **Ownership**: the node announces `Restarting` with a deadline and the hash of the handoff token; peers keep it
@@ -234,19 +234,26 @@ Per actor type with `[TickRate(n)]`, at time t ([draft §1](programming-model.md
     point (the successor's "loaded"); the successor runs them only after it. A deadline that passes first turns into
     an ordinary node departure: actors re-activate elsewhere under new epochs and a late successor discards the
     snapshot and joins with a new generation.
-  - **Transports**: *successor launched by the node* (bare metal, VMs, Windows services, macOS, development): warm up,
-    then hand over. The old process starts the new binary, connected over a local `System.IO.Pipes` named pipe (a
-    Windows named pipe, a Unix domain socket elsewhere); the successor finishes JIT warm-up or AOT initialization,
-    builds its empty worlds with their systems and authenticates standby peer links (below), binding no client port. Only then does the old process announce `Restarting`, stop its shards
-    between two ticks and stream the bytes; the successor loads them and takes over with one membership update; the
-    old process closes its listeners and exits, the successor binds the same ports. No `exec`. A service manager that tracks the PID
-    must accept the handover (systemd: `sd_notify` with `MAINPID`) or supervise a small launcher instead. *Process
-    restarted by the platform* (a container restart in the same Kubernetes pod, a systemd restart): the old process
-    writes the bytes into a file in a node-local directory (a memory-backed `emptyDir`, tmpfs where available, a plain
-    local directory otherwise) through `MemoryMappedFile.CreateFromFile` and exits; the new process loads a fresh,
-    checksummed snapshot for its node name at start, and ignores a stale or invalid one (activation from records as
-    usual). On Kubernetes the running pod's container image is changed in place, so the pod is not rescheduled
-    (deployment below).
+  - **Transports**, picked by the supervisor the node host detected (`UseSystemd()`, `AddWindowsService()`,
+    `UseLaunchd()`; per platform: [deployment.md section 0](deployment.md#0-launch-flows)). *Warm handoff* where the
+    node may launch its successor (systemd, where the successor sends `MAINPID` through `ISystemdNotifier` with
+    `Type=notify` and `NotifyAccess=all`; a plain process without a supervisor): warm up, then hand over. The old
+    process starts the new binary, connected over a local `System.IO.Pipes` pipe (a Windows named pipe, a Unix domain
+    socket elsewhere; `PipeOptions.CurrentUserOnly`); the successor finishes JIT warm-up or AOT initialization, builds
+    its empty worlds with their systems and authenticates standby peer links (below), binding no client port. Only
+    then does the old process announce `Restarting` and freeze its shards between two ticks. Freezing stops the shard
+    threads only: IO threads keep reading frames into the dispatch queue, so nothing sent during the pause is refused
+    and no client or peer is asked to stop sending. After `Save` the old process stops reading its links at a cutover
+    point and streams the bytes with the queued mail and each link's received byte count; frames sent after the
+    cutover wait in the peers' resend windows and replay to the successor over the standby links. The successor loads
+    the bytes and takes over with one membership update; the old process closes its listeners and exits, the
+    successor binds the same ports. No `exec`. *Platform restart* where the supervisor watches only the process it
+    started (a container restart in the same Kubernetes pod, a recreated Compose container with the node's own named
+    volume, launchd via `launchctl kickstart -k`, a Windows service via `Restart-Service`): the old process writes the
+    bytes into a file in a node-local directory (a memory-backed `emptyDir`, a named volume, a plain local directory)
+    through `MemoryMappedFile.CreateFromFile` and exits; the new process loads a fresh, checksummed snapshot for its
+    node name at start, and ignores a stale or invalid one (activation from records as usual). On Kubernetes the
+    running pod's container image is changed in place, so the pod is not rescheduled (deployment below).
   - **Standby peer links** (ADR-084): today's links are one per peer address with one inbound slot, named by a random
     per-process id, and a `Resume` from another id restarts the stream. Target: identity on the wire is (name,
     generation) with the incarnation beside it; the successor's `LinkHello` carries the next incarnation, `Standby` and
