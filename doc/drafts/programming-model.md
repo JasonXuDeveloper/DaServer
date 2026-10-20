@@ -1,4 +1,4 @@
-# DaServer 新编程模型设计（草案 v18，未实现，迭代中）
+# DaServer 新编程模型设计（草案 v19，未实现，迭代中）
 
 原则：业务代码干净、解耦、简洁，不用 OOP。能用 EasyEcs 的功能就用 EasyEcs，其余交给我们的特性和生成器，不重复造轮子。
 
@@ -324,6 +324,51 @@ static void Resolve(Entity e, in Casting c, in Position me, in Clock clock, Worl
 
 - 命中判定读的是这一帧的位置；前摇期间目标走开，就判定为闪避。
 - `HitSystem` 按目标汇总这一帧的伤害，按到达序号排序后施加，按目标并行；同一帧里谁先打死谁，也是确定的。
+
+### v19：n = 0 也要支持——动作是"延后 n 帧的事件"，n = 0 就当场执行
+
+前摇为 0 的动作要立即结算：瞬发技能、喝药、买东西、交易。它们不能统一推到下一帧：
+- **资源类的必须当场结算**：连发两次"购买"，如果都推到下一帧再扣钱，两次校验看到的都是扣钱之前的余额，就会超支。
+- **后面的消息要看到结果**：喝完药立刻放技能，技能的校验要看到加血之后的血量。
+
+**做法：把"结算"写成一个事件，由消息决定它延后几帧。用户只写一份结算代码。**
+
+```csharp
+[On<CastSkill>]                                   // validate, then schedule the resolution n frames later
+static void Cast(in CastSkill m, [Link] Self<Avatar> me, [Link] in Stunned? stunned)
+{
+    if (stunned is not null) return;
+    me.After(Skills.Windup(m.Skill), new Strike(m.Skill, m.Target));   // n = 0: runs right now, inline
+}
+
+[On<Strike>]                                      // the one resolution, whether n is 0 or 10
+static void Resolve(in Strike s, [Link] in Position me, [Of(nameof(Strike.Target))] in Position target,
+    [Of(nameof(Strike.Target))] ref Health hp)
+{
+    if (Skills.InRange(s.Skill, me.Value, target.Value)) hp.Value -= Skills.Damage(s.Skill);   // out of range now: dodged
+}
+```
+
+**运行时怎么执行 `After(n, 事件)`：**
+
+| n | 何时执行 | 顺序 |
+|---|---|---|
+| 0 | 当场，作为当前消息处理的一部分（同一个事务） | 和消息的到达顺序一致：后面的消息一定看到它的结果 |
+| > 0 | 第 当前帧 + n 帧，和这一帧到期的其他事件一起执行 | 按 `(帧, 到达序号)` 排序；结算前先跑完这一帧的移动，所以读到的是这一帧的位置 |
+
+- 到期的事件是数据（带 `Due` 的子实体）。同一帧到期的同类事件可以成批执行：互不相干的并行，同一目标的按到达序号依次执行（孤岛）。
+- 前摇期间被打断：打断的处理方法删掉这个待执行的事件，它就不会发生。
+- 瞬发（n = 0）和前摇（n > 0）走的是同一个 `[On<Strike>]`，所以不存在两套结算逻辑。
+
+**为什么 n = 0 当场执行，和推到帧边界结算的结果一样（除了资源类）：**
+- 位置只在帧推进时改变。所以同一个帧窗口里，当场判定和帧边界判定读到的是同一份位置。
+- 血量、资源在当场判定时按到达顺序修改，在帧边界时按到达序号修改，顺序一致。
+- 区别只在资源类的校验：当场执行时，后面的消息立刻看得到扣款；推到帧边界则看不到。所以 n = 0 一律当场执行。
+
+**于是整个模型只剩三样东西：**
+1. **消息**：校验，修改即时的状态（资源、冷却、动作开始），按到达顺序当场生效。
+2. **事件**：`After(n, …)`。n = 0 当场执行；n > 0 在第 n 帧和其他到期事件一起成批执行。
+3. **帧**：推进随时间变化的状态（移动、buff、回复），按列并行，可以 SIMD。
 
 ### 结论（v17）：消息是事务，tick 是并行计算；并行由运行时决定，用户不拆分
 
