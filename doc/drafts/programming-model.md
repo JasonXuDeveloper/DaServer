@@ -305,6 +305,60 @@ static void Advance(in Tick t, Span<Position> p, ReadOnlySpan<Velocity> v) { …
 | 宽事件（处理方法通过查询或 `World` 访问了签名之外的实体） | 一个串行屏障：前面的做完，它单独执行，后面再继续 | — |
 | 一个热点目标（很多人打同一个 boss） | 只有这个孤岛串行；对只做累加的组件（`[Accumulate] Health`），用按顺序的前缀和并行算出每一步，结果仍等于串行 | — |
 
+**一个完整的例子：用户什么都不用判断。**
+
+用户写的（全部是普通的同步代码）：
+
+```csharp
+[On<MoveTo>] static void Step(in MoveTo m, [Link] ref Position p) => p.Value = m.At;
+
+[On<Cast>] static void Hit(in Cast m, [Link] in Position me,
+    [Of(nameof(Cast.Target))] in Position target, [Of(nameof(Cast.Target))] ref Health hp)
+{ if (Vector2.Distance(me.Value, target.Value) < 5) hp.Value -= 10; }
+
+[On<Cast>] static void Aoe(in CastAoe m, [Link] in Position me, World world)   // reaches entities through World
+{ foreach (var e in world.Near(me.Value, 8)) e.WriteHealth().Value -= 5; }
+
+[On<Tick>] static void Regen(in Tick t, Span<Health> hp) { /* +1 each, SIMD */ }
+```
+
+地图依次收到：`① P1 移动  ② P2 移动  ③ P3 打 P2  ④ P4 移动  ⑤ P5 群攻  ⑥ P6 移动  ⑦ Tick`
+
+运行时看签名就知道每条事件读写什么：
+
+| 事件 | 读 | 写 |
+|---|---|---|
+| ① P1 移动 | — | P1.Position |
+| ② P2 移动 | — | P2.Position |
+| ③ P3 打 P2 | P3.Position、P2.Position | P2.Health |
+| ④ P4 移动 | — | P4.Position |
+| ⑤ P5 群攻 | 签名之外（用了 `World`） | 未知：宽事件 |
+| ⑥ P6 移动 | — | P6.Position |
+| ⑦ Tick | 每个实体自己的 Health | 每个实体自己的 Health |
+
+于是这样执行：
+
+```
+第一段 ①–④（⑤ 之前）：
+  孤岛 A：② → ③       （③ 读 P2.Position，必须在 ② 之后：P3 打的是 P2 移动后的位置）
+  孤岛 B：①
+  孤岛 C：④            A、B、C 三个孤岛并行；孤岛内按到达顺序
+⑤ 单独执行             （宽事件：前面全部做完，它独占）
+第二段 ⑥ 单独执行
+⑦ Tick：所有实体并行回血，SIMD
+```
+
+结果和按 ①②③④⑤⑥⑦ 一条条执行完全一样：
+- ③ 看到的是 P2 移动之后的位置；
+- ⑤ 看到的是 ①–④ 全部生效之后的世界。
+
+**用户要知道的只有：**
+- **所有效果都是立即生效的**，不需要判断。
+- **并行是运行时自动做的**，不改变结果，只影响速度。
+- **想让它更快**：把要访问的实体和组件写在参数上（像 `Hit`）；用 `World` 查询（像 `Aoe`）也是对的，只是这条事件会单独执行。
+  - 分析器在 `Aoe` 上给一条提示："这个处理方法通过 World 访问实体，执行时会独占地图"。
+  - 构建产物里有一张表，列出每个处理方法读写什么、是否独占，用来查哪条事件拖慢了地图。
+
 **用户付出的代价只有一条纪律：用参数声明要访问的组件，少用 `World` 查询。**
 - 用了也没错，只是这条事件会变成串行屏障；分析器会提示"这个处理方法是宽的"以及原因。
 - 共用的逻辑（伤害公式、占格规则）写成静态函数，参数是组件，被多个处理方法调用。
