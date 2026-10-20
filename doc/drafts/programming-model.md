@@ -10,7 +10,7 @@
 
 本稿是完整的一份。每条规则只在它所在的那一节写一次，别处只给链接。第 12 节是完整的例子，分别列出用户写的代码、生成的代码和测试。第 13 节是检查和版本记录，第 14 节是已定的取舍和转交 EasyEcs 的需求。
 
-文中引用的 EasyEcs 文档都在它仓库的 `docs/content/` 下。"请求 n" 指向 EasyEcs 提的功能（第 14 节）；请求 16 和 20 是本稿的前提。
+文中引用的 EasyEcs 文档都在它仓库的 `docs/content/` 下。本稿基于 EasyEcs 4.5：`entity.Run(ref job, filter)`、接口带的组过滤（`IGroupWith<T>`）、`world.Descendants(root)`、`LoadEntitiesInto(…, markWritten: false)`。
 
 ---
 
@@ -76,13 +76,13 @@
 
 | 机制 | EasyEcs 的功能 | 我们的特性和生成器 | 运行时 |
 |---|---|---|---|
-| 按键找实体 | 值索引（`world.MapIndex`） | 为 `partial` 的 `IIndexed<T>` 记录结构生成 `Key => this` | 收到消息时查索引 |
+| 按键找实体 | 值索引（`world.MapIndex`） | 为 `partial` 的 `IIndexed<T>` 记录结构生成显式实现 `T IIndexed<T>.Key => this` | 收到消息时查索引 |
 | 逻辑属于哪个 Actor 类型 | — | `[Handles<K>]` | 分发表按 Actor 类型建 |
 | 事件的顺序 | 有序值索引（`Range`）、单例 | `Due` | 运行时系统 `OrderedPhase` 按 `(时间, 序号)` 归并邮箱和到期项，状态在单例 `Ordered` 里 |
-| 消息处理 | 单实体 job（请求 16：`entity.Run<…, TJob>`）、`[With<T>]`、`[Without<T>]`、`Maybe<T>` | `[On<T>]` 生成 job 结构 | 逐个调用，逐个隔离异常 |
+| 消息处理 | 单实体 job（`entity.Run(ref job, filter)`，4.5）、`[With<T>]`、`[Without<T>]`、`Maybe<T>` | `[On<T>]` 生成 job 结构 | 逐个调用，逐个隔离异常 |
 | 参数绑定 | `[ForEach]` 的参数规则 | 一个规则：组件参数绑定到主体 | job 拿到主体的组件 |
 | 发出的东西 | 单例 | — | 单例 `Outbox`，每项执行完一次发出；当前项的上下文是单例 `Current` |
-| 每 tick 的逻辑 | `EcsSystem`、`[ForEach]`、批量方法、`Parallel`、`[Changed<T>]`、`[UpdateAfter<T>]`、`ISystemGroup`、组过滤（请求 20） | Actor 类型就是系统组，`[TickRate]`、`In<K>` | 有序阶段 → `world.Update<Map>()` → 框架的收尾系统 |
+| 每 tick 的逻辑 | `EcsSystem`、`[ForEach]`、批量方法、`Parallel`、`[Changed<T>]`、`[UpdateAfter<T>]`、`ISystemGroup`、接口带的组过滤（`IGroupWith<T>`，4.5） | Actor 类型就是系统组，`[TickRate]`、`In<K>` | 有序阶段 → `world.Update<Map>()` → 框架的收尾系统 |
 | 本域的事件 | `ChildOf`、有序值索引 | `Schedule(ev, after:)`、`Scheduled<T>`、`IEvent`、`Due` | 到期项和消息一起进有序阶段；发起者销毁时一起消失 |
 | 发送方向 | — | `[From<K>]` 生成发送方法，分析器按调用处的 Actor 类型检查 | 发送、回复、超时 |
 | 客户端消息的路由 | — | `[Handles<K>]`、`[To]` 生成路由表 | `Client` 实体直接转发给目标 |
@@ -92,7 +92,7 @@
 | 生命周期 | tag | `[On<Activated>]`、对 `Leaving` 的系统 | 占位、激活 epoch、隔离、`Depart` |
 | 一个 Actor 的实体 | `ChildOf`、`world.Children(map)` | `In<K>`、`root.Spawn`、`e.Root` | — |
 | 只写改过的 | `ITrackChanges`、`[Changed<T>]`、`[Removed<T>]`、`ICleanupComponent` | `IPersisted` | `ChangeSystem`、`CheckpointSystem` |
-| 记录、迁移 | `ComponentSet`、`SaveEntities`、`LoadEntitiesInto` | `IPersisted`、`[Transient]` | 读写存储，epoch CAS，布局哈希 |
+| 记录、迁移 | `ComponentSet`、`Descendants`、`SaveEntities`、`LoadEntitiesInto(…, markWritten: false)` | `IPersisted`、`[Transient]` | 读写存储，epoch CAS，布局哈希 |
 | 版本兼容 | Nino 类型 id、`[NinoFormerName]` | `wire.manifest` | 滚动升级 |
 | 热更 | `RemoveTypes`、可回收的上下文 | `Registration` 在 Logic 程序集里 | 两个 tick 之间切换 |
 | 测试 | 单个 world | `Registration`、`TestDomain<K>` | 手动时钟、`Outbox` 是数据 |
@@ -272,13 +272,20 @@ public readonly partial record struct Room(long Id)  : IActor<Room>;
 - 按键找实体：`world.MapIndex.TryFind(new Map(7), out var e)`，用的是 EasyEcs 的值索引；
 - 处理方法里知道自己是谁：主体是根时取组件参数 `in Map map`；主体是子实体时用 `me.Root`（第 5 节）。
 
-**接口**：`IActor<T>` 继承 `IComponent`、`IIndexed<T>` 和 `ISystemGroup`，并带着组过滤 `In<T>`。
+**接口**：`IActor<T>` 继承 `IComponent`、`IIndexed<T>` 和 `ISystemGroup`，并带着组过滤 `In<T>`：
+
+```csharp
+public interface IActor<TSelf> : IComponent, IIndexed<TSelf>, ISystemGroup, IGroupWith<In<TSelf>>
+    where TSelf : struct, IActor<TSelf>, IEquatable<TSelf>;   // IIndexed<T> requires T : IEquatable<T>; a record struct has it
+```
+
 - EasyEcs 认源码里声明的接口，包括继承来的：它的生成器和分析器都用 `AllInterfaces` 判断（`Symbols.Implements`）。所以：
   - `[UpdateInGroup<TGroup>]` 的约束是 `struct, ISystemGroup`，C# 认继承来的接口；
   - EasyEcs 的分析器判断"是不是系统组"时，EECS023 不会误报。
   - EasyEcs 看不到的，只有别的生成器补上的接口和特性。所以要让 EasyEcs 看见的东西，都由用户写的接口或特性带着（同第 10 节的 `IPersisted`）。
-- **组过滤由接口带上（请求 20，前提）**：EasyEcs 从组类型实现的接口上读组过滤，`IActor<TSelf>` 带着 `In<TSelf>`，所以 `[UpdateInGroup<Map>]` 的每个 `[ForEach]` 方法都只看 Map 的实体，用户不写 `[With<In<Map>>]`。不能写成接口上的特性 `[With<In<TSelf>>]`：C# 不允许特性的类型实参用类型形参（CS8968）。
-- **`Key => this` 由生成器补上**：任何实现 `IIndexed<T>`、键就是它自己的 `partial record struct` 都一样，Actor 类型、`Avatar`、`Cell`、`NetId` 都是。用户不写 `Key`。
+- **组过滤由接口带上（EasyEcs 4.5 的 `IGroupWith<T>`）**：EasyEcs 从组类型实现的接口上读组过滤，`IActor<TSelf>` 带着 `In<TSelf>`，所以 `[UpdateInGroup<Map>]` 的每个 `[ForEach]` 方法都只看 Map 的实体，用户不写 `[With<In<Map>>]`。不能写成接口上的特性 `[With<In<TSelf>>]`：C# 不允许特性的类型实参用类型形参（CS8968）。
+- **`Key` 由生成器补上，写成显式接口实现** `Map IIndexed<Map>.Key => this;`：任何实现 `IIndexed<T>`、键就是它自己的 `partial record struct` 都一样，Actor 类型、`Avatar`、`Cell`、`NetId` 都是。用户不写 `Key`。不能写成公有属性 `public Map Key => this;`：record 合成的 `ToString()` 会打印 `Key`，`Key` 又是自己，无限递归到栈溢出。
+- EasyEcs 生成的 `HasX` 是属性：写 `e.HasCasting`，不是 `e.HasCasting()`。
 - Actor 类型的 id 是 `TypeId<Map>.Value`，没有单独的常量。
 - `[TickRate]` 的规则在第 5 节。
 
@@ -399,7 +406,7 @@ public static partial class Moves
 
 ### 处理方法是 EasyEcs 的单实体 job
 
-生成器把每个 `[On<T>]` 方法编成一个 job 结构，和 EasyEcs 为 `[ForEach]` 方法生成的一样（`IForEachEntity<T1..Tn>`）。运行时用 `subject.Run<T1..Tn, TJob>(ref job, in filter)` 在主体上执行一次（请求 16，前提）。所以处理方法的参数规则就是 EasyEcs `[ForEach]` 的规则，只有一套：
+生成器把每个 `[On<T>]` 方法编成一个 job 结构，和 EasyEcs 为 `[ForEach]` 方法生成的一样（`IForEachEntity<T1..Tn>`）。运行时用 `subject.Run<T1..Tn, TJob>(ref job, in filter)` 在主体上执行一次（EasyEcs 4.5；基准是同样工作手写代码的 0.69–1.06 倍，0 分配）。所以处理方法的参数规则就是 EasyEcs `[ForEach]` 的规则，只有一套：
 - **`ref` 参数直接指向存储**。方法体里改了主体的结构（加 tag、建实体、`Ask` 等），`ref` 参数照样可写：EasyEcs 在返回后把写入搬到新行；`in` 参数保持改之前的值（`guide/refs-and-await.mdx` 的 "Inside passes"）。job 只声明它写的组件（`Writes`），追踪变更的组件只在被写时打戳。
 - **过滤**：`[With<T>]`、`[Without<T>]` 写在方法上，`Maybe<T>` 是可能没有的组件参数，和 `[ForEach]` 一样。主体缺少组件参数或不满足过滤时不调用：请求以 `Skipped` 失败，单向消息和事件跳过（计数）。
 - 消息、发送方、回复令牌、身份、单例是 job 的字段，由分发表在调用前填好。
@@ -501,7 +508,7 @@ public class Steering : EcsSystem
   - 帧率写进 `wire.manifest` 的 Server 一段；改帧率就是改了 Server，要滚动升级。
   - 一种服务器承载多个有 tick 的 Actor 类型时，各帧率必须整除其中最快的一个（例如 60、30、10），避免节拍抖动。
   - 没有 `[TickRate]` 的 Actor 类型也可以有系统：每批邮件之后跑（第 1 节）。
-- **只处理自己的实体**：组过滤 `In<K>` 由 `IActor<K>` 带上（请求 20），加到这个组每个系统的每个 `[ForEach]` 方法上（EasyEcs `guide/systems.mdx` 的 "Group filters"）。
+- **只处理自己的实体**：组过滤 `In<K>` 由 `IActor<K>` 带上（`IGroupWith<In<K>>`），加到这个组每个系统的每个 `[ForEach]` 方法上（EasyEcs `guide/systems.mdx` 的 "Group filters"）。
   - 查询缓存只存匹配的表，所以同一个 shard 上别的 Actor 类型的表，对这个组的系统不增加任何开销（`guide/systems.mdx` 的 "What it costs"，`why-fast.mdx` 的 "query cache"）。
   - `In<K>` 是框架的 tag（`public struct In<T> : IComponent where T : struct, IActor<T>;`），K 类型 Actor 的每个实体都带着：
     - 根：运行时激活时加上；
@@ -521,7 +528,7 @@ public class Steering : EcsSystem
 ### 处理方法抛出异常
 
 **不回滚。** EasyEcs 的结构变更当场生效，没有命令缓冲（EasyEcs `decisions.mdx` D2），组件写入也是当场的。所以抛出时：
-- 抛出之前做的修改都留着：建的实体、加删的组件和 tag、经 `ref` 参数和方法体写的组件；结构变更之后经 `ref` 参数的写入，EasyEcs 在 job 抛出时也搬到新行（请求 16 的要求）；
+- 抛出之前做的修改都留着：建的实体、加删的组件和 tag、经 `ref` 参数和方法体写的组件；结构变更之后经 `ref` 参数的写入，EasyEcs 在 job 抛出时也搬到新行（4.5 的 `entity.Run` 保证）；
 - 已经追加进 `Outbox` 的照样发出；
 - 这条消息的请求以失败结束；它的即时链里还没执行的事件作废。
 
@@ -844,7 +851,7 @@ public partial record struct Due(TimeSpan At, long Seq) : IComponent, IIndexed<D
 
 ---
 
-## 10. 持久化、迁移、热更、升级（EasyEcs 4.4）
+## 10. 持久化、迁移、热更、升级（EasyEcs 4.5）
 
 组件类型的集合都用 EasyEcs 的 `ComponentSet`（`reference/componentset.mdx`）：注册时建好一次，存在 `Registration` 里，框架按 `Type` 加入它在注册时才知道的类型（`ComponentSet.With(Type)`）。
 
@@ -855,7 +862,7 @@ public partial record struct Due(TimeSpan At, long Seq) : IComponent, IIndexed<D
 - 带至少一个 `IPersisted` 组件的子孙；
 - 这些子孙到根的路径上的实体。
 
-保存用的组件集合：`persist = ComponentSet.Create().With(typeof(每个 IPersisted 组件)).With<ChildOf>().With<In<K>>()`。
+收集用 `world.Descendants(root)`（深度优先，预热后不分配）。保存用的组件集合：`persist = ComponentSet.Create().With(typeof(每个 IPersisted 组件)).With<ChildOf>().With<In<K>>().With<Persisted>()`。
 
 ### 激活 epoch：一个 Actor 只有一个激活能写
 
@@ -868,10 +875,10 @@ public partial record struct Due(TimeSpan At, long Seq) : IComponent, IIndexed<D
 ### 恢复
 
 - 记录头里存着实体数 n。
-- 按根 prefab 建好根实体放在 `into[0]`，其余 n−1 个是空实体，然后一次 `LoadEntitiesInto(record, into)`。
+- 按根 prefab 建好根实体放在 `into[0]`，其余 n−1 个是空实体，然后一次 `LoadEntitiesInto(record, into, markWritten: false)`。
 - 同一次加载里，`ChildOf` 和 `EntityId` 会改写成新的 id；指向这组以外的 `EntityId` 变成 `Null`。
 - 子孙没有 prefab 默认值，需要的组件都要在记录里，包括 `In<K>`（它是 tag，不占列）。所以 `persist` 集合也带上 `In<K>`。
-- 加载完，`ChangeSystem` 把它的基准重置到这一刻。EasyEcs 会把加载的每一行都算作写入，不重置的话，每次激活都会白写一次（请求 18）。
+- `markWritten: false`：读进来的值不算变更，被它覆盖的 prefab 默认值也不算（EasyEcs 4.5），所以激活不会白写一次记录，`ChangeSystem` 不用重置任何基准。记录里没有、只由 prefab 设了默认值的持久化组件仍算写入，下一次检查点会存下来。
 
 ### 只写改过的
 
@@ -881,7 +888,7 @@ public partial record struct Due(TimeSpan At, long Seq) : IComponent, IIndexed<D
   - EasyEcs 看不到的只有别的生成器补上的接口，所以它必须是用户写在源码里的接口，不是由特性推出来的。
 - `ChangeSystem` 同时看 `[Changed<T>]` 和 `[Removed<T>]`：持久化组件被写或者被删，都给根实体标 `Unsaved`。
 - `CheckpointSystem` 按配置的检查点间隔，把带 `Unsaved` 的根 `SaveEntities` 写一次，按 epoch 比较并交换；写成后去掉 `Unsaved`。
-- 带持久化组件的子孙，在同一趟里加上框架的清理组件 `Persisted(EntityId Root)`。新建和 `LoadEntitiesInto` 都算写入，所以加载后它会自动补上。
+- 带持久化组件的子孙，在同一趟里加上框架的清理组件 `Persisted(EntityId Root)`。新建的子孙在第一次写入时补上；加载的子孙不算写入，所以 `Persisted` 在 `persist` 集合里，随记录一起恢复，`Root` 由加载改写成新的 id。
 - 子孙被销毁（例如物品用掉了）时，清理系统按 `Root` 给根实体标 `Unsaved`，然后移除自己。所以删除也会写进记录。
 
 ### 序列化规则（Nino）
@@ -1199,10 +1206,10 @@ NPC 也由用户 `root.Spawn(Prefabs.Npc)` 建，同样从 `NetIds` 取一个编
 
 ```csharp
 // <auto-generated/> Game.Server: Key => this for every partial IIndexed<T> record struct whose key is itself
-partial record struct Map    { public Map Key => this; }
-partial record struct Avatar { public Avatar Key => this; }
-partial record struct Cell   { public Cell Key => this; }
-partial record struct NetId  { public NetId Key => this; }
+partial record struct Map    { Map IIndexed<Map>.Key => this; }   // explicit: a public Key would recurse in ToString()
+partial record struct Avatar { Avatar IIndexed<Avatar>.Key => this; }   // explicit: a public Key would recurse in ToString()
+partial record struct Cell   { Cell IIndexed<Cell>.Key => this; }   // explicit: a public Key would recurse in ToString()
+partial record struct NetId  { NetId IIndexed<NetId>.Key => this; }   // explicit: a public Key would recurse in ToString()
 
 // [Claims]: the claims are a component of Client
 partial record struct Account : IComponent;
@@ -1241,7 +1248,7 @@ partial class Maps
     internal static void On_Enter(Entity subject, in Mail mail, ref Outcome outcome)
     {
         var job = new Enter_Job { Message = mail.Read<EnterMap>(), Who = mail.Claims<Account>(), World = subject.World };
-        if (!subject.Run<Map, NetIds, Enter_Job>(ref job, QueryFilter.Create())) { outcome.Skipped(); return; }   // request 16
+        if (!subject.Run<Map, NetIds, Enter_Job>(ref job, QueryFilter.Create())) { outcome.Skipped(); return; }   // EasyEcs 4.5 entity.Run
         outcome.Reply(job.Reply);                                          // Join() put the Route in Outbox ahead of this reply
     }
 }
@@ -1435,7 +1442,7 @@ public void Walking_out_of_range_during_the_windup_dodges()
   - 服务端存的加入消息、它的大小上限、重放和重放的退避（→ SDK 重新发）；
   - `[Claims<K>]`、`PlayerClaims`、由 K 的键生成声明字段（→ `[Claims] Account` 和 `[JoinOnConnect<Account>]`）；
   - `[Persist]` 和"`[Persist]` 必须声明 `ITrackChanges`"的规则（→ `IPersisted`）；
-  - Actor 类型上的 `[With<In<K>>]` 和对应的分析器规则（→ `IActor<T>` 带组过滤，请求 20）；
+  - Actor 类型上的 `[With<In<K>>]` 和对应的分析器规则（→ `IActor<T>` 带组过滤 `IGroupWith<In<T>>`，EasyEcs 4.5）；
   - `[Prefab<K>(Root = true)]`（→ `[RootPrefab<K>]`）、`[ModuleInitializer]` 注册和改写静态 prefab（→ `Registration`、`root.Spawn`）；
   - `e.Send(ev[, after:])`（→ `e.Schedule`）、区分 `Send(ev)` 和 `Send(to, msg)` 的分析器规则、`world.IsAlive(s.Id)`（→ `world.IsPending(in s)`）、例子里的 `Casting` 组件（→ `HasPending<T>`）；
   - `world.GetEntity(on.Parent)`（→ `e.Root`）、`None`（→ `Answer<TReq>`）、`IServerType`（→ 一个 `IServer`）；
@@ -1476,8 +1483,4 @@ public void Walking_out_of_range_during_the_windup_dodges()
 2. **客户端路由由 Logic 里 `[On<T>]` 所在的 `[Handles<K>]` 类推出**，不在 Server 里再写一遍。同一件事只写一处；热更改动路由时，由 `wire.manifest` 比对拦住。
 3. **`[From<K>]` 保持必写**。"从类型就看得出谁发给谁"是目标之一；新的发送方要改消息声明，这正是想要的显式。
 4. **消息不做成实体**。邮箱和到期项在有序阶段归并两个来源。把每条消息做成带 `Due` 的实体能统一表示，但每条消息多一次建实体和销毁。重构时用 BenchmarkDotNet 测一次：快不差于 10% 才改。
-5. **转交 EasyEcs 的需求**（需求文件第 16、18、19、20 条；15 和 17 经 EasyEcs 评估放弃）：
-   - **16（前提）**：单个实体执行一个 job，`entity.Run<T1..Tn, TJob>(ref job, in QueryFilter filter)`，`TJob : IForEachEntity<T1..Tn>`，不满足过滤返回 `false`；`ref` 写入跨结构变更的搬运和 `[ForEach]` 一样，job 抛出时也搬运；
-   - 18：加载时不打变更戳，`ChangeSystem` 就不用重置基准；
-   - 19：保存整棵子树（`Descendants`）；
-   - **20（前提）**：组过滤可以由组类型实现的泛型接口带上（例如 `IActor<TSelf>` 继承 `IGroupWith<In<TSelf>>`），生成器从 `AllInterfaces` 读出。接口上的特性 `[With<In<TSelf>>]` 写不出来：特性的类型实参不能是类型形参（CS8968）。
+5. **EasyEcs 4.5 已提供本稿依赖的功能**：`entity.Run(ref job, filter)`（抛出时 `ref` 写入也搬到新行）、接口带的组过滤 `IGroupWith<T>` / `IGroupWithout<T>`、`world.Descendants(root)`、`LoadEntitiesInto(…, markWritten: false)`（被覆盖的 prefab 默认值也不算写入），分析器把 `entity.Run` 和 `LoadEntitiesInto` 当结构调用（EECS010/013/014）。EasyEcs 评估后放弃的：并行批量方法、`LastWriteTick`、公开读写集、多 world 共享并行预算。重构的第一步是把 `EasyEcsVersion` 升到 4.5.0，并编译验证两件事：DaServer 生成器补的 `Key` 显式实现被 EasyEcs 的值索引接受；`IActor<TSelf>` 在框架程序集里编译通过。
