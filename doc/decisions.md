@@ -1552,7 +1552,7 @@ Replaced by ADR-081.
   changed" leaks; the order between mail, delayed sends and systems is implicit. EasyEcs 4.5 now provides what a
   model without these needs: single-entity jobs (`entity.Run(ref job[, filter])`), group filters carried by
   interfaces (`IGroupWith<T>`), `world.Descendants(root)` and `LoadEntitiesInto(…, markWritten: false)`.
-- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v33), structured as in
+- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v34), structured as in
   [drafts/architecture.md](drafts/architecture.md):
   - **The actor type is its address, its root component, its root prefab and its system group**:
     `[TickRate(30)] partial record struct Map(long Id) : IActor<Map>` (`IActor<T>` inherits `IEquatable<T>`, so
@@ -1586,31 +1586,36 @@ Replaced by ADR-081.
     - generations are max(last seen + 1, Unix ms), and only the lowest-ordinal seed forms a cluster, so a cold restart
       of the whole cluster never reuses a generation and parallel seeds never form two clusters.
   - **Replies, presences and retries are data with stated guarantees** (the table "每条路径保证什么" in the draft's §11):
-    - `[Durable]` on an `IRequestTo` makes both ends the framework's. The asker's waiting entity (request, state, call
-      id, UTC deadline from `deadline:`) is written into its record before the request leaves, and is re-asked with
-      the same call id on transient outcomes and after re-activation; a crashed asker is woken by its slot owner's
-      `DueScan` through the record's `next_due`. Handling the answer is held too: the `Replied` handler's output leaves
-      only after the asker's record holds the outcome, so a crash in between handles the same answer again rather
-      than a different one. One `AskTimeout` before the deadline the asker sends a single settling re-ask: the
-      receiver answers from its log, waits for its held reply, or records the call id as refused and answers
-      `TooLate`, so a late duplicate never runs; `Expired` then means only "unreachable, outcome unknown". The
-      receiver keeps call id → reply in an internal bounded `ReplyLog`, written in the same record write that holds
-      the reply until the epoch CAS, answers a repeat from it without running the handler, refuses (`TooLate`) to start
-      a request whose remaining budget is below its write latency, and records a handler that threw under
-      `OnError = Restart` as `Faulted`. A call id runs at most once; an outcome the caller saw survives either side's
-      crash; a `[Durable]` request cannot be cancelled (an analyzer error: giving up is waiting for the deadline).
+    - `[Durable]` on an `IRequestTo` makes both ends the framework's. An item that must settle (a `[Durable]` request
+      asked, handled, or its `Replied` handled) holds its whole output, and every later output of the actor in order,
+      until the record write's epoch CAS: nothing leaves ahead of the state it depends on. The asker's waiting entity
+      (request, state, call id, UTC deadline from `settleBy:`; `deadline:` stays the per-attempt timeout) is written
+      into its record before the request leaves, and is re-asked with the same call id on transient outcomes and after
+      re-activation; a crashed asker is woken by its slot owner's `DueScan` through the record's `next_due`. A crash
+      after the answer handles the same answer again rather than a different one, and destroying an entity with a
+      waiting durable ask below it fails the item instead of dropping the promise. One `AskTimeout` before the
+      deadline the asker sends a single settling re-ask: the receiver answers from its log, waits for its held reply,
+      or records the call id as refused (small entries outside the log's capacity) and answers `TooLate`, so a late
+      duplicate never runs; `Expired` then means only "unreachable, outcome unknown". The receiver keeps call id →
+      reply in an internal bounded `ReplyLog`, written in the same record write that holds the reply until the epoch
+      CAS; it answers a repeat from it first, then refuses (`TooLate`) to start a request whose remaining budget is
+      below its write latency; a handler that threw is recorded as `Faulted` across the `Reload` and answered only once
+      that is in the record, so a receiver's actor type must persist and use `OnError = Reload` (an analyzer error
+      otherwise). A call id runs at most once; an outcome the caller saw survives either side's crash; a `[Durable]`
+      request cannot be cancelled (an analyzer error: giving up is waiting for the deadline).
       Users write no reservations, re-asks or call rings. Opt-in, since it costs a store write of latency on each
       side; other requests stay immediate and an unknown outcome stays the asker's to decide.
     - A lost connection or gateway leaves its presences `Detached` for a grace (30 s, `DetachGrace`) instead of
       `Leave()`: after a region blip or a gateway crash, clients come back to presences that are still there, and
       actors rebuild nothing. A takeover sends `TakeOver` to the old connection's gateway; a newer login (a larger
-      token issue sequence, a per-account persisted counter that a token refresh keeps) closes the old device as
+      token issue sequence, a per-account counter persisted before the token leaves and kept by a refresh; one login is
+      one `ClientId`, so an equal sequence under another `ClientId` counts as newer too) closes the old device as
       terminal, so two devices never fight by reconnecting.
     - `Joined(MissedPushes)` tells snapshot systems whether to resend (`[Changed<Joined>]`; users need not learn
       `Retire` or stamps), and `Retire` keeps ADR-026's fence (a `HandedOff` marker on the old route) so each actor's
       pushes stay in order.
     - A pause never extends a request's budget (ADR-028's rule, kept across resend windows, migration and hot
-      restart); nested asks inherit the remaining time; `ReplyTo` carries its deadline.
+      restart); nested asks inherit the remaining time; `ReplyTo` carries its deadline (a UTC instant once it is in a record).
     - A status has two classes, `NotExecuted` (definitely not run) and `Transient` (worth retrying); the framework
       retries only not-executed refusals on forwarding hops and `[Durable]` asks, under a per-node retry budget
       (gRPC's retry throttling), and joins with jittered back-off; `Busy` carries a retry-after: blind retries of unknown outcomes duplicate
@@ -1623,32 +1628,40 @@ Replaced by ADR-081.
       admission bucket for new connections, and an `ActivationFailed` placeholder for an actor that throws on every
       activation.
   - **Rules for sharing a world** (the draft's §5; checked against Overwatch, Bevy and EasyEcs): a world holds many
-    actors, so `[On<T>]` methods and actor-group systems take a user singleton `in` only, and `ref` needs
-    `[WorldLocal]` (a world's cache or configuration, not actor state); systems of an actor type without `[TickRate]`
+    actors, so `[On<T>]` methods and actor-group systems take a user singleton `in` only, and only an
+    `IWorldSingleton<T>` (a world's cache or configuration, not actor state) may be taken `ref`; systems of an actor type without `[TickRate]`
     run after every mail batch, so each `[ForEach]` there must narrow by `[Changed<T>]`, `[Removed<T>]`, a tag or an
     `UpdateInterval` (an analyzer error otherwise); a throwing handler of an actor type whose root persists restarts
-    it from its last record by default (`OnError = Restart`: the root is reset to its `RootPrefab` copy keeping key and
-    mail, the batch's remaining items move into the mail, consecutive restarts back off like failed activations),
-    since EasyEcs applies changes at once without rollback and a half-applied item must never reach a checkpoint;
-    types without a record keep `Resume`.
-  - **Persistence is per entity kind, not per component type**: entities spawned from a
-    `[Prefab<K>(Persist = true)]` prefab (the root through `K.RootPrefab`) are saved with all their components but
-    `[Transient]` ones, and carry `Persisted`; others are not saved. The draft's own example forced this: a drop on a
+    it from its last record by default (`OnError = Reload`: the root is reset to its `RootPrefab` copy's values keeping
+    key and mail, the batch's remaining items move into the mail, the root's in-flight write finishes before the claim
+    and write completions count only for their own activation epoch, consecutive reloads back off like failed
+    activations), since EasyEcs applies changes at once without rollback and a half-applied item must never reach a
+    checkpoint; types without a record keep `Continue`.
+  - **Persistence is per entity kind, not per component type**: entities spawned from a persistent prefab (`[Persist]`
+    on the actor type's `RootPrefab`, `[Prefab<K>(Persist = true)]` on a child prefab) are saved with all their
+    components but `[NotSaved]` ones, and carry `Persisted(Root, Prefab)`; others are not saved. The draft's own example forced this: a drop on a
     map must be restored with its `NetId`, `Position` and `Loot` (and its waiting `[Durable]` ask), while avatars carry
     the same `NetId` and `Position` and must stay out of the record; per-type persistence (a marker interface on component types)
     either lost the drop's `NetId` or dragged every avatar into the record. Change tracking is a per-type column in
-    EasyEcs, so the registration switches it on for the record's component types (EasyEcs request #27; the generator
-    declares `ITrackChanges` until then) and the change system runs one `ChangedAny` over that set filtered by
-    `Persisted`: one visit per changed persistent row, nothing allocated.
+    EasyEcs, so the registration switches it on for the persist set, the types on persistent prefabs and those
+    spawned into persistent entities (EasyEcs request #27, proposed, not yet forwarded; the generator declares
+    `ITrackChanges` on `partial` types until then), and the change system runs one `ChangedAny` over that set filtered
+    by `Persisted`: one visit per changed persistent row, nothing allocated. Spawning a persistent entity tags its root
+    `Unsaved` directly, and placeholders (`Loading`, `Saving`, `ActivationFailed`) are never checkpointed, so a
+    `Reload` cannot write prefab defaults over the last good record. Records evolve by prefab: a load adds the
+    components the entity's prefab gained since (and writes the record again), skips unknown type ids, counted, and
+    the upgrade check refuses a release whose new fields or record types a rollback would drop, unless forced.
   - **The wake is the runtime's alone**: descendants that must wake an unloaded actor carry a persisted `WakeAt`
     (a durable ask, a reminder); the runtime keeps the root's `NextDue` at their minimum and rewrites `next_due` on
     every activation by `Wake`, so a stale column never wakes an actor twice.
-  - **Identity is an interface**: `Account(long Id) : IClaims` with `IClaims : IComponent`, so the constraint of
-    `[JoinOnConnect<T>] where T : struct, IClaims` and EasyEcs both see it; no attribute for the generator to complete.
+  - **Identity and user singletons are interfaces**: `Account(long Id) : IClaims` with `IClaims : IComponent`, so the
+    constraint of `[JoinOnConnect<T>] where T : struct, IClaims` and EasyEcs both see it; no attribute for the
+    generator to complete. User singletons are the same: `IConfigTable<TSelf>` (static abstract `Name` and `TryLoad`;
+    one cluster-wide current version per table) and `IWorldSingleton<TSelf>` (static abstract `Create`).
   - **EasyEcs 4.7 (planned, not released) replaces workarounds** (the draft's header and §14): `Mut<T>` with
     `SetIfChanged` (EasyEcs #23) for components recomputed every tick, `world.Instantiate` with components (#24) for
     `root.Spawn`, `ChangedAny`/`RemovedAny` (with a start tick, #25) for the change system, the wake and replication,
-    `world.Save(exclude)`/`Load(keep)` (#26) so configuration tables and `[WorldLocal]` singletons stay out of a hot
+    `world.Save(exclude)`/`Load(keep)` (#26) so user singletons (configuration tables, world singletons) stay out of a hot
     restart's snapshot, `IUniqueIndexed<T>` for actor and child keys, `TrimExcess`, `Slices` for the idle scan and
     checkpoints, and the system diagnostics for the inspector; the roadmap gates the steps that use them.
   - One project may define several server types; a node runs one.
@@ -1741,13 +1754,17 @@ Replaced by ADR-081.
 - Consequences:
   - Two user projects, `Game.Protocol` and `Game.Server`; ADR-067's reloadable logic project goes when W10 promotes
     the drafts.
-  - What changes without a restart is data swapped between two ticks: tuning tables (a validated world singleton,
-    its version on the member card) and feature flags choosing between handlers compiled into the binary.
+  - What changes without a restart is data swapped between two ticks: tuning tables (`IConfigTable<T>` singletons
+    with one current version per table in the store, loaded by every starting or hot-restarted node, replaced
+    cluster-wide by `POST /admin/tables/{name}`; a rollback posts the old version again) and feature flags choosing
+    between handlers compiled into the binary.
   - `[Stateless]` actor types deployed as their own group are replaced start-new-then-stop-old, without a pause.
   - The new process loads with `world.Load(bytes, markWritten: false)` (EasyEcs 4.6, its D39), so no actor rewrites
     its record and no `[Changed<T>]` method sees the loaded rows; a system that needs a full pass filters `Resumed`.
-    Configuration tables and `[WorldLocal]` singletons are the new process's own: the old one saves without them and
-    the new one creates them before the load, which keeps them (EasyEcs 4.7's `Save(exclude)` and `Load(keep)`).
+    User singletons (configuration tables, world singletons) are the new process's own: the old one saves without them
+    and the new one loads the cluster's current tables and creates its world singletons before the load, which keeps
+    them (EasyEcs 4.7's `Save(exclude)` and `Load(keep)`). The snapshot records its world count; a new process that
+    cannot create as many worlds goes through records.
 
 ## ADR-085 Actor-hosting groups publish as StatefulSets with `OnDelete`; hot restart patches pods in place
 - Context: ADR-030 publishes every node group as a Deployment: a node's identity was its random id and its actors'
@@ -1938,7 +1955,7 @@ Replaced by ADR-081.
   is balanced: each retire is a reconnect, a presence takeover on every actor the client is joined to and a resent
   snapshot, paid by a balanced cluster for nothing. The cluster already has what shedding needs: every member's load
   travels in its gossip pulse (ADR-031).
-- Decision (mechanics in [drafts/programming-model.md](drafts/programming-model.md) §7):
+- Decision (mechanics in [drafts/architecture.md](drafts/architecture.md#retire-and-rebalancing) section 3):
   - Each client-facing node puts its connection count in its pulse, computes its group's average from its own view,
     and only when it is above the average by more than a tolerance (10%, `DaServer:Clients:RebalanceTolerance`)
     retires its excess through `Retire` (make before break, ADR-026), at most 1% of its connections a second. The
@@ -1953,8 +1970,8 @@ Replaced by ADR-081.
   from the view; one more failure to handle); the cluster naming a gateway to connect to (ADR-026: an address per
   node the platform does not give).
 - Consequences: after a scale-out only the excess moves, at a bounded rate; a balanced or shrinking group pays
-  nothing. Tests (roadmap W5, W11): a balanced group retires nobody, a scale-out sheds only the excess, rebalancing
-  pauses during a drain and a hot restart. ADR-026's age becomes optional when W10 promotes the drafts.
+  nothing. Tests: a balanced group retires nobody and a scale-out sheds only the excess (roadmap W5, again on real
+  gateways in W11); rebalancing pauses during a drain and a hot restart (W6, which builds the hot restart). ADR-026's age becomes optional when W10 promotes the drafts.
 
 ## ADR-090 Optional capabilities: reminders, topics, non-.NET clients, replication, test and admin tools
 - Context: four needs recur across domains and are hard to get right in user code. Work due at a wall-clock time even
@@ -1994,10 +2011,10 @@ Replaced by ADR-081.
     writes the changed fields (generated per-type bitmasks against the last sent value) per `ClientGroup` once per tick
     into pooled frames. Its state is DaServer's own: each `Replica<T>` keeps the last sent value and the tick it was
     sent at, each group a bounded ring of exits, each actor an incarnation renewed on load, migration, hot restart
-    and `OnError = Restart`. A rejoining SDK sends (incarnation, tick): the same incarnation with the exit ring still
+    and `OnError = Reload`. A rejoining SDK sends (incarnation, tick): the same incarnation with the exit ring still
     covering the tick gets only what changed since (EasyEcs 4.7's `ChangedAny(since)` speeds the lookup up, it decides
-    nothing), anything else a full resend; full state also when an entity changes group and when a presence subscribes
-    a group. The SDKs apply the patches (C# into an EasyEcs world through `DaServer.Replication.Client`, TypeScript into
+    nothing), anything else a full resend, which starts with `Reset(incarnation)` so the client first clears that
+    actor's replicas; full state also when an entity changes group and when a presence subscribes a group. The SDKs apply the patches (C# into an EasyEcs world through `DaServer.Replication.Client`, TypeScript into
     an entity table). At most once, like pushes.
   - **Tools**: `TestCluster` fault injection (`Partition`, `Kill`, `DelayLinks`) for users' own tests; a read-only
     inspector on the HTTP plane (an actor's subtree, the busiest actors, each world's tables and systems, counts by

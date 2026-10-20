@@ -1,6 +1,6 @@
 # Target architecture (draft, not implemented)
 
-The architecture DaServer is refactored to (breaking, roadmap phase W): the v33 programming model of
+The architecture DaServer is refactored to (breaking, roadmap phase W): the v34 programming model of
 [programming-model.md](programming-model.md) on EasyEcs 4.6.0 and the features planned for EasyEcs 4.7 (not released; the roadmap gates the steps that use them, the draft's header and §14 list them), with Native AOT support. The programming model draft is
 the source of truth for what users write and what each rule means; this file says how the pieces fit together, holds the runtime's internal data and the client protocol's
 internals, and links to the draft's sections instead of repeating them. Today's architecture is [design.md](../design.md); the
@@ -18,9 +18,9 @@ node takes no AppHost code, production takes no test tools, and a capability is 
 |---|---|---|
 | `DaServer.Core` | netstandard2.1, net11.0 | What both sides see: the client-facing contracts (`IFromClient`, `IFromClient<R>`, `IToClient`, `[To]`, `IServer`, `TypeId<T>`, status codes) and the wire and transport (frames, buffers, channels, the pending-call table). Ships the generators, the analyzers and the `wire.manifest` task (below). |
 | `DaServer.Client` | netstandard2.1, net11.0 | The client SDK: connect, send `IFromClient`, receive `IToClient`, slots and re-joining, moving on `Retire` ([draft §7](programming-model.md#7-客户端与-presence)). |
-| `DaServer` | net11.0 | The server: the model (`IActor<T>`, `IChildKey<T>`, `[Handles<K>]`, `[On<T>]`, `IMessageTo<K>`, `IRequestTo<K,R>`, `[From<K>]`, `IEvent`, `IClaims`, `[Prefab<K>(Persist = true)]`, `[Transient]`, `Entity` operations, `Connection`), the framework systems, cluster, placement, persistence, migration, hot restart, and the node host: Generic Host and ASP.NET Core, configuration, OpenTelemetry, shutdown, the HTTP plane, and `UseLaunchd()` (DaServer's counterpart of the official `UseSystemd()` and `UseWindowsService()`, [deployment.md section 0](deployment.md#0-launch-flows)). |
+| `DaServer` | net11.0 | The server: the model (`IActor<T>`, `IChildKey<T>`, `[Handles<K>]`, `[On<T>]`, `IMessageTo<K>`, `IRequestTo<K,R>`, `[From<K>]`, `IEvent`, `IClaims`, `IConfigTable<T>`, `IWorldSingleton<T>`, `[Persist]`, `[Prefab<K>(Persist = true)]`, `[NotSaved]`, `Entity` operations, `Connection`), the framework systems, cluster, placement, persistence, migration, hot restart, and the node host: Generic Host and ASP.NET Core, configuration, OpenTelemetry, shutdown, the HTTP plane, and `UseLaunchd()` (DaServer's counterpart of the official `UseSystemd()` and `UseWindowsService()`, [deployment.md section 0](deployment.md#0-launch-flows)). |
 | `DaServer.Persistence.PostgreSql` | net11.0 | The record store: epoch-fenced, compare-and-swap writes. |
-| `DaServer.Testing` | net11.0 | `TestActor<K>` (one actor, one world, a manual clock), `TestCluster` (in-process nodes) and simulated users (`Swarm`, HTN behaviors) over `DaServer.Client` for load tests and E2E. |
+| `DaServer.Testing` | net11.0 | `TestActor<K>` (one actor, one world, DaServer's manual clock, ADR-071), `TestCluster` (in-process nodes) and simulated users (`Swarm`, HTN behaviors) over `DaServer.Client` for load tests and E2E. |
 | `DaServer.Aspire` | net11.0 | AppHost side: `AddDaServerCluster`, `AddNodes<TServer>` (a `DaServerNodeGroup<TServer>`), `WithActorStore`, `WithClientConnections(port)` on a node group, `WithClientEndpoints(gateways)` for a client app, the `{cluster}-restart` command, and a generator that writes the server types from the committed `wire.manifest` of the `#:project` (`actor` and `hosted-by` lines), each bound to that project. References no server assembly. |
 
 ### Optional capability packages
@@ -182,13 +182,14 @@ exported, OpenTelemetry). Names users never write but meet in diagnostics: the S
 | Data | Kind | Role | Metric |
 |---|---|---|---|
 | `Due(TimeSpan At, long Seq)` | component | Delayed events, request deadlines and `[Durable]` re-asks, join confirmation deadlines, a `Detached` presence's grace, join-on-connect back-off: one timer mechanism ([draft §9](programming-model.md#9-时间与广播)). Saved in migrations and snapshots, not in records (live only) | — |
-| Live-only components | components | `Due`, `Presence`, `Joined`, `Detached`, `Leaving`, `Subscribed`, `Route`: meaningful only in memory, so they migrate and go into snapshots but never into records | — |
-| `Persisted(EntityId Root)` | cleanup component | On every persistent entity (from a persistent prefab's registered copy; the root's points at itself): `ChangeSystem` filters by it, the record collects it, and destroying a persistent descendant tags its root `Unsaved` ([draft §10](programming-model.md#要保存的是实体不是组件类型)) | — |
+| Live-only components | components | `Due`, `Presence`, `Joined`, `Detached`, `Leaving`, `Subscribed`, `Route`, `GroupRate` (the root's send rates, set by `SetGroupRate`): meaningful only in memory, so they migrate and go into snapshots but never into records | — |
+| `Persisted(EntityId Root, int Prefab)` | cleanup component | On every persistent entity (from a persistent prefab's registered copy; the root's points at itself; `Prefab` is the prefab's id from `wire.manifest`): `ChangeSystem` filters by it, the record collects it, a load adds the components its prefab gained since the record was written, and destroying a persistent descendant tags its root `Unsaved` ([draft §10](programming-model.md#要保存的是实体不是组件类型)) | `daserver.records.unknown_types` |
 | `Pending` | component on the root | Pending delayed events and waiting asks (the `MaxPending` count); idle deactivation considers only roots where it is zero ([draft §6](programming-model.md#6-生命周期)) | `daserver.actors.pending` |
-| `HeldReply`, `HeldAsk`, held output | `DynamicBuffer`s on the root | Replies to and requests of `[Durable]` calls, and the `Outbox` of a `[Durable]` `Replied` handler, released only after the checkpoint's epoch CAS ([draft §8](programming-model.md#durable两端由框架负责)) | `daserver.durable.held` |
-| `ReplyLog` | persisted component on the root | `[Durable]` dedupe: call id → reply bytes, "token taken", `Faulted` or "refused" (a settling re-ask of a call that never ran), kept until the asker's deadline plus `DaServer:ClockSkew`, at most `DaServer:ReplyLogCapacity` entries; full: `Busy` | `daserver.durable.duplicates` |
-| Durable waiting entity | persistent child entity | Request bytes, ask state, call id, UTC deadline, `WakeAt`; re-asked on transient outcomes and after re-activation; one settling re-ask before the deadline; `Expired` only when that goes unanswered | `daserver.durable.reasks`, `daserver.durable.expired` |
+| `HeldOutput` | `DynamicBuffer` on the root | From an item that must settle (a `[Durable]` request asked or handled, a `[Durable]` `Replied` handled), that item's whole output and every later output of the actor, in order; released after the epoch CAS of the write it waits for, matched by activation epoch; discarded on fencing ([draft §8](programming-model.md#durable两端由框架负责)) | `daserver.durable.held` |
+| `ReplyLog` | persisted component on the root | `[Durable]` dedupe: call id → reply bytes, "token taken", `Faulted` or "refused" (a settling re-ask of a call that never ran), kept until the asker's deadline plus `DaServer:ClockSkew`, at most `DaServer:ReplyLogCapacity` reply and `Faulted` entries (full: `Busy`); refused entries are small and outside the cap | `daserver.durable.duplicates` |
+| Durable waiting entity | persistent child entity | Request bytes, ask state, call id, UTC deadline (`settleBy`), `WakeAt`, a cleanup component (destroyed with its asker by user code, it fails the item); re-asked on transient outcomes and after re-activation; one settling re-ask before the deadline; `Expired` only when that goes unanswered | `daserver.durable.reasks`, `daserver.durable.expired` |
 | `WakeAt(DateTime Utc)` | persisted component on descendants | When the actor must be awake: a durable waiting entity (the instant its request left), a reminder (its `UtcAt`) | — |
+| `IssueSeq` | persisted component on the root | The client-token issue sequence `root.IssueClientToken` increments ([draft §7](programming-model.md#7-客户端与-presence)) | — |
 | `NextDue` | persisted component on the root | The minimum `WakeAt` of the root's descendants, computed only by the runtime's `WakeSystem` (from `[ChangedAny<WakeAt>]`, `[RemovedAny<WakeAt>]` and the `Persisted` cleanup); the checkpoint writes it into the record's `next_due` column ([draft §10](programming-model.md#唤醒wakeatnextdueduescan)) | — |
 | `DueScan` | node system | Every `DaServer:DueScanInterval`, `IActorStore.DueKeys(slots, until)` over the slots the node owns; sends `Wake` (the one control mail that activates) to keys not active; an activation by `Wake` always rewrites `next_due` | `daserver.wakes` |
 | `Joined(bool MissedPushes)`, `Detached` | component and tag on a presence | Confirmed, and whether a push may have been missed (false only after a `Retire` behind the `HandedOff` fence); a presence of a lost connection in its grace period ([draft §7](programming-model.md#7-客户端与-presence)) | — |
@@ -197,21 +198,22 @@ exported, OpenTelemetry). Names users never write but meet in diagnostics: the S
 | Call index | runtime hash index per world | Call id → the waiting entity (`EntityId` with version), so a `Replied` finds its asker in one lookup | — |
 | `Ordered<K>` | singleton per actor type | Sequence counter, current tick window, immediate chain budget | — |
 | `Current` | singleton | The running item's time, root, sender and client context; operations read the client context from it, and its absence is a typed outcome (`Join()` returns `NoClient`) | — |
-| `Outbox` | singleton | Everything an item sends (`Send`, `Ask`, `Reply`, `Push`, `Broadcast`, join routes), serialized on append into pooled `FrameWriter`s per destination node (a broadcast or group push once, one frame per gateway); handed to the links once per phase (a group with `every: n` only on its due tick, and before any membership change of that group, [draft §9](programming-model.md#广播)), each destination in append order, so a join's route always precedes its reply; a fenced actor's held frames are discarded; `TestActor<K>` decodes it for assertions | — |
+| `Outbox` | singleton | Everything an item sends (`Send`, `Ask`, `Reply`, `Push`, `Broadcast`, join routes), serialized on append into pooled `FrameWriter`s per destination node (a broadcast or group push once, one frame per gateway); handed to the links once per phase (a group with a rate from `SetGroupRate` only on its due tick, and before any membership change of that group, [draft §9](programming-model.md#广播)), each destination in append order, so a join's route always precedes its reply; a fenced actor's held frames are discarded; `TestActor<K>` decodes it for assertions | — |
 | `Time` | singleton | `Tick`, `DeltaTime`, `TickRate`, `Elapsed` (monotonic, process-local), `Utc` (the world's `TimeProvider`, read once per item) | — |
 | `RestartingNodes` | node singleton | The members in `NodeRestarting`, with their expected pauses; `TryGetPause(connection, out pause)` for gateway systems that tell clients | `daserver.members{state}` |
 | `StoreDegraded`, `ActivationSlots`, `PeerHealth` | node singletons | The store is slow or down (no idle deactivation, `Saving` placeholders capped); concurrent epoch claims (jittered back-off); in-flight requests and latency per destination node with an adaptive limit (fail fast with `Busy`) ([draft §6](programming-model.md#6-生命周期), [§11](programming-model.md#11-失败时的结果)) | `daserver.store.degraded`, `daserver.activations.claiming`, `daserver.peer.inflight`, `daserver.peer.limit` |
-| Placeholder | entity | A key not yet active or being saved: the copy of `K.RootPrefab` without `In<K>`, the key, `Loading`, `Saving` or `ActivationFailed(until)`, a bounded `DynamicBuffer<Mail>`. `OnError = Restart` turns a root back into one in place (key and mail kept) | `daserver.activations.failed` |
+| Placeholder | entity | A key not yet active or being saved: the copy of `K.RootPrefab` without `In<K>`, the key, `Loading`, `Saving` or `ActivationFailed(until)`, a bounded `DynamicBuffer<Mail>`; a `Reload` keeps a faulting `[Durable]` call id on it. `OnError = Reload` turns a root back into one in place (key and mail kept, values reset to the prefab copy's) | `daserver.activations.failed` |
 | Control mail | mail on the control channel | `Route`, `Lost`, `JoinConfirmed`, `TakeOver(stamp)` (a takeover closing the old connection), the `HandedOff(slot)` marker on a retired route, `Fence(key, epoch)`, `Wake`; bounded by what the node holds, never `Busy` | `daserver.messages.dropped{reason}` |
 | Membership states | per member in the view | `NodeJoining`, `NodeLeaving` (placement is changing), `NodeRestarting` (a hot restart, announced on SIGTERM; user systems see the `Restarting` tag and `RestartingNodes`), `Rejoining` (the new process waiting for the coordinator's `Readmit` or `Gone`) | `daserver.members{state}` |
 
 ### `Registration`
 
-- Generated: `Registration.Create()` is a C# 14 static extension member in the user's assembly, one new instance per
-  call (no static registries, no module initializers): actor types with their `K.RootPrefab` prefabs and
-  `[ActorOptions]`, child prefab copies with `In<K>` (and `Persisted` for persistent ones), the record's component set
-  (with change tracking switched on for its types), user singletons, claims, join-on-connect, dispatch tables per actor
-  type, client routes, systems per group
+- Generated: `Registration.Create()` is a C# 14 static extension member in the server project's root namespace (its
+  container named after the assembly, so a test project importing two server projects calls the container,
+  [draft §5](programming-model.md#其他)), one new instance per call (no static registries, no module initializers):
+  actor types with their `K.RootPrefab` prefabs and `[ActorOptions]`, child prefab copies with `In<K>` (and `Persisted`
+  for persistent ones), the persist set (with change tracking switched on for its types), configuration tables and
+  world singletons, claims, join-on-connect, dispatch tables per actor type, client routes, systems per group
   ([draft §12](programming-model.md#12-完整例子连接进地图移动放技能捡东西看见别人)).
 - Nodes, `TestCluster` and `TestActor<K>` take the object.
 - Every type in it is closed at compile time in the user's assembly (section 8).
@@ -247,7 +249,7 @@ scope for now and would be another `IFrameChannel` (ADR-092).
    acknowledged (and while the target is `NodeRestarting`), records when it entered and subtracts the time held from a
    request's budget on replay, so a pause never extends a budget.
 5. **Target node IO thread → the dispatch queue of the shard** chosen by the key's hash.
-6. **Target shard**: the mailbox snapshot; the root by `world.Index<K, K>()` (a placeholder if not active, its mail
+6. **Target shard**: the mailbox snapshot; the root by `world.Index<K, K>().TryFind` (the generic form of the generated `world.MapIndex`; a placeholder if not active, its mail
    bounded); the subject is the root (`[To]`) or the presence by its `PresenceId` index.
 7. **Ordered phase**: the handler's job runs; the reply (and a join's route before it) is serialized into the
    `Outbox` frame for the gateway and handed to the link at the end of the phase.
@@ -262,23 +264,23 @@ scope for now and would be another `IFrameChannel` (ADR-092).
    is at its limit for that node (`Busy` at once).
 2. **Target**: link → dispatch queue → shard → mailbox → root → the request's job (dropped and counted if its
    deadline passed); the reply (returned, or later through `Reply(token)`) is serialized into the `Outbox` frame
-   addressed by (actor type, key, call id), or for a `[Durable]` request held in `HeldReply` until the record write
-   succeeds.
+   addressed by (actor type, key, call id), or for a `[Durable]` request held with the rest of the actor's output in
+   `HeldOutput` until the record write succeeds.
 3. **Back at the asker's node**: link → dispatch queue → shard; the call index finds the waiting entity (a tombstone
    forwards it if the asker migrated); the `Replied` mail runs in the ordered phase; `TryGetValue` reads the reply
    bytes from the mail's frame; the waiting entity is destroyed after the handler and its heap entry is dropped
    lazily.
 4. **Timeout**: the due heap pops the waiting entity first and the runtime delivers `Replied` with `TimedOut`. A full
    link fails the ask at once with `Busy`.
-5. **`[Durable]`** ([draft §8](programming-model.md#durable两端由框架负责)): the request waits in `HeldAsk` until the
-   asker's record holds the waiting entity; the target looks the call id up in the root's `ReplyLog` before the job
-   (a repeat is answered from it or dropped while its reply is still held) and holds the reply in `HeldReply` until
-   its own record write; a request whose remaining budget is below the store's write latency is refused with
-   `TooLate`. A transient outcome re-arms the waiting entity's `Due` for a re-ask with the same call id (retry-after,
+5. **`[Durable]`** ([draft §8](programming-model.md#durable两端由框架负责)): the request waits in `HeldOutput` until the
+   asker's record holds the waiting entity; the target first looks the call id up in the root's `ReplyLog` (a repeat is
+   answered from it, or dropped while its reply still waits), then refuses with `TooLate` a request whose remaining
+   budget is below the store's write latency, and only then runs the job; the reply and the rest of the actor's
+   output wait in `HeldOutput` until its own record write. A transient outcome re-arms the waiting entity's `Due` for a re-ask with the same call id (retry-after,
    jitter, the node's retry budget); one `AskTimeout` before the UTC deadline the asker sends a single settling
    re-ask, which the target answers from `ReplyLog`, after its held reply, or by recording the call id as refused and
    answering `TooLate`; only an unanswered settling re-ask gives `Expired`. The asker's `Replied` handler runs with its
-   output held until the asker's own record write. After a crash, `DueScan` finds the asker's key through `next_due`
+   output (and the actor's later output) held until the asker's own record write. After a crash, `DueScan` finds the asker's key through `next_due`
    (its waiting entity's `WakeAt`) and wakes it.
 
 - **Presences** ([draft §7](programming-model.md#7-客户端与-presence)): a client's existence on an actor, one per
@@ -300,8 +302,10 @@ scope for now and would be another `IFrameChannel` (ADR-092).
 The client protocol's internals behind [draft §7](programming-model.md#7-客户端与-presence).
 
 - **A token** is a `SignedToken` whose content is `(ClientId, issue sequence, claims)`. The issue sequence is a
-  per-account counter the issuer persists (the mmo sample keeps it on the account actor's root) and increments on
-  every login; a refresh keeps it, so a refreshed token on an old device never outranks a newer login.
+  per-account counter the issuer persists before the token leaves (`root.IssueClientToken` inside a `[Durable]`
+  request's handler keeps it in `IssueSeq` on the root; the mmo sample's account actor does so) and increments on
+  every login; a refresh keeps it, so a refreshed token on an old device never outranks a newer login. A login is its
+  `ClientId`: one login's reconnects share it.
 - **A connection stamp** is `(issue sequence, gateway node generation, connection counter on that node)`, compared
   lexicographically; the last two tell apart reconnects with the same token. Smaller: the newcomer gets `Superseded`
   and its `Connection` closes. Equal: the same connection retrying, answered again idempotently. Larger: takes over.
@@ -310,10 +314,11 @@ The client protocol's internals behind [draft §7](programming-model.md#7-客户
   `Route(ActorId target, PresenceId, Slot)` in the `Connection`'s `DynamicBuffer<Route>`.
 - **Takeover** (`Join()` with a larger stamp): the target drops `Joined`, `Leaving` and `Detached`, draws a new
   `PresenceId`, releases the old route by the old `(PresenceId, stamp)` (so a late release or leave from the old
-  connection matches nothing), and appends `TakeOver(new stamp)` for the old connection's gateway (the node recorded on
-  the old presence, across gateways too). The old `Connection` compares issue sequences: a larger one (another
-  device's newer login) closes it with `Superseded`, which the SDK treats as terminal; an equal one (the same login on
-  a new connection, or a `Retire`) closes it quietly, a retiring one only once its routes have moved and its open calls
+  connection matches nothing), and appends `TakeOver(new stamp, new ClientId)` for the old connection's gateway (the node
+  recorded on the old presence, across gateways too). The old `Connection` compares: a larger issue sequence (another
+  device's newer login), or an equal one with another `ClientId` (one sequence issued twice), closes it with
+  `Superseded`, which the SDK treats as terminal; an equal one with the same `ClientId` (the same login on a new
+  connection, or a `Retire`) closes it quietly, a retiring one only once its routes have moved and its open calls
   are answered. If it drops half-way, its presences go `Detached` and the new connection takes them over with
   `Joined.MissedPushes` true.
 - **`[JoinOnConnect]`**: the activated `Connection` sends an internal join request carrying its stamp to the actor
@@ -386,14 +391,19 @@ in short:
   `Activated` first, then the placeholder's mail, then later mail.
 - **Epoch fencing**: every record write compares the epoch; a failed compare fences the activation. A migration's
   arrival claims a new epoch too, so a late write from the source fails.
-- **Persistence** is per entity kind: entities spawned from a `[Prefab<K>(Persist = true)]` prefab (the root through
-  `K.RootPrefab`) carry `Persisted` and are saved with every component but `[Transient]` ones; others are not.
-  Records are `SaveEntities` of the root and its `Persisted` descendants (`world.Descendants(root)`) with the
-  `persist` component set built once in `Registration`; change tracking is switched on for that set's types (EasyEcs
-  request #27; until then the generator declares `ITrackChanges`). `ChangeSystem`
-  (`ChangedAny(persist).With<Persisted>()`) and the `Persisted` cleanup tag the root `Unsaved`; `CheckpointSystem` writes
-  `[With<Unsaved>]` roots with an epoch CAS. The waiting entities of `[Durable]` asks, `ReplyLog` and `NextDue` are in
-  the record, and roots holding a `[Durable]` reply, request or `Replied` output are written at once. **Wake**: the
+- **Persistence** is per entity kind: entities spawned from a persistent prefab (the root's `K.RootPrefab` with
+  `[Persist]`, child prefabs with `[Prefab<K>(Persist = true)]`) carry `Persisted` and are saved with every component
+  but `[NotSaved]` ones; others are not. Records are `SaveEntities` of the root and its `Persisted` descendants
+  (`world.Descendants(root)`) with the `persist` component set built once in `Registration`: the types on persistent
+  prefabs and those spawned into persistent entities, plus the framework's. Change tracking is switched on for that
+  set's types (EasyEcs request #27, proposed, not yet forwarded; until then the generator declares `ITrackChanges`, so
+  those types are `partial`). `root.Spawn`/`GetOrSpawn` of a persistent prefab, `ChangeSystem`
+  (`ChangedAny(persist).With<Persisted>()` and `RemovedAny`) and the `Persisted` cleanup tag the root `Unsaved`;
+  `CheckpointSystem` writes `[With<Unsaved>]` roots with an epoch CAS; both skip roots that are placeholders
+  (`Loading`, `Saving`, `ActivationFailed`). A load adds the components a record lacks from the prefab copy named by
+  `Persisted.Prefab` (tagging the root `Unsaved`) and skips unknown type ids, counted. The waiting entities of
+  `[Durable]` asks, `ReplyLog`, `IssueSeq` and `NextDue` are in the record, and roots with `HeldOutput` are written at
+  once. **Wake**: the
   runtime's `WakeSystem` keeps the root's `NextDue` at the minimum `WakeAt` of its descendants; each node's `DueScan`
   asks the store for keys of its slots whose `next_due` has passed (`IActorStore.DueKeys(slots, until)`, an index on
   the column) and activates them, so a `[Durable]` asker or a reminder survives a crash.
@@ -404,7 +414,7 @@ in short:
 
 ## 5. Migration, upgrades, hot restart
 
-- **Migration**: the whole subtree with the component set `migrate` (every component not `[Transient]`), including
+- **Migration**: the whole subtree with the component set `migrate` (every component not `[NotSaved]`), including
   waiting asks, presences with `Subscribed`, and delayed events with their remaining time (their `Seq` re-stamped on
   arrival in their old order, the due heap rebuilt). The header carries each component's layout hash from
   `wire.manifest`; one mismatch (mixed versions) falls back to deactivate, write the record, load it on the target.
@@ -419,7 +429,7 @@ in short:
 - **Rolling upgrades**: `[Hosts]` on the member card, `NotHandled` from old nodes retried once after placement is
   resolved again (an unknown client message at an old gateway is reported by the SDK as a version mismatch),
   migration falls back to records across layouts, load moves resume once the stateful groups have rolled, and the
-  upgrade check refuses a release whose records an older build could not keep (rollback safety). Changes of hosting
+  upgrade check refuses a release whose record fields or record types an older build could not keep (rollback safety). Changes of hosting
   or client routes change this way. **Gateways** always roll, surge then drain: every new gateway is ready before an old one leaves the load
   balancer and retires its connections in waves (`ControlOp.Retire`, make before break, ADR-026), so each client
   moves once ([deployment.md section 2](deployment.md#stateless-groups-and-gateways-deployment)).
@@ -427,17 +437,20 @@ in short:
   AOT and on every platform. Arming only prepares (the coordinator records a nonce); the platform's SIGTERM starts
   it: the node announces `NodeRestarting` and freezes once the coordinator acks (its slots pinned, its deadline kept by
   the coordinator), roots carry `Restarting` for one last tick, the worlds freeze (bounded) while IO keeps receiving,
-  the process writes a snapshot file under `DaServer:SnapshotPath` (temp file, fsync, rename; configuration tables and
-  `[WorldLocal]` singletons excluded, EasyEcs 4.7's `Save(exclude)`) and exits; the platform
+  the process writes a snapshot file under `DaServer:SnapshotPath` (temp file, fsync, rename; the header records the
+  world count; user singletons excluded, EasyEcs 4.7's `Save(exclude)`) and exits; the platform
   restarts it with the new build; the new process checks the snapshot (checksum, boot id, deadline, the armed
-  manifest), creates its configuration tables and `[WorldLocal]` singletons, loads the snapshot keeping them (`Load(keep)`), deletes it and waits in `Rejoining` for the coordinator's `Readmit` or `Gone`, then reconnects
+  manifest), creates the recorded number of worlds (or goes through records if it cannot), loads the cluster's current
+  configuration tables and creates its world singletons, loads the snapshot keeping them (`Load(keep)`), deletes it and waits in `Rejoining` for the coordinator's `Readmit` or `Gone`, then reconnects
   with the same identity (name, generation) and the peers resume its streams from their resend windows; roots carry
   `Resumed` for one tick. No actor re-activates, epochs stay. An aborted freeze falls back to a graceful stop.
 - **Deployment on Kubernetes** (ADR-085, roadmap W11): actor-hosting groups are StatefulSets with `OnDelete` and a
   memory-backed `emptyDir` for the snapshot; the rollout Job patches each running pod's image, one at a time;
   gateways and stateless groups are Deployments. The full target shape is [deployment.md](deployment.md).
-- **Changes without a restart** are data swaps between two ticks: tuning tables (`[ConfigTable]` singletons loaded and validated by the node, swapped by `POST /admin/tables/{name}`, their
-  version on the member card) and feature flags choosing between handlers compiled into the binary (a singleton or a
+- **Changes without a restart** are data swaps between two ticks: tuning tables (`IConfigTable<T>` singletons; the store
+  keeps one current version per table, (name, version, hash, bytes), the coordinator puts (name, version, hash) in the
+  view, every starting or hot-restarted node loads that version, `POST /admin/tables/{name}` validates and replaces it
+  cluster-wide, and a rollback posts the old bytes again) and feature flags choosing between handlers compiled into the binary (a singleton or a
   tag that handlers and systems filter on).
 
 ## 6. Distributed guarantees and failure handling
@@ -453,7 +466,7 @@ generator add, and what the runtime does:
 
 | Mechanism | EasyEcs | DaServer attributes and generator | Runtime |
 |---|---|---|---|
-| Finding entities by key | Value indexes and their generated members (`world.NetIdIndex.TryFind`, `world.CellIndex.Find`); unique ones `IUniqueIndexed<T>` (4.7; `IIndexed<T>` with a runtime uniqueness check until then) | Explicit `T IIndexed<T>.Key => this` for every partial `IActor<T>`, `IChildKey<T>` and self-keyed `IIndexed<T>` record struct | `world.Index<K, K>()` on receipt |
+| Finding entities by key | Value indexes and their generated members (`world.NetIdIndex.TryFind`, `world.CellIndex.Find`); unique ones `IUniqueIndexed<T>` (4.7; `IIndexed<T>` with a runtime uniqueness check until then) | Explicit `T IIndexed<T>.Key => this` for every partial `IActor<T>`, `IChildKey<T>` and self-keyed `IIndexed<T>` record struct | `world.Index<K, K>().TryFind` on receipt (the generic form of the same index) |
 | Which actor type logic belongs to | — | `[Handles<K>]` | Dispatch tables per actor type |
 | Order of events | Singletons | `Due` component | `OrderedPhase` merges the mailbox snapshot, the due heap and the chain by `(time, seq)`; state in `Ordered<K>` |
 | Message handling | Single-entity jobs (`entity.Run(ref job[, filter])`, 4.5), `[With<T>]`, `[Without<T>]`, `INoStructuralChanges` | `[On<T>]` methods compiled into job structs (zero-component jobs included) | One item at a time, exceptions isolated per item |
@@ -468,12 +481,12 @@ generator add, and what the runtime does:
 | Subscriptions | `DynamicBuffer`, `[Changed<DynamicBuffer<T>>]` | `Subscribed`, `SetGroups` | `SyncSubscriptions` |
 | Lifecycle | Tags | `[On<Activated>]`, systems on `Leaving`, `Deactivating`, `Restarting`, `Resumed` | Placeholders, epochs, fencing, `Depart` |
 | An actor's entities | `ChildOf`, `world.Children`, prefabs, `world.Instantiate` with components (4.7) | `In<K>`, `K.RootPrefab`, `[Prefab<K>(Persist = …)]`, `root.Spawn`, `GetOrSpawn`, `e.Root` | Registered prefab copies |
-| Writing only what changed | `ITrackChanges`, `[Changed<T>]`, `[Removed<T>]`, `ChangedAny`/`RemovedAny` (4.7), `Slices` (4.7), `ICleanupComponent`, `DynamicBuffer`; tracking switched on at run time (request #27) | Persistent prefabs, `[Transient]`, `[Durable]` | `Persisted`, `ChangeSystem`, `CheckpointSystem` |
-| Records, migration | `ComponentSet`, `Descendants`, `SaveEntities`, `LoadEntitiesInto` (`markWritten: false` on restore) | Persistent prefabs, `[Transient]` | Store, epoch CAS, layout hashes |
+| Writing only what changed | `ITrackChanges`, `[Changed<T>]`, `[Removed<T>]`, `ChangedAny`/`RemovedAny` (4.7), `Slices` (4.7), `ICleanupComponent`, `DynamicBuffer`; tracking switched on at run time (request #27, proposed, not yet forwarded) | Persistent prefabs, `[NotSaved]`, `[Durable]` | `Persisted`, `ChangeSystem`, `CheckpointSystem` |
+| Records, migration | `ComponentSet`, `Descendants`, `SaveEntities`, `LoadEntitiesInto` (`markWritten: false` on restore) | Persistent prefabs, `[NotSaved]` | Store, epoch CAS, layout hashes |
 | Wake | `[ChangedAny<T>]`, `[RemovedAny<T>]` (4.7) | — | `WakeAt`, `NextDue`, `DueScan` |
 | Version compatibility | Nino type ids, `[NinoFormerName]` | `wire.manifest` | Rolling upgrades |
 | Hot restart | `world.Save`, `world.Load(…, markWritten: false)` (4.6); `exclude` and `keep` sets (4.7) | `wire.manifest` diff picks the path; the snapshot format | Freeze between two ticks, the snapshot file, no re-activation |
-| Tests, diagnostics | One world, `SystemErrorPolicy.Throw`, `Capture`/`Restore`, `world.Count<Destroyed>()`, `world.Describe()`, `DescribeSchedule()` and `SystemStats` allocations and matches (4.7) | `Registration`, `TestActor<K>` | Manual clock, decoded `Outbox`, allocation assertions |
+| Tests, diagnostics | One world, `SystemErrorPolicy.Throw`, `Capture`/`Restore`, `world.Count<Destroyed>()`, `world.Describe()`, `DescribeSchedule()` (4.7) and `SystemStats` allocations and matches (4.7) | `Registration`, `TestActor<K>` | Manual clock, decoded `Outbox`, allocation assertions |
 | Pooling | `DynamicBuffer` pools, Nino's `[NinoPooled]` | — | Frames and send buffers |
 
 ## 8. Native AOT
@@ -534,7 +547,7 @@ Read-only endpoints on the HTTP plane, also Aspire commands (ADR-090), modelled 
 | `GET /admin/actors/{type}/{key}` | `Describe()` of the actor's root and of each entity in `world.Descendants(root)`: component names and values, decoded through `wire.manifest` |
 | `GET /admin/actors/top` | The busiest actors by mailbox depth and handler time |
 | `GET /admin/worlds/{i}` | `world.Describe()`: tables, rows, memory |
-| `GET /admin/worlds/{i}/systems` | `world.DescribeSchedule()` (groups, order, intervals) and each system's `system.Stats` (time, allocated bytes, matched entities; the last two EasyEcs 4.7, planned, under `MeasureSystems`, also exported as metrics) and `system.Error` (a system disabled by `SystemErrorPolicy.Disable`) |
+| `GET /admin/worlds/{i}/systems` | `world.DescribeSchedule()` (groups, order, intervals; EasyEcs 4.7, planned) and each system's `system.Stats` (time, allocated bytes, matched entities; the last two EasyEcs 4.7, planned, under `MeasureSystems`, also exported as metrics) and `system.Error` (a system disabled by `SystemErrorPolicy.Disable`) |
 | `GET /admin/worlds/{i}/count?with=Health,Dead` | The number of entities with those components; names resolve to `TypeId`s through the registration's component table, no reflection |
 
 - The cold path: each call runs on the world's thread between two items, allocates, and only on request.
@@ -585,7 +598,7 @@ Derived from [design.md](../design.md); what today's code has and the target dro
 | Tick rate in configuration, the default group at the tick rate | `[TickRate(n)]` on the actor type; `[UpdateInGroup<K>]` |
 | `UnloadAfterIdleSeconds` | `[ActorOptions(IdleTimeout = …)]` on the actor type |
 | Callers retry by hand and receivers deduplicate by hand | `[Durable]` requests: the asker's waiting entity is saved and re-asked until `Expired`, the receiver deduplicates through `ReplyLog`; other requests are the asker's to retry |
-| `[Persist]` per component type with a generated `ITrackChanges`, the own record format | Persistence per entity kind (`[Prefab<K>(Persist = true)]`, `[Transient]` components left out); records as `SaveEntities` over `Descendants` with a `ComponentSet`; epoch CAS |
+| `[Persist]` per component type with a generated `ITrackChanges`, the own record format | Persistence per entity kind (`[Persist]` roots and `[Prefab<K>(Persist = true)]` children, `[NotSaved]` components left out); records as `SaveEntities` over `Descendants` with a `ComponentSet`; epoch CAS |
 | State handoff (ADR-072) | Migration bytes with layout hashes, a new epoch on arrival; fallback to records |
 | `Registration_{Assembly}` run by a module initializer (ADR-012) | `Registration` instance from the generated `Registration.Create()` |
 | One project per server (ADR-017), Contracts / Model / Logic (N1) | Protocol / Server; several server types per Server project; node = one server type |
@@ -603,16 +616,11 @@ Derived from [design.md](../design.md); what today's code has and the target dro
 
 ## 10. Open points to settle during W
 
-1. **EasyEcs compile checks** (W1, on 4.7 once released, 4.6.0 until then): the generated explicit `Key` is accepted by
-   value indexes (`IUniqueIndexed<T>` on 4.7, `IIndexed<T>` before); `IActor<TSelf>` (inheriting `IEquatable<TSelf>`,
-   with the static `RootPrefab`) compiles in the framework assembly and in a consumer; a job without component
-   parameters runs through `entity.Run`; a clear through `Mut<DynamicBuffer<T>>` is not stamped; whether a read through
-   EasyEcs's generated accessor of a type whose tracking DaServer switched on counts as a write (request #27 decides
-   the final shape).
+1. **EasyEcs compile and behaviour checks**: listed, each with its test, only in roadmap step W1
+   ([roadmap.md](../roadmap.md)), with the 4.6 fallbacks for the 4.7 features.
 2. **Evaluations**, each adopted only without a regression: Kestrel's `ConnectionHandler` for the cluster and client
-   ports against the own listener (BenchmarkDotNet, W4; the earlier raw-TCP measurement in the roadmap regressed);
-   `FakeTimeProvider` as the manual clock of `TestActor<K>` and `TestCluster` (W2); the Prometheus exporter under AOT
-   (W8, section 8).
+   ports against the own listener (BenchmarkDotNet, W4; the earlier raw-TCP measurement in the roadmap regressed); the
+   Prometheus exporter under AOT (W8, section 8).
 3. **Replication field diff** (W7a): per-field bitmasks against the `Replica<T>` copy of the last sent value double the
    memory of replicated components; measure against diffing whole components on the mmo sample before adopting. The
    copy's sent tick and the incarnation stay either way: they decide what a rejoining client still needs.

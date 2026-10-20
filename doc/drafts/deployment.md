@@ -5,8 +5,9 @@ publish today (`aspire publish` of both samples, Aspire 13.6.1, Kubernetes publi
 2026-10-20). Decided items join ADR-085 and ADR-087 when W10 promotes the drafts, after W12 and N9; this file is deleted then.
 
 The step column follows the roadmap: **W7** samples, **W8** Native AOT (images, the Compose health check), **W11**
-Kubernetes shape and the hot-restart rollout (ADR-085), **W12** deployment corrections, **W6** the manifest diff and the
-`{cluster}-restart` command outside Kubernetes, **N9** the upgrade check. "Hook" means Aspire's `PublishAsKubernetesService` /
+Kubernetes shape and the hot-restart rollout (ADR-085), **W12** deployment corrections, **W6** the manifest diff, the
+`{cluster}-restart` command outside Kubernetes and the Compose shape it needs (one service per stateful node, a named
+snapshot volume each), **N9** the upgrade check (roadmap development order, item 14). "Hook" means Aspire's `PublishAsKubernetesService` /
 `PublishAsDockerComposeService`; "DA" means code in `DaServer.Aspire`. Ports per group are
 [draft §2](programming-model.md#2-服务器与节点); how a hot restart works is [draft §10](programming-model.md#热重启).
 
@@ -163,7 +164,7 @@ How ports are declared per group is [draft §2](programming-model.md#2-服务器
 | Job | What it runs | When | Why not today's way | How | Step |
 |---|---|---|---|---|---|
 | `{cluster}-schema` | The node image in schema mode (`--DaServer:Migrate`): `PostgreSqlActorStore.Schema` under the advisory lock, with a DDL role | Before nodes need the table: a Helm `pre-install,pre-upgrade` hook with an external database; a plain Job (named with the release revision, `ttlSecondsAfterFinished`) when the chart also runs PostgreSQL, since a pre-install hook would run before the database exists | Creation at node start does not race (advisory lock), but: every node start, scale-up and hot restart runs `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, which takes an `ACCESS EXCLUSIVE` lock on the live table before it checks anything ([ALTER TABLE](https://www.postgresql.org/docs/current/sql-altertable.html)): every claim and save of the cluster waits, and queues behind any long transaction. It also gives the runtime role DDL rights. Nodes then run `createTable: false` with a DML-only role and treat a missing table as "not ready yet" (retry within the startup probe) instead of exiting | DA (`WithActorStore(..., schema: SchemaMode.Job)`), DaServer (the mode), DaServer.Persistence.PostgreSql (missing table retried) | W12 |
-| `{cluster}-upgrade-check` | The new image in check mode: reads the running cluster's manifests (a node's `/admin/manifest`, admin token) and diffs them with its own `wire.manifest`; prints the hot-restart path (in place, through records, rolling) and fails on an incompatible change, and on a release that would write record fields the running build cannot keep (no safe rollback) unless forced | Helm `pre-upgrade` hook; `aspire deploy` step for Compose | Today only the route check runs, on the publishing machine, against the build alone (`RouteCheckStep.cs`); nothing compares with what is running | DA (step + Job), DaServer (mode), runtime (`/admin/manifest`) | N9 |
+| `{cluster}-upgrade-check` | The new image in check mode: reads the running cluster's manifests (a node's `/admin/manifest`, admin token) and diffs them with its own `wire.manifest`; prints the hot-restart path (in place, through records, rolling) and fails on an incompatible change, and on a release that would write record fields or record types the running build cannot keep (no safe rollback) unless forced | Helm `pre-upgrade` hook; `aspire deploy` step for Compose | Today only the route check runs, on the publishing machine, against the build alone (`RouteCheckStep.cs`); nothing compares with what is running | DA (step + Job), DaServer (mode), runtime (`/admin/manifest`) | N9 |
 | `{cluster}-rollout-{n}` | The new image in rollout mode, ServiceAccount `{cluster}-rollout`: per pod of each stateful group, one at a time and the coordinator last: pre-pull, arm the node (`/admin/restart`; refused while a member joins or leaves, another node holds the restart permit, or memory is short), patch the pod's image (the kubelet's SIGTERM starts the restart; an arm with no patch after it expires), wait for ready; or delete the pod when the path is rolling | Started by `aspire do {cluster}-restart` or `kubectl create job` | See section 5 for why in-cluster | DA (command creates the Job), DaServer (mode) | W11 |
 | Load generators | `bots`, `crowd`: **a Job** (`backoffLimit: 0`, `ttlSecondsAfterFinished`) behind `-- LoadTest=true`, otherwise excluded from publish | They run to completion; as Deployments they restart forever (a 10,000-bot storm every few minutes against the deployed cluster) | Sample: `ExcludeFromManifest()` in publish mode unless asked, the Job as an `AdditionalResource`; Compose: `profiles: [loadtest]` | W12 |
 
@@ -275,8 +276,9 @@ Steps: securityContext, `/tmp` and service account W12 (the snapshot volume W11)
 8. N9: the upgrade-check hook Job.
 9. W11: a public `Manifest` type (today `samples/Shared/Publishing.cs`) for the objects Aspire has no type for (Job,
    PodDisruptionBudget, NetworkPolicy, VerticalPodAutoscaler).
-10. W11: Compose: stateful groups as one service per node (fixed `hostname`, a named snapshot volume each); the
-    gateway surge and drain and the per-node hot restart in `{cluster}-restart` and the deploy step.
+10. W6: Compose: stateful groups as one service per node (fixed `hostname`, a named snapshot volume each) and the
+    per-node hot restart in `{cluster}-restart`. W11: the gateway surge and drain in `{cluster}-restart` and the deploy
+    step.
 11. W12: Compose: `${VAR:?}` for the signing secret, `DaServer__RequireSigningSecret`, the `internal: true` network for
     the cluster and HTTP planes, the read-only and non-root service settings (section 8).
 

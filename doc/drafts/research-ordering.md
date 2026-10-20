@@ -2,11 +2,11 @@
 
 问题：单线程按到达顺序处理所有客户端的消息，顺序可控，但只有一个核；多线程按客户端分 actor，交互的两个客户端没有共同的顺序；按消息随便调度，状态会乱、缓存失效。
 
-## 1. actor 运行时与分区系统：一致性域 + 单写者 + 成批执行
+## 1. actor 运行时与分区系统：单写者 + 成批执行
 
-“一致性域”是文献里的说法：一个单写者负责的那组状态。本设计里它就是一个 Actor（根实体加子孙）。
+文献里把一个单写者负责的那组状态叫“一致性域”；本设计里它就是一个 Actor（根实体加子孙），下文只说 Actor 或单写者的范围。
 
-| 系统 | 一致性域 | 单写者 | 成批 | 跨域 |
+| 系统 | 单写者的范围 | 单写者 | 成批 | 跨范围 |
 |---|---|---|---|---|
 | Orleans | grain | 逐个 turn（默认不可重入） | `ActivationSchedulingQuantum`（按时间） | 可重入选项；Orleans Transactions（两阶段提交，提前释放锁） |
 | Akka / Proto.Actor | 实体 | actor + Cluster Sharding | `throughput`（默认 5 / 300） | saga；只保证同一对发送方与接收方之间的顺序 |
@@ -123,12 +123,12 @@ EasyEcs 提供了什么、评估后放弃了什么，见编程模型草案[第 1
 - 游戏：Darkstar 用事务加冲突重试，不保证时间顺序；SpatialOS 没有前瞻或时间窗口的一致性保证；并行 Quake 服务器的瓶颈是锁和全局同步点的负载不均；人群密集的区域无法再细分（LEARS）。
 - 事件表：日历队列、时间轮的插入和取出平均 O(1)。https://blog.acolyer.org/2015/11/23/hashed-and-hierarchical-timing-wheels/
 
-## 9. 业界做法（v21 依据）
+## 9. 业界做法（编程模型草案第 1、5、9 节的依据）
 
-- **帧率是部署参数，延后用时间**：
+- **帧率写在 Actor 类型上、每个构建固定，延后用时间**：
   - Minecraft 的 `/tick rate` 改的是整个游戏的帧率，按 tick 写的一切（作物、红石、冷却）都跟着变快变慢；默认 20，重启后复原。https://minecraft.wiki/w/Commands/tick
   - Photon Quantum 的 `FrameTimer.FromSeconds(frame, 秒)`：用户写秒，内部存帧；另有 `FromFrames`。https://doc.photonengine.com/quantum/v3/concepts-and-patterns/frame-timer
-  - 结论：数据里写时间，改帧率不改手感（编程模型草案第 9 节）。
+  - 结论：帧率是 Actor 类型的 `[TickRate]`，随构建发布，不是部署参数；数据里写时间，改帧率不改手感（编程模型草案第 5、9 节）。
 - **并行来自很多个 Actor，不来自切开一个模拟步**：
   - TrinityCore：`MapUpdater` 是一个线程池，每张地图的更新是一个任务，地图内部单线程；一张地图卡住，这一轮的其他更新都要等它。https://github.com/TrinityCore/TrinityCore/blob/master/src/server/game/Maps/MapUpdater.cpp
   - EVE：每个星系单线程，热点星系独占节点，过载时时间膨胀（第 2 节）。
