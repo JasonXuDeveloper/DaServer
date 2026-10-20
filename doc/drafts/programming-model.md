@@ -1191,7 +1191,7 @@ AOI 的状态全在组件里：客户端看到的编号是 `NetId`，格子是 `
 5. `Departures`：带 `Leaving` 的 Avatar，写一条 `Disappear`。
 6. `Flush`：每张地图按格子合并 `Shout`，每个有内容的格子发一帧 `Nearby`，然后清空。
 
-所有系统都只看带 `In<Map>` 的实体（`IActor<Map>` 带着的组过滤，第 5 节）。除了 `Steering` 都是单线程：`Movement` 是批量方法（并行要等请求 17），其余的发消息、写别的实体或做结构变更。
+所有系统都只看带 `In<Map>` 的实体（`IActor<Map>` 带着的组过滤，第 5 节）。除了 `Steering` 都是单线程：`Movement` 是批量方法（SIMD 已经够快：EasyEcs 评估过批量方法的并行，和单线程批量、`ForEachParallel` 打平，放弃了），其余的发消息、写别的实体或做结构变更。
 
 NPC 也由用户 `root.Spawn(Prefabs.Npc)` 建，同样从 `NetIds` 取一个编号。
 
@@ -1476,9 +1476,8 @@ public void Walking_out_of_range_during_the_windup_dodges()
 2. **客户端路由由 Logic 里 `[On<T>]` 所在的 `[Handles<K>]` 类推出**，不在 Server 里再写一遍。同一件事只写一处；热更改动路由时，由 `wire.manifest` 比对拦住。
 3. **`[From<K>]` 保持必写**。"从类型就看得出谁发给谁"是目标之一；新的发送方要改消息声明，这正是想要的显式。
 4. **消息不做成实体**。邮箱和到期项在有序阶段归并两个来源。把每条消息做成带 `Due` 的实体能统一表示，但每条消息多一次建实体和销毁。重构时用 BenchmarkDotNet 测一次：快不差于 10% 才改。
-5. **转交 EasyEcs 的需求**（需求文件第 16–20 条）：
+5. **转交 EasyEcs 的需求**（需求文件第 16、18、19、20 条；15 和 17 经 EasyEcs 评估放弃）：
    - **16（前提）**：单个实体执行一个 job，`entity.Run<T1..Tn, TJob>(ref job, in QueryFilter filter)`，`TJob : IForEachEntity<T1..Tn>`，不满足过滤返回 `false`；`ref` 写入跨结构变更的搬运和 `[ForEach]` 一样，job 抛出时也搬运；
-   - 17：批量方法（`Span<T>`）也能 `Parallel = true`；
    - 18：加载时不打变更戳，`ChangeSystem` 就不用重置基准；
    - 19：保存整棵子树（`Descendants`）；
    - **20（前提）**：组过滤可以由组类型实现的泛型接口带上（例如 `IActor<TSelf>` 继承 `IGroupWith<In<TSelf>>`），生成器从 `AllInterfaces` 读出。接口上的特性 `[With<In<TSelf>>]` 写不出来：特性的类型实参不能是类型形参（CS8968）。
