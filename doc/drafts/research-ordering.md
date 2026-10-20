@@ -92,3 +92,22 @@
 - 业务逻辑单线程、一个场景一个串行权威，是网易各产品的共同基础，与本设计的"一致性域内串行"一致。
 - 把一个热点场景拆到多个进程（Avatar）能扩到约 500 人，但代价是异步结算和手工处理竞争；天谕认为不值得，改为把非业务的部分（序列化、广播、AOI、存盘）移出主线程。
 - 对本设计：域内的业务处理保持串行等价；把序列化、广播合并、AOI、写记录这些"输出"放到并行的 tick 系统和网络线程（框架已经这样做发送合并），是同一个方向。
+
+## 6. 让游戏逻辑像顺序代码、并行交给运行时
+
+- Sweeney，POPL 2006：游戏逻辑约 1 万个对象，每次更新碰 5–10 个；提议用事务，以任意顺序并发更新；数值计算用隐式并行的函数式，约占 80% 的 CPU。https://www.cs.princeton.edu/~dpw/popl/06/Tim-POPL.ppt
+- Verse：函数默认 `<transacts>`；`<computes>`/`<reads>`/`<writes>` 写在签名里；"没有 `<writes>` 的函数可以无锁并行执行"；失败会回滚效果。目前 Fortnite 的事务是单线程的（AutoRTFM），用于回滚。https://verselang.github.io/book/13_effects/ ，https://www.unrealengine.com/tech-blog/bringing-verse-transactional-memory-semantics-to-c
+- Roblox Parallel Luau：同一个 Actor 的脚本串行；`task.desynchronize`/`synchronize` 切换阶段；并行阶段基本只读；小任务的开销大于收益。https://create.roblox.com/docs/scripting/multithreading
+- SpacetimeDB：每个 reducer 一个事务；每个数据库单线程执行；BitCraft 按区域分模块，周期性的 agent reducer 批量处理。https://spacetimedb.com/docs/functions/reducers ，https://github.com/clockworklabs/BitCraftPublic
+- Unreal Mass：处理器声明 fragment 访问；结构变更走命令缓冲，批次结束时生效；信号双缓冲。https://dev.epicgames.com/documentation/en-us/unreal-engine/overview-of-mass-entity-in-unreal-engine
+- Bevy：observer 立即执行但串行、独占世界；系统并行但命令要等同步点；用户常遇到"差一帧"和顺序歧义的问题。https://bevy.org/news/bevy-0-14/ ，https://github.com/bevyengine/bevy/pull/7383
+- Unity DOTS：结构变更走命令缓冲，在同步点回放；频繁的状态用可开关的组件。https://docs.unity3d.com/Packages/com.unity.entities@1.3/manual/performance-sync-points.html
+
+## 7. 数据流、确定性模拟、SIMD
+
+- Differential Dataflow：按键分区、键内按时间顺序；单次更新约 230 µs，大批量时约 1–5 µs；适合大批量同一时间戳的数据，不适合顺序相关的小操作。https://github.com/TimelyDataflow/differential-dataflow
+- Factorio：并行电网 0.5 ms → 0.39 ms，但 CPU 用量从 0.5% 涨到 15%，整体没有变快（内存带宽受限）；只读的读取器并行效果好。https://www.factorio.com/blog/post/fff-421
+- Paradox CK3：每个系统先并行读（只写私有数据），再按确定顺序写；"最有效、最好教"。https://accu.org/conf-docs/PDFs_2023/XMultiThreadingModelinParadoxGamesPastPresentandFuture.pdf
+- Stellaris：伤害先记录，后续阶段再统一施加；按线程分缓冲，最后合并。
+- SIMD（PVLDB 2018）：连续数组上的筛选快 8.4 倍；分散访问时最多快 2.7 倍；gather 约 1.1 倍；连接查询几乎没有收益。https://ir.cwi.nl/pub/28470/28470.pdf
+- 顺序与公平：先到先得适合请求、回复类的交互；"同一 tick 视为同时"适合随时间推进的模拟。
