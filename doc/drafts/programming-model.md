@@ -18,8 +18,8 @@
 | 工程 | 放什么 | 谁引用 |
 |---|---|---|
 | `Game.Protocol` | 客户端收发的消息。只有数据，不出现任何服务端的种类 | 客户端和服务端；编译成 netstandard2.1 的 DLL 交给 Unity |
-| `Game.Server` | 种类、服务器之间的消息、组件、prefab、服务器类型、系统组，以及五行的 Program.cs | 服务端 |
-| `Game.Server.Logic` | 所有逻辑：`[Receive]` 方法和 `[ForEach]` 系统，以及生成的分发表、客户端路由表 | 服务端；放在可回收的 `AssemblyLoadContext` 里，可以热更 |
+| `Game.Server` | 种类、服务器之间的消息、延后的事件、组件、prefab、服务器类型，以及五行的 Program.cs | 服务端 |
+| `Game.Server.Logic` | 所有逻辑：`[On<T>]` 方法，以及生成的分发表、Tick 的 job 结构、客户端路由表 | 服务端；放在可回收的 `AssemblyLoadContext` 里，可以热更 |
 
 ### 用户写的
 
@@ -33,9 +33,12 @@
 | prefab | `[Spawns<Map>] static readonly Prefab Map = …;` | Server |
 | 令牌里的声明 | `[Claims] record struct PlayerClaims(long PlayerId) : IComponent;` | Server |
 | 服务器类型 | `[Hosts<Map>] struct MapServer : IServer;` | Server |
-| 系统组的频率 | `[Every(50)] struct Simulation : ISystemGroup;` | Server |
-| 处理消息 | `static partial class` 里的 `[Receive]` 方法 | Logic |
-| 每 tick 的逻辑 | `partial class … : EcsSystem` 里的 `[ForEach]` | Logic |
+| 帧长 | 写在种类上：`[Frame(50)] partial record struct Map(long Id) : IKind<Map>;` | Server |
+| 延后的事件 | `[NinoType] record struct Strike(int Skill, EntityId Target) : IEvent;` | Server |
+| 处理消息、生命周期、回信、事件 | `static partial class` 里的 `[On<T>]` 方法 | Logic |
+| 客户端消息的接收方 | `[On<MoveTo, Map>]`：第二个类型参数是接收它的种类 | Logic |
+| 延后执行 | `self.Raise(e)`（当前处理方法之后，同一个事务）；`self.Raise(e, after: n)` 返回 `Scheduled<T>`（n 帧后） | Logic |
+| 每帧的逻辑 | `[On<Tick>]`，参数是组件或列（`Span<T>`） | Logic |
 
 ### 框架给的
 
@@ -46,8 +49,12 @@
 | `KindKey` | 任意种类的地址（种类 id 加最多 16 字节的键），用 `Is<T>(out T key)` 取出强类型的键 |
 | `LinkId`、`Linked`、`Confirmed` | 客户端在某个目标上的链接；目标上的链接实体，例如地图上的 Avatar |
 | `ReplyTo<T>`、`Answer<TReq, TRep>`、`[Pending]`、`[Link]` | 晚些回复；等别的实体的结果；参数绑定到哪个实体 |
-| `Activated`、`Unlinked`、`LinkLost`、`Unloading` | 生命周期消息：框架发给实体自己，用 `[Receive]` 处理 |
-| `IdleAfter`、`Due`、`Clock` | 空闲回收；定时；shard 的时钟单例（`DeltaTime`、`Now`） |
+| `Activated`、`Unlinked`、`LinkLost`、`Unloading` | 生命周期消息：框架发给实体自己，用 `[On<T>]` 处理 |
+| `Tick` | 每一帧的事件（`Frame`、`DeltaTime`），用 `[On<Tick>]` 处理 |
+| `Raise`、`Scheduled<T>` | 延后的事件：n = 0 紧接着执行，n > 0 在 n 帧后执行；`Scheduled<T>` 可以存进组件，用来取消或表示"正在进行" |
+| `[Of(nameof(E.Field))]` | 参数绑定到事件或消息某个字段指向的实体，例如技能的目标 |
+| 空间区域 | 每帧按位置把一张地图分成互不影响的区域，区域之间并行；用户不写 |
+| `IdleAfter`、`Clock` | 空闲回收；shard 的时钟单例（`Now`、`Frame`、`DeltaTime`） |
 | `ClientGroup` | 一次序列化、按网关扇出的广播组 |
 
 ### 谁做什么
@@ -56,20 +63,22 @@
 |---|---|---|---|
 | 按键找实体 | 种类组件的值索引 | 为 `partial` 种类生成 `Key => this` 和种类 id 常量 | 收到消息时查索引 |
 | 只处理一类实体 | `[With<Map>]` | — | — |
-| 每 tick 的逻辑 | `[ForEach]` 生成的 job、`Parallel`、批量方法、`[Changed<T>]` | — | — |
-| 频率 | 系统组 | `[Every(ms)]` | shard 循环按时调用 `Update<T>()` |
-| 消息处理 | — | `[Receive]` 生成的分发跳板 | `MailSystem` 按到达顺序调用，逐条隔离异常 |
+| 事件的顺序 | — | — | 每个域按 `(时间, 序号)` 逐个执行消息、Tick、延后的事件 |
+| 消息处理 | — | `[On<T>]` 生成的分发跳板 | 逐个事件调用，逐个隔离异常 |
+| 每帧的逻辑 | 并行 API、批量方法、`[Changed<T>]` | `[On<Tick>]` 生成 job 结构 | 帧开始时按列并行执行 |
+| 帧长 | — | `[Frame(ms)]` | 同一帧长的域共用帧边界 |
+| 延后的事件 | 有序值索引的 `Range`、`ChildOf` | `Raise`、`Scheduled<T>`、`IEvent` | 到期时按 `(时间, 序号)` 执行；发起者销毁时一起消失 |
+| 空间区域 | 并行 API | — | 每帧按 AOI 网格分区，区域内串行、区域之间并行；调试模式核对全域逐个执行的结果 |
 | 发送方向 | — | `[From<K>]` 生成 `Self<K>` 上的方法 | 发送、回复、超时 |
-| 客户端消息的路由 | — | `[Receive<K>]` 生成路由表 | `Client` 实体转发 |
-| 等待、回复 | `ChildOf`、`ICleanupComponent` | `[Pending]`、`ReplyTo<T>` | 调用 id、`Due`、期限传递 |
+| 客户端消息的路由 | — | `[On<T, K>]` 生成路由表 | `Client` 实体转发 |
+| 等待、回复 | `ChildOf`、`ICleanupComponent` | `[Pending]`、`ReplyTo<T>` | 调用 id、框架内部的毫秒期限、期限传递 |
 | 链接 | 子实体、值索引 | `[Link]` 参数绑定 | 确认、核对、重连 |
-| 生命周期 | — | 用户写 `[Receive]` | 投递生命周期消息 |
-| 定时 | 有序值索引的 `Range` | — | `TimerSystem` |
+| 生命周期 | — | 用户写 `[On<Activated>]` 等 | 投递生命周期消息 |
 | 一张地图的实体 | `ChildOf`、`world.Children(map)` | — | — |
 | 只写改过的 | `ITrackChanges`、`[Changed<T>]`、`[Removed<T>]`、`ICleanupComponent` | `[Persist]` | `ChangeSystem`、`CheckpointSystem` |
 | 记录、迁移 | `ComponentSet`、`SaveEntities`、`LoadEntitiesInto` | `[Persist]`、`[Transient]` | 读写存储 |
 | 版本兼容 | Nino 类型 id、`[NinoFormerName]` | `wire.manifest` | 滚动升级 |
-| 热更 | `RemoveTypes`、可回收的上下文 | 分发表、路由表在 Logic 程序集里 | 两次更新之间切换 |
+| 热更 | `RemoveTypes`、可回收的上下文 | 分发表、job 结构、路由表在 Logic 程序集里 | 两帧之间切换 |
 | 对象复用 | `DynamicBuffer` 池化、Nino 的 `[NinoPooled]` | — | 帧、发送缓冲池化 |
 
 ---
@@ -126,7 +135,7 @@
 **用户写的只有三种，全部是 `[On<T>]`：**
 
 ```csharp
-[On<CastSkill>]                                   // a message: validate, change instant state, schedule
+[On<CastSkill, Map>]                              // a message: validate, change instant state, schedule
 static void Cast(in CastSkill m, [Link] Entity me, [Link] Maybe<Casting> casting, [Link] Maybe<Stunned> stunned)
 {
     if (casting.Exists || stunned.Exists) return;
@@ -210,8 +219,8 @@ public readonly partial record struct Room(long Id)   : IKind<Room>;
 
 **同一个值也是组件**：地图实体上带着 `Map(7)`。
 - 按键找实体：`world.MapIndex.TryFind(new Map(7), out var e)`，用的是 EasyEcs 的值索引；
-- 只处理地图的系统写 `[With<Map>]`；
-- `[ForEach]` 里取 `in Map self`，就知道自己是谁。
+- 只处理地图的 Tick 写 `[With<Map>]`；
+- 处理方法里取 `in Map self`，就知道自己是谁。
 
 **接口**：`IKind<T>` 继承 `IComponent` 和 `IIndexed<T>`。
 - EasyEcs 的生成器会读继承来的接口，所以 EasyEcs 不用改。
@@ -251,7 +260,7 @@ public readonly partial record struct Room(long Id)   : IKind<Room>;
 - 含集合的消息是 `[NinoPooled]` 类（Nino 4 的规则），发送后自动归还，不会每次推送都分配。
 - **消息里不写目标**，所以客户端不知道服务端有 Player、Map、Room。
 - **目标由服务端决定**：
-  - 处理这条消息的 `[Receive<Map>]` 写的是哪个种类，消息就转发给哪个种类；
+  - 处理这条消息的 `[On<MoveTo, Map>]` 第二个类型参数写的是哪个种类，消息就转发给哪个种类；
   - 生成器据此在 Logic 里生成客户端路由表；
   - 一条客户端消息只能有一个目标种类。
 - `IAddressed` 的消息带一个 `To` 字段，用来在同种类的多个链接里选一个。
@@ -282,45 +291,93 @@ public readonly partial record struct Room(long Id)   : IKind<Room>;
 
 ## 5. 逻辑
 
-> 注：执行模型以第 1 节的 v20 为准。本节以下的参数绑定、频率、异常处理和后面各节的例子，仍沿用旧名字 `[Receive]`/`[ForEach]`，待 v20 定稿后统一改为 `[On<T>]`。
+逻辑只有一种写法：`static partial class` 里的 `[On<T>]` 方法。
 
-### `[Receive]` 的参数
+### `[On<T>]` 的 T
+
+| T | 是什么 | 例子 |
+|---|---|---|
+| 服务器之间的消息 | 接收方由消息的 `IMessage<K>`、`IRequest<K, R>` 决定 | `[On<EnterMap>]` |
+| 客户端消息 | 第二个类型参数是接收它的种类，生成器据此写路由表 | `[On<MoveTo, Map>]` |
+| 生命周期消息 | 框架发给实体自己 | `[On<Activated>]`、`[On<Unlinked>]`、`[On<LinkLost>]`、`[On<Unloading>]` |
+| 回信 | 等别的实体的结果（第 8 节） | `[On<Answer<EnterMap, LinkId>>]` |
+| 延后的事件 | `IEvent`，由 `Raise` 发起 | `[On<Strike>]` |
+| 帧 | 每一帧一次（第 9 节） | `[On<Tick>]` |
+
+- 一个请求只能有一个处理方法；一条客户端消息只能有一个接收种类。
+- 事件类型和消息一样声明在 Server 工程，带 `[NinoType]`：它们会随实例迁移，也不能随 Logic 热更消失。
+
+### 参数
 
 | 参数 | 绑定到 |
 |---|---|
-| 消息 `in T` | 这条消息 |
-| `Self<K>` | 目标实体自己 |
-| `Entity`、组件（`ref`/`in`） | **目标实体**（默认） |
+| 消息或事件 `in T` | 这条消息、这个事件 |
+| `Self<K>` | 目标实体自己（域的根，例如地图） |
+| `Entity`、组件（`ref`/`in`） | **目标实体**（默认）；事件绑定到发起它的实体（`entity.Raise` 的那个） |
 | `[Link] Entity`、`[Link]` 组件 | 这个客户端在目标上的链接实体，例如这个玩家的 Avatar。只用于客户端消息和 `Unlinked` |
+| `[Of(nameof(E.Field))]` 组件 | 事件或消息里这个 `EntityId` 字段指向的实体，例如技能的目标 |
+| `Maybe<T>` | 可能没有的组件 |
 | `[Pending]` 组件 | 处理 `Answer` 时，等待实体上的数据 |
 | `in ReplyTo<T>` | 要晚些回复时取；处理 `Answer` 时，取的是等待实体上存的令牌 |
 | `From` | 发送方 |
+| `Span<T>`、`ReadOnlySpan<T>` | 只用于 `[On<Tick>]`：一整列 |
 | 单例 | 本 shard 的单例 |
 
-**引用不会失效**：处理方法里做了结构变更（建实体、`Ask`、`Link` 等），参数仍然可用。
+- `[Of]` 指向的实体已经不在，或者缺少要求的组件：跳板不调用处理方法，等同于重新校验失败。
+
+**引用不会失效**：处理方法里做了结构变更（建实体、`Ask`、`Link`、`Raise` 等），参数仍然可用。
 - 生成的跳板把 `in` 参数复制成局部变量。
 - `ref` 参数传入局部变量，调用结束后用 `TryGetRef` 写回。组件如果已被处理方法删掉，就不写回，不会把它加回来。
 - `DynamicBuffer` 参数直接按 `ref` 传入：它是指向存储的句柄，跳板只在调用前确保存储已经建好，之后不写回。
-- 分析器检查：取了 `ref T` 的处理方法，不能再用别的方式写目标上的 `T`，否则写回会覆盖那次写入。
+- 分析器检查：取了 `ref T` 的处理方法，不能再用别的方式写同一个实体上的 `T`，否则写回会覆盖那次写入。
 
-### 频率与 `Messages` 组
+### 延后执行：`Raise`
 
-- **`[Every(50)]`** 写在系统组上，按真实时间每 50 毫秒调用一次 `Update<Simulation>()`。EasyEcs 自带的 `UpdateInterval` 按更新次数计算，不是时间。
-- **每次唤醒**先跑框架的 `Messages` 组，再跑到了时间的 `[Every]` 组。
-- **`Messages` 组里**依次是：
-  1. `TimerSystem`：投递到期的邮件；
-  2. `MailSystem`：按到达顺序逐条调用分发跳板，生命周期消息也在其中；
-  3. `LifecycleSystem`：销毁已经回复的等待实体，以及已经写完记录的实例。
-- **框架的系统自己处理异常**，不受 EasyEcs 的 `SystemErrorPolicy` 管理。
-- **分发表和路由表**在加载时只暂存，各个 shard 在两次更新之间换上。表在暂存时一次建好；方法组转换成的静态委托由 C# 缓存，不会分配。
+- **`self.Raise(e)`、`entity.Raise(e)`**（n = 0）：当前处理方法返回后、下一个事件之前执行，属于同一个事务。每条消息最多连锁 1,024 个。
+- **`Raise(e, after: n)`**：n 帧后执行，返回 `Scheduled<T>`。
+  - 存进组件，可以 `Cancel()`（前摇被打断），也可以看 `Pending` 判断"正在施法"。
+  - 发起者被销毁时，它的待执行事件一起消失。
+- 只能 `Raise` 给本域的实体。影响别的域用消息。
+- 到期时要重新校验：施法者还活着吗？目标还在、还够得着吗？
+- 用户不判断"立即还是延后"：n 来自数据，0 也是合法值。
 
-### 处理消息时抛出异常
+### 每帧：`[On<Tick>]`
 
-- `MailSystem` 逐条捕获异常，这条消息的请求以失败结束。
+- 参数只有组件或列的 Tick 处理方法，只读写实体自己的组件。生成器为它写 job 结构，运行时用 EasyEcs 的并行 API 按列执行，可以 SIMD。
+  - 不能发消息、`Raise`、做结构变更（分析器检查；EasyEcs 另有 EECS013、EECS015）。
+- 取了 `Entity`、`World` 或 `Self<K>` 的 Tick 处理方法串行执行：
+  - 取 `Entity`：逐个实体；
+  - 取 `Self<K>`：每个域一次，例如一张地图的 AOI。
+- 先后：同一个类里按声明顺序；跨类用 `[After<TClass>]`。
+- `[With<T>]` 收窄到一类实体。
+
+### 一帧里的顺序
+
+一个域里所有事件按 `(时间, 序号)` 逐个执行（第 1 节）。落到每一帧 [t, t + 帧长)：
+
+1. **消息**：帧边界 t 之前进入本域的消息，时间戳就是 t，按序号逐条执行。每条之后，紧接着执行它连锁的 `Raise(e)`。
+2. **Tick**：时刻 t 的 `Tick`，同一时刻里排第一。先跑并行的，再跑串行的。
+3. **延后的事件**：时间落在 [t, t + 帧长) 的，按 `(时间, 序号)` 执行。
+
+**空间区域**（第 1 节）：
+- 帧开始时按位置把域分成区域：两个区域相距超过"作用距离 + 2 × 最大速度 × 一帧"，这一帧内互不影响；靠得太近的合并。
+- 第 1 步和第 3 步：每个区域按 `(时间, 序号)` 串行处理自己的事件，区域之间并行。第 2 步的并行 Tick 本来就按列并行。
+- 绑定不到位置的事件（发给地图本身的 `EnterMap`、`LeaveMap`）：在分区之前、帧开始时串行执行。它们和别的消息时间戳相同（都是 t），所以把它们的序号排在前面仍然符合 `(时间, 序号)`；新进来的实体随后参与分区。不能因为有人进图就让整帧不分区，否则人多的地图每帧都退回串行。
+- 只有一个区域、不需要并行的域可以关掉窗口：消息到了就处理，Tick 和延后的事件到时间就执行，顺序规则不变。
+
+**其他：**
+- 框架的系统自己处理异常，不受 EasyEcs 的 `SystemErrorPolicy` 管理。
+- 每帧之后，框架销毁已经回复的等待实体，以及已经写完记录的实例。
+- **分发表、job 表和路由表**在加载时只暂存，各个 shard 在两帧之间换上。表在暂存时一次建好；方法组转换成的静态委托由 C# 缓存，不会分配。
+
+### 处理方法抛出异常
+
+- 运行时逐个事件捕获异常：这条消息的请求以失败结束，它连锁的、还没执行的 `Raise(e)` 作废。
 - 之后怎么办，看种类上的 `[OnError]`：
-  - `Resume`（默认，与现在相同）：实体保持原样，接着处理下一条；
+  - `Resume`（默认）：实体保持原样，接着处理下一个事件；
   - `Reload`：照正常流程卸载（第 6 节），之后从记录重新激活。
-- **`Activated` 的处理方法抛出异常，算作激活失败**：
+- 一条消息连锁超过 1,024 个 `Raise(e)`，也按 `[OnError]` 处理。
+- **`[On<Activated>]` 抛出异常，算作激活失败**：
   - 排队的请求都以失败结束；
   - 实体不写记录就销毁；
   - 下一条消息到来时，按退避再激活一次。
@@ -331,7 +388,7 @@ public readonly partial record struct Room(long Id)   : IKind<Room>;
 
 ## 6. 生命周期
 
-生命周期事件是框架发给实体自己的消息，用 `[Receive]` 处理，和其他邮件排在同一个顺序里。
+生命周期事件是框架发给实体自己的消息，用 `[On<T>]` 处理，和其他事件排在同一条 `(时间, 序号)` 线上。
 
 | 消息 | 何时 | 常见用途 |
 |---|---|---|
@@ -344,10 +401,10 @@ public readonly partial record struct Room(long Id)   : IKind<Room>;
 
 | 状态 | 怎么进入 | 发生什么 |
 |---|---|---|
-| 加载中 | 第一条消息到达 | 占位接住邮件，异步读记录。这时还没有实体，`[ForEach]` 系统看不到它 |
+| 加载中 | 第一条消息到达 | 占位接住邮件，异步读记录。这时还没有实体，Tick 看不到它 |
 | 激活 | 记录到了，或者没有记录 | 按 prefab 建实体，装上记录；邮箱里第一条是 `Activated`，后面才是占位接住的邮件 |
-| 运行 | — | 邮件按到达顺序投递 |
-| 卸载 | 空闲超过 `IdleAfter`（有链接实体时不算空闲），或者调用 `world.Unload(e)` | 依次：<br>1. 决定卸载的那一刻起，新到的邮件由占位接住，所以 `Unloading` 之后不会再有别的邮件；<br>2. 对每个链接实体执行 `world.Unlink`，通知对应的 `Client`，只发不等；<br>3. 投递 `Unloading`；<br>4. 写记录；<br>5. 写成功后销毁实体。占位接住的邮件激活新实例，新实例读到的是刚写好的记录 |
+| 运行 | — | 消息、Tick、延后的事件按 `(时间, 序号)` 执行（第 5 节） |
+| 卸载 | 空闲超过 `IdleAfter`（有链接实体时不算空闲），或者调用 `world.Unload(e)` | 依次：<br>1. 决定卸载的那一刻起，新到的邮件由占位接住，所以 `Unloading` 之后不会再有别的邮件；<br>2. 对每个链接实体执行 `world.Unlink`，通知对应的 `Client`，只发不等；<br>3. 投递 `Unloading`；之后待执行的延后事件随实体一起消失（第 9 节）；<br>4. 写记录；<br>5. 写成功后销毁实体。占位接住的邮件激活新实例，新实例读到的是刚写好的记录 |
 
 - 写记录失败就重试，绝不丢弃。
 - **激活的条件：**
@@ -367,7 +424,7 @@ public readonly partial record struct Room(long Id)   : IKind<Room>;
   - 连接代数只用来判断是不是同一个连接：只比较相等，不比较大小。
 - **声明**：令牌里的声明放进用户声明的 `[Claims]` 组件，例如 `PlayerClaims(long PlayerId)`。框架只负责解码令牌、把组件加到 `Client` 上，不认识任何业务字段。
 - **位置固定**：`Client` 固定在连接所在的节点，不参与放置和重新平衡，也不迁移；连接断开，它就卸载。
-- **扩展**：用 `[Spawns<Client>]` 的 prefab 给它加组件，例如令牌桶；在 Logic 里给它写处理方法。
+- **扩展**：用 `[Spawns<Client>]` 的 prefab 给它加组件，例如令牌桶；在 Logic 里给它写 `[On<T>]` 方法。
 - **找不到它**：别的实体不能用 `ClientId` 找到 `Client`。推送只经过链接，所以不需要位置目录。
 
 ### 客户端消息的转发
@@ -407,8 +464,9 @@ public readonly partial record struct Room(long Id)   : IKind<Room>;
    - 目标的链接实体过了期限仍未确认，就删除。
 
 **第一条链接**：
-- `Client` 的 `Activated` 处理方法，根据声明向 Player 发 `Attach`，等待数据是 `Attempt(1)`。
-- 失败（超时、`NoOwner`、`Busy`）时，用 `self.After(退避, …)` 重试，`Attempt` 加一，退避带随机抖动；超过 N 次就断开客户端。
+- `Client` 的 `[On<Activated>]`，根据声明向 Player 发 `Attach`，等待数据是 `Attempt(1)`。
+- 失败（超时、`NoOwner`、`Busy`）时，用 `self.SendAfter(退避, …)` 重试，`Attempt` 加一，退避带随机抖动；超过 N 次就断开客户端。
+  - `SendAfter` 的延迟是毫秒，由框架内部的期限实现，到期时作为消息发出；它不是游戏逻辑的 `Raise`。
   - 尝试次数是看得见的组件，不藏在框架里。
   - 一个游戏节点宕机时，十万个客户端不会同时重试。
 
@@ -425,7 +483,7 @@ public readonly partial record struct Room(long Id)   : IKind<Room>;
 ### 断开
 
 - **`world.Unlink(linkEntity)`** 当场完成断开，因为调用它时本来就在目标的处理过程中，顺序不会乱：
-  1. 执行 `Unlinked` 的处理方法；
+  1. 执行 `[On<Unlinked>]`；
   2. 退出所有 `ClientGroup`；
   3. 销毁链接实体；
   4. 通知 `Client` 删掉这条路由，客户端收到一条框架通知。
@@ -450,15 +508,15 @@ public readonly partial record struct Room(long Id)   : IKind<Room>;
 - **`self.Ask(to, in message[, in pending][, in reply])`、`self.AskFor(client, to, in message[, in pending][, in reply])`**：创建一个等待子实体，带：
   - 可选的用户数据：一个普通组件；
   - 调用 id：全集群唯一；
-  - `Due` 期限；
+  - 期限：框架内部的毫秒期限（第 9 节）；
   - 可选的 `ReplyTo<T>`；
   - `AskFor` 时，还带上客户端的连接信息。
   - 生成器为有没有 `pending`、有没有 `reply` 各生成一个重载，不靠默认参数推断泛型。
 - **回信按 `(种类, 键, 调用 id)` 寻址**，发问方迁移后，回信会跟过去。
-- **回信是发给发问方的 `Answer` 邮件**：
+- **回信是发给发问方的 `Answer` 邮件**，用 `[On<Answer<TReq, TRep>>]` 处理，按（请求类型, 等待数据类型）分发：
   - 标了 `[Pending]` 的组件参数和 `in ReplyTo<T>` 绑定到等待实体，其余组件参数绑定到发问方；
   - 处理完，等待实体由框架删除。
-- **超时**：框架去掉等待实体上的 `Due`，投递一个 `Ok = false` 的 `Answer`。
+- **超时**：期限到了，框架投递一个 `Ok = false` 的 `Answer`。它和别的消息一样进入本域，排进 `(时间, 序号)`。
 - **`ReplyTo<T>` 是带类型的清理组件**，由框架搬运，用户不能复制（分析器检查）：
   - `T` 就是请求声明的回复类型，`world.Reply` 在编译期检查类型；
   - `world.Reply` 先读出令牌，再移除组件，然后发出回复；
@@ -473,14 +531,22 @@ public readonly partial record struct Room(long Id)   : IKind<Room>;
 
 ## 9. 时间与广播
 
-**时间：**
-- `Due(long UnixMs)` 是绝对的 UTC 毫秒数，带有序值索引。迁移和恢复之后仍然正确，前提是各节点用 NTP 对时。
-- `TimerSystem` 遍历 `Range(long.MinValue, Clock.Now)`：
-  - 到期的 `After` 子实体：投递它的消息，然后销毁。EasyEcs 允许在遍历中销毁实体。
-  - 到期的等待实体：遍历结束后再统一去掉 `Due`、投递超时，因为遍历时不能改索引的键。
-- `self.After(delay, in message[, in pending])` 建一个带 `Due` 的子实体，到期时把消息作为邮件投给父实体。
-- 周期性的逻辑用 `[Every]` 组，不用定时器。
-- `Clock` 是框架给每个 shard 的单例：`Now` 是这次唤醒的时间，`DeltaTime` 是距离该组上次运行的秒数。
+**帧：**
+- 每个域按帧走。帧长写在种类上：`[Frame(50)]`，不写默认 50 ms。
+- 一个 shard 上帧长相同的域共用帧边界，所以 Tick 能一次按列跑完这个 shard 上所有的域。
+- `Tick` 带 `Frame`（帧号）和 `DeltaTime`（帧长，秒）。
+- `Clock` 是框架给每个 shard 的单例：`Now` 是当前事件的时间，`Frame`、`DeltaTime` 同 `Tick`。
+
+**延后的事件：**
+- `Raise(e, after: n)` 的时间 = 发起时刻 + n × 帧长，是精确时间，不取整到帧。
+- 待执行的事件是发起实体的子实体，按 `(时间, 序号)` 建有序值索引；每帧用 `Range` 取出这一帧到期的。
+- 发起者被销毁时，子实体一起销毁，事件不再执行。
+- `Scheduled<T>` 是这个子实体的句柄：`Cancel()` 销毁它；`Pending` 在执行或取消后变成 `false`。
+- 周期性的逻辑写 `[On<Tick>]`；稀疏的周期（例如每 20 帧跳一次伤害）在事件处理方法里再 `Raise` 下一次。
+
+**框架内部的期限：**
+- 请求超时、链接确认期限、`SendAfter` 的退避，用的是框架内部的 `Due(long UnixMs)`：绝对的 UTC 毫秒数，带有序值索引。迁移和恢复之后仍然正确，前提是各节点用 NTP 对时。
+- 它们不属于游戏逻辑：到期时作为消息进入本域，再按 `(时间, 序号)` 执行。
 
 **广播：**
 - **`ClientGroup`**：
@@ -521,21 +587,21 @@ public readonly partial record struct Room(long Id)   : IKind<Room>;
 
 - 保存整棵子树的所有组件，标了 `[Transient]` 的除外，默认都带。
 - 托管类型的组件必须有 Nino 格式化器（分析器检查）。
-- 等待中的请求、链接实体随实例一起迁移。
+- 等待中的请求、链接实体、待执行的延后事件随实例一起迁移。延后事件保留剩下的时间，到达后照常执行。
+- 卸载写记录时不保存待执行的延后事件：需要跨卸载保留的状态，写进 `[Persist]` 组件。
 - 到达后的第一条邮件是 `Activated(MovedIn: true)`。
 - 跨 shard 也走字节，因为 `MoveEntities` 要求两个 world 在同一个线程。
 - 迁移期间尽力保序，不设栅栏。
 
 ### 热更
 
-- Logic 工程放在可回收的 `AssemblyLoadContext` 里，里面有所有逻辑、分发跳板、分发表和路由表。
-- 每个 shard 在两次 `Update` 之间：
+- Logic 工程放在可回收的 `AssemblyLoadContext` 里，里面有所有逻辑、分发跳板、Tick 的 job 结构、分发表和路由表。
+- 每个 shard 在两帧之间：
   1. `world.RemoveTypes(旧上下文)`；
-  2. 加入新的系统；
-  3. 换上新的分发表和路由表。
+  2. 换上新的分发表、job 表和路由表。
 - 所有 shard 都换完之后，旧上下文才卸载。
 - 新版本如果改了某条客户端消息的目标种类，`wire.manifest` 比对后拒绝这次热更。
-- 组件、消息、种类不热更，新增它们要走滚动升级。
+- 组件、消息、事件、种类不热更，新增它们要走滚动升级。待执行的延后事件因此在热更前后都有处理方法。
 
 ### 滚动升级
 
@@ -561,12 +627,15 @@ public readonly partial record struct Room(long Id)   : IKind<Room>;
 | 邮箱满 | 发送方收到 `Busy`；客户端的消息由网关回绝；链接控制消息不受限 |
 | 客户端读得太慢 | 断开（ADR-035） |
 | 断开通知丢失 | 链路重连时核对，或者节点离开视图时，补做断开 |
-| `[Receive]` 抛出异常 | 请求失败。默认 `Resume`；`Reload` 时断开所有链接后从记录重新激活；`Client` 直接断开 |
-| `[Every]` 组里的系统抛出异常 | 按 `SystemErrorPolicy` 处理，并在健康检查里报告 |
+| `[On<T>]` 抛出异常 | 请求失败，连锁的 `Raise(e)` 作废。默认 `Resume`；`Reload` 时断开所有链接后从记录重新激活；`Client` 直接断开 |
+| 一条消息连锁超过 1,024 个 `Raise(e)` | 按 `[OnError]` 处理 |
+| `[On<Tick>]` 抛出异常 | 这一帧跳过它剩下的部分，按种类的 `[OnError]` 处理，并在健康检查里报告 |
+| 延后事件到期前发起者被销毁 | 事件随发起者消失，不执行 |
+| 延后事件到期时条件已不成立（施法者死了、目标走开了） | 处理方法重新校验后作废；`[Of]` 指向的实体不在时，跳板不调用处理方法 |
 
 ---
 
-## 12. 完整例子：连接、进地图、移动、看见别人
+## 12. 完整例子：连接、进地图、移动、放技能、看见别人
 
 ### 用户写的
 
@@ -574,15 +643,16 @@ public readonly partial record struct Room(long Id)   : IKind<Room>;
 // ── Game.Protocol ─────────────────────────────────────────────────────────────
 [NinoType] public record struct TravelTo(long MapId)   : IFromClient<bool>;
 [NinoType] public record struct MoveTo(Vector2 At, Vector2 Velocity) : IFromClient;   // a step the client took
+[NinoType] public record struct CastSkill(int Skill, long Target) : IFromClient;      // Target: an id from Nearby
 [NinoType] public record struct SnapBack(Vector2 At) : IToClient;                     // the step was refused
 [NinoType, NinoPooled] public sealed partial class Nearby : IToClient { public List<NearbyEvent> Events = new(); }
 [NinoType] public record struct NearbyEvent(long Id, NearbyKind Kind, Vector2 At, Vector2 Velocity);   // Id: a LinkId or an npc's id
 ```
 
 ```csharp
-// ── Game.Server: kinds, servers, messages between servers ───────────────────
+// ── Game.Server: kinds, servers, messages and events ─────────────────────────
 public readonly partial record struct Player(long Id) : IKind<Player>;
-public readonly partial record struct Map(long Id)    : IKind<Map>;
+[Frame(50)] public readonly partial record struct Map(long Id) : IKind<Map>;          // 20 frames a second
 
 [Hosts<Player>] public struct GameServer    : IServer;
 [Hosts<Map>]    public struct MapServer     : IServer;
@@ -591,6 +661,8 @@ public readonly partial record struct Map(long Id)    : IKind<Map>;
 [NinoType, From<Client>] public record struct Attach                  : IRequest<Player, LinkId>;
 [NinoType, From<Player>] public record struct EnterMap(Player Player) : IRequest<Map, LinkId>;
 [NinoType, From<Player>] public record struct LeaveMap(Player Player) : IMessage<Map>;
+
+[NinoType] public record struct Strike(int Skill, EntityId Target) : IEvent;           // a cast's resolution, after the windup
 
 // ── Game.Server: data ─────────────────────────────────────────────────────────
 [Claims] public record struct PlayerClaims(long PlayerId) : IComponent;                // decoded from the token onto Client
@@ -604,52 +676,53 @@ public record struct Visible : IComponent;
 public record struct Position(Vector2 Value) : IComponent;
 public record struct Heading(Vector2 Value) : IComponent;                               // computed in parallel, untracked
 public record struct Velocity(Vector2 Value) : IComponent, ITrackChanges;
-public record struct Destination(Vector2 Target) : IComponent;            // server-driven movers (npcs)
-public record struct Steered : IComponent;                                // moved by time, not by messages
+public record struct Destination(Vector2 Target) : IComponent;                          // server-driven movers (npcs)
+public record struct Steered : IComponent;                                              // moved by time, not by messages
 public record struct Speed(float Value) : IComponent;
+public record struct Health(int Value) : IComponent;
+public record struct Casting(Scheduled<Strike> Strike) : IComponent;                    // "is casting" while Strike is pending
 public record struct Shout(NearbyEvent Event);                                          // a map's outbox element
 
 public static class Prefabs
 {
     [Spawns<Map>] public static readonly Prefab Map = new Prefab().SetGrid(512, 16).SetBuffer<Shout>();
     public static readonly Prefab Avatar = new Prefab().SetPosition(default).SetVelocity(default)
-        .SetVisible();                                                     // a player's position comes from its steps
+        .SetHealth(100).SetVisible();                                     // a player's position comes from its steps
     public static readonly Prefab Npc = new Prefab().SetPosition(default).SetHeading(default).SetVelocity(default)
-        .SetDestination(default).SetSpeed(3).SetSteered().SetVisible();
+        .SetDestination(default).SetSpeed(3).SetHealth(100).SetSteered().SetVisible();
 }
-
-[Every(50)] public struct Simulation : ISystemGroup;
 ```
 
 ```csharp
-// ── Game.Server.Logic: messages ───────────────────────────────────────────────
+// ── Game.Server.Logic: connecting ─────────────────────────────────────────────
 public static partial class Connecting
 {
-    [Receive]                                                              // the client connected: link it to its player
+    [On<Activated>]                                                        // the client connected: link it to its player
     static void Connected(in Activated a, in Self<Client> self, in PlayerClaims claims) =>
         self.Ask(new Player(claims.PlayerId), new Attach(), new Attempt(1));
 
-    [Receive]
+    [On<Answer<Attach, LinkId>>]
     static void Attached(in Answer<Attach, LinkId> answer, [Pending] in Attempt attempt, in Self<Client> self, in PlayerClaims claims, World world)
     {
         if (answer.Ok) world.Route(in answer);                             // Via = the Client itself
         else if (answer.Status == RpcStatus.Superseded || attempt.N >= 5) self.Disconnect();
-        else self.After(Backoff.Jittered(attempt.N), new Player(claims.PlayerId), new Attach(), new Attempt(attempt.N + 1));
+        else self.SendAfter(Backoff.Jittered(attempt.N), new Player(claims.PlayerId), new Attach(), new Attempt(attempt.N + 1));
     }
 
-    [Receive]                                                              // the player restarted: attach again
+    [On<LinkLost>]                                                         // the player restarted: attach again
     static void Lost(in LinkLost lost, in Self<Client> self, in PlayerClaims claims)
     {
         if (lost.Target.Is<Player>(out _)) self.Ask(new Player(claims.PlayerId), new Attach(), new Attempt(1));
     }
 }
 
+// ── Game.Server.Logic: players ────────────────────────────────────────────────
 public static partial class Players
 {
-    [Receive]                                                              // newest connection wins; an old one's retry gets Superseded
+    [On<Attach>]                                                           // newest connection wins; an old one's retry gets Superseded
     static LinkId Attach(in Attach m, in Self<Player> self) => self.LinkFrom(supersede: true);
 
-    [Receive<Player>]                                                      // TravelTo goes to the player
+    [On<TravelTo, Player>]                                                 // TravelTo goes to the player
     static void Travel(in TravelTo m, in Self<Player> self, in From from, in ReplyTo<bool> reply, Maybe<OnMap> onMap)
     {
         if (onMap.Exists) self.Send(onMap.Value.Map, new LeaveMap(self.Key));   // leave first: no double presence
@@ -657,30 +730,31 @@ public static partial class Players
         self.AskFor(from, map, new EnterMap(self.Key), new Travelling(map), reply);
     }
 
-    [Receive]                                                              // the map answered: route the client, then reply to it
+    [On<Answer<EnterMap, LinkId>>]                                         // the map answered: route the client, then reply to it
     static void Entered(in Answer<EnterMap, LinkId> answer, [Pending] in Travelling trip, in ReplyTo<bool> reply, Entity player, World world)
     {
         if (answer.Ok) player.SetOnMap(trip.To);
         world.Reply(in reply, answer.Ok, routeFrom: in answer);           // the Client writes the route, then hands over the reply
     }
 
-    [Receive]                                                              // the map restarted: enter it again for the same client
+    [On<LinkLost>]                                                         // the map restarted: enter it again for the same client
     static void Lost(in LinkLost lost, in Self<Player> self, Maybe<OnMap> onMap)
     {
         if (lost.Target.Is<Map>(out var map) && onMap.Exists && onMap.Value.Map == map)
             self.AskFor(lost.Client, map, new EnterMap(self.Key), new Rejoining());
     }
 
-    [Receive]                                                              // re-entered: write the route; no client request to reply to
+    [On<Answer<EnterMap, LinkId>>]                                         // re-entered: write the route; no client request to reply to
     static void Rejoined(in Answer<EnterMap, LinkId> answer, [Pending] in Rejoining r, World world)
     {
         if (answer.Ok) world.Route(in answer);
     }
 }
 
+// ── Game.Server.Logic: a map's messages ───────────────────────────────────────
 public static partial class Maps
 {
-    [Receive]                                                              // EnterMap is IRequest<Map, …>
+    [On<EnterMap>]                                                         // EnterMap is IRequest<Map, …>
     static LinkId Enter(in EnterMap m, in Self<Map> map, World world)
     {
         var key = new Avatar(map.Key, m.Player);
@@ -688,56 +762,68 @@ public static partial class Maps
         return map.LinkFrom(world.Instantiate(Prefabs.Avatar).Set(key));  // the client from the envelope; sets ChildOf(map)
     }
 
-    [Receive]
+    [On<LeaveMap>]
     static void Leave(in LeaveMap m, in Self<Map> map, World world)
     {
         if (world.AvatarIndex.TryFind(new Avatar(map.Key, m.Player), out var avatar)) world.Unlink(avatar);
     }
 
-    [Receive]                                                              // run inside Unlink: [Link] is the avatar, the outbox the map's
+    [On<Unlinked>]                                                         // run inside Unlink: [Link] is the avatar, the outbox the map's
     static void Gone(in Unlinked u, [Link] in Linked link, ref DynamicBuffer<Shout> outbox) =>
         outbox.Add(new Shout(new NearbyEvent(link.Id.Value, NearbyKind.Disappear, default, default)));
 
-    [Receive<Map>]                                                         // a step: applied now, so later messages see it
+    [On<MoveTo, Map>]                                                      // a step: applied now, so later events see it
     static void Move(in MoveTo m, [Link] Entity avatar, [Link] ref Position position, in Grid grid, World world)
     {
         if (!Movement.IsValidStep(in position, in m, in grid)) { world.Push(avatar, new SnapBack(position.Value)); return; }
         position.Value = m.At;
-        avatar.SetVelocity(m.Velocity);                                    // tracked: AOI broadcasts it this tick
+        avatar.SetVelocity(m.Velocity);                                    // tracked: AOI broadcasts it this frame
     }
 }
-```
 
-```csharp
-// ── Game.Server.Logic: per tick ───────────────────────────────────────────────
-[UpdateInGroup<Simulation>]
-public sealed partial class SteeringSystem : EcsSystem
+// ── Game.Server.Logic: combat ─────────────────────────────────────────────────
+public static partial class Combat
 {
-    [ForEach(Parallel = true), With<Steered>]                              // only what time moves; into an untracked component
-    static void Steer(in Position p, in Destination d, in Speed s, ref Heading h) => h.Value = Steering.Toward(p.Value, d.Target, s.Value);
+    [On<CastSkill, Map>]                                                   // validate, then schedule the resolution
+    static void Cast(in CastSkill m, [Link] Entity avatar, [Link] Maybe<Casting> casting, World world)
+    {
+        if (casting.Exists && casting.Value.Strike.Pending) return;        // one cast at a time
+        if (!Targets.TryFind(world, m.Target, out var target)) return;     // a LinkId or an npc id -> the entity on this map
+        avatar.SetCasting(avatar.Raise(new Strike(m.Skill, target), after: Skills.Windup(m.Skill)));   // 0 resolves right after this handler
+    }
 
-    [ForEach, With<Steered>]                                               // sequential: Velocity changes only when it differs
-    static void Commit(Entity e, in Heading h, in Velocity v) { if (h.Value != v.Value) e.SetVelocity(h.Value); }
+    [On<Strike>]                                                           // n frames later; reads the target as it is now
+    static void Resolve(in Strike s, Entity me, in Health mine, in Position at,
+        [Of(nameof(Strike.Target))] in Position target, [Of(nameof(Strike.Target))] ref Health hp)
+    {
+        me.RemoveCasting();
+        if (mine.Value <= 0 || hp.Value <= 0) return;                      // the caster died during the windup, or the target already did
+        if (Skills.InRange(s.Skill, at.Value, target.Value)) hp.Value -= Skills.Damage(s.Skill);   // out of range: dodged
+    }
 }
 
-[UpdateInGroup<Simulation>, UpdateAfter<SteeringSystem>]
-public sealed partial class IntegrateSystem : EcsSystem
+// ── Game.Server.Logic: every frame, in declaration order ─────────────────────
+public static partial class Simulation
 {
-    [ForEach, With<Steered>]                                               // a batch over whole columns; Vectors is a user helper
-    static void Integrate(Span<Position> positions, ReadOnlySpan<Velocity> velocities, in Clock clock) =>
-        Vectors.AddScaled(MemoryMarshal.Cast<Position, float>(positions), MemoryMarshal.Cast<Velocity, float>(velocities), clock.DeltaTime);
-}
+    [On<Tick>, With<Steered>]                                              // components only: a parallel job; into an untracked component
+    static void Steer(in Tick t, in Position p, in Destination d, in Speed s, ref Heading h) =>
+        h.Value = Steering.Toward(p.Value, d.Target, s.Value);
 
-[UpdateInGroup<Simulation>, UpdateAfter<IntegrateSystem>]
-public sealed partial class AoiSystem : EcsSystem                         // single-threaded: cells, subscriptions, sends
-{
-    [ForEach]
-    static void Map(Entity map, in Grid grid, ref DynamicBuffer<Shout> outbox, World world) => Aoi.Run(world, map, grid, ref outbox);
+    [On<Tick>, With<Steered>]                                              // takes Entity: sequential; Velocity changes only when it differs
+    static void Commit(in Tick t, Entity e, in Heading h, in Velocity v) { if (h.Value != v.Value) e.SetVelocity(h.Value); }
+
+    [On<Tick>, With<Steered>]                                              // whole columns; Vectors is a user helper
+    static void Integrate(in Tick t, Span<Position> positions, ReadOnlySpan<Velocity> velocities) =>
+        Vectors.AddScaled(MemoryMarshal.Cast<Position, float>(positions), MemoryMarshal.Cast<Velocity, float>(velocities), t.DeltaTime);
+
+    [On<Tick>]                                                             // takes Self<Map>: once per map, sequential: cells, subscriptions, sends
+    static void Broadcast(in Tick t, in Self<Map> map, in Grid grid, ref DynamicBuffer<Shout> outbox, World world) =>
+        Aoi.Run(world, map, grid, ref outbox);
 }
 ```
 
 `Aoi.Run` 处理一张地图：
-1. 遍历 `world.Children(map)`，每 tick 按位置把实体分进格子；格子不是组件，所以跨格不需要结构变更。
+1. 遍历 `world.Children(map)`，每帧按位置把实体分进格子；格子不是组件，所以跨格不需要结构变更。同一张网格也给运行时用来划分空间区域。
 2. 只看带 `Confirmed` 的 Avatar。
 3. 一个客户端跨了格，或者它的 Avatar 第一次带上 `Confirmed`（包括迁移来的）：
    - 更新它订阅的 3×3 `ClientGroup`；
@@ -745,12 +831,12 @@ public sealed partial class AoiSystem : EcsSystem                         // sin
 4. `Changed<Velocity>` 的实体写成 `Moved` 事件，和发件箱里已有的事件一起按格子合并。
 5. 每个有内容的格子发一帧 `Nearby`，然后清空发件箱。
 
-事件里的 `Id`：Avatar 用 `LinkId`，NPC 用一个不会与之相撞的编号（例如最高位置 1）。
+事件里的 `Id`：Avatar 用 `LinkId`，NPC 用一个不会与之相撞的编号（例如最高位置 1）。`Targets.TryFind` 按同样的规则查回实体。
 
 ### 生成的代码
 
 ```csharp
-// <auto-generated/> Game.Server: the kind's key, id and registration
+// <auto-generated/> Game.Server: the kind's key, id, frame and registration
 partial record struct Map
 {
     public Map Key => this;
@@ -760,7 +846,7 @@ partial record struct Map
 file static class MapKind
 {
     [ModuleInitializer]
-    internal static void Register() => Kinds.Register<Map>(Map.KindId,
+    internal static void Register() => Kinds.Register<Map>(Map.KindId, frameMs: 50,
         find: static (World w, in Map key, out Entity e) => w.MapIndex.TryFind(key, out e),   // EasyEcs's value index
         spawn: static (World w, in Map key) => w.SpawnKind(Prefabs.Map, key));                 // the only writer of Map
 }
@@ -785,16 +871,16 @@ public static class PlayerSends
 ```
 
 ```csharp
-// <auto-generated/> Game.Server.Logic: trampolines inside each partial class (they can reach private handlers)
+// <auto-generated/> Game.Server.Logic: [On<T>] trampolines inside each partial class (they can reach private handlers)
 partial class Maps
 {
-    internal static void Receive_Enter(World world, Entity target, Entity link, in Envelope envelope, ref Outcome outcome)
+    internal static void On_Enter(World world, Entity target, Entity link, in Envelope envelope, ref Outcome outcome)
     {
         var m = envelope.Read<EnterMap>();
         outcome.Reply(Enter(in m, Self<Map>.Of(target), world));
     }
 
-    internal static void Receive_Gone(World world, Entity target, Entity link, in Envelope envelope, ref Outcome outcome)
+    internal static void On_Gone(World world, Entity target, Entity link, in Envelope envelope, ref Outcome outcome)
     {
         var u = envelope.Read<Unlinked>();
         var linked = link.Read<Linked>();                                  // in: copied
@@ -802,35 +888,83 @@ partial class Maps
         Gone(in u, in linked, ref target.Get<DynamicBuffer<Shout>>());     // a buffer is a handle: passed by ref, no write-back
     }
 
-    internal static void Receive_Move(World world, Entity target, Entity link, in Envelope envelope, ref Outcome outcome)
+    internal static void On_Move(World world, Entity target, Entity link, in Envelope envelope, ref Outcome outcome)
     {
         var m = envelope.Read<MoveTo>();
-        var position = link.Read<Position>();                               // [Link] ref: a local in
-        var grid = target.Read<Grid>();                                     // in, on the map: copied
+        var position = link.Read<Position>();                              // [Link] ref: a local in
+        var grid = target.Read<Grid>();                                    // in, on the map: copied
         Move(in m, link, ref position, in grid, world);
         if (link.TryGetRef<Position>(out var slot)) slot = position;       // written back only if it still exists
+    }
+}
+
+partial class Combat
+{
+    // an event's target is the entity that raised it
+    internal static void On_Resolve(World world, Entity target, Entity link, in Envelope envelope, ref Outcome outcome)
+    {
+        var s = envelope.Read<Strike>();
+        var other = world.Resolve(s.Target);                               // [Of(nameof(Strike.Target))]
+        if (!other.TryRead<Position>(out var targetAt) || !other.TryRead<Health>(out var hp)) return;   // gone: not called
+        var mine = target.Read<Health>();
+        var at = target.Read<Position>();
+        Resolve(in s, target, in mine, in at, in targetAt, ref hp);        // RemoveCasting is a structural change: locals stay valid
+        if (other.TryGetRef<Health>(out var slot)) slot = hp;
+    }
+}
+
+partial class Simulation
+{
+    // components only: a job struct run by EasyEcs's parallel API, no closure, no allocation
+    internal struct Steer_Job : IForEachJob<Position, Destination, Speed, Heading>
+    {
+        public Tick Tick;
+        public void Execute(in Position p, in Destination d, in Speed s, ref Heading h) => Steer(in Tick, in p, in d, in s, ref h);
+    }
+
+    internal static void On_Steer(World world, in Tick tick) =>
+        world.Query<Steered_Query>().ParallelForEach(new Steer_Job { Tick = tick });
+
+    internal static void On_Integrate(World world, in Tick tick)
+    {
+        foreach (var chunk in world.Query<Steered_Query>().Chunks())               // whole columns, one call per chunk
+            Integrate(in tick, chunk.Span<Position>(), chunk.ReadOnlySpan<Velocity>());
+    }
+
+    internal static void On_Broadcast(World world, Entity map, in Tick tick)    // once per map
+    {
+        var grid = map.Read<Grid>();
+        map.EnsureBuffer<Shout>();
+        Broadcast(in tick, Self<Map>.Of(map), in grid, ref map.Get<DynamicBuffer<Shout>>(), world);
     }
 }
 ```
 
 ```csharp
-// <auto-generated/> Game.Server.Logic: dispatch per kind and the client routes, staged on load, adopted between updates
+// <auto-generated/> Game.Server.Logic: dispatch per kind, frame order, client routes; staged on load, adopted between frames
 file static class Dispatch_Map
 {
     [ModuleInitializer]
     internal static void Register() => Dispatch.Stage<Map>(static table => table
-        .Request(EnterMap.MessageId, Maps.Receive_Enter)
-        .Message(LeaveMap.MessageId, Maps.Receive_Leave)
-        .Message(Unlinked.MessageId, Maps.Receive_Gone)
-        .Message(MoveTo.MessageId, Maps.Receive_Move));                   // built once when staged
+        .Request(EnterMap.MessageId, Maps.On_Enter)
+        .Message(LeaveMap.MessageId, Maps.On_Leave)
+        .Message(Unlinked.MessageId, Maps.On_Gone)
+        .Message(MoveTo.MessageId, Maps.On_Move)
+        .Message(CastSkill.MessageId, Combat.On_Cast)
+        .Event(Strike.EventId, Combat.On_Resolve)
+        .Tick(Simulation.On_Steer, parallel: true)                         // declaration order
+        .Tick(Simulation.On_Commit)
+        .Tick(Simulation.On_Integrate, parallel: true)
+        .TickPerDomain(Simulation.On_Broadcast));                          // built once when staged
 }
 
 file static class ClientRoutes
 {
     [ModuleInitializer]
     internal static void Register() => Routes.Stage(static table => table
-        .Route(TravelTo.MessageId, Player.KindId)                         // [Receive<Player>] Travel
-        .Route(MoveTo.MessageId, Map.KindId));                            // [Receive<Map>] Move
+        .Route(TravelTo.MessageId, Player.KindId)                         // [On<TravelTo, Player>] Travel
+        .Route(MoveTo.MessageId, Map.KindId)                              // [On<MoveTo, Map>] Move
+        .Route(CastSkill.MessageId, Map.KindId));                         // [On<CastSkill, Map>] Cast
 }
 ```
 
@@ -847,13 +981,15 @@ namespace Game.Server
 
 ```text
 # wire.manifest (excerpt, committed)
-kind    Game.Server.Map     id 5A1C93E1  key int64   hosted-by MapServer
+kind    Game.Server.Map     id 5A1C93E1  key int64   hosted-by MapServer  frame 50ms
 kind    Game.Server.Player  id 0B77D012  key int64   hosted-by GameServer
-client  Game.Protocol.TravelTo  -> Player  reply bool
-client  Game.Protocol.MoveTo    -> Map
+client  Game.Protocol.TravelTo   -> Player  reply bool
+client  Game.Protocol.MoveTo     -> Map
+client  Game.Protocol.CastSkill  -> Map
 server  Game.Server.EnterMap    Player -> Map     reply LinkId
 server  Game.Server.LeaveMap    Player -> Map
 server  Game.Server.Attach      Client -> Player  reply LinkId
+event   Game.Server.Strike      Map
 push    Game.Protocol.Nearby    pooled
 ```
 
@@ -866,9 +1002,12 @@ push    Game.Protocol.Nearby    pooled
 ④ TravelTo(7)         Client(c1)@gate-0 → 路由 → Player 42@game-1
 ⑤ AskFor              Player 42 → Map 7@map-0：EnterMap；Map 7 建 Avatar（连接信息来自信封，LinkId L2），回复 L2
 ⑥ 回复客户端           world.Reply(…, routeFrom: answer) → Client(c1)：先写路由 (Map 7, L2, Via Player 42)，再交给客户端
-⑦ LinkConfirmed(L2)   Client → Map 7：Avatar 带上 Confirmed；下一次 Simulation 推完整快照
-⑧ MoveTo              Client(c1) → 路由 → Map 7：[Link] 绑定到这个 Avatar；校验这一步，当场改位置，后面的消息都看得到
-⑨ 每 50 ms            Map 7 的 Simulation：转向、积分、AOI；Nearby → 有观察者的网关 → 各个连接
+⑦ LinkConfirmed(L2)   Client → Map 7：Avatar 带上 Confirmed；下一帧的 Broadcast 推完整快照
+⑧ MoveTo              Client(c1) → 路由 → Map 7：[Link] 绑定到这个 Avatar；校验这一步，当场改位置，后面的事件都看得到
+⑨ CastSkill           同上进入 Map 7；Cast 校验后 Raise(Strike, after: 前摇)；前摇期间 Casting 拒绝第二次施法
+⑩ Strike 到期         在它的 (时间, 序号) 执行：读目标此刻的位置，够得着才扣血；目标走开了就是闪避
+⑪ 每 50 ms 一帧       消息 → Tick（Steer、Integrate 按列并行；Commit、Broadcast 串行）→ 到期的事件；离得够远的区域并行
+                      Nearby → 有观察者的网关 → 各个连接
 ```
 
 ---
@@ -877,18 +1016,21 @@ push    Game.Protocol.Nearby    pooled
 
 **编译期检查**（下面任何一种情况都会报错）：
 - 发送方向写错：没有对应的方法。
-- 客户端消息没有 `[Receive<K>]`，或者被两个种类接收。
+- 客户端消息没有 `[On<T, K>]`，或者被两个种类接收；服务器之间的消息写了第二个类型参数。
 - 一个请求有两个处理方法；`Answer` 的（请求类型, 等待数据类型）组合重复。
 - 请求的处理方法既不返回回复，也不取 `ReplyTo<T>`。
-- 含 `[Receive]` 或 `[ForEach]` 的类不是 `partial`（可一键修复）。
+- 含 `[On<T>]` 的类不是 `static partial class`（可一键修复）。
 - 用户代码写种类组件，或者把种类组件放进 prefab、`CreateEntity`。
-- 取了 `ref T` 的处理方法，又用别的方式写目标上的 `T`。
-- 在并行方法、批量方法里发消息。结构变更和写有索引的组件，EasyEcs 已经报 EECS013、EECS015。
+- 取了 `ref T` 的处理方法，又用别的方式写同一个实体上的 `T`。
+- 只取组件或列的 `[On<Tick>]` 里发消息、`Raise`、做结构变更。结构变更和写有索引的组件，EasyEcs 已经报 EECS013、EECS015。
+- `Raise` 给本域以外的实体；跨域的效果要用消息，至少隔一帧。
+- `[Of(nameof(E.Field))]` 的字段不存在，或者不是 `EntityId`。
+- 事件类型不是 `[NinoType]`，或者没有实现 `IEvent`。
 - 复制 `ReplyTo<T>`。
 - Protocol 里出现种类或者服务器之间的消息；Protocol 里含集合的消息不是 `[NinoPooled]` 类。
 - 种类的键超过 16 字节，或者不是非托管类型。
 - `[Persist]` 组件没有实现 `ITrackChanges`。
-- 组件、等待数据、`Answer` 的类型参数声明在 Logic。
+- 组件、事件、等待数据、`Answer` 的类型参数声明在 Logic。
 - 要迁移的托管组件没有 Nino 格式化器。
 
 **删掉的东西**：
@@ -896,6 +1038,7 @@ push    Game.Protocol.Nearby    pooled
 - `Created`/`Loaded`/`Unloading` 回调、`UnloadAfterIdleSeconds`；
 - 旧的 `[Filter]`、`[FromClient]`/`[ToClient]`、`Publish`；
 - Known/Granted/Superseded、自研的记录格式、`ActorKey`；
+- `[Receive]`、`[Receive<K>]`、用 `EcsSystem` 和 `[ForEach]` 写逻辑、`[Every]` 系统组、`self.After`、作为业务入口的 `TimerSystem`/`MailSystem`；
 - 草案历次加了又去掉的：位置目录、定时租约摘要、迁移栅栏、`MapSlot`、`RouteLost`。
 
 **版本记录**：
@@ -909,13 +1052,21 @@ push    Game.Protocol.Nearby    pooled
 | v12 | 种类就是它的地址，也是实体上的组件；Protocol 不出现种类，目标由 `[Receive<K>]` 决定；`[Hosts<Client>]`；`AddNodes<T>`；去掉位置目录和迁移栅栏；写入中占位；完整例子和生成的代码 |
 | v13 | 生命周期改成发给自己的消息；`[Link]` 绑定；跳板复制参数；只有运行时能写种类组件；`Confirmed` 之后才推送；`Attach` 退避；`Via` 与 `LinkLost`；`[Claims]`；`ReplyTo<T>`；期限传递；删除也触发保存 |
 | v14 | `world.Unlink` 当场完成，同一个键不会有两个链接实体；重新进图走 `world.Route(in answer)`；`Answer` 按（请求类型, 等待数据类型）分发；每种参数形态生成一个重载；`Activated` 抛异常算作激活失败；从决定卸载起，新邮件就由占位接住；加载中的实体在记录到达后才建；连接代数只比较是否相同，旧连接收到 `Superseded`；`KindKey`；`DynamicBuffer` 按 `ref` 直接传入，`ref` 参数用 `TryGetRef` 写回；去掉 `MapSlot`，AOI 按地图的子实体遍历；`RouteLost` 并进 `LinkLost`；只有 `[Receive]` 的类是 `static partial class`；用 `Maybe<OnMap>` 代替哨兵值；含集合的消息用 `[NinoPooled]`；加载后重置变更基准；`[Persist]` 必须实现 `ITrackChanges`；`LinkId` 的位布局 |
+| v15 | 研究执行模型：消息、帧、并行之间的先后 |
+| v16 | 一切都是对事件的反应：只有 `[On<T>]`，Tick 也是事件，由生成的 job 结构并行执行 |
+| v17 | 一条消息是一个事务；Tick 按列并行 |
+| v18 | 动作跨多帧：`Raise(e, after: n)`、`Scheduled<T>`，到期时重新校验 |
+| v19 | n = 0 在当前处理方法之后紧接着执行，属于同一个事务 |
+| v20 | 每个域是一个离散事件模拟：按 `(时间, 序号)` 逐个执行；并行来自空间区域的前瞻 |
 
 ---
 
 ## 14. 待拍板
 
-1. **生命周期事件是发给自己的消息**（`Activated`、`Unlinked`、`LinkLost`、`Unloading`），用 `[Receive]` 处理。
-2. **组件参数默认绑定到目标，`[Link]` 绑定到客户端的链接实体。**
-3. **推送只经过链接**：不提供"按 `ClientId` 给任意客户端发消息"。要给某个玩家推送，发给他的 Player，由 Player 来推。
-4. **只含 `[Receive]` 的类写成 `static partial class`**，每 tick 的逻辑写成 `EcsSystem`。
-5. **`Self<K>` 这个名字**，也可以叫 `Me<K>`。
+1. **采用 v20 的执行模型**：每个域按 `(时间, 序号)` 逐个执行消息、Tick、延后的事件；`[On<T>]` 是唯一的处理方法特性。
+2. **空间窗口默认开启，还是按域开启**：默认开启时，每条消息最多多等一帧（30 Hz 约 33 ms）；按域开启时，种类上写一个特性，不写就是消息到了就处理。
+3. **`[Of(nameof(Strike.Target))]` 的写法**，备选：
+   - 在事件字段上标 `[Target]`，参数写 `[Target] in Position`；
+   - 包装类型 `Of<Position>`，按字段名对应参数名；
+   - 保持 `[Of(nameof(…))]`。
+4. **`Self<K>` 这个名字**，也可以叫 `Me<K>`。
