@@ -74,11 +74,9 @@
 - https://static.usenix.org/events/usenix08/tech/slides/waldo.pdf
 - https://docs.unity3d.com/Packages/com.unity.entities@1.3/manual/systems-entity-command-buffer-playback.html
 
-## 4. EasyEcs 4.4
+## 4. EasyEcs
 
-- 现成可用：立即生效的结构变更、并行 `[ForEach]`、批量方法、`ParallelSystems`、变更追踪、值索引、`IGroup`、`DynamicBuffer`、`ICleanupComponent`、`MoveEntities`/`SaveEntities`、`MeasureSystems`。
-- 和"依赖图并行""乐观并行"冲突的决策：结构变更立即生效、不提供命令缓冲（D2、D3），世界只有一个所有者线程（D13）。
-- 需要提的功能：按分组值并行 `[ForEach]`；运行时读取读写集；对给定实体列表并行执行；多个 world 共享并行度上限；读取单个实体组件的写入 tick。后来哪些提供了、哪些放弃了，见编程模型草案[第 14 节](programming-model.md#14-已定的取舍以及待办)第 5 条。
+EasyEcs 提供了什么、评估后放弃了什么，见编程模型草案[第 14 节](programming-model.md#14-已定的取舍以及待办)第 5 条。
 
 ## 5. 网易：倩女幽魂、天谕手游、梦幻西游
 
@@ -130,7 +128,7 @@
 - **帧率是部署参数，延后用时间**：
   - Minecraft 的 `/tick rate` 改的是整个游戏的帧率，按 tick 写的一切（作物、红石、冷却）都跟着变快变慢；默认 20，重启后复原。https://minecraft.wiki/w/Commands/tick
   - Photon Quantum 的 `FrameTimer.FromSeconds(frame, 秒)`：用户写秒，内部存帧；另有 `FromFrames`。https://doc.photonengine.com/quantum/v3/concepts-and-patterns/frame-timer
-  - 结论：数据里写时间，发出时换算成到期帧一次（向上取整，从不提前）；改帧率不改手感。
+  - 结论：数据里写时间，改帧率不改手感（编程模型草案第 9 节）。
 - **并行来自很多个 Actor，不来自切开一个模拟步**：
   - TrinityCore：`MapUpdater` 是一个线程池，每张地图的更新是一个任务，地图内部单线程；一张地图卡住，这一轮的其他更新都要等它。https://github.com/TrinityCore/TrinityCore/blob/master/src/server/game/Maps/MapUpdater.cpp
   - EVE：每个星系单线程，热点星系独占节点，过载时时间膨胀（第 2 节）。

@@ -334,7 +334,7 @@ Replaced by ADR-081.
 - Consequences: replicas are visible and individually addressable on the dashboard; published deployments scale with
   the platform's tools (`kubectl scale`, an HPA, `docker compose up --scale`), and nothing is configured by hand. No
   StatefulSet: a node's identity is its gossip incarnation and its actors' state lives in the store, so pods need no
-  stable names or volumes (actor-hosting groups become StatefulSets with roadmap R11, ADR-085). No Kubernetes API
+  stable names or volumes (actor-hosting groups become StatefulSets with roadmap W11, ADR-085). No Kubernetes API
   access on the data plane (no RBAC): DNS is the only discovery (ADR-085's hot-restart command is the one API user).
 - Seeds resolve through `NodeOptions.SeedResolver` (`ISeedResolver`), in the background while a node is alone: gossip
   rounds never wait for DNS or a registry. The default reads "host:port" and expands DNS names to every address;
@@ -731,7 +731,7 @@ Replaced by ADR-081.
 - Alternatives: transport inside the client package (the server would depend on "Client"); inside Abstractions
   (every contract assembly carries sockets); a separate client transport (two implementations of one protocol).
 - Consequences: a Unity client references Abstractions, Core and Client (one package reference, the rest are
-  dependencies); contract projects reference Abstractions only. Roadmap R2 merges the packages (ADR-086).
+  dependencies); contract projects reference Abstractions only. Roadmap W2 merges the packages (ADR-086).
 
 ## ADR-053 Keep-alive: silence closes a connection, pings only fill idle directions
 - Context: TCP does not report a peer that vanished (a host gone, a dropped NAT or load balancer mapping, a mobile
@@ -1543,7 +1543,7 @@ Replaced by ADR-081.
   handler that must serialize such work says so in data (a component marking the work in progress). The client SDK
   and code outside worlds (HTTP, tests) still `await cluster.Ask(..)`.
 
-## ADR-082 Programming model v24: actors as entities in EasyEcs 4.6 worlds, [On<T>] handlers as single-entity jobs, presences
+## ADR-082 Programming model: actors as entities in EasyEcs 4.6 worlds, [On<T>] handlers as single-entity jobs, presences
 - Context: ADR-081 made actors entities, but kept a second vocabulary beside EasyEcs: `[Handle]` dispatchers that copy
   components out and back, a `Context` value, an `ActorKey` beside the id type, a mailbox drained apart from the
   tick, session tags (`Known`, `Granted`, `Superseded`), tick rates in configuration and messages that do not say who
@@ -1551,37 +1551,44 @@ Replaced by ADR-081.
   changed" leaks; the order between mail, delayed sends and systems is implicit. EasyEcs 4.5 now provides what a
   model without these needs: single-entity jobs (`entity.Run(ref job[, filter])`), group filters carried by
   interfaces (`IGroupWith<T>`), `world.Descendants(root)` and `LoadEntitiesInto(…, markWritten: false)`.
-- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v28), structured as in
+- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v29), structured as in
   [drafts/architecture.md](drafts/architecture.md):
-  - **The actor type is its address, its root component and its system group**:
-    `[TickRate(30)] partial record struct Map(long Id) : IActor<Map>`; an actor is the root and its descendants, all
-    tagged `In<Map>`; `[UpdateInGroup<Map>]` systems see only them.
+  - **The actor type is its address, its root component, its root prefab and its system group**:
+    `[TickRate(30)] partial record struct Map(long Id) : IActor<Map>` (`IActor<T>` inherits `IEquatable<T>`, so
+    consumers repeat no constraint); an actor is the root and its descendants, all tagged `In<Map>`;
+    `[UpdateInGroup<Map>]` systems see only them.
   - **`[On<T>]` methods in `[Handles<K>]` classes are EasyEcs single-entity jobs** on one subject entity: the
-    parameter rules are `[ForEach]`'s, `ref` points into storage, only written components are stamped.
-  - **Each actor is a discrete-event simulation**: mail and `Due` items run one at a time by `(time, seq)` in an
-    ordered phase, then the actor type's systems, then the framework's settling and cleanup. What leaves an item is
-    data in the `Outbox` singleton.
+    parameter rules are `[ForEach]`'s, `ref` points into storage, only written components are stamped; the actor key
+    parameter binds to the item's root whatever the subject.
+  - **Each actor is a discrete-event simulation**: mail, due items and the immediate chain run one at a time by
+    `(time, seq)` in an ordered phase, then the actor type's systems, then the framework's settling and cleanup. What
+    leaves an item is data in the `Outbox` singleton, serialized on append.
   - **Messages state their endpoints**: `IFromClient`/`IToClient` in Protocol (no actor types, no addresses),
-    `IMessageTo<K>`/`IRequestTo<K,R>` with `[From<K>]` in Server; answers are `Answer<TReq[,TState]>` mail.
+    `IMessageTo<K>`/`IRequestTo<K,R>` with `[From<K>]` in Server; answers are `Replied<TReq[,TState]>` mail whose value
+    is read with `TryGetValue`.
+  - **Data over callbacks**: deactivation, the moments around a hot restart, leaving and confirmation are tags that
+    systems react to; only `Activated` is mail, since it must precede the queued mail.
   - **Presences replace sessions**: `Join()`/`Leave()`, one presence per actor type, `[To]` client messages straight to
     the target, the gateway a server type hosting the built-in `Connection` actor type, ordered connection stamps, the SDK re-joining.
-  - **Distribution**: activation epochs with fenced writes, placeholder roots, `IPersisted` records through
-    `Descendants` and `ComponentSet`, migration bytes checked by layout hashes, remaining time across processes.
+  - **Distribution**: activation epochs claimed with the placement version and fenced writes, a membership lease,
+    placeholder roots, `IPersisted` records through `Descendants` and `ComponentSet`, migration bytes checked by layout
+    hashes under a new epoch, remaining time across processes.
   - One project may define several server types; a node runs one.
 - Alternatives: keep ADR-081's handlers and add the missing pieces (copy and write-back stays, two vocabularies stay);
-  handlers as systems over message entities (an entity per message; measured in R4 before adopting, draft §14);
-  optimistic execution with rollback (state copies cost as much as a ~1 µs event, pushes cannot be taken back);
-  spatial parallelism inside an actor (needs game concepts in the framework, ADR-045).
-- Consequences: breaking for every user project and most of the runtime (roadmap phase R). Business code is
-  `[On<T>]` methods and EasyEcs systems over data; the generator emits jobs, typed sends and one `Registration`
-  instance. ADR-081's handler, `Context`, session and lifecycle parts, ADR-012's module initializer registration and
-  ADR-017's one project per server are replaced when R10 promotes the drafts.
+  handlers as systems over message entities (an entity per message costs a create and a destroy; the runtime's due
+  heap and chain stack give the same order without one); optimistic execution with rollback (state copies cost as
+  much as a ~1 µs event, pushes cannot be taken back); spatial parallelism inside an actor (needs game concepts in the
+  framework, ADR-045).
+- Consequences: breaking for every user project and most of the runtime (roadmap phase W). Business code is
+  `[On<T>]` methods and EasyEcs systems over data; the generator emits jobs, typed sends, typed reply accessors and
+  one `Registration` instance. ADR-081's handler, `Context`, session and lifecycle parts, ADR-012's module initializer
+  registration and ADR-017's one project per server are replaced when W10 promotes the drafts.
 
 ## ADR-083 Native AOT support
 - Context: a native executable starts without JIT warm-up, keeps a smaller working set and ships without a runtime;
   the owner decided DaServer must support it. EasyEcs's core is `IsAotCompatible`; Nino serializes through generated
   formatters. What blocks AOT today is DaServer's own reflection (route listing, admin JSON of anonymous objects,
-  reflection-based JSON bodies, generic configuration binding); after R it would be generic code closed at run time,
+  reflection-based JSON bodies, generic configuration binding); after W it would be generic code closed at run time,
   and in-process hot reload, which loads assemblies at run time.
 - Decision:
   - **Every node publishes with `PublishAot=true`** (requirement E11). Framework projects set `IsAotCompatible` on
@@ -1592,10 +1599,7 @@ Replaced by ADR-081.
     `MakeGenericType`, `Activator` or assembly scanning; the analyzer reports a generic `[ForEach]` system closed
     outside its assembly, which EasyEcs would close at run time without a warning.
   - **The HTTP plane** uses `WebApplication.CreateSlimBuilder`, minimal APIs through the request delegate generator
-    and no JSON in the framework: admin endpoints answer typed `[NinoType]` records as Nino, or a plain-text table
-    for `Accept: text/plain`; probes and metrics keep their platform formats; `MapAsk`/`MapSend` take Nino bodies,
-    and JSON only where the application opts in per endpoint with its own source-generated `JsonSerializerContext`
-    (third-party webhooks). Routes are read from `wire.manifest`, not from assemblies.
+    and no JSON in the framework ([drafts/architecture.md](drafts/architecture.md) section 8 has the rules).
   - **Code changes load no assemblies at run time**: JIT and AOT nodes take a new build the same way, by hot restart
     or rolling upgrade (ADR-084), so user projects are `Game.Protocol` and `Game.Server`.
   - **0 warnings, no suppression**: a suppression of a library's warning in user programs is not accepted. EasyEcs
@@ -1605,9 +1609,9 @@ Replaced by ADR-081.
   reflection-based registration with trimming descriptors (fragile, and generic closure at run time is impossible
   under AOT anyway).
 - Consequences: the release checklist publishes each sample node with `PublishAot=true` with 0 warnings and runs the
-  E2E tests against the AOT binaries. What remains to verify is third-party: OpenTelemetry, the Prometheus exporter,
-  Npgsql through Aspire and the other hosting dependencies, in R8 ([drafts/architecture.md](drafts/architecture.md)
-  section 8). How a new build reaches running nodes, and what it needs from EasyEcs, is ADR-084.
+  E2E tests against the AOT binaries. What remains to verify is third-party: OpenTelemetry, the Prometheus exporter
+  (a beta, pinned; OTLP to a Collector if it warns), Npgsql through Aspire and the other hosting dependencies, in W8
+  ([drafts/architecture.md](drafts/architecture.md) section 8). How a new build reaches running nodes is ADR-084.
 
 ## ADR-084 Code changes ship by in-place hot restart (JIT and AOT); no in-process hot reload
 - Context: games change code while players stay connected. The usual way (ET, in-house game servers) loads a Logic
@@ -1617,92 +1621,39 @@ Replaced by ADR-081.
   caused a cycle between the host and the logic projects (ADR-067), and a load context swaps only the logic:
   framework, runtime and dependency updates restart anyway. Re-activating every actor from its record on each change
   costs a checkpoint interval of state and a load storm on the store.
-- Decision ([drafts/programming-model.md](drafts/programming-model.md) §10, [drafts/architecture.md](drafts/architecture.md) section 5):
+- Decision (the mechanics are [drafts/programming-model.md](drafts/programming-model.md) §10, nowhere else):
   - **A code change replaces the node's process in place**, the same on JIT and AOT nodes. The `{cluster}-restart`
-    command (admin endpoint and AppHost command) takes the new
-    build's `wire.manifest`; the diff picks *in place* (same layout hashes, no handler or `Leaving` consumer dropped,
-    same client routes), *through records* (deactivate, restart, activate) or a refusal in favour of a rolling upgrade.
-  - **Warm successor, then handoff**: where the node may launch its successor (a process without a supervisor, and
-    systemd, where the successor reports `MAINPID` through `Microsoft.Extensions.Hosting.Systemd`'s notifier with
-    `NotifyAccess=all`), the successor starts connected to it over a local pipe (`System.IO.Pipes`: a named pipe on
-    Windows, a Unix domain socket under `/tmp` elsewhere; `PipeOptions.CurrentUserOnly`, mode 0600 on Unix since
-    .NET 11), finishes JIT warm-up or AOT initialization, builds its empty worlds with their systems and authenticates
-    standby peer links (below), binding no client port. Only then does the old process announce `Restarting`, freeze
-    each shard between two ticks and stream the bytes. Where a supervisor only watches the process it started and
-    restarts it (a container restart in the same Kubernetes pod, ADR-085; a recreated Compose container with the
-    node's own named volume; launchd via `launchctl kickstart -k`; a Windows service via `Restart-Service`), the old
-    process writes the same bytes into a checksummed snapshot file in a node-local directory and exits; the new process
-    loads a fresh snapshot for its node name, and ignores a stale or invalid one (activation from records as usual).
-    Each platform's own supervisor restarts the node; the node host calls `UseSystemd()`, `AddWindowsService()` and
-    DaServer's `UseLaunchd()` (macOS has no official package; same contract: detect the supervisor, a no-op
-    elsewhere), and the transport follows from which one detected its supervisor (systemd: warm handoff; launchd and
-    Windows services: snapshot file; a configured `DaServer:SnapshotPath`, which DaServer.Aspire sets on Kubernetes, on
-    Compose and for local Aspire runs: snapshot file; nothing: warm handoff over the pipe). Local Aspire runs take the
-    snapshot path because Aspire's orchestrator (DCP) starts and watches each node process and would not see a
-    successor the node launched itself; `{cluster}-restart` there rebuilds, arms each node and restarts it with
-    Aspire's own resource restart command.
-  - **Freezing stops the shards, not the network**: IO threads keep reading frames into the dispatch queue while the
-    shards are frozen and saved, so nothing sent during the pause is refused and no client or peer is told to stop
-    sending (that would cost a round trip and make clients buffer, for a pause of tens to hundreds of milliseconds).
-    After `Save` the old process stops reading its links at a cutover point and serializes the queued mail with each
-    link's received byte count; frames sent after the cutover wait in the peers' resend windows and replay to the
-    successor over the standby links.
-  - **The bytes**: per shard `world.Save` (entities with ids and versions, components, buffers including placeholder
-    mail, singletons), the mail still in the dispatch queue and the shard's `Time.Elapsed` (every `Due` keeps its remaining
-    time); per node the call id sequence, tombstones, the connection stamp counter and, per peer link, the inbound
-    stream id with the bytes received up to the cutover point and the outbound stream id with its offset and
-    unacknowledged tail.
-  - **Identity and epochs are kept**: the successor takes over with one membership update, the same node name and
-    generation, the incarnation plus one and the handoff token whose hash `Restarting` announced. Activation epochs
-    live in the roots and in the store, so nothing re-activates and nothing is fenced.
-  - **`Restarting` with a deadline**: peers keep the node in the view and in placement (no `Suspect`, no re-placement)
-    until the deadline, measured on their own monotonic clocks, and hold messages to it in the bounded resend windows
-    of their links (`Busy` with the existing back-off beyond that).
-  - **Commit point**: only one process runs shards at any time. The old one stops its shards, settles in-flight record
-    writes before `Save` and never runs them again past the successor's "loaded" (pipe) or the successor finding a
-    valid snapshot (file); before it, a failure withdraws `Restarting` and the old process carries on. A deadline that
-    passes first is an ordinary departure: actors re-activate elsewhere under new epochs, a late successor discards
-    the snapshot and joins with a new generation.
-  - **Standby peer links**: today a link is one per peer address with one inbound slot, its Hello names a random
-    per-process node id, and a Resume from another node id restarts the stream and fails calls in flight (ADR-008,
-    ADR-065). The refactor adds: node identity on the wire as (name, generation) with the incarnation beside it, so
-    the successor resumes the old process's streams instead of looking like a restart; `LinkHello` (version
-    tolerant) gains the incarnation, a `Standby` flag and the endpoint the successor listens on until it binds the
-    advertised port; a peer keeps a standby connection beside the live one (authenticated as any Hello, answered
-    with no `Resume`, carrying no traffic) only for a member it knows whose Hello names a higher incarnation, and
-    closes it at the deadline or when `Restarting` is withdrawn; the membership update with that incarnation and the
-    matching token switches the link: the old connections close, the successor sends `Resume` with the restored
-    counts, each side replays its window. The member's card is fetched again when its incarnation rises (the build
-    is on it). Without a warm successor (the file path) the successor reconnects at the advertised address after
-    start, with the same identity, and the streams resume the same way.
-  - **Fallbacks when layouts change**: records that stay readable (version-tolerant or keyed `IPersisted`) take the
-    path through records; changes of hosting or client routes take a rolling upgrade with migration through records
-    (layout hashes, ADR-082). Gateways always take rolling upgrades (`Connection` is pinned to its socket).
+    command arms the node with the new build's `wire.manifest`; the diff picks *in place* (same layout hashes, no
+    handler or tag consumer dropped, same client routes), *through records* (deactivate, restart, activate) or a
+    refusal in favour of a rolling upgrade.
+  - **One mechanism on every platform: the snapshot file** (ADR-088). The worlds freeze between two ticks while IO
+    keeps receiving; the process writes the worlds, the queued mail and its link state into a checksummed file under
+    `DaServer:SnapshotPath` and exits; the platform's own supervisor restarts it with the new build; the new process
+    loads the file.
+  - **Identity and epochs are kept**: the new process reconnects as the same (name, generation), and peers resume its
+    streams from their resend windows, as after any dropped link. Activation epochs live in the roots and in the
+    store, so nothing re-activates and nothing is fenced.
+  - **`Restarting` with a deadline kept by the coordinator**: peers keep the node in the view and in placement and
+    hold messages in their bounded resend windows until the coordinator (ADR-079) declares it gone.
+  - **Fallbacks when layouts change**: records that stay readable take the path through records; changes of hosting
+    or client routes take a rolling upgrade. Gateways always roll, surge then drain with `Retire` (ADR-026).
 - Evidence: moving a world costs milliseconds and allocates nothing. BenchmarkDotNet ShortRun, EasyEcs 4.5.0,
   .NET 11 RC2, one world with 5 unmanaged components per entity: 10,000 entities `Save` 44 µs, `Load` 183 µs,
-  440 KB; 100,000 entities `Save` 0.76 ms, `Load` 2.7 ms, 4.4 MB; 0 B allocated in both.
+  440 KB; 100,000 entities `Save` 0.76 ms, `Load` 2.7 ms, 4.4 MB; 0 B allocated in both. The pause is therefore
+  process start and reconnects: the target is hundreds of milliseconds, measured end to end in roadmap W9.
 - Alternatives: a collectible `AssemblyLoadContext` with `RemoveTypes` and a dispatch-table swap between ticks (JIT
   only, unload leaks, a Logic project and its cycle, swaps the logic only); re-activation from records on every
   change (a checkpoint interval of state lost, a load storm); handing the listening sockets to the new process
   (`SCM_RIGHTS`, Envoy's hot restart: Unix only; a possible later optimization for gateways); `exec` into the new
-  binary (no Windows equivalent, no warm-up).
+  binary (no Windows equivalent); a warm successor handed the world over a local pipe (ADR-088).
 - Consequences:
-  - Two user projects, `Game.Protocol` and `Game.Server`; ADR-067's reloadable logic project goes when R10 promotes
+  - Two user projects, `Game.Protocol` and `Game.Server`; ADR-067's reloadable logic project goes when W10 promotes
     the drafts.
-  - Pause targets: tens of milliseconds after warm-up (save, transfer, load and the membership switch), hundreds
-    without (a platform restart adds process start and reconnects). R measures both end to end (BenchmarkDotNet per
-    shard, E2E with clients connected).
   - What changes without a restart is data swapped between two ticks: tuning tables (a validated world singleton,
     its version on the member card) and feature flags choosing between handlers compiled into the binary.
   - `[Stateless]` actor types deployed as their own group are replaced start-new-then-stop-old, without a pause.
-  - The successor loads with `world.Load(bytes, markWritten: false)` (EasyEcs 4.6, its D39): loaded rows have no
-    change tick and none counts as removed, and a system's first run looks at ticks from 1, so systems registered
-    before the load (warm-up) and after it (platform restart) both skip them. `ChangeSystem` tags no root `Unsaved`
-    and no actor rewrites its record; pending writes are not lost, since `Unsaved` is a tag on the root and travels
-    in the save. The same holds for user systems: after a hot restart no `[Changed<T>]` method (AOI included) sees
-    the loaded rows as changed; a system that needs a full pass runs a `[ForEach]` method without `[Changed<T>]` once
-    under data (draft §10). `AddSystem(system, changesFromNow: true)` is only for a system added to a running world
-    (a feature flag switched on). `world.Restore(snapshot)` always stamps rows as written and is for tests only.
+  - The new process loads with `world.Load(bytes, markWritten: false)` (EasyEcs 4.6, its D39), so no actor rewrites
+    its record and no `[Changed<T>]` method sees the loaded rows; a system that needs a full pass filters `Resumed`.
 
 ## ADR-085 Actor-hosting groups publish as StatefulSets with `OnDelete`; hot restart patches pods in place
 - Context: ADR-030 publishes every node group as a Deployment: a node's identity was its random id and its actors'
@@ -1715,22 +1666,24 @@ Replaced by ADR-081.
     (`{group}-{ordinal}`, the node name, `Environment.MachineName`), and a template change replaces no pod ("the
     StatefulSet controller will not automatically update the Pods"; pods are replaced only when deleted). The
     headless `{group}-peers` Service stays (seeds, `publishNotReadyAddresses`) and is the StatefulSet's `serviceName`.
-    Gateways and stateless groups stay Deployments (rolling upgrade, start-new-then-stop-old).
+    Gateways (surge then drain) and stateless groups stay Deployments.
   - **Hot restart on Kubernetes**: the release itself (`helm upgrade` of the published chart) sets the StatefulSet's
     template image; with `OnDelete` that replaces no pod, and pods created later get the new build. The rollout then
-    runs as an in-cluster Job with a namespaced Role (get/patch pods in the group): it first has every node pull the
-    new image (so the pull is not inside the pause), then, one pod at a time, patches the running pod's
-    `spec.containers[].image`. It never patches the template (the next `helm upgrade` would put the old image back).
-    That field is mutable on a running Pod; the kubelet restarts the container inside the same pod (same pod, UID and
-    IP; the Pod is not rescheduled), and an `emptyDir` survives container restarts. The snapshot directory is an
-    `emptyDir` with `medium: Memory` (tmpfs; its bytes count against the container's memory limit, about 4.4 MB per
-    100,000 entities of the benchmark world).
+    runs as DaServer's own in-cluster Job with a namespaced Role (its verbs: [drafts/deployment.md](drafts/deployment.md)
+    section 5): it first has every node pull the new image (so the pull is not inside the pause), then, one pod at a
+    time, arms the node, patches the running pod's `spec.containers[].image` and waits for it to be ready. It never
+    patches the template (the next `helm upgrade` would put the old image back). That field is mutable on a running
+    Pod; the kubelet restarts the container inside the same pod (same pod, UID and IP; the Pod is not rescheduled),
+    and an `emptyDir` survives container restarts. The snapshot directory is an `emptyDir` with `medium: Memory`
+    (tmpfs; its bytes count against the container's memory limit).
+  - **preStop runs on an image-patch restart too** (the kubelet's container kill runs it whatever the reason; proved
+    on kind in W11), so hot-restart groups have no preStop `sleep`: it would add to every pause.
   - The StatefulSet is named `{group}` (pods `game-0`, …) with `podManagementPolicy: Parallel`. A stateful group
-    that also accepts clients itself (no separate gateway, e.g. the flash sale's `sale`) uses `RollingUpdate`: its
-    clients reconnect on any restart, so it gains nothing from keeping the pod.
+    that also accepts clients itself (no separate gateway, e.g. the flash sale's `sale`) uses `RollingUpdate` (one pod
+    at a time, the default): its clients reconnect on any restart, so it gains nothing from keeping the pod.
   - Nodes need no Kubernetes API access: the data plane discovers peers through DNS only, and node pods run without
     a service-account token. The full target shape (Secrets, Jobs, probes, security context, network policy) is
-    [doc/drafts/deployment.md](drafts/deployment.md).
+    [drafts/deployment.md](drafts/deployment.md).
 - Sources: [StatefulSets: OnDelete, stable network ID](https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/);
   [Pods: Pod update and replacement](https://kubernetes.io/docs/concepts/workloads/pods/) ("Pod updates may not
   change fields other than `spec.containers[*].image`, …"; "`ContainerStatus.ImageID` reflects the image from the
@@ -1739,13 +1692,16 @@ Replaced by ADR-081.
   scheduled once; the kubelet restarts containers within it); [Volumes: emptyDir](https://kubernetes.io/docs/concepts/storage/volumes/#emptydir)
   ("The data in an `emptyDir` volume is safe across container crashes"; `medium: Memory` mounts a tmpfs counted
   against the memory limit). No page says in one sentence that an image patch restarts the container in place; the
-  Pod page implies it (the `ImageID` line above), and the R11 E2E proves it on a real cluster (kind).
+  Pod page implies it (the `ImageID` line above), and the W11 E2E proves it on a real cluster (kind).
 - Alternatives: Deployments with in-place pod patches (a later template change still rolls every pod, and pod names
   change on any replacement); `RollingUpdate` StatefulSets (the controller replaces each pod on a template change,
-  emptying its `emptyDir`); a persistent volume for the snapshot (slower, zone-bound, outlives the snapshot's use).
-- Consequences: ADR-030's "no StatefulSet" holds only for gateways and stateless groups once roadmap R11 lands, and
+  emptying its `emptyDir`); a persistent volume for the snapshot (slower, zone-bound, outlives the snapshot's use);
+  OpenKruise's Advanced StatefulSet with `InPlaceOnly` updates (rejected: a cluster-wide operator plus a
+  host-access DaemonSet, Kubernetes 1.33 to 1.35 not in its support matrix, image pre-pull skipped for three replicas
+  or fewer, and arming each node before its restart would still need DaServer's own controller).
+- Consequences: ADR-030's "no StatefulSet" holds only for gateways and stateless groups once roadmap W11 lands, and
   ADR-030 is rewritten then. Scaling a stateful group is still the platform's (`kubectl scale`, an HPA); a scaled-in
-  pod leaves gracefully as today. R11 changes `DaServer.Aspire` and the samples' AppHosts (roadmap).
+  pod leaves gracefully as today. W11 changes `DaServer.Aspire` and the samples' AppHosts (roadmap).
 
 ## ADR-086 Six packages and four words: Core absorbs Abstractions, the server absorbs Hosting, shards are internal
 - Context: the target architecture listed eleven projects (Abstractions, Core, Client, Simulation, `DaServer`,
@@ -1764,19 +1720,19 @@ Replaced by ADR-081.
     Testing, WireTool into the generator's MSBuild task.
   - **Users see four words**: server type, node, actor (its root entity and all descendants) and entity/component.
     "Domain" is gone: it is the actor. A node runs one EasyEcs world per thread and sizes the count from the CPUs it is
-    given (the container's request, ADR-085's `DOTNET_PROCESSOR_COUNT`); `DaServer:Worlds` overrides it, and the
-    AppHost has no shard parameter. Operator-facing names (configuration, metrics, admin output) say "world", the
-    word EasyEcs users already know; "shard" stays the runtime's internal name for a thread with its world and
-    appears in no public API.
+    given (the container's request through `DOTNET_PROCESSOR_COUNT`, [drafts/deployment.md](drafts/deployment.md)
+    section 2); `DaServer:Worlds` overrides it, and the AppHost has no shard parameter. Operator-facing names
+    (configuration, metrics, admin output) say "world", the word EasyEcs users already know; "shard" stays the
+    runtime's internal name for a thread with its world and appears in no public API.
 - Alternatives: keeping Abstractions apart so `Game.Protocol` carries no transport (the analyzer already refuses
   server types there, a client ships Core anyway, and the server-only API is not in Core); keeping Hosting apart for
   hosts without ASP.NET Core (none: every node serves probes and admin over HTTP, ADR-046; `TestCluster` starts no
   HTTP); a separate Simulation package (a test tool, never in production); keeping "domain" as a technical term for the
   subtree (two words for one thing).
-- Consequences: ADR-052's four layers become Core / Client / server once roadmap R2 lands, and ADR-052 is rewritten
+- Consequences: ADR-052's four layers become Core / Client / server once roadmap W2 lands, and ADR-052 is rewritten
   then. A Unity client references `DaServer.Client` (Core comes with it); a Protocol project references
   `DaServer.Core`; a node references `DaServer`; tests reference `DaServer.Testing`. Today's `DaServer:Shards`,
-  `map_shards` and the `daserver.shard.*` metrics are renamed in R2.
+  `map_shards` and the `daserver.shard.*` metrics are renamed in W2.
 
 ## ADR-087 Deployment lives in `Game.Server/apphost.cs`; ports are declared per node group; the connection actor is `Connection`
 - Context: the target model had a third user project (`Game.AppHost`), opened the client port implicitly next to an
@@ -1788,24 +1744,29 @@ Replaced by ADR-081.
     `dotnet run --file apphost.cs` or `aspire run` and published with `aspire publish` (build, run and Compose publish
     verified with Aspire 13.6.1 on the .NET 11 RC2 SDK). The `DaServer` package's build props remove `apphost.cs` from
     the server's compilation; `#:project` gives Aspire the project's metadata, not its assembly. User projects stay
-    Protocol and Server. The node's entry point stays the user's five-line `Program.cs`.
+    Protocol and Server. The node's entry point stays the user's `Program.cs` of about five lines.
   - **Local runs start the binary.** Aspire starts an `AddProject` resource as `dotnet run --project … --no-build`,
     which keeps a `dotnet` CLI process beside every replica. DaServer.Aspire uses Aspire's own `AddDotnetProject`
     (`Aspire.Hosting.Dotnet`), which runs the built project's `RunCommand` (the apphost executable) with the same
-    project defaults; it is prerelease, so it is pinned and R8 verifies it, with `AddProject` as the fallback. Aspire
+    project defaults; it is prerelease, so it is pinned and W8 verifies it, with `AddProject` as the fallback. Aspire
     has no API to launch a published native binary, so AOT is checked locally by running the published AOT images
     with Compose (the production images), not by a custom executable resource. On macOS and Windows hosts AOT images
-    build in a container (`sdk:11.0-noble-aot` stage, `runtime-deps` chiseled final stage), since Native AOT does not
-    compile across operating systems; on Linux the SDK container publish builds them. JIT images run on `aspnet`
-    chiseled; health checks run the node's own executable in probe mode (neither image has `dotnet`, curl or a shell).
-  - **One binary on every host.** The node host (`AddDaServer`) calls `UseSystemd()`, `AddWindowsService()` and
-    DaServer's `UseLaunchd()`, so Program.cs stays five lines. launchd has no official .NET package; `UseLaunchd()`
-    has the official two's contract: it detects launchd (`OperatingSystem.IsMacOS()` and `XPC_SERVICE_NAME` set to
-    the job label, not empty or `0`; not `getppid() == 1`, which orphans also see; not a security check), then uses
-    the lifetime without status messages, `AppContext.BaseDirectory` as content root (launchd starts in `/`) and
-    console logs without colours, with timestamps; elsewhere it does nothing. DaServer documents the plist (`Label`,
-    `ProgramArguments`, `KeepAlive`, `ExitTimeOut` at least the stop budget, `StandardOutPath`/`StandardErrorPath`).
-    The launch flows are [drafts/deployment.md](drafts/deployment.md) section 0.
+    build in a container (`sdk:11.0-resolute-aot` stage, `runtime-deps:11.0-resolute-chiseled` final stage), since
+    Native AOT does not compile across operating systems; on Linux the SDK container publish builds them. JIT images
+    run on `aspnet:11.0-resolute-chiseled`; health checks run the node's own executable in probe mode (neither image
+    has `dotnet`, curl or a shell). A hot restart in a local run is the dashboard's `{cluster}-restart` resource
+    command (`aspire do` runs in a fresh process that cannot reach the running AppHost).
+  - **One binary on every host, the service managers declared in `Program.cs`.**
+    `builder.Host.UseSystemd().UseWindowsService().UseLaunchd();` names all three explicitly, each a no-op off its
+    platform; `AddDaServer` calls none of them. launchd has no official .NET package; `UseLaunchd()` has the official
+    two's contract and naming: it detects launchd (`OperatingSystem.IsMacOS()` and `XPC_SERVICE_NAME` set and not
+    `0`; not `getppid() == 1`, which orphans also see; not a security check; the only source is a 2015 launchd-dev
+    thread, so a macOS runner verifies it), then uses the lifetime without status messages, `AppContext.BaseDirectory`
+    as content root (launchd starts in `/`) and console logs without colours, with timestamps. DaServer documents the
+    plist (`Label`, `ProgramArguments`, `KeepAlive`, `ExitTimeOut` set explicitly to at least the stop budget, since
+    launchd.plist(5) leaves the default system-defined, `WorkingDirectory`, `EnvironmentVariables` with
+    `DaServer__SnapshotPath`, `StandardOutPath`/`StandardErrorPath`), the systemd unit and the Windows service:
+    [drafts/deployment.md](drafts/deployment.md) section 0.
   - **Deployment is explicit.** Group names, replica counts, the store and every public port are written in
     `apphost.cs`; nothing is inferred from code. All replicas of a group listen on the same ports. The cluster and
     HTTP ports are assigned by DaServer.Aspire and reachable only inside the cluster; only `WithClientConnections(port)`
@@ -1818,6 +1779,35 @@ Replaced by ADR-081.
 - Alternatives: a separate AppHost project (still works, e.g. for Visual Studio, which does not open file-based
   AppHosts yet); the AppHost inside the node's `Program.cs` (the node image would carry Aspire.Hosting and the DCP
   orchestrator, which are not AOT-compatible and have no place on a production node); inferring client ports from
-  `[Hosts<Connection>]` (less visible; the owner prefers explicit deployment).
-- Consequences: roadmap R2 adds `UseLaunchd()` to the node host (verified on a macOS runner); R7 moves the samples to
-  `apphost.cs`; R11 renames the node-side API and adds the build check.
+  `[Hosts<Connection>]` (less visible; the owner prefers explicit deployment); the node host calling the service
+  managers itself (hidden; the owner prefers the three calls in sight).
+- Consequences: roadmap W2 adds `UseLaunchd()` (verified on a macOS runner); W5 adds `Connection`; W7 moves the samples
+  to `apphost.cs` with `WithClientConnections(port)` and the build check.
+
+## ADR-088 Hot restart is one mechanism; user behaviour before it is data
+- Context: ADR-084 first had two transports for the same bytes: a warm successor launched by the node and fed over a
+  local pipe (for systemd, with `MAINPID` handed to the successor, and for unsupervised processes), and a snapshot
+  file for every supervisor that watches only the process it started (Kubernetes, Compose, launchd, Windows services,
+  local Aspire). The warm path needed standby peer links beside the live ones, incarnation numbers on the wire, a
+  handoff token, a commit protocol between two live processes and rules for picking the transport, and it gained a
+  few hundred milliseconds only on systemd and bare processes. Games also need a say in what happens before the
+  pause (an MMO tells its players; a sale lets messages wait), and the first answer, a one-shot `[ForEach]` gated by
+  hand-made data, was a recipe rather than a model.
+- Decision:
+  - **The snapshot file on every platform**: Kubernetes (a memory `emptyDir`, the pod image patch, ADR-085), Compose
+    (a named volume per node), systemd (`RuntimeDirectory=` with `RuntimeDirectoryPreserve=restart`, `systemctl
+    restart`), launchd and Windows services (a local directory, `launchctl kickstart -k`, `Restart-Service`) and local
+    Aspire (a temp directory per node, the resource restart command). `DaServer:SnapshotPath` names the directory;
+    a plain file write, no memory-mapped file for a few MB. The node never launches its successor.
+  - **Peers see the same identity reconnect**: (name, generation) on the link, the streams resumed from the resend
+    windows with the byte counts in the snapshot: today's resume machinery, no second link.
+  - **Behaviour before and after is data**: the last tick before the freeze every root carries
+    `Restarting(TimeSpan ExpectedPause)`, and user systems filter `[With<Restarting>]`; the first tick after the load
+    every root carries `Resumed`. With no system nothing happens and messages wait. Gateways see the restarting nodes
+    in the `RestartingNodes` singleton.
+- Alternatives: the warm handoff above (a second transport, standby links, incarnations and a token for a gain on two
+  platforms); OpenKruise for Kubernetes (ADR-085); a virtual "before restart" hook on actors (a callback where a tag
+  and a system do).
+- Consequences: one code path to test (W6: snapshot written, loaded, stale or invalid, deadline passed); the pause
+  target is hundreds of milliseconds everywhere (ADR-084's evidence). Without `DaServer:SnapshotPath` a node has no
+  in-place path and takes the path through records.
