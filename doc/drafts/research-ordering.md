@@ -1,4 +1,4 @@
-# 调研：有状态服务器的消息顺序、并行与缓存（草案 v15 的依据）
+# 调研：有状态服务器的消息顺序、并行与缓存（编程模型草案的依据）
 
 问题：单线程按到达顺序处理所有客户端的消息，顺序可控，但只有一个核；多线程按客户端分 actor，交互的两个客户端没有共同的顺序；按消息随便调度，状态会乱、缓存失效。
 
@@ -111,3 +111,14 @@
 - Stellaris：伤害先记录，后续阶段再统一施加；按线程分缓冲，最后合并。
 - SIMD（PVLDB 2018）：连续数组上的筛选快 8.4 倍；分散访问时最多快 2.7 倍；gather 约 1.1 倍；连接查询几乎没有收益。https://ir.cwi.nl/pub/28470/28470.pdf
 - 顺序与公平：先到先得适合请求、回复类的交互；"同一 tick 视为同时"适合随时间推进的模拟。
+
+## 8. 并行离散事件模拟（PDES）
+
+- 前瞻（lookahead）：一个逻辑进程在时刻 T 发出的消息，时间戳至少是 T + L。若所有跨进程的影响都至少延迟 L，那么 [t, t + L) 窗口里不同进程的事件可以并行，结果与逐个执行一致（同时刻的事件要有确定的次序）。https://sigsim.acm.org/conf/mskr/Courseware/Fujimoto/Slides/FujimotoSlides-07-Lookahead.pdf
+- 窗口式同步（YAWNS 一类）：算出安全下界，处理所有不超过它的事件，屏障，再下一轮；"按时间步推进的模拟隐含了一个步长的前瞻"。https://sigsim.acm.org/conf/mskr/Courseware/Fujimoto/Slides/FujimotoSlides-09-SynchronousAlgorithms1.pdf
+- 前瞻的来源：一个实体影响另一个实体所需的最短时间，例如"武器飞到另一辆坦克需要 L"、"坦克的最大速度"。保守算法"成败取决于前瞻"：前瞻与步长之比从 0.9 降到 0.1，加速比从约 10 倍降到约 1 倍。
+- 前摇不是前瞻：结算时读目标当时的状态，延迟为 0。可用的前瞻来自空间距离与最大速度。
+- 乐观同步（Time Warp）：投机执行、回滚、反消息；反向计算比保存状态快约 3 倍。ROSS 的 PHOLD 约每核每秒 25 万个事件（合成基准）。https://www.llnl.gov/news/lawrence-livermore-and-rensselaer-polytechnic-institute-scientists-set-new-simulation-speed
+- 细粒度事件：平均每个事件 3.7 µs 时，原子操作、锁就已经是主要开销（Wilsey，WSC 2019）。约 1 µs 的事件只有在一次同步覆盖很多事件（按窗口、按批）时才值得并行。https://www.informs-sim.org/wsc19papers/150.pdf
+- 游戏：Darkstar 用事务加冲突重试，不保证时间顺序；SpatialOS 没有前瞻或时间窗口的一致性保证；并行 Quake 服务器的瓶颈是锁和全局同步点的负载不均；人群密集的区域无法再细分（LEARS）。
+- 事件表：日历队列、时间轮的插入和取出平均 O(1)。https://blog.acolyer.org/2015/11/23/hashed-and-hierarchical-timing-wheels/
