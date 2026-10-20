@@ -38,7 +38,7 @@ Keep this file current: tick items when done, add items when scope changes.
       `wire.manifest` (one section per project; user projects are Protocol and Server), the draft's §13 checks.
     - [ ] R4 Runtime core: shards (one world each, `MaxDegreeOfParallelism` per world), the ordered phase, `Due`,
       `Outbox`, `Current`, the framework groups (Ordering, Settling, Cleanup); messages-as-entities measured once.
-    - [ ] R5 Presences, the gateway (`Client` on `[Hosts<Client>]`), `[To]` routing, `[JoinOnConnect]`, SDK re-join,
+    - [ ] R5 Presences, the gateway (`Connection` on `[Hosts<Connection>]`), `[To]` routing, `[JoinOnConnect]`, SDK re-join,
       `ClientGroup` subscriptions.
     - [ ] R6 Persistence, activation and migration: epochs and fencing, placeholder roots, `IPersisted` records
       through `Descendants` and `ComponentSet`, migration bytes with layout hashes. Hot restart's runtime side (draft
@@ -51,7 +51,8 @@ Keep this file current: tick items when done, add items when scope changes.
       membership update, inbound counts and outbound tails in the handoff, the card fetched again on a higher
       incarnation; in-cluster tests for both transports and for each failure before and after the commit point (gated
       on EasyEcs request #22: `world.Load(input, markWritten: false)` and a first run from the current tick).
-    - [ ] R7 Samples (mmo, flashsale) on the new model.
+    - [ ] R7 Samples (mmo, flashsale) on the new model; each AppHost becomes an `apphost.cs` (file-based) in the
+      sample's server project, with client ports declared by `WithClientConnections(port)`.
     - [ ] R8 Native AOT publish of the samples' nodes with 0 warnings (gated on EasyEcs request #21: IL3054 for tracked
       components); the AOT E2E run. Admin endpoints as Nino (or plain text for `Accept: text/plain`), `MapAsk`/`MapSend`
       Nino by default with per-endpoint opt-in JSON through the application's source-generated context (ADR-083).
@@ -64,9 +65,9 @@ Keep this file current: tick items when done, add items when scope changes.
       set `Deployment.Spec.Replicas`), `serviceName` the headless `{group}-peers` Service, a `medium: Memory` `emptyDir`
       mounted for the snapshot; gateways and stateless groups stay Deployments. The samples' VPA `targetRef`
       (`samples/Shared/Publishing.cs` `DeploymentOf`) names a StatefulSet for stateful groups, PDBs select the
-      StatefulSet's pods, probes and grace periods carry over; the hot-restart command (admin endpoint and AppHost
-      command) updates the template image, then patches each pod's container image one pod at a time, with a Role
-      for those two patches. E2E on kind: same pod UID and IP, snapshot loaded, clients connected; `aspire publish`
+      StatefulSet's pods, probes and grace periods carry over; the hot-restart command `{cluster}-restart` (admin endpoint
+      and AppHost command, `aspire do mmo-restart`) starts the rollout Job, which patches each pod's container image
+      one pod at a time and never the template (the release sets it), with a Role for the pod patches. E2E on kind: same pod UID and IP, snapshot loaded, clients connected; `aspire publish`
       output (Helm lint and template) checked for both workload kinds; ADR-030 rewritten.
     - [ ] R12 Deployment corrections ([doc/drafts/deployment.md](drafts/deployment.md)): one `{cluster}-signing` Secret
       (`current`, optional `accepted` for rotation) read through `secretKeyRef`, and published nodes refuse to start
@@ -119,7 +120,7 @@ EasyEcs in parallel when DaServer waits on benchmarks: the Friflo gap, compariso
 - [x] Deadlines: the caller's remaining time travels with each request; expired work is dropped (ADR-028)
 - [ ] Send group broadcasts only to client-facing nodes that have members of the group (deferred: ADR-029)
 - [x] Resumable node links: a dropped connection replays what the peer did not process (ADR-008)
-- [ ] Client sessions as ECS entities in net loops (ECS rewrite P4; superseded by R5: `Client` actor entities)
+- [ ] Client sessions as ECS entities in net loops (ECS rewrite P4; superseded by R5: `Connection` actor entities)
 - [x] Actors unload when idle (`UnloadAfterIdleSeconds`, ADR-033)
 
 ## Now: zero GC (agreed; Z2 is step 1 of the development order)
@@ -1112,7 +1113,7 @@ and cards, a manual clock), fails before its fix, and passes after it.
     `Granted`, `Superseded`, indexed by session); `Created`/`Loaded`/`Unloading` mail; the generator declares
     `ITrackChanges` for `[Persist]` components, `ChangeSystem` tags written actors `Unsaved` and `CheckpointSystem`
     writes only those.
-  - [ ] P4 The transport and the capabilities as ECS (plan below). Superseded by R (client sessions become `Client`
+  - [ ] P4 The transport and the capabilities as ECS (plan below). Superseded by R (client sessions become `Connection`
     actor entities and presences).
   - [x] P5 Samples, tests and benchmarks on static handlers; the analyzers updated (async handlers rejected by DAS001,
     the rules of the removed model gone, DAS022: a component parameter used after a structural change of its entity).

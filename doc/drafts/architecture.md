@@ -1,6 +1,6 @@
 # Target architecture (draft, not implemented)
 
-The architecture DaServer is refactored to (breaking, roadmap phase R): the v27 programming model of
+The architecture DaServer is refactored to (breaking, roadmap phase R): the v28 programming model of
 [programming-model.md](programming-model.md) on EasyEcs 4.5.0, with Native AOT support. The programming model draft is
 the source of truth for what users write and what each rule means; this file says how the pieces fit together and
 links to the draft's sections instead of repeating them. Today's architecture is [design.md](../design.md); the
@@ -18,10 +18,10 @@ node takes no AppHost code, production takes no test tools, and a capability is 
 |---|---|---|
 | `DaServer.Core` | netstandard2.1, net11.0 | What both sides see: the client-facing contracts (`IFromClient`, `IFromClient<R>`, `IToClient`, `[To]`, `IServer`, `TypeId<T>`, status codes) and the wire and transport (frames, buffers, channels, the pending-call table). Ships the generators, the analyzers and the `wire.manifest` task (below). |
 | `DaServer.Client` | netstandard2.1, net11.0 | The client SDK: connect, send `IFromClient`, receive `IToClient`, slots and re-joining ([draft §7](programming-model.md#7-客户端与-presence)). |
-| `DaServer` | net11.0 | The server: the model (`IActor<T>`, `[Handles<K>]`, `[On<T>]`, `IMessageTo<K>`, `IRequestTo<K,R>`, `[From<K>]`, `IEvent`, `IPersisted`, `Entity` operations, `Client`), the framework systems, cluster, placement, persistence, migration, hot restart, and the node host: Generic Host and ASP.NET Core, configuration, OpenTelemetry, shutdown, the HTTP plane. |
+| `DaServer` | net11.0 | The server: the model (`IActor<T>`, `[Handles<K>]`, `[On<T>]`, `IMessageTo<K>`, `IRequestTo<K,R>`, `[From<K>]`, `IEvent`, `IPersisted`, `Entity` operations, `Connection`), the framework systems, cluster, placement, persistence, migration, hot restart, and the node host: Generic Host and ASP.NET Core, configuration, OpenTelemetry, shutdown, the HTTP plane. |
 | `DaServer.Persistence.PostgreSql` | net11.0 | The record store: epoch-fenced, compare-and-swap writes. |
 | `DaServer.Testing` | net11.0 | `TestActor<K>` (one actor, one world, a manual clock), `TestCluster` (in-process nodes) and simulated users (`Swarm`, HTN behaviors) over `DaServer.Client` for load tests and E2E. |
-| `DaServer.Aspire` | net11.0 | AppHost side: `AddDaServerCluster`, `AddNodes<TServer>`, `WithClientEndpoints()`, and a generator that writes the server types from the committed `wire.manifest` (`actor` and `hosted-by` lines). References no server assembly. |
+| `DaServer.Aspire` | net11.0 | AppHost side: `AddDaServerCluster`, `AddNodes<TServer>` (a `DaServerNodeGroup<TServer>`), `WithActorStore`, `WithClientConnections(port)` on a node group, `WithClientEndpoints(gateways)` for a client app, the `{cluster}-restart` command, and a generator that writes the server types from the committed `wire.manifest` of the `#:project` (`actor` and `hosted-by` lines), each bound to that project. References no server assembly. |
 | `DaServer.Generator` | netstandard2.0 | Not a package of its own: built twice (Roslyn 5.x and 4.3, Unity's oldest) into `DaServer.Core`'s `analyzers/` folder, so every project using DaServer gets it. The generators (explicit `Key`, typed sends, `[On<T>]` jobs, `Registration`, `wire.manifest`), the analyzers ([draft §13](programming-model.md#13-编译期检查删掉的东西版本记录)) and the MSBuild task behind `-p:UpdateWireManifest=true` (one section per project, [draft §10](programming-model.md#10-持久化迁移热重启升级easyecs-45)). |
 
 Merged away: `DaServer.Abstractions` into `DaServer.Core` (both are referenced by every client and every server; the
@@ -34,17 +34,29 @@ test tools), `DaServer.WireTool` into the generator's MSBuild task (ADR-086).
 | Project | Targets | Holds | Code changes |
 |---|---|---|---|
 | `Game.Protocol` | netstandard2.1, net11.0 | Client messages only: data, no actor types, no addresses, no nodes | Shipped to clients |
-| `Game.Server` | net11.0 | Actor types, server-to-server messages, events, components, claims, prefabs, server types (several per project), `[Handles<K>]` classes of `[On<T>]` methods, `[UpdateInGroup<K>]` systems, the generated `Registration`, the node's five-line `Program.cs` | Hot restart or rolling upgrade, JIT and AOT alike (section 5) |
+| `Game.Server` | net11.0 | Actor types, server-to-server messages, events, components, claims, prefabs, server types (several per project), `[Handles<K>]` classes of `[On<T>]` methods, `[UpdateInGroup<K>]` systems, the generated `Registration`, the node's five-line `Program.cs`, and `apphost.cs`, the deployment | Hot restart or rolling upgrade, JIT and AOT alike (section 5) |
 
 - **One project may define several server types** (`[Hosts<Map>] struct MapServer : IServer`); **a node is one process
   running one server type** ([draft §2](programming-model.md#2-服务器与节点)). The AppHost picks the type per node
-  group (`AddNodes<MapServer>("map", replicas: 4)`); a small deployment declares an `AllInOne` type. A node sizes its
+  group (`AddNodes<MapServer>("map", replicas: 4)`); a small deployment declares an `AllInOne` type.
+- **The AppHost is `Game.Server/apphost.cs`**, an Aspire file-based AppHost (`#:sdk Aspire.AppHost.Sdk`,
+  `#:package DaServer.Aspire`, `#:project Game.Server.csproj`), run with `dotnet run --file apphost.cs` or
+  `aspire run` and published with `aspire publish`. The `DaServer` package's build props remove it from the server's
+  compilation. A group's `name` is the Aspire resource and the pod prefix; a server type's identity is its `FullName`;
+  the cluster's name differs from every group's. Visual Studio does not open file-based AppHosts yet; a separate
+  AppHost project with the same code also works.
+- **Ports are declared per node group**, the same on every replica (one pod template, an IP per pod). The cluster
+  and HTTP (health, admin) ports are assigned by `DaServer.Aspire` and reachable only inside the cluster. Only what
+  the AppHost writes is exposed: `WithClientConnections(port)` (client TCP and WebSocket, behind one load-balanced
+  address by default; the load balancer's kind is the application's) and Aspire's `WithExternalHttpEndpoints()`
+  (webhooks). `[Hosts<Connection>]` without `WithClientConnections`, or the reverse, fails the build. Per-replica
+  public addresses (direct connect, as Agones does) are a non-goal for now. A node sizes its
   own thread count from the CPUs it is given (section 2); nobody writes it.
-- `[Hosts<Client>]` is "accepts clients": the gateway is a server type hosting the built-in `Client` actor type.
+- `[Hosts<Connection>]` is "accepts clients": the gateway is a server type hosting the built-in `Connection` actor type.
 
 ### Dependency directions
 
-An arrow reads "references". Dotted: reads a file, no assembly reference.
+An arrow reads "references". Dotted: no assembly reference.
 
 ```mermaid
 flowchart BT
@@ -54,7 +66,7 @@ flowchart BT
     PG[DaServer.Persistence.PostgreSql] --> Server
     Testing[DaServer.Testing] --> Server
     Testing --> Client
-    Aspire[DaServer.Aspire]
+    Aspire[DaServer.Aspire] --> Core
 
     Protocol[Game.Protocol] --> Core
     GameServer[Game.Server] --> Protocol
@@ -64,15 +76,16 @@ flowchart BT
     GameClient --> Client
     Tests[Game.Tests] --> GameServer
     Tests --> Testing
-    AppHost[Game.AppHost] --> Aspire
-    AppHost -.->|"reads wire.manifest"| GameServer
+    GameServer -.->|"apphost.cs uses it, reads wire.manifest"| Aspire
 ```
 
 - Everything points one way: `DaServer` never references a capability, a sample or a user project; `DaServer.Core`
   references only Nino; `DaServer.Client` never references `DaServer`.
 - `Game.Protocol` references only `DaServer.Core`: the analyzer refuses actor types, server messages, `ActorId`,
   `PresenceId` and `EntityId` there, and server-only APIs are not in `DaServer.Core` to begin with.
-- The AppHost references `DaServer.Aspire` and reads `wire.manifest`; it references no server assembly.
+- `apphost.cs` takes `DaServer.Aspire` by `#:package` and `Game.Server`'s project metadata by `#:project`, and the
+  generator reads that project's `wire.manifest`; no server assembly is referenced. `DaServer.Aspire` references
+  `DaServer.Core`: the generated server types implement `IServer`.
 
 ## 2. Runtime structure
 
@@ -106,7 +119,7 @@ Per actor type with `[TickRate(n)]`, at time t ([draft §1](programming-model.md
 | 3. Settling | `Depart`, `SyncSubscriptions` (framework group) | Presences with `Leaving` destroyed; changed `DynamicBuffer<Subscribed>` sent to the gateways |
 | 4. Cleanup | `ReleaseRoutes`, the `Persisted` cleanup (framework group, per shard, no `In<K>`) | Cleanup components of destroyed entities processed; `Outbox` flushed |
 
-- Actor types without `[TickRate]` (Player, `Client`) run items as they arrive; their group and settling run after
+- Actor types without `[TickRate]` (Player, `Connection`) run items as they arrive; their group and settling run after
   each batch of mail with `Time.DeltaTime` 0.
 - Server types hosting several ticking actor types keep rates that divide the fastest one.
 
@@ -114,11 +127,11 @@ Per actor type with `[TickRate(n)]`, at time t ([draft §1](programming-model.md
 
 | Data | Kind | Role |
 |---|---|---|
-| `Due(TimeSpan At, long Seq)` | ordered value index | Delayed events, request deadlines, join confirmation deadlines, attach back-off: one timer mechanism ([draft §9](programming-model.md#9-时间与广播)). The ordered phase takes the first `Range(Due.Min, (t, max))` entry, compares it with the mailbox head, runs the earlier, and queries again |
+| `Due(TimeSpan At, long Seq)` | ordered value index | Delayed events, request deadlines, join confirmation deadlines, join-on-connect back-off: one timer mechanism ([draft §9](programming-model.md#9-时间与广播)). The ordered phase takes the first `Range(Due.Min, (t, max))` entry, compares it with the mailbox head, runs the earlier, and queries again |
 | `Ordered` | singleton | Sequence counter, current tick window, immediate chain budget |
 | `Current` | singleton | The running item's time, root, sender and client context; operations read the client context from it |
 | `Outbox` | singleton | Everything an item sends (`Send`, `Ask`, `Reply`, `Push`, `Broadcast`, join routes), flushed in append order after the item: a join's route always precedes its reply; tests assert it as data |
-| `Time` | singleton | `Tick`, `DeltaTime`, `TickRate`, `Now` (monotonic, process-local) |
+| `Time` | singleton | `Tick`, `DeltaTime`, `TickRate`, `Elapsed` (monotonic, process-local) |
 | Placeholder | entity | A key not yet active or being saved: the root prefab copy without `In<K>`, the key, `Loading` or `Saving`, `DynamicBuffer<Mail>` |
 
 ### `Registration`
@@ -133,7 +146,7 @@ Per actor type with `[TickRate(n)]`, at time t ([draft §1](programming-model.md
 
 | Path | Shape | Route |
 |---|---|---|
-| Client → server | `IFromClient`, `IFromClient<R>` in Protocol | Client → its `Client` entity on the gateway → `[On<Incoming>]` filter → generated route table → straight to the target actor (no hop through Player) |
+| Client → server | `IFromClient`, `IFromClient<R>` in Protocol | Client → its `Connection` entity on the gateway → `[On<Incoming>]` filter → generated route table → straight to the target actor (no hop through Player) |
 | `[To]` field | `EnterMap([To] long Map)` | To the actor of the handling type whose key is the field; the subject is the root ([draft §4](programming-model.md#4-消息)) |
 | No `[To]` | `MoveTo(...)` | To the client's presence on the handling actor type; the subject is the presence entity; none: `NotJoined` |
 | Server → client | `IToClient` | `e.Push(msg)` to a presence, `root.Broadcast(msg)` to every joined presence, `e.Push(in group, msg)` to a `ClientGroup` |
@@ -142,13 +155,13 @@ Per actor type with `[TickRate(n)]`, at time t ([draft §1](programming-model.md
 | Outside actors | `ICluster` | HTTP, back-office, tests: any server-to-server message; `cluster.Disconnect(clientId)` |
 
 - **Presences** ([draft §7](programming-model.md#7-客户端与-presence)): a client's existence on an actor, one per
-  actor type: a child entity with `Presence` (a cleanup component) on the target, a `Route` in the `Client`'s
+  actor type: a child entity with `Presence` (a cleanup component) on the target, a `Route` in the `Connection`'s
   `DynamicBuffer<Route>`, a slot number in the SDK. `e.Join()` is immediate and appends the route to `Outbox`;
   `Leave()` adds `Leaving`, systems react, `Depart` destroys. Connection stamps are ordered (token issue sequence,
   gateway generation, connection counter): the larger takes over.
-- **`[JoinOnConnect<TClaims>]`**: the framework attaches the client to the actor whose key has the claims' shape
-  (Player) and re-attaches it when that presence is lost.
-- **Gateway**: a server type with `[Hosts<Client>]`. `Client` is pinned to its connection's node, never placed or
+- **`[JoinOnConnect<TClaims>]`**: the framework joins the client to the actor whose key has the claims' shape
+  (Player) and joins it again when that presence is lost.
+- **Gateway**: a server type with `[Hosts<Connection>]`. `Connection` is pinned to its socket's node, never placed or
   migrated, activated on connect, deactivated on disconnect. It filters, routes, keeps the routes and fans out groups.
 - **`ClientGroup` fan-out**: subscriptions are data (`DynamicBuffer<Subscribed>` on presences); `SyncSubscriptions`
   sends the differences to the gateways; a group push is serialized once, one frame per gateway with members, fanned
@@ -160,7 +173,7 @@ Per actor type with `[TickRate(n)]`, at time t ([draft §1](programming-model.md
 
 - **Placement**: an actor type is bound to server types (`[Hosts<…>]`); its keys are placed among the nodes hosting
   it, moved when nodes join or leave (rate-limited per node). `[Stateless]` actors live on any node, never persisted.
-  `Client` is pinned.
+  `Connection` is pinned.
 - **Activation** ([draft §6](programming-model.md#6-生命周期), [§10](programming-model.md#10-持久化迁移热重启升级easyecs-45)):
   1. The first message creates the placeholder (`Loading`); mail waits on it.
   2. The activation takes an epoch: a conditional write `(key, epoch) → epoch + 1`, even without a record.
@@ -176,7 +189,7 @@ Per actor type with `[TickRate(n)]`, at time t ([draft §1](programming-model.md
 - **Records**: `SaveEntities` over `world.Descendants(root)` with the component set
   `persist` = every `IPersisted` + `ChildOf` + `In<K>` + `Persisted`, built once in `Registration`. Restored values
   do not count as writes (`markWritten: false`), so an activation does not write the record back.
-- **Deactivation**: idle past `IdleTimeout` or `e.Deactivate()`: presences leave, `Deactivating` runs, the subtree is
+- **Deactivation**: idle past `[IdleTimeout]` or `root.Deactivate()`: presences leave, `Deactivating` runs, the subtree is
   saved and destroyed, a `Saving` placeholder holds new mail until the write lands.
 
 ## 5. Migration, upgrades, hot restart
@@ -198,16 +211,16 @@ Per actor type with `[TickRate(n)]`, at time t ([draft §1](programming-model.md
 - **Hot restart** ([draft §10](programming-model.md#热重启), the same on JIT and Native AOT nodes; the decision and why
   not `AssemblyLoadContext` are ADR-084): the node is replaced in place by a process of the new build; no actor
   re-activates, clients stay connected.
-  - **Paths**, picked from the manifest diff and reported by the command: *in place* (same layout hashes, no handler
+  - **Paths**, picked from the manifest diff and reported by the `{cluster}-restart` command (`aspire do mmo-restart`): *in place* (same layout hashes, no handler
     or `Leaving` consumer dropped, same client routes; target pause: tens of milliseconds after warm-up, hundreds without), *through
     records* (layouts changed only where records stay readable: deactivate all, restart, activate from records; a
     longer pause), or refused in favour of a rolling upgrade (hosting or client routes changed).
   - **Handoff bytes** (one format, two transports): per shard the `world.Save` output (entities with ids, components,
     buffers including placeholder mail, singletons; no systems, indexes or change ticks), mail still in the dispatch
-    queue and the shard's `Time.Now`; per node the call id sequence, tombstones, the connection stamp counter and per
+    queue and the shard's `Time.Elapsed`; per node the call id sequence, tombstones, the connection stamp counter and per
     peer link the inbound stream id with the bytes processed and the outbound stream id, offset and unacknowledged tail; a header with node name, generation, incarnation, handoff token and checksum. The new
     process loads each world, adds the systems from its `Registration` and resumes each shard clock at the saved
-    `Time.Now`, so every `Due` keeps its remaining time.
+    `Time.Elapsed`, so every `Due` keeps its remaining time.
   - **Ownership**: the node announces `Restarting` with a deadline and the hash of the handoff token; peers keep it
     in the view and in placement (no `Suspect`, no re-placement, no fencing) until the deadline, measured on their own
     monotonic clocks, and hold messages to it in the bounded resend windows of their links (`Busy` with the existing
@@ -253,7 +266,7 @@ Per actor type with `[TickRate(n)]`, at time t ([draft §1](programming-model.md
     (`AddSystem(system, seeExisting: false)` or a settable baseline), for the framework's persistence systems
     (`ChangeSystem`, checkpoint); a user system re-firing once (one extra AOI pass) is acceptable. Pending writes are
     not lost: `Unsaved` is a tag on the root and travels in the save.
-  - **Gateways** do not hot restart (`Client` is pinned to its connection); they take rolling upgrades. A possible
+  - **Gateways** do not hot restart (`Connection` is pinned to its socket); they take rolling upgrades. A possible
     later optimization is handing the sockets to the new process (`SCM_RIGHTS`, Envoy-style), Unix only.
   - **`[Stateless]` actor types** deployed as their own node group are replaced by start-new-then-stop-old, without
     a pause.
@@ -268,7 +281,7 @@ Per actor type with `[TickRate(n)]`, at time t ([draft §1](programming-model.md
   hook) and the samples' VPA targets a Deployment (`samples/Shared/Publishing.cs`); R11 changes the publisher hooks,
   the VPA `targetRef`, the PDBs' selection, the probes and grace periods on the new workload kind, and adds the
   rollout Job with a Role for the pod patches.
-- **Changes without a restart** are data swaps between two ticks: tuning tables (a validated shard singleton, its
+- **Changes without a restart** are data swaps between two ticks: tuning tables (a validated world singleton, its
   version on the member card) and feature flags choosing between handlers compiled into the binary (a singleton or a
   tag that handlers and systems filter on).
 
@@ -315,7 +328,8 @@ or rolling upgrade (section 5).
 ### What makes it work
 
 - **Registration is generated and closed**: `Registrations.Create()` names every closed type in the user's assembly
-  (`.Actor<Map>()`, `.Dispatch<Map>(…)`, `world.AddSystem<Depart<Map>>()`). No reflection, no `MakeGenericType`, no
+  (`.Actor<Map>(…)`, which also adds the framework's closed `OrderedPhase<Map>`, `Depart<Map>` and
+  `SyncSubscriptions<Map>`; `.Dispatch<Map>(…)`; `world.AddSystem<Steering>()`). No reflection, no `MakeGenericType`, no
   `Activator`, no assembly scanning, no module initializers.
 - **Framework per-actor-type systems are emitted closed by the generator**: the generated `Registration` names each
   instantiation. The framework's generic systems have no `[ForEach]` methods (they run their jobs from `OnUpdate`
@@ -384,20 +398,20 @@ Derived from [design.md](../design.md) and the deleted list in
 | `Answered<TRequest,TReply>`, `PendingReply`, `Answer<T>.Later` | `Answer<TReq>` / `Answer<TReq,TState>` to the asking entity (a waiting child with `Due`); `ReplyTo<T>` as data |
 | `IRequest<TReply>`, `[Message]`, `[FromClient]`/`[ToClient]` | `IFromClient`, `IFromClient<R>`, `IToClient` (Protocol); `IMessageTo<K>`, `IRequestTo<K,R>`, `[From<K>]` (Server); `IEvent` |
 | `Publish` | Deleted: explicit sends, `ClientGroup` |
-| `[Filter]`, `IMessageFilter` | `[On<Incoming>]` in `[Handles<Client>]` |
+| `[Filter]`, `IMessageFilter` | `[On<Incoming>]` in `[Handles<Connection>]` |
 | Mailbox used only while an actor is not live; `DispatchSystem`, `MailSystem` | Every item through the ordered phase, merged with `Due` by `(time, seq)`; mail waits on the placeholder |
 | Lifecycle tags (`Loading`, `Ready`, `UnloadRequested`, `Leaving`, `Fenced`, `Removing`), `Created`/`Loaded`/`Unloading` | Placeholder root (`Loading`, `Saving`), `Activated(Activation)`, `Deactivating`, fencing by epoch |
 | `TimerSystem`, timer wheel, `SendAfter` | `Due` ordered index; `e.Schedule(ev, after:)`; `Scheduled<T>` |
 | Sessions: bind and grant, `KnownSession` children, `Known`/`Granted`/`Superseded`, `SessionClosed` | Presences: `Join()`/`Leave()`, `Presence`/`Joined`/`Leaving`, `PresenceLost`, `[JoinOnConnect<TClaims>]`, ordered stamps |
-| `ClientConnections` feature (`DaServer:Clients`) | `Client` actor type hosted by a `[Hosts<Client>]` server type |
+| `ClientConnections` feature (`DaServer:Clients`) | `Connection` actor type hosted by a `[Hosts<Connection>]` server type |
 | Tick rate in configuration, the default group at the tick rate | `[TickRate(n)]` on the actor type; `[UpdateInGroup<K>]` |
-| `UnloadAfterIdleSeconds` | `IdleTimeout` |
+| `UnloadAfterIdleSeconds` | `[IdleTimeout]` on the actor type |
 | `[Persist]` with a generated `ITrackChanges`, the own record format | `IPersisted`; records as `SaveEntities` over `Descendants` with a `ComponentSet`; epoch CAS |
 | State handoff (ADR-072) | Migration bytes with layout hashes; fallback to records |
 | `Registration_{Assembly}` run by a module initializer (ADR-012) | `Registration` instance from `Registrations.Create()` |
 | One project per server (ADR-017), Contracts / Model / Logic (N1) | Protocol / Server; several server types per Server project; node = one server type |
 | Hot reload of the logic assembly (planned N9) | Hot restart: the node replaced in place by the new build, world handed over (JIT and AOT) |
-| `AddNodes<TProject>` | `AddNodes<TServer>` over server types generated from `wire.manifest` |
+| `AddNodes<TProject>` in a `Sample.AppHost` project | `AddNodes<TServer>` over server types generated from `wire.manifest`, in `Game.Server/apphost.cs`; ports declared per group |
 | Packages Abstractions, Core, Client, Simulation, `DaServer`, Hosting, WireTool, Testing, Persistence.PostgreSql, Aspire (ADR-052) | Core, Client, `DaServer`, Persistence.PostgreSql, Testing, Aspire; the generator and the manifest task inside Core (ADR-086) |
 | Shard count in configuration and AppHost parameters (`DaServer:Shards`, `map_shards`) | Sized by the node from its CPUs; `DaServer:Worlds` overrides; the word shard is internal |
 | Random `NodeId` per process | Cluster-assigned node generation; identity on the link Hello is (name, generation) plus incarnation, standby links for a successor |

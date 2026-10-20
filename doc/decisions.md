@@ -1564,7 +1564,7 @@ Replaced by ADR-081.
   - **Messages state their endpoints**: `IFromClient`/`IToClient` in Protocol (no actor types, no addresses),
     `IMessageTo<K>`/`IRequestTo<K,R>` with `[From<K>]` in Server; answers are `Answer<TReq[,TState]>` mail.
   - **Presences replace sessions**: `Join()`/`Leave()`, one presence per actor type, `[To]` client messages straight to
-    the target, the gateway a server type hosting `Client`, ordered connection stamps, the SDK re-joining.
+    the target, the gateway a server type hosting the built-in `Connection` actor type, ordered connection stamps, the SDK re-joining.
   - **Distribution**: activation epochs with fenced writes, placeholder roots, `IPersisted` records through
     `Descendants` and `ComponentSet`, migration bytes checked by layout hashes, remaining time across processes.
   - One project may define several server types; a node runs one.
@@ -1620,7 +1620,8 @@ Replaced by ADR-081.
   framework, runtime and dependency updates restart anyway. Re-activating every actor from its record on each change
   costs a checkpoint interval of state and a load storm on the store.
 - Decision ([drafts/programming-model.md](drafts/programming-model.md) §10, [drafts/architecture.md](drafts/architecture.md) section 5):
-  - **A code change replaces the node's process in place**, the same on JIT and AOT nodes. The command takes the new
+  - **A code change replaces the node's process in place**, the same on JIT and AOT nodes. The `{cluster}-restart`
+    command (admin endpoint and AppHost command) takes the new
     build's `wire.manifest`; the diff picks *in place* (same layout hashes, no handler or `Leaving` consumer dropped,
     same client routes), *through records* (deactivate, restart, activate) or a refusal in favour of a rolling upgrade.
   - **Warm successor, then handoff**: where the node launches its successor (bare metal, VMs, Windows services,
@@ -1632,7 +1633,7 @@ Replaced by ADR-081.
     node-local directory and exits; the new process loads a fresh snapshot for its node name, and ignores a stale or
     invalid one (activation from records as usual).
   - **The bytes**: per shard `world.Save` (entities with ids and versions, components, buffers including placeholder
-    mail, singletons), the mail still in the dispatch queue and the shard's `Time.Now` (every `Due` keeps its remaining
+    mail, singletons), the mail still in the dispatch queue and the shard's `Time.Elapsed` (every `Due` keeps its remaining
     time); per node the call id sequence, tombstones, the connection stamp counter and, per peer link, the inbound
     stream id with the bytes processed and the outbound stream id with its offset and unacknowledged tail.
   - **Identity and epochs are kept**: the successor takes over with one membership update, the same node name and
@@ -1660,7 +1661,7 @@ Replaced by ADR-081.
     start, with the same identity, and the streams resume the same way.
   - **Fallbacks when layouts change**: records that stay readable (version-tolerant or keyed `IPersisted`) take the
     path through records; changes of hosting or client routes take a rolling upgrade with migration through records
-    (layout hashes, ADR-082). Gateways always take rolling upgrades (`Client` is pinned to its socket).
+    (layout hashes, ADR-082). Gateways always take rolling upgrades (`Connection` is pinned to its socket).
 - Evidence: moving a world costs milliseconds and allocates nothing. BenchmarkDotNet ShortRun, EasyEcs 4.5.0,
   .NET 11 RC2, one world with 5 unmanaged components per entity: 10,000 entities `Save` 44 µs, `Load` 183 µs,
   440 KB; 100,000 entities `Save` 0.76 ms, `Load` 2.7 ms, 4.4 MB; 0 B allocated in both.
@@ -1763,3 +1764,29 @@ Replaced by ADR-081.
   then. A Unity client references `DaServer.Client` (Core comes with it); a Protocol project references
   `DaServer.Core`; a node references `DaServer`; tests reference `DaServer.Testing`. Today's `DaServer:Shards`,
   `map_shards` and the `daserver.shard.*` metrics are renamed in R2.
+
+## ADR-087 Deployment lives in `Game.Server/apphost.cs`; ports are declared per node group; the connection actor is `Connection`
+- Context: the target model had a third user project (`Game.AppHost`), opened the client port implicitly next to an
+  explicit `WithClientEndpoints()` whose name already meant "point a client app at the gateways", and called the
+  built-in actor type of a client connection `Client`, the same word as the remote client (`IFromClient`, the SDK).
+- Decision:
+  - **No AppHost project.** The AppHost is `Game.Server/apphost.cs`, an Aspire file-based AppHost (`#:sdk
+    Aspire.AppHost.Sdk`, `#:package DaServer.Aspire`, `#:project Game.Server.csproj`), run with
+    `dotnet run --file apphost.cs` or `aspire run` and published with `aspire publish` (build, run and Compose publish
+    verified with Aspire 13.6.1 on the .NET 11 RC2 SDK). The `DaServer` package's build props remove `apphost.cs` from
+    the server's compilation; `#:project` gives Aspire the project's metadata, not its assembly. User projects stay
+    Protocol and Server. The node's entry point stays the user's five-line `Program.cs`.
+  - **Deployment is explicit.** Group names, replica counts, the store and every public port are written in
+    `apphost.cs`; nothing is inferred from code. All replicas of a group listen on the same ports. The cluster and
+    HTTP ports are assigned by DaServer.Aspire and reachable only inside the cluster; only `WithClientConnections(port)`
+    (behind one load-balanced address; its kind is the application's) and Aspire's `WithExternalHttpEndpoints()` are
+    exposed. `[Hosts<Connection>]` without `WithClientConnections`, or the reverse, is a build error. Per-replica public
+    addresses (direct connect to one node, as Agones gives each game server a port) are a non-goal until a
+    direct-connect feature needs them.
+  - **`Connection`** is the built-in actor type of a client connection (`[Hosts<Connection>]`,
+    `[Handles<Connection>]`); "client" means only the remote side.
+- Alternatives: a separate AppHost project (still works, e.g. for Visual Studio, which does not open file-based
+  AppHosts yet); the AppHost inside the node's `Program.cs` (the node image would carry Aspire.Hosting and the DCP
+  orchestrator, which are not AOT-compatible and have no place on a production node); inferring client ports from
+  `[Hosts<Connection>]` (less visible; the owner prefers explicit deployment).
+- Consequences: roadmap R7 moves the samples to `apphost.cs`; R11 renames the node-side API and adds the build check.

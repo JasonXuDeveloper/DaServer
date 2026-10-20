@@ -45,7 +45,7 @@ The Compose model has `Secrets`, `ReadOnly`, `Tmpfs`, `CapDrop`, `SecurityOpt`, 
 
 How DA tells the kinds apart: before R, a group with `WithActorStore` or an explicit `.Stateful()`; after R3, from the
 committed `wire.manifest` (`actor` / `hosted-by`): a group hosting any actor type that is not `[Stateless]` is
-stateful; a group hosting only `Client` and `[Stateless]` types is not.
+stateful; a group hosting only `Connection` and `[Stateless]` types is not.
 
 ### Stateful node groups (host actors): StatefulSet
 
@@ -54,7 +54,7 @@ stateful; a group hosting only `Client` and `[Stateless]` types is not.
 | Kind | `StatefulSet` named `{group}` (not `{group}-statefulset`), so pods are `game-0`, `game-1`: the same names as the run-mode resources and the node names | Hot restart keeps the pod and its `emptyDir` (ADR-085); stable names match the dashboard and logs | DA: replace `resource.Workload` in the hook | R11 |
 | `serviceName` | `{group}-peers` (the existing headless Service, `publishNotReadyAddresses: true`); per-pod DNS `game-0.game-peers` | StatefulSets require a governing headless Service ([StatefulSet](https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/)) | DA | R11 |
 | `podManagementPolicy` | `Parallel` | Nodes join by gossip and need no order; `OrderedReady` serializes scale-ups (a flash-sale burst waits pod by pod) and can wedge on one broken pod ("forced rollback"). With `maxUnavailable` 1 rolling updates are unchanged | DA | R11 |
-| `updateStrategy` | `OnDelete` for groups without client connections; `RollingUpdate` (maxUnavailable 1) for stateful groups that also accept clients (flash sale `sale`) | `OnDelete`: a template change replaces no pod; DaServer's rollout decides per pod (hot restart or delete-and-recreate). A group hosting `Client` cannot hot restart (architecture draft §5) | DA | R11 |
+| `updateStrategy` | `OnDelete` for groups without client connections; `RollingUpdate` (maxUnavailable 1) for stateful groups that also accept clients (flash sale `sale`) | `OnDelete`: a template change replaces no pod; DaServer's rollout decides per pod (hot restart or delete-and-recreate). A group hosting `Connection` cannot hot restart (architecture draft §5) | DA | R11 |
 | Template image vs. pods | `helm upgrade` (or `aspire deploy`) sets the template image; the rollout only patches pods | **Correction to ADR-085**: if the command patches the StatefulSet template, the live object drifts from the Helm release and the next `helm upgrade` writes the old tag back | N9 | N9 |
 | Replicas | `spec.replicas` from `AddNodes(replicas)`; an HPA may own it (`scale` subresource works on StatefulSets, [HPA](https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/)) | Scale-in removes the highest ordinal, which leaves gracefully | DA | R11 |
 | Grace period | `terminationGracePeriodSeconds` = stop budget + margin + preStop, as today | Unchanged ([pod termination](https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#pod-termination)) | DA (exists) | - |
@@ -63,7 +63,7 @@ stateful; a group hosting only `Client` and `[Stateless]` types is not.
 | Persistent volume | **None** (no `volumeClaimTemplates`) | State lives in the actor store; a snapshot outlives one restart only. A PV would be zone-bound and slow | - | R11 |
 | PDB | `maxUnavailable: 1`, `unhealthyPodEvictionPolicy: AlwaysAllow`; stays an application choice (CLAUDE.md), the samples keep adding it | With the default policy, a store outage that makes every pod unready blocks every node drain ([PDB](https://kubernetes.io/docs/tasks/run-application/configure-pdb/#unhealthy-pod-eviction-policy)) | Sample hook | R7 |
 | Topology spread | Soft spread over `kubernetes.io/hostname` (`whenUnsatisfiable: ScheduleAnyway`); zone spread left to the app | One machine's loss should not take several nodes' actors at once ([topology spread](https://kubernetes.io/docs/concepts/scheduling-eviction/topology-spread-constraints/)) | DA (hostname), sample (zones) | R11 |
-| CPU count | `env DOTNET_PROCESSOR_COUNT` from `resourceFieldRef: requests.cpu` (rounded up) when no CPU limit is set | Shards default to `ProcessorCount`, which ignores requests: today a pod on a 64-core host runs 64 shards ([downward API](https://kubernetes.io/docs/tasks/inject-data-application/environment-variable-expose-pod-information/)) | DA | R11 |
+| CPU count | `env DOTNET_PROCESSOR_COUNT` from `resourceFieldRef: requests.cpu` (rounded up) when no CPU limit is set | The world count defaults to `ProcessorCount`, which ignores requests: today a pod on a 64-core host runs 64 shards ([downward API](https://kubernetes.io/docs/tasks/inject-data-application/environment-variable-expose-pod-information/)) | DA | R11 |
 | Image pre-pull | Before patching a pod, the rollout makes the node pull the new image (a short pod pinned to that node with the new image, exiting at once) | The kubelet kills the old container and only then pulls the image; a pull inside the pause defeats "hundreds of milliseconds" | N9 rollout Job | N9 |
 
 Moving an existing release from Deployment to StatefulSet deletes the Deployment: every pod of the group stops at
@@ -74,8 +74,7 @@ once (each leaves gracefully and saves). The upgrade note says so; scale the gro
 | Setting | Target | Why | How | Step |
 |---|---|---|---|---|
 | Kind | `Deployment`, `RollingUpdate` maxSurge 1, maxUnavailable 0 (today 1) | Start new, then stop old (ADR-083, architecture §5); with 0 unavailable a gateway roll never drops capacity | DA | R11 |
-| Client Service | The application's: the mmo sample's `LoadBalancer` on the `client` port only (annotations, `externalTrafficPolicy`) | CLAUDE.md: the load balancer's kind is the platform's and the application's | Sample hook (exists) | - |
-| Ordinary Service | Aspire's `{group}-service` exposes http, cluster and client: drop the `cluster` port (node links go pod to pod) | Smaller surface; a load-balanced cluster port is never right | DA | R11 |
+| Services | As for stateful groups (below) | | DA | R11 |
 | HPA | Allowed (flash sale uses one); `targetRef` names the right kind | `Publishing.DeploymentOf` assumes Deployment | Sample | R7 |
 | Probes, grace, preStop, spread, CPU count | As for stateful groups | | DA | R11 |
 
@@ -85,9 +84,24 @@ once (each leaves gracefully and saves). The upgrade note says so; scale the gro
 |---|---|---|
 | startupProbe | `/alive`, period 2 s, failureThreshold 45 (90 s) | Covers the store's 60 s `InitializeTimeout` and a snapshot or records load; liveness then needs no `initialDelaySeconds` ([probes](https://kubernetes.io/docs/concepts/configuration/liveness-readiness-startup-probes/)) |
 | readinessProbe | `/health` (joined, not leaving, store reachable), timeout 2 s | Unchanged meaning; 1 s timeouts flap under GC or load |
-| livenessProbe | `/alive` (no stalled shard), timeout 2 s | Unchanged meaning |
+| livenessProbe | `/alive` (no stalled world), timeout 2 s | Unchanged meaning |
 
 How: DA (`WithHttpProbe(ProbeType.Startup, ...)`), R11.
+
+### Services and ports (both kinds)
+
+Ports are declared per node group in `apphost.cs` and are the same on every replica (one pod template, an IP per pod;
+[draft §2](programming-model.md#2-服务器与节点)). Only what the AppHost writes is exposed.
+
+| Service | Target | Why | How | Step |
+|---|---|---|---|---|
+| `{group}-peers` (headless) | The cluster port (7000) only, as today | Node links go pod to pod; seeds | DA (exists) | - |
+| `{group}-service` (ClusterIP) | The HTTP port (health, admin) only, reachable inside the cluster; today it also carries the cluster and client ports | Smaller surface; a load-balanced cluster port is never right | DA | R11 |
+| Client Service | Only for a group with `WithClientConnections(port)`: the declared port (TCP and WebSocket), one address balanced over the replicas. Its `type` and annotations (`LoadBalancer`, `externalTrafficPolicy`) come from the application's hook, as the mmo sample does today | CLAUDE.md: the load balancer's kind is the platform's and the application's | DA (Service), sample hook (kind) | R11 |
+| Public HTTP | Only for a group with Aspire's `WithExternalHttpEndpoints()` (webhooks) | Admin and probes stay internal | Aspire (exists) | - |
+| Per-replica public addresses | None: direct connect to one pod (Agones-style) is a non-goal; a later direct-connect feature would add it | | - | - |
+
+A group hosting `Connection` without `WithClientConnections`, or the reverse, fails the AppHost build.
 
 ## 3. Jobs
 
@@ -118,7 +132,7 @@ certificate renewal (the platform's, cert-manager). Sources: [Job](https://kuber
 | Rotation | Change `accepted`, roll; swap; roll; drop. On Kubernetes "roll" for a stateful `OnDelete` group is a hot restart per pod: a container restart re-reads `secretKeyRef` env (env is resolved when the container starts) | The existing three-step rotation (operations.md) needs no new mechanism, only the key in the Secret | Docs | R11 |
 | Admin token | Operators, CI and the rollout Job get the **derived** token (`AdminToken.For`, HMAC of `daserver-admin`) in a Secret `{cluster}-admin`, never the signing secret | The token cannot sign links or tickets; the signing secret can | DA (renders it at publish from the parameter) | N9 |
 | Database | Two roles: owner (schema Job) and runtime (`SELECT, INSERT, UPDATE` on the table). Connection strings stay in Secrets (Aspire already puts `ConnectionStrings__actors` there); `AddConnectionString` parameters are secret | Least privilege; no DDL from nodes | Samples (two connection strings), DA (`WithActorStore(runtime, owner)`) | R7 / R11 |
-| OTLP | `OTEL_EXPORTER_OTLP_ENDPOINT` a plain parameter, `OTEL_EXPORTER_OTLP_HEADERS` (API keys) a `secret: true` parameter; both through `DaServerNodeGroup.WithEnvironment` | Aspire wires OTLP to its in-cluster dashboard; a real collector usually needs a key | Already expressible; document in operations.md | R11 |
+| OTLP | `OTEL_EXPORTER_OTLP_ENDPOINT` a plain parameter, `OTEL_EXPORTER_OTLP_HEADERS` (API keys) a `secret: true` parameter; both through `DaServerNodeGroup<T>.WithEnvironment` | Aspire wires OTLP to its in-cluster dashboard; a real collector usually needs a key | Already expressible; document in operations.md | R11 |
 | Non-secret config | Stays in Aspire's per-group ConfigMap (`envFrom`): cluster name, ports, seeds, flush interval | Correct today. A ConfigMap change restarts nothing; Deployments get a `checksum/config` pod annotation so `helm upgrade` rolls them | DA (annotation) | R11 |
 
 Compose: Aspire writes secret parameters as `${VAR}` in `docker-compose.yaml` and empty keys in `.env`. Target:
@@ -135,12 +149,12 @@ key-per-file source; worth it only together with reload-on-change rotation (late
 | Rollout Job: ServiceAccount `{cluster}-rollout` + Role + RoleBinding in the release namespace | `pods`: get, list, watch, patch, delete; `pods` create (the pre-pull pods); `statefulsets`: get, list, watch (read the template image and replicas). No `statefulsets` patch (Helm owns the template) | The two writes the rollout makes; namespaced, nothing cluster-wide ([RBAC](https://kubernetes.io/docs/reference/access-authn-authz/rbac/)) |
 | The operator or CI | `create` on `jobs`, `get` on `pods/log` in the namespace | Starting and watching the rollout |
 
-**Who runs it: an in-cluster Job, started by the AppHost command.** The alternative, the operator's CLI with a
+**Who runs it: an in-cluster Job, started by the AppHost's `{cluster}-restart` command (`aspire do mmo-restart`).** The alternative, the operator's CLI with a
 kubeconfig, would need `pods/proxy` or port-forwards to reach each pod's admin plane, would stop half-way when a
 laptop sleeps during a minutes-long one-pod-at-a-time roll, and would carry the operator's broad credentials. The Job
 runs the new image itself (so it has the new `wire.manifest`), reaches pods by IP inside the NetworkPolicy, and its
 token can do only the patches above. Aspire has typed `Role`, `RoleBinding` and `ServiceAccountV1`: DA adds them in
-the hook of the first stateful group. Compose has no API: there the AppHost command does the roll locally (see 8).
+the hook of the first stateful group. Compose has no API: there `{cluster}-restart` does the roll locally (see 8).
 
 ## 6. Network policy
 
@@ -149,8 +163,8 @@ DA emits these (the ports and groups are DaServer's knowledge; CNIs without Netw
 | Policy | Allows | Why |
 |---|---|---|
 | `{cluster}-cluster-plane` (all node pods) | Ingress on the cluster port (7000) only from pods labelled `daserver.io/cluster={cluster}` | Node links; defence in depth beside link authentication (ADR-065) |
-| `{cluster}-http-plane` | Ingress on the HTTP port from the release's Jobs and from a namespace selector given as a parameter (`metrics-namespace`, Prometheus); kubelet probes come from the node and most CNIs allow them | `/admin` (drain, unload) sits on this port, today open to the whole cluster network through `{group}-service` |
-| `{cluster}-clients` (client-facing groups) | Ingress on the client port from anywhere | The load balancer's traffic |
+| `{cluster}-http-plane` | Ingress on the HTTP port from the release's Jobs and from a namespace selector given as a parameter (`metrics-namespace`, Prometheus); kubelet probes come from the node and most CNIs allow them. From anywhere only for groups with `WithExternalHttpEndpoints()` | `/admin` (drain, unload) sits on this port, today open to the whole cluster network through `{group}-service` |
+| `{cluster}-clients` (groups with `WithClientConnections(port)`) | Ingress on the declared client port from anywhere | The load balancer's traffic |
 | Store | Egress from node pods and the schema Job to the database port; ingress to the in-chart PostgreSQL only from those | Samples (the database is the application's) |
 
 Default deny for the namespace is the platform's call. Source: [network policies](https://kubernetes.io/docs/concepts/services-networking/network-policies/).
@@ -175,7 +189,7 @@ Steps: securityContext, volumes and service account R11; images and the Compose 
 |---|---|
 | StatefulSet / Deployment | One service per group, `deploy.replicas` (as today). Hot restart: the image change recreates the container, losing `tmpfs` and changing the hostname (the node name). Compose groups take rolling upgrades only; a single-replica service with a fixed `hostname` and a named volume could hot restart later |
 | Jobs | One-shot services (`restart: "no"`): `schema` with nodes `depends_on: {schema: {condition: service_completed_successfully}}`; load generators under `profiles: [loadtest]` |
-| Upgrade check, rollout | Steps of `aspire deploy` / the AppHost command, run on the deploying machine |
+| Upgrade check, rollout | Steps of `aspire deploy` / `{cluster}-restart`, run on the deploying machine |
 | Secrets | `${VAR:?message}` (required) for the signing secret; `.env` never committed |
 | securityContext | `read_only: true`, `tmpfs: [/tmp]`, `user: "1654"`, `cap_drop: [ALL]`, `security_opt: ["no-new-privileges:true"]` |
 | NetworkPolicy | Two networks: an `internal: true` network for the cluster and HTTP planes, and the default one only for client-facing services and the dashboard |
@@ -190,14 +204,14 @@ Steps: securityContext, volumes and service account R11; images and the Compose 
    group accepts clients), snapshot `emptyDir` (medium Memory), no volume claims.
 2. Stateless groups and gateways: `maxUnavailable: 0`; `checksum/config` annotation.
 3. Every node pod: `startupProbe`, 2 s probe timeouts, ServiceAccount `{cluster}-node` without a token, restricted
-   securityContext, `/tmp` `emptyDir`, soft hostname spread, `DOTNET_PROCESSOR_COUNT` from `requests.cpu`; the
-   `cluster` port removed from `{group}-service`.
+   securityContext, `/tmp` `emptyDir`, soft hostname spread, `DOTNET_PROCESSOR_COUNT` from `requests.cpu`;
+   `{group}-service` with the HTTP port only, a client Service only for `WithClientConnections(port)`.
 4. One `{cluster}-signing` Secret (`current`, optional `accepted`) through `secretKeyRef`, or an existing Secret
    (`WithSigningSecret`); `DaServer__RequireSigningSecret=true` in publish mode; `{cluster}-admin` token Secret (N9).
 5. `WithActorStore(runtime, owner, schema: Job)`: the schema Job (hook or revision-named) and Compose one-shot service.
 6. NetworkPolicies for the cluster, HTTP and client planes; Compose internal network.
-7. N9: the upgrade-check hook Job, the rollout Job with its ServiceAccount, Role and RoleBinding, the AppHost command
-   that starts it, image pre-pull.
+7. N9: the upgrade-check hook Job, the rollout Job with its ServiceAccount, Role and RoleBinding, the `{cluster}-restart`
+   command that starts it, image pre-pull.
 8. R8: the Compose health check runs `/app/{assembly}`; chiseled `ContainerFamily` documented for node projects.
 9. A public `Manifest` type (today `samples/Shared/Publishing.cs`) for the objects Aspire has no type for (Job,
    PodDisruptionBudget, NetworkPolicy, VerticalPodAutoscaler).
@@ -210,6 +224,8 @@ Samples (R7):
    [loadtest]` (Compose).
 4. Two database roles (owner for the schema Job, runtime for the nodes); `ContainerFamily` chiseled in
    `samples/mmo/ServerNode.props` and `FlashSale.Server.csproj`.
+5. `Sample.AppHost` and `FlashSale.AppHost` become an `apphost.cs` in each sample's server project (file-based
+   AppHost, [draft §2](programming-model.md#2-服务器与节点)); client ports with `WithClientConnections(port)`.
 5. `tests/DaServer.E2E/PublishTests.cs`: assert `templates/{group}/statefulset.yaml` for game, map and sale (with
    `serviceName`, `OnDelete`/`Parallel`, the snapshot `emptyDir`), `deployment.yaml` for login and gateway, a
    startupProbe, one signing Secret, the schema Job, no bots/crowd workload by default, the NetworkPolicies, and in
