@@ -1552,7 +1552,7 @@ Replaced by ADR-081.
   changed" leaks; the order between mail, delayed sends and systems is implicit. EasyEcs provides what a
   model without these needs: single-entity jobs (`entity.Run(ref job[, filter])`), group filters carried by
   interfaces (`IGroupWith<T>`), `world.Descendants(root)` and `LoadEntitiesInto(…, markWritten: false)`.
-- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v48), structured as in
+- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v49), structured as in
   [drafts/architecture.md](drafts/architecture.md):
   - **The actor type is its address, its root component, its root prefab and its system group**:
     `[TickRate(30)] partial record struct Map(long Id) : IActor<Map>` (`IActor<T>` inherits `IEquatable<T>`, so
@@ -1859,6 +1859,9 @@ Replaced by ADR-081.
     Pod; the kubelet restarts the container inside the same pod (same pod, UID and IP; the Pod is not rescheduled),
     and an `emptyDir` survives container restarts. The snapshot directory is an `emptyDir` with `medium: Memory`
     (tmpfs; its bytes count against the container's memory limit).
+  - **A same-image roll** (secret rotation, a config change on an `OnDelete` group) has no image to patch: the Job
+    arms with `/admin/restart?exit=true`, the node runs hot-restart step 1 itself and exits, and the kubelet restarts
+    the container in the same pod (`restartPolicy: Always`), re-reading env and `envFrom`.
   - **preStop runs on an image-patch restart too** (the kubelet's container kill runs it whatever the reason; proved
     on kind in W11), so hot-restart groups have no preStop `sleep`: it would add to every pause.
   - The StatefulSet is named `{group}` (pods `game-0`, …) with `podManagementPolicy: Parallel`. A stateful group

@@ -1,4 +1,4 @@
-# DaServer 新编程模型设计（草案 v48，未实现，迭代中）
+# DaServer 新编程模型设计（草案 v49，未实现，迭代中）
 
 原则：业务代码干净、解耦、简洁，不用 OOP。ECS 一路到底：能用 EasyEcs 的功能就用 EasyEcs，状态都是数据，其余交给我们的特性和生成器，不重复造轮子。
 
@@ -1167,7 +1167,7 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 
 | 数据 | 要求 |
 |---|---|
-| 进记录的组件（`persist` 里的用户组件类型）、`[Durable]` 请求的 `Ask` 状态 | `[NinoType]`：改名用 `[NinoFormerName]`，加字段用 `VersionTolerant` 或 `Keyed` 格式；或者非托管、布局冻结：按原始字节写，布局哈希记在 `wire.manifest`，改了布局构建报错（DAS018），要改先改成 `[NinoType]`。布局冻结的是类型，所以它用到的每个地方都一样冻结（第 12 节 Avatar 上的 `Position` 也是）。托管的必须是 `[NinoType]`（分析器检查） |
+| 进记录的组件（`persist` 里的用户组件类型）、`[Durable]` 请求的 `Ask` 状态 | `[NinoType]`：改名用 `[NinoFormerName]`，加字段用 `VersionTolerant` 或 `Keyed` 格式；或者非托管、布局冻结：按原始字节写，布局哈希记在 `wire.manifest`，改了布局构建报错（DAS017），要改先改成 `[NinoType]`。布局冻结的是类型，所以它用到的每个地方都一样冻结（第 12 节 Avatar 上的 `Position` 也是）。托管的必须是 `[NinoType]`（分析器检查） |
 | 其他非托管的组件、本地事件、`Ask` 的状态 | 迁移和热重启时按原始字节搬运，不用标：`wire.manifest` 里每个这样的类型都有布局哈希，两边对不上就不搬字节（下面的迁移、热重启的路径） |
 | 托管的组件、事件、状态 | 要有 Nino 格式化器（`[NinoType]`，分析器检查） |
 
@@ -2043,7 +2043,7 @@ prefab  Loot    Game.Server.Loot.RootPrefab         id 64C2F9A1  composition 811
 prefab  Loot    Game.Server.Prefabs.StashPrefab     id B5E0A37C  composition 811C9DC5  persist
 prefab  Player  Game.Server.Player.RootPrefab       id 9E07D355  composition 6B19E4F3  persist
 record  Game.Server.Grid       nino  layout 19E4B2D8      # the persist set, one line per user type
-record  Game.Server.NetIds     raw   layout 3D5A0B19      # raw: a layout change fails the build (DAS018), wherever the type is used
+record  Game.Server.NetIds     raw   layout 3D5A0B19      # raw: a layout change fails the build (DAS017), wherever the type is used
 record  Game.Server.Inventory  nino  layout 82C7F015
 record  Game.Server.Stash      raw   layout A04C7E52
 record  Game.Server.Prize      nino  layout 6E12C4A7
@@ -2208,7 +2208,7 @@ public void An_expired_grant_takes_the_drop_off_the_map()
 - Actor 类型的键超过 16 字节，或者不是非托管类型。
 - 生成器要读的 prefab（`[Prefab<K>]` 字段、`RootPrefab`）不是至少 `internal`；`[Persist]` 写在 Actor 类型的 `RootPrefab` 以外，或者 `RootPrefab` 上写了 `[Prefab<K>]`（第 3 节）。
 - 根不保存的 Actor 类型有 `[Prefab<K>(Persist = true)]` 的 prefab；看得出要保存的 prefab 建在不保存的实体下面（第 10 节）。
-- 进记录的组件类型是托管的却没有 `[NinoType]`；按原始字节进记录的组件改了布局（DAS018，第 10 节的序列化规则）。
+- 进记录的组件类型是托管的却没有 `[NinoType]`；按原始字节进记录的组件改了布局（DAS017，第 10 节的序列化规则）。
 - `persist` 里要追踪的类型（`Ask` 的状态类型除外）没有 `ITrackChanges`，在这个编译里又补不上：不是 `partial`，或者来自别的程序集（第 10 节的"只写改过的"；不是 `partial` 的可一键修复）。
 - 对看得出要保存的实体 `Set` 或 `Remove` `persist` 里的 tag（W1 核对 tag 的增删会打戳之前；看不出的地方不报，第 10 节）。
 - `[Stateless]` 的 Actor 类型里 `Ask`、把 `ReplyTo<T>` 存进组件、`Join()`、建 `Due` 的 `Schedule`（带 `after`，或在系统里）。

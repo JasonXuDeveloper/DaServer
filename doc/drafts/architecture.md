@@ -1,6 +1,6 @@
 # Target architecture (draft, not implemented)
 
-The architecture DaServer is refactored to (breaking, roadmap phase W): the v48 programming model of
+The architecture DaServer is refactored to (breaking, roadmap phase W): the v49 programming model of
 [programming-model.md](programming-model.md) on EasyEcs 4.7 (the draft's header lists the features it uses), with Native AOT support. The programming model draft is
 the source of truth for what users write and what each rule means; this file says how the pieces fit together, holds the runtime's internal data and the client protocol's
 internals, and links to the draft's sections instead of repeating them. Today's architecture is [design.md](../design.md); the
@@ -274,7 +274,7 @@ scope for now and would be another `IFrameChannel` (ADR-092).
 6. **Target shard**: the mailbox snapshot; the root by `world.Index<K, K>().TryGet` (the generic form of the generated `world.MapIndex`; a placeholder if not active, its mail
    bounded); the subject is the root (`[To]`) or the presence by its `PresenceId` index.
 7. **Ordered phase**: the handler's job runs; the reply (and a join's route before it) is serialized into the
-   `Outbox` frame for the gateway and handed to the link at the end of the phase.
+   `Outbox` frame for the gateway and handed to the link after the ordered phase.
 8. **Gateway**: the reply reaches the `Connection`, which writes the client frame (one write per connection per batch,
    ADR-034).
 
