@@ -22,7 +22,7 @@ Keep this file current: tick items when done, add items when scope changes.
 11. S1-S6 (done) elastic scaling.
 12. The ECS rewrite (ADR-081, the "ECS rewrite" entry under "Open cleanup" below): P1-P3 and P5 done; P4, P6 and P7
     superseded by W.
-13. W — refactor to the v44 programming model ([drafts/programming-model.md](drafts/programming-model.md),
+13. W — refactor to the v45 programming model ([drafts/programming-model.md](drafts/programming-model.md),
     [drafts/architecture.md](drafts/architecture.md)) on EasyEcs 4.7 (ADR-082 to ADR-092). Breaking; each step
     proven before the next (W, not R: the requirement ids R0-R11 are taken).
     W10 runs last, after W12 and N9.
@@ -96,7 +96,8 @@ Keep this file current: tick items when done, add items when scope changes.
       `ClusterAskHonoursCancellationBudget`, `WebhookRetryDeduplicatesByExternalKey`, `ThrowingHandlerAnswersFaulted`,
       `CatchUpCapSkipsAndCountsTicks`, `TrimExcessAfterPeakShrinksWorld`, `GetOrSpawnTwiceFindsSameEntity`,
       `GetOrSpawnFactoryRunsOnlyOnSpawn`, `StatelessTypeAnswersOnAnyNodeWithoutClaim`, `TestActorTicksWithManualClock`,
-      `TwoTickRatesInOneWorldSeeOwnTime`.
+      `TwoTickRatesInOneWorldSeeOwnTime`, `ScheduleFromSystemBecomesDue` (`Schedule(ev)` from a system is a `Due` child at
+      `Time.Elapsed`, run in the next ordered phase, kept by a snapshot taken in between).
       Evaluate Kestrel's `ConnectionHandler` for the cluster and client ports against the own listener with
       BenchmarkDotNet (`TransportBenchmark`); adopt only without a regression.
     - [ ] W5 Presences, the gateway (`Connection` on `[Hosts<Connection>]`, `Incoming` as a header view, forwarding as a
@@ -236,7 +237,7 @@ Keep this file current: tick items when done, add items when scope changes.
       server types from the committed `wire.manifest` (`actor` and `hosted-by` lines; `IAcceptsClients` on those hosting
       `Connection`) and the build check. Tests: `Sample.Tests` on `TestActor<Map>`
       (`Walking_out_of_range_during_the_windup_dodges`, `A_busy_tick_allocates_nothing_and_threads_change_nothing`,
-      `An_expired_grant_takes_the_drop_off_the_map`, `DropsReshownAfterMapCrash`, `DropsReshownAfterCrashBeforeFirstRecord`, `LaterDropAppearsToEarlierClients`, `TakenDropDisappears`, `KilledNpcDisappearsAndDrops`, `CrossingPushesNewCellsSnapshot`, `CrossingDuringHandoverSnapshotsAtConfirmation` (an avatar crossing cells while its `Joined` is dropped is tagged `Resnap` and gets a full snapshot when confirmed), `SnapshotSkipsDeadAndLeaving`, `MapCrashReusedNumberDoesNotBreakLoot` (a drop number repeated after a map crash ends in `Clash`/`Redrop` and the drop
+      `An_expired_grant_takes_the_drop_off_the_map`, `DropsReshownAfterMapCrash`, `DropsReshownAfterCrashBeforeFirstRecord`, `LaterDropAppearsToEarlierClients`, `TakenDropDisappears`, `KilledNpcDisappearsAndDrops`, `CrossingPushesNewCellsSnapshot`, `CrossingDuringHandoverSnapshotsAtConfirmation` (an avatar crossing cells while its `Joined` is dropped is tagged `Resnap` and gets a full snapshot when confirmed), `SnapshotSkipsWhatVanishRemoves` (a `Leaving` avatar and a dead NPC are left out; a dead avatar, which stays on the map, is in), `MapCrashReusedNumberDoesNotBreakLoot` (a drop number repeated after a map crash ends in `Clash`/`Redrop` and the drop
       is shown again), `VisitorNumbersNeverMeetDropNumbers`, `VisitorNumbersContinueAfterMigration`, `TimedOutClaimLeavesPickUpUnknown`), `LoginIssuesIncreasingSequence`, `LoginTokenLeavesAfterSequenceWritten`,
       `AppHostServerTypesGeneratedFromManifest`, `ClientPortWithoutConnectionHostFailsBuild`; the 1,000-bot and
       100,000-buyer E2E on the new model.

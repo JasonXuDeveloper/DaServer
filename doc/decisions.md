@@ -1552,7 +1552,7 @@ Replaced by ADR-081.
   changed" leaks; the order between mail, delayed sends and systems is implicit. EasyEcs provides what a
   model without these needs: single-entity jobs (`entity.Run(ref job[, filter])`), group filters carried by
   interfaces (`IGroupWith<T>`), `world.Descendants(root)` and `LoadEntitiesInto(…, markWritten: false)`.
-- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v44), structured as in
+- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v45), structured as in
   [drafts/architecture.md](drafts/architecture.md):
   - **The actor type is its address, its root component, its root prefab and its system group**:
     `[TickRate(30)] partial record struct Map(long Id) : IActor<Map>` (`IActor<T>` inherits `IEquatable<T>`, so
@@ -2085,7 +2085,8 @@ Replaced by ADR-081.
     into pooled frames. Its state is DaServer's own: each `Replica<T>` keeps the last sent value and the stamp it was
     sent at (the world's `ChangeTick` when the replication pass ran, opaque to the client), each group a bounded ring of exits (group changes and destroys, which EasyEcs's per-world destroy log of
     `EntityId`s cannot answer per group), each actor an incarnation renewed on load, migration, hot restart
-    and `OnError = Reload`, so whenever the actor reaches another world, whose `ChangeTick` is not comparable; a renewal clears the actor's exit rings and zeroes its `Replica<T>` stamps, so ring coverage starts at the incarnation's first pass. A rejoining SDK sends (incarnation, stamp): the same incarnation with the exit ring still
+    and `OnError = Reload`: whenever the actor reaches another world, whose `ChangeTick` is not comparable, and on a reload
+    in the same world, which rebuilds the actor from its record; a renewal clears the actor's exit rings and zeroes its `Replica<T>` stamps, so ring coverage starts at the incarnation's first pass. A rejoining SDK sends (incarnation, stamp): the same incarnation with the exit ring still
     covering the stamp gets only what was written at or after it (a superset, which is safe), with full state for an entity whose `ReplicatedTo` was written since (it joined a group while the client was away);
     anything else gets a full resend, which starts with `Reset(incarnation)` so the client first clears that actor's
     replicas. A `ChangedAny` filter over the `[Replicated]` types and `ReplicatedTo`, moved with `Since(ack)`, speeds the

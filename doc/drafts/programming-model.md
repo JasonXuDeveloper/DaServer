@@ -1,4 +1,4 @@
-# DaServer 新编程模型设计（草案 v44，未实现，迭代中）
+# DaServer 新编程模型设计（草案 v45，未实现，迭代中）
 
 原则：业务代码干净、解耦、简洁，不用 OOP。ECS 一路到底：能用 EasyEcs 的功能就用 EasyEcs，状态都是数据，其余交给我们的特性和生成器，不重复造轮子。
 
@@ -244,7 +244,7 @@ public record struct Picking(ReplyTo<bool> Reply) : IComponent;                 
 
 | 阶段 | 做什么 | 怎么跑 |
 |---|---|---|
-| a. 有序阶段 | 运行时系统 `OrderedPhase`：tick 窗口里的消息和到期项按 `(时间, 序号)` 归并（第 9 节） | 串行。每一项执行完，紧接着执行它的即时链（不带 `after` 的 `Schedule`），每项最多连锁 1,024 个；阶段结束时把 `Outbox` 交给链路 |
+| a. 有序阶段 | 运行时系统 `OrderedPhase`：tick 窗口里的消息和到期项按 `(时间, 序号)` 归并（第 9 节） | 串行。每一项执行完，紧接着执行它的即时链（项里不带 `after` 的 `Schedule`；系统里的见第 9 节），每项最多连锁 1,024 个；阶段结束时把 `Outbox` 交给链路 |
 | b. 系统 | `world.Update<Map>()`：这个 Actor 类型的 EasyEcs 系统（第 5 节） | 单线程；`[ForEach(Parallel = true)]` 只在 world 比核少时分块多线程（第 5 节） |
 | c. 收尾（`Settling`） | 框架的系统：`Depart` 销毁带 `Leaving` 的 Presence，`SyncSubscriptions` 同步订阅（第 7、9 节），去掉 `Restarting` 和 `Resumed`（第 10 节）；然后框架组 `Cleanup` 处理已销毁实体留下的清理组件（`ReleaseRoutes` 等，第 6 节）；最后把 `Outbox` 交给链路 | 单线程 |
 
@@ -630,8 +630,8 @@ ref var hp = ref target.Health;
 
 | 写法 | 做什么 |
 |---|---|
-| `e.Schedule(ev)` | 本地事件，`ev` 是 `IEvent`，发给本 Actor 的实体 `e`；当前项返回后、下一项之前执行（即时链，最多 1,024 个）。不建实体：事件是 world 的链栈里的一个值。返回 `Scheduled<T>` |
-| `e.Schedule(ev, after: t)` | 同上，到期时刻 = 当前项的时间 + t（第 9 节）；建一个带 `Due` 的子实体。`t` 为 `TimeSpan.Zero` 时同上一行 |
+| `e.Schedule(ev)` | 本地事件，`ev` 是 `IEvent`，发给本 Actor 的实体 `e`。在项里：当前项返回后、下一项之前执行（即时链，最多 1,024 个），不建实体：事件是 world 的链栈里的一个值。在项外（系统里）：同 `e.Schedule(ev, after: TimeSpan.Zero)`（第 9 节）。返回 `Scheduled<T>` |
+| `e.Schedule(ev, after: t)` | 同上，到期时刻 = `Time.Elapsed` + t（第 9 节）；建一个带 `Due` 的子实体。在项里 `t` 为 `TimeSpan.Zero` 时同上一行（即时链） |
 | `e.IsPending<T>()`、`e.Cancel<T>()` | `e` 上还有没执行的 T 事件、或者还在等回信的 T 请求吗（链栈里的和子实体）；取消它们：事件不再执行，请求不再等、不再重问，回信到了就丢弃（第 8、9 节）。框架的两组扩展方法，放在两个静态类里：`where T : struct, IEvent` 和 `where T : struct, IRequest`（每个 `IRequestTo<,>` 都继承的标记接口）。两组签名相同、只差约束，同一个类里写不下（CS0111）；分在两个类里，C# 在重载决议时去掉约束不满足的候选，所以 `IsPending<Strike>()` 和 `IsPending<GrantItem>()` 各自只有一个候选（W1 核对）。`Cancel` 一个 `[Durable]` 的请求是编译错误（分析器）：要放弃就等期限（第 8 节） |
 | `e.IsPending(s)`、`e.Cancel(s)` | `e.Schedule` 返回的那一个事件还在等吗；取消它 |
 | `e.Send(to, msg)` | 服务器之间的单向消息，只发给别的 Actor，例如 `me.Send(new Player(id), new Defeated(map))` |
@@ -1003,6 +1003,7 @@ public readonly partial record struct Player(long Id) : IActor<Player>
   - 各节点的 UTC 只差对时的误差，所以框架用到 UTC 的地方（`ReplyLog` 留多久、`[Durable]` 的期限、提醒）都多留一个余量 `DaServer:ClockSkew`，排序和期限从不比较两个节点的 UTC。
 
 - **`Elapsed` 是正在执行的那一项的时间**：处理消息时是它进入 world 的时刻，执行延后事件时是它的到期时刻，系统里是 tick 时刻 t。
+- **框架组 `Cleanup` 不属于任何 Actor 类型**：所有 Actor 类型的一趟跑完后，运行时再写一次 `Time` 的 `Utc` 和 `Elapsed`（这一刻的时间），`Tick`、`TickRate`、`DeltaTime` 留着最后一趟的值，清理系统不读它们。
 - 所以系统和处理方法读到的 `Tick`、`DeltaTime`、`TickRate` 总是正在跑的这个 Actor 类型的；没有 tick 的 Actor 类型，它们是 0。
 - **`after` 从当前项的时间算起**：到期时刻 = `Time.Elapsed` + after，存精确值，不存 tick 号。它在 tick 窗口所在的那一帧执行（第 1 节），从不提前。
 - 数据里写秒或毫秒，例如配置表 `skills.Windup(id)` 返回 `TimeSpan`（第 12 节的 `SkillTable`）。
@@ -1031,7 +1032,8 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 - **`Due` 是组件，排序是运行时的索引**：每个 world 一个 4 叉最小堆，项是 `(At, Seq, EntityId 和版本)`。加 `Due` 时入堆；实体销毁或事件取消时不去堆里找，堆顶出堆时版本对不上就跳过（惰性删除）。EasyEcs 的有序值索引是排好序的数组，每取走队首都要搬动整个数组，所以不用它。
 - 堆不保存：`world.Load` 和迁移到达之后，运行时按带 `Due` 的实体重建一次。
 - `OrderedPhase` 每一步比较三处的队首：即时链（当前项刚 `Schedule` 的，先执行）、到期堆里不晚于 t 的、邮箱快照，执行最早的那个。执行中新加的、时间不晚于 t 的项，下一步就按顺序取到。序号取自单例 `Ordered<K>`。
-- **不带 `after` 的 `Schedule` 不建实体**：事件是 world 链栈里的一个值，当前项返回后依次执行，两个项之间链栈总是空的，所以它从不进快照或迁移的字节。
+- **项里不带 `after` 的 `Schedule` 不建实体**：事件是 world 链栈里的一个值，当前项返回后依次执行，两个项之间链栈总是空的，所以它从不进快照或迁移的字节。
+- **项外（系统里）的 `Schedule(ev)` 就是 `Schedule(ev, after: TimeSpan.Zero)`**：系统运行时没有正在执行的项，没有即时链可接。事件成为一个带 `Due` 的子实体，到期时刻是 `Time.Elapsed`（系统里是 tick 时刻 t），在下一个有序阶段执行（这一帧的有序阶段已经跑完），和别的 `Due` 一样进快照和迁移的字节。链栈只在项里用，所以两个项之间仍然是空的。
 - 发起者被销毁时，子实体一起销毁，事件不再执行。
 - 周期性的逻辑写进系统；稀疏的周期（例如每秒跳一次伤害）在事件处理方法里再 `Schedule(…, after:)` 下一次。
 - **每个 Actor 待处理的项有一个上限**：待执行的延后事件和等待中的请求合计（框架在根上数的那个个数，第 6 节），默认 65,536，Actor 类型上可以写 `[ActorOptions(MaxPending = n)]`。超过时 `Schedule` 和 `Ask` 抛出，按 `OnError` 处理：一个失控的循环不会吃光内存。
@@ -1235,7 +1237,7 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
   3. 每个 world 在两个 tick 之间冻结：不再执行任何项，等在途的存储操作（写记录、占 epoch）有结果：写成的就此落定，留住的 `[Durable]` 输出随之放出，在第 4 步的切换点之前交给链路；没写成的检查点给根加回 `Unsaved`，随快照过去，新进程的下一个检查点接着写；还有留住输出的根先写一次，等它们放出（第 8 节），所以快照里没有留住的输出。这个等待有上限，过了就放弃（下面）。**冻结只停 world 的线程**：IO 线程照常收帧，放进调度队列，冻结期间发来的消息不被拒绝，也不用让客户端或别的节点停发。
   4. 进程停止读链路，这一刻就是切换点。快照先写进 `DaServer:SnapshotPath` 目录里的临时文件，`fsync`，再改成正式的文件名（普通的文件写入：几 MB 用不着内存映射），然后进程退出。快照里有：
      - 头：节点名、节点代数、武装的随机数、旧版本和武装时新版本 `wire.manifest` 的哈希、每个组件的布局哈希、world 的个数、冻结时的 `Environment.TickCount64` 和内核的 boot id、校验和；
-     - 每个 world：`world.Save(output, exclude)` 的字节（实体连同 id 和版本、组件、`DynamicBuffer`（包括占位上等着的 `Mail`）、单例；不含系统、索引、写入戳，EasyEcs `guide/saves.mdx`；`exclude` 是用户的单例，下面）、调度队列里还没进 world 的邮件、`Time.Elapsed`；即时链在两个 tick 之间是空的，`Outbox` 在冻结前的最后一个 tick 交出了所有的帧（包括没到点的组帧，第 9 节），留住的 `[Durable]` 输出在第 3 步放出；
+     - 每个 world：`world.Save(output, exclude)` 的字节（实体连同 id 和版本、组件、`DynamicBuffer`（包括占位上等着的 `Mail`）、单例；不含系统、索引、写入戳，EasyEcs `guide/saves.mdx`；`exclude` 是用户的单例，下面）、调度队列里还没进 world 的邮件、`Time.Elapsed`；即时链在两个 tick 之间是空的（系统里的 `Schedule` 是带 `Due` 的子实体，在 world 的字节里），`Outbox` 在冻结前的最后一个 tick 交出了所有的帧（包括没到点的组帧，第 9 节），留住的 `[Durable]` 输出在第 3 步放出；
      - 节点的运行时状态：调用 id 的序号、墓碑；每条链路收到的字节数，发出的偏移和还没确认的尾巴；邮件和期限已经等了多久（第 9 节）。
   5. 平台用新的二进制或镜像重启进程（下表）。新进程找属于自己节点名的快照，逐项检查：校验和对；boot id 相同（机器没重启过）；按 `TickCount64` 算出的停顿没超过期限；自己的 `wire.manifest` 哈希等于武装时的新版本哈希（换错了镜像就不加载）。不合格就删掉它，以新的代数加入，走经记录。合格就按头里的个数建 world，不管这次分到多少 CPU（键按哈希落在哪个 world，个数不同就对不上）；只有建不了这个数（配置 `DaServer:Worlds` 钉了另一个数）才删掉快照、走经记录。再流式加载（`world.Load(bytes, in keep, markWritten: false)`，边读边装；新进程在加载之前已经建好用户的单例，`keep` 就是它们，下面），按 prefab 补上组件（上面的恢复），接上时钟、加上系统、重建到期堆和调用 id 索引，然后**在任何 world 运行之前**删掉这个文件：快照只用一次，加载之后再崩溃，下次启动只能经记录。
   6. **`Rejoining`**：新进程以同一个身份（节点名，代数）重连，带着武装的随机数做恢复握手；它的 world 保持冻结，直到协调者回答（期限只在这里判定一次）：
@@ -1766,8 +1768,11 @@ public class SendFullState : EcsSystem
     {
         var resnap = avatar.IsResnap;                                      // crossed cells while unconfirmed
         if (!joined.MissedPushes && !resnap) return;                       // handed over by a gateway upgrade: nothing missed
-        avatar.Push(Aoi.Snapshot(world, in cell));                         // a pooled Nearby of the 3×3 cells, from world.CellIndex.Find;
-                                                                           // Find(c).Count (O(1)) skips the empty ones
+        Span<ClientGroup> around = stackalloc ClientGroup[Aoi.MaxAround];
+        var now = Aoi.Around(avatar.Root, in cell, around);                // near and far, as Regroup subscribes them
+        avatar.Push(Aoi.Snapshot(world, now, default));                    // a pooled Nearby of every subscribed cell (nothing
+                                                                           // before), from world.CellIndex.Find; Find(c).Count
+                                                                           // (O(1)) skips the empty ones
         if (resnap) avatar.RemoveResnap();                                 // structural change last
     }
 }
@@ -1819,11 +1824,11 @@ NPC 死亡由 `Vanish.Fall` 处理：它的格子听到 `Disappear`，地图从�
 
 **保存的是什么**：地图的根（`Grid`、`NetIds`）在地图的记录里，地图上的掉落、Avatar 和 NPC 都不在。掉落的经济状态在 `Loot(地图的键)` 的记录里：每个掉落一个 `Stash`（`Prize`、`Position`，以及它还在等的 `GrantItem`）。地图每次不是迁移来的激活（从记录激活：宕机、`Reload`、停用之后；或者宕机在第一份记录之前，地图以 `Created` 回来）都向 `Loot` 发 `Restock`，`Loot` 把还有的掉落再 `Show` 一遍（新地图的 `Loot` 什么也没有，什么也不发）；迁移和热重启带着地图的全部实体，不用这一步（热重启不再激活）。地图的根仍然要保存，只为 `NetIds`：它只给掉落编号，从最后一份记录接着往下发，所以宕机只会重复上一个检查点之后发出的编号。重复的编号撞上 `Loot` 还记着的掉落时，`Stashes.Add` 留下 `Loot` 已有的，回 `Clash`，地图用下一个编号再报一次（`Redrop`），所以每个重复都由它补上，掉落都会再显示出来。Avatar 和 NPC 不保存，编号取自另一段：根上 `[NotSaved]` 的 `Visitors` 发的负数，从不和掉落的编号相撞，也不进记录（Avatar 进出地图不让根多写一次记录）。宕机之后它们都不在了，`Visitors` 从 0 重新数也不会重复；热重启的快照带着它；迁移的字节里没有它，`Maps.Start` 在 `Activated(Migrated)` 时从迁来的最小负编号接着数。客户端重新加入，Avatar 重新建出来。Player 的根（`Inventory`）在 Player 的记录里。`Shout` 在两个 tick 之间是空的，标了 `[NotSaved]`。所以 `persist` 里的用户类型是 `Grid`、`NetIds`（`Visitors` 是 `[NotSaved]`，不在里面）、`Inventory`（根）、`Stash`、`Prize`、`Position`（`Loot` 的掉落）和 Ask 的状态 `Looting`；`Position` 自己声明了 `ITrackChanges`，`Looting` 只在 Ask 时写一次、不追踪，其余写成 `partial`，由生成器补上（第 10 节）。`Enter` 用只在新建时调用的 lambda 取编号，重发的加入找到已有的 Avatar，不白花编号。
 
-AOI 的状态全在组件里：客户端看到的编号是 `NetId`，格子是 `Cell`（非唯一值索引，`world.CellIndex.Find(cell)` 列出格子里的实体），上次发出的速度是 `NetSync`，确认和有没有漏过推送是框架的 `Joined(MissedPushes)`，订阅是 `Subscribed`，消息是地图上的 `DynamicBuffer<Shout>`。`Aoi` 是用户写的无状态帮助类；`Aoi.Vanish(e, in id)` 在 `e` 有 `Cell` 时往那个格子写一条 `Disappear`（没有格子就没人见过它）。客户端把 `Appear` 和快照当作写入（已经知道的实体就更新），所以重复的不出错。`Aoi.Snapshot` 跳过带 `Dead` 或 `Leaving` 的实体：`Regroup` 和 `SendFullState` 跑在 `Vanish` 之前，这些实体这个 tick 的 `Disappear` 送到格子的组时，新订阅者还不是组员（订阅在收尾时才同步），快照带上它们，客户端就留下一个幽灵。每个系统只做一件事：
+AOI 的状态全在组件里：客户端看到的编号是 `NetId`，格子是 `Cell`（非唯一值索引，`world.CellIndex.Find(cell)` 列出格子里的实体），上次发出的速度是 `NetSync`，确认和有没有漏过推送是框架的 `Joined(MissedPushes)`，订阅是 `Subscribed`，消息是地图上的 `DynamicBuffer<Shout>`。`Aoi` 是用户写的无状态帮助类；`Aoi.Vanish(e, in id)` 在 `e` 有 `Cell` 时往那个格子写一条 `Disappear`（没有格子就没人见过它）。客户端把 `Appear` 和快照当作写入（已经知道的实体就更新），所以重复的不出错。`Aoi.Snapshot` 跳过 `Vanish` 这个 tick 要移走的实体：带 `Leaving` 的，和同时带 `Dead`、`Steered` 的（被打死的 NPC；被打死的 Avatar 不离开地图，照样在快照里）。`Regroup` 和 `SendFullState` 跑在 `Vanish` 之前，这些实体这个 tick 的 `Disappear` 送到格子的组时，新订阅者还不是组员（订阅在收尾时才同步），快照带上它们，客户端就留下一个幽灵。每个系统只做一件事：
 1. `CellAssign`：位置被写过的实体，算出格子；跨格才写 `Cell`。
 2. `Arrive`：`Cell` 被写过的可见实体（新建的、`Show` 出来的掉落、跨了格的），往新格子写一条 `Appear`，带位置，有 `Velocity` 的再带速度。所以先加入的客户端也看得到之后才出现的掉落和 NPC、走进视野的实体。
 3. `Regroup`：`Cell` 变了的 Presence，改写它订阅的 `ClientGroup`：3×3 格子的近处组，外面一圈格子的远处组（`root.Group(格子的键)`，键带着这张地图）。已经确认的 Avatar 跨格时，先推一份新订阅的格子（不在原来的 `Subscribed` 里的）的 `Aoi.Snapshot`：那些格子里早就在的实体不会再喊 `Appear`。还没确认的 Avatar（刚加入，或者 `Joined` 在交接中被去掉）跨格时推不了，`Regroup` 给它标 `Resnap`。框架的 `SyncSubscriptions` 按这份数据同步网关（第 9 节），所以用户只写一处。远处组的频率是 `Maps.Start` 在每次激活时写的数据（`root.SetGroupRate(key, every: 3)`，第 9 节）：它们的推送攒 3 个 tick 交出一帧。离开视野不用消息：客户端按位置和速度外推，实体走出自己订阅的格子就丢掉。
-4. `SendFullState`：这个 tick 确认的 Avatar（`Joined` 被写过：第一次加入、断线后重连、被别的连接接管），`MissedPushes` 为真或者带着 `Resnap` 才推一份完整的状态，推完去掉 `Resnap`；因网关升级换连接、其间也没跨格的，一个推送也没漏，不推。
+4. `SendFullState`：这个 tick 确认的 Avatar（`Joined` 被写过：第一次加入、断线后重连、被别的连接接管），`MissedPushes` 为真或者带着 `Resnap` 才推一份完整的状态：它订阅的全部格子，3×3 的近处和外面一圈的远处（`Aoi.Around`，和 `Regroup` 一样，只是没有原来的订阅），所以远处一直没动的实体也看得到；推完去掉 `Resnap`；因网关升级换连接、其间也没跨格的，一个推送也没漏，不推。
 5. `Diff`：速度被写过、并且和 `NetSync` 不同的实体，写一条 `Moved` 进地图的 `Shout`。
 6. `Vanish`：带 `Leaving` 的 Avatar 和这个 tick 被打死的 NPC，往它的格子写一条 `Disappear`；NPC 还留下掉落、被销毁。`Pickups.Remove` 销毁掉落之前也这样写。
 7. `Flush`：`Shout` 被写过的地图（`[Changed<DynamicBuffer<Shout>>]`，没消息的地图不访问），按格子合并，每个有内容的格子给它的近处组和远处组各推一份 `Nearby`，然后经 `ref` 清空。清空是 `Flush` 自己这一趟的写入，EasyEcs 不把它算作 `Flush` 下一趟的变更（`guide/change-tracking.mdx` 的 "Ticks"），所以没有新消息的地图下一个 tick 不再被访问。
