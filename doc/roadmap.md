@@ -23,7 +23,7 @@ Keep this file current: tick items when done, add items when scope changes.
 12. The ECS rewrite (ADR-081, the "ECS rewrite" entry under "Open cleanup" below): P1-P3 and P5 done; P4, P6 and P7
     superseded by R.
 13. R — refactor to the v24 programming model ([drafts/programming-model.md](drafts/programming-model.md),
-    [drafts/architecture.md](drafts/architecture.md)) on EasyEcs 4.5.0 (now; ADR-082, ADR-083). Breaking; each step
+    [drafts/architecture.md](drafts/architecture.md)) on EasyEcs 4.5.0 (now; ADR-082 to ADR-085). Breaking; each step
     proven before the next:
     - [ ] R1 EasyEcs 4.5.0 (`EasyEcsVersion`) and the compile checks: the generated explicit `Key`
       (`Map IIndexed<Map>.Key => this`) is accepted by value indexes; `IActor<TSelf>` with its constraints
@@ -41,18 +41,39 @@ Keep this file current: tick items when done, add items when scope changes.
       through `Descendants` and `ComponentSet`, migration bytes with layout hashes. Hot restart's runtime side (draft
       §10, JIT and AOT): shards stopped between two ticks, the handoff bytes (`world.Save`, pending mail, shard
       clocks, runtime state) over a local named pipe or a node-local snapshot file, `Restarting` with a deadline in
-      membership, the successor joining with the same generation and the next incarnation and keeping the epochs;
-      in-cluster tests for both transports and for each failure before and after the commit point (gated on EasyEcs
-      request #22, `world.Load(input, markWritten: false)`).
+      membership, warm up then hand over (the successor warmed, its systems registered and its standby peer links
+      authenticated before the old shards stop), the successor joining with the same generation and the next
+      incarnation and keeping the epochs (ADR-084); links: identity (name, generation) on the wire, `LinkHello` with
+      incarnation, `Standby` and a standby endpoint, a standby slot beside the live connection, the switch on the
+      membership update, inbound counts and outbound tails in the handoff, the card fetched again on a higher
+      incarnation; in-cluster tests for both transports and for each failure before and after the commit point (gated
+      on EasyEcs request #22: `world.Load(input, markWritten: false)` and a first run from the current tick).
     - [ ] R7 Samples (mmo, flashsale) on the new model.
     - [ ] R8 Native AOT publish of the samples' nodes with 0 warnings (gated on EasyEcs request #21: IL3054 for tracked
       components); the AOT E2E run. Admin endpoints as Nino (or plain text for `Accept: text/plain`), `MapAsk`/`MapSend`
       Nino by default with per-endpoint opt-in JSON through the application's source-generated context (ADR-083).
     - [ ] R9 BenchmarkDotNet against the pre-R baseline, allocation tests, the 10k-bot E2E, review rounds; the hot
-      restart pause measured end to end (BenchmarkDotNet per shard, E2E with clients connected; target under 1 s per
-      node, typically hundreds of milliseconds).
+      restart pause measured end to end (BenchmarkDotNet per shard, E2E with clients connected; target tens of
+      milliseconds after warm-up, hundreds of milliseconds for a platform restart).
     - [ ] R10 Promote the drafts into design.md and decisions.md (CLAUDE.md's Layout, ADR-017), delete the drafts.
-14. N9 hot restart, on R's model (draft §10; JIT and AOT, ADR-083): the operator side of what R6 builds.
+    - [ ] R11 Kubernetes shape (ADR-085): `DaServer.Aspire` publishes actor-hosting groups as StatefulSets with
+      `updateStrategy: OnDelete` (today a Deployment: `DaServerClusterExtensions` `AddNodes` and its `Kubernetes` hook
+      set `Deployment.Spec.Replicas`), `serviceName` the headless `{group}-peers` Service, a `medium: Memory` `emptyDir`
+      mounted for the snapshot; gateways and stateless groups stay Deployments. The samples' VPA `targetRef`
+      (`samples/Shared/Publishing.cs` `DeploymentOf`) names a StatefulSet for stateful groups, PDBs select the
+      StatefulSet's pods, probes and grace periods carry over; the hot-restart command (admin endpoint and AppHost
+      command) updates the template image, then patches each pod's container image one pod at a time, with a Role
+      for those two patches. E2E on kind: same pod UID and IP, snapshot loaded, clients connected; `aspire publish`
+      output (Helm lint and template) checked for both workload kinds; ADR-030 rewritten.
+    - [ ] R12 Deployment corrections ([doc/drafts/deployment.md](drafts/deployment.md)): one `{cluster}-signing` Secret
+      (`current`, optional `accepted` for rotation) read through `secretKeyRef`, and published nodes refuse to start
+      without it; database schema as a Job with an owner role, nodes on a DML-only role; an upgrade-check Job comparing
+      the new build's `wire.manifest` with the running cluster; load generators (`bots`, `crowd`) as Jobs or left out
+      of publish (Compose `profiles`); `DOTNET_PROCESSOR_COUNT` from `requests.cpu`; startup probes; no
+      service-account token on node pods; non-root, read-only root filesystem (writable `/tmp` and the snapshot
+      directory); NetworkPolicy (admin plane closed to the cluster network); topology spread; HPA/VPA `targetRef`
+      by workload kind; an AOT-safe Compose health check (no `dotnet` in AOT images); smaller AOT base images.
+14. N9 hot restart, on R's model (draft §10; JIT and AOT, ADR-084): the operator side of what R6 and R11 build.
 15. N4 route completeness, N11 generated filters (on the G filter point), K3-K5, open cleanup, quality items. Later
     optional modules: `DaServer.Reminders`, `DaServer.Topics`, leases for strict singletons.
 16. After the self-review converged (agreed): Z3 and Z4; P2 `DaServer.Persistence.Redis` and G7 browser clients;
@@ -591,12 +612,11 @@ in separate commits.
       `ContractTests`). Nino's default pool (64 per thread, 256 shared) needs no sizing for a bot loop. Text the
       clients send and receive takes Nino's default (one byte a char for ASCII names); chat (`Say`, `Chat`) is
       `[NinoUtf8]`, as chat mixes ASCII with emoji and other scripts.
-- [ ] N9 Hot restart (after R, on its model: draft §10; JIT and AOT alike, ADR-083): code changes replace a node's
+- [ ] N9 Hot restart (after R, on its model: draft §10; JIT and AOT alike, ADR-084): code changes replace a node's
       process in place, the world handed over (the runtime side is R6). Here: the admin command and the AppHost command
       (the new build's `wire.manifest` in, the path taken out: in place, through records, or refused for a rolling
-      upgrade), node groups restarted one node at a time, the Kubernetes path (the running pod's image changed in place,
-      a memory-backed `emptyDir` for the snapshot, an update strategy that does not replace pods) through the publisher
-      hooks, the service-manager note (systemd `MAINPID` handover or a launcher). Changes without a restart as data
+      upgrade), node groups restarted one node at a time, the Kubernetes path on R11's StatefulSets (ADR-085), the
+      service-manager note (systemd `MAINPID` handover or a launcher). Changes without a restart as data
       swaps between two ticks: tuning tables (validated snapshot, cluster-wide trigger, version on the member card) and
       feature flags choosing between handlers compiled in. Gateways take rolling upgrades; socket handoff
       (`SCM_RIGHTS`, Unix only) stays a possible later optimization. (in-house game servers, ET, Envoy hot restart)

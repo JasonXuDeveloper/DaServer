@@ -972,7 +972,7 @@ public partial record struct Due(TimeSpan At, long Seq) : IComponent, IIndexed<D
 
   | 比对结果 | 路径 | 停顿 |
   |---|---|---|
-  | 每个组件的布局哈希相同；旧版本有的事件、`Answer` 组合、生命周期消息的处理方法和对 `Leaving` 的消费，新版本都还有；客户端路由不变 | **原地**：交接 world | 每个节点不到 1 秒，一般几百毫秒 |
+  | 每个组件的布局哈希相同；旧版本有的事件、`Answer` 组合、生命周期消息的处理方法和对 `Leaving` 的消费，新版本都还有；客户端路由不变 | **原地**：交接 world | 预热之后几十毫秒；平台重启时几百毫秒 |
   | 布局变了，但只变在新版本读得了记录的组件上（`VersionTolerant`、`Keyed` 的 `IPersisted`，或者不持久化的组件），或者去掉了上一行的处理方法 | **经记录**：所有 Actor 停用、写记录，重启，按需从记录激活 | 更长；不持久化的状态按停用的规则丢掉，Presence 由 SDK 重新加入 |
   | 承载关系（`[Hosts]`）或客户端路由变了 | 拒绝；走**滚动升级**（上面），路由变了要连网关一起升级 | — |
 
@@ -981,16 +981,17 @@ public partial record struct Due(TimeSpan At, long Seq) : IComponent, IIndexed<D
 - **交接的字节**（下面两种传输方式完全相同）：
   - 头：节点名、节点代数、化身号、交接令牌、旧版本 `wire.manifest` 的哈希、校验和；
   - 每个 shard：`world.Save` 的字节（实体连同 id 和版本、组件、`DynamicBuffer`（包括占位上等着的 `Mail`）、单例；不含系统、索引、写入戳，EasyEcs `guide/saves.mdx`）；调度队列里还没进 world 的邮件；这个 shard 的 `Time.Now`；
-  - 节点的运行时状态：调用 id 的序号、墓碑、每条链路收到并确认过的序号、连接戳的计数。
+  - 节点的运行时状态：调用 id 的序号、墓碑、连接戳的计数；每条链路对方发来的流（流 id、处理到的字节数）和发出去的流（流 id、偏移、还没确认的尾巴）。
   - 记录写入在交接之前都有了结果：写成的去掉了 `Unsaved`，没写成的还带着。`Unsaved` 是根上的 tag，随 `world.Save` 一起过去，所以等着写的记录不会丢，新进程的下一个检查点接着写。`Outbox` 每项执行完就发出，两个 tick 之间是空的。
 - **时间**：新进程的 shard 时钟从保存时的 `Time.Now` 接着走，所以每个 `Due` 不用改写，剩下的时间不变，停顿不计入（同迁移的剩余时间）。
-- **步骤**：
-  1. 节点自己起继任进程时，新进程先启动并预热，不绑定任何端口（平台重启时，第 4、5 步在新进程启动之后）；
+- **步骤：先预热，再交接**（节点自己起继任进程时的标准顺序）：
+  1. 新进程先启动，做完 JIT 预热或 AOT 初始化，为每个 shard 建好空的 world、按 `Registration` 加上系统，并提前和其他节点握手，建好备用链路（见下面的"备用链路"）；它不绑定客户端端口；
   2. 旧节点在成员视图里宣布 `Restarting`，带一个期限和交接令牌的哈希；
-  3. 每个 shard 在两个 tick 之间停下：不再从链路取帧，等在途的记录写入有结果，然后 `world.Save`，写出运行时状态；
-  4. 新进程为每个 shard 建 world，`world.Load`，按 `Registration` 加上系统，接上时钟；
-  5. 新进程以同一个节点名和代数、化身号加一（成员视图里已有的化身号）、带着交接令牌加入；它的成员信息比 `Restarting` 新，其他节点关掉旧进程的链路，连上新进程，重放各自的重发窗口（已确认的序号在交接里，所以不重复）；
+  3. 这时旧进程的每个 shard 才在两个 tick 之间停下：不再从链路取帧，等在途的记录写入有结果，然后 `world.Save`，连同运行时状态流给新进程；
+  4. 新进程 `world.Load` 进已经建好的 world，接上时钟；
+  5. 新进程以一次成员更新接管：同一个节点名和代数、化身号加一（成员视图里已有的化身号）、带着交接令牌；它的成员信息比 `Restarting` 新，其他节点关掉旧进程的链路，改用备用链路，重放各自的重发窗口（处理到的字节数在交接里，所以不重复也不丢）；
   6. 旧进程退出。
+  - 平台重启进程时做不到预热：旧进程先退出，新进程启动后才做第 1、4、5 步。
 - **所有权怎么交过去**：
   - 不重新占 epoch，不隔离：每个 Actor 的 epoch 在它的根上，随 world 过去；存储里的 epoch 没变，新进程写记录照样比较成功。
   - 安全靠"任一时刻只有一个进程跑 shard"：旧进程在 `Save` 之前停下所有 shard，之后不再跑，除非新进程在**提交点**之前报告失败；新进程过了提交点才跑 shard。提交点是新进程加载完、回报"已加载"（本机管道），或者新进程找到合格的快照（平台重启，那时旧进程已经退出）。
@@ -998,11 +999,24 @@ public partial record struct Due(TimeSpan At, long Seq) : IComponent, IIndexed<D
   - 发给它的消息留在链路的有界重发窗口里（网关上的客户端消息也是），满了回 `Busy`，发送方按已有的退避重试；请求的期限照常走，可能超时（第 11 节）。
   - 交接令牌只有收到字节的进程知道，所以别的进程冒充不了继任者。
   - 期限过了还没接管：按节点离开视图处理（第 11 节），Actor 在别处占新的 epoch，从记录激活。迟到的新进程不被接受，丢弃快照，以新的代数加入；它没跑过 shard，不会写。新进程已经在跑、却被别的节点判了 `Dead` 时，epoch 比较会拦住它的写，它按上面激活 epoch 的规则隔离自己，再以新的代数加入。
+- **备用链路**（ADR-084）：
+  - 现在的链路按对方地址一条、只有一个入站位置；Hello 里是进程启动时随机的节点 id，`Resume` 回来的 id 变了就当作对方重启：丢掉流，在途的调用失败。同一个地址上来的第二个 Hello 会抢走旧进程的入站位置。所以热重启要改链路：
+  - 链路上的身份是（节点名，代数），化身号单独带上；继任进程是同一个身份，续上旧进程的流，不算重启；
+  - `LinkHello`（版本容忍，可以追加字段）加上化身号、`Standby` 标记和继任进程临时监听的端点（旧进程还占着公布的端口）；
+  - 其他节点照常验证这个 Hello，把连接放在现有连接旁边的备用位置：不回 `Resume`，不收发业务帧；只接受视图里已有的成员、化身号更高的；期限到了或 `Restarting` 撤回时关掉；
+  - 带着这个化身号和交接令牌的成员更新到了才切换：旧进程的连接关掉，继任进程用交接里恢复的字节数回 `Resume`，两边各自重放；
+  - 化身号变大时重新取成员卡片（新版本的构建号在卡片上）；
+  - 平台重启时没有备用链路：新进程绑好公布的端口后以同一个身份重连，流照样续上。
 - **两种传输方式**，同一套字节、同一套所有权规则：
   - **节点自己起继任进程**（物理机、虚拟机、Windows 服务、macOS、开发机）：旧进程启动新二进制，两者经本机的命名管道（`System.IO.Pipes`：Windows 上是命名管道，Unix 上是 Unix 域套接字）连上；新进程预热好之后，旧进程停 shard、把字节流过去；新进程加载、回报"已加载"；旧进程关掉监听端口退出，新进程绑定同样的端口。不需要 `exec`（Windows 没有）。服务管理器按 PID 盯进程时，要允许交接（例如 systemd 由新进程 `sd_notify` 报告 `MAINPID`），或者留一个很小的启动器进程作为被监管的父进程。
-  - **平台重启进程**（Kubernetes 同一个 Pod 里的容器重启、systemd 重启）：旧进程把字节写进节点本地目录里的一个文件（Kubernetes 上是 `medium: Memory` 的 emptyDir，有 tmpfs 用 tmpfs，否则普通本地目录），经 `MemoryMappedFile.CreateFromFile` 写入（跨平台；Unix 上没有具名映射），然后退出。新进程启动时找属于自己节点名、校验和正确、没过期限的快照：有就加载，不重新激活；过期或者不合格就删掉，照常加入、从记录激活。Kubernetes 上换镜像是改运行中 Pod 的容器镜像（kubelet 在同一个 Pod 里重启容器，emptyDir 保留，不重新调度）；工作负载的更新策略不能自己替换 Pod。
-- **停顿**：节点自己起继任进程时，新进程先预热、注册好系统、提前连好其他节点，再交接，停顿是几十毫秒（保存、传输、加载加上一次成员更新）；平台重启进程时没有预热，几百毫秒，不到 1 秒。搬 world 只要几毫秒：一个 world、每个实体 5 个非托管组件，1 万个实体 `Save` 44 µs、`Load` 183 µs、440 KB，10 万个实体 `Save` 0.76 ms、`Load` 2.7 ms、4.4 MB，都不分配（BenchmarkDotNet ShortRun，EasyEcs 4.5.0，.NET 11 RC2）。停顿主要花在进程启动（AOT 几十毫秒；节点自己起继任进程时，启动和预热在停顿之前）和其他节点重连上。R 里端到端测量：BenchmarkDotNet 测每个 shard 的交接，E2E 测停顿时长、客户端不断线。
-- **写入戳（热重启的前提：EasyEcs 需求 #22）**：`world.Load` 把每一行都算作写入，没有 `LoadEntitiesInto` 那样的 `markWritten` 参数；新加的系统第一次运行也访问所有行。不改的话，热重启之后每个 `IPersisted` 组件都像刚写过，`ChangeSystem` 给每个根标 `Unsaved`，每个 Actor 都把记录重写一遍。所以要 `world.Load(input, markWritten: false)`，并且 Load 之后加上的系统第一次运行不把这些行当作写过。真正没写的记录由带过来的 `Unsaved` 负责。
+  - **平台重启进程**（Kubernetes 同一个 Pod 里的容器重启、systemd 重启）：旧进程把字节写进节点本地目录里的一个文件（Kubernetes 上是 `medium: Memory` 的 emptyDir，有 tmpfs 用 tmpfs，否则普通本地目录），经 `MemoryMappedFile.CreateFromFile` 写入（跨平台；Unix 上没有具名映射），然后退出。新进程启动时找属于自己节点名、校验和正确、没过期限的快照：有就加载，不重新激活；过期或者不合格就删掉，照常加入、从记录激活。Kubernetes 上，承载 Actor 的节点组是 `updateStrategy: OnDelete` 的 StatefulSet（Pod 名就是节点名，改模板不替换 Pod）；命令先改 StatefulSet 模板里的镜像，再逐个改运行中 Pod 的容器镜像：kubelet 在同一个 Pod 里重启容器（同一个 UID、同一个 IP），emptyDir 保留，不重新调度（ADR-085）。网关和无状态的节点组仍是 Deployment。
+- **停顿**：先预热再交接时，停顿只有 `Save`、传输、`Load` 加上一次成员更新，目标是几十毫秒；平台重启时还要加上进程启动和重连，目标是几百毫秒。搬 world 只要几毫秒：一个 world、每个实体 5 个非托管组件，1 万个实体 `Save` 44 µs、`Load` 183 µs、440 KB，10 万个实体 `Save` 0.76 ms、`Load` 2.7 ms（合计约 3.5 ms）、4.4 MB，都不分配（BenchmarkDotNet ShortRun，EasyEcs 4.5.0，.NET 11 RC2）。R 里端到端测量：BenchmarkDotNet 测每个 shard 的交接，E2E 测停顿时长、客户端不断线。
+- **写入戳（热重启的前提：EasyEcs 需求 #22）**：
+  - 现状：`world.Load` 把每一行都盖上 world 当前的写入戳（缺某个追踪组件的行算作移除过），没有 `markWritten` 参数；系统的 `[Changed<T>]` / `[Removed<T>]` 按 `Since(LastRunTick + 1)` 过滤，第一次运行前 `LastRunTick` 是 0（`internal set`，框架改不了），所以第一次运行访问 world 开始以来盖过戳的每一行。
+  - 不改的话，热重启之后 `ChangeSystem` 给每个根标 `Unsaved`，每个 Actor 同时把记录重写一遍。
+  - 要两样：`world.Load(input, markWritten: false)`，语义同 `LoadEntitiesInto`（不盖写入戳，也不盖移除戳）；以及注册系统时选择第一次运行从当前 tick 开始（`AddSystem(system, seeExisting: false)` 或可设的基准），不靠"tick 0 恰好小于 `Since(1)`"这个实现细节（文档的约定是第一次运行访问所有拥有它的实体）。
+  - 用户系统热重启后多跑一次全量（例如多一次 AOI）可以接受；持久化系统（`ChangeSystem`、检查点）不行。
+  - 真正没写的记录由带过来的 `Unsaved` 负责。
 - **网关不热重启**：`Client` 钉在连接上，换进程连接就断。网关节点改代码走滚动升级，SDK 重连、重新加入。以后可以考虑把套接字交给新进程（`SCM_RIGHTS`，Envoy 的热重启），只在 Unix 上有。
 - **`[Stateless]` 的 Actor 类型**没有要交接的状态：可以单独部署成节点组，先起新节点、再停旧节点，零停顿。
 
@@ -1573,4 +1587,4 @@ public void A_busy_tick_allocates_nothing_and_threads_change_nothing()
 3. **`[From<K>]` 保持必写**。"从类型就看得出谁发给谁"是目标之一；新的发送方要改消息声明，这正是想要的显式。
 4. **消息不做成实体**。邮箱和到期项在有序阶段归并两个来源。把每条消息做成带 `Due` 的实体能统一表示，但每条消息多一次建实体和销毁。重构时用 BenchmarkDotNet 测一次：快不差于 10% 才改。
 5. **EasyEcs 4.5 已提供本稿依赖的功能**：`entity.Run(ref job[, filter])`（抛出时 `ref` 写入也搬到新行；job 带 `INoStructuralChanges` 时冻结结构）、接口带的组过滤 `IGroupWith<T>` / `IGroupWithout<T>`、`world.Descendants(root)`、`LoadEntitiesInto(…, markWritten: false)`（被覆盖的 prefab 默认值也不算写入），分析器把 `entity.Run` 和 `LoadEntitiesInto` 当结构调用（EECS010/013/014）。EasyEcs 评估后放弃的：并行批量方法、`LastWriteTick`、公开读写集、多 world 共享并行预算。重构的第一步是把 `EasyEcsVersion` 升到 4.5.0，并编译验证两件事：DaServer 生成器补的 `Key` 显式实现被 EasyEcs 的值索引接受；`IActor<TSelf>` 在框架程序集里编译通过。
-6. **热重启，不在进程内热更**。进程内热更（可回收的 `AssemblyLoadContext`、`RemoveTypes`、两个 tick 之间换分发表）要单独一个 Logic 工程，带来工程之间的循环，Native AOT 下做不了，换下去的代码还可能被缓存留住。换进程对 JIT 和 AOT 一样，用户工程少一个，代价是几十到几百毫秒的停顿（第 10 节）。**前提是 EasyEcs 需求 #22**：`world.Load(input, markWritten: false)`，否则每次热重启每个 Actor 都重写一遍记录（第 10 节）。`Save` 写进 `NinoArrayBufferWriter` 再拷进管道或文件，多一次拷贝；10 万个实体 4.4 MB，可以忽略，不另提需求。
+6. **改代码只有热重启，不用 `AssemblyLoadContext`**：理由和代价见 ADR-084，做法见第 10 节；Kubernetes 上的形态见 ADR-085。前提是 EasyEcs 需求 #22（`world.Load(input, markWritten: false)`，以及第一次运行从当前 tick 开始的系统）。`Save` 写进 `NinoArrayBufferWriter` 再拷进管道或文件，多一次拷贝；10 万个实体 4.4 MB，可以忽略，不另提需求。

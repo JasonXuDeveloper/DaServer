@@ -4,7 +4,7 @@ The architecture DaServer is refactored to (breaking, roadmap phase R): the v24 
 [programming-model.md](programming-model.md) on EasyEcs 4.5.0, with Native AOT support. The programming model draft is
 the source of truth for what users write and what each rule means; this file says how the pieces fit together and
 links to the draft's sections instead of repeating them. Today's architecture is [design.md](../design.md); the
-decisions are ADR-082 and ADR-083 in [decisions.md](../decisions.md). When R is done, this file and the draft are
+decisions are ADR-082 to ADR-085 in [decisions.md](../decisions.md). When R is done, this file and the draft are
 promoted into design.md and decisions.md and deleted (R10).
 
 ## 1. Layers and projects
@@ -174,50 +174,79 @@ Per actor type with `[TickRate(n)]`, at time t ([draft §1](programming-model.md
 - **Rolling upgrades**: `[Hosts]` on the member card, `NotHandled` from old nodes retried once after placement is
   resolved again, migration falls back to records across layouts. Gateways and changes of hosting or client routes
   change this way.
-- **Hot restart** ([draft §10](programming-model.md#热重启), the same on JIT and Native AOT nodes): the node is replaced
-  in place by a process of the new build; no actor re-activates, clients stay connected.
+- **Hot restart** ([draft §10](programming-model.md#热重启), the same on JIT and Native AOT nodes; the decision and why
+  not `AssemblyLoadContext` are ADR-084): the node is replaced in place by a process of the new build; no actor
+  re-activates, clients stay connected.
   - **Paths**, picked from the manifest diff and reported by the command: *in place* (same layout hashes, no handler
-    or `Leaving` consumer dropped, same client routes; target pause: under 1 s per node, typically hundreds of milliseconds), *through
+    or `Leaving` consumer dropped, same client routes; target pause: tens of milliseconds after warm-up, hundreds without), *through
     records* (layouts changed only where records stay readable: deactivate all, restart, activate from records; a
     longer pause), or refused in favour of a rolling upgrade (hosting or client routes changed).
   - **Handoff bytes** (one format, two transports): per shard the `world.Save` output (entities with ids, components,
     buffers including placeholder mail, singletons; no systems, indexes or change ticks), mail still in the dispatch
-    queue and the shard's `Time.Now`; per node the call id sequence, tombstones, acknowledged link sequences and the
-    connection stamp counter; a header with node name, generation, incarnation, handoff token and checksum. The new
+    queue and the shard's `Time.Now`; per node the call id sequence, tombstones, the connection stamp counter and per
+    peer link the inbound stream id with the bytes processed and the outbound stream id, offset and unacknowledged tail; a header with node name, generation, incarnation, handoff token and checksum. The new
     process loads each world, adds the systems from its `Registration` and resumes each shard clock at the saved
     `Time.Now`, so every `Due` keeps its remaining time.
   - **Ownership**: the node announces `Restarting` with a deadline and the hash of the handoff token; peers keep it
     in the view and in placement (no `Suspect`, no re-placement, no fencing) until the deadline, measured on their own
     monotonic clocks, and hold messages to it in the bounded resend windows of their links (`Busy` with the existing
     back-off beyond that). The successor joins with the same name and generation, the incarnation plus one and the
-    token; peers drop the old process's links, connect to it and replay their resend windows. Epochs stay in the
+    token; peers drop the old process's links, switch to the standby links (below) and replay their resend windows. Epochs stay in the
     roots and in the store, so its writes compare as before. Only one process runs shards at any time: the old one
     stops its shards and settles in-flight record writes before `Save` and never runs them again past the commit
     point (the successor's "loaded"); the successor runs them only after it. A deadline that passes first turns into
     an ordinary node departure: actors re-activate elsewhere under new epochs and a late successor discards the
     snapshot and joins with a new generation.
-  - **Transports**: *successor launched by the node* (bare metal, VMs, Windows services, macOS, development): the
-    old process starts the new binary, which warms up binding nothing, and streams the bytes over a local
-    `System.IO.Pipes` named pipe (a Windows named pipe, a Unix domain socket elsewhere); the old process then closes
-    its listeners and exits, the successor binds the same ports. No `exec`. A service manager that tracks the PID
+  - **Transports**: *successor launched by the node* (bare metal, VMs, Windows services, macOS, development): warm up,
+    then hand over. The old process starts the new binary, connected over a local `System.IO.Pipes` named pipe (a
+    Windows named pipe, a Unix domain socket elsewhere); the successor finishes JIT warm-up or AOT initialization,
+    builds its empty worlds with their systems and authenticates standby peer links (below), binding no client port. Only then does the old process announce `Restarting`, stop its shards
+    between two ticks and stream the bytes; the successor loads them and takes over with one membership update; the
+    old process closes its listeners and exits, the successor binds the same ports. No `exec`. A service manager that tracks the PID
     must accept the handover (systemd: `sd_notify` with `MAINPID`) or supervise a small launcher instead. *Process
     restarted by the platform* (a container restart in the same Kubernetes pod, a systemd restart): the old process
     writes the bytes into a file in a node-local directory (a memory-backed `emptyDir`, tmpfs where available, a plain
     local directory otherwise) through `MemoryMappedFile.CreateFromFile` and exits; the new process loads a fresh,
     checksummed snapshot for its node name at start, and ignores a stale or invalid one (activation from records as
-    usual). On Kubernetes the running pod's container image is changed in place, so the pod is not rescheduled.
-  - **Pause**: moving a world takes milliseconds (one world, 5 unmanaged components per entity: 100,000 entities
-    save in 0.76 ms and load in 2.7 ms, 4.4 MB, 0 B allocated; BenchmarkDotNet ShortRun, EasyEcs 4.5.0, .NET 11 RC2);
-    process start and peer reconnects dominate. R measures it end to end (BenchmarkDotNet per shard, E2E).
-  - **Change ticks (prerequisite: EasyEcs request #22)**: `world.Load` stamps every loaded row as written and has no
-    `markWritten` parameter, so every `IPersisted` row would look written and every actor would rewrite its record.
-    Hot restart needs `world.Load(input, markWritten: false)`, with systems added after the load not treating those
-    rows as written on their first run. Pending writes are not lost: `Unsaved` is a tag on the root and travels in
-    the save.
+    usual). On Kubernetes the running pod's container image is changed in place, so the pod is not rescheduled
+    (deployment below).
+  - **Standby peer links** (ADR-084): today's links are one per peer address with one inbound slot, named by a random
+    per-process id, and a `Resume` from another id restarts the stream. Target: identity on the wire is (name,
+    generation) with the incarnation beside it; the successor's `LinkHello` carries the next incarnation, `Standby` and
+    a temporary endpoint; a peer authenticates it as any Hello and parks it beside the live connection (no `Resume`,
+    no traffic), only for a known member and a higher incarnation, dropping it at the deadline or on withdrawal. The
+    membership update with that incarnation and the token switches: old connections close, the successor answers
+    `Resume` with the counts restored from the handoff (which also carries each outbound stream's id, offset and
+    unacknowledged tail), both sides replay. A rising incarnation also re-fetches the member's card (new build).
+    After a platform restart the successor reconnects at its advertised address with the same identity and the
+    streams resume the same way.
+  - **Pause**: after warm-up it is save, transfer and load plus the membership switch: tens of milliseconds
+    (one world, 5 unmanaged components per entity: 100,000 entities save in 0.76 ms and load in 2.7 ms, about 3.5 ms,
+    4.4 MB, 0 B allocated; BenchmarkDotNet ShortRun, EasyEcs 4.5.0, .NET 11 RC2). A platform restart adds process
+    start and peer reconnects: hundreds of milliseconds. R measures both end to end (BenchmarkDotNet per shard, E2E).
+  - **Change ticks (prerequisite: EasyEcs request #22)**: `world.Load` stamps every loaded row as written (and rows
+    lacking a tracked component as removed), and a system's first run filters `Since(LastRunTick + 1)` from
+    `LastRunTick` 0, so it visits every row stamped since the world began. After a hot restart `ChangeSystem` would
+    tag every root `Unsaved` and every actor would rewrite its record. Needed: `world.Load(input, markWritten: false)`
+    (no tick, no removal stamp, as `LoadEntitiesInto`) and a first run from the current tick chosen at registration
+    (`AddSystem(system, seeExisting: false)` or a settable baseline), for the framework's persistence systems
+    (`ChangeSystem`, checkpoint); a user system re-firing once (one extra AOI pass) is acceptable. Pending writes are
+    not lost: `Unsaved` is a tag on the root and travels in the save.
   - **Gateways** do not hot restart (`Client` is pinned to its connection); they take rolling upgrades. A possible
     later optimization is handing the sockets to the new process (`SCM_RIGHTS`, Envoy-style), Unix only.
   - **`[Stateless]` actor types** deployed as their own node group are replaced by start-new-then-stop-old, without
     a pause.
+- **Deployment on Kubernetes** (ADR-085, roadmap R11): node groups that host actors publish as a StatefulSet with
+  `updateStrategy: OnDelete` (stable pod names are node names; a template change replaces no pod), its `serviceName`
+  the headless `{group}-peers` Service, a `medium: Memory` `emptyDir` for the hot-restart snapshot; gateways and
+  stateless groups stay Deployments. The release (`helm upgrade`) sets the template image, which replaces no pod; an
+  in-cluster rollout Job then has every node pull the image and patches each running pod's container image one at a
+  time (never the template): the kubelet restarts the container in the same pod (same UID and IP) and the `emptyDir`
+  keeps the snapshot. The full target shape (Secrets, Jobs, probes, security, network policy) is
+  [deployment.md](deployment.md), roadmap R12. Today `DaServer.Aspire` emits a Deployment per group (`AddNodes`, its `Kubernetes`
+  hook) and the samples' VPA targets a Deployment (`samples/Shared/Publishing.cs`); R11 changes the publisher hooks,
+  the VPA `targetRef`, the PDBs' selection, the probes and grace periods on the new workload kind, and adds the
+  rollout Job with a Role for the pod patches.
 - **Changes without a restart** are data swaps between two ticks: tuning tables (a validated shard singleton, its
   version on the member card) and feature flags choosing between handlers compiled into the binary (a singleton or a
   tag that handlers and systems filter on).
@@ -348,7 +377,8 @@ Derived from [design.md](../design.md) and the deleted list in
 | One project per server (ADR-017), Contracts / Model / Logic (N1) | Protocol / Server; several server types per Server project; node = one server type |
 | Hot reload of the logic assembly (planned N9) | Hot restart: the node replaced in place by the new build, world handed over (JIT and AOT) |
 | `AddNodes<TProject>` | `AddNodes<TServer>` over server types generated from `wire.manifest` |
-| Random `NodeId` per process | Cluster-assigned node generation |
+| Random `NodeId` per process | Cluster-assigned node generation; identity on the link Hello is (name, generation) plus incarnation, standby links for a successor |
+| A Kubernetes Deployment per node group | StatefulSet with `OnDelete` for actor-hosting groups, Deployments for gateways and stateless groups (ADR-085) |
 | Deadlines in UTC milliseconds | Monotonic `TimeSpan`; remaining time across processes |
 | Route listing by reflection (`Routes`) | Routes from `wire.manifest` |
 | Admin JSON of anonymous objects | Typed `[NinoType]` records as Nino, or plain text for `Accept: text/plain` |

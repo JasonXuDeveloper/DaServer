@@ -334,7 +334,8 @@ Replaced by ADR-081.
 - Consequences: replicas are visible and individually addressable on the dashboard; published deployments scale with
   the platform's tools (`kubectl scale`, an HPA, `docker compose up --scale`), and nothing is configured by hand. No
   StatefulSet: a node's identity is its gossip incarnation and its actors' state lives in the store, so pods need no
-  stable names or volumes. No Kubernetes API access (no RBAC): DNS is the only discovery.
+  stable names or volumes (actor-hosting groups become StatefulSets with roadmap R11, ADR-085). No Kubernetes API
+  access on the data plane (no RBAC): DNS is the only discovery (ADR-085's hot-restart command is the one API user).
 - Seeds resolve through `NodeOptions.SeedResolver` (`ISeedResolver`), in the background while a node is alone: gossip
   rounds never wait for DNS or a registry. The default reads "host:port" and expands DNS names to every address;
   `DaServer.Hosting` resolves seeds written as service names (`tcp://peers`) through .NET service discovery
@@ -1595,29 +1596,139 @@ Replaced by ADR-081.
     for `Accept: text/plain`; probes and metrics keep their platform formats; `MapAsk`/`MapSend` take Nino bodies,
     and JSON only where the application opts in per endpoint with its own source-generated `JsonSerializerContext`
     (third-party webhooks). Routes are read from `wire.manifest`, not from assemblies.
-  - **Hot restart on both, no in-process hot reload**: a code change replaces the node's process in place. Between two
-    ticks each shard stops and its world (`world.Save`), pending mail and runtime state go to a process of the new
-    build, over a local named pipe when the node launches its successor or through a checksummed snapshot file in a
-    node-local directory when the platform restarts the process; the successor loads the worlds, joins with the same
-    node name and generation and the incarnation plus one, and keeps every activation epoch (no re-activation, no
-    fencing; peers hold its messages while it announces `Restarting` with a deadline). The manifest diff picks in
-    place, through records or a rolling upgrade ([drafts/programming-model.md](drafts/programming-model.md) §10). JIT
-    and AOT nodes behave the same, so user projects are `Game.Protocol` and `Game.Server`: no separate logic assembly,
-    no collectible load context.
+  - **Code changes load no assemblies at run time**: JIT and AOT nodes take a new build the same way, by hot restart
+    or rolling upgrade (ADR-084), so user projects are `Game.Protocol` and `Game.Server`.
   - **0 warnings, no suppression**: EasyEcs's AOT compile reports IL3054 (generic recursion through its change-tick
     column type) in programs with tracked components, which every stateful node has (`IPersisted`). The AOT publish
     check is gated on EasyEcs removing it (EasyEcs request #21); a suppression of a library's warning in user
     programs is not accepted.
 - Alternatives: AOT only for stateless nodes (no tracked components; splits the support matrix); suppress IL3054
-  (accepts a warning on the library's behalf); in-process hot reload on JIT only (a Logic assembly in a collectible
-  load context and `RemoveTypes`: a project cycle between host and logic, two behaviours per deployment, unloads that
-  caches can block; game servers and ET use it, but a restart that keeps the world costs well under a second); no
-  code change without re-activation (games need it); reflection-based registration with trimming descriptors
-  (fragile, and generic closure at run time is impossible under AOT anyway).
+  (accepts a warning on the library's behalf); in-process hot reload on JIT only (rejected in ADR-084);
+  reflection-based registration with trimming descriptors (fragile, and generic closure at run time is impossible
+  under AOT anyway).
 - Consequences: the release checklist publishes each sample node with `PublishAot=true` with 0 warnings and runs the
   E2E tests against the AOT binaries (open until EasyEcs request #21 ships). OpenTelemetry, the Prometheus exporter,
   Npgsql through Aspire and the other hosting dependencies are verified in R8 ([drafts/architecture.md](drafts/architecture.md)
-  section 8). Hot restart needs EasyEcs request #22 (`world.Load(input, markWritten: false)`), otherwise every actor
-  rewrites its record after a restart; its pause (target under 1 s per node) is measured end to end in R. ADR-067's
-  reloadable logic project is replaced when R10 promotes the drafts. Gateways take rolling upgrades (their sockets
-  would close); stateless node groups are replaced by start-new-then-stop-old.
+  section 8). How a new build reaches running nodes, and what it needs from EasyEcs, is ADR-084.
+
+## ADR-084 Code changes ship by in-place hot restart (JIT and AOT); no in-process hot reload
+- Context: games change code while players stay connected. The usual way (ET, in-house game servers) loads a Logic
+  assembly into a collectible `AssemblyLoadContext` and swaps it. Native AOT (ADR-083) cannot load code at all, so
+  AOT nodes would need a second mechanism. Unloading is unreliable: any lingering reference to the old assembly (a
+  static cache, a delegate, an event, a thread-local) keeps it alive, a leak per reload. A separate Logic project
+  caused a cycle between the host and the logic projects (ADR-067), and a load context swaps only the logic:
+  framework, runtime and dependency updates restart anyway. Re-activating every actor from its record on each change
+  costs a checkpoint interval of state and a load storm on the store.
+- Decision ([drafts/programming-model.md](drafts/programming-model.md) §10, [drafts/architecture.md](drafts/architecture.md) section 5):
+  - **A code change replaces the node's process in place**, the same on JIT and AOT nodes. The command takes the new
+    build's `wire.manifest`; the diff picks *in place* (same layout hashes, no handler or `Leaving` consumer dropped,
+    same client routes), *through records* (deactivate, restart, activate) or a refusal in favour of a rolling upgrade.
+  - **Warm successor, then handoff**: where the node launches its successor (bare metal, VMs, Windows services,
+    macOS, development), the successor starts connected to it over a local named pipe (`System.IO.Pipes`), finishes
+    JIT warm-up or AOT initialization, builds its empty worlds with their systems and authenticates standby peer links
+    (below), binding no client port. Only then does the old process announce `Restarting`, stop each shard between two
+    ticks and stream the bytes. Where the platform restarts the process (a container restart in the same Kubernetes
+    pod, ADR-085; a systemd restart), the old process writes the same bytes into a checksummed snapshot file in a
+    node-local directory and exits; the new process loads a fresh snapshot for its node name, and ignores a stale or
+    invalid one (activation from records as usual).
+  - **The bytes**: per shard `world.Save` (entities with ids and versions, components, buffers including placeholder
+    mail, singletons), the mail still in the dispatch queue and the shard's `Time.Now` (every `Due` keeps its remaining
+    time); per node the call id sequence, tombstones, the connection stamp counter and, per peer link, the inbound
+    stream id with the bytes processed and the outbound stream id with its offset and unacknowledged tail.
+  - **Identity and epochs are kept**: the successor takes over with one membership update, the same node name and
+    generation, the incarnation plus one and the handoff token whose hash `Restarting` announced. Activation epochs
+    live in the roots and in the store, so nothing re-activates and nothing is fenced.
+  - **`Restarting` with a deadline**: peers keep the node in the view and in placement (no `Suspect`, no re-placement)
+    until the deadline, measured on their own monotonic clocks, and hold messages to it in the bounded resend windows
+    of their links (`Busy` with the existing back-off beyond that).
+  - **Commit point**: only one process runs shards at any time. The old one stops its shards, settles in-flight record
+    writes before `Save` and never runs them again past the successor's "loaded" (pipe) or the successor finding a
+    valid snapshot (file); before it, a failure withdraws `Restarting` and the old process carries on. A deadline that
+    passes first is an ordinary departure: actors re-activate elsewhere under new epochs, a late successor discards
+    the snapshot and joins with a new generation.
+  - **Standby peer links**: today a link is one per peer address with one inbound slot, its Hello names a random
+    per-process node id, and a Resume from another node id restarts the stream and fails calls in flight (ADR-008,
+    ADR-065). The refactor adds: node identity on the wire as (name, generation) with the incarnation beside it, so
+    the successor resumes the old process's streams instead of looking like a restart; `LinkHello` (version
+    tolerant) gains the incarnation, a `Standby` flag and the endpoint the successor listens on until it binds the
+    advertised port; a peer keeps a standby connection beside the live one (authenticated as any Hello, answered
+    with no `Resume`, carrying no traffic) only for a member it knows whose Hello names a higher incarnation, and
+    closes it at the deadline or when `Restarting` is withdrawn; the membership update with that incarnation and the
+    matching token switches the link: the old connections close, the successor sends `Resume` with the restored
+    counts, each side replays its window. The member's card is fetched again when its incarnation rises (the build
+    is on it). Without a warm successor (the file path) the successor reconnects at the advertised address after
+    start, with the same identity, and the streams resume the same way.
+  - **Fallbacks when layouts change**: records that stay readable (version-tolerant or keyed `IPersisted`) take the
+    path through records; changes of hosting or client routes take a rolling upgrade with migration through records
+    (layout hashes, ADR-082). Gateways always take rolling upgrades (`Client` is pinned to its socket).
+- Evidence: moving a world costs milliseconds and allocates nothing. BenchmarkDotNet ShortRun, EasyEcs 4.5.0,
+  .NET 11 RC2, one world with 5 unmanaged components per entity: 10,000 entities `Save` 44 µs, `Load` 183 µs,
+  440 KB; 100,000 entities `Save` 0.76 ms, `Load` 2.7 ms, 4.4 MB; 0 B allocated in both.
+- Alternatives: a collectible `AssemblyLoadContext` with `RemoveTypes` and a dispatch-table swap between ticks (JIT
+  only, unload leaks, a Logic project and its cycle, swaps the logic only); re-activation from records on every
+  change (a checkpoint interval of state lost, a load storm); handing the listening sockets to the new process
+  (`SCM_RIGHTS`, Envoy's hot restart: Unix only; a possible later optimization for gateways); `exec` into the new
+  binary (no Windows equivalent, no warm-up).
+- Consequences:
+  - Two user projects, `Game.Protocol` and `Game.Server`; ADR-067's reloadable logic project goes when R10 promotes
+    the drafts.
+  - Pause targets: tens of milliseconds after warm-up (save, transfer, load and the membership switch), hundreds
+    without (a platform restart adds process start and reconnects). R measures both end to end (BenchmarkDotNet per
+    shard, E2E with clients connected).
+  - What changes without a restart is data swapped between two ticks: tuning tables (a validated shard singleton,
+    its version on the member card) and feature flags choosing between handlers compiled into the binary.
+  - `[Stateless]` actor types deployed as their own group are replaced start-new-then-stop-old, without a pause.
+  - Prerequisite, EasyEcs request #22. `world.Load` stamps every loaded row (and every row lacking a tracked
+    component, as removed) at the world's current change tick, and a system's `[Changed<T>]` / `[Removed<T>]` methods
+    filter on `Since(LastRunTick + 1)` with `LastRunTick` 0 before the first run (`internal set`): a system's first
+    run visits every row stamped since the world began, so after a hot restart `ChangeSystem` would tag every root
+    `Unsaved` and every actor would rewrite its record at once. Needed: `world.Load(input, markWritten: false)` with
+    `LoadEntitiesInto`'s semantics (no change tick, no removal stamp), and a first run that starts from the current
+    tick, chosen at registration (`AddSystem(system, seeExisting: false)` or a settable baseline): with tick 0 alone a
+    first run skips the loaded rows only because 0 is below `Since(1)`, while the documented contract is that a first
+    run visits every entity having the component. A user system that re-fires once after a restart (one extra AOI pass) is
+    acceptable; the persistence systems must not. Pending writes are not lost: `Unsaved` is a tag on the root and
+    travels in the save.
+
+## ADR-085 Actor-hosting groups publish as StatefulSets with `OnDelete`; hot restart patches pods in place
+- Context: ADR-030 publishes every node group as a Deployment: a node's identity was its random id and its actors'
+  state lived in the store, so pods needed no stable names. Hot restart (ADR-084) keeps a node's identity (name and
+  generation) and its in-memory world across a code change; on Kubernetes the process is restarted by the kubelet,
+  so the snapshot has to survive in the pod and the pod must not be replaced. A Deployment replaces pods on every
+  template change (new names, new IPs, empty volumes).
+- Decision:
+  - **Node groups that host actors publish as a StatefulSet with `updateStrategy: OnDelete`**: pods get stable names
+    (`{group}-{ordinal}`, the node name, `Environment.MachineName`), and a template change replaces no pod ("the
+    StatefulSet controller will not automatically update the Pods"; pods are replaced only when deleted). The
+    headless `{group}-peers` Service stays (seeds, `publishNotReadyAddresses`) and is the StatefulSet's `serviceName`.
+    Gateways and stateless groups stay Deployments (rolling upgrade, start-new-then-stop-old).
+  - **Hot restart on Kubernetes**: the release itself (`helm upgrade` of the published chart) sets the StatefulSet's
+    template image; with `OnDelete` that replaces no pod, and pods created later get the new build. The rollout then
+    runs as an in-cluster Job with a namespaced Role (get/patch pods in the group): it first has every node pull the
+    new image (so the pull is not inside the pause), then, one pod at a time, patches the running pod's
+    `spec.containers[].image`. It never patches the template (the next `helm upgrade` would put the old image back).
+    That field is mutable on a running Pod; the kubelet restarts the container inside the same pod (same pod, UID and
+    IP; the Pod is not rescheduled), and an `emptyDir` survives container restarts. The snapshot directory is an
+    `emptyDir` with `medium: Memory` (tmpfs; its bytes count against the container's memory limit, about 4.4 MB per
+    100,000 entities of the benchmark world).
+  - The StatefulSet is named `{group}` (pods `game-0`, …) with `podManagementPolicy: Parallel`. A stateful group
+    that also accepts clients itself (no separate gateway, e.g. the flash sale's `sale`) uses `RollingUpdate`: its
+    clients reconnect on any restart, so it gains nothing from keeping the pod.
+  - Nodes need no Kubernetes API access: the data plane discovers peers through DNS only, and node pods run without
+    a service-account token. The full target shape (Secrets, Jobs, probes, security context, network policy) is
+    [doc/drafts/deployment.md](drafts/deployment.md).
+- Sources: [StatefulSets: OnDelete, stable network ID](https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/);
+  [Pods: Pod update and replacement](https://kubernetes.io/docs/concepts/workloads/pods/) ("Pod updates may not
+  change fields other than `spec.containers[*].image`, …"; "`ContainerStatus.ImageID` reflects the image from the
+  previous generation until the new image is pulled and the container is updated"; one IP per Pod shared by its
+  containers); [Pod lifecycle](https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/) (a Pod is
+  scheduled once; the kubelet restarts containers within it); [Volumes: emptyDir](https://kubernetes.io/docs/concepts/storage/volumes/#emptydir)
+  ("The data in an `emptyDir` volume is safe across container crashes"; `medium: Memory` mounts a tmpfs counted
+  against the memory limit). No page says in one sentence that an image patch restarts the container in place; the
+  Pod page implies it (the `ImageID` line above), and the R11 E2E proves it on a real cluster (kind).
+- Alternatives: Deployments with in-place pod patches (a later template change still rolls every pod, and pod names
+  change on any replacement); `RollingUpdate` StatefulSets (the controller replaces each pod on a template change,
+  emptying its `emptyDir`); a persistent volume for the snapshot (slower, zone-bound, outlives the snapshot's use).
+- Consequences: ADR-030's "no StatefulSet" holds only for gateways and stateless groups once roadmap R11 lands, and
+  ADR-030 is rewritten then. Scaling a stateful group is still the platform's (`kubectl scale`, an HPA); a scaled-in
+  pod leaves gracefully as today. R11 changes `DaServer.Aspire` and the samples' AppHosts (roadmap).
