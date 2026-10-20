@@ -22,7 +22,7 @@ Keep this file current: tick items when done, add items when scope changes.
 11. S1-S6 (done) elastic scaling.
 12. The ECS rewrite (ADR-081, the "ECS rewrite" entry under "Open cleanup" below): P1-P3 and P5 done; P4, P6 and P7
     superseded by W.
-13. W — refactor to the v35 programming model ([drafts/programming-model.md](drafts/programming-model.md),
+13. W — refactor to the v36 programming model ([drafts/programming-model.md](drafts/programming-model.md),
     [drafts/architecture.md](drafts/architecture.md)) on EasyEcs 4.6.0 and 4.7 (ADR-082 to ADR-092). Breaking; each step
     proven before the next (W, not R: the requirement ids R0-R11 are taken). Every use of an EasyEcs 4.7 feature (planned)
     is marked "(4.7)" inline where a step names it; until 4.7 ships each such use takes the 4.6 fallback listed in W1,
@@ -130,9 +130,9 @@ Keep this file current: tick items when done, add items when scope changes.
       but for ask states, the change system on `ChangedAny`/`RemovedAny` (4.7), spawns of persistent prefabs tagging the
       root `Unsaved`, placeholders never checkpointed, every load (record, migration, snapshot) completing entities from
       their prefab copy: `[NotSaved]` components and those gained since the composition, unknown type ids skipped and
-      counted), one record write in flight per root with a write sequence in the CAS, checkpoints as `Slices` (4.7),
-      `OnError = Reload` (root reset to its prefab copy's values and `Unsaved` removed, keeping only the key, the mail,
-      the faulting call id and `HeldOutput`, the batch remainder into the mail,
+      counted), a plain epoch CAS with a root's writes never overlapping (`Writing`), checkpoints as `Slices` (4.7),
+      `OnError = Reload` (root reset to its prefab copy's values and `Unsaved` removed, keeping only the key, the mail
+      and the faulting call id, the batch remainder into the mail,
       the in-flight write awaited before the claim, write completions matched to their activation epoch, consecutive
       reloads backing off), migration bytes with layout hashes and a new epoch on arrival, tombstones forwarding all
       mail, group frames flushed before deactivation and migration and discarded on fencing. Hot restart's runtime side
@@ -143,10 +143,11 @@ Keep this file current: tick items when done, add items when scope changes.
       for a rolling upgrade) and `{cluster}-restart` for local Aspire (the dashboard's resource command), Compose
       (stateful groups as one service per node with a fixed hostname and a named snapshot volume each, restarted one
       node at a time) and the documented systemd unit, launchd plist and Windows service (the Kubernetes rollout is
-      W11). With them: `[Durable]` at both ends (`HeldOutput`: a settling item's whole output and the actor's later
-      output in order until the CAS, the four kinds of settling item, held output carried across deactivation,
-      migration and the freeze after awaiting the in-flight write, no idle deactivation while it is held, released
-      group pushes through their group's frame; the asker's waiting entity in the record before the request leaves,
+      W11). With them: `[Durable]` at both ends (group commit: a batch with any of the four kinds of durable item ends
+      in one record write, its whole output held until the CAS and released in order, discarded on fencing; the actor
+      paused meanwhile (`Committing`: no items, its systems' output queued behind the batch's, other actors running),
+      never idle, and awaited by deactivation, migration and the freeze; released group pushes through their group's
+      frame; the asker's waiting entity in the record before the request leaves,
       `settleBy`, re-asks (a `NotHandled` on a re-ask transient), the settling re-ask, a durable asker destroyed by a
       handler or a system failing the item and reloading, `Depart` re-parenting a durable wait to the root; the
       receiver's dedupe before the `TooLate` check, `ReplyLog` with refused entries under their own capacity
@@ -160,18 +161,18 @@ Keep this file current: tick items when done, add items when scope changes.
       `DestroyedPersistentChildTagsRootUnsaved`, `PlaceholderNeverCheckpointed`, `RecordMissingComponentsFilledFromPrefab`,
       `UnknownRecordTypeSkippedAndCounted`, `NotSavedComponentsReaddedOnArrivalAndLoad`,
       `PrefabGainedComponentAddedOnSnapshotLoad`, `ComponentRemovedAtRunTimeNotReadded`,
-      `NonPersistentEntityCompletedAfterMigration`, `OneRecordWriteInFlightPerRoot`, `OlderWriteNeverLandsAfterNewer`,
-      `TimedOutWriteThatLandedCountsAsWritten`, `ActivatedByRefusesOtherMessages`,
+      `NonPersistentEntityCompletedAfterMigration`, `GroupCommitWaitsForInFlightCheckpoint`,
+      `TimedOutWriteRetriedWithSameBytes`, `ActivatedByRefusesOtherMessages`,
       `DurableRequestActivatesDespiteActivatedBy`, `NotHandledOnDurableReaskIsTransient`, `MaxPendingExceededHandledByOnError`,
       `PlaceholderMailFullAnswersBusy`, `ReloadKeepsQueuedMail`, `ReloadResetsRootToPrefab`, `ReloadClearsUnsaved`,
-      `ReloadMovesBatchRemainderIntoMail`, `ReloadKeepsHeldOutputOnPlaceholder`, `ReloadWaitsForInFlightWrite`, `StaleWriteCompletionIgnoredAfterReload`,
+      `ReloadMovesBatchRemainderIntoMail`, `ReloadDiscardsUnwrittenDurableBatchOutput`, `ReloadWaitsForInFlightWrite`, `StaleWriteCompletionIgnoredAfterReload`,
       `HalfAppliedItemNeverReachesCheckpoint`, `RepeatedReloadBacksOff`, `DeterministicThrowOnDurableAnswersFaulted`,
-      `FaultedAcrossReloadAnsweredAfterWrite`, `DurableReplyReleasedOnlyAfterCheckpoint`,
-      `DurableOutputHeldInOrderUntilCas`, `GrantSurvivesCalleeCrashAfterReply`, `DurableRepliedOutputHeldUntilAskerRecord`,
+      `FaultedAcrossReloadAnsweredAfterWrite`, `DurableBatchOutputLeavesOnlyAfterWrite`,
+      `PausedActorTakesNoItemsDuringWrite`, `FencedDurableBatchDiscardsOutput`, `GrantSurvivesCalleeCrashAfterReply`,
+      `DurableRepliedOutputHeldUntilAskerRecord`,
       `SettlingReaskRefusesUnrunCall`, `RefusedEntriesHaveOwnCapacity`, `FullRefusedLogLeavesSettleUnanswered`,
       `RefusedEntriesExpireAfterDeadline`, `LateDuplicateAfterSettleNeverRuns`, `LaterReplyOnDurableTokenHeldUntilWrite`,
-      `HeldOutputCarriedThroughMigrationAndSnapshot`, `HeldOutputBlocksIdleDeactivation`,
-      `ReleasedGroupPushKeepsGroupRate`,
+      `DeactivationMigrationAndFreezeAwaitPausedWrite`, `PausedActorNotIdle`, `ReleasedGroupPushKeepsGroupRate`,
       `DurableRepeatAnsweredBeforeTooLateCheck`, `DurableRequestTooLateRefused`, `DestroyingDurableAskerFailsItem`,
       `SystemDestroyOfDurableAskerReloads`, `DepartReparentsDurableWaitToRoot`,
       `PersistedReplyToDeadlineIsUtc`, `IssueSeqWrittenBeforeTokenLeaves`, `NextDueFollowsWakeAt`,
@@ -191,7 +192,9 @@ Keep this file current: tick items when done, add items when scope changes.
       `DurableAskExpiresOnlyWhenSettleUnanswered`, `ReplyLogFullRefusesWithBusy`,
       `IdleDeactivationWaitsForPendingDueAndAsks`, `StoreOutageBoundsMemoryAndRecoversWithoutHerd`,
       `PoisonActorBacksOffClaims`, `RebalancePausesDuringDrainAndRestart`,
-      `TimeNoticeRepushedOnResume`, `ManifestDiffPicksPath`, `ComposeRestartOneNodeAtATime`.
+      `TimeNoticeRepushedOnResume`, `ManifestDiffPicksPath`, `ComposeRestartOneNodeAtATime`. BenchmarkDotNet
+      `DurableGroupCommitThroughput`: durable asks per second per actor and per world at a write latency of 1, 5 and
+      20 ms.
     - [ ] W6a `DaServer.Reminders` (ADR-090, draft §15): `Reminder<T>` persistent children with `WakeAt`,
       `root.Remind<T>`/`Unremind<T>`, `Reminded<T>` through a `Due` while active and the runtime's wake while unloaded.
       Tests: `ReminderActivatesUnloadedActor`, `ReminderSurvivesNodeCrash`, `ReminderFiresOncePerUtcAtWithinActivation`,

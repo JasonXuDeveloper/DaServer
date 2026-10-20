@@ -1552,7 +1552,7 @@ Replaced by ADR-081.
   changed" leaks; the order between mail, delayed sends and systems is implicit. EasyEcs 4.5 now provides what a
   model without these needs: single-entity jobs (`entity.Run(ref job[, filter])`), group filters carried by
   interfaces (`IGroupWith<T>`), `world.Descendants(root)` and `LoadEntitiesInto(…, markWritten: false)`.
-- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v35), structured as in
+- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v36), structured as in
   [drafts/architecture.md](drafts/architecture.md):
   - **The actor type is its address, its root component, its root prefab and its system group**:
     `[TickRate(30)] partial record struct Map(long Id) : IActor<Map>` (`IActor<T>` inherits `IEquatable<T>`, so
@@ -1583,16 +1583,20 @@ Replaced by ADR-081.
       membership change of a type, frames carry the highest seen), and a claim that displaces a live owner sends it
       `Fence(key, epoch)`, so two activations never overlap until the loser's next write; claims are idempotent, so
       a retried statement or a restart after a migration's arrival does not fence the claimant itself;
-    - a root has one record write in flight and each write compares a write sequence besides the epoch, so an older
-      write never lands after a newer one;
+    - a root's record writes never overlap (a checkpoint and a group commit each wait for one in flight), so the CAS
+      compares the epoch alone and a failed write is retried with the same bytes;
     - generations are max(last seen + 1, Unix ms), and only the lowest-ordinal seed forms a cluster, so a cold restart
       of the whole cluster never reuses a generation and parallel seeds never form two clusters.
   - **Replies, presences and retries are data with stated guarantees** (the table "每条路径保证什么" in the draft's §11):
-    - `[Durable]` on an `IRequestTo` makes both ends the framework's. An item that must settle (a `[Durable]` request
-      asked, handled, or its `Replied` handled, or a `Reply` through a stored durable token) holds its whole output, and
-      every later output of the actor in order, until the record write's epoch CAS: nothing leaves ahead of the state
-      it depends on. Held output survives deactivation, migration and the hot-restart freeze (each awaits the in-flight
-      write, the rest travels and is released after the receiver's first write), and a root holding it is never idle. The asker's waiting entity
+    - `[Durable]` on an `IRequestTo` makes both ends the framework's, by group commit. When an actor's batch holds a
+      durable item (a `[Durable]` request asked, handled, or its `Replied` handled, or a `Reply` through a stored
+      durable token), the actor finishes the batch, holds the batch's whole output, writes its record once (epoch CAS)
+      and on success releases the output in order; until then it is paused, taking no new items while the rest of its
+      world runs, and a failed CAS fences it and discards the output. Nothing leaves ahead of the state it depends on.
+      A paused actor is never idle, and deactivation, migration and the hot-restart freeze wait (bounded) for its
+      write, so no output waits in a placeholder, migration bytes or a snapshot. The items of a batch share its write:
+      an actor waits one store write per batch with durable items, so its throughput holds under load and the actors
+      beside it are not blocked. The asker's waiting entity
       (request, state, call id, UTC deadline from `settleBy:`; `deadline:` stays the per-attempt timeout) is written
       into its record before the request leaves, and is re-asked with the same call id on transient outcomes (a
       `NotHandled` from an older build on a re-ask included) and after re-activation; a `[Durable]` request always
@@ -1600,17 +1604,16 @@ Replaced by ADR-081.
       after the answer handles the same answer again rather than a different one, and destroying an entity with a
       waiting durable ask below it fails the item instead of dropping the promise (an asker's type persists and uses
       `OnError = Reload`, an analyzer error otherwise, so the promise comes back from the record). One `AskTimeout` before the
-      deadline the asker sends a single settling re-ask: the receiver answers from its log, waits for its held reply,
-      or records the call id as refused (under a cap of their own; when full the settling re-ask goes unanswered) and answers `TooLate`, so a late
+      deadline the asker sends a single settling re-ask: the receiver answers from its log or records the call id as
+      refused (under a cap of their own; when full the settling re-ask goes unanswered) and answers `TooLate`, so a late
       duplicate never runs; `Expired` then means only "unreachable, outcome unknown". The receiver keeps call id →
-      reply in an internal bounded `ReplyLog`, written in the same record write that holds the reply until the epoch
-      CAS; it answers a repeat from it first, then refuses (`TooLate`) to start a request whose remaining budget is
-      below its write latency; a handler that threw is recorded as `Faulted` across the `Reload` and answered only once
+      reply in an internal bounded `ReplyLog`, written in the same group commit as the reply; it answers a repeat from
+      it first, then refuses (`TooLate`) to start a request whose remaining budget is below its write latency; a handler that threw is recorded as `Faulted` across the `Reload` and answered only once
       that is in the record, so a receiver's actor type must persist and use `OnError = Reload` (an analyzer error
       otherwise). A call id runs at most once; an outcome the caller saw survives either side's crash; a `[Durable]`
       request cannot be cancelled (an analyzer error: giving up is waiting for the deadline).
-      Users write no reservations, re-asks or call rings. Opt-in, since it costs a store write of latency on each
-      side; other requests stay immediate and an unknown outcome stays the asker's to decide.
+      Users write no reservations, re-asks or call rings. Opt-in, since it costs a store write of latency per batch on
+      each side; other requests stay immediate and an unknown outcome stays the asker's to decide.
     - A lost connection or gateway leaves its presences `Detached` for a grace (30 s, `DetachGrace`) instead of
       `Leave()`: after a region blip or a gateway crash, clients come back to presences that are still there, and
       actors rebuild nothing. A takeover sends `TakeOver` to the old connection's gateway; a newer login (a larger
@@ -1640,7 +1643,7 @@ Replaced by ADR-081.
     run after every mail batch, so each `[ForEach]` there must narrow by `[Changed<T>]`, `[Removed<T>]`, a tag or an
     `UpdateInterval` (an analyzer error otherwise); a throwing handler of an actor type whose root persists restarts
     it from its last record by default (`OnError = Reload`: the root is reset to its `RootPrefab` copy's values keeping
-    only the key, the mail, the faulting call id and the held output, the batch's remaining items move into the mail, the root's in-flight write finishes before the claim
+    only the key, the mail and the faulting call id, the batch's remaining items move into the mail, the root's in-flight write finishes before the claim
     and write completions count only for their own activation epoch, consecutive reloads back off like failed
     activations), since EasyEcs applies changes at once without rollback and a half-applied item must never reach a
     checkpoint; types without a record keep `Continue`.
@@ -1688,7 +1691,9 @@ Replaced by ADR-081.
   promised the same thing twice); `Leave()` at once on a lost connection (a
   reconnect storm rebuilds every presence); every reply durable (a store write of latency on every request);
   persistence per component type (above); `Expired` straight at the deadline (a duplicate still in a resend window
-  could run after the asker gave up).
+  could run after the asker gave up); holding durable output per item in a FIFO on the root, later items' output
+  queued behind it, with a write sequence in the CAS (special cases everywhere: held output travelling in placeholders,
+  migration bytes and snapshots, released after the receiver's first write, kept across `Reload`).
 - Consequences: breaking for every user project and most of the runtime (roadmap phase W). The timer defaults are one
   table in the draft's §11 (lease 6 s, `SuspectAfter` 3 s, `DeadAfter` and re-placement 10 s, link silence 3 s):
   `SuspectAfter`, `DeadAfter` and the link timeout keep ADR-053's and ADR-064's values; ADR-023's "keys move when a

@@ -1,4 +1,4 @@
-# DaServer 新编程模型设计（草案 v35，未实现，迭代中）
+# DaServer 新编程模型设计（草案 v36，未实现，迭代中）
 
 原则：业务代码干净、解耦、简洁，不用 OOP。ECS 一路到底：能用 EasyEcs 的功能就用 EasyEcs，状态都是数据，其余交给我们的特性和生成器，不重复造轮子。
 
@@ -604,7 +604,7 @@ ref var hp = ref target.Health;
 | `e.Root` | `e` 所在 Actor 的根：沿 `ChildOf` 往上走的循环（EasyEcs 文档的祖先遍历） |
 
 - **跨 Actor 的操作，发送方是 `e.Root` 那个 Actor。**
-- **发出的东西先是数据**：`Send`、`Ask`、`Reply`、`Push`、`Broadcast` 和 `Join()` 的路由，都追加到运行时的单例 `Outbox`：追加时就序列化进按目标节点分的池化 `FrameWriter`，`Broadcast` 和组推送只序列化一次，每个网关一帧。有序阶段结束时（没有 tick 的 Actor 类型是每批邮件之后）和收尾之后，运行时把这些帧交给链路一次；同一个目标的帧按追加的顺序发出。所以 `Join()` 的路由一定排在回复前面（第 7 节），`TestActor<K>` 把 `Outbox` 解码成数据断言（第 12 节）。
+- **发出的东西先是数据**：`Send`、`Ask`、`Reply`、`Push`、`Broadcast` 和 `Join()` 的路由，都追加到运行时的单例 `Outbox`：追加时就序列化进按目标节点分的池化 `FrameWriter`，`Broadcast` 和组推送只序列化一次，每个网关一帧。有序阶段结束时（没有 tick 的 Actor 类型是每批邮件之后）和收尾之后，运行时把这些帧交给链路一次（一批里有 `[Durable]` 项的 Actor 的输出等它的写，第 8 节）；同一个目标的帧按追加的顺序发出。所以 `Join()` 的路由一定排在回复前面（第 7 节），`TestActor<K>` 把 `Outbox` 解码成数据断言（第 12 节）。
 - **当前项的上下文也是数据**：运行时的单例 `Current` 里是当前项的时间、根、发送方和客户端上下文。操作从它取客户端上下文；没有时是明确的结果（`Join()` 返回 `NoClient`），不是默认值。
 - `Send`/`Ask` 的方向检查见第 4 节。
 - 本地事件只能发给本 Actor 的实体，运行时断言。
@@ -645,17 +645,17 @@ ref var hp = ref target.Health;
 
 **不回滚。** EasyEcs 的结构变更当场生效，没有命令缓冲（EasyEcs `decisions.mdx` D2），组件写入也是当场的。所以抛出时：
 - 抛出之前做的修改都留着：建的实体、加删的组件和 tag、经 `ref` 参数和方法体写的组件；结构变更之后经 `ref` 参数的写入，EasyEcs 在 job 抛出时也搬到新行（4.5 的 `entity.Run` 保证）；
-- 已经追加进 `Outbox` 的照样发出（`[Durable]` 留住的输出按下面 `Reload` 的规则）；
+- 已经追加进 `Outbox` 的照样发出；这一批有 `[Durable]` 项时除外：它的输出等的那次写还没发出，`Reload` 丢弃它们（第 8 节）；
 - 这条消息的请求以 `Faulted` 结束（终止的结果，不是 `Transient`：同样的输入会再抛一次）；它的即时链里还没执行的事件作废。
 
 之后怎么办，看 Actor 类型上的 `[ActorOptions(OnError = …)]`：
 - `ErrorAction.Reload`：不写记录，不进 `Leaving`，不加 `Deactivating`。
   1. 销毁根的所有子孙；
-  2. 根回到注册时 `K.RootPrefab` 的副本：去掉副本以外的组件（tag `Unsaved` 也明确去掉），副本上有的组件改回副本的值；留着的只有键、排队的邮件（`Mail`）、抛出的 `[Durable]` 请求的调用 id 和为 `[Durable]` 留住的输出（`HeldOutput`，第 8 节），带上 `Loading`，就是占位；
+  2. 根回到注册时 `K.RootPrefab` 的副本：去掉副本以外的组件（tag `Unsaved` 也明确去掉），副本上有的组件改回副本的值；留着的只有键、排队的邮件（`Mail`）和抛出的 `[Durable]` 请求的调用 id，带上 `Loading`，就是占位；
   3. 这一批里这个根还没执行的邮件，按原来的 `(时间, 序号)` 移进 `Mail`；
-  4. 等这个根正在进行的写记录有结果，再从最后一次写成的记录重新激活（第 6 节的表，同样经 `ActivationSlots` 和退避）。写记录的结果按发起它的激活的 epoch 认：旧激活的结果不去掉新激活的 `Unsaved`，也不放出新激活留住的输出。
+  4. 等这个根正在进行的写记录有结果，再从最后一次写成的记录重新激活（第 6 节的表，同样经 `ActivationSlots` 和退避）。写记录的结果按发起它的激活的 epoch 认：旧激活的结果不去掉新激活的 `Unsaved`。
 
-  上次写记录之后的改动丢失，排队的邮件不丢。占位上的 `HeldOutput` 跟着它等的那次写：那次写已经发出并且写成，就放出；还没发出的写所等的输出丢弃，记录里本来就没有它们。Presence 是清理组件，销毁时框架释放它们的路由，客户端 SDK 收到 `PresenceLost` 后重新发加入消息（第 7 节）。抛出的是 `[Durable]` 请求时，它的调用 id 留在占位上；重新激活、记录装好之后并进 `ReplyLog`，记成 `Faulted`，根标 `Unsaved` 当场写记录，写成之后才回答 `Faulted`。之后重复的请求得到同样的回答，不再执行。同一个键连续 `Reload`（节点配置的次数）就进入下面激活失败的退避。
+  上次写记录之后的改动丢失，排队的邮件不丢。Presence 是清理组件，销毁时框架释放它们的路由，客户端 SDK 收到 `PresenceLost` 后重新发加入消息（第 7 节）。抛出的是 `[Durable]` 请求时，它的调用 id 留在占位上；重新激活、记录装好之后并进 `ReplyLog`，记成 `Faulted`，算作激活后第一批的 `[Durable]` 项：这一批的写成之后才回答 `Faulted`（第 8 节）。之后重复的请求得到同样的回答，不再执行。同一个键连续 `Reload`（节点配置的次数）就进入下面激活失败的退避。
 - `ErrorAction.Continue`：实体就是现在的样子，接着处理下一项。
 - **默认按根要不要保存分**：根的 `RootPrefab` 带 `[Persist]` 的 Actor 类型默认 `Reload`，其余默认 `Continue`。原因是不回滚：改了一半的项留在内存里，下一个检查点就把它写进记录，宕机和迁移都去不掉它；`Reload` 丢掉内存，从上一份完整的记录接着来。没有记录的 Actor 只有内存这一份，丢掉它不比留着好。`[Durable]` 请求的接收方和发问方都只能用 `Reload`（第 8 节）。
 
@@ -689,7 +689,7 @@ ref var hp = ref target.Health;
 | 加载中 | 占位，带 `Loading` | 第一条消息到达本节点，本节点按自己的视图是这个键的主人（不是主人就转发，不激活）；或者处理方法抛出、`OnError` 是 `Reload`（根要保存的 Actor 类型的默认，第 5 节） | 邮件留在占位上；拿到 `ActivationSlots` 的名额后，一条语句占 epoch 并读记录（第 10 节） |
 | 激活 | 同一个实体，成为根 | epoch 占到了，记录读到了或者没有记录 | 有记录时 `LoadEntitiesInto(record, [占位, n−1 个空实体], markWritten: false)`（第 10 节）；然后加上 `In<K>`，去掉 `Loading`。键和邮件本来就在它上面，不搬动；邮箱里第一条是 `Activated`，后面才是等着的邮件 |
 | 运行 | 完整的根实体 | — | 按 `(时间, 序号)` 执行消息和事件，再跑系统和收尾（第 1 节） |
-| 停用 | 完整的根实体 → 占位，带 `Saving` | 空闲超过 `IdleTimeout`（不写用节点配置 `DaServer:IdleTimeout`；空闲检查是 `[ForEach(Slices = N)]` 的框架系统，每次看每张表的 1/N 行）：没有待执行的延后事件和等待中的请求，没有为 `[Durable]` 留住的输出，也没有不带 `Detached` 的 Presence；或者调用 `root.Deactivate()` | 依次：<br>1. 对每个 Presence `Leave()`；<br>2. 根加上 `Deactivating`，之后的邮件不再执行，留给占位；<br>3. 这一轮的系统和收尾跑完（用户对 `Leaving` 和 `Deactivating` 的反应、`Depart`）后，`SaveEntities` 写进缓冲，销毁整棵子树（待执行的延后事件随之消失），换成带 `Saving` 的占位，邮件都留在占位上；<br>4. 异步写记录，按 epoch 比较并交换；<br>5. 写成功后：占位上有邮件，就变成 `Loading`，读到的是刚写好的记录；没有就销毁占位 |
+| 停用 | 完整的根实体 → 占位，带 `Saving` | 空闲超过 `IdleTimeout`（不写用节点配置 `DaServer:IdleTimeout`；空闲检查是 `[ForEach(Slices = N)]` 的框架系统，每次看每张表的 1/N 行）：没有待执行的延后事件和等待中的请求，不在暂停中（第 8 节），也没有不带 `Detached` 的 Presence；或者调用 `root.Deactivate()` | 依次：<br>1. 对每个 Presence `Leave()`；<br>2. 根加上 `Deactivating`，之后的邮件不再执行，留给占位；<br>3. 这一轮的系统和收尾跑完（用户对 `Leaving` 和 `Deactivating` 的反应、`Depart`）后，`SaveEntities` 写进缓冲，销毁整棵子树（待执行的延后事件随之消失），换成带 `Saving` 的占位，邮件都留在占位上；<br>4. 异步写记录，按 epoch 比较并交换；<br>5. 写成功后：占位上有邮件，就变成 `Loading`，读到的是刚写好的记录；没有就销毁占位 |
 | 隔离 | 销毁 | 写记录时 epoch 比较失败；收到 `Fence(键, epoch)` 控制邮件（第 10 节）；或者本节点被移出成员视图 | 不写记录、不进 `Leaving`、不加 `Deactivating`，直接销毁整棵子树；Presence 的路由由清理组件释放（第 7 节）；排队的请求以 `NoOwner` 失败 |
 
 - 写记录失败就重试，绝不丢弃；epoch 比较失败不是失败，是隔离。
@@ -861,19 +861,21 @@ public readonly partial record struct Account(long Id) : IClaims;               
 
 写在 `IRequestTo` 上（第 4 节），给必须落定一次的请求：发物品、扣款、下单、签发令牌。普通请求照旧：当场回复，结果未知由发问方决定。
 
-- **落定之前，输出排队**（两端共用这一条）：一项要先落定时，这一项追加进 `Outbox` 的全部输出（请求、回复、推送、单向消息，不只是请求或回复）都不交给链路，按顺序留在根上（内部的 `HeldOutput`）；这个 Actor 之后各项的输出也排在它们后面，先进先出。要先落定的项有四种：
-  1. 发出 `[Durable]` 请求；
-  2. 处理 `[Durable]` 请求；
+- **组提交**（两端共用这一条）：一个 Actor 的一批（一次有序阶段里它执行的项，第 1 节）里只要有一个 `[Durable]` 项，这一批就以一次写记录结束。`[Durable]` 项有四种：
+  1. 发出 `[Durable]` 请求（建等待实体）；
+  2. 处理 `[Durable]` 请求，收尾的一问也是；
   3. 处理 `[Durable]` 的 `Replied`；
   4. 用存着的 `[Durable]` 请求的令牌 `Reply`（令牌带着"请求是 `[Durable]` 的"）：同一次写里，`ReplyLog` 里这个调用 id 的"令牌已取走"换成这个回复。
 
-  根标 `Unsaved`，`CheckpointSystem` 不等检查点间隔当场写记录，epoch 比较并交换成功后按顺序放出。所以对外的先后和执行的先后一致，没有一条输出走在它依赖的那次落定之前。放出的组推送照常进这个组按频率交出的帧，也照常守"成员变化前先交出"的规则（第 9 节）。
-- **留住的输出不跨过停用、迁移和热重启丢掉**：停用、迁出和热重启的冻结都先等（有上限）这个根在途的写，放出它覆盖的输出；还留着的（它等的写还没写成）随停用的 `Saving` 占位、迁移的字节或快照走，由那一边第一次写成之后放出（迁来的和加载的根带着 `HeldOutput`，所以当场写）。`HeldOutput` 不空的根不算空闲（第 6 节）。
+  这一批执行完，它追加进 `Outbox` 的全部输出（请求、回复、推送、单向消息）都不交给链路；框架把根写一次记录，按 epoch 比较并交换，写成后这些输出按追加的顺序放出。从这一批结束到这次写有结果，这个 Actor **暂停**（根上内部的 tag `Committing`）：不执行新的项，它的邮件和到期项留在队列里，恢复后照常按 `(时间, 序号)` 执行；它的系统照常跑，追加的输出排在这一批的后面一起放出。同 world 的其他 Actor 照常执行。比较失败说明这个激活已被隔离（第 6 节），留住的输出丢弃。没有 `[Durable]` 项的批照旧（第 5 节的 `Outbox`）。
+  - 所以对外的先后和执行的先后一致，没有一条输出走在它依赖的那次落定之前；同一批的项共用这一次写。
+  - 这次写也是这个根的检查点（第 10 节）。放出的组推送照常进这个组按频率交出的帧，也照常守"成员变化前先交出"的规则（第 9 节）。
+  - 暂停的 Actor 不算空闲（第 6 节）；停用、迁出和热重启的冻结都先等它的写有结果（有上限），所以占位、迁移的字节和快照里都没有等着放出的输出。
 - **发问方**：
   - `Ask` 必写 `settleBy:`（生成的方法里它不是可选参数），它是整个承诺的期限；`deadline:` 照常是每一次问的超时，不写用 `DaServer:AskTimeout`，不超过剩下的期限。等待实体带着请求、状态、调用 id 和到期的 UTC 时刻（`Time.Utc` + `settleBy`），是要保存的实体，随 Actor 的记录保存（状态因此要能写进记录，第 10 节）。
   - **请求在等待实体写进记录之后才发出**（上面的规则）。否则发问方在请求发出、记录写成之前宕机，从旧记录恢复后不知道自己问过，同一件东西会再许给别人。
   - 结果是 `Transient`（`TimedOut`、`ConnectionLost`、`Busy`、`NoOwner`，以及重问收到的 `NotHandled`：滚动升级中旧版本的节点不认识它，不说明没执行过）时，框架用同一个调用 id 再问：等 `RetryAfter`（没有就指数退避），加完全随机抖动，计入每个节点的重试预算（预算空了就等下一次退避，不算失败）。Actor 从记录重新激活之后（宕机、迁移退回记录）和热重启之后，框架对每个还在等的等待实体再问一次；接收方去重，无害。
-  - **收尾的一问**：离期限还剩一个 `AskTimeout` 时，框架不再普通地重问，改发一次收尾的问（同一个调用 id，带收尾标记）。接收方回答它：`ReplyLog` 里有结果就用那个结果；回复还留着没放出就等它放出；两样都没有，就把这个调用 id 作为"拒绝"记进 `ReplyLog`（和别的回复一样，记录写成后才回答），回 `TooLate`。所以之后迟到的同一个请求（例如在重发窗口里等过的）查到拒绝，永远不会执行。收尾的问也没有回答，回信才是 `Status.Expired`：它只表示"联系不上，结果未知"。
+  - **收尾的一问**：离期限还剩一个 `AskTimeout` 时，框架不再普通地重问，改发一次收尾的问（同一个调用 id，带收尾标记）。接收方按下面的去重回答它；`ReplyLog` 里没有这个调用 id，就把它作为"拒绝"记进 `ReplyLog`（和别的回复一样，这一批写成后才回答），回 `TooLate`。所以之后迟到的同一个请求（例如在重发窗口里等过的）查到拒绝，永远不会执行。收尾的问也没有回答，回信才是 `Status.Expired`：它只表示"联系不上，结果未知"。
   - 所以 `Replied` 处理方法只看到最终的结果：回复的值、确定没执行的拒绝（`NotExecuted` 而不是 `Transient` 的，例如 `TooLate`、`NoActor`、`Skipped`），或者 `Expired`。
   - **处理回信也要先落定**（上面的规则）：否则发问方在回信之后、记录写成之前宕机，从记录恢复的等待实体再问一次，同一个结果被处理两次，对外说的话不一致。
   - **发问方的 Actor 类型必须要保存，并且用 `OnError = Reload`**（分析器报错），所以下面的"算作抛出"总是从记录恢复它。
@@ -883,14 +885,14 @@ public readonly partial record struct Account(long Id) : IClaims;               
 - **接收方**：
   - **接收方的 Actor 类型必须要保存，并且用 `OnError = Reload`**（分析器报错）：`Continue` 会让改了一半的状态和 `Faulted` 的回答一起写进记录。
   - 请求到达时依次：
-    1. **去重**：同一个调用 id 已经在 `ReplyLog` 里，不调用处理方法：回答已经落定的，用 `ReplyLog` 里的回答；还在排队等落定的、或者处理方法取了 `ReplyTo<T>` 还没回复的，丢弃（之后放出的那一个回复回答这个调用 id）。
+    1. **去重**：同一个调用 id 已经在 `ReplyLog` 里，不调用处理方法：有回答的（回复、`Faulted`、拒绝）就用它回答，这个回答随这一批的输出放出；"令牌已取走"还没回复的，丢弃（之后的那一个回复回答这个调用 id）。
     2. **不开始来不及落定的请求**：请求剩下的时间不够写一次记录（节点按最近的写延迟估计）时，不调用处理方法，回 `TooLate`（确定没执行）。
-    3. 调用处理方法：框架把 (调用 id, 回复, 发问方的期限) 记进根上的内部环 `ReplyLog`，它和处理方法的改动在同一次写记录里落定；回复（返回值或者 `Reply(token)`）和这一项的其他输出按上面的规则排队，写成之后才放出。
+    3. 调用处理方法：框架把 (调用 id, 回复, 发问方的期限) 记进根上的内部环 `ReplyLog`，它和处理方法的改动在同一次写记录里落定；回复（返回值或者 `Reply(token)`）和这一批的其他输出一起，写成之后才放出（上面的组提交）。
   - 处理方法抛出时，调用 id 记成 `Faulted`，写进记录之后才回答（第 5 节的 `Reload`）：终止的结果，重问得到同样的回答。
   - `[Durable]` 请求的 `ReplyTo<T>` 只能存进随记录保存的数据（要保存的实体上的组件、`[Durable]` 的 `Ask` 状态，分析器按看得出的地方检查）：令牌丢了，重复的请求又被丢弃，发问方的收尾一问只能等到 `Expired`。
   - `ReplyLog` 的项留到发问方的期限再加 `DaServer:ClockSkew` 之后（过了期限的请求不执行，第 9 节）。回复和 `Faulted` 的项每个 Actor 最多 `DaServer:ReplyLogCapacity` 个（默认 1,024）；满了、又都没过期时，新的 `[Durable]` 请求回 `Busy`，`RetryAfter` 是最早一项过期的时刻（确定没执行）。收尾一问记下的"拒绝"只有调用 id 和期限，有自己的上限 `DaServer:ReplyLogRefusedCapacity`（默认 1,024），同样在期限加 `DaServer:ClockSkew` 之后删掉；它满了时，这次收尾的一问不回答，发问方得到 `Expired`。没有一种项无界地增长。
-  - 比较失败说明这个激活已经被隔离：排队的输出都不发，改动和 `ReplyLog` 都没写进存储，发问方重问时由真正的主人执行一次。
-- **结果**：一个调用 id 最多执行一次；调用方看到的结果（成功或确定没执行），任一端宕机都不会丢；`Expired` 只在收尾的一问也联系不上时出现。代价是两端各多一次写存储的延迟，期间这个 Actor 的输出排队。不标的请求宕机时最多丢一个检查点间隔的改动（第 10 节）。
+  - 比较失败时（上面的组提交），改动和 `ReplyLog` 都没写进存储，发问方重问时由真正的主人执行一次。
+- **结果**：一个调用 id 最多执行一次；调用方看到的结果（成功或确定没执行），任一端宕机都不会丢；`Expired` 只在收尾的一问也联系不上时出现。代价：一批里有 `[Durable]` 项的 Actor 每批等一次写记录，期间不执行新的项；同一批的项共用这次写，所以负载高时每次写落定的项更多，吞吐不降；同 world 的其他 Actor 不受影响。不标的请求宕机时最多丢一个检查点间隔的改动（第 10 节）。
 - `ICluster` 带 `CallId.From(外部键)` 发 `[Durable]` 的请求时，接收方一样去重；调用方在 Actor 外面，不持久化，重试由它自己（第 4 节）。
 
 ### 客户端的调用 id、`ReplyTo<T>`
@@ -1020,7 +1022,7 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 - **被挤掉的主人马上隔离**：占的语句返回了被挤掉的主人（`old.owner` 是另一个还活着的节点代数），本节点给它发控制邮件 `Fence(键, epoch)`；那边的框架系统隔离这个根（第 6 节的表），不用等它下一次写记录失败才发现。
 - 只有按自己的视图是主人的节点才去占（第 6 节）；不是主人的转发。
 - **每次写记录都按 epoch 比较并交换**：存储里的 epoch 不是自己的，写失败。
-- **每个根同时最多一次写记录在途**：在途期间的改动（根还带着或重新带上 `Unsaved`）进下一次写。每次写还带一个写序号：`WHERE key = :key AND epoch = :e AND seq = :s`，写成时 `seq` 加一（占 epoch 的语句连同记录一起返回它），所以旧的写永远不会落在新的写之后。同一个 epoch 下 `seq` 已经前进，说明这一次写超时之前其实已经写成（只有这个激活按这个 epoch 写），按写成处理。
+- **同一个根的写从不重叠**：写在途期间（根上内部的 tag `Writing`）`CheckpointSystem` 不写它，组提交等它写完再发（第 8 节）；在途期间的改动（根还带着或重新带上 `Unsaved`）进下一次写。写失败或超时就用同样的字节重试：其间没有更新的写发出，所以只比较 epoch。
 - **比较失败就隔离**（第 6 节的表）：不写、不进 `Leaving`，销毁整棵子树。Presence 的路由由清理组件释放，客户端 SDK 重新加入，到达真正的主人那里。
 - **节点被移出成员视图时**，它在重新加入之前先隔离自己所有的 Actor，再以新的节点代数加入（第 2 节）。成员租约让它在别人重新放置之前就停下（第 2 节）；分区或长停顿之后醒来的节点即使漏过了租约，epoch 比较也拦住它的写。
 - `[Stateless]` 和 `Connection` 不占 epoch：它们不写记录。
@@ -1051,7 +1053,7 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 - **`root.Spawn`、`root.GetOrSpawn` 建出要保存的实体时，当场给根标 `Unsaved`**，不靠变更戳。
 - `ChangeSystem` 用注册时建好的 `QueryFilter.ChangedAny(persist).With<Persisted>()` 和对应的 `RemovedAny`（EasyEcs 4.7 计划）：要保存的实体上任何一个组件被写或者被删，这一行访问一次，按 `Persisted.Root` 给根标 `Unsaved`。一行改了几个组件也只访问一次；不保存的实体上同类型的写只多付变更戳，`ChangeSystem` 不访问它们。不分配。
 - **占位不写**：根带着 `Loading`、`Saving` 或 `ActivationFailed` 时，`ChangeSystem` 不给它标 `Unsaved`，`CheckpointSystem` 也不写它（`[Without<Loading>, Without<Saving>, Without<ActivationFailed>]`）。否则 `Reload` 把根改回 prefab 默认值的那些写，会被当成改动写进记录，盖掉最后一份好记录（第 5 节）。
-- `CheckpointSystem` 按配置的检查点间隔，把带 `Unsaved` 的根 `SaveEntities` 写一次（`[ForEach(Slices = N)]`：每次一片，写入摊在整个间隔里，不一齐涌向存储），按 epoch 比较并交换；写成后去掉 `Unsaved`。有输出在为 `[Durable]` 排队的根（第 8 节）不等间隔，当场写，写成后按顺序放出它们。根上的 `NextDue` 同时写进记录的 `next_due` 列（下面的唤醒）。
+- `CheckpointSystem` 按配置的检查点间隔，把带 `Unsaved` 的根 `SaveEntities` 写一次（`[ForEach(Slices = N)]`：每次一片，写入摊在整个间隔里，不一齐涌向存储），按 epoch 比较并交换；写成后去掉 `Unsaved`。一批里有 `[Durable]` 项的根不等间隔，由第 8 节的组提交当场写，这次写也是它的检查点。根上的 `NextDue` 同时写进记录的 `next_due` 列（下面的唤醒）。
 - **`Unsaved` 是根上的 tag，这是有意的**，虽然 EasyEcs 的 `ecs-principles.mdx` 第 5 条说变更检测用变更戳和 `[Changed<T>]`，不用加了又删的标记：
   - 要回答的问题是"这个 Actor 的记录要不要写"，答案属于根：子孙的变更（写、删、销毁）都要汇总到根上，记录也是按根整份写的。`[Changed<T>]` 只能回答"这一行这一趟写过没有"，回答不了"这棵树上次写成之后改过没有"；
   - 它要活过多个 tick：写记录失败时 tag 一直留着，直到某一次写成功，所以不能每 tick 从变更戳重新推出来；
@@ -1079,7 +1081,7 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 
 ### 迁移
 
-- 保存整棵子树，组件集合是注册时建好的 `migrate = ComponentSet.Create().With(typeof(每个不带 [NotSaved] 的组件))`：默认都带，标了 `[NotSaved]` 的除外；到达时按 prefab 补上它们（上面的恢复）。源节点先等这个根在途的写，留住的输出按第 8 节随字节走。
+- 保存整棵子树，组件集合是注册时建好的 `migrate = ComponentSet.Create().With(typeof(每个不带 [NotSaved] 的组件))`：默认都带，标了 `[NotSaved]` 的除外；到达时按 prefab 补上它们（上面的恢复）。源节点先等这个根在途的写（暂停的 Actor 等它的组提交，第 8 节）。
 - 等待中的请求、Presence 实体（连同 `Subscribed`）、待执行的延后事件随 Actor 一起迁移。
   - `Due` 在字节里是剩余时间，到达后按新 world 的单调时钟重新起算，再按它的 tick 边界归入 tick 窗口；已经过期的在第一个 tick 执行（第 9 节）。`Due.Seq` 到达时用新 world 的序号重新编号，保持它们之间原来的先后，然后重建到期堆。
 - **到达时占一个新的 epoch**：从字节里带来的 epoch `e` 比较并加一（同一条 `UPDATE … RETURNING`，不读记录），主人改成本节点；条件是 `epoch = e OR (epoch = e + 1 AND owner = (本节点名, 代数))`，所以这条语句重试时、或者到达后本节点热重启再来一次时，照样成功。占到之前，到达的子树像占位一样不运行，邮件排队；比较失败（别人已经占了）就隔离这份到达。所以迁移之后，源节点的任何迟到的写都会失败。
@@ -1138,10 +1140,10 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 - **步骤**：
   1. **SIGTERM 才开始**：武装状态下收到 SIGTERM（Windows 服务是停止命令），节点向协调者宣布成员状态 `NodeRestarting`（带预计停顿和武装的随机数）。协调者确认之后，期限才开始算，节点才冻结。期限由协调者按自己的单调时钟计时，其他节点只照它的决定做。
   2. **冻结前的最后一个 tick**：框架给每个 Actor 的根加上 `Restarting(TimeSpan ExpectedPause)`，用户的系统按需要反应（下面）；同一个 tick 的 `Settling` 去掉它，所以快照里没有 `Restarting`。
-  3. 每个 world 在两个 tick 之间冻结：不再执行任何项，等在途的存储操作（写记录、占 epoch）有结果：写成的去掉了 `Unsaved`、放出它覆盖的留住的输出，没写成的还带着 `Unsaved` 和 `HeldOutput`，随快照过去，新进程的下一个检查点接着写（第 8 节）。这个等待有上限，过了就放弃（下面）。**冻结只停 world 的线程**：IO 线程照常收帧，放进调度队列，冻结期间发来的消息不被拒绝，也不用让客户端或别的节点停发。
+  3. 每个 world 在两个 tick 之间冻结：不再执行任何项，等在途的存储操作（写记录、占 epoch）有结果：写成的去掉了 `Unsaved`，暂停的 Actor 放出这一批的输出，在第 4 步的切换点之前交给链路；没写成的检查点还带着 `Unsaved`，随快照过去，新进程的下一个检查点接着写；暂停的 Actor 要等到它的写写成（第 8 节），所以快照里没有暂停的 Actor。这个等待有上限，过了就放弃（下面）。**冻结只停 world 的线程**：IO 线程照常收帧，放进调度队列，冻结期间发来的消息不被拒绝，也不用让客户端或别的节点停发。
   4. 进程停止读链路，这一刻就是切换点。快照先写进 `DaServer:SnapshotPath` 目录里的临时文件，`fsync`，再改成正式的文件名（普通的文件写入：几 MB 用不着内存映射），然后进程退出。快照里有：
      - 头：节点名、节点代数、武装的随机数、旧版本和武装时新版本 `wire.manifest` 的哈希、每个组件的布局哈希、world 的个数、冻结时的 `Environment.TickCount64` 和内核的 boot id、校验和；
-     - 每个 world：`world.Save(output, exclude)` 的字节（实体连同 id 和版本、组件、`DynamicBuffer`（包括占位上等着的 `Mail`）、单例；不含系统、索引、写入戳，EasyEcs `guide/saves.mdx`；`exclude` 是用户的单例，下面）、调度队列里还没进 world 的邮件、`Time.Elapsed`；即时链在两个 tick 之间是空的，`Outbox` 在冻结前的最后一个 tick 交出了所有的帧（包括没到点的组帧，第 9 节）；为 `[Durable]` 还留着的输出不在 `Outbox` 里，它是根上的 `HeldOutput`，在 world 的字节里；
+     - 每个 world：`world.Save(output, exclude)` 的字节（实体连同 id 和版本、组件、`DynamicBuffer`（包括占位上等着的 `Mail`）、单例；不含系统、索引、写入戳，EasyEcs `guide/saves.mdx`；`exclude` 是用户的单例，下面）、调度队列里还没进 world 的邮件、`Time.Elapsed`；即时链在两个 tick 之间是空的，`Outbox` 在冻结前的最后一个 tick 交出了所有的帧（包括没到点的组帧，第 9 节），组提交留住的在第 3 步放出；
      - 节点的运行时状态：调用 id 的序号、墓碑；每条链路收到的字节数，发出的偏移和还没确认的尾巴；邮件和期限已经等了多久（第 9 节）。
   5. 平台用新的二进制或镜像重启进程（下表）。新进程找属于自己节点名的快照，逐项检查：校验和对；boot id 相同（机器没重启过）；按 `TickCount64` 算出的停顿没超过期限；自己的 `wire.manifest` 哈希等于武装时的新版本哈希（换错了镜像就不加载）。不合格就删掉它，以新的代数加入，走经记录。合格就按头里的个数建 world，不管这次分到多少 CPU（键按哈希落在哪个 world，个数不同就对不上）；只有建不了这个数（配置 `DaServer:Worlds` 钉了另一个数）才删掉快照、走经记录。再流式加载（`world.Load(bytes, markWritten: false, keep)`，边读边装；新进程在加载之前已经建好用户的单例，`keep` 就是它们，下面），按 prefab 补上组件（上面的恢复），接上时钟、加上系统、重建到期堆和调用 id 索引，然后**在任何 world 运行之前**删掉这个文件：快照只用一次，加载之后再崩溃，下次启动只能经记录。
   6. **`Rejoining`**：新进程以同一个身份（节点名，代数）重连，带着武装的随机数做恢复握手；它的 world 保持冻结，直到协调者回答（期限只在这里判定一次）：
@@ -1712,8 +1714,8 @@ partial class Moves
 // SetGroupRate (the root copy already carries the GroupRate buffer, section 9): both get it.
 // GrantItem is [Durable]: before the job the dispatch looks the call id up in the root's ReplyLog (a repeat is answered from it,
 // a settling re-ask of an unknown call id is recorded as refused and answered TooLate) and refuses with TooLate when the
-// remaining budget is below the store's write latency; after it, the item's whole output (the reply among it) and every later
-// output of that player wait, in order, for the record write. Granted handles a [Durable] Replied: the same for the map.
+// remaining budget is below the store's write latency; the player's batch then ends in one record write, and the batch's whole
+// output (the reply among it) leaves in order after its CAS. Granted handles a [Durable] Replied: the same for the map.
 ```
 
 ```csharp
@@ -1978,7 +1980,7 @@ public void A_busy_tick_allocates_nothing_and_threads_change_nothing()
 4. **消息不做成实体**。邮箱、到期堆和即时链在有序阶段归并三个来源。把每条消息做成带 `Due` 的实体能统一表示，但每条消息多一次建实体和销毁；到期堆和链栈已经给出同样的顺序，而延后事件本来就是实体（要保存、迁移）。所以不做。
 5. **EasyEcs 4.6.0 已提供本稿依赖的功能**：`entity.Run(ref job[, filter])`（抛出时 `ref` 写入也搬到新行；job 带 `INoStructuralChanges` 时冻结结构）、接口带的组过滤 `IGroupWith<T>` / `IGroupWithout<T>`、`world.Descendants(root)`、`LoadEntitiesInto(…, markWritten: false)`（被覆盖的 prefab 默认值也不算写入），分析器把 `entity.Run` 和 `LoadEntitiesInto` 当结构调用（EECS010/013/014）；4.6 又加上 `world.Load(bytes, markWritten: false)`（EasyEcs D39）、`AddSystem(…, changesFromNow: true)`，带追踪组件的程序 Native AOT 发布 0 警告（EasyEcs D38）。EasyEcs 评估后放弃的：并行批量方法、`LastWriteTick`、公开读写集、多 world 共享并行预算。重构的第一步是 [W1](../roadmap.md)：`EasyEcsVersion` 升到 4.7（发布之前用 4.6.0），本稿依赖、要先核对的 EasyEcs 编译和行为（每一项一个测试）以及 4.7 的各项在 4.6 上的替代做法，只列在那里。
 6. **改代码只有热重启，不用 `AssemblyLoadContext`；每个平台一种机制**：理由见 ADR-084 和 ADR-088，做法见第 10 节；Kubernetes 上的形态见 ADR-085。`Save` 写进 `NinoArrayBufferWriter` 再写进文件，多一次拷贝；几 MB 可以忽略，不另提需求。
-7. **能是数据的都是数据**（ECS 优先于 OOP）：停用、热重启前后、离开、断线、确认都是根或 Presence 上的 tag 或组件（`Deactivating`、`Restarting`、`Resumed`、`Leaving`、`Detached`、`Joined`），由系统反应，不是回调或虚方法；要不要保存是实体上的 `Persisted`；待处理的个数、为 `[Durable]` 排队的输出、`ReplyLog`、`NextDue`、组的发送频率在根上；节点状态（`RestartingNodes`，以及内部的存储降级、激活名额、各目标节点的在途上限）是节点单例；`Join()` 的结果是值。只有 `Activated` 是邮件：它必须排在占位上等着的邮件之前。保留的：
+7. **能是数据的都是数据**（ECS 优先于 OOP）：停用、热重启前后、离开、断线、确认都是根或 Presence 上的 tag 或组件（`Deactivating`、`Restarting`、`Resumed`、`Leaving`、`Detached`、`Joined`），由系统反应，不是回调或虚方法；要不要保存是实体上的 `Persisted`；待处理的个数、组提交的暂停（`Committing`）、`ReplyLog`、`NextDue`、组的发送频率在根上；节点状态（`RestartingNodes`，以及内部的存储降级、激活名额、各目标节点的在途上限）是节点单例；`Join()` 的结果是值。只有 `Activated` 是邮件：它必须排在占位上等着的邮件之前。保留的：
    - 单例 `Current`（当前项的上下文）：它是 world 的数据，由运行时在每项之前写；改成每个操作显式传参，每个 `Send`/`Ask`/`Join` 都要多一个参数，换不来别的；
    - `Registration` 的构建写法：它是生成的，只在启动时跑一次，写出封闭类型给 AOT；
    - `ICluster` 和 `TestActor<K>`：它们在 world 外面（HTTP、测试），不是 Actor 里的逻辑。
