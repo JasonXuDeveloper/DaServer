@@ -22,36 +22,34 @@ Keep this file current: tick items when done, add items when scope changes.
 11. S1-S6 (done) elastic scaling.
 12. The ECS rewrite (ADR-081, the "ECS rewrite" entry under "Open cleanup" below): P1-P3 and P5 done; P4, P6 and P7
     superseded by W.
-13. W — refactor to the v41 programming model ([drafts/programming-model.md](drafts/programming-model.md),
-    [drafts/architecture.md](drafts/architecture.md)) on EasyEcs 4.6.0 and 4.7 (ADR-082 to ADR-092). Breaking; each step
-    proven before the next (W, not R: the requirement ids R0-R11 are taken). Every use of an EasyEcs 4.7 feature (planned)
-    is marked "(4.7)" inline where a step names it; until 4.7 ships each such use takes the 4.6 fallback listed in W1,
-    and switches to 4.7 once it ships.
+13. W — refactor to the v42 programming model ([drafts/programming-model.md](drafts/programming-model.md),
+    [drafts/architecture.md](drafts/architecture.md)) on EasyEcs 4.7 (ADR-082 to ADR-092). Breaking; each step
+    proven before the next (W, not R: the requirement ids R0-R11 are taken).
     W10 runs last, after W12 and N9.
-    - [ ] W1 EasyEcs 4.7 once released (4.6.0 until then; `EasyEcsVersion`). The one home of the EasyEcs compile and
-      behaviour checks the drafts rely on, each with its test: the generated explicit `Key` (`Map IIndexed<Map>.Key =>
-      this`) is accepted by value indexes, `IUniqueIndexed<T>` (4.7) included (`GeneratedKeyAcceptedByValueIndex`);
-      `IActor<TSelf>` (inheriting `IEquatable<TSelf>`, `ISystemGroup`, `IGroupWith<In<TSelf>>`, with the static virtual
-      `RootPrefab`) and `IChildKey<TSelf>` compile in the framework assembly and in a consumer without repeating
-      constraints (`ActorInterfaceCompilesInConsumer`); a job without component parameters runs through `entity.Run`
-      (`ZeroComponentJobRuns`; otherwise the dispatch checks the filter and calls the method directly); the two
-      `IsPending<T>`/`Cancel<T>` groups, in two static classes, resolve by constraint
-      (`IsPendingOverloadsResolveByConstraint`); a clear through `Mut<DynamicBuffer<T>>` (4.7) is not stamped
-      (`MutBufferClearNotStamped`); a read through EasyEcs's generated accessor of a type tracked by DaServer counts as a
-      write (`GeneratedAccessorOfSwitchedOnTypeStamps`: the drafts assume so and read through `in` or `Read<T>()`);
-      adding a tracked component stamps a write and removing it records a removal (documented for `ITrackChanges`),
-      for tags and for types tracked through #27 too (`StructuralChangeOfTrackedTagDetected`; until it passes, and for
-      good if it fails, `Set` and `Remove` of a persist-set tag are an analyzer error only on an entity the analyzer
-      sees is persistent, and elsewhere the runtime finds the change by a sliced pass over persistent entities each
-      checkpoint interval, comparing their persist-set tags with a mask the fallback keeps per persistent entity at its last write). The 4.7 uses and their 4.6 fallbacks: `IUniqueIndexed<T>` (`IIndexed<T>` with
-      a uniqueness check on write), `Instantiate` with components (instantiate, then one `Set`: one row move),
-      `Mut<T>`/`SetIfChanged` (`ref`: always stamped), `ChangedAny`/`RemovedAny` with a start tick (one
-      `Changed<T>`/`Removed<T>` pass per type, as ADR-068's change system), `Slices` (the whole table per interval),
-      `Save(exclude)`/`Load(keep)` (the singletons removed before the save and set after the load, at the cost of change
-      stamps; when the snapshot write fails, set again before the `Resumed(Aborted)` tick), `Descendants(root).AddTo` (a hand-written descendant walk into the reused list), `Matches.Count` and
-      `ValueIndex.KeyCount` (iterate to count), `TrimExcess`, `DescribeSchedule` and the `SystemStats` additions (none). EasyEcs request #27 (tracking
-      switched on per type at run time; proposed, not yet forwarded): until it ships, the generator declares
-      `ITrackChanges` on the persist set's types that lack it, which are then `partial`.
+    - [ ] W1 EasyEcs 4.7 (`EasyEcsVersion`). The one home of the EasyEcs compile and behaviour checks the drafts rely on,
+      each with its test: the generated explicit `Key` (`Map IIndexed<Map>.Key => this`) is accepted by value indexes,
+      `IUniqueIndexed<T>` included, and its `Get`/`TryGet` find the entity (`GeneratedKeyAcceptedByValueIndex`);
+      `IActor<TSelf>` (inheriting `IUniqueIndexed<TSelf>`, `IEquatable<TSelf>`, `ISystemGroup`,
+      `IGroupWith<In<TSelf>>`, with the static virtual `RootPrefab`) and `IChildKey<TSelf>` compile in the framework
+      assembly and in a consumer without repeating constraints and without EECS036 (`ActorInterfaceCompilesInConsumer`);
+      a job without component parameters runs through `entity.Run` (`ZeroComponentJobRuns`; otherwise the dispatch
+      checks the filter and calls the method directly); the two `IsPending<T>`/`Cancel<T>` groups, in two static
+      classes, resolve by constraint (`IsPendingOverloadsResolveByConstraint`); a `Mut<T>` built by a generated
+      `[On<T>]` job (`new Mut<T>(ref value, entity)`, the job's `Writes => 0`) stamps only on `Write()` and on a
+      `SetIfChanged` that changed the value (`GeneratedJobMutStampsOnlyChanges`); a `ChangedAny` filter built from
+      several calls of up to nine types each, as `Registration` builds the persist set's, selects a row written in any
+      of them (`ChainedChangedAnyJoinsOneGroup`); `root.Spawn`/`GetOrSpawn` through `Instantiate` with given components
+      refuse a taken `IChildKey<T>` before creating anything (`SpawnOfTakenChildKeyChangesNothing`); a read through
+      EasyEcs's generated accessor of a type tracked by DaServer counts as a write
+      (`GeneratedAccessorOfSwitchedOnTypeStamps`: the drafts assume so and read through `in` or `Read<T>()`); adding a
+      tracked component stamps a write and removing it records a removal (documented for `ITrackChanges`), for tags and
+      for types tracked through #27 too (`StructuralChangeOfTrackedTagDetected`; if it fails, `Set` and `Remove` of a
+      persist-set tag are an analyzer error only on an entity the analyzer sees is persistent, and elsewhere the runtime
+      finds the change by a sliced pass over persistent entities each checkpoint interval, comparing their persist-set
+      tags with a mask kept per persistent entity at its last write); no framework or generated system declares a
+      member named `RunCount` (`EcsSystem.RunCount`, CS0108; `NoSystemMemberHidesRunCount`). EasyEcs request #27
+      (tracking switched on per type at run time; proposed, not yet forwarded, not in 4.7): until it ships, the
+      generator declares `ITrackChanges` on the persist set's types that lack it, which are then `partial`.
     - [ ] W2 Packages and attributes (ADR-086, ADR-087): Abstractions merged into Core, Hosting into `DaServer`,
       Simulation into Testing, WireTool into the generator's MSBuild task; `DaServer:Shards` and the AppHost's shard
       parameter replaced by sizing from the node's CPUs (`DaServer:Worlds` overrides); `UseLaunchd()` beside the
@@ -65,7 +63,7 @@ Keep this file current: tick items when done, add items when scope changes.
       `UseLaunchdDetectsOnlyLaunchd`.
     - [ ] W3 Generator and analyzers: explicit `Key`, typed sends (`[Durable]` asks with a required `settleBy` and an
       optional `deadline`), typed `Replied` accessors (C# 14 extension blocks), `[On<T>]` jobs (zero-component jobs
-      included; `INoStructuralChanges` inferred from how `Entity` and `World` are used; `Mut<T>` parameters (4.7)),
+      included; `INoStructuralChanges` inferred from how `Entity` and `World` are used; `Mut<T>` parameters),
       `Registration.Create()` as a static extension member in the server project's root namespace reading `K.RootPrefab`
       and the persistent prefabs (the persist set, change tracking switched on for it, #27), configuration tables and
       world singletons, `wire.manifest` (one section per project; `table` with the table type's format hash, `prefab`
@@ -87,9 +85,9 @@ Keep this file current: tick items when done, add items when scope changes.
       `Outbox` serializing on append into per-destination frames, `Current`, the framework groups (Ordering, Settling
       with `Restarting` and `Resumed` removal, Cleanup), a full link refusing at once, the per-actor item budget per
       batch, `PeerHealth`, request budgets (nested asks, `ReplyTo` deadlines), the retry budget, `ICluster.Ask` with a
-      deadline or `CancellationToken` and `CallId.From`, `root.Spawn` through `world.Instantiate` with components (4.7),
-      `root.GetOrSpawn` (with the factory overload run only on a spawn), unique key indexes (4.7), the fixed step with a
-      catch-up cap, `TrimExcess` (4.7) by a slow Cleanup system and an admin command, `OnError = Continue`, `Faulted`,
+      deadline or `CancellationToken` and `CallId.From`, `root.Spawn` through `world.Instantiate` with components,
+      `root.GetOrSpawn` (with the factory overload run only on a spawn), unique key indexes, the fixed step with a
+      catch-up cap, `TrimExcess` by a slow Cleanup system and an admin command, `OnError = Continue`, `Faulted`,
       `Status.NotExecuted`/`Transient`, `[Stateless]` actor types (any node, the key picks the local actor, no claim, no
       record), world singletons created per world by `Create()` and configuration tables read from
       `DaServer:Tables:{name}` (the cluster-wide version is N9), `TestActor<K>` without presences (one world, the root,
@@ -125,13 +123,13 @@ Keep this file current: tick items when done, add items when scope changes.
       coordinator, the epoch claim with owner generation and placement version in one `UPDATE … RETURNING`, fencing,
       placeholder roots and their bounded mail, `[ActivatedBy<T>]` (a key's first activation only; `[Durable]` requests
       always activate), `Pending` with `MaxPending`, the idle scan as
-      `[ForEach(Slices = N)]` (4.7), deactivation with `Deactivating` as a tag, persistence per entity kind
+      `[ForEach(Slices = N)]`, deactivation with `Deactivating` as a tag, persistence per entity kind
       (`FromPrefab(Prefab, Composition)` on every entity from a prefab, `Persisted(Root)`, records of the root and its
       persistent descendants through `Descendants` and `ComponentSet`, the persist set with change tracking switched on
-      but for ask states, the change system on `ChangedAny`/`RemovedAny` (4.7), spawns of persistent prefabs tagging the
+      but for ask states, the change system on `ChangedAny`/`RemovedAny`, spawns of persistent prefabs tagging the
       root `Unsaved`, placeholders never checkpointed, every load (record, migration, snapshot) completing entities from
       their prefab copy: `[NotSaved]` components and those gained since the composition, unknown type ids skipped and
-      counted), records and migrations collected by `Descendants(root).AddTo` (4.7), a CAS on the epoch and the write
+      counted), records and migrations collected by `Descendants(root).AddTo`, a CAS on the epoch and the write
       generation (`write_gen < :write_gen`, reset by every claim, continued from the snapshot by an in-place hot restart; a
       row found at its own epoch and generation counts as written) with a root's writes never overlapping (`Writing`), the tick-end write (one statement per
       world per tick end, ADR-068's `unnest`, per-row CAS; `WriteNow` roots every time, other `Unsaved` roots at most
@@ -145,7 +143,7 @@ Keep this file current: tick items when done, add items when scope changes.
       mail, group frames flushed before deactivation and migration and discarded on fencing. Hot restart's runtime side
       as the draft's §10 has it (ADR-084, ADR-088): the snapshot with its world count (rebuilt whatever the CPU share; through records only when configuration pins
       another count), user singletons outside it
-      (`Save(exclude)`/`Load(keep)` (4.7)), `Restarting`/`Resumed`, `RestartingNodes` with `TryGetPause`, the time notice
+      (`Save(output, in exclude)`/`Load(input, in keep, markWritten: false)`), `Restarting`/`Resumed`, `RestartingNodes` with `TryGetPause`, the time notice
       re-pushed on `Resumed`, the admin endpoint's manifest diff (the path taken: in place, through records, or refused
       for a rolling upgrade) and `{cluster}-restart` for local Aspire (the dashboard's resource command), Compose
       (stateful groups as one service per node with a fixed hostname and a named snapshot volume each, restarted one
@@ -168,7 +166,7 @@ Keep this file current: tick items when done, add items when scope changes.
       receiver's dedupe before the `TooLate` check, every definite refusal recorded as refused, `ReplyLog` with refused
       entries under their own capacity (`DaServer:ReplyLogRefusedCapacity`; full: neither recorded nor answered) and `Faulted` entries kept across a `Reload`), a persisted `ReplyTo<T>`'s deadline in UTC, `root.IssueClientToken` with `IssueSeq` on the root,
       `TestActor<K>` with `[Durable]` (the write at the end of `Tick`, `FailNextWrite()`, `Answer<TReq>(value | status)`),
-      `WakeAt`, `NextDue` from the runtime's `WakeSystem` (`ChangedAny`/`RemovedAny` (4.7)) with the `next_due` column,
+      `WakeAt`, `NextDue` from the runtime's `WakeSystem` (`[Changed<WakeAt>]`/`[Removed<WakeAt>]`) with the `next_due` column,
       `IActorStore.DueKeys` and the `DueScan` wake, `StoreDegraded` and `ActivationSlots`, `ActivationFailed`, strict
       placement versions with `Fence`, idempotent claims, generations from Unix ms and single-seed formation, the lease
       ack, the restart permit, arm nonce, `NodeRestarting` and `Rejoining`, pinned slots and the reconcile on `Readmit`.
@@ -229,7 +227,7 @@ Keep this file current: tick items when done, add items when scope changes.
       `PublishReachesSubscribersOnEveryNode`, `DeliveryNeverActivates`, `ResubscribesAfterActivation`,
       `GoneSubscriberPruned`, `StaleUnsubscribeKeepsNewSubscription`; BenchmarkDotNet fan-out to 1k/10k subscribers on
       1/3 nodes, 0 B per delivery.
-    - [ ] W7 Samples (mmo, flashsale) on the new model (their systems use `Mut<T>` (4.7)), the mmo's drops split
+    - [ ] W7 Samples (mmo, flashsale) on the new model (their systems use `Mut<T>`), the mmo's drops split
       between a non-ticking `Loot` actor (their records, persistent, the only `[Durable]` asker) and the map (what
       clients see, not saved, shown again after the map loads from its record), its avatars not saved; the login sample issuing client tokens inside a `[Durable]` request (the issue sequence
       written before the token leaves); each AppHost becomes an `apphost.cs` (file-based) in the sample's server
@@ -237,13 +235,15 @@ Keep this file current: tick items when done, add items when scope changes.
       server types from the committed `wire.manifest` (`actor` and `hosted-by` lines; `IAcceptsClients` on those hosting
       `Connection`) and the build check. Tests: `Sample.Tests` on `TestActor<Map>`
       (`Walking_out_of_range_during_the_windup_dodges`, `A_busy_tick_allocates_nothing_and_threads_change_nothing`,
-      `An_expired_grant_takes_the_drop_off_the_map`, `DropsReshownAfterMapCrash`, `MapCrashReusedNumberDoesNotBreakLoot`, `TimedOutClaimLeavesPickUpUnknown`), `LoginIssuesIncreasingSequence`, `LoginTokenLeavesAfterSequenceWritten`,
+      `An_expired_grant_takes_the_drop_off_the_map`, `DropsReshownAfterMapCrash`, `MapCrashReusedNumberDoesNotBreakLoot` (a drop number repeated after a map crash ends in `Clash`/`Redrop` and the drop
+      is shown again), `VisitorNumbersNeverMeetDropNumbers`, `VisitorNumbersContinueAfterMigration`, `TimedOutClaimLeavesPickUpUnknown`), `LoginIssuesIncreasingSequence`, `LoginTokenLeavesAfterSequenceWritten`,
       `AppHostServerTypesGeneratedFromManifest`, `ClientPortWithoutConnectionHostFailsBuild`; the 1,000-bot and
       100,000-buyer E2E on the new model.
     - [ ] W7a `DaServer.Replication` and `DaServer.Replication.Client` (ADR-090): `[Replicated]`, `ReplicatedTo`,
-      generated field bitmasks, `Replica<T>` with its sent tick, the per-group ring of exits, the per-actor incarnation,
-      patches per `ClientGroup` in pooled frames from a `ChangedAny` (4.7) system, full state on group changes and on an
-      incarnation mismatch (a full resend starts with `Reset(incarnation)`), deltas on rejoin (`ChangedAny(since)` (4.7)
+      generated field bitmasks, `Replica<T>` with its sent tick, the per-group ring of exits (group changes and destroys; EasyEcs's destroy log lists a world's destroyed `EntityId`s
+      without groups or `ReplicaId`s and misses group changes), the per-actor incarnation,
+      patches per `ClientGroup` in pooled frames from a `ChangedAny` system, full state on group changes and on an
+      incarnation mismatch (a full resend starts with `Reset(incarnation)`), deltas on rejoin (a `ChangedAny` filter kept in a field, moved with `Since(ack)`,
       for the lookup); proven on the mmo sample (its `Nearby` AOI as replicated components): same 10k-bot E2E, bytes per
       client and broadcast p99 against the hand-written AOI, 0 B per tick (drafts/architecture.md section 10). Tests:
       `RejoinSameIncarnationGetsDelta`, `IncarnationChangeForcesFullResend`, `OverwrittenExitRingForcesFullResend`,
@@ -254,21 +254,21 @@ Keep this file current: tick items when done, add items when scope changes.
       `ConformanceSuitePassesOnCSharpSdk`, `ConformanceSuitePassesOnTypeScriptClient`, `FlashSaleBuysFromBrowserPage`.
     - [ ] W7c Tools (ADR-090): `TestCluster.Partition`/`Kill`/`DelayLinks` for users' tests (the framework's own
       partition and crash tests move onto them); the read-only inspector (`/admin/actors/{type}/{key}`,
-      `/admin/actors/top`, `/admin/worlds/{i}`, `/admin/worlds/{i}/systems` with `DescribeSchedule` (4.7) and the system
-      statistics (4.7), `/admin/worlds/{i}/count?with=…`, drafts/architecture.md section 8) as Aspire commands. Tests:
+      `/admin/actors/top`, `/admin/worlds/{i}`, `/admin/worlds/{i}/systems` with `DescribeSchedule` and the system
+      statistics, `/admin/worlds/{i}/count?with=…`, drafts/architecture.md section 8) as Aspire commands. Tests:
       `UserTestPartitionIsolatesNodes`, `UserTestKillSkipsGracefulStop`, `UserTestDelayLinksDelaysFrames`,
       `InspectorDescribesActorSubtree`, `InspectorCountsByComponentWithoutReflection`.
     - [ ] W7d Samples as templates (ADR-091): `samples/arena` (matchmaking queues per region and mode, ranked and
       casual, `Match` and `Party` actors, a sharded `Leaderboard` merged on read), `samples/relay` (a `[TickRate(30)]`
       `Room` gathering inputs and broadcasting one frame per tick to its `ClientGroup`; simulation on the clients), the
       mmo's input ticks (`MoveTo.InputTick`, `LastInput` echoed in `Nearby` and snapshots) and its `Resync` keyframe
-      system, NPC AI as `[ForEach(Slices = N)]` (4.7), the flash sale's saga (order as a process manager over
+      system, NPC AI as `[ForEach(Slices = N)]`, the flash sale's saga (order as a process manager over
       `[Durable]` asks: compensation on `NotExecuted`, reconciliation on `Expired`; the sagas-versus-ACID page), each
       with BenchmarkDotNet numbers and a bot E2E; `DaServer.Templates` (`daserver`, `daserver-mmo`,
       `daserver-flashsale`, `daserver-arena`, `daserver-relay`) generated from the samples, instantiated, built and
       tested in CI. Tests: `ArenaMatchesQueuedPlayersE2E`, `RelayRoomSendsOneFramePerTick`, `InputTickEchoedInNearby`,
       `SagaCompensatesNotExecutedStep`, `SagaReconcilesExpiredStep`, `TemplatesInstantiateBuildAndTest`.
-    - [ ] W8 Native AOT publish of the samples' nodes with 0 warnings (EasyEcs 4.6 has none with tracked components;
+    - [ ] W8 Native AOT publish of the samples' nodes with 0 warnings (EasyEcs 4.7 has none with tracked components, its CI publishes and runs a native server;
       what remains to verify is the third-party packages, drafts/architecture.md section 8; the Prometheus exporter is a
       beta: pinned, verified under AOT, OTLP to a Collector as the fallback); the AOT E2E run. Local runs: nodes as
       `AddDotnetProject` (verified: no `dotnet run` process, OTLP, endpoints, replicas, attach; `AddProject` as the

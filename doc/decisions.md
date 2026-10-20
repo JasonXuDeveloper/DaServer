@@ -1544,15 +1544,15 @@ Replaced by ADR-081.
   handler that must serialize such work says so in data (a component marking the work in progress). The client SDK
   and code outside worlds (HTTP, tests) still `await cluster.Ask(..)`.
 
-## ADR-082 Programming model: actors as entities in EasyEcs 4.6 worlds, [On<T>] handlers as single-entity jobs, presences
+## ADR-082 Programming model: actors as entities in EasyEcs 4.7 worlds, [On<T>] handlers as single-entity jobs, presences
 - Context: ADR-081 made actors entities, but kept a second vocabulary beside EasyEcs: `[Handle]` dispatchers that copy
   components out and back, a `Context` value, an `ActorKey` beside the id type, a mailbox drained apart from the
   tick, session tags (`Known`, `Granted`, `Superseded`), tick rates in configuration and messages that do not say who
   sends them to whom. Writes copied back stamp tracked components whether they changed or not, so "write only what
-  changed" leaks; the order between mail, delayed sends and systems is implicit. EasyEcs 4.5 now provides what a
+  changed" leaks; the order between mail, delayed sends and systems is implicit. EasyEcs provides what a
   model without these needs: single-entity jobs (`entity.Run(ref job[, filter])`), group filters carried by
   interfaces (`IGroupWith<T>`), `world.Descendants(root)` and `LoadEntitiesInto(…, markWritten: false)`.
-- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v41), structured as in
+- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v42), structured as in
   [drafts/architecture.md](drafts/architecture.md):
   - **The actor type is its address, its root component, its root prefab and its system group**:
     `[TickRate(30)] partial record struct Map(long Id) : IActor<Map>` (`IActor<T>` inherits `IEquatable<T>`, so
@@ -1615,8 +1615,8 @@ Replaced by ADR-081.
       success, discarded on failure or timeout; output of generations not yet written is discarded, and re-asks
       recover it). A durable reply waits for the rest of the tick, a write of its root already in flight and one
       statement (more when the world's statements are at their bound).
-      Keeping economic state on actor types without `[TickRate]`, which ticking ones ask plainly (the draft's `Loot`
-      beside its `Map`), stays the recommended pattern, so a map's record is not written each tick it makes a durable
+      Keeping economic state on actor types without `[TickRate]`, which ticking ones ask plainly (a separate actor
+      type: the draft's `Loot`, hosted by PlayerServer), stays the recommended pattern, so a map's record is not written each tick it makes a durable
       item, but it is not required. Systems ask `[Durable]` requests and reply through stored durable tokens under the
       same rule; a throw in a system pass reloads every root that ran a durable item in it, and a durable `Ask` in the
       `Deactivating` pass cancels an idle deactivation only; a forced one (`Deactivate()`, a graceful stop, a hot restart
@@ -1634,8 +1634,8 @@ Replaced by ADR-081.
       `OnError = Reload`, an analyzer error otherwise, so the promise comes back from the record). At settle-by − the attempt's deadline
       (`deadline:`, else `AskTimeout`) − `ClockSkew` on its own clock (so a receiver whose clock runs ahead by up to the
       skew still takes it) the asker sends a single settling re-ask: the receiver answers from its log or answers
-      `TooLate`, so a late duplicate never runs; a `settleBy` shorter than that makes the first attempt the last, which
-      counts as the settling one but runs as usual, since the receiver has never seen its call id; `Expired` then
+      `TooLate`, so a late duplicate never runs; when that settling instant has passed at the release of the held first
+      attempt (decided at release, not at `Ask`), the first attempt is the last, which counts as the settling one but runs as usual, since the receiver has never seen its call id; `Expired` then
       means only "unreachable, outcome unknown". Every definite refusal the receiver's root gives
       a call id (`TooLate` either way, `Skipped`, a `NotHandled` to a first attempt) is recorded as refused, under a cap
       of its own (when full, a refusal is neither recorded nor answered), and answered once written, so a later attempt
@@ -1713,14 +1713,15 @@ Replaced by ADR-081.
     generator to complete. User singletons are the same: `IConfigTable<TSelf>` (static abstract `Name` and `TryLoad`;
     one cluster-wide current version per table with a store, per node from configuration without one) and
     `IWorldSingleton<TSelf>` (static abstract `Create`).
-  - **EasyEcs 4.7 (planned, not released) replaces workarounds** (the draft's header and §14): `Mut<T>` with
-    `SetIfChanged` (EasyEcs #23) for components recomputed every tick, `world.Instantiate` with components (#24) for
-    `root.Spawn`, `ChangedAny`/`RemovedAny` (with a start tick, #25) for the change system, the wake and replication,
-    `world.Save(exclude)`/`Load(keep)` (#26) so user singletons (configuration tables, world singletons) stay out of a hot
-    restart's snapshot, `IUniqueIndexed<T>` for actor and child keys, `TrimExcess`, `Slices` for the idle scan, `Descendants(root).AddTo` for
-    collecting records and migrations, O(1) `Matches.Count` and `ValueIndex.KeyCount` for interest checks and the
-    inspector, and the system diagnostics for the inspector; until 4.7 ships the steps that use them take the 4.6 fallbacks
-    listed in roadmap W1, then switch.
+  - **EasyEcs 4.7 features replace workarounds** (the draft's header): `Mut<T>` with `SetIfChanged` for components
+    recomputed every tick, `world.Instantiate` with given components for `root.Spawn`, `ChangedAny`/`RemovedAny`
+    (one filter moved with `Since(tick)`) for the change system and replication, `world.Save(output, in exclude)` and
+    `Load(input, in keep, markWritten: false)` so user singletons (configuration tables, world singletons) stay out of
+    a hot restart's snapshot, `IUniqueIndexed<T>` (`Get`/`TryGet`) for actor and child keys, `TrimExcess`, `Slices` for
+    the idle scan, `Descendants(root).AddTo` for collecting records and migrations, O(1) `Find(key).Count`,
+    `Children(parent).Count` and `ValueIndex.KeyCount` for interest checks and the inspector, and `SystemStats` and
+    `DescribeSchedule` for the inspector. Runtime tracking per type (request #27) is not in 4.7: the generator declares
+    `ITrackChanges` meanwhile (roadmap W1).
   - One project may define several server types; a node runs one.
 - Alternatives: keep ADR-081's handlers and add the missing pieces (copy and write-back stays, two vocabularies stay);
   handlers as systems over message entities (an entity per message costs a create and a destroy; the runtime's due
@@ -1773,7 +1774,7 @@ Replaced by ADR-081.
   - **Code changes load no assemblies at run time**: JIT and AOT nodes take a new build the same way, by hot restart
     or rolling upgrade (ADR-084), so user projects are `Game.Protocol` and `Game.Server`.
   - **0 warnings, no suppression**: a suppression of a library's warning in user programs is not accepted. EasyEcs
-    4.6 publishes without warnings with tracked components, which every stateful node has (its persistent entities').
+    4.7 publishes without warnings with tracked components, which every stateful node has (its persistent entities').
 - Alternatives: AOT only for stateless nodes (no tracked components; splits the support matrix); suppressing a
   library's AOT warning (accepts it on the library's behalf); in-process hot reload on JIT only (rejected in ADR-084);
   reflection-based registration with trimming descriptors (fragile, and generic closure at run time is impossible
@@ -1830,11 +1831,11 @@ Replaced by ADR-081.
     build's `TryLoad` when the manifest's table format hash changed; without a store, tables are per node from
     configuration) and feature flags choosing between handlers compiled into the binary.
   - `[Stateless]` actor types deployed as their own group are replaced start-new-then-stop-old, without a pause.
-  - The new process loads with `world.Load(bytes, markWritten: false)` (EasyEcs 4.6, its D39), so no actor rewrites
+  - The new process loads with `world.Load(bytes, in keep, markWritten: false)` (EasyEcs D39), so no actor rewrites
     its record and no `[Changed<T>]` method sees the loaded rows; a system that needs a full pass filters `Resumed`.
     User singletons (configuration tables, world singletons) are the new process's own: the old one saves without them
     and the new one loads the cluster's current tables and creates its world singletons before the load, which keeps
-    them (EasyEcs 4.7's `Save(exclude)` and `Load(keep)`). The snapshot records its world count, and the new process
+    them (`Save(output, in exclude)` and the `keep` set of singletons). The snapshot records its world count, and the new process
     creates that many worlds whatever its CPU share; only a configuration pinning another count goes through records.
 
 ## ADR-085 Actor-hosting groups publish as StatefulSets with `OnDelete`; hot restart patches pods in place
@@ -2082,10 +2083,11 @@ Replaced by ADR-081.
   - **`DaServer.Replication`**: `[Replicated]` on a change-tracked component; per actor type, a `ChangedAny` system
     writes the changed fields (generated per-type bitmasks against the last sent value) per `ClientGroup` once per tick
     into pooled frames. Its state is DaServer's own: each `Replica<T>` keeps the last sent value and the tick it was
-    sent at, each group a bounded ring of exits, each actor an incarnation renewed on load, migration, hot restart
+    sent at, each group a bounded ring of exits (group changes and destroys, which EasyEcs's per-world destroy log of
+    `EntityId`s cannot answer per group), each actor an incarnation renewed on load, migration, hot restart
     and `OnError = Reload`. A rejoining SDK sends (incarnation, tick): the same incarnation with the exit ring still
-    covering the tick gets only what changed since (EasyEcs 4.7's `ChangedAny(since)` speeds the lookup up, it decides
-    nothing), anything else a full resend, which starts with `Reset(incarnation)` so the client first clears that
+    covering the tick gets only what changed since (a `ChangedAny` filter moved with `Since(ack)` speeds the lookup up,
+    it decides nothing), anything else a full resend, which starts with `Reset(incarnation)` so the client first clears that
     actor's replicas; full state also when an entity changes group and when a presence subscribes a group. The SDKs apply the patches (C# into an EasyEcs world through `DaServer.Replication.Client`, TypeScript into
     an entity table). At most once, like pushes.
   - **Tools**: `TestCluster` fault injection (`Partition`, `Kill`, `DelayLinks`) for users' own tests; a read-only
@@ -2124,7 +2126,7 @@ Replaced by ADR-081.
     carries a `uint InputTick`, `Moves` writes it into a `LastInput` component on the avatar, and the `Nearby` and
     snapshot pushes echo it, so the client replays only the inputs the server has not applied yet. A `Resync` system
     with an `UpdateInterval` pushes the positions of each cell at a low rate as a correction keyframe, so clients' extrapolation
-    drift heals without a full snapshot; NPC AI runs as `[ForEach(Slices = N)]` (EasyEcs 4.7, planned), a slice of
+    drift heals without a full snapshot; NPC AI runs as `[ForEach(Slices = N)]`, a slice of
     the NPCs per tick.
   - **`samples/relay`**, a relay room in Photon Quantum's style ([Quantum intro](https://doc.photonengine.com/quantum/v3/quantum-intro)):
     a `[TickRate(30)]` `Room` actor gathers its players' inputs for each tick and broadcasts one frame per tick to its
