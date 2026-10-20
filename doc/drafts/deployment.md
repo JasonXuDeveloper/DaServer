@@ -2,11 +2,11 @@
 
 What `DaServer.Aspire` and the samples should publish for Kubernetes and Docker Compose, after an audit of what they
 publish today (`aspire publish` of both samples, Aspire 13.6.1, Kubernetes publisher 13.6.1-preview, run on
-2026-10-20). Decided items join ADR-085 and ADR-087 when merged; this file is deleted then (W10).
+2026-10-20). Decided items join ADR-085 and ADR-087 when W10 promotes the drafts, after W12 and N9; this file is deleted then.
 
 The step column follows the roadmap: **W7** samples, **W8** Native AOT (images, the Compose health check), **W11**
-Kubernetes shape and the hot-restart rollout (ADR-085), **W12** deployment corrections, **N9** the hot-restart
-operator side elsewhere (the upgrade check). "Hook" means Aspire's `PublishAsKubernetesService` /
+Kubernetes shape and the hot-restart rollout (ADR-085), **W12** deployment corrections, **W6** the manifest diff and the
+`{cluster}-restart` command outside Kubernetes, **N9** the upgrade check. "Hook" means Aspire's `PublishAsKubernetesService` /
 `PublishAsDockerComposeService`; "DA" means code in `DaServer.Aspire`. Ports per group are
 [draft §2](programming-model.md#2-服务器与节点); how a hot restart works is [draft §10](programming-model.md#热重启).
 
@@ -18,7 +18,7 @@ DaServer (ports, seeds, probes, the snapshot directory).
 
 | Where | Build | Start | Code change |
 |---|---|---|---|
-| Local, JIT (daily work) | `dotnet run --file Game.Server/apphost.cs` (or `aspire run`): Aspire builds the server once | Each node is an `AddDotnetProject` resource (`Aspire.Hosting.Dotnet`, pinned; prerelease): Aspire runs the built apphost executable, one process per replica, no `dotnet run` CLI process beside it; debugger, dashboard, OTLP as with `AddProject` (W8 verifies OTLP, endpoints, replicas and attach, and falls back to `AddProject` if one fails) | Rebuild in the dashboard, or the dashboard's `{cluster}-restart`: rebuild, arm each node, restart it with Aspire's resource restart command; snapshot in a per-node temp directory set by DA |
+| Local, JIT (daily work) | `dotnet run --file Game.Server/apphost.cs` (or `aspire run`): Aspire builds the server once | Each node is an `AddDotnetProject` resource (`Aspire.Hosting.Dotnet`, pinned; prerelease): Aspire runs the built apphost executable, one process per replica, no `dotnet run` CLI process beside it (no page says so: it rests on the implementation, which launches the project's `RunCommand` computed by `ComputeRunArguments`); debugger, dashboard, OTLP as with `AddProject` (W8 verifies that and OTLP, endpoints, replicas and attach, and falls back to `AddProject` if one fails) | Rebuild in the dashboard, or the dashboard's `{cluster}-restart`: rebuild, arm each node, restart it with Aspire's resource restart command; snapshot in a per-node temp directory set by DA |
 | Local, Native AOT (checking AOT) | `aspire publish` with `PublishAot=true` writes AOT images and a Compose file | `docker compose up` on that output: the same images as production; not for the edit-run loop | Publish again |
 | Docker Compose | `aspire publish`: JIT images on `aspnet:11.0-resolute-chiseled`, AOT images on `runtime-deps:11.0-resolute-chiseled` (no .NET runtime in the image; the SDK picks it for `PublishAot`) | `docker compose up -d` (Aspire's `aspire deploy` for Compose) | Stateful groups: hot restart (one service per node, snapshot on its named volume, section 8); gateways: surge then drain (section 8); others: rolling |
 | Kubernetes | `aspire publish -- Publish=k8s`: the same images, a Helm chart | `helm install` / `helm upgrade` | Stateful groups: hot restart (StatefulSet `OnDelete`, pod image patch, ADR-085); gateways and stateless groups: Deployment rollout (section 2) |
@@ -28,7 +28,8 @@ DaServer (ports, seeds, probes, the snapshot directory).
   `builder.Host.UseSystemd().UseWindowsService().UseLaunchd();` ([draft §2](programming-model.md#2-服务器与节点)).
   `AddDaServer` calls none of them.
 - **systemd**: `Type=notify` (`UseSystemd()` sends readiness and stopping), `RuntimeDirectory=daserver-<node>` with
-  `RuntimeDirectoryPreserve=restart` (a tmpfs under `/run` that `systemctl restart` keeps), and
+  `RuntimeDirectoryPreserve=restart` (a tmpfs under `/run` that `systemctl restart` keeps,
+  [systemd.exec(5)](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#RuntimeDirectory=)), and
   `Environment=DaServer__SnapshotPath=/run/daserver-<node>`; `TimeoutStopSec` at least the node's stop budget. A hot
   restart is `systemctl restart`.
 - **launchd** (macOS): a plist with `Label`, `ProgramArguments`, `KeepAlive`, `ExitTimeOut` (launchd sends SIGTERM,
@@ -37,7 +38,7 @@ DaServer (ports, seeds, probes, the snapshot directory).
   `StandardOutPath`/`StandardErrorPath` (logs go to stdout). A hot restart is `launchctl kickstart -k system/<label>`.
   `UseLaunchd()` detects launchd by `OperatingSystem.IsMacOS()` and `XPC_SERVICE_NAME` set and not `0` (a
   Terminal-started process has `0`); the only source for this is a 2015 launchd-dev thread
-  ([launchd-dev](https://lists.macosforge.org/pipermail/launchd-dev/2015-April/001124.html)), so W2 verifies it on a
+  ([launchd-dev, archived](http://web.archive.org/web/20240819043731/https://lists.macosforge.org/pipermail/launchd-dev/2015-April/001124.html)), so W2 verifies it on a
   macOS runner. Not `getppid() == 1` (orphans see it too); not a security check. Detected, it sets the lifetime
   without status messages, the content root to `AppContext.BaseDirectory` (launchd starts in `/`) and console logs
   without colours, with timestamps; SIGTERM is the Generic Host's default.
@@ -125,8 +126,8 @@ Gateways roll surge then drain, so every client moves exactly once and only the 
 | Setting | Target | Why | How | Step |
 |---|---|---|---|---|
 | Kind (gateways) | `Deployment`, `RollingUpdate` with `maxSurge: 100%`, `maxUnavailable: 0`: every new pod starts and is Ready before any old pod stops; the Deployment then scales the old ReplicaSet down | A client retired from an old gateway must not land on another old one and be retired again; with every new pod ready first, the load balancer reaches only new gateways. Cost: twice the gateway pods for the length of the roll (gateways are stateless and small) | DA | W11 |
-| Draining a gateway | On SIGTERM it fails readiness first (its endpoint goes not-ready/`terminating`, so the load balancer sends it no new connections), waits a short deregistration delay, then retires its connections in waves spread over `DrainSpread`: `ControlOp.Retire`, make before break (wave bounds and the push-order fence: [draft §7](programming-model.md#节点热重启网关升级客户端不断线用户不写代码)) | The client learns nothing new about the topology: it only receives `Retire` and reconnects to the same address; waves keep a mass retire from becoming a reconnect storm | DaServer (exists, ADR-026), DA (grace period covers delay + waves) | W11 |
-| Connection rebalancing | By load (ADR-089; rule and defaults in [draft §7](programming-model.md#节点热重启网关升级客户端不断线用户不写代码)): a gateway sheds only its excess above the group average, rate-limited, so a balanced group retires nobody. DA passes `DaServer:Clients:RebalanceTolerance` and the optional, off-by-default `maxConnectionAge` from `WithClientConnections` | After a scale-out, long-lived connections stay where they are; an age would also move clients of a balanced group | DaServer, DA (the parameters) | W5 / W11 |
+| Draining a gateway | On SIGTERM it fails readiness first (its endpoint goes not-ready/`terminating`, so the load balancer sends it no new connections), waits a short deregistration delay, then retires its connections in waves spread over `DrainSpread`: `ControlOp.Retire`, make before break (wave bounds and the push-order fence: [architecture.md section 3](architecture.md#retire-and-rebalancing)) | The client learns nothing new about the topology: it only receives `Retire` and reconnects to the same address; waves keep a mass retire from becoming a reconnect storm | DaServer (exists, ADR-026), DA (grace period covers delay + waves) | W11 |
+| Connection rebalancing | By load (ADR-089; rule and defaults in [architecture.md section 3](architecture.md#retire-and-rebalancing)): a gateway sheds only its excess above the group average, rate-limited, so a balanced group retires nobody. DA passes `DaServer:Clients:RebalanceTolerance` and the optional, off-by-default `maxConnectionAge` from `WithClientConnections` | After a scale-out, long-lived connections stay where they are; an age would also move clients of a balanced group | DaServer, DA (the parameters) | W5 / W11 |
 | Kind (stateless groups) | `Deployment`, `RollingUpdate` maxSurge 1, maxUnavailable 0 (today 1) | Start new, then stop old (ADR-085); no capacity dropped | DA | W11 |
 | Services | As for stateful groups (below) | | DA | W11 |
 | HPA | Allowed (flash sale uses one); `targetRef` names the right kind | `Publishing.DeploymentOf` assumes Deployment | Sample | W11 |
@@ -272,8 +273,12 @@ Steps: securityContext, `/tmp` and service account W12 (the snapshot volume W11)
 7. W8: the Compose health check runs `/app/{assembly}`; chiseled `ContainerFamily` on `resolute` documented for node
    projects.
 8. N9: the upgrade-check hook Job.
-9. A public `Manifest` type (today `samples/Shared/Publishing.cs`) for the objects Aspire has no type for (Job,
+9. W11: a public `Manifest` type (today `samples/Shared/Publishing.cs`) for the objects Aspire has no type for (Job,
    PodDisruptionBudget, NetworkPolicy, VerticalPodAutoscaler).
+10. W11: Compose: stateful groups as one service per node (fixed `hostname`, a named snapshot volume each); the
+    gateway surge and drain and the per-node hot restart in `{cluster}-restart` and the deploy step.
+11. W12: Compose: `${VAR:?}` for the signing secret, `DaServer__RequireSigningSecret`, the `internal: true` network for
+    the cluster and HTTP planes, the read-only and non-root service settings (section 8).
 
 Samples:
 1. W7: `Sample.AppHost` and `FlashSale.AppHost` become an `apphost.cs` in each sample's server project (file-based

@@ -550,8 +550,8 @@ Replaced by ADR-081.
 - Decision: actors and services are static classes (ADR-081), and DAS007 makes a mutable static field of one, or a
   field of a server system, a build error. Constants and `static readonly` data stay allowed. Per-actor state goes
   into components of the actor's entity (handler parameters), shared state into singletons.
-- Consequences: behaviour is code only, so persistence (N5), state handoff (N6) and hot reload (N9) touch data alone
-  and can swap the code freely. There is no actor object to create, pool or leak: a load creates an entity, and actor
+- Consequences: behaviour is code only, so persistence (N5), state handoff (N6) and code changes by hot restart
+  (ADR-084) touch data alone and can swap the code freely. There is no actor object to create, pool or leak: a load creates an entity, and actor
   churn (logins, short matches, idle unloads) allocates nothing.
 
 ## ADR-045 DaServer is a general ECS distributed server framework
@@ -562,7 +562,7 @@ Replaced by ADR-081.
   messages and RPC, membership, placement, persistence, reload, ingress and client connections (sessions, push,
   groups, resume; chat, IoT, market data, collaboration and games all need them, ADR-048). Business domains are not
   part of it: logins, maps, interest management, matchmaking, inventories live in samples (`samples/mmo`;
-  `samples/flashsale` planned, G5) or user code. Persistence (N5) and reload (N9) are planned.
+  `samples/flashsale` planned, G5) or user code. Persistence (N5) is in; code changes ship by hot restart (ADR-084).
 - Consequences: a capability enters the framework only if backends of different domains need it; it is built on the
   same public extension points users have (node features, ingress, address handlers, filters), lives in its own
   namespace and is off unless configured. The runtime (`DaServer.Runtime`, `DaServer.Cluster`, `DaServer.Rpc`) never
@@ -576,7 +576,7 @@ Replaced by ADR-081.
   Kestrel and the official health-check middleware.
 - Decision: every node hosts Kestrel on a separate HTTP port for health (`/health` readiness, `/alive` liveness),
   admin endpoints and user REST endpoints, all as minimal APIs (no MVC controllers: lighter, AOT/trim friendly, and
-  one reloadable endpoint source for N9). Node-to-node and client traffic stays on DaServer's TCP links (zero GC,
+  one endpoint source; code changes by hot restart, ADR-084). Node-to-node and client traffic stays on DaServer's TCP links (zero GC,
   ordered, batched). HTTP handlers run on the thread pool and reach actors only through `ICluster`.
 - Consequences: nodes reference the ASP.NET Core shared framework (aspnet runtime image, a few MB of memory, tens of
   ms of start-up). The HTTP plane is for low-frequency traffic only: probes, admin, internal REST (webhooks, payment
@@ -1040,7 +1040,7 @@ Replaced by ADR-081.
   `Created` handler gives.
 
 ## ADR-067 Components and logic live in separate projects; the node project is the reloadable logic
-- Context: hot reload (N9) replaces code while actors keep their state. EasyEcs stores components by type. A
+- Context: an in-process hot reload (since replaced by hot restart, ADR-084) replaces code while actors keep their state. EasyEcs stores components by type. A
   component declared in the reloaded assembly becomes a different type after the reload, and the stored data is
   unreachable. Logic that keeps state in object fields loses it the same way.
 - What other projects do: a typical game server keeps components in its server assembly and systems, handlers and extensions in
@@ -1054,15 +1054,15 @@ Replaced by ADR-081.
   - DAS007: actors, services and server systems hold no fields. A system's state is a singleton.
   - Not split: contracts (already their own project, shared with clients); shared logic (`DaServerShared`: clients run
     it, so it is never reloaded and may hold both); the node host (its `Program.cs` can load the node project's own
-    assembly collectibly, so the node project is the reloadable logic, N9).
+    assembly collectibly, so the node project is the reloadable logic).
   - Projects are recognised by what they reference: no property to set, no extra host project.
-- The reload itself is planned (roadmap N9, after the EasyEcs release it needs): no cluster-wide stop, each shard
+- The reload is superseded by ADR-084's hot restart (this ADR is rewritten when W10 promotes the drafts): no cluster-wide stop, each shard
   swapping its handler table and system list between two passes on its own thread (handlers run to completion, so
   nothing of the old code is in flight), components and singletons staying where they are because their types do not
   change (a typical game server stops the
   world and forces a GC instead). The split above holds now, so the reload adds no rule to existing code.
 - Consequences: one components project per server that has data. Changing a component's layout is a rolling deploy;
-  with N9, changing behaviour becomes a reload. Data and behaviour are split exactly as ECS splits them.
+  changing behaviour is a hot restart (ADR-084). Data and behaviour are split exactly as ECS splits them.
 
 ## ADR-068 Actor records: [Persist] components, saved by systems, versioned
 - Context: actors are loaded on demand and moved between nodes, so their state needs a store. Orleans writes a grain's
@@ -1430,7 +1430,7 @@ Replaced by ADR-081.
   polymorphic dispatch for messages (boxes struct messages and writes a type id the frame header already carries);
   Nino's interceptors (messages live in other assemblies and calls are generic, which they do not see).
 - Consequences: frames rent from the pinned `BufferPool` through Nino's pool parameter, so sockets send them as
-  they are. Nino's registries can be released with a collectible load context (`NinoRegistry.Remove`), which N9 hot reload will use.
+  they are. Nino's registries can be released with a collectible load context (`NinoRegistry.Remove`), which an in-process reload would use; code changes ship by hot restart instead (ADR-084).
   Moving to rc.6 changed every string's bytes, which earlier releases cannot read: a full restart (ADR-077), and no
   rollback once records hold rc.6 strings (rc.6 reads the earlier UTF-16 ones).
   BenchmarkDotNet: see the roadmap's Nino 4 row.
@@ -1552,7 +1552,7 @@ Replaced by ADR-081.
   changed" leaks; the order between mail, delayed sends and systems is implicit. EasyEcs 4.5 now provides what a
   model without these needs: single-entity jobs (`entity.Run(ref job[, filter])`), group filters carried by
   interfaces (`IGroupWith<T>`), `world.Descendants(root)` and `LoadEntitiesInto(…, markWritten: false)`.
-- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v32), structured as in
+- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v33), structured as in
   [drafts/architecture.md](drafts/architecture.md):
   - **The actor type is its address, its root component, its root prefab and its system group**:
     `[TickRate(30)] partial record struct Map(long Id) : IActor<Map>` (`IActor<T>` inherits `IEquatable<T>`, so
@@ -1572,7 +1572,7 @@ Replaced by ADR-081.
   - **Presences replace sessions**: `Join()`/`Leave()`, one presence per actor type, `[To]` client messages straight to
     the target, the gateway a server type hosting the built-in `Connection` actor type, ordered connection stamps, the SDK re-joining.
   - **Distribution**: activation epochs claimed with the placement version and fenced writes, a membership lease,
-    placeholder roots, `IPersisted` records through `Descendants` and `ComponentSet`, migration bytes checked by layout
+    placeholder roots, records of persistent entities through `Descendants` and `ComponentSet`, migration bytes checked by layout
     hashes under a new epoch, remaining time across processes. Each piece closes a hole a crash, a pause or a
     partition would open:
     - the lease is renewed only by a coordinator ack that echoes the node's own heartbeat counter, timed from the
@@ -1588,13 +1588,19 @@ Replaced by ADR-081.
   - **Replies, presences and retries are data with stated guarantees** (the table "每条路径保证什么" in the draft's §11):
     - `[Durable]` on an `IRequestTo` makes both ends the framework's. The asker's waiting entity (request, state, call
       id, UTC deadline from `deadline:`) is written into its record before the request leaves, and is re-asked with
-      the same call id on transient outcomes and after re-activation until the deadline, then `Expired`; a crashed
-      asker is woken by its slot owner's `DueScan` through the record's `next_due`. The receiver keeps call id → reply
-      in an internal bounded `ReplyLog`, written in the same record write that holds the reply until the epoch CAS,
-      and answers a repeat from it without running the handler. A success the caller saw survives either side's
-      crash, and a call id lands once within its deadline; users write no reservations, re-asks or call rings.
-      Opt-in, since it costs a store write of latency on each side; other requests stay immediate and an unknown
-      outcome stays the asker's to decide.
+      the same call id on transient outcomes and after re-activation; a crashed asker is woken by its slot owner's
+      `DueScan` through the record's `next_due`. Handling the answer is held too: the `Replied` handler's output leaves
+      only after the asker's record holds the outcome, so a crash in between handles the same answer again rather
+      than a different one. One `AskTimeout` before the deadline the asker sends a single settling re-ask: the
+      receiver answers from its log, waits for its held reply, or records the call id as refused and answers
+      `TooLate`, so a late duplicate never runs; `Expired` then means only "unreachable, outcome unknown". The
+      receiver keeps call id → reply in an internal bounded `ReplyLog`, written in the same record write that holds
+      the reply until the epoch CAS, answers a repeat from it without running the handler, refuses (`TooLate`) to start
+      a request whose remaining budget is below its write latency, and records a handler that threw under
+      `OnError = Restart` as `Faulted`. A call id runs at most once; an outcome the caller saw survives either side's
+      crash; a `[Durable]` request cannot be cancelled (an analyzer error: giving up is waiting for the deadline).
+      Users write no reservations, re-asks or call rings. Opt-in, since it costs a store write of latency on each
+      side; other requests stay immediate and an unknown outcome stays the asker's to decide.
     - A lost connection or gateway leaves its presences `Detached` for a grace (30 s, `DetachGrace`) instead of
       `Leave()`: after a region blip or a gateway crash, clients come back to presences that are still there, and
       actors rebuild nothing. A takeover sends `TakeOver` to the old connection's gateway; a newer login (a larger
@@ -1620,14 +1626,31 @@ Replaced by ADR-081.
     actors, so `[On<T>]` methods and actor-group systems take a user singleton `in` only, and `ref` needs
     `[WorldLocal]` (a world's cache or configuration, not actor state); systems of an actor type without `[TickRate]`
     run after every mail batch, so each `[ForEach]` there must narrow by `[Changed<T>]`, `[Removed<T>]`, a tag or an
-    `UpdateInterval` (an analyzer error otherwise); a throwing handler of an actor type with `IPersisted` components
-    restarts it from its last record by default (`OnError = Restart`), since EasyEcs applies changes at once without
-    rollback and a half-applied item must never reach a checkpoint; types without persisted components keep `Resume`.
-  - **EasyEcs 4.7 (planned, not released) replaces workarounds** (the draft's §0 and §14): `Mut<T>` with
+    `UpdateInterval` (an analyzer error otherwise); a throwing handler of an actor type whose root persists restarts
+    it from its last record by default (`OnError = Restart`: the root is reset to its `RootPrefab` copy keeping key and
+    mail, the batch's remaining items move into the mail, consecutive restarts back off like failed activations),
+    since EasyEcs applies changes at once without rollback and a half-applied item must never reach a checkpoint;
+    types without a record keep `Resume`.
+  - **Persistence is per entity kind, not per component type**: entities spawned from a
+    `[Prefab<K>(Persist = true)]` prefab (the root through `K.RootPrefab`) are saved with all their components but
+    `[Transient]` ones, and carry `Persisted`; others are not saved. The draft's own example forced this: a drop on a
+    map must be restored with its `NetId`, `Position` and `Loot` (and its waiting `[Durable]` ask), while avatars carry
+    the same `NetId` and `Position` and must stay out of the record; per-type persistence (a marker interface on component types)
+    either lost the drop's `NetId` or dragged every avatar into the record. Change tracking is a per-type column in
+    EasyEcs, so the registration switches it on for the record's component types (EasyEcs request #27; the generator
+    declares `ITrackChanges` until then) and the change system runs one `ChangedAny` over that set filtered by
+    `Persisted`: one visit per changed persistent row, nothing allocated.
+  - **The wake is the runtime's alone**: descendants that must wake an unloaded actor carry a persisted `WakeAt`
+    (a durable ask, a reminder); the runtime keeps the root's `NextDue` at their minimum and rewrites `next_due` on
+    every activation by `Wake`, so a stale column never wakes an actor twice.
+  - **Identity is an interface**: `Account(long Id) : IClaims` with `IClaims : IComponent`, so the constraint of
+    `[JoinOnConnect<T>] where T : struct, IClaims` and EasyEcs both see it; no attribute for the generator to complete.
+  - **EasyEcs 4.7 (planned, not released) replaces workarounds** (the draft's header and §14): `Mut<T>` with
     `SetIfChanged` (EasyEcs #23) for components recomputed every tick, `world.Instantiate` with components (#24) for
-    `root.Spawn`, `ChangedAny` for the change system and replication, `DestroyLog` for replication's removals,
-    `IUniqueIndexed<T>` for actor and child keys, `TrimExcess`, `Slices` for the idle scan and checkpoints, and the
-    system diagnostics for the inspector; the roadmap gates the steps that use them.
+    `root.Spawn`, `ChangedAny`/`RemovedAny` (with a start tick, #25) for the change system, the wake and replication,
+    `world.Save(exclude)`/`Load(keep)` (#26) so configuration tables and `[WorldLocal]` singletons stay out of a hot
+    restart's snapshot, `IUniqueIndexed<T>` for actor and child keys, `TrimExcess`, `Slices` for the idle scan and
+    checkpoints, and the system diagnostics for the inspector; the roadmap gates the steps that use them.
   - One project may define several server types; a node runs one.
 - Alternatives: keep ADR-081's handlers and add the missing pieces (copy and write-back stays, two vocabularies stay);
   handlers as systems over message entities (an entity per message costs a create and a destroy; the runtime's due
@@ -1637,7 +1660,9 @@ Replaced by ADR-081.
   the write they already force); user-written reservations, re-asks and call rings for requests that must land once
   (every such feature repeats the same components, and a crash between the ask and the asker's next write still
   promised the same thing twice); `Leave()` at once on a lost connection (a
-  reconnect storm rebuilds every presence); every reply durable (a store write of latency on every request).
+  reconnect storm rebuilds every presence); every reply durable (a store write of latency on every request);
+  persistence per component type (above); `Expired` straight at the deadline (a duplicate still in a resend window
+  could run after the asker gave up).
 - Consequences: breaking for every user project and most of the runtime (roadmap phase W). The timer defaults are one
   table in the draft's §11 (lease 6 s, `SuspectAfter` 3 s, `DeadAfter` and re-placement 10 s, link silence 3 s):
   `SuspectAfter`, `DeadAfter` and the link timeout keep ADR-053's and ADR-064's values; ADR-023's "keys move when a
@@ -1657,7 +1682,7 @@ Replaced by ADR-081.
 - Decision:
   - **Every node publishes with `PublishAot=true`** (requirement E11). Framework projects set `IsAotCompatible` on
     net11.0, so the trim and AOT analyzers run on every build.
-  - **Registration is generated as closed types in the user's assembly**: `Registrations.Create()` names every actor
+  - **Registration is generated as closed types in the user's assembly**: `Registration.Create()` names every actor
     type, dispatch table, job and system instantiation, the framework's per-actor-type systems included (they have
     no `[ForEach]` methods, so EasyEcs never closes their code with `MakeGenericType`, EasyEcs D20). No reflection,
     `MakeGenericType`, `Activator` or assembly scanning; the analyzer reports a generic `[ForEach]` system closed
@@ -1667,7 +1692,7 @@ Replaced by ADR-081.
   - **Code changes load no assemblies at run time**: JIT and AOT nodes take a new build the same way, by hot restart
     or rolling upgrade (ADR-084), so user projects are `Game.Protocol` and `Game.Server`.
   - **0 warnings, no suppression**: a suppression of a library's warning in user programs is not accepted. EasyEcs
-    4.6 publishes without warnings with tracked components, which every stateful node has (`IPersisted`).
+    4.6 publishes without warnings with tracked components, which every stateful node has (its persistent entities').
 - Alternatives: AOT only for stateless nodes (no tracked components; splits the support matrix); suppressing a
   library's AOT warning (accepts it on the library's behalf); in-process hot reload on JIT only (rejected in ADR-084);
   reflection-based registration with trimming descriptors (fragile, and generic closure at run time is impossible
@@ -1721,6 +1746,8 @@ Replaced by ADR-081.
   - `[Stateless]` actor types deployed as their own group are replaced start-new-then-stop-old, without a pause.
   - The new process loads with `world.Load(bytes, markWritten: false)` (EasyEcs 4.6, its D39), so no actor rewrites
     its record and no `[Changed<T>]` method sees the loaded rows; a system that needs a full pass filters `Resumed`.
+    Configuration tables and `[WorldLocal]` singletons are the new process's own: the old one saves without them and
+    the new one creates them before the load, which keeps them (EasyEcs 4.7's `Save(exclude)` and `Load(keep)`).
 
 ## ADR-085 Actor-hosting groups publish as StatefulSets with `OnDelete`; hot restart patches pods in place
 - Context: ADR-030 publishes every node group as a Deployment: a node's identity was its random id and its actors'
@@ -1814,8 +1841,9 @@ Replaced by ADR-081.
     Protocol and Server. The node's entry point stays the user's `Program.cs` of about five lines.
   - **Local runs start the binary.** Aspire starts an `AddProject` resource as `dotnet run --project … --no-build`,
     which keeps a `dotnet` CLI process beside every replica. DaServer.Aspire uses Aspire's own `AddDotnetProject`
-    (`Aspire.Hosting.Dotnet`), which runs the built project's `RunCommand` (the apphost executable) with the same
-    project defaults; it is prerelease, so it is pinned and W8 verifies it, with `AddProject` as the fallback. Aspire
+    (`Aspire.Hosting.Dotnet`), which runs the built project's `RunCommand` (the apphost executable, computed by
+    `ComputeRunArguments`) with the same project defaults; no page states this, it rests on the implementation, and the
+    package is prerelease, so it is pinned and W8 verifies it, with `AddProject` as the fallback. Aspire
     has no API to launch a published native binary, so AOT is checked locally by running the published AOT images
     with Compose (the production images), not by a custom executable resource. On macOS and Windows hosts AOT images
     build in a container (`sdk:11.0-resolute-aot` stage, `runtime-deps:11.0-resolute-chiseled` final stage), since
@@ -1939,16 +1967,19 @@ Replaced by ADR-081.
 - Decision: each is a package in its own namespace, off unless referenced, written in the model's own terms
   (components, tags, singletons, systems; no allocation on hot paths). The mechanics are
   [drafts/programming-model.md](drafts/programming-model.md) §15, nowhere else.
-  - **`DaServer.Reminders`**: a persisted `Reminder<T>(DateTime UtcAt, TimeSpan Period)` on a child entity. While the
-    actor is active it fires through a `Due`; while unloaded, the minimum `UtcAt` is the root's `NextDue`, which the
-    checkpoint writes into the record's `next_due` column, and the slot owner's `DueScan`
+  - **`DaServer.Reminders`**: a `Reminder<T>(DateTime UtcAt, TimeSpan Period)` on a persistent child entity with the
+    runtime's `WakeAt` set to `UtcAt`. While the actor is active it fires through a `Due`; while unloaded, the runtime's
+    `NextDue` (the minimum `WakeAt`) goes into the record's `next_due` column and the slot owner's `DueScan`
     (`IActorStore.DueKeys(slots, until)`) activates the actor. `Reminded<T>` is at least once, deduplicated by
-    (reminder, `UtcAt`): the advance lands in the same record as the handler's effects.
-  - **The wake is the runtime's, not the package's**: `NextDue`, `next_due`, `DueKeys` and `DueScan` belong to the
-    runtime because `[Durable]` asks need them too (ADR-082) and the runtime depends on no capability (ADR-045). They
-    are generic: the earliest UTC instant a record must be awake for.
+    (reminder, `UtcAt`): the advance lands in the same record as the handler's effects. After an outage a reminder
+    fires once and moves to its first future occurrence, not once per missed period.
+  - **The wake is the runtime's, not the package's**: `WakeAt`, `NextDue`, `next_due`, `DueKeys` and `DueScan` belong
+    to the runtime because `[Durable]` asks need them too (ADR-082) and the runtime depends on no capability
+    (ADR-045). Only the runtime computes `NextDue`; the package writes `WakeAt` on its reminders.
   - **`DaServer.Topics`**: a built-in `Topic(long Id)` actor type with a persisted `DynamicBuffer<Subscriber>`;
-    `Subscribe`, `Unsubscribe` and `Publish` on `Entity`. The subscriber keeps its own `Subscription` buffer,
+    `Subscribe`, `Unsubscribe` and `Publish` on `Entity`. Each `Subscriber` carries the subscriber's activation epoch,
+    which `Subscribe` updates; an unsubscribe or a gone-subscriber notice removes it only when the epochs match, so a
+    late notice from an old activation never drops a new one's subscription. The subscriber keeps its own `Subscription` buffer,
     re-subscribing after activation and unsubscribing on deactivation, so delivery never activates an actor. A publish
     is serialized once, one frame per subscriber node; at most once. It replaces today's `Publish`. Durable streams
     (replay, offsets, consumer groups) stay with Kafka or NATS JetStream.
@@ -1959,11 +1990,15 @@ Replaced by ADR-081.
     `browser-wasm` client ships a .NET runtime to every page (megabytes before the first frame) and gives JavaScript a
     `[JSExport]` shim instead of types, while generated codecs give browsers the types Unity gets. Unreal/C++ follows
     the same specification later.
-  - **`DaServer.Replication`**: `[Replicated]` on a change-tracked component; per type, a `[Changed<T>]` system writes
-    the changed fields (generated per-type bitmasks against the last sent value) per `ClientGroup` once per tick into
-    pooled frames; full state when an entity changes group, when a presence subscribes a group, and on
-    `[Changed<Joined>]` with `MissedPushes`. The SDKs apply the patches (C# into an EasyEcs world through
-    `DaServer.Replication.Client`, TypeScript into an entity table). At most once, like pushes.
+  - **`DaServer.Replication`**: `[Replicated]` on a change-tracked component; per actor type, a `ChangedAny` system
+    writes the changed fields (generated per-type bitmasks against the last sent value) per `ClientGroup` once per tick
+    into pooled frames. Its state is DaServer's own: each `Replica<T>` keeps the last sent value and the tick it was
+    sent at, each group a bounded ring of exits, each actor an incarnation renewed on load, migration, hot restart
+    and `OnError = Restart`. A rejoining SDK sends (incarnation, tick): the same incarnation with the exit ring still
+    covering the tick gets only what changed since (EasyEcs 4.7's `ChangedAny(since)` speeds the lookup up, it decides
+    nothing), anything else a full resend; full state also when an entity changes group and when a presence subscribes
+    a group. The SDKs apply the patches (C# into an EasyEcs world through `DaServer.Replication.Client`, TypeScript into
+    an entity table). At most once, like pushes.
   - **Tools**: `TestCluster` fault injection (`Partition`, `Kill`, `DelayLinks`) for users' own tests; a read-only
     inspector on the HTTP plane (an actor's subtree, the busiest actors, each world's tables and systems, counts by
     component; flecs's REST API is the model), exposed as Aspire commands; writes go only through `ICluster` messages.
@@ -1990,18 +2025,19 @@ Replaced by ADR-081.
     casual queues, `Match` actors that its players join as presences, `Party` actors, and a sharded `Leaderboard`
     (score shards by key, merged on read).
   - **A saga in `samples/flashsale`**: the order as a process-manager actor driving payment and stock with
-    `[Durable]` asks and compensating on `Expired`, with a pattern page in the sample on why sagas replace ACID
-    transactions across actors (each step lands once per call id, an unknown step is compensated, no lock or two-phase
-    commit spans actors).
+    `[Durable]` asks: a step refused as not executed (`NotExecuted`, `TooLate` included) is compensated; a step that
+    ends `Expired` (unreachable, outcome unknown) is reconciled by asking its owner again later; with a pattern page in
+    the sample on why sagas replace ACID transactions across actors (each step runs at most once per call id, no lock
+    or two-phase commit spans actors).
   - **Input ticks and corrections in `samples/mmo`**, the pattern every server-authoritative game with client
     prediction needs (Unity Netcode's [command stream](https://docs.unity3d.com/Packages/com.unity.netcode@1.5/manual/command-stream.html)
-    and [prediction](https://docs.unity3d.com/Packages/com.unity.netcode@1.5/manual/prediction.html)): `MoveTo`
+    and [prediction](https://docs.unity3d.com/Packages/com.unity.netcode@1.5/manual/prediction-details.html)): `MoveTo`
     carries a `uint InputTick`, `Moves` writes it into a `LastInput` component on the avatar, and the `Nearby` and
     snapshot pushes echo it, so the client replays only the inputs the server has not applied yet. A `Resync` system
     with an `UpdateInterval` pushes the positions of each cell at a low rate as a correction keyframe, so clients' extrapolation
     drift heals without a full snapshot; NPC AI runs as `[ForEach(Slices = N)]` (EasyEcs 4.7, planned), a slice of
     the NPCs per tick.
-  - **`samples/relay`**, a relay room in Photon Quantum's style ([Quantum intro](https://doc.photonengine.com/quantum/v2/quantum-intro)):
+  - **`samples/relay`**, a relay room in Photon Quantum's style ([Quantum intro](https://doc.photonengine.com/quantum/v3/quantum-intro)):
     a `[TickRate(30)]` `Room` actor gathers its players' inputs for each tick and broadcasts one frame per tick to its
     `ClientGroup`; it holds inputs only, the deterministic simulation runs on the clients. It proves the model fits a
     game whose server knows no game rules, and suits games that tolerate TCP (ADR-092).
@@ -2022,8 +2058,8 @@ Replaced by ADR-081.
   reliable, ordered streams behind one feature point, `IFrameChannel` (`Connection`, `WebSocketChannel`). A lost
   segment holds back every later byte of the stream until it is resent, at least a round trip later (head-of-line
   blocking). Fast-paced shooters therefore send state over UDP and drop what is stale:
-  Overwatch's netcode runs on UDP ([GDC 2017](https://www.gdcvault.com/play/1024001/-Overwatch-Gameplay-Architecture-and)),
-  Unity Netcode for Entities on Unity Transport over UDP ([command stream](https://docs.unity3d.com/Packages/com.unity.netcode@1.5/manual/command-stream.html)),
+  Overwatch's netcode runs on UDP (from the [GDC 2017 talk](https://www.gdcvault.com/play/1024001/-Overwatch-Gameplay-Architecture-and)),
+  Unity Netcode for Entities on Unity Transport, which runs "over either UDP sockets or WebSockets" ([Unity Transport](https://docs.unity3d.com/Packages/com.unity.transport@2.4/manual/index.html)),
   and QUIC exists to give streams without that blocking ([RFC 9000](https://www.rfc-editor.org/rfc/rfc9000)).
 - Decision:
   - **Client transports are TCP and WebSocket.** They fit MMOs, flash sales, turn-based games, chat and IoT, where a
