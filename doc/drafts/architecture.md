@@ -1,6 +1,6 @@
 # Target architecture (draft, not implemented)
 
-The architecture DaServer is refactored to (breaking, roadmap phase W): the v38 programming model of
+The architecture DaServer is refactored to (breaking, roadmap phase W): the v39 programming model of
 [programming-model.md](programming-model.md) on EasyEcs 4.6.0 and the features planned for EasyEcs 4.7 (not released; the draft's header and §14 list them; until 4.7 ships the steps that use them take the 4.6 fallbacks listed in roadmap W1, then switch), with Native AOT support. The programming model draft is
 the source of truth for what users write and what each rule means; this file says how the pieces fit together, holds the runtime's internal data and the client protocol's
 internals, and links to the draft's sections instead of repeating them. Today's architecture is [design.md](../design.md); the
@@ -134,8 +134,8 @@ The draft uses these before or apart from the section that defines them:
 - **Epoch**: the number an activation claims; record writes compare and swap it, so only one activation of an actor writes.
 - **Placeholder**: the root entity of an actor not yet active or being saved; mail waits on it.
 - **Settling**: step c of a tick: `Depart`, `SyncSubscriptions`, and removing `Restarting` and `Resumed`.
-- **Tick-end write**: at the end of every tick (actor types without `[TickRate]`: after every mail batch) a world writes the roots due for a write as one store statement, ADR-068's `unnest`, asynchronously ([draft §10](programming-model.md#默认异步成批地写); its runtime data below).
-- **Held output**, **write generation**: the only output that waits for a record is an outgoing `[Durable]` request and an answer to one; it carries the generation of the root's write that holds the item that produced it, and leaves when that write succeeds. Actors never pause ([draft §8](programming-model.md#durable两端由框架负责)).
+- **Tick-end write**: at the end of every tick (actor types without `[TickRate]`: after every mail batch) a world writes the roots due for a write asynchronously in one store statement (ADR-068's `unnest`; one more per 512 rows, at most `DaServer:StoreWritesInFlight` in flight) ([draft §10](programming-model.md#默认异步成批地写); its runtime data below).
+- **Held output**, **write generation**: the only output that waits for a record is an outgoing `[Durable]` request and an answer to one; it carries the generation of the root's write that holds the item that produced it, and leaves when that write succeeds; the actor keeps running meanwhile ([draft §8](programming-model.md#durable两端由框架负责)).
 - **Connection stamp**, **`Retire`**: section 3.
 - **Node singleton**: above.
 
@@ -148,8 +148,7 @@ loop on the shard's thread:
         at most a budget of items per actor (the rest waits for the next batch, still by (time, seq))
     if the volatile lease-expiry stamp has passed: run nothing (the world is frozen)
     for each actor type K without [TickRate] that has mail, due items or a pending chain:
-        Ordering<K>        OrderedPhase: chain stack, due heap (At <= now) and mailbox merged by (time, seq);
-                               a root that ran a [Durable] item gets WriteNow
+        Ordering<K>        OrderedPhase: chain stack, due heap (At <= now) and mailbox merged by (time, seq)
         hand Outbox frames to the links (held [Durable] output stays, tagged with its write generation)
         world.Update<K>()  K's systems, Time.DeltaTime 0
         Settling<K>        Depart, SyncSubscriptions, Restarting and Resumed removed
@@ -159,14 +158,18 @@ loop on the shard's thread:
         world.Update<K>()
         Settling<K>
     Cleanup              per world: ReleaseRoutes, the Persisted cleanup, WakeSystem, then CheckpointSystem (takes the
-                               records of WriteNow roots, and of Unsaved roots whose checkpoint interval has passed,
-                               skipping roots with a write in flight)
-    StoreWrite           per world: the tick-end write goes out as one statement when it holds any record (deactivations'
-                               included); held output is released as its rows succeed
+                               records of WriteNow roots first, then of Unsaved roots whose checkpoint interval has passed,
+                               skipping roots with a write in flight, as many as the free statements hold)
+    StoreWrite           per world: the tick-end write goes out when it holds any record (deactivations' included), one
+                               statement per 512 rows, at most DaServer:StoreWritesInFlight in flight; held output is
+                               released as its rows succeed
     hand Outbox frames to the links
 ```
 
 - Ordering state (sequence counter, tick window, chain budget) is per actor type, the singleton `Ordered<K>`.
+- `WriteNow` is set by the durable operations themselves (`Ask` and `Reply` of a `[Durable]` request, the dispatch of a
+  `[Durable]` request or its `Replied`), in handlers and systems alike, so an item of a system rides the same tick's
+  write ([draft §8](programming-model.md#durable两端由框架负责)).
 - **Fixed step with a catch-up cap** (DaServer's own design): a shard that fell behind (a long tick, a GC pause)
   runs the missed ticks one by one, each with the same `Δ`, but at most a few per wake (node configuration); past the
   cap it skips the rest and moves its tick clock on, counted in `daserver.ticks.skipped`. Items keep their exact
@@ -193,14 +196,14 @@ exported, OpenTelemetry). Names users never write but meet in diagnostics: the S
 | `FromPrefab(int Prefab, int Composition)` | component | On every entity spawned from a registered prefab copy, persistent or not, the root included: the prefab's id and the hash of its component set, both from `wire.manifest`. On every load (record, migration bytes, snapshot) the runtime adds the copy's `[NotSaved]` components the entity lacks and the components the prefab gained since `Composition` (known from the earlier compositions the manifest keeps; components removed at run time are not added back), then updates `Composition`, tagging the root `Unsaved` when it added persisted ones ([draft §10](programming-model.md#恢复)) | `daserver.records.unknown_types` |
 | `Persisted(EntityId Root)` | cleanup component | On every persistent entity (from a persistent prefab's registered copy; the root's points at itself): `ChangeSystem` filters by it, the record collects it, and destroying a persistent descendant tags its root `Unsaved` ([draft §10](programming-model.md#要保存的是实体不是组件类型)) | — |
 | `Pending` | component on the root | Pending delayed events and waiting asks (the `MaxPending` count); idle deactivation considers only roots where it is zero ([draft §6](programming-model.md#6-生命周期)) | `daserver.actors.pending` |
-| Tick-end write | runtime value per world | The records taken this tick (`WriteNow` roots first, then checkpoint and deactivation ones), sent as one `IActorStore.SaveAsync` call (one statement, at most 512 rows as today; the rest go in the next); several may be in flight, but never two for one root. Outcomes come back per row: a refused row fences only its actor and discards only its held output; a failed row is retried with the same bytes | — |
-| `Writing`, `WriteNow`, write generation | tags and a counter on the root | `Writing`: a record write of the root is in flight; `CheckpointSystem` skips the root, so writes never overlap and the CAS compares the epoch alone; changes meanwhile keep or regain `Unsaved` and go in the next write, which carries the latest state ([draft §10](programming-model.md#激活-epoch一个-actor-只有一个激活能写)). `WriteNow`: the root ran a `[Durable]` item, so the next tick-end write takes it whatever the checkpoint interval. The write generation counts the root's records taken; held output carries the generation its item's state goes into and leaves once a write of that generation or later succeeds ([draft §8](programming-model.md#durable两端由框架负责)) | `daserver.durable.held`, `daserver.durable.commit_latency` |
+| Tick-end write | runtime value per world | The records taken this tick (`WriteNow` roots first, then checkpoint and deactivation ones), sent as `IActorStore.SaveAsync` calls (one statement per 512 rows, as today); at most `DaServer:StoreWritesInFlight` statements per world in flight (default 2), never two writes for one root; roots beyond wait with their tags for the next round ([draft §10](programming-model.md#默认异步成批地写)). Outcomes come back per row: a refused row fences only its actor and discards only its held output; a failed row is retried with the same bytes | `daserver.store.writes_waiting` |
+| `Writing`, `WriteNow`, write generation | tags and a counter on the root | `Writing`: a record write of the root is in flight; `CheckpointSystem` skips the root, so writes never overlap and the CAS compares the epoch alone; changes meanwhile keep or regain `Unsaved` and go in the next write, which carries the latest state ([draft §10](programming-model.md#激活-epoch一个-actor-只有一个激活能写)). `WriteNow`: the root ran a `[Durable]` item (set by the operation itself, in a handler or a system), so the next tick-end write takes it whatever the checkpoint interval. The write generation counts the root's records taken; held output carries the generation its item's state goes into and leaves once a write of that generation or later succeeds ([draft §8](programming-model.md#durable两端由框架负责)) | `daserver.durable.held`, `daserver.durable.commit_latency` |
 | `ReplyLog` | persisted component on the root | `[Durable]` dedupe: call id → reply bytes, "token taken" (replaced by the reply in the write of the item that replies), `Faulted` or "refused" (a settling re-ask of a call that never ran), kept until the request's settle-by instant (UTC, carried in its envelope) plus `DaServer:ClockSkew`; at most `DaServer:ReplyLogCapacity` reply and `Faulted` entries (full: `Busy`) and, apart, at most `DaServer:ReplyLogRefusedCapacity` refused ones (default 1,024; full: the settling re-ask goes unanswered and ends `Expired`) | `daserver.durable.duplicates` |
-| Durable waiting entity | persistent child entity | Request bytes, ask state, call id, UTC deadline (`settleBy`), `WakeAt`, a cleanup component (destroyed with its asker by a user handler or system, it fails the item and the actor reloads, since a durable asker's type persists and uses `Reload`; a framework destroy such as `Depart` re-parents it to the root first); re-asked on transient outcomes and after re-activation; one settling re-ask before the deadline; `Expired` only when that goes unanswered | `daserver.durable.reasks`, `daserver.durable.expired` |
-| `WakeAt(DateTime Utc)` | persisted component on descendants | When the actor must be awake: a durable waiting entity (the instant its request left), a reminder (its `UtcAt`) | — |
+| Durable waiting entity | persistent child entity | Request bytes, ask state, call id, UTC deadline (`settleBy`: no attempt leaves once `Time.Utc` reaches it, the ask ends `Expired`), `WakeAt`, a cleanup component (destroyed with its asker by a user handler or system, it fails the item and the actor reloads, since a durable asker's type persists and uses `Reload`; a framework destroy such as `Depart` re-parents it to the root first); re-asked on transient outcomes and after re-activation; one settling re-ask before the deadline; `Expired` only when that goes unanswered | `daserver.durable.reasks`, `daserver.durable.expired` |
+| `WakeAt(DateTime Utc)` | persisted component on descendants | When the actor must be awake: a durable waiting entity (its next attempt's timeout or scheduled re-ask, its settle-by instant after the settling re-ask), a reminder (its `UtcAt`) | — |
 | `IssueSeq` | persisted component on the root | The client-token issue sequence `root.IssueClientToken` increments ([draft §7](programming-model.md#7-客户端与-presence)) | — |
 | `NextDue` | persisted component on the root | The minimum `WakeAt` of the root's descendants, computed only by the runtime: `WakeSystem` (from `[ChangedAny<WakeAt>]`, `[RemovedAny<WakeAt>]` and the `Persisted` cleanup) runs before `CheckpointSystem`, which takes every record; every write puts it into the record's `next_due` column ([draft §10](programming-model.md#唤醒wakeatnextdueduescan)) | — |
-| `DueScan` | node system | Every `DaServer:DueScanInterval`, `IActorStore.DueKeys(slots, until)` over the slots the node owns; sends `Wake` (the one control mail that activates) to keys not active; an activation by `Wake` always rewrites `next_due` | `daserver.wakes` |
+| `DueScan` | node system | Every `DaServer:DueScanInterval`, `IActorStore.DueKeys(slots, until)` over the slots the node owns; sends `Wake` (the one control mail that activates) to keys not active; an activation by `Wake` always rewrites `next_due`. The query does not exclude active keys (the store cannot tell); an active actor moves its `WakeAt` on as each instant comes, so its key shows up only between an instant and the write that moves it, and its world drops the `Wake` | `daserver.wakes` |
 | `Joined(bool MissedPushes)`, `Detached` | component and tag on a presence | Confirmed, and whether a push may have been missed (false only after a `Retire` behind the `HandedOff` fence); a presence of a lost connection in its grace period ([draft §7](programming-model.md#7-客户端与-presence)) | — |
 | Due heap | runtime index per world | A 4-ary min-heap of `(At, Seq, EntityId with version)`; lazy deletion (a popped entry whose entity version changed is skipped); rebuilt after `world.Load` and a migration's arrival. EasyEcs's ordered value index is a sorted array, so each pop would move the whole array | — |
 | Chain stack | runtime value per world | `Schedule` without `after`: the event as a value, run right after the item; empty between items, so never saved | — |
@@ -285,13 +288,15 @@ scope for now and would be another `IFrameChannel` (ADR-092).
    write that holds the waiting entity succeeds; the target first looks the call
    id up in the root's `ReplyLog` (a repeat is answered from it, or dropped while its token is taken), then refuses with
    `TooLate` a request whose remaining budget is below the store's write latency, and only then runs the job; the reply is
-   held until the target's tick-end write succeeds; the rest of either side's output leaves at once. A transient outcome re-arms the waiting
+   held until the target's tick-end write succeeds; the rest of either side's output leaves at once. The target drops,
+   unrecorded and unanswered, an attempt whose settle-by instant has passed on its own clock. A transient outcome re-arms the waiting
    entity's `Due` for a re-ask with the same call id (retry-after, jitter, the node's retry budget); every attempt's
    envelope carries the settle-by instant (UTC), which bounds the receiver's `ReplyLog` entry and a stored durable
    token; one `AskTimeout` before it the asker sends a single settling re-ask, which the target answers from `ReplyLog` or by
    recording the call id as refused (under its own cap; full: no answer) and answering `TooLate`; only an unanswered
-   settling re-ask gives `Expired`. The asker's `Replied` handler is a durable item too (its root rides the next
-   tick-end write), but its output is not held: after a crash it runs again with the same answer. After a crash, `DueScan` finds the asker's key through `next_due` (its waiting entity's
+   settling re-ask gives `Expired`; the asker sends no attempt once its `Time.Utc` reaches the settle-by instant. The
+   asker's `Replied` handler is a durable item too (its root rides the next tick-end write), but its plain output is not
+   held: after a crash it runs again with the same answer. After a crash, `DueScan` finds the asker's key through `next_due` (its waiting entity's
    `WakeAt`) and wakes it.
 
 - **Presences** ([draft §7](programming-model.md#7-客户端与-presence)): a client's existence on an actor, one per
@@ -411,9 +416,9 @@ in short:
   section 2), so the CAS compares the epoch alone and a failed or timed-out write is retried with the same bytes;
   `Unsaved` is cleared when the record is taken at the write's start and put back if the write fails, and changes
   meanwhile tag the root again and join the next write.
-- **Writes** are asynchronous and batched: one statement per world per tick end, a root with a `[Durable]` item in the next
-  one, other changed roots at most every checkpoint interval; graceful exits lose nothing, a crash loses at most the
-  last interval; actors never pause, only `[Durable]` requests and answers wait for their write
+- **Writes** are asynchronous and batched: one statement per world per tick end (bounded in flight), a root with a
+  `[Durable]` item in the next one, other changed roots at most every checkpoint interval (`DaServer:CheckpointInterval`); graceful exits lose nothing, a crash loses at most the
+  last interval; actors keep running, only `[Durable]` requests and answers wait for their write
   ([draft §10](programming-model.md#默认异步成批地写), section 2's tick-end write).
 - **Persistence** is per entity kind: entities spawned from a persistent prefab (the root's `K.RootPrefab` with
   `[Persist]`, child prefabs with `[Prefab<K>(Persist = true)]`) carry `Persisted` and are saved with every component
@@ -432,8 +437,9 @@ in short:
   runtime's `WakeSystem` keeps the root's `NextDue` at the minimum `WakeAt` of its descendants; each node's `DueScan`
   asks the store for keys of its slots whose `next_due` has passed (`IActorStore.DueKeys(slots, until)`, an index on
   the column) and activates them, so a `[Durable]` asker or a reminder survives a crash.
-- **Deactivation**: idle past `IdleTimeout` (`[ActorOptions]`; `Pending` zero, no presence other than `Detached` ones) or
-  `root.Deactivate()`, never while `StoreDegraded`: presences leave, the root carries
+- **Deactivation**: idle past `IdleTimeout` (`[ActorOptions]`; `Pending` zero, no presence other than `Detached` ones;
+  not while `StoreDegraded`) or `root.Deactivate()` (while `StoreDegraded`, beyond the cap on `Saving` placeholders it
+  is postponed): presences leave, the root carries
   `Deactivating` for the last pass of systems, the subtree is saved and destroyed, a `Saving` placeholder holds new
   mail until the write lands, and held `[Durable]` output leaves then.
 
@@ -630,6 +636,7 @@ Derived from [design.md](../design.md); what today's code has and the target dro
 | `MaxConnectionAge` spreads connections after a scale-out | Each gateway sheds only its excess above the group average, rate-limited, through `Retire` (ADR-089); the age stays an optional setting, off by default |
 | Tick rate in configuration, the default group at the tick rate | `[TickRate(n)]` on the actor type; `[UpdateInGroup<K>]` |
 | `UnloadAfterIdleSeconds` | `[ActorOptions(IdleTimeout = …)]` on the actor type |
+| `SaveEverySeconds` (30 s per actor type) | `DaServer:CheckpointInterval` (30 s per node) for plain changes; `[Durable]` items write at the next tick end |
 | Callers retry by hand and receivers deduplicate by hand | `[Durable]` requests: the asker's waiting entity is saved and re-asked until `Expired`, the receiver deduplicates through `ReplyLog`; other requests are the asker's to retry |
 | `[Persist]` per component type with a generated `ITrackChanges`, the own record format | Persistence per entity kind (`[Persist]` roots and `[Prefab<K>(Persist = true)]` children, `[NotSaved]` components left out); records as `SaveEntities` over `Descendants` with a `ComponentSet`; epoch CAS |
 | State handoff (ADR-072) | Migration bytes with layout hashes, a new epoch on arrival; fallback to records |

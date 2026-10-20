@@ -1552,7 +1552,7 @@ Replaced by ADR-081.
   changed" leaks; the order between mail, delayed sends and systems is implicit. EasyEcs 4.5 now provides what a
   model without these needs: single-entity jobs (`entity.Run(ref job[, filter])`), group filters carried by
   interfaces (`IGroupWith<T>`), `world.Descendants(root)` and `LoadEntitiesInto(…, markWritten: false)`.
-- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v38), structured as in
+- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v39), structured as in
   [drafts/architecture.md](drafts/architecture.md):
   - **The actor type is its address, its root component, its root prefab and its system group**:
     `[TickRate(30)] partial record struct Map(long Id) : IActor<Map>` (`IActor<T>` inherits `IEquatable<T>`, so
@@ -1588,11 +1588,13 @@ Replaced by ADR-081.
     - generations are max(last seen + 1, Unix ms), and only the lowest-ordinal seed forms a cluster, so a cold restart
       of the whole cluster never reuses a generation and parallel seeds never form two clusters.
   - **Replies, presences and retries are data with stated guarantees** (the table "每条路径保证什么" in the draft's §11):
-    - `[Durable]` on an `IRequestTo` makes both ends the framework's, and no actor ever pauses. A root that ran a
+    - `[Durable]` on an `IRequestTo` makes both ends the framework's, and actors keep running. A root that ran a
       durable item (a `[Durable]` request asked, handled, or its `Replied` handled, or a `Reply` through a stored
       durable token) rides its world's next tick-end write (after every mail batch for actor types without
-      `[TickRate]`) instead of waiting for the checkpoint interval; a root has at most one write in flight, and changes
-      made meanwhile go in the next one, which carries the latest state, so the CAS compares the epoch alone. Only two
+      `[TickRate]`) instead of waiting for the checkpoint interval; the operation itself marks the root, in a handler or
+      a system alike. A root has at most one write in flight and a world at most `DaServer:StoreWritesInFlight`
+      statements (roots beyond wait, durable ones first), and changes made meanwhile go in the next write, which
+      carries the latest state, so the CAS compares the epoch alone. Only two
       kinds of output are held: an outgoing `[Durable]` request and an answer to one (a returned reply, a `Reply`
       through a stored durable token, an answer from `ReplyLog`, `TooLate`, `Faulted`). Each carries the root's write
       generation that holds its item and leaves, in order, when that write succeeds; a refused row fences only its
@@ -1602,12 +1604,16 @@ Replaced by ADR-081.
       graceful stop (within its budget) wait for the root's in-flight write and its held output, so none waits in a
       placeholder, migration bytes or a snapshot; `Reload` first waits for the in-flight write's result (released on
       success, discarded on failure or timeout; output of generations not yet written is discarded, and re-asks
-      recover it). A durable reply waits one tick end plus one statement; the actor and its world keep running.
+      recover it). A durable reply waits for the rest of the tick, a write of its root already in flight and one
+      statement (more when the world's statements are at their bound).
       Keeping economic state on actor types without `[TickRate]`, which ticking ones ask plainly (the draft's `Loot`
       beside its `Map`), stays the recommended pattern, so a map's record is not written each tick it makes a durable
-      item, but it is not required. Durable items come only from handlers, never from systems (an analyzer error). The asker's waiting entity
+      item, but it is not required. Systems ask `[Durable]` requests and reply through stored durable tokens under the
+      same rule; a throw in a system pass reloads every root that ran a durable item in it, and a durable `Ask` in the
+      `Deactivating` pass cancels the deactivation. The asker's waiting entity
       (request, state, call id, UTC deadline from `settleBy:`; `deadline:` stays the per-attempt timeout) is written
-      into its record before the request leaves; every attempt's envelope carries that settle-by instant, and the
+      into its record before the request leaves; every attempt's envelope carries that settle-by instant, the asker
+      sends no attempt past it on its clock and the receiver drops, unrecorded, an attempt past it on its own, and the
       receiver keeps its `ReplyLog` entries (refused ones included) and a stored durable token's deadline by it, not by
       the attempt's deadline (`ICluster.Ask` takes a required `settleBy:` for `[Durable]` requests and is deduplicated by
       `CallId.From(externalKey)` until then). The waiting entity is re-asked with the same call id on transient outcomes (a
