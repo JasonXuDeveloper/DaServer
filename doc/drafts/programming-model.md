@@ -1,4 +1,4 @@
-# DaServer 新编程模型设计（草案 v40，未实现，迭代中）
+# DaServer 新编程模型设计（草案 v41，未实现，迭代中）
 
 原则：业务代码干净、解耦、简洁，不用 OOP。ECS 一路到底：能用 EasyEcs 的功能就用 EasyEcs，状态都是数据，其余交给我们的特性和生成器，不重复造轮子。
 
@@ -186,7 +186,7 @@ public readonly partial record struct Player(long Id) : IActor<Player>
 [NinoType] public partial record struct Grid(int Size, int CellSize) : IComponent;      // on a map's root
 [NinoType] public partial record struct Inventory(int Count, int Capacity, int Last) : IComponent;   // on a player's root
 public partial record struct NetIds(int Next) : IComponent;                             // on a map's root: the last number given out,
-                                                                                        // saved with it, so no number Loot holds is reused
+                                                                                        // saved at checkpoints (a crash may repeat one)
 public partial record struct NetId(Map Map, int Value) : IChildKey<NetId>;              // what clients call an entity; Key => this is generated
 public partial record struct Stash(Loot Loot, int Drop) : IChildKey<Stash>;             // a drop's record on Loot; Drop: its NetId number
 public partial record struct Cell(Map Map, int X, int Y) : IComponent, IIndexed<Cell>, ITrackChanges;   // AOI cell: many entities
@@ -301,16 +301,18 @@ public record struct Picking(ReplyTo<bool> Reply) : IComponent;                 
 ## 2. 服务器与节点
 
 ```csharp
-// Game.Server
-[Hosts<Player>, Hosts<Guild>] public readonly struct PlayerServer  : IServer;
-[Hosts<Map>]                  public readonly struct MapServer     : IServer;
-[Hosts<Connection>]           public readonly struct GatewayServer : IServer;   // hosting Connection = accepting clients
+// Game.Server: section 12's servers
+[Hosts<Player>, Hosts<Loot>] public readonly struct PlayerServer  : IServer;
+[Hosts<Map>]                 public readonly struct MapServer     : IServer;
+[Hosts<Connection>]          public readonly struct GatewayServer : IServer;   // hosting Connection = accepting clients
 ```
+
+第 3 节另外几种 Actor 类型（`Guild`、`Room`、`Pricing`）只示范写法；用到它们的工程同样把它们写进某个服务器的 `[Hosts<…>]`。
 
 - **一个工程可以定义多种服务器类型；节点 = 一个进程 = 一种服务器。**
   - 拆服务器就是为了独立扩缩、独立发布、故障隔离，所以一个进程只跑一种服务器。
   - 本地开发由 Aspire 起多个进程；测试用 `TestCluster` 和 `TestActor<K>`。
-  - 小规模部署可以写一个 `[Hosts<Player>, Hosts<Map>, Hosts<Connection>] AllInOne`。
+  - 小规模部署可以写一个 `[Hosts<Player>, Hosts<Loot>, Hosts<Map>, Hosts<Connection>] AllInOne`。
 - **`[Hosts<Connection>]` 就是"接受客户端"。**
 - **Actor 类型绑定的是服务器类型，不是节点：**
 
@@ -892,7 +894,7 @@ public readonly partial record struct Player(long Id) : IActor<Player>
 - **`e.Ask(to, in message[, state][, settleBy: t][, deadline: t][, call: id])`** 创建一个等待实体，它是 `e` 的子实体，带：
   - `state`：一个普通组件，存在等待实体上，回信时作为 `a.State` 交回；不写时回信是 `Replied<TReq>`，没有 `State`；
   - 调用 id：全集群唯一，`a.Call`；运行时按 world 维护"调用 id → 等待实体"的哈希索引，回信到达时一次查到；
-  - 期限：`Due`（第 9 节），在线上是剩余时间。`deadline` 是这次问的超时，不写用节点配置 `DaServer:AskTimeout`。在带请求上下文的项里（处理一个请求，或者它链上的回信），取 min(这个超时, 这个请求剩下的时间)：嵌套的问不会比外层的请求活得久；
+  - 期限：`Due`（第 9 节），在线上是剩余时间。`deadline` 是这次问的超时，不写用节点配置 `DaServer:AskTimeout`。在带请求上下文的项里（处理一个请求，或者它链上的回信），取 min(这个超时, 这个请求剩下的时间)：嵌套的问不会比外层的请求活得久。`[Durable]` 留住的第一问从放出时起算（下面）；
   - 客户端上下文：处理客户端消息、`PresenceLost` 时自动带上（第 4 节）。
   - 生成器为有状态和无状态各生成一个重载，不靠默认参数推断泛型。
 - **回信按 `(Actor 类型, 键, 调用 id)` 寻址**，发问方迁移后，回信会跟过去。
@@ -933,10 +935,10 @@ public readonly partial record struct Player(long Id) : IActor<Player>
   - **`Reload` 先等在途的写有结果**（第 5 节）：写成就放出这次写的写代的输出，失败或超时就丢弃；还没写的写代的输出丢弃。丢掉的请求和回答由重问补上：等待实体在记录里就会重问，不在就说明请求从没发出；接收方的回答在 `ReplyLog` 里，或者改动没写下、由真正的主人再执行一次。
 - **发问方**：
   - `Ask` 必写 `settleBy:`（生成的方法里它不是可选参数），它是整个承诺的期限；`deadline:` 照常是每一次问的超时，不写用 `DaServer:AskTimeout`，不超过剩下的期限。等待实体带着请求、状态、调用 id 和到期的 UTC 时刻（`Time.Utc` + `settleBy`，下文叫 settle-by 时刻），是要保存的实体，随 Actor 的记录保存（状态因此要能写进记录，第 10 节）。请求的信封带着 settle-by 时刻：接收方的 `ReplyLog` 留多久、`[Durable]` 请求的 `ReplyTo<T>` 的期限都按它，不按每一次问的期限。
-  - **请求在等待实体写进记录之后才发出**（上面留住的第一种）。否则发问方在请求发出、记录写成之前宕机，从旧记录恢复后不知道自己问过，同一件东西会再许给别人。
+  - **请求在等待实体写进记录之后才发出**（上面留住的第一种）。否则发问方在请求发出、记录写成之前宕机，从旧记录恢复后不知道自己问过，同一件东西会再许给别人。第一问的超时（它的 `Due`）和 `WakeAt` 从放出时算起，不从 `Ask` 算：等写的时间不吃掉这一问的期限。`Ask` 那次写进记录的 `WakeAt` 是 `Ask` 的时刻加上这一问的期限，不晚于放出后的那个时刻。
   - 结果是 `Transient`（`TimedOut`、`ConnectionLost`、`Busy`、`NoOwner`，以及重问收到的 `NotHandled`：滚动升级中旧版本的节点不认识它，不说明没执行过）时，框架用同一个调用 id 再问：等 `RetryAfter`（没有就指数退避），加完全随机抖动，计入每个节点的重试预算（预算空了就等下一次退避，不算失败）。Actor 从记录重新激活之后（宕机、迁移退回记录）和热重启之后，框架对每个还在等的等待实体再问一次；接收方去重，无害。
-  - **重问和收尾的一问不等写记录**：它们不加 `WriteNow`、不留住，当场发出。这是安全的：第一问发出之前，记录里已经有这个等待实体，带着请求、调用 id 和 settle-by 时刻，一问不带记录里没有的东西；之后宕机，从记录恢复的等待实体按 settle-by 时刻和自己的时钟重新算下一步，最多再问一次，接收方去重。它们改的 `WakeAt` 随下一个检查点写下。
-  - **收尾的一问**：发问方的 `Time.Utc` 到了 settle-by 时刻减去 `AskTimeout` 再减去 `DaServer:ClockSkew` 时，框架不再普通地重问，改发一次收尾的问（同一个调用 id，带收尾标记）：时钟比发问方快不超过这个余量的接收方，也在它自己的 settle-by 时刻之前收到它。`settleBy` 不比这两项之和长时，第一问就是收尾的一问。接收方按下面的去重回答它；`ReplyLog` 里没有这个调用 id，就把它记成拒绝（下面），回 `TooLate`。所以之后迟到的同一个请求（例如在重发窗口里等过的）查到拒绝，永远不会执行。收尾的问也没有回答，回信才是 `Status.Expired`：它只表示"联系不上，结果未知"。
+  - **重问和收尾的一问不另等写记录**：它们不加 `WriteNow`、不留住；等待实体所在的那一代写成（第一问就在那时放出）之后，到时就当场发出，在那之前不发。这是安全的：第一问发出之前，记录里已经有这个等待实体，带着请求、调用 id 和 settle-by 时刻，一问不带记录里没有的东西；之后宕机，从记录恢复的等待实体按 settle-by 时刻和自己的时钟重新算下一步，最多再问一次，接收方去重。它们改的 `WakeAt` 随下一个检查点写下。
+  - **收尾的一问**：发问方的 `Time.Utc` 到了 settle-by 时刻减去这一问的期限（`deadline:`，不写是 `AskTimeout`）再减去 `DaServer:ClockSkew` 时，框架不再普通地重问，改发一次收尾的重问（同一个调用 id，带收尾标记）：时钟比发问方快不超过这个余量的接收方，也在它自己的 settle-by 时刻之前收到它。接收方按下面的去重回答它；`ReplyLog` 里没有这个调用 id，就把它记成拒绝（下面），回 `TooLate`。`settleBy` 不比这两项之和长时，第一问就是最后一问，算作收尾的一问（没有回答就以 `Expired` 结束），但不带收尾标记：接收方照常执行它（下面的四步）。所以之后迟到的同一个请求（例如在重发窗口里等过的）查到拒绝，永远不会执行。收尾的问也没有回答，回信才是 `Status.Expired`：它只表示"联系不上，结果未知"。
   - **过了 settle-by 时刻不再问**：发问方的 `Time.Utc` 到了 settle-by 时刻，就不再发任何一问（重新激活之后的再问也不发），以 `Expired` 结束；收尾的一问没有回答，也在这时结束。
   - 所以 `Replied` 处理方法只看到最终的结果：回复的值、确定没执行的拒绝（`NotExecuted` 而不是 `Transient` 的，例如 `TooLate`、`Skipped`；接收方把它记成拒绝，下面），或者 `Expired`。
   - **处理回信不等记录**：发问方在处理回信之后、记录写成之前宕机，从记录恢复的等待实体再问一次，接收方从 `ReplyLog` 回答同样的结果，处理方法用同样的回答再执行一次。它的普通输出可能发出两次；它发出的 `[Durable]` 请求和回答还留着，随宕机丢弃，所以不会重复。
@@ -949,7 +951,7 @@ public readonly partial record struct Player(long Id) : IActor<Player>
   - 请求到达时依次：
     1. **过了 settle-by 时刻的丢弃**：按接收方自己的 `Time.Utc`，settle-by 时刻已过的一问不调用、不记 `ReplyLog`、不回答（发问方那边没有回答，以 `Expired` 结束）。`ReplyLog` 的项多留一个 `DaServer:ClockSkew`（下面），所以接收方接受的每一问都查得到它的项，接收方的时钟往回调了不超过这个余量也一样。
     2. **去重**：同一个调用 id 已经在 `ReplyLog` 里，不调用处理方法：有回答的（回复、`Faulted`、拒绝）就用它回答，这个回答留到 `ReplyLog` 里这一项写成才放出；"令牌已取走"还没回复的，丢弃（之后的那一个回复回答这个调用 id）。
-    3. **不开始来不及落定的请求**：请求剩下的时间不够写一次记录（节点按最近的写延迟估计）时，不调用处理方法，记成拒绝、回 `TooLate`（确定没执行）。
+    3. **不开始来不及落定的请求**：离 settle-by 时刻剩下的时间不够写一次记录（节点按最近的写延迟估计）时，不调用处理方法，记成拒绝、回 `TooLate`（确定没执行）。
     4. 调用处理方法：框架把 (调用 id, 回复, settle-by 时刻) 记进根上的内部环 `ReplyLog`，它和处理方法的改动在同一次写记录里落定；回复（返回值或者 `Reply(token)`）留到写成之后才放出（上面）。
   - **确定没执行的最终回答都记成拒绝**：接收方的根对一个调用 id 给出的每个 `NotExecuted` 而不是 `Transient` 的回答（两种 `TooLate`、主体不满足过滤的 `Skipped`、不是重问收到的 `NotHandled` 等）都作为拒绝记进 `ReplyLog`，和别的回答一样写成后才回答。所以这个调用 id 之后的问（重问、在重发窗口里等过的迟到的一问）都从 `ReplyLog` 得到同样的回答，永远不会执行。`Busy`、`NoOwner` 这些 `Transient` 的不记，发问方会再问。
   - 处理方法抛出时，调用 id 记成 `Faulted`，写进记录之后才回答（第 5 节的 `Reload`）：终止的结果，重问得到同样的回答。
@@ -1095,12 +1097,17 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 - 只有按自己的视图是主人的节点才去占（第 6 节）；不是主人的转发。
 - **每次写记录都按 epoch 和写代比较并交换**（写代是根上数着的、取走的记录数，第 8 节的留住的输出也按它）：
   ```sql
-  UPDATE actors SET record = r.record, next_due = r.next_due, write_gen = r.write_gen
-  FROM unnest(:keys, :records, :next_dues, :epochs, :write_gens) AS r(key, record, next_due, epoch, write_gen)
-  WHERE actors.key = r.key AND actors.epoch = r.epoch AND actors.write_gen < r.write_gen
+  WITH r AS (SELECT * FROM unnest(:keys, :records, :next_dues, :epochs, :write_gens)
+                 AS r(key, record, next_due, epoch, write_gen)),
+       w AS (UPDATE actors a SET record = r.record, next_due = r.next_due, write_gen = r.write_gen
+             FROM r WHERE a.key = r.key AND a.epoch = r.epoch AND a.write_gen < r.write_gen
+             RETURNING a.key)
+  SELECT a.key, a.epoch, a.write_gen                            -- the rows not updated, as stored
+  FROM r JOIN actors a ON a.key = r.key
+  WHERE NOT EXISTS (SELECT 1 FROM w WHERE w.key = r.key)
   ```
   存储里的 epoch 不是自己的，写失败。写代让一条超时之后才落地的旧语句永远盖不掉更新的状态：同一个 epoch 里写代只增不减，热重启原地时也一样（写代在根上，随快照过去，新进程接着数）。
-- **同一个根的写从不重叠**：写在途期间（根上内部的 tag `Writing`）`CheckpointSystem` 不取它的记录；在途期间的改动留着或重新标上 `Unsaved`（下面的"只写改过的"），进下一次写，它带着最新的状态，后写的盖掉先写的。写失败或超时就用同样的字节和写代重试；没更新的行由语句一并返回存储里的 `(epoch, 写代)`：epoch 是自己的、写代正是这一次的，说明先前超时的那次已经写成，算成功（同一个 epoch 里一个写代只用于一份字节）。
+- **同一个根的写从不重叠**：写在途期间（根上内部的 tag `Writing`）`CheckpointSystem` 不取它的记录；在途期间的改动留着或重新标上 `Unsaved`（下面的"只写改过的"），进下一次写，它带着最新的状态，后写的盖掉先写的。写失败或超时就用同样的字节和写代重试；没更新的行由语句的 `SELECT` 返回存储里的 `(epoch, 写代)`（它读的是语句开始时的快照，这些行本来就没被这条语句改）：epoch 是自己的、写代正是这一次的，说明先前超时的那次已经写成，算成功（同一个 epoch 里一个写代只用于一份字节）；epoch 不是自己的，比较失败。
 - **比较失败就隔离**（epoch 不是自己的，第 6 节的表）：不写、不进 `Leaving`，销毁整棵子树。Presence 的路由由清理组件释放，客户端 SDK 重新加入，到达真正的主人那里。
 - **节点被移出成员视图时**，它在重新加入之前先隔离自己所有的 Actor，再以新的节点代数加入（第 2 节）。成员租约让它在别人重新放置之前就停下（第 2 节）；分区或长停顿之后醒来的节点即使漏过了租约，epoch 比较也拦住它的写。
 - `[Stateless]` 和 `Connection` 不占 epoch：它们不写记录。
@@ -1311,8 +1318,8 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 | 请求在执行前已经过了期限（排队、重发窗口、热重启、迁移途中） | 丢弃并计数，不执行（第 9 节） |
 | `[Durable]` 的接收方在记录写成之前宕机或被隔离 | 回复不发，改动和 `ReplyLog` 也没写进存储；发问方重问，真正的主人执行一次 |
 | `[Durable]` 的发问方在回信前宕机 | 等待实体在记录里（请求在它写成之后才发出）；`DueScan` 唤醒 Actor，框架用同一个调用 id 再问，接收方从 `ReplyLog` 回答（第 8 节） |
-| `[Durable]` 的请求快到期限还没有结果 | 收尾的一问：接收方回答已有的结果，或者把调用 id 记成拒绝、回 `TooLate`（确定没执行，迟到的同一个请求也不会执行）；收尾的一问也没有回答，回信是 `Expired`：联系不上，结果未知，处理方法按业务对账（第 8 节） |
-| `[Durable]` 的请求到达时剩下的时间不够写一次记录 | 不执行，记成拒绝，回 `TooLate`；这个调用 id 以后也不会执行（第 8 节） |
+| `[Durable]` 的请求快到期限还没有结果 | 收尾的重问：接收方回答已有的结果，或者把调用 id 记成拒绝、回 `TooLate`（确定没执行，迟到的同一个请求也不会执行）；收尾的一问也没有回答，回信是 `Expired`：联系不上，结果未知，处理方法按业务对账（第 8 节） |
+| `[Durable]` 的请求到达时离 settle-by 时刻剩下的时间不够写一次记录 | 不执行，记成拒绝，回 `TooLate`；这个调用 id 以后也不会执行（第 8 节） |
 | `[Durable]` 的发问方处理回信后、记录写成前宕机 | 回信处理方法的普通输出已经发出，它的 `[Durable]` 请求和回答还留着，随宕机丢弃；从记录恢复后再问，接收方从 `ReplyLog` 回答同样的结果，处理方法用同样的回答再执行一次，普通输出可能重复 |
 | `ReplyLog` 满了 | 新的 `[Durable]` 请求回 `Busy`（确定没执行），`RetryAfter` 是最早一项过期的时刻 |
 | `ReplyLog` 里"拒绝"的项满了 | 新的拒绝不记、不回答，处理方法也不调用：普通的一问由发问方重问，收尾的一问以 `Expired` 结束（第 8 节） |
@@ -1377,7 +1384,7 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
   | `Busy`（带 `RetryAfter`）、`NoOwner` | 是 | 是 |
   | `NotHandled`、`NoActor`、`Filtered`、`NotJoined`、`Skipped` | 是（`[Durable]` 的重问收到的 `NotHandled` 除外：结果未知，按 `Transient` 再问，第 8 节） | |
   | `TimedOut`、`ConnectionLost` | 结果未知 | 是：只能用同一个调用 id 重问 |
-  | `TooLate` | 是：`[Durable]` 的请求来不及落定，或者收尾的一问时还没执行（第 8 节） | |
+  | `TooLate` | 是：`[Durable]` 的请求来不及落定，或者收尾的重问时还没执行（第 8 节） | |
   | `Faulted` | 处理方法抛出了；终止的结果，用同一个调用 id 再问得到同样的回答（第 5 节） | |
   | `Expired` | 结果未知：`[Durable]` 的收尾一问也联系不上（第 8 节） | |
   | `NoClient`、`Superseded`、`AlreadyConnected`、`Unavailable` | 加入和连接的结果（第 7 节） | |
@@ -1454,6 +1461,7 @@ public readonly partial record struct Loot(long Map) : IActor<Loot>             
 [NinoType, From<Map>] public record struct Restock : IMessageTo<Loot>;                  // the map came back from its record: no drops
 [NinoType, From<Loot>] public record struct Show(int Drop, int Item, Vector2 At) : IMessageTo<Map>;   // a drop Loot holds
 [NinoType, From<Loot>] public record struct Gone(int Drop) : IMessageTo<Map>;          // no longer to be had: off the map
+[NinoType, From<Loot>] public record struct Clash(int Item, Vector2 At) : IMessageTo<Map>;   // Loot holds that number: renumber
 public record struct Strike(int Skill, EntityId Target) : IEvent;                      // a cast's resolution, after the windup
 public record struct Fell(int Loot, Vector2 At) : IEvent;                               // an npc died here: scheduled on the map's root
 
@@ -1475,7 +1483,7 @@ public readonly record struct SkillTable(SkillRow[] Rows) : IConfigTable<SkillTa
 [NinoType] public partial record struct Grid(int Size, int CellSize) : IComponent;      // on a map's root
 [NinoType] public partial record struct Inventory(int Count, int Capacity, int Last) : IComponent;   // on a player's root
 public partial record struct NetIds(int Next) : IComponent;                             // on a map's root: the last number given out,
-                                                                                        // saved with it, so no number Loot holds is reused
+                                                                                        // saved at checkpoints (a crash may repeat one)
 public partial record struct NetId(Map Map, int Value) : IChildKey<NetId>;              // what clients call an entity; Key => this is generated
 public partial record struct Avatar(Map Map, Player Player) : IChildKey<Avatar>;
 public partial record struct Stash(Loot Loot, int Drop) : IChildKey<Stash>;             // a drop's record on Loot; Drop: its NetId number
@@ -1579,6 +1587,10 @@ public static partial class Pickups
     static void Drop(in Fell f, in Map map, Entity root, ref NetIds ids) =>
         root.Send(new Loot(map.Id), new Dropped(++ids.Next, f.Loot, f.At));   // Loot records it, then shows it here
 
+    [On<Clash>]                                                            // subject: the map's root; a number repeated after a
+    static void Redrop(in Clash c, in Map map, Entity root, ref NetIds ids) =>   // crash is Loot's already: the next one
+        root.Send(new Loot(map.Id), new Dropped(++ids.Next, c.Item, c.At));
+
     [On<Show>]                                                             // subject: the map's root; a re-shown drop is found again
     static void Place(in Show s, in Map map, Entity root) =>
         root.GetOrSpawn(Prefabs.DropPrefab, new NetId(map, s.Drop), new Prize(s.Item), new Position(s.At));
@@ -1615,8 +1627,13 @@ public static partial class Pickups
 public static partial class Stashes
 {
     [On<Dropped>]                                                          // subject: Loot's root
-    static void Add(in Dropped d, in Loot loot, Entity root)
+    static void Add(in Dropped d, in Loot loot, Entity root, World world)
     {
+        if (world.StashIndex.TryFind(new Stash(loot, d.Drop), out _))      // the map repeated a number after its crash:
+        {                                                                  // Loot keeps the drop it holds under it
+            root.Send(new Map(loot.Map), new Clash(d.Item, d.At));
+            return;
+        }
         root.Spawn(Prefabs.StashPrefab, new Stash(loot, d.Drop), new Prize(d.Item), new Position(d.At));
         root.Send(new Map(loot.Map), new Show(d.Drop, d.Item, d.At));        // the map shows only what Loot holds
     }
@@ -1764,7 +1781,7 @@ NPC 死亡时（例子里没写出），地图对根 `Schedule(new Fell(…))`�
 
 客户端连上时由 `[JoinOnConnect<Account>]` 加入 Player；进地图的 `EnterMap` 直接发给地图，不经过 Player。Player 只回答 `Loot` 的 `GrantItem`。
 
-**保存的是什么**：地图的根（`Grid`、`NetIds`）在地图的记录里，地图上的掉落、Avatar 和 NPC 都不在。掉落的经济状态在 `Loot(地图的键)` 的记录里：每个掉落一个 `Stash`（`Prize`、`Position`，以及它还在等的 `GrantItem`）。地图从记录激活之后（宕机、`Reload`、停用之后）向 `Loot` 发 `Restock`，`Loot` 把还有的掉落再 `Show` 一遍；迁移和热重启带着地图的全部实体，不用这一步。地图的根仍然要保存，只为 `NetIds`：它接着往下发编号，新的掉落不会撞上 `Loot` 还记着的编号；客户端重新加入，Avatar 重新建出来。Player 的根（`Inventory`）在 Player 的记录里。`Shout` 在两个 tick 之间是空的，标了 `[NotSaved]`。所以 `persist` 里的用户类型是 `Grid`、`NetIds`、`Inventory`（根）、`Stash`、`Prize`、`Position`（`Loot` 的掉落）和 Ask 的状态 `Looting`；`Position` 自己声明了 `ITrackChanges`，`Looting` 只在 Ask 时写一次、不追踪，其余写成 `partial`，由生成器补上（第 10 节）。`Enter` 用只在新建时调用的 lambda 取编号，重发的加入找到已有的 Avatar，不白花编号。
+**保存的是什么**：地图的根（`Grid`、`NetIds`）在地图的记录里，地图上的掉落、Avatar 和 NPC 都不在。掉落的经济状态在 `Loot(地图的键)` 的记录里：每个掉落一个 `Stash`（`Prize`、`Position`，以及它还在等的 `GrantItem`）。地图从记录激活之后（宕机、`Reload`、停用之后）向 `Loot` 发 `Restock`，`Loot` 把还有的掉落再 `Show` 一遍；迁移和热重启带着地图的全部实体，不用这一步。地图的根仍然要保存，只为 `NetIds`：它从最后一份记录接着往下发编号，所以宕机只会重复上一个检查点之后发出的编号。重复的编号撞上 `Loot` 还记着的掉落时，`Stashes.Add` 留下 `Loot` 已有的，回 `Clash`，地图用下一个编号再报一次（`Redrop`）；撞上的是地图上同号的 Avatar 或 NPC 时，`Place` 的 `GetOrSpawn` 找到它，这个掉落在地图上不显示，仍在 `Loot` 里。客户端重新加入，Avatar 重新建出来。Player 的根（`Inventory`）在 Player 的记录里。`Shout` 在两个 tick 之间是空的，标了 `[NotSaved]`。所以 `persist` 里的用户类型是 `Grid`、`NetIds`、`Inventory`（根）、`Stash`、`Prize`、`Position`（`Loot` 的掉落）和 Ask 的状态 `Looting`；`Position` 自己声明了 `ITrackChanges`，`Looting` 只在 Ask 时写一次、不追踪，其余写成 `partial`，由生成器补上（第 10 节）。`Enter` 用只在新建时调用的 lambda 取编号，重发的加入找到已有的 Avatar，不白花编号。
 
 AOI 的状态全在组件里：客户端看到的编号是 `NetId`，格子是 `Cell`（非唯一值索引，`world.CellIndex.Find(cell)` 列出格子里的实体），上次发出的速度是 `NetSync`，确认和有没有漏过推送是框架的 `Joined(MissedPushes)`，订阅是 `Subscribed`，消息是地图上的 `DynamicBuffer<Shout>`。`Aoi` 是用户写的无状态帮助类。每个系统只做一件事：
 1. `CellAssign`：位置被写过的实体，算出格子；跨格才写 `Cell`。
@@ -1866,13 +1883,14 @@ partial class Moves
 // (a child entity), Resolve adds Dead to another entity, Pickups.Place and Stashes.Add spawn, Take and Award ask (a waiting
 // child), Remove and Granted destroy: none gets INoStructuralChanges. Items.Grant_Job only writes Inventory through Mut and
 // returns its reply; Maps.Start_Job (SetGroupRate on the buffer the root copy carries, section 9, and a Send), Pickups.Drop_Job,
-// Picked_Job and Stashes.Reshow_Job only send or reply: they get it.
+// Redrop_Job, Picked_Job and Stashes.Reshow_Job only send or reply: they get it.
 // GrantItem is [Durable]: before the job the dispatch drops an attempt past its settle-by instant, looks the call id up in the
 // root's ReplyLog (a repeat is answered from it) and refuses with TooLate a settling re-ask of an unknown call id or an
-// attempt whose remaining budget is below the store's write latency; every such definite refusal (Skipped too) is recorded
+// attempt whose time to its settle-by instant is below the store's write latency; every such definite refusal (Skipped too) is recorded
 // as refused, so the call id never runs later. The dispatch tags the player's root WriteNow, so it rides the tick-end write,
 // and only the answer is held until that row's CAS. Award's Ask and Granted's dispatch tag Loot's root the same way: the
-// GrantItem's first attempt is held (re-asks leave at once), Granted's plain output leaves at once.
+// GrantItem's first attempt is held, its timeout counted from its release (re-asks leave at once after that), Granted's
+// plain output leaves at once.
 // Map takes part in no [Durable] item: only its checkpoints write its record.
 ```
 
@@ -1911,6 +1929,7 @@ public static class GameServerRegistration
                 .Client<PickUp>(Pickups.On_Take)
                 .Message<Show>(Pickups.On_Place)
                 .Message<Gone>(Pickups.On_Remove)
+                .Message<Clash>(Pickups.On_Redrop)
                 .Replied<Claim, Picking>(Pickups.On_Picked)
                 .Event<Strike>(Combat.On_Resolve)
                 .Event<Fell>(Pickups.On_Drop))
@@ -1968,6 +1987,7 @@ message Game.Server.Dropped    Map -> Loot
 message Game.Server.Restock    Map -> Loot
 message Game.Server.Show       Loot -> Map
 message Game.Server.Gone       Loot -> Map
+message Game.Server.Clash      Loot -> Map
 event   Game.Server.Strike   layout 7C21A0F3
 event   Game.Server.Fell     layout 4B90D2E6
 state   Game.Server.Looting  for GrantItem  durable
@@ -1999,6 +2019,7 @@ on      Game.Server.Dropped      Loot
 on      Game.Server.Restock      Loot
 on      Game.Server.Show         Map
 on      Game.Server.Gone         Map
+on      Game.Server.Clash        Map
 on      Game.Server.Strike       Map
 on      Game.Server.Fell         Map
 replied Game.Server.GrantItem Looting  Loot
@@ -2253,7 +2274,7 @@ me.Publish(new Topic(Feeds.Prices), new PriceChanged(item, price));
 ### 非 .NET 的客户端
 
 - **客户端的线协议写成公开的规范**：帧格式、握手（令牌、`wire.manifest` 哈希）、`Ready`、重连和重新加入（槽号、`JoinConfirmed`、`PresenceLost`、`PresenceClosed`）、`Retire` 和 `HandedOff`、`Superseded`、`Unavailable`、`Busy` 的 `RetryAfter`、心跳和静默断开。C# SDK 是参考实现，一套一致性测试同时跑 C# 和其他实现。
-- **TypeScript 客户端**（npm 包，经浏览器的 WebSocket 连 `/clients/ws`）：消息的编解码是 Nino 按 `Game.Protocol` 的 `wire.manifest` 生成的 TypeScript 代码，浏览器拿到和 Unity 一样的类型；槽、重新加入、`Retire`、退避按规范实现。
+- **TypeScript 客户端**（npm 包，经浏览器的 WebSocket 连 `/clients/ws`）：消息的类和编解码由 Nino.TypeScript（预发布的包）在每次构建 `Game.Protocol` 之后从它的程序集生成，结构体和版本兼容的类型都支持，DaServer 不另写 TypeScript 生成器；浏览器拿到和 Unity 一样的类型；槽、重新加入、`Retire`、退避按规范实现。
 - Unreal / C++ 以后按同一份规范做。
 
 ### `DaServer.Replication`：组件同步到客户端

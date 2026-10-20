@@ -1552,7 +1552,7 @@ Replaced by ADR-081.
   changed" leaks; the order between mail, delayed sends and systems is implicit. EasyEcs 4.5 now provides what a
   model without these needs: single-entity jobs (`entity.Run(ref job[, filter])`), group filters carried by
   interfaces (`IGroupWith<T>`), `world.Descendants(root)` and `LoadEntitiesInto(…, markWritten: false)`.
-- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v40), structured as in
+- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v41), structured as in
   [drafts/architecture.md](drafts/architecture.md):
   - **The actor type is its address, its root component, its root prefab and its system group**:
     `[TickRate(30)] partial record struct Map(long Id) : IActor<Map>` (`IActor<T>` inherits `IEquatable<T>`, so
@@ -1600,7 +1600,9 @@ Replaced by ADR-081.
       carries the latest state. Only two
       kinds of output are held: the first attempt of an outgoing `[Durable]` request and an answer to one (a returned
       reply, a `Reply` through a stored durable token, an answer from `ReplyLog`, a definite refusal, `Faulted`).
-      Re-asks and the settling re-ask leave at once and set no `WriteNow`: the record already holds the waiting entity
+      A held first attempt's timeout and `WakeAt` start at its release, so waiting for the write costs it no budget.
+      Re-asks and the settling re-ask set no `WriteNow` and leave at once, never before the write holding the waiting
+      entity has succeeded: the record already holds the waiting entity
       with its call id, request and settle-by instant, so an attempt carries nothing the record lacks, and after a crash
       the restored entity recomputes its next step from the settle-by instant and repeats at most one attempt, which the
       receiver deduplicates. Each carries the root's write
@@ -1629,15 +1631,18 @@ Replaced by ADR-081.
       activates its receiver (`[ActivatedBy]` narrows only a key's first activation); a crashed asker is woken by its slot owner's `DueScan` through the record's `next_due`. A crash
       after the answer handles the same answer again rather than a different one, and destroying an entity with a
       waiting durable ask below it fails the item instead of dropping the promise (an asker's type persists and uses
-      `OnError = Reload`, an analyzer error otherwise, so the promise comes back from the record). At settle-by − `AskTimeout`
-      − `ClockSkew` on its own clock (so a receiver whose clock runs ahead by up to the skew still takes it) the asker
-      sends a single settling re-ask: the receiver answers from its log or answers `TooLate`, so a late duplicate never
-      runs; `Expired` then means only "unreachable, outcome unknown". Every definite refusal the receiver's root gives
+      `OnError = Reload`, an analyzer error otherwise, so the promise comes back from the record). At settle-by − the attempt's deadline
+      (`deadline:`, else `AskTimeout`) − `ClockSkew` on its own clock (so a receiver whose clock runs ahead by up to the
+      skew still takes it) the asker sends a single settling re-ask: the receiver answers from its log or answers
+      `TooLate`, so a late duplicate never runs; a `settleBy` shorter than that makes the first attempt the last, which
+      counts as the settling one but runs as usual, since the receiver has never seen its call id; `Expired` then
+      means only "unreachable, outcome unknown". Every definite refusal the receiver's root gives
       a call id (`TooLate` either way, `Skipped`, a `NotHandled` to a first attempt) is recorded as refused, under a cap
       of its own (when full, a refusal is neither recorded nor answered), and answered once written, so a later attempt
       of that call id gets the same answer and never runs. The receiver keeps call id →
       reply in an internal bounded `ReplyLog`, written in the same record write as the reply's state; it answers a repeat from
-      it first, then refuses (`TooLate`, recorded) to start a request whose remaining budget is below its write latency; a handler that threw is recorded as `Faulted` across the `Reload` and answered only once
+      it first, then refuses (`TooLate`, recorded) to start a request whose time left to its settle-by instant is below its write
+      latency; a handler that threw is recorded as `Faulted` across the `Reload` and answered only once
       that is in the record, so a receiver's actor type must persist and use `OnError = Reload` (an analyzer error
       otherwise). A call id runs at most once; an outcome the caller saw survives either side's crash; a `[Durable]`
       request cannot be cancelled (an analyzer error: giving up is waiting for the deadline).
@@ -1753,15 +1758,18 @@ Replaced by ADR-081.
   reflection-based JSON bodies, generic configuration binding); after W it would be generic code closed at run time,
   and in-process hot reload, which loads assemblies at run time.
 - Decision:
-  - **Every node publishes with `PublishAot=true`** (requirement E11). Framework projects set `IsAotCompatible` on
-    net11.0, so the trim and AOT analyzers run on every build.
+  - **Every node can publish with `PublishAot=true`**, chosen per node; JIT images stay supported (requirement E11).
+    The release checklist publishes the samples' nodes with AOT. Framework projects set `IsAotCompatible` on net11.0,
+    so the trim and AOT analyzers run on every build.
   - **Registration is generated as closed types in the user's assembly**: `Registration.Create()` names every actor
     type, dispatch table, job and system instantiation, the framework's per-actor-type systems included (they have
     no `[ForEach]` methods, so EasyEcs never closes their code with `MakeGenericType`, EasyEcs D20). No reflection,
     `MakeGenericType`, `Activator` or assembly scanning; the analyzer reports a generic `[ForEach]` system closed
     outside its assembly, which EasyEcs would close at run time without a warning.
   - **The HTTP plane** uses `WebApplication.CreateSlimBuilder`, minimal APIs through the request delegate generator
-    and no JSON in the framework ([drafts/architecture.md](drafts/architecture.md) section 8 has the rules).
+    and no JSON in the framework: admin endpoints and `MapAsk`/`MapSend` take and answer `application/x-nino` through
+    Nino.AspNetCore's Minimal API bodies and results, with plain text for humans ([drafts/architecture.md](drafts/architecture.md)
+    section 8 has the rules).
   - **Code changes load no assemblies at run time**: JIT and AOT nodes take a new build the same way, by hot restart
     or rolling upgrade (ADR-084), so user projects are `Game.Protocol` and `Game.Server`.
   - **0 warnings, no suppression**: a suppression of a library's warning in user programs is not accepted. EasyEcs
@@ -1772,7 +1780,8 @@ Replaced by ADR-081.
   under AOT anyway).
 - Consequences: the release checklist publishes each sample node with `PublishAot=true` with 0 warnings and runs the
   E2E tests against the AOT binaries. What remains to verify is third-party: OpenTelemetry, the Prometheus exporter
-  (a beta, pinned; OTLP to a Collector if it warns), Npgsql through Aspire and the other hosting dependencies, in W8
+  (a beta, pinned; OTLP to a Collector if it warns), Npgsql through Aspire, Nino.AspNetCore and the other hosting
+  dependencies, in W8
   ([drafts/architecture.md](drafts/architecture.md) section 8). How a new build reaches running nodes is ADR-084.
 
 ## ADR-084 Code changes ship by in-place hot restart (JIT and AOT); no in-process hot reload
@@ -2065,7 +2074,8 @@ Replaced by ADR-081.
   - **Non-.NET clients**: the client wire protocol is published as a specification (frames, handshake, `Ready`,
     re-join and slots, `Retire` and `HandedOff`, `Busy` with its retry-after, keep-alive), with the C# SDK as the
     reference and one conformance suite run against every implementation. A TypeScript client over WebSocket uses
-    Nino's TypeScript codecs generated from `wire.manifest`. This reverses G7's "no TS code generation": a
+    the classes and codecs Nino.TypeScript (a prerelease package) generates for the protocol's `[NinoType]`s after each
+    build, structs and version-tolerant types included; DaServer writes no TypeScript generator. This reverses G7's "no TS code generation": a
     `browser-wasm` client ships a .NET runtime to every page (megabytes before the first frame) and gives JavaScript a
     `[JSExport]` shim instead of types, while generated codecs give browsers the types Unity gets. Unreal/C++ follows
     the same specification later.

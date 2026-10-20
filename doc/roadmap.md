@@ -22,7 +22,7 @@ Keep this file current: tick items when done, add items when scope changes.
 11. S1-S6 (done) elastic scaling.
 12. The ECS rewrite (ADR-081, the "ECS rewrite" entry under "Open cleanup" below): P1-P3 and P5 done; P4, P6 and P7
     superseded by W.
-13. W — refactor to the v40 programming model ([drafts/programming-model.md](drafts/programming-model.md),
+13. W — refactor to the v41 programming model ([drafts/programming-model.md](drafts/programming-model.md),
     [drafts/architecture.md](drafts/architecture.md)) on EasyEcs 4.6.0 and 4.7 (ADR-082 to ADR-092). Breaking; each step
     proven before the next (W, not R: the requirement ids R0-R11 are taken). Every use of an EasyEcs 4.7 feature (planned)
     is marked "(4.7)" inline where a step names it; until 4.7 ships each such use takes the 4.6 fallback listed in W1,
@@ -163,7 +163,7 @@ Keep this file current: tick items when done, add items when scope changes.
       idle deactivation only, a forced one keeping the waiting entity in its final record); the asker's waiting entity in the record before the request leaves,
       `settleBy` (the settle-by instant in every attempt's envelope, bounding `ReplyLog` entries and durable `ReplyTo`
       deadlines; no attempt sent past it, an attempt past it dropped by the receiver; `ICluster.Ask(settleBy:)`
-      deduplicated by `CallId.From` until then), `WakeAt` at the next attempt or the settle-by instant, re-asks (a `NotHandled` on a re-ask transient), the settling re-ask at settle-by − `AskTimeout` − `ClockSkew`, a durable asker destroyed by a
+      deduplicated by `CallId.From` until then), `WakeAt` at the next attempt or the settle-by instant, re-asks (a `NotHandled` on a re-ask transient), the settling re-ask at settle-by − the attempt's deadline − `ClockSkew` (a shorter `settleBy`: the first attempt is the last and runs as usual), a held first attempt's timeout and `WakeAt` from its release, re-asks only after the write holding the waiting entity, a durable asker destroyed by a
       handler or a system failing the item and reloading, `Depart` re-parenting a durable wait to the root; the
       receiver's dedupe before the `TooLate` check, every definite refusal recorded as refused, `ReplyLog` with refused
       entries under their own capacity (`DaServer:ReplyLogRefusedCapacity`; full: neither recorded nor answered) and `Faulted` entries kept across a `Reload`), a persisted `ReplyTo<T>`'s deadline in UTC, `root.IssueClientToken` with `IssueSeq` on the root,
@@ -186,7 +186,8 @@ Keep this file current: tick items when done, add items when scope changes.
       `FaultedAcrossReloadAnsweredAfterWrite`, `GrantSurvivesCalleeCrashAfterReply`,
       `SettlingReaskRefusesUnrunCall`, `RefusedDurableCallNeverRunsLater`, `SettlingReaskAllowsForClockSkew`,
       `ReaskLeavesAtOnceWithoutWrite`, `RefusedEntriesHaveOwnCapacity`, `FullRefusedLogLeavesSettleUnanswered`,
-      `RefusedEntriesExpireAfterDeadline`, `LateDuplicateAfterSettleNeverRuns`, `LaterReplyOnDurableTokenHeldUntilWrite`,
+      `RefusedEntriesExpireAfterDeadline`, `LateDuplicateAfterSettleNeverRuns`, `ShortSettleByFirstAttemptRuns`,
+      `HeldFirstAttemptTimeoutStartsAtRelease`, `SettlingTimingUsesAttemptDeadline`, `WriteGenerationContinuesAcrossInPlaceHotRestart`, `LaterReplyOnDurableTokenHeldUntilWrite`,
       `DurableOutputReleasedAfterItsTickWrite`, `PlainOutputNotHeldBehindDurable`, `OneWriteInFlightPerRootLaterOverwrites`,
       `TickEndWritesShareOneStatement`, `StoreWritesInFlightBounded`, `FencedWriteDiscardsHeldDurableOutput`,
       `DeactivationWaitsForHeldDurableOutput`, `MigrationWaitsForHeldDurableOutput`, `FreezeWritesRootsWithHeldOutput`,
@@ -195,7 +196,7 @@ Keep this file current: tick items when done, add items when scope changes.
       `ForcedDeactivationKeepsDurableAskInRecord`, `NoAttemptAfterSettleBy`,
       `ReceiverDropsAttemptPastSettleBy`,
       `ClusterDurableAskDedupedUntilSettleBy`,
-      `DurableRepeatAnsweredBeforeTooLateCheck`, `DurableRequestTooLateRefused`, `DestroyingDurableAskerFailsItem`,
+      `DurableRepeatAnsweredBeforeTooLateCheck`, `DurableRequestTooLateRefused` (time left to the settle-by instant), `DestroyingDurableAskerFailsItem`,
       `SystemDestroyOfDurableAskerReloads`, `DepartReparentsDurableWaitToRoot`,
       `PersistedReplyToDeadlineIsUtc`, `IssueSeqWrittenBeforeTokenLeaves`, `NextDueFollowsWakeAt`,
       `WakeActivationRewritesNextDue`, `SnapshotLoadedOnceThenCrashRejoinsFromRecords`,
@@ -236,7 +237,7 @@ Keep this file current: tick items when done, add items when scope changes.
       server types from the committed `wire.manifest` (`actor` and `hosted-by` lines; `IAcceptsClients` on those hosting
       `Connection`) and the build check. Tests: `Sample.Tests` on `TestActor<Map>`
       (`Walking_out_of_range_during_the_windup_dodges`, `A_busy_tick_allocates_nothing_and_threads_change_nothing`,
-      `An_expired_grant_takes_the_drop_off_the_map`, `DropsReshownAfterMapCrash`, `TimedOutClaimLeavesPickUpUnknown`), `LoginIssuesIncreasingSequence`, `LoginTokenLeavesAfterSequenceWritten`,
+      `An_expired_grant_takes_the_drop_off_the_map`, `DropsReshownAfterMapCrash`, `MapCrashReusedNumberDoesNotBreakLoot`, `TimedOutClaimLeavesPickUpUnknown`), `LoginIssuesIncreasingSequence`, `LoginTokenLeavesAfterSequenceWritten`,
       `AppHostServerTypesGeneratedFromManifest`, `ClientPortWithoutConnectionHostFailsBuild`; the 1,000-bot and
       100,000-buyer E2E on the new model.
     - [ ] W7a `DaServer.Replication` and `DaServer.Replication.Client` (ADR-090): `[Replicated]`, `ReplicatedTo`,
@@ -248,8 +249,8 @@ Keep this file current: tick items when done, add items when scope changes.
       `RejoinSameIncarnationGetsDelta`, `IncarnationChangeForcesFullResend`, `OverwrittenExitRingForcesFullResend`,
       `FullResendClearsClientReplicasFirst`.
     - [ ] W7b Non-.NET clients (ADR-090; replaces G7's plan): the client protocol specification, the conformance suite
-      (run against the C# SDK first), the TypeScript client (`@daserver/client`) with Nino's TypeScript codecs from
-      `wire.manifest`; proven by the flash sale from a browser page and the suite in CI. Tests:
+      (run against the C# SDK first), the TypeScript client (`@daserver/client`) with the codecs Nino.TypeScript (prerelease,
+      pinned) generates from `Game.Protocol`'s build; proven by the flash sale from a browser page and the suite in CI. Tests:
       `ConformanceSuitePassesOnCSharpSdk`, `ConformanceSuitePassesOnTypeScriptClient`, `FlashSaleBuysFromBrowserPage`.
     - [ ] W7c Tools (ADR-090): `TestCluster.Partition`/`Kill`/`DelayLinks` for users' tests (the framework's own
       partition and crash tests move onto them); the read-only inspector (`/admin/actors/{type}/{key}`,
@@ -273,9 +274,10 @@ Keep this file current: tick items when done, add items when scope changes.
       `AddDotnetProject` (verified: no `dotnet run` process, OTLP, endpoints, replicas, attach; `AddProject` as the
       fallback); AOT checked locally through the AOT images in Compose; images on `resolute` chiseled, built in a
       container on macOS and Windows; the Compose health check by the node's own executable (drafts/deployment.md
-      section 0). Admin endpoints, the inspector included, as Nino (or plain text for `Accept: text/plain`),
-      `MapAsk`/`MapSend` Nino by default with per-endpoint opt-in JSON through the application's source-generated
-      context (ADR-083). Tests: `SampleNodesPublishAotWithoutWarnings`, `E2EPassesAgainstAotBinaries`,
+      section 0). Admin endpoints, the inspector included, as Nino through Nino.AspNetCore's Minimal API results (or plain text
+      for `Accept: text/plain`), `MapAsk`/`MapSend` Nino bodies (`NinoBody<T>`) by default with per-endpoint opt-in JSON through the application's source-generated
+      context (ADR-083); Nino.AspNetCore verified in a published AOT node (drafts/architecture.md section 8). Tests:
+      `SampleNodesPublishAotWithoutWarnings`, `E2EPassesAgainstAotBinaries`,
       `LocalRunStartsNoDotnetCli`, `ComposeHealthCheckRunsNodeExecutable`, `AdminAnswersNinoOrPlainText`.
     - [ ] W9 BenchmarkDotNet against the pre-W baseline, allocation tests, the 10k-bot E2E, review rounds; the hot
       restart pause measured end to end through W6's `{cluster}-restart` (BenchmarkDotNet per shard, E2E with clients
@@ -463,8 +465,8 @@ balancing, TLS, CDN/WAF, Gateway API routes and autoscaling stay with the platfo
       `DaServer.Simulation` swarm (`MeasureUntilAsync`); AppHost, E2E (100,000 buyers in CI); the README compares it
       with the usual designs. One 4-core VM with the crowd on it: 3,000,000 buyers on one node, 6,000,101 requests in
       13.2 s with requests on a 1 ms beat (548,000/s steady, 1.51 node cores; ADR-070); the machine is the limit.
-- [ ] G7 Browser clients: the TypeScript client of W7b (ADR-090), over the browser's WebSocket with Nino's TypeScript
-      codecs generated from `wire.manifest`. Prove: the flash sale from a browser page. Unity WebGL (IL2CPP) needs a
+- [ ] G7 Browser clients: the TypeScript client of W7b (ADR-090), over the browser's WebSocket with Nino.TypeScript's
+      generated codecs. Prove: the flash sale from a browser page. Unity WebGL (IL2CPP) needs a
       jslib WebSocket transport for the existing client instead.
 - [ ] P2 Optional `DaServer.Persistence.Redis`: actor records in Redis (versioned writes in Lua) for teams that run
       Redis already; durability is Redis's (AOF). Decide with the user before building it.
