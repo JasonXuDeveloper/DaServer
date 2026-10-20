@@ -1581,7 +1581,7 @@ Replaced by ADR-081.
   the owner decided DaServer must support it. EasyEcs's core is `IsAotCompatible`; Nino serializes through generated
   formatters. What blocks AOT today is DaServer's own reflection (route listing, admin JSON of anonymous objects,
   reflection-based JSON bodies, generic configuration binding); after R it would be generic code closed at run time,
-  and hot reload, which loads assemblies at run time.
+  and in-process hot reload, which loads assemblies at run time.
 - Decision:
   - **Every node publishes with `PublishAot=true`** (requirement E11). Framework projects set `IsAotCompatible` on
     net11.0, so the trim and AOT analyzers run on every build.
@@ -1595,17 +1595,29 @@ Replaced by ADR-081.
     for `Accept: text/plain`; probes and metrics keep their platform formats; `MapAsk`/`MapSend` take Nino bodies,
     and JSON only where the application opts in per endpoint with its own source-generated `JsonSerializerContext`
     (third-party webhooks). Routes are read from `wire.manifest`, not from assemblies.
-  - **Hot reload is a deployment choice**: JIT deployments load the Logic assembly into a collectible context and may
-    hot reload it; AOT deployments compile Logic in and refuse a reload (changes ship as rolling upgrades).
+  - **Hot restart on both, no in-process hot reload**: a code change replaces the node's process in place. Between two
+    ticks each shard stops and its world (`world.Save`), pending mail and runtime state go to a process of the new
+    build, over a local named pipe when the node launches its successor or through a checksummed snapshot file in a
+    node-local directory when the platform restarts the process; the successor loads the worlds, joins with the same
+    node name and generation and the incarnation plus one, and keeps every activation epoch (no re-activation, no
+    fencing; peers hold its messages while it announces `Restarting` with a deadline). The manifest diff picks in
+    place, through records or a rolling upgrade ([drafts/programming-model.md](drafts/programming-model.md) §10). JIT
+    and AOT nodes behave the same, so user projects are `Game.Protocol` and `Game.Server`: no separate logic assembly,
+    no collectible load context.
   - **0 warnings, no suppression**: EasyEcs's AOT compile reports IL3054 (generic recursion through its change-tick
     column type) in programs with tracked components, which every stateful node has (`IPersisted`). The AOT publish
     check is gated on EasyEcs removing it (EasyEcs request #21); a suppression of a library's warning in user
     programs is not accepted.
 - Alternatives: AOT only for stateless nodes (no tracked components; splits the support matrix); suppress IL3054
-  (accepts a warning on the library's behalf); drop hot reload (JIT deployments lose N9, which typical game servers and ET
-  show games use); reflection-based registration with trimming descriptors (fragile, and generic closure at run time
-  is impossible under AOT anyway).
+  (accepts a warning on the library's behalf); in-process hot reload on JIT only (a Logic assembly in a collectible
+  load context and `RemoveTypes`: a project cycle between host and logic, two behaviours per deployment, unloads that
+  caches can block; game servers and ET use it, but a restart that keeps the world costs well under a second); no
+  code change without re-activation (games need it); reflection-based registration with trimming descriptors
+  (fragile, and generic closure at run time is impossible under AOT anyway).
 - Consequences: the release checklist publishes each sample node with `PublishAot=true` with 0 warnings and runs the
   E2E tests against the AOT binaries (open until EasyEcs request #21 ships). OpenTelemetry, the Prometheus exporter,
   Npgsql through Aspire and the other hosting dependencies are verified in R8 ([drafts/architecture.md](drafts/architecture.md)
-  section 8). Teams pick per deployment: hot reload (JIT) or native executables (AOT).
+  section 8). Hot restart needs EasyEcs request #22 (`world.Load(input, markWritten: false)`), otherwise every actor
+  rewrites its record after a restart; its pause (target under 1 s per node) is measured end to end in R. ADR-067's
+  reloadable logic project is replaced when R10 promotes the drafts. Gateways take rolling upgrades (their sockets
+  would close); stateless node groups are replaced by start-new-then-stop-old.

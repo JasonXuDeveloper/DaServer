@@ -19,7 +19,7 @@ promoted into design.md and decisions.md and deleted (R10).
 | `DaServer.Simulation` | net11.0 | Simulated users over `DaServer.Client`. |
 | `DaServer` (runtime) | net11.0 | The server side of the model: `IActor<T>`, `[Handles<K>]`, `[On<T>]`, `IMessageTo<K>`, `IRequestTo<K,R>`, `[From<K>]`, `IEvent`, `IPersisted`, `Entity` operations, `Client`, shards, the framework systems, cluster, placement, persistence, migration. |
 | `DaServer.Generator` (+ Roslyn 4.3 build) | netstandard2.0 | The generators (explicit `Key`, typed sends, `[On<T>]` jobs, `Registration`, `wire.manifest`) and the analyzers ([draft §13](programming-model.md#13-编译期检查删掉的东西版本记录)). |
-| `DaServer.WireTool` | net11.0 | Writes a project's `wire.manifest` (Server and Logic sections, [draft §10](programming-model.md#10-持久化迁移热更升级easyecs-45)). |
+| `DaServer.WireTool` | net11.0 | Writes a project's `wire.manifest` (one section per project, [draft §10](programming-model.md#10-持久化迁移热重启升级easyecs-45)). |
 | `DaServer.Hosting` | net11.0 | Generic Host and ASP.NET Core integration, configuration, OpenTelemetry, shutdown, the HTTP plane. |
 | `DaServer.Persistence.PostgreSql` | net11.0 | The record store: epoch-fenced, compare-and-swap writes. |
 | `DaServer.Testing` | net11.0 | `TestCluster` (in-process nodes, manual clock) and `TestDomain<K>` (one domain, one world). |
@@ -27,11 +27,10 @@ promoted into design.md and decisions.md and deleted (R10).
 
 ### User projects
 
-| Project | Targets | Holds | Hot reload |
+| Project | Targets | Holds | Code changes |
 |---|---|---|---|
-| `Game.Protocol` | netstandard2.1, net11.0 | Client messages only: data, no actor types, no addresses, no nodes | No (shipped to clients) |
-| `Game.Server` | net11.0 | Actor types, server-to-server messages, events, components, claims, prefabs, server types (several per project), the node's five-line `Program.cs` | No: rolling upgrade |
-| `Game.Server.Logic` | net11.0 | `[Handles<K>]` classes of `[On<T>]` methods, `[UpdateInGroup<K>]` systems, the generated `Registration` | JIT deployments only (section 8) |
+| `Game.Protocol` | netstandard2.1, net11.0 | Client messages only: data, no actor types, no addresses, no nodes | Shipped to clients |
+| `Game.Server` | net11.0 | Actor types, server-to-server messages, events, components, claims, prefabs, server types (several per project), `[Handles<K>]` classes of `[On<T>]` methods, `[UpdateInGroup<K>]` systems, the generated `Registration`, the node's five-line `Program.cs` | Hot restart or rolling upgrade, JIT and AOT alike (section 5) |
 
 - **One project may define several server types** (`[Hosts<Map>] struct MapServer : IServer`); **a node is one process
   running one server type** ([draft §2](programming-model.md#2-服务器与节点)). The AppHost picks the type per node
@@ -48,7 +47,7 @@ flowchart LR
     R --> PG[DaServer.Persistence.PostgreSql]
     A --> P[Game.Protocol]
     P --> S[Game.Server]
-    R --> S --> L[Game.Server.Logic]
+    R --> S
     P --> GC[game client]
     CL --> GC
     ASP[DaServer.Aspire] -.reads wire.manifest.-> S
@@ -57,8 +56,6 @@ flowchart LR
 - Everything points one way: the runtime never references a capability, a sample or a user project.
 - `Game.Protocol` references only `DaServer.Abstractions`: the analyzer refuses actor types, server messages,
   `ActorId`, `PresenceId` and `EntityId` there.
-- `Game.Server.Logic` references `Game.Server`; nothing in `Game.Server` references Logic types except the host's
-  `Registrations.Create()` call (open point 1 in section 10).
 - The AppHost references `DaServer.Aspire` and reads `wire.manifest`; it references no server assembly.
 
 ## 2. Runtime structure
@@ -105,10 +102,10 @@ Per actor type with `[TickRate(n)]`, at time t ([draft §1](programming-model.md
 
 ### `Registration`
 
-- Generated, one instance per call of `Registrations.Create()` (no static registries, no module initializers): the
-  Server part (actor types, root and child prefab copies with `In<K>`, claims, join-on-connect) and the Logic part
-  (dispatch tables per actor type, client routes, systems per group) ([draft §12](programming-model.md#12-完整例子连接进地图移动放技能看见别人)).
-- Nodes, `TestCluster` and `TestDomain<K>` take the object. Hot reload swaps its Logic part.
+- Generated, one instance per call of `Registrations.Create()` (no static registries, no module initializers): actor
+  types, root and child prefab copies with `In<K>`, claims, join-on-connect, dispatch tables per actor type, client
+  routes, systems per group ([draft §12](programming-model.md#12-完整例子连接进地图移动放技能看见别人)).
+- Nodes, `TestCluster` and `TestDomain<K>` take the object.
 - Every type in it is closed at compile time in the user's assembly (section 8).
 
 ## 3. Messaging
@@ -143,7 +140,7 @@ Per actor type with `[TickRate(n)]`, at time t ([draft §1](programming-model.md
 - **Placement**: an actor type is bound to server types (`[Hosts<…>]`); its keys are placed among the nodes hosting
   it, moved when nodes join or leave (rate-limited per node). `[Stateless]` actors live on any node, never persisted.
   `Client` is pinned.
-- **Activation** ([draft §6](programming-model.md#6-生命周期), [§10](programming-model.md#10-持久化迁移热更升级easyecs-45)):
+- **Activation** ([draft §6](programming-model.md#6-生命周期), [§10](programming-model.md#10-持久化迁移热重启升级easyecs-45)):
   1. The first message creates the placeholder (`Loading`); mail waits on it.
   2. The activation takes an epoch: a conditional write `(key, epoch) → epoch + 1`, even without a record.
   3. The record is loaded into the placeholder and n−1 empty entities:
@@ -161,7 +158,7 @@ Per actor type with `[TickRate(n)]`, at time t ([draft §1](programming-model.md
 - **Deactivation**: idle past `IdleTimeout` or `e.Deactivate()`: presences leave, `Deactivating` runs, the subtree is
   saved and destroyed, a `Saving` placeholder holds new mail until the write lands.
 
-## 5. Migration, upgrades, hot reload
+## 5. Migration, upgrades, hot restart
 
 - **Migration**: the whole subtree with the component set `migrate` (every component not `[Transient]`), including
   waiting asks, presences with `Subscribed`, and delayed events with their remaining time. The header carries each
@@ -170,16 +167,60 @@ Per actor type with `[TickRate(n)]`, at time t ([draft §1](programming-model.md
   written (re-subscribe, re-cell, first checkpoint). A tombstone forwards late control messages. Across shards it is
   bytes too (`MoveEntities` needs one thread).
 - **Time across processes** is remaining time only; each process runs on its own monotonic clock.
-- **`wire.manifest`**: a Server section (actor types, hosting server types, tick rates, claims, message endpoints,
-  events, state types, persisted components, layout hashes, pushes) and a Logic section (client routes, event and
-  `Answer` handlers, lifecycle handlers, `Leaving` consumers). The AppHost reads `actor` and `hosted-by`; nodes check
-  their server type against it at start.
+- **`wire.manifest`**: one section per project; `Game.Server`'s holds actor types, hosting server types, tick rates,
+  claims, message endpoints, events, state types, persisted components, layout hashes, pushes, client routes, event
+  and `Answer` handlers, lifecycle handlers and `Leaving` consumers. The AppHost reads `actor` and `hosted-by`; nodes
+  check their server type against it at start; a hot restart diffs the old and new manifests to pick its path.
 - **Rolling upgrades**: `[Hosts]` on the member card, `NotHandled` from old nodes retried once after placement is
-  resolved again, migration falls back to records across layouts. Anything in `Game.Server` changes only this way.
-- **Hot reload** (JIT deployments): the Logic assembly in a collectible `AssemblyLoadContext`; between two ticks
-  each shard calls `world.RemoveTypes(old context)`, installs the new `Registration`'s tables and adds its systems;
-  the old context unloads after every shard switched. `wire.manifest` refuses a reload that changes a client route or
-  drops a handler or `Leaving` consumer still in use.
+  resolved again, migration falls back to records across layouts. Gateways and changes of hosting or client routes
+  change this way.
+- **Hot restart** ([draft §10](programming-model.md#热重启), the same on JIT and Native AOT nodes): the node is replaced
+  in place by a process of the new build; no actor re-activates, clients stay connected.
+  - **Paths**, picked from the manifest diff and reported by the command: *in place* (same layout hashes, no handler
+    or `Leaving` consumer dropped, same client routes; target pause: under 1 s per node, typically hundreds of milliseconds), *through
+    records* (layouts changed only where records stay readable: deactivate all, restart, activate from records; a
+    longer pause), or refused in favour of a rolling upgrade (hosting or client routes changed).
+  - **Handoff bytes** (one format, two transports): per shard the `world.Save` output (entities with ids, components,
+    buffers including placeholder mail, singletons; no systems, indexes or change ticks), mail still in the dispatch
+    queue and the shard's `Time.Now`; per node the call id sequence, tombstones, acknowledged link sequences and the
+    connection stamp counter; a header with node name, generation, incarnation, handoff token and checksum. The new
+    process loads each world, adds the systems from its `Registration` and resumes each shard clock at the saved
+    `Time.Now`, so every `Due` keeps its remaining time.
+  - **Ownership**: the node announces `Restarting` with a deadline and the hash of the handoff token; peers keep it
+    in the view and in placement (no `Suspect`, no re-placement, no fencing) until the deadline, measured on their own
+    monotonic clocks, and hold messages to it in the bounded resend windows of their links (`Busy` with the existing
+    back-off beyond that). The successor joins with the same name and generation, the incarnation plus one and the
+    token; peers drop the old process's links, connect to it and replay their resend windows. Epochs stay in the
+    roots and in the store, so its writes compare as before. Only one process runs shards at any time: the old one
+    stops its shards and settles in-flight record writes before `Save` and never runs them again past the commit
+    point (the successor's "loaded"); the successor runs them only after it. A deadline that passes first turns into
+    an ordinary node departure: actors re-activate elsewhere under new epochs and a late successor discards the
+    snapshot and joins with a new generation.
+  - **Transports**: *successor launched by the node* (bare metal, VMs, Windows services, macOS, development): the
+    old process starts the new binary, which warms up binding nothing, and streams the bytes over a local
+    `System.IO.Pipes` named pipe (a Windows named pipe, a Unix domain socket elsewhere); the old process then closes
+    its listeners and exits, the successor binds the same ports. No `exec`. A service manager that tracks the PID
+    must accept the handover (systemd: `sd_notify` with `MAINPID`) or supervise a small launcher instead. *Process
+    restarted by the platform* (a container restart in the same Kubernetes pod, a systemd restart): the old process
+    writes the bytes into a file in a node-local directory (a memory-backed `emptyDir`, tmpfs where available, a plain
+    local directory otherwise) through `MemoryMappedFile.CreateFromFile` and exits; the new process loads a fresh,
+    checksummed snapshot for its node name at start, and ignores a stale or invalid one (activation from records as
+    usual). On Kubernetes the running pod's container image is changed in place, so the pod is not rescheduled.
+  - **Pause**: moving a world takes milliseconds (one world, 5 unmanaged components per entity: 100,000 entities
+    save in 0.76 ms and load in 2.7 ms, 4.4 MB, 0 B allocated; BenchmarkDotNet ShortRun, EasyEcs 4.5.0, .NET 11 RC2);
+    process start and peer reconnects dominate. R measures it end to end (BenchmarkDotNet per shard, E2E).
+  - **Change ticks (prerequisite: EasyEcs request #22)**: `world.Load` stamps every loaded row as written and has no
+    `markWritten` parameter, so every `IPersisted` row would look written and every actor would rewrite its record.
+    Hot restart needs `world.Load(input, markWritten: false)`, with systems added after the load not treating those
+    rows as written on their first run. Pending writes are not lost: `Unsaved` is a tag on the root and travels in
+    the save.
+  - **Gateways** do not hot restart (`Client` is pinned to its connection); they take rolling upgrades. A possible
+    later optimization is handing the sockets to the new process (`SCM_RIGHTS`, Envoy-style), Unix only.
+  - **`[Stateless]` actor types** deployed as their own node group are replaced by start-new-then-stop-old, without
+    a pause.
+- **Changes without a restart** are data swaps between two ticks: tuning tables (a validated shard singleton, its
+  version on the member card) and feature flags choosing between handlers compiled into the binary (a singleton or a
+  tag that handlers and systems filter on).
 
 ## 6. Distributed guarantees and failure handling
 
@@ -206,20 +247,19 @@ The guarantees are [draft §1](programming-model.md#1-保证); the outcome of ea
 | Domains | `ChildOf`, `world.Children`, `world.Descendants(root)`, prefabs (`new Prefab(base)` copies) |
 | Presences, cleanup | `ICleanupComponent`, `Destroyed`, `DynamicBuffer<T>`, `[Changed<DynamicBuffer<T>>]` |
 | Persistence | `ITrackChanges`, `[Changed<T>]`, `[Removed<T>]`, `ComponentSet`, `SaveEntities`, `LoadEntitiesInto(…, markWritten: false)`, Nino type ids |
-| Hot reload | `world.RemoveTypes(context)`, collectible contexts, `AddSystem<T>()` |
+| Hot restart | `world.Save`, `world.Load` (singletons included, systems not), `AddSystem<T>()` |
 | Diagnostics, tests | `SystemErrorPolicy` (`Disable` on nodes, `Throw` in `TestDomain<K>`), `MeasureSystems`, `system.Stats`, `world.Count<Destroyed>()`, `world.Describe()`, `Capture`/`Restore` |
 | Allocation-free reuse | Pooled `DynamicBuffer` storage, `MaxDegreeOfParallelism` per world |
 
 ## 8. Native AOT
 
 DaServer nodes publish with `PublishAot=true` (ADR-083, requirement E11, [draft §10](programming-model.md#native-aot)).
-JIT stays supported; the two are a deployment choice:
+JIT stays supported and behaves the same: neither loads assemblies at run time, and both change code by hot restart
+or rolling upgrade (section 5).
 
 | | JIT deployment | Native AOT deployment |
 |---|---|---|
-| Logic | Collectible `AssemblyLoadContext` | Compiled into the node |
-| Hot reload | Yes (section 5) | No: a reload request is refused; changes ship as a rolling upgrade |
-| Start-up, memory | JIT warm-up, tiered compilation | Native start, smaller working set |
+| Start-up, memory | JIT warm-up, tiered compilation | Native start (tens of milliseconds), smaller working set |
 | Reflection | Allowed where documented as JIT-only | None |
 
 ### What makes it work
@@ -254,7 +294,7 @@ JIT stays supported; the two are a deployment choice:
   `configuration.Get<TOptions>()` inside the generic `AddDaServerFeature<TOptions>` has an open type there and
   moves to a closed call site (to verify with the first AOT publish).
 - **Route listing**: `Routes` (the `DaServer__ListRoutes` check mode) reads assemblies by reflection; the target reads
-  the routes from `wire.manifest`'s Logic section instead.
+  the routes from `wire.manifest` instead.
 - **Framework projects** set `IsAotCompatible` on their net11.0 targets, so the trim and AOT analyzers run on every
   build under `TreatWarningsAsErrors`.
 
@@ -305,7 +345,8 @@ Derived from [design.md](../design.md) and the deleted list in
 | `[Persist]` with a generated `ITrackChanges`, the own record format | `IPersisted`; records as `SaveEntities` over `Descendants` with a `ComponentSet`; epoch CAS |
 | State handoff (ADR-072) | Migration bytes with layout hashes; fallback to records |
 | `Registration_{Assembly}` run by a module initializer (ADR-012) | `Registration` instance from `Registrations.Create()` |
-| One project per server (ADR-017), Contracts / Model / Logic (N1) | Protocol / Server / Logic; several server types per Server project; node = one server type |
+| One project per server (ADR-017), Contracts / Model / Logic (N1) | Protocol / Server; several server types per Server project; node = one server type |
+| Hot reload of the logic assembly (planned N9) | Hot restart: the node replaced in place by the new build, world handed over (JIT and AOT) |
 | `AddNodes<TProject>` | `AddNodes<TServer>` over server types generated from `wire.manifest` |
 | Random `NodeId` per process | Cluster-assigned node generation |
 | Deadlines in UTC milliseconds | Monotonic `TimeSpan`; remaining time across processes |
@@ -317,13 +358,7 @@ CLAUDE.md's Layout and ADR-017 change with R (one Server project may define seve
 
 ## 10. Open points to settle during R
 
-1. **The host and the Logic assembly.** `Game.Server`'s `Program.cs` calls Logic's `Registrations.Create()` while
-   Logic references `Game.Server`: a project cycle. On JIT nodes that hot reload, the first Logic version must also
-   load into a collectible context, so the host must not bind it statically; on AOT nodes it is bound statically.
-   One option: the five-line `Program.cs` moves to a host project referencing Server and Logic, and the host calls a
-   generated entry that, under `PublishAot`, calls `Registrations.Create()` and otherwise loads Logic by name into a
-   collectible context. Settled in R2–R4.
-2. **Messages as entities** ([draft §14](programming-model.md#14-已定的取舍以及待办) item 4): measured with
+1. **Messages as entities** ([draft §14](programming-model.md#14-已定的取舍以及待办) item 4): measured with
    BenchmarkDotNet in R4; changed only if not worse by more than 10%.
-3. **EasyEcs 4.5.0 compile checks** (R1): the generated explicit `Key` is accepted by value indexes; `IActor<TSelf>`
+2. **EasyEcs 4.5.0 compile checks** (R1): the generated explicit `Key` is accepted by value indexes; `IActor<TSelf>`
    compiles in the framework assembly.

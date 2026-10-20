@@ -32,20 +32,27 @@ Keep this file current: tick items when done, add items when scope changes.
       `[Handles<K>]`, `[On<T>]`, `IMessageTo<K>`, `IRequestTo<K,R>`, `[From<K>]`, `IEvent`, `IPersisted`, `[Claims]`,
       `[JoinOnConnect<T>]`, `[TickRate]`, `[Stateless]`, `[Transient]` in the runtime.
     - [ ] R3 Generator and analyzers: explicit `Key`, typed sends, `[On<T>]` jobs, the closed `Registration`,
-      `wire.manifest` sections, the draft's §13 checks.
+      `wire.manifest` (one section per project; user projects are Protocol and Server), the draft's §13 checks.
     - [ ] R4 Runtime core: shards (one world each, `MaxDegreeOfParallelism` per world), the ordered phase, `Due`,
       `Outbox`, `Current`, the framework groups (Ordering, Settling, Cleanup); messages-as-entities measured once.
     - [ ] R5 Presences, the gateway (`Client` on `[Hosts<Client>]`), `[To]` routing, `[JoinOnConnect]`, SDK re-join,
       `ClientGroup` subscriptions.
     - [ ] R6 Persistence, activation and migration: epochs and fencing, placeholder roots, `IPersisted` records
-      through `Descendants` and `ComponentSet`, migration bytes with layout hashes.
+      through `Descendants` and `ComponentSet`, migration bytes with layout hashes. Hot restart's runtime side (draft
+      §10, JIT and AOT): shards stopped between two ticks, the handoff bytes (`world.Save`, pending mail, shard
+      clocks, runtime state) over a local named pipe or a node-local snapshot file, `Restarting` with a deadline in
+      membership, the successor joining with the same generation and the next incarnation and keeping the epochs;
+      in-cluster tests for both transports and for each failure before and after the commit point (gated on EasyEcs
+      request #22, `world.Load(input, markWritten: false)`).
     - [ ] R7 Samples (mmo, flashsale) on the new model.
     - [ ] R8 Native AOT publish of the samples' nodes with 0 warnings (gated on EasyEcs request #21: IL3054 for tracked
       components); the AOT E2E run. Admin endpoints as Nino (or plain text for `Accept: text/plain`), `MapAsk`/`MapSend`
       Nino by default with per-endpoint opt-in JSON through the application's source-generated context (ADR-083).
-    - [ ] R9 BenchmarkDotNet against the pre-R baseline, allocation tests, the 10k-bot E2E, review rounds.
+    - [ ] R9 BenchmarkDotNet against the pre-R baseline, allocation tests, the 10k-bot E2E, review rounds; the hot
+      restart pause measured end to end (BenchmarkDotNet per shard, E2E with clients connected; target under 1 s per
+      node, typically hundreds of milliseconds).
     - [ ] R10 Promote the drafts into design.md and decisions.md (CLAUDE.md's Layout, ADR-017), delete the drafts.
-14. N9 hot reload, on R's model (draft §10; JIT deployments only, ADR-083).
+14. N9 hot restart, on R's model (draft §10; JIT and AOT, ADR-083): the operator side of what R6 builds.
 15. N4 route completeness, N11 generated filters (on the G filter point), K3-K5, open cleanup, quality items. Later
     optional modules: `DaServer.Reminders`, `DaServer.Topics`, leases for strict singletons.
 16. After the self-review converged (agreed): Z3 and Z4; P2 `DaServer.Persistence.Redis` and G7 browser clients;
@@ -584,17 +591,15 @@ in separate commits.
       `ContractTests`). Nino's default pool (64 per thread, 256 shared) needs no sizing for a bot loop. Text the
       clients send and receive takes Nino's default (one byte a char for ASCII names); chat (`Say`, `Chat`) is
       `[NinoUtf8]`, as chat mixes ASCII with emoji and other scripts.
-- [ ] N9 Hot reload (after R, on its model: draft §10; JIT deployments only, ADR-083): code (Logic assembly in a
-      collectible load context; each shard swaps handler registry and
-      systems at a wake boundary over unchanged components; handlers run to completion, so nothing runs old code after
-      the swap;
-      the old context unloads when unused, weak-reference leak check, no forced GC; a changed Model/Contracts refuses
-      and needs a rolling deploy) and config (validated snapshot, pinned per shard wake, cluster-wide trigger, version
-      in gossip). HTTP endpoints (ADR-046) reload with the Logic assembly: the framework owns a reloadable
-      `EndpointDataSource` whose change token swaps the endpoint set (minimal API handlers declared in Logic,
-      registered by the generator), in-flight requests finish on the old delegates; the unload test proves no routing
-      or System.Text.Json cache keeps the old context alive (JSON through source-generated contexts in Logic). Benchmark
-      the hot path before and after. (in-house game servers, ET)
+- [ ] N9 Hot restart (after R, on its model: draft §10; JIT and AOT alike, ADR-083): code changes replace a node's
+      process in place, the world handed over (the runtime side is R6). Here: the admin command and the AppHost command
+      (the new build's `wire.manifest` in, the path taken out: in place, through records, or refused for a rolling
+      upgrade), node groups restarted one node at a time, the Kubernetes path (the running pod's image changed in place,
+      a memory-backed `emptyDir` for the snapshot, an update strategy that does not replace pods) through the publisher
+      hooks, the service-manager note (systemd `MAINPID` handover or a launcher). Changes without a restart as data
+      swaps between two ticks: tuning tables (validated snapshot, cluster-wide trigger, version on the member card) and
+      feature flags choosing between handlers compiled in. Gateways take rolling upgrades; socket handoff
+      (`SCM_RIGHTS`, Unix only) stays a possible later optimization. (in-house game servers, ET, Envoy hot restart)
 - [x] N11 Declared filters: `[Filter]` on a static `RpcStatus M(in Context context, in TMessage message)` (that
       message type) or on an `IMessageFilter` class (every message) is registered by the assembly's
       generated registration: rate limits, authorization and auditing without startup code; DAS021 for a wrong shape
