@@ -1,10 +1,10 @@
 # Target architecture (draft, not implemented)
 
-The architecture DaServer is refactored to (breaking, roadmap phase W): the v31 programming model of
-[programming-model.md](programming-model.md) on EasyEcs 4.6.0, with Native AOT support. The programming model draft is
+The architecture DaServer is refactored to (breaking, roadmap phase W): the v32 programming model of
+[programming-model.md](programming-model.md) on EasyEcs 4.6.0 and the features planned for EasyEcs 4.7 (not released; the roadmap gates the steps that use them, the draft's §0 lists them), with Native AOT support. The programming model draft is
 the source of truth for what users write and what each rule means; this file says how the pieces fit together and
 links to the draft's sections instead of repeating them. Today's architecture is [design.md](../design.md); the
-decisions are ADR-082 to ADR-091 in [decisions.md](../decisions.md). When W is done, this file and the draft are
+decisions are ADR-082 to ADR-092 in [decisions.md](../decisions.md). When W is done, this file and the draft are
 promoted into design.md and decisions.md and deleted (W10).
 
 ## 1. Layers and projects
@@ -35,7 +35,7 @@ Each is off unless referenced and lives in its own namespace; the runtime refere
 | `DaServer.Replication.Client` | netstandard2.1, net11.0 | Applies replication patches into a client's EasyEcs world |
 | `@daserver/client` (npm) | TypeScript | The client SDK over WebSocket, per the published client protocol; message codecs are Nino's TypeScript output from `wire.manifest`; replication patches into an entity table |
 
-`DaServer.Templates` is a `dotnet new` template package (`daserver`, `daserver-mmo`, `daserver-flashsale`, `daserver-arena`), generated from the samples; nothing references it (ADR-091).
+`DaServer.Templates` is a `dotnet new` template package (`daserver`, `daserver-mmo`, `daserver-flashsale`, `daserver-arena`, `daserver-relay`), generated from the samples; nothing references it (ADR-091).
 
 `DaServer.Generator` (netstandard2.0) is not a package of its own: it is built twice (Roslyn 5.x and 4.3, Unity's
 oldest) into `DaServer.Core`'s `analyzers/` folder, so every project using DaServer gets it. It holds the generators
@@ -136,7 +136,7 @@ loop on the shard's thread:
         hand Outbox frames to the links
         world.Update<K>()  K's systems, Time.DeltaTime 0
         Settling<K>        Depart, SyncSubscriptions, Resumed removed
-    for each actor type K with [TickRate] whose tick t is due:
+    for each actor type K with [TickRate], for each of its due ticks t, oldest first, at most the catch-up cap:
         Ordering<K>        the window (t - Δ, t]
         hand Outbox frames to the links
         world.Update<K>()
@@ -146,6 +146,13 @@ loop on the shard's thread:
 ```
 
 - Ordering state (sequence counter, tick window, chain budget) is per actor type, the singleton `Ordered<K>`.
+- **Fixed step with a catch-up cap**, EasyEcs's documented pattern: a shard that fell behind (a long tick, a GC pause)
+  runs the missed ticks one by one, each with the same `Δ`, but at most a few per wake (node configuration); past the
+  cap it skips the rest and moves its tick clock on, counted in `daserver.ticks.skipped`. Items keep their exact
+  times, so a skipped tick shifts no order, it only widens the next window.
+- **Memory after a peak**: `world.TrimExcess()` (EasyEcs 4.7, planned) runs only explicitly: a framework system in
+  Cleanup with a long `UpdateInterval` once the world's rows have dropped well below their peak (after a scale-in or
+  migrations out), and the admin command `POST /admin/worlds/{i}/trim`; never on a hot path.
 - Server types hosting several ticking actor types keep rates that divide the fastest one.
 - Before a hot restart (the member is `NodeRestarting`) the runtime adds the `Restarting` tag to every root for the
   last tick (Settling removes it in that tick, so no snapshot holds it) and then stops calling the loop; after the load and the coordinator's `Readmit`
@@ -171,7 +178,7 @@ exported, OpenTelemetry).
 | Call index | runtime hash index per world | Call id → the waiting entity (`EntityId` with version), so a `Replied` finds its asker in one lookup | — |
 | `Ordered<K>` | singleton per actor type | Sequence counter, current tick window, immediate chain budget | — |
 | `Current` | singleton | The running item's time, root, sender and client context; operations read the client context from it, and its absence is a typed outcome (`Join()` returns `NoClient`) | — |
-| `Outbox` | singleton | Everything an item sends (`Send`, `Ask`, `Reply`, `Push`, `Broadcast`, join routes), serialized on append into pooled `FrameWriter`s per destination node (a broadcast or group push once, one frame per gateway); handed to the links once per phase, each destination in append order, so a join's route always precedes its reply; `TestActor<K>` decodes it for assertions | — |
+| `Outbox` | singleton | Everything an item sends (`Send`, `Ask`, `Reply`, `Push`, `Broadcast`, join routes), serialized on append into pooled `FrameWriter`s per destination node (a broadcast or group push once, one frame per gateway); handed to the links once per phase (a group with `every: n` only on its due tick, [draft §9](programming-model.md#广播)), each destination in append order, so a join's route always precedes its reply; `TestActor<K>` decodes it for assertions | — |
 | `Time` | singleton | `Tick`, `DeltaTime`, `TickRate`, `Elapsed` (monotonic, process-local), `Utc` (the world's `TimeProvider`, read once per item) | — |
 | `RestartingNodes` | node singleton | The members in `NodeRestarting`, with their expected pauses; `TryGetPause(connection, out pause)` for gateway systems that tell clients | `daserver.members{state}` |
 | `StoreDegraded`, `ActivationSlots`, `PeerHealth` | node singletons | The store is slow or down (no idle deactivation, `Saving` placeholders capped); concurrent epoch claims (jittered back-off); in-flight requests and latency per destination node with an adaptive limit (fail fast with `Busy`) ([draft §6](programming-model.md#6-生命周期), [§11](programming-model.md#11-失败时的结果)) | `daserver.store.degraded`, `daserver.activations.claiming`, `daserver.peer.inflight`, `daserver.peer.limit` |
@@ -201,11 +208,14 @@ exported, OpenTelemetry).
 | Actors to topics (optional) | `ITopicMessage` | `e.Publish(topic, msg)` to a `Topic` actor, one frame per subscriber node; `DaServer.Topics` ([draft §15](programming-model.md#15-扩展能力可选包)) |
 | Outside actors | `ICluster` | HTTP, back-office, tests: any server-to-server message with a deadline (sent as the budget) or a `CancellationToken` and an optional `CallId.From(externalKey)`; `cluster.Disconnect(clientId)` |
 
+Client transports are TCP and WebSocket (`/clients/ws`), both behind `IFrameChannel`; a datagram transport is out of
+scope for now and would be another `IFrameChannel` (ADR-092).
+
 ### A client message, hop by hop
 
 1. **Client SDK → gateway IO thread**: the frame lands in a pooled receive buffer (`BufferPool`).
 2. **→ the gateway shard's dispatch queue** (bounded; full: `Busy` to the client). The shard finds the `Connection`
-   root by its `ClientId` value index.
+   root by its `ClientId` unique value index.
 3. **Filter and route**: `Incoming` is a view of the frame header (`TypeId`, length, claims); the payload is never
    decoded. With an `[On<Incoming>]` method it runs as a job per message; without one the forward is a pass over the
    batch. The route table maps the `TypeId` to the handling actor type; the target key comes from the `[To]`
@@ -342,7 +352,7 @@ The guarantees and their mechanisms are [draft §1](programming-model.md#1-保�
 path guarantees (delivery, order, dedupe key, who times out and who retries), the retry rules and the timer defaults
 are [draft §11](programming-model.md#11-失败时的结果).
 
-## 7. EasyEcs 4.6 features used
+## 7. EasyEcs features used
 
 Which EasyEcs feature each part uses is the table "谁做什么" in [draft §0](programming-model.md#谁做什么).
 
@@ -379,7 +389,7 @@ or rolling upgrade (section 5).
   4.6 a program with tracked components publishes without warnings.
 - **The HTTP plane, no JSON in the framework** (the one place for these rules): `WebApplication.CreateSlimBuilder`;
   minimal APIs through ASP.NET Core's request delegate generator.
-  - **Admin endpoints** (`/admin/membership`, `/admin/stats`, drain, unload, restart) answer typed `[NinoType]`
+  - **Admin endpoints** (`/admin/membership`, `/admin/stats`, drain, unload, restart, the inspector below) answer typed `[NinoType]`
     records as Nino (`application/x-nino`, Nino.AspNetCore), or a plain-text table for `Accept: text/plain` (an
     operator with curl). The Aspire commands decode the Nino reply and show the text.
   - **Probes and metrics** keep their platform formats: plain-text health, Prometheus text exposition.
@@ -393,6 +403,24 @@ or rolling upgrade (section 5).
   moves to a closed call site (to verify with the first AOT publish).
 - **Framework projects** set `IsAotCompatible` on their net11.0 targets, so the trim and AOT analyzers run on every
   build under `TreatWarningsAsErrors`.
+
+### Inspector
+
+Read-only endpoints on the HTTP plane, also Aspire commands (ADR-090), modelled on flecs's REST API behind its Explorer
+([Remote API](https://www.flecs.dev/flecs/md_docs_2FlecsRemoteApi.html)):
+
+| Endpoint | Answers |
+|---|---|
+| `GET /admin/actors/{type}/{key}` | `Describe()` of the actor's root and of each entity in `world.Descendants(root)`: component names and values, decoded through `wire.manifest` |
+| `GET /admin/actors/top` | The busiest actors by mailbox depth and handler time |
+| `GET /admin/worlds/{i}` | `world.Describe()`: tables, rows, memory |
+| `GET /admin/worlds/{i}/systems` | `world.DescribeSchedule()` (groups, order, intervals) and each system's `system.Stats` (time, allocated bytes, matched entities; the last two EasyEcs 4.7, planned, under `MeasureSystems`, also exported as metrics) and `system.Error` (a system disabled by `SystemErrorPolicy.Disable`) |
+| `GET /admin/worlds/{i}/count?with=Health,Dead` | The number of entities with those components; names resolve to `TypeId`s through the registration's component table, no reflection |
+
+- The cold path: each call runs on the world's thread between two items, allocates, and only on request.
+- Answers are Nino or plain text, like every admin endpoint (above, ADR-083).
+- Nothing writes through them: an operator changes an actor by sending it a message through `ICluster` (`MapSend`,
+  `MapAsk`, an Aspire command), so the change runs as an ordered item under the actor's own rules.
 
 ### To verify (W8)
 
@@ -456,7 +484,8 @@ Derived from [design.md](../design.md) and the deleted list in
 
 ## 10. Open points to settle during W
 
-1. **EasyEcs 4.6.0 compile checks** (W1): the generated explicit `Key` is accepted by value indexes; `IActor<TSelf>`
+1. **EasyEcs compile checks** (W1, on 4.7 once released, 4.6.0 until then): the generated explicit `Key` is accepted by
+   unique value indexes (`IUniqueIndexed<T>`); `IActor<TSelf>`
    (inheriting `IEquatable<TSelf>`, with the static `RootPrefab`) compiles in the framework assembly and in a consumer.
 2. **Evaluations**, each adopted only without a regression: Kestrel's `ConnectionHandler` for the cluster and client
    ports against the own listener (BenchmarkDotNet, W4; the earlier raw-TCP measurement in the roadmap regressed);

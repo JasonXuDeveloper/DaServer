@@ -22,13 +22,15 @@ Keep this file current: tick items when done, add items when scope changes.
 11. S1-S6 (done) elastic scaling.
 12. The ECS rewrite (ADR-081, the "ECS rewrite" entry under "Open cleanup" below): P1-P3 and P5 done; P4, P6 and P7
     superseded by W.
-13. W — refactor to the v31 programming model ([drafts/programming-model.md](drafts/programming-model.md),
-    [drafts/architecture.md](drafts/architecture.md)) on EasyEcs 4.6.0 (ADR-082 to ADR-091). Breaking; each step proven
+13. W — refactor to the v32 programming model ([drafts/programming-model.md](drafts/programming-model.md),
+    [drafts/architecture.md](drafts/architecture.md)) on EasyEcs 4.6.0 (ADR-082 to ADR-092). Breaking; each step proven
     before the next (W, not R: the requirement ids R0-R11 are taken):
-    - [ ] W1 EasyEcs 4.6.0 (`EasyEcsVersion`) and the compile checks: the generated explicit `Key`
+    - [ ] W1 EasyEcs 4.7 once released (4.6.0 until then; `EasyEcsVersion`) and the compile checks: the generated explicit `Key`
       (`Map IIndexed<Map>.Key => this`) is accepted by value indexes; `IActor<TSelf>` (inheriting `IEquatable<TSelf>`,
       `ISystemGroup`, `IGroupWith<In<TSelf>>`, with the static virtual `RootPrefab`) and `IChildKey<TSelf>` compile in
-      the framework assembly and in a consumer without repeating constraints.
+      the framework assembly and in a consumer without repeating constraints. Steps marked "needs EasyEcs 4.7" wait for
+      its release (`Mut<T>`/`SetIfChanged`, `Instantiate` with components, `ChangedAny`/`RemovedAny`, `DestroyLog`,
+      `IUniqueIndexed<T>`, `TrimExcess`, `Slices`, `SystemStats` allocations and matches, `DescribeSchedule`).
     - [ ] W2 Packages and attributes (ADR-086, ADR-087): Abstractions merged into Core, Hosting into `DaServer`,
       Simulation into Testing, WireTool into the generator's MSBuild task; `DaServer:Shards` and the AppHost's shard
       parameter replaced by sizing from the node's CPUs (`DaServer:Worlds` overrides); `TestActor<K>` (`PresenceOf`,
@@ -36,23 +38,28 @@ Keep this file current: tick items when done, add items when scope changes.
       `UseSystemd()` and `UseWindowsService()`, all three declared in `Program.cs` (detection verified on a macOS
       runner); `IFromClient`/`IToClient`/`[To]` (on parameters)/`IServer` in Core; `IActor<T>`, `IChildKey<T>`,
       `[Handles<K>]`, `[On<T>]`, `IMessageTo<K>`, `IRequestTo<K,R>`, `[From<K>]`, `IEvent`, `IPersisted`, `[Claims]`,
-      `[JoinOnConnect<T>]`, `[TickRate]`, `[Stateless]`, `[Transient]`, `[ActorOptions]`, `Time.Utc` (from the world's
+      `[JoinOnConnect<T>]`, `[TickRate]`, `[Stateless]`, `[Transient]`, `[ActorOptions]`, `[WorldLocal]`, `Time.Utc` (from the world's
       `TimeProvider`) in the runtime.
     - [ ] W3 Generator and analyzers: explicit `Key`, typed sends, typed `Replied` accessors (C# 14 extension blocks),
       `[On<T>]` jobs (`INoStructuralChanges` inferred from how `Entity` and `World` are used), the closed `Registration`
       reading `K.RootPrefab`, `wire.manifest` (one section per project; user projects are Protocol and Server), the
       draft's §13 checks and warnings (`DateTime.UtcNow` in handlers and systems, `Ask` on a presence, `[Durable]` state
-      and `ReplyTo` kept outside the record); typed `Ask` of a `[Durable]` request with a required `deadline`.
+      and `ReplyTo` kept outside the record, a user singleton taken `ref` without `[WorldLocal]`, a `[ForEach]` of a
+      group without `[TickRate]` that narrows by no change filter, tag or `UpdateInterval`, `every:` on a group of an
+      actor type without `[TickRate]`); typed `Ask` of a `[Durable]` request with a required `deadline`.
     - [ ] W4 Runtime core: shards (one world each, `MaxDegreeOfParallelism` per world), the shard loop and the ordered
       phase per actor type (`Ordered<K>`), the due heap (4-ary, lazy deletion), the chain stack, the call index,
       `Outbox` serializing on append into per-destination frames, `Current`, the framework groups (Ordering, Settling,
       Cleanup), bounded queues (`MaxPending`, placeholder mail, a full link refusing at once), the per-actor item budget
       per batch, `PeerHealth`, the lease check before the ordered phase, request budgets (nested asks, `ReplyTo`
       deadlines), the retry budget, `ICluster.Ask` with a deadline or `CancellationToken` and `CallId.From`,
-      `OnError = Restart` keeping the mail, `root.GetOrSpawn`, `Status.NotExecuted`/`Transient`. Tests:
+      `root.Spawn` through `world.Instantiate` with components, unique key indexes, the idle scan and checkpoints
+      as `[ForEach(Slices = N)]`, the fixed step with a catch-up cap, `TrimExcess` by a slow Cleanup system and an admin
+      command (needs EasyEcs 4.7), `OnError` defaulting to `Restart` (keeping the mail) for actor types with `IPersisted` components and to `Resume`
+      otherwise, `root.GetOrSpawn`, `Status.NotExecuted`/`Transient`. Tests:
       `ShardChecksLeaseBeforeTick`, `NestedAskInheritsRemainingBudget`, `RetryBudgetCapsForwardRetries`,
       `HotActorDoesNotStarveShardNeighbors`, `SlowPeerFailsFastAfterLimit`, `ClusterAskHonoursCancellationBudget`,
-      `WebhookRetryDeduplicatesByExternalKey`, `RestartKeepsQueuedMail`. Evaluate Kestrel's `ConnectionHandler` for the
+      `WebhookRetryDeduplicatesByExternalKey`, `RestartKeepsQueuedMail`, `HalfAppliedItemNeverReachesCheckpoint`. Evaluate Kestrel's `ConnectionHandler` for the
       cluster and client ports against the own listener with BenchmarkDotNet (`TransportBenchmark`); adopt only without
       a regression.
     - [ ] W5 Presences, the gateway (`Connection` on `[Hosts<Connection>]`, `Incoming` as a header view, forwarding as a
@@ -61,16 +68,19 @@ Keep this file current: tick items when done, add items when scope changes.
       `DetachGrace`, `TakeOver` and the SDK's terminal `Superseded`, `AlreadyConnected`, client call ids across
       reconnects (`ConnectionLost`), `Busy` retry-after in the SDK and `[JoinOnConnect]` (`Unavailable`), the admission
       bucket, load-based connection rebalancing (ADR-089), the time notice re-pushed on `Resumed`, `ClientGroup`
-      subscriptions (full sets, keys scoped by `root.Group`), `RestartingNodes` with `TryGetPause`. Tests:
+      subscriptions (full sets, keys scoped by `root.Group`), the send rate per group (`root.Group(key, every: n)`: the
+      group's frame handed over on its due tick, a counter in its buffer, 0 B; flushed before deactivation, migration
+      and the freeze), `RestartingNodes` with `TryGetPause`. Tests:
       `GatewayCrashPresenceSurvivesGrace`, `NewestWinsClosesOldConnectionAcrossGateways`,
       `SupersededClientDoesNotReconnect`, `RefreshedTokenDoesNotOutrankNewerLogin`, `BalancedGroupRetiresNobody`,
       `ScaleOutShedsOnlyExcess`, `RebalancePausesDuringDrainAndRestart`, `TimeNoticeRepushedOnResume`,
       `JoinOnConnectOutageDoesNotAmplify`, `ClientRetryAfterReconnectKeepsCallId`, `ForeignCallIdCannotCollide`,
-      `RetireKeepsPushOrderPerActor`, `ReconnectAfterLossGetsFullSnapshot`, `RetireRacingConnectionLoss`,
+      `RetireKeepsPushOrderPerActor`, `ReconnectAfterLossGetsFullSnapshot`, `LowRateGroupCoalescesUntilDue`, `RetireRacingConnectionLoss`,
       `UnknownClientMessageAtOldGateway`.
     - [ ] W6 Persistence, activation and migration: the membership lease, generations from the coordinator, the epoch
       claim with owner generation and placement version in one `UPDATE … RETURNING`, fencing, placeholder roots,
-      `Deactivating` as a tag, `IPersisted` records through `Descendants` and `ComponentSet`, migration bytes with
+      `Deactivating` as a tag, `IPersisted` records through `Descendants` and `ComponentSet` (the change system on
+      `ChangedAny`/`RemovedAny`, needs EasyEcs 4.7), migration bytes with
       layout hashes and a new epoch on arrival, tombstones forwarding all mail. Hot restart's runtime side as the
       draft's §10 has it (ADR-084, ADR-088), with in-cluster tests: snapshot written and loaded with clients connected,
       `Restarting` and `Resumed` seen by systems, a stale or invalid snapshot ignored, the coordinator's deadline
@@ -105,7 +115,8 @@ Keep this file current: tick items when done, add items when scope changes.
       0 B per delivery.
     - [ ] W7 Samples (mmo, flashsale) on the new model; each AppHost becomes an `apphost.cs` (file-based) in the
       sample's server project, with client ports declared by `WithClientConnections(port)` and the build check.
-    - [ ] W7a `DaServer.Replication` and `DaServer.Replication.Client` (ADR-090): `[Replicated]`, `ReplicatedTo`,
+    - [ ] W7a (needs EasyEcs 4.7: `ChangedAny`, `DestroyLog`) `DaServer.Replication` and `DaServer.Replication.Client`
+      (ADR-090): `[Replicated]`, `ReplicatedTo`,
       generated field bitmasks, patches per `ClientGroup` in pooled frames, full state on group changes and
       `MissedPushes`; proven on the mmo sample (its `Nearby` AOI as replicated components): same 10k-bot E2E, bytes per
       client and broadcast p99 against the hand-written AOI, 0 B per tick (drafts/architecture.md section 10).
@@ -113,20 +124,24 @@ Keep this file current: tick items when done, add items when scope changes.
       (run against the C# SDK first), the TypeScript client (`@daserver/client`) with Nino's TypeScript codecs from
       `wire.manifest`; proven by the flash sale from a browser page and the suite in CI.
     - [ ] W7c Tools (ADR-090): `TestCluster.Partition`/`Kill`/`DelayLinks` for users' tests (the framework's own
-      partition and crash tests move onto them); `/admin/actors/{type}/{key}` and `/admin/actors/top` as Aspire
-      commands.
+      partition and crash tests move onto them); the read-only inspector (`/admin/actors/{type}/{key}`,
+      `/admin/actors/top`, `/admin/worlds/{i}`, `/admin/worlds/{i}/systems`, `/admin/worlds/{i}/count?with=…`,
+      drafts/architecture.md section 8; the system statistics need EasyEcs 4.7) as Aspire commands.
     - [ ] W7d Samples as templates (ADR-091): `samples/arena` (matchmaking queues per region and mode, ranked and
-      casual, `Match` and `Party` actors, a sharded `Leaderboard` merged on read), the flash sale's saga (order as a
+      casual, `Match` and `Party` actors, a sharded `Leaderboard` merged on read), `samples/relay` (a `[TickRate(30)]`
+      `Room` gathering inputs and broadcasting one frame per tick to its `ClientGroup`; simulation on the clients), the
+      mmo's input ticks (`MoveTo.InputTick`, `LastInput` echoed in `Nearby` and snapshots) and its `Resync` keyframe
+      system, NPC AI as `[ForEach(Slices = N)]` (needs EasyEcs 4.7), the flash sale's saga (order as a
       process manager over `[Durable]` asks, compensation on `Expired`, the sagas-versus-ACID page), each with
       BenchmarkDotNet numbers and a bot E2E; `DaServer.Templates` (`daserver`, `daserver-mmo`, `daserver-flashsale`,
-      `daserver-arena`) generated from the samples, instantiated, built and tested in CI.
+      `daserver-arena`, `daserver-relay`) generated from the samples, instantiated, built and tested in CI.
     - [ ] W8 Native AOT publish of the samples' nodes with 0 warnings (EasyEcs 4.6 has none with tracked components;
       what remains to verify is the third-party packages, drafts/architecture.md section 8; the Prometheus exporter is a
       beta: pinned, verified under AOT, OTLP to a Collector as the fallback); the AOT E2E run. Local runs: nodes as
       `AddDotnetProject` (verified, `AddProject` as the fallback); AOT checked locally through the AOT images in
       Compose; images on `resolute` chiseled, built in a container on macOS and Windows; the Compose health check by the
-      node's own executable (drafts/deployment.md section 0). Admin endpoints as Nino (or plain text for
-      `Accept: text/plain`), `MapAsk`/`MapSend` Nino by default with per-endpoint opt-in JSON through the application's
+      node's own executable (drafts/deployment.md section 0). Admin endpoints, the inspector included, as Nino (or plain
+      text for `Accept: text/plain`), `MapAsk`/`MapSend` Nino by default with per-endpoint opt-in JSON through the application's
       source-generated context (ADR-083).
     - [ ] W9 BenchmarkDotNet against the pre-W baseline, allocation tests, the 10k-bot E2E, review rounds; the hot
       restart pause measured end to end (BenchmarkDotNet per shard, E2E with clients connected; target in ADR-084); E2E

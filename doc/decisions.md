@@ -1552,7 +1552,7 @@ Replaced by ADR-081.
   changed" leaks; the order between mail, delayed sends and systems is implicit. EasyEcs 4.5 now provides what a
   model without these needs: single-entity jobs (`entity.Run(ref job[, filter])`), group filters carried by
   interfaces (`IGroupWith<T>`), `world.Descendants(root)` and `LoadEntitiesInto(…, markWritten: false)`.
-- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v31), structured as in
+- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v32), structured as in
   [drafts/architecture.md](drafts/architecture.md):
   - **The actor type is its address, its root component, its root prefab and its system group**:
     `[TickRate(30)] partial record struct Map(long Id) : IActor<Map>` (`IActor<T>` inherits `IEquatable<T>`, so
@@ -1616,6 +1616,18 @@ Replaced by ADR-081.
       singletons `StoreDegraded`, `ActivationSlots` and `PeerHealth`, a per-actor item budget per batch, an
       admission bucket for new connections, and an `ActivationFailed` placeholder for an actor that throws on every
       activation.
+  - **Rules for sharing a world** (the draft's §5; checked against Overwatch, Bevy and EasyEcs): a world holds many
+    actors, so `[On<T>]` methods and actor-group systems take a user singleton `in` only, and `ref` needs
+    `[WorldLocal]` (a world's cache or configuration, not actor state); systems of an actor type without `[TickRate]`
+    run after every mail batch, so each `[ForEach]` there must narrow by `[Changed<T>]`, `[Removed<T>]`, a tag or an
+    `UpdateInterval` (an analyzer error otherwise); a throwing handler of an actor type with `IPersisted` components
+    restarts it from its last record by default (`OnError = Restart`), since EasyEcs applies changes at once without
+    rollback and a half-applied item must never reach a checkpoint; types without persisted components keep `Resume`.
+  - **EasyEcs 4.7 (planned, not released) replaces workarounds** (the draft's §0 and §14): `Mut<T>` with
+    `SetIfChanged` (EasyEcs #23) for components recomputed every tick, `world.Instantiate` with components (#24) for
+    `root.Spawn`, `ChangedAny` for the change system and replication, `DestroyLog` for replication's removals,
+    `IUniqueIndexed<T>` for actor and child keys, `TrimExcess`, `Slices` for the idle scan and checkpoints, and the
+    system diagnostics for the inspector; the roadmap gates the steps that use them.
   - One project may define several server types; a node runs one.
 - Alternatives: keep ADR-081's handlers and add the missing pieces (copy and write-back stays, two vocabularies stay);
   handlers as systems over message entities (an entity per message costs a create and a destroy; the runtime's due
@@ -1952,9 +1964,10 @@ Replaced by ADR-081.
     pooled frames; full state when an entity changes group, when a presence subscribes a group, and on
     `[Changed<Joined>]` with `MissedPushes`. The SDKs apply the patches (C# into an EasyEcs world through
     `DaServer.Replication.Client`, TypeScript into an entity table). At most once, like pushes.
-  - **Tools**: `TestCluster` fault injection (`Partition`, `Kill`, `DelayLinks`) for users' own tests; admin actor
-    inspection (`/admin/actors/{type}/{key}` decoded through `wire.manifest` as plain text, `/admin/actors/top` by
-    mailbox depth and handler time), exposed as Aspire commands.
+  - **Tools**: `TestCluster` fault injection (`Partition`, `Kill`, `DelayLinks`) for users' own tests; a read-only
+    inspector on the HTTP plane (an actor's subtree, the busiest actors, each world's tables and systems, counts by
+    component; flecs's REST API is the model), exposed as Aspire commands; writes go only through `ICluster` messages.
+    The endpoints are [drafts/architecture.md](drafts/architecture.md) section 8, nowhere else.
 - Alternatives: reminders as a periodic scan of every record or a timer service with its own store (a full scan per
   poll, or a second store to keep consistent); reminders in the runtime (only some applications need them); topics as
   `ClientGroup`s (gateway fan-out to sockets, not mailboxes); durable topics (a log store is Kafka's job); keeping the
@@ -1980,13 +1993,48 @@ Replaced by ADR-081.
     `[Durable]` asks and compensating on `Expired`, with a pattern page in the sample on why sagas replace ACID
     transactions across actors (each step lands once per call id, an unknown step is compensated, no lock or two-phase
     commit spans actors).
+  - **Input ticks and corrections in `samples/mmo`**, the pattern every server-authoritative game with client
+    prediction needs (Unity Netcode's [command stream](https://docs.unity3d.com/Packages/com.unity.netcode@1.5/manual/command-stream.html)
+    and [prediction](https://docs.unity3d.com/Packages/com.unity.netcode@1.5/manual/prediction.html)): `MoveTo`
+    carries a `uint InputTick`, `Moves` writes it into a `LastInput` component on the avatar, and the `Nearby` and
+    snapshot pushes echo it, so the client replays only the inputs the server has not applied yet. A `Resync` system
+    with an `UpdateInterval` pushes the positions of each cell at a low rate as a correction keyframe, so clients' extrapolation
+    drift heals without a full snapshot; NPC AI runs as `[ForEach(Slices = N)]` (EasyEcs 4.7, planned), a slice of
+    the NPCs per tick.
+  - **`samples/relay`**, a relay room in Photon Quantum's style ([Quantum intro](https://doc.photonengine.com/quantum/v2/quantum-intro)):
+    a `[TickRate(30)]` `Room` actor gathers its players' inputs for each tick and broadcasts one frame per tick to its
+    `ClientGroup`; it holds inputs only, the deterministic simulation runs on the clients. It proves the model fits a
+    game whose server knows no game rules, and suits games that tolerate TCP (ADR-092).
   - Each sample has BenchmarkDotNet numbers and an E2E with bots (`DaServer.Testing` swarms) in CI.
   - **`DaServer.Templates`**, a `dotnet new` package: `daserver` (a minimal starter: Protocol, Server with one actor
-    type and `apphost.cs`, a test project), `daserver-mmo`, `daserver-flashsale`, `daserver-arena`. The templates are
+    type and `apphost.cs`, a test project), `daserver-mmo`, `daserver-flashsale`, `daserver-arena`, `daserver-relay`. The templates are
     generated from the samples, so a sample and its template never drift; CI instantiates each, builds it with 0
     warnings and runs its tests.
 - Alternatives: matchmaking, parties or leaderboards as framework capabilities (domain logic in the framework,
   ADR-045); samples without templates (copying out of the repository drags its build files along); templates written
   apart from the samples (two copies drift).
-- Consequences: roadmap W7d (arena, saga, templates) once the samples run on the new model (W7); the README's getting
+- Consequences: roadmap W7d (arena, relay, the mmo's input ticks and `Resync`, saga, templates) once the samples run
+  on the new model (W7); the README's getting
   started becomes `dotnet new daserver`; the roadmap's out-of-scope note on transactions points at the saga sample.
+
+## ADR-092 Client transports are TCP and WebSocket; a datagram transport is an extension, not built now
+- Context: clients reach gateways over TCP or WebSocket (`/clients/ws`, wss behind the platform's TLS), both
+  reliable, ordered streams behind one feature point, `IFrameChannel` (`Connection`, `WebSocketChannel`). A lost
+  segment holds back every later byte of the stream until it is resent, at least a round trip later (head-of-line
+  blocking). Fast-paced shooters therefore send state over UDP and drop what is stale:
+  Overwatch's netcode runs on UDP ([GDC 2017](https://www.gdcvault.com/play/1024001/-Overwatch-Gameplay-Architecture-and)),
+  Unity Netcode for Entities on Unity Transport over UDP ([command stream](https://docs.unity3d.com/Packages/com.unity.netcode@1.5/manual/command-stream.html)),
+  and QUIC exists to give streams without that blocking ([RFC 9000](https://www.rfc-editor.org/rfc/rfc9000)).
+- Decision:
+  - **Client transports are TCP and WebSocket.** They fit MMOs, flash sales, turn-based games, chat and IoT, where a
+    late message is still wanted and order matters, and WebSocket is what browsers have.
+  - **A datagram transport (UDP or QUIC) is not built now.** Twitch shooters suffer TCP's head-of-line blocking and
+    need one; they are not DaServer's target until a user needs it.
+  - **The client channel stays a feature point**: a datagram link is another `IFrameChannel` plus a way to mark
+    messages that may be dropped, not a rewrite of the gateway, presences or the SDK.
+- Alternatives: UDP with reliability layered on top now (a second transport to secure and test, browsers cannot use
+  it, no user needs it yet); WebTransport over QUIC for browsers (not in every browser, and .NET's QUIC needs msquic
+  on each platform).
+- Consequences: the docs state the scope (the drafts' §2 ports and architecture section 3); samples stay within it
+  (the relay room of ADR-091 suits games that tolerate TCP); a datagram transport enters later as a capability of its
+  own (ADR-045).
