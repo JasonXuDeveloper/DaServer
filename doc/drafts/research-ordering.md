@@ -122,3 +122,17 @@
 - 细粒度事件：平均每个事件 3.7 µs 时，原子操作、锁就已经是主要开销（Wilsey，WSC 2019）。约 1 µs 的事件只有在一次同步覆盖很多事件（按窗口、按批）时才值得并行。https://www.informs-sim.org/wsc19papers/150.pdf
 - 游戏：Darkstar 用事务加冲突重试，不保证时间顺序；SpatialOS 没有前瞻或时间窗口的一致性保证；并行 Quake 服务器的瓶颈是锁和全局同步点的负载不均；人群密集的区域无法再细分（LEARS）。
 - 事件表：日历队列、时间轮的插入和取出平均 O(1)。https://blog.acolyer.org/2015/11/23/hashed-and-hierarchical-timing-wheels/
+
+## 9. 业界做法（v21 依据）
+
+- **帧率是部署参数，延后用时间**：
+  - Minecraft 的 `/tick rate` 改的是整个游戏的帧率，按 tick 写的一切（作物、红石、冷却）都跟着变快变慢；默认 20，重启后复原。https://minecraft.wiki/w/Commands/tick
+  - Photon Quantum 的 `FrameTimer.FromSeconds(frame, 秒)`：用户写秒，内部存帧；另有 `FromFrames`。https://doc.photonengine.com/quantum/v3/concepts-and-patterns/frame-timer
+  - 结论：数据里写时间，发出时换算成到期帧一次（向上取整，从不提前）；改帧率不改手感。
+- **并行来自很多个域，不来自切开一个模拟步**：
+  - TrinityCore：`MapUpdater` 是一个线程池，每张地图的更新是一个任务，地图内部单线程；一张地图卡住，这一轮的其他更新都要等它。https://github.com/TrinityCore/TrinityCore/blob/master/src/server/game/Maps/MapUpdater.cpp
+  - EVE：每个星系单线程，热点星系独占节点，过载时时间膨胀（第 2 节）。
+  - LoL、Valorant：一局一个串行的服务器循环，一台机器跑很多局。https://technology.riotgames.com/news/determinism-league-legends-introduction ，https://www.riotgames.com/en/news/valorants-128-tick-servers
+  - New World：无缝世界按格子分给进程，人移动时交接；每个格子内部仍是一个串行权威（第 2 节）。
+  - 没有找到上市游戏在一个模拟步里按空间切分并行。空间前瞻需要位置、作用距离、最大速度这些游戏概念，和框架的通用性（ADR-045）冲突，还多一帧延迟。
+- **一个域内**：有序的部分串行；只写自己组件的部分按列并行（第 7 节的 CK3、Factorio，第 2 节的 ECS 引擎）。
