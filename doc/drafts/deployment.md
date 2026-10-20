@@ -8,6 +8,31 @@ Steps named below: **R6** runtime (hot restart, persistence), **R7** samples, **
 shape (ADR-085), **N9** hot-restart operator side. "Hook" means Aspire's `PublishAsKubernetesService` /
 `PublishAsDockerComposeService`; "DA" means code in `DaServer.Aspire`.
 
+## 0. Launch flows
+
+One node binary, five ways to run it. Everything below uses an official package or tool; DaServer adds only what
+follows from DaServer (ports, seeds, probes, the hot-restart handoff).
+
+| Where | Build | Start | Code change |
+|---|---|---|---|
+| Local, JIT (daily work) | `dotnet run --file Game.Server/apphost.cs` (or `aspire run`): Aspire builds the server once | Each node is an `AddDotnetProject` resource (`Aspire.Hosting.Dotnet`, pinned; prerelease): Aspire runs the project's `RunCommand`, the built apphost executable, one process per replica, no `dotnet run` CLI process beside it; debugger, dashboard, OTLP as with `AddProject` (R8 verifies OTLP, endpoints, replicas and attach, and falls back to `AddProject` if one fails) | Rebuild in the dashboard, or hot restart (`aspire do mmo-restart`) |
+| Local, Native AOT (checking AOT) | `aspire publish` with `PublishAot=true` writes AOT images and a Compose file | `docker compose up` on that output: the same images as production; not for the edit-run loop | Publish again |
+| Docker Compose | `aspire publish`: JIT images on `aspnet:11.0-noble-chiseled`, AOT images on `runtime-deps:11.0-noble-chiseled` (no .NET runtime in the image; the SDK picks it for `PublishAot`) | `docker compose up -d` (Aspire's `aspire deploy` for Compose) | Stateful groups: hot restart, platform-restart path (one service per node, snapshot on its named volume); others: rolling (`docker compose up -d`) |
+| Kubernetes | `aspire publish -- Publish=k8s`: the same images, a Helm chart | `helm install` / `helm upgrade` | Stateful groups: hot restart, platform-restart path (StatefulSet `OnDelete`, pod image patch, ADR-085); others: rolling (Deployment) |
+| Bare metal / VM | `dotnet publish -c Release -r linux-x64` (JIT: framework-dependent, needs the .NET runtime) or `-p:PublishAot=true -r <rid>` (one native executable, depends only on libc; verified: a 9.6 MB ASP.NET Core AOT node starts in an empty environment) | Linux: a systemd unit, `Type=notify`, `NotifyAccess=all`, the node calls `UseSystemd()` (`Microsoft.Extensions.Hosting.Systemd`). macOS: a launchd plist (`KeepAlive`), no official .NET package, the node runs as a plain process. Windows: `sc create` with the node calling `AddWindowsService()` (`Microsoft.Extensions.Hosting.WindowsServices`) | Install the new build beside the old one (versioned directory, a `current` link), then `{cluster}-restart` against the node's admin endpoint. systemd: warm handoff over the local pipe, the successor reports `MAINPID`. launchd (`launchctl kickstart -k`) and Windows services (`Restart-Service`): platform-restart path with the snapshot file |
+
+- **AOT images from macOS or Windows**: Native AOT does not compile across operating systems
+  ([cross-compile](https://learn.microsoft.com/dotnet/core/deploying/native-aot/cross-compile)), so a Linux AOT image
+  cannot come from the SDK container publish on those hosts. There DA publishes AOT nodes through
+  `PublishAsDockerFile` with a generated two-stage Dockerfile: build in `mcr.microsoft.com/dotnet/sdk:11.0-noble-aot`
+  (the SDK with the native toolchain), run on `runtime-deps:11.0-noble-chiseled`. The host needs only Docker. On Linux
+  (CI included) the SDK container publish builds the image directly. R8.
+- **Health checks** use the node's own executable in probe mode on every target (section 7), so neither image needs
+  `dotnet`, curl or a shell.
+- **Why not `AddExecutable` for local AOT**: Aspire has no API to publish and then launch a native binary; an
+  executable resource loses the .NET project defaults (OTLP, endpoints, Rebuild, debugging) that DA would have to
+  rebuild by hand. The Compose run of the real images checks AOT with official tools only.
+
 ## 1. What is published today (audit)
 
 | Area | Today | Where |
@@ -187,7 +212,7 @@ Steps: securityContext, volumes and service account R11; images and the Compose 
 
 | Kubernetes | Compose |
 |---|---|
-| StatefulSet / Deployment | One service per group, `deploy.replicas` (as today). Hot restart: the image change recreates the container, losing `tmpfs` and changing the hostname (the node name). Compose groups take rolling upgrades only; a single-replica service with a fixed `hostname` and a named volume could hot restart later |
+| StatefulSet / Deployment | Stateful groups: one service per node (`map-0`, `map-1`, …) with a fixed `hostname` (the node name) and a named volume of its own for the snapshot, since recreating a container (any image change) loses `tmpfs` and a replica's generated hostname. Hot restart runs the platform-restart path: `{cluster}-restart` on the deploying machine pulls, arms the node, `docker compose up -d --no-deps map-0`, waits for healthy, next node. Gateways and stateless groups: one service per group with `deploy.replicas`, rolling |
 | Jobs | One-shot services (`restart: "no"`): `schema` with nodes `depends_on: {schema: {condition: service_completed_successfully}}`; load generators under `profiles: [loadtest]` |
 | Upgrade check, rollout | Steps of `aspire deploy` / `{cluster}-restart`, run on the deploying machine |
 | Secrets | `${VAR:?message}` (required) for the signing secret; `.env` never committed |

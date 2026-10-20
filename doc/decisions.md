@@ -1622,14 +1622,24 @@ Replaced by ADR-081.
     command (admin endpoint and AppHost command) takes the new
     build's `wire.manifest`; the diff picks *in place* (same layout hashes, no handler or `Leaving` consumer dropped,
     same client routes), *through records* (deactivate, restart, activate) or a refusal in favour of a rolling upgrade.
-  - **Warm successor, then handoff**: where the node launches its successor (bare metal, VMs, Windows services,
-    macOS, development), the successor starts connected to it over a local named pipe (`System.IO.Pipes`), finishes
-    JIT warm-up or AOT initialization, builds its empty worlds with their systems and authenticates standby peer links
-    (below), binding no client port. Only then does the old process announce `Restarting`, stop each shard between two
-    ticks and stream the bytes. Where the platform restarts the process (a container restart in the same Kubernetes
-    pod, ADR-085; a systemd restart), the old process writes the same bytes into a checksummed snapshot file in a
-    node-local directory and exits; the new process loads a fresh snapshot for its node name, and ignores a stale or
-    invalid one (activation from records as usual).
+  - **Warm successor, then handoff**: where the node may launch its successor (a process without a supervisor, and
+    systemd, where the successor reports `MAINPID` through `Microsoft.Extensions.Hosting.Systemd`'s notifier with
+    `NotifyAccess=all`), the successor starts connected to it over a local pipe (`System.IO.Pipes`: a named pipe on
+    Windows, a Unix domain socket under `/tmp` elsewhere; `PipeOptions.CurrentUserOnly`, mode 0600 on Unix since
+    .NET 11), finishes JIT warm-up or AOT initialization, builds its empty worlds with their systems and authenticates
+    standby peer links (below), binding no client port. Only then does the old process announce `Restarting`, freeze
+    each shard between two ticks and stream the bytes. Where a supervisor only watches the process it started and
+    restarts it (a container restart in the same Kubernetes pod, ADR-085; a recreated Compose container with the
+    node's own named volume; launchd via `launchctl kickstart -k`; a Windows service via `Restart-Service`), the old
+    process writes the same bytes into a checksummed snapshot file in a node-local directory and exits; the new process
+    loads a fresh snapshot for its node name, and ignores a stale or invalid one (activation from records as usual).
+    No DaServer launcher process: each platform's own supervisor and official hosting package.
+  - **Freezing stops the shards, not the network**: IO threads keep reading frames into the dispatch queue while the
+    shards are frozen and saved, so nothing sent during the pause is refused and no client or peer is told to stop
+    sending (that would cost a round trip and make clients buffer, for a pause of tens to hundreds of milliseconds).
+    After `Save` the old process stops reading its links at a cutover point and serializes the queued mail with each
+    link's received byte count; frames sent after the cutover wait in the peers' resend windows and replay to the
+    successor over the standby links.
   - **The bytes**: per shard `world.Save` (entities with ids and versions, components, buffers including placeholder
     mail, singletons), the mail still in the dispatch queue and the shard's `Time.Elapsed` (every `Due` keeps its remaining
     time); per node the call id sequence, tombstones, the connection stamp counter and, per peer link, the inbound
@@ -1771,10 +1781,14 @@ Replaced by ADR-081.
     verified with Aspire 13.6.1 on the .NET 11 RC2 SDK). The `DaServer` package's build props remove `apphost.cs` from
     the server's compilation; `#:project` gives Aspire the project's metadata, not its assembly. User projects stay
     Protocol and Server. The node's entry point stays the user's five-line `Program.cs`.
-  - **Local runs start the binary.** Aspire starts a project resource as `dotnet run --project … --no-build`, which
-    keeps a `dotnet` process alive beside every node and always runs the Debug JIT build. DaServer.Aspire instead builds
-    the server once and starts each node as an executable resource on the built binary; `-- Aot=true` publishes with
-    Native AOT first and runs the native binary, so AOT behaviour is checked locally, not only in images.
+  - **Local runs start the binary.** Aspire starts an `AddProject` resource as `dotnet run --project … --no-build`,
+    which keeps a `dotnet` CLI process beside every replica. DaServer.Aspire uses Aspire's own `AddDotnetProject`
+    (`Aspire.Hosting.Dotnet`), which runs the built project's `RunCommand` (the apphost executable) with the same
+    project defaults; it is prerelease, so it is pinned and R8 verifies it, with `AddProject` as the fallback. Aspire
+    has no API to launch a published native binary, so AOT is checked locally by running the published AOT images
+    with Compose (the production images), not by a custom executable launcher. On macOS and Windows hosts AOT images
+    build in a container (`sdk:11.0-noble-aot` stage, `runtime-deps` chiseled final stage), since Native AOT does not
+    compile across operating systems.
   - **Deployment is explicit.** Group names, replica counts, the store and every public port are written in
     `apphost.cs`; nothing is inferred from code. All replicas of a group listen on the same ports. The cluster and
     HTTP ports are assigned by DaServer.Aspire and reachable only inside the cluster; only `WithClientConnections(port)`

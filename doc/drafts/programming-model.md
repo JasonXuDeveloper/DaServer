@@ -285,7 +285,7 @@ public class Movement : EcsSystem
   builder.Build().Run();
   ```
   - 运行：`dotnet run --file apphost.cs`（或 `aspire run`）；发布：`aspire publish`。在这个目录里直接 `dotnet run` 跑的是节点本身。
-  - 本地运行时，DaServer.Aspire 先把服务端编译一次，再把节点作为可执行文件直接启动（每个副本一个进程，不套 `dotnet run`，调试器按进程附加）。默认是 JIT；`dotnet run --file apphost.cs -- Aot=true` 先按 Native AOT 发布，再跑本机二进制，和线上镜像是同一种程序。
+  - 本地运行时，节点是 Aspire 的 `AddDotnetProject`（`Aspire.Hosting.Dotnet`）：先编译，再直接启动编译出的可执行文件，每个副本一个进程，不套 `dotnet run`，调试器照常附加；JIT。要在本地验证 AOT，就用 AOT 镜像跑 Compose（`aspire publish` 后 `docker compose up`），和线上是同一个镜像。各种环境的启动流程见 [deployment.md 第 0 节](deployment.md#0-launch-flows)。
   - `DaServer` 包的构建属性把 `apphost.cs` 移出服务端工程的编译（`<Compile Remove="apphost.cs" />`），用户不用写。
   - **AppHost 不引用服务端程序集**：`#:project` 只给 Aspire 工程元数据（`Projects.Game_Server`）。DaServer.Aspire 的生成器读这个工程提交的 `wire.manifest`，只读 `actor` 和 `hosted-by`（第 10 节），在 AppHost 里生成同名的服务器类型，每个都绑定到这个工程：`AddNodes<MapServer>` 起的是 Game.Server 的二进制，节点跑 `MapServer`。
   - **只有一个 `IServer`**（DaServer.Core）：服务端的服务器类型和 AppHost 里生成的同名类型都实现它。`AddNodes<T>(string name, int replicas) where T : struct, IServer` 返回 `DaServerNodeGroup<T>`。
@@ -1034,7 +1034,7 @@ public partial record struct Due(TimeSpan At, long Seq) : IComponent, IIndexed<D
 - **步骤：先预热，再交接**（节点自己起继任进程时的标准顺序）：
   1. 新进程先启动，做完 JIT 预热或 AOT 初始化，建好空的 world、按 `Registration` 加上系统，并提前和其他节点握手，建好备用链路（见下面的"备用链路"）；它不绑定客户端端口；
   2. 旧节点在成员视图里宣布 `Restarting`，带一个期限和交接令牌的哈希；
-  3. 这时旧进程的每个 world 才在两个 tick 之间停下：不再从链路取帧，等在途的记录写入有结果，然后 `world.Save`，连同运行时状态流给新进程；
+  3. 这时旧进程的每个 world 才在两个 tick 之间冻结：不再执行任何项，等在途的记录写入有结果，然后 `world.Save`。**冻结的只是 world 的线程**：IO 线程照常收网络帧，放进调度队列，所以冻结期间发来的消息不被拒绝，也不用让客户端或别的节点停发。`Save` 完了，旧进程在一个切换点停止读链路，把调度队列里还没进 world 的邮件和每条链路收到的字节数一起序列化，连同运行时状态流给新进程。切换点之后对方再发的帧留在对方的重发窗口里，第 5 步切到备用链路后重放给新进程。客户端看到的只是这期间的消息晚到一次停顿的时间；
   4. 新进程 `world.Load(bytes, markWritten: false)` 进已经建好的 world（见下面的"写入戳"），接上时钟；
   5. 新进程以一次成员更新接管：同一个节点名和代数、化身号加一（成员视图里已有的化身号）、带着交接令牌；它的成员信息比 `Restarting` 新，其他节点关掉旧进程的链路，改用备用链路，重放各自的重发窗口（处理到的字节数在交接里，所以不重复也不丢）；
   6. 旧进程退出。
@@ -1043,7 +1043,7 @@ public partial record struct Due(TimeSpan At, long Seq) : IComponent, IIndexed<D
   - 不重新占 epoch，不隔离：每个 Actor 的 epoch 在它的根上，随 world 过去；存储里的 epoch 没变，新进程写记录照样比较成功。
   - 安全靠"任一时刻只有一个进程跑 world"：旧进程在 `Save` 之前停下所有 world，之后不再跑，除非新进程在**提交点**之前报告失败；新进程过了提交点才跑 world。提交点是新进程加载完、回报"已加载"（本机管道），或者新进程找到合格的快照（平台重启，那时旧进程已经退出）。
   - `Restarting` 期间其他节点不把它当作失效：不判 `Suspect`、`Dead`，放置不变，不迁移，不重新激活。期限按各自的单调时钟、从第一次看到时算起，不依赖时钟一致。
-  - 发给它的消息留在链路的有界重发窗口里（网关上的客户端消息也是），满了回 `Busy`，发送方按已有的退避重试；请求的期限照常走，可能超时（第 11 节）。
+  - 切换点之前发来的消息由旧进程收下、随交接过去；之后的留在对方链路的有界重发窗口里（网关上的客户端消息也是），满了回 `Busy`，发送方按已有的退避重试；请求的期限照常走，可能超时（第 11 节）。不设"让客户端暂停发送"的通知：它要多一次往返，客户端还得自己缓存，停顿只有几十到几百毫秒，网关替客户端缓存更简单。
   - 交接令牌只有收到字节的进程知道，所以别的进程冒充不了继任者。
   - 期限过了还没接管：按节点离开视图处理（第 11 节），Actor 在别处占新的 epoch，从记录激活。迟到的新进程不被接受，丢弃快照，以新的代数加入；它没跑过 world，不会写。新进程已经在跑、却被别的节点判了 `Dead` 时，epoch 比较会拦住它的写，它按上面激活 epoch 的规则隔离自己，再以新的代数加入。
 - **备用链路**（ADR-084）：
@@ -1055,8 +1055,12 @@ public partial record struct Due(TimeSpan At, long Seq) : IComponent, IIndexed<D
   - 化身号变大时重新取成员卡片（新版本的构建号在卡片上）；
   - 平台重启时没有备用链路：新进程绑好公布的端口后以同一个身份重连，流照样续上。
 - **两种传输方式**，同一套字节、同一套所有权规则：
-  - **节点自己起继任进程**（物理机、虚拟机、Windows 服务、macOS、开发机）：旧进程启动新二进制，两者经本机的命名管道（`System.IO.Pipes`：Windows 上是命名管道，Unix 上是 Unix 域套接字）连上；新进程预热好之后，旧进程停 world、把字节流过去；新进程加载、回报"已加载"；旧进程关掉监听端口退出，新进程绑定同样的端口。不需要 `exec`（Windows 没有）。服务管理器按 PID 盯进程时，要允许交接（例如 systemd 由新进程 `sd_notify` 报告 `MAINPID`），或者留一个很小的启动器进程作为被监管的父进程。
-  - **平台重启进程**（Kubernetes 同一个 Pod 里的容器重启、systemd 重启）：旧进程把字节写进节点本地目录里的一个文件（Kubernetes 上是 `medium: Memory` 的 emptyDir，有 tmpfs 用 tmpfs，否则普通本地目录），经 `MemoryMappedFile.CreateFromFile` 写入（跨平台；Unix 上没有具名映射），然后退出。新进程启动时找属于自己节点名、校验和正确、没过期限的快照：有就加载，不重新激活；过期或者不合格就删掉，照常加入、从记录激活。Kubernetes 上，承载 Actor 的节点组是 `updateStrategy: OnDelete` 的 StatefulSet（Pod 名就是节点名，改模板不替换 Pod）；发布（`helm upgrade`）改 StatefulSet 模板里的镜像（`OnDelete` 下不替换 Pod），`{cluster}-restart` 再逐个改运行中 Pod 的容器镜像，从不改模板：kubelet 在同一个 Pod 里重启容器（同一个 UID、同一个 IP），emptyDir 保留，不重新调度（ADR-085）。网关和无状态的节点组仍是 Deployment。
+  - **节点自己起继任进程**（先预热再交接，停顿几十毫秒）：旧进程启动新二进制，两者经本机管道连上：.NET 自带的 `System.IO.Pipes`，Windows 上是命名管道，Linux 和 macOS 上是 `/tmp` 下的 Unix 域套接字；用 `PipeOptions.CurrentUserOnly`，连接时核对对方是同一个用户，.NET 11 起 Unix 上的套接字文件是 0600。新进程预热好之后，旧进程冻结、把字节流过去；新进程加载、回报"已加载"；旧进程关掉监听端口退出，新进程绑定同样的端口。不需要 `exec`（Windows 没有）。适用于：没有服务管理器的进程（开发机、自己管进程的部署），和 systemd：`Type=notify`、`NotifyAccess=all`，节点用官方的 `Microsoft.Extensions.Hosting.Systemd`（`UseSystemd()`，就绪和停止的通知、journald 日志），新进程接管后用同一个包的 `ISystemdNotifier` 发 `MAINPID=<自己的 pid>`，systemd 改盯新进程。
+  - **平台重启进程**（停顿几百毫秒）：旧进程把字节写进节点本地目录里的一个快照文件，经 `MemoryMappedFile.CreateFromFile` 写入（跨平台；Unix 上没有具名映射），然后退出；平台用新的二进制或镜像重启它。新进程启动时找属于自己节点名、校验和正确、没过期限的快照：有就加载，不重新激活；过期或者不合格就删掉，照常加入、从记录激活。适用于监管者只盯自己启动的那个进程、不能换 PID 的环境，都不用自己写启动器：
+    - **Kubernetes**：承载 Actor 的节点组是 `updateStrategy: OnDelete` 的 StatefulSet（Pod 名就是节点名，改模板不替换 Pod），快照在 `medium: Memory` 的 emptyDir；发布（`helm upgrade`）改模板里的镜像，`{cluster}-restart` 再逐个改运行中 Pod 的容器镜像，从不改模板：kubelet 在同一个 Pod 里重启容器（同一个 UID、同一个 IP），emptyDir 保留，不重新调度（ADR-085）。
+    - **Docker Compose**：承载 Actor 的节点组每个节点一个服务（`map-0`、`map-1`，固定的 `hostname`，就是节点名），快照在这个节点自己的命名卷里（容器重建后还在）；`{cluster}-restart` 在部署的机器上逐个节点 `docker compose pull`、通知节点、`docker compose up -d --no-deps map-0`。
+    - **macOS 的 launchd**、**Windows 服务**：launchd 和服务控制管理器只认自己启动的进程，不能像 systemd 那样换 PID，所以走这一条：`launchctl kickstart -k system/<label>`（plist 里 `KeepAlive`）或 `Restart-Service`；Windows 上节点用官方的 `Microsoft.Extensions.Hosting.WindowsServices`（`AddWindowsService()`），launchd 没有官方包，节点作为普通进程运行，`SIGTERM` 照常触发停机。快照在服务账号的本地目录。
+  - 网关和无状态的节点组不热重启，走滚动升级。
 - **停顿**：先预热再交接时，停顿只有 `Save`、传输、`Load` 加上一次成员更新，目标是几十毫秒；平台重启时还要加上进程启动和重连，目标是几百毫秒。搬 world 只要几毫秒：一个 world、每个实体 5 个非托管组件，1 万个实体 `Save` 44 µs、`Load` 183 µs、440 KB，10 万个实体 `Save` 0.76 ms、`Load` 2.7 ms（合计约 3.5 ms）、4.4 MB，都不分配（BenchmarkDotNet ShortRun，EasyEcs 4.5.0，.NET 11 RC2）。R 里端到端测量：BenchmarkDotNet 测每个 world 的交接，E2E 测停顿时长、客户端不断线。
 - **写入戳**：新进程用 `world.Load(bytes, markWritten: false)` 加载（EasyEcs 4.6，`guide/saves.mdx` 的 "Restart"，D39）：加载的行没有写入戳（tick 0），也不算移除过。
   - 加载之前已经跑过的系统（预热）和加载之后才加上的系统（平台重启）都不访问这些行：第一次运行看的是 tick 1 起的写入，tick 0 的行不在内（`guide/change-tracking.mdx` 的 "Ticks"）。所以 `ChangeSystem` 不会给每个根标 `Unsaved`，Actor 不会把记录重写一遍；两种顺序都不需要别的参数。

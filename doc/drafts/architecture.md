@@ -42,9 +42,10 @@ test tools), `DaServer.WireTool` into the generator's MSBuild task (ADR-086).
 - **The AppHost is `Game.Server/apphost.cs`**, an Aspire file-based AppHost (`#:sdk Aspire.AppHost.Sdk`,
   `#:package DaServer.Aspire`, `#:project Game.Server.csproj`), run with `dotnet run --file apphost.cs` or
   `aspire run` and published with `aspire publish`. The `DaServer` package's build props remove it from the server's
-  compilation. Run locally, DaServer.Aspire builds the server once and starts each node as an executable resource
-  on the built binary (no `dotnet run` wrapper per replica); `-- Aot=true` publishes it with Native AOT first and
-  runs the native binary, the same program as the image. A group's `name` is the Aspire resource and the pod prefix; a server type's identity is its `FullName`;
+  compilation. Run locally, each node is an `AddDotnetProject` resource (`Aspire.Hosting.Dotnet`): the built apphost
+  executable, no `dotnet run` process per replica, JIT. AOT is checked locally by running the published AOT images
+  with Compose. All launch flows (local, Compose, Kubernetes, systemd, launchd, Windows services):
+  [deployment.md section 0](deployment.md#0-launch-flows). A group's `name` is the Aspire resource and the pod prefix; a server type's identity is its `FullName`;
   the cluster's name differs from every group's. Visual Studio does not open file-based AppHosts yet; a separate
   AppHost project with the same code also works.
 - **Ports are declared per node group**, the same on every replica (one pod template, an IP per pod). The cluster
