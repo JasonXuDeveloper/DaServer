@@ -1,29 +1,33 @@
 # Target architecture (draft, not implemented)
 
-The architecture DaServer is refactored to (breaking, roadmap phase R): the v24 programming model of
+The architecture DaServer is refactored to (breaking, roadmap phase R): the v27 programming model of
 [programming-model.md](programming-model.md) on EasyEcs 4.5.0, with Native AOT support. The programming model draft is
 the source of truth for what users write and what each rule means; this file says how the pieces fit together and
 links to the draft's sections instead of repeating them. Today's architecture is [design.md](../design.md); the
-decisions are ADR-082 to ADR-085 in [decisions.md](../decisions.md). When R is done, this file and the draft are
+decisions are ADR-082 to ADR-086 in [decisions.md](../decisions.md). When R is done, this file and the draft are
 promoted into design.md and decisions.md and deleted (R10).
 
 ## 1. Layers and projects
 
 ### Framework packages
 
-| Project | Targets | Holds |
+Six packages. A package exists when something references it without the others: a Unity client takes no server, a
+node takes no AppHost code, production takes no test tools, and a capability is off unless referenced (ADR-045).
+
+| Package | Targets | Holds |
 |---|---|---|
-| `DaServer.Abstractions` | netstandard2.1, net11.0 | What Protocol projects and clients see: `IFromClient`, `IFromClient<R>`, `IToClient`, `[To]`, `IServer`, `TypeId<T>`, status codes. No server types. |
-| `DaServer.Core` | netstandard2.1, net11.0 | Wire and transport shared by servers and clients: frames, buffers, channels, the pending-call table. |
+| `DaServer.Core` | netstandard2.1, net11.0 | What both sides see: the client-facing contracts (`IFromClient`, `IFromClient<R>`, `IToClient`, `[To]`, `IServer`, `TypeId<T>`, status codes) and the wire and transport (frames, buffers, channels, the pending-call table). Ships the generators, the analyzers and the `wire.manifest` task (below). |
 | `DaServer.Client` | netstandard2.1, net11.0 | The client SDK: connect, send `IFromClient`, receive `IToClient`, slots and re-joining ([draft §7](programming-model.md#7-客户端与-presence)). |
-| `DaServer.Simulation` | net11.0 | Simulated users over `DaServer.Client`. |
-| `DaServer` (runtime) | net11.0 | The server side of the model: `IActor<T>`, `[Handles<K>]`, `[On<T>]`, `IMessageTo<K>`, `IRequestTo<K,R>`, `[From<K>]`, `IEvent`, `IPersisted`, `Entity` operations, `Client`, shards, the framework systems, cluster, placement, persistence, migration. |
-| `DaServer.Generator` (+ Roslyn 4.3 build) | netstandard2.0 | The generators (explicit `Key`, typed sends, `[On<T>]` jobs, `Registration`, `wire.manifest`) and the analyzers ([draft §13](programming-model.md#13-编译期检查删掉的东西版本记录)). |
-| `DaServer.WireTool` | net11.0 | Writes a project's `wire.manifest` (one section per project, [draft §10](programming-model.md#10-持久化迁移热重启升级easyecs-45)). |
-| `DaServer.Hosting` | net11.0 | Generic Host and ASP.NET Core integration, configuration, OpenTelemetry, shutdown, the HTTP plane. |
+| `DaServer` | net11.0 | The server: the model (`IActor<T>`, `[Handles<K>]`, `[On<T>]`, `IMessageTo<K>`, `IRequestTo<K,R>`, `[From<K>]`, `IEvent`, `IPersisted`, `Entity` operations, `Client`), the framework systems, cluster, placement, persistence, migration, hot restart, and the node host: Generic Host and ASP.NET Core, configuration, OpenTelemetry, shutdown, the HTTP plane. |
 | `DaServer.Persistence.PostgreSql` | net11.0 | The record store: epoch-fenced, compare-and-swap writes. |
-| `DaServer.Testing` | net11.0 | `TestCluster` (in-process nodes, manual clock) and `TestDomain<K>` (one domain, one world). |
+| `DaServer.Testing` | net11.0 | `TestActor<K>` (one actor, one world, a manual clock), `TestCluster` (in-process nodes) and simulated users (`Swarm`, HTN behaviors) over `DaServer.Client` for load tests and E2E. |
 | `DaServer.Aspire` | net11.0 | AppHost side: `AddDaServerCluster`, `AddNodes<TServer>`, `WithClientEndpoints()`, and a generator that writes the server types from the committed `wire.manifest` (`actor` and `hosted-by` lines). References no server assembly. |
+| `DaServer.Generator` | netstandard2.0 | Not a package of its own: built twice (Roslyn 5.x and 4.3, Unity's oldest) into `DaServer.Core`'s `analyzers/` folder, so every project using DaServer gets it. The generators (explicit `Key`, typed sends, `[On<T>]` jobs, `Registration`, `wire.manifest`), the analyzers ([draft §13](programming-model.md#13-编译期检查删掉的东西版本记录)) and the MSBuild task behind `-p:UpdateWireManifest=true` (one section per project, [draft §10](programming-model.md#10-持久化迁移热重启升级easyecs-45)). |
+
+Merged away: `DaServer.Abstractions` into `DaServer.Core` (both are referenced by every client and every server; the
+analyzer, not a package boundary, keeps server types out of `Game.Protocol`), `DaServer.Hosting` into `DaServer` (a
+node always runs both; `TestCluster` simply starts no HTTP), `DaServer.Simulation` into `DaServer.Testing` (both are
+test tools), `DaServer.WireTool` into the generator's MSBuild task (ADR-086).
 
 ### User projects
 
@@ -34,40 +38,57 @@ promoted into design.md and decisions.md and deleted (R10).
 
 - **One project may define several server types** (`[Hosts<Map>] struct MapServer : IServer`); **a node is one process
   running one server type** ([draft §2](programming-model.md#2-服务器与节点)). The AppHost picks the type per node
-  group (`AddNodes<MapServer>("map", replicas: 4, shards: 8)`); a small deployment declares an `AllInOne` type.
+  group (`AddNodes<MapServer>("map", replicas: 4)`); a small deployment declares an `AllInOne` type. A node sizes its
+  own thread count from the CPUs it is given (section 2); nobody writes it.
 - `[Hosts<Client>]` is "accepts clients": the gateway is a server type hosting the built-in `Client` actor type.
 
 ### Dependency directions
 
+An arrow reads "references". Dotted: reads a file, no assembly reference.
+
 ```mermaid
-flowchart LR
-    A[DaServer.Abstractions] --> C[DaServer.Core] --> CL[DaServer.Client] --> SIM[DaServer.Simulation]
-    C --> R[DaServer runtime] --> H[DaServer.Hosting]
-    R --> T[DaServer.Testing]
-    R --> PG[DaServer.Persistence.PostgreSql]
-    A --> P[Game.Protocol]
-    P --> S[Game.Server]
-    R --> S
-    P --> GC[game client]
-    CL --> GC
-    ASP[DaServer.Aspire] -.reads wire.manifest.-> S
+flowchart BT
+    Core[DaServer.Core<br/>+ generator, analyzers]
+    Client[DaServer.Client] --> Core
+    Server[DaServer] --> Core
+    PG[DaServer.Persistence.PostgreSql] --> Server
+    Testing[DaServer.Testing] --> Server
+    Testing --> Client
+    Aspire[DaServer.Aspire]
+
+    Protocol[Game.Protocol] --> Core
+    GameServer[Game.Server] --> Protocol
+    GameServer --> Server
+    GameServer -. optional .-> PG
+    GameClient[game client] --> Protocol
+    GameClient --> Client
+    Tests[Game.Tests] --> GameServer
+    Tests --> Testing
+    AppHost[Game.AppHost] --> Aspire
+    AppHost -. reads wire.manifest .-> GameServer
 ```
 
-- Everything points one way: the runtime never references a capability, a sample or a user project.
-- `Game.Protocol` references only `DaServer.Abstractions`: the analyzer refuses actor types, server messages,
-  `ActorId`, `PresenceId` and `EntityId` there.
+- Everything points one way: `DaServer` never references a capability, a sample or a user project; `DaServer.Core`
+  references only Nino; `DaServer.Client` never references `DaServer`.
+- `Game.Protocol` references only `DaServer.Core`: the analyzer refuses actor types, server messages, `ActorId`,
+  `PresenceId` and `EntityId` there, and server-only APIs are not in `DaServer.Core` to begin with.
 - The AppHost references `DaServer.Aspire` and reads `wire.manifest`; it references no server assembly.
 
 ## 2. Runtime structure
 
+Users see four words: **server type** (`MapServer`), **node** (a process running one server type), **actor**
+(`Map(7)`: its root entity and all its descendants) and **entity/component** (EasyEcs's own). A node's threads are
+the framework's business; inside DaServer one thread with its EasyEcs world is a **shard**, a word that appears in no
+public API, attribute, configuration key or AppHost call.
+
 | Level | What it is | Owns |
 |---|---|---|
-| Node | One process, one server type, a cluster-assigned node generation ([draft §2](programming-model.md#2-服务器与节点)) | Links, membership, placement view, shards, the HTTP plane |
-| Shard | One thread and one EasyEcs world; the actor types the server hosts share it; an actor lands on a shard by its key's hash | The dispatch queue, the framework systems, singletons (`Time`, `Ordered`, `Current`, `Outbox`) |
-| Domain | One actor: its root entity (carrying the actor type component, e.g. `Map(7)`) and its descendants | Its mail, its `Due` items, its presences, its waiting asks |
-| Entity | A root, an avatar, a presence, a waiting ask, a scheduled event | Components; `In<K>` on every entity of a K domain |
+| Node | One process, one server type, a cluster-assigned node generation ([draft §2](programming-model.md#2-服务器与节点)) | Links, membership, placement view, its shards, the HTTP plane |
+| Shard (internal) | One thread and one EasyEcs world; the actor types the server hosts share it; an actor lands on a shard by its key's hash. A node runs one shard per CPU it is given (the container's CPU request, `DaServer:Worlds` overrides) | The dispatch queue, the framework systems, singletons (`Time`, `Ordered`, `Current`, `Outbox`) |
+| Actor | Its root entity (carrying the actor type component, e.g. `Map(7)`) and the root's descendants | Its mail, its `Due` items, its presences, its waiting asks |
+| Entity | A root, an avatar, a presence, a waiting ask, a scheduled event | Components; `In<K>` on every entity of a K actor |
 
-- **Parallelism**: many domains per shard, many shards per node, many nodes. Inside a domain the ordered phase is
+- **Parallelism**: many actors per shard, many shards per node, many nodes. Inside an actor the ordered phase is
   serial; heavy system methods use `[ForEach(Parallel = true)]`. Each shard's world sets
   `WorldOptions.MaxDegreeOfParallelism` = node cores / node shards, at least 1 (EasyEcs D36: the budget is per world).
 - **The dispatch queue** is the only cross-thread handoff: IO threads and other shards post frames to it; the shard
@@ -76,7 +97,7 @@ flowchart LR
 
 ### A tick
 
-Per actor type with `[TickRate(n)]`, at time t ([draft §1](programming-model.md#执行模型每个域是一个离散事件模拟)):
+Per actor type with `[TickRate(n)]`, at time t ([draft §1](programming-model.md#执行模型每个-actor-是一个离散事件模拟)):
 
 | Step | Systems | What happens |
 |---|---|---|
@@ -105,7 +126,7 @@ Per actor type with `[TickRate(n)]`, at time t ([draft §1](programming-model.md
 - Generated, one instance per call of `Registrations.Create()` (no static registries, no module initializers): actor
   types, root and child prefab copies with `In<K>`, claims, join-on-connect, dispatch tables per actor type, client
   routes, systems per group ([draft §12](programming-model.md#12-完整例子连接进地图移动放技能看见别人)).
-- Nodes, `TestCluster` and `TestDomain<K>` take the object.
+- Nodes, `TestCluster` and `TestActor<K>` take the object.
 - Every type in it is closed at compile time in the user's assembly (section 8).
 
 ## 3. Messaging
@@ -117,7 +138,7 @@ Per actor type with `[TickRate(n)]`, at time t ([draft §1](programming-model.md
 | No `[To]` | `MoveTo(...)` | To the client's presence on the handling actor type; the subject is the presence entity; none: `NotJoined` |
 | Server → client | `IToClient` | `e.Push(msg)` to a presence, `root.Broadcast(msg)` to every joined presence, `e.Push(in group, msg)` to a `ClientGroup` |
 | Server → server | `IMessageTo<K>`, `IRequestTo<K,R>` with `[From<K>]` | Generated typed `Send`/`Ask` on `Entity`; the answer is `Answer<TReq>` or `Answer<TReq,TState>` mail to the asking entity ([draft §8](programming-model.md#8-等待别的-actor-的结果)) |
-| Inside a domain | `IEvent` | `e.Schedule(ev[, after:])`: a child entity with `Due`, run in the ordered phase |
+| Inside an actor | `IEvent` | `e.Schedule(ev[, after:])`: a child entity with `Due`, run in the ordered phase |
 | Outside actors | `ICluster` | HTTP, back-office, tests: any server-to-server message; `cluster.Disconnect(clientId)` |
 
 - **Presences** ([draft §7](programming-model.md#7-客户端与-presence)): a client's existence on an actor, one per
@@ -258,7 +279,7 @@ The guarantees are [draft §1](programming-model.md#1-保证); the outcome of ea
 
 | Guarantee | Mechanism |
 |---|---|
-| Each domain runs its items one at a time in `(time, seq)` order; domains run in parallel | Ordered phase, `Due` index |
+| Each actor runs its items one at a time in `(time, seq)` order; actors run in parallel | Ordered phase, `Due` index |
 | Per sender-target order, best effort while migrating | One ordered link per node direction; no migration fence |
 | One-way at most once; a request always ends (reply, refusal with a reason, timeout); a timeout may have run | Deadlines as `Due`; call ids are idempotency keys; reserve then commit |
 | At most one activation writes a key's record | Epoch claim and CAS writes; fencing |
@@ -273,11 +294,11 @@ The guarantees are [draft §1](programming-model.md#1-保证); the outcome of ea
 | `[On<T>]` handlers | Single-entity jobs `entity.Run<T1..Tn, TJob>(ref job[, in filter])`, `IForEachEntity<…>`, `Writes`, `QueryFilter`, `INoStructuralChanges` |
 | Per-tick logic | `EcsSystem`, `[ForEach]`, batch methods, `Parallel = true`, `[Changed<T>]`, `[UpdateAfter<T>]`, `ISystemGroup`, `IGroupWith<T>` group filters, `world.Update<TGroup>()` |
 | Ordering and timers | Ordered value index (`Range`) on `Due`, singletons |
-| Domains | `ChildOf`, `world.Children`, `world.Descendants(root)`, prefabs (`new Prefab(base)` copies) |
+| An actor's entities | `ChildOf`, `world.Children`, `world.Descendants(root)`, prefabs (`new Prefab(base)` copies) |
 | Presences, cleanup | `ICleanupComponent`, `Destroyed`, `DynamicBuffer<T>`, `[Changed<DynamicBuffer<T>>]` |
 | Persistence | `ITrackChanges`, `[Changed<T>]`, `[Removed<T>]`, `ComponentSet`, `SaveEntities`, `LoadEntitiesInto(…, markWritten: false)`, Nino type ids |
 | Hot restart | `world.Save`, `world.Load` (singletons included, systems not), `AddSystem<T>()` |
-| Diagnostics, tests | `SystemErrorPolicy` (`Disable` on nodes, `Throw` in `TestDomain<K>`), `MeasureSystems`, `system.Stats`, `world.Count<Destroyed>()`, `world.Describe()`, `Capture`/`Restore` |
+| Diagnostics, tests | `SystemErrorPolicy` (`Disable` on nodes, `Throw` in `TestActor<K>`), `MeasureSystems`, `system.Stats`, `world.Count<Destroyed>()`, `world.Describe()`, `Capture`/`Restore` |
 | Allocation-free reuse | Pooled `DynamicBuffer` storage, `MaxDegreeOfParallelism` per world |
 
 ## 8. Native AOT
@@ -377,6 +398,8 @@ Derived from [design.md](../design.md) and the deleted list in
 | One project per server (ADR-017), Contracts / Model / Logic (N1) | Protocol / Server; several server types per Server project; node = one server type |
 | Hot reload of the logic assembly (planned N9) | Hot restart: the node replaced in place by the new build, world handed over (JIT and AOT) |
 | `AddNodes<TProject>` | `AddNodes<TServer>` over server types generated from `wire.manifest` |
+| Packages Abstractions, Core, Client, Simulation, `DaServer`, Hosting, WireTool, Testing, Persistence.PostgreSql, Aspire (ADR-052) | Core, Client, `DaServer`, Persistence.PostgreSql, Testing, Aspire; the generator and the manifest task inside Core (ADR-086) |
+| Shard count in configuration and AppHost parameters (`DaServer:Shards`, `map_shards`) | Sized by the node from its CPUs; `DaServer:Worlds` overrides; the word shard is internal |
 | Random `NodeId` per process | Cluster-assigned node generation; identity on the link Hello is (name, generation) plus incarnation, standby links for a successor |
 | A Kubernetes Deployment per node group | StatefulSet with `OnDelete` for actor-hosting groups, Deployments for gateways and stateless groups (ADR-085) |
 | Deadlines in UTC milliseconds | Monotonic `TimeSpan`; remaining time across processes |

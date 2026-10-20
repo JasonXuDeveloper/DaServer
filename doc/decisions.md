@@ -731,7 +731,7 @@ Replaced by ADR-081.
 - Alternatives: transport inside the client package (the server would depend on "Client"); inside Abstractions
   (every contract assembly carries sockets); a separate client transport (two implementations of one protocol).
 - Consequences: a Unity client references Abstractions, Core and Client (one package reference, the rest are
-  dependencies); contract projects reference Abstractions only.
+  dependencies); contract projects reference Abstractions only. Roadmap R2 merges the packages (ADR-086).
 
 ## ADR-053 Keep-alive: silence closes a connection, pings only fill idle directions
 - Context: TCP does not report a peer that vanished (a host gone, a dropped NAT or load balancer mapping, a mobile
@@ -1554,11 +1554,11 @@ Replaced by ADR-081.
 - Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (v24), structured as in
   [drafts/architecture.md](drafts/architecture.md):
   - **The actor type is its address, its root component and its system group**:
-    `[TickRate(30)] partial record struct Map(long Id) : IActor<Map>`; a domain is the root and its descendants, all
+    `[TickRate(30)] partial record struct Map(long Id) : IActor<Map>`; an actor is the root and its descendants, all
     tagged `In<Map>`; `[UpdateInGroup<Map>]` systems see only them.
   - **`[On<T>]` methods in `[Handles<K>]` classes are EasyEcs single-entity jobs** on one subject entity: the
     parameter rules are `[ForEach]`'s, `ref` points into storage, only written components are stamped.
-  - **Each domain is a discrete-event simulation**: mail and `Due` items run one at a time by `(time, seq)` in an
+  - **Each actor is a discrete-event simulation**: mail and `Due` items run one at a time by `(time, seq)` in an
     ordered phase, then the actor type's systems, then the framework's settling and cleanup. What leaves an item is
     data in the `Outbox` singleton.
   - **Messages state their endpoints**: `IFromClient`/`IToClient` in Protocol (no actor types, no addresses),
@@ -1571,7 +1571,7 @@ Replaced by ADR-081.
 - Alternatives: keep ADR-081's handlers and add the missing pieces (copy and write-back stays, two vocabularies stay);
   handlers as systems over message entities (an entity per message; measured in R4 before adopting, draft §14);
   optimistic execution with rollback (state copies cost as much as a ~1 µs event, pushes cannot be taken back);
-  spatial parallelism inside a domain (needs game concepts in the framework, ADR-045).
+  spatial parallelism inside an actor (needs game concepts in the framework, ADR-045).
 - Consequences: breaking for every user project and most of the runtime (roadmap phase R). Business code is
   `[On<T>]` methods and EasyEcs systems over data; the generator emits jobs, typed sends and one `Registration`
   instance. ADR-081's handler, `Context`, session and lifecycle parts, ADR-012's module initializer registration and
@@ -1732,3 +1732,34 @@ Replaced by ADR-081.
 - Consequences: ADR-030's "no StatefulSet" holds only for gateways and stateless groups once roadmap R11 lands, and
   ADR-030 is rewritten then. Scaling a stateful group is still the platform's (`kubectl scale`, an HPA); a scaled-in
   pod leaves gracefully as today. R11 changes `DaServer.Aspire` and the samples' AppHosts (roadmap).
+
+## ADR-086 Six packages and four words: Core absorbs Abstractions, the server absorbs Hosting, shards are internal
+- Context: the target architecture listed eleven projects (Abstractions, Core, Client, Simulation, `DaServer`,
+  Generator, WireTool, Hosting, Persistence.PostgreSql, Testing, Aspire) and four levels of runtime structure (node,
+  shard, domain, entity). Several packages are never referenced apart: every client and every server takes both
+  Abstractions and Core, every node takes both `DaServer` and Hosting, WireTool only runs inside a build. "Domain" named
+  nothing but "an actor's root and its descendants", and "shard" leaked an implementation choice (one thread, one
+  world) into the AppHost (`AddNodes(..., shards: 8)`) and configuration.
+- Decision:
+  - **A package exists when something references it without the others.** Six packages: `DaServer.Core`
+    (netstandard2.1, net11.0: the client-facing contracts and the wire and transport; carries the generator, the
+    analyzers and the `wire.manifest` MSBuild task), `DaServer.Client`, `DaServer` (the server runtime and the node
+    host: Generic Host, ASP.NET Core, configuration, OpenTelemetry, the HTTP plane), `DaServer.Persistence.PostgreSql`
+    (a capability, ADR-045), `DaServer.Testing` (`TestActor<K>`, `TestCluster`, simulated users) and
+    `DaServer.Aspire` (AppHost only). Merged away: Abstractions into Core, Hosting into `DaServer`, Simulation into
+    Testing, WireTool into the generator's MSBuild task.
+  - **Users see four words**: server type, node, actor (its root entity and all descendants) and entity/component.
+    "Domain" is gone: it is the actor. A node runs one EasyEcs world per thread and sizes the count from the CPUs it is
+    given (the container's request, ADR-085's `DOTNET_PROCESSOR_COUNT`); `DaServer:Worlds` overrides it, and the
+    AppHost has no shard parameter. Operator-facing names (configuration, metrics, admin output) say "world", the
+    word EasyEcs users already know; "shard" stays the runtime's internal name for a thread with its world and
+    appears in no public API.
+- Alternatives: keeping Abstractions apart so `Game.Protocol` carries no transport (the analyzer already refuses
+  server types there, a client ships Core anyway, and the server-only API is not in Core); keeping Hosting apart for
+  hosts without ASP.NET Core (none: every node serves probes and admin over HTTP, ADR-046; `TestCluster` starts no
+  HTTP); a separate Simulation package (a test tool, never in production); keeping "domain" as a technical term for the
+  subtree (two words for one thing).
+- Consequences: ADR-052's four layers become Core / Client / server once roadmap R2 lands, and ADR-052 is rewritten
+  then. A Unity client references `DaServer.Client` (Core comes with it); a Protocol project references
+  `DaServer.Core`; a node references `DaServer`; tests reference `DaServer.Testing`. Today's `DaServer:Shards`,
+  `map_shards` and the `daserver.shard.*` metrics are renamed in R2.

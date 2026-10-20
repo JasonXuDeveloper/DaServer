@@ -23,12 +23,15 @@ Keep this file current: tick items when done, add items when scope changes.
 12. The ECS rewrite (ADR-081, the "ECS rewrite" entry under "Open cleanup" below): P1-P3 and P5 done; P4, P6 and P7
     superseded by R.
 13. R — refactor to the v24 programming model ([drafts/programming-model.md](drafts/programming-model.md),
-    [drafts/architecture.md](drafts/architecture.md)) on EasyEcs 4.5.0 (now; ADR-082 to ADR-085). Breaking; each step
+    [drafts/architecture.md](drafts/architecture.md)) on EasyEcs 4.5.0 (now; ADR-082 to ADR-086). Breaking; each step
     proven before the next:
     - [ ] R1 EasyEcs 4.5.0 (`EasyEcsVersion`) and the compile checks: the generated explicit `Key`
       (`Map IIndexed<Map>.Key => this`) is accepted by value indexes; `IActor<TSelf>` with its constraints
       (`ISystemGroup`, `IGroupWith<In<TSelf>>`) compiles in the framework assembly.
-    - [ ] R2 Abstractions and attributes: `IFromClient`/`IToClient`/`[To]`/`IServer` in Abstractions; `IActor<T>`,
+    - [ ] R2 Packages and attributes (ADR-086): Abstractions merged into Core, Hosting into `DaServer`, Simulation into
+      Testing, WireTool into the generator's MSBuild task; `DaServer:Shards` and the AppHost's shard parameter replaced
+      by sizing from the node's CPUs (`DaServer:Worlds` overrides); `TestActor<K>`. `IFromClient`/`IToClient`/`[To]`/
+      `IServer` in Core; `IActor<T>`,
       `[Handles<K>]`, `[On<T>]`, `IMessageTo<K>`, `IRequestTo<K,R>`, `[From<K>]`, `IEvent`, `IPersisted`, `[Claims]`,
       `[JoinOnConnect<T>]`, `[TickRate]`, `[Stateless]`, `[Transient]` in the runtime.
     - [ ] R3 Generator and analyzers: explicit `Key`, typed sends, `[On<T>]` jobs, the closed `Registration`,

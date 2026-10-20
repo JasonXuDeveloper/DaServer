@@ -1,4 +1,4 @@
-# DaServer 新编程模型设计（草案 v26，未实现，迭代中）
+# DaServer 新编程模型设计（草案 v27，未实现，迭代中）
 
 原则：业务代码干净、解耦、简洁，不用 OOP。ECS 一路到底：能用 EasyEcs 的功能就用 EasyEcs，状态都是数据，其余交给我们的特性和生成器，不重复造轮子。
 
@@ -40,10 +40,10 @@
 | 服务器类型 | `[Hosts<Map>] struct MapServer : IServer;` | Server |
 | 对消息和事件的反应 | `[Handles<Map>] static partial class Combat { [On<CastSkill>, Without<Stunned>] … }` | Server |
 | 每 tick 或对数据的反应 | `[UpdateInGroup<Map>] class Movement : EcsSystem { [ForEach] … }` | Server |
-| 本域里现在或以后做一件事 | `me.Schedule(new Strike(…), after: Skills.Windup(skill))`，不写 `after` 就是紧接着 | Server |
+| 本 Actor 里现在或以后做一件事 | `me.Schedule(new Strike(…), after: Skills.Windup(skill))`，不写 `after` 就是紧接着 | Server |
 | 发给别的 Actor | `me.Send(new Player(id), new Defeated(map))` | Server |
 | 等别的 Actor 的结果 | `me.Ask(new Player(who.Id), new GrantItem(item), new Looting(drop.Id, reply))`，回信是 `Answer<GrantItem, Looting>`；不带状态时是 `Answer<GrantItem>` | Server |
-| 测试一个域 | `new TestDomain<Map>(new Map(7), Registrations.Create())` | 测试 |
+| 测试一个 Actor | `new TestActor<Map>(new Map(7), Registrations.Create())` | 测试 |
 
 ### 框架给的
 
@@ -65,11 +65,11 @@
 | `[Claims]`、`[JoinOnConnect<TClaims>]` | 身份；连上就加入的 Actor 类型（第 7 节） |
 | `IPersisted` | 持久化的组件：`IComponent, ITrackChanges`（第 10 节） |
 | `[TickRate(n)]` | 写在 Actor 类型上的帧率 |
-| `Time` | shard 的单例：`Tick`、`DeltaTime`、`TickRate`、`Now` |
-| `Scheduled<T>` | 本域事件的句柄，普通数据 |
+| `Time` | world 的单例：`Tick`、`DeltaTime`、`TickRate`、`Now` |
+| `Scheduled<T>` | 本 Actor 事件的句柄，普通数据 |
 | `IdleTimeout` | 空闲回收 |
 | `ClientGroup` | 一次序列化、按网关扇出的广播组 |
-| `Registration`、`TestDomain<K>` | 生成的注册对象（实例，不是静态表）；一个域的测试台（第 12 节） |
+| `Registration`、`TestActor<K>` | 生成的注册对象（实例，不是静态表）；一个 Actor 的测试台（第 12 节） |
 
 ### 谁做什么
 
@@ -82,7 +82,7 @@
 | 参数绑定 | `[ForEach]` 的参数规则 | 一个规则：组件参数绑定到主体 | job 拿到主体的组件 |
 | 发出的东西 | 单例 | — | 单例 `Outbox`，每项执行完一次发出；当前项的上下文是单例 `Current` |
 | 每 tick 的逻辑 | `EcsSystem`、`[ForEach]`、批量方法、`Parallel`、`[Changed<T>]`、`[UpdateAfter<T>]`、`ISystemGroup`、接口带的组过滤（`IGroupWith<T>`，4.5） | Actor 类型就是系统组，`[TickRate]`、`In<K>` | 有序阶段 → `world.Update<Map>()` → 框架的收尾系统 |
-| 本域的事件 | `ChildOf`、有序值索引 | `Schedule(ev, after:)`、`Scheduled<T>`、`IEvent`、`Due` | 到期项和消息一起进有序阶段；发起者销毁时一起消失 |
+| 本 Actor 的事件 | `ChildOf`、有序值索引 | `Schedule(ev, after:)`、`Scheduled<T>`、`IEvent`、`Due` | 到期项和消息一起进有序阶段；发起者销毁时一起消失 |
 | 发送方向 | — | `[From<K>]` 生成发送方法，分析器按调用处的 Actor 类型检查 | 发送、回复、超时 |
 | 客户端消息的路由 | — | `[Handles<K>]`、`[To]` 生成路由表 | `Client` 实体直接转发给目标 |
 | 等待、回复 | `ChildOf` | `Answer<TReq>`、`Answer<TReq, TState>`、`ReplyTo<T>` | 调用 id、`Due` 期限、剩余时间传递 |
@@ -93,15 +93,15 @@
 | 只写改过的 | `ITrackChanges`、`[Changed<T>]`、`[Removed<T>]`、`ICleanupComponent` | `IPersisted` | `ChangeSystem`、`CheckpointSystem` |
 | 记录、迁移 | `ComponentSet`、`Descendants`、`SaveEntities`、`LoadEntitiesInto`（恢复时 `markWritten: false`） | `IPersisted`、`[Transient]` | 读写存储，epoch CAS，布局哈希 |
 | 版本兼容 | Nino 类型 id、`[NinoFormerName]` | `wire.manifest` | 滚动升级 |
-| 热重启 | `world.Save`、`world.Load`（单例随 world 保存，系统不保存） | `wire.manifest` 比对选路径、交接格式 | 两个 tick 之间停下 shard，交给新进程；不重新激活 |
-| 测试、诊断 | 单个 world、`SystemErrorPolicy.Throw`、`Capture`/`Restore`、`world.Count<Destroyed>()`、`world.Describe()` | `Registration`、`TestDomain<K>` | 手动时钟、`Outbox` 是数据、分配断言 |
+| 热重启 | `world.Save`、`world.Load`（单例随 world 保存，系统不保存） | `wire.manifest` 比对选路径、交接格式 | 两个 tick 之间停下 world，交给新进程；不重新激活 |
+| 测试、诊断 | 单个 world、`SystemErrorPolicy.Throw`、`Capture`/`Restore`、`world.Count<Destroyed>()`、`world.Describe()` | `Registration`、`TestActor<K>` | 手动时钟、`Outbox` 是数据、分配断言 |
 | 对象复用 | `DynamicBuffer` 池化、Nino 的 `[NinoPooled]` | — | 帧、发送缓冲池化 |
 
 ---
 
 ## 1. 保证
 
-1. **每个域按 `(时间, 序号)` 逐条处理自己的消息和事件，域之间并行。** 生命周期消息也是消息，排在同一个顺序里。
+1. **每个 Actor 按 `(时间, 序号)` 逐条处理自己的消息和事件，Actor 之间并行。** 生命周期消息也是消息，排在同一个顺序里。
 2. **同一个发送方发给同一个目标的消息，按发送顺序到达**，前提是双方都没有在迁移。
    - 迁移期间只尽力保序，同 Orleans：迁移那一两秒里，在途的消息可能后发先到。
    - 需要严格先后的业务，用请求和回复串起来。
@@ -110,13 +110,13 @@
 5. **客户端重连后是一个新的连接**：断线前没送达的推送会丢失，重连前后也没有顺序关系。新连接的连接戳更大，旧连接留下的 Presence 被它接管（第 7 节）。
 6. **每种失败的结果都是确定的**，见第 11 节。
 
-### 执行模型：每个域是一个离散事件模拟
+### 执行模型：每个 Actor 是一个离散事件模拟
 
-**Actor** 是 Actor 类型的一个实例，例如 7 号地图。**域**是一个 Actor 的根实体和它的子孙，例如一张地图和地图上的所有实体。域里发生的一切，都是排好序的事件：
+**Actor** 是 Actor 类型的一个实例，例如 7 号地图：它的根实体（带 Actor 类型组件 `Map(7)`）加上所有子孙，例如一张地图和地图上的所有实体。Actor 里发生的一切，都是排好序的事件：
 
 | 事件 | 时间 | 例子 |
 |---|---|---|
-| 客户端或别的 Actor 发来的消息 | 进入本 shard 的时刻 | 移动一步、放技能、交易 |
+| 客户端或别的 Actor 发来的消息 | 进入本 world 的时刻 | 移动一步、放技能、交易 |
 | 本地事件 `e.Schedule(ev)` | 紧接着当前处理方法 | 立即结算的技能 |
 | 延后的事件 `e.Schedule(ev, after: 时间)` | 当前项的时间 + after，精确值，不取整 | 前摇 0.3 秒后的结算、5 秒后 buff 到期 |
 | 框架的期限 | 到期时刻 | 请求超时、加入确认期限 |
@@ -125,7 +125,7 @@
 所有时刻都在本进程的单调时钟上（第 9 节）。
 
 **排序只有一条：所有项按 `(时间, 序号)` 执行。**
-- 时间：消息是进入本 shard 的时刻，延后事件和期限是精确的到期时刻。序号是 shard 的计数器，时间相同时按先后打破平局。
+- 时间：消息是进入本 world 的时刻，延后事件和期限是精确的到期时刻。序号是 world 的计数器，时间相同时按先后打破平局。
 - **tick 窗口**：时间落在 (t − Δ, t] 的项，在时刻 t 那个 tick 的有序阶段里按 `(时间, 序号)` 执行（Δ 是帧长）。tick 只决定"什么时候执行"，不改变"谁先谁后"。
 - 所以 0.29 秒到达的闪避排在 0.30 秒到期的结算前面，即使它们落在同一帧里。
 - 每个项看到的，正好是它之前所有项的全部效果。
@@ -162,12 +162,12 @@
 
 | 来源 | 做法 |
 |---|---|
-| 很多个域 | 一个 shard 是一个线程，跑很多张地图；节点有很多 shard，集群有很多节点。TrinityCore 的 MapUpdater、EVE 的星系、LoL 和 Valorant 的对局都是这样 |
-| 系统 | 一次 `world.Update<Map>()` 覆盖这个 shard 上这个 Actor 类型的所有域；重活的方法写 `Parallel = true` |
+| 很多个 Actor | 节点里每个工作线程跑一个 world，一个 world 里有很多张地图；节点有好几个 world，集群有很多节点。TrinityCore 的 MapUpdater、EVE 的星系、LoL 和 Valorant 的对局都是这样 |
+| 系统 | 一次 `world.Update<Map>()` 覆盖这个 world 上这个 Actor 类型的所有 Actor；重活的方法写 `Parallel = true` |
 
-- 域内的有序阶段永远串行。没有上市的游戏把一个模拟步按空间切开并行：那需要框架懂位置、作用距离、最大速度这些游戏概念（违反 ADR-045），还会加一帧延迟，语义也脆弱。
+- Actor 内的有序阶段永远串行。没有上市的游戏把一个模拟步按空间切开并行：那需要框架懂位置、作用距离、最大速度这些游戏概念（违反 ADR-045），还会加一帧延迟，语义也脆弱。
 - 以后再考虑：
-  - 一个超大的域，只有在基准测试显示它的有序阶段超出帧预算时，才提供用户自己给出分区的可选方案；
+  - 一个超大的 Actor，只有在基准测试显示它的有序阶段超出帧预算时，才提供用户自己给出分区的可选方案；
   - 无缝大世界用 New World 的做法：世界按格子分给进程，人移动时交接。
 
 **不采用的：**
@@ -203,11 +203,11 @@ public class Movement : EcsSystem
 用户不判断"立即还是延后"（`after` 来自数据，0 也合法），也不判断"每条消息还是每 tick"（反应写 `[On<T>]`，每 tick 和对数据的反应写系统）。
 
 **用户能看到的反馈：**
-- 每个域的指标：每个 tick 有序阶段的耗时，由运行时自己按域测量；
-- 每个系统的耗时：EasyEcs 的 `MeasureSystems` 和 `system.Stats`。它按 shard 的 world 统计每个系统，一次 `world.Update<Map>()` 覆盖这个 shard 上所有的 Map，所以是这些域合在一起的值，不分域；
+- 每个 Actor 的指标：每个 tick 有序阶段的耗时，由运行时自己按 Actor 测量；
+- 每个系统的耗时：EasyEcs 的 `MeasureSystems` 和 `system.Stats`。它按 world 统计每个系统，一次 `world.Update<Map>()` 覆盖这个 world 上所有的 Map，所以是这些 Actor 合在一起的值，不分 Actor；
 - `world.Count<Destroyed>()` 导出为指标：已销毁、清理组件还没处理完的实体数。一直涨，说明有清理系统没跑或者漏了（第 6 节）；
-- 管理端点返回 `world.Describe()`：每个 shard 的表、行数和内存（它会分配，只按请求调用）；
-- 并行和串行结果一致的核对，是一个测试（第 12 节的 `TestDomain<K>`）。
+- 管理端点返回 `world.Describe()`：每个 world 的表、行数和内存（它会分配，只按请求调用）；
+- 并行和串行结果一致的核对，是一个测试（第 12 节的 `TestActor<K>`）。
 
 ---
 
@@ -222,7 +222,7 @@ public class Movement : EcsSystem
 
 - **一个工程可以定义多种服务器类型；节点 = 一个进程 = 一种服务器。**
   - 拆服务器就是为了独立扩缩、独立发布、故障隔离，所以一个进程只跑一种服务器。
-  - 本地开发由 Aspire 起多个进程；测试用 `TestCluster` 和 `TestDomain<K>`。
+  - 本地开发由 Aspire 起多个进程；测试用 `TestCluster` 和 `TestActor<K>`。
   - 小规模部署可以写一个 `[Hosts<Player>, Hosts<Map>, Hosts<Client>] AllInOne`。
 - **`[Hosts<Client>]` 就是"接受客户端"。**
 - **Actor 类型绑定的是服务器类型，不是节点：**
@@ -237,18 +237,18 @@ public class Movement : EcsSystem
   - 同一个键任一时刻只有一个 Actor：放置决定它在哪，激活 epoch 保证分区和停顿之后也只有一个能写（第 10 节）。
   - `Client` 是例外，它固定在连接所在的节点（第 7 节）。
 - **节点代数**：节点每次加入集群，由集群分配一个单调递增的代数（不是进程里随机生成的数）。同名的节点重启后是新的代数，不会被当成原来那个。热重启不算重新加入：代数不变，化身号加一（第 10 节）。
-- **shard**：节点里的一个线程加一个 world。节点承载的所有 Actor 类型共用 shard 的 world，Actor 落在哪个 shard 由键的哈希决定。
+- **world**：节点里有几个工作线程，每个线程跑一个 EasyEcs world；节点承载的所有 Actor 类型共用它，Actor 落在哪个 world 由键的哈希决定。world 的个数由节点按分到的 CPU 自己定（`DaServer:Worlds` 可以覆盖），用户代码和 AppHost 都不写它；框架内部把"一个线程加一个 world"叫 shard。
 - **帧率**写在 Actor 类型上（第 5 节），不在配置里。
 - **Program.cs**：五行，把生成的 `Registrations.Create()` 交给节点（第 12 节）。没有静态的注册表。
 - **AppHost：**
   ```csharp
   var cluster = builder.AddDaServerCluster("game");
   cluster.AddNodes<GameServer>("game", replicas: 3);
-  cluster.AddNodes<MapServer>("map", replicas: 4, shards: 8);
+  cluster.AddNodes<MapServer>("map", replicas: 4);
   cluster.AddNodes<GatewayServer>("gate", replicas: 2).WithClientEndpoints();
   ```
   - AppHost 不引用服务端程序集。DaServer.Aspire 的生成器读服务端工程提交的 `wire.manifest`，只读 `actor` 和 `hosted-by`（第 10 节），在 AppHost 里生成同名的服务器类型。
-  - **只有一个 `IServer`**（DaServer.Abstractions）：服务端的服务器类型和 AppHost 里生成的同名类型都实现它。`AddNodes<T>(string name, int replicas, int shards = 1) where T : struct, IServer` 返回 `NodeGroup<T>`，名字取 `typeof(T).FullName`，两边一致。
+  - **只有一个 `IServer`**（DaServer.Core）：服务端的服务器类型和 AppHost 里生成的同名类型都实现它。`AddNodes<T>(string name, int replicas) where T : struct, IServer` 返回 `NodeGroup<T>`，名字取 `typeof(T).FullName`，两边一致。
   - 承载 `Client` 的服务器，生成的类型还实现 `IAcceptsClients`；`WithClientEndpoints()` 是 `NodeGroup<T>` 上 `where T : IAcceptsClients` 的扩展方法，所以给别的服务器开客户端端口编译不过。
   - 接受客户端的服务器没开端口时，AppHost 构建警告；消息引用的 Actor 类型没有节点承载时，构建报错。
   - 节点启动时，配置的服务器类型不存在，或者和 `wire.manifest` 对不上，启动失败。
@@ -291,7 +291,7 @@ public interface IActor<TSelf> : IComponent, IIndexed<TSelf>, ISystemGroup, IGro
 - Actor 类型的 id 是 `TypeId<Map>.Value`，没有单独的常量。
 - `[TickRate]` 的规则在第 5 节。
 
-**子实体的值索引，键里带上域**：一个 shard 的 world 里有很多域，所以子实体的键必须带着它所在的域，否则两张地图的同名键会撞。框架的 `PresenceId`（全 shard 唯一的随机值）和 `Due`（有意跨域，按 shard 排序）除外。写法只有两种：
+**子实体的值索引，键里带上 Actor**：一个 world 里有很多 Actor，所以子实体的键必须带着它所在的 Actor，否则两张地图的同名键会撞。框架的 `PresenceId`（全 world 唯一的随机值）和 `Due`（有意跨 Actor，按 world 排序）除外。写法只有两种：
 - 带根的 `EntityId`：`Cell(EntityId Map, int X, int Y)`、`NetId(EntityId Map, int Value)`。迁移和恢复时，`LoadEntitiesInto` 把它改写成新的 id（第 10 节）；
 - 带 Actor 的键：`Avatar(Map Map, Player Player)`。键不随迁移改变。
 
@@ -370,9 +370,9 @@ public interface IActor<TSelf> : IComponent, IIndexed<TSelf>, ISystemGroup, IGro
 [NinoType] public record struct Strike(int Skill, EntityId Target) : IEvent;
 ```
 
-- 本地事件只在一个域里传：`e.Schedule(ev)` 发给本域的一个实体，由同一个 Actor 类型的 `[On<T>]` 处理。
+- 本地事件只在一个 Actor 里传：`e.Schedule(ev)` 发给本 Actor 的一个实体，由同一个 Actor 类型的 `[On<T>]` 处理。
 - 带 `[NinoType]`：延后的事件随 Actor 迁移。
-- 影响别的域用消息（`e.Send(to, msg)`）。`Schedule` 只收 `IEvent`，`Send` 只收服务器之间的消息，类型约束就分开了它们，不用分析器。
+- 影响别的 Actor 用消息（`e.Send(to, msg)`）。`Schedule` 只收 `IEvent`，`Send` 只收服务器之间的消息，类型约束就分开了它们，不用分析器。
 
 ---
 
@@ -433,7 +433,7 @@ public static partial class Moves
 | 服务器之间的消息、`Activated`、`Deactivating` | 接收 Actor 的根实体，例如地图 |
 | `Answer` | 发问的实体（第 8 节） |
 
-- **自己的键**：主体是根时，取 Actor 类型组件参数 `in Map map`。主体是子实体时用 **`me.Root`**：DaServer 在 `Entity` 上的扩展，沿 `ChildOf` 走到没有父的实体，就是域的根，例如 `me.Root.Map`、`me.Root.Grid`。
+- **自己的键**：主体是根时，取 Actor 类型组件参数 `in Map map`。主体是子实体时用 **`me.Root`**：DaServer 在 `Entity` 上的扩展，沿 `ChildOf` 走到没有父的实体，就是 Actor 的根，例如 `me.Root.Map`、`me.Root.Grid`。
 - **例外：身份参数**：`[Claims]` 类型的参数（例如 `in Account who`）不绑定到主体，绑定到发这条客户端消息的客户端的身份。身份随信封带着（不超过 16 字节）。只能用在客户端消息的处理方法里（分析器检查）。
 
 **别的实体在方法体里显式读写：**
@@ -459,16 +459,16 @@ var grid = me.Root.Grid;
 | `ref DynamicBuffer<T>` | 主体上的缓冲 |
 | `Sender<K>` | 发送方。消息有多个 `[From<…>]` 时写 `Sender<ActorId>` |
 | `in ReplyTo<T>` | 请求的回复令牌，要晚些回复时取；`reply.Call` 是调用 id |
-| 单例 `in`/`ref` | 本 shard 的单例；`Time` 只能 `in` |
+| 单例 `in`/`ref` | 本 world 的单例；`Time` 只能 `in` |
 | `World` | ECS 操作 |
 
 ### 操作
 
-只有一个句柄：`Entity`。所有发送、推送、加入的操作都是 `Entity` 上的扩展方法（DaServer 提供，通过实体所在的 world 找到 shard），只写在这张表里：
+只有一个句柄：`Entity`。所有发送、推送、加入的操作都是 `Entity` 上的扩展方法（DaServer 提供，通过实体所在的 world 找到 world），只写在这张表里：
 
 | 写法 | 做什么 |
 |---|---|
-| `e.Schedule(ev)` | 本地事件，`ev` 是 `IEvent`，发给本域的实体 `e`；当前项返回后、下一项之前执行（即时链，最多 1,024 个）。返回 `Scheduled<T>` |
+| `e.Schedule(ev)` | 本地事件，`ev` 是 `IEvent`，发给本 Actor 的实体 `e`；当前项返回后、下一项之前执行（即时链，最多 1,024 个）。返回 `Scheduled<T>` |
 | `e.Schedule(ev, after: t)` | 同上，到期时刻 = 当前项的时间 + t（第 9 节）；`t` 为 `TimeSpan.Zero` 时同上一行 |
 | `e.HasPending<T>()`、`e.CancelPending<T>()` | `e` 上还有没执行的 T 事件吗；取消它们（第 9 节） |
 | `e.Send(to, msg)` | 服务器之间的单向消息，只发给别的 Actor，例如 `me.Send(new Player(id), new Defeated(map))` |
@@ -478,19 +478,19 @@ var grid = me.Root.Grid;
 | `e.Push(in group, msg)` | 推给一个 `ClientGroup`（第 9 节） |
 | `root.Broadcast(msg)` | `root` 是 Actor 的根：推给这个 Actor 所有带 `Joined` 的 Presence |
 | `e.SetGroups(groups)` | `e` 是 Presence：把它的 `DynamicBuffer<Subscribed>` 换成这些组（第 9 节） |
-| `root.Spawn(prefab[, in a[, in b …]])` | 在域里建实体：用注册时的 prefab 副本，一次 `Set(new ChildOf(root), a, b …)` 写上父和给的组件（最多一次行移动），当场返回实体 |
+| `root.Spawn(prefab[, in a[, in b …]])` | 在 Actor 里建实体：用注册时的 prefab 副本，一次 `Set(new ChildOf(root), a, b …)` 写上父和给的组件（最多一次行移动），当场返回实体 |
 | `e.Join()` | 让 `e` 成为当前客户端在本 Actor 上的 Presence，返回 `PresenceId`（第 7 节） |
 | `e.Leave()` | Presence `e` 离开：加上 `Leaving`（第 7 节） |
 | `e.Deactivate()` | 停用 `e` 所属的 Actor（第 6 节） |
 | `client.Disconnect()` | `client` 是 `Client` 的根：断开这个客户端 |
-| `e.Root` | `e` 所在域的根 |
+| `e.Root` | `e` 所在 Actor 的根 |
 
 - **跨 Actor 的操作，发送方是 `e.Root` 那个 Actor。**
 - **发出的东西先是数据**：`Send`、`Ask`、`Reply`、`Push`、`Broadcast` 和 `Join()` 的路由，都追加到运行时的单例 `Outbox`；当前项执行完（连同即时链），运行时按追加的顺序一次发出。所以 `Join()` 的路由一定排在回复前面（第 7 节），测试可以直接断言 `Outbox`（第 12 节）。
 - **当前项的上下文也是数据**：运行时的单例 `Current` 里是当前项的时间、根、发送方和客户端上下文。操作从它取客户端上下文；系统里没有客户端上下文。
 - `Send`/`Ask` 的方向检查见第 4 节。
 - 用户不判断"立即还是延后"：`after` 来自数据，0 也是合法值。
-- 本地事件只能发给本域的实体，运行时断言。
+- 本地事件只能发给本 Actor 的实体，运行时断言。
 
 ### 每 tick：Actor 类型就是系统组
 
@@ -514,24 +514,24 @@ public class Steering : EcsSystem
   - 一种服务器承载多个有 tick 的 Actor 类型时，各帧率必须整除其中最快的一个（例如 60、30、10），避免节拍抖动。
   - 没有 `[TickRate]` 的 Actor 类型也可以有系统：每批邮件之后跑（第 1 节）。
 - **只处理自己的实体**：组过滤 `In<K>` 由 `IActor<K>` 带上（`IGroupWith<In<K>>`），加到这个组每个系统的每个 `[ForEach]` 方法上（EasyEcs `guide/systems.mdx` 的 "Group filters"）。
-  - 查询缓存只存匹配的表，所以同一个 shard 上别的 Actor 类型的表，对这个组的系统不增加任何开销（`guide/systems.mdx` 的 "What it costs"，`why-fast.mdx` 的 "query cache"）。
+  - 查询缓存只存匹配的表，所以同一个 world 上别的 Actor 类型的表，对这个组的系统不增加任何开销（`guide/systems.mdx` 的 "What it costs"，`why-fast.mdx` 的 "query cache"）。
   - `In<K>` 是框架的 tag（`public struct In<T> : IComponent where T : struct, IActor<T>;`），K 类型 Actor 的每个实体都带着：
     - 根：运行时激活时加上；
     - `root.Spawn(prefab, in a, in b)`：`Registration` 注册 `[Prefab<K>]` 时做一份副本（EasyEcs 的 `new Prefab(basePrefab)`），带上 `In<K>` 和一列 `ChildOf(default)`，静态的 prefab 不被改动。`Spawn` 实例化副本，再一次 `Set(new ChildOf(root), a, b)`：`ChildOf` 已经有列，只写值；`a`、`b` 是 prefab 没有的组件时，整个实体只移动一次行；
     - 用户自己 `CreateEntity` 的实体：自己加。
-- **怎么跑**：shard 在每个 tick 依次调用框架组 `Ordering`（`OrderedPhase`）、`world.Update<Map>()`、框架组 `Settling`（`Depart`、`SyncSubscriptions`），最后是框架组 `Cleanup`（第 6 节）。`Ordering` 和 `Settling` 的系统是 DaServer 自己写的 `EcsSystem`，在 `OnUpdate` 里用按 Actor 类型建好的 `static readonly QueryFilter`（`.With<In<K>>()`）跑 job，所以不需要以类型形参为实参的特性。一个 shard 上同一 Actor 类型的域共用 tick 边界，所以一次覆盖这个 shard 上这个 Actor 类型的所有域。
+- **怎么跑**：每个 world 的线程在每个 tick 依次调用框架组 `Ordering`（`OrderedPhase`）、`world.Update<Map>()`、框架组 `Settling`（`Depart`、`SyncSubscriptions`），最后是框架组 `Cleanup`（第 6 节）。`Ordering` 和 `Settling` 的系统是 DaServer 自己写的 `EcsSystem`，在 `OnUpdate` 里用按 Actor 类型建好的 `static readonly QueryFilter`（`.With<In<K>>()`）跑 job，所以不需要以类型形参为实参的特性。一个 world 上同一 Actor 类型的 Actor 共用 tick 边界，所以一次覆盖这个 world 上这个 Actor 类型的所有 Actor。
 - **系统就是 EasyEcs 的系统**：`[ForEach]` 方法、批量方法（`Span<T>`）、`[Changed<T>]`、`[With<T>]`、`[UpdateAfter<T>]`、`UpdateInterval`，规则全按 EasyEcs 的文档。生成代码是 EasyEcs 自己的生成器写的。
-- **默认单线程**。`[ForEach(Parallel = true)]` 只给重活用（EasyEcs 的建议）：shard 本来就已经占满各个核。
-  - **每个 shard 的 world 设 `WorldOptions.MaxDegreeOfParallelism` = 节点的核数 / 节点的 shard 数，最少 1**（EasyEcs D36：并行预算按 world 设，不跨 world 共享；`guide/threading.mdx`、`guide/hosting.mdx`）。默认值是全部核数，八个 shard 各开满就是八倍超额。
-  - 并行方法按块切行，一块至少 1,024 行（`guide/systems.mdx` 的 "Parallel methods"），所以实体少的 shard 本来就单线程跑，开了也不多花。
+- **默认单线程**。`[ForEach(Parallel = true)]` 只给重活用（EasyEcs 的建议）：各个 world 本来就已经占满各个核。
+  - **每个 world 设 `WorldOptions.MaxDegreeOfParallelism` = 节点的核数 / 节点的 world 数，最少 1**（EasyEcs D36：并行预算按 world 设，不跨 world 共享；`guide/threading.mdx`、`guide/hosting.mdx`）。默认值是全部核数，八个 world 各开满就是八倍超额。
+  - 并行方法按块切行，一块至少 1,024 行（`guide/systems.mdx` 的 "Parallel methods"），所以实体少的 world 本来就单线程跑，开了也不多花。
 - **系统里的发送**：`Entity` 上的操作只能在非并行的系统里用，追加到 `Outbox`；`Parallel = true` 的方法里用，分析器报错。
 - `Time` 在系统里是这个 tick 的值，`Time.Now` 是 tick 时刻 t（第 9 节）。
 - **`[Changed<T>]` 看的是"写过"，不是"变了"**：被系统每 tick 改写的组件，每 tick 都算写入。例如被驱动的 NPC，`Steering` 和 `Movement` 每 tick 改写它的 `Velocity` 和 `Position`，所以第 12 节的 `CellAssign` 和 `Diff` 每 tick 都访问它们（跨格才写 `Cell`，速度和上次发出的相同就不发）。这是接受的取舍：多的只是一趟按列的遍历和比较。
 
 ### 其他
 
-- 框架的系统自己处理异常，不受 EasyEcs 的 `SystemErrorPolicy` 管理；节点上用户的系统用 `SystemErrorPolicy.Disable`（第 11 节），`TestDomain<K>` 用 `Throw`，让测试直接失败（第 12 节）。
-- **`Registration`** 是生成的一个实例对象，不是静态表：Actor 类型、prefab 副本、身份、挂接、分发表、路由表、系统。节点、`TestCluster`、`TestDomain<K>` 都接这个对象。表在构造时一次建好；方法组转换成的静态委托由 C# 缓存，不会分配。
+- 框架的系统自己处理异常，不受 EasyEcs 的 `SystemErrorPolicy` 管理；节点上用户的系统用 `SystemErrorPolicy.Disable`（第 11 节），`TestActor<K>` 用 `Throw`，让测试直接失败（第 12 节）。
+- **`Registration`** 是生成的一个实例对象，不是静态表：Actor 类型、prefab 副本、身份、挂接、分发表、路由表、系统。节点、`TestCluster`、`TestActor<K>` 都接这个对象。表在构造时一次建好；方法组转换成的静态委托由 C# 缓存，不会分配。
 
 ### 处理方法抛出异常
 
@@ -545,7 +545,7 @@ public class Steering : EcsSystem
 - `Restart`：不写记录，不进 `Leaving`，不投递 `Deactivating`，直接销毁整棵子树，之后从最后一次写成的记录重新激活。上次写记录之后的改动丢失。Presence 是清理组件，销毁时框架释放它们的路由，客户端 SDK 收到 `PresenceLost` 后重新发加入消息（第 7 节）。
 
 - 分析器给建议：**先校验，最后做结构变更**。方法里结构变更之后还有 `throw` 或可能抛出的调用时，给出提示。第 12 节的 `Resolve` 就是这样写的。
-- 一项的即时链超过 1,024 个，或者一个域待执行的延后事件超过上限（第 9 节），也按 `[OnError]` 处理。
+- 一项的即时链超过 1,024 个，或者一个 Actor 待执行的延后事件超过上限（第 9 节），也按 `[OnError]` 处理。
 - **`[On<Activated>]` 抛出异常，算作激活失败**：
   - 排队的请求都以失败结束；
   - 实体不写记录就销毁；
@@ -590,7 +590,7 @@ public class Steering : EcsSystem
   | `[OnError] Restart`、隔离、激活失败 | 是：不写记录 | 不移除：路由要释放，客户端 SDK 据此重新加入 |
 
   所以只有用户自己的销毁、`Restart`、隔离和激活失败留下待清理的实体，没有白做的清理。
-- **对 `Destroyed` 反应的框架系统不带 `In<K>` 过滤**：退役的实体已经没有 `In<K>`，带着它就永远匹配不到。所以 `ReleaseRoutes`（`[With<Destroyed>, With<Presence>]`）和 `Persisted` 的清理系统在框架组 `Cleanup` 里，按 shard 跑，不按 Actor 类型；它们需要的信息（连接戳、根的 `EntityId`）都在清理组件自己里面。
+- **对 `Destroyed` 反应的框架系统不带 `In<K>` 过滤**：退役的实体已经没有 `In<K>`，带着它就永远匹配不到。所以 `ReleaseRoutes`（`[With<Destroyed>, With<Presence>]`）和 `Persisted` 的清理系统在框架组 `Cleanup` 里，按 world 跑，不按 Actor 类型；它们需要的信息（连接戳、根的 `EntityId`）都在清理组件自己里面。
 - **激活的条件：**
   - 默认任何发给它的消息都能激活（Orleans 的虚拟 actor）；
   - Actor 类型可以写 `[ActivatedBy<EnterMap>]` 收紧，其他消息遇到不存在的 Actor，返回 `NoActor`；
@@ -810,20 +810,20 @@ static void Granted(in Answer<GrantItem, Looting> a, Entity me, World world)
 - 领域时间不是 UTC，不依赖各节点对时。它只在一个进程里有意义。
 - **跨进程只传剩余时间**：请求的期限在线上是"还剩多久"；迁移的字节里，延后事件和期限也存剩余时间。接收方用自己的单调时钟重新起算：到期时刻 = 收到时的 `Now` + 剩余时间。迁移途中花的时间不算进去（通常几毫秒）。
 - **绝对的 UTC 只出现在用户的持久化数据里**：要跨停用保留的时刻（例如"buff 在某日到期"），用户把 UTC 写进 `IPersisted` 组件，激活时自己换算。
-- `Time` 是 shard 的单例，由运行时写，用户只读：
+- `Time` 是 world 的单例，由运行时写，用户只读：
 
   ```csharp
   public record struct Time(long Tick, TimeSpan DeltaTime, int TickRate, TimeSpan Now) : ISingletonComponent;
   ```
 
-- **`Now` 是正在执行的那一项的时间**：处理消息时是它进入 shard 的时刻，执行延后事件时是它的到期时刻，系统里是 tick 时刻 t。
+- **`Now` 是正在执行的那一项的时间**：处理消息时是它进入 world 的时刻，执行延后事件时是它的到期时刻，系统里是 tick 时刻 t。
 - 系统运行期间，`Tick`、`DeltaTime`、`TickRate` 是这个 Actor 类型的值；没有 tick 的 Actor 类型，它们是 0。
 - **`after` 从当前项的时间算起**：到期时刻 = `Time.Now` + after，存精确值，不存 tick 号。它在 tick 窗口所在的那一帧执行（第 1 节），从不提前。
 - 数据里写秒或毫秒，例如 `Skills.Windup(id)` 返回 `TimeSpan`。
 - 为什么用时间不用 tick：改帧率不能改技能的手感。Minecraft 的 `/tick rate` 改了帧率，按帧写的一切都跟着变快变慢；Photon Quantum 的 `FrameTimer.FromSeconds` 让用户写秒，内部存帧。
-- 没有 tick 的域：到了时间就执行。
+- 没有 tick 的 Actor：到了时间就执行。
 - **帧率每个构建固定**：写在 Actor 类型上，进 `wire.manifest`（第 10 节）。
-- **客户端的时间**：只有有 `[TickRate]` 的 Actor 类型推。Presence 确认后，目标先推一条框架通知，带帧长、当前 tick 号和服务器时间（领域时间，客户端只用它的差值，第 7 节）；之后用户的第一份快照对齐到这个 tick。加入另一个有 tick 的 Actor 类型（可能是另一个帧率）、或者 Actor 迁移到别的 shard 之后，再推一次。
+- **客户端的时间**：只有有 `[TickRate]` 的 Actor 类型推。Presence 确认后，目标先推一条框架通知，带帧长、当前 tick 号和服务器时间（领域时间，客户端只用它的差值，第 7 节）；之后用户的第一份快照对齐到这个 tick。加入另一个有 tick 的 Actor 类型（可能是另一个帧率）、或者 Actor 迁移到别的 world 之后，再推一次。
 
 ### 一个计时机制：`Due`
 
@@ -849,7 +849,7 @@ public partial record struct Due(TimeSpan At, long Seq) : IComponent, IIndexed<D
 - **不边遍历 `Range` 边加项**：有序索引的遍历允许销毁实体，不允许改动 `Due`（`reference/valueindex-ordered.mdx`），而执行一项可能 `Schedule` 出新的 `Due`。所以每一步都重新查：取 `Range(Due.Min, new Due(t, long.MaxValue))` 的第一项（最小的、不晚于 t 的），和邮箱快照的队首比较，执行较早的那个，然后从头再查。每次查找 O(log 项数)；执行中新加的、时间不晚于 t 的项，下一次查找就按顺序取到。
 - 发起者被销毁时，子实体一起销毁，事件不再执行。
 - 周期性的逻辑写进系统；稀疏的周期（例如每秒跳一次伤害）在事件处理方法里再 `Schedule(…, after:)` 下一次。
-- **每个域待执行的延后事件有上限**（默认 65,536，Actor 类型上可以写 `[MaxScheduled(n)]`）。超过时 `Schedule` 抛出，按 `[OnError]` 处理：一个失控的循环不会吃光内存。
+- **每个 Actor 待执行的延后事件有上限**（默认 65,536，Actor 类型上可以写 `[MaxScheduled(n)]`）。超过时 `Schedule` 抛出，按 `[OnError]` 处理：一个失控的循环不会吃光内存。
 
 **`Scheduled<T>` 是普通数据**：`record struct Scheduled<T>(EntityId Id) where T : struct, IEvent`，指向那个子实体。
 - 还在等吗：`world.IsPending(in s)`；取消：`world.Cancel(in s)`。执行或取消后 `IsPending` 就是 `false`。
@@ -930,13 +930,13 @@ public partial record struct Due(TimeSpan At, long Seq) : IComponent, IIndexed<D
 
 - 保存整棵子树，组件集合是注册时建好的 `migrate = ComponentSet.Create().With(typeof(每个不带 [Transient] 的组件))`：默认都带，标了 `[Transient]` 的除外。
 - 等待中的请求、Presence 实体（连同 `Subscribed`）、待执行的延后事件随 Actor 一起迁移。
-  - `Due` 在字节里是剩余时间，到达后按新 shard 的单调时钟重新起算，再按它的 tick 边界归入 tick 窗口；已经过期的在第一个 tick 执行（第 9 节）。
+  - `Due` 在字节里是剩余时间，到达后按新 world 的单调时钟重新起算，再按它的 tick 边界归入 tick 窗口；已经过期的在第一个 tick 执行（第 9 节）。
 - **迁移头里带着每个组件的布局哈希**（来自 `wire.manifest`）。目标节点的布局有一个对不上（滚动升级时新旧版本混跑），就不搬字节：源节点改为停用、写记录，目标节点从版本兼容的记录加载。这时只有 `IPersisted` 的数据留下；Presence 丢失，由 SDK 重新加入。
 - 源节点销毁子树前先移除 `Presence` 和 `Persisted`：路由不释放，根也不标 `Unsaved`（第 6 节的表）。
 - **墓碑**：源节点在迁移后保留一段时间的 `(键 → 新节点)`，把晚到的控制消息（例如 `JoinConfirmed`、回信）转过去。
 - 停用写记录时不保存待执行的延后事件：需要跨停用保留的状态，写进 `IPersisted` 组件。
 - 到达后的第一条邮件是 `Activated(Activation.Migrated)`。
-- 跨 shard 也走字节，因为 `MoveEntities` 要求两个 world 在同一个线程。
+- 跨 world 也走字节，因为 `MoveEntities` 要求两个 world 在同一个线程。
 - 迁移期间尽力保序，不设栅栏。
 - 重新平衡引起的迁移限速：每个节点同时迁出的 Actor 有上限，节点增减时不会一下子搬空。
 
@@ -980,25 +980,25 @@ public partial record struct Due(TimeSpan At, long Seq) : IComponent, IIndexed<D
   - 一个节点组逐个节点热重启；期间新旧版本混跑，规则同滚动升级。
 - **交接的字节**（下面两种传输方式完全相同）：
   - 头：节点名、节点代数、化身号、交接令牌、旧版本 `wire.manifest` 的哈希、校验和；
-  - 每个 shard：`world.Save` 的字节（实体连同 id 和版本、组件、`DynamicBuffer`（包括占位上等着的 `Mail`）、单例；不含系统、索引、写入戳，EasyEcs `guide/saves.mdx`）；调度队列里还没进 world 的邮件；这个 shard 的 `Time.Now`；
+  - 每个 world：`world.Save` 的字节（实体连同 id 和版本、组件、`DynamicBuffer`（包括占位上等着的 `Mail`）、单例；不含系统、索引、写入戳，EasyEcs `guide/saves.mdx`）；调度队列里还没进 world 的邮件；这个 world 的 `Time.Now`；
   - 节点的运行时状态：调用 id 的序号、墓碑、连接戳的计数；每条链路对方发来的流（流 id、处理到的字节数）和发出去的流（流 id、偏移、还没确认的尾巴）。
   - 记录写入在交接之前都有了结果：写成的去掉了 `Unsaved`，没写成的还带着。`Unsaved` 是根上的 tag，随 `world.Save` 一起过去，所以等着写的记录不会丢，新进程的下一个检查点接着写。`Outbox` 每项执行完就发出，两个 tick 之间是空的。
-- **时间**：新进程的 shard 时钟从保存时的 `Time.Now` 接着走，所以每个 `Due` 不用改写，剩下的时间不变，停顿不计入（同迁移的剩余时间）。
+- **时间**：新进程的 world 时钟从保存时的 `Time.Now` 接着走，所以每个 `Due` 不用改写，剩下的时间不变，停顿不计入（同迁移的剩余时间）。
 - **步骤：先预热，再交接**（节点自己起继任进程时的标准顺序）：
-  1. 新进程先启动，做完 JIT 预热或 AOT 初始化，为每个 shard 建好空的 world、按 `Registration` 加上系统，并提前和其他节点握手，建好备用链路（见下面的"备用链路"）；它不绑定客户端端口；
+  1. 新进程先启动，做完 JIT 预热或 AOT 初始化，建好空的 world、按 `Registration` 加上系统，并提前和其他节点握手，建好备用链路（见下面的"备用链路"）；它不绑定客户端端口；
   2. 旧节点在成员视图里宣布 `Restarting`，带一个期限和交接令牌的哈希；
-  3. 这时旧进程的每个 shard 才在两个 tick 之间停下：不再从链路取帧，等在途的记录写入有结果，然后 `world.Save`，连同运行时状态流给新进程；
+  3. 这时旧进程的每个 world 才在两个 tick 之间停下：不再从链路取帧，等在途的记录写入有结果，然后 `world.Save`，连同运行时状态流给新进程；
   4. 新进程 `world.Load` 进已经建好的 world，接上时钟；
   5. 新进程以一次成员更新接管：同一个节点名和代数、化身号加一（成员视图里已有的化身号）、带着交接令牌；它的成员信息比 `Restarting` 新，其他节点关掉旧进程的链路，改用备用链路，重放各自的重发窗口（处理到的字节数在交接里，所以不重复也不丢）；
   6. 旧进程退出。
   - 平台重启进程时做不到预热：旧进程先退出，新进程启动后才做第 1、4、5 步。
 - **所有权怎么交过去**：
   - 不重新占 epoch，不隔离：每个 Actor 的 epoch 在它的根上，随 world 过去；存储里的 epoch 没变，新进程写记录照样比较成功。
-  - 安全靠"任一时刻只有一个进程跑 shard"：旧进程在 `Save` 之前停下所有 shard，之后不再跑，除非新进程在**提交点**之前报告失败；新进程过了提交点才跑 shard。提交点是新进程加载完、回报"已加载"（本机管道），或者新进程找到合格的快照（平台重启，那时旧进程已经退出）。
+  - 安全靠"任一时刻只有一个进程跑 world"：旧进程在 `Save` 之前停下所有 world，之后不再跑，除非新进程在**提交点**之前报告失败；新进程过了提交点才跑 world。提交点是新进程加载完、回报"已加载"（本机管道），或者新进程找到合格的快照（平台重启，那时旧进程已经退出）。
   - `Restarting` 期间其他节点不把它当作失效：不判 `Suspect`、`Dead`，放置不变，不迁移，不重新激活。期限按各自的单调时钟、从第一次看到时算起，不依赖时钟一致。
   - 发给它的消息留在链路的有界重发窗口里（网关上的客户端消息也是），满了回 `Busy`，发送方按已有的退避重试；请求的期限照常走，可能超时（第 11 节）。
   - 交接令牌只有收到字节的进程知道，所以别的进程冒充不了继任者。
-  - 期限过了还没接管：按节点离开视图处理（第 11 节），Actor 在别处占新的 epoch，从记录激活。迟到的新进程不被接受，丢弃快照，以新的代数加入；它没跑过 shard，不会写。新进程已经在跑、却被别的节点判了 `Dead` 时，epoch 比较会拦住它的写，它按上面激活 epoch 的规则隔离自己，再以新的代数加入。
+  - 期限过了还没接管：按节点离开视图处理（第 11 节），Actor 在别处占新的 epoch，从记录激活。迟到的新进程不被接受，丢弃快照，以新的代数加入；它没跑过 world，不会写。新进程已经在跑、却被别的节点判了 `Dead` 时，epoch 比较会拦住它的写，它按上面激活 epoch 的规则隔离自己，再以新的代数加入。
 - **备用链路**（ADR-084）：
   - 现在的链路按对方地址一条、只有一个入站位置；Hello 里是进程启动时随机的节点 id，`Resume` 回来的 id 变了就当作对方重启：丢掉流，在途的调用失败。同一个地址上来的第二个 Hello 会抢走旧进程的入站位置。所以热重启要改链路：
   - 链路上的身份是（节点名，代数），化身号单独带上；继任进程是同一个身份，续上旧进程的流，不算重启；
@@ -1008,9 +1008,9 @@ public partial record struct Due(TimeSpan At, long Seq) : IComponent, IIndexed<D
   - 化身号变大时重新取成员卡片（新版本的构建号在卡片上）；
   - 平台重启时没有备用链路：新进程绑好公布的端口后以同一个身份重连，流照样续上。
 - **两种传输方式**，同一套字节、同一套所有权规则：
-  - **节点自己起继任进程**（物理机、虚拟机、Windows 服务、macOS、开发机）：旧进程启动新二进制，两者经本机的命名管道（`System.IO.Pipes`：Windows 上是命名管道，Unix 上是 Unix 域套接字）连上；新进程预热好之后，旧进程停 shard、把字节流过去；新进程加载、回报"已加载"；旧进程关掉监听端口退出，新进程绑定同样的端口。不需要 `exec`（Windows 没有）。服务管理器按 PID 盯进程时，要允许交接（例如 systemd 由新进程 `sd_notify` 报告 `MAINPID`），或者留一个很小的启动器进程作为被监管的父进程。
+  - **节点自己起继任进程**（物理机、虚拟机、Windows 服务、macOS、开发机）：旧进程启动新二进制，两者经本机的命名管道（`System.IO.Pipes`：Windows 上是命名管道，Unix 上是 Unix 域套接字）连上；新进程预热好之后，旧进程停 world、把字节流过去；新进程加载、回报"已加载"；旧进程关掉监听端口退出，新进程绑定同样的端口。不需要 `exec`（Windows 没有）。服务管理器按 PID 盯进程时，要允许交接（例如 systemd 由新进程 `sd_notify` 报告 `MAINPID`），或者留一个很小的启动器进程作为被监管的父进程。
   - **平台重启进程**（Kubernetes 同一个 Pod 里的容器重启、systemd 重启）：旧进程把字节写进节点本地目录里的一个文件（Kubernetes 上是 `medium: Memory` 的 emptyDir，有 tmpfs 用 tmpfs，否则普通本地目录），经 `MemoryMappedFile.CreateFromFile` 写入（跨平台；Unix 上没有具名映射），然后退出。新进程启动时找属于自己节点名、校验和正确、没过期限的快照：有就加载，不重新激活；过期或者不合格就删掉，照常加入、从记录激活。Kubernetes 上，承载 Actor 的节点组是 `updateStrategy: OnDelete` 的 StatefulSet（Pod 名就是节点名，改模板不替换 Pod）；命令先改 StatefulSet 模板里的镜像，再逐个改运行中 Pod 的容器镜像：kubelet 在同一个 Pod 里重启容器（同一个 UID、同一个 IP），emptyDir 保留，不重新调度（ADR-085）。网关和无状态的节点组仍是 Deployment。
-- **停顿**：先预热再交接时，停顿只有 `Save`、传输、`Load` 加上一次成员更新，目标是几十毫秒；平台重启时还要加上进程启动和重连，目标是几百毫秒。搬 world 只要几毫秒：一个 world、每个实体 5 个非托管组件，1 万个实体 `Save` 44 µs、`Load` 183 µs、440 KB，10 万个实体 `Save` 0.76 ms、`Load` 2.7 ms（合计约 3.5 ms）、4.4 MB，都不分配（BenchmarkDotNet ShortRun，EasyEcs 4.5.0，.NET 11 RC2）。R 里端到端测量：BenchmarkDotNet 测每个 shard 的交接，E2E 测停顿时长、客户端不断线。
+- **停顿**：先预热再交接时，停顿只有 `Save`、传输、`Load` 加上一次成员更新，目标是几十毫秒；平台重启时还要加上进程启动和重连，目标是几百毫秒。搬 world 只要几毫秒：一个 world、每个实体 5 个非托管组件，1 万个实体 `Save` 44 µs、`Load` 183 µs、440 KB，10 万个实体 `Save` 0.76 ms、`Load` 2.7 ms（合计约 3.5 ms）、4.4 MB，都不分配（BenchmarkDotNet ShortRun，EasyEcs 4.5.0，.NET 11 RC2）。R 里端到端测量：BenchmarkDotNet 测每个 world 的交接，E2E 测停顿时长、客户端不断线。
 - **写入戳（热重启的前提：EasyEcs 需求 #22）**：
   - 现状：`world.Load` 把每一行都盖上 world 当前的写入戳（缺某个追踪组件的行算作移除过），没有 `markWritten` 参数；系统的 `[Changed<T>]` / `[Removed<T>]` 按 `Since(LastRunTick + 1)` 过滤，第一次运行前 `LastRunTick` 是 0（`internal set`，框架改不了），所以第一次运行访问 world 开始以来盖过戳的每一行。
   - 不改的话，热重启之后 `ChangeSystem` 给每个根标 `Unsaved`，每个 Actor 同时把记录重写一遍。
@@ -1023,7 +1023,7 @@ public partial record struct Due(TimeSpan At, long Seq) : IComponent, IIndexed<D
 ### 不重启就能改的
 
 两种改动都只是换数据，在两个 tick 之间生效：
-- **配置表**（调参的表）：一个 shard 单例，节点读入、校验新版本后，每个 shard 在两个 tick 之间换上；版本号写在成员信息里。
+- **配置表**（调参的表）：一个 world 的单例，节点读入、校验新版本后，每个 world 在两个 tick 之间换上；版本号写在成员信息里。
 - **功能开关**：二进制里编译好的几种做法，由一个单例或 tag 选（处理方法和系统按它过滤）；开关就是改这份数据。
 
 ---
@@ -1051,12 +1051,12 @@ public partial record struct Due(TimeSpan At, long Seq) : IComponent, IIndexed<D
 | 迁移期间的消息 | 不丢，尽力保序；晚到的控制消息由墓碑转发；目标节点宕机时，在途的单向消息可能丢失 |
 | 迁移两端的组件布局不同 | 不搬字节：停用、写记录，目标从记录加载 |
 | 新版本去掉了还在用的处理方法 | 热重启不走原地，改走经记录（第 10 节）；分发时仍然找不到就是 `NotHandled` |
-| 热重启时新进程起不来，或者 `Load` 失败、校验和不对 | 提交点之前：旧进程撤回 `Restarting`，接着跑 shard（平台重启时旧进程已经退出：新进程丢弃快照，照常从记录激活）；命令报告失败 |
+| 热重启时新进程起不来，或者 `Load` 失败、校验和不对 | 提交点之前：旧进程撤回 `Restarting`，接着跑 world（平台重启时旧进程已经退出：新进程丢弃快照，照常从记录激活）；命令报告失败 |
 | 热重启超过期限还没接管 | 按节点离开视图处理；迟到的新进程丢弃快照，以新的代数加入 |
 | 滚动升级中收到 `NotHandled` | 重新解析放置后可以重试一次 |
 | 邮箱满 | 发送方收到 `Busy`；客户端的消息由网关回绝 |
 | 控制通道 | 不受 `Busy` 限制，但有界：Presence 的控制消息不超过本节点的 Presence 数，回信不超过本节点还在等的请求数 |
-| 一个域的延后事件超过上限 | `Schedule` 抛出，按 `[OnError]` 处理 |
+| 一个 Actor 的延后事件超过上限 | `Schedule` 抛出，按 `[OnError]` 处理 |
 | 客户端读得太慢 | 断开（ADR-035） |
 | 离开通知丢失 | 链路重连时核对，或者节点离开视图时，补做 `Leave()` |
 | Presence 没经过 `Leave()` 就销毁 | 清理组件释放路由，SDK 收到 `PresenceLost` 后重新加入 |
@@ -1384,7 +1384,7 @@ public static partial class Registrations
             world.AddSystem<Diff>();
             world.AddSystem<Departures>();
             world.AddSystem<Flush>();
-        });                                                                // the shard runs Ordering, Update<Map>(), Settling at 30 Hz
+        });                                                                // the node runs Ordering, Update<Map>(), Settling at 30 Hz
 }
 // No Dispatch<Player>: Player has no handlers in this example; its presences come from JoinOnConnect.
 ```
@@ -1397,7 +1397,7 @@ namespace Game.Server
     public readonly struct MapServer     : IServer;
     public readonly struct GatewayServer : IServer, IAcceptsClients;
 }
-// The same IServer as the server side (DaServer.Abstractions); AddNodes<T>(string name, int replicas, int shards = 1) where T : struct, IServer names it typeof(T).FullName.
+// The same IServer as the server side (DaServer.Core); AddNodes<T>(string name, int replicas) where T : struct, IServer names it typeof(T).FullName.
 ```
 
 ```text
@@ -1418,7 +1418,7 @@ on      Game.Server.Strike       Map
 leaving Map  Departures
 ```
 
-### 测试一个域：`TestDomain<K>`
+### 测试一个 Actor：`TestActor<K>`
 
 一个 world、一个根、手动时钟；`Outbox` 是数据，直接断言。不起节点，不连网络。用户的系统用 `SystemErrorPolicy.Throw`：系统抛出就是测试失败，不像节点上那样停用了事。
 
@@ -1426,7 +1426,7 @@ leaving Map  Departures
 [Test]
 public void Walking_out_of_range_during_the_windup_dodges()
 {
-    using var map = new TestDomain<Map>(new Map(7), Registrations.Create());   // one world, the root, a manual clock
+    using var map = new TestActor<Map>(new Map(7), Registrations.Create());   // one world, the root, a manual clock
     var a = map.Connect(new Account(1));                                        // test clients: a stamp and the claims
     var b = map.Connect(new Account(2));
     map.Deliver(new EnterMap(7), client: a);
@@ -1445,7 +1445,7 @@ public void Walking_out_of_range_during_the_windup_dodges()
 [Test]
 public void A_busy_tick_allocates_nothing_and_threads_change_nothing()
 {
-    using var map = new TestDomain<Map>(new Map(7), Registrations.Create());
+    using var map = new TestActor<Map>(new Map(7), Registrations.Create());
     map.Populate(npcs: 20_000);                                                 // a test helper: enough rows for parallel chunks
     map.Tick();                                                                 // warm up: pools, query caches, buffers
 
@@ -1454,11 +1454,11 @@ public void A_busy_tick_allocates_nothing_and_threads_change_nothing()
 }
 ```
 
-- **`map.AllocatedBytes(action)`**：执行一次 `action`（静态 lambda，不捕获），返回分配的字节数。域里有 `Parallel = true` 的方法时用 `GC.GetTotalAllocatedBytes(precise: true)`，否则用 `GC.GetAllocatedBytesForCurrentThread()`（EasyEcs `guide/testing.mdx`）；所以测试按 fixture 串行跑。
-- **`map.AssertParallelMatchesSerial(ticks)`**：一个测试里核对并行和串行的结果完全一致。`MaxDegreeOfParallelism` 在建 world 时定下（init-only），`Restore` 只收同一个 world 的快照（别的 world 的抛 `ArgumentException`），所以测试台自己带一个串行的孪生域（`MaxDegreeOfParallelism = 1`），收到同样的输入：
-  1. 主域 `Capture()` 存下起点，跑 `ticks` 帧，记下 `Outbox` 和整棵子树 `SaveEntities` 的字节；
+- **`map.AllocatedBytes(action)`**：执行一次 `action`（静态 lambda，不捕获），返回分配的字节数。Actor 里有 `Parallel = true` 的方法时用 `GC.GetTotalAllocatedBytes(precise: true)`，否则用 `GC.GetAllocatedBytesForCurrentThread()`（EasyEcs `guide/testing.mdx`）；所以测试按 fixture 串行跑。
+- **`map.AssertParallelMatchesSerial(ticks)`**：一个测试里核对并行和串行的结果完全一致。`MaxDegreeOfParallelism` 在建 world 时定下（init-only），`Restore` 只收同一个 world 的快照（别的 world 的抛 `ArgumentException`），所以测试台自己带一个串行的孪生 world（`MaxDegreeOfParallelism = 1`），收到同样的输入：
+  1. 主 world `Capture()` 存下起点，跑 `ticks` 帧，记下 `Outbox` 和整棵子树 `SaveEntities` 的字节；
   2. `Restore(起点)`，再跑 `ticks` 帧，和第 1 步比较：并行方法有数据竞争时，两次多线程的结果就可能不同；
-  3. 孪生域跑同样的 `ticks` 帧，和第 1 步比较：串行和并行一致。
+  3. 孪生 world 跑同样的 `ticks` 帧，和第 1 步比较：串行和并行一致。
 
 ### 运行时的路径
 
@@ -1477,7 +1477,7 @@ public void A_busy_tick_allocates_nothing_and_threads_change_nothing()
 ⑧ CastSkill           同上；Cast 校验后 caster.Schedule(Strike, after: 前摇)，带着 Due 进有序索引；HasPending<Strike> 拒绝第二次施法
 ⑨ Strike 到期         tick 窗口所在那一帧的有序阶段，和消息按 (时间, 序号) 归并：读目标此刻的位置，够得着才扣血；走开了就是闪避
 ⑩ 每 33 ms 一个 tick   Ordering（OrderedPhase）→ Update<Map>()：Steering（多线程）、Movement、CellAssign、Regroup、Snapshot、Diff、
-                      Departures、Flush → Settling：Depart、SyncSubscriptions；只遍历带 In<Map> 的表 → Cleanup：ReleaseRoutes 等（按 shard）；
+                      Departures、Flush → Settling：Depart、SyncSubscriptions；只遍历带 In<Map> 的表 → Cleanup：ReleaseRoutes 等（按 world）；
                       Nearby → 有观察者的网关 → 各个连接
 ⑪ map-0 宕机          Map 7 在 map-1 建占位（键和等着的邮件都在它上面），占到新的 epoch，记录装进占位，它就是根（Avatar 不在记录里）；map-0 若只是停顿，醒来后写记录 epoch 比较失败，被隔离；
                       Client(c1) 看到 map-0 离开视图：删路由，PresenceLost(槽 1) 给 SDK；SDK 重发 EnterMap(7) → Enter 新建 Avatar，Join → 同 ④–⑥
@@ -1548,7 +1548,7 @@ public void A_busy_tick_allocates_nothing_and_threads_change_nothing()
   - `PresenceId` 的节点位、进程启动时随机的节点 id（→ 集群分配的节点代数）、只比较相等的连接代数（→ 有序的连接戳）；
   - UTC 纪元的领域时间、依赖 NTP 的绝对到期时刻（→ 单调时钟、剩余时间）；
   - 自动的 `NeedsSnapshot` 和"挂接/重放后推完整快照"（→ 用户逻辑）；Logic 决定有没有 tick 和对应的热更规则（→ `[TickRate]` 在 Server）；
-- v24 修订中去掉的：处理方法的 `Maybe<T>` 参数（→ 方法体里 `TryGetX`）、激活时把 Actor 类型组件和 `DynamicBuffer<Mail>` 从占位搬到新根（→ 占位就是根）、生成的 `find:` 委托（→ 运行时的 `world.Index<K, K>()`）、"迁移到达后按 `Subscribed` 重新订阅"的单独规则（→ 迁移到达算作写入）、每次调用 `QueryFilter.Create()`、`Spawn(…).SetX().SetY()` 的多次行移动（→ `Spawn(prefab, in a, in b)`）、按域的系统耗时（→ `system.Stats` 按 shard 的 world）；
+- v24 修订中去掉的：处理方法的 `Maybe<T>` 参数（→ 方法体里 `TryGetX`）、激活时把 Actor 类型组件和 `DynamicBuffer<Mail>` 从占位搬到新根（→ 占位就是根）、生成的 `find:` 委托（→ 运行时的 `world.Index<K, K>()`）、"迁移到达后按 `Subscribed` 重新订阅"的单独规则（→ 迁移到达算作写入）、每次调用 `QueryFilter.Create()`、`Spawn(…).SetX().SetY()` 的多次行移动（→ `Spawn(prefab, in a, in b)`）、按 Actor 的系统耗时（→ `system.Stats` 按 world）；
 - v25 的：`Game.Server.Logic` 工程和工程之间的循环、可回收的 `AssemblyLoadContext`、`RemoveTypes`、两个 tick 之间换分发表的热更、`wire.manifest` 的 Logic 一段、`Registration` 的 Logic 部分、"组件声明在 Logic"的检查、"AOT 不热更"（→ 两个工程、原地热重启，JIT 和 AOT 一样）；
 - 草案历次加了又去掉的：位置目录、定时租约摘要、迁移栅栏、`MapSlot`、`RouteLost`。
 
@@ -1568,13 +1568,14 @@ public void A_busy_tick_allocates_nothing_and_threads_change_nothing()
 | v17 | 一条消息是一个事务；Tick 按列并行 |
 | v18 | 动作跨多帧：`Raise(e, after: n)`、`Scheduled<T>`，到期时重新校验 |
 | v19 | n = 0 在当前处理方法之后紧接着执行，属于同一个事务 |
-| v20 | 每个域是一个离散事件模拟：按 `(时间, 序号)` 逐个执行 |
+| v20 | 每个 Actor 是一个离散事件模拟：按 `(时间, 序号)` 逐个执行 |
 | v21 | 延后用时间；一个绑定规则；[Handles<K>]；Answer<TReq,TState>；去掉空间分区 |
 | v22 | 每帧逻辑用 EasyEcs 系统；一个时间类型、一个计时机制（Due 有序索引）；Scheduled 是数据；ReplyTo 放进状态；实体操作在 Entity 上 |
 | v23 | 改名（Actor、Presence/Join/Leave、Sender、IMessageTo/IRequestTo、TickRate、Time…）；客户端消息带 [To] 直达目标，每个 Actor 类型一个 Presence；只留 Entity；帧率写在 Actor 类型上、Actor 类型即系统组；异常不回滚如实说明 |
 | v24 | handler = EasyEcs 单实体 job；离开/订阅/有序阶段都是数据；客户端看不到节点；SDK 负责重新加入；身份与 Player 解耦；IPersisted；Entity.Root；Schedule/Send 分开；激活 epoch 隔离、有序连接戳、相对时间、迁移版本校验、有界队列 |
 | v25 | 基于 EasyEcs 4.5（`entity.Run`、`IGroupWith`、`Descendants`、`markWritten: false`）；占位就是根；`Key` 显式实现、`IActor<TSelf>` 带 `IEquatable<TSelf>`；按 EasyEcs 文档修正（到期索引、清理组件、`Maybe<T>`、并行度）；Native AOT（JIT 可热更，AOT 不热更；注册是封闭类型、无反射） |
 | v26 | 进程内热更换成原地热重启：两个 tick 之间 `world.Save` 交给新进程（本机管道或节点本地快照文件），同一个节点代数、化身号加一、epoch 不变，不重新激活；JIT 和 AOT 一样；去掉 Logic 工程，用户工程只有 Protocol 和 Server；`wire.manifest` 每个工程一段；不重启就能改的是数据（配置表、功能开关） |
+| v27 | 名词精简：去掉“域”，就是 Actor（根实体加子孙）；shard 只在框架内部，用户看到的是节点里的 world，个数按 CPU 自动定，`AddNodes` 不再有 `shards`；`TestDomain<K>` 改名 `TestActor<K>`；包合并成 Core / Client / DaServer / Persistence.PostgreSql / Testing / Aspire（ADR-086） |
 
 ---
 
