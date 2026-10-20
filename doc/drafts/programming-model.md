@@ -1,4 +1,4 @@
-# DaServer 新编程模型设计（草案 v49，未实现，迭代中）
+# DaServer 新编程模型设计（草案 v50，未实现，迭代中）
 
 原则：业务代码干净、解耦、简洁，不用 OOP。ECS 一路到底：能用 EasyEcs 的功能就用 EasyEcs，状态都是数据，其余交给我们的特性和生成器，不重复造轮子。
 
@@ -500,7 +500,7 @@ public interface IChildKey<TSelf> : IComponent, IUniqueIndexed<TSelf>, IEquatabl
   - `Entity` 不带 Actor 类型，所以发送方由调用处决定：`[Handles<K>]` 类和 `[UpdateInGroup<K>]` 系统里，K 不在消息的 `[From<…>]` 里，分析器报错；在别处（帮助类）调用时，Debug 构建沿 `ChildOf` 走到根、断言它的 Actor 类型，Release 不做这一步。
   - 这是帮助写对的手段，不是安全边界。安全边界在网关：只转发 `IFromClient`。
 - **发送方是哪个 Actor**：发送实体所属的 Actor（`e.Root`），见第 5 节的操作表。
-- **客户端上下文自动带上**：处理客户端消息、`PresenceLost` 时，发出的请求信封里带着这个客户端的上下文（`ClientId`、所在节点、连接戳、身份、客户端的调用 id），和期限一样。接收方在处理这个请求时可以 `Join()`（第 7 节）。
+- **客户端上下文自动带上**：处理客户端消息、`PresenceLost` 时，发出的请求信封里带着这个客户端的上下文（`ClientId`、所在节点和 `ConnectionId`、连接戳、身份、客户端的调用 id），和期限一样。接收方在处理这个请求时可以 `Join()`（第 7 节）。
   - 用户不接触上下文本身；它在运行时的单例 `Current` 里（第 5 节）。系统里、`Activated` 里和定时事件里没有客户端上下文，从那里发出的请求也不带：接收方的 `Join()` 得到 `NoClient`（第 7 节），不是默认值。
 - **`ICluster`**（HTTP、后台、测试）不属于任何 Actor，可以发任何服务器之间的消息，回复回到调用方：`await cluster.Ask(to, msg, deadline, call: CallId.From(externalKey))`，期限也可以换成 `CancellationToken`；`[Durable]` 的请求还必写 `settleBy:`（第 8 节）。
   - 期限作为预算发出（第 9 节）；取消只停止等待，已经发出的请求照常执行，结果未知，同超时；
@@ -781,12 +781,13 @@ ref var hp = ref target.Health;
   - **签发**：`cluster.IssueClientToken(in claims, ClientId.New(), issueSeq, lifetime, into)`：`into` 是调用方给的 `Span<byte>`（至少 `SignedToken.MaxLength` 字节），返回写入的字节数，不分配。Actor 里用 `root.IssueClientToken(in claims, lifetime, into)`（第 5 节的操作表），签发序号是根上框架保存的计数器，每次加一。
   - **签发序号先落定，令牌才离开**：否则签发方在令牌发出之后、记录写成之前宕机，从旧记录恢复后同一个序号会再签给另一次登录。所以令牌由应用在一个 `[Durable]` 请求的处理方法里签发，令牌就是回复，回复在记录写成之后才放出（第 8 节）；在别处调用 `root.IssueClientToken`，或者在根不保存的 Actor 类型上调用，分析器报错。mmo 样例的登录服务就这样问账号 Actor。
   - **刷新**：`cluster.RefreshClientToken(token, lifetime, into)` 换新的过期时刻，保留 `ClientId` 和签发序号。
-  - **`ClientId`**：`readonly record struct ClientId(ulong Value)`，每次登录随机取一个，重连和刷新都不变；它是 `Connection` 的键、客户端调用 id 的前缀（第 8 节），也是 `cluster.Disconnect(clientId)` 的参数。
-- **激活**：客户端连上一个承载 `Connection` 的节点后，框架用令牌里的 `ClientId` 激活 `Connection(ClientId)`。
+  - **`ClientId`**：`readonly record struct ClientId(ulong Value)`，每次登录随机取一个，重连和刷新都不变；它是客户端调用 id 的前缀（第 8 节），也是 `cluster.Disconnect(clientId)` 的参数。
+- **`ConnectionId`**：`readonly record struct ConnectionId(ulong Hi, ulong Lo)`，16 个随机字节，网关接受连接时生成，每个连接一个；它是 `Connection` 的键。键不用 `ClientId`：同一次登录在一个节点上可能同时有两个连接（`Retire` 后又连到同一个网关、旧连接半开时重连），而 Actor 的键是唯一索引，第二个连接的键会抛出。
+- **激活**：客户端连上一个承载 `Connection` 的节点后，框架激活 `Connection(ConnectionId)`，加上 `ClientOf(ClientId)`（令牌里的 `ClientId`，非唯一的值索引，EasyEcs 的 `IIndexed<ClientId>`）：`cluster.Disconnect(clientId)` 用它找到这个客户端在本节点的连接，新连接用它找到同一次登录的旧连接（[architecture.md 第 3 节](architecture.md#connection-stamps)）。`Connection` 落在哪个 world 按 `ClientId` 的哈希，不按键，所以同一次登录在本节点的连接在同一个 world 里，索引查得到。
 - **身份**：令牌里的声明解码成用户写的 `IClaims` 类型，例如 `Account`，作为组件加到 `Connection` 上，并随它转发的每条客户端消息带上（第 5 节的身份参数）。框架不认识任何业务字段。
 - **位置固定**：`Connection` 固定在连接所在的节点，不参与放置，也不迁移；连接断开，它就停用。
 - **扩展**：写 `[Handles<Connection>]` 类；要给它加组件（例如令牌桶），在它的 `[On<Activated>]` 里当场 `Set` 上（`Connection` 是框架的类型，没有用户写的 `RootPrefab`）。
-- **找不到它**：别的 Actor 不能用 `ClientId` 找到 `Connection`。推送只经过 Presence，所以不需要位置目录。
+- **找不到它**：别的 Actor 不能用 `ClientId` 找到 `Connection`（`ClientOf` 的索引只在本节点的 world 里）。推送只经过 Presence，所以不需要位置目录。
 
 ### Presence
 
@@ -1089,7 +1090,7 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 
 ### 激活 epoch：一个 Actor 只有一个激活能写
 
-- **放置版本**：协调者每次因成员变化改动一个 Actor 类型的放置，就把这个类型的放置版本加一，随视图传播。节点之间的每个帧捎带发送方见过的最高版本；一个节点从不按比它见过的更旧的版本激活。
+- **放置版本**：一个 Actor 类型的放置每变一次，协调者就把这个类型的放置版本加一：成员变化，以及槽表的每次移动（按负载的迁移、粘性类型的钉住，ADR-079）都算；版本随视图和槽表传播。只在成员变化时加一的话，槽表移走的键在新主人那里永远占不到（同一个版本，主人不同）。节点之间的每个帧捎带发送方见过的最高版本；一个节点从不按比它见过的更旧的版本激活。
 - **激活先占 epoch，占和读是一条语句**（键还没有记录时插入一行占位；有行而条件不成立时语句不改也不返回任何行，就是没占到）：
   ```sql
   INSERT INTO actors AS a (key, epoch, write_gen, owner, placement, record)
@@ -1178,7 +1179,7 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 - 保存整棵子树（`world.Descendants(root).AddTo(ids, includeRoot: true)`，同上面的记录），组件集合是注册时建好的 `migrate = ComponentSet.Create().With(typeof(每个不带 [NotSaved] 的组件))`：默认都带，标了 `[NotSaved]` 的除外；只有组件类型（`With(Type)` 也收单例，组保存遇到单例就抛出，所以生成器只传组件）；到达时按 prefab 补上它们（上面的恢复）。源节点先等这个根在途的写和留住的 `[Durable]` 输出放出（第 8 节）。
 - 等待中的请求、Presence 实体（连同 `Subscribed`）、待执行的延后事件随 Actor 一起迁移。
   - `Due` 在字节里是剩余时间，到达后按新 world 的单调时钟重新起算，再按它的 tick 边界归入 tick 窗口；已经过期的在第一个 tick 执行（第 9 节）。`Due.Seq` 到达时用新 world 的序号重新编号，保持它们之间原来的先后，然后重建到期堆。
-- **到达时占一个新的 epoch**：从字节里带来的 epoch `e` 比较并加一（同一条 `UPDATE … RETURNING`，不读记录），主人改成本节点，写代归零（根上的写代也从 0 数起）；条件是 `epoch = e OR (epoch = e + 1 AND owner = (本节点名, 代数))`，所以这条语句重试时、或者到达后本节点热重启再来一次时，照样成功。占到之前，到达的子树像占位一样不运行，邮件排队；比较失败（别人已经占了）就隔离这份到达。所以迁移之后，源节点的任何迟到的写都会失败。
+- **到达时占一个新的 epoch**：从字节里带来的 epoch `e` 比较并加一（同一条 `UPDATE … RETURNING`，不读记录），主人改成本节点，放置版本改成本节点见过的这个类型的版本，写代归零（根上的写代也从 0 数起）；条件是 `epoch = e OR (epoch = e + 1 AND owner = (本节点名, 代数))`，所以这条语句重试时、或者到达后本节点热重启再来一次时，照样成功。占到之前，到达的子树像占位一样不运行，邮件排队；比较失败（别人已经占了）就隔离这份到达。所以迁移之后，源节点的任何迟到的写都会失败。
 - **迁移头里带着每个组件的布局哈希和每个 prefab 的组成哈希**（来自 `wire.manifest`）。组成哈希不同照样搬字节，到达时按 prefab 补上（上面的恢复）；目标节点的布局有一个对不上（滚动升级时新旧版本混跑），就不搬字节：源节点改为停用、写记录，目标节点从版本兼容的记录加载。这时只有记录里的留下；Presence 丢失，由 SDK 重新加入。
 - 源节点销毁子树前先移除 `Presence` 和 `Persisted`：路由不释放，根也不标 `Unsaved`（第 6 节的表）。
 - **墓碑**：源节点在迁移后保留一段时间的 `(键 → 新节点)`，这个键的所有邮件都转过去（控制消息、回信和普通消息都是）；墓碑还在时本节点不激活这个键。墓碑指向的节点已经离开视图时，按当前的放置转发。
@@ -1219,7 +1220,7 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 
 改代码就换二进制：节点在原地换成新版本的进程，Actor 不重新激活，客户端不断线。JIT 和 Native AOT、每个平台都是同一个机制：**快照文件**（ADR-084、ADR-088）。热重启的做法只写在这一节。
 
-- **武装只做准备**：运维命令 `{cluster}-restart`（第 2 节）带上新版本的 `wire.manifest`，经节点的管理端点武装节点。节点比对新旧两份，选一条路，在命令的结果里报告；协调者在视图里记下这次武装的随机数。武装之后没有等来 SIGTERM，过一段时间就静默作废，什么也不发生。
+- **武装只做准备**：运维命令 `{cluster}-restart`（第 2 节）带上新版本的 `wire.manifest`，经节点的管理端点武装节点。节点比对新旧两份，选一条路，在命令的结果里报告；协调者在视图里记下这次武装的随机数。武装之后没有等来 SIGTERM，过一段时间就静默作废，什么也不发生。带 `exit=true` 的武装（`/admin/restart?exit=true`）不等 SIGTERM：用于**同镜像滚动**（换密钥、改配置，二进制不变），节点当场自己执行第 1 步，写完快照就退出，由平台重启进程（下面的平台表）。
 
   | 比对结果 | 路径 | 停顿 |
   |---|---|---|
@@ -1232,7 +1233,7 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
   - **拒绝武装**：有成员在 `NodeLeaving` 或 `NodeJoining`（放置正在变）；全集群唯一的热重启许可已经发给了别的节点（第 2 节）；工作集加上快照的估计大小超过 cgroup 内存上限的约 80%（快照目录是内存盘时，它也算在这个上限里）。
   - 一个节点组逐个节点热重启，协调者排在最后；期间新旧版本混跑，规则同滚动升级。
 - **步骤**：
-  1. **SIGTERM 才开始**：武装状态下收到 SIGTERM（Windows 服务是停止命令），节点向协调者宣布成员状态 `NodeRestarting`（带预计停顿和武装的随机数）。协调者确认之后，期限才开始算，节点才冻结。期限由协调者按自己的单调时钟计时，其他节点只照它的决定做。
+  1. **SIGTERM 才开始，或者 `exit=true` 的武装当场开始**：武装状态下收到 SIGTERM（Windows 服务是停止命令）时开始；带 `exit=true` 武装的节点（同镜像滚动）不等信号，武装一被接受就自己开始，第 4 步之后退出，由平台重启进程。节点向协调者宣布成员状态 `NodeRestarting`（带预计停顿和武装的随机数）。协调者确认之后，期限才开始算，节点才冻结。期限由协调者按自己的单调时钟计时，其他节点只照它的决定做。
   2. **冻结前的最后一个 tick**：框架给每个 Actor 的根加上 `Restarting(TimeSpan ExpectedPause)`，用户的系统按需要反应（下面）；同一个 tick 的 `Settling` 去掉它，所以快照里没有 `Restarting`。
   3. 每个 world 在两个 tick 之间冻结：不再执行任何项，等在途的存储操作（写记录、占 epoch）有结果：写成的就此落定，留住的 `[Durable]` 输出随之放出，在第 4 步的切换点之前交给链路；没写成的检查点给根加回 `Unsaved`，随快照过去，新进程的下一个检查点接着写；还有留住输出的根先写一次，等它们放出（第 8 节），所以快照里没有留住的输出。这个等待有上限，过了就放弃（下面）。**冻结只停 world 的线程**：IO 线程照常收帧，放进调度队列，冻结期间发来的消息不被拒绝，也不用让客户端或别的节点停发。
   4. 进程停止读链路，这一刻就是切换点。快照先写进 `DaServer:SnapshotPath` 目录里的临时文件，`fsync`，再改成正式的文件名（普通的文件写入：几 MB 用不着内存映射），然后进程退出。快照里有：
@@ -1271,13 +1272,13 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 
   | 平台 | 快照目录（`DaServer:SnapshotPath`） | 怎么重启 |
   |---|---|---|
-  | Kubernetes | `medium: Memory` 的 `emptyDir` | 发布改模板里的镜像；`{cluster}-restart` 的 rollout Job 逐个改运行中 Pod 的容器镜像（StatefulSet `OnDelete`，同一个 Pod、UID 和 IP，ADR-085） |
-  | Docker Compose | 每个节点自己的命名卷 | 部署机器上逐个节点 `docker compose up -d --no-deps map-0` |
-  | systemd | `RuntimeDirectory=` 加 `RuntimeDirectoryPreserve=restart`（`/run` 下的 tmpfs，重启时保留，[systemd.exec(5)](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#RuntimeDirectory=)） | `systemctl restart` |
-  | launchd、Windows 服务 | 本地目录 | `launchctl kickstart -k`、`Restart-Service` |
+  | Kubernetes | `medium: Memory` 的 `emptyDir` | 发布改模板里的镜像；`{cluster}-restart` 的 rollout Job 逐个改运行中 Pod 的容器镜像（StatefulSet `OnDelete`，同一个 Pod、UID 和 IP，ADR-085）。同镜像滚动（换 Secret、改 ConfigMap：`OnDelete` 的模板变了也不换 Pod）没有镜像可改：Job 用 `exit=true` 武装，节点退出后 kubelet 在同一个 Pod 里重启容器（`restartPolicy: Always`），重新读 env 和 `envFrom` |
+  | Docker Compose | 每个节点自己的命名卷 | 部署机器上逐个节点 `docker compose up -d --no-deps map-0`；同镜像滚动是同一条命令：重启都重新读配置，不用 `exit=true` |
+  | systemd | `RuntimeDirectory=` 加 `RuntimeDirectoryPreserve=restart`（`/run` 下的 tmpfs，重启时保留，[systemd.exec(5)](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#RuntimeDirectory=)） | `systemctl restart`；同镜像滚动同样（重启重新读配置） |
+  | launchd、Windows 服务 | 本地目录 | `launchctl kickstart -k`、`Restart-Service`；同镜像滚动同样 |
   | 本地 Aspire | 每个节点一个临时目录 | 仪表盘里的 `{cluster}-restart`：重新编译，逐个节点武装，再用 Aspire 资源的重启命令（不是 `aspire do`：它跑在一个新进程里，碰不到正在运行的 AppHost） |
 
-  DaServer.Aspire 设置 `DaServer:SnapshotPath`；裸机上由 unit、plist 或服务的配置设置（[deployment.md 第 0 节](deployment.md#0-launch-flows)）。每个平台的重启都先发停止信号（SIGTERM，或 Windows 服务的停止命令），所以"武装 + 平台的重启"就是热重启。
+  DaServer.Aspire 设置 `DaServer:SnapshotPath`；裸机上由 unit、plist 或服务的配置设置（[deployment.md 第 0 节](deployment.md#0-launch-flows)）。每个平台的重启都先发停止信号（SIGTERM，或 Windows 服务的停止命令），所以"武装 + 平台的重启"就是热重启；`exit=true` 的武装由节点自己开始，平台只负责把退出的进程拉起来。
 - **写入戳**：新进程用 `world.Load(input, in keep, markWritten: false)` 加载（`guide/saves.mdx` 的 "Restart"，EasyEcs D39）：加载的行没有写入戳（tick 0），也不算移除过；系统加在加载之后，第一次运行看的是 tick 1 起的写入（`guide/change-tracking.mdx` 的 "Ticks"）。
   - 所以 `ChangeSystem` 不会给每个根标 `Unsaved`，Actor 不会把记录重写一遍；真正没写的记录由带过来的 `Unsaved` 负责。
   - **用户看得到的后果**：热重启之后，所有 `[Changed<T>]` / `[Removed<T>]` 方法（包括用户的，例如 AOI、`SyncSubscriptions`、`CellAssign`）都不把加载的行当作变更。由追踪组件算出来的组件本来就随快照过去，一般不用重算；确实要全量走一遍的，用 `[With<Resumed>]`。
@@ -1339,7 +1340,7 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 | 迁移两端的组件布局不同 | 不搬字节：停用、写记录，目标从记录加载 |
 | 记录里有这个版本不认识的类型（回滚之后） | 跳过并计数，加载照常；新版本 prefab 上多出的组件按 prefab 的默认值补上（第 10 节） |
 | 新版本去掉了还在用的处理方法 | 热重启不走原地，改走经记录（第 10 节）；分发时仍然找不到就是 `NotHandled` |
-| 武装之后没有等来 SIGTERM | 武装静默作废（第 10 节） |
+| 武装之后没有等来 SIGTERM（不带 `exit=true`） | 武装静默作废（第 10 节） |
 | 热重启冻结时存储挂住、快照写失败 | 放弃：撤回 `NodeRestarting`，根带 `Resumed(Aborted: true)`，节点优雅停止，新进程经记录（第 10 节） |
 | 热重启后快照不合格（校验和、节点名、boot id、过期、镜像不是武装的那个、配置钉了和头里不同的 world 数） | 新进程删掉它，以新的代数加入，Actor 从记录激活 |
 | 热重启加载之后又崩溃 | 快照在 world 运行前已经删掉，下次启动经记录 |
@@ -2136,17 +2137,17 @@ public void An_expired_grant_takes_the_drop_off_the_map()
 每一跳经过的队列、索引和帧见 [architecture.md 第 3 节](architecture.md#3-messaging)。
 
 ```
-① 客户端连 gate-0      框架在 gate-0 激活 Connection(c1)，加上 Account(42) 和连接戳 S1；第一条邮件是 Activated
+① 客户端连 gate-0      框架在 gate-0 激活 Connection(n1)（n1 是这个连接的 ConnectionId，c1 是它的 ClientId），加上 Account(42) 和连接戳 S1；第一条邮件是 Activated
 ② 连上就加入           [JoinOnConnect<Account>]：向 Player 42@game-1 发加入请求（带 S1）；Player 建 c1 的 Presence（戳更大的胜出），回复 P1
                       Connection 写路由 (Player 42, P1, 槽 0)，发 JoinConfirmed(P1)；推 Ready，放出排队的消息
-③ EnterMap(7)         Connection(c1)@gate-0：过滤（帧头）→ 路由表：带 [To]，目标 Map 7@map-0；直接转发，信封带着 c1 的上下文（身份、S1、调用 id）
+③ EnterMap(7)         Connection(n1)@gate-0：过滤（帧头）→ 路由表：带 [To]，目标 Map 7@map-0；直接转发，信封带着 c1 的上下文（身份、S1、调用 id）
 ④ Enter               Map 7 的有序阶段：主体是根；GetOrSpawn 找到或建出 Avatar（新建的带 NetId）；Join() 当场返回 Ok（P2），Enter 返回 true
                       Outbox 里给 gate-0 的帧先是 Route(Map 7, P2)，再是回复；阶段结束时交给链路
-⑤ Connection(c1)      写路由，槽 1；原来有 Map 3 的路由就删掉，Map 3 对旧 Presence Leave()；向 Map 7 发 JoinConfirmed(P2)；
+⑤ Connection(n1)      写路由，槽 1；原来有 Map 3 的路由就删掉，Map 3 对旧 Presence Leave()；向 Map 7 发 JoinConfirmed(P2)；
                       给 SDK 发 JoinConfirmed(槽 1, 调用 id)，再交回 true：SDK 记下 EnterMap(7) 是槽 1 的加入消息
 ⑥ JoinConfirmed(P2)   Map 7：Avatar 带上 Joined(MissedPushes: true)；推时间通知（33 ms、tick 号、服务器时间）；
                       Regroup 已写好 Subscribed，SendFullState 按 Changed<Joined> 推完整状态，收尾的 SyncSubscriptions 把订阅集合发给网关
-⑦ MoveTo              不带 [To]：Connection(c1) → c1 的 Map 路由 → Map 7 的邮箱；下一个 tick 的有序阶段取出：主体是 Avatar，校验这一步，当场改位置
+⑦ MoveTo              不带 [To]：Connection(n1) → c1 的 Map 路由 → Map 7 的邮箱；下一个 tick 的有序阶段取出：主体是 Avatar，校验这一步，当场改位置
 ⑧ CastSkill           同上；Cast 校验后 caster.Schedule(Strike, after: 前摇)，带着 Due 进到期堆；IsPending<Strike> 拒绝第二次施法
 ⑨ Strike 到期         tick 窗口所在那一帧的有序阶段，和消息按 (时间, 序号) 归并：读目标此刻的位置，够得着才扣血；走开了就是闪避
 ⑩ PickUp(9)           主体是 Avatar：Take 校验 9 号是看得见、够得着的掉落，掉落向 Loot 7@game-0 普通地 Ask Claim（状态里是客户端的令牌）；
@@ -2161,14 +2162,14 @@ public void An_expired_grant_takes_the_drop_off_the_map()
                       Nearby 序列化一次 → 有观察者的网关各一帧 → 各个连接
 ⑫ map-0 宕机          map-0 超过租约就自己冻结；Map 7 在 map-1 建占位（键和等着的邮件都在它上面），占到新的 epoch，记录装进占位，它就是根：
                       Grid 和 NetIds 恢复，掉落、Avatar 和 NPC 不在记录里；Activated(Loaded)（没写过记录时是 Created）向 Loot 7 发 Restock，Loot 7 把还有的掉落 Show 回来；
-                      Connection(c1) 看到 map-0 离开视图：删路由，PresenceLost(槽 1) 给 SDK；SDK 重发 EnterMap(7) → Enter 新建 Avatar，Join → 同 ④–⑥
+                      Connection(n1) 看到 map-0 离开视图：删路由，PresenceLost(槽 1) 给 SDK；SDK 重发 EnterMap(7) → Enter 新建 Avatar，Join → 同 ④–⑥
 ⑬ map-0 热重启        武装；SIGTERM 后宣布 NodeRestarting，协调者确认；最后一个 tick 根上带 Restarting；冻结、写快照、退出；
                       gate-0 把发给 map-0 的帧留在重发窗口；新进程加载快照、删掉文件，以同一个身份重连，协调者 Readmit 后续上流；
                       第一个 tick 带 Resumed；Avatar、Presence、路由都没变，客户端只看到一次停顿
 ⑭ c1 与 gate-0 的连接半开（gate-0 还没发现断线），c1 换到 gate-1 重连
-                      新的 Connection(c1) 带更大的戳 S2（签发序号相同，SDK 的连接序号更大）：连上就加入，接管 Player 上的 Presence；Ready 之后 SDK 重发 EnterMap(7)：
+                      新的 Connection(n2)（同一个 ClientId c1）带更大的戳 S2（签发序号相同，SDK 的连接序号更大）：连上就加入，接管 Player 上的 Presence；Ready 之后 SDK 重发 EnterMap(7)：
                       GetOrSpawn 找到原来的 Avatar，Join() 按戳接管（新的 PresenceId，去掉 Joined 直到确认）；gate-0 上的旧路由按旧的 PresenceId 释放；
-                      目标向 gate-0 发 TakeOver(S2)：签发序号相同，旧的 Connection(c1) 安静地关闭；确认后 Joined.MissedPushes 为真，SendFullState 重推
+                      目标向 gate-0 发 TakeOver(n1, S2)：签发序号相同，旧的 Connection(n1) 安静地关闭；确认后 Joined.MissedPushes 为真，SendFullState 重推
 ⑮ gate-1 宕机          Player 42 和 Map 7 上 c1 的 Presence 加上 Detached（宽限 30 秒），不推送；c1 经负载均衡器连到 gate-0，
                       戳更大，接管两个 Presence，去掉 Detached；没回来的，宽限期过后 Leave()
 ```

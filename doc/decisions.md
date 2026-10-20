@@ -1552,7 +1552,7 @@ Replaced by ADR-081.
   changed" leaks; the order between mail, delayed sends and systems is implicit. EasyEcs provides what a
   model without these needs: single-entity jobs (`entity.Run(ref job[, filter])`), group filters carried by
   interfaces (`IGroupWith<T>`), `world.Descendants(root)` and `LoadEntitiesInto(…, markWritten: false)`.
-- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v49), structured as in
+- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v50), structured as in
   [drafts/architecture.md](drafts/architecture.md):
   - **The actor type is its address, its root component, its root prefab and its system group**:
     `[TickRate(30)] partial record struct Map(long Id) : IActor<Map>` (`IActor<T>` inherits `IEquatable<T>`, so
@@ -1579,8 +1579,9 @@ Replaced by ADR-081.
       send, and checked by every world before its ordered phase (a node that hears nobody freezes even when the
       others still hear it); the next-oldest member acks once the coordinator is `Suspect`, so a coordinator crash
       expires nobody's lease; peers re-place after max(`DeadAfter`, `SuspectAfter` + lease);
-    - taking a key from another owner needs a strictly newer placement version (the coordinator bumps it on every
-      membership change of a type, frames carry the highest seen), and a claim that displaces a live owner sends it
+    - taking a key from another owner needs a strictly newer placement version (the coordinator bumps a type's version on every
+      placement change, a membership change or a slot-table move (ADR-079); frames carry the highest seen; a
+      migration's arrival writes it too), and a claim that displaces a live owner sends it
       `Fence(key, epoch)`, so two activations never overlap until the loser's next write; claims are idempotent, so
       a retried statement or a restart after a migration's arrival does not fence the claimant itself;
     - a root's record writes never overlap in one process (the next waits for the one in flight), and the CAS
@@ -1654,10 +1655,13 @@ Replaced by ADR-081.
       token issue sequence, a per-account counter persisted before the token leaves and kept by a refresh; one login is
       one `ClientId`, so an equal sequence under another `ClientId` counts as newer too) closes the old device as
       terminal, so two devices never fight by reconnecting; one login's connections are ordered by an attempt counter
-      the SDK carries, not by gateway generation, so a reconnect through an older gateway still takes over.
+      the SDK carries, not by gateway generation, so a reconnect through an older gateway still takes over. A `Connection` is keyed by a
+      per-connection `ConnectionId`, with the `ClientId` a non-unique index: one login can hold two connections on one
+      node (a retire or a half-open reconnect landing on the same gateway), and an actor key is unique.
     - `Joined(MissedPushes)` tells snapshot systems whether to resend (`[Changed<Joined>]`; users need not learn
       `Retire` or stamps), and `Retire` keeps ADR-026's fence (a `HandedOff` marker on the old route) so each actor's
-      pushes stay in order.
+      pushes stay in order; the client's handshake carries the retire flag, so `[JoinOnConnect]` presences get the fence
+      too.
     - A pause never extends a request's budget (ADR-028's rule, kept across resend windows, migration and hot
       restart); nested asks inherit the remaining time; `ReplyTo` carries its deadline (a UTC instant once it is in a record).
     - A status has two classes, `NotExecuted` (definitely not run) and `Transient` (worth retrying); the framework
@@ -1995,7 +1999,8 @@ Replaced by ADR-081.
     `Resumed(0, Aborted: true)` so systems can undo. With no system nothing happens and messages wait. Gateways see the
     restarting nodes in the `RestartingNodes` singleton.
   - **Arming only prepares; the platform's stop starts it**: the coordinator records an arm nonce in the view; the
-    node announces `NodeRestarting` on SIGTERM while armed and freezes only after the coordinator acks, so the deadline
+    node announces `NodeRestarting` on SIGTERM while armed (or at once when armed with `exit=true` for a same-image
+    roll: it runs step 1 itself, exits after its snapshot, and the platform restarts the process) and freezes only after the coordinator acks, so the deadline
     starts at the freeze and an arm the platform never follows (a rollout Job killed in between) expires silently.
     Arming is refused while a member joins or leaves, while another node holds the one cluster-wide restart permit,
     or when the working set plus the snapshot would pass about 80% of the cgroup memory limit; the rollout restarts
@@ -2031,13 +2036,14 @@ Replaced by ADR-081.
   snapshot, paid by a balanced cluster for nothing. The cluster already has what shedding needs: every member's load
   travels in its gossip pulse (ADR-031).
 - Decision (mechanics in [drafts/architecture.md](drafts/architecture.md#retire-and-rebalancing) section 3):
-  - Each client-facing node puts its connection count in its pulse, computes its group's average from its own view,
-    and only when it is above the average by more than a tolerance (10%, `DaServer:Clients:RebalanceTolerance`)
+  - Each client-facing node puts its connection count in its pulse, computes its group's average from its own view
+    over the gateways that are Up and ready (not `NodeJoining` ones, whose empty counts would make the others shed
+    before they can take connections), and only when it is above the average by more than a tolerance (10%, `DaServer:Clients:RebalanceTolerance`)
     retires its excess through `Retire` (make before break, ADR-026), at most 1% of its connections a second. The
     load balancer picks where they go.
   - A balanced group retires nobody. No coordinator is involved: each node decides from the view alone, and the
     rate and the tolerance keep nodes that act on slightly different views from overshooting.
-  - Paused while a gateway drains or `RestartingNodes` is not empty: counts then do not show the steady state.
+  - Paused while a gateway of the group is `NodeLeaving` (draining) or `RestartingNodes` is not empty: counts then do not show the steady state.
   - `MaxConnectionAge` stays only as an optional setting, off by default, for deployments that want periodic
     reconnection (credential rotation at the edge, long-lived NAT mappings).
 - Alternatives: the maximum age as the rebalancer (ADR-026: moves clients of balanced groups); a cluster-side
@@ -2045,7 +2051,8 @@ Replaced by ADR-081.
   from the view; one more failure to handle); the cluster naming a gateway to connect to (ADR-026: an address per
   node the platform does not give).
 - Consequences: after a scale-out only the excess moves, at a bounded rate; a balanced or shrinking group pays
-  nothing. Tests: a balanced group retires nobody and a scale-out sheds only the excess (roadmap W5, again on real
+  nothing. Tests: a balanced group retires nobody, a scale-out sheds only the excess and a joining gateway is left out
+  of the average (roadmap W5, again on real
   gateways in W11); rebalancing pauses during a drain and a hot restart (W6, which builds the hot restart). ADR-026's age becomes optional when W10 promotes the drafts.
 
 ## ADR-090 Optional capabilities: reminders, topics, non-.NET clients, replication, test and admin tools

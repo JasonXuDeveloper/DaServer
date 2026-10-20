@@ -22,7 +22,7 @@ Keep this file current: tick items when done, add items when scope changes.
 11. S1-S6 (done) elastic scaling.
 12. The ECS rewrite (ADR-081, the "ECS rewrite" entry under "Open cleanup" below): P1-P3 and P5 done; P4, P6 and P7
     superseded by W.
-13. W — refactor to the v49 programming model ([drafts/programming-model.md](drafts/programming-model.md),
+13. W — refactor to the v50 programming model ([drafts/programming-model.md](drafts/programming-model.md),
     [drafts/architecture.md](drafts/architecture.md)) on EasyEcs 4.7 (ADR-082 to ADR-092). Breaking; each step
     proven before the next (W, not R: the requirement ids R0-R11 are taken).
     W10 runs last, after W12 and N9.
@@ -100,15 +100,17 @@ Keep this file current: tick items when done, add items when scope changes.
       `Time.Elapsed`, run in the next ordered phase, kept by a snapshot taken in between).
       Evaluate Kestrel's `ConnectionHandler` for the cluster and client ports against the own listener with
       BenchmarkDotNet (`TransportBenchmark`); adopt only without a regression.
-    - [ ] W5 Presences, the gateway (`Connection` on `[Hosts<Connection>]`, `Incoming` as a header view, forwarding as a
-      batch pass), client tokens (`cluster.IssueClientToken`, `RefreshClientToken`, `ClientId`; one login is one
+    - [ ] W5 Presences, the gateway (`Connection` on `[Hosts<Connection>]`, keyed by a `ConnectionId` made at accept with
+      `ClientOf(ClientId)` a non-unique index and the world chosen by the `ClientId`, `Incoming` as a header view,
+      forwarding as a batch pass), client tokens (`cluster.IssueClientToken`, `RefreshClientToken`, `ClientId`; one login is one
       `ClientId`), `[To]` routing, `[JoinOnConnect]`, `Join()` returning `Status`, SDK re-join, `Retire` with presences
-      (the new connection's stamps take over, the `HandedOff` fence, `Joined(MissedPushes)`), `Detached` with
+      (the new connection's stamps take over, the `HandedOff` fence, `Joined(MissedPushes)`, the retire flag in the
+      handshake passed on by `[JoinOnConnect]` joins; two connections of one login on one node settled at activation), `Detached` with
       `DetachGrace`, `cluster.Disconnect` and `connection.Disconnect` (no grace), `TakeOver` and the SDK's terminal
       `Superseded` (a newer sequence, or an equal one under another `ClientId`), one login's connections ordered by the
       SDK's attempt counter (from the Unix milliseconds at SDK start, one per attempt), `AlreadyConnected`, client call ids
       across reconnects from a random 63-bit start (`ConnectionLost`), `Busy` retry-after in the SDK and
-      `[JoinOnConnect]` (`Unavailable`), the admission bucket, load-based connection rebalancing (ADR-089),
+      `[JoinOnConnect]` (`Unavailable`), the admission bucket, load-based connection rebalancing (ADR-089; the average over gateways Up and ready),
       `ClientGroup` subscriptions (full sets, keys scoped by `root.Group`), the send rate per group as data
       (`root.SetGroupRate(key, every: n)` into the `GroupRate` buffer the ticking root's copy carries, the latest wins; the
       group's frame handed over on its due tick and before any membership change of the group, a counter in its
@@ -120,7 +122,8 @@ Keep this file current: tick items when done, add items when scope changes.
       `JoinOnConnectOutageDoesNotAmplify`, `ClientRetryAfterReconnectKeepsCallId`, `SdkCallIdsStartRandom`,
       `ForeignCallIdCannotCollide`, `RetireKeepsPushOrderPerActor`, `ReconnectAfterLossGetsFullSnapshot`,
       `LowRateGroupCoalescesUntilDue`, `GroupFrameFlushedBeforeMembershipChange`, `LatestGroupRateWins`,
-      `RetireRacingConnectionLoss`, `UnknownClientMessageAtOldGateway`.
+      `RetireRacingConnectionLoss`, `UnknownClientMessageAtOldGateway`, `RetireToSameGatewayKeepsBothUntilRoutesMove`,
+      `HalfOpenReconnectToSameGateway`, `RetireKeepsJoinOnConnectFence`, `JoiningGatewayLeftOutOfAverage`.
     - [ ] W6 Persistence, activation, migration and hot restart: the membership lease, generations from the
       coordinator, the epoch claim with owner generation and placement version in one upsert (`INSERT … ON CONFLICT … RETURNING`, the displaced owner as PostgreSQL 18's `old.owner`), fencing,
       placeholder roots and their bounded mail, `[ActivatedBy<T>]` (a key's first activation only; `[Durable]` requests
@@ -147,7 +150,8 @@ Keep this file current: tick items when done, add items when scope changes.
       another count), user singletons outside it
       (`Save(output, in exclude)`/`Load(input, in keep, markWritten: false)`), `Restarting`/`Resumed`, `RestartingNodes` with `TryGetPause`, the time notice
       re-pushed on `Resumed`, the admin endpoint's manifest diff (the path taken: in place, through records, or refused
-      for a rolling upgrade) and `{cluster}-restart` for local Aspire (the dashboard's resource command), Compose
+      for a rolling upgrade), the `exit=true` arm (a same-image roll: the node starts step 1 itself, without a signal,
+      and exits after its snapshot for the platform to restart it) and `{cluster}-restart` for local Aspire (the dashboard's resource command), Compose
       (stateful groups as one service per node with a fixed hostname and a named snapshot volume each, restarted one
       node at a time) and the documented systemd unit, launchd plist and Windows service (the Kubernetes rollout is
       W11). With them: `[Durable]` at both ends (actors keep running: a root that ran any of the four kinds of durable item
@@ -170,7 +174,8 @@ Keep this file current: tick items when done, add items when scope changes.
       `TestActor<K>` with `[Durable]` (the write at the end of `Tick`, `FailNextWrite()`, `Answer<TReq>(value | status)`),
       `WakeAt`, `NextDue` from the runtime's `WakeSystem` (`[Changed<WakeAt>]`/`[Removed<WakeAt>]`) with the `next_due` column,
       `IActorStore.DueKeys` and the `DueScan` wake, `StoreDegraded` and `ActivationSlots`, `ActivationFailed`, strict
-      placement versions with `Fence`, idempotent claims, generations from Unix ms and single-seed formation, the lease
+      placement versions with `Fence` (bumped on every placement change of a type, slot-table moves included; a
+      migration's arrival claims with the type's current version), idempotent claims, generations from Unix ms and single-seed formation, the lease
       ack, the restart permit, arm nonce, `NodeRestarting` and `Rejoining`, pinned slots and the reconcile on `Readmit`.
       Tests: `ShardChecksLeaseBeforeTick`, `StashRestoredWithItsKey`, `AvatarNotInRecord`, `NetIdsCounterSurvivesCrash`,
       `PersistentSpawnUnderUnsavedParentThrows`, `SpawnOfPersistentPrefabTagsRootUnsaved`,
@@ -203,7 +208,7 @@ Keep this file current: tick items when done, add items when scope changes.
       `SnapshotWorldCountKeptUnlessConfigPinsAnother`, `ConfigTablesAndWorldSingletonsNotInSnapshot`,
       `LateProcessWaitsForCoordinatorVerdict`, `NewGenerationSupersedesRestartingOne`, `SnapshotFromBeforeRebootRejected`,
       `JoinDuringRestartMovesNoSlotOfRestartingNode`, `ScaleInWaitsForRestart`, `ResumeIsolatesRootsPlacedElsewhere`,
-      `AsymmetricPartitionFreezesUnheardNode`, `CoordinatorCrashDoesNotExpireLeases`, `SameVersionSecondClaimRefused`,
+      `AsymmetricPartitionFreezesUnheardNode`, `CoordinatorCrashDoesNotExpireLeases`, `SameVersionSecondClaimRefused`, `SlotMoveBumpsPlacementSoClaimSucceeds`, `ExitArmRestartsWithoutSignal`,
       `DisplacedOwnerFencedWithoutWrite`, `GroupFramesFlushedBeforeDeactivationAndMigration`,
       `FencedActorDiscardsGroupFrames`, `MigrationArrivalClaimSurvivesRestart`,
       `CoordinatorHotRestartDeadlineKeptBySuccessor`, `TwoExpiredRestartsDoNotDownMajority`,

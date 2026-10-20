@@ -1,6 +1,6 @@
 # Target architecture (draft, not implemented)
 
-The architecture DaServer is refactored to (breaking, roadmap phase W): the v49 programming model of
+The architecture DaServer is refactored to (breaking, roadmap phase W): the v50 programming model of
 [programming-model.md](programming-model.md) on EasyEcs 4.7 (the draft's header lists the features it uses), with Native AOT support. The programming model draft is
 the source of truth for what users write and what each rule means; this file says how the pieces fit together, holds the runtime's internal data and the client protocol's
 internals, and links to the draft's sections instead of repeating them. Today's architecture is [design.md](../design.md); the
@@ -225,8 +225,8 @@ exported, OpenTelemetry). Names users never write but meet in diagnostics: the S
 | `RestartingNodes` | node singleton | The members in `NodeRestarting`, with their expected pauses; `TryGetPause(connection, out pause)` for gateway systems that tell clients | `daserver.members{state}` |
 | `StoreDegraded`, `ActivationSlots`, `PeerHealth` | node singletons | The store is slow or down (no idle deactivation, `Saving` placeholders capped); concurrent epoch claims (jittered back-off); in-flight requests and latency per destination node with an adaptive limit (fail fast with `Busy`) ([draft §6](programming-model.md#6-生命周期), [§11](programming-model.md#11-失败时的结果)) | `daserver.store.degraded`, `daserver.activations.claiming`, `daserver.peer.inflight`, `daserver.peer.limit` |
 | Placeholder | entity | A key not yet active or being saved: the copy of `K.RootPrefab` without `In<K>`, the key, `Loading`, `Saving` or `ActivationFailed(until)`, a bounded `DynamicBuffer<Mail>`; `OnError = Reload` turns a root back into one in place, keeping only the key, the `Mail` and the faulting `[Durable]` call id (values reset to the prefab copy's) | `daserver.activations.failed` |
-| Control mail | mail on the control channel | `Route`, `Lost`, `JoinConfirmed`, `TakeOver(stamp)` (a takeover closing the old connection), the `HandedOff(slot)` marker on a retired route, `Fence(key, epoch)`, `Wake`; bounded by what the node holds, never `Busy` | `daserver.messages.dropped{reason}` |
-| Membership states | per member in the view | `NodeJoining`, `NodeLeaving` (placement is changing), `NodeRestarting` (a hot restart, announced on SIGTERM; user systems see the `Restarting` tag and `RestartingNodes`), `Rejoining` (the new process waiting for the coordinator's `Readmit` or `Gone`) | `daserver.members{state}` |
+| Control mail | mail on the control channel | `Route`, `Lost`, `JoinConfirmed`, `TakeOver(ConnectionId, stamp)` (a takeover closing the old connection), the `HandedOff(slot)` marker on a retired route, `Fence(key, epoch)`, `Wake`; bounded by what the node holds, never `Busy` | `daserver.messages.dropped{reason}` |
+| Membership states | per member in the view | `NodeJoining`, `NodeLeaving` (placement is changing), `NodeRestarting` (a hot restart, announced on SIGTERM, or at once under an `exit=true` arm; user systems see the `Restarting` tag and `RestartingNodes`), `Rejoining` (the new process waiting for the coordinator's `Readmit` or `Gone`) | `daserver.members{state}` |
 
 ### `Registration`
 
@@ -259,8 +259,8 @@ scope for now and would be another `IFrameChannel` (ADR-092).
 ### A client message, hop by hop
 
 1. **Client SDK → gateway IO thread**: the frame lands in a pooled receive buffer (`BufferPool`).
-2. **→ the gateway shard's dispatch queue** (bounded; full: `Busy` to the client). The shard finds the `Connection`
-   root by its `ClientId` unique value index.
+2. **→ the gateway shard's dispatch queue** (bounded; full: `Busy` to the client), the world chosen at accept by the
+   connection's `ClientId` hash. The shard finds the `Connection` root by its key, the `ConnectionId` made at accept.
 3. **Filter and route**: `Incoming` is a view of the frame header (`TypeId`, length, claims); the payload is never
    decoded. With an `[On<Incoming>]` method it runs as a job per message; without one the forward is a pass over the
    batch. The route table maps the `TypeId` to the handling actor type; the target key comes from the `[To]`
@@ -318,6 +318,12 @@ scope for now and would be another `IFrameChannel` (ADR-092).
 - **Gateway**: a server type with `[Hosts<Connection>]`. `Connection` is pinned to its socket's node, never placed or
   migrated, activated on connect (admitted by a token bucket), deactivated on disconnect. It filters, routes, keeps
   the routes and fans out groups.
+- **`Connection` is keyed per connection**: `Connection(ConnectionId)`, 16 random bytes made at accept, never the
+  `ClientId`. One login can hold two connections on one node (a `Retire` that lands on the same gateway, a reconnect
+  while a half-open connection lingers), and an actor key is a unique index, which throws on a duplicate key.
+  `ClientOf(ClientId)` on the root is a non-unique value index (`IIndexed<ClientId>`): `cluster.Disconnect` finds a
+  client's connections on the node by it, and a new connection finds the older one of its login (below). The world
+  is chosen by the `ClientId`'s hash, not the key's, so one login's connections on a node share a world and its index.
 - **`ClientGroup` fan-out**: subscriptions are data (`DynamicBuffer<Subscribed>` on presences); `SyncSubscriptions`
   sends the full set of each changed presence to the gateways, which replace it; a group push is serialized once, one
   frame per gateway with members, fanned out there.
@@ -341,19 +347,26 @@ The client protocol's internals behind [draft §7](programming-model.md#7-客户
   smaller one (a stale attempt arriving late) closes quietly too; an equal one is the same connection retrying,
   answered again idempotently. Between different `ClientId`s the larger issue sequence takes over and an equal one
   counts the newcomer as the newer login; only the side with the other `ClientId` and the smaller sequence (on a tie,
-  the older connection) gets `Superseded`, which the SDK treats as terminal. The same rule settles two `Connection`s
-  on one node.
-- **A presence** remembers its connection: `Presence(PresenceId Id, ClientId, node, stamp)` on the target, and
+  the older connection) gets `Superseded`, which the SDK treats as terminal.
+- **Two connections of one login on one node** (a `Retire` that lands on the same gateway, a reconnect while the old
+  connection is half-open): at activation the new `Connection` looks up the others of its `ClientId` in the `ClientOf`
+  index and compares attempts by the rule above. A newcomer with a smaller attempt closes quietly. Otherwise, when its
+  handshake carries the retire flag (below), the older one stays until the takeovers have moved its routes and its open
+  calls are answered, as in a retire across gateways; without the flag (a reconnect) the older one closes quietly at
+  once, its presences go `Detached`, and the new connection's joins take them over with `Joined.MissedPushes` true.
+  Connections of another `ClientId` are not compared there: the stamps settle them at the targets, as across nodes.
+- **A presence** remembers its connection: `Presence(PresenceId Id, ClientId, node, ConnectionId, stamp)` on the target, and
   `Route(ActorId target, PresenceId, Slot)` in the `Connection`'s `DynamicBuffer<Route>`.
 - **Takeover** (`Join()` with a larger stamp): the target drops `Joined`, `Leaving` and `Detached`, draws a new
   `PresenceId`, releases the old route by the old `(PresenceId, stamp)` (so a late release or leave from the old
-  connection matches nothing), and appends `TakeOver(new stamp, new ClientId)` for the old connection's gateway (the node
-  recorded on the old presence, across gateways too). The old `Connection` compares by the stamp rule above: another
+  connection matches nothing), and appends `TakeOver(old ConnectionId, new stamp, new ClientId)` for the old connection's gateway (the node
+  and connection recorded on the old presence, across gateways too). The old `Connection` compares by the stamp rule above: another
   `ClientId` with a larger or equal issue sequence closes it with `Superseded`; the same `ClientId` (the same login on
   a new connection, or a `Retire`) closes it quietly, a retiring one only once its routes have moved and its open calls
   are answered. If it drops half-way, its presences go `Detached` and the new connection takes them over with
   `Joined.MissedPushes` true.
-- **`[JoinOnConnect]`**: the activated `Connection` sends an internal join request carrying its stamp to the actor
+- **`[JoinOnConnect]`**: the activated `Connection` sends an internal join request carrying its stamp (and the
+  handshake's retire flag, so a retired client's `[JoinOnConnect]` presences get the `HandedOff` fence too) to the actor
   whose key has the claims' shape; that side creates or takes over the presence by stamp and `Takeover`; failures
   retry by `RetryAfter` or jittered back-off (joins are idempotent by stamp) until `Unavailable(retryAfter)`.
 - **Registering a route** after `Join()` (asynchronous):
@@ -365,7 +378,8 @@ The client protocol's internals behind [draft §7](programming-model.md#7-客户
      destination, so the confirmation arrives first; a lost one is implied by the first forwarded message) and
      `JoinConfirmed(slot, call id)` to the SDK ahead of the reply, so the SDK knows which message joined the slot.
   4. The target adds `Joined(MissedPushes)` and drops the confirmation deadline; `MissedPushes` is false only when the
-     SDK rejoined because of a `Retire` (the join carries the flag and the old route holds a `HandedOff` fence).
+     client moved because of a `Retire` (the join carries the flag, from the SDK's re-join or from the `Connection`'s
+     `[JoinOnConnect]` join, and the old route holds a `HandedOff` fence).
   5. If the `Connection` is gone, the confirmation deadline passes and the target `Leave()`s the presence, the path of a
      client that disconnects right after joining.
   6. A request whose client already timed out still writes the route; only the reply is dropped.
@@ -383,8 +397,8 @@ The client protocol's internals behind [draft §7](programming-model.md#7-客户
 - **Gateway upgrade or scale-in**: gateways do not hot restart (`Connection` is pinned to its socket). They roll
   surge then drain: every new gateway is ready before an old one leaves the load balancer and sends `ControlOp.Retire`
   in waves (make before break, ADR-026; at most 20 waves of at least 100 connections). The SDK connects through the
-  same public address, re-sends each slot's join flagged "moved by `Retire`", and the larger stamp takes over each
-  presence.
+  same public address with the handshake flagged "moved by `Retire`", re-sends each slot's join with the same flag (the
+  new `Connection` passes it on in its `[JoinOnConnect]` joins), and the larger stamp takes over each presence.
 - **The push-order fence** (ADR-026): on takeover the target pushes `HandedOff(slot)` on the old route after its last
   push there, then switches; the SDK holds the new connection's pushes for that slot until the old connection's
   `HandedOff` arrives, or for at most its call timeout. Nothing is missed, so `Joined.MissedPushes` is false; an application can still owe a snapshot of its own after the handover (the mmo sample's `Resnap` for an avatar that crossed cells meanwhile, [draft §12](programming-model.md#12-完整例子连接进地图移动放技能捡东西看见别人)).
@@ -392,10 +406,11 @@ The client protocol's internals behind [draft §7](programming-model.md#7-客户
   `PresenceLost` from a retiring connection. A connection still there after `RetireGrace` is dropped and handled as a
   lost connection (`Detached`).
 - **Rebalancing by load** (ADR-089): every client-facing node puts its connection count in its pulse (ADR-031) and
-  computes its group's average from its own view; only above the average by more than a tolerance (10%,
+  computes its group's average from its own view over the gateways that are Up and ready (a `NodeJoining` one counts
+  only once it is Up and ready: its empty count would make the others shed before it can take connections); only above the average by more than a tolerance (10%,
   `DaServer:Clients:RebalanceTolerance`) does it retire its excess as above, at most 1% of its connections a second,
   and the load balancer picks where they go. A balanced group retires nobody; no coordinator is involved. Paused
-  while a gateway is `NodeLeaving` or `RestartingNodes` is not empty. A maximum connection age
+  while a gateway of the group is `NodeLeaving` (draining) or `RestartingNodes` is not empty. A maximum connection age
   (`WithClientConnections(port, maxConnectionAge:)` or `DaServer:Clients:MaxConnectionAge`) stays optional, off by
   default, for deployments that want periodic reconnection.
 - **Admission**: a gateway admits new connections through a token bucket and answers `Busy(retryAfter)` when it is
@@ -407,7 +422,8 @@ The rules are [draft §6](programming-model.md#6-生命周期) and [§10](progra
 in short:
 
 - **Placement**: an actor type is bound to server types (`[Hosts<…>]`); its keys are placed among the nodes hosting
-  it, moved when nodes join or leave (rate-limited per node). A node activates a key only when its own view makes it
+  it, moved when nodes join or leave (rate-limited per node) or by the coordinator's slot table (ADR-079). Every placement
+  change of a type, slot-table moves included, bumps its placement version. A node activates a key only when its own view makes it
   the owner and no tombstone for the key is present; otherwise it forwards. `[ActivatedBy<T>]` narrows only a key's
   first activation (no record yet); `[Durable]` requests, like `Wake`, always activate. `[Stateless]` actors live on any node,
   never persisted. `Connection` is pinned.
@@ -424,7 +440,7 @@ in short:
   `LoadEntitiesInto(record, into, markWritten: false)` with the placeholder as the root; `In<K>` added;
   `Activated` first, then the placeholder's mail, then later mail.
 - **Epoch fencing**: every record write compares the epoch; a failed compare fences the activation. A migration's
-  arrival claims a new epoch too, so a late write from the source fails. A root's writes never overlap in one process (`Writing`,
+  arrival claims a new epoch too (writing the type's current placement version), so a late write from the source fails. A root's writes never overlap in one process (`Writing`,
   section 2), and the CAS also compares the write generation, so a late timed-out statement never overwrites newer state;
   a failed or timed-out write is retried with the same bytes and generation;
   `Unsaved` is cleared when the record is taken at the write's start and put back if the write fails, and changes
@@ -484,11 +500,12 @@ in short:
   moves once ([deployment.md section 2](deployment.md#stateless-groups-and-gateways-deployment)).
 - **Hot restart** (ADR-084, ADR-088; mechanics only in [draft §10](programming-model.md#热重启)): the same on JIT and
   AOT and on every platform. Arming only prepares (the coordinator records a nonce); the platform's SIGTERM starts
-  it: the node announces `NodeRestarting` and freezes once the coordinator acks (its slots pinned, its deadline kept by
+  it, or, for a same-image roll (a secret or config change), an arm with `exit=true` starts it at once
+  (the node needs no signal): the node announces `NodeRestarting` and freezes once the coordinator acks (its slots pinned, its deadline kept by
   the coordinator), roots carry `Restarting` for one last tick, the worlds freeze (bounded; in-flight writes land first and roots with held output are written, so no held output is in the snapshot) while IO keeps receiving,
   the process writes a snapshot file under `DaServer:SnapshotPath` (temp file, fsync, rename; the header records the
   world count; user singletons excluded, `Save(output, in exclude)`) and exits; the platform
-  restarts it with the new build; the new process checks the snapshot (checksum, boot id, deadline, the armed
+  restarts it with the new build (or the same one, re-reading its configuration); the new process checks the snapshot (checksum, boot id, deadline, the armed
   manifest), creates the recorded number of worlds whatever its CPU share (through records only when configuration pins
   another count), loads the cluster's current
   configuration tables and creates its world singletons, loads the snapshot keeping them (`Load(input, in keep, markWritten: false)`), deletes it and waits in `Rejoining` for the coordinator's `Readmit` or `Gone`, then reconnects
