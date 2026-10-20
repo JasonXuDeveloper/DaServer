@@ -1776,6 +1776,10 @@ Replaced by ADR-081.
     verified with Aspire 13.6.1 on the .NET 11 RC2 SDK). The `DaServer` package's build props remove `apphost.cs` from
     the server's compilation; `#:project` gives Aspire the project's metadata, not its assembly. User projects stay
     Protocol and Server. The node's entry point stays the user's five-line `Program.cs`.
+  - **Local runs start the binary.** Aspire starts a project resource as `dotnet run --project … --no-build`, which
+    keeps a `dotnet` process alive beside every node and always runs the Debug JIT build. DaServer.Aspire instead builds
+    the server once and starts each node as an executable resource on the built binary; `-- Aot=true` publishes with
+    Native AOT first and runs the native binary, so AOT behaviour is checked locally, not only in images.
   - **Deployment is explicit.** Group names, replica counts, the store and every public port are written in
     `apphost.cs`; nothing is inferred from code. All replicas of a group listen on the same ports. The cluster and
     HTTP ports are assigned by DaServer.Aspire and reachable only inside the cluster; only `WithClientConnections(port)`

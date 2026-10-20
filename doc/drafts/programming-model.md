@@ -285,6 +285,7 @@ public class Movement : EcsSystem
   builder.Build().Run();
   ```
   - 运行：`dotnet run --file apphost.cs`（或 `aspire run`）；发布：`aspire publish`。在这个目录里直接 `dotnet run` 跑的是节点本身。
+  - 本地运行时，DaServer.Aspire 先把服务端编译一次，再把节点作为可执行文件直接启动（每个副本一个进程，不套 `dotnet run`，调试器按进程附加）。默认是 JIT；`dotnet run --file apphost.cs -- Aot=true` 先按 Native AOT 发布，再跑本机二进制，和线上镜像是同一种程序。
   - `DaServer` 包的构建属性把 `apphost.cs` 移出服务端工程的编译（`<Compile Remove="apphost.cs" />`），用户不用写。
   - **AppHost 不引用服务端程序集**：`#:project` 只给 Aspire 工程元数据（`Projects.Game_Server`）。DaServer.Aspire 的生成器读这个工程提交的 `wire.manifest`，只读 `actor` 和 `hosted-by`（第 10 节），在 AppHost 里生成同名的服务器类型，每个都绑定到这个工程：`AddNodes<MapServer>` 起的是 Game.Server 的二进制，节点跑 `MapServer`。
   - **只有一个 `IServer`**（DaServer.Core）：服务端的服务器类型和 AppHost 里生成的同名类型都实现它。`AddNodes<T>(string name, int replicas) where T : struct, IServer` 返回 `DaServerNodeGroup<T>`。

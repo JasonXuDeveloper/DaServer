@@ -54,7 +54,8 @@ Keep this file current: tick items when done, add items when scope changes.
     - [ ] R7 Samples (mmo, flashsale) on the new model; each AppHost becomes an `apphost.cs` (file-based) in the
       sample's server project, with client ports declared by `WithClientConnections(port)`.
     - [ ] R8 Native AOT publish of the samples' nodes with 0 warnings (gated on EasyEcs request #21: IL3054 for tracked
-      components); the AOT E2E run. Admin endpoints as Nino (or plain text for `Accept: text/plain`), `MapAsk`/`MapSend`
+      components); the AOT E2E run. Local runs start each node on its built binary (no `dotnet run` per replica), and
+      `-- Aot=true` runs the AOT-published binary (ADR-087). Admin endpoints as Nino (or plain text for `Accept: text/plain`), `MapAsk`/`MapSend`
       Nino by default with per-endpoint opt-in JSON through the application's source-generated context (ADR-083).
     - [ ] R9 BenchmarkDotNet against the pre-R baseline, allocation tests, the 10k-bot E2E, review rounds; the hot
       restart pause measured end to end (BenchmarkDotNet per shard, E2E with clients connected; target tens of
