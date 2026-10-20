@@ -20,13 +20,34 @@ Keep this file current: tick items when done, add items when scope changes.
    placement affinity with K1-K2 placement strategies and the owner table.
 10. V1-V3 (done) versioning and rolling upgrades (before scaling: rolling deploys depend on them).
 11. S1-S6 (done) elastic scaling.
-12. The ECS rewrite (now; ADR-081, the "ECS rewrite" entry under "Open cleanup" below): P1-P3 and P5 done; P4
-    (the transport and the capabilities as ECS, client sessions as entities in net loops), P6 (records as EasyEcs
-    saves) and P7 (benchmarks, the 10k-bot run, reviews) open.
-13. N9 hot reload (waits for the EasyEcs release it needs).
-14. N4 route completeness, N11 generated filters (on the G filter point), K3-K5, open cleanup, quality items. Later
+12. The ECS rewrite (ADR-081, the "ECS rewrite" entry under "Open cleanup" below): P1-P3 and P5 done; P4, P6 and P7
+    superseded by R.
+13. R — refactor to the v24 programming model ([drafts/programming-model.md](drafts/programming-model.md),
+    [drafts/architecture.md](drafts/architecture.md)) on EasyEcs 4.5.0 (now; ADR-082, ADR-083). Breaking; each step
+    proven before the next:
+    - [ ] R1 EasyEcs 4.5.0 (`EasyEcsVersion`) and the compile checks: the generated explicit `Key`
+      (`Map IIndexed<Map>.Key => this`) is accepted by value indexes; `IActor<TSelf>` with its constraints
+      (`ISystemGroup`, `IGroupWith<In<TSelf>>`) compiles in the framework assembly.
+    - [ ] R2 Abstractions and attributes: `IFromClient`/`IToClient`/`[To]`/`IServer` in Abstractions; `IActor<T>`,
+      `[Handles<K>]`, `[On<T>]`, `IMessageTo<K>`, `IRequestTo<K,R>`, `[From<K>]`, `IEvent`, `IPersisted`, `[Claims]`,
+      `[JoinOnConnect<T>]`, `[TickRate]`, `[Stateless]`, `[Transient]` in the runtime.
+    - [ ] R3 Generator and analyzers: explicit `Key`, typed sends, `[On<T>]` jobs, the closed `Registration`,
+      `wire.manifest` sections, the draft's §13 checks.
+    - [ ] R4 Runtime core: shards (one world each, `MaxDegreeOfParallelism` per world), the ordered phase, `Due`,
+      `Outbox`, `Current`, the framework groups (Ordering, Settling, Cleanup); messages-as-entities measured once.
+    - [ ] R5 Presences, the gateway (`Client` on `[Hosts<Client>]`), `[To]` routing, `[JoinOnConnect]`, SDK re-join,
+      `ClientGroup` subscriptions.
+    - [ ] R6 Persistence, activation and migration: epochs and fencing, placeholder roots, `IPersisted` records
+      through `Descendants` and `ComponentSet`, migration bytes with layout hashes.
+    - [ ] R7 Samples (mmo, flashsale) on the new model.
+    - [ ] R8 Native AOT publish of the samples' nodes with 0 warnings (gated on EasyEcs request #21: IL3054 for tracked
+      components); the AOT E2E run.
+    - [ ] R9 BenchmarkDotNet against the pre-R baseline, allocation tests, the 10k-bot E2E, review rounds.
+    - [ ] R10 Promote the drafts into design.md and decisions.md (CLAUDE.md's Layout, ADR-017), delete the drafts.
+14. N9 hot reload, on R's model (draft §10; JIT deployments only, ADR-083).
+15. N4 route completeness, N11 generated filters (on the G filter point), K3-K5, open cleanup, quality items. Later
     optional modules: `DaServer.Reminders`, `DaServer.Topics`, leases for strict singletons.
-15. After the self-review converged (agreed): Z3 and Z4; P2 `DaServer.Persistence.Redis` and G7 browser clients;
+16. After the self-review converged (agreed): Z3 and Z4; P2 `DaServer.Persistence.Redis` and G7 browser clients;
     group broadcasts only to nodes with members (ADR-029); the server-side NPC sample.
 EasyEcs in parallel when DaServer waits on benchmarks: the Friflo gap, comparison tables in the docs.
 
@@ -66,7 +87,7 @@ EasyEcs in parallel when DaServer waits on benchmarks: the Friflo gap, compariso
 - [x] Deadlines: the caller's remaining time travels with each request; expired work is dropped (ADR-028)
 - [ ] Send group broadcasts only to client-facing nodes that have members of the group (deferred: ADR-029)
 - [x] Resumable node links: a dropped connection replays what the peer did not process (ADR-008)
-- [ ] Client sessions as ECS entities in net loops (ECS rewrite P4)
+- [ ] Client sessions as ECS entities in net loops (ECS rewrite P4; superseded by R5: `Client` actor entities)
 - [x] Actors unload when idle (`UnloadAfterIdleSeconds`, ADR-033)
 
 ## Now: zero GC (agreed; Z2 is step 1 of the development order)
@@ -562,7 +583,8 @@ in separate commits.
       `ContractTests`). Nino's default pool (64 per thread, 256 shared) needs no sizing for a bot loop. Text the
       clients send and receive takes Nino's default (one byte a char for ASCII names); chat (`Say`, `Chat`) is
       `[NinoUtf8]`, as chat mixes ASCII with emoji and other scripts.
-- [ ] N9 Hot reload: code (Logic assembly in a collectible load context; each shard swaps handler registry and
+- [ ] N9 Hot reload (after R, on its model: draft §10; JIT deployments only, ADR-083): code (Logic assembly in a
+      collectible load context; each shard swaps handler registry and
       systems at a wake boundary over unchanged components; handlers run to completion, so nothing runs old code after
       the swap;
       the old context unloads when unused, weak-reference leak check, no forced GC; a changed Model/Contracts refuses
@@ -1061,12 +1083,14 @@ and cards, a manual clock), fails before its fix, and passes after it.
     `Granted`, `Superseded`, indexed by session); `Created`/`Loaded`/`Unloading` mail; the generator declares
     `ITrackChanges` for `[Persist]` components, `ChangeSystem` tags written actors `Unsaved` and `CheckpointSystem`
     writes only those.
-  - [ ] P4 The transport and the capabilities as ECS (plan below).
+  - [ ] P4 The transport and the capabilities as ECS (plan below). Superseded by R (client sessions become `Client`
+    actor entities and presences).
   - [x] P5 Samples, tests and benchmarks on static handlers; the analyzers updated (async handlers rejected by DAS001,
     the rules of the removed model gone, DAS022: a component parameter used after a structural change of its entity).
-  - [ ] P6 Records as EasyEcs saves (needs component sets, Nino encoding and stable type ids in EasyEcs).
+  - [ ] P6 Records as EasyEcs saves (needs component sets, Nino encoding and stable type ids in EasyEcs). Superseded by
+    R6.
   - [ ] P7 BenchmarkDotNet against the P0 baseline (the README's numbers are from before the rewrite), the 10k-bot
-    run and the flash sale, review rounds.
+    run and the flash sale, review rounds. Superseded by R9.
 - P4 plan: the network layer on ECS, under the same rule.
   - Byte pumps stay plain code, every decision is a system: a pump (`SocketPump<TReceiver>`, `WebSocketPump`) owns a
     socket and its buffers, splits frames, classifies each with a pure function of the header and the immutable

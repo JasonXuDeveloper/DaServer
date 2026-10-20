@@ -33,6 +33,7 @@ goes through the checklist at the end; the results (numbers, test counts) are re
 | E7 | **Incremental generator rules.** Syntax predicates first, equatable symbol-free models, tracking names, no diagnostics from generators. | `GeneratorTests.UnrelatedEditsHitTheCache` covers every syntax stage. |
 | E8 | **Tests.** Unit, in-process cluster, gateway/client, generator/analyzer, allocation and end-to-end (AppHost + bots) tests; all green in CI on every push. | `dotnet test`: all pass; CI green. |
 | E9 | **Docs.** README (what/why/how with mermaid), design, decisions (one ADR per non-obvious choice), roadmap, this file. Code, comments, commits and docs in English. | Review. |
+| E11 | **Native AOT.** Every node publishes with `PublishAot=true`: registration, dispatch and framework systems are generated as closed types in the user's assembly (no reflection, `MakeGenericType`, `Activator` or assembly scanning); serialization is Nino's generated formatters; the HTTP plane uses the slim builder and source-generated JSON. Framework projects set `IsAotCompatible` on net11.0. JIT deployments may hot reload the Logic assembly; AOT deployments compile it in and do not (ADR-083). | The trim and AOT analyzers run on every build (0 warnings); release checklist step 6. The AOT publish is gated on EasyEcs removing its IL3054 for programs with tracked components (EasyEcs request #21): no suppression is accepted. |
 | E10 | **Commits.** Logic, docs and CI in separate commits; author = repository owner, committer = signing identity (Verified); no session links. | GitHub shows Verified on every commit. |
 
 ## 3. Release checklist
@@ -45,5 +46,7 @@ Run in order; record results in the roadmap.
 4. BenchmarkDotNet: `RpcBenchmark`, `MessageBenchmark`, `BroadcastBenchmark`, `ScenarioBenchmark` — mean and
    allocated recorded.
 5. Sample end to end: the AppHost's 10k-bot scenario prints `E2E OK` (R11).
-6. Review against R1–R11 and E1–E10 (this file); open items go to the roadmap.
-7. CI green on the pushed branch; commits Verified.
+6. Native AOT (E11): `dotnet publish -p:PublishAot=true` for each sample node with 0 warnings, and the E2E tests
+   passing against the AOT binaries.
+7. Review against R1–R11 and E1–E11 (this file); open items go to the roadmap.
+8. CI green on the pushed branch; commits Verified.

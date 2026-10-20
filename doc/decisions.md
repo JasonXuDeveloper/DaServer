@@ -1541,3 +1541,69 @@ Replaced by ADR-081.
   explicit state the actor can be inspected in. A second request may arrive while a first one waits for an answer: a
   handler that must serialize such work says so in data (a component marking the work in progress). The client SDK
   and code outside worlds (HTTP, tests) still `await cluster.Ask(..)`.
+
+## ADR-082 Programming model v24: actors as entities in EasyEcs 4.5 worlds, [On<T>] handlers as single-entity jobs, presences
+- Context: ADR-081 made actors entities, but kept a second vocabulary beside EasyEcs: `[Handle]` dispatchers that copy
+  components out and back, a `Context` value, an `ActorKey` beside the id type, a mailbox drained apart from the
+  tick, session tags (`Known`, `Granted`, `Superseded`), tick rates in configuration and messages that do not say who
+  sends them to whom. Writes copied back stamp tracked components whether they changed or not, so "write only what
+  changed" leaks; the order between mail, delayed sends and systems is implicit. EasyEcs 4.5 now provides what a
+  model without these needs: single-entity jobs (`entity.Run(ref job[, filter])`), group filters carried by
+  interfaces (`IGroupWith<T>`), `world.Descendants(root)` and `LoadEntitiesInto(…, markWritten: false)`.
+- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (v24), structured as in
+  [drafts/architecture.md](drafts/architecture.md):
+  - **The actor type is its address, its root component and its system group**:
+    `[TickRate(30)] partial record struct Map(long Id) : IActor<Map>`; a domain is the root and its descendants, all
+    tagged `In<Map>`; `[UpdateInGroup<Map>]` systems see only them.
+  - **`[On<T>]` methods in `[Handles<K>]` classes are EasyEcs single-entity jobs** on one subject entity: the
+    parameter rules are `[ForEach]`'s, `ref` points into storage, only written components are stamped.
+  - **Each domain is a discrete-event simulation**: mail and `Due` items run one at a time by `(time, seq)` in an
+    ordered phase, then the actor type's systems, then the framework's settling and cleanup. What leaves an item is
+    data in the `Outbox` singleton.
+  - **Messages state their endpoints**: `IFromClient`/`IToClient` in Protocol (no actor types, no addresses),
+    `IMessageTo<K>`/`IRequestTo<K,R>` with `[From<K>]` in Server; answers are `Answer<TReq[,TState]>` mail.
+  - **Presences replace sessions**: `Join()`/`Leave()`, one presence per actor type, `[To]` client messages straight to
+    the target, the gateway a server type hosting `Client`, ordered connection stamps, the SDK re-joining.
+  - **Distribution**: activation epochs with fenced writes, placeholder roots, `IPersisted` records through
+    `Descendants` and `ComponentSet`, migration bytes checked by layout hashes, remaining time across processes.
+  - One project may define several server types; a node runs one.
+- Alternatives: keep ADR-081's handlers and add the missing pieces (copy and write-back stays, two vocabularies stay);
+  handlers as systems over message entities (an entity per message; measured in R4 before adopting, draft §14);
+  optimistic execution with rollback (state copies cost as much as a ~1 µs event, pushes cannot be taken back);
+  spatial parallelism inside a domain (needs game concepts in the framework, ADR-045).
+- Consequences: breaking for every user project and most of the runtime (roadmap phase R). Business code is
+  `[On<T>]` methods and EasyEcs systems over data; the generator emits jobs, typed sends and one `Registration`
+  instance. ADR-081's handler, `Context`, session and lifecycle parts, ADR-012's module initializer registration and
+  ADR-017's one project per server are replaced when R10 promotes the drafts.
+
+## ADR-083 Native AOT support
+- Context: a native executable starts without JIT warm-up, keeps a smaller working set and ships without a runtime;
+  the owner decided DaServer must support it. EasyEcs's core is `IsAotCompatible`; Nino serializes through generated
+  formatters. What blocks AOT today is DaServer's own reflection (route listing, admin JSON of anonymous objects,
+  reflection-based JSON bodies, generic configuration binding); after R it would be generic code closed at run time,
+  and hot reload, which loads assemblies at run time.
+- Decision:
+  - **Every node publishes with `PublishAot=true`** (requirement E11). Framework projects set `IsAotCompatible` on
+    net11.0, so the trim and AOT analyzers run on every build.
+  - **Registration is generated as closed types in the user's assembly**: `Registrations.Create()` names every actor
+    type, dispatch table, job and system instantiation, the framework's per-actor-type systems included (they have
+    no `[ForEach]` methods, so EasyEcs never closes their code with `MakeGenericType`, EasyEcs D20). No reflection,
+    `MakeGenericType`, `Activator` or assembly scanning; the analyzer reports a generic `[ForEach]` system closed
+    outside its assembly, which EasyEcs would close at run time without a warning.
+  - **The HTTP plane** uses `WebApplication.CreateSlimBuilder`, minimal APIs through the request delegate generator
+    and source-generated JSON contexts (the framework's for its admin endpoints, the application's for JSON bodies it
+    maps); routes are read from `wire.manifest`, not from assemblies.
+  - **Hot reload is a deployment choice**: JIT deployments load the Logic assembly into a collectible context and may
+    hot reload it; AOT deployments compile Logic in and refuse a reload (changes ship as rolling upgrades).
+  - **0 warnings, no suppression**: EasyEcs's AOT compile reports IL3054 (generic recursion through its change-tick
+    column type) in programs with tracked components, which every stateful node has (`IPersisted`). The AOT publish
+    check is gated on EasyEcs removing it (EasyEcs request #21); a suppression of a library's warning in user
+    programs is not accepted.
+- Alternatives: AOT only for stateless nodes (no tracked components; splits the support matrix); suppress IL3054
+  (accepts a warning on the library's behalf); drop hot reload (JIT deployments lose N9, which a studied game server and ET
+  show games use); reflection-based registration with trimming descriptors (fragile, and generic closure at run time
+  is impossible under AOT anyway).
+- Consequences: the release checklist publishes each sample node with `PublishAot=true` with 0 warnings and runs the
+  E2E tests against the AOT binaries (open until EasyEcs request #21 ships). OpenTelemetry, the Prometheus exporter,
+  Npgsql through Aspire and the other hosting dependencies are verified in R8 ([drafts/architecture.md](drafts/architecture.md)
+  section 8). Teams pick per deployment: hot reload (JIT) or native executables (AOT).

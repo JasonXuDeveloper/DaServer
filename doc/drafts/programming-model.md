@@ -1,4 +1,4 @@
-# DaServer 新编程模型设计（草案 v24，未实现，迭代中）
+# DaServer 新编程模型设计（草案 v25，未实现，迭代中）
 
 原则：业务代码干净、解耦、简洁，不用 OOP。ECS 一路到底：能用 EasyEcs 的功能就用 EasyEcs，状态都是数据，其余交给我们的特性和生成器，不重复造轮子。
 
@@ -22,7 +22,7 @@
 |---|---|---|
 | `Game.Protocol` | 客户端收发的消息。只有数据，不出现任何服务端的 Actor 类型、节点或地址 | 客户端和服务端；编译成 netstandard2.1 的 DLL 交给 Unity |
 | `Game.Server` | Actor 类型、服务器之间的消息、本地事件、组件、身份、prefab、服务器类型（一个工程可以定义多种），以及五行的 Program.cs | 服务端 |
-| `Game.Server.Logic` | 所有逻辑：`[Handles<K>]` 类里的 `[On<T>]` 方法、`[UpdateInGroup<K>]` 的 `EcsSystem`，以及生成的 `Registration`（分发表、客户端路由表、系统） | 服务端；放在可回收的 `AssemblyLoadContext` 里，可以热更 |
+| `Game.Server.Logic` | 所有逻辑：`[Handles<K>]` 类里的 `[On<T>]` 方法、`[UpdateInGroup<K>]` 的 `EcsSystem`，以及生成的 `Registration`（分发表、客户端路由表、系统） | 服务端；JIT 部署时放在可回收的 `AssemblyLoadContext` 里，可以热更；Native AOT 部署时编译进节点，不热更（第 10 节） |
 
 ### 用户写的
 
@@ -957,6 +957,20 @@ public partial record struct Due(TimeSpan At, long Seq) : IComponent, IIndexed<D
 - 分发时还是找不到处理方法（例如旧版本本来就没有）：结果是确定的 `NotHandled`。请求以 `NotHandled` 失败，单向消息和事件丢弃并计数。
 - 组件、消息、事件、状态类型、Actor 类型（包括帧率）不热更，新增或修改它们要走滚动升级。
 
+### Native AOT
+
+节点可以用 `PublishAot=true` 发布成原生程序（ADR-083）。热更和 AOT 二选一，是部署时的选择：
+
+| | JIT 部署 | Native AOT 部署 |
+|---|---|---|
+| Logic | 放在可回收的 `AssemblyLoadContext` 里 | 编译进节点 |
+| 热更 | 可以（上面） | 不可以：原生程序不能在运行时加载程序集。热更请求被拒绝，改动走滚动升级 |
+
+- **生成的注册是封闭类型，不用反射**：`Registrations.Create()` 在用户的程序集里写出每个封闭的类型（`.Actor<Map>()`、分发表、job、`world.AddSystem<…>()`），框架按 Actor 类型的系统也由生成的代码写出封闭的实例。没有反射、`MakeGenericType`、`Activator`、程序集扫描，也没有模块初始化器。
+- 框架的泛型系统不写 `[ForEach]` 方法，在 `OnUpdate` 里用 EasyEcs 的泛型入口跑 job，所以 EasyEcs 不需要在运行时用 `MakeGenericType` 封闭它们的代码（EasyEcs D20：只由别的程序集封闭的泛型系统才走这条路，AOT 下不行）。用户的泛型 `[ForEach]` 系统只在别的程序集里封闭时，DaServer 的分析器报错（第 13 节）：EasyEcs 对这条路不报警告，错了只会在运行时失败。
+- 序列化都是 Nino 生成的格式化器；HTTP 平面用 `CreateSlimBuilder` 和源生成的 JSON。
+- EasyEcs 编译带追踪组件（`IPersisted`）的程序时报一个 IL3054。发布要求 0 警告，不接受压掉它：AOT 发布的检查等 EasyEcs 去掉这个警告（转交 EasyEcs 的需求 #21）。
+
 ### `wire.manifest`
 
 - 由 Server 和 Logic 两个工程一起写出，Logic 的行在单独的一段。
@@ -1463,10 +1477,11 @@ public void A_busy_tick_allocates_nothing_and_threads_change_nothing()
 - `[Stateless]` 的 Actor 类型里 `Ask`、把 `ReplyTo<T>` 存进组件、`Join()`、带 `after` 的 `Schedule`。
 - 组件、事件、状态类型、Actor 类型、身份声明在 Logic。
 - 要迁移的托管组件没有 Nino 格式化器。
+- 用户的泛型 `[ForEach]` 系统只在别的程序集里封闭（EasyEcs 要在运行时 `MakeGenericType`，Native AOT 下不行，第 10 节）。
 
 **提示**（不报错）：处理方法里结构变更之后还有 `throw` 或可能抛出的调用：先校验，最后做结构变更（第 5 节）。
 
-**启动时检查**：配置的服务器类型不存在，或者和 `wire.manifest` 对不上，节点启动失败。
+**启动时检查**：配置的服务器类型不存在，或者和 `wire.manifest` 对不上，节点启动失败。Native AOT 发布的节点不接受热更请求（第 10 节）。
 
 **实现时要一起改的**：CLAUDE.md 的 Layout 和 ADR-017 还写着"一种服务器一个工程"（`Sample.XServer` 各一个工程）；本稿是一个工程定义多种服务器类型，重构时一并改掉。
 
@@ -1519,6 +1534,7 @@ public void A_busy_tick_allocates_nothing_and_threads_change_nothing()
 | v22 | 每帧逻辑用 EasyEcs 系统；一个时间类型、一个计时机制（Due 有序索引）；Scheduled 是数据；ReplyTo 放进状态；实体操作在 Entity 上 |
 | v23 | 改名（Actor、Presence/Join/Leave、Sender、IMessageTo/IRequestTo、TickRate、Time…）；客户端消息带 [To] 直达目标，每个 Actor 类型一个 Presence；只留 Entity；帧率写在 Actor 类型上、Actor 类型即系统组；异常不回滚如实说明 |
 | v24 | handler = EasyEcs 单实体 job；离开/订阅/有序阶段都是数据；客户端看不到节点；SDK 负责重新加入；身份与 Player 解耦；IPersisted；Entity.Root；Schedule/Send 分开；激活 epoch 隔离、有序连接戳、相对时间、迁移版本校验、有界队列 |
+| v25 | 基于 EasyEcs 4.5（`entity.Run`、`IGroupWith`、`Descendants`、`markWritten: false`）；占位就是根；`Key` 显式实现、`IActor<TSelf>` 带 `IEquatable<TSelf>`；按 EasyEcs 文档修正（到期索引、清理组件、`Maybe<T>`、并行度）；Native AOT（JIT 可热更，AOT 不热更；注册是封闭类型、无反射） |
 
 ---
 
