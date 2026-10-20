@@ -1,6 +1,6 @@
 # Target architecture (draft, not implemented)
 
-The architecture DaServer is refactored to (breaking, roadmap phase W): the v46 programming model of
+The architecture DaServer is refactored to (breaking, roadmap phase W): the v47 programming model of
 [programming-model.md](programming-model.md) on EasyEcs 4.7 (the draft's header lists the features it uses), with Native AOT support. The programming model draft is
 the source of truth for what users write and what each rule means; this file says how the pieces fit together, holds the runtime's internal data and the client protocol's
 internals, and links to the draft's sections instead of repeating them. Today's architecture is [design.md](../design.md); the
@@ -148,15 +148,18 @@ loop on the shard's thread:
         at most a budget of items per actor (the rest waits for the next batch, still by (time, seq))
     if the volatile lease-expiry stamp has passed: run nothing (the world is frozen)
     for each actor type K without [TickRate] that has mail or due items (the chain stack is empty between items):
-        write Time         K's Tick and TickRate (0 here) from Ordered<K>; Elapsed and Utc again per item
+        write Time         K's Tick and TickRate (0 here) from Ordered<K>; Elapsed = the pass start (now), Utc;
+                               Elapsed and Utc again per item
         Ordering<K>        OrderedPhase: chain stack, due heap (At <= now) and mailbox merged by (time, seq)
         hand Outbox frames to the links (held [Durable] output stays, tagged with its write generation)
+        write Time         Elapsed back to the pass start, Utc read once
         world.Update<K>()  K's systems, Time.DeltaTime 0
         Settling<K>        Depart, SyncSubscriptions, Restarting and Resumed removed
     for each actor type K with [TickRate], for each of its due ticks t, oldest first, at most the catch-up cap:
-        write Time         K's Tick (advanced in Ordered<K>), TickRate and DeltaTime
+        write Time         K's Tick (advanced in Ordered<K>), TickRate, DeltaTime, Elapsed = t, Utc
         Ordering<K>        the window (t - Δ, t]
         hand Outbox frames to the links
+        write Time         Elapsed back to t, Utc read once
         world.Update<K>()
         Settling<K>
     write Time           Utc and Elapsed; Tick, TickRate and DeltaTime keep the last pass's values, which Cleanup does not read

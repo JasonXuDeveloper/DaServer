@@ -1,4 +1,4 @@
-# DaServer 新编程模型设计（草案 v46，未实现，迭代中）
+# DaServer 新编程模型设计（草案 v47，未实现，迭代中）
 
 原则：业务代码干净、解耦、简洁，不用 OOP。ECS 一路到底：能用 EasyEcs 的功能就用 EasyEcs，状态都是数据，其余交给我们的特性和生成器，不重复造轮子。
 
@@ -246,7 +246,7 @@ public record struct Picking(ReplyTo<bool> Reply) : IComponent;                 
 |---|---|---|
 | a. 有序阶段 | 运行时系统 `OrderedPhase`：tick 窗口里的消息和到期项按 `(时间, 序号)` 归并（第 9 节） | 串行。每一项执行完，紧接着执行它的即时链（项里不带 `after` 的 `Schedule`；系统里的见第 9 节），每项最多连锁 1,024 个；阶段结束时把 `Outbox` 交给链路 |
 | b. 系统 | `world.Update<Map>()`：这个 Actor 类型的 EasyEcs 系统（第 5 节） | 单线程；`[ForEach(Parallel = true)]` 只在 world 比核少时分块多线程（第 5 节） |
-| c. 收尾（`Settling`） | 框架的系统：`Depart` 销毁带 `Leaving` 的 Presence，`SyncSubscriptions` 同步订阅（第 7、9 节），去掉 `Restarting` 和 `Resumed`（第 10 节）；最后把 `Outbox` 交给链路。框架组 `Cleanup` 不在这里：所有 Actor 类型的一趟都跑完后，它在 world 上跑一次，处理已销毁实体留下的清理组件（`ReleaseRoutes` 等，第 6、9 节） | 单线程 |
+| c. 收尾（`Settling`） | 框架的系统：`Depart` 销毁带 `Leaving` 的 Presence，`SyncSubscriptions` 同步订阅（第 7、9 节），去掉 `Restarting` 和 `Resumed`（第 10 节）；收尾里写出的帧随这一圈最后一次交给链路发出。框架组 `Cleanup` 不在这里：所有 Actor 类型的一趟都跑完后，它在 world 上跑一次，处理已销毁实体留下的清理组件（`ReleaseRoutes` 等，第 6、9 节） | 单线程 |
 
 - 有序阶段的状态（tick 号、序号计数器、当前 tick 窗口、即时链预算）按 Actor 类型存在运行时的单例 `Ordered<K>` 里。有序阶段、收尾和清理都是 DaServer 自己的 `EcsSystem`，在框架的系统组里，每个只做一件事。
 - 有序阶段开始时取一次邮箱快照；这期间新到的消息进下一帧。
@@ -680,7 +680,7 @@ ref var hp = ref target.Health;
   - 只有一种服务器跑的 world 比核少时（`DaServer:Worlds`，例如一个节点只跑一张超大地图），`Parallel = true` 的方法才分块多线程；`TestActor<K>` 的 `AssertParallelMatchesSerial` 就是给这种部署用的（第 12 节）。
   - 并行方法按块切行，一块至少 1,024 行，写追踪组件的按 4,096 行的整数倍切（`guide/systems.mdx` 的 "Parallel methods"），所以实体少的 world 开了也不多花。
 - **系统里的发送**：`Entity` 上的操作只能在非并行的系统里用，追加到 `Outbox`；`Parallel = true` 的方法里用，分析器报错，`[Durable]` 的 `Ask` 和经存着的令牌 `Reply` 也一样（第 8 节）。
-- `Time` 在系统里是这个 tick 的值，`Time.Elapsed` 是 tick 时刻 t（第 9 节）。
+- 系统里 `Time.Elapsed` 是这一趟的时刻：有 `[TickRate]` 的是 tick 时刻 t，没有的是这一趟开始时读的时钟（第 9 节）。
 - **只在值变了时写**：`[Changed<T>]` 看的是"写过"，不是"变了"，`ref` 参数和批量方法的 `Span<T>` 一取就算写入。所以每 tick 重算一个追踪组件的系统取 `Mut<T>` 参数，用 `SetIfChanged(v)` 写：值相同就不写、不打戳（EasyEcs 4.7，同 Bevy 的 `set_if_neq`；不是参数的组件用 `entity.SetIfChanged(v)` 或生成的 `entity.SetXIfChanged(…)`，有索引的组件只能这样写）。值的比较用 `IEquatable<T>`（record struct 自带），没有它的非托管类型比字节，带托管字段又没有 `IEquatable<T>` 的抛出 `NotSupportedException`。见第 12 节的 `Steering` 和 `Movement`：站着的 NPC 不打戳，`CellAssign` 和 `Diff` 不访问它。
 - **几个组件合成一份输出时**，用 `[ChangedAny<A, B, C>]`（2 到 9 个追踪组件；`[RemovedAny<…>]`、`QueryFilter.ChangedAny<…>(since)`，EasyEcs 4.7）：其中任何一个写过，这一行只访问一次，不是每个组件一趟。一个过滤里的每次 `ChangedAny` 调用都并进同一组，所以超过 9 个类型就分几次调用。
   - 真的每 tick 都变的组件不要追踪：每次写都打戳，`[Changed<T>]` 每 tick 都是全部的行，比全扫还多一份开销（EasyEcs 的建议，[change tracking](https://ecs.xgamedev.net/en/docs/features.md#change-tracking)）。第 12 节追踪 `Position` 和 `Velocity`，因为多数实体多数 tick 不动。
@@ -1998,7 +1998,7 @@ public static class GameServerRegistration
                 world.AddSystem<Diff>();
                 world.AddSystem<Vanish>();
                 world.AddSystem<Flush>();
-            });                                                            // the node runs Ordering, Update<Map>(), Settling, Cleanup at 30 Hz
+            });                                                            // the node runs Ordering, Update<Map>(), Settling at 30 Hz; Cleanup per world
     }
 }
 ```
