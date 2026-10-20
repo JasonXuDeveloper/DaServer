@@ -25,7 +25,7 @@
 
 | 写什么 | 写法 | 工程 |
 |---|---|---|
-| 客户端消息 | `record struct MoveTo(Vector2 Target) : IFromClient;` | Protocol |
+| 客户端消息 | `record struct MoveTo(Vector2 At, Vector2 Velocity) : IFromClient;` | Protocol |
 | 推给客户端的消息 | `partial class Nearby : IToClient`（含集合的消息是 `[NinoPooled]` 类） | Protocol |
 | 种类（地址，也是实体上的组件） | `partial record struct Map(long Id) : IKind<Map>;` | Server |
 | 服务器之间的消息 | `[From<Player>] record struct EnterMap(…) : IRequest<Map, LinkId>;` | Server |
@@ -174,7 +174,7 @@ public readonly partial record struct Room(long Id)   : IKind<Room>;
 ```csharp
 // Game.Protocol: data only, no server kinds
 [NinoType] public record struct TravelTo(long MapId)       : IFromClient<bool>;   // a request: the client waits for a bool
-[NinoType] public record struct MoveTo(Vector2 Target)     : IFromClient;
+[NinoType] public record struct MoveTo(Vector2 At, Vector2 Velocity) : IFromClient;
 [NinoType] public record struct Say(long To, string Text)  : IFromClient, IAddressed;   // To picks one of several rooms
 [NinoType, NinoPooled] public sealed partial class Nearby : IToClient { public List<NearbyEvent> Events = new(); }
 ```
@@ -231,50 +231,62 @@ public readonly partial record struct Room(long Id)   : IKind<Room>;
 - **`Answer` 按 `(请求类型, [Pending] 的类型)` 分发**。所以同一种请求用不同的等待数据，可以有不同的处理方法；组合重复时报错。
 - **返回值就是回复**；返回 `void` 就是单向消息。
 
-### 顺序：当场判定，批量执行
+### 顺序：每条消息的效果当场生效，tick 只做时间带来的变化
 
 例子：同一张地图依次收到 `[攻击 A, 移动 B, 移动 A, 攻击 B]`。
 
-**不能按类型批量处理。**
-- 如果先把两个移动一起做、再把两个攻击一起做，攻击 A 判定时 B 已经移动过了。
-- 结果就是：发消息时打得到人，执行时人已经跑了。
-- ECS 里也没有"每个实体跨消息类型按到达顺序处理"的现成机制，Bevy、Flecs 的 observer 顺序都是未定义的。
+**不能按类型批量处理。** 先把两个移动一起做、再把两个攻击一起做，攻击 A 判定时 B 已经移动过了：发消息时打得到人，执行时人跑了。ECS 也没有"每个实体跨消息类型按到达顺序处理"的现成机制（Bevy、Flecs 的 observer 顺序都是未定义的）。
 
-**规则：凡是会影响后面判定的状态，在 `[Receive]` 里当场写；不影响判定、可以交换顺序的重活，留给 `[ForEach]` 批量做。**
+**也不能把消息带来的状态变化推迟到 tick。** 反过来的例子 `[移动 A（躲开）, 攻击 B（打 A）]`：如果移动只记下来、位置到 tick 才改，攻击 B 判定时 A 还在原地，A 明明先躲开了却仍被打中，顺序同样错了。另外：
+- 两个玩家同一 tick 想进同一个格子，只能进一个，谁先到谁进，这也必须按到达顺序裁决；
+- 踩陷阱、捡道具、走出引导技能的范围，这些由移动触发的事件，也会被推迟、被打乱。
+
+**规则：每条消息自己造成的变化，在 `[Receive]` 里当场写完；`[ForEach]` 只处理"时间流逝"带来的变化。**
+
+这样，第 k 条消息看到的，恰好是前 k−1 条消息的全部效果，加上上一次 tick 的结果。没有任何效果会按类型或者被推迟到 tick 才生效。
 
 | 放在哪 | 什么 | 例子 |
 |---|---|---|
-| `[Receive]`：每条消息一次，按到达顺序，当场生效 | 判定，以及后面的判定要读到的状态 | 命中与否；扣血、死亡；冷却、蓝量；瞬移、击退这种立即改位置的效果；目的地 |
-| `[ForEach]`：每 tick 一次，批量、可并行、可 SIMD | 随时间推进的模拟，以及不影响判定的效果 | 按速度积分位置；buff 每秒的伤害；AOI；广播；恢复 |
+| `[Receive]`：每条消息一次，按到达顺序，当场生效 | 这条消息带来的一切状态变化，以及对它的判定 | 移动一步（校验后改位置、占格子）、瞬移、击退、命中、扣血、死亡、冷却、蓝量、触发陷阱 |
+| `[ForEach]`：每 tick 一次，批量、可并行、可 SIMD | 不依赖任何消息、只因时间流逝而发生的变化 | 服务器驱动的移动（寻路、NPC、投射物）、buff 每秒的伤害、恢复、AOI 合并广播 |
 
-所以 v14 的写法是这样的：
-- **`MoveTo` 只写 `Destination`**，也就是意图，不改 `Position`。位置只在 tick 里按速度积分。所以同一个 tick 内，所有消息看到的都是同一份位置，判定之间不会互相影响先后。
-- **`Cast` 在 `[Receive]` 里当场判定**：用此刻的位置判断距离和命中，命中就当场扣血（`Health` 立即写）。
-  - 之后到达的攻击 B 判定时，会看到 A 打出的结果，例如 B 已经死了，就不能再出手。
-  - 因为一张地图上所有的消息都在同一个 shard 线程上逐条执行，所以这样写没有竞争。
-- **持续的效果写成数据**：buff 写成实体，由每 tick 的系统结算；`Moved`、`Damaged` 事件写进发件箱，由 AOI 系统合并发送。这些步骤先后交换也不影响结果。
+**移动属于哪一类，取决于游戏的移动模型：**
 
-按上面的例子：
+| 移动模型 | 消息的含义 | `[Receive]` 当场做的 | tick 做的 |
+|---|---|---|---|
+| **步进式**（多数 MMO：客户端按方向键移动，持续上报位置） | `MoveTo(At, Velocity, ClientTime)`：我走到了这里 | 校验速度、碰撞、格子占用，当场写 `Position`、`Velocity`；不合法就拉回 | 不积分这个实体的位置，只做 AOI 广播 |
+| **点击寻路式**（MOBA、RTS） | `MoveTo(Target)`：我要去那里 | 写 `Destination`，也就是新的计划，当场生效 | 按计划随时间推进位置，所有实体同一时刻前进 |
 
-| 到达 | `[Receive]` 当场做的 | tick 里做的 |
-|---|---|---|
-| 攻击 A | 用此刻的位置判定，命中就扣 B 的血，事件写进发件箱 | — |
-| 移动 B | 写 B 的 `Destination` | — |
-| 移动 A | 写 A 的 `Destination` | — |
-| 攻击 B | 先检查 B 还活着，再用此刻的位置判定 | — |
-| （tick） | — | 按新的 `Destination` 转向、积分位置；结算 buff；AOI 广播 |
+- 点击寻路时，移动消息改变的是计划，不是位置；位置是时间推进的结果，所有人在 tick 里同一时刻前进。所以同一个 tick 内的攻击看到的是同一份位置，这正是这种游戏的规则，不是顺序错误。
+- 步进式时，移动消息本身就是位置的变化，所以必须当场写。
+- 两种实体区分开：服务器驱动移动的实体带 `Steered` 组件，tick 只积分 `[With<Steered>]` 的实体，不会把客户端上报的位置再积分一遍。
 
-位置要到 tick 里才变化，这也符合现实：移动要花时间，按下移动键的那一刻人还在原地。
+**套用到例子（步进式）：**
 
-**需要按"客户端看到的那一刻"判定时**（延迟补偿）：
-- 在实体上放一个位置历史组件（环形缓冲），由 tick 系统写入；
-- `Cast` 带上客户端的时间戳，`[Receive]` 按那个时刻的历史位置判定。
+| 到达 | `[Receive]` 当场做的 |
+|---|---|
+| 攻击 A | 用此刻的位置判定，命中就扣 B 的血，事件写进发件箱 |
+| 移动 B | 校验后把 B 移到新位置，必要时换格子 |
+| 移动 A | 校验后把 A 移到新位置 |
+| 攻击 B | 先检查 B 还活着，再用 A、B 此刻的新位置判定 |
+| （tick） | 只做 AOI：把这一 tick 的事件按格子合并广播 |
+
+每一步看到的都是前面所有消息的结果，和到达顺序完全一致。
+
+**为什么可以这样做：**
+- 一张地图上所有玩家的消息都发给同一个地图实体，在同一个 shard 线程上逐条执行；
+- 所以"地图上的到达顺序"就是唯一的顺序，当场写不会有竞争；
+- 这就是地图要做成一个实例，并且由它拥有位置和格子的原因。
+
+**延迟补偿**（按客户端看到的那一刻判定，可选）：
+- 实体上放一个位置历史组件（环形缓冲），由 `[Receive]` 和 tick 写入；
+- `Cast` 带上客户端的时间戳，`[Receive]` 按那个时刻的历史位置判定；
 - 判定仍然在 `[Receive]` 里按到达顺序进行，只是读的是历史。
 
 **解耦**：
-- 每个 `[Receive]` 只处理一种消息、只读写它需要的组件。攻击不知道移动的存在，移动也不知道攻击的存在。
-- 它们之间唯一的联系是组件数据（`Position`、`Health`）。
-- 顺序由框架保证（每个实体按到达顺序逐条执行），不靠系统之间互相调用。
+- 每个 `[Receive]` 只处理一种消息，只读写它需要的组件。攻击不知道移动的存在，移动也不知道攻击的存在。
+- 它们之间唯一的联系是组件数据（`Position`、`Health`），顺序由框架保证，不靠系统之间互相调用。
+- 校验、占格这类多处用到的规则，写成读写组件的静态函数，由各个 `[Receive]` 调用，不复制代码。
 
 ### `[Receive]` 的参数
 
@@ -565,7 +577,8 @@ public readonly partial record struct Room(long Id)   : IKind<Room>;
 ```csharp
 // ── Game.Protocol ─────────────────────────────────────────────────────────────
 [NinoType] public record struct TravelTo(long MapId)   : IFromClient<bool>;
-[NinoType] public record struct MoveTo(Vector2 Target) : IFromClient;
+[NinoType] public record struct MoveTo(Vector2 At, Vector2 Velocity) : IFromClient;   // a step the client took
+[NinoType] public record struct SnapBack(Vector2 At) : IToClient;                     // the step was refused
 [NinoType, NinoPooled] public sealed partial class Nearby : IToClient { public List<NearbyEvent> Events = new(); }
 [NinoType] public record struct NearbyEvent(long Id, NearbyKind Kind, Vector2 At, Vector2 Velocity);   // Id: a LinkId or an npc's id
 ```
@@ -595,15 +608,18 @@ public record struct Visible : IComponent;
 public record struct Position(Vector2 Value) : IComponent;
 public record struct Heading(Vector2 Value) : IComponent;                               // computed in parallel, untracked
 public record struct Velocity(Vector2 Value) : IComponent, ITrackChanges;
-public record struct Destination(Vector2 Target) : IComponent;
+public record struct Destination(Vector2 Target) : IComponent;            // server-driven movers (npcs)
+public record struct Steered : IComponent;                                // moved by time, not by messages
 public record struct Speed(float Value) : IComponent;
 public record struct Shout(NearbyEvent Event);                                          // a map's outbox element
 
 public static class Prefabs
 {
     [Spawns<Map>] public static readonly Prefab Map = new Prefab().SetGrid(512, 16).SetBuffer<Shout>();
-    public static readonly Prefab Avatar = new Prefab().SetPosition(default).SetHeading(default).SetVelocity(default)
-        .SetDestination(default).SetSpeed(5).SetVisible();
+    public static readonly Prefab Avatar = new Prefab().SetPosition(default).SetVelocity(default)
+        .SetVisible();                                                     // a player's position comes from its steps
+    public static readonly Prefab Npc = new Prefab().SetPosition(default).SetHeading(default).SetVelocity(default)
+        .SetDestination(default).SetSpeed(3).SetSteered().SetVisible();
 }
 
 [Every(50)] public struct Simulation : ISystemGroup;
@@ -686,8 +702,13 @@ public static partial class Maps
     static void Gone(in Unlinked u, [Link] in Linked link, ref DynamicBuffer<Shout> outbox) =>
         outbox.Add(new Shout(new NearbyEvent(link.Id.Value, NearbyKind.Disappear, default, default)));
 
-    [Receive<Map>]                                                         // MoveTo goes to the map; [Link] is the sender's avatar
-    static void Move(in MoveTo m, [Link] ref Destination destination) => destination.Target = m.Target;
+    [Receive<Map>]                                                         // a step: applied now, so later messages see it
+    static void Move(in MoveTo m, [Link] Entity avatar, [Link] ref Position position, in Grid grid, World world)
+    {
+        if (!Movement.IsValidStep(in position, in m, in grid)) { world.Push(avatar, new SnapBack(position.Value)); return; }
+        position.Value = m.At;
+        avatar.SetVelocity(m.Velocity);                                    // tracked: AOI broadcasts it this tick
+    }
 }
 ```
 
@@ -696,17 +717,17 @@ public static partial class Maps
 [UpdateInGroup<Simulation>]
 public sealed partial class SteeringSystem : EcsSystem
 {
-    [ForEach(Parallel = true)]                                             // into an untracked component: no change stamps
+    [ForEach(Parallel = true), With<Steered>]                              // only what time moves; into an untracked component
     static void Steer(in Position p, in Destination d, in Speed s, ref Heading h) => h.Value = Steering.Toward(p.Value, d.Target, s.Value);
 
-    [ForEach]                                                              // sequential: Velocity changes only when it differs
+    [ForEach, With<Steered>]                                               // sequential: Velocity changes only when it differs
     static void Commit(Entity e, in Heading h, in Velocity v) { if (h.Value != v.Value) e.SetVelocity(h.Value); }
 }
 
 [UpdateInGroup<Simulation>, UpdateAfter<SteeringSystem>]
 public sealed partial class IntegrateSystem : EcsSystem
 {
-    [ForEach]                                                              // a batch over whole columns; Vectors is a user helper
+    [ForEach, With<Steered>]                                               // a batch over whole columns; Vectors is a user helper
     static void Integrate(Span<Position> positions, ReadOnlySpan<Velocity> velocities, in Clock clock) =>
         Vectors.AddScaled(MemoryMarshal.Cast<Position, float>(positions), MemoryMarshal.Cast<Velocity, float>(velocities), clock.DeltaTime);
 }
@@ -788,9 +809,10 @@ partial class Maps
     internal static void Receive_Move(World world, Entity target, Entity link, in Envelope envelope, ref Outcome outcome)
     {
         var m = envelope.Read<MoveTo>();
-        var destination = link.Read<Destination>();                         // [Link] ref: a local in
-        Move(in m, ref destination);
-        if (link.TryGetRef<Destination>(out var slot)) slot = destination; // written back only if it still exists
+        var position = link.Read<Position>();                               // [Link] ref: a local in
+        var grid = target.Read<Grid>();                                     // in, on the map: copied
+        Move(in m, link, ref position, in grid, world);
+        if (link.TryGetRef<Position>(out var slot)) slot = position;       // written back only if it still exists
     }
 }
 ```
@@ -849,7 +871,7 @@ push    Game.Protocol.Nearby    pooled
 ⑤ AskFor              Player 42 → Map 7@map-0：EnterMap；Map 7 建 Avatar（连接信息来自信封，LinkId L2），回复 L2
 ⑥ 回复客户端           world.Reply(…, routeFrom: answer) → Client(c1)：先写路由 (Map 7, L2, Via Player 42)，再交给客户端
 ⑦ LinkConfirmed(L2)   Client → Map 7：Avatar 带上 Confirmed；下一次 Simulation 推完整快照
-⑧ MoveTo              Client(c1) → 路由 → Map 7：[Link] 绑定到这个 Avatar，写 Destination
+⑧ MoveTo              Client(c1) → 路由 → Map 7：[Link] 绑定到这个 Avatar；校验这一步，当场改位置，后面的消息都看得到
 ⑨ 每 50 ms            Map 7 的 Simulation：转向、积分、AOI；Nearby → 有观察者的网关 → 各个连接
 ```
 
