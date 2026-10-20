@@ -22,7 +22,7 @@ Keep this file current: tick items when done, add items when scope changes.
 11. S1-S6 (done) elastic scaling.
 12. The ECS rewrite (ADR-081, the "ECS rewrite" entry under "Open cleanup" below): P1-P3 and P5 done; P4, P6 and P7
     superseded by W.
-13. W — refactor to the v37 programming model ([drafts/programming-model.md](drafts/programming-model.md),
+13. W — refactor to the v38 programming model ([drafts/programming-model.md](drafts/programming-model.md),
     [drafts/architecture.md](drafts/architecture.md)) on EasyEcs 4.6.0 and 4.7 (ADR-082 to ADR-092). Breaking; each step
     proven before the next (W, not R: the requirement ids R0-R11 are taken). Every use of an EasyEcs 4.7 feature (planned)
     is marked "(4.7)" inline where a step names it; until 4.7 ships each such use takes the 4.6 fallback listed in W1,
@@ -80,7 +80,7 @@ Keep this file current: tick items when done, add items when scope changes.
       `PrefabCompositionHistoryKeptInManifest`, `GroupRateOnlyJobGetsNoStructuralChanges`, `RawRecordLayoutChangeReported`, `TrackedRefNotAlwaysWrittenHinted`,
       `ConfigTableTakenByRefReported`, `SingletonWithoutInterfaceReported`, `UnfilteredForEachWithoutTickRateReported`,
       `SetGroupRateWithoutTickRateReported`, `DestroyWithDurableWaitHinted`, `UtcNowInHandlerWarned`,
-      `DurableItemFromSystemIsCompileError`, `DurableOnTickingActorWarns`,
+      `DurableItemFromSystemIsCompileError`,
       `RegistrationCallableWithTwoServerProjects`; `UnrelatedEditsHitTheCache` over the new stages.
     - [ ] W4 Runtime core: shards (one world each, `MaxDegreeOfParallelism` per world), the shard loop and the ordered
       phase per actor type (`Ordered<K>`), the due heap (4-ary, lazy deletion), the chain stack, the call index,
@@ -131,7 +131,9 @@ Keep this file current: tick items when done, add items when scope changes.
       but for ask states, the change system on `ChangedAny`/`RemovedAny` (4.7), spawns of persistent prefabs tagging the
       root `Unsaved`, placeholders never checkpointed, every load (record, migration, snapshot) completing entities from
       their prefab copy: `[NotSaved]` components and those gained since the composition, unknown type ids skipped and
-      counted), a plain epoch CAS with a root's writes never overlapping (`Writing`), checkpoints as `Slices` (4.7),
+      counted), a plain epoch CAS with a root's writes never overlapping (`Writing`), the tick-end write (one statement per
+      world per tick end, ADR-068's `unnest`, per-row CAS; `WriteNow` roots every time, other `Unsaved` roots at most
+      every checkpoint interval; at most one write in flight per root, later changes in the next write),
       `OnError = Reload` (root reset to its prefab copy's values and `Unsaved` removed, keeping only the key, the mail
       and the faulting call id, the batch remainder into the mail,
       the in-flight write awaited before the claim, write completions matched to their activation epoch, consecutive
@@ -144,22 +146,20 @@ Keep this file current: tick items when done, add items when scope changes.
       for a rolling upgrade) and `{cluster}-restart` for local Aspire (the dashboard's resource command), Compose
       (stateful groups as one service per node with a fixed hostname and a named snapshot volume each, restarted one
       node at a time) and the documented systemd unit, launchd plist and Windows service (the Kubernetes rollout is
-      W11). With them: `[Durable]` at both ends (group commit: a batch with any of the four kinds of durable item ends
-      in one record write, its whole output held until the CAS and released in order, discarded on fencing; the actor
-      paused meanwhile (`Committing`: no items, its systems' output queued behind the batch's, other actors running),
-      never idle, and awaited by deactivation, migration and the freeze; released group pushes through their group's
-      frame; the pause bounded by `DaServer:DurablePauseLimit` (past it a `Reload`: the held output released first only
-      if the write succeeded, discarded otherwise, a later write judged by its epoch; deactivation, migration (then
-      through the record) and a graceful stop proceed after the same bound); `NextDue` computed by the group commit for
-      its root before the record is taken, `WakeSystem` before `CheckpointSystem`; `Unsaved` cleared when the record is
-      taken and put back if the write fails; durable items from handlers only, systems of a paused actor appending
-      plain output released after the batch's; the asker's waiting entity in the record before the request leaves,
+      W11). With them: `[Durable]` at both ends (no actor pauses: a root that ran any of the four kinds of durable item
+      rides the next tick-end write (`WriteNow`); only outgoing `[Durable]` requests and answers to them are held,
+      tagged with the root's write generation, released in order when that write succeeds, discarded on fencing, a
+      refused row fencing only its actor; plain output leaves at once; deactivation, migration (the source writing the
+      root first), the freeze and a graceful stop waiting for the in-flight write and the held output; `Reload` waiting
+      for the in-flight write's result, releasing on success, discarding on failure or timeout and the output of
+      unwritten generations; `WakeSystem` before `CheckpointSystem`; `Unsaved` cleared when the record is taken and put
+      back if the write fails; durable items from handlers only; the asker's waiting entity in the record before the request leaves,
       `settleBy` (the settle-by instant in every attempt's envelope, bounding `ReplyLog` entries and durable `ReplyTo`
       deadlines; `ICluster.Ask(settleBy:)` deduplicated by `CallId.From` until then), re-asks (a `NotHandled` on a re-ask transient), the settling re-ask, a durable asker destroyed by a
       handler or a system failing the item and reloading, `Depart` re-parenting a durable wait to the root; the
       receiver's dedupe before the `TooLate` check, `ReplyLog` with refused entries under their own capacity
       (`DaServer:ReplyLogRefusedCapacity`) and `Faulted` entries kept across a `Reload`), a persisted `ReplyTo<T>`'s deadline in UTC, `root.IssueClientToken` with `IssueSeq` on the root,
-      `TestActor<K>` with `[Durable]` (the commit at the end of `Tick`, `FailNextWrite()`, `Answer<TReq>(value | status)`),
+      `TestActor<K>` with `[Durable]` (the write at the end of `Tick`, `FailNextWrite()`, `Answer<TReq>(value | status)`),
       `WakeAt`, `NextDue` from the runtime's `WakeSystem` (`ChangedAny`/`RemovedAny` (4.7)) with the `next_due` column,
       `IActorStore.DueKeys` and the `DueScan` wake, `StoreDegraded` and `ActivationSlots`, `ActivationFailed`, strict
       placement versions with `Fence`, idempotent claims, generations from Unix ms and single-seed formation, the lease
@@ -169,20 +169,17 @@ Keep this file current: tick items when done, add items when scope changes.
       `DestroyedPersistentChildTagsRootUnsaved`, `PlaceholderNeverCheckpointed`, `RecordMissingComponentsFilledFromPrefab`,
       `UnknownRecordTypeSkippedAndCounted`, `NotSavedComponentsReaddedOnArrivalAndLoad`,
       `PrefabGainedComponentAddedOnSnapshotLoad`, `ComponentRemovedAtRunTimeNotReadded`,
-      `NonPersistentEntityCompletedAfterMigration`, `GroupCommitWaitsForInFlightCheckpoint`,
+      `NonPersistentEntityCompletedAfterMigration`,
       `TimedOutWriteRetriedWithSameBytes`, `ActivatedByRefusesOtherMessages`,
       `DurableRequestActivatesDespiteActivatedBy`, `NotHandledOnDurableReaskIsTransient`, `MaxPendingExceededHandledByOnError`,
       `PlaceholderMailFullAnswersBusy`, `ReloadKeepsQueuedMail`, `ReloadResetsRootToPrefab`, `ReloadClearsUnsaved`,
-      `ReloadMovesBatchRemainderIntoMail`, `ReloadDiscardsUnwrittenDurableBatchOutput`, `ReloadWaitsForInFlightWrite`, `StaleWriteCompletionIgnoredAfterReload`,
+      `ReloadMovesBatchRemainderIntoMail`, `ReloadDiscardsUnwrittenDurableOutput`, `ReloadWaitsForInFlightWrite`, `StaleWriteCompletionIgnoredAfterReload`,
       `HalfAppliedItemNeverReachesCheckpoint`, `RepeatedReloadBacksOff`, `DeterministicThrowOnDurableAnswersFaulted`,
-      `FaultedAcrossReloadAnsweredAfterWrite`, `DurableBatchOutputLeavesOnlyAfterWrite`,
-      `PausedActorTakesNoItemsDuringWrite`, `FencedDurableBatchDiscardsOutput`, `GrantSurvivesCalleeCrashAfterReply`,
-      `DurableRepliedOutputHeldUntilAskerRecord`,
+      `FaultedAcrossReloadAnsweredAfterWrite`, `GrantSurvivesCalleeCrashAfterReply`,
       `SettlingReaskRefusesUnrunCall`, `RefusedEntriesHaveOwnCapacity`, `FullRefusedLogLeavesSettleUnanswered`,
       `RefusedEntriesExpireAfterDeadline`, `LateDuplicateAfterSettleNeverRuns`, `LaterReplyOnDurableTokenHeldUntilWrite`,
-      `DeactivationMigrationAndFreezeAwaitPausedWrite`, `PausedActorNotIdle`, `ReleasedGroupPushKeepsGroupRate`,
-      `SystemsOutputWhilePausedReleasedAfterBatch`, `GroupCommitCarriesNextDue`, `PauseLimitReloadsActor`,
-      `DeactivationAndMigrationAfterPauseLimit`, `ReloadWhilePausedReleasesCommittedOutput`,
+      `DurableOutputReleasedAfterItsTickWrite`, `PlainOutputNotHeldBehindDurable`, `OneWriteInFlightPerRootLaterOverwrites`,
+      `TickEndWritesShareOneStatement`, `FencedWriteDiscardsHeldDurableOutput`, `DeactivationWaitsForHeldDurableOutput`,
       `ClusterDurableAskDedupedUntilSettleBy`,
       `DurableRepeatAnsweredBeforeTooLateCheck`, `DurableRequestTooLateRefused`, `DestroyingDurableAskerFailsItem`,
       `SystemDestroyOfDurableAskerReloads`, `DepartReparentsDurableWaitToRoot`,
@@ -204,8 +201,8 @@ Keep this file current: tick items when done, add items when scope changes.
       `IdleDeactivationWaitsForPendingDueAndAsks`, `StoreOutageBoundsMemoryAndRecoversWithoutHerd`,
       `PoisonActorBacksOffClaims`, `RebalancePausesDuringDrainAndRestart`,
       `TimeNoticeRepushedOnResume`, `ManifestDiffPicksPath`, `ComposeRestartOneNodeAtATime`. BenchmarkDotNet
-      `DurableGroupCommitThroughput`: durable asks per second per actor and per world at a write latency of 1, 5 and
-      20 ms.
+      `DurableTickEndBatchThroughput` (1, 10, 100 and 1,000 concurrent durable asks per world at a store latency of 1, 5
+      and 20 ms) and `DurableReplyLatency`.
     - [ ] W6a `DaServer.Reminders` (ADR-090, draft §15): `Reminder<T>` persistent children with `WakeAt`,
       `root.Remind<T>`/`Unremind<T>`, `Reminded<T>` through a `Due` while active and the runtime's wake while unloaded.
       Tests: `ReminderActivatesUnloadedActor`, `ReminderSurvivesNodeCrash`, `ReminderFiresOncePerUtcAtWithinActivation`,
