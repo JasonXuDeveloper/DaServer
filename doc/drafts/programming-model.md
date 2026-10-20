@@ -1,4 +1,4 @@
-# DaServer 新编程模型设计（草案 v15，未实现，迭代中）
+# DaServer 新编程模型设计（草案 v16，未实现，迭代中）
 
 原则：业务代码干净、解耦、简洁，不用 OOP。能用 EasyEcs 的功能就用 EasyEcs，其余交给我们的特性和生成器，不重复造轮子。
 
@@ -270,6 +270,54 @@ public readonly partial record struct Room(long Id)   : IKind<Room>;
 ---
 
 ## 5. 逻辑
+
+### 统一的写法：一切都是对事件的反应
+
+**用户只写一种东西：某个事件发生时，对哪些实体的哪些组件做什么。**
+
+```csharp
+[On<MoveTo>]                                   // a point event: one target, applied now
+static void Step(in MoveTo m, [Link] ref Position p, [Link] ref Velocity v, in Grid grid) { … }
+
+[On<Cast>]                                     // a point event that touches another entity, declared by a field
+static void Hit(in Cast m, [Link] in Position me, [Of(nameof(Cast.Target))] in Position target,
+    [Of(nameof(Cast.Target))] ref Health hp) { … }
+
+[On<Tick>]                                     // a broadcast event: every matching entity, applied now
+static void Advance(in Tick t, Span<Position> p, ReadOnlySpan<Velocity> v) { … }   // batch form, SIMD
+```
+
+- **tick 也是一个事件**：`Tick` 是一条发给本 shard 所有匹配实体的消息，排在同一条线上：`m1, m2, Tick, m3 …`。
+- **写法完全相同**：参数都是组件（`in` 读、`ref` 写），由绑定规则决定是哪个实体的组件。点事件和广播事件只差在 `[On<…>]` 写的是哪个事件。
+- **所有效果都当场生效**：每个事件的处理方法执行完，它的效果就对之后的所有事件可见。
+  - 移动是 `MoveTo` 事件的效果，当场生效；
+  - 惯性推进是 `Tick` 事件的效果，在 tick 那一刻对所有实体同时生效。
+  - 所以不存在"ECS 的模拟要过一会儿才看到"：模拟就是 tick 这个事件的效果，从 tick 之后就可见。
+- **用户不拆分逻辑**：要写的只是"什么时候发生"（哪个事件），这是策划本来就在想的。用户不需要决定"即时还是延后"，也不需要决定"串行还是并行"。
+
+**怎么执行由运行时根据签名决定，结果总是等于按顺序逐条执行：**
+
+| 事件 | 运行时怎么做 | 用到的 |
+|---|---|---|
+| 广播事件（`Tick`、按地图的事件） | 每个实体只读写自己的组件（从签名可证），所以所有匹配实体并行；批量方法用 SIMD | EasyEcs 的并行 `ForEach`、批量方法 |
+| 一串点事件 | 按签名得到每条的读写集（实体由绑定和 `[Of(…)]` 字段决定），分成互不相交的孤岛：孤岛之间并行，孤岛内按到达顺序；同一孤岛的同类事件连续执行，缓存友好 | 生成的读写集；EasyEcs 第 12、13 条 |
+| 宽事件（处理方法通过查询或 `World` 访问了签名之外的实体） | 一个串行屏障：前面的做完，它单独执行，后面再继续 | — |
+| 一个热点目标（很多人打同一个 boss） | 只有这个孤岛串行；对只做累加的组件（`[Accumulate] Health`），用按顺序的前缀和并行算出每一步，结果仍等于串行 | — |
+
+**用户付出的代价只有一条纪律：用参数声明要访问的组件，少用 `World` 查询。**
+- 用了也没错，只是这条事件会变成串行屏障；分析器会提示"这个处理方法是宽的"以及原因。
+- 共用的逻辑（伤害公式、占格规则）写成静态函数，参数是组件，被多个处理方法调用。
+
+**这还是 ECS 吗？是，只是调度方式变了：**
+- 存储、查询、并行任务、SIMD，全部用 EasyEcs；
+- 变的是"系统什么时候运行"：从"每帧按顺序跑一遍所有系统"，变成"按事件发生的顺序运行这个事件的处理方法"。tick 只是其中一种事件。
+- 不需要新的存储架构；需要的是 DaServer 的事件调度器，加上 EasyEcs 的第 12、13 条（运行时读写集、对给定实体列表并行执行）。
+
+**实现上的一个约束：** EasyEcs 的生成器看不到我们生成的代码，所以 `[On<Tick>]` 不能由我们生成一个 `[ForEach]` 交给 EasyEcs 去生成 job。两种做法：
+1. 我们的生成器直接调用 EasyEcs 的运行时并行 API（`ForEachParallel` 等），自己生成 job 结构；
+2. 或者 tick 的处理方法仍写成 EasyEcs 原生的 `[ForEach]`（放在 `[Every]` 组里），写法相同，只是特性名不同。
+
+推荐 1：用户只看到一种特性 `[On<…>]`；分析器由我们负责检查（EasyEcs 的分析器不覆盖这些方法）。
 
 ### 两种方法
 
