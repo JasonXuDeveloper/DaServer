@@ -1,4 +1,4 @@
-# DaServer 新编程模型设计（草案 v17，未实现，迭代中）
+# DaServer 新编程模型设计（草案 v18，未实现，迭代中）
 
 原则：业务代码干净、解耦、简洁，不用 OOP。能用 EasyEcs 的功能就用 EasyEcs，其余交给我们的特性和生成器，不重复造轮子。
 
@@ -271,6 +271,59 @@ public readonly partial record struct Room(long Id)   : IKind<Room>;
 ---
 
 ## 5. 逻辑
+
+### v18：动作是随时间推进的过程；消息开始或改变动作，帧系统推进和结算
+
+**真实的玩法不是"一条消息、一个瞬间的结果"：**
+- 移动可能走 1 帧，也可能走 n 帧；
+- 攻击先有 3 帧前摇，第 4 帧才结算伤害。目标在前 3 帧里躲开了，就是闪避。
+
+所以一次攻击的结果，取决于结算那一帧时目标在哪里，而不是攻击包和移动包谁先到。这正好把顺序问题交还给了时间，也正好适合 ECS。
+
+**模型：**
+
+| 步骤 | 在哪里 | 做什么 | 执行方式 |
+|---|---|---|---|
+| 1. 收到消息 | `[On<消息>]` | 校验（被眩晕了不能放技能、蓝够不够），然后把"开始一个动作"写成数据：`Casting(技能, 开始帧, 序号)`、`MoveIntent(方向, 开始帧)`、`Stop` | 按到达顺序逐条执行，便宜，当场生效 |
+| 2. 每一帧 | 帧系统（`[On<Tick>]`） | 推进所有进行中的动作：移动按帧积分；前摇到了结算帧的技能，用这一帧所有人的实际位置判定命中；施加伤害、判定死亡；buff | 批量，按列并行，可 SIMD |
+| 3. 同一帧内的先后 | 帧系统之间的顺序 | 先移动，再判定命中，再施加伤害，再判定死亡：这就是这个游戏的规则，由系统顺序明确写出来 | 确定 |
+| 4. 同一帧的冲突 | 结算系统 | 两人抢同一格、两刀同时打死同一个人：按 `(帧, 到达序号)` 排序裁决，谁的包先到谁优先 | 确定，可批量 |
+
+**回到"攻击 A、移动 B、移动 A、攻击 B"：**
+- 四个包只是在各自到达时开始了各自的动作：A 开始前摇、B 开始移动、A 改变移动、B 开始前摇。
+- 第 4 帧时，A 的攻击用"B 在第 4 帧的实际位置"判定：B 在前摇期间走开了，就是闪避。
+- 结果由玩法规定的时间决定，不再依赖哪个包先被处理。同一帧里真正要比先后的地方，用到达序号作为确定的裁决依据。
+
+**和 v17 比：**
+- 消息处理更简单了：只校验、只记录动作的开始，不做结算。
+- 所有结算都在帧系统里，就是你倾向的"消息改状态，系统做事"。并行、SIMD 都落在这里，而这里正好是 CPU 花得最多的地方。
+- "立即生效"的含义变成：消息的效果（动作开始了、状态改了）立即对之后的消息可见。例如开始施法后马上收到的第二个施法请求会被拒绝。动作的结果在它该发生的那一帧生效。
+- 没有前摇的瞬时动作（交易、拾取、使用道具）：
+  - 可以在消息里当场完成（先到先得）；
+  - 也可以当作 0 帧的动作，由下一帧的系统按到达序号批量结算。
+  - 两种结果一致，由玩法选。
+
+**用户写的：**
+
+```csharp
+[On<CastSkill>]                                   // validate, then start the action as data
+static void Cast(in CastSkill m, [Link] Entity me, [Link] in Stunned? stunned, in Clock clock, in Arrival seq)
+{
+    if (stunned is not null || me.Has<Casting>()) return;
+    me.SetCasting(new Casting(m.Skill, m.Target, ResolveAt: clock.Frame + Skills.Windup(m.Skill), seq.Value));
+}
+
+[On<Tick>, UpdateAfter<MovementSystem>]           // every frame: casts whose windup ends now resolve against positions now
+static void Resolve(Entity e, in Casting c, in Position me, in Clock clock, World world)
+{
+    if (c.ResolveAt != clock.Frame) return;
+    world.Hits.Add(new Hit(e, c.Target, Skills.Damage(c.Skill), c.Seq));   // collected; applied by HitSystem sorted by (frame, seq)
+    e.RemoveCasting();
+}
+```
+
+- 命中判定读的是这一帧的位置；前摇期间目标走开，就判定为闪避。
+- `HitSystem` 按目标汇总这一帧的伤害，按到达序号排序后施加，按目标并行；同一帧里谁先打死谁，也是确定的。
 
 ### 结论（v17）：消息是事务，tick 是并行计算；并行由运行时决定，用户不拆分
 
