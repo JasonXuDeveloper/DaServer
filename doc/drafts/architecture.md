@@ -48,7 +48,7 @@ An arrow reads "references". Dotted: reads a file, no assembly reference.
 
 ```mermaid
 flowchart BT
-    Core[DaServer.Core<br/>+ generator, analyzers]
+    Core["DaServer.Core<br/>+ generator, analyzers"]
     Client[DaServer.Client] --> Core
     Server[DaServer] --> Core
     PG[DaServer.Persistence.PostgreSql] --> Server
@@ -59,13 +59,13 @@ flowchart BT
     Protocol[Game.Protocol] --> Core
     GameServer[Game.Server] --> Protocol
     GameServer --> Server
-    GameServer -. optional .-> PG
+    GameServer -.->|optional| PG
     GameClient[game client] --> Protocol
     GameClient --> Client
     Tests[Game.Tests] --> GameServer
     Tests --> Testing
     AppHost[Game.AppHost] --> Aspire
-    AppHost -. reads wire.manifest .-> GameServer
+    AppHost -.->|"reads wire.manifest"| GameServer
 ```
 
 - Everything points one way: `DaServer` never references a capability, a sample or a user project; `DaServer.Core`
