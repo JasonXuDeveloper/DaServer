@@ -275,7 +275,6 @@ public readonly partial record struct Room(long Id)   : IKind<Room>;
 - 每个 `[Receive]` 只处理一种消息、只读写它需要的组件。攻击不知道移动的存在，移动也不知道攻击的存在。
 - 它们之间唯一的联系是组件数据（`Position`、`Health`）。
 - 顺序由框架保证（每个实体按到达顺序逐条执行），不靠系统之间互相调用。
-- 分析器帮忙守住这条规则：`[Receive]` 读到的组件，如果在 `[ForEach]` 的并行或批量方法里被写，就提示"判定读到的状态可能落后一个 tick"。是否刻意如此（例如位置），由用户标注确认。
 
 ### `[Receive]` 的参数
 
