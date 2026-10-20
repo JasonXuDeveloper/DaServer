@@ -22,7 +22,7 @@ Keep this file current: tick items when done, add items when scope changes.
 11. S1-S6 (done) elastic scaling.
 12. The ECS rewrite (ADR-081, the "ECS rewrite" entry under "Open cleanup" below): P1-P3 and P5 done; P4, P6 and P7
     superseded by W.
-13. W — refactor to the v36 programming model ([drafts/programming-model.md](drafts/programming-model.md),
+13. W — refactor to the v37 programming model ([drafts/programming-model.md](drafts/programming-model.md),
     [drafts/architecture.md](drafts/architecture.md)) on EasyEcs 4.6.0 and 4.7 (ADR-082 to ADR-092). Breaking; each step
     proven before the next (W, not R: the requirement ids R0-R11 are taken). Every use of an EasyEcs 4.7 feature (planned)
     is marked "(4.7)" inline where a step names it; until 4.7 ships each such use takes the 4.6 fallback listed in W1,
@@ -80,6 +80,7 @@ Keep this file current: tick items when done, add items when scope changes.
       `PrefabCompositionHistoryKeptInManifest`, `GroupRateOnlyJobGetsNoStructuralChanges`, `RawRecordLayoutChangeReported`, `TrackedRefNotAlwaysWrittenHinted`,
       `ConfigTableTakenByRefReported`, `SingletonWithoutInterfaceReported`, `UnfilteredForEachWithoutTickRateReported`,
       `SetGroupRateWithoutTickRateReported`, `DestroyWithDurableWaitHinted`, `UtcNowInHandlerWarned`,
+      `DurableItemFromSystemIsCompileError`, `DurableOnTickingActorWarns`,
       `RegistrationCallableWithTwoServerProjects`; `UnrelatedEditsHitTheCache` over the new stages.
     - [ ] W4 Runtime core: shards (one world each, `MaxDegreeOfParallelism` per world), the shard loop and the ordered
       phase per actor type (`Ordered<K>`), the due heap (4-ary, lazy deletion), the chain stack, the call index,
@@ -147,16 +148,23 @@ Keep this file current: tick items when done, add items when scope changes.
       in one record write, its whole output held until the CAS and released in order, discarded on fencing; the actor
       paused meanwhile (`Committing`: no items, its systems' output queued behind the batch's, other actors running),
       never idle, and awaited by deactivation, migration and the freeze; released group pushes through their group's
-      frame; the asker's waiting entity in the record before the request leaves,
-      `settleBy`, re-asks (a `NotHandled` on a re-ask transient), the settling re-ask, a durable asker destroyed by a
+      frame; the pause bounded by `DaServer:DurablePauseLimit` (past it a `Reload`: the held output released first only
+      if the write succeeded, discarded otherwise, a later write judged by its epoch; deactivation, migration (then
+      through the record) and a graceful stop proceed after the same bound); `NextDue` computed by the group commit for
+      its root before the record is taken, `WakeSystem` before `CheckpointSystem`; `Unsaved` cleared when the record is
+      taken and put back if the write fails; durable items from handlers only, systems of a paused actor appending
+      plain output released after the batch's; the asker's waiting entity in the record before the request leaves,
+      `settleBy` (the settle-by instant in every attempt's envelope, bounding `ReplyLog` entries and durable `ReplyTo`
+      deadlines; `ICluster.Ask(settleBy:)` deduplicated by `CallId.From` until then), re-asks (a `NotHandled` on a re-ask transient), the settling re-ask, a durable asker destroyed by a
       handler or a system failing the item and reloading, `Depart` re-parenting a durable wait to the root; the
       receiver's dedupe before the `TooLate` check, `ReplyLog` with refused entries under their own capacity
       (`DaServer:ReplyLogRefusedCapacity`) and `Faulted` entries kept across a `Reload`), a persisted `ReplyTo<T>`'s deadline in UTC, `root.IssueClientToken` with `IssueSeq` on the root,
+      `TestActor<K>` with `[Durable]` (the commit at the end of `Tick`, `FailNextWrite()`, `Answer<TReq>(value | status)`),
       `WakeAt`, `NextDue` from the runtime's `WakeSystem` (`ChangedAny`/`RemovedAny` (4.7)) with the `next_due` column,
       `IActorStore.DueKeys` and the `DueScan` wake, `StoreDegraded` and `ActivationSlots`, `ActivationFailed`, strict
       placement versions with `Fence`, idempotent claims, generations from Unix ms and single-seed formation, the lease
       ack, the restart permit, arm nonce, `NodeRestarting` and `Rejoining`, pinned slots and the reconcile on `Readmit`.
-      Tests: `ShardChecksLeaseBeforeTick`, `DropRestoredWithItsNetId`, `AvatarNotInRecord`, `NetIdsCounterSurvivesCrash`,
+      Tests: `ShardChecksLeaseBeforeTick`, `StashRestoredWithItsKey`, `AvatarNotInRecord`, `NetIdsCounterSurvivesCrash`,
       `PersistentSpawnUnderUnsavedParentThrows`, `SpawnOfPersistentPrefabTagsRootUnsaved`,
       `DestroyedPersistentChildTagsRootUnsaved`, `PlaceholderNeverCheckpointed`, `RecordMissingComponentsFilledFromPrefab`,
       `UnknownRecordTypeSkippedAndCounted`, `NotSavedComponentsReaddedOnArrivalAndLoad`,
@@ -173,6 +181,9 @@ Keep this file current: tick items when done, add items when scope changes.
       `SettlingReaskRefusesUnrunCall`, `RefusedEntriesHaveOwnCapacity`, `FullRefusedLogLeavesSettleUnanswered`,
       `RefusedEntriesExpireAfterDeadline`, `LateDuplicateAfterSettleNeverRuns`, `LaterReplyOnDurableTokenHeldUntilWrite`,
       `DeactivationMigrationAndFreezeAwaitPausedWrite`, `PausedActorNotIdle`, `ReleasedGroupPushKeepsGroupRate`,
+      `SystemsOutputWhilePausedReleasedAfterBatch`, `GroupCommitCarriesNextDue`, `PauseLimitReloadsActor`,
+      `DeactivationAndMigrationAfterPauseLimit`, `ReloadWhilePausedReleasesCommittedOutput`,
+      `ClusterDurableAskDedupedUntilSettleBy`,
       `DurableRepeatAnsweredBeforeTooLateCheck`, `DurableRequestTooLateRefused`, `DestroyingDurableAskerFailsItem`,
       `SystemDestroyOfDurableAskerReloads`, `DepartReparentsDurableWaitToRoot`,
       `PersistedReplyToDeadlineIsUtc`, `IssueSeqWrittenBeforeTokenLeaves`, `NextDueFollowsWakeAt`,
@@ -206,14 +217,15 @@ Keep this file current: tick items when done, add items when scope changes.
       `PublishReachesSubscribersOnEveryNode`, `DeliveryNeverActivates`, `ResubscribesAfterActivation`,
       `GoneSubscriberPruned`, `StaleUnsubscribeKeepsNewSubscription`; BenchmarkDotNet fan-out to 1k/10k subscribers on
       1/3 nodes, 0 B per delivery.
-    - [ ] W7 Samples (mmo, flashsale) on the new model (their systems use `Mut<T>` (4.7)), the mmo's drops persistent
-      and its avatars not; the login sample issuing client tokens inside a `[Durable]` request (the issue sequence
+    - [ ] W7 Samples (mmo, flashsale) on the new model (their systems use `Mut<T>` (4.7)), the mmo's drops split
+      between a non-ticking `Loot` actor (their records, persistent, the only `[Durable]` asker) and the map (what
+      clients see, not saved, shown again after the map loads from its record), its avatars not saved; the login sample issuing client tokens inside a `[Durable]` request (the issue sequence
       written before the token leaves); each AppHost becomes an `apphost.cs` (file-based) in the sample's server
       project, with client ports declared by `WithClientConnections(port)`; `DaServer.Aspire`'s generator writing the
       server types from the committed `wire.manifest` (`actor` and `hosted-by` lines; `IAcceptsClients` on those hosting
       `Connection`) and the build check. Tests: `Sample.Tests` on `TestActor<Map>`
       (`Walking_out_of_range_during_the_windup_dodges`, `A_busy_tick_allocates_nothing_and_threads_change_nothing`,
-      `DropSurvivesMapCrash`), `LoginIssuesIncreasingSequence`, `LoginTokenLeavesAfterSequenceWritten`,
+      `An_expired_grant_takes_the_drop_off_the_map`, `DropsReshownAfterMapCrash`), `LoginIssuesIncreasingSequence`, `LoginTokenLeavesAfterSequenceWritten`,
       `AppHostServerTypesGeneratedFromManifest`, `ClientPortWithoutConnectionHostFailsBuild`; the 1,000-bot and
       100,000-buyer E2E on the new model.
     - [ ] W7a `DaServer.Replication` and `DaServer.Replication.Client` (ADR-090): `[Replicated]`, `ReplicatedTo`,

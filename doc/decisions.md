@@ -1552,7 +1552,7 @@ Replaced by ADR-081.
   changed" leaks; the order between mail, delayed sends and systems is implicit. EasyEcs 4.5 now provides what a
   model without these needs: single-entity jobs (`entity.Run(ref job[, filter])`), group filters carried by
   interfaces (`IGroupWith<T>`), `world.Descendants(root)` and `LoadEntitiesInto(…, markWritten: false)`.
-- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v36), structured as in
+- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v37), structured as in
   [drafts/architecture.md](drafts/architecture.md):
   - **The actor type is its address, its root component, its root prefab and its system group**:
     `[TickRate(30)] partial record struct Map(long Id) : IActor<Map>` (`IActor<T>` inherits `IEquatable<T>`, so
@@ -1596,9 +1596,18 @@ Replaced by ADR-081.
       A paused actor is never idle, and deactivation, migration and the hot-restart freeze wait (bounded) for its
       write, so no output waits in a placeholder, migration bytes or a snapshot. The items of a batch share its write:
       an actor waits one store write per batch with durable items, so its throughput holds under load and the actors
-      beside it are not blocked. The asker's waiting entity
+      beside it are not blocked. The pause is bounded by `DaServer:DurablePauseLimit` (2 s): past it the actor reloads
+      (its held output released first only if the write has succeeded; a write that lands later counts by its epoch
+      alone) and waits for the store like any activation, and deactivation, migration (then through the record) and a
+      graceful stop proceed after the same bound, so a store outage never parks an actor. Since a durable item pauses
+      the whole actor, economic state belongs on actor types without `[TickRate]`, which ticking ones ask plainly (the
+      draft's `Loot` beside its `Map`): the analyzer warns on a ticking actor type that asks, handles or replies to a
+      `[Durable]` request, and durable items come only from handlers, never from systems (an analyzer error). The asker's waiting entity
       (request, state, call id, UTC deadline from `settleBy:`; `deadline:` stays the per-attempt timeout) is written
-      into its record before the request leaves, and is re-asked with the same call id on transient outcomes (a
+      into its record before the request leaves; every attempt's envelope carries that settle-by instant, and the
+      receiver keeps its `ReplyLog` entries (refused ones included) and a stored durable token's deadline by it, not by
+      the attempt's deadline (`ICluster.Ask` takes a required `settleBy:` for `[Durable]` requests and is deduplicated by
+      `CallId.From(externalKey)` until then). The waiting entity is re-asked with the same call id on transient outcomes (a
       `NotHandled` from an older build on a re-ask included) and after re-activation; a `[Durable]` request always
       activates its receiver (`[ActivatedBy]` narrows only a key's first activation); a crashed asker is woken by its slot owner's `DueScan` through the record's `next_due`. A crash
       after the answer handles the same answer again rather than a different one, and destroying an entity with a
@@ -1650,10 +1659,11 @@ Replaced by ADR-081.
   - **Persistence is per entity kind, not per component type**: entities spawned from a persistent prefab (`[Persist]`
     on the actor type's `RootPrefab`, `[Prefab<K>(Persist = true)]` on a child prefab) are saved with all their
     components but `[NotSaved]` ones, and carry `Persisted(Root)`; others are not saved. Every entity spawned from a
-    prefab carries `FromPrefab(Prefab, Composition)`. The draft's own example forced this: a drop on a
-    map must be restored with its `NetId`, `Position` and `Loot` (and its waiting `[Durable]` ask), while avatars carry
-    the same `NetId` and `Position` and must stay out of the record; per-type persistence (a marker interface on component types)
-    either lost the drop's `NetId` or dragged every avatar into the record. Change tracking is a per-type column in
+    prefab carries `FromPrefab(Prefab, Composition)`. The draft's own example forced this: a drop's
+    record on the non-ticking `Loot` actor must be restored with its `Prize` and `Position` (and its waiting `[Durable]`
+    ask), while the map's visible drops and its avatars carry the same `Position` and must stay out of records;
+    per-type persistence (a marker interface on component types) either lost the record's `Position` or dragged every
+    avatar into the record. Change tracking is a per-type column in
     EasyEcs, so the registration switches it on for the persist set, the types on persistent prefabs and those
     spawned into persistent entities (EasyEcs request #27, proposed, not yet forwarded; the generator declares
     `ITrackChanges` on `partial` types until then), and the change system runs one `ChangedAny` over that set filtered
