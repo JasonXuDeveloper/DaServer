@@ -1,6 +1,6 @@
 # Target architecture (draft, not implemented)
 
-The architecture DaServer is refactored to (breaking, roadmap phase W): the v43 programming model of
+The architecture DaServer is refactored to (breaking, roadmap phase W): the v44 programming model of
 [programming-model.md](programming-model.md) on EasyEcs 4.7 (the draft's header lists the features it uses), with Native AOT support. The programming model draft is
 the source of truth for what users write and what each rule means; this file says how the pieces fit together, holds the runtime's internal data and the client protocol's
 internals, and links to the draft's sections instead of repeating them. Today's architecture is [design.md](../design.md); the
@@ -147,7 +147,7 @@ loop on the shard's thread:
     drain the dispatch queue (one bounded batch) into mailbox snapshots, split by actor type,
         at most a budget of items per actor (the rest waits for the next batch, still by (time, seq))
     if the volatile lease-expiry stamp has passed: run nothing (the world is frozen)
-    for each actor type K without [TickRate] that has mail, due items or a pending chain:
+    for each actor type K without [TickRate] that has mail or due items (the chain stack is empty between items):
         write Time         K's Tick and TickRate (0 here) from Ordered<K>; Elapsed and Utc again per item
         Ordering<K>        OrderedPhase: chain stack, due heap (At <= now) and mailbox merged by (time, seq)
         hand Outbox frames to the links (held [Durable] output stays, tagged with its write generation)
@@ -159,6 +159,7 @@ loop on the shard's thread:
         hand Outbox frames to the links
         world.Update<K>()
         Settling<K>
+    write Time           Utc and Elapsed; Tick, TickRate and DeltaTime keep the last pass's values, which Cleanup does not read
     Cleanup              per world: ReleaseRoutes, the Persisted cleanup, WakeSystem, then CheckpointSystem (takes the
                                records of WriteNow roots first, then of Unsaved roots whose checkpoint interval has passed,
                                skipping roots with a write in flight, as many as the free statements hold)
@@ -171,7 +172,8 @@ loop on the shard's thread:
 - Ordering state (tick number, sequence counter, tick window, chain budget) is per actor type, the singleton `Ordered<K>`.
   `Time` is one world singleton, so the runtime writes it at the start of each actor type's pass: actor types with
   different tick rates share a world, and each pass sees its own type's `Tick`, `TickRate` and `DeltaTime`
-  ([draft §9](programming-model.md#时间)).
+  ([draft §9](programming-model.md#时间)); before `Cleanup` it writes only `Utc` and `Elapsed`, the values the per-world
+  Cleanup systems read.
 - `WriteNow` is set by the durable operations themselves (`Ask` and `Reply` of a `[Durable]` request, the dispatch of a
   `[Durable]` request or its `Replied`), in handlers and systems alike, so an item of a system rides the same tick's
   write ([draft §8](programming-model.md#durable两端由框架负责)).

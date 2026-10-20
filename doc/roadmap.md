@@ -22,7 +22,7 @@ Keep this file current: tick items when done, add items when scope changes.
 11. S1-S6 (done) elastic scaling.
 12. The ECS rewrite (ADR-081, the "ECS rewrite" entry under "Open cleanup" below): P1-P3 and P5 done; P4, P6 and P7
     superseded by W.
-13. W — refactor to the v43 programming model ([drafts/programming-model.md](drafts/programming-model.md),
+13. W — refactor to the v44 programming model ([drafts/programming-model.md](drafts/programming-model.md),
     [drafts/architecture.md](drafts/architecture.md)) on EasyEcs 4.7 (ADR-082 to ADR-092). Breaking; each step
     proven before the next (W, not R: the requirement ids R0-R11 are taken).
     W10 runs last, after W12 and N9.
@@ -236,18 +236,18 @@ Keep this file current: tick items when done, add items when scope changes.
       server types from the committed `wire.manifest` (`actor` and `hosted-by` lines; `IAcceptsClients` on those hosting
       `Connection`) and the build check. Tests: `Sample.Tests` on `TestActor<Map>`
       (`Walking_out_of_range_during_the_windup_dodges`, `A_busy_tick_allocates_nothing_and_threads_change_nothing`,
-      `An_expired_grant_takes_the_drop_off_the_map`, `DropsReshownAfterMapCrash`, `DropsReshownAfterCrashBeforeFirstRecord`, `LaterDropAppearsToEarlierClients`, `TakenDropDisappears`, `KilledNpcDisappearsAndDrops`, `CrossingPushesNewCellsSnapshot`, `MapCrashReusedNumberDoesNotBreakLoot` (a drop number repeated after a map crash ends in `Clash`/`Redrop` and the drop
+      `An_expired_grant_takes_the_drop_off_the_map`, `DropsReshownAfterMapCrash`, `DropsReshownAfterCrashBeforeFirstRecord`, `LaterDropAppearsToEarlierClients`, `TakenDropDisappears`, `KilledNpcDisappearsAndDrops`, `CrossingPushesNewCellsSnapshot`, `CrossingDuringHandoverSnapshotsAtConfirmation` (an avatar crossing cells while its `Joined` is dropped is tagged `Resnap` and gets a full snapshot when confirmed), `SnapshotSkipsDeadAndLeaving`, `MapCrashReusedNumberDoesNotBreakLoot` (a drop number repeated after a map crash ends in `Clash`/`Redrop` and the drop
       is shown again), `VisitorNumbersNeverMeetDropNumbers`, `VisitorNumbersContinueAfterMigration`, `TimedOutClaimLeavesPickUpUnknown`), `LoginIssuesIncreasingSequence`, `LoginTokenLeavesAfterSequenceWritten`,
       `AppHostServerTypesGeneratedFromManifest`, `ClientPortWithoutConnectionHostFailsBuild`; the 1,000-bot and
       100,000-buyer E2E on the new model.
     - [ ] W7a `DaServer.Replication` and `DaServer.Replication.Client` (ADR-090): `[Replicated]`, `ReplicatedTo`,
       generated field bitmasks, `Replica<T>` with its sent stamp (the world's `ChangeTick` at the replication pass, opaque to the client, valid within one incarnation), the per-group ring of exits (group changes and destroys; EasyEcs's destroy log lists a world's destroyed `EntityId`s
-      without groups or `ReplicaId`s and misses group changes), the per-actor incarnation (renewed whenever the actor reaches another world),
+      without groups or `ReplicaId`s and misses group changes), the per-actor incarnation (renewed whenever the actor reaches another world; a renewal clears the exit rings and zeroes the `Replica<T>` stamps),
       patches per `ClientGroup` in pooled frames from a `ChangedAny` system, full state on group changes and on an
       incarnation mismatch (a full resend starts with `Reset(incarnation)`), deltas on rejoin (a `ChangedAny` filter over the `[Replicated]` types and `ReplicatedTo`, kept in a field, moved with `Since(ack)`,
       for the lookup; "at or after" resends a superset; an entity that joined a group since the ack gets full state); proven on the mmo sample (its `Nearby` AOI as replicated components): same 10k-bot E2E, bytes per
       client and broadcast p99 against the hand-written AOI, 0 B per tick (drafts/architecture.md section 10). Tests:
-      `RejoinSameIncarnationGetsDelta`, `IncarnationChangeForcesFullResend`, `OverwrittenExitRingForcesFullResend`, `RejoinDeltaSendsFullStateOfEntityThatJoinedGroup`, `RejoinDeltaAckIsWorldChangeTick`,
+      `RejoinSameIncarnationGetsDelta`, `IncarnationChangeForcesFullResend`, `IncarnationRenewalClearsExitRingsAndStamps`, `OverwrittenExitRingForcesFullResend`, `RejoinDeltaSendsFullStateOfEntityThatJoinedGroup`, `RejoinDeltaAckIsWorldChangeTick`,
       `FullResendClearsClientReplicasFirst`.
     - [ ] W7b Non-.NET clients (ADR-090; replaces G7's plan): the client protocol specification, the conformance suite
       (run against the C# SDK first), the TypeScript client (`@daserver/client`) with the codecs Nino.TypeScript (prerelease,
