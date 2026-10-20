@@ -1552,7 +1552,7 @@ Replaced by ADR-081.
   changed" leaks; the order between mail, delayed sends and systems is implicit. EasyEcs 4.5 now provides what a
   model without these needs: single-entity jobs (`entity.Run(ref job[, filter])`), group filters carried by
   interfaces (`IGroupWith<T>`), `world.Descendants(root)` and `LoadEntitiesInto(…, markWritten: false)`.
-- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v39), structured as in
+- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v40), structured as in
   [drafts/architecture.md](drafts/architecture.md):
   - **The actor type is its address, its root component, its root prefab and its system group**:
     `[TickRate(30)] partial record struct Map(long Id) : IActor<Map>` (`IActor<T>` inherits `IEquatable<T>`, so
@@ -1583,8 +1583,11 @@ Replaced by ADR-081.
       membership change of a type, frames carry the highest seen), and a claim that displaces a live owner sends it
       `Fence(key, epoch)`, so two activations never overlap until the loser's next write; claims are idempotent, so
       a retried statement or a restart after a migration's arrival does not fence the claimant itself;
-    - a root's record writes never overlap (the next waits for the one in flight), so the CAS
-      compares the epoch alone and a failed write is retried with the same bytes;
+    - a root's record writes never overlap in one process (the next waits for the one in flight), and the CAS
+      compares the epoch and the root's write generation (`write_gen < :write_gen`; every epoch claim resets it to 0,
+      an in-place hot restart continues it from the snapshot), so a timed-out statement that lands late never
+      overwrites newer state; a failed write is retried with the same bytes and generation, and a row found at its own
+      epoch and generation counts as written;
     - generations are max(last seen + 1, Unix ms), and only the lowest-ordinal seed forms a cluster, so a cold restart
       of the whole cluster never reuses a generation and parallel seeds never form two clusters.
   - **Replies, presences and retries are data with stated guarantees** (the table "每条路径保证什么" in the draft's §11):
@@ -1594,9 +1597,13 @@ Replaced by ADR-081.
       `[TickRate]`) instead of waiting for the checkpoint interval; the operation itself marks the root, in a handler or
       a system alike. A root has at most one write in flight and a world at most `DaServer:StoreWritesInFlight`
       statements (roots beyond wait, durable ones first), and changes made meanwhile go in the next write, which
-      carries the latest state, so the CAS compares the epoch alone. Only two
-      kinds of output are held: an outgoing `[Durable]` request and an answer to one (a returned reply, a `Reply`
-      through a stored durable token, an answer from `ReplyLog`, `TooLate`, `Faulted`). Each carries the root's write
+      carries the latest state. Only two
+      kinds of output are held: the first attempt of an outgoing `[Durable]` request and an answer to one (a returned
+      reply, a `Reply` through a stored durable token, an answer from `ReplyLog`, a definite refusal, `Faulted`).
+      Re-asks and the settling re-ask leave at once and set no `WriteNow`: the record already holds the waiting entity
+      with its call id, request and settle-by instant, so an attempt carries nothing the record lacks, and after a crash
+      the restored entity recomputes its next step from the settle-by instant and repeats at most one attempt, which the
+      receiver deduplicates. Each carries the root's write
       generation that holds its item and leaves, in order, when that write succeeds; a refused row fences only its
       actor and discards only its held output. Everything else (plain requests and replies, sends, pushes,
       broadcasts) leaves at once and rolls back on a crash like any change not yet written. Deactivation, migration
@@ -1610,7 +1617,8 @@ Replaced by ADR-081.
       beside its `Map`), stays the recommended pattern, so a map's record is not written each tick it makes a durable
       item, but it is not required. Systems ask `[Durable]` requests and reply through stored durable tokens under the
       same rule; a throw in a system pass reloads every root that ran a durable item in it, and a durable `Ask` in the
-      `Deactivating` pass cancels the deactivation. The asker's waiting entity
+      `Deactivating` pass cancels an idle deactivation only; a forced one (`Deactivate()`, a graceful stop, a hot restart
+      through records, a migration's fallback) keeps the waiting entity in its final record and `DueScan` resumes it. The asker's waiting entity
       (request, state, call id, UTC deadline from `settleBy:`; `deadline:` stays the per-attempt timeout) is written
       into its record before the request leaves; every attempt's envelope carries that settle-by instant, the asker
       sends no attempt past it on its clock and the receiver drops, unrecorded, an attempt past it on its own, and the
@@ -1621,12 +1629,15 @@ Replaced by ADR-081.
       activates its receiver (`[ActivatedBy]` narrows only a key's first activation); a crashed asker is woken by its slot owner's `DueScan` through the record's `next_due`. A crash
       after the answer handles the same answer again rather than a different one, and destroying an entity with a
       waiting durable ask below it fails the item instead of dropping the promise (an asker's type persists and uses
-      `OnError = Reload`, an analyzer error otherwise, so the promise comes back from the record). One `AskTimeout` before the
-      deadline the asker sends a single settling re-ask: the receiver answers from its log or records the call id as
-      refused (under a cap of their own; when full the settling re-ask goes unanswered) and answers `TooLate`, so a late
-      duplicate never runs; `Expired` then means only "unreachable, outcome unknown". The receiver keeps call id →
+      `OnError = Reload`, an analyzer error otherwise, so the promise comes back from the record). At settle-by − `AskTimeout`
+      − `ClockSkew` on its own clock (so a receiver whose clock runs ahead by up to the skew still takes it) the asker
+      sends a single settling re-ask: the receiver answers from its log or answers `TooLate`, so a late duplicate never
+      runs; `Expired` then means only "unreachable, outcome unknown". Every definite refusal the receiver's root gives
+      a call id (`TooLate` either way, `Skipped`, a `NotHandled` to a first attempt) is recorded as refused, under a cap
+      of its own (when full, a refusal is neither recorded nor answered), and answered once written, so a later attempt
+      of that call id gets the same answer and never runs. The receiver keeps call id →
       reply in an internal bounded `ReplyLog`, written in the same record write as the reply's state; it answers a repeat from
-      it first, then refuses (`TooLate`) to start a request whose remaining budget is below its write latency; a handler that threw is recorded as `Faulted` across the `Reload` and answered only once
+      it first, then refuses (`TooLate`, recorded) to start a request whose remaining budget is below its write latency; a handler that threw is recorded as `Faulted` across the `Reload` and answered only once
       that is in the record, so a receiver's actor type must persist and use `OnError = Reload` (an analyzer error
       otherwise). A call id runs at most once; an outcome the caller saw survives either side's crash; a `[Durable]`
       request cannot be cancelled (an analyzer error: giving up is waiting for the deadline).
@@ -1701,7 +1712,9 @@ Replaced by ADR-081.
     `SetIfChanged` (EasyEcs #23) for components recomputed every tick, `world.Instantiate` with components (#24) for
     `root.Spawn`, `ChangedAny`/`RemovedAny` (with a start tick, #25) for the change system, the wake and replication,
     `world.Save(exclude)`/`Load(keep)` (#26) so user singletons (configuration tables, world singletons) stay out of a hot
-    restart's snapshot, `IUniqueIndexed<T>` for actor and child keys, `TrimExcess`, `Slices` for the idle scan, and the system diagnostics for the inspector; until 4.7 ships the steps that use them take the 4.6 fallbacks
+    restart's snapshot, `IUniqueIndexed<T>` for actor and child keys, `TrimExcess`, `Slices` for the idle scan, `Descendants(root).AddTo` for
+    collecting records and migrations, O(1) `Matches.Count` and `ValueIndex.KeyCount` for interest checks and the
+    inspector, and the system diagnostics for the inspector; until 4.7 ships the steps that use them take the 4.6 fallbacks
     listed in roadmap W1, then switch.
   - One project may define several server types; a node runs one.
 - Alternatives: keep ADR-081's handlers and add the missing pieces (copy and write-back stays, two vocabularies stay);

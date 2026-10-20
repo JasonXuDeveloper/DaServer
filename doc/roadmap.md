@@ -22,7 +22,7 @@ Keep this file current: tick items when done, add items when scope changes.
 11. S1-S6 (done) elastic scaling.
 12. The ECS rewrite (ADR-081, the "ECS rewrite" entry under "Open cleanup" below): P1-P3 and P5 done; P4, P6 and P7
     superseded by W.
-13. W — refactor to the v39 programming model ([drafts/programming-model.md](drafts/programming-model.md),
+13. W — refactor to the v40 programming model ([drafts/programming-model.md](drafts/programming-model.md),
     [drafts/architecture.md](drafts/architecture.md)) on EasyEcs 4.6.0 and 4.7 (ADR-082 to ADR-092). Breaking; each step
     proven before the next (W, not R: the requirement ids R0-R11 are taken). Every use of an EasyEcs 4.7 feature (planned)
     is marked "(4.7)" inline where a step names it; until 4.7 ships each such use takes the 4.6 fallback listed in W1,
@@ -48,7 +48,8 @@ Keep this file current: tick items when done, add items when scope changes.
       `Mut<T>`/`SetIfChanged` (`ref`: always stamped), `ChangedAny`/`RemovedAny` with a start tick (one
       `Changed<T>`/`Removed<T>` pass per type, as ADR-068's change system), `Slices` (the whole table per interval),
       `Save(exclude)`/`Load(keep)` (the singletons removed before the save and set after the load, at the cost of change
-      stamps; when the snapshot write fails, set again before the `Resumed(Aborted)` tick), `TrimExcess`, `DescribeSchedule` and the `SystemStats` additions (none). EasyEcs request #27 (tracking
+      stamps; when the snapshot write fails, set again before the `Resumed(Aborted)` tick), `Descendants(root).AddTo` (a hand-written descendant walk into the reused list), `Matches.Count` and
+      `ValueIndex.KeyCount` (iterate to count), `TrimExcess`, `DescribeSchedule` and the `SystemStats` additions (none). EasyEcs request #27 (tracking
       switched on per type at run time; proposed, not yet forwarded): until it ships, the generator declares
       `ITrackChanges` on the persist set's types that lack it, which are then `partial`.
     - [ ] W2 Packages and attributes (ADR-086, ADR-087): Abstractions merged into Core, Hosting into `DaServer`,
@@ -130,7 +131,9 @@ Keep this file current: tick items when done, add items when scope changes.
       but for ask states, the change system on `ChangedAny`/`RemovedAny` (4.7), spawns of persistent prefabs tagging the
       root `Unsaved`, placeholders never checkpointed, every load (record, migration, snapshot) completing entities from
       their prefab copy: `[NotSaved]` components and those gained since the composition, unknown type ids skipped and
-      counted), a plain epoch CAS with a root's writes never overlapping (`Writing`), the tick-end write (one statement per
+      counted), records and migrations collected by `Descendants(root).AddTo` (4.7), a CAS on the epoch and the write
+      generation (`write_gen < :write_gen`, reset by every claim, continued from the snapshot by an in-place hot restart; a
+      row found at its own epoch and generation counts as written) with a root's writes never overlapping (`Writing`), the tick-end write (one statement per
       world per tick end, ADR-068's `unnest`, per-row CAS; `WriteNow` roots every time, other `Unsaved` roots at most
       every `DaServer:CheckpointInterval`; at most one write in flight per root, later changes in the next write; at
       most `DaServer:StoreWritesInFlight` statements in flight per world, roots beyond waiting, `WriteNow` first,
@@ -148,21 +151,22 @@ Keep this file current: tick items when done, add items when scope changes.
       (stateful groups as one service per node with a fixed hostname and a named snapshot volume each, restarted one
       node at a time) and the documented systemd unit, launchd plist and Windows service (the Kubernetes rollout is
       W11). With them: `[Durable]` at both ends (actors keep running: a root that ran any of the four kinds of durable item
-      rides the next tick-end write (`WriteNow`); only outgoing `[Durable]` requests and answers to them are held,
+      rides the next tick-end write (`WriteNow`); only first attempts of outgoing `[Durable]` requests and answers to them
+      are held (re-asks and the settling re-ask leave at once, no `WriteNow`),
       tagged with the root's write generation, released in order when that write succeeds, discarded on fencing, a
       refused row fencing only its actor; plain output leaves at once; deactivation, migration (the source writing the
       root first), the freeze and a graceful stop waiting for the in-flight write and the held output; `Reload` waiting
       for the in-flight write's result, releasing on success, discarding on failure or timeout and the output of
       unwritten generations; `WakeSystem` before `CheckpointSystem`; `Unsaved` cleared when the record is taken and put
       back if the write fails; durable items from handlers and systems alike (`WriteNow` set by the operation itself, a
-      throwing system pass reloading the roots that ran one, a durable `Ask` in the `Deactivating` pass cancelling the
-      deactivation); the asker's waiting entity in the record before the request leaves,
+      throwing system pass reloading the roots that ran one, a durable `Ask` in the `Deactivating` pass cancelling an
+      idle deactivation only, a forced one keeping the waiting entity in its final record); the asker's waiting entity in the record before the request leaves,
       `settleBy` (the settle-by instant in every attempt's envelope, bounding `ReplyLog` entries and durable `ReplyTo`
       deadlines; no attempt sent past it, an attempt past it dropped by the receiver; `ICluster.Ask(settleBy:)`
-      deduplicated by `CallId.From` until then), `WakeAt` at the next attempt or the settle-by instant, re-asks (a `NotHandled` on a re-ask transient), the settling re-ask, a durable asker destroyed by a
+      deduplicated by `CallId.From` until then), `WakeAt` at the next attempt or the settle-by instant, re-asks (a `NotHandled` on a re-ask transient), the settling re-ask at settle-by − `AskTimeout` − `ClockSkew`, a durable asker destroyed by a
       handler or a system failing the item and reloading, `Depart` re-parenting a durable wait to the root; the
-      receiver's dedupe before the `TooLate` check, `ReplyLog` with refused entries under their own capacity
-      (`DaServer:ReplyLogRefusedCapacity`) and `Faulted` entries kept across a `Reload`), a persisted `ReplyTo<T>`'s deadline in UTC, `root.IssueClientToken` with `IssueSeq` on the root,
+      receiver's dedupe before the `TooLate` check, every definite refusal recorded as refused, `ReplyLog` with refused
+      entries under their own capacity (`DaServer:ReplyLogRefusedCapacity`; full: neither recorded nor answered) and `Faulted` entries kept across a `Reload`), a persisted `ReplyTo<T>`'s deadline in UTC, `root.IssueClientToken` with `IssueSeq` on the root,
       `TestActor<K>` with `[Durable]` (the write at the end of `Tick`, `FailNextWrite()`, `Answer<TReq>(value | status)`),
       `WakeAt`, `NextDue` from the runtime's `WakeSystem` (`ChangedAny`/`RemovedAny` (4.7)) with the `next_due` column,
       `IActorStore.DueKeys` and the `DueScan` wake, `StoreDegraded` and `ActivationSlots`, `ActivationFailed`, strict
@@ -174,19 +178,21 @@ Keep this file current: tick items when done, add items when scope changes.
       `UnknownRecordTypeSkippedAndCounted`, `NotSavedComponentsReaddedOnArrivalAndLoad`,
       `PrefabGainedComponentAddedOnSnapshotLoad`, `ComponentRemovedAtRunTimeNotReadded`,
       `NonPersistentEntityCompletedAfterMigration`,
-      `TimedOutWriteRetriedWithSameBytes`, `ActivatedByRefusesOtherMessages`,
+      `TimedOutWriteRetriedWithSameBytes`, `LateTimedOutWriteNeverOverwritesNewer`, `ActivatedByRefusesOtherMessages`,
       `DurableRequestActivatesDespiteActivatedBy`, `NotHandledOnDurableReaskIsTransient`, `MaxPendingExceededHandledByOnError`,
       `PlaceholderMailFullAnswersBusy`, `ReloadKeepsQueuedMail`, `ReloadResetsRootToPrefab`, `ReloadClearsUnsaved`,
       `ReloadMovesBatchRemainderIntoMail`, `ReloadDiscardsUnwrittenDurableOutput`, `ReloadWaitsForInFlightWrite`, `StaleWriteCompletionIgnoredAfterReload`,
       `HalfAppliedItemNeverReachesCheckpoint`, `RepeatedReloadBacksOff`, `DeterministicThrowOnDurableAnswersFaulted`,
       `FaultedAcrossReloadAnsweredAfterWrite`, `GrantSurvivesCalleeCrashAfterReply`,
-      `SettlingReaskRefusesUnrunCall`, `RefusedEntriesHaveOwnCapacity`, `FullRefusedLogLeavesSettleUnanswered`,
+      `SettlingReaskRefusesUnrunCall`, `RefusedDurableCallNeverRunsLater`, `SettlingReaskAllowsForClockSkew`,
+      `ReaskLeavesAtOnceWithoutWrite`, `RefusedEntriesHaveOwnCapacity`, `FullRefusedLogLeavesSettleUnanswered`,
       `RefusedEntriesExpireAfterDeadline`, `LateDuplicateAfterSettleNeverRuns`, `LaterReplyOnDurableTokenHeldUntilWrite`,
       `DurableOutputReleasedAfterItsTickWrite`, `PlainOutputNotHeldBehindDurable`, `OneWriteInFlightPerRootLaterOverwrites`,
       `TickEndWritesShareOneStatement`, `StoreWritesInFlightBounded`, `FencedWriteDiscardsHeldDurableOutput`,
       `DeactivationWaitsForHeldDurableOutput`, `MigrationWaitsForHeldDurableOutput`, `FreezeWritesRootsWithHeldOutput`,
       `GracefulStopDiscardsHeldOutputPastBudget`, `RepliedHandlerRerunRepeatsPlainOutput`,
-      `SystemDurableAskRidesTickEndWrite`, `SystemThrowAfterDurableItemReloads`, `DurableAskInDeactivatingPassCancelsDeactivation`, `NoAttemptAfterSettleBy`,
+      `SystemDurableAskRidesTickEndWrite`, `SystemThrowAfterDurableItemReloads`, `DurableAskInIdleDeactivatingPassCancelsIt`,
+      `ForcedDeactivationKeepsDurableAskInRecord`, `NoAttemptAfterSettleBy`,
       `ReceiverDropsAttemptPastSettleBy`,
       `ClusterDurableAskDedupedUntilSettleBy`,
       `DurableRepeatAnsweredBeforeTooLateCheck`, `DurableRequestTooLateRefused`, `DestroyingDurableAskerFailsItem`,
@@ -230,7 +236,7 @@ Keep this file current: tick items when done, add items when scope changes.
       server types from the committed `wire.manifest` (`actor` and `hosted-by` lines; `IAcceptsClients` on those hosting
       `Connection`) and the build check. Tests: `Sample.Tests` on `TestActor<Map>`
       (`Walking_out_of_range_during_the_windup_dodges`, `A_busy_tick_allocates_nothing_and_threads_change_nothing`,
-      `An_expired_grant_takes_the_drop_off_the_map`, `DropsReshownAfterMapCrash`), `LoginIssuesIncreasingSequence`, `LoginTokenLeavesAfterSequenceWritten`,
+      `An_expired_grant_takes_the_drop_off_the_map`, `DropsReshownAfterMapCrash`, `TimedOutClaimLeavesPickUpUnknown`), `LoginIssuesIncreasingSequence`, `LoginTokenLeavesAfterSequenceWritten`,
       `AppHostServerTypesGeneratedFromManifest`, `ClientPortWithoutConnectionHostFailsBuild`; the 1,000-bot and
       100,000-buyer E2E on the new model.
     - [ ] W7a `DaServer.Replication` and `DaServer.Replication.Client` (ADR-090): `[Replicated]`, `ReplicatedTo`,
