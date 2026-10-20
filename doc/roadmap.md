@@ -492,7 +492,7 @@ stateful, maps being heavy actors.
       move with their actors (now `[Handoff]`), and the realm's status sequence was the hosting shard's tick (now the
       realm's own). The 10k-bot run with a scale step belongs to the release checklist.
 
-## Next: architecture borrowed from a studied game server, ET and Orleans (agreed scope; order: the development order above)
+## Next: architecture borrowed from in-house game servers, ET and Orleans (agreed scope; order: the development order above)
 
 Patterns only, never business code. Each item: tests, BenchmarkDotNet where a hot path changes, an ADR, logic and docs
 in separate commits.
@@ -507,7 +507,7 @@ in separate commits.
       or singleton (DAS013) and its systems hold no fields (DAS007); components live in `X.Components` projects
       (contracts and EasyEcs only), which a reload never replaces. Shared logic is exempt (clients run it, it never
       reloads); the node project is the reloadable logic itself (no separate host project). Samples, tests and
-      benchmarks follow it. (a studied game server Server/HotReload, ET Model/Hotfix)
+      benchmarks follow it. (game servers' server/hot-reload split, ET Model/Hotfix)
 - [x] N2 `SendAfter(delay, address, message)` / `CancelSend(timer)` (ADR-058): per-shard timer wheel of serialized
       frames (`ShardTimers`, `TimerSystem`), delivered as ordinary mail when due (follows moved keys), 5 ms resolution,
       zero allocation (`DelayedSendsDoNotAllocate`, `TimerBenchmark`); DAS009 of N3b points `await Task.Delay` to it.
@@ -545,7 +545,7 @@ in separate commits.
       per shard; a rejected versioned write fences the local copy; `IActorStore`, `InMemoryActorStore` and
       `PostgreSqlActorStore` (`DaServer.Persistence.PostgreSql`: a row per actor, one round trip per batch); DAS014;
       `PersistenceBenchmark`. Relational business
-      data (accounts, payments, mail, auctions) stays in the user's ORM inside services. (a studied game server write-behind, ET
+      data (accounts, payments, mail, auctions) stays in the user's ORM inside services. (game-server write-behind, ET
       serialized components, Orleans IPersistentState + ETags)
 - [x] Z7 A/B against d676d2a on one VM (default job, both built here; the VM is slower than when README numbers were
       taken, so only same-machine pairs compare): calls 26-74% faster (1 local call 60.1 -> 16.5 us, 1,024 local
@@ -593,7 +593,7 @@ in separate commits.
       `EndpointDataSource` whose change token swaps the endpoint set (minimal API handlers declared in Logic,
       registered by the generator), in-flight requests finish on the old delegates; the unload test proves no routing
       or System.Text.Json cache keeps the old context alive (JSON through source-generated contexts in Logic). Benchmark
-      the hot path before and after. (a studied game server, ET)
+      the hot path before and after. (in-house game servers, ET)
 - [x] N11 Declared filters: `[Filter]` on a static `RpcStatus M(in Context context, in TMessage message)` (that
       message type) or on an `IMessageFilter` class (every message) is registered by the assembly's
       generated registration: rate limits, authorization and auditing without startup code; DAS021 for a wrong shape
@@ -601,7 +601,7 @@ in separate commits.
       the dispatchers: a filter in another assembly (shared rules) applies too, and a message without filters still
       costs two length checks. (Orleans call filters)
 - Not adopted: Orleans interface proxies, per-activation Task scheduling, grain directory / repartitioning,
-  transactions; ET location server, coroutine locks, class entity trees, global singletons; a studied game server stop-the-world
+  transactions; ET location server, coroutine locks, class entity trees, global singletons; game-server stop-the-world
   reload with forced GC, manual dirty marking. GM commands (N10) are out of scope for now.
 
 ## Edge cases (audit of October 2026: each found case gets a deterministic test before its fix)

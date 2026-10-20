@@ -14,7 +14,7 @@ resolve). Each: context → decision → consequences.
   pays a few `#if NET` lines, never a second implementation.
 
 ## ADR-002 Shards: single-threaded shards with a dispatch queue, not a thread-pool actor runtime
-- Context: a thread-pool actor runtime (as in a studied game server) resumes continuations on pool threads and funnels many
+- Context: a thread-pool actor runtime (as in a typical in-house game server) resumes continuations on pool threads and funnels many
   producers into queues built for one, which needs locks or careful ownership in user code.
 - Decision: each node runs N shards (default one per core), each a dedicated thread owning an EasyEcs `World`, a
   bounded lock-free MPMC dispatch queue for new calls and messages (refused beyond its capacity, ADR-027), a second
@@ -118,7 +118,7 @@ resolve). Each: context → decision → consequences.
 
 ## ADR-013 The shard runtime is ECS
 - Context: an imperative shard loop (drain a queue, sweep in-flight work, run timers, tick) with ad-hoc per-actor
-  queues hides state in procedures. a studied game server's useful idea: actors are entities with their own mailbox, drained by
+  queues hides state in procedures. A useful idea from such servers: actors are entities with their own mailbox, drained by
   systems; infrastructure is systems over singleton state.
 - Decision: `Shard` keeps only the thread, the cross-thread dispatch queue and the wake/tick loop. Loaded actors are
   entities (`ActorKey`, indexed; their mailbox as a `DynamicBuffer<Envelope>`; lifecycle tags, ADR-037; known
@@ -1041,8 +1041,8 @@ Replaced by ADR-081.
 - Context: hot reload (N9) replaces code while actors keep their state. EasyEcs stores components by type. A
   component declared in the reloaded assembly becomes a different type after the reload, and the stored data is
   unreachable. Logic that keeps state in object fields loses it the same way.
-- What other projects do: a studied game server keeps components in `a studied game server.Server` and systems, handlers and extensions in
-  `a studied game server.Server.HotReload`, with analyzers and a generator that runs only in the reloadable project. ET splits
+- What other projects do: a typical game server keeps components in its server assembly and systems, handlers and extensions in
+  a hot-reloadable assembly, with analyzers and a generator that runs only in the reloadable project. ET splits
   Model (entities and components) from Hotfix (systems) and forbids fields in Hotfix through analyzers. Orleans does
   not reload code, so its grains keep their state classes beside them.
 - Decision: split only what a reload needs, in the application layer. The framework's own runtime is never reloaded
@@ -1057,14 +1057,14 @@ Replaced by ADR-081.
 - The reload itself is planned (roadmap N9, after the EasyEcs release it needs): no cluster-wide stop, each shard
   swapping its handler table and system list between two passes on its own thread (handlers run to completion, so
   nothing of the old code is in flight), components and singletons staying where they are because their types do not
-  change (a studied game server stops the
+  change (a typical game server stops the
   world and forces a GC instead). The split above holds now, so the reload adds no rule to existing code.
 - Consequences: one components project per server that has data. Changing a component's layout is a rolling deploy;
   with N9, changing behaviour becomes a reload. Data and behaviour are split exactly as ECS splits them.
 
 ## ADR-068 Actor records: [Persist] components, saved by systems, versioned
 - Context: actors are loaded on demand and moved between nodes, so their state needs a store. Orleans writes a grain's
-  state object when the grain asks (`WriteStateAsync`, one row per grain, an ETag). a studied game server writes MongoDB
+  state object when the grain asks (`WriteStateAsync`, one row per grain, an ETag). A typical game server writes document-store
   documents per type, marked dirty by hand and written back in batches; a renamed class loses its collection. ET
   saves serialized entities by hand. Akka.NET and Proto.Actor journal events.
 - Decision:
@@ -1600,7 +1600,7 @@ Replaced by ADR-081.
     check is gated on EasyEcs removing it (EasyEcs request #21); a suppression of a library's warning in user
     programs is not accepted.
 - Alternatives: AOT only for stateless nodes (no tracked components; splits the support matrix); suppress IL3054
-  (accepts a warning on the library's behalf); drop hot reload (JIT deployments lose N9, which a studied game server and ET
+  (accepts a warning on the library's behalf); drop hot reload (JIT deployments lose N9, which typical game servers and ET
   show games use); reflection-based registration with trimming descriptors (fragile, and generic closure at run time
   is impossible under AOT anyway).
 - Consequences: the release checklist publishes each sample node with `PublishAot=true` with 0 warnings and runs the
