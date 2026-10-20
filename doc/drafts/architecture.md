@@ -239,11 +239,17 @@ JIT stays supported; the two are a deployment choice:
 - **Serialization is Nino's generated formatters** (messages, persisted components, records, migration bytes); type
   ids are Nino's. EasyEcs records types by Nino type id (D30).
 - **EasyEcs**: `EasyEcs.Core` is marked `IsAotCompatible`; its generated code calls user methods directly.
-- **The HTTP plane**: `WebApplication.CreateSlimBuilder`; minimal APIs through ASP.NET Core's request delegate
-  generator; JSON through source-generated `JsonSerializerContext`s. Today's admin endpoints serialize anonymous
-  objects (`DaServerAdmin`) and `MapAsk` reads bodies with reflection-based JSON: the admin replies become typed
-  records in a framework context; JSON bodies of `MapAsk` need a context the application declares (the System.Text.Json
-  generator does not see other generators' output, so DaServer cannot declare it), while Nino bodies need nothing.
+- **The HTTP plane, no JSON in the framework**: `WebApplication.CreateSlimBuilder`; minimal APIs through ASP.NET
+  Core's request delegate generator.
+  - **Admin endpoints** (`/admin/membership`, `/admin/stats`, drain, unload) answer typed `[NinoType]` records as
+    Nino (`application/x-nino`, Nino.AspNetCore), or a plain-text table for `Accept: text/plain` (an operator with
+    curl). The Aspire commands decode the Nino reply and show the text. Today's `Results.Json` of anonymous objects
+    goes.
+  - **Probes and metrics** keep their platform formats: plain-text health, Prometheus text exposition.
+  - **`MapAsk` / `MapSend`** take Nino bodies only by default. An application that must accept JSON (a third-party
+    webhook) opts in per endpoint with a source-generated `JsonSerializerContext` it declares (the System.Text.Json
+    generator does not see other generators' output, so DaServer cannot declare it). No reflection-based JSON
+    anywhere.
 - **Configuration**: `Configure<NodeOptions>(section)` is handled by the configuration binding generator;
   `configuration.Get<TOptions>()` inside the generic `AddDaServerFeature<TOptions>` has an open type there and
   moves to a closed call site (to verify with the first AOT publish).
@@ -304,7 +310,8 @@ Derived from [design.md](../design.md) and the deleted list in
 | Random `NodeId` per process | Cluster-assigned node generation |
 | Deadlines in UTC milliseconds | Monotonic `TimeSpan`; remaining time across processes |
 | Route listing by reflection (`Routes`) | Routes from `wire.manifest` |
-| Admin JSON of anonymous objects | Typed records, source-generated JSON |
+| Admin JSON of anonymous objects | Typed `[NinoType]` records as Nino, or plain text for `Accept: text/plain` |
+| `MapAsk` bodies as JSON or Nino | Nino; JSON only per endpoint, through the application's source-generated context |
 
 CLAUDE.md's Layout and ADR-017 change with R (one Server project may define several server types).
 

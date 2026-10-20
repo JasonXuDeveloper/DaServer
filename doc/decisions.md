@@ -1591,8 +1591,10 @@ Replaced by ADR-081.
     `MakeGenericType`, `Activator` or assembly scanning; the analyzer reports a generic `[ForEach]` system closed
     outside its assembly, which EasyEcs would close at run time without a warning.
   - **The HTTP plane** uses `WebApplication.CreateSlimBuilder`, minimal APIs through the request delegate generator
-    and source-generated JSON contexts (the framework's for its admin endpoints, the application's for JSON bodies it
-    maps); routes are read from `wire.manifest`, not from assemblies.
+    and no JSON in the framework: admin endpoints answer typed `[NinoType]` records as Nino, or a plain-text table
+    for `Accept: text/plain`; probes and metrics keep their platform formats; `MapAsk`/`MapSend` take Nino bodies,
+    and JSON only where the application opts in per endpoint with its own source-generated `JsonSerializerContext`
+    (third-party webhooks). Routes are read from `wire.manifest`, not from assemblies.
   - **Hot reload is a deployment choice**: JIT deployments load the Logic assembly into a collectible context and may
     hot reload it; AOT deployments compile Logic in and refuse a reload (changes ship as rolling upgrades).
   - **0 warnings, no suppression**: EasyEcs's AOT compile reports IL3054 (generic recursion through its change-tick

@@ -41,7 +41,8 @@ Keep this file current: tick items when done, add items when scope changes.
       through `Descendants` and `ComponentSet`, migration bytes with layout hashes.
     - [ ] R7 Samples (mmo, flashsale) on the new model.
     - [ ] R8 Native AOT publish of the samples' nodes with 0 warnings (gated on EasyEcs request #21: IL3054 for tracked
-      components); the AOT E2E run.
+      components); the AOT E2E run. Admin endpoints as Nino (or plain text for `Accept: text/plain`), `MapAsk`/`MapSend`
+      Nino by default with per-endpoint opt-in JSON through the application's source-generated context (ADR-083).
     - [ ] R9 BenchmarkDotNet against the pre-R baseline, allocation tests, the 10k-bot E2E, review rounds.
     - [ ] R10 Promote the drafts into design.md and decisions.md (CLAUDE.md's Layout, ADR-017), delete the drafts.
 14. N9 hot reload, on R's model (draft §10; JIT deployments only, ADR-083).
