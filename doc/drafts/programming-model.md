@@ -1,4 +1,4 @@
-# DaServer 新编程模型设计（草案 v42，未实现，迭代中）
+# DaServer 新编程模型设计（草案 v43，未实现，迭代中）
 
 原则：业务代码干净、解耦、简洁，不用 OOP。ECS 一路到底：能用 EasyEcs 的功能就用 EasyEcs，状态都是数据，其余交给我们的特性和生成器，不重复造轮子。
 
@@ -248,7 +248,7 @@ public record struct Picking(ReplyTo<bool> Reply) : IComponent;                 
 | b. 系统 | `world.Update<Map>()`：这个 Actor 类型的 EasyEcs 系统（第 5 节） | 单线程；`[ForEach(Parallel = true)]` 只在 world 比核少时分块多线程（第 5 节） |
 | c. 收尾（`Settling`） | 框架的系统：`Depart` 销毁带 `Leaving` 的 Presence，`SyncSubscriptions` 同步订阅（第 7、9 节），去掉 `Restarting` 和 `Resumed`（第 10 节）；然后框架组 `Cleanup` 处理已销毁实体留下的清理组件（`ReleaseRoutes` 等，第 6 节）；最后把 `Outbox` 交给链路 | 单线程 |
 
-- 有序阶段的状态（序号计数器、当前 tick 窗口、即时链预算）按 Actor 类型存在运行时的单例 `Ordered<K>` 里。有序阶段、收尾和清理都是 DaServer 自己的 `EcsSystem`，在框架的系统组里，每个只做一件事。
+- 有序阶段的状态（tick 号、序号计数器、当前 tick 窗口、即时链预算）按 Actor 类型存在运行时的单例 `Ordered<K>` 里。有序阶段、收尾和清理都是 DaServer 自己的 `EcsSystem`，在框架的系统组里，每个只做一件事。
 - 有序阶段开始时取一次邮箱快照；这期间新到的消息进下一帧。
 - **一个 Actor 不能饿死同一 world 的邻居**：每批邮件里每个 Actor 最多执行一定数量的项（节点配置），其余留给下一批，仍按 `(时间, 序号)`。
 - **先看租约**：每个 world 在有序阶段之前读一次租约到期戳（`volatile`，第 2 节），过期就不执行，整个 world 冻结。
@@ -991,7 +991,7 @@ public readonly partial record struct Player(long Id) : IActor<Player>
   - 链路记下每个帧进重发窗口的时刻，重放时从请求的剩余时间里减去它在窗口里等的时间；
   - 迁移的字节和热重启的快照里带着"已经等了多久"：占位上和调度队列里的邮件、`ReplyTo` 的期限、等待中的请求的期限，都减去途中和停顿的时间；
   - 用户的延后事件不减：那是 Actor 自己的时间，迁移和热重启的停顿不计入（第 10 节）。
-- `Time` 是 world 的单例，由运行时写，用户只读：
+- `Time` 是 world 的单例，由运行时写，用户只读。同一个 world 上可以有帧率不同的 Actor 类型，所以运行时在每个 Actor 类型的一趟（`Ordering`、`Update<K>()`、`Settling`）开始时写它：`Tick` 和 `TickRate` 取自这个类型的 `Ordered<K>`（tick 号存在那里，按 Actor 类型数），`DeltaTime` 是这个类型的帧长；`Elapsed` 和 `Utc` 每一项开始时再写（下面）：
 
   ```csharp
   public record struct Time(long Tick, TimeSpan DeltaTime, int TickRate, TimeSpan Elapsed, DateTime Utc) : ISingletonComponent;
@@ -1003,7 +1003,7 @@ public readonly partial record struct Player(long Id) : IActor<Player>
   - 各节点的 UTC 只差对时的误差，所以框架用到 UTC 的地方（`ReplyLog` 留多久、`[Durable]` 的期限、提醒）都多留一个余量 `DaServer:ClockSkew`，排序和期限从不比较两个节点的 UTC。
 
 - **`Elapsed` 是正在执行的那一项的时间**：处理消息时是它进入 world 的时刻，执行延后事件时是它的到期时刻，系统里是 tick 时刻 t。
-- 系统运行期间，`Tick`、`DeltaTime`、`TickRate` 是这个 Actor 类型的值；没有 tick 的 Actor 类型，它们是 0。
+- 所以系统和处理方法读到的 `Tick`、`DeltaTime`、`TickRate` 总是正在跑的这个 Actor 类型的；没有 tick 的 Actor 类型，它们是 0。
 - **`after` 从当前项的时间算起**：到期时刻 = `Time.Elapsed` + after，存精确值，不存 tick 号。它在 tick 窗口所在的那一帧执行（第 1 节），从不提前。
 - 数据里写秒或毫秒，例如配置表 `skills.Windup(id)` 返回 `TimeSpan`（第 12 节的 `SkillTable`）。
 - 为什么用时间不用 tick：改帧率不能改技能的手感。Minecraft 的 `/tick rate` 改了帧率，按帧写的一切都跟着变快变慢；Photon Quantum 的 `FrameTimer.FromSeconds` 让用户写秒，内部存帧。
@@ -1237,7 +1237,7 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
      - 头：节点名、节点代数、武装的随机数、旧版本和武装时新版本 `wire.manifest` 的哈希、每个组件的布局哈希、world 的个数、冻结时的 `Environment.TickCount64` 和内核的 boot id、校验和；
      - 每个 world：`world.Save(output, exclude)` 的字节（实体连同 id 和版本、组件、`DynamicBuffer`（包括占位上等着的 `Mail`）、单例；不含系统、索引、写入戳，EasyEcs `guide/saves.mdx`；`exclude` 是用户的单例，下面）、调度队列里还没进 world 的邮件、`Time.Elapsed`；即时链在两个 tick 之间是空的，`Outbox` 在冻结前的最后一个 tick 交出了所有的帧（包括没到点的组帧，第 9 节），留住的 `[Durable]` 输出在第 3 步放出；
      - 节点的运行时状态：调用 id 的序号、墓碑；每条链路收到的字节数，发出的偏移和还没确认的尾巴；邮件和期限已经等了多久（第 9 节）。
-  5. 平台用新的二进制或镜像重启进程（下表）。新进程找属于自己节点名的快照，逐项检查：校验和对；boot id 相同（机器没重启过）；按 `TickCount64` 算出的停顿没超过期限；自己的 `wire.manifest` 哈希等于武装时的新版本哈希（换错了镜像就不加载）。不合格就删掉它，以新的代数加入，走经记录。合格就按头里的个数建 world，不管这次分到多少 CPU（键按哈希落在哪个 world，个数不同就对不上）；只有建不了这个数（配置 `DaServer:Worlds` 钉了另一个数）才删掉快照、走经记录。再流式加载（`world.Load(bytes, markWritten: false, keep)`，边读边装；新进程在加载之前已经建好用户的单例，`keep` 就是它们，下面），按 prefab 补上组件（上面的恢复），接上时钟、加上系统、重建到期堆和调用 id 索引，然后**在任何 world 运行之前**删掉这个文件：快照只用一次，加载之后再崩溃，下次启动只能经记录。
+  5. 平台用新的二进制或镜像重启进程（下表）。新进程找属于自己节点名的快照，逐项检查：校验和对；boot id 相同（机器没重启过）；按 `TickCount64` 算出的停顿没超过期限；自己的 `wire.manifest` 哈希等于武装时的新版本哈希（换错了镜像就不加载）。不合格就删掉它，以新的代数加入，走经记录。合格就按头里的个数建 world，不管这次分到多少 CPU（键按哈希落在哪个 world，个数不同就对不上）；只有建不了这个数（配置 `DaServer:Worlds` 钉了另一个数）才删掉快照、走经记录。再流式加载（`world.Load(bytes, in keep, markWritten: false)`，边读边装；新进程在加载之前已经建好用户的单例，`keep` 就是它们，下面），按 prefab 补上组件（上面的恢复），接上时钟、加上系统、重建到期堆和调用 id 索引，然后**在任何 world 运行之前**删掉这个文件：快照只用一次，加载之后再崩溃，下次启动只能经记录。
   6. **`Rejoining`**：新进程以同一个身份（节点名，代数）重连，带着武装的随机数做恢复握手；它的 world 保持冻结，直到协调者回答（期限只在这里判定一次）：
      - `Readmit`：只给当前的随机数，给了就清掉。节点先核对一遍：根所在的槽现在的主人已经不是自己的（期间放置变了），隔离或者迁出这些根；然后各 world 开始跑。其他节点认出同一个身份，按快照里的字节数续上各条流，重放各自的重发窗口：就是今天链路断了重连时的续流，不重复也不丢。对端收到这个身份的 Hello 时清掉对它的重连退避，马上连回来。
      - `Gone`：期限已过、随机数不对，或者已经有更大的代数：丢掉加载的 world，不写，以新的代数加入，从记录激活。
@@ -1464,7 +1464,7 @@ public readonly partial record struct Loot(long Map) : IActor<Loot>             
 [NinoType, From<Loot>, Durable] public record struct GrantItem(int Item) : IRequestTo<Player, bool>;   // lands once: section 8
 [NinoType, From<Map>] public record struct Claim(int Drop, Player By) : IRequestTo<Loot, bool>;   // plain: no [Durable] item on the map
 [NinoType, From<Map>] public record struct Dropped(int Drop, int Item, Vector2 At) : IMessageTo<Loot>;   // Drop: a NetId number
-[NinoType, From<Map>] public record struct Restock : IMessageTo<Loot>;                  // the map came back from its record: no drops
+[NinoType, From<Map>] public record struct Restock : IMessageTo<Loot>;                  // the map came back without its drops
 [NinoType, From<Loot>] public record struct Show(int Drop, int Item, Vector2 At) : IMessageTo<Map>;   // a drop Loot holds
 [NinoType, From<Loot>] public record struct Gone(int Drop) : IMessageTo<Map>;          // no longer to be had: off the map
 [NinoType, From<Loot>] public record struct Clash(int Item, Vector2 At) : IMessageTo<Map>;   // Loot holds that number: renumber
@@ -1504,6 +1504,7 @@ public record struct NetSync(Velocity Sent) : IComponent;                       
 public record struct Destination(Vector2 Target) : IComponent;                          // server-driven movers (npcs)
 public record struct Steered : IComponent;                                              // moved by time, not by messages
 public record struct Speed(float Value) : IComponent;
+public record struct Carries(int Item) : IComponent;                                   // what an npc drops when it dies
 public record struct Health(int Value) : IComponent;
 public record struct Dead : IComponent;
 public record struct Stunned : IComponent;
@@ -1519,7 +1520,7 @@ internal static class Prefabs                                                   
     static readonly Prefab BodyPrefab = new Prefab().SetPosition(default).SetVelocity(default).SetNetSync(default)
         .SetHealth(100).SetVisible();                                      // what everything walking on a map has; only a base
     [Prefab<Map>] internal static readonly Prefab AvatarPrefab = new Prefab(BodyPrefab).SetSpeed(6);   // not saved: rejoins after a restart
-    [Prefab<Map>] internal static readonly Prefab NpcPrefab = new Prefab(BodyPrefab).SetSpeed(3).SetDestination(default).SetSteered();
+    [Prefab<Map>] internal static readonly Prefab NpcPrefab = new Prefab(BodyPrefab).SetSpeed(3).SetCarries(default).SetDestination(default).SetSteered();
     [Prefab<Map>] internal static readonly Prefab DropPrefab = new Prefab().SetVisible();   // what clients see: not saved, Loot shows it again
     [Prefab<Loot>(Persist = true)]                                         // saved: Stash, Prize and Position (given at spawn)
     internal static readonly Prefab StashPrefab = new Prefab();            // and its waiting ask
@@ -1545,10 +1546,14 @@ public static partial class Maps
     {
         Span<long> far = stackalloc long[Aoi.MaxFarKeys];
         foreach (var key in Aoi.FarKeys(in grid, far)) root.SetGroupRate(key, every: 3);   // far cells: one frame every 3 ticks
-        if (a.Origin == Activation.Loaded) root.Send(new Loot(map.Id), new Restock());   // the record has no drops: Loot shows them
-        if (a.Origin == Activation.Migrated)                               // [NotSaved] Visitors arrives as 0, its avatars and
-            foreach (var e in world.Descendants(root))                     // NPCs with their numbers: go on below the lowest
-                if (e.TryGetNetId(out var id) && id.Value < 0) root.Visitors.Next = Math.Max(root.Visitors.Next, -id.Value);
+        if (a.Origin != Activation.Migrated)                               // from its record, or Created again by a crash before
+        {                                                                  // the first record: no drops here, Loot shows its own
+            root.Send(new Loot(map.Id), new Restock());
+            return;
+        }
+        foreach (var e in world.Descendants(root))                         // migrated: [NotSaved] Visitors arrives as 0, its avatars
+            if (e.TryGetNetId(out var id) && id.Value < 0)                 // and NPCs with their numbers: go on below the lowest
+                root.Visitors.Next = Math.Max(root.Visitors.Next, -id.Value);
     }
 }
 
@@ -1630,7 +1635,10 @@ public static partial class Pickups
     [On<Gone>]                                                             // subject: the map's root; after the answer to the Claim
     static void Remove(in Gone g, in Map map, World world)
     {
-        if (world.NetIdIndex.TryGet(new NetId(map, g.Drop), out var drop)) drop.Destroy();
+        var id = new NetId(map, g.Drop);
+        if (!world.NetIdIndex.TryGet(id, out var drop)) return;
+        Aoi.Vanish(drop, in id);                                           // its cell hears Disappear, then it goes
+        drop.Destroy();
     }
 }
 
@@ -1731,13 +1739,24 @@ public class CellAssign : EcsSystem
 }
 
 [UpdateInGroup<Map>, UpdateAfter<CellAssign>]
+public class Arrive : EcsSystem
+{
+    [ForEach, Changed<Cell>, With<Visible>]                                // spawned, shown or crossed into a cell: its cell hears it
+    static void Appear(Entity e, in Cell cell, in NetId id, in Position p) =>
+        e.Root.WriteShout().Add(new Shout(cell, Aoi.Appeared(e, in id, in p)));   // with its Velocity if it has one (a drop has none)
+}
+
+[UpdateInGroup<Map>, UpdateAfter<Arrive>]
 public class Regroup : EcsSystem
 {
     [ForEach, Changed<Cell>, With<Presence>]                               // a presence's first cell or a crossing: the near
-    static void Crossed(Entity avatar, in Cell cell)                       // groups of the 3×3 cells, the far ones of the ring
-    {
+    static void Crossed(Entity avatar, in Cell cell, in DynamicBuffer<Subscribed> before, World world)   // groups of the 3×3
+    {                                                                      // cells, the far ones of the ring
         Span<ClientGroup> around = stackalloc ClientGroup[Aoi.MaxAround];
-        avatar.SetGroups(Aoi.Around(avatar.Root, in cell, around));        // root.Group(key) per cell; the framework syncs the gateway
+        var now = Aoi.Around(avatar.Root, in cell, around);                // root.Group(key) per cell
+        if (avatar.Has<Joined>())                                          // a crossing: what the cells new to it hold (a join's
+            avatar.Push(Aoi.Snapshot(world, now, before.AsReadOnlySpan()));   // full state is SendFullState's)
+        avatar.SetGroups(now);                                             // the framework syncs the gateway
     }
 }
 
@@ -1769,10 +1788,14 @@ public class Diff : EcsSystem
 public class Vanish : EcsSystem
 {
     [ForEach, With<Leaving>]                                               // leaving now; the framework destroys it after the user's systems
-    static void Disappear(Entity avatar, in NetId id)
+    static void Disappear(Entity avatar, in NetId id) => Aoi.Vanish(avatar, in id);
+
+    [ForEach, With<Dead>, With<Steered>]                                   // an npc killed this tick: its drop, then off the map
+    static void Fall(Entity npc, in NetId id, in Position p, in Carries loot)
     {
-        if (!avatar.TryGetCell(out var cell)) return;                      // never placed: nobody saw it
-        avatar.Root.WriteShout().Add(new Shout(cell, new NearbyEvent(id.Value, NearbyKind.Disappear, default, default)));
+        Aoi.Vanish(npc, in id);
+        npc.Root.Schedule(new Fell(loot.Item, p.Value));                   // Pickups.Drop numbers it and tells Loot
+        npc.Destroy();                                                     // structural change last
     }
 }
 
@@ -1789,25 +1812,26 @@ public class Flush : EcsSystem
 }
 ```
 
-NPC 死亡时（例子里没写出），地图对根 `Schedule(new Fell(…))`，`Pickups.Drop` 取一个编号，告诉 `Loot`。被打断的前摇：眩晕的处理方法里 `me.Cancel<Strike>()`。
+NPC 死亡由 `Vanish.Fall` 处理：它的格子听到 `Disappear`，地图对根 `Schedule(new Fell(…))`，`Pickups.Drop` 取一个编号、告诉 `Loot`，然后销毁 NPC。别的原因让 NPC 离开地图时（例子里没写出），也一样先 `Aoi.Vanish` 再 `Destroy()`。被打断的前摇：眩晕的处理方法里 `me.Cancel<Strike>()`。
 
 客户端连上时由 `[JoinOnConnect<Account>]` 加入 Player；进地图的 `EnterMap` 直接发给地图，不经过 Player。Player 只回答 `Loot` 的 `GrantItem`。
 
-**保存的是什么**：地图的根（`Grid`、`NetIds`）在地图的记录里，地图上的掉落、Avatar 和 NPC 都不在。掉落的经济状态在 `Loot(地图的键)` 的记录里：每个掉落一个 `Stash`（`Prize`、`Position`，以及它还在等的 `GrantItem`）。地图从记录激活之后（宕机、`Reload`、停用之后）向 `Loot` 发 `Restock`，`Loot` 把还有的掉落再 `Show` 一遍；迁移和热重启带着地图的全部实体，不用这一步。地图的根仍然要保存，只为 `NetIds`：它只给掉落编号，从最后一份记录接着往下发，所以宕机只会重复上一个检查点之后发出的编号。重复的编号撞上 `Loot` 还记着的掉落时，`Stashes.Add` 留下 `Loot` 已有的，回 `Clash`，地图用下一个编号再报一次（`Redrop`），所以每个重复都由它补上，掉落都会再显示出来。Avatar 和 NPC 不保存，编号取自另一段：根上 `[NotSaved]` 的 `Visitors` 发的负数，从不和掉落的编号相撞，也不进记录（Avatar 进出地图不让根多写一次记录）。宕机之后它们都不在了，`Visitors` 从 0 重新数也不会重复；热重启的快照带着它；迁移的字节里没有它，`Maps.Start` 在 `Activated(Migrated)` 时从迁来的最小负编号接着数。客户端重新加入，Avatar 重新建出来。Player 的根（`Inventory`）在 Player 的记录里。`Shout` 在两个 tick 之间是空的，标了 `[NotSaved]`。所以 `persist` 里的用户类型是 `Grid`、`NetIds`（`Visitors` 是 `[NotSaved]`，不在里面）、`Inventory`（根）、`Stash`、`Prize`、`Position`（`Loot` 的掉落）和 Ask 的状态 `Looting`；`Position` 自己声明了 `ITrackChanges`，`Looting` 只在 Ask 时写一次、不追踪，其余写成 `partial`，由生成器补上（第 10 节）。`Enter` 用只在新建时调用的 lambda 取编号，重发的加入找到已有的 Avatar，不白花编号。
+**保存的是什么**：地图的根（`Grid`、`NetIds`）在地图的记录里，地图上的掉落、Avatar 和 NPC 都不在。掉落的经济状态在 `Loot(地图的键)` 的记录里：每个掉落一个 `Stash`（`Prize`、`Position`，以及它还在等的 `GrantItem`）。地图每次不是迁移来的激活（从记录激活：宕机、`Reload`、停用之后；或者宕机在第一份记录之前，地图以 `Created` 回来）都向 `Loot` 发 `Restock`，`Loot` 把还有的掉落再 `Show` 一遍（新地图的 `Loot` 什么也没有，什么也不发）；迁移和热重启带着地图的全部实体，不用这一步（热重启不再激活）。地图的根仍然要保存，只为 `NetIds`：它只给掉落编号，从最后一份记录接着往下发，所以宕机只会重复上一个检查点之后发出的编号。重复的编号撞上 `Loot` 还记着的掉落时，`Stashes.Add` 留下 `Loot` 已有的，回 `Clash`，地图用下一个编号再报一次（`Redrop`），所以每个重复都由它补上，掉落都会再显示出来。Avatar 和 NPC 不保存，编号取自另一段：根上 `[NotSaved]` 的 `Visitors` 发的负数，从不和掉落的编号相撞，也不进记录（Avatar 进出地图不让根多写一次记录）。宕机之后它们都不在了，`Visitors` 从 0 重新数也不会重复；热重启的快照带着它；迁移的字节里没有它，`Maps.Start` 在 `Activated(Migrated)` 时从迁来的最小负编号接着数。客户端重新加入，Avatar 重新建出来。Player 的根（`Inventory`）在 Player 的记录里。`Shout` 在两个 tick 之间是空的，标了 `[NotSaved]`。所以 `persist` 里的用户类型是 `Grid`、`NetIds`（`Visitors` 是 `[NotSaved]`，不在里面）、`Inventory`（根）、`Stash`、`Prize`、`Position`（`Loot` 的掉落）和 Ask 的状态 `Looting`；`Position` 自己声明了 `ITrackChanges`，`Looting` 只在 Ask 时写一次、不追踪，其余写成 `partial`，由生成器补上（第 10 节）。`Enter` 用只在新建时调用的 lambda 取编号，重发的加入找到已有的 Avatar，不白花编号。
 
-AOI 的状态全在组件里：客户端看到的编号是 `NetId`，格子是 `Cell`（非唯一值索引，`world.CellIndex.Find(cell)` 列出格子里的实体），上次发出的速度是 `NetSync`，确认和有没有漏过推送是框架的 `Joined(MissedPushes)`，订阅是 `Subscribed`，消息是地图上的 `DynamicBuffer<Shout>`。`Aoi` 是用户写的无状态帮助类。每个系统只做一件事：
+AOI 的状态全在组件里：客户端看到的编号是 `NetId`，格子是 `Cell`（非唯一值索引，`world.CellIndex.Find(cell)` 列出格子里的实体），上次发出的速度是 `NetSync`，确认和有没有漏过推送是框架的 `Joined(MissedPushes)`，订阅是 `Subscribed`，消息是地图上的 `DynamicBuffer<Shout>`。`Aoi` 是用户写的无状态帮助类；`Aoi.Vanish(e, in id)` 在 `e` 有 `Cell` 时往那个格子写一条 `Disappear`（没有格子就没人见过它）。客户端把 `Appear` 和快照当作写入（已经知道的实体就更新），所以重复的不出错。每个系统只做一件事：
 1. `CellAssign`：位置被写过的实体，算出格子；跨格才写 `Cell`。
-2. `Regroup`：`Cell` 变了的 Presence，改写它订阅的 `ClientGroup`：3×3 格子的近处组，外面一圈格子的远处组（`root.Group(格子的键)`，键带着这张地图）。框架的 `SyncSubscriptions` 按这份数据同步网关（第 9 节），所以用户只写一处。远处组的频率是 `Maps.Start` 在每次激活时写的数据（`root.SetGroupRate(key, every: 3)`，第 9 节）：它们的推送攒 3 个 tick 交出一帧。
-3. `SendFullState`：这个 tick 确认的 Avatar（`Joined` 被写过：第一次加入、断线后重连、被别的连接接管），`MissedPushes` 为真才推一份完整的状态；因网关升级换连接的一个推送也没漏，不推。
-4. `Diff`：速度被写过、并且和 `NetSync` 不同的实体，写一条 `Moved` 进地图的 `Shout`。
-5. `Vanish`：带 `Leaving` 的 Avatar，写一条 `Disappear`。
-6. `Flush`：`Shout` 被写过的地图（`[Changed<DynamicBuffer<Shout>>]`，没消息的地图不访问），按格子合并，每个有内容的格子给它的近处组和远处组各推一份 `Nearby`，然后经 `ref` 清空。清空是 `Flush` 自己这一趟的写入，EasyEcs 不把它算作 `Flush` 下一趟的变更（`guide/change-tracking.mdx` 的 "Ticks"），所以没有新消息的地图下一个 tick 不再被访问。
+2. `Arrive`：`Cell` 被写过的可见实体（新建的、`Show` 出来的掉落、跨了格的），往新格子写一条 `Appear`，带位置，有 `Velocity` 的再带速度。所以先加入的客户端也看得到之后才出现的掉落和 NPC、走进视野的实体。
+3. `Regroup`：`Cell` 变了的 Presence，改写它订阅的 `ClientGroup`：3×3 格子的近处组，外面一圈格子的远处组（`root.Group(格子的键)`，键带着这张地图）。已经确认的 Avatar 跨格时，先推一份新订阅的格子（不在原来的 `Subscribed` 里的）的 `Aoi.Snapshot`：那些格子里早就在的实体不会再喊 `Appear`。框架的 `SyncSubscriptions` 按这份数据同步网关（第 9 节），所以用户只写一处。远处组的频率是 `Maps.Start` 在每次激活时写的数据（`root.SetGroupRate(key, every: 3)`，第 9 节）：它们的推送攒 3 个 tick 交出一帧。离开视野不用消息：客户端按位置和速度外推，实体走出自己订阅的格子就丢掉。
+4. `SendFullState`：这个 tick 确认的 Avatar（`Joined` 被写过：第一次加入、断线后重连、被别的连接接管），`MissedPushes` 为真才推一份完整的状态；因网关升级换连接的一个推送也没漏，不推。
+5. `Diff`：速度被写过、并且和 `NetSync` 不同的实体，写一条 `Moved` 进地图的 `Shout`。
+6. `Vanish`：带 `Leaving` 的 Avatar 和这个 tick 被打死的 NPC，往它的格子写一条 `Disappear`；NPC 还留下掉落、被销毁。`Pickups.Remove` 销毁掉落之前也这样写。
+7. `Flush`：`Shout` 被写过的地图（`[Changed<DynamicBuffer<Shout>>]`，没消息的地图不访问），按格子合并，每个有内容的格子给它的近处组和远处组各推一份 `Nearby`，然后经 `ref` 清空。清空是 `Flush` 自己这一趟的写入，EasyEcs 不把它算作 `Flush` 下一趟的变更（`guide/change-tracking.mdx` 的 "Ticks"），所以没有新消息的地图下一个 tick 不再被访问。
 
 所有系统都只看带 `In<Map>` 的实体（`IActor<Map>` 带着的组过滤，第 5 节）。`Steering`、`Movement` 和 `Moves.Move` 用 `Mut<T>`（第 5 节的"只在值变了时写"）：站着的 NPC 和被拒绝的一步都不打戳，`CellAssign` 和 `Diff` 就不访问它们。除了 `Steering` 都是单线程：`Movement` 每行只是一次加法和一次比较，其余的发消息、写别的实体或做结构变更。`Steering` 也只在节点的 world 比核少时才多线程（第 5 节）。
 
 **捡东西分在两个 Actor 上**：按 tick 走的地图只管看得见的掉落：`Take` 校验客户端给的编号（是掉落、看得见、够得着），再普通地问 `Loot`（`Claim`），地图从不参与 `[Durable]`。不按 tick 走的 `Loot` 管经济状态（第 8 节推荐的写法）。这里没有用户写的预留、重问和去重：`GrantItem` 是 `[Durable]`，`Stash` 上还在等的问（`stash.IsPending<GrantItem>()`）就是"已经许给了别人"，它随 `Loot` 的记录保存。`Loot` 宕机后框架唤醒它，用同一个调用 id 再问；Player 那边框架认出问过的调用，回答第一次的结果，不执行第二次。快到期限时框架发收尾的一问：Player 还没执行就记成拒绝，掉落留着；收尾的一问也联系不上（`Expired`），掉落销毁：宁可丢，不发两次。`Stash` 没了，`Loot` 发 `Gone`，地图删掉看得见的掉落；`Loot` 不认识的编号（`Dropped` 在 `Loot` 的检查点之前随它宕机丢了）也回 `Gone`。
 
-NPC 也由用户建：`root.Spawn(Prefabs.NpcPrefab, new NetId(map, -(++root.Visitors.Next)))`，和 Avatar 一样从 `Visitors` 取一个负的编号。
+NPC 也由用户建：`root.Spawn(Prefabs.NpcPrefab, new NetId(map, -(++root.Visitors.Next)), new Carries(item))`，和 Avatar 一样从 `Visitors` 取一个负的编号；`Carries` 是它死时留下的东西。
 
 ### 生成的代码
 
@@ -1962,6 +1986,7 @@ public static class GameServerRegistration
                 world.AddSystem<Steering>();
                 world.AddSystem<Movement>();
                 world.AddSystem<CellAssign>();
+                world.AddSystem<Arrive>();
                 world.AddSystem<Regroup>();
                 world.AddSystem<SendFullState>();
                 world.AddSystem<Diff>();
@@ -2008,7 +2033,7 @@ table   Game.Server.SkillTable  skills  format 6A3E0D71   # the table type's lay
 prefab  Map     Game.Server.Map.RootPrefab          id 2F61A0C7  composition 0C5B7A12  persist
 prefab  Map     Game.Server.Prefabs.DropPrefab      id 7D2E10A4  composition 3A6C81F2
 prefab  Map     Game.Server.Prefabs.AvatarPrefab    id 51B3E9F0  composition 2D70C6E5
-prefab  Map     Game.Server.Prefabs.NpcPrefab       id C40A6B12  composition F1A8392C
+prefab  Map     Game.Server.Prefabs.NpcPrefab       id C40A6B12  composition 5E9D27B4
 prefab  Loot    Game.Server.Loot.RootPrefab         id 64C2F9A1  composition 811C9DC5  persist
 prefab  Loot    Game.Server.Prefabs.StashPrefab     id B5E0A37C  composition 811C9DC5  persist
 prefab  Player  Game.Server.Player.RootPrefab       id 9E07D355  composition 6B19E4F3  persist
@@ -2127,11 +2152,11 @@ public void An_expired_grant_takes_the_drop_off_the_map()
                       销毁 Stash，这些普通输出当场发出；Map 7 回复客户端 true，再删掉看得见的掉落。
                       game-0 在回信前宕机：DueScan 按 next_due 唤醒 Loot 7，Stash 和它的等待实体从记录恢复，
                       框架用同一个调用 id 再问，Player 从 ReplyLog 回答 true，不执行第二次
-⑪ 每 33 ms 一个 tick   Ordering（OrderedPhase）→ Update<Map>()：Steering、Movement、CellAssign、Regroup、SendFullState、Diff、
+⑪ 每 33 ms 一个 tick   Ordering（OrderedPhase）→ Update<Map>()：Steering、Movement、CellAssign、Arrive、Regroup、SendFullState、Diff、
                       Vanish、Flush → Settling：Depart、SyncSubscriptions、去掉 Restarting/Resumed；只遍历带 In<Map> 的表 → Cleanup：ReleaseRoutes 等（按 world）；
                       Nearby 序列化一次 → 有观察者的网关各一帧 → 各个连接
 ⑫ map-0 宕机          map-0 超过租约就自己冻结；Map 7 在 map-1 建占位（键和等着的邮件都在它上面），占到新的 epoch，记录装进占位，它就是根：
-                      Grid 和 NetIds 恢复，掉落、Avatar 和 NPC 不在记录里；Activated(Loaded) 向 Loot 7 发 Restock，Loot 7 把还有的掉落 Show 回来；
+                      Grid 和 NetIds 恢复，掉落、Avatar 和 NPC 不在记录里；Activated(Loaded)（没写过记录时是 Created）向 Loot 7 发 Restock，Loot 7 把还有的掉落 Show 回来；
                       Connection(c1) 看到 map-0 离开视图：删路由，PresenceLost(槽 1) 给 SDK；SDK 重发 EnterMap(7) → Enter 新建 Avatar，Join → 同 ④–⑥
 ⑬ map-0 热重启        武装；SIGTERM 后宣布 NodeRestarting，协调者确认；最后一个 tick 根上带 Restarting；冻结、写快照、退出；
                       gate-0 把发给 map-0 的帧留在重发窗口；新进程加载快照、删掉文件，以同一个身份重连，协调者 Readmit 后续上流；
@@ -2290,13 +2315,13 @@ me.Publish(new Topic(Feeds.Prices), new PriceChanged(item, price));
 
 - `[Replicated]` 写在追踪变更的组件上（分析器检查 `ITrackChanges`，以及非托管或 `[NinoType]`）。实体同步给谁，由用户写的 `ReplicatedTo(ClientGroup Group)` 决定，例如 AOI 系统写它所在格子的组。客户端看到的实体编号是包分配的 `ReplicaId`（每个 Actor 一个计数器），不是 `EntityId`。
 - **状态是 DaServer 自己的数据**，不依赖 EasyEcs 记住发过什么：
-  - 每个 `[Replicated]` 组件旁边有内部组件 `Replica<T>`：上次发出的值和发出它的 tick（`Time.Tick`）；
-  - 每个组有一个有界的环，记着离开这个组的实体（换组或销毁）和离开的 tick。不用 EasyEcs 的销毁日志（`WorldOptions.DestroyLog`、`world.DestroyedSince`）代替它：那个日志按 world 记被销毁的 `EntityId`，不分组、不带 `ReplicaId`，换组的离开它也不记；环把两种离开放在一处，按组回答；
-  - 每个 Actor 有一个**化身号**（随机 64 位，在根上）：从记录激活、迁移到达、热重启加载、`OnError = Reload` 时都换新的。tick 只在同一个化身里可比。
-- **每个 tick**：每个 Actor 类型一个包里的系统，`[ForEach, ChangedAny<所有 [Replicated] 类型>, With<ReplicatedTo>]`（每个属性 2 到 9 个类型，多的分几个属性，并进同一组）：一个实体改了几个组件也只出一份补丁。生成器给每个类型生成按字段的位掩码，和 `Replica<T>` 比较，按 `ClientGroup` 把改了的字段写进池化的帧，一个组一帧（序列化一次，网关扇出，第 9 节），再更新 `Replica<T>` 和它的 tick。离开组的实体写成移除。
+  - 每个 `[Replicated]` 组件旁边有内部组件 `Replica<T>`：上次发出的值和发出它的戳，也就是同步那一趟开始时读的 world 的 `ChangeTick`（EasyEcs 的变更戳，`ulong`；不是 `Time.Tick`，那是按 Actor 类型数的 tick 号，和写入戳比不了）；
+  - 每个组有一个有界的环，记着离开这个组的实体（换组或销毁）和离开时的 `ChangeTick`。不用 EasyEcs 的销毁日志（`WorldOptions.DestroyLog`、`world.DestroyedSince`）代替它：那个日志按 world 记被销毁的 `EntityId`，不分组、不带 `ReplicaId`，换组的离开它也不记；环把两种离开放在一处，按组回答；
+  - 每个 Actor 有一个**化身号**（随机 64 位，在根上）：从记录激活、迁移到达、热重启加载、`OnError = Reload` 时都换新的。`ChangeTick` 是一个 world 的计数，所以戳只在同一个化身里可比：Actor 每次换到另一个 world（迁移、热重启的新进程、换节点的激活），化身号都换了。
+- **每个 tick**：每个 Actor 类型一个包里的系统，`[ForEach, ChangedAny<所有 [Replicated] 类型>, With<ReplicatedTo>]`（每个属性 2 到 9 个类型，多的分几个属性，并进同一组）：一个实体改了几个组件也只出一份补丁。生成器给每个类型生成按字段的位掩码，和 `Replica<T>` 比较，按 `ClientGroup` 把改了的字段写进池化的帧，一个组一帧（序列化一次，网关扇出，第 9 节），再更新 `Replica<T>` 和它的戳。离开组的实体写成移除。每份补丁带着这一趟的戳，客户端只原样存下、加入时交回，不解释它。
 - **全量**：实体换组（`[Changed<ReplicatedTo>]`）时，新组收到它的全量、旧组收到移除；Presence 新订阅一个组时收到它订阅的组里所有实体的全量。
-- **重新加入只补差**：`[Changed<Joined>]` 并且 `MissedPushes` 为真时，SDK 在加入时带着它最后应用的（化身号, tick）。化身号相同、组的离开环还够得着那个 tick，就只发那之后的：离开环里的移除，以及 `Replica<T>` 的 tick 更新的组件；查询用一个存在字段里的过滤 `QueryFilter.Create().ChangedAny<…>(0)`，每个客户端用 `filter.Since(ack)` 换成它确认的起点，不分配（只是更快的查找，不靠它判断正确性）。化身号不同（Actor 重新加载、迁移、热重启、`Reload`），或者环已经被覆盖，就发全量。
-- **重发全量就是 `Reset(化身号)`**：先发一条 `Reset(化身号)`，客户端清掉这个 Actor 的所有副本，再应用全量。所以离线期间被移除的实体不会留在客户端上，客户端也从此按新的化身号报告（化身号, tick）。
+- **重新加入只补差**：`[Changed<Joined>]` 并且 `MissedPushes` 为真时，SDK 在加入时带着它最后应用的（化身号, 戳）。化身号相同、组的离开环还够得着那个戳，就只发从它起的：离开环里的移除；`ReplicatedTo` 的写入戳不早于它的实体发全量（离线期间才进组、之后没再写过的实体，`Replica<T>` 的戳不说明它，靠的是这一条）；其余实体发 `Replica<T>` 的戳不早于它的组件。查询用一个存在字段里的过滤 `QueryFilter.Create().ChangedAny<所有 [Replicated] 类型, ReplicatedTo>(0)`（`ReplicatedTo` 是追踪变更的组件），每个客户端用 `filter.Since(ack)` 换成它确认的起点，不分配（只是更快的查找，不靠它判断正确性）。`Since` 是"在它或它之后写过"，所以确认的那一趟里写过的也再发一次：多发，不漏。化身号不同（Actor 重新加载、迁移、热重启、`Reload`），或者环已经被覆盖，就发全量。
+- **重发全量就是 `Reset(化身号)`**：先发一条 `Reset(化身号)`，客户端清掉这个 Actor 的所有副本，再应用全量。所以离线期间被移除的实体不会留在客户端上，客户端也从此按新的化身号报告（化身号, 戳）。
 - 客户端 SDK 应用补丁：C# 的 `DaServer.Replication.Client` 写进客户端的 EasyEcs world，TypeScript 的写进按 `ReplicaId` 索引的实体表。
 - 最多一次，和推送一样；漏了的由全量补上。先在 mmo 样例上证明：它的 AOI 推送（`Nearby`）改成同步组件。
 

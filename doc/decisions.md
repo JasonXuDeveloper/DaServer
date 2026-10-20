@@ -1552,7 +1552,7 @@ Replaced by ADR-081.
   changed" leaks; the order between mail, delayed sends and systems is implicit. EasyEcs provides what a
   model without these needs: single-entity jobs (`entity.Run(ref job[, filter])`), group filters carried by
   interfaces (`IGroupWith<T>`), `world.Descendants(root)` and `LoadEntitiesInto(…, markWritten: false)`.
-- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v42), structured as in
+- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v43), structured as in
   [drafts/architecture.md](drafts/architecture.md):
   - **The actor type is its address, its root component, its root prefab and its system group**:
     `[TickRate(30)] partial record struct Map(long Id) : IActor<Map>` (`IActor<T>` inherits `IEquatable<T>`, so
@@ -2082,13 +2082,14 @@ Replaced by ADR-081.
     the same specification later.
   - **`DaServer.Replication`**: `[Replicated]` on a change-tracked component; per actor type, a `ChangedAny` system
     writes the changed fields (generated per-type bitmasks against the last sent value) per `ClientGroup` once per tick
-    into pooled frames. Its state is DaServer's own: each `Replica<T>` keeps the last sent value and the tick it was
-    sent at, each group a bounded ring of exits (group changes and destroys, which EasyEcs's per-world destroy log of
+    into pooled frames. Its state is DaServer's own: each `Replica<T>` keeps the last sent value and the stamp it was
+    sent at (the world's `ChangeTick` when the replication pass ran, opaque to the client), each group a bounded ring of exits (group changes and destroys, which EasyEcs's per-world destroy log of
     `EntityId`s cannot answer per group), each actor an incarnation renewed on load, migration, hot restart
-    and `OnError = Reload`. A rejoining SDK sends (incarnation, tick): the same incarnation with the exit ring still
-    covering the tick gets only what changed since (a `ChangedAny` filter moved with `Since(ack)` speeds the lookup up,
-    it decides nothing), anything else a full resend, which starts with `Reset(incarnation)` so the client first clears that
-    actor's replicas; full state also when an entity changes group and when a presence subscribes a group. The SDKs apply the patches (C# into an EasyEcs world through `DaServer.Replication.Client`, TypeScript into
+    and `OnError = Reload`, so whenever the actor reaches another world, whose `ChangeTick` is not comparable. A rejoining SDK sends (incarnation, stamp): the same incarnation with the exit ring still
+    covering the stamp gets only what was written at or after it (a superset, which is safe), with full state for an entity whose `ReplicatedTo` was written since (it joined a group while the client was away);
+    anything else gets a full resend, which starts with `Reset(incarnation)` so the client first clears that actor's
+    replicas. A `ChangedAny` filter over the `[Replicated]` types and `ReplicatedTo`, moved with `Since(ack)`, speeds the
+    lookup up and decides nothing. Full state also when an entity changes group and when a presence subscribes a group. The SDKs apply the patches (C# into an EasyEcs world through `DaServer.Replication.Client`, TypeScript into
     an entity table). At most once, like pushes.
   - **Tools**: `TestCluster` fault injection (`Partition`, `Kill`, `DelayLinks`) for users' own tests; a read-only
     inspector on the HTTP plane (an actor's subtree, the busiest actors, each world's tables and systems, counts by

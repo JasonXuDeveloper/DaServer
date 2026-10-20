@@ -22,7 +22,7 @@ Keep this file current: tick items when done, add items when scope changes.
 11. S1-S6 (done) elastic scaling.
 12. The ECS rewrite (ADR-081, the "ECS rewrite" entry under "Open cleanup" below): P1-P3 and P5 done; P4, P6 and P7
     superseded by W.
-13. W — refactor to the v42 programming model ([drafts/programming-model.md](drafts/programming-model.md),
+13. W — refactor to the v43 programming model ([drafts/programming-model.md](drafts/programming-model.md),
     [drafts/architecture.md](drafts/architecture.md)) on EasyEcs 4.7 (ADR-082 to ADR-092). Breaking; each step
     proven before the next (W, not R: the requirement ids R0-R11 are taken).
     W10 runs last, after W12 and N9.
@@ -81,7 +81,7 @@ Keep this file current: tick items when done, add items when scope changes.
       `SetGroupRateWithoutTickRateReported`, `DestroyWithDurableWaitHinted`, `UtcNowInHandlerWarned`,
       `RegistrationCallableWithTwoServerProjects`; `UnrelatedEditsHitTheCache` over the new stages.
     - [ ] W4 Runtime core: shards (one world each, `MaxDegreeOfParallelism` per world), the shard loop and the ordered
-      phase per actor type (`Ordered<K>`), the due heap (4-ary, lazy deletion), the chain stack, the call index,
+      phase per actor type (`Ordered<K>`, holding the type's tick number; `Time` written at the start of each actor type's pass), the due heap (4-ary, lazy deletion), the chain stack, the call index,
       `Outbox` serializing on append into per-destination frames, `Current`, the framework groups (Ordering, Settling
       with `Restarting` and `Resumed` removal, Cleanup), a full link refusing at once, the per-actor item budget per
       batch, `PeerHealth`, request budgets (nested asks, `ReplyTo` deadlines), the retry budget, `ICluster.Ask` with a
@@ -95,7 +95,8 @@ Keep this file current: tick items when done, add items when scope changes.
       `RetryBudgetCapsForwardRetries`, `HotActorDoesNotStarveShardNeighbors`, `SlowPeerFailsFastAfterLimit`,
       `ClusterAskHonoursCancellationBudget`, `WebhookRetryDeduplicatesByExternalKey`, `ThrowingHandlerAnswersFaulted`,
       `CatchUpCapSkipsAndCountsTicks`, `TrimExcessAfterPeakShrinksWorld`, `GetOrSpawnTwiceFindsSameEntity`,
-      `GetOrSpawnFactoryRunsOnlyOnSpawn`, `StatelessTypeAnswersOnAnyNodeWithoutClaim`, `TestActorTicksWithManualClock`.
+      `GetOrSpawnFactoryRunsOnlyOnSpawn`, `StatelessTypeAnswersOnAnyNodeWithoutClaim`, `TestActorTicksWithManualClock`,
+      `TwoTickRatesInOneWorldSeeOwnTime`.
       Evaluate Kestrel's `ConnectionHandler` for the cluster and client ports against the own listener with
       BenchmarkDotNet (`TransportBenchmark`); adopt only without a regression.
     - [ ] W5 Presences, the gateway (`Connection` on `[Hosts<Connection>]`, `Incoming` as a header view, forwarding as a
@@ -120,7 +121,7 @@ Keep this file current: tick items when done, add items when scope changes.
       `LowRateGroupCoalescesUntilDue`, `GroupFrameFlushedBeforeMembershipChange`, `LatestGroupRateWins`,
       `RetireRacingConnectionLoss`, `UnknownClientMessageAtOldGateway`.
     - [ ] W6 Persistence, activation, migration and hot restart: the membership lease, generations from the
-      coordinator, the epoch claim with owner generation and placement version in one `UPDATE … RETURNING`, fencing,
+      coordinator, the epoch claim with owner generation and placement version in one upsert (`INSERT … ON CONFLICT … RETURNING`, the displaced owner as PostgreSQL 18's `old.owner`), fencing,
       placeholder roots and their bounded mail, `[ActivatedBy<T>]` (a key's first activation only; `[Durable]` requests
       always activate), `Pending` with `MaxPending`, the idle scan as
       `[ForEach(Slices = N)]`, deactivation with `Deactivating` as a tag, persistence per entity kind
@@ -161,7 +162,7 @@ Keep this file current: tick items when done, add items when scope changes.
       idle deactivation only, a forced one keeping the waiting entity in its final record); the asker's waiting entity in the record before the request leaves,
       `settleBy` (the settle-by instant in every attempt's envelope, bounding `ReplyLog` entries and durable `ReplyTo`
       deadlines; no attempt sent past it, an attempt past it dropped by the receiver; `ICluster.Ask(settleBy:)`
-      deduplicated by `CallId.From` until then), `WakeAt` at the next attempt or the settle-by instant, re-asks (a `NotHandled` on a re-ask transient), the settling re-ask at settle-by − the attempt's deadline − `ClockSkew` (a shorter `settleBy`: the first attempt is the last and runs as usual), a held first attempt's timeout and `WakeAt` from its release, re-asks only after the write holding the waiting entity, a durable asker destroyed by a
+      deduplicated by `CallId.From` until then), `WakeAt` at the next attempt or the settle-by instant, re-asks (a `NotHandled` on a re-ask transient), the settling re-ask at settle-by − the attempt's deadline − `ClockSkew` (whether the first attempt is the last is decided at the held attempt's release, not at `Ask`: when the settling instant has passed by then, through a short `settleBy` or a slow write, it is the last and runs as usual), a held first attempt's timeout and `WakeAt` from its release, re-asks only after the write holding the waiting entity, a durable asker destroyed by a
       handler or a system failing the item and reloading, `Depart` re-parenting a durable wait to the root; the
       receiver's dedupe before the `TooLate` check, every definite refusal recorded as refused, `ReplyLog` with refused
       entries under their own capacity (`DaServer:ReplyLogRefusedCapacity`; full: neither recorded nor answered) and `Faulted` entries kept across a `Reload`), a persisted `ReplyTo<T>`'s deadline in UTC, `root.IssueClientToken` with `IssueSeq` on the root,
@@ -184,7 +185,7 @@ Keep this file current: tick items when done, add items when scope changes.
       `FaultedAcrossReloadAnsweredAfterWrite`, `GrantSurvivesCalleeCrashAfterReply`,
       `SettlingReaskRefusesUnrunCall`, `RefusedDurableCallNeverRunsLater`, `SettlingReaskAllowsForClockSkew`,
       `ReaskLeavesAtOnceWithoutWrite`, `RefusedEntriesHaveOwnCapacity`, `FullRefusedLogLeavesSettleUnanswered`,
-      `RefusedEntriesExpireAfterDeadline`, `LateDuplicateAfterSettleNeverRuns`, `ShortSettleByFirstAttemptRuns`,
+      `RefusedEntriesExpireAfterDeadline`, `LateDuplicateAfterSettleNeverRuns`, `ShortSettleByFirstAttemptRuns`, `SlowWriteMakesHeldFirstAttemptLast`,
       `HeldFirstAttemptTimeoutStartsAtRelease`, `SettlingTimingUsesAttemptDeadline`, `WriteGenerationContinuesAcrossInPlaceHotRestart`, `LaterReplyOnDurableTokenHeldUntilWrite`,
       `DurableOutputReleasedAfterItsTickWrite`, `PlainOutputNotHeldBehindDurable`, `OneWriteInFlightPerRootLaterOverwrites`,
       `TickEndWritesShareOneStatement`, `StoreWritesInFlightBounded`, `FencedWriteDiscardsHeldDurableOutput`,
@@ -229,24 +230,24 @@ Keep this file current: tick items when done, add items when scope changes.
       1/3 nodes, 0 B per delivery.
     - [ ] W7 Samples (mmo, flashsale) on the new model (their systems use `Mut<T>`), the mmo's drops split
       between a non-ticking `Loot` actor (their records, persistent, the only `[Durable]` asker) and the map (what
-      clients see, not saved, shown again after the map loads from its record), its avatars not saved; the login sample issuing client tokens inside a `[Durable]` request (the issue sequence
+      clients see, not saved, shown again after every activation that is not a migration), its avatars not saved, its AOI telling entries and exits (`Appear` into a cell newly written, `Disappear` before every destroy, a crossing's snapshot of the cells newly subscribed); the login sample issuing client tokens inside a `[Durable]` request (the issue sequence
       written before the token leaves); each AppHost becomes an `apphost.cs` (file-based) in the sample's server
       project, with client ports declared by `WithClientConnections(port)`; `DaServer.Aspire`'s generator writing the
       server types from the committed `wire.manifest` (`actor` and `hosted-by` lines; `IAcceptsClients` on those hosting
       `Connection`) and the build check. Tests: `Sample.Tests` on `TestActor<Map>`
       (`Walking_out_of_range_during_the_windup_dodges`, `A_busy_tick_allocates_nothing_and_threads_change_nothing`,
-      `An_expired_grant_takes_the_drop_off_the_map`, `DropsReshownAfterMapCrash`, `MapCrashReusedNumberDoesNotBreakLoot` (a drop number repeated after a map crash ends in `Clash`/`Redrop` and the drop
+      `An_expired_grant_takes_the_drop_off_the_map`, `DropsReshownAfterMapCrash`, `DropsReshownAfterCrashBeforeFirstRecord`, `LaterDropAppearsToEarlierClients`, `TakenDropDisappears`, `KilledNpcDisappearsAndDrops`, `CrossingPushesNewCellsSnapshot`, `MapCrashReusedNumberDoesNotBreakLoot` (a drop number repeated after a map crash ends in `Clash`/`Redrop` and the drop
       is shown again), `VisitorNumbersNeverMeetDropNumbers`, `VisitorNumbersContinueAfterMigration`, `TimedOutClaimLeavesPickUpUnknown`), `LoginIssuesIncreasingSequence`, `LoginTokenLeavesAfterSequenceWritten`,
       `AppHostServerTypesGeneratedFromManifest`, `ClientPortWithoutConnectionHostFailsBuild`; the 1,000-bot and
       100,000-buyer E2E on the new model.
     - [ ] W7a `DaServer.Replication` and `DaServer.Replication.Client` (ADR-090): `[Replicated]`, `ReplicatedTo`,
-      generated field bitmasks, `Replica<T>` with its sent tick, the per-group ring of exits (group changes and destroys; EasyEcs's destroy log lists a world's destroyed `EntityId`s
-      without groups or `ReplicaId`s and misses group changes), the per-actor incarnation,
+      generated field bitmasks, `Replica<T>` with its sent stamp (the world's `ChangeTick` at the replication pass, opaque to the client, valid within one incarnation), the per-group ring of exits (group changes and destroys; EasyEcs's destroy log lists a world's destroyed `EntityId`s
+      without groups or `ReplicaId`s and misses group changes), the per-actor incarnation (renewed whenever the actor reaches another world),
       patches per `ClientGroup` in pooled frames from a `ChangedAny` system, full state on group changes and on an
-      incarnation mismatch (a full resend starts with `Reset(incarnation)`), deltas on rejoin (a `ChangedAny` filter kept in a field, moved with `Since(ack)`,
-      for the lookup); proven on the mmo sample (its `Nearby` AOI as replicated components): same 10k-bot E2E, bytes per
+      incarnation mismatch (a full resend starts with `Reset(incarnation)`), deltas on rejoin (a `ChangedAny` filter over the `[Replicated]` types and `ReplicatedTo`, kept in a field, moved with `Since(ack)`,
+      for the lookup; "at or after" resends a superset; an entity that joined a group since the ack gets full state); proven on the mmo sample (its `Nearby` AOI as replicated components): same 10k-bot E2E, bytes per
       client and broadcast p99 against the hand-written AOI, 0 B per tick (drafts/architecture.md section 10). Tests:
-      `RejoinSameIncarnationGetsDelta`, `IncarnationChangeForcesFullResend`, `OverwrittenExitRingForcesFullResend`,
+      `RejoinSameIncarnationGetsDelta`, `IncarnationChangeForcesFullResend`, `OverwrittenExitRingForcesFullResend`, `RejoinDeltaSendsFullStateOfEntityThatJoinedGroup`, `RejoinDeltaAckIsWorldChangeTick`,
       `FullResendClearsClientReplicasFirst`.
     - [ ] W7b Non-.NET clients (ADR-090; replaces G7's plan): the client protocol specification, the conformance suite
       (run against the C# SDK first), the TypeScript client (`@daserver/client`) with the codecs Nino.TypeScript (prerelease,
