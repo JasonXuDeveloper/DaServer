@@ -389,7 +389,8 @@ Keep this file current: tick items when done, add items when scope changes.
       - `AskUntilAnswered` (ADR-100): one store table for every ask (`daserver_once_asks`, phases queued, sent,
         stopped, the call's state in `ask_state` with its type id in `state_type`: `AskStateKeptInRow`, an unknown type left sent
         and unanswered for a build that knows it, alerted by `DaServerOnceUnknownState`, and the upgrade check comparing
-        `state` lines: `UnknownStateTypeWaitsForBuild`), rows written in the item's own record write
+        `state` lines in both directions, no type an older build cannot read and no removal of a type in use:
+        `UnknownStateTypeWaitsForBuild`, `UpgradeCheckComparesStateLines`), rows written in the item's own record write
         joined to its compare, none in the record (`AskRowsOneTable`), inserted already sent when the window and
         `OnceInFlight` allow and no earlier row to that target is queued, in memory or paged out (`AskSentInItsOwnWrite`,
         `SentInsertNeverOvertakesQueued`); no write budget: a root's write is one transaction of several statements
@@ -407,8 +408,13 @@ Keep this file current: tick items when done, add items when scope changes.
         `OnceInFlight` sent rows per root (memory and rate only, nothing refused); every sent row held in memory while active
         (`LoweringOnceInFlightNeverAcksEarly`) and a bounded queued head per destination (`Once:QueuedHeadPerTarget` 64,
         `Once:TargetsInMemory` 256, round-robin), the rest paged per destination by ordinal (`AskRowsPagedPerTarget`,
-        `SlowTargetNeverHoldsOthers`), request
-        bytes kept until the insert lands and read ahead for the next sends, `next_try_at` set by phase and NULL once stopped;
+        `SlowTargetNeverHoldsOthers`), a destination in backoff or with a zero window giving up its head when others
+        wait, the next paged in by earliest `next_try_at` (`ManyTargetsPastMemoryAllProgress`), slow start of one sent
+        row for a destination with no answer since its last link-outcome retry (`StuckTargetsCannotFillInFlight`), queued
+        totals kept in `RootState` and written with the row changes (`QueuedTotalsSurviveReload`), request
+        bytes kept until the insert lands and read ahead for the next sends, a sent row keeping metadata only and its
+        bytes re-read for each re-ask round, unwritten rows during a store outage growing in memory and landing in one
+        write whose client timeout scales with its statement count (`OutageBacklogLandsInOneWrite`), `next_try_at` set by phase and NULL once stopped;
         a probe of an inactive sender answered from one statement over its sent rows and `OnceNext`
         (`ProbeAnswerSingleSnapshot`); range-read after the claim, their
         next try feeding `NextDue` so a crash or unload always wakes the root (`QueuedAsksWakeAfterCrash`); pending row

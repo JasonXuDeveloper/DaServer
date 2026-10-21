@@ -378,7 +378,7 @@ A cluster has tens of server types, hundreds of nodes per type and millions of a
   node's type. Incidents rank by severity (`critical`, then `warning`, as
   the rules name them), then by how many nodes they cover: a node-level incident covers its firing nodes, a type-level
   one (one alert for the type, no node) the type's nodes whose fresh readings pass the rule's `daserver_limit` (its
-  culprits, the same nodes its screen lists), and a cluster incident counts as covering every node. Each has its screen; the first incident's summary counts the rest
+  culprits, the same nodes its screen lists); a type-level rule with no per-node reading to compare (`DaServerOnceStaleAsking`, whose evidence is a store count, and `DaServerOnceAskOld`, the sweeper's gauge per actor type) counts as covering every node of its type, or of the cluster when `type="none"`; and a cluster incident counts as covering every node. Each has its screen; the first incident's summary counts the rest
   ("One more incident: long GC pauses on 2 PlayerServer nodes"). A silenced incident stays listed, last, with the
   time its silence ends.
 - **When the alerts cannot be read.** If Prometheus or Alertmanager does not answer, its newest sample is older than

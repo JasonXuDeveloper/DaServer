@@ -1623,7 +1623,7 @@ Replaced by ADR-081.
       stay bounded) and keeps its process and connections; a read that shows it `Active` resumes it, `Dead` stops it.
       While frozen it answers probes `Isolated` (a failed probe for a prober whose own lease has held for
       `IsolationTimeout` and that is not itself recovering from a cluster-wide freeze: one more `IsolationTimeout`
-      and its write backlog drained, while its store traffic ramps up from one statement per world, so a recovering
+      and its write backlog drained, while its store traffic ramps up from one write per world, so a recovering
       store does not cascade into deaths); isolated alone (some peer is not), it also fails readiness and exits with 75 after
       `IsolationExit` (1 min), so a node that reaches its peers but not the store gives its slots up. The cost is stated plainly:
       **a store outage longer than `IsolationTimeout` pauses the whole cluster** until the store is back (the store
@@ -3113,7 +3113,7 @@ Replaced by ADR-098.
     (`daserver_once_asks`: the root's call ordinal, phase `queued`/`sent`/`stopped`, the sequence, NULL while queued,
     target, the asking entity, request bytes, the call's `state` (`ask_state`, given back in `Replied<TReq, TState>`;
     its type follows the persisted-component layout rules, with its `NinoTypeId` in `state_type` so a reload finds the
-    `Replied<TReq, TState>` handler; an unknown type is not delivered on this build: the row stays sent and unanswered for a build that knows it, counted and alerted), created at, next try, attempt), in the same write as the item's record and joined
+    `Replied<TReq, TState>` handler; an unknown type is not delivered on this build: the row stays sent and unanswered for a build that knows it, counted and alerted; the upgrade check compares the manifest's `state` lines both ways: a type an older build cannot read makes the release not rollback-safe, a type removed while in use is refused, and the alert covers a rollback past the build that added a type while newer nodes kept creating its rows), created at, next try, attempt), in the same write as the item's record and joined
     to its compare, and the item commits implicitly, so the sender's state and the intent are written together (a
     transactional outbox: [microservices.io](https://microservices.io/patterns/data/transactional-outbox)). The row
     belongs to the root, so an asking entity destroyed by another path (a drop expiring) does not lose the ask in flight.
@@ -3144,10 +3144,16 @@ Replaced by ADR-098.
     once stopped). An active root holds every sent row's metadata in memory (so its acknowledgement to each receiver
     is exact, even after `OnceInFlight` is lowered) and, per destination, a bounded head of queued rows
     (`DaServer:Once:QueuedHeadPerTarget`, 64, for up to `DaServer:Once:TargetsInMemory`, 256, destinations served
-    round-robin), paging the rest in per destination by ordinal, so memory is bounded (E3) and a slow target never
-    holds the others; a new ask is inserted already sent only when no earlier row to its target is queued in memory or
-    paged out; request and state bytes stay in memory until their insert lands, then only for the rows it sends, a
-    destination's next ones read ahead in one range read; the activation reads the sent rows and the queued heads after its claim (as `OnceSenders` rows are); the move's and the freeze's last write carries every unwritten ask-row change, and the
+    round-robin), paging the rest in per destination by ordinal; a destination in backoff or facing a zero window
+    gives up its head when destinations not held wait, and the next one paged in has the earliest `next_try_at`; a
+    destination with no answer since its last link-outcome retry gets at most one sent row (slow start), so stuck
+    targets hold one in-flight slot each. The bound that holds: a slow target delays another's asks by at most one
+    rotation of the in-memory destinations while fewer than `OnceInFlight` targets are stuck, and memory is bounded
+    (E3). The root's queued totals (`QueuedRows`, `QueuedBytes`, a count per held destination) live in `RootState`,
+    written with the row changes, so admission is exact after a reload. A new ask is inserted already sent only when
+    no earlier row to its target is queued in memory or paged out; request and state bytes stay in memory until their
+    insert lands, and a sent row then keeps metadata only, its bytes re-read for each re-ask round by the same
+    read-ahead range read that serves a destination's next sends; the activation reads the sent rows and the queued heads after its claim (as `OnceSenders` rows are); the move's and the freeze's last write carries every unwritten ask-row change, and the
     rows stay in the store.
   - **The wake**: each row's next try feeds the root's `NextDue`, so a crash, an idle unload or a stop with asks
     queued or sent always wakes the root through `DueScan` to send or re-ask.
@@ -3156,11 +3162,12 @@ Replaced by ADR-098.
     run (client sessions are advertised a window of 0). Its systems, reactions (`Leaving`, `Deactivating`,
     `Restarting`, `Resumed`, `[Changed<T>]`), timers, actors' `[Once]` requests and answers always run; the last two
     each settle some root's ask, so roots asking each other always progress. No tag, no stopped system, no missed
-    reaction. Growth past the cap comes only from those items and is bounded by the store, so it is alerted, not
-    refused: `DaServerOnceAskOld`, on the age of the oldest ask row not stopped per actor type (from the sweeping
+    reaction. Growth past the cap comes only from those items, so it is alerted, not refused: written rows are
+    bounded by the store, unwritten ones (a store outage) grow in memory, about the outage's length times the ask
+    rate, and land in one write when the store returns, its client timeout scaled to its statement count; `DaServerOnceAskOld`, on the age of the oldest ask row not stopped per actor type (from the sweeping
     node's index-only scan), past three `MaxAskTimeout`s for 10 minutes, catches a stuck downstream whether the
     backlog grows or stays flat, and a healthy ramp's young rows never trip it; `DaServerOnceQueuedFull` fires on a
-    node holding a root past the queued cap for 10 minutes. A count of rows is a trend only, since it scales with
+    node holding a root past the queued cap for 10 minutes (unwritten queued rows counted too). A count of rows is a trend only, since it scales with
     traffic. A
     call in a loop of a `Replied` or `[Once]` handler is warning DAS034.
   - Only `[Once]` requests, and `[Once]` server requests only this way (DAS032): a request that is not deduplicated
