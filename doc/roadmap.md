@@ -640,16 +640,20 @@ Keep this file current: tick items when done, add items when scope changes.
       target (StatefulSet or Deployment), replacing the samples' `Publishing.DeploymentOf`. The samples' autoscaling
       through their hooks: the helper that adds an HPA or `ScaledObject` also clears the workload's `replicas`; the
       mmo's stateful groups on KEDA over the average busy ratio with `minReplicaCount` at least 1, the flash sale's HPA
-      with `behavior.scaleDown` of one pod per 40 s or more and a 600 s window, VPAs on memory only, PDBs on the
+      with `behavior.scaleDown` of one pod per 40 s or more and a 600 s window, VPAs on memory only for gateways and
+      stateless groups and `Off` on hot-restart groups (the rollout reads their recommendation), PDBs on the
       StatefulSet's pods (gateways by percentage) with `unhealthyPodEvictionPolicy: AlwaysAllow`. Compose gateways roll
       plainly in the same loop (no surge). `aspire do {cluster}-restart` starts DaServer's rollout Job, the Kubernetes
-      adapter of W6's loop (pre-pull, resize the parked container's memory request up in place through the pod's
-      `resize` subresource and refuse the arm when it does not fit, arm, apply the parked container's image one pod at a
+      adapter of W6's loop (pre-pull, resize the parked container's CPU and memory requests up to the node size in place
+      through the pod's `resize` subresource, memory from the larger of the chart's node size and the VPA's
+      recommendation, and refuse the arm when it does not fit, arm, apply the parked container's image one pod at a
       time with Server-Side Apply as `daserver-rollout`, never the template, wait for the handover, resize the old
-      container's request back down; for a same-image roll ask the node to have the parked instance exit; scale-in of
-      the group paused while it runs and released at the end), with its ServiceAccount and Role (pods, `pods/resize`,
-      and `patch` on HPAs and `ScaledObject`s); it mounts the signing secret's
-      files and derives the admin token (no `{cluster}-admin` Secret); the rollout restarts the coordinator last. The
+      container's requests down to the idle size; for a same-image roll ask the node to have the parked instance exit;
+      a resize-only run that swaps requests back after a crash takeover; scale-in of the group paused while it runs and
+      released at the end), with its ServiceAccount and Role (pods, `pods/resize`, `get` on VPAs, and `patch` on HPAs
+      and `ScaledObject`s); hot-restart pods render `node-a` node-sized and `node-b` idle-sized, with the processor count
+      a literal of the node size; it mounts the `{cluster}-admin` Secret and signs with the `act` scope, never the
+      signing secret; the rollout restarts the coordinator last. The
       upgrade note tells how to hand `replicas` to the autoscaler on a running group. E2E on kind: same pod UID and IP,
       only the parked container restarted by the image apply, the handover over the `emptyDir`'s socket, clients
       connected, the rollout order (coordinator last), `PodReadinessIgnoresIdleContainer`, `ParkedContainerRestartsAfterHandover`,
@@ -657,7 +661,11 @@ Keep this file current: tick items when done, add items when scope changes.
       new `envFrom`), `SameImageRollTwiceWithin10Min` (the kubelet's back-off delays only the parked instance's return),
       `PrePullRefusedForRoomWarns`, `RolloutPatchesDigestAndChecksImageId`,
       `StatefulSetImmutableFieldsUnchanged` (publish test against the previous chart), `ParkedResizeRefusedFallsBackToRecreate`,
-      `ParkedRequestResizedBackAfterHandover`, `VpaWithTwoContainerPod` (the open point of architecture.md section 10),
+      `ParkedRequestResizedBackAfterHandover` (CPU and memory to the idle size), `StandbySizedFromVpaRecommendation`
+      (the larger target of the two containers, never below the node size), `VpaOffOnHotRestartPods`,
+      `ColdStartNodeIsNodeSizedContainer`, `ProcessorCountIgnoresResizedRequest`, `ParkedInstanceExportsNoBusyRatio`
+      (the HPA's average counts nodes only), `CpuUtilizationHpaUnskewedByParked`, `CrashTakeoverReportsRequestsLow`,
+      `ResizeOnlyRunSwapsRequestsBack`,
       `AutoscaledGroupRendersNoReplicas`, `AspireDeployKeepsHpaReplicas`, `RolloutPausesScaleInAndReleasesIt`,
       `RolloutClearsStalePause`, `ScaleInOnePodPerPeriodHandsOverActors`, `RolloutLoopSameAcrossAdapters`, the
       rebalancing tests of W5 on real gateways after a scale-out; `aspire publish` output (Helm lint and template,

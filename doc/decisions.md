@@ -1910,10 +1910,11 @@ Replaced by ADR-081.
     namespace and a small `medium: Memory` `emptyDir` for the handover's lock, pipe and arm file; the one holding the
     lock is the node, the other parks (a few tens of MB) or, during a roll, is the standby. Each serves its probes on
     its own port and the idle one reports ready, so the pod's readiness follows the node. Both carry the same memory
-    limit; the parked one's memory request is small until the rollout resizes it in place (the pod's `resize`
-    subresource, `resizePolicy` `NotRequired`) to the node's working set for the handover, and back afterwards; when
-    the machine cannot fit the resize, the arm is refused and the pod takes the delete-and-recreate path through
-    records.
+    limit; requests follow the role (the node size on the node's container, the idle size on the parked one, `node-a`
+    rendered node-sized so it is the node at a cold start), and the rollout swaps them in place at each handover (the
+    pod's `resize` subresource, `resizePolicy` `NotRequired`; the processor count is the node size as a literal, so no
+    resize changes a process's parallelism); when the machine cannot fit the resize, the arm is refused and the pod
+    takes the delete-and-recreate path through records.
   - **Hot restart on Kubernetes**: the release itself (`helm upgrade` of the published chart) sets the StatefulSet's
     template image; with `OnDelete` that replaces no pod, and pods created later get the new build. The rollout then
     runs as DaServer's own in-cluster Job with a namespaced Role (its verbs: [drafts/deployment.md](drafts/deployment.md)
@@ -1947,7 +1948,7 @@ Replaced by ADR-081.
   - **One rollout loop, one adapter per platform**: pre-pull, arm, trigger, wait until ready, next, the coordinator
     last ([drafts/deployment.md](drafts/deployment.md) section 5); on Kubernetes the trigger is the parked container's
     image, and the Job writes through Server-Side Apply as its own field manager `daserver-rollout`: that container's
-    image, the parked container's memory request (`resize`), and a pause of the group's scale-in while it runs, so an
+    image, both containers' CPU and memory requests (`resize`), and a pause of the group's scale-in while it runs, so an
     autoscaler never deletes a pod in the middle of its handover (ADR-094). It authenticates with the cluster's admin key
     (the `{cluster}-admin` Secret, ADR-093), never the signing secret.
   - **preStop runs on an image-apply restart too** (the kubelet's container kill runs it whatever the reason; proved
@@ -2460,19 +2461,28 @@ Replaced by ADR-098.
   - **Scaling policy is the application's, written by the sample's hook**: KEDA or an HPA on the group's average
     busy ratio (`avg`, never `max`; an explicit minimum, KEDA's default is 0); scale-in one pod per period, the
     period at least the graceful stop and a stabilization window of 600 s or more, since a PDB does not slow a
-    scale-in; a VPA on memory only (`InPlaceOrRecreate` or `Off`), CPU scaling horizontally; PDBs with
+    scale-in; CPU scaling horizontally; a VPA `Off` or `Initial` on gateways and stateless groups
+    (memory only when active), and `Off` on hot-restart pods, whose node and parked containers swap roles at every handover: VPA
+    recommends per container name, so an active one would size the parked container as a node or race the rollout's
+    resize; the rollout reads the recommendation instead (the larger memory target of the two containers, never below
+    the chart's node size) when it sizes the standby. The busy ratio comes from node processes only, so the HPA's
+    average counts nodes whichever container runs them; a `ContainerResource` HPA cannot name the node's container;
+    PDBs with
     `maxUnavailable: 1` for stateful groups, a percentage for gateways, `unhealthyPodEvictionPolicy: AlwaysAllow`;
     none for the one-replica Dashboard. DA only names the scale target (StatefulSet or Deployment) and makes the
     `Manifest` type public for objects Aspire has no class for.
   - **Field ownership through Server-Side Apply**: the chart (`helm`) owns what the AppHost declares; an autoscaled
     group renders no `replicas` (the hook that adds the autoscaler clears it), so the HPA owns the count; the rollout
-    Job applies as field manager `daserver-rollout`, forcing only the parked container's image, resizing its memory
-    request, and, without force, a pause of the group's scale-in while it rolls (a pod deleted mid-handover stops
+    Job applies as field manager `daserver-rollout`, forcing only the parked container's image, swapping the two containers'
+    requests, and, without force, a pause of the group's scale-in while it rolls (a pod deleted mid-handover stops
     gracefully, but its roll fails and its actors move). Nodes
     and the Dashboard write nothing to the Kubernetes API.
-  - **In-place resize is for memory only**: a node reads its cgroup memory limit and calls `GC.RefreshMemoryLimit()`
-    when it changes, so `resizePolicy memory: NotRequired` resizes without a restart; CPU requests set the world count
-    only at start (`DOTNET_PROCESSOR_COUNT`), and node pods set no CPU limit.
+  - **In-place resize never changes a running process's parallelism**: a node reads its cgroup memory limit and calls
+    `GC.RefreshMemoryLimit()` when it changes, so `resizePolicy memory: NotRequired` resizes without a restart; CPU
+    requests set the world count only at start (`DOTNET_PROCESSOR_COUNT`), and node pods set no CPU limit. A
+    hot-restart pod's CPU request is resized only by the rollout's role swap, and its processor count is the chart's
+    node size as a literal, not the request; a crash takeover that leaves the requests swapped is reported by the
+    node (`daserver_node_requests_low`) and fixed by a resize-only run of the rollout.
 - Alternatives: rendering `replicas` and having the deploy fight the autoscaler (each deploy resets the size, a mass
   leave for a stateful group); `pod-deletion-cost` to pick which gateway goes (needs API access from someone, and
   rebalancing, ADR-089, already keeps gateways even); StatefulSet `maxUnavailable` (beta) or the `Recreate` strategy
@@ -2746,11 +2756,16 @@ Replaced by ADR-098.
   - **Platforms**: systemd (two template instances, the directory from `tmpfiles.d`), launchd (two jobs, `kickstart
     -k`), Windows (two services, one account or a pipe ACL), Compose (an a/b pair joined to a pinned holder's network
     namespace, `restart: unless-stopped`), local Aspire (two replicas) and **Kubernetes: one pod with two containers**
-    `node-a` and `node-b` sharing the pod's network and a small memory `emptyDir`; the rollout Job resizes the parked
-    container's memory request in place, applies only its image (the kubelet restarts only that container), and for a
+    `node-a` and `node-b` sharing the pod's network and a small memory `emptyDir`; the old process parks after the
+    handover rather than exit (an exited container would only be restarted into the same pod, freeing nothing); requests
+    follow the role, so the pod is sized as one node plus an idle instance: the rollout Job raises the parked
+    container's CPU and memory requests to the node size in place, applies only its image, lowers the old container's
+    to the idle size after the handover (the kubelet restarts only that container), and for a
     same-image roll has the node tell the parked instance to exit; each container has its own probe port and the idle
     one reports ready, so the pod's readiness follows the node except for the seconds the parked container restarts
-    (no client Service depends on a hot-restart pod; the PDB counts it as one unavailable); the in-place resize needs
+    (no client Service depends on a hot-restart pod; the PDB counts it as one unavailable); the autoscalers see one node
+    per pod: the HPA averages the busy ratio, which only node processes export, and the VPA is `Off` on these pods and
+    read by the Job (ADR-094); the in-place resize needs
     Kubernetes 1.33 or later and Linux pods, and a resize that is `Infeasible` or still `Deferred` at its deadline is
     set back, so that pod, like one that cannot fit the standby, takes the delete-and-recreate path through records
     (ADR-085).
@@ -2769,5 +2784,5 @@ Replaced by ADR-098.
 - Consequences: the draft's §10, architecture.md section 5 and deployment.md sections 0, 2, 3, 5, 8, 10 and 11 state
   it; there is no snapshot directory, restart mode or exit-on-arm setting, `/admin/restart` takes only
   `mode=unload` and `dryRun=true`, and the exit code 75 belongs to the isolation exit alone; roadmap W6 builds the handover with its platform triggers, W11 the
-  two-container pod and the Job's resize, W8 checks the socket passing under AOT, and BenchmarkDotNet's `HandoverPause`
+  two-container pod, the Job's role swap of the requests and the autoscalers on it (`VpaOffOnHotRestartPods`, `ParkedInstanceExportsNoBusyRatio`), W8 checks the socket passing under AOT, and BenchmarkDotNet's `HandoverPause`
   measures the pause at 100,000 and 1,000,000 actors under JIT and AOT.

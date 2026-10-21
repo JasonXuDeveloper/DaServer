@@ -1114,7 +1114,7 @@ LIMIT 512
     hash, deadline) and is refused while membership or a handoff is changing placement, while another node holds the
     restart permit, when the standby would not fit in memory (it needs about the node's working set: its own
     memory limit or the machine's available memory on bare metal and Compose; on Kubernetes the rollout first resizes
-    the parked container's memory request in place, below), or when the store's measured p99 write latency is above a
+    the parked container's requests in place, below), or when the store's measured p99 write latency is above a
     quarter of `DaServer:HotRestart:FreezeBound` (2 s): the freeze waits for the writes in flight and one write of every
     root holding output, so a slow store would only make the freeze pass its bound and resume in place. A same-image roll (configuration only) is the same path:
     the armed hash is the running one.
@@ -1191,9 +1191,13 @@ LIMIT 512
   - **Kubernetes**: one pod with two containers, `node-a` and `node-b`: the same image and configuration, the pod's
     network namespace, and a small `medium: Memory` `emptyDir` for the directory. Each container serves its probes on
     its own port (`DaServer:ProbePort`), and a parked or standby instance reports ready, since it serves nothing, so
-    the pod's readiness depends only on the node. Both containers carry the same memory limit; normally only the
-    node's carries the working set as its request and the parked one a small request. The rollout Job resizes the
-    parked container's request up to the node's working set in place (the pod's `resize` subresource, beta and on by
+    the pod's readiness depends only on the node. Both containers carry the same memory limit; requests follow the
+    role: the node's container carries the node size (CPU and memory) and the parked one the idle size, so the pod is
+    sized and scheduled as one node; the chart renders `node-a` node-sized, so at a cold start it becomes the node (an
+    idle-sized instance never takes the lock first). The processor count is the chart's node size as a literal, never
+    the request, so no resize changes a process's parallelism. The rollout Job resizes the parked container's requests
+    up to the node size in place (memory: the larger of `nodeSize.memory` and the VPA's recommended target for either
+    container; the pod's `resize` subresource, beta and on by
     default from Kubernetes 1.33, GA in 1.35, `resizePolicy` `NotRequired`, so nothing restarts; not available for Windows pods
     or on machines with the static CPU or memory manager, which take the delete-and-recreate path); when the resize
     reports `Infeasible`, or is still `Deferred` at its deadline (it might apply later), the Job sets the request back,
@@ -1201,7 +1205,15 @@ LIMIT 512
     apply later. Then it applies only that container's
     image (one forced server-side apply with the pod's `controller-revision-hash` label, ADR-085), so the kubelet
     restarts only that container, which comes up as the standby; after the handover the old process parks in place,
-    and the Job resizes its request back down. A same-image roll
+    and the Job resizes its requests down to the idle size. A crash takeover (the parked instance becomes the node in
+    an idle-sized container) leaves the requests swapped: the pod's total is right, but the node's CPU weight is the
+    idle one, so the node reports `daserver_node_requests_low` and a resize-only run of the Job swaps them back.
+    **Autoscalers**: the busy ratio is exported by node processes only, so a KEDA or HPA average over the group
+    counts nodes whichever container they run in (a CPU-utilization HPA also works, the parked container adding
+    almost nothing to the pod's usage or request; a `ContainerResource` one cannot, since the node alternates between
+    the two names); the VPA is `Off` on these pods, since it recommends per container name and an active one would
+    size the parked container as a node or race the Job's swap, and the Job reads its recommendation instead
+    (deployment.md section 10). A same-image roll
     has no image to apply: the Job asks the node, through its admin endpoint, to tell the parked instance over the
     pipe to exit, and the kubelet restarts it with a fresh read of env and `envFrom`. The kubelet's restart back-off
     (10 s, doubling, for a container that exited within 10 minutes of its start) only delays a parked instance's
@@ -1439,7 +1451,3 @@ Derived from [design.md](../design.md); what today's code has and the target dro
    memory of replicated components; measure against diffing whole components on the mmo AOI benchmark (W7a) before adopting. The
    copy's sent stamp (the world's `ChangeTick` when the replication pass ran, opaque to the client) and the incarnation
    stay either way: they decide what a rejoining client still needs.
-4. **The two-container pod with a VPA** (W11): a VPA recommends per container name, while `node-a` and `node-b` take
-   turns being the node; settle on kind whether the VPA's recommendation for the pair (container policies over both
-   names, or a recommendation-only mode the rollout reads) fits the rollout's in-place resize of the parked container,
-   before the samples combine the two.
