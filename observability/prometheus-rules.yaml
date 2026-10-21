@@ -243,8 +243,9 @@ groups:
 
       - alert: DaServerOnceQueuedFull
         # Target (roadmap W6): a node holds roots whose queued asks passed OnceQueued or Once:QueuedBytes, so new ordinary
-        # requests and client [Once] requests to them get Busy. Briefly at a peak is back-pressure working; for ten
-        # minutes it is a receiver that does not keep up.
+        # requests and client [Once] requests to them get Busy. The count includes queued rows not yet written (a store
+        # outage grows them in memory). Briefly at a peak is back-pressure working; for ten minutes it is a receiver
+        # that does not keep up, or a store that does not take the writes.
         expr: max by (cluster, type, node) (last_over_time(daserver_once_queued_full[2m])) > 0
         for: 10m
         labels:
@@ -256,7 +257,9 @@ groups:
       - alert: DaServerOnceUnknownState
         # Target (roadmap W6): an answer arrived for an AskUntilAnswered whose state type this build does not know. The
         # row stays sent and unanswered so a node of a build that knows the type delivers it after the next move or
-        # restart; during a rollback or a mixed-version run that is expected for minutes, never for long.
+        # restart; during a rollback or a mixed-version run that is expected for minutes, never for long. The upgrade
+        # check refuses removing a type in use, but newer nodes can keep creating rows of a type until a rollback past
+        # the build that added it replaces them; those rows wait here for a build that knows the type.
         expr: sum by (cluster, type, node) (increase(daserver_once_unknown_state_total[10m])) > 0
         for: 15m
         labels:
@@ -269,13 +272,13 @@ groups:
         # Target (roadmap W6): a [Once] receiver on this node holds more than 90% of SendersPerReceiver sender rows.
         # Past the cap new senders get WindowFull; rows free only as senders are destroyed.
         expr: max by (cluster, type, node) (last_over_time(daserver_once_senders[2m]))
-          > 0.9 * max by (cluster, type, node) (last_over_time(daserver_once_senders_cap[2m]))
+          / max by (cluster, type, node) (last_over_time(daserver_once_senders_cap[2m])) > 0.9
         for: 10m
         labels:
           severity: warning
         annotations:
           summary: "A [Once] receiver on {{ $labels.node }} nears its sender-row cap"
-          description: "One receiver keeps sender rows for {{ $value }} senders, above 90% of SendersPerReceiver. Destroy finished senders (orders after a sale) or raise the cap; past it new senders are refused."
+          description: "One receiver keeps sender rows at {{ $value | humanizePercentage }} of SendersPerReceiver. Destroy finished senders (orders after a sale) or raise the cap; past it new senders are refused."
           daserver_limit: "0.9"
           daserver_unit: "ratio"
 
