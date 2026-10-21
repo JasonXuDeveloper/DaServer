@@ -183,6 +183,27 @@ groups:
           summary: "{{ $labels.node }} drops [Once] attempts as too old"
           description: "Attempts arrive sent more than MaxAskTimeout + ClockSkew ago: check NTP on the senders' nodes and the gateways, and DaServer:ClockSkew."
 
+      - alert: DaServerOnceStaleAsking
+        # Target (roadmap W4): acknowledgements are sent from written state only, so an AskUntilAnswered can never be
+        # answered Stale. One that is means a runtime defect: the ask stops and waits for reconciliation.
+        expr: sum by (cluster, type, node) (increase(daserver_once_stale_asking_total[10m])) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.node }} got Stale for a pending ask"
+          description: "An AskUntilAnswered was answered Stale and stopped asking. Its operation needs reconciliation; report the runtime defect with the node's logs."
+
+      - alert: DaServerOnceCounterLow
+        # Target (roadmap W4): a saved actor's [Once] counter has fewer than 2^24 numbers left; it stops sending [Once]
+        # when it runs out. The gauge is the number of such roots on the node.
+        expr: max by (cluster, type, node) (last_over_time(daserver_once_counter_low[2m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.node }} has actors running out of [Once] numbers"
+          description: "An actor has sent about four billion [Once] requests in one record's life. Delete and recreate it (a new record starts a new seed) before the counter runs out."
+
   - name: daserver-recording
     # Target (roadmap W7e): the ask histogram does not exist yet. A two-minute window holds eight 15 s pushes, and at
     # least four however the export drifts. `type` is the callee's server type (the handling node records the ask).
