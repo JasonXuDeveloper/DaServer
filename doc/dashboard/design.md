@@ -103,15 +103,17 @@ There is one vocabulary, used the same way everywhere.
   key picks them. Every row is in the second ink and the selected one is in ink with its name in weight 600: one
   indicator, no highlight band. The accent still marks what is wrong in any row. A row is a step: ↑↓, the wheel, a
   click or its number select it, and the detail beside it morphs.
-- **A spread** is a distribution as a small multiple, 18 px tall in a list row: 32 bins of 2 ms from 0 to 64 ms,
-  the same scale on every row and the limit dashed, so ten server types compare at a glance (Tufte's small
-  multiples). Each row's bars are scaled to its own fullest bin. The detail carries the full distribution.
+- **A spread** is a distribution as a small multiple, 18 px tall in a list row: 32 bins on a square-root scale from
+  0 to 64 ms, the same scale on every row and the limit dashed, so ten server types compare at a glance (Tufte's
+  small multiples). The last bin holds everything from 64 ms on; the row's p99 column says how far. Each row's bars
+  are scaled to its own fullest bin. The detail carries the full distribution.
 - **A figure** is a label above, the reading in the display face, and its normal below ("usually 12 ms",
   "of 4 nodes"). A reading is never shown alone.
-- **A distribution** shows one reading across every node of a server type: 80 bins of thin bars in the ink, the bins
-  past the limit or holding an outlier in the accent, the limit as a dashed line, and the scale (zero, the limit, the
-  top) beneath. It reads the same at 4 nodes and at 400. Moving between server types, each bar grows or shrinks from
-  its foot instead of being redrawn.
+- **A distribution** shows one reading across every node of a server type that answered with a fresh reading: 80
+  bins of thin bars in the ink, the bins past the limit or holding an outlier in the accent and marked by a short
+  rule beneath the axis, the limit as a dashed line, and the scale (zero, the limit, the top, on a 1, 2, 2.5, 4, 5
+  progression) beneath. Its caption counts what it holds ("397 of 400 nodes answered"). It reads the same at 4 nodes
+  and at 400. Moving between server types, each bar grows or shrinks from its foot instead of being redrawn.
 - **A table** has one entity per table, one row height and hairlines that run unbroken. Text columns are left
   aligned, and numbers are right aligned in tabular figures. The gutter is padding on the side away from the
   alignment.
@@ -132,7 +134,11 @@ There is one vocabulary, used the same way everywhere.
 - Hairlines only. There are no cards, boxes, panels, badges, pills, round icons or shadows, and every corner is
   square.
 - One table per entity. Rows have the same height, and columns never mix kinds.
-- What is wrong is in the accent. When nothing is wrong, nothing is in the accent.
+- What is wrong is in the accent. When nothing is wrong, nothing is in the accent. Colour is never the only sign:
+  in a table what is wrong is also italic, a distribution marks its bins beneath the axis, and a count ("Out",
+  "3 of 400") says it in words.
+- "Cannot know" is not "fine". A source that cannot be read (Prometheus, Alertmanager, a node) is said in the accent,
+  never shown as silence.
 
 ## Focus
 
@@ -201,15 +207,36 @@ There is one vocabulary, used the same way everywhere.
 - Every key hint at the bottom is bold, always in the same place, and clickable. A pressed key underlines its hint
   at once, so the key is answered before anything has moved. A key that only one screen uses
   (such as rolling back) is a button on that screen, not a global key.
-- Every action that changes the cluster asks you to type the target's name, and it is written to the audit log.
+- Every action that changes the cluster asks you to type the target's name, and it is written to the audit log
+  (see Actions).
+
+## Live data
+
+The page is a view of the Dashboard server's latest snapshot, refreshed every cadence (10 s by default).
+
+- **When.** The margin's status line gives the snapshot's time and how many nodes answered ("As of 18:02:10. 627 of
+  630 nodes answered"); the environment in the header names the time zone every time is in (UTC unless configured).
+  Every age ("14 s ago") is counted on the snapshot's clock, never a node's.
+- **Freshness.** Each node's reading carries its age. The poll asks each node with a 2 s timeout, so dead nodes
+  cannot hold its slots. A node that does not answer is "Not answering, 41 s"; a node isolated from the store (it
+  fails readiness, answers probes as isolated and exits at its bound) is "Isolated, exits by 18:04"; a reading older
+  than two cadences is "Stale". None of them enters a distribution, and the outlier rule lists them first.
+- **A refresh patches, it does not re-render.** Texts that changed swap in place and bars take their new heights.
+  Keyboard focus, the pointer's row, and anything being typed (a confirmation, Find) stay as they are; Find and a
+  confirmation are never re-rendered by a refresh.
+- **Orders hold.** A list keeps the order the operator sees until they move to another section; selection is kept by
+  id, not position, and a number key acts on the order as it was last painted. A refresh that would add or drop rows
+  waits while the pointer or focus is on the page.
+- **Announcements.** Only the status line is a live region, and only its messages are announced, not each refresh.
 
 ## Motion
 
 Two motions, and nothing else: no fades or eases on whole blocks, no scrambled text, no wipes.
 
-**Text morph (Magic Move by character).** When a screen keeps its layout and only its values change (the next server
-type, the next list item, a status line, the folio), every text changes by character, like Keynote's Magic Move with
-matching set to characters. It combines three techniques:
+**Text morph (Magic Move by character).** When the operator moves and a screen keeps its layout while only its values
+change (the next server type, the next list item, a status line, the folio), every text changes by character, like
+Keynote's Magic Move with matching set to characters. A data refresh never morphs: a value that changed swaps in
+place, so a figure is never unreadable while the operator reads it. It combines three techniques:
 
 1. **Which characters stay.** The old and new strings are compared by character with a longest common subsequence
    (LCS), the same idea as `git diff`. A kept run must be at least two characters long unless it starts or ends both
@@ -259,26 +286,58 @@ inline-block. We match by character across re-rendered pages and need the layout
 A cluster has tens of server types, hundreds of nodes per type and millions of actors. No screen grows with them.
 
 - **Distributions, not rows.** A reading across a type's nodes is one distribution. The table under it lists only
-  the nodes that stand out: a state other than running, or a reading more than four median absolute deviations from
-  the type's median. At most four rows; the rest are one line with their count and range. When no node stands out
-  there is no table, and the line says "All 32 nodes within their usual range".
-- **Unhealthy first, every type a row.** Server types are one list, the unhealthy first, then by size. Tens of
+  the nodes that stand out, in this order: no fresh reading (not answering, isolated, stale); a state other than
+  running; no requests while the type has them; a reading more than four median absolute deviations from the median
+  of the nodes on the same build, either way (the deviation has a floor of 2% of the median, so a type whose nodes
+  read alike does not flag noise). At most four rows; the rest are one line with their count and range, and if a node
+  that Find chose took a row, how many more stand out. When no node stands out there is no table, and the line says
+  "All 32 nodes that answered within their usual range".
+- **Builds as counts.** A type halfway through a rollout runs two builds: its row says "2 builds", its detail gives the
+  counts ("388 on 20-3, 12 on 20-2"), outliers are found within each build, and the incident's cause compares the
+  builds' readings instead of claiming "every node moved". What is rolling and how far comes from the builds the nodes
+  report in membership, never from the page.
+- **Unhealthy first, every type a row.** Server types are one list, the unhealthy (an alert fires for it) first, then
+  by size. Tens of
   types fit as whole pages of rows with the rest counted beneath; each row carries its spread, so the list compares
   the types and the detail explains the selected one.
-- **Top-N, then Find.** Actors appear as the slowest six across the cluster; any other actor is found by its id.
-  Find shows five results per group and says how many more match.
-- **Counts read at a glance.** Large counts are rounded (2.41 M, 412 k); exact figures stay where they are small. A count
-  column holds numbers only: zero is 0, never "None".
-- **Logs by pattern.** Hundreds of nodes log the same line thousands of times; Loki groups them by pattern, and the
-  screen shows the patterns with their counts.
+- **Top-N, then Find.** Actors appear as the slowest six across the cluster, merged from each node's own ranking: an
+  actor needs 100 calls in the window to rank, and one seen on two nodes during a handoff counts once. Any other actor
+  is found by its id: the key is parsed by its type's registered key type, looked up on Enter or after a pause in
+  typing, and asked of its owner; a lookup never loads an actor, and one that is not loaded says so. Find shows five
+  results per group and says how many more match.
+- **Counts read at a glance.** Large counts are rounded (412 k, 2.41 M, 1.20 G), exact below 100,000 and grouped
+  (9,412). Durations switch to seconds at a second (1.24 s). A count column holds numbers only: zero is 0, never
+  "None"; a missing reading is a dash, never 0 or NaN.
+- **Logs by pattern.** Hundreds of nodes log the same line thousands of times; Loki's patterns API (the pattern
+  ingester) groups them, and the screen shows the patterns with their counts. A log query is one per server type with
+  the node as a label, never one per node (a type of 630 nodes would pass Loki's series limit), and its result is
+  cached in the snapshot, so ten viewers cost Loki one query.
 - **Where it is computed.** Distributions, outliers and rankings are computed by the Dashboard's server once per
   refresh, never in the browser and never per viewer (ADR-093). The browser receives the bins and the few rows it
-  shows. Nodes keep no history: charts come from Prometheus's range queries, or, without Prometheus, from the
-  Dashboard's own ring of polls, which starts when the Dashboard starts (the chart says so).
+  shows. A type's p99 is computed from its nodes' histogram buckets merged as deltas (a restarted node's counters
+  reset), never as a percentile of the nodes' percentiles; with Prometheus these are recording rules
+  (`histogram_quantile` by type, and by node and `le`). Nodes keep no history: charts come from Prometheus's range
+  queries, or, without Prometheus, from the Dashboard's own ring of polls, which starts when the Dashboard starts (the
+  chart says so).
+- **Membership from more than one node.** The Dashboard reads membership from up to three ready nodes and keeps the
+  view with the highest version; an actor lookup that meets `NotHosted` asks again on the newer slot table.
+  Disagreement is an incident only when it lasts (the alert's `for: 2m`), since views differ for a moment on every
+  join and leave.
 - **Alerts decide, outliers point.** Whether something is wrong is Prometheus's alert rules
   (`observability/prometheus-rules.yaml`); the outlier rule only names the culprit nodes and the rows that stand
-  out. Without Prometheus the Incident section covers what needs no threshold: a stalled shard, a node not ready,
-  views that disagree.
+  out. A type is unhealthy when an alert fires for it. A reading's limit is its rule's `daserver.limit` annotation,
+  read from the rules API (`/api/v1/rules`); a reading with no rule has no limit line. Without Prometheus the
+  Incident section covers what needs no threshold: a stalled shard, a node not ready, views that disagree.
+- **Incidents, not alerts.** Every rule fires per node, so a bad build fires hundreds of alerts. An incident is the
+  alerts of one rule on one server type (Alertmanager's grouping, silences and inhibitions honoured); incidents rank
+  by severity, then by how many nodes they cover. Each has its screen; the first incident's summary counts the rest
+  ("One more incident: long GC pauses on 2 PlayerServer nodes"). A silenced incident stays listed, last, with the
+  time its silence ends.
+- **When the alerts cannot be read.** If Prometheus or Alertmanager does not answer, its newest sample is older than
+  two evaluation intervals, or rule evaluation fails (`prometheus_rule_evaluation_failures_total`), the Incident
+  section's title is "Alerts cannot be read", with the time it last could, the status line says so in the accent, and
+  the screen shows the threshold-free checks from the Dashboard's own poll. It never says nothing is wrong. The
+  prototype shows this state with `?alerts=down`.
 
 ## What each job looks like
 
@@ -286,20 +345,60 @@ DaServer is a general framework, so every view below names server types, actors 
 
 | Job | The operator's question | Presentation | Left out |
 |---|---|---|---|
-| Triage | Is anything wrong right now? | The Incident section's first screen, one per firing alert: what is wrong as the title; the figure that proves it beside its limit and usual value, one sentence of cause and the fix as the primary action (main); the distribution of the reading across the affected type's nodes and its three worst nodes (aside), which tells a bad build (every node moved) from a bad node (one bar apart). When nothing is wrong, the title says so and the section has one screen | Status grids, counts of healthy things, coloured dots |
+| Triage | Is anything wrong right now? | The Incident section, a screen per incident (the alerts of one rule on one server type), worst first: what is wrong as the title; the figure that proves it beside its rule's limit and its usual value, one sentence of cause read from the builds' readings, the incidents left, and the fix as the primary action with Silence for an hour beside it (main); the distribution of the reading across the affected type's nodes that answered and its three worst nodes (aside), which tells a bad build (every node on it moved) from a bad node (one bar apart). When nothing is wrong, the title says so and the section has one screen; when the alerts cannot be read, the title says that instead | Status grids, counts of healthy things, coloured dots |
 | Evidence | Why do we think so? | The Incident section's second screen, two halves: the last hour as one chart (the culprit in the accent, the slowest of the others in ink, the limit dashed, the change that caused it marked), and beside it the logs, read from Loki and grouped by pattern (a pattern and its lines; on a full-width screen also how many nodes logged it and when last) | Dashboards of every metric; raw lines from hundreds of nodes; history beyond the hour (one link to Grafana) |
 | Cluster health | Which server type is unhealthy? | The list of Server types: one row per type (nodes, actors, ask p99, its spread across the nodes, how many stand out, build), unhealthy types first, the unhealthy row's name and p99 in the accent; membership is the eyebrow | Per-node detail in the list; a status column |
 | A server type | How are its nodes? | The detail beside the list: the type's name as the running head, the distribution of ask p99 across all its nodes with its usual value, the nodes that stand out (at most four rows: name, p99, and Restart or what the node is doing, "Leaving, 35 of 64 moved"), one line for the rest ("396 other nodes between 34 and 49 ms"); Hot restart and Grafana in the foot. Selecting another type morphs the detail and grows or shrinks each bar from its foot | A row per node; sparklines that are flat; graphs per node |
 | Membership | Do all nodes agree on who is in the cluster? | One phrase above the overview title ("630 nodes in 10 server types, every view agrees"); a disagreement becomes the incident | A separate membership page while views agree |
 | Store | Are actors being saved? | The Platform screen's first half: write p99, writes in flight and unsaved actors with their usual values (errors in the line under the running head while there are none); the actor types with the most unsaved actors and their oldest (as many of four rows as fit) | Query plans, per-table statistics |
 | Client connections | Are clients connected and balanced? | The Platform screen's second half: connected, the average per gateway, resumed (refused handshakes in the line under the running head while there are none); the distribution of clients across gateways; the gateways more than a tenth from the average (at most three rows) | A row per gateway; per-client lists |
-| Changes | What changed before it broke? | One master–detail screen: the last hour's changes, newest first, as the list (time, kind, target; the bad one in the accent); the selected change's detail beside it (what, who, the result, the finding), a bad rollout's roll back, and a link to its target in the cluster | Deploy logs; the full rollout timeline |
-| Rollout and rollback | Roll back the bad build | The primary action on the incident and on the rollout's detail, confirmed by typing the server type's name. A new build, the previous one included, reaches the nodes through the deploy (ADR-093): the Dashboard calls the deploy pipeline's webhook with the server type and the build to return to, and audits the call; without a webhook it shows the command to run | A separate deploy page |
-| Restart, hot restart | Restart a node; restart a type on its build | Restart on the node's row (`/admin/restart?exit=true` on that node: it hot restarts in place, exits after its snapshot and is started again by the platform); Hot restart under the node table (a same-image roll of the type: the Dashboard calls the deploy pipeline's webhook, which runs the one rollout loop, one node at a time and the coordinator last, with scale-in paused; without a webhook it shows the command, `aspire do {cluster}-restart`); both confirmed by typing the name. The Dashboard never loops over nodes itself: a restart of the Dashboard would leave a half-rolled group, and only the loop pauses scale-in. Taking a node out for good is the platform's scale-down | Bulk selection |
-| Config tables | Push a new table | An action in Find, confirmed by typing the table's name; accepted only when every node accepts it | An editor |
+| Changes | What changed before it broke? | One master–detail screen: the last hour's changes, newest first, as the list (time, kind, target; the bad one in the accent); the selected change's detail beside it (what, who, the result, the finding), a bad rollout's roll back, and a link to its target in the cluster. Changes come from what membership shows (a build changing across a type, a join, a leave, a new incarnation), the Dashboard's own actions, and what the deploy pipeline reports; with no Kubernetes API the Dashboard does not name an autoscaler, it says "Seen in membership". A change older than the hour is one link away, in Grafana's annotations | Deploy logs; the full rollout timeline |
+| Rollout and rollback | Roll back the bad build | The primary action on the incident and on the rollout's detail, confirmed by typing the server type's name and a reason. A new build, the previous one included, reaches the nodes through the deploy (ADR-093): the Dashboard calls the deploy pipeline's webhook with the server type, the build it expects to leave and the build to return to, and the pipeline refuses if the type has moved on; it runs one concurrency group per type, one node at a time. While it runs, the action reads "Rolling back, 12 of 400 on 20-2" from the builds in membership and the type's other actions wait. Without a webhook it shows the command to run | A separate deploy page |
+| Restart, hot restart | Restart a node; restart a type on its build | Restart on the node's row (`/admin/restart?exit=true&incarnation=N` on that node: it hot restarts in place, exits after its snapshot and is started again by the platform; it refuses an incarnation it no longer is). The confirmation says when another node of the type is not running, and the type restarts one node at a time. Hot restart under the node table (a same-image roll of the type: the Dashboard calls the deploy pipeline's webhook, which runs the one rollout loop, one node at a time and the coordinator last, with scale-in paused; without a webhook it shows the command, `aspire do {cluster}-restart`), confirmed by the type's name and a reason, and disabled while the type has another action running. The Dashboard never loops over nodes itself: a restart of the Dashboard would leave a half-rolled group, and only the loop pauses scale-in. Taking a node out for good is the platform's scale-down | Bulk selection |
+| Config tables | Push a new table | An action in Find, confirmed by typing the table's name and a reason. Two phases: every node validates and stages the table, then all switch together; if any node has not staged it within a minute, nothing switches and the push is aborted (the audit says which nodes did not answer). A node that joins meanwhile reads the table from the store | An editor |
 | An actor | What state is this actor in? | One master–detail screen: the six slowest actors in the cluster as the list (with any found by its id through Find), the selected actor beside it in full: handler p99, owning node, requests, mailbox, type, last saved, its components and its last log lines (from Loki), with a link to its traces (Grafana Explore over Tempo) | Lists of all actors; raw JSON dumps; live editing |
-| Audit | Who did what? | One row per action: time, who, action, target, newest first, paged; the audit is the Dashboard's log stream, read from Loki | Filters and search; export (the audit log is in the logs too) |
+| Audit | Who did what? | One row per action: time, who, action, target and reason, and its outcome with the action id, newest first, paged; read from the audit's durable sink (see Actions) | Filters and search; export (the audit is a table in the store, or a file) |
 | History | What happened last week? | A link on each view to Grafana at the same time range (the shipped dashboard, or Explore for logs and traces) | Our own long-term storage, ad-hoc queries, custom dashboards |
+
+## Actions
+
+Every action runs on the Dashboard's server, never in the browser, so closing the page does not stop or repeat it.
+
+- **What the operator saw.** An action carries it: a node's incarnation, a type's build. The target refuses an action
+  whose precondition has moved on, and the confirmation checks again when it is submitted.
+- **Once.** Each action has an idempotency key (the action, the target, what was seen, the operator), kept for ten
+  minutes: a second press, a retried call or another operator's identical request is the same action, and the page
+  says so ("Already requested as action 7f31"). The submit button disables on its first press.
+- **One at a time per server type.** While a rollback, a hot restart or a rollout runs on a type, its other actions
+  wait, and their buttons say which action is running. What is running comes from the server's record of its actions
+  and from the builds and incarnations in membership, so a reload, another operator or another Dashboard replica sees
+  the same.
+- **Outcomes.** The server's answer is Accepted, Failed, or Unknown when the call timed out (the action may have run;
+  its target says). A webhook that answers without a run id (GitHub's `workflow_dispatch`) is not retried after a
+  timeout: the pipeline is asked for runs carrying the action id first.
+- **Reasons.** An action on a whole server type or the cluster (roll back, hot restart a type, push a config table)
+  asks why, and the reason is written to the audit with the operator's name.
+- **Audit.** Every action is written twice: its intent before the call and its outcome after, with the same action
+  id, which the page shows. The audit's sink is durable: the store's `daserver_audit` table when the cluster has a
+  store (insert-only for the Dashboard's role), otherwise an append-only file; how long it keeps rows is the
+  operator's setting. The same lines also go to the logs, for Loki.
+- **Silences.** "Silence for an hour" creates an Alertmanager silence that expires; the incident stays listed, last,
+  with the time it ends.
+
+### Who may act
+
+- **An admin key of its own.** The Dashboard holds a separate admin key (its own Secret), never the cluster's signing
+  secret: a compromised Dashboard cannot pose as a node or sign a client's resume ticket. Nodes accept admin requests
+  signed with it.
+- **Two scopes.** View (readings, membership, an actor's state) and act (restart, rollback, hot restart, silence,
+  config push). A view token cannot act. Component values are shown to the view scope only where the deployment allows
+  it (they can hold personal data).
+- **Sign-in.** OIDC with a cookie: the Data Protection key ring is shared by every replica (the store, or a mounted
+  key), so a restart or a second replica keeps sessions. Every action carries an antiforgery token, and the cookie is
+  `SameSite=Strict`.
+- **No markup from data.** Log lines, actor keys and component values are data: the page writes them as text, never
+  as markup, and is served with a strict Content Security Policy (`default-src 'self'`, scripts from its own origin
+  only, no inline script, `frame-ancestors 'none'`).
 
 ## What we deliberately do not do
 
@@ -310,4 +409,5 @@ DaServer is a general framework, so every view below names server types, actors 
 - No widgets that look busy without answering a question: no gauges, donut charts, flat sparklines or counters of
   healthy things.
 - No modal dialogs. Find and confirmations open as pages, and Esc goes back.
+- No second approver. An action is one operator's, with a reason, and the audit says whose.
 - No scrolling pages and no sideways scrolling, on phones included.

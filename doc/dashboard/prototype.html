@@ -67,7 +67,11 @@ button:focus:not(:focus-visible){outline:none}
 .folio button:hover{border-color:var(--ink)}
 .nx:hover{color:var(--ink)}
 .nx .ar{margin-left:6px;color:var(--ink-3)}
-.status{grid-column:1 / 3;grid-row:2;align-self:end;margin:0;padding-right:var(--s2);font-style:italic;font-size:15px;line-height:1.45;color:var(--ink-2);min-height:4.4em;display:flex;align-items:flex-end}
+.status{grid-column:1 / 3;grid-row:2;align-self:end;margin:0;padding-right:var(--s2);font-style:italic;font-size:15px;line-height:1.45;color:var(--ink-2);min-height:4.4em;display:flex;flex-direction:column;justify-content:flex-end}
+/* the snapshot line: when the page's readings were taken and how many nodes answered; a message replaces it for a while */
+.snap{color:var(--ink-3)}
+.snap.ind{color:var(--indigo)}
+.status.msg .snap{display:none}
 .page{grid-column:3 / -1;grid-row:1 / 3;display:grid;grid-template-columns:subgrid;grid-template-rows:subgrid;min-width:0;min-height:0}
 .head{grid-column:1 / -1;grid-row:1;align-self:end;min-width:0}
 :root{--h1:clamp(34px,3.3vw,46px)}
@@ -159,6 +163,8 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
 .tbl.dim .td{color:var(--ink-3)}
 .tbl.dim .td.hl{color:var(--ink)}
 .tbl.dim .td.hl.ind,.tbl .td.ind{color:var(--indigo)}
+/* what is wrong is never colour alone: in a table it is also italic */
+.tbl .td.ind,.ms .tr .td.ind{font-style:italic}
 .tbl.gw{grid-template-columns:1fr 2.4fr 1fr 1fr}
 .tbl.lg{grid-template-columns:64px minmax(0,1fr) 96px 80px 72px}
 .tbl.lg .td{font:400 13.5px/1 var(--mono);color:var(--ink-2)}
@@ -206,9 +212,10 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
 .det .uf{flex-wrap:wrap;row-gap:var(--s1)}
 
 /* audit */
-.audit{display:grid;grid-template-columns:92px 140px 210px minmax(0,1fr);border-top:1px solid var(--rule)}
+.audit{display:grid;grid-template-columns:84px 140px 150px minmax(0,1fr) 150px;border-top:1px solid var(--rule)}
 .audit > *{height:var(--row);display:flex;align-items:center;padding-right:20px;border-bottom:1px solid var(--rule);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
-.audit .w{color:var(--ink-3)}
+.audit .w,.audit .oc{color:var(--ink-3)}
+.audit .oc.ind{color:var(--indigo)}
 
 /* find and confirm */
 .qin{width:100%;background:none;border:0;border-bottom:1px solid var(--rule-2);font:400 clamp(22px,1.9vw,28px)/1.3 var(--display);padding:6px 0 10px;outline:none;color:var(--ink)}
@@ -227,6 +234,8 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
 .hit.on .t{font-weight:600}
 .nores{color:var(--ink-3);font-style:italic;margin:0}
 .cf label{color:var(--ink-3);font-size:15px}
+.cf .qin.rs{font:400 17px/1.4 var(--text);padding:6px 0 8px}
+.cf .note{min-height:0}
 .cf label b{color:var(--ink);font-weight:600}
 
 /* motion. Text morph (Magic Move by character): kept characters glide from where they were to where they are,
@@ -246,6 +255,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
 .dist svg{display:block;width:100%;height:56px;overflow:visible;border-bottom:1px solid var(--rule-2)}
 .dist rect{fill:var(--ink-3);transform-box:fill-box;transform-origin:50% 100%}
 .dist rect.hot{fill:var(--indigo)}
+.dist .tick{fill:var(--indigo)}
 .dist .lim{position:absolute;top:0;height:56px;border-left:1px dashed var(--ink-2)}
 .dx{position:absolute;left:0;right:0;bottom:0;height:18px;font-size:13.5px;color:var(--ink-3);font-variant-numeric:tabular-nums}
 .dx span{position:absolute;top:0;transform:translateX(-50%);white-space:nowrap}
@@ -288,7 +298,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   .nextl{flex-direction:row;gap:8px;align-items:baseline;padding-top:0}
   .toc{display:none}
   .nextl{display:flex}
-  .status{position:absolute;left:0;right:0;bottom:44px;min-height:0;font-size:14px;padding:0}
+  .status{position:absolute;left:0;right:0;bottom:52px;min-height:0;font-size:14px;padding:0}
   .eyebrow{margin-bottom:6px;font-size:14.5px}
   h1{white-space:normal;height:2.5em;line-height:1.25;overflow:hidden;text-wrap:balance}
   .body{padding-top:18px;row-gap:var(--s3)}
@@ -337,11 +347,13 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   .h2{font-size:26px}
   .code{font-size:12px;line-height:1.7}
   .audit{grid-template-columns:52px minmax(0,1fr) auto;grid-auto-flow:row dense}
+  .audit .tm{grid-row:span 3!important}
   .audit > *{padding-right:0;height:auto;padding-block:9px}
   .audit .tm{grid-column:1;grid-row:span 2}
   .audit .a{grid-column:2;border-bottom:0;padding-bottom:0}
   .audit .w{grid-column:3;justify-content:flex-end;border-bottom:0;padding-bottom:0}
-  .audit .tg{grid-column:2 / -1;padding-top:2px;color:var(--ink-2);font-size:14.5px}
+  .audit .tg{grid-column:2 / -1;padding-top:2px;padding-bottom:0;border-bottom:0;color:var(--ink-2);font-size:14.5px}
+  .audit .oc{grid-column:2 / -1;padding-top:2px}
   .res{grid-template-columns:minmax(0,1fr)}
   .hit .h{font-size:13px}
   .qin{font-size:24px}
@@ -376,15 +388,15 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   <header class="top"><div class="wrap grid topin">
     <div class="brand"><b>DaServer</b></div>
     
-    <span class="env">mmo, production</span><span class="ex">Example data</span>
+    <span class="env">mmo, production, times in UTC</span><span class="ex">Example data</span>
   </div></header>
   <main class="stage wrap grid" id="stage">
     <aside class="margin" id="margin" aria-label="Position"><div class="folio" id="folio"></div><div class="nextl" id="nextl"></div><nav class="toc" id="toc" aria-label="Contents"></nav></aside>
-    <section class="page" aria-live="polite">
+    <section class="page">
       <div class="head"><p class="eyebrow sc" id="eb" data-m="eb"></p><h1 id="h1" data-m="h1"></h1></div>
       <div class="body" id="body"></div>
     </section>
-    <p class="status" id="status" role="status"><span data-m="status"></span></p>
+    <p class="status" id="status"><span class="snap" id="snap"></span><span data-m="status" role="status"></span></p>
   </main>
   <footer class="foot"><div class="wrap grid footin"><span class="ex">Example data</span><nav class="tabs" id="tabs" aria-label="Sections"></nav><div class="keys" id="keys"></div></div></footer>
 </div>
@@ -399,25 +411,47 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   function M(key, text, cls, tag) { tag = tag || 'span'; return '<' + tag + (cls ? ' class="' + cls + '"' : '') + ' data-m="' + key + '">' + esc(text) + '</' + tag + '>'; }
   var RM = window.matchMedia('(prefers-reduced-motion: reduce)');
   function rnd(n) { var x = Math.sin(n * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); }
-  function ms(v) { return v < 10 ? v.toFixed(1) : String(Math.round(v)); }
+  // ---------- numbers: every reading formatted the same way, at any size ----------
+  // A missing reading is a dash, never NaN or 0. Durations switch to seconds at a second; counts round from
+  // 100 thousand (412 k, 2.41 M, 1.20 G) and stay exact below.
+  function group(n) { return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+  function ms(v) { return v == null || !isFinite(v) ? '—' : v === 0 ? '0' : v < 10 ? v.toFixed(1) : group(Math.round(v)); }
+  function dur(v) { return v == null || !isFinite(v) ? '—' : v >= 1000 ? (v < 10000 ? (v / 1000).toFixed(2) : group(Math.round(v / 100) / 10)) + ' s' : ms(v) + ' ms'; }
+  function count(n) {
+    if (n == null || !isFinite(n)) return '—';
+    return n >= 999995e3 ? (n / 1e9).toFixed(2) + ' G' : n >= 999500 ? (n / 1e6).toFixed(2) + ' M' : n >= 1e5 ? Math.round(n / 1e3) + ' k' : group(Math.round(n));
+  }
+  function hhmm(t) { var d = new Date(t * 1000), h = d.getUTCHours(), m = d.getUTCMinutes(); return h + ':' + (m < 10 ? '0' : '') + m; }
+  function hhmmss(t) { var s = new Date(t * 1000).getUTCSeconds(); return hhmm(t) + ':' + (s < 10 ? '0' : '') + s; }
 
   // ---------- example data: a cluster at scale ----------
   // 10 server types, 630 nodes, 3.3 million actors, 412 thousand clients. The page never lists what grows with the
   // cluster: it shows figures, the distribution of a reading across a type's nodes, the few nodes that stand out,
-  // and Find for anything specific. The server computes the distributions and the outliers (ADR-093).
-  var N = 120, DEPLOY = 79, LIMIT = 25, T0 = Date.UTC(2026, 9, 20, 17, 2) / 1000;
+  // and Find for anything specific. The Dashboard's server computes the distributions and the outliers (ADR-093).
+  // ?alerts=down shows the page with Prometheus unreadable.
+  var Q = /[?&]alerts=down/.test(location.search);
+  // What the Dashboard's server could read this refresh. A source it cannot read is "cannot know", never "fine":
+  // with Prometheus down, no alert firing proves nothing.
+  var SRC = { alerts: Q ? 'down' : 'ok', alertsSince: Date.UTC(2026, 9, 20, 17, 58, 40) / 1000, cadence: 10 };
+  // The snapshot clock: the time the Dashboard's server took this refresh. Every age on the page is measured
+  // against it, never against a node's own clock.
+  var NOW = Date.UTC(2026, 9, 20, 18, 2, 10) / 1000;
+  var N = 120, DEPLOY = 79, T0 = Date.UTC(2026, 9, 20, 17, 2) / 1000;
   var XS = []; for (var xi = 0; xi < N; xi++) XS.push(T0 + xi * 60 * 60 / (N - 1));
-  function clock(i) { var t = 17 * 60 + 2 + Math.round(i * 60 / (N - 1)), h = Math.floor(t / 60), m = t % 60; return h + ':' + (m < 10 ? '0' : '') + m; }
+  function clock(i) { return hhmm(XS[i]); }
   function series(seed, base, amp, now, step) {
     var a = [];
     for (var i = 0; i < N; i++) { var v = base * (1 + amp * Math.sin(i / 9 + seed) + amp * .5 * Math.sin(i / 3.1 + seed * 2) + (rnd(seed * 100 + i) - .5) * amp * .6); if (step && i >= step[0]) v *= step[1] + (rnd(i + seed) - .5) * .08; a.push(v); }
     a[N - 1] = now; return a;
   }
-  function group(n) { return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
-  // counts at scale: 2.41 M, 412 k, 9,412
-  function count(n) { return n >= 1e6 ? (n / 1e6).toFixed(2) + ' M' : n >= 1e5 ? Math.round(n / 1e3) + ' k' : group(n); }
+  // Alert rules, read from Prometheus's rules API. A reading is held to the limit its rule carries in the
+  // daserver.limit annotation; a reading with no rule has no limit line, and the Dashboard sets no threshold of its own.
+  var RULES = SRC.alerts === 'ok' ? { ask: { alert: 'AskLatencyHigh', limit: 25 } } : {};
+  function limit(r) { return RULES[r || 'ask'] ? RULES[r || 'ask'].limit : null; }
+  function over(v, r) { var l = limit(r); return l != null && v != null && v > l; }
   // MapServer and ChatServer run the newest build; the rest are one behind
   var BUILD = '2026.10.20-3', PREV = '2026.10.20-2';
+  function short(b) { return b.slice(8); }
   // [id, name, node prefix, nodes, actor kinds, actors, requests/s, p99 now, usual p99]
   var TYPES = [
     ['gw', 'GatewayServer', 'gate', 24, 'Connection', 412318, '1.9 M', 3.1, 3.0],
@@ -431,109 +465,183 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     ['auction', 'AuctionServer', 'auction', 6, 'Market', 64, '8.4 k', 7.2, 7.0],
     ['rank', 'RankServer', 'rank', 4, 'Leaderboard', 220, '3.3 k', 3.3, 3.4]
   ].map(function (r, k) {
-    var t = { id: r[0], name: r[1], pre: r[2], n: r[3], actors: r[4], count: r[5], rps: r[6], now: r[7], usual: r[8], build: r[0] === 'map' || r[0] === 'chat' ? BUILD : PREV, nodes: [] };
-    var bad = t.now > LIMIT;
+    var t = { id: r[0], name: r[1], pre: r[2], n: r[3], actors: r[4], count: r[5], rps: r[6], now: r[7], usual: r[8], nodes: [] };
+    var bad = t.now > 2 * t.usual, build = r[0] === 'map' || r[0] === 'chat' ? BUILD : PREV;
     for (var i = 0; i < t.n; i++) {
       var u = rnd(k * 1000 + i), v = rnd(k * 1000 + i + 500);
-      // a bad build moves every node; a healthy type spreads a little around its usual value
-      var p = bad ? 34 + 15 * Math.pow(u, 1.4) : t.usual * (.86 + .3 * u);
-      t.nodes.push({ n: t.pre + '-' + i, p99: p, cpu: Math.round((bad ? 52 : 30) + 18 * v), mem: (bad ? 4.6 : 2.4) + 1.1 * u, st: 'ok', txt: 'Running' });
+      // a bad build moves every node; a healthy type spreads a little around its usual value. age: seconds since
+      // the node's reading, by the snapshot clock; inc: the node's incarnation, which an action on it must match
+      t.nodes.push({ n: t.pre + '-' + i, p99: bad ? 34 + 15 * Math.pow(u, 1.4) : t.usual * (.86 + .3 * u), rq: Math.round(1000 + 900 * v), cpu: Math.round((bad ? 52 : 30) + 18 * v), st: 'ok', txt: 'Running', age: 1 + Math.floor(v * 8), inc: 3 + Math.floor(u * 4), build: build });
     }
     return t;
   });
   function T(id) { for (var i = 0; i < TYPES.length; i++) if (TYPES[i].id === id) return TYPES[i]; }
-  function node(name) { var t = null; TYPES.forEach(function (x) { if (name.indexOf(x.pre + '-') === 0) t = x; }); return t && t.nodes[+name.slice(t.pre.length + 1)]; }
+  function typeOf(name) { var t = null; TYPES.forEach(function (x) { if (name.indexOf(x.pre + '-') === 0) t = x; }); return t; }
+  function node(name) { var t = typeOf(name); return t && t.nodes[+name.slice(t.pre.length + 1)]; }
   function setNode(name, o) { var n = node(name); for (var k in o) n[k] = o[k]; }
   setNode('map-33', { p99: 61, cpu: 88 }); setNode('map-388', { p99: 58, cpu: 86 }); setNode('map-120', { p99: 57, cpu: 84 });
   setNode('map-217', { p99: 39, cpu: 31, st: 'busy', txt: 'Leaving, 35 of 64 moved' });
-  setNode('game-87', { p99: 19.4, cpu: 93, mem: 6.1 }); setNode('gate-23', { p99: 2.4, cpu: 9, st: 'busy', txt: 'Joining, filling up' });
+  // nodes the poll could not read: one does not answer, one is isolated from the store (it fails readiness, answers
+  // probes as isolated and exits with 75 at its bound), one answered with a reading older than two cadences
+  setNode('map-301', { p99: null, st: 'silent', txt: 'Not answering', age: 41 });
+  setNode('game-12', { p99: null, st: 'isolated', txt: 'Isolated, exits by 18:04', age: 4 });
+  setNode('chat-9', { st: 'stale', txt: 'Stale reading', age: 34 });
+  // a node with no requests reads the best p99 of its type: the outlier rule looks both ways, and at requests
+  setNode('guild-4', { rq: 0, p99: 0.9 });
+  setNode('game-87', { p99: 19.4, cpu: 93 }); setNode('gate-23', { p99: 2.4, cpu: 9, st: 'busy', txt: 'Joining, filling up' });
   setNode('chat-5', { p99: 6.9, cpu: 71 });
-  TYPES.forEach(function (t) {
-    t.p = series(t.n + t.usual, t.usual, .06, t.now, t.now > LIMIT ? [DEPLOY, t.now / t.usual * .97] : null);
-    var v = t.nodes.map(function (n) { return n.p99; }).sort(function (a, b) { return a - b; });
-    t.med = v[v.length >> 1];
-    var dev = t.nodes.map(function (n) { return Math.abs(n.p99 - t.med); }).sort(function (a, b) { return a - b; });
-    t.mad = Math.max(dev[dev.length >> 1], t.med * .02);
-  });
-  // The nodes that stand out, worst first: a state other than running, then readings far from the type's median
-  // (more than 4 median absolute deviations). The rest are summarised, never listed.
+  // A reading counts only when it is fresh: answered within two cadences, by a node that is not silent or isolated
+  function fresh(n) { return n.p99 != null && n.age <= 2 * SRC.cadence && n.st !== 'silent' && n.st !== 'isolated' && n.st !== 'stale'; }
+  function answered(t) { return t.nodes.filter(fresh); }
+  // The builds a type's nodes run, as reported in membership, most nodes first
+  function builds(t) {
+    var m = {}, a = [];
+    t.nodes.forEach(function (n) { if (!m[n.build]) a.push(m[n.build] = { b: n.build, n: 0 }); m[n.build].n++; });
+    return a.sort(function (x, y) { return y.n - x.n; });
+  }
+  // The median and the median absolute deviation of each build's fresh readings: a type halfway through a rollout
+  // has two distributions, and a node is compared with the nodes on its own build. The deviation has a floor of 2%
+  // of the median, so a type whose nodes all read alike does not flag noise.
+  function stats(t) {
+    var by = {};
+    builds(t).forEach(function (g) {
+      var v = t.nodes.filter(function (n) { return n.build === g.b && fresh(n); }).map(function (n) { return n.p99; }).sort(function (a, b) { return a - b; });
+      if (!v.length) return;
+      var med = v[v.length >> 1], dev = v.map(function (x) { return Math.abs(x - med); }).sort(function (a, b) { return a - b; });
+      by[g.b] = { med: med, mad: Math.max(dev[dev.length >> 1], med * .02) };
+    });
+    t.by = by;
+  }
+  TYPES.forEach(function (t) { t.p = series(t.n + t.usual, t.usual, .06, t.now, t.now > 2 * t.usual ? [DEPLOY, t.now / t.usual * .97] : null); stats(t); });
+  function far(t, n) { var s = fresh(n) && t.by[n.build]; return !!s && Math.abs(n.p99 - s.med) > 4 * s.mad; }
+  // What a node is doing, in words: its state, or no requests while its type has them
+  function state(n) { return n.st === 'ok' && n.rq === 0 ? 'No requests' : n.st === 'silent' ? 'Not answering, ' + n.age + ' s' : n.st === 'stale' ? 'Stale, read ' + n.age + ' s ago' : n.txt; }
+  function standsOut(t, n) { return n.st !== 'ok' || n.rq === 0 || far(t, n); }
+  // The nodes that stand out, worst first: no reading (not answering, isolated, stale), another state, no requests,
+  // then readings more than four median absolute deviations from their build's median, either way.
   function outliers(t) {
-    var o = t.nodes.filter(function (n) { return n.st !== 'ok' || n.p99 - t.med > 4 * t.mad; });
-    o.sort(function (a, b) { return (a.st === 'ok') - (b.st === 'ok') || b.p99 - a.p99; });
+    var rank = function (n) { return !fresh(n) ? 0 : n.st !== 'ok' ? 1 : n.rq === 0 ? 2 : 3; };
+    var o = t.nodes.filter(function (n) { return standsOut(t, n); });
+    o.sort(function (a, b) { return rank(a) - rank(b) || (b.p99 - (t.by[b.build] || {}).med) - (a.p99 - (t.by[a.build] || {}).med); });
     return o;
   }
+  // The line on the nodes not shown: their count and range, and how many more stand out if Find put a node in a row
   function others(t, shown) {
-    var rest = t.nodes.filter(function (n) { return shown.indexOf(n) < 0; }), lo = Infinity, hi = 0;
+    var rest = answered(t).filter(function (n) { return shown.indexOf(n) < 0; }), lo = Infinity, hi = -Infinity;
     rest.forEach(function (n) { lo = Math.min(lo, n.p99); hi = Math.max(hi, n.p99); });
-    var bad = t.now > LIMIT;
-    var who = shown.length ? group(rest.length) + (rest.length === 1 ? ' other node' : ' other nodes') : 'All ' + group(rest.length) + ' nodes';
-    return who + (bad ? ' between ' + ms(lo) + ' and ' + ms(hi) + ' ms, all over the limit' : ' within their usual range');
+    var hidden = outliers(t).filter(function (n) { return shown.indexOf(n) < 0; }).length;
+    var who = shown.length ? group(rest.length) + (rest.length === 1 ? ' other node' : ' other nodes') : 'All ' + group(rest.length) + ' nodes that answered';
+    if (!rest.length) return hidden ? group(hidden) + ' more stand out' : '';
+    var where = over(lo) ? ' between ' + ms(lo) + ' and ' + dur(hi) + ', all over the limit' : !hidden && !over(hi) ? ' within their usual range' : ' between ' + ms(lo) + ' and ' + dur(hi);
+    return who + where + (hidden ? '; ' + group(hidden) + ' more stand' + (hidden === 1 ? 's' : '') + ' out' : '');
   }
-  function unhealthy(t) { return t.now > LIMIT; }
   var ALLNODES = TYPES.reduce(function (s, t) { return s + t.n; }, 0), ALLACTORS = TYPES.reduce(function (s, t) { return s + t.count; }, 0);
+  function answering() { return TYPES.reduce(function (s, t) { return s + answered(t).length; }, 0); }
   var MAP = T('map');
+  // Firing alerts, from Alertmanager: one per rule and node. An incident is the alerts of one rule on one server type;
+  // incidents rank by severity, then by how many nodes they cover. A silenced incident stays listed, last.
+  var ALERTS = [];
+  if (SRC.alerts === 'ok') {
+    MAP.nodes.forEach(function (n) { if (fresh(n) && over(n.p99)) ALERTS.push({ alert: 'AskLatencyHigh', service: 'MapServer', node: n.n, severity: 'page', since: Date.UTC(2026, 9, 20, 17, 43) / 1000 }); });
+    ['game-87', 'game-40'].forEach(function (n) { ALERTS.push({ alert: 'GcPauses', service: 'PlayerServer', node: n, severity: 'ticket', since: Date.UTC(2026, 9, 20, 17, 51) / 1000 }); });
+  }
+  var SILENCES = {};
+  function incidents() {
+    var g = {}, a = [];
+    ALERTS.forEach(function (x) { var k = x.alert + ' ' + x.service; if (!g[k]) a.push(g[k] = { key: k, alert: x.alert, service: x.service, severity: x.severity, since: x.since, nodes: 0 }); g[k].nodes++; });
+    a.forEach(function (i) { i.silenced = SILENCES[i.key]; });
+    return a.sort(function (p, q) { return !!p.silenced - !!q.silenced || (p.severity === q.severity ? 0 : p.severity === 'page' ? -1 : 1) || q.nodes - p.nodes; });
+  }
+  // A server type is unhealthy when an alert fires for it: the Dashboard has no threshold of its own
+  function unhealthy(t) { return ALERTS.some(function (x) { return x.service === t.name; }); }
+  // Changes: what membership shows (builds, joins, leaves, incarnations), the Dashboard's own actions, and what the
+  // deploy pipeline reports. With no Kubernetes API the Dashboard cannot name an autoscaler; it says what it saw.
   var CHANGES = [
-    { id: 'c6', time: '17:58', kind: 'Hot restart', target: 'game-87', detail: 'Same build, ' + PREV, by: 'On-call operator', result: 'Done, paused 0.4 s', note: '' },
-    { id: 'c5', time: '17:42', kind: 'Rollout', target: 'MapServer', detail: 'Build ' + BUILD, by: 'Release pipeline', result: '400 of 400 nodes, one at a time', note: 'MapServer ask p99 rose from 12 ms to 43 ms on every node after this rollout.', bad: true },
-    { id: 'c4', time: '17:40', kind: 'Scale-in', target: 'map-217', detail: 'Leaving', by: 'Autoscaler', result: '35 of 64 moved', note: '' },
-    { id: 'c3', time: '17:31', kind: 'Scale-out', target: 'GatewayServer', detail: '23 to 24 nodes', by: 'Autoscaler', result: 'gate-23 filling up', note: '' },
-    { id: 'c2', time: '17:20', kind: 'Config table', target: 'SkillTable', detail: 'Version 15', by: 'On-call operator', result: group(ALLNODES) + ' of ' + group(ALLNODES) + ' nodes accepted', note: '' },
-    { id: 'c1', time: '17:07', kind: 'Rollout', target: 'ChatServer', detail: 'Build ' + BUILD, by: 'Release pipeline', result: '16 of 16 nodes', note: '' }
+    { id: 'c6', t: Date.UTC(2026, 9, 20, 17, 58) / 1000, kind: 'Restart', target: 'game-87', detail: 'Same build, ' + PREV + '; incarnation 4 to 5', by: 'On-call operator, action 7f2c', result: 'Done, paused 0.4 s', note: '' },
+    { id: 'c5', t: Date.UTC(2026, 9, 20, 17, 42) / 1000, kind: 'Rollout', target: 'MapServer', detail: 'Build ' + BUILD, by: 'Release pipeline', result: '400 of 400 nodes, one at a time', note: 'MapServer ask p99 rose from 12 ms to 43 ms on every node after this rollout.', bad: true },
+    { id: 'c4', t: Date.UTC(2026, 9, 20, 17, 40) / 1000, kind: 'Leaving', target: 'map-217', detail: 'Handing its actors over', by: 'Seen in membership', result: '35 of 64 moved', note: '' },
+    { id: 'c3', t: Date.UTC(2026, 9, 20, 17, 31) / 1000, kind: 'Joined', target: 'gate-23', detail: 'GatewayServer, 23 to 24 nodes', by: 'Seen in membership', result: 'Filling up', note: '' },
+    { id: 'c2', t: Date.UTC(2026, 9, 20, 17, 20) / 1000, kind: 'Config table', target: 'SkillTable', detail: 'Version 15', by: 'On-call operator, action 7f2b', result: 'Committed on ' + group(ALLNODES) + ' nodes', note: '' },
+    { id: 'c1', t: Date.UTC(2026, 9, 20, 17, 7) / 1000, kind: 'Rollout', target: 'ChatServer', detail: 'Build ' + BUILD, by: 'Release pipeline', result: '16 of 16 nodes', note: '' }
   ];
-  // The slowest actors across the cluster, by handler p99: the top of a ranking each node keeps, merged.
+  // The slowest actors across the cluster, by handler p99: the top of a ranking each node keeps, merged on the
+  // Dashboard's server; an actor needs 100 calls in the window to rank, and one seen on two nodes mid-handoff counts once.
   var KINDS = { Map: 'map', Region: 'map', Player: 'pl', Inventory: 'pl', Connection: 'gw', Account: 'login', Channel: 'chat', Queue: 'match', Match: 'match', Guild: 'guild', Mailbox: 'mail', Market: 'auction', Leaderboard: 'rank' };
+  // The key type each actor type registers: an id is parsed by it, so Map(abc) is no Map
+  var KEYS = { Map: 'int', Region: 'int', Player: 'long', Inventory: 'long', Connection: 'long', Account: 'string', Channel: 'string', Queue: 'string', Match: 'long', Guild: 'long', Mailbox: 'long', Market: 'string', Leaderboard: 'string' };
   var ACTORS = [
-    { id: 'Map(7)', type: 'Map', node: 'map-33', p99: 58, rps: '18.4 k/s', mailbox: '1,762 of 2,000', full: true, saved: '14 s ago',
+    { id: 'Map(7)', type: 'Map', node: 'map-33', p99: 58, rps: '18.4 k/s', mailbox: '1,762 of 2,000', full: true, saved: 14,
       comps: ['Map    { Id: 7 }', 'Grid   { CellSize: 16, Width: 512, Height: 512 }', 'NetIds { Next: 48211 }'],
       logs: [['17:58:02', 'warn', 'tick 29.8 ms of 33.3 ms'], ['17:57:31', 'info', 'checkpoint, 1 statement'], ['17:42:15', 'info', 'activated on map-33 (rolling upgrade)']] },
-    { id: 'Map(1204)', type: 'Map', node: 'map-388', p99: 56, rps: '16.1 k/s', mailbox: '1,410 of 2,000', saved: '9 s ago',
+    { id: 'Map(1204)', type: 'Map', node: 'map-388', p99: 56, rps: '16.1 k/s', mailbox: '1,410 of 2,000', saved: 9,
       comps: ['Map    { Id: 1204 }', 'Grid   { CellSize: 16, Width: 512, Height: 512 }'], logs: [['17:58:00', 'warn', 'tick 28.9 ms of 33.3 ms']] },
-    { id: 'Region(88)', type: 'Region', node: 'map-120', p99: 49, rps: '7.2 k/s', mailbox: '402 of 2,000', saved: '3 s ago',
+    { id: 'Region(88)', type: 'Region', node: 'map-120', p99: 49, rps: '7.2 k/s', mailbox: '402 of 2,000', saved: 3,
       comps: ['Region { Id: 88, Maps: 4 }'], logs: [['17:57:12', 'warn', 'ask to Map(352) took 46 ms']] },
-    { id: 'Map(12)', type: 'Map', node: 'map-0', p99: 41, rps: '9.1 k/s', mailbox: '311 of 2,000', saved: '22 s ago',
+    { id: 'Map(12)', type: 'Map', node: 'map-0', p99: 41, rps: '9.1 k/s', mailbox: '311 of 2,000', saved: 22,
       comps: ['Map    { Id: 12 }'], logs: [['17:43:01', 'info', 'activated on map-0 (rolling upgrade)']] },
-    { id: 'Queue(eu-ranked)', type: 'Queue', node: 'match-4', p99: 22, rps: '2.4 k/s', mailbox: '96 of 2,000', saved: 'Not saved',
+    { id: 'Queue(eu-ranked)', type: 'Queue', node: 'match-4', p99: 22, rps: '2.4 k/s', mailbox: '96 of 2,000', saved: null,
       comps: ['Queue { Region: eu, Mode: ranked, Waiting: 1,904 }'], logs: [['17:58:09', 'info', 'formed 12 matches']] },
-    { id: 'Player(482913)', type: 'Player', node: 'game-87', p99: 19, rps: '44/s', mailbox: '2 of 2,000', saved: '2 s ago',
+    { id: 'Player(482913)', type: 'Player', node: 'game-87', p99: 19, rps: '44/s', mailbox: '2 of 2,000', saved: 2,
       comps: ['Player    { Id: 482913 }', 'Inventory { Slots: 18 of 40 }'], logs: [['17:58:10', 'info', 'GrantItem 2207 answered']] }
   ];
   var TOP = ACTORS.length;
-  // An actor looked up by id: asked of the one node that owns it, found through placement.
-  function lookup(id) {
-    var m = /^([A-Za-z]+)\(([\w-]+)\)$/.exec(id.trim()); if (!m) return null;
-    var kind = m[1][0].toUpperCase() + m[1].slice(1).toLowerCase(), t = T(KINDS[kind]); if (!t) return null;
-    var nm = kind + '(' + m[2] + ')';
-    for (var i = 0; i < ACTORS.length; i++) if (ACTORS[i].id.toLowerCase() === nm.toLowerCase()) return ACTORS[i];
-    var h = 0; for (var c = 0; c < nm.length; c++) h = (h * 31 + nm.charCodeAt(c)) >>> 0;
-    var n = t.nodes[h % t.n];
-    return { id: nm, type: kind, node: n.n, p99: Math.round(t.usual * 10) / 10, rps: (h % 90 + 4) + '/s', mailbox: (h % 5) + ' of 2,000', saved: (h % 40 + 1) + ' s ago', found: true,
-      comps: [kind + ' { Id: ' + m[2] + ' }'], logs: [['17:5' + (h % 9) + ':' + (10 + h % 49), 'info', 'answered ' + (h % 300 + 20) + ' requests in the last minute']] };
+  // An actor looked up by id: its key parsed by its type's registered key type, then asked of the one node that owns
+  // it through placement. A lookup never activates an actor: one that is not loaded says so.
+  function parseId(id) {
+    var m = /^([A-Za-z]+)\((.{1,64})\)$/.exec(id.trim()); if (!m) return null;
+    var kind = m[1][0].toUpperCase() + m[1].slice(1).toLowerCase(), k = KEYS[kind]; if (!k) return null;
+    if ((k === 'int' || k === 'long') && !/^\d{1,19}$/.test(m[2])) return null;
+    return { kind: kind, key: m[2], id: kind + '(' + m[2] + ')' };
   }
-  var AUDIT = [['17:58', 'On-call operator', 'Hot restart', 'game-87 on ' + PREV], ['17:20', 'On-call operator', 'Upload config table', 'SkillTable version 15'], ['17:07', 'Release pipeline', 'Rollout', 'ChatServer to ' + BUILD]];
+  function lookup(id) {
+    var p = parseId(id); if (!p) return null;
+    for (var i = 0; i < ACTORS.length; i++) if (ACTORS[i].id.toLowerCase() === p.id.toLowerCase()) return ACTORS[i];
+    var t = T(KINDS[p.kind]), h = 0; for (var c = 0; c < p.id.length; c++) h = (h * 31 + p.id.charCodeAt(c)) >>> 0;
+    var n = t.nodes[h % t.n];
+    if (h % 3 === 0) return { id: p.id, type: p.kind, node: n.n, notLoaded: true };
+    return { id: p.id, type: p.kind, node: n.n, p99: Math.round(t.usual * 10) / 10, rps: (h % 90 + 4) + '/s', mailbox: (h % 5) + ' of 2,000', saved: h % 40 + 1, found: true,
+      comps: [p.kind + ' { Id: ' + p.key + ' }'], logs: [['17:5' + (h % 9) + ':' + (10 + h % 49), 'info', 'answered ' + (h % 300 + 20) + ' requests in the last minute']] };
+  }
+  // The audit, read from its durable sink (the store's daserver_audit table, or the append-only file): every action
+  // twice, its intent before the call and its outcome after, linked by the action id. [time, who, action, target, outcome, id]
+  var AUDIT = [
+    [Date.UTC(2026, 9, 20, 17, 58, 4) / 1000, 'On-call operator', 'Restart', 'game-87, incarnation 4', 'Done', '7f2c'],
+    [Date.UTC(2026, 9, 20, 17, 20, 11) / 1000, 'On-call operator', 'Upload config table', 'SkillTable version 15', 'Committed', '7f2b'],
+    [Date.UTC(2026, 9, 20, 17, 7, 2) / 1000, 'Release pipeline', 'Rollout', 'ChatServer to ' + BUILD, 'Done', '7f2a']
+  ];
   var STORE = { p99: '4.2 ms', usual: '4.0 ms', inflight: '1,840', cap: 'of 5,040 allowed', unsaved: '18,204', oldest: '9 s',
     byType: [['Map', 'MapServer', '9,410', '9 s'], ['Player', 'PlayerServer', '6,102', '7 s'], ['Guild', 'GuildServer', '1,880', '5 s'], ['Mailbox', 'MailServer', '812', '4 s']] };
-  // clients per gateway; gate-23 joined a quarter of an hour ago and is filling up
-  var GW = T('gw'); GW.nodes.forEach(function (n, i) { n.clients = Math.round(17400 + 900 * (rnd(i + 77) - .5)); n.moving = 0; });
-  setNode('gate-23', { clients: 4210, moving: 312 }); setNode('gate-3', { clients: 19980 });
+  // clients per gateway; gate-23 joined half an hour ago and is filling up
+  var GW = T('gw'); GW.nodes.forEach(function (n, i) { n.clients = Math.round(17400 + 900 * (rnd(i + 77) - .5)); });
+  setNode('gate-23', { clients: 4210 }); setNode('gate-3', { clients: 19980 });
   var CLIENTS = { total: GW.nodes.reduce(function (s, n) { return s + n.clients; }, 0), resumed: 21977, refused: 0 };
+  // Actions run on the Dashboard's server and outlive the browser; the page shows what the server and the nodes
+  // report. One action at a time per server type; each has an id and an idempotency key.
+  var ACTIONS = [], ASEQ = 0x7f31;
+  function running(tid) { for (var i = 0; i < ACTIONS.length; i++) { var a = ACTIONS[i]; if (a.type === tid && (a.state === 'Requested' || a.state === 'Accepted')) return a; } return null; }
   var TABS = ['Incident', 'Cluster', 'Changes', 'Actors', 'Audit'];
 
-  var S = { i: 0, back: [], compact: false, mode: null, layout: null, rolling: false, acked: false, hl: null, status: '', found: null, last: {} };
+  var S = { i: 0, back: [], compact: false, mode: null, layout: null, hl: null, status: '', found: null, last: {} };
   var steps = [];
 
   // ---------- the step sequence ----------
   // A section holds a few screens. A list screen (server types, changes, actors) is master and detail on one page:
   // each of its rows is a step, so ↑↓ and the wheel move the selection and the detail morphs; past the last row
   // the next screen follows. Every step knows its screen (scr), and the contents in the margin list screens.
+  // Unhealthy first, then by size. The order is taken when the steps are built, on navigation, never on a refresh:
+  // a row the operator reads as 3 stays 3 until they move.
   function ordered() { return TYPES.slice().sort(function (a, b) { return unhealthy(b) - unhealthy(a) || b.n - a.n; }); }
   function buildSteps() {
     tabH = {}; FIT = {};
     var c = S.split, st = [];
     // o: eb, h1, body, and for a row of a list screen md (the noun its rows are counted in) and det (its detail alone)
     function add(tab, scr, slabel, key, layout, label, o) { o.tab = tab; o.scr = scr; o.slabel = slabel; o.key = key; o.layout = layout; o.label = label; st.push(o); }
-    add(0, 'sum', 'Summary', 'sum', 'inc-sum', 'Summary', { eb: function () { return S.rolling ? 'Rolling back, started just now' : 'In progress since 17:42'; }, h1: 'MapServer asks are slow', body: incSum });
+    // Prometheus unreadable: the section says it cannot know, and keeps the checks that need no threshold
+    if (SRC.alerts !== 'ok') add(0, 'sum', 'Summary', 'sum', 'inc-down', 'Summary', { bad: true, eb: function () { return 'Prometheus has not answered since ' + hhmmss(SRC.alertsSince); }, h1: 'Alerts cannot be read', body: incDown });
+    else add(0, 'sum', 'Summary', 'sum', 'inc-sum', 'Summary', { bad: true, eb: incEb, h1: 'MapServer asks are slow', body: incSum });
     var evb = function () { return 'MapServer against the other nine types, since the rollout'; };
-    if (!c) add(0, 'ev', 'Evidence', 'ev', 'inc-ev', 'Evidence', { eb: evb, h1: 'The evidence', body: incEv, after: drawMain });
+    if (SRC.alerts !== 'ok') ;
+    else if (!c) add(0, 'ev', 'Evidence', 'ev', 'inc-ev', 'Evidence', { eb: evb, h1: 'The evidence', body: incEv, after: drawMain });
     else {
       add(0, 'chart', 'The last hour', 'chart', 'inc-chart', 'The last hour', { eb: function () { return 'Ask latency p99, MapServer against the other nine types'; }, h1: 'The last hour', body: incChart, after: drawMain });
       add(0, 'logs', 'MapServer logs', 'logs', 'inc-logs', 'MapServer logs', { eb: function () { return 'Warnings since the rollout, grouped by pattern'; }, h1: 'What MapServer logs', body: incLogs });
@@ -542,7 +650,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     o.forEach(function (t) {
       var me = st.length;
       add(1, 'types', 'Server types', t.id, 'types', t.name, { md: 'server types', bad: unhealthy(t), kw: 'nodes cluster',
-        eb: function () { return group(ALLNODES) + ' nodes in ' + TYPES.length + ' server types, every view agrees'; }, h1: 'Server types',
+        eb: function () { return group(ALLNODES) + ' members in ' + TYPES.length + ' server types; every view agrees'; }, h1: 'Server types',
         body: function () { return mdBody(me, typesMaster, function (l) { return typeDet(t, l); }, NROWS + 1); }, det: function () { return fitted('det' + t.id, function (l) { return typeDet(t, l, true); }, NROWS + 1); }, deb: function () { return group(t.n) + ' nodes, ' + count(t.count) + ' actors, ' + t.rps + ' requests/s'; } });
     });
     if (!c) add(1, 'plat', 'Platform', 'plat', 'plat', 'Platform', { kw: 'store clients connections postgresql gateways', eb: function () { return 'What every node writes to, and what every client connects through'; }, h1: 'Platform', body: function () { return fitted('plat', platform, 3); } });
@@ -553,12 +661,12 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     CHANGES.forEach(function (ch, ci) {
       var me = st.length;
       add(2, 'changes', 'Changes', ch.id, 'changes', ch.kind + ' ' + ch.target, { md: 'changes', bad: ch.bad, eb: function () { return 'The last hour, newest first'; }, h1: 'Changes',
-        body: function () { return mdBody(me, changesMaster, function () { return changeDet(ci); }, 0); }, det: function () { return changeDet(ci, true); }, deb: function () { return ch.time + ', ' + ch.by; } });
+        body: function () { return mdBody(me, changesMaster, function () { return changeDet(ci); }, 0); }, det: function () { return changeDet(ci, true); }, deb: function () { return hhmm(ch.t) + ', ' + ch.by; } });
     });
     var list = ACTORS.slice(0, TOP).concat(S.found ? [S.found] : []);
     list.forEach(function (a) {
       var me = st.length;
-      add(3, 'actors', 'Actors', a.id, 'actors', a.id, { md: 'actors', bad: a.p99 > LIMIT, eb: function () { return count(ALLACTORS) + ' actors loaded; the slowest, and any you looked up'; }, h1: 'Slowest actors',
+      add(3, 'actors', 'Actors', a.id, 'actors', a.id, { md: 'actors', bad: over(a.p99), eb: function () { return count(ALLACTORS) + ' actors loaded; the slowest, and any you looked up'; }, h1: 'Slowest actors',
         body: function () { return mdBody(me, actorsMaster, function (l) { return actorDet(a, l); }, 3); }, det: function () { return fitted('det' + a.id, function (l) { return actorDet(a, l, true); }, 3); }, deb: function () { return a.found ? 'Looked up on ' + a.node + ', its owner' : a.type + ' on ' + a.node; } });
     });
     var per = S.compact ? 6 : 9, pages = Math.max(1, Math.ceil(AUDIT.length / per));
@@ -602,64 +710,107 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   // 80 bins of thin bars in ink; bins past the limit (or holding an outlier) in the accent. Each bar is a full
   // height rect scaled from its foot, so moving between server types animates the shape instead of swapping it.
   var BINS = 80;
-  function niceMax(v) { var s = [5, 10, 20, 25, 40, 50, 60, 80, 100, 150, 200, 250, 400, 500, 1000, 2000, 5000, 10000, 20000, 25000, 50000]; for (var i = 0; i < s.length; i++) if (s[i] >= v) return s[i]; return v; }
+  // the top of a scale: the next of 1, 1.5, 2, 2.5, 3, 4, 5, 6, 8 times a power of ten
+  function niceMax(v) { if (!(v > 0)) return 1; var p = Math.pow(10, Math.floor(Math.log10(v))), s = [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10]; for (var i = 0; i < s.length; i++) if (s[i] * p >= v) return s[i] * p; return 10 * p; }
   function dist(key, vals, o) {
-    var lo = o.lo || 0, hi = o.hi, bins = new Array(BINS).fill(0), mark = new Array(BINS).fill(false), top = 0;
-    vals.forEach(function (v, i) { var b = Math.max(0, Math.min(BINS - 1, Math.floor((v - lo) / (hi - lo) * BINS))); bins[b]++; if (o.hot && o.hot(v, i)) mark[b] = true; });
+    var lo = o.lo || 0, hi = o.hi > lo ? o.hi : lo + 1, bins = new Array(BINS).fill(0), mark = new Array(BINS).fill(false), top = 0;
+    vals.forEach(function (v, i) { if (v == null || !isFinite(v)) return; var b = Math.max(0, Math.min(BINS - 1, Math.floor((v - lo) / (hi - lo) * BINS))); bins[b]++; if (o.hot && o.hot(v, i)) mark[b] = true; });
     bins.forEach(function (n) { top = Math.max(top, n); });
     var bars = bins.map(function (n, b) {
       var f = n ? Math.max(.12, n / top) : 0;
       return '<rect x="' + (b + .15) + '" y="0" width=".7" height="1" style="transform:scaleY(' + f.toFixed(3) + ')"' + (mark[b] ? ' class="hot"' : '') + '/>';
     }).join('');
+    // a bin holding something wrong is also marked beneath the axis, so the accent is never colour alone
+    var ticks = mark.map(function (m, b) { return m ? '<rect class="tick" x="' + (b + .15) + '" y="1.08" width=".7" height=".06"/>' : ''; }).join('');
     var lim = o.limit != null ? (o.limit - lo) / (hi - lo) * 100 : null;
-    var ticks = [[lo, 0]].concat(lim != null ? [[o.limit, lim]] : []).concat([[hi, 100]]);
-    return '<div class="dist" data-dist="' + key + '"><svg viewBox="0 0 ' + BINS + ' 1" preserveAspectRatio="none" aria-hidden="true">' + bars + '</svg>' +
+    var ax = [[lo, 0]].concat(lim != null ? [[o.limit, lim]] : []).concat([[hi, 100]]);
+    // a scale label too close to the next is left out: zero gives way to the limit, the limit to the top
+    if (lim != null && lim < 22) ax.shift(); else if (lim != null && lim > 78) ax.pop();
+    return '<div class="dist" data-dist="' + key + '"><svg viewBox="0 0 ' + BINS + ' 1" preserveAspectRatio="none" aria-hidden="true">' + bars + ticks + '</svg>' +
       (lim != null ? '<span class="lim" style="left:' + lim + '%"></span>' : '') +
-      '<div class="dx">' + ticks.map(function (t, k) { return '<span data-m="' + key + '-x' + k + '" style="left:' + t[1] + '%"' + (k === ticks.length - 1 ? ' class="end"' : k === 0 ? ' class="start"' : '') + '>' + o.label(t[0], k) + '</span>'; }).join('') + '</div></div>';
+      '<div class="dx">' + ax.map(function (t, k) { return '<span data-m="' + key + '-x' + k + '" style="left:' + t[1] + '%"' + (k === ax.length - 1 ? ' class="end"' : k === 0 ? ' class="start"' : '') + '>' + esc(o.label(t[0], k)) + '</span>'; }).join('') + '</div></div>';
   }
   // the previous heights of each distribution, to animate from
   var distWas = {};
   function distMorph() {
     qa('.dist').forEach(function (d) {
-      var k = d.dataset.dist, rs = qa('rect', d), now = rs.map(function (r) { return r.style.transform; }), was = distWas[k];
+      var k = d.dataset.dist, rs = qa('rect:not(.tick)', d), now = rs.map(function (r) { return r.style.transform; }), was = distWas[k];
       if (was && !RM.matches) rs.forEach(function (r, i) { if (was[i] !== now[i]) r.animate([{ transform: was[i] }, { transform: now[i] }], { duration: DUR, easing: EASE }); });
       distWas[k] = now;
     });
   }
+  // Only fresh readings enter a distribution; a node with none is a row in the table instead (not answering,
+  // isolated, stale). The limit line is the alert rule's, and there is none without a rule.
   function p99Dist(t, key) {
-    var hi = niceMax(Math.max(LIMIT, t.nodes.reduce(function (m, n) { return Math.max(m, n.p99); }, 0)) * 1.08);
-    return dist(key || 'p99', t.nodes.map(function (n) { return n.p99; }), { hi: hi, limit: LIMIT, hot: function (v) { return v > LIMIT || v - t.med > 4 * t.mad; }, label: function (v, k) { return k === 1 ? 'limit ' + v + ' ms' : v + ' ms'; } });
+    var v = answered(t), hi = niceMax(Math.max(limit() || 0, v.reduce(function (m, n) { return Math.max(m, n.p99); }, 0)) * 1.08);
+    return dist(key || 'p99', v.map(function (n) { return n.p99; }), { hi: hi, limit: limit(), hot: function (x, i) { return over(x) || far(t, v[i]); }, label: function (x) { return x === limit() ? 'limit ' + dur(x) : dur(x); } });
   }
   // A small multiple for the master list: every type on one scale from 0 to 64 ms, the limit dashed, so the rows
   // compare at a glance; a type's bars are scaled to its own fullest bin. The scale is a square root, so the healthy
-  // types (2 to 9 ms) spread over a third of the strip instead of crowding its first bins.
+  // types (2 to 9 ms) spread over a third of the strip instead of crowding its first bins. The last bin holds
+  // everything from 64 ms on: the row's p99 column says how far.
   var SB = 32, SMAX = 64;
   function sx(v) { return Math.sqrt(Math.min(v, SMAX) / SMAX) * SB; }
   function strip(t) {
     var b = new Array(SB).fill(0), hot = new Array(SB).fill(false), top = 0;
-    t.nodes.forEach(function (n) { var k = Math.min(SB - 1, Math.floor(sx(n.p99))); b[k]++; if (n.p99 > LIMIT || n.p99 - t.med > 4 * t.mad) hot[k] = true; });
+    answered(t).forEach(function (n) { var k = Math.min(SB - 1, Math.floor(sx(n.p99))); b[k]++; if (over(n.p99) || far(t, n)) hot[k] = true; });
     b.forEach(function (v) { top = Math.max(top, v); });
-    var x = sx(LIMIT);
+    var l = limit(), x = l != null ? sx(l) : null;
     return '<svg class="strip" viewBox="0 0 ' + SB + ' 1" preserveAspectRatio="none" aria-hidden="true">' + b.map(function (v, k) { var f = v ? Math.max(.18, v / top) : 0; return v ? '<rect x="' + (k + .15) + '" y="' + (1 - f).toFixed(3) + '" width=".7" height="' + f.toFixed(3) + '"' + (hot[k] ? ' class="hot"' : '') + '/>' : ''; }).join('') +
-      '<line x1="' + x + '" x2="' + x + '" y1="-.15" y2="1"/></svg>';
+      (x != null ? '<line x1="' + x + '" x2="' + x + '" y1="-.15" y2="1"/>' : '') + '</svg>';
   }
 
   // ---------- screens: units placed on the page's 10 columns ----------
+  var SAY = { GcPauses: 'long GC pauses', AskLatencyHigh: 'slow asks' };
+  function incEb() {
+    var i = incidents()[0];
+    return 'Firing since ' + hhmm(i.since) + ' on ' + group(i.nodes) + ' of ' + group(MAP.n) + ' nodes' + (i.silenced ? '; silenced until ' + hhmm(i.silenced) : '');
+  }
+  // The cause, from the readings of each build: every node on one build moved (the build), a few nodes moved (the
+  // nodes), or a rollout is halfway and the builds are compared
+  function cause() {
+    var bs = builds(MAP), v = answered(MAP);
+    if (bs.length === 1) {
+      var o = v.filter(function (n) { return over(n.p99); }).length;
+      return o >= v.length * .9 ? 'All ' + group(v.length) + ' nodes that answered moved, so it is the build, not a node.' : group(o) + ' of ' + group(v.length) + ' nodes moved, so it is those nodes, not the build.';
+    }
+    return 'Over the limit ' + bs.map(function (g) { var w = v.filter(function (n) { return n.build === g.b; }); return 'on ' + short(g.b) + ', ' + group(w.filter(function (n) { return over(n.p99); }).length) + ' of ' + group(w.length); }).join('; ') + '.';
+  }
+  function moreIncidents() {
+    var a = incidents().slice(1).filter(function (i) { return !i.silenced; });
+    if (!a.length) return 'Everything else is within its usual range.';
+    return (a.length === 1 ? 'One more incident: ' : a.length + ' more incidents, the first: ') + (SAY[a[0].alert] || a[0].alert) + ' on ' + group(a[0].nodes) + ' ' + a[0].service + ' nodes.';
+  }
+  // A type's rollback, from what the nodes run: the action is the server's, the progress is membership's
+  function rbLabel(t, short1) {
+    var a = running(t.id), back = builds(t).filter(function (g) { return g.b === PREV; })[0];
+    if (a && a.kind === 'Roll back') return 'Rolling back, ' + group(back ? back.n : 0) + ' of ' + group(t.n) + ' on ' + short(PREV);
+    if (a) return t.name + ' is busy: ' + a.kind.toLowerCase() + ', action ' + a.id;
+    return short1 ? 'Roll back this rollout' : 'Roll back ' + t.name + ' to ' + PREV;
+  }
   function incSum() {
-    var o = MAP.nodes.slice().sort(function (a, b) { return b.p99 - a.p99; }).slice(0, 3);
+    var i = incidents()[0], o = answered(MAP).sort(function (a, b) { return b.p99 - a.p99; }).slice(0, 3);
     return '<div class="ln main col">' +
-      '<div class="fig"><span><span class="big">43</span><span class="bigu">ms</span></span>' +
-      '<div class="ref"><span><i class="sc">limit</i><span class="num">25 ms</span></span><span><i class="sc">usual</i><span class="num">12 ms</span></span></div></div>' +
-      '<p class="lead">Ask p99 on MapServer since build ' + BUILD + '. All 400 nodes moved, so it is the build, not a node. Everything else is within its usual range.</p>' +
-      '<div class="acts"><button class="act pri" id="rb"' + (S.rolling ? ' disabled' : '') + '>' + M('b-rb', S.rolling ? 'Rolling back to ' + PREV : 'Roll back MapServer to ' + PREV) + '</button>' +
-      '<button class="act sec" id="ack"' + (S.acked ? ' disabled' : '') + '>' + M('b-ack', S.acked ? 'Acknowledged' : 'Acknowledge') + '</button></div></div>' +
-      '<div class="ln aside col"><div class="col sm"><p class="cap sc">Ask p99 of each of the 400 nodes</p>' + p99Dist(MAP, 'inc') + '</div>' +
+      '<div class="fig"><span>' + M('b-big', ms(MAP.now), 'big num') + '<span class="bigu">ms</span></span>' +
+      '<div class="ref"><span><i class="sc">limit</i><span class="num">' + dur(limit()) + '</span></span><span><i class="sc">usual</i>' + M('b-us', dur(MAP.usual), 'num') + '</span></div></div>' +
+      '<p class="lead">' + M('b-lead', 'Ask p99 on MapServer since build ' + BUILD + '. ' + cause() + ' ' + moreIncidents()) + '</p>' +
+      '<div class="acts"><button class="act pri" id="rb" data-type="map"' + (running('map') ? ' disabled' : '') + '>' + M('b-rb', rbLabel(MAP)) + '</button>' +
+      '<button class="act sec" id="sil"' + (i.silenced ? ' disabled' : '') + '>' + M('b-sil', i.silenced ? 'Silenced until ' + hhmm(i.silenced) : 'Silence for an hour') + '</button></div></div>' +
+      '<div class="ln aside col"><div class="col sm"><p class="cap sc">' + M('b-ic', 'Ask p99 of the ' + group(answered(MAP).length) + ' of ' + group(MAP.n) + ' nodes that answered') + '</p>' + p99Dist(MAP, 'inc') + '</div>' +
       '<div class="tbl pn"><span class="th sc">Worst nodes</span><span class="th sc r">Ask p99</span>' +
-      o.map(function (n) { return '<span class="td">' + n.n + '</span><span class="td r ind">' + ms(n.p99) + ' ms</span>'; }).join('') + '</div></div>';
+      o.map(function (n, k) { return M('b-w' + k + 'a', n.n, 'td') + M('b-w' + k + 'b', dur(n.p99), 'td r ind'); }).join('') + '</div></div>';
+  }
+  // Prometheus unreadable: no alert firing proves nothing, so the page says it cannot know and shows what needs no
+  // threshold, from the Dashboard's own poll
+  function incDown() {
+    var nr = []; TYPES.forEach(function (t) { t.nodes.forEach(function (n) { if (n.st === 'silent' || n.st === 'isolated') nr.push(n); }); });
+    return '<div class="ln main col"><p class="lead">No alert can be read, so this page cannot say that nothing is wrong. Until Prometheus answers, it shows what needs no threshold, from its own poll of the nodes.</p></div>' +
+      '<div class="ln full">' + figRow([['Nodes answering', group(answering()) + ' of ' + group(ALLNODES), 'by the poll, 2 s each'], ['Membership', 'Agrees', 'across 3 ready nodes'], ['Stalled shards', '0', 'none for a minute'], ['Not ready', String(nr.length), nr.map(function (n) { return n.n; }).join(', ') || 'none', nr.length > 0]]) + '</div>' +
+      '<div class="ln full uf">' + hist('Prometheus') + '</div>';
   }
   function others9(i) { var m = 0; TYPES.forEach(function (t) { if (t !== MAP) m = Math.max(m, t.p[i]); }); return m; }
   function readout(i) {
-    return '<span>' + clock(i) + '</span><span>MapServer <b class="num ind">' + ms(MAP.p[i]) + ' ms</b></span><span>The other nine, at most <b class="num">' + ms(others9(i)) + ' ms</b></span>';
+    return '<span>' + clock(i) + '</span><span>MapServer <b class="num ind">' + dur(MAP.p[i]) + '</b></span><span>The other nine, at most <b class="num">' + dur(others9(i)) + '</b></span>';
   }
   // The evidence on one page: the hour's latency against the limit, and beside it what MapServer logs
   function incEv() {
@@ -707,9 +858,10 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   function typesMaster(me) {
     var head = '<span class="th"></span><span class="th sc">Server type</span><span class="th sc r b2">Nodes</span><span class="th sc r ac">Actors</span><span class="th sc r">Ask p99</span><span class="th sc sp" title="Ask p99 of every node, 0 to 64 ms, the limit dashed">Spread</span><span class="th sc r">Out</span><span class="th sc bd">Build</span>';
     return master(me, 'm6 ty', head, function (i, j, k) {
-      var t = T(steps[i].key), bad = unhealthy(t) ? ' ind' : '', so = outliers(t).length;
-      return rn(j, k) + M('b-r' + j + 'a', t.name, 'td nm' + bad) + M('b-r' + j + 'b', group(t.n), 'td r b2') + M('b-r' + j + 'c', count(t.count), 'td r ac') + M('b-r' + j + 'd', ms(t.now) + ' ms', 'td r' + bad) +
-        '<span class="td sp">' + strip(t) + '</span>' + M('b-r' + j + 'e', String(so), 'td r' + (so ? '' : ' mute')) + M('b-r' + j + 'g', t.build.slice(8), 'td bd' + (t.build === BUILD ? '' : ' mute'));
+      var t = T(steps[i].key), bad = unhealthy(t) ? ' ind' : '', so = outliers(t).length, bs = builds(t);
+      // a type halfway through a rollout runs two builds: the column says so, the detail gives the counts
+      return rn(j, k) + M('b-r' + j + 'a', t.name, 'td nm' + bad) + M('b-r' + j + 'b', group(t.n), 'td r b2') + M('b-r' + j + 'c', count(t.count), 'td r ac') + M('b-r' + j + 'd', dur(t.now), 'td r' + bad) +
+        '<span class="td sp">' + strip(t) + '</span>' + M('b-r' + j + 'e', String(so), 'td r' + (so ? '' : ' mute')) + M('b-r' + j + 'g', bs.length > 1 ? bs.length + ' builds' : short(bs[0].b), 'td bd' + (bs.length > 1 || bs[0].b === BUILD ? '' : ' mute'));
     });
   }
   // Four rows at most: the nodes that stand out, or the one Find chose, in place of the last.
@@ -727,20 +879,23 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     if (rows.length) {
       tb = '<div class="tbl nd' + (hl ? ' dim' : '') + '"><span class="th sc">Stands out</span><span class="th sc r">Ask p99</span><span class="th"></span>';
       rows.forEach(function (n, r) {
-        var h = n.n === S.hl ? ' hl' : '', bad = n.p99 > LIMIT || n.p99 - t.med > 4 * t.mad ? ' ind' : '';
-        // a running node offers its action; a node already moving says what it is doing instead
-        tb += M('b-n' + r + 'a', n.n, 'td' + h) + M('b-n' + r + 'e', ms(n.p99) + ' ms', 'td r' + h + bad) +
-          '<span class="td act2">' + (n.st === 'ok' ? '<button class="lnk" data-drain="' + n.n + '">' + M('b-n' + r + 'f', 'Restart') + '</button>' : M('b-n' + r + 'f', n.txt, 'st' + h)) + '</span>';
+        var h = n.n === S.hl ? ' hl' : '', bad = over(n.p99) || far(t, n) ? ' ind' : '', act = n.st === 'ok' && n.rq > 0;
+        // a running node offers its action; any other says what it is doing, or why it has no reading
+        tb += M('b-n' + r + 'a', n.n, 'td' + h) + M('b-n' + r + 'e', fresh(n) ? dur(n.p99) : '—', 'td r' + h + bad) +
+          '<span class="td act2">' + (act ? '<button class="lnk" data-restart="' + esc(n.n) + '">' + M('b-n' + r + 'f', 'Restart') + '</button>' : M('b-n' + r + 'f', state(n), 'st' + h + (fresh(n) ? '' : ' ind'))) + '</span>';
       });
       tb += '</div>';
     }
     // the line about the other nodes goes before any node row does
     var line = l > NROWS || !outliers(t).length ? '<p class="readout">' + M('b-ot', others(t, rows)) + '</p>' : '';
     // on its own page (a phone) the row's columns come first, as figures
-    var head = full ? figRow([['Ask p99', ms(t.now) + ' ms', 'usually ' + ms(t.usual) + ' ms', unhealthy(t)], ['Build', t.build.slice(5), t.build === BUILD ? 'the newest' : 'one behind']]) : M('b-dh', t.name, 'h2' + (unhealthy(t) ? ' ind' : ''), 'h2');
+    var bs = builds(t), ans = answered(t).length;
+    var head = full ? figRow([['Ask p99', dur(t.now), 'usually ' + dur(t.usual), unhealthy(t)], ['Build', short(bs[0].b), bs.length > 1 ? 'and ' + group(bs[1].n) + ' on ' + short(bs[1].b) : bs[0].b === BUILD ? 'the newest' : 'one behind']]) : M('b-dh', t.name, 'h2' + (unhealthy(t) ? ' ind' : ''), 'h2');
+    // one action per type at a time: while one runs, the button says which, and waits
+    var busy = running(t.id);
     return '<div class="ln ' + (full ? 'full' : 'd4') + ' det">' + head +
-      '<div class="col sm"><p class="cap sc">' + M('b-dc', 'Ask p99 of each of the ' + group(t.n) + ' nodes, usually ' + ms(t.usual) + ' ms') + '</p>' + p99Dist(t) + '</div>' +
-      tb + line + '<div class="uf"><div class="acts"><button class="act sec" id="hr" data-type="' + t.id + '">' + M('b-hr', 'Hot restart ' + t.name) + '</button></div>' + hist('Grafana') + '</div></div>';
+      '<div class="col sm"><p class="cap sc">' + M('b-dc', (ans === t.n ? 'Ask p99 of each of the ' + group(t.n) + ' nodes' : 'Ask p99, ' + group(ans) + ' of ' + group(t.n) + ' nodes answered') + '; usually ' + dur(t.usual)) + '</p>' + p99Dist(t) + '</div>' +
+      tb + line + '<div class="uf"><div class="acts"><button class="act sec" id="hr" data-type="' + t.id + '"' + (busy ? ' disabled' : '') + '>' + M('b-hr', busy ? rbLabel(t) : 'Hot restart ' + t.name) + '</button></div>' + hist('Grafana') + '</div></div>';
   }
   // Platform: the two things every node shares, side by side under their running heads
   function platform(l) {
@@ -773,7 +928,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   }
   function gwDist() {
     var avg = Math.round(CLIENTS.total / GW.n);
-    return '<div class="col sm"><p class="cap sc">Clients on each of the ' + GW.n + ' gateways</p>' + dist('gwc', GW.nodes.map(function (n) { return n.clients; }), { lo: 0, hi: 25000, hot: function (v) { return Math.abs(v - avg) > avg * .1; }, label: function (v) { return group(v); } }) + '</div>';
+    return '<div class="col sm"><p class="cap sc">Clients on each of the ' + GW.n + ' gateways</p>' + dist('gwc', GW.nodes.map(function (n) { return n.clients; }), { lo: 0, hi: niceMax(GW.nodes.reduce(function (m, n) { return Math.max(m, n.clients); }, 0) * 1.08), hot: function (v) { return Math.abs(v - avg) > avg * .1; }, label: function (v) { return group(v); } }) + '</div>';
   }
   function clientUnits(l, k) { return clientFigs(k) + gwDist() + gwRows(l) + '<div class="uf">' + hist('Grafana') + '</div>'; }
   // the clients alone, on a shorter desk or a phone: the figures across, the distribution beside the gateways
@@ -786,29 +941,29 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     var head = '<span class="th"></span><span class="th sc">Time</span><span class="th sc">Change</span><span class="th sc tg">Target</span>';
     return master(me, 'm4 chl', head, function (i, j, k) {
       var ch = CHANGES.filter(function (c) { return c.id === steps[i].key; })[0], b = ch.bad ? ' ind' : '';
-      return rn(j, k) + M('b-r' + j + 'a', ch.time, 'td') + M('b-r' + j + 'b', ch.kind, 'td nm' + b) + M('b-r' + j + 'c', ch.target, 'td tg' + b);
+      return rn(j, k) + M('b-r' + j + 'a', hhmm(ch.t), 'td') + M('b-r' + j + 'b', ch.kind, 'td nm' + b) + M('b-r' + j + 'c', ch.target, 'td tg' + b);
     });
   }
   function changeDet(ci, full) {
     var ch = CHANGES[ci], t = TYPES.filter(function (x) { return x.name === ch.target; })[0], nd = node(ch.target), to = t || (nd && TYPES.filter(function (x) { return ch.target.indexOf(x.pre + '-') === 0; })[0]);
-    var link = to ? '<button class="lnk" data-go="1:' + to.id + '"' + (nd ? ' data-hl="' + ch.target + '"' : '') + '>' + M('b-cl', 'Open ' + ch.target + ' in the cluster') + '</button>' : M('b-cl', '');
+    var link = to ? '<button class="lnk" data-go="1:' + esc(to.id) + '"' + (nd ? ' data-hl="' + esc(ch.target) + '"' : '') + '>' + M('b-cl', 'Open ' + ch.target + ' in the cluster') + '</button>' : M('b-cl', '');
     return '<div class="ln ' + (full ? 'full' : 'd6') + ' det">' + (full ? '' : M('b-dh', ch.kind + ' ' + ch.target, 'h2' + (ch.bad ? ' ind' : ''), 'h2')) +
       '<dl class="props"><dt>Detail</dt>' + M('b-c1', ch.detail, '', 'dd') + '<dt>Started by</dt>' + M('b-c2', ch.by, '', 'dd') + '<dt>Result</dt>' + M('b-c3', ch.result, '', 'dd') + '</dl>' +
-      M('b-c4', ch.note, 'note', 'p') + '<div class="uf"><div class="acts">' + (ch.bad ? '<button class="act pri" id="rb"' + (S.rolling ? ' disabled' : '') + '>' + M('b-rb', S.rolling ? 'Rolling back' : 'Roll back this rollout') + '</button>' : '') + '</div>' + link + '</div></div>';
+      M('b-c4', ch.note, 'note', 'p') + '<div class="uf"><div class="acts">' + (ch.bad && to ? '<button class="act pri" id="rb" data-type="' + esc(to.id) + '"' + (running(to.id) ? ' disabled' : '') + '>' + M('b-rb', rbLabel(to, true)) + '</button>' : '') + '</div>' + link + '</div></div>';
   }
   // Actors: the slowest across the cluster, and any looked up, on one list
   function actorsMaster(me) {
     var head = '<span class="th"></span><span class="th sc">Actor</span><span class="th sc nd2">Node</span><span class="th sc r">Handler p99</span>';
     var list = ACTORS.slice(0, TOP).concat(S.found ? [S.found] : []);
     return master(me, 'm4 acl', head, function (i, j, k) {
-      var a = list.filter(function (x) { return x.id === steps[i].key; })[0], b = a.p99 > LIMIT ? ' ind' : '';
-      return rn(j, k) + M('b-r' + j + 'a', a.id, 'td nm') + M('b-r' + j + 'b', a.node, 'td nd2') + M('b-r' + j + 'c', a.p99 + ' ms', 'td r' + b);
+      var a = list.filter(function (x) { return x.id === steps[i].key; })[0], b = over(a.p99) ? ' ind' : '';
+      return rn(j, k) + M('b-r' + j + 'a', a.id, 'td nm') + M('b-r' + j + 'b', a.node, 'td nd2') + M('b-r' + j + 'c', dur(a.p99), 'td r' + b);
     });
   }
   // l: lines of components and logs that fit
   function actorDet(a, l, full) {
-    var props = '<dt>Handler p99</dt>' + M('b-a0', a.p99 + ' ms', a.p99 > LIMIT ? 'ind' : '', 'dd') + '<dt>Node</dt>' + M('b-a2', a.node, '', 'dd') +
-      '<dt>Requests</dt>' + M('b-a3', a.rps, '', 'dd') + '<dt>Mailbox</dt>' + M('b-a4', a.mailbox, a.full ? 'ind' : '', 'dd') + '<dt>Type</dt>' + M('b-a1', a.type, '', 'dd') + '<dt>Last saved</dt>' + M('b-a5', a.saved, '', 'dd');
+    var props = '<dt>Handler p99</dt>' + M('b-a0', dur(a.p99), over(a.p99) ? 'ind' : '', 'dd') + '<dt>Node</dt>' + M('b-a2', a.node, '', 'dd') +
+      '<dt>Requests</dt>' + M('b-a3', a.rps, '', 'dd') + '<dt>Mailbox</dt>' + M('b-a4', a.mailbox, a.full ? 'ind' : '', 'dd') + '<dt>Type</dt>' + M('b-a1', a.type, '', 'dd') + '<dt>Last saved</dt>' + M('b-a5', a.saved == null ? 'Not saved' : a.saved + ' s ago', '', 'dd');
     var comps = '', logs = '';
     for (var k = 0; k < l; k++) {
       comps += M('b-ac' + k, a.comps[k] || '', 'code', 'div');
@@ -819,7 +974,9 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
       (l ? '<div class="blk"><span class="sc">Components</span><div>' + comps + '</div></div><div class="blk"><span class="sc">Logs</span><div>' + logs + '</div></div>' : '') + '<div class="uf">' + hist('Grafana') + '</div></div>';
   }
   function audit(p, per) {
-    return '<div class="ln full audit">' + AUDIT.slice(p * per, p * per + per).map(function (a) { return '<span class="tm">' + a[0] + '</span><span class="w">' + esc(a[1]) + '</span><span class="a">' + esc(a[2]) + '</span><span class="tg">' + esc(a[3]) + '</span>'; }).join('') + '</div>';
+    // the outcome is written after the call, against the same action id as the intent: Requested until then, and
+    // Unknown if the call timed out (the action may have run; its target says)
+    return '<div class="ln full audit">' + AUDIT.slice(p * per, p * per + per).map(function (a, k) { var o = p * per + k; return M('b-au' + o + 't', hhmmss(a[0]), 'tm num') + M('b-au' + o + 'w', a[1], 'w') + M('b-au' + o + 'a', a[2], 'a') + M('b-au' + o + 'g', a[3], 'tg') + M('b-au' + o + 'o', a[4] + ', ' + a[5], 'oc' + (a[4] === 'Failed' || a[4] === 'Unknown' ? ' ind' : '')); }).join('') + '</div>';
   }
 
   // ---------- charts (uPlot), coloured from the theme tokens ----------
@@ -841,12 +998,12 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
       series: [{}, { stroke: ink3, width: 1.3, points: { show: false } }, { stroke: indigo, width: 1.8, points: { show: false } }],
       hooks: {
         drawAxes: [function (u) {
-          var c = u.ctx, d = devicePixelRatio, y = u.valToPos(LIMIT, 'y', true), x = u.valToPos(XS[DEPLOY], 'x', true), L = u.bbox.left, R = L + u.bbox.width;
-          c.save(); c.lineWidth = d; c.strokeStyle = ink2; c.setLineDash([4 * d, 4 * d]); c.beginPath(); c.moveTo(L, y); c.lineTo(R, y); c.stroke();
+          var c = u.ctx, d = devicePixelRatio, lm = limit(), y = lm != null ? u.valToPos(lm, 'y', true) : 0, x = u.valToPos(XS[DEPLOY], 'x', true), L = u.bbox.left, R = L + u.bbox.width;
+          c.save(); c.lineWidth = d; c.font = (S.compact ? 12 : 13.5) * d + 'px Newsreader, Georgia, serif'; c.textAlign = 'left';
+          // the limit is the alert rule's; without a rule there is no line
+          if (lm != null) { c.strokeStyle = ink2; c.setLineDash([4 * d, 4 * d]); c.beginPath(); c.moveTo(L, y); c.lineTo(R, y); c.stroke(); c.textBaseline = 'bottom'; c.fillStyle = ink2; c.fillText('limit ' + dur(lm), L + 6 * d, y - 4 * d); }
           c.setLineDash([]); c.strokeStyle = indigo; c.beginPath(); c.moveTo(x, u.bbox.top); c.lineTo(x, u.bbox.top + u.bbox.height); c.stroke();
-          c.font = (S.compact ? 12 : 13.5) * d + 'px Newsreader, Georgia, serif'; c.textAlign = 'left'; c.textBaseline = 'bottom';
-          c.fillStyle = ink2; c.fillText('limit 25 ms', L + 6 * d, y - 4 * d);
-          c.fillStyle = indigo; c.textBaseline = 'top'; c.fillText('rollout 2026.10.20-3', x + 6 * d, u.bbox.top + 2 * d);
+          c.fillStyle = indigo; c.textBaseline = 'top'; c.fillText('rollout ' + BUILD, x + 6 * d, u.bbox.top + 2 * d);
           c.restore();
         }],
         draw: [function (u) {
@@ -1075,10 +1232,11 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     // a row of a list: on a desk it selects, on a phone it opens the row's detail
     qa('[data-row]', $('body')).forEach(function (b) { b.onclick = function () { var i = +b.dataset.row; if (S.compact && b.classList.contains('tr')) openDet(i); else go(i); }; });
     qa('[data-hist]', $('body')).forEach(function (b) { b.onclick = function (e) { e.preventDefault(); say('Opens ' + b.dataset.hist + ' at the same time range, in a new tab.'); }; });
-    qa('[data-drain]', $('body')).forEach(function (b) { b.onclick = function () { drain(b.dataset.drain); }; });
-    if ($('rb')) $('rb').onclick = rollback;
-    if ($('ack')) $('ack').onclick = function () { S.acked = true; log('Acknowledge', 'MapServer ask latency'); render('morph'); say('Acknowledged. Written to the audit log.'); };
-    if ($('hr')) $('hr').onclick = function () { hotRestart2($('hr').dataset.type); };
+    qa('[data-restart]', $('body')).forEach(function (b) { b.onclick = function () { restart(b.dataset.restart); }; });
+    if ($('rb')) $('rb').onclick = function () { rollback($('rb').dataset.type); };
+    // silencing is Alertmanager's: a silence that expires in an hour, written to the audit log like any action
+    if ($('sil')) $('sil').onclick = function () { var i = incidents()[0]; SILENCES[i.key] = NOW + 3600; var a = { id: (ASEQ++).toString(16), kind: 'Silence', target: i.alert + ' on ' + i.service + ' until ' + hhmm(NOW + 3600), state: 'Done' }; ACTIONS.push(a); audited(a); rebuild(); render('morph'); say('Silenced until ' + hhmm(NOW + 3600) + '. Action ' + a.id + '.'); };
+    if ($('hr')) $('hr').onclick = function () { hotRestart($('hr').dataset.type); };
     if ($('nx')) $('nx').onclick = function () { step(1); };
     if ($('fol')) $('fol').onclick = openToc;
   }
@@ -1101,37 +1259,118 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   function tabGo(t) {
     if (S.mode) { S.mode = null; }
     var cur = steps[S.i].tab; if (t < 0 || t >= TABS.length) return;
+    // a section change is navigation: lists take the order of the latest snapshot here, never under the pointer
+    if (t !== cur) rebuild();
     if (t === cur && S.layout === steps[S.i].layout && S.i === firstOf(t)) { render('morph'); return; }
     S.hl = null; S.i = firstOf(t); render(t >= cur ? 'left' : 'right');
   }
 
-  // ---------- actions: confirm by typing the target's name; each goes to the audit log ----------
-  function log(action, target) { AUDIT.unshift(['now', 'you', action, target]); var key = steps[S.i] && [steps[S.i].tab, steps[S.i].key]; S.last = {}; buildSteps(); if (key) S.i = findStep(key[0], key[1]); }
+  // ---------- actions: confirm by typing the target's name; each runs on the server and is audited twice ----------
+  // An action carries what the operator saw (a node's incarnation, a type's build), and the target refuses it if
+  // that has moved on. Its idempotency key (action, target, what was seen, operator) makes a second press, a retry
+  // or a second operator's identical request the same action, never a second one. The audit holds the intent before
+  // the call and the outcome after, both with the action id the page shows.
+  function nowT() { return NOW; }
+  function audited(a) { AUDIT.unshift([nowT(), 'You', a.kind, a.target + (a.reason ? '; ' + a.reason : ''), a.state, a.id]); a.row = AUDIT[0]; }
+  function settleAction(a, state) { a.state = state; if (a.row) a.row[4] = state; if (a.change) a.change.result = state; }
+  function rebuild() { var key = steps[S.i] && [steps[S.i].tab, steps[S.i].key]; S.last = {}; buildSteps(); if (key) S.i = findStep(key[0], key[1]); }
   var sayT;
-  function say(msg) { S.status = msg; var e = $('status').firstChild; setM(e, msg); clearTimeout(sayT); sayT = setTimeout(function () { setM(e, ''); }, 9000); }
+  function say(msg) { S.status = msg; var e = $('status').querySelector('[data-m="status"]'); $('status').classList.toggle('msg', !!msg); setM(e, msg); clearTimeout(sayT); sayT = setTimeout(function () { $('status').classList.remove('msg'); setM(e, ''); }, 9000); }
   function ask(cf) { cf.from = S.mode; S.cf = cf; S.mode = 'confirm'; S.modeH = 0; render('up'); }
-  function rollback() { if (S.rolling) return; ask({ title: 'Roll back MapServer', text: 'The 400 MapServer nodes hot-restart onto build ' + PREV + ', one at a time, each pausing about 0.4 s. Players stay connected.', need: 'MapServer', verb: 'Roll back', log: ['Roll back', 'MapServer to ' + PREV], done: 'Rolling back MapServer to ' + PREV + ', 8 nodes at a time. Written to the audit log.', effect: function () { S.rolling = true; } }); }
-  function drain(node) {
-    var t = TYPES.filter(function (x) { return node.indexOf(x.pre + '-') === 0; })[0];
-    ask({ title: 'Restart ' + node, text: 'It hands its actors to the other ' + group(t.n - 1) + ' ' + t.name + ' nodes, exits and is started again by the platform. Clients stay connected.', need: node, verb: 'Restart', log: ['Restart', node], done: 'Restarting ' + node + '. Written to the audit log.', effect: function () { setNode(node, { st: 'busy', txt: 'Draining, starting' }); } });
+  function rollback(tid) {
+    var t = T(tid), from = builds(t)[0].b;
+    ask({ title: 'Roll back ' + t.name, text: 'The deploy pipeline moves the ' + group(t.n) + ' ' + t.name + ' nodes from build ' + from + ' to ' + PREV + ', one at a time, each hot restarting in place with a pause of about 0.4 s. Clients stay connected.',
+      need: t.name, verb: 'Roll back', reason: true, key: 'Roll back ' + t.name + ' ' + from, target: t.name + ' to ' + PREV, type: t.id,
+      // the webhook carries the build it expects to leave; the pipeline refuses if the type has moved on
+      check: function () { var b = builds(t)[0].b; return b !== from ? t.name + ' moved to ' + b + ' since you opened this. Nothing was done.' : null; },
+      done: 'Rolling back ' + t.name + ' to ' + PREV + ', one node at a time.', run: function (a) { a.step = function () { var n = t.nodes.filter(function (x) { return x.build !== PREV; })[0]; if (n) { n.build = PREV; n.inc++; } else settleAction(a, 'Done'); }; } });
   }
-  function hotRestart2(id) {
-    var t = TYPES.filter(function (x) { return x.id === id; })[0];
-    ask({ title: 'Hot restart ' + t.name, text: 'The ' + group(t.n) + ' ' + t.name + ' nodes restart one at a time on their current build and resume from a snapshot. Clients stay connected.', need: t.name, verb: 'Hot restart', log: ['Hot restart', t.name], done: 'Hot restart of ' + t.name + ' started. Written to the audit log.' });
+  function restart(name) {
+    var n = node(name), t = typeOf(name), inc = n.inc;
+    var away = t.nodes.filter(function (x) { return x !== n && x.st !== 'ok'; });
+    ask({ title: 'Restart ' + name, text: name + ' hot restarts in place on its build: it writes its snapshot, exits and is started again by the platform, paused about 0.4 s. Its actors stay on it; clients stay connected.',
+      warn: away.length ? group(away.length) + ' other ' + t.name + (away.length === 1 ? ' node is' : ' nodes are') + ' not running (' + away.slice(0, 2).map(function (x) { return x.n + ', ' + state(x).toLowerCase(); }).join('; ') + '): restarting ' + name + ' now takes one more out at once.' : '',
+      need: name, verb: 'Restart', key: 'Restart ' + name + ' ' + inc, target: name + ', incarnation ' + inc, type: null,
+      // the node refuses a restart for an incarnation it no longer is, and the type allows one restart at a time
+      check: function () { var r = t.nodes.filter(function (x) { return x !== n && x.st === 'restart'; })[0]; return n.inc !== inc ? name + ' restarted since you opened this (incarnation ' + inc + ', now ' + n.inc + '). Nothing was done.' : r ? 'Wait: ' + r.n + ' is restarting. One node of a type restarts at a time.' : n.st !== 'ok' ? name + ' is ' + state(n).toLowerCase() + '. Nothing was done.' : null; },
+      done: 'Restarting ' + name + ' in place.', run: function (a) { setNode(name, { st: 'restart', txt: 'Restarting in place' }); var k = 0; a.step = function () { if (++k < 2) return; setNode(name, { st: 'ok', txt: 'Running', inc: inc + 1, age: 1 }); settleAction(a, 'Done'); }; } });
   }
-  function upload() { ask({ title: 'Upload SkillTable', text: 'Version 16 goes to all ' + group(ALLNODES) + ' nodes. Nothing changes until every node accepts the file.', need: 'SkillTable', verb: 'Upload', log: ['Upload config table', 'SkillTable version 16'], done: 'SkillTable version 16 accepted by ' + group(ALLNODES) + ' of ' + group(ALLNODES) + ' nodes. Written to the audit log.' }); }
+  function hotRestart(tid) {
+    var t = T(tid), b = builds(t)[0].b;
+    ask({ title: 'Hot restart ' + t.name, text: 'The deploy pipeline restarts the ' + group(t.n) + ' ' + t.name + ' nodes one at a time on their current build, the coordinator last, with scale-in paused. Each resumes from its snapshot; clients stay connected.',
+      need: t.name, verb: 'Hot restart', reason: true, key: 'Hot restart ' + t.name + ' ' + b, target: t.name + ' on ' + b, type: t.id,
+      check: function () { return null; }, done: 'Hot restart of ' + t.name + ' started.', run: function (a) { var k = 0; a.step = function () { if (++k >= 3) settleAction(a, 'Done'); }; } });
+  }
+  // a config table goes out in two phases: every node validates and stages it, then all switch at once; a node that
+  // has not staged it within a minute aborts the push, and a node that joins meanwhile reads the table from the store
+  function upload() {
+    ask({ title: 'Upload SkillTable', text: 'Version 16 goes to all ' + group(ALLNODES) + ' nodes in two phases. Every node validates and stages it; when all have, they switch together. If any node has not staged it within a minute, nothing switches and the push is aborted.',
+      need: 'SkillTable', verb: 'Upload', kind: 'Upload config table', reason: true, key: 'Upload SkillTable 16', target: 'SkillTable version 16', type: null,
+      check: function () { return null; }, done: 'SkillTable version 16 is staging on every node.', run: function (a) { var k = 0; a.step = function () { if (++k >= 2) settleAction(a, 'Committed'); }; } });
+  }
   function confirmBody() {
     var c = S.cf;
-    return '<div class="cf main col"><p class="ln lead">' + esc(c.text) + '</p><label class="ln" for="cin">Type <b>' + esc(c.need) + '</b> to confirm</label><input class="ln qin" id="cin" autocomplete="off" spellcheck="false" aria-label="Type ' + esc(c.need) + ' to confirm">' +
+    return '<div class="cf main col"><p class="ln lead">' + esc(c.text) + '</p>' + (c.warn ? '<p class="ln note">' + esc(c.warn) + '</p>' : '') +
+      '<label class="ln" for="cin">Type <b>' + esc(c.need) + '</b> to confirm</label><input class="ln qin" id="cin" autocomplete="off" spellcheck="false" aria-label="Type ' + esc(c.need) + ' to confirm">' +
+      (c.reason ? '<label class="ln" for="crs">Why: it is written to the audit log with your name</label><input class="ln qin rs" id="crs" autocomplete="off" aria-label="Reason">' : '') +
+      '<p class="ln note" id="cerr" role="alert"></p>' +
       '<div class="ln acts"><button class="act pri" id="cyes" disabled>' + esc(c.verb) + '</button><button class="act sec" id="cno">Cancel</button></div></div>';
   }
   function confirmWire() {
-    var i = $('cin'), y = $('cyes');
-    i.oninput = function () { y.disabled = i.value !== S.cf.need; };
-    i.onkeydown = function (e) { if (e.key === 'Enter' && i.value === S.cf.need) { e.preventDefault(); y.click(); } };
+    var i = $('cin'), r = $('crs'), y = $('cyes'), c = S.cf, sent = false;
+    function ok() { return i.value === c.need && (!r || r.value.trim().length >= 3); }
+    var upd = function () { y.disabled = sent || !ok(); };
+    i.oninput = upd; if (r) r.oninput = upd;
+    [i, r].forEach(function (x) { if (x) x.onkeydown = function (e) { if (e.key === 'Enter' && ok()) { e.preventDefault(); y.click(); } }; });
     $('cno').onclick = closeMode;
-    y.onclick = function () { var c = S.cf; if (c.effect) c.effect(); S.mode = c.from === 'det' ? 'det' : null; log(c.log[0], c.log[1]); render('down'); say(c.done); };
+    y.onclick = function () {
+      // the first press disables the button: a second press, or Enter during the call, sends nothing
+      if (sent || !ok()) return; sent = true; y.disabled = true;
+      var same = ACTIONS.filter(function (a) { return a.key === c.key && a.state !== 'Failed'; })[0];
+      var err = same ? 'Already requested as action ' + same.id + ' (' + same.state.toLowerCase() + '). Nothing new was sent.' : c.type && running(c.type) ? T(c.type).name + ' is busy with action ' + running(c.type).id + '. One action per server type at a time.' : c.check();
+      if (err) { $('cerr').textContent = err; return; }
+      var a = { id: (ASEQ++).toString(16), key: c.key, kind: c.kind || c.verb, target: c.target, type: c.type, reason: r ? r.value.trim() : '', state: 'Requested' };
+      ACTIONS.push(a); audited(a); c.run(a);
+      // the Dashboard's own actions are changes too
+      CHANGES.unshift(a.change = { id: 'a' + a.id, t: NOW, kind: a.kind, target: c.need, detail: a.target + (a.reason ? '; ' + a.reason : ''), by: 'You, action ' + a.id, result: a.state, note: '' });
+      S.mode = c.from === 'det' ? 'det' : null; rebuild(); render('down'); say(c.done + ' Action ' + a.id + '.');
+      // the server answers: accepted (the target took it), failed, or unknown on a timeout
+      setTimeout(function () { if (a.state === 'Requested') settleAction(a, 'Accepted'); refresh(true); }, 1200);
+    };
     i.focus({ preventScroll: true });
+  }
+  // ---------- refresh: the server's snapshot every cadence, patched in place ----------
+  // A refresh never re-renders: texts that changed swap in place (no morph; morphs answer navigation), bars take
+  // their new heights, and a page being typed into (confirm, Find) keeps its input. Rows keep their order until the
+  // operator moves; a refresh that would add or drop rows waits while the pointer or focus is on the page.
+  function snapLine() {
+    var e = $('snap'), down = SRC.alerts !== 'ok';
+    e.textContent = 'As of ' + hhmmss(NOW) + '. ' + group(answering()) + ' of ' + group(ALLNODES) + ' nodes answered' + (down ? '; alerts unreadable' : '');
+    e.classList.toggle('ind', down);
+  }
+  function touching() { return !!document.querySelector('.body .ms:hover') || ($('body').contains(document.activeElement) && document.activeElement !== $('body')); }
+  function refresh(now) {
+    if (!now) {
+      NOW += SRC.cadence;
+      TYPES.forEach(function (t) { t.now = t.now * (1 + (rnd(NOW + t.n) - .5) * .04); t.nodes.forEach(function (n, i) { if (n.p99 != null && n.st !== 'stale') n.p99 *= 1 + (rnd(NOW + i) - .5) * .03; if (n.st !== 'silent' && n.st !== 'stale') n.age = 1 + Math.floor(rnd(NOW * 3 + i) * 8); else n.age += SRC.cadence; }); stats(t); });
+      ACTIONS.forEach(function (a) { if (a.state === 'Accepted' && a.step) a.step(); });
+    }
+    snapLine();
+    if (S.mode === 'find' || S.mode === 'confirm' || S.mode === 'toc') return;
+    patch();
+  }
+  function patch() {
+    var v = view(), b = $('body'), tmp = document.createElement('div'), cur = {}, nxt = {};
+    tmp.innerHTML = v.body();
+    qa('[data-m]', b).forEach(function (e) { if (!e.closest('.leave')) cur[e.dataset.m] = e; });
+    qa('[data-m]', tmp).forEach(function (e) { nxt[e.dataset.m] = e; });
+    var a = Object.keys(cur), z = Object.keys(nxt);
+    if (a.length !== z.length || z.some(function (k) { return !cur[k]; })) { if (!touching()) render('none'); return; }
+    z.forEach(function (k) { var e = cur[k], n = nxt[k]; if (e.textContent !== n.textContent) { settle(e); e.textContent = n.textContent; } if (e.className !== n.className) e.className = n.className; });
+    var s1 = qa('.strip', b), s2 = qa('.strip', tmp); s1.forEach(function (s, k) { if (s2[k]) s.innerHTML = s2[k].innerHTML; });
+    var d1 = qa('.dist svg', b), d2 = qa('.dist svg', tmp); d1.forEach(function (s, k) { if (d2[k]) s.innerHTML = d2[k].innerHTML; });
+    qa('button[id]', tmp).forEach(function (n) { var e = $(n.id); if (e) e.disabled = n.disabled; });
+    qa('.dist').forEach(function (d) { distWas[d.dataset.dist] = qa('rect:not(.tick)', d).map(function (r) { return r.style.transform; }); });
   }
   function jump(i) { if (i !== S.i) { S.back.push(S.i); if (S.back.length > 20) S.back.shift(); } S.hl = null; S.i = i; }
   function back() { if (S.mode) { closeMode(); return; } if (!S.back.length) return; S.hl = null; var i = S.back.pop(); S.i = i; render('down'); }
@@ -1149,8 +1388,11 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   function openActor(a) { S.mode = null; if (a.found) { S.found = a; buildSteps(); } land(findStep(3, a.id)); }
   function allItems() {
     var q = F.q.trim(), G = [[], [], [], []], more = [0, 0, 0, 0];
-    var a = q ? lookup(q) : null;
-    if (a) G[0].push({ g: 0, k: 'Actor', t: a.id, h: a.found ? 'ask ' + a.node + ', its owner' : a.node, r: -1, run: function () { openActor(a); } });
+    // an actor id is looked up on Enter or after a pause in typing, never on every keystroke; a lookup asks the
+    // owner and never loads an actor that is not loaded
+    var p = q && parseId(q), a = p && F.resolved === q ? lookup(q) : null;
+    if (p && !a) G[0].push({ g: 0, k: 'Actor', t: p.id, h: 'Enter looks it up', r: -1, run: function () { F.resolved = F.q; results(); } });
+    if (a) G[0].push({ g: 0, k: 'Actor', t: a.id, h: a.notLoaded ? 'not loaded' : a.found ? 'on ' + a.node + ', its owner' : a.node, r: -1, run: a.notLoaded ? function () { say(a.id + ' is not loaded. Looking it up does not load it.'); } : function () { openActor(a); } });
     ACTORS.slice(0, TOP).forEach(function (x) { var k = rank(x.id, q); if (k < 9 && x !== a) G[0].push({ g: 0, k: 'Actor', t: x.id, h: x.node, r: k, run: function () { openActor(x); } }); });
     TYPES.forEach(function (t) {
       var so = outliers(t);
@@ -1159,7 +1401,6 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
       t.nodes.forEach(function (n) { var k = rank(n.n, q); if (k < 9) G[1].push({ g: 1, k: 'Node', t: n.n, h: t.name + (so.indexOf(n) >= 0 ? ', stands out' : ''), r: k + (so.indexOf(n) >= 0 ? 0 : .25) + n.n.length / 1000, run: goNode(t, n) }); });
     });
     [
-      { t: 'Roll back MapServer', h: 'to ' + PREV, run: function () { S.mode = null; rollback(); } },
       { t: 'Hot restart a server type', h: 'from its row in Server types', run: function () { S.mode = null; jump(findStep(1, ordered()[0].id)); render('down'); } },
       { t: 'Upload a config table', h: 'every node validates first', run: function () { S.mode = null; upload(); } }
     ].forEach(function (x) { var k = rank(x.t + ' ' + x.h, q); if (k < 9) { x.g = 2; x.k = 'Action'; x.r = k; G[2].push(x); } });
@@ -1181,16 +1422,20 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   // One column of results, as many rows as the window holds: groups as small running heads, rows on the 44 px rhythm,
   // the name at the left and its context at the right, never wrapping
   function findRows() { var v = innerHeight - (S.compact ? 470 : 470); return Math.max(4, Math.min(S.compact ? 7 : 9, Math.floor(v / 44))); }
-  function openFind() { if (S.mode === 'find') { closeMode(); return; } F.q = ''; F.sel = 0; F.W = findRows(); F.H = 40 + 56 + 32 + F.W * 44 + 3 * 40 + 36; S.mode = 'find'; S.modeH = 0; render('up'); }
+  function openFind() { if (S.mode === 'find') { closeMode(); return; } F.q = ''; F.resolved = null; F.sel = 0; F.W = findRows(); F.H = 40 + 56 + 32 + F.W * 44 + 3 * 40 + 36; S.mode = 'find'; S.modeH = 0; render('up'); }
   function findBody() { return '<div class="ln main"><input class="qin" id="q" placeholder="Actor, server type, node or action" autocomplete="off" spellcheck="false" aria-label="Find"></div><div class="ln main" id="res"></div>'; }
-  function findWire() { var i = $('q'); i.value = F.q; i.oninput = function () { F.q = i.value.toLowerCase(); F.sel = 0; results(); }; results(); i.focus({ preventScroll: true }); }
+  function findWire() { var i = $('q'); i.value = F.q; i.oninput = function () { F.q = i.value.toLowerCase(); F.sel = 0; clearTimeout(F.t); F.t = setTimeout(function () { F.resolved = F.q; if (S.mode === 'find') results(); }, 350); results(); }; results(); i.focus({ preventScroll: true }); }
   function results() {
     F.items = allItems();
     if (F.sel >= F.items.length) F.sel = Math.max(0, F.items.length - 1);
     var NAMES = ['Actors', 'Server types and nodes', 'Actions', 'Screens'], h = '';
-    if (!F.items.length) h = '<p class="nores">Nothing matches. Actor ids look like Player(482913); nodes like map-217.</p>';
+    if (!F.items.length) h = '<p class="nores">Nothing matches. Actor ids are a type and its key, like Player(482913); nodes look like map-217.</p>';
     else {
-      var W = F.W || 8, s0 = Math.max(0, Math.min(F.sel - Math.floor(W / 2), F.items.length - W)), prev = -1, hidden = F.items.length - Math.min(W, F.items.length) + F.more[0] + F.more[1] + F.more[2] + F.more[3];
+      var W = F.W || 8, s0 = Math.max(0, Math.min(F.sel - Math.floor(W / 2), F.items.length - W)), prev = -1;
+      // Find's height holds W rows and three group heads: a window crossing a fourth group gives up a row for its head
+      var heads = function (from, n) { var g = {}, c = 0; F.items.slice(from, from + n).forEach(function (o) { if (!g[o.g]) { g[o.g] = 1; c++; } }); return c; };
+      while (W > 1 && W * 44 + heads(s0, W) * 40 > (F.W || 8) * 44 + 3 * 40) { W--; if (F.sel >= s0 + W) s0++; }
+      var hidden = F.items.length - Math.min(W, F.items.length) + F.more[0] + F.more[1] + F.more[2] + F.more[3];
       h = '<div class="res">';
       F.items.slice(s0, s0 + W).forEach(function (o, k) { if (o.g !== prev) { h += '<span class="rh">' + NAMES[o.g] + '</span>'; prev = o.g; } h += hit(o, s0 + k); });
       if (hidden) h += '<p class="more">' + group(hidden) + ' more; ' + (F.q ? 'keep typing' : 'type a name') + '</p>';
@@ -1335,6 +1580,8 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   new MutationObserver(redraw).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
   if (document.fonts && document.fonts.ready) document.fonts.ready.then(function () { if (wantSplit() !== S.split) { setCompact(); S.layout = null; render('none'); return; } tabH = {}; FIT = {}; S.layout = null; render('none'); });
 
-  setCompact(); render('none'); window.focus();
+  setCompact(); render('none'); snapLine(); window.focus();
+  // the server's snapshot every cadence; window.dashTick lets a test take one at once
+  setInterval(function () { refresh(); }, SRC.cadence * 1000); window.dashTick = function () { refresh(); };
 })();
 </script>
