@@ -501,7 +501,9 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   setNode('chat-5', { p99: 6.9, cpu: 71 });
   // a canary: one GuildServer node already runs the newest build, and is slow
   setNode('guild-7', { build: BUILD, p99: 9.8 });
-  if (STORE_DOWN) TYPES.forEach(function (t) { t.nodes.forEach(function (n) { if (n.st === 'ok' || n.st === 'busy' || n.st === 'swapped') { n.st = 'isolated'; n.txt = 'Isolated since ' + hhmm(STORE_SINCE); } }); });
+  // a swapped node that is isolated keeps its Resize: with the store down the action is not sent, and the confirmation
+  // gives the pipeline's --resize-only command instead (the node, frozen, still runs on the idle requests)
+  if (STORE_DOWN) TYPES.forEach(function (t) { t.nodes.forEach(function (n) { if (n.st === 'ok' || n.st === 'busy' || n.st === 'swapped') { if (n.st === 'swapped') n.sw = true; n.st = 'isolated'; n.txt = n.sw ? 'Isolated; requests swapped' : 'Isolated since ' + hhmm(STORE_SINCE); } }); });
   // A reading counts only when it is fresh: answered within two cadences, by a node that is not silent or isolated
   function fresh(n) { return n.p99 != null && n.age <= 2 * SRC.cadence && n.st !== 'silent' && n.st !== 'isolated' && n.st !== 'stale'; }
   function answered(t) { return t.nodes.filter(fresh); }
@@ -928,7 +930,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     if (rows.length) {
       tb = '<div class="tbl nd' + (hl ? ' dim' : '') + '"><span class="th sc">Stands out</span><span class="th sc r">Ask p99</span><span class="th"></span>';
       rows.forEach(function (n, r) {
-        var h = n.n === S.hl ? ' hl' : '', bad = over(n.p99) || far(t, n) ? ' ind' : '', act = n.st === 'ok' && n.rq > 0, rs = n.st === 'swapped';
+        var h = n.n === S.hl ? ' hl' : '', bad = over(n.p99) || far(t, n) ? ' ind' : '', act = n.st === 'ok' && n.rq > 0, rs = n.st === 'swapped' || !!n.sw;
         // a running node offers its action; any other says what it is doing, or why it has no reading
         tb += M('b-n' + r + 'a', n.n, 'td' + h) + M('b-n' + r + 'e', fresh(n) ? dur(n.p99) : '—', 'td r' + h + bad) +
           '<span class="td act2">' + (act ? '<button class="lnk" data-restart="' + esc(n.n) + '">' + M('b-n' + r + 'f-restart', 'Restart') + '</button>' : rs ? '<button class="lnk" data-resize="' + esc(n.n) + '" title="' + esc(state(n)) + '">' + M('b-n' + r + 'f-resize', 'Resize') + '</button>' : M('b-n' + r + 'f-state', state(n), 'st' + h + (fresh(n) ? '' : ' ind'))) + '</span>';
@@ -1364,7 +1366,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     var n = node(name), t = typeOf(name), inc = n.inc;
     ask({ title: 'Resize ' + name, text: name + ' took over after a crash in the container sized for a parked instance, so it runs on the idle requests. The deploy pipeline sets the two containers\' requests by role in place: this node\'s to the node size, the parked one\'s to the idle size; nothing restarts.',
       need: name, verb: 'Resize', key: 'Resize ' + name + ' ' + inc, target: name + ', incarnation ' + inc, type: t.id, unlocked: true, pipeline: 'aspire do mmo-restart --type ' + t.name + ' --node ' + name + ' --incarnation ' + inc + ' --resize-only',
-      check: function () { return n.inc !== inc ? name + ' restarted since you opened this. Nothing was done.' : n.st !== 'swapped' ? name + '\'s requests are already the node\'s. Nothing was done.' : null; },
+      check: function () { return n.inc !== inc ? name + ' restarted since you opened this. Nothing was done.' : n.st !== 'swapped' && !n.sw ? name + '\'s requests are already the node\'s. Nothing was done.' : null; },
       done: 'Resizing ' + name + '.', run: function (a) { var k = 0; a.step = function () { if (++k < 2) return; setNode(name, { st: 'ok', txt: 'Running' }); settleAction(a, 'Done'); }; } });
   }
   // a stalled action (or one Unknown or Accepted for ten minutes) holds its type's lock until an operator says it

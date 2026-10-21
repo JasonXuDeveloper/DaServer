@@ -317,8 +317,12 @@ Keep this file current: tick items when done, add items when scope changes.
         `Unsaved`), every load completing entities from their prefab, the tick-end batched write with the epoch and
         write-generation CAS, `WriteNow` and `DaServer:CheckpointInterval` (staggered by the key's hash, oldest unsaved
         first, a quarter of each round kept for checkpoints), `DaServer:Store:WritesInFlight`, writes capped by
-        `Store:StatementBytes` of records and records by `Store:MaxRecordBytes`, rows sorted, transient errors retried (a timed-out
-        write cancelled first), deterministic ones bisected to the bad root, a world pausing its intake past
+        `Store:StatementBytes` of records and records by `Store:MaxRecordBytes`, rows sorted, store-level errors (every SQLSTATE but `22xxx`, `23xxx`,
+        `54xxx`) retried (a timed-out write cancelled first, the client timeout a progress deadline), row-deterministic ones
+        bisected to the bad root, ruled unwritable only when the rest landed and then retried alone, a quarter of a write
+        failing that way treated as a store failure (`StoreLevelErrorsNeverRuleUnwritable`, `UnwritableRootRetriedAlone`,
+        `HalfOpenWriteCancelledByProgressDeadline`), indexes on live tables built `CONCURRENTLY` with an `indisvalid` guard
+        (`InvalidIndexRebuilt`), a world pausing its intake past
         `Store:BacklogPause`, `daserver.store.oldest_unsaved_age`, a root whose state does not serialize or whose row the
         store refuses handled as `RecordUnwritable`;
       - the reload after a throw in a persisted actor (a type without a record continues);
@@ -415,7 +419,7 @@ Keep this file current: tick items when done, add items when scope changes.
         (`ManyTargetsPastMemoryAllProgress`), a stuck destination holding at most `OnceWindow` in-flight slots so
         healthy ones send while fewer than `OnceInFlight / OnceWindow` are stuck (`StuckTargetsBoundedByWindow`), queued
         totals kept in `RootState` and written with the row changes, a held destination's count its total queued rows
-        counted at page-in (`PagedInCountIsTotal`), a destination not held counting as having queued
+        counted at page-in, only while the root has no write in flight, its unlanded queued rows to that target added (`PagedInCountIsTotal`, including the insert-in-flight race), a destination not held counting as having queued
         rows only while `QueuedRows` exceeds the held counts (`QueuedTotalsSurviveReload`), `NextDue` from held rows and
         the next rotation so a root with only stuck work is not woken at once, request
         bytes kept until the insert lands and read ahead for the next sends, a sent row keeping metadata only and its

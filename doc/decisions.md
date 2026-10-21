@@ -2784,9 +2784,13 @@ Replaced by ADR-098.
     loses the larger of one interval and the time the write backlog takes to drain
     (`daserver.store.oldest_unsaved_age`), consistently within each actor. Writes are split between roots at 512 roots and
     `DaServer:Store:StatementBytes` of records (a root's record and row changes never split: its row changes go in as many
-    row statements as they need in its write's transaction), a record at `DaServer:Store:MaxRecordBytes`, rows sorted; transient errors retry
-    the same bytes (a timed-out write cancelled first), and a deterministic error bisects the write between roots to its one
-    bad root (`RecordUnwritable`), so one root never blocks a world's writes; a world whose backlog passes
+    row statements as they need in its write's transaction), a record at `DaServer:Store:MaxRecordBytes`, rows sorted; store-level errors (every SQLSTATE but
+    `22xxx`, `23xxx`, `54xxx`: a timeout, a lock, a lost connection, a read-only primary, a revoked grant, a schema mismatch)
+    retry the same bytes (a timed-out write cancelled first, the client timeout a progress deadline of `StatementTimeout`
+    per statement result), and a row-deterministic one bisects the write between roots to its one bad root, ruled
+    unwritable (`RecordUnwritable`, then retried alone) only when the rest landed, a quarter or more of a write failing
+    that way meaning the store is failing, so one root never blocks a world's writes and a sick store never hides as
+    unwritable roots; a world whose backlog passes
     `DaServer:Store:BacklogPause` stops taking mail until it drains.
   - **`root.Commit()` for valuable changes**: the root joins this tick's batched write (group commit, writes split
     between roots at 512 roots), and everything the item sent is held per root with its write generation, released in order when the
@@ -3153,7 +3157,7 @@ Replaced by ADR-098.
     destinations keep sending while fewer than `OnceInFlight / OnceWindow` (64) are stuck, past which new first sends
     wait (nothing lost, `DaServerOnceAskOld` alerts), a destination not held waits at most one rotation of the cursor of quantum sends,
     and memory is bounded (E3). The root's queued totals (`QueuedRows`, `QueuedBytes`, each held destination's total queued rows in the store, counted at page-in by an
-    index-only count, not only the rows read into memory)
+    index-only count while the root has no write in flight, plus its queued rows to that target not yet landed, never only the rows read into memory)
     live in `RootState`, written with the row changes, so admission is exact after a reload; a destination not held
     counts as having queued rows only while `QueuedRows` exceeds the held destinations' counts. A new ask is inserted already sent only when
     no earlier row to its target is queued in memory or paged out; request and state bytes stay in memory until their
