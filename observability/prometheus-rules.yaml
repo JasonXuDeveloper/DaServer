@@ -257,16 +257,16 @@ groups:
       - alert: DaServerOnceUnknownState
         # Target (roadmap W6): an answer arrived for an AskUntilAnswered whose state type this build does not know. The
         # row stays sent and unanswered so a node of a build that knows the type delivers it after the next move or
-        # restart; during a rollback or a mixed-version run that is expected for minutes, never for long. The upgrade
-        # check refuses removing a type in use, but newer nodes can keep creating rows of a type until a rollback past
-        # the build that added it replaces them; those rows wait here for a build that knows the type.
+        # restart; during a rollback or a mixed-version run that is expected for minutes, never for long. A state type is
+        # removed in two releases (stop creating it, then remove it once the upgrade check sees no rows); a rollback past
+        # the build that added a type, or a removal that skipped the first step, leaves rows no running build knows.
         expr: sum by (cluster, type, node) (increase(daserver_once_unknown_state_total[10m])) > 0
         for: 15m
         labels:
           severity: warning
         annotations:
           summary: "{{ $labels.node }} holds asks whose state type its build does not know"
-          description: "Answers to AskUntilAnswered calls carry a state type this build lacks (a rollback past the build that added it, or a mixed rollout). They are kept, not lost: finish the rollout or roll forward so a node that knows the type takes the actor."
+          description: "Answers to AskUntilAnswered calls carry a state type this build lacks (a rollback past the build that added it, a mixed rollout, or a removal that skipped its first release). They are kept, not lost: finish the rollout, or re-release a build that knows the type until those asks are answered."
 
       - alert: DaServerOnceSendersNearCap
         # Target (roadmap W6): a [Once] receiver on this node holds more than 90% of SendersPerReceiver sender rows.
@@ -281,6 +281,21 @@ groups:
           description: "One receiver keeps sender rows at {{ $value | humanizePercentage }} of SendersPerReceiver. Destroy finished senders (orders after a sale) or raise the cap; past it new senders are refused."
           daserver_limit: "0.9"
           daserver_unit: "ratio"
+
+      - alert: DaServerStoreWritesBehind
+        # Target (roadmap W6): a node's oldest change not yet written is older than four CheckpointIntervals (30 s by
+        # default) for 5 minutes. A full store outage freezes the worlds after IsolationTimeout; a data-only outage (a
+        # locked table, a full disk: membership reads still succeed) freezes nothing, so unwritten changes and asks grow
+        # in memory until this is acted on. A type with a longer CheckpointInterval needs its own limit.
+        expr: max by (cluster, type, node) (last_over_time(daserver_store_oldest_unsaved_age_seconds[2m])) > 120
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.node }} has changes unwritten for {{ $value | humanizeDuration }}"
+          description: "The store does not take this node's writes while membership still answers, so nothing freezes and unwritten changes grow in memory. Check the store's locks, disk and errors (daserver.store.writes_waiting)."
+          daserver_limit: "120"
+          daserver_unit: "s"
 
       - alert: DaServerDeleteSendAfter
         # Target (roadmap W6): an item sent or asked after root.Delete() returned Ok, which reloads it. In an answer's
