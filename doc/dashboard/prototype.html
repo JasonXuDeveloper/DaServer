@@ -1002,13 +1002,16 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     else if (k === 'ArrowLeft') { e.preventDefault(); if (!e.repeat) tabGo(steps[S.i].tab - 1); }
     else if (k === '/') { e.preventDefault(); openFind(); }
   });
-  // Wheel: one push of the wheel, one step. A step locks the wheel for 450 ms, so one spin or one flick with its
-  // inertia tail moves one screen. After that a step needs a new push: the first event after 200 ms of quiet, a mouse
-  // notch (lines or pages, or a whole multiple of 120 in wheelDeltaY), or a trackpad stream speeding up again (the
-  // last 10 samples above 1.2 times the last 70: a new flick on a decaying tail). A pixel stream steps once a push has
-  // added up to 24 px, so a touch of a few pixels does nothing; turning the other way is a new push at once.
-  var WH = { last: -1e9, stepAt: -1e9, dir: 0, acc: 0, fresh: true, hist: [], faster: false, turned: false };
+  // Wheel: one scroll, one step, however long the scroll goes on, like holding an arrow key that steps once. A scroll
+  // is a run of wheel events: a mouse spin of any number of notches, or a trackpad flick with its inertia tail. A new
+  // scroll starts with the first event after 240 ms of quiet, with a turn the other way, or when a trackpad stream
+  // speeds up again out of a decaying tail (its last 10 samples above 1.2 times its last 70: a new flick on top of the
+  // last one's inertia). A scroll steps on its first event (a notch) or once a pixel stream adds up to 24 px, so a
+  // touch of a few pixels does nothing. A new scroll that comes while the page is still moving (450 ms) is not lost:
+  // it steps the moment the transition ends.
+  var WH = { last: -1e9, stepAt: -1e9, dir: 0, acc: 0, fresh: true, hist: [], faster: false, wait: 0 };
   function mean(a, n) { var t = 0, k = Math.min(n, a.length); for (var i = a.length - k; i < a.length; i++) t += a[i]; return k ? t / k : 0; }
+  function wheelStep(now, dir) { clearTimeout(WH.wait); WH.wait = 0; WH.fresh = false; WH.acc = 0; WH.stepAt = now; step(dir); }
   window.addEventListener('wheel', function (e) {
     if (e.ctrlKey) return;
     e.preventDefault();
@@ -1016,15 +1019,18 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     var now = e.timeStamp || performance.now(), gap = now - WH.last, dir = e.deltaY > 0 ? 1 : -1, a = Math.abs(e.deltaY), wd = e.wheelDeltaY;
     var notch = e.deltaMode !== 0 || (!!wd && wd % 120 === 0 && gap > 40), turn = dir !== WH.dir;
     WH.last = now; WH.dir = dir;
-    if (gap >= 200 || turn) WH.hist.length = 0;
+    if (gap >= 240 || turn) WH.hist.length = 0;
     if (!notch) { WH.hist.push(a); if (WH.hist.length > 70) WH.hist.shift(); }
-    // only the moment a stream speeds up is a new push, not every sample while it stays faster
+    // only the moment a stream speeds up starts a new scroll, not every sample while it stays faster
     var faster = WH.hist.length >= 20 && mean(WH.hist, 10) > 1.2 * mean(WH.hist, 70), rise = faster && !WH.faster; WH.faster = faster;
-    if (gap >= 200 || turn || notch || rise) { if (!WH.fresh) WH.acc = 0; WH.fresh = true; if (turn) WH.turned = true; }
-    // a push the other way is not held by the lock
-    if (!WH.fresh || (!WH.turned && now - WH.stepAt < 450)) { if (WH.fresh && !notch) WH.acc += a; else if (WH.fresh) WH.acc = 24; return; }
+    if (gap >= 240 || turn || rise) { WH.fresh = true; WH.acc = 0; if (turn) { clearTimeout(WH.wait); WH.wait = 0; } }
+    if (!WH.fresh) return;
     WH.acc += notch ? 24 : a;
-    if (WH.acc >= 24) { WH.fresh = false; WH.turned = false; WH.acc = 0; WH.stepAt = now; step(dir); }
+    if (WH.acc < 24) return;
+    var wait = 450 - (now - WH.stepAt);
+    // a turn back steps at once; a scroll during the transition steps when it ends
+    if (turn || wait <= 0) wheelStep(now, dir);
+    else if (!WH.wait) WH.wait = setTimeout(function () { wheelStep(performance.now(), dir); }, wait);
   }, { passive: false });
   var t0 = null;
   $('stage').addEventListener('touchstart', function (e) { var t = e.touches[0]; t0 = { x: t.clientX, y: t.clientY }; }, { passive: true });
