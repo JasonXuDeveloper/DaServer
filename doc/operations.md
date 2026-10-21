@@ -80,12 +80,14 @@ finish a step on every node before starting the next.
 
 ## Production views
 
-The Aspire dashboard of a deployment is for diagnosis; the durable views are the platform's monitoring. Every node
-serves Prometheus metrics at `/metrics` on its HTTP port, and exports metrics, logs and traces over OTLP when
-`OTEL_EXPORTER_OTLP_ENDPOINT` is set. Logs go to Grafana Loki, which ingests OTLP itself (`/otlp/v1/logs`): point the
-Collector's `otlphttp` exporter (or the nodes) at it; `service.name` becomes a label and the other attributes
-structured metadata. Traces go to Tempo. The repository ships two starting points, checked against a
-running node:
+The Aspire dashboard of a deployment is for diagnosis; the durable views are the platform's monitoring. In
+production the nodes send everything over OTLP (`OTEL_EXPORTER_OTLP_ENDPOINT`) to one OpenTelemetry Collector, which
+fans out: metrics to Prometheus (remote write, or the Collector's own Prometheus endpoint for Prometheus to scrape),
+logs to Grafana Loki (which ingests OTLP itself at `/otlp/v1/logs`; `service.name` becomes a label, the other
+attributes structured metadata) and traces to Tempo. One exit per node, and the backends change in the Collector's
+configuration, not in the nodes. Every node also serves its metrics at `/metrics` on the HTTP port, always: KEDA or
+the Prometheus adapter read the scaling signal there, and an environment without a Collector can scrape it directly.
+The repository ships two starting points, checked against a running node:
 
 - `observability/grafana-dashboard.json`: a Grafana dashboard (import it, pick the Prometheus data source): members
   each node sees, shard busy ratio, loaded actors, client sessions, queued, dropped (by reason) and failed messages,
