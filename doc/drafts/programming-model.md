@@ -2374,7 +2374,7 @@ me.Publish(new Topic(Feeds.Prices), new PriceChanged(item, price));
 - **重新加入只补差**：`[Changed<Joined>]` 并且 `MissedPushes` 为真时，SDK 在加入时带着它最后应用的（化身号, 戳）。化身号相同、组的离开环还够得着那个戳，就只发从它起的：离开环里的移除；`ReplicatedTo` 的写入戳不早于它的实体发全量（离线期间才进组、之后没再写过的实体，`Replica<T>` 的戳不说明它，靠的是这一条）；其余实体发 `Replica<T>` 的戳不早于它的组件。查询用一个存在字段里的过滤 `QueryFilter.Create().ChangedAny<所有 [Replicated] 类型, ReplicatedTo>(0)`（`ReplicatedTo` 是追踪变更的组件），每个客户端用 `filter.Since(ack)` 换成它确认的起点，不分配（只是更快的查找，不靠它判断正确性）。`Since` 是"在它或它之后写过"，所以确认的那一趟里写过的也再发一次：多发，不漏。化身号不同（Actor 重新加载、迁移、热重启、`Reload`），或者环已经被覆盖，就发全量。
 - **重发全量就是 `Reset(化身号)`**：先发一条 `Reset(化身号)`，客户端清掉这个 Actor 的所有副本，再应用全量。所以离线期间被移除的实体不会留在客户端上，客户端也从此按新的化身号报告（化身号, 戳）。
 - 客户端 SDK 应用补丁：C# 的 `DaServer.Replication.Client` 写进客户端的 EasyEcs world，TypeScript 的写进按 `ReplicaId` 索引的实体表。
-- 最多一次，和推送一样；漏了的由全量补上。先在 mmo 样例上证明：它的 AOI 推送（`Nearby`）改成同步组件。
+- 最多一次，和推送一样；漏了的由全量补上。用一个单独的基准项目证明：同一个 mmo 的 AOI 场景跑两遍，同步组件对比样例手写的 `Nearby`（每个客户端的字节数、广播 p99、每 tick 的分配）；mmo 样例本身保留手写的 AOI（ADR-091）。
 
 ### 测试和管理的小工具
 

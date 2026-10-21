@@ -745,10 +745,10 @@ Derived from [design.md](../design.md); what today's code has and the target dro
 
 1. **EasyEcs compile and behaviour checks**: listed, each with its test, only in roadmap step W1
    ([roadmap.md](../roadmap.md)).
-2. **Evaluations**, each adopted only without a regression: Kestrel's `ConnectionHandler` for the cluster and client
-   ports against the own listener (BenchmarkDotNet, W4; the earlier raw-TCP measurement in the roadmap regressed); the
-   Prometheus exporter under AOT (W8, section 8).
+2. **Evaluations**, each adopted only without a regression: the Prometheus exporter under AOT (W8, section 8). The
+   cluster and client ports keep the own listener: Kestrel's connection pipeline was measured and regressed (roadmap,
+   "Open cleanup"), and `TransportBenchmark` stays to measure again when Kestrel changes.
 3. **Replication field diff** (W7a): per-field bitmasks against the `Replica<T>` copy of the last sent value double the
-   memory of replicated components; measure against diffing whole components on the mmo sample before adopting. The
+   memory of replicated components; measure against diffing whole components on the mmo AOI benchmark (W7a) before adopting. The
    copy's sent stamp (the world's `ChangeTick` when the replication pass ran, opaque to the client) and the incarnation
    stay either way: they decide what a rejoining client still needs.

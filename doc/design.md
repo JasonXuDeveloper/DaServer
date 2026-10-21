@@ -29,21 +29,8 @@ Acceptance criteria and metrics are in [requirements.md](requirements.md); the r
 
 ### Vocabulary
 
-Everything a developer declares is one of these (ADR-035). The message type alone decides who handles it.
-
-| Declaration | Meaning |
-|---|---|
-| `[NinoType, Message] partial record struct M` | a message between servers only |
-| `[Message, FromClient]` | game clients may send it; to an actor it goes to the actor bound to the session (`BindSession`), or to the actor the client names when that actor granted the session (`GrantSession`) |
-| `[Message, ToClient]` | servers push it to sessions and groups; only clients handle it |
-| `[NinoType]` alone | data inside messages; an unmanaged struct (an id) crosses as its memory without `[NinoType]`; anything else crossing the wire is a build error (DAS003) |
-| `M : IRequest<TReply>` | a request, answered with one `TReply` |
-| `[Actor<TId>]` / `[Service]` static class | an actor type addressed by `TId` / a service; settings are attribute constants (`UnloadAfterIdleSeconds`, `SaveEverySeconds`, `MailboxCapacity`, `OnError`) |
-| static `[Handle]` method of an actor or service | handles one message type: the message (`in`) first, then the actor's components (`ref`/`in`, added with their default when absent), singletons, `Entity`, `World`, `in Context`; returns `void`, a request's reply `T`, or `Answer<T>` (`Answer<T>.Later`: replied later through a `ReplyTo`); never `async` (DAS001) |
-| `Answered<TRequest, TReply>` handler | the answer to the actor's or service's own `ctx.Ask`, delivered as mail |
-| `Created` / `Loaded` / `Unloading` handler | lifecycle as mail: a new actor, a restored or moved one, one about to leave |
-| `[Handle]` method of any other class | client-side handler of pushes (`client.Register(obj)`) |
-| `class S : EcsSystem` with `[ForEach]` | per-tick logic over every matching entity of the shard |
+Everything a developer declares is one row of the README's [vocabulary table](../README.md#vocabulary), the one list
+of declarations (R2; ADR-035). The message type alone decides who handles it. What each call reaches:
 
 | Call (`Context` in handlers, `ICluster` elsewhere, `ClusterClient`) | Target |
 |---|---|
@@ -157,8 +144,7 @@ What a request costs, and what keeps it low:
 | Client pass-through | Client-facing nodes patch headers; they never deserialize payloads. One broadcast frame per client-facing node, `memcpy` per session. |
 | Input as data | High-rate client input (movement) is written into components by the actor and integrated by `[ForEach]` systems on the next tick: one cache-friendly pass instead of logic per message. |
 
-Planned (roadmap, ECS rewrite P4): the transport as worlds too, with client sessions, links and membership as
-entities in net loops.
+In the target model client connections are actor entities too (`Connection`, roadmap W5).
 
 ## 5. Reliability
 

@@ -70,8 +70,8 @@ Every screen is built on one grid, so positions line up from screen to screen an
 There is one vocabulary, used the same way everywhere.
 
 - **A unit** is a caption, then a figure, table or chart, then its foot. In the foot, actions come first and the
-  history link ("Open in Prometheus") sits at the end, on the unit's right edge. An action sits where the decision is
-  made: Drain on a node's row, Hot restart in the foot of the node table it restarts, a rollback in the rollout's
+  history link ("Open in Grafana") sits at the end, on the unit's right edge. An action sits where the decision is
+  made: Restart on a node's row, Hot restart in the foot of the node table it restarts, a rollback in the rollout's
   detail.
 - **A figure** is a label above, the reading in the display face, and its normal below ("usually 12 ms",
   "of 4 nodes"). A reading is never shown alone.
@@ -86,7 +86,7 @@ There is one vocabulary, used the same way everywhere.
   - The primary action is in the accent.
   - The secondary action is in the second ink.
   - Both are words in the display face with a rule beneath them.
-  - A row action (Drain) and a history link are the small text action.
+  - A row action (Restart) and a history link are the small text action.
 - **States.**
   - Hover darkens the ink one step.
   - Pressing an action nudges it down 1 px.
@@ -200,7 +200,12 @@ A cluster has tens of server types, hundreds of nodes per type and millions of a
   screen shows the patterns with their counts.
 - **Where it is computed.** Distributions, outliers and rankings are computed by the Dashboard's server once per
   refresh, never in the browser and never per viewer (ADR-093). The browser receives the bins and the few rows it
-  shows.
+  shows. Nodes keep no history: charts come from Prometheus's range queries, or, without Prometheus, from the
+  Dashboard's own ring of polls, which starts when the Dashboard starts (the chart says so).
+- **Alerts decide, outliers point.** Whether something is wrong is Prometheus's alert rules
+  (`observability/prometheus-rules.yaml`); the outlier rule only names the culprit nodes and the rows that stand
+  out. Without Prometheus the Incident section covers what needs no threshold: a stalled shard, a node not ready,
+  views that disagree.
 
 ## What each job looks like
 
@@ -208,25 +213,26 @@ DaServer is a general framework, so every view below names server types, actors 
 
 | Job | The operator's question | Presentation | Left out |
 |---|---|---|---|
-| Triage | Is anything wrong right now? | The Incident section's first screen: what is wrong as the title; the figure that proves it beside its limit and usual value, one sentence of cause and the fix as the primary action (main); the distribution of the reading across the affected type's nodes and its three worst nodes (aside), which tells a bad build (every node moved) from a bad node (one bar apart). When nothing is wrong, the title says so and the section has one screen | Status grids, counts of healthy things, coloured dots |
-| Evidence | Why do we think so? | The next screens of the same section: the last hour as one chart (the culprit in the accent, others in ink, the limit dashed, the change that caused it marked), then the logs, read from Loki and grouped by pattern (a pattern, its lines, how many nodes logged it, when last) | Dashboards of every metric; raw lines from hundreds of nodes; history beyond the window (one link to Prometheus or Loki) |
+| Triage | Is anything wrong right now? | The Incident section's first screen, one per firing alert: what is wrong as the title; the figure that proves it beside its limit and usual value, one sentence of cause and the fix as the primary action (main); the distribution of the reading across the affected type's nodes and its three worst nodes (aside), which tells a bad build (every node moved) from a bad node (one bar apart). When nothing is wrong, the title says so and the section has one screen | Status grids, counts of healthy things, coloured dots |
+| Evidence | Why do we think so? | The next screens of the same section: the last hour as one chart (the culprit in the accent, others in ink, the limit dashed, the change that caused it marked), then the logs, read from Loki and grouped by pattern (a pattern, its lines, how many nodes logged it, when last) | Dashboards of every metric; raw lines from hundreds of nodes; history beyond the hour (one link to Grafana) |
 | Cluster health | Which server type is unhealthy? | The Cluster section's first screen: one row per server type (nodes, actors, nodes that stand out, ask p99, build), unhealthy types first, at most seven rows and the rest named in one line; the unhealthy row in the accent; membership is the eyebrow | Per-node detail on the overview |
-| A server type | How are its nodes? | Four figures with their usual values, the distribution of ask p99 across all its nodes, then the nodes that stand out (at most four rows: state, CPU, memory, p99, Drain) and one line for the rest ("396 other nodes between 34 and 49 ms"); Hot restart in the foot | A row per node; sparklines that are flat; graphs per node |
+| A server type | How are its nodes? | Four figures with their usual values, the distribution of ask p99 across all its nodes, then the nodes that stand out (at most four rows: state, CPU, memory, p99, Restart) and one line for the rest ("396 other nodes between 34 and 49 ms"); Hot restart in the foot | A row per node; sparklines that are flat; graphs per node |
 | Membership | Do all nodes agree on who is in the cluster? | One phrase above the overview title ("630 nodes in 10 server types, every view agrees"); a disagreement becomes the incident | A separate membership page while views agree |
 | Store | Are actors being saved? | Write p99, writes in flight, unsaved actors and the oldest unsaved age, errors | Query plans, per-table statistics |
 | Client connections | Are clients connected and balanced? | Connected, resumed, the average per gateway, refused handshakes; the distribution of clients across gateways; the gateways more than a tenth from the average (at most three rows) | A row per gateway; per-client lists |
 | Changes | What changed before it broke? | A list of the last hour's changes (newest first) beside the selected change's detail; a bad rollout carries its own roll back | Deploy logs; the full rollout timeline |
-| Rollout and rollback | Roll back the bad build | The primary action on the incident and on the rollout's detail, confirmed by typing the server type's name | A separate deploy page |
-| Drain, hot restart | Take a node out; restart a type | Drain on the node's row; Hot restart under the node table; both confirmed by typing the name | Bulk selection |
+| Rollout and rollback | Roll back the bad build | The primary action on the incident and on the rollout's detail, confirmed by typing the server type's name. A new build, the previous one included, reaches the nodes through the deploy (ADR-093): how the Dashboard hands the rollback to the platform's deploy is an open point | A separate deploy page |
+| Restart, hot restart | Restart a node; restart a type on its build | Restart on the node's row (the node unloads its actors, exits and is started again by the platform); Hot restart under the node table (a same-image roll, one node at a time); both confirmed by typing the name. Taking a node out for good is the platform's scale-down | Bulk selection |
 | Config tables | Push a new table | An action in Find, confirmed by typing the table's name; accepted only when every node accepts it | An editor |
-| An actor | What state is this actor in? | The six slowest actors in the cluster, or Find by its id: type, owning node, requests, mailbox, last saved, its components and its last log lines (from Loki), with a link to its traces in Tempo | Lists of actors; raw JSON dumps; live editing |
+| An actor | What state is this actor in? | The six slowest actors in the cluster, or Find by its id: type, owning node, requests, mailbox, last saved, its components and its last log lines (from Loki), with a link to its traces (Grafana Explore over Tempo) | Lists of actors; raw JSON dumps; live editing |
 | Audit | Who did what? | One row per action: time, who, action, target, newest first, paged; the audit is the Dashboard's log stream, read from Loki | Filters and search; export (the audit log is in the logs too) |
-| History | What happened last week? | A link on each view to Prometheus, Loki or Tempo at the same time range | Our own long-term storage, ad-hoc queries, custom dashboards |
+| History | What happened last week? | A link on each view to Grafana at the same time range (the shipped dashboard, or Explore for logs and traces) | Our own long-term storage, ad-hoc queries, custom dashboards |
 
 ## What we deliberately do not do
 
-- No ad-hoc queries and no dashboard editor. Long-term history stays in Prometheus, Loki and Tempo, and every view
-  links there.
+- No ad-hoc queries and no dashboard editor. Long-term history stays in Prometheus, Loki and Tempo, read through
+  Grafana, and every view links there.
+- No thresholds of our own: alerts are Prometheus's rules.
 - No status colours (red, amber, green), no badges, no icons and no avatars.
 - No widgets that look busy without answering a question: no gauges, donut charts, flat sparklines or counters of
   healthy things.

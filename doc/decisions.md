@@ -316,8 +316,9 @@ Replaced by ADR-081.
   the group size, and a client-facing node without the group answers it with one dictionary miss. Tracking members per client-facing node
   needs membership gossip from client-facing nodes to every sender (sessions join groups on whichever node binds them), more
   ordering cases on client-facing node loss, and it only pays when there are many client-facing nodes and groups live on few of them.
-- Consequences: simple and ordered with binds (ADR-022). Revisit when deployments run tens of client-facing nodes with small
-  groups; the roadmap keeps the item.
+- Consequences: simple and ordered with binds (ADR-022). In the target model gateways hold full subscription sets
+  (roadmap W5), so a push goes only to the gateways with members (drafts/programming-model.md §9); this record is
+  rewritten when W10 promotes the drafts.
 
 ## ADR-030 Run: a resource per replica; published: a workload per group
 - Context: cluster members are addressed individually: each gossips its own cluster endpoint and links go to a
@@ -1117,10 +1118,14 @@ Replaced by ADR-081.
     real values are 0..4095), and each page probes only the pairs at or after the cursor's pair, taking at most 512
     rows from each (`LATERAL … LIMIT` over that pair's index range) with the pairs in order, so a page sorts rows per
     pair and stops at 512 instead of sorting every later pair's backlog.
-  - **Schema:** the `actor_records` table is created under an advisory lock, either by a node at start (run mode,
-    `TestCluster` on PostgreSQL, and published nodes until roadmap W12) or by the node image in schema mode
-    (`--DaServer:Migrate`: create and exit), both W6; W12 runs that mode as the published schema Job with a DDL role
-    and nodes on a DML-only role. Today's `daserver_actors` table is neither read nor converted (pre-1.0).
+  - **Schema:** only the node image in schema mode (`--DaServer:Migrate`: create under an advisory lock and exit)
+    creates the `actor_records` table: a Job when published (an owner role with DDL, nodes on a DML-only role), a
+    one-shot service in Compose, a one-shot resource in a local run; `TestCluster` calls the same schema code directly.
+    Nodes never create it: a node whose table is missing or whose store is unreachable at start stays not ready and
+    retries with one backoff, bounded by the startup probe. Once started, a node keeps answering ready through a
+    store outage (the store is not part of readiness: an outage would otherwise take every node out of its Service at
+    once); the outage shows in `StoreDegraded` and the metrics. Hand-written SQL, no migration library: one table and
+    one index. Today's `daserver_actors` table is neither read nor converted (pre-1.0).
   - **Backends:** `IActorStore` (claims, the batched write, `DueKeys`) is all a backend implements.
     `InMemoryActorStore` serves tests and development and behaves like the database (epochs, generations, slots).
     `PostgreSqlActorStore` is the default for deployments, written with Npgsql and no ORM (the record is opaque bytes,
@@ -1549,7 +1554,7 @@ Replaced by ADR-081.
   changed" leaks; the order between mail, delayed sends and systems is implicit. EasyEcs provides what a
   model without these needs: single-entity jobs (`entity.Run(ref job[, filter])`), group filters carried by
   interfaces (`IGroupWith<T>`), `world.Descendants(root)` and `LoadEntitiesInto(…, markWritten: false)`.
-- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v61), structured as in
+- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md), structured as in
   [drafts/architecture.md](drafts/architecture.md):
   - **The actor type is its address, its root component, its root prefab and its system group**:
     `[TickRate(30)] partial record struct Map(long Id) : IActor<Map>` (`IActor<T>` inherits `IEquatable<T>`, so
@@ -1590,63 +1595,18 @@ Replaced by ADR-081.
     - generations are max(last seen + 1, Unix ms), and only the lowest-ordinal seed forms a cluster, so a cold restart
       of the whole cluster never reuses a generation and parallel seeds never form two clusters.
   - **Replies, presences and retries are data with stated guarantees** (the table "每条路径保证什么" in the draft's §11):
-    - `[Durable]` on an `IRequestTo` makes both ends the framework's, and actors keep running. A root that ran a
-      durable item (a `[Durable]` request asked, handled, or its `Replied` handled, or a `Reply` through a stored
-      durable token) rides its world's next tick-end write (after every mail batch for actor types without
-      `[TickRate]`) instead of waiting for the checkpoint interval; the operation itself marks the root, in a handler or
-      a system alike. A root has at most one write in flight and a world at most `DaServer:StoreWritesInFlight`
-      statements (roots beyond wait, durable ones first), and changes made meanwhile go in the next write, which
-      carries the latest state. Only two
-      kinds of output are held: the first attempt of an outgoing `[Durable]` request and an answer to one (a returned
-      reply, a `Reply` through a stored durable token, an answer from `ReplyLog`, a definite refusal, `Faulted`).
-      A held first attempt's timeout and `WakeAt` start at its release, so waiting for the write costs it no budget.
-      Re-asks and the settling re-ask set no `WriteNow` and leave at once, never before the write holding the waiting
-      entity has succeeded: the record already holds the waiting entity
-      with its call id, request and settle-by instant, so an attempt carries nothing the record lacks, and after a crash
-      the restored entity recomputes its next step from the settle-by instant and repeats at most one attempt, which the
-      receiver deduplicates. Each carries the root's write
-      generation that holds its item and leaves, in order, when that write succeeds; a refused row fences only its
-      actor and discards only its held output. Everything else (plain requests and replies, sends, pushes,
-      broadcasts) leaves at once and rolls back on a crash like any change not yet written. Deactivation, migration
-      (the source writes the root first; a silent store postpones the move), the hot-restart freeze (bounded) and a
-      graceful stop (within its budget) wait for the root's in-flight write and its held output, so none waits in a
-      placeholder, migration bytes or a snapshot; `Reload` first waits for the in-flight write's result (released on
-      success, discarded on failure or timeout; output of generations not yet written is discarded, and re-asks
-      recover it). A durable reply waits for the rest of the tick, a write of its root already in flight and one
-      statement (more when the world's statements are at their bound).
-      Keeping economic state on actor types without `[TickRate]`, which ticking ones ask plainly (a separate actor
-      type: the draft's `Loot`, hosted by PlayerServer), stays the recommended pattern, so a map's record is not written each tick it makes a durable
-      item, but it is not required. Systems ask `[Durable]` requests and reply through stored durable tokens under the
-      same rule; a throw in a system pass reloads every root that ran a durable item in it, and a durable `Ask` in the
-      `Deactivating` pass cancels an idle deactivation only; a forced one (`Deactivate()`, a graceful stop, a hot restart
-      through records, a migration's fallback) keeps the waiting entity in its final record and `DueScan` resumes it. The asker's waiting entity
-      (request, state, call id, UTC deadline from `settleBy:`; `deadline:` stays the per-attempt timeout) is written
-      into its record before the request leaves; every attempt's envelope carries that settle-by instant, the asker
-      sends no attempt past it on its clock and the receiver drops, unrecorded, an attempt past it on its own, and the
-      receiver keeps its `ReplyLog` entries (refused ones included) and a stored durable token's deadline by it, not by
-      the attempt's deadline (`ICluster.Ask` takes a required `settleBy:` for `[Durable]` requests and is deduplicated by
-      `CallId.From(externalKey)` until then). The waiting entity is re-asked with the same call id on transient outcomes (a
-      `NotHandled` from an older build on a re-ask included) and after re-activation; a `[Durable]` request always
-      activates its receiver (`[ActivatedBy]` narrows only a key's first activation); a crashed asker is woken by its slot owner's `DueScan` through the record's `next_due`. A crash
-      after the answer handles the same answer again rather than a different one, and destroying an entity with a
-      waiting durable ask below it fails the item instead of dropping the promise (an asker's type persists and uses
-      `OnError = Reload`, an analyzer error otherwise, so the promise comes back from the record). At settle-by − the attempt's deadline
-      (`deadline:`, else `AskTimeout`) − `ClockSkew` on its own clock (so a receiver whose clock runs ahead by up to the
-      skew still takes it) the asker sends a single settling re-ask: the receiver answers from its log or answers
-      `TooLate`, so a late duplicate never runs; when that settling instant has passed at the release of the held first
-      attempt (decided at release, not at `Ask`), the first attempt is the last, which counts as the settling one but runs as usual, since the receiver has never seen its call id; `Expired` then
-      means only "unreachable, outcome unknown". Every definite refusal the receiver's root gives
-      a call id (`TooLate` either way, `Skipped`, a `NotHandled` to a first attempt) is recorded as refused, under a cap
-      of its own (when full, a refusal is neither recorded nor answered), and answered once written, so a later attempt
-      of that call id gets the same answer and never runs. The receiver keeps call id →
-      reply in an internal bounded `ReplyLog`, written in the same record write as the reply's state; it answers a repeat from
-      it first, then refuses (`TooLate`, recorded) to start a request whose time left to its settle-by instant is below its write
-      latency; a handler that threw is recorded as `Faulted` across the `Reload` and answered only once
-      that is in the record, so a receiver's actor type must persist and use `OnError = Reload` (an analyzer error
-      otherwise). A call id runs at most once; an outcome the caller saw survives either side's crash; a `[Durable]`
-      request cannot be cancelled (an analyzer error: giving up is waiting for the deadline).
-      Users write no reservations, re-asks or call rings. Opt-in, since it holds the request and the reply for a tick-end write
-      on each side; other requests stay immediate and an unknown outcome stays the asker's to decide.
+    - `[Durable]` on an `IRequestTo` makes both ends the framework's, and actors keep running. The asker's waiting
+      entity (request, state, call id, settle-by instant) is in its record before the first attempt leaves, and it is
+      re-asked with the same call id on transient outcomes and after re-activation (armed from its `WakeAt`, like every
+      wake); the receiver answers a repeat from a bounded `ReplyLog` written in the same record write as the reply's
+      state. Only the first attempt and the answer are held, until the tick-end write that holds them succeeds; plain
+      output leaves at once. A single settling re-ask before the settle-by instant turns a late duplicate into
+      `TooLate`, so a call id runs at most once, an outcome the caller saw survives either side's crash, and
+      `Expired` means only "unreachable, outcome unknown". Both ends persist (an analyzer error otherwise); a
+      `[Durable]` request cannot be cancelled. The mechanics (held output, timing of the settling re-ask, refusals,
+      system passes, deactivation and migration) are the draft's §8 and §10, and §11's table "每条路径保证什么" states
+      each path's guarantee. Opt-in, since it holds the request and the reply for a tick-end write on each side; other
+      requests stay immediate and an unknown outcome stays the asker's to decide.
     - A lost connection or gateway leaves its presences `Detached` for a grace (30 s, `DetachGrace`) instead of
       `Leave()`: after a region blip or a gateway crash, clients come back to presences that are still there, and
       actors rebuild nothing. A takeover sends `TakeOver` to the old connection's gateway; a newer login (a larger
@@ -1681,11 +1641,12 @@ Replaced by ADR-081.
     `IWorldSingleton<T>` (a world's cache or configuration, not actor state) may be taken `ref`; systems of an actor type without `[TickRate]`
     run after every mail batch, so each `[ForEach]` there must narrow by `[Changed<T>]`, `[Removed<T>]`, a tag or an
     `UpdateInterval` (an analyzer error otherwise); a throwing handler of an actor type whose root persists restarts
-    it from its last record by default (`OnError = Reload`: the root is reset to its `RootPrefab` copy's values keeping
-    only the key, the mail and the faulting call id, the batch's remaining items move into the mail, the root's in-flight write finishes before the claim
-    and write completions count only for their own activation epoch, consecutive reloads back off like failed
-    activations), since EasyEcs applies changes at once without rollback and a half-applied item must never reach a
-    checkpoint; types without a record keep `Continue`.
+    it from its last record (a reload: the root is reset to its `RootPrefab` copy's values keeping only the key, the
+    mail and the faulting call id, the batch's remaining items move into the mail, the root's in-flight write finishes
+    before the claim and write completions count only for their own activation epoch, consecutive reloads back off
+    like failed activations), since EasyEcs applies changes at once without rollback and a half-applied item must
+    never reach a checkpoint; a type without a record continues. There is no setting: the other choice for either
+    kind is unsound.
   - **Writes are asynchronous and batched by default**: changes tag roots `Unsaved`; at the end of every tick (after
     every mail batch for actor types without `[TickRate]`) a world writes the roots due in one statement (ADR-068's
     batch over arrays with `unnest`, kept), each row with its own epoch CAS: roots that ran a `[Durable]` item every
@@ -1693,7 +1654,7 @@ Replaced by ADR-081.
     but the unwritten changes of a root whose state does not serialize, which keeps its last record;
     only a crash loses at most the last checkpoint interval.
   - **Persistence is per entity kind, not per component type**: entities spawned from a persistent prefab (`[Persist]`
-    on the actor type's `RootPrefab`, `[Prefab<K>(Persist = true)]` on a child prefab) are saved with all their
+    on the actor type's `RootPrefab` or on a child prefab, `[Prefab<K>, Persist]`) are saved with all their
     components but `[NotSaved]` ones, and carry `Persisted(Root)`; others are not saved. Every entity spawned from a
     prefab carries `FromPrefab(Prefab, Composition)`. The draft's own example forced this: a drop's
     record on the non-ticking `Loot` actor must be restored with its `Prize` and `Position` (and its waiting `[Durable]`
@@ -1713,7 +1674,8 @@ Replaced by ADR-081.
     the record but not tracked: written once at `Ask`, which tags the root `Unsaved` itself.
   - **The wake is the runtime's alone**: descendants that must wake an unloaded actor carry a persisted `WakeAt`
     (a durable ask, a reminder); the runtime keeps the root's `NextDue` at their minimum and rewrites `next_due` on
-    every activation by `Wake`, so a stale column never wakes an actor twice.
+    every activation by `Wake`, so a stale column never wakes an actor twice. One runtime system, `ArmSystem`, arms a
+    `Due` from `WakeAt` on load or activation, so a durable re-ask and a reminder wake the same way.
   - **Identity and user singletons are interfaces**: `Account(long Id) : IClaims` with `IClaims : IComponent`, so the
     constraint of `[JoinOnConnect<T>] where T : struct, IClaims` and EasyEcs both see it; no attribute for the
     generator to complete. User singletons are the same: `IConfigTable<TSelf>` (static abstract `Name` and `TryLoad`;
@@ -1745,7 +1707,7 @@ Replaced by ADR-081.
   statements per interval where one serves the world); a separate log beside the records (Akka Persistence's journal
   plus snapshots: batching records already writes many actors in one statement, and a journal adds compaction, replay
   and fenced appends for little gain at our record sizes; revisited only if BenchmarkDotNet shows record size
-  dominating the write); holding all later output behind a durable item (v35: a FIFO on the root
+  dominating the write); holding all later output behind a durable item (a FIFO on the root
   with a write sequence in the CAS; special cases everywhere: held output travelling in placeholders, migration bytes
   and snapshots, released after the receiver's first write, kept across `Reload`).
 - Consequences: breaking for every user project and most of the runtime (roadmap phase W). The timer defaults are one
@@ -1867,7 +1829,13 @@ Replaced by ADR-081.
     (tmpfs; its bytes count against the container's memory limit).
   - **A same-image roll** (secret rotation, a config change on an `OnDelete` group) has no image to patch: the Job
     arms with `/admin/restart?exit=true`, the node runs hot-restart step 1 itself and exits, and the kubelet restarts
-    the container in the same pod (`restartPolicy: Always`), re-reading env and `envFrom`.
+    the container in the same pod (`restartPolicy: Always`), re-reading its env, `envFrom` and the mounted secret
+    files.
+  - **One rollout loop, one adapter per platform**: pre-pull, arm, trigger, wait until ready, next, the coordinator
+    last ([drafts/deployment.md](drafts/deployment.md) section 5); on Kubernetes the trigger is the image patch, and
+    the Job writes through Server-Side Apply as its own field manager `daserver-rollout`: the pod's container image,
+    and a pause of the group's scale-in while it runs, so an autoscaler never deletes an armed pod and its snapshot
+    (ADR-094). It derives the admin token from the mounted signing secret.
   - **preStop runs on an image-patch restart too** (the kubelet's container kill runs it whatever the reason; proved
     on kind in W11), so hot-restart groups have no preStop `sleep`: it would add to every pause.
   - The StatefulSet is named `{group}` (pods `game-0`, …) with `podManagementPolicy: Parallel`. A stateful group
@@ -1890,10 +1858,15 @@ Replaced by ADR-081.
   emptying its `emptyDir`); a persistent volume for the snapshot (slower, zone-bound, outlives the snapshot's use);
   OpenKruise's Advanced StatefulSet with `InPlaceOnly` updates (rejected: a cluster-wide operator plus a
   host-access DaemonSet, Kubernetes 1.33 to 1.35 not in its support matrix, image pre-pull skipped for three replicas
-  or fewer, and arming each node before its restart would still need DaServer's own controller).
+  or fewer, and arming each node before its restart would still need DaServer's own controller);
+  DaemonSets for nodes (their count follows the machines, an HPA cannot scale them, `kubectl drain` does not evict
+  their pods so a node gets no graceful leave, and their pod names are not stable).
 - Consequences: ADR-030's "no StatefulSet" holds only for gateways and stateless groups once roadmap W11 lands, and
-  ADR-030 is rewritten then. Scaling a stateful group is still the platform's (`kubectl scale`, an HPA); a scaled-in
-  pod leaves gracefully as today. W11 changes `DaServer.Aspire` and the samples' AppHosts (roadmap).
+  ADR-030 is rewritten then. Scaling a stateful group stays the platform's and the application's (`kubectl scale`, an
+  HPA or KEDA added by the AppHost); a scaled-in pod leaves gracefully. An autoscaled group renders no `replicas`,
+  since `aspire deploy` applies with `--force-conflicts` and would take the field back on every deploy; its scale-in
+  is one pod per period, set in the autoscaler's behavior (ADR-094). W11 changes `DaServer.Aspire` and the samples'
+  AppHosts (roadmap).
 
 ## ADR-086 Six packages and four words: Core absorbs Abstractions, the server absorbs Hosting, shards are internal
 - Context: the target architecture listed eleven projects (Abstractions, Core, Client, Simulation, `DaServer`,
@@ -1909,7 +1882,9 @@ Replaced by ADR-081.
     host: Generic Host, ASP.NET Core, configuration, OpenTelemetry, the HTTP plane), `DaServer.Persistence.PostgreSql`
     (a capability, ADR-045), `DaServer.Testing` (`TestActor<K>`, `TestCluster`, simulated users) and
     `DaServer.Aspire` (AppHost only). Merged away: Abstractions into Core, Hosting into `DaServer`, Simulation into
-    Testing, WireTool into the generator's MSBuild task.
+    Testing, WireTool into the generator's MSBuild task. `ManifestDiff`, the one comparison of two `wire.manifest`s
+    (used by the arm and its dry run, the upgrade check, the route check and the AppHost's build check), is compiled
+    into Core and linked into the generator ([drafts/architecture.md](drafts/architecture.md) section 5).
   - **Users see four words**: server type, node, actor (its root entity and all descendants) and entity/component.
     "Domain" is gone: it is the actor. A node runs one EasyEcs world per thread and sizes the count from the CPUs it is
     given (the container's request through `DOTNET_PROCESSOR_COUNT`, [drafts/deployment.md](drafts/deployment.md)
@@ -1950,15 +1925,12 @@ Replaced by ADR-081.
     has `dotnet`, curl or a shell). A hot restart in a local run is the dashboard's `{cluster}-restart` resource
     command (`aspire do` runs in a fresh process that cannot reach the running AppHost).
   - **One binary on every host, the service managers declared in `Program.cs`.**
-    `builder.Host.UseSystemd().UseWindowsService().UseLaunchd();` names all three explicitly, each a no-op off its
-    platform; `AddDaServer` calls none of them. launchd has no official .NET package; `UseLaunchd()` has the official
-    two's contract and naming: it detects launchd (`OperatingSystem.IsMacOS()` and `XPC_SERVICE_NAME` set and not
-    `0`; not `getppid() == 1`, which orphans also see; not a security check; the only source is a 2015 launchd-dev
-    thread, so a macOS runner verifies it), then uses the lifetime without status messages, `AppContext.BaseDirectory`
-    as content root (launchd starts in `/`) and console logs without colours, with timestamps. DaServer documents the
+    `builder.Host.UseSystemd().UseWindowsService();` names both explicitly, each a no-op off its platform;
+    `AddDaServer` calls neither. launchd needs no code: its plist sets the working directory and the environment
+    (console format, `DaServer__SnapshotPath`), and the Generic Host already stops on SIGTERM. DaServer documents the
     plist (`Label`, `ProgramArguments`, `KeepAlive`, `ExitTimeOut` set explicitly to at least the stop budget, since
-    launchd.plist(5) leaves the default system-defined, `WorkingDirectory`, `EnvironmentVariables` with
-    `DaServer__SnapshotPath`, `StandardOutPath`/`StandardErrorPath`), the systemd unit and the Windows service:
+    launchd.plist(5) leaves the default system-defined, `WorkingDirectory`, `EnvironmentVariables`,
+    `StandardOutPath`/`StandardErrorPath`), the systemd unit and the Windows service:
     [drafts/deployment.md](drafts/deployment.md) section 0.
   - **Deployment is explicit.** Group names, replica counts, the store and every public port are written in
     `apphost.cs`; nothing is inferred from code. All replicas of a group listen on the same ports. The cluster and
@@ -1973,19 +1945,19 @@ Replaced by ADR-081.
   AppHosts yet); the AppHost inside the node's `Program.cs` (the node image would carry Aspire.Hosting and the DCP
   orchestrator, which are not AOT-compatible and have no place on a production node); inferring client ports from
   `[Hosts<Connection>]` (less visible; the owner prefers explicit deployment); the node host calling the service
-  managers itself (hidden; the owner prefers the three calls in sight).
-- Consequences: roadmap W2 adds `UseLaunchd()` (verified on a macOS runner); W5 adds `Connection`; W7 moves the samples
+  managers itself (hidden; the owner prefers the calls in sight); a `UseLaunchd()` helper (launchd has no official
+  .NET package, its detection would rest on an unverified heuristic, and the plist already sets what it would).
+- Consequences: W5 adds `Connection`; W7 moves the samples
   to `apphost.cs` with `WithClientConnections(port)` and the build check.
 
 ## ADR-088 Hot restart is one mechanism; user behaviour before it is data
-- Context: ADR-084 first had two transports for the same bytes: a warm successor launched by the node and fed over a
-  local pipe (for systemd, with `MAINPID` handed to the successor, and for unsupervised processes), and a snapshot
-  file for every supervisor that watches only the process it started (Kubernetes, Compose, launchd, Windows services,
-  local Aspire). The warm path needed standby peer links beside the live ones, incarnation numbers on the wire, a
-  handoff token, a commit protocol between two live processes and rules for picking the transport, and it gained a
-  few hundred milliseconds only on systemd and bare processes. Games also need a say in what happens before the
-  pause (an MMO tells its players; a sale lets messages wait), and the first answer, a one-shot `[ForEach]` gated by
-  hand-made data, was a recipe rather than a model.
+- Context: a hot restart's bytes can reach the new process two ways: a warm successor launched by the node and fed
+  over a local pipe, or a snapshot file, which every supervisor that watches only the process it started
+  (Kubernetes, Compose, launchd, Windows services, local Aspire) needs anyway. The warm path needs standby peer links
+  beside the live ones, incarnation numbers on the wire, a handoff token, a commit protocol between two live
+  processes and rules for picking the transport, and gains a few hundred milliseconds only on systemd and bare
+  processes. Games also need a say in what happens before the pause (an MMO tells its players; a sale lets messages
+  wait); a one-shot `[ForEach]` gated by hand-made data is a recipe rather than a model.
 - Decision:
   - **The snapshot file on every platform**: Kubernetes (a memory `emptyDir`, the pod image patch, ADR-085), Compose
     (a named volume per node), systemd (`RuntimeDirectory=` with `RuntimeDirectoryPreserve=restart`, `systemctl
@@ -2000,27 +1972,19 @@ Replaced by ADR-081.
     `Resumed(TimeSpan Pause, bool Aborted)` with the measured pause, and an aborted restart raises
     `Resumed(0, Aborted: true)` so systems can undo. With no system nothing happens and messages wait. Gateways see the
     restarting nodes in the `RestartingNodes` singleton.
-  - **Arming only prepares; the platform's stop starts it**: the coordinator records an arm nonce in the view; the
-    node announces `NodeRestarting` on SIGTERM while armed (or at once when armed with `exit=true` for a same-image
-    roll: it runs step 1 itself, exits after its snapshot, and the platform restarts the process) and freezes only after the coordinator acks, so the deadline
-    starts at the freeze and an arm the platform never follows (a rollout Job killed in between) expires silently.
-    Arming is refused while a member joins or leaves, while another node holds the one cluster-wide restart permit,
-    or when the working set plus the snapshot would pass about 80% of the cgroup memory limit; the rollout restarts
-    the coordinator last. The freeze waits for in-flight store operations within a bound; past it, or when the
-    snapshot write fails, the node gives up and stops gracefully (through records).
-  - **A snapshot is used once, by the right binary, and only with the coordinator's consent**: written to a temp
-    file, fsynced and renamed; its header carries the nonce, the armed manifest hash (the new binary compares its
-    own), the component layout hashes and the kernel boot id with `Environment.TickCount64` (a snapshot from before
-    a reboot, or older than the deadline, is refused); the new process streams it in and deletes it before any
-    world runs, then waits in `Rejoining` until the coordinator answers `Readmit` (only for the current nonce, which
-    it then clears) or `Gone`. That answer is the only place the deadline is judged, so a late process never runs
-    beside the actors' new owners, and a crash after the load cannot load the same snapshot twice.
-  - **The coordinator keeps the rest of the cluster still**: it is the oldest member Up and not `NodeRestarting`; it pins
-    a restarting node's slots and plans no moves into or out of it; another node's leave waits for the restart
-    within its stop budget; on `Readmit` the node isolates or hands off roots whose slot owner changed anyway; a
-    successor coordinator restarts the full deadline; an expired restart counts as Left, not Dead, for keep-majority
-    (ADR-064); a join with the same name and a higher generation makes the older generation Left at once. A peer
-    that sees a Hello from the restarted identity resets its dial back-off.
+  - **Arming only prepares; the platform's stop starts it**: `/admin/restart` is the one admin verb (`mode=snapshot`
+    or `unload`, `exit=true` for a same-image roll, `dryRun=true` to report the path the manifest diff picks without
+    arming). The node freezes only after the coordinator acks its `NodeRestarting`, so the deadline starts at the
+    freeze and an arm the platform never follows expires silently. Arming is refused while a member joins or leaves,
+    while another node holds the cluster-wide restart permit, or when the snapshot would not fit the memory limit;
+    the rollout restarts the coordinator last. A freeze that cannot finish within its bound stops gracefully through
+    records.
+  - **A snapshot is used once, by the right binary, and only with the coordinator's consent**: its header names the
+    arm nonce, the manifest, the layout hashes and the boot; the new process loads it once and waits in `Rejoining`
+    for `Readmit` or `Gone`, the only place the deadline is judged. Meanwhile the coordinator pins the restarting
+    node's slots and moves nothing into or out of it; an expired restart counts as Left, not Dead, for keep-majority
+    (ADR-064), and a peer that sees a Hello from the restarted identity resets its dial back-off. The steps, checks
+    and their tests are the draft's §10.
 - Alternatives: the warm handoff above (a second transport, standby links, incarnations and a token for a gain on two
   platforms); OpenKruise for Kubernetes (ADR-085); a virtual "before restart" hook on actors (a callback where a tag
   and a system do).
@@ -2060,7 +2024,7 @@ Replaced by ADR-081.
 ## ADR-090 Optional capabilities: reminders, topics, non-.NET clients, replication, test and admin tools
 - Context: four needs recur across domains and are hard to get right in user code. Work due at a wall-clock time even
   when the actor is unloaded or its node crashed (daily resets, auction ends, renewals): `Schedule(after)` lives in
-  memory and is lost on a crash. Fan-out between actors (prices, world events, chat channels): today's `Publish`
+  memory and is lost on a crash. Fan-out between actors (prices, world events): today's `Publish`
   reaches only services and is deleted in W. Clients that are not .NET (browsers, Unreal): G7 planned the .NET client
   compiled to `browser-wasm` with no TypeScript code generation. Client copies of server components (every game
   writes its own diff and snapshot code; the mmo sample's `Nearby` is one). Users also cannot test their own logic
@@ -2068,45 +2032,27 @@ Replaced by ADR-081.
 - Decision: each is a package in its own namespace, off unless referenced, written in the model's own terms
   (components, tags, singletons, systems; no allocation on hot paths). The mechanics are
   [drafts/programming-model.md](drafts/programming-model.md) §15, nowhere else.
-  - **`DaServer.Reminders`**: a `Reminder<T>(DateTime UtcAt, TimeSpan Period)` on a persistent child entity with the
-    runtime's `WakeAt` set to `UtcAt`. While the actor is active it fires through a `Due`; while unloaded, the runtime's
-    `NextDue` (the minimum `WakeAt`) goes into the record's `next_due` column and the slot owner's `DueScan`
-    (`IActorStore.DueKeys(slots, until, after)`) activates the actor. `Reminded<T>` is at least once, deduplicated by
+  - **Which fan-out**: an actor to many actors is Topics; an actor to many clients is `ClientGroup` (a chat channel
+    included); a membership with rules of its own (a guild, a party) is a fixed-key actor that holds the members and
+    forwards, through `ClientGroup` to their clients (§15's opening rule).
+  - **`DaServer.Reminders`**: a `Reminder<T>(TimeSpan Period)` on a persistent child entity whose next firing is its
+    `WakeAt`. The runtime arms it like every wake (its `ArmSystem` turns a `WakeAt` into a `Due` on load and
+    activation; while unloaded, `NextDue` goes into the record's `next_due` column and the slot owner's `DueScan`
+    activates the actor); the package has no arming system of its own. `Reminded<T>` is at least once, deduplicated by
     (reminder, `UtcAt`): the advance lands in the same record as the handler's effects. After an outage a reminder
     fires once and moves to its first future occurrence, not once per missed period.
   - **The wake is the runtime's, not the package's**: `WakeAt`, `NextDue`, `next_due`, `DueKeys` and `DueScan` belong
     to the runtime because `[Durable]` asks need them too (ADR-082) and the runtime depends on no capability
     (ADR-045). Only the runtime computes `NextDue`; the package writes `WakeAt` on its reminders.
-  - **`DaServer.Topics`**: a built-in `Topic(long Id)` actor type with a persisted `DynamicBuffer<Subscriber>`;
-    `Subscribe`, `Unsubscribe` and `Publish` on `Entity`, each sending the Topic a one-way package message of that name
-    (`Publish` carries the payload's type id and bytes, serialized once; the Topic never decodes it), declaring no
-    `[From<…>]` like `NotSubscribed`, since any actor type sends them; a subscriber handles a delivery (an
-    `ITopicMessage`) with `[On<T>]` on its root, in any of its `[Handles<K>]` classes. `Subscribe` carries the subscriber's activation
-    epoch and is idempotent: the Topic keeps the highest epoch per subscriber and ignores a lower one; its table changes are
-    ordinary changes, written at the next checkpoint. The subscriber keeps its own
-    `Subscription` buffer, and the package's system renews: it subscribes after activation, re-sends `Subscribe` every
-    `DaServer:Topics:RenewInterval` (default 60 s) while the root is alive and not `Deactivating`, and again on
-    `[Removed<Deactivating>]` of a living root (a cancelled idle deactivation has already unsubscribed). Renewal heals
-    what a crash loses. `Unsubscribe` removes the entry from the subscriber's own `Subscription` buffer and tells the
-    Topic; the `Deactivating` pass also sends it (keeping the buffer for the next activation). The receiving node drops
-    a delivery whose topic is not in the subscriber root's `Subscription` buffer, or whose subscriber is gone, and
-    sends the Topic, from the subscriber's shard, a one-way `NotSubscribed(ActorId, Epoch) : IMessageTo<Topic>` echoing
-    the epoch the delivery frame carried for that subscriber (each entry in a node's frame is the table's
-    `(ActorId, Epoch)`). It is an ordinary package message, not control mail: control mail is the runtime's own closed
-    set of kinds, and the runtime depends on no package (ADR-045). Dropped under `Busy`, it is sent again at the next
-    publish, whose delivery is dropped again; the buffer is checked when the delivery is dispatched on
-    the shard, not when it is enqueued, so a lost `Unsubscribe` is pruned at the next publish even after the subscriber
-    has migrated to a new activation. An unsubscribe (carrying its sender's epoch) or a `NotSubscribed` (carrying
-    the delivered epoch) removes a subscriber only when the epoch equals the table's. A re-subscribe survives: within
-    one activation the unsubscribe, the `NotSubscribed` and the new `Subscribe` are ordinary one-way messages from one
-    shard to one Topic, so they arrive in order (guarantee 2), and a newer
-    activation's `Subscribe` raises the table's epoch first. `[Stateless]` actor types and `Connection` cannot
-    subscribe (they claim no epoch and their address names no node; DAS023). Delivery never activates an actor. A server type hosting topics declares `[Hosts<Topic>]` and needs
-    a store. A publish is serialized once, one frame per subscriber node; at most once: a lost or reordered subscription message
-    (a Topic crash before its checkpoint, a lost `Subscribe`, or `Unsubscribe` and `Subscribe` reordered while the
-    Topic migrates) costs at most one renew interval of missed publishes; once unsubscribed, no handler runs for a
-    delivery dispatched after the unsubscribe, and the Topic stops sending at the next publish. It replaces today's `Publish`.
-    Durable streams (replay, offsets, consumer groups) stay with Kafka or NATS JetStream.
+  - **`DaServer.Topics`**: a built-in `Topic(long Id)` actor type with a persisted table of subscribers and their
+    activation epochs; `Subscribe`, `Unsubscribe` and `Publish` on `Entity` send the Topic one-way package messages
+    (exempt from `[From<…>]`, since any actor type sends them); `Publish` is serialized once and sent as one frame per
+    subscriber node. Subscribers renew their own `Subscription` buffer every `DaServer:Topics:RenewInterval`, so a
+    crash or a lost message costs at most one interval of missed publishes; the receiving node checks that buffer at
+    dispatch and answers a stale delivery with `NotSubscribed`, so a lost `Unsubscribe` is pruned at the next publish.
+    Delivery is at most once and never activates an actor; `[Stateless]` actor types and `Connection` cannot subscribe
+    (DAS023). It replaces today's `Publish`; durable streams (replay, offsets, consumer groups) stay with Kafka or NATS
+    JetStream.
   - **Non-.NET clients**: the client wire protocol is published as a specification (frames, handshake, `Ready`,
     re-join and slots, `Retire` and `HandedOff`, `Busy` with its retry-after, keep-alive), with the C# SDK as the
     reference and one conformance suite run against every implementation. A TypeScript client over WebSocket uses
@@ -2117,19 +2063,16 @@ Replaced by ADR-081.
     the same specification later.
   - **`DaServer.Replication`**: `[Replicated]` on a change-tracked component; per actor type, a `ChangedAny` system
     writes the changed fields (generated per-type bitmasks against the last sent value) per `ClientGroup` once per tick
-    into pooled frames. Its state is DaServer's own: each `Replica<T>` keeps the last sent value and the stamp it was
-    sent at (the world's `ChangeTick` when the replication pass ran, opaque to the client), each group a bounded ring of exits (group changes and destroys, which EasyEcs's per-world destroy log of
-    `EntityId`s cannot answer per group), each actor an incarnation renewed on activation from the record, migration arrival, hot-restart load
-    and `OnError = Reload`: in another world the `ChangeTick` is not comparable, and an activation or a reload
-    in the same world rebuilds the actor from its record; a renewal clears the actor's exit rings and zeroes its `Replica<T>` stamps, so ring coverage starts at the incarnation's first pass. A rejoining SDK sends (incarnation, stamp): the same incarnation with the exit ring still
-    covering the stamp gets only what was written at or after it (a superset, which is safe), with full state for an entity whose `ReplicatedTo` was written since (it joined a group while the client was away);
-    anything else gets a full resend, which starts with `Reset(incarnation)` so the client first clears that actor's
-    replicas. A `ChangedAny` filter over the `[Replicated]` types and `ReplicatedTo`, moved with `Since(ack)`, speeds the
-    lookup up and decides nothing. Full state also when an entity changes group and when a presence subscribes a group. The SDKs apply the patches (C# into an EasyEcs world through `DaServer.Replication.Client`, TypeScript into
-    an entity table). At most once, like pushes.
+    into pooled frames. Each `Replica<T>` keeps the last sent value and its stamp (the world's `ChangeTick`), each
+    group a bounded ring of exits, each actor an incarnation renewed whenever it is rebuilt (activation, migration
+    arrival, hot-restart load, a reload after a throw), which clears the rings and the stamps. A rejoining SDK gets a
+    delta when its incarnation and stamp are still covered, otherwise a full resend starting with `Reset`. The SDKs
+    apply the patches (C# into an EasyEcs world through `DaServer.Replication.Client`, TypeScript into an entity
+    table). At most once, like pushes.
   - **Tools**: `TestCluster` fault injection (`Partition`, `Kill`, `DelayLinks`) for users' own tests; a read-only
     inspector on the HTTP plane (an actor's subtree, the busiest actors, each world's tables and systems, counts by
-    component; flecs's REST API is the model), exposed as Aspire commands; writes go only through `ICluster` messages.
+    component; flecs's REST API is the model); its endpoints are the single source, and Aspire commands (local runs),
+    the Dashboard (production, ADR-093) and curl are thin clients of them; writes go only through `ICluster` messages.
     The endpoints are [drafts/architecture.md](drafts/architecture.md) section 8, nowhere else.
 - Alternatives: reminders as a periodic scan of every record or a timer service with its own store (a full scan per
   poll, or a second store to keep consistent); reminders in the runtime (only some applications need them); topics as
@@ -2137,7 +2080,7 @@ Replaced by ADR-081.
   `browser-wasm` client (above); replication left as a recipe (every game repeats bitmasks and snapshots); fault
   injection only in the framework's own tests.
 - Consequences: roadmap W6a (Reminders; the wake itself is built in W6 for `[Durable]` asks), W6b (Topics), W7a
-  (Replication, proven on the mmo sample's AOI), W7b (protocol specification and TypeScript client, proven by the
+  (Replication, proven against the mmo's hand-written AOI in a benchmark of its own, ADR-091), W7b (protocol specification and TypeScript client, proven by the
   flash sale from a browser page; G7 points to it), W7c (tools). Each is proven by tests, BenchmarkDotNet numbers and
   allocation tests on its hot path before the next.
 
@@ -2164,7 +2107,10 @@ Replaced by ADR-081.
     snapshot pushes echo it, so the client replays only the inputs the server has not applied yet. A `Resync` system
     with an `UpdateInterval` pushes the positions of each cell at a low rate as a correction keyframe, so clients' extrapolation
     drift heals without a full snapshot; NPC AI runs as `[ForEach(Slices = N)]`, a slice of
-    the NPCs per tick.
+    the NPCs per tick. The mmo keeps its hand-written area of interest (`Nearby`, crossing snapshots, `Resync`):
+    `DaServer.Replication` is proven by a benchmark project that runs the same scenario both ways (bytes per client,
+    broadcast p99, allocation per tick), not by rewriting the sample, so the sample stays a pattern a game can copy
+    without the package.
   - **`samples/relay`**, a relay room in Photon Quantum's style ([Quantum intro](https://doc.photonengine.com/quantum/v3/quantum-intro)):
     a `[TickRate(30)]` `Room` actor gathers its players' inputs for each tick and broadcasts one frame per tick to its
     `ClientGroup`; it holds inputs only, the deterministic simulation runs on the clients. It proves the model fits a
@@ -2214,30 +2160,40 @@ Replaced by ADR-081.
   - **`DaServer.Dashboard` is the one console for production**: a stateless ASP.NET Core app, its own Deployment and
     Service (with the platform's Ingress or HTTPRoute) in Kubernetes, added by `AddDaServerDashboard` in the
     AppHost. It answers the operator's jobs (doc/dashboard/design.md): triage, evidence, cluster, server types,
-    store, client connections, changes, an actor, audit; and runs the actions (roll back, drain, hot restart, a
-    config table) through the nodes' admin plane, each confirmed by typing its target and written to the audit log.
+    store, client connections, changes, an actor, audit; and runs the actions (restart a node, hot restart a type on
+    its current build, a config table) through the nodes' admin plane, each confirmed by typing its target and
+    written to the audit log. A hot restart from the Dashboard is the same-image roll (`/admin/restart?exit=true`, one
+    node at a time, the coordinator last); a new build, a rollback included, reaches the nodes through the deploy
+    (`aspire deploy`, then `{cluster}-restart`), since only the platform changes an image. Taking a node out is the platform's scale-down, not a Dashboard action. It mounts the signing secret's
+    files and derives the admin token from them (drafts/deployment.md section 4); it calls no Kubernetes API and has
+    no autoscaler and no PodDisruptionBudget (one replica; its cost follows the nodes, not the viewers).
   - **Live state is gathered once per refresh, never per viewer or per request**, so its cost grows with nodes, not
-    with people watching. Each node keeps its readings and a last-hour window (one point a minute) in memory and its
-    own ranking of its slowest actors. When Prometheus is configured the Dashboard reads per-type aggregates and
-    per-node readings from it with a fixed set of queries; otherwise a collector in the Dashboard polls every node's
+    with people watching. Nodes keep no history: each serves its current readings and its own ranking of its slowest
+    actors. When Prometheus is configured the Dashboard reads per-type aggregates and per-node readings with a fixed
+    set of queries, and charts come from range queries; otherwise a collector in the Dashboard polls every node's
     stats summary (fixed size) every 10 s, at most 32 nodes at a time, into one in-memory snapshot that every viewer
-    reads. Distributions, outliers (a state other than running, or more than four median absolute deviations from
-    the type's median) and the cluster's slowest actors (the nodes' rankings merged) are computed from that snapshot
-    on the server; a screen receives only the bins and the few rows it shows. Membership comes from one node, with
-    each node's view hash to tell when views disagree. An actor's detail is asked on demand of the one node that
-    owns it, found through placement; Find resolves actor ids the same way and searches nodes in the snapshot. The
-    snapshot is a cache rebuilt at start, so replicas stay interchangeable.
-  - **Logs come from Loki.** Nodes keep exporting logs over OTLP; the platform's Collector (or the nodes directly)
-    sends them to Loki. Framework logs carry `daserver.node`, `daserver.actor.type`, `daserver.actor.key` and the
-    trace id as attributes, which Loki keeps as structured metadata (the actor key is never a label: it is unbounded).
-    The Dashboard queries Loki's HTTP API (LogQL `query_range`) for the lines of what the screen shows (the incident's
-    server type and time, a node, an actor) and shows them inline; the audit log is a log stream of the Dashboard
-    read back the same way.
-  - **History stays in Prometheus, Loki and Tempo.** Each view links there at the same time range; there are no
-    ad-hoc queries, no dashboard editor and no long-term storage of the Dashboard's own. Grafana remains for analysts;
-    the Aspire dashboard is for local runs.
+    reads, and keeps a bounded ring of those polls for the charts (they start when the Dashboard started, and the
+    evidence chart says so). Distributions, outliers (a state other than running, or more than four median absolute
+    deviations from the type's median) and the cluster's slowest actors (the nodes' rankings merged) are computed on
+    the server; a screen receives only the bins and the few rows it shows. Membership comes from one node, with each
+    node's view hash to tell when views disagree. An actor's detail is asked on demand of the one node that owns it,
+    found through placement; Find resolves actor ids the same way and searches nodes in the snapshot. The snapshot is
+    a cache rebuilt at start, so replicas stay interchangeable.
+  - **Something is wrong when an alert fires.** `observability/prometheus-rules.yaml` is the one definition: triage
+    shows the firing alerts (Prometheus's `ALERTS`, or Alertmanager's API) and uses the outlier rule only to name the
+    culprit nodes and the rows that stand out. Without Prometheus, triage covers only the states that need no
+    threshold: a stalled shard, a node not ready, views that disagree.
+  - **Logs come from Loki.** Nodes export logs over OTLP to the Collector, which sends them to Loki. The node is the
+    OpenTelemetry resource's `service.instance.id`, which Loki indexes as a label; framework logs add
+    `daserver.actor.type`, `daserver.actor.key` and the trace id as attributes, kept as structured metadata (the actor
+    key is never a label: it is unbounded). The Dashboard queries Loki's HTTP API (LogQL `query_range`) for the lines
+    of what the screen shows (the incident's server type and time, a node, an actor) and shows them inline; the audit
+    log is a log stream of the Dashboard read back the same way.
+  - **History is Grafana's.** Each view links to Grafana at the same time range (the shipped dashboard, or Explore
+    for logs and traces); there are no ad-hoc queries, no dashboard editor and no long-term storage of the
+    Dashboard's own. The Aspire dashboard is for local runs.
   - **Optional sources.** Without Loki the log screens and the audit screen say that Loki is not configured (audit
-    entries still go to the Dashboard's stdout); without Prometheus or Tempo their links are absent.
+    entries still go to the Dashboard's stdout); without Grafana the history links are absent.
   - **Sign-in is OIDC**; roles allow viewing or acting.
   - **The front end is vanilla TypeScript built by esbuild**, its assets prebuilt and embedded in the package, so only
     Dashboard contributors need a JavaScript toolchain; the look and motion follow doc/dashboard/design.md.
@@ -2245,6 +2201,42 @@ Replaced by ADR-081.
   Aspire dashboard (it has no plugin model); our own log store (Loki already indexes OTLP logs at scale); Elasticsearch
   or OpenSearch (heavier to run for what the screens query); Svelte with Vite (a framework for a few screens, slower
   builds).
-- Consequences: roadmap W7e builds it; the samples' AppHosts add Loki (and Prometheus and Tempo) for published runs
-  through the publisher hooks; doc/operations.md describes Loki and the console; framework log calls use
-  `LoggerMessage` with those attributes, off the hot paths.
+- Consequences: roadmap W7e builds it; the samples' AppHosts add the Collector, Prometheus, Loki, Tempo and Grafana
+  for published runs through the publisher hooks; doc/operations.md describes the telemetry path; framework log calls
+  use `LoggerMessage` with those attributes, off the hot paths.
+
+## ADR-094 Kubernetes objects and controllers: which object each part uses, who owns which field
+- Context: a published cluster is acted on by several writers at once: the chart (applied by `aspire deploy`, which
+  runs `helm upgrade --install --server-side=true --force-conflicts`, so every field the chart renders is taken back
+  on each deploy), autoscalers (HPA, KEDA's HPA, the VPA), node drains through the eviction API, and DaServer's own
+  rollout Job. Each workload kind behaves differently under them: a StatefulSet with `Parallel` pod management
+  deletes its highest ordinals at once, a PodDisruptionBudget guards evictions but not a scale-in, a DaemonSet is not
+  evicted by `kubectl drain` and cannot be scaled by an HPA, and .NET fixes its processor count at start.
+- Decision (the tables are [drafts/deployment.md](drafts/deployment.md) sections 10 and 11):
+  - **Kinds**: StatefulSets for actor-hosting groups (ADR-085), Deployments for gateways, stateless groups, the
+    Dashboard and the Collector's gateway, Jobs for schema, upgrade check, rollout and load generators; no DaemonSet
+    for nodes (the count follows machines, no HPA, no graceful leave on a drain, no stable names) and no CronJob.
+    DaemonSets stay the platform's (a Collector agent, node-exporter, CNI and CSI).
+  - **Scaling policy is the application's, written by the sample's hook**: KEDA or an HPA on the group's average
+    busy ratio (`avg`, never `max`; an explicit minimum, KEDA's default is 0); scale-in one pod per period, the
+    period at least the graceful stop and a stabilization window of 600 s or more, since a PDB does not slow a
+    scale-in; a VPA on memory only (`InPlaceOrRecreate` or `Off`), CPU scaling horizontally; PDBs with
+    `maxUnavailable: 1` for stateful groups, a percentage for gateways, `unhealthyPodEvictionPolicy: AlwaysAllow`;
+    none for the one-replica Dashboard. DA only names the scale target (StatefulSet or Deployment) and makes the
+    `Manifest` type public for objects Aspire has no class for.
+  - **Field ownership through Server-Side Apply**: the chart (`helm`) owns what the AppHost declares; an autoscaled
+    group renders no `replicas` (the hook that adds the autoscaler clears it), so the HPA owns the count; the rollout
+    Job applies as field manager `daserver-rollout`, forcing only the pod's container image and, without force, a
+    pause of the group's scale-in while it rolls (an armed pod deleted by a scale-in would lose its snapshot). Nodes
+    and the Dashboard write nothing to the Kubernetes API.
+  - **In-place resize is for memory only**: a node reads its cgroup memory limit and calls `GC.RefreshMemoryLimit()`
+    when it changes, so `resizePolicy memory: NotRequired` resizes without a restart; CPU requests set the world count
+    only at start (`DOTNET_PROCESSOR_COUNT`), and node pods set no CPU limit.
+- Alternatives: rendering `replicas` and having the deploy fight the autoscaler (each deploy resets the size, a mass
+  leave for a stateful group); `pod-deletion-cost` to pick which gateway goes (needs API access from someone, and
+  rebalancing, ADR-089, already keeps gateways even); StatefulSet `maxUnavailable` (beta) or the `Recreate` strategy
+  (alpha); a pre-pull DaemonSet (pulls on every machine); native sidecars (nothing to run beside a node);
+  client-side `kubectl apply` (no conflict detection, the annotation's size cap, stale state).
+- Consequences: roadmap W11 (scale-target helper, `replicas` cleared with the autoscaler, the samples' HPA/KEDA
+  behaviors and PDBs, the rollout's SSA writes and scale-in pause) and the memory-limit refresh step;
+  doc/operations.md tells operators the same rules for clusters that predate them.

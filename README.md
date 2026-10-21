@@ -421,23 +421,13 @@ node stays under 10% CPU.
 addresses lead them to, so a gateway started later takes old clients too (cluster test:
 `OldConnectionsMoveToANodeStartedLater`).
 
-**BenchmarkDotNet** ([benchmarks/](benchmarks/DaServer.Benchmark), default job, one 4-core VM, .NET 11 RC2, the
-release checklist's run in the roadmap; Allocated is per operation and includes the benchmark's clients):
-
-| Benchmark | Case | Mean | Allocated |
-|---|---|---:|---:|
-| Broadcast to every session, game node through 3 client-facing nodes | 3,000 clients | 15.5 ms | 16 B |
-| | 9,000 clients | 52.0 ms | 50 B |
-| Group broadcast through 1 client-facing node (1 / 9 groups) | 1,000 clients | 5.2 / 5.8 ms | 7 B |
-| | 5,000 clients | 26.5 / 32.5 ms | 46-50 B |
-| One-way messages to 64 actors, bursts of 1,024 (per message) | same node / other node | 454 ns / 730 ns | 0 |
-| 64 / 1,024 concurrent actor calls, all completed | same node | 169 µs / 776 µs | 0-1 B |
-| | other node | 315 µs / 1.05 ms | 0-1 B |
-| 1 actor call, round trip | same node / other node | 5.2 µs / 86 µs | 0-1 B |
-
-Against the agreed baseline (d676d2a on .NET 10, same machine, run back to back): calls 12-83% faster, one-way
-messages 54-90% faster, broadcasts -9% to +8% and the 3k / 9k scenario +2% / +8% (each within one standard deviation),
-allocations lower everywhere. How much comes from .NET 11 alone: ADR-054.
+**BenchmarkDotNet** ([benchmarks/](benchmarks/DaServer.Benchmark), default job, one 4-core VM, .NET 11 RC2): an
+actor call round trip takes 5.2 µs on one node and 86 µs across nodes, a one-way message 454 ns / 730 ns, and a
+broadcast to 9,000 clients through 3 client-facing nodes 52 ms, with 0-1 B allocated per call and message. Against
+the agreed baseline (d676d2a on .NET 10, same machine, back to back): calls 12-83% faster, one-way messages 54-90%
+faster, broadcasts -9% to +8%, allocations lower everywhere. The full table, every case with its allocation, is the
+release checklist's record in [the roadmap](doc/roadmap.md) ("Open after G"); how much comes from .NET 11 alone:
+ADR-054.
 
 ## Build, test, benchmark
 
