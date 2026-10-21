@@ -1549,7 +1549,7 @@ Replaced by ADR-081.
   changed" leaks; the order between mail, delayed sends and systems is implicit. EasyEcs provides what a
   model without these needs: single-entity jobs (`entity.Run(ref job[, filter])`), group filters carried by
   interfaces (`IGroupWith<T>`), `world.Descendants(root)` and `LoadEntitiesInto(…, markWritten: false)`.
-- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v57), structured as in
+- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v58), structured as in
   [drafts/architecture.md](drafts/architecture.md):
   - **The actor type is its address, its root component, its root prefab and its system group**:
     `[TickRate(30)] partial record struct Map(long Id) : IActor<Map>` (`IActor<T>` inherits `IEquatable<T>`, so
@@ -2087,9 +2087,14 @@ Replaced by ADR-081.
     what a crash loses. `Unsubscribe` removes the entry from the subscriber's own `Subscription` buffer and tells the
     Topic; the `Deactivating` pass also sends it (keeping the buffer for the next activation). The receiving node drops
     a delivery whose topic is not in the subscriber root's `Subscription` buffer, or whose subscriber is gone, and
-    answers the Topic with an epoch-carrying not-subscribed notice, so a lost `Unsubscribe` is pruned at the next
-    publish. An unsubscribe or a not-subscribed notice removes a subscriber only when the epochs match, so a late notice from an old activation never drops a new one's
-    subscription. Delivery never activates an actor. A server type hosting topics declares `[Hosts<Topic>]` and needs
+    answers the Topic with a not-subscribed notice echoing the epoch the delivery frame carried for that subscriber (each
+    entry in a node's frame is the table's `(ActorId, Epoch)`); the buffer is checked when the delivery is dispatched on
+    the shard, not when it is enqueued, so a lost `Unsubscribe` is pruned at the next publish even after the subscriber
+    has migrated to a new activation. An unsubscribe (carrying its sender's epoch) or a not-subscribed notice (carrying
+    the delivered epoch) removes a subscriber only when the epoch equals the table's. A re-subscribe survives: within
+    one activation the unsubscribe, the notice and the new `Subscribe` leave the shard in FIFO order, and a newer
+    activation's `Subscribe` raises the table's epoch first. `[Stateless]` actor types and `Connection` cannot
+    subscribe (they claim no epoch and their address names no node; DAS023). Delivery never activates an actor. A server type hosting topics declares `[Hosts<Topic>]` and needs
     a store. A publish is serialized once, one frame per subscriber node; at most once: a lost or reordered subscription message
     (a Topic crash before its checkpoint, a lost `Subscribe`, or `Unsubscribe` and `Subscribe` reordered while the
     Topic migrates) costs at most one renew interval of missed publishes; once unsubscribed, no handler runs for a

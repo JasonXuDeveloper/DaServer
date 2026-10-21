@@ -1,4 +1,4 @@
-# DaServer 新编程模型设计（草案 v57，未实现，迭代中）
+# DaServer 新编程模型设计（草案 v58，未实现，迭代中）
 
 原则：业务代码干净、解耦、简洁，不用 OOP。ECS 一路到底：能用 EasyEcs 的功能就用 EasyEcs，状态都是数据，其余交给我们的特性和生成器，不重复造轮子。
 
@@ -2247,6 +2247,7 @@ public void An_expired_grant_takes_the_drop_off_the_map()
 - `persist` 里要追踪的类型（`Ask` 的状态类型除外）没有 `ITrackChanges`，在这个编译里又补不上：不是 `partial`，或者来自别的程序集（第 10 节的"只写改过的"；不是 `partial` 的可一键修复）。
 - 对看得出要保存的实体 `Set` 或 `Remove` `persist` 里的 tag（W1 核对 tag 的增删会打戳之前；看不出的地方不报，第 10 节）。
 - `[Stateless]` 的 Actor 类型里 `Ask`、把 `ReplyTo<T>` 存进组件、`Join()`、建 `Due` 的 `Schedule`（带 `after`，或在系统里）。
+- `[Stateless]` 的 Actor 类型或 `Connection` 上 `Subscribe`：它们不占 epoch，地址里也没有节点（DAS023，第 15 节的 `DaServer.Topics`）。
 - `[Durable]` 写在不是 `IRequestTo` 的消息上，或者接收方是 `[Stateless]` 的 Actor 类型（它不写记录）；`[Durable]` 请求的 `Ask` 状态不能写进记录（第 10 节）；看得出 `[Durable]` 请求的 `ReplyTo<T>` 存进了不保存的实体，或者从不保存的实体发问（第 8 节）；`Cancel` 一个 `[Durable]` 的请求；`[Durable]` 请求的接收方或发问方的 Actor 类型不保存，或者 `OnError` 不是 `Reload`（第 8 节）；`root.IssueClientToken` 不在 `[Durable]` 请求的处理方法里调用，或者所在 Actor 类型的根不保存（第 7 节）。`[Durable]` 的 `Ask` 没写 `settleBy:` 是编译错误：生成的方法里它不是可选参数，`ICluster.Ask` 的也是。
 - `[ActorOptions]` 的值是负数。
 - 要迁移的托管组件、托管的事件或 `Ask` 状态没有 Nino 格式化器（第 10 节的序列化规则）。
@@ -2333,13 +2334,14 @@ me.Publish(new Topic(Feeds.Prices), new PriceChanged(item, price));
 ```
 
 - `Topic(long Id)` 是包里内置的 Actor 类型，根要保存，根上是订阅者表 `DynamicBuffer<Subscriber>`（`Subscriber(ActorId Actor, long Epoch)`，`Epoch` 是订阅者那次激活的 epoch）。`e.Subscribe(topic)`、`e.Unsubscribe(topic)` 是发给它的单向消息，订阅的是 `e.Root` 那个 Actor。`Feeds.Prices` 是用户自己的常量。
+- **`[Stateless]` 的 Actor 类型和 `Connection` 不能订阅**：它们不占 epoch（第 10 节），地址里也没有节点，Topic 的表记不下它们，投递也找不回同一个实例；在它们上面 `Subscribe` 是分析器错误（DAS023，第 13 节）。
 - **`Subscribe(epoch)` 是幂等的单向消息**，带着订阅方这次激活的 epoch（框架填上）：Topic 给每个订阅者只记最大的 epoch；epoch 更大就更新，相同的什么也不改，更小的（旧激活迟到的）不理会。表的改动是普通的改动，随下一个检查点写下（第 10 节）；宕机丢掉的由续订补上（下面）。
 - **承载 Topic 的服务器类型写 `[Hosts<Topic>]`**（第 2 节），Topic 的根要保存，所以这个工程要配存储。
 - **订阅也是订阅方的数据，订阅方定期续订**：订阅方的根上有持久化的 `DynamicBuffer<Subscription>`。包里的系统在 `Activated` 之后订阅；之后只要根活着、不带 `Deactivating`，每隔 `DaServer:Topics:RenewInterval`（默认 60 秒）把每个 `Subscription` 再发一次 `Subscribe`（`[ForEach(Slices = N)]` 分片扫，同空闲检查）；活着的根去掉 `Deactivating` 时（空闲停用被取消，`[Removed<Deactivating>]`）马上再发一次，因为那一轮已经退订过了（这要 W1 核对过 tag 的移除会记下，第 10 节；核对不过，这次重新订阅就退回到下一次续订）。所以丢了或乱了序的订阅消息最多一个续订间隔就补上（下面的"最多一次"）。
 - **退订**：`e.Unsubscribe(topic)` 先从订阅方自己的 `Subscription` 缓冲里删掉这一项，再给 Topic 发单向的 `Unsubscribe`。包里的系统在 `Deactivating` 那一轮也发 `Unsubscribe`（缓冲不动，下次激活照它再订阅），所以 Topic 的表里只有激活着的订阅者，投递从不激活 Actor。
-- **接收的节点按订阅方的数据过滤**：一条投递的 topic 不在订阅者根的 `Subscription` 缓冲里（退订了），或者订阅者已经不在，那个节点就丢掉它，回 Topic 一条带着 epoch 的"没有订阅"控制邮件；Topic 对两种一样处理，epoch 和表里的相同才删。所以丢了的 `Unsubscribe` 也无妨：下一次发布就把这一项删掉（不在的订阅者下次激活时自己再订阅）。
-- **删除只认同一个激活**：退订和"没有订阅"的通知都带着发出它的激活的 epoch，只有和表里的相同才删。所以旧激活迟到的退订或通知，删不掉新激活刚做的订阅；旧激活迟到的 `Subscribe` 比表里的小，也盖不掉它。
-- **`e.Publish(topic, msg)`**：发给 Topic；Topic 不解码负载，按订阅者所在的节点分组，每个节点一帧（只序列化一次，池化的帧），那个节点再放进各订阅者的邮箱。`ICluster` 也能发布。
+- **接收的节点按订阅方的数据过滤**：每个节点的投递帧里，每个订阅者都带着 Topic 表里的 `(ActorId, Epoch)`。投递在订阅者的 shard 上派发时（不是进队列时）才查缓冲：topic 不在订阅者根的 `Subscription` 缓冲里（退订了），或者订阅者已经不在，就丢掉它，回 Topic 一条"没有订阅"控制邮件，两种情况都原样带回投递时的那个 epoch；Topic 收到时，带回的 epoch 和表里的相同才删这一项。所以同一 tick 里排在 `Unsubscribe` 之前进队列的投递也不运行处理方法；丢了的 `Unsubscribe` 也无妨：下一次发布就把这一项删掉，哪怕订阅者在那之后已经迁移、换了新的激活（不在的订阅者下次激活时自己再订阅）。
+- **删除只认同一个激活**：退订带着发出它的激活的 epoch，"没有订阅"的通知带着投递时表里的 epoch，都只有和表里的相同才删。重新订阅也不会被误删：同一个激活里的退订、通知和再次 `Subscribe` 按先后从同一个 shard 发出、按顺序到达 Topic，新激活的 `Subscribe` 又先把表里的 epoch 抬高。所以旧激活迟到的退订或通知，删不掉新激活刚做的订阅；旧激活迟到的 `Subscribe` 比表里的小，也盖不掉它。
+- **`e.Publish(topic, msg)`**：发给 Topic；Topic 不解码负载，按订阅者所在的节点分组，每个节点一帧（只序列化一次，池化的帧，帧里每个订阅者带着它的 `(ActorId, Epoch)`），那个节点再放进各订阅者的邮箱。`ICluster` 也能发布。
 - **最多一次，两个方向都有界**：Topic 宕机时在途的发布丢掉。丢了或乱了序的订阅消息（Topic 在检查点之前宕机，丢了没写下的表；一条 `Subscribe` 在路上丢了；Topic 迁移时 `Unsubscribe` 和之后的 `Subscribe` 乱了序）最多让订阅者一个续订间隔收不到发布。退订之后，退订之后到达的投递不再运行处理方法（接收的节点按 `Subscription` 缓冲丢掉），`Unsubscribe` 丢了的话 Topic 也在下一次发布时停发（那次投递换回"没有订阅"的通知）。同一个发布者经同一个 Topic 发给同一个订阅者的按发送顺序到达。没有回放，没有持久的偏移：要持久的流（回放、消费组）用 Kafka 或 NATS JetStream，从 Actor 里调用。
 - 一个 Topic 的订阅者数有上限（节点配置）；更大的扇出分到多个 Topic 键，推给客户端用 `ClientGroup`（第 9 节）。
 - Actor 之间的扇出由它做；框架本身没有别的发布。
