@@ -1,0 +1,738 @@
+<title>DaServer Dashboard</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@400;500;600&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* A book page per screen: a narrow margin column (folio, what comes next, the latest status) beside one text column.
+   Ink on paper, one indigo for whatever is wrong and for the next step. Hairlines only, square everything. */
+:root{--paper:#F7F8FA;--ink:#111318;--ink-2:#3B3F4B;--ink-3:#5B6070;--rule:rgba(17,19,24,.14);--rule-2:rgba(17,19,24,.34);--indigo:#22397E}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--paper:#0E1014;--ink:#ECEEF2;--ink-2:#BDC1CB;--ink-3:#989DA9;--rule:rgba(236,238,242,.16);--rule-2:rgba(236,238,242,.34);--indigo:#9CAEF0;color-scheme:dark}}
+:root[data-theme="dark"]{--paper:#0E1014;--ink:#ECEEF2;--ink-2:#BDC1CB;--ink-3:#989DA9;--rule:rgba(236,238,242,.16);--rule-2:rgba(236,238,242,.34);--indigo:#9CAEF0;color-scheme:dark}
+:root{
+  --display:'Shippori Mincho','Noto Serif JP','Zen Old Mincho','Hiragino Mincho ProN','Yu Mincho','Songti SC',Georgia,serif;
+  --text:'Newsreader','Iowan Old Style','Palatino Linotype',Palatino,Georgia,serif;
+  --mono:'IBM Plex Mono',ui-monospace,'SF Mono',Menlo,Consolas,monospace;
+  --mc:224px;
+}
+html{height:100%;box-sizing:border-box}
+*,*::before,*::after{box-sizing:inherit}
+body{height:100%;overflow:hidden;background:var(--paper);color:var(--ink);font:400 17px/1.55 var(--text);-webkit-font-smoothing:antialiased;font-kerning:normal;overscroll-behavior:none}
+button{font:inherit;color:inherit;background:none;border:0;border-radius:0;padding:0;cursor:pointer;text-align:left}
+input{font:inherit;color:inherit;border-radius:0}
+:focus-visible{outline:1px solid var(--indigo);outline-offset:4px}
+button:focus:not(:focus-visible){outline:none}
+.ind{color:var(--indigo)}
+.num{font-variant-numeric:tabular-nums lining-nums}
+.sc{font:400 14px/1.4 var(--text);color:var(--ink-3)}
+
+.app{height:100%;display:grid;grid-template-rows:auto minmax(0,1fr) auto;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.wrap{width:100%;max-width:1200px;margin-inline:auto}
+
+/* header: one quiet grey line */
+.top{border-bottom:1px solid var(--rule)}
+.topin{display:grid;grid-template-columns:var(--mc) minmax(0,1fr) auto;align-items:baseline;height:68px;padding-top:26px}
+.brand{display:flex;align-items:baseline;gap:12px;white-space:nowrap}
+.brand b{font:500 18px/1 var(--display);letter-spacing:.01em}
+.brand span{font-size:14px;color:var(--ink-3)}
+.tabs{display:flex;gap:30px}
+.tabs button{font-size:15px;color:var(--ink-3);padding:2px 0}
+.tabs button:hover{color:var(--ink-2)}
+.tabs button[aria-current="page"]{color:var(--ink)}
+.ex{font-size:13px;font-style:italic;color:var(--ink-3)}
+.top .ex{display:none}
+
+/* stage */
+.stage{display:grid;grid-template-columns:var(--mc) minmax(0,1fr);position:relative;min-height:0;overflow:hidden;padding-block:clamp(28px,6.5vh,64px) clamp(20px,4vh,40px);touch-action:none}
+.margin{position:relative;display:flex;flex-direction:column;gap:22px;padding-right:32px}
+.folio{display:flex;align-items:baseline;gap:8px;color:var(--ink-3)}
+.folio .fn{font:400 46px/1 var(--display);color:var(--ink-3)}
+.folio .fo{font-size:14px}
+.nextl{display:flex;flex-direction:column;gap:4px}
+.nx{font-size:15px;color:var(--ink-2);align-self:flex-start}
+.nx:hover{color:var(--ink)}
+.nx .ar{margin-left:6px;color:var(--ink-3)}
+.status{position:absolute;left:0;bottom:clamp(20px,4vh,40px);width:calc(var(--mc) - 40px);margin:0;font-style:italic;font-size:15px;line-height:1.45;color:var(--ink-2);min-height:4.4em;display:flex;align-items:flex-end}
+.page{display:grid;grid-template-rows:auto minmax(0,1fr);min-width:0;min-height:0}
+.eyebrow{font-style:italic;font-size:16px;margin:0 0 10px;height:1.4em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+h1{font:500 clamp(40px,4.3vw,62px)/1.2 var(--display);margin:0;letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;height:1.25em}
+.body{position:relative;margin-top:clamp(22px,4.6vh,46px);min-height:0;overflow:hidden}
+
+/* footer: fixed key hints */
+.foot{border-top:1px solid var(--rule)}
+.footin{display:grid;grid-template-columns:var(--mc) minmax(0,1fr);align-items:center;height:58px;padding-bottom:env(safe-area-inset-bottom,0px)}
+.keys{display:flex;gap:34px;align-items:baseline;white-space:nowrap}
+.kh{display:inline-flex;align-items:baseline;gap:8px}
+.k{font:600 15px/1 var(--text);color:var(--ink);padding:4px 2px}
+.kd{font-size:14px;color:var(--ink-3)}
+.kh button:hover + .kd,.kh .k:hover{color:var(--ink)}
+.kh.off .k,.kh.off .kd{color:var(--ink-3);opacity:.5;cursor:default}
+
+/* shared pieces */
+.lead{font-size:clamp(17px,1.45vw,20px);line-height:1.6;color:var(--ink-2);max-width:56ch;margin:0;text-wrap:pretty}
+.acts{display:flex;align-items:baseline;gap:36px;flex-wrap:wrap}
+.act{font:500 clamp(19px,1.6vw,23px)/1.3 var(--display);padding:4px 0 5px;border-bottom:1px solid currentColor}
+.act:hover{box-shadow:inset 0 -1px 0 currentColor}
+.act.pri{color:var(--indigo)}
+.act.sec{color:var(--ink-2);border-color:var(--rule-2)}
+.act:disabled{color:var(--ink-3);border-color:var(--rule);cursor:default;box-shadow:none}
+.code{font:400 13.5px/1.85 var(--mono);color:var(--ink-2);margin:0;white-space:pre-wrap;word-break:break-word}
+.code .ind{font-weight:500}
+.props{display:grid;grid-template-columns:150px minmax(0,1fr);margin:0}
+.props > *{padding:9px 0;border-bottom:1px solid var(--rule);margin:0}
+.props dt{color:var(--ink-3);font-size:15px}
+.props dd{font-variant-numeric:tabular-nums}
+.props.two{grid-template-columns:110px minmax(0,1fr) 110px minmax(0,1fr)}
+
+/* incident */
+.inc{display:flex;flex-direction:column;gap:clamp(18px,3.4vh,34px)}
+.fig{display:flex;align-items:flex-end;gap:40px;flex-wrap:wrap}
+.big{font:400 clamp(92px,10.5vw,150px)/.86 var(--display);color:var(--indigo);font-variant-numeric:tabular-nums}
+.bigu{font:400 clamp(26px,2.4vw,34px)/1 var(--display);color:var(--indigo);margin-left:10px}
+.ref{display:flex;gap:36px;padding-bottom:6px}
+.ref i{font-style:italic}
+.ref span{display:flex;flex-direction:column;gap:4px;font:400 26px/1.1 var(--display)}
+.chartw{position:relative}
+.chart{position:relative;height:clamp(220px,40vh,360px)}
+.chart .uplot{width:100%!important}
+.readout{margin:16px 0 0;font-size:15px;color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
+.readout b{font-weight:500;color:var(--ink)}
+.readout b.ind{color:var(--indigo)}
+.readout span+span{margin-left:24px}
+.rorow{display:flex;justify-content:space-between;align-items:baseline;gap:24px;margin-top:16px}
+.rorow .readout{margin:0;min-width:0}
+.rorow .lnk{flex:none}
+.logs{display:flex;flex-direction:column}
+.logs .code{padding:14px 0;border-bottom:1px solid var(--rule)}
+.logs .code:first-child{border-top:1px solid var(--rule)}
+
+/* server type */
+.srv{display:flex;flex-direction:column;gap:clamp(14px,2.8vh,28px)}
+.figs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border-top:1px solid var(--rule)}
+.figs > div{display:flex;flex-direction:column;gap:4px;padding:14px 0 0}
+.fv{font:400 clamp(28px,2.7vw,38px)/1.1 var(--display);font-variant-numeric:tabular-nums}
+.fu{font-size:14.5px;color:var(--ink-3)}
+.tbl.ov{grid-template-columns:1.6fr .6fr .9fr .9fr 1.3fr}
+.tbl.ov .tr{display:contents;cursor:pointer}
+.tbl.ov .tr:hover .td{color:var(--ink)}
+.tbl.ov .tr:focus-visible .td{box-shadow:inset 0 -1px 0 var(--indigo)}
+
+.tbl.ov .bd{padding-left:48px}
+.tbl.gw{grid-template-columns:1.6fr 1fr 1fr;max-width:640px}
+.tbl{display:grid;grid-template-columns:1fr 2.2fr .7fr .9fr .8fr .7fr;column-gap:0}
+.tbl > .r{padding-left:16px}
+.tbl > .th{padding:0 0 8px;border-bottom:1px solid var(--rule-2)}
+.tbl > .td,.tbl .tr > .td{height:clamp(36px,4.8vh,44px);display:flex;align-items:center;border-bottom:1px solid var(--rule);white-space:nowrap;overflow:hidden;font-variant-numeric:tabular-nums}
+.tbl > .td.empty{border-bottom-color:transparent}
+.tbl .r{justify-content:flex-end;text-align:right}
+.tbl .th.r{text-align:right}
+.tbl .st{color:var(--ink-2)}
+.tbl.dim .td{color:var(--ink-3)}
+.tbl.dim .td.hl{color:var(--ink)}
+.tbl.dim .td.hl.ind,.tbl .td.ind{color:var(--indigo)}
+.lnk{font-size:15px;color:var(--ink-2);border-bottom:1px solid var(--rule-2);padding-bottom:1px}
+.lnk:hover{color:var(--ink);border-color:var(--ink)}
+
+/* list + detail (changes, actors) */
+.split{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,6fr);gap:clamp(32px,5vw,72px);align-items:start}
+.list{display:flex;flex-direction:column;border-top:1px solid var(--rule)}
+.li{display:grid;grid-template-columns:64px minmax(0,1fr) auto;gap:14px;align-items:baseline;padding:11px 0;border-bottom:1px solid var(--rule);color:var(--ink-3);font-variant-numeric:tabular-nums}
+.li:hover{color:var(--ink-2)}
+.li.on{color:var(--ink)}
+.li.on .k1{font-weight:600}
+.li .ind{color:var(--indigo)}
+.li .k3{text-align:right}
+.li.two{grid-template-columns:minmax(0,1fr) auto}
+.det{display:flex;flex-direction:column;gap:20px;min-width:0}
+.h2{font:500 clamp(28px,2.6vw,38px)/1.2 var(--display);margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.note{margin:0;font-style:italic;color:var(--indigo);min-height:1.55em}
+.blk{display:flex;flex-direction:column;gap:6px}
+
+/* audit */
+.audit{display:grid;grid-template-columns:92px 140px 210px minmax(0,1fr);column-gap:0;border-top:1px solid var(--rule)}
+.audit > *{padding:11px 20px 11px 0;border-bottom:1px solid var(--rule);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
+.audit .w{color:var(--ink-3)}
+
+/* find and confirm */
+.qin{width:100%;max-width:720px;background:none;border:0;border-bottom:1px solid var(--rule-2);font:400 clamp(24px,2.3vw,32px)/1.3 var(--display);padding:6px 0 10px;outline:none;color:var(--ink)}
+.qin::placeholder{color:var(--ink-3)}
+.qin:focus{border-bottom-color:var(--ink)}
+.res{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:40px;margin-top:clamp(20px,4vh,36px)}
+.rg{display:flex;flex-direction:column}
+.rg .sc{padding-bottom:8px;border-bottom:1px solid var(--rule)}
+.hit{display:flex;justify-content:space-between;gap:12px;padding:7px 0;color:var(--ink-3);border-bottom:1px solid var(--rule)}
+.hit .h{font-size:14px;color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hit:hover{color:var(--ink-2)}
+.hit.on{color:var(--ink)}
+.hit.on .t{font-weight:600}
+.nores{color:var(--ink-3);font-style:italic}
+.cf{display:flex;flex-direction:column;gap:clamp(16px,3vh,28px);max-width:720px}
+.cf label{color:var(--ink-3);font-size:15px}
+.cf label b{color:var(--ink);font-weight:600}
+
+/* text morph: unchanged characters stay, changed ones blur out and in */
+.mw{position:relative;display:inline-block;width:0;vertical-align:baseline;overflow:visible}
+.mo{position:absolute;left:0;bottom:0;white-space:pre;pointer-events:none;animation:mOut .2s cubic-bezier(.4,0,1,1) forwards}
+.mi{display:inline;animation:mIn .32s cubic-bezier(.25,.6,.25,1) .07s backwards}
+@keyframes mOut{to{filter:blur(6px);opacity:0}}
+@keyframes mIn{from{filter:blur(6px);opacity:0}}
+/* entering a page: lines slide in from the direction of travel */
+.enter .ln{animation:var(--slide) .36s cubic-bezier(.2,.75,.25,1) backwards;animation-delay:calc(var(--i,0) * 26ms)}
+.up{--slide:sUp}.down{--slide:sDown}.left{--slide:sLeft}.right{--slide:sRight}
+@keyframes sUp{from{transform:translateY(30px)}}
+@keyframes sDown{from{transform:translateY(-30px)}}
+@keyframes sLeft{from{transform:translateX(44px)}}
+@keyframes sRight{from{transform:translateX(-44px)}}
+@media (prefers-reduced-motion:reduce){.mo{display:none}.mi,.enter .ln{animation:none!important}}
+
+/* uPlot (its stylesheet, trimmed to what this page uses) */
+.uplot,.uplot *{box-sizing:border-box}
+.uplot{width:min-content;font-family:var(--text)}
+.u-wrap{position:relative;user-select:none}
+.u-over,.u-under{position:absolute}
+.u-under{overflow:hidden}
+.uplot canvas{display:block;position:relative;width:100%;height:100%}
+.u-axis{position:absolute}
+.u-cursor-x,.u-cursor-y{position:absolute;left:0;top:0;pointer-events:none;will-change:transform}
+.u-hz .u-cursor-x{height:100%;border-right:1px solid var(--rule-2)}
+.u-hz .u-cursor-y{display:none}
+.u-cursor-pt{display:none}
+.u-axis.u-off,.u-select.u-off,.u-cursor-x.u-off,.u-cursor-y.u-off{display:none}
+.u-select{display:none}
+
+/* phone: same order, more screens */
+@media (max-width:719px){
+  :root{--mc:0px}
+  body{font-size:16px}
+  .topin{grid-template-columns:minmax(0,1fr) auto;grid-template-rows:auto auto;height:auto;padding-top:16px;row-gap:12px}
+  .tabs{grid-column:1 / -1;grid-row:2;gap:0;justify-content:space-between;padding-bottom:12px}
+  .tabs button{font-size:14.5px}
+  .top .ex{display:block;grid-column:2;grid-row:1}
+  .stage{grid-template-columns:minmax(0,1fr);padding-block:22px 16px}
+  .margin{position:absolute;left:0;right:0;bottom:16px;flex-direction:row;justify-content:space-between;align-items:baseline;padding:0}
+  .folio .fn{font-size:15px;font-family:var(--text);color:var(--ink-3)}
+  .folio{gap:5px}
+  .nextl{flex-direction:row;gap:8px;align-items:baseline}
+  .status{width:auto;right:0;bottom:44px;min-height:0;font-size:14px}
+  .page{padding-bottom:84px}
+  .eyebrow{margin-bottom:6px;font-size:14.5px}
+  h1{font-size:30px;white-space:normal;height:2.5em;line-height:1.25;overflow:hidden;text-wrap:balance}
+  .body{margin-top:18px}
+  .footin{grid-template-columns:minmax(0,1fr);height:52px}
+  .footin > .ex{display:none}
+  .keys{justify-content:space-between;gap:0}
+  .lead{font-size:16.5px}
+  .big{font-size:96px}
+  .ref span{font-size:22px}
+  .fig{gap:24px}
+  .act{font-size:19px}
+  .acts{gap:24px}
+  .chart{height:250px}
+  .readout{white-space:normal;line-height:1.7}
+  .rorow{flex-direction:column;gap:6px}
+  .readout span{display:inline-block}
+  .readout span+span{margin-left:0;margin-right:14px}
+  .readout span:first-child{margin-right:14px}
+  .figs{grid-template-columns:1fr 1fr;row-gap:14px}
+  .tbl{grid-template-columns:minmax(0,1.2fr) .8fr 1fr .8fr;column-gap:10px}
+  .tbl.ov,.tbl.gw{column-gap:0}
+  .tbl.ov{grid-template-columns:minmax(0,1.5fr) .5fr .9fr .9fr}
+  .tbl.ov .bd{display:none}
+  .tbl.gw{grid-template-columns:minmax(0,1fr) 1fr 1fr}
+  .tbl.ov > .td,.tbl.ov .td,.tbl.gw > .td{height:42px;padding:0;border-bottom:1px solid var(--rule)}
+  .tbl > .td{height:auto;padding:9px 0 0;border-bottom:0}
+  .tbl > .td.sub{padding:2px 0 9px;border-bottom:1px solid var(--rule);font-size:14px}
+  .tbl > .td.sub.empty{border-bottom-color:transparent}
+  .tbl .st{grid-column:1 / 4}
+  .split{grid-template-columns:minmax(0,1fr);gap:22px}
+  .li{padding:6px 0;grid-template-columns:52px minmax(0,1fr) auto;gap:10px}
+  .props{grid-template-columns:116px minmax(0,1fr)}
+  .props > *{padding:5px 0}
+  .props.two{grid-template-columns:116px minmax(0,1fr)}
+  .det{gap:10px}
+  .note{font-size:15px;line-height:1.4}
+  .h2{font-size:26px}
+  .code{font-size:12px;line-height:1.7}
+  .audit{grid-template-columns:52px minmax(0,1fr) auto;column-gap:0;grid-auto-flow:row dense}
+  .audit > *{padding-right:0}
+  .audit .tm{grid-column:1;grid-row:span 2}
+  .audit .a{grid-column:2;border-bottom:0;padding-bottom:0}
+  .audit .w{grid-column:3;text-align:right;border-bottom:0;padding-bottom:0}
+  .audit .tg{grid-column:2 / -1;padding-top:2px;color:var(--ink-2);font-size:14.5px}
+  .res{grid-template-columns:minmax(0,1fr);gap:0}
+  .hit .h{font-size:13px}
+  .qin{font-size:24px}
+}
+</style>
+
+<div class="app" id="app">
+  <header class="top"><div class="wrap topin">
+    <div class="brand"><b>DaServer</b><span>mmo, production</span></div>
+    <nav class="tabs" id="tabs" aria-label="Sections"></nav>
+    <span class="ex">Example data</span>
+  </div></header>
+  <main class="stage wrap" id="stage">
+    <aside class="margin" id="margin" aria-label="Position"></aside>
+    <section class="page" aria-live="polite">
+      <div class="head"><p class="eyebrow sc" id="eb" data-m="eb"></p><h1 id="h1" data-m="h1"></h1></div>
+      <div class="body" id="body"></div>
+    </section>
+    <p class="status" id="status" role="status"><span data-m="status"></span></p>
+  </main>
+  <footer class="foot"><div class="wrap footin"><span class="ex">Example data</span><div class="keys" id="keys"></div></div></footer>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.iife.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/lethargy@1.0.9/lethargy.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsdiff/5.2.0/diff.min.js"></script>
+<script>
+(function () {
+  'use strict';
+  var $ = function (id) { return document.getElementById(id); };
+  var qa = function (sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); };
+  function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function M(key, text, cls, tag) { tag = tag || 'span'; return '<' + tag + (cls ? ' class="' + cls + '"' : '') + ' data-m="' + key + '">' + esc(text) + '</' + tag + '>'; }
+  var RM = window.matchMedia('(prefers-reduced-motion: reduce)');
+  function rnd(n) { var x = Math.sin(n * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); }
+  function ms(v) { return v < 10 ? v.toFixed(1) : String(Math.round(v)); }
+
+  // ---------- example data (from the previous console) ----------
+  var N = 120, DEPLOY = 79, LIMIT = 25, T0 = Date.UTC(2026, 9, 20, 17, 2) / 1000;
+  var XS = []; for (var xi = 0; xi < N; xi++) XS.push(T0 + xi * 60 * 60 / (N - 1));
+  function clock(i) { var t = 17 * 60 + 2 + Math.round(i * 60 / (N - 1)), h = Math.floor(t / 60), m = t % 60; return h + ':' + (m < 10 ? '0' : '') + m; }
+  function series(seed, base, amp, now, step) {
+    var a = [];
+    for (var i = 0; i < N; i++) { var v = base * (1 + amp * Math.sin(i / 9 + seed) + amp * .5 * Math.sin(i / 3.1 + seed * 2) + (rnd(seed * 100 + i) - .5) * amp * .6); if (step && i >= step[0]) v *= step[1] + (rnd(i + seed) - .5) * .08; a.push(v); }
+    a[N - 1] = now; return a;
+  }
+  var TYPES = [
+    { id: 'gw', name: 'GatewayServer', actors: 'Connection', count: '82,103', rps: '412k', err: '0.000%', now: 3.1, usual: 3.0, build: '2026.10.20-3', p: series(11, 3.1, .06, 3.1),
+      nodes: [{ n: 'gate-0', cpu: '22%', mem: '1.1 GB', p99: 3.0, st: 'ok', txt: 'Running' }, { n: 'gate-1', cpu: '21%', mem: '1.1 GB', p99: 3.2, st: 'ok', txt: 'Running' }] },
+    { id: 'pl', name: 'PlayerServer', actors: 'Player, Guild and Loot', count: '15,188', rps: '610k', err: '0.010%', now: 8.4, usual: 8.2, build: '2026.10.20-3', p: series(12, 8.4, .07, 8.4),
+      nodes: [{ n: 'game-0', cpu: '38%', mem: '3.4 GB', p99: 8.1, st: 'ok', txt: 'Running' }, { n: 'game-1', cpu: '41%', mem: '3.5 GB', p99: 8.9, st: 'ok', txt: 'Running' }, { n: 'game-2', cpu: '36%', mem: '3.3 GB', p99: 7.6, st: 'ok', txt: 'Resumed after hot restart' }] },
+    { id: 'map', name: 'MapServer', actors: 'Map', count: '221', rps: '880k', err: '0.020%', now: 43, usual: 12, build: '2026.10.20-3', p: series(13, 12, .06, 43, [DEPLOY, 3.45]),
+      nodes: [{ n: 'map-0', cpu: '61%', mem: '5.2 GB', p99: 41, st: 'ok', txt: 'Running' }, { n: 'map-1', cpu: '64%', mem: '5.4 GB', p99: 48, st: 'ok', txt: 'Running' }, { n: 'map-2', cpu: '37%', mem: '2.9 GB', p99: 36, st: 'busy', txt: 'Draining, 35 of 64 moved' }, { n: 'map-3', cpu: '58%', mem: '5.1 GB', p99: 44, st: 'ok', txt: 'Running' }] }
+  ];
+  var CHANGES = [
+    { id: 'c5', time: '17:58', kind: 'Hot restart', target: 'game-2', detail: 'Build 2026.10.20-3', by: 'ops@', result: 'Done, paused 0.4 s', note: '' },
+    { id: 'c4', time: '17:42', kind: 'Rollout', target: 'MapServer', detail: 'Build 2026.10.20-3', by: 'Release pipeline', result: '4 of 4 nodes', note: 'MapServer ask p99 rose from 12 ms to 43 ms after this rollout.', bad: true },
+    { id: 'c3', time: '17:40', kind: 'Drain', target: 'map-2', detail: 'Scale-in', by: 'Autoscaler', result: '35 of 64 moved', note: '' },
+    { id: 'c2', time: '17:20', kind: 'Config table', target: 'SkillTable', detail: 'Version 15', by: 'ops@', result: '9 of 9 nodes accepted', note: '' },
+    { id: 'c1', time: '17:07', kind: 'Scale-out', target: 'GatewayServer', detail: '1 to 2 nodes', by: 'Autoscaler', result: 'Done', note: '' }
+  ];
+  var ACTORS = [
+    { id: 'Map(7)', type: 'Map', node: 'map-1', p99: 58, rps: '18.4k/s', mailbox: '1,762 of 2,000', full: true, saved: '14 s ago',
+      comps: ['Map    { Id: 7 }', 'Grid   { CellSize: 16, Width: 512, Height: 512 }', 'NetIds { Next: 48211 }'],
+      logs: [['17:58:02', 'warn', 'tick 29.8 ms of 33.3 ms'], ['17:57:31', 'info', 'checkpoint, 1 statement'], ['17:42:15', 'info', 'activated on map-1 (rolling upgrade)']] },
+    { id: 'Map(12)', type: 'Map', node: 'map-0', p99: 41, rps: '9.1k/s', mailbox: '311 of 2,000', saved: '22 s ago',
+      comps: ['Map    { Id: 12 }'], logs: [['17:43:01', 'info', 'activated on map-0 (rolling upgrade)']] },
+    { id: 'Player(482913)', type: 'Player', node: 'game-1', p99: 6, rps: '44/s', mailbox: '2 of 2,000', saved: '2 s ago',
+      comps: ['Player    { Id: 482913 }', 'Inventory { Slots: 18 of 40 }'], logs: [['17:58:10', 'info', 'GrantItem 2207 answered']] }
+  ];
+  var AUDIT = [['17:58', 'ops@', 'Hot restart', 'game-2 to 2026.10.20-3'], ['17:20', 'ops@', 'Upload config table', 'SkillTable version 15'], ['17:07', 'Autoscaler', 'Scale', 'GatewayServer to 2 nodes']];
+  var STORE = { p99: '4.2 ms', usual: '4.0 ms', inflight: '3 of 8', unsaved: '1,204', oldest: '9 s', error: 'None in the last hour' };
+  var CLIENTS = { total: '82,103', resumed: '1,977', spread: 'Within 0.1% of the average', gw: [['gate-0', '41,020', '0'], ['gate-1', '41,083', '0']] };
+  var TABS = ['Incident', 'Cluster', 'Changes', 'Actors', 'Audit'];
+
+  var S = { i: 0, back: [], compact: false, mode: null, layout: null, rolling: false, acked: false, hl: null, status: '' };
+  var steps = [];
+
+  // ---------- the step sequence: screens, then items, then the next tab ----------
+  function buildSteps() {
+    var c = S.split, st = [];
+    function add(tab, key, layout, label, o) { o.tab = tab; o.key = key; o.layout = layout; o.label = label; st.push(o); }
+    add(0, 'sum', 'inc-sum', 'Summary', { eb: function () { return S.rolling ? 'Rolling back, started just now' : 'In progress since 17:42'; }, h1: 'MapServer asks are slow', body: incSum });
+    add(0, 'chart', 'inc-chart', 'The last hour', { eb: function () { return 'Ask latency p99 by server type'; }, h1: 'The last hour', body: incChart, after: drawMain });
+    add(0, 'logs', 'inc-logs', 'MapServer logs', { eb: function () { return 'Warnings since the rollout'; }, h1: 'What MapServer logs', body: incLogs });
+    add(1, 'all', 'cluster', 'Every server type', { eb: function () { return '9 nodes, every view agrees'; }, h1: 'The cluster', body: cluster });
+    TYPES.forEach(function (t, ti) {
+      var eb = function () { return 'Hosts ' + t.actors + ' actors'; };
+      if (!c) add(1, t.id, 'server', t.name, { eb: eb, h1: t.name, body: function () { return server(ti); } });
+      else {
+        add(1, t.id, 'server-sum', t.name, { eb: eb, h1: t.name, body: function () { return serverSum(ti); } });
+        add(1, t.id + '-n', 'server-nodes', t.name + ' nodes', { eb: function () { return t.nodes.length + ' nodes'; }, h1: t.name, body: function () { return serverNodes(ti); } });
+      }
+    });
+    add(1, 'store', 'store', 'The actor store', { eb: function () { return 'PostgreSQL, written by every node'; }, h1: 'The actor store', body: store });
+    add(1, 'clients', 'clients', 'Client connections', { eb: function () { return 'Held by GatewayServer'; }, h1: 'Client connections', body: clients });
+    CHANGES.forEach(function (ch, ci) { add(2, ch.id, 'changes', ch.kind + ' ' + ch.target, { eb: function () { return 'The last hour, newest first'; }, h1: 'Changes', body: function () { return changes(ci); } }); });
+    ACTORS.forEach(function (a, ai) {
+      var eb = function () { return 'By handler p99, slowest first'; };
+      if (!c) add(3, a.id, 'actors', a.id, { eb: eb, h1: 'Slowest actors', body: function () { return actors(ai); } });
+      else {
+        add(3, a.id, 'actor', a.id, { eb: eb, h1: 'Slowest actors', body: function () { return actors(ai, 1); } });
+        add(3, a.id + '-l', 'actor-more', a.id + ' components', { eb: eb, h1: 'Slowest actors', body: function () { return actors(ai, 2); } });
+      }
+    });
+    var per = S.compact ? 6 : 9, pages = Math.max(1, Math.ceil(AUDIT.length / per));
+    for (var p = 0; p < pages; p++) (function (p) { add(4, 'p' + p, 'audit-' + p, pages > 1 ? 'Page ' + (p + 1) : 'Audit log', { eb: function () { return 'Every action and who took it, newest first'; }, h1: 'Audit log', body: function () { return audit(p, per); } }); })(p);
+    steps = st;
+  }
+  function inTab(i) { var t = steps[i].tab, a = steps.filter(function (s) { return s.tab === t; }); return { k: a.indexOf(steps[i]) + 1, n: a.length }; }
+  function firstOf(tab) { for (var i = 0; i < steps.length; i++) if (steps[i].tab === tab) return i; return 0; }
+  function findStep(tab, key) { for (var i = 0; i < steps.length; i++) if (steps[i].tab === tab && steps[i].key === key) return i; return firstOf(tab); }
+
+  // ---------- screens ----------
+  function incSum() {
+    return '<div class="inc">' +
+      '<div class="ln fig"><span><span class="big">43</span><span class="bigu">ms</span></span>' +
+      '<div class="ref"><span><i class="sc">limit</i><span class="num">25 ms</span></span><span><i class="sc">usual</i><span class="num">12 ms</span></span></div></div>' +
+      '<p class="ln lead">Ask p99 on MapServer. It began at 17:42, right after build 2026.10.20-3 reached all 4 MapServer nodes. GatewayServer, PlayerServer and the store are unaffected.</p>' +
+      '<div class="ln acts"><button class="act pri" id="rb"' + (S.rolling ? ' disabled' : '') + '>' + M('b-rb', S.rolling ? 'Rolling back to 2026.10.20-2' : 'Roll back MapServer to 2026.10.20-2') + '</button>' +
+      '<button class="act sec" id="ack"' + (S.acked ? ' disabled' : '') + '>' + M('b-ack', S.acked ? 'Acknowledged' : 'Acknowledge') + '</button></div></div>';
+  }
+  function readout(i) {
+    return '<span>' + clock(i) + '</span>' + TYPES.map(function (t) { return '<span>' + t.name + ' <b class="num' + (t.id === 'map' ? ' ind' : '') + '">' + ms(t.p[i]) + ' ms</b></span>'; }).join('');
+  }
+  function incChart() { return '<div class="ln chartw"><div class="chart" id="chart"></div></div><div class="ln rorow"><p class="readout" id="ro">' + readout(N - 1) + '</p>' + hist('Prometheus') + '</div>'; }
+  function incLogs() {
+    var L = [['17:58:02', 'map-1', 'warn', 'Map(7) tick 29.8 ms of 33.3 ms'], ['17:51:40', 'map-0', 'warn', 'Map(12) tick 27.1 ms of 33.3 ms'], ['17:42:31', 'map-3', 'info', 'rolling upgrade complete, 4 of 4']];
+    return '<div class="logs">' + L.map(function (l) { return '<p class="ln code">' + l[0] + '  ' + l[1] + '  <span class="' + (l[2] === 'warn' ? 'ind' : '') + '">' + l[2] + '</span>  ' + esc(l[3]) + '</p>'; }).join('') + '<div class="ln acts">' + hist('Loki') + '</div></div>';
+  }
+  // Four figures, each with what it usually is beneath it: a number means nothing without its normal.
+  function figRow(f) {
+    return '<div class="ln figs">' + f.map(function (x, k) { return '<div><span class="sc">' + x[0] + '</span>' + M('b-f' + k, x[1], 'fv' + (x[3] ? ' ind' : '')) + M('b-fu' + k, x[2], 'fu') + '</div>'; }).join('') + '</div>';
+  }
+  function figs(t) {
+    return figRow([['Active actors', t.count, 'of ' + t.nodes.length + ' nodes'], ['Requests per second', t.rps, 'all nodes'], ['Errors', t.err, 'of requests'], ['Ask p99', ms(t.now) + ' ms', 'usually ' + ms(t.usual) + ' ms', t.now > LIMIT]]);
+  }
+  function hist(what) { return '<a class="lnk" href="#" data-hist="' + what + '">' + M('b-h', 'Open in ' + what) + '</a>'; }
+  function cluster() {
+    var h = '<span class="th sc">Server type</span><span class="th sc r">Nodes</span><span class="th sc r">Actors</span><span class="th sc r">Ask p99</span><span class="th sc bd">Build</span>';
+    TYPES.forEach(function (t, k) {
+      var bad = t.now > LIMIT ? ' ind' : '';
+      h += '<button class="tr" data-go="1:' + t.id + '">' + M('b-t' + k + 'a', t.name, 'td' + bad) + M('b-t' + k + 'b', String(t.nodes.length), 'td r') + M('b-t' + k + 'c', t.count, 'td r') + M('b-t' + k + 'd', ms(t.now) + ' ms', 'td r' + bad) + M('b-t' + k + 'e', t.build, 'td bd') + '</button>';
+    });
+    return '<div class="srv"><p class="ln lead">MapServer is over its 25 ms limit. Everything else is within its usual range, the store answers in ' + STORE.p99 + ' and every node sees the same 9 members.</p>' +
+      '<div class="ln tbl ov">' + h + '</div></div>';
+  }
+  function store() {
+    return '<div class="srv">' + figRow([['Write p99', STORE.p99, 'usually ' + STORE.usual], ['Writes in flight', STORE.inflight, 'per node, at most'], ['Unsaved actors', STORE.unsaved, 'oldest ' + STORE.oldest], ['Errors', 'None', 'in the last hour']]) +
+      '<p class="ln lead">Changed actors are written in batches of up to 512 rows. Nothing is waiting longer than its checkpoint interval.</p><div class="ln acts">' + hist('Prometheus') + '</div></div>';
+  }
+  function clients() {
+    var h = '<span class="th sc">Gateway</span><span class="th sc r">Clients</span><span class="th sc r">Moving now</span>';
+    CLIENTS.gw.forEach(function (g, k) { h += M('b-g' + k + 'a', g[0], 'td') + M('b-g' + k + 'b', g[1], 'td r') + M('b-g' + k + 'c', g[2], 'td r'); });
+    return '<div class="srv">' + figRow([['Connected', CLIENTS.total, 'clients'], ['Resumed', CLIENTS.resumed, 'in the last hour'], ['Spread', '0.1%', 'from the average'], ['Refused', '0', 'handshakes']]) +
+      '<div class="ln tbl gw">' + h + '</div></div>';
+  }
+  function nodeTable(t) {
+    var c = S.compact, h = '', dim = S.hl && t.nodes.some(function (n) { return n.n === S.hl; });
+    if (!c) {
+      h += '<span class="th sc">Node</span><span class="th sc">State</span><span class="th sc r">CPU</span><span class="th sc r">Memory</span><span class="th sc r">Ask p99</span><span class="th"></span>';
+      for (var r = 0; r < 4; r++) {
+        var n = t.nodes[r], e = n ? '' : ' empty', hl = n && n.n === S.hl ? ' hl' : '', bad = n && n.p99 > LIMIT ? ' ind' : '';
+        h += M('b-n' + r + 'a', n ? n.n : '', 'td' + e + hl) + M('b-n' + r + 'b', n ? n.txt : '', 'td st' + e + hl) + M('b-n' + r + 'c', n ? n.cpu : '', 'td r' + e + hl) + M('b-n' + r + 'd', n ? n.mem : '', 'td r' + e + hl) + M('b-n' + r + 'e', n ? ms(n.p99) + ' ms' : '', 'td r' + e + hl + bad);
+        h += '<span class="td r' + e + '">' + (n && n.st === 'ok' ? '<button class="lnk" data-drain="' + n.n + '">' + M('b-n' + r + 'f', 'Drain') + '</button>' : M('b-n' + r + 'f', '')) + '</span>';
+      }
+    } else {
+      h += '<span class="th sc">Node</span><span class="th sc r">CPU</span><span class="th sc r">Memory</span><span class="th sc r">p99</span>';
+      for (var q = 0; q < 4; q++) {
+        var m = t.nodes[q], em = m ? '' : ' empty', hm = m && m.n === S.hl ? ' hl' : '';
+        h += M('b-n' + q + 'a', m ? m.n : '', 'td' + em + hm) + M('b-n' + q + 'c', m ? m.cpu : '', 'td r' + em + hm) + M('b-n' + q + 'd', m ? m.mem : '', 'td r' + em + hm) + M('b-n' + q + 'e', m ? ms(m.p99) + ' ms' : '', 'td r' + em + hm + (m && m.p99 > LIMIT ? ' ind' : ''));
+        h += M('b-n' + q + 'b', m ? m.txt : '', 'td sub st' + em + hm) + '<span class="td sub r' + em + '">' + (m && m.st === 'ok' ? '<button class="lnk" data-drain="' + m.n + '">' + M('b-n' + q + 'f', 'Drain') + '</button>' : M('b-n' + q + 'f', '')) + '</span>';
+      }
+    }
+    return '<div class="ln tbl' + (dim ? ' dim' : '') + '">' + h + '</div>';
+  }
+  function hotRestart(t) { return '<div class="ln acts"><button class="act sec" id="hr" data-type="' + t.id + '">' + M('b-hr', 'Hot restart ' + t.name) + '</button>' + hist('Prometheus') + '</div>'; }
+  function server(ti) { var t = TYPES[ti]; return '<div class="srv">' + figs(t) + nodeTable(t) + hotRestart(t) + '</div>'; }
+  function serverSum(ti) { var t = TYPES[ti]; return '<div class="srv">' + figs(t) + '<div class="ln acts">' + hist('Prometheus') + '</div></div>'; }
+  function serverNodes(ti) { var t = TYPES[ti]; return '<div class="srv">' + nodeTable(t) + hotRestart(t) + '</div>'; }
+  function changes(ci) {
+    var ch = CHANGES[ci];
+    var list = '<div class="ln list">' + CHANGES.map(function (x, k) { return '<button class="li' + (k === ci ? ' on' : '') + '" data-go="2:' + x.id + '"><span class="k0">' + x.time + '</span><span class="k1' + (x.bad ? ' ind' : '') + '">' + x.kind + '</span><span class="k3">' + x.target + '</span></button>'; }).join('') + '</div>';
+    var det = '<div class="det">' + M('b-ct', ch.kind + ' ' + ch.target, 'ln h2', 'h2') +
+      '<dl class="ln props"><dt>Detail</dt>' + M('b-c1', ch.detail, '', 'dd') + '<dt>Started by</dt>' + M('b-c2', ch.by, '', 'dd') + '<dt>Result</dt>' + M('b-c3', ch.result, '', 'dd') + '</dl>' +
+      M('b-c4', ch.note, 'ln note', 'p') + '<div class="ln acts">' + (ch.bad ? '<button class="act pri" id="rb"' + (S.rolling ? ' disabled' : '') + '>' + M('b-rb', S.rolling ? 'Rolling back' : 'Roll back this rollout') + '</button>' : '') + '</div></div>';
+    return '<div class="split">' + list + det + '</div>';
+  }
+  function actors(ai, part) {
+    var a = ACTORS[ai], c = !!part;
+    var list = c ? '' : '<div class="ln list">' + ACTORS.map(function (x, k) { return '<button class="li two' + (k === ai ? ' on' : '') + '" data-go="3:' + x.id + '"><span class="k1">' + x.id + '</span><span class="k3' + (x.p99 > LIMIT ? ' ind' : '') + '">' + x.p99 + ' ms</span></button>'; }).join('') + '</div>';
+    var props = (c ? '<dt>Handler p99</dt>' + M('b-a0', a.p99 + ' ms', a.p99 > LIMIT ? 'ind' : '', 'dd') : '') +
+      '<dt>Type</dt>' + M('b-a1', a.type, '', 'dd') + '<dt>Node</dt>' + M('b-a2', a.node, '', 'dd') + '<dt>Requests</dt>' + M('b-a3', a.rps, '', 'dd') + '<dt>Mailbox</dt>' + M('b-a4', a.mailbox, a.full ? 'ind' : '', 'dd') + '<dt>Last saved</dt>' + M('b-a5', a.saved, '', 'dd');
+    var comps = '', logs = '';
+    for (var k = 0; k < 3; k++) {
+      comps += M('b-ac' + k, a.comps[k] || '', 'code', 'div');
+      var l = a.logs[k];
+      logs += '<div class="code">' + (l ? M('b-al' + k + 'a', l[0] + '  ') + M('b-al' + k + 'b', l[1], l[1] === 'warn' ? 'ind' : '') + M('b-al' + k + 'c', '  ' + l[2]) : M('b-al' + k + 'a', '') + M('b-al' + k + 'b', '') + M('b-al' + k + 'c', '')) + '</div>';
+    }
+    var more = '<div class="ln blk"><span class="sc">Components</span><div>' + comps + '</div></div><div class="ln blk"><span class="sc">Logs</span><div>' + logs + '</div><div class="acts">' + hist('Tempo') + '</div></div>';
+    var det = '<div class="det">' + M('b-at', a.id, 'ln h2', 'h2') + (part === 2 ? more : '<dl class="ln props two">' + props + '</dl>' + (part ? '' : more)) + '</div>';
+    return c ? det : '<div class="split">' + list + det + '</div>';
+  }
+  function audit(p, per) {
+    return '<div class="ln audit">' + AUDIT.slice(p * per, p * per + per).map(function (a) { return '<span class="tm">' + a[0] + '</span><span class="w">' + esc(a[1]) + '</span><span class="a">' + esc(a[2]) + '</span><span class="tg">' + esc(a[3]) + '</span>'; }).join('') + '</div>';
+  }
+
+  // ---------- charts (uPlot), coloured from the theme tokens ----------
+  var plots = [];
+  function tok(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+  function killPlots() { plots.forEach(function (u) { u.destroy(); }); plots = []; }
+  function drawMain() {
+    var el = $('chart'); if (!el) return;
+    var r = el.getBoundingClientRect(), ink3 = tok('--ink-3'), rule = tok('--rule'), indigo = tok('--indigo'), ink2 = tok('--ink-2');
+    var font = (S.compact ? 12 : 13.5) + 'px Newsreader, Georgia, serif';
+    var u = new uPlot({
+      width: Math.floor(r.width), height: Math.floor(r.height), legend: { show: false },
+      cursor: { y: false, points: { show: false }, drag: { x: false, y: false } },
+      scales: { x: { time: true }, y: { range: [0, 60] } },
+      axes: [
+        { stroke: ink3, font: font, grid: { show: false }, ticks: { show: false }, size: 34, gap: 8, splits: function () { return [XS[0], XS[59], XS[N - 1]]; }, values: function (u, v) { return v.map(function (x) { return clock(XS.indexOf(x)); }); } },
+        { stroke: ink3, font: font, grid: { stroke: rule, width: 1 }, ticks: { show: false }, size: S.compact ? 48 : 60, gap: 10, splits: function () { return [0, 20, 40, 60]; }, values: function (u, v) { return v.map(function (x) { return x + ' ms'; }); } }
+      ],
+      series: [{}].concat(TYPES.map(function (t) { return { stroke: t.id === 'map' ? indigo : ink3, width: t.id === 'map' ? 1.8 : 1.3, points: { show: false } }; })),
+      hooks: {
+        drawAxes: [function (u) {
+          var c = u.ctx, d = devicePixelRatio, y = u.valToPos(LIMIT, 'y', true), x = u.valToPos(XS[DEPLOY], 'x', true), L = u.bbox.left, R = L + u.bbox.width;
+          c.save(); c.lineWidth = d; c.strokeStyle = ink2; c.setLineDash([4 * d, 4 * d]); c.beginPath(); c.moveTo(L, y); c.lineTo(R, y); c.stroke();
+          c.setLineDash([]); c.strokeStyle = indigo; c.beginPath(); c.moveTo(x, u.bbox.top); c.lineTo(x, u.bbox.top + u.bbox.height); c.stroke();
+          c.font = (S.compact ? 12 : 13.5) * d + 'px Newsreader, Georgia, serif'; c.textAlign = 'left'; c.textBaseline = 'bottom';
+          c.fillStyle = ink2; c.fillText('limit 25 ms', L + 6 * d, y - 4 * d);
+          c.fillStyle = indigo; c.textBaseline = 'top'; c.fillText('rollout 2026.10.20-3', x + 6 * d, u.bbox.top + 2 * d);
+          c.restore();
+        }],
+        draw: [function (u) {
+          var c = u.ctx, d = devicePixelRatio, R = u.bbox.left + u.bbox.width;
+          c.save(); c.font = (S.compact ? 12 : 13.5) * d + 'px Newsreader, Georgia, serif'; c.textAlign = 'right'; c.textBaseline = 'bottom';
+          TYPES.forEach(function (t) { c.fillStyle = t.id === 'map' ? indigo : ink2; c.fillText(t.name, R - 2 * d, u.valToPos(t.p[N - 1], 'y', true) - 5 * d); });
+          c.restore();
+        }],
+        setCursor: [function (u) { var i = u.cursor.idx; $('ro') && ($('ro').innerHTML = readout(i == null ? N - 1 : i)); }]
+      }
+    }, [XS].concat(TYPES.map(function (t) { return t.p; })), el);
+    plots.push(u);
+  }
+
+  // ---------- text morph: diff the old and new text by character (jsdiff); kept characters
+  // are plain text, removed ones blur out where they stood, added ones blur in ----------
+  function morph(el, from, to) {
+    el.dataset.t = to;
+    if (from === to || RM.matches || typeof Diff === 'undefined') { el.textContent = to; return; }
+    // A kept run in the middle shorter than 3 characters reads as noise ("Pl a y er"), so it changes too;
+    // runs anchored at either end always stay. Between kept runs: one ghost of what left, one blur-in of what came.
+    var parts = Diff.diffChars(from, to), frag = document.createDocumentFragment(), gone = '', came = '', pos = 0;
+    function flush() {
+      if (gone) { var w = document.createElement('span'), o = document.createElement('span'); w.className = 'mw'; o.className = 'mo'; o.setAttribute('aria-hidden', 'true'); o.textContent = gone; w.appendChild(o); frag.appendChild(w); }
+      if (came) { var s = document.createElement('span'); s.className = 'mi'; s.textContent = came; frag.appendChild(s); }
+      gone = came = '';
+    }
+    parts.forEach(function (p) {
+      if (p.removed) { gone += p.value; return; }
+      if (p.added) { came += p.value; pos += p.value.length; return; }
+      var anchored = pos === 0 || pos + p.value.length === to.length;
+      pos += p.value.length;
+      if (!anchored && p.value.length < 3) { gone += p.value; came += p.value; return; }
+      flush(); frag.appendChild(document.createTextNode(p.value));
+    });
+    flush();
+    el.textContent = ''; el.appendChild(frag);
+    var tk = el._mt = (el._mt || 0) + 1;
+    setTimeout(function () { if (el._mt === tk && el.isConnected) el.textContent = to; }, 520);
+  }
+  function snapshot() { var o = {}; qa('[data-m]').forEach(function (e) { o[e.dataset.m] = e.dataset.t != null ? e.dataset.t : e.textContent; }); return o; }
+  function morphAll(old, root, skipBody) {
+    qa('[data-m]', root).forEach(function (e) {
+      var k = e.dataset.m, to = e.dataset.t != null ? e.dataset.t : e.textContent;
+      if (skipBody && k.indexOf('b-') === 0) { e.dataset.t = to; return; }
+      morph(e, old[k] == null ? '' : old[k], to);
+    });
+  }
+  function setText(el, text) { el.dataset.t = text; el.textContent = text; }
+
+  // ---------- render ----------
+  function view() {
+    if (S.mode === 'find') return { layout: 'find', eb: 'Actors, nodes and actions', h1: 'Find', body: findBody, after: findWire };
+    if (S.mode === 'confirm') return { layout: 'confirm', eb: 'Confirm. It is written to the audit log', h1: S.cf.title, body: confirmBody, after: confirmWire };
+    var s = steps[S.i]; return { layout: s.layout, eb: s.eb(), h1: s.h1, body: s.body, after: s.after };
+  }
+  function render(how) {
+    var v = view(), old = snapshot(), same = v.layout === S.layout && how !== 'none';
+    killPlots();
+    setText($('eb'), v.eb); setText($('h1'), v.h1);
+    renderMargin(); renderTabs();
+    var b = $('body');
+    b.className = 'body'; b.innerHTML = v.body();
+    if (!same && how && how !== 'none' && how !== 'morph' && !RM.matches) {
+      qa('.ln', b).forEach(function (e, k) { e.style.setProperty('--i', k); });
+      void b.offsetWidth; b.className = 'body enter ' + how;
+    }
+    S.layout = v.layout;
+    if (how !== 'none') morphAll(old, $('stage'), !same);
+    else qa('[data-m]').forEach(function (e) { e.dataset.t = e.textContent; });
+    wire(); if (v.after) v.after();
+    $('app').dataset.step = S.mode ? S.mode : String(S.i);
+    var eb = document.querySelector('[data-key="back"]'); if (eb) eb.parentNode.classList.toggle('off', !S.mode && !S.back.length);
+  }
+  function renderMargin() {
+    var m = $('margin');
+    if (S.mode) { m.innerHTML = '<div class="folio">' + M('fn', '', 'fn') + M('fo', '') + '</div><div class="nextl"><span class="sc">' + M('nxl', '') + '</span><span class="nx">' + M('nx', '') + '</span></div>'; return; }
+    var f = inTab(S.i), nx = steps[S.i + 1]; if (nx && nx.tab !== steps[S.i].tab) nx = null; var lab = nx ? nx.label : '\u00a0';
+    m.innerHTML = '<div class="folio">' + M('fn', String(f.k), 'fn num') + M('fo', 'of ' + f.n, 'fo') + '</div>' +
+      '<div class="nextl"><span class="sc">' + M('nxl', nx ? 'Next' : '\u00a0') + '</span><button class="nx" id="nx"' + (nx ? '' : ' disabled') + '>' + M('nx', lab) + '<span class="ar" aria-hidden="true">' + (nx ? '↓' : '') + '</span></button></div>';
+  }
+  function renderTabs() {
+    var cur = S.mode ? -1 : steps[S.i].tab;
+    $('tabs').innerHTML = TABS.map(function (t, k) { return '<button data-tab="' + k + '"' + (k === cur ? ' aria-current="page"' : '') + '>' + t + '</button>'; }).join('');
+  }
+  function renderKeys() {
+    var K = [[['↑', 'prev'], ['↓', 'next'], 'step'], [['←', 'ptab'], ['→', 'ntab'], 'section']];
+    K.push([['/', 'find'], 'find']);
+    K.push([['Esc', 'back'], 'back']);
+    $('keys').innerHTML = K.map(function (g) { var d = g[g.length - 1]; return '<span class="kh">' + g.slice(0, -1).map(function (k) { return '<button class="k" data-key="' + k[1] + '" aria-label="' + k[1] + '">' + k[0] + '</button>'; }).join('') + '<span class="kd">' + d + '</span></span>'; }).join('');
+  }
+  function wire() {
+    qa('[data-tab]').forEach(function (b) { b.onclick = function () { tabGo(+b.dataset.tab); }; });
+    qa('[data-go]', $('body')).forEach(function (b) { b.onclick = function () { var p = b.dataset.go.split(':'); go(findStep(+p[0], p[1]), true); }; });
+    qa('[data-hist]', $('body')).forEach(function (b) { b.onclick = function (e) { e.preventDefault(); say('Opens ' + b.dataset.hist + ' at the same time range, in a new tab.'); }; });
+    qa('[data-drain]', $('body')).forEach(function (b) { b.onclick = function () { drain(b.dataset.drain); }; });
+    if ($('rb')) $('rb').onclick = rollback;
+    if ($('ack')) $('ack').onclick = function () { S.acked = true; log('Acknowledge', 'MapServer ask latency'); render('morph'); say('Acknowledged. Written to the audit log.'); };
+    if ($('hr')) $('hr').onclick = function () { hotRestart2($('hr').dataset.type); };
+    if ($('nx')) $('nx').onclick = function () { step(1); };
+  }
+
+  // ---------- movement ----------
+  function go(i, keep) {
+    if (i < 0 || i >= steps.length || S.mode || i === S.i) return;
+    if (keep) { S.back.push(S.i); if (S.back.length > 20) S.back.shift(); }
+    var dir = steps[i].layout === steps[S.i].layout ? 'morph' : (i > S.i ? 'up' : 'down');
+    S.hl = null; S.i = i; render(dir);
+  }
+  function step(d) { if (S.mode === 'find') { moveSel(d); return; } if (S.mode) return; var j = S.i + d; if (!steps[j] || steps[j].tab !== steps[S.i].tab) return; S.hl = null; go(j); }
+  function tabGo(t) {
+    if (S.mode) { S.mode = null; }
+    var cur = steps[S.i].tab; if (t < 0 || t >= TABS.length) return;
+    if (t === cur && S.layout === steps[S.i].layout && steps[S.i] === steps[firstOf(t)]) { render('morph'); return; }
+    S.hl = null; S.i = firstOf(t); render(t >= cur ? 'left' : 'right');
+  }
+
+  // ---------- actions: confirm by typing the target's name; each goes to the audit log ----------
+  function log(action, target) { AUDIT.unshift(['now', 'you', action, target]); var key = steps[S.i] && [steps[S.i].tab, steps[S.i].key]; buildSteps(); if (key) S.i = findStep(key[0], key[1]); }
+  var sayT;
+  function say(msg) { S.status = msg; var e = $('status').firstChild; morph(e, e.dataset.t || '', msg); clearTimeout(sayT); sayT = setTimeout(function () { morph(e, e.dataset.t || '', ''); }, 9000); }
+  function ask(cf) { S.cf = cf; S.mode = 'confirm'; render('up'); }
+  function rollback() { if (S.rolling) return; ask({ title: 'Roll back MapServer', text: 'The 4 MapServer nodes hot-restart onto build 2026.10.20-2, one at a time, pausing about 0.4 s each. Players stay connected.', need: 'MapServer', verb: 'Roll back', log: ['Roll back', 'MapServer to 2026.10.20-2'], done: 'Rolling back MapServer to 2026.10.20-2. Written to the audit log.', effect: function () { S.rolling = true; } }); }
+  function drain(node) {
+    var t = TYPES.filter(function (x) { return x.nodes.some(function (n) { return n.n === node; }); })[0];
+    ask({ title: 'Drain ' + node, text: 'Its actors move to the other ' + t.name + ' nodes one at a time. Clients stay connected.', need: node, verb: 'Drain', log: ['Drain', node], done: 'Draining ' + node + '. Written to the audit log.', effect: function () { t.nodes.forEach(function (n) { if (n.n === node) { n.st = 'busy'; n.txt = 'Draining, starting'; } }); } });
+  }
+  function hotRestart2(id) {
+    var t = TYPES.filter(function (x) { return x.id === id; })[0];
+    ask({ title: 'Hot restart ' + t.name, text: 'The ' + t.nodes.length + ' ' + t.name + ' nodes restart one at a time on their current build and resume from a snapshot. Clients stay connected.', need: t.name, verb: 'Hot restart', log: ['Hot restart', t.name], done: 'Hot restart of ' + t.name + ' started. Written to the audit log.' });
+  }
+  function upload() { ask({ title: 'Upload SkillTable', text: 'Version 16 goes to all 9 nodes. Nothing changes until every node accepts the file.', need: 'SkillTable', verb: 'Upload', log: ['Upload config table', 'SkillTable version 16'], done: 'SkillTable version 16 accepted by 9 of 9 nodes. Written to the audit log.' }); }
+  function confirmBody() {
+    var c = S.cf;
+    return '<div class="cf"><p class="ln lead">' + esc(c.text) + '</p><label class="ln" for="cin">Type <b>' + esc(c.need) + '</b> to confirm</label><input class="ln qin" id="cin" autocomplete="off" spellcheck="false" aria-label="Type ' + esc(c.need) + ' to confirm">' +
+      '<div class="ln acts"><button class="act pri" id="cyes" disabled>' + esc(c.verb) + '</button><button class="act sec" id="cno">Cancel</button></div></div>';
+  }
+  function confirmWire() {
+    var i = $('cin'), y = $('cyes');
+    i.oninput = function () { y.disabled = i.value !== S.cf.need; };
+    i.onkeydown = function (e) { if (e.key === 'Enter' && i.value === S.cf.need) { e.preventDefault(); y.click(); } };
+    $('cno').onclick = closeMode;
+    y.onclick = function () { var c = S.cf; if (c.effect) c.effect(); S.mode = null; log(c.log[0], c.log[1]); render('down'); say(c.done); };
+    i.focus({ preventScroll: true });
+  }
+  function jump(i) { if (i !== S.i) { S.back.push(S.i); if (S.back.length > 20) S.back.shift(); } S.hl = null; S.i = i; }
+  function back() { if (S.mode) { closeMode(); return; } if (!S.back.length) return; S.hl = null; var i = S.back.pop(); S.i = i; render('down'); }
+  function closeMode() { if (!S.mode) return; S.mode = null; render('down'); }
+
+  // ---------- find (⌘K) ----------
+  var F = { q: '', sel: 0, items: [] };
+  function allItems() {
+    var o = ACTORS.map(function (a) { return { g: 0, t: a.id, h: a.node, run: function () { S.mode = null; jump(findStep(3, a.id)); render('down'); } }; });
+    TYPES.forEach(function (t) { t.nodes.forEach(function (n) { o.push({ g: 1, t: n.n, h: t.name, run: function () { S.mode = null; jump(findStep(1, S.split ? t.id + '-n' : t.id)); S.hl = n.n; render('down'); } }); }); });
+    return o.concat([
+      { g: 2, t: 'Roll back MapServer', h: 'to 2026.10.20-2', run: function () { S.mode = null; rollback(); } },
+      { g: 2, t: 'Hot restart GatewayServer', h: '2 nodes', run: function () { S.mode = null; hotRestart2('gw'); } },
+      { g: 2, t: 'Hot restart PlayerServer', h: '3 nodes', run: function () { S.mode = null; hotRestart2('pl'); } },
+      { g: 2, t: 'Hot restart MapServer', h: '4 nodes', run: function () { S.mode = null; hotRestart2('map'); } },
+      { g: 2, t: 'Upload a config table', h: 'all nodes validate first', run: function () { S.mode = null; upload(); } }
+    ]);
+  }
+  function openFind() { if (S.mode === 'find') { closeMode(); return; } F.q = ''; F.sel = 0; S.mode = 'find'; render('up'); }
+  function findBody() { return '<div class="ln"><input class="qin" id="q" placeholder="An actor id, a node, or an action" autocomplete="off" spellcheck="false" aria-label="Find"></div><div class="ln" id="res"></div>'; }
+  function findWire() { var i = $('q'); i.value = F.q; i.oninput = function () { F.q = i.value.toLowerCase(); F.sel = 0; results(); }; results(); i.focus({ preventScroll: true }); }
+  function results() {
+    F.items = allItems().filter(function (o) { return !F.q || (o.t + ' ' + o.h).toLowerCase().indexOf(F.q) >= 0; });
+    if (F.sel >= F.items.length) F.sel = Math.max(0, F.items.length - 1);
+    var G = ['Actors', 'Nodes', 'Actions'], h = '';
+    if (!F.items.length) h = '<p class="nores">Nothing matches. Actor ids look like Player(482913); nodes like map-1.</p>';
+    else if (!S.compact) h = '<div class="res">' + G.map(function (g, gi) { return '<div class="rg"><span class="sc">' + g + '</span>' + F.items.map(function (o, k) { return o.g !== gi ? '' : hit(o, k); }).join('') + '</div>'; }).join('') + '</div>';
+    else { var W = 8, s = Math.max(0, Math.min(F.sel - 3, F.items.length - W)); h = '<div class="res"><div class="rg">' + F.items.slice(s, s + W).map(function (o, k) { return hit(o, s + k, G[o.g]); }).join('') + '</div></div>'; }
+    $('res').innerHTML = h;
+    qa('[data-hit]', $('res')).forEach(function (b) { b.onclick = function () { F.items[+b.dataset.hit].run(); }; });
+  }
+  function hit(o, k, g) { return '<button class="hit' + (k === F.sel ? ' on' : '') + '" data-hit="' + k + '" tabindex="-1"><span class="t">' + esc(o.t) + '</span><span class="h">' + esc(g ? g + ', ' + o.h : o.h) + '</span></button>'; }
+  function moveSel(d) { if (!F.items.length) return; F.sel = Math.max(0, Math.min(F.items.length - 1, F.sel + d)); results(); }
+
+  // ---------- input: keys, wheel (Lethargy drops trackpad inertia), touch ----------
+  document.addEventListener('keydown', function (e) {
+    var k = e.key, typing = /INPUT|TEXTAREA/.test((document.activeElement || {}).tagName || '');
+    if ((e.metaKey || e.ctrlKey) && k.toLowerCase() === 'k') { e.preventDefault(); openFind(); return; }
+    if (S.mode === 'confirm') { if (k === 'Escape') { e.preventDefault(); closeMode(); } return; }
+    if (S.mode === 'find') {
+      if (k === 'Escape') { e.preventDefault(); closeMode(); }
+      else if (k === 'ArrowDown') { e.preventDefault(); moveSel(1); }
+      else if (k === 'ArrowUp') { e.preventDefault(); moveSel(-1); }
+      else if (k === 'Enter' && F.items[F.sel]) { e.preventDefault(); F.items[F.sel].run(); }
+      return;
+    }
+    if (typing || e.altKey || e.metaKey || e.ctrlKey) return;
+    if (k === 'Escape' || k === 'Backspace') { e.preventDefault(); back(); }
+    else if (k === 'ArrowDown' || k === 'PageDown' || k === 'j') { e.preventDefault(); if (!e.repeat) step(1); }
+    else if (k === 'ArrowUp' || k === 'PageUp' || k === 'k') { e.preventDefault(); if (!e.repeat) step(-1); }
+    else if (k === 'ArrowRight') { e.preventDefault(); if (!e.repeat) tabGo(steps[S.i].tab + 1); }
+    else if (k === 'ArrowLeft') { e.preventDefault(); if (!e.repeat) tabGo(steps[S.i].tab - 1); }
+    else if (k === '/') { e.preventDefault(); openFind(); }
+  });
+  // One gesture, one step: the first intentional wheel event steps, then the gesture is locked until
+  // the wheel has been quiet for 220 ms. Lethargy tells a fresh flick from the inertia tail of the last one,
+  // so a new flick during a long tail still counts as its own step.
+  var leth = typeof Lethargy !== 'undefined' ? new Lethargy(7, 50, 0.05) : null, locked = false, quiet;
+  window.addEventListener('wheel', function (e) {
+    if (e.ctrlKey) return;
+    e.preventDefault();
+    var dy = e.deltaY * (e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 600 : 1);
+    if (Math.abs(dy) < Math.abs(e.deltaX)) return;
+    var intent = leth ? leth.check(e) : (dy < 0 ? 1 : -1);
+    clearTimeout(quiet); quiet = setTimeout(function () { locked = false; }, 220);
+    if (locked || intent === false || Math.abs(dy) < 3) return;
+    locked = true; step(dy > 0 ? 1 : -1);
+  }, { passive: false });
+  var t0 = null;
+  $('stage').addEventListener('touchstart', function (e) { var t = e.touches[0]; t0 = { x: t.clientX, y: t.clientY }; }, { passive: true });
+  $('stage').addEventListener('touchmove', function (e) { if (!/INPUT/.test(e.target.tagName)) e.preventDefault(); }, { passive: false });
+  $('stage').addEventListener('touchend', function (e) {
+    if (!t0) return; var t = e.changedTouches[0], dx = t.clientX - t0.x, dy = t.clientY - t0.y; t0 = null;
+    if (Math.abs(dy) > 40 && Math.abs(dy) > Math.abs(dx)) step(dy < 0 ? 1 : -1);
+    else if (Math.abs(dx) > 60 && !S.mode) tabGo(steps[S.i].tab + (dx < 0 ? 1 : -1));
+  });
+  $('keys').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-key]'); if (!b) return; var a = b.dataset.key;
+    if (a === 'next') step(1); else if (a === 'prev') step(-1);
+    else if (a === 'ntab') tabGo(steps[S.i].tab + 1); else if (a === 'ptab') tabGo(steps[S.i].tab - 1);
+    else if (a === 'rollback') rollback(); else if (a === 'find') openFind(); else if (a === 'back') back();
+  });
+
+  // ---------- layout changes: phone splits screens; theme changes recolour the charts ----------
+  var mq = window.matchMedia('(max-width: 719px)');
+  function setCompact() {
+    var cur = steps[S.i], key = cur && [cur.tab, cur.key];
+    S.compact = mq.matches; S.split = S.compact || window.innerHeight < 800; buildSteps(); renderKeys();
+    if (key) { S.i = findStep(key[0], key[1]); if (steps[S.i].key !== key[1]) S.i = findStep(key[0], key[1].replace(/-(n|l)$/, '')); }
+  }
+  var rt; window.addEventListener('resize', function () { clearTimeout(rt); rt = setTimeout(function () {
+    if (mq.matches !== S.compact || (mq.matches || window.innerHeight < 800) !== S.split) { setCompact(); S.layout = null; render('none'); return; }
+    var v = view(); killPlots(); if (v.after && !S.mode) v.after(); }, 120); });
+  function redraw() { var v = view(); if (!S.mode && v.after) { killPlots(); v.after(); } }
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', redraw);
+  new MutationObserver(redraw).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(redraw);
+
+  setCompact(); render('none'); window.focus();
+})();
+</script>
