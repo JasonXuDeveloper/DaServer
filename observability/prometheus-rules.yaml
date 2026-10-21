@@ -253,6 +253,32 @@ groups:
           summary: "{{ $labels.node }} refuses new work to roots whose asks are queued"
           description: "Roots on this node have kept more queued AskUntilAnswered rows than OnceQueued allows for ten minutes; their new requests get Busy. Look at the receivers they ask (DaServerOnceAskOld)."
 
+      - alert: DaServerOnceUnknownState
+        # Target (roadmap W6): an answer arrived for an AskUntilAnswered whose state type this build does not know. The
+        # row stays sent and unanswered so a node of a build that knows the type delivers it after the next move or
+        # restart; during a rollback or a mixed-version run that is expected for minutes, never for long.
+        expr: sum by (cluster, type, node) (increase(daserver_once_unknown_state_total[10m])) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.node }} holds asks whose state type its build does not know"
+          description: "Answers to AskUntilAnswered calls carry a state type this build lacks (a rollback past the build that added it, or a mixed rollout). They are kept, not lost: finish the rollout or roll forward so a node that knows the type takes the actor."
+
+      - alert: DaServerOnceSendersNearCap
+        # Target (roadmap W6): a [Once] receiver on this node holds more than 90% of SendersPerReceiver sender rows.
+        # Past the cap new senders get WindowFull; rows free only as senders are destroyed.
+        expr: max by (cluster, type, node) (last_over_time(daserver_once_senders[2m]))
+          > 0.9 * max by (cluster, type, node) (last_over_time(daserver_once_senders_cap[2m]))
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A [Once] receiver on {{ $labels.node }} nears its sender-row cap"
+          description: "One receiver keeps sender rows for {{ $value }} senders, above 90% of SendersPerReceiver. Destroy finished senders (orders after a sale) or raise the cap; past it new senders are refused."
+          daserver_limit: "0.9"
+          daserver_unit: "ratio"
+
       - alert: DaServerDeleteSendAfter
         # Target (roadmap W6): an item sent or asked after root.Delete() returned Ok, which reloads it. In an answer's
         # item the answer is delivered again and the error repeats: a user bug the DAS033 hint points at.
