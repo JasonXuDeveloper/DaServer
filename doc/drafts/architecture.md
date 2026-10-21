@@ -1225,7 +1225,8 @@ LIMIT 512
     written, so no held output travels; a root whose `SaveEntitiesWith` throws drops its held output and is destroyed in
     the frozen world, left out) while IO keeps receiving. At the switch point the node stops reading its links and
     streams, from pooled buffers and with no intermediate file: a header (node name and generation, arm nonce, old and
-    armed manifest hashes, layout hashes, world count, `TickCount64` at the freeze; a single node's member row), each
+    armed manifest hashes, layout hashes, world count, `TickCount64` at the freeze, the configuration tables' versions
+    (the standby re-reads a table whose version differs, so a push during the handover is not lost); a single node's member row), each
     world's `Save(output, in exclude)` bytes (each world serialized on its own thread with an incremental checksum,
     the worlds' chunks interleaved on the pipe, so the pause is about the slowest world's serialization plus the
     standby's load; `exclude` names the user singletons and the runtime's `Outbox`, `Current`, `Time` and node-singleton
@@ -1434,7 +1435,7 @@ or rolling upgrade (section 5).
   the alert rules see each node at least eight times in two minutes. Pushed series get no staleness markers, so the
   rules read gauges with `last_over_time(...[2m])` and rates over at least four pushes. The ask latency
   `daserver.ask.duration` is a histogram in seconds (unit `s`), so it reaches Prometheus as
-  `daserver_ask_duration_seconds`; `daserver.node.requests_low` is a 0/1 gauge. `/metrics` stays on the HTTP plane for an
+  `daserver_ask_duration_seconds`; `daserver.node.requests_low` is a 0/1 gauge; `daserver.cluster.view_version` is the membership table version the node last read (`DaServerMembersDisagree` alerts on a node behind the cluster's newest whose version has not moved, not on differing member counts, which churn makes normal during a rollout). `/metrics` stays on the HTTP plane for an
   environment without a Collector, which scrapes it instead. KEDA and the Prometheus adapter query Prometheus, not the
   pod, so autoscaling works the same on either path. Stop-phase durations (`daserver.stop.phase.duration`) go out over
   OTLP with the final flush, and as stop-phase log lines in Loki; a scrape would rarely catch a stopping node.

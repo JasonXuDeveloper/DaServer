@@ -615,7 +615,7 @@ Keep this file current: tick items when done, add items when scope changes.
       by typing and audited (with a reason for type- and cluster-wide actions, preconditions, idempotency keys, one
       action per type); the node's OpenTelemetry resource (`service.name` the group, `service.instance.id` the
       node) and framework logs with `daserver.actor.type`, `daserver.actor.key` and the trace id; the ask-latency histogram (`daserver.ask.duration`, per
-      server type, in seconds) with its recording rules (`cluster_type:daserver_ask_duration_seconds_bucket:rate1m` by
+      server type, in seconds) with its recording rules (`cluster_type:daserver_ask_duration_seconds_bucket:rate2m` by
       cluster, type and `le`, `cluster_type:daserver_ask_duration_seconds:p99` and
       `cluster_type_node:daserver_ask_duration_seconds:p99`); the OTLP metric export interval pinned to 15 s in
       `AddDaServerTelemetry` (`OTEL_METRIC_EXPORT_INTERVAL` overrides it); every DaServer metric
@@ -659,7 +659,8 @@ Keep this file current: tick items when done, add items when scope changes.
       `ConfigPushTwoPhaseAbortsOnTimeout`, `FindNeverActivatesActor` (a key parsed by its registered key type; lookup on
       Enter or a pause), `AlertRulesGroupByClusterTypeNode` (every rule keeps the three labels; the GC rule renames job
       and instance), `SilentNodeAlertFires` (a node that stops pushing fires `DaServerNodeSilent` instead of resolving
-      its alerts), `MembersDisagreePerCluster`, `NodeRestartTakesTypeLock` (a node restart waits while its type rolls
+      its alerts), `MembersDisagreeOnStuckViewVersion` (a node behind the cluster's newest view version whose own has not moved;
+      member counts differing during a rollout do not fire), `NodeRestartTakesTypeLock` (a node restart waits while its type rolls
       back), `TypeLockIsUniqueIndexWithLease`, `ExpiredLeaseReconcilesFromPipelineRun`, `ActionFollowsRunToTerminalState`
       (Requested, Accepted, Running, then Done, Failed or Stalled), `StalledWhenMembershipShowsNoProgress`,
       `LockHeldUntilTerminalState` (a 400-node roll and a same-image hot restart keep it), `FinishedActionNoLongerDedupes`,
@@ -676,9 +677,15 @@ Keep this file current: tick items when done, add items when scope changes.
       `MarkFailedRefusedWhileStoreDown`, `ClusterActionsLockSentinel` (two config pushes never run at once),
       `ExpiredLeaseClaimedByOneReplica` (compare-and-set on the store's clock), `RunLookupGraceBeforeFailed`,
       `RunLookupFailureKeepsLock`, `CallbackWithoutValidSignatureRefused`, `SwappedRequestsShownWithResize`,
-      `ResizeTakesTypeLock`, `ParkedInstanceExportsNoMetrics`, `ParkedInstanceNeverShownAsNode`, `FocusReturnsToOpener`,
+      `ResizeTakesTypeLock`, `LeaseRenewedOnOwnTimer` (a slow refresh never lets it lapse), `ClaimOnlyAfterLeaseExpiredALeaseAgo`,
+      `LateDoneNeverOverwritesFailed`, `CallbackConfirmedByRunLookup` (a replayed callback is harmless),
+      `RunFoundWithinAnHourReattached`, `LateRunAfterAnHourCancelled`, `MarkFailedOfferedForLongUnknown`,
+      `MarkFailedInOneTransaction`, `ClusterLockExcludesTypeLocks` (a config push waits for a rolling type and the
+      reverse), `HandoverCarriesConfigVersion`, `ResizeProgressIsGaugeClearing`, `DashboardDispatchesResizeFromHealth`, `ParkedInstanceExportsNoMetrics`, `ParkedInstanceNeverShownAsNode`, `FocusReturnsToOpener`,
       `MetricExportIntervalIs15s`, the rules' unit tests under `promtool test rules` (`NodeSilentIgnoresGracefulStop`,
-      `NodeSilentFiresAfterTwoMinutes`, `MembersDisagreeIgnoresDepartedNode`, `NodeRequestsLowFires`), and the
+      `NodeSilentFiresAfterTwoMinutes`, `NodeSilentFiresOnCrashMidDrain` (stop phases before `close` do not exclude),
+      `NodeSilentForgetsAfter15Minutes`, `MembersDisagreeIgnoresDepartedNode`, `MembersDisagreeQuietDuringRollout`,
+      `NodeRequestsLowFires`, `AskLatencyHighFromMergedBuckets`), the `daserver.cluster.view_version` gauge, and the
       prototype's layout, control and wheel checks against the built pages.
     - [ ] W8 Native AOT publish of the samples' nodes with 0 warnings (what holds and what to verify:
       drafts/architecture.md section 8); the AOT E2E run. Local runs: nodes as

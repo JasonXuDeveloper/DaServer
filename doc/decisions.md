@@ -2338,8 +2338,11 @@ Replaced by ADR-098.
     Dashboard's actions are serialized by the pipeline, not by the Dashboard's lock. A group holds one running and one
     pending run, and a newer pending run cancels the older pending one whatever `cancel-in-progress` says (GitHub
     Actions), so a cancelled run is the action's Failed, as is a run the pipeline refuses. The pipeline reports the
-    end of a run on a completion callback signed with HMAC over its body (which carries the action id); the key, the
-    webhook token and the run-lookup token are the `{cluster}-deploy` Secret. A rollback during a
+    end of a run on a completion callback signed with HMAC over its body (which carries the action id), a hint the
+    Dashboard confirms with a run lookup before it writes a state, so a replayed callback is harmless; the callback's
+    `current` and `accepted` keys (for rotation), the webhook token and the run-lookup token are the `{cluster}-deploy`
+    Secret, mounted into the Dashboard only: nodes hold no pipeline credential, since a pipeline token cannot be scoped
+    to one kind of run. A rollback during a
     half-finished rollout names the build expected to leave, the minority one included. Without a webhook the Dashboard
     shows the command to run. Taking a node out is the platform's scale-down, not a Dashboard action.
   - **It holds an admin key of its own, never the cluster's signing secret**, so a compromised Dashboard cannot pose
@@ -2361,28 +2364,38 @@ Replaced by ADR-098.
       rollout. Another action waits, and its button names the running one. The confirmation says when another node
       of the type is not running. Every action on a type takes the type's lock, a node's restart included; an action
       on the whole cluster (a config push) takes the sentinel type `*cluster`, since `type` is never NULL (a unique
-      index never conflicts on NULL). The lock is `daserver_actions`: a unique partial index on `(type)` over every
-      state that has not finished (Requested, Accepted, Running, Unknown, Stalled), and a lease (`claimed_by`,
-      `lease_until`) of three cadences, renewed each cadence.
-    - **Reconcile.** A replica claims an expired lease by compare-and-set on the store's clock (`UPDATE
-      daserver_actions SET claimed_by = $me, lease_until = now() + $lease WHERE action_id = $1 AND lease_until <
-      now()`), so one replica wins; after a store outage the replica that was following the run re-claims first. It
-      then looks the run up by the action id. "No run yet" waits two minutes of grace before Failed (dispatch creates
-      runs asynchronously) and never sends again; a lookup that fails keeps the state and the lock.
+      index never conflicts on NULL). The two exclude each other: a config push waits until no type holds a lock, and a
+      type's action waits while `*cluster` is held, since a standby that read the old table could take over a node
+      after a push (the handover also carries the table version). The lock is `daserver_actions`: a unique partial
+      index on `(type)` over every state that has not finished (Requested, Accepted, Running, Unknown, Stalled), and a
+      lease (`claimed_by`, `lease_until`) of three cadences, renewed on a timer of its own (never in the poll loop, so
+      a slow refresh cannot let it lapse), every renewal and state write conditioned on `claimed_by`; an owner whose
+      renewal fails stops following the run.
+    - **Reconcile.** A replica claims a lease only once it expired a whole lease ago, by compare-and-set on the
+      store's clock (`UPDATE daserver_actions SET claimed_by = $me, lease_until = now() + $lease WHERE action_id = $1
+      AND lease_until < now() - $lease`), so a briefly late renewal is never taken over and one replica wins; after a
+      store outage the replica that was following the run therefore renews first. It then looks the run up by the
+      action id. A run not found yet (dispatch creates runs asynchronously, late during a pipeline incident) is looked
+      for during an hour and re-attached if it appears; after that the action is Failed and a run still appearing with
+      its id is cancelled and audited, never sent again; a lookup that fails keeps the state and the lock.
     - **State.** What runs comes from the server's action records and from builds and incarnations in membership,
       never from the page. The records are in the store; without one they are in memory and the Dashboard runs as one
       replica.
-    - **Outcomes.** Each action is Requested, Accepted, Running, then Done, Failed or Stalled. After Accepted the
-      Dashboard follows the run, by the pipeline's completion callback carrying the action id or by polling the run
-      each cadence. It is Stalled when membership shows no progress for ten minutes while the run still runs; Stalled
-      holds the lock until an operator marks it Failed. Done and Failed are the only terminal states, and the lock is
+    - **Outcomes.** Each action is Requested, Accepted, Running, then Done, Failed or Stalled. Every state write is a
+      compare-and-set from a non-final state, so a late Done never turns Failed into Done or brings a row back to a
+      held state (a late outcome is only audited). After Accepted the Dashboard follows the run, by polling the run
+      each cadence and by the pipeline's completion callback, confirmed by a lookup. It is Stalled when it shows no
+      progress for ten minutes while the run still runs (no node moved build or incarnation; for a Resize, the node's
+      requests-low gauge has not cleared); Stalled holds the lock until an operator marks it Failed, which is offered
+      for Unknown and Accepted too once they have lasted ten minutes. Done and Failed are the only terminal states, and the lock is
       held until one of them, so a 400-node roll
       keeps it for its whole length, and a same-image hot restart, which changes no build, keeps it too. Unknown means
       a timeout: the action may have run, and the run lookup by action id settles it. A webhook without a run id
       (`workflow_dispatch`) is not retried after a timeout; the pipeline is first asked for a run carrying the action
       id.
-    - **Mark failed** is an action of its own: act scope, a reason, audited, refused while the store is down. It
-      releases the lock and does not cancel the pipeline's run.
+    - **Mark failed** is an action of its own: act scope, a reason, audited, refused while the store is down (the lock
+      stays until it answers). In one transaction it sets the action Failed (the same compare-and-set) and writes its
+      own row already Done, so it never needs the lock it releases. It does not cancel the pipeline's run.
     - **Reasons.** An action on a whole type or on the cluster asks for a reason.
     - **Audit.** The audit holds the intent before the call and the outcome after it, with the same action id, which
       the page shows. The sink is durable: the store's `daserver_audit` table, owned by the owner role and
@@ -2424,7 +2437,7 @@ Replaced by ADR-098.
       the nodes' rankings merged; an actor needs 100 calls in the window to rank, and an actor seen on two nodes
       during a handoff counts once. A type's p99 comes from its nodes' histogram buckets merged as deltas, never as a
       percentile of percentiles; with Prometheus these are recording rules
-      (`cluster_type:daserver_ask_duration_seconds_bucket:rate1m`, `cluster_type:daserver_ask_duration_seconds:p99`,
+      (`cluster_type:daserver_ask_duration_seconds_bucket:rate2m`, `cluster_type:daserver_ask_duration_seconds:p99`,
       `cluster_type_node:daserver_ask_duration_seconds:p99`).
     - **One metrics path.** Nodes push OTLP every 15 s to one Collector, which sends to Prometheus's `/api/v1/otlp`
       (`--web.enable-otlp-receiver`, `otlp.promote_resource_attributes: [daserver.cluster]`); Prometheus scrapes no
@@ -2453,8 +2466,11 @@ Replaced by ADR-098.
     - **Incidents.** An incident is the alerts of one rule on one server type of one cluster, grouped by
       `alertname`, `cluster` and `type`, from Alertmanager's API with its grouping, silences and inhibitions. Every
       rule keeps those labels plus `node`, where `type` is `service.name` and `node` is `service.instance.id`.
-      `DaServerNodeSilent` fires for a node that stops pushing, which would otherwise read as healthy because its
-      series vanish. Incidents rank by severity, then by node count; each gets a screen, and the
+      `DaServerNodeSilent` fires for a node seen in the last 15 minutes that stops pushing, which would otherwise read as
+      healthy because its series vanish, unless its last push carried the final stop phase (`close`); it needs the
+      OTLP path, since a scrape carries no final push. `DaServerMembersDisagree` fires for a node whose membership view
+      version is behind the cluster's newest and has not moved, not on member counts, which a rollout's churn keeps
+      different. Incidents rank by severity, then by node count; each gets a screen, and the
       first one counts the rest.
     - **Cannot know.** The alerts are unreadable when Prometheus or Alertmanager does not answer, when the newest
       sample is older than two evaluation intervals, or when rule evaluation fails. The Incident section then says
