@@ -311,7 +311,7 @@ groups:
           severity: warning
         annotations:
           summary: "{{ $labels.node }} holds {{ $value }} root(s) whose record cannot be written"
-          description: "A root's record keeps failing to serialize or is refused by the store (logged RecordUnwritable). Its changes since the last record are lost on a crash. Fix the state (size, cycle, unregistered type) and redeploy. If many roots are listed, check the store's errors first (read-only, grants, schema)."
+          description: "A root's record keeps failing to serialize or is refused by the store (logged RecordUnwritable). Its changes since the last record are lost on a crash. Fix the state (size, cycle, unregistered type) and redeploy. If many roots are listed, check the store's errors first (a constraint or column the schema added)."
           daserver_limit: "0"
           daserver_unit: "roots"
 
