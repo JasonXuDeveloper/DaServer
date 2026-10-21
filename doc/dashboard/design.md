@@ -180,7 +180,7 @@ DaServer is a general framework, so every view below names server types, actors 
 | Job | The operator's question | Presentation | Left out |
 |---|---|---|---|
 | Triage | Is anything wrong right now? | The Incident section's first screen: what is wrong as the title; the figure that proves it beside its limit and usual value, one sentence of cause and the fix as the primary action (main); the affected type's nodes with their readings (aside), which tells a bad build from a bad node. When nothing is wrong, the title says so and the section has one screen | Status grids, counts of healthy things, coloured dots |
-| Evidence | Why do we think so? | The next screens of the same section: the last hour as one chart (the culprit in the accent, others in ink, the limit dashed, the change that caused it marked), then the relevant log lines | Dashboards of every metric; history beyond the window (one link to Prometheus or Loki) |
+| Evidence | Why do we think so? | The next screens of the same section: the last hour as one chart (the culprit in the accent, others in ink, the limit dashed, the change that caused it marked), then the relevant log lines, read from Loki | Dashboards of every metric; history beyond the window (one link to Prometheus or Loki) |
 | Cluster health | Which server type is unhealthy? | The Cluster section's first screen: one row per server type (nodes, actors, ask p99, build), the unhealthy row in the accent; membership is the eyebrow | Per-node detail on the overview |
 | A server type | How are its nodes? | Four figures with their usual values, then one row per node (state, CPU, memory, p99) with Drain on each; Hot restart in the table's foot | Sparklines that are flat; graphs per node |
 | Membership | Do all nodes agree on who is in the cluster? | One phrase above the overview title ("9 nodes, every view agrees"); a disagreement becomes the incident | A separate membership page while views agree |
@@ -190,8 +190,8 @@ DaServer is a general framework, so every view below names server types, actors 
 | Rollout and rollback | Roll back the bad build | The primary action on the incident and on the rollout's detail, confirmed by typing the server type's name | A separate deploy page |
 | Drain, hot restart | Take a node out; restart a type | Drain on the node's row; Hot restart under the node table; both confirmed by typing the name | Bulk selection |
 | Config tables | Push a new table | An action in Find, confirmed by typing the table's name; accepted only when every node accepts it | An editor |
-| An actor | What state is this actor in? | Find it (or pick it from the slowest list): type, node, requests, mailbox, last saved, its components and its last log lines, with a link to its traces in Tempo | Raw JSON dumps; live editing |
-| Audit | Who did what? | One row per action: time, who, action, target, newest first, paged | Filters and search; export (the audit log is in the logs too) |
+| An actor | What state is this actor in? | Find it (or pick it from the slowest list): type, node, requests, mailbox, last saved, its components and its last log lines (from Loki), with a link to its traces in Tempo | Raw JSON dumps; live editing |
+| Audit | Who did what? | One row per action: time, who, action, target, newest first, paged; the audit is the Dashboard's log stream, read from Loki | Filters and search; export (the audit log is in the logs too) |
 | History | What happened last week? | A link on each view to Prometheus, Loki or Tempo at the same time range | Our own long-term storage, ad-hoc queries, custom dashboards |
 
 ## What we deliberately do not do

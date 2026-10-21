@@ -2202,3 +2202,40 @@ Replaced by ADR-081.
 - Consequences: the docs state the scope (the drafts' §2 ports and architecture section 3); samples stay within it
   (the relay room of ADR-091 suits games that tolerate TCP); a datagram transport enters later as a capability of its
   own (ADR-045).
+
+## ADR-093 One production console, DaServer.Dashboard; logs from Grafana Loki
+- Context: an operator of a deployed cluster otherwise switches between three sites: the Aspire dashboard (diagnostic
+  only in deployments, no plugins, commands only in run mode), Grafana over Prometheus, and a log viewer. Consoles of
+  comparable systems (Temporal, Redpanda Console, CockroachDB, RabbitMQ management, the Orleans dashboard) keep a
+  short live window themselves and leave history to the monitoring stack. Nodes already export metrics, logs and
+  traces over OTLP and serve `/metrics`, and Grafana Loki 3 ingests OTLP logs natively (`/otlp/v1/logs`), keeping
+  resource attributes such as `service.name` as labels and the rest as structured metadata.
+- Decision:
+  - **`DaServer.Dashboard` is the one console for production**: a stateless ASP.NET Core app, its own Deployment and
+    Service (with the platform's Ingress or HTTPRoute) in Kubernetes, added by `AddDaServerDashboard` in the
+    AppHost. It answers the operator's jobs (doc/dashboard/design.md): triage, evidence, cluster, server types,
+    store, client connections, changes, an actor, audit; and runs the actions (roll back, drain, hot restart, a
+    config table) through the nodes' admin plane, each confirmed by typing its target and written to the audit log.
+  - **Live state comes from the nodes**: membership, stats and the inspector over the admin plane, and a short window
+    (the last hour) of the readings the screens show, kept by each node in memory.
+  - **Logs come from Loki.** Nodes keep exporting logs over OTLP; the platform's Collector (or the nodes directly)
+    sends them to Loki. Framework logs carry `daserver.node`, `daserver.actor.type`, `daserver.actor.key` and the
+    trace id as attributes, which Loki keeps as structured metadata (the actor key is never a label: it is unbounded).
+    The Dashboard queries Loki's HTTP API (LogQL `query_range`) for the lines of what the screen shows (the incident's
+    server type and time, a node, an actor) and shows them inline; the audit log is a log stream of the Dashboard
+    read back the same way.
+  - **History stays in Prometheus, Loki and Tempo.** Each view links there at the same time range; there are no
+    ad-hoc queries, no dashboard editor and no long-term storage of the Dashboard's own. Grafana remains for analysts;
+    the Aspire dashboard is for local runs.
+  - **Optional sources.** Without Loki the log screens and the audit screen say that Loki is not configured (audit
+    entries still go to the Dashboard's stdout); without Prometheus or Tempo their links are absent.
+  - **Sign-in is OIDC**; roles allow viewing or acting.
+  - **The front end is vanilla TypeScript built by esbuild**, its assets prebuilt and embedded in the package, so only
+    Dashboard contributors need a JavaScript toolchain; the look and motion follow doc/dashboard/design.md.
+- Alternatives: Grafana dashboards plus the Aspire dashboard (three sites, no actions, no audit); a plugin for the
+  Aspire dashboard (it has no plugin model); our own log store (Loki already indexes OTLP logs at scale); Elasticsearch
+  or OpenSearch (heavier to run for what the screens query); Svelte with Vite (a framework for a few screens, slower
+  builds).
+- Consequences: roadmap W7e builds it; the samples' AppHosts add Loki (and Prometheus and Tempo) for published runs
+  through the publisher hooks; doc/operations.md describes Loki and the console; framework log calls use
+  `LoggerMessage` with those attributes, off the hot paths.

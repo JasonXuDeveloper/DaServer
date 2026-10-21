@@ -322,6 +322,16 @@ Keep this file current: tick items when done, add items when scope changes.
       `daserver-flashsale`, `daserver-arena`, `daserver-relay`) generated from the samples, instantiated, built and
       tested in CI; the README's getting started becomes `dotnet new daserver`. Tests: `ArenaMatchesQueuedPlayersE2E`, `RelayRoomSendsOneFramePerTick`, `InputTickEchoedInNearby`,
       `SagaCompensatesNotExecutedStep`, `SagaReconcilesExpiredStep`, `TemplatesInstantiateBuildAndTest`.
+    - [ ] W7e `DaServer.Dashboard` (ADR-093, doc/dashboard/design.md): the stateless console (its own Deployment and
+      Service, `AddDaServerDashboard`), the screens of the design's jobs table over the nodes' admin plane and their
+      in-memory last-hour window, logs and the audit stream from Loki (LogQL `query_range`), links to Prometheus, Loki
+      and Tempo at the same time range, OIDC with view and act roles, actions confirmed by typing and audited; framework
+      logs with `daserver.node`, `daserver.actor.type`, `daserver.actor.key` and the trace id as attributes; the
+      samples' AppHosts adding Loki, Prometheus and Tempo when published; the front end in vanilla TypeScript built by
+      esbuild, assets embedded. Tests: `DashboardShowsIncidentFromNodeWindow`, `DashboardLogsComeFromLoki`,
+      `DashboardWithoutLokiSaysSo`, `ActorKeyIsNotALokiLabel`, `ActionNeedsTypedTargetAndIsAudited`,
+      `ViewerRoleCannotAct`, `DashboardHoldsNoState` (two replicas answer alike), and the prototype's layout and
+      control checks against the built pages.
     - [ ] W8 Native AOT publish of the samples' nodes with 0 warnings (EasyEcs 4.7 has none with tracked components, its CI publishes and runs a native server;
       what remains to verify is the third-party packages, drafts/architecture.md section 8; the Prometheus exporter is a
       beta: pinned, verified under AOT, OTLP to a Collector as the fallback); the AOT E2E run. Local runs: nodes as
