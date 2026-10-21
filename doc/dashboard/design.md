@@ -48,7 +48,7 @@ Every screen is built on one grid, so positions line up from screen to screen an
 
 - **Columns.** The measure is 1200 px with 12 columns and 24 px gutters. Columns 1–2 are the margin (folio, what
   comes next, the latest status); columns 3–12 are the page. The header puts the brand over the margin, the sections
-  over the page and the environment at the right edge. The footer's key hints start on the page's first column.
+  over the page and the environment at the right edge. The footer's key hints start on the page's first column, and its rule spans the 1200 px measure, not the window.
 - **Placements on the page's 10 columns.** A screen uses one of three compositions:
   - full: 10 columns, for a chart, a table or a row of figures;
   - main and aside: 6 columns, one empty column, then 3 columns;
@@ -121,9 +121,11 @@ There is one vocabulary, used the same way everywhere.
 | `/` or ⌘K / Ctrl+K | Find: an actor by its id, a server type, a node, an action; ranked as you type, five per group; ↑↓ select, Enter opens |
 | Esc or Backspace | Back. It closes Find or a confirmation, otherwise returns from the last jump (a list row, a Find result). It is dimmed while there is nowhere to go back to |
 
-- **Sections: an edge index.** There is no menu bar. On a desk the five sections run down the page's left edge like
-  a reference book's printed thumb index, set vertically (`writing-mode: vertical-rl`), 14 px, ink-3; the current
-  section is in ink and its 4 px ink mark bleeds off the edge. That mark is the only selected-state indicator. On a
+- **Sections: an edge index.** There is no menu bar. On a desk the five sections stand in a short column at the
+  window's left edge, like a reference book's printed thumb index but set horizontally so each name reads at a
+  glance: 14 px, ink-3, vertically centred, 22 px from the edge; the current section is in ink and its 4 px ink mark
+  bleeds off the edge. That mark is the only selected-state indicator. Below 1440 px the page moves right to leave the
+  index its own space, so nothing ever overlaps it. On a
   phone the index moves to the bottom edge, under the thumb: one line above the key hints, the current section in
   ink with a 1 px ink segment on the footer rule. The header is a running head only (the brand at the left, the
   environment at the right) with no rule under it. The index never moves.
@@ -195,12 +197,15 @@ A cluster has tens of server types, hundreds of nodes per type and millions of a
 
 - **Distributions, not rows.** A reading across a type's nodes is one distribution. The table under it lists only
   the nodes that stand out: a state other than running, or a reading more than four median absolute deviations from
-  the type's median. At most four rows; the rest are one line with their count and range.
+  the type's median. At most four rows; the rest are one line with their count and range. When no node stands out
+  the table keeps its place but shows nothing, and the foot says "All 32 nodes within their usual range"; on a short
+  screen such a type is one screen, not a summary and an empty node screen.
 - **Unhealthy first, then a summary.** The cluster overview shows at most seven server types, the unhealthy ones
   first, and names the others in one line. Every type is still one step away.
 - **Top-N, then Find.** Actors appear as the slowest six across the cluster; any other actor is found by its id.
   Find shows five results per group and says how many more match.
-- **Counts read at a glance.** Large counts are rounded (2.41 M, 412 k); exact figures stay where they are small.
+- **Counts read at a glance.** Large counts are rounded (2.41 M, 412 k); exact figures stay where they are small. A count
+  column holds numbers only: zero is 0, never "None".
 - **Logs by pattern.** Hundreds of nodes log the same line thousands of times; Loki groups them by pattern, and the
   screen shows the patterns with their counts.
 - **Where it is computed.** Distributions, outliers and rankings are computed by the Dashboard's server once per
@@ -223,7 +228,7 @@ DaServer is a general framework, so every view below names server types, actors 
 | Cluster health | Which server type is unhealthy? | The Cluster section's first screen: one row per server type (nodes, actors, nodes that stand out, ask p99, build), unhealthy types first, at most seven rows and the rest named in one line; the unhealthy row in the accent; membership is the eyebrow | Per-node detail on the overview |
 | A server type | How are its nodes? | Four figures with their usual values, the distribution of ask p99 across all its nodes, then the nodes that stand out (at most four rows: state, CPU, memory, p99, Restart) and one line for the rest ("396 other nodes between 34 and 49 ms"); Hot restart in the foot | A row per node; sparklines that are flat; graphs per node |
 | Membership | Do all nodes agree on who is in the cluster? | One phrase above the overview title ("630 nodes in 10 server types, every view agrees"); a disagreement becomes the incident | A separate membership page while views agree |
-| Store | Are actors being saved? | Write p99, writes in flight, unsaved actors and the oldest unsaved age, errors | Query plans, per-table statistics |
+| Store | Are actors being saved? | Write p99, writes in flight, unsaved actors and the oldest unsaved age, errors; then the actor types with the most unsaved actors and their oldest (four rows, three on a phone) | Query plans, per-table statistics |
 | Client connections | Are clients connected and balanced? | Connected, resumed, the average per gateway, refused handshakes; the distribution of clients across gateways; the gateways more than a tenth from the average (at most three rows) | A row per gateway; per-client lists |
 | Changes | What changed before it broke? | A list of the last hour's changes (newest first) beside the selected change's detail; a bad rollout carries its own roll back | Deploy logs; the full rollout timeline |
 | Rollout and rollback | Roll back the bad build | The primary action on the incident and on the rollout's detail, confirmed by typing the server type's name. A new build, the previous one included, reaches the nodes through the deploy (ADR-093): the Dashboard calls the deploy pipeline's webhook with the server type and the build to return to, and audits the call; without a webhook it shows the command to run | A separate deploy page |

@@ -67,8 +67,8 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
 .body{grid-column:1 / -1;grid-row:2;position:relative;display:grid;grid-template-columns:subgrid;grid-auto-rows:auto;align-content:start;row-gap:var(--s4);padding-top:var(--s5);min-height:0;overflow:hidden}
 
 /* footer: fixed key hints under the page column */
-.foot{border-top:1px solid var(--rule)}
-.footin{align-items:center;height:58px;padding-bottom:env(safe-area-inset-bottom,0px)}
+.foot{border-top:0}
+.footin{border-top:1px solid var(--rule);align-items:center;height:58px;padding-bottom:env(safe-area-inset-bottom,0px)}
 .footin > .ex{grid-column:1 / 3}
 .keys{grid-column:3 / -1;display:flex;gap:34px;align-items:baseline;white-space:nowrap}
 .kh{display:inline-flex;align-items:baseline;gap:8px}
@@ -138,6 +138,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
 .tbl > .td.empty{border-bottom-color:transparent}
 .tbl .r{justify-content:flex-end;text-align:right}
 .tbl .st{color:var(--ink-2)}
+.tbl.nodes.none .th{visibility:hidden}
 .tbl.dim .td{color:var(--ink-3)}
 .tbl.dim .td.hl{color:var(--ink)}
 .tbl.dim .td.hl.ind,.tbl .td.ind{color:var(--indigo)}
@@ -236,8 +237,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   .grid{grid-template-columns:minmax(0,1fr)}
   .topin{grid-template-columns:minmax(0,1fr) auto;grid-template-rows:auto auto;height:auto;padding-top:16px;row-gap:12px}
   .brand{grid-column:1}
-  .top .ex{display:block;grid-column:2;grid-row:1}
-  .env{display:none}
+  .env{grid-column:2;grid-row:1}
   .stage{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr);align-content:stretch;padding-block:22px 16px}
   .page{grid-column:1;padding-bottom:84px}
   .page .body > *,.leave > *{grid-column:1 / -1}
@@ -301,24 +301,26 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   .hit .h{font-size:13px}
   .qin{font-size:24px}
 }
-/* sections: an edge index. On a desk they run down the page's left edge like a reference book's printed thumb index,
-   set vertically; the current section is in ink and its mark bleeds off the edge, the others are in ink-3. On a phone
-   the index moves to the bottom edge, under the thumb: one line above the keys, the current mark on the footer rule.
-   The header is only a running head (brand, environment), with no rule under it. */
+/* sections: an edge index. On a desk the five sections stand in a short column at the window's left edge, like a
+   reference book's printed thumb index but set horizontally so they read at a glance; the current one is in ink and
+   its 4 px ink mark bleeds off the edge, the others are in ink-3. On a phone the index moves to the bottom edge, under
+   the thumb: one line above the keys, the current mark on the footer rule. The header is only a running head (brand,
+   environment), with no rule under it. */
 .top{border-bottom:0}
-.tabs{position:fixed;left:0;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;gap:22px;z-index:2}
-.tabs button{writing-mode:vertical-rl;font-size:14px;letter-spacing:.02em;padding:6px 0 6px 18px;position:relative;color:var(--ink-3)}
+.tabs{position:fixed;z-index:2;left:0;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;gap:6px}
+.tabs button{font-size:14px;line-height:1.4;padding:5px 0 5px 22px;position:relative;color:var(--ink-3);white-space:nowrap}
 .tabs button[aria-current="page"]{color:var(--ink)}
-.tabs button[aria-current="page"]::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--ink)}
+.tabs button[aria-current="page"]::before{content:"";position:absolute;left:0;top:7px;bottom:7px;width:4px;background:var(--ink)}
 .tabs button:hover{color:var(--ink-2)}
-@media (min-width:720px) and (max-width:1320px){.app{padding-left:max(56px,env(safe-area-inset-left,0px))}}
+.tabs button[aria-current="page"]:hover{color:var(--ink)}
+@media (min-width:720px) and (max-width:1439px){.app{padding-left:max(112px,env(safe-area-inset-left,0px))}}
 @media (max-width:719px){
   .topin{grid-template-rows:auto;row-gap:0;padding-bottom:4px}
   .foot{position:relative}
   .footin{grid-template-columns:minmax(0,1fr);grid-template-rows:44px 46px;height:auto;align-items:stretch}
   .tabs{position:static;transform:none;grid-column:1;grid-row:1;flex-direction:row;justify-content:space-between;gap:0;align-items:stretch}
-  .tabs button{writing-mode:horizontal-tb;display:flex;align-items:center;font-size:14.5px;letter-spacing:0;padding:0}
-  .tabs button[aria-current="page"]::before{top:-1px;bottom:auto;right:0;width:auto;height:1px}
+  .tabs button{display:flex;align-items:center;font-size:14.5px;padding:0}
+  .tabs button[aria-current="page"]::before{left:0;top:-1px;bottom:auto;right:0;width:auto;height:1px}
   .keys{grid-column:1;grid-row:2;align-self:center;border-top:1px solid var(--rule);height:100%;align-items:center}
 }
 </style>
@@ -416,17 +418,18 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     var rest = t.nodes.filter(function (n) { return shown.indexOf(n) < 0; }), lo = Infinity, hi = 0;
     rest.forEach(function (n) { lo = Math.min(lo, n.p99); hi = Math.max(hi, n.p99); });
     var bad = t.now > LIMIT;
-    return group(rest.length) + (rest.length === 1 ? ' other node' : ' other nodes') + (bad ? ' between ' + ms(lo) + ' and ' + ms(hi) + ' ms, all over the limit' : ' within their usual range');
+    var who = shown.length ? group(rest.length) + (rest.length === 1 ? ' other node' : ' other nodes') : 'All ' + group(rest.length) + ' nodes';
+    return who + (bad ? ' between ' + ms(lo) + ' and ' + ms(hi) + ' ms, all over the limit' : ' within their usual range');
   }
   function unhealthy(t) { return t.now > LIMIT; }
   var ALLNODES = TYPES.reduce(function (s, t) { return s + t.n; }, 0), ALLACTORS = TYPES.reduce(function (s, t) { return s + t.count; }, 0);
   var MAP = T('map');
   var CHANGES = [
-    { id: 'c6', time: '17:58', kind: 'Hot restart', target: 'game-87', detail: 'Build ' + BUILD, by: 'ops@', result: 'Done, paused 0.4 s', note: '' },
+    { id: 'c6', time: '17:58', kind: 'Hot restart', target: 'game-87', detail: 'Build ' + BUILD, by: 'On-call operator', result: 'Done, paused 0.4 s', note: '' },
     { id: 'c5', time: '17:42', kind: 'Rollout', target: 'MapServer', detail: 'Build ' + BUILD, by: 'Release pipeline', result: '400 of 400 nodes, one at a time', note: 'MapServer ask p99 rose from 12 ms to 43 ms on every node after this rollout.', bad: true },
     { id: 'c4', time: '17:40', kind: 'Scale-in', target: 'map-217', detail: 'Leaving', by: 'Autoscaler', result: '35 of 64 moved', note: '' },
     { id: 'c3', time: '17:31', kind: 'Scale-out', target: 'GatewayServer', detail: '23 to 24 nodes', by: 'Autoscaler', result: 'gate-23 filling up', note: '' },
-    { id: 'c2', time: '17:20', kind: 'Config table', target: 'SkillTable', detail: 'Version 15', by: 'ops@', result: group(ALLNODES) + ' of ' + group(ALLNODES) + ' nodes accepted', note: '' },
+    { id: 'c2', time: '17:20', kind: 'Config table', target: 'SkillTable', detail: 'Version 15', by: 'On-call operator', result: group(ALLNODES) + ' of ' + group(ALLNODES) + ' nodes accepted', note: '' },
     { id: 'c1', time: '17:07', kind: 'Rollout', target: 'ChatServer', detail: 'Build ' + BUILD, by: 'Release pipeline', result: '16 of 16 nodes', note: '' }
   ];
   // The slowest actors across the cluster, by handler p99: the top of a ranking each node keeps, merged.
@@ -458,8 +461,9 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     return { id: nm, type: kind, node: n.n, p99: Math.round(t.usual * 10) / 10, rps: (h % 90 + 4) + '/s', mailbox: (h % 5) + ' of 2,000', saved: (h % 40 + 1) + ' s ago', found: true,
       comps: [kind + ' { Id: ' + m[2] + ' }'], logs: [['17:5' + (h % 9) + ':' + (10 + h % 49), 'info', 'answered ' + (h % 300 + 20) + ' requests in the last minute']] };
   }
-  var AUDIT = [['17:58', 'ops@', 'Hot restart', 'game-87 to ' + BUILD], ['17:20', 'ops@', 'Upload config table', 'SkillTable version 15'], ['17:07', 'Release pipeline', 'Rollout', 'ChatServer to ' + BUILD]];
-  var STORE = { p99: '4.2 ms', usual: '4.0 ms', inflight: '1,840', cap: 'of 5,040 allowed', unsaved: '18,204', oldest: '9 s' };
+  var AUDIT = [['17:58', 'On-call operator', 'Hot restart', 'game-87 to ' + BUILD], ['17:20', 'On-call operator', 'Upload config table', 'SkillTable version 15'], ['17:07', 'Release pipeline', 'Rollout', 'ChatServer to ' + BUILD]];
+  var STORE = { p99: '4.2 ms', usual: '4.0 ms', inflight: '1,840', cap: 'of 5,040 allowed', unsaved: '18,204', oldest: '9 s',
+    byType: [['Map', 'MapServer', '9,410', '9 s'], ['Player', 'PlayerServer', '6,102', '7 s'], ['Guild', 'GuildServer', '1,880', '5 s'], ['Mailbox', 'MailServer', '812', '4 s']] };
   // clients per gateway; gate-23 joined a quarter of an hour ago and is filling up
   var GW = T('gw'); GW.nodes.forEach(function (n, i) { n.clients = Math.round(17400 + 900 * (rnd(i + 77) - .5)); n.moving = 0; });
   setNode('gate-23', { clients: 4210, moving: 312 }); setNode('gate-3', { clients: 19980 });
@@ -484,6 +488,8 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
       var eb = function () { return group(t.n) + ' nodes hosting ' + t.actors + ' actors'; };
       if (!c) add(1, t.id, 'server', t.name, { eb: eb, h1: t.name, body: function () { return server(t); } });
       else {
+        // a type with no node standing out (and none found) keeps one screen, its action in the summary's foot
+        if (!outliers(t).length && !(S.pin && S.pin.indexOf(t.pre + '-') === 0)) { add(1, t.id, 'server-sum', t.name, { eb: eb, h1: t.name, body: function () { return figs(t) + distUnit(t) + typeFoot(t, true, true); } }); return; }
         add(1, t.id, 'server-sum', t.name, { eb: eb, h1: t.name, body: function () { return serverSum(t); } });
         add(1, t.id + '-n', 'server-nodes', t.name + ' nodes', { eb: function () { return 'The nodes that stand out'; }, h1: t.name, body: function () { return serverNodes(t); } });
       }
@@ -587,14 +593,16 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     var h = '<span class="th sc">Server type</span><span class="th sc r">Nodes</span><span class="th sc r">Actors</span><span class="th sc r so">Stand out</span><span class="th sc r">Ask p99</span><span class="th sc bd">Build</span>';
     shown.forEach(function (t, k) {
       var bad = unhealthy(t) ? ' ind' : '', so = outliers(t).length;
-      h += '<button class="tr" data-go="1:' + t.id + '">' + M('b-t' + k + 'a', t.name, 'td' + bad) + M('b-t' + k + 'b', group(t.n), 'td r') + M('b-t' + k + 'c', count(t.count), 'td r') + M('b-t' + k + 'g', so ? String(so) : 'None', 'td r so' + (so ? '' : ' mute')) + M('b-t' + k + 'd', ms(t.now) + ' ms', 'td r' + bad) + M('b-t' + k + 'e', t.build, 'td bd') + '</button>';
+      h += '<button class="tr" data-go="1:' + t.id + '">' + M('b-t' + k + 'a', t.name, 'td' + bad) + M('b-t' + k + 'b', group(t.n), 'td r') + M('b-t' + k + 'c', count(t.count), 'td r') + M('b-t' + k + 'g', String(so), 'td r so' + (so ? '' : ' mute')) + M('b-t' + k + 'd', ms(t.now) + ' ms', 'td r' + bad) + M('b-t' + k + 'e', t.build, 'td bd') + '</button>';
     });
-    var more = rest.length ? rest.length + ' more, ' + rest.map(function (t) { return t.name; }).join(', ') + ', all within their usual range' : '';
+    var more = rest.length ? rest.length + ' more, all within their usual range: ' + rest.map(function (t) { return t.name; }).join(', ') : '';
     return '<div class="ln full tbl ov">' + h + '</div><div class="ln full uf"><p class="readout">' + esc(more) + '</p>' + hist('Grafana') + '</div>';
   }
   function store() {
-    return figRow([['Write p99', STORE.p99, 'usually ' + STORE.usual], ['Writes in flight', STORE.inflight, STORE.cap], ['Unsaved actors', STORE.unsaved, 'oldest ' + STORE.oldest], ['Errors', 'None', 'in the last hour']]) +
-      '<div class="ln full uf">' + hist('Grafana') + '</div>';
+    return figRow([['Write p99', STORE.p99, 'usually ' + STORE.usual], ['Writes in flight', STORE.inflight, STORE.cap], ['Unsaved actors', STORE.unsaved, 'oldest ' + STORE.oldest], ['Errors', '0', 'in the last hour']]) +
+      '<div class="ln full tbl gw"><span class="th sc">Actor type</span><span class="th sc st">Server type</span><span class="th sc r">Unsaved</span><span class="th sc r">Oldest</span>' +
+      STORE.byType.slice(0, S.compact ? 3 : 4).map(function (r, k) { return M('b-u' + k + 'a', r[0], 'td') + M('b-u' + k + 'b', r[1], 'td st') + M('b-u' + k + 'c', r[2], 'td r num') + M('b-u' + k + 'd', r[3], 'td r num'); }).join('') + '</div>' +
+      '<div class="ln full uf">' + (S.compact ? '' : '<p class="readout">The four types with the most actors waiting to be written; every other type has under 300</p>') + hist('Grafana') + '</div>';
   }
   // part: 0 everything, 1 the figures and the distribution, 2 the gateways that stand out (short screens)
   function clients(part) {
@@ -622,7 +630,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
       h += '<span class="th sc">Node</span><span class="th sc">State</span><span class="th sc r">CPU</span><span class="th sc r">Memory</span><span class="th sc r">Ask p99</span><span class="th"></span>';
       for (var r = 0; r < NROWS; r++) {
         var n = rows[r], e = n ? '' : ' empty', hl = n && n.n === S.hl ? ' hl' : '', bad = n && (n.p99 > LIMIT || n.p99 - t.med > 4 * t.mad) ? ' ind' : '';
-        h += M('b-n' + r + 'a', n ? n.n : '', 'td' + e + hl) + M('b-n' + r + 'b', n ? n.txt : (r ? '' : 'Every node is within its usual range'), 'td st' + (n || r ? e : '') + hl) + M('b-n' + r + 'c', n ? n.cpu + '%' : '', 'td r' + e + hl) + M('b-n' + r + 'd', n ? n.mem.toFixed(1) + ' GB' : '', 'td r' + e + hl) + M('b-n' + r + 'e', n ? ms(n.p99) + ' ms' : '', 'td r' + e + hl + bad);
+        h += M('b-n' + r + 'a', n ? n.n : '', 'td' + e + hl) + M('b-n' + r + 'b', n ? n.txt : '', 'td st' + e + hl) + M('b-n' + r + 'c', n ? n.cpu + '%' : '', 'td r' + e + hl) + M('b-n' + r + 'd', n ? n.mem.toFixed(1) + ' GB' : '', 'td r' + e + hl) + M('b-n' + r + 'e', n ? ms(n.p99) + ' ms' : '', 'td r' + e + hl + bad);
         h += '<span class="td r' + e + '">' + (n && n.st === 'ok' ? '<button class="lnk" data-drain="' + n.n + '">' + M('b-n' + r + 'f', 'Restart') + '</button>' : M('b-n' + r + 'f', '')) + '</span>';
       }
     } else {
@@ -630,14 +638,14 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
       for (var q = 0; q < NROWS; q++) {
         var m = rows[q], em = m ? '' : ' empty', hm = m && m.n === S.hl ? ' hl' : '';
         h += M('b-n' + q + 'a', m ? m.n : '', 'td' + em + hm) + M('b-n' + q + 'c', m ? m.cpu + '%' : '', 'td r' + em + hm) + M('b-n' + q + 'd', m ? m.mem.toFixed(1) + ' GB' : '', 'td r' + em + hm) + M('b-n' + q + 'e', m ? ms(m.p99) + ' ms' : '', 'td r' + em + hm + (m && (m.p99 > LIMIT || m.p99 - t.med > 4 * t.mad) ? ' ind' : ''));
-        h += M('b-n' + q + 'b', m ? m.txt : (q ? '' : 'Every node is within its usual range'), 'td sub st' + (m || q ? em : '')) + '<span class="td sub r' + em + '">' + (m && m.st === 'ok' ? '<button class="lnk" data-drain="' + m.n + '">' + M('b-n' + q + 'f', 'Restart') + '</button>' : M('b-n' + q + 'f', '')) + '</span>';
+        h += M('b-n' + q + 'b', m ? m.txt : '', 'td sub st' + em) + '<span class="td sub r' + em + '">' + (m && m.st === 'ok' ? '<button class="lnk" data-drain="' + m.n + '">' + M('b-n' + q + 'f', 'Restart') + '</button>' : M('b-n' + q + 'f', '')) + '</span>';
       }
     }
-    return '<div class="ln full tbl nodes' + (S.hl && rows.some(function (n) { return n.n === S.hl; }) ? ' dim' : '') + '">' + h + '</div>';
+    return '<div class="ln full tbl nodes' + (rows.length ? '' : ' none') + (S.hl && rows.some(function (n) { return n.n === S.hl; }) ? ' dim' : '') + '">' + h + '</div>';
   }
   function distUnit(t) { return '<div class="ln full col sm"><p class="cap sc">Ask p99 of each of the ' + group(t.n) + ' nodes</p>' + p99Dist(t) + '</div>'; }
   // The type's own action sits in the foot of its node table, with the count of the nodes not listed.
-  function typeFoot(t, act) { var rows = rowsOf(t); return '<div class="ln full uf">' + (act ? '<p class="readout">' + M('b-ot', others(t, rows)) + '</p><div class="acts"><button class="act sec" id="hr" data-type="' + t.id + '">' + M('b-hr', 'Hot restart ' + t.name) + '</button></div>' : '') + hist('Grafana') + '</div>'; }
+  function typeFoot(t, act, quiet) { var rows = rowsOf(t); return '<div class="ln full uf">' + (act ? (quiet ? '' : '<p class="readout">' + M('b-ot', others(t, rows)) + '</p>') + '<div class="acts"><button class="act sec" id="hr" data-type="' + t.id + '">' + M('b-hr', 'Hot restart ' + t.name) + '</button></div>' : '') + hist('Grafana') + '</div>'; }
   function server(t) { return figs(t) + distUnit(t) + nodeTable(t) + typeFoot(t, true); }
   function serverSum(t) { return figs(t) + distUnit(t) + typeFoot(t, false); }
   function serverNodes(t) { return nodeTable(t) + typeFoot(t, true); }
@@ -949,7 +957,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     F.more = more;
     return G[0].concat(G[1], G[2]);
   }
-  function goNode(t, n) { return function () { S.mode = null; jump(findStep(1, S.split ? t.id + '-n' : t.id)); S.hl = n.n; render('down'); }; }
+  function goNode(t, n) { return function () { S.mode = null; if (S.split) { var k = steps[S.i]; S.pin = n.n; buildSteps(); S.back = []; S.i = findStep(k.tab, k.key); } jump(findStep(1, S.split ? t.id + '-n' : t.id)); S.hl = n.n; render('down'); }; }
   function openFind() { if (S.mode === 'find') { closeMode(); return; } F.q = ''; F.sel = 0; S.mode = 'find'; S.modeH = 0; render('up'); }
   function findBody() { return '<div class="ln main"><input class="qin" id="q" placeholder="An actor id, a server type, a node, or an action" autocomplete="off" spellcheck="false" aria-label="Find"></div><div class="ln full" id="res"></div>'; }
   function findWire() { var i = $('q'); i.value = F.q; i.oninput = function () { F.q = i.value.toLowerCase(); F.sel = 0; results(); }; results(); i.focus({ preventScroll: true }); }
