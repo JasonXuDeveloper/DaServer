@@ -97,7 +97,8 @@ The repository ships two starting points, checked against a running node:
   late ticks and stalled shards, GC pauses and allocation, CPU and working set.
 - `observability/prometheus-rules.yaml`: alert rules (`promtool check rules` passes): a stalled shard, views that
   disagree, dropped messages, failing handlers, saturated shards, late ticks, GC pauses. Load it with `rule_files:`,
-  or wrap the group in a `PrometheusRule` for the Prometheus Operator.
+  or wrap the group in a `PrometheusRule` for the Prometheus Operator. A rule that compares a reading against a number carries that
+  number as the annotation `daserver_limit` (and its unit as `daserver_unit`): change both together when you tune it.
 
 Autoscaling is the platform's. The default signal is `daserver_shard_busy_ratio` (the share of time the shards work):
 with KEDA in the cluster (`AddHelmChart` in the AppHost installs it), a `ScaledObject` with a Prometheus trigger on

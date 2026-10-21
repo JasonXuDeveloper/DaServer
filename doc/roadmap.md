@@ -462,31 +462,50 @@ Keep this file current: tick items when done, add items when scope changes.
       `JoinMatchNeverBeforeSetup`, `RelayRoomSendsOneFramePerTick`, `InputTickEchoedInNearby`,
       `SagaCompensatesRefusedStep`, `SagaStepReaskedAfterCrash`, `LateReserveAfterReleaseRefused`, `TemplatesInstantiateBuildAndTest`.
     - [ ] W7e `DaServer.Dashboard` (ADR-093, doc/dashboard/design.md): the stateless console (its own Deployment and
-      Service, `AddDaServerDashboard`, the signing secret's files mounted for the admin token, no Kubernetes API), the
+      Service, `AddDaServerDashboard`, its own admin key (`{cluster}-admin`, key-per-file, current and accepted) with scopes view
+      and act, no Kubernetes API), the
       screens of the design's jobs table over one snapshot per refresh (Prometheus's fixed queries and range queries,
       or the nodes' current readings polled at a fixed cadence into the snapshot and a bounded ring), triage from
       firing Prometheus alerts (the outlier rule only naming culprits and the rows that stand out), distributions,
-      outliers and the slowest actors computed on the server, logs and the audit stream from Loki (LogQL
-      `query_range`), history links to Grafana at the same time range, OIDC with view and act roles, actions confirmed
-      by typing and audited; the node's OpenTelemetry resource (`service.name` the group, `service.instance.id` the
-      node) and framework logs with `daserver.actor.type`, `daserver.actor.key` and the trace id; one reading table
+      outliers and the slowest actors computed on the server, logs from Loki (LogQL
+      `query_range`, the patterns API, one query per type, cached in the snapshot), the audit in its durable sink
+      (`daserver_audit`, or an append-only file), history links to Grafana at the same time range, OIDC with view and act roles, actions confirmed
+      by typing and audited (with a reason for type- and cluster-wide actions, preconditions, idempotency keys, one
+      action per type); the node's OpenTelemetry resource (`service.name` the group, `service.instance.id` the
+      node) and framework logs with `daserver.actor.type`, `daserver.actor.key` and the trace id; the ask-latency histogram (`daserver.ask.duration`, per
+      server type) with its recording rules (`histogram_quantile(0.99, …)` by type and by node) and the rule
+      `DaServerAskLatencyHigh` carrying `daserver_limit` in `observability/prometheus-rules.yaml`; one reading table
       generating the instruments, `/admin/stats` and the stats line (off when OTLP is set); the samples' AppHosts
       adding the Collector, Prometheus, Loki, Tempo and Grafana when published, Prometheus fed by the Collector and
       scraping no node; a node's restart (for a node hosting actors, a same-image handover of that one node through the deploy pipeline's
-      webhook; retire and exit for a gateway or stateless node, which the platform replaces), the admin token derived again when the key
-      files change (current key, then accepted), view agreement from the view hashes the pulses carry (one node's
-      `/admin/membership`), a type's hot restart and a roll back
+      webhook; retire and exit for a gateway or stateless node, which the platform replaces), the admin key re-read when its
+      files change (current, then accepted), membership from up to three ready nodes (highest version, view hashes from
+      the pulses), a type's hot restart and a roll back
       through the deploy pipeline's webhook (`DaServer:Dashboard:RollbackWebhook`; the Dashboard never loops over
       nodes itself), the command shown when none is set; the front end in vanilla TypeScript built by esbuild, assets embedded. Tests:
       `RollbackCallsDeployWebhookAndAudits`, `RollbackWithoutWebhookShowsCommand`, `TypeHotRestartCallsDeployWebhook`, `DashboardShowsIncidentFromFiringAlerts`, `TriageWithoutPrometheusShowsThresholdFreeStatesOnly`,
       `ChartsFromPollRingWithoutPrometheus`, `DashboardLogsComeFromLoki`, `DashboardWithoutLokiSaysSo`,
-      `ActorKeyIsNotALokiLabel`, `ActionNeedsTypedTargetAndIsAudited`, `ViewerRoleCannotAct`, `DashboardHoldsNoState`
-      (two replicas answer alike), `ServerTypeScreenFixedAt400Nodes` (the screen's rows and bins do not grow with
+      `ActorKeyIsNotALokiLabel`, `ActionNeedsTypedTargetAndIsAudited`, `ViewScopeCannotAct` (a node refuses an act request signed for
+      view), `DashboardHoldsNoState` (two replicas answer alike: action records and the Data Protection key ring in the
+      store), `ServerTypeScreenFixedAt400Nodes` (the screen's rows and bins do not grow with
       nodes), `DashboardPollsNodesAtFixedCadence` (ten viewers add no node requests; at most 32 in flight),
       `DashboardReadsAggregatesFromPrometheusWhenPresent`, `OutliersComputedOnServer`,
       `SlowestActorsMergedFromNodeRankings`, `ActorDetailAsksOwningNodeOnly`, `FindCapsResultsPerGroup`,
-      `ResourceSetsServiceInstanceId`, `OneReadingTableFeedsMetricsStatsAndLine`, `StatsLineOffWhenOtlpSet`, `DashboardSurvivesRotation`, `ViewDisagreementFromOneNode`,
-      `GatewayRestartRetiresThenExits`, `StatelessRestartStopsGracefully`, and the prototype's layout, control and wheel checks against the built pages.
+      `ResourceSetsServiceInstanceId`, `OneReadingTableFeedsMetricsStatsAndLine`, `StatsLineOffWhenOtlpSet`, `DashboardSurvivesRotation`, `MembershipCrossCheckedAcrossReadyNodes`,
+      `GatewayRestartRetiresThenExits`, `StatelessRestartStopsGracefully`, `AlertLimitComesFromRuleAnnotation` (no rule,
+      no limit line), `IncidentsGroupAlertsByRuleAndType` (400 per-node alerts are one incident; ranked by severity,
+      then nodes; silences honoured), `AlertsUnreadableIsNotAllClear` (Prometheus down or stale shows "Alerts cannot be
+      read" and the threshold-free checks), `NodeReadingsCarryAge` (2 s timeout; not answering, isolated and stale are
+      states and stay out of distributions; "N of M answered"), `RefreshPatchesInPlace` (focus, typed input and list
+      order survive a refresh; Find and confirm are not re-rendered), `RestartRefusesStaleIncarnation`,
+      `OneActionPerTypeAtATime`, `RepeatedActionIsIdempotent` (a double press, a retry, a second operator),
+      `RollbackWebhookCarriesExpectedBuild`, `ActionOutlivesBrowser`, `WebhookTimeoutIsUnknownNotRetried`,
+      `TypeWideActionNeedsReason`, `AuditWritesIntentAndOutcome` (same action id, durable sink, insert-only role),
+      `DashboardHoldsNoSigningSecret` (only `{cluster}-admin` mounted), `ActionsNeedAntiforgeryToken`,
+      `DataRenderedAsTextUnderCsp` (a log line holding markup shows as text), `MixedBuildsCountedAndComparedPerBuild`,
+      `OutlierRuleTwoSidedWithNoRequests`, `TypeP99FromMergedBuckets`, `LokiQueriesOnePerTypeAndCached`,
+      `ConfigPushTwoPhaseAbortsOnTimeout`, `FindNeverActivatesActor` (a key parsed by its registered key type; lookup on
+      Enter or a pause), and the prototype's layout, control and wheel checks against the built pages.
     - [ ] W8 Native AOT publish of the samples' nodes with 0 warnings (what holds and what to verify:
       drafts/architecture.md section 8); the AOT E2E run. Local runs: nodes as
       `AddDotnetProject` (verified: no `dotnet run` process, OTLP, endpoints, replicas, attach; `AddProject` as the

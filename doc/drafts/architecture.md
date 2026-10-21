@@ -812,7 +812,7 @@ GRANT SELECT, INSERT, UPDATE ON :schema.daserver_membership, :schema.daserver_me
 
 The schema Job does not create roles. The samples' AppHosts add an init step that runs with the database's superuser
 (Aspire's PostgreSQL resource has only `postgres`) before the schema Job (which retries until the roles exist) and
-creates both roles, neither a superuser: the owner role (`CREATE` on the schema, owns the tables, the sequence and the
+creates the roles, none a superuser: the owner role (`CREATE` on the schema, owns the tables, the sequence and the
 two `SECURITY DEFINER` functions) and the runtime role. It is re-runnable, since on Kubernetes it runs as a Job with
 a fresh name every release, and every run converges the database to the configuration: (1) each role is created if
 missing and its password set on every run, so a changed password parameter reaches the database (`DO $$ BEGIN IF NOT
@@ -824,8 +824,19 @@ the owner role owns it (its `GRANT USAGE ON SCHEMA … TO <runtime>` then takes 
 a role without the privilege's grant option), and for `public`, `GRANT CREATE, USAGE ON SCHEMA public` to the owner
 and `USAGE` to the runtime role; (3) `ALTER TABLE`/`SEQUENCE`/`FUNCTION … OWNER TO <owner>` for every DaServer
 object that already exists under another owner (tables created by today's nodes as `postgres`), so the owner's
-grants and later `ALTER`s on them work. Against an external database the operator provisions
-both roles (deployment.md section 4).
+grants and later `ALTER`s on them work; (4) with `AddDaServerDashboard`, a third login role for the Dashboard
+(`<cluster>_dashboard`, created like the others) and its tables, owned by the owner role:
+`daserver_audit (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, action_id text NOT NULL, phase text NOT NULL
+CHECK (phase IN ('intent','outcome')), at timestamptz NOT NULL DEFAULT now(), who text NOT NULL, action text NOT NULL,
+target text NOT NULL, reason text, outcome text)` with indexes on `(at)` and `(action_id)`, on which the Dashboard's
+role has `INSERT, SELECT` and `USAGE` on the identity sequence but no `UPDATE` or `DELETE`, so the audit is
+insert-only; `daserver_actions` (action id, idempotency key, state, kept ten minutes after they settle) and
+`daserver_dataprotection` (the Data Protection key ring), which its role may update. The runtime role has no grant on
+any of the three, and the Dashboard's role none on the actor and membership tables. The Dashboard deletes no audit
+row: a `SECURITY DEFINER` function `daserver_audit_expire(retention interval)`, owned by the owner role and executable
+by the Dashboard's role, removes expired rows when the Dashboard calls it daily with
+`DaServer:Dashboard:AuditRetention` (unset: kept forever). Against an external database the operator provisions
+the roles (deployment.md section 4).
 
 **A membership change** (one transaction; `:v` is the version the node read, and the node must have been `Active` at
 it unless it is joining):

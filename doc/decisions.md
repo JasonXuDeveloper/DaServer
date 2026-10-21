@@ -2280,45 +2280,104 @@ Replaced by ADR-098.
     its current build, a config table) through the nodes' admin plane, each confirmed by typing its target and
     written to the audit log. Restarting one node that hosts actors is a same-image handover of that node (ADR-098),
     started through the deploy pipeline's webhook like a type's; a gateway or stateless node has nothing to hand over,
-    so it retires (a gateway hands its clients over first) and exits, and the platform starts a fresh one. Hot restarting a type is the same-image roll, and the Dashboard never loops over
+    so the same loop retires it (a gateway hands its clients over first) and the platform starts a fresh one. A node
+    restart carries the node's incarnation as the operator saw it, and the loop refuses it for an incarnation the node
+    no longer is. Hot restarting a type is the same-image roll, and the Dashboard never loops over
     nodes itself (its own restart would leave a half-rolled group, and only the rollout loop pauses scale-in): it calls
     the deploy pipeline's webhook, which runs the one rollout loop (one node at a time, the coordinator last), or shows
     `aspire do {cluster}-restart` without one; a new build, a rollback included, reaches the nodes through the deploy
     (`aspire deploy`, then `{cluster}-restart`), since only the platform changes an image: the Dashboard's roll back
     calls the deploy pipeline's webhook (`DaServer:Dashboard:RollbackWebhook`: GitHub Actions, Argo CD, any CI) with
-    the server type, the build to return to, who asked and why, and audits the call; without a webhook it shows the
-    command to run. Taking a node out is the platform's scale-down, not a Dashboard action. It mounts the signing secret's
-    files and derives the admin token from them (drafts/deployment.md section 4), deriving it again when the files
-    change and trying the current key, then the accepted one; it calls no Kubernetes API and has
-    no autoscaler and no PodDisruptionBudget (one replica; its cost follows the nodes, not the viewers).
+    the server type, the build to return to, who asked and why, and audits the call. The webhook call also carries the
+    build the type is expected to leave (the pipeline refuses when the type has moved on) and the action id, which the
+    pipeline puts on its run; the pipeline runs one concurrency group per server type. Without a webhook the Dashboard
+    shows the command to run. Taking a node out is the platform's scale-down, not a Dashboard action.
+  - **It holds an admin key of its own, never the cluster's signing secret**, so a compromised Dashboard cannot pose
+    as a node or sign a resume ticket. The key is the `{cluster}-admin` Secret, mounted key-per-file like the signing
+    secret with `current` and `accepted` files for rotation and re-read when they change. The Dashboard signs admin
+    requests with a scope: `view` (readings, membership, an actor's state) or `act` (anything that changes state);
+    nodes verify the key and the scope and refuse an `act` request signed for `view`. The rollout and upgrade-check
+    Jobs mount the same Secret and sign with `act`. The Dashboard calls no Kubernetes API and has no autoscaler and no
+    PodDisruptionBudget (one replica, two for availability; its cost follows the nodes, not the viewers).
+  - **Actions run on the server, once, one per type, audited twice.**
+    - Every action runs on the Dashboard's server and outlives the browser.
+    - **Preconditions.** An action carries what the operator saw: the node's incarnation for a node restart, the
+      type's build for a rollback or a type's hot restart. The loop or the pipeline refuses it when that has changed.
+    - **Idempotency.** An action has a key (action, target, what was seen, operator), kept for ten minutes. A second
+      press, a retry or another operator's identical request is the same action.
+    - **One at a time.** Each server type has one action at a time: a rollback, a hot restart, a node restart or a
+      rollout. Another action waits, and its button names the running one. The confirmation says when another node
+      of the type is not running.
+    - **State.** What runs comes from the server's action records and from builds and incarnations in membership,
+      never from the page. The records are in the store, or in memory without one.
+    - **Outcomes.** Each action ends Accepted, Failed or Unknown. Unknown means a timeout: the action may have run. A
+      webhook without a run id (`workflow_dispatch`) is not retried after a timeout; the pipeline is first asked for a
+      run carrying the action id.
+    - **Reasons.** An action on a whole type or on the cluster asks for a reason.
+    - **Audit.** The audit holds the intent before the call and the outcome after it, with the same action id, which
+      the page shows. The sink is durable: the store's `daserver_audit` table, owned by the owner role and
+      insert-only for the Dashboard's role, or an append-only file without a store. Retention is the operator's
+      setting (`DaServer:Dashboard:AuditRetention`). The same lines also go to the logs.
+    - **Silences.** "Silence" creates an expiring Alertmanager silence.
+    - **Config tables** go out in two phases: every node validates and stages the table, then all switch together. If
+      any node has not staged it within a minute, the push aborts and nothing switches; a node that joins meanwhile
+      reads the table from the store.
+    - **No second approver.**
   - **Live state is gathered once per refresh, never per viewer or per request**, so its cost grows with nodes, not
     with people watching. Nodes keep no history: each serves its current readings and its own ranking of its slowest
     actors. When Prometheus is configured the Dashboard reads per-type aggregates and per-node readings with a fixed
     set of queries, and charts come from range queries; otherwise a collector in the Dashboard polls every node's
     stats summary (fixed size) every 10 s, at most 32 nodes at a time, into one in-memory snapshot that every viewer
     reads, and keeps a bounded ring of those polls for the charts (they start when the Dashboard started, and the
-    evidence chart says so). Distributions, outliers (a state other than running, or more than four median absolute
-    deviations from the type's median) and the cluster's slowest actors (the nodes' rankings merged) are computed on
-    the server; a screen receives only the bins and the few rows it shows. Membership comes from one node's `/admin/membership`:
-    each member's pulse carries the hash of its view, so that one node also tells when views disagree. An actor's detail is asked on demand of the one node that owns it,
+    evidence chart says so).
+    - **Freshness.** Each node's reading carries its age on the snapshot's clock. The poll asks each node with a 2 s
+      timeout. A node that does not answer, a node isolated from the store (it fails readiness and answers probes as
+      isolated) and a reading older than two cadences each get a state of their own, and none of them enters a
+      distribution. The status line gives the snapshot's time and how many nodes answered.
+    - **Computed on the server.** Distributions, outliers and the cluster's slowest actors are computed on the
+      server; a screen receives only the bins and the few rows it shows. Outliers, in this order: no fresh reading; a
+      state other than running; no requests while the type has them; more than four median absolute deviations from
+      the median of the nodes on the same build, either way, with a floor of 2% of the median. The slowest actors are
+      the nodes' rankings merged; an actor needs 100 calls in the window to rank, and an actor seen on two nodes
+      during a handoff counts once. A type's p99 comes from its nodes' histogram buckets merged as deltas, never as a
+      percentile of percentiles; with Prometheus these are recording rules.
+    - **Builds.** A type on two builds shows both counts; outliers and the incident's cause are computed per build.
+    - **Membership** is read from up to three ready nodes, keeping the highest version. Each member's pulse carries
+      the hash of its view, so a disagreement shows; it is an incident only when it lasts (`for: 2m`). An actor
+      lookup that meets `NotHosted` asks again.
+    - An actor's detail is asked on demand of the one node that owns it,
     found through placement; Find resolves actor ids the same way and searches nodes in the snapshot. The snapshot is
     a cache rebuilt at start, so replicas stay interchangeable.
-  - **Something is wrong when an alert fires.** `observability/prometheus-rules.yaml` is the one definition: triage
-    shows the firing alerts (Prometheus's `ALERTS`, or Alertmanager's API) and uses the outlier rule only to name the
-    culprit nodes and the rows that stand out. Without Prometheus, triage covers only the states that need no
-    threshold: a stalled shard, a node not ready, views that disagree.
+  - **Something is wrong when an alert fires.** `observability/prometheus-rules.yaml` is the one definition.
+    - A type is unhealthy when an alert fires for it. A reading's limit is its rule's `daserver_limit` annotation,
+      read from Prometheus's rules API (`/api/v1/rules`); a reading with no rule has no limit line, and the Dashboard
+      keeps no threshold of its own.
+    - **Incidents.** An incident is the alerts of one rule on one server type, from Alertmanager's API with its
+      grouping, silences and inhibitions. Incidents rank by severity, then by node count; each gets a screen, and the
+      first one counts the rest.
+    - **Cannot know.** The alerts are unreadable when Prometheus or Alertmanager does not answer, when the newest
+      sample is older than two evaluation intervals, or when rule evaluation fails. The Incident section then says
+      "Alerts cannot be read", never that nothing is wrong, and shows the threshold-free checks from the poll: a
+      stalled shard, a node not ready, views that disagree. Without Prometheus, triage covers only those checks.
+    - The outlier rule only names culprits.
   - **Logs come from Loki.** Nodes export logs over OTLP to the Collector, which sends them to Loki. The node is the
     OpenTelemetry resource's `service.instance.id`, which Loki indexes as a label; framework logs add
     `daserver.actor.type`, `daserver.actor.key` and the trace id as attributes, kept as structured metadata (the actor
-    key is never a label: it is unbounded). The Dashboard queries Loki's HTTP API (LogQL `query_range`) for the lines
-    of what the screen shows (the incident's server type and time, a node, an actor) and shows them inline; the audit
-    log is a log stream of the Dashboard read back the same way.
+    key is never a label: it is unbounded). The Dashboard queries Loki's HTTP API (LogQL `query_range` for an actor's
+    or a node's lines, and the patterns API, from the pattern ingester, for the incident's grouped patterns), one
+    query per server type with the node as a label, never one per node. Results are cached in the snapshot and shown
+    inline (the incident's server type and time, a node, an actor); the audit is read from its durable sink, not from
+    Loki.
   - **History is Grafana's.** Each view links to Grafana at the same time range (the shipped dashboard, or Explore
     for logs and traces); there are no ad-hoc queries, no dashboard editor and no long-term storage of the
     Dashboard's own. The Aspire dashboard is for local runs.
-  - **Optional sources.** Without Loki the log screens and the audit screen say that Loki is not configured (audit
-    entries still go to the Dashboard's stdout); without Grafana the history links are absent.
-  - **Sign-in is OIDC**; roles allow viewing or acting.
+  - **Optional sources.** Without Loki the log screens say that Loki is not configured (the audit is
+    unaffected: it is in its own sink); without Grafana the history links are absent.
+  - **Sign-in is OIDC**, with the roles view and act. The cookie's Data Protection key ring is shared by the replicas
+    (in the store, or a mounted key). Every action carries an antiforgery token, and the cookie is `SameSite=Strict`.
+    The front end writes all data as text, never as markup, under a strict Content Security Policy (`default-src
+    'self'`, no inline script, `frame-ancestors 'none'`). Component values, which may hold personal data, are shown to
+    the view role only when the deployment allows it (`DaServer:Dashboard:ViewComponents`).
   - **The front end is vanilla TypeScript built by esbuild**, its assets prebuilt and embedded in the package, so only
     Dashboard contributors need a JavaScript toolchain; the look and motion follow doc/dashboard/design.md.
 - Alternatives: Grafana dashboards plus the Aspire dashboard (three sites, no actions, no audit); a plugin for the
@@ -2327,7 +2386,9 @@ Replaced by ADR-098.
   builds).
 - Consequences: roadmap W7e builds it; the samples' AppHosts add the Collector, Prometheus, Loki, Tempo and Grafana
   for published runs through the publisher hooks; doc/operations.md describes the telemetry path; framework log calls
-  use `LoggerMessage` with those attributes, off the hot paths.
+  use `LoggerMessage` with those attributes, off the hot paths; the roles step creates `daserver_audit`,
+  `daserver_actions` and `daserver_dataprotection` and the Dashboard's login role; deployment adds the
+  `{cluster}-admin` Secret.
 
 ## ADR-094 Kubernetes objects and controllers: which object each part uses, who owns which field
 - Context: a published cluster is acted on by several writers at once: the chart (applied by `aspire deploy`, which

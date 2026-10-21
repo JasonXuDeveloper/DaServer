@@ -445,7 +445,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     a[N - 1] = now; return a;
   }
   // Alert rules, read from Prometheus's rules API. A reading is held to the limit its rule carries in the
-  // daserver.limit annotation; a reading with no rule has no limit line, and the Dashboard sets no threshold of its own.
+  // daserver_limit annotation; a reading with no rule has no limit line, and the Dashboard sets no threshold of its own.
   var RULES = SRC.alerts === 'ok' ? { ask: { alert: 'AskLatencyHigh', limit: 25 } } : {};
   function limit(r) { return RULES[r || 'ask'] ? RULES[r || 'ask'].limit : null; }
   function over(v, r) { var l = limit(r); return l != null && v != null && v > l; }
@@ -1279,7 +1279,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   function ask(cf) { cf.from = S.mode; S.cf = cf; S.mode = 'confirm'; S.modeH = 0; render('up'); }
   function rollback(tid) {
     var t = T(tid), from = builds(t)[0].b;
-    ask({ title: 'Roll back ' + t.name, text: 'The deploy pipeline moves the ' + group(t.n) + ' ' + t.name + ' nodes from build ' + from + ' to ' + PREV + ', one at a time, each hot restarting in place with a pause of about 0.4 s. Clients stay connected.',
+    ask({ title: 'Roll back ' + t.name, text: 'The deploy pipeline moves the ' + group(t.n) + ' ' + t.name + ' nodes from build ' + from + ' to ' + PREV + ', one at a time, each handed over to a standby with a pause of about 0.3 s. Clients stay connected.',
       need: t.name, verb: 'Roll back', reason: true, key: 'Roll back ' + t.name + ' ' + from, target: t.name + ' to ' + PREV, type: t.id,
       // the webhook carries the build it expects to leave; the pipeline refuses if the type has moved on
       check: function () { var b = builds(t)[0].b; return b !== from ? t.name + ' moved to ' + b + ' since you opened this. Nothing was done.' : null; },
@@ -1288,7 +1288,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   function restart(name) {
     var n = node(name), t = typeOf(name), inc = n.inc;
     var away = t.nodes.filter(function (x) { return x !== n && x.st !== 'ok'; });
-    ask({ title: 'Restart ' + name, text: name + ' hot restarts in place on its build: it writes its snapshot, exits and is started again by the platform, paused about 0.4 s. Its actors stay on it; clients stay connected.',
+    ask({ title: 'Restart ' + name, text: 'The deploy pipeline hands ' + name + ' over to a standby on the same build, paused about 0.3 s. Its actors stay on it; clients stay connected.',
       warn: away.length ? group(away.length) + ' other ' + t.name + (away.length === 1 ? ' node is' : ' nodes are') + ' not running (' + away.slice(0, 2).map(function (x) { return x.n + ', ' + state(x).toLowerCase(); }).join('; ') + '): restarting ' + name + ' now takes one more out at once.' : '',
       need: name, verb: 'Restart', key: 'Restart ' + name + ' ' + inc, target: name + ', incarnation ' + inc, type: null,
       // the node refuses a restart for an incarnation it no longer is, and the type allows one restart at a time
