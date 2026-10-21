@@ -1,4 +1,4 @@
-# DaServer 新编程模型设计（草案 v51，未实现，迭代中）
+# DaServer 新编程模型设计（草案 v52，未实现，迭代中）
 
 原则：业务代码干净、解耦、简洁，不用 OOP。ECS 一路到底：能用 EasyEcs 的功能就用 EasyEcs，状态都是数据，其余交给我们的特性和生成器，不重复造轮子。
 
@@ -1106,10 +1106,10 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
     PRIMARY KEY (type_id, key));
   CREATE INDEX actors_due ON actors (slot, next_due) WHERE next_due IS NOT NULL;
   ```
-  键用 `bytea` 而不是两个 `bigint`：键是不超过 16 字节的任意非托管结构，一列就装得下每种形状，主键和比较都不用补零的第二列；每个字段按大端写，所以一个 `long` 键就是 `int8send(key)`，按 `bigint` 存键的旧表原地转换（[roadmap 的 W6](../roadmap.md)）。槽号由节点按键的哈希算好写进来（和放置同一个哈希），SQL 里不算哈希；`DueScan` 按 `(slot, next_due)` 的索引只扫自己的槽。
+  键用 `bytea` 而不是两个 `bigint`：键是不超过 16 字节的任意非托管结构，一列就装得下每种形状，主键和比较都不用补零的第二列；每个字段按大端写，所以一个 `long` 键就是 `int8send(key)`。重构建一张新表 `actor_records`，旧表不读也不转换（1.0 之前，破坏性）。槽号由节点按键的哈希算好写进来（和放置同一个哈希），SQL 里不算哈希；`DueScan` 按 `(slot, next_due)` 的索引只扫自己的槽。
 - **激活先占 epoch，占和读是一条语句**（键还没有记录时插入一行占位；有行而条件不成立时语句不改也不返回任何行，就是没占到）：
   ```sql
-  INSERT INTO actors AS a (type_id, key, slot, epoch, write_gen, owner, placement, record, next_due)
+  INSERT INTO actor_records AS a (type_id, key, slot, epoch, write_gen, owner, placement, record, next_due)
   VALUES (:type_id, :key, :slot, 1, 0, (:name, :gen), :v, NULL, NULL)   -- a new key: the placeholder row
   ON CONFLICT (type_id, key) DO UPDATE
      SET epoch = a.epoch + 1, write_gen = 0, owner = excluded.owner, placement = excluded.placement
@@ -1124,12 +1124,12 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
   ```sql
   WITH r AS (SELECT * FROM unnest(:type_ids, :keys, :records, :next_dues, :epochs, :write_gens)
                  AS r(type_id, key, record, next_due, epoch, write_gen)),
-       w AS (UPDATE actors a SET record = r.record, next_due = r.next_due, write_gen = r.write_gen
+       w AS (UPDATE actor_records a SET record = r.record, next_due = r.next_due, write_gen = r.write_gen
              FROM r WHERE a.type_id = r.type_id AND a.key = r.key
                       AND a.epoch = r.epoch AND a.write_gen < r.write_gen
              RETURNING a.type_id, a.key)
   SELECT a.type_id, a.key, a.epoch, a.write_gen                 -- the rows not updated, as stored
-  FROM r JOIN actors a ON a.type_id = r.type_id AND a.key = r.key
+  FROM r JOIN actor_records a ON a.type_id = r.type_id AND a.key = r.key
   WHERE NOT EXISTS (SELECT 1 FROM w WHERE w.type_id = r.type_id AND w.key = r.key)
   ```
   存储里的 epoch 不是自己的，写失败。写代让一条超时之后才落地的旧语句永远盖不掉更新的状态：同一个 epoch 里写代只增不减，热重启原地时也一样（写代在根上，随快照过去，新进程接着数）。
@@ -1182,7 +1182,7 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
   ```sql
   SELECT a.type_id, a.key
   FROM unnest(:type_ids, :slots) AS s(type_id, slot)
-  JOIN actors a ON a.slot = s.slot AND a.type_id = s.type_id
+  JOIN actor_records a ON a.slot = s.slot AND a.type_id = s.type_id
   WHERE a.next_due <= :until
   ```
   注册里有 `[Durable]` 请求或者 `DaServer.Reminders` 时才查。查询不排除激活着的键（存储不知道哪些在内存里）：激活着的 Actor 的 `WakeAt` 在将来或刚过（它的时刻一到 Actor 自己就做那件事并前移它），只在刚过、前移它的那次写还没写成时被查到，`Wake` 到了 world 就丢弃。重问不加 `WriteNow`（第 8 节），前移的 `WakeAt` 随检查点写下，所以一次扫描多出的行不超过最近一个检查点间隔里到时的项。

@@ -22,7 +22,7 @@ Keep this file current: tick items when done, add items when scope changes.
 11. S1-S6 (done) elastic scaling.
 12. The ECS rewrite (ADR-081, the "ECS rewrite" entry under "Open cleanup" below): P1-P3 and P5 done; P4, P6 and P7
     superseded by W.
-13. W — refactor to the v51 programming model ([drafts/programming-model.md](drafts/programming-model.md),
+13. W — refactor to the v52 programming model ([drafts/programming-model.md](drafts/programming-model.md),
     [drafts/architecture.md](drafts/architecture.md)) on EasyEcs 4.7 (ADR-082 to ADR-092). Breaking; each step
     proven before the next (W, not R: the requirement ids R0-R11 are taken).
     W10 runs last, after W12 and N9.
@@ -183,13 +183,7 @@ Keep this file current: tick items when done, add items when scope changes.
       `IActorStore.DueKeys` and the `DueScan` wake, the table of ADR-068 (primary key `(type_id, key)` with `key bytea`,
       the key's fields big-endian; columns `type_id, key, slot, epoch, write_gen, owner, placement, record, next_due`;
       the index on `(slot, next_due)`; the claim upsert, the write CTE and `DueKeys` on that key, `DueKeys` over the
-      node's `(type, slot)` pairs) and its migration by the schema Job (`--DaServer:Migrate`, with the cluster stopped,
-      one transaction under the advisory lock): an existing table keyed `(type_id, key bigint)` gets `key` converted by
-      `int8send(key)`, `version` renamed `epoch` and `data` renamed `record`, `hash` and `updated_at` dropped,
-      `write_gen` 0, `placement` 0 and an empty `owner` (so the first claim takes the row), `next_due` NULL, `slot`
-      filled by the Job from each key (it runs the node image, so it hashes as placement does) and then made `NOT NULL`
-      with the index built; each per-component record rewritten as its root's `SaveEntities` record (the root prefab's
-      copy with the stored components set), `StoreDegraded` and `ActivationSlots`, `ActivationFailed`, strict
+      node's `(type, slot)` pairs) in a new table `actor_records` created by the schema Job; the old `actors` table is not read or converted (pre-1.0, breaking: earlier records are not carried over), `StoreDegraded` and `ActivationSlots`, `ActivationFailed`, strict
       placement versions with `Fence` (bumped on every placement change of a type, slot-table moves included; a
       migration's arrival claims with the type's current version), idempotent claims, generations from Unix ms and single-seed formation, the lease
       ack, the restart permit, arm nonce, `NodeRestarting` and `Rejoining`, pinned slots and the reconcile on `Readmit`.
@@ -228,7 +222,7 @@ Keep this file current: tick items when done, add items when scope changes.
       `DisplacedOwnerFencedWithoutWrite`, `GroupFramesFlushedBeforeDeactivationAndMigration`,
       `FencedActorDiscardsGroupFrames`, `MigrationArrivalClaimSurvivesRestart`,
       `MigrationArrivalNeverLowersPlacement`, `MapAndLootSameIdDoNotShareRow`, `DueKeysFiltersBySlot`,
-      `SchemaJobMigratesExistingTable`,
+      `SchemaJobCreatesNewTableAndIgnoresOld`,
       `CoordinatorHotRestartDeadlineKeptBySuccessor`, `TwoExpiredRestartsDoNotDownMajority`,
       `ColdClusterRestartNeverReusesGeneration`, `ParallelSeedsFormOneCluster`, `ArmWithoutKillExpires`,
       `FreezeAbortsWhenStoreHangs`, `TornSnapshotRejected`, `ImageNotMatchingArmRejectsSnapshot`,

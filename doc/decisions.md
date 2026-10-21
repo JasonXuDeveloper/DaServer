@@ -1097,8 +1097,8 @@ Replaced by ADR-081.
   - **Wake:** every write stores the root's `NextDue` in `next_due`; `IActorStore.DueKeys(slots, until)` reads, over
     the `(slot, next_due)` index, the keys of the node's `(type, slot)` pairs whose `next_due` has passed, and
     `DueScan` wakes them.
-  - **Schema:** the schema Job (the node image with `--DaServer:Migrate`, a DDL role, under an advisory lock) creates or
-    migrates the table; nodes use a DML-only role.
+  - **Schema:** the schema Job (the node image with `--DaServer:Migrate`, a DDL role, under an advisory lock) creates the
+    `actor_records` table; an older table is neither read nor converted (pre-1.0); nodes use a DML-only role.
   - **Backends:** `IActorStore` (claims, the batched write, `DueKeys`) is all a backend implements.
     `InMemoryActorStore` serves tests and development and behaves like the database (epochs, generations, slots).
     `PostgreSqlActorStore` is the default for deployments, written with Npgsql and no ORM (the record is opaque bytes,
@@ -1526,7 +1526,7 @@ Replaced by ADR-081.
   changed" leaks; the order between mail, delayed sends and systems is implicit. EasyEcs provides what a
   model without these needs: single-entity jobs (`entity.Run(ref job[, filter])`), group filters carried by
   interfaces (`IGroupWith<T>`), `world.Descendants(root)` and `LoadEntitiesInto(…, markWritten: false)`.
-- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v51), structured as in
+- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v52), structured as in
   [drafts/architecture.md](drafts/architecture.md):
   - **The actor type is its address, its root component, its root prefab and its system group**:
     `[TickRate(30)] partial record struct Map(long Id) : IActor<Map>` (`IActor<T>` inherits `IEquatable<T>`, so
