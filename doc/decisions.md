@@ -1103,7 +1103,8 @@ Replaced by ADR-081.
     stored record stays, `RecordUnwritable`), and a migration falls back to such a forced deactivation (placement
     already names the target, which activates from the last record); an in-place hot restart leaves the root out of
     the snapshot (destroyed in the frozen world as by fencing, `RecordUnwritable`), so it re-activates from its last
-    record and the restart goes on. A refused
+    record and the restart goes on. The write that releases a root's held `[Durable]` output before a migration or a
+    freeze takes the same fallback at once, its held output dropped. A refused
     row fences only its actor; a timed-out write is retried with the same bytes and generation, and a row found at its
     own epoch and generation counts as written. `[Durable]` items ride the next write; other changes at most every
     `DaServer:CheckpointInterval`. Change tracking on the persist set tags written roots `Unsaved`, so only those are
@@ -1548,7 +1549,7 @@ Replaced by ADR-081.
   changed" leaks; the order between mail, delayed sends and systems is implicit. EasyEcs provides what a
   model without these needs: single-entity jobs (`entity.Run(ref job[, filter])`), group filters carried by
   interfaces (`IGroupWith<T>`), `world.Descendants(root)` and `LoadEntitiesInto(…, markWritten: false)`.
-- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v55), structured as in
+- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v56), structured as in
   [drafts/architecture.md](drafts/architecture.md):
   - **The actor type is its address, its root component, its root prefab and its system group**:
     `[TickRate(30)] partial record struct Map(long Id) : IActor<Map>` (`IActor<T>` inherits `IEquatable<T>`, so
@@ -1556,7 +1557,8 @@ Replaced by ADR-081.
     `[UpdateInGroup<Map>]` systems see only them.
   - **`[On<T>]` methods in `[Handles<K>]` classes are EasyEcs single-entity jobs** on one subject entity: the
     parameter rules are `[ForEach]`'s, `ref` points into storage, only written components are stamped; the actor key
-    parameter binds to the item's root whatever the subject.
+    parameter binds to the item's root whatever the subject. The exception is a handler with no component
+    parameters: EasyEcs's `entity.Run` takes one to nine components, so the dispatch calls it directly.
   - **Each actor is a discrete-event simulation**: mail, due items and the immediate chain run one at a time by
     `(time, seq)` in an ordered phase, then the actor type's systems, then the framework's settling and cleanup. What
     leaves an item is data in the `Outbox` singleton, serialized on append.
@@ -2077,17 +2079,18 @@ Replaced by ADR-081.
     (ADR-045). Only the runtime computes `NextDue`; the package writes `WakeAt` on its reminders.
   - **`DaServer.Topics`**: a built-in `Topic(long Id)` actor type with a persisted `DynamicBuffer<Subscriber>`;
     `Subscribe`, `Unsubscribe` and `Publish` on `Entity`, all one-way. `Subscribe` carries the subscriber's activation
-    epoch and is idempotent: the Topic keeps the highest epoch per subscriber and ignores a lower one, and tags its
-    root `WriteNow` whenever its table changes, so the change is written at that tick end. The subscriber keeps its own
+    epoch and is idempotent: the Topic keeps the highest epoch per subscriber and ignores a lower one; its table changes are
+    ordinary changes, written at the next checkpoint. The subscriber keeps its own
     `Subscription` buffer, and the package's system renews: it subscribes after activation, re-sends `Subscribe` every
     `DaServer:Topics:RenewInterval` (default 60 s) while the root is alive and not `Deactivating`, and again on
-    `[Removed<Deactivating>]` of a living root (a cancelled idle deactivation has already unsubscribed). A Topic crash
-    that lost an unwritten change, or a lost `Subscribe`, heals within one interval. `Unsubscribe` is sent in the
+    `[Removed<Deactivating>]` of a living root (a cancelled idle deactivation has already unsubscribed). Renewal heals
+    what a crash loses. `Unsubscribe` is sent in the
     `Deactivating` pass; a lost one is pruned by the gone-subscriber notice. An unsubscribe or a gone-subscriber notice
     removes a subscriber only when the epochs match, so a late notice from an old activation never drops a new one's
     subscription. Delivery never activates an actor. A server type hosting topics declares `[Hosts<Topic>]` and needs
-    a store. A publish is serialized once, one frame per subscriber node; at most once, and after a Topic crash a
-    subscription it had not written misses publishes for at most one renew interval. It replaces today's `Publish`.
+    a store. A publish is serialized once, one frame per subscriber node; at most once: a lost or reordered subscription message
+    (a Topic crash before its checkpoint, a lost `Subscribe`, or `Unsubscribe` and `Subscribe` reordered while the
+    Topic migrates) costs at most one renew interval of missed publishes. It replaces today's `Publish`.
     Durable streams (replay, offsets, consumer groups) stay with Kafka or NATS JetStream.
   - **Non-.NET clients**: the client wire protocol is published as a specification (frames, handshake, `Ready`,
     re-join and slots, `Retire` and `HandedOff`, `Busy` with its retry-after, keep-alive), with the C# SDK as the

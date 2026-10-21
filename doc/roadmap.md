@@ -22,7 +22,7 @@ Keep this file current: tick items when done, add items when scope changes.
 11. S1-S6 (done) elastic scaling.
 12. The ECS rewrite (ADR-081, the "ECS rewrite" entry under "Open cleanup" below): P1-P3 and P5 done; P4, P6 and P7
     superseded by W.
-13. W — refactor to the v55 programming model ([drafts/programming-model.md](drafts/programming-model.md),
+13. W — refactor to the v56 programming model ([drafts/programming-model.md](drafts/programming-model.md),
     [drafts/architecture.md](drafts/architecture.md)) on EasyEcs 4.7 (ADR-082 to ADR-092). Breaking; each step
     proven before the next (W, not R: the requirement ids R0-R11 are taken).
     W10 runs last, after W12 and N9.
@@ -167,7 +167,7 @@ Keep this file current: tick items when done, add items when scope changes.
       logged as `RecordUnwritable`, the rest of the batch written; deactivation, stop and migration saving before the
       destroy, a throw cancelling an idle deactivation, giving up a forced one's or a stop's write with the last record
       kept and `RecordUnwritable`, a migration falling back to such a forced deactivation, an in-place hot restart's
-      snapshot leaving the root out (destroyed in the frozen world as by fencing) instead of aborting; `WriteNow` roots every time, other `Unsaved` roots at most
+      snapshot leaving the root out (destroyed in the frozen world as by fencing) instead of aborting, the write releasing held output before a migration or a freeze taking that fallback at once with the held output dropped; `WriteNow` roots every time, other `Unsaved` roots at most
       every `DaServer:CheckpointInterval`; at most one write in flight per root, later changes in the next write; at
       most `DaServer:StoreWritesInFlight` statements in flight per world, roots beyond waiting, `WriteNow` first,
       counted in `daserver.store.writes_waiting`),
@@ -251,7 +251,7 @@ Keep this file current: tick items when done, add items when scope changes.
       `DueKeysFirstPageFromSentinel`, `DueKeysUntilFixedAcrossPages`, `DueKeysSkipsPairsBeforeCursor`, `DueKeysPageReadsAtMostAPagePerPair`,
       `UnwritableRootSkippedRestOfBatchWritten`, `UnwritableRootCancelsIdleDeactivation`,
       `UnwritableRootOnForcedDeactivationKeepsLastRecord`, `UnwritableRootOnStopKeepsLastRecord`,
-      `UnwritableRootMigrationFallsBackToDeactivation`, `UnwritableRootLeftOutOfSnapshot`, `NodeStartCreatesNewTableAndIgnoresOld`, `MigrateModeCreatesTableAndExits`,
+      `UnwritableRootMigrationFallsBackToDeactivation`, `UnwritableRootLeftOutOfSnapshot`, `UnwritableRootWithHeldOutputDoesNotStallMigrationOrFreeze`, `NodeStartCreatesNewTableAndIgnoresOld`, `MigrateModeCreatesTableAndExits`,
       `CoordinatorHotRestartDeadlineKeptBySuccessor`, `TwoExpiredRestartsDoNotDownMajority`,
       `ColdClusterRestartNeverReusesGeneration`, `ParallelSeedsFormOneCluster`, `ArmWithoutKillExpires`,
       `FreezeAbortsWhenStoreHangs`, `TornSnapshotRejected`, `ImageNotMatchingArmRejectsSnapshot`,
@@ -270,13 +270,13 @@ Keep this file current: tick items when done, add items when scope changes.
       `PeriodicReminderAdvancesInSameRecord`, `ReminderAfterOutageFiresOnce`; BenchmarkDotNet `DueScan` over 1M
       records, 0 B per firing.
     - [ ] W6b `DaServer.Topics` (ADR-090): the `Topic` actor type, one-way `Subscribe`/`Unsubscribe`/`Publish`,
-      subscribers with their activation epoch (`Subscribe` idempotent, the highest epoch kept, a lower one ignored, a
-      table change tagging the Topic's root `WriteNow`), `[Hosts<Topic>]` with a store, the subscriber's `Subscription`
+      subscribers with their activation epoch (`Subscribe` idempotent, the highest epoch kept, a lower one ignored, table
+      changes riding the normal checkpoint), `[Hosts<Topic>]` with a store, the subscriber's `Subscription`
       buffer (subscribe after `Activated`, renew every `DaServer:Topics:RenewInterval` while not `Deactivating` and on
       `[Removed<Deactivating>]` of a living root, unsubscribe on `Deactivating`), one frame per subscriber node; deletes
       the service `Publish`. Tests: `PublishReachesSubscribersOnEveryNode`, `DeliveryNeverActivates`,
       `ResubscribesAfterActivation`, `GoneSubscriberPruned`, `StaleUnsubscribeKeepsNewSubscription`,
-      `LowerEpochSubscribeIgnored`, `SubscriptionRenewsAfterTopicCrash`, `CancelledDeactivationResubscribes`;
+      `LowerEpochSubscribeIgnored`, `SubscriptionRenewsAfterTopicCrash`, `CancelledDeactivationResubscribes`, `ReorderedUnsubscribeHealsWithinRenewInterval`;
       BenchmarkDotNet fan-out to 1k/10k subscribers on 1/3 nodes, 0 B per delivery.
     - [ ] W7 Samples (mmo, flashsale) on the new model (their systems use `Mut<T>`), the mmo's drops split
       between a non-ticking `Loot` actor (their records, persistent, the only `[Durable]` asker) and the map (what
