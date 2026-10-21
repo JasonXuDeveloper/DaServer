@@ -351,8 +351,9 @@ A cluster has tens of server types, hundreds of nodes per type and millions of a
 - **Alerts decide, outliers point.** Whether something is wrong is Prometheus's alert rules
   (`observability/prometheus-rules.yaml`); the outlier rule only names the culprit nodes and the rows that stand
   out. A type is unhealthy when an alert fires for it. A reading's limit is its rule's `daserver_limit` annotation,
-  read from the rules API (`/api/v1/rules`); a reading with no rule has no limit line. Every rule keeps the labels
-  `cluster`, `type` and `node`: `type` is the OpenTelemetry resource's `service.name` (the node group) and `node` its
+  read from the rules API (`/api/v1/rules`); a reading with no rule has no limit line. Every rule about nodes keeps the labels
+  `cluster`, `type` and `node`; the rules over a whole type (`DaServerAskLatencyHigh`, `DaServerOnceStaleAsking`,
+  `DaServerOnceAskOld`) keep `cluster` and `type` and carry no `node`: `type` is the OpenTelemetry resource's `service.name` (the node group) and `node` its
   `service.instance.id`, which DaServer's metrics carry as labels and the rules rename for runtime metrics (Prometheus's
   OTLP endpoint maps them to `job` and `instance`). The metrics take one path: every node pushes over OTLP every 15 s
   (the export interval DaServer pins) to one Collector, which sends them to Prometheus's OTLP endpoint (`/api/v1/otlp`,
@@ -369,10 +370,10 @@ A cluster has tens of server types, hundreds of nodes per type and millions of a
 - **The store down is an incident of its own.** When most nodes are isolated at once, the cause is the store, not the
   nodes: the Incident section's first screen is "The store cannot be reached", with how many nodes are isolated and
   since when, ahead of every alert, and needs no rule. Actions wait for it (see Actions).
-- **Incidents, not alerts.** Every rule fires per node, so a bad build fires hundreds of alerts. An incident is the
+- **Incidents, not alerts.** Most rules fire per node, so a bad build fires hundreds of alerts. An incident is the
   alerts of one rule on one server type of one cluster (Alertmanager groups by `alertname`, `cluster` and `type`;
-  silences and inhibitions honoured); an alert without a `type` label (a rule over the whole cluster) is an incident of
-  the cluster; `DaServerMembersDisagree` names the node whose membership view is stuck, so it is an incident of that
+  silences and inhibitions honoured); an alert without a `type` label (a rule over the whole cluster), or with `type="none"` (a type-level rule on an actor
+  type no live member hosts), is an incident of the cluster; `DaServerMembersDisagree` names the node whose membership view is stuck, so it is an incident of that
   node's type. Incidents rank by severity (`critical`, then `warning`, as
   the rules name them), then by how many nodes they cover. Each has its screen; the first incident's summary counts the rest
   ("One more incident: long GC pauses on 2 PlayerServer nodes"). A silenced incident stays listed, last, with the

@@ -386,13 +386,20 @@ Keep this file current: tick items when done, add items when scope changes.
         (`ClientRowsDeletedAfterLastResendDeadline`), stale `[Once]` call
         ids refused and plain requests not (`PlainRequestBelowAckPasses`), at most `Clients:OnceReceiversPerSession`
         receivers tracked, acknowledgements forwarded, probes answered;
-      - `AskUntilAnswered` (ADR-100): one store table for every ask (`daserver_once_asks`, states queued, sent,
-        stopped), rows written in the item's own record statement joined to its compare and counted in
-        `RowChangesPerWrite`, none in the record (`AskRowsOneTable`); a request at most `Once:MaxRequestBytes`, checked at
+      - `AskUntilAnswered` (ADR-100): one store table for every ask (`daserver_once_asks`, phases queued, sent,
+        stopped, the call's state in `ask_state`: `AskStateKeptInRow`), rows written in the item's own record statement
+        joined to its compare, none in the record (`AskRowsOneTable`), inserted already sent when the window and
+        `OnceInFlight` allow (`AskSentInItsOwnWrite`); a root's row changes per write within `RowChangesPerWrite` and
+        `Once:ChangeBytesPerWrite`, an item that would pass them waiting in the mailbox and the root written now
+        (`AskBytesDeferItemPastWriteBudget`); a request and its state at most `Once:MaxRequestBytes`, checked at
         the call; the sequence taken from `OnceNext` only in the write that sends a row, re-sent after a crash under the
         stored one (`SeqAssignedAtSend`), so the cumulative acknowledgement, from written sent rows only, never passes a
-        queued ask (`AckNeverSkipsQueuedAsk`); sends per destination in call order, at most `OnceInFlight` sent rows per
-        root (memory and rate only, nothing refused); rows held in memory while active, range-read after the claim, their
+        queued ask (`AckNeverSkipsQueuedAsk`); sends per destination in call order, retries per destination on one timer in order
+        (`AskRetriesPerDestinationInOrder`; asks ordered only among first sends, the §1 exception), at most
+        `OnceInFlight` sent rows per root (memory and rate only, nothing refused); row metadata held in memory while
+        active, request bytes read from the store past `OnceInFlight`, `next_try_at` set by phase and NULL once stopped;
+        a probe of an inactive sender answered from one statement over its sent rows and `OnceNext`
+        (`ProbeAnswerSingleSnapshot`); range-read after the claim, their
         next try feeding `NextDue` so a crash or unload always wakes the root (`QueuedAsksWakeAfterCrash`); pending row
         changes written in the last write before a move or freeze (`MigrationCarriesPendingAskRows`); link outcomes
         retried by the runtime (`RetryAfter`, `Once:Retry` with backoff and jitter), windows waited out; only a value or a
@@ -406,8 +413,11 @@ Keep this file current: tick items when done, add items when scope changes.
         `OnceQueued`/`Once:QueuedBytes` queued rows, new ordinary requests and client `[Once]` requests get `Busy` and
         client sessions see a window of 0 (`AdmissionBusyAtQueuedCap`), while systems, reactions, timers, actors'
         `[Once]` requests and answers always run (`ReactionsRunUnderBackPressure`, `MutualOnceRootsProgress`); actors'
-        `[Once]` requests exempt from `MaxMail` (`OnceRequestsExemptFromMaxMail`); `AskInLoopIsDAS034Warning`, alert
-        `DaServerOnceAsksGrowing` on the store's `daserver.once.ask_rows`; the asking entity found again by its identity
+        `[Once]` requests exempt from `MaxMail` (`OnceRequestsExemptFromMaxMail`) but counted toward `Unacked` at
+        admission (`QueuedOnceCountsTowardUnacked`); `AskInLoopIsDAS034Warning`; alerts `DaServerOnceAskOld` on the
+        sweeping node's `daserver.once.ask_age` (index-only scan of `(type_id, phase, created_at)`) and
+        `DaServerOnceQueuedFull` on `daserver.once.queued_full`, `daserver.once.ask_rows` a trend only (promtool tests:
+        a stuck plateau fires, a healthy ramp does not, a drain resolves); the asking entity found again by its identity
         after a reload or migration, never by a raw entity id (`AskingEntitySurvivesReload`);
       - the wake: `WakeAt` on persistent framework entities (reminders, the delete check; ask rows carry their own next try), the `ArmSystem` arming a `Due` from it
         on load and activation, re-arming it on `[Changed<WakeAt>]` and disarming it on `[Removed<WakeAt>]`, the firing
@@ -1298,7 +1308,7 @@ Compose health check and no probe except HTTP probes declared with `WithHttpProb
       (`CallOptionsTests`).
 - [x] K5 `[Actor<TId>(MailboxCapacity = n)]` (an actor type's own bound; zero: the node's `ActorMailboxCapacity`,
       read from the type's settings when mail is queued) and `daserver.messages.dropped{reason}` (`queue_full`, `mailbox_full`,
-      `expired`; `Node.Dropped(DropReason)`), replacing `daserver.shard.rejected` and `daserver.shard.expired`
+      `expired`; `Node.Dropped(DropReason)`; the target adds `deleting`, one-way mail to a root being deleted, W6), replacing `daserver.shard.rejected` and `daserver.shard.expired`
       (`AnActorTypeSetsItsOwnMailboxCapacity`; replies and completions have their own queue, ADR-027).
 - Out of scope in core: durable streams (use Kafka/NATS; `DaServer.Topics` is at-most-once pub/sub between actors,
   ADR-090), transactions (a handler is atomic; sagas are order actors whose steps are `AskUntilAnswered`s of `[Once]` requests, plus compensation on definite answers, the flash sale's saga

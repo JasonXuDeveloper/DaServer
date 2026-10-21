@@ -284,7 +284,8 @@ Replaced by ADR-081.
   map or sale takes more, an actor that should shed load early less; mail waits there only while the actor loads,
   leaves or works off a backlog, ADR-081); a call or message beyond either is refused with
   `RpcStatus.Overloaded` (requests get the status, one-way messages are dropped), counted by reason in
-  `daserver.messages.dropped{reason=queue_full|mailbox_full}` (`Node.Dropped`). Node links are
+  `daserver.messages.dropped{reason=queue_full|mailbox_full|deleting}` (`Node.Dropped`; `deleting`: one-way mail to a
+  root being deleted, expected, ADR-099). Node links are
   never paused while a target shard is full: the link from B to A also carries replies to A's own calls, so pausing it
   stalls the work waiting for those answers until their timeouts, which can block the very shard that is full.
   Completions of a shard's own asks and runtime callbacks finish work already admitted, so they have a queue of their
@@ -2684,7 +2685,9 @@ Replaced by ADR-098.
   - **One rule users see**: everything one sender sends to one target (messages, requests, answers, presence notices
     `Route`, `Lost`, `JoinConfirmed`, `TakeOver`, `HandedOff`) arrives in send order; an answer counts as a message from
     the actor that gives it; sends to different targets never wait on each other; the only exception is best effort
-    during the second or two of a migration. Clients are covered the same way (a client to an actor, an actor to a
+    during the second or two of a migration, besides the ones the draft's §1 lists for `[Latest]`, `Commit`'s group
+    pushes and `AskUntilAnswered` (asks are ordered only among their first sends to the same target, not against the
+    root's other mail to it and not across retries, ADR-100). Clients are covered the same way (a client to an actor, an actor to a
     client). The sender's `Outbox` already appends per destination node in order, so answers simply stay in that
     stream, and a `Replied` goes through the asker's mailbox in arrival order.
   - **Never refusing an answer is an admission rule, not a lane**: an answer's room is reserved in bytes when its ask
@@ -2983,7 +2986,8 @@ Replaced by ADR-098.
     from a system (the cost is one tag per descendant, written once); its pending ordinary `Ask`s are cancelled (late
     answers are dropped), callers holding a `ReplyTo` token from it are not answered and time out (their requests ran, so no status saying
     otherwise is sent), and `NextDue`
-    counts only the delete's `WakeAt`; new requests get `Busy` (not stored), one-way mail is dropped and counted, only
+    counts only the delete's `WakeAt`; new requests get `Busy` (not stored), one-way mail is dropped and counted (`DropReason.Deleting`,
+    `daserver.messages.dropped{reason=deleting}`), only
     `[Once]` repeats are answered from `Unacked`; and it cannot ask or send (doing so after `Delete()` returned `Ok`
     in the same item is a runtime error that reloads the item, undoing the delete, counted in
     `daserver.delete.send_after` and alerted when it repeats, as a reloaded `Replied` item is delivered again; a build
@@ -3025,11 +3029,13 @@ Replaced by ADR-098.
     `RetryAfter`, then `Once:Retry`. The sender side never refuses for its own asks either: they are rows of their own
     (ADR-100), so no number of them can make its record unwritable, and back-pressure is applied only at the root's
     admission of new work (ADR-100). Actors' `[Once]` requests are exempt from the receiver's `MaxMail`: they are bounded
-    by `OnceWindow` per sender and the `Unacked` total, and a full mailbox refusing them could leave two roots asking each
+    by `OnceWindow` per sender and the `Unacked` total (the `[Once]` items already in the mailbox count toward it at
+    admission, so a request past it gets `WindowFull` at the door and the mailbox holds at most that many), and a full mailbox refusing them could leave two roots asking each
     other (a trade, a guild bank) each refusing the other. One sender cannot fill a receiver.
   - **Probes clear entries whose acknowledgement was lost**: an entry unacknowledged for `DaServer:Once:ProbeAfter`
     (30 s) with no newer mail makes the receiver send `AckQuery` (internal lane). An actor sender's node answers its
-    written `a` from the record without activating it, probes batched per node so a node crash does not activate
+    written `a` without activating it (an inactive sender's sent ask rows and `OnceNext` read in one statement, one
+    snapshot), probes batched per node so a node crash does not activate
     thousands of senders; a missing record answers "forgotten", and the receiver keeps the row and entries until
     `forget_after`. A client session's gateway answers from its session table; a session it does not hold answers
     "unknown", and the entries go with the session's row (below). Probes carry no time reasoning.
@@ -3101,20 +3107,32 @@ Replaced by ADR-098.
   value" should not depend on each handler.
 - Decision:
   - `e.AskUntilAnswered(to, in request[, state])` on a saved entity writes **one row** in the root's ask table
-    (`daserver_once_asks`: the root's call ordinal, state `queued`/`sent`/`stopped`, the sequence, NULL while queued,
-    target, the asking entity, request bytes, next try, attempt), in the same statement as the item's record and joined
+    (`daserver_once_asks`: the root's call ordinal, phase `queued`/`sent`/`stopped`, the sequence, NULL while queued,
+    target, the asking entity, request bytes, the call's `state` (`ask_state`, given back in `Replied<TReq, TState>`;
+    its type follows the persisted-component layout rules), created at, next try, attempt), in the same statement as the item's record and joined
     to its compare, and the item commits implicitly, so the sender's state and the intent are written together (a
     transactional outbox: [microservices.io](https://microservices.io/patterns/data/transactional-outbox)). The row
     belongs to the root, so an asking entity destroyed by another path (a drop expiring) does not lose the ask in flight.
     The record holds no ask: one table for every ask, in every state, so no number of asks can make a record
-    unwritable and there is no second place an ask can be in. A request is at most `DaServer:Once:MaxRequestBytes`
-    (1 MiB, well below `StatementBytes`), checked at the call.
+    unwritable and there is no second place an ask can be in. A request and its state are at most
+    `DaServer:Once:MaxRequestBytes` (1 MiB) together, checked at the call. **Write budget**: a root's ask-row changes
+    per write are bounded by `RowChangesPerWrite` and `DaServer:Once:ChangeBytesPerWrite` (4 MiB, at most
+    `StatementBytes` − `MaxRecordBytes`); an item that would pass either does not start (its mail waits in the
+    mailbox, answers and `[Once]` requests included, not refused) and the root is written now; one item alone past it
+    throws at the call; the runtime's own row changes wait for room. So the record and every row change of a root fit
+    one statement, and the move's and the freeze's last write carries them all.
   - **The sequence is taken when the ask is sent**: a row moves to `sent` and takes its sequence from `OnceNext` in the
-    write that sends it, and the attempt leaves once that write lands; a re-send after a crash reuses the stored
+    write that sends it (the item's own write when the window and `OnceInFlight` allow, so an ask waits for one write),
+    and the attempt leaves once that write lands; a re-send after a crash reuses the stored
     sequence. So the cumulative acknowledgement (ADR-099) is computed from sent rows only and never passes a queued ask.
-  - **Sending** goes per destination in ordinal order (the one order per pair, ADR-096), as the receiver's window
-    allows, at most `[ActorOptions(OnceInFlight)]` (1,024) sent rows per root: a bound on memory and send rate that
-    refuses nothing. An active root holds its rows in memory, read with the record by a range read after its claim
+  - **Sending** goes per destination in ordinal order, as the receiver's window allows, at most
+    `[ActorOptions(OnceInFlight)]` (1,024) sent rows per root: a bound on memory and send rate that refuses nothing;
+    one destination's asks are re-asked on one timer, in ordinal order. Asks are ordered only among their first sends
+    to the same target, not against the root's other mail to it (a queued ask is overtaken by a later `Send`) and not
+    across retries: the exception the draft's §1 and ADR-096 name. A row's next try is set by its phase (now for a
+    sendable queued row, the zero-window probe or `RetryAfter` while a window is shut, the re-ask time once sent, NULL
+    once stopped). An active root holds its rows' metadata in memory (request and state bytes only for the rows it
+    sends, read from the store past `OnceInFlight`), read with the record by a range read after its claim
     (as `OnceSenders` rows are); the move's and the freeze's last write carries every unwritten ask-row change, and the
     rows stay in the store.
   - **The wake**: each row's next try feeds the root's `NextDue`, so a crash, an idle unload or a stop with asks
@@ -3125,7 +3143,11 @@ Replaced by ADR-098.
     `Restarting`, `Resumed`, `[Changed<T>]`), timers, actors' `[Once]` requests and answers always run; the last two
     each settle some root's ask, so roots asking each other always progress. No tag, no stopped system, no missed
     reaction. Growth past the cap comes only from those items and is bounded by the store, so it is alerted, not
-    refused (`DaServerOnceAsksGrowing`, the sweeping node's count of ask rows per actor type rising for 30 minutes). A
+    refused: `DaServerOnceAskOld`, on the age of the oldest ask row not stopped per actor type (from the sweeping
+    node's index-only scan), past three `MaxAskTimeout`s for 10 minutes, catches a stuck downstream whether the
+    backlog grows or stays flat, and a healthy ramp's young rows never trip it; `DaServerOnceQueuedFull` fires on a
+    node holding a root past the queued cap for 10 minutes. A count of rows is a trend only, since it scales with
+    traffic. A
     call in a loop of a `Replied` or `[Once]` handler is warning DAS034.
   - Only `[Once]` requests, and `[Once]` server requests only this way (DAS032): a request that is not deduplicated
     would run again on every retry; a deduplicated one sent by a plain `Ask` has nobody to keep asking.
@@ -3156,13 +3178,18 @@ Replaced by ADR-098.
     systems and skipped `Leaving` reactions while full mailboxes refused the requests that would have drained it).
   - Back-pressure by pausing the root's systems and mail: it skips reactions users rely on and can still deadlock
     roots that ask each other; refusing new work at admission does neither.
+  - Deferring an item's extra row changes to a later write: inserts written later lose the intent on a crash after
+    the item's effects landed, deletes written later run `Replied` again; the item waits whole instead.
+  - Alerting on the number of ask rows: it rises with traffic on a healthy ramp and goes flat on a stuck downstream
+    once admission refuses; the oldest row's age does neither.
   - `AskUntilAnswered` for any request: retrying a request that is not deduplicated runs it again.
   - Delivering link outcomes to the user as well: the classification mistake the round found.
 - Consequences: the draft's §8, §10, §11 and §12 (the samples have no re-ask systems) and
   architecture.md section 2 state it; roadmap W6 builds it (tests `AskUntilAnsweredCommitsIntent`,
   `LinkOutcomeNeverReachesReplied`, `ReaskAfterCrashSameSequence`, `RefusalDeliveredOnce`,
   `AskRowDeletedOnAnswer`, `AskRowsOneTable`, `SeqAssignedAtSend`, `AckNeverSkipsQueuedAsk`,
-  `QueuedAsksWakeAfterCrash`, `AdmissionBusyAtQueuedCap`, `OnceRequestsExemptFromMaxMail`,
-  `ReactionsRunUnderBackPressure`, `AskRowSurvivesStashDestroy`, `OrphanReplyDroppedAckSent`, `PlainAskOfOnceIsDAS032`,
+  `QueuedAsksWakeAfterCrash`, `AdmissionBusyAtQueuedCap`, `OnceRequestsExemptFromMaxMail`, `AskBytesDeferItemPastWriteBudget`,
+  `ProbeAnswerSingleSnapshot`, `AskSentInItsOwnWrite`, `AskStateKeptInRow`, `AskRetriesPerDestinationInOrder`,
+  `QueuedOnceCountsTowardUnacked`, `ReactionsRunUnderBackPressure`, `AskRowSurvivesStashDestroy`, `OrphanReplyDroppedAckSent`, `PlainAskOfOnceIsDAS032`,
   `AskingEntitySurvivesReload`, `MutualOnceRootsProgress`, `MigrationCarriesPendingAskRows`,
   `StoppedAskingCountedFromStore`) and BenchmarkDotNet's ask throughput per root at a store latency of 1 and 5 ms.
