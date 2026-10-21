@@ -1799,10 +1799,10 @@ Replaced by ADR-081.
   a target claiming a moved key at once and letting the store decide (a claim races a source still
   running the actor); `UpdateInterval` for time-gated systems (it counts updates, and a world without `[TickRate]`
   updates only on mail); pausing the actor until its write lands (a
-  ticking actor stalls with every presence on it); a committing root written alone (a statement per root where one per
+  ticking actor stalls with every presence on it); a committing root written alone (a write per root where one per
   world serves them all); checkpoints sliced across the interval (several
-  statements per interval where one serves the world); a separate log beside the records (Akka Persistence's journal
-  plus snapshots: batching records already writes many actors in one statement, and a journal adds compaction, replay
+  writes per interval where one serves the world); a separate log beside the records (Akka Persistence's journal
+  plus snapshots: batching records already writes many actors in one write, and a journal adds compaction, replay
   and fenced appends for little gain at our record sizes; revisited only if BenchmarkDotNet shows record size
   dominating the write).
 - Consequences: breaking for every user project and most of the runtime (roadmap phase W). The timer defaults are one
@@ -3113,7 +3113,7 @@ Replaced by ADR-098.
     (`daserver_once_asks`: the root's call ordinal, phase `queued`/`sent`/`stopped`, the sequence, NULL while queued,
     target, the asking entity, request bytes, the call's `state` (`ask_state`, given back in `Replied<TReq, TState>`;
     its type follows the persisted-component layout rules, with its `NinoTypeId` in `state_type` so a reload finds the
-    `Replied<TReq, TState>` handler; an unknown type is not delivered on this build: the row stays sent and unanswered for a build that knows it, counted and alerted; the upgrade check compares the manifest's `state` lines both ways: a type an older build cannot read makes the release not rollback-safe, a type removed while in use is refused, and the alert covers a rollback past the build that added a type while newer nodes kept creating its rows), created at, next try, attempt), in the same write as the item's record and joined
+    `Replied<TReq, TState>` handler; an unknown type is not delivered on this build: the row stays sent and unanswered for a build that knows it, counted and alerted; the upgrade check compares the manifest's `state` lines both ways: a type an older build cannot read makes the release not rollback-safe, a type is removed in two releases, one that stops creating it and a later one that removes it, refused while the check still sees its rows, and the alert covers a rollback past the build that added a type, or a skipped first step, whose remedy is re-releasing a build that knows it), created at, next try, attempt), in the same write as the item's record and joined
     to its compare, and the item commits implicitly, so the sender's state and the intent are written together (a
     transactional outbox: [microservices.io](https://microservices.io/patterns/data/transactional-outbox)). The row
     belongs to the root, so an asking entity destroyed by another path (a drop expiring) does not lose the ask in flight.
@@ -3144,27 +3144,35 @@ Replaced by ADR-098.
     once stopped). An active root holds every sent row's metadata in memory (so its acknowledgement to each receiver
     is exact, even after `OnceInFlight` is lowered) and, per destination, a bounded head of queued rows
     (`DaServer:Once:QueuedHeadPerTarget`, 64, for up to `DaServer:Once:TargetsInMemory`, 256, destinations served
-    round-robin), paging the rest in per destination by ordinal; a destination in backoff or facing a zero window
-    gives up its head when destinations not held wait, and the next one paged in has the earliest `next_try_at`; a
-    destination with no answer since its last link-outcome retry gets at most one sent row (slow start), so stuck
-    targets hold one in-flight slot each. The bound that holds: a slow target delays another's asks by at most one
-    rotation of the in-memory destinations while fewer than `OnceInFlight` targets are stuck, and memory is bounded
-    (E3). The root's queued totals (`QueuedRows`, `QueuedBytes`, a count per held destination) live in `RootState`,
-    written with the row changes, so admission is exact after a reload. A new ask is inserted already sent only when
+    round-robin), paging the rest in per destination by ordinal; a held destination with nothing sendable (backoff
+    or a zero window) gives up its head when destinations not held wait, and destinations not held come in turn by a
+    target cursor walking `daserver_once_asks_queued` (the first queued row after the last target paged in, wrapping),
+    so a destination that yielded goes to the back. The bound that holds: a slow or stuck destination holds at most
+    `OnceWindow` (16) of the root's `OnceInFlight` slots, its sent rows keeping their sequences, so healthy
+    destinations keep sending while fewer than `OnceInFlight / OnceWindow` (64) are stuck, past which new first sends
+    wait (nothing lost, `DaServerOnceAskOld` alerts), a destination not held waits at most one rotation of the cursor,
+    and memory is bounded (E3). The root's queued totals (`QueuedRows`, `QueuedBytes`, a count per held destination)
+    live in `RootState`, written with the row changes, so admission is exact after a reload; a destination not held
+    counts as having queued rows only while `QueuedRows` exceeds the held destinations' counts. A new ask is inserted already sent only when
     no earlier row to its target is queued in memory or paged out; request and state bytes stay in memory until their
     insert lands, and a sent row then keeps metadata only, its bytes re-read for each re-ask round by the same
-    read-ahead range read that serves a destination's next sends; the activation reads the sent rows and the queued heads after its claim (as `OnceSenders` rows are); the move's and the freeze's last write carries every unwritten ask-row change, and the
+    read-ahead range read that serves a destination's next sends, each read bounded by `StatementBytes`; the activation reads the sent rows and the queued heads after its claim (as `OnceSenders` rows are); the move's and the freeze's last write carries every unwritten ask-row change, and the
     rows stay in the store.
-  - **The wake**: each row's next try feeds the root's `NextDue`, so a crash, an idle unload or a stop with asks
-    queued or sent always wakes the root through `DueScan` to send or re-ask.
+  - **The wake**: the root's `NextDue` is the earliest next try among the rows it holds (sent rows, held heads) and,
+    while destinations with queued rows are not held, no later than the next rotation (now + `Once:Retry`, doubling
+    to a minute over rotations that send nothing), so a crash, an idle unload or a stop with asks queued or sent
+    always wakes the root through `DueScan`, and a root left with only stuck work is not woken again at once.
   - **Back-pressure only at admission**: while a root's queued rows pass `[ActorOptions(OnceQueued)]` (1,024) or
     `DaServer:Once:QueuedBytes` (64 MiB), new ordinary requests to it and client `[Once]` requests get `Busy` before they
     run (client sessions are advertised a window of 0). Its systems, reactions (`Leaving`, `Deactivating`,
     `Restarting`, `Resumed`, `[Changed<T>]`), timers, actors' `[Once]` requests and answers always run; the last two
     each settle some root's ask, so roots asking each other always progress. No tag, no stopped system, no missed
     reaction. Growth past the cap comes only from those items, so it is alerted, not refused: written rows are
-    bounded by the store, unwritten ones (a store outage) grow in memory, about the outage's length times the ask
-    rate, and land in one write when the store returns, its client timeout scaled to its statement count; `DaServerOnceAskOld`, on the age of the oldest ask row not stopped per actor type (from the sweeping
+    bounded by the store, unwritten ones grow in memory while writes fail and land in one write when the store
+    returns (every write's client timeout is `statement_timeout` times its statement count). A full outage is bounded
+    by the isolation freeze (about `IsolationTimeout` times the ask rate); a data-only outage (membership reads still
+    succeed, data writes fail) freezes nothing and grows until `DaServerStoreWritesBehind` (the oldest unsaved change
+    past four `CheckpointInterval`s for 5 minutes) is acted on, the stated E3 exception; `DaServerOnceAskOld`, on the age of the oldest ask row not stopped per actor type (from the sweeping
     node's index-only scan), past three `MaxAskTimeout`s for 10 minutes, catches a stuck downstream whether the
     backlog grows or stays flat, and a healthy ramp's young rows never trip it; `DaServerOnceQueuedFull` fires on a
     node holding a root past the queued cap for 10 minutes (unwritten queued rows counted too). A count of rows is a trend only, since it scales with
@@ -3220,7 +3228,9 @@ Replaced by ADR-098.
   `AskRowDeletedOnAnswer`, `AskRowsOneTable`, `SeqAssignedAtSend`, `AckNeverSkipsQueuedAsk`,
   `QueuedAsksWakeAfterCrash`, `AdmissionBusyAtQueuedCap`, `OnceRequestsExemptFromMaxMail`, `RootRowChangesSpanStatementsInOneTransaction`,
   `ProbeAnswerSingleSnapshot`, `AskSentInItsOwnWrite`, `AskStateKeptInRow`, `AskRetriesPerDestinationInOrder`,
-  `AsksPerItemThrowsDeterministically`, `SlowTargetNeverHoldsOthers`, `LoweringOnceInFlightNeverAcksEarly`,
+  `AsksPerItemThrowsDeterministically`, `SlowTargetNeverHoldsOthers`, `StuckTargetsBoundedByWindow`,
+  `ManyTargetsPastMemoryAllProgress`, `QueuedTotalsSurviveReload`, `OutageBacklogLandsInOneWrite`,
+  `UpgradeCheckComparesStateLines`, `StoreWritesBehindAlerts`, `LoweringOnceInFlightNeverAcksEarly`,
   `AnsweredRowWithPendingRetryDeleted`, `SentInsertNeverOvertakesQueued`, `AskRowsPagedPerTarget`, `UnknownStateTypeWaitsForBuild`,
   `QueuedOnceCountsTowardUnacked`, `ReactionsRunUnderBackPressure`, `AskRowSurvivesStashDestroy`, `OrphanReplyDroppedAckSent`, `PlainAskOfOnceIsDAS032`,
   `AskingEntitySurvivesReload`, `MutualOnceRootsProgress`, `MigrationCarriesPendingAskRows`,

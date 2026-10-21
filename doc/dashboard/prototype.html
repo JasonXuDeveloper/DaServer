@@ -573,7 +573,9 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     a.forEach(function (i) { i.silenced = SILENCES[i.key]; });
     return a.sort(function (p, q) { return !!p.silenced - !!q.silenced || (p.severity === q.severity ? 0 : p.severity === 'critical' ? -1 : 1) || q.nodes - p.nodes; });
   }
-  // A type-level alert's culprits: the type's nodes whose fresh readings pass the rule's limit
+  // A type-level alert's culprits: the type's nodes whose fresh readings pass the rule's limit. A type-level alert
+  // without per-node readings (DaServerOnceStaleAsking, DaServerOnceAskOld) covers every node of the type, or of the
+  // cluster for type "none"; no such alert is in this page's data, so culprits() covers only the per-node case.
   function culprits(name) { var t = TYPES.filter(function (u) { return u.name === name; })[0]; return t ? t.nodes.filter(function (n) { return (fresh(n) || n.st === 'isolated') && over(n.p99); }).length : 0; }
   // A server type is unhealthy when an alert fires for it: the Dashboard has no threshold of its own
   function unhealthy(t) { return ALERTS.some(function (x) { return x.type === t.name; }); }
