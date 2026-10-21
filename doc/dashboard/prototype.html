@@ -22,6 +22,7 @@ button{font:inherit;color:inherit;background:none;border:0;border-radius:0;paddi
 input{font:inherit;color:inherit;border-radius:0}
 :focus-visible{outline:1px solid var(--indigo);outline-offset:4px}
 button:focus:not(:focus-visible){outline:none}
+.status:focus{outline:none}
 .ind{color:var(--indigo)}
 .num{font-variant-numeric:tabular-nums lining-nums}
 .sc{font:400 14px/1.4 var(--text);color:var(--ink-3)}
@@ -396,7 +397,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
       <div class="head"><p class="eyebrow sc" id="eb" data-m="eb"></p><h1 id="h1" data-m="h1"></h1></div>
       <div class="body" id="body"></div>
     </section>
-    <p class="status" id="status"><span class="snap" id="snap"></span><span data-m="status" role="status"></span></p>
+    <p class="status" id="status" tabindex="-1"><span class="snap" id="snap"></span><span data-m="status" role="status"></span></p>
   </main>
   <footer class="foot"><div class="wrap grid footin"><span class="ex">Example data</span><nav class="tabs" id="tabs" aria-label="Sections"></nav><div class="keys" id="keys"></div></div></footer>
 </div>
@@ -432,6 +433,8 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   var Q = /[?&]alerts=down/.test(location.search);
   // ?store=down shows the store unreachable: every node is isolated (frozen, answering probes as isolated), and the
   // Dashboard, whose audit, idempotency keys and locks live in the store, acts on nothing
+  // ?stall shows a rollback whose run stops making progress: Stalled holds the type's lock until an operator marks it Failed
+  var STALL = /[?&]stall\b/.test(location.search);
   var STORE_DOWN = /[?&]store=down/.test(location.search), STORE_SINCE = Date.UTC(2026, 9, 20, 17, 59, 30) / 1000;
   // What the Dashboard's server could read this refresh. A source it cannot read is "cannot know", never "fine":
   // with Prometheus down, no alert firing proves nothing.
@@ -489,13 +492,16 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   setNode('map-301', { p99: null, st: 'silent', txt: 'Not answering', age: 41 });
   setNode('game-12', { p99: null, st: 'isolated', txt: 'Isolated, exits by 18:04', age: 4 });
   setNode('chat-9', { st: 'stale', txt: 'Stale reading', age: 34 });
+  // a crash takeover left this node in the container sized for a parked instance (ADR-098): it runs, but on the idle
+  // requests until a resize-only run swaps them back. A parked instance itself is never a node on this page.
+  setNode('game-31', { st: 'swapped', txt: 'Requests swapped since takeover' });
   // a node with no requests reads the best p99 of its type: the outlier rule looks both ways, and at requests
   setNode('guild-4', { rq: 0, p99: 0.9 });
   setNode('game-87', { p99: 19.4, cpu: 93 }); setNode('gate-23', { p99: 2.4, cpu: 9, st: 'busy', txt: 'Joining, filling up' });
   setNode('chat-5', { p99: 6.9, cpu: 71 });
   // a canary: one GuildServer node already runs the newest build, and is slow
   setNode('guild-7', { build: BUILD, p99: 9.8 });
-  if (STORE_DOWN) TYPES.forEach(function (t) { t.nodes.forEach(function (n) { if (n.st === 'ok' || n.st === 'busy') { n.st = 'isolated'; n.txt = 'Isolated since ' + hhmm(STORE_SINCE); } }); });
+  if (STORE_DOWN) TYPES.forEach(function (t) { t.nodes.forEach(function (n) { if (n.st === 'ok' || n.st === 'busy' || n.st === 'swapped') { n.st = 'isolated'; n.txt = 'Isolated since ' + hhmm(STORE_SINCE); } }); });
   // A reading counts only when it is fresh: answered within two cadences, by a node that is not silent or isolated
   function fresh(n) { return n.p99 != null && n.age <= 2 * SRC.cadence && n.st !== 'silent' && n.st !== 'isolated' && n.st !== 'stale'; }
   function answered(t) { return t.nodes.filter(fresh); }
@@ -554,7 +560,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   // incidents rank by severity, then by how many nodes they cover. A silenced incident stays listed, last.
   var ALERTS = [];
   if (SRC.alerts === 'ok') {
-    MAP.nodes.forEach(function (n) { if (fresh(n) && over(n.p99)) ALERTS.push({ alert: 'DaServerAskLatencyHigh', type: 'MapServer', node: n.n, severity: 'critical', since: Date.UTC(2026, 9, 20, 17, 43) / 1000 }); });
+    MAP.nodes.forEach(function (n) { if ((fresh(n) || n.st === 'isolated') && over(n.p99)) ALERTS.push({ alert: 'DaServerAskLatencyHigh', type: 'MapServer', node: n.n, severity: 'critical', since: Date.UTC(2026, 9, 20, 17, 43) / 1000 }); });
     ['game-87', 'game-40'].forEach(function (n) { ALERTS.push({ alert: 'DaServerGcPauses', type: 'PlayerServer', node: n, severity: 'warning', since: Date.UTC(2026, 9, 20, 17, 51) / 1000 }); });
   }
   var SILENCES = {};
@@ -573,7 +579,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     { id: 'c5', t: Date.UTC(2026, 9, 20, 17, 42) / 1000, kind: 'Rollout', target: 'MapServer', detail: 'Build ' + BUILD, by: 'Release pipeline', result: '400 of 400 nodes, one at a time', note: 'MapServer ask p99 rose from 12 ms to 43 ms on every node after this rollout.', bad: true },
     { id: 'c4', t: Date.UTC(2026, 9, 20, 17, 40) / 1000, kind: 'Leaving', target: 'map-217', detail: 'Handing its actors over', by: 'Seen in membership', result: '35 of 64 moved', note: '' },
     { id: 'c3', t: Date.UTC(2026, 9, 20, 17, 31) / 1000, kind: 'Joined', target: 'gate-23', detail: 'GatewayServer, 23 to 24 nodes', by: 'Seen in membership', result: 'Filling up', note: '' },
-    { id: 'c2', t: Date.UTC(2026, 9, 20, 17, 20) / 1000, kind: 'Config table', target: 'SkillTable', detail: 'Version 15', by: 'On-call operator, action 7f2b', result: 'Committed on ' + group(ALLNODES) + ' nodes', note: '' },
+    { id: 'c2', t: Date.UTC(2026, 9, 20, 17, 20) / 1000, kind: 'Config table', target: 'SkillTable', detail: 'Version 15', by: 'On-call operator, action 7f2b', result: 'Switched on ' + group(ALLNODES) + ' nodes', note: '' },
     { id: 'c1', t: Date.UTC(2026, 9, 20, 17, 7) / 1000, kind: 'Rollout', target: 'ChatServer', detail: 'Build ' + BUILD, by: 'Release pipeline', result: '16 of 16 nodes', note: '' }
   ];
   // The slowest actors across the cluster, by handler p99: the top of a ranking each node keeps, merged on the
@@ -618,7 +624,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   // twice, its intent before the call and its outcome after, linked by the action id. [time, who, action, target, outcome, id]
   var AUDIT = [
     [Date.UTC(2026, 9, 20, 17, 58, 4) / 1000, 'On-call operator', 'Restart', 'game-87, incarnation 4', 'Done', '7f2c'],
-    [Date.UTC(2026, 9, 20, 17, 20, 11) / 1000, 'On-call operator', 'Upload config table', 'SkillTable version 15', 'Committed', '7f2b'],
+    [Date.UTC(2026, 9, 20, 17, 20, 11) / 1000, 'On-call operator', 'Upload config table', 'SkillTable version 15', 'Done', '7f2b'],
     [Date.UTC(2026, 9, 20, 17, 7, 2) / 1000, 'Release pipeline', 'Rollout', 'ChatServer to ' + BUILD, 'Done', '7f2a']
   ];
   var STORE = { p99: '4.2 ms', usual: '4.0 ms', inflight: '1,840', cap: 'of 5,040 allowed', unsaved: '18,204', oldest: '9 s',
@@ -630,8 +636,9 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   // Actions run on the Dashboard's server and outlive the browser; the page shows what the server and the nodes
   // report. One action at a time per server type; each has an id and an idempotency key.
   var ACTIONS = [], ASEQ = 0x7f31;
-  // an action holds its type's lock from Requested until a terminal state (Done, Failed, Stalled, Committed)
-  function unsettled(a) { return a.state === 'Requested' || a.state === 'Accepted' || a.state === 'Running'; }
+  // an action holds its type's lock from Requested until a terminal state, Done or Failed: Unknown (the call timed out;
+  // it may have run) and Stalled (the run stopped moving) hold it too. Cluster-wide actions lock the sentinel '*cluster'.
+  function unsettled(a) { return a.state !== 'Done' && a.state !== 'Failed'; }
   function running(tid) { for (var i = 0; i < ACTIONS.length; i++) { var a = ACTIONS[i]; if (a.type === tid && unsettled(a)) return a; } return null; }
   var TABS = ['Incident', 'Cluster', 'Changes', 'Actors', 'Audit'];
 
@@ -785,7 +792,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   // The cause, from the readings of each build: every node on one build moved (the build), a few nodes moved (the
   // nodes), or a rollout is halfway and the builds are compared
   function cause() {
-    var bs = builds(MAP), v = answered(MAP);
+    var bs = builds(MAP), v = seen(MAP);
     if (bs.length === 1) {
       var o = v.filter(function (n) { return over(n.p99); }).length;
       return o >= v.length * .9 ? 'All ' + group(v.length) + ' nodes that answered moved, so it is the build, not a node.' : group(o) + ' of ' + group(v.length) + ' nodes moved, so it is those nodes, not the build.';
@@ -800,18 +807,23 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   // A type's rollback, from what the nodes run: the action is the server's, the progress is membership's
   function rbLabel(t, short1) {
     var a = running(t.id), back = builds(t).filter(function (g) { return g.b === PREV; })[0];
+    if (a && a.state === 'Stalled') return a.kind + ' stalled, action ' + a.id;
     if (a && a.kind === 'Roll back') return 'Rolling back, ' + group(back ? back.n : 0) + ' of ' + group(t.n) + ' on ' + short(PREV);
     if (a) return t.name + ' is busy: ' + a.kind.toLowerCase() + ', action ' + a.id;
     return short1 ? 'Roll back this rollout' : 'Roll back ' + t.name + ' to ' + PREV;
   }
+  // readings for the incident: the fresh ones, or with the store down the last ones each node pushed
+  function seen(t) { var v = answered(t); return v.length ? v : t.nodes.filter(function (n) { return n.p99 != null && n.st !== 'silent'; }); }
+  // a stalled action holds the lock; marking it Failed is an action of its own, with a reason
+  function markBtn(t) { var a = running(t.id); return a && a.state === 'Stalled' ? '<button class="act sec" id="mf" data-action="' + a.id + '">' + M('b-mf', 'Mark ' + a.id + ' failed') + '</button>' : ''; }
   function incSum() {
-    var i = incidents()[0], o = answered(MAP).sort(function (a, b) { return b.p99 - a.p99; }).slice(0, 3);
+    var i = incidents()[0], o = seen(MAP).sort(function (a, b) { return b.p99 - a.p99; }).slice(0, 3);
     return '<div class="ln main col">' +
       '<div class="fig"><span>' + M('b-big', ms(MAP.now), 'big num') + '<span class="bigu">ms</span></span>' +
       '<div class="ref"><span><i class="sc">limit</i><span class="num">' + dur(limit()) + '</span></span><span><i class="sc">usual</i>' + M('b-us', dur(MAP.usual), 'num') + '</span></div></div>' +
-      '<p class="lead">' + M('b-lead', 'Ask p99 on MapServer since build ' + BUILD + '. ' + cause() + ' ' + moreIncidents()) + '</p>' +
+      '<p class="lead">' + M('b-lead', (STORE_DOWN ? 'From the last readings before the store went down: a' : 'A') + 'sk p99 on MapServer since build ' + BUILD + '. ' + cause() + ' ' + moreIncidents()) + '</p>' +
       '<div class="acts"><button class="act pri" id="rb" data-type="map"' + (running('map') ? ' disabled' : '') + '>' + M('b-rb', rbLabel(MAP)) + '</button>' +
-      '<button class="act sec" id="sil"' + (i.silenced ? ' disabled' : '') + '>' + M('b-sil', i.silenced ? 'Silenced until ' + hhmm(i.silenced) : 'Silence for an hour') + '</button></div></div>' +
+      '<button class="act sec" id="sil"' + (i.silenced ? ' disabled' : '') + '>' + M('b-sil', i.silenced ? 'Silenced until ' + hhmm(i.silenced) : 'Silence for an hour') + '</button>' + markBtn(MAP) + '</div></div>' +
       '<div class="ln aside col"><div class="col sm"><p class="cap sc">' + M('b-ic', 'Ask p99 of the ' + group(answered(MAP).length) + ' of ' + group(MAP.n) + ' nodes that answered') + '</p>' + p99Dist(MAP, 'inc') + '</div>' +
       '<div class="tbl pn"><span class="th sc">Worst nodes</span><span class="th sc r">Ask p99</span>' +
       o.map(function (n, k) { return M('b-w' + k + 'a', n.n, 'td') + M('b-w' + k + 'b', dur(n.p99), 'td r ind'); }).join('') + '</div></div>';
@@ -895,6 +907,8 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     if (max && h && o.indexOf(h) < 0 && h.n.indexOf(t.pre + '-') === 0) { if (o.length >= max) o[max - 1] = h; else o.push(h); }
     return o;
   }
+  // The type's shards' average busy ratio: the metric its autoscaler scales on, exported by node processes only
+  function busyOf(t) { var a = answered(t); if (!a.length) return '—'; var s = 0; a.forEach(function (n) { s += n.cpu; }); return Math.round(s / a.length) + '%'; }
   // A type's detail: what its rows cannot say. The distribution across its nodes, the nodes that stand out with
   // their action, and the type's own action. l: the level of detail, the node rows that fit, then the line on the rest.
   function typeDet(t, l, full) {
@@ -903,10 +917,10 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     if (rows.length) {
       tb = '<div class="tbl nd' + (hl ? ' dim' : '') + '"><span class="th sc">Stands out</span><span class="th sc r">Ask p99</span><span class="th"></span>';
       rows.forEach(function (n, r) {
-        var h = n.n === S.hl ? ' hl' : '', bad = over(n.p99) || far(t, n) ? ' ind' : '', act = n.st === 'ok' && n.rq > 0;
+        var h = n.n === S.hl ? ' hl' : '', bad = over(n.p99) || far(t, n) ? ' ind' : '', act = n.st === 'ok' && n.rq > 0, rs = n.st === 'swapped';
         // a running node offers its action; any other says what it is doing, or why it has no reading
         tb += M('b-n' + r + 'a', n.n, 'td' + h) + M('b-n' + r + 'e', fresh(n) ? dur(n.p99) : '—', 'td r' + h + bad) +
-          '<span class="td act2">' + (act ? '<button class="lnk" data-restart="' + esc(n.n) + '">' + M('b-n' + r + 'f', 'Restart') + '</button>' : M('b-n' + r + 'f', state(n), 'st' + h + (fresh(n) ? '' : ' ind'))) + '</span>';
+          '<span class="td act2">' + (act ? '<button class="lnk" data-restart="' + esc(n.n) + '">' + M('b-n' + r + 'f', 'Restart') + '</button>' : rs ? '<button class="lnk" data-resize="' + esc(n.n) + '" title="' + esc(state(n)) + '">' + M('b-n' + r + 'f', 'Resize') + '</button>' : M('b-n' + r + 'f', state(n), 'st' + h + (fresh(n) ? '' : ' ind'))) + '</span>';
       });
       tb += '</div>';
     }
@@ -918,8 +932,8 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     // one action per type at a time: while one runs, the button says which, and waits
     var busy = running(t.id);
     return '<div class="ln ' + (full ? 'full' : 'd4') + ' det">' + head +
-      '<div class="col sm"><p class="cap sc">' + M('b-dc', (ans === t.n ? 'Ask p99 of each of the ' + group(t.n) + ' nodes' : 'Ask p99, ' + group(ans) + ' of ' + group(t.n) + ' nodes answered') + '; usually ' + dur(t.usual)) + '</p>' + p99Dist(t) + '</div>' +
-      tb + line + '<div class="uf"><div class="acts"><button class="act sec" id="hr" data-type="' + t.id + '"' + (busy ? ' disabled' : '') + '>' + M('b-hr', busy ? rbLabel(t) : 'Hot restart ' + t.name) + '</button></div>' + hist('Grafana') + '</div></div>';
+      '<div class="col sm"><p class="cap sc">' + M('b-dc', (ans === t.n ? 'Ask p99 of each of the ' + group(t.n) + ' nodes' : 'Ask p99, ' + group(ans) + ' of ' + group(t.n) + ' nodes answered') + '; usually ' + dur(t.usual) + '; shards ' + busyOf(t) + ' busy') + '</p>' + p99Dist(t) + '</div>' +
+      tb + line + '<div class="uf"><div class="acts"><button class="act sec" id="hr" data-type="' + t.id + '"' + (busy ? ' disabled' : '') + '>' + M('b-hr', busy ? rbLabel(t) : 'Hot restart ' + t.name) + '</button>' + markBtn(t) + '</div>' + hist('Grafana') + '</div></div>';
   }
   // Platform: the two things every node shares, side by side under their running heads
   function platform(l) {
@@ -1257,9 +1271,11 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     qa('[data-row]', $('body')).forEach(function (b) { b.onclick = function () { var i = +b.dataset.row; if (S.compact && b.classList.contains('tr')) openDet(i); else go(i); }; });
     qa('[data-hist]', $('body')).forEach(function (b) { b.onclick = function (e) { e.preventDefault(); say('Opens ' + b.dataset.hist + ' at the same time range, in a new tab.'); }; });
     qa('[data-restart]', $('body')).forEach(function (b) { b.onclick = function () { restart(b.dataset.restart); }; });
+    qa('[data-resize]', $('body')).forEach(function (b) { b.onclick = function () { resize(b.dataset.resize); }; });
+    if ($('mf')) $('mf').onclick = function () { markFailed($('mf').dataset.action); };
     if ($('rb')) $('rb').onclick = function () { rollback($('rb').dataset.type); };
     // silencing is Alertmanager's: a silence that expires in an hour, written to the audit log like any action
-    if ($('sil')) $('sil').onclick = function () { if (STORE_DOWN) { say('The store cannot be reached: no silence was created.'); return; } var i = incidents()[0]; SILENCES[i.key] = NOW + 3600; var a = { id: (ASEQ++).toString(16), kind: 'Silence', target: i.alert + ' on ' + i.type + ' until ' + hhmm(NOW + 3600), state: 'Done' }; ACTIONS.push(a); audited(a); rebuild(); render('morph'); say('Silenced until ' + hhmm(NOW + 3600) + '. Action ' + a.id + '.'); };
+    if ($('sil')) $('sil').onclick = function () { if (STORE_DOWN) { say('The store cannot be reached: no silence was created.'); return; } var i = incidents()[0]; SILENCES[i.key] = NOW + 3600; var a = { id: (ASEQ++).toString(16), kind: 'Silence', target: i.alert + ' on ' + i.type + ' until ' + hhmm(NOW + 3600), state: 'Done' }; ACTIONS.push(a); audited(a); rebuild(); render('morph'); say('Silenced until ' + hhmm(NOW + 3600) + '. Action ' + a.id + '.'); refocus(null); };
     if ($('hr')) $('hr').onclick = function () { hotRestart($('hr').dataset.type); };
     if ($('nx')) $('nx').onclick = function () { step(1); };
     if ($('fol')) $('fol').onclick = openToc;
@@ -1291,8 +1307,8 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
 
   // ---------- actions: confirm by typing the target's name; each runs on the server and is audited twice ----------
   // An action carries what the operator saw (a node's incarnation, a type's build), and the target refuses it if
-  // that has moved on. Its idempotency key (action, target, what was seen, operator) makes a second press, a retry
-  // or a second operator's identical request the same action, never a second one. The audit holds the intent before
+  // that has moved on. Its idempotency key (action, target, what was seen; never the operator) makes a second press, a
+  // retry or a second operator's identical request the same action, never a second one. The audit holds the intent before
   // the call and the outcome after, both with the action id the page shows.
   function nowT() { return NOW; }
   function audited(a) { AUDIT.unshift([nowT(), 'You', a.kind, a.target + (a.reason ? '; ' + a.reason : ''), a.state, a.id]); a.row = AUDIT[0]; }
@@ -1300,21 +1316,24 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   function rebuild() { var key = steps[S.i] && [steps[S.i].tab, steps[S.i].key]; S.last = {}; buildSteps(); if (key) S.i = findStep(key[0], key[1]); }
   var sayT;
   function say(msg) { S.status = msg; var e = $('status').querySelector('[data-m="status"]'); $('status').classList.toggle('msg', !!msg); setM(e, msg); clearTimeout(sayT); sayT = setTimeout(function () { $('status').classList.remove('msg'); setM(e, ''); }, 9000); }
-  function ask(cf) { cf.from = S.mode; S.cf = cf; S.mode = 'confirm'; S.modeH = 0; render('up'); }
+  // focus returns to what opened a page: the button again when it is still there, else the status message
+  function opener() { var e = document.activeElement; if (!e || e === document.body) return null; if (e.id) return '#' + e.id; for (var k in e.dataset) return '[data-' + k.replace(/[A-Z]/g, function (c) { return '-' + c.toLowerCase(); }) + '="' + e.dataset[k] + '"]'; return null; }
+  function refocus(sel) { var e = sel && document.querySelector(sel); if (e && !e.disabled && e.offsetParent) e.focus({ preventScroll: true }); else $('status').focus({ preventScroll: true }); }
+  function ask(cf) { cf.from = S.mode; cf.opener = opener(); S.cf = cf; S.mode = 'confirm'; S.modeH = 0; render('up'); }
   function rollback(tid) {
     var t = T(tid), from = builds(t)[0].b;
     ask({ title: 'Roll back ' + t.name, text: 'The deploy pipeline moves the ' + group(t.n) + ' ' + t.name + ' nodes from build ' + from + ' to ' + PREV + ', one at a time, each handed over to a standby with a pause of about 0.3 s. Clients stay connected.',
-      need: t.name, verb: 'Roll back', reason: true, key: 'Roll back ' + t.name + ' ' + from, target: t.name + ' to ' + PREV, type: t.id, pipeline: 'aspire do mmo-rollout --type ' + t.name + ' --build ' + PREV,
+      need: t.name, verb: 'Roll back', reason: true, key: 'Roll back ' + t.name + ' ' + from, target: t.name + ' to ' + PREV, type: t.id, pipeline: 'aspire do mmo-restart --type ' + t.name + ' --build ' + PREV,
       // the webhook carries the build it expects to leave; the pipeline refuses if the type has moved on
       check: function () { var b = builds(t)[0].b; return b !== from ? t.name + ' moved to ' + b + ' since you opened this. Nothing was done.' : null; },
-      done: 'Rolling back ' + t.name + ' to ' + PREV + ', one node at a time.', run: function (a) { a.step = function () { var n = t.nodes.filter(function (x) { return x.build !== PREV; })[0]; if (n) { n.build = PREV; n.inc++; } else settleAction(a, 'Done'); }; } });
+      done: 'Rolling back ' + t.name + ' to ' + PREV + ', one node at a time.', run: function (a) { var k = 0; a.step = function () { if (STALL && ++k >= 2) { settleAction(a, 'Stalled'); a.step = null; return; } var n = t.nodes.filter(function (x) { return x.build !== PREV; })[0]; if (n) { n.build = PREV; n.inc++; } else settleAction(a, 'Done'); }; } });
   }
   function restart(name) {
     var n = node(name), t = typeOf(name), inc = n.inc;
     var away = t.nodes.filter(function (x) { return x !== n && x.st !== 'ok'; });
     ask({ title: 'Restart ' + name, text: 'The deploy pipeline hands ' + name + ' over to a standby on the same build, paused about 0.3 s. Its actors stay on it; clients stay connected.',
       warn: away.length ? group(away.length) + ' other ' + t.name + (away.length === 1 ? ' node is' : ' nodes are') + ' not running (' + away.slice(0, 2).map(function (x) { return x.n + ', ' + state(x).toLowerCase(); }).join('; ') + '): restarting ' + name + ' now takes one more out at once.' : '',
-      need: name, verb: 'Restart', key: 'Restart ' + name + ' ' + inc, target: name + ', incarnation ' + inc, type: t.id, pipeline: 'aspire do mmo-restart --node ' + name,
+      need: name, verb: 'Restart', key: 'Restart ' + name + ' ' + inc, target: name + ', incarnation ' + inc, type: t.id, pipeline: 'aspire do mmo-restart --type ' + t.name + ' --node ' + name + ' --incarnation ' + inc,
       // the node refuses a restart for an incarnation it no longer is, and the type allows one restart at a time
       check: function () { var r = t.nodes.filter(function (x) { return x !== n && x.st === 'restart'; })[0]; return n.inc !== inc ? name + ' restarted since you opened this (incarnation ' + inc + ', now ' + n.inc + '). Nothing was done.' : r ? 'Wait: ' + r.n + ' is restarting. One node of a type restarts at a time.' : n.st !== 'ok' ? name + ' is ' + state(n).toLowerCase() + '. Nothing was done.' : null; },
       done: 'Restarting ' + name + ' in place.', run: function (a) { setNode(name, { st: 'restart', txt: 'Restarting in place' }); var k = 0; a.step = function () { if (++k < 2) return; setNode(name, { st: 'ok', txt: 'Running', inc: inc + 1, age: 1 }); settleAction(a, 'Done'); }; } });
@@ -1325,12 +1344,29 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
       need: t.name, verb: 'Hot restart', reason: true, key: 'Hot restart ' + t.name + ' ' + b, target: t.name + ' on ' + b, type: t.id, pipeline: 'aspire do mmo-restart --type ' + t.name,
       check: function () { return null; }, done: 'Hot restart of ' + t.name + ' started.', run: function (a) { var k = 0; a.step = function () { if (++k >= 3) settleAction(a, 'Done'); }; } });
   }
+  // a crash takeover left a node on the parked container's idle requests: a resize-only run of the rollout swaps them
+  // back. It changes no build and moves no actor, but it is an action on the type like any other and takes its lock.
+  function resize(name) {
+    var n = node(name), t = typeOf(name), inc = n.inc;
+    ask({ title: 'Resize ' + name, text: name + ' took over after a crash in the container sized for a parked instance, so it runs on the idle requests. The deploy pipeline swaps the two containers\' requests back in place; nothing restarts.',
+      need: name, verb: 'Resize', key: 'Resize ' + name + ' ' + inc, target: name + ', incarnation ' + inc, type: t.id, pipeline: 'aspire do mmo-restart --type ' + t.name + ' --node ' + name + ' --incarnation ' + inc + ' --resize-only',
+      check: function () { return n.inc !== inc ? name + ' restarted since you opened this. Nothing was done.' : n.st !== 'swapped' ? name + '\'s requests are already the node\'s. Nothing was done.' : null; },
+      done: 'Resizing ' + name + '.', run: function (a) { var k = 0; a.step = function () { if (++k < 2) return; setNode(name, { st: 'ok', txt: 'Running' }); settleAction(a, 'Done'); }; } });
+  }
+  // a stalled action holds its type's lock until an operator says it failed: an action of its own, audited, with a reason
+  function markFailed(id) {
+    var a = ACTIONS.filter(function (x) { return x.id === id; })[0]; if (!a) return; var t = T(a.type);
+    ask({ title: 'Mark action ' + id + ' failed', text: 'Action ' + id + ' (' + a.kind.toLowerCase() + ' ' + a.target + ') has made no progress for ten minutes. Marking it failed releases ' + (t ? t.name : 'the cluster') + '\'s lock; it does not stop the pipeline\'s run, which you can cancel there.',
+      need: id, verb: 'Mark failed', kind: 'Mark failed', reason: true, key: 'Mark failed ' + id, target: 'action ' + id, type: null, pipeline: null,
+      check: function () { return a.state !== 'Stalled' ? 'Action ' + id + ' is ' + a.state.toLowerCase() + ' now. Nothing was done.' : null; },
+      done: 'Action ' + id + ' marked failed.', run: function (m) { settleAction(a, 'Failed'); settleAction(m, 'Done'); } });
+  }
   // a config table goes out in two phases: every node validates and stages it, then all switch at once; a node that
   // has not staged it within a minute aborts the push, and a node that joins meanwhile reads the table from the store
   function upload() {
     ask({ title: 'Upload SkillTable', text: 'Version 16 goes to all ' + group(ALLNODES) + ' nodes in two phases. Every node validates and stages it; when all have, they switch together. If any node has not staged it within a minute, nothing switches and the push is aborted.',
-      need: 'SkillTable', verb: 'Upload', kind: 'Upload config table', reason: true, key: 'Upload SkillTable 16', target: 'SkillTable version 16', type: null, pipeline: 'aspire do mmo-config --table SkillTable --version 16',
-      check: function () { return null; }, done: 'SkillTable version 16 is staging on every node.', run: function (a) { var k = 0; a.step = function () { if (++k >= 2) settleAction(a, 'Committed'); }; } });
+      need: 'SkillTable', verb: 'Upload', kind: 'Upload config table', reason: true, key: 'Upload SkillTable 16', target: 'SkillTable version 16', type: '*cluster', pipeline: null,
+      check: function () { return null; }, done: 'SkillTable version 16 is staging on every node.', run: function (a) { var k = 0; a.step = function () { if (++k >= 2) settleAction(a, 'Done'); }; } });
   }
   function confirmBody() {
     var c = S.cf;
@@ -1353,14 +1389,14 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
       // the key is the action, the target and what was seen, never the operator; it dedupes for ten minutes from the
       // request, and only while the action has not finished
       var same = ACTIONS.filter(function (a) { return a.key === c.key && unsettled(a) && NOW - a.t < 600; })[0];
-      var err = STORE_DOWN ? 'The store cannot be reached: nothing was sent. The deploy pipeline can still run it: ' + c.pipeline : same ? 'Already requested as action ' + same.id + ' (' + same.state.toLowerCase() + '). Nothing new was sent.' : c.type && running(c.type) ? T(c.type).name + ' is busy with action ' + running(c.type).id + '. One action per server type at a time.' : c.check();
+      var err = STORE_DOWN ? 'The store cannot be reached: nothing was sent.' + (c.pipeline ? ' The deploy pipeline can still run it: ' + c.pipeline : ' Try again when the store answers.') : same ? 'Already requested as action ' + same.id + ' (' + same.state.toLowerCase() + '). Nothing new was sent.' : c.type && running(c.type) ? (T(c.type) ? T(c.type).name : 'The cluster') + ' is busy with action ' + running(c.type).id + '. One action per server type at a time.' : c.check();
       // a refusal sends nothing and enables the button again, so a "wait" can be retried without retyping
       if (err) { $('cerr').textContent = err; sent = false; upd(); return; }
       var a = { id: (ASEQ++).toString(16), t: NOW, key: c.key, kind: c.kind || c.verb, target: c.target, type: c.type, reason: r ? r.value.trim() : '', state: 'Requested' };
       ACTIONS.push(a); audited(a); c.run(a);
       // the Dashboard's own actions are changes too
       CHANGES.unshift(a.change = { id: 'a' + a.id, t: NOW, kind: a.kind, target: c.need, detail: a.target + (a.reason ? '; ' + a.reason : ''), by: 'You, action ' + a.id, result: a.state, note: '' });
-      S.mode = c.from === 'det' ? 'det' : null; rebuild(); render('down'); say(c.done + ' Action ' + a.id + '.');
+      S.mode = c.from === 'det' ? 'det' : null; rebuild(); render('down'); say(c.done + ' Action ' + a.id + '.'); refocus(c.opener);
       // the server answers: accepted (the target took it), failed, or unknown on a timeout
       // then it follows the run (completion callback or polling) to Running and a terminal state
       setTimeout(function () { if (a.state === 'Requested') settleAction(a, 'Accepted'); refresh(true); }, 1200);
@@ -1374,7 +1410,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   function snapLine() {
     var e = $('snap'), down = SRC.alerts !== 'ok';
     var iso = isolatedCount(); down = down || iso * 2 > ALLNODES;
-    e.textContent = 'As of ' + hhmmss(NOW) + '. ' + group(answering()) + ' of ' + group(ALLNODES) + ' nodes read fresh' + (iso * 2 > ALLNODES ? '; the store cannot be reached' : SRC.alerts !== 'ok' ? '; alerts unreadable' : '');
+    e.textContent = 'As of ' + hhmmss(NOW) + '. ' + group(answering()) + ' of ' + group(ALLNODES) + ' nodes read fresh' + (iso * 2 > ALLNODES ? '; the store cannot be reached' : '') + (SRC.alerts !== 'ok' ? '; alerts unreadable' : '');
     e.classList.toggle('ind', down);
   }
   function touching() { return !!document.querySelector('.body .ms:hover') || ($('body').contains(document.activeElement) && document.activeElement !== $('body')); }
@@ -1409,7 +1445,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   function jump(i) { if (i !== S.i) { S.back.push(S.i); if (S.back.length > 20) S.back.shift(); } S.hl = null; S.i = i; }
   function back() { if (S.mode) { closeMode(); return; } if (!S.back.length) return; S.hl = null; var i = S.back.pop(); S.i = i; render('down'); }
   // confirm returns to where it was asked from: a row's page stays open beneath it
-  function closeMode() { if (!S.mode) return; S.mode = S.mode === 'confirm' && S.cf.from === 'det' ? 'det' : null; render('down'); }
+  function closeMode() { if (!S.mode) return; var was = S.mode, sel = S.mode === 'confirm' ? S.cf.opener : null; S.mode = S.mode === 'confirm' && S.cf.from === 'det' ? 'det' : null; render('down'); if (was === 'confirm') refocus(sel); }
 
   // ---------- find (⌘K) ----------
   var F = { q: '', sel: 0, items: [] };

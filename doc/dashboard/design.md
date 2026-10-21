@@ -298,7 +298,7 @@ A cluster has tens of server types, hundreds of nodes per type and millions of a
 
 - **Distributions, not rows.** A reading across a type's nodes is one distribution. The table under it lists only
   the nodes that stand out, in this order: no fresh reading (not answering, isolated, stale); a state other than
-  running; no requests while the type has them; a reading more than four median absolute deviations from the median
+  running (leaving, joining, restarting, "Requests swapped since takeover"); no requests while the type has them; a reading more than four median absolute deviations from the median
   of the nodes on the same build, either way (the deviation has a floor of 2% of the median, so a type whose nodes
   read alike does not flag noise, and an absolute floor of 0.5 ms or one item, so a median of 0 does not flag every
   nonzero reading). A build with fewer than five fresh nodes, such as a canary, is compared with the majority build's
@@ -331,10 +331,12 @@ A cluster has tens of server types, hundreds of nodes per type and millions of a
 - **Where it is computed.** Distributions, outliers and rankings are computed by the Dashboard's server once per
   refresh, never in the browser and never per viewer (ADR-093). The browser receives the bins and the few rows it
   shows. A type's p99 is computed from its nodes' histogram buckets merged as deltas (a restarted node's counters
-  reset), never as a percentile of the nodes' percentiles. With Prometheus these are three recording rules: the
-  buckets' rate summed by cluster, type and `le` (`type:daserver_ask_duration_seconds_bucket:rate1m`), the type's p99
-  from it (`type:daserver_ask_duration_seconds:p99`, where `histogram_quantile` consumes `le`), and each node's p99
-  (`node:daserver_ask_duration_seconds:p99`). Only the node p99 is recorded per node, never the buckets, so the rules
+  reset), never as a percentile of the nodes' percentiles. With Prometheus these are three recording rules over the ask
+  histogram (`daserver.ask.duration`, in seconds): the buckets' rate summed by cluster, type and `le`
+  (`cluster_type:daserver_ask_duration_seconds_bucket:rate1m`), the type's p99 from it
+  (`cluster_type:daserver_ask_duration_seconds:p99`, where `histogram_quantile` consumes `le`), and each node's p99
+  (`cluster_type_node:daserver_ask_duration_seconds:p99`); the one-minute window holds four pushes.
+  Only the node p99 is recorded per node, never the buckets, so the rules
   add about one series per node and two per type: at 2,000 nodes a refresh reads about 2,100 series, cheap even beside
   5 million. Nodes keep no history: charts come from Prometheus's range
   queries, or, without Prometheus, from the Dashboard's own ring of polls, which starts when the Dashboard starts (the
@@ -351,9 +353,15 @@ A cluster has tens of server types, hundreds of nodes per type and millions of a
   read from the rules API (`/api/v1/rules`); a reading with no rule has no limit line. Every rule keeps the labels
   `cluster`, `type` and `node`: `type` is the OpenTelemetry resource's `service.name` (the node group) and `node` its
   `service.instance.id`, which DaServer's metrics carry as labels and the rules rename for runtime metrics (Prometheus's
-  OTLP receiver maps them to `job` and `instance`). A node that stops pushing would otherwise read as healthy, since its
-  series fade and its alerts resolve; `DaServerNodeSilent` fires for it, and the Dashboard's own poll says "Not
-  answering" regardless. Without Prometheus the Incident section covers what needs no threshold: a stalled shard, a
+  OTLP endpoint maps them to `job` and `instance`). The metrics take one path: every node pushes over OTLP every 15 s
+  (the export interval DaServer pins) to one Collector, which sends them to Prometheus's OTLP endpoint (`/api/v1/otlp`,
+  with `otlp.promote_resource_attributes: [daserver.cluster]` in prometheus.yml); Prometheus scrapes no node. Pushed
+  series get no staleness markers, so a gauge is read only from its last two minutes (`last_over_time(...[2m])`) and a
+  rate over at least four pushes. A node that stops pushing would otherwise read as healthy, since its series fade and
+  its alerts resolve; `DaServerNodeSilent` fires for a node seen in the last hour that has pushed nothing for two
+  minutes, unless its last push was its graceful stop, and the Dashboard's own poll says "Not answering" regardless. A
+  parked hot-restart instance exports no metrics and is never shown as a node: the node is the instance holding the
+  lock. Without Prometheus the Incident section covers what needs no threshold: a stalled shard, a
   node not ready, views that disagree.
 - **The store down is an incident of its own.** When most nodes are isolated at once, the cause is the store, not the
   nodes: the Incident section's first screen is "The store cannot be reached", with how many nodes are isolated and
@@ -388,9 +396,9 @@ DaServer is a general framework, so every view below names server types, actors 
 | Store | Are actors being saved? | The Platform screen's first half: write p99, writes in flight and unsaved actors with their usual values (errors in the line under the running head while there are none); the actor types with the most unsaved actors and their oldest (as many of four rows as fit) | Query plans, per-table statistics |
 | Client connections | Are clients connected and balanced? | The Platform screen's second half: connected, the average per gateway, resumed (refused handshakes in the line under the running head while there are none); the distribution of clients across gateways; the gateways more than a tenth from the average (at most three rows) | A row per gateway; per-client lists |
 | Changes | What changed before it broke? | One master–detail screen: the last hour's changes, newest first, as the list (time, kind, target; the bad one in the accent); the selected change's detail beside it (what, who, the result, the finding), a bad rollout's roll back, and a link to its target in the cluster. Changes come from what membership shows (a build changing across a type, a join, a leave, a new incarnation), the Dashboard's own actions, and what the deploy pipeline reports; with no Kubernetes API the Dashboard does not name an autoscaler, it says "Seen in membership". A change older than the hour is one link away, in Grafana's annotations | Deploy logs; the full rollout timeline |
-| Rollout and rollback | Roll back the bad build | The primary action on the incident and on the rollout's detail, confirmed by typing the server type's name and a reason. A new build, the previous one included, reaches the nodes through the deploy (ADR-093): the Dashboard calls the deploy pipeline's webhook with the server type, the build it expects to leave and the build to return to, and the pipeline refuses if the type has moved on; it runs one concurrency group per type that queues and never cancels (GitHub Actions: `cancel-in-progress: false`), one node at a time, and a run it refuses is the action's Failed. While it runs, the action reads "Rolling back, 12 of 400 on 20-2" from the builds in membership and the type's other actions wait. A rollback during a half-finished rollout names the build that is expected to leave, the minority one included ("12 nodes on 20-3 return to 20-2"). Without a webhook it shows the command to run | A separate deploy page |
-| Restart, hot restart | Restart a node; restart a type on its build | Restart on the node's row, one of the type's actions like any other (it takes the type's lock, so it waits while a rollback or hot restart runs): the Dashboard calls the deploy pipeline's webhook (`DaServer:Dashboard:DeployWebhook`) for that one node with its incarnation as seen, and the rollout loop hands the node over to a standby of the same build (ADR-098), or retires a gateway or stateless node for the platform to replace; the loop refuses an incarnation the node no longer is. The confirmation says when another node of the type is not running, and the type restarts one node at a time. Hot restart under the node table (a same-image roll of the type: the Dashboard calls the deploy pipeline's webhook, which runs the one rollout loop, one node at a time and the coordinator last, with scale-in paused; without a webhook it shows the command, `aspire do {cluster}-restart`), confirmed by the type's name and a reason, and disabled while the type has another action running. The Dashboard never loops over nodes itself: a restart of the Dashboard would leave a half-rolled group, and only the loop pauses scale-in. Taking a node out for good is the platform's scale-down | Bulk selection |
-| Config tables | Push a new table | An action in Find, confirmed by typing the table's name and a reason. Two phases: every node validates and stages the table, then all switch together; if any node has not staged it within a minute, nothing switches and the push is aborted (the audit says which nodes did not answer). A node that joins meanwhile reads the table from the store | An editor |
+| Rollout and rollback | Roll back the bad build | The primary action on the incident and on the rollout's detail, confirmed by typing the server type's name and a reason. A new build, the previous one included, reaches the nodes through the deploy (ADR-093): the Dashboard calls the deploy pipeline's webhook with the server type, the build it expects to leave and the build to return to, and the pipeline refuses if the type has moved on; it runs one concurrency group per type (GitHub Actions: `cancel-in-progress: false`), one node at a time, and a run it refuses is the action's Failed. That group keeps one run going and one pending, and a newer pending run cancels the older pending one whatever the setting, so a release from CI can cancel a pending Dashboard rollback: a cancelled run is the action's Failed, and the page says so. Rollouts that CI starts are kept apart by the pipeline's group, not by the Dashboard's lock, which only knows the Dashboard's own actions. While it runs, the action reads "Rolling back, 12 of 400 on 20-2" from the builds in membership and the type's other actions wait. A rollback during a half-finished rollout names the build that is expected to leave, the minority one included ("12 nodes on 20-3 return to 20-2"). Without a webhook it shows the command to run | A separate deploy page |
+| Restart, hot restart | Restart a node; restart a type on its build | Restart on the node's row, one of the type's actions like any other (it takes the type's lock, so it waits while a rollback or hot restart runs): the Dashboard calls the deploy pipeline's webhook (`DaServer:Dashboard:DeployWebhook`) for that one node with its incarnation as seen, and the rollout loop hands the node over to a standby of the same build (ADR-098), or retires a gateway or stateless node for the platform to replace; the loop refuses an incarnation the node no longer is. The confirmation says when another node of the type is not running, and the type restarts one node at a time. A node that took over after a crash in the parked, idle-sized container reads "Requests swapped since takeover" (the node's `daserver_node_requests_low`, alert `DaServerNodeRequestsLow`) and its row offers Resize: the same webhook with `--resize-only`, under the type's lock, which swaps the two containers' requests back in place and restarts nothing. Hot restart under the node table (a same-image roll of the type: the Dashboard calls the deploy pipeline's webhook, which runs the one rollout loop, one node at a time and the coordinator last, with scale-in paused; without a webhook it shows the command, `aspire do {cluster}-restart`), confirmed by the type's name and a reason, and disabled while the type has another action running. The Dashboard never loops over nodes itself: a restart of the Dashboard would leave a half-rolled group, and only the loop pauses scale-in. Taking a node out for good is the platform's scale-down | Bulk selection |
+| Config tables | Push a new table | An action in Find, confirmed by typing the table's name and a reason. Two phases: every node validates and stages the table, then all switch together; if any node has not staged it within a minute, nothing switches and the push is aborted (the audit says which nodes did not answer). A node that joins meanwhile reads the table from the store. A push takes the cluster's lock (the sentinel type `*cluster`), so two pushes never run at once; it goes through the nodes' admin plane, not the pipeline, so with the store down it is refused with no command to run instead | An editor |
 | An actor | What state is this actor in? | One master–detail screen: the six slowest actors in the cluster as the list (with any found by its id through Find), the selected actor beside it in full: handler p99, owning node, requests, mailbox, type, last saved, its components and its last log lines (from Loki), with a link to its traces (Grafana Explore over Tempo) | Lists of all actors; raw JSON dumps; live editing |
 | Audit | Who did what? | One row per action: time, who, action, target and reason, and its latest outcome with the action id, newest first, paged. The sink holds two rows or more per action (its intent, then each outcome); the screen merges them by action id and shows the latest. Read from the audit's durable sink (see Actions) | Filters and search; export (the audit is a table in the store, or a file) |
 | History | What happened last week? | A link on each view to Grafana at the same time range (the shipped dashboard, or Explore for logs and traces) | Our own long-term storage, ad-hoc queries, custom dashboards |
@@ -403,21 +411,33 @@ Every action runs on the Dashboard's server, never in the browser, so closing th
   whose precondition has moved on, and the confirmation checks again when it is submitted.
 - **Once.** Each action has an idempotency key: the action, the target and what was seen, never the operator, so a
   second press, a retried call or another operator's identical request within ten minutes of the first request is the
-  same action, and the page says so ("Already requested as action 7f31"). An action that has finished (Done, Failed or
-  Stalled) no longer dedupes: a second hot restart of the same build an hour later is a new action. The submit button
+  same action, and the page says so ("Already requested as action 7f31"). An action that has finished (Done or Failed) no
+  longer dedupes: a second hot restart of the same build an hour later is a new action. The submit button
   disables on its first press and enables again when the server refuses, so a "wait" can be retried without retyping.
 - **One at a time per server type.** Every action on a type takes the type's lock: a rollback, a hot restart, a
   rollout and a node's restart alike. While one runs, the type's other actions wait, and their buttons say which action
   is running. The lock is the store's `daserver_actions` table: a unique partial index on `(type)` over the rows whose
-  state is Requested, Accepted or Running admits one live action per type, and the row carries a lease
-  (`claimed_by`, `lease_until`) that the replica running it renews every cadence. A replica that finds an expired lease
-  (its owner crashed) reconciles before taking over: it asks the deploy pipeline for the run carrying the action id, and
-  sets the row's state from it. Without a store there is no shared lock, so the Dashboard runs as one replica.
+  state is not terminal (Requested, Accepted, Running, Unknown or Stalled) admits one live action per type; an action on
+  the whole cluster (a config push) locks the sentinel type `*cluster`, since a unique index never conflicts on NULL. The
+  row carries a lease (`claimed_by`, `lease_until`, three cadences long, on the database's clock) that the replica
+  running it renews every cadence. A replica that finds an expired lease (its owner crashed) claims the row with one
+  compare-and-set (`UPDATE ... SET claimed_by = $me, lease_until = now() + $lease WHERE action_id = $1 AND lease_until <
+  now()`), so of two replicas that see it at once one wins, and only then reconciles: it asks the deploy pipeline for the
+  run carrying the action id and sets the row's state from it. A dispatch creates its run asynchronously, so "no run
+  yet" waits a grace period (two minutes) before the action is Failed, never sends it again; a lookup that fails (the
+  pipeline's API down or rate-limited) leaves the state as it is and the lock held. A lease that ran out during a store
+  outage is claimed first by the replica that was following the run, which still holds it in memory. Without a store
+  there is no shared lock, so the Dashboard runs as one replica.
 - **Outcomes until the end.** An action's state is Requested (written, before the call), Accepted (the pipeline took
-  it), Running, then Done, Failed or Stalled. After Accepted, the Dashboard follows the run: by the pipeline's
-  completion callback carrying the action id when it has one, or by polling the run every cadence. It is Stalled when
-  membership shows no progress (no node moved build or incarnation) for ten minutes while the run still says running;
-  Stalled is shown in the accent with the run's link and releases nothing until an operator marks it Failed. The lock
+  it), Running, then Done or Failed, the only terminal states; Unknown (the call timed out, so it may have run) and
+  Stalled hold the lock like a running action. After Accepted, the Dashboard follows the run: by the pipeline's
+  completion callback when it has one, or by polling the run every cadence. The callback is signed (HMAC over the body,
+  which carries the action id, with the key in the `{cluster}-deploy` Secret that also holds the webhook's and the run
+  lookup's tokens), since it can release a lock and carries no sign-in. It is Stalled when membership shows no progress
+  (no node moved build or incarnation) for ten minutes while the run still says running; Stalled is shown in the accent
+  with the run's link and releases nothing until an operator marks it Failed. Marking it Failed is an action of its
+  own: act scope, a reason, audited, and refused while the store is down (the page says the lock stays until it
+  answers); it releases the lock and does not stop the run, which the pipeline cancels. The lock
   is held until a terminal state, however long a roll of 400 nodes takes, and a same-image hot restart, which changes
   no build, still holds it. A call that timed out is Unknown until the run lookup finds it; a webhook that answers
   without a run id (GitHub's `workflow_dispatch`) is not retried after a timeout: the pipeline is asked for runs
@@ -430,8 +450,10 @@ Every action runs on the Dashboard's server, never in the browser, so closing th
   operator's setting. The same lines also go to the logs, for Loki.
 - **No store, no action.** The intent, the idempotency key and the type's lock all live in the store, so when it
   cannot be reached the Dashboard acts on nothing: the confirmation says "The store cannot be reached: nothing was
-  sent", and gives the deploy pipeline's command for the same action (`aspire do {cluster}-restart --type MapServer`),
-  whose own run log is the audit for it. An outcome that cannot be written after the call is kept in a local spill
+  sent", and gives the deploy pipeline's command for the same action, whose own run log is the audit for it. The rollout step
+  takes one shape for every action: `aspire do {cluster}-restart --type <type>` for a hot restart, plus `--build <build>`
+  for a rollback, `--node <node> --incarnation <n>` for one node, and `--resize-only` for a Resize. A config push and
+  marking an action Failed have no pipeline command: they need the store, and wait for it. An outcome that cannot be written after the call is kept in a local spill
   file and written when the store answers again, in order, before any new action.
 - **Silences.** "Silence for an hour" needs the act scope, is audited like any action, and creates an Alertmanager
   silence with the incident's matchers (`alertname`, `cluster`, `type`) that expires; the incident stays listed, last,
