@@ -2216,8 +2216,17 @@ Replaced by ADR-081.
     AppHost. It answers the operator's jobs (doc/dashboard/design.md): triage, evidence, cluster, server types,
     store, client connections, changes, an actor, audit; and runs the actions (roll back, drain, hot restart, a
     config table) through the nodes' admin plane, each confirmed by typing its target and written to the audit log.
-  - **Live state comes from the nodes**: membership, stats and the inspector over the admin plane, and a short window
-    (the last hour) of the readings the screens show, kept by each node in memory.
+  - **Live state is gathered once per refresh, never per viewer or per request**, so its cost grows with nodes, not
+    with people watching. Each node keeps its readings and a last-hour window (one point a minute) in memory and its
+    own ranking of its slowest actors. When Prometheus is configured the Dashboard reads per-type aggregates and
+    per-node readings from it with a fixed set of queries; otherwise a collector in the Dashboard polls every node's
+    stats summary (fixed size) every 10 s, at most 32 nodes at a time, into one in-memory snapshot that every viewer
+    reads. Distributions, outliers (a state other than running, or more than four median absolute deviations from
+    the type's median) and the cluster's slowest actors (the nodes' rankings merged) are computed from that snapshot
+    on the server; a screen receives only the bins and the few rows it shows. Membership comes from one node, with
+    each node's view hash to tell when views disagree. An actor's detail is asked on demand of the one node that
+    owns it, found through placement; Find resolves actor ids the same way and searches nodes in the snapshot. The
+    snapshot is a cache rebuilt at start, so replicas stay interchangeable.
   - **Logs come from Loki.** Nodes keep exporting logs over OTLP; the platform's Collector (or the nodes directly)
     sends them to Loki. Framework logs carry `daserver.node`, `daserver.actor.type`, `daserver.actor.key` and the
     trace id as attributes, which Loki keeps as structured metadata (the actor key is never a label: it is unbounded).

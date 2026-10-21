@@ -146,15 +146,15 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
 .tbl.dim .td.hl{color:var(--ink)}
 .tbl.dim .td.hl.ind,.tbl .td.ind{color:var(--indigo)}
 .tbl.nodes{grid-template-columns:1fr 2.4fr .8fr .9fr .9fr .7fr}
-.tbl.ov{grid-template-columns:2fr .7fr 1fr 1fr 1.6fr}
+.tbl.ov{grid-template-columns:1.9fr .7fr .9fr .9fr .9fr 1.4fr}
 .tbl.ov .tr{display:contents;cursor:pointer}
 .tbl.ov .tr:hover .td{color:var(--ink)}
 .tbl.ov .tr:focus-visible .td{box-shadow:inset 0 -1px 0 var(--indigo)}
 .tbl.ov .bd{padding-left:var(--s4)}
-.tbl.gw{grid-template-columns:1.6fr 1fr 1fr}
-.tbl.lg{grid-template-columns:92px 64px 56px minmax(0,1fr)}
+.tbl.gw{grid-template-columns:1fr 2.4fr 1fr 1fr}
+.tbl.lg{grid-template-columns:64px minmax(0,1fr) 96px 80px 72px}
 .tbl.lg .td{font:400 13.5px/1 var(--mono);color:var(--ink-2)}
-.tbl.lg .td.ind{font-weight:500}
+.tbl.lg .td.ind{font-weight:500;color:var(--indigo)}
 
 /* list + detail (changes, actors): both start on the same hairline */
 .list{display:flex;flex-direction:column;border-top:1px solid var(--rule)}
@@ -200,6 +200,23 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
 .leave > *,.probe > *{align-self:start}
 .probe{visibility:hidden;top:0;padding-top:var(--s5)}
 .tbl.pn{grid-template-columns:1fr auto}
+
+/* distributions: one reading across every node of a type; bars in ink, the accent where something is wrong */
+.sm{gap:var(--s1)}
+.cap{margin:0}
+.dist{position:relative;padding-bottom:22px}
+.dist svg{display:block;width:100%;height:56px;overflow:visible;border-bottom:1px solid var(--rule-2)}
+.dist rect{fill:var(--ink-3);transform-box:fill-box;transform-origin:50% 100%}
+.dist rect.hot{fill:var(--indigo)}
+.dist .lim{position:absolute;top:0;height:56px;border-left:1px dashed var(--ink-2)}
+.dx{position:absolute;left:0;right:0;bottom:0;height:18px;font-size:13.5px;color:var(--ink-3);font-variant-numeric:tabular-nums}
+.dx span{position:absolute;top:0;transform:translateX(-50%);white-space:nowrap}
+.dx span.start{transform:none}
+.dx span.end{transform:translateX(-100%)}
+.aside .dist svg,.aside .dist .lim{height:44px}
+.mute{color:var(--ink-3)}
+.more{margin:0;padding-top:8px;font-size:14px;font-style:italic;color:var(--ink-3)}
+.uf .readout{flex:1 1 auto}
 
 /* uPlot (its stylesheet, trimmed to what this page uses) */
 .uplot,.uplot *{box-sizing:border-box}
@@ -261,10 +278,11 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   .tbl .r,.tbl .th.r{padding-right:0;padding-left:10px}
   .tbl.nodes{grid-template-columns:minmax(0,1.2fr) .8fr 1fr .8fr}
   .tbl.ov{grid-template-columns:minmax(0,1.5fr) .5fr .9fr .9fr}
-  .tbl.ov .bd{display:none}
-  .tbl.gw{grid-template-columns:minmax(0,1fr) 1fr 1fr}
-  .tbl.lg{grid-template-columns:70px minmax(0,1fr)}
-  .tbl.pn{display:none}
+  .tbl.ov .bd,.tbl.ov .so{display:none}
+  .tbl.gw{grid-template-columns:minmax(0,1fr) .9fr .8fr}
+  .tbl.gw .st{display:none}
+  .tbl.lg{grid-template-columns:minmax(0,1fr) 64px}
+  .aside .tbl.pn{display:none}
   .tbl.lg .nd{display:none}
   .tbl.lg .lv{display:none}
   .tbl.nodes > .td{height:auto;padding:9px 0 0;border-bottom:0}
@@ -309,7 +327,6 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.iife.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/lethargy@1.0.9/lethargy.min.js"></script>
 <script>
 (function () {
   'use strict';
@@ -321,7 +338,10 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   function rnd(n) { var x = Math.sin(n * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); }
   function ms(v) { return v < 10 ? v.toFixed(1) : String(Math.round(v)); }
 
-  // ---------- example data (from the previous console) ----------
+  // ---------- example data: a cluster at scale ----------
+  // 10 server types, 630 nodes, 3.3 million actors, 412 thousand clients. The page never lists what grows with the
+  // cluster: it shows figures, the distribution of a reading across a type's nodes, the few nodes that stand out,
+  // and Find for anything specific. The server computes the distributions and the outliers (ADR-093).
   var N = 120, DEPLOY = 79, LIMIT = 25, T0 = Date.UTC(2026, 9, 20, 17, 2) / 1000;
   var XS = []; for (var xi = 0; xi < N; xi++) XS.push(T0 + xi * 60 * 60 / (N - 1));
   function clock(i) { var t = 17 * 60 + 2 + Math.round(i * 60 / (N - 1)), h = Math.floor(t / 60), m = t % 60; return h + ':' + (m < 10 ? '0' : '') + m; }
@@ -330,64 +350,146 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     for (var i = 0; i < N; i++) { var v = base * (1 + amp * Math.sin(i / 9 + seed) + amp * .5 * Math.sin(i / 3.1 + seed * 2) + (rnd(seed * 100 + i) - .5) * amp * .6); if (step && i >= step[0]) v *= step[1] + (rnd(i + seed) - .5) * .08; a.push(v); }
     a[N - 1] = now; return a;
   }
+  function group(n) { return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+  // counts at scale: 2.41 M, 412 k, 9,412
+  function count(n) { return n >= 1e6 ? (n / 1e6).toFixed(2) + ' M' : n >= 1e5 ? Math.round(n / 1e3) + ' k' : group(n); }
+  var BUILD = '2026.10.20-3', PREV = '2026.10.20-2';
+  // [id, name, node prefix, nodes, actor kinds, actors, requests/s, p99 now, usual p99]
   var TYPES = [
-    { id: 'gw', name: 'GatewayServer', actors: 'Connection', count: '82,103', rps: '412k', err: '0.000%', now: 3.1, usual: 3.0, build: '2026.10.20-3', p: series(11, 3.1, .06, 3.1),
-      nodes: [{ n: 'gate-0', cpu: '22%', mem: '1.1 GB', p99: 3.0, st: 'ok', txt: 'Running' }, { n: 'gate-1', cpu: '21%', mem: '1.1 GB', p99: 3.2, st: 'ok', txt: 'Running' }] },
-    { id: 'pl', name: 'PlayerServer', actors: 'Player, Guild and Loot', count: '15,188', rps: '610k', err: '0.010%', now: 8.4, usual: 8.2, build: '2026.10.20-3', p: series(12, 8.4, .07, 8.4),
-      nodes: [{ n: 'game-0', cpu: '38%', mem: '3.4 GB', p99: 8.1, st: 'ok', txt: 'Running' }, { n: 'game-1', cpu: '41%', mem: '3.5 GB', p99: 8.9, st: 'ok', txt: 'Running' }, { n: 'game-2', cpu: '36%', mem: '3.3 GB', p99: 7.6, st: 'ok', txt: 'Resumed after hot restart' }] },
-    { id: 'map', name: 'MapServer', actors: 'Map', count: '221', rps: '880k', err: '0.020%', now: 43, usual: 12, build: '2026.10.20-3', p: series(13, 12, .06, 43, [DEPLOY, 3.45]),
-      nodes: [{ n: 'map-0', cpu: '61%', mem: '5.2 GB', p99: 41, st: 'ok', txt: 'Running' }, { n: 'map-1', cpu: '64%', mem: '5.4 GB', p99: 48, st: 'ok', txt: 'Running' }, { n: 'map-2', cpu: '37%', mem: '2.9 GB', p99: 36, st: 'busy', txt: 'Draining, 35 of 64 moved' }, { n: 'map-3', cpu: '58%', mem: '5.1 GB', p99: 44, st: 'ok', txt: 'Running' }] }
-  ];
+    ['gw', 'GatewayServer', 'gate', 24, 'Connection', 412318, '1.9 M', 3.1, 3.0],
+    ['login', 'LoginServer', 'login', 8, 'Account', 9412, '2.1 k', 2.2, 2.3],
+    ['pl', 'PlayerServer', 'game', 120, 'Player and Inventory', 2410377, '640 k', 8.4, 8.2],
+    ['map', 'MapServer', 'map', 400, 'Map and Region', 1640, '880 k', 43, 12],
+    ['chat', 'ChatServer', 'chat', 16, 'Channel', 48210, '96 k', 2.6, 2.6],
+    ['match', 'MatchServer', 'match', 32, 'Queue and Match', 12904, '31 k', 6.1, 5.8],
+    ['guild', 'GuildServer', 'guild', 12, 'Guild', 88311, '22 k', 4.4, 4.5],
+    ['mail', 'MailServer', 'mail', 8, 'Mailbox', 301442, '12 k', 5.0, 4.9],
+    ['auction', 'AuctionServer', 'auction', 6, 'Market', 64, '8.4 k', 7.2, 7.0],
+    ['rank', 'RankServer', 'rank', 4, 'Leaderboard', 220, '3.3 k', 3.3, 3.4]
+  ].map(function (r, k) {
+    var t = { id: r[0], name: r[1], pre: r[2], n: r[3], actors: r[4], count: r[5], rps: r[6], now: r[7], usual: r[8], build: BUILD, nodes: [] };
+    var bad = t.now > LIMIT;
+    for (var i = 0; i < t.n; i++) {
+      var u = rnd(k * 1000 + i), v = rnd(k * 1000 + i + 500);
+      // a bad build moves every node; a healthy type spreads a little around its usual value
+      var p = bad ? 34 + 15 * Math.pow(u, 1.4) : t.usual * (.86 + .3 * u);
+      t.nodes.push({ n: t.pre + '-' + i, p99: p, cpu: Math.round((bad ? 52 : 30) + 18 * v), mem: (bad ? 4.6 : 2.4) + 1.1 * u, st: 'ok', txt: 'Running' });
+    }
+    return t;
+  });
+  function T(id) { for (var i = 0; i < TYPES.length; i++) if (TYPES[i].id === id) return TYPES[i]; }
+  function node(name) { var t = null; TYPES.forEach(function (x) { if (name.indexOf(x.pre + '-') === 0) t = x; }); return t && t.nodes[+name.slice(t.pre.length + 1)]; }
+  function setNode(name, o) { var n = node(name); for (var k in o) n[k] = o[k]; }
+  setNode('map-33', { p99: 61, cpu: 88 }); setNode('map-388', { p99: 58, cpu: 86 }); setNode('map-120', { p99: 57, cpu: 84 });
+  setNode('map-217', { p99: 39, cpu: 31, st: 'busy', txt: 'Draining, 35 of 64 moved' });
+  setNode('game-87', { p99: 19.4, cpu: 93, mem: 6.1 }); setNode('gate-23', { p99: 2.4, cpu: 9, st: 'busy', txt: 'Joining, filling up' });
+  setNode('chat-5', { p99: 6.9, cpu: 71 });
+  TYPES.forEach(function (t) {
+    t.p = series(t.n + t.usual, t.usual, .06, t.now, t.now > LIMIT ? [DEPLOY, t.now / t.usual * .97] : null);
+    var v = t.nodes.map(function (n) { return n.p99; }).sort(function (a, b) { return a - b; });
+    t.med = v[v.length >> 1];
+    var dev = t.nodes.map(function (n) { return Math.abs(n.p99 - t.med); }).sort(function (a, b) { return a - b; });
+    t.mad = Math.max(dev[dev.length >> 1], t.med * .02);
+  });
+  // The nodes that stand out, worst first: a state other than running, then readings far from the type's median
+  // (more than 4 median absolute deviations). The rest are summarised, never listed.
+  function outliers(t) {
+    var o = t.nodes.filter(function (n) { return n.st !== 'ok' || n.p99 - t.med > 4 * t.mad; });
+    o.sort(function (a, b) { return (a.st === 'ok') - (b.st === 'ok') || b.p99 - a.p99; });
+    return o;
+  }
+  function others(t, shown) {
+    var rest = t.nodes.filter(function (n) { return shown.indexOf(n) < 0; }), lo = Infinity, hi = 0;
+    rest.forEach(function (n) { lo = Math.min(lo, n.p99); hi = Math.max(hi, n.p99); });
+    var bad = t.now > LIMIT;
+    return group(rest.length) + (rest.length === 1 ? ' other node' : ' other nodes') + (bad ? ' between ' + ms(lo) + ' and ' + ms(hi) + ' ms, all over the limit' : ' within their usual range');
+  }
+  function unhealthy(t) { return t.now > LIMIT; }
+  var ALLNODES = TYPES.reduce(function (s, t) { return s + t.n; }, 0), ALLACTORS = TYPES.reduce(function (s, t) { return s + t.count; }, 0);
+  var MAP = T('map');
   var CHANGES = [
-    { id: 'c5', time: '17:58', kind: 'Hot restart', target: 'game-2', detail: 'Build 2026.10.20-3', by: 'ops@', result: 'Done, paused 0.4 s', note: '' },
-    { id: 'c4', time: '17:42', kind: 'Rollout', target: 'MapServer', detail: 'Build 2026.10.20-3', by: 'Release pipeline', result: '4 of 4 nodes', note: 'MapServer ask p99 rose from 12 ms to 43 ms after this rollout.', bad: true },
-    { id: 'c3', time: '17:40', kind: 'Drain', target: 'map-2', detail: 'Scale-in', by: 'Autoscaler', result: '35 of 64 moved', note: '' },
-    { id: 'c2', time: '17:20', kind: 'Config table', target: 'SkillTable', detail: 'Version 15', by: 'ops@', result: '9 of 9 nodes accepted', note: '' },
-    { id: 'c1', time: '17:07', kind: 'Scale-out', target: 'GatewayServer', detail: '1 to 2 nodes', by: 'Autoscaler', result: 'Done', note: '' }
+    { id: 'c6', time: '17:58', kind: 'Hot restart', target: 'game-87', detail: 'Build ' + BUILD, by: 'ops@', result: 'Done, paused 0.4 s', note: '' },
+    { id: 'c5', time: '17:42', kind: 'Rollout', target: 'MapServer', detail: 'Build ' + BUILD, by: 'Release pipeline', result: '400 of 400 nodes, 8 at a time', note: 'MapServer ask p99 rose from 12 ms to 43 ms on every node after this rollout.', bad: true },
+    { id: 'c4', time: '17:40', kind: 'Drain', target: 'map-217', detail: 'Scale-in', by: 'Autoscaler', result: '35 of 64 moved', note: '' },
+    { id: 'c3', time: '17:31', kind: 'Scale-out', target: 'GatewayServer', detail: '23 to 24 nodes', by: 'Autoscaler', result: 'gate-23 filling up', note: '' },
+    { id: 'c2', time: '17:20', kind: 'Config table', target: 'SkillTable', detail: 'Version 15', by: 'ops@', result: group(ALLNODES) + ' of ' + group(ALLNODES) + ' nodes accepted', note: '' },
+    { id: 'c1', time: '17:07', kind: 'Rollout', target: 'ChatServer', detail: 'Build ' + BUILD, by: 'Release pipeline', result: '16 of 16 nodes', note: '' }
   ];
+  // The slowest actors across the cluster, by handler p99: the top of a ranking each node keeps, merged.
+  var KINDS = { Map: 'map', Region: 'map', Player: 'pl', Inventory: 'pl', Connection: 'gw', Account: 'login', Channel: 'chat', Queue: 'match', Match: 'match', Guild: 'guild', Mailbox: 'mail', Market: 'auction', Leaderboard: 'rank' };
   var ACTORS = [
-    { id: 'Map(7)', type: 'Map', node: 'map-1', p99: 58, rps: '18.4k/s', mailbox: '1,762 of 2,000', full: true, saved: '14 s ago',
+    { id: 'Map(7)', type: 'Map', node: 'map-33', p99: 58, rps: '18.4 k/s', mailbox: '1,762 of 2,000', full: true, saved: '14 s ago',
       comps: ['Map    { Id: 7 }', 'Grid   { CellSize: 16, Width: 512, Height: 512 }', 'NetIds { Next: 48211 }'],
-      logs: [['17:58:02', 'warn', 'tick 29.8 ms of 33.3 ms'], ['17:57:31', 'info', 'checkpoint, 1 statement'], ['17:42:15', 'info', 'activated on map-1 (rolling upgrade)']] },
-    { id: 'Map(12)', type: 'Map', node: 'map-0', p99: 41, rps: '9.1k/s', mailbox: '311 of 2,000', saved: '22 s ago',
+      logs: [['17:58:02', 'warn', 'tick 29.8 ms of 33.3 ms'], ['17:57:31', 'info', 'checkpoint, 1 statement'], ['17:42:15', 'info', 'activated on map-33 (rolling upgrade)']] },
+    { id: 'Map(1204)', type: 'Map', node: 'map-388', p99: 56, rps: '16.1 k/s', mailbox: '1,410 of 2,000', saved: '9 s ago',
+      comps: ['Map    { Id: 1204 }', 'Grid   { CellSize: 16, Width: 512, Height: 512 }'], logs: [['17:58:00', 'warn', 'tick 28.9 ms of 33.3 ms']] },
+    { id: 'Region(88)', type: 'Region', node: 'map-120', p99: 49, rps: '7.2 k/s', mailbox: '402 of 2,000', saved: '3 s ago',
+      comps: ['Region { Id: 88, Maps: 4 }'], logs: [['17:57:12', 'warn', 'ask to Map(352) took 46 ms']] },
+    { id: 'Map(12)', type: 'Map', node: 'map-0', p99: 41, rps: '9.1 k/s', mailbox: '311 of 2,000', saved: '22 s ago',
       comps: ['Map    { Id: 12 }'], logs: [['17:43:01', 'info', 'activated on map-0 (rolling upgrade)']] },
-    { id: 'Player(482913)', type: 'Player', node: 'game-1', p99: 6, rps: '44/s', mailbox: '2 of 2,000', saved: '2 s ago',
+    { id: 'Queue(eu-ranked)', type: 'Queue', node: 'match-4', p99: 22, rps: '2.4 k/s', mailbox: '96 of 2,000', saved: 'Not saved',
+      comps: ['Queue { Region: eu, Mode: ranked, Waiting: 1,904 }'], logs: [['17:58:09', 'info', 'formed 12 matches']] },
+    { id: 'Player(482913)', type: 'Player', node: 'game-87', p99: 19, rps: '44/s', mailbox: '2 of 2,000', saved: '2 s ago',
       comps: ['Player    { Id: 482913 }', 'Inventory { Slots: 18 of 40 }'], logs: [['17:58:10', 'info', 'GrantItem 2207 answered']] }
   ];
-  var AUDIT = [['17:58', 'ops@', 'Hot restart', 'game-2 to 2026.10.20-3'], ['17:20', 'ops@', 'Upload config table', 'SkillTable version 15'], ['17:07', 'Autoscaler', 'Scale', 'GatewayServer to 2 nodes']];
-  var STORE = { p99: '4.2 ms', usual: '4.0 ms', inflight: '3 of 8', unsaved: '1,204', oldest: '9 s', error: 'None in the last hour' };
-  var CLIENTS = { total: '82,103', resumed: '1,977', spread: 'Within 0.1% of the average', gw: [['gate-0', '41,020', '0'], ['gate-1', '41,083', '0']] };
+  var TOP = ACTORS.length;
+  // An actor looked up by id: asked of the one node that owns it, found through placement.
+  function lookup(id) {
+    var m = /^([A-Za-z]+)\(([\w-]+)\)$/.exec(id.trim()); if (!m) return null;
+    var kind = m[1][0].toUpperCase() + m[1].slice(1).toLowerCase(), t = T(KINDS[kind]); if (!t) return null;
+    var nm = kind + '(' + m[2] + ')';
+    for (var i = 0; i < ACTORS.length; i++) if (ACTORS[i].id.toLowerCase() === nm.toLowerCase()) return ACTORS[i];
+    var h = 0; for (var c = 0; c < nm.length; c++) h = (h * 31 + nm.charCodeAt(c)) >>> 0;
+    var n = t.nodes[h % t.n];
+    return { id: nm, type: kind, node: n.n, p99: Math.round(t.usual * 10) / 10, rps: (h % 90 + 4) + '/s', mailbox: (h % 5) + ' of 2,000', saved: (h % 40 + 1) + ' s ago', found: true,
+      comps: [kind + ' { Id: ' + m[2] + ' }'], logs: [['17:5' + (h % 9) + ':' + (10 + h % 49), 'info', 'answered ' + (h % 300 + 20) + ' requests in the last minute']] };
+  }
+  var AUDIT = [['17:58', 'ops@', 'Hot restart', 'game-87 to ' + BUILD], ['17:20', 'ops@', 'Upload config table', 'SkillTable version 15'], ['17:07', 'Release pipeline', 'Rollout', 'ChatServer to ' + BUILD]];
+  var STORE = { p99: '4.2 ms', usual: '4.0 ms', inflight: '1,840', cap: 'of 5,040 allowed', unsaved: '18,204', oldest: '9 s' };
+  // clients per gateway; gate-23 joined a quarter of an hour ago and is filling up
+  var GW = T('gw'); GW.nodes.forEach(function (n, i) { n.clients = Math.round(17400 + 900 * (rnd(i + 77) - .5)); n.moving = 0; });
+  setNode('gate-23', { clients: 4210, moving: 312 }); setNode('gate-3', { clients: 19980 });
+  var CLIENTS = { total: GW.nodes.reduce(function (s, n) { return s + n.clients; }, 0), resumed: 21977, refused: 0 };
   var TABS = ['Incident', 'Cluster', 'Changes', 'Actors', 'Audit'];
 
-  var S = { i: 0, back: [], compact: false, mode: null, layout: null, rolling: false, acked: false, hl: null, status: '' };
+  var S = { i: 0, back: [], compact: false, mode: null, layout: null, rolling: false, acked: false, hl: null, status: '', found: null };
   var steps = [];
 
   // ---------- the step sequence: screens, then items, then the next tab ----------
+  // Server types are ordered unhealthy first, then by size; past the first few a type is still one step away.
+  function ordered() { return TYPES.slice().sort(function (a, b) { return unhealthy(b) - unhealthy(a) || b.n - a.n; }); }
   function buildSteps() {
     tabH = {};
     var c = S.split, st = [];
     function add(tab, key, layout, label, o) { o.tab = tab; o.key = key; o.layout = layout; o.label = label; st.push(o); }
     add(0, 'sum', 'inc-sum', 'Summary', { eb: function () { return S.rolling ? 'Rolling back, started just now' : 'In progress since 17:42'; }, h1: 'MapServer asks are slow', body: incSum });
-    add(0, 'chart', 'inc-chart', 'The last hour', { eb: function () { return 'Ask latency p99 by server type'; }, h1: 'The last hour', body: incChart, after: drawMain });
-    add(0, 'logs', 'inc-logs', 'MapServer logs', { eb: function () { return 'Warnings since the rollout'; }, h1: 'What MapServer logs', body: incLogs });
-    add(1, 'all', 'cluster', 'Every server type', { eb: function () { return '9 nodes, every view agrees'; }, h1: 'The cluster', body: cluster });
-    TYPES.forEach(function (t, ti) {
-      var eb = function () { return 'Hosts ' + t.actors + ' actors'; };
-      if (!c) add(1, t.id, 'server', t.name, { eb: eb, h1: t.name, body: function () { return server(ti); } });
+    add(0, 'chart', 'inc-chart', 'The last hour', { eb: function () { return 'Ask latency p99, MapServer against the other nine types'; }, h1: 'The last hour', body: incChart, after: drawMain });
+    add(0, 'logs', 'inc-logs', 'MapServer logs', { eb: function () { return 'Warnings since the rollout, grouped by pattern'; }, h1: 'What MapServer logs', body: incLogs });
+    add(1, 'all', 'cluster', 'Every server type', { eb: function () { return group(ALLNODES) + ' nodes in ' + TYPES.length + ' server types, every view agrees'; }, h1: 'The cluster', body: cluster });
+    ordered().forEach(function (t) {
+      var eb = function () { return group(t.n) + ' nodes hosting ' + t.actors + ' actors'; };
+      if (!c) add(1, t.id, 'server', t.name, { eb: eb, h1: t.name, body: function () { return server(t); } });
       else {
-        add(1, t.id, 'server-sum', t.name, { eb: eb, h1: t.name, body: function () { return serverSum(ti); } });
-        add(1, t.id + '-n', 'server-nodes', t.name + ' nodes', { eb: function () { return t.nodes.length + ' nodes'; }, h1: t.name, body: function () { return serverNodes(ti); } });
+        add(1, t.id, 'server-sum', t.name, { eb: eb, h1: t.name, body: function () { return serverSum(t); } });
+        add(1, t.id + '-n', 'server-nodes', t.name + ' nodes', { eb: function () { return 'The nodes that stand out'; }, h1: t.name, body: function () { return serverNodes(t); } });
       }
     });
     add(1, 'store', 'store', 'The actor store', { eb: function () { return 'PostgreSQL, written by every node'; }, h1: 'The actor store', body: store });
-    add(1, 'clients', 'clients', 'Client connections', { eb: function () { return 'Held by GatewayServer'; }, h1: 'Client connections', body: clients });
+    var ceb = function () { return 'Held by ' + GW.n + ' GatewayServer nodes'; };
+    if (!c) add(1, 'clients', 'clients', 'Client connections', { eb: ceb, h1: 'Client connections', body: function () { return clients(0); } });
+    else {
+      add(1, 'clients', 'clients-sum', 'Client connections', { eb: ceb, h1: 'Client connections', body: function () { return clients(1); } });
+      add(1, 'clients-n', 'clients-gw', 'Gateways that stand out', { eb: function () { return 'Gateways that stand out'; }, h1: 'Client connections', body: function () { return clients(2); } });
+    }
     CHANGES.forEach(function (ch, ci) { add(2, ch.id, 'changes', ch.kind + ' ' + ch.target, { eb: function () { return 'The last hour, newest first'; }, h1: 'Changes', body: function () { return changes(ci); } }); });
-    ACTORS.forEach(function (a, ai) {
-      var eb = function () { return 'By handler p99, slowest first'; };
-      if (!c) add(3, a.id, 'actors', a.id, { eb: eb, h1: 'Slowest actors', body: function () { return actors(ai); } });
+    var list = ACTORS.slice(0, TOP).concat(S.found ? [S.found] : []);
+    list.forEach(function (a, ai) {
+      var eb = function () { return a.found ? 'Looked up on ' + a.node + ', its owner' : count(ALLACTORS) + ' actors loaded, slowest first'; };
+      var h1 = a.found ? a.id : 'Slowest actors';
+      if (!c) add(3, a.id, 'actors', a.id, { eb: eb, h1: h1, body: function () { return actors(a); } });
       else {
-        add(3, a.id, 'actor', a.id, { eb: eb, h1: 'Slowest actors', body: function () { return actors(ai, 1); } });
-        add(3, a.id + '-l', 'actor-more', a.id + ' components', { eb: eb, h1: 'Slowest actors', body: function () { return actors(ai, 2); } });
+        add(3, a.id, 'actor', a.id, { eb: eb, h1: h1, body: function () { return actors(a, 1); } });
+        add(3, a.id + '-l', 'actor-more', a.id + ' components', { eb: eb, h1: h1, body: function () { return actors(a, 2); } });
       }
     });
     var per = S.compact ? 6 : 9, pages = Math.max(1, Math.ceil(AUDIT.length / per));
@@ -398,77 +500,133 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   function firstOf(tab) { for (var i = 0; i < steps.length; i++) if (steps[i].tab === tab) return i; return 0; }
   function findStep(tab, key) { for (var i = 0; i < steps.length; i++) if (steps[i].tab === tab && steps[i].key === key) return i; return firstOf(tab); }
 
+  // ---------- distributions: one reading across every node of a type, readable at 400 nodes ----------
+  // 80 bins of thin bars in ink; bins past the limit (or holding an outlier) in the accent. Each bar is a full
+  // height rect scaled from its foot, so moving between server types animates the shape instead of swapping it.
+  var BINS = 80;
+  function niceMax(v) { var s = [5, 10, 20, 25, 40, 50, 60, 80, 100, 150, 200, 250, 400, 500, 1000, 2000, 5000, 10000, 20000, 25000, 50000]; for (var i = 0; i < s.length; i++) if (s[i] >= v) return s[i]; return v; }
+  function dist(key, vals, o) {
+    var lo = o.lo || 0, hi = o.hi, bins = new Array(BINS).fill(0), mark = new Array(BINS).fill(false), top = 0;
+    vals.forEach(function (v, i) { var b = Math.max(0, Math.min(BINS - 1, Math.floor((v - lo) / (hi - lo) * BINS))); bins[b]++; if (o.hot && o.hot(v, i)) mark[b] = true; });
+    bins.forEach(function (n) { top = Math.max(top, n); });
+    var bars = bins.map(function (n, b) {
+      var f = n ? Math.max(.12, n / top) : 0;
+      return '<rect x="' + (b + .15) + '" y="0" width=".7" height="1" style="transform:scaleY(' + f.toFixed(3) + ')"' + (mark[b] ? ' class="hot"' : '') + '/>';
+    }).join('');
+    var lim = o.limit != null ? (o.limit - lo) / (hi - lo) * 100 : null;
+    var ticks = [[lo, 0]].concat(lim != null ? [[o.limit, lim]] : []).concat([[hi, 100]]);
+    return '<div class="dist" data-dist="' + key + '"><svg viewBox="0 0 ' + BINS + ' 1" preserveAspectRatio="none" aria-hidden="true">' + bars + '</svg>' +
+      (lim != null ? '<span class="lim" style="left:' + lim + '%"></span>' : '') +
+      '<div class="dx">' + ticks.map(function (t, k) { return '<span style="left:' + t[1] + '%"' + (k === ticks.length - 1 ? ' class="end"' : k === 0 ? ' class="start"' : '') + '>' + o.label(t[0], k) + '</span>'; }).join('') + '</div></div>';
+  }
+  // the previous heights of each distribution, to animate from
+  var distWas = {};
+  function distMorph() {
+    qa('.dist').forEach(function (d) {
+      var k = d.dataset.dist, rs = qa('rect', d), now = rs.map(function (r) { return r.style.transform; }), was = distWas[k];
+      if (was && !RM.matches) rs.forEach(function (r, i) { if (was[i] !== now[i]) r.animate([{ transform: was[i] }, { transform: now[i] }], { duration: DUR, easing: EASE }); });
+      distWas[k] = now;
+    });
+  }
+  function p99Dist(t, key) {
+    var hi = niceMax(Math.max(LIMIT, t.nodes.reduce(function (m, n) { return Math.max(m, n.p99); }, 0)) * 1.08);
+    return dist(key || 'p99', t.nodes.map(function (n) { return n.p99; }), { hi: hi, limit: LIMIT, hot: function (v) { return v > LIMIT || v - t.med > 4 * t.mad; }, label: function (v, k) { return k === 1 ? 'limit ' + v + ' ms' : v + ' ms'; } });
+  }
+
   // ---------- screens: units placed on the page's 10 columns (full, main + aside, list + detail) ----------
   function incSum() {
+    var o = MAP.nodes.slice().sort(function (a, b) { return b.p99 - a.p99; }).slice(0, 3);
     return '<div class="ln main col">' +
       '<div class="fig"><span><span class="big">43</span><span class="bigu">ms</span></span>' +
       '<div class="ref"><span><i class="sc">limit</i><span class="num">25 ms</span></span><span><i class="sc">usual</i><span class="num">12 ms</span></span></div></div>' +
-      '<p class="lead">Ask p99 on MapServer, since build 2026.10.20-3 reached its nodes. Every other server type and the store are within their usual range.</p>' +
-      '<div class="acts"><button class="act pri" id="rb"' + (S.rolling ? ' disabled' : '') + '>' + M('b-rb', S.rolling ? 'Rolling back to 2026.10.20-2' : 'Roll back MapServer to 2026.10.20-2') + '</button>' +
+      '<p class="lead">Ask p99 on MapServer since build ' + BUILD + '. All 400 nodes moved, so it is the build, not a node. Everything else is within its usual range.</p>' +
+      '<div class="acts"><button class="act pri" id="rb"' + (S.rolling ? ' disabled' : '') + '>' + M('b-rb', S.rolling ? 'Rolling back to ' + PREV : 'Roll back MapServer to ' + PREV) + '</button>' +
       '<button class="act sec" id="ack"' + (S.acked ? ' disabled' : '') + '>' + M('b-ack', S.acked ? 'Acknowledged' : 'Acknowledge') + '</button></div></div>' +
-      '<div class="ln aside tbl pn"><span class="th sc">MapServer node</span><span class="th sc r">Ask p99</span>' +
-      TYPES[2].nodes.map(function (n) { return '<span class="td">' + n.n + '</span><span class="td r' + (n.p99 > LIMIT ? ' ind' : '') + '">' + ms(n.p99) + ' ms</span>'; }).join('') + '</div>';
+      '<div class="ln aside col"><div class="col sm"><p class="cap sc">Ask p99 of each of the 400 nodes</p>' + p99Dist(MAP, 'inc') + '</div>' +
+      '<div class="tbl pn"><span class="th sc">Worst nodes</span><span class="th sc r">Ask p99</span>' +
+      o.map(function (n) { return '<span class="td">' + n.n + '</span><span class="td r ind">' + ms(n.p99) + ' ms</span>'; }).join('') + '</div></div>';
   }
+  function others9(i) { var m = 0; TYPES.forEach(function (t) { if (t !== MAP) m = Math.max(m, t.p[i]); }); return m; }
   function readout(i) {
-    return '<span>' + clock(i) + '</span>' + TYPES.map(function (t) { return '<span>' + t.name + ' <b class="num' + (t.id === 'map' ? ' ind' : '') + '">' + ms(t.p[i]) + ' ms</b></span>'; }).join('');
+    return '<span>' + clock(i) + '</span><span>MapServer <b class="num ind">' + ms(MAP.p[i]) + ' ms</b></span><span>The other nine, at most <b class="num">' + ms(others9(i)) + ' ms</b></span>';
   }
   function incChart() { return '<div class="ln full"><div class="chart" id="chart"></div></div><div class="ln full uf"><p class="readout" id="ro">' + readout(N - 1) + '</p>' + hist('Prometheus') + '</div>'; }
+  // At 400 nodes the lines are counted, not listed: Loki groups them by pattern.
   function incLogs() {
-    var L = [['17:58:02', 'map-1', 'warn', 'Map(7) tick 29.8 ms of 33.3 ms'], ['17:51:40', 'map-0', 'warn', 'Map(12) tick 27.1 ms of 33.3 ms'], ['17:42:31', 'map-3', 'info', 'rolling upgrade complete, 4 of 4']];
-    var h = '<span class="th sc">Time</span><span class="th sc nd">Node</span><span class="th sc lv">Level</span><span class="th sc">Message</span>';
-    L.forEach(function (l) { h += '<span class="td">' + l[0] + '</span><span class="td nd">' + l[1] + '</span><span class="td lv' + (l[2] === 'warn' ? ' ind' : '') + '">' + l[2] + '</span><span class="td">' + esc(l[3]) + '</span>'; });
-    return '<div class="ln full tbl lg">' + h + '</div><div class="ln full uf">' + hist('Loki') + '</div>';
+    var L = [['warn', 'Map(<id>) tick <ms> of 33.3 ms', '18,204', '391', '17:58'], ['warn', 'ask to Region(<id>) took <ms>', '6,930', '388', '17:58'], ['warn', 'mailbox of Map(<id>) over 1,500', '412', '57', '17:57'], ['info', 'rolling upgrade complete, <n> of <n>', '400', '400', '17:47']];
+    var h = '<span class="th sc lv">Level</span><span class="th sc">Pattern</span><span class="th sc r">Lines</span><span class="th sc r nd">Nodes</span><span class="th sc r nd">Last</span>';
+    L.forEach(function (l) { h += '<span class="td lv' + (l[0] === 'warn' ? ' ind' : '') + '">' + l[0] + '</span><span class="td">' + esc(l[1]) + '</span><span class="td r">' + l[2] + '</span><span class="td r nd">' + l[3] + '</span><span class="td r nd">' + l[4] + '</span>'; });
+    return '<div class="ln full tbl lg">' + h + '</div><div class="ln full uf"><p class="readout">Of MapServer\'s 400 nodes; one line per pattern</p>' + hist('Loki') + '</div>';
   }
   // Four figures, each with what it usually is beneath it: a number means nothing without its normal.
   function figRow(f) {
     return '<div class="ln full figs">' + f.map(function (x, k) { return '<div><span class="sc">' + x[0] + '</span>' + M('b-f' + k, x[1], 'fv' + (x[3] ? ' ind' : '')) + M('b-fu' + k, x[2], 'fu') + '</div>'; }).join('') + '</div>';
   }
   function figs(t) {
-    return figRow([['Active actors', t.count, 'of ' + t.nodes.length + ' nodes'], ['Requests per second', t.rps, 'all nodes'], ['Errors', t.err, 'of requests'], ['Ask p99', ms(t.now) + ' ms', 'usually ' + ms(t.usual) + ' ms', t.now > LIMIT]]);
+    return figRow([['Active actors', count(t.count), 'on ' + group(t.n) + ' nodes'], ['Requests per second', t.rps, 'all nodes'], ['Nodes that stand out', String(outliers(t).length), 'of ' + group(t.n)], ['Ask p99', ms(t.now) + ' ms', 'usually ' + ms(t.usual) + ' ms', t.now > LIMIT]]);
   }
   function hist(what) { return '<a class="lnk" href="#" data-hist="' + what + '">' + M('b-h', 'Open in ' + what) + '</a>'; }
+  // At most seven rows: the unhealthy types first, then by size; the rest in one line. Each type is still a step.
+  var OVROWS = 7;
   function cluster() {
-    var h = '<span class="th sc">Server type</span><span class="th sc r">Nodes</span><span class="th sc r">Actors</span><span class="th sc r">Ask p99</span><span class="th sc bd">Build</span>';
-    TYPES.forEach(function (t, k) {
-      var bad = t.now > LIMIT ? ' ind' : '';
-      h += '<button class="tr" data-go="1:' + t.id + '">' + M('b-t' + k + 'a', t.name, 'td' + bad) + M('b-t' + k + 'b', String(t.nodes.length), 'td r') + M('b-t' + k + 'c', t.count, 'td r') + M('b-t' + k + 'd', ms(t.now) + ' ms', 'td r' + bad) + M('b-t' + k + 'e', t.build, 'td bd') + '</button>';
+    var o = ordered(), shown = o.slice(0, OVROWS), rest = o.slice(OVROWS);
+    var h = '<span class="th sc">Server type</span><span class="th sc r">Nodes</span><span class="th sc r">Actors</span><span class="th sc r so">Stand out</span><span class="th sc r">Ask p99</span><span class="th sc bd">Build</span>';
+    shown.forEach(function (t, k) {
+      var bad = unhealthy(t) ? ' ind' : '', so = outliers(t).length;
+      h += '<button class="tr" data-go="1:' + t.id + '">' + M('b-t' + k + 'a', t.name, 'td' + bad) + M('b-t' + k + 'b', group(t.n), 'td r') + M('b-t' + k + 'c', count(t.count), 'td r') + M('b-t' + k + 'g', so ? String(so) : 'None', 'td r so' + (so ? '' : ' mute')) + M('b-t' + k + 'd', ms(t.now) + ' ms', 'td r' + bad) + M('b-t' + k + 'e', t.build, 'td bd') + '</button>';
     });
-    return '<div class="ln full tbl ov">' + h + '</div><div class="ln full uf">' + hist('Prometheus') + '</div>';
+    var more = rest.length ? rest.length + ' more, ' + rest.map(function (t) { return t.name; }).join(', ') + ', all within their usual range' : '';
+    return '<div class="ln full tbl ov">' + h + '</div><div class="ln full uf"><p class="readout">' + esc(more) + '</p>' + hist('Prometheus') + '</div>';
   }
   function store() {
-    return figRow([['Write p99', STORE.p99, 'usually ' + STORE.usual], ['Writes in flight', STORE.inflight, 'per node, at most'], ['Unsaved actors', STORE.unsaved, 'oldest ' + STORE.oldest], ['Errors', 'None', 'in the last hour']]) +
+    return figRow([['Write p99', STORE.p99, 'usually ' + STORE.usual], ['Writes in flight', STORE.inflight, STORE.cap], ['Unsaved actors', STORE.unsaved, 'oldest ' + STORE.oldest], ['Errors', 'None', 'in the last hour']]) +
       '<div class="ln full uf">' + hist('Prometheus') + '</div>';
   }
-  function clients() {
-    var h = '<span class="th sc">Gateway</span><span class="th sc r">Clients</span><span class="th sc r">Moving now</span>';
-    CLIENTS.gw.forEach(function (g, k) { h += M('b-g' + k + 'a', g[0], 'td') + M('b-g' + k + 'b', g[1], 'td r') + M('b-g' + k + 'c', g[2], 'td r'); });
-    return figRow([['Connected', CLIENTS.total, 'clients'], ['Resumed', CLIENTS.resumed, 'in the last hour'], ['Spread', '0.1%', 'from the average'], ['Refused', '0', 'handshakes']]) +
-      '<div class="ln main tbl gw">' + h + '</div><div class="ln full uf">' + hist('Prometheus') + '</div>';
+  // part: 0 everything, 1 the figures and the distribution, 2 the gateways that stand out (short screens)
+  function clients(part) {
+    // the gateways more than a tenth away from the average, or not running; three rows at most
+    var avg = Math.round(CLIENTS.total / GW.n);
+    var o = GW.nodes.filter(function (n) { return n.st !== 'ok' || Math.abs(n.clients - avg) > avg * .1; }).sort(function (a, b) { return Math.abs(b.clients - avg) - Math.abs(a.clients - avg); }).slice(0, 3);
+    var h = '<span class="th sc">Gateway</span><span class="th sc st">State</span><span class="th sc r">Clients</span><span class="th sc r">Moving here</span>';
+    for (var k = 0; k < 3; k++) { var g = o[k], e = g ? '' : ' empty'; h += M('b-g' + k + 'a', g ? g.n : '', 'td' + e) + M('b-g' + k + 'd', g ? g.txt : '', 'td st' + e) + M('b-g' + k + 'b', g ? group(g.clients) : '', 'td r' + e) + M('b-g' + k + 'c', g ? group(g.moving) : '', 'td r' + e); }
+    var top = figRow([['Connected', group(CLIENTS.total), 'clients'], ['Resumed', group(CLIENTS.resumed), 'in the last hour'], ['Per gateway', group(avg), 'on average'], ['Refused', '0', 'handshakes']]) +
+      '<div class="ln full col sm"><p class="cap sc">Clients on each of the ' + GW.n + ' gateways</p>' +
+      dist('gwc', GW.nodes.map(function (n) { return n.clients; }), { lo: 0, hi: 25000, hot: function (v) { return Math.abs(v - avg) > avg * .1; }, label: function (v) { return group(v); } }) + '</div>';
+    var foot = '<div class="ln full uf">' + hist('Prometheus') + '</div>';
+    return (part === 2 ? '' : top) + (part === 1 ? '' : '<div class="ln full tbl gw">' + h + '</div>') + foot;
+  }
+  // Four rows at most: the nodes that stand out, or the one Find chose, in place of the last.
+  var NROWS = 4;
+  function rowsOf(t) {
+    var o = outliers(t).slice(0, NROWS), h = S.hl && node(S.hl);
+    if (h && o.indexOf(h) < 0 && h.n.indexOf(t.pre + '-') === 0) { if (o.length >= NROWS) o[NROWS - 1] = h; else o.push(h); }
+    return o;
   }
   function nodeTable(t) {
-    var c = S.compact, h = '', dim = S.hl && t.nodes.some(function (n) { return n.n === S.hl; });
+    var c = S.compact, h = '', rows = rowsOf(t);
     if (!c) {
       h += '<span class="th sc">Node</span><span class="th sc">State</span><span class="th sc r">CPU</span><span class="th sc r">Memory</span><span class="th sc r">Ask p99</span><span class="th"></span>';
-      for (var r = 0; r < t.nodes.length; r++) {
-        var n = t.nodes[r], e = n ? '' : ' empty', hl = n && n.n === S.hl ? ' hl' : '', bad = n && n.p99 > LIMIT ? ' ind' : '';
-        h += M('b-n' + r + 'a', n ? n.n : '', 'td' + e + hl) + M('b-n' + r + 'b', n ? n.txt : '', 'td st' + e + hl) + M('b-n' + r + 'c', n ? n.cpu : '', 'td r' + e + hl) + M('b-n' + r + 'd', n ? n.mem : '', 'td r' + e + hl) + M('b-n' + r + 'e', n ? ms(n.p99) + ' ms' : '', 'td r' + e + hl + bad);
+      for (var r = 0; r < NROWS; r++) {
+        var n = rows[r], e = n ? '' : ' empty', hl = n && n.n === S.hl ? ' hl' : '', bad = n && (n.p99 > LIMIT || n.p99 - t.med > 4 * t.mad) ? ' ind' : '';
+        h += M('b-n' + r + 'a', n ? n.n : '', 'td' + e + hl) + M('b-n' + r + 'b', n ? n.txt : (r ? '' : 'Every node is within its usual range'), 'td st' + (n || r ? e : '') + hl) + M('b-n' + r + 'c', n ? n.cpu + '%' : '', 'td r' + e + hl) + M('b-n' + r + 'd', n ? n.mem.toFixed(1) + ' GB' : '', 'td r' + e + hl) + M('b-n' + r + 'e', n ? ms(n.p99) + ' ms' : '', 'td r' + e + hl + bad);
         h += '<span class="td r' + e + '">' + (n && n.st === 'ok' ? '<button class="lnk" data-drain="' + n.n + '">' + M('b-n' + r + 'f', 'Drain') + '</button>' : M('b-n' + r + 'f', '')) + '</span>';
       }
     } else {
       h += '<span class="th sc">Node</span><span class="th sc r">CPU</span><span class="th sc r">Memory</span><span class="th sc r">p99</span>';
-      for (var q = 0; q < t.nodes.length; q++) {
-        var m = t.nodes[q], em = m ? '' : ' empty', hm = m && m.n === S.hl ? ' hl' : '';
-        h += M('b-n' + q + 'a', m ? m.n : '', 'td' + em + hm) + M('b-n' + q + 'c', m ? m.cpu : '', 'td r' + em + hm) + M('b-n' + q + 'd', m ? m.mem : '', 'td r' + em + hm) + M('b-n' + q + 'e', m ? ms(m.p99) + ' ms' : '', 'td r' + em + hm + (m && m.p99 > LIMIT ? ' ind' : ''));
-        h += M('b-n' + q + 'b', m ? m.txt : '', 'td sub st' + em + hm) + '<span class="td sub r' + em + '">' + (m && m.st === 'ok' ? '<button class="lnk" data-drain="' + m.n + '">' + M('b-n' + q + 'f', 'Drain') + '</button>' : M('b-n' + q + 'f', '')) + '</span>';
+      for (var q = 0; q < NROWS; q++) {
+        var m = rows[q], em = m ? '' : ' empty', hm = m && m.n === S.hl ? ' hl' : '';
+        h += M('b-n' + q + 'a', m ? m.n : '', 'td' + em + hm) + M('b-n' + q + 'c', m ? m.cpu + '%' : '', 'td r' + em + hm) + M('b-n' + q + 'd', m ? m.mem.toFixed(1) + ' GB' : '', 'td r' + em + hm) + M('b-n' + q + 'e', m ? ms(m.p99) + ' ms' : '', 'td r' + em + hm + (m && (m.p99 > LIMIT || m.p99 - t.med > 4 * t.mad) ? ' ind' : ''));
+        h += M('b-n' + q + 'b', m ? m.txt : (q ? '' : 'Every node is within its usual range'), 'td sub st' + (m || q ? em : '')) + '<span class="td sub r' + em + '">' + (m && m.st === 'ok' ? '<button class="lnk" data-drain="' + m.n + '">' + M('b-n' + q + 'f', 'Drain') + '</button>' : M('b-n' + q + 'f', '')) + '</span>';
       }
     }
-    return '<div class="ln full tbl nodes' + (dim ? ' dim' : '') + '">' + h + '</div>';
+    return '<div class="ln full tbl nodes' + (S.hl && rows.some(function (n) { return n.n === S.hl; }) ? ' dim' : '') + '">' + h + '</div>';
   }
-  // The type's own action sits in the foot of its node table, where the nodes it restarts are listed.
-  function typeFoot(t, act) { return '<div class="ln full uf">' + (act ? '<div class="acts"><button class="act sec" id="hr" data-type="' + t.id + '">' + M('b-hr', 'Hot restart ' + t.name) + '</button></div>' : '') + hist('Prometheus') + '</div>'; }
-  function server(ti) { var t = TYPES[ti]; return figs(t) + nodeTable(t) + typeFoot(t, true); }
-  function serverSum(ti) { var t = TYPES[ti]; return figs(t) + typeFoot(t, false); }
-  function serverNodes(ti) { var t = TYPES[ti]; return nodeTable(t) + typeFoot(t, true); }
+  function distUnit(t) { return '<div class="ln full col sm"><p class="cap sc">Ask p99 of each of the ' + group(t.n) + ' nodes</p>' + p99Dist(t) + '</div>'; }
+  // The type's own action sits in the foot of its node table, with the count of the nodes not listed.
+  function typeFoot(t, act) { var rows = rowsOf(t); return '<div class="ln full uf">' + (act ? '<p class="readout">' + M('b-ot', others(t, rows)) + '</p><div class="acts"><button class="act sec" id="hr" data-type="' + t.id + '">' + M('b-hr', 'Hot restart ' + t.name) + '</button></div>' : '') + hist('Prometheus') + '</div>'; }
+  function server(t) { return figs(t) + distUnit(t) + nodeTable(t) + typeFoot(t, true); }
+  function serverSum(t) { return figs(t) + distUnit(t) + typeFoot(t, false); }
+  function serverNodes(t) { return nodeTable(t) + typeFoot(t, true); }
   function changes(ci) {
     var ch = CHANGES[ci];
     var list = '<div class="ln listc list">' + CHANGES.map(function (x, k) { return '<button class="li' + (k === ci ? ' on' : '') + '" data-go="2:' + x.id + '"><span class="k0">' + x.time + '</span><span class="k1' + (x.bad ? ' ind' : '') + '">' + x.kind + '</span><span class="k3">' + x.target + '</span></button>'; }).join('') + '</div>';
@@ -476,11 +634,11 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
       M('b-c4', ch.note, 'note', 'p') + '<div class="acts">' + (ch.bad ? '<button class="act pri" id="rb"' + (S.rolling ? ' disabled' : '') + '>' + M('b-rb', S.rolling ? 'Rolling back' : 'Roll back this rollout') + '</button>' : '') + '</div></div>';
     return list + det;
   }
-  function actors(ai, part) {
-    var a = ACTORS[ai], c = !!part;
-    var list = c ? '' : '<div class="ln listc list">' + ACTORS.map(function (x, k) { return '<button class="li two' + (k === ai ? ' on' : '') + '" data-go="3:' + x.id + '"><span class="k1">' + x.id + '</span><span class="k3' + (x.p99 > LIMIT ? ' ind' : '') + '">' + x.p99 + ' ms</span></button>'; }).join('') + '</div>';
+  function actors(a, part) {
+    var c = !!part, top = ACTORS.slice(0, TOP);
+    var list = c ? '' : '<div class="ln listc list">' + top.map(function (x) { return '<button class="li two' + (x === a ? ' on' : '') + '" data-go="3:' + x.id + '"><span class="k1">' + x.id + '</span><span class="k3' + (x.p99 > LIMIT ? ' ind' : '') + '">' + x.p99 + ' ms</span></button>'; }).join('') + '</div>';
     var props = (c ? '<dt>Actor</dt>' + M('b-at', a.id, '', 'dd') + '<dt>Handler p99</dt>' + M('b-a0', a.p99 + ' ms', a.p99 > LIMIT ? 'ind' : '', 'dd') : '') +
-      '<dt>Type</dt>' + M('b-a1', a.type, '', 'dd') + '<dt>Node</dt>' + M('b-a2', a.node, '', 'dd') + '<dt>Requests</dt>' + M('b-a3', a.rps, '', 'dd') + '<dt>Mailbox</dt>' + M('b-a4', a.mailbox, a.full ? 'ind' : '', 'dd') + '<dt>Last saved</dt>' + M('b-a5', a.saved, '', 'dd') + (c ? '' : '<dt></dt><dd></dd>');
+      '<dt>Type</dt>' + M('b-a1', a.type, '', 'dd') + '<dt>Node</dt>' + M('b-a2', a.node, '', 'dd') + '<dt>Requests</dt>' + M('b-a3', a.rps, '', 'dd') + '<dt>Mailbox</dt>' + M('b-a4', a.mailbox, a.full ? 'ind' : '', 'dd') + '<dt>Last saved</dt>' + M('b-a5', a.saved, '', 'dd') + (c ? '' : a.found ? '<dt>Handler p99</dt>' + M('b-a0', a.p99 + ' ms', a.p99 > LIMIT ? 'ind' : '', 'dd') : '<dt></dt><dd></dd>');
     var comps = '', logs = '';
     for (var k = 0; k < 3; k++) {
       comps += M('b-ac' + k, a.comps[k] || '', 'code', 'div');
@@ -511,7 +669,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
         { stroke: ink3, font: font, grid: { show: false }, ticks: { show: false }, size: 34, gap: 8, splits: function () { return [XS[0], XS[59], XS[N - 1]]; }, values: function (u, v) { return v.map(function (x) { return clock(XS.indexOf(x)); }); } },
         { stroke: ink3, font: font, grid: { stroke: rule, width: 1 }, ticks: { show: false }, size: S.compact ? 48 : 60, gap: 10, splits: function () { return [0, 20, 40, 60]; }, values: function (u, v) { return v.map(function (x) { return x + ' ms'; }); } }
       ],
-      series: [{}].concat(TYPES.map(function (t) { return { stroke: t.id === 'map' ? indigo : ink3, width: t.id === 'map' ? 1.8 : 1.3, points: { show: false } }; })),
+      series: [{}, { stroke: ink3, width: 1.3, points: { show: false } }, { stroke: indigo, width: 1.8, points: { show: false } }],
       hooks: {
         drawAxes: [function (u) {
           var c = u.ctx, d = devicePixelRatio, y = u.valToPos(LIMIT, 'y', true), x = u.valToPos(XS[DEPLOY], 'x', true), L = u.bbox.left, R = L + u.bbox.width;
@@ -525,12 +683,13 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
         draw: [function (u) {
           var c = u.ctx, d = devicePixelRatio, R = u.bbox.left + u.bbox.width;
           c.save(); c.font = (S.compact ? 12 : 13.5) * d + 'px Newsreader, Georgia, serif'; c.textAlign = 'right'; c.textBaseline = 'bottom';
-          TYPES.forEach(function (t) { c.fillStyle = t.id === 'map' ? indigo : ink2; c.fillText(t.name, R - 2 * d, u.valToPos(t.p[N - 1], 'y', true) - 5 * d); });
+          c.fillStyle = ink2; c.fillText('The other nine, at most', R - 2 * d, u.valToPos(others9(N - 1), 'y', true) - 5 * d);
+          c.fillStyle = indigo; c.fillText('MapServer', R - 2 * d, u.valToPos(MAP.p[N - 1], 'y', true) - 5 * d);
           c.restore();
         }],
         setCursor: [function (u) { var i = u.cursor.idx; $('ro') && ($('ro').innerHTML = readout(i == null ? N - 1 : i)); }]
       }
-    }, [XS].concat(TYPES.map(function (t) { return t.p; })), el);
+    }, [XS, XS.map(function (x, i) { return others9(i); }), MAP.p], el);
     plots.push(u);
   }
 
@@ -625,7 +784,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   function setM(el, to) { var o = {}; o[el.dataset.m] = measure(el); settle(el); el.textContent = to; morphAll(o, [el], true); }
   // ---------- render ----------
   function view() {
-    if (S.mode === 'find') return { layout: 'find', eb: 'Actors, nodes and actions', h1: 'Find', body: findBody, after: findWire };
+    if (S.mode === 'find') return { layout: 'find', eb: 'Actor ids, server types, nodes and actions', h1: 'Find', body: findBody, after: findWire };
     if (S.mode === 'confirm') return { layout: 'confirm', eb: 'Confirm. It is written to the audit log', h1: S.cf.title, body: confirmBody, after: confirmWire };
     var s = steps[S.i]; return { layout: s.layout, eb: s.eb(), h1: s.h1, body: s.body, after: s.after };
   }
@@ -654,7 +813,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     }
     S.layout = v.layout;
     wire(); if (v.after) v.after();
-    frame(v);
+    frame(v); if (same) distMorph(); else qa('.dist').forEach(function (d) { distWas[d.dataset.dist] = qa('rect', d).map(function (r) { return r.style.transform; }); });
     if (old) morphAll(old, qa('[data-m]').filter(function (e) { return (same || e.dataset.m.indexOf('b-') !== 0) && !e.closest('.leave') && e.dataset.m !== 'status'; }));
     $('app').dataset.step = S.mode ? S.mode : String(S.i);
     var eb = document.querySelector('[data-key="back"]'); if (eb) eb.parentNode.classList.toggle('off', !S.mode && !S.back.length);
@@ -671,7 +830,8 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     if (S.compact) { $('stage').style.gridTemplateRows = ''; return; }
     var t = steps[S.i].tab;
     if (tabH[t] == null) tabH[t] = probe(steps.filter(function (st) { return st.tab === t; }).map(function (st) { return st.body; }));
-    var h = S.mode ? Math.max(tabH[t], $('body').scrollHeight) : tabH[t];
+    // Find and confirm keep the tallest height they have had, so the head does not move while results narrow
+    var h = S.mode ? (S.modeH = Math.max(tabH[t], $('body').scrollHeight, S.modeH || 0)) : tabH[t];
     $('stage').style.gridTemplateRows = 'auto minmax(0,' + h + 'px)';
   }
   function renderMargin() {
@@ -720,17 +880,18 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   function log(action, target) { AUDIT.unshift(['now', 'you', action, target]); var key = steps[S.i] && [steps[S.i].tab, steps[S.i].key]; buildSteps(); if (key) S.i = findStep(key[0], key[1]); }
   var sayT;
   function say(msg) { S.status = msg; var e = $('status').firstChild; setM(e, msg); clearTimeout(sayT); sayT = setTimeout(function () { setM(e, ''); }, 9000); }
-  function ask(cf) { S.cf = cf; S.mode = 'confirm'; render('up'); }
-  function rollback() { if (S.rolling) return; ask({ title: 'Roll back MapServer', text: 'The 4 MapServer nodes hot-restart onto build 2026.10.20-2, one at a time, pausing about 0.4 s each. Players stay connected.', need: 'MapServer', verb: 'Roll back', log: ['Roll back', 'MapServer to 2026.10.20-2'], done: 'Rolling back MapServer to 2026.10.20-2. Written to the audit log.', effect: function () { S.rolling = true; } }); }
+  function ask(cf) { S.cf = cf; S.mode = 'confirm'; S.modeH = 0; render('up'); }
+  function rollback() { if (S.rolling) return; ask({ title: 'Roll back MapServer', text: 'The 400 MapServer nodes hot-restart onto build ' + PREV + ', 8 at a time, each pausing about 0.4 s; about 4 minutes in all. Players stay connected.', need: 'MapServer', verb: 'Roll back', log: ['Roll back', 'MapServer to ' + PREV], done: 'Rolling back MapServer to ' + PREV + ', 8 nodes at a time. Written to the audit log.', effect: function () { S.rolling = true; } }); }
   function drain(node) {
-    var t = TYPES.filter(function (x) { return x.nodes.some(function (n) { return n.n === node; }); })[0];
-    ask({ title: 'Drain ' + node, text: 'Its actors move to the other ' + t.name + ' nodes one at a time. Clients stay connected.', need: node, verb: 'Drain', log: ['Drain', node], done: 'Draining ' + node + '. Written to the audit log.', effect: function () { t.nodes.forEach(function (n) { if (n.n === node) { n.st = 'busy'; n.txt = 'Draining, starting'; } }); } });
+    var t = TYPES.filter(function (x) { return node.indexOf(x.pre + '-') === 0; })[0];
+    ask({ title: 'Drain ' + node, text: 'Its actors move to the other ' + group(t.n - 1) + ' ' + t.name + ' nodes one at a time. Clients stay connected.', need: node, verb: 'Drain', log: ['Drain', node], done: 'Draining ' + node + '. Written to the audit log.', effect: function () { setNode(node, { st: 'busy', txt: 'Draining, starting' }); } });
   }
   function hotRestart2(id) {
     var t = TYPES.filter(function (x) { return x.id === id; })[0];
-    ask({ title: 'Hot restart ' + t.name, text: 'The ' + t.nodes.length + ' ' + t.name + ' nodes restart one at a time on their current build and resume from a snapshot. Clients stay connected.', need: t.name, verb: 'Hot restart', log: ['Hot restart', t.name], done: 'Hot restart of ' + t.name + ' started. Written to the audit log.' });
+    var batch = Math.max(1, Math.round(t.n / 50));
+    ask({ title: 'Hot restart ' + t.name, text: 'The ' + group(t.n) + ' ' + t.name + ' nodes restart ' + (batch > 1 ? batch + ' at a time' : 'one at a time') + ' on their current build and resume from a snapshot. Clients stay connected.', need: t.name, verb: 'Hot restart', log: ['Hot restart', t.name], done: 'Hot restart of ' + t.name + ' started. Written to the audit log.' });
   }
-  function upload() { ask({ title: 'Upload SkillTable', text: 'Version 16 goes to all 9 nodes. Nothing changes until every node accepts the file.', need: 'SkillTable', verb: 'Upload', log: ['Upload config table', 'SkillTable version 16'], done: 'SkillTable version 16 accepted by 9 of 9 nodes. Written to the audit log.' }); }
+  function upload() { ask({ title: 'Upload SkillTable', text: 'Version 16 goes to all ' + group(ALLNODES) + ' nodes. Nothing changes until every node accepts the file.', need: 'SkillTable', verb: 'Upload', log: ['Upload config table', 'SkillTable version 16'], done: 'SkillTable version 16 accepted by ' + group(ALLNODES) + ' of ' + group(ALLNODES) + ' nodes. Written to the audit log.' }); }
   function confirmBody() {
     var c = S.cf;
     return '<div class="cf main col"><p class="ln lead">' + esc(c.text) + '</p><label class="ln" for="cin">Type <b>' + esc(c.need) + '</b> to confirm</label><input class="ln qin" id="cin" autocomplete="off" spellcheck="false" aria-label="Type ' + esc(c.need) + ' to confirm">' +
@@ -750,34 +911,50 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
 
   // ---------- find (⌘K) ----------
   var F = { q: '', sel: 0, items: [] };
+  // Find ranks and caps: exact, then prefix, then contained; a node that stands out before one that does not.
+  // An actor id is resolved through placement and asked of its owner, so millions of actors need no list here.
+  var CAP = 5;
+  function rank(t, q) { t = t.toLowerCase(); return !q ? 1 : t === q ? 0 : t.indexOf(q) === 0 ? 1 : t.indexOf(q) > 0 ? 2 : 9; }
+  function openActor(a) { S.mode = null; if (a.found) { S.found = a; buildSteps(); } jump(findStep(3, a.id)); render('down'); }
   function allItems() {
-    var o = ACTORS.map(function (a) { return { g: 0, t: a.id, h: a.node, run: function () { S.mode = null; jump(findStep(3, a.id)); render('down'); } }; });
-    TYPES.forEach(function (t) { t.nodes.forEach(function (n) { o.push({ g: 1, t: n.n, h: t.name, run: function () { S.mode = null; jump(findStep(1, S.split ? t.id + '-n' : t.id)); S.hl = n.n; render('down'); } }); }); });
-    return o.concat([
-      { g: 2, t: 'Roll back MapServer', h: 'to 2026.10.20-2', run: function () { S.mode = null; rollback(); } },
-      { g: 2, t: 'Hot restart GatewayServer', h: '2 nodes', run: function () { S.mode = null; hotRestart2('gw'); } },
-      { g: 2, t: 'Hot restart PlayerServer', h: '3 nodes', run: function () { S.mode = null; hotRestart2('pl'); } },
-      { g: 2, t: 'Hot restart MapServer', h: '4 nodes', run: function () { S.mode = null; hotRestart2('map'); } },
-      { g: 2, t: 'Upload a config table', h: 'all nodes validate first', run: function () { S.mode = null; upload(); } }
-    ]);
+    var q = F.q.trim(), G = [[], [], []], more = [0, 0, 0];
+    var a = q ? lookup(q) : null;
+    if (a) G[0].push({ g: 0, k: 'Actor', t: a.id, h: a.found ? 'ask ' + a.node + ', its owner' : a.node, r: -1, run: function () { openActor(a); } });
+    ACTORS.slice(0, TOP).forEach(function (x) { var k = rank(x.id, q); if (k < 9 && x !== a) G[0].push({ g: 0, k: 'Actor', t: x.id, h: x.node, r: k, run: function () { openActor(x); } }); });
+    TYPES.forEach(function (t) {
+      var so = outliers(t);
+      if (q && rank(t.name, q) < 9) G[1].push({ g: 1, k: 'Server type', t: t.name, h: group(t.n) + ' nodes', r: rank(t.name, q) - .5, run: function () { S.mode = null; jump(findStep(1, t.id)); render('down'); } });
+      if (!q) { so.slice(0, 2).forEach(function (n) { G[1].push({ g: 1, k: 'Node', t: n.n, h: t.name + ', stands out', r: 0, run: goNode(t, n) }); }); return; }
+      t.nodes.forEach(function (n) { var k = rank(n.n, q); if (k < 9) G[1].push({ g: 1, k: 'Node', t: n.n, h: t.name + (so.indexOf(n) >= 0 ? ', stands out' : ''), r: k + (so.indexOf(n) >= 0 ? 0 : .25) + n.n.length / 1000, run: goNode(t, n) }); });
+    });
+    [
+      { t: 'Roll back MapServer', h: 'to ' + PREV, run: function () { S.mode = null; rollback(); } },
+      { t: 'Hot restart a server type', h: 'from its own screen', run: function () { S.mode = null; jump(findStep(1, 'all')); render('down'); } },
+      { t: 'Upload a config table', h: 'every node validates first', run: function () { S.mode = null; upload(); } }
+    ].forEach(function (x) { var k = rank(x.t + ' ' + x.h, q); if (k < 9) { x.g = 2; x.k = 'Action'; x.r = k; G[2].push(x); } });
+    G.forEach(function (g, i) { g.sort(function (x, y) { return x.r - y.r; }); more[i] = Math.max(0, g.length - CAP); G[i] = g.slice(0, CAP); });
+    F.more = more;
+    return G[0].concat(G[1], G[2]);
   }
-  function openFind() { if (S.mode === 'find') { closeMode(); return; } F.q = ''; F.sel = 0; S.mode = 'find'; render('up'); }
-  function findBody() { return '<div class="ln main"><input class="qin" id="q" placeholder="An actor id, a node, or an action" autocomplete="off" spellcheck="false" aria-label="Find"></div><div class="ln full" id="res"></div>'; }
+  function goNode(t, n) { return function () { S.mode = null; jump(findStep(1, S.split ? t.id + '-n' : t.id)); S.hl = n.n; render('down'); }; }
+  function openFind() { if (S.mode === 'find') { closeMode(); return; } F.q = ''; F.sel = 0; S.mode = 'find'; S.modeH = 0; render('up'); }
+  function findBody() { return '<div class="ln main"><input class="qin" id="q" placeholder="An actor id, a server type, a node, or an action" autocomplete="off" spellcheck="false" aria-label="Find"></div><div class="ln full" id="res"></div>'; }
   function findWire() { var i = $('q'); i.value = F.q; i.oninput = function () { F.q = i.value.toLowerCase(); F.sel = 0; results(); }; results(); i.focus({ preventScroll: true }); }
   function results() {
-    F.items = allItems().filter(function (o) { return !F.q || (o.t + ' ' + o.h).toLowerCase().indexOf(F.q) >= 0; });
+    F.items = allItems();
     if (F.sel >= F.items.length) F.sel = Math.max(0, F.items.length - 1);
-    var G = ['Actors', 'Nodes', 'Actions'], h = '';
-    if (!F.items.length) h = '<p class="nores">Nothing matches. Actor ids look like Player(482913); nodes like map-1.</p>';
-    else if (!S.compact) h = '<div class="res">' + G.map(function (g, gi) { return '<div class="rg"><span class="sc">' + g + '</span>' + F.items.map(function (o, k) { return o.g !== gi ? '' : hit(o, k); }).join('') + '</div>'; }).join('') + '</div>';
-    else { var W = 8, s = Math.max(0, Math.min(F.sel - 3, F.items.length - W)); h = '<div class="res"><div class="rg">' + F.items.slice(s, s + W).map(function (o, k) { return hit(o, s + k, G[o.g]); }).join('') + '</div></div>'; }
+    var G = ['Actors', 'Server types and nodes', 'Actions'], h = '';
+    if (!F.items.length) h = '<p class="nores">Nothing matches. Actor ids look like Player(482913); nodes like map-217.</p>';
+    else if (!S.compact) h = '<div class="res">' + G.map(function (g, gi) { return '<div class="rg"><span class="sc">' + g + '</span>' + F.items.map(function (o, k) { return o.g !== gi ? '' : hit(o, k); }).join('') + (F.more[gi] ? '<p class="more">' + group(F.more[gi]) + ' more; keep typing</p>' : '') + '</div>'; }).join('') + '</div>';
+    else { var W = 8, s = Math.max(0, Math.min(F.sel - 3, F.items.length - W)); var more = F.more[0] + F.more[1] + F.more[2]; h = '<div class="res"><div class="rg">' + F.items.slice(s, s + W).map(function (o, k) { return hit(o, s + k, o.k); }).join('') + (more ? '<p class="more">' + group(more) + ' more; keep typing</p>' : '') + '</div></div>'; }
     $('res').innerHTML = h;
     qa('[data-hit]', $('res')).forEach(function (b) { b.onclick = function () { F.items[+b.dataset.hit].run(); }; });
+    frame(view());
   }
   function hit(o, k, g) { return '<button class="hit' + (k === F.sel ? ' on' : '') + '" data-hit="' + k + '" tabindex="-1"><span class="t">' + esc(o.t) + '</span><span class="h">' + esc(g ? g + ', ' + o.h : o.h) + '</span></button>'; }
   function moveSel(d) { if (!F.items.length) return; F.sel = Math.max(0, Math.min(F.items.length - 1, F.sel + d)); results(); }
 
-  // ---------- input: keys, wheel (Lethargy drops trackpad inertia), touch ----------
+  // ---------- input: keys, wheel, touch ----------
   // A pressed key answers at once: its hint underlines for a moment, before anything has moved.
   var KEYOF = { ArrowDown: 'next', PageDown: 'next', j: 'next', ArrowUp: 'prev', PageUp: 'prev', k: 'prev', ArrowRight: 'ntab', ArrowLeft: 'ptab', '/': 'find', Escape: 'back', Backspace: 'back' };
   function flash(name) { var b = document.querySelector('[data-key="' + name + '"]'); if (!b) return; b.classList.add('pressed'); clearTimeout(b._h); b._h = setTimeout(function () { b.classList.remove('pressed'); }, 180); }
@@ -804,19 +981,40 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     else if (k === 'ArrowLeft') { e.preventDefault(); if (!e.repeat) tabGo(steps[S.i].tab - 1); }
     else if (k === '/') { e.preventDefault(); openFind(); }
   });
-  // One gesture, one step: the first intentional wheel event steps, then the gesture is locked until
-  // the wheel has been quiet for 220 ms. Lethargy tells a fresh flick from the inertia tail of the last one,
-  // so a new flick during a long tail still counts as its own step.
-  var leth = typeof Lethargy !== 'undefined' ? new Lethargy(7, 50, 0.05) : null, locked = false, quiet;
+  // Wheel: one intentional gesture, one step, and the first event of it steps at once.
+  // A mouse sends one event per notch: lines or pages (Firefox), or a whole notch, a multiple of 120 in wheelDeltaY
+  // (Chrome, Edge, Safari). Every notch steps; notches closer than 90 ms are one spin and step at most that often.
+  // A trackpad sends a stream of small pixel deltas ending in an inertia tail. The stream adds up to 24 px and steps
+  // once, then is held until it goes quiet for 140 ms, turns round, or speeds up again out of a decayed tail (a new
+  // flick on top of the last one's inertia). Checked against the kinds of events browsers send.
+  var WH = { last: 0, dir: 0, acc: 0, held: false, low: 0, peak: 0, prev: 0, notchAt: -1e9, notch: false };
+  function isNotch(e, gap) {
+    if (e.deltaMode !== 0) return true;
+    var wd = e.wheelDeltaY;
+    // inside a dense stream a trackpad sample can be a multiple of 120 too; a notch stands alone or follows a notch
+    return !!wd && wd % 120 === 0 && (gap > 40 || WH.notch);
+  }
   window.addEventListener('wheel', function (e) {
     if (e.ctrlKey) return;
     e.preventDefault();
-    var dy = e.deltaY * (e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 600 : 1);
-    if (Math.abs(dy) < Math.abs(e.deltaX)) return;
-    var intent = leth ? leth.check(e) : (dy < 0 ? 1 : -1);
-    clearTimeout(quiet); quiet = setTimeout(function () { locked = false; }, 220);
-    if (locked || intent === false || Math.abs(dy) < 3) return;
-    locked = true; step(dy > 0 ? 1 : -1);
+    if (Math.abs(e.deltaY) < Math.abs(e.deltaX) || !e.deltaY) return;
+    var now = e.timeStamp || performance.now(), gap = now - WH.last, dir = e.deltaY > 0 ? 1 : -1, a = Math.abs(e.deltaY);
+    WH.last = now; WH.notch = isNotch(e, gap);
+    if (WH.notch) {
+      WH.held = false; WH.acc = 0; WH.dir = dir;
+      if (now - WH.notchAt >= 90) { WH.notchAt = now; step(dir); }
+      return;
+    }
+    if (gap > 140 || dir !== WH.dir) { WH.dir = dir; WH.acc = 0; WH.held = false; }
+    if (WH.held) {
+      WH.low = Math.min(WH.low, a); WH.peak = Math.max(WH.peak, a);
+      if (a >= 12 && a > WH.prev && a > 3 * WH.low && WH.low < WH.peak / 3) { WH.held = false; WH.acc = 0; }
+    }
+    WH.prev = a;
+    if (!WH.held) {
+      WH.acc += a;
+      if (WH.acc >= 24) { WH.held = true; WH.low = WH.peak = a; step(dir); }
+    }
   }, { passive: false });
   var t0 = null;
   $('stage').addEventListener('touchstart', function (e) { var t = e.touches[0]; t0 = { x: t.clientX, y: t.clientY }; }, { passive: true });

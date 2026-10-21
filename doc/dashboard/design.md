@@ -75,6 +75,10 @@ There is one vocabulary, used the same way everywhere.
   detail.
 - **A figure** is a label above, the reading in the display face, and its normal below ("usually 12 ms",
   "of 4 nodes"). A reading is never shown alone.
+- **A distribution** shows one reading across every node of a server type: 80 bins of thin bars in the ink, the bins
+  past the limit or holding an outlier in the accent, the limit as a dashed line, and the scale (zero, the limit, the
+  top) beneath. It reads the same at 4 nodes and at 400. Moving between server types, each bar grows or shrinks from
+  its foot instead of being redrawn.
 - **A table** has one entity per table, one row height and hairlines that run unbroken. Text columns are left
   aligned, and numbers are right aligned in tabular figures. The gutter is padding on the side away from the
   alignment.
@@ -114,11 +118,18 @@ There is one vocabulary, used the same way everywhere.
 | ↓ / ↑, wheel, vertical swipe, PageDown / PageUp, j / k | The next or previous screen within the current section. It stops at the section's first and last screens and never crosses into another section |
 | → / ←, horizontal swipe, a tab | The next or previous section, opening at its first screen |
 | A row in a list | Opens that item; Esc returns to where you were |
-| `/` or ⌘K / Ctrl+K | Find: actors, nodes and actions, filtered as you type; ↑↓ select, Enter opens |
+| `/` or ⌘K / Ctrl+K | Find: an actor by its id, a server type, a node, an action; ranked as you type, five per group; ↑↓ select, Enter opens |
 | Esc or Backspace | Back. It closes Find or a confirmation, otherwise returns from the last jump (a list row, a Find result). It is dimmed while there is nowhere to go back to |
 
-- One gesture is one step. A trackpad flick, with its inertia tail, moves one screen; a new flick moves again
-  (Lethargy tells them apart).
+- One gesture is one step, and the step happens on the gesture's first event, not after it ends.
+  - A mouse sends one event per notch: lines or pages (Firefox), or a multiple of 120 in `wheelDeltaY` (Chrome, Edge,
+    Safari). Every notch is one step; notches closer than 90 ms are one fast spin and step at most that often.
+  - A trackpad sends a stream of small pixel deltas with an inertia tail. The stream adds up to 24 px and steps once,
+    then is held until it is quiet for 140 ms, turns round, or speeds up again out of a decayed tail (a new flick on
+    top of the last one's inertia), which steps again.
+  - Checked in a browser against the events browsers send: one notch, notches 120 to 400 ms
+    apart, a Firefox notch, a macOS notch, a flick with its tail, a second flick in the tail, a slow drag, a touch of a
+    few pixels, a flick and back, a flick then a notch.
 - Every key hint at the bottom is bold, always in the same place, and clickable. A pressed key underlines its hint
   at once, so the key is answered before anything has moved. A key that only one screen uses
   (such as rolling back) is a button on that screen, not a global key.
@@ -173,24 +184,42 @@ The morph is our own, about a hundred lines of code. Libraries doing the same fa
 Torph matches whole words when the text has spaces, keeps one instance per element and lays characters out as
 inline-block. We match by character across re-rendered pages and need the layout untouched.
 
+## At scale
+
+A cluster has tens of server types, hundreds of nodes per type and millions of actors. No screen grows with them.
+
+- **Distributions, not rows.** A reading across a type's nodes is one distribution. The table under it lists only
+  the nodes that stand out: a state other than running, or a reading more than four median absolute deviations from
+  the type's median. At most four rows; the rest are one line with their count and range.
+- **Unhealthy first, then a summary.** The cluster overview shows at most seven server types, the unhealthy ones
+  first, and names the others in one line. Every type is still one step away.
+- **Top-N, then Find.** Actors appear as the slowest six across the cluster; any other actor is found by its id.
+  Find shows five results per group and says how many more match.
+- **Counts read at a glance.** Large counts are rounded (2.41 M, 412 k); exact figures stay where they are small.
+- **Logs by pattern.** Hundreds of nodes log the same line thousands of times; Loki groups them by pattern, and the
+  screen shows the patterns with their counts.
+- **Where it is computed.** Distributions, outliers and rankings are computed by the Dashboard's server once per
+  refresh, never in the browser and never per viewer (ADR-093). The browser receives the bins and the few rows it
+  shows.
+
 ## What each job looks like
 
 DaServer is a general framework, so every view below names server types, actors and nodes rather than any game.
 
 | Job | The operator's question | Presentation | Left out |
 |---|---|---|---|
-| Triage | Is anything wrong right now? | The Incident section's first screen: what is wrong as the title; the figure that proves it beside its limit and usual value, one sentence of cause and the fix as the primary action (main); the affected type's nodes with their readings (aside), which tells a bad build from a bad node. When nothing is wrong, the title says so and the section has one screen | Status grids, counts of healthy things, coloured dots |
-| Evidence | Why do we think so? | The next screens of the same section: the last hour as one chart (the culprit in the accent, others in ink, the limit dashed, the change that caused it marked), then the relevant log lines, read from Loki | Dashboards of every metric; history beyond the window (one link to Prometheus or Loki) |
-| Cluster health | Which server type is unhealthy? | The Cluster section's first screen: one row per server type (nodes, actors, ask p99, build), the unhealthy row in the accent; membership is the eyebrow | Per-node detail on the overview |
-| A server type | How are its nodes? | Four figures with their usual values, then one row per node (state, CPU, memory, p99) with Drain on each; Hot restart in the table's foot | Sparklines that are flat; graphs per node |
-| Membership | Do all nodes agree on who is in the cluster? | One phrase above the overview title ("9 nodes, every view agrees"); a disagreement becomes the incident | A separate membership page while views agree |
+| Triage | Is anything wrong right now? | The Incident section's first screen: what is wrong as the title; the figure that proves it beside its limit and usual value, one sentence of cause and the fix as the primary action (main); the distribution of the reading across the affected type's nodes and its three worst nodes (aside), which tells a bad build (every node moved) from a bad node (one bar apart). When nothing is wrong, the title says so and the section has one screen | Status grids, counts of healthy things, coloured dots |
+| Evidence | Why do we think so? | The next screens of the same section: the last hour as one chart (the culprit in the accent, others in ink, the limit dashed, the change that caused it marked), then the logs, read from Loki and grouped by pattern (a pattern, its lines, how many nodes logged it, when last) | Dashboards of every metric; raw lines from hundreds of nodes; history beyond the window (one link to Prometheus or Loki) |
+| Cluster health | Which server type is unhealthy? | The Cluster section's first screen: one row per server type (nodes, actors, nodes that stand out, ask p99, build), unhealthy types first, at most seven rows and the rest named in one line; the unhealthy row in the accent; membership is the eyebrow | Per-node detail on the overview |
+| A server type | How are its nodes? | Four figures with their usual values, the distribution of ask p99 across all its nodes, then the nodes that stand out (at most four rows: state, CPU, memory, p99, Drain) and one line for the rest ("396 other nodes between 34 and 49 ms"); Hot restart in the foot | A row per node; sparklines that are flat; graphs per node |
+| Membership | Do all nodes agree on who is in the cluster? | One phrase above the overview title ("630 nodes in 10 server types, every view agrees"); a disagreement becomes the incident | A separate membership page while views agree |
 | Store | Are actors being saved? | Write p99, writes in flight, unsaved actors and the oldest unsaved age, errors | Query plans, per-table statistics |
-| Client connections | Are clients connected and balanced? | Connected, resumed, spread from the average, refused handshakes; one row per gateway | Per-client lists |
+| Client connections | Are clients connected and balanced? | Connected, resumed, the average per gateway, refused handshakes; the distribution of clients across gateways; the gateways more than a tenth from the average (at most three rows) | A row per gateway; per-client lists |
 | Changes | What changed before it broke? | A list of the last hour's changes (newest first) beside the selected change's detail; a bad rollout carries its own roll back | Deploy logs; the full rollout timeline |
 | Rollout and rollback | Roll back the bad build | The primary action on the incident and on the rollout's detail, confirmed by typing the server type's name | A separate deploy page |
 | Drain, hot restart | Take a node out; restart a type | Drain on the node's row; Hot restart under the node table; both confirmed by typing the name | Bulk selection |
 | Config tables | Push a new table | An action in Find, confirmed by typing the table's name; accepted only when every node accepts it | An editor |
-| An actor | What state is this actor in? | Find it (or pick it from the slowest list): type, node, requests, mailbox, last saved, its components and its last log lines (from Loki), with a link to its traces in Tempo | Raw JSON dumps; live editing |
+| An actor | What state is this actor in? | The six slowest actors in the cluster, or Find by its id: type, owning node, requests, mailbox, last saved, its components and its last log lines (from Loki), with a link to its traces in Tempo | Lists of actors; raw JSON dumps; live editing |
 | Audit | Who did what? | One row per action: time, who, action, target, newest first, paged; the audit is the Dashboard's log stream, read from Loki | Filters and search; export (the audit log is in the logs too) |
 | History | What happened last week? | A link on each view to Prometheus, Loki or Tempo at the same time range | Our own long-term storage, ad-hoc queries, custom dashboards |
 
