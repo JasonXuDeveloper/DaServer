@@ -85,8 +85,11 @@ production the nodes send everything over OTLP (`OTEL_EXPORTER_OTLP_ENDPOINT`) t
 fans out: metrics to Prometheus (remote write, or the Collector's own Prometheus endpoint for Prometheus to scrape),
 logs to Grafana Loki (which ingests OTLP itself at `/otlp/v1/logs`; `service.name` becomes a label, the other
 attributes structured metadata) and traces to Tempo. One exit per node, and the backends change in the Collector's
-configuration, not in the nodes. Every node also serves its metrics at `/metrics` on the HTTP port, always: KEDA or
-the Prometheus adapter read the scaling signal there, and an environment without a Collector can scrape it directly.
+configuration, not in the nodes. Every node also serves its metrics at `/metrics` on the HTTP port, always, for an
+environment without a Collector, which scrapes it instead. Use one path per environment: with a Collector, do not also
+let Prometheus scrape the nodes, or every series arrives twice under two identities (`instance` from the scrape,
+`service.instance.id` through the Collector). KEDA and the Prometheus adapter query Prometheus, not the pod, so either
+path feeds autoscaling.
 The repository ships two starting points, checked against a running node:
 
 - `observability/grafana-dashboard.json`: a Grafana dashboard (import it, pick the Prometheus data source): members
