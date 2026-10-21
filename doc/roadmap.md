@@ -409,21 +409,25 @@ Keep this file current: tick items when done, add items when scope changes.
         `OnceInFlight` sent rows per root (memory and rate only, nothing refused); every sent row held in memory while active
         (`LoweringOnceInFlightNeverAcksEarly`) and a bounded queued head per destination (`Once:QueuedHeadPerTarget` 64,
         `Once:TargetsInMemory` 256, round-robin), the rest paged per destination by ordinal (`AskRowsPagedPerTarget`,
-        `SlowTargetNeverHoldsOthers`), a held destination with nothing sendable giving up its head when others wait and
+        `SlowTargetNeverHoldsOthers`), a held destination giving up its head when others wait once it has nothing sendable
+        (backoff, zero window, only `OnceInFlight` left) or has used its quantum of `QueuedHeadPerTarget` sends, and
         destinations not held paged in round-robin by a target cursor over `daserver_once_asks_queued`
         (`ManyTargetsPastMemoryAllProgress`), a stuck destination holding at most `OnceWindow` in-flight slots so
         healthy ones send while fewer than `OnceInFlight / OnceWindow` are stuck (`StuckTargetsBoundedByWindow`), queued
-        totals kept in `RootState` and written with the row changes, a destination not held counting as having queued
+        totals kept in `RootState` and written with the row changes, a held destination's count its total queued rows
+        counted at page-in (`PagedInCountIsTotal`), a destination not held counting as having queued
         rows only while `QueuedRows` exceeds the held counts (`QueuedTotalsSurviveReload`), `NextDue` from held rows and
         the next rotation so a root with only stuck work is not woken at once, request
         bytes kept until the insert lands and read ahead for the next sends, a sent row keeping metadata only and its
         bytes re-read for each re-ask round in reads bounded by `StatementBytes`, unwritten rows during a store outage
         growing in memory and landing in one write, every write's client timeout `statement_timeout` times its statement
         count (`OutageBacklogLandsInOneWrite`), a data-only outage alerted by `DaServerStoreWritesBehind`
-        (`StoreWritesBehindAlerts`), `next_try_at` set by phase and NULL once stopped;
+        (`StoreWritesBehindAlerts`; an unwritable root counted in `daserver.store.unwritable_roots`, alerted by
+        `DaServerRecordUnwritable` and left out of the gauge: `UnwritableRootNotStoreBehind`), `Store:StatementTimeout` and
+        TCP keepalive on the data sources, `next_try_at` set by phase and NULL once stopped;
         a probe of an inactive sender answered from one statement over its sent rows and `OnceNext`
         (`ProbeAnswerSingleSnapshot`); range-read after the claim, their
-        next try feeding `NextDue` so a crash or unload always wakes the root (`QueuedAsksWakeAfterCrash`); pending row
+        held rows' next try and the next cursor rotation feeding `NextDue` so a crash or unload always wakes the root (`QueuedAsksWakeAfterCrash`); pending row
         changes written in the last write before a move or freeze (`MigrationCarriesPendingAskRows`); link outcomes
         retried by the runtime (`RetryAfter`, `Once:Retry` with backoff and jitter), windows waited out; only a value or a
         definite refusal delivered as `Replied`, in an item that commits implicitly and deletes the row (the row belongs to

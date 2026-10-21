@@ -3144,14 +3144,16 @@ Replaced by ADR-098.
     once stopped). An active root holds every sent row's metadata in memory (so its acknowledgement to each receiver
     is exact, even after `OnceInFlight` is lowered) and, per destination, a bounded head of queued rows
     (`DaServer:Once:QueuedHeadPerTarget`, 64, for up to `DaServer:Once:TargetsInMemory`, 256, destinations served
-    round-robin), paging the rest in per destination by ordinal; a held destination with nothing sendable (backoff
-    or a zero window) gives up its head when destinations not held wait, and destinations not held come in turn by a
+    round-robin), paging the rest in per destination by ordinal; while destinations not held wait, a held destination gives up its head once
+    it has nothing sendable (backoff, a zero window, or rows waiting only on `OnceInFlight`) or has used its quantum
+    (`QueuedHeadPerTarget` sends since it was paged in), and destinations not held come in turn by a
     target cursor walking `daserver_once_asks_queued` (the first queued row after the last target paged in, wrapping),
     so a destination that yielded goes to the back. The bound that holds: a slow or stuck destination holds at most
     `OnceWindow` (16) of the root's `OnceInFlight` slots, its sent rows keeping their sequences, so healthy
     destinations keep sending while fewer than `OnceInFlight / OnceWindow` (64) are stuck, past which new first sends
-    wait (nothing lost, `DaServerOnceAskOld` alerts), a destination not held waits at most one rotation of the cursor,
-    and memory is bounded (E3). The root's queued totals (`QueuedRows`, `QueuedBytes`, a count per held destination)
+    wait (nothing lost, `DaServerOnceAskOld` alerts), a destination not held waits at most one rotation of the cursor of quantum sends,
+    and memory is bounded (E3). The root's queued totals (`QueuedRows`, `QueuedBytes`, each held destination's total queued rows in the store, counted at page-in by an
+    index-only count, not only the rows read into memory)
     live in `RootState`, written with the row changes, so admission is exact after a reload; a destination not held
     counts as having queued rows only while `QueuedRows` exceeds the held destinations' counts. A new ask is inserted already sent only when
     no earlier row to its target is queued in memory or paged out; request and state bytes stay in memory until their
@@ -3230,7 +3232,7 @@ Replaced by ADR-098.
   `ProbeAnswerSingleSnapshot`, `AskSentInItsOwnWrite`, `AskStateKeptInRow`, `AskRetriesPerDestinationInOrder`,
   `AsksPerItemThrowsDeterministically`, `SlowTargetNeverHoldsOthers`, `StuckTargetsBoundedByWindow`,
   `ManyTargetsPastMemoryAllProgress`, `QueuedTotalsSurviveReload`, `OutageBacklogLandsInOneWrite`,
-  `UpgradeCheckComparesStateLines`, `StoreWritesBehindAlerts`, `LoweringOnceInFlightNeverAcksEarly`,
+  `UpgradeCheckComparesStateLines`, `StoreWritesBehindAlerts`, `PagedInCountIsTotal`, `UnwritableRootNotStoreBehind`, `LoweringOnceInFlightNeverAcksEarly`,
   `AnsweredRowWithPendingRetryDeleted`, `SentInsertNeverOvertakesQueued`, `AskRowsPagedPerTarget`, `UnknownStateTypeWaitsForBuild`,
   `QueuedOnceCountsTowardUnacked`, `ReactionsRunUnderBackPressure`, `AskRowSurvivesStashDestroy`, `OrphanReplyDroppedAckSent`, `PlainAskOfOnceIsDAS032`,
   `AskingEntitySurvivesReload`, `MutualOnceRootsProgress`, `MigrationCarriesPendingAskRows`,
