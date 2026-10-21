@@ -313,8 +313,9 @@ Keep this file current: tick items when done, add items when scope changes.
       node) and framework logs with `daserver.actor.type`, `daserver.actor.key` and the trace id; one reading table
       generating the instruments, `/admin/stats` and the stats line (off when OTLP is set); the samples' AppHosts
       adding the Collector, Prometheus, Loki, Tempo and Grafana when published, Prometheus fed by the Collector and
-      scraping no node; the front end in vanilla TypeScript built by esbuild, assets embedded. Tests:
-      `DashboardShowsIncidentFromFiringAlerts`, `TriageWithoutPrometheusShowsThresholdFreeStatesOnly`,
+      scraping no node; roll back through the deploy pipeline's webhook (`DaServer:Dashboard:RollbackWebhook`), the
+      command shown when none is set; the front end in vanilla TypeScript built by esbuild, assets embedded. Tests:
+      `RollbackCallsDeployWebhookAndAudits`, `RollbackWithoutWebhookShowsCommand`, `DashboardShowsIncidentFromFiringAlerts`, `TriageWithoutPrometheusShowsThresholdFreeStatesOnly`,
       `ChartsFromPollRingWithoutPrometheus`, `DashboardLogsComeFromLoki`, `DashboardWithoutLokiSaysSo`,
       `ActorKeyIsNotALokiLabel`, `ActionNeedsTypedTargetAndIsAudited`, `ViewerRoleCannotAct`, `DashboardHoldsNoState`
       (two replicas answer alike), `ServerTypeScreenFixedAt400Nodes` (the screen's rows and bins do not grow with

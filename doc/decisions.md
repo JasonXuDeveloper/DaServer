@@ -2164,7 +2164,10 @@ Replaced by ADR-081.
     its current build, a config table) through the nodes' admin plane, each confirmed by typing its target and
     written to the audit log. A hot restart from the Dashboard is the same-image roll (`/admin/restart?exit=true`, one
     node at a time, the coordinator last); a new build, a rollback included, reaches the nodes through the deploy
-    (`aspire deploy`, then `{cluster}-restart`), since only the platform changes an image. Taking a node out is the platform's scale-down, not a Dashboard action. It mounts the signing secret's
+    (`aspire deploy`, then `{cluster}-restart`), since only the platform changes an image: the Dashboard's roll back
+    calls the deploy pipeline's webhook (`DaServer:Dashboard:RollbackWebhook`: GitHub Actions, Argo CD, any CI) with
+    the server type, the build to return to, who asked and why, and audits the call; without a webhook it shows the
+    command to run. Taking a node out is the platform's scale-down, not a Dashboard action. It mounts the signing secret's
     files and derives the admin token from them (drafts/deployment.md section 4); it calls no Kubernetes API and has
     no autoscaler and no PodDisruptionBudget (one replica; its cost follows the nodes, not the viewers).
   - **Live state is gathered once per refresh, never per viewer or per request**, so its cost grows with nodes, not
