@@ -387,17 +387,26 @@ Keep this file current: tick items when done, add items when scope changes.
         ids refused and plain requests not (`PlainRequestBelowAckPasses`), at most `Clients:OnceReceiversPerSession`
         receivers tracked, acknowledgements forwarded, probes answered;
       - `AskUntilAnswered` (ADR-100): one store table for every ask (`daserver_once_asks`, phases queued, sent,
-        stopped, the call's state in `ask_state`: `AskStateKeptInRow`), rows written in the item's own record statement
+        stopped, the call's state in `ask_state` with its type id in `state_type`: `AskStateKeptInRow`, an unknown type stopping
+        the row: `UnknownStateTypeStops`), rows written in the item's own record statement
         joined to its compare, none in the record (`AskRowsOneTable`), inserted already sent when the window and
-        `OnceInFlight` allow (`AskSentInItsOwnWrite`); a root's row changes per write within `RowChangesPerWrite` and
-        `Once:ChangeBytesPerWrite`, an item that would pass them waiting in the mailbox and the root written now
-        (`AskBytesDeferItemPastWriteBudget`); a request and its state at most `Once:MaxRequestBytes`, checked at
+        `OnceInFlight` allow and no earlier row to that target is queued (`AskSentInItsOwnWrite`,
+        `SentInsertNeverOvertakesQueued`); a soft write budget (`RowChangesPerWrite`, `Once:ChangeBytesPerWrite` 2 MiB,
+        every row change counted): an item starts only below it, else waits in the mailbox and the root is written now,
+        a system skips the root's entities for the pass (`AskBytesDeferItemPastWriteBudget`, `SystemSkipsRootPastWriteBudget`);
+        a started item's hard cap `[ActorOptions(AsksPerItem)]` (16) and `Once:BytesPerItem` (1 MiB), the call past it
+        throwing deterministically (`AsksPerItemThrowsDeterministically`); budget + item cap + `OnceSenders` bytes within
+        `StatementBytes` − `MaxRecordBytes`, checked at start; a quarter of each write kept for the runtime's sends,
+        retry updates coalesced (`RuntimeSendsKeepReservedBudget`); a row answered in a write sent only as a deletion,
+        `q` skipping rows `x` deletes (`AnsweredRowWithPendingRetryDeleted`); statements split between roots at 512 rows,
+        never splitting a root; a request and its state at most `Once:MaxRequestBytes`, checked at
         the call; the sequence taken from `OnceNext` only in the write that sends a row, re-sent after a crash under the
         stored one (`SeqAssignedAtSend`), so the cumulative acknowledgement, from written sent rows only, never passes a
         queued ask (`AckNeverSkipsQueuedAsk`); sends per destination in call order, retries per destination on one timer in order
         (`AskRetriesPerDestinationInOrder`; asks ordered only among first sends, the §1 exception), at most
-        `OnceInFlight` sent rows per root (memory and rate only, nothing refused); row metadata held in memory while
-        active, request bytes read from the store past `OnceInFlight`, `next_try_at` set by phase and NULL once stopped;
+        `OnceInFlight` sent rows per root (memory and rate only, nothing refused); only head rows held in memory while active
+        (`OnceInFlight` sent plus up to `OnceQueued` queued), the rest paged by ordinal (`AskRowsPagedPastHead`), request
+        bytes kept until the insert lands and read ahead for the next sends, `next_try_at` set by phase and NULL once stopped;
         a probe of an inactive sender answered from one statement over its sent rows and `OnceNext`
         (`ProbeAnswerSingleSnapshot`); range-read after the claim, their
         next try feeding `NextDue` so a crash or unload always wakes the root (`QueuedAsksWakeAfterCrash`); pending row
