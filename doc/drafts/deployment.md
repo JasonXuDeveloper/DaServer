@@ -104,7 +104,7 @@ type that is not `[Stateless]` is stateful; a group hosting only `Connection` an
 | `podManagementPolicy` | `Parallel` | Nodes join by gossip and need no order; `OrderedReady` serializes scale-ups (a flash-sale burst waits pod by pod) and can wedge on one broken pod ("forced rollback"). Rolling updates stay one pod at a time | DA | W11 |
 | `updateStrategy` | `OnDelete` for groups without client connections; `RollingUpdate` (its default, one pod at a time; no `maxUnavailable`, which is feature-gated for StatefulSets) for stateful groups that also accept clients (flash sale `sale`) | `OnDelete`: a template change replaces no pod; DaServer's rollout decides per pod (hot restart or delete-and-recreate). A group hosting `Connection` cannot hot restart ([draft §10](programming-model.md#热重启)) | DA | W11 |
 | Template image vs. pods | `helm upgrade` (or `aspire deploy`) sets the template image; the rollout patches only pods, never the template, so the live object never drifts from the Helm release (ADR-085) | The next `helm upgrade` would otherwise write the old tag back | Rollout Job | W11 |
-| Replicas | `spec.replicas` from `AddNodes(replicas)`; an HPA may own it (`scale` subresource works on StatefulSets, [HPA](https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/)) | Scale-in removes the highest ordinal, which leaves gracefully | DA | W11 |
+| Replicas | `spec.replicas` from `AddNodes(replicas)`, **not rendered** when the application adds an autoscaler for the group (the HPA then owns it through the `scale` subresource, which works on StatefulSets; section 11) | Scale-in removes the highest ordinals, all at once under `Parallel`, each leaving gracefully; the autoscaler's scale-in policy limits it to one pod per period (section 10) | DA, sample hook (clears it beside the autoscaler) | W11 |
 | Grace period | `terminationGracePeriodSeconds` = stop budget + margin + preStop, as today | Unchanged ([pod termination](https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#pod-termination)) | DA (exists) | - |
 | preStop | No `sleep` on hot-restart groups. The kubelet's container kill runs preStop whatever the reason, an image patch included (to prove on kind in W11), so a `sleep` would add its seconds to every hot restart's pause | [Lifecycle hooks](https://kubernetes.io/docs/concepts/containers/container-lifecycle-hooks/) | DA | W11 |
 | Snapshot volume | `emptyDir: {medium: Memory, sizeLimit: <2 x expected world bytes>}` at `/var/run/daserver/snapshot` (`DaServer__SnapshotPath`) | Survives container restarts, not pod deletion; tmpfs counts against the memory limit ([emptyDir](https://kubernetes.io/docs/concepts/storage/volumes/#emptydir)), so a node refuses to arm when its working set plus the snapshot estimate passes about 80% of the cgroup limit ([draft §10](programming-model.md#热重启)) | DA | W11 |
@@ -128,7 +128,7 @@ On Kubernetes gateways roll surge then drain, so every client moves exactly once
 | Connection rebalancing | By load (ADR-089; rule and defaults in [architecture.md section 3](architecture.md#retire-and-rebalancing)): a gateway sheds only its excess above the group average, rate-limited, so a balanced group retires nobody. DA passes `DaServer:Clients:RebalanceTolerance` and the optional, off-by-default `maxConnectionAge` from `WithClientConnections` | After a scale-out, long-lived connections stay where they are; an age would also move clients of a balanced group | DaServer, DA (the parameters) | W5 / W11 |
 | Kind (stateless groups) | `Deployment`, `RollingUpdate` maxSurge 1, maxUnavailable 0 (today 1) | Start new, then stop old (ADR-085); no capacity dropped | DA | W11 |
 | Services | As for stateful groups (below) | | DA | W11 |
-| HPA | Allowed (flash sale uses one); `targetRef` names the right kind | `Publishing.DeploymentOf` assumes Deployment | Sample | W11 |
+| HPA | Allowed (flash sale uses one); `targetRef` names the right kind; no rendered `replicas` (section 11); scale-in rate and PDB per section 10 | `Publishing.DeploymentOf` assumes Deployment | Sample | W11 |
 | Probes, grace, preStop, spread, CPU count | As for stateful groups; gateways keep a preStop delay for the endpoint to leave the load balancer | | DA | W11 / W12 |
 
 Bare metal: start the new gateway processes (another port or host behind the load balancer) before draining the old
@@ -202,7 +202,7 @@ roll.
 |---|---|---|
 | Nodes: ServiceAccount `{cluster}-node`, `automountServiceAccountToken: false` | None | Discovery is DNS (ADR-030); a node with an API token is a foothold for nothing it needs ([opt out of automounting](https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/#opt-out-of-api-credential-automounting)) |
 | Schema and upgrade-check Jobs | None (automount off) | They talk to the database and the nodes' admin plane only |
-| Rollout Job: ServiceAccount `{cluster}-rollout` + Role + RoleBinding in the release namespace | `pods`: get, list, watch, patch, delete; `pods` create (the pre-pull pods); `statefulsets`: get, list, watch (read the template image and replicas). No `statefulsets` patch (Helm owns the template) | The two writes the rollout makes; namespaced, nothing cluster-wide ([RBAC](https://kubernetes.io/docs/reference/access-authn-authz/rbac/)) |
+| Rollout Job: ServiceAccount `{cluster}-rollout` + Role + RoleBinding in the release namespace | `pods`: get, list, watch, patch, delete; `pods` create (the pre-pull pods); `statefulsets`: get, list, watch (read the template image and replicas); `horizontalpodautoscalers` (or `scaledobjects.keda.sh`): get, list, patch (finding the one that targets the group and pausing scale-in during the roll, section 10). No `statefulsets` patch (Helm owns the template). Writes go through Server-Side Apply as field manager `daserver-rollout` (section 11) | The writes the rollout makes; namespaced, nothing cluster-wide ([RBAC](https://kubernetes.io/docs/reference/access-authn-authz/rbac/)) |
 | The operator or CI | `create` on `jobs`, `get` on `pods/log` in the namespace | Starting and watching the rollout |
 
 **One rollout loop, one adapter per platform.** The loop is the node image's rollout mode: for each stateful group,
@@ -265,3 +265,246 @@ Steps: securityContext, `/tmp` and service account W12 (the snapshot volume W11)
 
 The work is the roadmap's (W6, W7, W8, W11, W12, N9); the Step column of each table above says which step
 builds that row. Docs to follow when merged are listed under W10 in the roadmap.
+
+## 10. Kubernetes resources and controllers
+
+Which Kubernetes object each part of a DaServer deployment uses, which controllers may act on it, and who writes it.
+Checked against Kubernetes 1.37 (current when written), VPA 1.7, KEDA 2.21, Gateway API 1.6, Helm 4 and Aspire 13.6.1.
+The rule from CLAUDE.md decides the "How" column: **DA** publishes what follows from DaServer itself (kinds, ports,
+probes, grace, seeds, the rollout's own objects); the **sample's hook** (the application's AppHost through
+`PublishAsKubernetesService`) adds scaling and disruption policy (HPA or `ScaledObject`, VPA, PDB, the load balancer's
+kind); the **platform** owns cluster-scoped and shared machinery (the controllers themselves, PriorityClasses, the
+Collector, node autoscaling, admission policy). DaServer exports the signals and makes joining and leaving safe; it
+does not decide when to scale.
+
+### Workload kind per component
+
+| Component | Kind | Why not the others | How | Step |
+|---|---|---|---|---|
+| Stateful node groups | `StatefulSet`, `OnDelete` (`RollingUpdate` when the group accepts clients itself), `Parallel` (section 2) | Stable pod names and a pod that survives the image patch (ADR-085). A Deployment renames pods and empties `emptyDir` on every template change; a DaemonSet ties the count to machines (below) | DA | W11 |
+| Gateways | `Deployment`, surge then drain (section 2) | No identity, no snapshot; surge needs a second ReplicaSet | DA | W11 |
+| Stateless groups | `Deployment`, `maxUnavailable: 0` | No identity, no snapshot | DA | W11 |
+| `DaServer.Dashboard` | `Deployment`, 1 replica (2 for availability), no autoscaler | Stateless (ADR-093); its cost grows with nodes, not viewers, so there is nothing for an HPA to follow | DA (`AddDaServerDashboard`) | W7e |
+| OpenTelemetry Collector | A gateway `Deployment` (an HPA on its own CPU is fine); an agent `DaemonSet` only when the platform also collects host or kubelet metrics or container log files | Nodes push OTLP to one address ([architecture.md section 8](architecture.md#telemetry)) and log over OTLP, so they need no per-machine agent ([Collector deployment: agent and gateway](https://opentelemetry.io/docs/collector/deploy/)) | Platform (sample `AddHelmChart` when published) | W7e / W12 |
+| Schema, upgrade check, rollout, load generators | `Job` (section 3) | Run to completion; a Deployment restarts them forever | DA (sample for load generators) | W11 / W12 / N9 |
+| Image pre-pull | Short bare pods created by the rollout Job, pinned to each machine that hosts a pod of the group | A pre-pull `DaemonSet` would pull on every machine, including those without the group, and would have to be deleted after | Rollout Job | W11 |
+| Scheduled work | No `CronJob` (section 3) | | - | - |
+
+ReplicaSets, ReplicationControllers and bare pods are never published directly.
+
+### DaemonSet: not for DaServer nodes
+
+A DaemonSet runs one pod per eligible machine. DaServer nodes do not use one:
+
+- **The count follows machines, not load.** Capacity would change when the node pool changes, and an HPA cannot
+  scale it ("HorizontalPodAutoscaling does not apply to objects that can't be scaled (for example: a DaemonSet)",
+  [HPA](https://kubernetes.io/docs/concepts/workloads/autoscaling/horizontal-pod-autoscale/)). DaServer scales by
+  adding nodes to a group, and placement (ADR-079) spreads slots over them.
+- **A machine drain does not stop them.** `kubectl drain` does not evict DaemonSet pods (they would be recreated on
+  the cordoned machine at once), so a node would not leave, hand over its actors or drain its clients before the
+  machine goes; only the kubelet's graceful node shutdown, if it is configured, would send SIGTERM, with its own
+  budget. A PodDisruptionBudget does not apply either
+  ([safely drain a node](https://kubernetes.io/docs/tasks/administer-cluster/safely-drain-node/)).
+- **No stable identity.** DaemonSet pod names carry a random suffix and change when a machine is replaced; ADR-085
+  needs `{group}-{ordinal}`.
+- **What a DaemonSet would give is reachable otherwise.** One node per machine is topology spread with
+  `whenUnsatisfiable: DoNotSchedule` plus a dedicated node pool (Aspire's `AddNodePool`, as the mmo sample does);
+  host networking for direct client connections is a non-goal (section 2, "Per-replica public addresses").
+
+DaemonSets stay for the platform's per-machine software ([DaemonSet](https://kubernetes.io/docs/concepts/workloads/controllers/daemonset/)):
+a Collector agent, node-exporter, the CNI and CSI drivers, log shippers. DaServer publishes none.
+
+### Autoscaling per group
+
+| Group | Horizontal | Vertical (VPA) | PDB | Produced by |
+|---|---|---|---|---|
+| Stateful | KEDA `ScaledObject` (or an HPA through the Prometheus adapter) on `avg(daserver_shard_busy_ratio)` of the group, `minReplicaCount` at least the group's floor (never 0), scale-in one pod at a time (below) | Memory: `InPlaceOrRecreate` (or `Off`); CPU: `Off` or `Initial`, never an in-place mode (below) | `maxUnavailable: 1`, `unhealthyPodEvictionPolicy: AlwaysAllow` | Sample hook |
+| Gateways | HPA on CPU or on client sessions per pod (`daserver_clients_sessions`, through KEDA); scale-in limited so drain waves do not overlap | `Off` (recommendations only) | `maxUnavailable` as a percentage (10–25%): one at a time would make a machine drain of a large gateway group take hours | Sample hook |
+| Stateless | KEDA or HPA on the busy ratio, or CPU (flash sale); scale-to-zero only for a group nobody calls while idle | `Off` or `Initial` | Optional, percentage | Sample hook |
+| Dashboard | None | None (fixed small requests) | None: a PDB on one replica blocks every machine drain | DA |
+| Collector | Its own HPA on CPU | Platform's | Platform's | Platform |
+
+DA's only part in autoscaling is a helper that names the right scale target (`StatefulSet` or `Deployment` and its
+name), since DA chooses the kind; today's `Publishing.DeploymentOf` hard-codes `Deployment` (section 1). The
+`Manifest` type for objects Aspire has no class for (VPA, `ScaledObject`, PDB) becomes public in DA (W11).
+
+#### HPA or KEDA on the busy ratio
+
+| | KEDA `ScaledObject` | Plain HPA |
+|---|---|---|
+| Metric path | KEDA's Prometheus scaler queries Prometheus; KEDA creates and owns the HPA (`keda-hpa-{name}`) and serves the value as an external metric | Needs the Prometheus adapter registered as `custom.metrics.k8s.io` or `external.metrics.k8s.io` |
+| Target | Any kind with a `/scale` subresource, StatefulSets included ([ScaledObject spec](https://keda.sh/docs/latest/reference/scaledobject-spec/)) | Same |
+| Behavior | `advanced.horizontalPodAutoscalerConfig.behavior` (passed to the HPA) | `spec.behavior` |
+| Pitfall | `minReplicaCount` defaults to **0**: a stateful or gateway group must set it, or an idle cluster scales its nodes away | None specific |
+| Pausing | `autoscaling.keda.sh/paused` annotation | No pause field; `behavior.scaleDown.selectPolicy: Disabled` stops scale-in only |
+
+Recommendation: KEDA where it is installed (operations.md already says so), the adapter otherwise; the busy ratio
+remains the default signal (design.md, metrics). Use `avg`, not `max`: one hot actor is a placement problem that more
+nodes cannot solve. HPA tolerance is per direction and stable since 1.37 (`behavior.scaleUp.tolerance`,
+`behavior.scaleDown.tolerance`, default 10%,
+[HPA tolerance](https://kubernetes.io/docs/concepts/workloads/autoscaling/horizontal-pod-autoscale/#tolerance)); a
+wider scale-down tolerance (0.2) keeps a group from shrinking on noise. Scale-to-zero (`HPAScaleToZero`, beta in 1.37,
+object and external metrics only) suits only a stateless group whose callers tolerate the cold start.
+
+#### Scale-in, draining and StatefulSet ordinals
+
+What happens when a controller removes a pod, per kind:
+
+| Kind | Which pods go | What DaServer does | What to set |
+|---|---|---|---|
+| StatefulSet, `Parallel` | The highest ordinals, **all at once** ("all Pods are created or terminated simultaneously", [StatefulSet: parallel pod management](https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#parallel-pod-management)) | Each leaves gracefully: hands its actors over or saves them (ADR-063), within the stop budget | `behavior.scaleDown.policies: [{type: Pods, value: 1, periodSeconds: P}]` with P at least the grace period (stop budget + margin, 40 s by default), and `stabilizationWindowSeconds` 600 or more: a scale-in moves every actor of the leaving node and a later scale-out moves slots back, so churn is expensive. Several simultaneous leaves would also hit the store and the coordinator at once |
+| Deployment (gateways) | The ReplicaSet's choice: unready and newer pods first, then by `controller.kubernetes.io/pod-deletion-cost` | The gateway fails readiness, waits the deregistration delay, retires its connections in waves over `DrainSpread`; its clients resume on the others | A scale-in policy of a few pods per period longer than `DrainSpread`, so retire waves from two gateways do not pile onto the same survivors |
+| Deployment (stateless) | As above | Leaves; nothing to hand over | Defaults are fine |
+
+- **A PDB does not slow a scale-in.** It guards the eviction API (machine drains, the VPA updater, node autoscalers);
+  a controller lowering `replicas` deletes pods directly ("deleting deployments or pods bypasses Pod Disruption
+  Budgets", [disruptions](https://kubernetes.io/docs/concepts/workloads/pods/disruptions/)). The scale-in policy
+  above is the only rate limit.
+- **No `pod-deletion-cost`.** Choosing the gateway with the fewest connections would need someone with API access to
+  annotate pods before each scale-in; the docs warn against updating it from a metric
+  ([ReplicaSet: pod deletion cost](https://kubernetes.io/docs/concepts/workloads/controllers/replicaset/#pod-deletion-cost)),
+  and connection rebalancing (ADR-089) already keeps gateways even, so every choice costs the same.
+- **A scale-in during a hot-restart rollout** would delete a pod the rollout may have armed: its snapshot dies with
+  the pod's `emptyDir`, and the actors reload from their records elsewhere, losing what changed since their last
+  checkpoint (a crash's loss, on a voluntary operation). Scale-out during a roll is harmless (new pods start from the
+  new template image; arming waits while a member joins). So the rollout Job **pauses scale-in of the group it
+  rolls** and releases it at the end: on a `ScaledObject` the `autoscaling.keda.sh/paused` annotation is too coarse
+  (it also stops scale-out), so it sets `advanced.horizontalPodAutoscalerConfig.behavior.scaleDown.selectPolicy:
+  Disabled`; on a plain HPA `behavior.scaleDown.selectPolicy: Disabled`; both with Server-Side Apply under its own
+  field manager (section 11), so the release does not own the field and the Job's apply never conflicts with it. A
+  Job killed mid-roll leaves scale-in paused: the next rollout clears the field first, and the Dashboard shows a
+  group whose scale-in `daserver-rollout` holds. Evictions in that window still follow the PDB (one pod at a time);
+  the arm-to-patch window is seconds.
+
+#### VPA modes against the busy-ratio HPA
+
+| Mode | What it does ([VPA](https://kubernetes.io/docs/concepts/workloads/autoscaling/vertical-pod-autoscale/)) | For DaServer |
+|---|---|---|
+| `Off` | Recommendations in `.status` only | Every group: sizing input for the application's requests |
+| `Initial` | Sets requests when a pod is created, never after | Good for CPU: `DOTNET_PROCESSOR_COUNT` comes from `requests.cpu` through the downward API (section 2), so a new pod gets as many worlds as the CPU it was given |
+| `Recreate` (`Auto` is its deprecated alias) | Evicts pods whose requests differ | Each eviction is a graceful leave and an actor move; prefer `InPlaceOrRecreate` |
+| `InPlaceOrRecreate` (beta) | Resizes running pods through the `resize` subresource, evicts when it cannot | Memory of stateful groups (below); it falls back to eviction, which honours the PDB |
+| `InPlace` (alpha, VPA 1.7, feature gate) | Resizes in place, never evicts; waits when the machine has no room | Not yet: alpha |
+
+- **CPU never in place.** A running node's parallelism is fixed at start: `Environment.ProcessorCount` "is fixed at
+  .NET runtime startup for the process lifetime"
+  ([Environment.ProcessorCount](https://learn.microsoft.com/dotnet/api/system.environment.processorcount)), the
+  downward-API variable is resolved when the container starts, and a hot restart keeps the snapshot's world count
+  (architecture.md section 5). More CPU in place only raises the cgroup weight of worlds that already exist; the
+  group's CPU grows horizontally. A group that pins `DaServer:Shards` (the mmo `map`) is the same.
+- **Not both autoscalers on one resource.** VPA and HPA must not both act on CPU (or memory) of the same workload.
+  The busy ratio is a custom metric, so the combination is allowed, but VPA in an active mode on CPU would change
+  what the ratio means under the HPA. Hence: HPA on the busy ratio for CPU, VPA on memory only
+  (`resourcePolicy.containerPolicies[].controlledResources: [memory]`) or `Off`.
+- `controlledValues: RequestsOnly` when the application sets a memory limit by hand; the default
+  (`RequestsAndLimits`) scales the limit with the request.
+
+#### In-place resize and the .NET runtime
+
+In-place pod resize is GA since 1.35 ([resize CPU and memory](https://kubernetes.io/docs/tasks/configure-pod-container/resize-container-resources/),
+[GA announcement](https://kubernetes.io/blog/2025/12/19/kubernetes-v1-35-in-place-pod-resize-ga/)): requests and
+limits are mutable through the `resize` subresource, each container's `resizePolicy` per resource says
+`NotRequired` (default) or `RestartContainer`, memory limit decreases are allowed but best-effort (skipped while usage
+is above the new limit), the QoS class cannot change, and resizing a memory-backed `emptyDir`'s `sizeLimit` is alpha
+in 1.37 (cgroup v2 only).
+
+| Resource | What .NET does on a live change | Target |
+|---|---|---|
+| CPU limit or request | Nothing: `ProcessorCount` and the world count are fixed (above) | No CPU limit on node pods (throttling stalls ticks); `resizePolicy cpu: NotRequired` so a resize never restarts a container |
+| Memory limit | The GC's hard limit (by default 75% of the container limit) is computed at start, but `GC.RefreshMemoryLimit()` (.NET 8+) "reconfigure[s] itself by detecting the various memory limits on the system", container limits included; it throws when the new limit is below what is already committed ([GC.RefreshMemoryLimit](https://learn.microsoft.com/dotnet/api/system.gc.refreshmemorylimit)) | **DaServer** watches the cgroup's `memory.max` off the shard threads (every few seconds, cgroup v2) and calls `GC.RefreshMemoryLimit()` when it changes, logging a refusal; the snapshot arm already reads the limit live (section 2). Then `resizePolicy memory: NotRequired` |
+
+Today the mmo sample's `ResizeInPlace` uses `memory: RestartContainer`, which on a stateful pod is a graceful stop
+and a rejoin in the same pod (every actor of the node moves twice). With the refresh above it becomes `NotRequired`.
+Stateful groups should set a memory limit (equal to the request) so that the GC limit, the snapshot's tmpfs and the
+arm check have one bound; CPU stays request-only.
+
+#### Other objects and controllers
+
+| Object or feature | Use | Why | How |
+|---|---|---|---|
+| PodDisruptionBudget | Per group as in the table above; `unhealthyPodEvictionPolicy: AlwaysAllow` everywhere | With the default `IfHealthyBudget`, a group whose pods are all unready (a store outage, a crash loop) blocks every machine drain ([PDB](https://kubernetes.io/docs/tasks/run-application/configure-pdb/#unhealthy-pod-eviction-policy)) | Sample hook |
+| PriorityClass | The application may give stateful groups a higher class than load generators and batch work; DA sets none | Preemption deletes a pod (a graceful leave, but an actor move); deferred in-place resizes are retried by priority first. Classes are cluster-scoped | Platform defines, sample references (`priorityClassName`) |
+| Topology spread | Section 2 (hostname soft, zones by the application) | | DA, sample |
+| Node pools / affinity | Optional, by the application (mmo: `AddNodePool("stateful")`) | | Sample |
+| Readiness gates | None of DaServer's: `/health` already says joined and not leaving. A cloud load balancer controller may inject its own gate on gateway pods (AWS Load Balancer Controller), which the surge-then-drain roll then waits for: wanted | | Platform |
+| Native sidecar containers (GA 1.33) | None on node pods | Telemetry goes over OTLP to the Collector; node links authenticate themselves (ADR-065). A service mesh is the platform's; if one is present, the cluster port (7000) should bypass its proxy (pod to pod, latency-bound) | - |
+| Init containers | None | The schema is a Job; a node waits for the store itself (section 3) | - |
+| StatefulSet `maxUnavailable` (beta, 1.35) | Not used | `OnDelete` groups never roll through the controller; client-facing stateful groups roll one pod at a time on purpose | - |
+| StatefulSet `Recreate` strategy (alpha, 1.37) | Not used | Stops every node of the group at once | - |
+| `minReadySeconds` | Not used | Readiness already waits for the join | - |
+| Service `LoadBalancer` or Gateway API | Client ports: a `LoadBalancer` Service (today's sample), or a Gateway with a `TCPRoute` (Standard since Gateway API 1.6, [release](https://kubernetes.io/blog/2026/08/03/gateway-api-v1-6-release/)) for TCP and an `HTTPRoute` for `/clients/ws`; the Dashboard and webhooks through an `HTTPRoute` (Aspire has typed `Gateway` and `HTTPRoute`, no `TCPRoute`) | The kind of load balancer is the application's (CLAUDE.md) | Sample hook |
+| Node autoscaling (Cluster Autoscaler, Karpenter) | Platform's | Its consolidation evicts through the eviction API, so PDBs and graceful leave apply; DA sets no `safe-to-evict` or `do-not-disrupt` annotations | Platform |
+| LimitRange, ResourceQuota | Platform's | VPA clamps its recommendations to LimitRanges | Platform |
+| Lease, CRDs, operators | None | No Kubernetes API from nodes (section 5); no DaServer operator (ADR-085) | - |
+
+## 11. Server-Side Apply
+
+**What it is.** Server-Side Apply (SSA, GA since 1.22) moves `apply` into the API server: a client sends a partial
+object holding only the fields it has an opinion on (`PATCH` with `application/apply-patch+yaml`), and the server
+merges it and records, per field, which **field manager** owns it in `metadata.managedFields`. Changing a field
+another manager owns is a **conflict**; the applier can force it (taking ownership), drop the field from its
+configuration (giving it up), or set the same value (sharing ownership)
+([Server-Side Apply](https://kubernetes.io/docs/reference/using-api/server-side-apply/)). Client-Side Apply (CSA)
+is the original `kubectl apply`: kubectl computes a three-way patch from the last configuration it stored in the
+`kubectl.kubernetes.io/last-applied-configuration` annotation, the live object and the new file.
+
+**Not control-plane only.** SSA is an API-server feature that any client uses: `kubectl apply --server-side`, Helm 4,
+Argo CD (`ServerSideApply=true`, manager `argocd-controller`), Flux (always SSA), and controllers through client-go's
+apply configurations. Built-in controllers mostly still write with `Update`/`Patch` (the HPA through the `scale`
+subresource, the VPA updater through `resize`), and those writes are recorded in `managedFields` too, so SSA appliers
+see them as owners and conflict with them. CSA is purely client-side (kubectl); Helm 3 had its own three-way merge
+against the stored release manifest instead of the annotation.
+
+**CSA's pitfalls, all of which DaServer would hit:**
+
+- No conflict detection: an apply silently overwrites what another actor changed. Helm 3 and CSA reset an
+  HPA-managed `spec.replicas` to the chart's value on every upgrade.
+- The annotation holds the whole object; annotations are capped at 262,144 bytes in total ("Resource is too big to
+  fit in 262144 bytes allowed annotation size", [Argo CD sync options](https://argo-cd.readthedocs.io/en/stable/user-guide/sync-options/)),
+  which large ConfigMaps (configuration tables) and CRDs reach.
+- It is stale state: values others overwrote stay in the applier's annotation until it touches that field again.
+- Custom resources (`ScaledObject`, VPA) get a JSON merge patch: lists are replaced whole.
+- Removing a field from the file deletes it from the live object, which for `replicas` means the default of 1
+  ([HPA: migrating to autoscaling](https://kubernetes.io/docs/concepts/workloads/autoscaling/horizontal-pod-autoscale/#migrating-deployments-and-statefulsets-to-horizontal-autoscaling)).
+  For a stateful group that is a mass leave.
+
+**What applies DaServer's objects.** `aspire deploy` for Kubernetes runs `helm upgrade --install ...
+--server-side=true --force-conflicts` (checked in the `Aspire.Hosting.Kubernetes` 13.6.1 assembly), and Aspire uses
+field manager `helm` for its own follow-up patches. Helm 4 applies with field manager `helm`, defaults to SSA for new
+installs and keeps an existing release's method on upgrade (`--server-side=auto`, recorded as `apply_method`)
+([HIP-0023](https://helm.sh/community/hips/hip-0023)). An operator running `helm upgrade` without
+`--force-conflicts` gets an error on a conflicting field instead. Because `aspire deploy` forces, **any field the chart
+renders is taken back on every deploy**, whoever changed it in between. The ownership plan below follows from that.
+
+### Who owns which field
+
+| Field | Owner (field manager) | Rule |
+|---|---|---|
+| Workload template, selector, `serviceName`, `updateStrategy`, Services, ConfigMaps, Secrets, PDB, autoscaler objects | `helm` (the chart DA and the sample produce) | Everything the AppHost declares |
+| `spec.replicas` of an autoscaled group | The HPA controller (KEDA's HPA included), through `scale` | **The chart does not render `replicas` for a group with an autoscaler.** The sample's helper that adds the HPA or `ScaledObject` sets the workload's `Spec.Replicas = null` in the same hook (Aspire's `Replicas` is nullable: "If null, the default value defined by the server will be used"), so one place says who owns the count. Otherwise every `aspire deploy` forces the rendered count back (a stateful group scaled to 8 drops to 2: six nodes leave at once) |
+| `spec.replicas` of a group without an autoscaler | `helm` | Rendered from `AddNodes(replicas)`; `kubectl scale` is undone by the next deploy, as intended |
+| Pod `spec.containers[].resources` | VPA admission (at creation) and updater (`resize`) | Pods are not in the chart; no conflict with `helm` |
+| Pod `spec.containers[node].image` after a hot restart | `daserver-rollout` | The rollout Job applies only `{metadata.name, spec.containers: [{name, image}]}` with SSA and `force=true` (the image field belongs to the StatefulSet controller from pod creation; the docs advise controllers to force on objects they manage). `managedFields` then records which pods were hot-restarted and when; the template stays `helm`'s |
+| `behavior.scaleDown.selectPolicy` during a roll | `daserver-rollout` | Applied without force: if the chart sets that field, the roll refuses to start and says so. Released by applying an empty configuration under the same manager, which removes the fields it owns |
+| Pre-pull pods | `daserver-rollout` | Created and deleted by the Job |
+| Anything on Kubernetes from nodes or the Dashboard | Nobody | Nodes have no token (section 5); the Dashboard acts through the nodes' admin plane (ADR-093) and needs no Kubernetes API |
+
+The rollout Role (section 5) gains `patch` on `horizontalpodautoscalers` (and on `scaledobjects.keda.sh` when the
+group uses KEDA) for the scale-in pause; nothing else changes. Using SSA for the Job's writes instead of
+read-modify-write patches needs no `resourceVersion`, cannot clobber a field it did not name, and leaves an audit trail
+in `managedFields` (`kubectl get pod game-0 --show-managed-fields`).
+
+### Moving an existing release
+
+- **From Helm 3 (CSA) to Helm 4.** `aspire deploy` already uses SSA. A release installed by Helm 3 and upgraded by
+  hand stays on CSA under `--server-side=auto`; pass `--server-side=true` once.
+- **Taking `replicas` out of the chart** (adding an autoscaler to a running group). If the HPA has never changed the
+  count, `helm` still owns it alone and the upgrade that drops the field resets it to 1. Before that upgrade, hand
+  the field over as the SSA page shows: `kubectl apply --server-side --field-manager=handover-to-hpa` a manifest with
+  only `spec.replicas` at the current value; the temporary manager disappears once the HPA writes the field
+  ([transferring ownership](https://kubernetes.io/docs/reference/using-api/server-side-apply/#transferring-ownership)).
+  The upgrade note for W11 says so.
+- **Argo CD or Flux instead of `aspire deploy`.** Both apply the chart with SSA; the same rule (no rendered
+  `replicas` for autoscaled groups) avoids their need for `ignoreDifferences` on `/spec/replicas`.
+- **Mixing tools.** Never `kubectl apply` (CSA) the rendered chart over a Helm 4 release: it adds the annotation and
+  its stale copy. Diagnose with `kubectl get <kind> <name> --show-managed-fields -o yaml`.
