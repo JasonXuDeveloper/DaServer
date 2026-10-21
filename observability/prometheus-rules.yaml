@@ -1,20 +1,29 @@
-# Alert rules for a DaServer cluster scraped by Prometheus (every node serves /metrics on its HTTP port).
-# Load them with `rule_files:` in prometheus.yml, or wrap the group in a PrometheusRule for the Prometheus Operator.
+# Alert rules for a DaServer cluster. Nodes push their metrics over OTLP every 15 s (the export interval DaServer pins)
+# to one OpenTelemetry Collector, which sends them to Prometheus's OTLP endpoint (/api/v1/otlp, enabled with
+# --web.enable-otlp-receiver). Prometheus scrapes no node. prometheus.yml sets
+# `otlp: { promote_resource_attributes: [daserver.cluster] }`; a `service.namespace` would make `job` read "ns/name",
+# so DaServer sets none.
+# Load the rules with `rule_files:` in prometheus.yml, or wrap the group in a PrometheusRule for the Prometheus Operator.
 # Thresholds are starting points: tune them to the application's load. A rule that compares a reading against a number
 # carries it as `daserver_limit` (with `daserver_unit`), so a console can draw the limit without a threshold of its own.
 #
-# Labels. Every rule keeps `cluster`, `type` (the node group, the OpenTelemetry resource's service.name) and `node`
-# (service.instance.id), so Alertmanager groups an incident as one rule on one server type of one cluster, a silence can
-# be scoped to a type, and one Prometheus can hold several clusters. DaServer's own metrics carry the three as labels.
-# Runtime metrics (dotnet_*) carry only the resource: Prometheus's OTLP receiver maps service.name to `job` and
-# service.instance.id to `instance`, and promotes daserver.cluster to `daserver_cluster` when started with
-# `otlp.promote_resource_attributes: [daserver.cluster]`; the GC rule renames them. A label a node does not send yet is
-# simply empty, so the rules also work on a single cluster.
+# Labels. Each rule keeps `cluster`, and the rules about nodes also keep `type` (the node group, the OpenTelemetry
+# resource's service.name) and `node` (service.instance.id), so Alertmanager groups an incident as one rule on one
+# server type of one cluster, a silence can be scoped to a type, and one Prometheus can hold several clusters.
+# DaServerMembersDisagree is about a whole cluster and keeps only `cluster`. DaServer's own metrics carry the three as
+# labels; runtime metrics (dotnet_*) carry only the resource, which the OTLP endpoint maps to `job` (service.name),
+# `instance` (service.instance.id) and `daserver_cluster`, and the GC rule renames them. A label a node does not send yet
+# is simply empty, so the rules also work on a single cluster.
+#
+# Freshness. Pushed series get no staleness markers: a node that stops leaves its last sample visible for the 5-minute
+# lookback. Rules over gauges therefore read only samples from the last 2 minutes (`last_over_time(...[2m])`, eight
+# pushes), so a departed node's last value does not linger, and rates use windows of at least four pushes.
+# A parked hot-restart instance exports no metrics, so two processes never write one node's series.
 groups:
   - name: daserver
     rules:
       - alert: DaServerShardStalled
-        expr: max by (cluster, type, node) (daserver_shard_stalled) > 0
+        expr: max by (cluster, type, node) (last_over_time(daserver_shard_stalled[2m])) > 0
         for: 1m
         labels:
           severity: critical
@@ -23,7 +32,7 @@ groups:
           description: "A shard thread has run one pass longer than StallAfter (blocking IO or an endless loop in a handler or system). Liveness (/alive) fails too, so the platform restarts the node."
 
       - alert: DaServerMembersDisagree
-        expr: max by (cluster) (daserver_cluster_members) != min by (cluster) (daserver_cluster_members)
+        expr: max by (cluster) (last_over_time(daserver_cluster_members[2m])) != min by (cluster) (last_over_time(daserver_cluster_members[2m]))
         for: 2m
         labels:
           severity: warning
@@ -52,7 +61,7 @@ groups:
           description: "More than one handler or system pass a second throws: a poison message, a broken dependency or a broken system. The node's logs name the handler and message (MessageFailed, ActorFailed for lifecycle handlers) or the system (SystemFailed)."
 
       - alert: DaServerShardsSaturated
-        expr: avg by (cluster, type, node) (daserver_shard_busy_ratio) > 0.85
+        expr: avg by (cluster, type, node) (last_over_time(daserver_shard_busy_ratio[2m])) > 0.85
         for: 10m
         labels:
           severity: warning
@@ -89,15 +98,40 @@ groups:
           description: "Something allocates on a hot path, or the heap is near its limit. Compare dotnet_gc_heap_total_allocated_bytes_total over time."
 
       - alert: DaServerNodeSilent
-        # Metrics arrive by push (OTLP through the Collector): a node that dies stops sending, its series fade and its
-        # alerts resolve, so a dead node would read as healthy. This rule remembers each node for an hour and fires when
-        # one has sent nothing for a minute. Longer absences are membership's: a node voted out leaves the view.
-        expr: time() - max by (cluster, type, node) (max_over_time(timestamp(daserver_cluster_members)[1h:30s])) > 60
+        # A node that dies stops pushing: its series fade and its other alerts resolve, so it would read as healthy. This
+        # fires for a node seen in the last hour that has pushed nothing for two minutes (eight pushes), unless its last
+        # push was its graceful stop: a stopping node flushes its stop phases (daserver.stop.phase.duration) in its final
+        # push, together with its membership gauge, so a node that left on purpose (scale-in, a rollout, a retired
+        # gateway) is not reported. A node that stopped, came back under the same name and then died is reported, since
+        # its later membership samples are newer than its stop.
+        expr: >-
+          (
+            max by (cluster, type, node) (present_over_time(daserver_cluster_members[1h]))
+            unless on (cluster, type, node) present_over_time(daserver_cluster_members[2m])
+          )
+          unless on (cluster, type, node)
+          (
+            max by (cluster, type, node) (max_over_time(timestamp(daserver_stop_phase_duration_milliseconds_count)[1h:15s]))
+            >= on (cluster, type, node)
+            max by (cluster, type, node) (max_over_time(timestamp(daserver_cluster_members)[1h:15s]))
+          )
         for: 1m
         labels:
           severity: critical
         annotations:
-          daserver_limit: "60"
+          daserver_limit: "120"
           daserver_unit: "s"
-          summary: "{{ $labels.node }} has sent no metrics for over a minute"
-          description: "The node stopped, lost its route to the Collector, or the Collector dropped it. Its other alerts cannot fire while it is silent. Check /health on the node and the Collector's logs."
+          summary: "{{ $labels.node }} has pushed no metrics for over two minutes"
+          description: "The node died, lost its route to the Collector, or the Collector dropped it, without a graceful stop. Its other alerts cannot fire while it is silent. Check /health on the node and the Collector's logs."
+
+      - alert: DaServerNodeRequestsLow
+        # After a crash takeover on Kubernetes the node runs in the container that was parked, with the idle-sized
+        # requests (ADR-098): little CPU weight, first in line for the OOM killer. The node reports it until the
+        # resize-only rollout run swaps the requests back.
+        expr: max by (cluster, type, node) (last_over_time(daserver_node_requests_low[2m])) > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.node }} runs on the parked container's idle-sized requests"
+          description: "A crash takeover left the node in the container sized for a parked instance. Run the rollout with --resize-only for this node (the Dashboard's Resize action) to swap the requests back."
