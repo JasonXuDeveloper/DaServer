@@ -82,7 +82,7 @@ Keep this file current: tick items when done, add items when scope changes.
       `IClaims`, `IConfigTable<T>`, `IWorldSingleton<T>`, `[Persist]` (on any registered prefab), `[Prefab<K>]`,
       `[JoinOnConnect<T>]`, `[Hosts<K>]`, `[ActivatedBy<T>]`, `[TickRate]`, `[EverySeconds(n)]`, `[Stateless]`, `[NotSaved]`,
       `[ActorOptions]` (`IdleTimeout`, `DetachGrace`, `MaxPending`, `MaxMail`, `MaxMailBytes`, `MaxWaitingMail`,
-      `PresencesPerClient`; no error setting: a persisted root reloads, others continue), `[DedupKey(Capacity, Keep)]` and
+      `PresencesPerClient`, `Unacked`; no error setting: a persisted root reloads, others continue), `[DedupKey]`, `[Once]` and
       `[MaxReplySize(n)]` (Core, so a Protocol key type can carry it), `Pending<T>`,
       `Sender`, `Time.Utc` (from the world's `TimeProvider`) in the runtime; node configuration bound by the
       configuration binding source generator (enabled in the library, a `NodeSettings` POCO, no reflection binding).
@@ -122,10 +122,12 @@ Keep this file current: tick items when done, add items when scope changes.
         whose element type is declared outside the server project and the DaServer packages, on a `[Persist]` prefab the analyzer can see, built with a literal `SetX` chain in
         the same compilation; elsewhere `Registration` throws at start), DAS028 (a `Set`/`Remove` of a persist-set tag on
         an entity the analyzer sees is persistent), DAS029 (a tracked component type in a referenced assembly that is not a DaServer package: it reaches no tracked
-        table), DAS030 (`[Latest]` on a request, a push or a topic message), DAS031 (`Commit`, `FirstTime`, `Seen` or
-        `root.IssueClientToken` on an actor type whose root is not saved, or `WakeAt` set on an entity the analyzer sees is
-        not persistent), DAS032 (`FirstTime`, `Seen` or `WakeAt.Retry<TKey>` with a key type the project does not declare, so
-        two kinds of keys would share a ring; also an invalid `[DedupKey]` capacity or keep). Ids are assigned here for every new §13 check as W3
+        table), DAS030 (`[Latest]` on a request, a push or a topic message), DAS031 (`Commit` or
+        `root.IssueClientToken` on an actor type whose root is not saved, such a type handling a `[DedupKey]`-keyed or
+        `[Once]` request, or `WakeAt` set on an entity the analyzer sees is not persistent), DAS032 (a deduplicated
+        request written wrong: two `[DedupKey]` fields, `[DedupKey]` on a type over 16 bytes or not unmanaged, `[Once]`
+        on a type that is not `IFromClient<R>`, a `[DedupKey]` field in a client request, or a reply that is not a
+        fixed-size value of at most 32 bytes). Ids are assigned here for every new §13 check as W3
         implements it. Generated partials (`Key`) repeat `readonly` and `record struct` but not the positional
         parameter list.
       - Retired: DAS005 and DAS011 (already unused), DAS008 (sessions and groups as ask targets are gone; typed sends
@@ -136,12 +138,13 @@ Keep this file current: tick items when done, add items when scope changes.
         EECS047).
       Tests, one
       generator case per diagnostic, among them: `MessageWithoutNinoTypeReported`, `LatestOnRequestIsDAS030`, `CommitOnUnsavedRootIsDAS031`,
-      `IssueClientTokenOnUnsavedRootReported`, `IssueClientTokenCommitsImplicitly`, `FirstTimeUnusedThenWriteHinted`,
+      `IssueClientTokenOnUnsavedRootReported`, `IssueClientTokenCommitsImplicitly`,
       `ClaimsParameterInSystemReported`, `PrefabNotInternalReported`,
       `PersistOnUnregisteredPrefabReported`, `IndexedChildKeyFirstFieldNotActorReported`,
-      `PendingOfNonEventOrRequestReported`, `PersistentPrefabOnUnsavedActorReported`, `RefAfterStructuralChangeIsDAS026` (EECS047), `DedupKeyOfForeignTypeIsDAS032`,
-      `DedupKeyKeepParsedAtCompileTime`, `RecentKeysClosedPerKeyType` (one tracked, persisted `RecentKeys<TKey>` per key type,
-      in the persist set and the manifest's `record` lines),
+      `PendingOfNonEventOrRequestReported`, `PersistentPrefabOnUnsavedActorReported`, `RefAfterStructuralChangeIsDAS026` (EECS047), `TwoDedupKeyFieldsIsDAS032`,
+      `OnceOnServerRequestIsDAS032`, `DedupKeyFieldInClientRequestIsDAS032`, `LargeDedupedReplyIsDAS032`,
+      `UnackedInPersistSetWhenKeyedRequestHandled` (the framework's `DynamicBuffer<Unacked>` in the persist set, the tracked
+      table and the manifest's `record` lines),
       `AskStateNotInPersistSet`, `TagSetOnVisiblyPersistentEntityIsDAS028`, `RegistrationRegistersCanCreateTables`, `ManifestRecordsActivatedBy`, `TagSetElsewhereNotReported`,
       `TrackedTypeInForeignReferenceIsDAS029`, `SubscribeFromUnsavedRootIsDAS023`, `PackageTrackedSetsComposeInRegistration`,
       `ReminderClosedPerRemindT` (one persistent prefab per (actor type, T), in the persist set and the manifest's
@@ -150,7 +153,7 @@ Keep this file current: tick items when done, add items when scope changes.
       `CanCreateWithoutActivatedByReported`, `ScheduleOrRemindWithoutHandlerReported`, `RemindOnUnsavedRootReported`,
       `PrefabCompositionHistoryKeptInManifest`, `GroupRateOnlyJobGetsNoStructuralChanges`, `ScheduleInSystemIsStructuralChange`, `ScheduleInStatelessSystemReported`, `RawRecordLayoutChangeReported`, `TrackedRefNotAlwaysWrittenHinted`,
       `ConfigTableTakenByRefReported`, `SingletonWithoutInterfaceReported`, `UnfilteredForEachWithoutTickRateReported`,
-      `SetGroupRateWithoutTickRateReported`, `UtcNowInHandlerWarned`, `RootCopyCarriesRecentKeysWhenUsed`,
+      `SetGroupRateWithoutTickRateReported`, `UtcNowInHandlerWarned`, `RootCopyCarriesUnackedWhenKeyedRequestHandled`,
       `RegistrationCallableWithTwoServerProjects`, `TopicPackageMessagesExemptFromDirection`,
       `ClientToWithoutActivatedByWarned` (DAS024), `MissingPartialIsDAS025`, `OnMethodBreakingEcsRuleIsDAS026`,
       `PersistTypeWithoutTrackedIsDAS027` (a component without `ITracked` and a buffer whose element is declared elsewhere, on a visible prefab; elsewhere
@@ -300,13 +303,17 @@ Keep this file current: tick items when done, add items when scope changes.
         written when nothing is unwritten, a group push held until release and then appended to its group's frame,
         a reply past its deadline dropped on release, held `[Latest]` mail replaced, held output bounded per root and
         world (`Busy` beyond), mail parked on a root once its final write before a migration is issued;
-        `root.FirstTime`/`Seen` over `RecentKeys<TKey>`, one generated ring per key type on the root copy, sized by
-        `[DedupKey(Capacity, Keep)]` (the oldest evicted when full; one evicted before its keep goes into the persisted
-        filter and its retries answer `Status.Forgotten`; a key recorded in an unwritten generation holds the repeat's
-        answer for that write); `WakeAt.Retry<TKey>` with `GiveUpAt`, `Woken(GiveUpAt)` and `Abandoned`; `root.IssueClientToken` with `IssueSeq`, committing implicitly; `TestActor<K>`
+        deduplicated requests (`[DedupKey]` fields, `[Once]` client requests) over the root's persisted
+        `DynamicBuffer<Unacked>`: the key looked up before the handler, a repeat answered with the stored reply (held
+        until that entry's write lands), the first run committing implicitly with its reply stored, `Busy` when the
+        buffer is full (`[ActorOptions(Unacked)]`, 1,024), never an eviction; entries pruned by the sender's
+        acknowledgement (the framework's `Acked` mail after the item that handled the reply is written, a client's
+        "answered up to n", a client session past its resume deadline, a destroyed root's pending keyed asks), each kept
+        `MaxAskTimeout + ClockSkew` past it; requests never run past their deadline, deadlines capped at `MaxAskTimeout`;
+        the SDK resending `[Once]` calls under the same call id; `WakeAt` and the tag `Woken`; `root.IssueClientToken` with `IssueSeq`, committing implicitly; `TestActor<K>`
         with `FailNextWrite()`, `Crash()` and `Answer<TReq>`;
       - the wake: `WakeAt` on persistent entities (user intents, reminders), the `ArmSystem` arming a `Due` from it on
-        load and activation, re-arming it on `[Changed<WakeAt>]` and disarming it on `[Removed<WakeAt>]`, the firing item removing `WakeAt` and adding `Woken(GiveUpAt)` for one pass (or `Abandoned` past `GiveUpAt`) (a package's own wake
+        load and activation, re-arming it on `[Changed<WakeAt>]` and disarming it on `[Removed<WakeAt>]`, the firing item removing `WakeAt` and adding the tag `Woken` for one pass (a package's own wake
         handler instead, for reminders), `NextDue`, the `next_due` column, `IActorStore.DueKeys` and `DueScan`;
       - the store: ADR-068's `actor_records` table, created only by the schema mode (`--DaServer:Migrate`); nodes not
         ready until it answers, one backoff without a deadline (`/alive` treats the wait as progress), and the store not part of readiness once a
@@ -371,7 +378,7 @@ Keep this file current: tick items when done, add items when scope changes.
       `ColdClusterRestartNeverReusesGeneration`, `ParallelFirstNodesFormOneCluster`, `ArmWithoutStandbyExpires`,
       `FreezeAbortsWhenStoreHangsNodeResumes`, `TornStreamNackedNodeResumes`, `RestartingTagNotHandedOver`, `AbortedRestartRaisesResumed`, `PeerBackoffResetOnRestartedHello`,
       `TombstoneToLeftNodeFallsBack`, `RequestHeldThroughHotRestartExpires`, `MigrationDoesNotExtendRequestBudget`,
-      `RetrySameKeyAnsweredFromState`, `IdleDeactivationWaitsForPendingDueAndAsks`, `StoreOutageBoundsMemoryAndRecoversWithoutHerd`,
+      `RepeatAfterCrashGetsStoredReply`, `IdleDeactivationWaitsForPendingDueAndAsks`, `StoreOutageBoundsMemoryAndRecoversWithoutHerd`,
       `PoisonActorBacksOffClaims`, `RebalancePausesDuringDrainAndRestart`,
       `TimeNoticeRepushedOnResume`, `ManifestDiffPicksPath`, `ComposeRestartOneNodeAtATime`,
       `SlotMoveHandsOffBeforeClaim`, `HandoffPostponedForwardsMail`, `NonCreatingMailClaimsWithoutInsert`,
@@ -422,9 +429,12 @@ Keep this file current: tick items when done, add items when scope changes.
       `ComposeNodeReachesExternalDatabase`, `NodePodsKeepDnsAndClusterEgress`, `ImageAndRevisionLabelInOneApply`, `ComposeHandoverVolumeWritable`,
       `WindowsIsolationExitCode` (`ServiceBase.ExitCode` 75 seen by the service manager, on a Windows runner). New for the
       redesigns: `CommitBarrierKeepsPairOrder`, `CommitWithNothingUnwrittenReleasesAtOnce`, `RepeatKeyAnswerWaitsForFirstWrite`,
-      `RecentKeysEvictsOldestCounted`, `RecentKeysExpireAfterAge`, `WokenRemovesWakeAtForOnePass`, `CrashBetweenWokenAndNewWakeAtFiresAgain`,
-      `GrantDedupedByDropKeyAcrossLootCrash`, `RingPerKeyTypeNoCrossEviction` (64 loot keys never evict a payment id),
-      `YoungEvictedKeyAnswersForgotten`, `ForgottenNeverExecutesAgain`, `IntentAbandonedAtGiveUpAt`, `WokenCarriesGiveUpAt`,
+      `DuplicateGetsStoredReply`, `AckPrunesEntry`, `ClientLowWaterPrunes`, `ExpiredRequestNeverExecuted`,
+      `AckAfterLastDeadline` (an attempt sent before the acknowledgement and delivered late, past a migration, never runs),
+      `DestroyedSenderAcks`, `BufferFullIsBusy`, `ResumeWindowEndDropsClientEntries`, `OnceResentUnderSameCallId`,
+      `AppRestartIsNewSession`, `AskDeadlineCappedAtMaxAskTimeout`, `UnackedOfCrashedSenderKeptAndReported`,
+      `WokenRemovesWakeAtForOnePass`, `CrashBetweenWokenAndNewWakeAtFiresAgain`,
+      `GrantDedupedByDropKeyAcrossLootCrash`, `ManyLootGrantsNeverEvictAPaymentEntry`,
       `RewrittenWakeAtRearms`, `RemovedWakeAtDisarms`, `HeldGroupPushJoinsFrameOnRelease`, `HeldGroupPushDoesNotStallGroup`,
       `HeldOutputCapAnswersBusy`, `ExpiredHeldReplyDropped`, `HeldLatestReplaced`, `RepeatCommitWaitsForEarlierWrite`,
       `MigrationConvergesWhileRootCommitsEveryTick`, `PoisonRowBisectedRestLands`, `OversizeRecordUnwritable`,
@@ -436,6 +446,8 @@ Keep this file current: tick items when done, add items when scope changes.
       `ArmRefusedWhenWritesSlow`, `ResizeDeferredRevertedArmRefused`, `RestartPodReadinessWindowOnlyParkedContainer`,
       `RebalanceSkipsHotActor`, `PlaceholderMailNodeBudget`. BenchmarkDotNet
       `CommitThroughputPerWorld` (1, 10, 100 and 1,000 commits per world per tick at a store latency of 1 and 5 ms),
+      `CreditThroughputWithUnacked` (keyed credits into 10,000 players at 1 and 5 ms: lookup, stored reply, acknowledgement
+      and pruning, against the same credits unkeyed),
       `CommitReplyLatency`, `CheckpointStorm` (1,000,000 roots written at once: drain time and memory against
       `StoreWritesInFlight`), and `HandoverPause` (JIT and AOT, 100,000 and 1,000,000 actors of about 200 bytes: the
       freeze, the parallel stream and the standby's load).
@@ -460,10 +472,10 @@ Keep this file current: tick items when done, add items when scope changes.
       before it asks, `Regrant` asking again on `Woken`) and the map (what
       clients see, not saved, shown again after every activation that is not a migration), its avatars not saved, its AOI telling entries and exits (`Appear` into a cell newly written, `Disappear` before every destroy, a crossing's snapshot of the cells newly subscribed); the login sample issuing client tokens (`IssueClientToken` commits: the issue sequence
       written before the token leaves); the mmo's inventory as slots on the `Player` root (the client's `UseItem` bound
-      to the root), precious-item use and premium purchases deduplicated by a client-made purchase id (`FirstTime`, `Commit`), a
+      to the root), precious-item use and premium purchases as `[Once]` client requests (run once, the SDK resending under the same call id), a
       recharge credited by the payment webhook through `ICluster.Ask` to `Payment(payment id)`, which commits its
       `Crediting` intent before answering the webhook and asks `Player` to `Credit(payment id, amount)` until answered
-      (`Player` deduplicates by the payment id; the client claims nothing), a daily reconciliation report, a guild's daily quest reset on a `DaServer.Reminders` reminder; the flash sale's
+      (`PaymentId` is a `[DedupKey]`: `Player` runs each credit once and keeps the reply until `Payment` writes `Delivered`; the client claims nothing), a daily reconciliation report, a guild's daily quest reset on a `DaServer.Reminders` reminder; the flash sale's
       `PlaceOrder` carrying only the sale, handled only by a keyed, non-persisted `Gate(Sale, Shard)` actor
       (`[ActivatedBy<PlaceOrder>]`, `CanCreate` over the sale table) that asks `Order(sale, user)` with the server
       message `Place` (ADR-091, ADR-095); each AppHost becomes an `apphost.cs` (file-based) in the sample's server
