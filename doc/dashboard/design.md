@@ -116,20 +116,25 @@ There is one vocabulary, used the same way everywhere.
 | Input | Does |
 |---|---|
 | ↓ / ↑, wheel, vertical swipe, PageDown / PageUp, j / k | The next or previous screen within the current section. It stops at the section's first and last screens and never crosses into another section |
-| → / ←, horizontal swipe, a tab | The next or previous section, opening at its first screen |
+| → / ←, horizontal swipe, a section in the edge index | The next or previous section, opening at its first screen |
 | A row in a list | Opens that item; Esc returns to where you were |
 | `/` or ⌘K / Ctrl+K | Find: an actor by its id, a server type, a node, an action; ranked as you type, five per group; ↑↓ select, Enter opens |
 | Esc or Backspace | Back. It closes Find or a confirmation, otherwise returns from the last jump (a list row, a Find result). It is dimmed while there is nowhere to go back to |
 
-- One gesture is one step, and the step happens on the gesture's first event, not after it ends.
-  - A mouse sends one event per notch: lines or pages (Firefox), or a multiple of 120 in `wheelDeltaY` (Chrome, Edge,
-    Safari). Every notch is one step; notches closer than 90 ms are one fast spin and step at most that often.
-  - A trackpad sends a stream of small pixel deltas with an inertia tail. The stream adds up to 24 px and steps once,
-    then is held until it is quiet for 140 ms, turns round, or speeds up again out of a decayed tail (a new flick on
-    top of the last one's inertia), which steps again.
-  - Checked in a browser against the events browsers send: one notch, notches 120 to 400 ms
-    apart, a Firefox notch, a macOS notch, a flick with its tail, a second flick in the tail, a slow drag, a touch of a
-    few pixels, a flick and back, a flick then a notch.
+- **Sections: an edge index.** There is no menu bar. On a desk the five sections run down the page's left edge like
+  a reference book's printed thumb index, set vertically (`writing-mode: vertical-rl`), 14 px, ink-3; the current
+  section is in ink and its 4 px ink mark bleeds off the edge. That mark is the only selected-state indicator. On a
+  phone the index moves to the bottom edge, under the thumb: one line above the key hints, the current section in
+  ink with a 1 px ink segment on the footer rule. The header is a running head only (the brand at the left, the
+  environment at the right) with no rule under it. The index never moves.
+- **One push of the wheel, one step.** A step locks the wheel for 450 ms, so one spin or one flick with its inertia
+  tail moves one screen. After that a step needs a new push: the first event after 200 ms of quiet, a mouse notch
+  (lines or pages, or a whole multiple of 120 in `wheelDeltaY`), or the moment a trackpad stream speeds up again
+  (the mean of its last 10 samples above 1.2 times the mean of its last 70, after fullPage.js). A pixel stream steps
+  once its push has added up to 24 px, so a touch of a few pixels does nothing; turning the other way is a new push
+  at once. A user who keeps scrolling steps once per transition; an inertia tail only slows down and never steps
+  again. Checked in a browser against the events browsers send (21 cases: notches at several spacings, Firefox and
+  macOS notches, a long spin, flicks with tails, a second flick in a tail, a slow drag, a touch, a turn back).
 - Every key hint at the bottom is bold, always in the same place, and clickable. A pressed key underlines its hint
   at once, so the key is answered before anything has moved. A key that only one screen uses
   (such as rolling back) is a button on that screen, not a global key.
