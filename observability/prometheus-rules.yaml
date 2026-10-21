@@ -186,16 +186,17 @@ groups:
       - alert: DaServerOnceStaleAsking
         # Target (roadmap W6): acknowledgements are sent from written state only, so an AskUntilAnswered can never be
         # answered Stale. One that is means a runtime defect: the ask stops and waits for reconciliation. The stopped
-        # asks are a gauge kept in the records, so the alert holds until reconciliation clears them, across restarts;
-        # the counter is exported at 0 from node start, so the first Stale shows as an increase.
+        # asks are counted from the records' stopped_asks column by the sweeping node every minute (a cluster gauge by
+        # type, whichever node sweeps), so the alert holds across idle unloads and restarts until reconciliation clears
+        # them; the counter is exported at 0 from node start, so the first Stale shows as an increase.
         expr: |
-          max by (cluster, type, node) (last_over_time(daserver_once_stopped[2m])) > 0
+          max by (cluster, type) (last_over_time(daserver_once_stopped[3m])) > 0
           or
-          sum by (cluster, type, node) (increase(daserver_once_stale_asking_total[10m])) > 0
+          sum by (cluster, type) (increase(daserver_once_stale_asking_total[10m])) > 0
         labels:
           severity: critical
         annotations:
-          summary: "{{ $labels.node }} got Stale for a pending ask"
+          summary: "{{ $labels.type }} has an ask stopped by a Stale answer"
           description: "An AskUntilAnswered was answered Stale and stopped asking. Its operation needs reconciliation; report the runtime defect with the node's logs."
 
       - alert: DaServerOnceCounterLow
@@ -208,6 +209,18 @@ groups:
         annotations:
           summary: "{{ $labels.node }} has actors running out of [Once] numbers"
           description: "An actor has sent about four billion [Once] requests in one record's life. Delete and recreate it (a new record starts a new seed) before the counter runs out."
+
+      - alert: DaServerOnceUnsentFull
+        # Target (roadmap W6): a root's asks written unsent reached Once:Unsent or Once:UnsentBytes, so it stopped taking
+        # ordinary mail and refuses [Once] requests whose handler asks. Brief episodes are back-pressure; a root that stays
+        # there is a stuck downstream or a cycle where every answer asks again. The gauge is the number of such roots.
+        expr: max by (cluster, type, node) (last_over_time(daserver_once_unsent_full[2m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.node }} has {{ $labels.type }} actors stopped on unsent asks"
+          description: "Asks to a downstream are piling up unsent. Check whether the receiving type is up and answering, and whether two types ask each other on every answer."
 
   - name: daserver-recording
     # Target (roadmap W7e): the ask histogram does not exist yet. A two-minute window holds eight 15 s pushes, and at
