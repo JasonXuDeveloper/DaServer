@@ -1,4 +1,4 @@
-# DaServer 新编程模型设计（草案 v54，未实现，迭代中）
+# DaServer 新编程模型设计（草案 v55，未实现，迭代中）
 
 原则：业务代码干净、解耦、简洁，不用 OOP。ECS 一路到底：能用 EasyEcs 的功能就用 EasyEcs，状态都是数据，其余交给我们的特性和生成器，不重复造轮子。
 
@@ -546,10 +546,10 @@ public record struct Strike(int Skill, EntityId Target) : IEvent;
 
 ### 处理方法是 EasyEcs 的单实体 job
 
-生成器把每个 `[On<T>]` 方法编成一个 job 结构，和 EasyEcs 为 `[ForEach]` 方法生成的一样（`IForEachEntity<T1..Tn>`）。运行时用 `subject.Run<T1..Tn, TJob>(ref job)` 在主体上执行一次，方法有过滤时用 `subject.Run<T1..Tn, TJob>(ref job, in Filter)`，`Filter` 是 job 上的静态字段（EasyEcs 4.5；基准是同样工作手写代码的 0.69–1.06 倍，0 分配）。所以处理方法的参数规则就是 EasyEcs `[ForEach]` 的规则，只有一套：
+生成器把每个带组件参数的 `[On<T>]` 方法编成一个 job 结构，和 EasyEcs 为 `[ForEach]` 方法生成的一样（`IForEachEntity<T1..Tn>`）。运行时用 `subject.Run<T1..Tn, TJob>(ref job)` 在主体上执行一次，方法有过滤时用 `subject.Run<T1..Tn, TJob>(ref job, in Filter)`，`Filter` 是 job 上的静态字段（EasyEcs 4.5；基准是同样工作手写代码的 0.69–1.06 倍，0 分配）。所以处理方法的参数规则就是 EasyEcs `[ForEach]` 的规则，只有一套：
 - **`ref` 参数直接指向存储**。方法体里改了主体的结构（加 tag、建实体、`Ask` 等），`ref` 参数照样可写：EasyEcs 在返回后把写入搬到新行；`in` 参数保持改之前的值（`guide/refs-and-await.mdx` 的 "Inside passes"）。job 只声明它写的组件（`Writes`），追踪变更的组件只在被写时打戳。
 - **过滤**：`[With<T>]`、`[Without<T>]` 写在方法上，和 `[ForEach]` 一样。生成器把它编成 job 上的 `static readonly QueryFilter Filter`，建一次；没有过滤的方法不带 filter 调用 `Run`，不在每次调用时 `QueryFilter.Create()`。主体缺少组件参数或不满足过滤时不调用：请求以 `Skipped` 失败，单向消息和事件跳过（计数）。
-- **没有组件参数的处理方法**（例如第 12 节的 `Enter`、`Cast`）编成不带组件的 job，同样经 `entity.Run(ref job[, filter])` 执行（W1 核对）。
+- **没有组件参数的处理方法**（例如第 12 节的 `Enter`、`Cast`）不编成 job：EasyEcs 4.7 的 `entity.Run` 只有 1 到 9 个组件的形式（`IForEachEntity<T1..T9>`），没有零个组件的。生成的分发自己判断过滤：主体活着（`subject.IsAlive`），`[With<T>]` 的每个类型 `subject.Has<T>()`，`[Without<T>]` 的每个类型没有；通过就直接调用方法，不通过同样按上一条跳过。方法拿不到指向存储的 `ref`，结构变更也就不用记账，`INoStructuralChanges` 对它无意义。
 - **组件参数都是必有的**：`IForEachEntity` 只收必有的组件，所以没有 `Maybe<T>` 参数。可能没有的数据在方法体里用 `TryGet<T>` 或生成的 `TryGetX(out …)` 读。
 - **`INoStructuralChanges`**：`Entity` 和 `World` 参数只用来读、查索引，或者只交给不改结构的操作（`Send`、`Push`、`Reply`、`Broadcast`、`Root`、`Group`、`SetGroupRate`、`SetGroups`：后两个只改写已有的缓冲，第 9 节）时，生成的 job 带上它，推断规则同 EasyEcs（`guide/structural-changes.mdx` 的 "Passes that freeze the structure"）：生成器看参数的用法，不看有没有这个参数。`Ask`、`Join`、`Leave`、`Spawn`、`GetOrSpawn`、`Deactivate`、带 `after` 的 `Schedule`，以及系统里（项外）的 `Schedule`，以及对任何实体的 `Set`/`Remove`/`Destroy`，算结构变更。带它的 job 运行时不做逐行记账，结构被冻结，违约就抛出。
 - **检查**：EasyEcs 的分析器只检查 `[ForEach]` 方法，不认识 `[On<T>]`。DaServer 的分析器对 `[On<T>]` 方法套用同样的检查（参数、过滤、有索引的组件、结构变更），见第 13 节。
@@ -1068,7 +1068,7 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 处理方法和系统从不等存储：
 - 改了要保存的数据，根上标 `Unsaved`（下面的"只写改过的"）。每个 tick 结束时（没有 tick 的 Actor 类型：每批邮件之后），world 把要写的根合成一批，按每 512 行一条语句异步地写下（PostgreSQL 上每条是按数组 `unnest` 的语句，今天的 `PostgreSqlActorStore` 已经这样写，ADR-068）：执行过 `[Durable]` 项的根每次都进（第 8 节），只有普通改动的根最多每个检查点间隔（`DaServer:CheckpointInterval`，默认 30 秒，同今天 `SaveEverySeconds` 的默认）进一次。每一行各自按 epoch 比较并交换（下面的激活 epoch）；一个根同时最多一次写在途。
 - **在途的语句有上限**：每个 world 同时最多 `DaServer:StoreWritesInFlight` 条语句在途（默认 2，所以一个节点最多是 world 数的两倍），一条语句最多 512 行（同今天），多的进下一条。名额满了，这一轮要写的根不取，留着 `Unsaved` 和 `WriteNow` 等下一轮，`WriteNow` 的先取。所以存储慢时内存和连接都有界，代价是留住的输出晚得更多（第 8 节的最坏延迟）；等着的根数是指标 `daserver.store.writes_waiting`。
-- 优雅地离开不丢改动：停用和优雅停止（缩容、滚动升级、关机）先写记录（第 6 节），迁移带着整棵子树走，热重启把还没写的连同 `Unsaved` 随快照带过去（下面）。
+- 优雅地离开不丢改动：停用和优雅停止（缩容、滚动升级、关机）先写记录（第 6 节），迁移带着整棵子树走，热重启把还没写的连同 `Unsaved` 随快照带过去（下面）。例外是序列化不了的根：它只留着上一份记录（下面的"只写改过的"）。
 - 只有宕机会丢，最多丢最后一个检查点间隔的普通改动（第 11 节）；Actor 照常执行，只有 `[Durable]` 请求的第一问和回答等包含它们的那次写写成才发出（第 8 节）。
 
 组件类型的集合都用 EasyEcs 的 `ComponentSet`（`reference/componentset.mdx`）：注册时建好一次，存在 `Registration` 里，框架按 `Type` 加入它在注册时才知道的类型（`ComponentSet.With(Type)`）。
@@ -1166,7 +1166,7 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 - **占位不写**：根带着 `Loading`、`Saving` 或 `ActivationFailed` 时，`ChangeSystem` 不给它标 `Unsaved`，`CheckpointSystem` 也不写它（`[Without<Loading>, Without<Saving>, Without<ActivationFailed>]`）。否则 `Reload` 把根改回 prefab 默认值的那些写，会被当成改动写进记录，盖掉最后一份好记录（第 5 节）。
 - `CheckpointSystem` 在每个 tick 末（没有 tick 的 Actor 类型：每批邮件之后）把要写的根各 `SaveEntities` 一次，合成这个 world 的一次批量写（上面的"默认"），按 epoch 比较并交换：执行过 `[Durable]` 项的根（根上内部的 tag `WriteNow`，由 `[Durable]` 的操作加上，第 8 节）每次都取，其余带 `Unsaved` 的根离上次写过了检查点间隔才取；在途的语句满了就都等下一轮（上面的"默认"）。**取记录时去掉 `Unsaved` 和 `WriteNow`**，写出错就加回（用同样的字节重试）；写在途期间的改动重新标上它，进下一次写。根上的 `NextDue` 同时写进记录的 `next_due` 列（下面的唤醒）。
 - **一个根的状态序列化不了**（`SaveEntities` 抛出：环、没注册的子类型）：跳过这一行，记日志 `RecordUnwritable`（按次数限流），这一批的其余行照常写。存储里留着它上一份记录；根重新标上 `Unsaved`（不标 `WriteNow`），过一个检查点间隔再试，它留住的输出等到某一次写成才放出。
-- **停用、停止和迁移也是先 `SaveEntities`，再销毁子树**。它抛出时：空闲停用取消，去掉 `Deactivating`，Actor 照常运行（已经离开的 Presence 不回来），根重新标上 `Unsaved`，按上一条再试；强制停用（`root.Deactivate()`、经记录的热重启、迁移退回的停用）和优雅停止放弃这次写，存储里留着上一份记录，记日志 `RecordUnwritable`，照常销毁，留住的输出随之丢弃；迁移中止，Actor 留在源节点上照常运行，根重新标上 `Unsaved`。
+- **停用、停止和迁移也是先 `SaveEntities`，再销毁子树**。它抛出时：空闲停用取消，去掉 `Deactivating`，Actor 照常运行（已经离开的 Presence 不回来），根重新标上 `Unsaved`，按上一条再试；强制停用（`root.Deactivate()`、经记录的热重启、迁移退回的停用）和优雅停止放弃这次写，存储里留着上一份记录，记日志 `RecordUnwritable`，照常销毁，留住的输出随之丢弃；迁移退回到强制停用（放置已经指向目标，Actor 不能留在源节点上），同样放弃这次写、留着上一份记录，目标按需从它激活。原地热重启的冻结也一样不因此放弃：快照的 `world.Save` 抛出时，框架逐根 `SaveEntities` 找出抛出的根，像隔离一样从冻结的 world 里销毁它们的子树（不写记录；Presence 留下的清理组件进快照，新进程释放它们的路由），记日志 `RecordUnwritable`，再 `world.Save` 一次；这些 Actor 在新进程里按需从上一份记录激活，没写下的改动丢掉。
 - **`Unsaved` 是根上的 tag，这是有意的**，虽然 EasyEcs 的 `ecs-principles.mdx` 第 5 条说变更检测用变更戳和 `[Changed<T>]`，不用加了又删的标记：
   - 要回答的问题是"这个 Actor 的记录要不要写"，答案属于根：子孙的变更（写、删、销毁）都要汇总到根上，记录也是按根整份写的。`[Changed<T>]` 只能回答"这一行这一趟写过没有"，回答不了"这棵树上次写成之后改过没有"；
   - 它要活过多个 tick：写记录出错时加回，直到某一次写成功，所以不能每 tick 从变更戳重新推出来；
@@ -1180,15 +1180,20 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 - 要叫醒 Actor 的子孙带持久化的 `WakeAt(DateTime Utc)`：`[Durable]` 的等待实体是它下一次问或 settle-by 的时刻（第 8 节），提醒是它的 `UtcAt`。
 - 运行时的 `WakeSystem` 按 `[Changed<WakeAt>]`、`[Removed<WakeAt>]`（两个方法；`ChangedAny` 要 2 到 9 个类型，一个类型就是 `Changed`）和 `Persisted` 的清理找出受影响的根，只对这些根沿 `world.Descendants(root)` 重算最小的 `WakeAt`，写进根上持久化的 `NextDue`。只有运行时算它，扩展能力不写。
 - **先算 `NextDue`，再取记录**：`WakeSystem` 在框架组 `Cleanup` 里排在 `CheckpointSystem` 之前，所以写下的 `next_due` 总算上了这个 tick 新建的等待实体。
-- 检查点把 `NextDue` 写进记录的 `next_due` 列（没有就是空）。每个节点的 `DueScan` 每隔 `DaServer:DueScanInterval` 向存储查自己是主人的槽里 `next_due` 已到的键（`IActorStore.DueKeys(slots, until, after)`，`slots` 是本节点拥有的 `(类型, 槽号)`，按 `(type_id, slot, next_due)` 的索引，一页最多 512 行，返回这一页的键和最后一行），给还没激活的发控制邮件 `Wake`，Actor 因此激活。一次扫描开始时定下 `until`（当时的 UTC），每一页都用它；`after` 是上一页的最后一行，第一页传一个排在所有真实行之前的哨兵 `(-2147483648, -1, '-infinity', '\x')`：`type_id` 是 `integer`，取不到更小的值，`slot` 是 `smallint`，真实的槽号在 0 到 4095，所以 `-1` 已经比任何真实的行小（`type_id` 恰好等于最小值时也一样），后两列不会被比到。不满 512 行的一页结束这次扫描。每一页只查游标那一对 `(类型, 槽号)` 和它之后的对：
+- 检查点把 `NextDue` 写进记录的 `next_due` 列（没有就是空）。每个节点的 `DueScan` 每隔 `DaServer:DueScanInterval` 向存储查自己是主人的槽里 `next_due` 已到的键（`IActorStore.DueKeys(slots, until, after)`，`slots` 是本节点拥有的 `(类型, 槽号)`，按 `(type_id, slot, next_due)` 的索引，一页最多 512 行，返回这一页的键和最后一行），给还没激活的发控制邮件 `Wake`，Actor 因此激活。一次扫描开始时定下 `until`（当时的 UTC），每一页都用它；`after` 是上一页的最后一行，第一页传一个排在所有真实行之前的哨兵 `(-2147483648, -1, '-infinity', '\x')`：`type_id` 是 `integer`，取不到更小的值，`slot` 是 `smallint`，真实的槽号在 0 到 4095，所以 `-1` 已经比任何真实的行小（`type_id` 恰好等于最小值时也一样），后两列不会被比到。不满 512 行的一页结束这次扫描。每一页只查游标那一对 `(类型, 槽号)` 和它之后的对，每一对最多取 512 行（`LATERAL … LIMIT`，只走这一对的索引范围）；对按顺序来，外层只在每一对的行里排序（PostgreSQL 的增量排序），凑满 512 行就停，所以一页从不把后面各对积压的行都取出来排序：
   ```sql
-  SELECT a.type_id, a.slot, a.next_due, a.key
-  FROM unnest(:type_ids, :slots) AS s(type_id, slot)
-  JOIN actor_records a ON a.type_id = s.type_id AND a.slot = s.slot
-  WHERE (s.type_id, s.slot) >= (:type_id, :slot)                                     -- pairs at or after the cursor's pair
-    AND a.next_due <= :until                                                         -- fixed once per scan
-    AND (a.type_id, a.slot, a.next_due, a.key) > (:type_id, :slot, :next_due, :key)   -- after: the previous page's last row,
-  ORDER BY a.type_id, a.slot, a.next_due, a.key                                      -- first page (-2147483648, -1, '-infinity', '\x')
+  SELECT s.type_id, s.slot, a.next_due, a.key
+  FROM (SELECT u.type_id, u.slot FROM unnest(:type_ids, :slots) AS u(type_id, slot)
+        WHERE (u.type_id, u.slot) >= (:type_id, :slot)                               -- pairs at or after the cursor's pair
+        ORDER BY u.type_id, u.slot) AS s
+  CROSS JOIN LATERAL (
+    SELECT r.next_due, r.key FROM actor_records r
+    WHERE r.type_id = s.type_id AND r.slot = s.slot
+      AND r.next_due <= :until                                                       -- fixed once per scan
+      AND (r.type_id, r.slot, r.next_due, r.key) > (:type_id, :slot, :next_due, :key) -- after: the previous page's last row,
+    ORDER BY r.next_due, r.key                                                       -- first page (-2147483648, -1, '-infinity', '\x')
+    LIMIT 512) AS a                                                                  -- at most a page from one pair
+  ORDER BY s.type_id, s.slot, a.next_due, a.key                                      -- pairs already in order: sorted per pair
   LIMIT 512
   ```
   注册里有 `[Durable]` 请求或者 `DaServer.Reminders` 时才查。查询不排除激活着的键（存储不知道哪些在内存里）：激活着的 Actor 的 `WakeAt` 在将来或刚过（它的时刻一到 Actor 自己就做那件事并前移它），只在刚过、前移它的那次写还没写成时被查到，`Wake` 到了 world 就丢弃。重问不加 `WriteNow`（第 8 节），前移的 `WakeAt` 随检查点写下，所以一次扫描多出的行不超过最近一个检查点间隔里到时的项。
@@ -1275,7 +1280,7 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
      - `Readmit`：只给当前的随机数，给了就清掉。节点先核对一遍：根所在的槽现在的主人已经不是自己的（期间放置变了），隔离或者迁出这些根；然后各 world 开始跑。其他节点认出同一个身份，按快照里的字节数续上各条流，重放各自的重发窗口：就是今天链路断了重连时的续流，不重复也不丢。对端收到这个身份的 Hello 时清掉对它的重连退避，马上连回来。
      - `Gone`：期限已过、随机数不对，或者已经有更大的代数：丢掉加载的 world，不写，以新的代数加入，从记录激活。
   7. 第一个 tick，每个根带着 `Resumed(TimeSpan Pause, bool Aborted)`，`Pause` 是实测的停顿；有 `[TickRate]` 的 Actor 给带 `Joined` 的 Presence 重推时间通知（第 7 节）；收尾组 `Settling` 去掉 `Resumed`。系统在有序阶段之后跑，所以看到 `Resumed` 时，停顿期间到的消息已经执行过了。
-- **放弃**：冻结等过上限，或者快照写失败，节点撤回 `NodeRestarting`；每个根在下一个 tick 带着 `Resumed(Pause: 0, Aborted: true)`，用户的系统可以撤销对 `Restarting` 的反应。然后节点照普通的优雅停止退出（所有 Actor 停用、写记录，ADR-063），新进程以新的代数加入，等于走了经记录。
+- **放弃**：冻结等过上限，或者快照写失败（序列化不了的根不算：它被留在快照外面，第 10 节的"只写改过的"），节点撤回 `NodeRestarting`；每个根在下一个 tick 带着 `Resumed(Pause: 0, Aborted: true)`，用户的系统可以撤销对 `Restarting` 的反应。然后节点照普通的优雅停止退出（所有 Actor 停用、写记录，ADR-063），新进程以新的代数加入，等于走了经记录。
 - **用户的反应是数据**：
   ```csharp
   [UpdateInGroup<Map>]
@@ -1446,6 +1451,7 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 | `DaServer:AskTimeout` | 5 秒 | 不写 `deadline:` 时每一次问的超时，`[Durable]` 的也是（第 8 节） |
 | `DaServer:DueScanInterval` | 1 秒 | `DueScan` 查到时的键的间隔（第 8 节） |
 | `DaServer:CheckpointInterval` | 30 秒 | 只有普通改动的根多久写一次记录；宕机最多丢这么久的普通改动（第 10 节） |
+| `DaServer:Topics:RenewInterval` | 60 秒 | 订阅方多久重发一次 `Subscribe`；Topic 宕机后没写下的订阅最多这么久收不到发布（第 15 节） |
 | `DaServer:ClockSkew` | 1 分钟 | 用到 UTC 的地方多留的余量（第 9 节） |
 | `RetireGrace` | 10 秒 | 退役的连接多久不走就断开（ADR-026） |
 | SDK 的心跳、静默断开 | 15 秒、30 秒 | ADR-053 |
@@ -1915,24 +1921,19 @@ public static class GrantItemSends
 ```
 
 ```csharp
-// <auto-generated/> Game.Server: each [On<T>] method as an EasyEcs per-entity job, inside its partial class
+// <auto-generated/> Game.Server: each [On<T>] method with component parameters as an EasyEcs per-entity job, inside its
+// partial class; one without them is called directly
 partial class Maps
 {
-    internal struct Enter_Job : IForEachEntity                             // no component parameter: the zero-component form (W1)
-    {
-        public EnterMap Message;                                           // filled from the mail
-        public Account Who;                                                // the sending client's claims, not the subject's
-        public Map Map;                                                    // the item's actor key, not a component of the subject
-        public bool Reply;
-        public static int Writes => 0;
-        public void Execute(Entity e) => Reply = Enter(in Message, in Who, in Map, e);
-    }                                                                      // spawns and joins: no INoStructuralChanges
-
+    // Enter has no component parameter: no job (EasyEcs's Run takes one to nine components). The dispatch tests what
+    // Run would: the subject is alive, and a [With<T>]/[Without<T>] on the method would add subject.Has<T>() tests here.
     internal static void On_Enter(Entity subject, in Mail mail, ref Outcome outcome)
     {
-        var job = new Enter_Job { Message = mail.Read<EnterMap>(), Who = mail.Claims<Account>(), Map = mail.Target<Map>() };
-        if (!subject.Run<Enter_Job>(ref job)) { outcome.Skipped(); return; }   // no filter on the method: none passed
-        outcome.Reply(job.Reply);                                          // Join() put the Route in Outbox ahead of this reply
+        if (!subject.IsAlive) { outcome.Skipped(); return; }
+        var message = mail.Read<EnterMap>();
+        var who = mail.Claims<Account>();                                  // the sending client's claims, not the subject's
+        var map = mail.Target<Map>();                                      // the item's actor key, not a component of the subject
+        outcome.Reply(Enter(in message, in who, in map, subject));        // Join() put the Route in Outbox ahead of this reply
     }
 }
 
@@ -1953,11 +1954,11 @@ partial class Moves
         if (!subject.Run<Position, Velocity, Speed, Move_Job>(ref job, Move_Job.Filter)) outcome.Skipped();   // no copy, no write-back
     }
 }
-// Combat.Cast_Job has no component parameter either (SkillTable is a singleton: a job field). Cast schedules after a windup
-// (a child entity), Resolve adds Dead to another entity, Pickups.Place and Stashes.Add spawn, Take and Award ask (a waiting
-// child), Remove and Granted destroy: none gets INoStructuralChanges. Items.Grant_Job only writes Inventory through Mut and
-// returns its reply; Maps.Start_Job (SetGroupRate on the buffer the root copy carries, section 9, and a Send), Pickups.Redrop_Job,
-// Picked_Job and Stashes.Reshow_Job only send or reply: they get it.
+// Combat.Cast, Pickups.Place, Picked and Remove, Stashes.Add, Reshow and Award have no component parameter either (keys,
+// claims and singletons such as SkillTable are arguments): called directly, as Enter. Of the jobs, Resolve adds Dead to
+// another entity, Take asks (a waiting child) and Granted destroys: none gets INoStructuralChanges. Items.Grant_Job only
+// writes Inventory through Mut and returns its reply; Maps.Start_Job (SetGroupRate on the buffer the root copy carries,
+// section 9, and a Send) and Pickups.Redrop_Job only send: they get it.
 // GrantItem is [Durable]: before the job the dispatch drops an attempt past its settle-by instant, looks the call id up in the
 // root's ReplyLog (a repeat is answered from it) and refuses with TooLate a settling re-ask of an unknown call id or an
 // attempt whose time to its settle-by instant is below the store's write latency; every such definite refusal (Skipped too) is recorded
@@ -2209,6 +2210,8 @@ public void An_expired_grant_takes_the_drop_off_the_map()
 
 ## 13. 编译期检查
 
+诊断编号沿用今天的 DAS001–022 里意思不变的那些，退役的编号不再发，新的检查用新编号（从 DAS023 起；逐个编号见路线图 W3）。
+
 **编译期检查**（下面任何一种情况都会报错）：
 - 发送方向写错：接收方不对没有对应的方法；`[Handles<K>]` 类或 `[UpdateInGroup<K>]` 系统里发送，K 不在消息的 `[From<…>]` 里。
 - 含 `[On<T>]` 的类没有 `[Handles<K>]`，或者不是 `static partial class`（可一键修复）。
@@ -2329,13 +2332,14 @@ me.Publish(new Topic(Feeds.Prices), new PriceChanged(item, price));
 [On<PriceChanged>] static void Reprice(in PriceChanged m, ref Shop shop) { … }   // in the subscriber's [Handles<K>] class
 ```
 
-- `Topic(long Id)` 是包里内置的 Actor 类型，根要保存，根上是订阅者表 `DynamicBuffer<Subscriber>`（`Subscriber(ActorId Actor, long Epoch)`，`Epoch` 是订阅者那次激活的 epoch）。`e.Subscribe(topic)`、`e.Unsubscribe(topic)` 是发给它的消息，订阅的是 `e.Root` 那个 Actor。`Feeds.Prices` 是用户自己的常量。
-- **`Subscribe` 是 `[Durable]` 请求**（第 8 节）：Topic 的回答由框架留住，直到写下这条订阅的那次写成功；订阅方没收到回答就一直再问。所以 Topic 宕机丢不了订阅：没写下的订阅，回答没发出，订阅方再问，Topic 从记录重新激活后再记一次。订阅方的类型本来就要保存（`Subscription` 在记录里）。`Unsubscribe` 是普通的单向消息，不是 `[Durable]`：它在 `Deactivating` 那一轮发出，`[Durable]` 请求会取消空闲停用（第 8 节）；丢了也无妨，订阅方不在了，下一次投递的"已经不在"通知就删掉它。
+- `Topic(long Id)` 是包里内置的 Actor 类型，根要保存，根上是订阅者表 `DynamicBuffer<Subscriber>`（`Subscriber(ActorId Actor, long Epoch)`，`Epoch` 是订阅者那次激活的 epoch）。`e.Subscribe(topic)`、`e.Unsubscribe(topic)` 是发给它的单向消息，订阅的是 `e.Root` 那个 Actor。`Feeds.Prices` 是用户自己的常量。
+- **`Subscribe(epoch)` 是幂等的单向消息**，带着订阅方这次激活的 epoch（框架填上）：Topic 给每个订阅者只记最大的 epoch；epoch 更大就更新，相同的什么也不改，更小的（旧激活迟到的）不理会。表一变，Topic 就给自己的根标 `WriteNow`，这次改动在这个 tick 末写下；表没变的 `Subscribe` 不写。
 - **承载 Topic 的服务器类型写 `[Hosts<Topic>]`**（第 2 节），Topic 的根要保存，所以这个工程要配存储。
-- **订阅也是订阅方的数据**：订阅方的根上有持久化的 `DynamicBuffer<Subscription>`。包里的系统在 `Activated` 之后重新订阅（幂等），在 `Deactivating` 时退订；所以 Topic 的表里只有激活着的订阅者，投递从不激活 Actor。投递到已经不在的订阅者时，那个节点回一条带着这个 epoch 的控制邮件，Topic 删掉它（它下次激活时自己再订阅）。
-- **删除只认同一个激活**：`Subscribe` 写下或更新订阅者的 epoch；退订和"已经不在"的通知都带着发出它的激活的 epoch，只有和表里的相同才删。所以旧激活迟到的退订或通知，删不掉新激活刚做的订阅。
+- **订阅也是订阅方的数据，订阅方定期续订**：订阅方的根上有持久化的 `DynamicBuffer<Subscription>`。包里的系统在 `Activated` 之后订阅；之后只要根活着、不带 `Deactivating`，每隔 `DaServer:Topics:RenewInterval`（默认 60 秒）把每个 `Subscription` 再发一次 `Subscribe`（`[ForEach(Slices = N)]` 分片扫，同空闲检查）；活着的根去掉 `Deactivating` 时（空闲停用被取消，`[Removed<Deactivating>]`）马上再发一次，因为那一轮已经退订过了。所以 Topic 宕机丢了还没写下的改动，或者一条 `Subscribe` 在路上丢了，最多一个续订间隔就补上。
+- **退订**：包里的系统在 `Deactivating` 那一轮发单向的 `Unsubscribe`，所以 Topic 的表里只有激活着的订阅者，投递从不激活 Actor。丢了也无妨：投递到已经不在的订阅者时，那个节点回一条带着这个 epoch 的控制邮件，Topic 删掉它（它下次激活时自己再订阅）。
+- **删除只认同一个激活**：退订和"已经不在"的通知都带着发出它的激活的 epoch，只有和表里的相同才删。所以旧激活迟到的退订或通知，删不掉新激活刚做的订阅；旧激活迟到的 `Subscribe` 比表里的小，也盖不掉它。
 - **`e.Publish(topic, msg)`**：发给 Topic；Topic 不解码负载，按订阅者所在的节点分组，每个节点一帧（只序列化一次，池化的帧），那个节点再放进各订阅者的邮箱。`ICluster` 也能发布。
-- **最多一次**；同一个发布者经同一个 Topic 发给同一个订阅者的按发送顺序到达。没有回放，没有持久的偏移：要持久的流（回放、消费组）用 Kafka 或 NATS JetStream，从 Actor 里调用。
+- **最多一次**：Topic 宕机时在途的发布丢掉；Topic 从记录重新激活后，宕机前没写下的订阅收不到发布，直到下一次续订（最多一个续订间隔）。同一个发布者经同一个 Topic 发给同一个订阅者的按发送顺序到达。没有回放，没有持久的偏移：要持久的流（回放、消费组）用 Kafka 或 NATS JetStream，从 Actor 里调用。
 - 一个 Topic 的订阅者数有上限（节点配置）；更大的扇出分到多个 Topic 键，推给客户端用 `ClientGroup`（第 9 节）。
 - Actor 之间的扇出由它做；框架本身没有别的发布。
 

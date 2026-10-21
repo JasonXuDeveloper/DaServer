@@ -22,7 +22,7 @@ Keep this file current: tick items when done, add items when scope changes.
 11. S1-S6 (done) elastic scaling.
 12. The ECS rewrite (ADR-081, the "ECS rewrite" entry under "Open cleanup" below): P1-P3 and P5 done; P4, P6 and P7
     superseded by W.
-13. W — refactor to the v54 programming model ([drafts/programming-model.md](drafts/programming-model.md),
+13. W — refactor to the v55 programming model ([drafts/programming-model.md](drafts/programming-model.md),
     [drafts/architecture.md](drafts/architecture.md)) on EasyEcs 4.7 (ADR-082 to ADR-092). Breaking; each step
     proven before the next (W, not R: the requirement ids R0-R11 are taken).
     W10 runs last, after W12 and N9.
@@ -32,8 +32,9 @@ Keep this file current: tick items when done, add items when scope changes.
       `IActor<TSelf>` (inheriting `IUniqueIndexed<TSelf>`, `IEquatable<TSelf>`, `ISystemGroup`,
       `IGroupWith<In<TSelf>>`, with the static virtual `RootPrefab`) and `IChildKey<TSelf>` compile in the framework
       assembly and in a consumer without repeating constraints and without EECS036 (`ActorInterfaceCompilesInConsumer`);
-      a job without component parameters runs through `entity.Run` (`ZeroComponentJobRuns`; otherwise the dispatch
-      checks the filter and calls the method directly); the two `IsPending<T>`/`Cancel<T>` groups, in two static
+      `entity.Run` takes one to nine components (no zero-component form), so a handler without component parameters is
+      no job: the dispatch tests the filter itself (`IsAlive`, `Has<T>` per `[With<T>]`/`[Without<T>]`) and calls the
+      method directly (`ZeroComponentHandlerCalledDirectly`, a filtered one skipped as `Skipped`); the two `IsPending<T>`/`Cancel<T>` groups, in two static
       classes, resolve by constraint (`IsPendingOverloadsResolveByConstraint`); a `Mut<T>` built by a generated
       `[On<T>]` job (`new Mut<T>(ref value, entity)`, the job's `Writes => 0`) stamps only on `Write()` and on a
       `SetIfChanged` that changed the value (`GeneratedJobMutStampsOnlyChanges`); a `ChangedAny` filter built from
@@ -62,14 +63,32 @@ Keep this file current: tick items when done, add items when scope changes.
       `PackagesDependOnlyDownwards` (rewritten for six packages), `WorldCountFollowsCpuRequest`,
       `UseLaunchdDetectsOnlyLaunchd`.
     - [ ] W3 Generator and analyzers: explicit `Key`, typed sends (`[Durable]` asks with a required `settleBy` and an
-      optional `deadline`), typed `Replied` accessors (C# 14 extension blocks), `[On<T>]` jobs (zero-component jobs
-      included; `INoStructuralChanges` inferred from how `Entity` and `World` are used; `Mut<T>` parameters),
+      optional `deadline`), typed `Replied` accessors (C# 14 extension blocks), `[On<T>]` jobs (a handler without component
+      parameters called directly after the dispatch's filter test; `INoStructuralChanges` inferred from how `Entity` and `World` are used; `Mut<T>` parameters),
       `Registration.Create()` as a static extension member in the server project's root namespace reading `K.RootPrefab`
       and the persistent prefabs (the persist set, change tracking switched on for it, #27), configuration tables and
       world singletons, `wire.manifest` (one section per project; `table` with the table type's format hash, `prefab`
       with its id and composition hash (earlier compositions kept), and `record` lines for the whole persist set, ask
       states `untracked`; user projects are Protocol and Server), `INoStructuralChanges` for jobs that only call
-      `SetGroupRate`/`SetGroups`, the draft's §13 checks and warnings. Tests, one
+      `SetGroupRate`/`SetGroups`, the draft's §13 checks and warnings. Today's diagnostic ids under the new model (an id
+      keeps its meaning or is retired; a retired id is never issued again, and every other §13 check takes a new id
+      from DAS023 on):
+      - Kept, same meaning: DAS003 (a type that cannot cross the wire), DAS004 (type id collision), DAS009 (a
+        synchronous wait on a world thread), DAS015 (work started off the world thread), DAS017 (a layout change the
+        manifest does not tolerate), DAS018 (manifest out of date), DAS022 (a `ref` used after a structural change of its
+        entity).
+      - Kept, applied to the new API: DAS001 (an invalid handler: now an `[On<T>]` method's shape), DAS002 (an invalid
+        message type: a non-generic `[NinoType]` struct or `[NinoPooled]` class implementing one marker, `IFromClient`,
+        `IFromClient<R>`, `IToClient`, `IMessageTo<K>` or `IRequestTo<K,R>`), DAS006 (a message used against its direction:
+        `[From<K>]` and the Protocol markers instead of `[FromClient]`/`[ToClient]`), DAS007 (fields in `[Handles<K>]`
+        classes and systems), DAS014 (an invalid persisted component: the persist set's types), DAS019 (a collection
+        held directly by a client message; an error, as §13 lists it).
+      - Retired: DAS005 and DAS011 (already unused), DAS008 (sessions and groups as ask targets are gone; typed sends
+        make a wrong receiver a compile error), DAS010 (no shared-logic project: user projects are Protocol and
+        Server), DAS012 ("a system asks": systems may `Ask`), DAS013 (components live in the Server project; no logic
+        reload to outlive), DAS016 (`IPlaced` is gone), DAS020 (`DisconnectSession` is gone), DAS021 (`[Filter]` is
+        replaced by `[On<Incoming>]`).
+      Tests, one
       generator case per diagnostic, among them: `MessageWithoutNinoTypeReported`, `DurableCancelReported`,
       `DurableReceiverWithoutReloadReported`, `DurableAskerWithoutReloadReported`,
       `IssueClientTokenOutsideDurableHandlerReported`, `IssueClientTokenOnUnsavedRootReported`,
@@ -147,7 +166,8 @@ Keep this file current: tick items when done, add items when scope changes.
       512 rows per world per tick end, ADR-068's `unnest`, per-row CAS; a root whose `SaveEntities` throws skipped and
       logged as `RecordUnwritable`, the rest of the batch written; deactivation, stop and migration saving before the
       destroy, a throw cancelling an idle deactivation, giving up a forced one's or a stop's write with the last record
-      kept and `RecordUnwritable`, aborting a migration with the actor left on the source; `WriteNow` roots every time, other `Unsaved` roots at most
+      kept and `RecordUnwritable`, a migration falling back to such a forced deactivation, an in-place hot restart's
+      snapshot leaving the root out (destroyed in the frozen world as by fencing) instead of aborting; `WriteNow` roots every time, other `Unsaved` roots at most
       every `DaServer:CheckpointInterval`; at most one write in flight per root, later changes in the next write; at
       most `DaServer:StoreWritesInFlight` statements in flight per world, roots beyond waiting, `WriteNow` first,
       counted in `daserver.store.writes_waiting`),
@@ -188,7 +208,7 @@ Keep this file current: tick items when done, add items when scope changes.
       the index on `(type_id, slot, next_due)`; the claim upsert, the write CTE and `DueKeys` on that key,
       `DueKeys(slots, until, after)` over the node's `(type, slot)` pairs in keyset pages of 512 returning the last row,
       the first page after the sentinel `(-2147483648, -1, '-infinity', '\x')`, `until` fixed per scan, each page probing
-      only the pairs at or after the cursor's) in a new table `actor_records`, created under an advisory lock by a
+      only the pairs at or after the cursor's, at most 512 rows from each through `LATERAL … LIMIT`) in a new table `actor_records`, created under an advisory lock by a
       node at start (run mode, `TestCluster` on PostgreSQL) or by the schema mode `--DaServer:Migrate` (create and exit); today's `daserver_actors` table is not read or converted (pre-1.0, breaking: earlier records are not carried over), `StoreDegraded` and `ActivationSlots`, `ActivationFailed`, strict
       placement versions with `Fence` (bumped on every placement change of a type, slot-table moves included; a
       migration's arrival claims with the type's current version), idempotent claims, generations from Unix ms and single-seed formation, the lease
@@ -228,10 +248,10 @@ Keep this file current: tick items when done, add items when scope changes.
       `DisplacedOwnerFencedWithoutWrite`, `GroupFramesFlushedBeforeDeactivationAndMigration`,
       `FencedActorDiscardsGroupFrames`, `MigrationArrivalClaimSurvivesRestart`,
       `MigrationArrivalNeverLowersPlacement`, `MapAndLootSameIdDoNotShareRow`, `DueKeysFiltersBySlot`, `DueKeysPagesPastLimit`,
-      `DueKeysFirstPageFromSentinel`, `DueKeysUntilFixedAcrossPages`, `DueKeysSkipsPairsBeforeCursor`,
+      `DueKeysFirstPageFromSentinel`, `DueKeysUntilFixedAcrossPages`, `DueKeysSkipsPairsBeforeCursor`, `DueKeysPageReadsAtMostAPagePerPair`,
       `UnwritableRootSkippedRestOfBatchWritten`, `UnwritableRootCancelsIdleDeactivation`,
       `UnwritableRootOnForcedDeactivationKeepsLastRecord`, `UnwritableRootOnStopKeepsLastRecord`,
-      `UnwritableRootAbortsMigration`, `NodeStartCreatesNewTableAndIgnoresOld`, `MigrateModeCreatesTableAndExits`,
+      `UnwritableRootMigrationFallsBackToDeactivation`, `UnwritableRootLeftOutOfSnapshot`, `NodeStartCreatesNewTableAndIgnoresOld`, `MigrateModeCreatesTableAndExits`,
       `CoordinatorHotRestartDeadlineKeptBySuccessor`, `TwoExpiredRestartsDoNotDownMajority`,
       `ColdClusterRestartNeverReusesGeneration`, `ParallelSeedsFormOneCluster`, `ArmWithoutKillExpires`,
       `FreezeAbortsWhenStoreHangs`, `TornSnapshotRejected`, `ImageNotMatchingArmRejectsSnapshot`,
@@ -249,13 +269,15 @@ Keep this file current: tick items when done, add items when scope changes.
       Tests: `ReminderActivatesUnloadedActor`, `ReminderSurvivesNodeCrash`, `ReminderFiresOncePerUtcAtWithinActivation`,
       `PeriodicReminderAdvancesInSameRecord`, `ReminderAfterOutageFiresOnce`; BenchmarkDotNet `DueScan` over 1M
       records, 0 B per firing.
-    - [ ] W6b `DaServer.Topics` (ADR-090): the `Topic` actor type, `Subscribe`/`Unsubscribe`/`Publish`, subscribers
-      with their activation epoch, `Subscribe` as a `[Durable]` request (`Unsubscribe` one-way), `[Hosts<Topic>]` with a
-      store, the subscriber's `Subscription` buffer (re-subscribe after `Activated`, unsubscribe on
-      `Deactivating`), one frame per subscriber node; deletes the service `Publish`. Tests:
-      `PublishReachesSubscribersOnEveryNode`, `DeliveryNeverActivates`, `ResubscribesAfterActivation`,
-      `GoneSubscriberPruned`, `StaleUnsubscribeKeepsNewSubscription`, `SubscriptionSurvivesTopicCrash`; BenchmarkDotNet fan-out to 1k/10k subscribers on
-      1/3 nodes, 0 B per delivery.
+    - [ ] W6b `DaServer.Topics` (ADR-090): the `Topic` actor type, one-way `Subscribe`/`Unsubscribe`/`Publish`,
+      subscribers with their activation epoch (`Subscribe` idempotent, the highest epoch kept, a lower one ignored, a
+      table change tagging the Topic's root `WriteNow`), `[Hosts<Topic>]` with a store, the subscriber's `Subscription`
+      buffer (subscribe after `Activated`, renew every `DaServer:Topics:RenewInterval` while not `Deactivating` and on
+      `[Removed<Deactivating>]` of a living root, unsubscribe on `Deactivating`), one frame per subscriber node; deletes
+      the service `Publish`. Tests: `PublishReachesSubscribersOnEveryNode`, `DeliveryNeverActivates`,
+      `ResubscribesAfterActivation`, `GoneSubscriberPruned`, `StaleUnsubscribeKeepsNewSubscription`,
+      `LowerEpochSubscribeIgnored`, `SubscriptionRenewsAfterTopicCrash`, `CancelledDeactivationResubscribes`;
+      BenchmarkDotNet fan-out to 1k/10k subscribers on 1/3 nodes, 0 B per delivery.
     - [ ] W7 Samples (mmo, flashsale) on the new model (their systems use `Mut<T>`), the mmo's drops split
       between a non-ticking `Loot` actor (their records, persistent, the only `[Durable]` asker) and the map (what
       clients see, not saved, shown again after every activation that is not a migration), its avatars not saved, its AOI telling entries and exits (`Appear` into a cell newly written, `Disappear` before every destroy, a crossing's snapshot of the cells newly subscribed); the login sample issuing client tokens inside a `[Durable]` request (the issue sequence

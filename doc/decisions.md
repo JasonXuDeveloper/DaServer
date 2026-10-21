@@ -1100,7 +1100,10 @@ Replaced by ADR-081.
     root whose `SaveEntities` throws (a state that does not serialize) is left out of the batch and logged
     (`RecordUnwritable`); the rest of the batch is written. Deactivation, stop and migration also save before they
     destroy: when that throws, an idle deactivation is cancelled, a forced one or a stop gives the write up (the last
-    stored record stays, `RecordUnwritable`), and a migration is aborted with the actor left on the source. A refused
+    stored record stays, `RecordUnwritable`), and a migration falls back to such a forced deactivation (placement
+    already names the target, which activates from the last record); an in-place hot restart leaves the root out of
+    the snapshot (destroyed in the frozen world as by fencing, `RecordUnwritable`), so it re-activates from its last
+    record and the restart goes on. A refused
     row fences only its actor; a timed-out write is retried with the same bytes and generation, and a row found at its
     own epoch and generation counts as written. `[Durable]` items ride the next write; other changes at most every
     `DaServer:CheckpointInterval`. Change tracking on the persist set tags written roots `Unsaved`, so only those are
@@ -1110,7 +1113,9 @@ Replaced by ADR-081.
     before `until`, in pages of 512 keyset-ordered by `(type_id, slot, next_due, key)` after the row `after`, and
     returns the page's last row; `DueScan` wakes them. A scan fixes `until` once; its first page passes a sentinel
     below every real row, `(-2147483648, -1, '-infinity', '\x')` (`type_id` is `integer`, `slot` a `smallint` whose
-    real values are 0..4095), and each page probes only the pairs at or after the cursor's pair.
+    real values are 0..4095), and each page probes only the pairs at or after the cursor's pair, taking at most 512
+    rows from each (`LATERAL … LIMIT` over that pair's index range) with the pairs in order, so a page sorts rows per
+    pair and stops at 512 instead of sorting every later pair's backlog.
   - **Schema:** the `actor_records` table is created under an advisory lock, either by a node at start (run mode,
     `TestCluster` on PostgreSQL, and published nodes until roadmap W12) or by the node image in schema mode
     (`--DaServer:Migrate`: create and exit), both W6; W12 runs that mode as the published schema Job with a DDL role
@@ -1543,7 +1548,7 @@ Replaced by ADR-081.
   changed" leaks; the order between mail, delayed sends and systems is implicit. EasyEcs provides what a
   model without these needs: single-entity jobs (`entity.Run(ref job[, filter])`), group filters carried by
   interfaces (`IGroupWith<T>`), `world.Descendants(root)` and `LoadEntitiesInto(…, markWritten: false)`.
-- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v54), structured as in
+- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v55), structured as in
   [drafts/architecture.md](drafts/architecture.md):
   - **The actor type is its address, its root component, its root prefab and its system group**:
     `[TickRate(30)] partial record struct Map(long Id) : IActor<Map>` (`IActor<T>` inherits `IEquatable<T>`, so
@@ -1682,7 +1687,8 @@ Replaced by ADR-081.
   - **Writes are asynchronous and batched by default**: changes tag roots `Unsaved`; at the end of every tick (after
     every mail batch for actor types without `[TickRate]`) a world writes the roots due in one statement (ADR-068's
     batch over arrays with `unnest`, kept), each row with its own epoch CAS: roots that ran a `[Durable]` item every
-    time, other `Unsaved` roots at most every checkpoint interval, deactivations' final writes with them. Graceful exits (deactivation, scale-in, rolling upgrade, hot restart, shutdown) lose nothing;
+    time, other `Unsaved` roots at most every checkpoint interval, deactivations' final writes with them. Graceful exits (deactivation, scale-in, rolling upgrade, hot restart, shutdown) lose nothing
+    but the unwritten changes of a root whose state does not serialize, which keeps its last record;
     only a crash loses at most the last checkpoint interval.
   - **Persistence is per entity kind, not per component type**: entities spawned from a persistent prefab (`[Persist]`
     on the actor type's `RootPrefab`, `[Prefab<K>(Persist = true)]` on a child prefab) are saved with all their
@@ -2070,16 +2076,19 @@ Replaced by ADR-081.
     to the runtime because `[Durable]` asks need them too (ADR-082) and the runtime depends on no capability
     (ADR-045). Only the runtime computes `NextDue`; the package writes `WakeAt` on its reminders.
   - **`DaServer.Topics`**: a built-in `Topic(long Id)` actor type with a persisted `DynamicBuffer<Subscriber>`;
-    `Subscribe`, `Unsubscribe` and `Publish` on `Entity`. `Subscribe` is a `[Durable]` request: the framework holds the
-    Topic's answer until the write holding the subscription succeeds and the subscriber re-asks until answered, so a
-    Topic crash loses no subscription. `Unsubscribe` stays one-way: it is sent in the `Deactivating` pass, where a
-    durable ask would cancel an idle deactivation, and a lost one is pruned by the gone-subscriber notice. A server
-    type hosting topics declares `[Hosts<Topic>]` and needs a store. Each `Subscriber` carries the subscriber's activation epoch,
-    which `Subscribe` updates; an unsubscribe or a gone-subscriber notice removes it only when the epochs match, so a
-    late notice from an old activation never drops a new one's subscription. The subscriber keeps its own `Subscription` buffer,
-    re-subscribing after activation and unsubscribing on deactivation, so delivery never activates an actor. A publish
-    is serialized once, one frame per subscriber node; at most once. It replaces today's `Publish`. Durable streams
-    (replay, offsets, consumer groups) stay with Kafka or NATS JetStream.
+    `Subscribe`, `Unsubscribe` and `Publish` on `Entity`, all one-way. `Subscribe` carries the subscriber's activation
+    epoch and is idempotent: the Topic keeps the highest epoch per subscriber and ignores a lower one, and tags its
+    root `WriteNow` whenever its table changes, so the change is written at that tick end. The subscriber keeps its own
+    `Subscription` buffer, and the package's system renews: it subscribes after activation, re-sends `Subscribe` every
+    `DaServer:Topics:RenewInterval` (default 60 s) while the root is alive and not `Deactivating`, and again on
+    `[Removed<Deactivating>]` of a living root (a cancelled idle deactivation has already unsubscribed). A Topic crash
+    that lost an unwritten change, or a lost `Subscribe`, heals within one interval. `Unsubscribe` is sent in the
+    `Deactivating` pass; a lost one is pruned by the gone-subscriber notice. An unsubscribe or a gone-subscriber notice
+    removes a subscriber only when the epochs match, so a late notice from an old activation never drops a new one's
+    subscription. Delivery never activates an actor. A server type hosting topics declares `[Hosts<Topic>]` and needs
+    a store. A publish is serialized once, one frame per subscriber node; at most once, and after a Topic crash a
+    subscription it had not written misses publishes for at most one renew interval. It replaces today's `Publish`.
+    Durable streams (replay, offsets, consumer groups) stay with Kafka or NATS JetStream.
   - **Non-.NET clients**: the client wire protocol is published as a specification (frames, handshake, `Ready`,
     re-join and slots, `Retire` and `HandedOff`, `Busy` with its retry-after, keep-alive), with the C# SDK as the
     reference and one conformance suite run against every implementation. A TypeScript client over WebSocket uses
