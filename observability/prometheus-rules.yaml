@@ -36,6 +36,7 @@ groups:
         # and leave all the time and read the table a few seconds apart, so counts differ for good while every node is
         # fine. A node is behind only when the cluster's newest version is ahead of it and its own has not moved for two
         # minutes: it cannot read the table (it is isolated, or its membership data source is starved).
+        # Target (roadmap W7e): today's nodes export no daserver_cluster_view_version, so this never fires yet.
         expr: >-
           (
             max by (cluster) (last_over_time(daserver_cluster_view_version[2m]))
@@ -144,9 +145,11 @@ groups:
         # After a crash takeover on Kubernetes the node runs in the container that was parked, with the idle-sized
         # requests (ADR-098): little CPU weight, first in line for the OOM killer. The node reports it until the
         # resize-only rollout run sets the requests by role again; the Dashboard dispatches that run itself when it sees
-        # the gauge, so this fires only when that keeps failing or no Dashboard runs.
+        # the gauge (once per incarnation plus one retry, outside the type's lock), so ten minutes covers a queued run
+        # and this fires only when that keeps failing or no Dashboard runs. Target (roadmap W11): today's nodes export
+        # no such gauge.
         expr: max by (cluster, type, node) (last_over_time(daserver_node_requests_low[2m])) > 0
-        for: 2m
+        for: 10m
         labels:
           severity: warning
         annotations:
@@ -154,11 +157,11 @@ groups:
           description: "A crash takeover left the node in the container sized for a parked instance. Run the rollout with --type, --node, --incarnation and --resize-only for this node (the Dashboard's Resize action) to set the requests by role again."
 
       - alert: DaServerAskLatencyHigh
-        # Target (roadmap W7e): today's nodes export no ask histogram, so this never fires yet. The type's p99 comes from
-        # buckets merged across its nodes, never a percentile of node percentiles; a two-minute rate holds at least four
-        # pushes however the export drifts. The Dashboard draws the type's limit from daserver_limit.
-        expr: >-
-          histogram_quantile(0.99, sum by (cluster, type, le) (rate(daserver_ask_duration_seconds_bucket[2m]))) > 0.025
+        # Target (roadmap W7e): today's nodes export no ask histogram, so this never fires yet. The histogram is recorded
+        # by the node that handles the ask, so `type` is the callee's server type. The type's p99 is the recording rule
+        # below, from buckets merged across its nodes, never a percentile of node percentiles. The Dashboard draws the
+        # type's limit from daserver_limit.
+        expr: cluster_type:daserver_ask_duration_seconds:p99 > 0.025
         for: 5m
         labels:
           severity: warning
@@ -167,3 +170,26 @@ groups:
           daserver_unit: "s"
           summary: "Asks to {{ $labels.type }} take {{ $value | humanizeDuration }} at p99"
           description: "Asks to this server type are slower than its limit: a hot actor, a slow store behind commits, or a node short of CPU. The Dashboard's incident shows the spread across nodes and the slowest actors."
+
+      - alert: DaServerOnceTooOld
+        # Target (roadmap W4): a [Once] attempt sent more than MaxAskTimeout + ClockSkew ago is dropped by its receiver.
+        # A steady rate means a clock (a node's, or a gateway's for clients) has drifted past ClockSkew, and every
+        # attempt from it is being dropped silently while AskUntilAnswered keeps asking.
+        expr: sum by (cluster, type, node) (rate(daserver_once_too_old_total[5m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.node }} drops [Once] attempts as too old"
+          description: "Attempts arrive sent more than MaxAskTimeout + ClockSkew ago: check NTP on the senders' nodes and the gateways, and DaServer:ClockSkew."
+
+  - name: daserver-recording
+    # Target (roadmap W7e): the ask histogram does not exist yet. A two-minute window holds eight 15 s pushes, and at
+    # least four however the export drifts. `type` is the callee's server type (the handling node records the ask).
+    rules:
+      - record: cluster_type:daserver_ask_duration_seconds_bucket:rate2m
+        expr: sum by (cluster, type, le) (rate(daserver_ask_duration_seconds_bucket[2m]))
+      - record: cluster_type:daserver_ask_duration_seconds:p99
+        expr: histogram_quantile(0.99, cluster_type:daserver_ask_duration_seconds_bucket:rate2m)
+      - record: cluster_type_node:daserver_ask_duration_seconds:p99
+        expr: histogram_quantile(0.99, sum by (cluster, type, node, le) (rate(daserver_ask_duration_seconds_bucket[2m])))
