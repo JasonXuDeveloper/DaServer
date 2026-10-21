@@ -342,14 +342,18 @@ Keep this file current: tick items when done, add items when scope changes.
         `Once:SendersPerReceiver`; per sender the mark, and `forget_after` or a client session's `delete_after`; an actor
         sender's rows forgotten only when its record is deleted (`root.Delete()` through `daserver_delete_actor`, rows
         marked `forget_after = now() + MaxAskTimeout + 3 × ClockSkew` in the same transaction: `ForgetOnSenderDestroy`,
-        `ForgetDrivenToCompletionAfterCrash`, an in-flight duplicate before `forget_after` still answered) or the receiver's
-        own record is (`ReceiverDestroyDropsRows`); a receiver with entries woken to probe by a framework `WakeAt`
+        `DeleteAndForgetAtomic`, an in-flight duplicate before `forget_after` still answered; a sender re-created under the
+        same key clears the old `forget_after` with its higher seed: `RecreatedSenderOutlivesOldForgetAfter`) or the
+        receiver's own record is (`ReceiverDestroyDropsRows`), a receiver deleted only once its `Unacked` is empty
+        (`DeleteWaitsForUnackedEmpty`; `root.Delete()` answers `Outstanding` while the root's own `Asking` children wait:
+        `DeleteRefusedWhileAsking`; a Deleting root not migrated, continued after a freeze; a retried delete with no record
+        counts as done: `RetriedDeleteWithNoRecordSucceeds`); a receiver with entries woken to probe by a framework `WakeAt`
         (`DeactivatedReceiverWakesToProbe`); in-memory rows of an always-active receiver dropped in the idle scan at their
-        time)
+        time, which also range-reads its rows with `forget_after` set every `ProbeAfter`: `IdleScanLearnsForgetAfter`)
         and `Unacked` in the record (sender, sequence, stored reply of at most 32 bytes, write generation); the check before
         the handler (too old, stale at or below `n`, a repeat answered with the stored reply after its write,
         `WindowFull` past `OnceWindow`, `Unacked`, the row changes or the rows (with `RetryAfter`), `NoActor` for a missing
-        receiver the request may not activate, an unstored `Busy` at the `Asking` hard cap (`OvershootIsUnstoredBusy`), else
+        receiver the request may not activate, an unstored `Busy` while the receiver is being deleted, else
         run once with an implicit commit); cumulative acknowledgements
         taken from the sender's last written record on every mail of the pair, and one on the internal lane after the
         answer's item is written; window updates pushed in order to refused senders from a bounded FIFO (`Once:RefusedQueue`), sent when entries clear
@@ -363,7 +367,8 @@ Keep this file current: tick items when done, add items when scope changes.
         quarter of the window (`SessionResignedSparingly`), resumed only with a valid client token and never past its
         expiry (`StolenSessionCannotOutliveClientToken`), refused by every gateway past `T`, the SDK counting `R` on a
         monotonic clock (`SdkIgnoresDeviceClock`), a single `[Once]` call resent for at most `ResumeWindow` from its first
-        attempt, by the SDK and by every gateway through the token's high-water marks (`ClientCallResendWindowEnforcedByGateway`:
+        attempt, by the SDK and by every gateway through the token's high-water marks (an id above an older token's marks
+        counted from that token's quarter: `OlderTokenCannotExtendDeadline`) (`ClientCallResendWindowEnforcedByGateway`:
         a client kept alive by heartbeats while the receiver is unreachable for minutes never runs a call twice), the
         session's rows deleted at the latest resend deadline seen plus `MaxAskTimeout + ClockSkew`
         (`ClientRowsDeletedAfterLastResendDeadline`), stale `[Once]` call
@@ -374,9 +379,11 @@ Keep this file current: tick items when done, add items when scope changes.
         its `WakeAt`; only a value or a definite refusal delivered as `Replied`, in an item that commits implicitly and
         destroys the `Asking` (always under the root, the asking entity recorded; an answer for a destroyed asking
         entity dropped and counted); `Faulted`/`NotHandled` accepted only from the current attempt's call id; a `Stale`
-        answer counted and alerted, never delivered; past `OnceOutstanding`, requests to the root other than `[Once]`
-        ones answered `Busy` before they run (`AskUntilAnswered` returns nothing; `MutualOnceAsksNeverDeadlock`), a hard
-        cap a quarter above it (`OutstandingHardCapThrows`); the asking entity found again by its identity after a reload
+        answer counted and alerted, never delivered, the `Asking` stopped and counted in the persisted gauge
+        `daserver.once.stopped` (`StoppedAskingGaugeHoldsAlert`; the counters an alert reads exported at 0 from start);
+        past `OnceOutstanding` asks in flight, requests to the root other than `[Once]` ones answered `Busy` before they
+        run (`AskUntilAnswered` returns nothing; `[Once]` requests never refused on it: `MutualOnceAsksNeverDeadlock`),
+        asks made past it written as unsent `Asking` children in the item's own write (`OverflowAskingWrittenUnsent`); the asking entity found again by its identity after a reload
         or migration, never by a raw entity id (`AskingEntitySurvivesReload`);
       - the wake: `WakeAt` on persistent framework entities (`Asking`, reminders), the `ArmSystem` arming a `Due` from it
         on load and activation, re-arming it on `[Changed<WakeAt>]` and disarming it on `[Removed<WakeAt>]`, the firing
@@ -470,7 +477,7 @@ Keep this file current: tick items when done, add items when scope changes.
       `InMemoryTableSharedByTestCluster`, `AspireAddsPostgresForMultiNodeWithoutStore`, `AspireSetsSingleNodeForOneNodeWithoutStore`, `DefunctRowsCleanedUp`, `ChainedSlotMoveWaitsForHandoff`, `ForwardedMailOrderedBeforeParked`,
       `ClaimNotTakenReturnsStoredOwner` (forward, not `NoActor`), `CanCreateFalseWritesNothing`,
       `NonPersistedTypeClaimsNoRow`, `NeverWrittenRowSweptAfterTtl` (through the `SECURITY DEFINER` function; the
-      runtime role has no `DELETE`), `RootDeleteRemovesRecordAndForgets` (`root.Delete()` through `daserver_delete_actor`: an epoch compare, a fenced activation deletes nothing; the sender's `[Once]` rows marked in a second statement, its receiver rows deleted; `DeleteOnUnsavedRootIsDAS031`), `SweepRunsOnOldestPersistedHost`, `SweepFirstBatchSentinel`, `RolesStepIdempotent`, `RolesStepCreatesConfiguredSchema` (owned by the owner role, the runtime role's `USAGE` effective), `RolesStepTakesOverExistingTables`, `RolesStepUpdatesPassword`
+      runtime role has no `DELETE`), `RootDeleteRemovesRecordAndForgets` (`root.Delete()` through `daserver_delete_actor`, one function with three statements in one transaction: an epoch compare, a fenced activation deletes nothing; the sender's `[Once]` rows marked `GREATEST` of their mark and the new one, its receiver rows deleted; `DeleteOnUnsavedRootIsDAS031`), `SweepRunsOnOldestPersistedHost`, `SweepFirstBatchSentinel`, `RolesStepIdempotent`, `RolesStepCreatesConfiguredSchema` (owned by the owner role, the runtime role's `USAGE` effective), `RolesStepTakesOverExistingTables`, `RolesStepUpdatesPassword`
       (and creates a non-superuser owner role), `MemberUpsertLeavesIAmAlive`, `CanCreateFalseStillActivatesExistingRecord` (a map removed from the table), `CanCreateFalseOnUnsavedTypeIsNoActor`, `JoinOnConnectCreatesKeyDespiteActivatedBy` (a first login creates the `Player` row; `[ActivatedBy]` and `CanCreate` do not apply to the join),
       `HandoffQueryAdoptedPerSlotOnly`, `HandoffQueryVersionStopsSourceActivation`,
       `EpochNotReusedAfterSweep`, `EveryClaimBranchTakesSequenceEpoch`, `ConcurrentNewKeyClaimRetriesEmptyResult`,
@@ -499,8 +506,10 @@ Keep this file current: tick items when done, add items when scope changes.
       `OnceRunsOnceSameSequence`, `StaleSequenceRefused` (an attempt sent before the acknowledgement and delivered late,
       past a migration, never runs), `CumulativeAckPrunes`, `LostAckHarmless`, `ProbeClearsLostAck`,
       `ProbeDeletedSenderForgotten`, `WindowHoldsAtSender`, `ZeroWindowProbeOpens`, `ForgetOnSenderDestroy`,
-      `ForgetDrivenToCompletionAfterCrash`, `ReceiverDestroyDropsRows`, `HandoverKeepsUnwrittenRowChanges`,
-      `OvershootIsUnstoredBusy`, `ClientCallResendWindowEnforcedByGateway`,
+      `DeleteAndForgetAtomic`, `ReceiverDestroyDropsRows`, `DeleteWaitsForUnackedEmpty`, `DeleteRefusedWhileAsking`,
+      `RecreatedSenderOutlivesOldForgetAfter`, `IdleScanLearnsForgetAfter`, `RetriedDeleteWithNoRecordSucceeds`,
+      `HandoverKeepsUnwrittenRowChanges`, `OverflowAskingWrittenUnsent`, `StoppedAskingGaugeHoldsAlert`,
+      `OlderTokenCannotExtendDeadline`, `ClientCallResendWindowEnforcedByGateway`,
       `OnceSequenceSurvivesCrashAndHandover`, `ClientSessionAckPrunes`, `GatewayRefusesStaleCallId`,
       `ClientRowsDeletedAfterLastResendDeadline`, `OnceResentUnderSameSequence`, `AppRestartIsNewSession`,
       `AskDeadlineCappedAtMaxAskTimeout`, `AskUntilAnsweredCommitsIntent`, `LinkOutcomeNeverReachesReplied`,
@@ -594,8 +603,10 @@ Keep this file current: tick items when done, add items when scope changes.
       (a forged callback with a valid id but no provider payment credits nothing), `AmountMismatchListedForRefund` (the state stays `Open`, the deadline still notifies),
       `UnpaidPaymentExpiresAndSettlesExpired`, `LatePaymentDuringExpiredSettleIsRefunded` (a payment landing while
       `Settled(Expired)` is in flight is listed for refund and the answer leaves the charge `Expired`),
-      `RepeatedSecondPaymentRefundedOnce`, `TwoLatePaymentsBothRefunded`, `PaymentDeletedAfterRetention` (its rows at the
-      player are forgotten),
+      `RepeatedSecondPaymentRefundedOnce`, `TwoLatePaymentsBothRefunded`, `PaymentDeletedAfterRetention` (`Purge` deletes only a
+      settled or expired charge whose refunds are all done and whose `SettledAt` plus `Payments:Retention` has passed;
+      its rows at the player are forgotten), `RefundCallbackMarksRefundDone` (a repeated refund callback answers the
+      earlier result), `PurgeKeepsChargeWithPendingRefund`,
       `WebhookAnswers2xxForEveryDefiniteOutcome`, `CheckoutTwiceIsOneProviderCheckout`, `CheckoutBeforeOpenRetriesThen409`, `CheckoutEndpointReadsAmountFromPayment`,
       `ProviderSimulatorRetriesCallback`, `ReconciliationReportsMissingStuckAndLate`, `StashPrefabRoundTrip` (Stash, Prize, Position and Granting
       in the record and back), `UnansweredGrantRepliesNothing` (the map's `Claim` times out, never a definite `false`),
@@ -604,7 +615,8 @@ Keep this file current: tick items when done, add items when scope changes.
       a map into `Reload`),
       `OrderCompensatesOnlyOnDefiniteRefusal` (a timeout keeps asking; the payment of a reserved order settled as
       expired writes `Releasing`, which survives a crash), `SoldOutEndsOrderWithoutRelease`,
-      `ReleasedStockIsSoldAgain` (`Gate` re-learns a shard through the shard's `Describe`), `OrdersDeletedAfterSaleForgetRows`, `OrderPaidThroughSharedPaymentSample` (Reserving,
+      `ReleasedStockIsSoldAgain` (`Gate` re-learns a shard through the shard's `Describe`), `OrdersDeletedAfterSaleForgetRows` (each order's own reminder at the sale's end plus the payment window),
+      `EndedSaleRefusesNewOrders`, `OrderPaidThroughSharedPaymentSample` (Reserving,
       AwaitingPayment, Confirmed), `OrderPaymentExpiryReleasesStock`, `GuildDailyResetFiresAfterCrash`, `BuyerCannotOrderForAnother`,
       `AppHostServerTypesGeneratedFromManifest`, `ClientPortWithoutConnectionHostFailsBuild`,
       `RouteCheckReadsCommittedManifests`; the 1,000-bot and
@@ -725,7 +737,7 @@ Keep this file current: tick items when done, add items when scope changes.
       `RunLookupFailureKeepsLock`, `CallbackWithoutValidSignatureRefused`, `SwappedRequestsShownWithResize`,
       `ResizeOutsideTypeLock` (idempotent, per-node group), `ResizeDispatchedOncePlusOneRetry`, `ResizeStalledAfterTenMinutes`, `LeaseRenewedOnOwnTimer` (a slow refresh never lets it lapse), `ClaimOnlyAfterLeaseExpiredALeaseAgo`,
       `LateDoneNeverOverwritesFailed`, `CallbackConfirmedByRunLookup` (a replayed callback is harmless),
-      `RunFoundWithinAnHourReattached`, `LateRunRefusedByPipelineAfterAnHour` (`--requested-at`), `LateRunRefusedAfterMarkFailed` (the step asks `GET /admin/actions/{id}`), `ResizeRowsTakeNoTypeLock`, `ResizeDispatchedOncePerIncarnationAcrossReplicas`, `StalledResizeHoldsOnlyItsNode`, `MarkFailedOfferedForLongRequestedOrUnknown`,
+      `RunFoundWithinAnHourReattached`, `LateRunRefusedByPipelineAfterAnHour` (`--requested-at`, only when the Dashboard does not answer), `QueuedRunBehindLongRolloutRuns` (an answering Dashboard decides, not the hour), `PipelineCheckRetriesBeforeRefusing` (a Dashboard restarting for a minute fails no run), `RolloutJobReachesDashboardActions` (the network policy admits the Job's pods to `/admin/actions` only; Compose's `rollout` on the internal network), `LateRunRefusedAfterMarkFailed` (the step asks `GET /admin/actions/{id}`), `ResizeRowsTakeNoTypeLock`, `OperatorResizeDedupedByIdempotencyKey` (no attempt number), `MarkFailedOnResizeWritesResizeRow`, `ResizeDispatchedOncePerIncarnationAcrossReplicas`, `StalledResizeHoldsOnlyItsNode`, `MarkFailedOfferedForLongRequestedOrUnknown`,
       `MarkFailedInOneTransaction`, `MarkFailedOnlyFromStateSeen`, `ClusterLockExcludesTypeLocks` (a config push is refused
       while a type rolls and the reverse, under concurrent inserts from two replicas: the serialising advisory lock),
       `PushRefusedBehindStalledTypeNamesIt`, `StagingAcksKeyedByIncarnation`, `RenewalZeroRowsStopsStoreErrorRetries`, `HandoverCarriesConfigVersion`, `ResizeProgressIsGaugeClearing`, `DashboardDispatchesResizeFromHealth`, `ParkedInstanceExportsNoMetrics`, `ParkedInstanceNeverShownAsNode`, `FocusReturnsToOpener`,

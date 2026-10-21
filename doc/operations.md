@@ -93,7 +93,7 @@ let Prometheus scrape the nodes, or every series arrives twice under two identit
 `service.instance.id` through the Collector). KEDA and the Prometheus adapter query Prometheus, not the pod, so either
 path feeds autoscaling. Set the metric export interval to 15 s (`OTEL_METRIC_EXPORT_INTERVAL=15000`; the SDK's
 default is 60 s): the rules read pushed gauges over two-minute windows (`last_over_time(...[2m])`, since pushed series
-get no staleness markers) and rates over five.
+get no staleness markers) and rates over windows holding at least four pushes.
 The repository ships two starting points, checked against a running node:
 
 - `observability/grafana-dashboard.json`: a Grafana dashboard (import it, pick the Prometheus data source): members
@@ -108,7 +108,7 @@ The repository ships two starting points, checked against a running node:
   or wrap the groups in a `PrometheusRule` for the Prometheus Operator. A rule that compares a reading against a number carries that
   number as the annotation `daserver_limit` (and its unit as `daserver_unit`): change both together when you tune it.
   Every rule about nodes groups by `cluster`, `type` and `node` (`DaServerAskLatencyHigh`, a type's p99, by `cluster`
-  and `type`; `DaServerMembersDisagree` by `cluster`), so Alertmanager groups an incident per rule and server type; a
+  and `type`; `DaServerMembersDisagree` also keeps `cluster`, `type` and `node`: one alert per lagging node), so Alertmanager groups an incident per rule and server type; a
   label a node does not send yet is empty, so the rules work on one cluster today. `DaServerNodeSilent` fires for a
   node seen in the last 15 minutes that has pushed nothing for two minutes, whose series would otherwise vanish and
   resolve its alerts; a node whose final push carries the `close` stop phase stopped gracefully and is not reported (a

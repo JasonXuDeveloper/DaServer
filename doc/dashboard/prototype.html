@@ -924,7 +924,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
         var h = n.n === S.hl ? ' hl' : '', bad = over(n.p99) || far(t, n) ? ' ind' : '', act = n.st === 'ok' && n.rq > 0, rs = n.st === 'swapped';
         // a running node offers its action; any other says what it is doing, or why it has no reading
         tb += M('b-n' + r + 'a', n.n, 'td' + h) + M('b-n' + r + 'e', fresh(n) ? dur(n.p99) : '—', 'td r' + h + bad) +
-          '<span class="td act2">' + (act ? '<button class="lnk" data-restart="' + esc(n.n) + '">' + M('b-n' + r + 'f', 'Restart') + '</button>' : rs ? '<button class="lnk" data-resize="' + esc(n.n) + '" title="' + esc(state(n)) + '">' + M('b-n' + r + 'f', 'Resize') + '</button>' : M('b-n' + r + 'f', state(n), 'st' + h + (fresh(n) ? '' : ' ind'))) + '</span>';
+          '<span class="td act2">' + (act ? '<button class="lnk" data-restart="' + esc(n.n) + '">' + M('b-n' + r + 'f-restart', 'Restart') + '</button>' : rs ? '<button class="lnk" data-resize="' + esc(n.n) + '" title="' + esc(state(n)) + '">' + M('b-n' + r + 'f-resize', 'Resize') + '</button>' : M('b-n' + r + 'f-state', state(n), 'st' + h + (fresh(n) ? '' : ' ind'))) + '</span>';
       });
       tb += '</div>';
     }
@@ -1366,7 +1366,8 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   function markFailed(id) {
     var a = ACTIONS.filter(function (x) { return x.id === id; })[0]; if (!a) return; var t = T(a.type), seenState = a.state;
     ask({ title: 'Mark action ' + id + ' failed', text: 'Action ' + id + ' (' + a.kind.toLowerCase() + ' ' + a.target + ') ' + (a.state === 'Stalled' ? 'has made no progress for ten minutes' : 'has been ' + a.state.toLowerCase() + ' for ten minutes') + '. Marking it failed releases ' + (t ? t.name : 'the cluster') + '\'s lock; it does not stop the pipeline\'s run, which you can cancel there.',
-      need: id, verb: 'Mark failed', kind: 'Mark failed', reason: true, key: 'Mark failed ' + id, target: 'action ' + id, type: a.type, unlocked: true, pipeline: null,
+      // its own row is written Done under the same type (a Resize's: a resize row for that node, no attempt number)
+      need: id, verb: 'Mark failed', kind: 'Mark failed', reason: true, key: 'Mark failed ' + id, target: 'action ' + id, type: a.type, rowType: a.type, unlocked: true, pipeline: null,
       // conditioned on the state the operator saw: an action that moved on meanwhile is not failed while healthy
       check: function () { return a.state !== seenState ? 'Action ' + id + ' moved from ' + seenState.toLowerCase() + ' to ' + a.state.toLowerCase() + '. Nothing was done; look again.' : !markable(a) ? 'Action ' + id + ' is ' + a.state.toLowerCase() + ' now. Nothing was done.' : null; },
       done: 'Action ' + id + ' marked failed.', run: function (m) { settleAction(a, 'Failed'); settleAction(m, 'Done'); } });
@@ -1407,7 +1408,9 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
       var err = STORE_DOWN ? 'The store cannot be reached: nothing was sent.' + (c.pipeline ? ' The deploy pipeline can still run it: ' + c.pipeline : ' Try again when the store answers; any lock stays until then.') : same ? 'Already requested as action ' + same.id + ' (' + same.state.toLowerCase() + '). Nothing new was sent.' : c.type && !c.unlocked && running(c.type) ? busyText(c.type) : c.check();
       // a refusal sends nothing and enables the button again, so a "wait" can be retried without retyping
       if (err) { $('cerr').textContent = err; sent = false; upd(); return; }
-      var a = { id: (ASEQ++).toString(16), t: NOW, key: c.key, kind: c.kind || c.verb, target: c.target, type: c.unlocked ? null : c.type, reason: r ? r.value.trim() : '', state: 'Requested' };
+      // a Resize row has no type (and an operator's has no attempt number: its key dedupes it); Mark failed's row
+      // keeps the type of the action it fails but is written Done at once, so it holds no lock
+      var a = { id: (ASEQ++).toString(16), t: NOW, key: c.key, kind: c.kind || c.verb, target: c.target, type: c.unlocked ? (c.rowType || null) : c.type, reason: r ? r.value.trim() : '', state: 'Requested' };
       ACTIONS.push(a); audited(a); c.run(a);
       // the Dashboard's own actions are changes too
       CHANGES.unshift(a.change = { id: 'a' + a.id, t: NOW, kind: a.kind, target: c.need, detail: a.target + (a.reason ? '; ' + a.reason : ''), by: 'You, action ' + a.id, result: a.state, note: '' });

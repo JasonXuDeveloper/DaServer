@@ -2236,7 +2236,11 @@ Replaced by ADR-098.
     the earlier result, and changes no state, so the deadline still notifies the owner; a daily reconciliation
     against the provider's report lists what is missing, stuck or listed for refund, and deletes (`root.Delete()`)
     payments settled, refunded and past `Payments:Retention` (30 days), which also forgets their `[Once]` rows at
-    the owners (ADR-099). `Open` is `partial` in the sample, and each game adds its `[From<Player>]` or
+    the owners (ADR-099): it sends each reconciled payment a `Purge`, which deletes only a charge that is `Settled` or
+    `Expired`, whose refunds are all done (each refund element carries the time the provider's verified refund
+    callback, `Refunded(providerRef)` through `ICluster`, recorded) and whose `SettledAt` plus the retention has
+    passed, and answers `false` otherwise. A flash-sale `Order` reminds itself at the sale's end plus the payment
+    window and deletes itself in a final state; `Gate` refuses an ended sale, so a deleted order is never created again. `Open` is `partial` in the sample, and each game adds its `[From<Player>]` or
     `[From<Order>]` beside its `PayFor` and `Notify`.
     The sample's provider is a simulator (checkout, a signed callback, a verify API, refunds and a daily report) that
     the bots pay through in the E2Es. The game supplies its `PayFor` type and its `Notify`; nothing in it is a
@@ -2378,7 +2382,8 @@ Replaced by ADR-098.
     - **One at a time.** Each server type has one action at a time: a rollback, a hot restart, a node restart or a
       rollout. Another action waits, and its button names the running one. The confirmation says when another node
       of the type is not running. Every action on a type takes the type's lock, a node's restart included (a Resize does not: its row has no type, a unique index on (node, incarnation,
-      attempt) admits its first attempt and one retry once across replicas, it runs in a per-node concurrency group and
+      attempt) admits its automatic first attempt and one retry once across replicas, an operator's Resize has no
+      attempt number and is deduplicated by its idempotency key, it runs in a per-node concurrency group and
       sets requests by role, so it is idempotent, never waits behind a rollback, and a Stalled one holds only its node); an action
       on the whole cluster (a config push) takes the sentinel type `*cluster`, since `type` is never NULL (a unique
       index never conflicts on NULL). The two exclude each other: a config push is refused while any type holds a lock (naming
@@ -2399,8 +2404,11 @@ Replaced by ADR-098.
       action id. A run not found yet (dispatch creates runs asynchronously, late during a pipeline incident) is looked
       for during an hour and re-attached if it appears; after that the action is Failed, and the pipeline itself refuses a run that
       appears later: every dispatch carries `--action` and `--requested-at`, and the rollout step's first step asks the
-      Dashboard (`GET /admin/actions/{id}`, signed with the admin key) whether the action is still unfinished, and
-      refuses a Failed or unknown action, no answer, or one requested more than an hour ago; so a run created after
+      Dashboard (`GET /admin/actions/{id}`, signed with the admin key, at the in-cluster address DA gives the Job,
+      which the Dashboard's network policy admits from the rollout Job's pods) whether the action is still
+      unfinished, retrying for about a minute, and refuses a Failed or unknown action; only when the Dashboard does not
+      answer does `--requested-at` decide (refused past an hour, so a run queued behind a long rollout is not refused
+      while the Dashboard answers); so a run created after
       an operator marked its action Failed ten minutes in never runs beside the action requested again. A lookup that
       fails keeps the state and the lock.
     - **State.** What runs comes from the server's action records and from builds and incarnations in membership,
@@ -2422,7 +2430,8 @@ Replaced by ADR-098.
     - **Mark failed** is an action of its own: act scope, a reason, audited, refused while the store is down (the lock
       stays until it answers). In one transaction it sets the action Failed, conditioned on the state the operator saw
       (`state = $seen`), so an action that moved on meanwhile is not failed while healthy, and writes its
-      own row already Done, so it never needs the lock it releases. It does not cancel the pipeline's run.
+      own row already Done (for a Resize a `kind = resize` row for that node with no attempt number), so it never
+      needs the lock it releases. It does not cancel the pipeline's run.
     - **Reasons.** An action on a whole type or on the cluster asks for a reason.
     - **Audit.** The audit holds the intent before the call and the outcome after it, with the same action id, which
       the page shows. The sink is durable: the store's `daserver_audit` table, owned by the owner role and
@@ -2939,7 +2948,7 @@ Replaced by ADR-098.
     - A receiver holding entries carries a framework `WakeAt` at its oldest entry plus `ProbeAfter`, so a deactivated
       receiver wakes to probe. A request at or below `n` is stale and refused (`Stale`, counted); one in
       `Unacked` gets its stored reply, after that entry's write; one to a missing receiver it may not activate gets
-      `NoActor`; a root at its `Asking` hard cap answers `Busy`, not stored; otherwise the handler runs once, commits
+      `NoActor`; a root being deleted answers `Busy`, not stored; otherwise the handler runs once, commits
       implicitly, and its reply is stored. A value, `Stale`, `WindowFull` and `NoActor` are definite; `Faulted` and
       `NotHandled` are definite too but not stored, so the sender accepts them only when they answer the current
       attempt; only link outcomes (and `Busy`) are unknown. The handler must answer at once (no `ReplyTo<T>`,
@@ -2951,9 +2960,24 @@ Replaced by ADR-098.
     sends no notices it must see confirmed), and `daserver_once_expire` deletes them then: every attempt the deleted
     actor sent was sent before the deletion, and with the sender's, the store's and the receiver's clocks within
     `ClockSkew` of each other each is older than `MaxAskTimeout + ClockSkew` by then, so none runs as new. Until
-    `forget_after` the row and entries stay and in-flight duplicates are still answered. An active receiver also gets
-    a best-effort "forget" on the internal lane. A receiver's own deletion deletes its rows with its record; a later
-    request activates a new actor (whose state starts over, so nothing is duplicated) or gets `NoActor`.
+    `forget_after` the row and entries stay and in-flight duplicates are still answered (a probe answered "forgotten"
+    changes nothing before then). An active receiver also gets a best-effort "forget" on the internal lane, and its
+    idle scan range-reads its rows with `forget_after` set every `ProbeAfter`, so one that missed the notice and
+    holds no entry still learns it. A sender deleted and created again under the same key numbers from a higher seed:
+    the first change with the higher seed raises `n` to `(seed, 0)` and clears the row's `forget_after` (in memory and
+    in the upsert), so the new actor's row does not go at the old deletion's time; a second deletion re-marks it with
+    the later time (`GREATEST`).
+  - **A receiver is deleted only once its `Unacked` is empty**: `root.Delete()` (which answers `Outstanding` and
+    deletes nothing while the root's own `Asking` children wait, so no intent is dropped silently) tags the root
+    `Deleting`, written with that item and releasing its held output; while deleting, duplicates are answered from
+    `Unacked` and other requests get `Busy`; once every stored reply is acknowledged (probes bound the wait), the
+    deletion runs: one function, three statements in one transaction (the epoch-compared delete of the record, the
+    marking of its rows as a sender, the deletion of its rows as a receiver). Deleting earlier would turn a request
+    that ran, and whose effects went on to a third actor, into a definite `NoActor` on retry, and the sender would
+    compensate. A Deleting root is not migrated out, and a freeze writes it with its tag so the new process continues;
+    a retried deletion that finds no record at all, after a commit whose acknowledgement was lost, counts as done. A
+    request after the deletion is new to that key: it activates a new actor (whose state starts over) or gets
+    `NoActor`.
     Rows therefore follow live senders: a flash-sale stock shard keeps one row per order that reached it, deleted when
     the sale's orders are deleted; a player keeps one per `Payment` until the payment's retention ends.
   - **Cumulative acknowledgement, from written state only**: every mail from a sender to a receiver carries `a`, the
@@ -2973,12 +2997,13 @@ Replaced by ADR-098.
     backoff is not starved by others taking the pool; if an update is lost a queued sender probes the zero window
     every `DaServer:Once:ZeroWindowProbe` (1 s, fixed); a sender that did not fit the queue backs off on
     `RetryAfter`, then `Once:Retry`. Past the sender's own `[ActorOptions(OnceOutstanding)]` (1,024) `Asking`
-    children, requests to the sender's root are refused `Busy` before they run, so `AskUntilAnswered` itself never
-    fails, **except `[Once]` requests**: they drain other roots' `Asking`s, and refusing them would deadlock two roots
-    asking each other (a trade, a guild bank). Up to a hard cap, `OnceOutstanding` plus a quarter, they still run; at
-    the hard cap `[Once]` requests are answered `Busy` before they run, not stored, so nothing fails halfway and no
-    sender compensates on it, and asks from items that cannot be refused wait in memory, unwritten, until the count
-    falls. One sender cannot fill a receiver.
+    children in flight, requests to the sender's root are refused `Busy` before they run, so `AskUntilAnswered`
+    itself never fails, **except `[Once]` requests, which are never refused on this limit** (only the receiver's
+    window limits them): they drain other roots' `Asking`s, and refusing them could leave two roots asking each other
+    (a trade, a guild bank) each refusing the other. Asks made past the limit, by `[Once]` handlers, systems and
+    one-way items, are written as `Asking` children marked unsent in the same write as the item that made them, so a
+    crash never keeps an item's debit without its intent, and are sent in order as the in-flight count falls; they
+    count toward the record like any data. One sender cannot fill a receiver.
   - **Probes clear entries whose acknowledgement was lost**: an entry unacknowledged for `DaServer:Once:ProbeAfter`
     (30 s) with no newer mail makes the receiver send `AckQuery` (internal lane). An actor sender's node answers its
     written `a` from the record without activating it, probes batched per node so a node crash does not activate
@@ -2995,7 +3020,9 @@ Replaced by ADR-098.
       token's high-water marks (the largest call id seen by the end of each quarter of `ResumeWindow`, the last five,
       older ones folded into one): a call id's resend deadline is the end of the quarter it first appeared in plus
       `ResumeWindow`, and any gateway refuses an attempt past it and stamps the deadline on every attempt it lets
-      through. A session kept alive by heartbeats while its resends cannot reach the receiver therefore cannot make a
+      through. A call id above every mark of the token presented counts as first seen in the quarter that token was
+      signed in (the call cannot be older than the token), so reconnecting elsewhere with an older token only makes
+      the deadline earlier, never later. A session kept alive by heartbeats while its resends cannot reach the receiver therefore cannot make a
       call run twice.
     - **A client session's rows are deleted by time** (the only time rule, because the resend horizon is enforced at
       the gateway): `delete_after` is the latest resend deadline the receiver saw for the session's calls plus
@@ -3028,8 +3055,10 @@ Replaced by ADR-098.
 - Consequences: the draft's §5 (`root.Delete()`), §8 and §11, architecture.md sections 2 and 4 state it; roadmap W6
   builds it (tests `OnceRunsOnceSameSequence`, `StaleSequenceRefused`, `CumulativeAckPrunes`, `LostAckHarmless`,
   `ProbeClearsLostAck`, `ProbeDeletedSenderForgotten`, `WindowHoldsAtSender`, `ZeroWindowProbeOpens`,
-  `ForgetOnSenderDestroy`, `ForgetDrivenToCompletionAfterCrash`, `ReceiverDestroyDropsRows`,
-  `ForgottenRowNeverWrittenBack`, `HandoverKeepsUnwrittenRowChanges`, `OvershootIsUnstoredBusy`,
+  `ForgetOnSenderDestroy`, `DeleteAndForgetAtomic`, `ReceiverDestroyDropsRows`, `DeleteWaitsForUnackedEmpty`,
+  `DeleteRefusedWhileAsking`, `RecreatedSenderOutlivesOldForgetAfter`, `IdleScanLearnsForgetAfter`,
+  `RetriedDeleteWithNoRecordSucceeds`, `ForgottenRowNeverWrittenBack`, `HandoverKeepsUnwrittenRowChanges`,
+  `OverflowAskingWrittenUnsent`,
   `OnceSequenceSurvivesCrashAndHandover`, `ClientSessionAckPrunes`, `GatewayRefusesStaleCallId`,
   `ClientCallResendWindowEnforcedByGateway`, `ClientRowsDeletedAfterLastResendDeadline`, `OnceFromClusterIsDAS032`,
   `OnceWithReplyToIsDAS032`, `OnceFlaggedInManifest`, `AckFromWrittenStateOnly`, `RecreatedSenderNumbersAboveOld`,
@@ -3065,10 +3094,13 @@ Replaced by ADR-098.
   - The asking entity is recorded by its identity in the record (the root, a child's unique key, or its place in the
     saved tree remapped through `LoadEntitiesInto`), never by a raw entity id, which EasyEcs reuses, so an answer after
     a reload or a migration reaches the right entity or none.
-  - `AskUntilAnswered` returns nothing and never fails: past `OnceOutstanding` asks the sender's root refuses new
-    requests `Busy` before they run, so no handler can ignore a refused intent; `[Once]` requests are never refused on
-    this limit (refusing them would deadlock two roots asking each other), and items that cannot be refused overshoot
-    up to a hard cap a quarter above it, past which `AskUntilAnswered` throws.
+  - `AskUntilAnswered` returns nothing and never fails: past `OnceOutstanding` asks in flight the sender's root
+    refuses new requests `Busy` before they run, so no handler can ignore a refused intent; `[Once]` requests are
+    never refused on this limit (refusing them could leave two roots asking each other each refusing the other), and
+    asks made past it are written as `Asking` children marked unsent in the item's own write and sent as the count
+    falls (ADR-099), so a crash never keeps the item's changes without its intent. A `Stale` answer, impossible by
+    construction, stops its `Asking` for reconciliation and counts in a persisted gauge, so the alert holds until it
+    is cleared.
   - `WakeAt` stays as the runtime's one durable-time mechanism, written by `AskUntilAnswered` and
     `DaServer.Reminders` only; there is no wake tag and no user system reacts to a wake.
 - Alternatives:
@@ -3081,4 +3113,4 @@ Replaced by ADR-098.
   `LinkOutcomeNeverReachesReplied`, `ReaskAfterCrashSameSequence`, `RefusalDeliveredOnce`,
   `AskingDestroyedOnAnswer`, `OnceOutstandingAnswersBusyAtAdmission`, `AskingParentedAtRootSurvivesStashDestroy`,
   `OrphanReplyDroppedAckSent`, `PlainAskOfOnceIsDAS032`, `AskingEntitySurvivesReload`, `MutualOnceAsksNeverDeadlock`,
-  `OutstandingHardCapThrows`).
+  `OverflowAskingWrittenUnsent`, `StoppedAskingGaugeHoldsAlert`).

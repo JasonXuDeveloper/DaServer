@@ -293,9 +293,13 @@ runs it in a per-node concurrency group `{cluster}-resize-{node}`, never the typ
 rollout; the Dashboard dispatches it when a node asks after a crash takeover, or an operator runs it; `--action` is
 the Dashboard's action id, put on the run, with `--requested-at` the moment it was requested: the step's first step
 asks the Dashboard whether the action is still unfinished (`GET /admin/actions/{id}` on the Dashboard, signed with the
-`{cluster}-admin` key the rollout Job mounts) and refuses a Failed or unknown action, no answer, or one requested more
-than an hour ago, so a run the pipeline created late (after an operator marked the action Failed and requested it
-again) never executes; a run started by hand without `--action` asks nothing. A config table push has no pipeline step: it goes through the nodes'
+`{cluster}-admin` key the rollout Job mounts; the Job learns the Dashboard's in-cluster address from DA, as
+`DaServer__Dashboard__Url`: the Dashboard's Service on Kubernetes, its service name on Compose), retrying the GET for
+about a minute (a Dashboard pod restarting or rolling) before it decides, and refuses a Failed or unknown action, so a
+run the pipeline created late (after an operator marked the action Failed and requested it again) never executes.
+Only when the Dashboard still does not answer does `--requested-at` decide: the run goes ahead if it was requested less
+than an hour ago and is refused otherwise, so a valid run that queued behind a long rollout is not refused while the
+Dashboard answers. A run started by hand without `--action` asks nothing. A config table push has no pipeline step: it goes through the nodes'
 admin plane.
 
 ## 6. Network policy
@@ -308,7 +312,7 @@ DA emits these (the ports and groups are DaServer's knowledge; CNIs without Netw
 | `{cluster}-http-plane` | Ingress on the HTTP port from the release's Jobs, from the Dashboard's pods (`daserver.io/dashboard={cluster}`, when `AddDaServerDashboard` is used) from the pods of every AppHost resource that references the group (`WithReference`: an internal REST caller or back-office service using `MapAsk`/`MapSend`; Aspire knows those references, and `/admin` still needs the admin key) and from a namespace selector given as a parameter (`metrics-namespace`, Prometheus or the Collector when it scrapes); kubelet probes come from the node and most CNIs allow them. From anywhere only for groups with `WithExternalHttpEndpoints()` | `/admin` (restart, unload) sits on this port, today open to the whole cluster network through `{group}-service` |
 | `{cluster}-clients` (groups with `WithClientConnections(port)`) | Ingress on the declared client port from anywhere | The load balancer's traffic |
 | Store | Ingress to the in-chart PostgreSQL only from node pods (every group: membership is in the store), the schema Job, the role-init Job (`{cluster}-roles`, sample) and the Dashboard's pods; node pods get no egress policy (an egress rule isolates them, cutting DNS, the cluster port to other nodes and OTLP to the Collector). A platform that must restrict egress also allows kube-dns on 53 UDP/TCP, the cluster port to pods labelled `daserver.io/cluster`, the Collector and the database | Samples (the database is the application's) |
-| `{cluster}-dashboard` (with `AddDaServerDashboard`) | Ingress to the Dashboard only from the Ingress or Gateway controller (operators, and the deploy pipeline's completion callback on its own path, whose HMAC signature the Dashboard checks); egress to Alertmanager (silences, alert groups), the Prometheus API, the Loki API, every node's HTTP port, the store and the deploy pipeline's webhook host | The Dashboard holds the admin key and acts on the cluster; nothing else should reach it |
+| `{cluster}-dashboard` (with `AddDaServerDashboard`) | Ingress to the Dashboard only from the Ingress or Gateway controller (operators, and the deploy pipeline's completion callback on its own path, whose HMAC signature the Dashboard checks) and from the release's rollout Job pods (`daserver.io/rollout={cluster}`) to its HTTP port, where the Dashboard serves them only `GET /admin/actions/{id}` under the admin key; egress to Alertmanager (silences, alert groups), the Prometheus API, the Loki API, every node's HTTP port, the store and the deploy pipeline's webhook host | The Dashboard holds the admin key and acts on the cluster; nothing else should reach it |
 
 Default deny for the namespace is the platform's call. Source: [network policies](https://kubernetes.io/docs/concepts/services-networking/network-policies/).
 
@@ -337,7 +341,7 @@ Steps: securityContext, `/tmp` and service account W12 (the handover volume W11)
 | Upgrade check, rollout | Steps of `aspire deploy` / `{cluster}-restart`. The nodes' HTTP plane is only on the internal network, which publishes no host port, so every admin call (the dry-run arm, arming, waiting for ready) runs in a container on that network: `docker compose run --rm --no-deps rollout <step> <node>`, the new image in rollout mode, the admin key read from the mounted secret file. The `rollout` service carries `profiles: [tools]`, so `docker compose up -d` never starts it. The deploying machine drives the loop and runs only the trigger (`up --force-recreate`) itself. The deploy step itself runs `docker compose up -d --no-recreate`, so a release creates new services and recreates no existing node; the loop then applies the new image and configuration one node at a time |
 | Secrets | Compose `secrets:` mounted at `/run/secrets/daserver` (section 4), the same files as on Kubernetes; `./secrets/` and `.env` never committed |
 | securityContext | `read_only: true`, `tmpfs: [/tmp]`, `user: "1654"`, `cap_drop: [ALL]`, `security_opt: ["no-new-privileges:true"]` |
-| NetworkPolicy | Three networks: an `internal: true` network for the cluster and HTTP planes; an outbound network (not internal, no published ports) on every node and the schema service so they reach an external database and an external OTLP endpoint; and the default one only for client-facing services and the dashboard |
+| NetworkPolicy | Three networks: an `internal: true` network for the cluster and HTTP planes; an outbound network (not internal, no published ports) on every node and the schema service so they reach an external database and an external OTLP endpoint; and the default one only for client-facing services and the dashboard. The Dashboard is on the internal network too (it polls the nodes' HTTP ports), and so is `rollout`, which reaches it there by its service name for the pipeline's `GET /admin/actions/{id}` |
 | RBAC | None (no API) |
 | Health check | The node executable in probe mode (section 7); `postgres` gets `pg_isready` so `game` can wait for `service_healthy` instead of `service_started` |
 
