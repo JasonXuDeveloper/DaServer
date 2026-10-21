@@ -99,16 +99,17 @@ The repository ships two starting points, checked against a running node:
 - `observability/grafana-dashboard.json`: a Grafana dashboard (import it, pick the Prometheus data source): members
   each node sees, shard busy ratio, loaded actors, client sessions, queued, dropped (by reason) and failed messages,
   late ticks and stalled shards, GC pauses and allocation, CPU and working set.
-- `observability/prometheus-rules.yaml`: alert rules: a stalled shard, a node stuck on an old membership view,
-  dropped messages, failing handlers, saturated shards, late ticks, GC pauses, a silent node, and target-only rules
+- `observability/prometheus-rules.yaml`: alert rules: a stalled shard, dropped messages, failing handlers,
+  saturated shards, late ticks, GC pauses, a silent node, and target-only rules
   that never fire on today's code (`DaServerMembersDisagree` reads `daserver_cluster_view_version`,
   `DaServerNodeRequestsLow`, `DaServerAskLatencyHigh`, `DaServerOnceTooOld`, `DaServerOnceStaleAsking`,
-  `DaServerOnceCounterLow`, and the ask recording rules: none of
+  `DaServerOnceCounterLow`, `DaServerOnceUnsentFull`, and the ask recording rules: none of
   their metrics exist yet). Check it with `promtool check rules` before loading it. Load it with `rule_files:`,
   or wrap the groups in a `PrometheusRule` for the Prometheus Operator. A rule that compares a reading against a number carries that
   number as the annotation `daserver_limit` (and its unit as `daserver_unit`): change both together when you tune it.
   Every rule about nodes groups by `cluster`, `type` and `node` (`DaServerAskLatencyHigh`, a type's p99, by `cluster`
-  and `type`; `DaServerMembersDisagree` also keeps `cluster`, `type` and `node`: one alert per lagging node), so Alertmanager groups an incident per rule and server type; a
+  and `type`; `DaServerOnceStaleAsking`, whose stopped-ask gauge is counted from the store by whichever node sweeps,
+  by `cluster` and `type`; `DaServerMembersDisagree` also keeps `cluster`, `type` and `node`: one alert per lagging node), so Alertmanager groups an incident per rule and server type; a
   label a node does not send yet is empty, so the rules work on one cluster today. `DaServerNodeSilent` fires for a
   node seen in the last 15 minutes that has pushed nothing for two minutes, whose series would otherwise vanish and
   resolve its alerts; a node whose final push carries the `close` stop phase stopped gracefully and is not reported (a

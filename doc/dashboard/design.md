@@ -447,15 +447,16 @@ Every action runs on the Dashboard's server, never in the browser, so closing th
   A dispatch creates its run asynchronously, so "no run yet" is not Failed at once: the lookup keeps searching for the
   action id for an hour (a run created late, during a pipeline incident, still runs); a run found in that hour is
   re-attached, and after it the action is Failed. Nothing follows a terminal row, so a run that appears later is stopped
-  by the pipeline itself: every dispatch carries `--action <id> --requested-at <UTC>`, and the rollout step's first
+  by the pipeline itself: every dispatch carries `--action <id>`, and the rollout step's first
   step asks the Dashboard whether that action is still unfinished (`GET /admin/actions/{id}`, signed with the
   `{cluster}-admin` key the rollout Job already mounts; it reaches the Dashboard's in-cluster address, which DA gives
   it, through the Dashboard's network policy) and runs only on a Requested, Accepted, Running or Unknown answer; a
-  Failed one (an operator marked it, a lookup gave up) or an unknown id refuses. It retries the GET for about a
-  minute first, so a Dashboard pod restarting or rolling does not fail every dispatched run; only when the Dashboard
-  still does not answer does `--requested-at` decide, refusing a run requested more than an hour ago and letting a
-  younger one go, so a valid run that queued behind a long rollout is not refused while the Dashboard answers. So a run created late, after an operator marked its action Failed ten minutes in
-  and requested it again, never runs beside the new one (a same-image hot restart has no build precondition that
+  Failed one (an operator marked it, a lookup gave up) or an unknown id refuses. **It fails closed**: it retries the
+  GET for five minutes (a Dashboard pod restarting or rolling), then refuses, and a Dashboard that cannot read the
+  store answers 503, which counts as no answer, never "unknown id". A valid run dispatched while the Dashboard stays
+  down that long fails and is requested again; a run that queued behind a long rollout is still decided by the
+  answering Dashboard, however long it waited. So a run created late, after an operator marked its action Failed ten minutes in
+  and requested it again, never runs, beside the new one or after it (a same-image hot restart has no build precondition that
   would otherwise stop it). A run started by hand with the command below carries no action id and asks nothing. A lookup that fails (the pipeline's API down or rate-limited) leaves the
   state as it is and the lock held. Without a store there is no shared lock, so the Dashboard runs as one replica.
 - **Outcomes until the end.** An action's state is Requested (written, before the call), Accepted (the pipeline took
@@ -495,7 +496,7 @@ Every action runs on the Dashboard's server, never in the browser, so closing th
   sent", and gives the deploy pipeline's command for the same action, whose own run log is the audit for it. The rollout step
   takes one shape for every action: `aspire do {cluster}-restart --type <type>` for a hot restart, plus `--build <build>`
   for a rollback, `--node <node> --incarnation <n>` for one node, and `--node <node> --incarnation <n> --resize-only` for a Resize; the
-  Dashboard's own dispatches add `--action <id> --requested-at <UTC>`. A config push and
+  Dashboard's own dispatches add `--action <id>`. A config push and
   marking an action Failed have no pipeline command: they need the store, and wait for it. An outcome that cannot be written after the call is kept in a local spill
   file and written when the store answers again, in order, before any new action.
 - **Silences.** "Silence for an hour" needs the act scope, is audited like any action, and creates an Alertmanager
@@ -506,7 +507,10 @@ Every action runs on the Dashboard's server, never in the browser, so closing th
 
 - **An admin key of its own.** The Dashboard holds a separate admin key (its own Secret), never the cluster's signing
   secret: a compromised Dashboard cannot pose as a node or sign a client's resume ticket. Nodes accept admin requests
-  signed with it.
+  signed with it. The Dashboard accepts that key on one route only, `GET /admin/actions/{id}` (read-only, the rollout
+  step's check above); every other route needs an operator's sign-in and the antiforgery token, which the rollout Job
+  does not have. A NetworkPolicy works on pods and ports, not paths, so this route rule is the Dashboard's, and the
+  policy only narrows who reaches the port.
 - **Two scopes.** View (readings, membership, an actor's state) and act (restart, rollback, hot restart, silence,
   config push). A view token cannot act. Component values are shown to the view scope only where the deployment allows
   it (they can hold personal data).

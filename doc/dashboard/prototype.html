@@ -1365,7 +1365,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   // so it never needs the lock it releases
   function markFailed(id) {
     var a = ACTIONS.filter(function (x) { return x.id === id; })[0]; if (!a) return; var t = T(a.type), seenState = a.state;
-    ask({ title: 'Mark action ' + id + ' failed', text: 'Action ' + id + ' (' + a.kind.toLowerCase() + ' ' + a.target + ') ' + (a.state === 'Stalled' ? 'has made no progress for ten minutes' : 'has been ' + a.state.toLowerCase() + ' for ten minutes') + '. Marking it failed releases ' + (t ? t.name : 'the cluster') + '\'s lock; it does not stop the pipeline\'s run, which you can cancel there.',
+    ask({ title: 'Mark action ' + id + ' failed', text: 'Action ' + id + ' (' + a.kind.toLowerCase() + ' ' + a.target + ') ' + (a.state === 'Stalled' ? 'has made no progress for ten minutes' : 'has been ' + a.state.toLowerCase() + ' for ten minutes') + '. ' + (a.kind === 'Resize' ? 'A Resize holds no lock, so marking it failed only ends it and lets the node be resized again' : 'Marking it failed releases ' + (t ? t.name : 'the cluster') + '\'s lock') + '; it does not stop the pipeline\'s run, which you can cancel there.',
       // its own row is written Done under the same type (a Resize's: a resize row for that node, no attempt number)
       need: id, verb: 'Mark failed', kind: 'Mark failed', reason: true, key: 'Mark failed ' + id, target: 'action ' + id, type: a.type, rowType: a.type, unlocked: true, pipeline: null,
       // conditioned on the state the operator saw: an action that moved on meanwhile is not failed while healthy

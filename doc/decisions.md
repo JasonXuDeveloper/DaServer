@@ -2235,7 +2235,7 @@ Replaced by ADR-098.
     second payment) goes into the charge's refund buffer once per provider reference, a repeated reference answering
     the earlier result, and changes no state, so the deadline still notifies the owner; a daily reconciliation
     against the provider's report lists what is missing, stuck or listed for refund, and deletes (`root.Delete()`)
-    payments settled, refunded and past `Payments:Retention` (30 days), which also forgets their `[Once]` rows at
+    payments settled, refunded and past `Payments.Retention` (30 days, a constant of the sample), which also forgets their `[Once]` rows at
     the owners (ADR-099): it sends each reconciled payment a `Purge`, which deletes only a charge that is `Settled` or
     `Expired`, whose refunds are all done (each refund element carries the time the provider's verified refund
     callback, `Refunded(providerRef)` through `ICluster`, recorded) and whose `SettledAt` plus the retention has
@@ -2403,13 +2403,15 @@ Replaced by ADR-098.
       correct. It then looks the run up by the
       action id. A run not found yet (dispatch creates runs asynchronously, late during a pipeline incident) is looked
       for during an hour and re-attached if it appears; after that the action is Failed, and the pipeline itself refuses a run that
-      appears later: every dispatch carries `--action` and `--requested-at`, and the rollout step's first step asks the
+      appears later: every dispatch carries `--action`, and the rollout step's first step asks the
       Dashboard (`GET /admin/actions/{id}`, signed with the admin key, at the in-cluster address DA gives the Job,
       which the Dashboard's network policy admits from the rollout Job's pods) whether the action is still
-      unfinished, retrying for about a minute, and refuses a Failed or unknown action; only when the Dashboard does not
-      answer does `--requested-at` decide (refused past an hour, so a run queued behind a long rollout is not refused
-      while the Dashboard answers); so a run created after
-      an operator marked its action Failed ten minutes in never runs beside the action requested again. A lookup that
+      unfinished, retrying for five minutes and then refusing (fail closed: a Dashboard that cannot read the store
+      answers 503, counted as no answer, never "unknown id"), and refuses a Failed or unknown action; so a run created
+      after an operator marked its action Failed ten minutes in never runs, beside the action requested again or after
+      it. The Dashboard accepts the admin key on that one read-only route only; its other routes need an operator's
+      sign-in and the antiforgery token. A NetworkPolicy cannot restrict a path, so the route rule is the Dashboard's
+      and the policy only narrows who reaches its port. A lookup that
       fails keeps the state and the lock.
     - **State.** What runs comes from the server's action records and from builds and incarnations in membership,
       never from the page. The records are in the store; without one they are in memory and the Dashboard runs as one
@@ -2963,21 +2965,30 @@ Replaced by ADR-098.
     `forget_after` the row and entries stay and in-flight duplicates are still answered (a probe answered "forgotten"
     changes nothing before then). An active receiver also gets a best-effort "forget" on the internal lane, and its
     idle scan range-reads its rows with `forget_after` set every `ProbeAfter`, so one that missed the notice and
-    holds no entry still learns it. A sender deleted and created again under the same key numbers from a higher seed:
+    holds no entry still learns it; the notice and the read carry the row's seed and apply only when it matches the
+    in-memory row's, so an old deletion's mark never lands on a re-created sender not yet written. A sender deleted and created again under the same key numbers from a higher seed:
     the first change with the higher seed raises `n` to `(seed, 0)` and clears the row's `forget_after` (in memory and
     in the upsert), so the new actor's row does not go at the old deletion's time; a second deletion re-marks it with
     the later time (`GREATEST`).
-  - **A receiver is deleted only once its `Unacked` is empty**: `root.Delete()` (which answers `Outstanding` and
-    deletes nothing while the root's own `Asking` children wait, so no intent is dropped silently) tags the root
-    `Deleting`, written with that item and releasing its held output; while deleting, duplicates are answered from
-    `Unacked` and other requests get `Busy`; once every stored reply is acknowledged (probes bound the wait), the
-    deletion runs: one function, three statements in one transaction (the epoch-compared delete of the record, the
-    marking of its rows as a sender, the deletion of its rows as a receiver). Deleting earlier would turn a request
-    that ran, and whose effects went on to a third actor, into a definite `NoActor` on retry, and the sender would
-    compensate. A Deleting root is not migrated out, and a freeze writes it with its tag so the new process continues;
-    a retried deletion that finds no record at all, after a commit whose acknowledgement was lost, counts as done. A
-    request after the deletion is new to that key: it activates a new actor (whose state starts over) or gets
-    `NoActor`.
+  - **Deletion is a one-way passage**: `root.Delete()` answers `Outstanding` and deletes nothing while the root's own
+    `Asking` children wait (no intent dropped silently); otherwise it tags the root `Deleting`, written with that item
+    and releasing its held output. From then on the root does nothing: generated filters carry `Without<Deleting>`,
+    so no system, reminder or `[ForEach]` runs on it; new requests get `Busy` (not stored), one-way mail is dropped and
+    counted, only `[Once]` repeats are answered from `Unacked`; and it cannot ask or send (doing so after `Delete()` in
+    the same item is a runtime error that reloads the item, undoing the delete; an analyzer hint asks for `Delete()`
+    last). The tag carries a framework `WakeAt`, so a crash or an idle unload resumes it through `DueScan`. The record
+    goes once the tag's write has landed, `Unacked` is empty (every stored reply acknowledged, probes bounding the
+    wait), no `Asking` exists, and `MaxAskTimeout + 2 × ClockSkew` has passed since the later of that write and the
+    last `[Once]` admission (an attempt in flight meanwhile meets the root, not a fresh actor): one function, three
+    statements in one transaction (the epoch-compared delete of the record, the `forget_after` marking of its rows as a
+    sender, the `orphan_after` marking of its rows as a receiver). Deleting earlier would turn a request that ran, and
+    whose effects went on to a third actor, into a definite `NoActor` on retry, and the sender would compensate. The
+    receiver's rows are kept until `orphan_after` because a key can be activated again ( `[ActivatedBy]`): the new
+    actor reads the old marks after its claim, so a late attempt the old one already ran gets `Stale` (the payment
+    sample's `Open` has exactly that shape); its own next write of a row clears the mark. A Deleting root is not
+    migrated out, and a freeze writes it with its tag so the new process continues; a retried deletion, after a commit
+    whose acknowledgement was lost, counts as done whether it finds no record or a newer activation's. A request after
+    the deletion that never ran here is new to that key: it activates a new actor or gets `NoActor`.
     Rows therefore follow live senders: a flash-sale stock shard keeps one row per order that reached it, deleted when
     the sale's orders are deleted; a player keeps one per `Payment` until the payment's retention ends.
   - **Cumulative acknowledgement, from written state only**: every mail from a sender to a receiver carries `a`, the
@@ -3002,8 +3013,12 @@ Replaced by ADR-098.
     window limits them): they drain other roots' `Asking`s, and refusing them could leave two roots asking each other
     (a trade, a guild bank) each refusing the other. Asks made past the limit, by `[Once]` handlers, systems and
     one-way items, are written as `Asking` children marked unsent in the same write as the item that made them, so a
-    crash never keeps an item's debit without its intent, and are sent in order as the in-flight count falls; they
-    count toward the record like any data. One sender cannot fill a receiver.
+    crash never keeps an item's debit without its intent, and are sent in order as the in-flight count falls. Unsent
+    ones have their own cap (`DaServer:Once:Unsent`, as `OnceOutstanding`, and `Once:UnsentBytes`, half of
+    `MaxRecordBytes`), so a stuck downstream cannot make the record unwritable: past it the root is tagged
+    `UnsentFull`, its ordinary mail stays queued (`MaxMail` pushes back), `[Once]` requests whose handler may ask get
+    `WindowFull`, systems that may ask skip it, and answers are still taken; only cyclic chains where every answer
+    asks again stall there, counted and alerted (`DaServerOnceUnsentFull`). One sender cannot fill a receiver.
   - **Probes clear entries whose acknowledgement was lost**: an entry unacknowledged for `DaServer:Once:ProbeAfter`
     (30 s) with no newer mail makes the receiver send `AckQuery` (internal lane). An actor sender's node answers its
     written `a` from the record without activating it, probes batched per node so a node crash does not activate
@@ -3055,9 +3070,12 @@ Replaced by ADR-098.
 - Consequences: the draft's §5 (`root.Delete()`), §8 and §11, architecture.md sections 2 and 4 state it; roadmap W6
   builds it (tests `OnceRunsOnceSameSequence`, `StaleSequenceRefused`, `CumulativeAckPrunes`, `LostAckHarmless`,
   `ProbeClearsLostAck`, `ProbeDeletedSenderForgotten`, `WindowHoldsAtSender`, `ZeroWindowProbeOpens`,
-  `ForgetOnSenderDestroy`, `DeleteAndForgetAtomic`, `ReceiverDestroyDropsRows`, `DeleteWaitsForUnackedEmpty`,
+  `ForgetOnSenderDestroy`, `DeleteAndForgetAtomic`, `DeletedReceiverRefusesLateAttempt`, `DeleteWaitsForUnackedEmpty`,
+  `DeletingRecordResumedAfterCrash`, `DeletingRootRunsNothing`, `SendAfterDeleteReloadsItem`,
+  `StaleForgetNoticeIgnoredForRecreatedSender`, `UnsentCapStopsDrainingAndRefusesAskingOnce`,
+  `NonAskingOnceHandlersRunAtUnsentCap`, `SystemsThatAskSkipUnsentFullRoots`,
   `DeleteRefusedWhileAsking`, `RecreatedSenderOutlivesOldForgetAfter`, `IdleScanLearnsForgetAfter`,
-  `RetriedDeleteWithNoRecordSucceeds`, `ForgottenRowNeverWrittenBack`, `HandoverKeepsUnwrittenRowChanges`,
+  `RetriedDeleteCountsAsDone`, `ForgottenRowNeverWrittenBack`, `HandoverKeepsUnwrittenRowChanges`,
   `OverflowAskingWrittenUnsent`,
   `OnceSequenceSurvivesCrashAndHandover`, `ClientSessionAckPrunes`, `GatewayRefusesStaleCallId`,
   `ClientCallResendWindowEnforcedByGateway`, `ClientRowsDeletedAfterLastResendDeadline`, `OnceFromClusterIsDAS032`,
@@ -3098,9 +3116,11 @@ Replaced by ADR-098.
     refuses new requests `Busy` before they run, so no handler can ignore a refused intent; `[Once]` requests are
     never refused on this limit (refusing them could leave two roots asking each other each refusing the other), and
     asks made past it are written as `Asking` children marked unsent in the item's own write and sent as the count
-    falls (ADR-099), so a crash never keeps the item's changes without its intent. A `Stale` answer, impossible by
-    construction, stops its `Asking` for reconciliation and counts in a persisted gauge, so the alert holds until it
-    is cleared.
+    falls (ADR-099), so a crash never keeps the item's changes without its intent; unsent ones are capped
+    (`Once:Unsent`, `UnsentBytes`). A `Stale` answer, impossible by construction, stops its `Asking` for
+    reconciliation; the record's `stopped_asks` column counts it and the sweeping node exports the cluster gauge from
+    the store, so the alert holds across unloads and restarts until it is cleared. An `AskUntilAnswered` on a
+    `Deleting` root is a runtime error.
   - `WakeAt` stays as the runtime's one durable-time mechanism, written by `AskUntilAnswered` and
     `DaServer.Reminders` only; there is no wake tag and no user system reacts to a wake.
 - Alternatives:
@@ -3113,4 +3133,4 @@ Replaced by ADR-098.
   `LinkOutcomeNeverReachesReplied`, `ReaskAfterCrashSameSequence`, `RefusalDeliveredOnce`,
   `AskingDestroyedOnAnswer`, `OnceOutstandingAnswersBusyAtAdmission`, `AskingParentedAtRootSurvivesStashDestroy`,
   `OrphanReplyDroppedAckSent`, `PlainAskOfOnceIsDAS032`, `AskingEntitySurvivesReload`, `MutualOnceAsksNeverDeadlock`,
-  `OverflowAskingWrittenUnsent`, `StoppedAskingGaugeHoldsAlert`).
+  `OverflowAskingWrittenUnsent`, `StoppedAskingCountedFromStore`).
