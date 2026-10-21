@@ -1122,7 +1122,8 @@ Replaced by ADR-081.
     creates the `actor_records` table: a Job when published (an owner role with DDL, nodes on a DML-only role), a
     one-shot service in Compose, a one-shot resource in a local run; `TestCluster` calls the same schema code directly.
     Nodes never create it: a node whose table is missing or whose store is unreachable at start stays not ready and
-    retries with one backoff, bounded by the startup probe. Once started, a node keeps answering ready through a
+    retries with one backoff, without a deadline (the startup probe treats the wait as progress, so an outage does
+    not restart nodes in a loop). Once started, a node keeps answering ready through a
     store outage (the store is not part of readiness: an outage would otherwise take every node out of its Service at
     once); the outage shows in `StoreDegraded` and the metrics. Hand-written SQL, no migration library: one table and
     one index. Today's `daserver_actors` table is neither read nor converted (pre-1.0).
@@ -1584,13 +1585,19 @@ Replaced by ADR-081.
     - the lease is renewed only by a coordinator ack that echoes the node's own heartbeat counter, timed from the
       send, and checked by every world before its ordered phase, before the store write and before handing frames
       to the links (a node that hears nobody freezes even when the others still hear it); an ack renews only when its
-      sender is on the majority side (it heard more than half of its view within `SuspectAfter`), and the
-      coordinator's own lease needs acks from a majority, so in a symmetric partition the minority freezes before the
-      majority re-places its actors; the next-oldest member acks once the coordinator is `Suspect`, so a coordinator
-      crash expires nobody's lease; peers re-place after max(`DeadAfter`, `SuspectAfter` + lease). A two-member
-      cluster cannot tell a crash from a partition: a lone member keeps renewing and only the epoch fence protects
-      it, so production runs at least three members of a stateful server type. The coordinator role is sticky: a
-      member readmitted after a hot restart does not take it back, so a rolling restart moves it once;
+      sender is on the majority side (it heard more than half of max(`DaServer:FormationSize`, its view) within
+      `SuspectAfter`, `NodeRestarting` members counted and unheard), and the coordinator's own lease needs acks from a
+      majority, so in a symmetric partition the minority freezes before the majority re-places its actors; the next
+      member in coordinator order acks once the coordinator is `Suspect`, so a coordinator crash expires nobody's
+      lease; peers re-place after max(`DeadAfter`, `SuspectAfter` + lease). `FormationSize` (default 3) is the
+      configured size, so a three-member cluster down to two still needs both, and a split of the survivors freezes
+      both. Only a cluster configured with `FormationSize = 2` lets a lone member keep renewing; it relies on the epoch
+      fence alone, so production runs at least three members of a stateful server type;
+    - **the coordinator is a function of the view**, replacing ADR-079's "oldest Up member": every member carries an
+      admission number, assigned by the coordinator at admission and again at readmission after a hot restart (node
+      generations stay), and the coordinator is the member Up, not `NodeRestarting`, with the smallest number. Every
+      node computes the same coordinator from the same view, nothing is elected, and a readmitted former coordinator
+      is last in line, so a rolling restart moves the role once;
     - taking a key from another owner needs a strictly newer placement version (the coordinator bumps a type's version on every
       placement change, a membership change or a slot-table move (ADR-079); frames carry the highest seen; a
       migration's arrival writes it too), and a claim that displaces a live owner sends it
@@ -1684,10 +1691,10 @@ Replaced by ADR-081.
     ask), while the map's visible drops and its avatars carry the same `Position` and must stay out of records;
     per-type persistence (a marker interface on component types) either lost the record's `Position` or dragged every
     avatar into the record. Change tracking is a per-type column in
-    EasyEcs, so the registration switches it on for the persist set, the types on persistent prefabs and those
-    spawned into persistent entities (EasyEcs request #27, proposed, not yet forwarded; the generator declares
-    `ITrackChanges` on `partial` types until then), and the change system runs one `ChangedAny` over that set filtered
-    by `Persisted`: one visit per changed persistent row, nothing allocated. Spawning a persistent entity tags its root
+    EasyEcs whose filter (`ChangedAny<T1..Tn>`) names its types at compile time, so persisted component types declare
+    `ITrackChanges` in source, the generator emits the tracked-type list and the filters from those declarations, and
+    `Registration` throws at start when a type on a `[Persist]` prefab (the run-time persist set) lacks it; the change
+    system runs one `ChangedAny` over the tracked types filtered by `Persisted`: one visit per changed persistent row, nothing allocated. Spawning a persistent entity tags its root
     `Unsaved` directly, and placeholders (`Loading`, `Saving`, `ActivationFailed`) are never checkpointed, so a
     `Reload` cannot write prefab defaults over the last good record. Records evolve by prefab: every load (record, migration bytes,
     snapshot) adds the `[NotSaved]` components (they arrive with the prefab's default) and those the entity's prefab
@@ -1711,8 +1718,7 @@ Replaced by ADR-081.
     a hot restart's snapshot, `IUniqueIndexed<T>` (`Get`/`TryGet`) for actor and child keys, `TrimExcess`, `Slices` for
     the idle scan, `Descendants(root).AddTo` for collecting records and migrations, O(1) `Find(key).Count`,
     `Children(parent).Count` and `ValueIndex.KeyCount` for interest checks and the inspector, and `SystemStats` and
-    `DescribeSchedule` for the inspector. Runtime tracking per type (request #27) is not in 4.7: the generator declares
-    `ITrackChanges` meanwhile (roadmap W1).
+    `DescribeSchedule` for the inspector. Tracking is declared in source, so no run-time switch is needed.
   - One project may define several server types; a node runs one.
 - Alternatives: keep ADR-081's handlers and add the missing pieces (copy and write-back stays, two vocabularies stay);
   handlers as systems over message entities (an entity per message costs a create and a destroy; the runtime's due
@@ -1742,8 +1748,9 @@ Replaced by ADR-081.
   member is Dead" becomes re-placement after max(`DeadAfter`, `SuspectAfter` + lease), the lease ack echoes ADR-031's
   heartbeat counter, and a hot restart past its deadline counts as Left, not Dead, for ADR-064's keep-majority;
   those ADRs are rewritten when W10 promotes the drafts, together with ADR-068 (a claim without its `INSERT`
-  branch for mail that may not create a key), ADR-072 (the handoff query before a claim) and ADR-079 (the sticky
-  coordinator). Business code is
+  branch for mail that may not create a key, the `CanCreate` gate, no rows for types that persist nothing, the
+  never-written rows' sweep), ADR-072 (the handoff query before a claim) and ADR-079 (the coordinator by admission
+  number). Business code is
   `[On<T>]` methods and EasyEcs systems over data; the generator emits jobs, typed sends, typed reply accessors and
   one `Registration` instance. ADR-081's handler, `Context`, session and lifecycle parts, ADR-012's module initializer
   registration and ADR-017's one project per server are replaced when W10 promotes the drafts.
@@ -1850,8 +1857,10 @@ Replaced by ADR-081.
     template image; with `OnDelete` that replaces no pod, and pods created later get the new build. The rollout then
     runs as DaServer's own in-cluster Job with a namespaced Role (its verbs: [drafts/deployment.md](drafts/deployment.md)
     section 5): it first has every node pull the new image (so the pull is not inside the pause), then, one pod at a
-    time, arms the node, patches the running pod's `spec.containers[].image` and waits for it to be ready. It never
-    patches the template (the next `helm upgrade` would put the old image back). That field is mutable on a running
+    time, arms the node, patches the running pod's `spec.containers[].image` and waits for it to be ready. Only the
+    image can change on a running pod, so before patching the Job compares each pod's spec, images aside, with the
+    StatefulSet's `updateRevision` ControllerRevision; a pod whose spec differs (env, probes, volumes, resources, the
+    grace period) is deleted and recreated one at a time instead, and the Job says so. It never patches the template (the next `helm upgrade` would put the old image back). That field is mutable on a running
     Pod; the kubelet restarts the container inside the same pod (same pod, UID and IP; the Pod is not rescheduled),
     and an `emptyDir` survives container restarts. The snapshot directory is an `emptyDir` with `medium: Memory`
     (tmpfs; its bytes count against the container's memory limit).
@@ -1861,7 +1870,8 @@ Replaced by ADR-081.
     restarts of an unchanged container that exited within 10 minutes of its start (10 s, then doubling, whatever the
     exit code), so the Job never exits one pod twice within 10 minutes and the coordinator's restart deadline covers
     the first 10 s step; an image patch changes the spec and is not backed off. Secret rotation needs no roll: nodes
-    reload the mounted key files (`reloadOnChange`) and report a key fingerprint, which the rotation step waits for
+    reload the mounted key files (the Secret mounted whole, without `items`, read through a polling file provider,
+    since file events miss the Secret volume's symlink swap) and report a key fingerprint, which the rotation step waits for
     on every node before the next step ([drafts/deployment.md](drafts/deployment.md) section 4).
   - **The image is pinned by digest**: the rollout resolves the release's reference to `image@sha256:…` once when
     the roll starts, patches that, and compares each pod's `imageID` before and after, so a mutable tag never
@@ -1969,7 +1979,8 @@ Replaced by ADR-081.
     `builder.Host.UseSystemd().UseWindowsService();` names both explicitly, each a no-op off its platform;
     `AddDaServer` calls neither. A same-image roll ends the process on purpose, so the supervisor must start it
     again whatever the exit: the systemd unit sets `Restart=always` (`RestartSec=1`); on Windows the node ends such a
-    restart with exit code 75 (`DaServer.ExitCodes.RestartRequested`) and the documented install sets
+    restart with exit code 75 (`DaServer.ExitCodes.RestartRequested`), set as `ServiceBase.ExitCode` on the
+    `WindowsServiceLifetime` before `StopApplication` (the service manager reads only that), and the documented install sets
     `sc failure <svc> reset= 0 actions= restart/1000` and `sc failureflag <svc> 1`, since the service manager runs
     recovery actions only for a non-zero exit. launchd needs no code: its plist sets the working directory and the environment
     (console format, `DaServer__SnapshotPath`), and the Generic Host already stops on SIGTERM. DaServer documents the
@@ -2009,7 +2020,7 @@ Replaced by ADR-081.
     image in `--DaServer:PrepareSnapshotDir` mode, and `docker compose up -d --no-deps --force-recreate <node>` as
     the trigger, since without `--force-recreate` a same-image roll recreates nothing; the admin calls run in a
     `docker compose run --rm --no-deps rollout` container on the internal network), systemd (`RuntimeDirectory=` with `RuntimeDirectoryPreserve=restart`, `systemctl
-    restart`), launchd and Windows services (a local directory, `launchctl kickstart -k`, `Restart-Service`) and local
+    restart`), launchd and Windows services (a local directory, `launchctl kill SIGTERM` with `KeepAlive`, `Restart-Service`) and local
     Aspire (a temp directory per node, the resource restart command). `DaServer:SnapshotPath` names the directory;
     a plain file write, no memory-mapped file for a few MB. The node never launches its successor.
   - **Peers see the same identity reconnect**: (name, generation) on the link, the streams resumed from the resend
@@ -2086,9 +2097,11 @@ Replaced by ADR-081.
   - **Which fan-out**: an actor to many actors is Topics; an actor to many clients is `ClientGroup` (a chat channel
     included); a membership with rules of its own (a guild, a party) is a fixed-key actor that holds the members and
     forwards, through `ClientGroup` to their clients (§15's opening rule).
-  - **`DaServer.Reminders`**: a `Reminder<T>(long Key, TimeSpan Period)` on a persistent child entity whose next
-    firing is its `WakeAt`; one per (T, key) and actor, so an actor can hold several of a kind
-    (`root.Remind<T>(key, at, every)` finds or spawns it, `root.Unremind<T>(key)` destroys it). The runtime arms it like every wake (its `ArmSystem` turns a `WakeAt` into a `Due` on load and
+  - **`DaServer.Reminders`**: a `Reminder<T>(ActorId Actor, long Key, TimeSpan Period)` on a persistent child entity
+    whose next firing is its `WakeAt`; one per (T, key) and actor, its unique index keyed by the actor first, so two
+    actors in one world keep their own and an actor can hold several of a kind (`root.Remind<T>(key, at, every)` finds
+    or spawns it and leaves an existing one with the same period untouched, so calling it on every activation never
+    skips an overdue firing; a new period or `move: true` reschedules; `root.Unremind<T>(key)` destroys it). The runtime arms it like every wake (its `ArmSystem` turns a `WakeAt` into a `Due` on load and
     activation; while unloaded, `NextDue` goes into the record's `next_due` column and the slot owner's `DueScan`
     activates the actor); the package has no arming system of its own. `Reminded<T>` is at least once, deduplicated by
     (reminder, `UtcAt`): the advance lands in the same record as the handler's effects. After an outage a reminder
@@ -2152,17 +2165,26 @@ Replaced by ADR-081.
   - **`samples/arena`**: a matchmaking queue actor per region and mode (a fixed key, the model's "service"), ranked and
     casual queues, `Match` actors that its players join as presences, `Party` actors, and a sharded `Leaderboard`
     (score shards by key, merged on read). The queue decides what a disconnected ticket means
-    (`[ForEach, With<Detached>]` drops it, a ticket expires after its own timeout), and its tests cover a player
-    detaching while queued and while being matched.
+    (`[ForEach, With<Detached>]` drops it, a ticket expires after its own timeout, scheduled once: a re-join finds
+    `IsPending<Expire>` and does not schedule again), tickets are keyed by the account (`Ticket(Queue, long Account)`,
+    so a re-login takes the same ticket over rather than queueing twice), and a match is set up before its players
+    are told: the queue `Ask`s the `Match` its `Setup` and pushes `Matched` from the `Replied` handler, so a client's
+    `JoinMatch` never reaches a `Match` that does not know it yet. Its tests cover a player detaching while queued and
+    while being matched.
   - **A saga in `samples/flashsale`**: the order as a process-manager actor driving payment and stock with
     `[Durable]` asks: a step refused as not executed (`NotExecuted`, `TooLate` included) is compensated; a step that
     ends `Expired` (unreachable, outcome unknown) is reconciled by asking its owner again later; with a pattern page in
     the sample on why sagas replace ACID transactions across actors (each step runs at most once per call id, no lock
     or two-phase commit spans actors). The buyer's identity comes from the token, not the message: `PlaceOrder`
     carries only the sale, and `Order(long Sale, long User)` routes with `Route(in Account, in PlaceOrder)`, so no
-    buyer orders for another. Today's stateless `Gate` service becomes a `[Stateless]` actor type on every
-    node (the sold-out answer for the late crowd and the optional admission queue), which hands the order to `Order`
-    by its claims-derived key.
+    buyer orders for another. Today's stateless `Gate` service becomes `Gate(long Sale, int Shard)`, an actor type that
+    is not persisted (so it claims no store row) and is routed by `Route(in Account, in PlaceOrder)` to the shard
+    `who.Id % Shards`: it handles the client's `PlaceOrder`, answers the late crowd `SoldOut` from what it has learned
+    (a sold-out answer from any `Order` it asked, or the sale's `Describe`), runs the optional admission queue, and for
+    the rest plainly asks `Order(Sale, User)` with the user from the claims, replying to the buyer from `Replied`. A
+    `[Stateless]` type cannot do this (it cannot `Ask` or keep a `ReplyTo`), and letting `PlaceOrder` reach `Order`
+    directly would leave a row per losing buyer. `Order` dedups by its key (a second `Place` returns the order's
+    status), so the plain ask may repeat.
   - **Input ticks and corrections in `samples/mmo`**, the pattern every server-authoritative game with client
     prediction needs (Unity Netcode's [command stream](https://docs.unity3d.com/Packages/com.unity.netcode@1.5/manual/command-stream.html)
     and [prediction](https://docs.unity3d.com/Packages/com.unity.netcode@1.5/manual/prediction-details.html)): `MoveTo`
@@ -2229,8 +2251,9 @@ Replaced by ADR-081.
     AppHost. It answers the operator's jobs (doc/dashboard/design.md): triage, evidence, cluster, server types,
     store, client connections, changes, an actor, audit; and runs the actions (restart a node, hot restart a type on
     its current build, a config table) through the nodes' admin plane, each confirmed by typing its target and
-    written to the audit log. Restarting one node calls `/admin/restart?exit=true` on it: it hot restarts in place
-    and the platform starts it again. Hot restarting a type is the same-image roll, and the Dashboard never loops over
+    written to the audit log. Restarting one node calls `/admin/restart?exit=true` on it: a node that hosts actors
+    hot restarts in place and the platform starts it again; a gateway or stateless node has no snapshot, so it retires
+    (a gateway hands its clients over first) and exits, and the platform starts a fresh one. Hot restarting a type is the same-image roll, and the Dashboard never loops over
     nodes itself (its own restart would leave a half-rolled group, and only the rollout loop pauses scale-in): it calls
     the deploy pipeline's webhook, which runs the one rollout loop (one node at a time, the coordinator last), or shows
     `aspire do {cluster}-restart` without one; a new build, a rollback included, reaches the nodes through the deploy
@@ -2238,7 +2261,8 @@ Replaced by ADR-081.
     calls the deploy pipeline's webhook (`DaServer:Dashboard:RollbackWebhook`: GitHub Actions, Argo CD, any CI) with
     the server type, the build to return to, who asked and why, and audits the call; without a webhook it shows the
     command to run. Taking a node out is the platform's scale-down, not a Dashboard action. It mounts the signing secret's
-    files and derives the admin token from them (drafts/deployment.md section 4); it calls no Kubernetes API and has
+    files and derives the admin token from them (drafts/deployment.md section 4), deriving it again when the files
+    change and trying the current key, then the accepted one; it calls no Kubernetes API and has
     no autoscaler and no PodDisruptionBudget (one replica; its cost follows the nodes, not the viewers).
   - **Live state is gathered once per refresh, never per viewer or per request**, so its cost grows with nodes, not
     with people watching. Nodes keep no history: each serves its current readings and its own ranking of its slowest
@@ -2248,8 +2272,8 @@ Replaced by ADR-081.
     reads, and keeps a bounded ring of those polls for the charts (they start when the Dashboard started, and the
     evidence chart says so). Distributions, outliers (a state other than running, or more than four median absolute
     deviations from the type's median) and the cluster's slowest actors (the nodes' rankings merged) are computed on
-    the server; a screen receives only the bins and the few rows it shows. Membership comes from one node, with each
-    node's view hash to tell when views disagree. An actor's detail is asked on demand of the one node that owns it,
+    the server; a screen receives only the bins and the few rows it shows. Membership comes from one node's `/admin/membership`:
+    each member's pulse carries the hash of its view, so that one node also tells when views disagree. An actor's detail is asked on demand of the one node that owns it,
     found through placement; Find resolves actor ids the same way and searches nodes in the snapshot. The snapshot is
     a cache rebuilt at start, so replicas stay interchangeable.
   - **Something is wrong when an alert fires.** `observability/prometheus-rules.yaml` is the one definition: triage
@@ -2325,23 +2349,41 @@ Replaced by ADR-081.
     `[ActivatedBy<TMessage>]` (several allowed), whose handler validates what it creates. The claim then runs without
     its `INSERT` branch and requires a written record, so a made-up key answers `NoActor` and writes nothing. A client
     `[To]` message to a type without `[ActivatedBy]` is analyzer warning DAS024 (suppressible where intended). An
-    actor type whose root does not persist has no record, so only `[ActivatedBy]` messages activate it.
-    `[ActivatedBy]` narrows only first activations: `[Durable]` requests and `Wake` always activate.
+    actor type whose root does not persist has no record, so a client `[To]` message activates it only through
+    `[ActivatedBy]` (server messages activate it as usual), and its activation leaves no row in the store.
+    `[ActivatedBy]` narrows only first activations: server `[Durable]` requests and `Wake` always activate, while a
+    client `[Durable]` request obeys it (a key without a written record never ran a durable request, so `NoActor` is
+    final).
+  - **A pure gate before the claim**: beside `[ActivatedBy]`, `static bool CanCreate(in TClaims who, in TMessage m)`
+    (which may also take `in` configuration tables, the node's immutable snapshots) runs on the owner before the
+    claim; `false` answers `NoActor` and writes nothing, so validation that needs no actor state (a map id in the map
+    table, an open sale) costs no row. Rows still never written expire after `DaServer:EmptyRecordTtl` (1 day): the
+    coordinator's world deletes them in batches through a `SECURITY DEFINER` function, and the runtime role has no
+    `DELETE` grant.
   - **Part of a key may come from the claims**: the message carries only the fields a client may state, and the
     actor type declares `static K Route(in TClaims who, in TMessage m)`, a pure function the gateway's generated route
     calls without allocating. A message without a matching `Route`, or a `Route` whose identity type is not the
-    project's `IClaims`, is an analyzer error.
+    project's `IClaims`, is an analyzer error when the key has fields the message does not carry.
   - **`[Durable]` on `IFromClient<R>`**: the receiver behaves exactly as for a server `[Durable]` request
     (deduplication by call id, `ReplyLog`, the reply released after the record write, `TooLate`); the client does not
-    persist, so the SDK retries with the same call id (prefixed by `ClientId`) after a timeout or `ConnectionLost`
-    until the settle-by instant, which the gateway sets at arrival + `DaServer:ClientSettle` (1 minute). The receiving
-    type must persist (analyzer error). For sensitive operations that change the economy; everything else stays
-    at most once.
+    persist, so the SDK retries with the same call id (prefixed by `ClientId`) after a timeout or `ConnectionLost`.
+    Every attempt carries the call's age (monotonic time since its first send), and the gateway sets settle-by =
+    arrival − age + `DaServer:ClientSettle` (3 minutes; a node refuses to start when it is below `ClockSkew` +
+    `AskTimeout` + 30 s, since the receiver judges a gateway instant by its own clock), so a retry through another
+    gateway keeps the first attempt's settle-by; the SDK stops at first send + `ClientSettle` − `AskTimeout`. The
+    receiver keeps an entry until the latest settle-by it accepted for the call id, and keeps per `ClientId` the
+    highest purged client call id (`DaServer:ReplyLogClients`, 256 per root, evicting only clients idle past
+    `ClientSettle` + `ClockSkew`), answering `TooLate` at or below it. The receiving type must persist (analyzer
+    error). For sensitive operations that change the economy; everything else stays at most once. A business
+    operation repeated under a new call id (an app restart, a hostile client) is deduplicated by its own key: a
+    payment provider's webhook asks `Payment(payment id)`, a persisted actor whose record is the "credited" flag with
+    no settle-by limit, which then asks `Player` durably.
   - **Several presences of one type**: at most one presence per actor and `[ActorOptions(PresencesPerClient = n)]`
     per actor type (default 1: a second map leaves the first; a chat or a queue raises it); joining past the limit
     leaves the oldest. A type above 1 handles only `[To]` client messages (analyzer check), and handlers recognise a
     member with `root.TryGetClient(out var presence)`. `root.JoinClient(prefab?)` finds the client's presence by the
-    framework's `(ActorId, ClientId)` index or spawns one, then joins.
+    framework's `(ActorId, ClientId)` index or spawns one, then joins; `ClientId` is one login, so membership that
+    must survive a re-login keys its member by the account instead (`Ticket(Queue, long Account)`).
   - **A client message without `[To]` handled by a `[JoinOnConnect]` type binds to the root**, where per-player state
     (inventory, wallet) lives; the presence is `root.TryGetClient`. A component parameter missing from `K.RootPrefab`
     (or from the presence's prefab, for presence subjects) fails `Registration` at construction, since the generator

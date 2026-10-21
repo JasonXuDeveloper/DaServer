@@ -125,10 +125,12 @@ public API, attribute, configuration key or AppHost call.
 - **Node singletons**: node-level state that user code may read (`RestartingNodes`) or the runtime consults (`StoreDegraded`, `ActivationSlots`, `PeerHealth`) is one immutable snapshot the node swaps atomically. Each world holds its own copy as a world singleton, refreshed from the snapshot at the start of each batch and tick, so world threads read it without locks and an item sees one value throughout.
 - **Node-wide limits are per-world shares**: a stale snapshot cannot hold a counter, so the two node-wide budgets
   (`ActivationSlots`' concurrent epoch claims and `PeerHealth`'s in-flight requests per destination node) are split into
-  shares, one per world, recomputed at each refresh from the node's limit and the world's recent use (at least one each);
-  a world spends only its own share, a plain field on its thread. The node never overshoots its limit and no counter is
-  contended; the cost is that a burst on one world waits for the next refresh before it borrows another world's unused
-  share.
+  shares, one per world, recomputed at each refresh from the node's limit and the world's recent use. A share never
+  drops below what the world already has in flight (only the remainder is handed out), and when the worlds outnumber
+  the limit some get 0, the non-zero shares rotating among the worlds with demand at each refresh; so the shares
+  always sum to at most the limit. A world spends only its own share, a plain field on its thread. The node never
+  overshoots its limit and no counter is contended; the cost is that a burst on one world waits for the next refresh
+  before it borrows another world's unused share.
 - **The dispatch queue** is the only cross-thread handoff: IO threads and other shards post frames to it; the shard
   thread moves them into mailbox snapshots. Queues are bounded (`Busy`); the control channel (presence control,
   answers) is bounded by what the node itself holds ([draft §11](programming-model.md#11-失败时的结果)).
@@ -174,12 +176,14 @@ loop on the shard's thread:
         world.Update<K>()
         Settling<K>
     write Time           Utc and Elapsed; Tick, TickRate and DeltaTime keep the last pass's values, which Cleanup does not read
-    Cleanup              per world: ReleaseRoutes, the Persisted cleanup, WakeSystem, then CheckpointSystem (takes the
-                               records of WriteNow roots first, then of Unsaved roots whose checkpoint interval has passed,
-                               skipping roots with a write in flight, as many as the free statements hold)
-    StoreWrite           per world: the tick-end write goes out when it holds any record (deactivations' included), one
-                               statement per 512 rows, at most DaServer:StoreWritesInFlight in flight; held output is
-                               released as its rows succeed
+    Cleanup              per world: ReleaseRoutes, the Persisted cleanup, WakeSystem, then CheckpointSystem (collects
+                               the ids of WriteNow roots first, then of Unsaved roots whose checkpoint interval has passed,
+                               skipping roots with a write in flight, as many as the free statements hold, and clears
+                               their flags; it saves nothing: World.Save throws inside a pass)
+    StoreWrite           per world, outside world.Update: Descendants and SaveEntities for each collected root and each
+                               deactivation (a framework job only marks them), then the tick-end write goes out when it
+                               holds any record, one statement per 512 rows, at most DaServer:StoreWritesInFlight in
+                               flight; held output is released as its rows succeed
     hand Outbox frames to the links
 ```
 
@@ -232,7 +236,7 @@ exported, OpenTelemetry). Names users never write but meet in diagnostics: the S
 | `NextDue` | persisted component on the root | The minimum `WakeAt` of the root's descendants, computed only by the runtime: `WakeSystem` (from `[Changed<WakeAt>]`, `[Removed<WakeAt>]` and the `Persisted` cleanup) runs before `CheckpointSystem`, which takes every record; every write puts it into the record's `next_due` column ([draft §10](programming-model.md#唤醒wakeatnextdueduescan)) | — |
 | `DueScan` | node system | Every `DaServer:DueScanInterval`, `IActorStore.DueKeys(slots, until, after)` over the slots the node owns (`until` fixed for the scan; the first page's `after` is a sentinel below every real row, each later page's the previous page's last row, which `DueKeys` returns; each page probes only the pairs at or after the cursor's, taking at most 512 rows from each through `LATERAL … LIMIT`, so no page sorts the backlog of every later pair); sends `Wake` (the one control mail that activates) to keys not active; an activation by `Wake` always rewrites `next_due`. The query does not exclude active keys (the store cannot tell); an active actor moves its `WakeAt` on as each instant comes, so its key shows up only between an instant and the checkpoint that writes the moved `WakeAt` (re-asks set no `WriteNow`): at most the instants of the last checkpoint interval, and its world drops the `Wake` | `daserver.wakes` |
 | `Joined(bool MissedPushes)`, `Detached` | component and tag on a presence | Confirmed, and whether a push may have been missed (false only after a `Retire` behind the `HandedOff` fence); a presence of a lost connection in its grace period ([draft §7](programming-model.md#7-客户端与-presence)) | — |
-| Due heap | runtime index per world | A 4-ary min-heap of `(At, Seq, EntityId with version)`; lazy deletion (a popped entry whose entity version changed is skipped); rebuilt after `world.Load` and a migration's arrival, and compacted in place (stale entries dropped, heap rebuilt in O(n)) whenever stale entries pass the live ones: most asks are answered in milliseconds while their timeout entry waits for its `At`, so without compaction the heap would hold rate × timeout dead entries. Bounded by twice the live items, which `MaxPending` bounds. EasyEcs's ordered value index is a sorted array, so each pop would move the whole array | `daserver.dueheap.entries{state}` |
+| Due heap | runtime index per world | A 4-ary min-heap of `(At, Seq, EntityId with version)`; lazy deletion: a popped entry is valid only if its entity is alive (same version) and its `(At, Seq)` equals the entity's current `Due` (a durable waiting entity or a reminder re-armed on the same entity keeps its version, so the version alone would fire it early); others are skipped. Rebuilt after `world.Load` and a migration's arrival, and compacted in place (stale entries dropped, heap rebuilt in O(n)) whenever the stale count (heap size − `CountOf<Due>`, O(1)) passes the live one: most asks are answered in milliseconds while their timeout entry waits for its `At`, so without compaction the heap would hold rate × timeout dead entries. So the heap holds at most twice the world's live `Due` entities, which `MaxPending` bounds per actor. EasyEcs's ordered value index is a sorted array, so each pop would move the whole array | `daserver.dueheap.entries{state}` |
 | Chain stack | runtime value per world | `Schedule` without `after`: the event as a value, run right after the item; empty between items, so never saved | — |
 | Call index | runtime hash index per world | Call id → the waiting entity (`EntityId` with version), so a `Replied` finds its asker in one lookup | — |
 | `Ordered<K>` | singleton per actor type | Tick number, sequence counter, current tick window, immediate chain budget | — |
@@ -241,7 +245,7 @@ exported, OpenTelemetry). Names users never write but meet in diagnostics: the S
 | `Time` | singleton | `Tick`, `DeltaTime`, `TickRate` (written at the start of each actor type's pass, from its `Ordered<K>`), `Elapsed` (monotonic, process-local), `Utc` (the world's `TimeProvider`, read once per item) | — |
 | `RestartingNodes` | node singleton | The members in `NodeRestarting`, with their expected pauses; `TryGetPause(connection, out pause)` for gateway systems that tell clients | `daserver.members{state}` |
 | `StoreDegraded`, `ActivationSlots`, `PeerHealth` | node singletons | The store is slow or down (no idle deactivation, `Saving` placeholders capped); concurrent epoch claims (jittered back-off); in-flight requests and latency per destination node with an adaptive limit (fail fast with `Busy`) ([draft §6](programming-model.md#6-生命周期), [§11](programming-model.md#11-失败时的结果)) | `daserver.store.degraded`, `daserver.activations.claiming`, `daserver.peer.inflight`, `daserver.peer.limit` |
-| Placeholder | entity | A key not yet active or being saved: the copy of `K.RootPrefab` without `In<K>`, the key, `Loading`, `Saving` or `ActivationFailed(until)`, a bounded `DynamicBuffer<Mail>`; a throw in a persisted actor (reload) turns a root back into one in place, keeping only the key, the `Mail` and the faulting `[Durable]` call ids (a bounded `DynamicBuffer<FaultedCall>`: a system pass that throws can fault several stored tokens of one root; past `DaServer:FaultedCallsMax`, default 64, the rest are not recorded and their askers end `Expired`) (values reset to the prefab copy's) | `daserver.activations.failed` |
+| Placeholder | entity | A key not yet active or being saved: the copy of `K.RootPrefab` without `In<K>`, the key, `Loading`, `Arriving` (a key of a handoff-pending slot waiting for its source's answer, section 4), `Saving` or `ActivationFailed(until)`, a bounded `DynamicBuffer<Mail>`; a throw in a persisted actor (reload) turns a root back into one in place, keeping only the key, the `Mail` and the faulting `[Durable]` call ids (a bounded `DynamicBuffer<FaultedCall>`: a system pass that throws can fault several stored tokens of one root; past `DaServer:FaultedCallsMax`, default 64, the rest are not recorded and their askers end `Expired`) (values reset to the prefab copy's) | `daserver.activations.failed` |
 | Control mail | mail on the control channel | `Route`, `Lost`, `JoinConfirmed`, `TakeOver(ConnectionId, stamp)` (a takeover closing the old connection), the `HandedOff(slot)` marker on a retired route, `Fence(key, epoch)`, `Wake`; mail to a `Connection` is addressed by its `ConnectionId` (the presence records it), so the gateway routes it to the world by that key's hash like any actor's; bounded by what the node holds, never `Busy` | `daserver.messages.dropped{reason}` |
 | Membership states | per member in the view | `NodeJoining`, `NodeLeaving` (placement is changing), `NodeRestarting` (a hot restart, announced on SIGTERM, or at once under an `exit=true` arm; user systems see the `Restarting` tag and `RestartingNodes`), `Rejoining` (the new process waiting for the coordinator's `Readmit` or `Gone`) | `daserver.members{state}` |
 
@@ -438,14 +442,17 @@ The client protocol's internals behind [draft §7](programming-model.md#7-客户
 - **The push-order fence** (ADR-026): on takeover the target first appends, for the old gateway, every group frame still
   held for the presence's groups (rate-limited ones included, ahead of their due tick), then removes the old
   connection's subscriptions (`TakeOver` carries them, so the old gateway stops fanning out to it at once), then pushes
-  `HandedOff(slot)` on the old route, then switches. So `HandedOff` is the last frame the old connection gets for the
-  slot. The SDK holds the new connection's pushes for that slot until the old connection's `HandedOff` arrives, and
+  `HandedOff(slot)` on the old route, then switches. The flushed group frames, `TakeOver` and `HandedOff` go to the old
+  gateway on one FIFO stream (the data stream of that link, not the control channel), and the gateway applies them in
+  arrival order, so the flushed frames still find their subscriptions before `TakeOver` removes them. So `HandedOff`
+  is the last frame the old connection gets for the slot. The SDK holds the new connection's pushes for that slot until the old connection's `HandedOff` arrives, and
   discards any push for the slot that the old connection delivers after it. Nothing is missed, so `Joined.MissedPushes`
   is false; an application can still owe a snapshot of its own after the handover (the mmo sample's `Resnap` for an avatar that crossed cells meanwhile, [draft §12](programming-model.md#12-完整例子连接进地图移动放技能捡东西看见别人)).
 - **A fence that never comes**: when the old connection or its gateway dies before `HandedOff` arrives, the SDK stops
-  holding after its call timeout and re-joins the slot without the retire flag, so the target sets
-  `Joined.MissedPushes` true and the snapshot system sends the full state; pushes lost on the old connection are
-  covered by it.
+  holding after its call timeout and re-joins the slot with a "fence missing" flag (same connection, same attempt).
+  An equal stamp is otherwise answered idempotently; with this flag the target sets `Joined.MissedPushes` true (and
+  writes `Joined`, so `[Changed<Joined>]` systems see it) and the snapshot system sends the full state; pushes lost on
+  the old connection are covered by it.
 - The old connection closes once its open calls are answered; its released routes no longer match, and the SDK ignores
   `PresenceLost` from a retiring connection. A connection still there after `RetireGrace` is dropped and handled as a
   lost connection (`Detached`).
@@ -471,8 +478,10 @@ in short:
   it, moved when nodes join or leave (rate-limited per node) or by the coordinator's slot table (ADR-079). Every placement
   change of a type, slot-table moves included, bumps its placement version. A node activates a key only when its own view makes it
   the owner and no tombstone for the key is present; otherwise it forwards. `[ActivatedBy<T>]` narrows only a key's
-  first activation (no record yet); `[Durable]` requests, like `Wake`, always activate. `[Stateless]` actors live on any node,
-  never persisted. `Connection` is pinned.
+  first activation (no record yet); server `[Durable]` requests, like `Wake`, always activate, while a client `[Durable]`
+  request obeys `[ActivatedBy]` like any client `[To]` message (a key without a written record never ran a durable
+  request, since its reply leaves only after the write, so `NoActor` is a safe final answer). `[Stateless]` actors live
+  on any node, never persisted. `Connection` is pinned.
 - **Moves hand off before the target claims** (ADR-072's "mail first", kept): when a placement change (a slot-table
   move, a node joining or leaving gracefully) moves key `k` from A to B, B treats the keys of every slot it received as
   handoff-pending until A reports the slot done or leaves the view. Mail for a pending key with no local state does not
@@ -481,34 +490,64 @@ in short:
   deactivated), after which B claims as usual, or with "postponed" (A cannot write the root before moving, for example
   while the store is down), after which B forwards the mail to A, which keeps the actor running there, and asks again
   after a back-off. A key never has a claim racing a live source: the store's placement version decides only between
-  a source that has left and its successor.
+  a source that has left and its successor. The coordinator does not move a slot again while its previous move is
+  still handoff-pending (the slot table marks it until the source reports it done or leaves the view), so a chained
+  move A→B→C never lets C ask a B that never held the key. Mail A forwards for a parked key goes ahead of the mail B
+  parked (A sends it on the migration's stream before the bytes), so per-sender order holds across the move.
 - **Membership lease**: renewed only by an ack echoing the node's own heartbeat counter, timed from the send, and an
   ack renews only when the acker is on the majority side: it has heard, within `SuspectAfter`, from more than half of
-  the members of its view (itself included). The coordinator acks; once it is `Suspect`, the next-oldest member acks,
-  again only from the majority side; the coordinator's own lease is renewed by acks from a majority of members to its
-  heartbeats. In a symmetric partition the minority side therefore stops renewing and freezes when its lease runs out,
-  before the majority re-places its actors. Clusters of two members cannot tell a crash from a partition: there a lone
-  member keeps renewing (otherwise one crash would freeze the cluster for good), so a two-member cluster has no
-  lease-based guarantee against a partition and relies on the epoch fence alone (a write by the stale side fails;
-  in-memory work, pushes and plain replies on that side run until its next write, at most a checkpoint interval).
-  Production clusters run at least three members of a stateful server type. Each world checks the expiry before its
-  ordered phase, again before the store write and before handing frames to the links (so catch-up ticks in one
-  iteration never run past it), and freezes past it; peers re-place its actors after
-  max(`DeadAfter`, `SuspectAfter` + lease). The coordinator (the oldest member Up and not `NodeRestarting`, ADR-079)
-  assigns node generations (max(last seen + 1, Unix ms)), grants the one cluster-wide restart permit and keeps a
-  restarting node's deadline. The role is sticky: a member readmitted after a hot restart keeps its age but does not
-  take the role back; it moves only when the current coordinator leaves or restarts, so a rolling restart moves it once. The timer defaults are one table in
+  `max(DaServer:FormationSize, members of its view)` (itself included; `NodeRestarting` members count in the
+  denominator and are not heard from). The order of the roles is a function of the view alone: each member carries
+  an admission number, assigned by the coordinator when the member is admitted and again when it is readmitted after
+  a hot restart (node generations are unchanged by it). The coordinator is the member Up, not `NodeRestarting`, with
+  the smallest admission number; it acks, and once it is `Suspect` the next in the same order acks, again only from
+  the majority side; the coordinator's own lease is renewed by acks from a majority. Every node computes the same
+  roles from the same view, so there is never a second coordinator, and a readmitted former coordinator is last in
+  line: a rolling restart moves the role once. In a symmetric partition the minority side stops renewing and freezes
+  when its lease runs out, before the majority re-places its actors. `DaServer:FormationSize` (default 3) is the
+  cluster's configured size, not the current view: a three-member cluster that lost a member still needs two of three,
+  so a later split of the two survivors freezes both rather than letting both run (an alert, `daserver_lease_minority`,
+  says so). Only a cluster configured with `FormationSize = 2` lets a lone member keep renewing (otherwise one crash
+  would freeze it for good); such a cluster has no lease-based guarantee against a partition and relies on the epoch
+  fence alone (a write by the stale side fails; in-memory work, pushes and plain replies on that side run until its
+  next write, at most a checkpoint interval). Each world checks the expiry before its ordered phase, again before the
+  store write and before handing frames to the links (so catch-up ticks in one iteration never run past it), and
+  freezes past it; peers re-place its actors after max(`DeadAfter`, `SuspectAfter` + lease). The coordinator assigns
+  node generations (max(last seen + 1, Unix ms)) and admission numbers, grants the one cluster-wide restart permit and
+  keeps a restarting node's deadline (ADR-082's coordinator rule). The timer defaults are one table in
   [draft §11](programming-model.md#定时的默认值).
 - **Activation**: the placeholder (`Loading`) holds the mail; one statement claims the epoch and reads the record
   (`INSERT … ON CONFLICT (type_id, key) DO UPDATE SET … WHERE … RETURNING …`, inserting the placeholder row for a new key and
   returning the displaced owner as PostgreSQL 18's `old.owner`; the store keeps epoch, write generation (reset to 0 by the claim), owner and placement version: taking a key from another owner needs a
   strictly newer version, a displaced owner gets `Fence(key, epoch)`), within `ActivationSlots`;
   `LoadEntitiesInto(record, into, markWritten: false)` with the placeholder as the root; `In<K>` added;
-  `Activated` first, then the placeholder's mail, then later mail. When the mail that triggers the activation may not
-  create the key (a client `[To]` message to a type without `[ActivatedBy]` for it, or any message the type's
+  `Activated` first, then the placeholder's mail, then later mail. When the claim does not take the key, the same
+  statement returns the stored placement and owner and whether a record exists, so "a newer owner holds it" (forward)
+  and "no record" (`NoActor`) are told apart.
+- **Who may create a key**: when the mail that triggers the activation may not create the key (a client `[To]`
+  message or client `[Durable]` request to a type without `[ActivatedBy]` for it, or any message the type's
   `[ActivatedBy]` list leaves out), the claim runs without its `INSERT` branch and requires a written record
-  (`record IS NOT NULL`): no row, or a row never written, answers `NoActor` and writes nothing, so a client cannot
-  create rows by inventing keys.
+  (`record IS NOT NULL`): no row, or a row never written, answers `NoActor` and writes nothing. A message that may
+  create the key first passes the type's pure gate, `static bool CanCreate(in TClaims, in TMessage)` beside
+  `[ActivatedBy]` (no world, no allocation; besides the claims and the message it may take only `in` configuration
+  tables, the node's immutable snapshots; checked on the owner before the claim, for example a map id against the map
+  table): `false` answers `NoActor` and writes nothing. So a client cannot create rows by inventing keys.
+- **Actor types that save nothing claim no row**: a type whose root is not persisted has no record, so its activation
+  writes nothing to the store, no claim included. What keeps one activation per key for it is the view: a node
+  activates only keys its view makes it the owner of and not handoff-pending, peers forward by the same rule, the
+  minority side of a partition freezes when its lease runs out, and a node removed from the view fences everything
+  before it rejoins with a new generation. Between two views that briefly disagree (a slot-table change still
+  spreading) two activations of such a key can exist for a moment; neither writes anything, so the cost is mail split
+  between them, and the forward-by-version rule (frames carry the highest placement version seen) ends it within one
+  view exchange. `[ActivatedBy]` and `CanCreate` apply to them as well: they decide whether an activation happens.
+- **Rows never written expire**: a row whose record is still `NULL` `DaServer:EmptyRecordTtl` (default 1 day) after
+  its last claim is deleted. Any live activation of a persisted type writes its first record within a checkpoint
+  interval (a new key is tagged `Unsaved`), so such a row belongs to an activation that was refused or crashed before
+  writing. The coordinator's world runs the sweep every `DaServer:EmptyRecordSweepInterval` (1 h), 1,000 rows per call
+  until a call deletes fewer, through `daserver_sweep_empty(ttl, limit)`, a `SECURITY DEFINER` function owned by the
+  schema's owner role that deletes only `record IS NULL AND claimed < now() - ttl` rows; the runtime role gets
+  `EXECUTE` on it and no `DELETE` on the table. If an activation somehow outlived the TTL without writing, its first
+  write finds no row, which is a failed compare: it fences, and the next mail activates the key again.
 - **The table**: one row per actor, keyed by `(type_id, key)` (`Map(7)` and `Loot(7)` are two rows), with the columns
   `type_id, key, slot, epoch, write_gen, owner, placement, record, next_due` and an index on `(type_id, slot, next_due)`. The
   key is `bytea`, the key's fields big-endian (any key shape up to 16 bytes in one column); the slot is the key's
@@ -528,11 +567,13 @@ in short:
   but `[NotSaved]` ones; others are not. Records are `SaveEntities` of the root and its `Persisted` descendants
   (`world.Descendants(root).AddTo(ids, includeRoot: true)`, then the non-persistent ones removed in place, saved as
   `SaveEntities(output, CollectionsMarshal.AsSpan(ids), in persist)`) with the `persist` component set built once in `Registration`, components only (a group save refuses a set naming a singleton): the types on persistent
-  prefabs and those spawned into persistent entities, `[Durable]` ask states, plus the framework's. Change tracking is
-  switched on for that set's types but the ask states, which are written once at `Ask` and tag the root `Unsaved`
-  there (EasyEcs request #27, proposed, not yet forwarded; until then the generator declares `ITrackChanges`, so
-  those types are `partial`). `root.Spawn` of a persistent prefab, `ChangeSystem`
-  (`ChangedAny<…>(since)` over the set's tracked types, at most nine per call, the calls joining one group, `.With<Persisted>()`, and `RemovedAny`) and the `Persisted` cleanup tag the root `Unsaved`;
+  prefabs and those spawned into persistent entities, `[Durable]` ask states, plus the framework's; it is used at run
+  time only. Change tracking comes from the source: every persisted user component type declares `ITrackChanges`
+  (buffers are tracked already), the generator emits the tracked-type list and the `ChangedAny`/`RemovedAny` filters
+  from those declarations (EasyEcs 4.7's filters name their types at compile time), and `Registration` throws at start
+  when a type on a `[Persist]` prefab is missing from that list; ask states are written once at `Ask` and tag the root
+  `Unsaved` there, untracked. `root.Spawn` of a persistent prefab, `ChangeSystem`
+  (`ChangedAny<…>(since)` over the tracked types, at most nine per call, the calls joining one group, `.With<Persisted>()`, and `RemovedAny`) and the `Persisted` cleanup tag the root `Unsaved`;
   `CheckpointSystem` puts `WriteNow` roots and, each interval, the `[With<Unsaved>]` roots into the tick-end write, each row with an epoch CAS; both skip roots that are placeholders
   (`Loading`, `Saving`, `ActivationFailed`). Every load completes entities from their prefab copies by `FromPrefab`
   (`[NotSaved]` components and those the prefab gained since; section 2) and skips unknown type ids, counted. The waiting entities of
@@ -572,22 +613,64 @@ CREATE TABLE actor_records (
   write_gen bigint         NOT NULL,
   owner     daserver_owner NOT NULL,   -- (node name, node generation) of the last claim
   placement bigint         NOT NULL,   -- the placement version of the last claim
+  claimed   timestamptz    NOT NULL,   -- the last claim's time: a never-written row expires from it
   record    bytea,                     -- NULL: claimed, never written
   next_due  timestamptz,               -- NextDue; NULL: nothing due
   PRIMARY KEY (type_id, key));
 CREATE INDEX actor_records_due ON actor_records (type_id, slot, next_due) WHERE next_due IS NOT NULL;
 ```
 
-**The claim (a new key inserts the placeholder row; a row whose condition fails changes nothing and returns no row)**:
+**The claim** (a new key inserts the placeholder row; when the condition fails nothing changes and the stored row
+comes back, `taken` false, so the node tells "forward to the newer owner" from "no record"):
 
 ```sql
-INSERT INTO actor_records AS a (type_id, key, slot, epoch, write_gen, owner, placement, record, next_due)
-VALUES (:type_id, :key, :slot, 1, 0, (:name, :gen), :v, NULL, NULL)   -- a new key: the placeholder row
-ON CONFLICT (type_id, key) DO UPDATE
-   SET epoch = a.epoch + 1, write_gen = 0, owner = excluded.owner, placement = excluded.placement
-   WHERE a.placement < excluded.placement
-      OR (a.placement = excluded.placement AND a.owner = excluded.owner)
-RETURNING new.epoch, new.record, old.owner                    -- PostgreSQL 18: OLD in RETURNING, NULL for an inserted row
+WITH c AS (
+  INSERT INTO actor_records AS a (type_id, key, slot, epoch, write_gen, owner, placement, claimed, record, next_due)
+  VALUES (:type_id, :key, :slot, 1, 0, (:name, :gen), :v, now(), NULL, NULL)   -- a new key: the placeholder row
+  ON CONFLICT (type_id, key) DO UPDATE
+     SET epoch = a.epoch + 1, write_gen = 0, owner = excluded.owner, placement = excluded.placement, claimed = now()
+     WHERE a.placement < excluded.placement
+        OR (a.placement = excluded.placement AND a.owner = excluded.owner)
+  RETURNING new.epoch, new.record, old.owner, new.placement)        -- PostgreSQL 18: OLD in RETURNING, NULL if inserted
+SELECT true AS taken, epoch, record, owner, placement FROM c
+UNION ALL
+SELECT false, a.epoch, NULL, a.owner, a.placement                    -- not taken: the row as stored before the statement
+FROM actor_records a
+WHERE a.type_id = :type_id AND a.key = :key AND NOT EXISTS (SELECT 1 FROM c)
+```
+
+**The claim that may not create the key** (no `INSERT` branch; `has_record` false answers `NoActor`):
+
+```sql
+WITH c AS (
+  UPDATE actor_records a
+     SET epoch = a.epoch + 1, write_gen = 0, owner = (:name, :gen), placement = :v, claimed = now()
+   WHERE a.type_id = :type_id AND a.key = :key AND a.record IS NOT NULL
+     AND (a.placement < :v OR (a.placement = :v AND a.owner = (:name, :gen)))
+  RETURNING a.epoch, a.record, a.placement)
+SELECT true AS taken, epoch, record, NULL::daserver_owner AS owner, placement, true AS has_record FROM c
+UNION ALL
+SELECT false, a.epoch, NULL, a.owner, a.placement, a.record IS NOT NULL
+FROM actor_records a
+WHERE a.type_id = :type_id AND a.key = :key AND NOT EXISTS (SELECT 1 FROM c)
+```
+
+(The no-insert claim's displaced owner is read the same way as above when PostgreSQL 18's `old` is used; the sketch
+leaves it out for brevity. No row at all means no record.)
+
+**The sweep of never-written rows** (created by the schema Job; the runtime role has `EXECUTE` only):
+
+```sql
+CREATE FUNCTION daserver_sweep_empty(ttl interval, max_rows integer) RETURNS integer
+LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, public AS $$
+  WITH d AS (DELETE FROM actor_records
+             WHERE ctid = ANY (ARRAY(SELECT ctid FROM actor_records
+                                     WHERE record IS NULL AND claimed < now() - ttl
+                                     LIMIT max_rows))
+             RETURNING 1)
+  SELECT count(*)::integer FROM d $$;
+REVOKE ALL ON FUNCTION daserver_sweep_empty(interval, integer) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION daserver_sweep_empty(interval, integer) TO daserver_runtime;
 ```
 
 **The batched write (compare and swap on epoch and write generation; the rows not updated come back as stored)**:
@@ -716,7 +799,7 @@ generator add, and what the runtime does:
 | Subscriptions | `DynamicBuffer`, `[Changed<DynamicBuffer<T>>]` | `Subscribed`, `SetGroups` | `SyncSubscriptions` |
 | Lifecycle | Tags | `[On<Activated>]`, systems on `Leaving`, `Deactivating`, `Restarting`, `Resumed` | Placeholders, epochs, fencing, `Depart` |
 | An actor's entities | `ChildOf`, `world.Children`, prefabs, `world.Instantiate` with up to nine given components (`ChildOf` one of them) | `In<K>`, `K.RootPrefab`, `[Prefab<K>]`, `[Persist]`, `root.Spawn`, `e.Root` | Registered prefab copies |
-| Writing only what changed | `ITrackChanges`, `[Changed<T>]`, `[Removed<T>]`, `ChangedAny`/`RemovedAny`, `ICleanupComponent`, `DynamicBuffer`; tracking switched on at run time (request #27; requests (a) and (b), not in 4.7) | Persistent prefabs, `[NotSaved]`, `[Durable]`; until request (a), the analyzer rejects `ref Maybe<T>` of a persisted type (EasyEcs decides `Maybe` stamping at generation time and cannot see DaServer's partial `ITrackChanges`) | `Persisted`, `ChangeSystem`, `CheckpointSystem` |
+| Writing only what changed | `ITrackChanges`, `[Changed<T>]`, `[Removed<T>]`, `ChangedAny`/`RemovedAny`, `ICleanupComponent`, `DynamicBuffer` (itself `ITrackChanges`); persisted types declare `ITrackChanges` in source, since 4.7's `ChangedAny<T1..Tn>` names its types at compile time (request (b) for prefab compositions, not in 4.7) | Persistent prefabs, `[NotSaved]`, `[Durable]`; `Registration` throws at start when a type on a `[Persist]` prefab lacks `ITrackChanges` | `Persisted`, `ChangeSystem`, `CheckpointSystem` |
 | Records, migration | `ComponentSet`, `Descendants(root).AddTo(ids, includeRoot: true)` (parents first, returns the count added, 0 B with a reused list), `SaveEntities` (ids as a span; a set without singletons), `LoadEntitiesInto` (`markWritten: false` on restore) | Persistent prefabs, `[NotSaved]` | Store, epoch CAS, layout hashes |
 | Wake | `[Changed<WakeAt>]`, `[Removed<WakeAt>]` | — | `WakeAt`, `NextDue`, `DueScan` |
 | Version compatibility | Nino type ids, `[NinoFormerName]` | `wire.manifest` | Rolling upgrades |
