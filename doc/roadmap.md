@@ -22,7 +22,7 @@ Keep this file current: tick items when done, add items when scope changes.
 11. S1-S6 (done) elastic scaling.
 12. The ECS rewrite (ADR-081, the "ECS rewrite" entry under "Open cleanup" below): P1-P3 and P5 done; P4, P6 and P7
     superseded by W.
-13. W — refactor to the v58 programming model ([drafts/programming-model.md](drafts/programming-model.md),
+13. W — refactor to the v59 programming model ([drafts/programming-model.md](drafts/programming-model.md),
     [drafts/architecture.md](drafts/architecture.md)) on EasyEcs 4.7 (ADR-082 to ADR-092). Breaking; each step
     proven before the next (W, not R: the requirement ids R0-R11 are taken).
     W10 runs last, after W12 and N9.
@@ -275,10 +275,10 @@ Keep this file current: tick items when done, add items when scope changes.
       subscribers with their activation epoch (`Subscribe` idempotent, the highest epoch kept, a lower one ignored, table
       changes riding the normal checkpoint), `[Hosts<Topic>]` with a store, the subscriber's `Subscription`
       buffer (subscribe after `Activated`, renew every `DaServer:Topics:RenewInterval` while not `Deactivating` and on
-      `[Removed<Deactivating>]` of a living root, unsubscribe on `Deactivating`; `Unsubscribe` removes the buffer entry), the receiving node dropping a delivery whose topic is not in the subscriber root's `Subscription` buffer and checking the buffer when the delivery is dispatched on the shard and answering with a not-subscribed notice echoing the delivered epoch, one frame per subscriber node with each entry's `(ActorId, Epoch)`; deletes
+      `[Removed<Deactivating>]` of a living root, unsubscribe on `Deactivating`; `Unsubscribe` removes the buffer entry), the receiving node dropping a delivery whose topic is not in the subscriber root's `Subscription` buffer and checking the buffer when the delivery is dispatched on the shard and answering with a one-way `NotSubscribed(ActorId, Epoch) : IMessageTo<Topic>` from the subscriber's shard echoing the delivered epoch (sent again at the next publish if dropped under `Busy`), one frame per subscriber node with each entry's `(ActorId, Epoch)`; deletes
       the service `Publish`. Tests: `PublishReachesSubscribersOnEveryNode`, `DeliveryNeverActivates`,
       `ResubscribesAfterActivation`, `GoneSubscriberPruned`, `StaleUnsubscribeKeepsNewSubscription`,
-      `LowerEpochSubscribeIgnored`, `SubscriptionRenewsAfterTopicCrash`, `CancelledDeactivationResubscribes`, `ReorderedUnsubscribeHealsWithinRenewInterval`, `LostUnsubscribeStopsDeliveryOnNextPublish`, `LostUnsubscribeThenMigrationStillPruned`;
+      `LowerEpochSubscribeIgnored`, `SubscriptionRenewsAfterTopicCrash`, `CancelledDeactivationResubscribes`, `ReorderedUnsubscribeHealsWithinRenewInterval`, `LostUnsubscribeStopsDeliveryOnNextPublish`, `LostUnsubscribeThenMigrationStillPruned`, `ResubscribeInSameActivationSurvivesNotice`;
       BenchmarkDotNet fan-out to 1k/10k subscribers on 1/3 nodes, 0 B per delivery.
     - [ ] W7 Samples (mmo, flashsale) on the new model (their systems use `Mut<T>`), the mmo's drops split
       between a non-ticking `Loot` actor (their records, persistent, the only `[Durable]` asker) and the map (what
