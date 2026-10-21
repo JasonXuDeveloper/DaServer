@@ -1,6 +1,7 @@
 # Alert rules for a DaServer cluster scraped by Prometheus (every node serves /metrics on its HTTP port).
 # Load them with `rule_files:` in prometheus.yml, or wrap the group in a PrometheusRule for the Prometheus Operator.
-# Thresholds are starting points: tune them to the application's load.
+# Thresholds are starting points: tune them to the application's load. A rule that compares a reading against a number
+# carries it as `daserver_limit` (with `daserver_unit`), so a console can draw the limit without a threshold of its own.
 groups:
   - name: daserver
     rules:
@@ -37,6 +38,8 @@ groups:
         labels:
           severity: warning
         annotations:
+          daserver_limit: "1"
+          daserver_unit: "1/s"
           summary: "Handlers on {{ $labels.node }} keep failing"
           description: "More than one handler or system pass a second throws: a poison message, a broken dependency or a broken system. The node's logs name the handler and message (MessageFailed, ActorFailed for lifecycle handlers) or the system (SystemFailed)."
 
@@ -46,6 +49,8 @@ groups:
         labels:
           severity: warning
         annotations:
+          daserver_limit: "0.85"
+          daserver_unit: "ratio"
           summary: "{{ $labels.node }}'s shards are busy {{ $value | humanizePercentage }} of the time"
           description: "The node has little headroom: add nodes to its group (the default scaling metric), or shards if its cores are idle."
 
@@ -55,6 +60,8 @@ groups:
         labels:
           severity: warning
         annotations:
+          daserver_limit: "1"
+          daserver_unit: "1/s"
           summary: "{{ $labels.node }} cannot keep its tick rate"
           description: "Ticks start a whole interval late: systems take longer than the tick, or the node lacks CPU."
 
@@ -64,5 +71,7 @@ groups:
         labels:
           severity: warning
         annotations:
+          daserver_limit: "0.05"
+          daserver_unit: "ratio"
           summary: "{{ $labels.instance }} spends over 5% of its time in GC pauses"
           description: "Something allocates on a hot path, or the heap is near its limit. Compare dotnet_gc_heap_total_allocated_bytes_total over time."
