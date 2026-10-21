@@ -101,8 +101,22 @@ The repository ships two starting points, checked against a running node:
 
 Autoscaling is the platform's. The default signal is `daserver_shard_busy_ratio` (the share of time the shards work):
 with KEDA in the cluster (`AddHelmChart` in the AppHost installs it), a `ScaledObject` with a Prometheus trigger on
-`avg(daserver_shard_busy_ratio{node=~"game-.*"})` scales a group's Deployment; the Prometheus adapter does the same for
-a plain HPA. Without either, an HPA on CPU (the flash sale sample's) is the closest built-in signal.
+`avg(daserver_shard_busy_ratio{node=~"game-.*"})` scales a group's Deployment or StatefulSet; the Prometheus adapter
+does the same for a plain HPA. Without either, an HPA on CPU (the flash sale sample's) is the closest built-in signal.
+
+- Use `avg`, not `max`: one hot actor is a placement problem that more nodes do not solve.
+- Set `minReplicaCount` on a `ScaledObject`: KEDA's default is 0.
+- Scale in one pod per period, with the period at least the group's graceful stop and a stabilization window of
+  600 s or more (`behavior.scaleDown`). A PodDisruptionBudget does not limit a scale-in, and a StatefulSet with
+  `Parallel` pod management deletes the highest ordinals at once; each leaving node needs the time to hand its actors
+  over.
+- A VerticalPodAutoscaler manages memory only; CPU scales horizontally (a node fixes its worlds from its processor
+  count at start).
+- `aspire deploy` runs `helm upgrade --server-side=true --force-conflicts`, so it takes back every field the chart
+  renders, `replicas` included. For a group an autoscaler manages, remove `replicas` from the published workload (or
+  move its ownership to the autoscaler: `kubectl apply --server-side --field-manager=handover-to-hpa` of a manifest
+  carrying only `replicas`), or every deploy resets the group's size. `kubectl get <kind> <name> --show-managed-fields`
+  shows which manager owns a field. Do not `kubectl apply` (client-side) over a Helm release.
 
 The cluster as one node sees it is `aspire resource <node> membership` (or `/admin/membership`); orchestration state is
 the platform's own (kubectl, k9s, Helm, the cloud console). Graceful stop phases go out over OTLP (the histogram
