@@ -56,6 +56,15 @@ follows from DaServer (ports, seeds, probes, the snapshot directory).
   rebuild by hand. The Compose run of the real images checks AOT with official tools only.
 - **Why the dashboard command locally**: `aspire do` runs its steps in a fresh process that cannot reach the running
   AppHost's orchestrator; the resource command runs inside it. Published targets use `aspire do {cluster}-restart`.
+- **Who starts a hot restart, per environment** (one loop, section 5; the trigger is the platform's adapter):
+
+  | Environment | Started by | The loop runs in | Restart trigger |
+  |---|---|---|---|
+  | Local run | the `{cluster}-restart` resource command in the Aspire dashboard | the AppHost process | the resource's restart |
+  | Compose | `aspire do {cluster}-restart` | the deploying machine | `docker compose up -d --no-deps <node>` |
+  | Kubernetes | `aspire do {cluster}-restart` | the `{cluster}-rollout-{n}` Job | the pod's image, applied as `daserver-rollout` |
+  | systemd, launchd, Windows service | the documented script | the operator's machine | `systemctl restart`, `launchctl kickstart -k`, `Restart-Service` |
+  | Any, same image (Dashboard's "Hot restart") | the Dashboard | the Dashboard | `/admin/restart?exit=true`: the node exits after its snapshot and the platform restarts it |
 
 ## 1. What is published today (audit)
 
@@ -411,7 +420,7 @@ in 1.37 (cgroup v2 only).
 | Resource | What .NET does on a live change | Target |
 |---|---|---|
 | CPU limit or request | Nothing: `ProcessorCount` and the world count are fixed (above) | No CPU limit on node pods (throttling stalls ticks); `resizePolicy cpu: NotRequired` so a resize never restarts a container |
-| Memory limit | The GC's hard limit (by default 75% of the container limit) is computed at start, but `GC.RefreshMemoryLimit()` (.NET 8+) "reconfigure[s] itself by detecting the various memory limits on the system", container limits included; it throws when the new limit is below what is already committed ([GC.RefreshMemoryLimit](https://learn.microsoft.com/dotnet/api/system.gc.refreshmemorylimit)) | **DaServer** watches the cgroup's `memory.max` off the shard threads (every few seconds, cgroup v2) and calls `GC.RefreshMemoryLimit()` when it changes, logging a refusal; the snapshot arm already reads the limit live (section 2). Then `resizePolicy memory: NotRequired` |
+| Memory limit | The GC's hard limit (by default 75% of the container limit) is computed at start, but `GC.RefreshMemoryLimit()` (.NET 8+) "reconfigure[s] itself by detecting the various memory limits on the system", container limits included; it throws when the new limit is below what is already committed ([GC.RefreshMemoryLimit](https://learn.microsoft.com/dotnet/api/system.gc.refreshmemorylimit)) | **DaServer** watches the cgroup's `memory.max` off the shard threads (every few seconds, cgroup v2) and calls `GC.RefreshMemoryLimit()` when it changes, logging a refusal; the snapshot arm already reads the limit live (section 2). Then `resizePolicy memory: NotRequired`. Native AOT is the same path: its `GC.RefreshMemoryLimit` ([GC.NativeAot.cs](https://github.com/dotnet/runtime/blob/main/src/coreclr/nativeaot/System.Private.CoreLib/src/System/GC.NativeAot.cs)) calls `RhRefreshMemoryLimit`, which asks the same GC to refresh ([GCHelpers.cpp](https://github.com/dotnet/runtime/blob/main/src/coreclr/nativeaot/Runtime/GCHelpers.cpp)), and the AOT runtime links the GC's own cgroup reader (`gc/unix/cgroup.cpp`), which reads the limit again on every call (`GCToOSInterface::GetPhysicalMemoryLimit`); W12 proves it on kind with both the JIT and the AOT image (`MemoryLimitResizeRefreshesGcLimit`, `MemoryLimitResizeRefreshesGcLimitUnderAot`) |
 
 Today the mmo sample's `ResizeInPlace` uses `memory: RestartContainer`, which on a stateful pod is a graceful stop
 and a rejoin in the same pod (every actor of the node moves twice). With the refresh above it becomes `NotRequired`.
