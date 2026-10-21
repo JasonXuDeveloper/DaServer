@@ -296,7 +296,8 @@ asks the Dashboard whether the action is still unfinished (`GET /admin/actions/{
 `{cluster}-admin` key the rollout Job mounts; the Job learns the Dashboard's in-cluster address from DA, as
 `DaServer__Dashboard__Url`: the Dashboard's Service on Kubernetes, its service name on Compose), retrying the GET for
 five minutes (a Dashboard pod restarting or rolling) and then **refuses: it fails closed** (a Dashboard that cannot
-read the store answers 503, counted as no answer, never "unknown id"); it refuses a Failed or unknown action, so a
+read the store answers 503, counted as no answer, never "unknown id"); it runs on any unfinished state, Stalled included (a Job that
+sat Pending reads Stalled before its first step), and refuses only a Done, Failed or unknown action, so a
 run the pipeline created late (after an operator marked the action Failed and requested it again) never executes.
 A run that queued behind a long rollout is decided by the answering Dashboard however long it waited; a valid run
 dispatched while the Dashboard stays down for five minutes fails, and the operator requests it again. A run started by hand without `--action` asks nothing. A config table push has no pipeline step: it goes through the nodes'

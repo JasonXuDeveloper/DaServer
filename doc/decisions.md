@@ -770,7 +770,7 @@ Replaced by ADR-081.
   remote 1.57 us -> 975 ns; the 3k/9k client scenario 14.0 -> 13.4 ms and 48.3 -> 45.6 ms; group broadcasts to
   1k/5k clients 3-8% slower (5.09 -> 5.25 ms ... 27.8 -> 30.1 ms); allocations equal.
 - Decision: the server core targets `net11.0` only; code both sides load (Core, Client, users' protocol and shared
-  rules) targets `net10.0` and netstandard2.1 (ADR-086: `net10.0` for Godot 4 .NET games, which cannot load a
+  rules) targets `net10.0` and netstandard2.1 (target, W2; today netstandard2.1 and `net11.0`) (ADR-086: `net10.0` for Godot 4 .NET games, which cannot load a
   `net11.0` assembly; netstandard2.1 for engines below .NET 10). `global.json` pins the 11.0 SDK (RC2 until GA,
   then the GA band); CI installs it from there. Runtime async (`<Features>runtime-async=on</Features>`, preview) is on
   for every `net11.0` build (`Directory.Build.targets`; a project opts out with `UseRuntimeAsync=false`: the
@@ -2240,8 +2240,10 @@ Replaced by ADR-098.
     `Expired`, whose refunds are all done (each refund element carries the time the provider's verified refund
     callback, `Refunded(providerRef)` through `ICluster`, recorded) and whose `SettledAt` plus the retention has
     passed, and answers `false` otherwise. A flash-sale `Order` reminds itself at the sale's end plus the payment
-    window and deletes itself in a final state; `Gate` refuses an ended sale, so a deleted order is never created again. `Open` is `partial` in the sample, and each game adds its `[From<Player>]` or
-    `[From<Order>]` beside its `PayFor` and `Notify`.
+    window and deletes itself in a final state; `Gate`, which is not saved, compares `time.Utc` with the sale table's `EndsAt`
+    on every request and answers `SaleEnded` past it (no reminder, nothing written), so a deleted order is never created
+    again, across `Gate` deactivations and restarts too. `Open` is `partial` in the sample, and each game adds its `[From<Player>]` or
+    `[From<Order>]` beside its `PayFor`, `Notify`, `[Once] Settled` and `[Hosts<Payment>]` on one of its server types.
     The sample's provider is a simulator (checkout, a signed callback, a verify API, refunds and a daily report) that
     the bots pay through in the E2Es. The game supplies its `PayFor` type and its `Notify`; nothing in it is a
     framework capability (ADR-045).
@@ -2407,7 +2409,9 @@ Replaced by ADR-098.
       Dashboard (`GET /admin/actions/{id}`, signed with the admin key, at the in-cluster address DA gives the Job,
       which the Dashboard's network policy admits from the rollout Job's pods) whether the action is still
       unfinished, retrying for five minutes and then refusing (fail closed: a Dashboard that cannot read the store
-      answers 503, counted as no answer, never "unknown id"), and refuses a Failed or unknown action; so a run created
+      answers 503, counted as no answer, never "unknown id"); it runs on any unfinished state, Stalled included (a Job
+      that sat Pending or built slowly reads Stalled before its first step), and refuses only a Done, Failed or unknown
+      action; so a run created
       after an operator marked its action Failed ten minutes in never runs, beside the action requested again or after
       it. The Dashboard accepts the admin key on that one read-only route only; its other routes need an operator's
       sign-in and the antiforgery token. A NetworkPolicy cannot restrict a path, so the route rule is the Dashboard's
@@ -2972,11 +2976,16 @@ Replaced by ADR-098.
     the later time (`GREATEST`).
   - **Deletion is a one-way passage**: `root.Delete()` answers `Outstanding` and deletes nothing while the root's own
     `Asking` children wait (no intent dropped silently); otherwise it tags the root `Deleting`, written with that item
-    and releasing its held output. From then on the root does nothing: generated filters carry `Without<Deleting>`,
-    so no system, reminder or `[ForEach]` runs on it; new requests get `Busy` (not stored), one-way mail is dropped and
-    counted, only `[Once]` repeats are answered from `Unacked`; and it cannot ask or send (doing so after `Delete()` in
-    the same item is a runtime error that reloads the item, undoing the delete; an analyzer hint asks for `Delete()`
-    last). The tag carries a framework `WakeAt`, so a crash or an idle unload resumes it through `DueScan`. The record
+    and releasing its held output. From then on the actor does nothing: the tag sits on the root and every entity of
+    its subtree (spawns under a tagged root inherit it), and `IActor<T>` declares `ISystemGroupWithout<Deleting>`, so
+    no system, reminder or `[ForEach]` of the type runs on the root or any descendant, and a Deleting actor never sends
+    from a system (the cost is one tag per descendant, written once); its pending ordinary `Ask`s are cancelled (late
+    answers are dropped), callers holding a `ReplyTo` token from it get `NoActor` at the real delete, and `NextDue`
+    counts only the delete's `WakeAt`; new requests get `Busy` (not stored), one-way mail is dropped and counted, only
+    `[Once]` repeats are answered from `Unacked`; and it cannot ask or send (doing so after `Delete()` returned `Ok`
+    in the same item is a runtime error that reloads the item, undoing the delete, counted in
+    `daserver.delete.send_after` and alerted when it repeats, as a reloaded `Replied` item is delivered again; analyzer
+    hint DAS033). The tag carries a framework `WakeAt`, so a crash or an idle unload resumes it through `DueScan`. The record
     goes once the tag's write has landed, `Unacked` is empty (every stored reply acknowledged, probes bounding the
     wait), no `Asking` exists, and `MaxAskTimeout + 2 × ClockSkew` has passed since the later of that write and the
     last `[Once]` admission (an attempt in flight meanwhile meets the root, not a fresh actor): one function, three
@@ -2985,7 +2994,8 @@ Replaced by ADR-098.
     whose effects went on to a third actor, into a definite `NoActor` on retry, and the sender would compensate. The
     receiver's rows are kept until `orphan_after` because a key can be activated again ( `[ActivatedBy]`): the new
     actor reads the old marks after its claim, so a late attempt the old one already ran gets `Stale` (the payment
-    sample's `Open` has exactly that shape); its own next write of a row clears the mark. A Deleting root is not
+    sample's `Open` has exactly that shape); any change to the row clears the mark in memory at once and its next write
+    clears it in the store, and the idle scan never drops a row that holds entries or unwritten changes. A Deleting root is not
     migrated out, and a freeze writes it with its tag so the new process continues; a retried deletion, after a commit
     whose acknowledgement was lost, counts as done whether it finds no record or a newer activation's. A request after
     the deletion that never ran here is new to that key: it activates a new actor or gets `NoActor`.
@@ -3015,10 +3025,20 @@ Replaced by ADR-098.
     one-way items, are written as `Asking` children marked unsent in the same write as the item that made them, so a
     crash never keeps an item's debit without its intent, and are sent in order as the in-flight count falls. Unsent
     ones have their own cap (`DaServer:Once:Unsent`, as `OnceOutstanding`, and `Once:UnsentBytes`, half of
-    `MaxRecordBytes`), so a stuck downstream cannot make the record unwritable: past it the root is tagged
-    `UnsentFull`, its ordinary mail stays queued (`MaxMail` pushes back), `[Once]` requests whose handler may ask get
-    `WindowFull`, systems that may ask skip it, and answers are still taken; only cyclic chains where every answer
-    asks again stall there, counted and alerted (`DaServerOnceUnsentFull`). One sender cannot fill a receiver.
+    `MaxRecordBytes`, a soft cap), so a stuck downstream cannot make the record unwritable. Past the soft cap the root
+    and its subtree are tagged `UnsentFull` and only the sources of new work stop: ordinary mail stays queued
+    (`MaxMail` pushes back), every system of the type skips the subtree (`ISystemGroupWithout<UnsentFull>` on
+    `IActor<T>`, no per-system analysis), and timed items whose handlers may ask stay `Due` until the tag clears.
+    `[Once]` requests and answers keep running, because each one settles another root's `Asking`: refusing asking
+    `[Once]` handlers at the soft cap would bring back the deadlock above for two hot roots asking each other, or
+    each asking a third, under steady load. Their own asks are written unsent up to a hard ceiling
+    (`Once:UnsentCeiling`, three quarters of `MaxRecordBytes`); the generator counts each `Replied` and `[Once]`
+    handler's `AskUntilAnswered` calls (a call in a loop is a DAS032 warning), so the growth past the soft cap is at
+    most `OnceOutstanding` × the largest fan-out and is checked against the ceiling at build. Only at the ceiling do
+    asking `[Once]` requests get `WindowFull`, alerted (`DaServerOnceUnsentCeiling`); the soft cap is alerted too
+    (`DaServerOnceUnsentFull`). "May ask" follows calls inside the compilation (partial methods such as the payment
+    sample's `Notify` included) and counts calls it cannot see as asking. A root holding unsent `Asking` children never
+    counts as idle. One sender cannot fill a receiver.
   - **Probes clear entries whose acknowledgement was lost**: an entry unacknowledged for `DaServer:Once:ProbeAfter`
     (30 s) with no newer mail makes the receiver send `AckQuery` (internal lane). An actor sender's node answers its
     written `a` from the record without activating it, probes batched per node so a node crash does not activate
@@ -3072,8 +3092,9 @@ Replaced by ADR-098.
   `ProbeClearsLostAck`, `ProbeDeletedSenderForgotten`, `WindowHoldsAtSender`, `ZeroWindowProbeOpens`,
   `ForgetOnSenderDestroy`, `DeleteAndForgetAtomic`, `DeletedReceiverRefusesLateAttempt`, `DeleteWaitsForUnackedEmpty`,
   `DeletingRecordResumedAfterCrash`, `DeletingRootRunsNothing`, `SendAfterDeleteReloadsItem`,
-  `StaleForgetNoticeIgnoredForRecreatedSender`, `UnsentCapStopsDrainingAndRefusesAskingOnce`,
-  `NonAskingOnceHandlersRunAtUnsentCap`, `SystemsThatAskSkipUnsentFullRoots`,
+  `StaleForgetNoticeIgnoredForRecreatedSender`, `UnsentCapStopsNewWorkSources`, `OnceAndRepliedRunPastUnsentCap`,
+  `MutualOnceRootsAtUnsentCapProgress`, `TimedAskingItemsWaitAtUnsentCap`, `UnsentCeilingRefusesAskingOnce`,
+  `AskInLoopIsDAS032Warning`, `RecreatedReceiverKeepsEntriesPastOrphanAfter`, `DeletingTagCoversSubtree`,
   `DeleteRefusedWhileAsking`, `RecreatedSenderOutlivesOldForgetAfter`, `IdleScanLearnsForgetAfter`,
   `RetriedDeleteCountsAsDone`, `ForgottenRowNeverWrittenBack`, `HandoverKeepsUnwrittenRowChanges`,
   `OverflowAskingWrittenUnsent`,
@@ -3116,9 +3137,11 @@ Replaced by ADR-098.
     refuses new requests `Busy` before they run, so no handler can ignore a refused intent; `[Once]` requests are
     never refused on this limit (refusing them could leave two roots asking each other each refusing the other), and
     asks made past it are written as `Asking` children marked unsent in the item's own write and sent as the count
-    falls (ADR-099), so a crash never keeps the item's changes without its intent; unsent ones are capped
-    (`Once:Unsent`, `UnsentBytes`). A `Stale` answer, impossible by construction, stops its `Asking` for
-    reconciliation; the record's `stopped_asks` column counts it and the sweeping node exports the cluster gauge from
+    falls (ADR-099), so a crash never keeps the item's changes without its intent; unsent ones have a soft cap
+    (`Once:Unsent`, `UnsentBytes`) that stops only new-work sources and a hard ceiling (`Once:UnsentCeiling`) where
+    asking `[Once]` requests are refused. A `Stale` answer, impossible by construction, stops its `Asking` for
+    reconciliation; the record's `stopped_asks` column counts it and the sweeping node (only while it sweeps and its count
+    succeeds, labelled by the hosting server type and the actor type) exports the cluster gauge from
     the store, so the alert holds across unloads and restarts until it is cleared. An `AskUntilAnswered` on a
     `Deleting` root is a runtime error.
   - `WakeAt` stays as the runtime's one durable-time mechanism, written by `AskUntilAnswered` and

@@ -140,15 +140,16 @@ Keep this file current: tick items when done, add items when scope changes.
         whose element type is declared outside the server project and the DaServer packages, on a `[Persist]` prefab the analyzer can see, built with a literal `SetX` chain in
         the same compilation; elsewhere `Registration` throws at start), DAS028 (a `Set`/`Remove` of a persist-set tag on
         an entity the analyzer sees is persistent), DAS029 (a tracked component type in a referenced assembly that is not a DaServer package: it reaches no tracked
-        table), DAS030 (`[Latest]` on a request, a push or a topic message), DAS031 (an unsaved root used where
+        table), DAS030 (`[Latest]` on a request, a push or a topic message), DAS033 (a hint: `Send`, `Ask`, `AskUntilAnswered`, `Push`, `Schedule` or `Remind` on a path where `root.Delete()` returned `Ok`; the `Outstanding` branch is not reported), DAS031 (an unsaved root used where
         a saved one is needed: `Commit`, `root.Delete()`, `root.IssueClientToken` or `AskUntilAnswered` on an actor type whose root is not
         saved or on an entity the analyzer sees is not persistent, or such a type handling or sending a `[Once]` request,
         `[From<K>]` whose `K`'s root is not saved included; every unsaved-root case is DAS031 only), DAS032
         (every `[Once]` shape and sending rule: on a type that is not a request, a reply that is not a fixed-size value
         of at most 32 bytes, a handler taking `ReplyTo<T>`, a `[Once]` server request sent by `Ask` or from `ICluster` or a
         `[Stateless]` type, or
-        `AskUntilAnswered` of a request that is not `[Once]`). Ids are assigned here for every new §13 check as W3
-        implements it. Generated partials (`Key`) repeat `readonly` and `record struct` but not the positional
+        `AskUntilAnswered` of a request that is not `[Once]`; as a warning, `AskUntilAnswered` inside a loop of a `Replied` or
+        `[Once]` handler, whose fan-out the generator must count). Ids are assigned here for every new §13 check as W3
+        implements it, warnings and hints included. Generated partials (`Key`) repeat `readonly` and `record struct` but not the positional
         parameter list.
       - Retired: DAS005 and DAS011 (already unused), DAS008 (sessions and groups as ask targets are gone; typed sends
         make a wrong receiver a compile error), DAS010 (no shared-logic project: user projects are Protocol and
@@ -172,7 +173,7 @@ Keep this file current: tick items when done, add items when scope changes.
       `prefab` lines), `RegistrationIncludesRemovedAnyFilter`, `ActivatedByRegistersClaimsAndTable` (the three-type and the
       two-type overloads), `ManifestRecordsBufferElements` (`Slot`), `NotSavedBufferNotInTrackedTable`, `SubscribingTypeRootCarriesSubscriptionBuffer`, `InMessageJobIsPlainStruct`, `SystemInKWithChildComponentsRejected`,
       `CanCreateWithoutActivatedByReported`, `ScheduleOrRemindWithoutHandlerReported`, `RemindOnUnsavedRootReported`,
-      `PrefabCompositionHistoryKeptInManifest`, `GroupRateOnlyJobGetsNoStructuralChanges`, `ScheduleInSystemIsStructuralChange`, `ScheduleInStatelessSystemReported`, `RawRecordLayoutChangeReported`, `TrackedRefNotAlwaysWrittenHinted`, `SendAfterDeleteHinted`,
+      `PrefabCompositionHistoryKeptInManifest`, `GroupRateOnlyJobGetsNoStructuralChanges`, `ScheduleInSystemIsStructuralChange`, `ScheduleInStatelessSystemReported`, `RawRecordLayoutChangeReported`, `TrackedRefNotAlwaysWrittenHinted`, `SendAfterDeleteIsDAS033Hint`, `RemindOnOutstandingBranchNotHinted`,
       `ConfigTableTakenByRefReported`, `SingletonWithoutInterfaceReported`, `UnfilteredForEachWithoutTickRateReported`,
       `SetGroupRateWithoutTickRateReported`, `UtcNowInHandlerWarned`, `RootCopyCarriesUnackedWhenOnceHandled`,
       `RegistrationCallableWithTwoServerProjects`, `TopicPackageMessagesExemptFromDirection`,
@@ -345,13 +346,14 @@ Keep this file current: tick items when done, add items when scope changes.
         `DeleteAndForgetAtomic`, an in-flight duplicate before `forget_after` still answered; a sender re-created under the
         same key clears the old `forget_after` with its higher seed: `RecreatedSenderOutlivesOldForgetAfter`) or the
         receiver's own record is (its rows as a receiver marked `orphan_after`, kept so a re-activation reads the old
-        marks: `DeletedReceiverRefusesLateAttempt`), a receiver deleted only once its `Unacked` is empty, it has no
+        marks: `DeletedReceiverRefusesLateAttempt`; a change to the row clears its in-memory mark and the idle scan keeps rows
+        with entries: `RecreatedReceiverKeepsEntriesPastOrphanAfter`), a receiver deleted only once its `Unacked` is empty, it has no
         `Asking` and `MaxAskTimeout + 2 × ClockSkew` has passed since the later of the `Deleting` write and its last
         `[Once]` admission (`DeleteWaitsForUnackedEmpty`; `root.Delete()` answers `Outstanding` while the root's own
         `Asking` children wait: `DeleteRefusedWhileAsking`; deletion a one-way passage: no system, reminder or
         `[ForEach]` on a Deleting root, new requests `Busy`, one-way mail dropped, only `[Once]` repeats answered:
-        `DeletingRootRunsNothing`; asking or sending after `Delete()` in the same item reloads it:
-        `SendAfterDeleteReloadsItem`, analyzer hint `SendAfterDeleteHinted`; its framework `WakeAt` resumes it after a
+        `DeletingRootRunsNothing`, the tag on the whole subtree: `DeletingTagCoversSubtree`; asking or sending after `Delete()` in the same item reloads it:
+        `SendAfterDeleteReloadsItem`, analyzer hint DAS033 (`SendAfterDeleteIsDAS033Hint`); its framework `WakeAt` resumes it after a
         crash or idle unload: `DeletingRecordResumedAfterCrash`; a Deleting root not migrated, continued after a freeze;
         a retried delete that finds no record or a newer activation's counts as done: `RetriedDeleteCountsAsDone`); a
         forget notice or idle-scan read applies only when its seed matches the in-memory row's
@@ -388,15 +390,19 @@ Keep this file current: tick items when done, add items when scope changes.
         destroys the `Asking` (always under the root, the asking entity recorded; an answer for a destroyed asking
         entity dropped and counted); `Faulted`/`NotHandled` accepted only from the current attempt's call id; a `Stale`
         answer counted and alerted, never delivered, the `Asking` stopped and counted in the record's `stopped_asks`
-        column, exported by the sweeping node as the cluster gauge `daserver.once.stopped` (`StoppedAskingCountedFromStore`:
+        column, exported by the sweeping node as the cluster gauge `daserver.once.stopped` (labelled by `hosting_type` and `actor_type`,
+        exported only while sweeping and counting succeeds: `StoppedGaugeOnlyFromLiveSweeper`; `StoppedAskingCountedFromStore`:
         the alert holds across idle unloads and node restarts; the counters an alert reads exported at 0 from start);
         past `OnceOutstanding` asks in flight, requests to the root other than `[Once]` ones answered `Busy` before they
         run (`AskUntilAnswered` returns nothing; `[Once]` requests never refused on it: `MutualOnceAsksNeverDeadlock`),
         asks made past it written as unsent `Asking` children in the item's own write (`OverflowAskingWrittenUnsent`), capped by
-        `Once:Unsent` and `Once:UnsentBytes`: past them the root is tagged `UnsentFull`, its ordinary mail stays queued,
-        `[Once]` requests whose handler may ask get `WindowFull`, systems that may ask skip it, answers are taken
-        (`UnsentCapStopsDrainingAndRefusesAskingOnce`, `NonAskingOnceHandlersRunAtUnsentCap`,
-        `SystemsThatAskSkipUnsentFullRoots`, alert `DaServerOnceUnsentFull`); the asking entity found again by its identity after a reload
+        the soft cap `Once:Unsent`/`Once:UnsentBytes`: past it the root and its subtree are tagged `UnsentFull` and only
+        new-work sources stop (ordinary mail stays queued, the type's systems skip the subtree, timed items that may ask
+        stay `Due`), `[Once]` requests and answers keep running up to the hard ceiling `Once:UnsentCeiling` where asking
+        `[Once]` requests get `WindowFull`; the generator counts each handler's asks
+        (`UnsentCapStopsNewWorkSources`, `OnceAndRepliedRunPastUnsentCap`,
+        `MutualOnceRootsAtUnsentCapProgress`, `TimedAskingItemsWaitAtUnsentCap`, `UnsentCeilingRefusesAskingOnce`,
+        `AskInLoopIsDAS032Warning`, alerts `DaServerOnceUnsentFull` and `DaServerOnceUnsentCeiling`); the asking entity found again by its identity after a reload
         or migration, never by a raw entity id (`AskingEntitySurvivesReload`);
       - the wake: `WakeAt` on persistent framework entities (`Asking`, reminders), the `ArmSystem` arming a `Due` from it
         on load and activation, re-arming it on `[Changed<WakeAt>]` and disarming it on `[Removed<WakeAt>]`, the firing
@@ -523,8 +529,9 @@ Keep this file current: tick items when done, add items when scope changes.
       `DeletingRootRunsNothing`, `SendAfterDeleteReloadsItem`, `DeletingRecordResumedAfterCrash`,
       `StaleForgetNoticeIgnoredForRecreatedSender`, `RecreatedSenderOutlivesOldForgetAfter`, `IdleScanLearnsForgetAfter`,
       `RetriedDeleteCountsAsDone`, `HandoverKeepsUnwrittenRowChanges`, `OverflowAskingWrittenUnsent`,
-      `UnsentCapStopsDrainingAndRefusesAskingOnce`, `NonAskingOnceHandlersRunAtUnsentCap`,
-      `SystemsThatAskSkipUnsentFullRoots`, `StoppedAskingCountedFromStore`,
+      `UnsentCapStopsNewWorkSources`, `OnceAndRepliedRunPastUnsentCap`,
+      `MutualOnceRootsAtUnsentCapProgress`, `TimedAskingItemsWaitAtUnsentCap`, `UnsentCeilingRefusesAskingOnce`,
+      `DeletingTagCoversSubtree`, `StoppedAskingCountedFromStore`,
       `OlderTokenCannotExtendDeadline`, `ClientCallResendWindowEnforcedByGateway`,
       `OnceSequenceSurvivesCrashAndHandover`, `ClientSessionAckPrunes`, `GatewayRefusesStaleCallId`,
       `ClientRowsDeletedAfterLastResendDeadline`, `OnceResentUnderSameSequence`, `AppRestartIsNewSession`,
@@ -599,7 +606,7 @@ Keep this file current: tick items when done, add items when scope changes.
       `Payment` committing every outcome and the webhook answering 2xx for each definite one, settling the owner with
       `[Once] Settled`, expiry on a reminder, late, mismatched and second payments recorded as refunds due, a daily reconciliation, and a provider simulator (checkout, signed callback, verify API,
       refunds, daily report) that the bots pay through; it is source-linked into each game's server, which supplies
-      `PayFor` and `Notify` (when it lands, CLAUDE.md's layout section lists `samples/payments`); the flash sale's
+      `PayFor`, `Notify`, its `[Once] Settled`, `[From<…>]` on `Open` and `[Hosts<Payment>]` on one of its server types (when it lands, CLAUDE.md's layout section lists `samples/payments`); the flash sale's
       `PlaceOrder` carrying only the sale, handled only by a keyed, non-persisted `Gate(Sale, Shard)` actor
       (`[ActivatedBy<PlaceOrder>]`, `CanCreate` over the sale table) that asks `Order(sale, user)` with the server
       message `Place` (ADR-091, ADR-095); each AppHost becomes an `apphost.cs` (file-based) in the sample's server
@@ -632,7 +639,7 @@ Keep this file current: tick items when done, add items when scope changes.
       `OrderCompensatesOnlyOnDefiniteRefusal` (a timeout keeps asking; the payment of a reserved order settled as
       expired writes `Releasing`, which survives a crash), `SoldOutEndsOrderWithoutRelease`,
       `ReleasedStockIsSoldAgain` (`Gate` re-learns a shard through the shard's `Describe`), `OrdersDeletedAfterSaleForgetRows` (each order's own reminder at the sale's end plus the payment window),
-      `EndedSaleRefusesNewOrders`, `OrderPaidThroughSharedPaymentSample` (Reserving,
+      `EndedSaleRefusesNewOrders` (`Gate` compares `time.Utc` with the sale table's `EndsAt` on every request, so it holds after `Gate` restarts), `OrderPaidThroughSharedPaymentSample` (Reserving,
       AwaitingPayment, Confirmed), `OrderPaymentExpiryReleasesStock`, `GuildDailyResetFiresAfterCrash`, `BuyerCannotOrderForAnother`,
       `AppHostServerTypesGeneratedFromManifest`, `ClientPortWithoutConnectionHostFailsBuild`,
       `RouteCheckReadsCommittedManifests`; the 1,000-bot and
@@ -753,7 +760,7 @@ Keep this file current: tick items when done, add items when scope changes.
       `RunLookupFailureKeepsLock`, `CallbackWithoutValidSignatureRefused`, `SwappedRequestsShownWithResize`,
       `ResizeOutsideTypeLock` (idempotent, per-node group), `ResizeDispatchedOncePlusOneRetry`, `ResizeStalledAfterTenMinutes`, `LeaseRenewedOnOwnTimer` (a slow refresh never lets it lapse), `ClaimOnlyAfterLeaseExpiredALeaseAgo`,
       `LateDoneNeverOverwritesFailed`, `CallbackConfirmedByRunLookup` (a replayed callback is harmless),
-      `RunFoundWithinAnHourReattached`, `PipelineCheckFailsClosed` (no answer for five minutes refuses, whatever the run's age), `DashboardAnswers503WithoutStore` (never "unknown id" when it cannot read the store), `QueuedRunBehindLongRolloutRuns` (an answering Dashboard decides), `PipelineCheckRetriesBeforeRefusing` (a Dashboard restarting for a minute fails no run), `RolloutJobReachesDashboardPort` (the network policy admits the Job's pods, labelled `daserver.io/rollout={cluster}`, to the Dashboard's port; Compose's `rollout` on the internal network), `AdminKeyOnlyOnActionsRoute` (the Dashboard accepts the admin key on `GET /admin/actions/{id}` only; a NetworkPolicy cannot restrict a path), `RolloutJobPodsCarryRolloutLabel`, `LateRunRefusedAfterMarkFailed` (the step asks `GET /admin/actions/{id}`), `ResizeRowsTakeNoTypeLock`, `OperatorResizeDedupedByIdempotencyKey` (no attempt number), `MarkFailedOnResizeWritesResizeRow`, `ResizeDispatchedOncePerIncarnationAcrossReplicas`, `StalledResizeHoldsOnlyItsNode`, `MarkFailedOfferedForLongRequestedOrUnknown`,
+      `RunFoundWithinAnHourReattached`, `PipelineCheckFailsClosed` (no answer for five minutes refuses, whatever the run's age), `PipelineCheckRunsOnStalled` (a run whose Job sat Pending past the Stalled bound still runs; only Done, Failed or an unknown id refuse), `DashboardAnswers503WithoutStore` (never "unknown id" when it cannot read the store), `QueuedRunBehindLongRolloutRuns` (an answering Dashboard decides), `PipelineCheckRetriesBeforeRefusing` (a Dashboard restarting for a minute fails no run), `RolloutJobReachesDashboardPort` (the network policy admits the Job's pods, labelled `daserver.io/rollout={cluster}`, to the Dashboard's port; Compose's `rollout` on the internal network), `AdminKeyOnlyOnActionsRoute` (the Dashboard accepts the admin key on `GET /admin/actions/{id}` only; a NetworkPolicy cannot restrict a path), `RolloutJobPodsCarryRolloutLabel`, `LateRunRefusedAfterMarkFailed` (the step asks `GET /admin/actions/{id}`), `ResizeRowsTakeNoTypeLock`, `OperatorResizeDedupedByIdempotencyKey` (no attempt number), `MarkFailedOnResizeWritesResizeRow`, `ResizeDispatchedOncePerIncarnationAcrossReplicas`, `StalledResizeHoldsOnlyItsNode`, `MarkFailedOfferedForLongRequestedOrUnknown`,
       `MarkFailedInOneTransaction`, `MarkFailedOnlyFromStateSeen`, `ClusterLockExcludesTypeLocks` (a config push is refused
       while a type rolls and the reverse, under concurrent inserts from two replicas: the serialising advisory lock),
       `PushRefusedBehindStalledTypeNamesIt`, `StagingAcksKeyedByIncarnation`, `RenewalZeroRowsStopsStoreErrorRetries`, `HandoverCarriesConfigVersion`, `ResizeProgressIsGaugeClearing`, `DashboardDispatchesResizeFromHealth`, `ParkedInstanceExportsNoMetrics`, `ParkedInstanceNeverShownAsNode`, `FocusReturnsToOpener`,

@@ -450,8 +450,9 @@ Every action runs on the Dashboard's server, never in the browser, so closing th
   by the pipeline itself: every dispatch carries `--action <id>`, and the rollout step's first
   step asks the Dashboard whether that action is still unfinished (`GET /admin/actions/{id}`, signed with the
   `{cluster}-admin` key the rollout Job already mounts; it reaches the Dashboard's in-cluster address, which DA gives
-  it, through the Dashboard's network policy) and runs only on a Requested, Accepted, Running or Unknown answer; a
-  Failed one (an operator marked it, a lookup gave up) or an unknown id refuses. **It fails closed**: it retries the
+  it, through the Dashboard's network policy) and runs on any unfinished answer (Requested, Accepted, Running, Unknown or Stalled: a run whose Job sat
+  Pending or built slowly reads Stalled before its first step, and Stalled waits for an operator); only Done, Failed
+  (an operator marked it, a lookup gave up) or an unknown id refuses. **It fails closed**: it retries the
   GET for five minutes (a Dashboard pod restarting or rolling), then refuses, and a Dashboard that cannot read the
   store answers 503, which counts as no answer, never "unknown id". A valid run dispatched while the Dashboard stays
   down that long fails and is requested again; a run that queued behind a long rollout is still decided by the
