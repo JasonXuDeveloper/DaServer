@@ -1549,7 +1549,7 @@ Replaced by ADR-081.
   changed" leaks; the order between mail, delayed sends and systems is implicit. EasyEcs provides what a
   model without these needs: single-entity jobs (`entity.Run(ref job[, filter])`), group filters carried by
   interfaces (`IGroupWith<T>`), `world.Descendants(root)` and `LoadEntitiesInto(…, markWritten: false)`.
-- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v56), structured as in
+- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v57), structured as in
   [drafts/architecture.md](drafts/architecture.md):
   - **The actor type is its address, its root component, its root prefab and its system group**:
     `[TickRate(30)] partial record struct Map(long Id) : IActor<Map>` (`IActor<T>` inherits `IEquatable<T>`, so
@@ -2084,13 +2084,16 @@ Replaced by ADR-081.
     `Subscription` buffer, and the package's system renews: it subscribes after activation, re-sends `Subscribe` every
     `DaServer:Topics:RenewInterval` (default 60 s) while the root is alive and not `Deactivating`, and again on
     `[Removed<Deactivating>]` of a living root (a cancelled idle deactivation has already unsubscribed). Renewal heals
-    what a crash loses. `Unsubscribe` is sent in the
-    `Deactivating` pass; a lost one is pruned by the gone-subscriber notice. An unsubscribe or a gone-subscriber notice
-    removes a subscriber only when the epochs match, so a late notice from an old activation never drops a new one's
+    what a crash loses. `Unsubscribe` removes the entry from the subscriber's own `Subscription` buffer and tells the
+    Topic; the `Deactivating` pass also sends it (keeping the buffer for the next activation). The receiving node drops
+    a delivery whose topic is not in the subscriber root's `Subscription` buffer, or whose subscriber is gone, and
+    answers the Topic with an epoch-carrying not-subscribed notice, so a lost `Unsubscribe` is pruned at the next
+    publish. An unsubscribe or a not-subscribed notice removes a subscriber only when the epochs match, so a late notice from an old activation never drops a new one's
     subscription. Delivery never activates an actor. A server type hosting topics declares `[Hosts<Topic>]` and needs
     a store. A publish is serialized once, one frame per subscriber node; at most once: a lost or reordered subscription message
     (a Topic crash before its checkpoint, a lost `Subscribe`, or `Unsubscribe` and `Subscribe` reordered while the
-    Topic migrates) costs at most one renew interval of missed publishes. It replaces today's `Publish`.
+    Topic migrates) costs at most one renew interval of missed publishes; once unsubscribed, no handler runs for a
+    delivery after the unsubscribe, and the Topic stops sending at the next publish. It replaces today's `Publish`.
     Durable streams (replay, offsets, consumer groups) stay with Kafka or NATS JetStream.
   - **Non-.NET clients**: the client wire protocol is published as a specification (frames, handshake, `Ready`,
     re-join and slots, `Retire` and `HandedOff`, `Busy` with its retry-after, keep-alive), with the C# SDK as the

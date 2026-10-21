@@ -22,7 +22,7 @@ Keep this file current: tick items when done, add items when scope changes.
 11. S1-S6 (done) elastic scaling.
 12. The ECS rewrite (ADR-081, the "ECS rewrite" entry under "Open cleanup" below): P1-P3 and P5 done; P4, P6 and P7
     superseded by W.
-13. W — refactor to the v56 programming model ([drafts/programming-model.md](drafts/programming-model.md),
+13. W — refactor to the v57 programming model ([drafts/programming-model.md](drafts/programming-model.md),
     [drafts/architecture.md](drafts/architecture.md)) on EasyEcs 4.7 (ADR-082 to ADR-092). Breaking; each step
     proven before the next (W, not R: the requirement ids R0-R11 are taken).
     W10 runs last, after W12 and N9.
@@ -44,7 +44,7 @@ Keep this file current: tick items when done, add items when scope changes.
       EasyEcs's generated accessor of a type tracked by DaServer counts as a write
       (`GeneratedAccessorOfSwitchedOnTypeStamps`: the drafts assume so and read through `in` or `Read<T>()`); adding a
       tracked component stamps a write and removing it records a removal (documented for `ITrackChanges`), for tags and
-      for types tracked through #27 too (`StructuralChangeOfTrackedTagDetected`; if it fails, `Set` and `Remove` of a
+      for types tracked through #27 too (`StructuralChangeOfTrackedTagDetected`: a persist-set tag, and `[Removed<T>]` on a non-persisted tag, `Deactivating`; if it fails, the Topics' cancelled-deactivation resubscribe falls back to the next renewal, and `Set` and `Remove` of a
       persist-set tag are an analyzer error only on an entity the analyzer sees is persistent, and elsewhere the runtime
       finds the change by a sliced pass over persistent entities each checkpoint interval, comparing their persist-set
       tags with a mask kept per persistent entity at its last write); no framework or generated system declares a
@@ -251,7 +251,7 @@ Keep this file current: tick items when done, add items when scope changes.
       `DueKeysFirstPageFromSentinel`, `DueKeysUntilFixedAcrossPages`, `DueKeysSkipsPairsBeforeCursor`, `DueKeysPageReadsAtMostAPagePerPair`,
       `UnwritableRootSkippedRestOfBatchWritten`, `UnwritableRootCancelsIdleDeactivation`,
       `UnwritableRootOnForcedDeactivationKeepsLastRecord`, `UnwritableRootOnStopKeepsLastRecord`,
-      `UnwritableRootMigrationFallsBackToDeactivation`, `UnwritableRootLeftOutOfSnapshot`, `UnwritableRootWithHeldOutputDoesNotStallMigrationOrFreeze`, `NodeStartCreatesNewTableAndIgnoresOld`, `MigrateModeCreatesTableAndExits`,
+      `UnwritableRootMigrationFallsBackToDeactivation`, `UnwritableRootLeftOutOfSnapshot`, `UnwritableRootWithHeldOutputDoesNotStallMigrationOrFreeze` (also asserting what the asker sees: its re-ask runs once on the activation rebuilt from the last record, or a settling re-ask is answered `TooLate` and the asker ends `Expired`), `NodeStartCreatesNewTableAndIgnoresOld`, `MigrateModeCreatesTableAndExits`,
       `CoordinatorHotRestartDeadlineKeptBySuccessor`, `TwoExpiredRestartsDoNotDownMajority`,
       `ColdClusterRestartNeverReusesGeneration`, `ParallelSeedsFormOneCluster`, `ArmWithoutKillExpires`,
       `FreezeAbortsWhenStoreHangs`, `TornSnapshotRejected`, `ImageNotMatchingArmRejectsSnapshot`,
@@ -273,10 +273,10 @@ Keep this file current: tick items when done, add items when scope changes.
       subscribers with their activation epoch (`Subscribe` idempotent, the highest epoch kept, a lower one ignored, table
       changes riding the normal checkpoint), `[Hosts<Topic>]` with a store, the subscriber's `Subscription`
       buffer (subscribe after `Activated`, renew every `DaServer:Topics:RenewInterval` while not `Deactivating` and on
-      `[Removed<Deactivating>]` of a living root, unsubscribe on `Deactivating`), one frame per subscriber node; deletes
+      `[Removed<Deactivating>]` of a living root, unsubscribe on `Deactivating`; `Unsubscribe` removes the buffer entry), the receiving node dropping a delivery whose topic is not in the subscriber root's `Subscription` buffer and answering with the epoch-carrying not-subscribed notice, one frame per subscriber node; deletes
       the service `Publish`. Tests: `PublishReachesSubscribersOnEveryNode`, `DeliveryNeverActivates`,
       `ResubscribesAfterActivation`, `GoneSubscriberPruned`, `StaleUnsubscribeKeepsNewSubscription`,
-      `LowerEpochSubscribeIgnored`, `SubscriptionRenewsAfterTopicCrash`, `CancelledDeactivationResubscribes`, `ReorderedUnsubscribeHealsWithinRenewInterval`;
+      `LowerEpochSubscribeIgnored`, `SubscriptionRenewsAfterTopicCrash`, `CancelledDeactivationResubscribes`, `ReorderedUnsubscribeHealsWithinRenewInterval`, `LostUnsubscribeStopsDeliveryOnNextPublish`;
       BenchmarkDotNet fan-out to 1k/10k subscribers on 1/3 nodes, 0 B per delivery.
     - [ ] W7 Samples (mmo, flashsale) on the new model (their systems use `Mut<T>`), the mmo's drops split
       between a non-ticking `Loot` actor (their records, persistent, the only `[Durable]` asker) and the map (what

@@ -1,4 +1,4 @@
-# DaServer 新编程模型设计（草案 v56，未实现，迭代中）
+# DaServer 新编程模型设计（草案 v57，未实现，迭代中）
 
 原则：业务代码干净、解耦、简洁，不用 OOP。ECS 一路到底：能用 EasyEcs 的功能就用 EasyEcs，状态都是数据，其余交给我们的特性和生成器，不重复造轮子。
 
@@ -2335,11 +2335,12 @@ me.Publish(new Topic(Feeds.Prices), new PriceChanged(item, price));
 - `Topic(long Id)` 是包里内置的 Actor 类型，根要保存，根上是订阅者表 `DynamicBuffer<Subscriber>`（`Subscriber(ActorId Actor, long Epoch)`，`Epoch` 是订阅者那次激活的 epoch）。`e.Subscribe(topic)`、`e.Unsubscribe(topic)` 是发给它的单向消息，订阅的是 `e.Root` 那个 Actor。`Feeds.Prices` 是用户自己的常量。
 - **`Subscribe(epoch)` 是幂等的单向消息**，带着订阅方这次激活的 epoch（框架填上）：Topic 给每个订阅者只记最大的 epoch；epoch 更大就更新，相同的什么也不改，更小的（旧激活迟到的）不理会。表的改动是普通的改动，随下一个检查点写下（第 10 节）；宕机丢掉的由续订补上（下面）。
 - **承载 Topic 的服务器类型写 `[Hosts<Topic>]`**（第 2 节），Topic 的根要保存，所以这个工程要配存储。
-- **订阅也是订阅方的数据，订阅方定期续订**：订阅方的根上有持久化的 `DynamicBuffer<Subscription>`。包里的系统在 `Activated` 之后订阅；之后只要根活着、不带 `Deactivating`，每隔 `DaServer:Topics:RenewInterval`（默认 60 秒）把每个 `Subscription` 再发一次 `Subscribe`（`[ForEach(Slices = N)]` 分片扫，同空闲检查）；活着的根去掉 `Deactivating` 时（空闲停用被取消，`[Removed<Deactivating>]`）马上再发一次，因为那一轮已经退订过了。所以丢了或乱了序的订阅消息最多一个续订间隔就补上（下面的"最多一次"）。
-- **退订**：包里的系统在 `Deactivating` 那一轮发单向的 `Unsubscribe`，所以 Topic 的表里只有激活着的订阅者，投递从不激活 Actor。丢了也无妨：投递到已经不在的订阅者时，那个节点回一条带着这个 epoch 的控制邮件，Topic 删掉它（它下次激活时自己再订阅）。
-- **删除只认同一个激活**：退订和"已经不在"的通知都带着发出它的激活的 epoch，只有和表里的相同才删。所以旧激活迟到的退订或通知，删不掉新激活刚做的订阅；旧激活迟到的 `Subscribe` 比表里的小，也盖不掉它。
+- **订阅也是订阅方的数据，订阅方定期续订**：订阅方的根上有持久化的 `DynamicBuffer<Subscription>`。包里的系统在 `Activated` 之后订阅；之后只要根活着、不带 `Deactivating`，每隔 `DaServer:Topics:RenewInterval`（默认 60 秒）把每个 `Subscription` 再发一次 `Subscribe`（`[ForEach(Slices = N)]` 分片扫，同空闲检查）；活着的根去掉 `Deactivating` 时（空闲停用被取消，`[Removed<Deactivating>]`）马上再发一次，因为那一轮已经退订过了（这要 W1 核对过 tag 的移除会记下，第 10 节；核对不过，这次重新订阅就退回到下一次续订）。所以丢了或乱了序的订阅消息最多一个续订间隔就补上（下面的"最多一次"）。
+- **退订**：`e.Unsubscribe(topic)` 先从订阅方自己的 `Subscription` 缓冲里删掉这一项，再给 Topic 发单向的 `Unsubscribe`。包里的系统在 `Deactivating` 那一轮也发 `Unsubscribe`（缓冲不动，下次激活照它再订阅），所以 Topic 的表里只有激活着的订阅者，投递从不激活 Actor。
+- **接收的节点按订阅方的数据过滤**：一条投递的 topic 不在订阅者根的 `Subscription` 缓冲里（退订了），或者订阅者已经不在，那个节点就丢掉它，回 Topic 一条带着 epoch 的"没有订阅"控制邮件；Topic 对两种一样处理，epoch 和表里的相同才删。所以丢了的 `Unsubscribe` 也无妨：下一次发布就把这一项删掉（不在的订阅者下次激活时自己再订阅）。
+- **删除只认同一个激活**：退订和"没有订阅"的通知都带着发出它的激活的 epoch，只有和表里的相同才删。所以旧激活迟到的退订或通知，删不掉新激活刚做的订阅；旧激活迟到的 `Subscribe` 比表里的小，也盖不掉它。
 - **`e.Publish(topic, msg)`**：发给 Topic；Topic 不解码负载，按订阅者所在的节点分组，每个节点一帧（只序列化一次，池化的帧），那个节点再放进各订阅者的邮箱。`ICluster` 也能发布。
-- **最多一次**：Topic 宕机时在途的发布丢掉。丢了或乱了序的订阅消息（Topic 在检查点之前宕机，丢了没写下的表；一条 `Subscribe` 在路上丢了；Topic 迁移时 `Unsubscribe` 和之后的 `Subscribe` 乱了序）最多让订阅者一个续订间隔收不到发布。同一个发布者经同一个 Topic 发给同一个订阅者的按发送顺序到达。没有回放，没有持久的偏移：要持久的流（回放、消费组）用 Kafka 或 NATS JetStream，从 Actor 里调用。
+- **最多一次，两个方向都有界**：Topic 宕机时在途的发布丢掉。丢了或乱了序的订阅消息（Topic 在检查点之前宕机，丢了没写下的表；一条 `Subscribe` 在路上丢了；Topic 迁移时 `Unsubscribe` 和之后的 `Subscribe` 乱了序）最多让订阅者一个续订间隔收不到发布。退订之后，退订之后到达的投递不再运行处理方法（接收的节点按 `Subscription` 缓冲丢掉），`Unsubscribe` 丢了的话 Topic 也在下一次发布时停发（那次投递换回"没有订阅"的通知）。同一个发布者经同一个 Topic 发给同一个订阅者的按发送顺序到达。没有回放，没有持久的偏移：要持久的流（回放、消费组）用 Kafka 或 NATS JetStream，从 Actor 里调用。
 - 一个 Topic 的订阅者数有上限（节点配置）；更大的扇出分到多个 Topic 键，推给客户端用 `ClientGroup`（第 9 节）。
 - Actor 之间的扇出由它做；框架本身没有别的发布。
 
