@@ -53,13 +53,13 @@ groups:
           description: "The cluster has moved on and this node's view has not changed for 4 minutes: it cannot read the membership table (isolated, a starved membership connection, or a network split). Compare /admin/membership of the nodes."
 
       - alert: DaServerMessagesDropped
-        expr: sum by (cluster, type, node, reason) (rate(daserver_messages_dropped_total[5m])) > 0
+        expr: sum by (cluster, type, node, reason) (rate(daserver_messages_dropped_total{reason!="deleting"}[5m])) > 0
         for: 5m
         labels:
           severity: warning
         annotations:
           summary: "{{ $labels.node }} drops messages ({{ $labels.reason }})"
-          description: "queue_full: a shard's dispatch queue is full (the node is overloaded); mailbox_full: an actor's mailbox is full (mail piled up while it loads or leaves, a slow store or handoff, or a hot actor behind on its backlog); expired: requests waited past their caller's timeout."
+          description: "queue_full: a shard's dispatch queue is full (the node is overloaded); mailbox_full: an actor's mailbox is full (mail piled up while it loads or leaves, a slow store or handoff, or a hot actor behind on its backlog); expired: requests waited past their caller's timeout. One-way mail to an actor being deleted (reason deleting) is expected and not alerted."
 
       - alert: DaServerHandlerFailures
         expr: sum by (cluster, type, node) (rate(daserver_handler_failed_total[5m])) > 1
@@ -198,13 +198,13 @@ groups:
             max by (cluster, hosting_type, actor_type) (last_over_time(daserver_once_stopped[3m])),
             "type", "$1", "hosting_type", "(.*)"
           ) > 0
-          or
+          or on (cluster, type)
           sum by (cluster, type) (increase(daserver_once_stale_asking_total[10m])) > 0
         labels:
           severity: critical
         annotations:
           summary: "{{ $labels.type }} has an ask stopped by a Stale answer"
-          description: "An AskUntilAnswered was answered Stale and stopped asking ({{ $labels.actor_type }} when shown). Its operation needs reconciliation; report the runtime defect with the node's logs."
+          description: "An AskUntilAnswered was answered Stale and stopped asking{{ if $labels.actor_type }} on {{ $labels.actor_type }} actors{{ end }}. Its operation needs reconciliation; report the runtime defect with the node's logs."
 
       - alert: DaServerOnceCounterLow
         # Target (roadmap W6): a saved actor's [Once] counter has fewer than 2^24 numbers left; it stops sending [Once]
@@ -218,10 +218,11 @@ groups:
           description: "An actor has sent about four billion [Once] requests in one record's life. Delete and recreate it (a new record starts a new seed) before the counter runs out."
 
       - alert: DaServerOnceUnsentFull
-        # Target (roadmap W6): a root's asks written unsent reached the soft cap (Once:Unsent or Once:UnsentBytes), so its
-        # ordinary mail, its type's systems and its timed items that ask stopped; [Once] requests and answers still run.
-        # Brief episodes are back-pressure; a root that stays there has a stuck downstream. The gauge is the number of
-        # such roots. A root holding unsent asks never counts as idle, so the gauge does not drop by an unload.
+        # Target (roadmap W6): a root's unsent asks (rows outside its record) reached the soft cap (Once:Unsent or
+        # Once:UnsentBytes), so its ordinary mail, its type's systems and its timed items that ask stopped and client
+        # sessions see a window of 0; [Once] requests and answers still run, never refused for unsent asks. Brief
+        # episodes are back-pressure; a root that stays there has a stuck downstream. The gauge is the number of such
+        # roots; a root holding unsent asks never counts as idle, so the gauge does not drop by an unload.
         expr: max by (cluster, type, node) (last_over_time(daserver_once_unsent_full[2m])) > 0
         for: 10m
         labels:
@@ -230,17 +231,31 @@ groups:
           summary: "{{ $labels.node }} has {{ $labels.type }} actors stopped on unsent asks"
           description: "Asks to a downstream are piling up unsent. Check whether the receiving type is up and answering."
 
-      - alert: DaServerOnceUnsentCeiling
-        # Target (roadmap W6): a root's unsent asks reached the hard ceiling (Once:UnsentCeiling, three quarters of
-        # MaxRecordBytes), so it now refuses [Once] requests whose handler asks with WindowFull. Past the soft cap only
-        # [Once] and answers add unsent asks, at most OnceOutstanding times the largest fan-out the generator counted,
-        # so reaching the ceiling means a downstream has been stuck for long.
-        expr: max by (cluster, type, node) (last_over_time(daserver_once_unsent_ceiling[2m])) > 0
+      - alert: DaServerOnceUnsentGrowing
+        # Target (roadmap W6): unsent asks live in their own store rows, so nothing refuses them; their growth is
+        # bounded only by the store. The sweeping node counts the rows per actor type every minute and exports
+        # daserver.once.unsent_rows like daserver.once.stopped (points labelled hosting_type, one per server type hosting
+        # the actor type or "none", and actor_type; only while it sweeps and the count succeeded), so the rule maps
+        # hosting_type onto type. Above the default soft cap and still rising for 30 minutes: a stuck downstream, or a
+        # chain whose every answer asks more than once.
+        expr: |
+          label_replace(
+            max by (cluster, hosting_type, actor_type) (last_over_time(daserver_once_unsent_rows[3m])),
+            "type", "$1", "hosting_type", "(.*)"
+          ) > 1024
+          and
+          label_replace(
+            max by (cluster, hosting_type, actor_type) (deriv(daserver_once_unsent_rows[30m])),
+            "type", "$1", "hosting_type", "(.*)"
+          ) > 0
+        for: 30m
         labels:
-          severity: critical
+          severity: warning
         annotations:
-          summary: "{{ $labels.node }} has {{ $labels.type }} actors refusing [Once] requests at the unsent ceiling"
-          description: "A root's unsent asks reached Once:UnsentCeiling. Restore the receiving type; its senders queue meanwhile."
+          summary: "{{ $labels.type }} has unsent asks growing ({{ $labels.actor_type }})"
+          description: "Asks written past OnceOutstanding keep piling up in the store. Restore the receiving type, or fix a handler that asks more than once per answer."
+          daserver_limit: "1024"
+          daserver_unit: "asks"
 
       - alert: DaServerDeleteSendAfter
         # Target (roadmap W6): an item sent or asked after root.Delete() returned Ok, which reloads it. In an answer's
@@ -250,6 +265,8 @@ groups:
           severity: warning
         annotations:
           summary: "{{ $labels.node }} keeps reloading {{ $labels.type }} items that send after Delete()"
+          daserver_limit: "3"
+          daserver_unit: "items/10m"
           description: "A handler sends or asks after root.Delete() returned Ok. Move Delete() last (analyzer hint DAS033)."
 
   - name: daserver-recording
