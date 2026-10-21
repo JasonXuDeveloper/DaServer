@@ -287,7 +287,9 @@ groups:
         # default) for 5 minutes. A full store outage freezes the worlds after IsolationTimeout; a data-only outage (a
         # locked table, a full disk: membership reads still succeed) freezes nothing, so unwritten changes and asks grow
         # in memory until this is acted on. The gauge leaves out roots ruled unwritable (DaServerRecordUnwritable), so
-        # one oversized record never reads as a store that stopped. The limit is four of the default
+        # one oversized record never reads as a store that stopped; a root is ruled unwritable only for a row-deterministic
+        # error (SQLSTATE 22xxx, 23xxx, 54xxx) while the rest of its write landed, so a read-only primary, a revoked
+        # grant, a schema mismatch or a locked table keeps every root in the gauge and fires this. The limit is four of the default
         # DaServer:CheckpointInterval: a server type (node group) configured with a longer interval needs its own copy.
         expr: max by (cluster, type, node) (last_over_time(daserver_store_oldest_unsaved_age_seconds[2m])) > 120
         for: 5m
@@ -301,15 +303,15 @@ groups:
 
       - alert: DaServerRecordUnwritable
         # Target (roadmap W6): a node holds a root whose record never lands (its state does not serialize, the record
-        # is over MaxRecordBytes, or the store refuses its row every time). The store is fine; the root keeps its last
-        # record and its held output until it is fixed.
+        # is over MaxRecordBytes, or the store refuses its row with a row-deterministic error while the rest of the write
+        # lands). The root keeps its last record and its held output, and is retried alone, until it is fixed.
         expr: max by (cluster, type, node) (last_over_time(daserver_store_unwritable_roots[2m])) > 0
         for: 10m
         labels:
           severity: warning
         annotations:
           summary: "{{ $labels.node }} holds {{ $value }} root(s) whose record cannot be written"
-          description: "A root's record keeps failing to serialize or is refused by the store (logged RecordUnwritable). Its changes since the last record are lost on a crash. Fix the state (size, cycle, unregistered type) and redeploy."
+          description: "A root's record keeps failing to serialize or is refused by the store (logged RecordUnwritable). Its changes since the last record are lost on a crash. Fix the state (size, cycle, unregistered type) and redeploy. If many roots are listed, check the store's errors first (read-only, grants, schema)."
           daserver_limit: "0"
           daserver_unit: "roots"
 
