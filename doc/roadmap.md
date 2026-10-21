@@ -22,7 +22,7 @@ Keep this file current: tick items when done, add items when scope changes.
 11. S1-S6 (done) elastic scaling.
 12. The ECS rewrite (ADR-081, the "ECS rewrite" entry under "Open cleanup" below): P1-P3 and P5 done; P4, P6 and P7
     superseded by W.
-13. W — refactor to the v52 programming model ([drafts/programming-model.md](drafts/programming-model.md),
+13. W — refactor to the v53 programming model ([drafts/programming-model.md](drafts/programming-model.md),
     [drafts/architecture.md](drafts/architecture.md)) on EasyEcs 4.7 (ADR-082 to ADR-092). Breaking; each step
     proven before the next (W, not R: the requirement ids R0-R11 are taken).
     W10 runs last, after W12 and N9.
@@ -144,7 +144,8 @@ Keep this file current: tick items when done, add items when scope changes.
       counted), records and migrations collected by `Descendants(root).AddTo`, a CAS on the epoch and the write
       generation (`write_gen < :write_gen`, reset by every claim, continued from the snapshot by an in-place hot restart; a
       row found at its own epoch and generation counts as written) with a root's writes never overlapping (`Writing`), the tick-end write (one statement per
-      world per tick end, ADR-068's `unnest`, per-row CAS; `WriteNow` roots every time, other `Unsaved` roots at most
+      512 rows per world per tick end, ADR-068's `unnest`, per-row CAS; a root whose `SaveEntities` throws skipped and
+      logged as `RecordUnwritable`, the rest of the batch written; `WriteNow` roots every time, other `Unsaved` roots at most
       every `DaServer:CheckpointInterval`; at most one write in flight per root, later changes in the next write; at
       most `DaServer:StoreWritesInFlight` statements in flight per world, roots beyond waiting, `WriteNow` first,
       counted in `daserver.store.writes_waiting`),
@@ -182,8 +183,9 @@ Keep this file current: tick items when done, add items when scope changes.
       `WakeAt`, `NextDue` from the runtime's `WakeSystem` (`[Changed<WakeAt>]`/`[Removed<WakeAt>]`) with the `next_due` column,
       `IActorStore.DueKeys` and the `DueScan` wake, the table of ADR-068 (primary key `(type_id, key)` with `key bytea`,
       the key's fields big-endian; columns `type_id, key, slot, epoch, write_gen, owner, placement, record, next_due`;
-      the index on `(slot, next_due)`; the claim upsert, the write CTE and `DueKeys` on that key, `DueKeys` over the
-      node's `(type, slot)` pairs) in a new table `actor_records` created by the schema Job; the old `actors` table is not read or converted (pre-1.0, breaking: earlier records are not carried over), `StoreDegraded` and `ActivationSlots`, `ActivationFailed`, strict
+      the index on `(type_id, slot, next_due)`; the claim upsert, the write CTE and `DueKeys` on that key, `DueKeys` over the
+      node's `(type, slot)` pairs in pages of 512) in a new table `actor_records`, created under an advisory lock by a
+      node at start (run mode, `TestCluster` on PostgreSQL) or by the schema mode `--DaServer:Migrate` (create and exit); the old `actors` table is not read or converted (pre-1.0, breaking: earlier records are not carried over), `StoreDegraded` and `ActivationSlots`, `ActivationFailed`, strict
       placement versions with `Fence` (bumped on every placement change of a type, slot-table moves included; a
       migration's arrival claims with the type's current version), idempotent claims, generations from Unix ms and single-seed formation, the lease
       ack, the restart permit, arm nonce, `NodeRestarting` and `Rejoining`, pinned slots and the reconcile on `Readmit`.
@@ -221,8 +223,8 @@ Keep this file current: tick items when done, add items when scope changes.
       `AsymmetricPartitionFreezesUnheardNode`, `CoordinatorCrashDoesNotExpireLeases`, `SameVersionSecondClaimRefused`, `SlotMoveBumpsPlacementSoClaimSucceeds`, `ExitArmRestartsWithoutSignal`,
       `DisplacedOwnerFencedWithoutWrite`, `GroupFramesFlushedBeforeDeactivationAndMigration`,
       `FencedActorDiscardsGroupFrames`, `MigrationArrivalClaimSurvivesRestart`,
-      `MigrationArrivalNeverLowersPlacement`, `MapAndLootSameIdDoNotShareRow`, `DueKeysFiltersBySlot`,
-      `SchemaJobCreatesNewTableAndIgnoresOld`,
+      `MigrationArrivalNeverLowersPlacement`, `MapAndLootSameIdDoNotShareRow`, `DueKeysFiltersBySlot`, `DueKeysPagesPastLimit`,
+      `UnwritableRootSkippedRestOfBatchWritten`, `NodeStartCreatesNewTableAndIgnoresOld`, `MigrateModeCreatesTableAndExits`,
       `CoordinatorHotRestartDeadlineKeptBySuccessor`, `TwoExpiredRestartsDoNotDownMajority`,
       `ColdClusterRestartNeverReusesGeneration`, `ParallelSeedsFormOneCluster`, `ArmWithoutKillExpires`,
       `FreezeAbortsWhenStoreHangs`, `TornSnapshotRejected`, `ImageNotMatchingArmRejectsSnapshot`,
@@ -331,8 +333,8 @@ Keep this file current: tick items when done, add items when scope changes.
     - [ ] W12 Deployment corrections ([drafts/deployment.md](drafts/deployment.md)): one `{cluster}-signing` Secret
       (`current`, optional `accepted` for rotation) read through `secretKeyRef`, or an existing one through
       `WithSigningSecret(existingSecretName)`, and published nodes refuse to start without it; Compose `${VAR:?}` for
-      the signing secret and an `internal: true` network for the cluster and HTTP planes; database schema as a Job with
-      an owner role, nodes on a DML-only role; load generators (`bots`, `crowd`) as Jobs or left out of publish
+      the signing secret and an `internal: true` network for the cluster and HTTP planes; database schema as a Job (W6's
+      `--DaServer:Migrate`) with an owner role, nodes on a DML-only role; load generators (`bots`, `crowd`) as Jobs or left out of publish
       (Compose `profiles`); `DOTNET_PROCESSOR_COUNT` from `requests.cpu`; startup probes and 2 s probe timeouts; no
       service-account token on node pods; non-root, read-only root filesystem (writable `/tmp` and the snapshot
       directory); NetworkPolicy (admin plane closed to the cluster network); topology spread; OTLP parameters; the

@@ -1,4 +1,4 @@
-# DaServer 新编程模型设计（草案 v52，未实现，迭代中）
+# DaServer 新编程模型设计（草案 v53，未实现，迭代中）
 
 原则：业务代码干净、解耦、简洁，不用 OOP。ECS 一路到底：能用 EasyEcs 的功能就用 EasyEcs，状态都是数据，其余交给我们的特性和生成器，不重复造轮子。
 
@@ -1093,7 +1093,7 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 - **放置版本**：一个 Actor 类型的放置每变一次，协调者就把这个类型的放置版本加一：成员变化，以及槽表的每次移动（按负载的迁移、粘性类型的钉住，ADR-079）都算；版本随视图和槽表传播。只在成员变化时加一的话，槽表移走的键在新主人那里永远占不到（同一个版本，主人不同）。节点之间的每个帧捎带发送方见过的最高版本；一个节点从不按比它见过的更旧的版本激活。
 - **一张表，一个 Actor 一行，主键是 `(type_id, key)`**：不同 Actor 类型的同号键（`Map(7)` 和 `Loot(7)`）是两行。
   ```sql
-  CREATE TABLE actors (
+  CREATE TABLE actor_records (
     type_id   integer        NOT NULL,   -- the actor type's id (Nino's type id)
     key       bytea          NOT NULL,   -- the key's fields in order, each big-endian at its own width (at most 16 bytes)
     slot      smallint       NOT NULL,   -- the key's placement slot (0..4095, ADR-074), computed by the node
@@ -1104,9 +1104,9 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
     record    bytea,                     -- NULL: claimed, never written
     next_due  timestamptz,               -- NextDue; NULL: nothing due
     PRIMARY KEY (type_id, key));
-  CREATE INDEX actors_due ON actors (slot, next_due) WHERE next_due IS NOT NULL;
+  CREATE INDEX actor_records_due ON actor_records (type_id, slot, next_due) WHERE next_due IS NOT NULL;
   ```
-  键用 `bytea` 而不是两个 `bigint`：键是不超过 16 字节的任意非托管结构，一列就装得下每种形状，主键和比较都不用补零的第二列；每个字段按大端写，所以一个 `long` 键就是 `int8send(key)`。重构建一张新表 `actor_records`，旧表不读也不转换（1.0 之前，破坏性）。槽号由节点按键的哈希算好写进来（和放置同一个哈希），SQL 里不算哈希；`DueScan` 按 `(slot, next_due)` 的索引只扫自己的槽。
+  键用 `bytea` 而不是两个 `bigint`：键是不超过 16 字节的任意非托管结构，一列就装得下每种形状，主键和比较都不用补零的第二列；每个字段按大端写，所以一个 `long` 键就是 `int8send(key)`。重构建一张新表 `actor_records`，旧表不读也不转换（1.0 之前，破坏性）。槽号由节点按键的哈希算好写进来（和放置同一个哈希），SQL 里不算哈希；`DueScan` 按 `(type_id, slot, next_due)` 的索引只扫自己的 `(类型, 槽号)`。
 - **激活先占 epoch，占和读是一条语句**（键还没有记录时插入一行占位；有行而条件不成立时语句不改也不返回任何行，就是没占到）：
   ```sql
   INSERT INTO actor_records AS a (type_id, key, slot, epoch, write_gen, owner, placement, record, next_due)
@@ -1165,6 +1165,7 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 - `ChangeSystem` 用注册时建好的两个过滤：`persist` 里追踪的类型的 `ChangedAny` 加 `With<Persisted>()`，和对应的 `RemovedAny`。EasyEcs 的 `QueryFilter.ChangedAny<T1..Tn>(since)` 一次最多 9 个类型，一个过滤里的每次调用并进同一组，所以生成的 `Registration` 每 9 个类型调用一次（`QueryFilter.Create().ChangedAny<Grid, NetIds, Inventory, Stash, Prize, Position>(0).With<Persisted>()`），每次运行用 `Since(上次运行的 tick)` 换起点。要保存的实体上任何一个组件被写或者被删，这一行访问一次，按 `Persisted.Root` 给根标 `Unsaved`。一行改了几个组件也只访问一次；不保存的实体上同类型的写只多付变更戳，`ChangeSystem` 不访问它们。不分配。
 - **占位不写**：根带着 `Loading`、`Saving` 或 `ActivationFailed` 时，`ChangeSystem` 不给它标 `Unsaved`，`CheckpointSystem` 也不写它（`[Without<Loading>, Without<Saving>, Without<ActivationFailed>]`）。否则 `Reload` 把根改回 prefab 默认值的那些写，会被当成改动写进记录，盖掉最后一份好记录（第 5 节）。
 - `CheckpointSystem` 在每个 tick 末（没有 tick 的 Actor 类型：每批邮件之后）把要写的根各 `SaveEntities` 一次，合成这个 world 的一次批量写（上面的"默认"），按 epoch 比较并交换：执行过 `[Durable]` 项的根（根上内部的 tag `WriteNow`，由 `[Durable]` 的操作加上，第 8 节）每次都取，其余带 `Unsaved` 的根离上次写过了检查点间隔才取；在途的语句满了就都等下一轮（上面的"默认"）。**取记录时去掉 `Unsaved` 和 `WriteNow`**，写出错就加回（用同样的字节重试）；写在途期间的改动重新标上它，进下一次写。根上的 `NextDue` 同时写进记录的 `next_due` 列（下面的唤醒）。
+- **一个根的状态序列化不了**（`SaveEntities` 抛出：环、没注册的子类型）：跳过这一行，记日志 `RecordUnwritable`（按次数限流），这一批的其余行照常写。存储里留着它上一份记录；根重新标上 `Unsaved`（不标 `WriteNow`），过一个检查点间隔再试，它留住的输出等到某一次写成才放出。
 - **`Unsaved` 是根上的 tag，这是有意的**，虽然 EasyEcs 的 `ecs-principles.mdx` 第 5 条说变更检测用变更戳和 `[Changed<T>]`，不用加了又删的标记：
   - 要回答的问题是"这个 Actor 的记录要不要写"，答案属于根：子孙的变更（写、删、销毁）都要汇总到根上，记录也是按根整份写的。`[Changed<T>]` 只能回答"这一行这一趟写过没有"，回答不了"这棵树上次写成之后改过没有"；
   - 它要活过多个 tick：写记录出错时加回，直到某一次写成功，所以不能每 tick 从变更戳重新推出来；
@@ -1178,12 +1179,15 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 - 要叫醒 Actor 的子孙带持久化的 `WakeAt(DateTime Utc)`：`[Durable]` 的等待实体是它下一次问或 settle-by 的时刻（第 8 节），提醒是它的 `UtcAt`。
 - 运行时的 `WakeSystem` 按 `[Changed<WakeAt>]`、`[Removed<WakeAt>]`（两个方法；`ChangedAny` 要 2 到 9 个类型，一个类型就是 `Changed`）和 `Persisted` 的清理找出受影响的根，只对这些根沿 `world.Descendants(root)` 重算最小的 `WakeAt`，写进根上持久化的 `NextDue`。只有运行时算它，扩展能力不写。
 - **先算 `NextDue`，再取记录**：`WakeSystem` 在框架组 `Cleanup` 里排在 `CheckpointSystem` 之前，所以写下的 `next_due` 总算上了这个 tick 新建的等待实体。
-- 检查点把 `NextDue` 写进记录的 `next_due` 列（没有就是空）。每个节点的 `DueScan` 每隔 `DaServer:DueScanInterval` 向存储查自己是主人的槽里 `next_due` 已到的键（`IActorStore.DueKeys(slots, until)`，`slots` 是本节点拥有的 `(类型, 槽号)`，按 `(slot, next_due)` 的索引），给还没激活的发控制邮件 `Wake`，Actor 因此激活：
+- 检查点把 `NextDue` 写进记录的 `next_due` 列（没有就是空）。每个节点的 `DueScan` 每隔 `DaServer:DueScanInterval` 向存储查自己是主人的槽里 `next_due` 已到的键（`IActorStore.DueKeys(slots, until)`，`slots` 是本节点拥有的 `(类型, 槽号)`，按 `(type_id, slot, next_due)` 的索引，一页最多 512 行，满页就从这一页的最后一行之后接着读），给还没激活的发控制邮件 `Wake`，Actor 因此激活：
   ```sql
-  SELECT a.type_id, a.key
+  SELECT a.type_id, a.slot, a.next_due, a.key
   FROM unnest(:type_ids, :slots) AS s(type_id, slot)
-  JOIN actor_records a ON a.slot = s.slot AND a.type_id = s.type_id
+  JOIN actor_records a ON a.type_id = s.type_id AND a.slot = s.slot
   WHERE a.next_due <= :until
+    AND (a.type_id, a.slot, a.next_due, a.key) > (:type_id, :slot, :next_due, :key)   -- the previous page's last row
+  ORDER BY a.type_id, a.slot, a.next_due, a.key
+  LIMIT 512
   ```
   注册里有 `[Durable]` 请求或者 `DaServer.Reminders` 时才查。查询不排除激活着的键（存储不知道哪些在内存里）：激活着的 Actor 的 `WakeAt` 在将来或刚过（它的时刻一到 Actor 自己就做那件事并前移它），只在刚过、前移它的那次写还没写成时被查到，`Wake` 到了 world 就丢弃。重问不加 `WriteNow`（第 8 节），前移的 `WakeAt` 随检查点写下，所以一次扫描多出的行不超过最近一个检查点间隔里到时的项。
 - **由 `Wake` 激活的 Actor 总是重写 `next_due`**：激活给根标 `Unsaved`，下一个检查点写下现在的 `NextDue`。否则一个过时的 `next_due` 会让 `DueScan` 每一轮都叫醒它。
@@ -2044,11 +2048,11 @@ namespace Game.Server
 ```text
 # wire.manifest (excerpt, committed)
 # ── Game.Server ──
-actor   Game.Server.Map     id 5A1C93E1  key int64   hosted-by MapServer   tick 30Hz
-actor   Game.Server.Loot    id 1D84B6A9  key int64   hosted-by PlayerServer
-actor   Game.Server.Player  id 0B77D012  key int64   hosted-by PlayerServer  join-on-connect Account newest-wins
-actor   DaServer.Connection id 3E0F7A21  key DaServer.ConnectionId raw(16){Hi:uint64@0:raw(8),Lo:uint64@8:raw(8)}  hosted-by GatewayServer
-claims  Game.Server.Account  int64
+actor   Game.Server.Map     id 5A1C93E1  key long    hosted-by MapServer   tick 30Hz
+actor   Game.Server.Loot    id 1D84B6A9  key long    hosted-by PlayerServer
+actor   Game.Server.Player  id 0B77D012  key long    hosted-by PlayerServer  join-on-connect Account newest-wins
+actor   DaServer.Connection id 3E0F7A21  key DaServer.ConnectionId raw(16){Hi:ulong@0:raw(8),Lo:ulong@8:raw(8)}  hosted-by GatewayServer
+claims  Game.Server.Account  long
 request Game.Server.GrantItem  Loot -> Player  reply bool  durable
 request Game.Server.Claim      Map -> Loot  reply bool
 message Game.Server.Dropped    Map -> Loot

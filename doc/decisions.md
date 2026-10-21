@@ -1070,6 +1070,12 @@ Replaced by ADR-081.
   per grain, an ETag). A typical game server writes documents per type, marked dirty by hand and written back in
   batches; a renamed class loses its collection. Akka.NET and Proto.Actor journal events.
 - Decision:
+  - **Today (until roadmap W6):** a record is the actor's `[Persist]` components, keyed by (handler type id, key),
+    versioned and hashed. It is written after the actor's `Unloading` mail, every `SaveEverySeconds` when changed
+    (change-tracked) and at once with `SaveNow`. Loading claims the record by raising its version and every write names
+    the version it replaces, so a stale owner's write is refused and its copy fenced; the hash recognizes a write whose
+    answer was lost. A state that does not serialize gives its write up and is logged (`RecordUnwritable`): the store
+    keeps the last record and the shard's other writes and handoffs go on. The rest of this decision is W6's target.
   - **What:** an actor's record is `SaveEntities` of its root and its `Persisted` descendants with the persist
     component set built in `Registration` (draft §10). Persisted components are version tolerant or keyed (DAS014,
     ADR-076); a load completes every entity from its prefab copy (`[NotSaved]` components and those the prefab gained)
@@ -1078,7 +1084,7 @@ Replaced by ADR-081.
   - **The table:** one row per actor, primary key `(type_id, key)`, so equal keys of two actor types (`Map(7)`,
     `Loot(7)`) are two rows. Columns: `type_id integer`, `key bytea`, `slot smallint`, `epoch bigint`,
     `write_gen bigint`, `owner` (node name, node generation), `placement bigint`, `record bytea`,
-    `next_due timestamptz`; an index on `(slot, next_due)`. The key is `bytea`, not two `bigint`s: a key is any
+    `next_due timestamptz`; an index on `(type_id, slot, next_due)`. The key is `bytea`, not two `bigint`s: a key is any
     unmanaged struct of at most 16 bytes, which one column holds whatever its shape, with no zero-padded second column
     in the primary key; its fields are written in order, each big-endian at its own width, so a `long` key is
     `int8send(key)`. The slot is the key's placement slot (ADR-074), computed by the node with the hash placement uses,
@@ -1088,17 +1094,22 @@ Replaced by ADR-081.
     a new key, raises the epoch, resets `write_gen` and takes the owner only with a strictly newer placement version
     (or the same version and owner, a retry), and a displaced owner gets `Fence(key, epoch)` at once. A migration's
     arrival claims with an `UPDATE` comparing the epoch it carries, writing `GREATEST(stored, seen)` placement.
-  - **Writes:** each world writes the roots due at a tick end in one statement over `unnest` arrays, every row a CAS
-    on `(type_id, key)`, the epoch and `write_gen < :write_gen`; the rows not updated come back as stored. A refused
+  - **Writes:** each world writes the roots due at a tick end in one statement per 512 rows over `unnest` arrays, at
+    most `DaServer:StoreWritesInFlight` statements in flight per world (roots beyond wait for the next round), every
+    row a CAS on `(type_id, key)`, the epoch and `write_gen < :write_gen`; the rows not updated come back as stored. A
+    root whose `SaveEntities` throws (a state that does not serialize) is left out of the batch and logged
+    (`RecordUnwritable`); the rest of the batch is written. A refused
     row fences only its actor; a timed-out write is retried with the same bytes and generation, and a row found at its
     own epoch and generation counts as written. `[Durable]` items ride the next write; other changes at most every
     `DaServer:CheckpointInterval`. Change tracking on the persist set tags written roots `Unsaved`, so only those are
     written.
   - **Wake:** every write stores the root's `NextDue` in `next_due`; `IActorStore.DueKeys(slots, until)` reads, over
-    the `(slot, next_due)` index, the keys of the node's `(type, slot)` pairs whose `next_due` has passed, and
-    `DueScan` wakes them.
-  - **Schema:** the schema Job (the node image with `--DaServer:Migrate`, a DDL role, under an advisory lock) creates the
-    `actor_records` table; an older table is neither read nor converted (pre-1.0); nodes use a DML-only role.
+    the `(type_id, slot, next_due)` index, the keys of the node's `(type, slot)` pairs whose `next_due` has passed, in
+    pages of 512 (each page starting after the previous one's last row), and `DueScan` wakes them.
+  - **Schema:** the `actor_records` table is created under an advisory lock, either by a node at start (run mode,
+    `TestCluster` on PostgreSQL, and published nodes until roadmap W12) or by the node image in schema mode
+    (`--DaServer:Migrate`: create and exit), both W6; W12 runs that mode as the published schema Job with a DDL role
+    and nodes on a DML-only role. An older table is neither read nor converted (pre-1.0).
   - **Backends:** `IActorStore` (claims, the batched write, `DueKeys`) is all a backend implements.
     `InMemoryActorStore` serves tests and development and behaves like the database (epochs, generations, slots).
     `PostgreSqlActorStore` is the default for deployments, written with Npgsql and no ORM (the record is opaque bytes,
@@ -1112,8 +1123,9 @@ Replaced by ADR-081.
   - The key as two `bigint` columns: fixed width, but every key pads to 16 bytes and the primary key has three
     columns; `bytea` holds every shape in one.
   - Event sourcing: out of core; it can be built as a pattern on actors.
-- Consequences: one statement per world per tick end whatever the number of changed actors; a stale owner can never
-  overwrite the new one, nor a late statement a newer state; `DueScan` costs one index range per owned slot. A store
+- Consequences: one statement per 512 changed actors per world per tick end, at most `StoreWritesInFlight` in flight
+  per world; a stale owner can never overwrite the new one, nor a late statement a newer state; `DueScan` costs one
+  index range per owned `(type, slot)` pair. A store
   outage delays deactivations and stops, bounded by the stop budget. Records are opaque bytes for performance;
   inspecting them needs the manifest (the inspector decodes them through `wire.manifest`).
 - References: the epoch refusing an older writer is a fencing token (Kleppmann, "How to do distributed locking", 2016;
@@ -1526,7 +1538,7 @@ Replaced by ADR-081.
   changed" leaks; the order between mail, delayed sends and systems is implicit. EasyEcs provides what a
   model without these needs: single-entity jobs (`entity.Run(ref job[, filter])`), group filters carried by
   interfaces (`IGroupWith<T>`), `world.Descendants(root)` and `LoadEntitiesInto(…, markWritten: false)`.
-- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v52), structured as in
+- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v53), structured as in
   [drafts/architecture.md](drafts/architecture.md):
   - **The actor type is its address, its root component, its root prefab and its system group**:
     `[TickRate(30)] partial record struct Map(long Id) : IActor<Map>` (`IActor<T>` inherits `IEquatable<T>`, so
