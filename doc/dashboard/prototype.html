@@ -104,6 +104,8 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
 .lead{font-size:clamp(17px,1.4vw,19px);line-height:1.6;color:var(--ink-2);max-width:56ch;margin:0;text-wrap:pretty}
 .uf{display:flex;align-items:baseline;gap:var(--s4);min-height:32px}
 .uf .lnk{margin-left:auto}
+.uf .acts{gap:var(--s4)}
+.uf .act{font:500 15px/1.4 var(--text);padding:0 0 1px}
 .acts{display:flex;align-items:baseline;gap:var(--s4);flex-wrap:wrap}
 .act{font:500 clamp(19px,1.5vw,21px)/1.3 var(--display);padding:4px 0 5px;border-bottom:1px solid currentColor}
 .act:hover{box-shadow:inset 0 -1px 0 currentColor}
@@ -332,6 +334,8 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
 .tabs button:hover{color:var(--ink-2)}
 .tabs button[aria-current="page"]:hover{color:var(--ink)}
 @media (min-width:720px) and (max-width:1439px){.app{padding-left:max(112px,env(safe-area-inset-left,0px))}}
+/* on a narrower desk the margin takes a third column, so the contents' names read whole */
+@media (min-width:720px) and (max-width:1279px){.brand,.margin,.status,.footin > .ex{grid-column:1 / 4}.page{grid-column:4 / -1}.keys{grid-column:4 / -1}.main{grid-column:1 / 6}.aside{grid-column:7 / -1}.listc{grid-column:1 / 4}.detc{grid-column:5 / -1}.leave,.probe{grid-template-columns:repeat(9,minmax(0,1fr))}}
 @media (max-width:719px){
   .topin{grid-template-rows:auto;row-gap:0;padding-bottom:4px}
   .foot{position:relative}
@@ -519,12 +523,12 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
       add(1, 'clients', 'clients-sum', 'Client connections', { eb: ceb, h1: 'Client connections', body: function () { return clients(1); } });
       add(1, 'clients-n', 'clients-gw', 'Gateways', { eb: function () { return 'Gateways that stand out'; }, h1: 'Client connections', body: function () { return clients(2); } });
     }
-    CHANGES.forEach(function (ch, ci) { add(2, ch.id, 'changes', ch.kind + ' ' + ch.target, { eb: function () { return 'The last hour, newest first'; }, h1: 'Changes', listed: true, body: function () { return changes(ci); } }); });
+    CHANGES.forEach(function (ch, ci) { add(2, ch.id, 'changes', ch.kind + ' ' + ch.target, { bad: ch.bad, eb: function () { return 'The last hour, newest first'; }, h1: 'Changes', body: function () { return changes(ci); } }); });
     var list = ACTORS.slice(0, TOP).concat(S.found ? [S.found] : []);
     list.forEach(function (a, ai) {
       var eb = function () { return a.found ? 'Looked up on ' + a.node + ', its owner' : count(ALLACTORS) + ' actors loaded, slowest first'; };
       var h1 = a.found ? a.id : 'Slowest actors';
-      if (!c) add(3, a.id, 'actors', a.id, { eb: eb, h1: h1, listed: true, body: function () { return actors(a); } });
+      if (!c) add(3, a.id, 'actors', a.id, { bad: a.p99 > LIMIT, eb: eb, h1: h1, body: function () { return actors(a); } });
       else {
         add(3, a.id, 'actor', a.id, { eb: eb, h1: h1, body: function () { return actors(a, 1); } });
         add(3, a.id + '-l', 'actor-more', a.id + ' components', { eb: eb, h1: h1, body: function () { return actors(a, 2); } });
@@ -628,7 +632,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     var avg = Math.round(CLIENTS.total / GW.n);
     var o = GW.nodes.filter(function (n) { return n.st !== 'ok' || Math.abs(n.clients - avg) > avg * .1; }).sort(function (a, b) { return Math.abs(b.clients - avg) - Math.abs(a.clients - avg); }).slice(0, 3);
     var h = '<span class="th sc">Gateway</span><span class="th sc st">State</span><span class="th sc r">Clients</span><span class="th sc r">Moving here</span>';
-    for (var k = 0; k < 3; k++) { var g = o[k], e = g ? '' : ' empty'; h += M('b-g' + k + 'a', g ? g.n : '', 'td' + e) + M('b-g' + k + 'd', g ? g.txt : '', 'td st' + e) + M('b-g' + k + 'b', g ? group(g.clients) : '', 'td r' + e) + M('b-g' + k + 'c', g ? group(g.moving) : '', 'td r' + e); }
+    for (var k = 0; k < o.length; k++) { var g = o[k], e = g ? '' : ' empty'; h += M('b-g' + k + 'a', g ? g.n : '', 'td' + e) + M('b-g' + k + 'd', g ? g.txt : '', 'td st' + e) + M('b-g' + k + 'b', g ? group(g.clients) : '', 'td r' + e) + M('b-g' + k + 'c', g ? group(g.moving) : '', 'td r' + e); }
     var top = figRow([['Connected', group(CLIENTS.total), 'clients'], ['Resumed', group(CLIENTS.resumed), 'in the last hour'], ['Per gateway', group(avg), 'on average'], ['Refused', '0', 'handshakes']]) +
       '<div class="ln full col sm"><p class="cap sc">Clients on each of the ' + GW.n + ' gateways</p>' +
       dist('gwc', GW.nodes.map(function (n) { return n.clients; }), { lo: 0, hi: 25000, hot: function (v) { return Math.abs(v - avg) > avg * .1; }, label: function (v) { return group(v); } }) + '</div>';
@@ -644,16 +648,18 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   }
   function nodeTable(t) {
     var c = S.compact, h = '', rows = rowsOf(t);
+    // only the nodes that stand out: a quiet type has no table, and the foot follows its unit at once
+    if (!rows.length) return '';
     if (!c) {
       h += '<span class="th sc">Node</span><span class="th sc">State</span><span class="th sc r">CPU</span><span class="th sc r">Memory</span><span class="th sc r">Ask p99</span><span class="th"></span>';
-      for (var r = 0; r < NROWS; r++) {
+      for (var r = 0; r < rows.length; r++) {
         var n = rows[r], e = n ? '' : ' empty', hl = n && n.n === S.hl ? ' hl' : '', bad = n && (n.p99 > LIMIT || n.p99 - t.med > 4 * t.mad) ? ' ind' : '';
         h += M('b-n' + r + 'a', n ? n.n : '', 'td' + e + hl) + M('b-n' + r + 'b', n ? n.txt : '', 'td st' + e + hl) + M('b-n' + r + 'c', n ? n.cpu + '%' : '', 'td r' + e + hl) + M('b-n' + r + 'd', n ? n.mem.toFixed(1) + ' GB' : '', 'td r' + e + hl) + M('b-n' + r + 'e', n ? ms(n.p99) + ' ms' : '', 'td r' + e + hl + bad);
         h += '<span class="td r' + e + '">' + (n && n.st === 'ok' ? '<button class="lnk" data-drain="' + n.n + '">' + M('b-n' + r + 'f', 'Restart') + '</button>' : M('b-n' + r + 'f', '')) + '</span>';
       }
     } else {
       h += '<span class="th sc">Node</span><span class="th sc r">CPU</span><span class="th sc r">Memory</span><span class="th sc r">p99</span>';
-      for (var q = 0; q < NROWS; q++) {
+      for (var q = 0; q < rows.length; q++) {
         var m = rows[q], em = m ? '' : ' empty', hm = m && m.n === S.hl ? ' hl' : '';
         h += M('b-n' + q + 'a', m ? m.n : '', 'td' + em + hm) + M('b-n' + q + 'c', m ? m.cpu + '%' : '', 'td r' + em + hm) + M('b-n' + q + 'd', m ? m.mem.toFixed(1) + ' GB' : '', 'td r' + em + hm) + M('b-n' + q + 'e', m ? ms(m.p99) + ' ms' : '', 'td r' + em + hm + (m && (m.p99 > LIMIT || m.p99 - t.med > 4 * t.mad) ? ' ind' : ''));
         h += M('b-n' + q + 'b', m ? m.txt : '', 'td sub st' + em) + '<span class="td sub r' + em + '">' + (m && m.st === 'ok' ? '<button class="lnk" data-drain="' + m.n + '">' + M('b-n' + q + 'f', 'Restart') + '</button>' : M('b-n' + q + 'f', '')) + '</span>';
@@ -669,16 +675,14 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   function serverNodes(t) { return nodeTable(t) + typeFoot(t, true); }
   function changes(ci) {
     var ch = CHANGES[ci];
-    var list = '<div class="ln listc list">' + CHANGES.map(function (x, k) { return '<button class="li' + (k === ci ? ' on' : '') + '" data-go="2:' + x.id + '"><span class="k0">' + x.time + '</span><span class="k1' + (x.bad ? ' ind' : '') + '">' + x.kind + '</span><span class="k3">' + x.target + '</span></button>'; }).join('') + '</div>';
-    var det = '<div class="ln detc det"><dl class="props"><dt>Detail</dt>' + M('b-c1', ch.detail, '', 'dd') + '<dt>Started by</dt>' + M('b-c2', ch.by, '', 'dd') + '<dt>Result</dt>' + M('b-c3', ch.result, '', 'dd') + '</dl>' +
+    var det = '<div class="ln main det"><dl class="props"><dt>Change</dt>' + M('b-c0', ch.time + '  ' + ch.kind + ' ' + ch.target, ch.bad ? 'ind' : '', 'dd') + '<dt>Detail</dt>' + M('b-c1', ch.detail, '', 'dd') + '<dt>Started by</dt>' + M('b-c2', ch.by, '', 'dd') + '<dt>Result</dt>' + M('b-c3', ch.result, '', 'dd') + '</dl>' +
       M('b-c4', ch.note, 'note', 'p') + '<div class="acts">' + (ch.bad ? '<button class="act pri" id="rb"' + (S.rolling ? ' disabled' : '') + '>' + M('b-rb', S.rolling ? 'Rolling back' : 'Roll back this rollout') + '</button>' : '') + '</div></div>';
-    return list + det;
+    return det;
   }
   function actors(a, part) {
-    var c = !!part, top = ACTORS.slice(0, TOP);
-    var list = c ? '' : '<div class="ln listc list">' + top.map(function (x) { return '<button class="li two' + (x === a ? ' on' : '') + '" data-go="3:' + x.id + '"><span class="k1">' + x.id + '</span><span class="k3' + (x.p99 > LIMIT ? ' ind' : '') + '">' + x.p99 + ' ms</span></button>'; }).join('') + '</div>';
-    var props = (c ? '<dt>Actor</dt>' + M('b-at', a.id, '', 'dd') + '<dt>Handler p99</dt>' + M('b-a0', a.p99 + ' ms', a.p99 > LIMIT ? 'ind' : '', 'dd') : '') +
-      '<dt>Type</dt>' + M('b-a1', a.type, '', 'dd') + '<dt>Node</dt>' + M('b-a2', a.node, '', 'dd') + '<dt>Requests</dt>' + M('b-a3', a.rps, '', 'dd') + '<dt>Mailbox</dt>' + M('b-a4', a.mailbox, a.full ? 'ind' : '', 'dd') + '<dt>Last saved</dt>' + M('b-a5', a.saved, '', 'dd') + (c ? '' : a.found ? '<dt>Handler p99</dt>' + M('b-a0', a.p99 + ' ms', a.p99 > LIMIT ? 'ind' : '', 'dd') : '<dt></dt><dd></dd>');
+    var c = !!part;
+    var props = '<dt>Actor</dt>' + M('b-at', a.id, '', 'dd') + '<dt>Handler p99</dt>' + M('b-a0', a.p99 + ' ms', a.p99 > LIMIT ? 'ind' : '', 'dd') +
+      '<dt>Type</dt>' + M('b-a1', a.type, '', 'dd') + '<dt>Node</dt>' + M('b-a2', a.node, '', 'dd') + '<dt>Requests</dt>' + M('b-a3', a.rps, '', 'dd') + '<dt>Mailbox</dt>' + M('b-a4', a.mailbox, a.full ? 'ind' : '', 'dd') + '<dt>Last saved</dt>' + M('b-a5', a.saved, '', 'dd');
     var comps = '', logs = '';
     for (var k = 0; k < 3; k++) {
       comps += M('b-ac' + k, a.comps[k] || '', 'code', 'div');
@@ -686,8 +690,8 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
       logs += '<div class="code">' + (l ? M('b-al' + k + 'a', l[0] + '  ') + M('b-al' + k + 'b', l[1], l[1] === 'warn' ? 'ind' : '') + M('b-al' + k + 'c', '  ' + l[2]) : M('b-al' + k + 'a', '') + M('b-al' + k + 'b', '') + M('b-al' + k + 'c', '')) + '</div>';
     }
     var more = '<div class="blk"><span class="sc">Components</span><div>' + comps + '</div></div><div class="blk"><span class="sc">Logs</span><div>' + logs + '</div></div><div class="uf">' + hist('Grafana') + '</div>';
-    var det = '<div class="ln ' + (c ? 'full' : 'detc') + ' det">' + (part === 2 ? more : '<dl class="props two">' + props + '</dl>' + (part ? '' : more)) + '</div>';
-    return list + det;
+    var det = '<div class="ln ' + (c ? 'full' : 'main') + ' det">' + (part === 2 ? more : '<dl class="props two">' + props + '</dl>' + (part ? '' : more)) + '</div>';
+    return det;
   }
   function audit(p, per) {
     return '<div class="ln full audit">' + AUDIT.slice(p * per, p * per + per).map(function (a) { return '<span class="tm">' + a[0] + '</span><span class="w">' + esc(a[1]) + '</span><span class="a">' + esc(a[2]) + '</span><span class="tg">' + esc(a[3]) + '</span>'; }).join('') + '</div>';
@@ -779,7 +783,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     layer.appendChild(c); nodes.push(c); return c;
   }
   function blurOut(ch, r, s, nodes) {
-    clone(ch, r, s, nodes).animate([{ opacity: 1, filter: 'blur(0)', transform: 'none' }, { opacity: 0, filter: 'blur(4px)', transform: 'translateY(-.3em)' }], { duration: DUR * .6, easing: EASE, fill: 'forwards' });
+    clone(ch, r, s, nodes).animate([{ opacity: 1, filter: 'blur(0)', transform: 'none' }, { opacity: 0, filter: 'blur(2px)', transform: 'translateY(-.2em)' }], { duration: DUR * .45, easing: EASE, fill: 'forwards' });
   }
   function settle(el) { var f = el._fl; if (!f) return; el._fl = null; clearTimeout(f.t); f.nodes.forEach(function (c) { c.remove(); }); el.style.color = ''; }
   function settleAll() { live.forEach(settle); live = []; layer.textContent = ''; }
@@ -802,7 +806,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
         var r = n.r[i]; if (!r) { clones.push(null); continue; }
         var c = clone(n.t[i], r, n.s, nodes), f = from[i]; clones.push(c);
         if (f) c.animate([{ transform: 'translate(' + (f.x - r.x) + 'px,' + (f.y - r.y) + 'px) scale(' + (f.h / r.h) + ')', color: o.s.color }, { transform: 'none', color: n.s.color }], { duration: DUR, easing: EASE });
-        else c.animate([{ opacity: 0, filter: 'blur(4px)', transform: 'translateY(.18em)' }, { opacity: 1, filter: 'blur(0)', transform: 'none' }], { duration: DUR * .8, delay: DUR * .2, easing: EASE, fill: 'backwards' });
+        else c.animate([{ opacity: 0, filter: 'blur(2px)', transform: 'translateY(.12em)' }, { opacity: 1, filter: 'blur(0)', transform: 'none' }], { duration: DUR * .55, easing: EASE, fill: 'backwards' });
       }
       for (var k = 0; k < o.t.length; k++) if (!gone[k] && o.r[k]) blurOut(o.t[k], o.r[k], o.s, nodes);
       el._fl = { nodes: nodes, clones: clones, s: n.s, t: setTimeout(function () { settle(el); live.splice(live.indexOf(el), 1); }, DUR + 60) };
@@ -814,7 +818,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     // texts that are gone altogether blur out too
     var orphans = [];
     Object.keys(old).forEach(function (k) { var o = old[k]; if (!seen[k] && o.t) o.r.forEach(function (r, i) { if (r) blurOut(o.t[i], r, o.s, orphans); }); });
-    if (orphans.length) setTimeout(function () { orphans.forEach(function (c) { c.remove(); }); }, DUR * .6 + 40);
+    if (orphans.length) setTimeout(function () { orphans.forEach(function (c) { c.remove(); }); }, DUR * .45 + 40);
   }
   function snapshot(withBody) {
     var o = {};
@@ -874,7 +878,8 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     // Find and confirm keep the tallest height they have had, so the head does not move while results narrow
     // Find has a height of its own, set by the rows it can show, so the head stays put while results narrow
     var h = S.mode === 'find' ? F.H : S.mode ? (S.modeH = Math.max(tabH[t], $('body').scrollHeight, S.modeH || 0)) : tabH[t];
-    $('stage').style.gridTemplateRows = 'auto minmax(0,' + h + 'px)';
+    // room below the tallest screen, so a unit's foot never sits on the footer rule
+    $('stage').style.gridTemplateRows = 'auto minmax(0,' + (h + 24) + 'px)';
   }
   function renderMargin() {
     if (S.mode) { $('folio').innerHTML = M('fn', '', 'fn') + M('fo', ''); $('nextl').innerHTML = '<span class="sc">' + M('nxl', '') + '</span><span class="nx">' + M('nx', '') + '</span>'; return; }
@@ -889,8 +894,8 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   // of the contents at a time, with the hidden screens counted on a line of their own.
   function sectionSteps() { var t = steps[S.i].tab, a = []; for (var i = 0; i < steps.length; i++) if (steps[i].tab === t) a.push(i); return a; }
   function renderToc() {
-    // a section whose page is itself a list of its screens (changes, actors) needs no second list beside it
-    var el = $('toc'); if (S.compact || S.mode || steps[S.i].listed) { el.innerHTML = ''; return; }
+    // a section of one screen shows its folio only: a list of one would repeat the title
+    var el = $('toc'); if (S.compact || S.mode || sectionSteps().length < 2) { el.innerHTML = ''; return; }
     var a = sectionSteps(), k = a.indexOf(S.i), h = tabH[steps[S.i].tab] || 0;
     var cap = Math.max(4, Math.floor((h - 40 - 72) / 28)), per = a.length <= cap ? a.length : cap - 2, from = a.length <= cap ? 0 : Math.floor(k / per) * per;
     if (a.length > cap && from + per > a.length) from = Math.max(0, a.length - per);
@@ -898,7 +903,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     if (from > 0) html += '<button class="tmore" data-toc="' + a[from - 1] + '">' + M('tm0', from + ' above') + '</button>';
     for (var j = from; j < Math.min(a.length, from + per); j++) {
       var st = steps[a[j]];
-      html += '<button class="tc" data-toc="' + a[j] + '"' + (a[j] === S.i ? ' aria-current="step"' : '') + '><span class="n">' + M('tn' + (j - from), String(j + 1)) + '</span><span class="l">' + M('tl' + (j - from), st.label) + '</span></button>';
+      html += '<button class="tc" data-toc="' + a[j] + '"' + (a[j] === S.i ? ' aria-current="step"' : '') + '><span class="n">' + M('tn' + (j - from), String(j + 1)) + '</span><span class="l' + (st.bad ? ' ind' : '') + '" title="' + esc(st.label) + '">' + M('tl' + (j - from), st.label) + '</span></button>';
     }
     var rest = a.length - Math.min(a.length, from + per);
     if (rest > 0) html += '<button class="tmore" data-toc="' + a[from + per] + '">' + M('tm1', rest + ' below') + '</button>';
@@ -1104,10 +1109,20 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   // while the page is still moving (450 ms) is not lost: it steps the moment the transition ends.
   var WH = { last: -1e9, stepAt: -1e9, dir: 0, acc: 0, fresh: true, peak: 0, low: 0, five: [], wait: 0 };
   function wheelStep(now, dir) { clearTimeout(WH.wait); WH.wait = 0; WH.fresh = false; WH.acc = 0; WH.stepAt = now; step(dir); }
+  var LW = { acc: 0 };
+  function listWheel(e) {
+    var d = e.deltaY * (e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? 400 : 1), wd = e.wheelDeltaY;
+    if (e.deltaMode !== 0 || (wd && wd % 120 === 0)) { LW.acc = 0; step(d > 0 ? 1 : -1); return; }
+    if ((LW.acc > 0) !== (d > 0)) LW.acc = 0;
+    LW.acc += d;
+    while (Math.abs(LW.acc) >= 40) { step(LW.acc > 0 ? 1 : -1); LW.acc -= LW.acc > 0 ? 40 : -40; }
+  }
   window.addEventListener('wheel', function (e) {
     if (e.ctrlKey) return;
     e.preventDefault();
     if (Math.abs(e.deltaY) < Math.abs(e.deltaX) || !e.deltaY) return;
+    // a list of results is not a page: the wheel moves through it freely, a row per notch or per 40 px
+    if (S.mode === 'find' || S.mode === 'toc') { listWheel(e); return; }
     var now = e.timeStamp || performance.now(), gap = now - WH.last, dir = e.deltaY > 0 ? 1 : -1, wd = e.wheelDeltaY;
     var notch = e.deltaMode !== 0 || (!!wd && wd % 120 === 0 && gap > 40), a = notch ? 120 : Math.abs(e.deltaY), turn = dir !== WH.dir;
     WH.last = now; WH.dir = dir;
@@ -1142,18 +1157,29 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
 
   // ---------- layout changes: phone splits screens; theme changes recolour the charts ----------
   var mq = window.matchMedia('(max-width: 719px)');
+  // A screen is split in two when the section's tallest screen would not fit between head and footer: measured,
+  // since a narrower desk wraps the same screen taller.
+  function wantSplit() {
+    if (mq.matches) return true;
+    if (window.innerHeight < 800) return true;
+    var keep = S.split; S.split = false; buildSteps();
+    var stage = $('stage'), head = document.querySelector('.head'), avail = stage.clientHeight - (head && head.offsetHeight > 40 ? head.offsetHeight : 90) - 72, tall = 0;
+    for (var t = 0; t < 5; t++) tall = Math.max(tall, probe(steps.filter(function (st) { return st.tab === t; }).map(function (st) { return st.body; })));
+    S.split = keep; if (keep) buildSteps(); tabH = {};
+    return tall > avail;
+  }
   function setCompact() {
     var cur = steps[S.i], key = cur && [cur.tab, cur.key];
-    S.compact = mq.matches; S.split = S.compact || window.innerHeight < 800; buildSteps(); renderKeys();
+    S.compact = mq.matches; S.split = wantSplit(); buildSteps(); renderKeys();
     if (key) { S.i = findStep(key[0], key[1]); if (steps[S.i].key !== key[1]) S.i = findStep(key[0], key[1].replace(/-(n|l)$/, '')); }
   }
   var rt; window.addEventListener('resize', function () { clearTimeout(rt); rt = setTimeout(function () {
-    if (mq.matches !== S.compact || (mq.matches || window.innerHeight < 800) !== S.split) { setCompact(); S.layout = null; render('none'); return; }
+    if (mq.matches !== S.compact || wantSplit() !== S.split) { setCompact(); S.layout = null; render('none'); return; }
     tabH = {}; var v = view(); frame(v); killPlots(); if (v.after && !S.mode) v.after(); }, 120); });
   function redraw() { var v = view(); if (!S.mode && v.after) { killPlots(); v.after(); } }
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', redraw);
   new MutationObserver(redraw).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
-  if (document.fonts && document.fonts.ready) document.fonts.ready.then(function () { tabH = {}; frame(view()); redraw(); });
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(function () { if (wantSplit() !== S.split) { setCompact(); S.layout = null; render('none'); return; } tabH = {}; frame(view()); redraw(); });
 
   setCompact(); render('none'); window.focus();
 })();

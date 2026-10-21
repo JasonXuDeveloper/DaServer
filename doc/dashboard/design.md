@@ -59,7 +59,10 @@ Every screen is built on one grid, so positions line up from screen to screen an
   body's first line. In a list and detail, both start on the same hairline.
 - **Centred per section.** Head and body are centred as one block between header and footer. The body row is as tall
   as the tallest screen of the current section, measured, so nothing moves within a section and no section hangs from
-  the top over an empty lower half.
+  the top over an empty lower half. When a section's tallest screen would not fit between head and footer (measured,
+  since a narrower desk wraps the same screen taller), its long screens split in two, as on a phone.
+- **Narrower desks.** From 720 to 1279 px the margin takes three columns and the page nine, so the contents' names
+  read whole.
 - **One focal point.** Each screen has one place the eye lands first (the incident's figure, a type's four figures, a
   chart, the selected list row), then a second (the table or the detail), then the action.
 - **Phones.** One column, in the same order. Views that do not fit become more screens. The folio and "Next" move to
@@ -72,7 +75,11 @@ There is one vocabulary, used the same way everywhere.
 - **A unit** is a caption, then a figure, table or chart, then its foot. In the foot, actions come first and the
   history link ("Open in Grafana") sits at the end, on the unit's right edge. An action sits where the decision is
   made: Restart on a node's row, Hot restart in the foot of the node table it restarts, a rollback in the rollout's
-  detail.
+  detail. The foot follows its unit at the body's rhythm, never pinned to the bottom of the reserved height: the space
+  a section reserves for its tallest screen lies below the last unit, not between a unit and its foot, and the body
+  keeps 24 px clear above the footer rule. A foot's action is set like the foot (15 px, its own baseline, a 1 px
+  underline), not in the larger face of a page action. A table lists only the rows it has: a quiet server type has no
+  node table, and its foot follows the distribution.
 - **A figure** is a label above, the reading in the display face, and its normal below ("usually 12 ms",
   "of 4 nodes"). A reading is never shown alone.
 - **A distribution** shows one reading across every node of a server type: 80 bins of thin bars in the ink, the bins
@@ -134,14 +141,18 @@ There is one vocabulary, used the same way everywhere.
   ink-3, with the current one in ink. The line below it is what comes next, so there is no separate Next line on a
   desk. A click opens a screen, and so does its number on the keyboard. The list is as tall as the section's body row
   allows, less the status line. A longer section shows its contents a page at a time, and a line at either end
-  counts the hidden screens ("9 above", "4 below") and opens the first of them. A section whose page is itself a
-  list of its screens (Changes, the slowest actors) has no contents beside it. On a phone the folio is a link that
+  counts the hidden screens ("9 above", "4 below") and opens the first of them. Every section with more than one
+  screen has its contents, Changes and Actors included: their pages show the selected change or actor in full, and
+  the contents are the list (a bad rollout and an actor over its limit in the accent there). A section of one screen
+  (Audit) shows its folio only, since a list of one would repeat the title. On a phone the folio is a link that
   opens the contents as a page of its own: one row per screen with its number, eight to a page; ↑↓ move, Enter or a
   number opens, Esc closes.
 - **Find** is one column in the main measure. The input carries the short placeholder "Actor, server type, node or
   action". Results are rows of 44 px, the name at the left and its context at the right, never wrapping; groups are
   small running heads. Find's height is set by the rows the window holds (four to nine on a desk), so the head stays
-  put while results narrow, and a final line counts what is not shown ("405 more; keep typing").
+  put while results narrow, and a final line counts what is not shown ("405 more; keep typing"). Find's results are a
+  list, not pages: the wheel moves through them freely, one row per notch or per 40 px of a trackpad, and the
+  one-scroll-one-step rule applies to screens only. The phone's contents page moves the same way.
 - **One scroll, one step.** A run of wheel events is one scroll however long it lasts: a spin of many notches, an
   accelerating spin, or a flick with its tail. A new scroll starts after 240 ms of quiet, with a turn the other way,
   or with a clear new flick on a decayed tail: the samples have fallen below a quarter of the scroll's peak, and the
@@ -168,8 +179,10 @@ matching set to characters. It combines three techniques:
    again. Invert, by moving each kept character back to its old place. Play, by animating it to the new place. Only
    the transform animates, so layout never moves. A size or colour difference animates with it.
 3. **New and old characters.**
-   - A new character blurs in: it starts at 4 px blur and opacity 0, slightly low, and settles.
-   - A removed character blurs out where it stood: it blurs, rises slightly and fades.
+   - A new character blurs in: it starts at 2 px blur and opacity 0, slightly low, and settles, without delay, so a
+     changed digit is never a visible gap.
+   - A removed character blurs out where it stood: it blurs, rises slightly and fades, faster than the new one
+     arrives.
 
 How it is drawn:
 
@@ -191,8 +204,8 @@ The leaving page exits quickly the other way. The title, eyebrow and margin text
 | Motion | Timing | Easing |
 |---|---|---|
 | Kept characters (FLIP) | 420 ms | `cubic-bezier(.2, .7, .2, 1)` for all motion |
-| Characters blurring in | 336 ms, after an 84 ms delay | the same |
-| Characters blurring out | 252 ms | the same |
+| Characters blurring in | 230 ms, no delay | the same |
+| Characters blurring out | 190 ms | the same |
 | New page, per block | 360 ms, 18 px vertical or 28 px horizontal, first block at 60 ms, then 35 ms apart | the same |
 | Leaving page | 160 ms, half the distance, the opposite way | `cubic-bezier(.4, 0, 1, 1)` |
 | Reduced motion | Text and pages change in place | none |
@@ -241,11 +254,11 @@ DaServer is a general framework, so every view below names server types, actors 
 | Membership | Do all nodes agree on who is in the cluster? | One phrase above the overview title ("630 nodes in 10 server types, every view agrees"); a disagreement becomes the incident | A separate membership page while views agree |
 | Store | Are actors being saved? | Write p99, writes in flight, unsaved actors and the oldest unsaved age, errors; then the actor types with the most unsaved actors and their oldest (four rows, three on a phone) | Query plans, per-table statistics |
 | Client connections | Are clients connected and balanced? | Connected, resumed, the average per gateway, refused handshakes; the distribution of clients across gateways; the gateways more than a tenth from the average (at most three rows) | A row per gateway; per-client lists |
-| Changes | What changed before it broke? | A list of the last hour's changes (newest first) beside the selected change's detail; a bad rollout carries its own roll back | Deploy logs; the full rollout timeline |
+| Changes | What changed before it broke? | The last hour's changes (newest first) as the section's contents, the bad one in the accent; the page is the selected change's detail, and a bad rollout carries its own roll back | Deploy logs; the full rollout timeline |
 | Rollout and rollback | Roll back the bad build | The primary action on the incident and on the rollout's detail, confirmed by typing the server type's name. A new build, the previous one included, reaches the nodes through the deploy (ADR-093): the Dashboard calls the deploy pipeline's webhook with the server type and the build to return to, and audits the call; without a webhook it shows the command to run | A separate deploy page |
 | Restart, hot restart | Restart a node; restart a type on its build | Restart on the node's row (`/admin/restart?exit=true` on that node: it hot restarts in place, exits after its snapshot and is started again by the platform); Hot restart under the node table (a same-image roll of the type: the Dashboard calls the deploy pipeline's webhook, which runs the one rollout loop, one node at a time and the coordinator last, with scale-in paused; without a webhook it shows the command, `aspire do {cluster}-restart`); both confirmed by typing the name. The Dashboard never loops over nodes itself: a restart of the Dashboard would leave a half-rolled group, and only the loop pauses scale-in. Taking a node out for good is the platform's scale-down | Bulk selection |
 | Config tables | Push a new table | An action in Find, confirmed by typing the table's name; accepted only when every node accepts it | An editor |
-| An actor | What state is this actor in? | The six slowest actors in the cluster, or Find by its id: type, owning node, requests, mailbox, last saved, its components and its last log lines (from Loki), with a link to its traces (Grafana Explore over Tempo) | Lists of actors; raw JSON dumps; live editing |
+| An actor | What state is this actor in? | The six slowest actors in the cluster as the section's contents, or Find by its id; the page is the actor in full: type, owning node, requests, mailbox, last saved, its components and its last log lines (from Loki), with a link to its traces (Grafana Explore over Tempo) | Lists of actors; raw JSON dumps; live editing |
 | Audit | Who did what? | One row per action: time, who, action, target, newest first, paged; the audit is the Dashboard's log stream, read from Loki | Filters and search; export (the audit log is in the logs too) |
 | History | What happened last week? | A link on each view to Grafana at the same time range (the shipped dashboard, or Explore for logs and traces) | Our own long-term storage, ad-hoc queries, custom dashboards |
 
