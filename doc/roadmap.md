@@ -138,12 +138,13 @@ Keep this file current: tick items when done, add items when scope changes.
         whose element type is declared outside the server project and the DaServer packages, on a `[Persist]` prefab the analyzer can see, built with a literal `SetX` chain in
         the same compilation; elsewhere `Registration` throws at start), DAS028 (a `Set`/`Remove` of a persist-set tag on
         an entity the analyzer sees is persistent), DAS029 (a tracked component type in a referenced assembly that is not a DaServer package: it reaches no tracked
-        table), DAS030 (`[Latest]` on a request, a push or a topic message), DAS031 (`Commit`,
-        `root.IssueClientToken` or `AskUntilAnswered` on an actor type whose root is not saved, such a type handling a
-        `[Once]` request, a `[Once]` request sent from `ICluster`, a `[Stateless]` type or a type whose root is not
-        saved, or `AskUntilAnswered` on an entity the analyzer sees is not persistent), DAS032 (`[Once]` written wrong:
-        on a type that is not a request, a reply that is not a fixed-size value of at most 32 bytes, a handler taking
-        `ReplyTo<T>`, a `[Once]` server request sent by `Ask`, or `AskUntilAnswered` of a request that is not `[Once]`). Ids are assigned here for every new §13 check as W3
+        table), DAS030 (`[Latest]` on a request, a push or a topic message), DAS031 (an unsaved root used where
+        a saved one is needed: `Commit`, `root.IssueClientToken` or `AskUntilAnswered` on an actor type whose root is not
+        saved or on an entity the analyzer sees is not persistent, or such a type handling a `[Once]` request), DAS032
+        (every `[Once]` shape and sending rule: on a type that is not a request, a reply that is not a fixed-size value
+        of at most 32 bytes, a handler taking `ReplyTo<T>`, a `[Once]` server request sent by `Ask` or from `ICluster`, a
+        `[Stateless]` type or a type whose root is not saved (`[From<K>]` whose `K`'s root is not saved included), or
+        `AskUntilAnswered` of a request that is not `[Once]`). Ids are assigned here for every new §13 check as W3
         implements it. Generated partials (`Key`) repeat `readonly` and `record struct` but not the positional
         parameter list.
       - Retired: DAS005 and DAS011 (already unused), DAS008 (sessions and groups as ask targets are gone; typed sends
@@ -159,9 +160,9 @@ Keep this file current: tick items when done, add items when scope changes.
       `PersistOnUnregisteredPrefabReported`, `IndexedChildKeyFirstFieldNotActorReported`,
       `PendingOfNonEventOrRequestReported`, `PersistentPrefabOnUnsavedActorReported`, `RefAfterStructuralChangeIsDAS026` (EECS047), `OnceOnMessageIsDAS032`,
       `LargeOnceReplyIsDAS032`, `OnceWithReplyToIsDAS032`, `PlainAskOfOnceIsDAS032`, `AskUntilAnsweredOfPlainRequestIsDAS032`,
-      `OnceFromClusterIsDAS031`, `OnceFromStatelessIsDAS031`, `OnceHandledOnUnsavedRootIsDAS031`,
+      `OnceFromClusterIsDAS032`, `OnceFromStatelessIsDAS032`, `OnceFromUnsavedFromKIsDAS032`, `OnceHandledOnUnsavedRootIsDAS031`,
       `AskUntilAnsweredOnVisiblyUnsavedEntityIsDAS031`, `OnceBuffersInRuntimePersistSet` (the framework's `Unacked`
-      and `OnceSenders` in the runtime's persist set, not the manifest's `record` lines), `OnceFlaggedInManifest`,
+      in the runtime's persist set, `OnceSenders` as its own rows, neither in the manifest's `record` lines), `OnceFlaggedInManifest`,
       `AskStateNotInPersistSet`, `TagSetOnVisiblyPersistentEntityIsDAS028`, `RegistrationRegistersCanCreateTables`, `ManifestRecordsActivatedBy`, `TagSetElsewhereNotReported`,
       `TrackedTypeInForeignReferenceIsDAS029`, `SubscribeFromUnsavedRootIsDAS023`, `PackageTrackedSetsComposeInRegistration`,
       `ReminderClosedPerRemindT` (one persistent prefab per (actor type, T), in the persist set and the manifest's
@@ -170,7 +171,7 @@ Keep this file current: tick items when done, add items when scope changes.
       `CanCreateWithoutActivatedByReported`, `ScheduleOrRemindWithoutHandlerReported`, `RemindOnUnsavedRootReported`,
       `PrefabCompositionHistoryKeptInManifest`, `GroupRateOnlyJobGetsNoStructuralChanges`, `ScheduleInSystemIsStructuralChange`, `ScheduleInStatelessSystemReported`, `RawRecordLayoutChangeReported`, `TrackedRefNotAlwaysWrittenHinted`,
       `ConfigTableTakenByRefReported`, `SingletonWithoutInterfaceReported`, `UnfilteredForEachWithoutTickRateReported`,
-      `SetGroupRateWithoutTickRateReported`, `UtcNowInHandlerWarned`, `RootCopyCarriesOnceBuffersWhenOnceHandled`,
+      `SetGroupRateWithoutTickRateReported`, `UtcNowInHandlerWarned`, `RootCopyCarriesUnackedWhenOnceHandled`,
       `RegistrationCallableWithTwoServerProjects`, `TopicPackageMessagesExemptFromDirection`,
       `ClientToWithoutActivatedByWarned` (DAS024), `MissingPartialIsDAS025`, `OnMethodBreakingEcsRuleIsDAS026`,
       `PersistTypeWithoutTrackedIsDAS027` (a component without `ITracked` and a buffer whose element is declared elsewhere, on a visible prefab; elsewhere
@@ -322,19 +323,29 @@ Keep this file current: tick items when done, add items when scope changes.
         world (`Busy` beyond), mail parked on a root once its final write before a migration is issued;
         a statement timed out three times halved; `root.IssueClientToken` with `IssueSeq`, committing implicitly;
         `TestActor<K>` with `FailNextWrite()`, `Crash()` and `Answer<TReq>`;
-      - `[Once]` (ADR-099): `RootState.OnceNext` taken and committed by `AskUntilAnswered`; the receiver's persisted
-        `OnceSenders` (per sender the mark `n`, window used, quiet since, a client session's end) and `Unacked`
-        (sequence, stored reply of at most 32 bytes, write generation); the check before the handler (stale at or below
-        `n`, a repeat answered with the stored reply after its write, `WindowFull` past `OnceWindow` or `Unacked`, else
-        run once with an implicit commit); cumulative acknowledgements on every mail of the pair and one after the
-        answer's item is written; `AckQuery` probes after `Once:ProbeAfter` answered by an activated sender, a missing
-        record or a session's gateway; the TIME-WAIT row (`MaxAskTimeout + ClockSkew`); requests never run past their
-        deadline, deadlines capped at `MaxAskTimeout`; client sessions (`(ClientId, nonce)`, `Clients:ResumeWindow`, the
-        gateway's session table, stale call ids refused, acknowledgements forwarded, probes answered);
+      - `[Once]` (ADR-099): `RootState.OnceNext` seeded from the record's first claim epoch (`epoch << 32`), taken and
+        committed by `AskUntilAnswered`; each attempt carrying the sender's UTC sent-at, attempts older than
+        `MaxAskTimeout + ClockSkew` dropped; the receiver's `OnceSenders` as rows of their own
+        (`daserver_once_senders`, written in the record's statement, loaded with it, bounded by
+        `Once:SendersPerReceiver`; per sender the mark `n`, window used, the last sent-at, a client session's token end)
+        and `Unacked` in the record (sender, sequence, stored reply of at most 32 bytes, write generation); the check before
+        the handler (too old, stale at or below `n`, a repeat answered with the stored reply after its write,
+        `WindowFull` past `OnceWindow` or `Unacked`, else run once with an implicit commit); cumulative acknowledgements
+        taken from the sender's last written record on every mail of the pair, and one on the internal lane after the
+        answer's item is written; window updates pushed in order to refused senders, zero-window probes every
+        `Once:ZeroWindowProbe`; `AckQuery` probes after `Once:ProbeAfter` on the internal lane, answered from the record
+        without activating (batched per node), "all settled" for a missing record, a session's gateway answering from its
+        table or "unknown"; the TIME-WAIT row (last sent-at + `MaxAskTimeout + ClockSkew`); requests never run past their
+        deadline, deadlines capped at `MaxAskTimeout`; client sessions as gateway-signed tokens `Session(ClientId, nonce,
+        T)` slid on replies and heartbeats by `Clients:ResumeWindow`, refused by every gateway past `T`, rows dropped at
+        `T + MaxAskTimeout + ClockSkew`, stale call ids refused, acknowledgements forwarded, probes answered;
       - `AskUntilAnswered` (ADR-100): the `Asking` child committed with the item, link outcomes retried by the runtime
         (`RetryAfter`, `Once:Retry` with backoff and jitter), windows waited out, a crash or deactivation resumed through
         its `WakeAt`; only a value or a definite refusal delivered as `Replied`, in an item that commits implicitly and
-        destroys the `Asking`; `OnceOutstanding` answering `Busy`;
+        destroys the `Asking` (always under the root, the asking entity recorded; an answer for a destroyed asking
+        entity dropped and counted); `Faulted`/`NotHandled` accepted only from the current attempt's call id; a `Stale`
+        answer counted and alerted, never delivered; past `OnceOutstanding`, requests to the root answered `Busy` before
+        they run (`AskUntilAnswered` returns nothing);
       - the wake: `WakeAt` on persistent framework entities (`Asking`, reminders), the `ArmSystem` arming a `Due` from it
         on load and activation, re-arming it on `[Changed<WakeAt>]` and disarming it on `[Removed<WakeAt>]`, the firing
         item running the wake handler registered for the entity's component (the runtime's re-ask, a package's reminder
@@ -459,14 +470,28 @@ Keep this file current: tick items when done, add items when scope changes.
       `OnceSequenceSurvivesCrashAndHandover`, `ClientSessionAckPrunes`, `GatewayRefusesStaleCallId`,
       `ResumeWindowEndDropsClientEntries`, `OnceResentUnderSameSequence`, `AppRestartIsNewSession`,
       `AskDeadlineCappedAtMaxAskTimeout`, `AskUntilAnsweredCommitsIntent`, `LinkOutcomeNeverReachesReplied`,
-      `ReaskAfterCrashSameSequence`, `RefusalDeliveredOnce`, `AskingDestroyedOnAnswer`, `OnceOutstandingReturnsBusy`,
+      `ReaskAfterCrashSameSequence`, `RefusalDeliveredOnce`, `AskingDestroyedOnAnswer`, `OnceOutstandingAnswersBusyAtAdmission`,
+      `AckFromWrittenStateOnly` (a `Send` after an in-memory answer, then a crash before its write: the restored
+      `Asking` re-asks and gets the stored reply, never `Stale`), `StaleToAskingAlertedNeverDelivered`,
+      `RecreatedSenderNumbersAboveOld` (a `Loot` destroyed and recreated within TIME-WAIT is not refused `Stale`),
+      `ShardRowsBounded` (a stock shard taking `Reserve` from 5,000 distinct orders a second keeps its record under
+      `MaxRecordBytes` and its rows under `Once:SendersPerReceiver`), `LateFaultedFromEarlierAttemptIgnored`,
+      `TooOldAttemptDropped` (a frame that waited in a full window past `MaxAskTimeout + ClockSkew`),
+      `DelayedAckSurvivesFullMailbox`, `WindowUpdatePushedInOrder`, `ZeroWindowProbeFixedInterval`,
+      `AskingParentedAtRootSurvivesStashDestroy`, `OrphanReplyDroppedAckSent`, `ProbeAnsweredWithoutActivation`,
+      `ProbesBatchedPerNode`, `UnknownSessionProbeWaitsForTokenEnd`, `SdkMapsStaleToUnknown`,
+      `SessionTokenRefusedPastTByAnyGateway`, `SdkStopsResendingPastT`, `FragmentAckedOnReceipt` (two 16 MB messages in
+      a 32 MB window both finish), `IncompleteMessageResentFromFragmentZero`, `LargeMessageReservesWholeSize`,
+      `BusyRefusalHasReservedRoom`, `AbortedHotRestartClearsOwnRestartUntil`, `SlowSingleRowRotatedOut`,
+      `HalvedStatementGrowsBack`, `ConnectionLimitsSizedFromAutoscalerMax`,
       `ReaskNotExecutedAfterUnknownKeepsGrant` (a re-ask's link outcome after an unknown first attempt never releases
       the drop), `CrashBetweenReaskAndNewWakeAtFiresAgain`, `RewrittenWakeAtRearms`, `RemovedWakeAtDisarms`,
       `AnswerRoomReservedByReceiver` (a map whose window to a gateway is full of pushes still answers that gateway's
       clients), `FixedReplyReservesExactSize`, `TimedOutStatementHalved`, `StallNeedsBracketGap` (a read that waited to
       start is no stall), `CoordinatorNeverRestarting`, `ArmRefusedWhileReplacementPending`,
-      `MembershipRoleConnectionsReserved`, `ResizeBackAutomatic`, `RequestsReadFromCgroup`, `VpaTargetCappedAtLimit`,
-      `PartialReassemblyResentAfterHandover`, `LatestEpochBeatsRestartedCounter`, `HotRestartKeepsClientsConnected`, `FailedHandoverResumesInPlace`, `HeldGroupPushJoinsFrameOnRelease`, `HeldGroupPushDoesNotStallGroup`,
+      `MembershipRoleConnectionsReserved`, `ResizeBackThroughDashboard`, `RequestsReadFromCgroup`, `VpaTargetCappedAtLimit`,
+      `PartialReassemblyResentAfterHandover`, `LatestEpochIsClaimEpoch` (a crash before the next write cannot reuse an
+      epoch while the counter restarts), `HotRestartKeepsClientsConnected`, `FailedHandoverResumesInPlace`, `HeldGroupPushJoinsFrameOnRelease`, `HeldGroupPushDoesNotStallGroup`,
       `HeldOutputCapAnswersBusy`, `ExpiredHeldReplyDropped`, `HeldLatestReplaced`, `RepeatCommitWaitsForEarlierWrite`,
       `MigrationConvergesWhileRootCommitsEveryTick`, `PoisonRowBisectedRestLands`, `OversizeRecordUnwritable`,
       `StatementBytesCapped`, `RowsSortedNoDeadlockWithStaleOwner`, `TimedOutWriteCancelledBeforeRetry`,
@@ -504,9 +529,15 @@ Keep this file current: tick items when done, add items when scope changes.
       clients see, not saved, shown again after every activation that is not a migration), its avatars not saved, its AOI telling entries and exits (`Appear` into a cell newly written, `Disappear` before every destroy, a crossing's snapshot of the cells newly subscribed); the login sample issuing client tokens (`IssueClientToken` commits: the issue sequence
       written before the token leaves); the mmo's inventory as slots on the `Player` root (the client's `UseItem` bound
       to the root), precious-item use and premium purchases as `[Once]` client requests (run once, the SDK resending under the same sequence number), a
-      recharge credited by the payment webhook through `ICluster.Ask` to `Payment(payment id)`, which commits `Crediting`
-      with an `AskUntilAnswered` of `[Once] Credit(amount)` before answering the webhook (`Player` runs each credit once
-      by `Payment`'s sequence number; `Payment` writes `Delivered` when the answer comes; the client claims nothing), a daily reconciliation report, a guild's daily quest reset on a `DaServer.Reminders` reminder; the flash sale's
+      recharge through the shared payment sample (below: `Player` opens a `Payment` on the client's `[Once] Recharge`,
+      `Payment`'s `[Once] Settled` credits once; the client claims nothing), a guild's daily quest reset on a `DaServer.Reminders` reminder;
+      `samples/payments`, the shared payment sample both games use (ADR-091): `Payment(id)` opened by the business owner
+      with `AskUntilAnswered` of `[Once] Open`, a node HTTP endpoint creating the checkout at the provider, the webhook
+      checking the callback's signature and verifying the payment server to server before `ICluster.Ask(Payment, Paid)`,
+      `Payment` committing `Paid` before the 2xx and settling the owner with `[Once] Settled`, expiry and late payments
+      flagged for refund, a daily reconciliation, and a provider simulator (checkout, signed callback, verify API,
+      refunds, daily report) that the bots pay through; it is source-linked into each game's server, which supplies
+      `PayFor` and `Notify` (when it lands, CLAUDE.md's layout section lists `samples/payments`); the flash sale's
       `PlaceOrder` carrying only the sale, handled only by a keyed, non-persisted `Gate(Sale, Shard)` actor
       (`[ActivatedBy<PlaceOrder>]`, `CanCreate` over the sale table) that asks `Order(sale, user)` with the server
       message `Place` (ADR-091, ADR-095); each AppHost becomes an `apphost.cs` (file-based) in the sample's server
@@ -518,14 +549,19 @@ Keep this file current: tick items when done, add items when scope changes.
       (`Walking_out_of_range_during_the_windup_dodges`, `A_busy_tick_allocates_nothing_and_threads_change_nothing`,
       `A_grant_is_asked_again_after_a_crash`, `ReaskLinkOutcomeNeverReleasesDrop`, `DropsReshownAfterMapCrash`, `DropsReshownAfterCrashBeforeFirstRecord`, `LaterDropAppearsToEarlierClients`, `TakenDropDisappears`, `ClaimAnswerArrivesBeforeGone` (Loot's answer and its `Gone` arrive in send order: the client gets its answer, then the drop disappears), `KilledNpcDisappearsAndDrops`, `CrossingPushesNewCellsSnapshot`, `CrossingDuringHandoverSnapshotsAtConfirmation` (an avatar crossing cells while its `Joined` is dropped is tagged `Resnap` and gets a full snapshot when confirmed), `SnapshotSkipsWhatVanishRemoves` (a `Leaving` avatar and a dead NPC are left out; a dead avatar, which stays on the map, is in), `MapCrashReusedNumberDoesNotBreakLoot` (a drop number repeated after a map crash ends in `Clash`/`Redrop` and the drop
       is shown again), `VisitorNumbersNeverMeetDropNumbers`, `VisitorNumbersContinueAfterMigration`, `TimedOutClaimLeavesPickUpUnknown`), `LoginIssuesIncreasingSequence`, `LoginTokenLeavesAfterSequenceWritten`,
-      `UseItemBindsToPlayerRoot`, `PreciousPurchaseRunsOnceAcrossRetry`, `RechargeWebhookCreditsOnce`
-      (through `Payment(payment id)`), `PaymentActorCreditsOnce` (a webhook repeated after days credits once),
-      `PlayerCreditsPaymentOnce` (a re-ask after `Payment` crashed carries the same sequence number and is answered from
-      the player's `Unacked` entry), `WebhookAnsweredOnlyAfterIntentWritten`, `RetriedWebhookWaitsForFirstWrite`, `CreditReaskedAfterPaymentCrash` (through the `Asking`'s `WakeAt`),
-      `ReconciliationReportsStuckCrediting`, `StashPrefabRoundTrip` (Stash, Prize, Position and Granting
+      `UseItemBindsToPlayerRoot`, `PreciousPurchaseRunsOnceAcrossRetry`, `RechargeCreditsOnce` (through the shared
+      payment sample), `PaymentWebhookRepeatedAfterDaysCreditsOnce`, `PlayerSettledOncePerSequence` (a re-ask after
+      `Payment` crashed carries the same sequence number and is answered from the player's `Unacked` entry),
+      `WebhookAnsweredOnlyAfterPaidWritten`, `RetriedWebhookWaitsForFirstWrite`, `SettleReaskedAfterPaymentCrash`
+      (through the `Asking`'s `WakeAt`), `WebhookWithBadSignatureRefused`, `WebhookVerifiedWithProviderBeforeAsk`
+      (a forged callback with a valid id but no provider payment credits nothing), `AmountMismatchNotPaid`,
+      `UnpaidPaymentExpiresAndSettlesFailed`, `LatePaymentFlaggedForRefund`, `CheckoutEndpointReadsAmountFromPayment`,
+      `ProviderSimulatorRetriesCallback`, `ReconciliationReportsMissingStuckAndLate`, `StashPrefabRoundTrip` (Stash, Prize, Position and Granting
       in the record and back), `UnansweredGrantRepliesNothing` (the map's `Claim` times out, never a definite `false`),
       `SamePlayerRetryDuringGrantGetsNoFalse`, `GrantedCommitsBothOutcomes`, `BuyItemRetryAddsNothing`,
-      `OrderCompensatesOnlyOnDefiniteRefusal` (a timeout keeps asking; `Releasing` survives a crash), `GuildDailyResetFiresAfterCrash`, `BuyerCannotOrderForAnother`,
+      `OrderCompensatesOnlyOnDefiniteRefusal` (a timeout keeps asking; sold out or the payment settled as expired or
+      failed writes `Releasing`, which survives a crash), `OrderPaidThroughSharedPaymentSample` (Reserving,
+      AwaitingPayment, Confirmed), `OrderPaymentExpiryReleasesStock`, `GuildDailyResetFiresAfterCrash`, `BuyerCannotOrderForAnother`,
       `AppHostServerTypesGeneratedFromManifest`, `ClientPortWithoutConnectionHostFailsBuild`,
       `RouteCheckReadsCommittedManifests`; the 1,000-bot and
       100,000-buyer E2E on the new model.
@@ -558,8 +594,8 @@ Keep this file current: tick items when done, add items when scope changes.
       `Room` gathering inputs and broadcasting one frame per tick to its `ClientGroup`; simulation on the clients), the
       mmo's input ticks (`MoveTo.InputTick`, `LastInput` echoed in `Nearby` and snapshots) and its `Resync` keyframe
       system, NPC AI as `[ForEach(Slices = N)]`, the flash sale's saga (the order as a process manager: each step a
-      state of the order with an `AskUntilAnswered` of a `[Once]` request (`Reserve`, `Charge`, `Release`), compensation
-      only on a definite answer, reconciliation of what stays unanswered; the sagas-versus-ACID page), each
+      state of the order with an `AskUntilAnswered` of a `[Once]` request (`Reserve`, a `Payment` of the shared sample,
+      `Release`), compensation only on a definite answer, reconciliation of what stays unanswered; the sagas-versus-ACID page), each
       with BenchmarkDotNet numbers and a bot E2E; `DaServer.Templates` (`daserver`, `daserver-mmo`,
       `daserver-flashsale`, `daserver-arena`, `daserver-relay`) generated from the samples, instantiated, built and
       tested in CI; the README's getting started becomes `dotnet new daserver`. Tests: `StarterChatJoinSayLeave`,
@@ -588,8 +624,10 @@ Keep this file current: tick items when done, add items when scope changes.
       generating the instruments, `/admin/stats` and the stats line (off when OTLP is set); the samples' AppHosts
       adding the Collector, Prometheus, Loki, Tempo and Grafana when published, Prometheus fed by the Collector through
       its OTLP endpoint (`--web.enable-otlp-receiver`, `daserver.cluster` promoted) and scraping no node; the
-      `{cluster}-deploy` Secret (webhook, lookup, callback and the resize-only token) and the HMAC-signed completion
-      callback; `DaServerNodeRequestsLow`; a node's restart (for a node hosting actors, a same-image handover of that one node through the deploy pipeline's
+      `{cluster}-deploy` Secret (webhook, lookup, and the callback's `current`/`accepted` HMAC keys, mounted into the
+      Dashboard only; nodes hold no pipeline credential) and the HMAC-signed completion callback, treated as a hint
+      confirmed by a run lookup; a node's resize request (its `/health` reporting `requests_low`, seen by the Dashboard's poll) checked and
+      dispatched by the Dashboard under the type's lock; `DaServerNodeRequestsLow`; a node's restart (for a node hosting actors, a same-image handover of that one node through the deploy pipeline's
       webhook; retire and exit for a gateway or stateless node, which the platform replaces), the admin key re-read when its
       files change (current, then accepted), membership from up to three ready nodes (highest version, view hashes from
       the pulses), a type's hot restart and a roll back
@@ -705,7 +743,8 @@ Keep this file current: tick items when done, add items when scope changes.
       recommendation, and refuse the arm when it does not fit, arm, apply the parked container's image one pod at a
       time with Server-Side Apply as `daserver-rollout`, never the template, wait for the handover, resize the old
       container's requests down to the idle size; for a same-image roll ask the node to have the parked instance exit;
-      a resize-only run that swaps requests back after a crash takeover; scale-in of the group paused while it runs and
+      a resize-only run (`--type --node --incarnation --resize-only`) that sets both containers' requests by role after a
+      crash takeover (the `node.lock` holder node-sized, the other idle-sized), in a per-node concurrency group; scale-in of the group paused while it runs and
       released at the end), with its ServiceAccount and Role (pods, `pods/resize`, `get` on VPAs, and `patch` on HPAs
       and `ScaledObject`s); hot-restart pods render `node-a` node-sized and `node-b` idle-sized, with the processor count
       a literal of the node size; it mounts the `{cluster}-admin` Secret and signs with the `act` scope, never the
@@ -721,7 +760,8 @@ Keep this file current: tick items when done, add items when scope changes.
       (the larger target of the two containers, never below the node size), `VpaOffOnHotRestartPods`,
       `ColdStartNodeIsNodeSizedContainer`, `ProcessorCountIgnoresResizedRequest`, `ParkedInstanceExportsNoBusyRatio`
       (the HPA's average counts nodes only), `CpuUtilizationHpaUnskewedByParked`, `CrashTakeoverReportsRequestsLow`,
-      `ResizeOnlyRunSwapsRequestsBack`,
+      `ResizeOnlyRunSetsRequestsByRole` (a repeated or late run changes nothing), `ResizeRunPerNodeGroupNeverCancelsRollout`,
+      `NodeAsksDashboardForResize` (no pipeline credential on nodes; the Dashboard checks `/health` first),
       `AutoscaledGroupRendersNoReplicas`, `AspireDeployKeepsHpaReplicas`, `RolloutPausesScaleInAndReleasesIt`,
       `RolloutClearsStalePause`, `ScaleInOnePodPerPeriodHandsOverActors`, `RolloutLoopSameAcrossAdapters`, the
       rebalancing tests of W5 on real gateways after a scale-out; `aspire publish` output (Helm lint and template,

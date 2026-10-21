@@ -86,7 +86,7 @@ static partial class Chat
 | 本 Actor 里现在或以后做一件事 | `me.Schedule(new Strike(…), after: skills.Windup(skill))`，不写 `after` 就是紧接着（在项里）；要扛住停用和宕机的定时：`root.Remind<DailyReset>(at, every)`（`DaServer.Reminders`，第 15 节） | Server |
 | 发给别的 Actor | `me.Send(new Player(id), new Defeated(map))` | Server |
 | 等别的 Actor 的结果 | `root.Ask(new Loot(map.Id), new Claim(m.Drop, by), new Picking(reply))`（`deadline:` 可选），回信是 `Replied<Claim, Picking>`；不带状态时是 `Replied<Claim>` | Server |
-| 贵重的改动 | 改完 `root.Commit()`：这个根在这个 tick 末就写，这一项发出的东西等写成才离开；`[Once]` 的请求由框架去重（框架分配的序号，执行一次，重复的拿到存着的回复，像 TCP 一样累计确认后删掉）；要扛住宕机一直问到有回答的：`root.AskUntilAnswered(to, request)`，请求本身就是写进记录的意图，回答照常是 `Replied`（第 8 节） | Server |
+| 贵重的改动 | 改完 `root.Commit()`：这个根在这个 tick 末就写，这一项发出的东西等写成才离开；把价值转进别的 Actor 的请求标 `[Once]`、用 `e.AskUntilAnswered(to, request)` 发（第 8 节） | Server |
 | 测试一个 Actor | `new TestActor<Map>(new Map(7), Registration.Create())`；多个节点用 `TestCluster` | 测试 |
 | 部署 | `cluster.AddNodes<MapServer>("map", replicas: 4)` | `Game.Server/apphost.cs`（第 2 节） |
 
@@ -275,7 +275,7 @@ public record struct Looting(ReplyTo<bool> Reply) : IComponent;                 
    - 另一个例外是组推送：调用了 `Commit` 的那一项推给一个 `ClientGroup` 的消息，写成时才追加进组帧，所以它和别的项推给同一个组的消息按放出的先后排，而不是按发出的先后（一次写不挡住整个组的广播，第 8 节）。
    - 用户看不到的框架流量（心跳、成员视图的交换、链路的确认、`Fence`、`Wake`、`HandoffQuery`）走自己的通道：它们和用户的消息之间没有可以观察的先后。
    - 需要跨两个目标的先后，用请求和回复串起来。
-3. **单向消息最多投递一次；请求一定有结果**：回复、带原因的拒绝，或者超时。**超时不等于没执行**：结果未知时由发问方决定；`[Once]` 的请求由框架分配序号去重，重复的拿到第一次存下的回复，从不执行两次，用 `AskUntilAnswered` 发出，框架一直问到有回答，链路上的结果不交给用户（第 8 节）。每条路径的投递、顺序、去重、超时和重试由谁负责，见第 11 节的表。
+3. **单向消息最多投递一次；请求一定有结果**：回复、带原因的拒绝，或者超时。**超时不等于没执行**：结果未知时由发问方决定；`[Once]` 的请求从不执行两次，用 `AskUntilAnswered` 发出，框架一直问到有回答（第 8 节）。每条路径的投递、顺序、去重、超时和重试由谁负责，见第 11 节的表。
 4. **同一个 Actor 任一时刻最多一个激活能写记录**：激活先占 epoch，每次写都按 epoch 比较并交换；比较失败的激活被隔离（第 10 节）。
 5. **客户端重连后是一个新的连接**：断线前没送达的推送会丢失，重连前后也没有顺序关系。旧连接留下的 Presence 在宽限期内保留，新连接接管它（第 7 节；先后由连接戳决定，见 [architecture.md 第 3 节](architecture.md#connection-stamps)）。
 6. **每种失败的结果都是确定的**，见第 11 节。
@@ -550,7 +550,7 @@ public interface IActor<TSelf> : IComponent, IUniqueIndexed<TSelf>, IEquatable<T
 - **`[Latest]`：只要最新的**（移动输入、视角、拖动中的位置这类状态）：写在单向消息上（`IFromClient`、`IMessageTo<K>`）。同一个发送方发给同一个目标的这种消息，邮箱里还有一条没处理的旧的时，新的一条到达就替换它：
   - 旧的那条是这个发送方发给这个目标、排在最后的一项时（它后面没有这个发送方的别的消息），新的**就地替换**它，留在旧的位置、用旧的时间。几万个发送方一起高频发送、邮箱一直积压时，每个发送方的那一条照样往前走、轮得到处理；排到队尾的话，每一条都被下一条挤回队尾，一条也处理不了。
   - 旧的那条后面还有这个发送方的别的消息时，丢掉旧的、新的排在队尾：占旧的位置就会跑到它们前面。所以到达的总是发出的那一串里按原顺序的一部分，从不和别的消息换位置。
-  - **发送方**：服务器之间是发送的 Actor；客户端是它的 `ClientId`（同一次登录换了连接、换了网关也是同一个发送方）。每条 `[Latest]` 消息带一对 `(发送方的代, 序号)`，按字典序比较：代是服务端发送方这次激活的序号（根上的框架组件，每次激活加一并随记录保存）、客户端的会话随机数之后的连接序号（第 7 节），序号在一代里按（发送方, 目标, 类型）数。接收方记着处理过和排着的最大的一对，更旧的直接丢掉：迁移时墓碑转来的旧的一条、重连前旧网关上还在途的一条，到得比新的晚，也盖不掉新的；发送方宕机后重新激活、应用重启，计数从头开始，但代更大，新的消息照样比旧的新。这张表按 Actor 记（每个发送方和类型一项，过了 `DaServer:Mailbox:LatestWindow`（10 秒）没有新消息就删），随迁移和交接走。邮箱满（`MaxMail`）时，原地替换的一条照样进来（它不占新的位置），追加的一条按满处理。
+  - **发送方**：服务器之间是发送的 Actor；客户端是它的 `ClientId`（同一次登录换了连接、换了网关也是同一个发送方）。每条 `[Latest]` 消息带一对 `(发送方的代, 序号)`，按字典序比较：代是服务端发送方这次激活的认领 epoch（来自存储的序列，认领时就已落定、单调递增，第 10 节；不用另记一个激活计数：那个要等下一次写才保存，宕机在那之前就会重用同一代而计数又从头开始，新消息会被当成旧的一直丢掉）、客户端的会话随机数之后的连接序号（第 7 节），序号在一代里按（发送方, 目标, 类型）数。接收方记着处理过和排着的最大的一对，更旧的直接丢掉：迁移时墓碑转来的旧的一条、重连前旧网关上还在途的一条，到得比新的晚，也盖不掉新的；发送方宕机后重新激活、应用重启，计数从头开始，但代更大，新的消息照样比旧的新。这张表按 Actor 记（每个发送方和类型一项，过了 `DaServer:Mailbox:LatestWindow`（10 秒）没有新消息就删），随迁移和交接走。邮箱满（`MaxMail`）时，原地替换的一条照样进来（它不占新的位置），追加的一条按满处理。
   - 替换在接收方的邮箱里做（占位上等着的邮件、`Commit` 留住的输出里也是），按（目标的根, 发送方, `TypeId`）记着最后一条没处理的，O(1)，不分配；被替换的、因为序号旧被丢掉的都计数（`daserver.messages.superseded`）。Actor 忙不过来时，这种消息自然只剩最新的一条，其余的消息一条不少。
   - 写在请求（`IFromClient<R>`、`IRequestTo<K, R>`）、推送或 Topic 的消息上，分析器报错（DAS030）：请求一定要有结果，推送和 Topic 的投递不经过 Actor 的邮箱。
 - 含集合的消息是 `[NinoPooled]` 类（Nino 4 的规则），写上 Nino 要求的两个钩子（`OnNinoPoolWarmup`、`OnNinoPoolReturn`，缺了是 NINO019）。服务端用 `Pooled<T>.Rent()` 取一个（DaServer 的帮助方法，取 Nino 池里的实例，没有就新建），`Push` 序列化之后把它还回池里，所以推送不分配；客户端收到的由 Nino 反序列化时从池里取。
@@ -593,7 +593,7 @@ public interface IActor<TSelf> : IComponent, IUniqueIndexed<TSelf>, IEquatable<T
 
 - **接收方写在接口上**：`IMessageTo<TTo>` 是单向消息，`IRequestTo<TTo, TReply>` 是请求（它继承标记接口 `IRequest`，分析器据此认出请求，例如 `IsPending<T>` 的 T 必须是 `IEvent` 或 `IRequest`）。
 - **发送方写在特性上**：`[From<K>]`，可以写多个。客户端只能发 `IFromClient`。
-- **把价值转进别的 Actor、不能执行两次的请求标 `[Once]`**（发物品、入账）：框架给每次发出分配序号，接收方执行一次、存下回复、写成之后才回答，发送方累计确认后删掉；它只能用 `AskUntilAnswered` 发出（第 8 节）。订单本身是自己的 Actor（`Payment`、`Order`），重复由它的状态回答。框架不按调用 id 去重别的请求。
+- **把价值转进别的 Actor、不能执行两次的请求标 `[Once]`**（发物品、入账），只能用 `AskUntilAnswered` 发出；规则全在第 8 节。订单本身是自己的 Actor（`Payment`、`Order`），重复由它的状态回答。框架不按调用 id 去重别的请求。
 - **消息里不写发送方的键**：接收方取 `Sender sender` 参数：`sender.Id` 是发送方的 `ActorId`，`sender.TryGet(out Map map)` 在发送方是 Map 时取出它的键（`TryGet<K>(out K key) where K : struct, IActor<K>`）。只有这一个 `Sender` 类型，所以一条消息有一个还是多个 `[From<…>]` 写法都一样。从 `ICluster` 或客户端来的消息没有发送方 Actor：`sender.Id` 是 `default`，每个 `TryGet` 都返回 `false`。
 - **方向由生成的方法和分析器保证**：
   - 每条消息生成 `Entity` 上的 `Send`/`Ask` 方法，参数类型是接收方的 Actor 类型，所以接收方写错编译不过；
@@ -604,7 +604,7 @@ public interface IActor<TSelf> : IComponent, IUniqueIndexed<TSelf>, IEquatable<T
   - 用户不接触上下文本身；它在运行时的单例 `Current` 里（第 5 节）。系统里、`Activated` 里和定时事件里没有客户端上下文，从那里发出的请求也不带：接收方的 `Join()` 得到 `NoClient`（第 7 节），不是默认值。
 - **`ICluster`**（HTTP、后台、测试）不属于任何 Actor，可以发任何服务器之间的消息，回复回到调用方：`await cluster.Ask(to, msg, deadline)`，期限也可以换成 `CancellationToken`。
   - 期限作为预算发出（第 9 节）；取消只停止等待，已经发出的请求照常执行，结果未知，同超时；
-  - 外部的重试（例如支付平台重发同一个 webhook）问的是同一个 Actor（`Payment(单号)`），由它的状态回答（第 8 节的充值）；`ICluster` 不能发 `[Once]` 的请求（它不保存，没有序号可以接着数，DAS031）；
+  - 外部的重试（例如支付平台重发同一个 webhook）问的是同一个 Actor（`Payment(单号)`），由它的状态回答（第 8 节的支付样例）；`ICluster` 不能发 `[Once]` 的请求（它不保存，没有序号可以接着数，DAS032）；
   - 节点热重启期间，它的 HTTP 平面不可用（进程已经退出、还没起来），外部调用方按自己的重试处理；
   - 踢人用 `cluster.Disconnect(clientId)`：发给所有承载 `Connection` 的节点，每个节点问它的每个 world，由连着它的那个处理。
 
@@ -735,7 +735,7 @@ ref var hp = ref target.Health;
 | `e.IsPending(p)`、`e.Cancel(p)` | `Schedule` 或 `Ask` 返回的那一个 `Pending<T>` 还在等吗；取消它 |
 | `e.Send(to, msg)` | 服务器之间的单向消息，只发给别的 Actor，例如 `me.Send(new Player(id), new Defeated(map))` |
 | `e.Ask(to, req[, state][, deadline: t])` | 请求，回信是 `Replied`，主体是 `e`；返回 `Pending<T>`，调用 id 是它的 `Call`。`deadline` 是这一问的超时，不写用 `DaServer:AskTimeout`（第 8 节） |
-| `e.AskUntilAnswered(to, req[, state])` | `e` 是要保存的实体（根或要保存的子孙），`req` 是 `[Once]` 的请求：请求作为要保存的子实体 `Asking` 和这一项一起写成才发出，框架一直问到有回答，回答是 `Replied`，主体是 `e`；返回 `Status`（发送方排的超过 `OnceOutstanding` 时是 `Busy`）（第 8 节） |
+| `e.AskUntilAnswered(to, req[, state])` | `e` 是要保存的实体（根或要保存的子孙），`req` 是 `[Once]` 的请求：请求作为根下要保存的子实体 `Asking` 和这一项一起写成才发出，框架一直问到有回答，回答是 `Replied`，主体是 `e`（`e` 已经不在了就丢弃）；没有返回值，从不失败（发送方的 `Asking` 到了 `OnceOutstanding`，发给它的新请求在执行之前就回 `Busy`）（第 8 节） |
 | `e.Reply(in token, value)` | 用回复令牌回复；令牌是 `default` 时什么也不做 |
 | `root.Commit()` | `root` 是要保存的 Actor 的根：它在这个 tick 末就写记录，这一项发出的一切等写成才离开（第 8 节） |
 | `e.Push(msg)` | `e` 是 Presence 或 `Connection` 的根：推给它的客户端 |
@@ -887,6 +887,7 @@ ref var hp = ref target.Health;
   - **签发序号先落定，令牌才离开**：否则签发方在令牌发出之后、记录写成之前宕机，从旧记录恢复后同一个序号会再签给另一次登录。所以 `root.IssueClientToken` 隐含 `root.Commit()`：令牌就是回复，在签发序号写成之后才离开（第 8 节）；在根不保存的 Actor 类型上调用，分析器报错。mmo 样例的登录服务就这样问账号 Actor。
   - **刷新**：`cluster.RefreshClientToken(token, lifetime, into)` 换新的过期时刻，保留 `ClientId` 和签发序号。
   - **`ClientId`**：`readonly record struct ClientId(ulong Value)`，每次登录随机取一个，重连和刷新都不变；它是客户端调用 id 的前缀（第 8 节），也是 `cluster.Disconnect(clientId)` 的参数。
+- **会话令牌**：令牌说明是谁登录；会话令牌说明 SDK 的这一次运行还在不在。SDK 第一次连上时网关签发 `Session(ClientId, 会话随机数, 有效至 T)`（同一把签名密钥），每次回复和心跳把 `T` 推到"现在加 `DaServer:Clients:ResumeWindow`"；重连时 SDK 交回它，任何网关过了 `T` 都不认（第 8 节的 `[Once]` 靠它：结束了的会话不能从另一个网关回来重放旧的调用）。应用重启是新的会话。
 - **`ConnectionId`**：`readonly record struct ConnectionId(ulong Hi, ulong Lo)`，16 个随机字节，网关接受连接时生成，每个连接一个；它是 `Connection` 的键。键不用 `ClientId`：同一次登录在一个节点上可能同时有两个连接（`Retire` 后又连到同一个网关、旧连接半开时重连），而 Actor 的键是唯一索引，第二个连接的键会抛出。
 - **激活**：客户端连上一个承载 `Connection` 的节点后，框架激活 `Connection(ConnectionId)`，和别的 Actor 一样按键的哈希落在一个 world 里；再加上 `ClientOf(ClientId)`（令牌里的 `ClientId`，非唯一的值索引，EasyEcs 的 `IIndexed<ClientId>`）。发给连接的一切（推送、`TakeOver`、`Lost`、`HandedOff`）都按 `ConnectionId` 寻址，Presence 记着它。只有必须按 `ClientId` 找连接的地方用 `ClientOf`：`cluster.Disconnect(clientId)` 发给每个承载 `Connection` 的节点，节点问它的每个 world（少见的管理操作）。同一次登录的几个连接之间不在网关上比较，在目标上按连接戳比较，同一个节点和不同节点一样（[architecture.md 第 3 节](architecture.md#connection-stamps)）。
 - **身份**：令牌里的声明解码成用户写的 `IClaims` 类型，例如 `Account`，作为组件加到 `Connection` 上，并随它转发的每条客户端消息带上（第 5 节的身份参数）。框架不认识任何业务字段。
@@ -1030,7 +1031,7 @@ public readonly partial record struct Player(long Id) : IActor<Player>
 一般的改动随检查点成批写下（第 10 节的"默认"）：宕机最多丢一个检查点间隔（存储跟不上时是积压排空的时间，第 10 节），下线（停用）、停机、迁移和热重启都先写或者带过去。这就是游戏服务器的惯例：TrinityCore 每 90 秒、AzerothCore 每 15 分钟给所有玩家存一次，下线时再存一次。物品、货币、订单这类贵重的改动要在回答之前落定：处理方法改完调用 `root.Commit()`（TrinityCore 的交易、邮件也是当场写进一个事务；Orleans 的 `WriteStateAsync`、Akka Persistence 的 `persist(...).thenReply` 都是"写成再回复"）。
 
 - **做什么**：根上置 `WriteNow`（框架组件 `RootState` 的字段，不是 tag，所以不改结构），这个根进这个 tick 末的批量写（没有 tick 的 Actor 类型：这批邮件之后），不等检查点间隔。同 world 这一刻要写的根合成一条语句（每 512 行、最多 `DaServer:Store:StatementBytes` 一条），所以提交多的时候一条语句落定更多的根：成组提交，吞吐不降。
-- **这一项发出的东西等写成才离开**：调用 `Commit` 的那一项（一个处理方法，或者系统里的一行）发出的一切（回复、`Send`、`Ask`、`Push`）留在根上（池化），带着根的写代：包含这一项改动的那次写记录。那次写（或者之后的一次）写成，它们按追加的顺序离开；比较失败（这个激活已被隔离，第 6 节），丢弃。写出错时，临时的错误（超时、连接断开、序列化冲突、死锁）用同样的字节重试（同一条语句连续超时三次就对半拆开，免得一条永远写不完的大语句一直占着 world 的写名额）；存储每次都会拒绝的错误（例如一行太大），把这条语句对半拆开再写，直到找出那一行，按写不进去处理（第 10 节），其余的照常写成。
+- **这一项发出的东西等写成才离开**：调用 `Commit` 的那一项（一个处理方法，或者系统里的一行）发出的一切（回复、`Send`、`Ask`、`Push`）留在根上（池化），带着根的写代：包含这一项改动的那次写记录。那次写（或者之后的一次）写成，它们按追加的顺序离开；比较失败（这个激活已被隔离，第 6 节），丢弃。写出错时，临时的错误（超时、连接断开、序列化冲突、死锁）用同样的字节重试（同一条语句连续超时三次就对半拆开，免得一条永远写不完的大语句一直占着 world 的写名额；拆到一行还超时的，这一行移出写名额，单独按退避重试（1 秒起，翻倍到 1 分钟），不占别人的名额；之后连续十条语句不超时，语句的大小再翻倍回到上限）；存储每次都会拒绝的错误（例如一行太大），把这条语句对半拆开再写，直到找出那一行，按写不进去处理（第 10 节），其余的照常写成。
   - 推给 `ClientGroup` 的也留住：写成时才追加进这个组的帧，所以一次写不挡住整个组的广播；它和别的项推给同一个组的消息按放出的先后排（第 1 节保证 2 的例外）。
   - 放出时已经过了期限的回复不发出、计数（发问方已经按超时处理了）；留住的 `[Latest]` 消息照样被同一个发送方的新的一条替换（第 4 节），一个每秒 60 次的输入流不会在一次写后面越排越长。
 - **处理方法不等**（ADR-081）：Actor 照常执行后面的项，它们读到还没写下的状态。
@@ -1053,57 +1054,64 @@ public readonly partial record struct Player(long Id) : IActor<Player>
 - **把价值转进另一个 Actor 的那一步**（`Payment` 给 Player 入账、客户端花钻石买东西、`Loot` 给 Player 发物品）是标了 `[Once]` 的请求，框架去重。做法照 TCP（[RFC 9293](https://www.rfc-editor.org/rfc/rfc9293)）：发送方给每次发出编一个序号，接收方按序号认出重复，发送方累计确认，接收方据此清理，并告诉发送方还能发几个。
 
 **序号**：
-- 发送方是一个要保存的 Actor（根要保存）或者一个客户端会话，别的都不能发 `[Once]` 的请求（`ICluster`、`[Stateless]`、根不保存的 Actor 类型：分析器报错，DAS031）。
+- 发送方是一个要保存的 Actor（根要保存）或者一个客户端会话，别的都不能发 `[Once]` 的请求（`ICluster`、`[Stateless]`、根不保存的 Actor 类型：分析器报错，DAS032）。
 - 每个发送方一个计数器，单调递增，从不重复：Actor 的在根的框架组件 `RootState` 里（`OnceNext`），和发出它的那次写一起落定（发出 `[Once]` 的请求隐含 `Commit`，下面），所以宕机、迁移、热重启之后接着数；客户端的在 SDK 里，见下面的"客户端会话"。一个发送方的序号发给所有接收方，不按接收方分开：发送方只要一个计数器、一个"最小的未完成"，接收方看到的序号有空洞（发给别人的），不影响下面的判断。
+- **记录新建时计数器从存储的 epoch 序列起步**：`OnceNext` 的初值是这个记录第一次被认领时的 epoch 左移 32 位（epoch 来自存储的序列，从不重复，第 10 节）。所以一个被销毁又重建的 Actor（地图重建后的 `Loot`、删掉又建的 Player、同一个场次和买家的新 `Order`）的序号都大于旧的那个用过的，接收方不会把新请求当成旧的拒掉，也不会拿旧的回复回答它（一个记录一辈子发不完 2^32 个 `[Once]`）。
 - 重试沿用原来的序号。用户不写键：框架分配，所以不会有"键重复了，新操作被当成旧的吞掉"（地图宕机之后掉落的编号重用这类），也不需要一个请求里有业务的键字段。
+- **每次尝试带着发送方的 UTC 发出时刻**（同一个序号的每次重试各带各的）：接收方不执行发出时刻早于 `MaxAskTimeout` 加 `DaServer:ClockSkew` 之前的尝试（丢弃、计数 `daserver.once.too_old`）。期限在线上是剩余时间，一帧在满的窗口、分片重组、重连里等过多久，剩余时间并不知道；发出时刻是绝对的，所以下面"安静的发送方"的推理不依赖链路上等了多久。
 
-**接收方**（根上两个保存的框架缓冲，生成器给收 `[Once]` 请求的 Actor 类型的根副本带上空的，所以写它们不是结构变更）：
-- `Unacked`：每一项是 `(发送方, 序号, 当时的回复)`，回复是不超过 32 字节的定长值（`bool`、枚举、小的结构体，DAS032）。
-- `OnceSenders`：每个发送方一行 `(发送方, 已确认到 n, 安静的起点)`：序号不大于 `n` 的都已完成并被确认，或者从来没发给这里。
+**接收方**：
+- `Unacked`（根上保存的框架缓冲，生成器给收 `[Once]` 请求的 Actor 类型的根副本带上空的，所以写它不是结构变更；最多 `[ActorOptions(Unacked = n)]` 项，默认 1,024，每项几十字节，整个缓冲约 64 KiB，在记录的上限之内）：每一项是 `(发送方, 序号, 当时的回复, 写代)`：回复是不超过 32 字节的定长值（`bool`、枚举、小的结构体，DAS032），写代是包含它的那次写，重复的请求等它写成才回答。
+- **`OnceSenders` 是自己的存储行，不在根的记录里**：每个 `(接收方, 发送方)` 一行 `(已确认到 n, 安静的起点)`：序号不大于 `n` 的都已完成并被确认，或者从来没发给这里。一个接收方的行数跟着发送方的个数走，不跟着项数走：秒杀的一个库存分片每秒收约 5,000 个不同 `Order` 的 `Reserve`，每行要在安静之后再留 `MaxAskTimeout` 加 `ClockSkew`（2 分钟，下面），就是约 60 万行、每行约 48 字节、约 29 MB；放进根的记录早超过 `DaServer:Store:MaxRecordBytes`（4 MiB），每次提交还要重写几十 MB。所以这些行和记录同一个事务、同一条成批写的语句写下（只写这一趟改过的行：约 5,000 / 20 tick ≈ 每 tick 250 行，加上到期删掉的），激活时随记录一起读进 world（按接收方的键做一次范围读，不是每条消息查一次库），迁移和交接的字节里也带着。每个接收方最多 `DaServer:Once:SendersPerReceiver` 行（默认 1,048,576，约 50 MB）：满了，新发送方的请求回 `WindowFull`（确定没执行，下面的流量控制），压力推回给发送方，从不挤掉一行（测试 `ShardRowsBounded`）。
 - 一条 `[Once]` 请求到达，框架在执行之前查：
   - 序号不大于这个发送方的 `n`：**过时的重复**（同 TCP 的序号检查），不执行，回 `Stale`（第 11 节；发送方已经确认过，没有谁在等它，只计数）。
   - 序号在 `Unacked` 里：**重复**，回答存着的回复（那一项还没写成时，等那次写，所以"已经做过"一定已经落定）。
+  - 窗口用完（下面）：回 `WindowFull`，确定没执行。
   - 否则是新的：处理方法执行一次，**隐含 `Commit`**，回复记进 `Unacked`，等记录写成才离开。宕机落在写成之前，改动和这一项一起丢掉，再问时当成第一次执行，不重复也不丢。
-- 接收方的回答都是确定的：值、`Stale`、`WindowFull`（下面）、`Faulted`（处理方法抛出，改动按 `Reload` 丢掉，这一项没记下，所以再问会再执行一次，不是重复），都是查过序号之后说的。只有链路上的结果（`TimedOut`、`ConnectionLost`、`Busy`、`NoOwner`、`Unavailable`）是未知。
+- 接收方的回答里，值和 `Stale`、`WindowFull` 是查过序号之后说的；`Faulted`（处理方法抛出，改动按 `Reload` 丢掉）和 `NotHandled` 也是，但它们**不存下**，所以只对这一次尝试说话：发送方只接受带着当前这次尝试的调用 id 的 `Faulted`、`NotHandled`，更早的尝试迟到的这类回答丢弃、计数（不然一次迟到的 `Faulted` 会在重试已经执行之后被当成定论，触发补偿，东西却已经给了）。只有链路上的结果（`TimedOut`、`ConnectionLost`、`Busy`、`NoOwner`、`Unavailable`）是未知。
 
 **累计确认，丢了无害**（同 TCP 的 ACK）：
-- 发送方发给这个接收方的每一封邮件（消息、请求、`[Once]` 请求的重试）都带着"比 `a` 小的序号我这边都已了结"：`a` 是发送方发给这个接收方、还在等回答的最小序号，没有在等的就是 `OnceNext`。接收方删掉这个发送方序号小于 `a` 的项，`n` 前进到 `a - 1`。
-- 发送方处理完带回复的 `Replied`、那次写写成之后，框架再单独发一次确认（同 TCP 的延迟确认）。它是普通的单向邮件，丢了（窗口满、邮箱满、接收方宕机在下一次写之前）无害：下一封邮件、下一次确认、下面的探测都带着同样或更新的 `a`。
+- 发送方发给这个接收方的每一封邮件（消息、请求、`[Once]` 请求的重试）都带着"比 `a` 小的序号我这边都已了结"。**`a` 取已经写下的状态，不取内存里的**：它是发送方最近一次写成的记录里、发给这个接收方还在等回答的最小序号（那时的 `Asking`），没有在等的就是那时的 `OnceNext`。内存里刚销毁、还没写下的 `Asking`（`Replied` 已经处理、那次写还在途）不算了结：不然那次写之前宕机，`Asking` 从记录里回来再问，接收方已经确认、删了那一项，只能回 `Stale`。接收方删掉这个发送方序号小于 `a` 的项，`n` 前进到 `a - 1`。
+- 发送方处理完带回复的 `Replied`、那次写写成之后，框架再单独发一次确认（同 TCP 的延迟确认），走框架内部的通道（同心跳、成员表，第 1 节；在接收方收下时处理，不进邮箱，所以邮箱满、`Busy` 都丢不掉它；链路窗口里有一小块固定的预留给它和下面的探测、窗口更新）。丢了（链路断开、接收方宕机在下一次写之前）也无害：下一封邮件、下一次确认、下面的探测都带着同样或更新的 `a`。
 - 接收方清理 `Unacked` 不用 `Commit`，随检查点写下；宕机后旧的项回来，再被下一次确认或探测清掉。
+- **`Stale` 到不了 `AskUntilAnswered`**：确认只按写下的状态发，所以一个还在记录里的 `Asking`，接收方从没被告知它了结了。万一收到（运行时的缺陷），计数、报警（`daserver.once.stale_asking`，告警规则），这个 `Asking` 停在那里不再问，由对账处理，从不交给用户。
 
 **流量控制**（同 TCP 的接收窗口）：
-- 接收方给每个发送方最多 `[ActorOptions(OnceWindow = n)]` 项未确认的（默认 16），整个根最多 `[ActorOptions(Unacked = n)]` 项（默认 1,024）。每个回答都带着这个发送方还能用的项数。
-- 发送方据此在自己这边排队，不发出去被拒：窗口用完时，后面的 `[Once]` 请求留在发送方（它们本来就是写进记录的意图，下面），窗口打开（回答、确认的回信带着新的窗口）再发。
-- 窗口为零时发送方按重试的间隔再问一次最早的那个（同 TCP 的零窗口探测），接收方回 `WindowFull`（确定没执行）和当前的窗口。
-- 只有发送方自己排的超过上限（每个根 `[ActorOptions(OnceOutstanding = n)]`，默认 1,024）时，`AskUntilAnswered` 才当场返回 `Status.Busy`：压力推回给发起的那一项，不会挤掉什么。
+- 接收方给每个发送方最多 `[ActorOptions(OnceWindow = n)]` 项未确认的（默认 16），整个根最多 `Unacked` 项。每个回答都带着这个发送方还能用的项数。
+- 发送方据此在自己这边排队，不发出去被拒：窗口用完时，后面的 `[Once]` 请求留在发送方（它们本来就是写进记录的意图，下面），窗口打开再发。
+- **窗口由接收方推开**（同 TCP 的窗口更新）：回了 `WindowFull` 的发送方按先后记在接收方的一个有界队列里；项清掉、窗口打开时，接收方按这个顺序给它们发窗口更新（内部通道）。所以排着的发送方不靠退避去碰运气，先被拒的先拿到窗口，一个退避到一分钟的发送方也不会错过（秒杀）。更新丢了，发送方按固定的 `DaServer:Once:ZeroWindowProbe`（默认 1 秒，不翻倍）再问一次最早的那个（同 TCP 的零窗口探测）。
 - 一个发送方占不满一个接收方：别的发送方照样有自己的窗口，直到整个根的上限。
+- **发送方自己排的有上限**：每个根最多 `[ActorOptions(OnceOutstanding = n)]` 个 `Asking`（默认 1,024）。到了上限，发给这个根的新请求在执行之前就回 `Busy`（同 `Commit` 留住的输出的上限，第 8 节上面），所以处理方法里的 `AskUntilAnswered` 从不失败，也没有返回值可忘；系统里、单向消息的项发出的照样排上（超出的最多是一个 tick 的量）。
 
-**探测**（同 TCP 的保活探测）：一个发送方的项在 `Unacked` 里放了 `DaServer:Once:ProbeAfter`（默认 30 秒）还没被确认，又没有新的邮件带来确认，接收方问一次发送方"你那边的 `a` 是多少"（框架邮件 `AckQuery`）：
-- Actor 发送方：`AckQuery` 和 `Wake` 一样能激活它（只有运行时处理，不进用户代码），激活后从记录里的待问请求算出 `a` 回答；记录不存在（根被销毁了）就回答"都了结了"。
-- 客户端会话：问持有这个会话的网关，网关从会话表回答；会话已经结束（下面）就回答"都了结了"。
-- 回答也是普通的单向邮件，丢了就过一个 `ProbeAfter` 再问。所以确认丢了、接收方宕机回滚了清理，都不会让一项永远留着：要么发送方还在问（它在等，这一项该留），要么探测把它清掉。
+**探测**（同 TCP 的保活探测）：一个发送方的项在 `Unacked` 里放了 `DaServer:Once:ProbeAfter`（默认 30 秒）还没被确认，又没有新的邮件带来确认，接收方问一次发送方"你那边的 `a` 是多少"（框架邮件 `AckQuery`，内部通道）：
+- Actor 发送方：发送方节点的运行时从记录回答，不激活这个 Actor：激活着的从它写下的状态（上面的 `a`），没激活的读一次记录里的 `Asking` 和 `OnceNext`；同一个节点收到的探测成批读（一个节点宕机之后，几千个接收方同时来问，也只是几条成批的读，不是几千次激活）。记录不存在（根被销毁了）就回答"都了结了"。
+- 客户端会话：问持有这个会话的网关，网关从会话表回答；会话已经结束（下面）就回答"都了结了"；网关不认识这个会话（客户端换了网关、这个网关重启过）就回答"不知道"：接收方不清理，等到这个会话的令牌上的结束时刻（下面）再清。
+- "都了结了"带着发送方的 `a`（Actor 的是记录里的 `OnceNext`；被销毁的、结束了的会话：接收方取它看到的这个发送方最大的序号加一），接收方照普通确认清理、`n` 前进到 `a - 1`，那一行进入安静期。
+- 回答也走内部通道，丢了就过一个 `ProbeAfter` 再问。所以确认丢了、接收方宕机回滚了清理，都不会让一项永远留着：要么发送方还在问（它在等，这一项该留），要么探测把它清掉。
 
-**安静的发送方**（同 TCP 的 TIME-WAIT）：一个发送方的项都清掉之后，它在 `OnceSenders` 里的那一行（几十字节）再留 `DaServer:MaxAskTimeout` 加 `DaServer:ClockSkew` 才删：任何请求的期限都不超过 `MaxAskTimeout`，接收方从不执行过了期限的请求（第 9 节），所以那之后不会再有这个发送方更早的尝试到达；删得更早，一次迟到的旧尝试就会被当成新的。留的只是这一行，不是回复。
+**安静的发送方**（同 TCP 的 TIME-WAIT）：一个发送方的项都清掉之后，它在 `OnceSenders` 里的那一行再留到"它最后一次尝试的发出时刻加 `MaxAskTimeout` 加 `ClockSkew`"才删：比这更早发出的尝试接收方不执行（上面），所以那之后不会再有这个发送方更早的尝试被执行；删得更早，一次迟到的旧尝试就会被当成新的。留的只是这一行，不是回复。
 
 **客户端会话**：
-- 会话是 `(ClientId, 会话随机数)`：SDK 启动时选一个随机的 64 位数，重连后接着用；应用重启是新的会话。序号就是 SDK 给 `[Once]` 请求的调用 id，在会话里单调递增。
-- 网关记着每个会话（`DaServer:Clients:ResumeWindow`，默认 2 分钟：从最后一次活动算起，断线之后还认这个会话多久），每个请求带着网关盖上的、这个会话此刻的结束时刻。窗口结束后网关忘掉这个会话，再用它的随机数连上来的被拒（SDK 换一个新的会话），所以它的旧序号不会再进来；接收方在这个时刻再过 `MaxAskTimeout` 加 `ClockSkew` 之后删掉这个会话的项和那一行。
-- SDK 在每个请求和心跳里带着这个会话的 `a`（最小的还没收到回复的 `[Once]` 调用 id），网关记下，并拒绝序号小于它的请求（过时的，或者有人重放旧的调用 id）。网关记着这个会话有项留在哪些接收方（每个会话几个），`a` 前进时给它们各发一次确认，探测也由它回答。
-- `[Once]` 的请求由 SDK 自己用同一个序号重发，直到有回复或者会话结束；应用只拿到一次结果，自己从不重发（`Busy` 也由 SDK 按 `RetryAfter` 重发）。会话结束时结果未知，应用重新拉一次状态（背包、余额）就知道。
+- **会话是网关签名的令牌**：SDK 第一次连上时，网关签发 `Session(ClientId, 会话随机数, 有效至 T)`，用集群的签名密钥签名（同客户端令牌，第 7 节）；每次回复和心跳把 `T` 往后推到"现在加 `DaServer:Clients:ResumeWindow`"（默认 2 分钟），换一个新签的令牌。SDK 重连时交回它，**任何网关**都只认还没过 `T` 的：过了就拒，SDK 换一个新的会话。所以会话结束不靠某一个网关记得：客户端换了网关、原来的网关宕机了，过了 `T` 的旧会话都进不来。
+- SDK 用自己的时钟也看 `T`：过了 `T` 不再重发这个会话的任何请求，结果未知，应用重新拉一次状态（背包、余额）就知道。应用重启是新的会话。序号就是 SDK 给 `[Once]` 请求的调用 id，在会话里单调递增。
+- 每个请求带着网关盖上的这个会话的 `T`；接收方在 `T` 再过 `MaxAskTimeout` 加 `ClockSkew` 之后删掉这个会话的项和那一行（`T` 后推了，就按新的）。
+- SDK 在每个请求和心跳里带着这个会话的 `a`（最小的还没收到回复的 `[Once]` 调用 id），网关记下，并拒绝序号小于它的请求（过时的，或者有人重放旧的调用 id）。网关记着这个会话有项留在哪些接收方（每个会话几个），`a` 前进时给它们各发一次确认（内部通道），探测也由它回答（上面）。
+- `[Once]` 的请求由 SDK 自己用同一个序号重发，直到有回复或者过了 `T`；应用只拿到一次结果，自己从不重发（`Busy` 也由 SDK 按 `RetryAfter` 重发）。SDK 收到 `Stale` 时按"结果未知"交给应用（这一次已经有过结论，只是这条连接没收到），应用重新拉一次状态。
 
 **限制**：
-- `[Once]` 请求的处理方法要当场返回回复，不能取 `ReplyTo<T>`（DAS032）：存下的回复要和改动在同一次写里落定。要先问别的 Actor 才能回答的，把它拆成自己的订单 Actor 的一步（秒杀的 `Order`）。
-- `Unacked`、`OnceSenders` 是框架的持久化组件，在 `persist` 集合、追踪类型表里各有一行；`wire.manifest` 给每个 `[Once]` 的请求类型记一个 `once` 标记（加上或去掉它会改变语义，滚动升级的比较要看得见，第 14 节）。
-- 指标 `daserver.once.entries`、`daserver.once.duplicates`、`daserver.once.stale`、`daserver.once.window_full`、`daserver.once.probes`。
+- `[Once]` 请求的处理方法要当场返回回复，不能取 `ReplyTo<T>`（DAS032）：存下的回复要和改动在同一次写里落定。要先问别的 Actor 或者外面的服务才能回答的，把它拆成自己的订单 Actor 的一步（秒杀的 `Order`、共用的支付样例的 `Payment`）。
+- `Unacked`、`OnceSenders` 是框架的持久化数据：`Unacked` 在根的记录里，`OnceSenders` 是自己的行；都在运行时自己的追踪过滤里，不在用户的追踪类型表、`wire.manifest` 的 `record` 行里；`wire.manifest` 给每个 `[Once]` 的请求类型记一个 `once` 标记（加上或去掉它会改变语义，滚动升级的比较要看得见，第 14 节）。
+- 指标 `daserver.once.entries`、`daserver.once.senders`、`daserver.once.duplicates`、`daserver.once.stale`、`daserver.once.stale_asking`、`daserver.once.too_old`、`daserver.once.window_full`、`daserver.once.probes`。
 
 ### 一直问到有回答：`AskUntilAnswered`
 
-普通的问在发问方停用或宕机时随等待实体消失。要一直问到有回答的（入账、发物品、下单的每一步），写 `root.AskUntilAnswered(to, in request[, state])`：
+普通的问在发问方停用或宕机时随等待实体消失。要一直问到有回答的（入账、发物品、下单的每一步），写 `e.AskUntilAnswered(to, in request[, state])`，`e` 是根或者它要保存的子实体：
 
-- **请求本身就是写进记录的意图**：框架在根下建一个要保存的子实体（框架组件 `Asking`：目标、序号、请求的字节、`state`），隐含 `Commit`，写成之后才发出（同事务性发件箱：状态和意图一起写下，转发方重发，接收方按 id 去重，[transactional outbox](https://microservices.io/patterns/data/transactional-outbox)）。所以"忘了先 `Commit` 意图就去问"不会凭空多出价值。
+- **请求本身就是写进记录的意图**：框架在**根**下建一个要保存的子实体（框架组件 `Asking`：发问的实体、目标、序号、请求的字节、`state`），隐含 `Commit`，写成之后才发出（同事务性发件箱：状态和意图一起写下，转发方重发，接收方按 id 去重，[transactional outbox](https://microservices.io/patterns/data/transactional-outbox)）。所以"忘了先 `Commit` 意图就去问"不会凭空多出价值。`Asking` 总在根下，不在发问的实体下：发问的实体被别的路径销毁了（掉落过期、重新掉落），在途的问照样问到有回答，接收方的项照常被确认。
 - **只用于 `[Once]` 的请求，`[Once]` 的请求也只能这样发**（分析器，DAS032）：不去重的请求一直重试会重复执行；去重的请求用普通的 `Ask` 发，结果未知时没有谁接着问。
 - **框架负责重试**：链路上的结果（`TimedOut`、`Busy`、`NoOwner`、`Unavailable`、`ConnectionLost`）不交给用户，按 `RetryAfter`（没有就按 `DaServer:Once:Retry`，默认 5 秒起，翻倍到 1 分钟，带抖动）用同一个序号再问；节点宕机、Actor 停用之后，运行时按 `Asking` 上的 `WakeAt` 唤醒它接着问（第 10 节的唤醒）。窗口用完时按上面的流量控制排队。
-- **回答照常是 `Replied<TRequest[, TState]>`**，只投递一次：带值（`a.TryGetValue(out var v)`），或者接收方确定的拒绝（`Faulted`、`NotHandled`：查过序号之后说的，这次和之前都没有执行）。收到它的那一项隐含 `Commit`，`Asking` 随之销毁，写成之后框架发确认。**补偿只在这两种回答上做**；链路上的结果永远不会到用户手里，所以不会出现"再问时收到 `NotExecuted` 就以为没做过"。
+- **回答照常是 `Replied<TRequest[, TState]>`**，只投递一次，主体是发问的实体：带值（`a.TryGetValue(out var v)`），或者接收方确定的拒绝（`Faulted`、`NotHandled`，只认当前这次尝试的：上面）。收到它的那一项隐含 `Commit`，`Asking` 随之销毁，写成之后框架发确认。**补偿只在这两种回答上做**；链路上的结果永远不会到用户手里，所以不会出现"再问时收到 `NotExecuted` 就以为没做过"。
+- 发问的实体已经不在了：回答照样让 `Asking` 销毁、照样确认，回答本身丢弃、计数（`daserver.once.orphan_replies`）：价值已经在接收方落定，发问的实体由用户销毁，就是用户放弃了这个结果。销毁了的 `Asking` 迟到的回答也丢弃。
 - 一直没有回答的（接收方的类型删了、一直 `WindowFull`）一直问下去，指标 `daserver.once.oldest_age` 报出最老的一个，样例的对账报出停在某一步太久的订单。
 - 发问的根被销毁时，它的 `Asking` 一起没了，接收方的项由探测清掉（"都了结了"）。
 
@@ -1111,52 +1119,66 @@ public readonly partial record struct Player(long Id) : IActor<Player>
 
 **扣的一方写下自己的状态，`AskUntilAnswered` 一个 `[Once]` 的请求；收的一方执行一次，回复存进 `Unacked`，写成之后才回答；扣的一方在 `Replied` 里记下完成。** 恰好一次，没有条件：不重复（序号由框架分配、从不重复；确认之前的重复拿到存着的回复，确认之后的旧尝试被序号检查拒绝），不丢（框架一直问到有回答，意图在记录里）。没有时间或容量的条件：窗口满了只让发送方排队，从不挤掉一项。TrinityCore 把交易的双方写进一个事务；这里两个 Actor 的记录不在一个事务里，所以拆成这条规则。没有按这条规则做的交互（例如捡一件普通的东西不 `Commit`）宕机时可能一方回滚、另一方没有：扣的一方先写，所以结果是丢了一件，不是多出一件，游戏宁可丢、不复制。
 
-- **充值不经客户端**（mmo 样例，W7）：支付平台的 webhook 经 `ICluster.Ask(new Payment(new PaymentId(id)), new Paid(player, diamonds))` 问 `Payment`；它根上的 `Charge` 就是这一笔的状态，平台的重试由它回答。
+- **支付是一个共用的样例**（`samples/payments`，mmo 的充值和秒杀都用它，W7）：照支付平台的正规流程，外面的 IO 都在 HTTP 平面，不在 shard 上（DAS015）。
+  1. 客户端经客户端协议发 `[Once] Recharge(Pack)` 给 Player（秒杀：订单预留到库存之后自己开）。Player 写下"等着这笔"（`DynamicBuffer<Paying>` 里一项 `(PaymentId, Diamonds)`，在 `Player.RootPrefab` 上），`AskUntilAnswered(new Payment(id), new Open(...))` 开一笔 `Payment(id)`（id 由发起方生成，和意图一起写下），回答客户端这笔的 id。
+  2. 客户端调用节点的 HTTP 端点 `POST /payments/{id}/checkout`（低频，HTTP 平面的本分）：端点经 `ICluster.Ask` 读出这笔的金额，向支付平台创建收银（IO，在 shard 外），把平台的收银地址返回给客户端；客户端去平台付款。
+  3. 平台回调我们的 webhook（HTTP 平面），带着这笔的 id 和平台的令牌；端点先用平台的签名验回调，再拿令牌向平台服务器到服务器地查这笔（金额、状态），都对上才 `ICluster.Ask(new Payment(id), new Paid(amount, providerRef))`。webhook 在 `Payment` 写下 `Paid` 之后才回 2xx：之前宕机，平台按自己的规则重发，由 `Payment` 的状态回答。
+  4. `Payment` 写下 `Paid`，`AskUntilAnswered` 发起方一个 `[Once] Settled(PaymentId, Outcome)`：mmo 的 Player 入账钻石，秒杀的 `Order` 确认。过了收款期限没付的，`Payment` 写下 `Expired`，同样通知发起方（失败）；过期之后才到的付款，`Payment` 记成要退款，对账报出（模拟的平台能退款）。
+  5. 每天和平台的报表对账：平台有、`Payment` 没有的单号，停在 `Open`/`Paid` 太久的，过期后到的付款，都报出来（样例的管理端点，经 `ICluster`）。
   ```csharp
-  [NinoType] public readonly record struct PaymentId(long Value);
-  public readonly partial record struct Payment(PaymentId Id) : IActor<Payment>
+  // samples/payments, linked into each game's server: the game supplies PayFor (who is paid for) and Notify
+  [NinoType] public readonly record struct PaymentId(Guid Value);
+  [ActivatedBy<Open>] public readonly partial record struct Payment(PaymentId Id) : IActor<Payment>
   {
-      [Persist] public static Prefab RootPrefab { get; } = new Prefab().SetCharge(default);   // default: not paid yet
+      [Persist] public static Prefab RootPrefab { get; } = new Prefab().SetCharge(default);
   }
-  public enum ChargeState : byte { None, Crediting, Delivered }
-  [NinoType] public record struct Charge(Player To, int Diamonds, ChargeState State, DateTime Since) : IComponent, ITracked;
-  [NinoType] public record struct Paid(Player To, int Diamonds) : IRequestTo<Payment, bool>;          // from ICluster
-  [Once, NinoType, From<Payment>] public record struct Credit(int Diamonds) : IRequestTo<Player, bool>;
+  public enum ChargeState : byte { None, Open, Paid, Settled, Expired }
+  [NinoType] public record struct Charge(PayFor For, long Amount, ChargeState State, DateTime Deadline) : IComponent, ITracked;
+  [Once, NinoType] public record struct Open(PayFor For, long Amount, DateTime Deadline) : IRequestTo<Payment, bool>;
+  [NinoType] public record struct Paid(long Amount) : IRequestTo<Payment, bool>;   // from ICluster, after the provider confirmed
 
   [Handles<Payment>]
   public static partial class Charges
   {
-      [On<Paid>]                                                            // subject: the payment's root; the provider's retries too
-      static bool Accept(in Paid m, in Charge c, in Time time, Entity root)
+      [On<Open>]                                                            // from the business owner, once per sequence number
+      static bool Opened(in Open m, Mut<Charge> c)
       {
-          if (c.State == ChargeState.None)                                  // the first delivery: the state, then the ask
-          {
-              root.SetCharge(new Charge(m.To, m.Diamonds, ChargeState.Crediting, time.Utc));
-              root.AskUntilAnswered(m.To, new Credit(m.Diamonds));          // committed with Crediting; asked until answered
-          }
-          root.Commit();                                                    // the webhook's 2xx leaves once Crediting is written,
-          return true;                                                      // a retry's too: before that, the provider retries
-      }
-
-      [On<Replied<Credit>>]                                                 // subject: the payment's root; comes once, with a value
-      static void Credited(in Replied<Credit> a, in Charge c, Entity root)  // or the player's definite refusal
-      {
-          if (a.TryGetValue(out _)) root.SetCharge(c with { State = ChargeState.Delivered });
-      }                                                                     // a refusal stays Crediting: reconciliation reports it
-  }
-
-  [Handles<Player>]
-  public static partial class Wallets
-  {
-      [On<Credit>]                                                          // subject: the player's root; runs once per sequence
-      static bool Add(in Credit m, Mut<Wallet> wallet)                      // number: a re-ask gets the stored true, after the write
-      {
-          wallet.Write().Diamonds += m.Diamonds;
+          c.Write() = new Charge(m.For, m.Amount, ChargeState.Open, m.Deadline);
           return true;
       }
+
+      [On<Paid>]                                                            // the webhook, after verifying with the provider
+      static bool Accept(in Paid m, Mut<Charge> c, Entity root)
+      {
+          if (c.Value.State == ChargeState.Open && m.Amount == c.Value.Amount)
+          {
+              c.Write().State = ChargeState.Paid;
+              Notify(root, c.Value.For, Outcome.Paid);                      // the game's AskUntilAnswered of its [Once] Settled
+          }
+          root.Commit();                                                    // the 2xx leaves once Paid is written; a retry's too
+          return c.Value.State is ChargeState.Paid or ChargeState.Settled;
+      }
+
+      static partial void Notify(Entity root, PayFor to, Outcome outcome);  // mmo: Player; flash sale: Order
+  }
+
+  // the mmo's side
+  [Once, NinoType, From<Payment>] public record struct Settled(PaymentId Id, Outcome Outcome) : IRequestTo<Player, bool>;
+  [On<Settled>]                                                          // subject: the player's root; runs once per sequence number
+  static bool Credit(in Settled m, Mut<Wallet> wallet, Entity root)
+  {
+      var paying = root.WritePaying();                                   // the recharges this player started
+      for (int i = 0; i < paying.Count; i++)
+          if (paying[i].Id == m.Id)
+          {
+              if (m.Outcome == Outcome.Paid) wallet.Write().Diamonds += paying[i].Diamonds;
+              paying.RemoveAtSwapBack(i);
+              break;
+          }
+      return true;                                                       // [Once] commits: the answer leaves once this is written
   }
   ```
-  `Credited` 不调用 `Commit`：处理 `AskUntilAnswered` 的回答的那一项隐含它（框架的确认跟在这次写后面）。处理方法里没有重试、意图组件和去重的代码。每天和支付平台的报表对账：`Crediting` 超过一天的、平台有而 `Payment` 没有的单号都报出来（样例的管理端点，经 `ICluster`）。客户端只看到钻石变多（推送）。
+  `Charges` 里的 `Settled` 回答（`[On<Replied<Settled>>]`）把这笔改成 `Settled`；`Opened` 还用 `root.Remind<Expire>(m.Deadline)` 定一个到期提醒（`DaServer.Reminders`，第 15 节：`Payment` 不按 tick 走，提醒扛得过停用和宕机），到期时还是 `Open` 的写下 `Expired` 并 `Notify(..., Outcome.Expired)`。处理方法里没有重试、意图组件和去重的代码：`Open`、`Settled` 由框架按序号去重，平台的重复回调由 `Charge.State` 回答。客户端只看到钻石变多（推送）。
 - **玩家发起的贵重请求**（花钻石买东西、用珍贵道具）：
   ```csharp
   // Game.Protocol
@@ -1180,8 +1202,8 @@ public readonly partial record struct Player(long Id) : IActor<Player>
       return BuyResult.Ok;                                               // [Once] commits: the reply leaves once this is written
   }
   ```
-  处理方法里没有去重的代码：重发由 SDK 用同一个序号做，接收方回答存着的回复。应用只拿到一次结果；会话结束（应用被杀、断网超过 `ResumeWindow`）时结果未知，应用重新拉一次背包就知道。再点一次"购买"是一次新的购买。
-- **秒杀的订单**（ADR-091）：`Order(Sale, User)` 是订单自己的 Actor，同一个买家再来，回答订单现在的状态。每一步是订单的状态加一次 `AskUntilAnswered`：写下 `Reserving`，问库存分片 `[Once] Reserve`（回答写进订单之后进下一步）；预留到了，写下 `Charging`，`Charge` 用订单的键作支付平台的幂等键。**补偿只由确定的回答触发**（分片回答卖完了、支付被拒）：写下 `Releasing`，`AskUntilAnswered` 一个 `[Once] Release`。链路上的结果不到用户手里，所以不会因为超时去补偿。库存分片是 `Reserve`、`Release` 的接收方，`[Once]` 替它去重；它的预留集合是业务状态（还剩多少、谁预留了），`Release` 在这场秒杀结束之前留着订单的键，迟到的 `Reserve` 不会落在已经释放的订单上。
+  处理方法里没有去重的代码：重发由 SDK 用同一个序号做，接收方回答存着的回复。应用只拿到一次结果；会话结束（应用被杀、断网超过 `ResumeWindow`，会话令牌过了 `T`）时结果未知，应用重新拉一次背包就知道。再点一次"购买"是一次新的购买。
+- **秒杀的订单**（ADR-091）：`Order(Sale, User)` 是订单自己的 Actor，同一个买家再来，回答订单现在的状态。每一步是订单的状态加一次 `AskUntilAnswered`：写下 `Reserving`，问库存分片 `[Once] Reserve`（回答写进订单之后进下一步）；预留到了，写下 `AwaitingPayment`，按上面共用的支付样例开一笔 `Payment`（`Open`，收款期限是这场秒杀的付款时限），买家拿着这笔的 id 去付款；`Payment` 的 `Settled(Paid)` 到了，订单写下 `Confirmed`。**补偿只由确定的回答触发**（分片回答卖完了；`Settled` 说过期或失败）：写下 `Releasing`，`AskUntilAnswered` 一个 `[Once] Release`，回答到了写下 `Released`。链路上的结果不到用户手里，所以不会因为超时去补偿。库存分片是 `Reserve`、`Release` 的接收方，`[Once]` 替它去重；它的预留集合是业务状态（还剩多少、谁预留了），`Release` 在这场秒杀结束之前留着订单的键，迟到的 `Reserve` 不会落在已经释放的订单上。
 
 ### 客户端的调用 id、`ReplyTo<T>`
 
@@ -1197,7 +1219,7 @@ public readonly partial record struct Player(long Id) : IActor<Player>
 - 请求的处理方法要么返回回复，要么取 `ReplyTo<T>`，不能两样都做，也不能都不做（分析器检查）。
 - 等待实体和它的状态随 Actor 迁移和热重启（序列化规则见第 10 节）。
 - **回信不受 `Busy` 限制，它的位置在两头都留好**：回复的字节数按请求类型算：回复是定长的（`bool`、枚举、定长结构体）就是生成器算出的确切大小，变长的按 `DaServer:MaxReplyBytes`（64 KiB；更大的写 `[MaxReplySize(n)]`）。
-  - **回信走的那一段，由接收方留**：接收方收下一个请求（进它的邮箱）时，在自己发往发问方节点的链路窗口里留这么多字节，回复发出或者请求过了期限就释放。所以一个往网关推广播推满了窗口的地图，照样能把回复发给通过这个网关问它的客户端：留的位置不和推送抢。留不下（窗口里留的已过一半）就不收这个请求，当场回 `Busy`：拒绝的是新的请求，从不是回信。
+  - **回信走的那一段，由接收方留**：接收方收下一个请求（进它的邮箱）时，在自己发往发问方节点的链路窗口里留这么多字节，回复发出或者请求过了期限就释放。所以一个往网关推广播推满了窗口的地图，照样能把回复发给通过这个网关问它的客户端：留的位置不和推送抢。留不下（窗口里留的已过一半）就不收这个请求，当场回 `Busy`：拒绝的是新的请求，从不是回信。这条 `Busy` 自己用窗口里一小块固定的预留（同内部通道的确认、探测、窗口更新），被推送占满的窗口也挤不掉它，所以发问方收到的是 `Busy`，不是超时。
   - **回信到达的那一段，由发问方留**：每次 `Ask` 在发问方这个 world 的派发队列里留同样多的字节，回信到达或者这次问到了期限就释放（存着的 `ReplyTo<T>` 过了期限也不再占位置）；留的已过队列的一半时，新的问当场以 `Busy` 回答，不发出：一个 Actor 一下子发出几万个问，占不满整个分片，别的 Actor 照常收消息。
   - 定长的回复按确切大小留，所以一个 `bool` 的问只留几个字节：链路上能同时在途的问不被 64 KiB 的估计压到几百个。比留的位置还大的回复不占预留，照普通消息排，可能被拒，发问方超时（计数 `daserver.replies.oversize`）（第 11 节）。
 
@@ -1359,7 +1381,7 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
   - **读和写各有各的写法**：对追踪的类型，EasyEcs 生成的 `entity.X` 属性是 `ref readonly`（它的 `ComponentGenerator`：被 world 关注的类型，即追踪、有索引或分组的，给只读的 `Read`），经它读从不算写入。写走 `SetX`、`WriteX()`（追踪、不带索引也不分组的类型才有）、`SetXIfChanged`、`Mut<T>` 或 `ref` 参数，每种都打戳。生成的 `TryGetX(out copy)` 和 `TryGet<T>(out copy)` 按值复制，从不算写入（EasyEcs `api.mdx` 的 entity 表），所以可能没有的组件照常用它读（第 12 节的 `stash.TryGetPrize`、`e.TryGetCell`）。
 - **结构变更也是变更**：加上一个被追踪的组件算一次写入，去掉它记下一次移除（EasyEcs `reference/itrackchanges.mdx`、`guide/change-tracking.mdx`），所以下面的 `ChangedAny`/`RemovedAny` 看得到它们。写了 `ITracked` 的 tag 也这样，由 W1 核对；核对通过，tag 的增删由 `ChangeSystem` 照常看到，什么也不用另做。核对之前（核对不过就一直这样），限制按实体，不按类型：对 `persist` 里的 tag `Set`/`Remove`，只在分析器看得出这个实体要保存时报错（例如 `root.Spawn` 一个要保存的 prefab 返回的实体、带 `[With<Persisted>]` 的方法）；看不出的地方照常写，运行时在要保存的实体上发现 tag 变了就给根标 `Unsaved`（做法在 W1）。同一个 tag 在不保存的实体上随便增删（第 12 节的 `Visible`）。
 - **`root.Spawn` 建出要保存的实体时，当场给根标 `Unsaved`**，不靠变更戳。
-- `ChangeSystem` 用注册时建好的两个过滤：生成器写出的追踪类型的 `ChangedAny` 加 `With<Persisted>()`，和对应的 `RemovedAny`。EasyEcs 的 `ChangedAny<T1..Tn>(since)`（`QueryFilter` 的实例方法）一次最多 9 个类型，一个过滤里的每次调用并进同一组，所以生成的 `Registration` 把追踪类型分成每组 2 到 9 个、大小均衡的几组，每组调用一次（12 个分成 6 + 6：均衡只是为了每次调用的开销差不多）。只有一个类型的一份（一个包只追踪一个类型，或者用户的工程只有一个）写成 `ChangedAny<T, T>` 和 `RemovedAny<T, T>`，同 EasyEcs 自己的生成器，从不写 `Changed<T>`/`Removed<T>`：过滤里的 `Changed<T>` 是"并且"，和别的份并在一起时会要求这个类型也写过，`ChangedAny` 的各次调用才是"任何一个"（测试 `SingleTrackedTypeComposesWithPackageSets`）。第 12 节的样例有十二个追踪类型（十一个用户的，加上框架的 `DynamicBuffer<Unacked>`：Player 收要去重的 `GrantItem`），生成两次各六个的调用：`QueryFilter.Create().ChangedAny<Grid, NetIds, Inventory, Wallet, Stash, Prize>(0).ChangedAny<Position, Cell, Velocity, Granting, DynamicBuffer<Slot>, DynamicBuffer<Unacked>>(0).With<Persisted>()`（`Shout` 是 `[NotSaved]`，不在里面），每次运行用 `Since(上次运行的 tick)` 换起点。要保存的实体上任何一个组件被写或者被删，这一行访问一次，按 `Persisted.Root` 给根标 `Unsaved`。一行改了几个组件也只访问一次；不保存的实体上同类型的写只多付变更戳，`ChangeSystem` 不访问它们。不分配。
+- `ChangeSystem` 用注册时建好的两个过滤：生成器写出的追踪类型的 `ChangedAny` 加 `With<Persisted>()`，和对应的 `RemovedAny`。EasyEcs 的 `ChangedAny<T1..Tn>(since)`（`QueryFilter` 的实例方法）一次最多 9 个类型，一个过滤里的每次调用并进同一组，所以生成的 `Registration` 把追踪类型分成每组 2 到 9 个、大小均衡的几组，每组调用一次（12 个分成 6 + 6：均衡只是为了每次调用的开销差不多）。只有一个类型的一份（一个包只追踪一个类型，或者用户的工程只有一个）写成 `ChangedAny<T, T>` 和 `RemovedAny<T, T>`，同 EasyEcs 自己的生成器，从不写 `Changed<T>`/`Removed<T>`：过滤里的 `Changed<T>` 是"并且"，和别的份并在一起时会要求这个类型也写过，`ChangedAny` 的各次调用才是"任何一个"（测试 `SingleTrackedTypeComposesWithPackageSets`）。第 12 节的样例有十一个用户的追踪类型，生成两次调用，六个和五个：`QueryFilter.Create().ChangedAny<Grid, NetIds, Inventory, Wallet, Stash, Prize>(0).ChangedAny<Position, Cell, Velocity, Granting, DynamicBuffer<Slot>>(0).With<Persisted>()`（`Shout` 是 `[NotSaved]`，不在里面）。框架自己的持久化类型（`RootState`、`DynamicBuffer<Unacked>`、`Asking`、`WakeAt`）在运行时自己的过滤里，不在这张表里；`OnceSenders` 是自己的存储行（第 8 节），不经这个过滤，每次运行用 `Since(上次运行的 tick)` 换起点。要保存的实体上任何一个组件被写或者被删，这一行访问一次，按 `Persisted.Root` 给根标 `Unsaved`。一行改了几个组件也只访问一次；不保存的实体上同类型的写只多付变更戳，`ChangeSystem` 不访问它们。不分配。
 - **占位不写**：根带着 `Loading`、`Saving` 或 `ActivationFailed` 时，`ChangeSystem` 不给它标 `Unsaved`，`CheckpointSystem` 也不写它（`[Without<Loading>, Without<Saving>, Without<ActivationFailed>]`）。否则 `Reload` 把根改回 prefab 默认值的那些写，会被当成改动写进记录，盖掉最后一份好记录（第 5 节）。
 - **记录在 pass 外面取**：EasyEcs 的 `World.Save`（`SaveEntitiesWith` 经它走）在 pass 进行中抛出（`ThrowIfIterating`），而 `[ForEach]` 方法和不带 `INoStructuralChanges` 的 `entity.Run` 都在 pass 里；带 `INoStructuralChanges` 的 job 冻住了结构闸门，`Save` 要进结构区，同样抛出。所以任何 job 和任何 `[ForEach]` 方法里都不调用 `SaveEntitiesWith`。所以 `CheckpointSystem` 在 pass 里只收集要写的根的 id、改根上的标记，取记录（`Descendants`、`SaveEntitiesWith`）由每个 world 的 `StoreWrite` 步骤在 `world.Update` 之后做（[architecture.md 第 2 节](architecture.md#the-shard-loop)的循环）；停用、停止和迁移的那次 `SaveEntitiesWith` 也一样，框架的 job 只做标记（W1 测试 `SaveEntitiesOutsidePassOnly`）。
 - `CheckpointSystem` 在每个 tick 末（没有 tick 的 Actor 类型：每批邮件之后）挑出要写的根，`StoreWrite` 把它们各 `SaveEntitiesWith` 一次，合成这个 world 的一次批量写（上面的"默认"），按 epoch 比较并交换：调用过 `Commit` 的根（`RootState` 的 `WriteNow` 字段，由 `Commit` 置上，第 8 节）每次都取，其余带 `Unsaved` 的根离上次写过了检查点间隔才取；在途的语句满了就都等下一轮（上面的"默认"）。**取记录时去掉 `Unsaved` 和 `WriteNow`**，写出错就加回（用同样的字节重试）；写在途期间的改动重新标上它，进下一次写。根上的 `NextDue` 同时写进记录的 `next_due` 列（下面的唤醒）。
@@ -1376,7 +1398,7 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 
 没激活的 Actor 也要在某个 UTC 时刻醒来：`AskUntilAnswered` 的请求要再问（第 8 节），`DaServer.Reminders` 的提醒要触发（第 15 节）。这是运行时的事，扩展能力只写数据（ADR-045），用户不直接写它：
 - 要叫醒 Actor 的实体带持久化的框架组件 `WakeAt(DateTime Utc)`：`AskUntilAnswered` 的 `Asking` 实体上是它下一次再问的时刻（第 8 节），提醒上是它下一次触发的时刻（第 15 节）。它们只写 `WakeAt`。
-- 运行时的 `WakeSystem` 按 `[Changed<WakeAt>]`、`[Removed<WakeAt>]`（两个方法；`ChangedAny` 要 2 到 9 个类型，一个类型就是 `Changed`）和 `Persisted` 的清理找出受影响的根，只对这些根沿 `world.Descendants(root)` 重算最小的 `WakeAt`，写进根上持久化的 `NextDue`；值变了就给根标 `Unsaved`（`NextDue` 是运行时的，不在生成的 `ChangeSystem` 过滤里），所以前移的时刻一定随下一个检查点写下。只有运行时算它，用户和扩展能力不写。
+- 运行时的 `WakeSystem` 按 `[Changed<WakeAt>]`、`[Removed<WakeAt>]`（两个方法；`ChangedAny` 要 2 到 9 个类型，一个类型就是 `Changed`；只按 `[Removed<T>]` 过滤的方法取一个用不到的组件参数 `in Persisted`，因为 EasyEcs 4.7 的 EECS003 只接受只带 `[With<T>]` 或 `[Changed<T>]` 的零组件 `[ForEach]`，EasyEcs 需求 (e)；Topics 包对 `[Removed<Deactivating>]` 的反应同样）和 `Persisted` 的清理找出受影响的根，只对这些根沿 `world.Descendants(root)` 重算最小的 `WakeAt`，写进根上持久化的 `NextDue`；值变了就给根标 `Unsaved`（`NextDue` 是运行时的，不在生成的 `ChangeSystem` 过滤里），所以前移的时刻一定随下一个检查点写下。只有运行时算它，用户和扩展能力不写。
 - **激活着时，`WakeAt` 由一个系统换成 `Due`**：运行时的 `ArmSystem` 有三个方法：`[ForEach, With<WakeAt>, Without<Due>]` 给刚从记录加载、刚迁来的实体挂上 `Due = Time.Elapsed + (WakeAt.Utc − Time.Utc)`（已过的就是 0）；`[ForEach, Changed<WakeAt>]` 给改写了 `WakeAt` 的实体重挂（改写 `Due` 的 `(At, Seq)`，堆里旧的那一项按惰性删除跳过，第 9 节），所以把下一次再问挪后或挪前都按新的时刻；`[ForEach, Removed<WakeAt>]` 摘掉它的 `Due`，所以已经有了回答的 `Asking`、取消了的提醒不会再被叫醒。之后这件事只看单调的 `Due`，NTP 的跳变不再挪动它。带 `WakeAt` 的实体上的 `Due` 只属于它：同一个实体上不会有别的 `Due`（延后事件和等待都是子实体）。
 - **到时**：这个 `Due` 是有序阶段里的一项，交给登记了这个组件的唤醒处理，在这一项里直接做事：`Asking` 的由运行时再问一次、写下下一次的 `WakeAt`（第 8 节）；`DaServer.Reminders` 投递提醒、前进周期（第 15 节）。宕机落在两次写之间时，记录里还是旧的 `WakeAt`，下次激活又到时：再问是同一个序号，无害。所以再问和提醒没有各自的挂载系统，重新激活之后也不另扫一轮，用户也不写叫醒之后的系统。
 - **先算 `NextDue`，再取记录**：`WakeSystem` 在框架组 `Cleanup` 里排在 `CheckpointSystem` 之前，所以写下的 `next_due` 总算上了这个 tick 新写的 `WakeAt`。
@@ -1496,7 +1518,8 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
   - `NodeRestarting` 期间其他节点不把它当作失效：不怀疑它，也不宣布它 `Dead`；协调者钉住它所有的槽，不规划迁入或迁出它的移动，不重新激活。发给它的消息留在各自链路的有界重发窗口里（网关上的客户端消息也是）。窗口满了：单向消息丢弃并计数，请求立刻以 `Busy` 失败（`RetryAfter` 是预计停顿），重试由发问方按第 11 节决定；请求的期限照常走，可能超时。
   - 有成员在 `NodeRestarting` 时，别的节点的离开在自己的停止预算之内等它回来再走：两件事同时改放置，第 8 步的核对就对不上了。
   - 期限过了，协调者把它写成 `Dead`。Actor 在别处占新的 epoch，从记录激活；迟到的热备读到自己 `Dead`，以新的代数加入。
-  - 协调者自己热重启时仍是协调者（它的行和启动时间不变），只是冻结期间不做决定。协调者的定义是：`restart_until` 没有过期的 `Active` 成员里启动最早的（第 2 节）；所以它超过期限时就不再是协调者，按这条规则算出的下一个把它写成 `Dead`，不会出现谁都不认为自己是协调者的情况。
+  - 热重启的节点不是协调者：协调者是没有 `restart_until`（不管值是多少）的 `Active` 成员里启动最早的（第 2 节），规则只看表、不看时钟，所以读到同一个版本的节点都同意；协调者自己武装热重启时，下一个按规则就接手，期限过了由它把这个节点写成 `Dead`，不会出现谁都不认为自己是协调者的情况。
+  - 放弃了的热重启（存储卡住、交接失败）由这个节点自己清掉 `restart_until`：它的行还是 `Active`、还是它自己的代数时，这次带版本的写就成立，期限过没过都一样；所以存储晚回来时，一个健康的节点不会因为期限已过被写成 `Dead`、丢掉没写下的状态。
 - **平台**：每个平台都是这一对实例，只换"重启不是节点的那个实例"这一步；逐个节点"预拉镜像、武装、重启那个实例、等就绪"的循环只有一份（[deployment.md 第 5 节](deployment.md#5-rbac-and-who-runs-the-hot-restart)）。DaServer 不另起管理进程。
 
   | 平台 | 这一对实例 | 触发器 |
@@ -1565,10 +1588,10 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 | 接收方 `Commit` 之后、写成之前宕机或被隔离 | 回复不发，改动和 `Unacked` 里的那一项也没写进存储；`AskUntilAnswered` 超时，用同一个序号再问，真正的主人执行一次（第 8 节） |
 | 接收方写成之后、回复到达之前宕机 | `AskUntilAnswered` 超时再问，接收方从 `Unacked` 里认出这个序号，回答存下的回复，不再执行 |
 | 发问方在回信前宕机 | 普通的问随之消失；`AskUntilAnswered` 的请求在记录里，`DueScan` 按它的 `WakeAt` 唤醒 Actor，框架接着问，接收方回答存下的回复（第 8 节） |
-| 发送方确认之后，一次更早的尝试才到 | 序号不大于接收方记的"已确认到 n"：过时的重复，回 `Stale`，不执行，计数（同 TCP 的序号检查，第 8 节） |
-| 确认丢了（窗口满、邮箱满、接收方在下一次写之前宕机） | 无害：之后的每封邮件、下一次确认都带着同样或更新的累计确认；发送方安静了，接收方过 `Once:ProbeAfter` 探测一次（第 8 节） |
-| 发送方给一个接收方的窗口用完 | 后面的 `[Once]` 请求在发送方排队，窗口打开再发；发送方自己排的超过 `OnceOutstanding` 时 `AskUntilAnswered` 返回 `Busy`；从不挤掉一项（第 8 节） |
-| 发问的根被销毁、会话结束 | 它在接收方的项由探测清掉（回答"都了结了"）；会话的项在会话结束后再过 `MaxAskTimeout` 加 `ClockSkew` 删掉（第 8 节） |
+| 发送方确认之后，一次更早的尝试才到 | 发出时刻早于 `MaxAskTimeout + ClockSkew` 之前的丢弃；其余的序号不大于接收方记的"已确认到 n"：过时的重复，回 `Stale`，不执行，计数（同 TCP 的序号检查）；`AskUntilAnswered` 不会收到 `Stale`（确认只按写下的状态发），SDK 收到时按"结果未知"交给应用（第 8 节） |
+| 确认丢了（链路断开、接收方在下一次写之前宕机） | 无害：确认走内部通道，邮箱满、`Busy` 丢不掉它；之后的每封邮件、下一次确认都带着同样或更新的累计确认；发送方安静了，接收方过 `Once:ProbeAfter` 探测一次（第 8 节） |
+| 发送方给一个接收方的窗口用完 | 后面的 `[Once]` 请求在发送方排队，接收方按先后推窗口更新，更新丢了按 `Once:ZeroWindowProbe` 再问；发送方的 `Asking` 到了 `OnceOutstanding`，发给它的新请求在执行之前回 `Busy`；接收方的发送方行到了 `Once:SendersPerReceiver`，新发送方回 `WindowFull`；从不挤掉一项（第 8 节） |
+| 发问的根被销毁、会话结束 | 它在接收方的项由探测清掉（回答"都了结了"）；会话的项在会话令牌的 `T` 再过 `MaxAskTimeout` 加 `ClockSkew` 删掉，不认识这个会话的网关回答"不知道"，接收方等到那时（第 8 节） |
 | 拿着回复令牌的 Actor 在回复前停用 | 令牌在要保存的实体上，重新激活后期限内照样回复；否则调用方按期限超时 |
 | 过了期限才 `Reply` | 不发出，计数 |
 | 发问的实体在回信前被销毁 | 等待实体一起销毁，回信丢弃 |
@@ -1614,7 +1637,7 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 | 组件的状态 | 会：宕机时丢最多一个检查点间隔的改动；`Commit` 之后的不丢 | — | — | — |
 | `Push` | 会：断线、`Detached` 期间丢失；链路或网关满了、客户端读得太慢时被丢掉或合并 | 不会；例外同 `Send` | — | 没人；丢掉、合并的都给 Presence 记 `MissedPushes`，快照系统按预算补全，重新加入后也是（第 7 节） |
 | `ClientGroup`（含 `root.Everyone`） | 同 `Push`；只发给带 `Joined` 的 Presence | 不会 | — | 同 `Push` |
-| 客户端请求（`IFromClient<R>`） | 一定有结果：回复、拒绝、`TimedOut` 或者 `ConnectionLost` | 会：应用再发时 | `[Once]`：会话里的调用 id 就是序号，框架存下回复，请求和心跳带着的累计确认后删 | SDK：`[Once]` 的用同一个序号重发到有回复或会话结束（`ResumeWindow`）；别的由应用决定 |
+| 客户端请求（`IFromClient<R>`） | 一定有结果：回复、拒绝、`TimedOut` 或者 `ConnectionLost` | 会：应用再发时 | `[Once]`：会话里的调用 id 就是序号，框架存下回复，请求和心跳带着的累计确认后删 | SDK：`[Once]` 的用同一个序号重发到有回复或会话令牌过期（`T`，`ResumeWindow`）；别的由应用决定 |
 | 客户端单向消息（`IFromClient`） | 会：最多一次。断开时没送达的丢失；断线后到这个槽重新加入之前，不带 `[To]` 的被网关丢弃并计数（`NotJoined`，第 7 节）；`[Latest]` 的被同类型的新的一条替换 | 不会：SDK 不重发 | — | 没人 |
 | 加入（`[JoinOnConnect]`、SDK 重发的加入消息） | 不会：失败就重试，直到成功或者 `Unavailable` | 无害：`Join()` 按连接戳幂等，唯一索引找到已有的实体 | 连接戳 | 框架（`[JoinOnConnect]`）和 SDK（各槽的加入消息），按 `RetryAfter` 和抖动 |
 | 转发的一跳 | 同它转发的消息 | 不会：只重试确定没执行的拒绝（`NoOwner`、`NotHandled`） | — | 框架，计入重试预算 |
@@ -1632,9 +1655,9 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
   | `Ok` | | |
   | `Busy`（带 `RetryAfter`）、`NoOwner`、`Unavailable`（带 `RetryAfter`：到重新放置还剩的时间） | 是 | 是 |
   | `NotHandled`、`NoActor`、`Filtered`、`NotJoined`、`Skipped` | 是 | |
-  | `WindowFull`、`Stale`（`[Once]` 的，第 8 节） | 是：接收方查过序号之后说的 | `WindowFull` 是 |
+  | `WindowFull`、`Stale`（`[Once]` 的，第 8 节） | 是：接收方查过序号之后说的 | `WindowFull` 是；`Stale` 对 SDK 是结果未知 |
   | `TimedOut`、`ConnectionLost` | 结果未知 | 是：普通的请求再问是一次新的执行；`[Once]` 的由 `AskUntilAnswered`、SDK 用同一个序号再问 |
-  | `Faulted` | 否：处理方法抛出了，根不保存（`Continue`）的 Actor 可能改了一半（第 5 节）；根保存的按 `Reload` 丢掉改动，所以 `[Once]` 的请求收到它就是确定没执行。结果不存，再问会再执行一次 | |
+  | `Faulted` | 否：处理方法抛出了，根不保存（`Continue`）的 Actor 可能改了一半（第 5 节）；根保存的按 `Reload` 丢掉改动，所以 `[Once]` 的请求收到它就是确定没执行。结果不存，再问会再执行一次；所以发送方只认答这一次尝试（调用 id 相同）的 `Faulted`、`NotHandled`，更早的尝试迟到的丢弃 | |
   | `NoClient`、`Superseded`、`AlreadyConnected` | 加入和连接的结果（第 7 节） | |
 
 - **框架自己重试的只有**：转发的一跳上确定没执行的拒绝（例如按过时视图转发后收到 `NoOwner`，滚动升级中的 `NotHandled`）和加入（`[JoinOnConnect]`，第 7 节）。转发的重试用每个节点一个重试预算：令牌桶，约为请求数的 10%（同 gRPC 的重试节流）；桶空了，转发把拒绝原样交回调用方。请求的重试是发问方代码的事（`AskUntilAnswered` 由框架接着问，第 8 节）：`Replied` 处理方法按 `Status` 决定，要重试的用 `Schedule(…, after: a.RetryAfter)` 延后再问（第 13 节的提示）。
@@ -1671,7 +1694,9 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 | `[ActorOptions(Unacked = n)]`、`OnceWindow`、`OnceOutstanding` | 1,024、16、1,024 | 接收方的根最多几项没确认的 `[Once]`；每个发送方的窗口；发送方的根最多排几个 `AskUntilAnswered`（第 8 节） |
 | `DaServer:Once:ProbeAfter` | 30 秒 | 一项没确认、发送方又安静了这么久，接收方探测一次（第 8 节） |
 | `DaServer:Once:Retry` | 5 秒，翻倍到 1 分钟 | `AskUntilAnswered` 没有 `RetryAfter` 时的重试间隔，带抖动（第 8 节） |
-| `DaServer:Clients:ResumeWindow` | 2 分钟 | 网关在最后一次活动之后还认一个客户端会话多久；`[Once]` 的序号在会话里有效（第 8 节） |
+| `DaServer:Once:ZeroWindowProbe` | 1 秒，不翻倍 | 窗口为零、窗口更新又没到时，发送方再问一次最早的那个（第 8 节） |
+| `DaServer:Once:SendersPerReceiver` | 1,048,576 | 一个接收方最多几行 `OnceSenders`（约 50 MB），满了新发送方回 `WindowFull`（第 8 节） |
+| `DaServer:Clients:ResumeWindow` | 2 分钟 | 会话令牌的有效期 `T` 每次回复和心跳后推到"现在加这么久"；过了 `T` 任何网关都不认这个会话，SDK 也不再重发；`[Once]` 的序号在会话里有效（第 8 节） |
 | `DaServer:IdleTimeout` | 15 分钟 | `[ActorOptions(IdleTimeout = …)]` 不写时，空闲多久停用（同 Orleans 默认的激活回收时长，第 6 节） |
 | `MaxPending`、`MaxWaitingMail` | 65,536、65,536 | `[ActorOptions]`：一个根待处理的项（延后事件、在途的问）；一个键的占位上等着的邮件（第 5、6 节） |
 | `PresencesPerClient` | 1 | `[ActorOptions]`：一个客户端在这种 Actor 上最多几个 Presence（第 7 节） |
@@ -2259,11 +2284,11 @@ public static class GameServerRegistration
             .Actor<Loot>()                                                 // root prefab: Loot.RootPrefab, persistent; no tick
             .Prefab<Loot>(Prefabs.StashPrefab, persist: true)              // the copy also carries Persisted
             .Actor<Player>(static a => a                                   // root prefab: Player.RootPrefab, persistent
-                .Once())                                                   // it receives a [Once] request: its root copy carries empty
-                                                                           // Unacked and OnceSenders buffers (1,024 entries, window 16)
+                .Once())                                                   // it receives a [Once] request: its root copy carries an empty
+                                                                           // Unacked buffer (1,024 entries, window 16); OnceSenders are rows
             .Tracked(static set => set                                     // every component type of this compilation declaring ITracked
                 .With<Grid>().With<NetIds>().With<Inventory>().With<Wallet>()   // (section 10), plus the buffers it uses; the
-                .With<Stash>().With<Prize>().With<Position>().With<Cell>() // framework's persisted types (RootState, Unacked, OnceSenders,
+                .With<Stash>().With<Prize>().With<Position>().With<Cell>() // framework's persisted types (RootState, Unacked,
                 .With<Velocity>().With<Granting>().With<DynamicBuffer<Slot>>(),   // Asking, WakeAt) are in the runtime's own filter;
                 changed: static f => f                                     // Registration checks the run-time persist set; packages add theirs
                     .ChangedAny<Grid, NetIds, Inventory, Wallet, Stash, Prize>(0)   // eleven in two balanced calls (six, five);
@@ -2524,9 +2549,9 @@ public void A_grant_is_asked_again_after_a_crash()
 - 带 `[To]` 的客户端消息找不到对应的 `Route`，或者 `Route` 的身份类型不是工程的 `IClaims`（第 4 节）；`PresencesPerClient` 大于 1 的 Actor 类型处理不带 `[To]` 的客户端消息（第 7 节）；`ClientGroup.Everyone` 这个保留键用在 `root.Group(…)` 里（第 9 节）。
 - `IActor<T>`、以自身作键的 `IUniqueIndexed<T>`、`IIndexed<T>` 不是 `partial`（DAS025，可一键修复，第 3 节）。
 - 分析器看得出是要保存的 prefab（同一个编译里用字面的 `SetX` 链搭的 `[Persist]` prefab）上有没写 `ITracked` 的用户组件类型，或者元素类型声明在服务端工程和 DaServer 包以外的 `DynamicBuffer<T>`（DAS027，第 10 节；看不出的由 `Registration` 在启动时抛出）。
-- `root.Commit()`、`root.IssueClientToken`、`AskUntilAnswered` 用在根不保存的 Actor 类型上；根不保存的 Actor 类型处理 `[Once]` 的请求；`[Once]` 的请求从 `ICluster`、`[Stateless]` 或根不保存的 Actor 类型发出（`[From<K>]` 的 K 根不保存也报）；`AskUntilAnswered` 在看得出不保存的实体上调用（DAS031，第 8 节）。
+- 该用要保存的根、用了不保存的（DAS031，第 8 节）：`root.Commit()`、`root.IssueClientToken`、`AskUntilAnswered` 用在根不保存的 Actor 类型上，或者在看得出不保存的实体上调用；根不保存的 Actor 类型处理 `[Once]` 的请求。
 - `[Latest]` 写在请求、推送或 Topic 的消息上（DAS030，第 4 节）。
-- `[Once]` 写错（DAS032，第 8 节）：写在不是请求（`IFromClient<R>`、`IRequestTo<K, R>`）的类型上；回复不是不超过 32 字节的定长值（存不进 `Unacked`）；处理方法取 `ReplyTo<T>`（存下的回复要和改动一起写成）；`[Once]` 的服务器请求用 `Ask` 发出，或者 `AskUntilAnswered` 发的不是 `[Once]` 的请求。
+- `[Once]` 的写法和发法（DAS032，第 8 节）：写在不是请求（`IFromClient<R>`、`IRequestTo<K, R>`）的类型上；回复不是不超过 32 字节的定长值（存不进 `Unacked`）；处理方法取 `ReplyTo<T>`（存下的回复要和改动一起写成）；`[Once]` 的服务器请求用 `Ask` 发出，或者从 `ICluster`、`[Stateless]`、根不保存的 Actor 类型发出（`[From<K>]` 的 K 根不保存也报）；`AskUntilAnswered` 发的不是 `[Once]` 的请求。
 - `Join()` 的返回值没有用到。
 - 客户端消息有多个 `[To]` 参数；`[To]` 参数的类型和处理 Actor 类型的键形状不一致；`[Handles<Connection>]` 处理的消息带 `[To]`。
 - 身份参数（`IClaims` 类型）用在客户端消息以外的处理方法里；`[UpdateInGroup<K>]` 系统的方法取 `IClaims` 参数（第 5 节；Actor 类型参数 `in K` 可以取，它只匹配根）。
@@ -2635,7 +2660,7 @@ root.Remind<DailyReset>(Quests.NextMidnightUtc(time.Utc), every: TimeSpan.FromDa
 
   | | `e.Schedule(ev, after:)` | `AskUntilAnswered`（运行时，第 8 节） | `DaServer.Reminders` |
   |---|---|---|---|
-  | 写法 | 一个事件，`[On<T>]` 处理 | `root.AskUntilAnswered(to, request)`，回答在 `[On<Replied<T>>]` | `root.Remind<T>(at, every)`，`[On<Reminded<T>>]` 处理 |
+  | 写法 | 一个事件，`[On<T>]` 处理 | `e.AskUntilAnswered(to, request)`，回答在 `[On<Replied<T>>]` | `root.Remind<T>(at, every)`，`[On<Reminded<T>>]` 处理 |
   | 时间 | 单调时间，精确到项 | 重试按 `RetryAfter` 和退避；宕机后精度是 `DueScan` 的间隔（秒级） | UTC，同 `WakeAt` |
   | 停用、宕机 | 丢失（迁移、热重启不丢） | 留在记录里，到时激活 Actor 接着问 | 同 `WakeAt` |
   | 投递 | 最多一次 | 请求在接收方恰好一次（`[Once]`），回答投递一次 | 至少一次，按 (提醒, `UtcAt`) 去重，周期自己前进 |
