@@ -65,13 +65,22 @@ Keep this file current: tick items when done, add items when scope changes.
       framework uses `GetOrAddX`/`SetX` wherever a load may have brought one back (`NoAddSingletonAfterLoad`); the
       inspector's and the admin plane's reads go through `world.Read` and stamp nothing (`InspectorReadStampsNothing`); the
       generated `SetXIfChanged` of an indexed tracked component adds it when the entity lacks it and notifies the index
-      (`SetIfChangedAddsMissingIndexedComponent`; if not, the mmo's `CellAssign` writes `SetCell` after its own compare).
+      (`SetIfChangedAddsMissingIndexedComponent`; EasyEcs 4.7's XML documents it: "as Set does: added if missing,
+      stamped, indexed"); `world.TrimExcess` runs from the world loop between `world.Update` calls, never inside a pass
+      or a system (its XML: "owner thread only, not during a pass") (`TrimExcessBetweenUpdatesOnly`); every framework
+      reactor whose filter is only `[Removed<T>]`, `[ChangedAny]` or `[RemovedAny]` takes a component parameter or a
+      `[With<…>]`, since EECS003 accepts a zero-component `[ForEach]` only with `[With<T>]` or `[Changed<T>]`
+      (`RemovedReactorsTakeAComponent`).
       EasyEcs requests (draft §14 item 8; proposed, not yet forwarded, none in 4.7; #27 and (a) withdrawn, since
       persisted types declare `ITracked` in source): (b) a public
       read of a prefab's components (until then `Registration` instantiates each prefab once into a scratch world at
       construction and reads the instance's `Entity.Describe()` types; `PrefabCompositionReadWithoutRequestB`), (c) adding a system to a group without an attribute (until then the
       generator emits a closed subclass per actor type of each generic framework system), (d) a "job-shaped" attribute
-      so EasyEcs's analyzer checks `[On<T>]` methods itself (until then DAS026 repeats its rules).
+      so EasyEcs's analyzer checks `[On<T>]` methods itself (until then DAS026 repeats its rules), (e) EECS003 accepting
+      `[Removed<T>]`, `[ChangedAny]` and `[RemovedAny]` as the filter of a zero-component `[ForEach]`, as it accepts
+      `[Changed<T>]` (until then those reactors take a component, above). Still open after checking the 4.7.0 package:
+      `Prefab` exposes only `Has<T>`/`Read<T>`/`Id`, `AddSystem<T>(bool changesFromNow)` has no group, and the
+      generator has no job-shaped attribute.
     - [ ] W2 Packages and attributes (ADR-086, ADR-087): Abstractions merged into Core, Hosting into `DaServer`,
       Simulation into Testing, WireTool shipped inside Core beside the generator and run out of process (`dotnet exec`
       after the build, `UpdateWireManifest=true`); `DaServer:Shards` and the AppHost's shard
@@ -86,7 +95,14 @@ Keep this file current: tick items when done, add items when scope changes.
       `[MaxReplySize(n)]` (Core, so a Protocol key type can carry it), `Pending<T>`,
       `Sender`, `Time.Utc` (from the world's `TimeProvider`) in the runtime; node configuration bound by the
       configuration binding source generator (enabled in the library, a `NodeSettings` POCO, no reflection binding).
+      Targets (ADR-086): code both sides load (Core, Client, the templates' `Game.Protocol`/`Game.Shared`) builds for
+      `net10.0` and netstandard2.1 (today netstandard2.1 and net11.0; `#if NET` paths now compile against .NET 10, so
+      anything .NET 11-only moves to the server core), `DaServer.Replication.Client` for `net10.0` only (W7a), the server
+      core (`DaServer`, Persistence, Testing, Aspire) for `net11.0` only; a Godot 4 .NET game (`net10.0`) loads the
+      .NET build with its fast paths.
       Tests: `PackagesDependOnlyDownwards` (rewritten for six packages and the optional ones), `WorldCountFollowsCpuRequest`,
+      `ClientPackagesLoadOnNet10` (a net10.0 console references Core and Client and runs a connect, the CI's stand-in for
+      a Godot game),
       `WireToolRunsOutOfProcess` (the manifest written by `dotnet exec`, no task assembly loaded into MSBuild).
     - [ ] W3 Generator and analyzers: explicit `Key`, typed sends (asks with an
       optional `deadline`), typed `Replied` accessors (C# 14 extension blocks), `[On<T>]` jobs run through EasyEcs's
@@ -520,11 +536,13 @@ Keep this file current: tick items when done, add items when scope changes.
       deltas on rejoin; proven by a benchmark project running the mmo's AOI scenario both ways (replicated components
       against the sample's hand-written `Nearby`): bytes per client, broadcast p99, 0 B per tick (ADR-091). Tests:
       `RejoinSameIncarnationGetsDelta`, `IncarnationChangeForcesFullResend`, `IncarnationRenewalClearsExitRingsAndStamps`, `ReloadRenewsIncarnation`, `OverwrittenExitRingForcesFullResend`, `RejoinDeltaSendsFullStateOfEntityThatJoinedGroup`, `RejoinDeltaAckIsWorldChangeTick`,
-      `FullResendClearsClientReplicasFirst`.
+      `FullResendClearsClientReplicasFirst`, `ReplicationClientRunsOnNet10` (`DaServer.Replication.Client` targets `net10.0`
+      only, the target EasyEcs ships, so Godot 4 .NET games and .NET bots load it).
     - [ ] W7b Non-.NET clients (ADR-090): the client protocol specification, the conformance suite
       (run against the C# SDK first), the TypeScript client (`@daserver/client`) with the codecs Nino.TypeScript (prerelease,
       pinned) generates from `Game.Protocol`'s build; proven by the flash sale from a browser page and the suite in CI;
-      Unity WebGL (IL2CPP) keeps the C# client over a jslib WebSocket transport. Tests:
+      the first C# client engine is Godot 4 .NET (`net10.0`); Unity (netstandard2.1, IL2CPP, WebGL over a jslib
+      WebSocket transport) is future work, and its replication waits for an EasyEcs netstandard2.1 build. Tests:
       `ConformanceSuitePassesOnCSharpSdk`, `ConformanceSuitePassesOnTypeScriptClient`, `FlashSaleBuysFromBrowserPage`.
     - [ ] W7c Tools (ADR-090): `TestCluster.Partition`/`Kill`/`DelayLinks` and `Table(value)` for users' tests (the framework's own
       partition and crash tests move onto them); the read-only inspector's endpoints (drafts/architecture.md section 8,

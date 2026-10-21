@@ -61,7 +61,7 @@ static partial class Chat
 
 ### 用户写的
 
-用户一般只有两个工程：`Game.Protocol` 是客户端收发的消息，只有数据，编译成 netstandard2.1 的 DLL 交给 Unity；`Game.Server` 是其余的一切。客户端也要跑的规则（预测移动、本地校验，例如 mmo 样例的 `Steps.IsValid`）放进第三个工程 `Game.Shared`（netstandard2.1，只有纯函数和数据，不含 Actor 类型和服务器之间的消息；Protocol 之外由分析器同样把关），Server 和客户端都引用它。`Game.Server` 加上五行的 Program.cs 和部署用的 `apphost.cs`（第 2 节）。换代码就是换二进制：节点原地热重启，JIT 和 Native AOT 一样（第 10 节）。
+用户一般只有两个工程：`Game.Protocol` 是客户端收发的消息，只有数据，编译成 net10.0 的 DLL 交给客户端（首先是 Godot 4 .NET，它的游戏工程是 net10.0；也编 netstandard2.1，给以后的 Unity 留着）；`Game.Server` 是其余的一切。客户端也要跑的规则（预测移动、本地校验，例如 mmo 样例的 `Steps.IsValid`）放进第三个工程 `Game.Shared`（netstandard2.1、net10.0，只有纯函数和数据，不含 Actor 类型和服务器之间的消息；Protocol 之外由分析器同样把关），Server 和客户端都引用它。`Game.Server` 加上五行的 Program.cs 和部署用的 `apphost.cs`（第 2 节）。换代码就是换二进制：节点原地热重启，JIT 和 Native AOT 一样（第 10 节）。
 
 | 写什么 | 写法 | 工程 |
 |---|---|---|
@@ -2668,7 +2668,7 @@ me.Publish(new Topic(Feeds.Prices), new PriceChanged(item, price));
 ### 非 .NET 的客户端
 
 - **客户端的线协议写成公开的规范**：帧格式、握手（令牌、`wire.manifest` 哈希）、`Ready`、重连和重新加入（槽号、`JoinConfirmed`、`PresenceLost`、`PresenceClosed`）、`Retire` 和 `HandedOff`、`Superseded`、`Unavailable`、`Busy` 的 `RetryAfter`、心跳和静默断开。C# SDK 是参考实现，一套一致性测试同时跑 C# 和其他实现。
-- **TypeScript 客户端**（npm 包，经浏览器的 WebSocket 连 `/clients/ws`）：消息的类和编解码由 Nino.TypeScript（预发布的包）在每次构建 `Game.Protocol` 之后从它的程序集生成，结构体和版本兼容的类型都支持，DaServer 不另写 TypeScript 生成器；浏览器拿到和 Unity 一样的类型；槽、重新加入、`Retire`、退避按规范实现。
+- **TypeScript 客户端**（npm 包，经浏览器的 WebSocket 连 `/clients/ws`）：消息的类和编解码由 Nino.TypeScript（预发布的包）在每次构建 `Game.Protocol` 之后从它的程序集生成，结构体和版本兼容的类型都支持，DaServer 不另写 TypeScript 生成器；浏览器拿到和 C# 客户端一样的类型；槽、重新加入、`Retire`、退避按规范实现。
 - Unreal / C++ 以后按同一份规范做。
 
 ### `DaServer.Replication`：组件同步到客户端
@@ -2686,7 +2686,8 @@ me.Publish(new Topic(Feeds.Prices), new PriceChanged(item, price));
 - **全量**：实体换组（`[Changed<ReplicatedTo>]`）时，新组收到它的全量、旧组收到移除；Presence 新订阅一个组时收到它订阅的组里所有实体的全量。
 - **重新加入只补差**：`[Changed<Joined>]` 并且 `MissedPushes` 为真时，SDK 在加入时带着它最后应用的（化身号, 戳）。化身号相同、组的离开环还够得着那个戳，就只发从它起的：离开环里的移除；`ReplicatedTo` 的写入戳不早于它的实体发全量（离线期间才进组、之后没再写过的实体，`Replica<T>` 的戳不说明它，靠的是这一条）；其余实体发 `Replica<T>` 的戳不早于它的组件。查询用一个存在字段里的过滤 `QueryFilter.Create().ChangedAny<所有 [Replicated] 类型, ReplicatedTo>(0)`（`ReplicatedTo` 是追踪变更的组件），每个客户端用 `filter.Since(ack)` 换成它确认的起点，不分配（只是更快的查找，不靠它判断正确性）。`Since` 是"在它或它之后写过"，所以确认的那一趟里写过的也再发一次：多发，不漏。化身号不同（Actor 重新加载、迁移、热重启、`Reload`），或者环已经被覆盖，就发全量。
 - **重发全量就是 `Reset(化身号)`**：先发一条 `Reset(化身号)`，客户端清掉这个 Actor 的所有副本，再应用全量。所以离线期间被移除的实体不会留在客户端上，客户端也从此按新的化身号报告（化身号, 戳）。
-- 客户端 SDK 应用补丁：C# 的 `DaServer.Replication.Client` 写进客户端的 EasyEcs world，TypeScript 的写进按 `ReplicaId` 索引的实体表。
+- 客户端 SDK 应用补丁：C# 的 `DaServer.Replication.Client`（net10.0，因为 EasyEcs 只发 net10.0：Godot 4 .NET 游戏和 .NET 机器人）写进客户端的 EasyEcs world，TypeScript 的写进按 `ReplicaId` 索引的实体表。Unity 要等 EasyEcs 出 netstandard2.1 的版本（路线图 W7）。
+- 同步的组件用写入方法改：`[Replicated]` 组件都追踪变更，生成的 `entity.Health` 是 `ref readonly`，所以服务器上写它用 `e.WriteHealth()`、`Mut<Health>` 或 `SetHealth`，不能像第 12 节没同步的 `Health` 那样 `ref var hp = ref target.Health`。
 - 最多一次，和推送一样；漏了的由全量补上。用一个单独的基准项目证明：同一个 mmo 的 AOI 场景跑两遍，同步组件对比样例手写的 `Nearby`（每个客户端的字节数、广播 p99、每 tick 的分配）；mmo 样例本身保留手写的 AOI（ADR-091）。
 
 ### 测试和管理的小工具

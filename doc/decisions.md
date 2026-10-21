@@ -787,6 +787,8 @@ Replaced by ADR-081.
   runtime; clients that cannot run .NET 11 take netstandard2.1); `ValueTask<T>` under runtime async as the awaitable
   (no faster than `Reply<T>`, 320 B per suspension).
 - Consequences: servers need the .NET 11 runtime (x86-64-v2 or newer); BenchmarkDotNet 0.16 (preview) hosts .NET 11.
+  The target packages (ADR-086, roadmap W2) build what a client loads for `net10.0` and netstandard2.1 instead
+  (Godot 4 .NET games); the server core stays `net11.0` only.
   Broadcast fan-out is the one path that did not gain: profile it on .NET 11 (roadmap, "Open after G").
 
 
@@ -1997,7 +1999,7 @@ Replaced by ADR-081.
   world) into the AppHost (`AddNodes(..., shards: 8)`) and configuration.
 - Decision:
   - **A package exists when something references it without the others.** Six packages: `DaServer.Core`
-    (netstandard2.1, net11.0: the client-facing contracts and the wire and transport; carries the generator, the
+    (netstandard2.1, net10.0: the client-facing contracts and the wire and transport; carries the generator, the
     analyzers and the `wire.manifest` tool), `DaServer.Client`, `DaServer` (the server runtime and the node
     host: Generic Host, ASP.NET Core, configuration, OpenTelemetry, the HTTP plane), `DaServer.Persistence.PostgreSql`
     (a capability, ADR-045), `DaServer.Testing` (`TestActor<K>`, `TestCluster`, simulated users) and
@@ -2021,9 +2023,15 @@ Replaced by ADR-081.
   HTTP); WireTool as an in-process MSBuild task (above); a separate Simulation package (a test tool, never in production); keeping "domain" as a technical term for the
   subtree (two words for one thing).
 - Consequences: ADR-052's four layers become Core / Client / server once roadmap W2 lands, and ADR-052 is rewritten
-  then. A Unity client references `DaServer.Client` (Core comes with it); a Protocol project references
+  then. A game client references `DaServer.Client` (Core comes with it); a Protocol project references
   `DaServer.Core`; a node references `DaServer`; tests reference `DaServer.Testing`. Today's `DaServer:Shards`,
-  `map_shards` and the `daserver.shard.*` metrics are renamed in W2.
+  `map_shards` and the `daserver.shard.*` metrics are renamed in W2. Targets: code both sides load (Core, Client,
+  `DaServer.Replication.Client`, users' `Game.Protocol`/`Game.Shared`) targets `net10.0` and netstandard2.1
+  (`DaServer.Replication.Client` `net10.0` only, as EasyEcs ships `net10.0` only); the server core (`DaServer`,
+  Persistence, Testing, Aspire, the optional server packages) targets `net11.0` only. The first client engine is
+  Godot 4 .NET, whose game projects target `net10.0` (EasyEcs's own guidance) and cannot load a `net11.0` assembly;
+  netstandard2.1 is kept for a later Unity client. This replaces ADR-054's "no net10.0 build" and drops the shared
+  packages' `net11.0` build in W2; .NET 11 features (runtime async) stay in the server core.
 
 ## ADR-087 Deployment lives in `Game.Server/apphost.cs`; ports are declared per node group; the connection actor is `Connection`
 - Context: the target model had a third user project (`Game.AppHost`), opened the client port implicitly next to an

@@ -11,13 +11,13 @@ promoted into design.md and decisions.md and deleted (W10).
 
 ### Framework packages
 
-Six packages. A package exists when something references it without the others: a Unity client takes no server, a
+Six packages. A package exists when something references it without the others: a game client takes no server, a
 node takes no AppHost code, production takes no test tools, and a capability is off unless referenced (ADR-045).
 
 | Package | Targets | Holds |
 |---|---|---|
-| `DaServer.Core` | netstandard2.1, net11.0 | What both sides see: the client-facing contracts (`IFromClient`, `IFromClient<R>`, `IToClient`, `[To]`, `IServer`, `TypeId<T>`, status codes) and the wire and transport (frames, buffers, channels, the pending-call table). Ships the generators, the analyzers and the `wire.manifest` task (below). |
-| `DaServer.Client` | netstandard2.1, net11.0 | The client SDK: connect, send `IFromClient`, receive `IToClient`, slots and re-joining, moving on `Retire` ([draft §7](programming-model.md#7-客户端与-presence)). |
+| `DaServer.Core` | netstandard2.1, net10.0 | What both sides see: the client-facing contracts (`IFromClient`, `IFromClient<R>`, `IToClient`, `[To]`, `IServer`, `TypeId<T>`, status codes) and the wire and transport (frames, buffers, channels, the pending-call table). Ships the generators, the analyzers and the `wire.manifest` task (below). |
+| `DaServer.Client` | netstandard2.1, net10.0 | The client SDK: connect, send `IFromClient`, receive `IToClient`, slots and re-joining, moving on `Retire` ([draft §7](programming-model.md#7-客户端与-presence)). |
 | `DaServer` | net11.0 | The server: the model (`IActor<T>`, `[Handles<K>]`, `[On<T>]`, `IMessageTo<K>`, `IRequestTo<K,R>`, `[From<K>]`, `IEvent`, `IClaims`, `IConfigTable<T>`, `IWorldSingleton<T>`, `[Persist]`, `[NotSaved]`, `Entity` operations, `Connection`), the framework systems, cluster, placement, persistence, migration, hot restart, and the node host: Generic Host and ASP.NET Core, configuration, OpenTelemetry, shutdown, the HTTP plane (service managers are .NET's own `UseSystemd()` and `UseWindowsService()`; launchd needs only its plist, [deployment.md section 0](deployment.md#0-launch-flows)). |
 | `DaServer.Persistence.PostgreSql` | net11.0 | The record store: epoch-fenced, compare-and-swap writes. |
 | `DaServer.Testing` | net11.0 | `TestActor<K>` (one actor, one world, DaServer's manual clock, ADR-071), `TestCluster` (in-process nodes) and simulated users (`Swarm`, HTN behaviors) over `DaServer.Client` for load tests and E2E. |
@@ -32,8 +32,16 @@ Each is off unless referenced and lives in its own namespace; the runtime refere
 | `DaServer.Reminders` | net11.0 | `Reminder<T>`, `Reminded<T>`, `root.Remind<T>`; reminders are persistent entities whose next firing is the runtime's `WakeAt`; the runtime's `ArmSystem` arms their `Due`, the package only handles the firing |
 | `DaServer.Topics` | net11.0 | The `Topic` actor type, `ITopicMessage`, `Subscribe`/`Unsubscribe`/`Publish` on `Entity` (each a one-way package message to the Topic without `[From<…>]`; `Publish` carries the payload's type id and bytes, which the Topic never decodes), the one-way `NotSubscribed(ActorId, Epoch) : IMessageTo<Topic>` (an ordinary package message, not control mail), the subscriber-side `Subscription` buffer and the system renewing it every `DaServer:Topics:RenewInterval`; table changes ride the normal checkpoint, the receiving node drops a delivery whose topic is not in the subscriber root's `Subscription` buffer and sends the Topic, from the subscriber's shard, a one-way `NotSubscribed` echoing the `(ActorId, Epoch)` the delivery frame carried (dropped under `Busy`, it is sent again at the next publish), which the Topic deletes only when that epoch equals its table's; delivery is at most once, a lost or reordered subscription message costs at most one renew interval of missed publishes, and once unsubscribed no handler runs for a later delivery and the Topic stops sending at the next publish |
 | `DaServer.Replication` | net11.0 | `[Replicated]`, `ReplicatedTo`, the per-type replication systems with generated field bitmasks; its own state: `Replica<T>` (last sent value and the world's `ChangeTick` it was sent at), a bounded ring of exits per group, an incarnation per actor (renewed on activation from the record, migration arrival, hot-restart load and a reload after a throw, so the stamps compare only within one; a renewal clears the actor's exit rings and zeroes its `Replica<T>` stamps) |
-| `DaServer.Replication.Client` | netstandard2.1, net11.0 | Applies replication patches into a client's EasyEcs world |
+| `DaServer.Replication.Client` | net10.0 | Applies replication patches into a client's EasyEcs world (EasyEcs ships `net10.0` only: Godot 4 .NET games and .NET bots; Unity waits for an EasyEcs netstandard2.1 build) |
 | `@daserver/client` (npm) | TypeScript | The client SDK over WebSocket, per the published client protocol; message classes and codecs generated by Nino.TypeScript from `Game.Protocol`'s build (no DaServer generator); replication patches into an entity table |
+
+Targets, one rule: code both sides load (`DaServer.Core`, `DaServer.Client`, `DaServer.Replication.Client`, users'
+`Game.Protocol` and `Game.Shared`) targets `net10.0` and netstandard2.1, and the server core (`DaServer`,
+`DaServer.Persistence.PostgreSql`, `DaServer.Testing`, `DaServer.Aspire`, the optional server packages, `Game.Server`)
+targets `net11.0` only, where runtime async and the other .NET 11 features live. `net10.0` is for the first client
+engine, Godot 4 .NET, whose game projects target `net10.0` (EasyEcs's own guidance) and cannot load a `net11.0`
+assembly; a server loads the same `net10.0` build. netstandard2.1 leaves the door open for Unity, which is future work;
+`DaServer.Replication.Client` is `net10.0` only, because EasyEcs ships `net10.0` only (ADR-086, roadmap W2).
 
 `DaServer.Templates` is a `dotnet new` template package (`daserver`, `daserver-mmo`, `daserver-flashsale`, `daserver-arena`, `daserver-relay`), generated from the samples; nothing references it (ADR-091).
 
@@ -56,7 +64,7 @@ test tools); `DaServer.WireTool` is no package of its own, it ships inside `DaSe
 
 | Project | Targets | Holds | Code changes |
 |---|---|---|---|
-| `Game.Protocol` | netstandard2.1, net11.0 | Client messages only: data, no actor types, no addresses, no nodes | Shipped to clients |
+| `Game.Protocol` | netstandard2.1, net10.0 | Client messages only: data, no actor types, no addresses, no nodes | Shipped to clients |
 | `Game.Server` | net11.0 | Actor types, server-to-server messages, events, components, the `IClaims` type, prefabs, server types (several per project), `[Handles<K>]` classes of `[On<T>]` methods, `[UpdateInGroup<K>]` systems, the generated `Registration`, the node's `Program.cs` (about five lines), and `apphost.cs`, the deployment | Hot restart or rolling upgrade, JIT and AOT alike (section 5) |
 
 - **One project may define several server types** (`[Hosts<Map>] public readonly struct MapServer : IServer`); **a
@@ -1359,7 +1367,7 @@ or rolling upgrade (section 5).
   must not bind. `GetValue<TimeSpan>` and the generic `configuration.Get<TOptions>()` of `AddDaServerFeature<TOptions>`
   move to closed call sites. A W8 test publishes a node with warnings as errors and checks no SYSLIB1100/1101,
   IL2026 or IL3050.
-- **Framework projects** set `IsAotCompatible` on their net11.0 targets, so the trim and AOT analyzers run on every
+- **Framework projects** set `IsAotCompatible` on their .NET targets (net10.0, net11.0), so the trim and AOT analyzers run on every
   build under `TreatWarningsAsErrors`.
 
 ### Telemetry
