@@ -118,7 +118,8 @@ There is one vocabulary, used the same way everywhere.
 | ↓ / ↑, wheel, vertical swipe, PageDown / PageUp, j / k | The next or previous screen within the current section. It stops at the section's first and last screens and never crosses into another section |
 | → / ←, horizontal swipe, a section in the edge index | The next or previous section, opening at its first screen |
 | A row in a list | Opens that item; Esc returns to where you were |
-| `/` or ⌘K / Ctrl+K | Find: an actor by its id, a server type, a node, an action; ranked as you type, five per group; ↑↓ select, Enter opens |
+| 1–9 (two digits in a row for 10 and on), Home / End, a contents entry | Opens that screen of the current section, the first or the last |
+| `/` or ⌘K / Ctrl+K | Find: actors by id, server types, nodes, screens by name, actions; one column, ranked as you type; with nothing typed, the current section's other screens come first; ↑↓ select, Enter opens |
 | Esc or Backspace | Back. It closes Find or a confirmation, otherwise returns from the last jump (a list row, a Find result). It is dimmed while there is nowhere to go back to |
 
 - **Sections: an edge index.** There is no menu bar. On a desk the five sections stand in a short column at the
@@ -129,14 +130,24 @@ There is one vocabulary, used the same way everywhere.
   phone the index moves to the bottom edge, under the thumb: one line above the key hints, the current section in
   ink with a 1 px ink segment on the footer rule. The header is a running head only (the brand at the left, the
   environment at the right) with no rule under it. The index never moves.
-- **One push of the wheel, one step.** A step locks the wheel for 450 ms, so one spin or one flick with its inertia
-  tail moves one screen. After that a step needs a new push: the first event after 200 ms of quiet, a mouse notch
-  (lines or pages, or a whole multiple of 120 in `wheelDeltaY`), or the moment a trackpad stream speeds up again
-  (the mean of its last 10 samples above 1.2 times the mean of its last 70, after fullPage.js). A pixel stream steps
-  once its push has added up to 24 px, so a touch of a few pixels does nothing; turning the other way is a new push
-  at once. A user who keeps scrolling steps once per transition; an inertia tail only slows down and never steps
-  again. Checked in a browser against the events browsers send (21 cases: notches at several spacings, Firefox and
-  macOS notches, a long spin, flicks with tails, a second flick in a tail, a slow drag, a touch, a turn back).
+- **Contents.** In the margin, under the folio, the current section's screens are listed by number and name, 15 px,
+  ink-3, with the current one in ink. The line below it is what comes next, so there is no separate Next line on a
+  desk. A click opens a screen, and so does its number on the keyboard. The list is as tall as the section's body row
+  allows, less the status line. A longer section shows its contents a page at a time, and a line at either end
+  counts the hidden screens ("9 above", "4 below") and opens the first of them. A section whose page is itself a
+  list of its screens (Changes, the slowest actors) has no contents beside it. On a phone the folio is a link that
+  opens the contents as a page of its own: one row per screen with its number, eight to a page; ↑↓ move, Enter or a
+  number opens, Esc closes.
+- **Find** is one column in the main measure. The input carries the short placeholder "Actor, server type, node or
+  action". Results are rows of 44 px, the name at the left and its context at the right, never wrapping; groups are
+  small running heads. Find's height is set by the rows the window holds (four to nine on a desk), so the head stays
+  put while results narrow, and a final line counts what is not shown ("405 more; keep typing").
+- **One scroll, one step.** A run of wheel events is one scroll however long it lasts: a spin of many notches, an
+  accelerating spin, or a flick with its tail. A new scroll starts after 240 ms of quiet, with a turn the other way,
+  or with a clear new flick on a decayed tail: the samples have fallen below a quarter of the scroll's peak, and the
+  new sample is at least 30 px and three times the smallest of the last five. A notch steps on its first event, a
+  pixel stream after 24 px, and a scroll that comes during the 450 ms transition steps when it ends. Checked in a
+  browser against the events browsers send, an accelerating macOS spin and a jittery trackpad tail included.
 - Every key hint at the bottom is bold, always in the same place, and clickable. A pressed key underlines its hint
   at once, so the key is answered before anything has moved. A key that only one screen uses
   (such as rolling back) is a button on that screen, not a global key.

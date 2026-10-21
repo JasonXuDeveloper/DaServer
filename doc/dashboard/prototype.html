@@ -53,8 +53,21 @@ button:focus:not(:focus-visible){outline:none}
 .folio{grid-row:1;align-self:end;display:flex;align-items:baseline;gap:8px;color:var(--ink-3)}
 .folio .fn{font:400 var(--h1)/1.2 var(--display);color:var(--ink-3)}
 .folio .fo{font-size:14px}
-.nextl{grid-row:2;align-self:start;display:flex;flex-direction:column;gap:4px;padding-top:var(--s5)}
+.nextl{grid-row:2;align-self:start;display:none;flex-direction:column;gap:4px;padding-top:var(--s5)}
 .nx{font-size:15px;color:var(--ink-2);align-self:flex-start}
+/* the section's contents: every screen of the section, the current one in ink; the line below it is what comes next */
+.toc{grid-row:2;align-self:start;display:flex;flex-direction:column;padding-top:var(--s5);padding-right:var(--s2);min-width:0}
+.tc{display:grid;grid-template-columns:28px minmax(0,1fr);align-items:baseline;height:28px;font-size:15px;color:var(--ink-3);white-space:nowrap}
+.tc .n{font-size:13px;font-variant-numeric:tabular-nums lining-nums}
+.tc .l{overflow:hidden;text-overflow:ellipsis}
+.tc:hover{color:var(--ink-2)}
+.tc[aria-current]{color:var(--ink)}
+.tc[aria-current]:hover{color:var(--ink)}
+.tmore{height:28px;font-size:14px;font-style:italic;color:var(--ink-3);padding-left:28px;text-align:left}
+.tmore:hover{color:var(--ink-2)}
+.folio button{font:inherit;color:inherit;display:inline-flex;align-items:baseline;gap:5px;border-bottom:1px solid var(--rule-2);padding-bottom:1px}
+.folio button:hover{border-color:var(--ink)}
+.tpage{display:block;text-align:left;height:40px}
 .nx:hover{color:var(--ink)}
 .nx .ar{margin-left:6px;color:var(--ink-3)}
 .status{grid-column:1 / 3;grid-row:2;align-self:end;margin:0;padding-right:var(--s2);font-style:italic;font-size:15px;line-height:1.45;color:var(--ink-2);min-height:4.4em;display:flex;align-items:flex-end}
@@ -173,14 +186,17 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
 .audit .w{color:var(--ink-3)}
 
 /* find and confirm */
-.qin{width:100%;background:none;border:0;border-bottom:1px solid var(--rule-2);font:400 clamp(24px,2.3vw,32px)/1.3 var(--display);padding:6px 0 10px;outline:none;color:var(--ink)}
+.qin{width:100%;background:none;border:0;border-bottom:1px solid var(--rule-2);font:400 clamp(22px,1.9vw,28px)/1.3 var(--display);padding:6px 0 10px;outline:none;color:var(--ink)}
 .qin::placeholder{color:var(--ink-3)}
 .qin:focus{border-bottom-color:var(--ink)}
-.res{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));column-gap:var(--g)}
+.res{display:flex;flex-direction:column;min-width:0}
+.rh{display:flex;align-items:flex-end;height:40px;padding-bottom:6px;font-size:14px;color:var(--ink-3);border-bottom:1px solid var(--rule)}
 .rg{display:flex;flex-direction:column}
 .rg .sc{padding-bottom:8px;border-bottom:1px solid var(--rule)}
-.hit{display:flex;justify-content:space-between;align-items:center;gap:12px;height:40px;color:var(--ink-3);border-bottom:1px solid var(--rule)}
-.hit .h{font-size:14px;color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hit{display:flex;justify-content:space-between;align-items:center;gap:var(--s2);height:44px;flex:0 0 auto;color:var(--ink-3);border-bottom:1px solid var(--rule);white-space:nowrap;min-width:0}
+.hit .t{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.hit .h{flex:0 0 auto}
+.hit .h{font-size:14px;color:var(--ink-3)}
 .hit:hover{color:var(--ink-2)}
 .hit.on{color:var(--ink)}
 .hit.on .t{font-weight:600}
@@ -245,6 +261,8 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   .folio .fn{font:400 15px/1.4 var(--text);color:var(--ink-3)}
   .folio{gap:5px}
   .nextl{flex-direction:row;gap:8px;align-items:baseline;padding-top:0}
+  .toc{display:none}
+  .nextl{display:flex}
   .status{position:absolute;left:0;right:0;bottom:44px;min-height:0;font-size:14px;padding:0}
   .eyebrow{margin-bottom:6px;font-size:14.5px}
   h1{white-space:normal;height:2.5em;line-height:1.25;overflow:hidden;text-wrap:balance}
@@ -332,7 +350,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     <span class="env">mmo, production</span><span class="ex">Example data</span>
   </div></header>
   <main class="stage wrap grid" id="stage">
-    <aside class="margin" id="margin" aria-label="Position"><div class="folio" id="folio"></div><div class="nextl" id="nextl"></div></aside>
+    <aside class="margin" id="margin" aria-label="Position"><div class="folio" id="folio"></div><div class="nextl" id="nextl"></div><nav class="toc" id="toc" aria-label="Contents"></nav></aside>
     <section class="page" aria-live="polite">
       <div class="head"><p class="eyebrow sc" id="eb" data-m="eb"></p><h1 id="h1" data-m="h1"></h1></div>
       <div class="body" id="body"></div>
@@ -499,14 +517,14 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     if (!c) add(1, 'clients', 'clients', 'Client connections', { eb: ceb, h1: 'Client connections', body: function () { return clients(0); } });
     else {
       add(1, 'clients', 'clients-sum', 'Client connections', { eb: ceb, h1: 'Client connections', body: function () { return clients(1); } });
-      add(1, 'clients-n', 'clients-gw', 'Gateways that stand out', { eb: function () { return 'Gateways that stand out'; }, h1: 'Client connections', body: function () { return clients(2); } });
+      add(1, 'clients-n', 'clients-gw', 'Gateways', { eb: function () { return 'Gateways that stand out'; }, h1: 'Client connections', body: function () { return clients(2); } });
     }
-    CHANGES.forEach(function (ch, ci) { add(2, ch.id, 'changes', ch.kind + ' ' + ch.target, { eb: function () { return 'The last hour, newest first'; }, h1: 'Changes', body: function () { return changes(ci); } }); });
+    CHANGES.forEach(function (ch, ci) { add(2, ch.id, 'changes', ch.kind + ' ' + ch.target, { eb: function () { return 'The last hour, newest first'; }, h1: 'Changes', listed: true, body: function () { return changes(ci); } }); });
     var list = ACTORS.slice(0, TOP).concat(S.found ? [S.found] : []);
     list.forEach(function (a, ai) {
       var eb = function () { return a.found ? 'Looked up on ' + a.node + ', its owner' : count(ALLACTORS) + ' actors loaded, slowest first'; };
       var h1 = a.found ? a.id : 'Slowest actors';
-      if (!c) add(3, a.id, 'actors', a.id, { eb: eb, h1: h1, body: function () { return actors(a); } });
+      if (!c) add(3, a.id, 'actors', a.id, { eb: eb, h1: h1, listed: true, body: function () { return actors(a); } });
       else {
         add(3, a.id, 'actor', a.id, { eb: eb, h1: h1, body: function () { return actors(a, 1); } });
         add(3, a.id + '-l', 'actor-more', a.id + ' components', { eb: eb, h1: h1, body: function () { return actors(a, 2); } });
@@ -806,7 +824,8 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   function setM(el, to) { var o = {}; o[el.dataset.m] = measure(el); settle(el); el.textContent = to; morphAll(o, [el], true); }
   // ---------- render ----------
   function view() {
-    if (S.mode === 'find') return { layout: 'find', eb: 'Actor ids, server types, nodes and actions', h1: 'Find', body: findBody, after: findWire };
+    if (S.mode === 'find') return { layout: 'find', eb: 'Type a name; ↑↓ choose, Enter opens, Esc returns', h1: 'Find', body: findBody, after: findWire };
+    if (S.mode === 'toc') return { layout: 'toc', eb: TABS[T.tab] + ', ' + T.items.length + ' screens', h1: 'Contents', body: tocBody, after: tocWire };
     if (S.mode === 'confirm') return { layout: 'confirm', eb: 'Confirm. It is written to the audit log', h1: S.cf.title, body: confirmBody, after: confirmWire };
     var s = steps[S.i]; return { layout: s.layout, eb: s.eb(), h1: s.h1, body: s.body, after: s.after };
   }
@@ -835,7 +854,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     }
     S.layout = v.layout;
     wire(); if (v.after) v.after();
-    frame(v); if (same) distMorph(); else qa('.dist').forEach(function (d) { distWas[d.dataset.dist] = qa('rect', d).map(function (r) { return r.style.transform; }); });
+    frame(v); renderToc(); if (same) distMorph(); else qa('.dist').forEach(function (d) { distWas[d.dataset.dist] = qa('rect', d).map(function (r) { return r.style.transform; }); });
     if (old) morphAll(old, qa('[data-m]').filter(function (e) { return (same || e.dataset.m.indexOf('b-') !== 0) && !e.closest('.leave') && e.dataset.m !== 'status'; }));
     $('app').dataset.step = S.mode ? S.mode : String(S.i);
     var eb = document.querySelector('[data-key="back"]'); if (eb) eb.parentNode.classList.toggle('off', !S.mode && !S.back.length);
@@ -853,15 +872,65 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     var t = steps[S.i].tab;
     if (tabH[t] == null) tabH[t] = probe(steps.filter(function (st) { return st.tab === t; }).map(function (st) { return st.body; }));
     // Find and confirm keep the tallest height they have had, so the head does not move while results narrow
-    var h = S.mode ? (S.modeH = Math.max(tabH[t], $('body').scrollHeight, S.modeH || 0)) : tabH[t];
+    // Find has a height of its own, set by the rows it can show, so the head stays put while results narrow
+    var h = S.mode === 'find' ? F.H : S.mode ? (S.modeH = Math.max(tabH[t], $('body').scrollHeight, S.modeH || 0)) : tabH[t];
     $('stage').style.gridTemplateRows = 'auto minmax(0,' + h + 'px)';
   }
   function renderMargin() {
     if (S.mode) { $('folio').innerHTML = M('fn', '', 'fn') + M('fo', ''); $('nextl').innerHTML = '<span class="sc">' + M('nxl', '') + '</span><span class="nx">' + M('nx', '') + '</span>'; return; }
-    var f = inTab(S.i), nx = steps[S.i + 1]; if (nx && nx.tab !== steps[S.i].tab) nx = null; var lab = nx ? nx.label : ' ';
-    $('folio').innerHTML = M('fn', String(f.k), 'fn num') + M('fo', 'of ' + f.n, 'fo');
-    $('nextl').innerHTML = '<span class="sc">' + M('nxl', nx ? 'Next' : ' ') + '</span><button class="nx" id="nx"' + (nx ? '' : ' disabled') + '>' + M('nx', lab) + '<span class="ar" aria-hidden="true">' + (nx ? '↓' : '') + '</span></button>';
+    var f = inTab(S.i), nx = steps[S.i + 1]; if (nx && nx.tab !== steps[S.i].tab) nx = null; var lab = nx ? nx.label : ' ';
+    var fo = M('fn', String(f.k), 'fn num') + M('fo', 'of ' + f.n, 'fo');
+    // on a phone the folio is the way into the section's contents
+    $('folio').innerHTML = S.compact && f.n > 1 ? '<button id="fol" aria-label="Contents of this section">' + fo + '</button>' : fo;
+    $('nextl').innerHTML = '<span class="sc">' + M('nxl', nx ? 'Next' : ' ') + '</span><button class="nx" id="nx"' + (nx ? '' : ' disabled') + '>' + M('nx', lab) + '<span class="ar" aria-hidden="true">' + (nx ? '↓' : '') + '</span></button>';
   }
+  // The section's contents, beside the page: every screen by number and name, the current one in ink. It is as tall
+  // as the section's body row allows (less the status line); a longer section shows a window of it, turning a page
+  // of the contents at a time, with the hidden screens counted on a line of their own.
+  function sectionSteps() { var t = steps[S.i].tab, a = []; for (var i = 0; i < steps.length; i++) if (steps[i].tab === t) a.push(i); return a; }
+  function renderToc() {
+    // a section whose page is itself a list of its screens (changes, actors) needs no second list beside it
+    var el = $('toc'); if (S.compact || S.mode || steps[S.i].listed) { el.innerHTML = ''; return; }
+    var a = sectionSteps(), k = a.indexOf(S.i), h = tabH[steps[S.i].tab] || 0;
+    var cap = Math.max(4, Math.floor((h - 40 - 72) / 28)), per = a.length <= cap ? a.length : cap - 2, from = a.length <= cap ? 0 : Math.floor(k / per) * per;
+    if (a.length > cap && from + per > a.length) from = Math.max(0, a.length - per);
+    var html = '';
+    if (from > 0) html += '<button class="tmore" data-toc="' + a[from - 1] + '">' + M('tm0', from + ' above') + '</button>';
+    for (var j = from; j < Math.min(a.length, from + per); j++) {
+      var st = steps[a[j]];
+      html += '<button class="tc" data-toc="' + a[j] + '"' + (a[j] === S.i ? ' aria-current="step"' : '') + '><span class="n">' + M('tn' + (j - from), String(j + 1)) + '</span><span class="l">' + M('tl' + (j - from), st.label) + '</span></button>';
+    }
+    var rest = a.length - Math.min(a.length, from + per);
+    if (rest > 0) html += '<button class="tmore" data-toc="' + a[from + per] + '">' + M('tm1', rest + ' below') + '</button>';
+    el.innerHTML = html;
+    qa('[data-toc]', el).forEach(function (b) { b.onclick = function () { go(+b.dataset.toc); }; });
+  }
+  // Jump to the n-th screen of the section (keys 1-9, two digits in a row for 10 and on)
+  var NUM = { buf: '', t: 0 };
+  function goNth(n) { var a = sectionSteps(); if (n >= 1 && n <= a.length) go(a[n - 1]); }
+  function digit(d) {
+    var a = sectionSteps(), now = performance.now();
+    NUM.buf = (now - NUM.at < 700 ? NUM.buf : '') + d; NUM.at = now; clearTimeout(NUM.t);
+    var n = +NUM.buf;
+    // wait for a second digit only while one could still follow
+    if (n * 10 <= a.length && NUM.buf.length < 2) { NUM.t = setTimeout(function () { NUM.buf = ''; goNth(n); }, 500); return; }
+    NUM.buf = ''; goNth(n);
+  }
+  // The contents as a page of its own, on a phone (or from Find): the section's screens, the current one in ink
+  var T = { sel: 0, items: [] };
+  function openToc() { if (S.mode) return; T.items = sectionSteps(); T.sel = T.items.indexOf(S.i); T.tab = steps[S.i].tab; S.mode = 'toc'; S.modeH = 0; render('up'); }
+  function tocBody() {
+    // a page of the contents at a time; a line at either end turns to the hidden screens and counts them
+    var W = a_len() > 9 ? 8 : 9, a = T.items, s0 = Math.floor(T.sel / W) * W, h = '<div class="ln full"><div class="res"><div class="rg">';
+    if (s0 > 0) h += '<button class="more tpage" data-tsel="' + (s0 - 1) + '">' + s0 + ' above</button>';
+    for (var j = s0; j < Math.min(a.length, s0 + W); j++) h += '<button class="hit' + (j === T.sel ? ' on' : '') + '" data-tp="' + a[j] + '" tabindex="-1"><span class="t">' + esc(steps[a[j]].label) + '</span><span class="h">' + (j + 1) + '</span></button>';
+    if (s0 + W < a.length) h += '<button class="more tpage" data-tsel="' + (s0 + W) + '">' + (a.length - s0 - W) + ' below</button>';
+    return h + '</div></div></div>';
+  }
+  function a_len() { return T.items.length; }
+  function tocWire() { qa('[data-tp]').forEach(function (b) { b.onclick = function () { tocOpen(+b.dataset.tp); }; }); qa('[data-tsel]').forEach(function (b) { b.onclick = function () { T.sel = +b.dataset.tsel; render('morph'); }; }); }
+  function tocOpen(i) { S.mode = null; S.hl = null; var dir = i > S.i ? 'up' : 'down'; S.i = i; render(dir); }
+  function tocMove(d) { T.sel = Math.max(0, Math.min(T.items.length - 1, T.sel + d)); render('morph'); }
   function renderTabs() {
     var cur = S.mode ? -1 : steps[S.i].tab;
     $('tabs').innerHTML = TABS.map(function (t, k) { return '<button data-tab="' + k + '"' + (k === cur ? ' aria-current="page"' : '') + '>' + t + '</button>'; }).join('');
@@ -881,6 +950,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     if ($('ack')) $('ack').onclick = function () { S.acked = true; log('Acknowledge', 'MapServer ask latency'); render('morph'); say('Acknowledged. Written to the audit log.'); };
     if ($('hr')) $('hr').onclick = function () { hotRestart2($('hr').dataset.type); };
     if ($('nx')) $('nx').onclick = function () { step(1); };
+    if ($('fol')) $('fol').onclick = openToc;
   }
 
   // ---------- movement ----------
@@ -890,7 +960,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     var dir = steps[i].layout === steps[S.i].layout ? 'morph' : (i > S.i ? 'up' : 'down');
     S.hl = null; S.i = i; render(dir);
   }
-  function step(d) { if (S.mode === 'find') { moveSel(d); return; } if (S.mode) return; var j = S.i + d; if (!steps[j] || steps[j].tab !== steps[S.i].tab) return; S.hl = null; go(j); }
+  function step(d) { if (S.mode === 'find') { moveSel(d); return; } if (S.mode === 'toc') { tocMove(d); return; } if (S.mode) return; var j = S.i + d; if (!steps[j] || steps[j].tab !== steps[S.i].tab) return; S.hl = null; go(j); }
   function tabGo(t) {
     if (S.mode) { S.mode = null; }
     var cur = steps[S.i].tab; if (t < 0 || t >= TABS.length) return;
@@ -938,7 +1008,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   function rank(t, q) { t = t.toLowerCase(); return !q ? 1 : t === q ? 0 : t.indexOf(q) === 0 ? 1 : t.indexOf(q) > 0 ? 2 : 9; }
   function openActor(a) { S.mode = null; if (a.found) { S.found = a; buildSteps(); } jump(findStep(3, a.id)); render('down'); }
   function allItems() {
-    var q = F.q.trim(), G = [[], [], []], more = [0, 0, 0];
+    var q = F.q.trim(), G = [[], [], [], []], more = [0, 0, 0, 0];
     var a = q ? lookup(q) : null;
     if (a) G[0].push({ g: 0, k: 'Actor', t: a.id, h: a.found ? 'ask ' + a.node + ', its owner' : a.node, r: -1, run: function () { openActor(a); } });
     ACTORS.slice(0, TOP).forEach(function (x) { var k = rank(x.id, q); if (k < 9 && x !== a) G[0].push({ g: 0, k: 'Actor', t: x.id, h: x.node, r: k, run: function () { openActor(x); } }); });
@@ -953,21 +1023,33 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
       { t: 'Hot restart a server type', h: 'from its own screen', run: function () { S.mode = null; jump(findStep(1, 'all')); render('down'); } },
       { t: 'Upload a config table', h: 'every node validates first', run: function () { S.mode = null; upload(); } }
     ].forEach(function (x) { var k = rank(x.t + ' ' + x.h, q); if (k < 9) { x.g = 2; x.k = 'Action'; x.r = k; G[2].push(x); } });
+    // every screen by its name, so a later screen of a long section is a few letters away
+    if (!q) sectionSteps().forEach(function (i) { if (i !== S.i && G[3].length < CAP) G[3].push({ g: 3, k: 'Screen', t: steps[i].label, h: TABS[steps[i].tab] + ', ' + (sectionSteps().indexOf(i) + 1), r: 0, run: function () { S.mode = null; jump(i); render('down'); } }); });
+    if (q) steps.forEach(function (st, i) { var k = rank(st.label, q); if (k < 9) G[3].push({ g: 3, k: 'Screen', t: st.label, h: TABS[st.tab], r: k, run: function () { S.mode = null; jump(i); render('down'); } }); });
     G.forEach(function (g, i) { g.sort(function (x, y) { return x.r - y.r; }); more[i] = Math.max(0, g.length - CAP); G[i] = g.slice(0, CAP); });
     F.more = more;
-    return G[0].concat(G[1], G[2]);
+    // with nothing typed: this section's other screens first, then what stands out, then actions
+    return q ? G[0].concat(G[1], G[3], G[2]) : G[3].concat(G[1], G[2], G[0]);
   }
   function goNode(t, n) { return function () { S.mode = null; if (S.split) { var k = steps[S.i]; S.pin = n.n; buildSteps(); S.back = []; S.i = findStep(k.tab, k.key); } jump(findStep(1, S.split ? t.id + '-n' : t.id)); S.hl = n.n; render('down'); }; }
-  function openFind() { if (S.mode === 'find') { closeMode(); return; } F.q = ''; F.sel = 0; S.mode = 'find'; S.modeH = 0; render('up'); }
-  function findBody() { return '<div class="ln main"><input class="qin" id="q" placeholder="An actor id, a server type, a node, or an action" autocomplete="off" spellcheck="false" aria-label="Find"></div><div class="ln full" id="res"></div>'; }
+  // One column of results, as many rows as the window holds: groups as small running heads, rows on the 44 px rhythm,
+  // the name at the left and its context at the right, never wrapping
+  function findRows() { var v = innerHeight - (S.compact ? 470 : 470); return Math.max(4, Math.min(S.compact ? 7 : 9, Math.floor(v / 44))); }
+  function openFind() { if (S.mode === 'find') { closeMode(); return; } F.q = ''; F.sel = 0; F.W = findRows(); F.H = 40 + 56 + 32 + F.W * 44 + 3 * 40 + 36; S.mode = 'find'; S.modeH = 0; render('up'); }
+  function findBody() { return '<div class="ln main"><input class="qin" id="q" placeholder="Actor, server type, node or action" autocomplete="off" spellcheck="false" aria-label="Find"></div><div class="ln main" id="res"></div>'; }
   function findWire() { var i = $('q'); i.value = F.q; i.oninput = function () { F.q = i.value.toLowerCase(); F.sel = 0; results(); }; results(); i.focus({ preventScroll: true }); }
   function results() {
     F.items = allItems();
     if (F.sel >= F.items.length) F.sel = Math.max(0, F.items.length - 1);
-    var G = ['Actors', 'Server types and nodes', 'Actions'], h = '';
+    var NAMES = ['Actors', 'Server types and nodes', 'Actions', 'Screens'], h = '';
     if (!F.items.length) h = '<p class="nores">Nothing matches. Actor ids look like Player(482913); nodes like map-217.</p>';
-    else if (!S.compact) h = '<div class="res">' + G.map(function (g, gi) { return '<div class="rg"><span class="sc">' + g + '</span>' + F.items.map(function (o, k) { return o.g !== gi ? '' : hit(o, k); }).join('') + (F.more[gi] ? '<p class="more">' + group(F.more[gi]) + ' more; keep typing</p>' : '') + '</div>'; }).join('') + '</div>';
-    else { var W = 8, s = Math.max(0, Math.min(F.sel - 3, F.items.length - W)); var more = F.more[0] + F.more[1] + F.more[2]; h = '<div class="res"><div class="rg">' + F.items.slice(s, s + W).map(function (o, k) { return hit(o, s + k, o.k); }).join('') + (more ? '<p class="more">' + group(more) + ' more; keep typing</p>' : '') + '</div></div>'; }
+    else {
+      var W = F.W || 8, s0 = Math.max(0, Math.min(F.sel - Math.floor(W / 2), F.items.length - W)), prev = -1, hidden = F.items.length - Math.min(W, F.items.length) + F.more[0] + F.more[1] + F.more[2] + F.more[3];
+      h = '<div class="res">';
+      F.items.slice(s0, s0 + W).forEach(function (o, k) { if (o.g !== prev) { h += '<span class="rh">' + NAMES[o.g] + '</span>'; prev = o.g; } h += hit(o, s0 + k); });
+      if (hidden) h += '<p class="more">' + group(hidden) + ' more; ' + (F.q ? 'keep typing' : 'type a name') + '</p>';
+      h += '</div>';
+    }
     $('res').innerHTML = h;
     qa('[data-hit]', $('res')).forEach(function (b) { b.onclick = function () { F.items[+b.dataset.hit].run(); }; });
     frame(view());
@@ -987,6 +1069,14 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     var k = e.key, typing = /INPUT|TEXTAREA/.test((document.activeElement || {}).tagName || '');
     if ((e.metaKey || e.ctrlKey) && k.toLowerCase() === 'k') { e.preventDefault(); openFind(); return; }
     if (S.mode === 'confirm') { if (k === 'Escape') { e.preventDefault(); closeMode(); } return; }
+    if (S.mode === 'toc') {
+      if (k === 'Escape' || k === 'Backspace') { e.preventDefault(); closeMode(); }
+      else if (k === 'ArrowDown' || k === 'j') { e.preventDefault(); tocMove(1); }
+      else if (k === 'ArrowUp' || k === 'k') { e.preventDefault(); tocMove(-1); }
+      else if (k === 'Enter') { e.preventDefault(); tocOpen(T.items[T.sel]); }
+      else if (/^[0-9]$/.test(k)) { e.preventDefault(); var n = +k; if (n >= 1 && n <= T.items.length) tocOpen(T.items[n - 1]); }
+      return;
+    }
     if (S.mode === 'find') {
       if (k === 'Escape') { e.preventDefault(); closeMode(); }
       else if (k === 'ArrowDown') { e.preventDefault(); moveSel(1); }
@@ -1001,29 +1091,32 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     else if (k === 'ArrowRight') { e.preventDefault(); if (!e.repeat) tabGo(steps[S.i].tab + 1); }
     else if (k === 'ArrowLeft') { e.preventDefault(); if (!e.repeat) tabGo(steps[S.i].tab - 1); }
     else if (k === '/') { e.preventDefault(); openFind(); }
+    else if (k === 'Home') { e.preventDefault(); goNth(1); }
+    else if (k === 'End') { e.preventDefault(); goNth(sectionSteps().length); }
+    else if (/^[0-9]$/.test(k)) { e.preventDefault(); digit(k); }
   });
   // Wheel: one scroll, one step, however long the scroll goes on, like holding an arrow key that steps once. A scroll
-  // is a run of wheel events: a mouse spin of any number of notches, or a trackpad flick with its inertia tail. A new
-  // scroll starts with the first event after 240 ms of quiet, with a turn the other way, or when a trackpad stream
-  // speeds up again out of a decaying tail (its last 10 samples above 1.2 times its last 70: a new flick on top of the
-  // last one's inertia). A scroll steps on its first event (a notch) or once a pixel stream adds up to 24 px, so a
-  // touch of a few pixels does nothing. A new scroll that comes while the page is still moving (450 ms) is not lost:
-  // it steps the moment the transition ends.
-  var WH = { last: -1e9, stepAt: -1e9, dir: 0, acc: 0, fresh: true, hist: [], faster: false, wait: 0 };
-  function mean(a, n) { var t = 0, k = Math.min(n, a.length); for (var i = a.length - k; i < a.length; i++) t += a[i]; return k ? t / k : 0; }
+  // is a run of wheel events: a mouse spin of any number of notches (accelerating ones included), or a trackpad flick
+  // with its inertia tail. A new scroll starts only after 240 ms of quiet, with a turn the other way, or with a clear
+  // new flick on a decayed tail: since this scroll's peak the samples have fallen below a quarter of it, and the new
+  // sample is at least 30 px and three times the smallest of the last five. A scroll steps on its first event (a
+  // notch) or once a pixel stream adds up to 24 px, so a touch of a few pixels does nothing. A new scroll that comes
+  // while the page is still moving (450 ms) is not lost: it steps the moment the transition ends.
+  var WH = { last: -1e9, stepAt: -1e9, dir: 0, acc: 0, fresh: true, peak: 0, low: 0, five: [], wait: 0 };
   function wheelStep(now, dir) { clearTimeout(WH.wait); WH.wait = 0; WH.fresh = false; WH.acc = 0; WH.stepAt = now; step(dir); }
   window.addEventListener('wheel', function (e) {
     if (e.ctrlKey) return;
     e.preventDefault();
     if (Math.abs(e.deltaY) < Math.abs(e.deltaX) || !e.deltaY) return;
-    var now = e.timeStamp || performance.now(), gap = now - WH.last, dir = e.deltaY > 0 ? 1 : -1, a = Math.abs(e.deltaY), wd = e.wheelDeltaY;
-    var notch = e.deltaMode !== 0 || (!!wd && wd % 120 === 0 && gap > 40), turn = dir !== WH.dir;
+    var now = e.timeStamp || performance.now(), gap = now - WH.last, dir = e.deltaY > 0 ? 1 : -1, wd = e.wheelDeltaY;
+    var notch = e.deltaMode !== 0 || (!!wd && wd % 120 === 0 && gap > 40), a = notch ? 120 : Math.abs(e.deltaY), turn = dir !== WH.dir;
     WH.last = now; WH.dir = dir;
-    if (gap >= 240 || turn) WH.hist.length = 0;
-    if (!notch) { WH.hist.push(a); if (WH.hist.length > 70) WH.hist.shift(); }
-    // only the moment a stream speeds up starts a new scroll, not every sample while it stays faster
-    var faster = WH.hist.length >= 20 && mean(WH.hist, 10) > 1.2 * mean(WH.hist, 70), rise = faster && !WH.faster; WH.faster = faster;
-    if (gap >= 240 || turn || rise) { WH.fresh = true; WH.acc = 0; if (turn) { clearTimeout(WH.wait); WH.wait = 0; } }
+    var small = WH.five.length ? Math.min.apply(null, WH.five) : a;
+    var flick = !notch && WH.peak > 0 && WH.low < WH.peak / 4 && a >= 30 && a >= 3 * small;
+    if (gap >= 240 || turn || flick) { WH.fresh = true; WH.acc = 0; WH.peak = 0; WH.five.length = 0; if (turn) { clearTimeout(WH.wait); WH.wait = 0; } }
+    // the peak of this scroll, and the lowest sample since it: a tail has decayed once that falls below a quarter
+    if (a > WH.peak) { WH.peak = a; WH.low = a; } else if (a < WH.low) WH.low = a;
+    WH.five.push(a); if (WH.five.length > 5) WH.five.shift();
     if (!WH.fresh) return;
     WH.acc += notch ? 24 : a;
     if (WH.acc < 24) return;
