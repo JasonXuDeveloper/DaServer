@@ -84,7 +84,9 @@ Keep this file current: tick items when done, add items when scope changes.
       `Registration.Create()` as a static extension member in the server project's root namespace reading `K.RootPrefab`
       and the persistent prefabs (the persist set, computed at run time; the tracked-type list and the
       `ChangedAny`/`RemovedAny` filters emitted from the source's `ITrackChanges` declarations, and `Registration`
-      throwing when a type on a `[Persist]` prefab lacks it), configuration tables and
+      throwing when a type on a `[Persist]` prefab lacks it; each referenced DaServer package's
+      `PackageHooks.Register(Registration)` called in the chain, emitted even when empty: `PackageHookEmittedWhenEmpty`,
+      `PackageBufferNotInServerTrackedList`), configuration tables and
       world singletons, `wire.manifest` (one section per project; `table` with the table type's format hash, `prefab`
       with its id and composition hash (earlier compositions kept), and `record` lines for the whole persist set, ask
       states `untracked`; user projects are Protocol and Server), `INoStructuralChanges` for jobs that only call
@@ -140,7 +142,7 @@ Keep this file current: tick items when done, add items when scope changes.
       `Registration` throws at start, buffers included),
       `RouteMissingForKeyFieldsReported` (not for `[To]` messages whose key the message carries),
       `ActivatedByUnhandledMessageReported`, `RouteOnUnhandledMessageReported`, `JoinClientStatusUnusedReported`,
-      `CanCreateTakesClaimsMessageAndAtMostOneTable`,
+      `CanCreateTakesClaimsMessageAndAtMostOneTable`, `ServerMessageCanCreateTakesNoClaims`,
       `ClientDurableOnUnsavedTypeReported`, `UntargetedClientMessageOnMultiPresenceTypeReported`,
       `EveryOrFilterRequiredWithoutTickRate`; `UnrelatedEditsHitTheCache` over the new stages.
     - [ ] W4 Runtime core: shards (one world each, `MaxDegreeOfParallelism` per world), the shard loop and the ordered
@@ -220,9 +222,11 @@ Keep this file current: tick items when done, add items when scope changes.
         transactions, created by the schema mode) and the in-memory one (one node, `TestCluster`); joining (generation
         max(Unix ms, recorded max + 1), older generations of the name written `Dead`, connectivity checked before
         `Active`), probes on a ring, indirect probes, suspicion votes and death declarations, the table refresh and
-        snapshot push, a node reading itself `Dead` stopping, the freeze after `IsolationTimeout` without a table read (resume on
-        `Active`, `daserver_membership_frozen`), the stall guard, re-placement after `died_at + IsolationTimeout +
-        DeathMargin` on the store's clock, the view read as one snapshot, suspicions and `i_am_alive` stamped with the
+        snapshot push, a node reading itself `Dead` stopping, the isolation lease (from the read's issue, on the boot-time clock, checked by every shard before
+        each ordered phase and Outbox hand-off; pushed snapshots never renew it), the freeze past it (no drain, resume on
+        `Active`, `Isolated` probe answers, failed readiness, exit 75 after `IsolationExit` when a peer is not isolated,
+        `daserver_membership_frozen`), the stall guard, dead members kept in the placement set until re-placement after
+        `dead_seen_at + IsolationTimeout + DeathMargin` on the store's clock, the view read as one snapshot, suspicions and `i_am_alive` stamped with the
         store's `now()`, `daserver_link_unreachable`, the coordinator derived from the table, `restart_until` as the
         restart permit, `WithMembershipStore`, a storeless node starting only with `DaServer:Membership:SingleNode`,
         `DaServer.Aspire` setting `SingleNode` for one node without a store and adding PostgreSQL to an AppHost with more
@@ -255,12 +259,17 @@ Keep this file current: tick items when done, add items when scope changes.
         `Restarting`/`Resumed`, `RestartingNodes`, the restart permit (`restart_until`), the arm nonce, `NodeRestarting`, `Rejoining`
         (reading the node's own row), pinned slots and the reconcile when the row still holds the node; the warm
         standby (`DaServer:HotRestart:Mode`, the role decided by the lock on `<snapshot dir>/node.lock`, the snapshot
-        streamed over a `NamedPipeServerStream` with `CurrentUserOnly` and a short socket path fallback, the handshake
-        (nonce, manifest hash, deadline), the ack before the old process exits 0 and the file plus exit 75 on a nack or
-        timeout, ports bound after the pipe's EOF and the lock with an `EADDRINUSE` retry, the instance id in
-        `/health`, the memory check) with its adapters for systemd (`daserver@map-0-a`/`-b`, both enabled, the directory from `tmpfiles.d`), launchd,
-        Windows services (one service account or a `PipeSecurity` ACL), Compose (the `map-0-net` holder on a pinned
-        image and an a/b pair) and local Aspire; `/admin/restart` as the one admin verb (`mode=snapshot|unload`,
+        streamed over a `NamedPipeServerStream` with `CurrentUserOnly` (the standby listens; a socket path past the
+        limit refused at start and at publish), the armed process connecting and retrying until a standby passes the
+        handshake (nonce, manifest hash, deadline) or the arm expires, the ack before the old process exits 0, a resume
+        in place on a nack, a broken stream or a timeout, ports bound after the pipe's EOF and the lock with an
+        `EADDRINUSE` retry, a lock taken without an acked stream running the normal start path, the leftover snapshot
+        deleted once `Active`, the instance id, `DaServer:Instance` and the manifest hash in `/health`, the memory
+        check) with its adapters for systemd (the `daserver@.service` template with `DaServer__Instance=%i` and
+        `/etc/daserver/%i.env`, `daserver@map-0-a`/`-b` both enabled, the directory from `tmpfiles.d`), launchd
+        (`kickstart -k` on the standby's job), Windows services (one service account or a `PipeSecurity` ACL), Compose
+        (the `map-0-net` holder on a pinned image and an a/b pair, all three `restart: unless-stopped`,
+        `DaServer__Instance` per service) and local Aspire; `/admin/restart` as the one admin verb (`mode=snapshot|unload`,
         `exit=true`, `dryRun=true` reporting the path `ManifestDiff` picks); the arm's write of every `Unsaved` root,
         a rejected snapshot recovering from records, framework singletons excluded from the snapshot; the rollout loop
         with its adapters for local Aspire (the dashboard's `{cluster}-restart` command), Compose (one service per
@@ -296,7 +305,7 @@ Keep this file current: tick items when done, add items when scope changes.
       `ClusterDurableAskDedupedUntilSettleBy`,
       `DurableRepeatAnsweredBeforeTooLateCheck`, `DurableRequestTooLateRefused` (time left to the settle-by instant), `DestroyingDurableAskerFailsItem`,
       `SystemDestroyOfDurableAskerReloads`, `DepartReparentsDurableWaitToRoot`,
-      `PersistedReplyToDeadlineIsUtc`, `IssueSeqWrittenBeforeTokenLeaves`, `NextDueFollowsWakeAt`,
+      `PersistedReplyToDeadlineIsUtc`, `IssueSeqWrittenBeforeTokenLeaves`, `NextDueFollowsWakeAt`, `NextDueChangeTagsUnsaved` (a reminder firing on an always-active actor moves `next_due` at the next checkpoint, so `DueScan` stops returning it),
       `WakeActivationRewritesNextDue`, `SnapshotLoadedOnceThenCrashRejoinsFromRecords`,
       `SnapshotWorldCountKeptUnlessConfigPinsAnother`, `ConfigTablesAndWorldSingletonsNotInSnapshot`,
       `LateProcessReadsItsRowBeforeRunning`, `NewGenerationSupersedesRestartingOne`, `SnapshotFromBeforeRebootRejected`,
@@ -327,21 +336,29 @@ Keep this file current: tick items when done, add items when scope changes.
       `DeclaredDeadNodeStopsItself`, `PartitionMinoritySideDeclaredDead` (and a 2|3 split of five where the 2 side
       writes first keeps the 2 side), `TwoNodeSplitKeepsExactlyOne`, `TableCasConflictRetries`,
       `StoreOutageFreezesAndResumes` (the whole cluster pauses, connections kept), `PartitionMinorityWithoutStoreFreezes`,
-      `StallGuardKeepsWorldsFrozen`, `ReplacementWaitsDiedAtPlusIsolation`, `MembershipViewReadAtomic`,
+      `StallGuardKeepsWorldsFrozen`, `ReplacementWaitsDeadSeenAtPlusIsolation`, `DeadSeenAtLaterThanStalledDeathCommit` (a
+      death writer paused before `COMMIT`: the re-placement deadline still follows the commit), `DeadMemberKeepsSlotsUntilReplaced`
+      (no node activates its keys before the coordinator's write, senders get `Unavailable(retryAfter)`; a new generation
+      of the name takes none of them early), `LeaseCountsFromReadIssue` (a delayed reply does not extend it),
+      `PushedSnapshotDoesNotRenewLease`, `ShardChecksLeaseWithoutMembershipLoop` (thread pool starved: the shard stops at
+      the deadline and keeps its Outbox), `SuspendedProcessWakesWithLeaseExpired` (the boot-time clock),
+      `IsolatedNodeAnswersProbesIsolatedAndFailsReadiness`, `IsolatedNodeReachingPeersExitsAfterIsolationExit`,
+      `StoreOutageNobodyExitsNobodyVoted` (after the outage no node is voted dead for reading the table a few seconds
+      late), `FrozenShardDrainsNothingAndQueueStaysBounded`, `MailKeepsArrivalTimeAcrossFreeze`, `MembershipViewReadAtomic`,
       `AsymmetricLinkReported`, `TestClusterFaultInjectingMembershipTable`,
       `NewerGenerationMarksOlderDead`, `OneStatefulOneGatewaySurvivesGatewayRestart`,
       `CoordinatorDerivedFromTable` (every node at a version names the same coordinator; a stale coordinator's write
-      fails), `PlacementVersionIsTableVersion`, `StorelessWithoutSingleNodeRefusesStart`,
+      fails), `PlacementVersionIsTableVersion`, `StorelessWithoutSingleNodeRefusesStart`, `SingleNodeWithStoreRefusesStart`, `SingleNodeHotRestartKeepsSnapshot` (the header's member row seeds the in-memory table),
       `InMemoryTableSharedByTestCluster`, `AspireAddsPostgresForMultiNodeWithoutStore`, `AspireSetsSingleNodeForOneNodeWithoutStore`, `DefunctRowsCleanedUp`, `ChainedSlotMoveWaitsForHandoff`, `ForwardedMailOrderedBeforeParked`,
       `ClaimNotTakenReturnsStoredOwner` (forward, not `NoActor`), `CanCreateFalseWritesNothing`,
       `NonPersistedTypeClaimsNoRow`, `NeverWrittenRowSweptAfterTtl` (through the `SECURITY DEFINER` function; the
-      runtime role has no `DELETE`), `SweepRunsOnOldestPersistedHost`, `SweepFirstBatchSentinel`, `RolesStepIdempotent`
+      runtime role has no `DELETE`), `SweepRunsOnOldestPersistedHost`, `SweepFirstBatchSentinel`, `RolesStepIdempotent`, `RolesStepCreatesConfiguredSchema` (owned by the owner role, the runtime role's `USAGE` effective), `RolesStepTakesOverExistingTables`, `RolesStepUpdatesPassword`
       (and creates a non-superuser owner role), `MemberUpsertLeavesIAmAlive`, `ClientDurableObeysActivatedBy`, `ClientDurableSettleByFromAge` (a retry through
       a second gateway after a reconnect keeps the first settle-by and is answered from the log),
       `ClientDurableBelowLowWaterIsTooLate`, `LowWaterAppliesAfterReplyLogMiss`, `RestartedSdkCallIdsAboveLowWater`, `CallIdBaseFromGatewayNotDeviceClock`, `TooLateCarriesMarkSdkResendsOnce`,
       `TooLateResendOnlyForUnsentFreshIds` (an id sent before, or passed back with `call:`, ends `Expired`),
       `ExplicitCallCarriesFirstSentAge`, `ClientSettleBelowMinimumRefusesStart`,
-      `CanCreateFalseStillActivatesExistingRecord` (a map removed from the table), `CanCreateFalseOnUnsavedTypeIsNoActor`,
+      `CanCreateFalseStillActivatesExistingRecord` (a map removed from the table), `CanCreateFalseOnUnsavedTypeIsNoActor`, `JoinOnConnectCreatesKeyDespiteActivatedBy` (a first login creates the `Player` row; `[ActivatedBy]` and `CanCreate` do not apply to the join),
       `HandoffQueryAdoptedPerSlotOnly`, `HandoffQueryVersionStopsSourceActivation`,
       `EpochNotReusedAfterSweep`, `EveryClaimBranchTakesSequenceEpoch`, `ConcurrentNewKeyClaimRetriesEmptyResult`,
       `BatchedWriteMissingRowFences`, `SchemaJobRerunsIdempotently`, `SweepWalksTableOnce` (key-set batches, by the coordinator), `ArmVoidedByHandoff`,
@@ -351,8 +368,11 @@ Keep this file current: tick items when done, add items when scope changes.
       `BatchedWriteLowerWriteGenAtSameEpochRetried`, `BatchedWriteLandedWriteCountsAsWritten`,
       `StandbyHandoverPauseUnder300ms` (also BenchmarkDotNet, JIT and AOT), `StandbyMissingFallsBackToFile`,
       `StandbyStreamFailureFallsBackToFile`, `StandbyBindsPortsAfterOldExits` (retrying on `EADDRINUSE`), `NodeLockDecidesStandbyRole`,
-      `StandbyAckBeforeOldExits`, `StandbyNackWritesFileExit75`, `StandbyHandshakeStartsFreeze`, `HealthReportsInstanceId`,
-      `StandbySocketPathFallback`,
+      `StandbyAckBeforeOldExits`, `StandbyNackResumesInPlace` (nothing lost, the roll stops for that node),
+      `NoStandbyNeverFreezes` (the arm expires, the loop reports it), `ArmedClientRetriesPastOldBuildStandby`,
+      `StandbyHandshakeStartsFreeze`, `HealthReportsInstanceAndManifestHash` (the loop waits for the armed hash),
+      `StandbySocketPathTooLongRefused` (at start and at publish), `StandbyTakingLockWithoutAckRunsNormalStart`,
+      `LeftoverSnapshotDeletedOnceActive`, `LaunchdStandbyKickstarted`, `SystemdTemplateInstanceEnvironment`,
       `ArmRefusesStandbyWhenMemoryDoubleExceedsLimit`, `StandbyPipeOwnerOnly`, `HandedOverProcessNotRestarted` (exit 0
       under each supervisor's on-failure policy), `ComposeStandbyHandover` (the holder keeps the address),
       `DueHeapDefersUnclaimedArrival`, `DueHeapSkipsRearmedEntry`, `SharesNeverExceedNodeLimit` (more
@@ -369,7 +389,7 @@ Keep this file current: tick items when done, add items when scope changes.
     - [ ] W6a `DaServer.Reminders` (ADR-090, draft §15): `Reminder<T>(ActorId Actor, Key, Period)` persistent children whose next firing is
       their `WakeAt`, armed by the runtime like every wake (the package has no arming system), one per (T, key):
       `root.Remind<T>(DateTime at, TimeSpan every = default, long key = 0, bool move = false)` finds or spawns it, `root.CancelReminder<T>(key: 0)`, `Reminded<T>(Key, UtcAt)`.
-      Tests: `RemindKeyedTwice`, `RemindSamePeriodKeepsTime`, `RemindMoveOrNewPeriodReschedules`, `CancelReminderDestroys`, `ReminderActivatesUnloadedActor`, `ReminderSurvivesNodeCrash`,
+      Tests: `RemindKeyedTwice`, `RemindSamePeriodKeepsTime`, `RemindMoveOrNewPeriodReschedules` (the unique index key is `(Actor, Key)`, so a new period finds the existing reminder), `CancelReminderDestroys`, `ReminderActivatesUnloadedActor`, `ReminderSurvivesNodeCrash`,
       `ReminderFiresOncePerUtcAtWithinActivation`, `RemindersArmedOnlyByRuntime`,
       `PeriodicReminderAdvancesInSameRecord`, `ReminderAfterOutageFiresOnce`; BenchmarkDotNet `DueScan` over 1M
       records, 0 B per firing.
@@ -398,13 +418,13 @@ Keep this file current: tick items when done, add items when scope changes.
       (no `ListRoutes` mode, no process per node project). The mmo keeps its hand-written AOI (ADR-091). Tests:
       `Sample.Tests` on `TestActor<Map>`
       (`Walking_out_of_range_during_the_windup_dodges`, `A_busy_tick_allocates_nothing_and_threads_change_nothing`,
-      `An_expired_grant_takes_the_drop_off_the_map`, `DropsReshownAfterMapCrash`, `DropsReshownAfterCrashBeforeFirstRecord`, `LaterDropAppearsToEarlierClients`, `TakenDropDisappears`, `KilledNpcDisappearsAndDrops`, `CrossingPushesNewCellsSnapshot`, `CrossingDuringHandoverSnapshotsAtConfirmation` (an avatar crossing cells while its `Joined` is dropped is tagged `Resnap` and gets a full snapshot when confirmed), `SnapshotSkipsWhatVanishRemoves` (a `Leaving` avatar and a dead NPC are left out; a dead avatar, which stays on the map, is in), `MapCrashReusedNumberDoesNotBreakLoot` (a drop number repeated after a map crash ends in `Clash`/`Redrop` and the drop
+      `An_expired_grant_takes_the_drop_off_the_map`, `DropsReshownAfterMapCrash`, `DropsReshownAfterCrashBeforeFirstRecord`, `LaterDropAppearsToEarlierClients`, `TakenDropDisappears` (whichever of the `Claim` answer and `Gone` lands first), `GoneBeforeClaimAnswerStillRepliesPickUp` (a `Gone` that overtakes the answer tags the drop `Vanishing`; the client gets its answer, then the drop disappears), `KilledNpcDisappearsAndDrops`, `CrossingPushesNewCellsSnapshot`, `CrossingDuringHandoverSnapshotsAtConfirmation` (an avatar crossing cells while its `Joined` is dropped is tagged `Resnap` and gets a full snapshot when confirmed), `SnapshotSkipsWhatVanishRemoves` (a `Leaving` avatar and a dead NPC are left out; a dead avatar, which stays on the map, is in), `MapCrashReusedNumberDoesNotBreakLoot` (a drop number repeated after a map crash ends in `Clash`/`Redrop` and the drop
       is shown again), `VisitorNumbersNeverMeetDropNumbers`, `VisitorNumbersContinueAfterMigration`, `TimedOutClaimLeavesPickUpUnknown`), `LoginIssuesIncreasingSequence`, `LoginTokenLeavesAfterSequenceWritten`,
       `UseItemBindsToPlayerRoot`, `PreciousPurchaseRunsOnceAcrossRetry`, `RechargeWebhookCreditsOnce`
       (through `Payment(payment id)`), `PaymentActorCreditsOnce` (a webhook repeated after days credits once),
       `PlayerCreditsPaymentOnce` (a re-ask under a fresh call id after `Expired` is answered "already credited"; the
       payment id is the key), `CreditedPaymentIdsDroppedAfterSettleBy` (kept past `Settle` until the latest `Credit`
-      settle-by plus `ClockSkew`), `ExpiredSettleReasked` (an `Expired` `Settle` re-asked at once under a fresh call id; re-sent on activation after a crash), `StashPrefabRoundTrip` (Stash, Prize and Position
+      settle-by plus `ClockSkew`), `CreditedIdsPrunedOnCreditAndActivation` (settled ids past their window are removed when the next `Credit` or `Settle` is handled and on activation; no timer per id), `ExpiredSettleReasked` (an `Expired` `Settle` re-asked at once under a fresh call id; re-sent on activation after a crash), `StashPrefabRoundTrip` (Stash, Prize and Position
       in the record and back), `ExpiredGrantRepliesNothing` (the map's `Claim` times out, never a definite `false`), `GuildDailyResetFiresAfterCrash`, `BuyerCannotOrderForAnother`,
       `AppHostServerTypesGeneratedFromManifest`, `ClientPortWithoutConnectionHostFailsBuild`,
       `RouteCheckReadsCommittedManifests`; the 1,000-bot and

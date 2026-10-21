@@ -158,15 +158,21 @@ The draft uses these before or apart from the section that defines them:
 ```text
 loop on the shard's thread:
     wait for frames in the dispatch queue, the next due tick, or the due heap's head
+    if the volatile frozen flag is set, or the lease clock has passed the published lease deadline (the node is Dead,
+            isolated or restarting): run nothing (the world is frozen); drain nothing either, except in a hot
+            restart's short freeze, whose IO keeps receiving (an isolation freeze keeps mail in the bounded dispatch
+            queue, so a full queue answers Busy rather than growing mailboxes)
     drain the dispatch queue (one bounded batch) into mailbox snapshots, split by actor type,
-        at most a budget of items per actor (the rest waits for the next batch, still by (time, seq))
-    if the volatile frozen flag is set (the node is Dead, isolated or restarting): run nothing (the world is frozen)
+        at most a budget of items per actor (the rest waits for the next batch, still by (time, seq));
+        a message's time is its arrival, stamped when the link reads the frame, so mail drained after a freeze
+        still sorts by when it came, ahead of answers and events that came later
     for each actor type K without [TickRate] that has mail or due items, or whose quiet pass is due
             (every DaServer:QuietPass, 1 s, so that time-gated systems run in an idle world; the chain stack is empty between items):
         write Time         K's Tick, TickRate and DeltaTime (all 0 here) from Ordered<K>; Elapsed = the pass start (now), Utc;
                                Elapsed and Utc again per item
         Ordering<K>        OrderedPhase: chain stack, due heap (At <= now) and mailbox merged by (time, seq)
-        hand Outbox frames to the links (held [Durable] output stays, tagged with its write generation)
+        hand Outbox frames to the links (held [Durable] output stays, tagged with its write generation),
+            after checking the lease deadline again: frames of a pass the lease ran out in stay in the Outbox
         write Time         Elapsed back to the pass start, Utc read once
         world.Update<K>()  K's systems, Time.DeltaTime 0
         Settling<K>        Depart, SyncSubscriptions, Restarting and Resumed removed
@@ -235,7 +241,7 @@ exported, OpenTelemetry). Names users never write but meet in diagnostics: the S
 | Durable waiting entity | persistent child entity | Request bytes, ask state, call id, UTC deadline (`settleBy`: no attempt leaves once `Time.Utc` reaches it, the ask ends `Expired`), `WakeAt`, a cleanup component (destroyed with its asker by a user handler or system, it fails the item and the actor reloads, since a durable asker's type persists and uses `Reload`; a framework destroy such as `Depart` re-parents it to the root first); the first attempt's timeout and `WakeAt` start at its release, not at `Ask`; re-asked on transient outcomes and after re-activation; one settling re-ask at settle-by − the attempt's deadline (`deadline:`, else `AskTimeout`) − `DaServer:ClockSkew` on the asker's clock (when the settling instant has passed at the first attempt's release, the held first attempt is the last and counts as the settling one, but runs as usual); re-asks are not held and set no `WriteNow`, since the record already holds the entity, its call id, request and settle-by instant, but leave only once the write generation holding the entity has succeeded; kept in the final record by a forced deactivation (only an idle one is cancelled by a durable `Ask` in its `Deactivating` pass); `Expired` only when the settling re-ask goes unanswered | `daserver.durable.reasks`, `daserver.durable.expired` |
 | `WakeAt(DateTime Utc)` | persisted component on descendants | When the actor must be awake: a durable waiting entity (its next attempt's timeout or scheduled re-ask, its settle-by instant after the settling re-ask), a reminder (its next firing); while active, `ArmSystem` (`[With<WakeAt>, Without<Due>]`) arms `Due = Elapsed + (WakeAt − Utc)` once, after which only the monotonic `Due` counts | — |
 | `IssueSeq` | persisted component on the root | The client-token issue sequence `root.IssueClientToken` increments ([draft §7](programming-model.md#7-客户端与-presence)) | — |
-| `NextDue` | persisted component on the root | The minimum `WakeAt` of the root's descendants, computed only by the runtime: `WakeSystem` (from `[Changed<WakeAt>]`, `[Removed<WakeAt>]` and the `Persisted` cleanup) runs before `CheckpointSystem`, which takes every record; every write puts it into the record's `next_due` column ([draft §10](programming-model.md#唤醒wakeatnextdueduescan)) | — |
+| `NextDue` | persisted component on the root | The minimum `WakeAt` of the root's descendants, computed only by the runtime: `WakeSystem` (from `[Changed<WakeAt>]`, `[Removed<WakeAt>]` and the `Persisted` cleanup; it tags the root `Unsaved` whenever the value changes, since `NextDue` is the runtime's and not in the generated `ChangeSystem` filter) runs before `CheckpointSystem`, which takes every record; every write puts it into the record's `next_due` column ([draft §10](programming-model.md#唤醒wakeatnextdueduescan)) | — |
 | `DueScan` | node system | Every `DaServer:DueScanInterval`, `IActorStore.DueKeys(slots, until, after)` over the slots the node owns (`until` fixed for the scan; the first page's `after` is a sentinel below every real row, each later page's the previous page's last row, which `DueKeys` returns; each page probes only the pairs at or after the cursor's, taking at most 512 rows from each through `LATERAL … LIMIT`, so no page sorts the backlog of every later pair); sends `Wake` (the one control mail that activates) to keys not active; an activation by `Wake` always rewrites `next_due`. The query does not exclude active keys (the store cannot tell); an active actor moves its `WakeAt` on as each instant comes, so its key shows up only between an instant and the checkpoint that writes the moved `WakeAt` (re-asks set no `WriteNow`): at most the instants of the last checkpoint interval, and its world drops the `Wake` | `daserver.wakes` |
 | `Joined(bool MissedPushes)`, `Detached` | component and tag on a presence | Confirmed, and whether a push may have been missed (false only after a `Retire` behind the `HandedOff` fence); a presence of a lost connection in its grace period ([draft §7](programming-model.md#7-客户端与-presence)) | — |
 | Due heap | runtime index per world | A 4-ary min-heap of `(At, Seq, EntityId with version)`; lazy deletion: a popped entry is valid only if its entity is alive (same version) and its `(At, Seq)` equals the entity's current `Due` (a durable waiting entity or a reminder re-armed on the same entity keeps its version, so the version alone would fire it early); others are skipped. Rebuilt after `world.Load`, and for a migration's arrival only once its claim has succeeded (an arrival does not run before its claim, so its entries are not in the heap until then, neither skipped nor fired), and compacted in place (stale entries dropped, heap rebuilt in O(n)) whenever the stale count (heap size − `CountOf<Due>`, O(1)) passes the live one: most asks are answered in milliseconds while their timeout entry waits for its `At`, so without compaction the heap would hold rate × timeout dead entries. So the heap holds at most twice the world's live `Due` entities, which `MaxPending` bounds per actor. EasyEcs's ordered value index is a sorted array, so each pop would move the whole array | `daserver.dueheap.entries{state}` |
@@ -507,7 +513,7 @@ in short:
   - **Rows**: `daserver_members` holds one row per node incarnation: cluster, name, node generation, address, server
     type, status (`Joining`, `Active`, `ShuttingDown`, `Dead`), the suspicions against it (suspecting member,
     generation, and the store's `now()` when written, so every node judges a vote's age by one clock), `restart_until`
-    (a granted hot restart and its deadline), `died_at` (the store's `now()` when it was written `Dead`), start time and
+    (a granted hot restart and its deadline), `dead_seen_at` (the store's `now()` in the coordinator's first write after it read the member `Dead`; below), start time and
     `i_am_alive`;
     `daserver_membership` holds one row per cluster: the table version, the slot table and its per-type placement
     versions. Every change (a join, a status, a suspicion, a death, a restart permit, a slot move) is one transaction
@@ -548,22 +554,61 @@ in short:
     `Dead`, which peers do once they see it), it freezes every world, fences all its actors and exits with a non-zero
     code; the platform starts a new process, which joins with a new generation. Peers stop sending to a `Dead` member
     at once.
-  - **No table, no work**: a node whose last successful table read is older than `DaServer:Membership:IsolationTimeout`
-    (20 s) freezes its worlds: it runs no item and sends nothing, but keeps its process, its connections and its
-    snapshot of the worlds; mail waits in the bounded resend windows (full windows answer `Busy`, draft §9). It keeps
-    reading; when a read shows its generation still `Active`, the worlds resume, and when it shows `Dead`, it stops as
-    above. A sole member is not special. So a node cut off from the store never serves stale state or runs a second
-    activation, whether or not it still reaches other nodes, and the cost is stated plainly: **a store outage pauses the
-    whole cluster** (no actor runs, clients stay connected and their requests wait or answer `Busy`) until the store is
-    back, when every node resumes where it stopped. The pause is reported (`daserver_membership_frozen`, the
-    `MembershipFrozen` log) so the store's outage is visible as the cluster's.
-  - **Stall guard**: a node whose loop finds a monotonic gap above `ProbeInterval` since its last pass (a GC pause, a
-    stopped VM) keeps its worlds frozen until a table read confirms its generation is still `Active`; probe misses
-    measured across the gap are ignored, so a stall neither runs stale work nor votes a peer dead.
-  - **Re-placement**: the slots of a member written `Dead` are re-placed only once the store's `now()` passes its
-    `died_at + IsolationTimeout + DaServer:Membership:DeathMargin` (5 s): by then the dead node has either read its
-    death and stopped, or gone `IsolationTimeout` without a read and frozen. The coordinator reads that time from the
-    store, so its own clock and the moment it learned of the death do not matter.
+  - **The isolation lease**: a node may run its worlds only within `DaServer:Membership:IsolationTimeout` (20 s) of
+    the moment it **issued** its last table read that returned its generation `Active`. The read's snapshot is taken
+    after it was issued, so a reply that arrives late, holding a state from before a death, never stretches the lease
+    past that state. A snapshot a peer pushes, or sends in answer to a stale frame version, updates the view but never
+    the lease: its age is unknown. Lease times come from a clock that keeps counting while the machine is suspended
+    (`CLOCK_BOOTTIME` on Linux, `QueryInterruptTime` on Windows, `mach_continuous_time` on macOS; `Stopwatch` uses
+    `CLOCK_MONOTONIC`, which stops during suspend and under checkpoint-restore), so a process that was suspended or
+    restored wakes with its lease expired. The membership loop publishes the lease deadline as one value; **each shard
+    compares it with that clock itself** before every ordered phase and before handing Outbox frames to the links, so a
+    shard that wakes from a pause runs nothing past the lease even when the membership loop (on the thread pool) has
+    not run yet.
+  - **No table, no work**: a node whose lease has run out freezes its worlds: it runs no item and sends nothing, but
+    keeps its process, its connections and its snapshot of the worlds. Its shards stop draining their dispatch queues
+    (the loop checks the freeze before the drain, above), so mail stays in the queues, bounded by
+    `DaServer:DispatchQueueCapacity` (65,536 per shard, ADR-040): beyond it a request is refused `Busy` and a one-way
+    message dropped and counted, as for any full queue (draft §9), so a long outage does not grow memory. It keeps reading; when a read shows its generation still `Active`, the
+    worlds resume, and when it shows `Dead`, it stops as above. A frozen node also **tells the cluster it is isolated**:
+    it answers probes, direct and indirect, with `Isolated`, which the prober counts as a failed probe at once (no
+    indirect probe first) when its own lease has been valid without a break for at least `IsolationTimeout` (so after
+    a store outage, when the nodes' first reads land a few seconds apart, nobody votes against a node that simply has
+    not read yet), and its peers vote it `Dead` as soon as they reach the store. While at least one peer answers its
+    own probes as not isolated (the peers reach the store and it does not), it is **isolated alone**: its `/health`
+    readiness fails, and once it has been frozen for `DaServer:Membership:IsolationExit` (1 min) that way, it exits
+    with code 75 and the platform starts it
+    again, to join with a new generation once it reaches the store. So a node that reaches its peers but not the store
+    (an exhausted pool, a DNS failure, a network policy) gives its slots up instead of holding them frozen forever.
+    When every peer it reaches is isolated too, the store is down for everyone: readiness holds (a store outage must
+    not take every gateway out of the load balancer, deployment.md section 2) and nobody exits: the cost is stated
+    plainly, **a store outage pauses the whole cluster** (no actor runs, clients stay connected and their requests wait
+    or answer `Busy`) until the store is back, when every node resumes where it stopped. The pause is reported
+    (`daserver_membership_frozen`, the `MembershipFrozen` log) so the store's outage is visible as the cluster's.
+  - **Stall guard**: a node whose loop finds a gap above `ProbeInterval` on the lease clock since its last pass (a GC
+    pause, a stopped VM) keeps its worlds frozen until a table read confirms its generation is still `Active`, and
+    probe misses measured across the gap are ignored, so a stall neither runs stale work nor votes a peer dead. The
+    shards' own lease check is what safety rests on; the guard only shortens the stale work a pause shorter than the
+    lease could still do.
+  - **A dead member keeps its slots until it is re-placed**: a member written `Dead` stays in every node's placement
+    set (rendezvous ranking and slot-table overrides alike) until the coordinator's re-placement write removes it, so
+    no node activates its keys before that write, whatever the order in which nodes learn of the death. Peers stop
+    sending to a `Dead` generation, so mail for its keys is answered by the sending node with
+    `Unavailable(retryAfter)`, `retryAfter` the time left to the re-placement deadline as the view tells it (about
+    `IsolationTimeout + DeathMargin`, 25 s, at most): asks retry by their own rules (a `[Durable]` ask re-asks after
+    it), client calls get `Unavailable`, one-way mail waits in the sender's window. A new generation of the same name
+    hosts none of the old generation's slots before that write either.
+  - **Re-placement**: the deadline counts from `dead_seen_at`, not from the death's own write. A death is a transaction
+    of several statements whose `now()` is its start, and a writer that stalls before `COMMIT` (a GC pause, a slow
+    synchronous commit) would commit long after that time, while the dead node, still reading itself `Active`, renews
+    its lease until the commit. So the coordinator, on the first table read that shows a member `Dead` with no
+    `dead_seen_at`, stamps it with the store's `now()` in a versioned write of its own: that transaction began after a
+    read that saw the death committed, so `dead_seen_at` is later than the commit, and the dead node's last lease began
+    before the commit. Once the store's `now()` passes `dead_seen_at + IsolationTimeout + DaServer:Membership:DeathMargin`
+    (5 s; it covers the drift between the store's clock rate and the node's lease clock), the coordinator removes the
+    member from the placement set in one versioned write, the placement-version bump of every type it hosted: by then
+    the dead node has either read its death and stopped, or seen its lease run out and frozen. The coordinator reads
+    both times from the store, so its own clock and the moment it learned of the death do not matter.
   - **Asymmetric reachability** (C cannot reach B, A can): A's indirect probe clears B, so B is not declared dead and
     C's mail to B waits and times out. Orleans has the same gap; DaServer reports it rather than guessing
     (`daserver_link_unreachable{from,to}`, and the Dashboard lists the pair).
@@ -579,7 +624,7 @@ in short:
     `AllInOne` deployment) and `TestCluster`, whose in-process nodes share one instance (wrapped per node in a
     fault-injecting `IMembershipTable` that tests use to cut one node off the store, delay its reads or stall it). A
     node without a membership store starts only when `DaServer:Membership:SingleNode = true` says it is alone; any
-    other configuration refuses to start, so two storeless replicas never form two clusters running every actor twice.
+    other configuration refuses to start, so two storeless replicas never form two clusters running every actor twice; `SingleNode = true` on a node that also has a membership store (or an actor store) refuses to start as well, since a second replica configured the same way would bypass the store's table. A single node's hot restart and standby handover carry its member row (name, generation, start time, `restart_until`) in the snapshot header, and the new process seeds its in-memory table from it before `Rejoining`, so the check "still `Active`, own generation, own `restart_until`" passes as on a cluster.
     `DaServer.Aspire` sets `SingleNode` when the AppHost has one node and no store, and adds a PostgreSQL resource for
     membership when it declares more than one node and no store. A cluster of more than one process needs the table in
     a store: the actor store's PostgreSQL by default, or a separate connection (`WithMembershipStore(db)`). Every node,
@@ -597,11 +642,11 @@ in short:
   and "no record" (`NoActor`) are told apart.
 - **Who may create a key**: a type without `[ActivatedBy]` lets every server message create a key and no client
   message; a type with `[ActivatedBy]` lets only the listed messages create one, server messages included (the list is
-  the type's whole set of creating messages), with server `[Durable]` requests and `Wake` always activating. When the mail that triggers the activation may not create the key (a client `[To]`
+  the type's whole set of creating messages), with server `[Durable]` requests, `Wake` and the `[JoinOnConnect]` join always activating (the join's key is computed from the claims, never chosen by the client, so neither `[ActivatedBy]` nor `CanCreate` applies to it and a first login creates the `Player` row). When the mail that triggers the activation may not create the key (a client `[To]`
   message or client `[Durable]` request to a type without `[ActivatedBy]` for it, or any message the type's
   `[ActivatedBy]` list leaves out), the claim runs without its `INSERT` branch and requires a written record
   (`record IS NOT NULL`): no row, or a row never written, answers `NoActor` and writes nothing. A message that may
-  create the key first passes the type's pure gate, `static bool CanCreate(in TClaims, in TMessage)` beside
+  create the key first passes the type's pure gate, `static bool CanCreate(in TClaims, in TMessage)` (a server message has no claims: `CanCreate(in TMessage)`; another shape is an analyzer error) beside
   `[ActivatedBy]` (no world, no allocation; besides the claims and the message it may take at most one `in`
   configuration table, the node's immutable snapshot, an analyzer error otherwise; checked on the owner before the claim, for example a map id against the map
   table): for a saved type `false` turns the claim into the no-insert one above, so a key that already has a record
@@ -611,7 +656,7 @@ in short:
   writes nothing to the store, no claim included. What keeps one activation per key for it is the view: a node
   activates only keys its view makes it the owner of and not handoff-pending, peers forward by the same rule, a
   node written `Dead` in the membership table stops when it reads it, a node that cannot read the table freezes after
-  `IsolationTimeout`, and its slots move only after `died_at + IsolationTimeout + DeathMargin` on the store's clock. Between two views that briefly disagree (a slot-table change still
+  `IsolationTimeout`, and its slots move only after `dead_seen_at + IsolationTimeout + DeathMargin` on the store's clock. Between two views that briefly disagree (a slot-table change still
   spreading) two activations of such a key can exist for a moment; neither writes anything, so the cost is mail split
   between them, and the forward-by-version rule (frames carry the highest placement version seen) ends it within one
   view exchange. `[ActivatedBy]` and `CanCreate` apply to them as well: they decide whether an activation happens.
@@ -647,7 +692,7 @@ in short:
   prefabs and those spawned into persistent entities, `[Durable]` ask states, plus the framework's; it is used at run
   time only. Change tracking comes from the source: every persisted user component type declares `ITrackChanges`
   (buffers are tracked already), the generator emits the tracked-type list and the `ChangedAny`/`RemovedAny` filters
-  from those declarations (EasyEcs 4.7's filters name their types at compile time), and `Registration` throws at start
+  from those declarations (EasyEcs 4.7's filters name their types at compile time; each DaServer package's generator emits its share (its tracked types, prefabs and systems) as `internal static Registration <package namespace>.Generated.PackageHooks.Register(Registration)`, always, an empty one when it has nothing to register, and the server project's generator calls the hook of every referenced DaServer package in `Registration.Create()`'s chain; buffers enter the server project's list only when their element type is declared there), and `Registration` throws at start
   when a type on a `[Persist]` prefab is missing from that list; ask states are written once at `Ask` and tag the root
   `Unsaved` there, untracked. `root.Spawn` of a persistent prefab, `ChangeSystem`
   (`ChangedAny<…>(since)` over the tracked types that reach records, `[NotSaved]` types and buffers of `[NotSaved]` elements left out, split into balanced calls of 2 to 9 types joining one group, a single type as `ChangedAny<T, T>`/`RemovedAny<T, T>` (never `Changed<T>`, which would AND with the group), `.With<Persisted>()`, and `RemovedAny`) and the `Persisted` cleanup tag the root `Unsaved`;
@@ -656,7 +701,7 @@ in short:
   (`[NotSaved]` components and those the prefab gained since; section 2) and skips unknown type ids, counted. The waiting entities of
   `[Durable]` asks, `ReplyLog`, `IssueSeq` and `NextDue` are in the record, and a root that ran a `[Durable]` item is
   written at the next tick end. **Wake**: the
-  runtime's `WakeSystem` keeps the root's `NextDue` at the minimum `WakeAt` of its descendants; each node's `DueScan`
+  runtime's `WakeSystem` keeps the root's `NextDue` at the minimum `WakeAt` of its descendants and tags the root `Unsaved` when it changes; each node's `DueScan`
   asks the store for keys of its slots whose `next_due` has passed (`IActorStore.DueKeys(slots, until, after)` over the node's `(type, slot)` pairs, the
   `(type_id, slot, next_due)` index, in keyset pages of 512 from a sentinel first row, `until` fixed per scan, at most a page per pair through `LATERAL … LIMIT`) and activates them, so a `[Durable]` asker or a reminder survives a crash.
 - **Deactivation**: idle past `IdleTimeout` (`[ActorOptions]`; `Pending` zero, no presence other than `Detached` ones;
@@ -721,7 +766,7 @@ CREATE TABLE IF NOT EXISTS :schema.daserver_members (       -- one row per node 
   status        smallint    NOT NULL,   -- Joining, Active, ShuttingDown, Dead
   suspicions    bytea,                  -- (suspecting name, generation, store now()) per suspicion
   restart_until timestamptz,            -- a granted hot restart's deadline; NULL: none
-  died_at       timestamptz,            -- store now() when written Dead; re-placement waits on it
+  dead_seen_at  timestamptz,            -- store now() of the coordinator's first write after reading it Dead
   started       timestamptz NOT NULL,
   i_am_alive    timestamptz NOT NULL,   -- diagnostics and the join's skip rule; written without a version change
   PRIMARY KEY (cluster, name, generation));
@@ -735,8 +780,17 @@ The schema Job does not create roles. The samples' AppHosts add an init step tha
 (Aspire's PostgreSQL resource has only `postgres`) before the schema Job (which retries until the roles exist) and
 creates both roles, neither a superuser: the owner role (`CREATE` on the schema, owns the tables, the sequence and the
 two `SECURITY DEFINER` functions) and the runtime role. It is re-runnable, since on Kubernetes it runs as a Job with
-a fresh name every release: `DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '<owner>') THEN CREATE
-ROLE … LOGIN; END IF; … END $$`, then `GRANT CREATE ON SCHEMA`. Against an external database the operator provisions
+a fresh name every release, and every run converges the database to the configuration: (1) each role is created if
+missing and its password set on every run, so a changed password parameter reaches the database (`DO $$ BEGIN IF NOT
+EXISTS (SELECT FROM pg_roles WHERE rolname = '<owner>') THEN CREATE ROLE … LOGIN; END IF; END $$`, then `ALTER ROLE
+… PASSWORD …`; a `DO` body takes no bind parameters and psql does not substitute `:'var'` inside dollar quotes, so
+the step builds each statement with `format('… %I … PASSWORD %L', name, password)` and runs it with `EXECUTE`); (2)
+`CREATE SCHEMA IF NOT EXISTS <schema> AUTHORIZATION <owner>`, so a configured schema other than `public` exists and
+the owner role owns it (its `GRANT USAGE ON SCHEMA … TO <runtime>` then takes effect; PostgreSQL ignores a grant from
+a role without the privilege's grant option), and for `public`, `GRANT CREATE, USAGE ON SCHEMA public` to the owner
+and `USAGE` to the runtime role; (3) `ALTER TABLE`/`SEQUENCE`/`FUNCTION … OWNER TO <owner>` for every DaServer
+object that already exists under another owner (tables created by today's nodes as `postgres`), so the owner's
+grants and later `ALTER`s on them work. Against an external database the operator provisions
 both roles (deployment.md section 4).
 
 **A membership change** (one transaction; `:v` is the version the node read, and the node must have been `Active` at
@@ -747,8 +801,11 @@ BEGIN;
 UPDATE daserver_membership SET version = :v + 1, slots = coalesce(:slots, slots), placements = coalesce(:placements, placements)
  WHERE cluster = :cluster AND version = :v;                 -- 0 rows: a conflict, ROLLBACK, re-read the table, retry
 INSERT INTO daserver_members ... ON CONFLICT (cluster, name, generation) DO UPDATE SET ...;   -- the changed rows;
-       -- SET lists status, suspicions, restart_until, died_at, address: never i_am_alive, so a stale copy cannot
-       -- overwrite a heartbeat written since
+       -- SET lists status, suspicions, restart_until, address and
+       --   dead_seen_at = CASE WHEN excluded.dead_seen_at IS NOT NULL      -- the coordinator asks for the stamp
+       --                  THEN coalesce(daserver_members.dead_seen_at, now())  -- the store's clock, set once
+       --                  ELSE daserver_members.dead_seen_at END;
+       -- never i_am_alive, so a stale copy cannot overwrite a heartbeat written since
 COMMIT;
 ```
 
@@ -936,28 +993,47 @@ LIMIT 512
   snapshot file if one is there (so a boot, a crash restart or a promoted standby's later restart all just run). An
   instance that cannot take the lock is the standby: it finishes .NET start-up, warms its code (nothing to JIT under
   AOT; ReadyToRun plus the warm-up path under JIT), opens its store connection pool, joins nothing, serves nothing, and
-  listens on a named pipe (`NamedPipeServerStream` with `PipeOptions.CurrentUserOnly`: a Unix domain socket in the
-  snapshot directory on Linux and macOS, mode 0600, a stale socket unlinked; a named pipe on Windows; AOT-safe; not an
-  anonymous pipe, since the platform's supervisor starts the standby, so no handle can be inherited). A socket path
-  longer than the platform's limit (108 bytes on Linux, 104 on macOS) falls back to a short path under `/tmp` named by
-  a hash of the node name, checked at start. On Windows the pair runs under one service account (a dedicated user or
-  gMSA), or the pipe carries an explicit `PipeSecurity` ACL granting the other service's SID; with two default virtual
-  accounts `CurrentUserOnly` would refuse the old process and every handover would fall back to the file.
-  - **The handover**: the armed old process (draft section 10) starts its freeze when a standby connects and passes a
-    handshake: the arm nonce, the new manifest hash (the standby's own) and the deadline, before any bytes. It then
-    streams the bytes it would write to the file (header, per-world `Save` bytes, checksum) from a pooled buffer, with
-    no intermediate file. The standby checks them as it checks the file (checksum, nonce, manifest hash, deadline; the
-    boot id is trivially the same) and answers an ack or a nack. Only on the ack does the old process close its
-    listening sockets, release the lock and exit with code 0 (its supervisor does not restart a 0 exit, deployment.md
-    section 0); on a nack or no answer within the handover timeout it writes the file and exits with 75, so the
-    supervisor restarts it into the restart path (a standby that nacks exits 0 first, so the restarted old build takes
-    the lock back). The standby learns the old process is gone by the pipe's EOF and by
-    taking the lock, then binds the node's ports (retrying on `EADDRINUSE` for a moment, since sockets of the old
-    process may linger) and continues at `Rejoining`. Without a standby that connects by the arm's timeout, the old
-    process freezes as in the restart path.
-  - **Readiness**: `/health` reports the process's instance id (a random id at start) and the instance's name (the
-    unit instance, service or container), so the rollout restarts the instance that is not live and waits for a new
-    id before moving on: on Compose the pair shares one network namespace and an old process still answers.
+  **listens** (it is the pipe's server) on a named pipe (`NamedPipeServerStream` with `PipeOptions.CurrentUserOnly`: a
+  Unix domain socket in the snapshot directory on Linux and macOS, mode 0600, a stale socket unlinked; a named pipe on
+  Windows; AOT-safe; not an anonymous pipe, since the platform's supervisor starts the standby, so no handle can be
+  inherited). A socket path longer than the platform's limit (108 bytes on Linux, 104 on macOS) is refused: the node
+  will not start in `Standby` mode with it, and `DaServer.Aspire` checks the path at publish; there is no fallback
+  under `/tmp`, which Compose (`tmpfs: [/tmp]` per container) and systemd's `PrivateTmp=` do not share and where
+  another user could take the name. On Windows the pair runs under one service account (a dedicated user or gMSA), or
+  the pipe carries an explicit `PipeSecurity` ACL granting the other service's SID; with two default virtual accounts
+  `CurrentUserOnly` would refuse the old process and every handover would fail. Each instance knows its own name from
+  `DaServer:Instance` (the unit instance `%i`, the service name, the container's service: below), and both share the
+  node name.
+  - **The handover**: the armed old process (draft section 10) is the pipe's **client**. From the arm on it connects to
+    the standby's pipe and retries (with back-off) until a standby passes the handshake or the arm expires: a standby
+    still on the old build, running since boot before the trigger replaced it, fails the handshake on the manifest
+    hash and the old process simply tries again, since the trigger is about to replace that standby. The handshake
+    carries the arm nonce, the armed manifest hash (it must equal the standby's own) and the deadline, before any
+    bytes. Only once it passes does the old process start its freeze; it then streams the bytes it would write to the
+    file (header, per-world `Save` bytes, checksum) from a pooled buffer, with no intermediate file. The standby checks
+    them as it checks the file (checksum, nonce, manifest hash, deadline; the boot id is trivially the same) and answers
+    an ack or a nack. On the ack the old process closes its listening sockets, releases the lock and exits with code 0.
+    On a nack, a broken stream or no answer within the handover timeout, **the old process resumes in place**: it has
+    released nothing (it still holds the lock, its sockets and its row, whose `restart_until` it clears), its roots
+    carry `Resumed(Pause, Aborted: true)` for one tick and it keeps serving (unlike an aborted freeze after SIGTERM,
+    which then stops gracefully: nothing asked this process to stop), and nothing is lost; it reports the failure to the rollout loop
+    (`/health` keeps its manifest hash and instance id, below), which stops the roll for that node, as it stops on any
+    failed step. A standby that nacks or loses the stream discards what it read and stays a standby. Without a standby
+    that passes the handshake by the arm's timeout, the old process never freezes: the arm expires and the loop
+    reports it. The standby learns the old process is gone by the pipe's EOF and by taking the lock, then binds the
+    node's ports (retrying on `EADDRINUSE` for a moment, since sockets of the old process may linger) and continues at
+    `Rejoining`.
+  - **A standby that takes the lock without a handover**: when the live process dies (a crash, a kill, a host
+    problem) the kernel releases the lock and the standby becomes the node. It uses streamed bytes only when it checked
+    and acked them (the old process, once it has the ack, does nothing but exit, so they are complete and current);
+    otherwise it runs the normal start path: a snapshot file if one is there and valid (step 5's checks), else records.
+    Rejoining's `restart_until` check rules out a double load. Once the node is `Active` it deletes any snapshot file
+    left in the directory, so a stale one is never loaded by a later start.
+  - **Readiness**: `/health` reports the process's instance id (a random id at start), the instance's name
+    (`DaServer:Instance`) and the running manifest hash. The rollout restarts the instance that is not live, and waits
+    for a new instance id **with the armed manifest hash** before moving on: on Compose the pair shares one network
+    namespace and an old process still answers, and an old process that resumed after a failed handover reports the
+    old hash, so the loop never mistakes it for success.
   - The pause targets, measured in W6, are about 0.1–0.3 s for JIT and AOT alike (freeze, serialize, deserialize),
     against about 0.3–1 s (AOT) and 1–2 s (JIT) for the restart path. The machine holds both processes' memory during
     the window, so arming refuses a standby when twice the working set plus the snapshot would pass the memory limit.
