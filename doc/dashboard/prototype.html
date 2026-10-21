@@ -194,7 +194,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
 .ms .bd,.ms .th.bd{padding-left:var(--s3);padding-right:0}
 .ms.ty{grid-template-columns:22px minmax(0,1.5fr) .5fr .75fr .75fr minmax(96px,1.5fr) .35fr .5fr}
 .ms.chl{grid-template-columns:22px 56px minmax(0,1fr) minmax(0,1.1fr)}
-.ms.acl{grid-template-columns:22px minmax(0,1.3fr) .8fr .9fr}
+.ms.acl{grid-template-columns:22px minmax(0,1.3fr) minmax(76px,.8fr) .9fr}
 .strip{display:block;width:100%;height:18px;overflow:visible}
 .strip rect{fill:var(--ink-3)}
 .strip rect.hot{fill:var(--indigo)}
@@ -212,7 +212,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
 .det .uf{flex-wrap:wrap;row-gap:var(--s1)}
 
 /* audit */
-.audit{display:grid;grid-template-columns:84px 140px 150px minmax(0,1fr) 150px;border-top:1px solid var(--rule)}
+.audit{display:grid;grid-template-columns:84px 140px 172px minmax(0,1fr) 150px;border-top:1px solid var(--rule)}
 .audit > *{height:var(--row);display:flex;align-items:center;padding-right:20px;border-bottom:1px solid var(--rule);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
 .audit .w,.audit .oc{color:var(--ink-3)}
 .audit .oc.ind{color:var(--indigo)}
@@ -346,7 +346,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   .note{font-size:15px;line-height:1.4}
   .h2{font-size:26px}
   .code{font-size:12px;line-height:1.7}
-  .audit{grid-template-columns:52px minmax(0,1fr) auto;grid-auto-flow:row dense}
+  .audit{grid-template-columns:64px minmax(0,1fr) auto;grid-auto-flow:row dense}
   .audit .tm{grid-row:span 3!important}
   .audit > *{padding-right:0;height:auto;padding-block:9px}
   .audit .tm{grid-column:1;grid-row:span 2}
@@ -430,6 +430,9 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   // and Find for anything specific. The Dashboard's server computes the distributions and the outliers (ADR-093).
   // ?alerts=down shows the page with Prometheus unreadable.
   var Q = /[?&]alerts=down/.test(location.search);
+  // ?store=down shows the store unreachable: every node is isolated (frozen, answering probes as isolated), and the
+  // Dashboard, whose audit, idempotency keys and locks live in the store, acts on nothing
+  var STORE_DOWN = /[?&]store=down/.test(location.search), STORE_SINCE = Date.UTC(2026, 9, 20, 17, 59, 30) / 1000;
   // What the Dashboard's server could read this refresh. A source it cannot read is "cannot know", never "fine":
   // with Prometheus down, no alert firing proves nothing.
   var SRC = { alerts: Q ? 'down' : 'ok', alertsSince: Date.UTC(2026, 9, 20, 17, 58, 40) / 1000, cadence: 10 };
@@ -446,7 +449,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   }
   // Alert rules, read from Prometheus's rules API. A reading is held to the limit its rule carries in the
   // daserver_limit annotation; a reading with no rule has no limit line, and the Dashboard sets no threshold of its own.
-  var RULES = SRC.alerts === 'ok' ? { ask: { alert: 'AskLatencyHigh', limit: 25 } } : {};
+  var RULES = SRC.alerts === 'ok' ? { ask: { alert: 'DaServerAskLatencyHigh', limit: 25 } } : {};
   function limit(r) { return RULES[r || 'ask'] ? RULES[r || 'ask'].limit : null; }
   function over(v, r) { var l = limit(r); return l != null && v != null && v > l; }
   // MapServer and ChatServer run the newest build; the rest are one behind
@@ -490,6 +493,9 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   setNode('guild-4', { rq: 0, p99: 0.9 });
   setNode('game-87', { p99: 19.4, cpu: 93 }); setNode('gate-23', { p99: 2.4, cpu: 9, st: 'busy', txt: 'Joining, filling up' });
   setNode('chat-5', { p99: 6.9, cpu: 71 });
+  // a canary: one GuildServer node already runs the newest build, and is slow
+  setNode('guild-7', { build: BUILD, p99: 9.8 });
+  if (STORE_DOWN) TYPES.forEach(function (t) { t.nodes.forEach(function (n) { if (n.st === 'ok' || n.st === 'busy') { n.st = 'isolated'; n.txt = 'Isolated since ' + hhmm(STORE_SINCE); } }); });
   // A reading counts only when it is fresh: answered within two cadences, by a node that is not silent or isolated
   function fresh(n) { return n.p99 != null && n.age <= 2 * SRC.cadence && n.st !== 'silent' && n.st !== 'isolated' && n.st !== 'stale'; }
   function answered(t) { return t.nodes.filter(fresh); }
@@ -502,14 +508,19 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   // The median and the median absolute deviation of each build's fresh readings: a type halfway through a rollout
   // has two distributions, and a node is compared with the nodes on its own build. The deviation has a floor of 2%
   // of the median, so a type whose nodes all read alike does not flag noise.
+  // A build with fewer than five fresh nodes (a canary) is held to the majority build's median and deviation, since a
+  // node cannot stand out from itself; the absolute floor of 0.5 ms keeps a median near 0 from flagging every reading.
+  var FLOOR = 0.5, SMALL = 5;
   function stats(t) {
-    var by = {};
+    var by = {}, main = null;
     builds(t).forEach(function (g) {
       var v = t.nodes.filter(function (n) { return n.build === g.b && fresh(n); }).map(function (n) { return n.p99; }).sort(function (a, b) { return a - b; });
       if (!v.length) return;
       var med = v[v.length >> 1], dev = v.map(function (x) { return Math.abs(x - med); }).sort(function (a, b) { return a - b; });
-      by[g.b] = { med: med, mad: Math.max(dev[dev.length >> 1], med * .02) };
+      by[g.b] = { med: med, mad: Math.max(dev[dev.length >> 1], med * .02, FLOOR), n: v.length };
+      if (!main || v.length > main.n) main = by[g.b];
     });
+    for (var b in by) if (by[b].n < SMALL && main && main !== by[b]) by[b] = main;
     t.by = by;
   }
   TYPES.forEach(function (t) { t.p = series(t.n + t.usual, t.usual, .06, t.now, t.now > 2 * t.usual ? [DEPLOY, t.now / t.usual * .97] : null); stats(t); });
@@ -538,22 +549,23 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   var ALLNODES = TYPES.reduce(function (s, t) { return s + t.n; }, 0), ALLACTORS = TYPES.reduce(function (s, t) { return s + t.count; }, 0);
   function answering() { return TYPES.reduce(function (s, t) { return s + answered(t).length; }, 0); }
   var MAP = T('map');
-  // Firing alerts, from Alertmanager: one per rule and node. An incident is the alerts of one rule on one server type;
+  // Firing alerts, from Alertmanager: one per rule and node, labelled cluster, type and node. An incident is the alerts
+  // of one rule on one server type (Alertmanager's grouping by alertname, cluster and type);
   // incidents rank by severity, then by how many nodes they cover. A silenced incident stays listed, last.
   var ALERTS = [];
   if (SRC.alerts === 'ok') {
-    MAP.nodes.forEach(function (n) { if (fresh(n) && over(n.p99)) ALERTS.push({ alert: 'AskLatencyHigh', service: 'MapServer', node: n.n, severity: 'page', since: Date.UTC(2026, 9, 20, 17, 43) / 1000 }); });
-    ['game-87', 'game-40'].forEach(function (n) { ALERTS.push({ alert: 'GcPauses', service: 'PlayerServer', node: n, severity: 'ticket', since: Date.UTC(2026, 9, 20, 17, 51) / 1000 }); });
+    MAP.nodes.forEach(function (n) { if (fresh(n) && over(n.p99)) ALERTS.push({ alert: 'DaServerAskLatencyHigh', type: 'MapServer', node: n.n, severity: 'critical', since: Date.UTC(2026, 9, 20, 17, 43) / 1000 }); });
+    ['game-87', 'game-40'].forEach(function (n) { ALERTS.push({ alert: 'DaServerGcPauses', type: 'PlayerServer', node: n, severity: 'warning', since: Date.UTC(2026, 9, 20, 17, 51) / 1000 }); });
   }
   var SILENCES = {};
   function incidents() {
     var g = {}, a = [];
-    ALERTS.forEach(function (x) { var k = x.alert + ' ' + x.service; if (!g[k]) a.push(g[k] = { key: k, alert: x.alert, service: x.service, severity: x.severity, since: x.since, nodes: 0 }); g[k].nodes++; });
+    ALERTS.forEach(function (x) { var k = x.alert + ' ' + x.type; if (!g[k]) a.push(g[k] = { key: k, alert: x.alert, type: x.type, severity: x.severity, since: x.since, nodes: 0 }); g[k].nodes++; });
     a.forEach(function (i) { i.silenced = SILENCES[i.key]; });
-    return a.sort(function (p, q) { return !!p.silenced - !!q.silenced || (p.severity === q.severity ? 0 : p.severity === 'page' ? -1 : 1) || q.nodes - p.nodes; });
+    return a.sort(function (p, q) { return !!p.silenced - !!q.silenced || (p.severity === q.severity ? 0 : p.severity === 'critical' ? -1 : 1) || q.nodes - p.nodes; });
   }
   // A server type is unhealthy when an alert fires for it: the Dashboard has no threshold of its own
-  function unhealthy(t) { return ALERTS.some(function (x) { return x.service === t.name; }); }
+  function unhealthy(t) { return ALERTS.some(function (x) { return x.type === t.name; }); }
   // Changes: what membership shows (builds, joins, leaves, incarnations), the Dashboard's own actions, and what the
   // deploy pipeline reports. With no Kubernetes API the Dashboard cannot name an autoscaler; it says what it saw.
   var CHANGES = [
@@ -618,7 +630,9 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   // Actions run on the Dashboard's server and outlive the browser; the page shows what the server and the nodes
   // report. One action at a time per server type; each has an id and an idempotency key.
   var ACTIONS = [], ASEQ = 0x7f31;
-  function running(tid) { for (var i = 0; i < ACTIONS.length; i++) { var a = ACTIONS[i]; if (a.type === tid && (a.state === 'Requested' || a.state === 'Accepted')) return a; } return null; }
+  // an action holds its type's lock from Requested until a terminal state (Done, Failed, Stalled, Committed)
+  function unsettled(a) { return a.state === 'Requested' || a.state === 'Accepted' || a.state === 'Running'; }
+  function running(tid) { for (var i = 0; i < ACTIONS.length; i++) { var a = ACTIONS[i]; if (a.type === tid && unsettled(a)) return a; } return null; }
   var TABS = ['Incident', 'Cluster', 'Changes', 'Actors', 'Audit'];
 
   var S = { i: 0, back: [], compact: false, mode: null, layout: null, hl: null, status: '', found: null, last: {} };
@@ -637,6 +651,8 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     // o: eb, h1, body, and for a row of a list screen md (the noun its rows are counted in) and det (its detail alone)
     function add(tab, scr, slabel, key, layout, label, o) { o.tab = tab; o.scr = scr; o.slabel = slabel; o.key = key; o.layout = layout; o.label = label; st.push(o); }
     // Prometheus unreadable: the section says it cannot know, and keeps the checks that need no threshold
+    // the store unreachable comes first and needs no rule: most nodes isolated at once means the store, not the nodes
+    if (STORE_DOWN) add(0, 'store-down', 'The store', 'store-down', 'inc-down', 'The store', { bad: true, eb: function () { return group(isolatedCount()) + ' of ' + group(ALLNODES) + ' nodes isolated since ' + hhmmss(STORE_SINCE); }, h1: 'The store cannot be reached', body: incStore });
     if (SRC.alerts !== 'ok') add(0, 'sum', 'Summary', 'sum', 'inc-down', 'Summary', { bad: true, eb: function () { return 'Prometheus has not answered since ' + hhmmss(SRC.alertsSince); }, h1: 'Alerts cannot be read', body: incDown });
     else add(0, 'sum', 'Summary', 'sum', 'inc-sum', 'Summary', { bad: true, eb: incEb, h1: 'MapServer asks are slow', body: incSum });
     var evb = function () { return 'MapServer against the other nine types, since the rollout'; };
@@ -761,7 +777,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   }
 
   // ---------- screens: units placed on the page's 10 columns ----------
-  var SAY = { GcPauses: 'long GC pauses', AskLatencyHigh: 'slow asks' };
+  var SAY = { DaServerGcPauses: 'long GC pauses', DaServerAskLatencyHigh: 'slow asks' };
   function incEb() {
     var i = incidents()[0];
     return 'Firing since ' + hhmm(i.since) + ' on ' + group(i.nodes) + ' of ' + group(MAP.n) + ' nodes' + (i.silenced ? '; silenced until ' + hhmm(i.silenced) : '');
@@ -779,7 +795,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   function moreIncidents() {
     var a = incidents().slice(1).filter(function (i) { return !i.silenced; });
     if (!a.length) return 'Everything else is within its usual range.';
-    return (a.length === 1 ? 'One more incident: ' : a.length + ' more incidents, the first: ') + (SAY[a[0].alert] || a[0].alert) + ' on ' + group(a[0].nodes) + ' ' + a[0].service + ' nodes.';
+    return (a.length === 1 ? 'One more incident: ' : a.length + ' more incidents, the first: ') + (SAY[a[0].alert] || a[0].alert) + ' on ' + group(a[0].nodes) + ' ' + a[0].type + ' nodes.';
   }
   // A type's rollback, from what the nodes run: the action is the server's, the progress is membership's
   function rbLabel(t, short1) {
@@ -802,6 +818,14 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   }
   // Prometheus unreadable: no alert firing proves nothing, so the page says it cannot know and shows what needs no
   // threshold, from the Dashboard's own poll
+  function isolatedCount() { var k = 0; TYPES.forEach(function (t) { t.nodes.forEach(function (n) { if (n.st === 'isolated') k++; }); }); return k; }
+  // every node isolated: the worlds are frozen until the store answers; the readings on the page are the last ones,
+  // with their age, and no action can be sent (its intent, key and lock live in the store)
+  function incStore() {
+    return '<div class="ln main col"><p class="lead">Every node has lost the store and frozen its worlds; none is answering clients. They resume on their own when the store answers. Until then this page shows the last readings with their age, and sends no action.</p></div>' +
+      '<div class="ln full">' + figRow([['Nodes isolated', group(isolatedCount()) + ' of ' + group(ALLNODES), 'since ' + hhmmss(STORE_SINCE), true], ['Fresh readings', group(answering()), 'of ' + group(ALLNODES) + ' nodes'], ['Membership', 'As of ' + hhmm(STORE_SINCE), 'the last view read'], ['Actions', 'None sent', 'the deploy pipeline still runs']]) + '</div>' +
+      '<div class="ln full uf">' + hist('Grafana') + '</div>';
+  }
   function incDown() {
     var nr = []; TYPES.forEach(function (t) { t.nodes.forEach(function (n) { if (n.st === 'silent' || n.st === 'isolated') nr.push(n); }); });
     return '<div class="ln main col"><p class="lead">No alert can be read, so this page cannot say that nothing is wrong. Until Prometheus answers, it shows what needs no threshold, from its own poll of the nodes.</p></div>' +
@@ -1235,7 +1259,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     qa('[data-restart]', $('body')).forEach(function (b) { b.onclick = function () { restart(b.dataset.restart); }; });
     if ($('rb')) $('rb').onclick = function () { rollback($('rb').dataset.type); };
     // silencing is Alertmanager's: a silence that expires in an hour, written to the audit log like any action
-    if ($('sil')) $('sil').onclick = function () { var i = incidents()[0]; SILENCES[i.key] = NOW + 3600; var a = { id: (ASEQ++).toString(16), kind: 'Silence', target: i.alert + ' on ' + i.service + ' until ' + hhmm(NOW + 3600), state: 'Done' }; ACTIONS.push(a); audited(a); rebuild(); render('morph'); say('Silenced until ' + hhmm(NOW + 3600) + '. Action ' + a.id + '.'); };
+    if ($('sil')) $('sil').onclick = function () { if (STORE_DOWN) { say('The store cannot be reached: no silence was created.'); return; } var i = incidents()[0]; SILENCES[i.key] = NOW + 3600; var a = { id: (ASEQ++).toString(16), kind: 'Silence', target: i.alert + ' on ' + i.type + ' until ' + hhmm(NOW + 3600), state: 'Done' }; ACTIONS.push(a); audited(a); rebuild(); render('morph'); say('Silenced until ' + hhmm(NOW + 3600) + '. Action ' + a.id + '.'); };
     if ($('hr')) $('hr').onclick = function () { hotRestart($('hr').dataset.type); };
     if ($('nx')) $('nx').onclick = function () { step(1); };
     if ($('fol')) $('fol').onclick = openToc;
@@ -1280,7 +1304,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   function rollback(tid) {
     var t = T(tid), from = builds(t)[0].b;
     ask({ title: 'Roll back ' + t.name, text: 'The deploy pipeline moves the ' + group(t.n) + ' ' + t.name + ' nodes from build ' + from + ' to ' + PREV + ', one at a time, each handed over to a standby with a pause of about 0.3 s. Clients stay connected.',
-      need: t.name, verb: 'Roll back', reason: true, key: 'Roll back ' + t.name + ' ' + from, target: t.name + ' to ' + PREV, type: t.id,
+      need: t.name, verb: 'Roll back', reason: true, key: 'Roll back ' + t.name + ' ' + from, target: t.name + ' to ' + PREV, type: t.id, pipeline: 'aspire do mmo-rollout --type ' + t.name + ' --build ' + PREV,
       // the webhook carries the build it expects to leave; the pipeline refuses if the type has moved on
       check: function () { var b = builds(t)[0].b; return b !== from ? t.name + ' moved to ' + b + ' since you opened this. Nothing was done.' : null; },
       done: 'Rolling back ' + t.name + ' to ' + PREV + ', one node at a time.', run: function (a) { a.step = function () { var n = t.nodes.filter(function (x) { return x.build !== PREV; })[0]; if (n) { n.build = PREV; n.inc++; } else settleAction(a, 'Done'); }; } });
@@ -1290,22 +1314,22 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     var away = t.nodes.filter(function (x) { return x !== n && x.st !== 'ok'; });
     ask({ title: 'Restart ' + name, text: 'The deploy pipeline hands ' + name + ' over to a standby on the same build, paused about 0.3 s. Its actors stay on it; clients stay connected.',
       warn: away.length ? group(away.length) + ' other ' + t.name + (away.length === 1 ? ' node is' : ' nodes are') + ' not running (' + away.slice(0, 2).map(function (x) { return x.n + ', ' + state(x).toLowerCase(); }).join('; ') + '): restarting ' + name + ' now takes one more out at once.' : '',
-      need: name, verb: 'Restart', key: 'Restart ' + name + ' ' + inc, target: name + ', incarnation ' + inc, type: null,
+      need: name, verb: 'Restart', key: 'Restart ' + name + ' ' + inc, target: name + ', incarnation ' + inc, type: t.id, pipeline: 'aspire do mmo-restart --node ' + name,
       // the node refuses a restart for an incarnation it no longer is, and the type allows one restart at a time
       check: function () { var r = t.nodes.filter(function (x) { return x !== n && x.st === 'restart'; })[0]; return n.inc !== inc ? name + ' restarted since you opened this (incarnation ' + inc + ', now ' + n.inc + '). Nothing was done.' : r ? 'Wait: ' + r.n + ' is restarting. One node of a type restarts at a time.' : n.st !== 'ok' ? name + ' is ' + state(n).toLowerCase() + '. Nothing was done.' : null; },
       done: 'Restarting ' + name + ' in place.', run: function (a) { setNode(name, { st: 'restart', txt: 'Restarting in place' }); var k = 0; a.step = function () { if (++k < 2) return; setNode(name, { st: 'ok', txt: 'Running', inc: inc + 1, age: 1 }); settleAction(a, 'Done'); }; } });
   }
   function hotRestart(tid) {
     var t = T(tid), b = builds(t)[0].b;
-    ask({ title: 'Hot restart ' + t.name, text: 'The deploy pipeline restarts the ' + group(t.n) + ' ' + t.name + ' nodes one at a time on their current build, the coordinator last, with scale-in paused. Each resumes from its snapshot; clients stay connected.',
-      need: t.name, verb: 'Hot restart', reason: true, key: 'Hot restart ' + t.name + ' ' + b, target: t.name + ' on ' + b, type: t.id,
+    ask({ title: 'Hot restart ' + t.name, text: 'The deploy pipeline restarts the ' + group(t.n) + ' ' + t.name + ' nodes one at a time on their current build, the coordinator last, with scale-in paused. Each hands its worlds over to a standby on the same build, paused about 0.3 s; clients stay connected.',
+      need: t.name, verb: 'Hot restart', reason: true, key: 'Hot restart ' + t.name + ' ' + b, target: t.name + ' on ' + b, type: t.id, pipeline: 'aspire do mmo-restart --type ' + t.name,
       check: function () { return null; }, done: 'Hot restart of ' + t.name + ' started.', run: function (a) { var k = 0; a.step = function () { if (++k >= 3) settleAction(a, 'Done'); }; } });
   }
   // a config table goes out in two phases: every node validates and stages it, then all switch at once; a node that
   // has not staged it within a minute aborts the push, and a node that joins meanwhile reads the table from the store
   function upload() {
     ask({ title: 'Upload SkillTable', text: 'Version 16 goes to all ' + group(ALLNODES) + ' nodes in two phases. Every node validates and stages it; when all have, they switch together. If any node has not staged it within a minute, nothing switches and the push is aborted.',
-      need: 'SkillTable', verb: 'Upload', kind: 'Upload config table', reason: true, key: 'Upload SkillTable 16', target: 'SkillTable version 16', type: null,
+      need: 'SkillTable', verb: 'Upload', kind: 'Upload config table', reason: true, key: 'Upload SkillTable 16', target: 'SkillTable version 16', type: null, pipeline: 'aspire do mmo-config --table SkillTable --version 16',
       check: function () { return null; }, done: 'SkillTable version 16 is staging on every node.', run: function (a) { var k = 0; a.step = function () { if (++k >= 2) settleAction(a, 'Committed'); }; } });
   }
   function confirmBody() {
@@ -1326,15 +1350,19 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     y.onclick = function () {
       // the first press disables the button: a second press, or Enter during the call, sends nothing
       if (sent || !ok()) return; sent = true; y.disabled = true;
-      var same = ACTIONS.filter(function (a) { return a.key === c.key && a.state !== 'Failed'; })[0];
-      var err = same ? 'Already requested as action ' + same.id + ' (' + same.state.toLowerCase() + '). Nothing new was sent.' : c.type && running(c.type) ? T(c.type).name + ' is busy with action ' + running(c.type).id + '. One action per server type at a time.' : c.check();
-      if (err) { $('cerr').textContent = err; return; }
-      var a = { id: (ASEQ++).toString(16), key: c.key, kind: c.kind || c.verb, target: c.target, type: c.type, reason: r ? r.value.trim() : '', state: 'Requested' };
+      // the key is the action, the target and what was seen, never the operator; it dedupes for ten minutes from the
+      // request, and only while the action has not finished
+      var same = ACTIONS.filter(function (a) { return a.key === c.key && unsettled(a) && NOW - a.t < 600; })[0];
+      var err = STORE_DOWN ? 'The store cannot be reached: nothing was sent. The deploy pipeline can still run it: ' + c.pipeline : same ? 'Already requested as action ' + same.id + ' (' + same.state.toLowerCase() + '). Nothing new was sent.' : c.type && running(c.type) ? T(c.type).name + ' is busy with action ' + running(c.type).id + '. One action per server type at a time.' : c.check();
+      // a refusal sends nothing and enables the button again, so a "wait" can be retried without retyping
+      if (err) { $('cerr').textContent = err; sent = false; upd(); return; }
+      var a = { id: (ASEQ++).toString(16), t: NOW, key: c.key, kind: c.kind || c.verb, target: c.target, type: c.type, reason: r ? r.value.trim() : '', state: 'Requested' };
       ACTIONS.push(a); audited(a); c.run(a);
       // the Dashboard's own actions are changes too
       CHANGES.unshift(a.change = { id: 'a' + a.id, t: NOW, kind: a.kind, target: c.need, detail: a.target + (a.reason ? '; ' + a.reason : ''), by: 'You, action ' + a.id, result: a.state, note: '' });
       S.mode = c.from === 'det' ? 'det' : null; rebuild(); render('down'); say(c.done + ' Action ' + a.id + '.');
       // the server answers: accepted (the target took it), failed, or unknown on a timeout
+      // then it follows the run (completion callback or polling) to Running and a terminal state
       setTimeout(function () { if (a.state === 'Requested') settleAction(a, 'Accepted'); refresh(true); }, 1200);
     };
     i.focus({ preventScroll: true });
@@ -1345,7 +1373,8 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   // operator moves; a refresh that would add or drop rows waits while the pointer or focus is on the page.
   function snapLine() {
     var e = $('snap'), down = SRC.alerts !== 'ok';
-    e.textContent = 'As of ' + hhmmss(NOW) + '. ' + group(answering()) + ' of ' + group(ALLNODES) + ' nodes answered' + (down ? '; alerts unreadable' : '');
+    var iso = isolatedCount(); down = down || iso * 2 > ALLNODES;
+    e.textContent = 'As of ' + hhmmss(NOW) + '. ' + group(answering()) + ' of ' + group(ALLNODES) + ' nodes read fresh' + (iso * 2 > ALLNODES ? '; the store cannot be reached' : SRC.alerts !== 'ok' ? '; alerts unreadable' : '');
     e.classList.toggle('ind', down);
   }
   function touching() { return !!document.querySelector('.body .ms:hover') || ($('body').contains(document.activeElement) && document.activeElement !== $('body')); }
@@ -1353,7 +1382,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     if (!now) {
       NOW += SRC.cadence;
       TYPES.forEach(function (t) { t.now = t.now * (1 + (rnd(NOW + t.n) - .5) * .04); t.nodes.forEach(function (n, i) { if (n.p99 != null && n.st !== 'stale') n.p99 *= 1 + (rnd(NOW + i) - .5) * .03; if (n.st !== 'silent' && n.st !== 'stale') n.age = 1 + Math.floor(rnd(NOW * 3 + i) * 8); else n.age += SRC.cadence; }); stats(t); });
-      ACTIONS.forEach(function (a) { if (a.state === 'Accepted' && a.step) a.step(); });
+      ACTIONS.forEach(function (a) { if (a.state === 'Accepted') settleAction(a, 'Running'); if (a.state === 'Running' && a.step) a.step(); });
     }
     snapLine();
     if (S.mode === 'find' || S.mode === 'confirm' || S.mode === 'toc') return;
@@ -1365,7 +1394,12 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     qa('[data-m]', b).forEach(function (e) { if (!e.closest('.leave')) cur[e.dataset.m] = e; });
     qa('[data-m]', tmp).forEach(function (e) { nxt[e.dataset.m] = e; });
     var a = Object.keys(cur), z = Object.keys(nxt);
-    if (a.length !== z.length || z.some(function (k) { return !cur[k]; })) { if (!touching()) render('none'); return; }
+    // rows added or dropped: render when the pointer and focus are off the page, or after 30 s at the latest; until
+    // then every value that kept its row still updates, and the status line says rows changed
+    var moved = a.length !== z.length || z.some(function (k) { return !cur[k]; });
+    if (moved && (!touching() || (S.heldSince && NOW - S.heldSince >= 30))) { S.heldSince = 0; render('none'); return; }
+    if (moved) { if (!S.heldSince) { S.heldSince = NOW; say('Rows changed; move away to see them.'); } z = z.filter(function (k) { return cur[k]; }); }
+    else S.heldSince = 0;
     z.forEach(function (k) { var e = cur[k], n = nxt[k]; if (e.textContent !== n.textContent) { settle(e); e.textContent = n.textContent; } if (e.className !== n.className) e.className = n.className; });
     var s1 = qa('.strip', b), s2 = qa('.strip', tmp); s1.forEach(function (s, k) { if (s2[k]) s.innerHTML = s2[k].innerHTML; });
     var d1 = qa('.dist svg', b), d2 = qa('.dist svg', tmp); d1.forEach(function (s, k) { if (d2[k]) s.innerHTML = d2[k].innerHTML; });
@@ -1582,6 +1616,6 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
 
   setCompact(); render('none'); snapLine(); window.focus();
   // the server's snapshot every cadence; window.dashTick lets a test take one at once
-  setInterval(function () { refresh(); }, SRC.cadence * 1000); window.dashTick = function () { refresh(); };
+  setInterval(function () { refresh(); }, SRC.cadence * 1000); window.dashTick = function () { refresh(); }; window.dashProbe = function () { return { canary: far(T('guild'), node('guild-7')) }; };
 })();
 </script>
