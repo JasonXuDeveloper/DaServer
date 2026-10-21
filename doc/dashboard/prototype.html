@@ -79,7 +79,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
 .k{font:600 15px/1 var(--text);color:var(--ink);padding:4px 2px;box-shadow:inset 0 -1px 0 transparent;transition:box-shadow .12s}
 .kd{font-size:14px;color:var(--ink-3)}
 .kh button:hover + .kd,.kh .k:hover{color:var(--ink)}
-.k.hit{box-shadow:inset 0 -1px 0 var(--ink);transition:none}
+.k.pressed{box-shadow:inset 0 -1px 0 var(--ink);transition:none}
 .kh.off .k,.kh.off .kd{color:var(--ink-3);opacity:.5;cursor:default}
 
 /* placement on the page's 10 columns */
@@ -780,7 +780,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   // ---------- input: keys, wheel (Lethargy drops trackpad inertia), touch ----------
   // A pressed key answers at once: its hint underlines for a moment, before anything has moved.
   var KEYOF = { ArrowDown: 'next', PageDown: 'next', j: 'next', ArrowUp: 'prev', PageUp: 'prev', k: 'prev', ArrowRight: 'ntab', ArrowLeft: 'ptab', '/': 'find', Escape: 'back', Backspace: 'back' };
-  function flash(name) { var b = document.querySelector('[data-key="' + name + '"]'); if (!b) return; b.classList.add('hit'); clearTimeout(b._h); b._h = setTimeout(function () { b.classList.remove('hit'); }, 180); }
+  function flash(name) { var b = document.querySelector('[data-key="' + name + '"]'); if (!b) return; b.classList.add('pressed'); clearTimeout(b._h); b._h = setTimeout(function () { b.classList.remove('pressed'); }, 180); }
   document.addEventListener('keydown', function (e) {
     var typingNow = /INPUT|TEXTAREA/.test((document.activeElement || {}).tagName || '');
     if (KEYOF[e.key] && !e.metaKey && !e.ctrlKey && !e.altKey && (!typingNow || e.key === 'Escape' || /Arrow/.test(e.key) && S.mode === 'find')) flash(KEYOF[e.key]);
