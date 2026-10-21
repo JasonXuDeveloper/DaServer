@@ -1,4 +1,4 @@
-# DaServer 新编程模型设计（草案 v60，未实现，迭代中）
+# DaServer 新编程模型设计（草案 v61，未实现，迭代中）
 
 原则：业务代码干净、解耦、简洁，不用 OOP。ECS 一路到底：能用 EasyEcs 的功能就用 EasyEcs，状态都是数据，其余交给我们的特性和生成器，不重复造轮子。
 
@@ -497,7 +497,7 @@ public interface IChildKey<TSelf> : IComponent, IUniqueIndexed<TSelf>, IEquatabl
 - **消息里不写发送方的键**：接收方取 `Sender sender` 参数：`sender.Id` 是发送方的 `ActorId`，`sender.TryGet(out Map map)` 在发送方是 Map 时取出它的键（`TryGet<K>(out K key) where K : struct, IActor<K>`）。只有这一个 `Sender` 类型，所以一条消息有一个还是多个 `[From<…>]` 写法都一样。从 `ICluster` 或客户端来的消息没有发送方 Actor：`sender.Id` 是 `default`，每个 `TryGet` 都返回 `false`。
 - **方向由生成的方法和分析器保证**：
   - 每条消息生成 `Entity` 上的 `Send`/`Ask` 方法，参数类型是接收方的 Actor 类型，所以接收方写错编译不过；
-  - `Entity` 不带 Actor 类型，所以发送方由调用处决定：`[Handles<K>]` 类和 `[UpdateInGroup<K>]` 系统里，K 不在消息的 `[From<…>]` 里，分析器报错（`DaServer.Topics` 包自己的 `Subscribe`、`Unsubscribe`、`NotSubscribed` 不写 `[From<…>]`，不受这条检查，第 15 节）；在别处（帮助类）调用时，Debug 构建沿 `ChildOf` 走到根、断言它的 Actor 类型，Release 不做这一步。
+  - `Entity` 不带 Actor 类型，所以发送方由调用处决定：`[Handles<K>]` 类和 `[UpdateInGroup<K>]` 系统里，K 不在消息的 `[From<…>]` 里，分析器报错（`DaServer.Topics` 包自己的 `Subscribe`、`Unsubscribe`、`Publish`、`NotSubscribed` 不写 `[From<…>]`，不受这条检查，第 15 节）；在别处（帮助类）调用时，Debug 构建沿 `ChildOf` 走到根、断言它的 Actor 类型，Release 不做这一步。
   - 这是帮助写对的手段，不是安全边界。安全边界在网关：只转发 `IFromClient`。
 - **发送方是哪个 Actor**：发送实体所属的 Actor（`e.Root`），见第 5 节的操作表。
 - **客户端上下文自动带上**：处理客户端消息、`PresenceLost` 时，发出的请求信封里带着这个客户端的上下文（`ClientId`、所在节点和 `ConnectionId`、连接戳、身份、客户端的调用 id），和期限一样。接收方在处理这个请求时可以 `Join()`（第 7 节）。
@@ -2214,7 +2214,7 @@ public void An_expired_grant_takes_the_drop_off_the_map()
 诊断编号沿用今天的 DAS001–022 里意思不变的那些，退役的编号不再发，新的检查用新编号（从 DAS023 起；逐个编号见路线图 W3）。
 
 **编译期检查**（下面任何一种情况都会报错）：
-- 发送方向写错：接收方不对没有对应的方法；`[Handles<K>]` 类或 `[UpdateInGroup<K>]` 系统里发送，K 不在消息的 `[From<…>]` 里。
+- 发送方向写错：接收方不对没有对应的方法；`[Handles<K>]` 类或 `[UpdateInGroup<K>]` 系统里发送，K 不在消息的 `[From<…>]` 里（`DaServer.Topics` 的四条消息除外，第 4 节）。
 - 含 `[On<T>]` 的类没有 `[Handles<K>]`，或者不是 `static partial class`（可一键修复）。
 - 服务器之间的消息的接收方不是类上的 K；客户端消息没有处理方法，或者被两个 Actor 类型处理。
 - 消息（`IFromClient`、`IToClient`、`IMessageTo<K>`、`IRequestTo<K, R>`、`ITopicMessage`）没有 `[NinoType]`。
@@ -2273,7 +2273,7 @@ public void An_expired_grant_takes_the_drop_off_the_map()
 
 1. **身份用用户自己的类型 `Account : IClaims` 加 `[JoinOnConnect<Account>]`**，不用框架包装 `Claim<Player>`。框架是通用的，不是每个应用都有 Player（例如秒杀的买家）；身份绑在某个 Actor 的键上，令牌格式会随那个键变。身份是一个接口（`IClaims : IComponent`），不是特性：EasyEcs 和 C# 的泛型约束都看得见它（`[JoinOnConnect<T>] where T : struct, IClaims`），生成器不用补任何东西。代价是 `Account` 和 `Player` 的字段写两遍，由分析器保证形状相同。
 2. **客户端路由由 `[On<T>]` 所在的 `[Handles<K>]` 类推出**，不另写路由表。同一件事只写一处；改动路由的版本要连网关一起滚动升级，热重启由 `wire.manifest` 比对拦住（第 10 节）。
-3. **`[From<K>]` 保持必写**（唯一的例外是 `DaServer.Topics` 包自己的三条消息，第 15 节）。"从类型就看得出谁发给谁"是目标之一；新的发送方要改消息声明，这正是想要的显式。
+3. **`[From<K>]` 保持必写**（唯一的例外是 `DaServer.Topics` 包自己的四条消息，第 15 节）。"从类型就看得出谁发给谁"是目标之一；新的发送方要改消息声明，这正是想要的显式。
 4. **消息不做成实体**。邮箱、到期堆和即时链在有序阶段归并三个来源。把每条消息做成带 `Due` 的实体能统一表示，但每条消息多一次建实体和销毁；到期堆和链栈已经给出同样的顺序，而延后事件本来就是实体（要保存、迁移）。所以不做。
 5. **EasyEcs 4.7 提供本稿依赖的功能**（清单在开头）。EasyEcs 评估后放弃的：并行批量方法、`LastWriteTick`、公开读写集、多 world 共享并行预算（D36）。重构的第一步是 [W1](../roadmap.md)：`EasyEcsVersion` 升到 4.7；本稿依赖、要先核对的 EasyEcs 编译和行为（每一项一个测试）只列在那里。
 6. **改代码只有热重启，不用 `AssemblyLoadContext`；每个平台一种机制**：理由见 ADR-084 和 ADR-088，做法见第 10 节；Kubernetes 上的形态见 ADR-085。`Save` 写进 `NinoArrayBufferWriter` 再写进文件，多一次拷贝；几 MB 可以忽略，不另提需求。
@@ -2332,11 +2332,11 @@ root.Remind<DailyReset>(at: Quests.NextMidnightUtc(time.Utc), every: TimeSpan.Fr
 me.Subscribe(new Topic(Feeds.Prices));                                     // me: an entity of the subscribing actor
 me.Publish(new Topic(Feeds.Prices), new PriceChanged(item, price));
 [On<PriceChanged>] static void Reprice(in PriceChanged m, ref Shop shop) { … }   // in the subscriber's [Handles<K>] class
-// the package's own messages, all one-way to the Topic: Subscribe, Unsubscribe and
+// the package's own messages, all one-way to the Topic: Subscribe, Unsubscribe, Publish and
 [NinoType] public record struct NotSubscribed(ActorId Actor, long Epoch) : IMessageTo<Topic>;   // sent by the subscriber's shard
 ```
 
-- `Topic(long Id)` 是包里内置的 Actor 类型，根要保存，根上是订阅者表 `DynamicBuffer<Subscriber>`（`Subscriber(ActorId Actor, long Epoch)`，`Epoch` 是订阅者那次激活的 epoch）。`e.Subscribe(topic)`、`e.Unsubscribe(topic)` 是发给它的单向消息，订阅的是 `e.Root` 那个 Actor；包里还有一条发给它的单向消息 `NotSubscribed(ActorId, Epoch)`（下面）。它们不写 `[From<…>]`：任何 Actor 类型都可能发送它们，所以第 4 节的方向规则不适用于它们（分析器也不检查）。这些都是包里普通的消息，不是控制邮件：控制邮件是运行时自己的几种（第 10、11 节），运行时不依赖包。`Feeds.Prices` 是用户自己的常量。
+- `Topic(long Id)` 是包里内置的 Actor 类型，根要保存，根上是订阅者表 `DynamicBuffer<Subscriber>`（`Subscriber(ActorId Actor, long Epoch)`，`Epoch` 是订阅者那次激活的 epoch）。`e.Subscribe(topic)`、`e.Unsubscribe(topic)`、`e.Publish(topic, msg)` 各给它发一条包里的单向消息（`Subscribe`、`Unsubscribe`、`Publish`），订阅的是 `e.Root` 那个 Actor；包里还有一条发给它的单向消息 `NotSubscribed(ActorId, Epoch)`（下面）。它们不写 `[From<…>]`：任何 Actor 类型都可能发送它们，所以第 4 节的方向规则不适用于它们（分析器也不检查）。这些都是包里普通的消息，不是控制邮件：控制邮件是运行时自己的几种（第 10、11 节），运行时不依赖包。`Feeds.Prices` 是用户自己的常量。
 - **`[Stateless]` 的 Actor 类型和 `Connection` 不能订阅**：它们不占 epoch（第 10 节），地址里也没有节点，Topic 的表记不下它们，投递也找不回同一个实例；在它们上面 `Subscribe` 是分析器错误（DAS023，第 13 节）。
 - **`Subscribe(epoch)` 是幂等的单向消息**，带着订阅方这次激活的 epoch（框架填上）：Topic 给每个订阅者只记最大的 epoch；epoch 更大就更新，相同的什么也不改，更小的（旧激活迟到的）不理会。表的改动是普通的改动，随下一个检查点写下（第 10 节）；宕机丢掉的由续订补上（下面）。
 - **承载 Topic 的服务器类型写 `[Hosts<Topic>]`**（第 2 节），Topic 的根要保存，所以这个工程要配存储。
@@ -2344,7 +2344,7 @@ me.Publish(new Topic(Feeds.Prices), new PriceChanged(item, price));
 - **退订**：`e.Unsubscribe(topic)` 先从订阅方自己的 `Subscription` 缓冲里删掉这一项，再给 Topic 发单向的 `Unsubscribe`。包里的系统在 `Deactivating` 那一轮也发 `Unsubscribe`（缓冲不动，下次激活照它再订阅），所以 Topic 的表里只有激活着的订阅者，投递从不激活 Actor。
 - **接收的节点按订阅方的数据过滤**：每个节点的投递帧里，每个订阅者都带着 Topic 表里的 `(ActorId, Epoch)`。投递在订阅者的 shard 上派发时（不是进队列时）才查缓冲：topic 不在订阅者根的 `Subscription` 缓冲里（退订了），或者订阅者已经不在，就丢掉它，从订阅者的 shard 给 Topic 发一条单向消息 `NotSubscribed(ActorId, Epoch)`，两种情况都原样带回投递时的那个 epoch；Topic 收到时，带回的 epoch 和表里的相同才删这一项。所以在 `Unsubscribe` 之后派发的投递不运行处理方法；`NotSubscribed` 是普通的单向消息，在 `Busy` 下可能被丢掉，丢了也无妨：下一次投递又被丢掉，再发一次；丢了的 `Unsubscribe` 也无妨：下一次发布就把这一项删掉，哪怕订阅者在那之后已经迁移、换了新的激活（不在的订阅者下次激活时自己再订阅）。
 - **删除只认同一个激活**：退订带着发出它的激活的 epoch，`NotSubscribed` 带着投递时表里的 epoch，都只有和表里的相同才删。重新订阅也不会被误删：同一个激活里的退订、`NotSubscribed` 和再次 `Subscribe` 都是普通的单向消息，按先后从同一个 shard 发给同一个 Topic，按第 1 节的保证 2 按顺序到达，新激活的 `Subscribe` 又先把表里的 epoch 抬高。所以旧激活迟到的退订或通知，删不掉新激活刚做的订阅；旧激活迟到的 `Subscribe` 比表里的小，也盖不掉它。
-- **`e.Publish(topic, msg)`**：发给 Topic；Topic 不解码负载，按订阅者所在的节点分组，每个节点一帧（只序列化一次，池化的帧，帧里每个订阅者带着它的 `(ActorId, Epoch)`），那个节点再放进各订阅者的邮箱。`ICluster` 也能发布。
+- **`e.Publish(topic, msg)`**：把 `msg` 序列化一次，装进包里的单向消息 `Publish`（负载的类型号和字节）发给 Topic；Topic 不解码负载，按订阅者所在的节点分组，每个节点一帧（只序列化一次，池化的帧，帧里每个订阅者带着它的 `(ActorId, Epoch)`），那个节点再放进各订阅者的邮箱。`ICluster` 也能发布。
 - **最多一次，两个方向都有界**：Topic 宕机时在途的发布丢掉。丢了或乱了序的订阅消息（Topic 在检查点之前宕机，丢了没写下的表；一条 `Subscribe` 在路上丢了；Topic 迁移时 `Unsubscribe` 和之后的 `Subscribe` 乱了序）最多让订阅者一个续订间隔收不到发布。退订之后，在 `Unsubscribe` 之后派发的投递不再运行处理方法（接收的节点按 `Subscription` 缓冲丢掉），`Unsubscribe` 丢了的话 Topic 也在下一次发布时停发（那次投递换回一条 `NotSubscribed`）。同一个发布者经同一个 Topic 发给同一个订阅者的按发送顺序到达。没有回放，没有持久的偏移：要持久的流（回放、消费组）用 Kafka 或 NATS JetStream，从 Actor 里调用。
 - 一个 Topic 的订阅者数有上限（节点配置）；更大的扇出分到多个 Topic 键，推给客户端用 `ClientGroup`（第 9 节）。
 - Actor 之间的扇出由它做；框架本身没有别的发布。

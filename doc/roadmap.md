@@ -22,7 +22,7 @@ Keep this file current: tick items when done, add items when scope changes.
 11. S1-S6 (done) elastic scaling.
 12. The ECS rewrite (ADR-081, the "ECS rewrite" entry under "Open cleanup" below): P1-P3 and P5 done; P4, P6 and P7
     superseded by W.
-13. W — refactor to the v60 programming model ([drafts/programming-model.md](drafts/programming-model.md),
+13. W — refactor to the v61 programming model ([drafts/programming-model.md](drafts/programming-model.md),
     [drafts/architecture.md](drafts/architecture.md)) on EasyEcs 4.7 (ADR-082 to ADR-092). Breaking; each step
     proven before the next (W, not R: the requirement ids R0-R11 are taken).
     W10 runs last, after W12 and N9.
@@ -81,7 +81,7 @@ Keep this file current: tick items when done, add items when scope changes.
         message type: a non-generic `[NinoType]` struct or `[NinoPooled]` class implementing one marker, `IFromClient`,
         `IFromClient<R>`, `IToClient`, `IMessageTo<K>`, `IRequestTo<K,R>` or `ITopicMessage`), DAS006 (a message used against its direction:
         `[From<K>]` and the Protocol markers instead of `[FromClient]`/`[ToClient]`; the `DaServer.Topics` package's
-        `Subscribe`, `Unsubscribe` and `NotSubscribed` declare no `[From<…>]`, since any actor type sends them, and are exempt), DAS007 (fields in `[Handles<K>]`
+        `Subscribe`, `Unsubscribe`, `Publish` and `NotSubscribed` declare no `[From<…>]`, since any actor type sends them, and are exempt), DAS007 (fields in `[Handles<K>]`
         classes and systems), DAS014 (an invalid persisted component: the persist set's types), DAS019 (a collection
         held directly by a client message; an error, as §13 lists it).
       - New: DAS023 (`Subscribe` on a `[Stateless]` actor type or on `Connection`: they claim no epoch and their address
@@ -101,7 +101,7 @@ Keep this file current: tick items when done, add items when scope changes.
       `PrefabCompositionHistoryKeptInManifest`, `GroupRateOnlyJobGetsNoStructuralChanges`, `ScheduleInSystemIsStructuralChange`, `ScheduleInStatelessSystemReported`, `RawRecordLayoutChangeReported`, `TrackedRefNotAlwaysWrittenHinted`,
       `ConfigTableTakenByRefReported`, `SingletonWithoutInterfaceReported`, `UnfilteredForEachWithoutTickRateReported`,
       `SetGroupRateWithoutTickRateReported`, `DestroyWithDurableWaitHinted`, `UtcNowInHandlerWarned`,
-      `RegistrationCallableWithTwoServerProjects`; `UnrelatedEditsHitTheCache` over the new stages.
+      `RegistrationCallableWithTwoServerProjects`, `TopicPackageMessagesExemptFromDirection`; `UnrelatedEditsHitTheCache` over the new stages.
     - [ ] W4 Runtime core: shards (one world each, `MaxDegreeOfParallelism` per world), the shard loop and the ordered
       phase per actor type (`Ordered<K>`, holding the type's tick number; `Time` written at the start of each actor type's pass), the due heap (4-ary, lazy deletion), the chain stack, the call index,
       `Outbox` serializing on append into per-destination frames, `Current`, the framework groups (Ordering, Settling
@@ -272,14 +272,14 @@ Keep this file current: tick items when done, add items when scope changes.
       Tests: `ReminderActivatesUnloadedActor`, `ReminderSurvivesNodeCrash`, `ReminderFiresOncePerUtcAtWithinActivation`,
       `PeriodicReminderAdvancesInSameRecord`, `ReminderAfterOutageFiresOnce`; BenchmarkDotNet `DueScan` over 1M
       records, 0 B per firing.
-    - [ ] W6b `DaServer.Topics` (ADR-090): the `Topic` actor type, one-way `Subscribe`/`Unsubscribe`/`Publish`,
+    - [ ] W6b `DaServer.Topics` (ADR-090): the `Topic` actor type, one-way `Subscribe`/`Unsubscribe`/`Publish` (`Publish` carrying the payload's type id and bytes, serialized once),
       subscribers with their activation epoch (`Subscribe` idempotent, the highest epoch kept, a lower one ignored, table
       changes riding the normal checkpoint), `[Hosts<Topic>]` with a store, the subscriber's `Subscription`
       buffer (subscribe after `Activated`, renew every `DaServer:Topics:RenewInterval` while not `Deactivating` and on
       `[Removed<Deactivating>]` of a living root, unsubscribe on `Deactivating`; `Unsubscribe` removes the buffer entry), the receiving node dropping a delivery whose topic is not in the subscriber root's `Subscription` buffer and checking the buffer when the delivery is dispatched on the shard and answering with a one-way `NotSubscribed(ActorId, Epoch) : IMessageTo<Topic>` from the subscriber's shard echoing the delivered epoch (sent again at the next publish if dropped under `Busy`), one frame per subscriber node with each entry's `(ActorId, Epoch)`; deletes
       the service `Publish`. Tests: `PublishReachesSubscribersOnEveryNode`, `DeliveryNeverActivates`,
       `ResubscribesAfterActivation`, `GoneSubscriberPruned`, `StaleUnsubscribeKeepsNewSubscription`,
-      `LowerEpochSubscribeIgnored`, `SubscriptionRenewsAfterTopicCrash`, `CancelledDeactivationResubscribes`, `ReorderedUnsubscribeHealsWithinRenewInterval`, `LostUnsubscribeStopsDeliveryOnNextPublish`, `LostUnsubscribeThenMigrationStillPruned`, `ResubscribeInSameActivationSurvivesNotice`;
+      `LowerEpochSubscribeIgnored`, `SubscriptionRenewsAfterTopicCrash`, `CancelledDeactivationResubscribes`, `ReorderedUnsubscribeHealsWithinRenewInterval`, `LostUnsubscribeStopsDeliveryOnNextPublish`, `LostUnsubscribeThenMigrationStillPruned`, `ResubscribeInSameActivationSurvivesNotice`, `TopicDeliveryHandledOnSubscriberRoot`;
       BenchmarkDotNet fan-out to 1k/10k subscribers on 1/3 nodes, 0 B per delivery.
     - [ ] W7 Samples (mmo, flashsale) on the new model (their systems use `Mut<T>`), the mmo's drops split
       between a non-ticking `Loot` actor (their records, persistent, the only `[Durable]` asker) and the map (what

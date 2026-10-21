@@ -1549,7 +1549,7 @@ Replaced by ADR-081.
   changed" leaks; the order between mail, delayed sends and systems is implicit. EasyEcs provides what a
   model without these needs: single-entity jobs (`entity.Run(ref job[, filter])`), group filters carried by
   interfaces (`IGroupWith<T>`), `world.Descendants(root)` and `LoadEntitiesInto(…, markWritten: false)`.
-- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v60), structured as in
+- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v61), structured as in
   [drafts/architecture.md](drafts/architecture.md):
   - **The actor type is its address, its root component, its root prefab and its system group**:
     `[TickRate(30)] partial record struct Map(long Id) : IActor<Map>` (`IActor<T>` inherits `IEquatable<T>`, so
@@ -2078,7 +2078,9 @@ Replaced by ADR-081.
     to the runtime because `[Durable]` asks need them too (ADR-082) and the runtime depends on no capability
     (ADR-045). Only the runtime computes `NextDue`; the package writes `WakeAt` on its reminders.
   - **`DaServer.Topics`**: a built-in `Topic(long Id)` actor type with a persisted `DynamicBuffer<Subscriber>`;
-    `Subscribe`, `Unsubscribe` and `Publish` on `Entity`, all one-way; a subscriber handles a delivery (an
+    `Subscribe`, `Unsubscribe` and `Publish` on `Entity`, each sending the Topic a one-way package message of that name
+    (`Publish` carries the payload's type id and bytes, serialized once; the Topic never decodes it), declaring no
+    `[From<…>]` like `NotSubscribed`, since any actor type sends them; a subscriber handles a delivery (an
     `ITopicMessage`) with `[On<T>]` on its root, in any of its `[Handles<K>]` classes. `Subscribe` carries the subscriber's activation
     epoch and is idempotent: the Topic keeps the highest epoch per subscriber and ignores a lower one; its table changes are
     ordinary changes, written at the next checkpoint. The subscriber keeps its own
