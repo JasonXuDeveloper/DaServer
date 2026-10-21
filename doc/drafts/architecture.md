@@ -929,10 +929,12 @@ grants and later `ALTER`s on them work; (4) with `AddDaServerDashboard`, a third
 CHECK (phase IN ('intent','outcome')), at timestamptz NOT NULL DEFAULT now(), who text NOT NULL, action text NOT NULL,
 target text NOT NULL, reason text, outcome text)` with indexes on `(at)` and `(action_id)`, on which the Dashboard's
 role has `INSERT, SELECT` and `USAGE` on the identity sequence but no `UPDATE` or `DELETE`, so the audit is
-insert-only; `daserver_actions (action_id text PRIMARY KEY, idem_key text NOT NULL, type text, state text NOT NULL
+insert-only; `daserver_actions (action_id text PRIMARY KEY, idem_key text NOT NULL, type text NOT NULL, state text NOT NULL
 CHECK (state IN ('requested','accepted','running','done','failed','stalled','unknown')), requested_at timestamptz NOT
-NULL DEFAULT now(), claimed_by text, lease_until timestamptz, run_id text)`, with a unique partial index on `(type)
-WHERE state IN ('requested','accepted','running')` (one live action per type: the lock) and an index on `(idem_key,
+NULL DEFAULT now(), claimed_by text, lease_until timestamptz, run_id text)` (`type` is the server type, or the sentinel
+`'*cluster'` for an action on the whole cluster, since a unique index never conflicts on NULL), with a unique partial
+index on `(type) WHERE state IN ('requested','accepted','running','unknown','stalled')` (one unfinished action per
+type: the lock; Done and Failed are the only terminal states) and an index on `(idem_key,
 requested_at)`, on which the Dashboard's role has `SELECT, INSERT, UPDATE, DELETE` (it expires finished rows older
 than a day); and `daserver_dataprotection` (the Data Protection key ring), which its role may update. Silences are
 written to Alertmanager with the Dashboard's own token (deployment.md, the `{cluster}-alertmanager` Secret). The runtime role has no grant on
@@ -1363,13 +1365,22 @@ or rolling upgrade (section 5).
 ### Telemetry
 
 - **One exit per node in production**: OTLP (metrics, logs, traces) to one OpenTelemetry Collector, which sends
-  metrics to Prometheus, logs to Loki and traces to Tempo. With a Collector, Prometheus does not also scrape the nodes:
-  one metrics path, so no series arrives twice under two identities. `/metrics` stays on the HTTP plane for an
+  metrics to Prometheus's OTLP endpoint (`/api/v1/otlp`, enabled by `--web.enable-otlp-receiver`, with
+  `otlp.promote_resource_attributes: [daserver.cluster]` in its configuration), logs to Loki and traces to Tempo. With a
+  Collector, Prometheus does not also scrape the nodes: one metrics path, so no series arrives twice under two
+  identities. The metric export interval is pinned to 15 s (`AddDaServerTelemetry` sets the periodic reader's
+  `ExportIntervalMilliseconds` to 15000; `OTEL_METRIC_EXPORT_INTERVAL` overrides it), not the SDK's 60 s default, so
+  the alert rules see each node at least eight times in two minutes. Pushed series get no staleness markers, so the
+  rules read gauges with `last_over_time(...[2m])` and rates over at least four pushes. The ask latency
+  `daserver.ask.duration` is a histogram in seconds (unit `s`), so it reaches Prometheus as
+  `daserver_ask_duration_seconds`; `daserver.node.requests_low` is a 0/1 gauge. `/metrics` stays on the HTTP plane for an
   environment without a Collector, which scrapes it instead. KEDA and the Prometheus adapter query Prometheus, not the
   pod, so autoscaling works the same on either path. Stop-phase durations (`daserver.stop.phase.duration`) go out over
   OTLP with the final flush, and as stop-phase log lines in Loki; a scrape would rarely catch a stopping node.
 - **One identity**: `AddDaServerTelemetry` sets one OpenTelemetry resource, `service.name` = the node group (server
-  type) and `service.instance.id` = the node name. Metrics keep a `node` label with the same value, which a direct
+  type) and `service.instance.id` = the node name, and no `service.namespace` (it would make `job` read "ns/name"). A
+  parked hot-restart instance exports no metrics (its meter provider exports nothing until it holds the lock) and logs
+  with `daserver.instance` set, so the node name is a telemetry identity only while its holder has the lock. Metrics keep a `node` label with the same value, which a direct
   scrape needs; logs carry no separate node attribute, since Loki indexes `service.instance.id`. DaServer's own
   instruments also carry `cluster` and `type` labels next to `node`, so alert rules group by cluster and type and one
   Prometheus can hold several clusters; runtime metrics get them from the resource (`service.name` → `job`,

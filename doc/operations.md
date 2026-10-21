@@ -82,14 +82,18 @@ finish a step on every node before starting the next.
 
 The Aspire dashboard of a deployment is for diagnosis; the durable views are the platform's monitoring. In
 production the nodes send everything over OTLP (`OTEL_EXPORTER_OTLP_ENDPOINT`) to one OpenTelemetry Collector, which
-fans out: metrics to Prometheus (remote write, or the Collector's own Prometheus endpoint for Prometheus to scrape),
+fans out: metrics to Prometheus's OTLP endpoint (the Collector's `otlphttp` exporter to `/api/v1/otlp`; start
+Prometheus with `--web.enable-otlp-receiver` and set `otlp: { promote_resource_attributes: [daserver.cluster] }` in
+its configuration; leave `service.namespace` unset, or `job` reads "ns/name"),
 logs to Grafana Loki (which ingests OTLP itself at `/otlp/v1/logs`; `service.name` becomes a label, the other
 attributes structured metadata) and traces to Tempo. One exit per node, and the backends change in the Collector's
 configuration, not in the nodes. Every node also serves its metrics at `/metrics` on the HTTP port, always, for an
 environment without a Collector, which scrapes it instead. Use one path per environment: with a Collector, do not also
 let Prometheus scrape the nodes, or every series arrives twice under two identities (`instance` from the scrape,
 `service.instance.id` through the Collector). KEDA and the Prometheus adapter query Prometheus, not the pod, so either
-path feeds autoscaling.
+path feeds autoscaling. Set the metric export interval to 15 s (`OTEL_METRIC_EXPORT_INTERVAL=15000`; the SDK's
+default is 60 s): the rules read pushed gauges over two-minute windows (`last_over_time(...[2m])`, since pushed series
+get no staleness markers) and rates over five.
 The repository ships two starting points, checked against a running node:
 
 - `observability/grafana-dashboard.json`: a Grafana dashboard (import it, pick the Prometheus data source): members
@@ -101,8 +105,10 @@ The repository ships two starting points, checked against a running node:
   number as the annotation `daserver_limit` (and its unit as `daserver_unit`): change both together when you tune it.
   Every rule groups by `cluster`, `type` and `node`, so Alertmanager groups an incident per rule and server type; a
   label a node does not send yet is empty, so the rules work on one cluster today. `DaServerNodeSilent` fires for a
-  node that stops pushing, whose series would otherwise vanish and resolve its alerts. When several clusters share one
-  Prometheus, start it with `otlp.promote_resource_attributes: [daserver.cluster]`.
+  node seen in the last hour that has pushed nothing for two minutes, whose series would otherwise vanish and resolve
+  its alerts; a node that stopped gracefully (its final push carries its stop phases) is not reported.
+  `DaServerNodeRequestsLow` fires for a hot-restart node left in an idle-sized container after a crash takeover (the
+  target design, ADR-094; today's code exports no such gauge, so it never fires).
 
 Autoscaling is the platform's. The default signal is `daserver_shard_busy_ratio` (the share of time the shards work):
 with KEDA in the cluster (`AddHelmChart` in the AppHost installs it), a `ScaledObject` with a Prometheus trigger on

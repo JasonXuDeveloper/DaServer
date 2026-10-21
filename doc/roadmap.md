@@ -561,13 +561,17 @@ Keep this file current: tick items when done, add items when scope changes.
       by typing and audited (with a reason for type- and cluster-wide actions, preconditions, idempotency keys, one
       action per type); the node's OpenTelemetry resource (`service.name` the group, `service.instance.id` the
       node) and framework logs with `daserver.actor.type`, `daserver.actor.key` and the trace id; the ask-latency histogram (`daserver.ask.duration`, per
-      server type) with its recording rules (`type:daserver_ask_duration_seconds_bucket:rate1m` by cluster, type and `le`,
-      `type:daserver_ask_duration_seconds:p99` and `node:daserver_ask_duration_seconds:p99`); every DaServer metric
+      server type, in seconds) with its recording rules (`cluster_type:daserver_ask_duration_seconds_bucket:rate1m` by
+      cluster, type and `le`, `cluster_type:daserver_ask_duration_seconds:p99` and
+      `cluster_type_node:daserver_ask_duration_seconds:p99`); the OTLP metric export interval pinned to 15 s in
+      `AddDaServerTelemetry` (`OTEL_METRIC_EXPORT_INTERVAL` overrides it); every DaServer metric
       carrying `cluster` and `type` labels beside `node` and the rule
       `DaServerAskLatencyHigh` carrying `daserver_limit` in `observability/prometheus-rules.yaml`; one reading table
       generating the instruments, `/admin/stats` and the stats line (off when OTLP is set); the samples' AppHosts
-      adding the Collector, Prometheus, Loki, Tempo and Grafana when published, Prometheus fed by the Collector and
-      scraping no node; a node's restart (for a node hosting actors, a same-image handover of that one node through the deploy pipeline's
+      adding the Collector, Prometheus, Loki, Tempo and Grafana when published, Prometheus fed by the Collector through
+      its OTLP endpoint (`--web.enable-otlp-receiver`, `daserver.cluster` promoted) and scraping no node; the
+      `{cluster}-deploy` Secret (webhook, lookup, callback and the resize-only token) and the HMAC-signed completion
+      callback; `DaServerNodeRequestsLow`; a node's restart (for a node hosting actors, a same-image handover of that one node through the deploy pipeline's
       webhook; retire and exit for a gateway or stateless node, which the platform replaces), the admin key re-read when its
       files change (current, then accepted), membership from up to three ready nodes (highest version, view hashes from
       the pulses), a type's hot restart and a roll back
@@ -609,9 +613,16 @@ Keep this file current: tick items when done, add items when scope changes.
       flags), `OutlierAbsoluteFloor`, `RowChangeStillPatchesValues` (values update and the status says rows changed; rows
       change after 30 s at the latest), `AlertsUnreadableHasHysteresis`, `RecordingRulesNamed`, `LokiPatternsBudgeted`
       (the incident's type each cadence, the others every five minutes, incremental windows),
-      `PipelineQueuesNeverCancels`, `SameSiteLaxWithAntiforgery`, `ExpiredSessionIs401AndKeepsInputs`,
+      `CancelledRunIsFailed` (a newer pending run cancels ours: the action is Failed), `SameSiteLaxWithAntiforgery`, `ExpiredSessionIs401AndKeepsInputs`,
       `AssetsSelfHostedUnderCsp`, `StylesViaCssom`, `SilenceNeedsActScopeAndIsAudited`, `SilenceCarriesIncidentMatchers`,
-      `RefusalReenablesConfirm`, `TimesShowZoneOffset`, `AuditRowsMergedByActionId`, `NamesFitAt1024`, and the
+      `RefusalReenablesConfirm`, `TimesShowZoneOffset`, `AuditRowsMergedByActionId`, `NamesFitAt1024`,
+      `LockHeldWhileUnknown`, `LockHeldWhileStalled`, `MarkFailedReleasesLockAndIsAudited`,
+      `MarkFailedRefusedWhileStoreDown`, `ClusterActionsLockSentinel` (two config pushes never run at once),
+      `ExpiredLeaseClaimedByOneReplica` (compare-and-set on the store's clock), `RunLookupGraceBeforeFailed`,
+      `RunLookupFailureKeepsLock`, `CallbackWithoutValidSignatureRefused`, `SwappedRequestsShownWithResize`,
+      `ResizeTakesTypeLock`, `ParkedInstanceExportsNoMetrics`, `ParkedInstanceNeverShownAsNode`, `FocusReturnsToOpener`,
+      `MetricExportIntervalIs15s`, the rules' unit tests under `promtool test rules` (`NodeSilentIgnoresGracefulStop`,
+      `NodeSilentFiresAfterTwoMinutes`, `MembersDisagreeIgnoresDepartedNode`, `NodeRequestsLowFires`), and the
       prototype's layout, control and wheel checks against the built pages.
     - [ ] W8 Native AOT publish of the samples' nodes with 0 warnings (what holds and what to verify:
       drafts/architecture.md section 8); the AOT E2E run. Local runs: nodes as
