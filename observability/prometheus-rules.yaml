@@ -172,7 +172,7 @@ groups:
           description: "Asks to this server type are slower than its limit: a hot actor, a slow store behind commits, or a node short of CPU. The Dashboard's incident shows the spread across nodes and the slowest actors."
 
       - alert: DaServerOnceTooOld
-        # Target (roadmap W4): a [Once] attempt sent more than MaxAskTimeout + ClockSkew ago is dropped by its receiver.
+        # Target (roadmap W6): a [Once] attempt sent more than MaxAskTimeout + ClockSkew ago is dropped by its receiver.
         # A steady rate means a clock (a node's, or a gateway's for clients) has drifted past ClockSkew, and every
         # attempt from it is being dropped silently while AskUntilAnswered keeps asking.
         expr: sum by (cluster, type, node) (rate(daserver_once_too_old_total[5m])) > 0
@@ -184,9 +184,14 @@ groups:
           description: "Attempts arrive sent more than MaxAskTimeout + ClockSkew ago: check NTP on the senders' nodes and the gateways, and DaServer:ClockSkew."
 
       - alert: DaServerOnceStaleAsking
-        # Target (roadmap W4): acknowledgements are sent from written state only, so an AskUntilAnswered can never be
-        # answered Stale. One that is means a runtime defect: the ask stops and waits for reconciliation.
-        expr: sum by (cluster, type, node) (increase(daserver_once_stale_asking_total[10m])) > 0
+        # Target (roadmap W6): acknowledgements are sent from written state only, so an AskUntilAnswered can never be
+        # answered Stale. One that is means a runtime defect: the ask stops and waits for reconciliation. The stopped
+        # asks are a gauge kept in the records, so the alert holds until reconciliation clears them, across restarts;
+        # the counter is exported at 0 from node start, so the first Stale shows as an increase.
+        expr: |
+          max by (cluster, type, node) (last_over_time(daserver_once_stopped[2m])) > 0
+          or
+          sum by (cluster, type, node) (increase(daserver_once_stale_asking_total[10m])) > 0
         labels:
           severity: critical
         annotations:
@@ -194,7 +199,7 @@ groups:
           description: "An AskUntilAnswered was answered Stale and stopped asking. Its operation needs reconciliation; report the runtime defect with the node's logs."
 
       - alert: DaServerOnceCounterLow
-        # Target (roadmap W4): a saved actor's [Once] counter has fewer than 2^24 numbers left; it stops sending [Once]
+        # Target (roadmap W6): a saved actor's [Once] counter has fewer than 2^24 numbers left; it stops sending [Once]
         # when it runs out. The gauge is the number of such roots on the node.
         expr: max by (cluster, type, node) (last_over_time(daserver_once_counter_low[2m])) > 0
         for: 5m
