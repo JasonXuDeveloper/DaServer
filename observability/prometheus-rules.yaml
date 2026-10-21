@@ -10,7 +10,7 @@
 # Labels. Each rule keeps `cluster`, and the rules about nodes also keep `type` (the node group, the OpenTelemetry
 # resource's service.name) and `node` (service.instance.id), so Alertmanager groups an incident as one rule on one
 # server type of one cluster, a silence can be scoped to a type, and one Prometheus can hold several clusters.
-# DaServerMembersDisagree is about a whole cluster and keeps only `cluster`. DaServer's own metrics carry the three as
+# DaServer's own metrics carry the three as
 # labels; runtime metrics (dotnet_*) carry only the resource, which the OTLP endpoint maps to `job` (service.name),
 # `instance` (service.instance.id) and `daserver_cluster`, and the GC rule renames them. A label a node does not send yet
 # is simply empty, so the rules also work on a single cluster.
@@ -32,13 +32,24 @@ groups:
           description: "A shard thread has run one pass longer than StallAfter (blocking IO or an endless loop in a handler or system). Liveness (/alive) fails too, so the platform restarts the node."
 
       - alert: DaServerMembersDisagree
-        expr: max by (cluster) (last_over_time(daserver_cluster_members[2m])) != min by (cluster) (last_over_time(daserver_cluster_members[2m]))
+        # Compares the membership table version each node has read, not member counts: during a long rollout nodes join
+        # and leave all the time and read the table a few seconds apart, so counts differ for good while every node is
+        # fine. A node is behind only when the cluster's newest version is ahead of it and its own has not moved for two
+        # minutes: it cannot read the table (it is isolated, or its membership data source is starved).
+        expr: >-
+          (
+            max by (cluster) (last_over_time(daserver_cluster_view_version[2m]))
+            - on (cluster) group_right
+            max by (cluster, type, node) (last_over_time(daserver_cluster_view_version[2m]))
+          ) > 0
+          and on (cluster, type, node)
+          max by (cluster, type, node) (changes(daserver_cluster_view_version[2m])) == 0
         for: 2m
         labels:
           severity: warning
         annotations:
-          summary: "Nodes of {{ $labels.cluster }} see different numbers of members"
-          description: "Views have not converged for 2 minutes: a network split, a node that cannot reach the others, or nodes joining and leaving in a loop. Compare /admin/membership of the nodes."
+          summary: "{{ $labels.node }} is stuck on an old membership view"
+          description: "The cluster has moved on and this node's view has not changed for 4 minutes: it cannot read the membership table (isolated, a starved membership connection, or a network split). Compare /admin/membership of the nodes."
 
       - alert: DaServerMessagesDropped
         expr: sum by (cluster, type, node, reason) (rate(daserver_messages_dropped_total[5m])) > 0
@@ -99,21 +110,26 @@ groups:
 
       - alert: DaServerNodeSilent
         # A node that dies stops pushing: its series fade and its other alerts resolve, so it would read as healthy. This
-        # fires for a node seen in the last hour that has pushed nothing for two minutes (eight pushes), unless its last
-        # push was its graceful stop: a stopping node flushes its stop phases (daserver.stop.phase.duration) in its final
-        # push, together with its membership gauge, so a node that left on purpose (scale-in, a rollout, a retired
-        # gateway) is not reported. A node that stopped, came back under the same name and then died is reported, since
-        # its later membership samples are newer than its stop.
+        # fires for a node seen in the last 15 minutes that has pushed nothing for two minutes (eight pushes), unless its
+        # last push was its graceful stop. A stopping node records each stop phase as it ends and flushes them in its
+        # final push together with its membership gauge; only the last phase, `close`, means the stop finished, so a
+        # node that crashes in the middle of a long drain is still reported. The stop's sample must be no more than 5 s
+        # older than the last membership sample, since the two are pushed together but need not carry equal timestamps.
+        # A node that stopped, came back under the same name and then died is reported, since its later membership
+        # samples are newer than its stop. Fifteen minutes, not an hour: a crashed gateway or stateless pod comes back
+        # under a new name, and its old name should not page for an hour after the platform healed it. This rule needs
+        # the OTLP path: a scrape carries no final push, so where nodes are scraped (no Collector) every graceful stop
+        # would fire it; leave it out there.
         expr: >-
           (
-            max by (cluster, type, node) (present_over_time(daserver_cluster_members[1h]))
+            max by (cluster, type, node) (present_over_time(daserver_cluster_members[15m]))
             unless on (cluster, type, node) present_over_time(daserver_cluster_members[2m])
           )
           unless on (cluster, type, node)
           (
-            max by (cluster, type, node) (max_over_time(timestamp(daserver_stop_phase_duration_milliseconds_count)[1h:15s]))
+            max by (cluster, type, node) (max_over_time(timestamp(daserver_stop_phase_duration_milliseconds_count{phase="close"})[15m:1m]))
             >= on (cluster, type, node)
-            max by (cluster, type, node) (max_over_time(timestamp(daserver_cluster_members)[1h:15s]))
+            max by (cluster, type, node) (max_over_time(timestamp(daserver_cluster_members)[15m:1m])) - 5
           )
         for: 1m
         labels:
@@ -127,11 +143,27 @@ groups:
       - alert: DaServerNodeRequestsLow
         # After a crash takeover on Kubernetes the node runs in the container that was parked, with the idle-sized
         # requests (ADR-098): little CPU weight, first in line for the OOM killer. The node reports it until the
-        # resize-only rollout run swaps the requests back.
+        # resize-only rollout run sets the requests by role again; the Dashboard dispatches that run itself when it sees
+        # the gauge, so this fires only when that keeps failing or no Dashboard runs.
         expr: max by (cluster, type, node) (last_over_time(daserver_node_requests_low[2m])) > 0
         for: 2m
         labels:
           severity: warning
         annotations:
           summary: "{{ $labels.node }} runs on the parked container's idle-sized requests"
-          description: "A crash takeover left the node in the container sized for a parked instance. Run the rollout with --resize-only for this node (the Dashboard's Resize action) to swap the requests back."
+          description: "A crash takeover left the node in the container sized for a parked instance. Run the rollout with --type, --node, --incarnation and --resize-only for this node (the Dashboard's Resize action) to set the requests by role again."
+
+      - alert: DaServerAskLatencyHigh
+        # Target (roadmap W7e): today's nodes export no ask histogram, so this never fires yet. The type's p99 comes from
+        # buckets merged across its nodes, never a percentile of node percentiles; a two-minute rate holds at least four
+        # pushes however the export drifts. The Dashboard draws the type's limit from daserver_limit.
+        expr: >-
+          histogram_quantile(0.99, sum by (cluster, type, le) (rate(daserver_ask_duration_seconds_bucket[2m]))) > 0.025
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          daserver_limit: "0.025"
+          daserver_unit: "s"
+          summary: "Asks to {{ $labels.type }} take {{ $value | humanizeDuration }} at p99"
+          description: "Asks to this server type are slower than its limit: a hot actor, a slow store behind commits, or a node short of CPU. The Dashboard's incident shows the spread across nodes and the slowest actors."
