@@ -2,11 +2,19 @@
 # Load them with `rule_files:` in prometheus.yml, or wrap the group in a PrometheusRule for the Prometheus Operator.
 # Thresholds are starting points: tune them to the application's load. A rule that compares a reading against a number
 # carries it as `daserver_limit` (with `daserver_unit`), so a console can draw the limit without a threshold of its own.
+#
+# Labels. Every rule keeps `cluster`, `type` (the node group, the OpenTelemetry resource's service.name) and `node`
+# (service.instance.id), so Alertmanager groups an incident as one rule on one server type of one cluster, a silence can
+# be scoped to a type, and one Prometheus can hold several clusters. DaServer's own metrics carry the three as labels.
+# Runtime metrics (dotnet_*) carry only the resource: Prometheus's OTLP receiver maps service.name to `job` and
+# service.instance.id to `instance`, and promotes daserver.cluster to `daserver_cluster` when started with
+# `otlp.promote_resource_attributes: [daserver.cluster]`; the GC rule renames them. A label a node does not send yet is
+# simply empty, so the rules also work on a single cluster.
 groups:
   - name: daserver
     rules:
       - alert: DaServerShardStalled
-        expr: max by (node) (daserver_shard_stalled) > 0
+        expr: max by (cluster, type, node) (daserver_shard_stalled) > 0
         for: 1m
         labels:
           severity: critical
@@ -15,16 +23,16 @@ groups:
           description: "A shard thread has run one pass longer than StallAfter (blocking IO or an endless loop in a handler or system). Liveness (/alive) fails too, so the platform restarts the node."
 
       - alert: DaServerMembersDisagree
-        expr: max(daserver_cluster_members) != min(daserver_cluster_members)
+        expr: max by (cluster) (daserver_cluster_members) != min by (cluster) (daserver_cluster_members)
         for: 2m
         labels:
           severity: warning
         annotations:
-          summary: "Nodes see different numbers of members"
+          summary: "Nodes of {{ $labels.cluster }} see different numbers of members"
           description: "Views have not converged for 2 minutes: a network split, a node that cannot reach the others, or nodes joining and leaving in a loop. Compare /admin/membership of the nodes."
 
       - alert: DaServerMessagesDropped
-        expr: sum by (node, reason) (rate(daserver_messages_dropped_total[5m])) > 0
+        expr: sum by (cluster, type, node, reason) (rate(daserver_messages_dropped_total[5m])) > 0
         for: 5m
         labels:
           severity: warning
@@ -33,7 +41,7 @@ groups:
           description: "queue_full: a shard's dispatch queue is full (the node is overloaded); mailbox_full: an actor's mailbox is full (mail piled up while it loads or leaves, a slow store or handoff, or a hot actor behind on its backlog); expired: requests waited past their caller's timeout."
 
       - alert: DaServerHandlerFailures
-        expr: sum by (node) (rate(daserver_handler_failed_total[5m])) > 1
+        expr: sum by (cluster, type, node) (rate(daserver_handler_failed_total[5m])) > 1
         for: 5m
         labels:
           severity: warning
@@ -44,7 +52,7 @@ groups:
           description: "More than one handler or system pass a second throws: a poison message, a broken dependency or a broken system. The node's logs name the handler and message (MessageFailed, ActorFailed for lifecycle handlers) or the system (SystemFailed)."
 
       - alert: DaServerShardsSaturated
-        expr: avg by (node) (daserver_shard_busy_ratio) > 0.85
+        expr: avg by (cluster, type, node) (daserver_shard_busy_ratio) > 0.85
         for: 10m
         labels:
           severity: warning
@@ -55,7 +63,7 @@ groups:
           description: "The node has little headroom: add nodes to its group (the default scaling metric), or shards if its cores are idle."
 
       - alert: DaServerTicksLate
-        expr: sum by (node) (rate(daserver_shard_tick_overruns_total[5m])) > 1
+        expr: sum by (cluster, type, node) (rate(daserver_shard_tick_overruns_total[5m])) > 1
         for: 10m
         labels:
           severity: warning
@@ -66,12 +74,30 @@ groups:
           description: "Ticks start a whole interval late: systems take longer than the tick, or the node lacks CPU."
 
       - alert: DaServerGcPauses
-        expr: sum by (instance) (rate(dotnet_gc_pause_time_seconds_total[5m])) > 0.05
+        expr: >-
+          label_replace(label_replace(label_replace(
+            sum by (daserver_cluster, job, instance) (rate(dotnet_gc_pause_time_seconds_total[5m])),
+            "cluster", "$1", "daserver_cluster", "(.*)"), "type", "$1", "job", "(.*)"), "node", "$1", "instance", "(.*)")
+          > 0.05
         for: 10m
         labels:
           severity: warning
         annotations:
           daserver_limit: "0.05"
           daserver_unit: "ratio"
-          summary: "{{ $labels.instance }} spends over 5% of its time in GC pauses"
+          summary: "{{ $labels.node }} spends over 5% of its time in GC pauses"
           description: "Something allocates on a hot path, or the heap is near its limit. Compare dotnet_gc_heap_total_allocated_bytes_total over time."
+
+      - alert: DaServerNodeSilent
+        # Metrics arrive by push (OTLP through the Collector): a node that dies stops sending, its series fade and its
+        # alerts resolve, so a dead node would read as healthy. This rule remembers each node for an hour and fires when
+        # one has sent nothing for a minute. Longer absences are membership's: a node voted out leaves the view.
+        expr: time() - max by (cluster, type, node) (max_over_time(timestamp(daserver_cluster_members)[1h:30s])) > 60
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          daserver_limit: "60"
+          daserver_unit: "s"
+          summary: "{{ $labels.node }} has sent no metrics for over a minute"
+          description: "The node stopped, lost its route to the Collector, or the Collector dropped it. Its other alerts cannot fire while it is silent. Check /health on the node and the Collector's logs."
