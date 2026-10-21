@@ -641,9 +641,9 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   function unsettled(a) { return a.state !== 'Done' && a.state !== 'Failed'; }
   // a type's action waits while the cluster's lock is held, and a cluster action waits while any type holds its lock
   function running(tid) { for (var i = 0; i < ACTIONS.length; i++) { var a = ACTIONS[i]; if (!a.type || !unsettled(a)) continue; if (a.type === tid || (tid === '*cluster') || a.type === '*cluster') return a; } return null; }
-  // Unknown and Accepted can be marked failed too once they have lasted ten minutes: a pipeline whose API stays down
-  // would otherwise hold the lock for good
-  function markable(a) { return a && (a.state === 'Stalled' || ((a.state === 'Unknown' || a.state === 'Accepted') && NOW - a.t >= 600)); }
+  // Requested, Unknown and Accepted can be marked failed too once they have lasted ten minutes: a replica that crashed
+  // before the call, or a pipeline whose API stays down, would otherwise hold the lock for good
+  function markable(a) { return a && (a.state === 'Stalled' || ((a.state === 'Requested' || a.state === 'Unknown' || a.state === 'Accepted') && NOW - a.t >= 600)); }
   var TABS = ['Incident', 'Cluster', 'Changes', 'Actors', 'Audit'];
 
   var S = { i: 0, back: [], compact: false, mode: null, layout: null, hl: null, status: '', found: null, last: {} };
@@ -1350,12 +1350,13 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   }
   // a crash takeover left a node on the parked container's idle requests: a resize-only run of the rollout sets both
   // containers' requests by role (the lock holder node-sized), so a repeat changes nothing. The Dashboard dispatches it
-  // itself when the node's health says so; this is the manual fallback. It changes no build and moves no actor, but it
-  // is an action on the type like any other and takes its lock; its progress is the gauge clearing.
+  // itself when the node's health says so (once per incarnation plus one retry); this is the manual fallback. It
+  // changes no build, moves no actor and takes no lock: the pipeline runs it in a per-node group and it sets requests
+  // by role, so it is idempotent and never waits behind a rollback; its progress is the gauge clearing.
   function resize(name) {
     var n = node(name), t = typeOf(name), inc = n.inc;
     ask({ title: 'Resize ' + name, text: name + ' took over after a crash in the container sized for a parked instance, so it runs on the idle requests. The deploy pipeline sets the two containers\' requests by role in place: this node\'s to the node size, the parked one\'s to the idle size; nothing restarts.',
-      need: name, verb: 'Resize', key: 'Resize ' + name + ' ' + inc, target: name + ', incarnation ' + inc, type: t.id, pipeline: 'aspire do mmo-restart --type ' + t.name + ' --node ' + name + ' --incarnation ' + inc + ' --resize-only',
+      need: name, verb: 'Resize', key: 'Resize ' + name + ' ' + inc, target: name + ', incarnation ' + inc, type: t.id, unlocked: true, pipeline: 'aspire do mmo-restart --type ' + t.name + ' --node ' + name + ' --incarnation ' + inc + ' --resize-only',
       check: function () { return n.inc !== inc ? name + ' restarted since you opened this. Nothing was done.' : n.st !== 'swapped' ? name + '\'s requests are already the node\'s. Nothing was done.' : null; },
       done: 'Resizing ' + name + '.', run: function (a) { var k = 0; a.step = function () { if (++k < 2) return; setNode(name, { st: 'ok', txt: 'Running' }); settleAction(a, 'Done'); }; } });
   }
@@ -1363,10 +1364,11 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   // failed: an action of its own, audited, with a reason; one transaction fails the action and writes this one Done,
   // so it never needs the lock it releases
   function markFailed(id) {
-    var a = ACTIONS.filter(function (x) { return x.id === id; })[0]; if (!a) return; var t = T(a.type);
+    var a = ACTIONS.filter(function (x) { return x.id === id; })[0]; if (!a) return; var t = T(a.type), seenState = a.state;
     ask({ title: 'Mark action ' + id + ' failed', text: 'Action ' + id + ' (' + a.kind.toLowerCase() + ' ' + a.target + ') ' + (a.state === 'Stalled' ? 'has made no progress for ten minutes' : 'has been ' + a.state.toLowerCase() + ' for ten minutes') + '. Marking it failed releases ' + (t ? t.name : 'the cluster') + '\'s lock; it does not stop the pipeline\'s run, which you can cancel there.',
       need: id, verb: 'Mark failed', kind: 'Mark failed', reason: true, key: 'Mark failed ' + id, target: 'action ' + id, type: a.type, unlocked: true, pipeline: null,
-      check: function () { return !markable(a) ? 'Action ' + id + ' is ' + a.state.toLowerCase() + ' now. Nothing was done.' : null; },
+      // conditioned on the state the operator saw: an action that moved on meanwhile is not failed while healthy
+      check: function () { return a.state !== seenState ? 'Action ' + id + ' moved from ' + seenState.toLowerCase() + ' to ' + a.state.toLowerCase() + '. Nothing was done; look again.' : !markable(a) ? 'Action ' + id + ' is ' + a.state.toLowerCase() + ' now. Nothing was done.' : null; },
       done: 'Action ' + id + ' marked failed.', run: function (m) { settleAction(a, 'Failed'); settleAction(m, 'Done'); } });
   }
   // a config table goes out in two phases: every node validates and stages it, then all switch at once; a node that
@@ -1375,6 +1377,11 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     ask({ title: 'Upload SkillTable', text: 'Version 16 goes to all ' + group(ALLNODES) + ' nodes in two phases. Every node validates and stages it; when all have, they switch together. If any node has not staged it within a minute, nothing switches and the push is aborted.',
       need: 'SkillTable', verb: 'Upload', kind: 'Upload config table', reason: true, key: 'Upload SkillTable 16', target: 'SkillTable version 16', type: '*cluster', pipeline: null,
       check: function () { return null; }, done: 'SkillTable version 16 is staging on every node.', run: function (a) { var k = 0; a.step = function () { if (++k >= 2) settleAction(a, 'Done'); }; } });
+  }
+  // a refusal names what holds the lock: the type (or the cluster), its action and, when stalled, Mark failed
+  function busyText(want) {
+    var b = running(want), who = b.type === '*cluster' ? 'The cluster' : T(b.type).name;
+    return (want === '*cluster' && b.type !== '*cluster' ? 'Config pushes wait for every type: ' : '') + who + ' is busy with ' + b.kind.toLowerCase() + ' ' + b.id + (b.state === 'Stalled' ? ', stalled: mark it failed first.' : '. One action per server type at a time; nothing was sent.');
   }
   function confirmBody() {
     var c = S.cf;
@@ -1397,7 +1404,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
       // the key is the action, the target and what was seen, never the operator; it dedupes for ten minutes from the
       // request, and only while the action has not finished
       var same = ACTIONS.filter(function (a) { return a.key === c.key && unsettled(a) && NOW - a.t < 600; })[0];
-      var err = STORE_DOWN ? 'The store cannot be reached: nothing was sent.' + (c.pipeline ? ' The deploy pipeline can still run it: ' + c.pipeline : ' Try again when the store answers; any lock stays until then.') : same ? 'Already requested as action ' + same.id + ' (' + same.state.toLowerCase() + '). Nothing new was sent.' : c.type && !c.unlocked && running(c.type) ? (T(c.type) ? T(c.type).name : 'The cluster') + ' is busy with action ' + running(c.type).id + '. One action per server type at a time.' : c.check();
+      var err = STORE_DOWN ? 'The store cannot be reached: nothing was sent.' + (c.pipeline ? ' The deploy pipeline can still run it: ' + c.pipeline : ' Try again when the store answers; any lock stays until then.') : same ? 'Already requested as action ' + same.id + ' (' + same.state.toLowerCase() + '). Nothing new was sent.' : c.type && !c.unlocked && running(c.type) ? busyText(c.type) : c.check();
       // a refusal sends nothing and enables the button again, so a "wait" can be retried without retyping
       if (err) { $('cerr').textContent = err; sent = false; upd(); return; }
       var a = { id: (ASEQ++).toString(16), t: NOW, key: c.key, kind: c.kind || c.verb, target: c.target, type: c.unlocked ? null : c.type, reason: r ? r.value.trim() : '', state: 'Requested' };
