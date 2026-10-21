@@ -30,8 +30,9 @@ follows from DaServer (ports, seeds, probes, the snapshot directory).
 - **systemd**: `Type=notify` (`UseSystemd()` sends readiness and stopping), `RuntimeDirectory=daserver-<node>` with
   `RuntimeDirectoryPreserve=restart` (a tmpfs under `/run` that `systemctl restart` keeps,
   [systemd.exec(5)](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#RuntimeDirectory=)), and
-  `Environment=DaServer__SnapshotPath=/run/daserver-<node>`; `TimeoutStopSec` at least the node's stop budget. A hot
-  restart is `systemctl restart`.
+  `Environment=DaServer__SnapshotPath=/run/daserver-<node>`; `TimeoutStopSec` at least the node's stop budget;
+  `Restart=always` with `RestartSec=1` (a same-image roll's `exit=true` ends the process, and only `Restart=` starts it
+  again). A hot restart is `systemctl restart`.
 - **launchd** (macOS): a plist with `Label`, `ProgramArguments`, `KeepAlive`, `ExitTimeOut` (launchd sends SIGTERM,
   then SIGKILL after it; launchd.plist(5) calls the default system-defined, so set it explicitly, at least the stop
   budget), `WorkingDirectory`, `EnvironmentVariables` with `DaServer__SnapshotPath` (a local directory),
@@ -41,14 +42,19 @@ follows from DaServer (ports, seeds, probes, the snapshot directory).
   `Logging__Console__FormatterOptions__ColorBehavior=Disabled` and a `Logging__Console__FormatterOptions__TimestampFormat`.
   The Generic Host's console lifetime already stops on SIGTERM.
 - **Windows services**: `sc create`; `DaServer:SnapshotPath` (a local directory) in the node's configuration. A hot
-  restart is `Restart-Service`.
+  restart is `Restart-Service`. A same-image roll (`exit=true`) cannot rely on a clean exit there: a Generic Host
+  service that stops cleanly reports `SERVICE_STOPPED`, and the service manager's recovery actions never fire. So on
+  Windows the node ends such a restart with exit code 75 (`DaServer.ExitCodes.RestartRequested`), and the documented
+  install sets `sc failure <svc> reset= 0 actions= restart/1000` and `sc failureflag <svc> 1`, which makes the service
+  manager restart a service that stops with a non-zero code.
 - **AOT images from macOS or Windows**: Native AOT does not compile across operating systems
   ([cross-compile](https://learn.microsoft.com/dotnet/core/deploying/native-aot/cross-compile)), so a Linux AOT image
   cannot come from the SDK container publish on those hosts. There DA publishes AOT nodes through
   `PublishAsDockerFile` with a generated two-stage Dockerfile: build in `mcr.microsoft.com/dotnet/sdk:11.0-resolute-aot`
   (the SDK with the native toolchain), run on `runtime-deps:11.0-resolute-chiseled`. The host needs only Docker. On
-  Linux (CI included) the SDK container publish builds the image directly. W8. (.NET 11 images are on Ubuntu 26.04,
-  `resolute`; there are no `noble` tags for it.)
+  Linux (CI included) the SDK container publish builds the image directly. W8. The images are Ubuntu 26.04 (`resolute`)
+  variants; DA sets `ContainerFamily=resolute-chiseled` explicitly rather than relying on the SDK's default family
+  ([.NET on Ubuntu 26.04](https://devblogs.microsoft.com/dotnet/whats-new-for-dotnet-in-ubuntu-2604/)).
 - **Health checks** use the node's own executable in probe mode on every target (section 7), so neither image needs
   `dotnet`, curl or a shell.
 - **Why not `AddExecutable` for local AOT**: Aspire has no API to publish and then launch a native binary; an
@@ -61,10 +67,11 @@ follows from DaServer (ports, seeds, probes, the snapshot directory).
   | Environment | Started by | The loop runs in | Restart trigger |
   |---|---|---|---|
   | Local run | the `{cluster}-restart` resource command in the Aspire dashboard | the AppHost process | the resource's restart |
-  | Compose | `aspire do {cluster}-restart` | the deploying machine | `docker compose up -d --no-deps <node>` |
+  | Compose | `aspire do {cluster}-restart` | the deploying machine drives it; the admin calls (arm, dry run, wait for ready) run inside the internal network as `docker compose run --rm --no-deps rollout …` (section 8) | `docker compose up -d --no-deps --force-recreate <node>` |
   | Kubernetes | `aspire do {cluster}-restart` | the `{cluster}-rollout-{n}` Job | the pod's image, applied as `daserver-rollout` |
   | systemd, launchd, Windows service | the documented script | the operator's machine | `systemctl restart`, `launchctl kickstart -k`, `Restart-Service` |
-  | Any, same image (Dashboard's "Hot restart") | the Dashboard | the Dashboard | `/admin/restart?exit=true`: the node exits after its snapshot and the platform restarts it |
+  | Any, the Dashboard's "Hot restart" of a type | the Dashboard calls the deploy pipeline's webhook (`DaServer:Dashboard:DeployWebhook`), which runs `aspire do {cluster}-restart`; without a webhook it shows that command | wherever the row above for that environment says | as above |
+  | Any, one node (the Dashboard's node "Restart") | the Dashboard | the node | `/admin/restart?exit=true` on that node: it exits after its snapshot and the platform restarts it (one node; the group roll is the loop above) |
 
 ## 1. What is published today (audit)
 
@@ -111,17 +118,19 @@ type that is not `[Stateless]` is stateful; a group hosting only `Connection` an
 | Kind | `StatefulSet` named `{group}` (not `{group}-statefulset`), so pods are `game-0`, `game-1`: the same names as the run-mode resources and the node names | Hot restart keeps the pod and its `emptyDir` (ADR-085); stable names match the dashboard and logs | DA: replace `resource.Workload` in the hook | W11 |
 | `serviceName` | `{group}-peers` (the existing headless Service, `publishNotReadyAddresses: true`); per-pod DNS `game-0.game-peers` | StatefulSets require a governing headless Service ([StatefulSet](https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/)) | DA | W11 |
 | `podManagementPolicy` | `Parallel` | Nodes join by gossip and need no order; `OrderedReady` serializes scale-ups (a flash-sale burst waits pod by pod) and can wedge on one broken pod ("forced rollback"). Rolling updates stay one pod at a time | DA | W11 |
-| `updateStrategy` | `OnDelete` for groups without client connections; `RollingUpdate` (its default, one pod at a time; no `maxUnavailable`, which is feature-gated for StatefulSets) for stateful groups that also accept clients (flash sale `sale`) | `OnDelete`: a template change replaces no pod; DaServer's rollout decides per pod (hot restart or delete-and-recreate). A group hosting `Connection` cannot hot restart ([draft §10](programming-model.md#热重启)) | DA | W11 |
+| `updateStrategy` | `OnDelete` for groups without client connections; `RollingUpdate` (its default, one pod at a time; `maxUnavailable` is beta and on by default since 1.35 but not used, section 10) for stateful groups that also accept clients (flash sale `sale`) | `OnDelete`: a template change replaces no pod; DaServer's rollout decides per pod (hot restart or delete-and-recreate). A group hosting `Connection` cannot hot restart ([draft §10](programming-model.md#热重启)). Such a group has no surge either: the clients of a terminating pod are retired to the other pods, old ones included, so during its roll a client may move up to once per remaining old pod. That is the documented limit of hosting clients on a stateful group; groups that want one move per client keep gateways separate | DA | W11 |
 | Template image vs. pods | `helm upgrade` (or `aspire deploy`) sets the template image; the rollout patches only pods, never the template, so the live object never drifts from the Helm release (ADR-085) | The next `helm upgrade` would otherwise write the old tag back | Rollout Job | W11 |
 | Replicas | `spec.replicas` from `AddNodes(replicas)`, **not rendered** when the application adds an autoscaler for the group (the HPA then owns it through the `scale` subresource, which works on StatefulSets; section 11) | Scale-in removes the highest ordinals, all at once under `Parallel`, each leaving gracefully; the autoscaler's scale-in policy limits it to one pod per period (section 10) | DA, sample hook (clears it beside the autoscaler) | W11 |
 | Grace period | `terminationGracePeriodSeconds` = stop budget + margin + preStop, as today | Unchanged ([pod termination](https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#pod-termination)) | DA (exists) | - |
 | preStop | No `sleep` on hot-restart groups. The kubelet's container kill runs preStop whatever the reason, an image patch included (to prove on kind in W11), so a `sleep` would add its seconds to every hot restart's pause | [Lifecycle hooks](https://kubernetes.io/docs/concepts/containers/container-lifecycle-hooks/) | DA | W11 |
-| Snapshot volume | `emptyDir: {medium: Memory, sizeLimit: <2 x expected world bytes>}` at `/var/run/daserver/snapshot` (`DaServer__SnapshotPath`) | Survives container restarts, not pod deletion; tmpfs counts against the memory limit ([emptyDir](https://kubernetes.io/docs/concepts/storage/volumes/#emptydir)), so a node refuses to arm when its working set plus the snapshot estimate passes about 80% of the cgroup limit ([draft §10](programming-model.md#热重启)) | DA | W11 |
+| Snapshot volume | `emptyDir: {medium: Memory, sizeLimit: …}` at `/var/run/daserver/snapshot` (`DaServer__SnapshotPath`); the size is a parameter (`WithSnapshotSize(…)`), by default the container's memory limit (a memory-backed volume is capped at the smaller of `sizeLimit` and the pod's limit, and a full volume makes the snapshot fail, which aborts the hot restart safely) | Survives container restarts, not pod deletion; tmpfs counts against the memory limit ([emptyDir](https://kubernetes.io/docs/concepts/storage/volumes/#emptydir)), so a node refuses to arm when its working set plus the snapshot estimate passes about 80% of the cgroup limit ([draft §10](programming-model.md#热重启)) | DA | W11 |
 | Persistent volume | **None** (no `volumeClaimTemplates`) | State lives in the actor store; a snapshot outlives one restart only. A PV would be zone-bound and slow | - | W11 |
 | PDB | `maxUnavailable: 1`, `unhealthyPodEvictionPolicy: AlwaysAllow`; stays an application choice (CLAUDE.md), the samples keep adding it on the StatefulSet's pods | With the default policy, an outage that makes every pod unready blocks every node drain ([PDB](https://kubernetes.io/docs/tasks/run-application/configure-pdb/#unhealthy-pod-eviction-policy)) | Sample hook | W11 |
 | Topology spread | Soft spread over `kubernetes.io/hostname` (`whenUnsatisfiable: ScheduleAnyway`); zone spread left to the app | One machine's loss should not take several nodes' actors at once ([topology spread](https://kubernetes.io/docs/concepts/scheduling-eviction/topology-spread-constraints/)) | DA (hostname), sample (zones) | W12 |
 | CPU count | `env DOTNET_PROCESSOR_COUNT` from `resourceFieldRef: requests.cpu` (rounded up) when no CPU limit is set | The world count defaults to `ProcessorCount`, which ignores requests: today a pod on a 64-core host runs 64 worlds ([downward API](https://kubernetes.io/docs/tasks/inject-data-application/environment-variable-expose-pod-information/)) | DA | W12 |
-| Image pre-pull | Before patching a pod, the rollout makes the node pull the new image (a short pod pinned to that node with the new image, exiting at once) | The kubelet kills the old container and only then pulls the image; a pull inside the pause defeats "hundreds of milliseconds" | Rollout Job | W11 |
+| Image pre-pull | Before patching a pod, the rollout makes the node pull the new image: a pod with `nodeName` set to that node (it skips the scheduler, so it carries what admission needs), the new image's node binary in a no-op mode (`--DaServer:Exit`; a chiseled image has no `true`), `restartPolicy: Never`, `activeDeadlineSeconds`, the restricted `securityContext` of section 7, small explicit requests and limits (a `ResourceQuota` rejects a pod without them) and the workload's `imagePullSecrets` | The kubelet kills the old container and only then pulls the image; a pull inside the pause defeats "hundreds of milliseconds" | Rollout Job | W11 |
+| Image reference | The rollout applies the digest-pinned reference (`image@sha256:…`, resolved once when the roll starts) and compares `status.containerStatuses[].imageID` before and after each pod | With a mutable tag (`latest`) and `IfNotPresent`, an unchanged reference restarts nothing or runs a stale cached image | Rollout Job | W11 |
+| Immutable fields | `serviceName`, `podManagementPolicy`, `selector` and `volumeClaimTemplates` are frozen from the first release: DA never changes them, and a publish test compares them with the previous chart. Kubernetes accepts updates to `replicas`, `template`, `updateStrategy`, `minReadySeconds`, `ordinals` and `persistentVolumeClaimRetentionPolicy` only, so any other change makes `aspire deploy` fail with `Forbidden` | [StatefulSet spec](https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/) | DA, publish test `StatefulSetImmutableFieldsUnchanged` | W11 |
 
 Moving an existing release from Deployment to StatefulSet deletes the Deployment: every pod of the group stops at
 once (each leaves gracefully and saves). The upgrade note says so; scale the group down first or accept the pause.
@@ -147,7 +156,7 @@ ones; the operator's load balancer configuration decides. Compose: section 8.
 
 | Probe | Target | Why |
 |---|---|---|
-| startupProbe | `/alive`, period 2 s, failureThreshold 45 (90 s) | Covers waiting for the store at start (until the table answers, the node is not ready and retries with one backoff; there is no separate initialize deadline) and a snapshot or records load; liveness then needs no `initialDelaySeconds` ([probes](https://kubernetes.io/docs/concepts/configuration/liveness-readiness-startup-probes/)) |
+| startupProbe | `/alive`, period 2 s, failureThreshold 45 (90 s) | Covers waiting for the store at start (until the table answers, the node is not ready and retries with one backoff; there is no separate initialize deadline), a snapshot or records load and the `Rejoining` wait for `Readmit`; liveness then needs no `initialDelaySeconds` ([probes](https://kubernetes.io/docs/concepts/configuration/liveness-readiness-startup-probes/)). Kestrel starts first: the node's long start (store wait, snapshot load, `Rejoining`) runs after `ApplicationStarted`, not inside a hosted service's `StartAsync`, so `/alive` answers during it instead of refusing connections |
 | readinessProbe | `/health` (joined, not leaving), timeout 2 s; once the node has started, the store is not part of it: the Npgsql data source is registered with `DisableHealthChecks`, or `/health` maps only the checks tagged `daserver` (today `AddKeyedNpgsqlDataSource` adds its check to `/health`) | A store outage must not take every node out of service: active actors keep running and activations back off ([draft §6](programming-model.md#6-生命周期)); 1 s timeouts flap under GC or load |
 | livenessProbe | `/alive` (no stalled world), timeout 2 s | Unchanged meaning |
 
@@ -171,7 +180,7 @@ How ports are declared per group is [draft §2](programming-model.md#2-服务器
 |---|---|---|---|---|---|
 | `{cluster}-schema` | The node image in schema mode (`--DaServer:Migrate`, added by W6): `PostgreSqlActorStore.Schema` under the advisory lock, with a DDL role | Always a plain Job named with the release revision (`ttlSecondsAfterFinished`); no Helm hook variant (a pre-install hook would run before an in-chart database exists, and one shape is enough). Nodes never create the table: until it answers they are not ready and retry with one backoff, bounded by the startup probe. Aspire run mode runs the same mode as a one-shot resource; in-process tests (`TestCluster`) call `Schema` once before their nodes start | Creation at node start gives the runtime role DDL rights, and every node start, scale-up and hot restart runs `CREATE INDEX IF NOT EXISTS`, which takes a `SHARE` lock on the live table before it checks whether the index exists ([CREATE INDEX](https://www.postgresql.org/docs/current/sql-createindex.html)): every save of the cluster waits for it, and it queues behind any long transaction. Hand-written SQL and the advisory lock stay: a migrations library is not worth one table and one index | DA (`WithActorStore(..., schema: SchemaMode.Job)`), DaServer.Persistence.PostgreSql (missing table: not ready, retried); the mode itself is W6 | W12 |
 | `{cluster}-upgrade-check` | The new image in check mode: sends its own `wire.manifest` to a running node's dry-run arm (`/admin/restart?dryRun=true`, admin token), where the one manifest diff runs ([architecture.md section 5](architecture.md#5-migration-upgrades-hot-restart)) and answers the hot-restart path (in place, through records, rolling); the check prints it and fails on an incompatible change, and on a release that would write record fields or record types the running build cannot keep (no safe rollback) unless forced | A plain Job started by the deploy step (`aspire deploy`) before the template changes; Compose: a step of `aspire deploy` | Today only the route check runs, on the publishing machine, against the build alone; nothing compares with what is running | DA (step + Job), DaServer (check mode, dry-run arm) | N9 |
-| `{cluster}-rollout-{n}` | The new image in rollout mode, ServiceAccount `{cluster}-rollout`: per pod of each stateful group, one at a time and the coordinator last: pre-pull, arm the node (`/admin/restart`; refused while a member joins or leaves, another node holds the restart permit, or memory is short), patch the pod's image (the kubelet's SIGTERM starts the restart; an arm with no patch after it expires), wait for ready; or delete the pod when the path is rolling. A **same-image roll** (secret rotation, a config change) has no image to patch: the Job arms with `/admin/restart?exit=true` (the same admin verb; `mode=unload` instead unloads every actor first, the full-unload restart), the node runs hot-restart step 1 itself and exits, and the kubelet restarts the container in the same pod (`restartPolicy: Always`), which re-reads env and `envFrom` | Started by `aspire do {cluster}-restart` or `kubectl create job` | See section 5 for why in-cluster | DA (command creates the Job), DaServer (mode) | W11 |
+| `{cluster}-rollout-{n}` | The new image in rollout mode, ServiceAccount `{cluster}-rollout`: per pod of each stateful group, one at a time and the coordinator last: pre-pull, arm the node (`/admin/restart`; refused while a member joins or leaves, another node holds the restart permit, or memory is short), patch the pod's image (the kubelet's SIGTERM starts the restart; an arm with no patch after it expires), wait for ready; or delete the pod when the path is rolling. A **same-image roll** (a config change) has no image to patch: the Job arms with `/admin/restart?exit=true` (the same admin verb; `mode=unload` instead unloads every actor first, the full-unload restart), the node runs hot-restart step 1 itself and exits, and the kubelet restarts the container in the same pod (`restartPolicy: Always`), which re-reads env and `envFrom`. The kubelet backs off restarts of an unchanged container spec that exited within 10 minutes of its last start (10 s, then doubling), whatever the exit code: the Job never exits one pod twice within 10 minutes (a second same-image roll of a pod waits; KEP-5593's `KubeletCrashLoopBackOffMax`, beta in 1.35, lowers the cap where the cluster enables it), and the coordinator's restart deadline covers the first 10 s step. An image patch changes the spec, so it is not backed off. Secret rotation needs no roll at all (section 4) | Started by `aspire do {cluster}-restart` or `kubectl create job` | See section 5 for why in-cluster | DA (command creates the Job), DaServer (mode) | W11 |
 | Load generators | `bots`, `crowd`: **a Job** (`backoffLimit: 0`, `ttlSecondsAfterFinished`) behind `-- LoadTest=true`, otherwise excluded from publish | They run to completion; as Deployments they restart forever (a 10,000-bot storm every few minutes against the deployed cluster) | Sample: `ExcludeFromManifest()` in publish mode unless asked, the Job as an `AdditionalResource`; Compose: `profiles: [loadtest]` | W12 |
 
 Not cluster workloads: the **E2E tests** run in CI as the driver (they start the cluster through Aspire locally or
@@ -191,7 +200,7 @@ certificate renewal (the platform's, cert-manager). Sources: [Job](https://kuber
 | Signing secret | **One** cluster Secret `{cluster}-signing` with keys `current` and optional `accepted`; every node mounts it as files at `/run/secrets/daserver` (`items`: `current` → `DaServer__SigningSecret`, `accepted` → `DaServer__AcceptedSigningSecret`, `optional: true` for `accepted`) and reads them through .NET's key-per-file configuration provider (`AddKeyPerFile("/run/secrets/daserver", optional: true)`, `__` becomes `:`). Files, not environment variables: the value stays out of `kubectl describe`, `docker inspect` and process dumps, and Compose mounts its `secrets:` at the same path, so one mechanism serves both | Today each group has its own copy in the values (four `--set`s in the mmo chart that must agree; one typo splits the cluster: its Hellos are refused). One object is what the rotation steps change | DA: in publish mode, leave the variable out of the generated per-group Secret, add the Secret and the volume mount in the hook; DaServer.Hosting: the key-per-file source | W12 |
 | Missing secret | Published nodes refuse to start without a signing secret (`DaServer__RequireSigningSecret=true`, set by DA in publish mode only; run mode and tests stay open) | Today an empty value silently yields an unauthenticated cluster; Helm templates from Aspire cannot use `required` | Runtime option + DA | W12 |
 | Existing Secret | `WithSigningSecret(existingSecretName)`: reference a Secret made by External Secrets, Sealed Secrets or the CSI driver instead of a Helm value | Secret values in Helm values end up in release history and CI logs ([secrets good practices](https://kubernetes.io/docs/concepts/security/secrets-good-practices/)) | DA | W12 |
-| Rotation | Change `accepted`, roll; swap; roll; drop. On Kubernetes "roll" for a stateful `OnDelete` group is the rollout Job's same-image roll (section 3): each node exits after its snapshot and reads the files again when its container restarts (the node reads them at start; the kubelet refreshes mounted Secret files in place) | The existing three-step rotation (operations.md) needs no new mechanism, only the key in the Secret | Docs | W12 |
+| Rotation | Change `accepted`; swap; drop, without restarting anything: nodes load the key files with `reloadOnChange` (the provider polls, since a Secret volume swaps a `..data` symlink that file events miss) and replace their signing keys between two batches. Every node reports the fingerprint of the keys it holds (an HMAC key id, never the key) in `/admin/membership`; the rotation step (a command of DA, `{cluster}-rotate-secret`, and the operations page) waits until every node reports the new fingerprint before the next step, since the kubelet updates mounted Secret files eventually (its sync period plus cache, often 60 to 90 s) | A roll per step would restart gateways and stateless groups too (their template does not change, so Helm would not roll them) and run into the kubelet's restart back-off; reading the files live needs neither | DaServer.Hosting (reload, fingerprint), DA (command), docs | W12 |
 | Admin token | The rollout, upgrade-check and Dashboard workloads mount `{cluster}-signing` and derive the token in memory at start (`AdminToken.For`, HMAC of `daserver-admin`); they send only the token. No `{cluster}-admin` Secret and no token in Helm values or release history | The token cannot sign links or tickets; the signing secret never leaves the cluster's Secret | DA (mounts), DaServer (derivation in those modes) | W11 |
 | Database | Two roles: owner (schema Job) and runtime (`SELECT, INSERT, UPDATE` on the table). Connection strings stay in Secrets (Aspire already puts `ConnectionStrings__actors` there); `AddConnectionString` parameters are secret | Least privilege; no DDL from nodes | Samples (two connection strings), DA (`WithActorStore(runtime, owner)`) | W12 |
 | OTLP | In publish mode DA points `OTEL_EXPORTER_OTLP_ENDPOINT` at the OpenTelemetry Collector (a plain parameter), `OTEL_EXPORTER_OTLP_HEADERS` (API keys) a `secret: true` parameter; the samples do not publish the Aspire dashboard | Aspire wires OTLP to its in-cluster dashboard: telemetry would have two destinations; the Collector fans out to Prometheus, Loki and Tempo ([architecture.md section 8](architecture.md#telemetry)) | DA, samples | W12 |
@@ -202,8 +211,12 @@ same files as on Kubernetes. A top-level `secrets:` entry per key (`daserver-sig
 `file: ./secrets/signing-current`, or `environment: SAMPLE_SECRET` for CI) is granted to every node, the schema
 service and the rollout step with `target: /run/secrets/daserver/DaServer__SigningSecret` (and the accepted key the
 same way); the node reads them through the same key-per-file source, and `DaServer__RequireSigningSecret` makes a
-missing file a refused start. `./secrets/` is never committed. Rotation is the same three steps: change the files,
-roll.
+missing file a refused start. `./secrets/` is never committed. A `file:` secret is a bind mount, and Compose ignores
+`uid`, `gid` and `mode` for it ([Compose secrets](https://docs.docker.com/reference/compose-file/services/)): the host
+file must be readable by uid 1654 (mode 0444, or 0440 with group 1654), which the operations page and DA's publish
+output state; an `environment:` source honours `mode`. Rotation is the same three steps without a restart: write the
+new content into the existing file (`cat new > ./secrets/signing-current` keeps its inode; a tool that replaces the
+file makes a new inode the bind mount never sees, and then only `up --force-recreate` picks it up).
 
 ## 5. RBAC and who runs the hot restart
 
@@ -218,7 +231,7 @@ roll.
 one node at a time and the coordinator last: pre-pull the new image, arm (`/admin/restart`), trigger the restart,
 wait for ready, next; a rolling path or a group without hot restart (gateways, stateless groups) skips the arm. Only
 "trigger the restart" differs per platform: Aspire run mode (the resource's restart command, inside the AppHost),
-Compose (`docker compose up -d --no-deps <node>`), Kubernetes (patch the pod's image, or delete the pod on the rolling
+Compose (`docker compose up -d --no-deps --force-recreate <node>`), Kubernetes (patch the pod's image, or delete the pod on the rolling
 path) and bare metal (the service manager's restart). There is no second implementation.
 
 **Who runs it on Kubernetes: an in-cluster Job, started by `aspire do {cluster}-restart` (W11).** The alternative, the operator's CLI with a
@@ -235,7 +248,7 @@ DA emits these (the ports and groups are DaServer's knowledge; CNIs without Netw
 | Policy | Allows | Why |
 |---|---|---|
 | `{cluster}-cluster-plane` (all node pods) | Ingress on the cluster port (7000) only from pods labelled `daserver.io/cluster={cluster}` | Node links; defence in depth beside link authentication (ADR-065) |
-| `{cluster}-http-plane` | Ingress on the HTTP port from the release's Jobs and from a namespace selector given as a parameter (`metrics-namespace`, Prometheus); kubelet probes come from the node and most CNIs allow them. From anywhere only for groups with `WithExternalHttpEndpoints()` | `/admin` (restart, unload) sits on this port, today open to the whole cluster network through `{group}-service` |
+| `{cluster}-http-plane` | Ingress on the HTTP port from the release's Jobs, from the Dashboard's pods (`daserver.io/dashboard={cluster}`, when `AddDaServerDashboard` is used) and from a namespace selector given as a parameter (`metrics-namespace`, Prometheus or the Collector when it scrapes); kubelet probes come from the node and most CNIs allow them. From anywhere only for groups with `WithExternalHttpEndpoints()` | `/admin` (restart, unload) sits on this port, today open to the whole cluster network through `{group}-service` |
 | `{cluster}-clients` (groups with `WithClientConnections(port)`) | Ingress on the declared client port from anywhere | The load balancer's traffic |
 | Store | Egress from node pods and the schema Job to the database port; ingress to the in-chart PostgreSQL only from those | Samples (the database is the application's) |
 
@@ -259,11 +272,11 @@ Steps: securityContext, `/tmp` and service account W12 (the snapshot volume W11)
 
 | Kubernetes | Compose |
 |---|---|
-| StatefulSet | Stateful groups: one service per node (`map-0`, `map-1`, …) with a fixed `hostname` (the node name) and a named volume of its own for the snapshot, since recreating a container (any image change) loses `tmpfs` and a replica's generated hostname. Hot restart: `{cluster}-restart` on the deploying machine runs the rollout loop (section 5) with `docker compose up -d --no-deps map-0` as its trigger |
+| StatefulSet | Stateful groups: one service per node (`map-0`, `map-1`, …) with a fixed `hostname` (the node name) and a named volume of its own for the snapshot, since recreating a container (any image change) loses `tmpfs` and a replica's generated hostname. An empty named volume mounted at a path the image lacks is created `root:root 0755`, which uid 1654 cannot write: a one-shot service per stateful node, `map-0-snapshot-init`, runs the node image as `user: "0"` in `--DaServer:PrepareSnapshotDir` mode (libc `chown`/`chmod` of the mounted directory to 1654; the image has no shell) and the node `depends_on` its completion; E2E check `ComposeSnapshotVolumeWritable`. Hot restart: `{cluster}-restart` runs the rollout loop (section 5) with `docker compose up -d --no-deps --force-recreate map-0` as its trigger: without `--force-recreate`, `up` recreates a container only when its image or service configuration changed, so a same-image roll would restart nothing. Recreating keeps the snapshot on the named volume |
 | Deployment (gateways) | A plain rolling restart in the same loop, one container at a time: the stopping gateway retires its connections (section 2) and its clients resume on another gateway. A client may move twice during a gateway roll, which is acceptable at Compose's single-host scale; no surge |
 | Deployment (stateless groups) | One service per group with `deploy.replicas`, rolling |
 | Jobs | One-shot services (`restart: "no"`): `schema` with nodes `depends_on: {schema: {condition: service_completed_successfully}}`; load generators under `profiles: [loadtest]` |
-| Upgrade check, rollout | Steps of `aspire deploy` / `{cluster}-restart`, run on the deploying machine: the check calls a node's dry-run arm, the rollout is the same loop |
+| Upgrade check, rollout | Steps of `aspire deploy` / `{cluster}-restart`. The nodes' HTTP plane is only on the internal network, which publishes no host port, so every admin call (the dry-run arm, arming, waiting for ready) runs in a container on that network: `docker compose run --rm --no-deps rollout <step> <node>`, the new image in rollout mode, the admin token derived from the mounted secret file. The deploying machine drives the loop and runs only the trigger (`up --force-recreate`) itself |
 | Secrets | Compose `secrets:` mounted at `/run/secrets/daserver` (section 4), the same files as on Kubernetes; `./secrets/` and `.env` never committed |
 | securityContext | `read_only: true`, `tmpfs: [/tmp]`, `user: "1654"`, `cap_drop: [ALL]`, `security_opt: ["no-new-privileges:true"]` |
 | NetworkPolicy | Two networks: an `internal: true` network for the cluster and HTTP planes, and the default one only for client-facing services and the dashboard |
@@ -400,13 +413,26 @@ What happens when a controller removes a pod, per kind:
   ([Environment.ProcessorCount](https://learn.microsoft.com/dotnet/api/system.environment.processorcount)), the
   downward-API variable is resolved when the container starts, and a hot restart keeps the snapshot's world count
   (architecture.md section 5). More CPU in place only raises the cgroup weight of worlds that already exist; the
-  group's CPU grows horizontally. A group that pins `DaServer:Shards` (the mmo `map`) is the same.
+  group's CPU grows horizontally. A group that pins `DaServer:Shards` (the mmo `map`) is the same. Whether
+  `DOTNET_PROCESSOR_COUNT` (from `requests.cpu`) is honoured by a Native AOT node as by a JIT one, and whether a
+  container restart after a resize picks up the new request, is not documented upstream: W8 and W12 test both
+  (`CpuCountFromRequestsUnderAot`, `CpuCountAfterResizeAndRestart`).
 - **Not both autoscalers on one resource.** VPA and HPA must not both act on CPU (or memory) of the same workload.
   The busy ratio is a custom metric, so the combination is allowed, but VPA in an active mode on CPU would change
   what the ratio means under the HPA. Hence: HPA on the busy ratio for CPU, VPA on memory only
   (`resourcePolicy.containerPolicies[].controlledResources: [memory]`) or `Off`.
 - `controlledValues: RequestsOnly` when the application sets a memory limit by hand; the default
   (`RequestsAndLimits`) scales the limit with the request.
+
+#### Garbage collector settings
+
+Nodes run Server GC with concurrent collection, as the ASP.NET Core default, and turn DATAS off
+(`GarbageCollectionAdaptationMode=0`): DATAS (on by default since .NET 9) changes the number of GC heaps with the
+allocation rate to save memory, but a node's worlds are sized to its cores and its hot paths allocate nothing in
+steady state, so a fixed heap per core gives steadier tick latency for no memory cost worth having. W8 measures both
+with the 10,000-bot E2E (p99 broadcast, working set) and keeps DATAS off only if it wins. The GC's hard limit stays
+at its default, 75% of the container's memory limit; the snapshot's tmpfs is charged to the same cgroup, which is why
+a node refuses to arm above about 80% (section 2).
 
 #### In-place resize and the .NET runtime
 

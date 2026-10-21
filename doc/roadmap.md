@@ -22,7 +22,7 @@ Keep this file current: tick items when done, add items when scope changes.
 11. S1-S6 (done) elastic scaling.
 12. The ECS rewrite (ADR-081, the "ECS rewrite" entry under "Open cleanup" below; done where W does not replace it).
 13. W — refactor to the programming model ([drafts/programming-model.md](drafts/programming-model.md),
-    [drafts/architecture.md](drafts/architecture.md)) on EasyEcs 4.7 (ADR-082 to ADR-092). Breaking; each step
+    [drafts/architecture.md](drafts/architecture.md)) on EasyEcs 4.7 (ADR-082 to ADR-095). Breaking; each step
     proven before the next (W, not R: the requirement ids R0-R11 are taken).
     W10 runs last, after W12 and N9. Each step updates design.md and README for what it lands and deletes its rows
     from [drafts/architecture.md](drafts/architecture.md) section 9, so the docs stay true between steps; W10 moves
@@ -48,20 +48,31 @@ Keep this file current: tick items when done, add items when scope changes.
       persist-set tag are an analyzer error only on an entity the analyzer sees is persistent, and elsewhere the runtime
       finds the change by a sliced pass over persistent entities each checkpoint interval, comparing their persist-set
       tags with a mask kept per persistent entity at its last write); no framework or generated system declares a
-      member named `RunCount` (`EcsSystem.RunCount`, CS0108; `NoSystemMemberHidesRunCount`). EasyEcs request #27
-      (tracking switched on per type at run time; proposed, not yet forwarded, not in 4.7): until it ships, the
-      generator declares `ITrackChanges` on the persist set's types that lack it, which are then `partial`.
+      member named `RunCount` (`EcsSystem.RunCount`, CS0108; `NoSystemMemberHidesRunCount`); a write through `Mut<T>`
+      after a structural change of its entity in the same job is kept and stamped (`MutWriteAfterStructuralChangeKept`).
+      EasyEcs requests (draft §14 item 8; proposed, not yet forwarded, none in 4.7): #27 (tracking switched on per type
+      at run time; until it ships, the generator declares `ITrackChanges` on the persist set's types that lack it,
+      which are then `partial`, and a `ref Maybe<T>` of such a type is DAS027), (a) stamping decided at run time
+      everywhere (`Maybe<T>` columns and generated `SetXIfChanged`/`WriteX`; with #27 it retires DAS027), (b) a public
+      read of a prefab's components (until then `Registration` instantiates each prefab once into a scratch world at
+      construction and reads the instance's `Entity.Describe()` types; `PrefabCompositionReadWithoutRequestB`), (c) adding a system to a group without an attribute (until then the
+      generator emits a closed subclass per actor type of each generic framework system), (d) a "job-shaped" attribute
+      so EasyEcs's analyzer checks `[On<T>]` methods itself (until then DAS026 repeats its rules).
     - [ ] W2 Packages and attributes (ADR-086, ADR-087): Abstractions merged into Core, Hosting into `DaServer`,
-      Simulation into Testing, WireTool into the generator's MSBuild task; `DaServer:Shards` and the AppHost's shard
+      Simulation into Testing, WireTool shipped inside Core beside the generator and run out of process (`dotnet exec`
+      after the build, `UpdateWireManifest=true`); `DaServer:Shards` and the AppHost's shard
       parameter replaced by sizing from the node's CPUs (`DaServer:Worlds` overrides); `UseSystemd()` and
       `UseWindowsService()` declared in `Program.cs` (launchd configured by its plist, drafts/deployment.md section 0);
       `IFromClient`/`IToClient`/`[To]` (on parameters)/`IServer` in Core; `IActor<T>`,
       `[Handles<K>]`, `[On<T>]`, `IMessageTo<K>`, `IRequestTo<K,R>` with the `IRequest` marker, `[From<K>]`, `IEvent`,
       `IClaims`, `IConfigTable<T>`, `IWorldSingleton<T>`, `[Persist]` (on any registered prefab), `[Prefab<K>]`,
-      `[JoinOnConnect<T>]`, `[Hosts<K>]`, `[ActivatedBy<T>]`, `[TickRate]`, `[Stateless]`, `[NotSaved]`,
-      `[ActorOptions]` (`IdleTimeout`; no error setting: a persisted root reloads, others continue), `Pending<T>`,
-      `Sender`, `Time.Utc` (from the world's `TimeProvider`) in the runtime. Tests: `PackagesDependOnlyDownwards`
-      (rewritten for six packages), `WorldCountFollowsCpuRequest`.
+      `[JoinOnConnect<T>]`, `[Hosts<K>]`, `[ActivatedBy<T>]`, `[TickRate]`, `[Every(seconds)]`, `[Stateless]`, `[NotSaved]`,
+      `[ActorOptions]` (`IdleTimeout`, `DetachGrace`, `MaxPending`, `MaxWaitingMail`, `PresencesPerClient`; no error
+      setting: a persisted root reloads, others continue), `Pending<T>`,
+      `Sender`, `Time.Utc` (from the world's `TimeProvider`) in the runtime; node configuration bound by the
+      configuration binding source generator (enabled in the library, a `NodeSettings` POCO, no reflection binding).
+      Tests: `PackagesDependOnlyDownwards` (rewritten for six packages), `WorldCountFollowsCpuRequest`,
+      `WireToolRunsOutOfProcess` (the manifest written by `dotnet exec`, no task assembly loaded into MSBuild).
     - [ ] W3 Generator and analyzers: explicit `Key`, typed sends (`[Durable]` asks with a required `settleBy` and an
       optional `deadline`), typed `Replied` accessors (C# 14 extension blocks), `[On<T>]` jobs run through EasyEcs's
       `entity.Run` (only the job struct and the dispatch table generated; the analyzer reports EasyEcs's EECS ids for
@@ -86,7 +97,11 @@ Keep this file current: tick items when done, add items when scope changes.
         classes and systems), DAS014 (an invalid persisted component: the persist set's types), DAS019 (a collection
         held directly by a client message; an error, as §13 lists it).
       - New: DAS023 (`Subscribe` on a `[Stateless]` actor type or on `Connection`: they claim no epoch and their address
-        names no node).
+        names no node), DAS024 (a client `[To]` message to an actor type without `[ActivatedBy]` for it: a warning,
+        since it reaches only keys with a record), DAS025 (`IActor<T>`, or an `IUniqueIndexed<T>`/`IIndexed<T>` keyed
+        by itself, not `partial`; with a code fix), DAS026 (an `[On<T>]` method breaks an EasyEcs `[ForEach]` rule; the
+        message names the EECS rule and links it), DAS027 (a `ref Maybe<T>` of a type tracked only through the
+        generator's declaration).
       - Retired: DAS005 and DAS011 (already unused), DAS008 (sessions and groups as ask targets are gone; typed sends
         make a wrong receiver a compile error), DAS010 (no shared-logic project: user projects are Protocol and
         Server), DAS012 ("a system asks": systems may `Ask`), DAS013 (components live in the Server project; no logic
@@ -103,7 +118,11 @@ Keep this file current: tick items when done, add items when scope changes.
       `PrefabCompositionHistoryKeptInManifest`, `GroupRateOnlyJobGetsNoStructuralChanges`, `ScheduleInSystemIsStructuralChange`, `ScheduleInStatelessSystemReported`, `RawRecordLayoutChangeReported`, `TrackedRefNotAlwaysWrittenHinted`,
       `ConfigTableTakenByRefReported`, `SingletonWithoutInterfaceReported`, `UnfilteredForEachWithoutTickRateReported`,
       `SetGroupRateWithoutTickRateReported`, `DestroyWithDurableWaitHinted`, `UtcNowInHandlerWarned`,
-      `RegistrationCallableWithTwoServerProjects`, `TopicPackageMessagesExemptFromDirection`; `UnrelatedEditsHitTheCache` over the new stages.
+      `RegistrationCallableWithTwoServerProjects`, `TopicPackageMessagesExemptFromDirection`,
+      `ClientToWithoutActivatedByWarned` (DAS024), `MissingPartialIsDAS025`, `OnMethodBreakingEcsRuleIsDAS026`,
+      `RefMaybeOfPersistedTypeIsError` (DAS027), `RouteWithoutMatchingClaimsReported`,
+      `ClientDurableOnUnsavedTypeReported`, `UntargetedClientMessageOnMultiPresenceTypeReported`,
+      `EveryOrFilterRequiredWithoutTickRate`; `UnrelatedEditsHitTheCache` over the new stages.
     - [ ] W4 Runtime core: shards (one world each, `MaxDegreeOfParallelism` per world), the shard loop and the ordered
       phase per actor type (`Ordered<K>`, holding the type's tick number; `Time` written at the start of each actor type's pass), the due heap (4-ary, lazy deletion), the chain stack, the call index,
       `Outbox` serializing on append into per-destination frames, `Current`, the framework groups (Ordering, Settling
@@ -118,18 +137,28 @@ Keep this file current: tick items when done, add items when scope changes.
       `DaServer:Tables:{name}` (the cluster-wide version is N9), `TestActor<K>` without presences (one world, the root,
       DaServer's manual clock of ADR-071, `SetTable`), `TestCluster` rebuilt on `Registration` (its nodes take the generated
       object; no node-wide `TickRate` or `Shards` option: a node's worlds as in production, `Worlds` to override) with
-      `AdvanceAsync(time)` stepping the manual clock so each actor type ticks at its own `[TickRate]`. Tests: `NestedAskInheritsRemainingBudget`,
+      `TestCluster.Start(Registration.Create(), c => c.Nodes<TServer>(n).ManualClock())`, `Connect(claims)` and `Step(time)`
+      stepping the manual clock so each actor type ticks at its own `[TickRate]`; `[Every(seconds)]` systems and the
+      world's quiet pass (`DaServer:QuietPass`); `RootState` (`Writing`, `WriteNow`, write generation as fields);
+      `ActivationSlots` and `PeerHealth` as per-world shares; the due heap compacted in place; systems taking the
+      actor key `in K` bound to the item's root. Tests: `NestedAskInheritsRemainingBudget`,
       `RetryBudgetCapsForwardRetries`, `HotActorDoesNotStarveShardNeighbors`, `SlowPeerFailsFastAfterLimit`,
       `ClusterAskHonoursCancellationBudget`, `WebhookRetryDeduplicatesByExternalKey`, `ThrowingHandlerAnswersFaulted`,
       `CatchUpCapSkipsAndCountsTicks`, `TrimExcessAfterPeakShrinksWorld`, `ReSentJoinFindsSameEntityByIndex`,
       `PendingHandleCoversScheduleAndAsk`, `ThrowInActorWithoutRecordContinues`, `StatelessTypeAnswersOnAnyNodeWithoutClaim`, `TestActorTicksWithManualClock`,
-      `TwoTickRatesInOneWorldSeeOwnTime`, `TestClusterAdvanceTicksEachTypeAtItsRate`, `SystemsSeePassTimeNotLastItemTime`, `UntickedPassSeesZeroDeltaTime`, `ScheduleFromSystemBecomesDue` (`Schedule(ev)` from a system is a `Due` child at
+      `TwoTickRatesInOneWorldSeeOwnTime`, `TestClusterStepTicksEachTypeAtItsRate`, `EveryRunsInIdleWorld`,
+      `ReplyIsNotStructural`, `ActivationSharesPerWorld`, `DueHeapCompacts`, `SystemInKMatchesRoots`,
+      `RegistrationRejectsComponentMissingFromPrefab`, `SystemsSeePassTimeNotLastItemTime`, `UntickedPassSeesZeroDeltaTime`, `ScheduleFromSystemBecomesDue` (`Schedule(ev)` from a system is a `Due` child at
       `Time.Elapsed`, run in the next ordered phase, kept by a snapshot taken in between).
     - [ ] W5 Presences, the gateway (`Connection` on `[Hosts<Connection>]`, keyed by a `ConnectionId` made at accept and
       placed on a world by that key's hash like every actor, every frame to a connection routed by the `ConnectionId`,
       `ClientOf(ClientId)` a non-unique index that `cluster.Disconnect` asks each world for, `Incoming` as a header view,
       forwarding as a batch pass), client tokens (`cluster.IssueClientToken`, `RefreshClientToken`, `ClientId`; one login is one
-      `ClientId`), `[To]` routing, `[JoinOnConnect]`, `Join()` returning `Status`, SDK re-join, `Retire` with presences
+      `ClientId`), `[To]` routing (only to keys with a record unless `[ActivatedBy]`; key fields from the claims
+      through the actor type's `Route(in TClaims, in TMessage)`), `[JoinOnConnect]` (client messages without `[To]`
+      bound to the root), `PresencesPerClient` (the oldest left past the limit), `root.JoinClient(prefab?)` and
+      `root.TryGetClient`, client `[Durable]` requests (settle-by at arrival + `DaServer:ClientSettle`, the SDK
+      retrying with the same call id), `Join()` returning `Status`, SDK re-join, `Retire` with presences
       (the new connection's stamps take over, the `HandedOff` fence, `Joined(MissedPushes)`, the retire flag in the
       handshake passed on by `[JoinOnConnect]` joins; one login's connections settled by stamps at the targets, on one node as across nodes), `Detached` with
       `DetachGrace`, `cluster.Disconnect` and `connection.Disconnect` (no grace), `TakeOver` and the SDK's terminal
@@ -157,15 +186,22 @@ Keep this file current: tick items when done, add items when scope changes.
       `HalfOpenReconnectToSameGateway`, `RetireKeepsJoinOnConnectFence`, `JoiningGatewayLeftOutOfAverage`,
       `TakeOverReachesOldConnectionInAnotherWorld`, `DisconnectFindsConnectionsInEveryWorld`,
       `RejectRefusesOnlyOtherClientWhileJoined` (the same `ClientId` takes over by attempt, a `Detached` presence never
-      rejects).
+      rejects), `ClientToUnknownKeyIsNoActorAndWritesNothing`, `ActivatedByClientMessageCreatesKey`,
+      `RouteFromClaimsIgnoresClientUser`, `ClientDurableRequestAnsweredAfterWrite`,
+      `ClientDurableRetrySameCallIdAnsweredFromReplyLog`, `ClientDurablePastClientSettleIsUnknown`,
+      `JoinOnConnectClientMessageBindsRoot`, `PresencesPerClientEvictsOldest`, `JoinClientFindsOrSpawns`,
+      `TryGetClientFalseForNonMember`, `RetireFlushesRatedGroupBeforeHandedOff`, `SdkDropsPushAfterHandedOff`,
+      `FenceTimeoutRejoinsWithMissedPushes`.
     - [ ] W6 Persistence, activation, migration and hot restart (draft §6, §8, §10 and §11; architecture.md sections 4
       and 5; ADR-068, ADR-082, ADR-084, ADR-088):
-      - membership and fencing: the lease and its ack, generations from the coordinator (Unix ms, single-seed
+      - membership and fencing: the lease and its ack (renewing only from the majority side; the coordinator role
+        sticky across readmission), generations from the coordinator (Unix ms, single-seed
         formation), the epoch claim with owner generation and placement version in one upsert, strict placement
         versions with `Fence` (bumped on every placement change, a migration's arrival writing `GREATEST`), idempotent
         claims, `StoreDegraded`, `ActivationSlots`, `ActivationFailed`;
       - activation: placeholder roots with their mail bounded by `MaxWaitingMail`, `[ActivatedBy<T>]` (a key's first
-        activation only; `[Durable]` requests always activate), `Pending` with `MaxPending`, the idle scan as
+        activation only; `[Durable]` requests always activate; mail that may not create a key claims without the
+        `INSERT` branch), the handoff before a claim (`Arriving`, `HandoffQuery`) for keys of a slot just received, `Pending` with `MaxPending`, the idle scan as
         `[ForEach(Slices = N)]`, deactivation with the `Deactivating` tag;
       - records: persistence per entity kind (`FromPrefab`, `Persisted(Root)`, the persist set and its change system,
         `Unsaved`), every load completing entities from their prefab, the tick-end batched write with the epoch and
@@ -173,7 +209,8 @@ Keep this file current: tick items when done, add items when scope changes.
         whose state does not serialize handled as `RecordUnwritable`;
       - the reload after a throw in a persisted actor (a type without a record continues);
       - `[Durable]` at both ends: held first attempts and answers, `settleBy`, re-asks, the settling re-ask,
-        `ReplyLog` with its refused entries (`DaServer:ReplyLogRefusedCapacity`), `root.IssueClientToken` with
+        `ReplyLog` with its refused entries (`DaServer:ReplyLogRefusedCapacity`) and its byte cap
+        (`DaServer:ReplyLogBytes`), `SettleTooShort`, a transient outcome of the settling re-ask ending `Expired`, `root.IssueClientToken` with
         `IssueSeq`, `TestActor<K>` with `[Durable]` (`FailNextWrite()`, `Answer<TReq>`);
       - the wake: `WakeAt`, the `ArmSystem` arming a `Due` from it on load and activation, `NextDue`, the `next_due`
         column, `IActorStore.DueKeys` and `DueScan`;
@@ -185,10 +222,14 @@ Keep this file current: tick items when done, add items when scope changes.
       - hot restart's runtime side (draft §10): the snapshot with its world count, user singletons outside it,
         `Restarting`/`Resumed`, `RestartingNodes`, the restart permit, the arm nonce, `NodeRestarting`, `Rejoining`,
         pinned slots and the reconcile on `Readmit`; `/admin/restart` as the one admin verb (`mode=snapshot|unload`,
-        `exit=true`, `dryRun=true` reporting the path `ManifestDiff` picks); the rollout loop with its adapters for
-        local Aspire (the dashboard's `{cluster}-restart` command), Compose (one service per stateful node with a fixed
-        hostname and a named snapshot volume) and the documented systemd unit, launchd plist and Windows service (the
-        Kubernetes adapter is W11);
+        `exit=true`, `dryRun=true` reporting the path `ManifestDiff` picks); the arm's write of every `Unsaved` root,
+        a rejected snapshot recovering from records, framework singletons excluded from the snapshot; the rollout loop
+        with its adapters for local Aspire (the dashboard's `{cluster}-restart` command), Compose (one service per
+        stateful node with a fixed hostname and a named snapshot volume made writable by its `snapshot-init` service,
+        `up -d --no-deps --force-recreate` as the trigger, admin calls from `docker compose run --rm --no-deps rollout`
+        on the internal network) and the documented systemd unit (`Restart=always`), launchd plist and Windows service
+        (exit code 75 with `sc failure` and `sc failureflag`) (the Kubernetes adapter is W11); the retire fence and
+        clock rules: a retiring node excluded from rebalancing, a member whose clock moved back readmitted;
       - docs: operations.md and README lose `/admin/drain` and its command.
       Tests: `ShardChecksLeaseBeforeTick`, `StashRestoredWithItsKey`, `AvatarNotInRecord`, `NetIdsCounterSurvivesCrash`,
       `PersistentSpawnUnderUnsavedParentThrows`, `SpawnOfPersistentPrefabTagsRootUnsaved`,
@@ -240,12 +281,19 @@ Keep this file current: tick items when done, add items when scope changes.
       `DurableAskExpiresOnlyWhenSettleUnanswered`, `ReplyLogFullRefusesWithBusy` (a full reply log refuses new calls with `Busy`),
       `IdleDeactivationWaitsForPendingDueAndAsks`, `StoreOutageBoundsMemoryAndRecoversWithoutHerd`,
       `PoisonActorBacksOffClaims`, `RebalancePausesDuringDrainAndRestart`,
-      `TimeNoticeRepushedOnResume`, `ManifestDiffPicksPath`, `ComposeRestartOneNodeAtATime`. BenchmarkDotNet
+      `TimeNoticeRepushedOnResume`, `ManifestDiffPicksPath`, `ComposeRestartOneNodeAtATime`,
+      `SlotMoveHandsOffBeforeClaim`, `HandoffPostponedForwardsMail`, `NonCreatingMailClaimsWithoutInsert`,
+      `MinorityFreezesInSymmetricPartition`, `TwoMemberClusterKeepsLease`, `CoordinatorRoleSticky`,
+      `RebalanceExcludesRetiring`, `ClockBackRejoinAccepted`, `SettlingBusyIsExpired`, `SettleTooShortRefused`,
+      `ReplyLogByteCapBusy`, `ArmPreFlushesUnsaved`, `RejectedSnapshotRecoversFromRecords`,
+      `SnapshotExcludesFrameworkSingletons`, `ComposeSameImageRollRecreates`, `ComposeSnapshotVolumeWritable`,
+      `WindowsRestartExitCode`. BenchmarkDotNet
       `DurableTickEndBatchThroughput` (1, 10, 100 and 1,000 concurrent durable asks per world at a store latency of 1, 5
       and 20 ms) and `DurableReplyLatency`.
-    - [ ] W6a `DaServer.Reminders` (ADR-090, draft §15): `Reminder<T>(Period)` persistent children whose next firing is
-      their `WakeAt`, armed by the runtime like every wake (the package has no arming system), `root.Remind<T>`/
-      `Unremind<T>`, `Reminded<T>`. Tests: `ReminderActivatesUnloadedActor`, `ReminderSurvivesNodeCrash`,
+    - [ ] W6a `DaServer.Reminders` (ADR-090, draft §15): `Reminder<T>(Key, Period)` persistent children whose next firing is
+      their `WakeAt`, armed by the runtime like every wake (the package has no arming system), one per (T, key):
+      `root.Remind<T>(key, at, every)` finds or spawns it, `root.Unremind<T>(key)`, `Reminded<T>(Key, UtcAt)`.
+      Tests: `RemindKeyedTwice`, `RemindSameKeyMovesTime`, `UnremindDestroys`, `ReminderActivatesUnloadedActor`, `ReminderSurvivesNodeCrash`,
       `ReminderFiresOncePerUtcAtWithinActivation`, `RemindersArmedOnlyByRuntime`,
       `PeriodicReminderAdvancesInSameRecord`, `ReminderAfterOutageFiresOnce`; BenchmarkDotNet `DueScan` over 1M
       records, 0 B per firing.
@@ -255,13 +303,18 @@ Keep this file current: tick items when done, add items when scope changes.
       the service `Publish`. Tests: `PublishReachesSubscribersOnEveryNode`, `DeliveryNeverActivates`,
       `ResubscribesAfterActivation`, `GoneSubscriberPruned`, `StaleUnsubscribeKeepsNewSubscription` (an older epoch's
       unsubscribe is ignored), `LowerEpochSubscribeIgnored`, `SubscriptionRenewsAfterTopicCrash`,
-      `CancelledDeactivationResubscribes`, `ReorderedUnsubscribeHealsWithinRenewInterval` (same epoch, reordered
-      during a Topic migration: the next renewal restores it), `LostUnsubscribeStopsDeliveryOnNextPublish`, `LostUnsubscribeThenMigrationStillPruned`, `ResubscribeInSameActivationSurvivesNotice`, `TopicDeliveryHandledOnSubscriberRoot`;
+      `CancelledDeactivationResubscribes`, `ReorderedUnsubscribeHealsWithinTwoRenewIntervals` (same epoch, reordered
+      during a Topic migration: a renewal restores it within two intervals), `LostUnsubscribeStopsDeliveryOnNextPublish`, `LostUnsubscribeThenMigrationStillPruned`, `ResubscribeInSameActivationSurvivesNotice`, `TopicDeliveryHandledOnSubscriberRoot`;
       BenchmarkDotNet fan-out to 1k/10k subscribers on 1/3 nodes, 0 B per delivery.
     - [ ] W7 Samples (mmo, flashsale) on the new model (their systems use `Mut<T>`), the mmo's drops split
       between a non-ticking `Loot` actor (their records, persistent, the only `[Durable]` asker) and the map (what
       clients see, not saved, shown again after every activation that is not a migration), its avatars not saved, its AOI telling entries and exits (`Appear` into a cell newly written, `Disappear` before every destroy, a crossing's snapshot of the cells newly subscribed); the login sample issuing client tokens inside a `[Durable]` request (the issue sequence
-      written before the token leaves); each AppHost becomes an `apphost.cs` (file-based) in the sample's server
+      written before the token leaves); the mmo's inventory as slots on the `Player` root (the client's `UseItem` bound
+      to the root), precious-item use and premium purchases as client `[Durable]` requests, a recharge credited by the
+      payment webhook through `ICluster.Ask` (`CallId.From` the payment id) and claimed by the client with another
+      `[Durable]` request, a guild's daily quest reset on a `DaServer.Reminders` reminder; the flash sale's
+      `PlaceOrder` carrying only the sale (`Order` routed from the claims) and its `Gate` service a `[Stateless]` actor
+      type (ADR-091, ADR-095); each AppHost becomes an `apphost.cs` (file-based) in the sample's server
       project, with client ports declared by `WithClientConnections(port)`; `DaServer.Aspire`'s generator writing the
       server types from the committed `wire.manifest` (`actor` and `hosted-by` lines; `IAcceptsClients` on those hosting
       `Connection`) and the build check, and the route check reading the committed manifests through `ManifestDiff`
@@ -270,6 +323,8 @@ Keep this file current: tick items when done, add items when scope changes.
       (`Walking_out_of_range_during_the_windup_dodges`, `A_busy_tick_allocates_nothing_and_threads_change_nothing`,
       `An_expired_grant_takes_the_drop_off_the_map`, `DropsReshownAfterMapCrash`, `DropsReshownAfterCrashBeforeFirstRecord`, `LaterDropAppearsToEarlierClients`, `TakenDropDisappears`, `KilledNpcDisappearsAndDrops`, `CrossingPushesNewCellsSnapshot`, `CrossingDuringHandoverSnapshotsAtConfirmation` (an avatar crossing cells while its `Joined` is dropped is tagged `Resnap` and gets a full snapshot when confirmed), `SnapshotSkipsWhatVanishRemoves` (a `Leaving` avatar and a dead NPC are left out; a dead avatar, which stays on the map, is in), `MapCrashReusedNumberDoesNotBreakLoot` (a drop number repeated after a map crash ends in `Clash`/`Redrop` and the drop
       is shown again), `VisitorNumbersNeverMeetDropNumbers`, `VisitorNumbersContinueAfterMigration`, `TimedOutClaimLeavesPickUpUnknown`), `LoginIssuesIncreasingSequence`, `LoginTokenLeavesAfterSequenceWritten`,
+      `UseItemBindsToPlayerRoot`, `PreciousPurchaseRunsOnceAcrossRetry`, `RechargeWebhookCreditsOnce`,
+      `RechargeClaimedOnce`, `GuildDailyResetFiresAfterCrash`, `BuyerCannotOrderForAnother`,
       `AppHostServerTypesGeneratedFromManifest`, `ClientPortWithoutConnectionHostFailsBuild`,
       `RouteCheckReadsCommittedManifests`; the 1,000-bot and
       100,000-buyer E2E on the new model.
@@ -292,15 +347,19 @@ Keep this file current: tick items when done, add items when scope changes.
       Tests:
       `UserTestPartitionIsolatesNodes`, `UserTestKillSkipsGracefulStop`, `UserTestDelayLinksDelaysFrames`,
       `InspectorDescribesActorSubtree`, `InspectorCountsByComponentWithoutReflection`.
-    - [ ] W7d Samples as templates (ADR-091): `samples/arena` (matchmaking queues per region and mode, ranked and
-      casual, `Match` and `Party` actors, a sharded `Leaderboard` merged on read), `samples/relay` (a `[TickRate(30)]`
+    - [ ] W7d Samples as templates (ADR-091): `samples/starter` (the chat room of draft §0: `[ActivatedBy<JoinRoom>]`,
+      `PresencesPerClient = 16`, `JoinClient`/`TryGetClient`, no record; the `daserver` template), `samples/arena`
+      (matchmaking queues per region and mode, ranked and casual, `Match` and `Party` actors, a sharded `Leaderboard`
+      merged on read; a detached ticket dropped by a `[With<Detached>]` system, tickets expiring), `samples/relay` (a `[TickRate(30)]`
       `Room` gathering inputs and broadcasting one frame per tick to its `ClientGroup`; simulation on the clients), the
       mmo's input ticks (`MoveTo.InputTick`, `LastInput` echoed in `Nearby` and snapshots) and its `Resync` keyframe
       system, NPC AI as `[ForEach(Slices = N)]`, the flash sale's saga (order as a process manager over
       `[Durable]` asks: compensation on `NotExecuted`, reconciliation on `Expired`; the sagas-versus-ACID page), each
       with BenchmarkDotNet numbers and a bot E2E; `DaServer.Templates` (`daserver`, `daserver-mmo`,
       `daserver-flashsale`, `daserver-arena`, `daserver-relay`) generated from the samples, instantiated, built and
-      tested in CI; the README's getting started becomes `dotnet new daserver`. Tests: `ArenaMatchesQueuedPlayersE2E`, `RelayRoomSendsOneFramePerTick`, `InputTickEchoedInNearby`,
+      tested in CI; the README's getting started becomes `dotnet new daserver`. Tests: `StarterChatJoinSayLeave`,
+      `StarterRoomGoesIdleWhenEmpty`, `ArenaMatchesQueuedPlayersE2E`, `DetachedTicketLeavesQueue`, `TicketExpires`,
+      `PlayerDetachingWhileMatched`, `RelayRoomSendsOneFramePerTick`, `InputTickEchoedInNearby`,
       `SagaCompensatesNotExecutedStep`, `SagaReconcilesExpiredStep`, `TemplatesInstantiateBuildAndTest`.
     - [ ] W7e `DaServer.Dashboard` (ADR-093, doc/dashboard/design.md): the stateless console (its own Deployment and
       Service, `AddDaServerDashboard`, the signing secret's files mounted for the admin token, no Kubernetes API), the
@@ -313,9 +372,10 @@ Keep this file current: tick items when done, add items when scope changes.
       node) and framework logs with `daserver.actor.type`, `daserver.actor.key` and the trace id; one reading table
       generating the instruments, `/admin/stats` and the stats line (off when OTLP is set); the samples' AppHosts
       adding the Collector, Prometheus, Loki, Tempo and Grafana when published, Prometheus fed by the Collector and
-      scraping no node; roll back through the deploy pipeline's webhook (`DaServer:Dashboard:RollbackWebhook`), the
-      command shown when none is set; the front end in vanilla TypeScript built by esbuild, assets embedded. Tests:
-      `RollbackCallsDeployWebhookAndAudits`, `RollbackWithoutWebhookShowsCommand`, `DashboardShowsIncidentFromFiringAlerts`, `TriageWithoutPrometheusShowsThresholdFreeStatesOnly`,
+      scraping no node; a node's restart in place (`/admin/restart?exit=true`), a type's hot restart and a roll back
+      through the deploy pipeline's webhook (`DaServer:Dashboard:RollbackWebhook`; the Dashboard never loops over
+      nodes itself), the command shown when none is set; the front end in vanilla TypeScript built by esbuild, assets embedded. Tests:
+      `RollbackCallsDeployWebhookAndAudits`, `RollbackWithoutWebhookShowsCommand`, `TypeHotRestartCallsDeployWebhook`, `DashboardShowsIncidentFromFiringAlerts`, `TriageWithoutPrometheusShowsThresholdFreeStatesOnly`,
       `ChartsFromPollRingWithoutPrometheus`, `DashboardLogsComeFromLoki`, `DashboardWithoutLokiSaysSo`,
       `ActorKeyIsNotALokiLabel`, `ActionNeedsTypedTargetAndIsAudited`, `ViewerRoleCannotAct`, `DashboardHoldsNoState`
       (two replicas answer alike), `ServerTypeScreenFixedAt400Nodes` (the screen's rows and bins do not grow with
@@ -333,11 +393,14 @@ Keep this file current: tick items when done, add items when scope changes.
       for `Accept: text/plain`), `MapAsk`/`MapSend` Nino bodies (`NinoBody<T>`) by default with per-endpoint opt-in JSON through the application's source-generated
       context (ADR-083); Nino.AspNetCore verified in a published AOT node (drafts/architecture.md section 8). Tests:
       `SampleNodesPublishAotWithoutWarnings`, `E2EPassesAgainstAotBinaries`,
-      `LocalRunStartsNoDotnetCli`, `ComposeHealthCheckRunsNodeExecutable`, `AdminAnswersNinoOrPlainText`.
+      `LocalRunStartsNoDotnetCli`, `ComposeHealthCheckRunsNodeExecutable`, `AdminAnswersNinoOrPlainText`,
+      `ConfigBindingNoAotWarnings`, `CpuCountFromRequestsUnderAot`.
     - [ ] W9 BenchmarkDotNet against the pre-W baseline, allocation tests, the 10k-bot E2E, review rounds; the hot
       restart pause measured end to end through W6's `{cluster}-restart` (BenchmarkDotNet per shard, E2E with clients
       connected; target in ADR-084); E2E `RegionBlipReconnectStorm` (every client of a region drops and reconnects
-      within the grace: presences survive, admission and back-off keep the reconnects bounded).
+      within the grace: presences survive, admission and back-off keep the reconnects bounded); the GC settings
+      (Server GC with DATAS off against the default, drafts/deployment.md "Garbage collector settings") measured with
+      the 10,000-bot E2E (broadcast p99, working set), DATAS kept off only if it wins.
     - [ ] W10 (last, after W12 and N9, which still point into the drafts) Promote what is left of the drafts into
       design.md and decisions.md and delete them (each step before already moved what it landed, rule above). The
       records that describe today's model and are rewritten or removed with them, from architecture.md section 9:
@@ -350,8 +413,9 @@ Keep this file current: tick items when done, add items when scope changes.
       (typed ids become actor types), ADR-052 (packages), ADR-055 and ADR-056 (the Simulation package and DAS010
       retired), ADR-058 (`SendAfter` becomes `Due`), ADR-061 (systems may ask), ADR-064 (an expired hot restart counts
       as Left), ADR-066 (no error setting: a persisted root reloads, others continue), ADR-067 (no reloadable logic
-      project), ADR-068 (its "Today" bullet), ADR-072 (handoff becomes migration bytes), ADR-073 (`IPlaced` and DAS016
-      gone), ADR-081 (handlers, `Context`, sessions, lifecycle); CLAUDE.md (Layout: one Server project with several
+      project), ADR-068 (its "Today" bullet; the claim without its `INSERT` branch), ADR-072 (handoff becomes migration
+      bytes, asked for by `HandoffQuery` before the target claims), ADR-073 (`IPlaced` and DAS016 gone), ADR-079 (the
+      coordinator role sticky across readmission; the lease from the majority side), ADR-081 (handlers, `Context`, sessions, lifecycle); CLAUDE.md (Layout: one Server project with several
       server types; the orchestration rule: what DaServer.Aspire adds now, StatefulSets, the signing Secret mounted as
       files, the Jobs, the rollout Role, NetworkPolicies, pod security; `replicas` owned by the autoscaler and the
       rollout's field manager, ADR-094) and operations.md ("Publish and deploy", "Rotating the signing secret").
@@ -376,28 +440,35 @@ Keep this file current: tick items when done, add items when scope changes.
       files and derives the admin token (no `{cluster}-admin` Secret); the rollout restarts the coordinator last. The
       upgrade note tells how to hand `replicas` to the autoscaler on a running group. E2E on kind: same pod UID and IP,
       preStop run on the image patch, snapshot loaded, clients connected, the rollout order (coordinator last),
-      `JobKilledBetweenArmAndPatch`, `SameImageRollRereadsSecret` (`/admin/restart?exit=true`: the node exits after its
-      snapshot and its container restarts in the same pod), `SnapshotNearMemoryLimitRefusesArm`,
+      `JobKilledBetweenArmAndPatch`, `SameImageRollRereadsConfig` (`/admin/restart?exit=true`: the node exits after its
+      snapshot and its container restarts in the same pod), `SameImageRollTwiceWithin10Min` (the second roll of a pod
+      waits out the kubelet's back-off window), `RolloutPatchesDigestAndChecksImageId`,
+      `StatefulSetImmutableFieldsUnchanged` (publish test against the previous chart), `SnapshotNearMemoryLimitRefusesArm`,
       `AutoscaledGroupRendersNoReplicas`, `AspireDeployKeepsHpaReplicas`, `RolloutPausesScaleInAndReleasesIt`,
       `RolloutClearsStalePause`, `ScaleInOnePodPerPeriodHandsOverActors`, `RolloutLoopSameAcrossAdapters`, the
       rebalancing tests of W5 on real gateways after a scale-out; `aspire publish` output (Helm lint and template,
       Compose) checked for both workload kinds.
     - [ ] W12 Deployment corrections ([drafts/deployment.md](drafts/deployment.md) sections 3, 4, 6, 7 and 10): one
       `{cluster}-signing` Secret (`current`, optional `accepted` for rotation) mounted as files at
-      `/run/secrets/daserver` and read through the key-per-file configuration source, or an existing one through
-      `WithSigningSecret(existingSecretName)`, and published nodes refuse to start without it; Compose `secrets:`
+      `/run/secrets/daserver` and read through the key-per-file configuration source with `reloadOnChange` (keys
+      replaced between two batches, the key fingerprint in `/admin/membership`, the `{cluster}-rotate-secret` command
+      waiting for every node's fingerprint), or an existing one through `WithSigningSecret(existingSecretName)`, and
+      published nodes refuse to start without it; Compose secret files readable by the node's uid (0444, or 0440 with
+      group 1654); Compose `secrets:`
       mounted at the same path and an `internal: true` network for the cluster and HTTP planes; the schema Job (W6's
       `--DaServer:Migrate`, Compose's one-shot service) with an owner role, nodes on a DML-only role, no Helm hook;
       the upgrade check a plain Job started by the deploy step (N9); load generators (`bots`, `crowd`) as Jobs or left
       out of publish (Compose `profiles`); `DOTNET_PROCESSOR_COUNT` from `requests.cpu`; startup probes and 2 s probe
       timeouts; no service-account token on node pods; non-root, read-only root filesystem (writable `/tmp` and the
-      snapshot directory); NetworkPolicy (admin plane closed to the cluster network); topology spread; published OTLP
+      snapshot directory); NetworkPolicy (admin plane closed to the cluster network, open to the Dashboard and the
+      rollout Job); topology spread; Server GC with DATAS off in the published images (W9 decides); published OTLP
       pointed at the Collector (the samples publish no Aspire dashboard); the `checksum/config` annotation; the memory
       limit followed at run time: a node reads its cgroup `memory.max` and calls `GC.RefreshMemoryLimit()` when it
       changes (a refused refresh logged), the samples' in-place resize set to `memory: NotRequired` with VPAs on memory
       and a memory limit on stateful groups (ADR-094). Tests: `tests/DaServer.E2E/PublishTests.cs` over the published
       Helm chart and Compose file, `MemoryLimitResizeRefreshesGcLimit` (kind, in-place resize),
-      `CpuResizeKeepsWorldCount`, `NodeRefusesStartWithoutSigningSecret`.
+      `CpuResizeKeepsWorldCount`, `NodeRefusesStartWithoutSigningSecret`, `SecretRotationWithoutRestart`,
+      `RotationWaitsForFingerprintOnEveryNode`, `NetworkPolicyAdmitsDashboard`, `ComposeSecretReadableByNode`.
 14. N9 hot restart's remaining operator side, on W's model (draft §10; ADR-084, ADR-088), after W12 and before W10: the
     `{cluster}-upgrade-check` Job and `aspire deploy` step, a plain Job that calls a running node's dry-run arm
     (`/admin/restart?dryRun=true` with the new manifest, `ManifestDiff`), including the rollback-safety check (a release whose new
