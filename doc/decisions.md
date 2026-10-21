@@ -1077,7 +1077,7 @@ Replaced by ADR-081.
     the version it replaces, so a stale owner's write is refused and its copy fenced; the hash recognizes a write whose
     answer was lost. A state that does not serialize gives its write up and is logged (`RecordUnwritable`): the store
     keeps the last record and the shard's other writes and handoffs go on. The rest of this decision is W6's target.
-  - **What:** an actor's record is `SaveEntities` of its root and its `Persisted` descendants with the persist
+  - **What:** an actor's record is `SaveEntitiesWith` of its root and its `Persisted` descendants with the persist
     component set built in `Registration` (draft §10). Persisted components are version tolerant or keyed (DAS014,
     ADR-076); a load completes every entity from its prefab copy (`[NotSaved]` components and those the prefab gained)
     and skips unknown type ids, counted. Transient data is rebuilt on activation. Relational and queried data
@@ -1098,7 +1098,7 @@ Replaced by ADR-081.
   - **Writes:** each world writes the roots due at a tick end in one statement per 512 rows over `unnest` arrays, at
     most `DaServer:StoreWritesInFlight` statements in flight per world (roots beyond wait for the next round), every
     row a CAS on `(type_id, key)`, the epoch and `write_gen < :write_gen`; the rows not updated come back as stored. A
-    root whose `SaveEntities` throws (a state that does not serialize) is left out of the batch and logged
+    root whose `SaveEntitiesWith` throws (a state that does not serialize) is left out of the batch and logged
     (`RecordUnwritable`); the rest of the batch is written. Deactivation, stop and migration also save before they
     destroy: when that throws, an idle deactivation is cancelled, a forced one or a stop gives the write up (the last
     stored record stays, `RecordUnwritable`), and a migration falls back to such a forced deactivation (placement
@@ -1536,7 +1536,7 @@ Replaced by ADR-081.
     (A asks B asks A simply works) and no long-turn watcher.
   - **The runtime follows the same rules:** one system per lifecycle tag, ordered with `[UpdateAfter]` along the data
     flow, failed systems disabled and revived (EasyEcs `SystemErrorPolicy`), stored components change-tracked
-    (`ITrackChanges`, declared by the generator for `[Persist]` types) so a checkpoint visits only written actors.
+    (`ITracked`, declared by the generator for `[Persist]` types) so a checkpoint visits only written actors.
 - Alternatives: keep actor objects and move only their state into components (two models stay; a suspended turn
   still holds the actor); a shard-level mail queue instead of a per-actor buffer (faster to drain, but mail is the
   actor's data and leaves with it); `await` inside handlers with continuations posted back (allocations per await,
@@ -1554,7 +1554,7 @@ Replaced by ADR-081.
   sends them to whom. Writes copied back stamp tracked components whether they changed or not, so "write only what
   changed" leaks; the order between mail, delayed sends and systems is implicit. EasyEcs provides what a
   model without these needs: single-entity jobs (`entity.Run(ref job[, filter])`), group filters carried by
-  interfaces (`IGroupWith<T>`), `world.Descendants(root)` and `LoadEntitiesInto(…, markWritten: false)`.
+  interfaces (`ISystemGroupWith<T>`), `world.Descendants(root)` and `LoadEntitiesInto(…, markWritten: false)`.
 - Decision: the model of [drafts/programming-model.md](drafts/programming-model.md), structured as in
   [drafts/architecture.md](drafts/architecture.md):
   - **The actor type is its address, its root component, its root prefab and its system group**:
@@ -1723,13 +1723,13 @@ Replaced by ADR-081.
     per-type persistence (a marker interface on component types) either lost the record's `Position` or dragged every
     avatar into the record. Change tracking is a per-type column in
     EasyEcs whose filter (`ChangedAny<T1..Tn>`) names its types at compile time, so persisted component types declare
-    `ITrackChanges` in source, the generator emits the tracked-type list and the filters from those declarations (each DaServer package's generator emits its share (its tracked types, prefabs and systems) as `internal static Registration <package namespace>.Generated.PackageHooks.Register(Registration)`, always, an empty one when it has nothing to register, and the server project's generator calls the hook of every referenced DaServer package in `Registration.Create()`'s chain; buffers enter the server project's list only when their element type is declared there), and
+    `ITracked` in source, the generator emits the tracked-type list and the filters from those declarations (each DaServer package's generator emits its share (its tracked types, prefabs and systems) as `internal static Registration <package namespace>.Generated.PackageHooks.Register(Registration)`, always, an empty one when it has nothing to register, and the server project's generator calls the hook of every referenced DaServer package in `Registration.Create()`'s chain; buffers enter the server project's list only when their element type is declared there), and
     `Registration` throws at start when a type on a `[Persist]` prefab (the run-time persist set) lacks it; the change
     system runs `ChangedAny` over the tracked types that reach records (`[NotSaved]` types and buffers of `[NotSaved]`
     elements left out, so a buffer emptied every tick does not rewrite every record; balanced calls of 2 to 9 types, a
     single type as `ChangedAny<T, T>`/`RemovedAny<T, T>`, never `Changed<T>`, which would AND with the group) filtered by `Persisted`: one visit per changed persistent row, nothing allocated.
     Generated accessors (`entity.X`) of tracked types are `ref readonly` in EasyEcs 4.7, so reading never stamps;
-    records are taken outside every pass and job (`SaveEntities` throws inside one). Spawning a persistent entity tags its root
+    records are taken outside every pass and job (`SaveEntitiesWith` throws inside one). Spawning a persistent entity tags its root
     `Unsaved` directly, and placeholders (`Loading`, `Saving`, `ActivationFailed`) are never checkpointed, so a
     `Reload` cannot write prefab defaults over the last good record. Records evolve by prefab: every load (record, migration bytes,
     hot-restart handover) adds the `[NotSaved]` components (they arrive with the prefab's default) and those the entity's prefab
@@ -1749,11 +1749,11 @@ Replaced by ADR-081.
     `IWorldSingleton<TSelf>` (static abstract `Create`).
   - **EasyEcs 4.7 features replace workarounds** (the draft's header): `Mut<T>` with `SetIfChanged` for components
     recomputed every tick, `world.Instantiate` with given components for `root.Spawn`, `ChangedAny`/`RemovedAny`
-    (one filter moved with `Since(tick)`) for the change system and replication, `world.Save(output, in exclude)` and
-    `Load(input, in keep, markWritten: false)` so user singletons (configuration tables, world singletons) stay out of
+    (one filter moved with `Since(tick)`) for the change system and replication, `world.SaveWithout(output, in exclude)` and
+    `LoadKeeping(input, in keep, markWritten: false)` so user singletons (configuration tables, world singletons) stay out of
     a hot restart's handover, `IUniqueIndexed<T>` (`Get`/`TryGet`) for actor and child keys, `TrimExcess`, `Slices` for
     the idle scan, `Descendants(root).AddTo` for collecting records and migrations, O(1) `Find(key).Count`,
-    `Children(parent).Count` and `ValueIndex.KeyCount` for interest checks and the inspector, and `SystemStats` and
+    `Children(parent).Count` and `index.KeyCount` for interest checks and the inspector, `DestroyEntities(ids)` for destroying a subtree in one structural gate, `world.Read` for the inspector's and the admin plane's read-only passes (no tick stamped), and `SystemStats` and
     `DescribeSchedule` for the inspector. Tracking is declared in source, so no run-time switch is needed.
   - One project may define several server types; a node runs one.
 - Alternatives: keep ADR-081's handlers and add the missing pieces (copy and write-back stays, two vocabularies stay);
@@ -1876,7 +1876,7 @@ Replaced by ADR-081.
     build's `TryLoad` when the manifest's table format hash changed; without a store, tables are per node from
     configuration) and feature flags choosing between handlers compiled into the binary.
   - `[Stateless]` actor types deployed as their own group are replaced start-new-then-stop-old, without a pause.
-  - The new process loads with `world.Load(bytes, in keep, markWritten: false)` (EasyEcs D39), so no actor rewrites
+  - The new process loads with `world.LoadKeeping(bytes, in keep, markWritten: false)` (EasyEcs D39), so no actor rewrites
     its record and no `[Changed<T>]` method sees the loaded rows; a system that needs a full pass filters `Resumed`.
     User singletons (configuration tables, world singletons) are the new process's own: the old one saves without them
     and the new one loads the cluster's current tables and creates its world singletons before the load, which keeps

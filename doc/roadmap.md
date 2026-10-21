@@ -31,33 +31,41 @@ Keep this file current: tick items when done, add items when scope changes.
       each with its test: the generated explicit `Key` (`Map IIndexed<Map>.Key => this`) is accepted by value indexes,
       `IUniqueIndexed<T>` included, and its `Get`/`TryGet` find the entity (`GeneratedKeyAcceptedByValueIndex`);
       `IActor<TSelf>` (inheriting `IUniqueIndexed<TSelf>`, `IEquatable<TSelf>`, `ISystemGroup`,
-      `IGroupWith<In<TSelf>>`, with the static virtual `RootPrefab`) compiles in the framework assembly and in a consumer
+      `ISystemGroupWith<In<TSelf>>`, with the static virtual `RootPrefab`) compiles in the framework assembly and in a consumer
       without repeating constraints and without EECS036 (`ActorInterfaceCompilesInConsumer`);
       `entity.Run` takes one to nine components (no zero-component form), so a handler without component parameters is
       no job: the dispatch tests the filter itself (`IsAlive`, `Has<T>` per `[With<T>]`/`[Without<T>]`) and calls the
       method directly (`ZeroComponentHandlerCalledDirectly`, a filtered one skipped as `Skipped`); a `Mut<T>` built by a generated
-      `[On<T>]` job (`new Mut<T>(ref value, entity)`; the job's `Writes` includes the `Mut<T>` bits, which are also its
+      `[On<T>]` job (`new Mut<T>(ref value, entity)`; the job's `WriteMask` includes the `Mut<T>` bits, which are also its
       `OwnStamps`, so a move carries the ref and `RunJob` leaves the stamping to `Mut`) stamps only on `Write()` and on a
       `SetIfChanged` that changed the value (`GeneratedJobMutStampsOnlyChanges`); a generated job holding a `ref`
       singleton is a `ref struct` and the write reaches the world (`RefSingletonWriteReachesWorld`); `World.Save` and
-      `SaveEntities` throw inside a pass, so records are taken after `world.Update` (`SaveEntitiesOutsidePassOnly`); a `ChangedAny` filter built from
+      `SaveEntitiesWith` throw inside a pass, so records are taken after `world.Update` (`SaveEntitiesOutsidePassOnly`); a `ChangedAny` filter built from
       balanced calls of 2 to 9 types each, as the generated tracked-type list builds it (a single type as
       `ChangedAny<T, T>`, never `Changed<T>`, which a filter ANDs), selects a row written in any of them
       (`BalancedChangedAnyChunks`), and a package's one-type set composed with the user's set still selects a row
       written only in the user's types (`SingleTrackedTypeComposesWithPackageSets`, `RemovedAny` alike); `root.Spawn` through `Instantiate` with given components
       refuses a taken `IUniqueIndexed<T>` key before creating anything (`SpawnOfTakenUniqueKeyChangesNothing`); a read through
-      EasyEcs's generated accessor of an `ITrackChanges` type is `ref readonly` and stamps nothing
+      EasyEcs's generated accessor of an `ITracked` type is `ref readonly` and stamps nothing
       (`GeneratedAccessorOfTrackedTypeIsReadOnly`); a `[NotSaved]` buffer written every tick tags no root `Unsaved`
       (`NotSavedBufferWriteDoesNotTagUnsaved`); adding a
-      tracked component stamps a write and removing it records a removal (documented for `ITrackChanges`), for tags
+      tracked component stamps a write and removing it records a removal (documented for `ITracked`), for tags
       declaring it too (`StructuralChangeOfTrackedTagDetected`: a persist-set tag, and `[Removed<T>]` on a non-persisted tag, `Deactivating`; if it fails, the Topics' cancelled-deactivation resubscribe falls back to the next renewal, and `Set` and `Remove` of a
       persist-set tag are an analyzer error only on an entity the analyzer sees is persistent, and elsewhere the runtime
       finds the change by a sliced pass over persistent entities each checkpoint interval, comparing their persist-set
       tags with a mask kept per persistent entity at its last write); no framework or generated system declares a
       member named `RunCount` (`EcsSystem.RunCount`, CS0108; `NoSystemMemberHidesRunCount`); a write through `Mut<T>`
-      after a structural change of its entity in the same job is kept and stamped (`MutWriteAfterStructuralChangeKept`).
+      after a structural change of its entity in the same job is kept and stamped (`MutWriteAfterStructuralChangeKept`);
+      the generated code, the framework and the samples build with EasyEcs 4.7's analyzer rules EECS037 to EECS052 as
+      errors: components given to `CreateEntity`/`Instantiate` instead of a `Set` right after (EECS052), read-only
+      passes over tracked components through `world.Read` (EECS046), no `ref` kept across a structural change (EECS047)
+      (`GeneratedCodeCleanUnderEasyEcs47Analyzers`); the handover's `SaveWithout`/`LoadKeeping` keep the new process's
+      singletons (`HandoverKeepsNewProcessSingletons`); a subtree collected with `Descendants(root).AddTo` is destroyed by
+      one `DestroyEntities(ids)` (`SubtreeDestroyedInOneCall`); `AddSingleton` throws on a present singleton, so the
+      framework uses `GetOrAddX`/`SetX` wherever a load may have brought one back (`NoAddSingletonAfterLoad`); the
+      inspector's and the admin plane's reads go through `world.Read` and stamp nothing (`InspectorReadStampsNothing`).
       EasyEcs requests (draft §14 item 8; proposed, not yet forwarded, none in 4.7; #27 and (a) withdrawn, since
-      persisted types declare `ITrackChanges` in source): (b) a public
+      persisted types declare `ITracked` in source): (b) a public
       read of a prefab's components (until then `Registration` instantiates each prefab once into a scratch world at
       construction and reads the instance's `Entity.Describe()` types; `PrefabCompositionReadWithoutRequestB`), (c) adding a system to a group without an attribute (until then the
       generator emits a closed subclass per actor type of each generic framework system), (d) a "job-shaped" attribute
@@ -83,7 +91,7 @@ Keep this file current: tick items when done, add items when scope changes.
       what they cover; a handler without component parameters called directly after the dispatch's filter test; `INoStructuralChanges` inferred from how `Entity` and `World` are used; `Mut<T>` parameters),
       `Registration.Create()` as a static extension member in the server project's root namespace reading `K.RootPrefab`
       and the persistent prefabs (the persist set, computed at run time; the tracked-type list and the
-      `ChangedAny`/`RemovedAny` filters emitted from the source's `ITrackChanges` declarations, and `Registration`
+      `ChangedAny`/`RemovedAny` filters emitted from the source's `ITracked` declarations, and `Registration`
       throwing when a type on a `[Persist]` prefab lacks it; each referenced DaServer package's
       `PackageHooks.Register(Registration)` called in the chain, emitted even when empty: `PackageHookEmittedWhenEmpty`,
       `PackageBufferNotInServerTrackedList`), configuration tables and
@@ -108,7 +116,7 @@ Keep this file current: tick items when done, add items when scope changes.
         they claim no epoch and their subscriptions cannot be stored), DAS024 (a client `[To]` message to an actor type with no `[ActivatedBy]` at all: a warning,
         since no message can create its keys), DAS025 (`IActor<T>`, or an `IUniqueIndexed<T>`/`IIndexed<T>` keyed
         by itself, not `partial`; with a code fix), DAS026 (an `[On<T>]` method breaks an EasyEcs `[ForEach]` rule; the
-        message names the EECS rule, EECS002/011/012/013/015, and links it), DAS027 (a user component type without `ITrackChanges`, or a `DynamicBuffer<T>`
+        message names the EECS rule, EECS002/011/012/013/015, and links it), DAS027 (a user component type without `ITracked`, or a `DynamicBuffer<T>`
         whose element type is declared outside the server project and the DaServer packages, on a `[Persist]` prefab the analyzer can see, built with a literal `SetX` chain in
         the same compilation; elsewhere `Registration` throws at start), DAS028 (a `Set`/`Remove` of a persist-set tag on
         an entity the analyzer sees is persistent), DAS029 (a tracked component type in a referenced assembly that is not a DaServer package: it reaches no tracked
@@ -139,7 +147,7 @@ Keep this file current: tick items when done, add items when scope changes.
       `SetGroupRateWithoutTickRateReported`, `UtcNowInHandlerWarned`, `RootCopyCarriesRecentKeysWhenUsed`,
       `RegistrationCallableWithTwoServerProjects`, `TopicPackageMessagesExemptFromDirection`,
       `ClientToWithoutActivatedByWarned` (DAS024), `MissingPartialIsDAS025`, `OnMethodBreakingEcsRuleIsDAS026`,
-      `PersistTypeWithoutTrackChangesIsDAS027` (a component without `ITrackChanges` and a buffer whose element is declared elsewhere, on a visible prefab; elsewhere
+      `PersistTypeWithoutTrackChangesIsDAS027` (a component without `ITracked` and a buffer whose element is declared elsewhere, on a visible prefab; elsewhere
       `Registration` throws at start, buffers included),
       `RouteMissingForKeyFieldsReported` (not for `[To]` messages whose key the message carries),
       `ActivatedByUnhandledMessageReported`, `RouteOnUnhandledMessageReported`, `JoinClientStatusUnusedReported`,
@@ -1646,7 +1654,7 @@ and cards, a manual clock), fails before its fix, and passes after it.
     and pools, and the `Actor` and `Service` base classes deleted.
   - [x] EC3 Sessions and persistence as data: an actor's known sessions are `KnownSession` child entities (tags `Known`,
     `Granted`, `Superseded`, indexed by session); `Created`/`Loaded`/`Unloading` mail; the generator declares
-    `ITrackChanges` for `[Persist]` components, `ChangeSystem` tags written actors `Unsaved` and `CheckpointSystem`
+    `ITracked` for `[Persist]` components, `ChangeSystem` tags written actors `Unsaved` and `CheckpointSystem`
     writes only those.
   - [ ] EC4 The transport and the capabilities as ECS. Superseded by W5 (`Connection` actor entities and presences).
   - [x] EC5 Samples, tests and benchmarks on static handlers; the analyzers updated (async handlers rejected by DAS001,

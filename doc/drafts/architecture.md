@@ -189,7 +189,7 @@ loop on the shard's thread:
                                the ids of WriteNow roots first, then of Unsaved roots whose checkpoint interval has passed,
                                skipping roots with a write in flight, as many as the free statements hold, and clears
                                their flags; it saves nothing: World.Save throws inside a pass)
-    StoreWrite           per world, outside world.Update: Descendants and SaveEntities for each collected root and each
+    StoreWrite           per world, outside world.Update: Descendants and SaveEntitiesWith for each collected root and each
                                deactivation (a framework job only marks them), then the tick-end write goes out when it
                                holds any record, one statement per 512 rows, at most DaServer:StoreWritesInFlight in
                                flight; held output is released as its rows succeed
@@ -233,9 +233,9 @@ exported, OpenTelemetry). Names users never write but meet in diagnostics: the S
 | Live-only components | components | `Due`, `Presence`, `Joined`, `Detached`, `Leaving`, `Subscribed`, `Route`, `GroupRate` (the root's send rates, set by `SetGroupRate`; the root copy of a ticking actor type carries the empty buffer, and `Join()` adds an empty `Subscribed` buffer, so `SetGroupRate` and `SetGroups` are not structural changes): meaningful only in memory, so they migrate and are handed over but never go into records; `Woken` (a tag for one pass after a `WakeAt` fired) is live only too | — |
 | `FromPrefab(int Prefab, int Composition)` | component | On every entity spawned from a registered prefab copy, persistent or not, the root included: the prefab's id and the hash of its component set, both from `wire.manifest`. On every load (record, migration bytes, hot-restart handover) the runtime adds the copy's `[NotSaved]` components the entity lacks and the components the prefab gained since `Composition` (known from the earlier compositions the manifest keeps; components removed at run time are not added back), then updates `Composition`, tagging the root `Unsaved` when it added persisted ones ([draft §10](programming-model.md#恢复)) | `daserver.records.unknown_types` |
 | `Persisted(EntityId Root)` | cleanup component | On every persistent entity (from a persistent prefab's registered copy; the root's points at itself): `ChangeSystem` filters by it, the record collects it, and destroying a persistent descendant tags its root `Unsaved` ([draft §10](programming-model.md#要保存的是实体不是组件类型)) | — |
-| `Deactivating` | tag on the root, declared `ITrackChanges` | The last pass before a deactivation; declared `ITrackChanges` because EasyEcs's `RemovedAttribute<T>` requires it, so `[Removed<Deactivating>]` sees a cancelled idle deactivation (`DaServer.Topics` re-subscribes there, [draft §15](programming-model.md#15-扩展能力可选包)) | |
+| `Deactivating` | tag on the root, declared `ITracked` | The last pass before a deactivation; declared `ITracked` because EasyEcs's `RemovedAttribute<T>` requires it, so `[Removed<Deactivating>]` sees a cancelled idle deactivation (`DaServer.Topics` re-subscribes there, [draft §15](programming-model.md#15-扩展能力可选包)) | |
 | `Pending` | component on the root | Pending delayed events and waiting asks (the `MaxPending` count); idle deactivation considers only roots where it is zero ([draft §6](programming-model.md#6-生命周期)) | `daserver.actors.pending` |
-| Tick-end write | runtime value per world | The records taken this tick (`WriteNow` roots first, then checkpoint and deactivation ones), sent as `IActorStore.SaveAsync` calls (one statement per 512 rows, as today); at most `DaServer:StoreWritesInFlight` statements per world in flight (default 2), never two writes for one root; roots beyond wait with their tags for the next round ([draft §10](programming-model.md#默认异步成批地写)). Outcomes come back per row: a refused row fences only its actor and discards only its held output; a failed row is retried with the same bytes and write generation; a root whose `SaveEntities` throws is left out of the statement and logged (`RecordUnwritable`), the rest of the batch goes and the root is tagged `Unsaved` again for the next interval (on deactivation, stop, migration and freeze: section 4) | `daserver.store.writes_waiting` |
+| Tick-end write | runtime value per world | The records taken this tick (`WriteNow` roots first, then checkpoint and deactivation ones), sent as `IActorStore.SaveAsync` calls (one statement per 512 rows, as today); at most `DaServer:StoreWritesInFlight` statements per world in flight (default 2), never two writes for one root; roots beyond wait with their tags for the next round ([draft §10](programming-model.md#默认异步成批地写)). Outcomes come back per row: a refused row fences only its actor and discards only its held output; a failed row is retried with the same bytes and write generation; a root whose `SaveEntitiesWith` throws is left out of the statement and logged (`RecordUnwritable`), the rest of the batch goes and the root is tagged `Unsaved` again for the next interval (on deactivation, stop, migration and freeze: section 4) | `daserver.store.writes_waiting` |
 | `Writing`, `WriteNow`, write generation | fields of `RootState`, a framework component every root carries from its prefab copy | Fields, not tags, so setting them is no structural change (`Commit` stays inside `INoStructuralChanges` jobs). `Writing`: a record write of the root is in flight; `CheckpointSystem` skips the root, so one process never overlaps two writes; changes meanwhile keep or regain `Unsaved` and go in the next write, which carries the latest state. The CAS compares the epoch and the write generation (`write_gen < :write_gen`, reset to 0 by every epoch claim, continued across a hot restart's handover), so a timed-out statement landing late never overwrites newer state ([draft §10](programming-model.md#激活-epoch一个-actor-只有一个激活能写)). `WriteNow`: the root called `Commit` (in a handler or a system), so the next tick-end write takes it whatever the checkpoint interval; a `Commit` with nothing unwritten writes nothing and releases at once. The write generation counts the root's records taken; held output carries the generation its item's state goes into and leaves once a write of that generation or later succeeds ([draft §8](programming-model.md#贵重的改动rootcommit)) | `daserver.commits.held`, `daserver.commits.latency` |
 | `RecentKeys` | persisted component on the root (a bounded ring on the root copy of every type that calls `FirstTime`/`Seen`) | Business keys for deduplication: (type id, up to 16 key bytes, UTC time, write generation); at most `RecentKeys` entries (default 64), each kept `RecentKeysAge` (default 7 days), the oldest evicted when full (counted, `expired` label); a key found in a generation not yet written makes the item count as committed, so a repeat is never answered before the first write lands ([draft §8](programming-model.md#去重靠业务的键rootfirsttimein-key)) | `daserver.recentkeys.evicted{expired}` |
 | `WakeAt(DateTime Utc)` | persisted component on persistent entities | When the actor must be awake: a committed intent's next ask (user code writes it), a reminder's next firing; while active, `ArmSystem` (`[With<WakeAt>, Without<Due>]`) arms `Due = Elapsed + (WakeAt − Utc)` once, after which only the monotonic `Due` counts; when it fires the runtime removes `WakeAt` and adds `Woken` for one pass (a package's own wake handler instead, for reminders), and a system writes a new one if it wants another | — |
@@ -267,7 +267,7 @@ exported, OpenTelemetry). Names users never write but meet in diagnostics: the S
   read through EasyEcs request (b); until it ships, by instantiating each prefab once into a scratch world and reading
   the instance's `Entity.Describe()` types, cold and once; the generator cannot compute it, since prefabs are
   built with members another generator writes and a generator never sees another's output; checked against the
-  generated tracked-type list, which comes from the `ITrackChanges` declarations in source), each prefab's composition hash (the same way), configuration tables and
+  generated tracked-type list, which comes from the `ITracked` declarations in source), each prefab's composition hash (the same way), configuration tables and
   world singletons, claims, join-on-connect, dispatch tables per actor type, client routes, systems per group
   ([draft §12](programming-model.md#12-完整例子连接进地图移动放技能捡东西看见别人)).
 - Nodes, `TestCluster` and `TestActor<K>` take the object. Its constructor also checks what only the prefabs can tell:
@@ -470,7 +470,7 @@ The client protocol's internals behind [draft §7](programming-model.md#7-客户
   5. If the `Connection` is gone, the confirmation deadline passes and the target `Leave()`s the presence, the path of a
      client that disconnects right after joining.
   6. A request whose client already timed out still writes the route; only the reply is dropped.
-- **Losing a presence**: `ReleaseRoutes` (framework group `Cleanup`, `[With<Destroyed>, With<Presence>]`, no `In<K>`)
+- **Losing a presence**: `ReleaseRoutes` (framework group `Cleanup`, `[With<Retired>, With<Presence>]`, no `In<K>`)
   appends `Lost(PresenceId, stamp)` for a presence destroyed without `Leave()`; the `Connection` removes the route
   when it receives `Lost`, when a forward comes back `NotJoined`, or when the target's node leaves the view, and then
   delivers `PresenceLost`.
@@ -722,11 +722,11 @@ in short:
   ([draft §10](programming-model.md#默认异步成批地写), section 2's tick-end write).
 - **Persistence** is per entity kind: entities spawned from a persistent prefab (the root's `K.RootPrefab` with
   `[Persist]`, child prefabs with `[Prefab<K>, Persist]`) carry `Persisted` and are saved with every component
-  but `[NotSaved]` ones; others are not. Records are `SaveEntities` of the root and its `Persisted` descendants
+  but `[NotSaved]` ones; others are not. Records are `SaveEntitiesWith` of the root and its `Persisted` descendants
   (`world.Descendants(root).AddTo(ids, includeRoot: true)`, then the non-persistent ones removed in place, saved as
-  `SaveEntities(output, CollectionsMarshal.AsSpan(ids), in persist)`) with the `persist` component set built once in `Registration`, components only (a group save refuses a set naming a singleton): the types on persistent
+  `SaveEntitiesWith(output, CollectionsMarshal.AsSpan(ids), in persist)`) with the `persist` component set built once in `Registration`, components only (a group save refuses a set naming a singleton): the types on persistent
   prefabs and those spawned into persistent entities, plus the framework's (ask states are not recorded); it is used at run
-  time only. Change tracking comes from the source: every persisted user component type declares `ITrackChanges`
+  time only. Change tracking comes from the source: every persisted user component type declares `ITracked`
   (buffers are tracked already), the generator emits the tracked-type list and the `ChangedAny`/`RemovedAny` filters
   from those declarations (EasyEcs 4.7's filters name their types at compile time; each DaServer package's generator emits its share (its tracked types, prefabs and systems) as `internal static Registration <package namespace>.Generated.PackageHooks.Register(Registration)`, always, an empty one when it has nothing to register, and the server project's generator calls the hook of every referenced DaServer package in `Registration.Create()`'s chain; buffers enter the server project's list only when their element type is declared there), and `Registration` throws at start
   when a type on a `[Persist]` prefab is missing from that list. `root.Spawn` of a persistent prefab, `ChangeSystem`
@@ -743,7 +743,7 @@ in short:
   is postponed): presences leave, the root carries
   `Deactivating` for the last pass of systems, the subtree is saved and destroyed, a `Saving` placeholder holds new
   mail until the write lands, and output held by `Commit` leaves then.
-- **Unwritable root off the checkpoint path**: deactivation, stop and migration run `SaveEntities` before the destroy.
+- **Unwritable root off the checkpoint path**: deactivation, stop and migration run `SaveEntitiesWith` before the destroy.
   If it throws, an idle deactivation is cancelled and the actor stays active (tagged `Unsaved` again); a forced
   deactivation (`root.Deactivate()` and the other uncancellable ones) or a graceful stop gives the write up, keeps the
   last stored record, logs `RecordUnwritable` and destroys as usual; a migration falls back to such a forced
@@ -982,7 +982,7 @@ LIMIT 512
   `wire.manifest`; one layout mismatch (mixed versions) falls back to deactivate, write the record, load it on the
   target, while a changed composition only completes entities on arrival (`FromPrefab`, section 2). The source first
   writes the root and waits for its output held by `Commit` to leave (the store not answering postpones the move), so no
-  held output travels; a root whose `SaveEntities` throws drops its held output at once and falls back to a forced
+  held output travels; a root whose `SaveEntitiesWith` throws drops its held output at once and falls back to a forced
   deactivation (section 4).
   Arrivals load with `markWritten: true`, so `[Changed<T>]` systems treat them as written (re-subscribe, re-cell,
   first checkpoint). A tombstone forwards all mail for the key. Across shards it is bytes too (`MoveEntities` needs
@@ -1047,14 +1047,14 @@ LIMIT 512
     handshake passes, the node takes the cluster's one restart permit (its row's `restart_until`, a versioned write;
     other members see `NodeRestarting` and pin its slots), roots carry `Restarting` for one last tick, and the worlds
     freeze between two ticks (bounded; in-flight writes land first and roots with output held by `Commit` are
-    written, so no held output travels; a root whose `SaveEntities` throws drops its held output and is destroyed in
+    written, so no held output travels; a root whose `SaveEntitiesWith` throws drops its held output and is destroyed in
     the frozen world, left out) while IO keeps receiving. At the switch point the node stops reading its links and
     streams, from pooled buffers and with no intermediate file: a header (node name and generation, arm nonce, old and
     armed manifest hashes, layout hashes, world count, `TickCount64` at the freeze; a single node's member row), each
     world's `Save(output, in exclude)` bytes (each world serialized on its own thread with an incremental checksum,
     the worlds' chunks interleaved on the pipe, so the pause is about the slowest world's serialization plus the
     standby's load; `exclude` names the user singletons and the runtime's `Outbox`, `Current`, `Time` and node-singleton
-    copies, which the new process creates before `Load(input, in keep, markWritten: false)` keeps them), the dispatch
+    copies, which the new process creates before `LoadKeeping(input, in keep, markWritten: false)` keeps them), the dispatch
     queues' mail, the runtime state (call-id sequence, tombstones, every link's byte counts and unacknowledged tail,
     how long mail and deadlines have waited), and **the listening sockets**: `SCM_RIGHTS` over the Unix domain socket
     (P/Invoke `sendmsg`, AOT-safe; the standby wraps each descriptor with `new Socket(new SafeSocketHandle(fd,
@@ -1134,24 +1134,24 @@ generator add, and what the runtime does:
 | Finding entities by key | Value indexes and their generated members (`world.NetIdIndex.TryGet`, `world.CellIndex.Find`, its O(1) `Count` for an empty cell); unique ones `IUniqueIndexed<T>` (`Get`/`TryGet`; a write that would repeat a key throws before it changes anything) | Explicit `T IIndexed<T>.Key => this` for every partial `IActor<T>` and self-keyed `IIndexed<T>` record struct | `world.Index<K, K>().TryGet` on receipt (the generic form of the same index) |
 | Which actor type logic belongs to | — | `[Handles<K>]` | Dispatch tables per actor type |
 | Order of events | Singletons | `Due` component | `OrderedPhase` merges the mailbox snapshot, the due heap and the chain by `(time, seq)`; state in `Ordered<K>` |
-| Message handling | Single-entity jobs (`entity.Run(ref job[, filter])`), `[With<T>]`, `[Without<T>]`, `INoStructuralChanges` | `[On<T>]` methods compiled into job structs with EasyEcs's own `Writes`/`OwnStamps` contract (`Writes` = the `ref` and `Mut<T>` bits, which also decides which refs are carried to a new row after a structural change; `OwnStamps` = the `Mut<T>` bits, which stamp only when written, as EasyEcs's `SystemGenerator` emits); `Run` takes one to nine components, so a method without component parameters is no job: the dispatch tests the filter itself (`IsAlive`, `Has<T>` per `[With<T>]`/`[Without<T>]`) and calls it directly | One item at a time, exceptions isolated per item |
+| Message handling | Single-entity jobs (`entity.Run(ref job[, filter])`), `[With<T>]`, `[Without<T>]`, `INoStructuralChanges` | `[On<T>]` methods compiled into job structs with EasyEcs's own `WriteMask`/`OwnStamps` contract (`WriteMask` = the `ref` and `Mut<T>` bits, which also decides which refs are carried to a new row after a structural change; `OwnStamps` = the `Mut<T>` bits, which stamp only when written, as EasyEcs's `SystemGenerator` emits); `Run` takes one to nine components, so a method without component parameters is no job: the dispatch tests the filter itself (`IsAlive`, `Has<T>` per `[With<T>]`/`[Without<T>]`) and calls it directly | One item at a time, exceptions isolated per item |
 | Parameter binding | `[ForEach]`'s parameter rules, `Mut<T>` | Component parameters bind to the subject; the actor type and `IClaims` parameters are fields of the job | The job gets the subject's components |
 | Output | Singletons | — | `Outbox`, serialized on append; the item's context in `Current` |
-| Per-tick logic | `EcsSystem`, `[ForEach]`, batch methods, `Parallel`, `[Changed<T>]`, `[UpdateAfter<T>]`, `ISystemGroup`, `IGroupWith<T>`, `SetIfChanged`/`SetXIfChanged` | The actor type is the system group, `[TickRate]`, `In<K>` | Ordering → `world.Update<K>()` → Settling |
+| Per-tick logic | `EcsSystem`, `[ForEach]`, batch methods, `Parallel`, `[Changed<T>]`, `[UpdateAfter<T>]`, `ISystemGroup`, `ISystemGroupWith<T>`, `SetIfChanged`/`SetXIfChanged` | The actor type is the system group, `[TickRate]`, `In<K>` | Ordering → `world.Update<K>()` → Settling |
 | Events inside an actor | `ChildOf` | `Schedule(ev, after:)`, `Pending<T>`, `IEvent`, `Due` | Due heap, chain stack; gone with their initiator |
 | Send direction | — | `[From<K>]`: typed sends, the analyzer checks the calling actor type | Send, reply, timeout |
 | Client routing | — | `[Handles<K>]` and `[To]` give the route table | `Connection` forwards on the frame header without decoding the payload |
 | Asks and replies | `ChildOf` | `Replied<TReq[, TState]>`, `ReplyTo<T>`, `Commit`, `FirstTime` | Call index, `Due` deadlines, remaining time; output held by `Commit`, `RecentKeys` |
-| Presences | Child entities, value index, cleanup components (`ICleanupComponent`, `Destroyed`) | `[JoinOnConnect]`, find by the unique index or `root.Spawn`, `Join()`, `Leaving`, `Detached`, `Joined(MissedPushes)` | Stamps, routes, confirmation, grace, reconciliation, `ReleaseRoutes` |
+| Presences | Child entities, value index, cleanup components (`ICleanupComponent`, `Retired`) | `[JoinOnConnect]`, find by the unique index or `root.Spawn`, `Join()`, `Leaving`, `Detached`, `Joined(MissedPushes)` | Stamps, routes, confirmation, grace, reconciliation, `ReleaseRoutes` |
 | Subscriptions | `DynamicBuffer`, `[Changed<DynamicBuffer<T>>]` | `Subscribed`, `SetGroups` | `SyncSubscriptions` |
 | Lifecycle | Tags | `[On<Activated>]`, systems on `Leaving`, `Deactivating`, `Restarting`, `Resumed` | Placeholders, epochs, fencing, `Depart` |
 | An actor's entities | `ChildOf`, `world.Children`, prefabs, `world.Instantiate` with up to nine given components (`ChildOf` one of them) | `In<K>`, `K.RootPrefab`, `[Prefab<K>]`, `[Persist]`, `root.Spawn`, `e.Root` | Registered prefab copies |
-| Writing only what changed | `ITrackChanges`, `[Changed<T>]`, `[Removed<T>]`, `ChangedAny`/`RemovedAny`, `ICleanupComponent`, `DynamicBuffer` (itself `ITrackChanges`); persisted types declare `ITrackChanges` in source, since 4.7's `ChangedAny<T1..Tn>` names its types at compile time (request (b) for prefab compositions, not in 4.7) | Persistent prefabs, `[NotSaved]`, `Commit`; `Registration` throws at start when a type on a `[Persist]` prefab lacks `ITrackChanges` | `Persisted`, `ChangeSystem`, `CheckpointSystem` |
-| Records, migration | `ComponentSet`, `Descendants(root).AddTo(ids, includeRoot: true)` (parents first, returns the count added, 0 B with a reused list), `SaveEntities` (ids as a span; a set without singletons), `LoadEntitiesInto` (`markWritten: false` on restore) | Persistent prefabs, `[NotSaved]` | Store, epoch CAS, layout hashes |
+| Writing only what changed | `ITracked`, `[Changed<T>]`, `[Removed<T>]`, `ChangedAny`/`RemovedAny`, `ICleanupComponent`, `DynamicBuffer` (itself `ITracked`); persisted types declare `ITracked` in source, since 4.7's `ChangedAny<T1..Tn>` names its types at compile time (request (b) for prefab compositions, not in 4.7) | Persistent prefabs, `[NotSaved]`, `Commit`; `Registration` throws at start when a type on a `[Persist]` prefab lacks `ITracked` | `Persisted`, `ChangeSystem`, `CheckpointSystem` |
+| Records, migration | `ComponentSet`, `Descendants(root).AddTo(ids, includeRoot: true)` (parents first, returns the count added, 0 B with a reused list), `SaveEntitiesWith` (ids as a span; a set without singletons), `DestroyEntities(ids)` (a subtree in one structural gate), `LoadEntitiesInto` (`markWritten: false` on restore) | Persistent prefabs, `[NotSaved]` | Store, epoch CAS, layout hashes |
 | Wake | `[Changed<WakeAt>]`, `[Removed<WakeAt>]`, tags | `WakeAt`, `Woken` | `NextDue`, `DueScan` |
 | Version compatibility | Nino type ids, `[NinoFormerName]` | `wire.manifest` | Rolling upgrades |
-| Hot restart | `world.Save(output, in exclude)`, `world.Load(input, in keep, markWritten: false)`, `ComponentSet.WithSingleton<T>()` | `wire.manifest` diff picks the path; the handover's stream format | Freeze between two ticks, the stream to the standby, no re-activation |
-| Tests, diagnostics | One world, `SystemErrorPolicy.Throw`, `Capture`/`Restore`, `world.Count<Destroyed>()`, `world.Describe()`, `DescribeSchedule()` (text or mermaid), `SystemStats` allocated bytes and entities visited, O(1) `Find(key).Count`, `Children(parent).Count` and `ValueIndex.KeyCount` | `Registration`, `TestActor<K>` | Manual clock, decoded `Outbox`, allocation assertions |
+| Hot restart | `world.SaveWithout(output, in exclude)`, `world.LoadKeeping(input, in keep, markWritten: false)`, `ComponentSet.WithSingleton<T>()` | `wire.manifest` diff picks the path; the handover's stream format | Freeze between two ticks, the stream to the standby, no re-activation |
+| Tests, diagnostics | One world, `SystemErrorPolicy.Throw`, `Capture`/`Restore`, `world.Count<Retired>()`, `world.DescribeTables()`, `world.Read<…>(filter)` (read-only passes for the inspector and the admin plane: no tick stamped), `DescribeSchedule()` (text or mermaid), `SystemStats` allocated bytes and entities visited, O(1) `Find(key).Count`, `Children(parent).Count` and `index.KeyCount` | `Registration`, `TestActor<K>` | Manual clock, decoded `Outbox`, allocation assertions |
 | Pooling | `DynamicBuffer` pools, Nino's `[NinoPooled]` | — | Frames and send buffers |
 
 ## 8. Native AOT
@@ -1248,7 +1248,7 @@ The inspector's read-only endpoints are modelled on flecs's REST API behind its 
 |---|---|
 | `GET /admin/actors/{type}/{key}` | `Describe()` of the actor's root and of each entity in `world.Descendants(root)`: component names and values, decoded through `wire.manifest`, and each entity's child count (`world.Children(e).Count`, O(1)) |
 | `GET /admin/actors/top` | The busiest actors by mailbox depth and handler time |
-| `GET /admin/worlds/{i}` | `world.Describe()`: tables, rows, memory; per value index its distinct keys with entities (`ValueIndex.KeyCount`, O(1); e.g. occupied cells), also exported as metrics |
+| `GET /admin/worlds/{i}` | `world.DescribeTables()`: tables, rows, memory; per value index its distinct keys with entities (`index.KeyCount`, O(1); e.g. occupied cells), also exported as metrics |
 | `GET /admin/worlds/{i}/systems` | `world.DescribeSchedule()` (per group its stages, why a system waits, the pairs only registration order orders; as text, or `ToMermaid()`) and each system's `system.Stats` (time, `LastAllocated`/`TotalAllocated`, `LastEntities`/`TotalEntities`, under `MeasureSystems`, also exported as metrics) and `system.Error` (a system disabled by `SystemErrorPolicy.Disable`) |
 | `GET /admin/worlds/{i}/count?with=Health,Dead` | The number of entities with those components; names resolve to `TypeId`s through the registration's component table, no reflection |
 
@@ -1303,7 +1303,7 @@ Derived from [design.md](../design.md); what today's code has and the target dro
 | `UnloadAfterIdleSeconds` | `[ActorOptions(IdleTimeout = …)]` on the actor type |
 | `SaveEverySeconds` (30 s per actor type) | `DaServer:CheckpointInterval` (30 s per node) for plain changes; a root that calls `Commit` writes at the next tick end |
 | Callers retry by hand and receivers deduplicate by hand | Receivers deduplicate by business keys (`FirstTime` over `RecentKeys`) and commit before answering; askers that must survive a crash write an intent and a `WakeAt` and ask again when `Woken` (ADR-097) |
-| `[Persist]` per component type with a generated `ITrackChanges`, the own record format | Persistence per entity kind (`[Persist]` roots and children, `[NotSaved]` components left out); records as `SaveEntities` over `Descendants` with a `ComponentSet`; epoch CAS |
+| `[Persist]` per component type with a generated `ITracked`, the own record format | Persistence per entity kind (`[Persist]` roots and children, `[NotSaved]` components left out); records as `SaveEntitiesWith` over `Descendants` with a `ComponentSet`; epoch CAS |
 | State handoff (ADR-072) | Migration bytes with layout hashes, a new epoch on arrival; fallback to records |
 | `Registration_{Assembly}` run by a module initializer (ADR-012) | `Registration` instance from the generated `Registration.Create()` |
 | One project per server (ADR-017), Contracts / Model / Logic (N1) | Protocol / Server; several server types per Server project; node = one server type |
