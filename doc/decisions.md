@@ -1098,18 +1098,23 @@ Replaced by ADR-081.
     most `DaServer:StoreWritesInFlight` statements in flight per world (roots beyond wait for the next round), every
     row a CAS on `(type_id, key)`, the epoch and `write_gen < :write_gen`; the rows not updated come back as stored. A
     root whose `SaveEntities` throws (a state that does not serialize) is left out of the batch and logged
-    (`RecordUnwritable`); the rest of the batch is written. A refused
+    (`RecordUnwritable`); the rest of the batch is written. Deactivation, stop and migration also save before they
+    destroy: when that throws, an idle deactivation is cancelled, a forced one or a stop gives the write up (the last
+    stored record stays, `RecordUnwritable`), and a migration is aborted with the actor left on the source. A refused
     row fences only its actor; a timed-out write is retried with the same bytes and generation, and a row found at its
     own epoch and generation counts as written. `[Durable]` items ride the next write; other changes at most every
     `DaServer:CheckpointInterval`. Change tracking on the persist set tags written roots `Unsaved`, so only those are
     written.
-  - **Wake:** every write stores the root's `NextDue` in `next_due`; `IActorStore.DueKeys(slots, until)` reads, over
-    the `(type_id, slot, next_due)` index, the keys of the node's `(type, slot)` pairs whose `next_due` has passed, in
-    pages of 512 (each page starting after the previous one's last row), and `DueScan` wakes them.
+  - **Wake:** every write stores the root's `NextDue` in `next_due`; `IActorStore.DueKeys(slots, until, after)` reads,
+    over the `(type_id, slot, next_due)` index, the keys of the node's `(type, slot)` pairs whose `next_due` is at or
+    before `until`, in pages of 512 keyset-ordered by `(type_id, slot, next_due, key)` after the row `after`, and
+    returns the page's last row; `DueScan` wakes them. A scan fixes `until` once; its first page passes a sentinel
+    below every real row, `(-2147483648, -1, '-infinity', '\x')` (`type_id` is `integer`, `slot` a `smallint` whose
+    real values are 0..4095), and each page probes only the pairs at or after the cursor's pair.
   - **Schema:** the `actor_records` table is created under an advisory lock, either by a node at start (run mode,
     `TestCluster` on PostgreSQL, and published nodes until roadmap W12) or by the node image in schema mode
     (`--DaServer:Migrate`: create and exit), both W6; W12 runs that mode as the published schema Job with a DDL role
-    and nodes on a DML-only role. An older table is neither read nor converted (pre-1.0).
+    and nodes on a DML-only role. Today's `daserver_actors` table is neither read nor converted (pre-1.0).
   - **Backends:** `IActorStore` (claims, the batched write, `DueKeys`) is all a backend implements.
     `InMemoryActorStore` serves tests and development and behaves like the database (epochs, generations, slots).
     `PostgreSqlActorStore` is the default for deployments, written with Npgsql and no ORM (the record is opaque bytes,
@@ -1538,7 +1543,7 @@ Replaced by ADR-081.
   changed" leaks; the order between mail, delayed sends and systems is implicit. EasyEcs provides what a
   model without these needs: single-entity jobs (`entity.Run(ref job[, filter])`), group filters carried by
   interfaces (`IGroupWith<T>`), `world.Descendants(root)` and `LoadEntitiesInto(…, markWritten: false)`.
-- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v53), structured as in
+- Decision: the model of [drafts/programming-model.md](drafts/programming-model.md) (now v54), structured as in
   [drafts/architecture.md](drafts/architecture.md):
   - **The actor type is its address, its root component, its root prefab and its system group**:
     `[TickRate(30)] partial record struct Map(long Id) : IActor<Map>` (`IActor<T>` inherits `IEquatable<T>`, so
@@ -2058,14 +2063,18 @@ Replaced by ADR-081.
   - **`DaServer.Reminders`**: a `Reminder<T>(DateTime UtcAt, TimeSpan Period)` on a persistent child entity with the
     runtime's `WakeAt` set to `UtcAt`. While the actor is active it fires through a `Due`; while unloaded, the runtime's
     `NextDue` (the minimum `WakeAt`) goes into the record's `next_due` column and the slot owner's `DueScan`
-    (`IActorStore.DueKeys(slots, until)`) activates the actor. `Reminded<T>` is at least once, deduplicated by
+    (`IActorStore.DueKeys(slots, until, after)`) activates the actor. `Reminded<T>` is at least once, deduplicated by
     (reminder, `UtcAt`): the advance lands in the same record as the handler's effects. After an outage a reminder
     fires once and moves to its first future occurrence, not once per missed period.
   - **The wake is the runtime's, not the package's**: `WakeAt`, `NextDue`, `next_due`, `DueKeys` and `DueScan` belong
     to the runtime because `[Durable]` asks need them too (ADR-082) and the runtime depends on no capability
     (ADR-045). Only the runtime computes `NextDue`; the package writes `WakeAt` on its reminders.
   - **`DaServer.Topics`**: a built-in `Topic(long Id)` actor type with a persisted `DynamicBuffer<Subscriber>`;
-    `Subscribe`, `Unsubscribe` and `Publish` on `Entity`. Each `Subscriber` carries the subscriber's activation epoch,
+    `Subscribe`, `Unsubscribe` and `Publish` on `Entity`. `Subscribe` is a `[Durable]` request: the framework holds the
+    Topic's answer until the write holding the subscription succeeds and the subscriber re-asks until answered, so a
+    Topic crash loses no subscription. `Unsubscribe` stays one-way: it is sent in the `Deactivating` pass, where a
+    durable ask would cancel an idle deactivation, and a lost one is pruned by the gone-subscriber notice. A server
+    type hosting topics declares `[Hosts<Topic>]` and needs a store. Each `Subscriber` carries the subscriber's activation epoch,
     which `Subscribe` updates; an unsubscribe or a gone-subscriber notice removes it only when the epochs match, so a
     late notice from an old activation never drops a new one's subscription. The subscriber keeps its own `Subscription` buffer,
     re-subscribing after activation and unsubscribing on deactivation, so delivery never activates an actor. A publish

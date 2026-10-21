@@ -22,7 +22,7 @@ Keep this file current: tick items when done, add items when scope changes.
 11. S1-S6 (done) elastic scaling.
 12. The ECS rewrite (ADR-081, the "ECS rewrite" entry under "Open cleanup" below): P1-P3 and P5 done; P4, P6 and P7
     superseded by W.
-13. W — refactor to the v53 programming model ([drafts/programming-model.md](drafts/programming-model.md),
+13. W — refactor to the v54 programming model ([drafts/programming-model.md](drafts/programming-model.md),
     [drafts/architecture.md](drafts/architecture.md)) on EasyEcs 4.7 (ADR-082 to ADR-092). Breaking; each step
     proven before the next (W, not R: the requirement ids R0-R11 are taken).
     W10 runs last, after W12 and N9.
@@ -145,7 +145,9 @@ Keep this file current: tick items when done, add items when scope changes.
       generation (`write_gen < :write_gen`, reset by every claim, continued from the snapshot by an in-place hot restart; a
       row found at its own epoch and generation counts as written) with a root's writes never overlapping (`Writing`), the tick-end write (one statement per
       512 rows per world per tick end, ADR-068's `unnest`, per-row CAS; a root whose `SaveEntities` throws skipped and
-      logged as `RecordUnwritable`, the rest of the batch written; `WriteNow` roots every time, other `Unsaved` roots at most
+      logged as `RecordUnwritable`, the rest of the batch written; deactivation, stop and migration saving before the
+      destroy, a throw cancelling an idle deactivation, giving up a forced one's or a stop's write with the last record
+      kept and `RecordUnwritable`, aborting a migration with the actor left on the source; `WriteNow` roots every time, other `Unsaved` roots at most
       every `DaServer:CheckpointInterval`; at most one write in flight per root, later changes in the next write; at
       most `DaServer:StoreWritesInFlight` statements in flight per world, roots beyond waiting, `WriteNow` first,
       counted in `daserver.store.writes_waiting`),
@@ -183,9 +185,11 @@ Keep this file current: tick items when done, add items when scope changes.
       `WakeAt`, `NextDue` from the runtime's `WakeSystem` (`[Changed<WakeAt>]`/`[Removed<WakeAt>]`) with the `next_due` column,
       `IActorStore.DueKeys` and the `DueScan` wake, the table of ADR-068 (primary key `(type_id, key)` with `key bytea`,
       the key's fields big-endian; columns `type_id, key, slot, epoch, write_gen, owner, placement, record, next_due`;
-      the index on `(type_id, slot, next_due)`; the claim upsert, the write CTE and `DueKeys` on that key, `DueKeys` over the
-      node's `(type, slot)` pairs in pages of 512) in a new table `actor_records`, created under an advisory lock by a
-      node at start (run mode, `TestCluster` on PostgreSQL) or by the schema mode `--DaServer:Migrate` (create and exit); the old `actors` table is not read or converted (pre-1.0, breaking: earlier records are not carried over), `StoreDegraded` and `ActivationSlots`, `ActivationFailed`, strict
+      the index on `(type_id, slot, next_due)`; the claim upsert, the write CTE and `DueKeys` on that key,
+      `DueKeys(slots, until, after)` over the node's `(type, slot)` pairs in keyset pages of 512 returning the last row,
+      the first page after the sentinel `(-2147483648, -1, '-infinity', '\x')`, `until` fixed per scan, each page probing
+      only the pairs at or after the cursor's) in a new table `actor_records`, created under an advisory lock by a
+      node at start (run mode, `TestCluster` on PostgreSQL) or by the schema mode `--DaServer:Migrate` (create and exit); today's `daserver_actors` table is not read or converted (pre-1.0, breaking: earlier records are not carried over), `StoreDegraded` and `ActivationSlots`, `ActivationFailed`, strict
       placement versions with `Fence` (bumped on every placement change of a type, slot-table moves included; a
       migration's arrival claims with the type's current version), idempotent claims, generations from Unix ms and single-seed formation, the lease
       ack, the restart permit, arm nonce, `NodeRestarting` and `Rejoining`, pinned slots and the reconcile on `Readmit`.
@@ -224,7 +228,10 @@ Keep this file current: tick items when done, add items when scope changes.
       `DisplacedOwnerFencedWithoutWrite`, `GroupFramesFlushedBeforeDeactivationAndMigration`,
       `FencedActorDiscardsGroupFrames`, `MigrationArrivalClaimSurvivesRestart`,
       `MigrationArrivalNeverLowersPlacement`, `MapAndLootSameIdDoNotShareRow`, `DueKeysFiltersBySlot`, `DueKeysPagesPastLimit`,
-      `UnwritableRootSkippedRestOfBatchWritten`, `NodeStartCreatesNewTableAndIgnoresOld`, `MigrateModeCreatesTableAndExits`,
+      `DueKeysFirstPageFromSentinel`, `DueKeysUntilFixedAcrossPages`, `DueKeysSkipsPairsBeforeCursor`,
+      `UnwritableRootSkippedRestOfBatchWritten`, `UnwritableRootCancelsIdleDeactivation`,
+      `UnwritableRootOnForcedDeactivationKeepsLastRecord`, `UnwritableRootOnStopKeepsLastRecord`,
+      `UnwritableRootAbortsMigration`, `NodeStartCreatesNewTableAndIgnoresOld`, `MigrateModeCreatesTableAndExits`,
       `CoordinatorHotRestartDeadlineKeptBySuccessor`, `TwoExpiredRestartsDoNotDownMajority`,
       `ColdClusterRestartNeverReusesGeneration`, `ParallelSeedsFormOneCluster`, `ArmWithoutKillExpires`,
       `FreezeAbortsWhenStoreHangs`, `TornSnapshotRejected`, `ImageNotMatchingArmRejectsSnapshot`,
@@ -243,10 +250,11 @@ Keep this file current: tick items when done, add items when scope changes.
       `PeriodicReminderAdvancesInSameRecord`, `ReminderAfterOutageFiresOnce`; BenchmarkDotNet `DueScan` over 1M
       records, 0 B per firing.
     - [ ] W6b `DaServer.Topics` (ADR-090): the `Topic` actor type, `Subscribe`/`Unsubscribe`/`Publish`, subscribers
-      with their activation epoch, the subscriber's `Subscription` buffer (re-subscribe after `Activated`, unsubscribe on
+      with their activation epoch, `Subscribe` as a `[Durable]` request (`Unsubscribe` one-way), `[Hosts<Topic>]` with a
+      store, the subscriber's `Subscription` buffer (re-subscribe after `Activated`, unsubscribe on
       `Deactivating`), one frame per subscriber node; deletes the service `Publish`. Tests:
       `PublishReachesSubscribersOnEveryNode`, `DeliveryNeverActivates`, `ResubscribesAfterActivation`,
-      `GoneSubscriberPruned`, `StaleUnsubscribeKeepsNewSubscription`; BenchmarkDotNet fan-out to 1k/10k subscribers on
+      `GoneSubscriberPruned`, `StaleUnsubscribeKeepsNewSubscription`, `SubscriptionSurvivesTopicCrash`; BenchmarkDotNet fan-out to 1k/10k subscribers on
       1/3 nodes, 0 B per delivery.
     - [ ] W7 Samples (mmo, flashsale) on the new model (their systems use `Mut<T>`), the mmo's drops split
       between a non-ticking `Loot` actor (their records, persistent, the only `[Durable]` asker) and the map (what
@@ -287,7 +295,7 @@ Keep this file current: tick items when done, add items when scope changes.
       `[Durable]` asks: compensation on `NotExecuted`, reconciliation on `Expired`; the sagas-versus-ACID page), each
       with BenchmarkDotNet numbers and a bot E2E; `DaServer.Templates` (`daserver`, `daserver-mmo`,
       `daserver-flashsale`, `daserver-arena`, `daserver-relay`) generated from the samples, instantiated, built and
-      tested in CI. Tests: `ArenaMatchesQueuedPlayersE2E`, `RelayRoomSendsOneFramePerTick`, `InputTickEchoedInNearby`,
+      tested in CI; the README's getting started becomes `dotnet new daserver`. Tests: `ArenaMatchesQueuedPlayersE2E`, `RelayRoomSendsOneFramePerTick`, `InputTickEchoedInNearby`,
       `SagaCompensatesNotExecutedStep`, `SagaReconcilesExpiredStep`, `TemplatesInstantiateBuildAndTest`.
     - [ ] W8 Native AOT publish of the samples' nodes with 0 warnings (EasyEcs 4.7 has none with tracked components, its CI publishes and runs a native server;
       what remains to verify is the third-party packages, drafts/architecture.md section 8; the Prometheus exporter is a

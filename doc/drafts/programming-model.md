@@ -1,4 +1,4 @@
-# DaServer 新编程模型设计（草案 v53，未实现，迭代中）
+# DaServer 新编程模型设计（草案 v54，未实现，迭代中）
 
 原则：业务代码干净、解耦、简洁，不用 OOP。ECS 一路到底：能用 EasyEcs 的功能就用 EasyEcs，状态都是数据，其余交给我们的特性和生成器，不重复造轮子。
 
@@ -739,7 +739,7 @@ ref var hp = ref target.Health;
 | 加载中 | 占位，带 `Loading` | 第一条消息到达本节点，本节点按自己的视图是这个键的主人（不是主人就转发，不激活）；或者处理方法抛出、`OnError` 是 `Reload`（根要保存的 Actor 类型的默认，第 5 节） | 邮件留在占位上；拿到 `ActivationSlots` 的名额后，一条语句占 epoch 并读记录（第 10 节） |
 | 激活 | 同一个实体，成为根 | epoch 占到了，记录读到了或者没有记录 | 有记录时 `LoadEntitiesInto(record, [占位, n−1 个空实体], markWritten: false)`（第 10 节）；然后加上 `In<K>`，去掉 `Loading`。键和邮件本来就在它上面，不搬动；邮箱里第一条是 `Activated`，后面才是等着的邮件 |
 | 运行 | 完整的根实体 | — | 按 `(时间, 序号)` 执行消息和事件，再跑系统和收尾（第 1 节） |
-| 停用 | 完整的根实体 → 占位，带 `Saving` | 空闲超过 `IdleTimeout`（不写用节点配置 `DaServer:IdleTimeout`；空闲检查是 `[ForEach(Slices = N)]` 的框架系统，每次看每张表的 1/N 行）：没有待执行的延后事件和等待中的请求，也没有不带 `Detached` 的 Presence；或者调用 `root.Deactivate()` | 依次：<br>1. 对每个 Presence `Leave()`；<br>2. 根加上 `Deactivating`，之后的邮件不再执行，留给占位（这一轮的系统发出 `[Durable]` 请求：空闲停用就此取消，其余的停用照常，等待实体进最后一份记录，第 8 节）；<br>3. 这一轮的系统和收尾跑完（用户对 `Leaving` 和 `Deactivating` 的反应、`Depart`）后，`SaveEntities` 写进缓冲，销毁整棵子树（待执行的延后事件随之消失），换成带 `Saving` 的占位，邮件都留在占位上。所以 `[ForEach, With<Deactivating>]` 的系统里 `Schedule(ev)` 建的 `Due` 子实体也随子树消失，事件不会执行；<br>4. 异步写记录，按 epoch 比较并交换；<br>5. 写成功后：占位上有邮件，就变成 `Loading`，读到的是刚写好的记录；没有就销毁占位 |
+| 停用 | 完整的根实体 → 占位，带 `Saving` | 空闲超过 `IdleTimeout`（不写用节点配置 `DaServer:IdleTimeout`；空闲检查是 `[ForEach(Slices = N)]` 的框架系统，每次看每张表的 1/N 行）：没有待执行的延后事件和等待中的请求，也没有不带 `Detached` 的 Presence；或者调用 `root.Deactivate()` | 依次：<br>1. 对每个 Presence `Leave()`；<br>2. 根加上 `Deactivating`，之后的邮件不再执行，留给占位（这一轮的系统发出 `[Durable]` 请求：空闲停用就此取消，其余的停用照常，等待实体进最后一份记录，第 8 节）；<br>3. 这一轮的系统和收尾跑完（用户对 `Leaving` 和 `Deactivating` 的反应、`Depart`）后，`SaveEntities` 写进缓冲（抛出时见第 10 节的"只写改过的"），销毁整棵子树（待执行的延后事件随之消失），换成带 `Saving` 的占位，邮件都留在占位上。所以 `[ForEach, With<Deactivating>]` 的系统里 `Schedule(ev)` 建的 `Due` 子实体也随子树消失，事件不会执行；<br>4. 异步写记录，按 epoch 比较并交换；<br>5. 写成功后：占位上有邮件，就变成 `Loading`，读到的是刚写好的记录；没有就销毁占位 |
 | 隔离 | 销毁 | 写记录时 epoch 比较失败；收到 `Fence(键, epoch)` 控制邮件（第 10 节）；或者本节点被移出成员视图 | 不写记录、不进 `Leaving`、不加 `Deactivating`，直接销毁整棵子树；Presence 的路由由清理组件释放（第 7 节）；排队的请求以 `NoOwner` 失败 |
 
 - 写记录失败就重试，绝不丢弃；epoch 比较失败不是失败，是隔离。
@@ -961,7 +961,7 @@ public readonly partial record struct Player(long Id) : IActor<Player>
   - `[Durable]` 请求的 `ReplyTo<T>` 只能存进随记录保存的数据（要保存的实体上的组件、`[Durable]` 的 `Ask` 状态，分析器按看得出的地方检查）：令牌丢了，重复的请求又被丢弃，发问方的收尾一问只能等到 `Expired`。它的期限是 settle-by 时刻：这一次问超时之后，晚些的 `Reply` 照样回答这个调用 id。
   - `ReplyLog` 的项留到 settle-by 时刻再加 `DaServer:ClockSkew` 之后（过了 settle-by 时刻，这个调用 id 的问都被丢弃）。回复和 `Faulted` 的项每个 Actor 最多 `DaServer:ReplyLogCapacity` 个（默认 1,024）；满了、又都没过期时，新的 `[Durable]` 请求回 `Busy`，`RetryAfter` 是最早一项过期的时刻（确定没执行）。拒绝的项只有调用 id、settle-by 时刻和原因，有自己的上限 `DaServer:ReplyLogRefusedCapacity`（默认 1,024），同样在 settle-by 时刻加 `DaServer:ClockSkew` 之后删掉；它满了时，新的拒绝不记、不回答（处理方法也不调用）：普通的一问由发问方重问，收尾的一问以 `Expired` 结束。没有一种项无界地增长。
   - 比较失败时，改动和 `ReplyLog` 都没写进存储，发问方重问时由真正的主人执行一次。
-- **结果**：一个调用 id 最多执行一次；调用方看到的结果（成功或确定没执行），任一端宕机都不会丢；`Expired` 只在收尾的一问也联系不上时出现。代价：`[Durable]` 请求的第一问和回答各等一次 tick 末的批量写才发出（最坏的延迟见上面）；同 world 这一刻要写的根共用一条语句，所以负载高时每条语句落定的项更多，吞吐不降。不标的请求宕机时最多丢一个检查点间隔的改动（第 10 节）。
+- **结果**：一个调用 id 最多执行一次；调用方看到的结果（成功或确定没执行），任一端宕机都不会丢；`Expired` 只在收尾的一问也联系不上时出现。代价：`[Durable]` 请求的第一问和回答各等一次 tick 末的批量写才发出（最坏的延迟见上面）；同 world 这一刻要写的根每 512 行共用一条语句，所以负载高时每条语句落定的项更多，吞吐不降。不标的请求宕机时最多丢一个检查点间隔的改动（第 10 节）。
 - `ICluster.Ask` 发 `[Durable]` 的请求必写 `settleBy:`；带 `CallId.From(外部键)` 时接收方一样去重，直到 settle-by 时刻加 `DaServer:ClockSkew`。调用方在 Actor 外面，不持久化，重试由它自己（第 4 节）。
 
 ### 客户端的调用 id、`ReplyTo<T>`
@@ -1066,7 +1066,7 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 ### 默认：异步、成批地写
 
 处理方法和系统从不等存储：
-- 改了要保存的数据，根上标 `Unsaved`（下面的"只写改过的"）。每个 tick 结束时（没有 tick 的 Actor 类型：每批邮件之后），world 把要写的根合成一批，用一条语句异步地写下（PostgreSQL 上是一条按数组 `unnest` 的语句，今天的 `PostgreSqlActorStore` 已经这样写，ADR-068）：执行过 `[Durable]` 项的根每次都进（第 8 节），只有普通改动的根最多每个检查点间隔（`DaServer:CheckpointInterval`，默认 30 秒，同今天 `SaveEverySeconds` 的默认）进一次。每一行各自按 epoch 比较并交换（下面的激活 epoch）；一个根同时最多一次写在途。
+- 改了要保存的数据，根上标 `Unsaved`（下面的"只写改过的"）。每个 tick 结束时（没有 tick 的 Actor 类型：每批邮件之后），world 把要写的根合成一批，按每 512 行一条语句异步地写下（PostgreSQL 上每条是按数组 `unnest` 的语句，今天的 `PostgreSqlActorStore` 已经这样写，ADR-068）：执行过 `[Durable]` 项的根每次都进（第 8 节），只有普通改动的根最多每个检查点间隔（`DaServer:CheckpointInterval`，默认 30 秒，同今天 `SaveEverySeconds` 的默认）进一次。每一行各自按 epoch 比较并交换（下面的激活 epoch）；一个根同时最多一次写在途。
 - **在途的语句有上限**：每个 world 同时最多 `DaServer:StoreWritesInFlight` 条语句在途（默认 2，所以一个节点最多是 world 数的两倍），一条语句最多 512 行（同今天），多的进下一条。名额满了，这一轮要写的根不取，留着 `Unsaved` 和 `WriteNow` 等下一轮，`WriteNow` 的先取。所以存储慢时内存和连接都有界，代价是留住的输出晚得更多（第 8 节的最坏延迟）；等着的根数是指标 `daserver.store.writes_waiting`。
 - 优雅地离开不丢改动：停用和优雅停止（缩容、滚动升级、关机）先写记录（第 6 节），迁移带着整棵子树走，热重启把还没写的连同 `Unsaved` 随快照带过去（下面）。
 - 只有宕机会丢，最多丢最后一个检查点间隔的普通改动（第 11 节）；Actor 照常执行，只有 `[Durable]` 请求的第一问和回答等包含它们的那次写写成才发出（第 8 节）。
@@ -1106,7 +1106,7 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
     PRIMARY KEY (type_id, key));
   CREATE INDEX actor_records_due ON actor_records (type_id, slot, next_due) WHERE next_due IS NOT NULL;
   ```
-  键用 `bytea` 而不是两个 `bigint`：键是不超过 16 字节的任意非托管结构，一列就装得下每种形状，主键和比较都不用补零的第二列；每个字段按大端写，所以一个 `long` 键就是 `int8send(key)`。重构建一张新表 `actor_records`，旧表不读也不转换（1.0 之前，破坏性）。槽号由节点按键的哈希算好写进来（和放置同一个哈希），SQL 里不算哈希；`DueScan` 按 `(type_id, slot, next_due)` 的索引只扫自己的 `(类型, 槽号)`。
+  键用 `bytea` 而不是两个 `bigint`：键是不超过 16 字节的任意非托管结构，一列就装得下每种形状，主键和比较都不用补零的第二列；每个字段按大端写，所以一个 `long` 键就是 `int8send(key)`。重构建一张新表 `actor_records`，今天的 `daserver_actors` 表不读也不转换（1.0 之前，破坏性）。槽号由节点按键的哈希算好写进来（和放置同一个哈希），SQL 里不算哈希；`DueScan` 按 `(type_id, slot, next_due)` 的索引只扫自己的 `(类型, 槽号)`。
 - **激活先占 epoch，占和读是一条语句**（键还没有记录时插入一行占位；有行而条件不成立时语句不改也不返回任何行，就是没占到）：
   ```sql
   INSERT INTO actor_records AS a (type_id, key, slot, epoch, write_gen, owner, placement, record, next_due)
@@ -1166,6 +1166,7 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 - **占位不写**：根带着 `Loading`、`Saving` 或 `ActivationFailed` 时，`ChangeSystem` 不给它标 `Unsaved`，`CheckpointSystem` 也不写它（`[Without<Loading>, Without<Saving>, Without<ActivationFailed>]`）。否则 `Reload` 把根改回 prefab 默认值的那些写，会被当成改动写进记录，盖掉最后一份好记录（第 5 节）。
 - `CheckpointSystem` 在每个 tick 末（没有 tick 的 Actor 类型：每批邮件之后）把要写的根各 `SaveEntities` 一次，合成这个 world 的一次批量写（上面的"默认"），按 epoch 比较并交换：执行过 `[Durable]` 项的根（根上内部的 tag `WriteNow`，由 `[Durable]` 的操作加上，第 8 节）每次都取，其余带 `Unsaved` 的根离上次写过了检查点间隔才取；在途的语句满了就都等下一轮（上面的"默认"）。**取记录时去掉 `Unsaved` 和 `WriteNow`**，写出错就加回（用同样的字节重试）；写在途期间的改动重新标上它，进下一次写。根上的 `NextDue` 同时写进记录的 `next_due` 列（下面的唤醒）。
 - **一个根的状态序列化不了**（`SaveEntities` 抛出：环、没注册的子类型）：跳过这一行，记日志 `RecordUnwritable`（按次数限流），这一批的其余行照常写。存储里留着它上一份记录；根重新标上 `Unsaved`（不标 `WriteNow`），过一个检查点间隔再试，它留住的输出等到某一次写成才放出。
+- **停用、停止和迁移也是先 `SaveEntities`，再销毁子树**。它抛出时：空闲停用取消，去掉 `Deactivating`，Actor 照常运行（已经离开的 Presence 不回来），根重新标上 `Unsaved`，按上一条再试；强制停用（`root.Deactivate()`、经记录的热重启、迁移退回的停用）和优雅停止放弃这次写，存储里留着上一份记录，记日志 `RecordUnwritable`，照常销毁，留住的输出随之丢弃；迁移中止，Actor 留在源节点上照常运行，根重新标上 `Unsaved`。
 - **`Unsaved` 是根上的 tag，这是有意的**，虽然 EasyEcs 的 `ecs-principles.mdx` 第 5 条说变更检测用变更戳和 `[Changed<T>]`，不用加了又删的标记：
   - 要回答的问题是"这个 Actor 的记录要不要写"，答案属于根：子孙的变更（写、删、销毁）都要汇总到根上，记录也是按根整份写的。`[Changed<T>]` 只能回答"这一行这一趟写过没有"，回答不了"这棵树上次写成之后改过没有"；
   - 它要活过多个 tick：写记录出错时加回，直到某一次写成功，所以不能每 tick 从变更戳重新推出来；
@@ -1179,14 +1180,15 @@ public record struct Due(TimeSpan At, long Seq) : IComponent;
 - 要叫醒 Actor 的子孙带持久化的 `WakeAt(DateTime Utc)`：`[Durable]` 的等待实体是它下一次问或 settle-by 的时刻（第 8 节），提醒是它的 `UtcAt`。
 - 运行时的 `WakeSystem` 按 `[Changed<WakeAt>]`、`[Removed<WakeAt>]`（两个方法；`ChangedAny` 要 2 到 9 个类型，一个类型就是 `Changed`）和 `Persisted` 的清理找出受影响的根，只对这些根沿 `world.Descendants(root)` 重算最小的 `WakeAt`，写进根上持久化的 `NextDue`。只有运行时算它，扩展能力不写。
 - **先算 `NextDue`，再取记录**：`WakeSystem` 在框架组 `Cleanup` 里排在 `CheckpointSystem` 之前，所以写下的 `next_due` 总算上了这个 tick 新建的等待实体。
-- 检查点把 `NextDue` 写进记录的 `next_due` 列（没有就是空）。每个节点的 `DueScan` 每隔 `DaServer:DueScanInterval` 向存储查自己是主人的槽里 `next_due` 已到的键（`IActorStore.DueKeys(slots, until)`，`slots` 是本节点拥有的 `(类型, 槽号)`，按 `(type_id, slot, next_due)` 的索引，一页最多 512 行，满页就从这一页的最后一行之后接着读），给还没激活的发控制邮件 `Wake`，Actor 因此激活：
+- 检查点把 `NextDue` 写进记录的 `next_due` 列（没有就是空）。每个节点的 `DueScan` 每隔 `DaServer:DueScanInterval` 向存储查自己是主人的槽里 `next_due` 已到的键（`IActorStore.DueKeys(slots, until, after)`，`slots` 是本节点拥有的 `(类型, 槽号)`，按 `(type_id, slot, next_due)` 的索引，一页最多 512 行，返回这一页的键和最后一行），给还没激活的发控制邮件 `Wake`，Actor 因此激活。一次扫描开始时定下 `until`（当时的 UTC），每一页都用它；`after` 是上一页的最后一行，第一页传一个排在所有真实行之前的哨兵 `(-2147483648, -1, '-infinity', '\x')`：`type_id` 是 `integer`，取不到更小的值，`slot` 是 `smallint`，真实的槽号在 0 到 4095，所以 `-1` 已经比任何真实的行小（`type_id` 恰好等于最小值时也一样），后两列不会被比到。不满 512 行的一页结束这次扫描。每一页只查游标那一对 `(类型, 槽号)` 和它之后的对：
   ```sql
   SELECT a.type_id, a.slot, a.next_due, a.key
   FROM unnest(:type_ids, :slots) AS s(type_id, slot)
   JOIN actor_records a ON a.type_id = s.type_id AND a.slot = s.slot
-  WHERE a.next_due <= :until
-    AND (a.type_id, a.slot, a.next_due, a.key) > (:type_id, :slot, :next_due, :key)   -- the previous page's last row
-  ORDER BY a.type_id, a.slot, a.next_due, a.key
+  WHERE (s.type_id, s.slot) >= (:type_id, :slot)                                     -- pairs at or after the cursor's pair
+    AND a.next_due <= :until                                                         -- fixed once per scan
+    AND (a.type_id, a.slot, a.next_due, a.key) > (:type_id, :slot, :next_due, :key)   -- after: the previous page's last row,
+  ORDER BY a.type_id, a.slot, a.next_due, a.key                                      -- first page (-2147483648, -1, '-infinity', '\x')
   LIMIT 512
   ```
   注册里有 `[Durable]` 请求或者 `DaServer.Reminders` 时才查。查询不排除激活着的键（存储不知道哪些在内存里）：激活着的 Actor 的 `WakeAt` 在将来或刚过（它的时刻一到 Actor 自己就做那件事并前移它），只在刚过、前移它的那次写还没写成时被查到，`Wake` 到了 world 就丢弃。重问不加 `WriteNow`（第 8 节），前移的 `WakeAt` 随检查点写下，所以一次扫描多出的行不超过最近一个检查点间隔里到时的项。
@@ -2328,6 +2330,8 @@ me.Publish(new Topic(Feeds.Prices), new PriceChanged(item, price));
 ```
 
 - `Topic(long Id)` 是包里内置的 Actor 类型，根要保存，根上是订阅者表 `DynamicBuffer<Subscriber>`（`Subscriber(ActorId Actor, long Epoch)`，`Epoch` 是订阅者那次激活的 epoch）。`e.Subscribe(topic)`、`e.Unsubscribe(topic)` 是发给它的消息，订阅的是 `e.Root` 那个 Actor。`Feeds.Prices` 是用户自己的常量。
+- **`Subscribe` 是 `[Durable]` 请求**（第 8 节）：Topic 的回答由框架留住，直到写下这条订阅的那次写成功；订阅方没收到回答就一直再问。所以 Topic 宕机丢不了订阅：没写下的订阅，回答没发出，订阅方再问，Topic 从记录重新激活后再记一次。订阅方的类型本来就要保存（`Subscription` 在记录里）。`Unsubscribe` 是普通的单向消息，不是 `[Durable]`：它在 `Deactivating` 那一轮发出，`[Durable]` 请求会取消空闲停用（第 8 节）；丢了也无妨，订阅方不在了，下一次投递的"已经不在"通知就删掉它。
+- **承载 Topic 的服务器类型写 `[Hosts<Topic>]`**（第 2 节），Topic 的根要保存，所以这个工程要配存储。
 - **订阅也是订阅方的数据**：订阅方的根上有持久化的 `DynamicBuffer<Subscription>`。包里的系统在 `Activated` 之后重新订阅（幂等），在 `Deactivating` 时退订；所以 Topic 的表里只有激活着的订阅者，投递从不激活 Actor。投递到已经不在的订阅者时，那个节点回一条带着这个 epoch 的控制邮件，Topic 删掉它（它下次激活时自己再订阅）。
 - **删除只认同一个激活**：`Subscribe` 写下或更新订阅者的 epoch；退订和"已经不在"的通知都带着发出它的激活的 epoch，只有和表里的相同才删。所以旧激活迟到的退订或通知，删不掉新激活刚做的订阅。
 - **`e.Publish(topic, msg)`**：发给 Topic；Topic 不解码负载，按订阅者所在的节点分组，每个节点一帧（只序列化一次，池化的帧），那个节点再放进各订阅者的邮箱。`ICluster` 也能发布。
