@@ -901,8 +901,13 @@ grants and later `ALTER`s on them work; (4) with `AddDaServerDashboard`, a third
 CHECK (phase IN ('intent','outcome')), at timestamptz NOT NULL DEFAULT now(), who text NOT NULL, action text NOT NULL,
 target text NOT NULL, reason text, outcome text)` with indexes on `(at)` and `(action_id)`, on which the Dashboard's
 role has `INSERT, SELECT` and `USAGE` on the identity sequence but no `UPDATE` or `DELETE`, so the audit is
-insert-only; `daserver_actions` (action id, idempotency key, state, kept ten minutes after they settle) and
-`daserver_dataprotection` (the Data Protection key ring), which its role may update. The runtime role has no grant on
+insert-only; `daserver_actions (action_id text PRIMARY KEY, idem_key text NOT NULL, type text, state text NOT NULL
+CHECK (state IN ('requested','accepted','running','done','failed','stalled','unknown')), requested_at timestamptz NOT
+NULL DEFAULT now(), claimed_by text, lease_until timestamptz, run_id text)`, with a unique partial index on `(type)
+WHERE state IN ('requested','accepted','running')` (one live action per type: the lock) and an index on `(idem_key,
+requested_at)`, on which the Dashboard's role has `SELECT, INSERT, UPDATE, DELETE` (it expires finished rows older
+than a day); and `daserver_dataprotection` (the Data Protection key ring), which its role may update. Silences are
+written to Alertmanager with the Dashboard's own token (deployment.md, the `{cluster}-alertmanager` Secret). The runtime role has no grant on
 any of the three, and the Dashboard's role none on the actor and membership tables. The Dashboard deletes no audit
 row: a `SECURITY DEFINER` function `daserver_audit_expire(retention interval)`, owned by the owner role and executable
 by the Dashboard's role, removes expired rows when the Dashboard calls it daily with
@@ -1319,7 +1324,10 @@ or rolling upgrade (section 5).
   OTLP with the final flush, and as stop-phase log lines in Loki; a scrape would rarely catch a stopping node.
 - **One identity**: `AddDaServerTelemetry` sets one OpenTelemetry resource, `service.name` = the node group (server
   type) and `service.instance.id` = the node name. Metrics keep a `node` label with the same value, which a direct
-  scrape needs; logs carry no separate node attribute, since Loki indexes `service.instance.id`.
+  scrape needs; logs carry no separate node attribute, since Loki indexes `service.instance.id`. DaServer's own
+  instruments also carry `cluster` and `type` labels next to `node`, so alert rules group by cluster and type and one
+  Prometheus can hold several clusters; runtime metrics get them from the resource (`service.name` → `job`,
+  `service.instance.id` → `instance`, `daserver.cluster` promoted to `daserver_cluster`).
 - **One reading table**: the node's readings (name, unit, kind, reader) are declared once; the instruments, the
   `/admin/stats` answer and the stats line are generated from it. The stats line is off by default when OTLP is set
   (load tests turn it on); it would repeat Prometheus in Loki every 30 s per node.
@@ -1334,7 +1342,7 @@ The admin endpoints are the single source; every client is thin over them:
 | Client | Where | What it shows or does |
 |---|---|---|
 | Aspire commands | Local runs (Aspire has resource commands in run mode only) | Membership, stats, the inspector, unload, `{cluster}-restart` |
-| `DaServer.Dashboard` | Production (ADR-093) | The same endpoints, the node restart and table actions confirmed and audited; the view (members, their states, the slot table with its version) from one node's `/admin/membership`, so it finds an actor's owner without being a member; a type's hot restart goes through the deploy pipeline's webhook (the one rollout loop), not a loop of its own |
+| `DaServer.Dashboard` | Production (ADR-093) | The same endpoints, actions confirmed and audited; the view (members, their states, the slot table with its version) from up to three ready nodes' `/admin/membership`, chosen again each refresh from the newest view, keeping the highest version (the last view stays, with its age, while no node is ready), so it finds an actor's owner without being a member; a node's restart, a type's hot restart and a rollback go through the deploy pipeline's webhook (`DaServer:Dashboard:DeployWebhook`, the one rollout loop), a config table push through the admin endpoints |
 | curl | Anywhere, with the admin token | `Accept: text/plain` answers |
 
 The inspector's read-only endpoints are modelled on flecs's REST API behind its Explorer

@@ -534,7 +534,9 @@ Keep this file current: tick items when done, add items when scope changes.
       by typing and audited (with a reason for type- and cluster-wide actions, preconditions, idempotency keys, one
       action per type); the node's OpenTelemetry resource (`service.name` the group, `service.instance.id` the
       node) and framework logs with `daserver.actor.type`, `daserver.actor.key` and the trace id; the ask-latency histogram (`daserver.ask.duration`, per
-      server type) with its recording rules (`histogram_quantile(0.99, …)` by type and by node) and the rule
+      server type) with its recording rules (`type:daserver_ask_duration_seconds_bucket:rate1m` by cluster, type and `le`,
+      `type:daserver_ask_duration_seconds:p99` and `node:daserver_ask_duration_seconds:p99`); every DaServer metric
+      carrying `cluster` and `type` labels beside `node` and the rule
       `DaServerAskLatencyHigh` carrying `daserver_limit` in `observability/prometheus-rules.yaml`; one reading table
       generating the instruments, `/admin/stats` and the stats line (off when OTLP is set); the samples' AppHosts
       adding the Collector, Prometheus, Loki, Tempo and Grafana when published, Prometheus fed by the Collector and
@@ -542,14 +544,15 @@ Keep this file current: tick items when done, add items when scope changes.
       webhook; retire and exit for a gateway or stateless node, which the platform replaces), the admin key re-read when its
       files change (current, then accepted), membership from up to three ready nodes (highest version, view hashes from
       the pulses), a type's hot restart and a roll back
-      through the deploy pipeline's webhook (`DaServer:Dashboard:RollbackWebhook`; the Dashboard never loops over
+      through the deploy pipeline's webhook (`DaServer:Dashboard:DeployWebhook`; the Dashboard never loops over
       nodes itself), the command shown when none is set; the front end in vanilla TypeScript built by esbuild, assets embedded. Tests:
       `RollbackCallsDeployWebhookAndAudits`, `RollbackWithoutWebhookShowsCommand`, `TypeHotRestartCallsDeployWebhook`, `DashboardShowsIncidentFromFiringAlerts`, `TriageWithoutPrometheusShowsThresholdFreeStatesOnly`,
       `ChartsFromPollRingWithoutPrometheus`, `DashboardLogsComeFromLoki`, `DashboardWithoutLokiSaysSo`,
       `ActorKeyIsNotALokiLabel`, `ActionNeedsTypedTargetAndIsAudited`, `ViewScopeCannotAct` (a node refuses an act request signed for
       view), `DashboardHoldsNoState` (two replicas answer alike: action records and the Data Protection key ring in the
-      store), `ServerTypeScreenFixedAt400Nodes` (the screen's rows and bins do not grow with
-      nodes), `DashboardPollsNodesAtFixedCadence` (ten viewers add no node requests; at most 32 in flight),
+      store; two replicas only with a store), `ServerTypeScreenFixedAt400Nodes` (the screen's rows and bins do not grow with
+      nodes), `DashboardPollsNodesAtFixedCadence` (ten viewers add no node requests; concurrency sized from the node
+      count, failed nodes backed off),
       `DashboardReadsAggregatesFromPrometheusWhenPresent`, `OutliersComputedOnServer`,
       `SlowestActorsMergedFromNodeRankings`, `ActorDetailAsksOwningNodeOnly`, `FindCapsResultsPerGroup`,
       `ResourceSetsServiceInstanceId`, `OneReadingTableFeedsMetricsStatsAndLine`, `StatsLineOffWhenOtlpSet`, `DashboardSurvivesRotation`, `MembershipCrossCheckedAcrossReadyNodes`,
@@ -557,16 +560,32 @@ Keep this file current: tick items when done, add items when scope changes.
       no limit line), `IncidentsGroupAlertsByRuleAndType` (400 per-node alerts are one incident; ranked by severity,
       then nodes; silences honoured), `AlertsUnreadableIsNotAllClear` (Prometheus down or stale shows "Alerts cannot be
       read" and the threshold-free checks), `NodeReadingsCarryAge` (2 s timeout; not answering, isolated and stale are
-      states and stay out of distributions; "N of M answered"), `RefreshPatchesInPlace` (focus, typed input and list
+      states and stay out of distributions; "N of M read fresh"), `RefreshPatchesInPlace` (focus, typed input and list
       order survive a refresh; Find and confirm are not re-rendered), `RestartRefusesStaleIncarnation`,
-      `OneActionPerTypeAtATime`, `RepeatedActionIsIdempotent` (a double press, a retry, a second operator),
-      `RollbackWebhookCarriesExpectedBuild`, `ActionOutlivesBrowser`, `WebhookTimeoutIsUnknownNotRetried`,
+      `OneActionPerTypeAtATime`, `RepeatedActionIsIdempotent` (a double press, a retry, a second operator; the key excludes the operator; a
+      finished action no longer dedupes),
+      `DeployWebhookCarriesExpectedBuild`, `ActionOutlivesBrowser`, `WebhookTimeoutIsUnknownNotRetried`,
       `TypeWideActionNeedsReason`, `AuditWritesIntentAndOutcome` (same action id, durable sink, insert-only role),
       `DashboardHoldsNoSigningSecret` (only `{cluster}-admin` mounted), `ActionsNeedAntiforgeryToken`,
       `DataRenderedAsTextUnderCsp` (a log line holding markup shows as text), `MixedBuildsCountedAndComparedPerBuild`,
       `OutlierRuleTwoSidedWithNoRequests`, `TypeP99FromMergedBuckets`, `LokiQueriesOnePerTypeAndCached`,
       `ConfigPushTwoPhaseAbortsOnTimeout`, `FindNeverActivatesActor` (a key parsed by its registered key type; lookup on
-      Enter or a pause), and the prototype's layout, control and wheel checks against the built pages.
+      Enter or a pause), `AlertRulesGroupByClusterTypeNode` (every rule keeps the three labels; the GC rule renames job
+      and instance), `SilentNodeAlertFires` (a node that stops pushing fires `DaServerNodeSilent` instead of resolving
+      its alerts), `MembersDisagreePerCluster`, `NodeRestartTakesTypeLock` (a node restart waits while its type rolls
+      back), `TypeLockIsUniqueIndexWithLease`, `ExpiredLeaseReconcilesFromPipelineRun`, `ActionFollowsRunToTerminalState`
+      (Requested, Accepted, Running, then Done, Failed or Stalled), `StalledWhenMembershipShowsNoProgress`,
+      `LockHeldUntilTerminalState` (a 400-node roll and a same-image hot restart keep it), `FinishedActionNoLongerDedupes`,
+      `StoreDownSendsNothingAndShowsCommand`, `OutcomeSpillsAndReplaysInOrder`, `StoreDownIsFirstIncident`,
+      `StatusCountsFreshReadings`, `LastMembershipKeptWithAge`, `MembershipTargetsRechosenEachRefresh`,
+      `PollAlwaysRunsWithPrometheus`, `FailedNodesBackedOff`, `SmallBuildComparedWithMajority` (a one-node canary
+      flags), `OutlierAbsoluteFloor`, `RowChangeStillPatchesValues` (values update and the status says rows changed; rows
+      change after 30 s at the latest), `AlertsUnreadableHasHysteresis`, `RecordingRulesNamed`, `LokiPatternsBudgeted`
+      (the incident's type each cadence, the others every five minutes, incremental windows),
+      `PipelineQueuesNeverCancels`, `SameSiteLaxWithAntiforgery`, `ExpiredSessionIs401AndKeepsInputs`,
+      `AssetsSelfHostedUnderCsp`, `StylesViaCssom`, `SilenceNeedsActScopeAndIsAudited`, `SilenceCarriesIncidentMatchers`,
+      `RefusalReenablesConfirm`, `TimesShowZoneOffset`, `AuditRowsMergedByActionId`, `NamesFitAt1024`, and the
+      prototype's layout, control and wheel checks against the built pages.
     - [ ] W8 Native AOT publish of the samples' nodes with 0 warnings (what holds and what to verify:
       drafts/architecture.md section 8); the AOT E2E run. Local runs: nodes as
       `AddDotnetProject` (verified: no `dotnet run` process, OTLP, endpoints, replicas, attach; `AddProject` as the

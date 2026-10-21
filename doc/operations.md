@@ -99,6 +99,10 @@ The repository ships two starting points, checked against a running node:
   disagree, dropped messages, failing handlers, saturated shards, late ticks, GC pauses. Load it with `rule_files:`,
   or wrap the group in a `PrometheusRule` for the Prometheus Operator. A rule that compares a reading against a number carries that
   number as the annotation `daserver_limit` (and its unit as `daserver_unit`): change both together when you tune it.
+  Every rule groups by `cluster`, `type` and `node`, so Alertmanager groups an incident per rule and server type; a
+  label a node does not send yet is empty, so the rules work on one cluster today. `DaServerNodeSilent` fires for a
+  node that stops pushing, whose series would otherwise vanish and resolve its alerts. When several clusters share one
+  Prometheus, start it with `otlp.promote_resource_attributes: [daserver.cluster]`.
 
 Autoscaling is the platform's. The default signal is `daserver_shard_busy_ratio` (the share of time the shards work):
 with KEDA in the cluster (`AddHelmChart` in the AppHost installs it), a `ScaledObject` with a Prometheus trigger on
