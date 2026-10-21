@@ -1607,11 +1607,17 @@ Replaced by ADR-081.
       read that returned it `Active` (a snapshot pushed by a peer never renews it), measured on a clock that counts
       suspend (`CLOCK_BOOTTIME`, `QueryInterruptTime`, `mach_continuous_time`), and every shard checks the published
       deadline itself before each ordered phase and before handing frames to the links, so neither a starved thread
-      pool nor a suspended VM lets stale work through;
+      pool nor a suspended machine lets stale work through; that clock cannot see a VM the hypervisor stopped or a
+      CRIU restore in a time namespace, so every read also returns the store's `now()` and a store clock running more
+      than a second ahead of the lease clock between reads is treated as a stall (stale work is then possible until
+      the next read, at most `TableRefresh`, stopped by epoch fencing for persisted writes); membership uses a small
+      data source of its own, never queued behind the actors' write backlog;
     - **no table, no work**: past its lease a node freezes its worlds (it stops draining its dispatch queues, which
       stay bounded) and keeps its process and connections; a read that shows it `Active` resumes it, `Dead` stops it.
       While frozen it answers probes `Isolated` (a failed probe for a prober whose own lease has held for
-      `IsolationTimeout`); isolated alone (some peer is not), it also fails readiness and exits with 75 after
+      `IsolationTimeout` and that is not itself recovering from a cluster-wide freeze: one more `IsolationTimeout`
+      and its write backlog drained, while its store traffic ramps up from one statement per world, so a recovering
+      store does not cascade into deaths); isolated alone (some peer is not), it also fails readiness and exits with 75 after
       `IsolationExit` (1 min), so a node that reaches its peers but not the store gives its slots up. The cost is stated plainly:
       **a store outage longer than `IsolationTimeout` pauses the whole cluster** until the store is back (the store
       already holds every record, so a stateful cluster could not save through the outage either), and then nobody
@@ -1627,7 +1633,9 @@ Replaced by ADR-081.
       epoch compare as well. Indirect probes keep one-way unreachability from killing anyone: it is reported
       (`daserver_link_unreachable{from,to}`), not guessed at;
     - **the coordinator is a function of the table**, replacing ADR-079's "oldest Up member" by its table form: the
-      `Active` member with the oldest start time (then name) at the version read. Its decisions (slot moves, a hot
+      `Active` member whose `restart_until` has not expired with the oldest start time (then name) at the version
+      read, so a coordinator past its own hot-restart deadline is no longer coordinator and the next one writes it
+      `Dead`. Its decisions (slot moves, a hot
       restart's permit and deadline, declaring an expired restart `Dead`) are versioned writes, so a stale
       coordinator cannot act; a hot restart keeps the row, generation and start time;
     - without a store a node starts only with `DaServer:Membership:SingleNode = true` (one node: local runs,
@@ -1660,7 +1668,7 @@ Replaced by ADR-081.
   - **Replies, presences and retries are data with stated guarantees** (the table "每条路径保证什么" in the draft's §11):
     - Everything one sender sends to one target arrives in send order, answers included (ADR-096). Ordinary progress is
       written in batches; a valuable change calls `root.Commit()`, which holds the item's output until the tick-end
-      write lands, and receivers deduplicate by business keys (`FirstTime` over `RecentKeys`); retries that survive a
+      write lands, and receivers deduplicate by business keys (`FirstTime` over a ring per key type, `RecentKeys<TKey>`); retries that survive a
       crash are intents written with a `WakeAt` and asked again on `Woken` (ADR-097). `Writing`, `WriteNow` and the
       write generation are fields of the framework's `RootState` component, not tags, so `Commit` is no structural
       change.
@@ -1710,9 +1718,11 @@ Replaced by ADR-081.
   - **Writes are asynchronous and batched by default**: changes tag roots `Unsaved`; at the end of every tick (after
     every mail batch for actor types without `[TickRate]`) a world writes the roots due in one statement (ADR-068's
     batch over arrays with `unnest`, kept), each row with its own epoch CAS: roots that called `Commit` every
-    time, other `Unsaved` roots at most every checkpoint interval, deactivations' final writes with them. Graceful exits (deactivation, scale-in, rolling upgrade, hot restart, shutdown) lose nothing
-    but the unwritten changes of a root whose state does not serialize, which keeps its last record;
-    only a crash loses at most the last checkpoint interval. Arming a hot restart writes every `Unsaved` root once
+    time, other `Unsaved` roots at their staggered checkpoint instant, deactivations' final writes with them (ADR-097
+    has the caps, the error handling and the checkpoint order). Graceful exits (deactivation, scale-in, rolling upgrade,
+    hot restart, shutdown) lose nothing but the unwritten changes of a root whose state does not serialize or whose row
+    the store refuses, which keeps its last record, and, for a shutdown, what its stop budget could not drain (logged);
+    a crash loses the larger of the last checkpoint interval and the backlog's drain time. Arming a hot restart writes every `Unsaved` root once
     while the actors keep running, so a crash of the new process after a handover loses only the changes made since.
   - **Persistence is per entity kind, not per component type**: entities spawned from a persistent prefab (`[Persist]`
     on the actor type's `RootPrefab` or on a child prefab, `[Prefab<K>, Persist]`) are saved with all their
@@ -1740,8 +1750,9 @@ Replaced by ADR-081.
   - **The wake is the runtime's alone**: descendants that must wake an unloaded actor carry a persisted `WakeAt`
     (a committed intent, a reminder); the runtime keeps the root's `NextDue` at their minimum and rewrites `next_due` on
     every activation by `Wake`, so a stale column never wakes an actor twice. One runtime system, `ArmSystem`, arms a
-    `Due` from `WakeAt` on load or activation; when it fires the entity is tagged `Woken` for one pass (a package's
-    wake handler for its own entities), so an intent's re-ask and a reminder wake the same way.
+    `Due` from `WakeAt` on load or activation, re-arms it when `WakeAt` is rewritten and removes it when `WakeAt` is
+    removed; when it fires the entity gets `Woken(GiveUpAt)` for one pass, or the tag `Abandoned` past its
+    `GiveUpAt` (a package's wake handler for its own entities), so an intent's re-ask and a reminder wake the same way.
   - **Identity and user singletons are interfaces**: `Account(long Id) : IClaims` with `IClaims : IComponent`, so the
     constraint of `[JoinOnConnect<T>] where T : struct, IClaims` and EasyEcs both see it; no attribute for the
     generator to complete. User singletons are the same: `IConfigTable<TSelf>` (static abstract `Name` and `TryLoad`;
@@ -1916,14 +1927,14 @@ Replaced by ADR-081.
     more than the image (env, probes, volumes, resources, the grace period) is deleted and recreated one at a time
     instead, and the Job says so. It never patches the template (the next `helm upgrade` would put the old image back). That field is mutable on a running
     Pod; the kubelet restarts only that container inside the same pod (same pod, UID and IP; the Pod is not
-    rescheduled), it comes up as the standby and the node hands over to it; the old process exits and the kubelet
-    starts it again, parked.
+    rescheduled), it comes up as the standby and the node hands over to it; the old process parks in place (it never exits, so its
+    container keeps running and the pod keeps its readiness).
   - **A same-image roll** (a config change on an `OnDelete` group) has no image to apply: the Job arms the node with
     its running manifest and has it tell the parked instance over the pipe to exit; the kubelet restarts that
     container in the same pod (`restartPolicy: Always`), re-reading its env and `envFrom`, and the handover follows.
     The kubelet backs off restarts of a container that exited within 10 minutes of its start (10 s, then doubling,
-    whatever the exit code); that only delays the parked instance's return, never the pause, so a second roll of a pod
-    within 10 minutes waits before its handover. Secret rotation needs no roll: nodes
+    whatever the exit code); that only delays a same-image roll's standby (a handed-over instance parks without
+    exiting), never the pause, so a second same-image roll of a pod within 10 minutes waits before its handover. Secret rotation needs no roll: nodes
     reload the mounted key files (the Secret mounted whole, without `items`, read through a polling file provider every 4 s,
     since file events miss the Secret volume's symlink swap; a reload that reads an empty or short key keeps the old
     keys) and report a key fingerprint, which the rotation step waits for
@@ -1937,7 +1948,8 @@ Replaced by ADR-081.
     last ([drafts/deployment.md](drafts/deployment.md) section 5); on Kubernetes the trigger is the parked container's
     image, and the Job writes through Server-Side Apply as its own field manager `daserver-rollout`: that container's
     image, the parked container's memory request (`resize`), and a pause of the group's scale-in while it runs, so an
-    autoscaler never deletes a pod in the middle of its handover (ADR-094). It derives the admin token from the mounted signing secret.
+    autoscaler never deletes a pod in the middle of its handover (ADR-094). It authenticates with the cluster's admin key
+    (the `{cluster}-admin` Secret, ADR-093), never the signing secret.
   - **preStop runs on an image-apply restart too** (the kubelet's container kill runs it whatever the reason; proved
     on kind in W11), so hot-restart groups have no preStop `sleep`: it would only delay the standby.
   - The StatefulSet is named `{group}` (pods `game-0`, …) with `podManagementPolicy: Parallel`. A stateful group
@@ -2037,10 +2049,11 @@ Replaced by ADR-081.
     `builder.Host.UseSystemd().UseWindowsService();` names both explicitly, each a no-op off its platform;
     `AddDaServer` calls neither. The one exit that wants a restart is the isolation exit (a node cut off from the
     store alone, ADR-082), code 75 (`DaServer.ExitCodes.RestartRequested`) on every platform; an instance that handed
-    over (ADR-098) exits 0 and needs none, so every supervisor restarts only a non-zero exit: the systemd unit
+    over (ADR-098) parks in place and never exits, so every supervisor restarts only a non-zero exit (a crash, the
+    isolation exit): the systemd unit
     sets `Restart=on-failure` (`RestartSec=1`), launchd `KeepAlive = {SuccessfulExit = false}` (Compose and Kubernetes
     are the exceptions: Compose's `restart: unless-stopped`, since Docker does not restart `on-failure` containers after
-    a daemon restart or a reboot, and the pod's `restartPolicy: Always`; a handed-over container comes back and parks); on Windows the code is set as `ServiceBase.ExitCode` on the
+    a daemon restart or a reboot, and the pod's `restartPolicy: Always`); on Windows the code is set as `ServiceBase.ExitCode` on the
     `WindowsServiceLifetime` before `StopApplication` (the service manager reads only that), and the documented install sets
     `sc failure <svc> reset= 0 actions= restart/1000` and `sc failureflag <svc> 1`, since the service manager runs
     recovery actions only for a non-zero exit. launchd needs no code: its plist (`ThrottleInterval` 1, so a restart
@@ -2068,7 +2081,7 @@ Replaced by ADR-081.
 - Consequences: W5 adds `Connection`; W7 moves the samples
   to `apphost.cs` with `WithClientConnections(port)` and the build check.
 
-## ADR-088 Hot restart through a snapshot file or a warm standby
+## ADR-088 Hot restart shapes
 Replaced by ADR-098.
 
 ## ADR-089 Gateways rebalance connections by load, not by age
@@ -2189,10 +2202,13 @@ Replaced by ADR-098.
     `JoinMatch` never reaches a `Match` that does not know it yet. Its tests cover a player detaching while queued and
     while being matched.
   - **A saga in `samples/flashsale`**: the order as a process-manager actor driving stock and payment, each step a
-    committed intent (`Reserving`, `Charging`) with a `WakeAt`, asked again on `Woken` until answered (ADR-097): the
-    stock shard's reservations deduplicate `Reserve(order key)` and it commits before answering, the payment provider
-    takes the order key as its idempotency key, a definite refusal is compensated by `Release(order key)` (idempotent,
-    the key kept for the sale's lifetime so a late `Reserve` is refused), and what stays unanswered is reconciled; with
+    committed intent (`Reserving`, `Charging`, `Releasing`) with `WakeAt.Retry<OrderKey>`, asked again on `Woken` until
+    answered (ADR-097): the stock shard's reservations deduplicate `Reserve(order key)` and it commits before
+    answering, the payment provider takes the order key as its idempotency key, and compensation has one trigger, a
+    definite refusal (sold out, payment declined), which commits `Releasing` and asks `Release(order key)` until
+    answered (idempotent, the key kept for the sale's lifetime so a late `Reserve` is refused); a timeout is an unknown
+    outcome, never compensated: the intent stays and is asked again, and what reaches its `GiveUpAt` unanswered is
+    `Abandoned` and reconciled; with
     a pattern page in the sample on why sagas replace ACID transactions across actors (each step is idempotent by its
     key, no lock or two-phase commit spans actors). The buyer's identity comes from the token, not the message: `PlaceOrder`
     carries only the sale. Only one actor type handles it (a client message has one): today's stateless `Gate`
@@ -2221,11 +2237,14 @@ Replaced by ADR-098.
     purchase id the client makes once, which the handler deduplicates (`FirstTime`) before it commits (ADR-097); a
     recharge never goes through the client: the payment provider's webhook sends `Paid` through `ICluster.Ask` to
     `Payment(payment id)`, a persisted actor whose record is the payment's state; the first `Paid` writes the intent
-    `Crediting` with a `WakeAt` and commits, so the webhook's 2xx leaves only once that is written and the provider's
+    `Crediting` with `WakeAt.Retry<PaymentId>` and commits (a retried `Paid` commits too, so its answer also waits for
+    that write), so the webhook's 2xx leaves only once that is written and the provider's
     retries (three days at Stripe) cover a crash before it; `Payment` asks `Player` to `Credit(payment id, amount)` until
-    answered (again on `Woken`), `Player` adds the gems only when `FirstTime(payment id)` and commits before it answers,
-    so a payment is credited exactly once; on the answer `Payment` marks itself `Delivered`; a daily reconciliation
-    against the provider's report lists what is still `Crediting` or missing. A guild resets its daily
+    answered (again on `Woken`, within the `PaymentId` ring's keep), `Player` adds the gems only when
+    `FirstTime(payment id)` (its own `PaymentId` ring, `[DedupKey(Capacity = 32, Keep = "30.00:00:00")]`) and commits
+    before it answers, so a payment is credited once; on the answer `Payment` marks itself `Delivered`; a daily
+    reconciliation against the provider's report lists what is still `Crediting`, what was `Abandoned` and what is
+    missing. The flow is written out as code in the draft's §8. A guild resets its daily
     quests with a `DaServer.Reminders` reminder.
   - **`samples/relay`**, a relay room in Photon Quantum's style ([Quantum intro](https://doc.photonengine.com/quantum/v3/quantum-intro)):
     a `[TickRate(30)]` `Room` actor gathers its players' inputs for each tick and broadcasts one frame per tick to its
@@ -2502,19 +2521,41 @@ Replaced by ADR-098.
     during the second or two of a migration. Clients are covered the same way (a client to an actor, an actor to a
     client). The sender's `Outbox` already appends per destination node in order, so answers simply stay in that
     stream, and a `Replied` goes through the asker's mailbox in arrival order.
-  - **Never refusing an answer is an admission rule, not a lane**: answers and presence notices are bounded by pending
-    asks and presences, so the dispatch queue and the resend window keep that room for them; a full queue or window
-    refuses new messages and asks, never an answer.
+  - **Never refusing an answer is an admission rule, not a lane**: an answer's room is reserved in bytes when its ask
+    is made (the request type's maximum reply size, `DaServer:MaxReplyBytes` or `[MaxReplySize(n)]`), in the asker's
+    dispatch queue and its link window, released on the answer or at the deadline, and a new ask is refused locally
+    past half of either, so one actor's 65,536 asks cannot fill a shard and stall everyone until a timeout; presence
+    notices are bounded by the join rate; a full queue or window refuses new messages and asks, never an answer.
+  - **Admission is per actor**: each mailbox is bounded (`[ActorOptions(MaxMail, MaxMailBytes)]`), so a hot actor
+    refuses only its own mail and never makes its shard's neighbours answer `Busy`; the dispatch queue's bound is the
+    node's memory guard behind it (Akka's bounded mailboxes, Orleans' per-grain queue limit). `MaxPending` past its
+    limit answers an ask `Busy` instead of throwing.
+  - **One pair per gateway**: everything an actor sends to one gateway node (group frames, `TakeOver`, `HandedOff`,
+    direct pushes) is one pair for ordering and interleaving, so a fragmented group frame stays ahead of the fence
+    behind it and an actor's pushes to a client keep their order.
+  - **Full is not broken**: a link never disconnects because its window is full; it stops admitting (`Busy`, one-way
+    mail dropped) and drains. A push dropped at a link or a gateway, or conflated for a slow client (the newest frame
+    per group kept, the client disconnected only after `SlowClientGrace`, 10 s), marks the affected presences
+    `MissedPushes`, and the snapshot system resends their state within `DaServer:ResyncsPerTick` per actor and tick.
   - **Lanes only for what no handler can observe**: heartbeats, membership and view exchange, link acks, `Fence`,
     `Wake` and `HandoffQuery` are written ahead of queued data, so failure detection never waits behind bulk traffic.
   - **`[Latest]` instead of unordered messages**: on a one-way message (`IFromClient`, `IMessageTo<K>`) a newer message
-    of the type from the same sender to the same target replaces an older one still unhandled in the mailbox: the old
-    one is dropped and the new one is appended, so what arrives is always a subsequence of what was sent, in order
-    (taking the old one's slot would put the new one ahead of messages sent before it). Movement input and view
+    of the type from the same sender to the same target replaces an older one still unhandled in the mailbox: in place
+    (its slot and time kept) when the old one is the sender's last item to that target, so 100,000 senders at 30 Hz
+    behind a backlog are each still served instead of being pushed back to the tail forever; otherwise the old one is
+    dropped and the new one appended (taking its slot would put the new one ahead of messages sent before it), so what
+    arrives is always a subsequence of what was sent, in order. Each such message carries a sequence per (sender,
+    target, type), the sender a client's `ClientId`, and an older one is dropped, so a stale message forwarded by a
+    tombstone or still in flight from an old gateway never replaces a newer one. Movement input and view
     direction lose nothing that matters when an actor falls behind, and nothing else is reordered. Requests, pushes and
     topic messages cannot carry it (DAS030).
   - **Links fragment and coalesce**: a message above `DaServer:Links:FragmentSize` (64 KiB) is split and its fragments
     interleave round robin with other pairs' frames, so a 4 MB message delays another pair's answer by one fragment;
+    at most `DaServer:Links:LargeInFlight` (4) large messages are in progress per link and the receiver reassembles
+    within `DaServer:Links:ReassemblyBytes` (64 MiB), admitting a message whole on its first fragment, keeping partial
+    buffers across a reconnect and dropping them when the peer's generation changes; the window is at least
+    `MaxMessageSize` plus the answer reservations; a rate-limited group frame flushes early at
+    `DaServer:GroupFrameMaxBytes` (256 KiB);
     small frames keep being copied into one pooled batch buffer per link or connection and written with one `send` per
     flush (ADR-034, ADR-070's optional beat); a flush that carries a fragment hands it over without copying as a
     gather write, so it stays one system call; receiving parses every frame of a pooled 64 KiB buffer per `recv`; acks
@@ -2532,7 +2573,10 @@ Replaced by ADR-098.
   - Gather writes for every frame: ADR-034 measured that the copy of small frames is not the cost.
 - Consequences: the drafts' §1 guarantee 2 and architecture.md section 3 ("Links") state it; the mmo sample loses its
   `Vanishing` tag and asks Loot from the map's root; roadmap W4 builds the links and `[Latest]` (tests
-  `AnswerThenMessageArriveInSendOrder`, `LatestNeverOvertakesOtherMessages`, `SmallAnswerInterleavesWithFragments`, …),
+  `AnswerThenMessageArriveInSendOrder`, `LatestNeverOvertakesOtherMessages`, `LatestUnderBacklogStillDelivered`,
+  `StaleLatestAfterMigrationDropped`, `HotActorRefusesOnlyItsOwnMail`, `AskReservationRefusesLocally`,
+  `FenceHoldsBehindFragmentedGroupFrame`, `ReassemblyBudgetBounded`, `DroppedPushMarksMissedPushes`,
+  `SlowClientConflatedNotDisconnected`, `SmallAnswerInterleavesWithFragments`, …),
   with BenchmarkDotNet's system calls per message at 10,000 connections and a small answer's latency behind a 4 MB
   message on one link.
 
@@ -2565,29 +2609,53 @@ Replaced by ADR-098.
     the transactional outbox writes state and intent together and lets the consumer deduplicate
     ([outbox](https://microservices.io/patterns/data/transactional-outbox)).
 - Decision:
-  - **Default persistence is the game convention**: change-tracked roots are written in batches at most every
-    `DaServer:CheckpointInterval` (30 s), and always before deactivation (a logout), a graceful stop, a migration and a
-    hot restart's handover; a crash loses at most one interval of ordinary progress, consistently within each actor.
+  - **Default persistence is the game convention**: change-tracked roots are written in batches every
+    `DaServer:CheckpointInterval` (30 s, each root's instant staggered by its key's hash, oldest unsaved first, a quarter
+    of every write round kept for them while commits flow), and always before deactivation (a logout), a migration
+    and a hot restart's handover; a graceful stop writes within its stop budget and logs what it could not. A crash
+    loses the larger of one interval and the time the write backlog takes to drain
+    (`daserver.store.oldest_unsaved_age`), consistently within each actor. Statements are capped at 512 rows and
+    `DaServer:Store:StatementBytes`, a record at `DaServer:Store:MaxRecordBytes`, rows sorted; transient errors retry
+    the same bytes (a timed-out statement cancelled first), and a deterministic error bisects the statement to its one
+    bad row (`RecordUnwritable`), so one root never blocks a world's writes; a world whose backlog passes
+    `DaServer:Store:BacklogPause` stops taking mail until it drains.
   - **`root.Commit()` for valuable changes**: the root joins this tick's batched write (group commit, one statement
     per 512 rows), and everything the item sent is held per root with its write generation, released in order when the
     write lands and dropped on a fence; the held output is a barrier per (root, destination actor), so the one order
-    of ADR-096 holds; handlers never wait (ADR-081); a `Commit` with nothing unwritten writes nothing.
-    `root.IssueClientToken` commits implicitly.
-  - **Deduplication by business keys**: `root.FirstTime(in key)` / `root.Seen(in key)` over `RecentKeys`, a persisted
-    bounded ring on the root (`[ActorOptions(RecentKeys = 64, RecentKeysAge = 7 days)]` by default, the oldest evicted and
-    counted when full); a key recorded in a generation not yet written holds the repeat's answer for that write. Call
-    ids only correlate replies.
-  - **Retries that survive a crash are data**: the asker writes its intent as a persisted component with a `WakeAt`,
-    commits, and asks; when the `WakeAt` fires the runtime removes it and tags the entity `Woken` for one pass, and the
-    user's system asks again and writes a new `WakeAt`; `DueScan` wakes an inactive actor through `next_due` as before.
+    of ADR-096 holds; a held group push joins its group's frame only on release (ordered against other items' group
+    pushes by release, the one exception besides migration, so one write never stalls a group's broadcast); a reply
+    past its deadline is dropped on release; held output is bounded per root and per world
+    (`DaServer:Commit:HeldBytesPerRoot`, `HeldBytesPerWorld`), past which new requests to the root are answered
+    `Busy(RetryAfter ≈ write latency)`; handlers never wait (ADR-081); a `Commit` with nothing unwritten writes nothing,
+    and with an earlier change still unwritten it waits for that write (so a repeat's answer never runs ahead of the
+    first one's write). Only saved roots may call it (DAS031). `root.IssueClientToken` commits implicitly.
+  - **Deduplication by business keys, one ring per kind of key**: `root.FirstTime(in key)` / `root.Seen(in key)`
+    over `RecentKeys<TKey>`, a persisted bounded ring on the root generated per key type, sized on the key type by
+    `[DedupKey(Capacity, Keep)]` (64 and 7 days by default); a key type must be the project's own (DAS032), so loot
+    keys never push a payment id out of a shared ring. A key evicted before its keep (a ring sized too small) goes into
+    a small persisted filter, and a later retry of it is never executed again: its answer becomes `Status.Forgotten`
+    ("cannot tell, reconcile"), counted; a filter false positive refuses a new key the same way, never duplicates one.
+    A key recorded in a generation not yet written holds the repeat's answer for that write. Call ids only correlate
+    replies.
+  - **Retries that survive a crash are data**: the asker writes its intent as a persisted component with
+    `WakeAt.Retry<TKey>(now, after)` (its `GiveUpAt` is now plus the receiver's key type's keep), commits, and asks;
+    when the `WakeAt` fires the runtime removes it and adds `Woken(GiveUpAt)` for one pass, and the user's system asks
+    again and writes `w.Again(next)`; past `GiveUpAt` (less `ClockSkew`) the runtime tags it `Abandoned` instead,
+    counted and logged, for reconciliation, since the receiver may have forgotten the key; the arming system re-arms
+    on a rewritten `WakeAt` and disarms on a removed one; `DueScan` wakes an inactive actor through `next_due` as before.
   - **One rule for moving value between actors**: the debit side commits its intent first, the credit side
-    deduplicates by the intent's key and commits before answering, the debit side completes on the answer; nothing is
-    ever duplicated, and nothing is lost while the asking continues within the receiver's `RecentKeysAge`;
-    reconciliation reports what stays unanswered.
+    deduplicates by the intent's key and commits before answering, the debit side completes on the answer and commits.
+    The guarantee, with its conditions: nothing is duplicated as long as every re-ask comes within the key type's keep
+    (which `WakeAt.Retry<TKey>` enforces) and the receiver's ring holds a keep's worth of that kind of key (capacity ≥
+    the receiver's key rate × keep; a ring too small answers `Forgotten` rather than execute again); nothing is lost
+    while the asking continues; an intent that reaches `GiveUpAt` is `Abandoned` and reconciliation settles it, as does
+    any `Forgotten`. An ordinary item that reads uncommitted state and tells another destination is not held back: it
+    commits too when it must not run ahead of the write.
   - Samples: the mmo's recharge (`Payment` commits `Crediting` before answering the webhook and asks `Player`
-    `Credit(payment id)` until answered; `Player` deduplicates by the payment id; a daily reconciliation), purchases
-    deduplicated by a client-made id, Loot's `Granting` intent with `Regrant`; the flash sale's order saga with
-    `Reserve`/`Release` idempotent by the order key.
+    `Credit(payment id)` until answered; `Player` deduplicates by the payment id; a daily reconciliation; written out
+    as code in the draft's §8), purchases deduplicated by a client-made `PurchaseId`, Loot's `Granting` intent with
+    `Regrant` and `Granted` committing on both outcomes; the flash sale's order saga with `Reserving`, `Charging` and
+    `Releasing` intents, `Reserve`/`Release` idempotent by the order key, compensation only on a definite refusal.
 - Alternatives:
   - Keeping `[Durable]` and trimming it: the delivery protocol still costs the settle-by machinery on every durable ask
     and on the client, and still cannot replace business-key deduplication where an operation is re-sent under a new
@@ -2598,9 +2666,12 @@ Replaced by ADR-098.
   - Pausing the actor until its write lands: a ticking actor stalls with every presence on it (ADR-081).
 - Consequences: the drafts' §8 and §10 and architecture.md sections 2 to 4 state it; the framework has no delivery
   protocol (no durable attribute, reply log, settle-by instant or client call-id mark, and no `TooLate`,
-  `SettleTooShort` or `Expired` status); roadmap W6 builds `Commit`, `RecentKeys` and `Woken` (tests `CommitReplyHeldUntilWrite`, `CommitFencedDropsOutput`,
+  `SettleTooShort` or `Expired` status); roadmap W6 builds `Commit`, `RecentKeys<TKey>` with `[DedupKey]`, `WakeAt.Retry`,
+  `Woken` and `Abandoned` (tests `CommitReplyHeldUntilWrite`, `CommitFencedDropsOutput`,
   `CommitsShareTickStatement`, `CommitBarrierKeepsPairOrder`, `RetrySameKeyAnsweredFromState`,
-  `IntentReaskedAfterCrashViaWakeAt`, `IssueTokenCommitsImplicitly`) with BenchmarkDotNet's commit throughput per world
+  `IntentReaskedAfterCrashViaWakeAt`, `IssueClientTokenCommitsImplicitly`, `RingPerKeyTypeNoCrossEviction`,
+  `YoungEvictedKeyAnswersForgotten`, `IntentAbandonedAtGiveUpAt`, `HeldGroupPushJoinsFrameOnRelease`,
+  `HeldOutputCapAnswersBusy`, `PoisonRowBisectedRestLands`), DAS031 and DAS032 with BenchmarkDotNet's commit throughput per world
   at a store latency of 1 and 5 ms; W7 rewrites the samples.
 
 ## ADR-098 Hot update has one path: a warm standby handover over a local pipe
@@ -2629,7 +2700,9 @@ Replaced by ADR-098.
     socket, `CurrentUserOnly`), passes the handshake (nonce, manifest hash, deadline, process id), takes the restart
     permit, freezes, streams each world on its own thread with an incremental checksum, passes its listening sockets
     (`SCM_RIGHTS` on Unix, `Socket.DuplicateAndClose` on Windows; Kestrel's `ListenHandle` where it takes one), and
-    exits 0 after the standby's ack; on a nack, a broken stream, a timeout or a freeze past its bound it resumes in
+    after the standby's ack releases the lock, destroys its worlds, returns their memory (one compacting full
+    collection) and parks in place as the pair's parked instance, never exiting, so no handover waits on a supervisor
+    and a Kubernetes pod keeps its readiness; on a nack, a broken stream, a timeout or a freeze past its bound it resumes in
     place and nothing is lost. There is no snapshot file, no exit after a failed handover and no SIGTERM-started hot
     restart: SIGTERM is always a graceful stop (ADR-063).
   - **Paths**: in place (the handover carries the worlds), through records (`mode=unload` or a layout the manifest diff
@@ -2640,8 +2713,11 @@ Replaced by ADR-098.
     `node-a` and `node-b` sharing the pod's network and a small memory `emptyDir`; the rollout Job resizes the parked
     container's memory request in place, applies only its image (the kubelet restarts only that container), and for a
     same-image roll has the node tell the parked instance to exit; each container has its own probe port and the idle
-    one reports ready, so the pod's readiness follows the node; a pod that cannot fit the standby's request takes the
-    delete-and-recreate path through records (ADR-085).
+    one reports ready, so the pod's readiness follows the node except for the seconds the parked container restarts
+    (no client Service depends on a hot-restart pod; the PDB counts it as one unavailable); the in-place resize needs
+    Kubernetes 1.33 or later and Linux pods, and a resize that is `Infeasible` or still `Deferred` at its deadline is
+    set back, so that pod, like one that cannot fit the standby, takes the delete-and-recreate path through records
+    (ADR-085).
   - **User behaviour before and after is data**: `Restarting(ExpectedPause)` on every root for the last tick before the
     freeze, `Resumed(Pause, Aborted)` for the first tick after, reacted to by systems; `RestartingNodes` lets gateway
     systems tell clients.
