@@ -186,7 +186,7 @@ groups:
       - alert: DaServerOnceStaleAsking
         # Target (roadmap W6): acknowledgements are sent from written state only, so an AskUntilAnswered can never be
         # answered Stale. One that is means a runtime defect: the ask stops and waits for reconciliation. The stopped
-        # asks are counted from the records' stopped_asks column by the sweeping node every minute, so the alert holds
+        # asks are counted from the ask table's stopped rows by the sweeping node every minute, so the alert holds
         # across idle unloads and restarts until reconciliation clears them. The gauge's points carry `hosting_type` (the
         # server type hosting the actor type, from membership's hosted types) and `actor_type`; its series' resource
         # `type` is the sweeper's own, so the rule maps `hosting_type` onto `type` and silences by type match. A node
@@ -217,43 +217,32 @@ groups:
           summary: "{{ $labels.node }} has actors running out of [Once] numbers"
           description: "An actor has sent about four billion [Once] requests in one record's life. Delete and recreate it (a new record starts a new seed) before the counter runs out."
 
-      - alert: DaServerOnceUnsentFull
-        # Target (roadmap W6): a root's unsent asks (rows outside its record) reached the soft cap (Once:Unsent or
-        # Once:UnsentBytes), so its ordinary mail, its type's systems and its timed items that ask stopped and client
-        # sessions see a window of 0; [Once] requests and answers still run, never refused for unsent asks. Brief
-        # episodes are back-pressure; a root that stays there has a stuck downstream. The gauge is the number of such
-        # roots; a root holding unsent asks never counts as idle, so the gauge does not drop by an unload.
-        expr: max by (cluster, type, node) (last_over_time(daserver_once_unsent_full[2m])) > 0
-        for: 10m
-        labels:
-          severity: warning
-        annotations:
-          summary: "{{ $labels.node }} has {{ $labels.type }} actors stopped on unsent asks"
-          description: "Asks to a downstream are piling up unsent. Check whether the receiving type is up and answering."
-
-      - alert: DaServerOnceUnsentGrowing
-        # Target (roadmap W6): unsent asks live in their own store rows, so nothing refuses them; their growth is
-        # bounded only by the store. The sweeping node counts the rows per actor type every minute and exports
-        # daserver.once.unsent_rows like daserver.once.stopped (points labelled hosting_type, one per server type hosting
-        # the actor type or "none", and actor_type; only while it sweeps and the count succeeded), so the rule maps
-        # hosting_type onto type. Above the default soft cap and still rising for 30 minutes: a stuck downstream, or a
-        # chain whose every answer asks more than once.
+      - alert: DaServerOnceAsksGrowing
+        # Target (roadmap W6): every AskUntilAnswered ask is a row of its own in the store, never in a record, so nothing
+        # refuses an ask for their number; back-pressure refuses only new work at a root's admission (Once:Queued), and the
+        # items that still run (actors' [Once] requests, answers, systems, timers) can keep adding rows. The sweeping node
+        # counts the rows per actor type every minute and exports daserver.once.ask_rows like daserver.once.stopped (points
+        # labelled hosting_type, one per server type hosting the actor type or "none", and actor_type; only while it sweeps
+        # and the count succeeded), so the rule maps hosting_type onto type. The threshold is a count over all roots of the
+        # actor type, not a per-root cap: more than 1,024 rows that have kept rising over the 30-minute deriv window and
+        # then for 30 more minutes (about an hour in all) is a stuck downstream, or a chain whose every answer asks more
+        # than once. With no live host, type reads "none".
         expr: |
           label_replace(
-            max by (cluster, hosting_type, actor_type) (last_over_time(daserver_once_unsent_rows[3m])),
+            max by (cluster, hosting_type, actor_type) (last_over_time(daserver_once_ask_rows[3m])),
             "type", "$1", "hosting_type", "(.*)"
           ) > 1024
           and
           label_replace(
-            max by (cluster, hosting_type, actor_type) (deriv(daserver_once_unsent_rows[30m])),
+            max by (cluster, hosting_type, actor_type) (deriv(daserver_once_ask_rows[30m])),
             "type", "$1", "hosting_type", "(.*)"
           ) > 0
         for: 30m
         labels:
           severity: warning
         annotations:
-          summary: "{{ $labels.type }} has unsent asks growing ({{ $labels.actor_type }})"
-          description: "Asks written past OnceOutstanding keep piling up in the store. Restore the receiving type, or fix a handler that asks more than once per answer."
+          summary: "Asks from {{ $labels.actor_type }} actors are piling up (hosted by {{ $labels.type }})"
+          description: "AskUntilAnswered rows of this actor type keep growing in the store. Restore the receiving type, or fix a handler that asks more than once per answer."
           daserver_limit: "1024"
           daserver_unit: "asks"
 
