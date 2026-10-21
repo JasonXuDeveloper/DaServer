@@ -179,19 +179,22 @@ certificate renewal (the platform's, cert-manager). Sources: [Job](https://kuber
 
 | Item | Target | Why | How | Step |
 |---|---|---|---|---|
-| Signing secret | **One** cluster Secret `{cluster}-signing` with keys `current` and optional `accepted`; every node reads them through `env.valueFrom.secretKeyRef` (`accepted` with `optional: true`) as `DaServer__SigningSecret` / `DaServer__AcceptedSigningSecret` | Today each group has its own copy in the values (four `--set`s in the mmo chart that must agree; one typo splits the cluster: its Hellos are refused). One object is what the rotation steps change | DA: in publish mode, leave the variable out of the generated per-group Secret, add the Secret and the `valueFrom` env in the hook | W12 |
+| Signing secret | **One** cluster Secret `{cluster}-signing` with keys `current` and optional `accepted`; every node mounts it as files at `/run/secrets/daserver` (`items`: `current` → `DaServer__SigningSecret`, `accepted` → `DaServer__AcceptedSigningSecret`, `optional: true` for `accepted`) and reads them through .NET's key-per-file configuration provider (`AddKeyPerFile("/run/secrets/daserver", optional: true)`, `__` becomes `:`). Files, not environment variables: the value stays out of `kubectl describe`, `docker inspect` and process dumps, and Compose mounts its `secrets:` at the same path, so one mechanism serves both | Today each group has its own copy in the values (four `--set`s in the mmo chart that must agree; one typo splits the cluster: its Hellos are refused). One object is what the rotation steps change | DA: in publish mode, leave the variable out of the generated per-group Secret, add the Secret and the volume mount in the hook; DaServer.Hosting: the key-per-file source | W12 |
 | Missing secret | Published nodes refuse to start without a signing secret (`DaServer__RequireSigningSecret=true`, set by DA in publish mode only; run mode and tests stay open) | Today an empty value silently yields an unauthenticated cluster; Helm templates from Aspire cannot use `required` | Runtime option + DA | W12 |
 | Existing Secret | `WithSigningSecret(existingSecretName)`: reference a Secret made by External Secrets, Sealed Secrets or the CSI driver instead of a Helm value | Secret values in Helm values end up in release history and CI logs ([secrets good practices](https://kubernetes.io/docs/concepts/security/secrets-good-practices/)) | DA | W12 |
-| Rotation | Change `accepted`, roll; swap; roll; drop. On Kubernetes "roll" for a stateful `OnDelete` group is the rollout Job's same-image roll (section 3): each node exits after its snapshot and its container restart re-reads `secretKeyRef` env (env is resolved when the container starts) | The existing three-step rotation (operations.md) needs no new mechanism, only the key in the Secret | Docs | W12 |
+| Rotation | Change `accepted`, roll; swap; roll; drop. On Kubernetes "roll" for a stateful `OnDelete` group is the rollout Job's same-image roll (section 3): each node exits after its snapshot and reads the files again when its container restarts (the node reads them at start; the kubelet refreshes mounted Secret files in place) | The existing three-step rotation (operations.md) needs no new mechanism, only the key in the Secret | Docs | W12 |
 | Admin token | The rollout, upgrade-check and Dashboard workloads mount `{cluster}-signing` and derive the token in memory at start (`AdminToken.For`, HMAC of `daserver-admin`); they send only the token. No `{cluster}-admin` Secret and no token in Helm values or release history | The token cannot sign links or tickets; the signing secret never leaves the cluster's Secret | DA (mounts), DaServer (derivation in those modes) | W11 |
 | Database | Two roles: owner (schema Job) and runtime (`SELECT, INSERT, UPDATE` on the table). Connection strings stay in Secrets (Aspire already puts `ConnectionStrings__actors` there); `AddConnectionString` parameters are secret | Least privilege; no DDL from nodes | Samples (two connection strings), DA (`WithActorStore(runtime, owner)`) | W12 |
 | OTLP | In publish mode DA points `OTEL_EXPORTER_OTLP_ENDPOINT` at the OpenTelemetry Collector (a plain parameter), `OTEL_EXPORTER_OTLP_HEADERS` (API keys) a `secret: true` parameter; the samples do not publish the Aspire dashboard | Aspire wires OTLP to its in-cluster dashboard: telemetry would have two destinations; the Collector fans out to Prometheus, Loki and Tempo ([architecture.md section 8](architecture.md#telemetry)) | DA, samples | W12 |
 | Non-secret config | Stays in Aspire's per-group ConfigMap (`envFrom`): cluster name, ports, seeds, flush interval | Correct today. A ConfigMap change restarts nothing; Deployments get a `checksum/config` pod annotation so `helm upgrade` rolls them; `OnDelete` StatefulSets replace no pod on a template change, so their config change is applied by the rollout Job's same-image roll (section 3) | DA (annotation) | W12 |
 
-Compose: Aspire writes secret parameters as `${VAR}` in `docker-compose.yaml` and empty keys in `.env`. Target:
-`${SAMPLE_SECRET:?set the cluster signing secret}` (Compose refuses to start without it), plus
-`DaServer__RequireSigningSecret`. File-based Compose `secrets:` (mounted at `/run/secrets`) need the node to read a
-key-per-file source; worth it only together with reload-on-change rotation (later, not W12).
+Compose: Aspire writes secret parameters as `${VAR}` in `docker-compose.yaml` and empty keys in `.env`. Target: the
+same files as on Kubernetes. A top-level `secrets:` entry per key (`daserver-signing-current` from
+`file: ./secrets/signing-current`, or `environment: SAMPLE_SECRET` for CI) is granted to every node, the schema
+service and the rollout step with `target: /run/secrets/daserver/DaServer__SigningSecret` (and the accepted key the
+same way); the node reads them through the same key-per-file source, and `DaServer__RequireSigningSecret` makes a
+missing file a refused start. `./secrets/` is never committed. Rotation is the same three steps: change the files,
+roll.
 
 ## 5. RBAC and who runs the hot restart
 
@@ -252,7 +255,7 @@ Steps: securityContext, `/tmp` and service account W12 (the snapshot volume W11)
 | Deployment (stateless groups) | One service per group with `deploy.replicas`, rolling |
 | Jobs | One-shot services (`restart: "no"`): `schema` with nodes `depends_on: {schema: {condition: service_completed_successfully}}`; load generators under `profiles: [loadtest]` |
 | Upgrade check, rollout | Steps of `aspire deploy` / `{cluster}-restart`, run on the deploying machine: the check calls a node's dry-run arm, the rollout is the same loop |
-| Secrets | `${VAR:?message}` (required) for the signing secret; `.env` never committed |
+| Secrets | Compose `secrets:` mounted at `/run/secrets/daserver` (section 4), the same files as on Kubernetes; `./secrets/` and `.env` never committed |
 | securityContext | `read_only: true`, `tmpfs: [/tmp]`, `user: "1654"`, `cap_drop: [ALL]`, `security_opt: ["no-new-privileges:true"]` |
 | NetworkPolicy | Two networks: an `internal: true` network for the cluster and HTTP planes, and the default one only for client-facing services and the dashboard |
 | RBAC | None (no API) |
