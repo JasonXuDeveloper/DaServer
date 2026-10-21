@@ -286,16 +286,32 @@ groups:
         # Target (roadmap W6): a node's oldest change not yet written is older than four CheckpointIntervals (30 s by
         # default) for 5 minutes. A full store outage freezes the worlds after IsolationTimeout; a data-only outage (a
         # locked table, a full disk: membership reads still succeed) freezes nothing, so unwritten changes and asks grow
-        # in memory until this is acted on. A type with a longer CheckpointInterval needs its own limit.
+        # in memory until this is acted on. The gauge leaves out roots ruled unwritable (DaServerRecordUnwritable), so
+        # one oversized record never reads as a store that stopped. The limit is four of the default
+        # DaServer:CheckpointInterval: a server type (node group) configured with a longer interval needs its own copy.
         expr: max by (cluster, type, node) (last_over_time(daserver_store_oldest_unsaved_age_seconds[2m])) > 120
         for: 5m
         labels:
           severity: critical
         annotations:
           summary: "{{ $labels.node }} has changes unwritten for {{ $value | humanizeDuration }}"
-          description: "The store does not take this node's writes while membership still answers, so nothing freezes and unwritten changes grow in memory. Check the store's locks, disk and errors (daserver.store.writes_waiting)."
+          description: "The store does not take this node's writes. If membership still answers, nothing freezes and unwritten changes grow in memory; if it does not, the node is frozen too (daserver.membership.frozen). Check the store's locks, disk and errors (daserver.store.writes_waiting)."
           daserver_limit: "120"
           daserver_unit: "s"
+
+      - alert: DaServerRecordUnwritable
+        # Target (roadmap W6): a node holds a root whose record never lands (its state does not serialize, the record
+        # is over MaxRecordBytes, or the store refuses its row every time). The store is fine; the root keeps its last
+        # record and its held output until it is fixed.
+        expr: max by (cluster, type, node) (last_over_time(daserver_store_unwritable_roots[2m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.node }} holds {{ $value }} root(s) whose record cannot be written"
+          description: "A root's record keeps failing to serialize or is refused by the store (logged RecordUnwritable). Its changes since the last record are lost on a crash. Fix the state (size, cycle, unregistered type) and redeploy."
+          daserver_limit: "0"
+          daserver_unit: "roots"
 
       - alert: DaServerDeleteSendAfter
         # Target (roadmap W6): an item sent or asked after root.Delete() returned Ok, which reloads it. In an answer's
