@@ -1096,7 +1096,7 @@ Replaced by ADR-081.
     (or the same version and owner, a retry), and a displaced owner gets `Fence(key, epoch)` at once. A migration's
     arrival claims with an `UPDATE` comparing the epoch it carries, writing `GREATEST(stored, seen)` placement.
   - **Writes:** each world writes the roots due at a tick end in one statement per 512 rows over `unnest` arrays, at
-    most `DaServer:StoreWritesInFlight` statements in flight per world (roots beyond wait for the next round), every
+    most `DaServer:Store:WritesInFlight` statements in flight per world (roots beyond wait for the next round), every
     row a CAS on `(type_id, key)`, the epoch and `write_gen < :write_gen`; the rows not updated come back as stored. A
     root whose `SaveEntitiesWith` throws (a state that does not serialize) is left out of the batch and logged
     (`RecordUnwritable`); the rest of the batch is written. Deactivation, stop and migration also save before they
@@ -1140,7 +1140,7 @@ Replaced by ADR-081.
   - The key as two `bigint` columns: fixed width, but every key pads to 16 bytes and the primary key has three
     columns; `bytea` holds every shape in one.
   - Event sourcing: out of core; it can be built as a pattern on actors.
-- Consequences: one statement per 512 changed actors per world per tick end, at most `StoreWritesInFlight` in flight
+- Consequences: one statement per 512 changed actors per world per tick end, at most `Store:WritesInFlight` in flight
   per world; a stale owner can never overwrite the new one, nor a late statement a newer state; `DueScan` costs one
   index range per owned `(type, slot)` pair. A store
   outage delays deactivations and stops, bounded by the stop budget. Records are opaque bytes for performance;
@@ -1631,7 +1631,7 @@ Replaced by ADR-081.
       than the death's commit even when the death's writer stalled before `COMMIT`; so a cut-off node has frozen
       before any other node activates its keys, whatever the nodes' clocks say, and a persisted key is fenced by the
       epoch compare as well. Indirect probes keep one-way unreachability from killing anyone: it is reported
-      (`daserver_link_unreachable{from,to}`), not guessed at;
+      (`daserver.link.unreachable{from,to}`), not guessed at;
     - **the coordinator is a function of the table**, replacing ADR-079's "oldest Up member" by its table form: the
       `Active` member whose `restart_until` has not expired with the oldest start time (then name) at the version
       read, so a coordinator past its own hot-restart deadline is no longer coordinator and the next one writes it
@@ -1668,8 +1668,9 @@ Replaced by ADR-081.
   - **Replies, presences and retries are data with stated guarantees** (the table "每条路径保证什么" in the draft's §11):
     - Everything one sender sends to one target arrives in send order, answers included (ADR-096). Ordinary progress is
       written in batches; a valuable change calls `root.Commit()`, which holds the item's output until the tick-end
-      write lands; an order is its own actor, and the step that moves value into another actor is keyed (`[DedupKey]`, clients `[Once]`) so the receiver runs it once and keeps the reply in `Unacked` until the sender acknowledges; retries that survive a
-      crash are intents written with a `WakeAt` and asked again on `Woken` (ADR-097). `Writing`, `WriteNow` and the
+      write lands; an order is its own actor, and the step that moves value into another actor is a `[Once]` request (framework
+      sequence numbers, the reply kept in `Unacked` until the cumulative acknowledgement, ADR-099) sent by
+      `AskUntilAnswered`, whose request is the persisted intent the runtime asks again after a crash (ADR-097, ADR-100). `Writing`, `WriteNow` and the
       write generation are fields of the framework's `RootState` component, not tags, so `Commit` is no structural
       change.
     - A lost connection or gateway leaves its presences `Detached` for a grace (30 s, `DetachGrace`) instead of
@@ -1748,11 +1749,12 @@ Replaced by ADR-081.
     check refuses a release whose new fields or record types a rollback would drop, unless forced. Ask states and waiting entities are not in
     the record.
   - **The wake is the runtime's alone**: descendants that must wake an unloaded actor carry a persisted `WakeAt`
-    (a committed intent, a reminder); the runtime keeps the root's `NextDue` at their minimum and rewrites `next_due` on
-    every activation by `Wake`, so a stale column never wakes an actor twice. One runtime system, `ArmSystem`, arms a
-    `Due` from `WakeAt` on load or activation, re-arms it when `WakeAt` is rewritten and removes it when `WakeAt` is
-    removed; when it fires the entity gets the tag `Woken` for one pass (a package's wake handler for its own
-    entities), so an intent's re-ask and a reminder wake the same way.
+    (an `AskUntilAnswered`'s `Asking` child, a reminder); the runtime keeps the root's `NextDue` at their minimum and
+    rewrites `next_due` on every activation by `Wake`, so a stale column never wakes an actor twice. One runtime system,
+    `ArmSystem`, arms a `Due` from `WakeAt` on load or activation, re-arms it when `WakeAt` is rewritten and removes it
+    when `WakeAt` is removed; when it fires, the wake handler registered for the entity's component runs (the runtime's
+    re-ask, a package's reminder delivery), so a re-ask and a reminder wake the same way and no user system reacts to a
+    wake.
   - **Identity and user singletons are interfaces**: `Account(long Id) : IClaims` with `IClaims : IComponent`, so the
     constraint of `[JoinOnConnect<T>] where T : struct, IClaims` and EasyEcs both see it; no attribute for the
     generator to complete. User singletons are the same: `IConfigTable<TSelf>` (static abstract `Name` and `TryLoad`;
@@ -1771,7 +1773,7 @@ Replaced by ADR-081.
   handlers as systems over message entities (an entity per message costs a create and a destroy; the runtime's due
   heap and chain stack give the same order without one); optimistic execution with rollback (state copies cost as
   much as a ~1 µs event, pushes cannot be taken back); spatial parallelism inside an actor (needs game concepts in the
-  framework, ADR-045); deduplicating every request (a store write on every request; ADR-097 deduplicates only the keyed step that moves
+  framework, ADR-045); deduplicating every request (a store write on every request; ADR-099 deduplicates only the `[Once]` step that moves
   value, until its sender acknowledges); `Leave()` at once on a lost connection (a
   reconnect storm rebuilds every presence); every reply durable (a store write of latency on every request);
   persistence per component type (above); a self-made quorum membership (majority-committed views, a lease renewed by
@@ -2136,7 +2138,7 @@ Replaced by ADR-098.
     (reminder, `UtcAt`): the advance lands in the same record as the handler's effects. After an outage a reminder
     fires once and moves to its first future occurrence, not once per missed period.
   - **The wake is the runtime's, not the package's**: `WakeAt`, `NextDue`, `next_due`, `DueKeys` and `DueScan` belong
-    to the runtime because committed intents need them too (ADR-097) and the runtime depends on no capability
+    to the runtime because `AskUntilAnswered` needs them too (ADR-100) and the runtime depends on no capability
     (ADR-045). Only the runtime computes `NextDue`; the package writes `WakeAt` on its reminders and registers a wake
     handler that delivers `Reminded<T>` in the firing item.
   - **`DaServer.Topics`**: a built-in `Topic(long Id)` actor type with a persisted table of subscribers and their
@@ -2175,7 +2177,7 @@ Replaced by ADR-098.
   `ClientGroup`s (gateway fan-out to sockets, not mailboxes); durable topics (a log store is Kafka's job); keeping the
   `browser-wasm` client (above); replication left as a recipe (every game repeats bitmasks and snapshots); fault
   injection only in the framework's own tests.
-- Consequences: roadmap W6a (Reminders; the wake itself is built in W6 for committed intents), W6b (Topics), W7a
+- Consequences: roadmap W6a (Reminders; the wake itself is built in W6 for `AskUntilAnswered`), W6b (Topics), W7a
   (Replication, proven against the mmo's hand-written AOI in a benchmark of its own, ADR-091), W7b (protocol specification and TypeScript client, proven by the
   flash sale from a browser page; G7 points to it), W7c (tools). Each is proven by tests, BenchmarkDotNet numbers and
   allocation tests on its hot path before the next.
@@ -2203,13 +2205,12 @@ Replaced by ADR-098.
     `JoinMatch` never reaches a `Match` that does not know it yet. Its tests cover a player detaching while queued and
     while being matched.
   - **A saga in `samples/flashsale`**: the order as a process-manager actor driving stock and payment, each step a
-    committed intent (`Reserving`, `Charging`, `Releasing`) with a `WakeAt`, asked again on `Woken` until
-    answered (ADR-097): the stock shard's reservations (its own state, as orders are) deduplicate `Reserve(order key)` and it commits before
-    answering, the payment provider takes the order key as its idempotency key, and compensation has one trigger, a
-    definite refusal (sold out, payment declined), which commits `Releasing` and asks `Release(order key)` until
-    answered (idempotent, the key kept for the sale's lifetime so a late `Reserve` is refused); a timeout is an unknown
-    outcome, never compensated: the intent stays and is asked again until an answer comes, and a reconciliation lists
-    orders stuck in one step; with
+    state of the order (`Reserving`, `Charging`, `Releasing`) written with an `AskUntilAnswered` of a `[Once]` request
+    (ADR-100): the stock shard runs each `Reserve` once (ADR-099) and keeps its reservations as business state, the
+    payment provider takes the order key as its idempotency key, and compensation has one trigger, a definite answer
+    (sold out, payment declined), which writes `Releasing` and asks `[Once] Release` until answered (the order key kept
+    for the sale's lifetime so a late `Reserve` is refused); link outcomes never reach the order, so a timeout is never
+    compensated, and a reconciliation lists orders stuck in one step; with
     a pattern page in the sample on why sagas replace ACID transactions across actors (each step is idempotent by its
     key, no lock or two-phase commit spans actors). The buyer's identity comes from the token, not the message: `PlaceOrder`
     carries only the sale. Only one actor type handles it (a client message has one): today's stateless `Gate`
@@ -2235,15 +2236,14 @@ Replaced by ADR-098.
     broadcast p99, allocation per tick), not by rewriting the sample, so the sample stays a pattern a game can copy
     without the package. The player's inventory is slots on the `Player` root: the client's `UseItem` binds to the
     root (a `[JoinOnConnect]` type, ADR-095); spending a precious item and buying with premium currency are `[Once]`
-    client requests, which the SDK resends under the same call id and the player runs once (ADR-097); a
+    client requests, which the SDK resends under the same sequence number and the player runs once (ADR-099); a
     recharge never goes through the client: the payment provider's webhook sends `Paid` through `ICluster.Ask` to
-    `Payment(payment id)`, a persisted actor whose record is the payment's state; the first `Paid` writes the intent
-    `Crediting` with a `WakeAt` and commits (a retried `Paid` commits too, so its answer also waits for
-    that write), so the webhook's 2xx leaves only once that is written and the provider's
-    retries (three days at Stripe) cover a crash before it; `Payment` asks `Player` to `Credit(payment id, amount)` until
-    answered (again on `Woken`); `PaymentId` is a `[DedupKey]`, so `Player` runs each credit once, commits and keeps
-    its reply in `Unacked` until `Payment` has written `Delivered` and the framework acknowledges, so a payment is
-    credited once however long the asking takes; a daily reconciliation against the provider's report lists what has
+    `Payment(payment id)`, a persisted actor whose record is the payment's state; the first `Paid` writes
+    `Crediting` with an `AskUntilAnswered` of `[Once] Credit(amount)` (a retried `Paid` commits too, so its answer also
+    waits for that write), so the webhook's 2xx leaves only once that is written and the provider's retries (three days
+    at Stripe) cover a crash before it; the runtime asks `Player` until answered (ADR-100), `Player` runs the credit once
+    by `Payment`'s sequence number and keeps its reply in `Unacked` until the cumulative acknowledgement (ADR-099), so a
+    payment is credited once however long the asking takes; `Payment` writes `Delivered` when the answer comes; a daily reconciliation against the provider's report lists what has
     been `Crediting` too long and what is missing. The flow is written out as code in the draft's §8. A guild resets its daily
     quests with a `DaServer.Reminders` reminder.
   - **`samples/relay`**, a relay room in Photon Quantum's style ([Quantum intro](https://doc.photonengine.com/quantum/v3/quantum-intro)):
@@ -2481,7 +2481,7 @@ Replaced by ADR-098.
     requests set the world count only at start (`DOTNET_PROCESSOR_COUNT`), and node pods set no CPU limit. A
     hot-restart pod's CPU request is resized only by the rollout's role swap, and its processor count is the chart's
     node size as a literal, not the request; a crash takeover that leaves the requests swapped is reported by the
-    node (`daserver_node_requests_low`) and fixed by a resize-only run of the rollout.
+    node (`daserver.node.requests_low`) and fixed by a resize-only run of the rollout.
 - Alternatives: rendering `replicas` and having the deploy fight the autoscaler (each deploy resets the size, a mass
   leave for a stateful group); `pod-deletion-cost` to pick which gateway goes (needs API access from someone, and
   rebalancing, ADR-089, already keeps gateways even); StatefulSet `maxUnavailable` (beta) or the `Recreate` strategy
@@ -2616,8 +2616,8 @@ Replaced by ADR-098.
     must still hold an answer until the earlier data arrives, so it adds buffering and bookkeeping and gains no latency.
   - Akka's per-actor large-message lane: needs configuration per destination; fragmentation needs none.
   - Gather writes for every frame: ADR-034 measured that the copy of small frames is not the cost.
-- Consequences: the drafts' §1 guarantee 2 and architecture.md section 3 ("Links") state it; the mmo sample loses its
-  `Vanishing` tag and asks Loot from the map's root; roadmap W4 builds the links and `[Latest]` (tests
+- Consequences: the drafts' §1 guarantee 2 and architecture.md section 3 ("Links") state it; the mmo sample needs no tag
+  for the order of an answer and a later message, and asks Loot from the map's root; roadmap W4 builds the links and `[Latest]` (tests
   `AnswerThenMessageArriveInSendOrder`, `LatestNeverOvertakesOtherMessages`, `LatestUnderBacklogStillDelivered`,
   `StaleLatestAfterMigrationDropped`, `HotActorRefusesOnlyItsOwnMail`, `AskReservationRefusesLocally`,
   `FenceHoldsBehindFragmentedGroupFrame`, `ReassemblyBudgetBounded`, `DroppedPushMarksMissedPushes`,
@@ -2625,7 +2625,7 @@ Replaced by ADR-098.
   with BenchmarkDotNet's system calls per message at 10,000 connections and a small answer's latency behind a 4 MB
   message on one link.
 
-## ADR-097 Game persistence: batched checkpoints, `Commit` for valuable changes, deduplication until acknowledged
+## ADR-097 Game persistence: batched checkpoints, `Commit` for valuable changes, orders as actors
 - Context: the drafts had `[Durable]` requests, a framework delivery protocol with persisted waiting entities, a
   settle-by instant on every ask, a settling re-ask, a `ReplyLog` per root with refused entries and byte caps,
   `TooLate`, `SettleTooShort` and `Expired`, and on the client side the call's age, a gateway-given call-id base and a
@@ -2677,66 +2677,37 @@ Replaced by ADR-098.
   - **Orders are their own actors**: a payment is `Payment(payment id)`, a flash-sale order `Order(sale, buyer)`, each a
     record row of its own (the orders table); a repeated webhook or a buyer coming back is answered from that actor's
     state, with no other deduplication.
-  - **The step that moves value into another actor is deduplicated until its sender acknowledges**: a request with a
-    field whose type carries `[DedupKey]` (the project's own unmanaged type of at most 16 bytes: `PaymentId`, the mmo's
-    `Stash`), or a client request marked `[Once]` (its key is the client's `(ClientId, session, call id)`), is looked up
-    in the receiver's persisted `DynamicBuffer<Unacked>` before its handler: a repeat gets the stored reply (held until
-    that entry's write lands) and the handler does not run; otherwise the handler runs once, commits implicitly, and
-    its reply (a fixed-size value of at most 32 bytes, DAS032) is stored with (sender, key). Entries are removed when
-    the sender acknowledges: an actor sender's framework `Acked` mail leaves once the item that handled the reply is
-    written (so the user records completion there, removing the intent), a client's SDK carries "answered up to call
-    n" on every request and heartbeat, and a client session past its resume deadline (stamped on each `[Once]`
-    request by the gateway) drops its entries; a destroyed root acknowledges the keyed asks it still waits on. An
-    acknowledged entry stays `DaServer:MaxAskTimeout` (1 minute, the cap on every request's deadline) plus
-    `ClockSkew` before it goes, and no request runs past its deadline, so no live duplicate arrives after an
-    acknowledgement, whatever the order during a migration. The buffer holds only operations in flight, bounded by
-    `[ActorOptions(Unacked)]` (1,024): full, new keyed requests are answered `Busy` before running, and an entry is
-    never evicted. An entry whose sender never comes back (its activation crashed and nothing asked again) stays, since
-    it is the operation's only record: `daserver.dedup.oldest_age` reports it and an admin endpoint lists and clears it
-    after reconciliation. The SDK resends `[Once]` requests under the same call id until answered or the session's
-    resume window ends; an application never resends one itself. Call ids otherwise only correlate replies.
-  - **Retries that survive a crash are data**: the asker writes its intent as a persisted component with a
-    `WakeAt(now + after)`, commits, and asks; when the `WakeAt` fires the runtime removes it and adds the tag `Woken`
-    for one pass, and the user's system asks again and writes the next `WakeAt`, until an answer comes; the arming
-    system re-arms on a rewritten `WakeAt` and disarms on a removed one; `DueScan` wakes an inactive actor through
-    `next_due` as before. There is no give-up instant: the receiver keeps the entry until acknowledged, so asking
-    longer never duplicates.
-  - **One rule for moving value between actors**: the debit side commits its intent first and asks with the intent's
-    key; the credit side runs the keyed request once, stores its reply and commits before answering; the debit side
-    records completion in the `Replied` that carries the reply, and the framework acknowledges once that is written.
-    The guarantee has one condition: the sender keeps asking with the same key until it is answered. Then the effect
-    happens exactly once (a repeat before the acknowledgement gets the stored reply, an attempt after it is past its
-    deadline and never runs) and nothing is lost while the asking continues; no time or capacity condition, since a
-    full buffer pushes back with `Busy` and never forgets. An ordinary item that reads uncommitted state and tells
-    another destination is not held back: it commits too when it must not run ahead of the write.
-  - Samples: the mmo's recharge (`Payment` commits `Crediting` before answering the webhook and asks `Player`
-    `Credit(payment id)` until answered; `Player` runs each credit once by the `PaymentId` key; a daily
-    reconciliation; written out as code in the draft's §8), purchases as `[Once]` client requests, Loot's `Granting` intent with
-    `Regrant` and `Granted` committing on both outcomes; the flash sale's order saga with `Reserving`, `Charging` and
-    `Releasing` intents, `Reserve`/`Release` idempotent by the order key, compensation only on a definite refusal.
+  - **The step that moves value into another actor runs exactly once**: a `[Once]` request with framework-assigned
+    sequence numbers, cumulative acknowledgements, windows and probes, as TCP does it (ADR-099), sent by
+    `AskUntilAnswered`, whose request is the persisted intent the runtime keeps asking (ADR-100).
+  - **One rule for moving value between actors**: the debit side writes its own state and `AskUntilAnswered`s a
+    `[Once]` request (committed together); the credit side runs it once, stores its reply and commits before
+    answering; the debit side records completion in the `Replied`, which comes once with a value or the receiver's
+    definite refusal. The effect happens exactly once and is never lost, with no condition on time or capacity: the
+    numbers never repeat, a repeat before the acknowledgement gets the stored reply, an older attempt after it is
+    refused as stale, a full window makes the sender wait instead of forgetting anything. An ordinary item that reads
+    uncommitted state and tells another destination is not held back: it commits too when it must not run ahead of
+    the write.
+  - Samples: the mmo's recharge (`Payment` commits `Crediting` with its `AskUntilAnswered` of `[Once] Credit` before
+    answering the webhook; `Player` runs each credit once; a daily reconciliation; written out as code in the draft's
+    §8), purchases as `[Once]` client requests, Loot's `Granting` and `AskUntilAnswered` of `[Once] GrantItem`, with
+    `Granted` called only on a value or a definite refusal; the flash sale's order saga, each step a state of the order
+    and an `AskUntilAnswered` (`Reserve`, `Charge`, `Release` on a definite refusal).
 - Alternatives:
   - Keeping `[Durable]` and trimming it: the delivery protocol still costs the settle-by machinery on every durable ask
     and on the client, and still cannot replace keyed deduplication where an operation is asked again under a new
     call id (a provider's retry, an asker's next activation after a crash).
   - Framework exactly-once by call id for every request: a stored reply and a write per request; no actor framework
     above does it.
-  - A ring of recent keys per kind of key in the record, kept for an age: either it is sized for the busiest actor
-    (every write rewrites it) or a young key is evicted and a late retry runs twice; a filter of evicted keys trades
-    that for refusing new keys by false positives. Bounding by acknowledgement keeps only operations in flight.
-  - A table of keys beside the records, expired by age: exact, but a key missing from memory needs a store lookup
-    before the handler, and an age still bounds how long a sender may retry.
   - Writing every reply durably: a store write of latency on every request.
   - Pausing the actor until its write lands: a ticking actor stalls with every presence on it (ADR-081).
 - Consequences: the drafts' §8 and §10 and architecture.md sections 2 to 4 state it; the framework has no delivery
   protocol (no durable attribute, settle-by instant or settling re-ask, and no `TooLate`, `SettleTooShort` or
-  `Expired` status); roadmap W6 builds `Commit`, `[DedupKey]` and `[Once]` with `Unacked` and its acknowledgements,
-  `WakeAt` and `Woken` (tests `CommitReplyHeldUntilWrite`, `CommitFencedDropsOutput`,
-  `CommitsShareTickStatement`, `CommitBarrierKeepsPairOrder`, `DuplicateGetsStoredReply`, `AckPrunesEntry`,
-  `ClientLowWaterPrunes`, `ExpiredRequestNeverExecuted`, `AckAfterLastDeadline`, `DestroyedSenderAcks`,
-  `BufferFullIsBusy`, `ResumeWindowEndDropsClientEntries`, `IntentReaskedAfterCrashViaWakeAt`,
-  `IssueClientTokenCommitsImplicitly`, `HeldGroupPushJoinsFrameOnRelease`, `HeldOutputCapAnswersBusy`,
-  `PoisonRowBisectedRestLands`), DAS031 and DAS032 with BenchmarkDotNet's commit throughput per world at a store
-  latency of 1 and 5 ms and credit throughput with `Unacked`; W7 rewrites the samples.
+  `Expired` status); roadmap W6 builds `Commit` (tests `CommitReplyHeldUntilWrite`, `CommitFencedDropsOutput`,
+  `CommitsShareTickStatement`, `CommitBarrierKeepsPairOrder`, `IssueClientTokenCommitsImplicitly`,
+  `HeldGroupPushJoinsFrameOnRelease`, `HeldOutputCapAnswersBusy`, `PoisonRowBisectedRestLands`,
+  `TimedOutStatementHalved`) with BenchmarkDotNet's commit throughput per world at a store latency of 1 and 5 ms;
+  `[Once]` and `AskUntilAnswered` are ADR-099's and ADR-100's; W7 rewrites the samples.
 
 ## ADR-098 Hot update has one path: a warm standby handover over a local pipe
 - Context: the drafts had two hot-restart shapes: a snapshot file written before the process exits and read by its
@@ -2804,3 +2775,115 @@ Replaced by ADR-098.
   `mode=unload` and `dryRun=true`, and the exit code 75 belongs to the isolation exit alone; roadmap W6 builds the handover with its platform triggers, W11 the
   two-container pod, the Job's role swap of the requests and the autoscalers on it (`VpaOffOnHotRestartPods`, `ParkedInstanceExportsNoBusyRatio`), W8 checks the socket passing under AOT, and BenchmarkDotNet's `HandoverPause`
   measures the pause at 100,000 and 1,000,000 actors under JIT and AOT.
+
+## ADR-099 `[Once]`: exactly-once requests the way TCP does it
+- Context: the value-moving step of ADR-097 must run exactly once. Deduplicating it by a user-declared key in an
+  acknowledged buffer has holes, found in the ninth design audit: a key the user chooses
+  can repeat (a map's drop numbers after a crash), so a new operation was swallowed as an old one; a one-way
+  acknowledgement could be lost (a full window or mailbox, a receiver crash before its next write) and nobody sent it
+  again, so entries stayed forever and 1,024 of them made the receiver `Busy` for good; a sender that cannot commit
+  (`ICluster`, a stateless or unsaved actor) could never acknowledge; acknowledged entries had to stay two minutes, so
+  a busy receiver held about eight keyed operations per second; a sender that forgot to commit before asking could
+  create value; and a key marker beside `[Once]` is two concepts for one mechanism. TCP solved the same problem decades
+  ago (RFC 9293, [rfc-editor.org/rfc/rfc9293](https://www.rfc-editor.org/rfc/rfc9293)): the sender numbers what it
+  sends, the receiver checks numbers against what it has accepted, acknowledgements are cumulative and ride on later
+  traffic so a lost one costs nothing, a receive window bounds what each sender may have outstanding, keep-alive and
+  zero-window probes cover silence, and TIME-WAIT keeps a closed connection's state just long enough that no old
+  segment is mistaken for a new one.
+- Decision:
+  - **One marker, `[Once]`, on the request type**; the user writes no key. It is allowed on `IFromClient<R>` and
+    `IRequestTo<K, R>`; only a client session or an actor whose root is saved may send one (DAS031), and a server
+    `[Once]` request is sent only by `AskUntilAnswered` (ADR-100, DAS032).
+  - **Sequence numbers per sender, assigned by the framework**: an actor's counter is `RootState.OnceNext`, taken by
+    `AskUntilAnswered` and written with that item (the ask implies `Commit`), so a crash, a migration or a handover
+    continues it and a number is never reused; a client's is its call id within a session (below). Per sender rather
+    than per pair: the sender keeps one counter and one "lowest unsettled per receiver", and a receiver seeing gaps
+    (numbers sent elsewhere) changes nothing, since its checks are "at or below the acknowledged mark" and "in my
+    entries".
+  - **The receiver**: per sender a mark `n` in the persisted `OnceSenders` buffer, and `Unacked` entries (sender,
+    sequence, the stored reply of at most 32 bytes, the write generation). A request at or below `n` is stale and
+    refused (`Stale`, counted); one in `Unacked` gets its stored reply, after that entry's write; otherwise the handler
+    runs once, commits implicitly, and its reply is stored. Every answer is definite (a value, `Stale`, `WindowFull`,
+    `Faulted` after the dedup check); only link outcomes are unknown. The handler must answer at once (no
+    `ReplyTo<T>`, DAS032), so the stored reply and the change land in one write.
+  - **Cumulative acknowledgement**: every mail from a sender to a receiver carries `a`, the lowest sequence the sender
+    still awaits from that receiver (else its next number); the receiver drops entries below `a` and moves `n` to
+    `a − 1`, with no commit (a crash brings older entries back and the next acknowledgement clears them). After the
+    item that handled the answer is written, the framework sends one more acknowledgement (TCP's delayed ACK); losing
+    any of them is harmless.
+  - **Windows instead of refusals**: each answer advertises how many unacknowledged entries this sender may have
+    (`[ActorOptions(OnceWindow)]`, 16; the root's total `[ActorOptions(Unacked)]`, 1,024); the sender holds further
+    asks locally (they are persisted already), retries the oldest when the window is zero (TCP's zero-window probe,
+    answered `WindowFull` with the current window), and only `AskUntilAnswered` beyond the sender's own
+    `[ActorOptions(OnceOutstanding)]` (1,024) returns `Busy`. One sender cannot fill a receiver.
+  - **Probes**: an entry unacknowledged for `DaServer:Once:ProbeAfter` (30 s) with a quiet sender makes the receiver
+    send `AckQuery` (internal lane). An actor sender is activated to answer from its record (a missing record, a
+    destroyed root, answers "all settled"); a client session's gateway answers from its session table (an ended
+    session answers "all settled"). So no entry outlives the operation it belongs to.
+  - **TIME-WAIT**: a sender's row in `OnceSenders` stays `DaServer:MaxAskTimeout` plus `ClockSkew` after its last
+    entry goes, since no request runs past its deadline (capped by `MaxAskTimeout`), so no older attempt can arrive
+    after the row is gone. Only the row stays, not the replies.
+  - **Client sessions**: a session is `(ClientId, session nonce)`, the nonce chosen by the SDK at start and kept across
+    reconnects (an app restart is a new session); its `[Once]` sequence is its call id. The gateway keeps the session
+    for `DaServer:Clients:ResumeWindow` (2 minutes after its last activity), stamps the session's end on every request,
+    records the SDK's cumulative acknowledgement from every request and heartbeat, refuses a call id below it (a stale
+    copy or a replay), forwards acknowledgements to the receivers that hold entries for the session and answers their
+    probes; after the window it forgets the session, refuses its nonce, and receivers drop its entries and row one
+    `MaxAskTimeout` plus `ClockSkew` after the stamped end. The SDK resends `[Once]` requests under the same number
+    until answered or the session ends; the application never resends one.
+  - `wire.manifest` marks every `[Once]` request type (`once`), since adding or removing it changes semantics across
+    a rolling upgrade.
+- Alternatives:
+  - A user-declared key on the request (`[DedupKey]` on a field's type): keys can repeat (a crash reissues numbers), a
+    request becomes deduplicated by accident when it happens to carry the type, and it is a second concept beside
+    `[Once]`.
+  - Retaining acknowledged entries for a time (two minutes past the acknowledgement): caps a receiver's throughput at
+    its capacity divided by the retention; TCP keeps only the per-connection state in TIME-WAIT, not the data.
+  - A filter of evicted keys (a Bloom filter): refuses genuinely new operations by false positives.
+  - A dedup table beside the records, expired by age: a store lookup before the handler on a cache miss, and an age
+    still bounds how long a sender may retry.
+  - Acknowledging acknowledgements (a sender's persisted list of acknowledgements owed, re-sent until confirmed): a
+    second protocol on top of the first; cumulative acknowledgements on later traffic plus probes cover a lost one.
+  - Per-pair sequences: a counter and a persisted mark per (sender, receiver) on the sender too; per-sender numbers
+    need one counter and lose nothing.
+- Consequences: the draft's §8 and §11, architecture.md sections 2 and 3 state it; roadmap W6 builds it (tests
+  `OnceRunsOnceSameSequence`, `StaleSequenceRefused`, `CumulativeAckPrunes`, `LostAckHarmless`,
+  `ProbeClearsQuietSender`, `ProbeDestroyedSenderAllSettled`, `WindowHoldsAtSender`, `ZeroWindowProbeOpens`,
+  `TimeWaitRowExpires`, `OnceSequenceSurvivesCrashAndHandover`, `ClientSessionAckPrunes`, `GatewayRefusesStaleCallId`,
+  `ResumeWindowEndDropsClientEntries`, `OnceFromClusterIsDAS031`, `OnceWithReplyToIsDAS032`, `OnceFlaggedInManifest`)
+  and BenchmarkDotNet's credit throughput per receiver with windows of 16 at a store latency of 1 and 5 ms.
+
+## ADR-100 `AskUntilAnswered`: the request is the intent
+- Context: asking until answered across crashes, written by hand, is the same lines in every flow that moves value
+  (the recharge, the loot grant, each step of a saga): an intent component with a default on the prefab, a `WakeAt`,
+  a system on a wake tag that asks again if nothing is pending, and a `Replied` handler that must tell a value from an
+  unknown outcome. Getting that last part wrong duplicates value: a handler that compensates on a re-ask's
+  `NotExecuted` releases a drop an earlier attempt may already have granted (the ninth design audit found it in the
+  mmo sample). Users should not write the same lines twice (principle 6), and the rule "compensate only on a
+  value" should not depend on each handler.
+- Decision:
+  - `e.AskUntilAnswered(to, in request[, state])` on a saved entity: the framework spawns a saved framework child
+    `Asking` (target, sequence number from `OnceNext`, request bytes, state, `WakeAt`) and the item commits implicitly,
+    so the ask leaves only once the sender's state and the intent are written together (a transactional outbox:
+    [microservices.io](https://microservices.io/patterns/data/transactional-outbox)).
+  - Only `[Once]` requests, and `[Once]` server requests only this way (DAS032): a request that is not deduplicated
+    would run again on every retry; a deduplicated one sent by a plain `Ask` has nobody to keep asking.
+  - The runtime retries link outcomes (`TimedOut`, `Busy`, `NoOwner`, `Unavailable`, `ConnectionLost`) with the same
+    number, after `RetryAfter` or `DaServer:Once:Retry` (5 s, doubling to 1 minute, jittered), and after a crash or a
+    deactivation through the `Asking`'s `WakeAt` and `DueScan`; a zero window is waited out (ADR-099).
+  - The answer is an ordinary `Replied<TReq[, TState]>`, delivered once, with a value or the receiver's definite
+    refusal (`Faulted`, `NotHandled`, after its sequence check); the item that handles it commits implicitly, destroys
+    the `Asking`, and the framework acknowledges once it is written. Link outcomes never reach the user, so a
+    handler cannot mistake a re-ask's `NotExecuted` for "never ran".
+  - `AskUntilAnswered` returns `Status`: `Busy` when the sender already holds `OnceOutstanding` asks.
+  - `WakeAt` stays as the runtime's one durable-time mechanism, written by `AskUntilAnswered` and
+    `DaServer.Reminders` only; there is no wake tag and no user system reacts to a wake.
+- Alternatives:
+  - Leaving the intent loop to users (component, `WakeAt`, `Woken` system, `IsPending` guard): the same lines in every
+    sample, and every `Replied` handler must classify statuses correctly.
+  - `AskUntilAnswered` for any request: retrying a request that is not deduplicated runs it again.
+  - Delivering link outcomes to the user as well: the classification mistake the round found.
+- Consequences: the draft's §8, §10, §11 and §12 (the samples have no re-ask systems) and
+  architecture.md section 2 state it; roadmap W6 builds it (tests `AskUntilAnsweredCommitsIntent`,
+  `LinkOutcomeNeverReachesReplied`, `ReaskAfterCrashSameSequence`, `RefusalDeliveredOnce`,
+  `AskingDestroyedOnAnswer`, `OnceOutstandingReturnsBusy`, `PlainAskOfOnceIsDAS032`).
