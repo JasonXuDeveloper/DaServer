@@ -1578,38 +1578,45 @@ Replaced by ADR-081.
     to the target, the gateway a server type hosting the built-in `Connection` actor type, ordered connection stamps,
     the SDK re-joining. What a client message may activate, which key fields come from its claims, client `[Durable]`
     requests and where a message without `[To]` lands are ADR-095.
-  - **Distribution**: activation epochs claimed with the placement version and fenced writes, a membership lease,
-    placeholder roots, records of persistent entities through `Descendants` and `ComponentSet`, migration bytes checked by layout
-    hashes under a new epoch, remaining time across processes. Each piece closes a hole a crash, a pause or a
-    partition would open:
-    - the lease is renewed only by a coordinator ack that echoes the node's own heartbeat counter, timed from the
-      send, and checked by every world before its ordered phase, before the store write and before handing frames
-      to the links (a node that hears nobody freezes even when the others still hear it); an ack renews only when its
-      sender is on the majority side (it heard more than half of max(`DaServer:FormationSize`, the last committed view)
-      within `SuspectAfter`, `NodeRestarting` members counted and unheard), and the coordinator's own lease needs acks from a
-      majority, so in a symmetric partition the minority freezes before the majority re-places its actors; the next
-      member in coordinator order acks once the coordinator is `Suspect`, so a coordinator crash expires nobody's
-      lease; peers re-place after max(`DeadAfter`, `SuspectAfter` + lease). `FormationSize` (default 3) is the
-      configured size, so a three-member cluster down to two still needs both, and a split of the survivors freezes
-      both. Only a cluster configured with `FormationSize = 2` lets a lone member keep renewing; it relies on the epoch
-      fence alone, so production runs at least three members of a stateful server type; `FormationSize = 1` is a
-      single-node cluster, and `DaServer.Aspire` sets it from all node groups' declared replicas (the quorum and `FormationSize` count the same
-      members: every member of the view, gateways included);
-    - **every view change, additions included, commits only with a majority of the last committed view** (the
-      coordinator proposes it; a joiner neither acks nor counts as heard, hosts no slots and serves no clients until
-      the change commits, as Akka's `WeaklyUp` and Raft's configuration changes), and the lease's denominator is that
-      last committed view, so a 5-member cluster split 2|3 renews on the 3 side only: neither side can shrink the
-      cluster to itself, and a minority cannot admit joiners until it is a majority. A joiner with a committed
-      member's name and a newer node generation replaces that seat and acks for it, so a restarted member of a
-      2-member view is readmitted; with `FormationSize = 2` a lone survivor commits the removal of its dead peer
-      under the same exemption as its lease;
-    - **the coordinator is a function of the view**, replacing ADR-079's "oldest Up member": every member carries an
-      admission number, assigned by the coordinator at admission and again at readmission after a hot restart (node
-      generations stay), and the coordinator is the member Up, not `NodeRestarting`, with the smallest number. Every
-      node computes the same coordinator from the same view, nothing is elected, and a readmitted former coordinator
-      is last in line, so a rolling restart moves the role once;
+  - **Distribution**: activation epochs claimed with the placement version and fenced writes, membership as a table in
+    the store, placeholder roots, records of persistent entities through `Descendants` and `ComponentSet`, migration
+    bytes checked by layout hashes under a new epoch, remaining time across processes. Each piece closes a hole a
+    crash, a pause or a partition would open:
+    - **membership is Orleans' protocol** ([cluster management](https://learn.microsoft.com/dotnet/orleans/implementation/cluster-management)),
+      behind the feature point `IMembershipTable` with a PostgreSQL implementation and an in-memory one: one row per
+      node incarnation (`daserver_members`: name, generation, address, server type, status `Joining`/`Active`/
+      `ShuttingDown`/`Dead`, suspicions, `restart_until`, start time, `i_am_alive`) and one version row per cluster
+      (`daserver_membership`: version, slot table, per-type placement versions). Every change is one transaction that
+      compares and swaps the version, so changes are totally ordered and every node that read version v derives the
+      same members, coordinator and slot table. The store is the arbiter, so there is no quorum, ballot or configured
+      cluster size, and any number of members may fail;
+    - a node joins by inserting itself `Joining` with generation max(Unix ms, recorded max + 1), marking older
+      generations of its name `Dead` in the same transaction, checking two-way connectivity to every `Active` member
+      (skipping rows whose `i_am_alive` is stale) and writing itself `Active`; it hosts and serves nothing before. No
+      seeds: nodes find each other in the table;
+    - failure detection: members probe up to `ProbedNodes` (10) successors on a ring every `ProbeInterval` (1 s);
+      after `MissedProbes` (3) and a failed indirect probe they write a suspicion, and `VotesForDeath` (2, or every
+      other `Active` member when fewer remain) suspicions within `SuspicionExpiry` (3 min) make the writer declare the
+      target `Dead`. A writer must be `Active` at the version it writes, so in a partition the first death written
+      wins and the other side's compares fail: a node that reads itself `Dead` freezes, fences and exits, and a
+      two-node split keeps exactly one node. Nodes read the table every `TableRefresh` (5 s) and push snapshots after
+      their writes; frames carry the table version;
+    - a node that neither reads the table nor exchanges a probe with any `Active` member for `IsolationTimeout`
+      (20 s) freezes and exits; a store outage alone stops nobody (nobody can be declared dead or join until it is
+      back). The coordinator writes the slot table that re-places a dead member's slots no sooner than one
+      `TableRefresh` after the death, so a dead node that reaches the store has stopped by then, and one that does
+      not is fenced by the epoch compare;
+    - **the coordinator is a function of the table**, replacing ADR-079's "oldest Up member" by its table form: the
+      `Active` member with the oldest start time (then name) at the version read. Its decisions (slot moves, a hot
+      restart's permit and deadline, declaring an expired restart `Dead`) are versioned writes, so a stale
+      coordinator cannot act; a hot restart keeps the row, generation and start time;
+    - without a store the in-memory table serves one node (local runs, `AllInOne`) and `TestCluster` (one shared
+      instance); a cluster of more than one process needs the membership store (the actor store's PostgreSQL or
+      `WithMembershipStore(db)`), refuses to start without it, and `DaServer.Aspire` adds PostgreSQL when an AppHost
+      has more than one node and no store;
     - taking a key from another owner needs a strictly newer placement version (the coordinator bumps a type's version on every
-      placement change, a membership change or a slot-table move (ADR-079); frames carry the highest seen; a
+      placement change, a membership change or a slot-table move (ADR-079): the table version of that change, so
+      every node derives the same versions; frames carry the highest seen; a
       migration's arrival writes it too), and a claim that displaces a live owner sends it
       `Fence(key, epoch)`, so two activations never overlap until the loser's next write; claims are idempotent, so
       a retried statement or a restart after a migration's arrival does not fence the claimant itself;
@@ -1626,8 +1633,8 @@ Replaced by ADR-081.
       epoch and generation counts as written; every claim takes its epoch from a sequence (an insert, a takeover and the
       no-insert claim alike), so epochs only rise across the store and a key whose never-written row was swept never
       reuses an epoch and a late statement or an old `Fence` cannot match it;
-    - generations are max(last seen + 1, Unix ms), and only the lowest-ordinal seed forms a cluster, so a cold restart
-      of the whole cluster never reuses a generation and parallel seeds never form two clusters.
+    - generations are max(Unix ms, recorded max + 1), so a cold restart of the whole cluster never reuses a
+      generation, and the first writer creates the version row, so parallel starts never form two clusters.
   - **Replies, presences and retries are data with stated guarantees** (the table "每条路径保证什么" in the draft's §11):
     - `[Durable]` on an `IRequestTo` makes both ends the framework's, and actors keep running. The asker's waiting
       entity (request, state, call id, settle-by instant) is in its record before the first attempt leaves, and it is
@@ -1752,8 +1759,13 @@ Replaced by ADR-081.
   promised the same thing twice); `Leave()` at once on a lost connection (a
   reconnect storm rebuilds every presence); every reply durable (a store write of latency on every request);
   persistence per component type (above); `Expired` straight at the deadline (a duplicate still in a resend window
-  could run after the asker gave up); a lease renewed by any ack (in a symmetric partition both sides keep
-  renewing); a target claiming a moved key at once and letting the store decide (a claim races a source still
+  could run after the asker gave up); a self-made quorum membership (majority-committed views, a lease renewed by
+  majority acks and a configured formation size: it freezes a whole cluster when fewer than half its configured
+  members remain, cannot tell a two-member split from a crash, and needs seeds and a formation rule, while the store
+  every stateful cluster already depends on can arbitrate by itself); a lease defined by the age of the last table
+  read (a store outage would freeze every node, where Orleans keeps running and only stops changing membership);
+  Raft or an external coordination service for membership (a second consensus system to operate beside the store);
+  a target claiming a moved key at once and letting the store decide (a claim races a source still
   running the actor); `UpdateInterval` for time-gated systems (it counts updates, and a world without `[TickRate]`
   updates only on mail); pausing the actor until its durable write lands (a
   ticking actor stalls with every presence on it); a durable root written alone (a statement per root where one per
@@ -1765,14 +1777,15 @@ Replaced by ADR-081.
   with a write sequence in the CAS; special cases everywhere: held output travelling in placeholders, migration bytes
   and snapshots, released after the receiver's first write, kept across `Reload`).
 - Consequences: breaking for every user project and most of the runtime (roadmap phase W). The timer defaults are one
-  table in the draft's §11 (lease 6 s, `SuspectAfter` 3 s, `DeadAfter` and re-placement 10 s, link silence 3 s):
-  `SuspectAfter`, `DeadAfter` and the link timeout keep ADR-053's and ADR-064's values; ADR-023's "keys move when a
-  member is Dead" becomes re-placement after max(`DeadAfter`, `SuspectAfter` + lease), the lease ack echoes ADR-031's
-  heartbeat counter, and a hot restart past its deadline counts as Left, not Dead, for ADR-064's keep-majority;
-  those ADRs are rewritten when W10 promotes the drafts, together with ADR-068 (a claim without its `INSERT`
+  table in the draft's §11 (probes every 1 s, 3 missed, 2 votes within 3 min, table refresh 5 s, isolation 20 s,
+  link silence 3 s). A cluster of more than one node needs a store, gateways included (the membership table is
+  there). ADR-023's gossip membership, seeds and "keys move when a member is Dead", ADR-031's heartbeats as the
+  failure detector and ADR-064's keep-majority are replaced by the table: death is written by suspicion votes,
+  re-placement waits one table refresh after it, and a hot restart past its deadline is written `Dead` by the
+  coordinator; those ADRs are rewritten when W10 promotes the drafts, together with ADR-068 (a claim without its `INSERT`
   branch for mail that may not create a key, the `CanCreate` gate, no rows for types that persist nothing, the
   never-written rows' sweep), ADR-072 (the handoff query before a claim, carrying the target's version) and ADR-079 (the
-  coordinator by admission number, view changes committed by a majority of the last committed view). Business code is
+  coordinator and the slot table derived from the membership table). Business code is
   `[On<T>]` methods and EasyEcs systems over data; the generator emits jobs, typed sends, typed reply accessors and
   one `Registration` instance. ADR-081's handler, `Context`, session and lifecycle parts, ADR-012's module initializer
   registration and ADR-017's one project per server are replaced when W10 promotes the drafts.
@@ -1826,12 +1839,15 @@ Replaced by ADR-081.
   - **One mechanism on every platform: the snapshot file** (ADR-088). The worlds freeze between two ticks while IO
     keeps receiving; the process writes the worlds, the queued mail and its link state into a checksummed file under
     `DaServer:SnapshotPath` and exits; the platform's own supervisor restarts it with the new build; the new process
-    loads the file.
+    loads the file. Where the supervisor can run a second instance (not Kubernetes), a warm standby started before
+    the freeze receives the same bytes over a local pipe instead, which takes process start and warm-up out of the
+    pause (ADR-088).
   - **Identity and epochs are kept**: the new process reconnects as the same (name, generation), and peers resume its
     streams from their resend windows, as after any dropped link. Activation epochs live in the roots and in the
     store, so nothing re-activates and nothing is fenced.
-  - **`NodeRestarting` (the membership state) with a deadline kept by the coordinator**: peers keep the node in the view and in placement and
-    hold messages in their bounded resend windows until the coordinator (ADR-079) declares it gone; ADR-088 says when
+  - **`NodeRestarting` (the node's membership row holds `restart_until`, its deadline)**: peers keep the node in the
+    table and in placement and hold messages in their bounded resend windows until it clears the deadline or the
+    coordinator (ADR-079) writes it `Dead` once it has passed; ADR-088 says when
     the restart starts, how the new process rejoins and what the coordinator guards meanwhile.
   - **Fallbacks when layouts change**: records that stay readable take the path through records; changes of hosting
     or client routes take a rolling upgrade. Gateways always roll, surge then drain with `Retire` (ADR-026). The
@@ -1845,7 +1861,7 @@ Replaced by ADR-081.
   only, unload leaks, a Logic project and its cycle, swaps the logic only); re-activation from records on every
   change (a checkpoint interval of state lost, a load storm); handing the listening sockets to the new process
   (`SCM_RIGHTS`, Envoy's hot restart: Unix only; a possible later optimization for gateways); `exec` into the new
-  binary (no Windows equivalent); a warm successor handed the world over a local pipe (ADR-088).
+  binary (no Windows equivalent); a successor launched by the node itself and joined beside it (ADR-088).
 - Consequences:
   - Two user projects, `Game.Protocol` and `Game.Server`; ADR-067's reloadable logic project goes when W10 promotes
     the drafts.
@@ -2034,12 +2050,14 @@ Replaced by ADR-081.
   to `apphost.cs` with `WithClientConnections(port)` and the build check.
 
 ## ADR-088 Hot restart is one mechanism; user behaviour before it is data
-- Context: a hot restart's bytes can reach the new process two ways: a warm successor launched by the node and fed
-  over a local pipe, or a snapshot file, which every supervisor that watches only the process it started
-  (Kubernetes, Compose, launchd, Windows services, local Aspire) needs anyway. The warm path needs standby peer links
-  beside the live ones, incarnation numbers on the wire, a handoff token, a commit protocol between two live
-  processes and rules for picking the transport, and gains a few hundred milliseconds only on systemd and bare
-  processes. Games also need a say in what happens before the pause (an MMO tells its players; a sale lets messages
+- Context: a hot restart's bytes can reach the new process two ways: a snapshot file, which every supervisor that
+  watches only the process it started (Kubernetes, Compose, launchd, Windows services, local Aspire) needs anyway, or
+  a warm successor fed over a local pipe. A successor the node launches itself and joins to the cluster beside the
+  old process needs standby peer links, incarnation numbers on the wire, a handoff token and a commit protocol between
+  two live processes. A successor the platform's supervisor starts, which joins nothing and only receives the same
+  bytes the file would hold, needs none of that and removes the new process's start-up and warm-up from the pause
+  (0.3–1 s under AOT, 1–2 s under JIT, against 0.1–0.3 s for freeze, serialize and deserialize), wherever a
+  supervisor can run a second instance of a node. Games also need a say in what happens before the pause (an MMO tells its players; a sale lets messages
   wait); a one-shot `[ForEach]` gated by hand-made data is a recipe rather than a model.
 - Decision:
   - **The snapshot file on every platform**: Kubernetes (a memory `emptyDir`, the pod image patch, ADR-085), Compose
@@ -2051,6 +2069,18 @@ Replaced by ADR-081.
     restart`), launchd and Windows services (a local directory, `launchctl kill SIGTERM` with `KeepAlive`, `Restart-Service`) and local
     Aspire (a temp directory per node, the resource restart command). `DaServer:SnapshotPath` names the directory;
     a plain file write, no memory-mapped file for a few MB. The node never launches its successor.
+  - **Warm standby where the platform can run a second instance** (`DaServer:HotRestart:Mode = Standby`, default
+    `Restart`, set per platform by `DaServer.Aspire`: systemd, launchd, Windows services, Compose and local runs;
+    not Kubernetes, where a running pod cannot gain a container from a new image and ephemeral containers are for
+    debugging): the supervisor starts the new build with `--DaServer:Standby`, which starts, warms up, opens its store
+    pool, joins nothing and listens on a `NamedPipeServerStream` (a Unix domain socket in the snapshot directory, a
+    named pipe on Windows; owner-only permissions or ACL; not an anonymous pipe, since the old process did not start
+    it). At the freeze the old process streams the snapshot's bytes (header, per-world `Save` bytes, checksum) from a
+    pooled buffer instead of writing the file and exits with code 0, which its supervisor does not restart; the
+    standby checks them as it checks a file, binds the node's ports after the old process exits and continues at
+    `Rejoining`. No standby, or a failed stream, falls back to the file. Arming refuses a standby when twice the
+    working set plus the snapshot would pass the memory limit. Handing the listening sockets over (`SCM_RIGHTS`,
+    `Socket.DuplicateAndClose`) instead of rebinding is a later improvement.
   - **Peers see the same identity reconnect**: (name, generation) on the link, the streams resumed from the resend
     windows with the byte counts in the snapshot: today's resume machinery, no second link.
   - **Behaviour before and after is data**: the last tick before the freeze every root carries
@@ -2061,26 +2091,32 @@ Replaced by ADR-081.
     restarting nodes in the `RestartingNodes` singleton.
   - **Arming only prepares; the platform's stop starts it**: `/admin/restart` is the one admin verb (`mode=snapshot`
     or `unload`, `exit=true` for a same-image roll, `dryRun=true` to report the path the manifest diff picks without
-    arming). The node freezes only after the coordinator acks its `NodeRestarting`, so the deadline starts at the
-    freeze and an arm the platform never follows expires silently. Arming is refused while a member joins or leaves,
+    arming). The node freezes only after its write of `restart_until` (the cluster's one restart permit and its
+    deadline, in its membership row) commits, so the deadline starts at the freeze and an arm the platform never
+    follows expires silently. Arming is refused while a member joins or leaves,
     while another node holds the cluster-wide restart permit, or when the snapshot would not fit the memory limit;
     the rollout restarts the coordinator last. A freeze that cannot finish within its bound stops gracefully through
     records. Arming writes every `Unsaved` root once while the actors run, so the snapshot carries only the changes
     since; the freeze writes nothing, since a short pause matters more.
-  - **A snapshot is used once, by the right binary, and only with the coordinator's consent**: its header names the
-    arm nonce, the manifest, the layout hashes and the boot; the new process loads it once and waits in `Rejoining`
-    for `Readmit` or `Gone`, the only place the deadline is judged. Meanwhile the coordinator pins the restarting
-    node's slots and moves nothing into or out of it; an expired restart counts as Left, not Dead, for keep-majority
-    (ADR-064), and a peer that sees a Hello from the restarted identity resets its dial back-off. A snapshot the new
+  - **A snapshot is used once, by the right binary, and only while the node's row still holds it**: its header names
+    the arm nonce, the manifest, the layout hashes and the boot; the new process loads it once and waits in
+    `Rejoining` until it reads its membership row: still `Active` with its generation, it clears `restart_until` with
+    a versioned write (which fails once the deadline has passed) and reconnects; written `Dead`, it fences and joins
+    with a new generation. The deadline is judged on the store's clock. Meanwhile the coordinator pins the
+    restarting node's slots and moves nothing into or out of it; an expired restart is written `Dead` by the
+    coordinator, and a peer that sees a Hello from the restarted identity resets its dial back-off. A snapshot the new
     process rejects (another boot or image, the deadline passed, the file gone after a reschedule) is
     crash-equivalent: its actors re-activate from their records, losing what changed after the arm's write. The
     steps, checks and their tests are the draft's §10.
-- Alternatives: the warm handoff above (a second transport, standby links, incarnations and a token for a gain on two
-  platforms); OpenKruise for Kubernetes (ADR-085); a virtual "before restart" hook on actors (a callback where a tag
+- Alternatives: a node-launched successor that joins beside the old process (above: standby links, incarnations, a
+  token and a commit protocol); a standby on Kubernetes through a second container started idle in every pod (it
+  would have to be the new image before the release exists, so it runs the old one) or an in-pod supervisor
+  (DaServer starts no supervisor process); OpenKruise for Kubernetes (ADR-085); a virtual "before restart" hook on actors (a callback where a tag
   and a system do).
-- Consequences: one code path to test (W6: snapshot written, loaded once, stale, torn or from another image,
-  deadline passed, freeze aborted; W11: the rollout's order and a Job killed between arm and patch); the pause
-  target is hundreds of milliseconds everywhere (ADR-084's evidence). Without `DaServer:SnapshotPath` a node has no
+- Consequences: one snapshot format and one load path, reached through a file or a pipe (W6: snapshot written,
+  loaded once, stale, torn or from another image, deadline passed, freeze aborted, a standby handed over, missing or
+  failing mid-stream; W11: the rollout's order and a Job killed between arm and patch); the pause target is hundreds
+  of milliseconds everywhere (ADR-084's evidence), and about 0.1–0.3 s with a standby. Without `DaServer:SnapshotPath` a node has no
   in-place path and takes the path through records. The node's HTTP plane is down during the pause; `ICluster`
   callers outside see it unavailable and retry on their side.
 
@@ -2230,9 +2266,12 @@ Replaced by ADR-081.
     root (a `[JoinOnConnect]` type, ADR-095); spending a precious item and buying with premium currency are client
     `[Durable]` requests; a recharge never goes through the client: the payment provider's webhook sends a `[Durable]` `Paid` through
     `ICluster.Ask` to `Payment(payment id)`, a persisted actor whose record is the payment's state; it asks `Player`
-    durably to `Credit(payment id, amount)`, and `Player` deduplicates by the persisted set of payment ids it has
-    credited, so a payment is credited at most once whatever the call ids; a `Credit` that ends `Expired` is asked
-    again with a fresh call id until the answer is definite (credited, or already credited); a guild resets its daily
+    durably to `Credit(payment id, amount)`, and `Player` deduplicates by the payment id (not the call id) in a
+    persisted set, so a payment is credited at most once whatever the call ids; a `Credit` that ends `Expired` is
+    asked again with a fresh call id until the answer is definite (credited, or already credited). The set is bounded:
+    each id keeps the latest `Credit` settle-by it saw, `Payment` then asks `Player` durably to
+    `Settle(payment id) : IRequestTo<Player, bool>` (recorded first, re-sent on every activation until answered), and
+    `Player` drops the id only after that settle-by plus `ClockSkew`, when no `Credit` for it can still run; a guild resets its daily
     quests with a `DaServer.Reminders` reminder.
   - **`samples/relay`**, a relay room in Photon Quantum's style ([Quantum intro](https://doc.photonengine.com/quantum/v3/quantum-intro)):
     a `[TickRate(30)]` `Room` actor gathers its players' inputs for each tick and broadcasts one frame per tick to its
@@ -2395,7 +2434,7 @@ Replaced by ADR-081.
     answers `NoActor`, writing nothing (a type that saves nothing answers `NoActor` at once); validation that needs no actor state (a map id in the map table, a sale that
     exists) costs no row. An analyzer error flags a `CanCreate` whose message is not in `[ActivatedBy]` and a
     `CanCreate`-shaped method under another name. Rows still never written expire after `DaServer:EmptyRecordTtl`
-    (1 day): the member with a store and the smallest admission number deletes them in key-set batches through a
+    (1 day): the coordinator deletes them in key-set batches through a
     `SECURITY DEFINER` function, and the runtime role has no
     `DELETE` grant.
   - **Part of a key may come from the claims**: the message carries only the fields a client may state, and the
@@ -2414,13 +2453,19 @@ Replaced by ADR-081.
     `ClientSettle` + `ClockSkew`), answering `TooLate` at or below it once the `ReplyLog` lookup has missed (entries
     are purged by settle-by, not by id). The SDK's call-id counter starts at the base the gateway gives in the handshake (server time,
     Unix ms << 20), so an app restarted with the same token, even on a device whose clock moved back, starts above
-    that mark; a `TooLate` carries the mark so the SDK can jump above it and resend once under a new id. The receiving type must persist (analyzer
+    that mark; a `TooLate` carries the mark so the SDK jumps above it, and resends once under a new id only an id
+    this SDK process minted after the handshake whose first attempt got that `TooLate` (it never ran); any other id
+    at or below the mark may have run before its entry was purged and ends `Expired`. An application retry passes
+    `call: (id, firstSent)`, so the age, and with it the settle-by, survives an app restart. The receiving type must persist (analyzer
     error). For sensitive operations that change the economy; everything else stays at most once. A business
     operation repeated under a new call id (an app restart, a hostile client) is deduplicated by its own key. A
     recharge never goes through the client: the payment provider's webhook asks `Payment(payment id)`, a persisted
     actor with no settle-by limit, which asks `Player` durably to `Credit(payment id, amount)`; `Player` keeps the
-    credited payment ids in its record and answers a repeat "already credited", and `Payment` re-asks an `Expired`
-    credit under a fresh call id until the answer is definite, so a payment is credited exactly once.
+    credited payment ids in its record, each with the latest `Credit` settle-by, and answers a repeat "already
+    credited", and `Payment` re-asks an `Expired` credit under a fresh call id until the answer is definite, so a
+    payment is credited exactly once. The set stays bounded: `Payment` then sends a durable `Settle(payment id)`
+    (re-sent on activation until answered), and `Player` drops the id after its latest settle-by plus `ClockSkew`
+    (ADR-091).
   - **Several presences of one type**: at most one presence per actor and `[ActorOptions(PresencesPerClient = n)]`
     per actor type (default 1: a second map leaves the first; a chat or a queue raises it); joining past the limit
     leaves the oldest. A type above 1 handles only `[To]` client messages (analyzer check), and handlers recognise a

@@ -113,7 +113,7 @@ public API, attribute, configuration key or AppHost call.
 
 | Level | What it is | Owns |
 |---|---|---|
-| Node | One process, one server type, a node generation assigned by the coordinator ([draft §2](programming-model.md#2-服务器与节点)) | Links, membership (with its lease), placement view, its shards, the HTTP plane, `DueScan`, and the node state (`StoreDegraded`, `ActivationSlots`, `PeerHealth`, `RestartingNodes`) as one immutable snapshot swapped atomically |
+| Node | One process, one server type, a node generation it picks when it joins the membership table ([draft §2](programming-model.md#2-服务器与节点)) | Links, membership (its view of the table), placement view, its shards, the HTTP plane, `DueScan`, and the node state (`StoreDegraded`, `ActivationSlots`, `PeerHealth`, `RestartingNodes`) as one immutable snapshot swapped atomically |
 | Shard (internal) | One thread and one EasyEcs world; the actor types the server hosts share it; an actor lands on a shard by its key's hash. A node runs one shard per CPU it is given (the container's CPU request, `DaServer:Worlds` overrides) | The dispatch queue, the framework systems, singletons (`Time`, `Ordered<K>`, `Current`, `Outbox`) and its copies of the node singletons, the due heap, the chain stack, the call index |
 | Actor | Its root entity (carrying the actor type component, e.g. `Map(7)`) and the root's descendants | Its mail, its `Due` items, its presences, its waiting asks |
 | Entity | A root, an avatar, a presence, a waiting ask, a scheduled event | Components; `In<K>` on every entity of a K actor; `Persisted` on every persistent one |
@@ -160,7 +160,7 @@ loop on the shard's thread:
     wait for frames in the dispatch queue, the next due tick, or the due heap's head
     drain the dispatch queue (one bounded batch) into mailbox snapshots, split by actor type,
         at most a budget of items per actor (the rest waits for the next batch, still by (time, seq))
-    if the volatile lease-expiry stamp has passed: run nothing (the world is frozen)
+    if the volatile frozen flag is set (the node is Dead, isolated or restarting): run nothing (the world is frozen)
     for each actor type K without [TickRate] that has mail or due items, or whose quiet pass is due
             (every DaServer:QuietPass, 1 s, so that time-gated systems run in an idle world; the chain stack is empty between items):
         write Time         K's Tick, TickRate and DeltaTime (all 0 here) from Ordered<K>; Elapsed = the pass start (now), Utc;
@@ -211,7 +211,7 @@ loop on the shard's thread:
   migrations out), and the admin command `POST /admin/worlds/{i}/trim`; never on a hot path.
 - Server types hosting several ticking actor types keep rates that divide the fastest one.
 - Before a hot restart (the member is `NodeRestarting`) the runtime adds the `Restarting` tag to every root for the
-  last tick (Settling removes it in that tick, so no snapshot holds it) and then stops calling the loop; after the load and the coordinator's `Readmit`
+  last tick (Settling removes it in that tick, so no snapshot holds it) and then stops calling the loop; after the load and the cleared `restart_until`
   every root carries `Resumed(Pause, Aborted)` for one tick ([draft §10](programming-model.md#热重启)).
 
 ### Runtime data
@@ -250,7 +250,7 @@ exported, OpenTelemetry). Names users never write but meet in diagnostics: the S
 | Placeholder | entity | A key not yet active or being saved: the copy of `K.RootPrefab` without `In<K>`, the key, `Loading`, `Arriving` (a key of a handoff-pending slot waiting for its source's answer, section 4), `Saving` or `ActivationFailed(until)`, a bounded `DynamicBuffer<Mail>`; a throw in a persisted actor (reload) turns a root back into one in place, keeping only the key, the `Mail` and the faulting `[Durable]` call ids (a bounded `DynamicBuffer<FaultedCall>`: a system pass that throws can fault several stored tokens of one root; past `DaServer:FaultedCallsMax`, default 64, the rest are not recorded and their askers end `Expired`) (values reset to the prefab copy's) | `daserver.activations.failed` |
 | Control mail | mail on the control channel | `Route`, `Lost`, `JoinConfirmed`, `Fence(key, epoch)`, `Wake` (`TakeOver` and `HandedOff` are not control mail: they travel on the data stream, in order with the group frames, section 3's Retire, but like control mail they
 bypass `PeerHealth`'s fail-fast `Busy` and the mailbox drops: a fence is never refused or dropped, only ordered); mail to a `Connection` is addressed by its `ConnectionId` (the presence records it), so the gateway routes it to the world by that key's hash like any actor's; bounded by what the node holds, never `Busy` | `daserver.messages.dropped{reason}` |
-| Membership states | per member in the view | `NodeJoining`, `NodeLeaving` (placement is changing), `NodeRestarting` (a hot restart, announced on SIGTERM, or at once under an `exit=true` arm; user systems see the `Restarting` tag and `RestartingNodes`), `Rejoining` (the new process waiting for the coordinator's `Readmit` or `Gone`) | `daserver.members{state}` |
+| Membership states | per member, from the membership table | `Joining`, `Active`, `ShuttingDown`, `Dead` (the table's statuses); `NodeJoining`, `NodeLeaving` (placement is changing), `NodeRestarting` (its row holds `restart_until`: a hot restart, announced on SIGTERM, or at once under an `exit=true` arm; user systems see the `Restarting` tag and `RestartingNodes`), `Rejoining` (the new process reading its row before it clears `restart_until`, or finding itself `Dead`) | `daserver.members{state}` |
 
 ### `Registration`
 
@@ -500,43 +500,67 @@ in short:
   still handoff-pending (the slot table marks it until the source reports it done or leaves the view), so a chained
   move A→B→C never lets C ask a B that never held the key. Mail A forwards for a parked key goes ahead of the mail B
   parked (A sends it on the migration's stream before the bytes), so per-sender order holds across the move.
-- **Every view change needs a quorum of the last committed view**: a view that adds or removes members (a join, a
-  readmission, `Dead`, `Left`, a hot restart past its deadline) is committed only when more than half of
-  `max(DaServer:FormationSize, members of the last committed view)` have acknowledged it; the coordinator proposes it.
-  A joiner is only proposed until then: it neither acks nor counts as heard, hosts no slots and serves no clients (as
-  Akka's `WeaklyUp`, and Raft's rule that a configuration change commits with a majority of the old configuration). So
-  a minority can neither shrink the cluster to itself nor grow itself into a majority by admitting new nodes: a 5-member
-  cluster split 2|3 whose 2 side admits two joiners still counts 2 of 5. One change needs no extra seat: a joiner with
-  the name of a committed member and a newer node generation replaces that member's seat (its old process is fenced by
-  the generation), and it acks for that seat, so a restarted member of a 2-member view is readmitted by the survivor
-  and itself. A cluster configured with `FormationSize = 2` lets a lone member commit the removal of its dead peer by
-  itself, under the same exemption as its lease below; `FormationSize = 1` is a single member.
-- **Membership lease**: renewed only by an ack echoing the node's own heartbeat counter, timed from the send, and an
-  ack renews only when the acker is on the majority side: it has heard, within `SuspectAfter`, from more than half of
-  `max(DaServer:FormationSize, members of the last committed view)` (itself included; `NodeRestarting` members count
-  in the denominator and are not heard from). A 5-member cluster split 2|3 keeps the denominator 5 on both sides, so
-  only the 3 side renews, whatever either side has decided locally about the other. The order of the roles is a function of the view alone: each member carries
-  an admission number, assigned by the coordinator when the member is admitted and again when it is readmitted after
-  a hot restart (node generations are unchanged by it). The coordinator is the member Up, not `NodeRestarting`, with
-  the smallest admission number; it acks, and once it is `Suspect` the next in the same order acks, again only from
-  the majority side; the coordinator's own lease is renewed by acks from a majority. Every node computes the same
-  roles from the same view, so there is never a second coordinator, and a readmitted former coordinator is last in
-  line: a rolling restart moves the role once. In a symmetric partition the minority side stops renewing and freezes
-  when its lease runs out, before the majority re-places its actors. `DaServer:FormationSize` (default 3) is the
-  cluster's configured size, not the current view: a three-member cluster that lost a member still needs two of three,
-  so a later split of the two survivors freezes both rather than letting both run (an alert, `daserver_lease_minority`,
-  says so). `FormationSize = 1` is a single-node cluster (a local run, an `AllInOne` deployment); `DaServer.Aspire` sets
-  `FormationSize` from the replicas the AppHost declares for all node groups (the quorum and `FormationSize` count the
-  same members: every member of the view, gateways included), so a one-node run does not freeze.
-  Only a cluster configured with `FormationSize = 2` lets a lone member keep renewing (otherwise one crash
-  would freeze it for good); such a cluster has no lease-based guarantee against a partition and relies on the epoch
-  fence alone (a write by the stale side fails; in-memory work, pushes and plain replies on that side run until its
-  next write, at most a checkpoint interval). Each world checks the expiry before its ordered phase, again before the
-  store write and before handing frames to the links (so catch-up ticks in one iteration never run past it), and
-  freezes past it; peers re-place its actors after max(`DeadAfter`, `SuspectAfter` + lease). The coordinator assigns
-  node generations (max(last seen + 1, Unix ms)) and admission numbers, grants the one cluster-wide restart permit and
-  keeps a restarting node's deadline (ADR-082's coordinator rule). The timer defaults are one table in
-  [draft §11](programming-model.md#定时的默认值).
+- **Membership is a table in the store** (Orleans' membership protocol, [Orleans: cluster
+  management](https://learn.microsoft.com/dotnet/orleans/implementation/cluster-management), behind a feature point,
+  `IMembershipTable`, with a PostgreSQL implementation and an in-memory one): the store decides who is in the cluster,
+  so there is no quorum, ballot or formation size to reason about, and any number of members may fail.
+  - **Rows**: `daserver_members` holds one row per node incarnation: cluster, name, node generation, address, server
+    type, status (`Joining`, `Active`, `ShuttingDown`, `Dead`), the suspicions against it (suspecting member,
+    generation, UTC time), `restart_until` (a granted hot restart and its deadline), start time and `i_am_alive`;
+    `daserver_membership` holds one row per cluster: the table version, the slot table and its per-type placement
+    versions. Every change (a join, a status, a suspicion, a death, a restart permit, a slot move) is one transaction
+    that updates the changed rows and sets the version row to version + 1 where the version is still the one read
+    (compare-and-swap); a conflict re-reads and retries with back-off. So all membership changes are totally ordered
+    by the table version, and every node that has read version v computes the same members, coordinator and slot
+    table. `i_am_alive` (every `DaServer:Membership:IAmAliveInterval`, 30 s) is written without touching the version.
+  - **Joining**: a node reads the table, picks its generation as max(Unix ms, the largest generation recorded for its
+    name + 1), and in one versioned transaction inserts its row as `Joining` and marks every older generation of its
+    name `Dead` (an old process of the same name that is still running reads that and stops). It then checks two-way
+    connectivity to every `Active` member (skipping a member whose `i_am_alive` is three intervals old: a crashed
+    node that was never declared dead does not block a restart of the whole cluster) and writes itself `Active`; until
+    then it hosts no slots and serves no clients. If a member does not answer, it does not become `Active` and retries
+    (a node cut off from part of the cluster never joins it). The first node of a cluster creates the version row.
+    No seeds are needed for membership: the table is where nodes find each other.
+  - **Failure detection**: every `Active` member probes up to `DaServer:Membership:ProbedNodes` (10) others, its
+    successors on a ring of the active members' hashed identities, over the node links every
+    `DaServer:Membership:ProbeInterval` (1 s); after `DaServer:Membership:MissedProbes` (3) missed replies it first
+    asks one other member to probe the target (an indirect probe) and, if that also fails, writes a timestamped
+    suspicion into the target's row. When a suspicion makes `DaServer:Membership:VotesForDeath` (2, or every other
+    `Active` member when fewer remain) suspicions from distinct `Active` members younger than
+    `DaServer:Membership:SuspicionExpiry` (3 min), the writer marks the target `Dead` in the same transaction. A writer
+    must be `Active` at the version it writes against, so in a partition where both sides reach the store the first
+    death written wins and the other side's attempts fail their compare: a side that finds itself `Dead` stops. A two-node
+    cluster split in two therefore keeps exactly one node.
+  - **Learning the view**: a node reads the table every `DaServer:Membership:TableRefresh` (5 s) and, after any write it
+    makes, sends the new snapshot to the other members, who adopt it when its version is newer than theirs. Frames
+    carry the sender's table version, so a peer with a newer view answers a stale one with its snapshot.
+  - **A node declared dead stops**: once it reads itself `Dead` (or a peer refuses its frames because its generation is
+    `Dead`, which peers do once they see it), it freezes every world, fences all its actors and exits with a non-zero
+    code; the platform starts a new process, which joins with a new generation. Peers stop sending to a `Dead` member
+    at once.
+  - **Isolation bound**: a node that has neither read the table nor exchanged a probe with any `Active` member for
+    `DaServer:Membership:IsolationTimeout` (20 s) freezes its worlds and exits the same way. A store outage alone does
+    not stop anyone (peers keep probing each other; nobody can be declared dead or join until the store is back), and
+    a partitioned node that still reaches the store learns its death within one `TableRefresh`. What runs on a dead
+    node before it stops is bounded by these two intervals, and its writes fail the epoch compare (the new owner claimed
+    a newer epoch).
+  - **Re-placement**: the slots of a member written `Dead` are re-placed by the next slot table, which the coordinator
+    writes no sooner than one `TableRefresh` after the death, so a dead node that can reach the store has stopped by then.
+  - **The coordinator** is the `Active` member with the oldest start time (then the smallest name) at the table version
+    a node has read: every node with that version agrees, and a stale coordinator cannot act, since everything it
+    decides (slot moves, a restart permit, a hot restart's deadline) is a versioned write whose compare fails. It plans
+    slot moves (ADR-079) and writes the slot table; the placement version of a type is the table version of the last
+    change to its hosting nodes or its slots, so every node derives the same versions. A hot restart's permit and
+    deadline are the restarting node's `restart_until`: granted by a versioned write when no other row holds one, and a
+    member whose `restart_until` has passed is written `Dead` by the coordinator. A hot restart keeps the node's row
+    and generation (draft §10).
+  - **Without a store**: the in-memory table serves a single node (a local run, a starter without a database, an
+    `AllInOne` deployment) and `TestCluster`, whose in-process nodes share one instance. A cluster of more than one
+    process needs the table in a store: the actor store's PostgreSQL by default, or a separate connection
+    (`WithMembershipStore(db)`); a node configured for more than one member without a membership store refuses to start, and
+    `DaServer.Aspire` adds a PostgreSQL resource for membership when an AppHost declares more than one node and no
+    store. Every node, gateways included, needs that connection (the runtime role's grants, section 4's schema).
+  The timer defaults are one table in [draft §11](programming-model.md#定时的默认值).
 - **Activation**: the placeholder (`Loading`) holds the mail; one statement claims the epoch and reads the record
   (`INSERT … ON CONFLICT (type_id, key) DO UPDATE SET … WHERE … RETURNING …`, inserting the placeholder row for a new key, its
   every epoch (a new key, a takeover, the no-insert claim) taken from a sequence so a key whose row was swept never
@@ -559,16 +583,16 @@ in short:
   answers `NoActor`, writing nothing; a type that saves nothing has no record to find, so `false` is `NoActor`. So a client cannot create rows by inventing keys.
 - **Actor types that save nothing claim no row**: a type whose root is not persisted has no record, so its activation
   writes nothing to the store, no claim included. What keeps one activation per key for it is the view: a node
-  activates only keys its view makes it the owner of and not handoff-pending, peers forward by the same rule, the
-  minority side of a partition freezes when its lease runs out, and a node removed from the view fences everything
-  before it rejoins with a new generation. Between two views that briefly disagree (a slot-table change still
+  activates only keys its view makes it the owner of and not handoff-pending, peers forward by the same rule, a
+  node written `Dead` in the membership table stops (at once when it reads it, within `IsolationTimeout` when it
+  reaches nobody), and its slots move only one `TableRefresh` after its death. Between two views that briefly disagree (a slot-table change still
   spreading) two activations of such a key can exist for a moment; neither writes anything, so the cost is mail split
   between them, and the forward-by-version rule (frames carry the highest placement version seen) ends it within one
   view exchange. `[ActivatedBy]` and `CanCreate` apply to them as well: they decide whether an activation happens.
 - **Rows never written expire**: a row whose record is still `NULL` `DaServer:EmptyRecordTtl` (default 1 day) after
   its last claim is deleted. Any live activation of a persisted type writes its first record within a checkpoint
   interval (a new key is tagged `Unsaved`), so such a row belongs to an activation that was refused or crashed before
-  writing. The member with a store and the smallest admission number (the coordinator may be a gateway with no store)
+  writing. The coordinator (every member has the membership store; section 4's membership)
   runs the sweep in its first world every `DaServer:EmptyRecordSweepInterval` (1 h), in key-set batches of 1,000 rows
   that walk the primary key once per sweep (no index fits `record IS NULL`, and a partial index on it would make every
   record write non-HOT), through `daserver_sweep_empty(ttl, limit, after)`, a `SECURITY DEFINER` function owned by the
@@ -632,81 +656,129 @@ and its wake section); the store implements `IActorStore` with them.
 **The schema** (created by the schema Job as the owner role, in the schema `:schema`, default `public`; `:runtime_role` is
 the `Username` of the runtime connection string, so the role names are the user's). DDL takes no bind parameters, so
 `:schema` and `:runtime_role` are formatted into the text as quoted identifiers (`quote_ident`, `format('%I')`). Every
-statement is re-runnable, since the Job runs on every release: the type is created in a `DO` block that skips an
-existing one (PostgreSQL has no `CREATE TYPE IF NOT EXISTS`), the rest uses `IF NOT EXISTS` and `CREATE OR REPLACE`,
-and the index is created only when `to_regclass` does not find it, so a release takes no index lock:
+object is qualified with `:schema`, in the DDL and in the runtime statements alike (the store prefixes the names it
+formats into its statements), so neither role depends on its `search_path`; the sketches below leave the prefix out
+for brevity. The owner role needs `CREATE` on `:schema` (in PostgreSQL 15 and later, `public` grants it to nobody but
+the database owner). Every statement is re-runnable, since the Job runs on every release: `IF NOT EXISTS` and
+`CREATE OR REPLACE` throughout, and the index is created only when `to_regclass` does not find it, so a release takes
+no index lock. There are no composite types: Npgsql cannot map one under Native AOT, so the owner is two columns.
 
 ```sql
-DO $$ BEGIN CREATE TYPE daserver_owner AS (name text, gen bigint);       -- (node name, node generation)
-     EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-CREATE SEQUENCE IF NOT EXISTS actor_records_epoch;                         -- every epoch: never reused after a sweep
-CREATE TABLE IF NOT EXISTS actor_records (
-  type_id   integer        NOT NULL,   -- the actor type's id (Nino's type id)
-  key       bytea          NOT NULL,   -- the key's fields in order, each big-endian at its own width (at most 16 bytes)
-  slot      smallint       NOT NULL,   -- the key's placement slot (0..4095, ADR-074), computed by the node
-  epoch     bigint         NOT NULL,
-  write_gen bigint         NOT NULL,
-  owner     daserver_owner NOT NULL,   -- (node name, node generation) of the last claim
-  placement bigint         NOT NULL,   -- the placement version of the last claim
-  claimed   timestamptz    NOT NULL,   -- the last claim's time: a never-written row expires from it
-  record    bytea,                     -- NULL: claimed, never written
-  next_due  timestamptz,               -- NextDue; NULL: nothing due
+CREATE SEQUENCE IF NOT EXISTS :schema.actor_records_epoch;                 -- every epoch: never reused after a sweep
+CREATE TABLE IF NOT EXISTS :schema.actor_records (
+  type_id    integer     NOT NULL,   -- the actor type's id (Nino's type id)
+  key        bytea       NOT NULL,   -- the key's fields in order, each big-endian at its own width (at most 16 bytes)
+  slot       smallint    NOT NULL,   -- the key's placement slot (0..4095, ADR-074), computed by the node
+  epoch      bigint      NOT NULL,
+  write_gen  bigint      NOT NULL,
+  owner_name text        NOT NULL,   -- the node name of the last claim
+  owner_gen  bigint      NOT NULL,   -- and its node generation
+  placement  bigint      NOT NULL,   -- the placement version of the last claim
+  claimed    timestamptz NOT NULL,   -- the last claim's time: a never-written row expires from it
+  record     bytea,                  -- NULL: claimed, never written
+  next_due   timestamptz,            -- NextDue; NULL: nothing due
   PRIMARY KEY (type_id, key));
--- when to_regclass('actor_records_due') IS NULL:
-CREATE INDEX IF NOT EXISTS actor_records_due ON actor_records (type_id, slot, next_due) WHERE next_due IS NOT NULL;
+-- when to_regclass(':schema.actor_records_due') IS NULL:
+CREATE INDEX IF NOT EXISTS actor_records_due ON :schema.actor_records (type_id, slot, next_due) WHERE next_due IS NOT NULL;
+CREATE TABLE IF NOT EXISTS :schema.daserver_membership (    -- one row per cluster: the version row
+  cluster    text   PRIMARY KEY,
+  version    bigint NOT NULL,        -- every membership change sets it to version + 1 where it is still the one read
+  slots      bytea  NOT NULL,        -- the slot table (ADR-079)
+  placements bytea  NOT NULL,        -- per actor type: the table version of its last hosting or slot change
+  configs    bytea);                 -- configuration tables: (name, version, hash)
+CREATE TABLE IF NOT EXISTS :schema.daserver_members (       -- one row per node incarnation
+  cluster       text        NOT NULL,
+  name          text        NOT NULL,
+  generation    bigint      NOT NULL,
+  address       text        NOT NULL,
+  server_type   text        NOT NULL,
+  status        smallint    NOT NULL,   -- Joining, Active, ShuttingDown, Dead
+  suspicions    bytea,                  -- (suspecting name, generation, UTC time) per suspicion
+  restart_until timestamptz,            -- a granted hot restart's deadline; NULL: none
+  started       timestamptz NOT NULL,
+  i_am_alive    timestamptz NOT NULL,   -- diagnostics and the join's skip rule; written without a version change
+  PRIMARY KEY (cluster, name, generation));
 GRANT USAGE ON SCHEMA :schema TO :runtime_role;
-GRANT SELECT, INSERT, UPDATE ON actor_records TO :runtime_role;           -- no DELETE: only the sweep function deletes
-GRANT USAGE ON SEQUENCE actor_records_epoch TO :runtime_role;           -- nextval in both claims
+GRANT SELECT, INSERT, UPDATE ON :schema.actor_records TO :runtime_role;  -- no DELETE: only the sweep function deletes
+GRANT USAGE ON SEQUENCE :schema.actor_records_epoch TO :runtime_role;  -- nextval in both claims
+GRANT SELECT, INSERT, UPDATE ON :schema.daserver_membership, :schema.daserver_members TO :runtime_role;
 ```
 
 The schema Job does not create roles. The samples' AppHosts add an init step that creates the runtime role with the
-database's superuser (Aspire's PostgreSQL resource has only `postgres`); against an external database the operator
-provisions both roles (deployment.md section 4).
+database's superuser (Aspire's PostgreSQL resource has only `postgres`) and runs before the schema Job (or the Job
+retries until the role exists); against an external database the operator provisions both roles (deployment.md
+section 4).
+
+**A membership change** (one transaction; `:v` is the version the node read, and the node must have been `Active` at
+it unless it is joining):
+
+```sql
+BEGIN;
+UPDATE daserver_membership SET version = :v + 1, slots = coalesce(:slots, slots), placements = coalesce(:placements, placements)
+ WHERE cluster = :cluster AND version = :v;                 -- 0 rows: a conflict, ROLLBACK, re-read the table, retry
+INSERT INTO daserver_members ... ON CONFLICT (cluster, name, generation) DO UPDATE SET ...;   -- the changed rows
+COMMIT;
+```
+
+The rows of members written `Dead` stay for `DaServer:Membership:DefunctRowAge` (7 days, for diagnostics) and are
+deleted by `daserver_members_cleanup(cluster, age)`, a `SECURITY DEFINER` function the schema Job creates like the
+sweep below (the runtime role has `EXECUTE` on it, no `DELETE`); the coordinator calls it once a day.
 
 **The claim** (a new key inserts the placeholder row; when the condition fails nothing changes and the stored row
 comes back, `taken` false, so the node tells "forward to the newer owner" from "no record"):
 
 ```sql
 WITH c AS (
-  INSERT INTO actor_records AS a (type_id, key, slot, epoch, write_gen, owner, placement, claimed, record, next_due)
-  VALUES (:type_id, :key, :slot, nextval('actor_records_epoch'), 0, (:name, :gen), :v, now(), NULL, NULL)   -- a new key
+  INSERT INTO actor_records AS a (type_id, key, slot, epoch, write_gen, owner_name, owner_gen, placement, claimed, record, next_due)
+  VALUES (:type_id, :key, :slot, nextval('actor_records_epoch'), 0, :name, :gen, :v, now(), NULL, NULL)  -- a new key
   ON CONFLICT (type_id, key) DO UPDATE
-     SET epoch = excluded.epoch, write_gen = 0, owner = excluded.owner, placement = excluded.placement, claimed = now()
+     SET epoch = excluded.epoch, write_gen = 0, owner_name = excluded.owner_name, owner_gen = excluded.owner_gen,
+         placement = excluded.placement, claimed = now()
      WHERE a.placement < excluded.placement
-        OR (a.placement = excluded.placement AND a.owner = excluded.owner)
-  RETURNING new.epoch, new.record, old.owner, new.placement)        -- PostgreSQL 18: OLD in RETURNING, NULL if inserted
-SELECT true AS taken, epoch, record, owner, placement FROM c
+        OR (a.placement = excluded.placement AND a.owner_name = excluded.owner_name AND a.owner_gen = excluded.owner_gen)
+  RETURNING new.epoch, new.record, old.owner_name, old.owner_gen, new.placement)  -- PostgreSQL 18: OLD, NULL if inserted
+SELECT true AS taken, epoch, record, owner_name, owner_gen, placement FROM c
 UNION ALL
-SELECT false, a.epoch, NULL, a.owner, a.placement                    -- not taken: the row as stored before the statement
+SELECT false, a.epoch, NULL, a.owner_name, a.owner_gen, a.placement  -- not taken: the row as stored before the statement
 FROM actor_records a
 WHERE a.type_id = :type_id AND a.key = :key AND NOT EXISTS (SELECT 1 FROM c)
 ```
 
 Every epoch comes from the sequence (`excluded.epoch` is the `nextval` of `VALUES`, which PostgreSQL evaluates on a
 conflict too), so epochs rise across the whole store and a row created again after a sweep never repeats an epoch an
-old activation held. Under READ COMMITTED the statement can return no row: two nodes claim the same new key at once,
-the second one's `ON CONFLICT` locks the first one's committed row and its condition fails, and its fallback
-`SELECT` uses a snapshot from before that row existed. An empty result is neither taken nor forward: the node runs
-the statement again (it then sees the row).
+old activation held. Under READ COMMITTED the fallback `SELECT` uses the statement's snapshot, while the `ON CONFLICT`
+condition is checked on the latest committed row, so two results are races, not answers, and the node runs the
+statement again (a new statement sees the committed row): an empty result (two nodes claimed the same new key at once,
+and the second one's snapshot predates the first one's row), and a not-taken row that would have met the condition
+(a placement older than `:v`, or `:v` with this node as owner: the row the condition saw had changed since the
+snapshot). Only a not-taken row that fails the condition means "forward".
+
+**A claim that times out** may still commit. The node cancels it first (Npgsql's cancellation sends PostgreSQL's
+cancel request and waits for the command to end) and only then runs it again; if the first attempt had committed, the
+retry is taken with the node itself as the old owner, so the node remembers the owner it read before the first
+attempt (the row's owner, or the previous placement's host) and treats that one as the displaced owner it notifies.
 
 **The claim that may not create the key** (no `INSERT` branch; `has_record` false answers `NoActor`):
 
 ```sql
 WITH c AS (
   UPDATE actor_records a
-     SET epoch = nextval('actor_records_epoch'), write_gen = 0, owner = (:name, :gen), placement = :v, claimed = now()
+     SET epoch = nextval('actor_records_epoch'), write_gen = 0, owner_name = :name, owner_gen = :gen, placement = :v,
+         claimed = now()
    WHERE a.type_id = :type_id AND a.key = :key AND a.record IS NOT NULL
-     AND (a.placement < :v OR (a.placement = :v AND a.owner = (:name, :gen)))
+     AND (a.placement < :v OR (a.placement = :v AND a.owner_name = :name AND a.owner_gen = :gen))
   RETURNING a.epoch, a.record, a.placement)
-SELECT true AS taken, epoch, record, NULL::daserver_owner AS owner, placement, true AS has_record FROM c
+SELECT true AS taken, epoch, record, NULL::text AS owner_name, NULL::bigint AS owner_gen, placement, true AS has_record FROM c
 UNION ALL
-SELECT false, a.epoch, NULL, a.owner, a.placement, a.record IS NOT NULL
+SELECT false, a.epoch, NULL, a.owner_name, a.owner_gen, a.placement, a.record IS NOT NULL
 FROM actor_records a
 WHERE a.type_id = :type_id AND a.key = :key AND NOT EXISTS (SELECT 1 FROM c)
 ```
 
-(The no-insert claim's displaced owner is read the same way as above when PostgreSQL 18's `old` is used; the sketch
-leaves it out for brevity. No row at all means no record.)
+(The displaced owner is read the same way as above when PostgreSQL 18's `old` is used; the sketch leaves it out for
+brevity.) The same races are run again: a not-taken row with a record that would have met the condition, and a result
+that says no record (no row, or `has_record` false) while the row may have been written meanwhile: the node runs the
+statement once more, and answers `NoActor` only when the second run agrees.
 
 **The sweep of never-written rows** (created by the schema Job; the runtime role has `EXECUTE` only):
 
@@ -727,8 +799,12 @@ REVOKE ALL ON FUNCTION :schema.daserver_sweep_empty(interval, integer, integer, 
 GRANT EXECUTE ON FUNCTION :schema.daserver_sweep_empty(interval, integer, integer, bytea) TO :runtime_role;
 ```
 
-**The batched write (compare and swap on epoch and write generation; the rows not updated come back as stored, and a
-row that is gone, for example swept, comes back with a NULL epoch, which the node treats as a failed compare)**:
+**The batched write** (compare and swap on epoch and write generation). The rows not updated come back as the
+statement's snapshot stored them, and the node reads each: a different epoch, or a NULL one (the row is gone, for
+example swept), is a failed compare and fences the activation; the same epoch with a `write_gen` at or above the
+written one is a write that already landed (a retried batch); the same epoch with a lower `write_gen` is a race (a
+concurrent claim changed the row after the snapshot, so the `UPDATE` saw the new epoch while the `SELECT` shows the
+old one), and that row is written again in the next batch, where it fails or lands:
 
 ```sql
 WITH r AS (SELECT * FROM unnest(:type_ids, :keys, :records, :next_dues, :epochs, :write_gens)
@@ -793,10 +869,11 @@ LIMIT 512
   balancer and retires its connections in waves (`ControlOp.Retire`, make before break, ADR-026), so each client
   moves once ([deployment.md section 2](deployment.md#stateless-groups-and-gateways-deployment)).
 - **Hot restart** (ADR-084, ADR-088; mechanics only in [draft §10](programming-model.md#热重启)): the same on JIT and
-  AOT and on every platform. Arming only prepares (the coordinator records a nonce); the platform's SIGTERM starts
+  AOT and on every platform. Arming only prepares (the node records a nonce); the platform's SIGTERM starts
   it, or, for a same-image roll (a secret or config change), an arm with `exit=true` starts it at once
-  (the node needs no signal): the node announces `NodeRestarting` and freezes once the coordinator acks (its slots pinned, its deadline kept by
-  the coordinator), roots carry `Restarting` for one last tick, the worlds freeze (bounded; in-flight writes land first and roots with held output are written, so no held output is in the snapshot; a root whose `SaveEntities` throws drops its held output at once and is destroyed in the frozen world, left out of the snapshot) while IO keeps receiving,
+  (the node needs no signal): the node takes the cluster's one restart permit by writing its row's `restart_until`
+  (the deadline) in the membership table, which other members see as `NodeRestarting` (its slots pinned), and freezes once
+  that write commits, roots carry `Restarting` for one last tick, the worlds freeze (bounded; in-flight writes land first and roots with held output are written, so no held output is in the snapshot; a root whose `SaveEntities` throws drops its held output at once and is destroyed in the frozen world, left out of the snapshot) while IO keeps receiving,
   the process writes a snapshot file under `DaServer:SnapshotPath` (temp file, fsync, rename; the header records the
   world count; `Save(output, in exclude)` with `exclude` naming the user singletons and the framework's runtime
   singletons: `Outbox` (pooled writers), `Current`, `Time` and the world's copies of the node singletons, which the new
@@ -804,8 +881,9 @@ LIMIT 512
   restarts it with the new build (or the same one, re-reading its configuration); the new process checks the snapshot (checksum, boot id, deadline, the armed
   manifest), creates the recorded number of worlds whatever its CPU share (through records only when configuration pins
   another count), loads the cluster's current
-  configuration tables and creates its world singletons, loads the snapshot keeping them (`Load(input, in keep, markWritten: false)`), deletes it and waits in `Rejoining` for the coordinator's `Readmit` or `Gone`, then reconnects
-  with the same identity (name, generation) and the peers resume its streams from their resend windows; roots carry
+  configuration tables and creates its world singletons, loads the snapshot keeping them (`Load(input, in keep, markWritten: false)`), deletes it and waits in `Rejoining` while it reads its row: still `Active` with its generation, it clears
+  `restart_until` (a versioned write) and reconnects with the same identity (name, generation); written `Dead` (the
+  deadline passed), it fences everything and joins with a new generation and the peers resume its streams from their resend windows; roots carry
   `Resumed` for one tick. No actor re-activates, epochs stay. An aborted freeze falls back to a graceful stop.
   Arming writes every `Unsaved` root once (a checkpoint round, while the actors keep running), so the snapshot carries
   only the changes since. A snapshot the new process rejects (another boot id or image than armed, the deadline
@@ -814,12 +892,38 @@ LIMIT 512
   that peers saw acknowledged but that waited in the frozen dispatch queues (requests are re-asked or time out as after
   a crash). [Draft §11](programming-model.md#11-失败时的结果) lists the cases. Keeping the freeze short matters more
   than writing every root inside it, so the freeze does not write the remaining changes.
+- **Warm standby** (optional, `DaServer:HotRestart:Mode = Standby`, default `Restart`; set per platform by
+  `DaServer.Aspire`): while the old process still serves, the platform starts the new build as a standby
+  (`--DaServer:Standby`). It finishes .NET start-up, warms its code (nothing to JIT under AOT; ReadyToRun plus the
+  warm-up path under JIT), opens its store connection pool, joins nothing, serves nothing, and listens on a named pipe
+  (`NamedPipeServerStream`: a Unix domain socket in the snapshot directory on Linux and macOS, a named pipe on
+  Windows; AOT-safe; owner-only file permissions or a pipe ACL for the node's own user; not an anonymous pipe, since
+  the platform's supervisor starts the standby, not the old process, so no handle can be inherited). At the freeze the
+  old process connects (`NamedPipeClientStream`) and streams the same bytes it would write to the file (header,
+  per-world `Save` bytes, checksum) from a pooled buffer with no intermediate file, closes its listening sockets and
+  exits with code 0, which its supervisor does not restart (deployment.md section 0); the standby checks them as it checks the file (checksum, arm nonce, manifest hash, deadline; the boot id is
+  trivially the same), binds the node's ports once the old process has exited, and continues at `Rejoining`. Without
+  a ready standby at the freeze, or when the stream fails, the old process writes the file and the platform restarts
+  as usual. The pause targets, measured in W6, are about 0.1–0.3 s for JIT and AOT alike (freeze, serialize,
+  deserialize), against about 0.3–1 s (AOT) and 1–2 s (JIT) for the restart path. The machine holds both processes'
+  memory during the window, so arming refuses a standby when twice the working set plus the snapshot would pass the
+  memory limit. Where it exists: systemd (a second unit instance, `daserver@new`), launchd, Windows (a second service
+  instance), Compose and local Aspire runs. On Compose the network namespace must outlive either process, and a
+  namespace joined through `network_mode: service:map-0` is torn down when `map-0`'s container stops: so a small
+  holder service per stateful node (`map-0-net`, the node image in `--DaServer:Hold` mode, which only waits) owns the
+  namespace and the node's hostname, and two node services, `map-0-a` and `map-0-b`, join it
+  (`network_mode: service:map-0-net`) and share the snapshot volume; the rollout starts the stopped one of the pair
+  as the standby (deployment.md section 8). Not on Kubernetes: a running pod cannot gain a container from
+  a new image (the pod spec's containers are immutable; ephemeral containers are for debugging, cannot have ports or
+  probes and are not meant to run a workload), and an in-pod supervisor is not an option since DaServer starts no
+  supervisor process. Handing the listening sockets over instead of rebinding them (`SCM_RIGHTS` through P/Invoke on
+  Unix, `Socket.DuplicateAndClose` on Windows) would remove the rebind gap; it is a later improvement.
 - **Deployment on Kubernetes** (ADR-085, roadmap W11): actor-hosting groups are StatefulSets with `OnDelete` and a
   memory-backed `emptyDir` for the snapshot; the rollout Job patches each running pod's image, one at a time;
   gateways and stateless groups are Deployments. The full target shape is [deployment.md](deployment.md).
 - **Changes without a restart** are data swaps between two ticks: tuning tables (`IConfigTable<T>` singletons; with a
-  store it keeps one current version per table, (name, version, hash, bytes), the coordinator puts (name, version,
-  hash) in the view, every starting or hot-restarted node loads that version, the first reader seeds a table type
+  store it keeps one current version per table, (name, version, hash, bytes), the coordinator writes (name, version,
+  hash) into the membership table's version row, every starting or hot-restarted node loads that version, the first reader seeds a table type
   the store has no version of from its configuration, `POST /admin/tables/{name}` validates and replaces it
   cluster-wide, a rollback posts the old bytes again, and a node whose `TryLoad` rejects the current version fails
   readiness, which the upgrade check prevents by trying the new build's `TryLoad` when a table's format hash changed;

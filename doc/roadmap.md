@@ -41,8 +41,10 @@ Keep this file current: tick items when done, add items when scope changes.
       `SetIfChanged` that changed the value (`GeneratedJobMutStampsOnlyChanges`); a generated job holding a `ref`
       singleton is a `ref struct` and the write reaches the world (`RefSingletonWriteReachesWorld`); `World.Save` and
       `SaveEntities` throw inside a pass, so records are taken after `world.Update` (`SaveEntitiesOutsidePassOnly`); a `ChangedAny` filter built from
-      balanced calls of 2 to 9 types each, as the generated tracked-type list builds it (a single type as `Changed<T>`),
-      selects a row written in any of them (`BalancedChangedAnyChunks`); `root.Spawn` through `Instantiate` with given components
+      balanced calls of 2 to 9 types each, as the generated tracked-type list builds it (a single type as
+      `ChangedAny<T, T>`, never `Changed<T>`, which a filter ANDs), selects a row written in any of them
+      (`BalancedChangedAnyChunks`), and a package's one-type set composed with the user's set still selects a row
+      written only in the user's types (`SingleTrackedTypeComposesWithPackageSets`, `RemovedAny` alike); `root.Spawn` through `Instantiate` with given components
       refuses a taken `IUniqueIndexed<T>` key before creating anything (`SpawnOfTakenUniqueKeyChangesNothing`); a read through
       EasyEcs's generated accessor of an `ITrackChanges` type is `ref readonly` and stamps nothing
       (`GeneratedAccessorOfTrackedTypeIsReadOnly`); a `[NotSaved]` buffer written every tick tags no root `Unsaved`
@@ -101,8 +103,8 @@ Keep this file current: tick items when done, add items when scope changes.
         classes and systems), DAS014 (an invalid persisted component: the persist set's types), DAS019 (a collection
         held directly by a client message; an error, as §13 lists it).
       - New: DAS023 (`Subscribe` on a `[Stateless]` actor type, on `Connection` or on an actor type whose root is not saved:
-        they claim no epoch and their subscriptions cannot be stored), DAS024 (a client `[To]` message to an actor type without `[ActivatedBy]` for it: a warning,
-        since it reaches only keys with a record), DAS025 (`IActor<T>`, or an `IUniqueIndexed<T>`/`IIndexed<T>` keyed
+        they claim no epoch and their subscriptions cannot be stored), DAS024 (a client `[To]` message to an actor type with no `[ActivatedBy]` at all: a warning,
+        since no message can create its keys), DAS025 (`IActor<T>`, or an `IUniqueIndexed<T>`/`IIndexed<T>` keyed
         by itself, not `partial`; with a code fix), DAS026 (an `[On<T>]` method breaks an EasyEcs `[ForEach]` rule; the
         message names the EECS rule, EECS002/011/012/013/015, and links it), DAS027 (a user component type or `DynamicBuffer`
         element without `ITrackChanges` on a `[Persist]` prefab the analyzer can see, built with a literal `SetX` chain in
@@ -125,7 +127,9 @@ Keep this file current: tick items when done, add items when scope changes.
       `PendingOfNonEventOrRequestReported`, `PersistentPrefabOnUnsavedActorReported`, `PersistTypeWithoutTrackingReported`,
       `AskStateRecordedWithoutTracking`, `TagSetOnVisiblyPersistentEntityIsDAS028`, `RegistrationRegistersCanCreateTables`, `ManifestRecordsActivatedBy`, `TagSetElsewhereNotReported`,
       `TrackedTypeInForeignReferenceIsDAS029`, `SubscribeFromUnsavedRootIsDAS023`, `PackageTrackedSetsComposeInRegistration`,
-      `ReminderClosedPerRemindT`, `SubscribingTypeRootCarriesSubscriptionBuffer`, `InMessageJobIsPlainStruct`, `SystemInKWithChildComponentsRejected`,
+      `ReminderClosedPerRemindT` (one persistent prefab per (actor type, T), in the persist set and the manifest's
+      `prefab` lines), `RegistrationIncludesRemovedAnyFilter`, `ActivatedByRegistersClaimsAndTable` (the three-type and the
+      two-type overloads), `ManifestRecordsBufferElements` (`Slot`), `NotSavedBufferNotInTrackedTable`, `SubscribingTypeRootCarriesSubscriptionBuffer`, `InMessageJobIsPlainStruct`, `SystemInKWithChildComponentsRejected`,
       `CanCreateWithoutActivatedByReported`, `ScheduleOrRemindWithoutHandlerReported`, `RemindOnUnsavedRootReported`,
       `PrefabCompositionHistoryKeptInManifest`, `GroupRateOnlyJobGetsNoStructuralChanges`, `ScheduleInSystemIsStructuralChange`, `ScheduleInStatelessSystemReported`, `RawRecordLayoutChangeReported`, `TrackedRefNotAlwaysWrittenHinted`,
       `ConfigTableTakenByRefReported`, `SingletonWithoutInterfaceReported`, `UnfilteredForEachWithoutTickRateReported`,
@@ -211,13 +215,19 @@ Keep this file current: tick items when done, add items when scope changes.
       `FenceTimeoutRejoinsWithMissedPushes`.
     - [ ] W6 Persistence, activation, migration and hot restart (draft §6, §8, §10 and §11; architecture.md sections 4
       and 5; ADR-068, ADR-082, ADR-084, ADR-088):
-      - membership and fencing: the lease and its ack (renewing only from the majority side of
-        max(`FormationSize`, the last committed view); every view change, additions included, committed by a majority of
-        the last committed view, joiners neither acking nor hosting until then, a same-name newer generation replacing
-        its seat; the coordinator the Up member with the smallest admission number, a new number at readmission), generations from the coordinator (Unix ms, single-seed
-        formation), the epoch claim with owner generation and placement version in one upsert, strict placement
+      - membership and fencing: the membership table (Orleans' protocol, architecture.md section 4): the feature point
+        `IMembershipTable` with the PostgreSQL implementation (`daserver_members`, `daserver_membership`, versioned CAS
+        transactions, created by the schema mode) and the in-memory one (one node, `TestCluster`); joining (generation
+        max(Unix ms, recorded max + 1), older generations of the name written `Dead`, connectivity checked before
+        `Active`), probes on a ring, indirect probes, suspicion votes and death declarations, the table refresh and
+        snapshot push, a node reading itself `Dead` stopping, `IsolationTimeout`, re-placement one refresh after a
+        death, the coordinator derived from the table, `restart_until` as the restart permit, `WithMembershipStore`, a
+        multi-node configuration without a store refusing to start, `DaServer.Aspire` adding PostgreSQL to an AppHost
+        with more than one node and no store; no seeds; the epoch claim with owner name and generation (two columns) and placement version in one upsert, strict placement
         versions with `Fence` (bumped on every placement change, a migration's arrival writing `GREATEST`), idempotent
-        claims, `StoreDegraded`, `ActivationSlots`, `ActivationFailed`;
+        claims (a not-taken result whose row meets the condition, an empty result and a no-insert `NoActor` are run
+        again; a timed-out claim is cancelled before its retry, which notifies the owner remembered from before the
+        first attempt), `StoreDegraded`, `ActivationSlots`, `ActivationFailed`;
       - activation: placeholder roots with their mail bounded by `MaxWaitingMail`, `[ActivatedBy<T>]` (a key's first
         activation only; `[Durable]` requests always activate; mail that may not create a key claims without the
         `INSERT` branch), the handoff before a claim (`Arriving`, `HandoffQuery`) for keys of a slot just received, `Pending` with `MaxPending`, the idle scan as
@@ -239,18 +249,22 @@ Keep this file current: tick items when done, add items when scope changes.
       - migration bytes with layout hashes and a new epoch on arrival, tombstones forwarding mail, group frames flushed
         before deactivation and migration and discarded on fencing;
       - hot restart's runtime side (draft §10): the snapshot with its world count, user singletons outside it,
-        `Restarting`/`Resumed`, `RestartingNodes`, the restart permit, the arm nonce, `NodeRestarting`, `Rejoining`,
-        pinned slots and the reconcile on `Readmit`; `/admin/restart` as the one admin verb (`mode=snapshot|unload`,
+        `Restarting`/`Resumed`, `RestartingNodes`, the restart permit (`restart_until`), the arm nonce, `NodeRestarting`, `Rejoining`
+        (reading the node's own row), pinned slots and the reconcile when the row still holds the node; the warm
+        standby (`DaServer:HotRestart:Mode`, `--DaServer:Standby`, the snapshot streamed over a `NamedPipeServerStream`
+        with owner-only permissions, the file as the fallback, ports bound after the old process exits, the memory
+        check) with its adapters for systemd, launchd, Windows services, Compose (the `map-0-net` holder and an a/b
+        pair) and local Aspire; `/admin/restart` as the one admin verb (`mode=snapshot|unload`,
         `exit=true`, `dryRun=true` reporting the path `ManifestDiff` picks); the arm's write of every `Unsaved` root,
         a rejected snapshot recovering from records, framework singletons excluded from the snapshot; the rollout loop
         with its adapters for local Aspire (the dashboard's `{cluster}-restart` command), Compose (one service per
         stateful node with a fixed hostname and a named snapshot volume made writable by its `snapshot-init` service,
         `up -d --no-deps --force-recreate` as the trigger, admin calls from `docker compose run --rm --no-deps rollout`
-        on the internal network) and the documented systemd unit (`Restart=always`), launchd plist and Windows service
-        (exit code 75 with `sc failure` and `sc failureflag`) (the Kubernetes adapter is W11); the retire fence and
-        clock rules: a retiring node excluded from rebalancing, a member whose clock moved back readmitted;
+        on the internal network) and the documented systemd unit (`Restart=on-failure`), launchd plist (`KeepAlive` with `SuccessfulExit = false`) and Windows service
+        (`sc failure` and `sc failureflag`; exit code 75 after every hot-restart snapshot, 0 after a handover) (the Kubernetes adapter is W11); the retire fence and
+        clock rules: a retiring node excluded from rebalancing, a member whose clock moved back accepted again;
       - docs: operations.md and README lose `/admin/drain` and its command.
-      Tests: `ShardChecksLeaseBeforeTick`, `StashRestoredWithItsKey`, `AvatarNotInRecord`, `NetIdsCounterSurvivesCrash`,
+      Tests: `ShardChecksFrozenFlagBeforeTick`, `StashRestoredWithItsKey`, `AvatarNotInRecord`, `NetIdsCounterSurvivesCrash`,
       `PersistentSpawnUnderUnsavedParentThrows`, `SpawnOfPersistentPrefabTagsRootUnsaved`,
       `DestroyedPersistentChildTagsRootUnsaved`, `PlaceholderNeverCheckpointed`, `RecordMissingComponentsFilledFromPrefab`,
       `UnknownRecordTypeSkippedAndCounted`, `NotSavedComponentsReaddedOnArrivalAndLoad`,
@@ -279,9 +293,9 @@ Keep this file current: tick items when done, add items when scope changes.
       `PersistedReplyToDeadlineIsUtc`, `IssueSeqWrittenBeforeTokenLeaves`, `NextDueFollowsWakeAt`,
       `WakeActivationRewritesNextDue`, `SnapshotLoadedOnceThenCrashRejoinsFromRecords`,
       `SnapshotWorldCountKeptUnlessConfigPinsAnother`, `ConfigTablesAndWorldSingletonsNotInSnapshot`,
-      `LateProcessWaitsForCoordinatorVerdict`, `NewGenerationSupersedesRestartingOne`, `SnapshotFromBeforeRebootRejected`,
+      `LateProcessReadsItsRowBeforeRunning`, `NewGenerationSupersedesRestartingOne`, `SnapshotFromBeforeRebootRejected`,
       `JoinDuringRestartMovesNoSlotOfRestartingNode`, `ScaleInWaitsForRestart`, `ResumeIsolatesRootsPlacedElsewhere`,
-      `AsymmetricPartitionFreezesUnheardNode`, `CoordinatorCrashDoesNotExpireLeases`, `SameVersionSecondClaimRefused`, `SlotMoveBumpsPlacementSoClaimSucceeds`, `ExitArmRestartsWithoutSignal`,
+      `AsymmetricPartitionUnheardNodeDeclaredDead`, `CoordinatorCrashNextOldestTakesOver`, `SameVersionSecondClaimRefused`, `SlotMoveBumpsPlacementSoClaimSucceeds`, `ExitArmRestartsWithoutSignal`,
       `DisplacedOwnerFencedWithoutWrite`, `GroupFramesFlushedBeforeDeactivationAndMigration`,
       `FencedActorDiscardsGroupFrames`, `MigrationArrivalClaimSurvivesRestart`,
       `MigrationArrivalNeverLowersPlacement`, `MapAndLootSameIdDoNotShareRow`, `DueKeysFiltersBySlot`, `DueKeysPagesPastLimit`,
@@ -291,8 +305,8 @@ Keep this file current: tick items when done, add items when scope changes.
       `UnwritableRootMigrationFallsBackToDeactivation`, `UnwritableRootLeftOutOfSnapshot`, `UnwritableRootWithHeldOutputDoesNotStallMigrationOrFreeze` (also asserting what the asker sees: its re-ask runs once on the activation rebuilt from the last record, or a settling re-ask is answered `TooLate` and the asker ends `Expired`), `MigrateModeCreatesTableAndExits` (and ignores today's table), `NodeNotReadyUntilTableExists`,
       `StoreOutageKeepsNodeReady`, `ArmSystemArmsDueFromWakeAt`, `DurableReaskArmedFromWakeAfterReactivation`,
       `DryRunArmReportsPathWithoutArming`, `RestartUnloadModeUnloadsBeforeExit`,
-      `CoordinatorHotRestartDeadlineKeptBySuccessor`, `TwoExpiredRestartsDoNotDownMajority`,
-      `ColdClusterRestartNeverReusesGeneration`, `ParallelSeedsFormOneCluster`, `ArmWithoutKillExpires`,
+      `CoordinatorHotRestartStaysCoordinator`, `ExpiredRestartWrittenDead`,
+      `ColdClusterRestartNeverReusesGeneration`, `ParallelFirstNodesFormOneCluster`, `ArmWithoutKillExpires`,
       `FreezeAbortsWhenStoreHangs`, `TornSnapshotRejected`, `ImageNotMatchingArmRejectsSnapshot`,
       `RestartingTagNotInSnapshot`, `AbortedRestartRaisesResumed`, `PeerBackoffResetOnRestartedHello`,
       `TombstoneToLeftNodeFallsBack`, `RequestHeldThroughHotRestartExpires`, `MigrationDoesNotExtendRequestBudget`,
@@ -302,24 +316,34 @@ Keep this file current: tick items when done, add items when scope changes.
       `PoisonActorBacksOffClaims`, `RebalancePausesDuringDrainAndRestart`,
       `TimeNoticeRepushedOnResume`, `ManifestDiffPicksPath`, `ComposeRestartOneNodeAtATime`,
       `SlotMoveHandsOffBeforeClaim`, `HandoffPostponedForwardsMail`, `NonCreatingMailClaimsWithoutInsert`,
-      `MinorityFreezesInSymmetricPartition`, `FormationSizeTwoKeepsLease`, `FormationSizeTwoSurvivorRemovesDeadPeer`, `OneStatefulOneGatewaySurvivesGatewayRestart`,
-      `AdditionDuringSplitNeedsOldMajority`, `JoinerNeitherAcksNorHostsUntilCommitted`, `SameNameNewerGenerationReplacesSeat`, `ThreeMemberClusterDownToTwoFreezesOnSplit`,
-      `CoordinatorComputedFromViewAlone` (every node names the same coordinator; a readmitted former coordinator is
-      last in line), `ChainedSlotMoveWaitsForHandoff`, `ForwardedMailOrderedBeforeParked`,
+      `JoinWritesJoiningThenActive` (no slots, no clients before `Active`), `JoinWaitsForConnectivityToActiveMembers`,
+      `JoinSkipsStaleIAmAlive`, `SuspicionVotesDeclareDeath`, `IndirectProbeBeforeSuspicion`, `ExpiredSuspicionsDoNotCount`,
+      `DeclaredDeadNodeStopsItself`, `PartitionMinoritySideDeclaredDead` (and a 2|3 split of five where the 2 side
+      writes first keeps the 2 side), `TwoNodeSplitKeepsExactlyOne`, `TableCasConflictRetries`,
+      `StoreOutageStopsNobody`, `IsolatedNodeStopsAfterIsolationTimeout`, `ReplacementWaitsOneTableRefresh`,
+      `NewerGenerationMarksOlderDead`, `OneStatefulOneGatewaySurvivesGatewayRestart`,
+      `CoordinatorDerivedFromTable` (every node at a version names the same coordinator; a stale coordinator's write
+      fails), `PlacementVersionIsTableVersion`, `MultiNodeWithoutMembershipStoreRefusesStart`,
+      `InMemoryTableSharedByTestCluster`, `AspireAddsPostgresForMultiNodeWithoutStore`, `DefunctRowsCleanedUp`, `ChainedSlotMoveWaitsForHandoff`, `ForwardedMailOrderedBeforeParked`,
       `ClaimNotTakenReturnsStoredOwner` (forward, not `NoActor`), `CanCreateFalseWritesNothing`,
       `NonPersistedTypeClaimsNoRow`, `NeverWrittenRowSweptAfterTtl` (through the `SECURITY DEFINER` function; the
       runtime role has no `DELETE`), `ClientDurableObeysActivatedBy`, `ClientDurableSettleByFromAge` (a retry through
       a second gateway after a reconnect keeps the first settle-by and is answered from the log),
       `ClientDurableBelowLowWaterIsTooLate`, `LowWaterAppliesAfterReplyLogMiss`, `RestartedSdkCallIdsAboveLowWater`, `CallIdBaseFromGatewayNotDeviceClock`, `TooLateCarriesMarkSdkResendsOnce`,
-      `CreditedPaymentIdsDroppedOnSettled`,
-      `ClientSettleBelowMinimumRefusesStart`, `PaymentActorCreditsOnce` (a webhook repeated after days credits once),
-      `PlayerCreditsPaymentOnce` (a re-ask under a fresh call id after `Expired` is answered "already credited"),
+      `TooLateResendOnlyForUnsentFreshIds` (an id sent before, or passed back with `call:`, ends `Expired`),
+      `ExplicitCallCarriesFirstSentAge`, `ClientSettleBelowMinimumRefusesStart`,
       `CanCreateFalseStillActivatesExistingRecord` (a map removed from the table), `CanCreateFalseOnUnsavedTypeIsNoActor`,
       `HandoffQueryAdoptedPerSlotOnly`, `HandoffQueryVersionStopsSourceActivation`,
       `EpochNotReusedAfterSweep`, `EveryClaimBranchTakesSequenceEpoch`, `ConcurrentNewKeyClaimRetriesEmptyResult`,
-      `BatchedWriteMissingRowFences`, `SchemaJobRerunsIdempotently`, `SweepWalksTableOnce` (key-set batches, by the member with a store and the smallest
-      admission number), `ArmVoidedByHandoff`, `ViewRemovalNeedsQuorumOfLastCommittedView` (a 2|3 split of five:
-      only the 3 side renews), `FormationSizeOneSingleNodeRenews`, `SchemaGrantsRuntimeRoleFromConnectionString`,
+      `BatchedWriteMissingRowFences`, `SchemaJobRerunsIdempotently`, `SweepWalksTableOnce` (key-set batches, by the coordinator), `ArmVoidedByHandoff`,
+      `SchemaGrantsRuntimeRoleFromConnectionString` (the members tables too), `SchemaQualifiesEveryObject` (a role
+      whose `search_path` lacks the schema), `OwnerColumnsMapUnderAot`, `NotTakenClaimMeetingConditionRetries`,
+      `NoInsertClaimNoActorRaceRetried`, `TimedOutClaimCancelledThenNotifiesDisplacedOwner`,
+      `BatchedWriteLowerWriteGenAtSameEpochRetried`, `BatchedWriteLandedWriteCountsAsWritten`,
+      `StandbyHandoverPauseUnder300ms` (also BenchmarkDotNet, JIT and AOT), `StandbyMissingFallsBackToFile`,
+      `StandbyStreamFailureFallsBackToFile`, `StandbyBindsPortsAfterOldExits`,
+      `ArmRefusesStandbyWhenMemoryDoubleExceedsLimit`, `StandbyPipeOwnerOnly`, `HandedOverProcessNotRestarted` (exit 0
+      under each supervisor's on-failure policy), `ComposeStandbyHandover` (the holder keeps the address),
       `DueHeapDefersUnclaimedArrival`, `DueHeapSkipsRearmedEntry`, `SharesNeverExceedNodeLimit` (more
       worlds than the limit), `ArmAnswersAfterWriteRound` (`exit=true` too), `ArmRefusedDuringHandoff`,
       `FenceMissingRejoinSetsMissedPushes`, `FlushedFramesAppliedBeforeTakeOver`, `SaveEntitiesOutsidePassOnly`,
@@ -366,7 +390,11 @@ Keep this file current: tick items when done, add items when scope changes.
       `An_expired_grant_takes_the_drop_off_the_map`, `DropsReshownAfterMapCrash`, `DropsReshownAfterCrashBeforeFirstRecord`, `LaterDropAppearsToEarlierClients`, `TakenDropDisappears`, `KilledNpcDisappearsAndDrops`, `CrossingPushesNewCellsSnapshot`, `CrossingDuringHandoverSnapshotsAtConfirmation` (an avatar crossing cells while its `Joined` is dropped is tagged `Resnap` and gets a full snapshot when confirmed), `SnapshotSkipsWhatVanishRemoves` (a `Leaving` avatar and a dead NPC are left out; a dead avatar, which stays on the map, is in), `MapCrashReusedNumberDoesNotBreakLoot` (a drop number repeated after a map crash ends in `Clash`/`Redrop` and the drop
       is shown again), `VisitorNumbersNeverMeetDropNumbers`, `VisitorNumbersContinueAfterMigration`, `TimedOutClaimLeavesPickUpUnknown`), `LoginIssuesIncreasingSequence`, `LoginTokenLeavesAfterSequenceWritten`,
       `UseItemBindsToPlayerRoot`, `PreciousPurchaseRunsOnceAcrossRetry`, `RechargeWebhookCreditsOnce`
-      (through `Payment(payment id)`), `GuildDailyResetFiresAfterCrash`, `BuyerCannotOrderForAnother`,
+      (through `Payment(payment id)`), `PaymentActorCreditsOnce` (a webhook repeated after days credits once),
+      `PlayerCreditsPaymentOnce` (a re-ask under a fresh call id after `Expired` is answered "already credited"; the
+      payment id is the key), `CreditedPaymentIdsDroppedAfterSettleBy` (kept past `Settle` until the latest `Credit`
+      settle-by plus `ClockSkew`), `LostSettleResentOnActivation`, `StashPrefabRoundTrip` (Stash, Prize and Position
+      in the record and back), `ExpiredGrantRepliesNothing` (the map's `Claim` times out, never a definite `false`), `GuildDailyResetFiresAfterCrash`, `BuyerCannotOrderForAnother`,
       `AppHostServerTypesGeneratedFromManifest`, `ClientPortWithoutConnectionHostFailsBuild`,
       `RouteCheckReadsCommittedManifests`; the 1,000-bot and
       100,000-buyer E2E on the new model.
@@ -383,11 +411,12 @@ Keep this file current: tick items when done, add items when scope changes.
       pinned) generates from `Game.Protocol`'s build; proven by the flash sale from a browser page and the suite in CI;
       Unity WebGL (IL2CPP) keeps the C# client over a jslib WebSocket transport. Tests:
       `ConformanceSuitePassesOnCSharpSdk`, `ConformanceSuitePassesOnTypeScriptClient`, `FlashSaleBuysFromBrowserPage`.
-    - [ ] W7c Tools (ADR-090): `TestCluster.Partition`/`Kill`/`DelayLinks` for users' tests (the framework's own
+    - [ ] W7c Tools (ADR-090): `TestCluster.Partition`/`Kill`/`DelayLinks` and `Table(value)` for users' tests (the framework's own
       partition and crash tests move onto them); the read-only inspector's endpoints (drafts/architecture.md section 8,
       "Inspector and admin clients"), with Aspire commands as thin clients for local runs (the Dashboard is W7e's).
       Tests:
       `UserTestPartitionIsolatesNodes`, `UserTestKillSkipsGracefulStop`, `UserTestDelayLinksDelaysFrames`,
+      `TestClusterTableSeedsCurrentVersion`,
       `InspectorDescribesActorSubtree`, `InspectorCountsByComponentWithoutReflection`.
     - [ ] W7d Samples as templates (ADR-091): `samples/starter` (the chat room of draft §0: `[ActivatedBy<JoinRoom>]`,
       `PresencesPerClient = 16`, `JoinClient`/`TryGetClient`, no record; the `daserver` template), `samples/arena`
@@ -452,18 +481,19 @@ Keep this file current: tick items when done, add items when scope changes.
       design.md and decisions.md and delete them (each step before already moved what it landed, rule above). The
       records that describe today's model and are rewritten or removed with them, from architecture.md section 9:
       ADR-011 (shard and world: the shard internal, "world" public, ADR-086), ADR-012 (registration), ADR-017 (one
-      project per server), ADR-019 and ADR-047 (`Publish` deleted), ADR-023 (keys move after the lease), ADR-024,
+      project per server), ADR-019 and ADR-047 (`Publish` deleted), ADR-023 (gossip membership and seeds replaced by the membership table), ADR-024,
       ADR-036, ADR-050 and ADR-051 (sessions, tickets and grants become presences and client tokens), ADR-025 and
       ADR-029 (client groups: full subscription sets, pushes only to gateways with members), ADR-026 (the connection
       age optional), ADR-030 (gateways and stateless groups only: no RBAC for nodes, one namespaced Role for the
-      rollout Job; one step only), ADR-033 (`IdleTimeout`), ADR-037 (lifecycle tags), ADR-038 (`[Message]`), ADR-043
+      rollout Job; one step only; no seeds), ADR-031 (pulses no longer the failure detector: probes and suspicion
+      votes), ADR-033 (`IdleTimeout`), ADR-037 (lifecycle tags), ADR-038 (`[Message]`), ADR-043
       (typed ids become actor types), ADR-052 (packages), ADR-055 and ADR-056 (the Simulation package and DAS010
-      retired), ADR-058 (`SendAfter` becomes `Due`), ADR-061 (systems may ask), ADR-064 (an expired hot restart counts
-      as Left; the majority counted over `FormationSize`), ADR-065 (rotation without restarts: nodes reload the key
+      retired), ADR-058 (`SendAfter` becomes `Due`), ADR-061 (systems may ask), ADR-064 (keep-majority replaced by suspicion votes
+      and death declarations in the membership table), ADR-065 (rotation without restarts: nodes reload the key
       files live), ADR-066 (no error setting: a persisted root reloads, others continue), ADR-067 (no reloadable logic
       project), ADR-068 (its "Today" bullet; the claim without its `INSERT` branch), ADR-072 (handoff becomes migration
       bytes, asked for by `HandoffQuery` before the target claims), ADR-073 (`IPlaced` and DAS016 gone), ADR-079 (the
-      coordinator by admission number, computed from the view; the lease from the majority side), ADR-081 (handlers, `Context`, sessions, lifecycle); CLAUDE.md (Layout: one Server project with several
+      coordinator and the slot table derived from the membership table), ADR-081 (handlers, `Context`, sessions, lifecycle); CLAUDE.md (Layout: one Server project with several
       server types; the orchestration rule: what DaServer.Aspire adds now, StatefulSets, the signing Secret mounted as
       files, the Jobs, the rollout Role, NetworkPolicies, pod security; `replicas` owned by the autoscaler and the
       rollout's field manager, ADR-094) and operations.md ("Publish and deploy", "Rotating the signing secret").
@@ -505,7 +535,11 @@ Keep this file current: tick items when done, add items when scope changes.
       published nodes refuse to start without it; Compose secret files readable by the node's uid (0444, or 0440 with
       group 1654); Compose `secrets:`
       mounted at the same path and an `internal: true` network for the cluster and HTTP planes; the schema Job (W6's
-      `--DaServer:Migrate`, Compose's one-shot service) with an owner role, nodes on a DML-only role, no Helm hook;
+      `--DaServer:Migrate`, Compose's one-shot service) with an owner role (`CREATE` on the schema, every object
+      schema-qualified), nodes on a DML-only role (the actor and membership tables), every node group given the store's
+      connection (gateways included: membership is there), the samples' role-init step before the schema Job (on
+      Kubernetes the schema Job retries until the role exists), the Compose deploy order (`up -d --wait postgres`, then
+      `up --no-deps --force-recreate --exit-code-from schema schema`), no Helm hook;
       the upgrade check a plain Job started by the deploy step (N9); load generators (`bots`, `crowd`) as Jobs or left
       out of publish (Compose `profiles`); `DOTNET_PROCESSOR_COUNT` from `requests.cpu`; startup probes and 2 s probe
       timeouts; no service-account token on node pods; non-root, read-only root filesystem (writable `/tmp` and the
@@ -519,7 +553,9 @@ Keep this file current: tick items when done, add items when scope changes.
       (kind, in-place resize, JIT and AOT images), `CpuResizeKeepsWorldCount`, `DashboardSurvivesRotation`,
       `TemplateChangeBeyondImageRecreatesPod` (a VPA-resized pod still patches in place), `ComposeGatewayRollKeepsClients`, `ComposeSnapshotVolumeWritable`, `NodeRefusesStartWithoutSigningSecret`, `SecretRotationWithoutRestart`,
       `RotationWaitsForFingerprintOnEveryNode`, `RejectEmptyKeyOnReload`, `NetworkPolicyAdmitsDashboard`,
-      `NetworkPolicyAdmitsReferencingResources`, `ComposeSecretReadableByNode`, `LaunchdThrottleIntervalOne`.
+      `NetworkPolicyAdmitsReferencingResources`, `NetworkPolicyAdmitsRoleInitToStore`, `ComposeDeployWaitsForPostgresThenSchemaExitCode`
+      (a failing schema stops the deploy), `SchemaJobRetriesUntilRoleExists`, `GatewayPodsReachStore`,
+      `ComposeSecretReadableByNode`, `LaunchdThrottleIntervalOne`.
 14. N9 hot restart's remaining operator side, on W's model (draft §10; ADR-084, ADR-088), after W12 and before W10: the
     `{cluster}-upgrade-check` Job and `aspire deploy` step, a plain Job that calls a running node's dry-run arm
     (`/admin/restart?dryRun=true` with the new manifest, `ManifestDiff`), including the rollback-safety check (a release whose new
