@@ -555,21 +555,26 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   var ALLNODES = TYPES.reduce(function (s, t) { return s + t.n; }, 0), ALLACTORS = TYPES.reduce(function (s, t) { return s + t.count; }, 0);
   function answering() { return TYPES.reduce(function (s, t) { return s + answered(t).length; }, 0); }
   var MAP = T('map');
-  // Firing alerts, from Alertmanager: one per rule and node, labelled cluster, type and node. An incident is the alerts
-  // of one rule on one server type (Alertmanager's grouping by alertname, cluster and type);
-  // incidents rank by severity, then by how many nodes they cover. A silenced incident stays listed, last.
+  // Firing alerts, from Alertmanager: node-level rules fire one per node (labelled cluster, type and node), type-level
+  // rules one per server type (no node). An incident is the alerts of one rule on one server type (Alertmanager's
+  // grouping by alertname, cluster and type); incidents rank by severity, then by how many nodes they cover: a
+  // node-level incident's firing nodes, a type-level one's nodes whose readings pass the rule's limit (its culprits).
+  // A silenced incident stays listed, last.
   var ALERTS = [];
   if (SRC.alerts === 'ok') {
-    MAP.nodes.forEach(function (n) { if ((fresh(n) || n.st === 'isolated') && over(n.p99)) ALERTS.push({ alert: 'DaServerAskLatencyHigh', type: 'MapServer', node: n.n, severity: 'critical', since: Date.UTC(2026, 9, 20, 17, 43) / 1000 }); });
+    // a type-level rule: one alert for the server type, no node; its culprit nodes come from the readings' outliers
+    if (MAP.nodes.some(function (n) { return (fresh(n) || n.st === 'isolated') && over(n.p99); })) ALERTS.push({ alert: 'DaServerAskLatencyHigh', type: 'MapServer', node: null, severity: 'warning', since: Date.UTC(2026, 9, 20, 17, 43) / 1000 });
     ['game-87', 'game-40'].forEach(function (n) { ALERTS.push({ alert: 'DaServerGcPauses', type: 'PlayerServer', node: n, severity: 'warning', since: Date.UTC(2026, 9, 20, 17, 51) / 1000 }); });
   }
   var SILENCES = {};
   function incidents() {
     var g = {}, a = [];
-    ALERTS.forEach(function (x) { var k = x.alert + ' ' + x.type; if (!g[k]) a.push(g[k] = { key: k, alert: x.alert, type: x.type, severity: x.severity, since: x.since, nodes: 0 }); g[k].nodes++; });
+    ALERTS.forEach(function (x) { var k = x.alert + ' ' + x.type; if (!g[k]) a.push(g[k] = { key: k, alert: x.alert, type: x.type, severity: x.severity, since: x.since, nodes: 0 }); g[k].nodes += x.node ? 1 : culprits(x.type); });
     a.forEach(function (i) { i.silenced = SILENCES[i.key]; });
     return a.sort(function (p, q) { return !!p.silenced - !!q.silenced || (p.severity === q.severity ? 0 : p.severity === 'critical' ? -1 : 1) || q.nodes - p.nodes; });
   }
+  // A type-level alert's culprits: the type's nodes whose fresh readings pass the rule's limit
+  function culprits(name) { var t = TYPES.filter(function (u) { return u.name === name; })[0]; return t ? t.nodes.filter(function (n) { return (fresh(n) || n.st === 'isolated') && over(n.p99); }).length : 0; }
   // A server type is unhealthy when an alert fires for it: the Dashboard has no threshold of its own
   function unhealthy(t) { return ALERTS.some(function (x) { return x.type === t.name; }); }
   // Changes: what membership shows (builds, joins, leaves, incarnations), the Dashboard's own actions, and what the

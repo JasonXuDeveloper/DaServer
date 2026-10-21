@@ -316,9 +316,9 @@ Keep this file current: tick items when done, add items when scope changes.
       - records: persistence per entity kind (`FromPrefab`, `Persisted(Root)`, the persist set and its change system,
         `Unsaved`), every load completing entities from their prefab, the tick-end batched write with the epoch and
         write-generation CAS, `WriteNow` and `DaServer:CheckpointInterval` (staggered by the key's hash, oldest unsaved
-        first, a quarter of each round kept for checkpoints), `DaServer:Store:WritesInFlight`, statements capped by
-        `Store:StatementBytes` and records by `Store:MaxRecordBytes`, rows sorted, transient errors retried (a timed-out
-        write cancelled first), deterministic ones bisected to the bad row, a world pausing its intake past
+        first, a quarter of each round kept for checkpoints), `DaServer:Store:WritesInFlight`, writes capped by
+        `Store:StatementBytes` of records and records by `Store:MaxRecordBytes`, rows sorted, transient errors retried (a timed-out
+        write cancelled first), deterministic ones bisected to the bad root, a world pausing its intake past
         `Store:BacklogPause`, `daserver.store.oldest_unsaved_age`, a root whose state does not serialize or whose row the
         store refuses handled as `RecordUnwritable`;
       - the reload after a throw in a persisted actor (a type without a record continues);
@@ -327,7 +327,7 @@ Keep this file current: tick items when done, add items when scope changes.
         written when nothing is unwritten, a group push held until release and then appended to its group's frame,
         a reply past its deadline dropped on release, held `[Latest]` mail replaced, held output bounded per root and
         world (`Busy` beyond), mail parked on a root once its final write before a migration is issued;
-        a statement timed out three times halved; `root.IssueClientToken` with `IssueSeq`, committing implicitly;
+        a write timed out three times halved; `root.IssueClientToken` with `IssueSeq`, committing implicitly;
         `TestActor<K>` with `FailNextWrite()`, `Crash()` and `Answer<TReq>`;
       - `[Once]` (ADR-099): `RootState.OnceNext` a sequence pair `(seed, counter)` compared seed first, the seed the
         record's first claim epoch (no shift, `SequenceSeedNeverOverflows`), an alert with 2^24 counters left and no
@@ -337,9 +337,9 @@ Keep this file current: tick items when done, add items when scope changes.
         (`ClientSentAtStampedByGateway`), attempts older than `MaxAskTimeout + ClockSkew` dropped and alerted
         (`DaServerOnceTooOld`; also `DaServerOnceStaleAsking` and `DaServerOnceCounterLow`, target-only rules in
         `observability/prometheus-rules.yaml`); the receiver's `OnceSenders` as rows of their own (`daserver_once_senders`: changed rows in
-        the record's statement, at most `Once:RowChangesPerWrite` (1,024) per root per write (`OnceRowChangesBounded`,
-        two changes per new sender), inserted only while the sending actor's record exists (`ForgottenRowNeverWrittenBack`),
-        never deleted by that statement (`RowsDeletedOutsideRecordStatement`), never in migration or handover bytes: the
+        the record's write transaction, as many row statements as they need, each applying only where its record landed
+        (`RootRowChangesSpanStatementsInOneTransaction`, two changes per new sender), inserted only while the sending actor's record exists (`ForgottenRowNeverWrittenBack`),
+        never deleted by the record's write (`RowsDeletedOutsideRecordStatement`), never in migration or handover bytes: the
         move's and the freeze's last write carries the unwritten row changes (`HandoverKeepsUnwrittenRowChanges`) and the
         target range-reads after its claim commits (`OnceRowsReadAfterClaim`, `OnceRowsNotInMigrationBytes`), bounded by
         `Once:SendersPerReceiver`; per sender the mark, and `forget_after` or a client session's `delete_after`; an actor
@@ -364,7 +364,7 @@ Keep this file current: tick items when done, add items when scope changes.
         time, which also range-reads its rows with `forget_after` set every `ProbeAfter`: `IdleScanLearnsForgetAfter`)
         and `Unacked` in the record (sender, sequence, stored reply of at most 32 bytes, write generation); the check before
         the handler (too old, stale at or below `n`, a repeat answered with the stored reply after its write,
-        `WindowFull` past `OnceWindow`, `Unacked`, the row changes or the rows (with `RetryAfter`), `NoActor` for a missing
+        `WindowFull` past `OnceWindow`, `Unacked` or the rows (with `RetryAfter`), `NoActor` for a missing
         receiver the request may not activate, an unstored `Busy` while the receiver is being deleted, else
         run once with an implicit commit); cumulative acknowledgements
         taken from the sender's last written record on every mail of the pair, and one on the internal lane after the
@@ -387,25 +387,27 @@ Keep this file current: tick items when done, add items when scope changes.
         ids refused and plain requests not (`PlainRequestBelowAckPasses`), at most `Clients:OnceReceiversPerSession`
         receivers tracked, acknowledgements forwarded, probes answered;
       - `AskUntilAnswered` (ADR-100): one store table for every ask (`daserver_once_asks`, phases queued, sent,
-        stopped, the call's state in `ask_state` with its type id in `state_type`: `AskStateKeptInRow`, an unknown type stopping
-        the row: `UnknownStateTypeStops`), rows written in the item's own record statement
+        stopped, the call's state in `ask_state` with its type id in `state_type`: `AskStateKeptInRow`, an unknown type left sent
+        and unanswered for a build that knows it, alerted by `DaServerOnceUnknownState`, and the upgrade check comparing
+        `state` lines: `UnknownStateTypeWaitsForBuild`), rows written in the item's own record write
         joined to its compare, none in the record (`AskRowsOneTable`), inserted already sent when the window and
-        `OnceInFlight` allow and no earlier row to that target is queued (`AskSentInItsOwnWrite`,
-        `SentInsertNeverOvertakesQueued`); a soft write budget (`RowChangesPerWrite`, `Once:ChangeBytesPerWrite` 2 MiB,
-        every row change counted): an item starts only below it, else waits in the mailbox and the root is written now,
-        a system skips the root's entities for the pass (`AskBytesDeferItemPastWriteBudget`, `SystemSkipsRootPastWriteBudget`);
-        a started item's hard cap `[ActorOptions(AsksPerItem)]` (16) and `Once:BytesPerItem` (1 MiB), the call past it
-        throwing deterministically (`AsksPerItemThrowsDeterministically`); budget + item cap + `OnceSenders` bytes within
-        `StatementBytes` − `MaxRecordBytes`, checked at start; a quarter of each write kept for the runtime's sends,
-        retry updates coalesced (`RuntimeSendsKeepReservedBudget`); a row answered in a write sent only as a deletion,
-        `q` skipping rows `x` deletes (`AnsweredRowWithPendingRetryDeleted`); statements split between roots at 512 rows,
+        `OnceInFlight` allow and no earlier row to that target is queued, in memory or paged out (`AskSentInItsOwnWrite`,
+        `SentInsertNeverOvertakesQueued`); no write budget: a root's write is one transaction of several statements
+        (records first, then row statements chunked by `StatementBytes`, each joined to its record's new write
+        generation), sent in one round trip (`RootRowChangesSpanStatementsInOneTransaction`, `FencedRootRowsUnchanged`),
+        so every item, system and reaction runs; a started item's cap `[ActorOptions(AsksPerItem)]` (16) and
+        `Once:BytesPerItem` (1 MiB), the call past it throwing deterministically (`AsksPerItemThrowsDeterministically`);
+        retry updates going with the next write; a row answered in a write sent only as a deletion, the delete a separate
+        statement after the upsert (`AnsweredRowWithPendingRetryDeleted`); writes split between roots at 512 roots,
         never splitting a root; a request and its state at most `Once:MaxRequestBytes`, checked at
         the call; the sequence taken from `OnceNext` only in the write that sends a row, re-sent after a crash under the
         stored one (`SeqAssignedAtSend`), so the cumulative acknowledgement, from written sent rows only, never passes a
         queued ask (`AckNeverSkipsQueuedAsk`); sends per destination in call order, retries per destination on one timer in order
         (`AskRetriesPerDestinationInOrder`; asks ordered only among first sends, the §1 exception), at most
-        `OnceInFlight` sent rows per root (memory and rate only, nothing refused); only head rows held in memory while active
-        (`OnceInFlight` sent plus up to `OnceQueued` queued), the rest paged by ordinal (`AskRowsPagedPastHead`), request
+        `OnceInFlight` sent rows per root (memory and rate only, nothing refused); every sent row held in memory while active
+        (`LoweringOnceInFlightNeverAcksEarly`) and a bounded queued head per destination (`Once:QueuedHeadPerTarget` 64,
+        `Once:TargetsInMemory` 256, round-robin), the rest paged per destination by ordinal (`AskRowsPagedPerTarget`,
+        `SlowTargetNeverHoldsOthers`), request
         bytes kept until the insert lands and read ahead for the next sends, `next_try_at` set by phase and NULL once stopped;
         a probe of an inactive sender answered from one statement over its sent rows and `OnceNext`
         (`ProbeAnswerSingleSnapshot`); range-read after the claim, their
@@ -426,7 +428,9 @@ Keep this file current: tick items when done, add items when scope changes.
         admission (`QueuedOnceCountsTowardUnacked`); `AskInLoopIsDAS034Warning`; alerts `DaServerOnceAskOld` on the
         sweeping node's `daserver.once.ask_age` (index-only scan of `(type_id, phase, created_at)`) and
         `DaServerOnceQueuedFull` on `daserver.once.queued_full`, `daserver.once.ask_rows` a trend only (promtool tests:
-        a stuck plateau fires, a healthy ramp does not, a drain resolves); the asking entity found again by its identity
+        a stuck plateau fires, a healthy ramp does not, a drain resolves), `DaServerOnceUnknownState` on
+        `daserver.once.unknown_state` and `DaServerOnceSendersNearCap` on `daserver.once.senders` against its cap
+        (promtool tests: an unknown state fires after 15 minutes, a receiver at 90% of the cap fires); the asking entity found again by its identity
         after a reload or migration, never by a raw entity id (`AskingEntitySurvivesReload`);
       - the wake: `WakeAt` on persistent framework entities (reminders, the delete check; ask rows carry their own next try), the `ArmSystem` arming a `Due` from it
         on load and activation, re-arming it on `[Changed<WakeAt>]` and disarming it on `[Removed<WakeAt>]`, the firing

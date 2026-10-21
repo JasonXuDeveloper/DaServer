@@ -1100,8 +1100,10 @@ Replaced by ADR-081.
     a new key, raises the epoch, resets `write_gen` and takes the owner only with a strictly newer placement version
     (or the same version and owner, a retry), and a displaced owner gets `Fence(key, epoch)` at once. A migration's
     arrival claims with an `UPDATE` comparing the epoch it carries, writing `GREATEST(stored, seen)` placement.
-  - **Writes:** each world writes the roots due at a tick end in statements over `unnest` arrays split between roots at 512 rows (a root's record and row changes never split), at
-    most `DaServer:Store:WritesInFlight` statements in flight per world (roots beyond wait for the next round), every
+  - **Writes:** each world writes the roots due at a tick end in writes over `unnest` arrays, each one transaction of
+    several statements in one round trip (the records' compare and swap, then the roots' row statements, each applying
+    only where its record landed), split between roots at 512 roots (a root's record and row changes never split), at
+    most `DaServer:Store:WritesInFlight` writes in flight per world (roots beyond wait for the next round), every
     row a CAS on `(type_id, key)`, the epoch and `write_gen < :write_gen`; the rows not updated come back as stored. A
     root whose `SaveEntitiesWith` throws (a state that does not serialize) is left out of the batch and logged
     (`RecordUnwritable`); the rest of the batch is written. Deactivation, stop and migration also save before they
@@ -1145,7 +1147,7 @@ Replaced by ADR-081.
   - The key as two `bigint` columns: fixed width, but every key pads to 16 bytes and the primary key has three
     columns; `bytea` holds every shape in one.
   - Event sourcing: out of core; it can be built as a pattern on actors.
-- Consequences: one statement per 512 changed actors per world per tick end, at most `Store:WritesInFlight` in flight
+- Consequences: one write (one transaction, one round trip) per 512 changed actors per world per tick end, at most `Store:WritesInFlight` in flight
   per world; a stale owner can never overwrite the new one, nor a late statement a newer state; `DueScan` costs one
   index range per owned `(type, slot)` pair. A store
   outage delays deactivations and stops, bounded by the stop budget. Records are opaque bytes for performance;
@@ -1725,8 +1727,8 @@ Replaced by ADR-081.
     never reach a checkpoint; a type without a record continues. There is no setting: the other choice for either
     kind is unsound.
   - **Writes are asynchronous and batched by default**: changes tag roots `Unsaved`; at the end of every tick (after
-    every mail batch for actor types without `[TickRate]`) a world writes the roots due in one statement (ADR-068's
-    batch over arrays with `unnest`, kept), each row with its own epoch CAS: roots that called `Commit` every
+    every mail batch for actor types without `[TickRate]`) a world writes the roots due in one write (ADR-068's
+    batch over arrays with `unnest`, kept, one transaction), each row with its own epoch CAS: roots that called `Commit` every
     time, other `Unsaved` roots at their staggered checkpoint instant, deactivations' final writes with them (ADR-097
     has the caps, the error handling and the checkpoint order). Graceful exits (deactivation, scale-in, rolling upgrade,
     hot restart, shutdown) lose nothing but the unwritten changes of a root whose state does not serialize or whose row
@@ -2780,13 +2782,14 @@ Replaced by ADR-098.
     of every write round kept for them while commits flow), and always before deactivation (a logout), a migration
     and a hot restart's handover; a graceful stop writes within its stop budget and logs what it could not. A crash
     loses the larger of one interval and the time the write backlog takes to drain
-    (`daserver.store.oldest_unsaved_age`), consistently within each actor. Statements are split between roots at 512 rows and
-    `DaServer:Store:StatementBytes` (a root's record and row changes never split), a record at `DaServer:Store:MaxRecordBytes`, rows sorted; transient errors retry
-    the same bytes (a timed-out statement cancelled first), and a deterministic error bisects the statement between roots to its one
+    (`daserver.store.oldest_unsaved_age`), consistently within each actor. Writes are split between roots at 512 roots and
+    `DaServer:Store:StatementBytes` of records (a root's record and row changes never split: its row changes go in as many
+    row statements as they need in its write's transaction), a record at `DaServer:Store:MaxRecordBytes`, rows sorted; transient errors retry
+    the same bytes (a timed-out write cancelled first), and a deterministic error bisects the write between roots to its one
     bad root (`RecordUnwritable`), so one root never blocks a world's writes; a world whose backlog passes
     `DaServer:Store:BacklogPause` stops taking mail until it drains.
-  - **`root.Commit()` for valuable changes**: the root joins this tick's batched write (group commit, statements split
-    between roots at 512 rows), and everything the item sent is held per root with its write generation, released in order when the
+  - **`root.Commit()` for valuable changes**: the root joins this tick's batched write (group commit, writes split
+    between roots at 512 roots), and everything the item sent is held per root with its write generation, released in order when the
     write lands and dropped on a fence; the held output is a barrier per (root, destination actor), so the one order
     of ADR-096 holds; a held group push joins its group's frame only on release (ordered against other items' group
     pushes by release, the one exception besides migration, so one write never stalls a group's broadcast); a reply
@@ -2941,12 +2944,12 @@ Replaced by ADR-098.
     requests a second holds 500–1,000 entries; such a receiver raises `Unacked`. Per sender a row `OnceSenders` (the
     mark `n`; `forget_after` once the sending actor is deleted; `delete_after` for a client session), about 52 bytes,
     **a store row of its own** (`daserver_once_senders`), outside the record because rows follow senders, not entries.
-    - Changed rows (a moved mark, a new sender) are written in the record's statement and only where its compare
-      succeeded, since moving `n` and dropping `Unacked` entries must land together. A new sender costs two changes in
-      two writes (the row, then the acknowledgement moving `n`); at most `DaServer:Once:RowChangesPerWrite` (1,024,
-      about 52 KB) unwritten changes per root, past which a new sender gets `WindowFull` with `RetryAfter` the next
-      write, so a root takes at most `RowChangesPerWrite / 2` new senders a write (about 10,000 a second at 20 writes
-      a second) and its changes always fit one statement however long its writes back off.
+    - Changed rows (a moved mark, a new sender) are written in the record's write transaction and only where its
+      compare succeeded, since moving `n` and dropping `Unacked` entries must land together. A new sender costs two
+      changes in two writes (the row, then the acknowledgement moving `n`), about 52 bytes each; a root's row changes
+      go in as many row statements as they need inside its write's transaction, so nothing caps them per write and a
+      receiver's new-sender rate is bounded by its handler throughput and the store (5,000 new senders a second at 20
+      writes a second is about 500 row changes, 26 KB, a write).
     - A sending actor's row is inserted only while that actor's record exists (`FOR KEY SHARE` on it), so a forgotten
       row is never written back.
     - Rows are not in migration or handover bytes: the move's and the freeze's last write carries the root's
@@ -3110,27 +3113,23 @@ Replaced by ADR-098.
     (`daserver_once_asks`: the root's call ordinal, phase `queued`/`sent`/`stopped`, the sequence, NULL while queued,
     target, the asking entity, request bytes, the call's `state` (`ask_state`, given back in `Replied<TReq, TState>`;
     its type follows the persisted-component layout rules, with its `NinoTypeId` in `state_type` so a reload finds the
-    `Replied<TReq, TState>` handler; an unknown type is counted and the row stopped), created at, next try, attempt), in the same statement as the item's record and joined
+    `Replied<TReq, TState>` handler; an unknown type is not delivered on this build: the row stays sent and unanswered for a build that knows it, counted and alerted), created at, next try, attempt), in the same write as the item's record and joined
     to its compare, and the item commits implicitly, so the sender's state and the intent are written together (a
     transactional outbox: [microservices.io](https://microservices.io/patterns/data/transactional-outbox)). The row
     belongs to the root, so an asking entity destroyed by another path (a drop expiring) does not lose the ask in flight.
     The record holds no ask: one table for every ask, in every state, so no number of asks can make a record
     unwritable and there is no second place an ask can be in. A request and its state are at most
-    `DaServer:Once:MaxRequestBytes` (1 MiB) together, checked at the call. **Write budget**: soft, with a hard cap per
-    item. An item starts only while the root's unwritten row changes (ask rows and `OnceSenders` rows) are below
-    `RowChangesPerWrite` (1,024) and `DaServer:Once:ChangeBytesPerWrite` (2 MiB): the runtime cannot know before a
-    handler runs how many asks it will make, so it checks before, not during; below it the item's mail (answers and
-    `[Once]` requests included) waits in the mailbox, not refused, and the root is written now; a system skips that
-    root's entities for the pass and the root is written now. A started item (a system's work on one entity counts as
-    one) may add at most `[ActorOptions(AsksPerItem)]` asks (16) and `DaServer:Once:BytesPerItem` bytes (1 MiB); the
-    call past either throws, deterministically whatever the batching (in a `[Once]` handler a deterministic `Faulted`,
-    like any throw). Budget + one item's cap + the `OnceSenders` change bytes ≤ `StatementBytes` − `MaxRecordBytes`,
-    checked at start. A quarter of each write is kept for the runtime's own changes; a retry's attempt/next-try update
-    is coalesced into the room left and the retry does not wait for it, while a first send waits for its own write. So
-    the record and every row change of a root fit one statement (statements split between roots at 512 rows, a root
-    never split), and the move's and the freeze's last write carries them all. A row answered in a write goes only as
-    a deletion: its pending change is dropped (in PostgreSQL an upsert and a delete of one row in one statement keep
-    the upsert).
+    `DaServer:Once:MaxRequestBytes` (1 MiB) together, checked at the call. **Per-item caps, no write budget**: a
+    started item (a handler run, or a system's work on one entity) may add at most `[ActorOptions(AsksPerItem)]` asks
+    (16) and `DaServer:Once:BytesPerItem` bytes (1 MiB); the call past either throws, deterministically whatever the
+    batching (in a `[Once]` handler a deterministic `Faulted`, like any throw). They bound memory and abuse only: a
+    root's write is one transaction whose row statements (ask rows, `OnceSenders` rows) apply only where its record
+    landed (joined on the epoch and the new write generation), chunked into as many statements as `StatementBytes`
+    needs, so no number of row changes can make a root unwritable, and every item, system and reaction runs. A retry's
+    attempt/next-try update goes with the root's next write and the retry does not wait for it, while a first send
+    waits for its own write. The move's and the freeze's last write carries every row change. A row answered in a
+    write goes only as a deletion: its pending change is dropped, and the delete is a separate statement after the
+    upsert (in one statement PostgreSQL would keep the upsert).
   - **The sequence is taken when the ask is sent**: a row moves to `sent` and takes its sequence from `OnceNext` in the
     write that sends it (the item's own write when the window and `OnceInFlight` allow and no earlier row to the same target is queued,
     so an ask waits for one write; else the earlier rows go first, in ordinal order),
@@ -3142,10 +3141,13 @@ Replaced by ADR-098.
     to the same target, not against the root's other mail to it (a queued ask is overtaken by a later `Send`) and not
     across retries: the exception the draft's §1 and ADR-096 name. A row's next try is set by its phase (now for a
     sendable queued row, the zero-window probe or `RetryAfter` while a window is shut, the re-ask time once sent, NULL
-    once stopped). An active root holds only its head rows in memory (up to `OnceInFlight` sent plus up to `OnceQueued`
-    queued, by ordinal) and pages the rest in by ordinal range as room frees, so memory is bounded (E3); request and
-    state bytes stay in memory until their insert lands, then only for the rows it sends, the next ones read ahead in
-    one range read; the activation reads the head after its claim (as `OnceSenders` rows are); the move's and the freeze's last write carries every unwritten ask-row change, and the
+    once stopped). An active root holds every sent row's metadata in memory (so its acknowledgement to each receiver
+    is exact, even after `OnceInFlight` is lowered) and, per destination, a bounded head of queued rows
+    (`DaServer:Once:QueuedHeadPerTarget`, 64, for up to `DaServer:Once:TargetsInMemory`, 256, destinations served
+    round-robin), paging the rest in per destination by ordinal, so memory is bounded (E3) and a slow target never
+    holds the others; a new ask is inserted already sent only when no earlier row to its target is queued in memory or
+    paged out; request and state bytes stay in memory until their insert lands, then only for the rows it sends, a
+    destination's next ones read ahead in one range read; the activation reads the sent rows and the queued heads after its claim (as `OnceSenders` rows are); the move's and the freeze's last write carries every unwritten ask-row change, and the
     rows stay in the store.
   - **The wake**: each row's next try feeds the root's `NextDue`, so a crash, an idle unload or a stop with asks
     queued or sent always wakes the root through `DueScan` to send or re-ask.
@@ -3192,11 +3194,15 @@ Replaced by ADR-098.
   - Back-pressure by pausing the root's systems and mail: it skips reactions users rely on and can still deadlock
     roots that ask each other; refusing new work at admission does neither.
   - Deferring an item's extra row changes to a later write: inserts written later lose the intent on a crash after
-    the item's effects landed, deletes written later run `Replied` again; the item waits whole instead.
-  - A hard budget checked before the item ("an item that would pass it does not start"): not implementable, since an
-    item's asks are known only as it runs; throwing at the crossing call made a correct program fail by how the batch
-    fell. A soft budget plus a per-item cap makes the throw a deterministic property of the item.
-  - Keeping every ask row in memory: unbounded under a stuck downstream (E3).
+    the item's effects landed, deletes written later run `Replied` again.
+  - A per-write budget so a root's record and rows fit one statement: a hard one is not implementable (an item's asks
+    are known only as it runs), and a soft one made systems skip a root past it, which loses `[Changed<T>]` and
+    `[Removed<T>]` reactions for good (they select rows written since the system's last run) and can starve a busy
+    root's systems. One transaction of several statements, each joined to its record's write, removes the reason for
+    a budget.
+  - Keeping every queued ask row in memory: unbounded under a stuck downstream (E3). Paging queued rows by one
+    ordinal across destinations: a slow target fills the head and holds the others, and a new ask checked against
+    memory alone overtakes paged-out rows.
   - Alerting on the number of ask rows: it rises with traffic on a healthy ramp and goes flat on a stuck downstream
     once admission refuses; the oldest row's age does neither.
   - `AskUntilAnswered` for any request: retrying a request that is not deduplicated runs it again.
@@ -3205,10 +3211,10 @@ Replaced by ADR-098.
   architecture.md section 2 state it; roadmap W6 builds it (tests `AskUntilAnsweredCommitsIntent`,
   `LinkOutcomeNeverReachesReplied`, `ReaskAfterCrashSameSequence`, `RefusalDeliveredOnce`,
   `AskRowDeletedOnAnswer`, `AskRowsOneTable`, `SeqAssignedAtSend`, `AckNeverSkipsQueuedAsk`,
-  `QueuedAsksWakeAfterCrash`, `AdmissionBusyAtQueuedCap`, `OnceRequestsExemptFromMaxMail`, `AskBytesDeferItemPastWriteBudget`,
+  `QueuedAsksWakeAfterCrash`, `AdmissionBusyAtQueuedCap`, `OnceRequestsExemptFromMaxMail`, `RootRowChangesSpanStatementsInOneTransaction`,
   `ProbeAnswerSingleSnapshot`, `AskSentInItsOwnWrite`, `AskStateKeptInRow`, `AskRetriesPerDestinationInOrder`,
-  `AsksPerItemThrowsDeterministically`, `SystemSkipsRootPastWriteBudget`, `RuntimeSendsKeepReservedBudget`,
-  `AnsweredRowWithPendingRetryDeleted`, `SentInsertNeverOvertakesQueued`, `AskRowsPagedPastHead`, `UnknownStateTypeStops`,
+  `AsksPerItemThrowsDeterministically`, `SlowTargetNeverHoldsOthers`, `LoweringOnceInFlightNeverAcksEarly`,
+  `AnsweredRowWithPendingRetryDeleted`, `SentInsertNeverOvertakesQueued`, `AskRowsPagedPerTarget`, `UnknownStateTypeWaitsForBuild`,
   `QueuedOnceCountsTowardUnacked`, `ReactionsRunUnderBackPressure`, `AskRowSurvivesStashDestroy`, `OrphanReplyDroppedAckSent`, `PlainAskOfOnceIsDAS032`,
   `AskingEntitySurvivesReload`, `MutualOnceRootsProgress`, `MigrationCarriesPendingAskRows`,
   `StoppedAskingCountedFromStore`) and BenchmarkDotNet's ask throughput per root at a store latency of 1 and 5 ms.
