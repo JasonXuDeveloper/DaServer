@@ -261,8 +261,8 @@ exported, OpenTelemetry). Names users never write but meet in diagnostics: the S
 | `Writing`, `WriteNow`, write generation | fields of `RootState`, a framework component every root carries from its prefab copy | Fields, not tags, so setting them is no structural change (`Commit` stays inside `INoStructuralChanges` jobs). `Writing`: a record write of the root is in flight; `CheckpointSystem` skips the root, so one process never overlaps two writes; changes meanwhile keep or regain `Unsaved` and go in the next write, which carries the latest state. The CAS compares the epoch and the write generation (`write_gen < :write_gen`, reset to 0 by every epoch claim, continued across a hot restart's handover), so a timed-out statement landing late never overwrites newer state ([draft §10](programming-model.md#激活-epoch一个-actor-只有一个激活能写)). `WriteNow`: the root called `Commit` (in a handler or a system), so the next tick-end write takes it whatever the checkpoint interval; a `Commit` with nothing unwritten writes nothing and releases at once. The write generation counts the root's records taken; held output carries the generation its item's state goes into and leaves once a write of that generation or later succeeds ([draft §8](programming-model.md#贵重的改动rootcommit)) | `daserver.commits.held`, `daserver.commits.held_bytes`, `daserver.commits.latency` |
 | `OnceNext` | field of `RootState` (persisted) | The sender's `[Once]` sequence, a pair `(seed: long, counter: uint)` compared seed first: monotonic, never reused, taken by `AskUntilAnswered` and written with the item that took it (the ask implies `Commit`), so a crash, a migration or a handover continues it; a new record's seed is its first claim's epoch (the store's sequence, never reused) and its counter starts at 0, so a destroyed and recreated actor's numbers are above every number its earlier incarnation used, with no shift to overflow; an alert at 2^24 counters left, and the root stops sending `[Once]` when the counter runs out ([draft §8](programming-model.md#去重订单是自己的-actor转移价值的那一步是-once)) | `daserver.once.counter_low` |
 | `Asking` | persisted framework child entity under the root (it records the entity that called `AskUntilAnswered`) | One `[Once]` ask still waiting for its answer: the asking entity (by its identity in the record, its unique key or its place in the saved tree remapped through `LoadEntitiesInto`, never a raw entity id, which EasyEcs reuses), target, sequence, request bytes, state, and a `WakeAt` for the next try. Each attempt has its own call id and carries a UTC sent-at stamped by the sender's node. The runtime re-asks after link outcomes (`RetryAfter`, else `DaServer:Once:Retry` with backoff and jitter) and after crashes (the `WakeAt` through `DueScan`); only a value or the receiver's definite refusal is delivered as `Replied`, in an item that commits implicitly and destroys it; `Faulted` and `NotHandled`, which the receiver does not store, count only when they answer the current attempt's call id. When the asking entity is gone the answer still destroys the `Asking` and is dropped, counted. The sender's cumulative acknowledgement to a receiver comes from its last written record: the lowest sequence among the `Asking` children for that receiver in that record, else that record's `OnceNext`; an `Asking` destroyed in memory whose write is still in flight is not settled yet. A `Stale` answer to an `Asking` cannot happen by construction; if it does it is counted and alerted (`daserver.once.stale_asking`) and the `Asking` stops asking, left to reconciliation. A sender holds asks beyond the receiver's advertised window locally; past `[ActorOptions(OnceOutstanding)]` (1,024) `Asking` children, requests to the root other than `[Once]` ones are refused `Busy` before they run (refusing `[Once]` requests would deadlock two roots asking each other), so `AskUntilAnswered` never fails and returns nothing; items that cannot be refused overshoot up to a hard cap, `OnceOutstanding` plus a quarter, past which it throws (`daserver.once.outstanding_overflow`) | `daserver.once.asking`, `daserver.once.oldest_age`, `daserver.once.orphan_replies`, `daserver.once.stale_asking` |
-| `Unacked` | persisted `DynamicBuffer` on the root of every actor type that receives a `[Once]` request; the root copy carries it empty, in the runtime's persisted set | TCP's receive buffer: (sender, sequence, the stored reply of at most 32 bytes, the write generation), at most `[ActorOptions(Unacked)]` (1,024; about 90 bytes an entry, 90–100 KiB full, rewritten with every write of the record: about 2 MB a second of record plus WAL for a receiver committing every tick). The dispatch checks a `[Once]` request before its handler: an attempt sent (UTC, stamped by the sender's node or, for a client, the gateway) more than `MaxAskTimeout + ClockSkew` ago is dropped, counted; at or below the sender's `n`, `Stale` (refused, counted); in `Unacked`, the stored reply (held until that generation is written); the sender's window (`[ActorOptions(OnceWindow)]`, 16), the root's total, the root's unwritten row changes or its row count full, `WindowFull` with the current window and a `RetryAfter`, and the sender is queued for a window update; otherwise the handler runs once, commits implicitly and its reply is stored. Every mail from that sender carries its cumulative acknowledgement `a`; entries below `a` are dropped and `n` moves up to `a` (exclusive; no commit needed: a crash restores older entries and the next acknowledgement or probe clears them again). An entry unacknowledged for `DaServer:Once:ProbeAfter` (30 s) with a quiet sender makes the receiver send `AckQuery` on the internal lane (the sender's node answers from the record without activating, probes batched per node, a missing record answers "all settled"; a client session's gateway answers from its session table, "unknown" for a session it does not hold); a receiver holding entries carries a framework `WakeAt` at its oldest entry plus `ProbeAfter`, so a deactivated receiver wakes to probe | `daserver.once.entries`, `daserver.once.duplicates`, `daserver.once.stale`, `daserver.once.too_old`, `daserver.once.window_full`, `daserver.once.probes` |
-| `OnceSenders` | store rows of their own, one per (receiver, sender) (`daserver_once_senders`), held in the world beside the receiver's root; **not** in migration or handover bytes (the target range-reads them after its claim commits; 600,000 rows load in about 0.5–2 s and 30–60 MB while mail waits on the placeholder under `MaxWaitingMail` and `WaitingMailBytes`); changed rows written in the receiver's record statement, at most `DaServer:Once:RowChangesPerWrite` (256) per root per write; expired rows deleted outside it by `daserver_once_expire` | Per sender (an actor's `ActorId`, or a client's `(ClientId, session)`) the mark `n` (a sequence pair; every sequence below it is settled or never sent here), `quiet_until`, the advertised window used, the last attempt's sent-at, and for a client the session token's end `T` as last seen (persisted, so a reloaded receiver still knows when to drop the session's entries). Kept out of the root record because rows follow distinct senders, not entries: a flash-sale stock shard taking `Reserve` from about 5,000 distinct orders a second keeps about 600,000 quiet rows (two minutes, below), about 29 MB, far above `Store:MaxRecordBytes`; as rows a tick writes about 250 of them. A sender's row stays until its last attempt's sent-at plus `MaxAskTimeout + ClockSkew` (TCP's TIME-WAIT); a client session's rows until `T + MaxAskTimeout + ClockSkew`; an always-active receiver drops its in-memory copies past that in the idle scan. At most `DaServer:Once:SendersPerReceiver` (1,048,576) rows per receiver: past it a new sender gets `WindowFull` with `RetryAfter` the oldest row's expiry, no row is ever evicted. The receiver keeps a bounded FIFO (`DaServer:Once:RefusedQueue`, 4,096) of senders refused `WindowFull` and sends them window updates on the internal lane when the window opens (entries clear; for the row limit, rows expire); senders past the FIFO back off | `daserver.once.senders` |
+| `Unacked` | persisted `DynamicBuffer` on the root of every actor type that receives a `[Once]` request; the root copy carries it empty, in the runtime's persisted set | TCP's receive buffer: (sender, sequence, the stored reply of at most 32 bytes, the write generation), at most `[ActorOptions(Unacked)]` (1,024; about 84 bytes an entry with a 32-byte sender id, about 84 KiB full, rewritten with every write of the record: about 1.7 MB a second of record plus WAL for a receiver committing every tick). Size it by how long an entry lives: about one reply write, one write of the sender's answer and one acknowledgement, 0.1–0.2 s on a healthy store, so a receiver taking 5,000 `[Once]` requests a second holds 500–1,000 entries; raise `Unacked` for such a receiver. The dispatch checks a `[Once]` request before its handler: an attempt sent (UTC, stamped by the sender's node or, for a client, the gateway) more than `MaxAskTimeout + ClockSkew` ago is dropped, counted; a missing receiver the request may not activate answers `NoActor` (definite); at or below the sender's `n`, `Stale` (refused, counted); in `Unacked`, the stored reply (held until that generation is written); the sender's window (`[ActorOptions(OnceWindow)]`, 16), the root's total, the root's unwritten row changes or its row count full, `WindowFull` with the current window and a `RetryAfter`, and the sender is queued for a window update; the root's `Asking` count at its hard cap, `Busy`, not stored; otherwise the handler runs once, commits implicitly and its reply is stored. Every mail from that sender carries its cumulative acknowledgement `a`; entries below `a` are dropped and `n` moves up to `a` (exclusive; no commit needed: a crash restores older entries and the next acknowledgement or probe clears them again). An entry unacknowledged for `DaServer:Once:ProbeAfter` (30 s) with no newer mail makes the receiver send `AckQuery` on the internal lane, only to clear entries whose acknowledgement was lost (the sender's node answers its written `a` from the record without activating, probes batched per node, a missing record answers "forgotten" and the receiver drops that sender's entries and in-memory row; a client session's gateway answers from its session table, "unknown" for a session it does not hold, whose entries then go with the session's row); a receiver holding entries carries a framework `WakeAt` at its oldest entry plus `ProbeAfter`, so a deactivated receiver wakes to probe; on load, an entry whose sender has no row (forgotten) is dropped | `daserver.once.entries`, `daserver.once.duplicates`, `daserver.once.stale`, `daserver.once.too_old`, `daserver.once.window_full`, `daserver.once.probes` |
+| `OnceSenders` | store rows of their own, one per (receiver, sender) (`daserver_once_senders`), held in the world beside the receiver's root; **not** in migration or handover bytes (the move's and the freeze's last write carries every unwritten row change of the root, then the target range-reads the rows after its claim commits; the 1,048,576-row cap is about 55 MB and loads in 1–3 s while mail waits on the placeholder under `MaxWaitingMail` and `WaitingMailBytes`); changed rows written in the receiver's record statement, at most `DaServer:Once:RowChangesPerWrite` (1,024, about 52 KB) per root per write; deleted outside it | Per sender (an actor's `ActorId`, or a client's `(ClientId, session)`) the mark `n` (a sequence pair; every sequence below it is settled or never sent here), about 52 bytes a row; a forgotten actor sender's row also holds `forget_after`, a client session's row `delete_after`. **An actor sender's row has no time-based expiry**: it is deleted only when the sender is destroyed (the transaction that deletes the sender's record marks its rows at every receiver `forget_after = now() + MaxAskTimeout + 3 × ClockSkew`, by an index on the sender, so no sender has to remember where it asked; every attempt sent before the destroy is older than `MaxAskTimeout + ClockSkew` by then, across the sender's, the store's and the receiver's clocks, so none can run as new) or when the receiver is destroyed (its rows go in the transaction that deletes its record). Rows therefore follow live senders: a flash-sale stock shard keeps one row per order that reached it, which `Gate` keeps to thousands or tens of thousands, gone when the sale's orders are destroyed. A client session's rows are deleted at `delete_after`, the latest resend deadline the receiver saw for the session's calls plus `MaxAskTimeout + ClockSkew`: every gateway refuses an attempt of a call past its resend deadline, carried in the session token as call-id high-water marks per quarter of `ResumeWindow`. Each new sender costs two row changes in two writes (the row, then the acknowledgement moving `n`), so a root takes at most `RowChangesPerWrite / 2` new senders a write, about 10,000 a second at 20 writes a second. At most `DaServer:Once:SendersPerReceiver` (1,048,576) rows per receiver: past it a new sender gets `WindowFull`, no row is ever evicted, rows free up only as senders are destroyed. The receiver keeps a bounded FIFO (`DaServer:Once:RefusedQueue`, 4,096) of senders refused `WindowFull` and sends them window updates on the internal lane when the window opens (entries clear; for the row limit, rows are deleted); senders past the FIFO back off | `daserver.once.senders`, `daserver.once.forgotten` |
 | `WakeAt(DateTime Utc)` | persisted component on persistent entities | When the actor must be awake: an `Asking` child's next try, a reminder's next firing (framework and package code write it, user code does not); while active, `ArmSystem` arms `Due = Elapsed + (Utc − Time.Utc)` on load and arrival (`[With<WakeAt>, Without<Due>]`), re-arms it when `WakeAt` is written (`[Changed<WakeAt>]`: the `Due`'s `(At, Seq)` changes and the heap skips the old entry) and removes it when `WakeAt` is removed (`[Removed<WakeAt>]`, a method taking `in Persisted`: EECS003 accepts a zero-component `[ForEach]` only with `[With<T>]` or `[Changed<T>]`, EasyEcs request (e)), after which only the monotonic `Due` counts; when it fires, the wake handler registered for the entity's component runs in that item (the runtime's re-ask for `Asking`, `DaServer.Reminders`' delivery) and writes the next `WakeAt` if there is one | — |
 | `IssueSeq` | persisted component on the root | The client-token issue sequence `root.IssueClientToken` increments ([draft §7](programming-model.md#7-客户端与-presence)) | — |
 | `NextDue` | persisted component on the root | The minimum `WakeAt` of the root and its descendants, computed only by the runtime: `WakeSystem` (from `[Changed<WakeAt>]`, `[Removed<WakeAt>]` and the `Persisted` cleanup; it tags the root `Unsaved` whenever the value changes, since `NextDue` is the runtime's and not in the generated `ChangeSystem` filter) runs before `CheckpointSystem`, which takes every record; every write puts it into the record's `next_due` column ([draft §10](programming-model.md#唤醒wakeatnextdueduescan)) | — |
@@ -369,8 +369,11 @@ scope for now and would be another `IFrameChannel` (ADR-092).
    framework's TCP-shaped exactly-once (RFC 9293): the sender's sequence number from `OnceNext`, committed with the
    `Asking` child; the receiver's check against `OnceSenders` and `Unacked` (stale, duplicate, window full or new); the
    reply stored and committed before it leaves; cumulative acknowledgements on every later mail of the pair, a
-   framework acknowledgement after the item that handled the answer is written, a probe (`AckQuery`) for a quiet
-   sender; per-sender windows instead of refusals. Link outcomes never reach the user: the runtime asks again with the
+   framework acknowledgement after the item that handled the answer is written, a probe (`AckQuery`) only to clear
+   entries whose acknowledgement was lost; per-sender windows instead of refusals. A receiver forgets a sending actor
+   only when that actor's record is deleted (its rows go `MaxAskTimeout + 3 × ClockSkew` later) or its own is: no
+   time-based expiry for actor senders; a client session's rows go past the latest resend deadline of its calls,
+   which every gateway enforces. Link outcomes never reach the user: the runtime asks again with the
    same number, and after a crash `DueScan` finds the asker's key through `next_due` and wakes it.
 
 - **Presences** ([draft §7](programming-model.md#7-客户端与-presence)): a client's existence on an actor, at most one
@@ -864,7 +867,7 @@ in short:
   `CheckpointSystem` puts `WriteNow` roots and, each interval, the `[With<Unsaved>]` roots into the tick-end write, each row with an epoch CAS; both skip roots that are placeholders
   (`Loading`, `Saving`, `ActivationFailed`). Every load completes entities from their prefab copies by `FromPrefab`
   (`[NotSaved]` components and those the prefab gained since; section 2) and skips unknown type ids, counted. `Unacked`, `RootState`'s `OnceNext`, `IssueSeq`, `NextDue` and the `Asking` children with their `WakeAt` are in the record (waiting entities are
-  not); the receiver's changed `OnceSenders` rows go in the same statement (never its deletions, section 4), and a root that called `Commit` is written at the next tick end. **Wake**: the
+  not); the receiver's changed `OnceSenders` rows go in the same statement (never deletions: those are `daserver_delete_actor`'s and `daserver_once_expire`'s, section 4), and a root that called `Commit` is written at the next tick end. **Wake**: the
   runtime's `WakeSystem` keeps the root's `NextDue` at the minimum `WakeAt` of the root and its descendants and tags the root `Unsaved` when it changes; each node's `DueScan`
   asks the store for keys of its slots whose `next_due` has passed (`IActorStore.DueKeys(slots, until, after)` over the node's `(type, slot)` pairs, the
   `(type_id, slot, next_due)` index, in keyset pages of 512 from a sentinel first row, `until` fixed per scan, at most a page per pair through `LATERAL … LIMIT`) and activates them, so an `AskUntilAnswered` or a reminder survives a crash.
@@ -916,14 +919,18 @@ CREATE TABLE IF NOT EXISTS :schema.actor_records (
 -- when to_regclass(':schema.actor_records_due') IS NULL:
 CREATE INDEX IF NOT EXISTS actor_records_due ON :schema.actor_records (type_id, slot, next_due) WHERE next_due IS NOT NULL;
 CREATE TABLE IF NOT EXISTS :schema.daserver_once_senders ( -- a [Once] receiver's per-sender rows (draft §8)
-  type_id     integer     NOT NULL,  -- the receiver
-  key         bytea       NOT NULL,
-  sender      bytea       NOT NULL,  -- an actor's ActorId, or a client's (ClientId, session)
-  mark_seed    bigint     NOT NULL,  -- n = (seed, counter), compared seed first: every sequence below it is settled
-  mark_counter bigint     NOT NULL,  --   or was never sent here (the counter is a uint, held in a bigint)
-  quiet_until timestamptz,           -- set when the last entry went: last attempt's sent-at + MaxAskTimeout + ClockSkew
-  session_end timestamptz,           -- a client session's token end T as last seen; NULL for an actor sender
-  PRIMARY KEY (type_id, key, sender));
+  type_id      integer     NOT NULL, -- the receiver
+  key          bytea       NOT NULL,
+  sender_type  integer     NOT NULL, -- the sending actor's type id; 0 for a client session
+  sender_key   bytea       NOT NULL, -- its key, or a client's (ClientId, session)
+  mark_seed    bigint      NOT NULL, -- n = (seed, counter), compared seed first: every sequence below it is settled
+  mark_counter bigint      NOT NULL, --   or was never sent here (the counter is a uint, held in a bigint)
+  forget_after timestamptz,          -- set when the sending actor's record is deleted: delete + MaxAskTimeout + 3 × ClockSkew
+  delete_after timestamptz,          -- a client session's row: its latest resend deadline seen + MaxAskTimeout + ClockSkew
+  PRIMARY KEY (type_id, key, sender_type, sender_key));
+-- when to_regclass(':schema.daserver_once_senders_by_sender') IS NULL:
+CREATE INDEX IF NOT EXISTS daserver_once_senders_by_sender ON :schema.daserver_once_senders (sender_type, sender_key)
+  WHERE sender_type <> 0;            -- the forget path finds a deleted sender's rows at every receiver
 CREATE TABLE IF NOT EXISTS :schema.daserver_membership (    -- one row per cluster: the version row
   cluster    text   PRIMARY KEY,
   version    bigint NOT NULL,        -- every membership change sets it to version + 1 where it is still the one read
@@ -946,7 +953,8 @@ CREATE TABLE IF NOT EXISTS :schema.daserver_members (       -- one row per node 
 GRANT USAGE ON SCHEMA :schema TO :runtime_role;
 GRANT SELECT, INSERT, UPDATE ON :schema.actor_records TO :runtime_role;  -- no DELETE: only the sweep function deletes
 GRANT USAGE ON SEQUENCE :schema.actor_records_epoch TO :runtime_role;  -- nextval in both claims
-GRANT SELECT, INSERT, UPDATE, DELETE ON :schema.daserver_once_senders TO :runtime_role;  -- only through the batched write
+GRANT SELECT, INSERT, UPDATE ON :schema.daserver_once_senders TO :runtime_role;  -- no DELETE: only daserver_delete_actor
+                                                            -- and daserver_once_expire delete
 GRANT USAGE ON SCHEMA :schema TO :membership_role;
 GRANT SELECT, INSERT, UPDATE ON :schema.daserver_membership, :schema.daserver_members TO :membership_role;  -- membership's
                                                             -- own data source; the runtime role has no grant on them
@@ -955,7 +963,7 @@ GRANT SELECT, INSERT, UPDATE ON :schema.daserver_membership, :schema.daserver_me
 The schema Job does not create roles. The samples' AppHosts add an init step that runs with the database's superuser
 (Aspire's PostgreSQL resource has only `postgres`) before the schema Job (which retries until the roles exist) and
 creates the roles, none a superuser: the owner role (`CREATE` on the schema, owns the tables, the sequence and the
-two `SECURITY DEFINER` functions), the runtime role and the membership role (`<cluster>_membership`: the membership
+`SECURITY DEFINER` functions), the runtime role and the membership role (`<cluster>_membership`: the membership
 tables only, used by the nodes' small membership data source, section 2). The step sizes the shares from the most nodes
 the cluster may run, not from the configured count: per node group, the autoscaler's maximum (`maxReplicas`, or the
 group's count when it is not autoscaled) times one plus the rollout surge (`maxSurge`), plus one warm standby
@@ -981,15 +989,20 @@ grants and later `ALTER`s on them work; (4) with `AddDaServerDashboard`, a third
 CHECK (phase IN ('intent','outcome')), at timestamptz NOT NULL DEFAULT now(), who text NOT NULL, action text NOT NULL,
 target text NOT NULL, reason text, outcome text)` with indexes on `(at)` and `(action_id)`, on which the Dashboard's
 role has `INSERT, SELECT` and `USAGE` on the identity sequence but no `UPDATE` or `DELETE`, so the audit is
-insert-only; `daserver_actions (action_id text PRIMARY KEY, idem_key text NOT NULL, type text NOT NULL, state text NOT NULL
-CHECK (state IN ('requested','accepted','running','done','failed','stalled','unknown')), requested_at timestamptz NOT
-NULL DEFAULT now(), claimed_by text, lease_until timestamptz, run_id text)` (`type` is the server type, or the sentinel
-`'*cluster'` for an action on the whole cluster, since a unique index never conflicts on NULL), with a unique partial
-index on `(type) WHERE state IN ('requested','accepted','running','unknown','stalled')` (one unfinished action per
-type: the lock; Done and Failed are the only terminal states; every lock-taking insert first takes
-`pg_advisory_xact_lock(hashtext('daserver_actions'))` in its transaction, since a type's row and `*cluster` have
-different keys and READ COMMITTED would let both inserts pass their checks) and an index on `(idem_key,
-requested_at)`, on which the Dashboard's role has `SELECT, INSERT, UPDATE, DELETE` (it expires finished rows older
+insert-only; `daserver_actions (action_id text PRIMARY KEY, idem_key text NOT NULL, kind text NOT NULL CHECK (kind IN
+('action','resize')), type text, node text, incarnation bigint, attempt smallint, state text NOT NULL CHECK (state IN
+('requested','accepted','running','done','failed','stalled','unknown')), requested_at timestamptz NOT NULL DEFAULT
+now(), claimed_by text, lease_until timestamptz, run_id text, CHECK ((kind = 'action' AND type IS NOT NULL) OR (kind =
+'resize' AND type IS NULL AND node IS NOT NULL AND incarnation IS NOT NULL AND attempt IN (1, 2))))` (an action's
+`type` is the server type, or the sentinel `'*cluster'` for an action on the whole cluster; a resize has no `type`, so
+it never takes or waits for a type's lock), with a unique partial index on `(type) WHERE kind = 'action' AND state IN
+('requested','accepted','running','unknown','stalled')` (one unfinished action per type: the lock; Done and Failed are
+the only terminal states; every lock-taking insert first takes `pg_advisory_xact_lock(hashtext('daserver_actions'))`
+in its transaction, since a type's row and `*cluster` have different keys and READ COMMITTED would let both inserts
+pass their checks), a unique index on `(node, incarnation, attempt) WHERE kind = 'resize'` (a resize runs at most
+twice per node incarnation, a first attempt and one retry, however many replicas see the gauge: the second replica's
+insert conflicts and it follows the existing row; a Stalled resize holds only that node's attempt, nothing else) and
+an index on `(idem_key, requested_at)`, on which the Dashboard's role has `SELECT, INSERT, UPDATE, DELETE` (it expires finished rows older
 than a day); and `daserver_dataprotection` (the Data Protection key ring), which its role may update. Silences are
 written to Alertmanager with the Dashboard's own token (deployment.md, the `{cluster}-alertmanager` Secret). The runtime role has no grant on
 any of the three, and the Dashboard's role none on the actor and membership tables. The Dashboard deletes no audit
@@ -1119,14 +1132,17 @@ WITH r AS (SELECT * FROM unnest(:type_ids, :keys, :records, :next_dues, :epochs,
            FROM r WHERE a.type_id = r.type_id AND a.key = r.key
                     AND a.epoch = r.epoch AND a.write_gen < r.write_gen
            RETURNING a.type_id, a.key),
-     o AS (INSERT INTO daserver_once_senders AS d                                        -- the receivers' changed rows,
-                  (type_id, key, sender, mark_seed, mark_counter, quiet_until, session_end) -- only where the record landed
-           SELECT s.* FROM unnest(:o_type_ids, :o_keys, :o_senders, :o_seeds, :o_counters, :o_quiet, :o_ends)
-                    AS s(type_id, key, sender, mark_seed, mark_counter, quiet_until, session_end)
+     o AS (INSERT INTO daserver_once_senders AS d                                -- the receivers' changed rows, only
+                  (type_id, key, sender_type, sender_key, mark_seed, mark_counter, delete_after)  -- where the record landed
+           SELECT s.* FROM unnest(:o_type_ids, :o_keys, :o_sender_types, :o_sender_keys, :o_seeds, :o_counters, :o_deletes)
+                    AS s(type_id, key, sender_type, sender_key, mark_seed, mark_counter, delete_after)
            JOIN w ON w.type_id = s.type_id AND w.key = s.key
-           ON CONFLICT (type_id, key, sender) DO UPDATE SET mark_seed = excluded.mark_seed,
-                  mark_counter = excluded.mark_counter, quiet_until = excluded.quiet_until,
-                  session_end = excluded.session_end)
+           WHERE s.sender_type = 0                                               -- a client session, or a sending actor
+              OR EXISTS (SELECT 1 FROM actor_records x                           -- whose record still exists: a row is
+                         WHERE x.type_id = s.sender_type AND x.key = s.sender_key  -- never written back after the
+                         FOR KEY SHARE)                                          -- sender's deletion forgot it
+           ON CONFLICT (type_id, key, sender_type, sender_key) DO UPDATE SET mark_seed = excluded.mark_seed,
+                  mark_counter = excluded.mark_counter, delete_after = excluded.delete_after)   -- forget_after kept
 SELECT r.type_id, r.key, a.epoch, a.write_gen                 -- the rows not updated, as stored; a missing row
 FROM r LEFT JOIN actor_records a ON a.type_id = r.type_id AND a.key = r.key   -- comes back with a NULL epoch:
 WHERE NOT EXISTS (SELECT 1 FROM w WHERE w.type_id = r.type_id AND w.key = r.key)   -- a failed compare, it fences
@@ -1134,16 +1150,43 @@ WHERE NOT EXISTS (SELECT 1 FROM w WHERE w.type_id = r.type_id AND w.key = r.key)
 
 The changed `OnceSenders` rows ride the receiver's record: they change only where its compare succeeded (the join
 with `w`), so a fenced activation changes none, and they count toward the statement's 512 rows and `StatementBytes`;
-a root has at most `DaServer:Once:RowChangesPerWrite` (256, about 12 KB) unwritten row changes, so its rows always fit
-one statement, however long its writes back off or however many senders arrived meanwhile (draft §8). The statement
-never deletes rows: expired rows need no atomicity with the record. An activation reads the rows **after its claim
-commits** (`SELECT sender, mark_seed, mark_counter, quiet_until, session_end FROM daserver_once_senders WHERE type_id
-= :t AND key = :k`; read before the claim, a fenced owner's late write could still land and roll a mark back) and
-keeps the live ones; an always-active receiver drops its in-memory copies past `quiet_until` (or past `session_end +
-MaxAskTimeout + ClockSkew`) in the idle scan. Rows past their time, of active and inactive receivers alike, are
-removed by `daserver_once_expire(max_rows)`, a `SECURITY DEFINER` function created like the sweep (`DELETE … WHERE
-quiet_until < now() - :ClockSkew OR session_end < now() - :MaxAskTimeout - :ClockSkew`, key-set pages of at most
-`max_rows`), which the sweeping node calls with the sweep.
+a root has at most `DaServer:Once:RowChangesPerWrite` (1,024, about 52 KB) unwritten row changes, so its rows always
+fit one statement, however long its writes back off or however many senders arrived meanwhile (draft §8). A sending
+actor's row is inserted only while that actor's record exists, under `FOR KEY SHARE` on it, so a row change that
+races the sender's deletion either makes the deletion wait and is then seen by its second statement, or finds the
+record gone and inserts nothing; the statement never deletes rows. An activation reads the rows **after its claim
+commits** (`SELECT sender_type, sender_key, mark_seed, mark_counter, forget_after, delete_after FROM
+daserver_once_senders WHERE type_id = :t AND key = :k`; read before the claim, a fenced owner's late write could
+still land and roll a mark back); an always-active receiver drops its in-memory copies, with their `Unacked`
+entries, one `ClockSkew` past `forget_after` or `delete_after` in the idle scan. Rows past their time, of active
+and inactive receivers alike, are removed by `daserver_once_expire(skew, max_rows)`, a `SECURITY DEFINER` function
+created like the sweep (`DELETE … WHERE forget_after < now() OR delete_after < now() - skew`, key-set pages of at
+most `max_rows`), which the sweeping node calls with the sweep. An actor sender's row has no other expiry.
+
+**Deleting an actor** (`root.Delete()`, draft §5): one `SECURITY DEFINER` function, two statements, so the second
+sees every row change that committed while the first waited for the record's row lock:
+
+```sql
+CREATE OR REPLACE FUNCTION :schema.daserver_delete_actor(t integer, k bytea, e bigint, forget interval)
+RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+BEGIN
+  DELETE FROM :schema.actor_records WHERE type_id = t AND key = k AND epoch = e;   -- the compare: a fenced
+  IF NOT FOUND THEN RETURN false; END IF;                                          -- activation deletes nothing
+  UPDATE :schema.daserver_once_senders SET forget_after = now() + forget           -- its rows as a sender, at every
+   WHERE sender_type = t AND sender_key = k AND forget_after IS NULL;              -- receiver: deleted by the expiry
+  DELETE FROM :schema.daserver_once_senders WHERE type_id = t AND key = k;         -- its rows as a receiver
+  RETURN true;
+END $$;
+REVOKE ALL ON FUNCTION :schema.daserver_delete_actor(integer, bytea, bigint, interval) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION :schema.daserver_delete_actor(integer, bytea, bigint, interval) TO :runtime_role;
+```
+
+`forget` is `MaxAskTimeout + 3 × ClockSkew`: every `[Once]` attempt the deleted actor sent was sent before the
+deletion by its node's clock, and a receiver drops attempts sent more than `MaxAskTimeout + ClockSkew` ago by its own
+clock, so with the sender's, the store's and the receiver's clocks within `ClockSkew` of each other no attempt of the
+deleted actor can run as new once its rows go. A receiver's write and a deletion can deadlock (each holds its own
+record's lock and wants the other's row); `40P01` is transient and the statement retries. The node calls the function
+after the root's last item, then deactivates without a final write; a `false` is a failed compare and fences.
 
 **`DueKeys(slots, until, after)`: one page**:
 
@@ -1455,7 +1498,11 @@ or rolling upgrade (section 5).
   the alert rules see each node at least eight times in two minutes. Pushed series get no staleness markers, so the
   rules read gauges with `last_over_time(...[2m])` and rates over at least four pushes. The ask latency
   `daserver.ask.duration` is a histogram in seconds (unit `s`), so it reaches Prometheus as
-  `daserver_ask_duration_seconds`; `daserver.node.requests_low` is a 0/1 gauge; `daserver.cluster.view_version` is the membership table version the node last read (`DaServerMembersDisagree` alerts on a node behind the cluster's newest whose version has not moved, not on differing member counts, which churn makes normal during a rollout). `/metrics` stays on the HTTP plane for an
+  `daserver_ask_duration_seconds`, with explicit bucket boundaries `AddDaServerTelemetry` sets through
+  `InstrumentAdvice<double>.HistogramBucketBoundaries`: 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10 s, log-spaced so a p99 from
+  `histogram_quantile` is meaningful from half a millisecond to ten seconds and 25 ms, the default limit, sits on a
+  boundary (.NET's default boundaries, 0, 5, 10, 25 … 10,000, are meant for milliseconds: in seconds every ask under
+  5 s would share one bucket, the p99 would read about 4.95 s and the alert would fire on every healthy cluster); `daserver.node.requests_low` is a 0/1 gauge; `daserver.cluster.view_version` is the membership table version the node last read (`DaServerMembersDisagree` alerts on a node behind the cluster's newest whose version has not moved, not on differing member counts, which churn makes normal during a rollout). `/metrics` stays on the HTTP plane for an
   environment without a Collector, which scrapes it instead. KEDA and the Prometheus adapter query Prometheus, not the
   pod, so autoscaling works the same on either path. Stop-phase durations (`daserver.stop.phase.duration`) go out over
   OTLP with the final flush, and as stop-phase log lines in Loki; a scrape would rarely catch a stopping node.

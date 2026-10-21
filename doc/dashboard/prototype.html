@@ -1381,7 +1381,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   // a refusal names what holds the lock: the type (or the cluster), its action and, when stalled, Mark failed
   function busyText(want) {
     var b = running(want), who = b.type === '*cluster' ? 'The cluster' : T(b.type).name;
-    return (want === '*cluster' && b.type !== '*cluster' ? 'Config pushes wait for every type: ' : '') + who + ' is busy with ' + b.kind.toLowerCase() + ' ' + b.id + (b.state === 'Stalled' ? ', stalled: mark it failed first.' : '. One action per server type at a time; nothing was sent.');
+    return (want === '*cluster' && b.type !== '*cluster' ? 'Config pushes are refused while a type is busy: ' : '') + who + ' is busy with ' + b.kind.toLowerCase() + ' ' + b.id + (b.state === 'Stalled' ? ', stalled: mark it failed first.' : '. One action per server type at a time; nothing was sent.');
   }
   function confirmBody() {
     var c = S.cf;

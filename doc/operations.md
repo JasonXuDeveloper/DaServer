@@ -102,11 +102,13 @@ The repository ships two starting points, checked against a running node:
 - `observability/prometheus-rules.yaml`: alert rules: a stalled shard, a node stuck on an old membership view,
   dropped messages, failing handlers, saturated shards, late ticks, GC pauses, a silent node, and target-only rules
   that never fire on today's code (`DaServerMembersDisagree` reads `daserver_cluster_view_version`,
-  `DaServerNodeRequestsLow`, `DaServerAskLatencyHigh`, `DaServerOnceTooOld`, and the ask recording rules: none of
+  `DaServerNodeRequestsLow`, `DaServerAskLatencyHigh`, `DaServerOnceTooOld`, `DaServerOnceStaleAsking`,
+  `DaServerOnceCounterLow`, and the ask recording rules: none of
   their metrics exist yet). Check it with `promtool check rules` before loading it. Load it with `rule_files:`,
   or wrap the groups in a `PrometheusRule` for the Prometheus Operator. A rule that compares a reading against a number carries that
   number as the annotation `daserver_limit` (and its unit as `daserver_unit`): change both together when you tune it.
-  Every rule groups by `cluster`, `type` and `node`, so Alertmanager groups an incident per rule and server type; a
+  Every rule about nodes groups by `cluster`, `type` and `node` (`DaServerAskLatencyHigh`, a type's p99, by `cluster`
+  and `type`; `DaServerMembersDisagree` by `cluster`), so Alertmanager groups an incident per rule and server type; a
   label a node does not send yet is empty, so the rules work on one cluster today. `DaServerNodeSilent` fires for a
   node seen in the last 15 minutes that has pushed nothing for two minutes, whose series would otherwise vanish and
   resolve its alerts; a node whose final push carries the `close` stop phase stopped gracefully and is not reported (a
