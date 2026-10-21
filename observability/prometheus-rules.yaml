@@ -217,34 +217,41 @@ groups:
           summary: "{{ $labels.node }} has actors running out of [Once] numbers"
           description: "An actor has sent about four billion [Once] requests in one record's life. Delete and recreate it (a new record starts a new seed) before the counter runs out."
 
-      - alert: DaServerOnceAsksGrowing
+      - alert: DaServerOnceAskOld
         # Target (roadmap W6): every AskUntilAnswered ask is a row of its own in the store, never in a record, so nothing
-        # refuses an ask for their number; back-pressure refuses only new work at a root's admission (Once:Queued), and the
-        # items that still run (actors' [Once] requests, answers, systems, timers) can keep adding rows. The sweeping node
-        # counts the rows per actor type every minute and exports daserver.once.ask_rows like daserver.once.stopped (points
-        # labelled hosting_type, one per server type hosting the actor type or "none", and actor_type; only while it sweeps
-        # and the count succeeded), so the rule maps hosting_type onto type. The threshold is a count over all roots of the
-        # actor type, not a per-root cap: more than 1,024 rows that have kept rising over the 30-minute deriv window and
-        # then for 30 more minutes (about an hour in all) is a stuck downstream, or a chain whose every answer asks more
-        # than once. With no live host, type reads "none".
+        # refuses an ask for their number; back-pressure refuses only new work at a root's admission (OnceQueued). A
+        # stuck or unhosted downstream shows as old rows, whether the backlog keeps growing or goes flat once admission
+        # refuses; a healthy ramp only adds young rows. The sweeping node reads the age of the oldest ask row not stopped
+        # per actor type every minute (an index-only scan of daserver_once_asks (type_id, phase, created_at)) and exports
+        # daserver.once.ask_age in seconds like daserver.once.stopped (points labelled hosting_type, one per server type
+        # hosting the actor type or "none", and actor_type; only while it sweeps and the read succeeded), so the rule maps
+        # hosting_type onto type. The limit is three MaxAskTimeouts (1 minute by default). With no live host, type reads
+        # "none" (an incident of the cluster).
         expr: |
           label_replace(
-            max by (cluster, hosting_type, actor_type) (last_over_time(daserver_once_ask_rows[3m])),
+            max by (cluster, hosting_type, actor_type) (last_over_time(daserver_once_ask_age_seconds[3m])),
             "type", "$1", "hosting_type", "(.*)"
-          ) > 1024
-          and
-          label_replace(
-            max by (cluster, hosting_type, actor_type) (deriv(daserver_once_ask_rows[30m])),
-            "type", "$1", "hosting_type", "(.*)"
-          ) > 0
-        for: 30m
+          ) > 180
+        for: 10m
         labels:
           severity: warning
         annotations:
-          summary: "Asks from {{ $labels.actor_type }} actors are piling up (hosted by {{ $labels.type }})"
-          description: "AskUntilAnswered rows of this actor type keep growing in the store. Restore the receiving type, or fix a handler that asks more than once per answer."
-          daserver_limit: "1024"
-          daserver_unit: "asks"
+          summary: "Asks from {{ $labels.actor_type }} actors are waiting long (hosted by {{ $labels.type }})"
+          description: "The oldest AskUntilAnswered row of this actor type has waited {{ $value | humanizeDuration }}. Restore the receiving type, or fix a handler that asks more than once per answer."
+          daserver_limit: "180"
+          daserver_unit: "s"
+
+      - alert: DaServerOnceQueuedFull
+        # Target (roadmap W6): a node holds roots whose queued asks passed OnceQueued or Once:QueuedBytes, so new ordinary
+        # requests and client [Once] requests to them get Busy. Briefly at a peak is back-pressure working; for ten
+        # minutes it is a receiver that does not keep up.
+        expr: max by (cluster, type, node) (last_over_time(daserver_once_queued_full[2m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.node }} refuses new work to roots whose asks are queued"
+          description: "Roots on this node have kept more queued AskUntilAnswered rows than OnceQueued allows for ten minutes; their new requests get Busy. Look at the receivers they ask (DaServerOnceAskOld)."
 
       - alert: DaServerDeleteSendAfter
         # Target (roadmap W6): an item sent or asked after root.Delete() returned Ok, which reloads it. In an answer's
