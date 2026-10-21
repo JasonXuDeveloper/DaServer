@@ -2980,12 +2980,13 @@ Replaced by ADR-098.
     its subtree (spawns under a tagged root inherit it), and `IActor<T>` declares `ISystemGroupWithout<Deleting>`, so
     no system, reminder or `[ForEach]` of the type runs on the root or any descendant, and a Deleting actor never sends
     from a system (the cost is one tag per descendant, written once); its pending ordinary `Ask`s are cancelled (late
-    answers are dropped), callers holding a `ReplyTo` token from it get `NoActor` at the real delete, and `NextDue`
+    answers are dropped), callers holding a `ReplyTo` token from it are not answered and time out (their requests ran, so no status saying
+    otherwise is sent), and `NextDue`
     counts only the delete's `WakeAt`; new requests get `Busy` (not stored), one-way mail is dropped and counted, only
     `[Once]` repeats are answered from `Unacked`; and it cannot ask or send (doing so after `Delete()` returned `Ok`
     in the same item is a runtime error that reloads the item, undoing the delete, counted in
-    `daserver.delete.send_after` and alerted when it repeats, as a reloaded `Replied` item is delivered again; analyzer
-    hint DAS033). The tag carries a framework `WakeAt`, so a crash or an idle unload resumes it through `DueScan`. The record
+    `daserver.delete.send_after` and alerted when it repeats, as a reloaded `Replied` item is delivered again; a build
+    error, DAS033, on every path where the analyzer sees `Delete()` returned `Ok`, a hint where it cannot tell). The tag carries a framework `WakeAt`, so a crash or an idle unload resumes it through `DueScan`. The record
     goes once the tag's write has landed, `Unacked` is empty (every stored reply acknowledged, probes bounding the
     wait), no `Asking` exists, and `MaxAskTimeout + 2 × ClockSkew` has passed since the later of that write and the
     last `[Once]` admission (an attempt in flight meanwhile meets the root, not a fresh actor): one function, three
@@ -3022,23 +3023,28 @@ Replaced by ADR-098.
     itself never fails, **except `[Once]` requests, which are never refused on this limit** (only the receiver's
     window limits them): they drain other roots' `Asking`s, and refusing them could leave two roots asking each other
     (a trade, a guild bank) each refusing the other. Asks made past the limit, by `[Once]` handlers, systems and
-    one-way items, are written as `Asking` children marked unsent in the same write as the item that made them, so a
-    crash never keeps an item's debit without its intent, and are sent in order as the in-flight count falls. Unsent
-    ones have their own cap (`DaServer:Once:Unsent`, as `OnceOutstanding`, and `Once:UnsentBytes`, half of
-    `MaxRecordBytes`, a soft cap), so a stuck downstream cannot make the record unwritable. Past the soft cap the root
-    and its subtree are tagged `UnsentFull` and only the sources of new work stop: ordinary mail stays queued
-    (`MaxMail` pushes back), every system of the type skips the subtree (`ISystemGroupWithout<UnsentFull>` on
-    `IActor<T>`, no per-system analysis), and timed items whose handlers may ask stay `Due` until the tag clears.
-    `[Once]` requests and answers keep running, because each one settles another root's `Asking`: refusing asking
-    `[Once]` handlers at the soft cap would bring back the deadlock above for two hot roots asking each other, or
-    each asking a third, under steady load. Their own asks are written unsent up to a hard ceiling
-    (`Once:UnsentCeiling`, three quarters of `MaxRecordBytes`); the generator counts each `Replied` and `[Once]`
-    handler's `AskUntilAnswered` calls (a call in a loop is a DAS032 warning), so the growth past the soft cap is at
-    most `OnceOutstanding` × the largest fan-out and is checked against the ceiling at build. Only at the ceiling do
-    asking `[Once]` requests get `WindowFull`, alerted (`DaServerOnceUnsentCeiling`); the soft cap is alerted too
-    (`DaServerOnceUnsentFull`). "May ask" follows calls inside the compilation (partial methods such as the payment
-    sample's `Notify` included) and counts calls it cannot see as asking. A root holding unsent `Asking` children never
-    counts as idle. One sender cannot fill a receiver.
+    one-way items, are written as rows of their own (`daserver_once_unsent`: owner, sequence, target, asking entity and
+    request bytes, each at most `MaxMessageSize`) in the same statement as the item's record and joined to its compare,
+    as `OnceSenders` rows are, so a crash never keeps an item's debit without its intent; the record keeps only a cursor
+    (the lowest unsent sequence) and the count and bytes. As the in-flight count falls they are read back in order, a
+    page at a time, turned into `Asking` children and deleted in that write. They are not in migration or handover
+    bytes (the cursor travels in the record, the rows stay in the store), and `Delete()` answers `Outstanding` while
+    any exist. Outside the record, no number of them can make it unwritable, so asking `[Once]` requests are never
+    refused for them: refusing them is what let two roots asking each other deadlock. A soft cap
+    (`DaServer:Once:Unsent`, as `OnceOutstanding`, and `Once:UnsentBytes`, 64 MiB) is back-pressure only: past it the
+    root and its subtree are tagged `UnsentFull` (spawns under it inherit the tag) and the sources of new work stop:
+    ordinary mail stays queued (`MaxMail` pushes back), every system of the type skips the subtree
+    (`ISystemGroupWithout<UnsentFull>` on `IActor<T>`, no per-system analysis), timed items whose handlers may ask stay
+    `Due`, and client sessions, pure sources with no `Asking` of their own, are advertised a window of 0. `[Once]`
+    requests and answers always run, because each one settles another root's `Asking`. The tag clears below three
+    quarters of both caps, so a root sitting at the cap does not re-tag its subtree on every answer; `Resumed` stays on
+    a tagged root until the tag clears, so a resume reaction is never skipped. Growth past the soft cap is bounded by
+    the store, not by the record: it comes only from other roots' `[Once]` work and from answers whose handlers ask more
+    than once, so it is alerted, not refused (`DaServerOnceUnsentFull` on the tag; `DaServerOnceUnsentGrowing` on the
+    store's unsent rows per actor type, `daserver.once.unsent_rows`, rising for 30 minutes, the sign of a stuck
+    downstream or a chain whose every answer asks twice). "May ask" follows calls inside the compilation (partial
+    methods such as the payment sample's `Notify` included) and counts calls it cannot see as asking; a call in a loop
+    of a `Replied` or `[Once]` handler is warning DAS034. A root holding unsent asks never counts as idle. One sender cannot fill a receiver.
   - **Probes clear entries whose acknowledgement was lost**: an entry unacknowledged for `DaServer:Once:ProbeAfter`
     (30 s) with no newer mail makes the receiver send `AckQuery` (internal lane). An actor sender's node answers its
     written `a` from the record without activating it, probes batched per node so a node crash does not activate
@@ -3093,8 +3099,9 @@ Replaced by ADR-098.
   `ForgetOnSenderDestroy`, `DeleteAndForgetAtomic`, `DeletedReceiverRefusesLateAttempt`, `DeleteWaitsForUnackedEmpty`,
   `DeletingRecordResumedAfterCrash`, `DeletingRootRunsNothing`, `SendAfterDeleteReloadsItem`,
   `StaleForgetNoticeIgnoredForRecreatedSender`, `UnsentCapStopsNewWorkSources`, `OnceAndRepliedRunPastUnsentCap`,
-  `MutualOnceRootsAtUnsentCapProgress`, `TimedAskingItemsWaitAtUnsentCap`, `UnsentCeilingRefusesAskingOnce`,
-  `AskInLoopIsDAS032Warning`, `RecreatedReceiverKeepsEntriesPastOrphanAfter`, `DeletingTagCoversSubtree`,
+  `MutualOnceRootsAtUnsentCapProgress`, `TimedAskingItemsWaitAtUnsentCap`, `UnsentRowsLeaveTheRecord`,
+  `UnsentFullHysteresis`, `UnsentFullTagCoversSpawns`, `ClientWindowZeroAtUnsentCap`,
+  `ResumeReactionRunsWhenUnsentFullClears`, `AskInLoopIsDAS034Warning`, `RecreatedReceiverKeepsEntriesPastOrphanAfter`, `DeletingTagCoversSubtree`,
   `DeleteRefusedWhileAsking`, `RecreatedSenderOutlivesOldForgetAfter`, `IdleScanLearnsForgetAfter`,
   `RetriedDeleteCountsAsDone`, `ForgottenRowNeverWrittenBack`, `HandoverKeepsUnwrittenRowChanges`,
   `OverflowAskingWrittenUnsent`,
@@ -3136,10 +3143,9 @@ Replaced by ADR-098.
   - `AskUntilAnswered` returns nothing and never fails: past `OnceOutstanding` asks in flight the sender's root
     refuses new requests `Busy` before they run, so no handler can ignore a refused intent; `[Once]` requests are
     never refused on this limit (refusing them could leave two roots asking each other each refusing the other), and
-    asks made past it are written as `Asking` children marked unsent in the item's own write and sent as the count
-    falls (ADR-099), so a crash never keeps the item's changes without its intent; unsent ones have a soft cap
-    (`Once:Unsent`, `UnsentBytes`) that stops only new-work sources and a hard ceiling (`Once:UnsentCeiling`) where
-    asking `[Once]` requests are refused. A `Stale` answer, impossible by construction, stops its `Asking` for
+    asks made past it are written as unsent rows in the item's own statement and sent as the count falls (ADR-099),
+    so a crash never keeps the item's changes without its intent; a soft cap on unsent ones (`Once:Unsent`,
+    `UnsentBytes`) stops only new-work sources and is alerted, and no `[Once]` request is refused for them. A `Stale` answer, impossible by construction, stops its `Asking` for
     reconciliation; the record's `stopped_asks` column counts it and the sweeping node (only while it sweeps and its count
     succeeds, labelled by the hosting server type and the actor type) exports the cluster gauge from
     the store, so the alert holds across unloads and restarts until it is cleared. An `AskUntilAnswered` on a
