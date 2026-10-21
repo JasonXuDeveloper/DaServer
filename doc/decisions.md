@@ -1125,7 +1125,7 @@ Replaced by ADR-081.
     real values are 0..4095), and each page probes only the pairs at or after the cursor's pair, taking at most 512
     rows from each (`LATERAL … LIMIT` over that pair's index range) with the pairs in order, so a page sorts rows per
     pair and stops at 512 instead of sorting every later pair's backlog.
-  - **Schema:** only the node image in schema mode (`--DaServer:Migrate`: create under an advisory lock and exit)
+  - **Schema:** only the node image in schema mode (`--DaServer:Migrate`: create under a session-level advisory lock taken by polling `pg_try_advisory_lock`, each `CREATE INDEX CONCURRENTLY` its own top-level statement, and exit)
     creates the `actor_records` table: a Job when published (an owner role with DDL, nodes on a DML-only role), a
     one-shot service in Compose, a one-shot resource in a local run; `TestCluster` calls the same schema code directly.
     Nodes never create it: a node whose table is missing or whose store is unreachable at start stays not ready and
@@ -2786,9 +2786,13 @@ Replaced by ADR-098.
     `DaServer:Store:StatementBytes` of records (a root's record and row changes never split: its row changes go in as many
     row statements as they need in its write's transaction), a record at `DaServer:Store:MaxRecordBytes`, rows sorted; store-level errors (every SQLSTATE but
     `22xxx`, `23xxx`, `54xxx`: a timeout, a lock, a lost connection, a read-only primary, a revoked grant, a schema mismatch)
-    retry the same bytes (a timed-out write cancelled first, the client timeout a progress deadline of `StatementTimeout`
-    per statement result), and a row-deterministic one bisects the write between roots to its one bad root, ruled
-    unwritable (`RecordUnwritable`, then retried alone) only when the rest landed, a quarter or more of a write failing
+    retry the same bytes with a backoff (1 s doubling to 1 min, the slot released between attempts; a write timed out before its
+    `COMMIT` is cancelled first, never once `COMMIT` is sent; the client deadline is `StatementTimeout` times the write's
+    statements, PostgreSQL returning a pipelined batch's results only at its Sync; `COMMIT` runs with `statement_timeout = 0`,
+    and a cancelled synchronous-replication wait or a connection lost after `COMMIT` is an unknown outcome that releases no
+    held output until a re-read finds the write), and a row-deterministic one bisects the write between roots to its one
+    bad root, ruled unwritable (`RecordUnwritable`, then retried alone outside the write slots, staying unwritable when that
+    retry fails the same way) only when the rest landed, more than a quarter of a write of at least 8 roots failing
     that way meaning the store is failing, so one root never blocks a world's writes and a sick store never hides as
     unwritable roots; a world whose backlog passes
     `DaServer:Store:BacklogPause` stops taking mail until it drains.
@@ -3157,7 +3161,7 @@ Replaced by ADR-098.
     destinations keep sending while fewer than `OnceInFlight / OnceWindow` (64) are stuck, past which new first sends
     wait (nothing lost, `DaServerOnceAskOld` alerts), a destination not held waits at most one rotation of the cursor of quantum sends,
     and memory is bounded (E3). The root's queued totals (`QueuedRows`, `QueuedBytes`, each held destination's total queued rows in the store, counted at page-in by an
-    index-only count while the root has no write in flight, plus its queued rows to that target not yet landed, never only the rows read into memory)
+    index-only count that takes the root's `Writing` slot as a write does (writes and page-ins alternate, so a root committing every tick still pages in), plus its queued rows to that target not yet landed, never only the rows read into memory)
     live in `RootState`, written with the row changes, so admission is exact after a reload; a destination not held
     counts as having queued rows only while `QueuedRows` exceeds the held destinations' counts. A new ask is inserted already sent only when
     no earlier row to its target is queued in memory or paged out; request and state bytes stay in memory until their

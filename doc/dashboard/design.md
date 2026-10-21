@@ -501,7 +501,7 @@ Every action runs on the Dashboard's server, never in the browser, so closing th
   sent", and gives the deploy pipeline's command for the same action, whose own run log is the audit for it. The rollout step
   takes one shape for every action: `aspire do {cluster}-restart --type <type>` for a hot restart, plus `--build <build>`
   for a rollback, `--node <node> --incarnation <n>` for one node, and `--node <node> --incarnation <n> --resize-only` for a Resize; the
-  Dashboard's own dispatches add `--action <id>`. A node whose requests stayed swapped still offers Resize while the store is down (its row reads "Isolated; requests swapped"), and the confirmation gives that `--resize-only` command, since the frozen node keeps running on the idle requests. A config push and
+  Dashboard's own dispatches add `--action <id>`. A node whose requests stayed swapped still offers Resize while the store is down (its row shows the state "Isolated; requests swapped" next to the Resize button, as a swapped row shows "Requests swapped since takeover" while the store is up), and the confirmation gives that `--resize-only` command, since the frozen node keeps running on the idle requests. A config push and
   marking an action Failed have no pipeline command: they need the store, and wait for it. An outcome that cannot be written after the call is kept in a local spill
   file and written when the store answers again, in order, before any new action.
 - **Silences.** "Silence for an hour" needs the act scope, is audited like any action, and creates an Alertmanager

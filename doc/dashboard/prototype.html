@@ -933,7 +933,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
         var h = n.n === S.hl ? ' hl' : '', bad = over(n.p99) || far(t, n) ? ' ind' : '', act = n.st === 'ok' && n.rq > 0, rs = n.st === 'swapped' || !!n.sw;
         // a running node offers its action; any other says what it is doing, or why it has no reading
         tb += M('b-n' + r + 'a', n.n, 'td' + h) + M('b-n' + r + 'e', fresh(n) ? dur(n.p99) : '—', 'td r' + h + bad) +
-          '<span class="td act2">' + (act ? '<button class="lnk" data-restart="' + esc(n.n) + '">' + M('b-n' + r + 'f-restart', 'Restart') + '</button>' : rs ? '<button class="lnk" data-resize="' + esc(n.n) + '" title="' + esc(state(n)) + '">' + M('b-n' + r + 'f-resize', 'Resize') + '</button>' : M('b-n' + r + 'f-state', state(n), 'st' + h + (fresh(n) ? '' : ' ind'))) + '</span>';
+          '<span class="td act2">' + (act ? '<button class="lnk" data-restart="' + esc(n.n) + '">' + M('b-n' + r + 'f-restart', 'Restart') + '</button>' : rs ? M('b-n' + r + 'f-state', state(n), 'st' + h + (fresh(n) ? '' : ' ind')) + ' <button class="lnk" data-resize="' + esc(n.n) + '">' + M('b-n' + r + 'f-resize', 'Resize') + '</button>' : M('b-n' + r + 'f-state', state(n), 'st' + h + (fresh(n) ? '' : ' ind'))) + '</span>';
       });
       tb += '</div>';
     }
