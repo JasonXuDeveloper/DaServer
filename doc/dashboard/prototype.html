@@ -63,11 +63,8 @@ button:focus:not(:focus-visible){outline:none}
 .tc:hover{color:var(--ink-2)}
 .tc[aria-current]{color:var(--ink)}
 .tc[aria-current]:hover{color:var(--ink)}
-.tmore{height:28px;font-size:14px;font-style:italic;color:var(--ink-3);padding-left:28px;text-align:left}
-.tmore:hover{color:var(--ink-2)}
 .folio button{font:inherit;color:inherit;display:inline-flex;align-items:baseline;gap:5px;border-bottom:1px solid var(--rule-2);padding-bottom:1px}
 .folio button:hover{border-color:var(--ink)}
-.tpage{display:block;text-align:left;height:40px}
 .nx:hover{color:var(--ink)}
 .nx .ar{margin-left:6px;color:var(--ink-3)}
 .status{grid-column:1 / 3;grid-row:2;align-self:end;margin:0;padding-right:var(--s2);font-style:italic;font-size:15px;line-height:1.45;color:var(--ink-2);min-height:4.4em;display:flex;align-items:flex-end}
@@ -95,8 +92,14 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
 .full{grid-column:1 / -1}
 .main{grid-column:1 / 7}
 .aside{grid-column:8 / -1}
-.listc{grid-column:1 / 5}
-.detc{grid-column:6 / -1}
+/* a list screen: the master list and the selected row's detail, a gutter's width further apart than the grid's */
+.m6{grid-column:1 / 7}
+.d4{grid-column:7 / -1;padding-left:var(--g)}
+.m4{grid-column:1 / 5}
+.d6{grid-column:5 / -1;padding-left:var(--g)}
+/* two halves under their running heads (the platform) */
+.half1{grid-column:1 / 6}
+.half2{grid-column:6 / -1;padding-left:var(--g)}
 .col{display:flex;flex-direction:column;gap:var(--s3);min-width:0}
 
 /* components: one vocabulary.
@@ -153,34 +156,54 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
 .tbl > .td.empty{border-bottom-color:transparent}
 .tbl .r{justify-content:flex-end;text-align:right}
 .tbl .st{color:var(--ink-2)}
-.tbl.nodes.none .th{visibility:hidden}
 .tbl.dim .td{color:var(--ink-3)}
 .tbl.dim .td.hl{color:var(--ink)}
 .tbl.dim .td.hl.ind,.tbl .td.ind{color:var(--indigo)}
-.tbl.nodes{grid-template-columns:1fr 2.4fr .8fr .9fr .9fr .7fr}
-.tbl.ov{grid-template-columns:1.9fr .7fr .9fr .9fr .9fr 1.4fr}
-.tbl.ov .tr{display:contents;cursor:pointer}
-.tbl.ov .tr:hover .td{color:var(--ink)}
-.tbl.ov .tr:focus-visible .td{box-shadow:inset 0 -1px 0 var(--indigo)}
-.tbl.ov .bd{padding-left:var(--s4)}
 .tbl.gw{grid-template-columns:1fr 2.4fr 1fr 1fr}
 .tbl.lg{grid-template-columns:64px minmax(0,1fr) 96px 80px 72px}
 .tbl.lg .td{font:400 13.5px/1 var(--mono);color:var(--ink-2)}
 .tbl.lg .td.ind{font-weight:500;color:var(--indigo)}
 
-/* list + detail (changes, actors): both start on the same hairline */
-.list{display:flex;flex-direction:column;border-top:1px solid var(--rule)}
-.li{display:grid;grid-template-columns:56px minmax(0,1fr) auto;gap:var(--s2);align-items:center;height:var(--row);border-bottom:1px solid var(--rule);color:var(--ink-3);font-variant-numeric:tabular-nums}
-.li:hover{color:var(--ink-2)}
-.li.on{color:var(--ink)}
-.li.on .k1{font-weight:600}
-.li .ind{color:var(--indigo)}
-.li .k3{text-align:right}
-.li.two{grid-template-columns:minmax(0,1fr) auto}
 .det{display:flex;flex-direction:column;gap:var(--s3);min-width:0}
+/* a short desk tightens the space between a detail's units before it drops any of them */
+.short .det{gap:var(--s2)}
 .h2{font:500 clamp(26px,2.3vw,32px)/var(--row) var(--display);height:var(--row);margin:0;border-top:1px solid transparent;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .note{margin:0;font-style:italic;color:var(--indigo);min-height:1.55em}
 .blk{display:flex;flex-direction:column;gap:6px}
+
+/* master lists: one row per item, the selected one in ink and its name in weight; numbers to pick it by */
+.ms .tr{display:contents;cursor:pointer}
+.ms .td{color:var(--ink-2)}
+.ms .td.n{font-size:13px;color:var(--ink-3)}
+.ms .tr:hover .td{color:var(--ink)}
+.ms .tr.on .td{color:var(--ink)}
+.ms .tr.on .nm{font-weight:600}
+.ms .tr .td.ind,.ms .tr.on .td.ind{color:var(--indigo)}
+.ms .tr .td.mute{color:var(--ink-3)}
+.ms .tr:focus-visible .td{box-shadow:inset 0 -1px 0 var(--indigo)}
+@media (min-width:720px){.ms > .th{height:68px;display:flex;align-items:flex-end}}
+.ms > *,.ms .tr > *{padding-right:var(--s2)}
+.ms .r,.ms .th.r{padding-left:var(--s2);padding-right:0}
+.ms .sp,.ms .th.sp{padding-left:var(--s3)}
+.ms .bd,.ms .th.bd{padding-left:var(--s3);padding-right:0}
+.ms.ty{grid-template-columns:22px minmax(0,1.5fr) .5fr .75fr .75fr minmax(96px,1.5fr) .35fr .5fr}
+.ms.chl{grid-template-columns:22px 56px minmax(0,1fr) minmax(0,1.1fr)}
+.ms.acl{grid-template-columns:22px minmax(0,1.3fr) .8fr .9fr}
+.strip{display:block;width:100%;height:18px;overflow:visible}
+.strip rect{fill:var(--ink-3)}
+.strip rect.hot{fill:var(--indigo)}
+.strip line{stroke:var(--ink-2);stroke-width:1;stroke-dasharray:2 2;vector-effect:non-scaling-stroke}
+.wmore{display:flex;gap:var(--s3);margin:0;height:36px;align-items:flex-end;font-size:14px;font-style:italic;color:var(--ink-3)}
+.wmore button:hover{color:var(--ink-2)}
+.rhs{margin:-16px 0 0}
+.tbl.nd{grid-template-columns:76px 64px minmax(0,1fr)}
+.tbl.nd .act2{padding-left:var(--s3);padding-right:0}
+.tbl.nd .act2 .st{overflow:hidden;text-overflow:ellipsis}
+.det .readout{white-space:normal}
+.tbl.gwn{grid-template-columns:80px minmax(0,1fr) 80px}
+.figs.f3{grid-template-columns:repeat(3,minmax(0,1fr))}
+.tbl.lg.nar{grid-template-columns:48px minmax(0,1fr) 64px}
+.det .uf{flex-wrap:wrap;row-gap:var(--s1)}
 
 /* audit */
 .audit{display:grid;grid-template-columns:92px 140px 210px minmax(0,1fr);border-top:1px solid var(--rule)}
@@ -290,21 +313,23 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   .figs{grid-template-columns:1fr 1fr;row-gap:14px;column-gap:16px}
   .tbl > *,.tbl .tr > *{padding-right:10px}
   .tbl .r,.tbl .th.r{padding-right:0;padding-left:10px}
-  .tbl.nodes{grid-template-columns:minmax(0,1.2fr) .8fr 1fr .8fr}
-  .tbl.ov{grid-template-columns:minmax(0,1.5fr) .5fr .9fr .9fr}
-  .tbl.ov .bd,.tbl.ov .so{display:none}
   .tbl.gw{grid-template-columns:minmax(0,1fr) .9fr .8fr}
   .tbl.gw .st{display:none}
   .tbl.lg{grid-template-columns:minmax(0,1fr) 64px}
   .aside .tbl.pn{display:none}
   .tbl.lg .nd{display:none}
   .tbl.lg .lv{display:none}
-  .tbl.nodes > .td{height:auto;padding:9px 0 0;border-bottom:0}
-  .tbl.nodes > .td.sub{padding:2px 0 9px;border-bottom:1px solid var(--rule);font-size:14px}
-  .tbl.nodes > .td.sub.empty{border-bottom-color:transparent}
-  .tbl.nodes .st{grid-column:1 / 4}
-  .li{grid-template-columns:52px minmax(0,1fr) auto;gap:10px;height:38px}
   .props{grid-template-columns:116px minmax(0,1fr)}
+  .probe > *{grid-column:1 / -1}
+  .d4,.d6,.half2{padding-left:0}
+  .ms.ty{grid-template-columns:22px minmax(0,1fr) 72px 40px}
+  .ms.ty .ac,.ms.ty .bd,.ms.ty .sp,.ms.ty .b2{display:none}
+  .ms.acl{grid-template-columns:22px minmax(0,1fr) auto}
+  .ms.acl .nd2{display:none}
+  .ms.chl{grid-template-columns:22px 52px minmax(0,1fr)}
+  .ms.chl .tg{display:none}
+  .ms > *,.ms .tr > *{padding-right:10px}
+  .ms .r,.ms .th.r{padding-left:10px}
   .props > *{height:36px}
   .props.two{grid-template-columns:116px minmax(0,1fr)}
   .det{gap:10px}
@@ -335,7 +360,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
 .tabs button[aria-current="page"]:hover{color:var(--ink)}
 @media (min-width:720px) and (max-width:1439px){.app{padding-left:max(112px,env(safe-area-inset-left,0px))}}
 /* on a narrower desk the margin takes a third column, so the contents' names read whole */
-@media (min-width:720px) and (max-width:1279px){.brand,.margin,.status,.footin > .ex{grid-column:1 / 4}.page{grid-column:4 / -1}.keys{grid-column:4 / -1}.main{grid-column:1 / 6}.aside{grid-column:7 / -1}.listc{grid-column:1 / 4}.detc{grid-column:5 / -1}.leave,.probe{grid-template-columns:repeat(9,minmax(0,1fr))}}
+@media (min-width:720px) and (max-width:1279px){.brand,.margin,.status,.footin > .ex{grid-column:1 / 4}.page{grid-column:4 / -1}.keys{grid-column:4 / -1}.main{grid-column:1 / 6}.aside{grid-column:7 / -1}.m6{grid-column:1 / 6}.d4{grid-column:6 / -1}.m4{grid-column:1 / 5}.d6{grid-column:5 / -1}.ms.ty .ac,.ms.ty .bd,.ms.ty .sp{display:none}.ms.ty{grid-template-columns:22px minmax(0,1.5fr) .5fr .75fr .4fr}.leave,.probe{grid-template-columns:repeat(9,minmax(0,1fr))}}
 @media (max-width:719px){
   .topin{grid-template-rows:auto;row-gap:0;padding-bottom:4px}
   .foot{position:relative}
@@ -391,6 +416,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   function group(n) { return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
   // counts at scale: 2.41 M, 412 k, 9,412
   function count(n) { return n >= 1e6 ? (n / 1e6).toFixed(2) + ' M' : n >= 1e5 ? Math.round(n / 1e3) + ' k' : group(n); }
+  // MapServer and ChatServer run the newest build; the rest are one behind
   var BUILD = '2026.10.20-3', PREV = '2026.10.20-2';
   // [id, name, node prefix, nodes, actor kinds, actors, requests/s, p99 now, usual p99]
   var TYPES = [
@@ -405,7 +431,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     ['auction', 'AuctionServer', 'auction', 6, 'Market', 64, '8.4 k', 7.2, 7.0],
     ['rank', 'RankServer', 'rank', 4, 'Leaderboard', 220, '3.3 k', 3.3, 3.4]
   ].map(function (r, k) {
-    var t = { id: r[0], name: r[1], pre: r[2], n: r[3], actors: r[4], count: r[5], rps: r[6], now: r[7], usual: r[8], build: BUILD, nodes: [] };
+    var t = { id: r[0], name: r[1], pre: r[2], n: r[3], actors: r[4], count: r[5], rps: r[6], now: r[7], usual: r[8], build: r[0] === 'map' || r[0] === 'chat' ? BUILD : PREV, nodes: [] };
     var bad = t.now > LIMIT;
     for (var i = 0; i < t.n; i++) {
       var u = rnd(k * 1000 + i), v = rnd(k * 1000 + i + 500);
@@ -447,7 +473,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   var ALLNODES = TYPES.reduce(function (s, t) { return s + t.n; }, 0), ALLACTORS = TYPES.reduce(function (s, t) { return s + t.count; }, 0);
   var MAP = T('map');
   var CHANGES = [
-    { id: 'c6', time: '17:58', kind: 'Hot restart', target: 'game-87', detail: 'Build ' + BUILD, by: 'On-call operator', result: 'Done, paused 0.4 s', note: '' },
+    { id: 'c6', time: '17:58', kind: 'Hot restart', target: 'game-87', detail: 'Same build, ' + PREV, by: 'On-call operator', result: 'Done, paused 0.4 s', note: '' },
     { id: 'c5', time: '17:42', kind: 'Rollout', target: 'MapServer', detail: 'Build ' + BUILD, by: 'Release pipeline', result: '400 of 400 nodes, one at a time', note: 'MapServer ask p99 rose from 12 ms to 43 ms on every node after this rollout.', bad: true },
     { id: 'c4', time: '17:40', kind: 'Scale-in', target: 'map-217', detail: 'Leaving', by: 'Autoscaler', result: '35 of 64 moved', note: '' },
     { id: 'c3', time: '17:31', kind: 'Scale-out', target: 'GatewayServer', detail: '23 to 24 nodes', by: 'Autoscaler', result: 'gate-23 filling up', note: '' },
@@ -483,7 +509,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     return { id: nm, type: kind, node: n.n, p99: Math.round(t.usual * 10) / 10, rps: (h % 90 + 4) + '/s', mailbox: (h % 5) + ' of 2,000', saved: (h % 40 + 1) + ' s ago', found: true,
       comps: [kind + ' { Id: ' + m[2] + ' }'], logs: [['17:5' + (h % 9) + ':' + (10 + h % 49), 'info', 'answered ' + (h % 300 + 20) + ' requests in the last minute']] };
   }
-  var AUDIT = [['17:58', 'On-call operator', 'Hot restart', 'game-87 to ' + BUILD], ['17:20', 'On-call operator', 'Upload config table', 'SkillTable version 15'], ['17:07', 'Release pipeline', 'Rollout', 'ChatServer to ' + BUILD]];
+  var AUDIT = [['17:58', 'On-call operator', 'Hot restart', 'game-87 on ' + PREV], ['17:20', 'On-call operator', 'Upload config table', 'SkillTable version 15'], ['17:07', 'Release pipeline', 'Rollout', 'ChatServer to ' + BUILD]];
   var STORE = { p99: '4.2 ms', usual: '4.0 ms', inflight: '1,840', cap: 'of 5,040 allowed', unsaved: '18,204', oldest: '9 s',
     byType: [['Map', 'MapServer', '9,410', '9 s'], ['Player', 'PlayerServer', '6,102', '7 s'], ['Guild', 'GuildServer', '1,880', '5 s'], ['Mailbox', 'MailServer', '812', '4 s']] };
   // clients per gateway; gate-23 joined a quarter of an hour ago and is filling up
@@ -492,55 +518,85 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   var CLIENTS = { total: GW.nodes.reduce(function (s, n) { return s + n.clients; }, 0), resumed: 21977, refused: 0 };
   var TABS = ['Incident', 'Cluster', 'Changes', 'Actors', 'Audit'];
 
-  var S = { i: 0, back: [], compact: false, mode: null, layout: null, rolling: false, acked: false, hl: null, status: '', found: null };
+  var S = { i: 0, back: [], compact: false, mode: null, layout: null, rolling: false, acked: false, hl: null, status: '', found: null, last: {} };
   var steps = [];
 
-  // ---------- the step sequence: screens, then items, then the next tab ----------
-  // Server types are ordered unhealthy first, then by size; past the first few a type is still one step away.
+  // ---------- the step sequence ----------
+  // A section holds a few screens. A list screen (server types, changes, actors) is master and detail on one page:
+  // each of its rows is a step, so ↑↓ and the wheel move the selection and the detail morphs; past the last row
+  // the next screen follows. Every step knows its screen (scr), and the contents in the margin list screens.
   function ordered() { return TYPES.slice().sort(function (a, b) { return unhealthy(b) - unhealthy(a) || b.n - a.n; }); }
   function buildSteps() {
-    tabH = {};
+    tabH = {}; FIT = {};
     var c = S.split, st = [];
-    function add(tab, key, layout, label, o) { o.tab = tab; o.key = key; o.layout = layout; o.label = label; st.push(o); }
-    add(0, 'sum', 'inc-sum', 'Summary', { eb: function () { return S.rolling ? 'Rolling back, started just now' : 'In progress since 17:42'; }, h1: 'MapServer asks are slow', body: incSum });
-    add(0, 'chart', 'inc-chart', 'The last hour', { eb: function () { return 'Ask latency p99, MapServer against the other nine types'; }, h1: 'The last hour', body: incChart, after: drawMain });
-    add(0, 'logs', 'inc-logs', 'MapServer logs', { eb: function () { return 'Warnings since the rollout, grouped by pattern'; }, h1: 'What MapServer logs', body: incLogs });
-    add(1, 'all', 'cluster', 'Every server type', { eb: function () { return group(ALLNODES) + ' nodes in ' + TYPES.length + ' server types, every view agrees'; }, h1: 'The cluster', body: cluster });
-    ordered().forEach(function (t) {
-      var eb = function () { return group(t.n) + ' nodes hosting ' + t.actors + ' actors'; };
-      if (!c) add(1, t.id, 'server', t.name, { eb: eb, h1: t.name, body: function () { return server(t); } });
-      else {
-        // a type with no node standing out (and none found) keeps one screen, its action in the summary's foot
-        if (!outliers(t).length && !(S.pin && S.pin.indexOf(t.pre + '-') === 0)) { add(1, t.id, 'server-sum', t.name, { eb: eb, h1: t.name, body: function () { return figs(t) + distUnit(t) + typeFoot(t, true, true); } }); return; }
-        add(1, t.id, 'server-sum', t.name, { eb: eb, h1: t.name, body: function () { return serverSum(t); } });
-        add(1, t.id + '-n', 'server-nodes', t.name + ' nodes', { eb: function () { return 'The nodes that stand out'; }, h1: t.name, body: function () { return serverNodes(t); } });
-      }
-    });
-    add(1, 'store', 'store', 'The actor store', { eb: function () { return 'PostgreSQL, written by every node'; }, h1: 'The actor store', body: store });
-    var ceb = function () { return 'Held by ' + GW.n + ' GatewayServer nodes'; };
-    if (!c) add(1, 'clients', 'clients', 'Client connections', { eb: ceb, h1: 'Client connections', body: function () { return clients(0); } });
+    // o: eb, h1, body, and for a row of a list screen md (the noun its rows are counted in) and det (its detail alone)
+    function add(tab, scr, slabel, key, layout, label, o) { o.tab = tab; o.scr = scr; o.slabel = slabel; o.key = key; o.layout = layout; o.label = label; st.push(o); }
+    add(0, 'sum', 'Summary', 'sum', 'inc-sum', 'Summary', { eb: function () { return S.rolling ? 'Rolling back, started just now' : 'In progress since 17:42'; }, h1: 'MapServer asks are slow', body: incSum });
+    var evb = function () { return 'MapServer against the other nine types, since the rollout'; };
+    if (!c) add(0, 'ev', 'Evidence', 'ev', 'inc-ev', 'Evidence', { eb: evb, h1: 'The evidence', body: incEv, after: drawMain });
     else {
-      add(1, 'clients', 'clients-sum', 'Client connections', { eb: ceb, h1: 'Client connections', body: function () { return clients(1); } });
-      add(1, 'clients-n', 'clients-gw', 'Gateways', { eb: function () { return 'Gateways that stand out'; }, h1: 'Client connections', body: function () { return clients(2); } });
+      add(0, 'chart', 'The last hour', 'chart', 'inc-chart', 'The last hour', { eb: function () { return 'Ask latency p99, MapServer against the other nine types'; }, h1: 'The last hour', body: incChart, after: drawMain });
+      add(0, 'logs', 'MapServer logs', 'logs', 'inc-logs', 'MapServer logs', { eb: function () { return 'Warnings since the rollout, grouped by pattern'; }, h1: 'What MapServer logs', body: incLogs });
     }
-    CHANGES.forEach(function (ch, ci) { add(2, ch.id, 'changes', ch.kind + ' ' + ch.target, { bad: ch.bad, eb: function () { return 'The last hour, newest first'; }, h1: 'Changes', body: function () { return changes(ci); } }); });
+    var o = ordered();
+    o.forEach(function (t) {
+      var me = st.length;
+      add(1, 'types', 'Server types', t.id, 'types', t.name, { md: 'server types', bad: unhealthy(t), kw: 'nodes cluster',
+        eb: function () { return group(ALLNODES) + ' nodes in ' + TYPES.length + ' server types, every view agrees'; }, h1: 'Server types',
+        body: function () { return mdBody(me, typesMaster, function (l) { return typeDet(t, l); }, NROWS + 1); }, det: function () { return fitted('det' + t.id, function (l) { return typeDet(t, l, true); }, NROWS + 1); }, deb: function () { return group(t.n) + ' nodes, ' + count(t.count) + ' actors, ' + t.rps + ' requests/s'; } });
+    });
+    if (!c) add(1, 'plat', 'Platform', 'plat', 'plat', 'Platform', { kw: 'store clients connections postgresql gateways', eb: function () { return 'What every node writes to, and what every client connects through'; }, h1: 'Platform', body: function () { return fitted('plat', platform, 3); } });
+    else {
+      add(1, 'store', 'The actor store', 'store', 'store', 'The actor store', { kw: 'platform postgresql', eb: function () { return 'PostgreSQL, written by every node'; }, h1: 'The actor store', body: function () { return fitted('store', store, 3); } });
+      add(1, 'clients', 'Client connections', 'clients', 'clients', 'Client connections', { kw: 'platform gateways', eb: function () { return 'Held by ' + GW.n + ' GatewayServer nodes'; }, h1: 'Client connections', body: function () { return fitted('clients', clients, 3); } });
+    }
+    CHANGES.forEach(function (ch, ci) {
+      var me = st.length;
+      add(2, 'changes', 'Changes', ch.id, 'changes', ch.kind + ' ' + ch.target, { md: 'changes', bad: ch.bad, eb: function () { return 'The last hour, newest first'; }, h1: 'Changes',
+        body: function () { return mdBody(me, changesMaster, function () { return changeDet(ci); }, 0); }, det: function () { return changeDet(ci, true); }, deb: function () { return ch.time + ', ' + ch.by; } });
+    });
     var list = ACTORS.slice(0, TOP).concat(S.found ? [S.found] : []);
-    list.forEach(function (a, ai) {
-      var eb = function () { return a.found ? 'Looked up on ' + a.node + ', its owner' : count(ALLACTORS) + ' actors loaded, slowest first'; };
-      var h1 = a.found ? a.id : 'Slowest actors';
-      if (!c) add(3, a.id, 'actors', a.id, { bad: a.p99 > LIMIT, eb: eb, h1: h1, body: function () { return actors(a); } });
-      else {
-        add(3, a.id, 'actor', a.id, { eb: eb, h1: h1, body: function () { return actors(a, 1); } });
-        add(3, a.id + '-l', 'actor-more', a.id + ' components', { eb: eb, h1: h1, body: function () { return actors(a, 2); } });
-      }
+    list.forEach(function (a) {
+      var me = st.length;
+      add(3, 'actors', 'Actors', a.id, 'actors', a.id, { md: 'actors', bad: a.p99 > LIMIT, eb: function () { return count(ALLACTORS) + ' actors loaded; the slowest, and any you looked up'; }, h1: 'Slowest actors',
+        body: function () { return mdBody(me, actorsMaster, function (l) { return actorDet(a, l); }, 3); }, det: function () { return fitted('det' + a.id, function (l) { return actorDet(a, l, true); }, 3); }, deb: function () { return a.found ? 'Looked up on ' + a.node + ', its owner' : a.type + ' on ' + a.node; } });
     });
     var per = S.compact ? 6 : 9, pages = Math.max(1, Math.ceil(AUDIT.length / per));
-    for (var p = 0; p < pages; p++) (function (p) { add(4, 'p' + p, 'audit-' + p, pages > 1 ? 'Page ' + (p + 1) : 'Audit log', { eb: function () { return 'Every action and who took it, newest first'; }, h1: 'Audit log', body: function () { return audit(p, per); } }); })(p);
+    for (var p = 0; p < pages; p++) (function (p) { add(4, 'audit', 'Audit log', 'p' + p, 'audit-' + p, pages > 1 ? 'Page ' + (p + 1) : 'Audit log', { eb: function () { return 'Every action and who took it, newest first'; }, h1: 'Audit log', body: function () { return audit(p, per); } }); })(p);
     steps = st;
   }
-  function inTab(i) { var t = steps[i].tab, a = steps.filter(function (s) { return s.tab === t; }); return { k: a.indexOf(steps[i]) + 1, n: a.length }; }
   function firstOf(tab) { for (var i = 0; i < steps.length; i++) if (steps[i].tab === tab) return i; return 0; }
   function findStep(tab, key) { for (var i = 0; i < steps.length; i++) if (steps[i].tab === tab && steps[i].key === key) return i; return firstOf(tab); }
+  function sectionSteps() { var t = steps[S.i].tab, a = []; for (var i = 0; i < steps.length; i++) if (steps[i].tab === t) a.push(i); return a; }
+  // The screens of a section, in order, each with the range of steps it holds
+  function screens(tab) {
+    var a = [], m = {};
+    steps.forEach(function (s, i) {
+      if (s.tab !== tab) return; var x = m[s.scr];
+      if (!x) { x = m[s.scr] = { scr: s.scr, label: s.slabel, first: i, last: i, bad: false, kw: s.kw || '', md: s.md }; a.push(x); }
+      x.last = i; if (s.bad) x.bad = true;
+    });
+    return a;
+  }
+  function here(i) { if (i == null) i = S.i; var s = steps[i], a = screens(s.tab); for (var k = 0; k < a.length; k++) if (a[k].scr === s.scr) return { k: k, a: a, x: a[k], row: i - a[k].first, rows: a[k].last - a[k].first + 1 }; }
+  // a list screen opens on the row it was left on
+  function entry(x) { var i = S.last[x.scr]; return i != null && i >= x.first && i <= x.last ? i : x.first; }
+
+  // ---------- fitting: a screen holds what its height allows ----------
+  // The content height the body row can give: the stage, less its padding, the head, the body's own top padding and
+  // the room kept above the footer rule. A screen made at levels of detail takes the highest level that fits.
+  var FIT = {};
+  function room() {
+    if (S.compact) { var b = $('body'); return Math.max(160, b.clientHeight - 18); }
+    var hd = document.querySelector('.head');
+    return $('stage').clientHeight - 64 - (hd && hd.offsetHeight > 40 ? hd.offsetHeight : 90) - 24 - 40;
+  }
+  function measureHtml(html) { var pr = document.createElement('div'); pr.className = 'probe'; pr.style.paddingTop = '0'; $('body').appendChild(pr); pr.innerHTML = html; var h = pr.offsetHeight; pr.remove(); return h; }
+  function fitted(key, make, max) {
+    var r = room(), w = innerWidth, c = FIT[key];
+    if (!c || c.r !== r || c.w !== w) { var l = max; while (l > 0 && measureHtml(make(l)) > r) l--; c = FIT[key] = { r: r, w: w, l: l }; }
+    return make(c.l);
+  }
 
   // ---------- distributions: one reading across every node of a type, readable at 400 nodes ----------
   // 80 bins of thin bars in ink; bins past the limit (or holding an outlier) in the accent. Each bar is a full
@@ -559,7 +615,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     var ticks = [[lo, 0]].concat(lim != null ? [[o.limit, lim]] : []).concat([[hi, 100]]);
     return '<div class="dist" data-dist="' + key + '"><svg viewBox="0 0 ' + BINS + ' 1" preserveAspectRatio="none" aria-hidden="true">' + bars + '</svg>' +
       (lim != null ? '<span class="lim" style="left:' + lim + '%"></span>' : '') +
-      '<div class="dx">' + ticks.map(function (t, k) { return '<span style="left:' + t[1] + '%"' + (k === ticks.length - 1 ? ' class="end"' : k === 0 ? ' class="start"' : '') + '>' + o.label(t[0], k) + '</span>'; }).join('') + '</div></div>';
+      '<div class="dx">' + ticks.map(function (t, k) { return '<span data-m="' + key + '-x' + k + '" style="left:' + t[1] + '%"' + (k === ticks.length - 1 ? ' class="end"' : k === 0 ? ' class="start"' : '') + '>' + o.label(t[0], k) + '</span>'; }).join('') + '</div></div>';
   }
   // the previous heights of each distribution, to animate from
   var distWas = {};
@@ -574,8 +630,21 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     var hi = niceMax(Math.max(LIMIT, t.nodes.reduce(function (m, n) { return Math.max(m, n.p99); }, 0)) * 1.08);
     return dist(key || 'p99', t.nodes.map(function (n) { return n.p99; }), { hi: hi, limit: LIMIT, hot: function (v) { return v > LIMIT || v - t.med > 4 * t.mad; }, label: function (v, k) { return k === 1 ? 'limit ' + v + ' ms' : v + ' ms'; } });
   }
+  // A small multiple for the master list: every type on one scale from 0 to 64 ms, the limit dashed, so the rows
+  // compare at a glance; a type's bars are scaled to its own fullest bin. The scale is a square root, so the healthy
+  // types (2 to 9 ms) spread over a third of the strip instead of crowding its first bins.
+  var SB = 32, SMAX = 64;
+  function sx(v) { return Math.sqrt(Math.min(v, SMAX) / SMAX) * SB; }
+  function strip(t) {
+    var b = new Array(SB).fill(0), hot = new Array(SB).fill(false), top = 0;
+    t.nodes.forEach(function (n) { var k = Math.min(SB - 1, Math.floor(sx(n.p99))); b[k]++; if (n.p99 > LIMIT || n.p99 - t.med > 4 * t.mad) hot[k] = true; });
+    b.forEach(function (v) { top = Math.max(top, v); });
+    var x = sx(LIMIT);
+    return '<svg class="strip" viewBox="0 0 ' + SB + ' 1" preserveAspectRatio="none" aria-hidden="true">' + b.map(function (v, k) { var f = v ? Math.max(.18, v / top) : 0; return v ? '<rect x="' + (k + .15) + '" y="' + (1 - f).toFixed(3) + '" width=".7" height="' + f.toFixed(3) + '"' + (hot[k] ? ' class="hot"' : '') + '/>' : ''; }).join('') +
+      '<line x1="' + x + '" x2="' + x + '" y1="-.15" y2="1"/></svg>';
+  }
 
-  // ---------- screens: units placed on the page's 10 columns (full, main + aside, list + detail) ----------
+  // ---------- screens: units placed on the page's 10 columns ----------
   function incSum() {
     var o = MAP.nodes.slice().sort(function (a, b) { return b.p99 - a.p99; }).slice(0, 3);
     return '<div class="ln main col">' +
@@ -592,106 +661,162 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   function readout(i) {
     return '<span>' + clock(i) + '</span><span>MapServer <b class="num ind">' + ms(MAP.p[i]) + ' ms</b></span><span>The other nine, at most <b class="num">' + ms(others9(i)) + ' ms</b></span>';
   }
+  // The evidence on one page: the hour's latency against the limit, and beside it what MapServer logs
+  function incEv() {
+    return '<div class="ln half1 col sm"><p class="cap sc">Ask p99, MapServer against the slowest of the other nine</p><div class="chart" id="chart"></div><div class="uf"><p class="readout" id="ro">' + readout(N - 1) + '</p></div></div>' +
+      '<div class="ln half2 col sm"><p class="cap sc">What MapServer logs, one line per pattern</p>' + logTable(true) + '<div class="uf"><p class="readout">Warnings from 391 of 400 nodes</p>' + hist('Grafana') + '</div></div>';
+  }
   function incChart() { return '<div class="ln full"><div class="chart" id="chart"></div></div><div class="ln full uf"><p class="readout" id="ro">' + readout(N - 1) + '</p>' + hist('Grafana') + '</div>'; }
   // At 400 nodes the lines are counted, not listed: Loki groups them by pattern.
-  function incLogs() {
-    var L = [['warn', 'Map(<id>) tick <ms> of 33.3 ms', '18,204', '391', '17:58'], ['warn', 'ask to Region(<id>) took <ms>', '6,930', '388', '17:58'], ['warn', 'mailbox of Map(<id>) over 1,500', '412', '57', '17:57'], ['info', 'rolling upgrade complete, <n> of <n>', '400', '400', '17:47']];
-    var h = '<span class="th sc lv">Level</span><span class="th sc">Pattern</span><span class="th sc r">Lines</span><span class="th sc r nd">Nodes</span><span class="th sc r nd">Last</span>';
-    L.forEach(function (l) { h += '<span class="td lv' + (l[0] === 'warn' ? ' ind' : '') + '">' + l[0] + '</span><span class="td">' + esc(l[1]) + '</span><span class="td r">' + l[2] + '</span><span class="td r nd">' + l[3] + '</span><span class="td r nd">' + l[4] + '</span>'; });
-    return '<div class="ln full tbl lg">' + h + '</div><div class="ln full uf"><p class="readout">Of MapServer\'s 400 nodes; one line per pattern</p>' + hist('Grafana') + '</div>';
+  var LOGS = [['warn', 'Map(<id>) tick <ms> of 33.3 ms', '18,204', '391', '17:58'], ['warn', 'ask to Region(<id>) took <ms>', '6,930', '388', '17:58'], ['warn', 'mailbox of Map(<id>) over 1,500', '412', '57', '17:57'], ['info', 'rolling upgrade complete, <n> of <n>', '400', '400', '17:47']];
+  function logTable(narrow) {
+    var h = '<span class="th sc lv">Level</span><span class="th sc">Pattern</span><span class="th sc r">Lines</span>' + (narrow ? '' : '<span class="th sc r nd">Nodes</span><span class="th sc r nd">Last</span>');
+    LOGS.forEach(function (l) { h += '<span class="td lv' + (l[0] === 'warn' ? ' ind' : '') + '">' + l[0] + '</span><span class="td">' + esc(l[1]) + '</span><span class="td r">' + l[2] + '</span>' + (narrow ? '' : '<span class="td r nd">' + l[3] + '</span><span class="td r nd">' + l[4] + '</span>'); });
+    return '<div class="tbl lg' + (narrow ? ' nar' : '') + '">' + h + '</div>';
   }
-  // Four figures, each with what it usually is beneath it: a number means nothing without its normal.
-  function figRow(f) {
-    return '<div class="ln full figs">' + f.map(function (x, k) { return '<div><span class="sc">' + x[0] + '</span>' + M('b-f' + k, x[1], 'fv' + (x[3] ? ' ind' : '')) + M('b-fu' + k, x[2], 'fu') + '</div>'; }).join('') + '</div>';
-  }
-  function figs(t) {
-    return figRow([['Active actors', count(t.count), 'on ' + group(t.n) + ' nodes'], ['Requests per second', t.rps, 'all nodes'], ['Nodes that stand out', String(outliers(t).length), 'of ' + group(t.n)], ['Ask p99', ms(t.now) + ' ms', 'usually ' + ms(t.usual) + ' ms', t.now > LIMIT]]);
+  function incLogs() { return '<div class="ln full">' + logTable() + '</div><div class="ln full uf"><p class="readout">Of MapServer\'s 400 nodes; one line per pattern</p>' + hist('Grafana') + '</div>'; }
+  // Figures, each with what it usually is beneath it: a number means nothing without its normal.
+  function figRow(f, cls) {
+    return '<div class="figs' + (cls ? ' ' + cls : '') + '">' + f.map(function (x, k) { return '<div><span class="sc">' + x[0] + '</span>' + M('b-f' + (cls || '') + k, x[1], 'fv' + (x[3] ? ' ind' : '')) + M('b-fu' + (cls || '') + k, x[2], 'fu') + '</div>'; }).join('') + '</div>';
   }
   function hist(what) { return '<a class="lnk" href="#" data-hist="' + what + '">' + M('b-h', 'Open in ' + what) + '</a>'; }
-  // At most seven rows: the unhealthy types first, then by size; the rest in one line. Each type is still a step.
-  var OVROWS = 7;
-  function cluster() {
-    var o = ordered(), shown = o.slice(0, OVROWS), rest = o.slice(OVROWS);
-    var h = '<span class="th sc">Server type</span><span class="th sc r">Nodes</span><span class="th sc r">Actors</span><span class="th sc r so">Stand out</span><span class="th sc r">Ask p99</span><span class="th sc bd">Build</span>';
-    shown.forEach(function (t, k) {
-      var bad = unhealthy(t) ? ' ind' : '', so = outliers(t).length;
-      h += '<button class="tr" data-go="1:' + t.id + '">' + M('b-t' + k + 'a', t.name, 'td' + bad) + M('b-t' + k + 'b', group(t.n), 'td r') + M('b-t' + k + 'c', count(t.count), 'td r') + M('b-t' + k + 'g', String(so), 'td r so' + (so ? '' : ' mute')) + M('b-t' + k + 'd', ms(t.now) + ' ms', 'td r' + bad) + M('b-t' + k + 'e', t.build, 'td bd') + '</button>';
+
+  // A list screen: the master list (the screen's rows, the selected one in ink) and the selected row's detail.
+  // On a phone the list stands alone, and a row opens its detail as a page of its own.
+  // me: the step whose body this is (a probe measures every row's body while another is selected)
+  function mdBody(me, mst, det, max) {
+    if (S.compact) return mst(me);
+    return fitted('md' + me, function (l) { return mst(me) + det(l); }, max);
+  }
+  // The rows of the current list screen, windowed to the height: whole pages of rows, the rest counted beneath.
+  // mk(stepIndex, j, on) returns one row's cells; j is the row's place in the window, so texts morph by position.
+  function master(me, cls, head, mk) {
+    var h0 = here(me), x = h0.x, n = h0.rows, k = h0.row, rh = S.compact ? 42 : 44;
+    // the head row is as tall as the detail's title and its gap, so the first hairlines of both sides line up
+    var th = S.compact ? 30 + 36 : 68, cap = Math.floor((room() - th) / rh), per = n <= cap ? n : Math.max(1, Math.floor((room() - th - 36) / rh)), from = n <= cap ? 0 : Math.floor(k / per) * per;
+    if (from + per > n) from = Math.max(0, n - per);
+    var h = '<div class="ln ' + (S.compact ? 'full' : cls.split(' ')[0]) + '"><div class="ms tbl ' + cls + '">' + head;
+    for (var j = 0; j < per; j++) { var i = x.first + from + j; h += '<button class="tr' + (i === me ? ' on' : '') + '" data-row="' + i + '"' + (i === me ? ' aria-current="true"' : '') + '>' + mk(i, j, from + j) + '</button>'; }
+    h += '</div>';
+    // a phone says how a row opens
+    if (n > per || S.compact) h += '<p class="wmore">' + (from ? '<button data-row="' + (x.first + from - 1) + '">' + from + ' above</button>' : '') + (from + per < n ? '<button data-row="' + (x.first + from + per) + '">' + (n - from - per) + ' below</button>' : '') + (S.compact ? '<span>Tap a row for its detail</span>' : '') + '</p>';
+    return h + '</div>';
+  }
+  function rn(j, k) { return '<span class="td n">' + (k + 1) + '</span>'; }
+  // Server types: every type compared on one list, its distribution of ask p99 a small multiple on a shared scale
+  function typesMaster(me) {
+    var head = '<span class="th"></span><span class="th sc">Server type</span><span class="th sc r b2">Nodes</span><span class="th sc r ac">Actors</span><span class="th sc r">Ask p99</span><span class="th sc sp" title="Ask p99 of every node, 0 to 64 ms, the limit dashed">Spread</span><span class="th sc r">Out</span><span class="th sc bd">Build</span>';
+    return master(me, 'm6 ty', head, function (i, j, k) {
+      var t = T(steps[i].key), bad = unhealthy(t) ? ' ind' : '', so = outliers(t).length;
+      return rn(j, k) + M('b-r' + j + 'a', t.name, 'td nm' + bad) + M('b-r' + j + 'b', group(t.n), 'td r b2') + M('b-r' + j + 'c', count(t.count), 'td r ac') + M('b-r' + j + 'd', ms(t.now) + ' ms', 'td r' + bad) +
+        '<span class="td sp">' + strip(t) + '</span>' + M('b-r' + j + 'e', String(so), 'td r' + (so ? '' : ' mute')) + M('b-r' + j + 'g', t.build.slice(8), 'td bd' + (t.build === BUILD ? '' : ' mute'));
     });
-    var more = rest.length ? rest.length + ' more, all within their usual range: ' + rest.map(function (t) { return t.name; }).join(', ') : '';
-    return '<div class="ln full tbl ov">' + h + '</div><div class="ln full uf"><p class="readout">' + esc(more) + '</p>' + hist('Grafana') + '</div>';
-  }
-  function store() {
-    return figRow([['Write p99', STORE.p99, 'usually ' + STORE.usual], ['Writes in flight', STORE.inflight, STORE.cap], ['Unsaved actors', STORE.unsaved, 'oldest ' + STORE.oldest], ['Errors', '0', 'in the last hour']]) +
-      '<div class="ln full tbl gw"><span class="th sc">Actor type</span><span class="th sc st">Server type</span><span class="th sc r">Unsaved</span><span class="th sc r">Oldest</span>' +
-      STORE.byType.slice(0, S.compact ? 3 : 4).map(function (r, k) { return M('b-u' + k + 'a', r[0], 'td') + M('b-u' + k + 'b', r[1], 'td st') + M('b-u' + k + 'c', r[2], 'td r num') + M('b-u' + k + 'd', r[3], 'td r num'); }).join('') + '</div>' +
-      '<div class="ln full uf">' + (S.compact ? '' : '<p class="readout">The four types with the most actors waiting to be written; every other type has under 300</p>') + hist('Grafana') + '</div>';
-  }
-  // part: 0 everything, 1 the figures and the distribution, 2 the gateways that stand out (short screens)
-  function clients(part) {
-    // the gateways more than a tenth away from the average, or not running; three rows at most
-    var avg = Math.round(CLIENTS.total / GW.n);
-    var o = GW.nodes.filter(function (n) { return n.st !== 'ok' || Math.abs(n.clients - avg) > avg * .1; }).sort(function (a, b) { return Math.abs(b.clients - avg) - Math.abs(a.clients - avg); }).slice(0, 3);
-    var h = '<span class="th sc">Gateway</span><span class="th sc st">State</span><span class="th sc r">Clients</span><span class="th sc r">Moving here</span>';
-    for (var k = 0; k < o.length; k++) { var g = o[k], e = g ? '' : ' empty'; h += M('b-g' + k + 'a', g ? g.n : '', 'td' + e) + M('b-g' + k + 'd', g ? g.txt : '', 'td st' + e) + M('b-g' + k + 'b', g ? group(g.clients) : '', 'td r' + e) + M('b-g' + k + 'c', g ? group(g.moving) : '', 'td r' + e); }
-    var top = figRow([['Connected', group(CLIENTS.total), 'clients'], ['Resumed', group(CLIENTS.resumed), 'in the last hour'], ['Per gateway', group(avg), 'on average'], ['Refused', '0', 'handshakes']]) +
-      '<div class="ln full col sm"><p class="cap sc">Clients on each of the ' + GW.n + ' gateways</p>' +
-      dist('gwc', GW.nodes.map(function (n) { return n.clients; }), { lo: 0, hi: 25000, hot: function (v) { return Math.abs(v - avg) > avg * .1; }, label: function (v) { return group(v); } }) + '</div>';
-    var foot = '<div class="ln full uf">' + hist('Grafana') + '</div>';
-    return (part === 2 ? '' : top) + (part === 1 ? '' : '<div class="ln full tbl gw">' + h + '</div>') + foot;
   }
   // Four rows at most: the nodes that stand out, or the one Find chose, in place of the last.
   var NROWS = 4;
-  function rowsOf(t) {
-    var o = outliers(t).slice(0, NROWS), h = S.hl && node(S.hl);
-    if (h && o.indexOf(h) < 0 && h.n.indexOf(t.pre + '-') === 0) { if (o.length >= NROWS) o[NROWS - 1] = h; else o.push(h); }
+  function rowsOf(t, max) {
+    var o = outliers(t).slice(0, max), h = S.hl && node(S.hl);
+    if (max && h && o.indexOf(h) < 0 && h.n.indexOf(t.pre + '-') === 0) { if (o.length >= max) o[max - 1] = h; else o.push(h); }
     return o;
   }
-  function nodeTable(t) {
-    var c = S.compact, h = '', rows = rowsOf(t);
-    // only the nodes that stand out: a quiet type has no table, and the foot follows its unit at once
-    if (!rows.length) return '';
-    if (!c) {
-      h += '<span class="th sc">Node</span><span class="th sc">State</span><span class="th sc r">CPU</span><span class="th sc r">Memory</span><span class="th sc r">Ask p99</span><span class="th"></span>';
-      for (var r = 0; r < rows.length; r++) {
-        var n = rows[r], e = n ? '' : ' empty', hl = n && n.n === S.hl ? ' hl' : '', bad = n && (n.p99 > LIMIT || n.p99 - t.med > 4 * t.mad) ? ' ind' : '';
-        h += M('b-n' + r + 'a', n ? n.n : '', 'td' + e + hl) + M('b-n' + r + 'b', n ? n.txt : '', 'td st' + e + hl) + M('b-n' + r + 'c', n ? n.cpu + '%' : '', 'td r' + e + hl) + M('b-n' + r + 'd', n ? n.mem.toFixed(1) + ' GB' : '', 'td r' + e + hl) + M('b-n' + r + 'e', n ? ms(n.p99) + ' ms' : '', 'td r' + e + hl + bad);
-        h += '<span class="td r' + e + '">' + (n && n.st === 'ok' ? '<button class="lnk" data-drain="' + n.n + '">' + M('b-n' + r + 'f', 'Restart') + '</button>' : M('b-n' + r + 'f', '')) + '</span>';
-      }
-    } else {
-      h += '<span class="th sc">Node</span><span class="th sc r">CPU</span><span class="th sc r">Memory</span><span class="th sc r">p99</span>';
-      for (var q = 0; q < rows.length; q++) {
-        var m = rows[q], em = m ? '' : ' empty', hm = m && m.n === S.hl ? ' hl' : '';
-        h += M('b-n' + q + 'a', m ? m.n : '', 'td' + em + hm) + M('b-n' + q + 'c', m ? m.cpu + '%' : '', 'td r' + em + hm) + M('b-n' + q + 'd', m ? m.mem.toFixed(1) + ' GB' : '', 'td r' + em + hm) + M('b-n' + q + 'e', m ? ms(m.p99) + ' ms' : '', 'td r' + em + hm + (m && (m.p99 > LIMIT || m.p99 - t.med > 4 * t.mad) ? ' ind' : ''));
-        h += M('b-n' + q + 'b', m ? m.txt : '', 'td sub st' + em) + '<span class="td sub r' + em + '">' + (m && m.st === 'ok' ? '<button class="lnk" data-drain="' + m.n + '">' + M('b-n' + q + 'f', 'Restart') + '</button>' : M('b-n' + q + 'f', '')) + '</span>';
-      }
+  // A type's detail: what its rows cannot say. The distribution across its nodes, the nodes that stand out with
+  // their action, and the type's own action. l: the level of detail, the node rows that fit, then the line on the rest.
+  function typeDet(t, l, full) {
+    var rows = rowsOf(t, Math.min(l, NROWS)), hl = S.hl && rows.some(function (n) { return n.n === S.hl; });
+    var tb = '';
+    if (rows.length) {
+      tb = '<div class="tbl nd' + (hl ? ' dim' : '') + '"><span class="th sc">Stands out</span><span class="th sc r">Ask p99</span><span class="th"></span>';
+      rows.forEach(function (n, r) {
+        var h = n.n === S.hl ? ' hl' : '', bad = n.p99 > LIMIT || n.p99 - t.med > 4 * t.mad ? ' ind' : '';
+        // a running node offers its action; a node already moving says what it is doing instead
+        tb += M('b-n' + r + 'a', n.n, 'td' + h) + M('b-n' + r + 'e', ms(n.p99) + ' ms', 'td r' + h + bad) +
+          '<span class="td act2">' + (n.st === 'ok' ? '<button class="lnk" data-drain="' + n.n + '">' + M('b-n' + r + 'f', 'Restart') + '</button>' : M('b-n' + r + 'f', n.txt, 'st' + h)) + '</span>';
+      });
+      tb += '</div>';
     }
-    return '<div class="ln full tbl nodes' + (rows.length ? '' : ' none') + (S.hl && rows.some(function (n) { return n.n === S.hl; }) ? ' dim' : '') + '">' + h + '</div>';
+    // the line about the other nodes goes before any node row does
+    var line = l > NROWS || !outliers(t).length ? '<p class="readout">' + M('b-ot', others(t, rows)) + '</p>' : '';
+    // on its own page (a phone) the row's columns come first, as figures
+    var head = full ? figRow([['Ask p99', ms(t.now) + ' ms', 'usually ' + ms(t.usual) + ' ms', unhealthy(t)], ['Build', t.build.slice(5), t.build === BUILD ? 'the newest' : 'one behind']]) : M('b-dh', t.name, 'h2' + (unhealthy(t) ? ' ind' : ''), 'h2');
+    return '<div class="ln ' + (full ? 'full' : 'd4') + ' det">' + head +
+      '<div class="col sm"><p class="cap sc">' + M('b-dc', 'Ask p99 of each of the ' + group(t.n) + ' nodes, usually ' + ms(t.usual) + ' ms') + '</p>' + p99Dist(t) + '</div>' +
+      tb + line + '<div class="uf"><div class="acts"><button class="act sec" id="hr" data-type="' + t.id + '">' + M('b-hr', 'Hot restart ' + t.name) + '</button></div>' + hist('Grafana') + '</div></div>';
   }
-  function distUnit(t) { return '<div class="ln full col sm"><p class="cap sc">Ask p99 of each of the ' + group(t.n) + ' nodes</p>' + p99Dist(t) + '</div>'; }
-  // The type's own action sits in the foot of its node table, with the count of the nodes not listed.
-  function typeFoot(t, act, quiet) { var rows = rowsOf(t); return '<div class="ln full uf">' + (act ? (quiet ? '' : '<p class="readout">' + M('b-ot', others(t, rows)) + '</p>') + '<div class="acts"><button class="act sec" id="hr" data-type="' + t.id + '">' + M('b-hr', 'Hot restart ' + t.name) + '</button></div>' : '') + hist('Grafana') + '</div>'; }
-  function server(t) { return figs(t) + distUnit(t) + nodeTable(t) + typeFoot(t, true); }
-  function serverSum(t) { return figs(t) + distUnit(t) + typeFoot(t, false); }
-  function serverNodes(t) { return nodeTable(t) + typeFoot(t, true); }
-  function changes(ci) {
-    var ch = CHANGES[ci];
-    var det = '<div class="ln main det"><dl class="props"><dt>Change</dt>' + M('b-c0', ch.time + '  ' + ch.kind + ' ' + ch.target, ch.bad ? 'ind' : '', 'dd') + '<dt>Detail</dt>' + M('b-c1', ch.detail, '', 'dd') + '<dt>Started by</dt>' + M('b-c2', ch.by, '', 'dd') + '<dt>Result</dt>' + M('b-c3', ch.result, '', 'dd') + '</dl>' +
-      M('b-c4', ch.note, 'note', 'p') + '<div class="acts">' + (ch.bad ? '<button class="act pri" id="rb"' + (S.rolling ? ' disabled' : '') + '>' + M('b-rb', S.rolling ? 'Rolling back' : 'Roll back this rollout') + '</button>' : '') + '</div></div>';
-    return det;
+  // Platform: the two things every node shares, side by side under their running heads
+  function platform(l) {
+    return '<div class="ln half1 det">' + M('b-ph0', 'The actor store', 'h2', 'h2') + '<p class="sc rhs">PostgreSQL, written by every node; no errors in the last hour</p>' + storeUnits(l, 3) + '</div>' +
+      '<div class="ln half2 det">' + M('b-ph1', 'Client connections', 'h2', 'h2') + '<p class="sc rhs">Held by ' + GW.n + ' gateways; no handshakes refused</p>' + clientUnits(l, 3) + '</div>';
   }
-  function actors(a, part) {
-    var c = !!part;
-    var props = '<dt>Actor</dt>' + M('b-at', a.id, '', 'dd') + '<dt>Handler p99</dt>' + M('b-a0', a.p99 + ' ms', a.p99 > LIMIT ? 'ind' : '', 'dd') +
-      '<dt>Type</dt>' + M('b-a1', a.type, '', 'dd') + '<dt>Node</dt>' + M('b-a2', a.node, '', 'dd') + '<dt>Requests</dt>' + M('b-a3', a.rps, '', 'dd') + '<dt>Mailbox</dt>' + M('b-a4', a.mailbox, a.full ? 'ind' : '', 'dd') + '<dt>Last saved</dt>' + M('b-a5', a.saved, '', 'dd');
+  function storeFigs(k) {
+    var f = [['Write p99', STORE.p99, 'usually ' + STORE.usual], ['Writes in flight', STORE.inflight, STORE.cap], ['Unsaved actors', STORE.unsaved, 'oldest ' + STORE.oldest], ['Errors', '0', 'in the last hour']];
+    return figRow(f.slice(0, k), k === 3 ? 'f3' : '');
+  }
+  function storeUnits(l, k) {
+    return storeFigs(k) + '<div class="tbl gw"><span class="th sc">Actor type</span><span class="th sc st">Server type</span><span class="th sc r">Unsaved</span><span class="th sc r">Oldest</span>' +
+      STORE.byType.slice(0, Math.max(1, l + 1)).map(function (r, k) { return M('b-u' + k + 'a', r[0], 'td') + M('b-u' + k + 'b', r[1], 'td st') + M('b-u' + k + 'c', r[2], 'td r num') + M('b-u' + k + 'd', r[3], 'td r num'); }).join('') + '</div>' +
+      '<div class="uf"><p class="readout">The types with the most actors waiting to be written</p>' + hist('Grafana') + '</div>';
+  }
+  function store(l) { return '<div class="ln full det">' + storeUnits(l, 4) + '</div>'; }
+  // the gateways more than a tenth away from the average, or not running; l rows at most
+  function gwRows(l) {
+    var avg = Math.round(CLIENTS.total / GW.n);
+    var o = GW.nodes.filter(function (n) { return n.st !== 'ok' || Math.abs(n.clients - avg) > avg * .1; }).sort(function (a, b) { return Math.abs(b.clients - avg) - Math.abs(a.clients - avg); }).slice(0, l);
+    if (!o.length) return '';
+    var h = '<span class="th sc">Gateway</span><span class="th sc st">State</span><span class="th sc r">Clients</span>';
+    o.forEach(function (g, k) { h += M('b-g' + k + 'a', g.n, 'td') + M('b-g' + k + 'd', g.txt, 'td st') + M('b-g' + k + 'b', group(g.clients), 'td r'); });
+    return '<div class="tbl gwn">' + h + '</div>';
+  }
+  function clientFigs(k) {
+    var avg = Math.round(CLIENTS.total / GW.n);
+    var f = [['Connected', group(CLIENTS.total), 'clients'], ['Per gateway', group(avg), 'on average'], ['Resumed', group(CLIENTS.resumed), 'in the last hour'], ['Refused', '0', 'handshakes']];
+    return figRow(f.slice(0, k), k === 3 ? 'f3' : '');
+  }
+  function gwDist() {
+    var avg = Math.round(CLIENTS.total / GW.n);
+    return '<div class="col sm"><p class="cap sc">Clients on each of the ' + GW.n + ' gateways</p>' + dist('gwc', GW.nodes.map(function (n) { return n.clients; }), { lo: 0, hi: 25000, hot: function (v) { return Math.abs(v - avg) > avg * .1; }, label: function (v) { return group(v); } }) + '</div>';
+  }
+  function clientUnits(l, k) { return clientFigs(k) + gwDist() + gwRows(l) + '<div class="uf">' + hist('Grafana') + '</div>'; }
+  // the clients alone, on a shorter desk or a phone: the figures across, the distribution beside the gateways
+  function clients(l) {
+    if (S.compact) return '<div class="ln full det">' + clientUnits(l, 4) + '</div>';
+    return '<div class="ln full">' + clientFigs(4) + '</div><div class="ln m6 det">' + gwDist() + '<div class="uf">' + hist('Grafana') + '</div></div><div class="ln d4 det">' + (gwRows(l) || '<p class="readout">Every gateway near the average</p>') + '</div>';
+  }
+  // Changes: the hour's changes on one list, the selected one's detail beside it
+  function changesMaster(me) {
+    var head = '<span class="th"></span><span class="th sc">Time</span><span class="th sc">Change</span><span class="th sc tg">Target</span>';
+    return master(me, 'm4 chl', head, function (i, j, k) {
+      var ch = CHANGES.filter(function (c) { return c.id === steps[i].key; })[0], b = ch.bad ? ' ind' : '';
+      return rn(j, k) + M('b-r' + j + 'a', ch.time, 'td') + M('b-r' + j + 'b', ch.kind, 'td nm' + b) + M('b-r' + j + 'c', ch.target, 'td tg' + b);
+    });
+  }
+  function changeDet(ci, full) {
+    var ch = CHANGES[ci], t = TYPES.filter(function (x) { return x.name === ch.target; })[0], nd = node(ch.target), to = t || (nd && TYPES.filter(function (x) { return ch.target.indexOf(x.pre + '-') === 0; })[0]);
+    var link = to ? '<button class="lnk" data-go="1:' + to.id + '"' + (nd ? ' data-hl="' + ch.target + '"' : '') + '>' + M('b-cl', 'Open ' + ch.target + ' in the cluster') + '</button>' : M('b-cl', '');
+    return '<div class="ln ' + (full ? 'full' : 'd6') + ' det">' + (full ? '' : M('b-dh', ch.kind + ' ' + ch.target, 'h2' + (ch.bad ? ' ind' : ''), 'h2')) +
+      '<dl class="props"><dt>Detail</dt>' + M('b-c1', ch.detail, '', 'dd') + '<dt>Started by</dt>' + M('b-c2', ch.by, '', 'dd') + '<dt>Result</dt>' + M('b-c3', ch.result, '', 'dd') + '</dl>' +
+      M('b-c4', ch.note, 'note', 'p') + '<div class="uf"><div class="acts">' + (ch.bad ? '<button class="act pri" id="rb"' + (S.rolling ? ' disabled' : '') + '>' + M('b-rb', S.rolling ? 'Rolling back' : 'Roll back this rollout') + '</button>' : '') + '</div>' + link + '</div></div>';
+  }
+  // Actors: the slowest across the cluster, and any looked up, on one list
+  function actorsMaster(me) {
+    var head = '<span class="th"></span><span class="th sc">Actor</span><span class="th sc nd2">Node</span><span class="th sc r">Handler p99</span>';
+    var list = ACTORS.slice(0, TOP).concat(S.found ? [S.found] : []);
+    return master(me, 'm4 acl', head, function (i, j, k) {
+      var a = list.filter(function (x) { return x.id === steps[i].key; })[0], b = a.p99 > LIMIT ? ' ind' : '';
+      return rn(j, k) + M('b-r' + j + 'a', a.id, 'td nm') + M('b-r' + j + 'b', a.node, 'td nd2') + M('b-r' + j + 'c', a.p99 + ' ms', 'td r' + b);
+    });
+  }
+  // l: lines of components and logs that fit
+  function actorDet(a, l, full) {
+    var props = '<dt>Handler p99</dt>' + M('b-a0', a.p99 + ' ms', a.p99 > LIMIT ? 'ind' : '', 'dd') + '<dt>Node</dt>' + M('b-a2', a.node, '', 'dd') +
+      '<dt>Requests</dt>' + M('b-a3', a.rps, '', 'dd') + '<dt>Mailbox</dt>' + M('b-a4', a.mailbox, a.full ? 'ind' : '', 'dd') + '<dt>Type</dt>' + M('b-a1', a.type, '', 'dd') + '<dt>Last saved</dt>' + M('b-a5', a.saved, '', 'dd');
     var comps = '', logs = '';
-    for (var k = 0; k < 3; k++) {
+    for (var k = 0; k < l; k++) {
       comps += M('b-ac' + k, a.comps[k] || '', 'code', 'div');
-      var l = a.logs[k];
-      logs += '<div class="code">' + (l ? M('b-al' + k + 'a', l[0] + '  ') + M('b-al' + k + 'b', l[1], l[1] === 'warn' ? 'ind' : '') + M('b-al' + k + 'c', '  ' + l[2]) : M('b-al' + k + 'a', '') + M('b-al' + k + 'b', '') + M('b-al' + k + 'c', '')) + '</div>';
+      var g = a.logs[k];
+      logs += '<div class="code">' + (g ? M('b-al' + k + 'a', g[0] + '  ') + M('b-al' + k + 'b', g[1], g[1] === 'warn' ? 'ind' : '') + M('b-al' + k + 'c', '  ' + g[2]) : M('b-al' + k + 'a', '') + M('b-al' + k + 'b', '') + M('b-al' + k + 'c', '')) + '</div>';
     }
-    var more = '<div class="blk"><span class="sc">Components</span><div>' + comps + '</div></div><div class="blk"><span class="sc">Logs</span><div>' + logs + '</div></div><div class="uf">' + hist('Grafana') + '</div>';
-    var det = '<div class="ln ' + (c ? 'full' : 'main') + ' det">' + (part === 2 ? more : '<dl class="props two">' + props + '</dl>' + (part ? '' : more)) + '</div>';
-    return det;
+    return '<div class="ln ' + (full ? 'full' : 'd6') + ' det">' + (full ? '' : M('b-dh', a.id, 'h2', 'h2')) + '<dl class="props ' + (full ? '' : 'two') + '">' + props + '</dl>' +
+      (l ? '<div class="blk"><span class="sc">Components</span><div>' + comps + '</div></div><div class="blk"><span class="sc">Logs</span><div>' + logs + '</div></div>' : '') + '<div class="uf">' + hist('Grafana') + '</div></div>';
   }
   function audit(p, per) {
     return '<div class="ln full audit">' + AUDIT.slice(p * per, p * per + per).map(function (a) { return '<span class="tm">' + a[0] + '</span><span class="w">' + esc(a[1]) + '</span><span class="a">' + esc(a[2]) + '</span><span class="tg">' + esc(a[3]) + '</span>'; }).join('') + '</div>';
@@ -727,8 +852,10 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
         draw: [function (u) {
           var c = u.ctx, d = devicePixelRatio, R = u.bbox.left + u.bbox.width;
           c.save(); c.font = (S.compact ? 12 : 13.5) * d + 'px Newsreader, Georgia, serif'; c.textAlign = 'right'; c.textBaseline = 'bottom';
-          c.fillStyle = ink2; c.fillText('The other nine, at most', R - 2 * d, u.valToPos(others9(N - 1), 'y', true) - 5 * d);
-          c.fillStyle = indigo; c.fillText('MapServer', R - 2 * d, u.valToPos(MAP.p[N - 1], 'y', true) - 5 * d);
+          // each label sits clear above the highest point its line reaches under it
+          var top = function (f) { var m = 0; for (var i = N - 16; i < N; i++) m = Math.max(m, f(i)); return u.valToPos(m, 'y', true) - 6 * d; };
+          c.fillStyle = ink2; c.fillText('The other nine', R - 2 * d, top(others9));
+          c.fillStyle = indigo; c.fillText('MapServer', R - 2 * d, top(function (i) { return MAP.p[i]; }));
           c.restore();
         }],
         setCursor: [function (u) { var i = u.cursor.idx; $('ro') && ($('ro').innerHTML = readout(i == null ? N - 1 : i)); }]
@@ -829,9 +956,12 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   // ---------- render ----------
   function view() {
     if (S.mode === 'find') return { layout: 'find', eb: 'Type a name; ↑↓ choose, Enter opens, Esc returns', h1: 'Find', body: findBody, after: findWire };
-    if (S.mode === 'toc') return { layout: 'toc', eb: TABS[T.tab] + ', ' + T.items.length + ' screens', h1: 'Contents', body: tocBody, after: tocWire };
+    if (S.mode === 'toc') return { layout: 'toc', eb: TABS[TC.tab] + ', ' + TC.items.length + ' screens', h1: 'Contents', body: tocBody, after: tocWire };
     if (S.mode === 'confirm') return { layout: 'confirm', eb: 'Confirm. It is written to the audit log', h1: S.cf.title, body: confirmBody, after: confirmWire };
-    var s = steps[S.i]; return { layout: s.layout, eb: s.eb(), h1: s.h1, body: s.body, after: s.after };
+    var s = steps[S.i];
+    // a row's detail as a page of its own (a phone)
+    if (S.mode === 'det') return { layout: 'det-' + s.scr, eb: s.deb(), h1: s.label, body: s.det };
+    return { layout: s.layout, eb: s.eb(), h1: s.h1, body: s.body, after: s.after };
   }
   // Same layout: every text morphs in place. A new layout: the head and margin morph, the old body leaves
   // opposite the direction of travel and the new one glides in from it, block by block.
@@ -848,7 +978,11 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
       qa('[id],[data-m]', leave).forEach(function (e) { e.removeAttribute('id'); e.removeAttribute('data-m'); });
     } else dying.forEach(function (u) { u.destroy(); });
     $('eb').textContent = v.eb; $('h1').textContent = v.h1;
+    if (!S.mode || S.mode === 'det') { var s = steps[S.i]; if (s.md) S.last[s.scr] = S.i; }
     renderMargin(); renderTabs();
+    $('app').classList.toggle('short', !S.compact && room() < 470);
+    // the body row is sized before the body is made, so a screen fits itself to the height it is given
+    frame(v);
     b.innerHTML = v.body();
     if (leave) {
       b.appendChild(leave);
@@ -858,7 +992,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     }
     S.layout = v.layout;
     wire(); if (v.after) v.after();
-    frame(v); renderToc(); if (same) distMorph(); else qa('.dist').forEach(function (d) { distWas[d.dataset.dist] = qa('rect', d).map(function (r) { return r.style.transform; }); });
+    renderToc(); if (same) distMorph(); else qa('.dist').forEach(function (d) { distWas[d.dataset.dist] = qa('rect', d).map(function (r) { return r.style.transform; }); });
     if (old) morphAll(old, qa('[data-m]').filter(function (e) { return (same || e.dataset.m.indexOf('b-') !== 0) && !e.closest('.leave') && e.dataset.m !== 'status'; }));
     $('app').dataset.step = S.mode ? S.mode : String(S.i);
     var eb = document.querySelector('[data-key="back"]'); if (eb) eb.parentNode.classList.toggle('off', !S.mode && !S.back.length);
@@ -875,69 +1009,58 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     if (S.compact) { $('stage').style.gridTemplateRows = ''; return; }
     var t = steps[S.i].tab;
     if (tabH[t] == null) tabH[t] = probe(steps.filter(function (st) { return st.tab === t; }).map(function (st) { return st.body; }));
-    // Find and confirm keep the tallest height they have had, so the head does not move while results narrow
-    // Find has a height of its own, set by the rows it can show, so the head stays put while results narrow
-    var h = S.mode === 'find' ? F.H : S.mode ? (S.modeH = Math.max(tabH[t], $('body').scrollHeight, S.modeH || 0)) : tabH[t];
+    // Find has a height of its own, set by the rows it can show, so the head stays put while results narrow;
+    // confirm keeps the tallest height it has had
+    var h = S.mode === 'find' ? F.H : S.mode ? (S.modeH = Math.max(tabH[t], S.modeH || 0)) : tabH[t];
     // room below the tallest screen, so a unit's foot never sits on the footer rule
     $('stage').style.gridTemplateRows = 'auto minmax(0,' + (h + 24) + 'px)';
   }
+  // The folio: on a list screen the selected row of the list ("3 of 10 server types"), else the screen of the section
   function renderMargin() {
-    if (S.mode) { $('folio').innerHTML = M('fn', '', 'fn') + M('fo', ''); $('nextl').innerHTML = '<span class="sc">' + M('nxl', '') + '</span><span class="nx">' + M('nx', '') + '</span>'; return; }
-    var f = inTab(S.i), nx = steps[S.i + 1]; if (nx && nx.tab !== steps[S.i].tab) nx = null; var lab = nx ? nx.label : ' ';
-    var fo = M('fn', String(f.k), 'fn num') + M('fo', 'of ' + f.n, 'fo');
+    if (S.mode && S.mode !== 'det') { $('folio').innerHTML = M('fn', '', 'fn') + M('fo', ''); $('nextl').innerHTML = '<span class="sc">' + M('nxl', '') + '</span><span class="nx">' + M('nx', '') + '</span>'; return; }
+    var h = here(), s = steps[S.i], nx = S.mode ? null : steps[S.i + 1]; if (nx && nx.tab !== s.tab) nx = null;
+    var fo = s.md ? M('fn', String(h.row + 1), 'fn num') + M('fo', 'of ' + h.rows + ' ' + s.md, 'fo') : M('fn', String(h.k + 1), 'fn num') + M('fo', 'of ' + h.a.length, 'fo');
     // on a phone the folio is the way into the section's contents
-    $('folio').innerHTML = S.compact && f.n > 1 ? '<button id="fol" aria-label="Contents of this section">' + fo + '</button>' : fo;
-    $('nextl').innerHTML = '<span class="sc">' + M('nxl', nx ? 'Next' : ' ') + '</span><button class="nx" id="nx"' + (nx ? '' : ' disabled') + '>' + M('nx', lab) + '<span class="ar" aria-hidden="true">' + (nx ? '↓' : '') + '</span></button>';
+    $('folio').innerHTML = S.compact && !S.mode && h.a.length > 1 ? '<button id="fol" aria-label="Contents of this section">' + fo + '</button>' : fo;
+    $('nextl').innerHTML = '<span class="sc">' + M('nxl', nx ? 'Next' : ' ') + '</span><button class="nx" id="nx"' + (nx ? '' : ' disabled') + '>' + M('nx', nx ? nx.label : ' ') + '<span class="ar" aria-hidden="true">' + (nx ? '↓' : '') + '</span></button>';
   }
-  // The section's contents, beside the page: every screen by number and name, the current one in ink. It is as tall
-  // as the section's body row allows (less the status line); a longer section shows a window of it, turning a page
-  // of the contents at a time, with the hidden screens counted on a line of their own.
-  function sectionSteps() { var t = steps[S.i].tab, a = []; for (var i = 0; i < steps.length; i++) if (steps[i].tab === t) a.push(i); return a; }
+  // The section's contents, beside the page: its screens by number and name, the current one in ink. A list
+  // screen's rows are on the page itself, so the contents stay a few lines long.
   function renderToc() {
+    var el = $('toc'), a = steps[S.i] ? screens(steps[S.i].tab) : [];
     // a section of one screen shows its folio only: a list of one would repeat the title
-    var el = $('toc'); if (S.compact || S.mode || sectionSteps().length < 2) { el.innerHTML = ''; return; }
-    var a = sectionSteps(), k = a.indexOf(S.i), h = tabH[steps[S.i].tab] || 0;
-    var cap = Math.max(4, Math.floor((h - 40 - 72) / 28)), per = a.length <= cap ? a.length : cap - 2, from = a.length <= cap ? 0 : Math.floor(k / per) * per;
-    if (a.length > cap && from + per > a.length) from = Math.max(0, a.length - per);
-    var html = '';
-    if (from > 0) html += '<button class="tmore" data-toc="' + a[from - 1] + '">' + M('tm0', from + ' above') + '</button>';
-    for (var j = from; j < Math.min(a.length, from + per); j++) {
-      var st = steps[a[j]];
-      html += '<button class="tc" data-toc="' + a[j] + '"' + (a[j] === S.i ? ' aria-current="step"' : '') + '><span class="n">' + M('tn' + (j - from), String(j + 1)) + '</span><span class="l' + (st.bad ? ' ind' : '') + '" title="' + esc(st.label) + '">' + M('tl' + (j - from), st.label) + '</span></button>';
-    }
-    var rest = a.length - Math.min(a.length, from + per);
-    if (rest > 0) html += '<button class="tmore" data-toc="' + a[from + per] + '">' + M('tm1', rest + ' below') + '</button>';
-    el.innerHTML = html;
+    if (S.compact || S.mode || a.length < 2) { el.innerHTML = ''; return; }
+    var cur = steps[S.i].scr;
+    el.innerHTML = a.map(function (x, j) {
+      return '<button class="tc" data-toc="' + entry(x) + '"' + (x.scr === cur ? ' aria-current="step"' : '') + '><span class="n">' + M('tn' + j, String(j + 1)) + '</span><span class="l' + (x.bad ? ' ind' : '') + '" title="' + esc(x.label) + '">' + M('tl' + j, x.label) + '</span></button>';
+    }).join('');
     qa('[data-toc]', el).forEach(function (b) { b.onclick = function () { go(+b.dataset.toc); }; });
   }
-  // Jump to the n-th screen of the section (keys 1-9, two digits in a row for 10 and on)
+  // Numbers: on a list screen they pick its rows (the numbers printed beside them), elsewhere the section's screens.
+  // Two digits in a row reach 10 and on.
   var NUM = { buf: '', t: 0 };
-  function goNth(n) { var a = sectionSteps(); if (n >= 1 && n <= a.length) go(a[n - 1]); }
+  function nth(n) { var h = here(); if (steps[S.i].md) { if (n >= 1 && n <= h.rows) go(h.x.first + n - 1); } else if (n >= 1 && n <= h.a.length) go(entry(h.a[n - 1])); }
   function digit(d) {
-    var a = sectionSteps(), now = performance.now();
+    var h = here(), max = steps[S.i].md ? h.rows : h.a.length, now = performance.now();
     NUM.buf = (now - NUM.at < 700 ? NUM.buf : '') + d; NUM.at = now; clearTimeout(NUM.t);
     var n = +NUM.buf;
     // wait for a second digit only while one could still follow
-    if (n * 10 <= a.length && NUM.buf.length < 2) { NUM.t = setTimeout(function () { NUM.buf = ''; goNth(n); }, 500); return; }
-    NUM.buf = ''; goNth(n);
+    if (n * 10 <= max && NUM.buf.length < 2) { NUM.t = setTimeout(function () { NUM.buf = ''; nth(n); }, 500); return; }
+    NUM.buf = ''; nth(n);
   }
-  // The contents as a page of its own, on a phone (or from Find): the section's screens, the current one in ink
-  var T = { sel: 0, items: [] };
-  function openToc() { if (S.mode) return; T.items = sectionSteps(); T.sel = T.items.indexOf(S.i); T.tab = steps[S.i].tab; S.mode = 'toc'; S.modeH = 0; render('up'); }
+  // The contents as a page of its own, on a phone: the section's screens, the current one in ink
+  var TC = { sel: 0, items: [] };
+  function openToc() { if (S.mode) return; var h = here(); TC.items = h.a; TC.sel = h.k; TC.tab = steps[S.i].tab; S.mode = 'toc'; S.modeH = 0; render('up'); }
   function tocBody() {
-    // a page of the contents at a time; a line at either end turns to the hidden screens and counts them
-    var W = a_len() > 9 ? 8 : 9, a = T.items, s0 = Math.floor(T.sel / W) * W, h = '<div class="ln full"><div class="res"><div class="rg">';
-    if (s0 > 0) h += '<button class="more tpage" data-tsel="' + (s0 - 1) + '">' + s0 + ' above</button>';
-    for (var j = s0; j < Math.min(a.length, s0 + W); j++) h += '<button class="hit' + (j === T.sel ? ' on' : '') + '" data-tp="' + a[j] + '" tabindex="-1"><span class="t">' + esc(steps[a[j]].label) + '</span><span class="h">' + (j + 1) + '</span></button>';
-    if (s0 + W < a.length) h += '<button class="more tpage" data-tsel="' + (s0 + W) + '">' + (a.length - s0 - W) + ' below</button>';
+    var h = '<div class="ln full"><div class="res"><div class="rg">';
+    TC.items.forEach(function (x, j) { h += '<button class="hit' + (j === TC.sel ? ' on' : '') + '" data-tp="' + entry(x) + '" tabindex="-1"><span class="t">' + esc(x.label) + '</span><span class="h">' + (x.md ? (x.last - x.first + 1) + ' ' + steps[x.first].md : j + 1) + '</span></button>'; });
     return h + '</div></div></div>';
   }
-  function a_len() { return T.items.length; }
-  function tocWire() { qa('[data-tp]').forEach(function (b) { b.onclick = function () { tocOpen(+b.dataset.tp); }; }); qa('[data-tsel]').forEach(function (b) { b.onclick = function () { T.sel = +b.dataset.tsel; render('morph'); }; }); }
+  function tocWire() { qa('[data-tp]').forEach(function (b) { b.onclick = function () { tocOpen(+b.dataset.tp); }; }); }
   function tocOpen(i) { S.mode = null; S.hl = null; var dir = i > S.i ? 'up' : 'down'; S.i = i; render(dir); }
-  function tocMove(d) { T.sel = Math.max(0, Math.min(T.items.length - 1, T.sel + d)); render('morph'); }
+  function tocMove(d) { TC.sel = Math.max(0, Math.min(TC.items.length - 1, TC.sel + d)); render('morph'); }
   function renderTabs() {
-    var cur = S.mode ? -1 : steps[S.i].tab;
+    var cur = S.mode && S.mode !== 'det' ? -1 : steps[S.i].tab;
     $('tabs').innerHTML = TABS.map(function (t, k) { return '<button data-tab="' + k + '"' + (k === cur ? ' aria-current="page"' : '') + '>' + t + '</button>'; }).join('');
   }
   function renderKeys() {
@@ -948,7 +1071,9 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   }
   function wire() {
     qa('[data-tab]').forEach(function (b) { b.onclick = function () { tabGo(+b.dataset.tab); }; });
-    qa('[data-go]', $('body')).forEach(function (b) { b.onclick = function () { var p = b.dataset.go.split(':'); go(findStep(+p[0], p[1]), true); }; });
+    qa('[data-go]', $('body')).forEach(function (b) { b.onclick = function () { var p = b.dataset.go.split(':'); if (S.mode === 'det') S.mode = null; go(findStep(+p[0], p[1]), true, b.dataset.hl); }; });
+    // a row of a list: on a desk it selects, on a phone it opens the row's detail
+    qa('[data-row]', $('body')).forEach(function (b) { b.onclick = function () { var i = +b.dataset.row; if (S.compact && b.classList.contains('tr')) openDet(i); else go(i); }; });
     qa('[data-hist]', $('body')).forEach(function (b) { b.onclick = function (e) { e.preventDefault(); say('Opens ' + b.dataset.hist + ' at the same time range, in a new tab.'); }; });
     qa('[data-drain]', $('body')).forEach(function (b) { b.onclick = function () { drain(b.dataset.drain); }; });
     if ($('rb')) $('rb').onclick = rollback;
@@ -959,25 +1084,32 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   }
 
   // ---------- movement ----------
-  function go(i, keep) {
-    if (i < 0 || i >= steps.length || S.mode || i === S.i) return;
+  // ↑↓ walk the section's steps: a list screen's rows, then the next screen. A row of the same list morphs.
+  function go(i, keep, hl) {
+    if (i < 0 || i >= steps.length || (S.mode && S.mode !== 'det') || (i === S.i && !hl)) return;
     if (keep) { S.back.push(S.i); if (S.back.length > 20) S.back.shift(); }
-    var dir = steps[i].layout === steps[S.i].layout ? 'morph' : (i > S.i ? 'up' : 'down');
-    S.hl = null; S.i = i; render(dir);
+    var dir = steps[i].layout === steps[S.i].layout && !S.mode ? 'morph' : (i > S.i ? 'up' : 'down');
+    S.mode = null; S.hl = hl || null; S.i = i; render(dir);
   }
-  function step(d) { if (S.mode === 'find') { moveSel(d); return; } if (S.mode === 'toc') { tocMove(d); return; } if (S.mode) return; var j = S.i + d; if (!steps[j] || steps[j].tab !== steps[S.i].tab) return; S.hl = null; go(j); }
+  function openDet(i) { if (i !== S.i) S.hl = null; S.i = i; S.mode = 'det'; render('up'); }
+  function step(d) {
+    if (S.mode === 'find') { moveSel(d); return; } if (S.mode === 'toc') { tocMove(d); return; }
+    // on a row's own page ↑↓ move through the rows of its list
+    if (S.mode === 'det') { var n = steps[S.i + d]; if (n && n.scr === steps[S.i].scr) { S.hl = null; S.i += d; render('morph'); } return; }
+    if (S.mode) return; var j = S.i + d; if (!steps[j] || steps[j].tab !== steps[S.i].tab) return; go(j);
+  }
   function tabGo(t) {
     if (S.mode) { S.mode = null; }
     var cur = steps[S.i].tab; if (t < 0 || t >= TABS.length) return;
-    if (t === cur && S.layout === steps[S.i].layout && steps[S.i] === steps[firstOf(t)]) { render('morph'); return; }
+    if (t === cur && S.layout === steps[S.i].layout && S.i === firstOf(t)) { render('morph'); return; }
     S.hl = null; S.i = firstOf(t); render(t >= cur ? 'left' : 'right');
   }
 
   // ---------- actions: confirm by typing the target's name; each goes to the audit log ----------
-  function log(action, target) { AUDIT.unshift(['now', 'you', action, target]); var key = steps[S.i] && [steps[S.i].tab, steps[S.i].key]; buildSteps(); if (key) S.i = findStep(key[0], key[1]); }
+  function log(action, target) { AUDIT.unshift(['now', 'you', action, target]); var key = steps[S.i] && [steps[S.i].tab, steps[S.i].key]; S.last = {}; buildSteps(); if (key) S.i = findStep(key[0], key[1]); }
   var sayT;
   function say(msg) { S.status = msg; var e = $('status').firstChild; setM(e, msg); clearTimeout(sayT); sayT = setTimeout(function () { setM(e, ''); }, 9000); }
-  function ask(cf) { S.cf = cf; S.mode = 'confirm'; S.modeH = 0; render('up'); }
+  function ask(cf) { cf.from = S.mode; S.cf = cf; S.mode = 'confirm'; S.modeH = 0; render('up'); }
   function rollback() { if (S.rolling) return; ask({ title: 'Roll back MapServer', text: 'The 400 MapServer nodes hot-restart onto build ' + PREV + ', one at a time, each pausing about 0.4 s. Players stay connected.', need: 'MapServer', verb: 'Roll back', log: ['Roll back', 'MapServer to ' + PREV], done: 'Rolling back MapServer to ' + PREV + ', 8 nodes at a time. Written to the audit log.', effect: function () { S.rolling = true; } }); }
   function drain(node) {
     var t = TYPES.filter(function (x) { return node.indexOf(x.pre + '-') === 0; })[0];
@@ -998,12 +1130,13 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     i.oninput = function () { y.disabled = i.value !== S.cf.need; };
     i.onkeydown = function (e) { if (e.key === 'Enter' && i.value === S.cf.need) { e.preventDefault(); y.click(); } };
     $('cno').onclick = closeMode;
-    y.onclick = function () { var c = S.cf; if (c.effect) c.effect(); S.mode = null; log(c.log[0], c.log[1]); render('down'); say(c.done); };
+    y.onclick = function () { var c = S.cf; if (c.effect) c.effect(); S.mode = c.from === 'det' ? 'det' : null; log(c.log[0], c.log[1]); render('down'); say(c.done); };
     i.focus({ preventScroll: true });
   }
   function jump(i) { if (i !== S.i) { S.back.push(S.i); if (S.back.length > 20) S.back.shift(); } S.hl = null; S.i = i; }
   function back() { if (S.mode) { closeMode(); return; } if (!S.back.length) return; S.hl = null; var i = S.back.pop(); S.i = i; render('down'); }
-  function closeMode() { if (!S.mode) return; S.mode = null; render('down'); }
+  // confirm returns to where it was asked from: a row's page stays open beneath it
+  function closeMode() { if (!S.mode) return; S.mode = S.mode === 'confirm' && S.cf.from === 'det' ? 'det' : null; render('down'); }
 
   // ---------- find (⌘K) ----------
   var F = { q: '', sel: 0, items: [] };
@@ -1011,7 +1144,9 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   // An actor id is resolved through placement and asked of its owner, so millions of actors need no list here.
   var CAP = 5;
   function rank(t, q) { t = t.toLowerCase(); return !q ? 1 : t === q ? 0 : t.indexOf(q) === 0 ? 1 : t.indexOf(q) > 0 ? 2 : 9; }
-  function openActor(a) { S.mode = null; if (a.found) { S.found = a; buildSteps(); } jump(findStep(3, a.id)); render('down'); }
+  // A result lands on its row of a list screen (on a phone, on the row's own page), a node on its type's row
+  function land(i, hl) { jump(i); S.hl = hl || null; S.mode = S.compact && steps[i].md ? 'det' : null; render('down'); }
+  function openActor(a) { S.mode = null; if (a.found) { S.found = a; buildSteps(); } land(findStep(3, a.id)); }
   function allItems() {
     var q = F.q.trim(), G = [[], [], [], []], more = [0, 0, 0, 0];
     var a = q ? lookup(q) : null;
@@ -1019,24 +1154,30 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     ACTORS.slice(0, TOP).forEach(function (x) { var k = rank(x.id, q); if (k < 9 && x !== a) G[0].push({ g: 0, k: 'Actor', t: x.id, h: x.node, r: k, run: function () { openActor(x); } }); });
     TYPES.forEach(function (t) {
       var so = outliers(t);
-      if (q && rank(t.name, q) < 9) G[1].push({ g: 1, k: 'Server type', t: t.name, h: group(t.n) + ' nodes', r: rank(t.name, q) - .5, run: function () { S.mode = null; jump(findStep(1, t.id)); render('down'); } });
+      if (q && rank(t.name, q) < 9) G[1].push({ g: 1, k: 'Server type', t: t.name, h: group(t.n) + ' nodes', r: rank(t.name, q) - .5, run: function () { land(findStep(1, t.id)); } });
       if (!q) { so.slice(0, 2).forEach(function (n) { G[1].push({ g: 1, k: 'Node', t: n.n, h: t.name + ', stands out', r: 0, run: goNode(t, n) }); }); return; }
       t.nodes.forEach(function (n) { var k = rank(n.n, q); if (k < 9) G[1].push({ g: 1, k: 'Node', t: n.n, h: t.name + (so.indexOf(n) >= 0 ? ', stands out' : ''), r: k + (so.indexOf(n) >= 0 ? 0 : .25) + n.n.length / 1000, run: goNode(t, n) }); });
     });
     [
       { t: 'Roll back MapServer', h: 'to ' + PREV, run: function () { S.mode = null; rollback(); } },
-      { t: 'Hot restart a server type', h: 'from its own screen', run: function () { S.mode = null; jump(findStep(1, 'all')); render('down'); } },
+      { t: 'Hot restart a server type', h: 'from its row in Server types', run: function () { S.mode = null; jump(findStep(1, ordered()[0].id)); render('down'); } },
       { t: 'Upload a config table', h: 'every node validates first', run: function () { S.mode = null; upload(); } }
     ].forEach(function (x) { var k = rank(x.t + ' ' + x.h, q); if (k < 9) { x.g = 2; x.k = 'Action'; x.r = k; G[2].push(x); } });
-    // every screen by its name, so a later screen of a long section is a few letters away
-    if (!q) sectionSteps().forEach(function (i) { if (i !== S.i && G[3].length < CAP) G[3].push({ g: 3, k: 'Screen', t: steps[i].label, h: TABS[steps[i].tab] + ', ' + (sectionSteps().indexOf(i) + 1), r: 0, run: function () { S.mode = null; jump(i); render('down'); } }); });
-    if (q) steps.forEach(function (st, i) { var k = rank(st.label, q); if (k < 9) G[3].push({ g: 3, k: 'Screen', t: st.label, h: TABS[st.tab], r: k, run: function () { S.mode = null; jump(i); render('down'); } }); });
+    // every screen by its name (and what it holds), this section's first when nothing is typed
+    var cur = steps[S.i].scr;
+    TABS.forEach(function (tn, tab) {
+      if (!q && tab !== steps[S.i].tab) return;
+      screens(tab).forEach(function (x, j) {
+        var k = rank(x.label, q); if (q && k === 9 && x.kw.indexOf(q) >= 0) k = 3;
+        if ((q ? k < 9 : x.scr !== cur)) G[3].push({ g: 3, k: 'Screen', t: x.label, h: tn + ', ' + (j + 1), r: q ? k : 0, run: function () { S.mode = null; jump(entry(x)); render('down'); } });
+      });
+    });
     G.forEach(function (g, i) { g.sort(function (x, y) { return x.r - y.r; }); more[i] = Math.max(0, g.length - CAP); G[i] = g.slice(0, CAP); });
     F.more = more;
     // with nothing typed: this section's other screens first, then what stands out, then actions
     return q ? G[0].concat(G[1], G[3], G[2]) : G[3].concat(G[1], G[2], G[0]);
   }
-  function goNode(t, n) { return function () { S.mode = null; if (S.split) { var k = steps[S.i]; S.pin = n.n; buildSteps(); S.back = []; S.i = findStep(k.tab, k.key); } jump(findStep(1, S.split ? t.id + '-n' : t.id)); S.hl = n.n; render('down'); }; }
+  function goNode(t, n) { return function () { land(findStep(1, t.id), n.n); }; }
   // One column of results, as many rows as the window holds: groups as small running heads, rows on the 44 px rhythm,
   // the name at the left and its context at the right, never wrapping
   function findRows() { var v = innerHeight - (S.compact ? 470 : 470); return Math.max(4, Math.min(S.compact ? 7 : 9, Math.floor(v / 44))); }
@@ -1078,8 +1219,16 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
       if (k === 'Escape' || k === 'Backspace') { e.preventDefault(); closeMode(); }
       else if (k === 'ArrowDown' || k === 'j') { e.preventDefault(); tocMove(1); }
       else if (k === 'ArrowUp' || k === 'k') { e.preventDefault(); tocMove(-1); }
-      else if (k === 'Enter') { e.preventDefault(); tocOpen(T.items[T.sel]); }
-      else if (/^[0-9]$/.test(k)) { e.preventDefault(); var n = +k; if (n >= 1 && n <= T.items.length) tocOpen(T.items[n - 1]); }
+      else if (k === 'Enter') { e.preventDefault(); tocOpen(TC.items[TC.sel]); }
+      else if (/^[0-9]$/.test(k)) { e.preventDefault(); var n = +k; if (n >= 1 && n <= TC.items.length) tocOpen(TC.items[n - 1]); }
+      return;
+    }
+    if (S.mode === 'det') {
+      if (k === 'Escape' || k === 'Backspace') { e.preventDefault(); closeMode(); }
+      else if (k === 'ArrowDown' || k === 'j') { e.preventDefault(); step(1); }
+      else if (k === 'ArrowUp' || k === 'k') { e.preventDefault(); step(-1); }
+      else if (k === 'ArrowRight' || k === 'ArrowLeft') { e.preventDefault(); tabGo(steps[S.i].tab + (k === 'ArrowRight' ? 1 : -1)); }
+      else if (k === '/') { e.preventDefault(); openFind(); }
       return;
     }
     if (S.mode === 'find') {
@@ -1096,8 +1245,9 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     else if (k === 'ArrowRight') { e.preventDefault(); if (!e.repeat) tabGo(steps[S.i].tab + 1); }
     else if (k === 'ArrowLeft') { e.preventDefault(); if (!e.repeat) tabGo(steps[S.i].tab - 1); }
     else if (k === '/') { e.preventDefault(); openFind(); }
-    else if (k === 'Home') { e.preventDefault(); goNth(1); }
-    else if (k === 'End') { e.preventDefault(); goNth(sectionSteps().length); }
+    else if (k === 'Home') { e.preventDefault(); go(sectionSteps()[0]); }
+    else if (k === 'End') { e.preventDefault(); var a = sectionSteps(); go(a[a.length - 1]); }
+    else if (k === 'Enter' && S.compact && steps[S.i].md) { e.preventDefault(); openDet(S.i); }
     else if (/^[0-9]$/.test(k)) { e.preventDefault(); digit(k); }
   });
   // Wheel: one scroll, one step, however long the scroll goes on, like holding an arrow key that steps once. A scroll
@@ -1161,7 +1311,8 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   // since a narrower desk wraps the same screen taller.
   function wantSplit() {
     if (mq.matches) return true;
-    if (window.innerHeight < 800) return true;
+    // the side-by-side screens (the evidence, the platform) need the full measure and a full height
+    if (window.innerHeight < 800 || window.innerWidth < 1200) return true;
     var keep = S.split; S.split = false; buildSteps();
     var stage = $('stage'), head = document.querySelector('.head'), avail = stage.clientHeight - (head && head.offsetHeight > 40 ? head.offsetHeight : 90) - 72, tall = 0;
     for (var t = 0; t < 5; t++) tall = Math.max(tall, probe(steps.filter(function (st) { return st.tab === t; }).map(function (st) { return st.body; })));
@@ -1171,15 +1322,18 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   function setCompact() {
     var cur = steps[S.i], key = cur && [cur.tab, cur.key];
     S.compact = mq.matches; S.split = wantSplit(); buildSteps(); renderKeys();
-    if (key) { S.i = findStep(key[0], key[1]); if (steps[S.i].key !== key[1]) S.i = findStep(key[0], key[1].replace(/-(n|l)$/, '')); }
+    // a screen that is split on a short desk or a phone maps to its halves and back
+    var TWIN = { ev: 'chart', chart: 'ev', logs: 'ev', plat: 'store', store: 'plat', clients: 'plat' };
+    if (key) { S.i = findStep(key[0], key[1]); if (steps[S.i].key !== key[1] && TWIN[key[1]]) S.i = findStep(key[0], TWIN[key[1]]); }
+    S.last = {}; if (S.mode === 'det' && !S.compact) S.mode = null;
   }
   var rt; window.addEventListener('resize', function () { clearTimeout(rt); rt = setTimeout(function () {
     if (mq.matches !== S.compact || wantSplit() !== S.split) { setCompact(); S.layout = null; render('none'); return; }
-    tabH = {}; var v = view(); frame(v); killPlots(); if (v.after && !S.mode) v.after(); }, 120); });
+    tabH = {}; FIT = {}; S.layout = null; render('none'); }, 120); });
   function redraw() { var v = view(); if (!S.mode && v.after) { killPlots(); v.after(); } }
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', redraw);
   new MutationObserver(redraw).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
-  if (document.fonts && document.fonts.ready) document.fonts.ready.then(function () { if (wantSplit() !== S.split) { setCompact(); S.layout = null; render('none'); return; } tabH = {}; frame(view()); redraw(); });
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(function () { if (wantSplit() !== S.split) { setCompact(); S.layout = null; render('none'); return; } tabH = {}; FIT = {}; S.layout = null; render('none'); });
 
   setCompact(); render('none'); window.focus();
 })();
