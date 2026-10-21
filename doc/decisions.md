@@ -1593,12 +1593,16 @@ Replaced by ADR-081.
       configured size, so a three-member cluster down to two still needs both, and a split of the survivors freezes
       both. Only a cluster configured with `FormationSize = 2` lets a lone member keep renewing; it relies on the epoch
       fence alone, so production runs at least three members of a stateful server type; `FormationSize = 1` is a
-      single-node cluster, and `DaServer.Aspire` sets it from the stateful groups' declared replicas;
-    - **a view change that removes members commits only with a majority of the last committed view** (the
-      coordinator proposes it; a removal a minority side makes locally never commits), and the lease's denominator
-      is that last committed view, so a 5-member cluster split 2|3 renews on the 3 side only: neither side can shrink
-      the cluster to itself and then count itself a majority (Akka's keep-majority decides over the last agreed
-      membership for the same reason);
+      single-node cluster, and `DaServer.Aspire` sets it from all node groups' declared replicas (the quorum and `FormationSize` count the same
+      members: every member of the view, gateways included);
+    - **every view change, additions included, commits only with a majority of the last committed view** (the
+      coordinator proposes it; a joiner neither acks nor counts as heard, hosts no slots and serves no clients until
+      the change commits, as Akka's `WeaklyUp` and Raft's configuration changes), and the lease's denominator is that
+      last committed view, so a 5-member cluster split 2|3 renews on the 3 side only: neither side can shrink the
+      cluster to itself, and a minority cannot admit joiners until it is a majority. A joiner with a committed
+      member's name and a newer node generation replaces that seat and acks for it, so a restarted member of a
+      2-member view is readmitted; with `FormationSize = 2` a lone survivor commits the removal of its dead peer
+      under the same exemption as its lease;
     - **the coordinator is a function of the view**, replacing ADR-079's "oldest Up member": every member carries an
       admission number, assigned by the coordinator at admission and again at readmission after a hot restart (node
       generations stay), and the coordinator is the member Up, not `NodeRestarting`, with the smallest number. Every
@@ -1611,15 +1615,17 @@ Replaced by ADR-081.
       a retried statement or a restart after a migration's arrival does not fence the claimant itself;
     - a move hands off before the target claims (ADR-072's "mail first", kept): mail for a key of a slot the node
       just received parks on an `Arriving` placeholder while the node asks the source (`HandoffQuery`, carrying the
-      target's placement version, which the source adopts so it forwards the slot's keys from then on), which answers
+      slot and the target's placement version, which the source records for that slot only, so it forwards the slot's
+      keys from then on while its own claims keep its own view's version), which answers
       with the migration bytes, "not here" or "postponed" (it keeps the actor and the mail is forwarded to it), so a
       claim never races a live source and the placement version decides only after a source has left;
     - a root's record writes never overlap in one process (the next waits for the one in flight), and the CAS
       compares the epoch and the root's write generation (`write_gen < :write_gen`; every epoch claim resets it to 0,
       an in-place hot restart continues it from the snapshot), so a timed-out statement that lands late never
       overwrites newer state; a failed write is retried with the same bytes and generation, and a row found at its own
-      epoch and generation counts as written; a new row's first epoch comes from a sequence, so a key whose
-      never-written row was swept never reuses an epoch and a late statement or an old `Fence` cannot match it;
+      epoch and generation counts as written; every claim takes its epoch from a sequence (an insert, a takeover and the
+      no-insert claim alike), so epochs only rise across the store and a key whose never-written row was swept never
+      reuses an epoch and a late statement or an old `Fence` cannot match it;
     - generations are max(last seen + 1, Unix ms), and only the lowest-ordinal seed forms a cluster, so a cold restart
       of the whole cluster never reuses a generation and parallel seeds never form two clusters.
   - **Replies, presences and retries are data with stated guarantees** (the table "每条路径保证什么" in the draft's §11):
@@ -1662,8 +1668,10 @@ Replaced by ADR-081.
       retries only not-executed refusals on forwarding hops and `[Durable]` asks, under a per-node retry budget
       (gRPC's retry throttling), and joins with jittered back-off; `Busy` carries a retry-after: blind retries of unknown outcomes duplicate
       effects, unbounded ones amplify an outage. Client call ids are per session across reconnects and prefixed by
-      `ClientId`; the SDK's counter starts at (Unix ms << 20), so a restarted app's calls stay above the receiver's
-      low-water mark, which applies only when the `ReplyLog` lookup misses; `ICluster` derives call ids from external
+      `ClientId`; the SDK's counter starts at a base the gateway gives in the handshake (the gateway's Unix ms << 20,
+      never the device clock), so a restarted app's calls stay above the receiver's low-water mark, which applies
+      only when the `ReplyLog` lookup misses; a `TooLate` carries the mark and the SDK jumps above it and resends once
+      under a new id (not executed, so safe); `ICluster` derives call ids from external
       idempotency keys.
     - Time inside an actor comes from `Time` only: `Elapsed` (monotonic) for order and deadlines, `Utc` (the world's
       `TimeProvider`) for instants kept across deactivation; the analyzer warns on `DateTime.UtcNow`.
@@ -1764,7 +1772,7 @@ Replaced by ADR-081.
   those ADRs are rewritten when W10 promotes the drafts, together with ADR-068 (a claim without its `INSERT`
   branch for mail that may not create a key, the `CanCreate` gate, no rows for types that persist nothing, the
   never-written rows' sweep), ADR-072 (the handoff query before a claim, carrying the target's version) and ADR-079 (the
-  coordinator by admission number, removals committed by a majority of the last committed view). Business code is
+  coordinator by admission number, view changes committed by a majority of the last committed view). Business code is
   `[On<T>]` methods and EasyEcs systems over data; the generator emits jobs, typed sends, typed reply accessors and
   one `Registration` instance. ADR-081's handler, `Context`, session and lifecycle parts, ADR-012's module initializer
   registration and ADR-017's one project per server are replaced when W10 promotes the drafts.
@@ -2119,7 +2127,7 @@ Replaced by ADR-081.
     forwards, through `ClientGroup` to their clients (§15's opening rule).
   - **`DaServer.Reminders`**: a `Reminder<T>(ActorId Actor, long Key, TimeSpan Period)` on a persistent child entity
     whose next firing is its `WakeAt`; one per (T, key) and actor, its unique index keyed by the actor first, so two
-    actors in one world keep their own and an actor can hold several of a kind (`root.Remind<T>(at, every, key: 0)` finds
+    actors in one world keep their own and an actor can hold several of a kind (`root.Remind<T>(DateTime at, TimeSpan every = default, long key = 0, bool move = false)` finds
     or spawns it and leaves an existing one with the same period untouched, so calling it on every activation never
     skips an overdue firing; a new period or `move: true` reschedules; `root.CancelReminder<T>(key: 0)` destroys it). The runtime arms it like every wake (its `ArmSystem` turns a `WakeAt` into a `Due` on load and
     activation; while unloaded, `NextDue` goes into the record's `next_due` column and the slot owner's `DueScan`
@@ -2136,8 +2144,8 @@ Replaced by ADR-081.
     crash or a lost message costs at most two intervals of missed publishes (the renewal scans in slices, and a row
     moved to another table during a round is missed once); the receiving node checks that buffer at
     dispatch and answers a stale delivery with `NotSubscribed`, so a lost `Unsubscribe` is pruned at the next publish.
-    Delivery is at most once and never activates an actor; `[Stateless]` actor types and `Connection` cannot subscribe
-    (DAS023). It replaces today's `Publish`; durable streams (replay, offsets, consumer groups) stay with Kafka or NATS
+    Delivery is at most once and never activates an actor; `[Stateless]` actor types, `Connection` and actor types whose root
+    is not saved cannot subscribe (DAS023): Topics needs the subscriber's epoch and a saved `Subscription` on its root. It replaces today's `Publish`; durable streams (replay, offsets, consumer groups) stay with Kafka or NATS
     JetStream.
   - **Non-.NET clients**: the client wire protocol is published as a specification (frames, handshake, `Ready`,
     re-join and slots, `Retire` and `HandedOff`, `Busy` with its retry-after, keep-alive), with the C# SDK as the
@@ -2200,7 +2208,7 @@ Replaced by ADR-081.
     carries only the sale. Only one actor type handles it (a client message has one): today's stateless `Gate`
     service becomes `Gate(long Sale, int Shard)`, an actor type that is not persisted (so it claims no store row),
     with `[ActivatedBy<PlaceOrder>]`, `CanCreate` (the sale exists) and `Route(in Account, in PlaceOrder)` to the shard
-    `who.Id % Shards` (`Shards` a constant: `Route` reads no tables, so changing it means a gateway roll): it handles the client's `PlaceOrder`, answers the late crowd `SoldOut` from what it has learned
+    `who.Id % SaleShards.Count` (`SaleShards.Count` a constant: `Route` reads no tables, so changing it means a gateway roll): it handles the client's `PlaceOrder`, answers the late crowd `SoldOut` from what it has learned
     (a sold-out answer from any `Order` it asked, or the sale's `Describe`), runs the optional admission queue, and for
     the rest plainly asks `Order(m.Sale, who.Id)` with the server message `[From<Gate>] Place : IRequestTo<Order,
     OrderStatus>` (the user from the claims, so no buyer orders for another; `Order` needs no `Route` or
@@ -2382,9 +2390,9 @@ Replaced by ADR-081.
     final).
   - **A pure gate before the claim**: beside `[ActivatedBy]`, `static bool CanCreate(in TClaims who, in TMessage m)`
     (which may also take `in` configuration tables, the node's immutable snapshots) runs on the owner before the
-    claim; `false` turns the claim into the no-insert one, so a key that already has a record still activates (a
-    `[Durable]` retry of an order placed before the sale closed finds its answer) and only a key without a record
-    answers `NoActor`, writing nothing; validation that needs no actor state (a map id in the map table, a sale that
+    claim; for a saved type `false` turns the claim into the no-insert one, so a key that already has a record still
+    activates (a map taken out of the map table keeps its record and still runs) and only a key without a record
+    answers `NoActor`, writing nothing (a type that saves nothing answers `NoActor` at once); validation that needs no actor state (a map id in the map table, a sale that
     exists) costs no row. An analyzer error flags a `CanCreate` whose message is not in `[ActivatedBy]` and a
     `CanCreate`-shaped method under another name. Rows still never written expire after `DaServer:EmptyRecordTtl`
     (1 day): the member with a store and the smallest admission number deletes them in key-set batches through a
@@ -2404,8 +2412,9 @@ Replaced by ADR-081.
     receiver keeps an entry until the latest settle-by it accepted for the call id, and keeps per `ClientId` the
     highest purged client call id (`DaServer:ReplyLogClients`, 256 per root, evicting only clients idle past
     `ClientSettle` + `ClockSkew`), answering `TooLate` at or below it once the `ReplyLog` lookup has missed (entries
-    are purged by settle-by, not by id). The SDK's call-id counter starts at (Unix ms << 20), so an app restarted with
-    the same token never starts below that mark. The receiving type must persist (analyzer
+    are purged by settle-by, not by id). The SDK's call-id counter starts at the base the gateway gives in the handshake (server time,
+    Unix ms << 20), so an app restarted with the same token, even on a device whose clock moved back, starts above
+    that mark; a `TooLate` carries the mark so the SDK can jump above it and resend once under a new id. The receiving type must persist (analyzer
     error). For sensitive operations that change the economy; everything else stays at most once. A business
     operation repeated under a new call id (an app restart, a hostile client) is deduplicated by its own key. A
     recharge never goes through the client: the payment provider's webhook asks `Payment(payment id)`, a persisted

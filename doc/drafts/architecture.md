@@ -248,7 +248,8 @@ exported, OpenTelemetry). Names users never write but meet in diagnostics: the S
 | `RestartingNodes` | node singleton | The members in `NodeRestarting`, with their expected pauses; `TryGetPause(connection, out pause)` for gateway systems that tell clients | `daserver.members{state}` |
 | `StoreDegraded`, `ActivationSlots`, `PeerHealth` | node singletons | The store is slow or down (no idle deactivation, `Saving` placeholders capped); concurrent epoch claims (jittered back-off); in-flight requests and latency per destination node with an adaptive limit (fail fast with `Busy`) ([draft §6](programming-model.md#6-生命周期), [§11](programming-model.md#11-失败时的结果)) | `daserver.store.degraded`, `daserver.activations.claiming`, `daserver.peer.inflight`, `daserver.peer.limit` |
 | Placeholder | entity | A key not yet active or being saved: the copy of `K.RootPrefab` without `In<K>`, the key, `Loading`, `Arriving` (a key of a handoff-pending slot waiting for its source's answer, section 4), `Saving` or `ActivationFailed(until)`, a bounded `DynamicBuffer<Mail>`; a throw in a persisted actor (reload) turns a root back into one in place, keeping only the key, the `Mail` and the faulting `[Durable]` call ids (a bounded `DynamicBuffer<FaultedCall>`: a system pass that throws can fault several stored tokens of one root; past `DaServer:FaultedCallsMax`, default 64, the rest are not recorded and their askers end `Expired`) (values reset to the prefab copy's) | `daserver.activations.failed` |
-| Control mail | mail on the control channel | `Route`, `Lost`, `JoinConfirmed`, `Fence(key, epoch)`, `Wake` (`TakeOver` and `HandedOff` are not control mail: they travel on the data stream, in order with the group frames, section 3's Retire); mail to a `Connection` is addressed by its `ConnectionId` (the presence records it), so the gateway routes it to the world by that key's hash like any actor's; bounded by what the node holds, never `Busy` | `daserver.messages.dropped{reason}` |
+| Control mail | mail on the control channel | `Route`, `Lost`, `JoinConfirmed`, `Fence(key, epoch)`, `Wake` (`TakeOver` and `HandedOff` are not control mail: they travel on the data stream, in order with the group frames, section 3's Retire, but like control mail they
+bypass `PeerHealth`'s fail-fast `Busy` and the mailbox drops: a fence is never refused or dropped, only ordered); mail to a `Connection` is addressed by its `ConnectionId` (the presence records it), so the gateway routes it to the world by that key's hash like any actor's; bounded by what the node holds, never `Busy` | `daserver.messages.dropped{reason}` |
 | Membership states | per member in the view | `NodeJoining`, `NodeLeaving` (placement is changing), `NodeRestarting` (a hot restart, announced on SIGTERM, or at once under an `exit=true` arm; user systems see the `Restarting` tag and `RestartingNodes`), `Rejoining` (the new process waiting for the coordinator's `Readmit` or `Gone`) | `daserver.members{state}` |
 
 ### `Registration`
@@ -492,17 +493,24 @@ in short:
   (it moves the actor now, mail first, then the subtree), with "not here" (never active, or already written and
   deactivated), after which B claims as usual, or with "postponed" (A cannot write the root before moving, for example
   while the store is down), after which B forwards the mail to A, which keeps the actor running there, and asks again
-  after a back-off. `HandoffQuery` carries B's placement version: A adopts it at once if it is newer than A's view, so from then on A
-  forwards the slot's keys instead of activating them, even before its view catches up. A key never has a claim racing a live source: the store's placement version decides only between
+  after a back-off. `HandoffQuery` carries the slot and B's placement version: A records "slot s left me at vB" for that slot only (it
+  does not know the new table's other slots), so from then on A forwards that slot's keys instead of activating them,
+  even before its view catches up; A's own claims always use its own view's version. A key never has a claim racing a live source: the store's placement version decides only between
   a source that has left and its successor. The coordinator does not move a slot again while its previous move is
   still handoff-pending (the slot table marks it until the source reports it done or leaves the view), so a chained
   move A→B→C never lets C ask a B that never held the key. Mail A forwards for a parked key goes ahead of the mail B
   parked (A sends it on the migration's stream before the bytes), so per-sender order holds across the move.
-- **View changes that remove members need a quorum**: a view that drops members (`Dead`, `Left`, a hot restart past its
-  deadline) is committed only when more than half of the members of the last committed view have acknowledged it; the
-  coordinator proposes it, and a removal a minority makes locally is never committed, so the two sides of a partition
-  never each shrink the cluster to themselves. Additions commit as before (they cannot make a minority a majority,
-  since the denominator below is the last committed view, not the proposed one).
+- **Every view change needs a quorum of the last committed view**: a view that adds or removes members (a join, a
+  readmission, `Dead`, `Left`, a hot restart past its deadline) is committed only when more than half of
+  `max(DaServer:FormationSize, members of the last committed view)` have acknowledged it; the coordinator proposes it.
+  A joiner is only proposed until then: it neither acks nor counts as heard, hosts no slots and serves no clients (as
+  Akka's `WeaklyUp`, and Raft's rule that a configuration change commits with a majority of the old configuration). So
+  a minority can neither shrink the cluster to itself nor grow itself into a majority by admitting new nodes: a 5-member
+  cluster split 2|3 whose 2 side admits two joiners still counts 2 of 5. One change needs no extra seat: a joiner with
+  the name of a committed member and a newer node generation replaces that member's seat (its old process is fenced by
+  the generation), and it acks for that seat, so a restarted member of a 2-member view is readmitted by the survivor
+  and itself. A cluster configured with `FormationSize = 2` lets a lone member commit the removal of its dead peer by
+  itself, under the same exemption as its lease below; `FormationSize = 1` is a single member.
 - **Membership lease**: renewed only by an ack echoing the node's own heartbeat counter, timed from the send, and an
   ack renews only when the acker is on the majority side: it has heard, within `SuspectAfter`, from more than half of
   `max(DaServer:FormationSize, members of the last committed view)` (itself included; `NodeRestarting` members count
@@ -518,7 +526,8 @@ in short:
   cluster's configured size, not the current view: a three-member cluster that lost a member still needs two of three,
   so a later split of the two survivors freezes both rather than letting both run (an alert, `daserver_lease_minority`,
   says so). `FormationSize = 1` is a single-node cluster (a local run, an `AllInOne` deployment); `DaServer.Aspire` sets
-  `FormationSize` from the replicas the AppHost declares for the stateful groups, so a one-node run does not freeze.
+  `FormationSize` from the replicas the AppHost declares for all node groups (the quorum and `FormationSize` count the
+  same members: every member of the view, gateways included), so a one-node run does not freeze.
   Only a cluster configured with `FormationSize = 2` lets a lone member keep renewing (otherwise one crash
   would freeze it for good); such a cluster has no lease-based guarantee against a partition and relies on the epoch
   fence alone (a write by the stale side fails; in-memory work, pushes and plain replies on that side run until its
@@ -530,7 +539,8 @@ in short:
   [draft §11](programming-model.md#定时的默认值).
 - **Activation**: the placeholder (`Loading`) holds the mail; one statement claims the epoch and reads the record
   (`INSERT … ON CONFLICT (type_id, key) DO UPDATE SET … WHERE … RETURNING …`, inserting the placeholder row for a new key, its
-  first epoch taken from a sequence so a key whose row was swept never reuses an epoch, and
+  every epoch (a new key, a takeover, the no-insert claim) taken from a sequence so a key whose row was swept never
+  reuses an epoch, an empty result under READ COMMITTED retried, and
   returning the displaced owner as PostgreSQL 18's `old.owner`; the store keeps epoch, write generation (reset to 0 by the claim), owner and placement version: taking a key from another owner needs a
   strictly newer version, a displaced owner gets `Fence(key, epoch)`), within `ActivationSlots`;
   `LoadEntitiesInto(record, into, markWritten: false)` with the placeholder as the root; `In<K>` added;
@@ -544,9 +554,9 @@ in short:
   create the key first passes the type's pure gate, `static bool CanCreate(in TClaims, in TMessage)` beside
   `[ActivatedBy]` (no world, no allocation; besides the claims and the message it may take only `in` configuration
   tables, the node's immutable snapshots; checked on the owner before the claim, for example a map id against the map
-  table): `false` turns the claim into the no-insert one above, so a key that already has a record still activates
-  (a client's `[Durable]` retry of an order that ran before the sale closed finds its answer in the `ReplyLog`), and
-  only a key without a record answers `NoActor`, writing nothing. So a client cannot create rows by inventing keys.
+  table): for a saved type `false` turns the claim into the no-insert one above, so a key that already has a record
+  still activates (a map taken out of the map table keeps its record and still runs), and only a key without a record
+  answers `NoActor`, writing nothing; a type that saves nothing has no record to find, so `false` is `NoActor`. So a client cannot create rows by inventing keys.
 - **Actor types that save nothing claim no row**: a type whose root is not persisted has no record, so its activation
   writes nothing to the store, no claim included. What keeps one activation per key for it is the view: a node
   activates only keys its view makes it the owner of and not handoff-pending, peers forward by the same rule, the
@@ -620,12 +630,17 @@ The PostgreSQL statements behind the rules above ([draft §10](programming-model
 and its wake section); the store implements `IActorStore` with them.
 
 **The schema** (created by the schema Job as the owner role, in the schema `:schema`, default `public`; `:runtime_role` is
-the `Username` of the runtime connection string, so the role names are the user's):
+the `Username` of the runtime connection string, so the role names are the user's). DDL takes no bind parameters, so
+`:schema` and `:runtime_role` are formatted into the text as quoted identifiers (`quote_ident`, `format('%I')`). Every
+statement is re-runnable, since the Job runs on every release: the type is created in a `DO` block that skips an
+existing one (PostgreSQL has no `CREATE TYPE IF NOT EXISTS`), the rest uses `IF NOT EXISTS` and `CREATE OR REPLACE`,
+and the index is created only when `to_regclass` does not find it, so a release takes no index lock:
 
 ```sql
-CREATE TYPE daserver_owner AS (name text, gen bigint);                    -- (node name, node generation)
-CREATE SEQUENCE actor_records_epoch;                                       -- first epochs: never reused after a sweep
-CREATE TABLE actor_records (
+DO $$ BEGIN CREATE TYPE daserver_owner AS (name text, gen bigint);       -- (node name, node generation)
+     EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+CREATE SEQUENCE IF NOT EXISTS actor_records_epoch;                         -- every epoch: never reused after a sweep
+CREATE TABLE IF NOT EXISTS actor_records (
   type_id   integer        NOT NULL,   -- the actor type's id (Nino's type id)
   key       bytea          NOT NULL,   -- the key's fields in order, each big-endian at its own width (at most 16 bytes)
   slot      smallint       NOT NULL,   -- the key's placement slot (0..4095, ADR-074), computed by the node
@@ -637,10 +652,11 @@ CREATE TABLE actor_records (
   record    bytea,                     -- NULL: claimed, never written
   next_due  timestamptz,               -- NextDue; NULL: nothing due
   PRIMARY KEY (type_id, key));
-CREATE INDEX actor_records_due ON actor_records (type_id, slot, next_due) WHERE next_due IS NOT NULL;
+-- when to_regclass('actor_records_due') IS NULL:
+CREATE INDEX IF NOT EXISTS actor_records_due ON actor_records (type_id, slot, next_due) WHERE next_due IS NOT NULL;
 GRANT USAGE ON SCHEMA :schema TO :runtime_role;
 GRANT SELECT, INSERT, UPDATE ON actor_records TO :runtime_role;           -- no DELETE: only the sweep function deletes
-GRANT USAGE ON SEQUENCE actor_records_epoch TO :runtime_role;
+GRANT USAGE ON SEQUENCE actor_records_epoch TO :runtime_role;           -- nextval in both claims
 ```
 
 The schema Job does not create roles. The samples' AppHosts add an init step that creates the runtime role with the
@@ -655,7 +671,7 @@ WITH c AS (
   INSERT INTO actor_records AS a (type_id, key, slot, epoch, write_gen, owner, placement, claimed, record, next_due)
   VALUES (:type_id, :key, :slot, nextval('actor_records_epoch'), 0, (:name, :gen), :v, now(), NULL, NULL)   -- a new key
   ON CONFLICT (type_id, key) DO UPDATE
-     SET epoch = a.epoch + 1, write_gen = 0, owner = excluded.owner, placement = excluded.placement, claimed = now()
+     SET epoch = excluded.epoch, write_gen = 0, owner = excluded.owner, placement = excluded.placement, claimed = now()
      WHERE a.placement < excluded.placement
         OR (a.placement = excluded.placement AND a.owner = excluded.owner)
   RETURNING new.epoch, new.record, old.owner, new.placement)        -- PostgreSQL 18: OLD in RETURNING, NULL if inserted
@@ -666,12 +682,19 @@ FROM actor_records a
 WHERE a.type_id = :type_id AND a.key = :key AND NOT EXISTS (SELECT 1 FROM c)
 ```
 
+Every epoch comes from the sequence (`excluded.epoch` is the `nextval` of `VALUES`, which PostgreSQL evaluates on a
+conflict too), so epochs rise across the whole store and a row created again after a sweep never repeats an epoch an
+old activation held. Under READ COMMITTED the statement can return no row: two nodes claim the same new key at once,
+the second one's `ON CONFLICT` locks the first one's committed row and its condition fails, and its fallback
+`SELECT` uses a snapshot from before that row existed. An empty result is neither taken nor forward: the node runs
+the statement again (it then sees the row).
+
 **The claim that may not create the key** (no `INSERT` branch; `has_record` false answers `NoActor`):
 
 ```sql
 WITH c AS (
   UPDATE actor_records a
-     SET epoch = a.epoch + 1, write_gen = 0, owner = (:name, :gen), placement = :v, claimed = now()
+     SET epoch = nextval('actor_records_epoch'), write_gen = 0, owner = (:name, :gen), placement = :v, claimed = now()
    WHERE a.type_id = :type_id AND a.key = :key AND a.record IS NOT NULL
      AND (a.placement < :v OR (a.placement = :v AND a.owner = (:name, :gen)))
   RETURNING a.epoch, a.record, a.placement)
@@ -688,7 +711,7 @@ leaves it out for brevity. No row at all means no record.)
 **The sweep of never-written rows** (created by the schema Job; the runtime role has `EXECUTE` only):
 
 ```sql
-CREATE FUNCTION :schema.daserver_sweep_empty(ttl interval, max_rows integer, after_type integer, after_key bytea)
+CREATE OR REPLACE FUNCTION :schema.daserver_sweep_empty(ttl interval, max_rows integer, after_type integer, after_key bytea)
 RETURNS TABLE (deleted integer, last_type integer, last_key bytea)       -- the cursor for the next batch
 LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
   WITH page AS (SELECT a.type_id, a.key FROM :schema.actor_records a      -- key-set walk: the table once per sweep
@@ -704,7 +727,8 @@ REVOKE ALL ON FUNCTION :schema.daserver_sweep_empty(interval, integer, integer, 
 GRANT EXECUTE ON FUNCTION :schema.daserver_sweep_empty(interval, integer, integer, bytea) TO :runtime_role;
 ```
 
-**The batched write (compare and swap on epoch and write generation; the rows not updated come back as stored)**:
+**The batched write (compare and swap on epoch and write generation; the rows not updated come back as stored, and a
+row that is gone, for example swept, comes back with a NULL epoch, which the node treats as a failed compare)**:
 
 ```sql
 WITH r AS (SELECT * FROM unnest(:type_ids, :keys, :records, :next_dues, :epochs, :write_gens)
@@ -713,9 +737,9 @@ WITH r AS (SELECT * FROM unnest(:type_ids, :keys, :records, :next_dues, :epochs,
            FROM r WHERE a.type_id = r.type_id AND a.key = r.key
                     AND a.epoch = r.epoch AND a.write_gen < r.write_gen
            RETURNING a.type_id, a.key)
-SELECT a.type_id, a.key, a.epoch, a.write_gen                 -- the rows not updated, as stored
-FROM r JOIN actor_records a ON a.type_id = r.type_id AND a.key = r.key
-WHERE NOT EXISTS (SELECT 1 FROM w WHERE w.type_id = r.type_id AND w.key = r.key)
+SELECT r.type_id, r.key, a.epoch, a.write_gen                 -- the rows not updated, as stored; a missing row
+FROM r LEFT JOIN actor_records a ON a.type_id = r.type_id AND a.key = r.key   -- comes back with a NULL epoch:
+WHERE NOT EXISTS (SELECT 1 FROM w WHERE w.type_id = r.type_id AND w.key = r.key)   -- a failed compare, it fences
 ```
 
 **`DueKeys(slots, until, after)`: one page**:
