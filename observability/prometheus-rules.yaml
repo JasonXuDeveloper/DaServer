@@ -335,9 +335,10 @@ groups:
 
       - alert: DaServerStoreUnsafe
         # Target (roadmap W6, ADR-104): the store's self-check finds a setting that can corrupt the database rather than
-        # lose recent writes (PostgreSQL fsync or full_page_writes off), read on every new connection and re-checked
-        # every 10 s. Nothing is refused: a running node keeps working as Local (fencing only), and a node starting on
-        # it stays not ready, exporting the class but no started class. A development or TestCluster node, exempt,
+        # lose recent writes (PostgreSQL fsync or full_page_writes off), read on every new connection and every 10 s,
+        # so this fires about 30 s after a node reports it. Nothing is refused: a serving node (or a hot restart's
+        # standby) goes on under the Local rules, and a fresh start waits not ready before it joins, exporting the class
+        # but no started class. A development or TestCluster node, exempt,
         # started serving on it and exports -1 as its started class too, so it does not fire; one that started on a
         # safe setting and is reloaded to an unsafe one does.
         expr: |
@@ -349,7 +350,7 @@ groups:
           severity: critical
         annotations:
           summary: "{{ $labels.node }}'s {{ $labels.store }} store runs with fsync or full_page_writes off"
-          description: "A crash of the database can now corrupt it rather than lose recent writes. Writes go on as Local; a node starting meanwhile stays not ready. Turn the setting the self-check logs back on; the class returns within 10 s."
+          description: "A crash of the database can now corrupt it rather than lose recent writes. Writes go on under the Local rules, but no durability guarantee holds across a database host crash meanwhile; a node starting meanwhile stays not ready. Turn the setting the self-check logs back on; the class returns within 10 s."
 
       - alert: DaServerMembershipDocumentLarge
         # Target (roadmap W6, ADR-103): the membership document is written whole on every change, and a change that would
@@ -368,6 +369,22 @@ groups:
           description: "Membership changes rewrite the whole document; at the store's MaxValueBytes they are refused and no death or re-placement can be written. Check that re-placement moves dead entries out, or put membership on a store with a larger value limit (WithMembershipStore)."
           daserver_limit: "0.5"
           daserver_unit: "of MaxValueBytes"
+
+      - alert: DaServerMembershipWritePending
+        # Target (roadmap W6, ADR-103): a node has at most one membership write in flight, so one whose outcome stays
+        # unknown (the store slow, or failing writes while reads answer, e.g. a membership store of its own) holds back
+        # every later one from that node: its heartbeats skip, and on the coordinator deaths, dead_seen_at stamps,
+        # re-placements and restart permits wait. The lease rests on reads, so the node keeps running; this names the
+        # stall that DaServerStoreWritesBehind (actor writes only) does not. The gauge is 0 while nothing is pending.
+        expr: max by (cluster, type, node) (last_over_time(daserver_membership_write_pending_age_seconds[2m])) > 60
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.node }} has had a membership write pending for over a minute"
+          description: "Until it settles, the node's later membership writes wait: heartbeats, and on the coordinator deaths and re-placements. Check the membership store's write path (locks, disk, its synchronous standbys) and its logs."
+          daserver_limit: "60"
+          daserver_unit: "seconds"
 
       - alert: DaServerDeleteSendAfter
         # Target (roadmap W6): an item sent or asked after root.Delete() returned Ok, which reloads it. In an answer's
