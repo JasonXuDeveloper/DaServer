@@ -319,20 +319,37 @@ groups:
       - alert: DaServerStoreDurabilityDropped
         # Target (roadmap W6, ADR-104): the store's effective durability class (2 Strict, 1 Replicated, 0 Local, -1 Unsafe;
         # the lower of the provider's declaration and its periodic self-check) fell below the class the node started
-        # with: a replication setting changed under a running cluster (no synchronous standby configured, eviction turned
-        # on), or an unsafe setting (PostgreSQL fsync or full_page_writes off) was reloaded, which locks the store against
-        # writes until a check passes (re-checked every 10 s; reads go on). Exempt development nodes keep writing and
-        # export the class they found, and started there, so they never fire. Below Strict a failover or crash may lose recent writes; nothing alerts
-        # on that, the class accepted it. Labelled by store (actors, membership, dashboard).
+        # serving with, while still a class (Unsafe has its own rule below): a replication setting changed under a
+        # running cluster (no synchronous standby configured, eviction turned on). Below Strict a failover or crash may
+        # lose recent writes; nothing alerts on that, the class accepted it. Labelled by store (actors, membership,
+        # dashboard).
         expr: |
-          min by (cluster, type, node, store) (last_over_time(daserver_store_durability_class[2m]))
+          (min by (cluster, type, node, store) (last_over_time(daserver_store_durability_class[2m])) >= 0)
             < min by (cluster, type, node, store) (last_over_time(daserver_store_durability_class_started[2m]))
         for: 5m
         labels:
           severity: critical
         annotations:
           summary: "{{ $labels.node }}'s {{ $labels.store }} store is below the durability it started with"
-          description: "The store's self-check now finds a weaker class than at start: acknowledged writes may be lost in a failover, or, at Unsafe (-1), an fsync or full_page_writes setting is off and the store is locked against writes until it is turned back on. Restore the settings the self-check logs (DaServer:Store:SelfCheckInterval)."
+          description: "The store's self-check now finds a weaker class than at start: acknowledged writes may be lost in a failover. Restore the settings the self-check logs (DaServer:Store:SelfCheckInterval)."
+
+      - alert: DaServerStoreUnsafe
+        # Target (roadmap W6, ADR-104): the store's self-check finds a setting that can corrupt the database rather than
+        # lose recent writes (PostgreSQL fsync or full_page_writes off), read on every new connection and re-checked
+        # every 10 s. Nothing is refused: a running node keeps working as Local (fencing only), and a node starting on
+        # it stays not ready, exporting the class but no started class. A development or TestCluster node, exempt,
+        # started serving on it and exports -1 as its started class too, so it does not fire; one that started on a
+        # safe setting and is reloaded to an unsafe one does.
+        expr: |
+          min by (cluster, type, node, store) (last_over_time(daserver_store_durability_class[2m])) == -1
+            unless on (cluster, type, node, store)
+              min by (cluster, type, node, store) (last_over_time(daserver_store_durability_class_started[2m])) == -1
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.node }}'s {{ $labels.store }} store runs with fsync or full_page_writes off"
+          description: "A crash of the database can now corrupt it rather than lose recent writes. Writes go on as Local; a node starting meanwhile stays not ready. Turn the setting the self-check logs back on; the class returns within 10 s."
 
       - alert: DaServerMembershipDocumentLarge
         # Target (roadmap W6, ADR-103): the membership document is written whole on every change, and a change that would
