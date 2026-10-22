@@ -342,7 +342,7 @@ Keep this file current: tick items when done, add items when scope changes.
         owner's rights, and `PUBLIC` cannot execute it), `RolePrefixUniquePerServer` (roles marked in the transaction that creates them, by `COMMENT ON ROLE`, with the cluster's membership store server (`system_identifier`), database and schema: one cluster's second store database converges, another cluster's membership database on this server or another, another schema or an unmarked role is refused, naming `RolePrefix`; after a membership move, roles re-marked as operations.md says converge)); `PublishRefusesStorelessRecords` (`aspire publish` fails when any node's records or Dashboard
         would use the in-memory store); `AspireRunModeIsDevelopment` (run mode sets `DOTNET_ENVIRONMENT=Development`
         unless the AppHost sets one; publish never does); the
-        self-check declaring `Strict` only with a synchronous standby and `DaServer:Store:PostgreSql:SafeFailover`;
+        self-check declaring `Strict` only for the declared `DaServer:Store:PostgreSql:SafeFailover` shape with a matching configuration (`Quorum`: `ANY 1` over at least two standbys, however many stream; `None`: no synchronous standby names and no permanent physical slot);
         in every class `fsync` or `full_page_writes` `off` making the class `Unsafe`, read on every new connection and
         every 10 s: a fresh start on it stays not ready before the membership join (`UnsafeAtStartStaysNotReady`), one
         finding it while serving, or a hot restart's standby, refuses nothing, goes on under the `Local` rules and raises
@@ -1023,10 +1023,10 @@ Keep this file current: tick items when done, add items when scope changes.
       `RotationWaitsForFingerprintOnEveryNode`, `RejectEmptyKeyOnReload`, `NetworkPolicyAdmitsDashboard`,
       `NetworkPolicyAdmitsReferencingResources`, `NetworkPolicyAdmitsRoleInitToStore`, `ComposeDeployWaitsForPostgresThenSchemaExitCode`
       (a failing schema stops the deploy), `SchemaJobRetriesUntilRoleExists`, `GatewayPodsReachStore`,
-      `ComposeSecretReadableByNode`, `LaunchdThrottleIntervalOne`, `PublishedStoreReplicatesSynchronously`, `ComposePublishesStrictDatabase`
+      `ComposeSecretReadableByNode`, `LaunchdThrottleIntervalOne`, `PublishedStoreReplicatesSynchronously` (the Kubernetes chart's PostgreSQL), `ComposePublishesStrictDatabase`
       (the Compose file's one `postgres` runs with `fsync`, `full_page_writes` and `synchronous_commit` on and no
       standby, and the nodes start `Strict` with failure domain `host`), `SingleInstanceWithoutSafeFailoverIsLocal`
-      (an undeclared single instance never claims `Strict`), `StartupLogNamesFailureDomain`.
+      (an undeclared single instance never claims `Strict`), `StandbyMaintenanceKeepsStrict` (one standby down keeps `Quorum` `Strict`), `BackupStreamingKeepsStrict` (a `pg_basebackup -X stream` keeps `None` `Strict`), `StartupLogNamesFailureDomain`.
 14. N9 hot restart's remaining operator side, on W's model (draft §10; ADR-084, ADR-098), after W12 and before W10: the
     `{cluster}-upgrade-check` Job and `aspire deploy` step, a plain Job that calls a running node's dry-run arm
     (`/admin/restart?dryRun=true` with the new manifest, `ManifestDiff`), including the rollback-safety check (a release whose new

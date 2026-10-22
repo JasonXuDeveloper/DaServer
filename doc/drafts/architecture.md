@@ -1036,17 +1036,18 @@ runtime acts on these classes only (section 2's Tick-end write), never on a stor
 
 | Class | An acknowledged write | Examples |
 |---|---|---|
-| `Strict` | Is never lost or rolled back by a crash within the deployment's failure domain or by any failover the store performs: durable on commit, promotion (if any) only of a replica holding every acknowledged write, no silent fallback. The failure domain (`DaServer:Store:FailureDomain`) bounds it: three zones on Kubernetes, which survive the loss of any one instance; one host on Docker Compose, whose disk or host loss is not covered | PostgreSQL with strict synchronous replication and failover that never promotes a standby missing an acknowledged commit, or a single crash-safe instance with no failover at all (below); MongoDB with majority writes; CockroachDB and YugabyteDB (to verify, roadmap W6) |
+| `Strict` | Is never lost or rolled back by a crash within the deployment's failure domain or by any failover the store performs: durable on commit, promotion (if any) only of a replica holding every acknowledged write, no silent fallback. The failure domain (`DaServer:Store:FailureDomain`) bounds it: three zones for what `DaServer.Aspire` publishes on Kubernetes, which survive the loss of any one instance; one host on Docker Compose, whose disk or host loss is not covered | PostgreSQL with strict synchronous replication and failover that never promotes a standby missing an acknowledged commit, or a single crash-safe instance with no failover at all (below); MongoDB with majority writes; CockroachDB and YugabyteDB (to verify, roadmap W6) |
 | `Replicated` | Reached at least one replica or its disk, but a failover may still promote one without it, or replication may degrade | Redis or Valkey with `WAITAOF` and `min-replicas-to-write`; MySQL semi-synchronous replication with its fallback timeout |
 | `Local` | Is on the primary only, and a failover may lose it | A single instance whose failover is unknown; asynchronous replication |
 
 - The **effective class** is the lower of the provider's declaration and its self-check, run at start and every
-  `DaServer:Store:SelfCheckInterval` (5 min) (a PostgreSQL without a synchronous standby, a MongoDB whose effective
+  `DaServer:Store:SelfCheckInterval` (5 min) (a PostgreSQL whose configuration does not match its declared shape, a MongoDB whose effective
   write concern is not majority, a Redis with eviction, no AOF or no replica each lower it). It is logged (on `Strict`
   with the failure domain, `DaServer:Store:FailureDomain`: `zones`, `host` or `unknown`, which `DaServer.Aspire` sets
   for what it publishes and an external store leaves `unknown`; a `host` domain says the disk's or host's loss is not
-  covered), exported per
-  store (`daserver.store.durability_class`, 2 `Strict`, 1 `Replicated`, 0 `Local`, -1 `Unsafe`, and the class at
+  covered; one key covers every store of the node, and when they sit in different domains it names the weakest; test
+  `StartupLogNamesFailureDomain`), exported per
+  store (`daserver.store.durability_class`, labelled `store` and `failure_domain`, which the Dashboard reads, 2 `Strict`, 1 `Replicated`, 0 `Local`, -1 `Unsafe`, and the class at
   the node's first serving start, `daserver.store.durability_class_started`, carried over a hot restart and
   re-evaluated there against the new configuration's acceptance (section 5), and absent while a node waits not ready; `daserver.store.unsafe_exempt`, 1 on an
   exempt node below; alert `DaServerStoreDurabilityDropped` when the first falls below the second while still a
@@ -1372,8 +1373,10 @@ failover that can promote a standby missing an acknowledged commit, in one of tw
   `synchronous_mode: quorum` with `synchronous_mode_strict: true`, which writes `synchronous_standby_names` itself;
   CloudNativePG's quorum-based failover, 1.27 and later, with `postgresql.synchronous` `method: any` and
   `dataDurability: required`; a managed service's zone-redundant mode that promotes only a replica holding every
-  acknowledged commit). With no synchronous standby up, writes, claims and membership writes pause in `COMMIT`
-  rather than degrade: lease reads still answer, so nothing freezes, but heartbeats skip, deaths and re-placements
+  acknowledged commit). A managed high-availability service declares this shape too: its replicas may not show in
+  `pg_stat_replication`, and the operator's declaration is what counts. With no synchronous standby up, writes, claims
+  and membership writes pause in `COMMIT` rather than degrade (the class stays `Strict`: every acknowledged commit is
+  still on a standby the failover would promote): lease reads still answer, so nothing freezes, but heartbeats skip, deaths and re-placements
   wait, `DaServerMembershipWritePending` fires on every node and `DaServerStoreWritesBehind` on every node with
   unsaved changes.
 - **Single**: one instance with no standby and no failover at all. Crash recovery from its WAL keeps every
@@ -1386,15 +1389,22 @@ roles step instead creates this `SECURITY DEFINER` function, owned by the owner 
 `pg_read_all_stats`, in the configured schema of every database the cluster's stores use, as step (6) below shows;
 callers name it with its schema; checked on 16: each of the runtime, membership and Dashboard roles sees
 `streaming`/`quorum` through it and `NULL` directly, and a role without the grant is refused). Failover policy is not
-visible from SQL, so `Strict` also needs the operator's statement `DaServer:Store:PostgreSql:SafeFailover`: failover
-never promotes a standby missing an acknowledged commit, which no failover at all meets. With the statement the
-self-check declares `Strict` for the replicated shape when two synchronous standbys stream as `quorum` under
-`ANY 1`, and for the single shape when `synchronous_standby_names` is empty and no standby streams; any other
-combination is `Replicated` (a synchronous standby but no statement) or `Local`, so an external single instance
-never claims `Strict` unless its operator declares that nothing fails it over. What `DaServer.Aspire` publishes
-sets the statement and the failure domain: on Kubernetes a primary and two standbys in three zones with quorum-aware
-failover (`zones`), so maintenance on one standby pauses nothing (the samples add a PodDisruptionBudget through the
-publisher hook); on Docker Compose one `postgres` service with its named volume and no replication (`host`), so
+visible from SQL, so `Strict` needs the operator to declare the shape, `DaServer:Store:PostgreSql:SafeFailover`
+(not set by default), and the self-check then checks the configuration, never how many standbys stream at the moment:
+`Quorum` is `Strict` when `synchronous_standby_names` is `ANY 1 (…)` naming at least two standbys and
+`synchronous_commit` is `on` or `remote_apply` (zero or one standby streaming is still `Strict`: writes pause, as
+above, so maintenance on a standby or a rolling update lowers nothing, test `StandbyMaintenanceKeepsStrict`); `None`
+(nothing fails it over) is `Strict` when `synchronous_standby_names` is empty, `synchronous_commit` is `on` and no
+permanent physical replication slot exists (`SELECT count(*) FROM pg_catalog.pg_replication_slots WHERE slot_type =
+'physical' AND NOT temporary`, readable by every role: a disconnected standby keeps its slot, while a backup's
+`pg_basebackup -X stream` uses a temporary slot and a walsender that is not a standby, so a backup or
+`pg_receivewal` lowers nothing; checked on 16, test `BackupStreamingKeepsStrict`). `None` is refused together with
+`FailureDomain = zones`. Without a declaration, or with a configuration that does not match it, the store is
+`Replicated` (a synchronous standby) or `Local`, so an external single instance never claims `Strict` unless its
+operator declares that nothing fails it over (test `SingleInstanceWithoutSafeFailoverIsLocal`). What `DaServer.Aspire` publishes
+sets the statement and the failure domain: on Kubernetes `Quorum`, a primary and two standbys in three zones with
+quorum-aware failover (`zones`), so maintenance on one standby pauses nothing (the samples add a PodDisruptionBudget through the
+publisher hook); on Docker Compose `None`, one `postgres` service with its named volume and no replication (`host`), so
 regular backups are the operator's protection against the host's loss ([operations.md](../operations.md#backups))
 (test `ComposePublishesStrictDatabase`); the local single-node database of `aspire run` is `Local` and exempt.
 In every class the provider also reads `fsync` and `full_page_writes`
@@ -1402,7 +1412,7 @@ In every class the provider also reads `fsync` and `full_page_writes`
 recent commits): the class is `Unsafe`, a fresh start stays not ready before it joins and a serving node goes on under
 the `Local` rules, whatever `AcceptDurability` says (section 4's durability classes);
 `synchronous_commit` `off` or `local` (a crash in place, or a failover, loses the last acknowledged commits) declares
-`Local`, and a synchronous standby without `SafeFailover` (its failover may promote a standby missing an
+`Local`, and a synchronous standby without `SafeFailover = Quorum` (its failover may promote a standby missing an
 acknowledged commit) or with `remote_write` declares `Replicated` (test
 `UnsafeDurabilitySettingsDetected`).
 
@@ -1427,8 +1437,10 @@ cluster's membership store: its server, database and schema (`format('daserver:%
 any role may read (checked on 16, no grant) and which a promotion keeps: a cluster has exactly one membership store,
 however many databases its other stores use, and two servers with a database of the same name never share a mark),
 compares every role of its
-prefix with that mark in every database it visits (never with `current_database()`), and refuses, naming `RolePrefix`,
-when a role carries another mark or none (test `RolePrefixUniquePerServer`: one cluster's second store database
+prefix with that mark in every database it visits (never with `current_database()`), and refuses when a role carries
+another mark or none, naming both remedies: `RolePrefix` for another cluster's roles, or re-marking the roles
+([operations.md](../operations.md#moving-membership-to-another-store)) after this cluster's membership moved, a
+`pg_upgrade` or a dump and restore (test `RolePrefixUniquePerServer`: one cluster's second store database
 converges, another cluster's membership database (on this server or another) or another schema under the same prefix
 is refused, and so is an unmarked role; checked on 16 with an actor database and a membership database on one server);
 roles an operator provisioned by hand are adopted by setting that comment on them, and moving membership to another
@@ -1519,7 +1531,7 @@ layers 1 to 3 and 5 pass, and layer 4 for that class on a real topology; first-p
 | 2. Concurrency | Linearizability per key: random claim, write and delete histories from racing clients checked against a compare-and-set register model (a Porcupine-style checker shipped in the kit); exactly one taker per placement version |
 | 3. Fault injection | The `Unknown` obligation through the proxy: a connection dropped after the store's commit point was forwarded (PostgreSQL: its `COMMIT`; MongoDB: `commitTransaction` or the single write; Redis: the function call) is never `StoreLevel` or `NotApplied`, only `Landed` or `Unknown`, and `Confirm` then agrees with the store; dropped before it is a safe retry, and may answer `StoreLevel` (a PostgreSQL data batch whose deadline passed before `COMMIT`); a commit point's reply delayed past a deadline is `Unknown`; a half-open connection is found within the provider's stated bound; a stalled durability wait pauses writes while membership reads still answer; plus the store-side faults a provider supplies (a cancelled synchronous wait on PostgreSQL, a step-down on MongoDB, `CLIENT PAUSE` on Redis) |
 | 4. Failover, per class | Load with recorded acknowledgements, the primary killed or partitioned at random points, a promotion: `Strict` loses no `Landed` or confirmed write over many runs; `Replicated` and `Local` may lose writes, but no write under an older token lands after a newer claim the store still holds, and no two owners' writes mix. The PostgreSQL commit tests (`UnknownReleasesOnlyAfterConfirm` with the primary up and the standby down, `RetriedWriteConfirmedBeforeRelease`, `ConfirmFindsWriteAbsentResends`, `TimedOutClaimConfirmedByRerun`, `MembershipWaitNeverTerminated`) are kit tests here |
-| 5. Self-check | A misconfigured store lowers the effective class (PostgreSQL without a synchronous standby, MongoDB at `w: 1`, Redis with eviction, no AOF or no replica), and a production node without `AcceptDurability` refuses to start; an unsafe setting (PostgreSQL `fsync` or `full_page_writes` off) keeps a fresh start not ready before it joins in every class and, found while serving, drops the class to `Unsafe` within 10 s |
+| 5. Self-check | A misconfigured store lowers the effective class (PostgreSQL whose configuration does not match its declared `SafeFailover` shape, MongoDB at `w: 1`, Redis with eviction, no AOF or no replica), and a production node without `AcceptDurability` refuses to start; an unsafe setting (PostgreSQL `fsync` or `full_page_writes` off) keeps a fresh start not ready before it joins in every class and, found while serving, drops the class to `Unsafe` within 10 s |
 | Profile | Not pass or fail: BenchmarkDotNet batched writes and claims per second at 1 and 5 ms of injected latency, recorded per provider |
 
 ## 5. Migration, upgrades, hot restart

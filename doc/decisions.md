@@ -3280,14 +3280,20 @@ Replaced by ADR-098.
     deaths wait; `DaServerStoreWritesBehind` and `DaServerMembershipWritePending`, the stated E3 exception).
     **Single**: one instance with no standby and no failover at all, where crash recovery keeps every acknowledged
     commit and nothing can roll back; its disk or host is the failure domain. Failover policy is not visible from
-    SQL, so either shape needs the operator's statement `DaServer:Store:PostgreSql:SafeFailover` (failover never
-    promotes a standby missing an acknowledged commit, which no failover at all meets); with it the self-check
-    declares `Strict` when two synchronous standbys stream as `quorum` under `ANY 1`, or when
-    `synchronous_standby_names` is empty and no standby streams, and anything else is `Replicated` or `Local`, so an
-    external single instance claims `Strict` only when its operator declares it. `DaServer.Aspire` sets the statement
-    and `DaServer:Store:FailureDomain` for what it publishes: on Kubernetes a primary and two standbys in three zones
+    SQL, so the operator declares the shape, `DaServer:Store:PostgreSql:SafeFailover = Quorum | None` (failover never
+    promotes a standby missing an acknowledged commit, which no failover at all meets), and the self-check checks the
+    configuration, never how many standbys stream at the moment: `Quorum` is `Strict` when `synchronous_standby_names`
+    is `ANY 1 (…)` naming at least two standbys and `synchronous_commit` is `on` or `remote_apply` (zero or one
+    standby streaming stays `Strict`, writes pausing; a managed high-availability service declares `Quorum`, its
+    replicas possibly invisible to `pg_stat_replication`); `None` is `Strict` when `synchronous_standby_names` is
+    empty, `synchronous_commit` is `on` and no permanent physical replication slot exists (a backup's temporary slot
+    and walsender lower nothing), and is refused with `FailureDomain = zones`; anything else is `Replicated` or
+    `Local`, so an external single instance claims `Strict` only when its operator declares it. Rejected: counting
+    the standbys that stream, which lowered a correct deployment during a standby's maintenance and passed a primary
+    whose tool had emptied `synchronous_standby_names`. `DaServer.Aspire` sets the statement
+    and `DaServer:Store:FailureDomain` for what it publishes: on Kubernetes `Quorum`, a primary and two standbys in three zones
     with quorum-aware failover (`zones`), so maintenance on one standby pauses nothing (the samples add a
-    PodDisruptionBudget through the publisher hook); on Docker Compose one crash-safe instance with no replication
+    PodDisruptionBudget through the publisher hook); on Docker Compose `None`, one crash-safe instance with no replication
     (`host`), its disk's or host's loss not covered and backups the operator's protection. Rejected for Compose: a
     primary and two standbys on the same host with manual promotion; it guarded only one container's data directory
     against corruption while every other host or disk failure took all three, and it needed a persisted primary
@@ -3531,8 +3537,8 @@ Replaced by ADR-098.
   what it publishes; test `AspireRunModeIsDevelopment`); every other environment is production, a plain `dotnet run` included (test
   `ProductionIsAnyNonDevelopmentEnvironment`). R13
   holds per class: on `Strict` unchanged, no acknowledged write lost and no rollback across a crash within the
-  deployment's failure domain and any failover the store performs (`DaServer:Store:FailureDomain`: three zones on
-  Kubernetes, surviving the loss of any one instance; one host on Docker Compose, whose disk or host loss is not
+  deployment's failure domain and any failover the store performs (`DaServer:Store:FailureDomain`: three zones for what
+  `DaServer.Aspire` publishes on Kubernetes, surviving the loss of any one instance; one host on Docker Compose, whose disk or host loss is not
   covered and which the start-up log line names); below it the guarantee is
   **fencing only**: the version is the fencing token, so two owners' writes never mix, while output leaves at the
   provider's wait and a failover or crash may lose recent writes, index entries and claims whose effects already
@@ -3563,7 +3569,9 @@ Replaced by ADR-098.
   and the start-up log say. Tests `NonStrictStoreRefusedWithoutOptIn`, `MembershipRequiresStrict`,
   `DashboardStoreBelowStrictRefusedWithoutOptIn`, `SelfCheckLowersClass`, `OwnOlderVersionFencedAndCounted`,
   `UnsafeDurabilitySettingsDetected`, `UnsafeStoreDropsClassAndAlerts`, `UnsafeAtStartStaysNotReady`,
-  `UnsafeDuringHotRestartTakesOver`, `InMemoryStoreRefusedForRecordsInProduction`.
+  `UnsafeDuringHotRestartTakesOver`, `InMemoryStoreRefusedForRecordsInProduction`, `ComposePublishesStrictDatabase`,
+  `SingleInstanceWithoutSafeFailoverIsLocal`, `StandbyMaintenanceKeepsStrict`, `BackupStreamingKeepsStrict`,
+  `StartupLogNamesFailureDomain`.
 
 ## ADR-105 Every row has one writer; a deleted actor leaves a tombstone (amends ADR-099)
 - Context: two writes spanned actors: a receiver's write took `FOR KEY SHARE` on its sender's record so a forgotten
