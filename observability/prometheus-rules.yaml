@@ -222,7 +222,7 @@ groups:
         # refuses an ask for their number; back-pressure refuses only new work at a root's admission (OnceQueued). A
         # stuck or unhosted downstream shows as old rows, whether the backlog keeps growing or goes flat once admission
         # refuses; a healthy ramp only adds young rows. The sweeping node reads the age of the oldest ask row not stopped
-        # per actor type every minute (an index-only scan of daserver_once_asks (type_id, phase, created_at)) and exports
+        # per actor type every minute (its ask census: the ask index's keys and those roots' record headers) and exports
         # daserver.once.ask_age in seconds like daserver.once.stopped (points labelled hosting_type, one per server type
         # hosting the actor type or "none", and actor_type; only while it sweeps and the read succeeded), so the rule maps
         # hosting_type onto type. The limit is three MaxAskTimeouts (1 minute by default). With no live host, type reads
@@ -287,8 +287,8 @@ groups:
         # default) for 5 minutes. A full store outage freezes the worlds after IsolationTimeout; a data-only outage (no
         # synchronous standby up, a locked table, a full disk: membership reads still succeed) freezes nothing, so unwritten changes and asks grow
         # in memory until this is acted on. The gauge leaves out roots ruled unwritable (DaServerRecordUnwritable), so
-        # one oversized record never reads as a store that stopped; a root is ruled unwritable only for a row-deterministic
-        # error (SQLSTATE 22xxx, 23xxx, 54xxx) while the rest of its write landed, so a read-only primary, a revoked
+        # one oversized record never reads as a store that stopped; a root is ruled unwritable only for a RowDeterministic
+        # outcome (PostgreSQL: SQLSTATE 22xxx, 23xxx, 54xxx) while the rest of its batch landed, so a read-only primary, a revoked
         # grant, a schema mismatch or a locked table keeps every root in the gauge and fires this. The limit is four of the default
         # DaServer:CheckpointInterval: a server type (node group) configured with a longer interval needs its own copy.
         expr: max by (cluster, type, node) (last_over_time(daserver_store_oldest_unsaved_age_seconds[2m])) > 120
@@ -297,7 +297,7 @@ groups:
           severity: critical
         annotations:
           summary: "{{ $labels.node }} has changes unwritten for {{ $value | humanizeDuration }}"
-          description: "The store does not take this node's writes. If membership still answers, nothing freezes and unwritten changes grow in memory; if it does not, the node is frozen too (daserver.membership.frozen). Check the store's synchronous standbys first (pg_stat_replication.sync_state: with no standby in 'quorum' or 'sync' every COMMIT waits), then its locks, disk and errors (daserver.store.writes_waiting)."
+          description: "The store does not take this node's writes. If membership still answers, nothing freezes and unwritten changes grow in memory; if it does not, the node is frozen too (daserver.membership.frozen). Check what the store's writes wait for first (PostgreSQL: its synchronous standbys, pg_stat_replication.sync_state: with no standby in 'quorum' or 'sync' every COMMIT waits; Redis or Valkey: its replicas, WAITAOF), then its locks, disk and errors (daserver.store.writes_waiting)."
           daserver_limit: "120"
           daserver_unit: "s"
 
@@ -311,9 +311,37 @@ groups:
           severity: warning
         annotations:
           summary: "{{ $labels.node }} holds {{ $value }} root(s) whose record cannot be written"
-          description: "A root's record keeps failing to serialize or is refused by the store (logged RecordUnwritable). Its changes since the last record are lost on a crash. Fix the state (size, cycle, unregistered type) and redeploy. If many roots are listed, check the store's errors first (a constraint or column the schema added)."
+          description: "A root's record keeps failing to serialize or is refused by the store (logged RecordUnwritable). Its changes since the last record are lost on a crash. Fix the state (size, cycle, unregistered type) and redeploy. If many roots are listed, check the store's errors first (a schema change or a store limit)."
           daserver_limit: "0"
           daserver_unit: "roots"
+
+      - alert: DaServerStoreRolledBack
+        # Target (roadmap W6, ADR-104): after a store failover (its term changed) the rollback audit found active roots
+        # whose stored version is behind their last landed write: a store below Strict lost writes whose output may
+        # already have left. The roots were fenced and reloaded; the log line StoreRollback names them.
+        expr: sum by (cluster, type, node) (increase(daserver_store_rollbacks_total[10m])) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.node }} found {{ $value }} actor(s) rolled back by a store failover"
+          description: "The store lost acknowledged writes in a failover (its durability class is below Strict). Reconcile the actors the StoreRollback log names: replies, [Once] answers and pushes released since the lost writes described state that no longer exists."
+          daserver_limit: "0"
+          daserver_unit: "roots/10m"
+
+      - alert: DaServerStoreDurabilityDropped
+        # Target (roadmap W6, ADR-104): the store's effective durability class (2 Strict, 1 Replicated, 0 Local; the lower
+        # of the provider's declaration and its periodic self-check) fell below the class the node started with: a
+        # replication setting changed under a running cluster (no synchronous standby configured, eviction turned on).
+        # Labelled by store (actors, membership).
+        expr: |
+          min by (cluster, type, node, store) (last_over_time(daserver_store_durability_class[2m]))
+            < min by (cluster, type, node, store) (last_over_time(daserver_store_durability_class_started[2m]))
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.node }}'s {{ $labels.store }} store is below the durability it started with"
+          description: "The store's self-check now finds a weaker class than at start: acknowledged writes may be lost in a failover. Restore the replication settings the self-check logs (DaServer:Store:SelfCheckInterval)."
 
       - alert: DaServerDeleteSendAfter
         # Target (roadmap W6): an item sent or asked after root.Delete() returned Ok, which reloads it. In an answer's
