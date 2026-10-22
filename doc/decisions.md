@@ -3470,8 +3470,9 @@ Replaced by ADR-098.
   starts at max(the store's `Now` in milliseconds + 86,400,000, `DaServer:Membership:InitialVersion`): versions move
   one per change, far slower than a clock, so after membership moves to another store, the cluster is renamed or a
   store is restored, each new document starts above every placement version an earlier one stamped into records and
-  `Topic` subscriber stamps, nested documents included (`InitialVersion` only for a store whose `Now` is not Unix time
-  or whose clock is in doubt: a trusted clock + one day, replaced at each new document, test
+  `Topic` subscriber stamps, however many documents came before, provided each store's `Now` was within `ClockSkew`
+  of true time when each document was created (`InitialVersion` only for a store whose `Now` is not Unix time
+  or whose clock is in doubt or ran ahead: a trusted time past the furthest reading the ahead clock gave + one day, replaced at each new document, test
   `NewDocumentStartsADayAheadOfItsStore`). A version lower than one
   the node held, or a stored placement version still above the document after a re-read (a stale view only forwards
   from the fresh one), therefore means the store broke `Strict` or was put back in time (a failover that lost a commit: on PostgreSQL, a

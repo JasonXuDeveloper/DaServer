@@ -684,11 +684,12 @@ in short:
     version max(the store's `Now` in milliseconds + 86,400,000, `DaServer:Membership:InitialVersion`), never 1: versions
     move one per change, far slower than a clock, so every document starts a day past its store's clock and a later
     document (membership moved to another store, a cluster renamed, a restore: operations.md) starts above every
-    placement version an earlier one stamped into records and `Topic` subscriber stamps, nested documents included.
+    placement version an earlier one stamped into records and `Topic` subscriber stamps, however many documents came before
+    (provided each store's `Now` was within `ClockSkew` of true time when each document was created).
     A claim of an old record therefore never reads as a store fault (the old stamps are simply lower; subscribers heal
     through `NotSubscribed`; tests `NewMembershipDocumentStartsAboveStamps`, `NewDocumentStartsADayAheadOfItsStore`).
-    `InitialVersion` is only for a store whose `Now` is not Unix time or whose clock is in doubt: then a trusted clock's
-    Unix milliseconds + 86,400,000, replaced at each new document, never left over from an earlier one.
+    `InitialVersion` is only for a store whose `Now` is not Unix time or whose clock is in doubt or ran ahead: then a
+    trusted time's Unix milliseconds (past the furthest reading an ahead clock gave) + 86,400,000, replaced at each new document, never left over from an earlier one.
     No seeds are needed for membership: the table is where nodes find each other.
   - **Failure detection**: every `Active` member probes up to `DaServer:Membership:ProbedNodes` (10) others, its
     successors on a ring of the active members' hashed identities, over the node links every
@@ -1042,8 +1043,9 @@ runtime acts on these classes only (section 2's Tick-end write), never on a stor
 | `Local` | Is on the primary only, and a failover may lose it | A single instance whose failover is unknown; asynchronous replication |
 
 - The **effective class** is the lower of the provider's declaration and its self-check, run at start and every
-  `DaServer:Store:SelfCheckInterval` (5 min) (a PostgreSQL whose `synchronous_commit` is below its declaration, a MongoDB whose effective
-  write concern is not majority, a Redis with eviction, no AOF or no replica each lower it). It is logged (on `Strict`
+  `DaServer:Store:SelfCheckInterval` (5 min) (a MongoDB whose effective write concern is not majority, a Redis with
+  eviction, no AOF or no replica each lower it; PostgreSQL's settings, `synchronous_commit` below its declaration
+  included, are read every 10 s with the unsafe settings below). It is logged (on `Strict`
   with the failure domain, `DaServer:Store:FailureDomain`: `zones`, `host` or `unknown`, which `DaServer.Aspire` sets
   for what it publishes and an external store leaves `unknown`; a `host` domain says the disk's or host's loss is not
   covered; one key covers every store of the node, and when they sit in different domains it names the weakest, `unknown` below `host` below `zones` (understating a
