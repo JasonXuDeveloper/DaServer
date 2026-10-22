@@ -103,7 +103,7 @@ The repository ships two starting points, checked against a running node:
   saturated shards, late ticks, GC pauses, a silent node, and target-only rules
   that never fire on today's code (`DaServerMembersDisagree` reads `daserver_cluster_view_version`,
   `DaServerNodeRequestsLow`, `DaServerAskLatencyHigh`, `DaServerOnceTooOld`, `DaServerOnceStaleAsking`,
-  `DaServerOnceCounterLow`, `DaServerOnceAskOld`, `DaServerOnceQueuedFull`, `DaServerOnceUnknownState`, `DaServerOnceSendersNearCap`, `DaServerStoreWritesBehind` (its limit is four of the node group's `DaServer:CheckpointInterval`: a group configured with a longer interval needs its own copy of the rule), `DaServerRecordUnwritable`, `DaServerDeleteSendAfter`, and the ask recording rules: none of
+  `DaServerOnceCounterLow`, `DaServerOnceAskOld`, `DaServerOnceQueuedFull`, `DaServerOnceUnknownState`, `DaServerOnceSendersNearCap`, `DaServerStoreWritesBehind` (its limit is four of the node group's `DaServer:CheckpointInterval`: a group configured with a longer interval needs its own copy of the rule; when it fires, check the store's synchronous standbys first, `pg_stat_replication.sync_state`), `DaServerRecordUnwritable`, `DaServerDeleteSendAfter`, and the ask recording rules: none of
   their metrics exist yet). Check it with `promtool check rules` before loading it. Load it with `rule_files:`,
   or wrap the groups in a `PrometheusRule` for the Prometheus Operator. A rule that compares a reading against a number carries that
   number as the annotation `daserver_limit` (and its unit as `daserver_unit`): change both together when you tune it.

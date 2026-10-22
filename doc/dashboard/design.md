@@ -495,7 +495,9 @@ Every action runs on the Dashboard's server, never in the browser, so closing th
 - **Audit.** Every action is written at least twice: its intent before the call and each outcome after, with the same
   action id, which the page shows. The intent is committed, and durable on the store's synchronous standby, before the
   action's row is written, and the call goes out only once that row is durable too; a commit whose outcome is unknown
-  (a store failover in the middle) is written again under the same idempotency key before anything is called. The audit's sink is durable: the store's `daserver_audit` table when the cluster has
+  (a store failover in the middle) is confirmed by a real write before anything is called: a fresh audit row for the
+  intent, an update of the action's row (`UPDATE daserver_actions SET state = state WHERE action_id = …`), since an
+  insert that conflicts writes nothing and so proves nothing about the standby. The audit's sink is durable: the store's `daserver_audit` table when the cluster has
   a store (insert-only for the Dashboard's role), otherwise an append-only file; how long it keeps rows is the
   operator's setting. The same lines also go to the logs, for Loki.
 - **No store, no action.** The intent, the idempotency key and the type's lock all live in the store, so when it

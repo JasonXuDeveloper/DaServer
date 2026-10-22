@@ -327,13 +327,15 @@ Keep this file current: tick items when done, add items when scope changes.
         their results are back, nothing ever cancelled, `57014` driving the halving; the client deadline `StatementTimeout`
         times the data statements, no progress deadline, the connection closed at it before any `COMMIT` and nothing
         committed: `ManyStatementWriteNotCancelled`; `COMMIT` with no client deadline, never cancelled or closed by the node:
-        `TimedOutWriteNeverCancelled`; a dead socket found by keepalive and `TCP_USER_TIMEOUT` (30 s):
-        `HalfOpenWriteEndsAtScaledDeadline`, `HalfOpenCommitEndsByTcp`; at most `WritesInFlight` writes and as many solo
-        retries per world in `COMMIT`, the runtime role's `CONNECTION LIMIT` sized for them; an unknown outcome of write g,
+        `TimedOutWriteNeverCancelled`; an explicit `BEGIN` in the batch: `BatchNeverCommitsWithoutCommit`; a dead
+        socket found by keepalive, a `COMMIT` unanswered after `StatementTimeout` looked up by `(pid, backend_start)`, an
+        abandoned connection's backend terminated before the retry: `HalfOpenWriteEndsAtScaledDeadline`,
+        `UnansweredCommitLookedUp`, `AbandonedBackendTerminatedBeforeRetry`; at most `WritesInFlight` writes and as many
+        solo retries per world and `ActivationSlots` claims in `COMMIT`, the roles' `CONNECTION LIMIT`s sized for them; an unknown outcome of write g,
         and a retry refused because the row already carries g, released only after the confirming write `SET write_gen =
         g + 1 … WHERE epoch = e AND write_gen = g` commits cleanly (no row: another epoch fences, a lower `write_gen` resends
         write g): `SyncWaitCancelledReleasesOnlyAfterConfirm`, `RetriedWriteConfirmedBeforeRelease`,
-        `ConfirmFindsWriteAbsentResends`; the three
+        `ConfirmFindsWriteAbsentResends`; a confirmation releases nothing above g: `ConfirmNeverReleasesLaterItems`; the three
         data sources on `Target Session Attributes=read-write`: `DataSourcesRequireReadWrite`), row-deterministic ones
         bisected to the bad root, ruled unwritable only when the rest landed and then retried alone outside the slots (solo
         retries at most `WritesInFlight` per world: `SoloRetriesCappedPerWorld`), more
@@ -937,9 +939,10 @@ Keep this file current: tick items when done, add items when scope changes.
       connection (gateways included: membership is there), the samples' role-init step before the schema Job (on
       Kubernetes the schema Job retries until the role exists), the Compose deploy order (`up -d --wait postgres`, then
       `up --no-deps --force-recreate --exit-code-from schema schema`), no Helm hook; the published PostgreSQL (16 or later) a primary
-      and two standbys replicating strictly (ADR-101: `synchronous_commit = on`, `ANY 1 (…)`, so one standby's maintenance
+      and two standbys in three zones replicating strictly with quorum-aware failover (ADR-101: `synchronous_commit = on`, `ANY 1 (…)`, so one standby's maintenance
       pauses nothing, the samples adding a PodDisruptionBudget through the publisher hook; writes pause without a
-      standby; the local `aspire run` single node exempt), the roles step setting `client_connection_check_interval` and,
+      standby; the local `aspire run` single node exempt), the roles step setting `client_connection_check_interval`, `idle_in_transaction_session_timeout`, server keepalive
+      and `tcp_user_timeout` (`HalfOpenBeforeCommitReleasesLocks`) and,
       on 17 and later only (`server_version_num >= 170000`), `transaction_timeout = 0` (a run on PostgreSQL 16 passes),
       the schema Job ending with a cleanly committed schema comment, the Dashboard's audit intent committed before its
       action row, `Target Session Attributes=read-write` on every data source DA wires;

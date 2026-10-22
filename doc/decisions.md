@@ -3261,14 +3261,21 @@ Replaced by ADR-098.
   `client_connection_check_interval` notwithstanding (checked on PostgreSQL 16, more than 36 s after the client was
   killed). So a re-read that finds the write proves visibility, not durability; and a read, an xid-only
   transaction or a compare-and-set that updates 0 rows writes no WAL and never waits for the standby, so it proves
-  nothing either.
+  nothing either. A client that vanishes after its data statements and before `COMMIT` leaves its backend idle in its
+  transaction, holding its row locks (the membership version row among them) for as long as the server takes to notice:
+  with server keepalive at the OS default about two hours, since `client_connection_check_interval` sees only a socket
+  the kernel closed. Npgsql has no hook to set `TCP_USER_TIMEOUT` on its sockets. And under `ANY 1` over two standbys
+  an acknowledged commit may sit on either one, so a failover that promotes whichever standby it reaches can lose it.
 - Decision:
   - **Production stores replicate synchronously and strictly**: `synchronous_commit` `on` or `remote_apply`, at least
-    one synchronous standby (`synchronous_standby_names = 'ANY 1 (…)'`), failover promotes only a synchronous standby
-    (Patroni `synchronous_mode: true` with `synchronous_mode_strict: true`, CloudNativePG `postgresql.synchronous` with
-    `dataDurability: required`, the managed equivalents), and with no synchronous standby writes pause rather than
-    degrade to asynchronous: a data-only outage (`DaServerStoreWritesBehind`, the stated E3 exception). What
-    `DaServer.Aspire` publishes is a primary and two standbys under `ANY 1`, so maintenance on one standby pauses
+    one synchronous standby (`synchronous_standby_names = 'ANY 1 (…)'`), failover is quorum-aware: it promotes a standby
+    only when it can prove that standby holds every acknowledged commit, and waits otherwise (Patroni 4's
+    `synchronous_mode: quorum` with `synchronous_mode_strict: true`, which writes `synchronous_standby_names` as
+    `ANY 1 (…)` itself; CloudNativePG's quorum-based failover, 1.27 and later, with `postgresql.synchronous`
+    `method: any` and `dataDurability: required`; a managed service's equivalent), and with no synchronous standby
+    writes pause rather than degrade to asynchronous: a data-only outage (`DaServerStoreWritesBehind`, the stated E3
+    exception). What `DaServer.Aspire` publishes is a primary and two standbys under `ANY 1` in three zones, with
+    quorum-aware failover, so maintenance on one standby pauses
     nothing (the samples add a PodDisruptionBudget through the publisher hook); a single-node development store (the
     local `aspire run`) is exempt. The minimum is PostgreSQL 16.
   - **All three data sources connect only to the primary**: the runtime's, membership's and the Dashboard's connection
@@ -3279,28 +3286,35 @@ Replaced by ADR-098.
     server's `statement_timeout` ends a data statement (`57014`, which drives the write halving); the client deadline
     is `StatementTimeout` times the write's data statements, and at it, before any `COMMIT`, the connection is closed
     (never a CancelRequest) and nothing committed. `COMMIT` has no client deadline and the node never cancels it or
-    closes its connection; a dead socket is found by TCP (keepalive while the answer is awaited, `TCP_USER_TIMEOUT`
-    while data is unacknowledged, about 30 s) and is an unknown outcome. On PostgreSQL 17 and later every DaServer role
+    closes its connection while its backend waits for the standby; a dead socket is found by keepalive (about 30 s), and
+    a `COMMIT` unanswered after `StatementTimeout` is looked up by its backend's `(pid, backend_start)` from another
+    connection: gone, or idle in its transaction, is an unknown outcome at once. On PostgreSQL 17 and later every DaServer role
     carries `transaction_timeout = 0` (the roles step sets it only when `server_version_num >= 170000`), so nothing
-    the server times ends a synchronous wait. A backend left waiting after its socket died keeps its locks and a
-    connection; at most `WritesInFlight` writes and as many solo retries per world are ever in `COMMIT`, and the runtime
-    role's `CONNECTION LIMIT` holds room for them. Claims, membership writes, the Dashboard's writes and the schema Job's
+    the server times ends a synchronous wait. A connection the node gives up on has its backend terminated
+    (`pg_terminate_backend` on that `(pid, backend_start)`, which a role may do to its own backends) from a fresh
+    connection before the retry or the confirmation, so a backend left waiting or idle keeps its locks only until the
+    node reaches the store again; every DaServer role carries `idle_in_transaction_session_timeout = 30s`, server
+    keepalive (10 s idle, 2 s interval, 5 probes) and `tcp_user_timeout = 30000`, so a lost client's backend that is
+    not waiting for the standby ends within about 30 s; the roles' `CONNECTION LIMIT`s hold room for the backends a
+    node can leave in `COMMIT` (`2 × WritesInFlight` per world plus `ActivationSlots`, and its one membership write). Claims, membership writes, the Dashboard's writes and the schema Job's
     last step commit the same way and act only on a clean commit: a claim whose commit ended unknown is run again and
     still notifies the displaced owner it remembered; while no standby is up, claims wait with the writes.
   - **Durability confirms release**: after an unknown outcome of write g the root runs a confirming write, `UPDATE …
     SET write_gen = :g + 1 WHERE … AND epoch = :e AND write_gen = :g`, a real `UPDATE` that writes WAL and waits for
     the standby past the earlier commit; it is a record write (the root is `Writing`, and it consumes generation g+1).
-    Held output up to g is released only when it updates one row and its `COMMIT` returns cleanly. When it updates no
+    Held output up to g is released only when it updates one row and its `COMMIT` returns cleanly; it carries no
+    state, so output tagged g+1 (items that ran while write g was in doubt) waits for the next record write. When it updates no
     row the root reads its row: another epoch fences the root; a `write_gen` below g means write g never landed, and
-    write g is sent again with its row changes. A read alone never releases; a confirmation that ends unknown is
-    confirmed again. A retry of write g refused because the row already carries g takes the same confirming write
+    write g is sent again with its row changes. A read alone never releases; a confirmation that ends unknown is a
+    write in doubt of generation g+1, confirmed the same way (g+1 to g+2). A retry of write g refused because the row already carries g takes the same confirming write
     before it releases.
   - **Membership writes commit the same way**: the confirming write is the version row's next compare-and-set; at
     most one membership write per node is in flight (`i_am_alive` skipped while one is pending) and one of the
     membership data source's two connections is kept for reads, so a commit waiting for the standby never starves the
     lease's reads. A membership version read lower than the last one seen (a failover that lost an asynchronous tail on
     a store not meeting this rule) is adopted and logged (`MembershipVersionRegressed`), never treated as an error
-    loop; the node keeps the highest version it held, raises the version row above it before it claims again, and
+    loop; the node keeps the highest version it held, after adopting a regressed one raises the version row above it before
+    it claims again, and
     re-reads the table after any reconnect before claiming.
   - Solo retries (timing-out and unwritable roots alike) run at most `WritesInFlight` per world at once, so after an
     outage they never crowd claims and page-ins out of the runtime pool.
@@ -3318,10 +3332,18 @@ Replaced by ADR-098.
     waiting; TCP finding a dead socket is the only end the client needs.
   - Degrading to asynchronous when the standby is gone (Patroni's non-strict mode): keeps writes flowing by giving up
     the guarantee silently.
+  - Failover to the most advanced reachable synchronous standby (Patroni's `synchronous_mode: true`, CloudNativePG
+    without its failover quorum): under `ANY 1` with the primary and the acknowledging standby lost together, it
+    promotes the other one and loses a commit whose output already left.
+  - `TCP_USER_TIMEOUT` on the node's sockets: Npgsql has no socket hook, and the pod-wide `net.ipv4.tcp_retries2` is
+    not a Kubernetes safe sysctl and would change every socket of the node; the lookup by `(pid, backend_start)` needs
+    neither.
 - Consequences: architecture.md section 2 and deployment.md's Database row state it, requirements state it
   (production store replication), roadmap W6 and W12 build it (tests `SyncWaitCancelledReleasesOnlyAfterConfirm`, the
   primary up and the standby down; `RetriedWriteConfirmedBeforeRelease`; `ConfirmFindsWriteAbsentResends`;
-  `TimedOutWriteNeverCancelled`; `HalfOpenCommitEndsByTcp`; `TimedOutClaimConfirmedByRerun`;
+  `TimedOutWriteNeverCancelled`; `UnansweredCommitLookedUp`; `AbandonedBackendTerminatedBeforeRetry`;
+  `HalfOpenBeforeCommitReleasesLocks`; `BatchNeverCommitsWithoutCommit`; `ConfirmNeverReleasesLaterItems`;
+  `TimedOutClaimConfirmedByRerun`;
   `MembershipVersionRegressionAfterFailoverAdopted`; `MembershipReadsAnswerWhileCommitWaits`; `SoloRetriesCappedPerWorld`;
   `DataSourcesRequireReadWrite`), and a commit's latency includes one more client round trip (`COMMIT` on its own) and
   one round trip to the standby.
