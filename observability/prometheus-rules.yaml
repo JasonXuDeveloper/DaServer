@@ -374,10 +374,11 @@ groups:
 
       - alert: DaServerMembershipWritePending
         # Target (roadmap W6, ADR-103): a node has at most one membership write in flight, so one whose outcome stays
-        # unknown (the store slow, or failing writes while reads answer, e.g. a membership store of its own) holds back
-        # every later one from that node: its heartbeats and its own restart permit wait, and on the coordinator deaths,
-        # dead_seen_at stamps and re-placements wait (a coordinator stuck past IsolationExit steps down). The lease rests
-        # on reads, so the node keeps running; this names the
+        # unknown (no synchronous standby up, the store slow, or failing writes while reads answer, e.g. a membership
+        # store of its own; an unknown write stays pending until its backend is gone) holds back every later one from
+        # that node: its heartbeats and its own restart permit wait, and on the coordinator deaths, dead_seen_at stamps
+        # and re-placements wait; nothing steps down, since in a standby outage every node's writes wait alike, so this
+        # fires on every node then. The lease rests on reads, so the node keeps running; this names the
         # stall that DaServerStoreWritesBehind (actor writes only) does not. The gauge is 0 while nothing is pending.
         expr: max by (cluster, type, node) (last_over_time(daserver_membership_write_pending_age_seconds[2m])) > 60
         for: 2m
@@ -392,11 +393,13 @@ groups:
       - alert: DaServerMembershipRegressed
         # Target (roadmap W6, ADR-103): a node read a membership version below one it held, or a stored placement version
         # still above a fresh document. Membership needs a Strict store, whose provider never lets a waiting commit become
-        # visible early, so this is a store fault (on PostgreSQL a crash-restart in place followed by a failover before
-        # the standby received the commit). The framework does not repair it: the node stops and exits with code 75, and
-        # the platform restarts it with a new generation; unsaved state on it is lost. The counter is exported at 0 from
-        # node start and pushed before the exit, so the one increment is seen.
-        expr: sum by (cluster, type, node) (increase(daserver_membership_regressions_total[10m])) > 0
+        # visible early, so this is a store fault (on PostgreSQL a crash-restart in place or a fast shutdown ending the
+        # wait, then a failover before the standby received the commit; strict-mode quorum failover makes it rarer). The
+        # framework does not repair it: the node freezes and fences without writing, exits with code 75, and the
+        # platform restarts it with a new generation; unsaved state on it is lost, and every node that held the higher
+        # version does the same. The counter is 0 or 1 per process, exported at 0 from node start and pushed before the
+        # exit; max_over_time, not increase, so a regression found before the series' first push still fires.
+        expr: max by (cluster, type, node) (max_over_time(daserver_membership_regressions_total[10m])) > 0
         labels:
           severity: critical
         annotations:
