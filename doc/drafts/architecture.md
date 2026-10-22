@@ -727,7 +727,7 @@ in short:
     a standby, so what it shows is durable even when the wait ended early (a fast shutdown, a crash-restart); the
     write landed if and only if the node's entry there, looked up by (name, generation), has a `write_seq` at or above
     the one it wrote, whatever other writes moved the version since, and an absent entry means it did not land (a join
-    is then retried, with the dead-key exception (see below); once joined, the absent-entry rule below stops the node). The writer never acts on it before. The lease rests only on plain `Get`s of the
+    is then retried, except as the stop rule below says; once joined, the absent-entry rule below stops the node). The writer never acts on it before. The lease rests only on plain `Get`s of the
     document, so a pending write never costs the node's lease (test `UnknownMembershipWriteNeverHoldsLease`). At most one
     membership write per node is in flight, so while one stays pending (a standby outage, the store slow, or failing
     writes) every later one from that node waits: heartbeats skip, its own restart permit waits, and on the
@@ -859,7 +859,9 @@ in short:
     node without a membership store starts only when `DaServer:Membership:SingleNode = true` says it is alone; any
     other configuration refuses to start, so two storeless replicas never form two clusters running every actor twice; `SingleNode = true` on a node that also has a membership store (or an actor store) refuses to start as well, since a second replica configured the same way would bypass the store's table. A single node's hot-restart handover carries its member entry (name, generation, start time, `restart_until`, `write_seq`) in the stream's header, and the new process seeds its in-memory table from it, at the carried table version, before `Rejoining`, so the check "still `Active`, own generation, own `restart_until`" passes as on a cluster and its own seeded version is never read as a regression.
     `DaServer.Aspire` sets `SingleNode` when the AppHost has one node and no store, and adds a PostgreSQL resource, the
-    actor store and membership's, when it declares more than one node and no store; when any node's records or
+    actor store and membership's, when it declares more than one node and no store, published in the same shape as a
+    declared store (a primary and two synchronous standbys under `ANY 1` across three zones, quorum failover,
+    `QuorumFailover` set: [deployment.md](deployment.md), the Database row), so its class is `Strict`; when any node's records or
     Dashboard would use the in-memory store in what it publishes (one storeless node hosting a `[Persist]` type or
     the Dashboard, or an AppHost that names only a membership store), `aspire publish` fails and names them, since
     the published node would refuse to start (test `PublishRefusesStorelessRecords`). A cluster of more than one process needs the table in
@@ -1078,7 +1080,8 @@ runtime acts on these classes only (section 2's Tick-end write), never on a stor
 
 ### The framework over the contract
 
-- **Claim**, batched per world within `ActivationSlots`: a `Get` of the record key; the placement rule (section 4's
+- **Claim**, batched per world within `ActivationSlots` (`DaServer:Store:ActivationSlots`, default 64 concurrent epoch
+  claims per node, split into per-world shares): a `Get` of the record key; the placement rule (section 4's
   activation); then a put of the new header compared on the stored version (absent when nothing is stored): epoch =
   the stored or the tombstone's epoch + 1 (1 when nothing is stored), the owner, the activation's count, the placement
   version, write generation 0, the body kept. A `NotApplied` claim `Get`s the key again and decides anew. A stored
@@ -1168,7 +1171,7 @@ puts and deletes over `unnest` arrays and range scans on the primary key, so the
 PostgreSQL wire family through self-check variants: Aurora, AlloyDB, Neon, PolarDB for PostgreSQL, CockroachDB and
 YugabyteDB, each to verify against the kit before it is named supported (roadmap W6).
 
-**The schema** (created by the schema Job as the owner role, in the schema `:schema`, default `public`; DDL takes no
+**The schema** (created by the schema Job as the owner role, in the schema `:schema`, `DaServer:Store:PostgreSql:Schema`, default `public`; DDL takes no
 bind parameters, so `:schema` and the role names are formatted in as quoted identifiers, `format('%I')`; every
 object is qualified with `:schema`, so no role depends on its `search_path`; every statement is re-runnable, since
 the Job runs on every release). Records, membership and the Dashboard's keys live in tables of the same shape, so
@@ -1326,7 +1329,7 @@ waiting until the standby answers. The write stays pending meanwhile: the member
 `(pid, backend_start)` every `StatementTimeout` and, once it is gone, runs `Confirm` on that same session (lookup
 first), whose marker commit waits for a standby, and reads the node's entry, looked up by (name, generation), from
 what it shows: the write landed if and only if that entry's `write_seq` is at least the one written, and an absent
-entry means not landed (a join is retried, with the dead-key exception (see below); once joined, the absent-entry stop rule applies; checked on 16: the lookup works as the membership
+entry means not landed (a join is retried, except as section 2's "A node declared dead stops" says; once joined, the absent-entry stop rule applies; checked on 16: the lookup works as the membership
 role, and a read after the backend ends shows the row; test `MembershipWaitNeverTerminated`). That settlement runs on
 the lookup connection, its own wait is never cancelled, and it counts as the process's one pending membership item.
 A settlement `Confirm` that ends `Unknown` keeps that item and is repeated only once a lookup finds the earlier
@@ -1392,12 +1395,17 @@ password set every run (`format('… %I … PASSWORD %L', …)` run by `EXECUTE`
 parameters): the owner role, the runtime role, the membership role and, with `AddDaServerDashboard`, the Dashboard's role,
 named `<prefix>_owner`, `_runtime`, `_membership` and `_dashboard` where the prefix is `<cluster>_<schema>`, or, when
 that is longer than 52 bytes (`octet_length`), its longest leading run of whole characters that fits 40 bytes, `_`
-and the first 8 hex digits of its `md5` (so every name fits PostgreSQL's 63 bytes, a multibyte character is never
-cut, and re-runs find the same roles; checked on 16 with a 63-byte cluster name, run twice; test
-`RoleNamesFitAndRepeatForLongClusterNames`). Cluster names are ASCII (Aspire resource names are), so only a schema
-name can be multibyte. Roles are per server, not
-per database, so the prefix must be unique on the server: two clusters of one name and schema in two databases of one
-server (staging and production) take `DaServer:Store:PostgreSql:RolePrefix`, which replaces it; the
+and the first 8 hex digits of its SHA-256 (`left(encode(sha256(convert_to(prefix, 'UTF8')), 'hex'), 8)`; not `md5`,
+which a server in FIPS mode refuses), so every name fits PostgreSQL's 63 bytes, a multibyte character is never cut,
+and re-runs find the same roles (checked on 16 with a 63-byte cluster name and a long multibyte prefix, run twice;
+test `RoleNamesFitAndRepeatForLongClusterNames`). Cluster names are ASCII (Aspire resource names are); a schema name or
+`DaServer:Store:PostgreSql:RolePrefix` can be multibyte, and a set `RolePrefix` replaces `<cluster>_<schema>` and goes
+through the same shortening. Roles are per server, not per database, so the prefix must be unique on the server: two
+clusters of one name and schema in two databases of one server (staging and production) set `RolePrefix`. The step
+enforces it: it stamps every role it creates with `COMMENT ON ROLE` naming its database and schema
+(`daserver:<database>/<schema>`), and refuses, naming `RolePrefix`, when a role of its prefix already carries another
+database's or schema's mark or none (test `RolePrefixUniquePerServer`: a second database or schema under the same
+prefix is refused, the same database and schema re-run converge); the
 owner has `CREATE` on the schema and owns the tables; none is a superuser; (2) `CREATE SCHEMA IF NOT EXISTS <schema> AUTHORIZATION <owner>` (for `public`, `GRANT CREATE, USAGE` to
 the owner); (3) `ALTER … OWNER TO <owner>` for DaServer objects created under another owner; (4) a `CONNECTION
 LIMIT` per role, sized from the most nodes the cluster may run (per group the autoscaler's maximum times one plus the

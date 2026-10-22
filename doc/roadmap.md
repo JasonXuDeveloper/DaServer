@@ -333,12 +333,12 @@ Keep this file current: tick items when done, add items when scope changes.
         `MembershipWaitNeverTerminated`, `MembershipLeftoverBoundedPerRole`; a join retry stopping when its own
         generation's dead key exists or a higher generation of its name is recorded: `JoinRetryStopsWhenMarkedDead`; a handover starting only with no pending
         membership item, the wait counting against the arm: `HandoverStartsWithNoPendingMembershipItem`; the role's connections, across every
-        database, against its limit (not exported when unlimited) exported and alerted: `MembershipConnectionsLowAlerted`); the roles step (roles named by cluster and schema, hashed past 52 bytes: `RolesStepIdempotent`,
-        `RoleNamesFitAndRepeatForLongClusterNames`,
+        database, against its limit (not exported when unlimited) exported and alerted: `MembershipConnectionsLowAlerted`); the roles step (roles named by cluster and schema, or `RolePrefix`, shortened past 52 bytes with a SHA-256 suffix: `RolesStepIdempotent`,
+        `RoleNamesFitAndRepeatForLongClusterNames` (a 63-byte cluster name and a long multibyte prefix),
         `RolesStepCreatesConfiguredSchema`, `RolesStepTakesOverExistingTables`, `RolesStepUpdatesPassword`,
         `ConnectionLimitsSizedFromAutoscalerMax`, `MembershipRoleConnectionsReserved`, `RolesSeeStandbySyncState` (runtime, membership and Dashboard roles through `daserver_replication()`, only the owner
         holding `pg_read_all_stats`; the function's `search_path` is fixed, so a caller's objects never run with the
-        owner's rights, and `PUBLIC` cannot execute it), `RolePrefixUniquePerServer`); `PublishRefusesStorelessRecords` (`aspire publish` fails when any node's records or Dashboard
+        owner's rights, and `PUBLIC` cannot execute it), `RolePrefixUniquePerServer` (roles marked with their database and schema by `COMMENT ON ROLE`: a second database or schema under one prefix is refused, naming `RolePrefix`), `ActivationSlotsConfigurable`); `PublishRefusesStorelessRecords` (`aspire publish` fails when any node's records or Dashboard
         would use the in-memory store); `AspireRunModeIsDevelopment` (run mode sets `DOTNET_ENVIRONMENT=Development`
         unless the AppHost sets one; publish never does); the
         self-check declaring `Strict` only with a synchronous standby and `DaServer:Store:PostgreSql:QuorumFailover`;

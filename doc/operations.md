@@ -95,8 +95,12 @@ suggests) or renaming the cluster starts a new membership document; the actor re
    under the old name: copy them to the new prefix to keep the audit and the signed-in sessions, or accept losing
    them (sign-in cookies are then invalidated).
 5. Delete the old document's keys (`m|<cluster>` and its prefix) from the old store once nothing reads them.
-6. On a cluster rename on PostgreSQL, the roles step creates `<cluster>_<schema>_*` roles under the new name: drop the
-   old prefix's roles (`DROP ROLE`, after `REASSIGN OWNED` to the new owner role) once nothing connects as them.
+6. On a cluster rename on PostgreSQL, the roles step creates `<cluster>_<schema>_*` roles under the new name (with
+   `DaServer:Store:PostgreSql:RolePrefix` set the roles stay the same and there is nothing to drop). Once nothing
+   connects as the old prefix's roles, run in every database the cluster's stores use, for each old role,
+   `REASSIGN OWNED BY <old> TO <new prefix>_owner; DROP OWNED BY <old>;` (the first hands over what it owns, the
+   second removes its grants: the schema's `USAGE`, the tables' DML, `EXECUTE` on `daserver_replication()`; both act
+   on the current database only), then `DROP ROLE` each old role once.
 
 ## Production views
 
