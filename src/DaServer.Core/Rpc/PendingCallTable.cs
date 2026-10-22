@@ -19,9 +19,11 @@ internal sealed class PendingCallTable
     {
         public IPendingCall? Call;
         public object? Owner;
-        public int Tag; // call id while active, 0 when free, Cooling or Failing for a failed call's slot
+        // (generation << 32) | tag, swapped as one: the tag is the call id while active, 0 when free, Cooling or Failing
+        // for a failed call's slot. A call id repeats once the generation's low bits wrap; the whole generation does not,
+        // so a sweep that read a call's tag never fails a later call that wrapped to the same id.
+        public long State;
         public int Deadline; // low 32 bits of the deadline in Platform.Milliseconds, 0 = none
-        public uint Generation;
         public int NextFree; // free stack link: index + 1 of the next free slot, 0 = none; cooling: until when (low 32 bits)
     }
 
@@ -100,7 +102,7 @@ internal sealed class PendingCallTable
         }
 
         ref var e = ref At(index);
-        uint generation = e.Generation + 1;
+        uint generation = GenerationOf(Volatile.Read(ref e.State)) + 1;
         uint id = (generation << _indexBits) | (uint)index;
         while (id == 0 || (int)id is Failing or Cooling) // tags that are not call ids
         {
@@ -108,11 +110,10 @@ internal sealed class PendingCallTable
             id = (generation << _indexBits) | (uint)index;
         }
 
-        e.Generation = generation;
         e.Call = call;
         e.Owner = owner;
         e.Deadline = deadlineMs == 0 ? 0 : (int)deadlineMs | ((int)deadlineMs == 0 ? 1 : 0); // a deadline never reads as none
-        Volatile.Write(ref e.Tag, (int)id); // publish last
+        Volatile.Write(ref e.State, StateOf(generation, (int)id)); // publish last
         callId = id;
         return true;
     }
@@ -194,7 +195,7 @@ internal sealed class PendingCallTable
         for (int i = 0; i < allocated; i++)
         {
             index = (start + i) % allocated;
-            if (Interlocked.CompareExchange(ref At(index).Tag, 0, Cooling) == Cooling)
+            if (TrySwapTag(ref At(index).State, Cooling, 0))
             {
                 _warmFrom = index;
                 return true;
@@ -206,6 +207,31 @@ internal sealed class PendingCallTable
     }
 
     private int _warmFrom; // where the last early take found a cooling slot
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static long StateOf(uint generation, int tag) => (long)generation << 32 | (uint)tag;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int TagOf(long state) => (int)state;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static uint GenerationOf(long state) => (uint)(state >> 32);
+
+    /// <summary>
+    /// Swap the tag from <paramref name="from"/> to <paramref name="to"/>, keeping the generation. A read of the state
+    /// can tear on a 32-bit client: the tag half alone is atomic, so a mismatch is real, and a torn generation only fails
+    /// the exchange, which reads again.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool TrySwapTag(ref long state, int from, int to)
+    {
+        while (true)
+        {
+            long seen = Volatile.Read(ref state);
+            if (TagOf(seen) != from) return false;
+            if (Interlocked.CompareExchange(ref state, StateOf(GenerationOf(seen), to), seen) == seen) return true;
+        }
+    }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private void AllocateChunk(int chunk)
@@ -224,7 +250,7 @@ internal sealed class PendingCallTable
             return null; // never issued (a forged or corrupt id)
 
         ref var e = ref At(index);
-        if (Interlocked.CompareExchange(ref e.Tag, 0, (int)callId) != (int)callId)
+        if (!TrySwapTag(ref e.State, (int)callId, 0))
             return null;
 
         var call = e.Call;
@@ -257,7 +283,7 @@ internal sealed class PendingCallTable
         for (int i = 0; i < allocated; i++)
         {
             ref var e = ref At(i);
-            if (Volatile.Read(ref e.Tag) != 0 && ReferenceEquals(e.Owner, owner)) return true;
+            if (TagOf(Volatile.Read(ref e.State)) != 0 && ReferenceEquals(e.Owner, owner)) return true;
         }
 
         return false;
@@ -275,22 +301,29 @@ internal sealed class PendingCallTable
         for (int i = 0; i < allocated; i++)
         {
             ref var e = ref At(i);
-            int tag = Volatile.Read(ref e.Tag);
+            long state = Volatile.Read(ref e.State);
+            int tag = TagOf(state);
             if (tag == Cooling)
             {
-                if (expired && now - Volatile.Read(ref e.NextFree) > 0 && Interlocked.CompareExchange(ref e.Tag, 0, Cooling) == Cooling)
+                if (expired && now - Volatile.Read(ref e.NextFree) > 0 && TrySwapTag(ref e.State, Cooling, 0))
                     PushFree(i); // cooled down: the sweep frees it
                 continue;
             }
 
             if (tag is 0 or Failing || (owner != null && !ReferenceEquals(e.Owner, owner)) || (expired && (e.Deadline == 0 || now - e.Deadline <= 0)))
                 continue;
-            if (Interlocked.CompareExchange(ref e.Tag, Failing, tag) != tag) continue; // answered meanwhile
+            // Compared with the generation too: the call checked above, not a later one whose id wrapped to the same tag.
+            if (Interlocked.CompareExchange(ref e.State, StateOf(GenerationOf(state), Failing), state) != state)
+            {
+                i--; // it changed meanwhile (answered, or a torn read on a 32-bit client): look at it again
+                continue;
+            }
+
             var call = e.Call!;
             e.Call = null;
             e.Owner = null;
             Volatile.Write(ref e.NextFree, now + CoolMs);
-            Volatile.Write(ref e.Tag, Cooling);
+            Volatile.Write(ref e.State, StateOf(GenerationOf(state), Cooling));
             call.Fail(status);
             failed++;
         }
