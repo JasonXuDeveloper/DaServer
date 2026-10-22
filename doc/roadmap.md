@@ -290,59 +290,78 @@ Keep this file current: tick items when done, add items when scope changes.
       `JoinRetryOutlastsReplacement` (a player node dies: `[JoinOnConnect]` keeps retrying past the ~30 s re-placement),
       `UnavailableCarriesTimeLeft`, `SendBoundAtLeastMaxMessageSize`.
     - [ ] W6 Persistence, activation, migration and hot restart (draft §6, §8, §10 and §11; architecture.md sections 4
-      and 5; ADR-068, ADR-082, ADR-084, ADR-097, ADR-098):
-      - membership and fencing: the membership table (Orleans' protocol, architecture.md section 4): the feature point
-        `IMembershipTable` with the PostgreSQL implementation (`daserver_members`, `daserver_membership`, versioned CAS
-        transactions committed as data writes are (ADR-101), a lower version read after a failover adopted and logged:
-        `MembershipVersionRegressionAfterFailoverAdopted`, the highest version held raised past before the next claim and the table
-        re-read after a reconnect; one membership write in flight, `i_am_alive` skipped while one is pending, one of the two
-        connections kept for reads: `MembershipReadsAnswerWhileCommitWaits`; created by the schema mode) and the in-memory one (one node, `TestCluster`); joining (generation
+      and 5; ADR-068, ADR-082, ADR-084, ADR-097, ADR-098, ADR-101 to ADR-105):
+      - the store contract (ADR-102; architecture.md section 4): `IStore` (ordered byte keys with writer-chosen
+        versions, `Get` and `Scan` with `Now`, conditional `Put`/`Delete`, `GuardedWrite`, ordered batches, `Confirm`,
+        `Durability`, `SelfCheck`, `Term`, `MaxValueBytes`, `Migrate`) and its outcome model, the runtime acting on outcome
+        classes only; the key layout (records, ask rows, the queued-ask index, `OnceSenders` rows under their root; the due
+        and ask indexes as hints written ahead of their record and cleaned compared on their versions:
+        `DueEntryNeverLostToCleanup`); `InMemoryStore` (behaves as `Strict`); the durability classes (ADR-104): the
+        effective class the lower of the declaration and the self-check, `DaServer:Store:AcceptDurability` and
+        `DaServer:Membership:AcceptDurability`, `daserver.store.durability_class`, the rollback audit on a `Term` change
+        (`NonStrictStoreRefusedWithoutOptIn`, `MembershipBelowStrictRefusedWithoutOptIn`, `SelfCheckLowersClass`,
+        `RollbackAuditFindsActiveRoots`, `RolledBackEpochNeverMatchesOtherOwner`); the conformance kit in
+        `DaServer.Testing` (contract, per-key linearizability with a shipped checker, fault injection through a kit TCP
+        proxy, failover per class, self-check), run against `InMemoryStore` and PostgreSQL in CI (layer 4 nightly);
+      - the PostgreSQL provider (`DaServer.Persistence.PostgreSql`, `PostgreSqlStore`, `AddPostgreSqlStore`; PostgreSQL
+        16 or later): the `daserver_kv`, `daserver_membership_kv` and `daserver_confirm` tables created only by the
+        schema mode under a polled advisory lock, ending in a cleanly committed `COMMENT ON TABLE` (`SchemaJobRerunsIdempotently`,
+        `SchemaQualifiesEveryObject`, `SchemaGrantsRuntimeRoleFromConnectionString`); `Get`, `Scan`, the guarded-write
+        batch over `unnest` and `Confirm` by a marker write (architecture.md section 4's statements:
+        `LargeRootWriteStaysAtomic`, `ExpiryNeverDeletesNewerVersion`, `NotAppliedRaceReread`); SQLSTATE to outcomes, a
+        failed batch split between roots to the one `RowDeterministic` root (`PoisonRowBisectedRestLands`), a batch timed
+        out three times halved (`TimedOutBatchHalved`, `HalvedBatchGrowsBack`); the commit handling of ADR-101 (`BEGIN`
+        and data statements as one pipelined batch, `COMMIT` on its own with no client deadline and never cancelled:
+        `ManyStatementWriteNotCancelled`, `TimedOutWriteNeverCancelled`, `BatchNeverCommitsWithoutCommit`,
+        `HalfOpenWriteEndsAtScaledDeadline`, `UnansweredCommitLookedUp`, `AbandonedBackendTerminatedBeforeRetry`,
+        `HalfOpenBeforeCommitReleasesLocks`, `DataSourcesRequireReadWrite`); the roles step (`RolesStepIdempotent`,
+        `RolesStepCreatesConfiguredSchema`, `RolesStepTakesOverExistingTables`, `RolesStepUpdatesPassword`,
+        `ConnectionLimitsSizedFromAutoscalerMax`, `MembershipRoleConnectionsReserved`); the self-check declaring `Strict`
+        only with a synchronous standby and `DaServer:Store:PostgreSql:QuorumFailover`; the BenchmarkDotNet gate
+        `GenericTableCommitThroughput` (the generic table kept only within 10% of typed columns at 1 and 5 ms of injected
+        latency, else typed columns behind the same primitives); the wire family's variants (Aurora, AlloyDB, Neon,
+        PolarDB for PostgreSQL, CockroachDB, YugabyteDB) named supported only once the kit passes against each;
+      - membership and fencing: the membership table (Orleans' protocol, ADR-103, architecture.md section 4) as one
+        versioned document through `IStore` (a conditional put per change, one `Get` per read: `MembershipViewReadAtomic`;
+        heartbeats as keys of their own, written only by their member; an `Unknown` write settled by `Confirm`; a lower
+        version read after a failover adopted and logged: `MembershipVersionRegressionAfterFailoverAdopted`, the highest
+        version held raised past before the next claim and the document re-read after a reconnect; one membership write in
+        flight, heartbeats skipped while one is pending, its own store client with a connection kept for reads:
+        `MembershipReadsAnswerWhileCommitWaits`) and the in-memory store (one node, `TestCluster`); joining (generation
         max(Unix ms, recorded max + 1), older generations of the name written `Dead`, connectivity checked before
         `Active`), probes on a ring, indirect probes, suspicion votes and death declarations, the table refresh and
         snapshot push, a node reading itself `Dead` stopping, the isolation lease (from the read's issue, on the boot-time clock, checked by every shard before
         each ordered phase and Outbox hand-off; pushed snapshots never renew it), the freeze past it (no drain, resume on
         `Active`, `Isolated` probe answers, failed readiness, exit 75 after `IsolationExit` when a peer is not isolated,
         `daserver.membership.frozen`), the stall guard, dead members kept in the placement set until re-placement after
-        `dead_seen_at + IsolationTimeout + DeathMargin` on the store's clock, the view read as one snapshot, suspicions and `i_am_alive` stamped with the
-        store's `now()`, `daserver.link.unreachable`, the coordinator derived from the table, `restart_until` as the
+        `dead_seen_at + IsolationTimeout + DeathMargin` on the store's clock (`dead_seen_at` the `Now` of the coordinator's first read
+        showing the death), suspicions stamped with the store's `Now`, `daserver.link.unreachable`, the coordinator derived from the table, `restart_until` as the
         restart permit, `WithMembershipStore`, a storeless node starting only with `DaServer:Membership:SingleNode`,
         `DaServer.Aspire` setting `SingleNode` for one node without a store and adding PostgreSQL to an AppHost with more
-        than one; the fault-injecting per-node `IMembershipTable` in `TestCluster`; no seeds; the epoch claim with owner name and generation (two columns) and placement version in one upsert, strict placement
-        versions with `Fence` (bumped on every placement change, a migration's arrival writing `GREATEST`), idempotent
-        claims (a not-taken result whose row meets the condition, an empty result and a no-insert `NoActor` are run
-        again; a claim is never cancelled, its `COMMIT` sent on its own and acted on only when clean, one that ends
-        unknown run again and still notifying the owner remembered from before the first attempt, claims waiting with
-        the writes while no standby is up: `TimedOutClaimConfirmedByRerun`; on PostgreSQL 16 and 17 the displaced owner
-        from the row locked first, on 18 from `old`), `StoreDegraded`, `ActivationSlots`, `ActivationFailed`;
+        than one; the fault-injecting per-node `IStore` in `TestCluster`; no seeds; the claim as a `Get` then a put
+        compared on the stored version (the epoch per key, continued through a tombstone: `EpochContinuedThroughTombstone`;
+        the owner's name and generation and the placement version in the header; the displaced owner from the `Get`),
+        strict placement versions with `Fence` (bumped on every placement change, a migration's arrival compared on the
+        source's last version and never lowering placement), a `NotApplied` claim decided again from the stored value, an
+        `Unknown` one acting only once `Confirm` shows it and still notifying the displaced owner
+        (`TimedOutClaimConfirmedByRerun`), `StoreDegraded`, `ActivationSlots`, `ActivationFailed`;
       - activation: placeholder roots with their mail bounded by `MaxWaitingMail`, `[ActivatedBy<T>]` (a key's first
-        activation only; `Wake` and the `[JoinOnConnect]` join always activate; mail that may not create a key claims without the
-        `INSERT` branch), the handoff before a claim (`Arriving`, `HandoffQuery`) for keys of a slot just received, `Pending` with `MaxPending`, the idle scan as
+        activation only; `Wake` and the `[JoinOnConnect]` join always activate; mail that may not create a key claims requiring
+        a record), the handoff before a claim (`Arriving`, `HandoffQuery`) for keys of a slot just received, `Pending` with `MaxPending`, the idle scan as
         `[ForEach(Slices = N)]`, deactivation with the `Deactivating` tag;
       - records: persistence per entity kind (`FromPrefab`, `Persisted(Root)`, the persist set and its change system,
-        `Unsaved`), every load completing entities from their prefab, the tick-end batched write with the epoch and
-        write-generation CAS, `WriteNow` and `DaServer:CheckpointInterval` (staggered by the key's hash, oldest unsaved
-        first, a quarter of each round kept for checkpoints), `DaServer:Store:WritesInFlight`, writes capped by
-        `Store:StatementBytes` of records and records by `Store:MaxRecordBytes`, rows sorted, store-level errors (every SQLSTATE but `22xxx`, `23xxx`,
-        `54xxx`) retried with a backoff (ADR-101: a write's data statements are one pipelined batch and its `COMMIT` a message of its own once
-        their results are back, nothing ever cancelled, `57014` driving the halving; the client deadline `StatementTimeout`
-        times the data statements, no progress deadline, the connection closed at it before any `COMMIT` and nothing
-        committed: `ManyStatementWriteNotCancelled`; `COMMIT` with no client deadline, never cancelled or closed by the node:
-        `TimedOutWriteNeverCancelled`; an explicit `BEGIN` in the batch: `BatchNeverCommitsWithoutCommit`; a dead
-        socket found by keepalive, a `COMMIT` unanswered after `StatementTimeout` looked up by `(pid, backend_start)`, an
-        abandoned connection's backend terminated before the retry: `HalfOpenWriteEndsAtScaledDeadline`,
-        `UnansweredCommitLookedUp`, `AbandonedBackendTerminatedBeforeRetry`; at most `WritesInFlight` writes and as many
-        solo retries per world and `ActivationSlots` claims in `COMMIT`, the roles' `CONNECTION LIMIT`s sized for them; an unknown outcome of write g,
-        and a retry refused because the row already carries g, released only after the confirming write `SET write_gen =
-        g + 1 … WHERE epoch = e AND write_gen = g` commits cleanly (no row: another epoch fences, a lower `write_gen` resends
-        write g): `SyncWaitCancelledReleasesOnlyAfterConfirm`, `RetriedWriteConfirmedBeforeRelease`,
-        `ConfirmFindsWriteAbsentResends`; a confirmation releases nothing above g: `ConfirmNeverReleasesLaterItems`; the three
-        data sources on `Target Session Attributes=read-write`: `DataSourcesRequireReadWrite`), row-deterministic ones
-        bisected to the bad root, ruled unwritable only when the rest landed and then retried alone outside the slots (solo
-        retries at most `WritesInFlight` per world: `SoloRetriesCappedPerWorld`), more
-        than a quarter of a write of at least 8 roots failing that way treated as a store failure
-        (`StoreLevelErrorsNeverRuleUnwritable`, `UnwritableRootRetriedAlone`, `SingleRootWriteRuledUnwritable`,
-        `UnwritableAloneRetryStaysUnwritable`), indexes on live tables built `CONCURRENTLY` as top-level statements under a
-        polled session lock, an INVALID one dropped first (`InvalidIndexRebuilt`, `TwoSchemaJobsNeverDeadlock`), a world pausing its intake past
+        `Unsaved`), every load completing entities from their prefab, the tick-end batch of guarded writes (one per root,
+        the record compared on the root's last landed version), `WriteNow` and `DaServer:CheckpointInterval` (staggered by
+        the key's hash, oldest unsaved first, a quarter of each round kept for checkpoints), `DaServer:Store:WritesInFlight`,
+        batches capped by `Store:BatchBytes` of records and records by `Store:MaxRecordBytes` (or the provider's
+        `MaxValueBytes`), keys sorted, outcomes per root by class: `StoreLevel` retried with the same bytes and a backoff,
+        `Unknown` and `AlreadyLanded` released only once `Confirm` shows the write (another token fences, a lower
+        generation resends write g): `UnknownReleasesOnlyAfterConfirm`, `RetriedWriteConfirmedBeforeRelease`,
+        `ConfirmFindsWriteAbsentResends`, and nothing above g released: `ConfirmNeverReleasesLaterItems`;
+        `RowDeterministic` ruled unwritable and then retried alone outside the slots (solo retries at most `WritesInFlight`
+        per world: `SoloRetriesCappedPerWorld`), more than a quarter of a batch of at least 8 roots failing that way treated
+        as a store failure (`StoreLevelErrorsNeverRuleUnwritable`, `UnwritableRootRetriedAlone`,
+        `SingleRootWriteRuledUnwritable`, `UnwritableAloneRetryStaysUnwritable`), a world pausing its intake past
         `Store:BacklogPause`, `daserver.store.oldest_unsaved_age`, a root whose state does not serialize or whose row the
         store refuses handled as `RecordUnwritable`;
       - the reload after a throw in a persisted actor (a type without a record continues);
@@ -353,25 +372,26 @@ Keep this file current: tick items when done, add items when scope changes.
         world (`Busy` beyond), mail parked on a root once its final write before a migration is issued;
         a write timed out three times halved; `root.IssueClientToken` with `IssueSeq`, committing implicitly;
         `TestActor<K>` with `FailNextWrite()`, `Crash()` and `Answer<TReq>`;
-      - `[Once]` (ADR-099): `RootState.OnceNext` a sequence pair `(seed, counter)` compared seed first, the seed the
-        record's first claim epoch (no shift, `SequenceSeedNeverOverflows`), an alert with 2^24 counters left and no
+      - `[Once]` (ADR-099): `RootState.OnceNext` a sequence pair `(seed, counter)` compared seed first, the seed set by
+        the claim creating the incarnation, the larger of its `Now` in milliseconds and the tombstone's seed + 1 (no
+        shift, `SequenceSeedNeverOverflows`), an alert with 2^24 counters left and no
         `[Once]` past the end (`CounterExhaustionStopsOnce`), taken and committed by `AskUntilAnswered`; each attempt
         with its own identity (a call id per attempt for actors, an attempt number in the client envelope:
         `ClientLateFaultOfEarlierAttemptIgnored`) and a UTC sent-at stamped by the sender's node or the gateway
         (`ClientSentAtStampedByGateway`), attempts older than `MaxAskTimeout + ClockSkew` dropped and alerted
         (`DaServerOnceTooOld`; also `DaServerOnceStaleAsking` and `DaServerOnceCounterLow`, target-only rules in
-        `observability/prometheus-rules.yaml`); the receiver's `OnceSenders` as rows of their own (`daserver_once_senders`: changed rows in
-        the record's write transaction, as many row statements as they need, each applying only where its record landed
-        (`RootRowChangesSpanStatementsInOneTransaction`, two changes per new sender), inserted only while the sending actor's record exists (`ForgottenRowNeverWrittenBack`),
-        never deleted by the record's write (`RowsDeletedOutsideRecordStatement`), never in migration or handover bytes: the
-        move's and the freeze's last write carries the unwritten row changes (`HandoverKeepsUnwrittenRowChanges`) and the
-        target range-reads after its claim commits (`OnceRowsReadAfterClaim`, `OnceRowsNotInMigrationBytes`), bounded by
-        `Once:SendersPerReceiver`; per sender the mark, and `forget_after` or a client session's `delete_after`; an actor
-        sender's rows forgotten only when its record is deleted (`root.Delete()` through `daserver_delete_actor`, rows
-        marked `forget_after = now() + MaxAskTimeout + 3 × ClockSkew` in the same transaction: `ForgetOnSenderDestroy`,
-        `DeleteAndForgetAtomic`, an in-flight duplicate before `forget_after` still answered; a sender re-created under the
-        same key clears the old `forget_after` with its higher seed: `RecreatedSenderOutlivesOldForgetAfter`) or the
-        receiver's own record is (its rows as a receiver marked `orphan_after`, kept so a re-activation reads the old
+        `observability/prometheus-rules.yaml`); the receiver's `OnceSenders` as keys of their own under the receiver (ADR-105: written only by
+        the receiver, as dependents of its guarded write, however many: `LargeRootWriteStaysAtomic`, two changes per new
+        sender; a row written back after the expiry deleted it costs storage only: `ForgottenRowWrittenBackExpiresAgain`),
+        never in migration or handover bytes: the move's and the freeze's last write carries the unwritten row changes
+        (`HandoverKeepsUnwrittenRowChanges`) and the target reads them after its claim lands (`OnceRowsReadAfterClaim`,
+        `OnceRowsNotInMigrationBytes`), bounded by `Once:SendersPerReceiver`; per sender the mark, and `orphan_after` or a
+        client session's `delete_after`; an actor sender's rows forgotten only after its record is deleted (`root.Delete()`
+        writing a tombstone with `forgetUntil = Now + MaxAskTimeout + 3 × ClockSkew` on its own key: `ForgetOnSenderDestroy`,
+        `TombstoneCarriesForget`; the expiry deleting the receivers' rows once the sender's key shows it forgotten, an
+        in-flight duplicate before then still answered; a sender re-created under the same key raises the row to its
+        higher seed: `RecreatedSenderRowKept`) or the receiver's own record is (its rows as a receiver marked
+        `orphan_after` in its tombstone's write, kept so a re-activation reads the old
         marks: `DeletedReceiverRefusesLateAttempt`; a change to the row clears its in-memory mark and the idle scan keeps rows
         with entries: `RecreatedReceiverKeepsEntriesPastOrphanAfter`), a receiver deleted only once its `Unacked` is empty, it owns no
         ask row and `MaxAskTimeout + 2 × ClockSkew` has passed since the later of the `Deleting` write and its last
@@ -381,11 +401,11 @@ Keep this file current: tick items when done, add items when scope changes.
         `DeletingRootRunsNothing`, the tag on the whole subtree: `DeletingTagCoversSubtree`; asking or sending after `Delete()` in the same item reloads it:
         `SendAfterDeleteReloadsItem`, analyzer error DAS033 (`SendAfterDeleteIsDAS033`); its framework `WakeAt` resumes it after a
         crash or idle unload: `DeletingRecordResumedAfterCrash`; a Deleting root not migrated, continued after a freeze;
-        a retried delete that finds no record or a newer activation's counts as done: `RetriedDeleteCountsAsDone`); a
-        forget notice or idle-scan read applies only when its seed matches the in-memory row's
-        (`StaleForgetNoticeIgnoredForRecreatedSender`); a receiver with entries woken to probe by a framework `WakeAt`
-        (`DeactivatedReceiverWakesToProbe`); in-memory rows of an always-active receiver dropped in the idle scan at their
-        time, which also range-reads its rows with `forget_after` set every `ProbeAfter`: `IdleScanLearnsForgetAfter`)
+        a retried delete that finds its tombstone or a newer activation's claim counts as done: `RetriedDeleteCountsAsDone`); a
+        forget check applies to a row only for the seed it holds (`ForgetCheckIgnoresRecreatedSender`); a receiver with
+        entries woken to probe by a framework `WakeAt` (`DeactivatedReceiverWakesToProbe`); in-memory rows of an
+        always-active receiver dropped after their sender's `forgetUntil`, learned from an `AckQuery` answer or the idle
+        scan's bounded walk (`Once:ForgetCheckBatch` rows per `ProbeAfter`): `IdleScanForgetsTombstonedSender`)
         and `Unacked` in the record (sender, sequence, stored reply of at most 32 bytes, write generation); the check before
         the handler (too old, stale at or below `n`, a repeat answered with the stored reply after its write,
         `WindowFull` past `OnceWindow`, `Unacked` or the rows (with `RetryAfter`), `NoActor` for a missing
@@ -395,7 +415,7 @@ Keep this file current: tick items when done, add items when scope changes.
         answer's item is written; window updates pushed in order to refused senders from a bounded FIFO (`Once:RefusedQueue`), sent when entries clear
         or, for the row limit, when rows are deleted (`RowLimitWindowUpdateOnDelete`), zero-window probes every
         `Once:ZeroWindowProbe` for queued senders and backoff for the rest (`UnqueuedRefusedSendersBackOff`); `AckQuery` probes after `Once:ProbeAfter` on the internal lane, answered from the record
-        without activating (batched per node), "forgotten" for a missing record (rows kept until `forget_after`), a
+        without activating (batched per node), "forgotten" with `forgetUntil` for a tombstone or a missing record (rows kept until then), a
         session's gateway answering from its table or "unknown", only to clear entries whose acknowledgement was lost
         (`ProbeClearsLostAck`); requests never run past their
         deadline, deadlines capped at `MaxAskTimeout`; client sessions as gateway-signed tokens `Session(ClientId, nonce,
@@ -410,7 +430,7 @@ Keep this file current: tick items when done, add items when scope changes.
         (`ClientRowsDeletedAfterLastResendDeadline`), stale `[Once]` call
         ids refused and plain requests not (`PlainRequestBelowAckPasses`), at most `Clients:OnceReceiversPerSession`
         receivers tracked, acknowledgements forwarded, probes answered;
-      - `AskUntilAnswered` (ADR-100): one store table for every ask (`daserver_once_asks`, phases queued, sent,
+      - `AskUntilAnswered` (ADR-100): every ask one key under its root (phases queued, sent,
         stopped, the call's state in `ask_state` with its type id in `state_type`: `AskStateKeptInRow`, an unknown type left sent
         and unanswered for a build that knows it, alerted by `DaServerOnceUnknownState`, and the upgrade check comparing
         `state` lines in both directions, no type an older build cannot read and a type removed in two releases (stop
@@ -418,13 +438,12 @@ Keep this file current: tick items when done, add items when scope changes.
         `UnknownStateTypeWaitsForBuild`, `UpgradeCheckComparesStateLines`), rows written in the item's own record write
         joined to its compare, none in the record (`AskRowsOneTable`), inserted already sent when the window and
         `OnceInFlight` allow and no earlier row to that target is queued, in memory or paged out (`AskSentInItsOwnWrite`,
-        `SentInsertNeverOvertakesQueued`); no write budget: a root's write is one transaction of several statements
-        (records first, then row statements chunked by `StatementBytes`, each joined to its record's new write
-        generation), sent in two round trips, the statements then `COMMIT` (`RootRowChangesSpanStatementsInOneTransaction`, `FencedRootRowsUnchanged`),
-        so every item, system and reaction runs; a started item's cap `[ActorOptions(AsksPerItem)]` (16) and
+        `SentInsertNeverOvertakesQueued`); no write budget: a root's rows are dependents of its record's guarded write,
+        applied only with it however many (`LargeRootWriteStaysAtomic`, `FencedRootRowsUnchanged`), so every item, system
+        and reaction runs; a started item's cap `[ActorOptions(AsksPerItem)]` (16) and
         `Once:BytesPerItem` (1 MiB), the call past it throwing deterministically (`AsksPerItemThrowsDeterministically`);
-        retry updates going with the next write; a row answered in a write sent only as a deletion, the delete a separate
-        statement after the upsert (`AnsweredRowWithPendingRetryDeleted`); writes split between roots at 512 roots,
+        retry updates going with the next write; a row answered in a write sent only as a deletion, its pending change dropped
+        (`AnsweredRowWithPendingRetryDeleted`); writes split between roots at 512 roots,
         never splitting a root; a request and its state at most `Once:MaxRequestBytes`, checked at
         the call; the sequence taken from `OnceNext` only in the write that sends a row, re-sent after a crash under the
         stored one (`SeqAssignedAtSend`), so the cumulative acknowledgement, from written sent rows only, never passes a
@@ -435,7 +454,7 @@ Keep this file current: tick items when done, add items when scope changes.
         `Once:TargetsInMemory` 256, round-robin), the rest paged per destination by ordinal (`AskRowsPagedPerTarget`,
         `SlowTargetNeverHoldsOthers`), a held destination giving up its head when others wait once it has nothing sendable
         (backoff, zero window, only `OnceInFlight` left) or has used its quantum of `QueuedHeadPerTarget` sends, and
-        destinations not held paged in round-robin by a target cursor over `daserver_once_asks_queued`
+        destinations not held paged in round-robin by a target cursor over the root's queued-index keys
         (`ManyTargetsPastMemoryAllProgress`), a stuck destination holding at most `OnceWindow` in-flight slots so
         healthy ones send while fewer than `OnceInFlight / OnceWindow` are stuck (`StuckTargetsBoundedByWindow`), queued
         totals kept in `RootState` and written with the row changes, a held destination's count its total queued rows
@@ -443,21 +462,20 @@ Keep this file current: tick items when done, add items when scope changes.
         rows only while `QueuedRows` exceeds the held counts (`QueuedTotalsSurviveReload`), `NextDue` from held rows and
         the next rotation so a root with only stuck work is not woken at once, request
         bytes kept until the insert lands and read ahead for the next sends, a sent row keeping metadata only and its
-        bytes re-read for each re-ask round in reads bounded by `StatementBytes`, unwritten rows during a store outage
-        growing in memory and landing in one write, every write's client timeout `statement_timeout` times its statement
-        count (`OutageBacklogLandsInOneWrite`), a data-only outage alerted by `DaServerStoreWritesBehind`
+        bytes re-read for each re-ask round in reads bounded by `BatchBytes`, unwritten rows during a store outage
+        growing in memory and landing in one write (`OutageBacklogLandsInOneWrite`), a data-only outage alerted by `DaServerStoreWritesBehind`
         (`StoreWritesBehindAlerts`; an unwritable root counted in `daserver.store.unwritable_roots`, alerted by
-        `DaServerRecordUnwritable` and left out of the gauge: `UnwritableRootNotStoreBehind`), `Store:StatementTimeout` and
-        TCP keepalive on the data sources, `next_try_at` set by phase and NULL once stopped;
-        a probe of an inactive sender answered from one statement over its sent rows and `OnceNext`
-        (`ProbeAnswerSingleSnapshot`); range-read after the claim, their
+        `DaServerRecordUnwritable` and left out of the gauge: `UnwritableRootNotStoreBehind`), the next try set by phase
+        and none once stopped; a probe of an inactive sender answered from its record and then its ask rows, in that order
+        (`ProbeAnswerRecordFirst`); read after the claim, their
         held rows' next try and the next cursor rotation feeding `NextDue` so a crash or unload always wakes the root (`QueuedAsksWakeAfterCrash`); pending row
         changes written in the last write before a move or freeze (`MigrationCarriesPendingAskRows`); link outcomes
         retried by the runtime (`RetryAfter`, `Once:Retry` with backoff and jitter), windows waited out; only a value or a
         definite refusal delivered as `Replied`, in an item that commits implicitly and deletes the row (the row belongs to
         the root, the asking entity recorded; an answer for a destroyed asking entity dropped and counted);
         `Faulted`/`NotHandled` accepted only from the current attempt's call id; a `Stale` answer counted and alerted,
-        never delivered, the row moved to `stopped`, counted from the store by the sweeping node as the cluster gauge
+        never delivered, the row moved to `stopped`, counted by the sweeping node's ask census (the ask index and the
+        roots' headers) as the cluster gauge
         `daserver.once.stopped` (labelled by `hosting_type` and `actor_type`, exported only while sweeping and counting
         succeeds: `StoppedGaugeOnlyFromLiveSweeper`; `StoppedAskingCountedFromStore`: the alert holds across idle unloads
         and node restarts; the counters an alert reads exported at 0 from start); back-pressure at admission only: past
@@ -466,7 +484,7 @@ Keep this file current: tick items when done, add items when scope changes.
         `[Once]` requests and answers always run (`ReactionsRunUnderBackPressure`, `MutualOnceRootsProgress`); actors'
         `[Once]` requests exempt from `MaxMail` (`OnceRequestsExemptFromMaxMail`) but counted toward `Unacked` at
         admission (`QueuedOnceCountsTowardUnacked`); `AskInLoopIsDAS034Warning`; alerts `DaServerOnceAskOld` on the
-        sweeping node's `daserver.once.ask_age` (index-only scan of `(type_id, phase, created_at)`) and
+        sweeping node's `daserver.once.ask_age` (from the ask census) and
         `DaServerOnceQueuedFull` on `daserver.once.queued_full`, `daserver.once.ask_rows` a trend only (promtool tests:
         a stuck plateau fires, a healthy ramp does not, a drain resolves), `DaServerOnceUnknownState` on
         `daserver.once.unknown_state` and `DaServerOnceSendersNearCap` on `daserver.once.senders` against its cap
@@ -475,8 +493,8 @@ Keep this file current: tick items when done, add items when scope changes.
       - the wake: `WakeAt` on persistent framework entities (reminders, the delete check; ask rows carry their own next try), the `ArmSystem` arming a `Due` from it
         on load and activation, re-arming it on `[Changed<WakeAt>]` and disarming it on `[Removed<WakeAt>]`, the firing
         item running the wake handler registered for the entity's component (the delete check, a package's reminder
-        delivery), `NextDue`, the `next_due` column, `IActorStore.DueKeys` and `DueScan`;
-      - the store: ADR-068's `actor_records` table, created only by the schema mode (`--DaServer:Migrate`); nodes not
+        delivery), `NextDue` in the record's header, the due index (`DaServer:Store:DueBucket`) and `DueScan`;
+      - the store's schema created only by the schema mode (`--DaServer:Migrate`, the provider's `Migrate`); nodes not
         ready until it answers, one backoff without a deadline (`/alive` treats the wait as progress), and the store not part of readiness once a
         node has started; today's `daserver_actors` table neither read nor converted;
       - migration bytes with layout hashes and a new epoch on arrival, tombstones forwarding mail, group frames flushed
@@ -493,7 +511,7 @@ Keep this file current: tick items when done, add items when scope changes.
         queues and link state streamed, the listening sockets passed over (`SCM_RIGHTS` on Unix, `DuplicateAndClose` on
         Windows, Kestrel's `ListenHandle` where it takes one), the standby's check, load and ack, the node parking in place after
         the ack (worlds destroyed, memory returned, never exiting) and its resume in place on a nack, a broken stream, a timeout or a freeze past its bound, `Rejoining`
-        (reading the node's own row), pinned slots and the reconcile, `Resumed`, `RestartingNodes`, `NodeRestarting`, a
+        (reading the node's own membership entry), pinned slots and the reconcile, `Resumed`, `RestartingNodes`, `NodeRestarting`, a
         lock taken without a completed handover running the normal start, the instance id, `DaServer:Instance` and the
         manifest hash in `/health`; `/admin/restart` as the one admin verb (`mode=unload` for the path through records,
         `dryRun=true` reporting the path `ManifestDiff` picks); the rollout loop with its triggers for local Aspire (the
@@ -528,8 +546,8 @@ Keep this file current: tick items when done, add items when scope changes.
       `LateProcessReadsItsRowBeforeRunning`, `NewGenerationSupersedesRestartingOne`, `JoinDuringRestartMovesNoSlotOfRestartingNode`, `ScaleInWaitsForRestart`, `ResumeIsolatesRootsPlacedElsewhere`,
       `AsymmetricPartitionUnheardNodeDeclaredDead`, `CoordinatorCrashNextOldestTakesOver`, `SameVersionSecondClaimRefused`, `SlotMoveBumpsPlacementSoClaimSucceeds`, `DisplacedOwnerFencedWithoutWrite`, `GroupFramesFlushedBeforeDeactivationAndMigration`,
       `FencedActorDiscardsGroupFrames`, `MigrationArrivalClaimSurvivesRestart`,
-      `MigrationArrivalNeverLowersPlacement`, `MapAndLootSameIdDoNotShareRow`, `DueKeysFiltersBySlot`, `DueKeysPagesPastLimit`,
-      `DueKeysFirstPageFromSentinel`, `DueKeysUntilFixedAcrossPages`, `DueKeysSkipsPairsBeforeCursor`, `DueKeysPageReadsAtMostAPagePerPair`,
+      `MigrationArrivalNeverLowersPlacement`, `MapAndLootSameIdDoNotShareRecord`, `DueScanFiltersBySlot`, `DueScanPagesPastLimit`,
+      `DueScanUntilFixedAcrossPages`, `DueScanWakesOnlyDueHeaders`,
       `UnwritableRootSkippedRestOfBatchWritten`, `UnwritableRootCancelsIdleDeactivation`,
       `UnwritableRootOnForcedDeactivationKeepsLastRecord`, `UnwritableRootOnStopKeepsLastRecord`,
       `UnwritableRootMigrationFallsBackToDeactivation`, `UnwritableRootLeftOutOfHandover`, `UnwritableRootWithHeldOutputDoesNotStallMigrationOrFreeze`, `MigrateModeCreatesTableAndExits` (and ignores today's table), `NodeNotReadyUntilTableExists`,
@@ -557,22 +575,21 @@ Keep this file current: tick items when done, add items when scope changes.
       `IsolatedNodeAnswersProbesIsolatedAndFailsReadiness`, `IsolatedNodeReachingPeersExitsAfterIsolationExit`,
       `StoreOutageNobodyExitsNobodyVoted` (after the outage no node is voted dead for reading the table a few seconds
       late), `FrozenShardDrainsNothingAndQueueStaysBounded`, `MailKeepsArrivalTimeAcrossFreeze`, `MembershipViewReadAtomic`,
-      `AsymmetricLinkReported`, `TestClusterFaultInjectingMembershipTable`,
+      `AsymmetricLinkReported`, `TestClusterFaultInjectingStore`,
       `NewerGenerationMarksOlderDead`, `OneStatefulOneGatewaySurvivesGatewayRestart`,
       `CoordinatorDerivedFromTable` (every node at a version names the same coordinator; a stale coordinator's write
-      fails), `PlacementVersionIsTableVersion`, `StorelessWithoutSingleNodeRefusesStart`, `SingleNodeWithStoreRefusesStart`, `SingleNodeHandoverSeedsMemberRow` (the header's member row seeds the in-memory table),
-      `InMemoryTableSharedByTestCluster`, `AspireAddsPostgresForMultiNodeWithoutStore`, `AspireSetsSingleNodeForOneNodeWithoutStore`, `DefunctRowsCleanedUp`, `ChainedSlotMoveWaitsForHandoff`, `ForwardedMailOrderedBeforeParked`,
+      fails), `PlacementVersionIsTableVersion`, `StorelessWithoutSingleNodeRefusesStart`, `SingleNodeWithStoreRefusesStart`, `SingleNodeHandoverSeedsMemberEntry` (the header's member entry seeds the in-memory store),
+      `InMemoryStoreSharedByTestCluster`, `AspireAddsPostgresForMultiNodeWithoutStore`, `AspireSetsSingleNodeForOneNodeWithoutStore`, `DefunctEntriesDropped`, `ChainedSlotMoveWaitsForHandoff`, `ForwardedMailOrderedBeforeParked`,
       `ClaimNotTakenReturnsStoredOwner` (forward, not `NoActor`), `CanCreateFalseWritesNothing`,
-      `NonPersistedTypeClaimsNoRow`, `NeverWrittenRowSweptAfterTtl` (through the `SECURITY DEFINER` function; the
-      runtime role has no `DELETE`), `RootDeleteRemovesRecordAndForgets` (`root.Delete()` through `daserver_delete_actor`, one function with four statements in one transaction: an epoch compare, a fenced activation deletes nothing; its ask rows deleted (none, by `Outstanding`); the sender's `[Once]` rows marked `GREATEST` of their mark and the new one, its receiver rows marked `orphan_after`, deleted only by the expiry; `DeleteOnUnsavedRootIsDAS031`), `SweepRunsOnOldestPersistedHost`, `SweepFirstBatchSentinel`, `RolesStepIdempotent`, `RolesStepCreatesConfiguredSchema` (owned by the owner role, the runtime role's `USAGE` effective), `RolesStepTakesOverExistingTables`, `RolesStepUpdatesPassword`
-      (and creates a non-superuser owner role), `MemberUpsertLeavesIAmAlive`, `CanCreateFalseStillActivatesExistingRecord` (a map removed from the table), `CanCreateFalseOnUnsavedTypeIsNoActor`, `JoinOnConnectCreatesKeyDespiteActivatedBy` (a first login creates the `Player` row; `[ActivatedBy]` and `CanCreate` do not apply to the join),
+      `NonPersistedTypeClaimsNothing`, `NeverWrittenPlaceholderExpiresAfterTtl` (compared on its version: a first write
+      landing meanwhile is kept), `RootDeleteWritesTombstone` (`root.Delete()` as one guarded write compared on the root's version, so a fenced activation writes nothing: the tombstone with `forgetUntil`, its receiver rows marked `orphan_after`, no ask rows by `Outstanding`; `DeleteOnUnsavedRootIsDAS031`), `ExpiryRunsOnOldestPersistedHost`, `ExpiryWalkResumesFromCursor`, `RolesStepIdempotent`, `RolesStepCreatesConfiguredSchema` (owned by the owner role, the runtime role's `USAGE` effective), `RolesStepTakesOverExistingTables`, `RolesStepUpdatesPassword`
+      (and creates a non-superuser owner role), `VersionedWriteNeverTouchesHeartbeat`, `CanCreateFalseStillActivatesExistingRecord` (a map removed from the table), `CanCreateFalseOnUnsavedTypeIsNoActor`, `JoinOnConnectCreatesKeyDespiteActivatedBy` (a first login creates the `Player` row; `[ActivatedBy]` and `CanCreate` do not apply to the join),
       `HandoffQueryAdoptedPerSlotOnly`, `HandoffQueryVersionStopsSourceActivation`,
-      `EpochNotReusedAfterSweep`, `EveryClaimBranchTakesSequenceEpoch`, `ConcurrentNewKeyClaimRetriesEmptyResult`,
-      `BatchedWriteMissingRowFences`, `SchemaJobRerunsIdempotently`, `SweepWalksTableOnce` (key-set batches, by the coordinator), `ArmVoidedByHandoff`,
-      `SchemaGrantsRuntimeRoleFromConnectionString` (the members tables too), `SchemaQualifiesEveryObject` (a role
-      whose `search_path` lacks the schema), `OwnerColumnsMapUnderAot`, `NotTakenClaimMeetingConditionRetries`,
-      `NoInsertClaimNoActorRaceRetried`, `TimedOutClaimConfirmedByRerun`,
-      `BatchedWriteLowerWriteGenAtSameEpochRetried`, `BatchedWriteLandedWriteCountsAsWritten`,
+      `ConcurrentNewKeyClaimOneTaker`,
+      `WriteFindingNothingStoredFences`, `ExpiryWalksKeysOnce`, `ArmVoidedByHandoff`,
+      `ProviderStatementsRunUnderAot`, `NotAppliedClaimDecidedAgain`,
+      `RecordRequiringClaimNoActorOnlyWithoutBody`, `TimedOutClaimConfirmedByRerun`,
+      `NotAppliedOwnTokenLowerGenerationRewritten`, `AlreadyLandedConfirmedBeforeRelease`,
       `StandbyHandoverPauseUnder300ms`, `ListeningSocketsPassedOverNoUnboundGap` (backlog kept; Kestrel re-bound only where
       `ListenHandle` refuses), `NodeLockDecidesRole`, `ParkedInstanceTakesLockWhenNodeDies`, `ParkedInstanceRefusesHandshake`,
       `ParkedInstanceExitsOnRequest`, `WorldsStreamedInParallel`,
@@ -593,9 +610,9 @@ Keep this file current: tick items when done, add items when scope changes.
       `OnceRunsOnceSameSequence`, `StaleSequenceRefused` (an attempt sent before the acknowledgement and delivered late,
       past a migration, never runs), `CumulativeAckPrunes`, `LostAckHarmless`, `ProbeClearsLostAck`,
       `ProbeDeletedSenderForgotten`, `WindowHoldsAtSender`, `ZeroWindowProbeOpens`, `ForgetOnSenderDestroy`,
-      `DeleteAndForgetAtomic`, `DeletedReceiverRefusesLateAttempt`, `DeleteWaitsForUnackedEmpty`, `DeleteRefusedWhileAsking`,
+      `TombstoneCarriesForget`, `DeletedReceiverRefusesLateAttempt`, `DeleteWaitsForUnackedEmpty`, `DeleteRefusedWhileAsking`,
       `DeletingRootRunsNothing`, `SendAfterDeleteReloadsItem`, `DeletingRecordResumedAfterCrash`,
-      `StaleForgetNoticeIgnoredForRecreatedSender`, `RecreatedSenderOutlivesOldForgetAfter`, `IdleScanLearnsForgetAfter`,
+      `ForgetCheckIgnoresRecreatedSender`, `RecreatedSenderRowKept`, `IdleScanForgetsTombstonedSender`,
       `RetriedDeleteCountsAsDone`, `HandoverKeepsUnwrittenRowChanges`, `AskRowsOneTable`, `SeqAssignedAtSend`,
       `AckNeverSkipsQueuedAsk`, `QueuedAsksWakeAfterCrash`, `AdmissionBusyAtQueuedCap`, `OnceRequestsExemptFromMaxMail`,
       `ReactionsRunUnderBackPressure`, `MutualOnceRootsProgress`, `MigrationCarriesPendingAskRows`,
@@ -618,25 +635,27 @@ Keep this file current: tick items when done, add items when scope changes.
       `SessionTokenRefusedPastTByAnyGateway`, `SdkStopsResendingPastCallDeadline`, `FragmentAckedOnReceipt` (two 16 MB messages in
       a 32 MB window both finish), `IncompleteMessageResentFromFragmentZero`, `LargeMessageReservesWholeSize`,
       `BusyRefusalHasReservedRoom`, `AbortedHotRestartClearsOwnRestartUntil`, `SlowSingleRowRotatedOut`,
-      `HalvedStatementGrowsBack`, `ConnectionLimitsSizedFromAutoscalerMax`,
+      `ConnectionLimitsSizedFromAutoscalerMax`,
       `ReaskNotExecutedAfterUnknownKeepsGrant` (a re-ask's link outcome after an unknown first attempt never releases
       the drop), `CrashBetweenReaskAndNewWakeAtFiresAgain`, `RewrittenWakeAtRearms`, `RemovedWakeAtDisarms`,
       `AnswerRoomReservedByReceiver` (a map whose window to a gateway is full of pushes still answers that gateway's
-      clients), `FixedReplyReservesExactSize`, `TimedOutStatementHalved`, `StallNeedsBracketGap` (a read that waited to
+      clients), `FixedReplyReservesExactSize`, `StallNeedsBracketGap` (a read that waited to
       start is no stall), `CoordinatorNeverRestarting`, `ArmRefusedWhileReplacementPending`,
       `MembershipRoleConnectionsReserved`, `ResizeBackThroughDashboard`, `RequestsReadFromCgroup`, `VpaTargetCappedAtLimit`,
       `PartialReassemblyResentAfterHandover`, `LatestEpochIsClaimEpoch` (a crash before the next write cannot reuse an
       epoch while the counter restarts), `HotRestartKeepsClientsConnected`, `FailedHandoverResumesInPlace`, `HeldGroupPushJoinsFrameOnRelease`, `HeldGroupPushDoesNotStallGroup`,
       `HeldOutputCapAnswersBusy`, `ExpiredHeldReplyDropped`, `HeldLatestReplaced`, `RepeatCommitWaitsForEarlierWrite`,
-      `MigrationConvergesWhileRootCommitsEveryTick`, `PoisonRowBisectedRestLands`, `OversizeRecordUnwritable`,
-      `StatementBytesCapped`, `RowsSortedNoDeadlockWithStaleOwner`, `TimedOutWriteNeverCancelled`,
+      `MigrationConvergesWhileRootCommitsEveryTick`, `OversizeRecordUnwritable`,
+      `BatchBytesCapped`, `KeysSortedNoDeadlockWithStaleOwner`,
       `CheckpointStormDrainsOldestFirst`, `CheckpointsKeepShareUnderCommitFlood`, `BacklogPausesIntake`,
-      `GracefulStopPastBudgetLogsUnwritten`, `MembershipOnOwnDataSource`, `RecoveryRampsStoreTraffic`,
+      `GracefulStopPastBudgetLogsUnwritten`, `MembershipOnOwnStoreClient`, `RecoveryRampsStoreTraffic`,
       `RecoveringNodeIgnoresIsolatedVotes` (no cascade of deaths after a two-minute outage),
       `StoreClockJumpTreatedAsStall` (a VM paused 30 s with its boot clock stopped), `CoordinatorExcludesRestarting`,
       `ArmRefusedWhenWritesSlow`, `ResizeDeferredRevertedArmRefused`, `RestartPodReadinessWindowOnlyParkedContainer`,
       `RebalanceSkipsHotActor`, `PlaceholderMailNodeBudget`. BenchmarkDotNet
-      `CommitThroughputPerWorld` (1, 10, 100 and 1,000 commits per world per tick at a store latency of 1 and 5 ms),
+      `CommitThroughputPerWorld` (1, 10, 100 and 1,000 commits per world per tick at a store latency of 1 and 5 ms, per
+      provider; for PostgreSQL also the generic table against typed columns, `GenericTableCommitThroughput`, the gate
+      above), `ClaimThroughput` (activation batches through `Get` then a conditional put at 1 and 5 ms),
       `OnceCreditThroughput` (`[Once]` credits into 10,000 players with windows of 16 at 1 and 5 ms: the sequence check,
       stored reply, cumulative acknowledgement and pruning, against the same credits as plain asks),
       `CommitReplyLatency`, `CheckpointStorm` (1,000,000 roots written at once: drain time and memory against
@@ -935,11 +954,11 @@ Keep this file current: tick items when done, add items when scope changes.
       group 1654); Compose `secrets:`
       mounted at the same path and an `internal: true` network for the cluster and HTTP planes; the schema Job (W6's
       `--DaServer:Migrate`, Compose's one-shot service) with an owner role (`CREATE` on the schema, every object
-      schema-qualified), nodes on a DML-only role (the actor and membership tables), every node group given the store's
+      schema-qualified), nodes on a DML-only role (the record and membership tables), every node group given the store's
       connection (gateways included: membership is there), the samples' role-init step before the schema Job (on
       Kubernetes the schema Job retries until the role exists), the Compose deploy order (`up -d --wait postgres`, then
       `up --no-deps --force-recreate --exit-code-from schema schema`), no Helm hook; the published PostgreSQL (16 or later) a primary
-      and two standbys in three zones replicating strictly with quorum-aware failover (ADR-101: `synchronous_commit = on`, `ANY 1 (…)`, so one standby's maintenance
+      and two standbys in three zones replicating strictly with quorum-aware failover, so its self-check declares `Strict` (ADR-101: `synchronous_commit = on`, `ANY 1 (…)`, so one standby's maintenance
       pauses nothing, the samples adding a PodDisruptionBudget through the publisher hook; writes pause without a
       standby; the local `aspire run` single node exempt), the roles step setting `client_connection_check_interval`, `idle_in_transaction_session_timeout`, server keepalive
       and `tcp_user_timeout` (`HalfOpenBeforeCommitReleasesLocks`) and,
@@ -981,8 +1000,8 @@ Keep this file current: tick items when done, add items when scope changes.
     `TableRollbackPostsOldVersion`, `FeatureFlagSwitchesBetweenTicks`.
 15. N4 route completeness, N11 generated filters (on the G filter point), K3-K5, open cleanup, quality items. Later
     optional module: leases for strict singletons.
-16. After the self-review converged (agreed): Z3 and Z4; P2 `DaServer.Persistence.Redis` (the item under "One
-    message model" below).
+16. After the self-review converged (agreed): Z3 and Z4; P2 and P3, the Redis/Valkey and MongoDB store providers (the
+    items under "One message model" below; ADR-102).
 EasyEcs in parallel when DaServer waits on benchmarks: the Friflo gap, comparison tables in the docs.
 
 ## Runtime (`src/DaServer`)
@@ -1108,8 +1127,19 @@ balancing, TLS, CDN/WAF, Gateway API routes and autoscaling stay with the platfo
       `DaServer.Simulation` swarm (`MeasureUntilAsync`); AppHost, E2E (100,000 buyers in CI); the README compares it
       with the usual designs. One 4-core VM with the crowd on it: 3,000,000 buyers on one node, 6,000,101 requests in
       13.2 s with requests on a 1 ms beat (548,000/s steady, 1.51 node cores; ADR-070); the machine is the limit.
-- [ ] P2 Optional `DaServer.Persistence.Redis`: actor records in Redis (versioned writes in Lua) for teams that run
-      Redis already; durability is Redis's (AOF). Decide with the user before building it.
+- [ ] P2 `DaServer.Persistence.Redis`, the Redis and Valkey provider of `IStore` (ADR-102, architecture.md section 4),
+      declared `Replicated` (ADR-104): commands common to Redis 7.2+ and Valkey 7.2+, a Functions library loaded by
+      `Migrate`, a root's keys hash-tagged into one slot so a guarded write is atomic in Sentinel and Cluster mode alike
+      (a large one as function calls inside one `MULTI`, shown by kit layer 1), ordered scans through per-prefix sorted
+      sets, the indexes written and acknowledged ahead of their record in Cluster mode, the `Replicated` preset
+      (`appendfsync always`, `WAITAOF 1 1 0`, `min-replicas-to-write 1`, `noeviction`, two replicas), `MaxValueBytes`
+      512 KiB, `Term` from `master_replid`; certified by the kit (layers 1 to 3 and 5, layer 4 for `Replicated` on
+      Sentinel and on Cluster).
+- [ ] P3 `DaServer.Persistence.MongoDb`, the MongoDB provider of `IStore`, declared `Strict` with majority writes on
+      a replica set (no `wtimeout`): one collection keyed by the key bytes, a guarded write as one document update or a
+      transaction, `bulkWrite` batches, `_id` range scans, `$$NOW`, `Confirm` by a majority read,
+      `UnknownTransactionCommitResult` as `Unknown`, the election term as `Term`; certified by the kit for `Strict`.
+      MySQL and its family stay with the community through the kit.
 - Not in the framework: waiting rooms (virtual queues for human surges). They are policy for one kind of traffic,
   belong at the very edge (CDN/SaaS) to protect origins, and compose from ingress primitives (admission filters,
   token bucket, load-aware refusal) plus a queue actor; `samples/flashsale` shows the pattern.

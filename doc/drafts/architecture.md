@@ -19,7 +19,7 @@ node takes no AppHost code, production takes no test tools, and a capability is 
 | `DaServer.Core` | netstandard2.1, net10.0 | What both sides see: the client-facing contracts (`IFromClient`, `IFromClient<R>`, `IToClient`, `[To]`, `[Once]`, `[Latest]`, `IServer`, `TypeId<T>`, status codes) and the wire and transport (frames, buffers, channels, the pending-call table). Ships the generators, the analyzers and the `wire.manifest` task (below). |
 | `DaServer.Client` | netstandard2.1, net10.0 | The client SDK: connect, send `IFromClient`, receive `IToClient`, slots and re-joining, moving on `Retire` ([draft §7](programming-model.md#7-客户端与-presence)). |
 | `DaServer` | net11.0 | The server: the model (`IActor<T>`, `[Handles<K>]`, `[On<T>]`, `IMessageTo<K>`, `IRequestTo<K,R>`, `[From<K>]`, `IEvent`, `IClaims`, `IConfigTable<T>`, `IWorldSingleton<T>`, `[Persist]`, `[NotSaved]`, `Entity` operations, `Connection`), the framework systems, cluster, placement, persistence, migration, hot restart, and the node host: Generic Host and ASP.NET Core, configuration, OpenTelemetry, shutdown, the HTTP plane (service managers are .NET's own `UseSystemd()` and `UseWindowsService()`; launchd needs only its plist, [deployment.md section 0](deployment.md#0-launch-flows)). |
-| `DaServer.Persistence.PostgreSql` | net11.0 | The record store: epoch-fenced, compare-and-swap writes. |
+| `DaServer.Persistence.PostgreSql` | net11.0 | The reference store provider (`IStore`, section 4) for PostgreSQL and its wire family; Redis/Valkey and MongoDB providers follow as packages of their own (roadmap W6). |
 | `DaServer.Testing` | net11.0 | `TestActor<K>` (one actor, one world, DaServer's manual clock, ADR-071), `TestCluster` (in-process nodes) and simulated users (`Swarm`, HTN behaviors) over `DaServer.Client` for load tests and E2E. |
 | `DaServer.Aspire` | net11.0 | AppHost side: `AddDaServerCluster`, `AddNodes<TServer>` (a `DaServerNodeGroup<TServer>`), `WithActorStore`, `WithClientConnections(port)` on a node group, `WithClientEndpoints(gateways)` for a client app, the `{cluster}-restart` command, and a generator that writes the server types from the committed `wire.manifest` of the `#:project` (`actor` and `hosted-by` lines), each bound to that project. References no server assembly. |
 
@@ -165,11 +165,11 @@ The draft uses these before or apart from the section that defines them:
 - **Immediate chain**: `Schedule` without `after` inside an item, run right after the item; a value on the world's chain stack, not an entity. Outside an item (in a system) `Schedule(ev)` is `Schedule(ev, after: TimeSpan.Zero)`: a `Due` child at `Time.Elapsed`, run in the next ordered phase ([draft §9](programming-model.md#9-时间与广播)).
 - **`Due`**: an instant; delayed events, request deadlines and join confirmation deadlines are entities with a `Due`, ordered by the runtime's heap.
 - **`Outbox`**: what an item sends, serialized on append into pooled frames per destination and handed to the links after each ordered phase and once at the end of the loop iteration.
-- **Epoch**: the number an activation claims; record writes compare and swap it, so only one activation of an actor writes.
+- **Epoch**: the number an activation claims, per key; with the owner's node name and generation it is the activation's fencing token, which every record write compares, so only one activation of an actor writes.
 - **Placeholder**: the root entity of an actor not yet active or being saved; mail waits on it.
 - **Settling**: step c of a tick: `Depart`, `SyncSubscriptions`, and removing `Restarting` and `Resumed`.
-- **Tick-end write**: at the end of every tick (actor types without `[TickRate]`: after every mail batch) a world writes the roots due for a write asynchronously as one write: one transaction of several statements in two round trips, the statements then `COMMIT` (ADR-068's `unnest`), one write per 512 roots or `DaServer:Store:StatementBytes` of records, split only between roots, a root's row changes chunked into statements inside its write, at most `DaServer:Store:WritesInFlight` writes in flight, a write that ends without an answer confirmed durably before anything it held is released ([draft §10](programming-model.md#默认异步成批地写); its runtime data below).
-- **Held output**, **write generation**: the only output that waits for a record is what an item that called `root.Commit()` sends; it carries the generation of the root's write that holds the item, leaves when that write is durable (its `COMMIT` returned cleanly, or a confirming write's did: Tick-end write in section 2), and holds back the root's later output to the same destination actor; a held group push is appended to its group's frame only on release, so it orders against other items' group pushes by release (the one exception besides migration); held output is bounded per root and per world (`Busy` beyond); the actor keeps running meanwhile ([draft §8](programming-model.md#贵重的改动rootcommit)).
+- **Tick-end write**: at the end of every tick (actor types without `[TickRate]`: after every mail batch) a world writes the roots due for a write asynchronously as one batch of the store contract: one guarded write per root (its record and its rows, atomic per root, nothing across roots), one batch per 512 roots or `DaServer:Store:BatchBytes` of records, at most `DaServer:Store:WritesInFlight` batches in flight, a write that ends `Unknown` confirmed durable before anything it held is released ([draft §10](programming-model.md#默认异步成批地写); its runtime data below; the contract in section 4).
+- **Held output**, **write generation**: the only output that waits for a record is what an item that called `root.Commit()` sends; it carries the generation of the root's write that holds the item, leaves when that write is durable (`Landed`, or found by `Confirm`: Tick-end write in section 2), and holds back the root's later output to the same destination actor; a held group push is appended to its group's frame only on release, so it orders against other items' group pushes by release (the one exception besides migration); held output is bounded per root and per world (`Busy` beyond); the actor keeps running meanwhile ([draft §8](programming-model.md#贵重的改动rootcommit)).
 - **Connection stamp**, **`Retire`**: section 3.
 - **Node singleton**: above.
 
@@ -209,13 +209,13 @@ loop on the shard's thread:
     Cleanup              per world: ReleaseRoutes, the Persisted cleanup, WakeSystem, then CheckpointSystem (collects
                                the ids of WriteNow roots first and of Unsaved roots whose staggered checkpoint instant has
                                passed, oldest unsaved first, keeping at least a quarter of each round's rows for checkpoint
-                               roots when both wait, skipping roots with a write in flight, as many as the free statements
+                               roots when both wait, skipping roots with a write in flight, as many as the free batches
                                hold, and clears their flags; it saves nothing: World.Save throws inside a pass)
     StoreWrite           per world, outside world.Update: Descendants and SaveEntitiesWith for each collected root and each
                                deactivation (a framework job only marks them), then the tick-end write goes out when it
-                               holds any record, writes (one transaction, two round trips each: the statements, then COMMIT) split between roots at 512 roots or DaServer:Store:StatementBytes of records (a root's row changes chunked into statements inside its write), rows sorted
-                               by (type_id, key), at most DaServer:Store:WritesInFlight in flight; held output is released
-                               as its rows succeed
+                               holds any record: one guarded write per root (record and rows), batched per 512 roots or
+                               DaServer:Store:BatchBytes of records, keys sorted, at most DaServer:Store:WritesInFlight
+                               batches in flight; held output is released as its roots land
     hand Outbox frames to the links
 ```
 
@@ -259,18 +259,18 @@ exported, OpenTelemetry). Names users never write but meet in diagnostics: the S
 | `FromPrefab(int Prefab, int Composition)` | component | On every entity spawned from a registered prefab copy, persistent or not, the root included: the prefab's id and the hash of its component set, both from `wire.manifest`. On every load (record, migration bytes, hot-restart handover) the runtime adds the copy's `[NotSaved]` components the entity lacks and the components the prefab gained since `Composition` (known from the earlier compositions the manifest keeps; components removed at run time are not added back), then updates `Composition`, tagging the root `Unsaved` when it added persisted ones ([draft §10](programming-model.md#恢复)) | `daserver.records.unknown_types` |
 | `Persisted(EntityId Root)` | cleanup component | On every persistent entity (from a persistent prefab's registered copy; the root's points at itself): `ChangeSystem` filters by it, the record collects it, and destroying a persistent descendant tags its root `Unsaved` ([draft §10](programming-model.md#要保存的是实体不是组件类型)). An entity never moves under another actor's root: the tags, `Persisted.Root` and the record all follow the subtree, so the record collector treats a descendant whose `Persisted.Root` names another root as a fault (that root's write is `RecordUnwritable`, logged); to change roots, spawn a new entity under the new root | — |
 | `Deactivating` | tag on the root, declared `ITracked` | The last pass before a deactivation; declared `ITracked` because EasyEcs's `RemovedAttribute<T>` requires it, so `[Removed<Deactivating>]` sees a cancelled idle deactivation (`DaServer.Topics` re-subscribes there, [draft §15](programming-model.md#15-扩展能力可选包)) | |
-| `Deleting` | tag on the root and on every entity of its subtree (spawns under a tagged root inherit it), persisted with the record, with a framework `WakeAt` | Set by `root.Delete()` (`Ok`; `Outstanding` while the root owns any ask row, `OnceAsks` below, in any state); a one-way passage: `IActor<T>` declares `ISystemGroupWithout<Deleting>`, so no system, reminder or `[ForEach]` of the type runs on the root or any descendant, and a Deleting actor never sends from a system; new requests get `Busy` (not stored), one-way mail is dropped and counted, only `[Once]` repeats are answered from `Unacked`; asking or sending after `Delete()` in the same item is a build error on the paths the analyzer sees (DAS033) and, on the paths it cannot see, a runtime error that reloads the item (counted in `daserver.delete.send_after`, alerted when it repeats, since a reloaded `Replied` item is delivered again). Its own pending ordinary `Ask`s are cancelled (their late answers are dropped as having no waiting entity); callers holding a `ReplyTo` token from it are not answered and time out (their requests ran, so no status saying they did not is sent). `NextDue` on a Deleting root counts only the delete `WakeAt`. The rebalancer skips it, a freeze writes it, and its `WakeAt` makes `DueScan` load it after a crash or idle unload to continue; `daserver_delete_actor` runs once the tag's write landed, `Unacked` is empty, the root owns no ask row and `MaxAskTimeout + 2 × ClockSkew` has passed since the later of that write and the last `[Once]` admission (section 4). Cost: one tag per descendant, written once | `daserver.actors.deleting`, `daserver.messages.dropped{reason=deleting}`, `daserver.delete.send_after` |
+| `Deleting` | tag on the root and on every entity of its subtree (spawns under a tagged root inherit it), persisted with the record, with a framework `WakeAt` | Set by `root.Delete()` (`Ok`; `Outstanding` while the root owns any ask row, `OnceAsks` below, in any state); a one-way passage: `IActor<T>` declares `ISystemGroupWithout<Deleting>`, so no system, reminder or `[ForEach]` of the type runs on the root or any descendant, and a Deleting actor never sends from a system; new requests get `Busy` (not stored), one-way mail is dropped and counted, only `[Once]` repeats are answered from `Unacked`; asking or sending after `Delete()` in the same item is a build error on the paths the analyzer sees (DAS033) and, on the paths it cannot see, a runtime error that reloads the item (counted in `daserver.delete.send_after`, alerted when it repeats, since a reloaded `Replied` item is delivered again). Its own pending ordinary `Ask`s are cancelled (their late answers are dropped as having no waiting entity); callers holding a `ReplyTo` token from it are not answered and time out (their requests ran, so no status saying they did not is sent). `NextDue` on a Deleting root counts only the delete `WakeAt`. The rebalancer skips it, a freeze writes it, and its `WakeAt` makes `DueScan` load it after a crash or idle unload to continue; the tombstone write (section 4) goes once the tag's write landed, `Unacked` is empty, the root owns no ask row and `MaxAskTimeout + 2 × ClockSkew` has passed since the later of that write and the last `[Once]` admission. Cost: one tag per descendant, written once | `daserver.actors.deleting`, `daserver.messages.dropped{reason=deleting}`, `daserver.delete.send_after` |
 | `Pending` | component on the root | Pending delayed events and waiting asks (the `MaxPending` count); idle deactivation considers only roots where it is zero ([draft §6](programming-model.md#6-生命周期)) | `daserver.actors.pending` |
-| Tick-end write | runtime value per world | The records taken this tick (`WriteNow` roots first, then checkpoint and deactivation ones), sent as `IActorStore.SaveAsync` calls, each one explicit transaction in two round trips: `BEGIN`, the records' compare and swap, then the roots' row statements (section 4), as one pipelined batch, then its `COMMIT` as a message of its own once the batch's results are back (the batch runs in an `NpgsqlTransaction`: a batch without one is an implicit transaction that commits at its Sync, before the client could stop it; test `BatchNeverCommitsWithoutCommit`); at most `DaServer:Store:WritesInFlight` writes per world in flight (default 2), never two writes for one root; roots beyond wait with their tags for the next round ([draft §10](programming-model.md#默认异步成批地写)). Writes are split between roots at 512 roots and `DaServer:Store:StatementBytes` (8 MiB) of records; one root's record and its row changes (`OnceSenders`, ask rows) are never split across writes, its row changes chunked into as many row statements as `StatementBytes` needs inside its write's transaction, and the timeout halving and the bisect below never split a root either; rows sorted by `(type_id, key)` so racing writers lock in one order; a record above `DaServer:Store:MaxRecordBytes` (4 MiB) is unwritable. Outcomes come back per row: a refused row fences only its actor and discards only its held output; every write runs each statement under PostgreSQL's per-statement `statement_timeout` (`DaServer:Store:StatementTimeout`, default 5 s, set on the data source's connections), with the write's client timeout at that timeout times its statement count (time spent waiting for a pooled connection does not count: the pool's own `Timeout` bounds it), so a write with many row statements is never cut short by the client; errors are classified by SQLSTATE: **row-deterministic** ones (`22xxx` data exceptions, `23xxx` integrity violations, `54xxx` program limits) and the client-side ones (`SaveEntitiesWith` throws, a record above `MaxRecordBytes`) are the root's own; **every other error is store-level** and retried with the same bytes and write generation (among them `57014` statement timeout, `55P03` lock not available, `08xxx` connection, `25006` read-only after a failover, `42501` privileges, `42P01`/`42703` schema, `53xxx` resources, `57P0x` shutdown, `40001`, `40P01`, and a write that ended at its client deadline, an unknown outcome confirmed as below); a store-level failure is retried with a backoff (1 s, doubling to 1 min, the write slot released between attempts), except that a write which timed out three times in a row is halved between roots (and halved again on the next three), since a write the statement timeout can never fit would otherwise hold the world's write slots forever; a single root that keeps timing out is taken out of the slots and retried alone with a backoff (1 s, doubling to 1 min; its root keeps its held output and its tags), at most `WritesInFlight` solo retries per world at once (more wait their turn, so after an outage solo retries never crowd claims and page-ins out of the runtime pool), its client timeout scaled to its statement count like every write's, so a root whose row changes span many statements after an outage still lands, so it never holds one of the world's `WritesInFlight` slots, and the world's write size doubles back toward the cap after ten writes in a row land without a timeout; a row-deterministic one bisects the write between roots until the one root is found, which is ruled unwritable only when the rest of its write landed (a store that takes the other roots' rows is not refusing writes), takes the `RecordUnwritable` path and is from then on retried alone each interval, outside the world's write slots (under the same per-world cap on solo retries), never re-batched (so a sick root costs no bisection per checkpoint); its solo retry failing row-deterministically keeps it unwritable and never takes the store-level path (tests `SingleRootWriteRuledUnwritable`, `UnwritableAloneRetryStaysUnwritable`); if a write of at least 8 roots has more than a quarter of them come out unwritable, the store is treated as failing instead: none is ruled unwritable, they stay in the age gauge and are retried as store-level; a root whose `SaveEntitiesWith` throws is left out of the write and logged (`RecordUnwritable`), the rest of the batch goes and the root is tagged `Unsaved` again for the next interval (on deactivation, stop, migration and freeze: section 4); a root ruled unwritable is counted in `daserver.store.unwritable_roots` and left out of `daserver.store.oldest_unsaved_age`, so one oversized record never reads as a store that stopped taking writes. There is no progress deadline and no cancel: a write's data statements are one pipelined batch (PostgreSQL sends a batch's results only at its Sync, so nothing arrives before they all end), and its `COMMIT` is sent only once those results are back, so the client always knows which of the two it waits on. The client never sends a CancelRequest. The scaled total covers the data batch only and is the write's only client deadline (test `ManyStatementWriteNotCancelled`): at that deadline no `COMMIT` has been sent, the client closes the connection, the server rolls the transaction back, and the write is a store-level failure retried as above, nothing of it committed. `COMMIT` has no client deadline and the node never cancels it, nor closes its connection while its backend waits for the standby (test `TimedOutWriteNeverCancelled`): it ends when PostgreSQL answers, when keepalive finds the socket dead, or when the lookup below finds its backend gone or idle. The server's `statement_timeout` (`57014`) is what times the data statements out and drives the three-timeouts-then-halve rule; it never fires during `COMMIT` (PostgreSQL stops it before committing). The node finds a dead socket by TCP keepalive: the data sources keep it on (Npgsql `Keepalive=10;Tcp Keepalive=true;Tcp Keepalive Time=10;Tcp Keepalive Interval=2`, about 30 s to a verdict), which probes an idle socket (a `COMMIT` whose message the server acknowledged and whose answer is awaited, and a pooled connection a failover left half-open before it is used). Keepalive does not probe a socket with data in flight (ADR-053), and Npgsql has no hook to set `TCP_USER_TIMEOUT` on its sockets, so a `COMMIT` whose bytes are never acknowledged would wait out the kernel's retransmissions (`tcp_retries2`, about 15 min). So every connection records its backend's `(pid, backend_start)` when it opens (Npgsql's `ProcessID`, then `SELECT backend_start FROM pg_stat_activity WHERE pid = pg_backend_pid()`), and a `COMMIT` unanswered after `StatementTimeout` is looked up, every `StatementTimeout`, from another connection of the same data source: a backend waiting for synchronous replication (`wait_event = 'SyncRep'`) is a live wait and the `COMMIT` keeps waiting; a backend gone (a failover, a restart) or idle in its transaction (the `COMMIT` never arrived) makes the outcome unknown at once (test `UnansweredCommitLookedUp`). **A connection the node gives up on** (a data batch at its deadline, a `COMMIT` found dead by keepalive or by the lookup; a claim's, a membership write's and the Dashboard's alike) is closed, and its backend, if the server still has it, is terminated from a fresh connection before the retry or the confirmation: `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid = :pid AND backend_start = :started` (a role may signal its own backends; `backend_start` keeps a reused pid safe). So a backend left in a synchronous wait or idle in its transaction holds its row locks and its connection only until the node reaches the store again (test `AbandonedBackendTerminatedBeforeRetry`); terminating one in a synchronous wait leaves its commit visible but not durable, the unknown outcome the confirming write below covers. For a client that never comes back (a lost host, a partition that outlasts the wait) the roles step sets on every DaServer role (`ALTER ROLE … SET`) `idle_in_transaction_session_timeout = '30s'`, so a backend whose `COMMIT` never came rolls back and frees its locks (a node paused past it finds its `COMMIT` failing on a closed connection: an unknown outcome, confirmed below, nothing committed); server keepalive (`tcp_keepalives_idle = 10`, `tcp_keepalives_interval = 2`, `tcp_keepalives_count = 5`) and `tcp_user_timeout = 30000`, so the server closes a half-open client's sockets; and `client_connection_check_interval = '10s'`, which then ends such a client's running statement (on Linux it sees only a socket the kernel closed, so without server keepalive it sees nothing) (test `HalfOpenBeforeCommitReleasesLocks`). Nothing the server times ends a backend waiting for synchronous replication: a lost host's waiting backends stay until the standby returns or a failover, within its role's room (section 4). A data batch in flight on a dead socket ends at its scaled deadline, nothing committed (test `HalfOpenWriteEndsAtScaledDeadline`). All three data sources (runtime, membership, the Dashboard's) connect only to the primary: `Target Session Attributes=read-write` on a multi-host connection string, or a single read-write endpoint (`-rw` service), so neither a lease read nor a confirmation ever reads a standby. **COMMIT and synchronous replication**: the store replicates synchronously and strictly ([deployment](deployment.md), ADR-101); on PostgreSQL 17 and later the runtime and membership roles carry `transaction_timeout = 0`, so neither the node nor the server cuts the wait for the synchronous standby short; a `COMMIT` stuck on synchronous replication (no synchronous standby up) is a data-only outage: the write keeps its slot and its connection, so at most `WritesInFlight` writes and `WritesInFlight` solo retries per world wait in `COMMIT` (claims wait with them, section 4), and the runtime role's `CONNECTION LIMIT` is sized for that (section 4); membership reads still answer on their own connection (section 4, membership), the lease renews, `DaServerStoreWritesBehind` fires, and the standby's return or a failover ends it. **Durability, not visibility, releases**: any unknown outcome (PostgreSQL's warning that the wait for synchronous replication was cancelled and the transaction committed locally, which an operator's cancel, `pg_terminate_backend` or a `transaction_timeout` set against these docs causes; a `COMMIT` whose socket died) releases no held output, because a cancelled synchronous wait makes the write visible on the primary before any standby has it, and a read, an xid-only transaction or a compare that matches nothing writes no WAL and waits for no standby. Once the store answers again (after a failover, from the new primary), the root runs a confirming write for the write of generation g in doubt, `UPDATE actor_records SET write_gen = :g + 1 WHERE type_id = :t AND key = :k AND epoch = :e AND write_gen = :g`: a real `UPDATE` writing WAL under `synchronous_commit`, whose `COMMIT` waits for the synchronous standby past the earlier commit. It is a record write like any other: the root is `Writing` while it runs and it takes generation g+1 from the root's counter, so the root's next write compares above it. Held output up to generation g is released only when it updates one row and its `COMMIT` returns cleanly (no cancelled-wait warning, no dead socket). It carries no state, so it releases nothing above g: output tagged g+1 (items that ran while write g was in doubt, their state only in memory) moves to the root's next record write, which takes g+2 (test `ConfirmNeverReleasesLaterItems`). If it updates no row, the root reads its row: another epoch means the root is fenced (its held output discarded, as for any refused write); a `write_gen` below g means write g never landed, and the root sends write g again with its row changes (the same bytes, its `OnceSenders` and ask rows), under the same rule. A read alone never releases, since it waits for no standby. A confirmation that ends unknown is itself a write in doubt, of generation g+1, confirmed the same way (`SET write_gen = :g + 2 … AND write_gen = :g + 1`); a `write_gen` of g found then means the first confirmation never landed, and it is sent again. A retry of write g whose compare and swap is refused because the row already carries g (the earlier attempt landed) takes the same confirming write before it releases (tests `SyncWaitCancelledReleasesOnlyAfterConfirm`, primary up and standby down; `RetriedWriteConfirmedBeforeRelease`; `ConfirmFindsWriteAbsentResends`); what the store must provide is in [deployment](deployment.md) | `daserver.store.writes_waiting`, `daserver.store.oldest_unsaved_age`, `daserver.store.unwritable_roots` |
-| `Writing`, `WriteNow`, write generation | fields of `RootState`, a framework component every root carries from its prefab copy | Fields, not tags, so setting them is no structural change (`Commit` stays inside `INoStructuralChanges` jobs). `Writing`: a record write of the root, or a page-in of one of its ask destinations (count and head read), is in flight; `CheckpointSystem` skips the root, so one process never overlaps two writes; changes meanwhile keep or regain `Unsaved` and go in the next write, which carries the latest state. The CAS compares the epoch and the write generation (`write_gen < :write_gen`, reset to 0 by every epoch claim, continued across a hot restart's handover), so a timed-out statement landing late never overwrites newer state ([draft §10](programming-model.md#激活-epoch一个-actor-只有一个激活能写)). `WriteNow`: the root called `Commit` (in a handler or a system), so the next tick-end write takes it whatever the checkpoint interval; a `Commit` with nothing unwritten writes nothing and releases at once. The write generation counts the root's records taken; held output carries the generation of the record write its item's state goes into (the root's next record write when the item ran) and leaves once a record write of that generation or later is durable, its `COMMIT` returned cleanly; a confirming write takes a generation but carries no state, so its clean commit releases only up to the generation it confirms, and output tagged with the generation it took moves to the next record write (Tick-end write above; [draft §8](programming-model.md#贵重的改动rootcommit)) | `daserver.commits.held`, `daserver.commits.held_bytes`, `daserver.commits.latency` |
-| `OnceNext` | field of `RootState` (persisted) | The sender's `[Once]` sequence, a pair `(seed: long, counter: uint)` compared seed first: monotonic, never reused, taken by an ask only in the write that sends it (`OnceAsks` below), so a sequence never belongs to an ask not yet durably sent, and a crash, a migration or a handover continues it; a new record's seed is its first claim's epoch (the store's sequence, never reused) and its counter starts at 0, so a destroyed and recreated actor's numbers are above every number its earlier incarnation used, with no shift to overflow; an alert at 2^24 counters left, and the root stops sending `[Once]` when the counter runs out ([draft §8](programming-model.md#去重订单是自己的-actor转移价值的那一步是-once)) | `daserver.once.counter_low` |
-| `OnceAsks` | store rows of their own, one per `AskUntilAnswered` ask (`daserver_once_asks`), in any state; **not** in the record, nor in migration or handover bytes (the move's and the freeze's last write carries every unwritten ask-row change of the root, as it does `OnceSenders` changes; the target range-reads the rows after its claim commits). An active root holds in memory every `sent` row's metadata (the in-flight asks, so its acknowledgement to each receiver is exact even after `OnceInFlight` is lowered; test `LoweringOnceInFlightNeverAcksEarly`) and, **per destination**, a bounded head of queued rows (`DaServer:Once:QueuedHeadPerTarget`, 64) for up to `DaServer:Once:TargetsInMemory` destinations (256), served round-robin. While destinations not held wait, a held destination gives up its in-memory head (its rows stay in the store) once it has nothing sendable (in backoff, facing a zero window, or its rows waiting only on the root's `OnceInFlight`) or has used its quantum, `QueuedHeadPerTarget` sends since it was paged in, so busy healthy destinations cannot keep the slots for ever. Destinations not held are paged in **round-robin by a target cursor**: a key-set walk over `daserver_once_asks_queued` `(type_id, key, target, ordinal) WHERE phase = 0`, each step reading the first queued row whose target is after the last one paged in and wrapping to the start at the end and stepping over a target already held (each step one index-only probe), so every destination with queued rows comes back in turn and one that yielded goes to the back of the rotation; rows within a destination are paged by ordinal through the same index. A queued row's `next_try_at` matters only while its destination is held. The bound that holds: a slow or stuck destination holds at most `OnceWindow` (16) of the root's `OnceInFlight` slots (its sent rows keep their sequences and never go back to queued), so healthy destinations keep sending while fewer than `OnceInFlight / OnceWindow` (64 with the defaults) destinations are stuck; past that new first sends wait for a slot, nothing is lost and `DaServerOnceAskOld` alerts; and a destination not held waits at most one rotation of the cursor, each held destination sending at most one quantum before it yields (tests `AskRowsPagedPerTarget`, `SlowTargetNeverHoldsOthers`, `ManyTargetsPastMemoryAllProgress`, `StuckTargetsBoundedByWindow`). The root's queued totals live in `RootState` (persisted, written in the same transaction as the row changes): `QueuedRows`, `QueuedBytes` and, for each destination it holds, that destination's total queued rows in the store (counted at page-in by an index-only count over `daserver_once_asks_queued` for `(type_id, key, target)`, kept with its head and updated with the row changes after; a page-in takes the root's `Writing` slot as a write does, so no write starts or lands while its count and head read are on their way, and the root's queued rows to that target not yet landed are attached to its head and added to that count, so the count never misses an ask whose insert is still in flight nor counts one twice; the root's next write waits for at most that one index-only read, page-ins and writes alternate, so a root that commits every tick still pages destinations in (test `PageInProgressesUnderCommitEveryTick`); never only the rows read into memory, which would let a head of 64 drained to 0 insert a new ask already sent ahead of the rows still in the store; test `PagedInCountIsTotal`) (a destination it does not hold counts as having some only while `QueuedRows` exceeds the sum of the held destinations' counts, so a root with no paged-out rows inserts a first ask to a new target already sent), so admission and `daserver.once.queued_full` are exact after an unload, a crash or a move (test `QueuedTotalsSurviveReload`), and memory stays bounded however far the store's rows grow (E3). A row's request and state bytes stay in memory until the write inserting it lands; a sent row keeps only its metadata, and each re-ask round re-reads the bytes of the rows it re-sends with the same read-ahead range read that serves first sends, each read bounded by bytes (`StatementBytes`) and a destination's round spread over as many reads as it needs, so sent rows cost metadata only (E3); a destination's next rows to send are read ahead in one range read (a crash between that read and their write is harmless: the bytes never change and only the owning root changes its rows). The activation's range read after the claim reads the sent rows and the queued heads only | Owner, a local ordinal (`RootState.AskOrdinal`, the order of the calls), phase (`queued`, `sent`, `stopped`), the sequence pair (NULL while queued), target, the asking entity (by its identity in the record, its unique key or its place in the saved tree remapped through `LoadEntitiesInto`, never a raw entity id, which EasyEcs reuses), the request bytes and the ask's own state (`ask_state`, the `state` argument of the call, NULL without one; its type follows the persisted-component layout rules and has a `state` line in the manifest) with that state's type (`state_type`, its `NinoTypeId`, so a reload knows which `Replied<TReq, TState>` handler gets the answer; a type the build does not know is not delivered here: the row stays `sent` and unanswered (the answer is not acknowledged, so the receiver keeps it and a node of a build that knows the type delivers it after the next move or restart), counted in `daserver.once.unknown_state` and alerted by `DaServerOnceUnknownState`; the upgrade check compares the manifest's `state` lines in both directions: a release whose state types an older build cannot read is not rollback-safe, and a state type is removed in two releases, one that stops creating it (the check then sees no new rows of it) and a later one that removes it, refused while the check still sees rows of it; a rollback past the build that added a type, or a removal that skipped the first step, meets rows no running build knows, which is the case `DaServerOnceUnknownState` reports, and its remedy is to re-release a build that knows the type until those rows are answered), together at most `DaServer:Once:MaxRequestBytes` (1 MiB, checked at the call: a larger one throws in the calling item), `created_at`, `next_try_at` (by phase: a queued row that may be sent now, now; one waiting on a window, `ZeroWindowProbe` or the receiver's `RetryAfter`; a sent one, its re-ask time; a stopped one, NULL, so a stopped row never keeps the root due) and the attempt count. `AskUntilAnswered` inserts the row in the item's own record write, joined to its compare as `OnceSenders` rows are, so a fenced activation writes none and a crash never keeps an item's changes without its intent; when the receiver's window and `OnceInFlight` allow at that write and no earlier row of the root to the same target is still queued, in memory or paged out, the row is inserted already `sent` with its sequence, so an ask leaves after one write; else `queued`, and the earlier rows are sent first, in ordinal order (test `SentInsertNeverOvertakesQueued`). **Per-item caps, no write budget**: a started item (a handler run, or a system's work on one entity) may add at most `[ActorOptions(AsksPerItem)]` asks (16) and `DaServer:Once:BytesPerItem` of request and state bytes (1 MiB); the call past either throws, deterministically (a programming error, an analyzer hint where visible; in a `[Once]` handler it is a deterministic `Faulted`, like any throw, to design around by splitting the work). These bound memory and abuse only: a root's row changes ride its record's write transaction in as many statements as they need (section 4), so no number of asks can make it unwritable, and every item, system and reaction runs (tests `AsksPerItemThrowsDeterministically`, `RootRowChangesSpanStatementsInOneTransaction`). A first send waits for its own write; a retry's update (attempt, next try) need not be written before the retry leaves and goes with the root's next write. The record itself holds no ask. **Sending**: per destination in ordinal order, as that receiver's window allows and at most `[ActorOptions(OnceInFlight)]` (1,024) sent rows per root, a bound on memory and send rate that refuses nothing; one destination's asks are re-asked on one timer, in ordinal order. Asks are ordered only among their first sends to the same target: not against the root's other mail to it (a queued ask is overtaken by a later `Send`) and not across retries, the one exception to the per-pair order for asks (draft §1, ADR-096); a row moves to `sent` and takes its sequence from `OnceNext` in the write that sends it, and the attempt leaves only once that write lands, so no sequence is ever taken by an ask that is not durably sent and a re-send after a crash reuses the stored one. Each attempt has its own call id and a UTC sent-at stamped by the sender's node. The runtime re-asks after link outcomes (`RetryAfter`, else `DaServer:Once:Retry` with backoff and jitter) and after crashes and unloads (the root's `NextDue` is the earliest `next_try_at` among the rows it holds, its sent rows and its held destinations' heads, and, while destinations with queued rows are not held, no later than the next rotation, now + `DaServer:Once:Retry` doubling up to a minute over rotations that send nothing; so `DueScan` loads it, and a root whose only work is stuck is not woken again at once after an idle unload); only a value or the receiver's definite refusal is delivered as `Replied`, in an item that commits implicitly and deletes the row; `Faulted` and `NotHandled`, which the receiver does not store, count only when they answer the current attempt's call id. When the asking entity is gone the answer still deletes the row and is dropped, counted. **Acknowledgement**: the sender's cumulative acknowledgement to a receiver comes from its last written state: the lowest sequence among its `sent` rows for that receiver, else that state's `OnceNext`; a queued row has no sequence yet, so an acknowledgement never passes an ask not yet sent (test `AckNeverSkipsQueuedAsk`). A `Stale` answer cannot happen by construction; if it does it is counted and alerted (`daserver.once.stale_asking`) and the row moves to `stopped`, left to reconciliation; the sweeping node counts `stopped` rows per actor type every minute (an index-only scan of `(type_id, phase, created_at)`) and exports the cluster gauge `daserver.once.stopped` (point labels `hosting_type`, one point per server type hosting the actor type and `none` when no live member hosts it, and `actor_type`; the rule maps `hosting_type` onto `type`), so its alert holds across idle unloads, node restarts and moves until reconciliation clears it; the `stale_asking` counter is exported at 0 from node start. **Back-pressure is at admission only**: while a root's queued rows pass `[ActorOptions(OnceQueued)]` (1,024 rows) or `DaServer:Once:QueuedBytes` (64 MiB), new ordinary requests to it and client `[Once]` requests get `Busy` before they run (client sessions are advertised a window of 0); its systems, reactions (`Leaving`, `Deactivating`, `Restarting`, `Resumed`, `[Changed<T>]`), timers, actors' `[Once]` requests and answers always run, the last two because each settles another root's ask, so roots asking each other never stall each other. Growth past the cap comes only from those always-running items; rows already written are bounded by the store, while rows not yet written grow in memory while writes fail and land in one write when the store returns (every write's client timeout scales with its statement count, section 4). A full outage is bounded: the isolation freeze stops the worlds after `IsolationTimeout`, so the growth is about `IsolationTimeout` times the root's ask rate. A data-only outage (the store answers membership reads but data writes keep failing: a locked table, a full disk) freezes nothing, so unwritten rows and held output grow in memory until `DaServerStoreWritesBehind` (`daserver.store.oldest_unsaved_age` past four `CheckpointInterval`s for 5 minutes) is acted on, the one stated exception to E3; `daserver.store.writes_waiting` shows the same outage, and the alerts are `DaServerOnceAskOld` on the age of the oldest ask row not stopped, per actor type (more than three `MaxAskTimeout`s for 10 minutes: a stuck or unhosted downstream, whether its backlog grows or not; a healthy ramp has young rows), and `DaServerOnceQueuedFull` on a node holding a root past the queued cap for 10 minutes (the count includes queued rows not yet written). `root.Delete()` answers `Outstanding` while the root owns any row, in any state; `daserver_delete_actor` deletes stragglers with the record. An `AskUntilAnswered` on a `Deleting` root is a runtime error | `daserver.once.asks{phase}`, `daserver.once.orphan_replies`, `daserver.once.unknown_state`, `daserver.once.stale_asking`, `daserver.once.stopped`, `daserver.once.queued_full`, `daserver.once.ask_age`, `daserver.once.ask_rows` |
-| `Unacked` | persisted `DynamicBuffer` on the root of every actor type that receives a `[Once]` request; the root copy carries it empty, in the runtime's persisted set | TCP's receive buffer: (sender, sequence, the stored reply of at most 32 bytes, the write generation), at most `[ActorOptions(Unacked)]` (1,024; about 84 bytes an entry with a 32-byte sender id, about 84 KiB full, rewritten with every write of the record: about 1.7 MB a second of record plus WAL for a receiver committing every tick). Size it by how long an entry lives: about one reply write, one write of the sender's answer and one acknowledgement, 0.1–0.2 s on a healthy store, so a receiver taking 5,000 `[Once]` requests a second holds 500–1,000 entries; raise `Unacked` for such a receiver. The dispatch checks a `[Once]` request before its handler: an attempt sent (UTC, stamped by the sender's node or, for a client, the gateway) more than `MaxAskTimeout + ClockSkew` ago is dropped, counted; a missing receiver the request may not activate answers `NoActor` (definite); at or below the sender's `n`, `Stale` (refused, counted); in `Unacked`, the stored reply (held until that generation is written); the sender's window (`[ActorOptions(OnceWindow)]`, 16), the root's total or its row count (`DaServer:Once:SendersPerReceiver`) full, `WindowFull` with the current window and a `RetryAfter`, and the sender is queued for a window update; a root being deleted (`Deleting`), `Busy`, not stored; otherwise the handler runs once, commits implicitly and its reply is stored. Every mail from that sender carries its cumulative acknowledgement `a`; entries below `a` are dropped and `n` moves up to `a` (exclusive; no commit needed: a crash restores older entries and the next acknowledgement or probe clears them again). An entry unacknowledged for `DaServer:Once:ProbeAfter` (30 s) with no newer mail makes the receiver send `AckQuery` on the internal lane, only to clear entries whose acknowledgement was lost (the sender's node answers its written `a` without activating: an active sender from its last written state, an inactive one from one statement that reads its sent ask rows and its record's `OnceNext` together, one snapshot, so a send landing between two reads cannot make the answer pass it (test `ProbeAnswerSingleSnapshot`); probes batched per node, a missing record answers "forgotten" and the receiver keeps that sender's row and entries until the row's `forget_after` (read from the row when not known in memory), so a duplicate still in flight is answered from them; a client session's gateway answers from its session table, "unknown" for a session it does not hold, whose entries then go with the session's row); a receiver holding entries carries a framework `WakeAt` at its oldest entry plus `ProbeAfter`, so a deactivated receiver wakes to probe; on load, an entry whose sender has no row (forgotten) is dropped | `daserver.once.entries`, `daserver.once.duplicates`, `daserver.once.stale`, `daserver.once.too_old`, `daserver.once.window_full`, `daserver.once.probes` |
-| `OnceSenders` | store rows of their own, one per (receiver, sender) (`daserver_once_senders`), held in the world beside the receiver's root; **not** in migration or handover bytes (the move's and the freeze's last write carries every unwritten row change of the root, then the target range-reads the rows after its claim commits; the 1,048,576-row cap is about 55 MB and loads in 1–3 s while mail waits on the placeholder under `MaxWaitingMail` and `WaitingMailBytes`); changed rows written in the receiver's record write (row statements in its transaction, section 4); deleted outside it | Per sender (an actor's `ActorId`, or a client's `(ClientId, session)`) the mark `n` (a sequence pair; every sequence below it is settled or never sent here), about 52 bytes a row; a forgotten actor sender's row also holds `forget_after`, a deleted receiver's rows `orphan_after`, a client session's row `delete_after`. **An actor sender's row has no time-based expiry**: it is deleted only when the sender is destroyed (the transaction that deletes the sender's record marks its rows at every receiver `forget_after = now() + MaxAskTimeout + 3 × ClockSkew`, by an index on the sender, so no sender has to remember where it asked; every attempt sent before the destroy is older than `MaxAskTimeout + ClockSkew` by then, across the sender's, the store's and the receiver's clocks, so none can run as new) or when the receiver is destroyed (the transaction that deletes its record marks its rows `orphan_after`, the same interval, kept so a re-activation of the key reads the old marks and a late attempt the old actor ran gets `Stale`; the new actor's next write of a row clears the mark; `daserver_once_expire` deletes the rest). Rows therefore follow live senders: a flash-sale stock shard keeps one row per order that reached it, which `Gate` keeps to thousands or tens of thousands, gone when the sale's orders are destroyed. A client session's rows are deleted at `delete_after`, the latest resend deadline the receiver saw for the session's calls plus `MaxAskTimeout + ClockSkew`: every gateway refuses an attempt of a call past its resend deadline, carried in the session token as call-id high-water marks per quarter of `ResumeWindow`. Each new sender costs two row changes in two writes (the row, then the acknowledgement moving `n`), about 52 bytes each; nothing caps them per write, so a receiver's new-sender rate is bounded by its handler throughput and the store (a stock shard taking 5,000 new senders a second at 20 writes a second writes about 500 row changes, 26 KB, a write). At most `DaServer:Once:SendersPerReceiver` (1,048,576) rows per receiver: past it a new sender gets `WindowFull`, no row is ever evicted, rows free up only as senders are destroyed. The receiver keeps a bounded FIFO (`DaServer:Once:RefusedQueue`, 4,096) of senders refused `WindowFull` and sends them window updates on the internal lane when the window opens (entries clear; for the row limit, rows are deleted); senders past the FIFO back off, and a queued sender whose update was lost asks again every `DaServer:Once:ZeroWindowProbe` (1 s, fixed) | `daserver.once.senders`, `daserver.once.forgotten` |
+| Tick-end write | runtime value per world | The records taken this tick (`WriteNow` roots first, then checkpoint and deactivation ones), sent as one batch of the store contract (section 4): per root one guarded write, its record put compared on the version of its last landed write or claim, its row changes (ask rows, queued-index entries, `OnceSenders` rows) as dependents applied only with it; a root's new due entry (when its `NextDue` bucket changed) goes ahead of it in the batch. At most `DaServer:Store:WritesInFlight` batches per world in flight (default 2), never two writes for one root; roots beyond wait with their tags for the next round ([draft §10](programming-model.md#默认异步成批地写)). Batches split between roots at 512 roots and `DaServer:Store:BatchBytes` (8 MiB) of records; a root's guarded write is never split, however many rows changed (the provider applies a large one in as many statements or messages as it needs inside its atomic unit; test `LargeRootWriteStaysAtomic`); keys sorted, so racing writers lock in one order; a record above `DaServer:Store:MaxRecordBytes` (4 MiB, or the provider's lower `MaxValueBytes`) is unwritable. **Outcomes come back per root** and the runtime acts on their class, never on a store's error codes: `Landed` releases the root's held output up to its generation; `NotApplied` showing another fencing token fences the actor and discards its held output (showing this activation's token with a lower generation, a race: the root is written again against the stored version); `AlreadyLanded` (a retry finds its own version stored) and `Unknown` (the request may have been applied: a lost connection, a cut durability wait) release nothing until `Confirm` (below); `StoreLevel` (nothing applied) retries the same bytes and generation with a backoff (1 s doubling to 1 min, the slot released between attempts); `RowDeterministic` (this root's payload fails whatever the time) and the client-side failures (`SaveEntitiesWith` throws, a record above the cap) take the `RecordUnwritable` path: the root keeps its last record, is retried alone each interval outside the world's slots (at most `WritesInFlight` solo retries per world, so after an outage they never crowd claims and page-ins out), is never re-batched, and a solo retry failing the same way keeps it unwritable (tests `SingleRootWriteRuledUnwritable`, `UnwritableAloneRetryStaysUnwritable`); if a batch of at least 8 roots has more than a quarter of them `RowDeterministic`, the store is treated as failing instead: none is ruled unwritable and all retry as `StoreLevel`. A root ruled unwritable is counted in `daserver.store.unwritable_roots` and left out of `daserver.store.oldest_unsaved_age`, so one oversized record never reads as a store that stopped taking writes. Deadlines, cancellation, statement sizes and error codes are the provider's (the PostgreSQL provider's in section 4); the runtime sets no deadline that could cut a durability wait. **Durability, not visibility, releases**: a write that ended `Unknown` or `AlreadyLanded` releases only after `Confirm` of the record key (the provider's call: what it returns is at the store's durability point) shows the version of generation g; then held output up to g leaves. `Confirm` showing another token fences the root; showing this activation's token with a lower generation means write g never landed, and it is sent again (the same bytes and row changes, compared on the confirmed version); a `Confirm` that ends `Unknown` is repeated, and a read alone never releases. Output tagged above g (items that ran while write g was in doubt) waits for the next record write (tests `UnknownReleasesOnlyAfterConfirm`, `RetriedWriteConfirmedBeforeRelease`, `ConfirmFindsWriteAbsentResends`, `ConfirmNeverReleasesLaterItems`). While the store takes no writes but answers membership reads (a provider waiting for its replicas, a locked table, a full disk), writes keep their slots and wait, membership reads answer on their own client (section 4), the lease renews and `DaServerStoreWritesBehind` fires | `daserver.store.writes_waiting`, `daserver.store.oldest_unsaved_age`, `daserver.store.unwritable_roots` |
+| `Writing`, `WriteNow`, write generation | fields of `RootState`, a framework component every root carries from its prefab copy | Fields, not tags, so setting them is no structural change (`Commit` stays inside `INoStructuralChanges` jobs). `Writing`: a record write of the root, its `Confirm`, or a page-in of one of its ask destinations (count and head read), is in flight; `CheckpointSystem` skips the root, so one process never overlaps two writes; changes meanwhile keep or regain `Unsaved` and go in the next write, which carries the latest state. The record's version is its fencing token and write generation, `(epoch, owner name, owner generation, write generation)`; every write compares the stored version with the one of the root's last landed write or claim (the write generation reset to 0 by every claim, continued across a hot restart's handover), so a late write never overwrites newer state, and two owners never write the same version, even after a store rollback hands an epoch out twice ([draft §10](programming-model.md#激活-epoch一个-actor-只有一个激活能写)). `WriteNow`: the root called `Commit` (in a handler or a system), so the next tick-end write takes it whatever the checkpoint interval; a `Commit` with nothing unwritten writes nothing and releases at once. The write generation counts the root's records taken; held output carries the generation of the record write its item's state goes into (the root's next record write when the item ran) and leaves once a record write of that generation or later is durable: `Landed`, or shown by `Confirm` (Tick-end write above; [draft §8](programming-model.md#贵重的改动rootcommit)) | `daserver.commits.held`, `daserver.commits.held_bytes`, `daserver.commits.latency` |
+| `OnceNext` | field of `RootState` (persisted) | The sender's `[Once]` sequence, a pair `(seed: long, counter: uint)` compared seed first: monotonic, never reused, taken by an ask only in the write that sends it (`OnceAsks` below), so a sequence never belongs to an ask not yet durably sent, and a crash, a migration or a handover continues it; an incarnation's seed is set by the claim that creates it: the larger of the store's clock in milliseconds at that claim and the tombstone's seed plus one (section 4), and its counter starts at 0, so a destroyed and recreated actor's numbers are above every number its earlier incarnation used (within the tombstone's horizon the tombstone carries the old seed; past it the old seed is older than the horizon, far more than the clocks may disagree), with no shift to overflow; an alert at 2^24 counters left, and the root stops sending `[Once]` when the counter runs out ([draft §8](programming-model.md#去重订单是自己的-actor转移价值的那一步是-once)) | `daserver.once.counter_low` |
+| `OnceAsks` | store rows of their own under the root's key (`…|a|ordinal`, section 4), one per `AskUntilAnswered` ask, in any state; **not** in the record, nor in migration or handover bytes (the move's and the freeze's last write carries every unwritten ask-row change of the root, as it does `OnceSenders` changes; the target reads the rows after its claim lands). An active root holds in memory every `sent` row's metadata (the in-flight asks, so its acknowledgement to each receiver is exact even after `OnceInFlight` is lowered; test `LoweringOnceInFlightNeverAcksEarly`) and, **per destination**, a bounded head of queued rows (`DaServer:Once:QueuedHeadPerTarget`, 64) for up to `DaServer:Once:TargetsInMemory` destinations (256), served round-robin. While destinations not held wait, a held destination gives up its in-memory head (its rows stay in the store) once it has nothing sendable (in backoff, facing a zero window, or its rows waiting only on the root's `OnceInFlight`) or has used its quantum, `QueuedHeadPerTarget` sends since it was paged in, so busy healthy destinations cannot keep the slots for ever. Destinations not held are paged in **round-robin by a target cursor**: a walk over the root's queued-index keys (`…|q|target|ordinal`, one empty key per queued row, written with the row), each step a `Scan` for the first key whose target is after the last one paged in, wrapping to the start at the end and stepping over a target already held (each step one short scan), so every destination with queued rows comes back in turn and one that yielded goes to the back of the rotation; rows within a destination are paged by ordinal through the same keys. A queued row's `next_try_at` matters only while its destination is held. The bound that holds: a slow or stuck destination holds at most `OnceWindow` (16) of the root's `OnceInFlight` slots (its sent rows keep their sequences and never go back to queued), so healthy destinations keep sending while fewer than `OnceInFlight / OnceWindow` (64 with the defaults) destinations are stuck; past that new first sends wait for a slot, nothing is lost and `DaServerOnceAskOld` alerts; and a destination not held waits at most one rotation of the cursor, each held destination sending at most one quantum before it yields (tests `AskRowsPagedPerTarget`, `SlowTargetNeverHoldsOthers`, `ManyTargetsPastMemoryAllProgress`, `StuckTargetsBoundedByWindow`). The root's queued totals live in `RootState` (persisted, written in the same guarded write as the row changes): `QueuedRows`, `QueuedBytes` and, for each destination it holds, that destination's total queued rows in the store (counted at page-in by a keys-only scan of that target's queued-index keys, at most `OnceQueued` of them, kept with its head and updated with the row changes after; a page-in takes the root's `Writing` slot as a write does, so no write starts or lands while its count and head read are on their way, and the root's queued rows to that target not yet landed are attached to its head and added to that count, so the count never misses an ask whose insert is still in flight nor counts one twice; the root's next write waits for at most that one scan, page-ins and writes alternate, so a root that commits every tick still pages destinations in (test `PageInProgressesUnderCommitEveryTick`); never only the rows read into memory, which would let a head of 64 drained to 0 insert a new ask already sent ahead of the rows still in the store; test `PagedInCountIsTotal`) (a destination it does not hold counts as having some only while `QueuedRows` exceeds the sum of the held destinations' counts, so a root with no paged-out rows inserts a first ask to a new target already sent), so admission and `daserver.once.queued_full` are exact after an unload, a crash or a move (test `QueuedTotalsSurviveReload`), and memory stays bounded however far the store's rows grow (E3). A row's request and state bytes stay in memory until the write inserting it lands; a sent row keeps only its metadata, and each re-ask round re-reads the bytes of the rows it re-sends with the same read-ahead range read that serves first sends, each read bounded by bytes (`BatchBytes`) and a destination's round spread over as many reads as it needs, so sent rows cost metadata only (E3); a destination's next rows to send are read ahead in one range read (a crash between that read and their write is harmless: the bytes never change and only the owning root changes its rows). The activation's range read after the claim reads the sent rows and the queued heads only | Owner, a local ordinal (`RootState.AskOrdinal`, the order of the calls), phase (`queued`, `sent`, `stopped`), the sequence pair (NULL while queued), target, the asking entity (by its identity in the record, its unique key or its place in the saved tree remapped through `LoadEntitiesInto`, never a raw entity id, which EasyEcs reuses), the request bytes and the ask's own state (`ask_state`, the `state` argument of the call, NULL without one; its type follows the persisted-component layout rules and has a `state` line in the manifest) with that state's type (`state_type`, its `NinoTypeId`, so a reload knows which `Replied<TReq, TState>` handler gets the answer; a type the build does not know is not delivered here: the row stays `sent` and unanswered (the answer is not acknowledged, so the receiver keeps it and a node of a build that knows the type delivers it after the next move or restart), counted in `daserver.once.unknown_state` and alerted by `DaServerOnceUnknownState`; the upgrade check compares the manifest's `state` lines in both directions: a release whose state types an older build cannot read is not rollback-safe, and a state type is removed in two releases, one that stops creating it (the check then sees no new rows of it) and a later one that removes it, refused while the check still sees rows of it; a rollback past the build that added a type, or a removal that skipped the first step, meets rows no running build knows, which is the case `DaServerOnceUnknownState` reports, and its remedy is to re-release a build that knows the type until those rows are answered), together at most `DaServer:Once:MaxRequestBytes` (1 MiB, checked at the call: a larger one throws in the calling item), `created_at`, `next_try_at` (by phase: a queued row that may be sent now, now; one waiting on a window, `ZeroWindowProbe` or the receiver's `RetryAfter`; a sent one, its re-ask time; a stopped one, NULL, so a stopped row never keeps the root due) and the attempt count. `AskUntilAnswered` inserts the row in the item's own record write, joined to its compare as `OnceSenders` rows are, so a fenced activation writes none and a crash never keeps an item's changes without its intent; when the receiver's window and `OnceInFlight` allow at that write and no earlier row of the root to the same target is still queued, in memory or paged out, the row is inserted already `sent` with its sequence, so an ask leaves after one write; else `queued`, and the earlier rows are sent first, in ordinal order (test `SentInsertNeverOvertakesQueued`). **Per-item caps, no write budget**: a started item (a handler run, or a system's work on one entity) may add at most `[ActorOptions(AsksPerItem)]` asks (16) and `DaServer:Once:BytesPerItem` of request and state bytes (1 MiB); the call past either throws, deterministically (a programming error, an analyzer hint where visible; in a `[Once]` handler it is a deterministic `Faulted`, like any throw, to design around by splitting the work). These bound memory and abuse only: a root's row changes ride its record's guarded write, however many (section 4), so no number of asks can make it unwritable, and every item, system and reaction runs (tests `AsksPerItemThrowsDeterministically`, `LargeRootWriteStaysAtomic`). A first send waits for its own write; a retry's update (attempt, next try) need not be written before the retry leaves and goes with the root's next write. The record itself holds no ask. **Sending**: per destination in ordinal order, as that receiver's window allows and at most `[ActorOptions(OnceInFlight)]` (1,024) sent rows per root, a bound on memory and send rate that refuses nothing; one destination's asks are re-asked on one timer, in ordinal order. Asks are ordered only among their first sends to the same target: not against the root's other mail to it (a queued ask is overtaken by a later `Send`) and not across retries, the one exception to the per-pair order for asks (draft §1, ADR-096); a row moves to `sent` and takes its sequence from `OnceNext` in the write that sends it, and the attempt leaves only once that write lands, so no sequence is ever taken by an ask that is not durably sent and a re-send after a crash reuses the stored one. Each attempt has its own call id and a UTC sent-at stamped by the sender's node. The runtime re-asks after link outcomes (`RetryAfter`, else `DaServer:Once:Retry` with backoff and jitter) and after crashes and unloads (the root's `NextDue` is the earliest `next_try_at` among the rows it holds, its sent rows and its held destinations' heads, and, while destinations with queued rows are not held, no later than the next rotation, now + `DaServer:Once:Retry` doubling up to a minute over rotations that send nothing; so `DueScan` loads it, and a root whose only work is stuck is not woken again at once after an idle unload); only a value or the receiver's definite refusal is delivered as `Replied`, in an item that commits implicitly and deletes the row; `Faulted` and `NotHandled`, which the receiver does not store, count only when they answer the current attempt's call id. When the asking entity is gone the answer still deletes the row and is dropped, counted. **Acknowledgement**: the sender's cumulative acknowledgement to a receiver comes from its last written state: the lowest sequence among its `sent` rows for that receiver, else that state's `OnceNext`; a queued row has no sequence yet, so an acknowledgement never passes an ask not yet sent (test `AckNeverSkipsQueuedAsk`). A `Stale` answer cannot happen by construction; if it does it is counted and alerted (`daserver.once.stale_asking`) and the row moves to `stopped`, left to reconciliation; the sweeping node's ask census (every minute: it scans the ask index of roots that own ask rows, `a|type|key` keys kept like due entries, and reads those roots' record headers, which carry the oldest unstopped row's `created_at`, the stopped count and the state types present; section 4) counts `stopped` rows per actor type and exports the cluster gauge `daserver.once.stopped` (point labels `hosting_type`, one point per server type hosting the actor type and `none` when no live member hosts it, and `actor_type`; the rule maps `hosting_type` onto `type`), so its alert holds across idle unloads, node restarts and moves until reconciliation clears it; the `stale_asking` counter is exported at 0 from node start. **Back-pressure is at admission only**: while a root's queued rows pass `[ActorOptions(OnceQueued)]` (1,024 rows) or `DaServer:Once:QueuedBytes` (64 MiB), new ordinary requests to it and client `[Once]` requests get `Busy` before they run (client sessions are advertised a window of 0); its systems, reactions (`Leaving`, `Deactivating`, `Restarting`, `Resumed`, `[Changed<T>]`), timers, actors' `[Once]` requests and answers always run, the last two because each settles another root's ask, so roots asking each other never stall each other. Growth past the cap comes only from those always-running items; rows already written are bounded by the store, while rows not yet written grow in memory while writes fail and land in one write when the store returns. A full outage is bounded: the isolation freeze stops the worlds after `IsolationTimeout`, so the growth is about `IsolationTimeout` times the root's ask rate. A data-only outage (the store answers membership reads but data writes keep failing: a locked table, a full disk) freezes nothing, so unwritten rows and held output grow in memory until `DaServerStoreWritesBehind` (`daserver.store.oldest_unsaved_age` past four `CheckpointInterval`s for 5 minutes) is acted on, the one stated exception to E3; `daserver.store.writes_waiting` shows the same outage, and the alerts are `DaServerOnceAskOld` on the age of the oldest ask row not stopped, per actor type, from the census (more than three `MaxAskTimeout`s for 10 minutes: a stuck or unhosted downstream, whether its backlog grows or not; a healthy ramp has young rows), and `DaServerOnceQueuedFull` on a node holding a root past the queued cap for 10 minutes (the count includes queued rows not yet written). `root.Delete()` answers `Outstanding` while the root owns any row, in any state, so the tombstone write finds none. An `AskUntilAnswered` on a `Deleting` root is a runtime error | `daserver.once.asks{phase}`, `daserver.once.orphan_replies`, `daserver.once.unknown_state`, `daserver.once.stale_asking`, `daserver.once.stopped`, `daserver.once.queued_full`, `daserver.once.ask_age`, `daserver.once.ask_rows` |
+| `Unacked` | persisted `DynamicBuffer` on the root of every actor type that receives a `[Once]` request; the root copy carries it empty, in the runtime's persisted set | TCP's receive buffer: (sender, sequence, the stored reply of at most 32 bytes, the write generation), at most `[ActorOptions(Unacked)]` (1,024; about 84 bytes an entry with a 32-byte sender id, about 84 KiB full, rewritten with every write of the record: about 1.7 MB a second of record plus WAL for a receiver committing every tick). Size it by how long an entry lives: about one reply write, one write of the sender's answer and one acknowledgement, 0.1–0.2 s on a healthy store, so a receiver taking 5,000 `[Once]` requests a second holds 500–1,000 entries; raise `Unacked` for such a receiver. The dispatch checks a `[Once]` request before its handler: an attempt sent (UTC, stamped by the sender's node or, for a client, the gateway) more than `MaxAskTimeout + ClockSkew` ago is dropped, counted; a missing receiver the request may not activate answers `NoActor` (definite); at or below the sender's `n`, `Stale` (refused, counted); in `Unacked`, the stored reply (held until that generation is written); the sender's window (`[ActorOptions(OnceWindow)]`, 16), the root's total or its row count (`DaServer:Once:SendersPerReceiver`) full, `WindowFull` with the current window and a `RetryAfter`, and the sender is queued for a window update; a root being deleted (`Deleting`), `Busy`, not stored; otherwise the handler runs once, commits implicitly and its reply is stored. Every mail from that sender carries its cumulative acknowledgement `a`; entries below `a` are dropped and `n` moves up to `a` (exclusive; no commit needed: a crash restores older entries and the next acknowledgement or probe clears them again). An entry unacknowledged for `DaServer:Once:ProbeAfter` (30 s) with no newer mail makes the receiver send `AckQuery` on the internal lane, only to clear entries whose acknowledgement was lost (the sender's node answers its written `a` without activating: an active sender from its last written state, an inactive one by reading its record and then its ask rows, in that order: a send landing between the two reads only adds rows at or above the record's `OnceNext`, so the answer, the lowest of those rows' sequences and that `OnceNext`, never passes it (test `ProbeAnswerRecordFirst`); probes batched per node; a tombstone or a missing record answers "forgotten" with the tombstone's `forgetUntil` (a missing record: already past), and the receiver keeps that sender's row and entries until then, so a duplicate still in flight is answered from them; a client session's gateway answers from its session table, "unknown" for a session it does not hold, whose entries then go with the session's row); a receiver holding entries carries a framework `WakeAt` at its oldest entry plus `ProbeAfter`, so a deactivated receiver wakes to probe; on load, an entry whose sender has no row (forgotten) is dropped | `daserver.once.entries`, `daserver.once.duplicates`, `daserver.once.stale`, `daserver.once.too_old`, `daserver.once.window_full`, `daserver.once.probes` |
+| `OnceSenders` | store rows of their own under the receiver's key (`…|s|sender`, section 4), one per (receiver, sender), held in the world beside the receiver's root and written only by it; **not** in migration or handover bytes (the move's and the freeze's last write carries every unwritten row change of the root, then the target reads the rows after its claim lands; the 1,048,576-row cap is about 55 MB and loads in 1–3 s while mail waits on the placeholder under `MaxWaitingMail` and `WaitingMailBytes`); changed rows go as dependents of the receiver's record write | Per sender (an actor's `ActorId`, or a client's `(ClientId, session)`) the mark `n` (a sequence pair; every sequence below it is settled or never sent here), about 52 bytes a row; a deleted receiver's rows also hold `orphan_after`, a client session's row `delete_after`. **An actor sender's row has no time-based expiry**: it goes only after the sender or the receiver is destroyed. A destroyed sender leaves a tombstone on its own key with `forgetUntil` = the deletion + `MaxAskTimeout + 3 × ClockSkew` by the store's clock (every attempt sent before the destroy is older than `MaxAskTimeout + ClockSkew` by then, across the sender's, the store's and the receiver's clocks, so none can run as new); nothing writes the receivers' rows for it, so no sender remembers where it asked and no write spans two actors. A forgotten sender's rows are deleted by the expiry, which reads the sender's key for each actor sender row it walks (a tombstone past `forgetUntil`, no record at all, or a live record whose seed is above the row's and whose `prevForgetUntil`, copied from the tombstone it replaced, has passed) and deletes the row compared on its version; a receiver drops its in-memory row and entries one `ClockSkew` after the same is shown by an `AckQuery` answer or by its idle scan's bounded walk over its held rows without entries (`DaServer:Once:ForgetCheckBatch`, 1,024 rows per `ProbeAfter`, batched reads of the senders' keys), never a row with entries or unwritten changes. A receiver whose write puts such a row back (it raced the expiry) costs storage until the next pass, nothing more. The receiver's own destruction writes `orphan_after` (the same interval) on its rows in its tombstone's guarded write: they are kept so a re-activation of the key reads the old marks and a late attempt the old actor ran gets `Stale`; the new actor's next write of a row clears the mark; the expiry deletes the rest. Rows therefore follow live senders: a flash-sale stock shard keeps one row per order that reached it, which `Gate` keeps to thousands or tens of thousands, gone after the sale's orders are destroyed. A client session's rows are deleted at `delete_after`, the latest resend deadline the receiver saw for the session's calls plus `MaxAskTimeout + ClockSkew`: every gateway refuses an attempt of a call past its resend deadline, carried in the session token as call-id high-water marks per quarter of `ResumeWindow`. Each new sender costs two row changes in two writes (the row, then the acknowledgement moving `n`), about 52 bytes each; nothing caps them per write, so a receiver's new-sender rate is bounded by its handler throughput and the store (a stock shard taking 5,000 new senders a second at 20 writes a second writes about 500 row changes, 26 KB, a write). At most `DaServer:Once:SendersPerReceiver` (1,048,576) rows per receiver: past it a new sender gets `WindowFull`, no row is ever evicted, rows free up only as senders are forgotten. The receiver keeps a bounded FIFO (`DaServer:Once:RefusedQueue`, 4,096) of senders refused `WindowFull` and sends them window updates on the internal lane when the window opens (entries clear; for the row limit, rows are dropped); senders past the FIFO back off, and a queued sender whose update was lost asks again every `DaServer:Once:ZeroWindowProbe` (1 s, fixed) | `daserver.once.senders`, `daserver.once.forgotten` |
 | `WakeAt(DateTime Utc)` | persisted component on persistent entities | When the actor must be awake: a reminder's next firing, the `Deleting` tag's delete check (an ask row's next try is its own `next_try_at`, `OnceAsks` above) (framework and package code write it, user code does not); while active, `ArmSystem` arms `Due = Elapsed + (Utc − Time.Utc)` on load and arrival (`[With<WakeAt>, Without<Due>]`), re-arms it when `WakeAt` is written (`[Changed<WakeAt>]`: the `Due`'s `(At, Seq)` changes and the heap skips the old entry) and removes it when `WakeAt` is removed (`[Removed<WakeAt>]`, a method taking `in Persisted`: EECS003 accepts a zero-component `[ForEach]` only with `[With<T>]` or `[Changed<T>]`, EasyEcs request (e)), after which only the monotonic `Due` counts; when it fires, the wake handler registered for the entity's component runs in that item (`DaServer.Reminders`' delivery, the delete check) and writes the next `WakeAt` if there is one | — |
 | `IssueSeq` | persisted component on the root | The client-token issue sequence `root.IssueClientToken` increments ([draft §7](programming-model.md#7-客户端与-presence)) | — |
-| `NextDue` | persisted component on the root | The minimum of the `WakeAt` of the root and its descendants and the `next_try_at` of the root's ask rows, computed only by the runtime: `WakeSystem` (from `[Changed<WakeAt>]`, `[Removed<WakeAt>]` and the `Persisted` cleanup; it tags the root `Unsaved` whenever the value changes, since `NextDue` is the runtime's and not in the generated `ChangeSystem` filter) runs before `CheckpointSystem`, which takes every record; every write puts it into the record's `next_due` column ([draft §10](programming-model.md#唤醒wakeatnextdueduescan)) | — |
-| `DueScan` | node system | Every `DaServer:DueScanInterval`, `IActorStore.DueKeys(slots, until, after)` over the slots the node owns (`until` fixed for the scan; the first page's `after` is a sentinel below every real row, each later page's the previous page's last row, which `DueKeys` returns; each page probes only the pairs at or after the cursor's, taking at most 512 rows from each through `LATERAL … LIMIT`, so no page sorts the backlog of every later pair); sends `Wake` (the one control mail that activates) to keys not active; an activation by `Wake` always rewrites `next_due`. The query does not exclude active keys (the store cannot tell); an active actor removes or moves its `WakeAt` as each instant comes, so its key shows up only between an instant and the checkpoint that writes the change: at most the instants of the last checkpoint interval, and its world drops the `Wake` | `daserver.wakes` |
+| `NextDue` | persisted component on the root | The minimum of the `WakeAt` of the root and its descendants and the `next_try_at` of the root's ask rows, computed only by the runtime: `WakeSystem` (from `[Changed<WakeAt>]`, `[Removed<WakeAt>]` and the `Persisted` cleanup; it tags the root `Unsaved` whenever the value changes, since `NextDue` is the runtime's and not in the generated `ChangeSystem` filter) runs before `CheckpointSystem`, which takes every record; every write puts it into the record's header, and a write that moves it into another due bucket puts a due entry ahead of the record (section 4) ([draft §10](programming-model.md#唤醒wakeatnextdueduescan)) | — |
+| `DueScan` | node system | Every `DaServer:DueScanInterval`, a `Scan` of the due index over the `(type, slot)` pairs the node owns, from the start of each pair's range to the bucket that holds now (`until` fixed for the scan), in pages of 512 keys, the pairs' scans batched; the entries are a hint that never misses a due key: it reads the candidates' record headers, sends `Wake` (the one control mail that activates) to keys due and not active, and deletes, compared on its version, an entry whose record shows another bucket or nothing due (an entry written meanwhile has another version, so the delete never removes a live one; test `DueEntryNeverLostToCleanup`); an activation by `Wake` always rewrites the header. The scan does not exclude active keys (the store cannot tell); an active actor removes or moves its `WakeAt` as each instant comes, so its key shows up only between an instant and the checkpoint that writes the change: at most the instants of the last checkpoint interval, and its world drops the `Wake` | `daserver.wakes` |
 | `Joined(bool MissedPushes)`, `Detached` | component and tag on a presence | Confirmed, and whether a push may have been missed (false only after a `Retire` behind the `HandedOff` fence); a presence of a lost connection in its grace period ([draft §7](programming-model.md#7-客户端与-presence)) | — |
 | Due heap | runtime index per world | A 4-ary min-heap of `(At, Seq, EntityId with version)`; lazy deletion: a popped entry is valid only if its entity is alive (same version) and its `(At, Seq)` equals the entity's current `Due` (an intent or a reminder re-armed on the same entity keeps its version, so the version alone would fire it early); others are skipped. Rebuilt after `world.Load`, and for a migration's arrival only once its claim has succeeded (an arrival does not run before its claim, so its entries are not in the heap until then, neither skipped nor fired), and compacted in place (stale entries dropped, heap rebuilt in O(n)) whenever the stale count (heap size − `CountOf<Due>`, O(1)) passes the live one: most asks are answered in milliseconds while their timeout entry waits for its `At`, so without compaction the heap would hold rate × timeout dead entries. So the heap holds at most twice the world's live `Due` entities, which `MaxPending` bounds per actor. EasyEcs's ordered value index is a sorted array, so each pop would move the whole array | `daserver.dueheap.entries{state}` |
 | Chain stack | runtime value per world | `Schedule` without `after`: the event as a value, run right after the item; empty between items, so never saved | — |
@@ -284,9 +284,9 @@ exported, OpenTelemetry). Names users never write but meet in diagnostics: the S
 | Placeholder | entity | A key not yet active or being saved: the copy of `K.RootPrefab` without `In<K>`, the key, `Loading`, `Arriving` (a key of a handoff-pending slot waiting for its source's answer, section 4), `Saving` or `ActivationFailed(until)`, a bounded `DynamicBuffer<Mail>` (`MaxWaitingMail` per key and `DaServer:WaitingMailBytes` per node, shared out per world); a throw in a persisted actor (reload) turns a root back into one in place, keeping only the key and the `Mail` (values reset to the prefab copy's) | `daserver.activations.failed` |
 | Internal lane | frames no handler can relate to a message | Heartbeats, membership and view exchange, link acks, `Fence(key, epoch)`, `Wake`, `HandoffQuery`, a large message's completion notice and `[Once]`'s bookkeeping (its acknowledgements, `AckQuery` and its answers, window updates): written ahead of queued data so failure detection never waits behind bulk traffic; never `Busy` (section 3's links) | — |
 | Presence notices | mail in the pair's order | `Route`, `Lost`, `JoinConfirmed`, `TakeOver`, `HandedOff`, `Missed` (a gateway dropped or conflated a push for that presence, which then gets `MissedPushes`): user-observable, so they travel in the one ordered stream with the messages and group frames of their pair (section 3), with room reserved so they are never `Busy` or dropped, bounded by the join rate times latency (a few per join); mail to a `Connection` is addressed by its `ConnectionId` (the presence records it), so the gateway routes it to the world by that key's hash like any actor's | `daserver.messages.dropped{reason}`, `daserver.messages.superseded` |
-| `[Latest]` table | runtime value per actor (migrated and handed over, never recorded) | Per (root, sender, message type): the last unhandled mail (replaced in place when it is the sender's last item to the target, else dropped and the new one appended) and the highest sequence handled or queued; a `[Latest]` message carries `(sender epoch, sequence)` compared in that order, the sender being the sending actor (its epoch: the activation's claim epoch, from the store's sequence, durable at the claim, so a crash before the next write cannot reuse an epoch while the counter restarts) or, for a client, its `ClientId` (its epoch: the connection stamp's attempt, a Unix-millisecond start taken as the larger of its own plus one and the one the target reported plus one, section 3's connection stamps; the session nonce is random and orders nothing), the sequence counted per (sender, target, type) within an epoch, and an older pair is dropped, so a sender restarted from a lower counter still wins, so a stale message forwarded by a tombstone or still in flight from an old gateway never replaces a newer one; entries go after `DaServer:Mailbox:LatestWindow` (10 s) without a message | `daserver.messages.superseded` |
+| `[Latest]` table | runtime value per actor (migrated and handed over, never recorded) | Per (root, sender, message type): the last unhandled mail (replaced in place when it is the sender's last item to the target, else dropped and the new one appended) and the highest sequence handled or queued; a `[Latest]` message carries `(sender epoch, sequence)` compared in that order, the sender being the sending actor (its epoch: the activation's claim epoch, which rises with every claim of the key and is durable at the claim, so a crash before the next write cannot reuse an epoch while the counter restarts) or, for a client, its `ClientId` (its epoch: the connection stamp's attempt, a Unix-millisecond start taken as the larger of its own plus one and the one the target reported plus one, section 3's connection stamps; the session nonce is random and orders nothing), the sequence counted per (sender, target, type) within an epoch, and an older pair is dropped, so a sender restarted from a lower counter still wins, so a stale message forwarded by a tombstone or still in flight from an old gateway never replaces a newer one; entries go after `DaServer:Mailbox:LatestWindow` (10 s) without a message | `daserver.messages.superseded` |
 | Answer reservations | runtime value per world and per link | Bytes reserved for answers at both ends of their path: the receiver, when it admits a request into a mailbox, reserves the reply's size in its own outbound window to the asker's node (released when the reply is sent or the request's deadline passes; past half the window the request is refused `Busy`), and the asker, when it asks, reserves it in its own dispatch queue (released when the answer arrives or at the deadline; past half, the ask is refused locally `Busy`). The size is exact for fixed-size replies (computed by the generator: a `bool` reserves a few bytes) and `DaServer:MaxReplyBytes` (64 KiB, or `[MaxReplySize(n)]`) for variable ones; an answer larger than its reservation travels as ordinary traffic | `daserver.asks.reserved_bytes`, `daserver.replies.oversize` |
-| Membership states | per member, from the membership table | `Joining`, `Active`, `ShuttingDown`, `Dead` (the table's statuses); `NodeJoining`, `NodeLeaving` (placement is changing), `NodeRestarting` (its row holds `restart_until`: a hot restart, announced once a standby passed the handshake; user systems see the `Restarting` tag and `RestartingNodes`), `Rejoining` (the standby that took over reading its row before it clears `restart_until`, or finding itself `Dead`) | `daserver.members{state}` |
+| Membership states | per member, from the membership table | `Joining`, `Active`, `ShuttingDown`, `Dead` (the table's statuses); `NodeJoining`, `NodeLeaving` (placement is changing), `NodeRestarting` (its entry holds `restart_until`: a hot restart, announced once a standby passed the handshake; user systems see the `Restarting` tag and `RestartingNodes`), `Rejoining` (the standby that took over reading its entry before it clears `restart_until`, or finding itself `Dead`) | `daserver.members{state}` |
 
 ### `Registration`
 
@@ -644,63 +644,58 @@ in short:
   move A→B→C never lets C ask a B that never held the key. Mail A forwards for a parked key goes ahead of the mail B
   parked (A sends it on the migration's stream before the bytes), so per-sender order holds across the move.
 - **Membership is a table in the store** (Orleans' membership protocol, [Orleans: cluster
-  management](https://learn.microsoft.com/dotnet/orleans/implementation/cluster-management), behind a feature point,
-  `IMembershipTable`, with a PostgreSQL implementation and an in-memory one): the store decides who is in the cluster,
-  so there is no quorum, ballot or formation size to reason about, and any number of members may fail.
-  - **Rows**: `daserver_members` holds one row per node incarnation: cluster, name, node generation, address, server
-    type, status (`Joining`, `Active`, `ShuttingDown`, `Dead`), the suspicions against it (suspecting member,
-    generation, and the store's `now()` when written, so every node judges a vote's age by one clock), `restart_until`
-    (a granted hot restart and its deadline), `dead_seen_at` (the store's `now()` in the coordinator's first write after it read the member `Dead`; below), start time and
-    `i_am_alive`;
-    `daserver_membership` holds one row per cluster: the table version, the slot table and its per-type placement
-    versions. Every change (a join, a status, a suspicion, a death, a restart permit, a slot move) is one transaction
-    that updates the changed rows and sets the version row to version + 1 where the version is still the one read
-    (compare-and-swap); a conflict re-reads and retries with back-off. So all membership changes are totally ordered
-    by the table version, and every node that has read version v computes the same members, coordinator and slot
-    table. `i_am_alive` (every `DaServer:Membership:IAmAliveInterval`, 30 s, as the store's `now()`) is written without
-    touching the version, and no versioned write ever sets it (the row upsert leaves it out of `DO UPDATE SET`, so a
-    stale copy never overwrites a newer heartbeat).
+  management](https://learn.microsoft.com/dotnet/orleans/implementation/cluster-management)), kept as **one versioned
+  document** written through the same store contract as records (section 4's `IStore`, so every provider has it and
+  there is one implementation of the protocol): the store decides who is in the cluster, so there is no quorum,
+  ballot or formation size to reason about, and any number of members may fail.
+  - **The document** (`m|cluster`) holds the table version, one entry per node incarnation (name, node generation,
+    address, server type, status `Joining`, `Active`, `ShuttingDown` or `Dead`, the suspicions against it with the
+    suspecting member, its generation and the store's `Now` when written, so every node judges a vote's age by one
+    clock, `restart_until` for a granted hot restart and its deadline, `dead_seen_at` (below) and the start time), the
+    slot table and its per-type placement versions, and the configuration tables' versions: tens of KB for hundreds
+    of members and 4,096 slots. Every change (a join, a status, a suspicion, a death, a restart permit, a slot move)
+    is one conditional put of the whole document, version v + 1 where the stored version is still the v read; a
+    conflict re-reads and retries with back-off. So all membership changes are totally ordered by the version, and
+    every node that has read version v computes the same members, coordinator and slot table. A read is one `Get`, so
+    a snapshot is always atomic. Heartbeats are keys of their own (`m|cluster|alive|name|generation`, the `Now` of the
+    member's latest read, every `DaServer:Membership:IAmAliveInterval`, 30 s), each written only by its member and never touching the
+    version, so a versioned write can never overwrite one; they serve diagnostics and the join's skip rule.
   - **Joining**: a node reads the table, picks its generation as max(Unix ms, the largest generation recorded for its
-    name + 1), and in one versioned transaction inserts its row as `Joining` and marks every older generation of its
+    name + 1), and in one versioned write adds its entry as `Joining` and marks every older generation of its
     name `Dead` (an old process of the same name that is still running reads that and stops). It then checks two-way
-    connectivity to every `Active` member (skipping a member whose `i_am_alive` is three intervals older than the
-    newest `i_am_alive` in the table, not than the joiner's clock: a crashed node that was never declared dead does not
+    connectivity to every `Active` member (skipping a member whose heartbeat is three intervals older than the
+    newest heartbeat, not than the joiner's clock: a crashed node that was never declared dead does not
     block a restart of the whole cluster, and after a store outage, when every heartbeat is old, nobody is skipped) and
     writes itself `Active`; a member that skipped a check casts no suspicion vote until it has probed every member
     once. Until
     then it hosts no slots and serves no clients. If a member does not answer, it does not become `Active` and retries
-    (a node cut off from part of the cluster never joins it). The first node of a cluster creates the version row.
+    (a node cut off from part of the cluster never joins it). The first node of a cluster creates the document.
     No seeds are needed for membership: the table is where nodes find each other.
   - **Failure detection**: every `Active` member probes up to `DaServer:Membership:ProbedNodes` (10) others, its
     successors on a ring of the active members' hashed identities, over the node links every
     `DaServer:Membership:ProbeInterval` (1 s); after `DaServer:Membership:MissedProbes` (3) missed replies it first
     asks one other member to probe the target (an indirect probe) and, if that also fails, writes a timestamped
-    suspicion into the target's row. When a suspicion makes `DaServer:Membership:VotesForDeath` (2, or every other
+    suspicion into the target's entry. When a suspicion makes `DaServer:Membership:VotesForDeath` (2, or every other
     `Active` member when fewer remain) suspicions from distinct `Active` members younger than
-    `DaServer:Membership:SuspicionExpiry` (3 min), the writer marks the target `Dead` in the same transaction. A writer
+    `DaServer:Membership:SuspicionExpiry` (3 min), the writer marks the target `Dead` in the same write. A writer
     must be `Active` at the version it writes against, so in a partition where both sides reach the store the first
     death written wins and the other side's attempts fail their compare: a side that finds itself `Dead` stops. A two-node
     cluster split in two therefore keeps exactly one node.
   - **Learning the view**: a node reads the table every `DaServer:Membership:TableRefresh` (5 s) and, after any write it
     makes, sends the new snapshot to the other members, who adopt it when its version is newer than theirs. Frames
-    carry the sender's table version, so a peer with a newer view answers a stale one with its snapshot. A read is one
-    snapshot: the version row and the member rows come from one statement (a `UNION ALL` of both tables), so under
-    READ COMMITTED a node never pairs version v with rows of v + 1; the in-memory table hands out the same atomic
-    copy. A table read always wins over the node's own copy: a read that returns a version **lower** than the one the
-    node holds (only a failover can cause it, after a write the old primary showed but no standby had) is adopted as it
-    is and logged (`MembershipVersionRegressed`), and snapshots pushed by peers are compared against that adopted
-    version from then on. The node also keeps the highest version it has ever held: after adopting a regressed version it
-    writes the version row above that before it claims an epoch again (`version = greatest(version, :highest) + 1`, compared on the version it read)
-    and waits for that write to commit cleanly, so a number a lost write used never names different content and no
-    claim runs on a regressed view; and after any reconnect of its membership data source it reads the table before it
-    claims (test `MembershipVersionRegressionAfterFailoverAdopted`, which also checks the raise and the re-read).
-  - **Membership writes commit like data writes**: `COMMIT` is sent after the data statements' results, has no client
-    deadline and is never cancelled (`statement_timeout` never fires during it), so a synchronous-replication wait is
-    never cut short; at most one membership write per node is in flight, and the `i_am_alive` write is skipped while
-    one is pending; the warning that the wait was cancelled, a terminated backend or a socket that died after `COMMIT`
-    was sent is an unknown outcome, and the writer acts on its write (a death, a `dead_seen_at`
-    stamp, a re-placement version) and pushes it to peers only after a confirming write (the version row's next
-    compare-and-set, which writes WAL and waits for the synchronous standby) commits cleanly (section 2's Tick-end write rule).
+    carry the sender's table version, so a peer with a newer view answers a stale one with its snapshot. A table read
+    always wins over the node's own copy: a read that returns a version **lower** than the one the node holds (a
+    failover of a store below `Strict`, which lost a write the old primary showed) is adopted as it is and logged
+    (`MembershipVersionRegressed`), and snapshots pushed by peers are compared against that adopted version from
+    then on. The node also keeps the highest version it has ever held: after adopting a regressed version it writes
+    the document at a version above that before it claims an epoch again, and waits for that write to land, so a
+    number a lost write used never names different content and no claim runs on a regressed view; and after any
+    reconnect of its membership client it reads the table before it claims (test
+    `MembershipVersionRegressionAfterFailoverAdopted`, which also checks the raise and the re-read).
+  - **Membership writes land like data writes**: a write acts (a death, a `dead_seen_at` stamp, a re-placement
+    version, a restart permit) and is pushed to peers only once it is `Landed`; one that ends `Unknown` is settled by
+    the next read through `Confirm` (the membership client's reads after an unknown write go through it), never
+    acted on before. At most one membership write per node is in flight, and heartbeats skip while one is pending.
   - **A node declared dead stops**: once it reads itself `Dead` (or a peer refuses its frames because its generation is
     `Dead`, which peers do once they see it), it freezes every world, fences all its actors and exits with a non-zero
     code; the platform starts a new process, which joins with a new generation. Peers stop sending to a `Dead` member
@@ -714,8 +709,8 @@ in short:
     `CLOCK_MONOTONIC`, which stops during suspend), so a process whose machine suspended wakes with its lease expired.
     That clock sees only a suspend the guest performs: a VM the hypervisor stops (QEMU's kvmclock counts only while
     the VM runs) or a CRIU restore inside a time namespace (which offsets `CLOCK_MONOTONIC` and `CLOCK_BOOTTIME` to
-    look continuous, `time_namespaces(7)`) hides the gap. So every table read also returns the store's `now()`, taken when
-    the statement starts, which lies somewhere between the read's issue and its reply on the lease clock. The node
+    look continuous, `time_namespaces(7)`) hides the gap. So every table read also returns the store's `Now` (the
+    contract's server clock, section 4), which lies somewhere between the read's issue and its reply on the lease clock. The node
     keeps, for each read, the bracket [issue, reply]; a stall is counted only when the store's time between two reads
     advanced more than one second beyond the widest gap their brackets allow (the later reply minus the earlier issue),
     so a read that waited to start (a reconnect after a failover, a queue in front of the store) is not a stall, and a
@@ -746,17 +741,15 @@ in short:
     plainly, **a store outage pauses the whole cluster** (no actor runs, clients stay connected and their requests wait
     or answer `Busy`) until the store is back, when every node resumes where it stopped. The pause is reported
     (`daserver.membership.frozen`, the `MembershipFrozen` log) so the store's outage is visible as the cluster's.
-  - **Its own connections**: membership reads and writes use a small data source of their own (two connections, one
-    kept for reads only; short statement timeouts on its reads and data statements, none on `COMMIT`), never the actor
-    store's pool, and with one write in flight at most, a write waiting for synchronous replication never takes the
-    connection the lease's reads need (test `MembershipReadsAnswerWhileCommitWaits`); even against the same database, so after a store outage
-    a membership read never queues behind the actors' write backlog and no node looks isolated because of it. Its own
-    pool does not stop the actor pools from using up the server's `max_connections`, so the roles step reserves room
-    on the server: each role gets a `CONNECTION LIMIT` by the one rule of section 4's roles step (the most nodes the
-    cluster may run, plus room for backends left waiting), and the membership data source logs in as its own role
-    (`<cluster>_membership`), so the actor pools can never take its connections
-    (`reserved_connections` with `pg_use_reserved_connections` granted to that role is the alternative; the roles step
-    prefers it when the server allows).
+  - **Its own client**: membership reads and writes use a store client of their own, never the actor store's, even
+    against the same store, so after a store outage a membership read never queues behind the actors' write backlog
+    and no node looks isolated because of it; with one write in flight at most and a connection kept for reads, a
+    write waiting for its durability point never takes what the lease's reads need (test
+    `MembershipReadsAnswerWhileCommitWaits`). Membership may point at a store instance of its own
+    (`WithMembershipStore(db)`), so it can outlive an actor-store outage. Its effective durability class must be
+    `Strict` (section 4): unsaved actor types have no epoch fencing behind it, so a rolled-back re-placement could
+    give one key two hosts; a node refuses to start on a lower class unless `DaServer:Membership:AcceptDurability`
+    names it.
   - **Recovery after a cluster-wide freeze**: a node resuming from a freeze every peer shared ramps its store traffic
     (record writes and epoch claims start at one write per world and double with each successful round up to
     their limits; `DueScan` starts after a random delay) and counts no peer's `Isolated` answer as a failed probe
@@ -776,13 +769,13 @@ in short:
     `IsolationTimeout + DeathMargin`, 25 s, at most): asks retry by their own rules (`AskUntilAnswered` asks again by
     itself), client calls get `Unavailable`, one-way mail waits in the sender's window. A new generation of the same name
     hosts none of the old generation's slots before that write either.
-  - **Re-placement**: the deadline counts from `dead_seen_at`, not from the death's own write. A death is a transaction
-    of several statements whose `now()` is its start, and a writer that stalls before `COMMIT` (a GC pause, a slow
-    synchronous commit) would commit long after that time, while the dead node, still reading itself `Active`, renews
-    its lease until the commit. So the coordinator, on the first table read that shows a member `Dead` with no
-    `dead_seen_at`, stamps it with the store's `now()` in a versioned write of its own: that transaction began after a
-    read that saw the death committed, so `dead_seen_at` is later than the commit, and the dead node's last lease began
-    before the commit. Once the store's `now()` passes `dead_seen_at + IsolationTimeout + DaServer:Membership:DeathMargin`
+  - **Re-placement**: the deadline counts from `dead_seen_at`, not from the death's own write. A writer that stalls
+    between reading the document and its write landing (a GC pause, a slow durability wait) lands the death long
+    after the `Now` it read, while the dead node, still reading itself `Active`, renews its lease until then. So the
+    coordinator, on the first read that shows a member `Dead` with no `dead_seen_at`, stamps it with that read's
+    `Now` in a versioned write of its own: the read saw the death landed, so its `Now` is later than the landing (the
+    contract's `Now` is never earlier than any write the read shows), and the dead node's last lease began before
+    the landing. Once the store's `Now` passes `dead_seen_at + IsolationTimeout + DaServer:Membership:DeathMargin`
     (5 s; it covers the drift between the store's clock rate and the node's lease clock), the coordinator removes the
     member from the placement set in one versioned write, the placement-version bump of every type it hosted: by then
     the dead node has either read its death and stopped, or seen its lease run out and frozen. The coordinator reads
@@ -797,47 +790,48 @@ in short:
     decides (slot moves, a restart permit, a hot restart's deadline) is a versioned write whose compare fails. It plans
     slot moves (ADR-079) and writes the slot table; the placement version of a type is the table version of the last
     change to its hosting nodes or its slots, so every node derives the same versions. A hot restart's permit and
-    deadline are the restarting node's `restart_until`: granted by a versioned write when no other row holds one and no `Dead`
+    deadline are the restarting node's `restart_until`: granted by a versioned write when no other entry holds one and no `Dead`
     member still awaits re-placement (a hot restart never overlaps a re-placement), and a member whose
     `restart_until` has passed is written `Dead` by the coordinator. A node whose hot restart was aborted clears its own
-    `restart_until` by a versioned write while its row is still `Active` with its own generation, deadline passed or
-    not, so a store that answers late never costs a healthy node its unsaved state. A hot restart keeps the node's row
-    and generation (draft §10).
-  - **Without a store**: the in-memory table serves a single node (a local run, a starter without a database, an
+    `restart_until` by a versioned write while its entry is still `Active` with its own generation, deadline passed or
+    not, so a store that answers late never costs a healthy node its unsaved state. A hot restart keeps the node's
+    entry and generation (draft §10). Entries of members written `Dead` stay for `DaServer:Membership:DefunctRowAge`
+    (7 days, for diagnostics); the coordinator drops them, and their heartbeat keys, in a later versioned write.
+  - **Without a store**: the in-memory store serves a single node (a local run, a starter without a database, an
     `AllInOne` deployment) and `TestCluster`, whose in-process nodes share one instance (wrapped per node in a
-    fault-injecting `IMembershipTable` that tests use to cut one node off the store, delay its reads or stall it). A
+    fault-injecting `IStore` that tests use to cut one node off the store, delay its reads or stall it). A
     node without a membership store starts only when `DaServer:Membership:SingleNode = true` says it is alone; any
-    other configuration refuses to start, so two storeless replicas never form two clusters running every actor twice; `SingleNode = true` on a node that also has a membership store (or an actor store) refuses to start as well, since a second replica configured the same way would bypass the store's table. A single node's hot-restart handover carries its member row (name, generation, start time, `restart_until`) in the stream's header, and the new process seeds its in-memory table from it before `Rejoining`, so the check "still `Active`, own generation, own `restart_until`" passes as on a cluster.
+    other configuration refuses to start, so two storeless replicas never form two clusters running every actor twice; `SingleNode = true` on a node that also has a membership store (or an actor store) refuses to start as well, since a second replica configured the same way would bypass the store's table. A single node's hot-restart handover carries its member entry (name, generation, start time, `restart_until`) in the stream's header, and the new process seeds its in-memory table from it before `Rejoining`, so the check "still `Active`, own generation, own `restart_until`" passes as on a cluster.
     `DaServer.Aspire` sets `SingleNode` when the AppHost has one node and no store, and adds a PostgreSQL resource for
     membership when it declares more than one node and no store. A cluster of more than one process needs the table in
-    a store: the actor store's PostgreSQL by default, or a separate connection (`WithMembershipStore(db)`). Every node,
-    gateways included, needs that connection, as the membership role (section 4's roles step).
+    a store: the actor store by default, or a separate one (`WithMembershipStore(db)`). Every node, gateways included,
+    needs that connection.
   The timer defaults are one table in [draft §11](programming-model.md#定时的默认值).
-- **Activation**: the placeholder (`Loading`) holds the mail; one statement claims the epoch and reads the record, in a
-  transaction whose `COMMIT` is sent on its own like a write's (section 2)
-  (`INSERT … ON CONFLICT (type_id, key) DO UPDATE SET … WHERE … RETURNING …`, inserting the placeholder row for a new key, its
-  every epoch (a new key, a takeover, the no-insert claim) taken from a sequence so a key whose row was swept never
-  reuses an epoch, an empty result under READ COMMITTED retried, and
-  returning the displaced owner (PostgreSQL 18's `old.owner`; on 16 and 17 the owner of the row the transaction locked
-  first); the store keeps epoch, write generation (reset to 0 by the claim), owner and placement version: taking a key from another owner needs a
-  strictly newer version, a displaced owner gets `Fence(key, epoch)`), within `ActivationSlots`;
-  `LoadEntitiesInto(record, into, markWritten: false)` with the placeholder as the root; `In<K>` added;
-  `Activated` first, then the placeholder's mail, then later mail. When the claim does not take the key, the same
-  statement returns the stored placement and owner and whether a record exists, so "a newer owner holds it" (forward)
-  and "no record" (`NoActor`) are told apart.
+- **Activation**: the placeholder (`Loading`) holds the mail; the claim takes the key in two steps of the store
+  contract, batched per world within `ActivationSlots` (section 4's claim): a `Get` of the record key, then, when the
+  node's view makes it the owner and the stored placement version is older than its own (or equal with this node as
+  owner, a retry), a conditional put of a new header compared on the stored version (absent for a new key): the next
+  epoch for the key, this node as owner, the write generation reset to 0, the placement version. The displaced owner
+  is the one the `Get` showed and gets `Fence(key, epoch)`; a taking claim that is `NotApplied` (another claim landed
+  in between) is decided again from the stored value it returns; one that ends `Unknown` or `AlreadyLanded` acts only
+  once `Confirm` shows its version, and still notifies the owner it displaced (test `TimedOutClaimConfirmedByRerun`).
+  Then `LoadEntitiesInto(record, into, markWritten: false)` with the placeholder as the root; `In<K>` added;
+  `Activated` first, then the placeholder's mail, then later mail. When the stored value does not let the node take
+  the key, the stored placement and owner and whether a record exists tell "a newer owner holds it" (forward) from
+  "no record" (`NoActor`).
 - **Who may create a key**: a type without `[ActivatedBy]` lets every server message create a key and no client
   message; a type with `[ActivatedBy]` lets only the listed messages create one, server messages included (the list is
   the type's whole set of creating messages), with `Wake` and the `[JoinOnConnect]` join always activating (the join's key is computed from the claims, never chosen by the client, so neither `[ActivatedBy]` nor `CanCreate` applies to it and a first login creates the `Player` row). When the mail that triggers the activation may not create the key (a client `[To]`
   message to a type without `[ActivatedBy]` for it, or any message the type's
-  `[ActivatedBy]` list leaves out), the claim runs without its `INSERT` branch and requires a written record
-  (`record IS NOT NULL`): no row, or a row never written, answers `NoActor` and writes nothing. A message that may
+  `[ActivatedBy]` list leaves out), the claim requires a written record: nothing stored, a tombstone, or a
+  placeholder never written answers `NoActor` and writes nothing. A message that may
   create the key first passes the type's pure gate, `static bool CanCreate(in TClaims, in TMessage)` (a server message has no claims: `CanCreate(in TMessage)`; another shape is an analyzer error) beside
   `[ActivatedBy]` (no world, no allocation; besides the claims and the message it may take at most one `in`
   configuration table, the node's immutable snapshot, an analyzer error otherwise; checked on the owner before the claim, for example a map id against the map
-  table): for a saved type `false` turns the claim into the no-insert one above, so a key that already has a record
+  table): for a saved type `false` turns the claim into the record-requiring one above, so a key that already has a record
   still activates (a map taken out of the map table keeps its record and still runs), and only a key without a record
-  answers `NoActor`, writing nothing; a type that saves nothing has no record to find, so `false` is `NoActor`. So a client cannot create rows by inventing keys.
-- **Actor types that save nothing claim no row**: a type whose root is not persisted has no record, so its activation
+  answers `NoActor`, writing nothing; a type that saves nothing has no record to find, so `false` is `NoActor`. So a client cannot create store keys by inventing actor keys.
+- **Actor types that save nothing claim nothing**: a type whose root is not persisted has no record, so its activation
   writes nothing to the store, no claim included. What keeps one activation per key for it is the view: a node
   activates only keys its view makes it the owner of and not handoff-pending, peers forward by the same rule, a
   node written `Dead` in the membership table stops when it reads it, a node that cannot read the table freezes after
@@ -845,37 +839,38 @@ in short:
   spreading) two activations of such a key can exist for a moment; neither writes anything, so the cost is mail split
   between them, and the forward-by-version rule (frames carry the highest placement version seen) ends it within one
   view exchange. `[ActivatedBy]` and `CanCreate` apply to them as well: they decide whether an activation happens.
-- **Rows never written expire**: a row whose record is still `NULL` `DaServer:EmptyRecordTtl` (default 1 day) after
-  its last claim is deleted. Any live activation of a persisted type writes its first record within a checkpoint
-  interval (a new key is tagged `Unsaved`), so such a row belongs to an activation that was refused or crashed before
-  writing. The oldest `Active` member that hosts a persisted type (it has the actor store)
-  runs the sweep in its first world every `DaServer:EmptyRecordSweepInterval` (1 h), in key-set batches of 1,000 rows
-  that walk the primary key once per sweep (no index fits `record IS NULL`, and a partial index on it would make every
-  record write non-HOT), through `daserver_sweep_empty(ttl, limit, after)`, a `SECURITY DEFINER` function owned by the
-  schema's owner role that deletes only `record IS NULL AND claimed < now() - ttl` rows; the runtime role gets
-  `EXECUTE` on it and no `DELETE` on the table. If an activation somehow outlived the TTL without writing, its first
-  write finds no row, which is a failed compare: it fences, and the next mail activates the key again.
-- **The table**: one row per actor, keyed by `(type_id, key)` (`Map(7)` and `Loot(7)` are two rows), with the columns
-  `type_id, key, slot, epoch, write_gen, owner, placement, record, next_due` and an index on `(type_id, slot, next_due)`. The
-  key is `bytea`, the key's fields big-endian (any key shape up to 16 bytes in one column); the slot is the key's
-  placement slot, computed by the node ([draft §10](programming-model.md#激活-epoch一个-actor-只有一个激活能写), ADR-068).
-- **Epoch fencing**: every record write compares the epoch; a failed compare fences the activation. A migration's
-  arrival claims a new epoch too (writing `GREATEST` of the stored and the type's current placement version), so a late write from the source fails. A root's writes never overlap in one process (`Writing`,
-  section 2), and the CAS also compares the write generation, so a late timed-out statement never overwrites newer state;
-  a failed or timed-out write is retried with the same bytes and generation;
+- **Placeholders never written expire**: a record key whose header was claimed but whose body was never written
+  is deleted `DaServer:EmptyRecordTtl` (default 1 day) after its last claim. Any live activation of a persisted type
+  writes its first record within a checkpoint interval (a new key is tagged `Unsaved`), so such a key belongs to an
+  activation that was refused or crashed before writing. The oldest `Active` member that hosts a persisted type (it
+  has the actor store) runs the expiry in its first world every `DaServer:EmptyRecordSweepInterval` (1 h): one
+  paged walk of the record keys (section 4's expiry), each deletion compared on the version it read, so a first
+  write that lands meanwhile is never deleted. If an activation somehow outlived the TTL without writing, its first
+  write finds nothing stored, a failed compare: it fences, and the next mail activates the key again.
+- **Keys**: one record key per actor, `r|type|key` (`Map(7)` and `Loot(7)` are two keys), its rows under it, and the
+  due index by `(type, slot)` (section 4). The key's fields are big-endian (any key shape up to 16 bytes); the slot is
+  the key's placement slot, computed by the node ([draft §10](programming-model.md#激活-epoch一个-actor-只有一个激活能写), ADR-068).
+- **Fencing**: the version every record write compares is the activation's fencing token with its write
+  generation, so a refused compare fences the activation. A migration's arrival claims a new epoch too (compared on
+  the version the source's last write left, placement the greater of the stored and the type's current version), so
+  a late write from the source fails. A root's writes never overlap in one process (`Writing`, section 2), so a late
+  write never overwrites newer state; a write that fails `StoreLevel` is retried with the same bytes and generation;
   `Unsaved` is cleared when the record is taken at the write's start and put back if the write fails, and changes
   meanwhile tag the root again and join the next write.
-- **Writes** are asynchronous and batched: one write (one transaction of several statements, two round trips: the statements, then `COMMIT`) per 512 roots or
-  `DaServer:Store:StatementBytes` of records per world per tick end, a root's row changes chunked into statements inside its write, rows sorted, at most `DaServer:Store:WritesInFlight` in flight, a root that called `Commit` in the next one,
-  other changed roots at their staggered checkpoint instant (every `DaServer:CheckpointInterval`, the first at a
-  fraction of it set by the key's hash, oldest unsaved first, a quarter of each round kept for them while commits
-  wait). Store-level errors (every SQLSTATE but `22xxx`, `23xxx`, `54xxx`) retry the same bytes with a backoff (never cancelled; a write that ends without an
-  answer is confirmed by a WAL-writing rewrite before it releases anything); a row-deterministic one bisects the write between roots to the one bad root, ruled unwritable only when the
-  rest landed (`RecordUnwritable`, then retried alone); more than a quarter of a write of at least 8 roots unwritable means the store is failing. A world whose write backlog passes
-  `DaServer:Store:BacklogPause` stops draining its dispatch queue until it shrinks. A crash loses the larger of one
-  interval and the time the backlog takes to drain (`daserver.store.oldest_unsaved_age`); a graceful stop writes
-  within its stop budget and logs what it could not; a root whose state does not serialize loses everything since
-  its last good record (below); actors keep running, only what a committing item sends waits for its write (ADR-097)
+- **Writes** are asynchronous and batched: one guarded write per root (record and rows together, nothing across
+  roots), batched per 512 roots or `DaServer:Store:BatchBytes` of records per world per tick end, keys sorted, at
+  most `DaServer:Store:WritesInFlight` batches in flight, a root that called `Commit` in the next one, other changed
+  roots at their staggered checkpoint instant (every `DaServer:CheckpointInterval`, the first at a fraction of it set
+  by the key's hash, oldest unsaved first, a quarter of each round kept for them while commits wait). Outcomes per
+  root, by class (section 2's Tick-end write): `StoreLevel` retries the same bytes with a backoff, `Unknown` is
+  settled by `Confirm` before it releases anything, `RowDeterministic` is the root's own (`RecordUnwritable`, then
+  retried alone), and more than a quarter of a batch of at least 8 roots `RowDeterministic` means the store is
+  failing. A world whose write backlog passes `DaServer:Store:BacklogPause` stops draining its dispatch queue until
+  it shrinks. A crash loses the larger of one interval and the time the backlog takes to drain
+  (`daserver.store.oldest_unsaved_age`), plus, on a store below `Strict`, whatever a store failover rolls back (section
+  4's durability classes); a graceful stop writes within its stop budget and logs what it could not; a root whose
+  state does not serialize loses everything since its last good record (below); actors keep running, only what a
+  committing item sends waits for its write (ADR-097)
   ([draft §10](programming-model.md#默认异步成批地写), section 2's tick-end write).
 - **Persistence** is per entity kind: entities spawned from a persistent prefab (the root's `K.RootPrefab` with
   `[Persist]`, child prefabs with `[Prefab<K>, Persist]`) carry `Persisted` and are saved with every component
@@ -888,13 +883,12 @@ in short:
   from those declarations (EasyEcs 4.7's filters name their types at compile time; each DaServer package's generator emits its share (its tracked types, prefabs and systems) as `internal static Registration <package namespace>.Generated.PackageHooks.Register(Registration)`, always, an empty one when it has nothing to register, and the server project's generator calls the hook of every referenced DaServer package in `Registration.Create()`'s chain; buffers enter the server project's list only when their element type is declared there), and `Registration` throws at start
   when a type on a `[Persist]` prefab is missing from that list. `root.Spawn` of a persistent prefab, `ChangeSystem`
   (`ChangedAny<…>(since)` over the tracked types that reach records, `[NotSaved]` types and buffers of `[NotSaved]` elements left out, split into balanced calls of 2 to 9 types joining one group, a single type as `ChangedAny<T, T>`/`RemovedAny<T, T>` (never `Changed<T>`, which would AND with the group), `.With<Persisted>()`, and `RemovedAny`) and the `Persisted` cleanup tag the root `Unsaved`;
-  `CheckpointSystem` puts `WriteNow` roots and, each interval, the `[With<Unsaved>]` roots into the tick-end write, each row with an epoch CAS; both skip roots that are placeholders
+  `CheckpointSystem` puts `WriteNow` roots and, each interval, the `[With<Unsaved>]` roots into the tick-end write, each compared on its version; both skip roots that are placeholders
   (`Loading`, `Saving`, `ActivationFailed`). Every load completes entities from their prefab copies by `FromPrefab`
   (`[NotSaved]` components and those the prefab gained since; section 2) and skips unknown type ids, counted. `Unacked`, `RootState`'s `OnceNext`, `AskOrdinal` and queued totals (`QueuedRows`, `QueuedBytes`, per held destination), `IssueSeq` and `NextDue` are in the record (asks, with their states, are store rows
-  of their own; waiting entities are not recorded); the receiver's changed `OnceSenders` rows go in the same write transaction (never deletions: only `daserver_once_expire` deletes them, after `daserver_delete_actor` or a session's end marked them, section 4), and so do the root's new and changed ask rows (`daserver_once_asks`) and the deletion of those answered this write, and a root that called `Commit` is written at the next tick end. **Wake**: the
-  runtime's `WakeSystem` keeps the root's `NextDue` at the minimum of the `WakeAt` of the root and its descendants and the `next_try_at` of its ask rows (NULL for stopped rows), and tags the root `Unsaved` when it changes; each node's `DueScan`
-  asks the store for keys of its slots whose `next_due` has passed (`IActorStore.DueKeys(slots, until, after)` over the node's `(type, slot)` pairs, the
-  `(type_id, slot, next_due)` index, in keyset pages of 512 from a sentinel first row, `until` fixed per scan, at most a page per pair through `LATERAL … LIMIT`) and activates them, so an `AskUntilAnswered` or a reminder survives a crash.
+  of their own; waiting entities are not recorded); the receiver's changed `OnceSenders` rows, the root's new and changed ask rows and their queued-index keys, and the deletion of those answered this write, go as dependents of the same guarded write (a forgotten sender's rows are deleted by the expiry, never by a write of another actor, section 4), and a root that called `Commit` is written at the next tick end. **Wake**: the
+  runtime's `WakeSystem` keeps the root's `NextDue` at the minimum of the `WakeAt` of the root and its descendants and the next try of its ask rows (none for stopped rows), and tags the root `Unsaved` when it changes; each node's `DueScan`
+  scans the due index of its `(type, slot)` pairs up to now (section 2's `DueScan`, section 4's keys) and activates the keys due, so an `AskUntilAnswered` or a reminder survives a crash.
 - **Deactivation**: idle past `IdleTimeout` (`[ActorOptions]`; `Pending` zero, no presence other than `Detached` ones;
   not while `StoreDegraded`) or `root.Deactivate()` (while `StoreDegraded`, beyond the cap on `Saving` placeholders it
   is postponed): presences leave, the root carries
@@ -910,493 +904,360 @@ in short:
   output before a migration or a freeze takes the same fallback at once, its held output dropped rather
   than waiting for a write that never succeeds ([draft §10](programming-model.md#只写改过的)).
 
-### Store statements
+### The store contract
 
-The PostgreSQL statements behind the rules above ([draft §10](programming-model.md#激活-epoch一个-actor-只有一个激活能写)
-and its wake section); the store implements `IActorStore` with them.
+Everything DaServer keeps goes through one narrow interface, `IStore`, which a store provider implements. Claims,
+fencing, tombstones, the due index, `[Once]` and ask rows, deletion, expiry and membership are the framework's,
+written once over it, so every provider gets all of them and the conformance kit (below) checks them once per
+provider. What a provider owns is exactly what cannot be shared: how its store commits, fails and proves durability
+(ADR-102).
 
-**PostgreSQL 16 or later** is required (deployment.md's Database row): 17 adds `transaction_timeout`, which the roles
-step then sets to 0, and 18 lets the claim return the displaced owner as `old` (16 and 17 lock the row first, below).
+**Keys and versions.** Keys are byte strings the framework encodes so that byte order is the order it scans: a kind,
+the actor type id big-endian, the actor key with its length (its fields big-endian, any shape up to 16 bytes), then
+the kind's own fields. Every stored key carries a **version**: opaque bytes (at most 64) the writer supplies with
+each put, which conditions compare. The framework makes versions unique to their writer: a record's version is its
+activation's fencing token and write generation, `(epoch, owner name, owner generation, write generation)`, so two
+owners never write the same version, even when a store failover rolls an epoch back and it is handed out again.
 
-**The schema** (created by the schema Job as the owner role, in the schema `:schema`, default `public`; `:runtime_role` is
-the `Username` of the runtime connection string, so the role names are the user's). DDL takes no bind parameters, so
-`:schema` and `:runtime_role` are formatted into the text as quoted identifiers (`quote_ident`, `format('%I')`). Every
-object is qualified with `:schema`, in the DDL and in the runtime statements alike (the store prefixes the names it
-formats into its statements), so neither role depends on its `search_path`; the sketches below leave the prefix out
-for brevity. The owner role needs `CREATE` on `:schema` (in PostgreSQL 15 and later, `public` grants it to nobody but
-the database owner). Every statement is re-runnable, since the Job runs on every release: `IF NOT EXISTS` and
-`CREATE OR REPLACE` throughout. An index is created only when it is missing or invalid: on a fresh table with plain
-`CREATE INDEX`; on a table that already has rows (a release adding an index to a live deployment) with
-`CREATE INDEX CONCURRENTLY`, so record writes are not blocked while it builds. PostgreSQL refuses `CONCURRENTLY` inside a
-transaction block, a `DO` body or a multi-statement command string, so the Job sends each concurrent build as its own
-top-level statement; the plain DDL may stay in a transaction. Two schema Jobs serialise on a session-level advisory
-lock taken by polling `pg_try_advisory_lock` from the client, one short statement per try with the session idle in
-between (never the blocking `pg_advisory_lock`, nor a loop inside one statement: a concurrent build waits for every older
-transaction, a session blocked on the lock or looping in a `DO` body among them, which either deadlocks and leaves the
-index INVALID or stalls both Jobs; test `TwoSchemaJobsNeverDeadlock`). The guard checks `pg_index.indisvalid` and drops an INVALID index first (`DROP INDEX CONCURRENTLY`), since
-`CREATE INDEX … IF NOT EXISTS` silently skips an existing INVALID index; only then does it build, so an index is never
-kept half made (test `InvalidIndexRebuilt`). Its last step, in a transaction of its own, sets `COMMENT ON TABLE
-actor_records IS 'DaServer schema <n>'` (a catalog write, so its `COMMIT` waits for the synchronous standby past every
-earlier step's), and the Job succeeds only when that `COMMIT` returns cleanly, under the write rule of section 2 (no
-client deadline on `COMMIT`, no cancel): a cancelled-wait warning or a dead socket fails the Job, and its retry runs
-every step again, so a release never starts against a schema a failover could take back. There are no composite types: Npgsql cannot map one under Native AOT, so the owner is two columns.
+| Key | Holds |
+|---|---|
+| `r\|type\|key` | The record: a header (epoch, owner, placement version, write generation, the `[Once]` seed, `NextDue` and its bucket, the ask census fields: the oldest unstopped ask's `created_at`, the stopped count and the state types present; a placeholder flag for a key claimed and never written; or a tombstone: the epoch, owner and seed of the deleted incarnation and its `forgetUntil`; and `prevForgetUntil`, copied from the tombstone a claim replaced) and the body, the `SaveEntitiesWith` bytes |
+| `r\|type\|key\|a\|ordinal` | An `AskUntilAnswered` row: phase, sequence, target, asking entity, request, `ask_state` and its `state_type`, `created_at`, next try, attempt |
+| `r\|type\|key\|q\|target\|ordinal` | The queued-ask index, one empty key per queued row |
+| `r\|type\|key\|s\|sender` | A `OnceSenders` row: the mark `n`, `orphan_after`, `delete_after` |
+| `d\|type\|slot\|bucket\|key` | The due index: a hint that the key may be due from its bucket on (`DaServer:Store:DueBucket`, 1 minute) |
+| `a\|type\|key` | The ask index: a hint that the root owns ask rows, read by the ask census |
+| `m\|cluster`, `m\|cluster\|alive\|name\|generation` | The membership document and the heartbeats, in membership's store (section 4's membership) |
+
+A root's keys share its record key's prefix, so a provider can keep them in one partition, hash slot or transaction;
+only the two indexes and membership live outside a root.
+
+**Primitives.**
+
+| Primitive | Semantics |
+|---|---|
+| `Get(keys)` | Each key's value and version, or absent, linearizable (read from the primary or leader), with `Now` |
+| `Scan(from, to, limit)` | Keys, values and versions in byte order, consistent with every landed write, with `Now` |
+| `Now` | The store's clock, returned with every read, never earlier than the landing of any write the read shows |
+| `Put(key, value, version, expected)`, `Delete(key, expected)` | Applied only when the stored version is the expected one, or the key is absent when absence is expected; a put may also be unconditional |
+| `GuardedWrite(head, dependents)` | The head is a conditional put or delete; the dependents (puts and deletes of keys under the head's prefix) apply exactly when the head applies, all or nothing, however many there are; each key appears once (the framework coalesces a row's changes, a deletion winning) |
+| Batch | Many operations in one call, each with its own outcome; not atomic across operations, but ordered: a later operation never lands durably while an earlier one has not |
+| `Confirm(keys)` | Each key's value and version as the store holds them at its durability point: whatever it returns survives every failover the provider's class covers |
+| `Durability`, `SelfCheck()`, `Term`, `MaxValueBytes`, `Migrate()` | The declared class; the start-up check of the deployment against it; an opaque value in every outcome that changes when the store fails over; the largest value the provider takes; idempotent schema creation, safe to run concurrently, ending in a durable marker |
+
+**Outcomes**, one model for every write: `Landed` (applied, at the durability point); `AlreadyLanded` (not applied
+because the stored version is the one this write sets: a retry of a write that landed, durability unproven);
+`NotApplied` (with the stored version); `RowDeterministic` (this payload fails for this key whatever the time: too
+large, refused by the store's own checks); `StoreLevel` (nothing applied; with a `RetryAfter` when the store says);
+and `Unknown` (it may have been applied, or applied and not shown at the durability point). **A provider answers
+`Unknown` whenever a request may have been applied**: a connection lost after sending, a deadline after sending, a
+durability wait cut short, fewer replica acknowledgements than it waits for; never `StoreLevel` for those. The
+runtime acts on these classes only (section 2's Tick-end write), never on a store's error codes.
+
+### Durability classes
+
+| Class | An acknowledged write | Examples |
+|---|---|---|
+| `Strict` | Survives any single failure and any failover the store performs: quorum or synchronous commit, promotion only of a replica holding every acknowledged write, no silent fallback | PostgreSQL with strict synchronous replication and quorum-aware failover (below); MongoDB with majority writes; CockroachDB and YugabyteDB (to verify, roadmap W6) |
+| `Replicated` | Reached at least one replica or its disk, but a failover may still promote one without it, or replication may degrade | Redis or Valkey with `WAITAOF` and `min-replicas-to-write`; MySQL semi-synchronous replication with its fallback timeout |
+| `Local` | Is on the primary only | A single instance; asynchronous replication |
+
+- The **effective class** is the lower of the provider's declaration and its self-check, run at start and every
+  `DaServer:Store:SelfCheckInterval` (5 min) (a PostgreSQL without a synchronous standby, a MongoDB whose effective
+  write concern is not majority, a Redis with eviction, no AOF or no replica each lower it). It is logged, exported per
+  store (`daserver.store.durability_class` and the class at start, `daserver.store.durability_class_started`; alert
+  `DaServerStoreDurabilityDropped` when the first falls below the second) and shown on the Dashboard.
+- A production node refuses to start on an actor store below `Strict` unless `DaServer:Store:AcceptDurability`
+  names that class (`Replicated` or `Local`), and on a membership store below `Strict` unless
+  `DaServer:Membership:AcceptDurability` does; development runs and `TestCluster` are exempt (ADR-104).
+- **What each class guarantees** (R13). `Strict`: what a `Commit` item sent leaves only once its write is durable,
+  so released output survives every failover; an `Unknown` write releases nothing until `Confirm`. Below `Strict`,
+  output leaves once the write reached the provider's wait, and a failover that loses the write rolls back state
+  whose effects already left: `[Once]` stays exactly-once and `AskUntilAnswered` never loses an intent *except across
+  such a rollback*, so value flows keep business reconciliation (ADR-097). In every class two owners' writes never
+  mix (the version is the fencing token) and a rollback of an active root is found:
+- **Rollback audit**: every outcome carries the store's `Term`. When a node sees it change, each world `Confirm`s
+  its active persisted roots' record keys in pages; a root whose stored version is not the one of its last landed
+  write (an older generation, or another token) was rolled back: the runtime fences and reloads it and logs
+  `StoreRollback` (the root, the generations lost, the output released since them), counted in
+  `daserver.store.rollbacks` and alerted (`DaServerStoreRolledBack`). Roots written and unloaded before the failover
+  cannot be audited: their loss is invisible, which is what `Strict` exists to prevent (test
+  `RollbackAuditFindsActiveRoots`).
+
+### The framework over the contract
+
+- **Claim**, batched per world within `ActivationSlots`: a `Get` of the record key; the placement rule (section 4's
+  activation); then a put of the new header compared on the stored version (absent when nothing is stored): epoch =
+  the stored or the tombstone's epoch + 1 (1 when nothing is stored), the owner, the placement version, write
+  generation 0, the body kept. A new incarnation (nothing stored, a tombstone) gets its `[Once]` seed, the larger of
+  the claim's `Now` in milliseconds and the tombstone's seed + 1, and the tombstone's `forgetUntil` as its
+  `prevForgetUntil`. A claim that may not create the key requires a body. A migration's arrival claims the same way,
+  compared on the version the source's last write left. One round trip more than a single conditional statement, per
+  activation batch: the store compares versions, never header fields.
+- **Write**: per root one guarded write, the record put as head (its version the token and the new generation,
+  compared on the last landed version), the row changes as dependents. When the root's due bucket changes, or it
+  gains its first ask row, the new due entry or ask index entry (unconditional puts) goes ahead of it in the batch, so
+  an index never misses a key whose record landed; a stale entry is deleted later, compared on its version, by
+  `DueScan` or the census when the header no longer matches (test `DueEntryNeverLostToCleanup`).
+- **Confirm** settles `Unknown` and `AlreadyLanded` (section 2's Tick-end write); a membership write's the same way.
+- **Delete** (`root.Delete()`, once its wait has passed, section 2's `Deleting`): one guarded write, the tombstone put
+  on the record key as head (the epoch, owner and seed, `forgetUntil` = the `Now` of the read that starts the
+  deletion + `MaxAskTimeout + 3 × ClockSkew`), compared on the last landed version, with `orphan_after` (the same
+  instant) on the root's rows as a receiver and the deletion of its queued-index keys as dependents (no ask rows:
+  `Delete()` answers `Outstanding` while it owns one). `NotApplied` fences; after an `Unknown`, a `Confirm` showing the
+  tombstone it wrote, or a newer activation's claim, means the deletion is done. The receivers' rows for the deleted
+  sender are not written: they learn from its tombstone (section 2's `OnceSenders`).
+- **Expiry**, on the oldest `Active` member hosting a persisted type, every `DaServer:EmptyRecordSweepInterval` (1 h),
+  one paged walk of the record keys and the rows under them in key order, each deletion compared on the version it
+  read: placeholders past `EmptyRecordTtl`; tombstones past `forgetUntil`, with the rows left under them; rows past
+  their own `orphan_after` or `delete_after`; and actor senders' rows whose sender is forgotten (its key, read in
+  batches: a tombstone past `forgetUntil`, nothing stored, or a live incarnation whose seed is above the row's and whose
+  `prevForgetUntil` has passed). A provider with native expiry may take over the time-based part only with the same
+  predicates (kit layer 1).
+- **Ask census**, on the same member every minute: a `Scan` of the ask index per actor type, and a `Get` of those
+  roots' record headers in batches, gives the oldest unstopped ask per type, the stopped counts and the state types
+  present (section 2's `OnceAsks`; the upgrade check asks it before removing a state type); entries whose header
+  shows no ask row are deleted.
+
+### The PostgreSQL provider
+
+`DaServer.Persistence.PostgreSql`, the reference provider, on Npgsql with no ORM, for **PostgreSQL 16 or later**
+(17 adds `transaction_timeout`, which the roles step sets to 0). Its statements are only lookups, conditional
+puts and deletes over `unnest` arrays and range scans on the primary key, so the same provider serves the
+PostgreSQL wire family through self-check variants: Aurora, AlloyDB, Neon, PolarDB for PostgreSQL, CockroachDB and
+YugabyteDB, each to verify against the kit before it is named supported (roadmap W6).
+
+**The schema** (created by the schema Job as the owner role, in the schema `:schema`, default `public`; DDL takes no
+bind parameters, so `:schema` and the role names are formatted in as quoted identifiers, `format('%I')`; every
+object is qualified with `:schema`, so no role depends on its `search_path`; every statement is re-runnable, since
+the Job runs on every release). Records and membership live in two tables of the same shape, so each data source's
+role is granted only its own; there are no secondary indexes, since the due and ask indexes are keys:
 
 ```sql
-CREATE SEQUENCE IF NOT EXISTS :schema.actor_records_epoch;                 -- every epoch: never reused after a sweep
-CREATE TABLE IF NOT EXISTS :schema.actor_records (
-  type_id    integer     NOT NULL,   -- the actor type's id (Nino's type id)
-  key        bytea       NOT NULL,   -- the key's fields in order, each big-endian at its own width (at most 16 bytes)
-  slot       smallint    NOT NULL,   -- the key's placement slot (0..4095, ADR-074), computed by the node
-  epoch      bigint      NOT NULL,
-  write_gen  bigint      NOT NULL,
-  owner_name text        NOT NULL,   -- the node name of the last claim
-  owner_gen  bigint      NOT NULL,   -- and its node generation
-  placement  bigint      NOT NULL,   -- the placement version of the last claim
-  claimed    timestamptz NOT NULL,   -- the last claim's time: a never-written row expires from it
-  record     bytea,                  -- NULL: claimed, never written
-  next_due   timestamptz,            -- NextDue (WakeAt, the held ask rows' next_try_at, the next cursor rotation); NULL: nothing due
-  PRIMARY KEY (type_id, key));
--- an INVALID :schema.actor_records_due is dropped first (IF NOT EXISTS skips it); built CONCURRENTLY on a table with rows,
--- as its own top-level statement:
-CREATE INDEX IF NOT EXISTS actor_records_due ON :schema.actor_records (type_id, slot, next_due) WHERE next_due IS NOT NULL;
-CREATE TABLE IF NOT EXISTS :schema.daserver_once_senders ( -- a [Once] receiver's per-sender rows (draft §8)
-  type_id      integer     NOT NULL, -- the receiver
-  key          bytea       NOT NULL,
-  sender_type  integer     NOT NULL, -- the sending actor's type id; 0 for a client session
-  sender_key   bytea       NOT NULL, -- its key, or a client's (ClientId, session)
-  mark_seed    bigint      NOT NULL, -- n = (seed, counter), compared seed first: every sequence below it is settled
-  mark_counter bigint      NOT NULL, --   or was never sent here (the counter is a uint, held in a bigint)
-  forget_after timestamptz,          -- set when the sending actor's record is deleted: delete + MaxAskTimeout + 3 × ClockSkew
-  orphan_after timestamptz,          -- set when the receiver's record is deleted, the same interval; cleared by the
-                                     -- receiver's next write of the row (a re-created receiver taking requests again)
-  delete_after timestamptz,          -- a client session's row: its latest resend deadline seen + MaxAskTimeout + ClockSkew
-  PRIMARY KEY (type_id, key, sender_type, sender_key));
--- an INVALID :schema.daserver_once_senders_by_sender is dropped first; CONCURRENTLY on a table with rows, top-level:
-CREATE INDEX IF NOT EXISTS daserver_once_senders_by_sender ON :schema.daserver_once_senders (sender_type, sender_key)
-  WHERE sender_type <> 0;            -- the forget path finds a deleted sender's rows at every receiver
-CREATE TABLE IF NOT EXISTS :schema.daserver_once_asks (    -- every AskUntilAnswered ask, outside the record (draft §8)
-  type_id      integer     NOT NULL, -- the asking root
-  key          bytea       NOT NULL,
-  ordinal      bigint      NOT NULL, -- RootState.AskOrdinal at the call: sends go in this order per target
-  phase        smallint    NOT NULL, -- 0 queued, 1 sent, 2 stopped
-  seq_seed     bigint,               -- the [Once] sequence (seed, counter), taken from OnceNext in the write that
-  seq_counter  bigint,               --   sends it; NULL while queued
-  target       bytea       NOT NULL, -- the receiver's address
-  asker        bytea       NOT NULL, -- the asking entity, by its identity in the record
-  request      bytea       NOT NULL, -- with ask_state, at most DaServer:Once:MaxRequestBytes
-  ask_state    bytea,                -- the call's state argument (Replied<TReq, TState>), NULL without one
-  state_type   integer,              -- its NinoTypeId, NULL without one: picks the Replied handler after a reload
-  created_at   timestamptz NOT NULL DEFAULT now(),
-  next_try_at  timestamptz,          -- the next attempt (NULL when stopped); feeds next_due while the row is held
-  attempt      integer     NOT NULL DEFAULT 0,
-  PRIMARY KEY (type_id, key, ordinal));
--- an INVALID :schema.daserver_once_asks_age is dropped first; CONCURRENTLY on a table with rows, top-level:
-CREATE INDEX IF NOT EXISTS daserver_once_asks_age ON :schema.daserver_once_asks (type_id, phase, created_at);
-                                     -- the sweeper's per-type counts and oldest age, index-only
--- an INVALID :schema.daserver_once_asks_queued is dropped first; CONCURRENTLY on a table with rows, top-level:
-CREATE INDEX IF NOT EXISTS daserver_once_asks_queued ON :schema.daserver_once_asks (type_id, key, target, ordinal)
-  WHERE phase = 0;                   -- an active root pages its queued asks in per destination, counts a destination's queued rows at page-in, and its target cursor walks it round-robin
--- an INVALID :schema.daserver_once_asks_state is dropped first; CONCURRENTLY on a table with rows, top-level:
-CREATE INDEX IF NOT EXISTS daserver_once_asks_state ON :schema.daserver_once_asks (state_type, type_id)
-  WHERE state_type IS NOT NULL;     -- the upgrade check counts the rows of a state type a release removes
-CREATE TABLE IF NOT EXISTS :schema.daserver_membership (    -- one row per cluster: the version row
-  cluster    text   PRIMARY KEY,
-  version    bigint NOT NULL,        -- every membership change sets it to version + 1 where it is still the one read
-  slots      bytea  NOT NULL,        -- the slot table (ADR-079)
-  placements bytea  NOT NULL,        -- per actor type: the table version of its last hosting or slot change
-  configs    bytea);                 -- configuration tables: (name, version, hash)
-CREATE TABLE IF NOT EXISTS :schema.daserver_members (       -- one row per node incarnation
-  cluster       text        NOT NULL,
-  name          text        NOT NULL,
-  generation    bigint      NOT NULL,
-  address       text        NOT NULL,
-  server_type   text        NOT NULL,
-  status        smallint    NOT NULL,   -- Joining, Active, ShuttingDown, Dead
-  suspicions    bytea,                  -- (suspecting name, generation, store now()) per suspicion
-  restart_until timestamptz,            -- a granted hot restart's deadline; NULL: none
-  dead_seen_at  timestamptz,            -- store now() of the coordinator's first write after reading it Dead
-  started       timestamptz NOT NULL,
-  i_am_alive    timestamptz NOT NULL,   -- diagnostics and the join's skip rule; written without a version change
-  PRIMARY KEY (cluster, name, generation));
-GRANT USAGE ON SCHEMA :schema TO :runtime_role;
-GRANT SELECT, INSERT, UPDATE ON :schema.actor_records TO :runtime_role;  -- no DELETE: only the sweep and
-                                                            -- daserver_delete_actor (SECURITY DEFINER) delete
-GRANT USAGE ON SEQUENCE :schema.actor_records_epoch TO :runtime_role;  -- nextval in both claims
-GRANT SELECT, INSERT, UPDATE, DELETE ON :schema.daserver_once_asks TO :runtime_role;  -- written only in the record's
--- write transaction, joined to its compare; stragglers deleted by daserver_delete_actor
-GRANT SELECT, INSERT, UPDATE ON :schema.daserver_once_senders TO :runtime_role;  -- no DELETE: only daserver_once_expire
-                                                            -- deletes (daserver_delete_actor only marks rows)
-GRANT USAGE ON SCHEMA :schema TO :membership_role;
-GRANT SELECT, INSERT, UPDATE ON :schema.daserver_membership, :schema.daserver_members TO :membership_role;  -- membership's
-                                                            -- own data source; the runtime role has no grant on them
+CREATE TABLE IF NOT EXISTS :schema.daserver_kv (
+  key     bytea PRIMARY KEY,                    -- the framework's ordered key (bytea compares bytewise)
+  version bytea NOT NULL,                       -- the writer's version
+  value   bytea NOT NULL);                      -- opaque to the store; TOASTed when large
+CREATE TABLE IF NOT EXISTS :schema.daserver_membership_kv (LIKE :schema.daserver_kv INCLUDING ALL);
+CREATE TABLE IF NOT EXISTS :schema.daserver_confirm (client text PRIMARY KEY, n bigint NOT NULL);  -- Confirm's marker
+GRANT USAGE ON SCHEMA :schema TO :runtime_role, :membership_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON :schema.daserver_kv TO :runtime_role;  -- deletes come only from the
+GRANT SELECT, INSERT, UPDATE, DELETE ON :schema.daserver_membership_kv TO :membership_role;  -- framework, compared
+GRANT SELECT, INSERT, UPDATE ON :schema.daserver_confirm TO :runtime_role, :membership_role;  -- on the version
+COMMENT ON TABLE :schema.daserver_kv IS 'DaServer schema <n>';     -- the last step, in a transaction of its own
 ```
 
-The schema Job does not create roles. The samples' AppHosts add an init step that runs with the database's superuser
-(Aspire's PostgreSQL resource has only `postgres`) before the schema Job (which retries until the roles exist) and
-creates the roles, none a superuser: the owner role (`CREATE` on the schema, owns the tables, the sequence and the
-`SECURITY DEFINER` functions), the runtime role and the membership role (`<cluster>_membership`: the membership
-tables only, used by the nodes' small membership data source, section 2). The step sizes the shares from the most nodes
-the cluster may run, not from the configured count: per node group, the autoscaler's maximum (`maxReplicas`, or the
-group's count when it is not autoscaled) times one plus the rollout surge (`maxSurge`), plus one warm standby
-process per stateful node (a hot update runs two processes per node), times each data source's pool size gives the membership role's
-`CONNECTION LIMIT` (membership pool × nodes, plus one per node for its one membership write left waiting for
-synchronous replication after its socket died) and the runtime role's (actor pool × nodes that hold a store, plus per
-such node `2 × WritesInFlight` per world and `ActivationSlots`, the most writes, solo retries and claims ever in
-`COMMIT` at once, for backends left waiting after their socket died: a node terminates its own once it reaches the
-store again, section 2, so they never pile up across network flaps, while a lost host's stay until the standby
-returns), and the step fails, naming the numbers, when those plus the Dashboard's, the owner's and the superuser's
-reserve exceed the server's `max_connections`, so scaling out can never exhaust both shares; it sets them, and on
-every DaServer role (`ALTER ROLE … SET`) `client_connection_check_interval = '10s'`,
-`idle_in_transaction_session_timeout = '30s'`, `tcp_keepalives_idle = 10`, `tcp_keepalives_interval = 2`,
-`tcp_keepalives_count = 5` and `tcp_user_timeout = 30000` (section 2: a half-open client's backend that is not
-waiting for synchronous replication ends within about 30 s and releases its locks),
-and, only when `current_setting('server_version_num')::int >= 170000`, `transaction_timeout = 0` on the runtime,
-membership, owner and Dashboard roles (so no server-wide transaction timeout cuts a synchronous-replication wait
-short; PostgreSQL 16 has no transaction timeout, so there is nothing to set), on every run, so the
-actor pools can never take the connections membership reads need (the step grants
-`pg_use_reserved_connections` to the membership role instead when `reserved_connections` is configured). It is re-runnable, since on Kubernetes it runs as a Job with
-a fresh name every release, and every run converges the database to the configuration: (1) each role is created if
-missing and its password set on every run, so a changed password parameter reaches the database (`DO $$ BEGIN IF NOT
-EXISTS (SELECT FROM pg_roles WHERE rolname = '<owner>') THEN CREATE ROLE … LOGIN; END IF; END $$`, then `ALTER ROLE
-… PASSWORD …`; a `DO` body takes no bind parameters and psql does not substitute `:'var'` inside dollar quotes, so
-the step builds each statement with `format('… %I … PASSWORD %L', name, password)` and runs it with `EXECUTE`); (2)
-`CREATE SCHEMA IF NOT EXISTS <schema> AUTHORIZATION <owner>`, so a configured schema other than `public` exists and
-the owner role owns it (its `GRANT USAGE ON SCHEMA … TO <runtime>` then takes effect; PostgreSQL ignores a grant from
-a role without the privilege's grant option), and for `public`, `GRANT CREATE, USAGE ON SCHEMA public` to the owner
-and `USAGE` to the runtime role; (3) `ALTER TABLE`/`SEQUENCE`/`FUNCTION … OWNER TO <owner>` for every DaServer
-object that already exists under another owner (tables created by today's nodes as `postgres`), so the owner's
-grants and later `ALTER`s on them work; (4) with `AddDaServerDashboard`, a fourth login role for the Dashboard
-(`<cluster>_dashboard`, created like the others) and its tables, owned by the owner role:
-`daserver_audit (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, action_id text NOT NULL, phase text NOT NULL
-CHECK (phase IN ('intent','outcome')), at timestamptz NOT NULL DEFAULT now(), who text NOT NULL, action text NOT NULL,
-target text NOT NULL, reason text, outcome text)` with indexes on `(at)` and `(action_id)`, on which the Dashboard's
-role has `INSERT, SELECT` and `USAGE` on the identity sequence but no `UPDATE` or `DELETE`, so the audit is
-insert-only; `daserver_actions (action_id text PRIMARY KEY, idem_key text NOT NULL, kind text NOT NULL CHECK (kind IN
-('action','resize')), type text, node text, incarnation bigint, attempt smallint, state text NOT NULL CHECK (state IN
-('requested','accepted','running','done','failed','stalled','unknown')), requested_at timestamptz NOT NULL DEFAULT
-now(), claimed_by text, lease_until timestamptz, run_id text, CHECK ((kind = 'action' AND type IS NOT NULL) OR (kind =
-'resize' AND type IS NULL AND node IS NOT NULL AND incarnation IS NOT NULL AND (attempt IN (1, 2) OR attempt IS
-NULL))))` (an action's
-`type` is the server type, or the sentinel `'*cluster'` for an action on the whole cluster; a resize has no `type`, so
-it never takes or waits for a type's lock), with a unique partial index on `(type) WHERE kind = 'action' AND state IN
-('requested','accepted','running','unknown','stalled')` (one unfinished action per type: the lock; Done and Failed are
-the only terminal states; every lock-taking insert first takes `pg_advisory_xact_lock(hashtext('daserver_actions'))`
-in its transaction, since a type's row and `*cluster` have different keys and READ COMMITTED would let both inserts
-pass their checks), a unique index on `(node, incarnation, attempt) WHERE kind = 'resize' AND attempt IS NOT NULL` (the automatic
-resize runs at most twice per node incarnation, a first attempt and one retry, however many replicas see the gauge:
-the second replica's insert conflicts and it follows the existing row; a Stalled resize holds only that node's
-attempt, nothing else), a unique index on `(idem_key) WHERE kind = 'resize' AND attempt IS NULL AND state NOT IN
-('done','failed')` (an operator's Resize from the row has no attempt number and is deduplicated by its idempotency
-key; Mark failed on a resize writes its own row as `kind = 'resize'`, `attempt` NULL, already Done) and
-an index on `(idem_key, requested_at)`, on which the Dashboard's role has `SELECT, INSERT, UPDATE, DELETE` (it expires finished rows older
-than a day); and `daserver_dataprotection` (the Data Protection key ring), which its role may update. Silences are
-written to Alertmanager with the Dashboard's own token (deployment.md, the `{cluster}-alertmanager` Secret). The runtime role has no grant on
-any of the three, and the Dashboard's role none on the actor and membership tables. The Dashboard deletes no audit
-row: a `SECURITY DEFINER` function `daserver_audit_expire(retention interval)`, owned by the owner role and executable
-by the Dashboard's role, removes expired rows when the Dashboard calls it daily with
-`DaServer:Dashboard:AuditRetention` (unset: kept forever). The Dashboard's writes follow the write rule of section 2
-(`COMMIT` sent on its own, no client deadline on it, never cancelled): an action's audit intent row is committed
-cleanly before its `daserver_actions` row is written, and the action is called only once that row's `COMMIT` returned
-cleanly; a cancelled-wait warning or a dead socket is an unknown outcome the Dashboard confirms by a real write, never by
-calling: a fresh audit row for the intent, and `UPDATE daserver_actions SET state = state WHERE action_id = :id` for
-the action's row (an update writes WAL and waits for the standby; an `INSERT … ON CONFLICT DO NOTHING` or a unique-key
-violation writes nothing and proves nothing). Against an external database the operator provisions
-the roles (deployment.md section 4).
+Two schema Jobs serialise on a session-level advisory lock taken by polling `pg_try_advisory_lock` from the client
+(one short statement per try). The Job's last step, the `COMMENT ON TABLE` in a transaction of its own, writes the
+catalog, so its `COMMIT` waits for the synchronous standby past every earlier step's, and the Job succeeds only when
+that `COMMIT` returns cleanly under the commit rule below: a release never starts against a schema a failover could
+take back. The generic table is adopted only if its batched commit throughput is within 10% of typed columns
+(`BenchmarkDotNet` gate, roadmap W6); otherwise the provider keeps record keys in a table with the header's fields
+as columns behind the same primitives, and nothing outside it changes.
 
-**A membership change** (one transaction, its `COMMIT` sent once the statements' results are back, with no client
-deadline, section 2; `:v` is the version the node read, and the node must have been `Active` at it unless it is
-joining):
+**The statements.** `Get`, with the clock taken after the statement's snapshot (`now()` is the transaction's start,
+which could precede a commit the read shows):
+
+```sql
+SELECT k.key, v.version, v.value, clock_timestamp() AS now
+FROM unnest(:keys::bytea[]) AS k(key) LEFT JOIN :schema.daserver_kv v ON v.key = k.key;
+```
+
+`Scan` (one row of NULLs when the range is empty, so `Now` always comes back; several scans go in one batch):
+
+```sql
+SELECT clock_timestamp() AS now, s.key, s.version, s.value
+FROM (VALUES (1)) AS one(x)
+LEFT JOIN LATERAL (SELECT key, version, value FROM :schema.daserver_kv
+                   WHERE key >= :from AND key < :to ORDER BY key LIMIT :limit) AS s ON true;
+```
+
+A batch of guarded writes (conditional puts and deletes are guarded writes without dependents) is one statement per
+`BatchBytes`, the heads compared and the dependents joined to the heads that applied:
+
+```sql
+WITH h AS (SELECT * FROM unnest(:keys, :versions, :values, :expected, :ops) AS h(key, version, value, expected, op)),
+     upd AS (UPDATE :schema.daserver_kv k SET version = h.version, value = h.value      -- op 1 put, 2 delete
+             FROM h WHERE h.op = 1 AND h.expected IS NOT NULL AND k.key = h.key AND k.version = h.expected
+             RETURNING k.key),
+     ins AS (INSERT INTO :schema.daserver_kv (key, version, value)                       -- expected NULL: absent
+             SELECT h.key, h.version, h.value FROM h WHERE h.op = 1 AND h.expected IS NULL
+             ON CONFLICT (key) DO NOTHING RETURNING key),
+     del AS (DELETE FROM :schema.daserver_kv k USING h
+             WHERE h.op = 2 AND k.key = h.key AND k.version = h.expected RETURNING k.key),
+     ok AS (SELECT key FROM upd UNION ALL SELECT key FROM ins UNION ALL SELECT key FROM del),
+     d AS (SELECT * FROM unnest(:d_heads, :d_keys, :d_versions, :d_values, :d_ops) AS d(head, key, version, value, op)),
+     dput AS (INSERT INTO :schema.daserver_kv (key, version, value)
+              SELECT d.key, d.version, d.value FROM d JOIN ok ON ok.key = d.head WHERE d.op = 1
+              ON CONFLICT (key) DO UPDATE SET version = excluded.version, value = excluded.value),
+     ddel AS (DELETE FROM :schema.daserver_kv k USING d JOIN ok ON ok.key = d.head
+              WHERE d.op = 2 AND k.key = d.key)
+SELECT h.key, s.version                       -- the heads not applied, as the statement's snapshot stores them
+FROM h LEFT JOIN :schema.daserver_kv s ON s.key = h.key
+WHERE NOT EXISTS (SELECT 1 FROM ok WHERE ok.key = h.key);
+```
+
+A head returned with the version this write sets is `AlreadyLanded`; with the expected version, it is a race (the
+`UPDATE` waited for another transaction's row and saw a newer one than the snapshot shows), and the provider reads it
+again before it answers `NotApplied`. A root whose dependents do not fit the first statement continues in more
+statements of the same transaction, carrying only the dependents of heads that applied (the head's row lock holds
+until `COMMIT`), so a root's write is never split across transactions (test `LargeRootWriteStaysAtomic`). Keys are
+sorted, so two transactions touching the same keys lock them in one order. `Confirm` is a transaction that writes the
+client's marker row and reads the keys, committed under the rule below:
 
 ```sql
 BEGIN;
-UPDATE daserver_membership SET version = :v + 1, slots = coalesce(:slots, slots), placements = coalesce(:placements, placements)
- WHERE cluster = :cluster AND version = :v;                 -- 0 rows: a conflict, ROLLBACK, re-read the table, retry
-INSERT INTO daserver_members ... ON CONFLICT (cluster, name, generation) DO UPDATE SET ...;   -- the changed rows;
-       -- SET lists status, suspicions, restart_until, address and
-       --   dead_seen_at = CASE WHEN excluded.dead_seen_at IS NOT NULL      -- the coordinator asks for the stamp
-       --                  THEN coalesce(daserver_members.dead_seen_at, now())  -- the store's clock, set once
-       --                  ELSE daserver_members.dead_seen_at END;
-       -- never i_am_alive, so a stale copy cannot overwrite a heartbeat written since
+INSERT INTO :schema.daserver_confirm AS c (client, n) VALUES (:client, 1)   -- writes WAL, so COMMIT waits for the
+  ON CONFLICT (client) DO UPDATE SET n = c.n + 1;                            -- synchronous standby past every
+SELECT k.key, v.version, v.value FROM unnest(:keys::bytea[]) AS k(key)        -- commit the read shows
+  LEFT JOIN :schema.daserver_kv v ON v.key = k.key;
 COMMIT;
 ```
 
-The rows of members written `Dead` stay for `DaServer:Membership:DefunctRowAge` (7 days, for diagnostics) and are
-deleted by `daserver_members_cleanup(cluster, age)`, a `SECURITY DEFINER` function the schema Job creates like the
-sweep below, with the same `SET search_path = pg_catalog, pg_temp`, schema-qualified objects and grants
-(`REVOKE ALL ON FUNCTION :schema.daserver_members_cleanup(text, interval) FROM PUBLIC; GRANT EXECUTE … TO
-:membership_role`: PostgreSQL grants `EXECUTE` to `PUBLIC` by default); neither role has `DELETE` on the membership
-tables. The coordinator calls it once a day through the membership data source.
+A read, a compare that updates nothing and an xid-only transaction write no WAL and wait for no standby, so none of
+them proves durability; the marker's write does (checked on PostgreSQL 16 with `synchronous_standby_names = 'ANY 1
+(nostandby)'`: the batch and the confirm's read return, both `COMMIT`s wait in `SyncRep`, a not-applied write's
+`COMMIT` returns at once).
 
-**The claim** (a new key inserts the placeholder row; when the condition fails nothing changes and the stored row
-comes back, `taken` false, so the node tells "forward to the newer owner" from "no record"). It runs as `BEGIN`, the
-statement, then `COMMIT` sent on its own once the statement's result is back, like a write (section 2). The form below
-uses PostgreSQL 18's `old`. On 16 and 17 the transaction first locks the row, `SELECT owner_name, owner_gen FROM
-actor_records WHERE type_id = :type_id AND key = :key FOR UPDATE`: a row found is the displaced owner (nobody can
-change it before the claim), and the statement runs with `RETURNING a.epoch, a.record, NULL::text, NULL::bigint,
-a.placement` in place of the `old` columns; no row found, the transaction runs the `INSERT` alone with `ON CONFLICT
-DO NOTHING RETURNING epoch, record`, and an empty result (another node inserted the key since the lock) rolls back and
-runs the claim again, whose lock now finds the row, so the displaced owner is always known:
+**Errors to outcomes.** A batch is one transaction, so a row-deterministic error (`22xxx` data exception, `23xxx`
+integrity violation, `54xxx` program limit, or a value above `MaxValueBytes`) aborts all of it: the provider splits
+the batch in half between roots and writes each half, down to the root that fails, which is `RowDeterministic`
+while the others land. Every other error before `COMMIT` is `StoreLevel` (`57014` statement timeout, `55P03`,
+`08xxx`, `25006` read-only after a failover, `42501`, `42P01`, `42703`, `53xxx`, `57P0x`, `40001`, `40P01`). Each data
+statement runs under the server's `statement_timeout` (`DaServer:Store:StatementTimeout`, 5 s); a batch that times
+out three times in a row is halved between roots (and again after three more), and one root that keeps timing out is
+`StoreLevel` on its own, so the world's slots are never held by a write that cannot fit.
 
-```sql
-WITH c AS (
-  INSERT INTO actor_records AS a (type_id, key, slot, epoch, write_gen, owner_name, owner_gen, placement, claimed, record, next_due)
-  VALUES (:type_id, :key, :slot, nextval('actor_records_epoch'), 0, :name, :gen, :v, now(), NULL, NULL)  -- a new key
-  ON CONFLICT (type_id, key) DO UPDATE
-     SET epoch = excluded.epoch, write_gen = 0, owner_name = excluded.owner_name, owner_gen = excluded.owner_gen,
-         placement = excluded.placement, claimed = now()
-     WHERE a.placement < excluded.placement
-        OR (a.placement = excluded.placement AND a.owner_name = excluded.owner_name AND a.owner_gen = excluded.owner_gen)
-  RETURNING new.epoch, new.record, old.owner_name, old.owner_gen, new.placement)  -- PostgreSQL 18: OLD, NULL if inserted
-SELECT true AS taken, epoch, record, owner_name, owner_gen, placement FROM c
-UNION ALL
-SELECT false, a.epoch, NULL, a.owner_name, a.owner_gen, a.placement  -- not taken: the row as stored before the statement
-FROM actor_records a
-WHERE a.type_id = :type_id AND a.key = :key AND NOT EXISTS (SELECT 1 FROM c)
-```
+**Commit handling** (ADR-101). A write's `BEGIN` and data statements go as one pipelined batch inside an
+`NpgsqlTransaction` (a batch without one is an implicit transaction that commits at its Sync; test
+`BatchNeverCommitsWithoutCommit`), and `COMMIT` is sent as a message of its own once their results are back, so the
+client always knows which it waits on. The client deadline is `StatementTimeout` times the data statements, covering
+the data batch only: at it no `COMMIT` has been sent, the connection is closed (never a CancelRequest), nothing
+committed, `StoreLevel`. `COMMIT` has no client deadline and is never cancelled; it ends when PostgreSQL answers,
+when TCP keepalive finds the socket dead (`Keepalive=10;Tcp Keepalive=true;Tcp Keepalive Time=10;Tcp Keepalive
+Interval=2`, about 30 s), or when a lookup finds its backend gone or idle: every connection records its backend's
+`(pid, backend_start)` when it opens, and a `COMMIT` unanswered after `StatementTimeout` is looked up from another
+connection every `StatementTimeout` (`wait_event = 'SyncRep'` is a live wait; gone, or idle in its transaction, is
+`Unknown` at once; test `UnansweredCommitLookedUp`); Npgsql has no hook to set `TCP_USER_TIMEOUT`. A connection the
+provider gives up on is closed and its backend terminated from a fresh one (`SELECT pg_terminate_backend(pid) FROM
+pg_stat_activity WHERE pid = :pid AND backend_start = :started`; a role may signal its own backends) before the retry
+or the `Confirm`, so a backend left waiting or idle holds its locks only until the node reaches the store again
+(test `AbandonedBackendTerminatedBeforeRetry`). The cancelled-wait warning ("committed locally"), a dead socket or a
+gone backend while `COMMIT` waits is `Unknown`; a clean `COMMIT` is `Landed`. Every data source connects to the
+primary only (`Target Session Attributes=read-write`, or a single read-write endpoint), so neither a lease read nor
+a `Confirm` is answered by a standby (test `DataSourcesRequireReadWrite`). Membership uses its own data source on
+`daserver_membership_kv` with its own role, two connections, one kept for reads.
 
-Every epoch comes from the sequence (`excluded.epoch` is the `nextval` of `VALUES`, which PostgreSQL evaluates on a
-conflict too), so epochs rise across the whole store and a row created again after a sweep never repeats an epoch an
-old activation held. Under READ COMMITTED the fallback `SELECT` uses the statement's snapshot, while the `ON CONFLICT`
-condition is checked on the latest committed row, so two results are races, not answers, and the node runs the
-statement again (a new statement sees the committed row): an empty result (two nodes claimed the same new key at once,
-and the second one's snapshot predates the first one's row), and a not-taken row that would have met the condition
-(a placement older than `:v`, or `:v` with this node as owner: the row the condition saw had changed since the
-snapshot). Only a not-taken row that fails the condition means "forward".
+**`Strict` on PostgreSQL**: `synchronous_commit` `on` or `remote_apply`, `synchronous_standby_names = 'ANY 1 (…)'`
+over two standbys, and quorum-aware failover that promotes a standby only when it can prove that standby holds
+every acknowledged commit and waits otherwise (Patroni 4's `synchronous_mode: quorum` with
+`synchronous_mode_strict: true`, which writes `synchronous_standby_names` itself; CloudNativePG's quorum-based
+failover, 1.27 and later, with `postgresql.synchronous` `method: any` and `dataDurability: required`; a managed
+service's zone-redundant mode that promotes only a replica holding every acknowledged commit). With no synchronous
+standby up, writes and claims pause in `COMMIT` rather than degrade (a data-only outage, `DaServerStoreWritesBehind`).
+The self-check reads `synchronous_commit`, `synchronous_standby_names` and `pg_stat_replication`, and declares
+`Strict` only when they match and the operator has stated quorum-aware failover (`DaServer:Store:PostgreSql:QuorumFailover`,
+set by `DaServer.Aspire` for what it publishes, since failover policy is not visible from SQL). What `DaServer.Aspire`
+publishes is a primary and two standbys in three zones under `ANY 1` with quorum-aware failover, so maintenance on one
+standby pauses nothing (the samples add a PodDisruptionBudget through the publisher hook); the local single-node
+database of `aspire run` is `Local` and exempt.
 
-**A claim is never cancelled**, and the node acts on it only when its `COMMIT` returns cleanly. Its statement has the
-server's `statement_timeout`; a claim whose statement timed out, or whose socket died before `COMMIT` was sent,
-committed nothing and runs again. A `COMMIT` that ends with the cancelled-wait warning or on a dead socket is an
-unknown outcome: the node runs the claim again (the rerun writes WAL and waits for the synchronous standby past the
-first attempt), and if the first attempt had committed, the rerun is taken with the node itself as the old owner, so
-the node remembers the owner it read before the first attempt (the row's owner, or the previous placement's host) and
-still notifies that displaced owner (test `TimedOutClaimConfirmedByRerun`). While no synchronous standby is up, claims
-wait in `COMMIT` like writes, so activations pause with the data writes, within `ActivationSlots`.
+**The roles step.** The schema Job does not create roles. The samples' AppHosts add an init step (`{cluster}-roles`,
+the database's superuser; Aspire's PostgreSQL resource has only `postgres`) that runs before the schema Job (which
+retries until the roles exist) and converges the database on every run: (1) each role created if missing and its
+password set every run (`format('… %I … PASSWORD %L', …)` run by `EXECUTE`, since a `DO` body takes no bind
+parameters): the owner role (`CREATE` on the schema, owns the tables), the runtime role, the membership role
+(`<cluster>_membership`) and, with `AddDaServerDashboard`, the Dashboard's role (`<cluster>_dashboard`); none a
+superuser; (2) `CREATE SCHEMA IF NOT EXISTS <schema> AUTHORIZATION <owner>` (for `public`, `GRANT CREATE, USAGE` to
+the owner); (3) `ALTER … OWNER TO <owner>` for DaServer objects created under another owner; (4) a `CONNECTION
+LIMIT` per role, sized from the most nodes the cluster may run (per group the autoscaler's maximum times one plus the
+rollout surge, plus one warm standby process per stateful node) times its pool size, plus per node the backends it can
+leave in `COMMIT` after a socket dies (`2 × WritesInFlight` per world plus `ActivationSlots` for the runtime role, one
+for the membership role; a node terminates its own on reconnecting, a lost host's stay until the standby returns),
+failing, with the numbers, when the shares plus the Dashboard's, the owner's and the superuser's reserve exceed
+`max_connections` (or granting `pg_use_reserved_connections` to the membership role when `reserved_connections` is
+configured); (5) on every DaServer role (`ALTER ROLE … SET`): `client_connection_check_interval = '10s'`,
+`idle_in_transaction_session_timeout = '30s'` (a backend whose `COMMIT` never came rolls back and frees its locks;
+test `HalfOpenBeforeCommitReleasesLocks`), `tcp_keepalives_idle = 10`, `tcp_keepalives_interval = 2`,
+`tcp_keepalives_count = 5`, `tcp_user_timeout = 30000` (a half-open client's backend not waiting for the standby
+ends within about 30 s), and, only when `current_setting('server_version_num')::int >= 170000`,
+`transaction_timeout = 0`. Nothing the server times ends a synchronous wait. Against an external database the
+operator provisions the roles.
 
-**The claim that may not create the key** (no `INSERT` branch; `has_record` false answers `NoActor`):
+**The Dashboard's tables** stay in PostgreSQL (the Dashboard does not go through `IStore`; its lock and audit need
+SQL's unique indexes and grants), created by the roles step with `AddDaServerDashboard` and owned by the owner role:
+`daserver_audit (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, action_id text NOT NULL, phase text NOT NULL
+CHECK (phase IN ('intent','outcome')), at timestamptz NOT NULL DEFAULT now(), who text NOT NULL, action text NOT NULL,
+target text NOT NULL, reason text, outcome text)` with indexes on `(at)` and `(action_id)`, insert-only for the
+Dashboard's role (`INSERT, SELECT`, `USAGE` on the identity sequence); `daserver_actions (action_id text PRIMARY KEY,
+idem_key text NOT NULL, kind text NOT NULL CHECK (kind IN ('action','resize')), type text, node text, incarnation
+bigint, attempt smallint, state text NOT NULL CHECK (state IN
+('requested','accepted','running','done','failed','stalled','unknown')), requested_at timestamptz NOT NULL DEFAULT
+now(), claimed_by text, lease_until timestamptz, run_id text, CHECK ((kind = 'action' AND type IS NOT NULL) OR (kind
+= 'resize' AND type IS NULL AND node IS NOT NULL AND incarnation IS NOT NULL AND (attempt IN (1, 2) OR attempt IS
+NULL))))` (an action's `type` is the server type, or `'*cluster'` for the whole cluster; a resize has none, so it
+never takes or waits for a type's lock), with a unique partial index on `(type) WHERE kind = 'action' AND state IN
+('requested','accepted','running','unknown','stalled')` (one unfinished action per type: the lock; every
+lock-taking insert first takes `pg_advisory_xact_lock(hashtext('daserver_actions'))`, since a type's row and
+`*cluster` have different keys), a unique index on `(node, incarnation, attempt) WHERE kind = 'resize' AND attempt
+IS NOT NULL` (the automatic resize runs at most twice per node incarnation), a unique index on `(idem_key) WHERE
+kind = 'resize' AND attempt IS NULL AND state NOT IN ('done','failed')` (an operator's Resize, deduplicated by its
+idempotency key) and an index on `(idem_key, requested_at)`, on which the Dashboard's role has `SELECT, INSERT,
+UPDATE, DELETE` (it expires finished rows older than a day); and `daserver_dataprotection` (the Data Protection key
+ring), which its role may update. The tables are small, so their indexes are built plainly in the step's
+transaction. A `SECURITY DEFINER` function `daserver_audit_expire(retention interval)` (`SET search_path =
+pg_catalog, pg_temp`, `EXECUTE` revoked from `PUBLIC` and granted to the Dashboard's role) removes expired audit rows
+when the Dashboard calls it daily with `DaServer:Dashboard:AuditRetention` (unset: kept forever). The Dashboard's
+writes follow the commit rule above: an action's audit intent row commits cleanly before its `daserver_actions` row is
+written, and the action is called only once that row's `COMMIT` returned cleanly; an `Unknown` commit is confirmed by
+a real write, never by calling: a fresh audit row for the intent, and `UPDATE daserver_actions SET state = state WHERE
+action_id = :id` for the action's row (an update writes WAL and waits for the standby; an `INSERT … ON CONFLICT DO
+NOTHING` writes nothing and proves nothing). The runtime and membership roles have no grant on these tables, and the
+Dashboard's role none on the store's.
 
-```sql
-WITH c AS (
-  UPDATE actor_records a
-     SET epoch = nextval('actor_records_epoch'), write_gen = 0, owner_name = :name, owner_gen = :gen, placement = :v,
-         claimed = now()
-   WHERE a.type_id = :type_id AND a.key = :key AND a.record IS NOT NULL
-     AND (a.placement < :v OR (a.placement = :v AND a.owner_name = :name AND a.owner_gen = :gen))
-  RETURNING a.epoch, a.record, a.placement)
-SELECT true AS taken, epoch, record, NULL::text AS owner_name, NULL::bigint AS owner_gen, placement, true AS has_record FROM c
-UNION ALL
-SELECT false, a.epoch, NULL, a.owner_name, a.owner_gen, a.placement, a.record IS NOT NULL
-FROM actor_records a
-WHERE a.type_id = :type_id AND a.key = :key AND NOT EXISTS (SELECT 1 FROM c)
-```
+### Other providers
 
-(The displaced owner is read the same way as above, `old` on 18 and the locked row on 16 and 17; the sketch leaves
-it out for brevity.) The same races are run again: a not-taken row with a record that would have met the condition, and a result
-that says no record (no row, or `has_record` false) while the row may have been written meanwhile: the node runs the
-statement once more, and answers `NoActor` only when the second run agrees.
+- **Redis and Valkey** (`DaServer.Persistence.Redis`, after PostgreSQL), declared `Replicated` at best: Redis's own
+  documentation says `WAIT` "does not make Redis a strongly consistent store", and Sentinel or Cluster may promote a
+  replica without the write. Commands common to Redis 7.2+ and Valkey 7.2+ only: a Functions library loaded by
+  `Migrate` (persisted and replicated, unlike `EVAL`'s script cache), each function checking every condition before
+  it writes (a function that errors does not roll back); a root's keys hash-tagged into one slot (`{type|key}`), so
+  a guarded write is atomic in Sentinel and Cluster mode alike, a large one as several function calls inside one
+  `MULTI` (to verify: kit layer 1's large-root test); ordered scans through per-prefix sorted sets; the due and ask
+  indexes in other slots in Cluster mode, written and acknowledged before the record (the batch's order rule).
+  Preset for `Replicated`: `appendonly yes`, `appendfsync always`, `WAITAOF 1 1 0` after each batch (no timeout,
+  so writes pause like PostgreSQL's when replicas are gone; a short count is `Unknown`), `min-replicas-to-write 1`,
+  `min-replicas-max-lag 10`, `maxmemory-policy noeviction`, two replicas, Sentinel quorum 2 of 3. Records are in RAM:
+  the provider declares `MaxValueBytes` 512 KiB. `Confirm` is a real write followed by `WAITAOF`; `Term` is
+  `master_replid`. In Cluster mode a failover rolls back one shard only, so a `[Once]` sender and receiver on
+  different shards can disagree after it: the rollback audit and reconciliation cover it.
+- **MongoDB** (`DaServer.Persistence.MongoDb`, after Redis), `Strict` with majority writes on a replica set (no
+  `wtimeout`, which leaves the write in place): one collection keyed by the key bytes; a guarded write as one
+  document update when it has no dependents, otherwise a transaction; batches through `bulkWrite`; scans as `_id`
+  ranges; `Now` as `$$NOW`; `Confirm` by a majority read; `UnknownTransactionCommitResult` is `Unknown`; `Term` is the
+  election term.
+- **MySQL and its family** (MySQL, MariaDB, TiDB, PolarDB for MySQL) are left to the community through the kit:
+  `Strict` needs Group Replication or semi-synchronous replication with no fallback and promotion of an acknowledged
+  replica only (managed MySQL services fall back to asynchronous replication unless their strong-sync mode is chosen).
+- Every provider uses its store's native driver; no ORM: the values are opaque bytes and the contract's semantics
+  (durability, `Unknown`, conditional writes) are what an ORM hides.
 
-**The sweep of never-written rows** (created by the schema Job; the runtime role has `EXECUTE` only):
+### The conformance kit
 
-```sql
-CREATE OR REPLACE FUNCTION :schema.daserver_sweep_empty(ttl interval, max_rows integer, after_type integer, after_key bytea)
-RETURNS TABLE (deleted integer, last_type integer, last_key bytea)       -- the cursor for the next batch
-LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
-  WITH page AS (SELECT a.type_id, a.key FROM :schema.actor_records a      -- key-set walk: the table once per sweep
-                WHERE (a.type_id, a.key) > (after_type, after_key)     -- first batch: the sentinel
-                                                                         -- (-2147483648, '\x'), never NULL
-                ORDER BY a.type_id, a.key LIMIT max_rows),
-       d AS (DELETE FROM :schema.actor_records a USING page p
-             WHERE a.type_id = p.type_id AND a.key = p.key
-               AND a.record IS NULL AND a.claimed < now() - ttl         -- rechecked on the row being deleted
-             RETURNING 1)
-  SELECT (SELECT count(*)::integer FROM d), max(p.type_id), (SELECT p2.key FROM page p2
-          ORDER BY p2.type_id DESC, p2.key DESC LIMIT 1) FROM page p $$;
-REVOKE ALL ON FUNCTION :schema.daserver_sweep_empty(interval, integer, integer, bytea) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION :schema.daserver_sweep_empty(interval, integer, integer, bytea) TO :runtime_role;
-```
+Public, in `DaServer.Testing`: abstract NUnit fixtures a provider's test project subclasses, giving a factory, a
+topology (start, stop, partition and promote nodes) and an endpoint the kit puts its own TCP proxy in front of
+(precedents: Akka.NET's `Akka.Persistence.TCK`, Dapr's conformance tests). A provider is certified for a class when
+layers 1 to 3 and 5 pass, and layer 4 for that class on a real topology; first-party providers run layers 1 to 3 and
+5 on every CI run and layer 4 nightly.
 
-**The batched write** (compare and swap on epoch and write generation). One write of a world's due roots is **one
-transaction of several statements, sent in two round trips** (the statements as one `NpgsqlBatch`, then `COMMIT` once
-their results are back): first the records' compare and swap
-for every root of the batch, then the row statements of those roots (`OnceSenders` rows, ask rows), each applying only
-where its root's record landed. The rows not updated by the first statement come back as its snapshot stored them,
-and the node reads each: a different epoch, or a NULL one (the row is gone, for example swept), is a failed compare
-and fences the activation; the same epoch with a `write_gen` at or above the written one is a write that already
-landed (a retried batch); the same epoch with a lower `write_gen` is a race (a concurrent claim changed the row after
-the snapshot, so the `UPDATE` saw the new epoch while the `SELECT` shows the old one), and that row is written again
-in the next batch, where it fails or lands.
-
-The node fills the arrays sorted by `(type_id, key)`, so two transactions touching the same rows (a stale owner's and
-the new owner's) take their row locks in one order and never deadlock. The records split between transactions at 512
-roots and `DaServer:Store:StatementBytes` (8 MiB, the size of one statement); a root's row changes are chunked into as
-many row statements as `StatementBytes` needs, all in its record's transaction, so a root's record and its row changes
-are never split across transactions however many rows changed (test `RootRowChangesSpanStatementsInOneTransaction`).
-**A write that times out** is never cancelled: the server's `statement_timeout` ends a data statement (`57014`), and at the client's scaled deadline, which covers the data statements only, the connection is closed before `COMMIT` was sent, so nothing committed; `COMMIT` has no client deadline (section 2). A retry carries the same bytes and write generation, so a
-transaction whose `COMMIT` ended unknown and that committed reads back as written and its row statements re-apply as no-ops; nothing it held is released until a confirming write (section 2) commits cleanly under synchronous replication. Errors are
-classified by SQLSTATE: row-deterministic ones (`22xxx`, `23xxx`, `54xxx`) will recur for that root, so the node splits the
-transaction in half between roots and writes each half, down to the single root that fails, which is ruled unwritable
-only when the others landed, logged `RecordUnwritable`, keeps its last record and is retried alone from then on, outside the
-write slots (a solo retry that fails row-deterministically keeps it unwritable); if a transaction of at least 8 roots has
-more than a quarter of them fail that way the store is treated as failing (none is ruled unwritable). Solo retries, of
-timing-out and of unwritable roots alike, run at most `WritesInFlight` per world at once.
-Every other error is store-level and retries the transaction with a backoff (1 s doubling to 1 min, its slot released between attempts): `57014`, `55P03`, `08xxx`, `25006`, `42501`, `42P01`,
-`42703`, `53xxx`, `57P0x`, `40001`, `40P01` and a write that ended at its client deadline among them, so a read-only primary, a revoked grant
-or a locked table keeps every root in `daserver.store.oldest_unsaved_age` and `DaServerStoreWritesBehind` fires.
-
-```sql
--- statement 1: the records of every root in the batch
-WITH r AS (SELECT * FROM unnest(:type_ids, :keys, :records, :next_dues, :epochs, :write_gens)
-               AS r(type_id, key, record, next_due, epoch, write_gen)),
-     w AS (UPDATE actor_records a SET record = r.record, next_due = r.next_due, write_gen = r.write_gen
-           FROM r WHERE a.type_id = r.type_id AND a.key = r.key
-                    AND a.epoch = r.epoch AND a.write_gen < r.write_gen
-           RETURNING a.type_id, a.key)
-SELECT r.type_id, r.key, a.epoch, a.write_gen                 -- the rows not updated, as stored; a missing row
-FROM r LEFT JOIN actor_records a ON a.type_id = r.type_id AND a.key = r.key   -- comes back with a NULL epoch:
-WHERE NOT EXISTS (SELECT 1 FROM w WHERE w.type_id = r.type_id AND w.key = r.key);  -- a failed compare, it fences
-
--- then, in the same transaction, the row statements, each chunked by StatementBytes; every row carries its root's
--- epoch and new write generation, and applies only where the record landed (statement 1 holds the record's row lock
--- until commit, so no claim can slip between)
-INSERT INTO daserver_once_senders AS d                                -- the receivers' changed rows
-       (type_id, key, sender_type, sender_key, mark_seed, mark_counter, delete_after)
-SELECT s.type_id, s.key, s.sender_type, s.sender_key, s.mark_seed, s.mark_counter, s.delete_after
-FROM unnest(:o_type_ids, :o_keys, :o_sender_types, :o_sender_keys, :o_seeds, :o_counters, :o_deletes,
-            :o_epochs, :o_write_gens)
-     AS s(type_id, key, sender_type, sender_key, mark_seed, mark_counter, delete_after, epoch, write_gen)
-JOIN actor_records a ON a.type_id = s.type_id AND a.key = s.key       -- only where the record landed
-                    AND a.epoch = s.epoch AND a.write_gen = s.write_gen
-WHERE s.sender_type = 0                                               -- a client session, or a sending actor
-   OR EXISTS (SELECT 1 FROM actor_records x                           -- whose record still exists: a row is
-              WHERE x.type_id = s.sender_type AND x.key = s.sender_key  -- never written back after the
-              FOR KEY SHARE)                                          -- sender's deletion forgot it
-ON CONFLICT (type_id, key, sender_type, sender_key) DO UPDATE SET mark_seed = excluded.mark_seed,
-       mark_counter = excluded.mark_counter, delete_after = excluded.delete_after,
-       orphan_after = NULL,                                            -- the receiver writes it: alive again
-       forget_after = CASE WHEN excluded.mark_seed > d.mark_seed THEN NULL   -- a re-created sender (a higher
-                           ELSE d.forget_after END;                          -- seed) clears the old forget
-
-INSERT INTO daserver_once_asks AS g                                   -- the root's new and changed asks
-       (type_id, key, ordinal, phase, seq_seed, seq_counter, target, asker, request, ask_state,
-        state_type, next_try_at, attempt)
-SELECT n.type_id, n.key, n.ordinal, n.phase, n.seq_seed, n.seq_counter, n.target, n.asker, n.request,
-       n.ask_state, n.state_type, n.next_try_at, n.attempt
-FROM unnest(:q_type_ids, :q_keys, :q_ordinals, :q_phases, :q_seeds, :q_counters, :q_targets, :q_askers,
-            :q_requests, :q_states, :q_state_types, :q_next_tries, :q_attempts, :q_epochs, :q_write_gens)
-     AS n(type_id, key, ordinal, phase, seq_seed, seq_counter, target, asker, request, ask_state,
-          state_type, next_try_at, attempt, epoch, write_gen)
-JOIN actor_records a ON a.type_id = n.type_id AND a.key = n.key       -- only where the record landed
-                    AND a.epoch = n.epoch AND a.write_gen = n.write_gen
-ON CONFLICT (type_id, key, ordinal) DO UPDATE SET phase = excluded.phase,   -- a change: the request and state
-       seq_seed = excluded.seq_seed, seq_counter = excluded.seq_counter,    -- bytes are sent empty and not
-       next_try_at = excluded.next_try_at, attempt = excluded.attempt;      -- updated
-
-DELETE FROM daserver_once_asks g                                      -- the asks answered this write
-USING unnest(:x_type_ids, :x_keys, :x_ordinals, :x_epochs, :x_write_gens) AS z(type_id, key, ordinal, epoch, write_gen)
-JOIN actor_records a ON a.type_id = z.type_id AND a.key = z.key
-                    AND a.epoch = z.epoch AND a.write_gen = z.write_gen
-WHERE g.type_id = z.type_id AND g.key = z.key AND g.ordinal = z.ordinal;
-```
-
-The changed `OnceSenders` rows and the root's ask-row changes ride the record: they change only where its compare
-succeeded (the join on the epoch and the new write generation), so a fenced activation changes none, and a retried
-transaction that already committed re-applies them as no-ops. They are never split from their record's transaction,
-so no number of row changes can make a root unwritable; the per-item caps (`AsksPerItem`, `BytesPerItem`,
-`MaxRequestBytes`, section 2 `OnceAsks`) only bound memory and abuse, and between writes a root's unwritten changes
-are bounded by the write backlog rules (`BacklogPause` and the held-output caps stop mail and requests) and, in a full store outage, by the isolation freeze; a data-only outage freezes nothing, so systems, timers and reactions keep adding changes in memory until `DaServerStoreWritesBehind` is acted on (the E3 exception, requirements.md). A row answered in
-this write goes only as a deletion: its pending change is dropped by the node, and the delete is a separate statement
-after the upsert, so even a row in both lists ends deleted (in one statement PostgreSQL would skip a delete of a row
-the same statement upserted; test `AnsweredRowWithPendingRetryDeleted`). A sending
-actor's row is inserted only while that actor's record exists, under `FOR KEY SHARE` on it, so a row change that
-races the sender's deletion either makes the deletion wait and is then seen by its second statement, or finds the
-record gone and inserts nothing; the write never deletes `OnceSenders` rows. An expiry that deletes a row while a
-receiver's write is in flight is harmless: the write is an upsert, so it re-inserts the row (under the same `FOR KEY
-SHARE` check, so never for a deleted sender) or inserts nothing. A change carrying a higher seed than the row's
-(the same key deleted and created again) clears the row's `forget_after`: the old seed's numbers belong to the deleted
-actor and are refused `Stale` from then on, and the new actor's row must not go at the old deletion's time. An activation reads the rows **after its claim
-commits** (`SELECT sender_type, sender_key, mark_seed, mark_counter, forget_after, orphan_after, delete_after FROM
-daserver_once_senders WHERE type_id = :t AND key = :k`; read before the claim, a fenced owner's late write could
-still land and roll a mark back); an always-active receiver drops its in-memory copies, with their `Unacked`
-entries, one `ClockSkew` past `forget_after` or `delete_after` in the idle scan, and every `ProbeAfter` the idle
-scan range-reads its own rows with `forget_after IS NOT NULL` (the receiver index), so a receiver that missed the
-best-effort "forget" notice and holds no entry to probe still learns it. The notice and the read carry the row's
-`mark_seed`, and a `forget_after` applies to an in-memory row only when the seeds match: a higher seed in memory is the
-same key deleted and created again, not yet written, and the new sender wins (test
-`StaleForgetNoticeIgnoredForRecreatedSender`). Rows past their time, of active
-and inactive receivers alike, are removed by `daserver_once_expire(skew, max_rows)`, a `SECURITY DEFINER` function
-created like the sweep (`DELETE … WHERE forget_after < now() OR orphan_after < now() OR delete_after < now() - skew`, key-set pages of at
-most `max_rows`), which the sweeping node calls with the sweep. An actor sender's row has no other expiry.
-
-**Deleting an actor** (`root.Delete()`, draft §5): one `SECURITY DEFINER` function, four statements in one
-transaction, so the later ones see every row change that committed while the first waited for the record's row lock:
-
-```sql
-CREATE OR REPLACE FUNCTION :schema.daserver_delete_actor(t integer, k bytea, e bigint, forget interval)
-RETURNS smallint LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
-BEGIN
-  DELETE FROM :schema.actor_records WHERE type_id = t AND key = k AND epoch = e;   -- the compare: a fenced
-  IF NOT FOUND THEN                                                                -- activation deletes nothing
-    IF EXISTS (SELECT 1 FROM :schema.actor_records WHERE type_id = t AND key = k) THEN RETURN -1; END IF;  -- fenced
-    RETURN 0;                                                                      -- no record at all
-  END IF;
-  UPDATE :schema.daserver_once_senders                                            -- its rows as a sender, at every
-     SET forget_after = GREATEST(forget_after, now() + forget)                     -- receiver: deleted by the expiry;
-   WHERE sender_type = t AND sender_key = k;                                       -- a second deletion re-marks later
-  DELETE FROM :schema.daserver_once_asks WHERE type_id = t AND key = k;          -- none in practice: Delete() needs none
-  UPDATE :schema.daserver_once_senders                                            -- its rows as a receiver: kept, so
-     SET orphan_after = GREATEST(orphan_after, now() + forget)                     -- a re-activation reads the marks and
-   WHERE type_id = t AND key = k;                                                  -- a late attempt gets Stale
-  RETURN 1;
-END $$;
-REVOKE ALL ON FUNCTION :schema.daserver_delete_actor(integer, bytea, bigint, interval) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION :schema.daserver_delete_actor(integer, bytea, bigint, interval) TO :runtime_role;
-```
-
-`forget` is `MaxAskTimeout + 3 × ClockSkew`: every `[Once]` attempt the deleted actor sent was sent before the
-deletion by its node's clock, and a receiver drops attempts sent more than `MaxAskTimeout + ClockSkew` ago by its own
-clock, so with the sender's, the store's and the receiver's clocks within `ClockSkew` of each other no attempt of the
-deleted actor can run as new once its rows go. The same interval marks the deleted actor's rows **as a receiver**
-(`orphan_after`) instead of deleting them: a key activated again after the deletion reads them after its claim, so a
-late attempt the old actor already ran is at or below `n` and gets `Stale` rather than running on the new actor; the
-new actor's next write of a row clears its mark (it takes that sender's requests again), any in-memory change to the
-row (an admission, `n` moving, an entry added) clears the in-memory copy of the mark at once, the idle scan never
-drops a row that holds entries or unwritten changes, and rows it never touches go with the expiry. A receiver's write and a deletion of one of its senders
-both lock the sender's record first (the write's `FOR KEY SHARE`, the deletion's `DELETE`) and only then the
-`(receiver, sender)` row, so one waits for the other and they do not deadlock; `40P01` stays store-level and
-retries the whole write, for safety.
-`root.Delete()` (refused with `Outstanding` while the root owns any ask row, in any state) tags the root and its subtree
-`Deleting`, which goes out with that item's write and releases its held output; the actor then runs no system,
-reminder or `[ForEach]` on the root or any descendant (`IActor<T>` declares `ISystemGroupWithout<Deleting>`), cancels
-its pending ordinary `Ask`s, leaves `ReplyTo` holders to time out (their requests ran), takes no new request (`Busy`, not stored) or one-way mail (dropped,
-counted), answers only `[Once]` repeats from `Unacked`, and cannot ask or send (a `Send`, `Ask`, `AskUntilAnswered`,
-`Push`, `Schedule` or `Remind` after `Delete()` in the same item is a runtime error that reloads the item, undoing the
-delete). The tag carries a framework `WakeAt`, so after a crash or an idle unload `DueScan` loads the root and the
-check runs again. The node calls the function only after the `Deleting` write has landed, and only when the root's
-`Unacked` is empty (every reply it stored acknowledged, so a later `NoActor` is truly "not run"), it owns no ask row,
-and `MaxAskTimeout + 2 × ClockSkew` has passed since the later of that write and its last `[Once]` admission (an
-attempt in flight meanwhile meets the root and gets its stored reply, `Stale` or `Busy`, never a fresh actor); then it
-destroys the root without a final write. A Deleting root is not migrated out (the rebalancer skips it); a freeze writes
-it with its tag and the new process continues. `1` deleted; `-1` is a failed compare and fences; `0` is no record at
-all. On a retry of a call whose outcome the node did not see (the connection dropped after the commit), `0` and `-1`
-both mean the delete is done (the record is gone, or a newer activation has since claimed the key); on a first call,
-both fence.
-
-**`DueKeys(slots, until, after)`: one page**:
-
-```sql
-SELECT s.type_id, s.slot, a.next_due, a.key
-FROM (SELECT u.type_id, u.slot FROM unnest(:type_ids, :slots) AS u(type_id, slot)
-      WHERE (u.type_id, u.slot) >= (:type_id, :slot)                               -- pairs at or after the cursor's pair
-      ORDER BY u.type_id, u.slot) AS s
-CROSS JOIN LATERAL (
-  SELECT r.next_due, r.key FROM actor_records r
-  WHERE r.type_id = s.type_id AND r.slot = s.slot
-    AND r.next_due <= :until                                                       -- fixed once per scan
-    AND (r.type_id, r.slot, r.next_due, r.key) > (:type_id, :slot, :next_due, :key) -- after: the previous page's last row,
-  ORDER BY r.next_due, r.key                                                       -- first page (-2147483648, -1, '-infinity', '\x')
-  LIMIT 512) AS a                                                                  -- at most a page from one pair
-ORDER BY s.type_id, s.slot, a.next_due, a.key                                      -- pairs already in order: sorted per pair
-LIMIT 512
-```
+| Layer | Proves |
+|---|---|
+| 1. Contract | Every primitive's semantics: conditions on absent, equal and other versions, `AlreadyLanded`, dependents all or nothing however large, ordered scans and paging, `Now` never before a landed write it shows, `MaxValueBytes + 1` as `RowDeterministic` while the rest of the batch lands; and the framework's protocols run over the provider: claims, fencing, tombstones, epochs continued through deletion, seeds of recreated actors, due and ask indexes never missing a key, expiry predicates, membership |
+| 2. Concurrency | Linearizability per key: random claim, write and delete histories from racing clients checked against a compare-and-set register model (a Porcupine-style checker shipped in the kit); exactly one taker per placement version |
+| 3. Fault injection | The `Unknown` obligation through the proxy: a connection dropped after forwarding is never `StoreLevel` or `NotApplied`, only `Landed` or `Unknown`, and `Confirm` then agrees with the store; dropped before forwarding is a safe retry; a reply delayed past a deadline is `Unknown`; a half-open connection is found within the provider's stated bound; a stalled durability wait pauses writes while membership reads still answer; plus the store-side faults a provider supplies (a cancelled synchronous wait on PostgreSQL, a step-down on MongoDB, `CLIENT PAUSE` on Redis) |
+| 4. Failover, per class | Load with recorded acknowledgements, the primary killed or partitioned at random points, a promotion: `Strict` loses no `Landed` or confirmed write over many runs; `Replicated` and `Local` may lose writes, but no write under an older token lands after a newer claim, the `Term` changes, and the rollback audit finds every lost generation of the roots kept active. The PostgreSQL commit tests (`UnknownReleasesOnlyAfterConfirm` with the primary up and the standby down, `RetriedWriteConfirmedBeforeRelease`, `ConfirmFindsWriteAbsentResends`, `TimedOutClaimConfirmedByRerun`, `MembershipVersionRegressionAfterFailoverAdopted`) are kit tests here |
+| 5. Self-check | A misconfigured store lowers the effective class (PostgreSQL without a synchronous standby, MongoDB at `w: 1`, Redis with eviction, no AOF or no replica), and a production node without `AcceptDurability` refuses to start |
+| Profile | Not pass or fail: BenchmarkDotNet batched writes and claims per second at 1 and 5 ms of injected latency, recorded per provider |
 
 ## 5. Migration, upgrades, hot restart
 
@@ -1429,7 +1290,7 @@ LIMIT 512
 - **Rolling upgrades**: `[Hosts]` on the member card, `NotHandled` from old nodes retried once after placement is
   resolved again (an unknown client message at an old gateway is reported by the SDK as a version mismatch),
   migration falls back to records across layouts, load moves resume once the stateful groups have rolled, and the
-  upgrade check refuses a release whose record fields or record types an older build could not keep (rollback safety), and compares the manifest's `state` lines (the types of asks' `ask_state`, rows outside the record) in both directions: a state type an older build cannot read makes the release not rollback-safe, and a state type is removed in two releases: the first stops creating it but keeps the type and its `Replied` handler, the second removes it and is refused while the check still counts rows of it (index `daserver_once_asks_state`); a rollback past the build that added a type, or a removal that skipped the first release, meets rows no running build knows, which `DaServerOnceUnknownState` reports, and the remedy is to re-release a build that knows the type until those rows are answered. Changes of hosting
+  upgrade check refuses a release whose record fields or record types an older build could not keep (rollback safety), and compares the manifest's `state` lines (the types of asks' `ask_state`, rows outside the record) in both directions: a state type an older build cannot read makes the release not rollback-safe, and a state type is removed in two releases: the first stops creating it but keeps the type and its `Replied` handler, the second removes it and is refused while the check still counts rows of it (the ask census, section 4); a rollback past the build that added a type, or a removal that skipped the first release, meets rows no running build knows, which `DaServerOnceUnknownState` reports, and the remedy is to re-release a build that knows the type until those rows are answered. Changes of hosting
   or client routes change this way. **Gateways** always roll; on Kubernetes surge then drain: every new gateway is ready before an old one leaves the load
   balancer and retires its connections in waves (`ControlOp.Retire`, make before break, ADR-026), so each client
   moves once ([deployment.md section 2](deployment.md#stateless-groups-and-gateways-deployment)).
@@ -1473,14 +1334,14 @@ LIMIT 512
     until a standby passes the handshake (arm nonce, the armed manifest hash equal to the standby's own, deadline, the
     standby's process id, all before any bytes) or the arm expires, in which case it never freezes and the rollout
     reports the failure. An instance still on the old build fails on the hash and the node simply retries. Once the
-    handshake passes, the node takes the cluster's one restart permit (its row's `restart_until`, a versioned write;
+    handshake passes, the node takes the cluster's one restart permit (its entry's `restart_until`, a versioned write;
     other members see `NodeRestarting` and pin its slots), roots carry `Restarting` for one last tick, and the worlds
     freeze between two ticks (bounded; in-flight writes land first and roots with output held by `Commit` are
     written, so no held output travels; a root whose `SaveEntitiesWith` throws drops its held output and is destroyed in
     the frozen world, left out) while IO keeps receiving. At the switch point the node stops reading its links and
     streams, from pooled buffers and with no intermediate file: a header (node name and generation, arm nonce, old and
     armed manifest hashes, layout hashes, world count, `TickCount64` at the freeze, the configuration tables' versions
-    (the standby re-reads a table whose version differs, so a push during the handover is not lost); a single node's member row), each
+    (the standby re-reads a table whose version differs, so a push during the handover is not lost); a single node's member entry), each
     world's `Save(output, in exclude)` bytes (each world serialized on its own thread with an incremental checksum,
     the worlds' chunks interleaved on the pipe, so the pause is about the slowest world's serialization plus the
     standby's load; `exclude` names the user singletons and the runtime's `Outbox`, `Current`, `Time` and node-singleton
@@ -1501,13 +1362,13 @@ LIMIT 512
     parked instance from then on, and the next hot restart's trigger restarts it. It never exits, so no handover
     depends on a supervisor starting a process again: on Kubernetes its container keeps running, the pod never drops
     out of readiness for it, and no kubelet restart back-off applies. On a nack, a broken stream, no answer within the handover timeout or a freeze past its bound, **the node
-    resumes in place**: it released nothing (lock, sockets and row are its own; it clears `restart_until`), its roots
+    resumes in place**: it released nothing (lock, sockets and membership entry are its own; it clears `restart_until`), its roots
     carry `Resumed(Pause, Aborted: true)` for one tick and nothing is lost; it reports the failure and the rollout
     stops for that node. A hot restart never ends the process on failure: nothing asked it to stop. SIGTERM is always
     a graceful stop (ADR-063), never a hot restart.
   - **Rejoining**: the standby learns the node is gone from the node's last word on the pipe ("handed over") and by
     taking the lock, adopts the sockets
-    and reads its row: still `Active` with its generation and the old process's `restart_until`, it clears
+    and reads its entry: still `Active` with its generation and the old process's `restart_until`, it clears
     `restart_until` (a versioned write), checks that every root's slot is still its own (fencing or moving the others
     out), reconnects with the same identity (name, generation), and the peers resume its streams from their resend
     windows; written `Dead` (the deadline passed) or out-generationed, it drops the loaded worlds and joins with a new
@@ -1577,7 +1438,7 @@ LIMIT 512
     shape (StatefulSet with `OnDelete`, Services, probes, the rollout Job and its Role) is [deployment.md](deployment.md).
 - **Changes without a restart** are data swaps between two ticks: tuning tables (`IConfigTable<T>` singletons; with a
   store it keeps one current version per table, (name, version, hash, bytes), the coordinator writes (name, version,
-  hash) into the membership table's version row, every starting or hot-restarted node loads that version, the first reader seeds a table type
+  hash) into the membership document, every starting or hot-restarted node loads that version, the first reader seeds a table type
   the store has no version of from its configuration, `POST /admin/tables/{name}` validates and replaces it
   cluster-wide, a rollback posts the old bytes again, and a node whose `TryLoad` rejects the current version fails
   readiness, which the upgrade check prevents by trying the new build's `TryLoad` when a table's format hash changed;
@@ -1672,7 +1533,7 @@ or rolling upgrade (section 5).
   `PublishAot` of the user's project does not switch the configuration binding generator on, so the library sets
   `<EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>` itself. `NodeOptions` splits into a
   bound POCO of values (`NodeSettings`: sizes, intervals, paths) and the runtime wiring set in code (the type filter,
-  `ISeedResolver`, `TimeProvider`, `IActorStore`, `ILoggerFactory`, the feature list), which the binder cannot and
+  `ISeedResolver`, `TimeProvider`, `IStore`, `ILoggerFactory`, the feature list), which the binder cannot and
   must not bind. `GetValue<TimeSpan>` and the generic `configuration.Get<TOptions>()` of `AddDaServerFeature<TOptions>`
   move to closed call sites. A W8 test publishes a node with warnings as errors and checks no SYSLIB1100/1101,
   IL2026 or IL3050.
@@ -1788,13 +1649,14 @@ Derived from [design.md](../design.md); what today's code has and the target dro
 | `UnloadAfterIdleSeconds` | `[ActorOptions(IdleTimeout = …)]` on the actor type |
 | `SaveEverySeconds` (30 s per actor type) | `DaServer:CheckpointInterval` (30 s per node) for plain changes; a root that calls `Commit` writes at the next tick end |
 | Callers retry by hand and receivers deduplicate by hand | Orders are their own actors; the step that moves value is a `[Once]` request sent by `AskUntilAnswered`: framework-assigned sequence numbers, the reply stored in `Unacked` and committed before it leaves, cumulative acknowledgements, windows and probes as in TCP, and the request itself the persisted intent the runtime keeps asking (ADR-097, ADR-099) |
-| `[Persist]` per component type with a generated `ITracked`, the own record format | Persistence per entity kind (`[Persist]` roots and children, `[NotSaved]` components left out); records as `SaveEntitiesWith` over `Descendants` with a `ComponentSet`; epoch CAS |
+| `[Persist]` per component type with a generated `ITracked`, the own record format | Persistence per entity kind (`[Persist]` roots and children, `[NotSaved]` components left out); records as `SaveEntitiesWith` over `Descendants` with a `ComponentSet`; written through the narrow store contract (`IStore`, a guarded write per root compared on its version; ADR-102) |
 | State handoff (ADR-072) | Migration bytes with layout hashes, a new epoch on arrival; fallback to records |
 | `Registration_{Assembly}` run by a module initializer (ADR-012) | `Registration` instance from the generated `Registration.Create()` |
 | One project per server (ADR-017), Contracts / Model / Logic (N1) | Protocol / Server; several server types per Server project; node = one server type |
 | Hot reload of the logic assembly (ADR-067, never built) | Hot restart by a warm standby handover over a local pipe, the same on every platform (JIT and AOT, ADR-098) |
 | `AddNodes<TProject>` in a `Sample.AppHost` project | `AddNodes<TServer>` over server types generated from `wire.manifest`, in `Game.Server/apphost.cs`; ports declared per group |
 | Packages Abstractions, Core, Client, Simulation, `DaServer`, Hosting, WireTool, Testing, Persistence.PostgreSql, Aspire (ADR-052) | Core, Client, `DaServer`, Persistence.PostgreSql, Testing, Aspire; the generator and the out-of-process manifest tool inside Core (ADR-086) |
+| `IActorStore` (versioned record writes) with one PostgreSQL implementation; membership by seeds and gossip | One narrow `IStore` for records and membership (ADR-102, ADR-103), store providers per database (PostgreSQL first, then Redis/Valkey and MongoDB), durability classes (ADR-104) and a public conformance kit |
 | Shard count in configuration and AppHost parameters (`DaServer:Shards`, `map_shards`) | Sized by the node from its CPUs; `DaServer:Worlds` overrides; the word shard is internal |
 | Random `NodeId` per process | Node generation assigned by the coordinator; identity on the link Hello is (name, generation), so a hot-restarted node resumes its streams |
 | A Kubernetes Deployment per node group | StatefulSet with `OnDelete` for actor-hosting groups, Deployments for gateways (surge then drain) and stateless groups (ADR-085); one rollout loop with a restart adapter per platform |
@@ -1820,3 +1682,7 @@ Derived from [design.md](../design.md); what today's code has and the target dro
    memory of replicated components; measure against diffing whole components on the mmo AOI benchmark (W7a) before adopting. The
    copy's sent stamp (the world's `ChangeTick` when the replication pass ran, opaque to the client) and the incarnation
    stay either way: they decide what a rejoining client still needs.
+4. **Store providers** (W6): the PostgreSQL provider's generic table is kept only within 10% of typed columns on
+   the batched commit benchmark (section 4); the wire family's variants (Aurora, AlloyDB, Neon, PolarDB for
+   PostgreSQL, CockroachDB, YugabyteDB) and any managed Redis-protocol service claimed `Strict` (AWS MemoryDB) are
+   named supported only once the conformance kit passes against them.
