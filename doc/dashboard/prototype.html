@@ -636,14 +636,18 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     [Date.UTC(2026, 9, 20, 17, 20, 11) / 1000, 'On-call operator', 'Upload config table', 'SkillTable version 15', 'Done', '7f2b'],
     [Date.UTC(2026, 9, 20, 17, 7, 2) / 1000, 'Release pipeline', 'Rollout', 'ChatServer to ' + BUILD, 'Done', '7f2a']
   ];
-  // The store's provider and its effective durability class for records and for membership: Strict, or a lower class
-  // the deployment accepted (?durability=replicated shows one), said in words since an operator may not know the names
+  // The store's provider and its effective durability class for records, membership and the Dashboard's own store:
+  // Strict, a lower class the deployment accepted (?durability=replicated shows one), or Unsafe, writes refused until an
+  // unsafe setting is fixed (?durability=unsafe), said in words since an operator may not know the names
   var DUR_LOW = /[?&]durability=replicated/.test(location.search);
+  var DUR_UNSAFE = /[?&]durability=unsafe/.test(location.search);
   // the line under the store's running head: the class, then the errors while there are none; a lower class takes
   // the whole line, since what it may lose matters more than a count of nothing
   // (the store's own screen names the provider in its eyebrow already)
   function durText(own) {
-    var t = DUR_LOW ? 'records Replicated by choice: a failover may lose the last writes' : 'Strict for records and membership; no errors in the last hour';
+    var t = DUR_UNSAFE ? 'writes refused: fsync is off on the database; turn it back on and writes resume'
+      : DUR_LOW ? 'records Replicated by choice: a failover may lose the last writes'
+      : 'Strict for records, membership and this Dashboard; no errors in the last hour';
     return own ? t.charAt(0).toUpperCase() + t.slice(1) : 'PostgreSQL, ' + t;
   }
   var STORE = { p99: '4.2 ms', usual: '4.0 ms', inflight: '1,840', cap: 'of 5,040 allowed', unsaved: '18,204', oldest: '9 s',
