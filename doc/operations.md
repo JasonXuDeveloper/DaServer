@@ -88,61 +88,44 @@ suggests) or renaming the cluster starts a new membership document; the actor re
    `m|<cluster>` in the old store). If it is not (a clock behind, or a provider whose `Now` is not Unix time), set
    `DaServer:Membership:InitialVersion` above that version.
 3. When membership moves to another store on PostgreSQL, re-mark the prefix's roles for it before starting (the roles step refuses
-   roles marked for another one): in any database, `COMMENT ON ROLE "<role>" IS 'daserver:<system_identifier>/<database>/<schema>'`
-   for each role, with the new membership server's `system_identifier` (`SELECT system_identifier FROM
-   pg_control_system();` there) and the database and schema quoted as `format('%I')` quotes them.
-4. Change the configuration and start the nodes. The first creates the new document at the store's `Now` in
+   roles marked for another one): on every server the cluster's stores use, in any one database there,
+   `COMMENT ON ROLE "<role>" IS 'daserver:<system_identifier>/<database>/<schema>'` for each role, with the new
+   membership server's `system_identifier` (`SELECT system_identifier FROM pg_control_system();` there) and the
+   database and schema quoted as `format('%I')` quotes them.
+4. On a changed `DaServer:Store:PostgreSql:Schema`, move the tables first: `ALTER SCHEMA "<old>" RENAME TO "<new>"` in
+   every database the cluster's stores use (a new schema would otherwise be created empty and the actor records left
+   in the old one). With `DaServer:Store:PostgreSql:RolePrefix` set, re-mark the roles with the new schema as in
+   step 3; without it the prefix changes too and the roles step creates the new roles already marked.
+5. Change the configuration and start the nodes. The first creates the new document at the store's `Now` in
    milliseconds, or at `InitialVersion` when higher, so it starts above every placement version the old document
    stamped into records and `Topic` subscriber stamps: claims of existing records proceed, and a subscriber stamped
    under the old document is refused once, answered `NotSubscribed`, and subscribes again.
-5. On a cluster rename, the Dashboard's keys (`x|<cluster>|…`: actions, the audit, the Data Protection key ring) stay
+6. On a cluster rename, the Dashboard's keys (`x|<cluster>|…`: actions, the audit, the Data Protection key ring) stay
    under the old name: copy them to the new prefix to keep the audit and the signed-in sessions, or accept losing
    them (sign-in cookies are then invalidated).
-6. Delete the old document's keys (`m|<cluster>` and its prefix) from the old store once nothing reads them.
-7. On a changed `DaServer:Store:PostgreSql:Schema`, first move the tables, before starting: `ALTER SCHEMA "<old>"
-   RENAME TO "<new>"` in every database the cluster's stores use (a new schema would otherwise be created empty and
-   the actor records left in the old one), and re-mark the roles with the new schema as in step 3.
-8. On a cluster rename on PostgreSQL (or a changed `DaServer:Store:PostgreSql:Schema`, which changes the prefix the
-   same way), the roles step creates `<cluster>_<schema>_*` roles under the new name and hands them the schema and the
-   tables, so the renamed cluster runs before any cleanup (with `DaServer:Store:PostgreSql:RolePrefix` set the roles
-   stay the same and there is nothing to drop). Once nothing connects as the old prefix's roles, run in every database
-   the cluster's stores use, for each old role, `REASSIGN OWNED BY "<old>" TO "<new prefix>_owner"; DROP OWNED BY
-   "<old>";`, each name quoted as an identifier (`format('%I')`; a schema name can be multibyte or mixed case). The
-   first hands over what it owns, the second removes its grants (the schema's `USAGE`, the tables' DML, `EXECUTE` on
-   `daserver_replication()`); both act on the current database only. Then `DROP ROLE` each old role once; the old
-   owner's `pg_read_all_stats` membership goes with it.
+7. Delete the old document's keys (`m|<cluster>` and its prefix) from the old store once nothing reads them.
+8. On a cluster rename on PostgreSQL (or a changed schema, which changes the prefix the same way), the roles step
+   creates `<cluster>_<schema>_*` roles under the new name and hands them the schema and the tables, so the renamed
+   cluster runs before any cleanup (with `RolePrefix` set the roles stay the same and there is nothing to drop). Once
+   nothing connects as the old prefix's roles, run in every database the cluster's stores use, for each old role,
+   `REASSIGN OWNED BY "<old>" TO "<new prefix>_owner"; DROP OWNED BY "<old>";`, each name quoted as an identifier
+   (`format('%I')`; a schema name can be multibyte or mixed case). The first hands over what it owns, the second
+   removes its grants (the schema's `USAGE`, the tables' DML, `EXECUTE` on `daserver_replication()`); both act on
+   the current database only. Then `DROP ROLE` each old role once on every server the stores use (roles are per
+   server); the old owner's `pg_read_all_stats` membership goes with it.
 
-## Promoting a standby on Compose
+A major upgrade with `pg_upgrade` or a dump and restore gives the server a new `system_identifier`: re-mark the roles
+as in step 3 before starting, or the roles step refuses them.
 
-(target, ADR-101; test `ComposeManualPromotionKeepsAcknowledgedCommits`) On Docker Compose `DaServer.Aspire`
-publishes the database as three services on one host with no automatic failover: the primary named by the published
-parameter `DaServer:Store:PostgreSql:ComposePrimary` (`postgres` by default) and two synchronous standbys under
-`ANY 1`, all `restart: unless-stopped`. When the primary is lost, every data source loses its only read-write server
-(`Target Session Attributes=read-write` over the three hosts), so writes stop and, with no lease read, the nodes freeze
-after `IsolationTimeout` and wait; they resume where they stopped once the membership store answers again. To restore
-service without losing an acknowledged write:
+## Backups
 
-1. Make sure the old primary stays down (`docker compose stop <primary>`) until step 3 changes `ComposePrimary`: any
-   `docker compose up` before then (a deploy, `{cluster}-restart`) starts it again, and two primaries would diverge.
-2. On each standby, check `SELECT pg_is_wal_replay_paused();` is false, wait until `SELECT pg_last_wal_replay_lsn();`
-   stops advancing (replay of everything it holds has finished), then read
-   `SELECT greatest(pg_last_wal_receive_lsn(), pg_last_wal_replay_lsn());`. Every acknowledged commit reached at least
-   one of them (`ANY 1`), and WAL is one ordered stream, so the standby with the higher value holds them all. The
-   receive position alone is not enough: a standby restarted after the primary was lost reports the start of the
-   segment it would stream from, not what it holds (checked on 16: both read the same receive position while only
-   one held the last commit; the `greatest` above told them apart). Both values `NULL` means not yet comparable: wait.
-   With only one standby reachable, wait for the other: the survivor alone cannot be shown to hold every commit.
-   Promoting it anyway is an operator's explicit decision to accept losing what only the other held; nodes that held
-   a later membership version then stop (a regression is a store fault, ADR-103) and restart on the survivor.
-3. On the chosen standby set `synchronous_standby_names` first (`ALTER SYSTEM SET synchronous_standby_names =
-   'ANY 1 (…)'` naming the other standby and the rebuilt one, then `SELECT pg_reload_conf();`), so it never accepts a
-   write asynchronously, then promote it (`SELECT pg_promote();`). Set `ComposePrimary` to that service, rebuild the
-   old primary's volume as a standby of the new one (`pg_basebackup`), point the other standby at it, and deploy. The
-   nodes' multi-host connection string reaches the new primary without recreating them, and the frozen nodes resume
-   (checked on 16: promoted the standby holding the last commit, re-pointed the other, which streamed as `quorum` and
-   held every row).
-
-Losing the whole host is not covered by this shape; that needs the Kubernetes one (three zones, quorum-aware
+(target, ADR-101) On Docker Compose `DaServer.Aspire` publishes one PostgreSQL with no replication: `Strict` within
+its failure domain, one host (`DaServer:Store:FailureDomain = host`). A crash or restart keeps every acknowledged
+commit, but losing the disk or the host loses everything since the last backup, so take regular backups
+(`pg_dump`, or `pg_basebackup` with WAL archiving for point-in-time recovery) to another machine. A restore puts the
+store, and the membership document, back in time: nodes that held a later membership version stop (a regression is a
+store fault, ADR-103) and restart on it, and anything released after the backup is gone, which `Strict` never
+promised across the host's loss. To survive an instance's loss, use the Kubernetes shape (three zones, quorum-aware
 failover).
 
 ## Production views

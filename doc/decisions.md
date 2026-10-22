@@ -3269,28 +3269,29 @@ Replaced by ADR-098.
   so a failover that promotes whichever standby it reaches can lose it.
 - Decision (the PostgreSQL provider's obligations for `Strict`, `Confirm` and `Unknown`, ADR-102; the runtime only
   acts on the outcomes):
-  - **`Strict` needs strict synchronous replication**: `synchronous_commit` `on` or `remote_apply`,
-    `synchronous_standby_names = 'ANY 1 (…)'` over two standbys, and failover that never promotes a standby missing an
-    acknowledged commit: no automatic failover at all (an operator promotes by hand only a standby shown to hold every
-    acknowledged commit, `DaServer.Aspire`'s Docker Compose shape), or quorum-aware failover that promotes a standby only
+  - **`Strict` needs a commit no crash in the failure domain and no failover can lose**: `fsync`, `full_page_writes`
+    and `synchronous_commit` (`on` or `remote_apply`) on, and one of two shapes. **Replicated**:
+    `synchronous_standby_names = 'ANY 1 (…)'` over two standbys and quorum-aware failover that promotes a standby only
     when it can prove that standby holds every acknowledged commit and waits otherwise (Patroni 4's
     `synchronous_mode: quorum` with `synchronous_mode_strict: true`, which writes `synchronous_standby_names` itself;
     CloudNativePG's quorum-based failover, 1.27 and later, with `postgresql.synchronous` `method: any` and
     `dataDurability: required`; a managed service's equivalent); with no synchronous standby, writes, claims and
     membership writes pause rather than degrade (lease reads still answer, so nothing freezes; heartbeats skip and
-    deaths wait; `DaServerStoreWritesBehind` and `DaServerMembershipWritePending`, the stated E3 exception). The self-check reads the
-    replication settings and `pg_stat_replication` and declares `Strict` only when they match and the deployment states
-    such failover (`DaServer:Store:PostgreSql:SafeFailover`, which `DaServer.Aspire` sets for what it publishes: a
-    primary and two standbys under `ANY 1`, on Kubernetes in three zones with quorum-aware failover, so maintenance on
-    one standby pauses nothing (the samples add a PodDisruptionBudget through the publisher hook), on Docker Compose on
-    one host with manual promotion only, no Patroni or etcd, its host's loss not covered: the standbys stream as a
-    `<prefix>_replication` role under the application names `postgres_a` and `postgres_b`, which
-    `synchronous_standby_names` names unquoted, the primary is the published `DaServer:Store:PostgreSql:ComposePrimary`
-    that all three entrypoints obey, and the nodes reach it through one multi-host read-write connection string; the
-    promotion procedure compares `greatest(pg_last_wal_receive_lsn(), pg_last_wal_replay_lsn())`, since a standby
-    restarted after the primary's loss reports only the segment it would stream from, and sets
-    `synchronous_standby_names` on the chosen standby before promoting it). The flag was `QuorumFailover`; it is
-    `SafeFailover` because manual-only promotion meets the same rule. `pg_stat_replication` shows `state` and `sync_state` only to
+    deaths wait; `DaServerStoreWritesBehind` and `DaServerMembershipWritePending`, the stated E3 exception).
+    **Single**: one instance with no standby and no failover at all, where crash recovery keeps every acknowledged
+    commit and nothing can roll back; its disk or host is the failure domain. Failover policy is not visible from
+    SQL, so either shape needs the operator's statement `DaServer:Store:PostgreSql:SafeFailover` (failover never
+    promotes a standby missing an acknowledged commit, which no failover at all meets); with it the self-check
+    declares `Strict` when two synchronous standbys stream as `quorum` under `ANY 1`, or when
+    `synchronous_standby_names` is empty and no standby streams, and anything else is `Replicated` or `Local`, so an
+    external single instance claims `Strict` only when its operator declares it. `DaServer.Aspire` sets the statement
+    and `DaServer:Store:FailureDomain` for what it publishes: on Kubernetes a primary and two standbys in three zones
+    with quorum-aware failover (`zones`), so maintenance on one standby pauses nothing (the samples add a
+    PodDisruptionBudget through the publisher hook); on Docker Compose one crash-safe instance with no replication
+    (`host`), its disk's or host's loss not covered and backups the operator's protection. Rejected for Compose: a
+    primary and two standbys on the same host with manual promotion; it guarded only one container's data directory
+    against corruption while every other host or disk failure took all three, and it needed a persisted primary
+    choice, a replication role, entrypoint rules and a promotion procedure of its own. `pg_stat_replication` shows `state` and `sync_state` only to
     members of `pg_read_all_stats`, which would also show every session's query text on the server, so the roles step
     grants it to the owner role alone and creates a `SECURITY DEFINER` function owned by it, `daserver_replication()`,
     in the configured schema of every database the cluster's stores use, with `search_path` fixed to `pg_catalog,
@@ -3467,9 +3468,9 @@ Replaced by ADR-098.
   placement version an earlier document stamped into records and `Topic` subscriber stamps (the new store's clock
   must be ahead of the old document's creation plus its changes, else the floor is set). A version lower than one
   the node held, or a stored placement version still above the document after a re-read (a stale view only forwards
-  from the fresh one), therefore means the store broke `Strict` (on PostgreSQL, a crash-restart in place or a fast
-  shutdown ending the wait, followed by a failover before the standby received the commit, which quorum-failover tooling in strict mode makes rarer, not
-  impossible): a store fault, which the framework does not repair. The node logs `MembershipVersionRegressed`, counts
+  from the fresh one), therefore means the store broke `Strict` or was put back in time (a failover that lost a commit: on PostgreSQL, a
+  crash-restart in place or a fast shutdown ending the wait, followed by a failover before the standby received the
+  commit, which quorum-failover tooling in strict mode makes rarer, not impossible; or a restore from a backup): a store fault, which the framework does not repair. The node logs `MembershipVersionRegressed`, counts
   it (alert `DaServerMembershipRegressed`, critical), stops as a node that reads itself `Dead` (it freezes its worlds
   and fences its actors without writing) and exits with code 75; the platform starts it again with a new generation
   and persisted actors load from the store. Every node that held the higher version stops, so the whole cluster may
@@ -3494,8 +3495,8 @@ Replaced by ADR-098.
     lost-history owner, and raise past a stored placement at claim time): each audit round found a new way it failed
     (two regressions in a row overwrote a live handoff source and let a claim race a live activation, the repair state
     did not survive a hot restart, a version number alone missed a regression another node had already written
-    past), for a fault a `Strict` store commits only rarely (a crash-restart or fast shutdown, then a failover
-    before a standby had it). A below-`Strict` membership opt-in went with it.
+    past), for a fault a `Strict` store commits only rarely (a failover that lost a commit, or a restore from a
+    backup). A below-`Strict` membership opt-in went with it.
   - A coordinator stepping down when its own write stays pending: in a standby outage every node's writes wait, so it
     exited with its unsaved state while nobody could write it `Dead` or take over.
 - Consequences: one membership implementation, tested by the kit against every provider; a store outage still pauses
@@ -3529,14 +3530,15 @@ Replaced by ADR-098.
   sets `DOTNET_ENVIRONMENT=Development` on nodes and the Dashboard in run mode unless the AppHost sets one, never in
   what it publishes; test `AspireRunModeIsDevelopment`); every other environment is production, a plain `dotnet run` included (test
   `ProductionIsAnyNonDevelopmentEnvironment`). R13
-  holds per class: on `Strict` unchanged, no acknowledged write lost and no rollback across the loss of any one
-  database instance and any failover the store performs, the deployment's failure domain bounding it (three zones on
-  Kubernetes; one host on Docker Compose, whose loss is not covered and which the start-up log line names); below it the guarantee is
+  holds per class: on `Strict` unchanged, no acknowledged write lost and no rollback across a crash within the
+  deployment's failure domain and any failover the store performs (`DaServer:Store:FailureDomain`: three zones on
+  Kubernetes, surviving the loss of any one instance; one host on Docker Compose, whose disk or host loss is not
+  covered and which the start-up log line names); below it the guarantee is
   **fencing only**: the version is the fencing token, so two owners' writes never mix, while output leaves at the
   provider's wait and a failover or crash may lose recent writes, index entries and claims whose effects already
   left. `[Once]` and `AskUntilAnswered` hold except across such a loss and value flows keep their reconciliation. The
-  framework promises no detection of the loss and reports only what it meets (below); the node logs at start the class it runs, that it accepted it, and, on `Strict`, the deployment's failure domain
-  (a one-host Compose database says the host's loss is not covered).
+  framework promises no detection of the loss and reports only what it meets (below); the node logs at start the class it runs, that it accepted it, and, on `Strict`, the failure domain
+  (a `host` domain says the disk's or host's loss is not covered; an external store's is `unknown`).
   A root that writes again and finds its own token at an older generation is fenced, reloaded and counted
   (`daserver.store.regressions`, not alerted), so a loss is never mistaken for a race and written over; that reports
   what it meets and promises no coverage. A setting that can corrupt rather than lose writes (PostgreSQL's `fsync` or

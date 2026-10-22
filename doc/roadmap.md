@@ -997,11 +997,13 @@ Keep this file current: tick items when done, add items when scope changes.
       `--DaServer:Migrate`, Compose's one-shot service) with an owner role (`CREATE` on the schema, every object
       schema-qualified), nodes on a DML-only role (the record and membership tables), every node group given the store's
       connection (gateways included: membership is there), the samples' role-init step before the schema Job (on
-      Kubernetes the schema Job retries until the role exists), the Compose deploy order (`up -d --wait postgres postgres-a postgres-b`, then
-      `up --no-deps --force-recreate --exit-code-from schema schema`), no Helm hook; the published PostgreSQL (16 or later) a primary
-      and two standbys replicating strictly, on Kubernetes in three zones with quorum-aware failover, on Compose three services on one host with manual promotion only (no Patroni or etcd; the host's loss not covered), so its self-check declares `Strict` (ADR-101: `synchronous_commit = on`, `ANY 1 (…)`, so one standby's maintenance
-      pauses nothing, the samples adding a PodDisruptionBudget through the publisher hook; writes pause without a
-      standby; the local `aspire run` single node exempt), the roles step setting `client_connection_check_interval`, `idle_in_transaction_session_timeout`, server keepalive
+      Kubernetes the schema Job retries until the role exists), the Compose deploy order (`up -d --wait postgres`, then
+      `up --no-deps --force-recreate --exit-code-from schema schema`), no Helm hook; the published PostgreSQL (16 or later) `Strict` within its failure domain (ADR-101, `SafeFailover` and
+      `DaServer:Store:FailureDomain` set by DA): on Kubernetes a primary and two standbys under `ANY 1` in three zones with
+      quorum-aware failover (`zones`; one standby's maintenance pauses nothing, the samples adding a PodDisruptionBudget
+      through the publisher hook; writes pause without a standby), on Compose one crash-safe instance with no
+      replication or failover (`host`; the disk's or host's loss not covered, backups the operator's); the local
+      `aspire run` single node exempt, the roles step setting `client_connection_check_interval`, `idle_in_transaction_session_timeout`, server keepalive
       and `tcp_user_timeout` (`HalfOpenBeforeCommitReleasesLocks`) and,
       on 17 and later only (`server_version_num >= 170000`), `transaction_timeout = 0` (a run on PostgreSQL 16 passes),
       the schema Job ending with a cleanly committed schema comment, the Dashboard's audit intent committed before its
@@ -1022,12 +1024,9 @@ Keep this file current: tick items when done, add items when scope changes.
       `NetworkPolicyAdmitsReferencingResources`, `NetworkPolicyAdmitsRoleInitToStore`, `ComposeDeployWaitsForPostgresThenSchemaExitCode`
       (a failing schema stops the deploy), `SchemaJobRetriesUntilRoleExists`, `GatewayPodsReachStore`,
       `ComposeSecretReadableByNode`, `LaunchdThrottleIntervalOne`, `PublishedStoreReplicatesSynchronously`, `ComposePublishesStrictDatabase`
-      (the Compose file's primary and two standbys, streaming as `<prefix>_replication` under the application names
-      `postgres_a` and `postgres_b`, read `quorum` and the nodes start `Strict`), `ComposeManualPromotionKeepsAcknowledgedCommits`
-      (operations.md's procedure promotes the standby holding every acknowledged commit, including when that standby
-      restarted after the primary was lost and its receive position no longer shows what it holds),
-      `ComposePrimaryParameterSurvivesRepublish` (after a promotion and `ComposePrimary` set, a new `aspire publish`
-      and deploy keep the promoted primary, and a server off its timeline refuses to start).
+      (the Compose file's one `postgres` runs with `fsync`, `full_page_writes` and `synchronous_commit` on and no
+      standby, and the nodes start `Strict` with failure domain `host`), `SingleInstanceWithoutSafeFailoverIsLocal`
+      (an undeclared single instance never claims `Strict`), `StartupLogNamesFailureDomain`.
 14. N9 hot restart's remaining operator side, on W's model (draft §10; ADR-084, ADR-098), after W12 and before W10: the
     `{cluster}-upgrade-check` Job and `aspire deploy` step, a plain Job that calls a running node's dry-run arm
     (`/admin/restart?dryRun=true` with the new manifest, `ManifestDiff`), including the rollback-safety check (a release whose new
