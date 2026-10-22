@@ -86,7 +86,7 @@ internal sealed partial class Connection
                     offset = 0;
                 }
 
-                Volatile.Write(ref _writer, 0);
+                Interlocked.Exchange(ref _writer, 0); // a full fence: HasQueued is read after the release is seen, or a Wake that met _writer == 1 is lost
                 if (Queue.HasQueued) _flusher!.Add(this); // queued after the last take: next beat
             }
         }

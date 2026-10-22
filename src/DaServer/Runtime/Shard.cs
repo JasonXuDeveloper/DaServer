@@ -301,7 +301,7 @@ internal sealed class Shard : CompletionThread
         finally
         {
             if (_stopRequested) Volatile.Write(ref _counters.PassStartedMs, 0); // a shard that stopped is not stalled; one that crashed is, for /alive
-            Volatile.Write(ref _closed, 1);
+            Interlocked.Exchange(ref _closed, 1); // a full fence: the queue is read after the flag is seen, or an admit racing it is stranded
             ForwardQueued();
             try
             {
