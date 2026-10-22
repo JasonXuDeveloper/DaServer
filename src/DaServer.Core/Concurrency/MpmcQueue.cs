@@ -129,7 +129,15 @@ internal sealed class MpmcQueue<T>
     /// core (never sleep a whole millisecond) so a preempted thread can finish.
     /// </summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static void WaitForSlot(ref SpinWait spinner) => spinner.SpinOnce(sleep1Threshold: -1);
+    private static void WaitForSlot(ref SpinWait spinner)
+    {
+#if NET
+        spinner.SpinOnce(sleep1Threshold: -1);
+#else
+        if (spinner.NextSpinWillYield) Thread.Yield(); // netstandard2.1's SpinOnce sleeps a millisecond in time
+        else spinner.SpinOnce();
+#endif
+    }
 }
 
 /// <summary>
