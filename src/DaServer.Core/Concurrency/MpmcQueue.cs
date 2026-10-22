@@ -58,6 +58,7 @@ internal sealed class MpmcQueue<T>
         var slots = _slots;
         long pos = Volatile.Read(ref _enqueuePos.Value);
         SpinWait spinner = default;
+        int contended = 0;
         while (true)
         {
             ref var slot = ref slots[pos & _mask];
@@ -65,12 +66,17 @@ internal sealed class MpmcQueue<T>
             long diff = seq - pos;
             if (diff == 0)
             {
-                if (Interlocked.CompareExchange(ref _enqueuePos.Value, pos + 1, pos) == pos)
+                long seen = Interlocked.CompareExchange(ref _enqueuePos.Value, pos + 1, pos);
+                if (seen == pos)
                 {
                     slot.Item = item;
                     Volatile.Write(ref slot.Sequence, pos + 1);
                     return true;
                 }
+
+                Contended(ref contended); // another producer took it: back off before trying the next position
+                pos = seen;
+                continue;
             }
             else if (diff < 0)
             {
@@ -90,6 +96,7 @@ internal sealed class MpmcQueue<T>
         var slots = _slots;
         long pos = Volatile.Read(ref _dequeuePos.Value);
         SpinWait spinner = default;
+        int contended = 0;
         while (true)
         {
             ref var slot = ref slots[pos & _mask];
@@ -97,7 +104,8 @@ internal sealed class MpmcQueue<T>
             long diff = seq - (pos + 1);
             if (diff == 0)
             {
-                if (Interlocked.CompareExchange(ref _dequeuePos.Value, pos + 1, pos) == pos)
+                long seen = Interlocked.CompareExchange(ref _dequeuePos.Value, pos + 1, pos);
+                if (seen == pos)
                 {
                     item = slot.Item;
                     // Release references held by the slot so pooled objects/strings can be collected.
@@ -106,6 +114,10 @@ internal sealed class MpmcQueue<T>
                     Volatile.Write(ref slot.Sequence, pos + _mask + 1);
                     return true;
                 }
+
+                Contended(ref contended);
+                pos = seen;
+                continue;
             }
             else if (diff < 0)
             {
@@ -128,6 +140,10 @@ internal sealed class MpmcQueue<T>
     /// Another thread is between taking a position and handing the slot over, two steps apart: spin, then yield the
     /// core (never sleep a whole millisecond) so a preempted thread can finish.
     /// </summary>
+    /// <summary>A lost exchange: spin 2, 4, ... 64 times before the next try, so losers stop bouncing the cursor's line.</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void Contended(ref int attempts) => Thread.SpinWait(1 << Math.Min(++attempts, 6));
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static void WaitForSlot(ref SpinWait spinner)
     {
