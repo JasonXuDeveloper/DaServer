@@ -110,9 +110,8 @@ suggests) or renaming the cluster starts a new membership document; the actor re
    nothing connects as the old prefix's roles, run in every database the cluster's stores use, for each old role,
    `REASSIGN OWNED BY "<old>" TO "<new prefix>_owner"; DROP OWNED BY "<old>";`, each name quoted as an identifier
    (`format('%I')`; a schema name can be multibyte or mixed case). The first hands over what it owns, the second
-   removes its grants (the schema's `USAGE`, the tables' DML, `EXECUTE` on `daserver_replication()`); both act on
-   the current database only. Then `DROP ROLE` each old role once on every server the stores use (roles are per
-   server); the old owner's `pg_read_all_stats` membership goes with it.
+   removes its grants (the schema's `USAGE`, the tables' DML); both act on the current database only. Then `DROP
+   ROLE` each old role once on every server the stores use (roles are per server).
 
 A major upgrade with `pg_upgrade` or a dump and restore gives the server a new `system_identifier`: re-mark the roles
 as in step 3 before starting, or the roles step refuses them.
@@ -122,16 +121,26 @@ as in step 3 before starting, or the roles step refuses them.
 (target, ADR-101) On Docker Compose `DaServer.Aspire` publishes one PostgreSQL with no replication: `Strict` within
 its failure domain, one host (`DaServer:Store:FailureDomain = host`). A crash or restart keeps every acknowledged
 commit, but losing the disk or the host loses everything since the last backup, so take regular backups
-(`pg_basebackup`, its default `-X stream` included, or WAL archiving with `archive_command` for point-in-time recovery;
-neither lowers the class, since a backup holds only a temporary replication slot) to another machine. Restore every
-store the cluster uses to one consistent point in time. If they cannot be (membership on its own instance restored to
-an earlier time than the records), stop the cluster, delete `m|<cluster>` and its keys, and start a new document as
-in [Moving membership](#moving-membership-to-another-store) step 5, which starts above every stamp. A restore into a
-freshly initialized server (a dump and restore) needs the roles re-marked, as that section's step 3 says. A restore puts the
-store, and the membership document, back in time: nodes that held a later membership version stop (a regression is a
-store fault, ADR-103) and restart on it, and anything released after the backup is gone, which `Strict` never
-promised across the host's loss. To survive an instance's loss, use the Kubernetes shape (three zones, quorum-aware
-failover).
+(`pg_basebackup`, or WAL archiving with `archive_command` for point-in-time recovery; the class rests on the
+declaration, so neither lowers it) to another machine. To survive an instance's loss, use the Kubernetes shape (three
+zones, quorum-aware failover).
+
+A restore puts a store back in time, and anything released after the backup is gone, which `Strict` never promised
+across the host's loss:
+
+1. Stop the whole cluster first, every time: nodes still running on a restored store would act on state they hold in
+   memory that the store no longer has (a `[Once]` sender reloaded with an older `OnceNext` against a receiver still
+   holding a later copy).
+2. Restore. When only the records were lost, restore the actor store alone and leave membership as it is: its
+   document never moves back, and claims of the restored records proceed.
+3. When membership is restored too, restore every store to one consistent point. Two instances restored "to the same
+   time" are only as consistent as their clocks, so when the stores sit on different instances, or cannot be brought
+   to one point, delete `m|<cluster>` and its keys instead and start a new document as
+   [Moving membership](#moving-membership-to-another-store) says: step 2 (the clock check, against the highest
+   placement version stamped in the records rather than the restored document's), step 3 (re-mark the roles: a
+   restore into a freshly initialized server, a dump and restore, has a new `system_identifier`) and step 5.
+4. Start the cluster. A node that still held a later membership version would stop (a regression is a store fault,
+   ADR-103), which step 1 avoids.
 
 ## Production views
 

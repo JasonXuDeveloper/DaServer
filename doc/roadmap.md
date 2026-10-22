@@ -336,13 +336,11 @@ Keep this file current: tick items when done, add items when scope changes.
         database, against its limit (not exported when unlimited) exported and alerted: `MembershipConnectionsLowAlerted`); the roles step (roles named by cluster and schema, or `RolePrefix`, shortened past 52 bytes with a SHA-256 suffix: `RolesStepIdempotent`,
         `RoleNamesFitAndRepeatForLongClusterNames` (a 63-byte cluster name and a long multibyte prefix),
         `RoleNamesMatchBetweenAspireAndSql` (`DaServer.Aspire`'s C# names equal the SQL's),
-        `RolesStepCreatesConfiguredSchema`, `RolesStepTakesOverExistingTables` (the schema, when not `public`, then the tables and the function), `RolesStepUpdatesPassword`,
-        `ConnectionLimitsSizedFromAutoscalerMax`, `MembershipRoleConnectionsReserved`, `RolesSeeStandbySyncState` (runtime, membership and Dashboard roles through `daserver_replication()`, only the owner
-        holding `pg_read_all_stats`; the function's `search_path` is fixed, so a caller's objects never run with the
-        owner's rights, and `PUBLIC` cannot execute it), `RolePrefixUniquePerServer` (roles marked in the transaction that creates them, by `COMMENT ON ROLE`, with the cluster's membership store server (`system_identifier`), database and schema: one cluster's second store database converges, another cluster's membership database on this server or another, another schema or an unmarked role is refused, naming `RolePrefix`; after a membership move, roles re-marked as operations.md says converge)); `PublishRefusesStorelessRecords` (`aspire publish` fails when any node's records or Dashboard
+        `RolesStepCreatesConfiguredSchema`, `RolesStepTakesOverExistingTables` (the schema, when not `public`, then the tables), `RolesStepUpdatesPassword`,
+        `ConnectionLimitsSizedFromAutoscalerMax`, `MembershipRoleConnectionsReserved`, `RolePrefixUniquePerServer` (roles marked in the transaction that creates them, by `COMMENT ON ROLE`, with the cluster's membership store server (`system_identifier`), database and schema: one cluster's second store database converges, another cluster's membership database on this server or another, another schema or an unmarked role is refused, naming `RolePrefix`; after a membership move, roles re-marked as operations.md says converge)); `PublishRefusesStorelessRecords` (`aspire publish` fails when any node's records or Dashboard
         would use the in-memory store); `AspireRunModeIsDevelopment` (run mode sets `DOTNET_ENVIRONMENT=Development`
         unless the AppHost sets one; publish never does); the
-        self-check declaring `Strict` only for the declared `DaServer:Store:PostgreSql:SafeFailover` shape with a matching configuration (`Quorum`: `ANY 1` over at least two standbys, however many stream; `None`: no synchronous standby names and no permanent physical slot);
+        class `Strict` only by the operator's declaration (`DaServer:Store:PostgreSql:Durability`, not set `Local`: `UndeclaredStoreIsLocal`), the self-check verifying only local durability (`synchronous_commit` `off` or `local` lowering it to `Local`, `remote_write` to `Replicated`), never the high-availability shape (`DeclaredStrictVerifiesOnlyLocalDurability`);
         in every class `fsync` or `full_page_writes` `off` making the class `Unsafe`, read on every new connection and
         every 10 s: a fresh start on it stays not ready before the membership join (`UnsafeAtStartStaysNotReady`), one
         finding it while serving, or a hot restart's standby, refuses nothing, goes on under the `Local` rules and raises
@@ -998,7 +996,7 @@ Keep this file current: tick items when done, add items when scope changes.
       schema-qualified), nodes on a DML-only role (the record and membership tables), every node group given the store's
       connection (gateways included: membership is there), the samples' role-init step before the schema Job (on
       Kubernetes the schema Job retries until the role exists), the Compose deploy order (`up -d --wait postgres`, then
-      `up --no-deps --force-recreate --exit-code-from schema schema`), no Helm hook; the published PostgreSQL (16 or later) `Strict` within its failure domain (ADR-101, `SafeFailover` and
+      `up --no-deps --force-recreate --exit-code-from schema schema`), no Helm hook; the published PostgreSQL (16 or later) `Strict` within its failure domain (ADR-101, the `Strict` declaration and
       `DaServer:Store:FailureDomain` set by DA): on Kubernetes a primary and two standbys under `ANY 1` in three zones with
       quorum-aware failover (`zones`; one standby's maintenance pauses nothing, the samples adding a PodDisruptionBudget
       through the publisher hook; writes pause without a standby), on Compose one crash-safe instance with no
@@ -1025,8 +1023,7 @@ Keep this file current: tick items when done, add items when scope changes.
       (a failing schema stops the deploy), `SchemaJobRetriesUntilRoleExists`, `GatewayPodsReachStore`,
       `ComposeSecretReadableByNode`, `LaunchdThrottleIntervalOne`, `PublishedStoreReplicatesSynchronously` (the Kubernetes chart's PostgreSQL), `ComposePublishesStrictDatabase`
       (the Compose file's one `postgres` runs with `fsync`, `full_page_writes` and `synchronous_commit` on and no
-      standby, and the nodes start `Strict` with failure domain `host`), `SingleInstanceWithoutSafeFailoverIsLocal`
-      (an undeclared single instance never claims `Strict`), `StandbyMaintenanceKeepsStrict` (one standby down keeps `Quorum` `Strict`), `BackupStreamingKeepsStrict` (a `pg_basebackup -X stream` keeps `None` `Strict`), `StartupLogNamesFailureDomain`.
+      standby, and the nodes start `Strict` with failure domain `host`), `StartupLogNamesFailureDomain`.
 14. N9 hot restart's remaining operator side, on W's model (draft §10; ADR-084, ADR-098), after W12 and before W10: the
     `{cluster}-upgrade-check` Job and `aspire deploy` step, a plain Job that calls a running node's dry-run arm
     (`/admin/restart?dryRun=true` with the new manifest, `ManifestDiff`), including the rollback-safety check (a release whose new

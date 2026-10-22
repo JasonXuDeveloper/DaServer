@@ -3270,45 +3270,40 @@ Replaced by ADR-098.
 - Decision (the PostgreSQL provider's obligations for `Strict`, `Confirm` and `Unknown`, ADR-102; the runtime only
   acts on the outcomes):
   - **`Strict` needs a commit no crash in the failure domain and no failover can lose**: `fsync`, `full_page_writes`
-    and `synchronous_commit` (`on` or `remote_apply`) on, and one of two shapes. **Replicated**:
-    `synchronous_standby_names = 'ANY 1 (…)'` over two standbys and quorum-aware failover that promotes a standby only
-    when it can prove that standby holds every acknowledged commit and waits otherwise (Patroni 4's
-    `synchronous_mode: quorum` with `synchronous_mode_strict: true`, which writes `synchronous_standby_names` itself;
-    CloudNativePG's quorum-based failover, 1.27 and later, with `postgresql.synchronous` `method: any` and
-    `dataDurability: required`; a managed service's equivalent); with no synchronous standby, writes, claims and
-    membership writes pause rather than degrade (lease reads still answer, so nothing freezes; heartbeats skip and
-    deaths wait; `DaServerStoreWritesBehind` and `DaServerMembershipWritePending`, the stated E3 exception).
-    **Single**: one instance with no standby and no failover at all, where crash recovery keeps every acknowledged
-    commit and nothing can roll back; its disk or host is the failure domain. Failover policy is not visible from
-    SQL, so the operator declares the shape, `DaServer:Store:PostgreSql:SafeFailover = Quorum | None` (failover never
-    promotes a standby missing an acknowledged commit, which no failover at all meets), and the self-check checks the
-    configuration, never how many standbys stream at the moment: `Quorum` is `Strict` when `synchronous_standby_names`
-    is `ANY 1 (…)` naming at least two standbys and `synchronous_commit` is `on` or `remote_apply` (zero or one
-    standby streaming stays `Strict`, writes pausing; a managed high-availability service declares `Quorum`, its
-    replicas possibly invisible to `pg_stat_replication`); `None` is `Strict` when `synchronous_standby_names` is
-    empty, `synchronous_commit` is `on` and no permanent physical replication slot exists (a backup's temporary slot
-    and walsender lower nothing), and is refused with `FailureDomain = zones`; anything else is `Replicated` or
-    `Local`, so an external single instance claims `Strict` only when its operator declares it. Rejected: counting
-    the standbys that stream, which lowered a correct deployment during a standby's maintenance and passed a primary
-    whose tool had emptied `synchronous_standby_names`. `DaServer.Aspire` sets the statement
-    and `DaServer:Store:FailureDomain` for what it publishes: on Kubernetes `Quorum`, a primary and two standbys in three zones
-    with quorum-aware failover (`zones`), so maintenance on one standby pauses nothing (the samples add a
-    PodDisruptionBudget through the publisher hook); on Docker Compose `None`, one crash-safe instance with no replication
-    (`host`), its disk's or host's loss not covered and backups the operator's protection. Rejected for Compose: a
-    primary and two standbys on the same host with manual promotion; it guarded only one container's data directory
-    against corruption while every other host or disk failure took all three, and it needed a persisted primary
-    choice, a replication role, entrypoint rules and a promotion procedure of its own. `pg_stat_replication` shows `state` and `sync_state` only to
-    members of `pg_read_all_stats`, which would also show every session's query text on the server, so the roles step
-    grants it to the owner role alone and creates a `SECURITY DEFINER` function owned by it, `daserver_replication()`,
-    in the configured schema of every database the cluster's stores use, with `search_path` fixed to `pg_catalog,
-    pg_temp` (so a caller's objects never run with the owner's rights), `EXECUTE` revoked from `PUBLIC`, returning only
-    `application_name`, `state` and `sync_state`, executable by the runtime, membership and Dashboard roles, called
-    schema-qualified (without it a production node or Dashboard never sees `Strict`; the gate and the connection gauges read only
-    a role's own backends, which need no grant). The local single-node database is `Local` and exempt.
-    In every class the provider reports `fsync` or `full_page_writes` `off` (a crash may corrupt the database
-    rather than lose recent commits), reading both on every new connection and every 10 s: the class is then
+    and `synchronous_commit` (`on` or `remote_apply`) on, and one of two deployments. **Three zones**: a primary and
+    two standbys under `synchronous_standby_names = 'ANY 1 (…)'` with quorum-aware failover that promotes a standby
+    only when it can prove that standby holds every acknowledged commit and waits otherwise (CloudNativePG's
+    quorum-based failover, 1.27 and later, with `postgresql.synchronous` `method: any` and `dataDurability:
+    required`; Patroni 4's `synchronous_mode: quorum` with `synchronous_mode_strict: true`; a managed service's
+    zone-redundant mode making the same promise); with no synchronous standby, writes, claims and membership writes
+    pause rather than degrade (lease reads still answer, so nothing freezes; heartbeats skip and deaths wait;
+    `DaServerStoreWritesBehind` and `DaServerMembershipWritePending`, the stated E3 exception). **One host**: one
+    instance with no standby and no failover at all, where crash recovery keeps every acknowledged commit and nothing
+    can roll back; its disk or host is the failure domain.
+  - **`Strict` rests on the operator's declaration**, `DaServer:Store:PostgreSql:Durability` (`Strict`, `Replicated`
+    or `Local`; not set is `Local`), with `DaServer:Store:FailureDomain`; one declaration covers every PostgreSQL store
+    of the node, declared at the weakest when they differ. The framework cannot verify a high-availability tool's
+    promise and does not try; the operator and the tool answer for it. The self-check verifies only what every
+    PostgreSQL shows without misjudging it: `synchronous_commit` `off` or `local` makes the class at most `Local`,
+    `remote_write` at most `Replicated`; the effective class is the lower of the declaration and that. Rejected:
+    verifying the high-availability shape from SQL, first by counting the standbys that stream (a standby's
+    maintenance lowered a correct deployment), then by matching the declared shape's configuration (Patroni rewrites
+    `synchronous_standby_names` to the standbys that are healthy, so maintenance still lowered it; managed services
+    replicating below SQL show no standby, so they could never pass; a backup tool's permanent slot lowered a single
+    instance); each check misjudged correct deployments without catching a tool that breaks its promise, and needed
+    `pg_stat_replication`, which PostgreSQL shows only to members of `pg_read_all_stats` (every session's query text
+    on the server). `DaServer.Aspire` declares `Strict` and the failure domain for what it publishes: on Kubernetes a
+    primary and two standbys in three zones with quorum-aware failover (`zones`), so maintenance on one standby
+    pauses nothing (the samples add a PodDisruptionBudget through the publisher hook); on Docker Compose one
+    crash-safe instance with no replication (`host`), its disk's or host's loss not covered and backups the
+    operator's protection. Rejected for Compose: a primary and two standbys on the same host with manual promotion;
+    it guarded only one container's data directory against corruption while every other host or disk failure took
+    all three, and it needed a persisted primary choice, a replication role, entrypoint rules and a promotion
+    procedure of its own. The local single-node database is `Local` and exempt.
+  - In every class the provider reports `fsync` or `full_page_writes` `off` (a crash may corrupt the database rather
+    than lose recent commits), reading the settings on every new connection and every 10 s: the class is then
     `Unsafe` (ADR-104), a fresh start stays not ready before it joins, and a serving node or a hot restart's standby
-    goes on under the `Local` rules and alerts; it declares `synchronous_commit` `off` or `local` as `Local`. The minimum is PostgreSQL 16.
+    goes on under the `Local` rules and alerts. The minimum is PostgreSQL 16.
   - **Every data source connects only to the primary**: the runtime's, membership's and the Dashboard's connection
     strings carry `Target Session Attributes=read-write` (`DaServer.Aspire` adds it) or name a single read-write
     endpoint, so a demoted node is never written to and no read is answered by a standby.
@@ -3525,7 +3520,8 @@ Replaced by ADR-098.
   unfinished audit, and a planned restart would audit every active root; Orleans, Akka.NET and Dapr promise no such
   detection either.
 - Decision: a provider declares its class, its self-check (at start and every `SelfCheckInterval`) may lower it, and the effective class is the lower
-  of the two, logged, exported (`daserver.store.durability_class`) and shown on the Dashboard. A production node
+  of the two (on PostgreSQL the operator declares it and the self-check verifies only local durability, since a
+  high-availability tool's promise is not visible from SQL: ADR-101), logged, exported (`daserver.store.durability_class`) and shown on the Dashboard. A production node
   refuses to start below `Strict` unless `DaServer:Store:AcceptDurability` (actor store) or
   `DaServer:Dashboard:AcceptDurability` names the class; membership always needs `Strict` (ADR-103); the in-memory
   store is `Strict` as a single node's membership (nothing outlives the process to roll back), while as an actor or
@@ -3539,7 +3535,8 @@ Replaced by ADR-098.
   holds per class: on `Strict` unchanged, no acknowledged write lost and no rollback across a crash within the
   deployment's failure domain and any failover the store performs (`DaServer:Store:FailureDomain`: three zones for what
   `DaServer.Aspire` publishes on Kubernetes, surviving the loss of any one instance; one host on Docker Compose, whose disk or host loss is not
-  covered and which the start-up log line names); below it the guarantee is
+  covered and which the start-up log line names; `unknown` below `host` below `zones`, one key per node naming the
+  weakest of its stores); below it the guarantee is
   **fencing only**: the version is the fencing token, so two owners' writes never mix, while output leaves at the
   provider's wait and a failover or crash may lose recent writes, index entries and claims whose effects already
   left. `[Once]` and `AskUntilAnswered` hold except across such a loss and value flows keep their reconciliation. The
@@ -3563,15 +3560,17 @@ Replaced by ADR-098.
   a replacement for stating it); a rollback audit on every failover term change (above: no portable term, crash
   recovery in place unseen, audit storms after planned restarts, state to carry across hot restarts); locking an
   `Unsafe` store against writes (it froze membership leases behind refused `Confirm`s, crash-looped nodes started
-  during it and lost hot restarts started before it, for a setting the alert already names).
+  during it and lost hot restarts started before it, for a setting the alert already names); verifying a
+  high-availability store's shape from SQL (Patroni rewrites `synchronous_standby_names` to the healthy standbys,
+  managed services replicating below SQL show none, a backup tool's slot looks like a standby: each check lowered
+  correct deployments without catching a tool that breaks its promise; ADR-101).
 - Consequences: R13 and E3 restated per class; the Dashboard and the alert rules show the effective class; below
   `Strict` the framework promises no detection of lost writes and reports only what it meets, which the documentation
   and the start-up log say. Tests `NonStrictStoreRefusedWithoutOptIn`, `MembershipRequiresStrict`,
   `DashboardStoreBelowStrictRefusedWithoutOptIn`, `SelfCheckLowersClass`, `OwnOlderVersionFencedAndCounted`,
   `UnsafeDurabilitySettingsDetected`, `UnsafeStoreDropsClassAndAlerts`, `UnsafeAtStartStaysNotReady`,
   `UnsafeDuringHotRestartTakesOver`, `InMemoryStoreRefusedForRecordsInProduction`, `ComposePublishesStrictDatabase`,
-  `SingleInstanceWithoutSafeFailoverIsLocal`, `StandbyMaintenanceKeepsStrict`, `BackupStreamingKeepsStrict`,
-  `StartupLogNamesFailureDomain`.
+  `UndeclaredStoreIsLocal`, `DeclaredStrictVerifiesOnlyLocalDurability`, `StartupLogNamesFailureDomain`.
 
 ## ADR-105 Every row has one writer; a deleted actor leaves a tombstone (amends ADR-099)
 - Context: two writes spanned actors: a receiver's write took `FOR KEY SHARE` on its sender's record so a forgotten
