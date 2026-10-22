@@ -298,7 +298,7 @@ Keep this file current: tick items when done, add items when scope changes.
         classes only; the key layout (records, ask rows, the queued-ask index, `OnceSenders` rows under their root; the due
         and ask indexes as hints written ahead of their record, kept with it when a batch is halved, naming the record
         version they precede and cleaned compared on their versions only once the header has reached it:
-        `DueEntryNeverLostToCleanup`); the activation stamp and the activation count in the record's version; `InMemoryStore` (behaves as `Strict`); the durability classes (ADR-104): the
+        `DueEntryNeverLostToCleanup`); the activation stamp and the activation count in the record's version; `InMemoryStore` (`Strict` as a single node's membership, `Local` for records and the Dashboard: `InMemoryStoreIsLocalForRecords`; a hot restart through records refused on it: `ThroughRecordsRefusedOnInMemoryStore`); the durability classes (ADR-104): the
         effective class the lower of the declaration and the self-check, `DaServer:Store:AcceptDurability` and
         `DaServer:Dashboard:AcceptDurability` (membership always `Strict`, no opt-in), `daserver.store.durability_class`,
         the started class carried over a hot restart and `daserver.store.unsafe_exempt` on development and `TestCluster` nodes,
@@ -324,8 +324,11 @@ Keep this file current: tick items when done, add items when scope changes.
         `ManyStatementWriteNotCancelled`, `TimedOutWriteNeverCancelled`, `BatchNeverCommitsWithoutCommit`,
         `HalfOpenWriteEndsAtScaledDeadline`, `UnansweredCommitLookedUp`, `AbandonedBackendTerminatedBeforeRetry`,
         `HalfOpenBeforeCommitReleasesLocks`, `DataSourcesRequireReadWrite`; a membership write's wait never cancelled
-        nor its backend terminated, at most one left per node name through `application_name`:
-        `MembershipWaitNeverTerminated`, `MembershipLeftoverBoundedPerName`); the roles step (`RolesStepIdempotent`,
+        nor its backend terminated, settled once that backend is gone by a `Confirm` on the lookup connection and the
+        entry's `write_seq` (the conditioned-on value plus one; a join starts at 1), a process waiting before its first
+        membership write until no other backend of the role in its database has waited in `COMMIT` past
+        `StatementTimeout`: `MembershipWaitNeverTerminated`, `MembershipLeftoverBoundedPerRole`; the role's connections
+        against its limit exported and alerted: `MembershipConnectionsLowAlerted`); the roles step (`RolesStepIdempotent`,
         `RolesStepCreatesConfiguredSchema`, `RolesStepTakesOverExistingTables`, `RolesStepUpdatesPassword`,
         `ConnectionLimitsSizedFromAutoscalerMax`, `MembershipRoleConnectionsReserved`, `RolesSeeStandbySyncState` (runtime, membership and Dashboard roles)); the
         self-check declaring `Strict` only with a synchronous standby and `DaServer:Store:PostgreSql:QuorumFailover`;
@@ -487,7 +490,7 @@ Keep this file current: tick items when done, add items when scope changes.
         the next rotation so a root with only stuck work is not woken at once, request
         bytes kept until the insert lands and read ahead for the next sends, a sent row keeping metadata only and its
         bytes re-read for each re-ask round in reads bounded by `BatchBytes`, unwritten rows during a store outage
-        growing in memory and landing in one write (`OutageBacklogLandsInOneWrite`), a data-only outage alerted by `DaServerStoreWritesBehind`
+        growing in memory and landing in one write (`OutageBacklogLandsInOneWrite`), an outage of data writes only (a locked table, a full disk) or of the synchronous standbys alerted by `DaServerStoreWritesBehind`
         (`StoreWritesBehindAlerts`; an unwritable root counted in `daserver.store.unwritable_roots`, alerted by
         `DaServerRecordUnwritable` and left out of the gauge: `UnwritableRootNotStoreBehind`), the next try set by phase
         and none once stopped; a probe of an inactive sender answered from its record and then its ask rows, in that order

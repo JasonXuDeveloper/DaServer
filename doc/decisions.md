@@ -1130,8 +1130,9 @@ Replaced by ADR-081.
     readiness: an outage would otherwise take every node out of its Service at once); the outage shows in
     `StoreDegraded` and the metrics. Hand-written SQL, no migration library. Today's `daserver_actors` table is
     neither read nor converted (pre-1.0).
-  - **Providers:** `IStore` (ADR-102) is all a provider implements. `InMemoryStore` serves tests and development and
-    behaves like a `Strict` store (versions, conditions, `Now`). `PostgreSqlStore` is the default for deployments,
+  - **Providers:** `IStore` (ADR-102) is all a provider implements. `InMemoryStore` serves tests, development and a single
+    storeless node: versions, conditions and `Now` as a `Strict` store, `Strict` as a single node's membership and
+    `Local` for records (ADR-104). `PostgreSqlStore` is the default for deployments,
     written with Npgsql and no ORM (values are opaque bytes, so the schema never follows the components); the record
     bytes are the world's pooled buffers, passed without copying. `AddPostgreSqlStore()` wires it on Aspire's Npgsql
     integration; the AppHost passes the connection string (`WithActorStore`).
@@ -3303,9 +3304,10 @@ Replaced by ADR-098.
     `idle_in_transaction_session_timeout = 30s`, server keepalive (10 s idle, 2 s interval, 5 probes) and
     `tcp_user_timeout = 30000`, so a lost client's backend that is not waiting for the standby ends within about 30 s;
     the roles' `CONNECTION LIMIT`s hold room for the backends a node can leave in `COMMIT` (`2 × WritesInFlight` per
-    world plus `ActivationSlots`, and per node name one membership write's, never terminated, since a process waits
-    before its first membership write until no earlier backend under its name, its `application_name`, still waits in
-    `COMMIT`). Claims, the Dashboard's writes, membership writes and the schema Job's last step commit the same way
+    world plus `ActivationSlots`, and per node process running when a standby outage begins one membership write's,
+    never terminated, since a process waits before its first membership write until no other backend of the
+    membership role in its database has waited in `COMMIT` longer than `StatementTimeout`, so replaced pods add
+    none; `pg_read_all_stats` shows a role every backend on the server, hence the role and database filters). Claims, the Dashboard's writes, membership writes and the schema Job's last step commit the same way
     and act only on a clean commit or a `Confirm`.
   - **`Confirm` writes before it reads**: one transaction that upserts the client's marker row
     (`daserver_confirm`), reads the keys and commits; only a clean `COMMIT` answers, since the marker's WAL follows
@@ -3319,9 +3321,11 @@ Replaced by ADR-098.
     invisible to other sessions until the wait ends, and ending it early is what makes it visible without the standby
     (checked on 16), so no node reads a membership write the standby may not have. An `Unknown` one stays pending
     until its backend, looked up by `(pid, backend_start)`, is gone: a `Confirm` while it waits could read before the
-    commit lands (checked on 16). Then the same session runs `Confirm`, whose marker commit waits for a standby, so
-    what it shows is durable even when the wait ended early (a fast shutdown, a crash-restart); the write landed if
-    and only if the node's entry shows a `write_seq` at or above the one written. The node re-reads the document after
+    commit lands (checked on 16). Then the lookup connection runs `Confirm`, whose marker commit waits for a standby
+    (never cancelled, repeated when it ends `Unknown`), so what it shows is durable even when the wait ended early (a
+    fast shutdown, a crash-restart); the write landed if and only if the node's entry, looked up by (name,
+    generation), shows a `write_seq` at or above the one written (`write_seq` = the value in the document the write is
+    conditioned on, plus one; a join starts at 1), and an absent entry means it did not land. The node re-reads the document after
     any reconnect before claiming; a version lower than one it held is a store fault (ADR-103).
 - Alternatives:
   - Asynchronous replication with a stated loss bound, as the only mode: released output (a granted item, a paid
@@ -3450,7 +3454,7 @@ Replaced by ADR-098.
   restart. The highest version held travels in a hot restart's handover. If membership's store drops below `Strict`
   while serving, `DaServerStoreDurabilityDropped` fires and nodes keep running. Nothing steps down while a membership
   write is pending: in a standby outage every node's writes wait alike, and `DaServerMembershipWritePending` reports
-  it. A joined node (its join write `Landed` or found by the `Get`) that
+  it. A joined node (its join write `Landed` or shown by the `Confirm` run after its backend ended) that
   reads a document without its own entry stops. A read is one `Get`, so a snapshot is atomic; the store's `Now` comes back with it and is never earlier than
   a write the read shows, which `dead_seen_at` relies on (the coordinator stamps the `Now` of its first read that
   showed the death). Membership uses its own store client and may point at a store instance of its own
@@ -3468,7 +3472,8 @@ Replaced by ADR-098.
     lost-history owner, and raise past a stored placement at claim time): each audit round found a new way it failed
     (two regressions in a row overwrote a live handoff source and let a claim race a live activation, the repair state
     did not survive a hot restart, a version number alone missed a regression another node had already written
-    past), for a fault a `Strict` store does not commit. A below-`Strict` membership opt-in went with it.
+    past), for a fault a `Strict` store commits only rarely (a crash-restart or fast shutdown, then a failover
+    before a standby had it). A below-`Strict` membership opt-in went with it.
   - A coordinator stepping down when its own write stays pending: in a standby outage every node's writes wait, so it
     exited with its unsaved state while nobody could write it `Dead` or take over.
 - Consequences: one membership implementation, tested by the kit against every provider; a store outage still pauses
@@ -3476,7 +3481,7 @@ Replaced by ADR-098.
   document, negligible at membership's rate. architecture.md section 4 states it; tests
   `MembershipDocumentBoundedUnderChurn`, `MembershipRequiresStrict`, `MembershipRegressionStopsTheNode`,
   `MembershipWaitNeverTerminated`, `StaleViewClaimRereadsAndForwards`, `ReplacedNodeAbsentFromDocumentStops`,
-  `UnknownMembershipWriteNeverHoldsLease`, `MembershipWritePendingAlerted`, `MembershipLeftoverBoundedPerName`,
+  `UnknownMembershipWriteNeverHoldsLease`, `MembershipWritePendingAlerted`, `MembershipLeftoverBoundedPerRole`, `MembershipConnectionsLowAlerted`,
   `NewMembershipDocumentStartsAboveStamps`,
   `RegressionDetectedAcrossHotRestart`.
 
@@ -3493,7 +3498,9 @@ Replaced by ADR-098.
   of the two, logged, exported (`daserver.store.durability_class`) and shown on the Dashboard. A production node
   refuses to start below `Strict` unless `DaServer:Store:AcceptDurability` (actor store) or
   `DaServer:Dashboard:AcceptDurability` names the class; membership always needs `Strict` (ADR-103); the in-memory
-  store is `Strict` (nothing outlives the process to roll back), so a single node serves on it; development and
+  store is `Strict` only as a single node's membership (nothing outlives the process to roll back) and `Local` as an
+  actor or Dashboard store (a crash loses every record), so a production node names `Local` for it, and a hot
+  restart through records refuses an in-memory actor store; development and
   `TestCluster` are exempt and log a warning. R13
   holds per class: on `Strict` unchanged, no acknowledged write lost and no rollback; below it the guarantee is
   **fencing only**: the version is the fencing token, so two owners' writes never mix, while output leaves at the
@@ -3524,7 +3531,7 @@ Replaced by ADR-098.
   and the start-up log say. Tests `NonStrictStoreRefusedWithoutOptIn`, `MembershipRequiresStrict`,
   `DashboardStoreBelowStrictRefusedWithoutOptIn`, `SelfCheckLowersClass`, `OwnOlderVersionFencedAndCounted`,
   `UnsafeDurabilitySettingsDetected`, `UnsafeStoreDropsClassAndAlerts`, `UnsafeAtStartStaysNotReady`,
-  `UnsafeDuringHotRestartTakesOver`.
+  `UnsafeDuringHotRestartTakesOver`, `InMemoryStoreIsLocalForRecords`, `ThroughRecordsRefusedOnInMemoryStore`.
 
 ## ADR-105 Every row has one writer; a deleted actor leaves a tombstone (amends ADR-099)
 - Context: two writes spanned actors: a receiver's write took `FOR KEY SHARE` on its sender's record so a forgotten
