@@ -3181,8 +3181,8 @@ Replaced by ADR-098.
     reaction. Growth past the cap comes only from those items, so it is alerted, not refused: written rows are
     bounded by the store, unwritten ones grow in memory while writes fail and land in one write when the store
     returns. A full outage is bounded
-    by the isolation freeze (about `IsolationTimeout` times the ask rate); a data-only outage (membership reads still
-    succeed, data writes fail) freezes nothing and grows until `DaServerStoreWritesBehind` (the oldest unsaved change
+    by the isolation freeze (about `IsolationTimeout` times the ask rate); an outage of writes alone (membership
+    reads still succeed, writes fail or wait) freezes nothing and grows until `DaServerStoreWritesBehind` (the oldest unsaved change
     past four `CheckpointInterval`s for 5 minutes) is acted on, the stated E3 exception; `DaServerOnceAskOld`, on the age of the oldest ask row not stopped per actor type (from the sweeping
     node's ask census, ADR-102), past three `MaxAskTimeout`s for 10 minutes, catches a stuck downstream whether the
     backlog grows or stays flat, and a healthy ramp's young rows never trip it; `DaServerOnceQueuedFull` fires on a
@@ -3271,8 +3271,9 @@ Replaced by ADR-098.
     when it can prove that standby holds every acknowledged commit and waits otherwise (Patroni 4's
     `synchronous_mode: quorum` with `synchronous_mode_strict: true`, which writes `synchronous_standby_names` itself;
     CloudNativePG's quorum-based failover, 1.27 and later, with `postgresql.synchronous` `method: any` and
-    `dataDurability: required`; a managed service's equivalent); with no synchronous standby, writes pause rather than
-    degrade (a data-only outage, `DaServerStoreWritesBehind`, the stated E3 exception). The self-check reads the
+    `dataDurability: required`; a managed service's equivalent); with no synchronous standby, writes, claims and
+    membership writes pause rather than degrade (lease reads still answer, so nothing freezes; heartbeats skip and
+    deaths wait; `DaServerStoreWritesBehind` and `DaServerMembershipWritePending`, the stated E3 exception). The self-check reads the
     replication settings and `pg_stat_replication` and declares `Strict` only when they match and the deployment states
     quorum-aware failover (`DaServer:Store:PostgreSql:QuorumFailover`, which `DaServer.Aspire` sets for what it
     publishes: a primary and two standbys in three zones, so maintenance on one standby pauses nothing; the samples add
@@ -3302,21 +3303,24 @@ Replaced by ADR-098.
     `idle_in_transaction_session_timeout = 30s`, server keepalive (10 s idle, 2 s interval, 5 probes) and
     `tcp_user_timeout = 30000`, so a lost client's backend that is not waiting for the standby ends within about 30 s;
     the roles' `CONNECTION LIMIT`s hold room for the backends a node can leave in `COMMIT` (`2 × WritesInFlight` per
-    world plus `ActivationSlots`, and its one membership write). Claims, membership writes, the Dashboard's writes and
-    the schema Job's last step commit the same way and act only on a clean commit or a `Confirm`.
+    world plus `ActivationSlots`, and per node process one membership write's, never terminated, plus a restarted
+    process's leftover). Claims, the Dashboard's writes and the schema Job's last step commit the same way and act
+    only on a clean commit or a `Confirm`; membership writes commit the same way and act only on a clean commit or
+    the `Get` below.
   - **`Confirm` writes before it reads**: one transaction that upserts the client's marker row
     (`daserver_confirm`), reads the keys and commits; only a clean `COMMIT` answers, since the marker's WAL follows
     every commit the read shows and the synchronous wait covers them all. It needs no write generation of its own and
     proves absent keys too (checked on PostgreSQL 16 under `ANY 1 (nostandby)`: the batch and the confirm's read
     return, both `COMMIT`s wait in `SyncRep`, a not-applied write's `COMMIT` returns at once).
-  - **Membership writes land the same way**: an `Unknown` one is settled by `Confirm` of the document; at most one
-    membership write per node is in flight (heartbeats skip while one is pending) and one of the membership data
-    source's two connections is kept for reads, so a commit waiting for the standby never starves the lease's reads.
-    A membership write's synchronous wait is never cancelled and its backend never terminated (unlike a data write's):
-    a commit waiting for its standby is invisible to other sessions until the wait ends, and ending it early is what
-    makes it visible without the standby (checked on 16), so no node reads a membership write the standby may not
-    have; its `Unknown` outcome is settled by `Confirm` on another connection while the backend keeps waiting. The
-    node re-reads the document after any reconnect before claiming; a version lower than one it held is a store fault
+  - **Membership writes have no `Confirm`**: at most one membership write per node is in flight (heartbeats skip
+    while one is pending) and one of the membership data source's two connections is kept for reads, so a commit
+    waiting for the standby never starves the lease's reads. A membership write's synchronous wait is never cancelled
+    and its backend never terminated (unlike a data write's): a commit waiting for its standby is invisible to other
+    sessions until the wait ends, and ending it early is what makes it visible without the standby (checked on 16), so
+    no node reads a membership write the standby may not have. An `Unknown` one stays pending until its backend, looked
+    up by `(pid, backend_start)`, is gone, and a plain `Get` then decides by version and content; a `Confirm` could not
+    decide sooner, since its read can miss a commit still waiting that lands after it (checked on 16). The node
+    re-reads the document after any reconnect before claiming; a version lower than one it held is a store fault
     (ADR-103).
 - Alternatives:
   - Asynchronous replication with a stated loss bound, as the only mode: released output (a granted item, a paid
@@ -3428,14 +3432,22 @@ Replaced by ADR-098.
   document's prefix (a dependent of the same guarded write), so churn never grows it; its size is exported and
   alerted above half the provider's `MaxValueBytes`, and a change that would exceed it is refused and logged.
   Membership needs a `Strict` store, with no opt-in below it (unsaved actor types have no epoch fencing behind it), and
-  nobody acts on a membership write the store can still lose: its writer only once it is `Landed` or confirmed, and
-  readers because the provider never lets a waiting commit become visible early (ADR-101). A version lower than one
+  nobody acts on a membership write the store can still lose: its writer only once it is `Landed` or found by a `Get`
+  after its backend ended (membership has no `Confirm`, ADR-101), and readers because the provider never lets a
+  waiting commit become visible early. A new document starts at a version taken from the store's `Now` in
+  milliseconds, so after membership moves to another store or the cluster is renamed its versions start above every
+  placement version an earlier document stamped into records and `Topic` subscriber stamps. A version lower than one
   the node held, or a stored placement version still above the document after a re-read (a stale view only forwards
   from the fresh one), therefore means the store broke `Strict` (on PostgreSQL, a crash-restart in place followed by a
-  failover before the standby received the commit, which quorum-failover tooling in strict mode prevents): a store
-  fault, which the framework does not repair. The node logs `MembershipVersionRegressed`, counts it (alert
-  `DaServerMembershipRegressed`, critical), stops serving and exits with code 75; the platform starts it again with a
-  new generation and persisted actors load from the store. A joined node (its join write `Landed` or confirmed) that
+  failover before the standby received the commit, which quorum-failover tooling in strict mode makes rarer, not
+  impossible): a store fault, which the framework does not repair. The node logs `MembershipVersionRegressed`, counts
+  it (alert `DaServerMembershipRegressed`, critical), stops as a node that reads itself `Dead` (it freezes its worlds
+  and fences its actors without writing) and exits with code 75; the platform starts it again with a new generation
+  and persisted actors load from the store. Every node that held the higher version stops, so the whole cluster may
+  restart. The highest version held travels in a hot restart's handover. If membership's store drops below `Strict`
+  while serving, `DaServerStoreDurabilityDropped` fires and nodes keep running. Nothing steps down while a membership
+  write is pending: in a standby outage every node's writes wait alike, and `DaServerMembershipWritePending` reports
+  it. A joined node (its join write `Landed` or found by the `Get`) that
   reads a document without its own entry stops. A read is one `Get`, so a snapshot is atomic; the store's `Now` comes back with it and is never earlier than
   a write the read shows, which `dead_seen_at` relies on (the coordinator stamps the `Now` of its first read that
   showed the death). Membership uses its own store client and may point at a store instance of its own
@@ -3454,12 +3466,15 @@ Replaced by ADR-098.
     (two regressions in a row overwrote a live handoff source and let a claim race a live activation, the repair state
     did not survive a hot restart, a version number alone missed a regression another node had already written
     past), for a fault a `Strict` store does not commit. A below-`Strict` membership opt-in went with it.
+  - A coordinator stepping down when its own write stays pending: in a standby outage every node's writes wait, so it
+    exited with its unsaved state while nobody could write it `Dead` or take over.
 - Consequences: one membership implementation, tested by the kit against every provider; a store outage still pauses
   the whole cluster (R5), unless membership points at a separate `Strict` instance; a change rewrites the whole
   document, negligible at membership's rate. architecture.md section 4 states it; tests
   `MembershipDocumentBoundedUnderChurn`, `MembershipRequiresStrict`, `MembershipRegressionStopsTheNode`,
-  `MembershipWaitNeverTerminated`, `StaleViewClaimRereadsNotRaises`, `ReplacedNodeAbsentFromDocumentStops`,
-  `UnknownMembershipWriteNeverHoldsLease`, `MembershipWritePendingAlerted`, `StuckCoordinatorStepsDown`.
+  `MembershipWaitNeverTerminated`, `StaleViewClaimRereadsAndForwards`, `ReplacedNodeAbsentFromDocumentStops`,
+  `UnknownMembershipWriteNeverHoldsLease`, `MembershipWritePendingAlerted`, `NewMembershipDocumentStartsAboveStamps`,
+  `RegressionDetectedAcrossHotRestart`.
 
 ## ADR-104 Durability classes: `Strict`, `Replicated`, `Local`
 - Context: R13 promised that released output survives every failover, which only a `Strict` store keeps (ADR-101). Many

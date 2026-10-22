@@ -339,16 +339,17 @@ Keep this file current: tick items when done, add items when scope changes.
         PolarDB for PostgreSQL, CockroachDB, YugabyteDB) named supported only once the kit passes against each;
       - membership and fencing: the membership table (Orleans' protocol, ADR-103, architecture.md section 4) as one
         versioned document through `IStore` (a conditional put per change, one `Get` per read: `MembershipViewReadAtomic`;
-        heartbeats as keys of their own, written only by their member; an `Unknown` write settled by a `Confirm` of its own, the lease resting only on plain reads (`UnknownMembershipWriteNeverHoldsLease`); a claim reading a higher
-        stored placement version re-reading the document, a stale view only forwarding (`StaleViewClaimRereadsNotRaises`);
+        heartbeats as keys of their own, written only by their member; an `Unknown` write pending until its never-terminated backend is gone, then decided by a `Get` (no `Confirm`: `MembershipWaitNeverTerminated`), the lease resting only on plain reads (`UnknownMembershipWriteNeverHoldsLease`); a new document's version from the store's `Now` in ms (`NewMembershipDocumentStartsAboveStamps`); a claim reading a higher
+        stored placement version re-reading the document, a stale view only forwarding (`StaleViewClaimRereadsAndForwards`);
         a version below one the node held, or a stored placement still above a fresh document, a store fault: logged,
-        counted, `DaServerMembershipRegressed`, the node exiting with code 75 (`MembershipRegressionStopsTheNode`); the
+        counted, `DaServerMembershipRegressed`, the node freezing and fencing without writing and exiting with code 75
+        (`MembershipRegressionStopsTheNode`), the highest version held carried by a hot restart
+        (`RegressionDetectedAcrossHotRestart`); the
         document re-read after a reconnect; `Dead` entries moved to keys of their own at re-placement and the document's size alerted
         (`MembershipDocumentBoundedUnderChurn`), a node whose entry left the document stopping, peers refusing a
         generation their view does not list (`ReplacedNodeAbsentFromDocumentStops`); one membership write in
         flight, heartbeats skipped while one is pending and its age alerted (`daserver.membership.write_pending_age`,
-        `DaServerMembershipWritePending`: `MembershipWritePendingAlerted`; a coordinator stuck past `IsolationExit` stepping
-        down: `StuckCoordinatorStepsDown`), its own store client with a connection kept
+        `DaServerMembershipWritePending`: `MembershipWritePendingAlerted`; nothing steps down), its own store client with a connection kept
         for reads: `MembershipReadsAnswerWhileCommitWaits`) and the in-memory store (one node, `TestCluster`); joining (generation
         max(Unix ms · 2^16 + 16 random bits, recorded max + 1), older generations of the name written `Dead`, connectivity checked before
         `Active`), probes on a ring, indirect probes, suspicion votes and death declarations, the table refresh and

@@ -78,6 +78,18 @@ without a restart of the cluster and without losing a ticket, in three rolling d
 Each step accepts what the previous one signs, so old and new nodes link and resume each other's clients throughout;
 finish a step on every node before starting the next.
 
+## Moving membership to another store
+
+(target, ADR-103) Moving membership to its own instance (`WithMembershipStore`, as `DaServerMembershipDocumentLarge`
+suggests) or renaming the cluster starts a new membership document; the actor records stay where they are:
+
+1. Stop the whole cluster (a rolling move would split it between two documents).
+2. Change the configuration and start the nodes. The first creates the new document at a version taken from the
+   store's `Now` in milliseconds, so it starts above every placement version the old document stamped into records
+   and `Topic` subscriber stamps: claims of existing records proceed, and a subscriber stamped under the old document
+   is refused once, answered `NotSubscribed`, and subscribes again.
+3. Delete the old document's keys (`m|<cluster>` and its prefix) from the old store once nothing reads them.
+
 ## Production views
 
 The Aspire dashboard of a deployment is for diagnosis; the durable views are the platform's monitoring. In
@@ -110,7 +122,7 @@ The repository ships two starting points, checked against a running node:
   Most rules group by `cluster`, `type` and `node`; the exceptions: `DaServerAskLatencyHigh`, a type's p99, by `cluster`
   and `type`; `DaServerOnceAskOld` by `cluster`, `type` and `actor_type`; `DaServerMembershipDocumentLarge`, about the
   one document, by `cluster`; `DaServerOnceStaleAsking`, whose stopped-ask gauge is counted from the store by whichever node sweeps and maps the
-  hosting server type onto `type`, by `cluster` and `type`; both it and `DaServerOnceAskOld` keep `actor_type` as a label, StaleAsking naming it in its description and AskOld in its summary; `DaServerMembersDisagree` also keeps `cluster`, `type` and `node`: one alert per lagging node. So Alertmanager groups an incident per rule and server type; a
+  hosting server type onto `type`, by `cluster` and `type`; both it and `DaServerOnceAskOld` keep `actor_type` as a label, StaleAsking naming it in its description and AskOld in its summary; `DaServerGcPauses` by `daserver_cluster`, `job` and `instance` (the runtime's own GC metrics carry those); `DaServerMessagesDropped` adds `reason`; `DaServerStoreUnsafe` and `DaServerStoreDurabilityDropped` add `store`; `DaServerMembersDisagree` also keeps `cluster`, `type` and `node`: one alert per lagging node. So Alertmanager groups an incident per rule and server type; a
   label a node does not send yet is empty, so the rules work on one cluster today. `DaServerNodeSilent` fires for a
   node seen in the last 15 minutes that has pushed nothing for two minutes, whose series would otherwise vanish and
   resolve its alerts; a node whose final push carries the `close` stop phase stopped gracefully and is not reported (a
