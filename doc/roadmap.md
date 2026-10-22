@@ -303,15 +303,15 @@ Keep this file current: tick items when done, add items when scope changes.
         `DaServer:Membership:AcceptDurability` and `DaServer:Dashboard:AcceptDurability`, `daserver.store.durability_class`,
         below `Strict` fencing as the only guarantee (no loss detection; the class logged at start), an own-token older
         version in `NotApplied` or `Confirm` fenced, reloaded and counted in `daserver.store.regressions`, any other
-        stored version (another token, the key absent) fenced, and an unsafe setting refused at start and locking the
-        store against writes when found later (`NonStrictStoreRefusedWithoutOptIn`, `MembershipBelowStrictRefusedWithoutOptIn`,
+        stored version (another token, the key absent) fenced, and an unsafe setting making the class `Unsafe`, a node
+        not ready at start and working as `Local` when it is found later (`NonStrictStoreRefusedWithoutOptIn`, `MembershipBelowStrictRefusedWithoutOptIn`,
         `DashboardStoreBelowStrictRefusedWithoutOptIn`,
         `SelfCheckLowersClass`, `OwnOlderVersionFencedAndCounted`, `RolledBackEpochNeverMatchesOtherOwner`,
         `ActivationStampOrdersUnsavedReactivation`); the conformance kit in
         `DaServer.Testing` (contract, per-key linearizability with a shipped checker, fault injection through a kit TCP
         proxy, failover per class, self-check), run against `InMemoryStore` and PostgreSQL in CI (layer 4 nightly);
       - the PostgreSQL provider (`DaServer.Persistence.PostgreSql`, `PostgreSqlStore`, `AddPostgreSqlStore`; PostgreSQL
-        16 or later): the `daserver_kv`, `daserver_membership_kv` and `daserver_confirm` tables created only by the
+        16 or later): the `daserver_kv`, `daserver_membership_kv`, `daserver_dashboard_kv` and `daserver_confirm` tables created only by the
         schema mode under a polled advisory lock, ending in a cleanly committed `COMMENT ON TABLE` (`SchemaJobRerunsIdempotently`,
         `SchemaQualifiesEveryObject`, `SchemaGrantsRuntimeRoleFromConnectionString`); `Get`, `Scan`, the guarded-write
         batch over `unnest` and `Confirm` by a marker write (architecture.md section 4's statements:
@@ -325,17 +325,18 @@ Keep this file current: tick items when done, add items when scope changes.
         `RolesStepCreatesConfiguredSchema`, `RolesStepTakesOverExistingTables`, `RolesStepUpdatesPassword`,
         `ConnectionLimitsSizedFromAutoscalerMax`, `MembershipRoleConnectionsReserved`, `RolesSeeStandbySyncState` (runtime, membership and Dashboard roles)); the
         self-check declaring `Strict` only with a synchronous standby and `DaServer:Store:PostgreSql:QuorumFailover`;
-        in every class `fsync` or `full_page_writes` `off` refused at start and locking the store against writes when
-        found later, read on every new connection as well as in each check, re-checked every 10 s while locked
-        (development and `TestCluster` exempt with a warning: they keep writing and export the class they found),
-        `synchronous_commit` `off` or `local` declared `Local` (`UnsafeDurabilitySettingsDetected`,
-        `UnsafeStoreRefusesWritesKeepsReads`); the BenchmarkDotNet gate
+        in every class `fsync` or `full_page_writes` `off` making the class `Unsafe`, read on every new connection as
+        well as in each check and re-checked every 10 s while it holds: a node starting on it stays not ready
+        (`UnsafeAtStartStaysNotReady`), one finding it later refuses nothing, works as `Local` and raises
+        `DaServerStoreUnsafe` (`UnsafeStoreDropsClassAndAlerts`; development and `TestCluster` exempt with a warning:
+        they start and export the class they found), `synchronous_commit` `off` or `local` declared `Local`
+        (`UnsafeDurabilitySettingsDetected`); the BenchmarkDotNet gate
         `GenericTableCommitThroughput` (the generic table kept only within 10% of typed columns at 1 and 5 ms of injected
         latency, else typed columns behind the same primitives); the wire family's variants (Aurora, AlloyDB, Neon,
         PolarDB for PostgreSQL, CockroachDB, YugabyteDB) named supported only once the kit passes against each;
       - membership and fencing: the membership table (Orleans' protocol, ADR-103, architecture.md section 4) as one
         versioned document through `IStore` (a conditional put per change, one `Get` per read: `MembershipViewReadAtomic`;
-        heartbeats as keys of their own, written only by their member; an `Unknown` write settled by `Confirm`; a lower
+        heartbeats as keys of their own, written only by their member; an `Unknown` write settled by a `Confirm` of its own, the lease resting only on plain reads (`UnknownMembershipWriteNeverHoldsLease`); a lower
         version read after a failover adopted and logged: `MembershipVersionRegressionAfterFailoverAdopted`, the highest
         version held raised past, with every type's placement version, before the next claim, a claim reading a higher
         stored placement version re-reading the document and raising past it only when the fresh one is still below
@@ -410,7 +411,7 @@ Keep this file current: tick items when done, add items when scope changes.
         higher seed: `RecreatedSenderRowKept`) or the receiver's own record is (its rows as a receiver marked
         `orphan_after` in its tombstone's write, kept so a re-activation reads the old
         marks: `DeletedReceiverRefusesLateAttempt`; a change to the row clears its in-memory mark and the idle scan keeps rows
-        with entries: `RecreatedReceiverKeepsEntriesPastOrphanAfter`), a receiver deleted only once its `Unacked` is empty, it owns no
+        with entries: `RecreatedReceiverKeepsEntriesPastOrphanAfter`), its `Unacked` sized by how long an entry lives (BenchmarkDotNet `OnceReceiverWriteBytes`, the bytes a receiver's write adds per entry), a receiver deleted only once its `Unacked` is empty, it owns no
         ask row and `MaxAskTimeout + 2 × ClockSkew` has passed since the later of the `Deleting` write and its last
         `[Once]` admission (`DeleteWaitsForUnackedEmpty`; `root.Delete()` answers `Outstanding` while the root owns
         any ask row, in any state: `DeleteRefusedWhileAsking`; deletion a one-way passage: no system, reminder or
@@ -573,7 +574,7 @@ Keep this file current: tick items when done, add items when scope changes.
       `CoordinatorHotRestartStaysCoordinator`, `ExpiredRestartWrittenDead`,
       `ColdClusterRestartNeverReusesGeneration`, `ParallelFirstNodesFormOneCluster`, `ArmWithoutStandbyExpires`,
       `FreezeAbortsWhenStoreHangsNodeResumes`, `TornStreamNackedNodeResumes`, `RestartingTagNotHandedOver`, `AbortedRestartRaisesResumed`, `PeerBackoffResetOnRestartedHello`,
-      `ForwardingMarkerToLeftNodeFallsBack`, `RequestHeldThroughHotRestartExpires`, `MigrationDoesNotExtendRequestBudget`,
+      `ForwardingMarkerToLeftNodeFallsBack`, `ForwardingMarkerDroppedWhenKeyReturns`, `RequestHeldThroughHotRestartExpires`, `MigrationDoesNotExtendRequestBudget`,
       `RepeatAfterCrashGetsStoredReply`, `IdleDeactivationWaitsForPendingDueAndAsks`, `StoreOutageBoundsMemoryAndRecoversWithoutHerd`,
       `PoisonActorBacksOffClaims`, `RebalancePausesDuringDrainAndRestart`,
       `TimeNoticeRepushedOnResume`, `ManifestDiffPicksPath`, `ComposeRestartOneNodeAtATime`,
@@ -616,7 +617,7 @@ Keep this file current: tick items when done, add items when scope changes.
       `StandbySocketPathTooLongRefused` (at start and at publish), `StandbyTakingLockWithoutAckRunsNormalStart`,
       `LaunchdStandbyKickstarted`, `SystemdTemplateInstanceEnvironment`,
       `ArmRefusedWhenStandbyDoesNotFit`, `StandbyPipeOwnerOnly`, `HandedOverProcessParksInPlace` (it never exits: no
-      supervisor restart, a Kubernetes pod stays Ready; its memory returned), `ComposeStandbyHandover` (the holder keeps the address),
+      supervisor restart, a Kubernetes pod stays Ready; its memory returned), `ComposeStandbyHandover` (the holder keeps the address), `ComposePairBackAfterDaemonRestart`,
       `DueHeapDefersUnclaimedArrival`, `DueHeapSkipsRearmedEntry`, `SharesNeverExceedNodeLimit` (more
       worlds than the limit), `ArmAnswersAfterWriteRound`, `ArmRefusedDuringHandoff`,
       `FenceMissingRejoinSetsMissedPushes`, `FlushedFramesAppliedBeforeTakeOver`, `SaveEntitiesOutsidePassOnly`,
@@ -1683,7 +1684,20 @@ and cards, a manual clock), fails before its fix, and passes after it.
       handing its slot over: shard dispatch refused as `Overloaded`, pools dropping and allocating buffers. A slot one
       lap behind is full only when every position is still taken, empty only when no producer took it; otherwise the
       caller spins and yields, as `ConcurrentQueue`'s segments and crossbeam's `ArrayQueue` do
-      (`MpmcQueueNeverFalselyFullOrEmpty`; 5.3M false fulls in 8M operations at 4 threads before, none after).
+      (`MpmcQueueNeverFalselyFullOrEmpty`; 5.3M false fulls in 8M operations at 4 threads before, none after). A lost
+      exchange of a cursor then backs off 2, 4, ... 64 spins and retries from the position it returned, so the losers
+      stop bouncing the cursor's line. BenchmarkDotNet on one machine (ns per operation):
+
+      | Benchmark | Before the fix | Fix | Fix and back-off |
+      |---|---|---|---|
+      | `PoolBenchmark.Queue`, 4 / 16 threads | 306.9 / 173.5 (failed operations counted) | 292.8 / 352.4 | 151.6 / 144.0 |
+      | `PoolBenchmark.QueueBcl` (`ConcurrentQueue`), 4 / 16 threads | | 295.1 / 280.9 | 310.2 / 325.4 |
+      | `PoolBenchmark.Buffers` / `Objects`, 16 threads | 11.5 / 7.0 | 9.8 / 6.8 | 9.7 / 6.9 |
+      | `MessageBenchmark` Local / Remote | 586.1 / 844.6 | 500.7 / 800.7 | 468.6 / 752.3 |
+      | `RpcBenchmark.Calls` | | | within 3.5% of the fix in every case, allocations unchanged |
+
+      The pool rows ran on one machine before a container restart; the `MessageBenchmark` and `RpcBenchmark` fix and
+      back-off columns ran back to back after it, on a slower machine, so its before column does not compare with them.
 - [x] CQ2 A shard stopping and an admit racing it, and a flushed connection's carry loop and a `Wake`, each stored a
       flag and then read what the other thread stored (store buffering, allowed on x64): a frame stranded in a stopped
       shard, a connection stalled until closed as a slow consumer. Full fences (`Interlocked.Exchange`) on both stores;

@@ -1097,7 +1097,8 @@ Replaced by ADR-081.
     new key): the next epoch for the key (the stored or the tombstone's + 1), the write generation reset, the owner
     taken only with a strictly newer placement version (or the same version and owner, a retry); the displaced owner,
     known from the `Get`, gets `Fence(key, version)` at once with the version the `Get` showed, and fences only the
-    activation whose version is that one (a delayed `Fence` never destroys a later activation of the key). A migration's arrival claims the same way, compared on the
+    activation whose token (epoch, owner, generation, activation count) is that version's, whatever its write
+    generation (a delayed `Fence` never destroys a later activation of the key). A migration's arrival claims the same way, compared on the
     version the source's last write left. A claim acts only once it has `Landed`, or `Confirm` shows its version
     (ADR-101).
   - **Writes:** each world writes the roots due at a tick end as one batch of guarded writes, one per root (the record
@@ -1652,7 +1653,7 @@ Replaced by ADR-081.
       placement change, a membership change or a slot-table move (ADR-079): the table version of that change, so
       every node derives the same versions; frames carry the highest seen; a
       migration's arrival writes it too), and a claim that displaces a live owner sends it
-      `Fence(key, version)` (the version it displaced; only that activation is fenced), so two activations never overlap until the loser's next write; claims are idempotent, so
+      `Fence(key, version)` (the version it displaced; only the activation holding that token is fenced), so two activations never overlap until the loser's next write; claims are idempotent, so
       a retried statement or a restart after a migration's arrival does not fence the claimant itself;
     - a move hands off before the target claims (ADR-072's "mail first", kept): mail for a key of a slot the node
       just received parks on an `Arriving` placeholder while the node asks the source (`HandoffQuery`, carrying the
@@ -1669,7 +1670,8 @@ Replaced by ADR-081.
       write or an old `Fence` from matching another owner's even when a store rollback hands an epoch out twice;
     - generations are max(Unix ms · 2^16 + 16 random bits, recorded max + 1), so a cold restart of the whole cluster
       never reuses a generation, and two processes that lost the recorded history and start in the same millisecond
-      do not share one (nor an owner token), and the first writer creates the membership document, so parallel starts never form two clusters.
+      almost never share one (nor an owner token; the join is a versioned write, so a second joiner re-reads and takes
+      the recorded max + 1), and the first writer creates the membership document, so parallel starts never form two clusters.
   - **Replies, presences and retries are data with stated guarantees** (the table "每条路径保证什么" in the draft's §11):
     - Everything one sender sends to one target arrives in send order, answers included (ADR-096). Ordinary progress is
       written in batches; a valuable change calls `root.Commit()`, which holds the item's output until the tick-end
@@ -3278,8 +3280,8 @@ Replaced by ADR-098.
     members of `pg_read_all_stats`, so the roles step grants it to the runtime, membership and Dashboard roles (without
     it a production node or Dashboard never sees `Strict`). The local single-node database is `Local` and exempt.
     In every class the self-check refuses `fsync` or `full_page_writes` `off` (a crash may corrupt the database
-    rather than lose recent commits), reading both on every new connection as well as in each check: at start the
-    node refuses to start, and found later the store is locked against writes (ADR-104); it declares `synchronous_commit` `off` or `local` as `Local`. The minimum is PostgreSQL 16.
+    rather than lose recent commits), reading both on every new connection as well as in each check: the class is then
+    `Unsafe` (ADR-104), a node stays not ready at start, and one that finds it later keeps working as `Local` and alerts; it declares `synchronous_commit` `off` or `local` as `Local`. The minimum is PostgreSQL 16.
   - **Every data source connects only to the primary**: the runtime's, membership's and the Dashboard's connection
     strings carry `Target Session Attributes=read-write` (`DaServer.Aspire` adds it) or name a single read-write
     endpoint, so a demoted node is never written to and no read is answered by a standby.
@@ -3445,7 +3447,8 @@ Replaced by ADR-098.
   the whole cluster (R5), unless membership points at a separate `Strict` instance; a change rewrites the whole
   document, negligible at membership's rate. architecture.md section 4 states it; tests
   `MembershipDocumentBoundedUnderChurn`, `MembershipVersionRegressionAfterFailoverAdopted`,
-  `StrandedPlacementRaisedPast`, `StaleViewClaimRereadsNotRaises`, `ReplacedNodeAbsentFromDocumentStops`.
+  `StrandedPlacementRaisedPast`, `StaleViewClaimRereadsNotRaises`, `ReplacedNodeAbsentFromDocumentStops`,
+  `UnknownMembershipWriteNeverHoldsLease`.
 
 ## ADR-104 Durability classes: `Strict`, `Replicated`, `Local`
 - Context: R13 promised that released output survives every failover, which only a `Strict` store keeps (ADR-101). Many
@@ -3456,7 +3459,7 @@ Replaced by ADR-098.
   recovers in place with nothing that changes, a hot restart would have to carry each partition's term and an
   unfinished audit, and a planned restart would audit every active root; Orleans, Akka.NET and Dapr promise no such
   detection either.
-- Decision: a provider declares its class, its start-up self-check may lower it, and the effective class is the lower
+- Decision: a provider declares its class, its self-check (at start and every `SelfCheckInterval`) may lower it, and the effective class is the lower
   of the two, logged, exported (`daserver.store.durability_class`) and shown on the Dashboard. A production node
   refuses to start below `Strict` unless `DaServer:Store:AcceptDurability` (actor store),
   `DaServer:Membership:AcceptDurability` (membership) or `DaServer:Dashboard:AcceptDurability` names the class; development and `TestCluster` are exempt and log a warning. R13
@@ -3469,18 +3472,22 @@ Replaced by ADR-098.
   A root that writes again and finds its own token at an older generation is fenced, reloaded and counted
   (`daserver.store.regressions`, not alerted), so a loss is never mistaken for a race and written over; that reports
   what it meets and promises no coverage. A setting that can corrupt rather than lose writes (PostgreSQL's `fsync` or
-  `full_page_writes` off) is unsafe in every class: refused at start; found later, the store is locked against writes
-  (effective class `Unsafe`, below `Local`: data writes, claims, `Confirm` and membership writes refused, held output
-  kept, reads and lease reads going on, re-checked every 10 s until it passes, `DaServerStoreDurabilityDropped`);
-  development and `TestCluster` are exempt with a warning: they keep writing and export the class they found.
+  `full_page_writes` off) is unsafe in every class: the effective class is `Unsafe`, below `Local`, re-checked every
+  10 s until it passes. Found at start, the node stays not ready (the startup probe counts the wait as progress) and
+  becomes ready once the setting is fixed; found later, nothing is refused, the store keeps working as `Local`
+  (fencing only) and `DaServerStoreUnsafe` fires within 30 s. Development and `TestCluster` are exempt with a warning:
+  they start and export the class they found.
 - Alternatives: refusing every store below `Strict` (excludes most Redis and MySQL estates); accepting them silently;
   per-store waits (`WAIT`, semi-sync, `w: majority`) presented as equal (they are how a provider reaches its class, not
   a replacement for stating it); a rollback audit on every failover term change (above: no portable term, crash
-  recovery in place unseen, audit storms after planned restarts, state to carry across hot restarts).
+  recovery in place unseen, audit storms after planned restarts, state to carry across hot restarts); locking an
+  `Unsafe` store against writes (it froze membership leases behind refused `Confirm`s, crash-looped nodes started
+  during it and lost hot restarts started before it, for a setting the alert already names).
 - Consequences: R13 and E3 restated per class; the Dashboard and the alert rules show the effective class; below
-  `Strict` lost writes are invisible to the framework, which the documentation and the start-up log say. Tests
-  `NonStrictStoreRefusedWithoutOptIn`, `SelfCheckLowersClass`, `OwnOlderVersionFencedAndCounted`,
-  `UnsafeDurabilitySettingsDetected`, `UnsafeStoreRefusesWritesKeepsReads`.
+  `Strict` the framework promises no detection of lost writes and reports only what it meets, which the documentation
+  and the start-up log say. Tests `NonStrictStoreRefusedWithoutOptIn`, `MembershipBelowStrictRefusedWithoutOptIn`,
+  `DashboardStoreBelowStrictRefusedWithoutOptIn`, `SelfCheckLowersClass`, `OwnOlderVersionFencedAndCounted`,
+  `UnsafeDurabilitySettingsDetected`, `UnsafeStoreDropsClassAndAlerts`, `UnsafeAtStartStaysNotReady`.
 
 ## ADR-105 Every row has one writer; a deleted actor leaves a tombstone (amends ADR-099)
 - Context: two writes spanned actors: a receiver's write took `FOR KEY SHARE` on its sender's record so a forgotten
