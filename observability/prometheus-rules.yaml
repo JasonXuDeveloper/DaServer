@@ -429,7 +429,7 @@ groups:
           severity: critical
         annotations:
           summary: "{{ $labels.node }} read a membership version older than one it held and stopped"
-          description: "The membership store lost a write it had shown, which a Strict store does only rarely: a failover that lost a commit (a crash-restart or fast shutdown, then a failover before a standby had it) or a restore from a backup. Check the membership database's failover (quorum-aware, strict mode), its synchronous standbys and whether it was restored; the node restarts with a new generation."
+          description: "The membership store lost a write it had shown, which a Strict store does only rarely: a failover that lost a commit (a crash-restart or fast shutdown, then a failover before a standby had it) or a restore from a backup. Check the membership database's failover (quorum-aware, strict mode), its synchronous standbys and whether it was restored; the node restarts with a new generation. If it keeps firing after the restarts, a record carries a placement version the store lost: stop the cluster and start a new membership document (operations.md, Moving membership, steps 1, 2 and 5)."
           daserver_limit: "0"
           daserver_unit: "regressions"
 
