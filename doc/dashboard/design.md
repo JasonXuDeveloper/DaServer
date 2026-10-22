@@ -494,8 +494,8 @@ Every action runs on the Dashboard's server, never in the browser, so closing th
   action id, which the page shows. The intent has `Landed` in the Dashboard's store before the action's key is
   written, and the call goes out only once that key has landed too; a write whose outcome is unknown (a store failover
   in the middle) is settled by the store's `Confirm` of those keys before anything is called, never by calling. The
-  audit is durable as the store's class is: entries in the Dashboard's store, each written once and never rewritten,
-  otherwise (no store) an append-only file; how long it keeps them is the operator's setting
+  audit is durable as the store's class is: entries in the Dashboard's store, each written once and never rewritten
+  (on a node without a database, the in-memory store, so the audit lasts as long as the process); how long it keeps them is the operator's setting
   (`DaServer:Dashboard:AuditRetention`). Append-only is the framework's rule, not a database grant: whoever holds the
   store's credentials can rewrite the entries, so an operator who needs tamper evidence exports the audit to a sink
   of their own. The same lines also go to the logs, for Loki.

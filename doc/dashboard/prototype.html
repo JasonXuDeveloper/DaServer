@@ -629,7 +629,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     return { id: p.id, type: p.kind, node: n.n, p99: Math.round(t.usual * 10) / 10, rps: (h % 90 + 4) + '/s', mailbox: (h % 5) + ' of 2,000', saved: h % 40 + 1, found: true,
       comps: [p.kind + ' { Id: ' + p.key + ' }'], logs: [['17:5' + (h % 9) + ':' + (10 + h % 49), 'info', 'answered ' + (h % 300 + 20) + ' requests in the last minute']] };
   }
-  // The audit, read from its durable sink (entries in the Dashboard's store, or the append-only file): every action
+  // The audit, read from its durable sink (entries in the Dashboard's store): every action
   // twice, its intent before the call and its outcome after, linked by the action id. [time, who, action, target, outcome, id]
   var AUDIT = [
     [Date.UTC(2026, 9, 20, 17, 58, 4) / 1000, 'On-call operator', 'Restart', 'game-87, incarnation 4', 'Done', '7f2c'],

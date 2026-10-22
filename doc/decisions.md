@@ -2439,8 +2439,8 @@ Replaced by ADR-098.
     - **Audit.** The audit holds the intent before the call and the outcome after it, with the same action id, which
       the page shows. The intent and the action's key land before the call, and an `Unknown` write is settled by the
       store's `Confirm`, never by calling. The sink is durable as the Dashboard's store's class is: entries in that
-      store (`IStore`, by default on membership's database; ADR-102), each written once and never rewritten, or an
-      append-only file without a store. Append-only is the framework's rule, not a database grant: whoever holds the
+      store (`IStore`, by default on membership's database; ADR-102), each written once and never rewritten (a node
+      without a database keeps it in its in-memory store, for the life of the process). Append-only is the framework's rule, not a database grant: whoever holds the
       store's credentials can rewrite the entries, and an operator who needs tamper evidence exports the audit to a
       sink of their own, outside the framework. Retention is the operator's setting
       (`DaServer:Dashboard:AuditRetention`), expired entries deleted compared on their version. The same lines also go
@@ -2713,9 +2713,12 @@ Replaced by ADR-098.
     (its slot and time kept) when the old one is the sender's last item to that target, so 100,000 senders at 30 Hz
     behind a backlog are each still served instead of being pushed back to the tail forever; otherwise the old one is
     dropped and the new one appended (taking its slot would put the new one ahead of messages sent before it), so what
-    arrives is always a subsequence of what was sent, in order. Each such message carries a sequence per (sender,
-    target, type), the sender a client's `ClientId`, and an older one is dropped, so a stale message forwarded by a
-    tombstone or still in flight from an old gateway never replaces a newer one. Movement input and view
+    arrives is always a subsequence of what was sent, in order. Each such message carries `(sender stamp, sequence)`, the
+    sequence counted per (sender, target, type) within a stamp, and an older pair is dropped, so a stale message
+    forwarded by a migration's forwarding marker or still in flight from an old gateway never replaces a newer one. The
+    sender is the sending actor (its stamp the activation stamp; a `[Stateless]` actor is one sender per node
+    generation) or a client's `ClientId` (its stamp the connection stamp's attempt), so a restarted sender with a lower
+    counter still wins. Movement input and view
     direction lose nothing that matters when an actor falls behind, and nothing else is reordered. Requests, pushes and
     topic messages cannot carry it (DAS030).
   - **Links fragment and coalesce**: a message above `DaServer:Links:FragmentSize` (64 KiB) is split and its fragments
@@ -3272,13 +3275,9 @@ Replaced by ADR-098.
     a PodDisruptionBudget through the publisher hook). `pg_stat_replication` shows `state` and `sync_state` only to
     members of `pg_read_all_stats`, so the roles step grants it to the runtime, membership and Dashboard roles (without
     it a production node or Dashboard never sees `Strict`). The local single-node database is `Local` and exempt.
-    Below `Strict` the self-check refuses `fsync` or `full_page_writes` `off` (a crash may corrupt rather than lose a
-    findable suffix) and declares `synchronous_commit` `off` or `local` as `Local`. The minimum is PostgreSQL 16.
-  - **`Term` is `(system_identifier, timeline, postmaster start time)`**, read when a connection opens: a promotion
-    moves the primary to a new timeline and a restart in place starts a new postmaster, and both break every
-    connection, so every outcome after either carries the new term, and a crash restart that lost acknowledged commits
-    on the same timeline (`synchronous_commit = off`) still starts the rollback audit (the current WAL file name's
-    timeline, not `pg_control_checkpoint()`'s, which lags until the first checkpoint after promotion). One partition.
+    In every class the self-check refuses `fsync` or `full_page_writes` `off` (a crash may corrupt the database
+    rather than lose recent commits): at start the node refuses to start, and found later the store is fenced
+    (ADR-104); it declares `synchronous_commit` `off` or `local` as `Local`. The minimum is PostgreSQL 16.
   - **Every data source connects only to the primary**: the runtime's, membership's and the Dashboard's connection
     strings carry `Target Session Attributes=read-write` (`DaServer.Aspire` adds it) or name a single read-write
     endpoint, so a demoted node is never written to and no read is answered by a standby.
@@ -3314,7 +3313,7 @@ Replaced by ADR-098.
 - Alternatives:
   - Asynchronous replication with a stated loss bound, as the only mode: released output (a granted item, a paid
     order's reply) would outlive the state it describes after a failover; ADR-104 allows it only by an explicit
-    opt-in, with the rollback audit.
+    opt-in, with fencing as its only guarantee.
   - Releasing on visibility (a re-read finds the write): a cancelled synchronous wait makes a write visible that a
     failover then loses.
   - Cancelling a timed-out write before `COMMIT`: a cancel races `COMMIT` in a pipelined batch, and once `COMMIT` is
@@ -3358,21 +3357,22 @@ Replaced by ADR-098.
     store's `Now`; conditional `Put` and `Delete`; `GuardedWrite` (one conditional head and dependents that apply
     exactly with it, required of certified providers: PostgreSQL has it as a transaction, Redis as a function call in
     one hash slot, MongoDB as a transaction or one document); ordered, non-atomic batches; `Confirm`; and the store's
-    `Durability`, `SelfCheck`, `Term`, `Partition`, `MaxValueBytes` and `Migrate` (architecture.md section 4). `Get` is
+    `Durability`, `SelfCheck`, `MaxValueBytes` and `Migrate` (architecture.md section 4). `Get` is
     linearizable and may read only a value's first bytes (a record's header, at most `DaServer:Store:HeaderBytes`);
     `Scan` stops at a key count or at `DaServer:Store:ScanBytes` of values; a put may also be unconditional (an upsert,
-    for index entries and heartbeats); every outcome carries the `(partition, term)` it reached.
+    for index entries and heartbeats).
   - **One outcome model**: `Landed`, `AlreadyLanded`, `NotApplied`, `RowDeterministic`, `StoreLevel`, `Unknown`; a
     provider answers `Unknown` whenever a request may have been applied, never `StoreLevel`, and rereads a race before
     it answers `NotApplied`. The runtime acts on these, never on a store's error codes; a `NotApplied` or `Confirm`
-    showing the root's own token at a generation below its last landed one is a store rollback (one process never
-    overlaps two writes of a root), handled as the rollback audit's finding (ADR-104), never written over.
+    showing the root's own token at a generation below its last landed one means the store went back (one process
+    never overlaps two writes of a root): the root is fenced, reloaded and counted (`daserver.store.regressions`),
+    never written over; any other stored version (another token, or the key absent) fences it.
   - **The framework owns every protocol, once**: claims (a `Get`, then a put compared on the stored version), fencing
     (a record's version is its fencing token and write generation, ADR-105), tombstones, the due index and the ask
     index as keys (hints that never miss a key: written ahead of their record and kept with it when a batch is halved,
     each naming the record version it precedes, and deleted compared on their own version only once the record's
     header is at or above that version and disagrees), `[Once]` and ask rows as keys under their root, deletion, expiry (one paged walk, every deletion compared
-    on the version read), the ask census, membership (ADR-103), the rollback audit (ADR-104) and the Dashboard's
+    on the version read), the ask census, membership (ADR-103) and the Dashboard's
     actions, type locks, idempotency keys, audit and key ring (ADR-093: puts only when absent and puts compared on the
     version read; its own `IStore` registration, by default on membership's database), so no part of DaServer needs a
     particular database.
@@ -3405,7 +3405,7 @@ Replaced by ADR-098.
   key; values are opaque, so operators inspect them through the Dashboard rather than SQL; sweeps are paged scans.
   architecture.md section 4 states the contract, the framework's use of it and the providers; roadmap W6 builds it
   (kit layers 1 to 5, the BenchmarkDotNet gate, tests `LargeRootWriteStaysAtomic`, `DueEntryNeverLostToCleanup`,
-  `ProbeAnswerRecordFirst`, `ExpiryNeverDeletesNewerVersion`, `OwnOlderVersionIsRollback`).
+  `ProbeAnswerRecordFirst`, `ExpiryNeverDeletesNewerVersion`, `OwnOlderVersionFencedAndCounted`).
 
 ## ADR-103 Membership is one versioned document through the store contract
 - Context: membership (ADR-082) needs a total order of versions, a compare-and-set, atomic snapshot reads, heartbeats
@@ -3421,8 +3421,12 @@ Replaced by ADR-098.
   alerted above half the provider's `MaxValueBytes`, and a change that would exceed it is refused and logged. A
   version lower than one the node held (a store below `Strict` rolled back) is adopted, and the document is written
   above the highest held with every type's placement version raised to the new table version before any claim, so no
-  record or activation stamp from the lost history outranks the new placement; a claim that reads a stored placement
-  version above its own table version raises the document above it the same way first. A read is one `Get`, so a snapshot is atomic; the store's `Now` comes back with it and is never earlier than
+  record or activation stamp from the lost history outranks the new placement. A claim that reads a stored placement
+  version above its own table version first reads the document again: a stale view only forwards from the fresh one,
+  and only a fresh document still below the stored version (a node that held the lost history died before raising)
+  is raised above it the same way before the claim. A joined node (its join write `Landed` or confirmed) that reads a
+  document without its own entry stops; after a regression below `Strict` that includes the nodes that joined in the
+  lost history, which rejoin. A read is one `Get`, so a snapshot is atomic; the store's `Now` comes back with it and is never earlier than
   a write the read shows, which `dead_seen_at` relies on (the coordinator stamps the `Now` of its first read that
   showed the death). Membership uses its own store client, may point at a store instance of its own
   (`WithMembershipStore`) and requires an effective class of `Strict` unless `DaServer:Membership:AcceptDurability`
@@ -3438,36 +3442,41 @@ Replaced by ADR-098.
 - Consequences: one membership implementation, tested by the kit against every provider; a store outage still pauses
   the whole cluster (R5), unless membership points at a separate `Strict` instance; a change rewrites the whole
   document, negligible at membership's rate. architecture.md section 4 states it; tests
-  `MembershipDocumentBoundedUnderChurn`, `MembershipVersionRegressionAfterFailoverAdopted`.
+  `MembershipDocumentBoundedUnderChurn`, `MembershipVersionRegressionAfterFailoverAdopted`,
+  `StrandedPlacementRaisedPast`, `StaleViewClaimRereadsNotRaises`, `ReplacedNodeAbsentFromDocumentStops`.
 
 ## ADR-104 Durability classes: `Strict`, `Replicated`, `Local`
 - Context: R13 promised that released output survives every failover, which only a `Strict` store keeps (ADR-101). Many
   deployments run Redis, MySQL semi-synchronous replication or managed services that degrade to asynchronous
   replication; Redis's own documentation says `WAIT` "does not make Redis a strongly consistent store". Refusing them
-  all contradicts the owner's direction; accepting them silently gives up the guarantee without saying so.
+  all contradicts the owner's direction; accepting them silently gives up the guarantee without saying so. Detecting
+  their losses was tried and dropped: a failover term has no order across stores, a PostgreSQL backend crash
+  recovers in place with nothing that changes, a hot restart would have to carry each partition's term and an
+  unfinished audit, and a planned restart would audit every active root; Orleans, Akka.NET and Dapr promise no such
+  detection either.
 - Decision: a provider declares its class, its start-up self-check may lower it, and the effective class is the lower
   of the two, logged, exported (`daserver.store.durability_class`) and shown on the Dashboard. A production node
   refuses to start below `Strict` unless `DaServer:Store:AcceptDurability` (actor store),
-  `DaServer:Membership:AcceptDurability` (membership) or `DaServer:Dashboard:AcceptDurability` names the class; development and `TestCluster` are exempt. R13
-  holds per class: on `Strict` unchanged; below it, output leaves at the provider's wait, and a failover may roll back
-  state whose effects already left, so `[Once]` and `AskUntilAnswered` hold except across such a rollback and value
-  flows keep their reconciliation. In every class the version is the fencing token, so two owners' writes never mix,
-  and the **rollback audit** (every outcome carries the `(partition, term)` it reached; on a partition's term change
-  each world `Confirm`s its active persisted roots in that partition, fences, reloads and reports any found behind its
-  last landed write, and puts its active roots' due and ask entries again; `daserver.store.rollbacks`,
-  `DaServerStoreRolledBack`) makes a rollback of an active actor visible. A write or `Confirm` that shows a root's own
-  token at an older generation is the same finding, so a rollback is never mistaken for a race and written over, and
-  so is another token shown under a newer term than the root's last landed write (the rollback also undid the claim).
-  A term changes on every event that can lose acknowledged writes, a crash restart in place included (PostgreSQL's
-  term carries the postmaster's start time). A setting that can corrupt rather than roll back (`fsync = off`) is
-  refused in every class.
+  `DaServer:Membership:AcceptDurability` (membership) or `DaServer:Dashboard:AcceptDurability` names the class; development and `TestCluster` are exempt and log a warning. R13
+  holds per class: on `Strict` unchanged, no acknowledged write lost and no rollback; below it the guarantee is
+  **fencing only**: the version is the fencing token, so two owners' writes never mix, while output leaves at the
+  provider's wait and a failover or crash may lose recent writes, index entries and claims whose effects already
+  left. `[Once]` and `AskUntilAnswered` hold except across such a loss and value flows keep their reconciliation. The
+  framework neither detects nor reports the loss; the node logs at start the class it runs and that it accepted it.
+  A root that writes again and finds its own token at an older generation is fenced, reloaded and counted
+  (`daserver.store.regressions`, not alerted), so a loss is never mistaken for a race and written over; that reports
+  what it meets and promises no coverage. A setting that can corrupt rather than lose writes (PostgreSQL's `fsync` or
+  `full_page_writes` off) is unsafe in every class: refused at start; found by a later check, the store is fenced
+  (effective class `Unsafe`, below `Local`, every write refused until a check passes, `DaServerStoreDurabilityDropped`);
+  development and `TestCluster` are exempt with a warning.
 - Alternatives: refusing every store below `Strict` (excludes most Redis and MySQL estates); accepting them silently;
   per-store waits (`WAIT`, semi-sync, `w: majority`) presented as equal (they are how a provider reaches its class, not
-  a replacement for stating it).
-- Consequences: R13 and E3 restated per class; the Dashboard and the alert rules show the effective class; roots
-  written and unloaded before a failover below `Strict` lose writes invisibly, which the documentation says. Tests
-  `NonStrictStoreRefusedWithoutOptIn`, `SelfCheckLowersClass`, `RollbackAuditFindsActiveRoots`,
-  `RollbackAuditPerPartition`, `OwnOlderVersionIsRollback`, `RollbackPastClaimReported`, `TermChangesOnCrashRestart`.
+  a replacement for stating it); a rollback audit on every failover term change (above: no portable term, crash
+  recovery in place unseen, audit storms after planned restarts, state to carry across hot restarts).
+- Consequences: R13 and E3 restated per class; the Dashboard and the alert rules show the effective class; below
+  `Strict` lost writes are invisible to the framework, which the documentation and the start-up log say. Tests
+  `NonStrictStoreRefusedWithoutOptIn`, `SelfCheckLowersClass`, `OwnOlderVersionFencedAndCounted`,
+  `UnsafeDurabilitySettingsDetected`.
 
 ## ADR-105 Every row has one writer; a deleted actor leaves a tombstone (amends ADR-099)
 - Context: two writes spanned actors: a receiver's write took `FOR KEY SHARE` on its sender's record so a forgotten

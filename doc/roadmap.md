@@ -225,7 +225,7 @@ Keep this file current: tick items when done, add items when scope changes.
       `LatestNeverOvertakesOtherMessages`, `HeartbeatNotBehindLargeMessage`, `SmallAnswerInterleavesWithFragments`,
       `FragmentsReassembleInPairOrder`, `AckRidesOnData`, `LatestUnderBacklogStillDelivered` (100,000 senders at 30 Hz
       behind a backlog: each sender's message is handled), `StaleLatestAfterMigrationDropped` (an older one forwarded by a
-      tombstone after a newer one), `LatestSequenceContinuesAcrossReconnect`, `StatelessLatestSendersIndependent`, `HotActorRefusesOnlyItsOwnMail` (its shard's
+      forwarding marker after a newer one), `LatestSequenceContinuesAcrossReconnect`, `StatelessLatestSendersIndependent`, `HotActorRefusesOnlyItsOwnMail` (its shard's
       neighbours keep receiving), `AskReservationRefusesLocally` (65,536 asks from one actor), `MaxPendingAnswersBusy`,
       `ReservationReleasedAtDeadline`, `OversizeReplyTravelsUnreserved`, `FenceHoldsBehindFragmentedGroupFrame`,
       `PushOrderToClientKeptAcrossFragments`, `FullLinkNeverDisconnects`, `ReassemblyBudgetBounded`,
@@ -293,19 +293,20 @@ Keep this file current: tick items when done, add items when scope changes.
       and 5; ADR-068, ADR-082, ADR-084, ADR-097, ADR-098, ADR-101 to ADR-105):
       - the store contract (ADR-102; architecture.md section 4): `IStore` (ordered byte keys with writer-chosen
         versions, `Get` and `Scan` with `Now`, conditional `Put`/`Delete`, `GuardedWrite`, ordered batches, `Confirm`,
-        `Durability`, `SelfCheck`, `Term` per partition, `MaxValueBytes`, `Migrate`; `Get` and `Scan` reading headers only,
+        `Durability`, `SelfCheck`, `MaxValueBytes`, `Migrate`; `Get` and `Scan` reading headers only,
         `Scan` bounded by `ScanBytes`; unconditional puts) and its outcome model, the runtime acting on outcome
         classes only; the key layout (records, ask rows, the queued-ask index, `OnceSenders` rows under their root; the due
         and ask indexes as hints written ahead of their record, kept with it when a batch is halved, naming the record
         version they precede and cleaned compared on their versions only once the header has reached it:
         `DueEntryNeverLostToCleanup`); the activation stamp and the activation count in the record's version; `InMemoryStore` (behaves as `Strict`); the durability classes (ADR-104): the
         effective class the lower of the declaration and the self-check, `DaServer:Store:AcceptDurability` and
-        `DaServer:Membership:AcceptDurability`, `daserver.store.durability_class`, the rollback audit on a `Term` change
-        per partition, and an own-token older version in `NotApplied` or `Confirm` treated as a rollback
-        (`NonStrictStoreRefusedWithoutOptIn`, `MembershipBelowStrictRefusedWithoutOptIn`, `SelfCheckLowersClass`,
-        `RollbackAuditFindsActiveRoots`, `RollbackAuditPerPartition`, `OwnOlderVersionIsRollback`,
-        `RollbackPastClaimReported` (another token shown under a newer term fenced through the audit's finding path),
-        `RolledBackEpochNeverMatchesOtherOwner`, `ActivationStampOrdersUnsavedReactivation`); the conformance kit in
+        `DaServer:Membership:AcceptDurability` and `DaServer:Dashboard:AcceptDurability`, `daserver.store.durability_class`,
+        below `Strict` fencing as the only guarantee (no loss detection; the class logged at start), an own-token older
+        version in `NotApplied` or `Confirm` fenced, reloaded and counted in `daserver.store.regressions`, any other
+        stored version (another token, the key absent) fenced, and an unsafe setting refused at start and fencing the
+        store when found later (`NonStrictStoreRefusedWithoutOptIn`, `MembershipBelowStrictRefusedWithoutOptIn`,
+        `SelfCheckLowersClass`, `OwnOlderVersionFencedAndCounted`, `RolledBackEpochNeverMatchesOtherOwner`,
+        `ActivationStampOrdersUnsavedReactivation`); the conformance kit in
         `DaServer.Testing` (contract, per-key linearizability with a shipped checker, fault injection through a kit TCP
         proxy, failover per class, self-check), run against `InMemoryStore` and PostgreSQL in CI (layer 4 nightly);
       - the PostgreSQL provider (`DaServer.Persistence.PostgreSql`, `PostgreSqlStore`, `AddPostgreSqlStore`; PostgreSQL
@@ -323,8 +324,8 @@ Keep this file current: tick items when done, add items when scope changes.
         `RolesStepCreatesConfiguredSchema`, `RolesStepTakesOverExistingTables`, `RolesStepUpdatesPassword`,
         `ConnectionLimitsSizedFromAutoscalerMax`, `MembershipRoleConnectionsReserved`, `RolesSeeStandbySyncState` (runtime, membership and Dashboard roles)); the
         self-check declaring `Strict` only with a synchronous standby and `DaServer:Store:PostgreSql:QuorumFailover`;
-        `Term` from the system identifier, the timeline and the postmaster's start time (`TermChangesOnPromotion`,
-        `TermChangesOnCrashRestart`), `fsync = off` refused and `synchronous_commit` below `local` declared `Local`
+        in every class `fsync` or `full_page_writes` `off` refused at start and fencing the store when found later
+        (development and `TestCluster` exempt with a warning), `synchronous_commit` `off` or `local` declared `Local`
         (`UnsafeDurabilitySettingsDetected`); the BenchmarkDotNet gate
         `GenericTableCommitThroughput` (the generic table kept only within 10% of typed columns at 1 and 5 ms of injected
         latency, else typed columns behind the same primitives); the wire family's variants (Aurora, AlloyDB, Neon,
@@ -510,7 +511,7 @@ Keep this file current: tick items when done, add items when scope changes.
       - the store's schema created only by the schema mode (`--DaServer:Migrate`, the provider's `Migrate`); nodes not
         ready until it answers, one backoff without a deadline (`/alive` treats the wait as progress), and the store not part of readiness once a
         node has started; today's `daserver_actors` table neither read nor converted;
-      - migration bytes with layout hashes and a new epoch on arrival, tombstones forwarding mail, group frames flushed
+      - migration bytes with layout hashes and a new epoch on arrival, forwarding markers passing mail on, group frames flushed
         before deactivation and migration and discarded on fencing;
       - hot restart's runtime side (draft §10, ADR-098): the pair of instances and the role by the lock on
         `<DaServer:HandoverPath>/node.lock` (node, standby while an arm with its manifest hash is in the arm file, parked
@@ -569,7 +570,7 @@ Keep this file current: tick items when done, add items when scope changes.
       `CoordinatorHotRestartStaysCoordinator`, `ExpiredRestartWrittenDead`,
       `ColdClusterRestartNeverReusesGeneration`, `ParallelFirstNodesFormOneCluster`, `ArmWithoutStandbyExpires`,
       `FreezeAbortsWhenStoreHangsNodeResumes`, `TornStreamNackedNodeResumes`, `RestartingTagNotHandedOver`, `AbortedRestartRaisesResumed`, `PeerBackoffResetOnRestartedHello`,
-      `TombstoneToLeftNodeFallsBack`, `RequestHeldThroughHotRestartExpires`, `MigrationDoesNotExtendRequestBudget`,
+      `ForwardingMarkerToLeftNodeFallsBack`, `RequestHeldThroughHotRestartExpires`, `MigrationDoesNotExtendRequestBudget`,
       `RepeatAfterCrashGetsStoredReply`, `IdleDeactivationWaitsForPendingDueAndAsks`, `StoreOutageBoundsMemoryAndRecoversWithoutHerd`,
       `PoisonActorBacksOffClaims`, `RebalancePausesDuringDrainAndRestart`,
       `TimeNoticeRepushedOnResume`, `ManifestDiffPicksPath`, `ComposeRestartOneNodeAtATime`,
@@ -1144,16 +1145,15 @@ balancing, TLS, CDN/WAF, Gateway API routes and autoscaling stay with the platfo
       13.2 s with requests on a 1 ms beat (548,000/s steady, 1.51 node cores; ADR-070); the machine is the limit.
 - [ ] P2 `DaServer.Persistence.Redis`, the Redis and Valkey provider of `IStore` (ADR-102, architecture.md section 4),
       declared `Replicated` (ADR-104): commands common to Redis 7.2+ and Valkey 7.2+, a Functions library loaded by
-      `Migrate`, a root's keys hash-tagged into one slot so a guarded write is atomic in Sentinel and Cluster mode alike
-      (a large one as function calls inside one `MULTI`, shown by kit layer 1), ordered scans through per-prefix sorted
-      sets, the indexes written and acknowledged ahead of their record in Cluster mode, the `Replicated` preset
-      (`appendfsync always`, `WAITAOF 1 1 0`, `min-replicas-to-write 1`, `noeviction`, two replicas), `MaxValueBytes`
-      512 KiB, `Term` from `master_replid`; certified by the kit (layers 1 to 3 and 5, layer 4 for `Replicated` on
-      Sentinel and on Cluster).
+      `Migrate`, a root's keys hash-tagged into one slot and a guarded write always one function call however large
+      (never `MULTI`), ordered scans through per-prefix sorted sets, the `Replicated` preset (`appendfsync always`,
+      `WAITAOF 1 1 0`, `min-replicas-to-write 1`, `noeviction`, two replicas), `MaxValueBytes` 512 KiB; Sentinel first,
+      certified by the kit (layers 1 to 3 and 5, layer 4 for `Replicated`); Cluster mode only once the kit passes on it
+      (the expiry's ordered scan across slots and the indexes in other slots are open, architecture.md section 4).
 - [ ] P3 `DaServer.Persistence.MongoDb`, the MongoDB provider of `IStore`, declared `Strict` with majority writes on
       a replica set (no `wtimeout`): one collection keyed by the key bytes, a guarded write as one document update or a
       transaction, `bulkWrite` batches, `_id` range scans, `$$NOW`, `Confirm` by a majority read,
-      `UnknownTransactionCommitResult` as `Unknown`, the election term as `Term`; certified by the kit for `Strict`.
+      `UnknownTransactionCommitResult` as `Unknown`; certified by the kit for `Strict`.
       MySQL and its family stay with the community through the kit.
 - Not in the framework: waiting rooms (virtual queues for human surges). They are policy for one kind of traffic,
   belong at the very edge (CDN/SaaS) to protect origins, and compose from ingress primitives (admission filters,
