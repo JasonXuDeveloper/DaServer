@@ -393,14 +393,16 @@ groups:
 
       - alert: DaServerMembershipConnectionsLow
         # Target (roadmap W6, ADR-101): the membership role's connections against its CONNECTION LIMIT. A membership
-        # write waiting for a standby is never terminated, and a process waits before its first membership write until
-        # no other backend of the role has waited in COMMIT past StatementTimeout, so in a standby outage the stuck
-        # backends stay those of the processes that had already written; this catches a limit sized too small for
-        # them, or another client on the role, before a node that must reconnect is refused and its lease runs out.
-        # Every node reads the role's count (pg_stat_activity, through pg_read_all_stats) on its self-check cadence.
+        # write waiting for a standby is never terminated, a process holds one pending membership item at a time, and
+        # one waits before its first membership write while the role's waits in COMMIT past StatementTimeout make no
+        # progress, so in a standby outage the stuck backends stay those of the processes running when it began; this
+        # catches a limit sized too small for them, or another client on the role, before a node that must reconnect
+        # is refused and its lease runs out. Every node reads, on its self-check cadence, the role's count across every
+        # database (pg_stat_activity filtered on its own user, which a role sees without pg_read_all_stats) and its
+        # limit (pg_roles.rolconnlimit, not exported when -1, unlimited; the > 0 guard keeps a stray -1 silent).
         expr: >
           max by (cluster) (last_over_time(daserver_membership_connections[3m]))
-            > 0.8 * max by (cluster) (last_over_time(daserver_membership_connection_limit[3m]))
+            > 0.8 * (max by (cluster) (last_over_time(daserver_membership_connection_limit[3m])) > 0)
         for: 5m
         labels:
           severity: warning
