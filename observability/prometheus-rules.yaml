@@ -285,8 +285,9 @@ groups:
 
       - alert: DaServerStoreWritesBehind
         # Target (roadmap W6): a node's oldest change not yet written is older than four CheckpointIntervals (30 s by
-        # default) for 5 minutes. A full store outage freezes the worlds after IsolationTimeout; a data-only outage (no
-        # synchronous standby up, a locked table, a full disk: membership reads still succeed) freezes nothing, so unwritten changes and asks grow
+        # default) for 5 minutes. A full store outage freezes the worlds after IsolationTimeout; an outage of data writes
+        # only (a locked table, a full disk) or of the synchronous standbys (membership writes then wait too:
+        # DaServerMembershipWritePending), with membership reads still answering, freezes nothing, so unwritten changes and asks grow
         # in memory until this is acted on. The gauge leaves out roots ruled unwritable (DaServerRecordUnwritable), so
         # one oversized record never reads as a store that stopped; a root is ruled unwritable only for a RowDeterministic
         # outcome (PostgreSQL: SQLSTATE 22xxx, 23xxx, 54xxx) while the rest of its batch landed, so a read-only primary, a revoked
@@ -404,7 +405,7 @@ groups:
           severity: critical
         annotations:
           summary: "{{ $labels.node }} read a membership version older than one it held and stopped"
-          description: "The membership store lost a write it had shown, which a Strict store never does. Check the membership database's failover (quorum-aware, strict mode) and its synchronous standbys; the node restarts with a new generation."
+          description: "The membership store lost a write it had shown, which a Strict store does only rarely (a crash-restart or fast shutdown, then a failover before a standby had it). Check the membership database's failover (quorum-aware, strict mode) and its synchronous standbys; the node restarts with a new generation."
           daserver_limit: "0"
           daserver_unit: "regressions"
 
