@@ -95,12 +95,34 @@ suggests) or renaming the cluster starts a new membership document; the actor re
    under the old name: copy them to the new prefix to keep the audit and the signed-in sessions, or accept losing
    them (sign-in cookies are then invalidated).
 5. Delete the old document's keys (`m|<cluster>` and its prefix) from the old store once nothing reads them.
-6. On a cluster rename on PostgreSQL, the roles step creates `<cluster>_<schema>_*` roles under the new name (with
-   `DaServer:Store:PostgreSql:RolePrefix` set the roles stay the same and there is nothing to drop). Once nothing
-   connects as the old prefix's roles, run in every database the cluster's stores use, for each old role,
-   `REASSIGN OWNED BY <old> TO <new prefix>_owner; DROP OWNED BY <old>;` (the first hands over what it owns, the
-   second removes its grants: the schema's `USAGE`, the tables' DML, `EXECUTE` on `daserver_replication()`; both act
-   on the current database only), then `DROP ROLE` each old role once.
+6. On a cluster rename on PostgreSQL (or a changed `DaServer:Store:PostgreSql:Schema`, which changes the prefix the
+   same way), the roles step creates `<cluster>_<schema>_*` roles under the new name and hands them the schema and the
+   tables, so the renamed cluster runs before any cleanup (with `DaServer:Store:PostgreSql:RolePrefix` set the roles
+   stay the same and there is nothing to drop). Once nothing connects as the old prefix's roles, run in every database
+   the cluster's stores use, for each old role, `REASSIGN OWNED BY "<old>" TO "<new prefix>_owner"; DROP OWNED BY
+   "<old>";`, each name quoted as an identifier (`format('%I')`; a schema name can be multibyte or mixed case). The
+   first hands over what it owns, the second removes its grants (the schema's `USAGE`, the tables' DML, `EXECUTE` on
+   `daserver_replication()`); both act on the current database only. Then `DROP ROLE` each old role once; the old
+   owner's `pg_read_all_stats` membership goes with it.
+
+## Promoting a standby on Compose
+
+(target, ADR-101) On Docker Compose `DaServer.Aspire` publishes the database as a primary (`postgres`) and two
+synchronous standbys (`postgres-a`, `postgres-b`) on one host, with no automatic failover. When the primary is lost,
+every data source loses its only read-write server (`Target Session Attributes=read-write`), so writes stop and,
+with no lease read, the nodes freeze after `IsolationTimeout` and wait; they resume where they stopped once the
+membership store answers again. To restore service without losing an acknowledged write:
+
+1. Make sure the old primary stays down (`docker compose stop postgres`); two primaries would diverge.
+2. On both standbys, read `SELECT pg_last_wal_receive_lsn();`. Every acknowledged commit reached at least one of
+   them (`ANY 1`), and WAL is one ordered stream, so the standby with the higher value holds them all. Both must
+   answer: with one standby lost too, wait for it, since the survivor alone cannot be shown to hold every commit.
+3. Promote that standby (`SELECT pg_promote();`), point the other one and the nodes' connection strings at it
+   (in the Compose file, swap the services' roles), set `synchronous_standby_names` on the new primary to name the
+   other standby and a rebuilt third one (`pg_basebackup` from the new primary), and the frozen nodes resume.
+
+Losing the whole host is not covered by this shape; that needs the Kubernetes one (three zones, quorum-aware
+failover).
 
 ## Production views
 

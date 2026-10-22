@@ -3270,7 +3270,9 @@ Replaced by ADR-098.
 - Decision (the PostgreSQL provider's obligations for `Strict`, `Confirm` and `Unknown`, ADR-102; the runtime only
   acts on the outcomes):
   - **`Strict` needs strict synchronous replication**: `synchronous_commit` `on` or `remote_apply`,
-    `synchronous_standby_names = 'ANY 1 (…)'` over two standbys, and quorum-aware failover that promotes a standby only
+    `synchronous_standby_names = 'ANY 1 (…)'` over two standbys, and failover that never promotes a standby missing an
+    acknowledged commit: no automatic failover at all (an operator promotes by hand only a standby shown to hold every
+    acknowledged commit, `DaServer.Aspire`'s Docker Compose shape), or quorum-aware failover that promotes a standby only
     when it can prove that standby holds every acknowledged commit and waits otherwise (Patroni 4's
     `synchronous_mode: quorum` with `synchronous_mode_strict: true`, which writes `synchronous_standby_names` itself;
     CloudNativePG's quorum-based failover, 1.27 and later, with `postgresql.synchronous` `method: any` and
@@ -3278,9 +3280,10 @@ Replaced by ADR-098.
     membership writes pause rather than degrade (lease reads still answer, so nothing freezes; heartbeats skip and
     deaths wait; `DaServerStoreWritesBehind` and `DaServerMembershipWritePending`, the stated E3 exception). The self-check reads the
     replication settings and `pg_stat_replication` and declares `Strict` only when they match and the deployment states
-    quorum-aware failover (`DaServer:Store:PostgreSql:QuorumFailover`, which `DaServer.Aspire` sets for what it
-    publishes: a primary and two standbys in three zones, so maintenance on one standby pauses nothing; the samples add
-    a PodDisruptionBudget through the publisher hook). `pg_stat_replication` shows `state` and `sync_state` only to
+    such failover (`DaServer:Store:PostgreSql:QuorumFailover`, which `DaServer.Aspire` sets for what it publishes: a
+    primary and two standbys under `ANY 1`, on Kubernetes in three zones with quorum-aware failover, so maintenance on
+    one standby pauses nothing (the samples add a PodDisruptionBudget through the publisher hook), on Docker Compose on
+    one host with manual promotion only, no Patroni or etcd, its host's loss not covered). `pg_stat_replication` shows `state` and `sync_state` only to
     members of `pg_read_all_stats`, which would also show every session's query text on the server, so the roles step
     grants it to the owner role alone and creates a `SECURITY DEFINER` function owned by it, `daserver_replication()`,
     in the configured schema of every database the cluster's stores use, with `search_path` fixed to `pg_catalog,

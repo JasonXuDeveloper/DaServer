@@ -335,10 +335,11 @@ Keep this file current: tick items when done, add items when scope changes.
         membership item, the wait counting against the arm: `HandoverStartsWithNoPendingMembershipItem`; the role's connections, across every
         database, against its limit (not exported when unlimited) exported and alerted: `MembershipConnectionsLowAlerted`); the roles step (roles named by cluster and schema, or `RolePrefix`, shortened past 52 bytes with a SHA-256 suffix: `RolesStepIdempotent`,
         `RoleNamesFitAndRepeatForLongClusterNames` (a 63-byte cluster name and a long multibyte prefix),
-        `RolesStepCreatesConfiguredSchema`, `RolesStepTakesOverExistingTables`, `RolesStepUpdatesPassword`,
+        `RoleNamesMatchBetweenAspireAndSql` (`DaServer.Aspire`'s C# names equal the SQL's),
+        `RolesStepCreatesConfiguredSchema`, `RolesStepTakesOverExistingTables` (the schema, when not `public`, then the tables and the function), `RolesStepUpdatesPassword`,
         `ConnectionLimitsSizedFromAutoscalerMax`, `MembershipRoleConnectionsReserved`, `RolesSeeStandbySyncState` (runtime, membership and Dashboard roles through `daserver_replication()`, only the owner
         holding `pg_read_all_stats`; the function's `search_path` is fixed, so a caller's objects never run with the
-        owner's rights, and `PUBLIC` cannot execute it), `RolePrefixUniquePerServer` (roles marked with their database and schema by `COMMENT ON ROLE`: a second database or schema under one prefix is refused, naming `RolePrefix`), `ActivationSlotsConfigurable`); `PublishRefusesStorelessRecords` (`aspire publish` fails when any node's records or Dashboard
+        owner's rights, and `PUBLIC` cannot execute it), `RolePrefixUniquePerServer` (roles marked in the transaction that creates them, by `COMMENT ON ROLE`, with the cluster's membership store database and schema: one cluster's second store database converges, another cluster's membership database, another schema or an unmarked role is refused, naming `RolePrefix`)); `PublishRefusesStorelessRecords` (`aspire publish` fails when any node's records or Dashboard
         would use the in-memory store); `AspireRunModeIsDevelopment` (run mode sets `DOTNET_ENVIRONMENT=Development`
         unless the AppHost sets one; publish never does); the
         self-check declaring `Strict` only with a synchronous standby and `DaServer:Store:PostgreSql:QuorumFailover`;
@@ -381,7 +382,7 @@ Keep this file current: tick items when done, add items when scope changes.
         strict placement versions with `Fence` (bumped on every placement change, a migration's arrival compared on the
         source's last version and never lowering placement), a `NotApplied` claim decided again from the stored value, an
         `Unknown` one acting only once `Confirm` shows it and still notifying the displaced owner
-        (`TimedOutClaimConfirmedByRerun`), `StoreDegraded`, `ActivationSlots`, `ActivationFailed`;
+        (`TimedOutClaimConfirmedByRerun`), `StoreDegraded`, `ActivationSlots` (`ActivationSlotsConfigurable`), `ActivationFailed`;
       - activation: placeholder roots with their mail bounded by `MaxWaitingMail`, `[ActivatedBy<T>]` (a key's first
         activation only; `Wake` and the `[JoinOnConnect]` join always activate; mail that may not create a key claims requiring
         a record), the handoff before a claim (`Arriving`, `HandoffQuery`) for keys of a slot just received, `Pending` with `MaxPending`, the idle scan as
@@ -996,9 +997,9 @@ Keep this file current: tick items when done, add items when scope changes.
       `--DaServer:Migrate`, Compose's one-shot service) with an owner role (`CREATE` on the schema, every object
       schema-qualified), nodes on a DML-only role (the record and membership tables), every node group given the store's
       connection (gateways included: membership is there), the samples' role-init step before the schema Job (on
-      Kubernetes the schema Job retries until the role exists), the Compose deploy order (`up -d --wait postgres`, then
+      Kubernetes the schema Job retries until the role exists), the Compose deploy order (`up -d --wait postgres postgres-a postgres-b`, then
       `up --no-deps --force-recreate --exit-code-from schema schema`), no Helm hook; the published PostgreSQL (16 or later) a primary
-      and two standbys in three zones replicating strictly with quorum-aware failover, so its self-check declares `Strict` (ADR-101: `synchronous_commit = on`, `ANY 1 (…)`, so one standby's maintenance
+      and two standbys replicating strictly, on Kubernetes in three zones with quorum-aware failover, on Compose three services on one host with manual promotion only (no Patroni or etcd; the host's loss not covered), so its self-check declares `Strict` (ADR-101: `synchronous_commit = on`, `ANY 1 (…)`, so one standby's maintenance
       pauses nothing, the samples adding a PodDisruptionBudget through the publisher hook; writes pause without a
       standby; the local `aspire run` single node exempt), the roles step setting `client_connection_check_interval`, `idle_in_transaction_session_timeout`, server keepalive
       and `tcp_user_timeout` (`HalfOpenBeforeCommitReleasesLocks`) and,
@@ -1020,7 +1021,9 @@ Keep this file current: tick items when done, add items when scope changes.
       `RotationWaitsForFingerprintOnEveryNode`, `RejectEmptyKeyOnReload`, `NetworkPolicyAdmitsDashboard`,
       `NetworkPolicyAdmitsReferencingResources`, `NetworkPolicyAdmitsRoleInitToStore`, `ComposeDeployWaitsForPostgresThenSchemaExitCode`
       (a failing schema stops the deploy), `SchemaJobRetriesUntilRoleExists`, `GatewayPodsReachStore`,
-      `ComposeSecretReadableByNode`, `LaunchdThrottleIntervalOne`, `PublishedStoreReplicatesSynchronously`.
+      `ComposeSecretReadableByNode`, `LaunchdThrottleIntervalOne`, `PublishedStoreReplicatesSynchronously`, `ComposePublishesStrictDatabase`
+      (the Compose file's primary and two standbys read `quorum` and the nodes start `Strict`), `ComposeManualPromotionKeepsAcknowledgedCommits`
+      (operations.md's procedure promotes the standby holding every acknowledged commit).
 14. N9 hot restart's remaining operator side, on W's model (draft §10; ADR-084, ADR-098), after W12 and before W10: the
     `{cluster}-upgrade-check` Job and `aspire deploy` step, a plain Job that calls a running node's dry-run arm
     (`/admin/restart?dryRun=true` with the new manifest, `ManifestDiff`), including the rollback-safety check (a release whose new

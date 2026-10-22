@@ -860,8 +860,9 @@ in short:
     other configuration refuses to start, so two storeless replicas never form two clusters running every actor twice; `SingleNode = true` on a node that also has a membership store (or an actor store) refuses to start as well, since a second replica configured the same way would bypass the store's table. A single node's hot-restart handover carries its member entry (name, generation, start time, `restart_until`, `write_seq`) in the stream's header, and the new process seeds its in-memory table from it, at the carried table version, before `Rejoining`, so the check "still `Active`, own generation, own `restart_until`" passes as on a cluster and its own seeded version is never read as a regression.
     `DaServer.Aspire` sets `SingleNode` when the AppHost has one node and no store, and adds a PostgreSQL resource, the
     actor store and membership's, when it declares more than one node and no store, published in the same shape as a
-    declared store (a primary and two synchronous standbys under `ANY 1` across three zones, quorum failover,
-    `QuorumFailover` set: [deployment.md](deployment.md), the Database row), so its class is `Strict`; when any node's records or
+    declared store (a primary and two synchronous standbys under `ANY 1`: on Kubernetes across three zones with
+    quorum-aware failover, on Docker Compose on one host with manual promotion only; `QuorumFailover` set either way:
+    [deployment.md](deployment.md), the Database row and section 8), so its class is `Strict`; when any node's records or
     Dashboard would use the in-memory store in what it publishes (one storeless node hosting a `[Persist]` type or
     the Dashboard, or an AppHost that names only a membership store), `aspire publish` fails and names them, since
     the published node would refuse to start (test `PublishRefusesStorelessRecords`). A cluster of more than one process needs the table in
@@ -1329,7 +1330,7 @@ waiting until the standby answers. The write stays pending meanwhile: the member
 `(pid, backend_start)` every `StatementTimeout` and, once it is gone, runs `Confirm` on that same session (lookup
 first), whose marker commit waits for a standby, and reads the node's entry, looked up by (name, generation), from
 what it shows: the write landed if and only if that entry's `write_seq` is at least the one written, and an absent
-entry means not landed (a join is retried, except as section 2's "A node declared dead stops" says; once joined, the absent-entry stop rule applies; checked on 16: the lookup works as the membership
+entry means not landed (a join is retried, except as section 4's "A node declared dead stops" says; once joined, the absent-entry stop rule applies; checked on 16: the lookup works as the membership
 role, and a read after the backend ends shows the row; test `MembershipWaitNeverTerminated`). That settlement runs on
 the lookup connection, its own wait is never cancelled, and it counts as the process's one pending membership item.
 A settlement `Confirm` that ends `Unknown` keeps that item and is repeated only once a lookup finds the earlier
@@ -1376,11 +1377,15 @@ creates this `SECURITY DEFINER` function, owned by the owner role, the one role 
 configured schema of every database the cluster's stores use, as step (6) below shows; callers name it with its
 schema; checked on 16: each of the runtime, membership and Dashboard roles sees `streaming`/`quorum` through it and
 `NULL` directly, and a role without the grant is refused), and declares
-`Strict` only when they match and the operator has stated quorum-aware failover (`DaServer:Store:PostgreSql:QuorumFailover`,
+`Strict` only when they match and the operator has stated that failover never promotes a standby missing an acknowledged commit: a quorum-aware failover tool, or no automatic failover at all, an operator promoting by hand only a standby shown to hold every acknowledged commit (`DaServer:Store:PostgreSql:QuorumFailover`,
 set by `DaServer.Aspire` for what it publishes, since failover policy is not visible from SQL). What `DaServer.Aspire`
-publishes is a primary and two standbys in three zones under `ANY 1` with quorum-aware failover, so maintenance on one
-standby pauses nothing (the samples add a PodDisruptionBudget through the publisher hook); the local single-node
-database of `aspire run` is `Local` and exempt. In every class the provider also reads `fsync` and `full_page_writes`
+publishes is a primary and two standbys under `ANY 1`: on Kubernetes in three zones with quorum-aware failover, so
+maintenance on one standby pauses nothing (the samples add a PodDisruptionBudget through the publisher hook); on
+Docker Compose three services on the one host with no automatic failover (no Patroni or etcd), so a dead primary
+stops writes until an operator promotes a standby holding every acknowledged commit ([operations.md](../operations.md#promoting-a-standby-on-compose)),
+and losing the host is not covered (checked on 16: a primary and two local standbys read `quorum` through
+`daserver_replication()`; test `ComposePublishesStrictDatabase`); the local single-node database of `aspire run` is
+`Local` and exempt. In every class the provider also reads `fsync` and `full_page_writes`
 (on every new connection and every 10 s): either `off` is unsafe (a crash can corrupt the database rather than lose
 recent commits): the class is `Unsafe`, a fresh start stays not ready before it joins and a serving node goes on under
 the `Local` rules, whatever `AcceptDurability` says (section 4's durability classes);
@@ -1398,16 +1403,25 @@ that is longer than 52 bytes (`octet_length`), its longest leading run of whole 
 and the first 8 hex digits of its SHA-256 (`left(encode(sha256(convert_to(prefix, 'UTF8')), 'hex'), 8)`; not `md5`,
 which a server in FIPS mode refuses), so every name fits PostgreSQL's 63 bytes, a multibyte character is never cut,
 and re-runs find the same roles (checked on 16 with a 63-byte cluster name and a long multibyte prefix, run twice;
-test `RoleNamesFitAndRepeatForLongClusterNames`). Cluster names are ASCII (Aspire resource names are); a schema name or
+test `RoleNamesFitAndRepeatForLongClusterNames`; `DaServer.Aspire` derives the same names in C# for the connection
+strings it writes, test `RoleNamesMatchBetweenAspireAndSql`). Cluster names are ASCII (Aspire resource names are); a schema name or
 `DaServer:Store:PostgreSql:RolePrefix` can be multibyte, and a set `RolePrefix` replaces `<cluster>_<schema>` and goes
 through the same shortening. Roles are per server, not per database, so the prefix must be unique on the server: two
 clusters of one name and schema in two databases of one server (staging and production) set `RolePrefix`. The step
-enforces it: it stamps every role it creates with `COMMENT ON ROLE` naming its database and schema
-(`daserver:<database>/<schema>`), and refuses, naming `RolePrefix`, when a role of its prefix already carries another
-database's or schema's mark or none (test `RolePrefixUniquePerServer`: a second database or schema under the same
-prefix is refused, the same database and schema re-run converge); the
+enforces it: in the transaction that creates a role (one `DO` block) it stamps it with `COMMENT ON ROLE` naming the
+cluster's membership store database and schema (`format('daserver:%I/%I', <membership database>, <schema>)`: a
+cluster has exactly one membership store, however many databases its other stores use), compares every role of its
+prefix with that mark in every database it visits (never with `current_database()`), and refuses, naming `RolePrefix`,
+when a role carries another mark or none (test `RolePrefixUniquePerServer`: one cluster's second store database
+converges, another cluster's membership database or another schema under the same prefix is refused, and so is an
+unmarked role; checked on 16 with an actor database and a membership database on one server); roles an operator
+provisioned by hand are adopted by setting that comment on them; the
 owner has `CREATE` on the schema and owns the tables; none is a superuser; (2) `CREATE SCHEMA IF NOT EXISTS <schema> AUTHORIZATION <owner>` (for `public`, `GRANT CREATE, USAGE` to
-the owner); (3) `ALTER … OWNER TO <owner>` for DaServer objects created under another owner; (4) a `CONNECTION
+the owner); (3) when the schema is not `public`, `ALTER SCHEMA <schema> OWNER TO <owner>` (`CREATE SCHEMA IF NOT EXISTS`
+leaves an existing schema's owner as it was, so after a cluster rename the new roles could not use it until the old
+ones were cleaned up), then `ALTER … OWNER TO <owner>` for the DaServer tables and `daserver_replication()` created
+under another owner (test `RolesStepTakesOverExistingTables`; checked on 16: a renamed cluster's new roles work before
+the old ones are dropped); (4) a `CONNECTION
 LIMIT` per role, sized from the most nodes the cluster may run (per group the autoscaler's maximum times one plus the
 rollout surge, plus one warm standby process per stateful node) times its pool size, plus per node the backends it can
 leave in `COMMIT` after a socket dies (`2 × WritesInFlight` per world plus `ActivationSlots` for the runtime role, of
