@@ -46,6 +46,41 @@ public partial class InfrastructureTests
         Assert.That(seen.Count, Is.EqualTo(producers * perProducer));
     }
 
+    /// <summary>
+    /// More threads than cores, each holding at most one item in a queue with room for all: never full, and never
+    /// empty while the thread's own item is in it. A thread preempted between taking a position and handing its slot
+    /// over must not make the others see the queue full or empty.
+    /// </summary>
+    [Test]
+    public void MpmcQueueNeverFalselyFullOrEmpty()
+    {
+        int threads = Environment.ProcessorCount * 4;
+        var q = new MpmcQueue<long>(threads * 2);
+        const int perThread = 200_000;
+        long falseFull = 0, falseEmpty = 0;
+        var workers = new Thread[threads];
+        for (int t = 0; t < threads; t++)
+        {
+            workers[t] = new Thread(() =>
+            {
+                for (long i = 0; i < perThread; i++)
+                {
+                    if (!q.TryEnqueue(i))
+                    {
+                        Interlocked.Increment(ref falseFull);
+                        continue;
+                    }
+
+                    if (!q.TryDequeue(out _)) Interlocked.Increment(ref falseEmpty);
+                }
+            });
+            workers[t].Start();
+        }
+
+        foreach (var w in workers) w.Join();
+        Assert.That((falseFull, falseEmpty), Is.EqualTo((0L, 0L)));
+    }
+
     [Test]
     public void BufferPoolRoundsToBucketsAndReuses()
     {

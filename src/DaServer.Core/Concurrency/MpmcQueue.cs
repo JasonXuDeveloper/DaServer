@@ -57,6 +57,7 @@ internal sealed class MpmcQueue<T>
     {
         var slots = _slots;
         long pos = Volatile.Read(ref _enqueuePos.Value);
+        SpinWait spinner = default;
         while (true)
         {
             ref var slot = ref slots[pos & _mask];
@@ -73,7 +74,10 @@ internal sealed class MpmcQueue<T>
             }
             else if (diff < 0)
             {
-                return false; // full
+                // The slot still holds the item of the lap before. Full only when that item is not dequeued yet: a
+                // consumer that took it but has not released the slot (preempted between its two steps) leaves room.
+                if (pos - Volatile.Read(ref _dequeuePos.Value) >= _slots.Length) return false;
+                WaitForSlot(ref spinner);
             }
 
             pos = Volatile.Read(ref _enqueuePos.Value);
@@ -85,6 +89,7 @@ internal sealed class MpmcQueue<T>
     {
         var slots = _slots;
         long pos = Volatile.Read(ref _dequeuePos.Value);
+        SpinWait spinner = default;
         while (true)
         {
             ref var slot = ref slots[pos & _mask];
@@ -104,14 +109,27 @@ internal sealed class MpmcQueue<T>
             }
             else if (diff < 0)
             {
-                item = default!;
-                return false; // empty
+                // The slot's item is not published yet. Empty only when no producer took the position: one that took
+                // it but has not published (preempted between its two steps) has the item on its way.
+                if (Volatile.Read(ref _enqueuePos.Value) - pos <= 0)
+                {
+                    item = default!;
+                    return false;
+                }
+
+                WaitForSlot(ref spinner);
             }
 
             pos = Volatile.Read(ref _dequeuePos.Value);
         }
     }
 
+    /// <summary>
+    /// Another thread is between taking a position and handing the slot over, two steps apart: spin, then yield the
+    /// core (never sleep a whole millisecond) so a preempted thread can finish.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void WaitForSlot(ref SpinWait spinner) => spinner.SpinOnce(sleep1Threshold: -1);
 }
 
 /// <summary>
