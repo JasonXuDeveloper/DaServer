@@ -1640,8 +1640,8 @@ Replaced by ADR-081.
       hot-restarting is never coordinator, so the next one by the rule writes it `Dead` if its deadline passes. A
       node whose hot restart was aborted (a hung store) may clear its own `restart_until` by a versioned write while
       its entry is still `Active` with its own generation, deadline passed or not, so a store that comes back late does not
-      cost it its unsaved state. Its decisions (slot moves, a hot
-      restart's permit and deadline, declaring an expired restart `Dead`) are versioned writes, so a stale
+      cost it its unsaved state. The restarting node writes its own permit and deadline into its entry; the
+      coordinator's decisions (slot moves, declaring an expired restart `Dead`) are versioned writes, so a stale
       coordinator cannot act; a hot restart keeps the entry, generation and start time;
     - without a store a node starts only with `DaServer:Membership:SingleNode = true` (one node: local runs,
       `AllInOne`), served by the in-memory table; any other node without a membership store (the actor store
@@ -3312,9 +3312,12 @@ Replaced by ADR-098.
   - **Membership writes land the same way**: an `Unknown` one is settled by `Confirm` of the document; at most one
     membership write per node is in flight (heartbeats skip while one is pending) and one of the membership data
     source's two connections is kept for reads, so a commit waiting for the standby never starves the lease's reads.
-    A version lower than the last one seen (a failover of a store below `Strict`) is adopted and logged
-    (`MembershipVersionRegressed`); the node keeps the highest version it held, after adopting a regressed one writes
-    the document above it before it claims again, and re-reads it after any reconnect before claiming (ADR-103).
+    A membership write's synchronous wait is never cancelled and its backend never terminated (unlike a data write's):
+    a commit waiting for its standby is invisible to other sessions until the wait ends, and ending it early is what
+    makes it visible without the standby (checked on 16), so no node reads a membership write the standby may not
+    have; its `Unknown` outcome is settled by `Confirm` on another connection while the backend keeps waiting. The
+    node re-reads the document after any reconnect before claiming; a version lower than one it held is a store fault
+    (ADR-103).
 - Alternatives:
   - Asynchronous replication with a stated loss bound, as the only mode: released output (a granted item, a paid
     order's reply) would outlive the state it describes after a failover; ADR-104 allows it only by an explicit
@@ -3342,7 +3345,7 @@ Replaced by ADR-098.
 - Consequences: architecture.md section 4 (the PostgreSQL provider) and deployment.md's Database row state it,
   requirements state it (R13), roadmap W6 and W12 build it (kit layer 4 for PostgreSQL:
   `UnknownReleasesOnlyAfterConfirm`, the primary up and the standby down; `RetriedWriteConfirmedBeforeRelease`;
-  `ConfirmFindsWriteAbsentResends`; `TimedOutClaimConfirmedByRerun`; `MembershipVersionRegressionAfterFailoverAdopted`;
+  `ConfirmFindsWriteAbsentResends`; `TimedOutClaimConfirmedByRerun`; `MembershipWaitNeverTerminated`;
   and the provider's own `TimedOutWriteNeverCancelled`, `UnansweredCommitLookedUp`,
   `AbandonedBackendTerminatedBeforeRetry`, `HalfOpenBeforeCommitReleasesLocks`, `BatchNeverCommitsWithoutCommit`,
   `MembershipReadsAnswerWhileCommitWaits`, `DataSourcesRequireReadWrite`), and a commit's latency includes one more
@@ -3423,23 +3426,20 @@ Replaced by ADR-098.
   written by a conditional put of the whole document; heartbeats are keys of their own, each written only by its
   member. The re-placement write moves each `Dead` entry out of the document into a key of its own under the
   document's prefix (a dependent of the same guarded write), so churn never grows it; its size is exported and
-  alerted above half the provider's `MaxValueBytes`, and a change that would exceed it is refused and logged. A
-  version lower than one the node held (a store below `Strict` rolled back) is adopted, and the document is written
-  above the highest held with every type's placement version raised to the new table version before any claim, so no
-  record or activation stamp from the lost history outranks the new placement, and with every slot whose owner differs
-  between the highest view the node held (it keeps that view's slot table) and the regressed one marked handoff-pending
-  from the lost-history owner, so an unsaved actor that history moved is handed back, not activated twice (a commit is
-  visible while it waits for its standby, so a view read from `Strict` membership can still hold a write the store then
-  loses). A claim that reads a stored placement
-  version above its own table version first reads the document again: a stale view only forwards from the fresh one,
-  and only a fresh document still below the stored version (a node that held the lost history died before raising)
-  is raised above it the same way before the claim. A joined node (its join write `Landed` or confirmed) that reads a
-  document without its own entry stops; after a regression below `Strict` that includes the nodes that joined in the
-  lost history, which rejoin. A read is one `Get`, so a snapshot is atomic; the store's `Now` comes back with it and is never earlier than
+  alerted above half the provider's `MaxValueBytes`, and a change that would exceed it is refused and logged.
+  Membership needs a `Strict` store, with no opt-in below it (unsaved actor types have no epoch fencing behind it), and
+  nobody acts on a membership write the store can still lose: its writer only once it is `Landed` or confirmed, and
+  readers because the provider never lets a waiting commit become visible early (ADR-101). A version lower than one
+  the node held, or a stored placement version still above the document after a re-read (a stale view only forwards
+  from the fresh one), therefore means the store broke `Strict` (on PostgreSQL, a crash-restart in place followed by a
+  failover before the standby received the commit, which quorum-failover tooling in strict mode prevents): a store
+  fault, which the framework does not repair. The node logs `MembershipVersionRegressed`, counts it (alert
+  `DaServerMembershipRegressed`, critical), stops serving and exits with code 75; the platform starts it again with a
+  new generation and persisted actors load from the store. A joined node (its join write `Landed` or confirmed) that
+  reads a document without its own entry stops. A read is one `Get`, so a snapshot is atomic; the store's `Now` comes back with it and is never earlier than
   a write the read shows, which `dead_seen_at` relies on (the coordinator stamps the `Now` of its first read that
-  showed the death). Membership uses its own store client, may point at a store instance of its own
-  (`WithMembershipStore`) and requires an effective class of `Strict` unless `DaServer:Membership:AcceptDurability`
-  names a lower one: unsaved actor types have no epoch fencing behind it.
+  showed the death). Membership uses its own store client and may point at a store instance of its own
+  (`WithMembershipStore`).
 - Alternatives:
   - A membership interface per store: the subtlest code (snapshot atomicity, unknown commits, heartbeats never
     overwritten, version regression) written once per store.
@@ -3448,13 +3448,18 @@ Replaced by ADR-098.
   - etcd or Consul: correct, but another cluster to run, and the time rules would have to be rebuilt around
     leader-timed leases; possible later as a provider of this same contract whose `Now` is a lease.
   - A built-in Raft: the highest cost, and what R5 chose Orleans' table to avoid.
+  - Repairing a regression automatically (adopt the lower version, raise the document above the highest held with
+    every placement version, mark every slot whose owner differs from the highest view held handoff-pending from the
+    lost-history owner, and raise past a stored placement at claim time): each audit round found a new way it failed
+    (two regressions in a row overwrote a live handoff source and let a claim race a live activation, the repair state
+    did not survive a hot restart, a version number alone missed a regression another node had already written
+    past), for a fault a `Strict` store does not commit. A below-`Strict` membership opt-in went with it.
 - Consequences: one membership implementation, tested by the kit against every provider; a store outage still pauses
   the whole cluster (R5), unless membership points at a separate `Strict` instance; a change rewrites the whole
   document, negligible at membership's rate. architecture.md section 4 states it; tests
-  `MembershipDocumentBoundedUnderChurn`, `MembershipVersionRegressionAfterFailoverAdopted`,
-  `StrandedPlacementRaisedPast`, `StaleViewClaimRereadsNotRaises`, `ReplacedNodeAbsentFromDocumentStops`,
-  `UnknownMembershipWriteNeverHoldsLease`, `RegressedSlotMoveStaysHandoffPending`,
-  `MembershipWritePendingAlerted`.
+  `MembershipDocumentBoundedUnderChurn`, `MembershipRequiresStrict`, `MembershipRegressionStopsTheNode`,
+  `MembershipWaitNeverTerminated`, `StaleViewClaimRereadsNotRaises`, `ReplacedNodeAbsentFromDocumentStops`,
+  `UnknownMembershipWriteNeverHoldsLease`, `MembershipWritePendingAlerted`, `StuckCoordinatorStepsDown`.
 
 ## ADR-104 Durability classes: `Strict`, `Replicated`, `Local`
 - Context: R13 promised that released output survives every failover, which only a `Strict` store keeps (ADR-101). Many
@@ -3467,14 +3472,14 @@ Replaced by ADR-098.
   detection either.
 - Decision: a provider declares its class, its self-check (at start and every `SelfCheckInterval`) may lower it, and the effective class is the lower
   of the two, logged, exported (`daserver.store.durability_class`) and shown on the Dashboard. A production node
-  refuses to start below `Strict` unless `DaServer:Store:AcceptDurability` (actor store),
-  `DaServer:Membership:AcceptDurability` (membership) or `DaServer:Dashboard:AcceptDurability` names the class; development and `TestCluster` are exempt and log a warning. R13
+  refuses to start below `Strict` unless `DaServer:Store:AcceptDurability` (actor store) or
+  `DaServer:Dashboard:AcceptDurability` names the class; membership always needs `Strict` (ADR-103); development and
+  `TestCluster` are exempt and log a warning. R13
   holds per class: on `Strict` unchanged, no acknowledged write lost and no rollback; below it the guarantee is
   **fencing only**: the version is the fencing token, so two owners' writes never mix, while output leaves at the
   provider's wait and a failover or crash may lose recent writes, index entries and claims whose effects already
   left. `[Once]` and `AskUntilAnswered` hold except across such a loss and value flows keep their reconciliation. The
-  framework promises no detection of the loss and reports only what it meets (below, and a membership version below
-  one the node held, ADR-103); the node logs at start the class it runs and that it accepted it.
+  framework promises no detection of the loss and reports only what it meets (below); the node logs at start the class it runs and that it accepted it.
   A root that writes again and finds its own token at an older generation is fenced, reloaded and counted
   (`daserver.store.regressions`, not alerted), so a loss is never mistaken for a race and written over; that reports
   what it meets and promises no coverage. A setting that can corrupt rather than lose writes (PostgreSQL's `fsync` or
@@ -3485,8 +3490,9 @@ Replaced by ADR-098.
   serving, or by a hot restart's standby (a handover is not a start: arming is not refused for it, and the standby
   takes the worlds), nothing is refused: the framework runs the `Local` rules (fencing, output released as for
   `Local`), though no class guarantee holds across a crash of the database host while the setting is unsafe, and
-  `DaServerStoreUnsafe` fires 30 s after the node reports it. Development and `TestCluster` are exempt with a
-  warning: they start and export the class they found.
+  `DaServerStoreUnsafe` fires 30 s after the node reports it. The class a node started serving with is carried over
+  a hot restart, so the standby compares against the old process's. Development and `TestCluster` are exempt with a
+  warning: they start, export the class they found and `daserver.store.unsafe_exempt` 1, and never alert.
 - Alternatives: refusing every store below `Strict` (excludes most Redis and MySQL estates); accepting them silently;
   per-store waits (`WAIT`, semi-sync, `w: majority`) presented as equal (they are how a provider reaches its class, not
   a replacement for stating it); a rollback audit on every failover term change (above: no portable term, crash
@@ -3495,7 +3501,7 @@ Replaced by ADR-098.
   during it and lost hot restarts started before it, for a setting the alert already names).
 - Consequences: R13 and E3 restated per class; the Dashboard and the alert rules show the effective class; below
   `Strict` the framework promises no detection of lost writes and reports only what it meets, which the documentation
-  and the start-up log say. Tests `NonStrictStoreRefusedWithoutOptIn`, `MembershipBelowStrictRefusedWithoutOptIn`,
+  and the start-up log say. Tests `NonStrictStoreRefusedWithoutOptIn`, `MembershipRequiresStrict`,
   `DashboardStoreBelowStrictRefusedWithoutOptIn`, `SelfCheckLowersClass`, `OwnOlderVersionFencedAndCounted`,
   `UnsafeDurabilitySettingsDetected`, `UnsafeStoreDropsClassAndAlerts`, `UnsafeAtStartStaysNotReady`,
   `UnsafeDuringHotRestartTakesOver`.

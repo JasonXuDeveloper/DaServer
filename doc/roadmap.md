@@ -300,11 +300,13 @@ Keep this file current: tick items when done, add items when scope changes.
         version they precede and cleaned compared on their versions only once the header has reached it:
         `DueEntryNeverLostToCleanup`); the activation stamp and the activation count in the record's version; `InMemoryStore` (behaves as `Strict`); the durability classes (ADR-104): the
         effective class the lower of the declaration and the self-check, `DaServer:Store:AcceptDurability` and
-        `DaServer:Membership:AcceptDurability` and `DaServer:Dashboard:AcceptDurability`, `daserver.store.durability_class`,
+        `DaServer:Dashboard:AcceptDurability` (membership always `Strict`, no opt-in), `daserver.store.durability_class`,
+        the started class carried over a hot restart and `daserver.store.unsafe_exempt` on development and `TestCluster` nodes,
         below `Strict` fencing as the only guarantee (no loss detection; the class logged at start), an own-token older
         version in `NotApplied` or `Confirm` fenced, reloaded and counted in `daserver.store.regressions`, any other
-        stored version (another token, the key absent) fenced, and an unsafe setting making the class `Unsafe`, a node
-        not ready at start and working as `Local` when it is found later (`NonStrictStoreRefusedWithoutOptIn`, `MembershipBelowStrictRefusedWithoutOptIn`,
+        stored version (another token, the key absent) fenced, and an unsafe setting making the class `Unsafe`: a fresh
+        start waits not ready before its membership join, a serving node or a hot restart's standby goes on under the
+        `Local` rules (`NonStrictStoreRefusedWithoutOptIn`, `MembershipRequiresStrict`,
         `DashboardStoreBelowStrictRefusedWithoutOptIn`,
         `SelfCheckLowersClass`, `OwnOlderVersionFencedAndCounted`, `RolledBackEpochNeverMatchesOtherOwner`,
         `ActivationStampOrdersUnsavedReactivation`); the conformance kit in
@@ -321,7 +323,8 @@ Keep this file current: tick items when done, add items when scope changes.
         and data statements as one pipelined batch, `COMMIT` on its own with no client deadline and never cancelled:
         `ManyStatementWriteNotCancelled`, `TimedOutWriteNeverCancelled`, `BatchNeverCommitsWithoutCommit`,
         `HalfOpenWriteEndsAtScaledDeadline`, `UnansweredCommitLookedUp`, `AbandonedBackendTerminatedBeforeRetry`,
-        `HalfOpenBeforeCommitReleasesLocks`, `DataSourcesRequireReadWrite`); the roles step (`RolesStepIdempotent`,
+        `HalfOpenBeforeCommitReleasesLocks`, `DataSourcesRequireReadWrite`; a membership write's wait never cancelled
+        nor its backend terminated: `MembershipWaitNeverTerminated`); the roles step (`RolesStepIdempotent`,
         `RolesStepCreatesConfiguredSchema`, `RolesStepTakesOverExistingTables`, `RolesStepUpdatesPassword`,
         `ConnectionLimitsSizedFromAutoscalerMax`, `MembershipRoleConnectionsReserved`, `RolesSeeStandbySyncState` (runtime, membership and Dashboard roles)); the
         self-check declaring `Strict` only with a synchronous standby and `DaServer:Store:PostgreSql:QuorumFailover`;
@@ -329,24 +332,23 @@ Keep this file current: tick items when done, add items when scope changes.
         every 10 s: a fresh start on it stays not ready before the membership join (`UnsafeAtStartStaysNotReady`), one
         finding it while serving, or a hot restart's standby, refuses nothing, goes on under the `Local` rules and raises
         `DaServerStoreUnsafe` (`UnsafeStoreDropsClassAndAlerts`, `UnsafeDuringHotRestartTakesOver`; development and `TestCluster` exempt with a warning:
-        they start and export the class they found), `synchronous_commit` `off` or `local` declared `Local`
+        they start, export the class they found and never alert), `synchronous_commit` `off` or `local` declared `Local`
         (`UnsafeDurabilitySettingsDetected`); the BenchmarkDotNet gate
         `GenericTableCommitThroughput` (the generic table kept only within 10% of typed columns at 1 and 5 ms of injected
         latency, else typed columns behind the same primitives); the wire family's variants (Aurora, AlloyDB, Neon,
         PolarDB for PostgreSQL, CockroachDB, YugabyteDB) named supported only once the kit passes against each;
       - membership and fencing: the membership table (Orleans' protocol, ADR-103, architecture.md section 4) as one
         versioned document through `IStore` (a conditional put per change, one `Get` per read: `MembershipViewReadAtomic`;
-        heartbeats as keys of their own, written only by their member; an `Unknown` write settled by a `Confirm` of its own, the lease resting only on plain reads (`UnknownMembershipWriteNeverHoldsLease`); a lower
-        version read after a failover adopted and logged: `MembershipVersionRegressionAfterFailoverAdopted`, the highest
-        version held raised past, with every type's placement version, before the next claim, a claim reading a higher
-        stored placement version re-reading the document and raising past it only when the fresh one is still below
-        (`StrandedPlacementRaisedPast`, `StaleViewClaimRereadsNotRaises`), the raise marking every slot whose owner
-        differs from the highest view held handoff-pending from the lost-history owner
-        (`RegressedSlotMoveStaysHandoffPending`), and the document re-read after a reconnect; `Dead` entries moved to keys of their own at re-placement and the document's size alerted
+        heartbeats as keys of their own, written only by their member; an `Unknown` write settled by a `Confirm` of its own, the lease resting only on plain reads (`UnknownMembershipWriteNeverHoldsLease`); a claim reading a higher
+        stored placement version re-reading the document, a stale view only forwarding (`StaleViewClaimRereadsNotRaises`);
+        a version below one the node held, or a stored placement still above a fresh document, a store fault: logged,
+        counted, `DaServerMembershipRegressed`, the node exiting with code 75 (`MembershipRegressionStopsTheNode`); the
+        document re-read after a reconnect; `Dead` entries moved to keys of their own at re-placement and the document's size alerted
         (`MembershipDocumentBoundedUnderChurn`), a node whose entry left the document stopping, peers refusing a
         generation their view does not list (`ReplacedNodeAbsentFromDocumentStops`); one membership write in
         flight, heartbeats skipped while one is pending and its age alerted (`daserver.membership.write_pending_age`,
-        `DaServerMembershipWritePending`: `MembershipWritePendingAlerted`), its own store client with a connection kept
+        `DaServerMembershipWritePending`: `MembershipWritePendingAlerted`; a coordinator stuck past `IsolationExit` stepping
+        down: `StuckCoordinatorStepsDown`), its own store client with a connection kept
         for reads: `MembershipReadsAnswerWhileCommitWaits`) and the in-memory store (one node, `TestCluster`); joining (generation
         max(Unix ms · 2^16 + 16 random bits, recorded max + 1), older generations of the name written `Dead`, connectivity checked before
         `Active`), probes on a ring, indirect probes, suspicion votes and death declarations, the table refresh and
