@@ -317,9 +317,10 @@ groups:
           daserver_unit: "roots"
 
       - alert: DaServerStoreRolledBack
-        # Target (roadmap W6, ADR-104): after a store failover (its term changed) the rollback audit found active roots
-        # whose stored version is behind their last landed write: a store below Strict lost writes whose output may
-        # already have left (or a write or Confirm found a root's own older version). The roots were fenced and reloaded;
+        # Target (roadmap W6, ADR-104): after a store failover or restart (its term changed) the rollback audit found
+        # active roots whose stored version is behind their last landed write: a store below Strict lost writes whose
+        # output may already have left (or a write or Confirm found a root's own older version, or another owner's
+        # under a newer term). The roots were fenced and reloaded;
         # the log line StoreRollback names them. The counter is exported at 0 from node start, so a node's first rollback
         # shows as an increase.
         expr: sum by (cluster, type, node) (increase(daserver_store_rollbacks_total[10m])) > 0
@@ -327,7 +328,7 @@ groups:
           severity: critical
         annotations:
           summary: "{{ $labels.node }} found {{ $value | printf \"%.0f\" }} actor(s) rolled back by a store failover"
-          description: "The store lost acknowledged writes in a failover (its durability class is below Strict). Reconcile the actors the StoreRollback log names: replies, [Once] answers and pushes released since the lost writes described state that no longer exists."
+          description: "The store lost acknowledged writes in a failover or a crash restart (its durability class is below Strict). Reconcile the actors the StoreRollback log names: replies, [Once] answers and pushes released since the lost writes described state that no longer exists."
           daserver_limit: "0"
           daserver_unit: "roots/10m"
 
