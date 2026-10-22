@@ -2066,10 +2066,11 @@ Replaced by ADR-081.
     command (`aspire do` runs in a fresh process that cannot reach the running AppHost).
   - **One binary on every host, the service managers declared in `Program.cs`.**
     `builder.Host.UseSystemd().UseWindowsService();` names both explicitly, each a no-op off its platform;
-    `AddDaServer` calls neither. The one exit that wants a restart is the isolation exit (a node cut off from the
-    store alone, ADR-082), code 75 (`DaServer.ExitCodes.RestartRequested`) on every platform; an instance that handed
-    over (ADR-098) parks in place and never exits, so every supervisor restarts only a non-zero exit (a crash, the
-    isolation exit): the systemd unit
+    `AddDaServer` calls neither. Every stop that wants a restart ends through the same path with code 75
+    (`DaServer.ExitCodes.RestartRequested`) on every platform: the isolation exit (a node cut off from the store
+    alone, ADR-082), the stop of a node declared dead, and the stop on a membership regression (ADR-103); an instance
+    that handed over (ADR-098) parks in place and never exits, so every supervisor restarts only a non-zero exit (a
+    crash, code 75): the systemd unit
     sets `Restart=on-failure` (`RestartSec=1`), launchd `KeepAlive = {SuccessfulExit = false}` (Compose and Kubernetes
     are the exceptions: Compose's `restart: unless-stopped`, since Docker does not restart `on-failure` containers after
     a daemon restart or a reboot, and the pod's `restartPolicy: Always`); on Windows the code is set as `ServiceBase.ExitCode` on the
@@ -2910,7 +2911,7 @@ Replaced by ADR-098.
     are for debugging; a permanent warm standby per pod: twice the memory always.
 - Consequences: the draft's §10, architecture.md section 5 and deployment.md sections 0, 2, 3, 5, 8, 10 and 11 state
   it; there is no snapshot directory, restart mode or exit-on-arm setting, `/admin/restart` takes only
-  `mode=unload` and `dryRun=true`, and the exit code 75 belongs to the isolation exit alone; roadmap W6 builds the handover with its platform triggers, W11 the
+  `mode=unload` and `dryRun=true`, and the exit code 75 belongs to the stops that want a restart (the isolation exit, a node declared dead, a membership regression), never to a handover; roadmap W6 builds the handover with its platform triggers, W11 the
   two-container pod, the Job's sizing of the requests by role and the autoscalers on it (`VpaOffOnHotRestartPods`, `ParkedInstanceExportsNoBusyRatio`), W8 checks the socket passing under AOT, and BenchmarkDotNet's `HandoverPause`
   measures the pause at 100,000 and 1,000,000 actors under JIT and AOT.
 
@@ -3280,9 +3281,11 @@ Replaced by ADR-098.
     `DaServerStoreWritesBehind` and `DaServerMembershipWritePending`, the stated E3 exception). **One host**: one
     instance with no standby and no failover at all, where crash recovery keeps every acknowledged commit and nothing
     can roll back; its disk or host is the failure domain.
-  - **`Strict` rests on the operator's declaration**, `DaServer:Store:PostgreSql:Durability` (`Strict`, `Replicated`
-    or `Local`; not set is `Local`), with `DaServer:Store:FailureDomain`; one declaration covers every PostgreSQL store
-    of the node, declared at the weakest when they differ. The framework cannot verify a high-availability tool's
+  - **`Strict` rests on the operator's declaration**, per store (`DaServer:Store:PostgreSql:Durability` for the
+    records, `DaServer:Membership:PostgreSql:Durability` and `DaServer:Dashboard:PostgreSql:Durability` defaulting to
+    it; `Strict`, `Replicated` or `Local`; not set is `Local`), with `DaServer:Store:FailureDomain`; each store is
+    declared and checked on its own, so weaker records accepted with `AcceptDurability` sit beside a `Strict`
+    membership store. The framework cannot verify a high-availability tool's
     promise and does not try; the operator and the tool answer for it. The self-check verifies only what every
     PostgreSQL shows without misjudging it: `synchronous_commit` `off` or `local` makes the class at most `Local`,
     `remote_write` at most `Replicated`; the effective class is the lower of the declaration and that. Rejected:
@@ -3570,7 +3573,7 @@ Replaced by ADR-098.
   `DashboardStoreBelowStrictRefusedWithoutOptIn`, `SelfCheckLowersClass`, `OwnOlderVersionFencedAndCounted`,
   `UnsafeDurabilitySettingsDetected`, `UnsafeStoreDropsClassAndAlerts`, `UnsafeAtStartStaysNotReady`,
   `UnsafeDuringHotRestartTakesOver`, `InMemoryStoreRefusedForRecordsInProduction`, `ComposePublishesStrictDatabase`,
-  `UndeclaredStoreIsLocal`, `DeclaredStrictVerifiesOnlyLocalDurability`, `StartupLogNamesFailureDomain`.
+  `UndeclaredStoreIsLocal`, `DeclaredStrictVerifiesOnlyLocalDurability`, `DurabilityDeclaredPerStore`, `StartupLogNamesFailureDomain`.
 
 ## ADR-105 Every row has one writer; a deleted actor leaves a tombstone (amends ADR-099)
 - Context: two writes spanned actors: a receiver's write took `FOR KEY SHARE` on its sender's record so a forgotten

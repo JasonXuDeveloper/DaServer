@@ -741,8 +741,8 @@ in short:
     holds its own generation, or the document or a dead key holds a generation of its name above its own: a newer
     process of its name has joined or marked it dead and it stops; test `JoinRetryStopsWhenMarkedDead`), reads a document that
     no longer holds its own entry (a joined node's entry leaves only at its re-placement, after it was `Dead`, so
-    absence is death even once its dead key has expired), or a peer refuses its frames, it freezes every world, fences all its actors and exits with a
-    non-zero code; the platform starts a new process, which joins with a new generation. The same holds for a
+    absence is death even once its dead key has expired), or a peer refuses its frames, it freezes every world, fences all its actors and exits with
+    code 75, as the isolation exit and the regression stop do (one path, `DaServer.ExitCodes.RestartRequested`); the platform starts a new process, which joins with a new generation. The same holds for a
     `Rejoining` standby (draft §10). A peer refuses frames from a generation its view lists `Dead` or does not list at
     all, once its view is at or above the table version the frame carries (a frame from a newer version makes it read
     the table first), so a peer that joined after the entry moved out refuses the zombie too; peers stop sending to a
@@ -1366,8 +1366,10 @@ a `Confirm` is answered by a standby (test `DataSourcesRequireReadWrite`). Membe
 `daserver_membership_kv` with its own role, two connections, one kept for reads; a third opens to look a stuck
 write's backend up.
 
-**`Strict` on PostgreSQL** rests on the operator's declaration, `DaServer:Store:PostgreSql:Durability` (`Strict`,
-`Replicated` or `Local`; not set is `Local`), with `DaServer:Store:FailureDomain`. Declaring `Strict` asserts that the
+**`Strict` on PostgreSQL** rests on the operator's declaration, per store: `DaServer:Store:PostgreSql:Durability` for
+the records, `DaServer:Membership:PostgreSql:Durability` and `DaServer:Dashboard:PostgreSql:Durability` for membership's
+and the Dashboard's stores, each defaulting to the records key (`Strict`, `Replicated` or `Local`; not set is
+`Local`), with `DaServer:Store:FailureDomain`. Declaring `Strict` asserts that the
 deployment never loses or rolls back an acknowledged commit within its failure domain: durable on commit, and no
 failover that can promote a standby missing an acknowledged commit. The framework cannot verify that promise, and does
 not try: whom a high-availability tool names as synchronous and whom it would promote is not reliably visible from SQL
@@ -1390,13 +1392,14 @@ The self-check verifies only what every PostgreSQL shows without misjudging it, 
 connection and every 10 s (`current_setting`, on the store's own role, so a per-role override is seen): `fsync` or
 `full_page_writes` `off` is unsafe (a crash can corrupt the database rather than lose recent commits), so the class is
 `Unsafe`, a fresh start stays not ready before it joins and a serving node goes on under the `Local` rules, whatever
-the declaration or `AcceptDurability` says (section 4's durability classes); `synchronous_commit` `off` or `local` (a
-crash in place, or a failover, loses the last acknowledged commits) makes it at most `Local`, and `remote_write` at
-most `Replicated` (test `UnsafeDurabilitySettingsDetected`). The effective class is the lower of the declaration and
+the declaration or `AcceptDurability` says (section 4's durability classes); `synchronous_commit` `off` (a crash in
+place loses the last acknowledged commits) or `local` (no standby is waited for, so a failover may lose them) makes it
+at most `Local`, and `remote_write` at most `Replicated`; the one-host shape needs `on` too, since it is checked
+without knowing the shape (test `UnsafeDurabilitySettingsDetected`). The effective class is the lower of the declaration and
 this check (test `DeclaredStrictVerifiesOnlyLocalDurability`); an undeclared store is `Local`, so an external instance
-never claims `Strict` unless its operator declares it (test `UndeclaredStoreIsLocal`). One declaration covers every
-PostgreSQL store of the node (records, membership, the Dashboard's): stores in deployments of different strength are
-declared at the weakest. What `DaServer.Aspire` publishes declares `Strict` with its failure domain: on Kubernetes a
+never claims `Strict` unless its operator declares it (test `UndeclaredStoreIsLocal`). Each store is declared and
+checked on its own, so records on a weaker deployment, accepted with `DaServer:Store:AcceptDurability`, sit beside a
+`Strict` membership store on its own instance (test `DurabilityDeclaredPerStore`). What `DaServer.Aspire` publishes declares `Strict` with its failure domain: on Kubernetes a
 primary and two standbys in three zones with quorum-aware failover (`zones`), so maintenance on one standby pauses
 nothing (the samples add a PodDisruptionBudget through the publisher hook); on Docker Compose one `postgres` service
 with its named volume and no replication (`host`), so regular backups are the operator's protection against the host's
@@ -1661,7 +1664,7 @@ layers 1 to 3 and 5 pass, and layer 4 for that class on a real topology; first-p
     other), local Aspire (two replicas of the node resource) and **Kubernetes** (below). After a handover the old
     instance parks in place on every platform; the supervisors' restart policies (`Restart=on-failure`, `KeepAlive`
     with `SuccessfulExit = false`, Windows recovery, `restart: unless-stopped`) matter only for crashes and the
-    isolation exit (code 75).
+    stops that want a restart (code 75: the isolation exit, a node declared dead, a membership regression).
   - **Kubernetes**: one pod with two containers, `node-a` and `node-b`: the same image and configuration, the pod's
     network namespace, and a small `medium: Memory` `emptyDir` for the directory. Each container serves its probes on
     its own port (`DaServer:ProbePort`), and a parked or standby instance reports ready, since it serves nothing, so

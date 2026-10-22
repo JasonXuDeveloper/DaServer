@@ -340,12 +340,12 @@ Keep this file current: tick items when done, add items when scope changes.
         `ConnectionLimitsSizedFromAutoscalerMax`, `MembershipRoleConnectionsReserved`, `RolePrefixUniquePerServer` (roles marked in the transaction that creates them, by `COMMENT ON ROLE`, with the cluster's membership store server (`system_identifier`), database and schema: one cluster's second store database converges, another cluster's membership database on this server or another, another schema or an unmarked role is refused, naming `RolePrefix`; after a membership move, roles re-marked as operations.md says converge)); `PublishRefusesStorelessRecords` (`aspire publish` fails when any node's records or Dashboard
         would use the in-memory store); `AspireRunModeIsDevelopment` (run mode sets `DOTNET_ENVIRONMENT=Development`
         unless the AppHost sets one; publish never does); the
-        class `Strict` only by the operator's declaration (`DaServer:Store:PostgreSql:Durability`, not set `Local`: `UndeclaredStoreIsLocal`), the self-check verifying only local durability (`synchronous_commit` `off` or `local` lowering it to `Local`, `remote_write` to `Replicated`), never the high-availability shape (`DeclaredStrictVerifiesOnlyLocalDurability`);
+        class `Strict` only by the operator's declaration, per store (`DaServer:Store:PostgreSql:Durability`, with membership's and the Dashboard's keys defaulting to it: `DurabilityDeclaredPerStore`; not set `Local`: `UndeclaredStoreIsLocal`), the self-check verifying only local durability (`synchronous_commit` `off` or `local` lowering it to `Local`, `remote_write` to `Replicated`), never the high-availability shape (`DeclaredStrictVerifiesOnlyLocalDurability`);
         in every class `fsync` or `full_page_writes` `off` making the class `Unsafe`, read on every new connection and
         every 10 s: a fresh start on it stays not ready before the membership join (`UnsafeAtStartStaysNotReady`), one
         finding it while serving, or a hot restart's standby, refuses nothing, goes on under the `Local` rules and raises
         `DaServerStoreUnsafe` (`UnsafeStoreDropsClassAndAlerts`, `UnsafeDuringHotRestartTakesOver`; development and `TestCluster` exempt with a warning:
-        they start, export the class they found and never alert), `synchronous_commit` `off` or `local` declared `Local`
+        they start, export the class they found and never alert), `synchronous_commit` `off` or `local` lowered to `Local`
         (`UnsafeDurabilitySettingsDetected`); the BenchmarkDotNet gate
         `GenericTableCommitThroughput` (the generic table kept only within 10% of typed columns at 1 and 5 ms of injected
         latency, else typed columns behind the same primitives); the wire family's variants (Aurora, AlloyDB, Neon,
