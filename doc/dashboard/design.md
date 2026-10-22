@@ -462,7 +462,7 @@ Every action runs on the Dashboard's server, never in the browser, so closing th
   answering Dashboard, however long it waited. So a run created late, after an operator marked its action Failed ten minutes in
   and requested it again, never runs, beside the new one or after it (a same-image hot restart has no build precondition that
   would otherwise stop it). A run started by hand with the command below carries no action id and asks nothing. A lookup that fails (the pipeline's API down or rate-limited) leaves the
-  state as it is and the lock held. Without a store there is no shared lock, so the Dashboard runs as one replica.
+  state as it is and the lock held. Without a store (development only) there is no shared lock, so the Dashboard runs as one replica.
 - **Outcomes until the end.** An action's state is Requested (written, before the call), Accepted (the pipeline took
   it), Running, then Done or Failed, the only terminal states; Unknown (the call timed out, so it may have run) and
   Stalled hold the lock like a running action. Every state write is the lease holder's put from a non-final state,

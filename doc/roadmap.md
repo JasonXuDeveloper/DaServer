@@ -331,14 +331,16 @@ Keep this file current: tick items when done, add items when scope changes.
         waits in its database past `StatementTimeout` make no progress (a slow standby lets it through, a stalled one
         holds it; at most one stuck backend per live process plus those of processes that died while stuck):
         `MembershipWaitNeverTerminated`, `MembershipLeftoverBoundedPerRole`; a join retry stopping when its own
-        generation's dead key exists: `JoinRetryStopsWhenMarkedDead`; a handover starting only with no pending
+        generation's dead key exists or a higher generation of its name is recorded: `JoinRetryStopsWhenMarkedDead`; a handover starting only with no pending
         membership item, the wait counting against the arm: `HandoverStartsWithNoPendingMembershipItem`; the role's connections, across every
         database, against its limit (not exported when unlimited) exported and alerted: `MembershipConnectionsLowAlerted`); the roles step (roles named by cluster and schema, hashed past 52 bytes: `RolesStepIdempotent`,
         `RoleNamesFitAndRepeatForLongClusterNames`,
         `RolesStepCreatesConfiguredSchema`, `RolesStepTakesOverExistingTables`, `RolesStepUpdatesPassword`,
         `ConnectionLimitsSizedFromAutoscalerMax`, `MembershipRoleConnectionsReserved`, `RolesSeeStandbySyncState` (runtime, membership and Dashboard roles through `daserver_replication()`, only the owner
-        holding `pg_read_all_stats`)); `PublishRefusesStorelessRecords` (`aspire publish` of one storeless node hosting a
-        `[Persist]` type or the Dashboard fails); the
+        holding `pg_read_all_stats`; the function's `search_path` is fixed, so a caller's objects never run with the
+        owner's rights, and `PUBLIC` cannot execute it), `RolePrefixUniquePerServer`); `PublishRefusesStorelessRecords` (`aspire publish` fails when any node's records or Dashboard
+        would use the in-memory store); `AspireRunModeIsDevelopment` (run mode sets `DOTNET_ENVIRONMENT=Development`
+        unless the AppHost sets one; publish never does); the
         self-check declaring `Strict` only with a synchronous standby and `DaServer:Store:PostgreSql:QuorumFailover`;
         in every class `fsync` or `full_page_writes` `off` making the class `Unsafe`, read on every new connection and
         every 10 s: a fresh start on it stays not ready before the membership join (`UnsafeAtStartStaysNotReady`), one

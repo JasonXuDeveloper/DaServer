@@ -727,7 +727,7 @@ in short:
     a standby, so what it shows is durable even when the wait ended early (a fast shutdown, a crash-restart); the
     write landed if and only if the node's entry there, looked up by (name, generation), has a `write_seq` at or above
     the one it wrote, whatever other writes moved the version since, and an absent entry means it did not land (a join
-    is then retried; once joined, the absent-entry rule below stops the node). The writer never acts on it before. The lease rests only on plain `Get`s of the
+    is then retried, with the dead-key exception (see below); once joined, the absent-entry rule below stops the node). The writer never acts on it before. The lease rests only on plain `Get`s of the
     document, so a pending write never costs the node's lease (test `UnknownMembershipWriteNeverHoldsLease`). At most one
     membership write per node is in flight, so while one stays pending (a standby outage, the store slow, or failing
     writes) every later one from that node waits: heartbeats skip, its own restart permit waits, and on the
@@ -737,7 +737,8 @@ in short:
     `MembershipWritePendingAlerted`).
   - **A node declared dead stops**: once it reads itself `Dead`, or, once joined (its join write `Landed`, or shown by the `Confirm` run once
     its backend ended, its entry's `write_seq`; a join that ended `Unknown` and did not land is retried, not taken as death, unless `m|cluster|dead|name|generation`
-    holds its own generation: a newer process of its name marked it dead and it stops; test `JoinRetryStopsWhenMarkedDead`), reads a document that
+    holds its own generation, or the document or a dead key holds a generation of its name above its own: a newer
+    process of its name has joined or marked it dead and it stops; test `JoinRetryStopsWhenMarkedDead`), reads a document that
     no longer holds its own entry (a joined node's entry leaves only at its re-placement, after it was `Dead`, so
     absence is death even once its dead key has expired), or a peer refuses its frames, it freezes every world, fences all its actors and exits with a
     non-zero code; the platform starts a new process, which joins with a new generation. The same holds for a
@@ -857,10 +858,11 @@ in short:
     `InMemoryStoreRefusedForRecordsInProduction`); a storeless production node hosts unsaved types only. A
     node without a membership store starts only when `DaServer:Membership:SingleNode = true` says it is alone; any
     other configuration refuses to start, so two storeless replicas never form two clusters running every actor twice; `SingleNode = true` on a node that also has a membership store (or an actor store) refuses to start as well, since a second replica configured the same way would bypass the store's table. A single node's hot-restart handover carries its member entry (name, generation, start time, `restart_until`, `write_seq`) in the stream's header, and the new process seeds its in-memory table from it, at the carried table version, before `Rejoining`, so the check "still `Active`, own generation, own `restart_until`" passes as on a cluster and its own seeded version is never read as a regression.
-    `DaServer.Aspire` sets `SingleNode` when the AppHost has one node and no store, and adds a PostgreSQL resource for
-    membership when it declares more than one node and no store; when that one storeless node hosts a `[Persist]` type
-    or the Dashboard, `aspire publish` fails and names them, since the published node would refuse to start (test
-    `PublishRefusesStorelessRecords`). A cluster of more than one process needs the table in
+    `DaServer.Aspire` sets `SingleNode` when the AppHost has one node and no store, and adds a PostgreSQL resource, the
+    actor store and membership's, when it declares more than one node and no store; when any node's records or
+    Dashboard would use the in-memory store in what it publishes (one storeless node hosting a `[Persist]` type or
+    the Dashboard, or an AppHost that names only a membership store), `aspire publish` fails and names them, since
+    the published node would refuse to start (test `PublishRefusesStorelessRecords`). A cluster of more than one process needs the table in
     a store: the actor store by default, or a separate one (`WithMembershipStore(db)`). Every node, gateways included,
     needs that connection.
   The timer defaults are one table in [draft §11](programming-model.md#定时的默认值).
@@ -1046,8 +1048,9 @@ runtime acts on these classes only (section 2's Tick-end write), never on a stor
   names that class (`Replicated` or `Local`), and on a Dashboard store below `Strict` unless
   `DaServer:Dashboard:AcceptDurability` does; membership has no such opt-in and always needs `Strict` (section 4,
   "Its own client"). Development runs and `TestCluster` are exempt: they start on any class and log a warning
-  (ADR-104). Development means `IHostEnvironment.IsDevelopment()` (Aspire's run mode sets it; `TestCluster` is exempt
-  by itself); every other environment, a plain `dotnet run` without one included, is production (test
+  (ADR-104). Development means `IHostEnvironment.IsDevelopment()`: `DaServer.Aspire` sets `DOTNET_ENVIRONMENT=Development` on
+  every node and the Dashboard in run mode unless the AppHost sets one, and never in what it publishes (test
+  `AspireRunModeIsDevelopment`); `TestCluster` is exempt by itself; every other environment, a plain `dotnet run` without one included, is production (test
   `ProductionIsAnyNonDevelopmentEnvironment`).
 - **Unsafe settings**: in every class the provider reports a store configured to corrupt rather than lose writes
   (the PostgreSQL provider: `fsync` or `full_page_writes` off). This check is one cheap read of the settings and runs
@@ -1269,11 +1272,14 @@ transactions (test `LargeRootWriteStaysAtomic`). Keys are
 sorted, so two transactions touching the same keys lock them in one order. `Confirm` is a transaction that writes the
 connection's marker row and reads the keys, committed under the rule below. `:client` is the node's name and
 generation, or the Dashboard replica's name, and the connection's backend pid, so no two connections share a row and
-a `Confirm` never queues behind another's synchronous wait. Rows untouched for a day are deleted
+a `Confirm` never queues behind another `Confirm`'s synchronous wait. Rows untouched for a day are deleted
 (`DELETE FROM :schema.daserver_confirm WHERE at < clock_timestamp() - interval '1 day'`, harmless to run twice) on
 each database by whoever writes there: the expiry member for the actor store, the membership coordinator on
 membership's database (its `Confirm`s settle membership writes whose backend ended; the delete runs on the membership
-client as that process's one pending membership item, so it never adds a second stuck backend), the Dashboard's active replica on its own; on one database all three run it:
+client as that process's one pending membership item, so it never adds a second stuck backend; one that ends
+`Unknown` is held like a heartbeat until its backend is looked up gone and then dropped, and while it waits for the
+standby it holds the locks of the day-old rows it deletes, which a `Confirm` touching one of them waits behind until
+the standby returns), the Dashboard's active replica on its own; on one database all three run it:
 
 ```sql
 BEGIN;
@@ -1320,7 +1326,7 @@ waiting until the standby answers. The write stays pending meanwhile: the member
 `(pid, backend_start)` every `StatementTimeout` and, once it is gone, runs `Confirm` on that same session (lookup
 first), whose marker commit waits for a standby, and reads the node's entry, looked up by (name, generation), from
 what it shows: the write landed if and only if that entry's `write_seq` is at least the one written, and an absent
-entry means not landed (a join is retried; once joined, the absent-entry stop rule applies; checked on 16: the lookup works as the membership
+entry means not landed (a join is retried, with the dead-key exception (see below); once joined, the absent-entry stop rule applies; checked on 16: the lookup works as the membership
 role, and a read after the backend ends shows the row; test `MembershipWaitNeverTerminated`). That settlement runs on
 the lookup connection, its own wait is never cancelled, and it counts as the process's one pending membership item.
 A settlement `Confirm` that ends `Unknown` keeps that item and is repeated only once a lookup finds the earlier
@@ -1363,10 +1369,10 @@ node and `DaServerStoreWritesBehind` on every node with unsaved changes.
 The self-check reads `synchronous_commit`, `synchronous_standby_names` and the standbys' `state` and `sync_state`
 through `daserver_replication()` (PostgreSQL shows those columns of `pg_stat_replication` only to members of
 `pg_read_all_stats`, which would also show a role every session's query text on the server; the roles step instead
-creates this `SECURITY DEFINER` function, owned by the owner role, the one role granted `pg_read_all_stats`, returning
-only `application_name`, `state` and `sync_state`, with `EXECUTE` granted to the runtime, membership and Dashboard
-roles; checked on 16: each of them sees `streaming`/`quorum` through it and `NULL` directly, and a role without the
-grant is refused), and declares
+creates this `SECURITY DEFINER` function, owned by the owner role, the one role granted `pg_read_all_stats`, in the
+configured schema of every database the cluster's stores use, as step (6) below shows; callers name it with its
+schema; checked on 16: each of the runtime, membership and Dashboard roles sees `streaming`/`quorum` through it and
+`NULL` directly, and a role without the grant is refused), and declares
 `Strict` only when they match and the operator has stated quorum-aware failover (`DaServer:Store:PostgreSql:QuorumFailover`,
 set by `DaServer.Aspire` for what it publishes, since failover policy is not visible from SQL). What `DaServer.Aspire`
 publishes is a primary and two standbys in three zones under `ANY 1` with quorum-aware failover, so maintenance on one
@@ -1385,16 +1391,22 @@ retries until the roles exist) and converges the database on every run: (1) each
 password set every run (`format('… %I … PASSWORD %L', …)` run by `EXECUTE`, since a `DO` body takes no bind
 parameters): the owner role, the runtime role, the membership role and, with `AddDaServerDashboard`, the Dashboard's role,
 named `<prefix>_owner`, `_runtime`, `_membership` and `_dashboard` where the prefix is `<cluster>_<schema>`, or, when
-that is longer than 52 bytes, its first 40 bytes, `_` and the first 8 hex digits of its `md5` (so every name fits
-PostgreSQL's 63 bytes and re-runs find the same roles; checked on 16 with a 63-byte cluster name, run twice); the
+that is longer than 52 bytes (`octet_length`), its longest leading run of whole characters that fits 40 bytes, `_`
+and the first 8 hex digits of its `md5` (so every name fits PostgreSQL's 63 bytes, a multibyte character is never
+cut, and re-runs find the same roles; checked on 16 with a 63-byte cluster name, run twice; test
+`RoleNamesFitAndRepeatForLongClusterNames`). Cluster names are ASCII (Aspire resource names are), so only a schema
+name can be multibyte. Roles are per server, not
+per database, so the prefix must be unique on the server: two clusters of one name and schema in two databases of one
+server (staging and production) take `DaServer:Store:PostgreSql:RolePrefix`, which replaces it; the
 owner has `CREATE` on the schema and owns the tables; none is a superuser; (2) `CREATE SCHEMA IF NOT EXISTS <schema> AUTHORIZATION <owner>` (for `public`, `GRANT CREATE, USAGE` to
 the owner); (3) `ALTER … OWNER TO <owner>` for DaServer objects created under another owner; (4) a `CONNECTION
 LIMIT` per role, sized from the most nodes the cluster may run (per group the autoscaler's maximum times one plus the
 rollout surge, plus one warm standby process per stateful node) times its pool size, plus per node the backends it can
 leave in `COMMIT` after a socket dies (`2 × WritesInFlight` per world plus `ActivationSlots` for the runtime role, of
 which a node terminates its own on reconnecting; for the membership role one per node process that may be running, its one write's, never terminated, plus its
-lookup connection: a process started while the role's waits make no progress writes nothing, so replaced pods add
-none; a lost host's stay until the standby returns),
+lookup connection; that reserve also covers a process that died while stuck, since its replacement, started while the
+role's waits make no progress, writes nothing; backends left from an earlier window, when a standby answered briefly
+and the gate opened again, can exceed it, which is `DaServerMembershipConnectionsLow`'s case),
 failing, with the numbers, when the shares plus the Dashboard's, the owner's and the superuser's reserve exceed
 `max_connections` (or granting `pg_use_reserved_connections` to the membership role when `reserved_connections` is
 configured); (5) on every DaServer role (`ALTER ROLE … SET`): `client_connection_check_interval = '10s'`,
@@ -1402,9 +1414,21 @@ configured); (5) on every DaServer role (`ALTER ROLE … SET`): `client_connecti
 test `HalfOpenBeforeCommitReleasesLocks`), `tcp_keepalives_idle = 10`, `tcp_keepalives_interval = 2`,
 `tcp_keepalives_count = 5`, `tcp_user_timeout = 30000` (a half-open client's backend not waiting for the standby
 ends within about 30 s), and, only when `current_setting('server_version_num')::int >= 170000`,
-`transaction_timeout = 0`; (6) `GRANT pg_read_all_stats` to the owner role only and the `daserver_replication()`
-function above for the others (each runs its own self-check; without it a production node or Dashboard never sees
-`Strict`). Nothing the server times ends a synchronous wait. Against an external database the
+`transaction_timeout = 0`; (6) `GRANT pg_read_all_stats` to the owner role only and, in every database the cluster's stores
+use, the function the others' self-checks read (without it a production node or Dashboard never sees `Strict`):
+
+```sql
+CREATE OR REPLACE FUNCTION :schema.daserver_replication()
+  RETURNS TABLE (application_name text, state text, sync_state text)
+  LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+AS $$ SELECT application_name, state, sync_state FROM pg_catalog.pg_stat_replication $$;
+ALTER FUNCTION :schema.daserver_replication() OWNER TO :owner_role;
+REVOKE ALL ON FUNCTION :schema.daserver_replication() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION :schema.daserver_replication() TO :runtime_role, :membership_role, :dashboard_role;
+```
+
+(the fixed `search_path` keeps a caller's objects out of the owner's rights; the Dashboard's grant only with
+`AddDaServerDashboard`). The self-check calls `SELECT * FROM :schema.daserver_replication()`. Nothing the server times ends a synchronous wait. Against an external database the
 operator provisions the roles.
 
 **The Dashboard's table**, `daserver_dashboard_kv`, holds the Dashboard's keys (above) for its own role, which has

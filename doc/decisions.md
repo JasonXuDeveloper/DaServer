@@ -3283,8 +3283,10 @@ Replaced by ADR-098.
     a PodDisruptionBudget through the publisher hook). `pg_stat_replication` shows `state` and `sync_state` only to
     members of `pg_read_all_stats`, which would also show every session's query text on the server, so the roles step
     grants it to the owner role alone and creates a `SECURITY DEFINER` function owned by it, `daserver_replication()`,
-    that returns only `application_name`, `state` and `sync_state`, executable by the runtime, membership and Dashboard
-    roles (without it a production node or Dashboard never sees `Strict`; the gate and the connection gauges read only
+    in the configured schema of every database the cluster's stores use, with `search_path` fixed to `pg_catalog,
+    pg_temp` (so a caller's objects never run with the owner's rights), `EXECUTE` revoked from `PUBLIC`, returning only
+    `application_name`, `state` and `sync_state`, executable by the runtime, membership and Dashboard roles, called
+    schema-qualified (without it a production node or Dashboard never sees `Strict`; the gate and the connection gauges read only
     a role's own backends, which need no grant). The local single-node database is `Local` and exempt.
     In every class the provider reports `fsync` or `full_page_writes` `off` (a crash may corrupt the database
     rather than lose recent commits), reading both on every new connection and every 10 s: the class is then
@@ -3309,14 +3311,15 @@ Replaced by ADR-098.
     `idle_in_transaction_session_timeout = 30s`, server keepalive (10 s idle, 2 s interval, 5 probes) and
     `tcp_user_timeout = 30000`, so a lost client's backend that is not waiting for the standby ends within about 30 s;
     the roles' `CONNECTION LIMIT`s hold room for the backends a node can leave in `COMMIT` (`2 × WritesInFlight` per
-    world plus `ActivationSlots`, and one membership write's per live node process, never terminated, plus the
-    backends of processes that died while stuck: a process holds one pending membership item at
-    a time, a repeated settlement waiting for the earlier backend to be gone, and waits before its first membership
-    write while the membership role's waits in its database past `StatementTimeout` make no progress, so replaced pods
-    add none and a slow standby still lets starts through; a crash-restart of the primary, an operator's termination
-    or a standby answering briefly starts that window again, so a stuck membership backend is never terminated by
-    hand: the standby is restored; the membership role is the cluster's own, the roles step naming roles by cluster
-    and schema). Claims, the Dashboard's writes, membership writes and the schema Job's last step commit the same way
+    world plus `ActivationSlots`, and one membership write's per node process that may be running, never terminated: a process holds one
+    pending membership item at a time, a repeated settlement waiting for the earlier backend to be gone, and waits
+    before its first membership write while the membership role's waits in its database past `StatementTimeout` make
+    no progress, so that reserve also covers a process that died while stuck, its replacement writing nothing, and a
+    slow standby still lets starts through; backends left from an earlier window, when a crash-restart of the
+    primary, an operator's termination or a standby answering briefly opened the gate again, can exceed it, which
+    `DaServerMembershipConnectionsLow` reports, so a stuck membership backend is never terminated by hand: the standby
+    is restored; the membership role is the cluster's own, the roles step naming roles by cluster and schema, the
+    prefix unique on the server). Claims, the Dashboard's writes, membership writes and the schema Job's last step commit the same way
     and act only on a clean commit or a `Confirm`.
   - **`Confirm` writes before it reads**: one transaction that upserts the client's marker row
     (`daserver_confirm`), reads the keys and commits; only a clean `COMMIT` answers, since the marker's WAL follows
@@ -3512,8 +3515,9 @@ Replaced by ADR-098.
   Dashboard store it loses every record at any restart, planned or not, which no class describes, so a production node
   refuses it for `[Persist]` types and the Dashboard with no opt-in (a storeless production node hosts unsaved types
   only); development and
-  `TestCluster` are exempt and log a warning. Development is `IHostEnvironment.IsDevelopment()` (Aspire's run mode
-  sets it); every other environment is production, a plain `dotnet run` included (test
+  `TestCluster` are exempt and log a warning. Development is `IHostEnvironment.IsDevelopment()` (`DaServer.Aspire`
+  sets `DOTNET_ENVIRONMENT=Development` on nodes and the Dashboard in run mode unless the AppHost sets one, never in
+  what it publishes; test `AspireRunModeIsDevelopment`); every other environment is production, a plain `dotnet run` included (test
   `ProductionIsAnyNonDevelopmentEnvironment`). R13
   holds per class: on `Strict` unchanged, no acknowledged write lost and no rollback; below it the guarantee is
   **fencing only**: the version is the fencing token, so two owners' writes never mix, while output leaves at the

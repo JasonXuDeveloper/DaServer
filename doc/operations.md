@@ -95,6 +95,8 @@ suggests) or renaming the cluster starts a new membership document; the actor re
    under the old name: copy them to the new prefix to keep the audit and the signed-in sessions, or accept losing
    them (sign-in cookies are then invalidated).
 5. Delete the old document's keys (`m|<cluster>` and its prefix) from the old store once nothing reads them.
+6. On a cluster rename on PostgreSQL, the roles step creates `<cluster>_<schema>_*` roles under the new name: drop the
+   old prefix's roles (`DROP ROLE`, after `REASSIGN OWNED` to the new owner role) once nothing connects as them.
 
 ## Production views
 
